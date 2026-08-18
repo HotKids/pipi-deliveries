@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="express_2x2_1_overlap">#1A000000</color>
+    <color name="express_2x2_2_overlap">#0D000000</color>
+    <color name="aicy_ic_launcher_background">#FFFFEBD6</color>
+    <color name="widget_empty_title">#FF000000</color>
+    <color name="widget_empty_text">#4D000000</color>
+</resources>

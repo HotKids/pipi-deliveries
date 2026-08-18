@@ -1,0 +1,163 @@
+name: Android checks
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Verify main and release snapshot
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        run: |
+          test "$(git rev-list --count HEAD)" = "1"
+          version="$(sed -n 's/^val releaseVersionNameDefault = "\([^"]*\)"$/\1/p' app/build.gradle.kts)"
+          test "$(printf '%s\n' "$version" | grep -c '^[0-9][0-9.]*$')" = "1"
+          test "$(git log -1 --format=%s)" = "Pipi Deliveries v$version"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Unit tests, lint and release build
+        run: |
+          ./gradlew \
+            :app:testStandardDebugUnitTest \
+            :app:testCompatDebugUnitTest \
+            :app:lintStandardDebug \
+            :app:lintCompatDebug \
+            :app:assembleStandardRelease \
+            :app:assembleCompatRelease \
+            --console=plain
+
+  release-apk:
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Restore release signing key
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$SIGNING_KEYSTORE_BASE64"
+          install -d -m 700 "$RUNNER_TEMP/deliveries-signing"
+          printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/deliveries-signing/release.jks"
+          chmod 600 "$RUNNER_TEMP/deliveries-signing/release.jks"
+          echo "SIGNING_STORE_FILE=$RUNNER_TEMP/deliveries-signing/release.jks" >> "$GITHUB_ENV"
+      - name: Set release metadata
+        run: |
+          safe_ref="${GITHUB_REF_NAME//\//-}"
+          echo "DELIVERIES_ARTIFACT_NAME=Deliveries-${safe_ref}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version_name="${GITHUB_REF_NAME#v}"
+          else
+            version_name="$(sed -n 's/^val releaseVersionNameDefault = "\([^"]*\)"$/\1/p' app/build.gradle.kts)"
+          fi
+          IFS=. read -r major minor patch <<< "$version_name"
+          [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]
+          test "$minor" -lt 100
+          test "$patch" -lt 100
+          test "$GITHUB_RUN_ATTEMPT" -lt 100
+          version_code=$((major * 1000000 + minor * 10000 + patch * 100 + GITHUB_RUN_ATTEMPT))
+          echo "DELIVERIES_VERSION_CODE=$version_code" >> "$GITHUB_ENV"
+          echo "DELIVERIES_VERSION_NAME=$version_name" >> "$GITHUB_ENV"
+      - name: Build signed APK
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          DELIVERIES_K100_PROXY_TOKEN: ${{ secrets.DELIVERIES_K100_PROXY_TOKEN }}
+        run: |
+          test -n "$SIGNING_STORE_PASSWORD"
+          test -n "$SIGNING_KEY_ALIAS"
+          test -n "$SIGNING_KEY_PASSWORD"
+          test -n "$DELIVERIES_K100_PROXY_TOKEN"
+          ./gradlew \
+            :app:testStandardDebugUnitTest \
+            :app:testCompatDebugUnitTest \
+            :app:lintStandardDebug \
+            :app:lintCompatDebug \
+            :app:assembleStandardRelease \
+            :app:assembleCompatRelease \
+            --console=plain
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/deliveries-signing/release.jks"
+      - name: Prepare GitHub Release APK
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          standard_apk="$RUNNER_TEMP/Deliveries-${GITHUB_REF_NAME}.apk"
+          compat_apk="$RUNNER_TEMP/Deliveries-${GITHUB_REF_NAME}-Android10.apk"
+          cp app/build/outputs/apk/standard/release/app-standard-release.apk "$standard_apk"
+          cp app/build/outputs/apk/compat/release/app-compat-release.apk "$compat_apk"
+          echo "RELEASE_APK_STANDARD=$standard_apk" >> "$GITHUB_ENV"
+          echo "RELEASE_APK_COMPAT=$compat_apk" >> "$GITHUB_ENV"
+      - name: Upload signed APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.DELIVERIES_ARTIFACT_NAME }}
+          path: |
+            app/build/outputs/apk/standard/release/app-standard-release.apk
+            app/build/outputs/apk/compat/release/app-compat-release.apk
+          if-no-files-found: error
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$RELEASE_APK_STANDARD" \
+            "$RELEASE_APK_COMPAT" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Pipi Deliveries $GITHUB_REF_NAME" \
+            --generate-notes
+      - name: Remove previous GitHub Releases and tags
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit 1000 \
+            --json tagName \
+            --jq '.[].tagName' | while IFS= read -r old_tag; do
+              if [ "$old_tag" != "$GITHUB_REF_NAME" ]; then
+                gh release delete "$old_tag" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --cleanup-tag \
+                  --yes
+              fi
+            done
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/" \
+            --jq '.[].ref' | while IFS= read -r old_ref; do
+              old_tag="${old_ref#refs/tags/}"
+              if [ "$old_tag" != "$GITHUB_REF_NAME" ]; then
+                gh api --method DELETE \
+                  "repos/$GITHUB_REPOSITORY/git/refs/tags/$old_tag"
+              fi
+            done
