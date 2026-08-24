@@ -1,0 +1,26 @@
+{
+  "icon": "cat.fill",
+  "name": "Pipi Deliveries",
+  "color": "rgba(184, 114, 171, 1)",
+  "entry": "index.tsx",
+  "permissions": null,
+  "runInApp": true,
+  "contributors": [],
+  "version": "0.5",
+  "intentInputTypes": [],
+  "localizedNames": {
+    "zh": "派派助手",
+    "en": "Pipi Deliveries"
+  },
+  "description": "A local-first delivery tracker for Scripting with account sync, manual queries, cached timelines, and Home Screen widgets.",
+  "remoteResource": null,
+  "author": {
+    "name": "HotKids",
+    "email": null,
+    "homepage": "https://github.com/HotKids"
+  },
+  "localizedDescriptions": {
+    "zh": "在 Scripting 中集中查看快递，支持手机号同步、手动查询、物流缓存、快捷指令和主屏幕小组件。",
+    "en": "A local-first delivery tracker for Scripting with account sync, manual queries, cached timelines, Shortcuts, and Home Screen widgets."
+  }
+}

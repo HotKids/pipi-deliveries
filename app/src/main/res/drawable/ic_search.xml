@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+    <!-- Material Symbols Outlined: search, FILL=1, wght=400, GRAD=0, opsz=24. -->
+    <group android:translateY="960">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M784,-120L532,-372Q502,-348 463,-334Q424,-320 380,-320Q271,-320 195.5,-395.5Q120,-471 120,-580Q120,-689 195.5,-764.5Q271,-840 380,-840Q489,-840 564.5,-764.5Q640,-689 640,-580Q640,-536 626,-497Q612,-458 588,-428L840,-176ZM380,-400Q455,-400 507.5,-452.5Q560,-505 560,-580Q560,-655 507.5,-707.5Q455,-760 380,-760Q305,-760 252.5,-707.5Q200,-655 200,-580Q200,-505 252.5,-452.5Q305,-400 380,-400Z" />
+    </group>
+</vector>

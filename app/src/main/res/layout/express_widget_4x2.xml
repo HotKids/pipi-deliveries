@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/widget_express_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:theme="@style/PipiWidgetTheme">
+
+    <ImageView
+        android:id="@+id/widget_express_brand_gradient"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/widget_express_gradient_surface"
+        android:clipToOutline="true"
+        android:contentDescription="@null"
+        android:scaleType="fitXY"
+        android:src="@drawable/widget_express_brand_gradient_mask" />
+
+    <LinearLayout
+        android:id="@+id/widget_express_content"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="14dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingBottom="8dp">
+
+            <LinearLayout
+                android:id="@+id/widget_express_header"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/widget_express_title"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:layout_marginStart="2dp"
+                    android:contentDescription="@null"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_symbol_chevron_right"
+                    android:tint="?attr/colorOnSurfaceVariant"
+                    tools:ignore="UseAppTint" />
+            </LinearLayout>
+
+            <ImageView
+                android:id="@+id/widget_express_search"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="@string/search_express_hint"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_search"
+                android:tint="?attr/colorOnSurfaceVariant"
+                tools:ignore="UseAppTint" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/widget_express_empty"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:contentDescription="@null"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_local_shipping"
+                android:tint="?attr/colorOnSurface"
+                tools:ignore="UseAppTint" />
+
+            <TextView
+                android:id="@+id/widget_express_empty_text"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/widget_no_express"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/widget_express_row1"
+            style="@style/DeliveriesExpressWideRow">
+            <ImageView
+                android:id="@+id/widget_express_logo1"
+                style="@style/DeliveriesExpressWideLogo" />
+            <LinearLayout style="@style/DeliveriesExpressWideTextColumn">
+                <LinearLayout style="@style/DeliveriesExpressWideTitleLine">
+                    <TextView
+                        android:id="@+id/widget_express_company1"
+                        style="@style/DeliveriesExpressWideCompany" />
+                    <TextView
+                        android:id="@+id/widget_express_status1"
+                        style="@style/DeliveriesExpressWideStatus" />
+                </LinearLayout>
+                <TextView
+                    android:id="@+id/widget_express_detail1"
+                    style="@style/DeliveriesExpressWideDetail" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/widget_express_row2"
+            style="@style/DeliveriesExpressWideRow">
+            <ImageView
+                android:id="@+id/widget_express_logo2"
+                style="@style/DeliveriesExpressWideLogo" />
+            <LinearLayout style="@style/DeliveriesExpressWideTextColumn">
+                <LinearLayout style="@style/DeliveriesExpressWideTitleLine">
+                    <TextView
+                        android:id="@+id/widget_express_company2"
+                        style="@style/DeliveriesExpressWideCompany" />
+                    <TextView
+                        android:id="@+id/widget_express_status2"
+                        style="@style/DeliveriesExpressWideStatus" />
+                </LinearLayout>
+                <TextView
+                    android:id="@+id/widget_express_detail2"
+                    style="@style/DeliveriesExpressWideDetail" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/widget_express_row3"
+            style="@style/DeliveriesExpressWideRow">
+            <ImageView
+                android:id="@+id/widget_express_logo3"
+                style="@style/DeliveriesExpressWideLogo" />
+            <LinearLayout style="@style/DeliveriesExpressWideTextColumn">
+                <LinearLayout style="@style/DeliveriesExpressWideTitleLine">
+                    <TextView
+                        android:id="@+id/widget_express_company3"
+                        style="@style/DeliveriesExpressWideCompany" />
+                    <TextView
+                        android:id="@+id/widget_express_status3"
+                        style="@style/DeliveriesExpressWideStatus" />
+                </LinearLayout>
+                <TextView
+                    android:id="@+id/widget_express_detail3"
+                    style="@style/DeliveriesExpressWideDetail" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

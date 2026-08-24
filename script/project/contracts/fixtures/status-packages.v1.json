@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "name": "summary state 3 completes a timed package without rewriting node 501",
+      "summaryState": "3",
+      "tracks": [
+        {
+          "timeText": "2026-08-24 12:00:00",
+          "detail": "快件已由收件人取出",
+          "statusCode": "501"
+        }
+      ],
+      "expectedSemantic": "COMPLETED",
+      "expectedLatestStatusCode": "501"
+    },
+    {
+      "name": "state 3 without timed tracking is not a completed package",
+      "summaryState": "3",
+      "tracks": [
+        {
+          "timeText": "",
+          "detail": "已签收",
+          "statusCode": "3"
+        }
+      ],
+      "expectedSemantic": "UNKNOWN",
+      "expectedLatestStatusCode": "3"
+    },
+    {
+      "name": "pickup status has the highest compact priority",
+      "semantics": ["COMPLETED", "TRANSIT", "WAITING_PICKUP", "DELIVERY"],
+      "expectedHeadline": "WAITING_PICKUP"
+    },
+    {
+      "name": "same event merges missing status metadata without a duplicate row",
+      "mergeTracks": {
+        "cached": [
+          {
+            "timeText": "2026-08-24 12:00:00",
+            "detail": "  快件 已到达；  ",
+            "statusCode": ""
+          }
+        ],
+        "refreshed": [
+          {
+            "timeText": "2026-08-24 12:00:00",
+            "detail": "快件 已到达",
+            "statusCode": "501"
+          }
+        ]
+      },
+      "expectedTrackCount": 1,
+      "expectedLatestStatusCode": "501"
+    }
+  ]
+}

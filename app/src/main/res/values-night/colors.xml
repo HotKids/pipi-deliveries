@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="express_2x2_1_overlap">#1AFFFFFF</color>
+    <color name="express_2x2_2_overlap">#0DFFFFFF</color>
+    <color name="widget_empty_title">#FFFFFFFF</color>
+    <color name="widget_empty_text">#4DFFFFFF</color>
+    <color name="widget_compact_pill_background">#FF48484A</color>
+    <color name="widget_surface">#FF1C1C1E</color>
+</resources>

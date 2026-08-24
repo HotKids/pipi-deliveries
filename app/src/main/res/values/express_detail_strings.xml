@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="copy_waybill">复制运单号</string>
+    <string name="waybill_copied">运单号已复制</string>
+</resources>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- Widget-picker previews are fixed reference renders, not runtime density assets. -->
+    <issue id="IconDensities,IconMissingDensityFolder" severity="ignore" />
+</lint>
