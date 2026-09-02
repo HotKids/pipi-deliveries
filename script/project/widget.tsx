@@ -1,19 +1,21 @@
 import { Script, Widget } from "scripting";
 import { loadWidgetSnapshot } from "./services/storage";
+import { lastNetworkRefreshSuccessAtMs } from "./services/refresh-runtime-state";
 import { FallbackWidget } from "./widget/FallbackWidget";
 import { MediumWidget } from "./widget/MediumWidget";
 import { SmallWidget } from "./widget/SmallWidget";
+import { refreshAllShipments } from "./services/sync";
 import {
+  bestEffortWidgetRefresh,
   safelyLoadWidgetSnapshot,
+  shouldRunWidgetNetworkRefresh,
+  WIDGET_REFRESH_BUDGET_MS,
+  widgetReloadPolicy,
   widgetPresentationKind,
 } from "./widget/runtime";
+import { loadCarrierAuthorityCache } from "./services/carrier-authority";
 
-const reloadPolicy = {
-  policy: "after" as const,
-  date: new Date(Date.now() + 30 * 60 * 1000),
-};
-
-const content = (() => {
+function widgetContent() {
   const kind = widgetPresentationKind(String(Widget.family || ""));
   if (kind === "unsupported") {
     return (
@@ -67,6 +69,28 @@ const content = (() => {
       />
     );
   }
-})();
+}
 
-Widget.present(content, { reloadPolicy });
+async function run() {
+  loadCarrierAuthorityCache();
+  let shouldRefresh = true;
+  try {
+    shouldRefresh = shouldRunWidgetNetworkRefresh(
+      lastNetworkRefreshSuccessAtMs(),
+    );
+  } catch {
+    shouldRefresh = true;
+  }
+  if (shouldRefresh) {
+    await bestEffortWidgetRefresh(() =>
+      refreshAllShipments(undefined, {
+        budgetMs: WIDGET_REFRESH_BUDGET_MS,
+        accountOrderProjection: true,
+        backgroundHostSafe: true,
+      })
+    );
+  }
+  Widget.present(widgetContent(), { reloadPolicy: widgetReloadPolicy() });
+}
+
+void run();

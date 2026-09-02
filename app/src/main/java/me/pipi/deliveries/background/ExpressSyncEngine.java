@@ -4,6 +4,7 @@ import android.content.Context;
 import android.util.Log;
 
 import me.pipi.deliveries.data.ExpressRepository;
+import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
@@ -14,10 +15,13 @@ import me.pipi.deliveries.network.ExpressAccountSource;
 import me.pipi.deliveries.network.ExpressDiscoveryClient;
 import me.pipi.deliveries.network.ExpressSubscriptionClient;
 import me.pipi.deliveries.network.ManualQueryCoordinator;
+import me.pipi.deliveries.network.ManualQueryRoutingPolicy;
 
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /** Synchronizes the selected account source, then refreshes independent local fallbacks. */
@@ -34,23 +38,33 @@ final class ExpressSyncEngine {
     private static void syncAllUnbatched(
             Context context, ExpressRepository repository) {
         int[] network = {0, 0};
-        ExpressApi kuaidi100 = new ExpressApi(context);
+        ExpressApi localApi = new ExpressApi(context);
         String bindingSource = ExpressAccountSource.bindingSource(context);
         boolean useInterface5 = "interface5".equals(bindingSource);
         ExpressDiscoveryClient discovery = useInterface5
                 ? new ExpressDiscoveryClient() : null;
-        ExpressSubscriptionClient subscription = useInterface5
-                ? null : new ExpressSubscriptionClient();
+        ExpressSubscriptionClient subscription = new ExpressSubscriptionClient();
         Set<String> syncedSubscriptionWaybills = new HashSet<>();
         List<String> boundPhones = repository.phones(bindingSource);
-        refreshPendingManualQueries(repository, kuaidi100, bindingSource);
+        Map<String, String> bindingGenerations =
+                repository.bindingGenerations(bindingSource);
+        refreshPendingManualQueries(
+                context, repository, discovery, subscription, localApi, bindingSource);
         if (!boundPhones.isEmpty()) {
             network[0]++;
             try {
                 if (useInterface5) {
                     discovery.sync(context, boundPhones);
+                    repository.recordAutomaticRefreshExecuted(
+                            "INTERFACE5",
+                            discovery.syncedWaybillsByGeneration(),
+                            System.currentTimeMillis());
                 } else {
-                    for (ExpressQueryResult result : subscription.query(context)) {
+                    List<ExpressQueryResult> subscriptionResults = subscription.query(context);
+                    Map<String, Set<String>> seenByGeneration = new HashMap<>();
+                    for (ExpressQueryResult result : subscriptionResults) {
+                        String normalizedWaybill = normalizeWaybill(result.waybill);
+                        syncedSubscriptionWaybills.add(normalizedWaybill);
                         if (!hasUsableInformation(result)) continue;
                         String association = result.phone.isEmpty()
                                 ? repository.associatedPhone(result.waybill, bindingSource)
@@ -64,9 +78,17 @@ final class ExpressSyncEngine {
                         }
                         if (ExpressRepository.shouldSuppressAutomaticImport(
                                 suppressed, boundPhone) || boundPhone.isEmpty()) continue;
-                        repository.saveInterface6(result, boundPhone);
-                        syncedSubscriptionWaybills.add(normalizeWaybill(result.waybill));
+                        String generation = bindingGenerations.get(
+                                boundPhone.replaceAll("\\D", ""));
+                        if (generation == null || generation.isEmpty()) continue;
+                        seenByGeneration
+                                .computeIfAbsent(generation, ignored -> new HashSet<>())
+                                .add(normalizedWaybill);
+                        repository.saveInterface6(result, boundPhone, generation);
                     }
+                    repository.recordAutomaticRefreshExecuted(
+                            "INTERFACE6",
+                            seenByGeneration, System.currentTimeMillis());
                 }
                 network[1]++;
             } catch (Throwable failure) {
@@ -83,6 +105,8 @@ final class ExpressSyncEngine {
                             && !repository.hasAccountTimeline(
                                     item.waybill, "interface5")))) {
                         network[0]++;
+                        String bindingGeneration = repository.bindingGeneration(
+                                item.phone, "interface5");
                         ExpressQueryResult refreshed = discovery.refreshKnown(context, item);
                         if (refreshed != null
                                 && !ExpressStatusNormalizer.isProviderErrorDetail(
@@ -90,9 +114,11 @@ final class ExpressSyncEngine {
                             boolean realTimeline = Kuaidi100TimelinePolicy
                                     .hasRealTracking(refreshed);
                             if (item.isAccountOrder()) {
-                                repository.saveInterface5Order(refreshed, item.phone);
+                                repository.saveInterface5Order(
+                                        refreshed, item.phone, bindingGeneration);
                             } else {
-                                repository.saveInterface5(refreshed, item.phone);
+                                repository.saveInterface5(
+                                        refreshed, item.phone, bindingGeneration);
                             }
                             ExpressItem persisted = repository.findByWaybill(
                                     refreshed.waybill, "interface5");
@@ -109,51 +135,62 @@ final class ExpressSyncEngine {
                         && !syncedSubscriptionWaybills.contains(normalizeWaybill(item.waybill))
                         && !item.semantic.terminal()) {
                     network[0]++;
+                    String bindingGeneration = repository.bindingGeneration(
+                            item.phone, "interface6");
                     ExpressQueryResult refreshed = subscription.queryWaybill(
                             context, item.waybill, item.courierCode);
                     if (hasUsableInformation(refreshed)) {
-                        repository.saveInterface6(refreshed, item.phone);
+                        repository.saveInterface6(
+                                refreshed, item.phone, bindingGeneration);
                         network[1]++;
                     }
                 }
                 ExpressItem current = repository.findByWaybill(item.waybill, bindingSource);
-                if (shouldRefreshProjectedOrder(
-                        current,
-                        current == null ? null
-                                : repository.kuaidi100Timeline(current.displayWaybill()),
-                        System.currentTimeMillis())) {
-                    network[0]++;
-                    ExpressQueryResult carrier = kuaidi100.queryWithPhones(
-                            current.displayWaybill(), current.displayCourierCode(),
-                            repository.phoneCandidates(current.phone, bindingSource));
-                    if (Kuaidi100TimelinePolicy.hasTimedTracking(carrier)) {
-                        repository.saveKuaidi100Timeline(carrier);
-                        current = repository.find(current.rowId);
+                if (needsProjectedCarrierRecognition(current)) {
+                    try {
+                        String carrierName = recognizedProjectedCarrier(
+                                localApi.detect(current.projectedWaybill));
+                        if (!carrierName.isEmpty() && repository.saveOrderProjectionCarrier(
+                                current, bindingSource, current.projectedWaybill,
+                                carrierName)) {
+                            current = repository.find(current.rowId);
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw interrupted;
+                    } catch (Throwable failure) {
+                        // Recognition owns its normalized-waybill cooldown and paid-call memory.
+                        // A carrier-label failure must not suppress the normal manual supplement.
+                        Log.w(TAG, "Projected carrier recognition failed: "
+                                + failure.getClass().getSimpleName());
                     }
-                    network[1]++;
                 }
                 ExpressRepository.ManualTimelinePollClaim manualClaim =
                         usesSharedManualTimeline(current)
+                        && manualChainRequired(repository, current)
                                 ? repository.claimManualTimelinePoll(
                                 current, System.currentTimeMillis()) : null;
                 if (manualClaim != null) {
                     network[0]++;
                     ExpressItem manualOwner = current;
+                    ExpressRepository.ManualQueryOwnerClaim ownerClaim =
+                            repository.captureManualQueryOwner(manualOwner);
                     try {
-                        ExpressQueryResult refreshed =
-                                ManualQueryCoordinator.queryKuaidi100First(
-                                        () -> kuaidi100.queryWithPhones(
-                                                manualOwner.waybill,
-                                                manualOwner.courierCode,
-                                                repository.phoneCandidates(
-                                                        manualOwner.phone, "interface5")),
-                                        () -> discovery.queryManual(
-                                                context, manualOwner.waybill,
-                                                repository.phones("interface5")));
-                        network[1]++;
-                        if (Kuaidi100TimelinePolicy.hasTimedTracking(refreshed)) {
-                            repository.saveOwnerManualTimeline(
-                                    manualOwner, refreshed, manualOwner.phone, "interface5");
+                        ManualQueryCoordinator.Batch manualBatch =
+                                ManualQueryCoordinator.queryPickerFirst(
+                                        () -> subscription.queryManual(
+                                                context, manualOwner.displayWaybill(), null),
+                                        repository.manualTimelineCandidate(
+                                                manualOwner, "meizu"),
+                                        () -> localApi.queryMoto(
+                                                manualOwner.displayWaybill(),
+                                                manualOwner.courierCode, null),
+                                        ManualQueryRoutingPolicy.includesMoto(manualOwner));
+                        repository.saveOwnerManualQueryBatch(
+                                manualOwner, ownerClaim, manualBatch.successes,
+                                manualOwner.phone, bindingSource);
+                        if (!manualBatch.successes.isEmpty()) {
+                            network[1]++;
                             current = repository.find(manualOwner.rowId);
                         }
                     } finally {
@@ -165,34 +202,23 @@ final class ExpressSyncEngine {
                         && !current.semantic.terminal()
                         && isLocalTimelineSource(current.source)) {
                     network[0]++;
-                    ExpressQueryResult refreshed = kuaidi100.queryWithPhones(
-                            current.waybill, current.courierCode,
-                            repository.phoneCandidates(current.phone, bindingSource));
-                    if (isInterface5Kuaidi100Owned(current)) {
-                        repository.saveManualKuaidi100(
-                                refreshed, current.phone, "interface5");
-                    } else {
-                        ExpressQueryResult selected = repository.saveKuaidi100Timeline(refreshed);
-                        if (selected == null) selected = refreshed;
-                        repository.saveQuery(
-                                selected, current.phone, ExpressApi.listSource(selected));
-                    }
-                    network[1]++;
-                }
-                if (current != null && !"KD-100".equals(current.source)
-                        && !current.isAccountOrder()
-                        && !usesSharedManualTimeline(current)
-                        && repository.needsKuaidi100Headline(current)) {
-                    ExpressQueryResult cached = repository.kuaidi100Timeline(current.waybill);
-                    if (cached != null) {
-                        repository.saveKuaidi100HeadlineFallback(cached, bindingSource);
-                    }
-                    network[0]++;
-                    ExpressQueryResult k100 = kuaidi100.queryWithPhones(
-                            current.waybill, current.courierCode,
-                            repository.phoneCandidates(current.phone, bindingSource));
-                    repository.saveKuaidi100HeadlineFallback(k100, bindingSource);
-                    network[1]++;
+                    ExpressItem manualOwner = current;
+                    ExpressRepository.ManualQueryOwnerClaim ownerClaim =
+                            repository.captureManualQueryOwner(manualOwner);
+                    ManualQueryCoordinator.Batch batch =
+                            ManualQueryCoordinator.queryPickerFirst(
+                                    () -> subscription.queryManual(
+                                            context, manualOwner.displayWaybill(), null),
+                                    repository.manualTimelineCandidate(
+                                            manualOwner, "meizu"),
+                                    () -> localApi.queryMoto(
+                                            manualOwner.displayWaybill(),
+                                            manualOwner.courierCode, null),
+                                    ManualQueryRoutingPolicy.includesMoto(manualOwner));
+                    repository.saveManualQueryBatch(
+                            manualOwner, ownerClaim, batch.successes,
+                            manualOwner.phone, bindingSource);
+                    if (!batch.successes.isEmpty()) network[1]++;
                 }
             } catch (Throwable failure) {
                 Log.w(TAG, "Express refresh failed", failure);
@@ -201,9 +227,11 @@ final class ExpressSyncEngine {
         ensureSomeSourceSucceeded(network);
     }
 
-    /** Promotes a hidden manual item only when K100 returns its first real tracking node. */
+    /** Reuses the available Android sources before promoting a hidden manual item. */
     private static void refreshPendingManualQueries(
-            ExpressRepository repository, ExpressApi kuaidi100, String bindingSource) {
+            Context context, ExpressRepository repository,
+            ExpressDiscoveryClient discovery, ExpressSubscriptionClient subscription,
+            ExpressApi localApi, String bindingSource) {
         for (PendingExpressQuery pending : repository.claimPendingManualQueries(
                 System.currentTimeMillis(), bindingSource)) {
             try {
@@ -212,26 +240,15 @@ final class ExpressSyncEngine {
                     repository.removePendingManual(pending.waybill, pending.bindingSource);
                     continue;
                 }
-                ExpressQueryResult queried = kuaidi100.queryWithPhones(
-                        pending.waybill, pending.courierCode,
-                        repository.phoneCandidates(pending.phone, pending.bindingSource));
-                ExpressQueryResult refreshed = new ExpressQueryResult(
-                        queried.waybill,
-                        queried.courierCode.isEmpty() ? pending.courierCode : queried.courierCode,
-                        queried.companyName.isEmpty() ? pending.companyName : queried.companyName,
-                        queried.semantic, queried.statusEventTime,
-                        queried.latestTime, queried.latestDetail,
-                        queried.tracksJson, pending.detailUrl, queried.phone,
-                        queried.timelineProvider, pending.routeInterface,
-                        pending.routeCredential, queried.sourceProvider);
-                if (!Kuaidi100TimelinePolicy.hasTimedTracking(refreshed)) continue;
-                String phone = refreshed.phone.isEmpty() ? pending.phone : refreshed.phone;
-                repository.saveManualKuaidi100(
-                        refreshed, phone, pending.bindingSource);
-                if (repository.findByWaybill(
-                        pending.waybill, pending.bindingSource) != null) {
-                    repository.removePendingManual(pending.waybill, pending.bindingSource);
-                }
+                ManualQueryCoordinator.Batch batch =
+                        ManualQueryCoordinator.queryPickerFirst(
+                        () -> subscription.queryManual(
+                                context, pending.waybill, null),
+                        null,
+                        () -> localApi.queryMoto(
+                                pending.waybill, pending.courierCode, null),
+                        true);
+                repository.savePendingManualQueryBatch(pending, batch.successes);
             } catch (Throwable failure) {
                 // Keep the claimed item hidden. Its next periodic attempt is rate-limited.
                 Log.w(TAG, "Pending manual express refresh failed", failure);
@@ -261,20 +278,28 @@ final class ExpressSyncEngine {
                 || item.isAccountOrder());
     }
 
-    private static boolean isInterface5Kuaidi100Owned(ExpressItem item) {
-        return item != null && ("I5-K100".equalsIgnoreCase(item.source)
-                || "I5-K100".equalsIgnoreCase(item.stateOwner));
-    }
-
     static boolean usesSharedManualTimeline(ExpressItem item) {
-        return item != null && item.isInterface5ShunFengSource();
+        return item != null && item.usesSourceManualTakeover()
+                && (!item.isAccountOrder() || !item.projectedWaybill.isEmpty());
     }
 
-    static boolean shouldRefreshProjectedOrder(
-            ExpressItem item, ExpressQueryResult cached, long now) {
+    static boolean needsProjectedCarrierRecognition(ExpressItem item) {
         return item != null && item.isAccountOrder()
-                && !item.projectedWaybill.isEmpty()
-                && Kuaidi100TimelinePolicy.shouldRefresh(item, cached, now);
+                && !normalizeWaybill(item.projectedWaybill).isEmpty()
+                && CarrierRegistry.resolveName(item.projectedCompanyName) == null;
+    }
+
+    static String recognizedProjectedCarrier(String kuaidi100Code) {
+        CarrierRegistry.Carrier carrier =
+                CarrierRegistry.resolveKuaidi100Code(kuaidi100Code);
+        return carrier == null ? "" : carrier.companyName;
+    }
+
+    static boolean manualChainRequired(
+            ExpressRepository repository, ExpressItem item) {
+        if (item == null || item.isCainiaoSource() || item.semantic.terminal()) return false;
+        return !item.isJingDongSource()
+                || repository == null || !repository.sourceTimelineHasStart(item);
     }
 
     private static boolean isInterface6Owned(ExpressItem item) {

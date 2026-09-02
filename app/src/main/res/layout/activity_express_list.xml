@@ -23,7 +23,7 @@
         android:id="@+id/home_query_container"
         style="@style/PipiSearchField"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="@dimen/express_search_field_height"
         android:layout_marginStart="24dp"
         android:layout_marginEnd="24dp"
         android:layout_marginBottom="12dp"
@@ -33,7 +33,8 @@
         <com.google.android.material.textfield.TextInputEditText
             android:id="@+id/home_query_input"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
+            android:layout_height="match_parent"
+            android:minHeight="@dimen/express_search_field_height"
             android:cursorVisible="false"
             android:gravity="center_vertical"
             android:hint="@string/search_express_hint"
@@ -84,8 +85,8 @@
                 android:orientation="vertical">
 
                 <ImageView
-                    android:layout_width="102dp"
-                    android:layout_height="102dp"
+                    android:layout_width="81.6dp"
+                    android:layout_height="81.6dp"
                     android:importantForAccessibility="no"
                     android:scaleType="fitCenter"
                     android:src="@drawable/widget_express_empty_vehicle" />
@@ -106,4 +107,5 @@
         </FrameLayout>
 
     </FrameLayout>
+
 </LinearLayout>

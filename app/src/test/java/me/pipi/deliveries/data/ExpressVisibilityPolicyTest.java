@@ -76,7 +76,7 @@ public final class ExpressVisibilityPolicyTest {
     }
 
     @Test
-    public void deletionTombstoneUsesSha256AndNormalizesCase() {
+    public void associationIdentityHashUsesSha256AndNormalizesCase() {
         String lowerCase = ExpressRepository.waybillHash("abc");
         String upperCase = ExpressRepository.waybillHash("ABC");
         String differentWaybill = ExpressRepository.waybillHash("ABD");
@@ -109,8 +109,9 @@ public final class ExpressVisibilityPolicyTest {
     }
 
     @Test
-    public void pendingQueriesExpireAtSevenDayBoundary() {
+    public void pendingQueriesExpireAtTwentyFourHourBoundary() {
         long ttl = ExpressRepository.PENDING_QUERY_TTL_MS;
+        assertEquals(24L * 60L * 60L * 1000L, ttl);
         assertFalse(ExpressRepository.isPendingQueryExpired(NOW - ttl + 1L, NOW));
         assertTrue(ExpressRepository.isPendingQueryExpired(NOW - ttl, NOW));
         assertTrue(ExpressRepository.isPendingQueryExpired(0L, NOW));

@@ -9,11 +9,13 @@ type FullRefreshEntry<Result> = Readonly<{
   promise: Promise<Result>;
   deadlineAtMs?: number;
   generation: number;
+  abort: () => void;
 }>;
 
 export type FullRefreshLease = Readonly<{
   generation: number;
   deadlineAtMs?: number;
+  signal: AbortSignal;
   isCurrent: (now?: number) => boolean;
   assertCurrent: (now?: number) => void;
 }>;
@@ -49,6 +51,7 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
     const entry = this.fullRefreshes.get(source);
     if (!entry) return undefined;
     if (entry.deadlineAtMs != null && now >= entry.deadlineAtMs) {
+      entry.abort();
       this.fullRefreshes.delete(source);
       return undefined;
     }
@@ -78,6 +81,22 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
     return promise;
   }
 
+  runDetailFresh(
+    key: DetailKey,
+    source: Source,
+    task: () => Promise<DetailResult>,
+    reuseFull: (result: FullResult) => DetailResult | Promise<DetailResult>,
+  ): Promise<DetailResult> {
+    // An explicit pull or manual submission has a stronger source contract than an
+    // older detail attempt, so it must run after that attempt instead of inheriting it.
+    const existing = this.detailRefreshes.get(key)?.promise;
+    if (!existing) return this.runDetail(key, source, task, reuseFull);
+    return existing.then(
+      () => undefined,
+      () => undefined,
+    ).then(() => this.runDetail(key, source, task, reuseFull));
+  }
+
   runFull(
     source: Source,
     task: (
@@ -93,12 +112,21 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
     const blockers = [...this.detailRefreshes.entries()].filter(
       ([, entry]) => entry.source === source,
     );
+    const controller = new AbortController();
+    const abortLease = () => {
+      controller.abort();
+      if (this.fullRefreshes.get(source)?.generation === generation) {
+        this.fullRefreshes.delete(source);
+      }
+    };
     const lease: FullRefreshLease = {
       generation,
       deadlineAtMs: options.operationDeadlineAtMs,
+      signal: controller.signal,
       isCurrent: (now = Date.now()) => {
         const current = this.fullRefreshes.get(source);
         return Boolean(
+          !controller.signal.aborted &&
           current?.generation === generation &&
             (
               options.operationDeadlineAtMs == null ||
@@ -107,55 +135,65 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
         );
       },
       assertCurrent: (now = Date.now()) => {
-        if (!lease.isCurrent(now)) throw new OperationTimeoutError();
+        if (!lease.isCurrent(now)) {
+          abortLease();
+          throw new OperationTimeoutError();
+        }
       },
     };
     let promise: Promise<FullResult>;
     const work = Promise.resolve().then(async () => {
-      const skipDetailKeys = new Set<DetailKey>();
-      const blockerStates: BlockerState<DetailResult>[] = blockers.map(
-        () => ({ status: "pending" }),
-      );
-      const blockerResults = Promise.all(
-        blockers.map(([, entry], index) => entry.promise.then(
-          (value) => {
-            blockerStates[index] = { status: "fulfilled", value };
-          },
-          () => {
-            blockerStates[index] = { status: "rejected" };
-          },
-        )),
-      );
-      const blockerDeadlineAtMs = options.blockerDeadlineAtMs;
-      if (blockerDeadlineAtMs == null || !blockers.length) {
-        await blockerResults;
-      } else {
-        const delayMs = Math.max(0, blockerDeadlineAtMs - Date.now());
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        try {
-          await Promise.race([
-            blockerResults,
-            new Promise<void>((resolve) => {
-              timeout = setTimeout(resolve, delayMs);
-            }),
-          ]);
-        } finally {
-          if (timeout != null) clearTimeout(timeout);
+      try {
+        const skipDetailKeys = new Set<DetailKey>();
+        const blockerStates: BlockerState<DetailResult>[] = blockers.map(
+          () => ({ status: "pending" }),
+        );
+        const blockerResults = Promise.all(
+          blockers.map(([, entry], index) => entry.promise.then(
+            (value) => {
+              blockerStates[index] = { status: "fulfilled", value };
+            },
+            () => {
+              blockerStates[index] = { status: "rejected" };
+            },
+          )),
+        );
+        const blockerDeadlineAtMs = options.blockerDeadlineAtMs;
+        if (blockerDeadlineAtMs == null || !blockers.length) {
+          await blockerResults;
+        } else {
+          const delayMs = Math.max(0, blockerDeadlineAtMs - Date.now());
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              blockerResults,
+              new Promise<void>((resolve) => {
+                timeout = setTimeout(resolve, delayMs);
+              }),
+            ]);
+          } finally {
+            if (timeout != null) clearTimeout(timeout);
+          }
         }
+        blockerStates.forEach((result, index) => {
+          if (
+            result.status === "pending" ||
+            (
+              result.status === "fulfilled" &&
+              shouldSkipDetail(result.value)
+            )
+          ) {
+            skipDetailKeys.add(blockers[index][0]);
+          }
+        });
+        lease.assertCurrent();
+        const result = await task(skipDetailKeys, lease);
+        lease.assertCurrent();
+        return result;
+      } catch (error) {
+        lease.assertCurrent();
+        throw error;
       }
-      blockerStates.forEach((result, index) => {
-        if (
-          result.status === "pending" ||
-          (
-            result.status === "fulfilled" &&
-            shouldSkipDetail(result.value)
-          )
-        ) {
-          skipDetailKeys.add(blockers[index][0]);
-        }
-      });
-      lease.assertCurrent();
-      return task(skipDetailKeys, lease);
     });
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const guarded = options.operationDeadlineAtMs == null
@@ -164,9 +202,7 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
           work,
           new Promise<FullResult>((_, reject) => {
             timeout = setTimeout(() => {
-              if (this.fullRefreshes.get(source)?.generation === generation) {
-                this.fullRefreshes.delete(source);
-              }
+              abortLease();
               reject(new OperationTimeoutError());
             }, Math.max(0, options.operationDeadlineAtMs! - Date.now()));
           }),
@@ -181,6 +217,7 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
       promise,
       deadlineAtMs: options.operationDeadlineAtMs,
       generation,
+      abort: abortLease,
     });
     return promise;
   }

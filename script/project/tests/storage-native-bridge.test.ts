@@ -228,18 +228,6 @@ function completeState(): AppState {
       phone: "13800138000",
       boundAtMs: NOW - 1_000,
     }],
-    suppressions: [{
-      kind: "deleted",
-      source: "interface5",
-      sourceIdHash: "a".repeat(64),
-      phoneHash: "b".repeat(64),
-      createdAtMs: NOW - 2_000,
-    }],
-    tombstones: [{
-      waybillHash: "c".repeat(64),
-      reason: "manual_delete",
-      createdAtMs: NOW - 2_000,
-    }],
     pendingQueries: [{
       id: "interface5:PENDING123",
       source: "interface5",
@@ -280,8 +268,6 @@ function legacyEnvelope(state: AppState): unknown {
 function assertBusinessState(state: AppState): void {
   assert.equal(state.bindings[0]?.phone, "13800138000");
   assert.equal(state.pendingQueries[0]?.waybill, "PENDING123");
-  assert.equal(state.suppressions.length, 1);
-  assert.equal(state.tombstones.length, 1);
   assert.equal(state.shipments.length, 1);
   assert.equal(state.shipments[0]?.sourceTimeline?.tracks.length, 2);
   assert.equal(state.shipments[0]?.manualTimelines?.[0]?.tracks.length, 2);

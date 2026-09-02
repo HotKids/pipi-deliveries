@@ -15,6 +15,7 @@ import {
 } from "scripting";
 import type { AppState } from "../models";
 import { sendAccountCode } from "../services/account-sync";
+import { SCRIPT_VERSION } from "../services/build-track";
 import {
   gatewayCredentialStatus,
   removeGatewayToken,
@@ -41,7 +42,6 @@ import { NotificationSettingsPage } from "./NotificationSettingsPage";
 import { notificationEnabledCount } from "../services/notification-preferences";
 import { transientToast } from "../services/ui-feedback";
 
-const SCRIPT_VERSION = "0.5";
 const PROJECT_URL = "https://github.com/HotKids/pipi-deliveries";
 
 type AuthorizationState = "unauthorized" | "authorized" | "unavailable";
@@ -149,11 +149,11 @@ export function SettingsPage(props: {
       refreshAuthorization();
       const value = error instanceof Error
         ? error.message
-        : "Access Key 保存失败，请重试";
+        : "保存失败，请稍后重试";
       if (value === "Access Key 格式不正确") {
         setAuthorizationNotice(value);
       } else {
-        setNotice(value);
+        setNotice("保存失败，请稍后重试");
       }
     }
   }
@@ -174,7 +174,7 @@ export function SettingsPage(props: {
       setNotice(
         nextAuthorization === "unauthorized"
           ? "Access Key 已移除"
-          : "Access Key 未能移除，请重试",
+          : "Access Key 移除失败，请稍后重试",
       );
     } catch {
       refreshAuthorization();
@@ -212,7 +212,7 @@ export function SettingsPage(props: {
     });
     const next = await bindPhone(requestedSource, phone, code, flowId);
     props.onStateChange(next);
-    setManagerNotice("手机号绑定成功，关联快递将自动同步");
+    setManagerNotice("手机号绑定成功");
     void refreshAllShipments(requestedSource)
       .then((summary) => {
         props.onStateChange(summary.state);

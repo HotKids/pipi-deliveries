@@ -100,7 +100,7 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs = 500) {
     },
     (value) => value,
   );
-  const forced = coordinator.runDetail(
+  const forced = coordinator.runDetailFresh(
     "shipment-forced",
     "interface5",
     async () => {
@@ -109,11 +109,38 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs = 500) {
     },
     (value) => value,
   );
-  assert.equal(forced, automatic);
+  assert.notEqual(forced, automatic);
   assert.equal(automaticCalls, 1);
   assert.equal(forcedCalls, 0);
   automaticGate.resolve("automatic-network");
-  assert.equal(await forced, "automatic-network");
+  assert.equal(await automatic, "automatic-network");
+  assert.equal(await forced, "forced-network");
+  assert.equal(forcedCalls, 1);
+}
+
+{
+  const coordinator = new RefreshCoordinator<string, string, string, string>();
+  const cancelledGate = deferred<string>();
+  const cancelled = coordinator.runDetail(
+    "shipment-retry",
+    "interface5",
+    () => cancelledGate.promise,
+    (value) => value,
+  );
+  let retryCalls = 0;
+  const retry = coordinator.runDetailFresh(
+    "shipment-retry",
+    "interface5",
+    async () => {
+      retryCalls++;
+      return "fallback-enabled-retry";
+    },
+    (value) => value,
+  );
+  cancelledGate.reject(new Error("cancelled previous detail"));
+  await assert.rejects(cancelled, /cancelled previous detail/);
+  assert.equal(await retry, "fallback-enabled-retry");
+  assert.equal(retryCalls, 1);
 }
 
 {
@@ -356,6 +383,7 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs = 500) {
   const coordinator = new RefreshCoordinator<string, string, string, string>();
   const never = deferred<string>();
   let leaseCurrentAfterTimeout = true;
+  let leaseAbortedAfterTimeout = false;
   const timedOut = coordinator.runFull(
     "interface5",
     async (_skipped, lease) => {
@@ -363,6 +391,7 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs = 500) {
         return await never.promise;
       } finally {
         leaseCurrentAfterTimeout = lease.isCurrent();
+        leaseAbortedAfterTimeout = lease.signal.aborted;
       }
     },
     () => true,
@@ -373,10 +402,32 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs = 500) {
   never.reject(new Error("release stale work"));
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(leaseCurrentAfterTimeout, false);
+  assert.equal(leaseAbortedAfterTimeout, true);
   assert.equal(
     await coordinator.runFull("interface5", async () => "replacement"),
     "replacement",
   );
+}
+
+{
+  const coordinator = new RefreshCoordinator<string, string, string, string>();
+  const startedAt = Date.now();
+  let lateSignal: AbortSignal | undefined;
+  const lateSuccess = coordinator.runFull(
+    "interface5",
+    async (_skipped, lease) => {
+      lateSignal = lease.signal;
+      while (Date.now() - startedAt < 40) {
+        // Simulate a native bridge call that returns only after the JS timer is overdue.
+      }
+      return "late-success";
+    },
+    () => true,
+    { operationDeadlineAtMs: startedAt + 10 },
+  );
+  await assert.rejects(lateSuccess, /请求超时/);
+  assert.equal(lateSignal?.aborted, true);
+  assert.equal(coordinator.full("interface5"), undefined);
 }
 
 console.log("refresh coordination tests passed");

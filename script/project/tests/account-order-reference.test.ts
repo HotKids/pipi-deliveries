@@ -12,6 +12,8 @@ const shipment = {
     manuallyAdded: false,
     companyName: "京东购物",
     courierCode: "JD_ORDER",
+    rawCourierCode: "jd_order_source",
+    rawCompanyName: "京东购物来源原名",
     phone: "18600000000",
   },
   timeline: {
@@ -43,6 +45,8 @@ assert.equal(restored?.ownerId, shipment.identity.sourceId);
 assert.equal(restored?.waybill, shipment.identity.sourceId);
 assert.equal(restored?.projectionUrl, projectionUrl);
 assert.equal(restored?.tracks[0]?.detail, "订单已下单");
+assert.equal(restored?.rawCourierCode, "jd_order_source");
+assert.equal(restored?.rawCompanyName, "京东购物来源原名");
 
 const detailWithoutProjection = {
   ...restored!,
@@ -59,10 +63,13 @@ assert.equal(patched?.latestDetail, "订单正在处理");
 
 const projected = structuredClone(shipment);
 projected.identity.projectedWaybill = "JD0123456789012";
-assert.equal(
-  accountParcelWithProjectionReference(projected, null, projectionUrl),
+const projectedReference = accountParcelWithProjectionReference(
+  projected,
   null,
+  projectionUrl,
 );
+assert.equal(projectedReference?.waybill, "JD0123456789012");
+assert.equal(projectedReference?.projectionUrl, projectionUrl);
 
 const unrelated = structuredClone(shipment);
 unrelated.identity.accountOrder = false;

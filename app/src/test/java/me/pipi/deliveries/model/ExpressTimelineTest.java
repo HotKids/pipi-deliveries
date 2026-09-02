@@ -140,6 +140,60 @@ public final class ExpressTimelineTest {
     }
 
     @Test
+    public void incrementalMergeBoundsHistoryAndRetainsEarliestStartBoundary() throws Exception {
+        JSONArray cached = new JSONArray();
+        for (int index = 0; index < 170; index++) {
+            cached.put(new JSONObject()
+                    .put("time", String.format("2026-08-%02d %02d:%02d:00",
+                            31 - (index / 24), index % 24, index % 60))
+                    .put("context", index == 169 ? "快件已下单" : "运输节点 " + index));
+        }
+
+        JSONArray merged = new JSONArray(ExpressTimeline.mergeJson(
+                cached.toString(),
+                "[{\"time\":\"2026-09-01 12:00:00\",\"context\":\"快件已签收\"}]"));
+
+        assertEquals(156, merged.length());
+        boolean hasOrdered = false;
+        boolean hasDelivered = false;
+        for (int index = 0; index < merged.length(); index++) {
+            String detail = merged.getJSONObject(index).optString("context");
+            hasOrdered |= detail.contains("已下单");
+            hasDelivered |= detail.contains("已签收");
+        }
+        assertEquals(true, hasOrdered);
+        assertEquals(true, hasDelivered);
+    }
+
+    @Test
+    public void compactionUsesProviderAwareStructuredStartEvidence() throws Exception {
+        JSONArray cached = new JSONArray();
+        for (int index = 0; index < 170; index++) {
+            JSONObject value = new JSONObject()
+                    .put("time", String.format("2026-08-%02d %02d:%02d:00",
+                            31 - (index / 24), index % 24, index % 60))
+                    .put("context", "运输节点 " + index);
+            if (index == 169) {
+                value.put("statusCode", 102)
+                        .put("_pipiStatusSource", "meizu");
+            }
+            cached.put(value);
+        }
+
+        JSONArray merged = new JSONArray(ExpressTimeline.mergeJson(
+                cached.toString(), "[]"));
+
+        assertEquals(156, merged.length());
+        boolean hasPickerOrdered = false;
+        for (int index = 0; index < merged.length(); index++) {
+            JSONObject value = merged.getJSONObject(index);
+            hasPickerOrdered |= value.optInt("statusCode") == 102
+                    && "meizu".equals(value.optString("_pipiStatusSource"));
+        }
+        assertEquals(true, hasPickerOrdered);
+    }
+
+    @Test
     public void findsLatestRealEventBehindStateAndProviderPlaceholders() {
         ExpressTimeline.Track track = ExpressTimeline.latestMeaningful(
                 "[{\"time\":\"2026-08-15 13:00:00\",\"context\":\"运输中\"},"
@@ -150,5 +204,18 @@ public final class ExpressTimelineTest {
 
         assertEquals("2026-08-15 12:00:00", track.time);
         assertEquals("快件到达杭州转运中心", track.detail);
+    }
+
+    @Test
+    public void providerErrorsAreRemovedFromLegacyReadsAndIncrementalMerges() {
+        String cached = "[{\"time\":\"2026-09-02 10:45:00\","
+                + "\"context\":\"验证码错误，请重试\"}]";
+        String valid = "[{\"time\":\"2026-09-02 10:46:00\","
+                + "\"context\":\"快件运输中\"}]";
+
+        assertEquals(0, ExpressTimeline.parse(cached, "", "").size());
+        String merged = ExpressTimeline.mergeJson(cached, valid);
+        assertEquals(1, ExpressTimeline.parse(merged, "", "").size());
+        assertEquals(false, merged.contains("验证码错误"));
     }
 }

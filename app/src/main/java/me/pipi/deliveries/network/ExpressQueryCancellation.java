@@ -1,13 +1,16 @@
 package me.pipi.deliveries.network;
 
 import java.util.concurrent.TimeUnit;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /** One finite, cancellable lifetime shared by every request in an express query. */
 public final class ExpressQueryCancellation {
     private final Object lock = new Object();
     private final long deadlineNanos;
     private boolean cancelled;
-    private Runnable activeCancellation;
+    private final Set<Runnable> activeCancellations = new LinkedHashSet<>();
 
     public ExpressQueryCancellation(long timeoutMillis) {
         if (timeoutMillis <= 0L) throw new IllegalArgumentException("timeout must be positive");
@@ -15,14 +18,14 @@ public final class ExpressQueryCancellation {
     }
 
     public void cancel() {
-        Runnable cancellation;
+        ArrayList<Runnable> cancellations;
         synchronized (lock) {
             if (cancelled) return;
             cancelled = true;
-            cancellation = activeCancellation;
-            activeCancellation = null;
+            cancellations = new ArrayList<>(activeCancellations);
+            activeCancellations.clear();
         }
-        if (cancellation != null) {
+        for (Runnable cancellation : cancellations) {
             try {
                 cancellation.run();
             } catch (RuntimeException ignored) {
@@ -59,12 +62,7 @@ public final class ExpressQueryCancellation {
         synchronized (lock) {
             cancelNow = cancelled || deadlineNanos - System.nanoTime() <= 0L
                     || Thread.currentThread().isInterrupted();
-            if (!cancelNow) {
-                if (activeCancellation != null) {
-                    throw new IllegalStateException("Express query already has an active request");
-                }
-                activeCancellation = cancellation;
-            }
+            if (!cancelNow) activeCancellations.add(cancellation);
         }
         if (cancelNow) {
             try {
@@ -78,7 +76,7 @@ public final class ExpressQueryCancellation {
 
     void detach(Runnable cancellation) {
         synchronized (lock) {
-            if (activeCancellation == cancellation) activeCancellation = null;
+            activeCancellations.remove(cancellation);
         }
     }
 }

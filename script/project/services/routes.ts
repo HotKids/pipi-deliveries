@@ -1,4 +1,4 @@
-import type { BindingSource } from "../models";
+import type { BindingSource, ShipmentRoute } from "../models";
 import {
   SCRIPT_BINDING_SOURCE,
   requireScriptSource,
@@ -13,6 +13,7 @@ const MAX_ROUTE_LENGTH = 16_384;
 type RouteValue = {
   url: string;
   source: BindingSource;
+  kind?: ShipmentRoute["kind"];
   updatedAtMs: number;
 };
 
@@ -35,6 +36,7 @@ export type ShipmentRouteMutation =
       kind: "save";
       targetId: string;
       source: BindingSource;
+      routeKind?: ShipmentRoute["kind"];
       url: string;
     }
   | {
@@ -43,12 +45,14 @@ export type ShipmentRouteMutation =
       fromId: string;
       targetId: string;
       source: BindingSource;
+      routeKind?: ShipmentRoute["kind"];
     };
 
 export type ShipmentRoutePublication = {
   key: string;
   targetId: string;
   source: BindingSource;
+  routeKind: ShipmentRoute["kind"];
 };
 
 export type LegacyShipmentRouteMigration = {
@@ -56,18 +60,20 @@ export type LegacyShipmentRouteMigration = {
   toId: string;
 };
 
-function trustedRoute(value: string): string {
+function trustedRoute(
+  value: string,
+  kind: ShipmentRoute["kind"] = "cainiao",
+): string {
   const clean = String(value || "").trim();
   if (!/^https:\/\//i.test(clean) || clean.length > MAX_ROUTE_LENGTH) return "";
   try {
     const parsed = new URL(clean);
     const host = parsed.hostname.toLowerCase();
-    if (
-      host === "cainiao.com" ||
-      host.endsWith(".cainiao.com") ||
-      host === "taobao.com" ||
-      host.endsWith(".taobao.com")
-    ) {
+    const trusted = kind === "web"
+      ? host === "kuaidi100.com" || host.endsWith(".kuaidi100.com")
+      : host === "cainiao.com" || host.endsWith(".cainiao.com") ||
+        host === "taobao.com" || host.endsWith(".taobao.com");
+    if (trusted) {
       return clean;
     }
   } catch {
@@ -248,12 +254,13 @@ export function saveShipmentRoute(
   source: BindingSource,
   url: string,
   now = Date.now(),
+  kind: ShipmentRoute["kind"] = "cainiao",
 ): boolean {
   requireScriptSource(source);
-  const trusted = trustedRoute(url);
+  const trusted = trustedRoute(url, kind);
   if (!shipmentId || !trusted) return false;
   const routes = read();
-  routes[shipmentId] = { url: trusted, source, updatedAtMs: now };
+  routes[shipmentId] = { url: trusted, source, kind, updatedAtMs: now };
   write(routes);
   return true;
 }
@@ -262,19 +269,21 @@ export function loadShipmentRoute(
   shipmentId: string,
   expectedSource: BindingSource,
   now = Date.now(),
+  expectedKind: ShipmentRoute["kind"] = "cainiao",
 ): string {
   requireScriptSource(expectedSource);
   const value = read()[shipmentId];
   if (
     !value ||
     value.source !== expectedSource ||
+    (value.kind || "cainiao") !== expectedKind ||
     value.updatedAtMs <= 0 ||
     value.updatedAtMs > now ||
     now - value.updatedAtMs >= ROUTE_MAX_AGE_MS
   ) {
     return "";
   }
-  return trustedRoute(value.url);
+  return trustedRoute(value.url, expectedKind);
 }
 
 export function removeShipmentRoutes(ids: readonly string[]): void {
@@ -294,6 +303,7 @@ export function moveShipmentRoute(
   toId: string,
   expectedSource: BindingSource,
   now = Date.now(),
+  expectedKind: ShipmentRoute["kind"] = "cainiao",
 ): boolean {
   requireScriptSource(expectedSource);
   if (!fromId || !toId) return false;
@@ -302,10 +312,11 @@ export function moveShipmentRoute(
   if (
     !value ||
     value.source !== expectedSource ||
+    (value.kind || "cainiao") !== expectedKind ||
     value.updatedAtMs <= 0 ||
     value.updatedAtMs > now ||
     now - value.updatedAtMs >= ROUTE_MAX_AGE_MS ||
-    !trustedRoute(value.url)
+    !trustedRoute(value.url, expectedKind)
   ) {
     return false;
   }
@@ -334,7 +345,7 @@ export function migrateLegacyShipmentRoutes(
       value.updatedAtMs <= 0 ||
       value.updatedAtMs > now ||
       now - value.updatedAtMs >= ROUTE_MAX_AGE_MS ||
-      !trustedRoute(value.url)
+      !trustedRoute(value.url, value.kind || "cainiao")
     ) {
       continue;
     }
@@ -344,7 +355,7 @@ export function migrateLegacyShipmentRoutes(
         existing.updatedAtMs >= value.updatedAtMs &&
         existing.updatedAtMs <= now &&
         now - existing.updatedAtMs < ROUTE_MAX_AGE_MS &&
-        trustedRoute(existing.url)
+        trustedRoute(existing.url, existing.kind || "cainiao")
       ? existing
       : {
           ...value,
@@ -384,11 +395,13 @@ export function commitShipmentRouteMutations<T>(
     if (!mutation.key || !mutation.targetId) continue;
     if (mutation.kind === "save") {
       requireScriptSource(mutation.source);
-      const url = trustedRoute(mutation.url);
+      const routeKind = mutation.routeKind || "cainiao";
+      const url = trustedRoute(mutation.url, routeKind);
       if (!url) continue;
       after[mutation.targetId] = {
         url,
         source: mutation.source,
+        kind: routeKind,
         updatedAtMs: now,
       };
     } else {
@@ -400,7 +413,7 @@ export function commitShipmentRouteMutations<T>(
         value.updatedAtMs <= 0 ||
         value.updatedAtMs > now ||
         now - value.updatedAtMs >= ROUTE_MAX_AGE_MS ||
-        !trustedRoute(value.url)
+        !trustedRoute(value.url, mutation.routeKind || value.kind || "cainiao")
       ) {
         continue;
       }
@@ -413,6 +426,8 @@ export function commitShipmentRouteMutations<T>(
       key: mutation.key,
       targetId: mutation.targetId,
       source: mutation.source,
+      routeKind: mutation.routeKind ||
+        (after[mutation.targetId]?.kind || "cainiao"),
     });
   }
 
@@ -441,7 +456,7 @@ export function pruneShipmentRoutes(
       value.updatedAtMs <= 0 ||
       value.updatedAtMs > now ||
       now - value.updatedAtMs >= ROUTE_MAX_AGE_MS ||
-      !trustedRoute(value.url)
+      !trustedRoute(value.url, value.kind || "cainiao")
     ) {
       delete routes[id];
       changed = true;

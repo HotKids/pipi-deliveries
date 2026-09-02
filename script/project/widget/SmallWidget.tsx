@@ -28,7 +28,7 @@ export function SmallWidget(props: {
 }) {
   const { snapshot } = props;
   const row = snapshot.rows[0];
-  const layout = smallWidgetLayout(props.displayWidth);
+  const layout = smallWidgetLayout(props.displayWidth, props.displayHeight);
   const emptyLayout = smallWidgetEmptyLayout(
     props.displayWidth,
     props.displayHeight,
@@ -62,20 +62,52 @@ export function SmallWidget(props: {
               frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
             >
               <HStack
-                alignment="top"
+                alignment="center"
                 spacing={layout.headerSpacing}
                 frame={{ maxWidth: "infinity" }}
               >
-                <Text
-                  font={layout.statusFont}
-                  fontWeight="semibold"
-                  lineLimit={1}
-                  minScaleFactor={0.9}
-                  allowsTightening={true}
-                  frame={{ maxWidth: "infinity", alignment: "leading" }}
+                <VStack
+                  alignment="leading"
+                  spacing={layout.identitySpacing}
+                  frame={{
+                    minHeight: layout.iconSize,
+                    maxHeight: layout.iconSize,
+                    maxWidth: "infinity",
+                  }}
                 >
-                  {row.statusLabel}
-                </Text>
+                  <Text
+                    font={layout.statusFont}
+                    fontWeight="semibold"
+                    lineLimit={1}
+                    minScaleFactor={0.9}
+                    allowsTightening={true}
+                    frame={{
+                      minHeight: layout.statusLineHeight,
+                      maxHeight: layout.statusLineHeight,
+                      maxWidth: "infinity",
+                      alignment: "topLeading",
+                    }}
+                  >
+                    {row.statusLabel}
+                  </Text>
+                  <Text
+                    font={layout.companyFont}
+                    foregroundStyle="secondaryLabel"
+                    lineLimit={1}
+                    minScaleFactor={0.75}
+                    allowsTightening={true}
+                    frame={{
+                      minHeight: layout.companyLineHeight,
+                      maxHeight: layout.companyLineHeight,
+                      maxWidth: "infinity",
+                      alignment: "bottomLeading",
+                    }}
+                  >
+                    {row.waybillSuffix
+                      ? `${row.companyName} ${row.waybillSuffix}`
+                      : row.companyName}
+                  </Text>
+                </VStack>
                 <CourierIcon
                   courierCode={row.courierCode}
                   companyName={row.companyName}
@@ -134,44 +166,63 @@ export function SmallWidget(props: {
         </VStack>
       ) : (
         <Link url={props.openSearchURL}>
-          <VStack
-            spacing={0}
-            padding={emptyLayout.padding}
+          <ZStack
             frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
           >
-            <HStack
+            <VStack
+              spacing={0}
+              padding={emptyLayout.padding}
+              frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+            >
+              <HStack
+                frame={{
+                  maxWidth: "infinity",
+                  minHeight: emptyLayout.headerHeight,
+                  maxHeight: emptyLayout.headerHeight,
+                }}
+              >
+                <Spacer />
+              </HStack>
+              <ZStack
+                frame={{
+                  minHeight: emptyLayout.contentHeight,
+                  maxHeight: emptyLayout.contentHeight,
+                  maxWidth: "infinity",
+                  alignment: "center",
+                }}
+              >
+                <EmptyDeliveryStateGroup
+                  vehicleSize={emptyLayout.vehicleSize}
+                  spacing={emptyLayout.contentSpacing}
+                  labelFont={emptyLayout.labelFont}
+                />
+              </ZStack>
+            </VStack>
+            <VStack
+              alignment="trailing"
+              spacing={0}
+              padding={{
+                top: emptyLayout.searchTopPadding,
+                trailing: emptyLayout.searchTrailingPadding,
+              }}
               frame={{
                 maxWidth: "infinity",
-                minHeight: emptyLayout.headerHeight,
-                maxHeight: emptyLayout.headerHeight,
+                maxHeight: "infinity",
+                alignment: "topTrailing",
               }}
             >
-              <Spacer />
               <Image
                 systemName="magnifyingglass"
                 font={emptyLayout.searchFont}
                 foregroundStyle={EMPTY_WIDGET_ACCENT}
                 frame={{
-                  width: emptyLayout.searchSize,
-                  height: emptyLayout.searchSize,
+                  width: emptyLayout.searchWidth,
+                  height: emptyLayout.searchHeight,
                 }}
               />
-            </HStack>
-            <ZStack
-              frame={{
-                minHeight: emptyLayout.contentHeight,
-                maxHeight: emptyLayout.contentHeight,
-                maxWidth: "infinity",
-                alignment: "center",
-              }}
-            >
-              <EmptyDeliveryStateGroup
-                vehicleSize={emptyLayout.vehicleSize}
-                spacing={emptyLayout.contentSpacing}
-                labelFont={emptyLayout.labelFont}
-              />
-            </ZStack>
-          </VStack>
+              <Spacer />
+            </VStack>
+          </ZStack>
         </Link>
       )}
     </ZStack>

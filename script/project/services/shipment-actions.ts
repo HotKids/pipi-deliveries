@@ -77,7 +77,7 @@ export function performShipmentDeletion(
 ): ShipmentMutationResult {
   return performShipmentMutation(
     id,
-    "删除失败，请稍后重试",
+    "操作失败，请稍后重试",
     dependencies,
   );
 }
@@ -92,7 +92,7 @@ export function performShipmentCompletion(
 ): ShipmentMutationResult {
   return performShipmentMutation(
     id,
-    "标记失败，请稍后重试",
+    "操作失败，请稍后重试",
     dependencies,
   );
 }

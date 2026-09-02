@@ -218,6 +218,49 @@ public final class Kuaidi100TimelinePolicyTest {
     }
 
     @Test
+    public void startGateUsesProviderSpecificCodesAndChineseBoundaryEvents() {
+        ExpressQueryResult accountShipped = new ExpressQueryResult(
+                "TEST123", "SF", "顺丰速运", StatusSemantic.TRANSIT,
+                "2026-08-16 12:00:00", "已发货",
+                "[{\"time\":\"2026-08-16 12:00:00\",\"context\":\"已发货\","
+                        + "\"statusCode\":\"102\",\"_pipiStatusSource\":\"interface6\"}]",
+                "", "", "interface6");
+        ExpressQueryResult pickerOrdered = new ExpressQueryResult(
+                "TEST123", "SF", "顺丰速运", StatusSemantic.TRANSIT,
+                "2026-08-16 12:00:00", "已发货",
+                "[{\"time\":\"2026-08-16 12:00:00\",\"context\":\"已发货\","
+                        + "\"statusCode\":\"102\",\"_pipiStatusSource\":\"meizu\"}]",
+                "", "", "meizu");
+        ExpressQueryResult pickedByText = new ExpressQueryResult(
+                "TEST123", "SF", "顺丰速运", StatusSemantic.TRANSIT,
+                "2026-08-16 12:00:00", "运输中",
+                "[{\"time\":\"2026-08-16 11:00:00\",\"context\":\"快件已揽收\"},"
+                        + "{\"time\":\"2026-08-16 12:00:00\",\"context\":\"运输中\"}]",
+                "", "", "meizu");
+
+        assertFalse(Kuaidi100TimelinePolicy.hasTimelineStart(accountShipped));
+        assertTrue(Kuaidi100TimelinePolicy.hasTimelineStart(pickerOrdered));
+        assertTrue(Kuaidi100TimelinePolicy.hasTimelineStart(pickedByText));
+    }
+
+    @Test
+    public void legacyProviderErrorCodeCannotCloseTheStartGate() {
+        ExpressQueryResult legacyMixedMeizu = new ExpressQueryResult(
+                "TEST123", "SF", "顺丰速运", StatusSemantic.TRANSIT,
+                "2026-09-02 10:46:00", "快件运输中",
+                "[{\"time\":\"2026-09-02 10:45:00\","
+                        + "\"context\":\"验证码错误，请重试\","
+                        + "\"statusCode\":\"102\",\"_pipiStatusSource\":\"meizu\"},"
+                        + "{\"time\":\"2026-09-02 10:46:00\","
+                        + "\"context\":\"快件运输中\","
+                        + "\"statusCode\":\"0\",\"_pipiStatusSource\":\"meizu\"}]",
+                "", "", "meizu");
+
+        assertTrue(Kuaidi100TimelinePolicy.hasTimedTracking(legacyMixedMeizu));
+        assertFalse(Kuaidi100TimelinePolicy.hasTimelineStart(legacyMixedMeizu));
+    }
+
+    @Test
     public void persistedManualAuthorityNeedsAParseableTimedNode() {
         assertFalse(Kuaidi100TimelinePolicy.hasTimedTracking(result(
                 StatusSemantic.PICKED, "", "快件已揽收",
@@ -231,6 +274,47 @@ public final class Kuaidi100TimelinePolicyTest {
         assertTrue(Kuaidi100TimelinePolicy.hasTimedTracking(result(
                 StatusSemantic.PICKED, "2026-08-16 12:00:00", "快件已揽收",
                 "[{\"time\":\"2026-08-16 12:00:00\",\"context\":\"快件已揽收\"}]")));
+    }
+
+    @Test
+    public void completenessUsesProviderContractWithKdniaoTerminalGuard() {
+        assertTrue(Kuaidi100TimelinePolicy.isTimelineIncomplete(result(
+                StatusSemantic.TRANSIT, "", "", "[]")));
+        ExpressQueryResult oneK100Node = new ExpressQueryResult(
+                "TEST123", "ZTO", "中通快递", StatusSemantic.COMPLETED,
+                "2026-08-16 12:00:00", "已签收",
+                "[{\"time\":\"2026-08-16 12:00:00\",\"context\":\"已签收\"}]",
+                "", "", "kuaidi100");
+        ExpressQueryResult oneKdniaoTerminalNode = new ExpressQueryResult(
+                "TEST123", "ZTO", "中通快递", StatusSemantic.COMPLETED,
+                "2026-08-16 12:00:00", "已签收",
+                "[{\"time\":\"2026-08-16 12:00:00\",\"context\":\"已签收\"}]",
+                "", "", "kdniao");
+        ExpressQueryResult twoKdniaoTerminalNodes = new ExpressQueryResult(
+                "TEST123", "ZTO", "中通快递", StatusSemantic.COMPLETED,
+                "2026-08-16 12:00:00", "已签收",
+                "[{\"time\":\"2026-08-16 12:00:00\",\"context\":\"已签收\"},"
+                        + "{\"time\":\"2026-08-16 10:00:00\","
+                        + "\"context\":\"已揽收\"}]",
+                "", "", "kdniao");
+        ExpressQueryResult manyAccountNodes = new ExpressQueryResult(
+                "TEST123", "ZTO", "中通快递", StatusSemantic.TRANSIT,
+                "2026-08-16 12:00:00", "运输中",
+                "[{\"time\":\"2026-08-16 12:00:00\",\"context\":\"运输中\"},"
+                        + "{\"time\":\"2026-08-16 11:00:00\",\"context\":\"已揽收\"},"
+                        + "{\"time\":\"2026-08-16 10:00:00\",\"context\":\"已发出\"}]",
+                "", "", "interface5");
+        ExpressQueryResult completedMoto = new ExpressQueryResult(
+                "TEST123", "ZTO", "中通快递", StatusSemantic.COMPLETED,
+                "2026-08-16 13:00:00", "已签收",
+                "[{\"time\":\"2026-08-16 13:00:00\",\"context\":\"已签收\"}]",
+                "", "", "v4");
+
+        assertFalse(Kuaidi100TimelinePolicy.isTimelineIncomplete(oneK100Node));
+        assertTrue(Kuaidi100TimelinePolicy.isTimelineIncomplete(oneKdniaoTerminalNode));
+        assertFalse(Kuaidi100TimelinePolicy.isTimelineIncomplete(twoKdniaoTerminalNodes));
+        assertTrue(Kuaidi100TimelinePolicy.isTimelineIncomplete(manyAccountNodes));
+        assertTrue(Kuaidi100TimelinePolicy.isTimelineIncomplete(completedMoto));
     }
 
     private static ExpressItem item(StatusSemantic semantic, long eventTime) {

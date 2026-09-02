@@ -6,6 +6,7 @@ import androidx.webkit.WebMessageCompat;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.net.URI;
@@ -74,12 +75,35 @@ final class ExpressOrderProjectionBridge {
         }
         try {
             JSONObject value = new JSONObject(payload);
-            String waybill = value.optString("waybillCode", "").trim();
-            if (!waybill.matches("^[A-Za-z0-9_-]{6,40}$")
-                    || normalize(waybill).equals(normalize(sourceIdentity))) return null;
-            String carrier = value.optString("carrierName", "").trim();
-            if (carrier.length() > 64) carrier = carrier.substring(0, 64);
-            return new Candidate(waybill, carrier);
+            JSONArray identities = value.optJSONArray("identities");
+            if (value.has("identities") && identities == null) return null;
+            if (identities == null) identities = new JSONArray().put(value);
+            String source = normalize(sourceIdentity);
+            String selectedIdentity = "";
+            String selectedWaybill = "";
+            String selectedCarrier = "";
+            for (int index = 0; index < identities.length(); index++) {
+                JSONObject identity = identities.optJSONObject(index);
+                if (identity == null) return null;
+                Object declared = identity.opt("waybillCode");
+                if (declared == null || declared == JSONObject.NULL) continue;
+                if (!(declared instanceof String)) return null;
+                String waybill = ((String) declared).trim();
+                if (waybill.isEmpty()) continue;
+                if (!waybill.matches("^[A-Za-z0-9_-]{6,40}$")) return null;
+                String normalized = normalize(waybill);
+                if (normalized.equals(source)) continue;
+                if (!selectedIdentity.isEmpty() && !selectedIdentity.equals(normalized)) {
+                    return null;
+                }
+                String carrier = identity.optString("carrierName", "").trim();
+                if (carrier.length() > 64) carrier = carrier.substring(0, 64);
+                selectedIdentity = normalized;
+                selectedWaybill = waybill;
+                if (selectedCarrier.isEmpty()) selectedCarrier = carrier;
+            }
+            return selectedIdentity.isEmpty()
+                    ? null : new Candidate(selectedWaybill, selectedCarrier);
         } catch (Throwable ignored) {
             return null;
         }

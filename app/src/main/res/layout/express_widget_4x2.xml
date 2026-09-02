@@ -17,12 +17,21 @@
         android:scaleType="fitXY"
         android:src="@drawable/widget_express_brand_gradient_mask" />
 
+    <ImageView
+        android:id="@+id/widget_express_line_art"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0.22"
+        android:contentDescription="@null"
+        android:scaleType="fitXY"
+        android:src="@drawable/widget_express_empty_4x2_bg" />
+
     <LinearLayout
         android:id="@+id/widget_express_content"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:padding="14dp">
+        android:padding="@dimen/express_widget_search_edge_inset">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -60,12 +69,7 @@
 
             <ImageView
                 android:id="@+id/widget_express_search"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:contentDescription="@string/search_express_hint"
-                android:scaleType="fitCenter"
-                android:src="@drawable/ic_search"
-                android:tint="?attr/colorOnSurfaceVariant"
+                style="@style/DeliveriesExpressWidgetSearch"
                 tools:ignore="UseAppTint" />
         </LinearLayout>
 
@@ -79,22 +83,22 @@
             android:visibility="gone">
 
             <ImageView
-                android:layout_width="32dp"
-                android:layout_height="32dp"
+                android:layout_width="68dp"
+                android:layout_height="68dp"
                 android:contentDescription="@null"
                 android:scaleType="fitCenter"
-                android:src="@drawable/ic_local_shipping"
-                android:tint="?attr/colorOnSurface"
-                tools:ignore="UseAppTint" />
+                android:src="@drawable/widget_express_empty_vehicle" />
 
             <TextView
                 android:id="@+id/widget_express_empty_text"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/widget_no_express"
-                android:textColor="?attr/colorOnSurfaceVariant"
-                android:textSize="14sp" />
+                android:layout_marginTop="4dp"
+                android:fontFamily="sans-serif-medium"
+                android:includeFontPadding="false"
+                android:text="@string/widget_empty_message"
+                android:textColor="@color/widget_empty_text"
+                android:textSize="16sp" />
         </LinearLayout>
 
         <LinearLayout
@@ -111,6 +115,7 @@
                     <TextView
                         android:id="@+id/widget_express_status1"
                         style="@style/DeliveriesExpressWideStatus" />
+                    <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
                 </LinearLayout>
                 <TextView
                     android:id="@+id/widget_express_detail1"
@@ -132,6 +137,7 @@
                     <TextView
                         android:id="@+id/widget_express_status2"
                         style="@style/DeliveriesExpressWideStatus" />
+                    <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
                 </LinearLayout>
                 <TextView
                     android:id="@+id/widget_express_detail2"
@@ -153,6 +159,7 @@
                     <TextView
                         android:id="@+id/widget_express_status3"
                         style="@style/DeliveriesExpressWideStatus" />
+                    <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
                 </LinearLayout>
                 <TextView
                     android:id="@+id/widget_express_detail3"

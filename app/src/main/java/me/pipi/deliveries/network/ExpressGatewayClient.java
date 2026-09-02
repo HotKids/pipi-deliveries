@@ -1,7 +1,6 @@
 package me.pipi.deliveries.network;
 
 import android.content.Context;
-import android.content.SharedPreferences;
 
 import me.pipi.deliveries.BuildConfig;
 
@@ -9,31 +8,21 @@ import org.json.JSONObject;
 
 import java.io.IOException;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
-import java.util.Locale;
-import java.util.UUID;
+import java.util.Map;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-
-/** Signed, fixed-route transport to Pipi's credential-holding express gateway. */
+/** Fixed-route transport authenticated by Android hardware-backed request signatures. */
 final class ExpressGatewayClient implements ExpressGatewayTransport {
     private static final String GATEWAY_URL = clean(BuildConfig.EXPRESS_GATEWAY_URL);
-    private static final String GATEWAY_TOKEN = clean(BuildConfig.EXPRESS_GATEWAY_TOKEN);
-    // Preserve the existing installation identity so migration does not create another client.
-    private static final String PREFS = "kuaidi100_proxy";
-    private static final String CLIENT_ID = "client_id";
 
-    private final String clientId;
+    private final GatewaySessionSigner signer;
 
     ExpressGatewayClient(Context context) {
         if (context == null) throw new IllegalArgumentException("context is required");
-        clientId = installScopedClientId(context.getApplicationContext());
+        signer = new GatewaySessionSigner(context.getApplicationContext(), GATEWAY_URL);
     }
 
     @Override public boolean configured() {
-        return isTrustedGatewayUrl(GATEWAY_URL) && !GATEWAY_TOKEN.isEmpty();
+        return isTrustedGatewayUrl(GATEWAY_URL);
     }
 
     @Override public HttpClient.Response post(String path, JSONObject payload) throws Exception {
@@ -50,36 +39,36 @@ final class ExpressGatewayClient implements ExpressGatewayTransport {
             throw new IllegalArgumentException("invalid gateway route");
         }
         String body = (payload == null ? new JSONObject() : payload).toString();
-        long timestamp = System.currentTimeMillis() / 1000L;
-        LinkedHashMap<String, String> headers = new LinkedHashMap<>();
-        headers.put("X-Deliveries-Timestamp", String.valueOf(timestamp));
-        headers.put("X-Deliveries-Client", clientId);
-        headers.put("X-Deliveries-Signature", hmacSha256Hex(
-                GATEWAY_TOKEN, canonicalRequest(timestamp, clientId, route, body)));
         try {
-            String url = stripTrailingSlash(GATEWAY_URL) + route;
-            return cancellation == null
-                    ? HttpClient.postJson(url, body, headers, false)
-                    : HttpClient.postJson(url, body, headers, false, cancellation);
+            return send(route, body, cancellation, false);
+        } catch (GatewaySessionSigner.RejectedSession rejected) {
+            if (cancellation != null) cancellation.throwIfCancelled();
+            signer.invalidate(rejected.session);
+            return send(route, body, cancellation, true);
         } catch (IOException networkFailure) {
             if (cancellation != null) cancellation.throwIfCancelled();
-            // Do not surface DNS, TLS or timeout implementation text through the UI.
             throw GatewayHttpErrors.networkFailure();
         }
     }
 
-    static String hmacSha256Hex(String key, String value) throws Exception {
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-        byte[] bytes = mac.doFinal(value.getBytes(StandardCharsets.UTF_8));
-        StringBuilder output = new StringBuilder(bytes.length * 2);
-        for (byte item : bytes) output.append(String.format(Locale.US, "%02x", item & 0xff));
-        return output.toString();
+    private HttpClient.Response send(
+            String route, String body, ExpressQueryCancellation cancellation,
+            boolean afterReenrollment) throws Exception {
+        GatewaySessionSigner.SignedHeaders signed = signer.headers(route, body, cancellation);
+        HttpClient.Response response = postJson(route, body, signed.values, cancellation);
+        if (response.status == 401 && !afterReenrollment) {
+            throw new GatewaySessionSigner.RejectedSession(signed.session);
+        }
+        return response;
     }
 
-    static String canonicalRequest(long timestamp, String clientId, String route, String body) {
-        return timestamp + "\n" + clean(clientId) + "\n" + clean(route) + "\n"
-                + (body == null ? "" : body);
+    private HttpClient.Response postJson(
+            String route, String body, Map<String, String> headers,
+            ExpressQueryCancellation cancellation) throws Exception {
+        String url = stripTrailingSlash(GATEWAY_URL) + route;
+        return cancellation == null
+                ? HttpClient.postJson(url, body, headers, false)
+                : HttpClient.postJson(url, body, headers, false, cancellation);
     }
 
     static boolean isTrustedGatewayUrl(String value) {
@@ -93,15 +82,6 @@ final class ExpressGatewayClient implements ExpressGatewayTransport {
         } catch (Throwable ignored) {
             return false;
         }
-    }
-
-    private static String installScopedClientId(Context context) {
-        SharedPreferences preferences = context.getSharedPreferences(PREFS, 0);
-        String existing = preferences.getString(CLIENT_ID, "");
-        if (existing != null && existing.matches("[a-f0-9]{32}")) return existing;
-        String generated = UUID.randomUUID().toString().replace("-", "");
-        preferences.edit().putString(CLIENT_ID, generated).apply();
-        return generated;
     }
 
     private static String stripTrailingSlash(String value) {

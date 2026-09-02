@@ -25,6 +25,15 @@ final class HttpClient {
                 body.getBytes(StandardCharsets.UTF_8), redirects, Collections.emptyMap());
     }
 
+    static Response postForm(
+            String url, String body, boolean redirects,
+            ExpressQueryCancellation cancellation) throws Exception {
+        if (cancellation == null) throw new IllegalArgumentException("cancellation is required");
+        return execute(url, "POST", "application/x-www-form-urlencoded; charset=UTF-8",
+                body.getBytes(StandardCharsets.UTF_8), redirects,
+                Collections.emptyMap(), cancellation);
+    }
+
     static Response postJson(String url, String body) throws Exception {
         return execute(url, "POST", "application/json; charset=UTF-8",
                 body.getBytes(StandardCharsets.UTF_8), true, Collections.emptyMap());

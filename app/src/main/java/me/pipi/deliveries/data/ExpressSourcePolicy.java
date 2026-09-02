@@ -90,6 +90,9 @@ final class ExpressSourcePolicy {
     /** Keeps the home/widget projection aligned with the currently selected account interface. */
     static boolean belongsToBindingSource(ExpressItem item, String bindingSource) {
         if (item == null) return false;
+        // The account toggle selects only the automatic feed. A user-created shipment is one
+        // durable local item and must remain visible under either automatic interface.
+        if (item.manuallyAdded) return true;
         return belongsToBindingSource(
                 item.stateOwner.isEmpty() ? item.source : item.stateOwner, bindingSource);
     }

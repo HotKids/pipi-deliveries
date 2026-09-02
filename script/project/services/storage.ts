@@ -2,28 +2,34 @@ import type {
   AccountBinding,
   AppState,
   BindingSource,
-  ImportSuppression,
   PendingManualQuery,
   Shipment,
-  WaybillTombstone,
+  TimelinePackage,
   WidgetSnapshot,
 } from "../models";
 import {
   buildWidgetSnapshot,
+  isProviderErrorDetail,
   normalizeWaybill,
   normalizedProjectedWaybill,
   pruneShipments,
   sortShipments,
+  timedTracks,
 } from "./status";
 import {
   absorbHistoricalShipment,
   applyAccountShipment,
   applyManualShipment,
+  automaticSourceOf,
   displayWaybill,
+  invalidateAutomaticOwner,
   isHistoricalAccountDuplicate,
+  isVerifiedKuaidi100Timeline,
+  normalizeAutomaticOwnership,
   selectShipmentTimeline,
 } from "./shipment-policy";
 import { projectedCarrierPresentation } from "./carrier-presentation";
+import { isJingDongAccountOrder } from "./account-parser";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
 import {
   diagnosticState,
@@ -40,6 +46,7 @@ import {
 import {
   migrateLegacyShipmentRoutes,
   pruneOrderProjectionReferences,
+  pruneShipmentRoutes,
   type LegacyShipmentRouteMigration,
 } from "./routes";
 import {
@@ -114,6 +121,28 @@ function prunePending(
   );
 }
 
+function hasTimedShipmentAuthority(shipment: Shipment): boolean {
+  return [
+    shipment.timeline,
+    ...(shipment.sourceTimeline ? [shipment.sourceTimeline] : []),
+    ...(shipment.manualTimelines || []),
+  ].some((timeline) => timedTracks(timeline.tracks).length > 0);
+}
+
+function pruneExpiredManualPlaceholders(
+  shipments: readonly Shipment[],
+  now: number,
+): Shipment[] {
+  return shipments.filter((shipment) => {
+    if (!shipment.identity.manuallyAdded || hasTimedShipmentAuthority(shipment)) {
+      return true;
+    }
+    const createdAtMs = Number(shipment.identity.createdAtMs);
+    return !Number.isFinite(createdAtMs) || createdAtMs <= 0 ||
+      now - createdAtMs < PENDING_TTL_MS;
+  });
+}
+
 function pruneOrderProjectionReferencesForState(
   state: AppState,
   now: number,
@@ -123,7 +152,6 @@ function pruneOrderProjectionReferencesForState(
       state.shipments.flatMap((shipment) => {
         const source = shipment.identity.bindingSource;
         return shipment.identity.accountOrder &&
-            !normalizedProjectedWaybill(shipment.identity) &&
             source === SCRIPT_BINDING_SOURCE
           ? [{ ownerId: shipment.identity.id, source }]
           : [];
@@ -135,31 +163,19 @@ function pruneOrderProjectionReferencesForState(
   }
 }
 
-function uniqueTombstones(
-  values: readonly WaybillTombstone[],
-): WaybillTombstone[] {
-  const result = new Map<string, WaybillTombstone>();
-  for (const value of values) {
-    const hash = String(value?.waybillHash || "").trim().toLowerCase();
-    if (!/^[a-f0-9]{64}$/.test(hash)) continue;
-    const reason = value.reason === "retention_expired"
-      ? "retention_expired"
-      : "manual_delete";
-    const normalized: WaybillTombstone = {
-      waybillHash: hash,
-      reason,
-      createdAtMs:
-        typeof value.createdAtMs === "number" && Number.isFinite(value.createdAtMs)
-          ? value.createdAtMs
-          : 0,
-    };
-    const key = hash;
-    const previous = result.get(key);
-    if (!previous || normalized.createdAtMs < previous.createdAtMs) {
-      result.set(key, normalized);
-    }
+function pruneShipmentRoutesForState(state: AppState, now: number): void {
+  try {
+    pruneShipmentRoutes([
+      ...state.shipments
+        .filter((shipment) => Boolean(shipment.route))
+        .map((shipment) => shipment.identity.id),
+      ...state.pendingQueries
+        .filter((pending) => Boolean(pending.route))
+        .map((pending) => pending.id),
+    ], now);
+  } catch {
+    /* encrypted routes remain unavailable and expire automatically */
   }
-  return [...result.values()];
 }
 
 export function emptyState(): AppState {
@@ -169,8 +185,6 @@ export function emptyState(): AppState {
     updatedAtMs: 0,
     activeSource: SCRIPT_BINDING_SOURCE,
     bindings: [],
-    suppressions: [],
-    tombstones: [],
     pendingQueries: [],
     shipments: [],
   };
@@ -232,8 +246,6 @@ function isCurrentState(value: unknown): value is AppState {
     typeof state.updatedAtMs === "number" &&
     (state.activeSource === "interface5" || state.activeSource === "interface6") &&
     Array.isArray(state.bindings) &&
-    Array.isArray(state.suppressions) &&
-    (state.tombstones == null || Array.isArray(state.tombstones)) &&
     Array.isArray(state.pendingQueries) &&
     Array.isArray(state.shipments)
   );
@@ -248,19 +260,12 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
         updatedAtMs: value.updatedAtMs,
         shipments: value.shipments,
       };
-  const normalizedShipments = migrateShipmentSources(base.shipments || [])
-    .map(normalizeShipmentAuthorities);
-  const retainedShipments = pruneShipments(normalizedShipments, now);
-  const retainedSet = new Set(retainedShipments);
-  const retentionTombstones = normalizedShipments
-    .filter((item) => !retainedSet.has(item))
-    .flatMap((item) => tombstonesForShipment(item, "retention_expired", now));
-  const tombstones = uniqueTombstones([
-    ...((base as AppState).tombstones || []),
-    ...retentionTombstones,
-  ]);
-  const tombstoneHashes = new Set(
-    tombstones.map((item) => item.waybillHash),
+  const retainedShipments = pruneExpiredManualPlaceholders(
+    retainDurableShipments(
+      migrateShipmentSources(base.shipments || []).map(normalizeShipmentAuthorities),
+      now,
+    ),
+    now,
   );
   return {
     version: 2,
@@ -268,17 +273,11 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     updatedAtMs: base.updatedAtMs,
     activeSource: SCRIPT_BINDING_SOURCE,
     bindings: uniqueBindings(base.bindings || []),
-    suppressions: normalizeSuppressions(base.suppressions || []),
-    tombstones,
     pendingQueries: prunePending(
       migratePendingSources(base.pendingQueries || []),
       now,
-    ).filter((pending) => !tombstoneHashes.has(
-      privateHash(normalizeWaybill(pending.waybill)),
-    )),
-    shipments: sortShipments(retainedShipments.filter(
-      (shipment) => !shipmentTombstoned(tombstoneHashes, shipment),
-    )),
+    ),
+    shipments: sortShipments(retainedShipments),
   };
 }
 
@@ -361,7 +360,25 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
   const canonicalId = manuallyAdded
     ? `${SCRIPT_BINDING_SOURCE}:manual:${canonicalWaybill}`
     : shipment.identity.id;
-  const projectedWaybill = normalizedProjectedWaybill(shipment.identity);
+  const existingProjectedWaybill = normalizedProjectedWaybill(shipment.identity);
+  const repairsJingDongOrder = Boolean(
+    !manuallyAdded &&
+      !shipment.identity.accountOrder &&
+      !existingProjectedWaybill &&
+      isJingDongAccountOrder(
+        shipment.identity.sourceId,
+        String(shipment.identity.sourceProvider || ""),
+        shipment.statusPresentation?.scope || "",
+        [
+          shipment.timeline.latestDetail,
+          ...(shipment.sourceTimeline?.tracks || shipment.timeline.tracks)
+            .map((track) => track.detail),
+        ],
+      ),
+  );
+  const projectedWaybill = repairsJingDongOrder
+    ? ""
+    : existingProjectedWaybill;
   const rawProjectionRetry = shipment.identity.orderProjectionRetry;
   const routeHash = String(rawProjectionRetry?.routeHash || "")
     .trim()
@@ -414,6 +431,14 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
       rawManualRefreshAttemptAtMs > 0
       ? rawManualRefreshAttemptAtMs
       : undefined;
+  const rawCainiaoH5FallbackActivatedAtMs = Number(
+    shipment.cainiaoH5FallbackActivatedAtMs,
+  );
+  const cainiaoH5FallbackActivatedAtMs =
+    Number.isFinite(rawCainiaoH5FallbackActivatedAtMs) &&
+      rawCainiaoH5FallbackActivatedAtMs > 0
+      ? rawCainiaoH5FallbackActivatedAtMs
+      : undefined;
   const rawManualRefreshLease = shipment.manualRefreshLease;
   const manualRefreshLeaseAttemptId = String(
     rawManualRefreshLease?.attemptId || "",
@@ -437,7 +462,23 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
     : undefined;
   return {
     ...shipment,
+    statusPresentation: repairsJingDongOrder
+      ? shipment.statusPresentation ||
+        (shipment.timeline.semantic === "COMPLETED"
+          ? { scope: "ORDER", semantic: "COMPLETED", text: "已完成" }
+          : undefined)
+      : shipment.statusPresentation,
+    sourceTimeline: repairsJingDongOrder
+      ? {
+          ...(shipment.sourceTimeline || shipment.timeline),
+          companyName: "京东购物",
+        }
+      : shipment.sourceTimeline,
+    manualTimelines: repairsJingDongOrder
+      ? []
+      : shipment.manualTimelines,
     forcedCompletedAtMs,
+    cainiaoH5FallbackActivatedAtMs,
     manualRefreshAttemptAtMs,
     manualRefreshLease,
     identity: {
@@ -449,19 +490,30 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
           ? null
           : bindingSource,
       sourceId: manuallyAdded ? canonicalWaybill : shipment.identity.sourceId,
+      sourceOwner: repairsJingDongOrder
+        ? `${SCRIPT_BINDING_SOURCE}:order`
+        : shipment.identity.sourceOwner,
       projectedWaybill,
       orderProjectionRetry,
+      orderId: repairsJingDongOrder
+        ? shipment.identity.sourceId
+        : shipment.identity.orderId,
+      accountOrder: repairsJingDongOrder || shipment.identity.accountOrder,
       courierCode: projectedPresentation
         ? projectedPresentation.courierCode
         : shipment.identity.courierCode,
       companyName: projectedPresentation
         ? projectedPresentation.companyName
+        : repairsJingDongOrder
+          ? "京东购物"
         : shipment.identity.companyName,
     },
-    route:
-      shipment.route?.kind === "cainiao"
-        ? { kind: "cainiao", source: SCRIPT_BINDING_SOURCE }
-        : null,
+    route: shipment.route && (
+        shipment.route.kind === "cainiao" ||
+        (manuallyAdded && shipment.route.kind === "web")
+      )
+      ? { kind: shipment.route.kind, source: SCRIPT_BINDING_SOURCE }
+      : null,
   };
 }
 
@@ -474,7 +526,7 @@ function legacyRouteMigrations(
     finalShipments.map((shipment) => [shipment.identity.id, shipment]),
   );
   for (const shipment of value.shipments || []) {
-    if (shipment.route?.kind !== "cainiao") continue;
+    if (!shipment.route) continue;
     const migrated = migrateShipmentSource(shipment);
     if (!migrated) continue;
     const target = finalById.get(migrated.identity.id) ||
@@ -489,7 +541,7 @@ function legacyRouteMigrations(
   }
   if (isCurrentState(value)) {
     for (const pending of value.pendingQueries || []) {
-      if (pending.route?.kind !== "cainiao") continue;
+      if (!pending.route) continue;
       const migrated = migratePendingSource(pending);
       if (!migrated) continue;
       migrations.push({ fromId: pending.id, toId: migrated.id });
@@ -502,6 +554,17 @@ function migrateShipmentSources(values: readonly Shipment[]): Shipment[] {
   const automatic: Shipment[] = [];
   const manual = new Map<string, Shipment>();
   const migrated = values
+    .filter((shipment) => {
+      if (shipment.identity.manuallyAdded) return true;
+      const source = automaticSourceOf(shipment);
+      const provider = String(shipment.identity.sourceProvider || "")
+        .trim()
+        .toLowerCase();
+      return !(
+        (source === "interface1" || source === "vivo") &&
+        provider === "jingdong"
+      );
+    })
     .map(migrateShipmentSource)
     .filter((shipment): shipment is Shipment => shipment != null)
     .sort((left, right) =>
@@ -570,10 +633,11 @@ function migratePendingSource(pending: PendingManualQuery): PendingManualQuery |
     id: canonicalId,
     source: SCRIPT_BINDING_SOURCE,
     waybill,
-    route:
-      pending.route?.kind === "cainiao"
-        ? { kind: "cainiao", source: SCRIPT_BINDING_SOURCE }
-        : null,
+    route: pending.route && (
+        pending.route.kind === "cainiao" || pending.route.kind === "web"
+      )
+      ? { kind: pending.route.kind, source: SCRIPT_BINDING_SOURCE }
+      : null,
   };
 }
 
@@ -611,57 +675,80 @@ function migratePendingSources(
   return [...result.values()];
 }
 
-function normalizeSuppressions(
-  values: readonly ImportSuppression[],
-): ImportSuppression[] {
-  const result = new Map<string, ImportSuppression>();
-  for (const value of values) {
-    if (
-      !value ||
-      (value.source !== SCRIPT_BINDING_SOURCE && value.source !== "interface6") ||
-      (value.kind !== "unbound" && value.kind !== "deleted")
-    ) continue;
-    const sourceIdHash = String(value.sourceIdHash || "").trim().toLowerCase();
-    const phoneHash = String(value.phoneHash || "").trim().toLowerCase();
-    if (!/^[a-f0-9]{64}$/.test(sourceIdHash)) continue;
-    if (phoneHash && !/^[a-f0-9]{64}$/.test(phoneHash)) continue;
-    const normalized: ImportSuppression = {
-      kind: value.kind,
-      source: SCRIPT_BINDING_SOURCE,
-      sourceIdHash,
-      phoneHash,
-      createdAtMs:
-        typeof value.createdAtMs === "number" && Number.isFinite(value.createdAtMs)
-          ? value.createdAtMs
-          : 0,
-    };
-    const key = `${normalized.kind}:${sourceIdHash}:${phoneHash}`;
-    const previous = result.get(key);
-    if (!previous || normalized.createdAtMs < previous.createdAtMs) {
-      result.set(key, normalized);
-    }
+function sanitizeProviderErrorTimeline(
+  timeline: TimelinePackage,
+): TimelinePackage {
+  const removed = timeline.tracks.filter((track) =>
+    isProviderErrorDetail(track.detail)
+  );
+  if (!removed.length && !isProviderErrorDetail(timeline.latestDetail)) {
+    return timeline;
   }
-  return [...result.values()];
+  const tracks = timeline.tracks.filter((track) =>
+    !isProviderErrorDetail(track.detail)
+  );
+  const latest = [...tracks].sort(
+    (left, right) => (right.timeMs || 0) - (left.timeMs || 0),
+  )[0] || null;
+  // Legacy packages did not record whether package-level metadata came from a
+  // removed error node or a surviving event, so the old metadata is unusable.
+  const invalidatedMetadata = removed.length > 0 ||
+    isProviderErrorDetail(timeline.latestDetail);
+  return {
+    ...timeline,
+    complete: tracks.length && !invalidatedMetadata
+      ? timeline.complete
+      : false,
+    structuredStatus: invalidatedMetadata ? false : timeline.structuredStatus,
+    semantic: !tracks.length || invalidatedMetadata
+      ? "UNKNOWN"
+      : timeline.semantic,
+    statusEventAtMs: !tracks.length || invalidatedMetadata
+      ? null
+      : timeline.statusEventAtMs,
+    latestTimeText: latest?.timeText || "",
+    latestDetail: latest?.detail || "",
+    tracks,
+  };
 }
 
 function normalizeShipmentAuthorities(shipment: Shipment): Shipment {
   const manuallyAdded = Boolean(shipment.identity.manuallyAdded);
-  const sourceTimeline = manuallyAdded
+  const sourceTimelineRaw = manuallyAdded
     ? null
     : shipment.sourceTimeline || shipment.timeline;
+  const sourceTimeline = sourceTimelineRaw
+    ? sanitizeProviderErrorTimeline(sourceTimelineRaw)
+    : null;
   const manualTimelines = Array.isArray(shipment.manualTimelines)
-    ? [...shipment.manualTimelines]
+    ? shipment.manualTimelines
+      .map(sanitizeProviderErrorTimeline)
+      .filter((timeline) =>
+        timeline.tracks.length > 0 && (
+          timeline.provider.trim().toLowerCase() !== "kuaidi100_h5" ||
+          isVerifiedKuaidi100Timeline(timeline)
+        )
+      )
     : manuallyAdded
-      ? [shipment.timeline]
+      ? [sanitizeProviderErrorTimeline(shipment.timeline)]
+        .filter((timeline) => timeline.tracks.length > 0)
       : [];
+  const keepsCainiaoRoute = String(shipment.identity.sourceProvider || "")
+    .trim()
+    .toLowerCase() === "cainiao";
   const normalized: Shipment = {
     ...shipment,
-    route: shipment.route?.kind === "cainiao" ? shipment.route : null,
+    route: shipment.route?.kind === "web" && manuallyAdded
+      ? shipment.route
+      : keepsCainiaoRoute && shipment.route?.kind === "cainiao"
+        ? shipment.route
+        : null,
     sourceTimeline,
     manualTimelines,
-    timeline: sourceTimeline || shipment.timeline,
+    timeline: sourceTimeline || sanitizeProviderErrorTimeline(shipment.timeline),
   };
-  return { ...normalized, timeline: selectShipmentTimeline(normalized) };
+  const selected = { ...normalized, timeline: selectShipmentTimeline(normalized) };
+  return normalizeAutomaticOwnership(selected);
 }
 
 type StoredStateRead = {
@@ -1026,17 +1113,92 @@ export function loadState(now = Date.now()): AppState {
   return encoded.state;
 }
 
-export function visibleShipments(state: AppState): Shipment[] {
-  return state.shipments.filter(
-    (shipment) =>
-      shipment.identity.bindingSource == null ||
-      shipment.identity.bindingSource === SCRIPT_BINDING_SOURCE,
+export function visibleShipments(
+  state: AppState,
+  now = Date.now(),
+): Shipment[] {
+  return pruneShipments(
+    state.shipments.filter(
+      (shipment) =>
+        (
+          shipment.identity.bindingSource == null ||
+          shipment.identity.bindingSource === SCRIPT_BINDING_SOURCE
+        ) &&
+        (!shipment.identity.manuallyAdded || hasTimedShipmentAuthority(shipment)),
+    ),
+    now,
   );
 }
 
 export function loadWidgetSnapshot(now = Date.now()): WidgetSnapshot {
   const state = loadState(now);
-  return buildWidgetSnapshot(visibleShipments(state), now);
+  return buildWidgetSnapshot(visibleShipments(state, now), now);
+}
+
+function hasDurableOrderProjectionAuthority(shipment: Shipment): boolean {
+  if (
+    shipment.identity.bindingSource === SCRIPT_BINDING_SOURCE &&
+    shipment.identity.accountOrder &&
+    normalizedProjectedWaybill(shipment.identity)
+  ) {
+    return true;
+  }
+  return Boolean(
+    shipment.automaticOwnership?.observations.some((observation) =>
+      observation.bindingValid !== false &&
+      observation.source === SCRIPT_BINDING_SOURCE &&
+      observation.identity.bindingSource === SCRIPT_BINDING_SOURCE &&
+      observation.identity.accountOrder &&
+      normalizedProjectedWaybill(observation.identity)
+    ),
+  );
+}
+
+function retainDurableShipments(
+  shipments: readonly Shipment[],
+  now: number,
+): Shipment[] {
+  const visibleIds = new Set(
+    pruneShipments(shipments, now).map((shipment) => shipment.identity.id),
+  );
+  return shipments.filter((shipment) =>
+    visibleIds.has(shipment.identity.id) ||
+    (
+      shipment.identity.manuallyAdded &&
+      Number.isFinite(shipment.identity.createdAtMs) &&
+      shipment.identity.createdAtMs > 0 &&
+      shipment.identity.createdAtMs <= now &&
+      now - shipment.identity.createdAtMs < PENDING_TTL_MS
+    ) ||
+    hasDurableOrderProjectionAuthority(shipment)
+  );
+}
+
+function preserveDurableOrderProjections(
+  previousShipments: readonly Shipment[],
+  candidateShipments: readonly Shipment[],
+  now: number,
+): Shipment[] {
+  const previousById = new Map(
+    previousShipments.map((shipment) => [shipment.identity.id, shipment]),
+  );
+  return candidateShipments.map((candidate) => {
+    const previous = previousById.get(candidate.identity.id);
+    if (
+      !previous?.identity.accountOrder ||
+      !candidate.identity.accountOrder ||
+      !normalizedProjectedWaybill(previous.identity) ||
+      normalizedProjectedWaybill(candidate.identity)
+    ) {
+      return candidate;
+    }
+    const restored = applyAccountShipment(candidate, previous, now);
+    return {
+      ...restored,
+      accountRecord: candidate.accountRecord || restored.accountRecord,
+      updatedAtMs: Math.max(candidate.updatedAtMs, restored.updatedAtMs),
+    };
+  });
 }
 
 export function saveState(
@@ -1044,20 +1206,19 @@ export function saveState(
   now = Date.now(),
 ): AppState {
   const previous = loadState(now);
-  const normalizedShipments = migrateShipmentSources(candidate.shipments)
-    .map(normalizeShipmentAuthorities);
-  const retainedShipments = pruneShipments(normalizedShipments, now);
-  const retainedSet = new Set(retainedShipments);
-  const retentionTombstones = normalizedShipments
-    .filter((item) => !retainedSet.has(item))
-    .flatMap((item) => tombstonesForShipment(item, "retention_expired", now));
-  const tombstones = uniqueTombstones([
-    ...previous.tombstones,
-    ...candidate.tombstones,
-    ...retentionTombstones,
-  ]);
-  const tombstoneHashes = new Set(
-    tombstones.map((item) => item.waybillHash),
+  const normalizedShipments = preserveDurableOrderProjections(
+    previous.shipments,
+    migrateShipmentSources(candidate.shipments)
+      .map(normalizeShipmentAuthorities),
+    now,
+  );
+  // UI retention may hide an old signed shipment, but its confirmed
+  // order-to-waybill projection remains source authority. Dropping that row
+  // would let the next account summary recreate the order number and trigger
+  // the same hidden WebView capture again.
+  const retainedShipments = pruneExpiredManualPlaceholders(
+    retainDurableShipments(normalizedShipments, now),
+    now,
   );
   const next: AppState = {
     version: 2,
@@ -1065,19 +1226,11 @@ export function saveState(
     updatedAtMs: now,
     activeSource: SCRIPT_BINDING_SOURCE,
     bindings: uniqueBindings(candidate.bindings),
-    suppressions: normalizeSuppressions(candidate.suppressions),
-    tombstones,
     pendingQueries: prunePending(
       migratePendingSources(candidate.pendingQueries),
       now,
-    ).filter(
-      (pending) => !tombstoneHashes.has(
-        privateHash(normalizeWaybill(pending.waybill)),
-      ),
     ),
-    shipments: sortShipments(retainedShipments.filter(
-      (shipment) => !shipmentTombstoned(tombstoneHashes, shipment),
-    )),
+    shipments: sortShipments(retainedShipments),
   };
   const stored = encodeState(next);
   try {
@@ -1113,6 +1266,8 @@ export function saveState(
     "info",
   );
   pruneOrderProjectionReferencesForState(stored.state, now);
+  // Cleanup belongs after a durable transition: route publication writes the sidecar first.
+  pruneShipmentRoutesForState(stored.state, now);
   return stored.state;
 }
 
@@ -1149,14 +1304,17 @@ function rebaseNewAccountProjection(
   ) {
     return null;
   }
+  const rebased = applyAccountShipment(
+    current,
+    incoming,
+    current.updatedAtMs,
+  );
   return {
-    ...current,
-    identity: {
-      ...current.identity,
-      projectedWaybill: projected,
-      courierCode: incoming.identity.courierCode || current.identity.courierCode,
-      companyName: incoming.identity.companyName || current.identity.companyName,
-    },
+    ...rebased,
+    statusPresentation: rebased.statusPresentation?.scope === "ORDER"
+      ? undefined
+      : rebased.statusPresentation,
+    updatedAtMs: current.updatedAtMs,
   };
 }
 
@@ -1173,6 +1331,39 @@ export type RefreshStateCommit = Readonly<{
   state: AppState;
   applied: boolean;
 }>;
+
+const REFRESH_VOLATILE_FIELDS = new Set([
+  "updatedAtMs",
+  "successAtMs",
+  "observedAtMs",
+]);
+
+function withoutRefreshVolatility(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutRefreshVolatility);
+  if (!value || typeof value !== "object") return value;
+  const normalized: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (REFRESH_VOLATILE_FIELDS.has(key)) continue;
+    normalized[key] = withoutRefreshVolatility(item);
+  }
+  return normalized;
+}
+
+function refreshContentFingerprint(state: AppState): string {
+  return checksum(withoutRefreshVolatility({
+    version: state.version,
+    activeSource: state.activeSource,
+    bindings: [...state.bindings].sort((left, right) =>
+      `${left.source}:${left.phone}`.localeCompare(`${right.source}:${right.phone}`)
+    ),
+    pendingQueries: [...state.pendingQueries].sort((left, right) =>
+      left.id.localeCompare(right.id)
+    ),
+    shipments: [...state.shipments].sort((left, right) =>
+      left.identity.id.localeCompare(right.identity.id)
+    ),
+  }));
+}
 
 export function commitRefreshState(
   base: AppState,
@@ -1211,47 +1402,45 @@ export function commitRefreshState(
       if (!rebased) continue;
       incoming = rebased;
     }
-    if (
-      isWaybillTombstoned(
-        latest,
-        tombstoneWaybill(incoming),
-      )
-    ) continue;
     if (!before && incoming.identity.manuallyAdded) {
       const canonical = displayWaybill(incoming);
-      const causedByPending = base.pendingQueries.some(
+      const causalPending = base.pendingQueries.find(
         (pending) =>
           pending.source === bindingSource &&
           normalizeWaybill(pending.waybill) === canonical,
       );
-      const pendingStillExists = latest.pendingQueries.some(
-        (pending) =>
-          pending.source === bindingSource &&
-          normalizeWaybill(pending.waybill) === canonical,
-      );
-      if (causedByPending && !pendingStillExists) continue;
+      if (causalPending) {
+        const currentPending = latest.pendingQueries.find(
+          (pending) => pending.id === causalPending.id,
+        );
+        // A newer submit may reuse the same canonical id. Only the exact
+        // pending generation that caused this network round may create its
+        // first owner; deletion or replacement invalidates the late result.
+        if (
+          pendingVersion(currentPending) !== pendingVersion(causalPending)
+        ) continue;
+      }
     }
     if (!incoming.identity.manuallyAdded) {
       const associatedPhone = phone(incoming.identity.phone || "");
-      if (
-        associatedPhone &&
-        !latest.bindings.some(
+      if (associatedPhone) {
+        const baselineBinding = base.bindings.find(
           (binding) =>
             binding.source === bindingSource &&
             binding.phone === associatedPhone,
-        )
-      ) {
-        continue;
-      }
-      if (
-        isImportSuppressed(
-          latest,
-          bindingSource,
-          incoming.identity.sourceId,
-          associatedPhone,
-        )
-      ) {
-        continue;
+        );
+        const latestBinding = latest.bindings.find(
+          (binding) =>
+            binding.source === bindingSource &&
+            binding.phone === associatedPhone,
+        );
+        if (
+          !baselineBinding ||
+          !latestBinding ||
+          baselineBinding.boundAtMs !== latestBinding.boundAtMs
+        ) {
+          continue;
+        }
       }
     }
     shipments = replaceShipment(shipments, incoming);
@@ -1277,7 +1466,6 @@ export function commitRefreshState(
   );
   let pendingQueries = [...latest.pendingQueries];
   for (const [id, incoming] of candidatePending) {
-    if (isWaybillTombstoned(latest, incoming.waybill)) continue;
     const before = basePending.get(id);
     const current = pendingQueries.find((item) => item.id === id);
     if (before && !current) continue;
@@ -1304,10 +1492,13 @@ export function commitRefreshState(
   ) {
     return { state: loadState(now), applied: false };
   }
-  return {
-    state: saveState({ ...latest, shipments, pendingQueries }, now),
-    applied: true,
-  };
+  const merged = { ...latest, shipments, pendingQueries };
+  if (
+    refreshContentFingerprint(merged) === refreshContentFingerprint(latest)
+  ) {
+    return { state: latest, applied: true };
+  }
+  return { state: saveState(merged, now), applied: true };
 }
 
 export function bindingsForSource(
@@ -1346,11 +1537,6 @@ export function addBinding(
         ),
         { source: bindingSource, phone: normalizedPhone, boundAtMs: now },
       ],
-      suppressions: state.suppressions.filter(
-        (item) =>
-          item.source !== bindingSource ||
-          item.phoneHash !== privateHash(normalizedPhone),
-      ),
     },
     now,
   );
@@ -1399,21 +1585,29 @@ export function commitTargetShipmentRefresh(
     (fence?.acceptsState != null && !fence.acceptsState(latest)) ||
     !before ||
     !current ||
-    checksum(before) !== checksum(current) ||
-    isWaybillTombstoned(latest, tombstoneWaybill(incoming))
+    checksum(before) !== checksum(current)
   ) {
     return { state: latest, applied: false };
   }
-  return {
-    state: saveState(
-      {
-        ...latest,
-        shipments: replaceShipment(latest.shipments, incoming),
-      },
-      now,
-    ),
-    applied: true,
+  const incomingWaybill = displayWaybill(incoming);
+  const pendingQueries = hasTimedShipmentAuthority(incoming)
+    ? latest.pendingQueries.filter(
+        (pending) =>
+          pending.source !== incoming.identity.bindingSource ||
+          normalizeWaybill(pending.waybill) !== incomingWaybill,
+      )
+    : latest.pendingQueries;
+  const merged = {
+    ...latest,
+    pendingQueries,
+    shipments: replaceShipment(latest.shipments, incoming),
   };
+  if (
+    refreshContentFingerprint(merged) === refreshContentFingerprint(latest)
+  ) {
+    return { state: latest, applied: true };
+  }
+  return { state: saveState(merged, now), applied: true };
 }
 
 export type RoutePointerTarget = {
@@ -1483,83 +1677,6 @@ export function privateHash(value: string): string {
     .toLowerCase();
 }
 
-function tombstoneWaybill(shipment: Shipment): string {
-  return normalizeWaybill(
-    shipment.identity.manuallyAdded
-      ? shipment.timeline.waybill
-      : shipment.identity.sourceId || shipment.timeline.waybill,
-  );
-}
-
-function tombstonesForShipment(
-  shipment: Shipment,
-  reason: WaybillTombstone["reason"],
-  now: number,
-): WaybillTombstone[] {
-  const waybill = tombstoneWaybill(shipment);
-  return waybill ? [{
-    waybillHash: privateHash(waybill),
-    reason,
-    createdAtMs: now,
-  }] : [];
-}
-
-function shipmentTombstoned(
-  hashes: ReadonlySet<string>,
-  shipment: Shipment,
-): boolean {
-  const waybill = tombstoneWaybill(shipment);
-  return Boolean(waybill && hashes.has(privateHash(waybill)));
-}
-
-export function isWaybillTombstoned(
-  state: AppState,
-  waybill: string,
-): boolean {
-  const normalized = normalizeWaybill(waybill);
-  if (!normalized) return false;
-  const hash = privateHash(normalized);
-  return state.tombstones.some(
-    (item) => item.waybillHash === hash,
-  );
-}
-
-function suppressionForShipment(
-  shipment: Shipment,
-  kind: ImportSuppression["kind"],
-  now: number,
-): ImportSuppression | null {
-  const bindingSource = shipment.identity.bindingSource;
-  if (!bindingSource || shipment.identity.manuallyAdded) return null;
-  return {
-    kind,
-    source: bindingSource,
-    sourceIdHash: privateHash(shipment.identity.sourceId),
-    phoneHash: phone(shipment.identity.phone || "")
-      ? privateHash(shipment.identity.phone || "")
-      : "",
-    createdAtMs: now,
-  };
-}
-
-export function isImportSuppressed(
-  state: AppState,
-  bindingSource: BindingSource,
-  sourceId: string,
-  phoneNumber: string,
-): boolean {
-  requireScriptSource(bindingSource);
-  if (isWaybillTombstoned(state, sourceId)) return true;
-  const sourceIdHash = privateHash(sourceId);
-  const phoneHash = privateHash(phoneNumber);
-  return state.suppressions.some(
-    (item) =>
-      item.source === bindingSource &&
-      item.sourceIdHash === sourceIdHash &&
-      (!item.phoneHash || !phoneHash || item.phoneHash === phoneHash),
-  );
-}
-
 export function removeBinding(
   bindingSource: BindingSource,
   phoneNumber: string,
@@ -1582,11 +1699,9 @@ export function removeBinding(
     if (uniquelyMatchesTail(tail)) return true;
     return !shipment.identity.manuallyAdded && sourceBindings.length === 1;
   });
-  const suppressions = matching
-    .filter((shipment) => !shipment.identity.manuallyAdded)
-    .map((shipment) => suppressionForShipment(shipment, "unbound", now))
-    .filter((value): value is ImportSuppression => value != null);
-  const removed = new Set(matching.map((shipment) => shipment.identity.id));
+  const matchingIds = new Set(matching.map((shipment) => shipment.identity.id));
+  const bindingIdentity = `phone:${normalizedPhone}`;
+  const tailBindingIdentity = `tail:${suffix}`;
   return saveBindingTransition(
     state,
     {
@@ -1595,13 +1710,40 @@ export function removeBinding(
         (binding) =>
           binding.source !== bindingSource || binding.phone !== normalizedPhone,
       ),
-      suppressions: [...state.suppressions, ...suppressions],
       pendingQueries: state.pendingQueries.filter(
         (pending) =>
           pending.source !== bindingSource ||
           !uniquelyMatchesTail(pending.phoneTail),
       ),
-      shipments: state.shipments.filter((shipment) => !removed.has(shipment.identity.id)),
+      shipments: state.shipments.map((shipment) => {
+        if (shipment.identity.manuallyAdded) return shipment;
+        const matchingObservation = shipment.automaticOwnership?.observations
+          .find((observation) =>
+            observation.source === bindingSource &&
+            (
+              observation.bindingIdentity === bindingIdentity ||
+              (
+                uniquelyMatchesTail(suffix) &&
+                observation.bindingIdentity === tailBindingIdentity
+              )
+            ) &&
+            observation.bindingValid !== false
+          );
+        if (!matchingIds.has(shipment.identity.id) && !matchingObservation) {
+          return shipment;
+        }
+        const hasBindingEvidence = Boolean(
+          phone(shipment.identity.phone || "") ||
+          uniquelyMatchesTail(shipment.identity.phoneTail || ""),
+        );
+        return invalidateAutomaticOwner(
+          shipment,
+          bindingSource,
+          now,
+          matchingObservation?.bindingIdentity ||
+            (hasBindingEvidence ? normalizedPhone : ""),
+        );
+      }),
     },
     now,
   );
@@ -1612,12 +1754,6 @@ export function upsertShipment(incoming: Shipment, now = Date.now()): AppState {
     requireScriptSource(incoming.identity.bindingSource);
   }
   const state = loadState(now);
-  if (
-    isWaybillTombstoned(
-      state,
-      tombstoneWaybill(incoming),
-    )
-  ) return state;
   const current = state.shipments.find(
     (item) => item.identity.id === incoming.identity.id,
   );
@@ -1645,32 +1781,18 @@ export function upsertShipment(incoming: Shipment, now = Date.now()): AppState {
 export function removeShipment(id: string, now = Date.now()): AppState {
   const state = loadState(now);
   const shipment = state.shipments.find((item) => item.identity.id === id);
-  const suppression = shipment
-    ? suppressionForShipment(shipment, "deleted", now)
-    : null;
-  const deletionTombstones = shipment
-    ? tombstonesForShipment(shipment, "manual_delete", now)
-    : [];
-  const deletionHashes = new Set(
-    deletionTombstones.map((item) => item.waybillHash),
-  );
+  const canonical = shipment ? displayWaybill(shipment) : "";
   return saveState(
     {
       ...state,
       pendingQueries: shipment
         ? state.pendingQueries.filter(
             (pending) =>
-              !deletionHashes.has(
-                privateHash(normalizeWaybill(pending.waybill)),
-              ),
+              normalizeWaybill(pending.waybill) !== canonical,
           )
         : state.pendingQueries,
-      suppressions: suppression
-        ? [...state.suppressions, suppression]
-        : state.suppressions,
-      tombstones: [...state.tombstones, ...deletionTombstones],
       shipments: state.shipments.filter(
-        (item) => !shipmentTombstoned(deletionHashes, item),
+        (item) => item.identity.id !== id,
       ),
     },
     now,
@@ -1707,7 +1829,6 @@ export function upsertPendingQuery(
 ): AppState {
   requireScriptSource(pending.source);
   const state = loadState(now);
-  if (isWaybillTombstoned(state, pending.waybill)) return state;
   return saveState(
     {
       ...state,

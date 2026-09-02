@@ -1,9 +1,14 @@
 import type { AccountSource } from "./account-identity";
+import type { TimelinePackage } from "../models";
 import {
   isProviderErrorDetail,
   normalizeWaybill,
   parseProviderTime,
 } from "./status";
+import {
+  parseCarrierNormalization,
+  type CarrierNormalization,
+} from "./carrier-normalization";
 
 export type AccountStatusSemantic =
   | "CANCELLED"
@@ -30,11 +35,17 @@ export type AccountParcelDto = Readonly<{
   orderId: string;
   accountOrder: boolean;
   courierCode: string;
+  rawCourierCode?: string;
+  rawCompanyName?: string;
   companyName: string;
+  carrierNormalization: CarrierNormalization | null;
   sourceProvider: string;
   sourceStateCode: string;
   sourceStateText: string;
   semantic: AccountStatusSemantic;
+  normalizedStatusScope?: "ORDER" | "SHIPMENT";
+  normalizedStatusSemantic?: AccountStatusSemantic;
+  normalizedStatusText?: string;
   receiverPhone: string;
   senderPhone: string;
   latestTimeText: string;
@@ -42,13 +53,18 @@ export type AccountParcelDto = Readonly<{
   tracks: readonly AccountTrackDto[];
   routeUrl: string;
   projectionUrl: string;
+  /** Same-source timeline extracted from this order's JD H5 page. */
+  projectionTimeline?: TimelinePackage | null;
 }>;
 
 export type AccountParcelDefaults = Readonly<{
   waybill?: string;
   waybillAliases?: readonly string[];
   courierCode?: string;
+  rawCourierCode?: string;
+  rawCompanyName?: string;
   companyName?: string;
+  carrierNormalization?: CarrierNormalization | null;
   provider?: string;
   phone?: string;
 }>;
@@ -227,6 +243,33 @@ function semanticFromAccountState(code: string, description: string): AccountSta
   }
 }
 
+function normalizedStatusScope(value: unknown): "ORDER" | "SHIPMENT" | undefined {
+  const normalized = text(value).toUpperCase();
+  return normalized === "ORDER" || normalized === "SHIPMENT"
+    ? normalized
+    : undefined;
+}
+
+function normalizedStatusSemantic(
+  value: unknown,
+): AccountStatusSemantic | undefined {
+  const normalized = text(value).toUpperCase() as AccountStatusSemantic;
+  return [
+    "CANCELLED",
+    "DANGER",
+    "ORDERED",
+    "SHIPPED",
+    "PICKED",
+    "TRANSIT",
+    "DELIVERY",
+    "WAITING_PICKUP",
+    "COMPLETED",
+    "UNKNOWN",
+  ].includes(normalized)
+    ? normalized
+    : undefined;
+}
+
 function confirmedPickupEvent(value: string): boolean {
   const clean = value.replace(/\s+/g, "");
   if (!clean || clean.includes("已签收")) return false;
@@ -291,16 +334,47 @@ function orderProjectionUrl(value: JsonObject): string {
   return "";
 }
 
+export function isJingDongAccountOrder(
+  identifier: string,
+  provider: string,
+  statusScope = "",
+  evidence: readonly string[] = [],
+): boolean {
+  if (provider !== "JingDong") return false;
+  if (/^[0-9]{16}$/.test(identifier)) return true;
+  if (!/^[0-9]{12}$/.test(identifier)) return false;
+  return statusScope.trim().toUpperCase() === "ORDER" ||
+    evidence.some((value) => /订单/.test(String(value || "")));
+}
+
 function accountOrder(value: JsonObject): boolean {
-  const mailNo = first(value, "mailNo");
-  const provider = first(value, "provider", "providerName");
-  return /^[0-9]{16}$/.test(mailNo) && provider === "JingDong";
+  const parsedTracks = tracks(value);
+  return isJingDongAccountOrder(
+    first(value, "mailNo"),
+    first(value, "provider", "providerName"),
+    first(value, "normalizedStatusScope"),
+    [
+      first(
+        value,
+        "state",
+        "logisticsStatusDesc",
+        "stateName",
+        "statusText",
+        "normalizedStatusText",
+        "lastLogisticDetail",
+        "context",
+        "message",
+      ),
+      ...parsedTracks.map((item) => item.detail),
+    ],
+  );
 }
 
 function parseParcel(
   source: AccountSource,
   raw: unknown,
   defaults: AccountParcelDefaults = {},
+  normalizationResponse?: unknown,
 ): AccountParcelDto | null {
   const value = object(decode(raw));
   if (!Object.keys(value).length) return null;
@@ -339,10 +413,22 @@ function parseParcel(
     "logisticsUpdateTime",
     "time",
   );
-  const courierCode = first(value, "cpCode", "com") || text(defaults.courierCode);
+  const rawCourierCode = first(value, "cpCode", "com") ||
+    text(defaults.rawCourierCode);
+  const rawCompanyName = first(value, "name", "cpName", "companyName") ||
+    text(defaults.rawCompanyName);
+  const carrierNormalization = isOrder
+    ? null
+    : parseCarrierNormalization(value, normalizationResponse) ||
+      defaults.carrierNormalization || null;
+  const courierCode = carrierNormalization?.isBuiltIn
+    ? carrierNormalization.standardCode
+    : rawCourierCode || text(defaults.courierCode);
   const companyName = isOrder
     ? "京东购物"
-    : first(value, "name", "cpName", "companyName") || text(defaults.companyName);
+    : carrierNormalization?.isBuiltIn
+    ? carrierNormalization.displayName
+    : rawCompanyName || text(defaults.companyName);
   return {
     source,
     ownerId: identity,
@@ -350,11 +436,23 @@ function parseParcel(
     orderId: isOrder ? identity : "",
     accountOrder: isOrder,
     courierCode,
+    rawCourierCode,
+    rawCompanyName,
     companyName,
-    sourceProvider: first(value, "provider", "fromCp") || text(defaults.provider),
+    carrierNormalization,
+    sourceProvider: first(value, "provider", "providerName") || text(defaults.provider),
     sourceStateCode: stateCode,
     sourceStateText: stateText,
     semantic,
+    normalizedStatusScope: source === "interface5"
+      ? normalizedStatusScope(value.normalizedStatusScope)
+      : undefined,
+    normalizedStatusSemantic: source === "interface5"
+      ? normalizedStatusSemantic(value.normalizedStatusSemantic)
+      : undefined,
+    normalizedStatusText: source === "interface5"
+      ? first(value, "normalizedStatusText") || undefined
+      : undefined,
     receiverPhone: first(value, "phone", "subPhone", "receiverPhone") || text(defaults.phone),
     senderPhone: first(value, "sendPhone", "senderPhone"),
     latestTimeText,
@@ -381,9 +479,17 @@ export function mergeAccountParcel(
     waybill: projected ? detail.waybill : summary.waybill,
     accountOrder: summary.accountOrder || detail.accountOrder,
     sourceProvider: summary.sourceProvider || detail.sourceProvider,
+    carrierNormalization:
+      detail.carrierNormalization || summary.carrierNormalization,
     receiverPhone: summary.receiverPhone || detail.receiverPhone,
     senderPhone: summary.senderPhone || detail.senderPhone,
     semantic: detail.semantic === "UNKNOWN" ? summary.semantic : detail.semantic,
+    normalizedStatusScope:
+      detail.normalizedStatusScope || summary.normalizedStatusScope,
+    normalizedStatusSemantic:
+      detail.normalizedStatusSemantic || summary.normalizedStatusSemantic,
+    normalizedStatusText:
+      detail.normalizedStatusText || summary.normalizedStatusText,
     latestTimeText: detail.latestTimeText || summary.latestTimeText,
     latestDetail: detail.latestDetail || summary.latestDetail,
     tracks: detail.tracks.length ? detail.tracks : summary.tracks,
@@ -483,7 +589,7 @@ export function parseAccountSyncResult(
   const identities = new Set<string>();
   let rejectedRecords = 0;
   for (const row of rows) {
-    const parcel = parseParcel(source, row);
+    const parcel = parseParcel(source, row, {}, input);
     if (!parcel) {
       rejectedRecords++;
       continue;

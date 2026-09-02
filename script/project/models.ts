@@ -10,26 +10,18 @@ export type StatusSemantic =
   | "COMPLETED"
   | "UNKNOWN";
 
+export type StatusPresentation = {
+  scope: "ORDER" | "SHIPMENT";
+  semantic: StatusSemantic;
+  text: string;
+};
+
 export type BindingSource = "interface5" | "interface6";
 
 export type AccountBinding = {
   source: BindingSource;
   phone: string;
   boundAtMs: number;
-};
-
-export type ImportSuppression = {
-  kind: "unbound" | "deleted";
-  source: BindingSource;
-  sourceIdHash: string;
-  phoneHash: string;
-  createdAtMs: number;
-};
-
-export type WaybillTombstone = {
-  waybillHash: string;
-  reason: "manual_delete" | "retention_expired";
-  createdAtMs: number;
 };
 
 export type AccountDetailRecord = {
@@ -44,7 +36,7 @@ export type AccountDetailRecord = {
 };
 
 export type ShipmentRoute = {
-  kind: "cainiao";
+  kind: "cainiao" | "web";
   source: BindingSource;
 };
 
@@ -58,7 +50,14 @@ export type TrackNode = {
 
 export type TimelinePackage = {
   provider: string;
+  // Whether the provider returned a self-contained history; unrelated to delivery status.
+  complete?: boolean;
+  // Whether semantic/statusEventAtMs came from a provider enum rather than prose.
+  structuredStatus?: boolean;
   waybill: string;
+  // Exact carrier/protocol code returned by this provider. Missing on legacy data
+  // and on sources that did not return a carrier field.
+  rawCourierCode?: string;
   courierCode: string;
   companyName: string;
   semantic: StatusSemantic;
@@ -77,7 +76,12 @@ export type ShipmentIdentity = {
   phoneTail: string;
   phone?: string;
   courierCode: string;
+  rawCourierCode?: string;
+  rawCompanyName?: string;
   companyName: string;
+  carrierIsBuiltIn?: boolean;
+  carrierKuaidi100Code?: string;
+  carrierTableVersion?: string;
   sourceProvider?: string;
   orderId?: string;
   projectedWaybill?: string;
@@ -92,11 +96,37 @@ export type ShipmentIdentity = {
   createdAtMs: number;
 };
 
+export type AutomaticSourceObservation = {
+  source: string;
+  bindingIdentity: string;
+  bindingValid?: boolean;
+  observedAtMs: number;
+  identity: ShipmentIdentity;
+  sourceTimeline: TimelinePackage;
+  statusPresentation?: StatusPresentation;
+  routeCapability?: ShipmentRoute | null;
+  accountRecord?: AccountDetailRecord | null;
+};
+
+export type AutomaticOwnership = {
+  ownerSource: string | null;
+  ownerBindingIdentity: string | null;
+  claimedAtMs: number;
+  lastTakeoverAtMs: number;
+  ownerMisses: number;
+  takeoverPending: boolean;
+  observations: readonly AutomaticSourceObservation[];
+};
+
 export type Shipment = {
   identity: ShipmentIdentity;
   timeline: TimelinePackage;
   sourceTimeline?: TimelinePackage | null;
   manualTimelines?: readonly TimelinePackage[];
+  automaticOwnership?: AutomaticOwnership;
+  statusPresentation?: StatusPresentation;
+  /** Set only after this shipment's trusted Cainiao H5 returned no usable timeline. */
+  cainiaoH5FallbackActivatedAtMs?: number;
   manualRefreshAttemptAtMs?: number;
   manualRefreshLease?: {
     attemptId: string;
@@ -115,10 +145,13 @@ export type PendingManualQuery = {
   waybill: string;
   phoneTail: string;
   courierCode: string;
+  rawCourierCode?: string;
   companyName: string;
   createdAtMs: number;
   lastAttemptAtMs: number;
   attempts: number;
+  /** A foreground-only first-round continuation still has providers to run. */
+  awaitingRoundCompletion?: boolean;
   route?: ShipmentRoute | null;
 };
 
@@ -128,8 +161,6 @@ export type AppState = {
   updatedAtMs: number;
   activeSource: BindingSource;
   bindings: readonly AccountBinding[];
-  suppressions: readonly ImportSuppression[];
-  tombstones: readonly WaybillTombstone[];
   pendingQueries: readonly PendingManualQuery[];
   shipments: readonly Shipment[];
 };
@@ -178,4 +209,5 @@ export type RefreshSummary = {
   succeeded: number;
   failed: number;
   state: AppState;
+  promotedPendingShipmentIds: readonly string[];
 };

@@ -23,6 +23,19 @@ export type DiagnosticDetails = {
   orders?: number;
   routableOrders?: number;
   ownerFingerprint?: string;
+  waybillTail?: string;
+  sourceProvider?: string;
+  carrierCode?: string;
+  routeKind?: string;
+  skipReason?: string;
+  extractionSource?: string;
+  exitReason?: string;
+  timelineProvider?: string;
+  finalTimelineProvider?: string;
+  detailTimelineProvider?: string;
+  executionBoundary?: "per_stage" | "host_budget";
+  scriptVersion?: string;
+  clientBuild?: number;
   httpStatus?: number;
   failureCode?: string;
   authRuntime?: string;
@@ -41,16 +54,37 @@ export type DiagnosticDetails = {
   probeRequestCount?: number;
   unionSignalSeen?: boolean;
   unionResourceSeen?: boolean;
+  resourceReplayBlockReason?: string;
   domMatched?: boolean;
   requestCallbackCount?: number;
   evaluationAttempts?: number;
   evaluationFailures?: number;
   loadDurationMs?: number;
   resourceCount?: number;
+  rawTrackCount?: number;
+  validTrackCount?: number;
+  effectiveTrackCount?: number;
+  detailEffectiveTrackCount?: number;
+  primarySuccessCount?: number;
+  primaryReachedTimelineStart?: boolean;
   pageClass?: string;
   readyState?: string;
   visibilityState?: string;
   viewportAvailable?: boolean;
+  automatic?: boolean;
+  selected?: boolean;
+  webViewAllowed?: boolean;
+  routePointerPresent?: boolean;
+  routePresent?: boolean;
+  routeTrusted?: boolean;
+  routeCaptured?: boolean;
+  waybillPresent?: boolean;
+  persisted?: boolean;
+  motoSupported?: boolean;
+  motoSucceeded?: boolean;
+  kuaidi100Succeeded?: boolean;
+  kdniaoAttempted?: boolean;
+  kdniaoSucceeded?: boolean;
   result?: string;
   stage?: string;
   errorCategory?: string;
@@ -65,10 +99,14 @@ export type DiagnosticEntry = {
 };
 
 const DIAGNOSTIC_KEY = "pipi_deliveries_diagnostic_log_v1";
-const MAX_RECORDS = 100;
+// A single foreground refresh can emit dozens of causally related stage records.
+// Keep enough history to preserve several complete refresh flows for diagnosis.
+const MAX_RECORDS = 200;
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_CLOSED_FLOWS = 256;
 const SAFE_TEXT = /^[A-Za-z0-9._:-]{1,64}$/;
 const SOURCES = new Set<BindingSource>([SCRIPT_BINDING_SOURCE]);
+const closedFlowIds = new Set<string>();
 
 const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "flowId",
@@ -90,6 +128,19 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "orders",
   "routableOrders",
   "ownerFingerprint",
+  "waybillTail",
+  "sourceProvider",
+  "carrierCode",
+  "routeKind",
+  "skipReason",
+  "extractionSource",
+  "exitReason",
+  "timelineProvider",
+  "finalTimelineProvider",
+  "detailTimelineProvider",
+  "executionBoundary",
+  "scriptVersion",
+  "clientBuild",
   "httpStatus",
   "failureCode",
   "authRuntime",
@@ -108,16 +159,37 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "probeRequestCount",
   "unionSignalSeen",
   "unionResourceSeen",
+  "resourceReplayBlockReason",
   "domMatched",
   "requestCallbackCount",
   "evaluationAttempts",
   "evaluationFailures",
   "loadDurationMs",
   "resourceCount",
+  "rawTrackCount",
+  "validTrackCount",
+  "effectiveTrackCount",
+  "detailEffectiveTrackCount",
+  "primarySuccessCount",
+  "primaryReachedTimelineStart",
   "pageClass",
   "readyState",
   "visibilityState",
   "viewportAvailable",
+  "automatic",
+  "selected",
+  "webViewAllowed",
+  "routePointerPresent",
+  "routePresent",
+  "routeTrusted",
+  "routeCaptured",
+  "waybillPresent",
+  "persisted",
+  "motoSupported",
+  "motoSucceeded",
+  "kuaidi100Succeeded",
+  "kdniaoAttempted",
+  "kdniaoSucceeded",
   "result",
   "stage",
   "errorCategory",
@@ -155,6 +227,12 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
   "evaluationFailures",
   "loadDurationMs",
   "resourceCount",
+  "rawTrackCount",
+  "validTrackCount",
+  "effectiveTrackCount",
+  "detailEffectiveTrackCount",
+  "primarySuccessCount",
+  "clientBuild",
 ]);
 
 const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
@@ -170,11 +248,28 @@ const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
   "unionResourceSeen",
   "domMatched",
   "viewportAvailable",
+  "automatic",
+  "selected",
+  "webViewAllowed",
+  "routePointerPresent",
+  "routePresent",
+  "routeTrusted",
+  "routeCaptured",
+  "waybillPresent",
+  "persisted",
+  "motoSupported",
+  "motoSucceeded",
+  "kuaidi100Succeeded",
+  "primaryReachedTimelineStart",
+  "kdniaoAttempted",
+  "kdniaoSucceeded",
 ]);
 
 const SAFE_FAILURE_CODES = new Set([
   "attestation_rejected",
   "body_too_large",
+  "carrier_mismatch",
+  "carrier_unknown",
   "delegation_unavailable",
   "detail_route_not_reconstructable",
   "expired_request",
@@ -195,14 +290,18 @@ const SAFE_FAILURE_CODES = new Set([
   "invalid_push_receipt",
   "invalid_query",
   "invalid_railway_operation",
+  "invalid_response",
   "invalid_route_credential",
   "invalid_timeline_query",
   "invalid_upstream_response",
   "invalid_waybill",
   "invalid_weather_operation",
   "method_not_allowed",
+  "network",
   "not_found",
+  "phone_tail",
   "rate_limited",
+  "rejected",
   "replay_store_unavailable",
   "replayed_request",
   "unauthorized",
@@ -234,6 +333,11 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
   for (const [rawKey, rawValue] of Object.entries(value)) {
     const key = rawKey as keyof DiagnosticDetails;
     if (!DETAIL_KEYS.has(key) || rawValue == null) continue;
+    if (key === "waybillTail") {
+      const tail = String(rawValue).trim().toUpperCase();
+      if (/^[A-Z0-9]{4}$/.test(tail)) result.waybillTail = tail;
+      continue;
+    }
     if (key === "failureCode") {
       const code = String(rawValue).trim().toLowerCase();
       if (SAFE_FAILURE_CODES.has(code)) {
@@ -316,6 +420,10 @@ export function diagnosticState(state: AppState): DiagnosticDetails {
 export function classifyDiagnosticError(error: unknown): string {
   const name = error instanceof Error ? error.name.toLowerCase() : "";
   const message = error instanceof Error ? error.message.toLowerCase() : "";
+  const rawCode = error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : "";
+  const code = typeof rawCode === "string" ? rawCode.trim().toLowerCase() : "";
   const status = Number(
     error && typeof error === "object" && "status" in error
       ? (error as { status?: unknown }).status
@@ -327,6 +435,15 @@ export function classifyDiagnosticError(error: unknown): string {
   if (status === 408) return "timeout";
   if (status === 429) return "rate_limited";
   if (status >= 500) return "service";
+  if (code === "invalid_upstream_response") return "protocol";
+  if (code === "invalid_company_code" || code === "invalid_input") {
+    return "validation";
+  }
+  if (code === "rate_limited") return "rate_limited";
+  if (
+    code === "upstream_rejected" ||
+    code === "upstream_unavailable"
+  ) return "upstream";
   if (
     name.includes("accountparse") ||
     message.includes("响应与当前运单不匹配") ||
@@ -416,12 +533,15 @@ export function writeDiagnostic(
   const cleanEvent = String(event || "").trim();
   if (!SAFE_TEXT.test(cleanEvent)) return;
   const now = Date.now();
+  const cleanDetails = sanitizeDetails(details);
+  const flowId = cleanDetails.flowId || "";
+  if (flowId && closedFlowIds.has(flowId)) return;
   const item: DiagnosticEntry = {
     id: `${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     at: new Date(now).toISOString(),
     level,
     event: cleanEvent,
-    details: sanitizeDetails(details),
+    details: cleanDetails,
   };
   try {
     Storage.set(
@@ -429,6 +549,17 @@ export function writeDiagnostic(
       [...storedEntries(now), item].slice(-MAX_RECORDS),
       { shared: true },
     );
+    if (
+      flowId &&
+      (cleanEvent === "refresh.succeeded" || cleanEvent === "refresh.failed")
+    ) {
+      closedFlowIds.add(flowId);
+      while (closedFlowIds.size > MAX_CLOSED_FLOWS) {
+        const oldest = closedFlowIds.values().next().value;
+        if (typeof oldest !== "string") break;
+        closedFlowIds.delete(oldest);
+      }
+    }
   } catch {
     /* diagnostics must never change app behavior */
   }
@@ -441,6 +572,7 @@ export function readDiagnostics(): DiagnosticEntry[] {
 export function clearDiagnostics(): void {
   try {
     Storage.remove(DIAGNOSTIC_KEY, { shared: true });
+    closedFlowIds.clear();
   } catch {
     throw new Error("诊断日志清空失败");
   }

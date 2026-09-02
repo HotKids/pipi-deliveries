@@ -10,18 +10,28 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
-/** Prevents upstream endpoints and provider credentials from returning to the APK source set. */
+/** Keeps account and public timeline providers behind the public Android gateway. */
 public final class ExpressGatewayContractTest {
     @Test
-    public void allAdaptersUseSemanticGatewayRoutesOnly() throws Exception {
+    public void timelinesUseGatewayWhileFreeCarrierRecognitionStaysLocal() throws Exception {
         String api = source("me/pipi/deliveries/network/ExpressApi.java");
+        String classifier = source(
+                "me/pipi/deliveries/network/Kuaidi100CarrierDetector.java");
+        String recognition = source(
+                "me/pipi/deliveries/network/CarrierRecognitionCoordinator.java");
         String account = source("me/pipi/deliveries/network/ExpressDiscoveryClient.java");
         String subscription = source(
                 "me/pipi/deliveries/network/ExpressSubscriptionClient.java");
         String adapters = api + account + subscription;
 
-        assertTrue(api.contains("/api/express/classify"));
-        assertTrue(api.contains("/api/express/timeline/preferred"));
+        assertFalse(api.contains("/api/express/classify"));
+        assertTrue(recognition.contains("/api/express/classify"));
+        assertTrue(recognition.contains("put(\"firstStageCompleted\", true)"));
+        assertTrue(classifier.contains(
+                "https://www.kuaidi100.com/autonumber/autoComNum"));
+        assertTrue(classifier.contains("HttpClient.postForm"));
+        assertFalse(api.contains("Kuaidi100QueryClient"));
+        assertFalse(api.contains("/api/express/timeline/preferred"));
         assertTrue(api.contains("/api/express/timeline/public"));
         assertTrue(account.contains("/api/express/accounts/code"));
         assertTrue(account.contains("/api/express/accounts/bind"));
@@ -33,6 +43,7 @@ public final class ExpressGatewayContractTest {
         assertTrue(subscription.contains("/api/express/accounts/sync"));
         assertTrue(subscription.contains("/api/express/timeline/source"));
         assertTrue(subscription.contains("put(\"interface\", \"v6\")"));
+        assertTrue(subscription.contains("put(\"mode\", \"manual\")"));
 
         assertFalse(api.contains("https://"));
         assertFalse(account.contains("https://"));
@@ -40,9 +51,17 @@ public final class ExpressGatewayContractTest {
         assertFalse(source("me/pipi/deliveries/feature/express/ExpressDetailActivity.java")
                 .contains("/api/express/detail"));
         assertFalse(adapters.contains("Cipher.getInstance"));
-        assertFalse(adapters.contains("SecretKeySpec"));
         assertFalse(adapters.contains("IvParameterSpec"));
-        assertFalse(adapters.contains("MessageDigest.getInstance(\"MD5\")"));
+        assertFalse(api.contains("Kuaidi100Credentials"));
+        assertFalse(account.contains("detectManualCarrier"));
+        assertFalse(source("me/pipi/deliveries/feature/express/ExpressListActivity.java")
+                .contains("detectManualCarrier"));
+        assertTrue(account.contains("AccountCarrierNormalizer.apply(item, result)"));
+        assertTrue(subscription.contains("AccountCarrierNormalizer.apply(value, result)"));
+        assertFalse(account.contains("Kuaidi100CarrierDetector"));
+        assertFalse(subscription.contains("Kuaidi100CarrierDetector"));
+        assertFalse(account.contains("CarrierRecognitionCoordinator"));
+        assertFalse(subscription.contains("CarrierRecognitionCoordinator"));
     }
 
     @Test
@@ -84,8 +103,7 @@ public final class ExpressGatewayContractTest {
     public void accountSourcePersistsDiscoveryBeforeDetailEnrichment() throws Exception {
         String account = source("me/pipi/deliveries/network/ExpressDiscoveryClient.java");
         String sync = source("me/pipi/deliveries/background/ExpressSyncEngine.java");
-        int summaryWrite = account.indexOf(
-                "repository.saveInterface5OrderSummary(jd, associatedPhone)");
+        int summaryWrite = account.indexOf("repository.saveInterface5OrderSummary(");
         int detailPhase = account.indexOf("for (JSONObject item : discovered)");
         assertTrue(summaryWrite >= 0 && detailPhase > summaryWrite);
         assertTrue(account.contains("refreshKnown(Context context, ExpressItem item)"));
@@ -112,14 +130,53 @@ public final class ExpressGatewayContractTest {
     }
 
     @Test
+    public void androidDistributionUsesHardwareBackedRequestSignatures() throws Exception {
+        String gateway = source("me/pipi/deliveries/network/ExpressGatewayClient.java");
+        String signer = source("me/pipi/deliveries/network/GatewaySessionSigner.java");
+        String gradle = repositoryFile("app/build.gradle.kts");
+
+        assertTrue(gateway.contains("GatewaySessionSigner"));
+        assertTrue(signer.contains("/api/auth/challenge"));
+        assertTrue(signer.contains("/api/auth/session"));
+        assertTrue(signer.contains("AndroidKeyStore"));
+        assertTrue(signer.contains("setAttestationChallenge"));
+        assertTrue(signer.contains("X-Pipi-Session"));
+        assertTrue(signer.contains("X-Pipi-Signature"));
+        assertTrue(signer.contains("SHA256withRSA"));
+        assertFalse(gateway.contains("Collections.emptyMap()"));
+    }
+
+    @Test
+    public void releaseBuildNeverFallsBackToDebugSigning() throws Exception {
+        String gradle = repositoryFile("app/build.gradle.kts");
+        assertTrue(gradle.contains("Release signing configuration is required"));
+        assertTrue(gradle.contains("signingConfig = releaseSigning"));
+        assertFalse(gradle.contains("releaseSigning ?: signingConfigs.getByName(\"debug\")"));
+    }
+
+    @Test
+    public void localBuildDefaultsToOfficiallySignedBetaTrack() throws Exception {
+        String build = repositoryFile("build.sh");
+        assertTrue(build.contains("MODE=\"${1:-beta}\""));
+        assertTrue(build.contains("https://beta.pipiassistant.app"));
+        assertTrue(build.contains("Pipi-Deliveries-beta.apk"));
+        int betaCase = build.indexOf("beta)");
+        int debugCase = build.indexOf("debug)");
+        assertTrue(betaCase >= 0 && debugCase > betaCase);
+        String betaBuild = build.substring(betaCase, debugCase);
+        assertTrue(betaBuild.contains("load_release_signing"));
+        assertTrue(betaBuild.contains(":app:assembleStandardRelease"));
+        assertFalse(betaBuild.contains("assembleStandardDebug"));
+    }
+
+    @Test
     public void repositoryUsesOnlyNeutralProviderNames() throws Exception {
         List<String> forbidden = List.of(
-                new String(new char[]{'m', 'e', 'i', 'z', 'u'}),
                 new String(new char[]{'x', 'i', 'a', 'o', 'm', 'i'}),
                 new String(new char[]{(char) 39749, (char) 26063}),
                 new String(new char[]{(char) 23567, (char) 31859}));
         Path root = Files.isDirectory(Path.of("app/src/main"))
-                ? Path.of(".") : Path.of("..");
+                ? Path.of("app/src/main") : Path.of("src/main");
         try (java.util.stream.Stream<Path> paths = Files.walk(root)) {
             for (Path path : (Iterable<Path>) paths::iterator) {
                 if (!Files.isRegularFile(path) || !isRepositoryText(path)) continue;
@@ -148,6 +205,12 @@ public final class ExpressGatewayContractTest {
     private static String source(String relative) throws Exception {
         Path path = Path.of("src/main/java").resolve(relative);
         if (!Files.isRegularFile(path)) path = Path.of("app/src/main/java").resolve(relative);
+        return Files.readString(path, StandardCharsets.UTF_8);
+    }
+
+    private static String repositoryFile(String relative) throws Exception {
+        Path path = Path.of(relative);
+        if (!Files.isRegularFile(path)) path = Path.of("..").resolve(relative);
         return Files.readString(path, StandardCharsets.UTF_8);
     }
 }

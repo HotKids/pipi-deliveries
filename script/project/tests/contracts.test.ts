@@ -11,6 +11,7 @@ const policy = JSON.parse(
 );
 assert.deepEqual(EXPRESS_POLICY, policy);
 assert.equal(EXPRESS_POLICY.status.labels.DANGER, "异常件");
+assert.equal(EXPRESS_POLICY.pendingQueries.ttlMs, 24 * 60 * 60 * 1000);
 
 const fixtures = JSON.parse(
   await readFile(

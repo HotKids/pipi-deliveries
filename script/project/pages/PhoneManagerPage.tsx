@@ -65,13 +65,18 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     if (props.notice) setNotice(props.notice);
   }, [props.notice]);
 
-  async function runAction(action: () => MaybeAsync, fallback: string) {
+  async function runAction(
+    action: () => MaybeAsync,
+    fallback: string,
+    success = "",
+  ) {
     if (props.busy || actionInFlightRef.current) return;
     actionInFlightRef.current = true;
     setLocalBusy(true);
     setNotice("");
     try {
       await action();
+      if (mountedRef.current && success) setNotice(success);
     } catch (error) {
       if (mountedRef.current) setNotice(errorMessage(error, fallback));
     } finally {
@@ -81,7 +86,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   }
 
   async function refresh() {
-    await runAction(props.onRefresh, "刷新失败，请稍后重试");
+    await runAction(props.onRefresh, "刷新失败，请稍后重试", "刷新完成");
   }
 
   function add() {
@@ -99,7 +104,8 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
       });
       if (!confirmed) return;
       await props.onRemove(binding);
-    }, "解绑失败，请稍后重试");
+      if (mountedRef.current) setNotice("手机号已解绑");
+    }, "操作失败，请稍后重试");
   }
 
   return (

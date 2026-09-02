@@ -36,8 +36,12 @@ import android.widget.Toast;
 import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.content.res.AppCompatResources;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.color.MaterialColors;
@@ -58,6 +62,8 @@ import me.pipi.deliveries.background.ExpressScheduler;
 import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
+import me.pipi.deliveries.data.ManualTimelineAuthorityPolicy;
+import me.pipi.deliveries.data.ManualRoutePolicy;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.ExpressTimeline;
@@ -69,13 +75,17 @@ import me.pipi.deliveries.network.ExpressDiscoveryClient;
 import me.pipi.deliveries.network.ExpressQueryCancellation;
 import me.pipi.deliveries.network.ExpressSubscriptionClient;
 import me.pipi.deliveries.network.ManualQueryCoordinator;
+import me.pipi.deliveries.network.ManualQueryRoutingPolicy;
 
-/** Cainiao uses its credentialed H5; every other provider uses Pipi's local timeline. */
+/** Renders cached timeline authorities and performs only user-triggered detail enrichment. */
 public final class ExpressDetailActivity extends AppCompatActivity {
     private static final String ORDER_LOG_TAG = "ExpressOrderProjection";
+    private static final String MANUAL_LOG_TAG = "ExpressManualTimeline";
     public static final String EXTRA_ROW_ID = "express_row_id";
     private static final String EXTRA_PREVIEW = "express_preview";
     private static final String EXTRA_PERSIST_PREVIEW = "persist_express_preview";
+    private static final String EXTRA_TRANSIENT_PICKER_PREVIEW =
+            "transient_picker_preview";
     private static final String EXTRA_WAYBILL = "preview_waybill";
     private static final String EXTRA_COURIER = "preview_courier";
     private static final String EXTRA_COMPANY = "preview_company";
@@ -103,9 +113,15 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private static final long LOCAL_REFRESH_TIMEOUT_MS = 10_000L;
     static final long ORDER_CAPTURE_TIMEOUT_MS = 20_000L;
     static final long ORDER_CAPTURE_WAIT_TIMEOUT_MS = 25_000L;
+    private static final int JINGDONG_FULL_PROGRESS_MAX_ATTEMPTS = 7;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private WebView webView;
+    private boolean webNativeFallbackStarted;
+    private int jingDongFullProgressAttempts;
+    private boolean jingDongFullProgressExpanded;
+    private boolean jingDongFullProgressAttemptInFlight;
+    private String visibleJingDongDetailUrl = "";
     private WebView orderCaptureWebView;
     private ExpressOrderProjectionRetryStore orderProjectionRetries;
     private ExpressItem orderProjectionAttemptOwner;
@@ -117,9 +133,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private final ExpressDelayedCallbackRegistry orderCaptureCallbacks =
             new ExpressDelayedCallbackRegistry();
     private boolean orderProjectionCaptureEnabled;
+    private boolean detailIdentityProjectionAttempted;
     private LinearLayout timeline;
     private boolean timelineLoadingPlaceholder;
     private LinearProgressIndicator nativeProgress;
+    private SwipeRefreshLayout detailSwipe;
     private TextView statusView;
     private TextView waybillView;
     private LinearLayout hotlineRow;
@@ -177,6 +195,21 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                                 ? "interface5" : "interface6");
     }
 
+    static Intent persistedPreviewIntent(
+            Context context, ExpressQueryResult result, String phone, String bindingSource) {
+        return previewIntent(context, result, phone, bindingSource)
+                .putExtra(EXTRA_PERSIST_PREVIEW, false)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+    }
+
+    static Intent transientPickerPreviewIntent(
+            Context context, ExpressQueryResult result, String phone, String bindingSource) {
+        return previewIntent(context, result, phone, bindingSource)
+                .putExtra(EXTRA_PERSIST_PREVIEW, false)
+                .putExtra(EXTRA_TRANSIENT_PICKER_PREVIEW, true)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+    }
+
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         if (getIntent().getBooleanExtra(EXTRA_PREVIEW, false)) {
@@ -197,11 +230,20 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             finish();
             return;
         }
-        String cainiaoUrl = safeCainiaoUrl(item);
-        if (!cainiaoUrl.isEmpty() && !item.isAccountOrder()) {
-            showWebDetail(cainiaoUrl, false);
+        boolean transientPickerPreview = getIntent().getBooleanExtra(
+                EXTRA_TRANSIENT_PICKER_PREVIEW, false);
+        String cainiaoUrl = transientPickerPreview ? "" : safeCainiaoUrl(item);
+        if (!cainiaoUrl.isEmpty()) {
+            showCainiaoWebDetail(cainiaoUrl);
         } else {
-            showNativeDetail();
+            String jingDongUrl = transientPickerPreview ? "" : safeOrderH5Url(item);
+            if (!jingDongUrl.isEmpty()) {
+                showJingDongWebDetail(jingDongUrl);
+            } else {
+                String kuaidi100Url = transientPickerPreview ? "" : kuaidi100FallbackUrl();
+                if (kuaidi100Url.isEmpty()) showNativeDetail();
+                else showKuaidi100WebDetail(kuaidi100Url);
+            }
         }
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() { navigateBack(); }
@@ -219,6 +261,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         if (orderCaptureWebView != null) {
             disposeOrderCapture(orderCaptureWebView);
         }
+        if (detailSwipe != null) detailSwipe.setRefreshing(false);
         super.onStop();
     }
 
@@ -234,6 +277,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     private void showNativeDetail() {
         setContentView(R.layout.activity_express_detail);
+        applySystemBarInsets(findViewById(R.id.express_detail_root));
         MaterialToolbar toolbar = findViewById(R.id.detail_toolbar);
         toolbar.setNavigationOnClickListener(view -> finish());
         ImageView icon = findViewById(R.id.detail_icon);
@@ -242,6 +286,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         waybillView = findViewById(R.id.detail_waybill);
         timeline = findViewById(R.id.timeline);
         nativeProgress = findViewById(R.id.detail_progress);
+        detailSwipe = findViewById(R.id.detail_swipe);
+        detailSwipe.setColorSchemeColors(
+                MaterialColors.getColor(detailSwipe,
+                        androidx.appcompat.R.attr.colorPrimary));
+        detailSwipe.setOnRefreshListener(() -> refreshLocalTimeline(false));
         hotlineRow = findViewById(R.id.detail_hotline);
         hotlineView = findViewById(R.id.detail_hotline_value);
         renderHeader(item.displayCourierCode(), item.displayCompany(), item.displayWaybill(),
@@ -260,8 +309,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             boolean v4Owner = v4TimelineOwnsItem(item);
             ExpressQueryResult accountTimeline = accountSource.isEmpty()
                     ? null : repository.accountTimeline(accountWaybill, accountSource);
-            boolean accountTimelineUsable =
-                    Kuaidi100TimelinePolicy.hasRealTracking(accountTimeline);
+            boolean accountTimelineUsable = accountTimelineUsable(item, accountTimeline);
             ExpressQueryResult publicTimeline = v4Owner
                     ? repository.v4Timeline(timelineWaybill) : null;
             boolean publicTimelineUsable =
@@ -275,7 +323,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             boolean persistAccountInitial = false;
             boolean persistPublicInitial = false;
             boolean persistLocalInitial = false;
-            if (!accountTimelineUsable && !accountSource.isEmpty() && initialUsable) {
+            if (!accountTimelineUsable && !accountSource.isEmpty() && initialUsable
+                    && !item.isInterface5ProjectedOrder()) {
                 accountTimeline = initial;
                 accountTimelineUsable = true;
                 persistAccountInitial = true;
@@ -292,15 +341,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 persistLocalInitial = true;
             }
             ExpressQueryResult cached = preferredDetailTimeline(
-                    accountTimeline, publicTimeline, kuaidi100Timeline);
+                    accountTimelineUsable ? accountTimeline : null,
+                    publicTimeline, kuaidi100Timeline);
             boolean cachedUsable = Kuaidi100TimelinePolicy.hasRealTracking(cached);
-            boolean refreshDue = !accountTimelineUsable && !publicTimelineUsable
-                    && canRefreshLocalTimeline(item)
-                    && (!cachedUsable
-                    || Kuaidi100TimelinePolicy.shouldRefresh(
-                    item, cached, System.currentTimeMillis()));
             InitialTimelinePresentation presentation = initialTimelinePresentation(
-                    cachedUsable, refreshDue);
+                    cachedUsable, false);
             if (presentation == InitialTimelinePresentation.TRACKS) {
                 renderTimeline(ExpressTimeline.parse(
                         cached.tracksJson, cached.latestTime, cached.latestDetail));
@@ -311,9 +356,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             }
             persistInitialTimelineAsync(repository, initial, accountSource,
                     persistAccountInitial, persistPublicInitial, persistLocalInitial);
-            if (refreshDue) {
-                refreshLocalTimeline(!cachedUsable);
-            }
         }
     }
 
@@ -345,19 +387,22 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         String accountSource = accountTimelineSource(item);
         ExpressQueryResult accountTimeline = accountSource.isEmpty()
                 ? null : repository.accountTimeline(accountTimelineWaybill(item), accountSource);
-        boolean accountTimelineUsable =
-                Kuaidi100TimelinePolicy.hasRealTracking(accountTimeline);
+        boolean accountTimelineUsable = accountTimelineUsable(item, accountTimeline);
         boolean v4Owner = v4TimelineOwnsItem(item);
         ExpressQueryResult publicTimeline = v4Owner
                 ? repository.v4Timeline(waybill) : null;
         boolean publicTimelineUsable =
                 Kuaidi100TimelinePolicy.hasRealTracking(publicTimeline);
         ExpressQueryResult cached = preferredDetailTimeline(
-                accountTimeline, publicTimeline, repository.kuaidi100Timeline(waybill));
+                accountTimelineUsable ? accountTimeline : null,
+                publicTimeline, repository.kuaidi100Timeline(waybill));
         boolean cachedUsable = Kuaidi100TimelinePolicy.hasRealTracking(cached);
-        boolean refreshDue = !accountTimelineUsable && !publicTimelineUsable
-                && (!cachedUsable || Kuaidi100TimelinePolicy.shouldRefresh(
-                item, cached, System.currentTimeMillis()));
+        ExpressQueryResult initial = itemResult(
+                item, accountSource.isEmpty() ? waybill : accountTimelineWaybill(item),
+                !accountSource.isEmpty() ? accountSource : v4Owner ? "v4" : "kuaidi100");
+        ExpressQueryResult ownerTimeline = !accountSource.isEmpty()
+                ? accountTimeline : v4Owner ? publicTimeline : initial;
+        boolean refreshDue = needsManualSupplement(item, ownerTimeline, cached);
         if (cachedUsable) {
             renderTimeline(ExpressTimeline.parse(
                     cached.tracksJson, cached.latestTime, cached.latestDetail));
@@ -374,21 +419,16 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     /** Keeps detail rendering on the same selected manual package as every other surface. */
     private boolean renderManualTimelineAuthority(
             ExpressRepository repository, boolean force) {
-        boolean sharedSource = item != null && item.isInterface5ShunFengSource();
+        boolean sharedSource = usesSharedManualTimeline(item);
         if (!sharedSource && !manualTimelineOwnsDetail(item)) return false;
+        ManualTimelineAuthorityPolicy.Candidate detailAuthority =
+                repository.manualDetailTimelineAuthority(item);
+        ExpressQueryResult detailResult = detailAuthority == null
+                ? null : detailAuthority.result;
         renderTimeline(ExpressTimeline.parse(
-                item.tracksJson, item.latestTime, item.latestDetail));
-        ExpressRepository.ManualTimelinePollClaim claim = sharedSource
-                ? repository.claimForegroundManualTimelinePoll(
-                        item, System.currentTimeMillis(), force) : null;
-        boolean shouldRefresh = sharedSource
-                ? claim != null
-                : item.manuallyAdded && Kuaidi100TimelinePolicy.shouldRefresh(
-                item, itemResult(item, item.waybill, item.manualTimelineProvider),
-                System.currentTimeMillis());
-        if (shouldRefresh) {
-            refreshLocalTimeline(!item.hasManualTimelineAuthority(), claim);
-        }
+                detailResult == null ? item.tracksJson : detailResult.tracksJson,
+                detailResult == null ? item.latestTime : detailResult.latestTime,
+                detailResult == null ? item.latestDetail : detailResult.latestDetail));
         return true;
     }
 
@@ -396,8 +436,35 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         return value != null && value.hasManualTimelineAuthority();
     }
 
-    private void showWebDetail(String detailUrl, boolean captureOrderProjection) {
+    static boolean usesSharedManualTimeline(ExpressItem value) {
+        return value != null && value.usesSourceManualTakeover()
+                && (!value.isAccountOrder() || !value.projectedWaybill.isEmpty());
+    }
+
+    private String kuaidi100FallbackUrl() {
+        return kuaidi100FallbackUrl(false);
+    }
+
+    private String kuaidi100FallbackUrl(boolean afterJingDongFailure) {
+        ExpressRepository repository = ExpressRepository.get(this);
+        ExpressItem owner = item;
+        if (previewResult != null) {
+            ExpressItem persisted = repository.findByWaybill(
+                    previewResult.waybill, previewBindingSource);
+            if (persisted != null) owner = persisted;
+        }
+        if (!allowsKuaidi100Route(owner, previewResult, afterJingDongFailure)) return "";
+        String route = repository.meizuManualDetailUrl(owner);
+        if (route.isEmpty() && previewResult != null
+                && "meizu".equalsIgnoreCase(previewResult.timelineProvider)) {
+            route = previewResult.detailUrl;
+        }
+        return safeKuaidi100Url(route);
+    }
+
+    private void showCainiaoWebDetail(String detailUrl) {
         setContentView(R.layout.activity_express_web);
+        applySystemBarInsets(findViewById(R.id.express_web_root));
         MaterialToolbar toolbar = findViewById(R.id.web_toolbar);
         toolbar.setTitle(item.displayCompany());
         toolbar.setNavigationOnClickListener(view -> navigateBack());
@@ -415,45 +482,26 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
         String localLogo = courierLogoDataUri(item);
         webView.setWebViewClient(new WebViewClient() {
-            @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) {
-                super.onPageStarted(view, url, icon);
-                if (captureOrderProjection) injectOrderProjectionProbe(view);
-            }
-
             @Override public boolean shouldOverrideUrlLoading(
                     WebView view, WebResourceRequest request) {
-                return request == null
-                        || !allowedWebUrl(request.getUrl(), captureOrderProjection);
+                boolean blocked = request == null || !allowed(request.getUrl());
+                if (blocked && (request == null || request.isForMainFrame())) {
+                    fallbackWebDetailToNative(view, progress);
+                }
+                return blocked;
             }
 
             @Override public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                if (captureOrderProjection) {
-                    injectOrderProjectionProbe(view);
-                    inspectOrderProjectionDom(view);
-                    revealWebView(view, progress);
-                } else {
-                    decorateCainiaoPage(view, url, localLogo,
-                            pageSurface, () -> revealWebView(view, progress));
-                }
-            }
-
-            @Override public void onPageCommitVisible(WebView view, String url) {
-                super.onPageCommitVisible(view, url);
-                if (captureOrderProjection) {
-                    injectOrderProjectionProbe(view);
-                    revealWebView(view, progress);
-                } else {
-                    decorateCainiaoPage(view, url, localLogo,
-                            pageSurface, () -> revealWebView(view, progress));
-                }
+                revealCainiaoPageOrFallback(
+                        view, url, localLogo, pageSurface, progress);
             }
 
             @Override public void onReceivedError(
                     WebView view, WebResourceRequest request, WebResourceError error) {
                 super.onReceivedError(view, request, error);
                 if (request == null || request.isForMainFrame()) {
-                    revealWebView(view, progress);
+                    fallbackWebDetailToNative(view, progress);
                 }
             }
 
@@ -461,7 +509,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     WebView view, WebResourceRequest request, WebResourceResponse response) {
                 super.onReceivedHttpError(view, request, response);
                 if (request == null || request.isForMainFrame()) {
-                    revealWebView(view, progress);
+                    fallbackWebDetailToNative(view, progress);
                 }
             }
 
@@ -477,13 +525,216 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             }
         });
         webView.loadUrl(detailUrl);
-        if (captureOrderProjection) {
-            webView.postDelayed(() -> injectOrderProjectionProbe(webView), 80L);
-            webView.postDelayed(() -> injectOrderProjectionProbe(webView), 350L);
-        }
         webView.postDelayed(() -> {
-            if (!isFinishing() && !isDestroyed()) revealWebView(webView, progress);
+            if (isCurrentDetailWebView(webView)
+                    && webView.getVisibility() != View.VISIBLE) {
+                fallbackWebDetailToNative(webView, progress);
+            }
         }, 12_000L);
+    }
+
+    /** Opens the shipment's original signed JD page without persisting its page timeline. */
+    private void showJingDongWebDetail(String detailUrl) {
+        visibleJingDongDetailUrl = detailUrl;
+        setContentView(R.layout.activity_express_web);
+        applySystemBarInsets(findViewById(R.id.express_web_root));
+        MaterialToolbar toolbar = findViewById(R.id.web_toolbar);
+        toolbar.setTitle(item.displayCompany());
+        toolbar.setNavigationOnClickListener(view -> navigateBack());
+        ProgressBar progress = findViewById(R.id.web_progress);
+        webView = findViewById(R.id.web_view);
+        jingDongFullProgressAttempts = 0;
+        jingDongFullProgressExpanded = false;
+        jingDongFullProgressAttemptInFlight = false;
+        configureWebView(webView);
+        if (item.isAccountOrder() && item.projectedWaybill.isEmpty()) {
+            installOrderProjectionBridge(webView);
+        }
+        webView.getSettings().setSupportMultipleWindows(false);
+        webView.getSettings().setJavaScriptCanOpenWindowsAutomatically(false);
+        int pageSurface = MaterialColors.getColor(webView,
+                com.google.android.material.R.attr.colorSurface);
+        webView.setBackgroundColor(pageSurface);
+        webView.setVisibility(View.INVISIBLE);
+        CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
+        webView.setWebViewClient(new WebViewClient() {
+            @Override public void onPageStarted(
+                    WebView view, String url, android.graphics.Bitmap icon) {
+                super.onPageStarted(view, url, icon);
+                Uri target = Uri.parse(url == null ? "" : url);
+                if (isBlockedJingDongLogin(target)) {
+                    view.stopLoading();
+                    fallbackJingDongWebDetail(view, progress);
+                    return;
+                }
+                injectOrderProjectionProbe(view);
+            }
+
+            @Override public boolean shouldOverrideUrlLoading(
+                    WebView view, WebResourceRequest request) {
+                if (request == null) return true;
+                Uri target = request.getUrl();
+                boolean blocked = shouldBlockJingDongNavigation(
+                        target, request.isForMainFrame());
+                if (blocked && request.isForMainFrame()) {
+                    view.post(() -> fallbackJingDongWebDetail(view, progress));
+                }
+                return blocked;
+            }
+
+            @Override public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                if (!isJingDongLogisticsPage(Uri.parse(url == null ? "" : url))) return;
+                injectOrderProjectionProbe(view);
+                inspectOrderProjectionDom(view);
+                revealWebView(view, progress);
+                startJingDongFullProgressExpansion(view);
+            }
+
+            @Override public void onPageCommitVisible(WebView view, String url) {
+                super.onPageCommitVisible(view, url);
+                if (!isJingDongLogisticsPage(Uri.parse(url == null ? "" : url))) return;
+                injectOrderProjectionProbe(view);
+                revealWebView(view, progress);
+            }
+
+            @Override public void onReceivedError(
+                    WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (request == null || request.isForMainFrame()) {
+                    fallbackJingDongWebDetail(view, progress);
+                }
+            }
+
+            @Override public void onReceivedHttpError(
+                    WebView view, WebResourceRequest request, WebResourceResponse response) {
+                super.onReceivedHttpError(view, request, response);
+                if (request == null || request.isForMainFrame()) {
+                    fallbackJingDongWebDetail(view, progress);
+                }
+            }
+
+            @Override public boolean onRenderProcessGone(
+                    WebView view, RenderProcessGoneDetail detail) {
+                Log.w(ORDER_LOG_TAG, "JD WebView renderer exited; crashed="
+                        + (detail != null && detail.didCrash()));
+                fallbackJingDongWebDetail(view, progress);
+                return true;
+            }
+        });
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onCreateWindow(
+                    WebView view, boolean isDialog, boolean isUserGesture,
+                    android.os.Message resultMsg) {
+                return false;
+            }
+
+            @Override public void onProgressChanged(WebView view, int newProgress) {
+                progress.setProgress(newProgress);
+                progress.setVisibility(newProgress >= 100 ? View.GONE : View.VISIBLE);
+            }
+        });
+        webView.loadUrl(detailUrl);
+        webView.postDelayed(() -> {
+            if (isCurrentDetailWebView(webView)
+                    && webView.getVisibility() != View.VISIBLE) {
+                fallbackJingDongWebDetail(webView, progress);
+            }
+        }, 12_000L);
+    }
+
+    /** Opens Picker's K100 route without treating it as a source-owned route atom. */
+    private void showKuaidi100WebDetail(String detailUrl) {
+        visibleJingDongDetailUrl = "";
+        setContentView(R.layout.activity_express_web);
+        applySystemBarInsets(findViewById(R.id.express_web_root));
+        MaterialToolbar toolbar = findViewById(R.id.web_toolbar);
+        toolbar.setTitle(item.displayCompany());
+        toolbar.setNavigationOnClickListener(view -> navigateBack());
+        ProgressBar progress = findViewById(R.id.web_progress);
+        webView = findViewById(R.id.web_view);
+        configureWebView(webView);
+        int pageSurface = MaterialColors.getColor(webView,
+                com.google.android.material.R.attr.colorSurface);
+        webView.setBackgroundColor(pageSurface);
+        webView.setVisibility(View.INVISIBLE);
+        CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
+        webView.setWebViewClient(new WebViewClient() {
+            @Override public boolean shouldOverrideUrlLoading(
+                    WebView view, WebResourceRequest request) {
+                boolean blocked = request == null
+                        || safeKuaidi100Url(request.getUrl().toString()).isEmpty();
+                if (blocked && (request == null || request.isForMainFrame())) {
+                    fallbackWebDetailToNative(view, progress);
+                }
+                return blocked;
+            }
+
+            @Override public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                revealWebView(view, progress);
+            }
+
+            @Override public void onPageCommitVisible(WebView view, String url) {
+                super.onPageCommitVisible(view, url);
+                revealWebView(view, progress);
+            }
+
+            @Override public void onReceivedError(
+                    WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (request == null || request.isForMainFrame()) {
+                    fallbackWebDetailToNative(view, progress);
+                }
+            }
+
+            @Override public void onReceivedHttpError(
+                    WebView view, WebResourceRequest request, WebResourceResponse response) {
+                super.onReceivedHttpError(view, request, response);
+                if (request == null || request.isForMainFrame()) {
+                    fallbackWebDetailToNative(view, progress);
+                }
+            }
+
+            @Override public boolean onRenderProcessGone(
+                    WebView view, RenderProcessGoneDetail detail) {
+                return handleRenderProcessGone(view, progress, true, detail);
+            }
+        });
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override public void onProgressChanged(WebView view, int newProgress) {
+                progress.setProgress(newProgress);
+                progress.setVisibility(newProgress >= 100 ? View.GONE : View.VISIBLE);
+            }
+        });
+        webView.loadUrl(detailUrl);
+        webView.postDelayed(() -> {
+            if (isCurrentDetailWebView(webView)
+                    && webView.getVisibility() != View.VISIBLE) {
+                fallbackWebDetailToNative(webView, progress);
+            }
+        }, 12_000L);
+    }
+
+    private void revealCainiaoPageOrFallback(
+            WebView view, String url, String localLogo,
+            int pageSurface, ProgressBar progress) {
+        if (!isCurrentDetailWebView(view)) return;
+        view.evaluateJavascript(
+                "(function(){var b=document.body;if(!b)return false;"
+                        + "var t=(b.innerText||'').trim();"
+                        + "return t.length>0||!!b.querySelector('img,svg,canvas,video');})()",
+                value -> {
+                    if (!isCurrentDetailWebView(view)) return;
+                    if (!"true".equals(value)) {
+                        fallbackWebDetailToNative(view, progress);
+                        return;
+                    }
+                    decorateCainiaoPage(view, url, localLogo,
+                            pageSurface, () -> revealWebView(view, progress));
+                });
     }
 
     private static void revealWebView(WebView view, ProgressBar progress) {
@@ -491,8 +742,72 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         if (progress != null) progress.setVisibility(View.GONE);
     }
 
+    private void startJingDongFullProgressExpansion(WebView view) {
+        if (!isCurrentDetailWebView(view) || jingDongFullProgressExpanded
+                || jingDongFullProgressAttemptInFlight
+                || jingDongFullProgressAttempts >= JINGDONG_FULL_PROGRESS_MAX_ATTEMPTS) {
+            return;
+        }
+        Uri page = Uri.parse(view.getUrl() == null ? "" : view.getUrl());
+        if (!isJingDongLogisticsPage(page)) return;
+        jingDongFullProgressAttemptInFlight = true;
+        jingDongFullProgressAttempts++;
+        view.evaluateJavascript(jingDongFullProgressExpansionScript(), encoded -> {
+            jingDongFullProgressAttemptInFlight = false;
+            if (!isCurrentDetailWebView(view)) return;
+            String result = decodeEvaluationString(encoded);
+            if ("clicked".equals(result) || "already".equals(result)) {
+                jingDongFullProgressExpanded = true;
+                Log.i(ORDER_LOG_TAG, "JD full progress expanded");
+                return;
+            }
+            if (jingDongFullProgressAttempts >= JINGDONG_FULL_PROGRESS_MAX_ATTEMPTS) {
+                Log.i(ORDER_LOG_TAG, "JD full progress control unavailable");
+                return;
+            }
+            long delayMillis = Math.min(
+                    2_000L, 200L * (1L << Math.min(3, jingDongFullProgressAttempts - 1)));
+            view.postDelayed(() -> startJingDongFullProgressExpansion(view), delayMillis);
+        });
+    }
+
+    private void fallbackJingDongWebDetail(WebView failed, ProgressBar progress) {
+        fallbackWebDetail(failed, progress, true);
+    }
+
+    /** A provider H5 is presentation-only; failure must preserve the local owner package. */
+    private void fallbackWebDetailToNative(WebView failed, ProgressBar progress) {
+        fallbackWebDetail(failed, progress, false);
+    }
+
+    private void fallbackWebDetail(
+            WebView failed, ProgressBar progress, boolean tryKuaidi100) {
+        if (webNativeFallbackStarted || failed == null || failed != webView
+                || isFinishing() || isDestroyed()) return;
+        webNativeFallbackStarted = true;
+        if (failed == orderCaptureWebView) {
+            failOrderProjectionAttempt();
+            disposeOrderCapture(failed);
+        }
+        visibleJingDongDetailUrl = "";
+        webView = null;
+        if (progress != null) progress.setVisibility(View.GONE);
+        failed.stopLoading();
+        ViewGroup parent = (ViewGroup) failed.getParent();
+        if (parent != null) parent.removeView(failed);
+        failed.destroy();
+        String fallbackUrl = tryKuaidi100 ? kuaidi100FallbackUrl(true) : "";
+        if (fallbackUrl.isEmpty()) {
+            showNativeDetail();
+        } else {
+            webNativeFallbackStarted = false;
+            showKuaidi100WebDetail(fallbackUrl);
+        }
+    }
+
     private boolean startOrderProjectionCapture(String detailUrl) {
         if (detailUrl == null || detailUrl.isEmpty() || orderCaptureWebView != null) return false;
+        if (reuseVisibleOrderProjectionCapture(detailUrl)) return true;
         orderCaptureCallbacks.clear();
         WebView capture = new WebView(this);
         orderCaptureWebView = capture;
@@ -501,22 +816,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         configureWebView(capture);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(capture, true);
-        ExpressOrderProjectionBridge.install(
-                capture, (sourceView, payload) ->
-                        acceptOrderProjectionOnMainThread(sourceView, payload, true));
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            // This must run before the page's own scripts. onPageStarted/evaluateJavascript is
-            // already too late for a fast getUnionActivity request and was the reason some rows
-            // never received their real waybill.
-            WebViewCompat.addDocumentStartJavaScript(
-                    capture,
-                    orderProjectionProbeScript(),
-                    new java.util.HashSet<>(java.util.Arrays.asList(
-                            "https://jd.com", "https://*.jd.com")));
-            Log.i(ORDER_LOG_TAG, "Installed document-start identity capture");
-        } else {
-            Log.w(ORDER_LOG_TAG, "Document-start capture unsupported; using DOM fallback");
-        }
+        installOrderProjectionBridge(capture);
         capture.setWebViewClient(new WebViewClient() {
             @Override public void onPageStarted(
                     WebView view, String url, android.graphics.Bitmap icon) {
@@ -527,7 +827,17 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
             @Override public boolean shouldOverrideUrlLoading(
                     WebView view, WebResourceRequest request) {
-                return request == null || !allowedOrderHost(request.getUrl());
+                boolean blocked = request == null
+                        || shouldBlockJingDongNavigation(
+                                request.getUrl(), request.isForMainFrame());
+                if (blocked && request != null && request.isForMainFrame()) {
+                    view.post(() -> {
+                        if (view != orderCaptureWebView) return;
+                        failOrderProjectionAttempt();
+                        disposeOrderCapture(view);
+                    });
+                }
+                return blocked;
             }
 
             @Override public void onPageCommitVisible(WebView view, String url) {
@@ -551,6 +861,23 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         params.gravity = Gravity.TOP | Gravity.START;
         addContentView(capture, params);
         capture.loadUrl(detailUrl);
+        scheduleOrderProjectionInspection(capture);
+        return true;
+    }
+
+    private boolean reuseVisibleOrderProjectionCapture(String detailUrl) {
+        WebView visible = webView;
+        if (visible == null || !detailUrl.equals(visibleJingDongDetailUrl)
+                || !isCurrentDetailWebView(visible)) return false;
+        orderCaptureCallbacks.clear();
+        orderCaptureWebView = visible;
+        injectOrderProjectionProbe(visible);
+        inspectOrderProjectionDom(visible);
+        scheduleOrderProjectionInspection(visible);
+        return true;
+    }
+
+    private void scheduleOrderProjectionInspection(WebView capture) {
         postOrderCapture(capture, () -> injectOrderProjectionProbe(capture), 80L);
         postOrderCapture(capture, () -> injectOrderProjectionProbe(capture), 350L);
         for (long delay : new long[]{1_000L, 3_000L, 6_000L, 10_000L, 16_000L}) {
@@ -563,11 +890,30 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 disposeOrderCapture(capture);
             }
         }, ORDER_CAPTURE_TIMEOUT_MS);
-        return true;
+    }
+
+    private void installOrderProjectionBridge(WebView target) {
+        ExpressOrderProjectionBridge.install(
+                target, (sourceView, payload) ->
+                        acceptOrderProjectionOnMainThread(sourceView, payload, true));
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            // This must run before the page's own scripts. onPageStarted/evaluateJavascript is
+            // already too late for a fast getUnionActivity request and was the reason some rows
+            // never received their real waybill.
+            WebViewCompat.addDocumentStartJavaScript(
+                    target,
+                    orderProjectionProbeScript(),
+                    new java.util.HashSet<>(java.util.Arrays.asList(
+                            "https://jd.com", "https://*.jd.com")));
+            Log.i(ORDER_LOG_TAG, "Installed document-start identity capture");
+        } else {
+            Log.w(ORDER_LOG_TAG, "Document-start capture unsupported; using DOM fallback");
+        }
     }
 
     private void startOrderProjectionCaptureIfDue() {
         if (!orderProjectionCaptureEnabled || item == null || orderCaptureWebView != null
+                || detailIdentityProjectionAttempted
                 || item.rowId <= 0L || !item.isAccountOrder()
                 || !item.projectedWaybill.isEmpty()) return;
         ExpressItem expectedOwner = item;
@@ -598,6 +944,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             item = confirmedOwner;
             orderProjectionAttemptOwner = confirmedOwner;
             attemptRetained = startOrderProjectionCapture(detailUrl);
+            if (attemptRetained) detailIdentityProjectionAttempted = true;
         } catch (RuntimeException | Error failure) {
             failOrderProjectionAttempt();
             throw failure;
@@ -680,15 +1027,18 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     private void disposeOrderCapture(WebView capture) {
         if (capture == null || capture != orderCaptureWebView) return;
+        boolean visibleDetail = capture == webView;
         orderCaptureWebView = null;
         orderCaptureCallbacks.clear();
         try {
-            capture.stopLoading();
-            capture.loadUrl("about:blank");
-            capture.clearHistory();
-            ViewGroup parent = (ViewGroup) capture.getParent();
-            if (parent != null) parent.removeView(capture);
-            capture.destroy();
+            if (!visibleDetail) {
+                capture.stopLoading();
+                capture.loadUrl("about:blank");
+                capture.clearHistory();
+                ViewGroup parent = (ViewGroup) capture.getParent();
+                if (parent != null) parent.removeView(capture);
+                capture.destroy();
+            }
         } finally {
             releaseOrderProjectionAttempt();
         }
@@ -732,25 +1082,32 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             RenderProcessGoneDetail detail) {
         Log.w(ORDER_LOG_TAG, "WebView renderer exited; crashed="
                 + (detail != null && detail.didCrash()));
-        if (crashed == webView) webView = null;
+        boolean detailWeb = crashed == webView;
+        if (closeDetail && detailWeb && !isFinishing() && !isDestroyed()) {
+            fallbackWebDetailToNative(crashed, progress);
+            return true;
+        }
+        if (detailWeb) webView = null;
         boolean orderCapture = crashed == orderCaptureWebView;
         if (orderCapture) {
             orderCaptureWebView = null;
             orderCaptureCallbacks.clear();
         }
-        if (orderCapture) failOrderProjectionAttempt();
+        if (orderCapture) {
+            failOrderProjectionAttempt();
+        }
         if (progress != null) progress.setVisibility(View.GONE);
         ViewGroup parent = crashed == null ? null : (ViewGroup) crashed.getParent();
         if (parent != null) parent.removeView(crashed);
         if (crashed != null) crashed.destroy();
-        if (closeDetail && !isFinishing() && !isDestroyed()) {
-            Toast.makeText(this, R.string.web_detail_unavailable, Toast.LENGTH_SHORT).show();
-            finish();
-        }
         return true;
     }
 
     private void refreshLocalTimeline(boolean showProgress) {
+        if (item == null || !canRefreshLocalTimeline(item)) {
+            if (detailSwipe != null) detailSwipe.setRefreshing(false);
+            return;
+        }
         refreshLocalTimeline(showProgress, null);
     }
 
@@ -758,6 +1115,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             boolean showProgress, ExpressRepository.ManualTimelinePollClaim claim) {
         if (localRefreshInFlight || !canRefreshLocalTimeline(item)) {
             ExpressRepository.get(this).releaseManualTimelinePoll(claim);
+            if (detailSwipe != null) detailSwipe.setRefreshing(false);
             return;
         }
         localRefreshInFlight = true;
@@ -775,107 +1133,132 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 if (!taskState.compareAndSet(0, 1)) return;
                 try {
                     ExpressRepository repository = ExpressRepository.get(this);
+                    ExpressRepository.ManualQueryOwnerClaim ownerClaim =
+                            repository.captureManualQueryOwner(requestItem);
+                    boolean projectedInterface5Order =
+                            requestItem.isInterface5ProjectedOrder();
                     if (requestItem.manuallyAdded
-                            || requestItem.isInterface5ShunFengSource()) {
+                            || usesSharedManualTimeline(requestItem)
+                            || projectedInterface5Order) {
                         String owner = requestItem.stateOwner.isEmpty()
                                 ? requestItem.source : requestItem.stateOwner;
                         String bindingSource =
                                 ExpressAccountSource.bindingSourceForOwner(owner);
-                        ExpressQueryResult refreshed =
-                                ManualQueryCoordinator.queryForBindingSource(
-                                        bindingSource,
-                                        requestItem.isInterface5ShunFengSource(),
-                                        () -> new ExpressDiscoveryClient().queryManual(
-                                                getApplicationContext(), requestItem.waybill,
-                                                repository.phones(bindingSource), cancellation),
-                                        () -> new ExpressSubscriptionClient().queryManual(
-                                                getApplicationContext(), requestItem.waybill,
+                        String manualWaybill = requestItem.displayWaybill();
+                        String manualCourierCode = projectedInterface5Order
+                                ? "" : requestItem.courierCode;
+                        Log.i(MANUAL_LOG_TAG, "Refresh start rowId="
+                                + requestItem.rowId
+                                + " owner=" + owner
+                                + " provider=" + requestItem.sourceProvider
+                                + " shared=" + usesSharedManualTimeline(requestItem)
+                                + " projected=" + projectedInterface5Order);
+                        ExpressApi manualApi = new ExpressApi(getApplicationContext());
+                        ExpressSubscriptionClient meizuApi = new ExpressSubscriptionClient();
+                        ManualQueryCoordinator.Batch manualBatch =
+                                ManualQueryCoordinator.queryPickerFirst(
+                                        () -> meizuApi.queryManual(
+                                                getApplicationContext(), manualWaybill,
                                                 cancellation),
-                                        () -> new ExpressApi(getApplicationContext())
-                                                .queryWithPhones(
-                                                        requestItem.waybill,
-                                                        requestItem.courierCode,
-                                                        repository.phoneCandidates(
-                                                                requestItem.phone, bindingSource),
-                                                        cancellation));
+                                        repository.manualTimelineCandidate(
+                                                requestItem, "meizu"),
+                                        () -> manualApi.queryMoto(
+                                                manualWaybill, manualCourierCode, cancellation),
+                                        ManualQueryRoutingPolicy.includesMoto(requestItem));
+                        ExpressQueryResult refreshed = manualBatch.detailSelected();
                         cancellation.throwIfCancelled();
-                        if (Kuaidi100TimelinePolicy.hasTimedTracking(refreshed)) {
-                            repository.saveOwnerManualTimeline(
-                                    requestItem, refreshed, requestItem.phone, bindingSource);
-                        }
+                        Log.i(MANUAL_LOG_TAG, "Refresh result rowId="
+                                + requestItem.rowId
+                                + " provider=" + (refreshed == null
+                                ? "" : refreshed.timelineProvider)
+                                + " timed="
+                                + Kuaidi100TimelinePolicy.hasTimedTracking(refreshed));
+                        repository.saveOwnerManualQueryBatch(
+                                requestItem, ownerClaim, manualBatch.successes,
+                                requestItem.phone, bindingSource);
                         ExpressItem refreshedOwner = repository.find(requestItem.rowId);
+                        ManualTimelineAuthorityPolicy.Candidate refreshedDetail =
+                                repository.manualDetailTimelineAuthority(requestItem);
                         runOnUiThread(() -> {
                             if (generation != localRefreshGeneration
                                     || isFinishing() || isDestroyed()
                                     || refreshedOwner == null || item == null
                                     || item.rowId != requestItem.rowId) return;
                             item = refreshedOwner;
+                            String fallbackUrl = kuaidi100FallbackUrl();
+                            if (!fallbackUrl.isEmpty()) {
+                                showKuaidi100WebDetail(fallbackUrl);
+                                return;
+                            }
                             ImageView icon = findViewById(R.id.detail_icon);
                             if (icon != null) icon.setImageResource(item.displayIconResource());
                             renderHeader(item.displayCourierCode(), item.displayCompany(),
                                     item.displayWaybill(), item.displayStatus(), item.semantic);
+                            ExpressQueryResult detail = refreshedDetail == null
+                                    ? null : refreshedDetail.result;
                             renderTimeline(ExpressTimeline.parse(
-                                    item.tracksJson, item.latestTime, item.latestDetail));
+                                    detail == null ? item.tracksJson : detail.tracksJson,
+                                    detail == null ? item.latestTime : detail.latestTime,
+                                    detail == null ? item.latestDetail : detail.latestDetail));
                         });
                         return;
                     }
                     String timelineWaybill = requestItem.displayWaybill();
                     String courierHint = requestItem.projectedWaybill.isEmpty()
-                            ? requestItem.courierCode
-                            : CarrierRegistry.queryCode("", requestItem.projectedCompanyName);
+                            ? requestItem.courierCode : "";
                     String owner = requestItem.stateOwner.isEmpty()
                             ? requestItem.source : requestItem.stateOwner;
                     String bindingSource = ExpressAccountSource.bindingSourceForOwner(owner);
-                    ExpressQueryResult refreshed = new ExpressApi(
-                            getApplicationContext()).queryWithPhones(
-                            timelineWaybill, courierHint,
-                            repository.phoneCandidates(requestItem.phone, bindingSource),
-                            cancellation);
+                    ExpressApi manualApi = new ExpressApi(getApplicationContext());
+                    ExpressSubscriptionClient meizuApi = new ExpressSubscriptionClient();
+                    ManualQueryCoordinator.Batch manualBatch =
+                            ManualQueryCoordinator.queryPickerFirst(
+                                    () -> meizuApi.queryManual(
+                                            getApplicationContext(), timelineWaybill,
+                                            cancellation),
+                                    repository.manualTimelineCandidate(
+                                            requestItem, "meizu"),
+                                    () -> manualApi.queryMoto(
+                                            timelineWaybill, courierHint, cancellation),
+                                    ManualQueryRoutingPolicy.includesMoto(requestItem));
                     cancellation.throwIfCancelled();
-                    // Once the bounded network result is accepted, finish caching it even if the
-                    // screen stops. The generation guard below still prevents stale UI updates.
-                    boolean interface5Fallback = interface5Kuaidi100OwnsItem(requestItem);
-                    ExpressQueryResult merged;
-                    if (interface5Fallback) {
-                        repository.saveManualKuaidi100(
-                                refreshed, requestItem.phone, "interface5");
-                        merged = repository.kuaidi100Timeline(refreshed.waybill);
-                    } else {
-                        merged = repository.saveKuaidi100Timeline(refreshed);
-                    }
-                    ExpressQueryResult selected = merged == null ? refreshed : merged;
-                    ExpressItem projectedItem = requestItem.projectedWaybill.isEmpty()
-                            ? null : repository.find(requestItem.rowId);
-                    if (localTimelineOwnsItem(requestItem) && !interface5Fallback) {
-                        repository.saveQuery(
-                                selected, requestItem.phone, ExpressApi.listSource(selected));
-                    }
-                    ExpressItem refreshedProjection = projectedItem;
+                    repository.saveOwnerManualQueryBatch(
+                            requestItem, ownerClaim, manualBatch.successes,
+                            requestItem.phone, bindingSource);
+                    ExpressItem refreshedOwner = repository.find(requestItem.rowId);
+                    ManualTimelineAuthorityPolicy.Candidate refreshedDetail =
+                            repository.manualDetailTimelineAuthority(requestItem);
                     runOnUiThread(() -> {
                         if (generation != localRefreshGeneration
                                 || isFinishing() || isDestroyed()
-                                || item == null || item.rowId != requestItem.rowId
+                                || refreshedOwner == null || item == null
+                                || item.rowId != requestItem.rowId
                                 || !normalizeIdentity(item.displayWaybill()).equals(
                                 normalizeIdentity(requestItem.displayWaybill()))) return;
-                        if (refreshedProjection != null) {
-                            item = refreshedProjection;
-                            ImageView icon = findViewById(R.id.detail_icon);
-                            if (icon != null) icon.setImageResource(item.displayIconResource());
-                            renderHeader(item.displayCourierCode(), item.displayCompany(),
-                                    item.displayWaybill(), item.displayStatus(), item.semantic);
-                        } else if (localTimelineOwnsItem(requestItem)) {
-                            renderHeader(selected.courierCode, CarrierRegistry.displayName(
-                                            selected.courierCode, selected.companyName),
-                                    selected.waybill,
-                                    selected.semantic.label, selected.semantic);
+                        item = refreshedOwner;
+                        String fallbackUrl = kuaidi100FallbackUrl();
+                        if (!fallbackUrl.isEmpty()) {
+                            showKuaidi100WebDetail(fallbackUrl);
+                            return;
                         }
-                        if (merged != null) renderTimeline(ExpressTimeline.parse(
-                                merged.tracksJson, merged.latestTime, merged.latestDetail));
+                        ImageView icon = findViewById(R.id.detail_icon);
+                        if (icon != null) icon.setImageResource(item.displayIconResource());
+                        renderHeader(item.displayCourierCode(), item.displayCompany(),
+                                item.displayWaybill(), item.displayStatus(), item.semantic);
+                        ExpressQueryResult detail = refreshedDetail == null
+                                ? null : refreshedDetail.result;
+                        renderTimeline(ExpressTimeline.parse(
+                                detail == null ? item.tracksJson : detail.tracksJson,
+                                detail == null ? item.latestTime : detail.latestTime,
+                                detail == null ? item.latestDetail : detail.latestDetail));
                     });
                 } catch (InterruptedException cancelled) {
                     Thread.currentThread().interrupt();
-                } catch (Throwable ignored) {
-                    // Keep the cached local timeline visible when K100 is unavailable.
+                } catch (Throwable failure) {
+                    // Keep the cached local timeline visible when every enabled source fails.
+                    Log.w(MANUAL_LOG_TAG, "Refresh failed rowId="
+                            + requestItem.rowId
+                            + " error=" + failure.getClass().getSimpleName());
                 } finally {
                     ExpressRepository.get(this).releaseManualTimelinePoll(claim);
                     runOnUiThread(() -> finishLocalTimelineRefresh(generation));
@@ -904,6 +1287,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         localRefreshTaskState = null;
         clearLocalRefreshTimeout();
         setLocalRefreshProgressVisible(false);
+        if (detailSwipe != null) detailSwipe.setRefreshing(false);
         if (timelineLoadingPlaceholder) {
             renderTimeline(java.util.Collections.emptyList());
         }
@@ -924,6 +1308,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         localRefreshTaskState = null;
         clearLocalRefreshTimeout();
         setLocalRefreshProgressVisible(false);
+        if (detailSwipe != null) detailSwipe.setRefreshing(false);
         if (!restartOnStart && timelineLoadingPlaceholder) {
             renderTimeline(java.util.Collections.emptyList());
         }
@@ -1154,6 +1539,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             setLocalRefreshProgressVisible(false);
         }
         worker.shutdownNow();
+        if (orderCaptureWebView == webView) disposeOrderCapture(orderCaptureWebView);
         if (webView != null) {
             WebView closing = webView;
             webView = null;
@@ -1178,6 +1564,24 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setSafeBrowsingEnabled(true);
         if (Build.VERSION.SDK_INT >= 33) settings.setAlgorithmicDarkeningAllowed(true);
+    }
+
+    static void applySystemBarInsets(View root) {
+        if (root == null) return;
+        int initialLeft = root.getPaddingLeft();
+        int initialTop = root.getPaddingTop();
+        int initialRight = root.getPaddingRight();
+        int initialBottom = root.getPaddingBottom();
+        ViewCompat.setOnApplyWindowInsetsListener(root, (view, windowInsets) -> {
+            Insets bars = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
+            view.setPadding(
+                    initialLeft + bars.left,
+                    initialTop + bars.top,
+                    initialRight + bars.right,
+                    initialBottom + bars.bottom);
+            return windowInsets;
+        });
+        ViewCompat.requestApplyInsets(root);
     }
 
     private void decorateCainiaoPage(
@@ -1267,9 +1671,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     static String accountTimelineSource(ExpressItem value) {
         if (value == null) return "";
-        // Shopping-order summaries are never carrier timeline authority. Before projection they
-        // remain ordered; after projection the real-waybill K100 sidecar owns the detail.
-        if (value.isAccountOrder()) return "";
+        // An unprojected order id is not a carrier identity. Once interface 5 supplies the real
+        // waybill, its independent account sidecar may own that carrier timeline ahead of K100.
+        if (value.isAccountOrder() && !value.isInterface5ProjectedOrder()) return "";
         String owner = value.stateOwner.isEmpty() ? value.source : value.stateOwner;
         if (value.usesInterface5AccountTimeline()) return "interface5";
         if ("INTERFACE6".equalsIgnoreCase(owner)) {
@@ -1282,9 +1686,28 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         return value == null ? "" : value.displayWaybill();
     }
 
+    static boolean accountTimelineUsable(
+            ExpressItem value, ExpressQueryResult accountTimeline) {
+        return value != null && value.isInterface5ProjectedOrder()
+                ? Kuaidi100TimelinePolicy.hasTimedTracking(accountTimeline)
+                : Kuaidi100TimelinePolicy.hasRealTracking(accountTimeline);
+    }
+
     static boolean canRefreshLocalTimeline(ExpressItem value) {
         return value != null && (!value.isAccountOrder()
                 || !value.projectedWaybill.isEmpty());
+    }
+
+    static boolean needsManualSupplement(
+            ExpressItem value, ExpressQueryResult ownerTimeline,
+            ExpressQueryResult selectedManualTimeline) {
+        if (value == null || value.isCainiaoSource()) return false;
+        // JD source completion freezes every display timeline. Background refresh may continue for
+        // retention, but a detail supplement must not replace the frozen package.
+        if (value.semantic == StatusSemantic.COMPLETED
+                && "JingDong".equalsIgnoreCase(value.sourceProvider)) return false;
+        if (Kuaidi100TimelinePolicy.hasTimelineStart(ownerTimeline)) return false;
+        return !Kuaidi100TimelinePolicy.hasTimelineStart(selectedManualTimeline);
     }
 
     static ExpressQueryResult preferredDetailTimeline(
@@ -1301,7 +1724,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         return new ExpressQueryResult(
                 waybill, value.courierCode, value.companyName, value.semantic,
                 value.statusEventTime, value.latestTime, value.latestDetail, value.tracksJson,
-                "", value.phone, provider, "", "", value.sourceProvider);
+                "", value.phone, provider, "", "", value.sourceProvider,
+                value.carrierNormalization);
     }
 
     /** A manual query is committed only after its transient detail screen is closed. */
@@ -1322,7 +1746,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     static String safeCainiaoUrl(ExpressItem item) {
-        if (!allowsProviderRoute(item)) return "";
+        if (!allowsCainiaoRoute(item)) return "";
         String route = item.routeCredentialAvailable
                 && CainiaoRoute.isLegacyCredentialedUrl(item.routeCredential)
                 ? item.routeCredential : item.detailUrl;
@@ -1334,16 +1758,38 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     static String safeOrderH5Url(ExpressItem item) {
-        if (!allowsProviderRoute(item)
-                || !item.isAccountOrder() || !item.routeCredentialAvailable) return "";
+        if (!allowsJingDongRoute(item) || !item.routeCredentialAvailable) return "";
         String route = item.routeCredential;
         if (route.isEmpty()) return "";
         Uri candidate = Uri.parse(route);
         return allowedOrderHost(candidate) ? candidate.toString() : "";
     }
 
-    static boolean allowsProviderRoute(ExpressItem item) {
-        return item != null && !item.hasManualTimelineAuthority();
+    static String safeKuaidi100Url(String route) {
+        return ManualRoutePolicy.safeKuaidi100Url(route);
+    }
+
+    static boolean allowsCainiaoRoute(ExpressItem item) {
+        return item != null && "CaiNiao".equalsIgnoreCase(item.sourceProvider);
+    }
+
+    static boolean allowsJingDongRoute(ExpressItem item) {
+        return item != null && !item.manuallyAdded
+                && "JingDong".equalsIgnoreCase(item.sourceProvider);
+    }
+
+    static boolean allowsKuaidi100Route(
+            ExpressItem item, ExpressQueryResult preview) {
+        return allowsKuaidi100Route(item, preview, false);
+    }
+
+    static boolean allowsKuaidi100Route(
+            ExpressItem item, ExpressQueryResult preview, boolean afterJingDongFailure) {
+        if (preview != null && "meizu".equalsIgnoreCase(preview.timelineProvider)) {
+            return true;
+        }
+        return item != null && (item.manuallyAdded || item.isShunFengSource()
+                || (afterJingDongFailure && allowsJingDongRoute(item)));
     }
 
     private static boolean allowed(Uri uri) {
@@ -1352,13 +1798,24 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         return trustedHost(host, "cainiao.com") || trustedHost(host, "taobao.com");
     }
 
-    private static boolean allowedWebUrl(Uri uri, boolean orderProjection) {
-        return orderProjection ? allowedOrderHost(uri) : allowed(uri);
-    }
-
     static boolean allowedOrderHost(Uri uri) {
         if (uri == null || !"https".equalsIgnoreCase(uri.getScheme())) return false;
         return trustedHost(uri.getHost(), "jd.com");
+    }
+
+    static boolean isBlockedJingDongLogin(Uri uri) {
+        return uri != null && "https".equalsIgnoreCase(uri.getScheme())
+                && "plogin.m.jd.com".equalsIgnoreCase(uri.getHost());
+    }
+
+    static boolean shouldBlockJingDongNavigation(Uri uri, boolean mainFrame) {
+        return !allowedOrderHost(uri) || (mainFrame && isBlockedJingDongLogin(uri));
+    }
+
+    static boolean isJingDongLogisticsPage(Uri uri) {
+        return uri != null && "https".equalsIgnoreCase(uri.getScheme())
+                && "jingfen.jd.com".equalsIgnoreCase(uri.getHost())
+                && "/item".equals(uri.getPath());
     }
 
     private void injectOrderProjectionProbe(WebView view) {
@@ -1386,7 +1843,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         WebView capture = orderCaptureWebView;
         if (capture == null || source != capture || item == null || !item.isAccountOrder()) return;
         Uri page = Uri.parse(capture.getUrl() == null ? "" : capture.getUrl());
-        if (!originValidated && !allowedOrderHost(page)) return;
+        if (isBlockedJingDongLogin(page)
+                || (!originValidated && !allowedOrderHost(page))) return;
         try {
                 ExpressItem expectedOwner = orderProjectionAttemptOwner;
                 if (expectedOwner == null) return;
@@ -1399,10 +1857,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 }
                 String waybill = candidate.waybill;
                 String company = candidate.carrier;
-                if (company.isEmpty()) {
-                    CarrierRegistry.Carrier inferred = CarrierRegistry.guessByWaybill(waybill);
-                    if (inferred != null) company = inferred.companyName;
-                }
                 ExpressRepository repository = ExpressRepository.get(ExpressDetailActivity.this);
                 ExpressItem currentOwner = repository.find(expectedOwner.rowId);
                 if (!ExpressOrderProjectionBridge.sameUnresolvedOwner(
@@ -1417,30 +1871,32 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         expectedOwner, ExpressAccountSource.bindingSourceForOwner(owner),
                         waybill, company);
                 if (saved) {
-                    Log.i(ORDER_LOG_TAG, "Captured display identity from isolated H5");
+                    Log.i(ORDER_LOG_TAG, "Captured display identity from JD H5");
+                    ExpressScheduler.requestNow(ExpressDetailActivity.this);
                     if (isFinishing() || isDestroyed()) return;
                     ExpressItem refreshed = repository.find(item.rowId);
                     if (refreshed != null) {
                         item = refreshed;
                         ImageView icon = findViewById(R.id.detail_icon);
                         if (icon != null) icon.setImageResource(item.displayIconResource());
-                        renderHeader(item.displayCourierCode(), item.displayCompany(),
-                                item.displayWaybill(),
-                                item.displayStatus(), item.semantic);
-                        ExpressQueryResult cached = repository.kuaidi100Timeline(
-                                item.displayWaybill());
-                        boolean cachedUsable = Kuaidi100TimelinePolicy.hasRealTracking(cached);
-                        boolean refreshDue = !cachedUsable
-                                || Kuaidi100TimelinePolicy.shouldRefresh(
-                                item, cached, System.currentTimeMillis());
-                        if (cachedUsable) {
-                            renderTimeline(ExpressTimeline.parse(
-                                    cached.tracksJson, cached.latestTime, cached.latestDetail));
-                        } else {
-                            renderTimelineLoading();
-                        }
-                        if (refreshDue) {
-                            refreshLocalTimeline(!cachedUsable);
+                        if (statusView != null && waybillView != null
+                                && hotlineRow != null && hotlineView != null) {
+                            renderHeader(item.displayCourierCode(), item.displayCompany(),
+                                    item.displayWaybill(),
+                                    item.displayStatus(), item.semantic);
+                            ExpressQueryResult cached = repository.accountTimeline(
+                                    item.displayWaybill(),
+                                    ExpressAccountSource.bindingSourceForOwner(owner));
+                            boolean cachedUsable =
+                                    Kuaidi100TimelinePolicy.hasRealTracking(cached);
+                            if (timeline != null && cachedUsable) {
+                                renderTimeline(ExpressTimeline.parse(
+                                        cached.tracksJson,
+                                        cached.latestTime,
+                                        cached.latestDetail));
+                            } else if (timeline != null) {
+                                renderTimeline(java.util.Collections.emptyList());
+                            }
                         }
                     }
                     disposeOrderCapture(capture);
@@ -1458,6 +1914,18 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     static String normalizeIdentity(String value) {
         return value == null ? "" : value.toUpperCase(Locale.ROOT)
                 .replaceAll("[^A-Z0-9]", "");
+    }
+
+    static String jingDongFullProgressExpansionScript() {
+        return "(function(){try{"
+                + "if(window.__deliveriesFullProgressExpanded)return 'already';"
+                + "var button=document.querySelector('.logistics-button');"
+                + "if(!button||typeof button.click!=='function')return 'missing';"
+                + "var label=button.querySelector('.logistics-button-text');"
+                + "var text=String(label&&label.textContent||'').replace(/\\s+/g,'');"
+                + "if(text!=='完整物流进度')return 'missing';"
+                + "button.click();window.__deliveriesFullProgressExpanded=true;"
+                + "return 'clicked';}catch(e){return 'failed';}})()";
     }
 
     static String orderProjectionProbeScript() {
@@ -1490,14 +1958,15 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 + "if(!carrier){for(var j=0;j<traces.length;j++){var trace=traces[j]||{};"
                 + "carrier=String(trace.expressName||trace.carrierName||trace.companyName||"
                 + "trace.expressCompany||trace.cpName||'').trim();if(carrier)break;}}"
-                + "var seen={};function add(way,name){way=String(way||'').trim();if(!way)return;"
+                + "var identities=[],seen={};function add(way,name){way=String(way||'').trim();if(!way)return;"
                 + "var key=way.toUpperCase().replace(/[^A-Z0-9]/g,'');"
                 + "if(seen[key])return;seen[key]=true;"
-                + "emit({waybillCode:way,carrierName:String(name||carrier||'').trim()});}"
+                + "identities.push({waybillCode:way,carrierName:String(name||carrier||'').trim()});}"
                 + "add(info.waybillCode,carrier);for(var i=0;i<traces.length;i++){"
                 + "var candidate=traces[i]||{};add(candidate.waybillCode,"
                 + "candidate.expressName||candidate.carrierName||candidate.companyName||"
                 + "candidate.expressCompany||candidate.cpName||carrier);}"
+                + "if(identities.length)emit({identities:identities});"
                 + "}catch(e){}}"
                 + "function requestText(value){try{if(typeof value==='string')return value;"
                 + "return value&&value.url?String(value.url):String(value||'');}catch(e){return '';}}"

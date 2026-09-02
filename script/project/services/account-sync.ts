@@ -16,8 +16,9 @@ import {
   parseAccountSyncResult,
   parseAccountTimelineResponse,
 } from "./account-parser";
-import { postGateway } from "./gateway";
+import { GatewayError, postGateway } from "./gateway";
 import {
+  mergeTimelinePackage,
   normalizeWaybill,
   normalizedProjectedWaybill,
   parseProviderTime,
@@ -25,22 +26,18 @@ import {
 } from "./status";
 import {
   assertWithinDeadline,
+  OperationTimeoutError,
   remainingTimeoutMs,
 } from "./deadline";
 import {
-  ACCOUNT_FOLLOWUP_RESERVE_MS,
-  ACCOUNT_LIST_BUDGET_MS,
-  accountChildDeadline,
-} from "./account-sync-policy";
-import {
   SCRIPT_BINDING_SOURCE,
-  SCRIPT_MANUAL_QUERY_SOURCE,
   requireScriptSource,
 } from "./script-source";
 import { projectedCarrierPresentation } from "./carrier-presentation";
-
-const SCRIPT_CLIENT_VERSION = "0.5";
-const SCRIPT_CLIENT_BUILD = 210;
+import {
+  normalizeAccountParcelCarrier,
+  type AccountCarrierNormalizationOptions,
+} from "./account-carrier-normalization";
 
 export type AccountParcelFetchResult = Readonly<{
   parcels: readonly AccountParcelDto[];
@@ -48,11 +45,12 @@ export type AccountParcelFetchResult = Readonly<{
   rejectedRecords: number;
 }>;
 
-function accountApi(deadlineAtMs?: number): AccountApi {
+function accountApi(deadlineAtMs?: number, signal?: AbortSignal): AccountApi {
   return new AccountApi((route, payload, timeoutMs) =>
     postGateway(route, payload, {
       timeoutMs: remainingTimeoutMs(deadlineAtMs, timeoutMs),
       deadlineAtMs,
+      signal,
     }),
   );
 }
@@ -61,6 +59,29 @@ function phones(bindings: readonly AccountBinding[], source: BindingSource): str
   return bindings
     .filter((binding) => binding.source === source)
     .map((binding) => binding.phone);
+}
+
+/** Keeps display-only carrier recognition from failing account data retrieval. */
+export async function normalizeAccountParcelCarrierBestEffort(
+  parcel: AccountParcelDto,
+  options: AccountCarrierNormalizationOptions = {},
+): Promise<AccountParcelDto> {
+  if (options.signal?.aborted) throw new OperationTimeoutError();
+  try {
+    const normalized = await normalizeAccountParcelCarrier(parcel, options);
+    if (options.signal?.aborted) throw new OperationTimeoutError();
+    return normalized;
+  } catch (error) {
+    if (
+      options.signal?.aborted ||
+      (error instanceof Error && error.name === "AbortError")
+    ) throw error;
+    if (
+      error instanceof GatewayError ||
+      error instanceof OperationTimeoutError
+    ) return parcel;
+    throw error;
+  }
 }
 
 export async function sendAccountCode(
@@ -97,8 +118,8 @@ function detailRecord(
 ): AccountDetailRecord {
   return {
     waybill: parcel.ownerId,
-    companyCode: parcel.courierCode,
-    name: parcel.companyName,
+    companyCode: parcel.rawCourierCode || "",
+    name: parcel.rawCompanyName || "",
     provider: parcel.sourceProvider,
     stateNumber: Number(parcel.sourceStateCode) || 0,
     updateTime: parcel.latestTimeText,
@@ -110,27 +131,32 @@ function detailRecord(
 export async function fetchAccountParcels(
   source: BindingSource,
   bindings: readonly AccountBinding[],
-  deadlineAtMs?: number,
+  requestDeadlineAtMs?: number,
+  signal?: AbortSignal,
 ): Promise<AccountParcelFetchResult> {
   requireScriptSource(source);
-  const listDeadlineAtMs = accountChildDeadline(
-    deadlineAtMs,
-    ACCOUNT_LIST_BUDGET_MS,
-    ACCOUNT_FOLLOWUP_RESERVE_MS,
-  );
-  assertWithinDeadline(listDeadlineAtMs);
+  assertWithinDeadline(requestDeadlineAtMs);
   const boundPhones = phones(bindings, source);
   if (!boundPhones.length) {
     return { parcels: [], rawRecords: 0, rejectedRecords: 0 };
   }
-  const response = await accountApi(listDeadlineAtMs).sync({
+  const response = await accountApi(requestDeadlineAtMs, signal).sync({
     source: SCRIPT_BINDING_SOURCE,
     identity: loadAccountIdentity(SCRIPT_BINDING_SOURCE),
     phones: boundPhones,
   });
   const parsed = parseAccountSyncResult(SCRIPT_BINDING_SOURCE, response);
+  const parcels: AccountParcelDto[] = [];
+  for (const parcel of parsed.parcels) {
+    parcels.push(parcel.accountOrder
+      ? await normalizeAccountParcelCarrierBestEffort(parcel, {
+          deadlineAtMs: requestDeadlineAtMs,
+          signal,
+        })
+      : parcel);
+  }
   return {
-    parcels: parsed.parcels,
+    parcels,
     rawRecords: parsed.rawRecords,
     rejectedRecords: parsed.rejectedRecords,
   };
@@ -138,58 +164,85 @@ export async function fetchAccountParcels(
 
 export async function queryAccountManual(
   source: BindingSource,
+  bindings: readonly AccountBinding[],
   waybill: string,
   deadlineAtMs?: number,
+  signal?: AbortSignal,
 ): Promise<AccountParcelDto | null> {
   requireScriptSource(source);
   assertWithinDeadline(deadlineAtMs);
-  const api = accountApi(deadlineAtMs);
+  const api = accountApi(deadlineAtMs, signal);
   const response = await api.timeline({
-    source: SCRIPT_MANUAL_QUERY_SOURCE,
+    source: SCRIPT_BINDING_SOURCE,
     mode: "manual",
+    identity: loadAccountIdentity(SCRIPT_BINDING_SOURCE),
     waybill,
-    clientVersion: SCRIPT_CLIENT_VERSION,
-    clientBuild: SCRIPT_CLIENT_BUILD,
+    phones: phones(bindings, source),
   });
-  return parseAccountTimelineResponse(
-    SCRIPT_MANUAL_QUERY_SOURCE,
+  const parcel = parseAccountTimelineResponse(
+    SCRIPT_BINDING_SOURCE,
     response,
     { waybill },
   );
+  return parcel
+    ? normalizeAccountParcelCarrierBestEffort(parcel, { deadlineAtMs, signal })
+    : null;
 }
 
 export async function refreshAccountParcel(
   shipment: Shipment,
   deadlineAtMs?: number,
+  signal?: AbortSignal,
 ): Promise<AccountParcelDto | null> {
   const source = shipment.identity.bindingSource;
   if (!source || shipment.identity.manuallyAdded) return null;
   requireScriptSource(source);
   if (!shipment.accountRecord) return null;
   assertWithinDeadline(deadlineAtMs);
-  const api = accountApi(deadlineAtMs);
+  const api = accountApi(deadlineAtMs, signal);
   const response = await api.timeline({
     source: SCRIPT_BINDING_SOURCE,
     mode: "detail",
     identity: loadAccountIdentity(SCRIPT_BINDING_SOURCE),
     record: shipment.accountRecord,
   });
-  return parseAccountTimelineResponse(SCRIPT_BINDING_SOURCE, response, {
+  const parcel = parseAccountTimelineResponse(SCRIPT_BINDING_SOURCE, response, {
     waybill: shipment.identity.sourceId,
     waybillAliases: normalizedProjectedWaybill(shipment.identity)
       ? [normalizedProjectedWaybill(shipment.identity)]
       : [],
     courierCode: shipment.identity.courierCode,
+    rawCourierCode: shipment.identity.rawCourierCode,
+    rawCompanyName: shipment.identity.rawCompanyName,
     companyName: shipment.identity.companyName,
+    carrierNormalization: shipment.identity.carrierIsBuiltIn != null
+      ? {
+          standardCode: shipment.identity.carrierIsBuiltIn
+            ? shipment.identity.courierCode
+            : "",
+          displayName: shipment.identity.carrierIsBuiltIn
+            ? shipment.identity.companyName
+            : "",
+          kuaidi100Code: shipment.identity.carrierKuaidi100Code || "",
+          isBuiltIn: shipment.identity.carrierIsBuiltIn === true,
+          tableVersion: shipment.identity.carrierTableVersion,
+        }
+      : null,
     provider: shipment.identity.sourceProvider,
     phone: shipment.identity.phone,
   });
+  return parcel && shipment.identity.accountOrder
+    ? normalizeAccountParcelCarrierBestEffort(parcel, { deadlineAtMs, signal })
+    : parcel;
 }
 
 function trustedRouteKind(
   parcel: AccountParcelDto,
 ): ShipmentRoute["kind"] | null {
-  if (!parcel.routeUrl) return null;
+  if (
+    String(parcel.sourceProvider || "").trim().toLowerCase() !== "cainiao" ||
+    !parcel.routeUrl
+  ) return null;
   try {
     const host = new URL(parcel.routeUrl).hostname.toLowerCase();
     if (
@@ -218,6 +271,56 @@ function fullPhone(
   return !hasEvidence && boundPhones.length === 1 ? boundPhones[0] : "";
 }
 
+/**
+ * Reattaches a confirmed order projection from its durable automatic-source
+ * observation. The projected order can be presented by another canonical
+ * waybill owner, so the top-level shipment id is not sufficient authority.
+ */
+export function accountParcelWithExistingProjection(
+  parcel: AccountParcelDto,
+  shipments: readonly Shipment[],
+): AccountParcelDto {
+  if (!parcel.accountOrder) return parcel;
+  const ownerId = normalizeWaybill(parcel.ownerId);
+  const expectedId = `${parcel.source}:account:${ownerId}`;
+  const authorities = shipments.flatMap((shipment) => [
+    ...(shipment.identity.id === expectedId
+      ? [{
+          identity: shipment.identity,
+          sourceTimeline: shipment.sourceTimeline || shipment.timeline,
+        }]
+      : []),
+    ...(shipment.automaticOwnership?.observations || [])
+      .filter((observation) =>
+        observation.bindingValid !== false &&
+        observation.source === parcel.source &&
+        observation.identity.id === expectedId
+      )
+      .map((observation) => ({
+        identity: observation.identity,
+        sourceTimeline: observation.sourceTimeline,
+      })),
+  ]);
+  const projectedAuthority = authorities.find(({ identity }) =>
+    identity.accountOrder &&
+    identity.bindingSource === parcel.source &&
+    normalizeWaybill(identity.sourceId) === ownerId &&
+    Boolean(normalizedProjectedWaybill(identity))
+  );
+  const projectedIdentity = projectedAuthority?.identity;
+  const projectedWaybill = normalizedProjectedWaybill(projectedIdentity);
+  return projectedWaybill
+    ? {
+        ...parcel,
+        waybill: projectedWaybill,
+        courierCode: projectedIdentity?.courierCode || parcel.courierCode,
+        companyName: projectedIdentity?.companyName || parcel.companyName,
+        projectionTimeline:
+          parcel.projectionTimeline || projectedAuthority?.sourceTimeline || null,
+      }
+    : parcel;
+}
+
 export function parcelToShipment(
   parcel: AccountParcelDto,
   boundPhones: readonly string[],
@@ -234,7 +337,9 @@ export function parcelToShipment(
       timeMs: parseProviderTime(track.timeText),
       detail: track.detail,
       statusCode: track.statusCode,
-      raw: track.statusCode ? { statusCode: track.statusCode } : {},
+      raw: track.statusCode
+        ? { statusCode: track.statusCode, _pipiStatusSource: parcel.source }
+        : { _pipiStatusSource: parcel.source },
     }))
     .filter((track) => Boolean(track.detail));
   const latest = tracks.find((track) => track.timeMs != null) || tracks[0];
@@ -242,6 +347,15 @@ export function parcelToShipment(
   let semantic = parcel.semantic as StatusSemantic;
   if (semantic === "UNKNOWN" && latest) {
     semantic = semanticFromText(latest.detail);
+  }
+  if (
+    unprojectedOrder &&
+    (
+      semantic === "PICKED" ||
+      semanticFromText(parcel.latestDetail) === "PICKED"
+    )
+  ) {
+    semantic = "ORDERED";
   }
   const routeKind = trustedRouteKind(parcel);
   const projectedPresentation = parcel.accountOrder && !unprojectedOrder
@@ -255,7 +369,7 @@ export function parcelToShipment(
   const companyName = unprojectedOrder
     ? "京东购物"
     : projectedPresentation?.companyName || parcel.companyName || courierCode || "快递";
-  const timeline = {
+  const accountTimeline = {
     provider: parcel.source,
     waybill: displayWaybill,
     courierCode,
@@ -267,6 +381,33 @@ export function parcelToShipment(
     tracks,
     successAtMs: now,
   } satisfies Shipment["timeline"];
+  const projectionTimeline = parcel.projectionTimeline &&
+      normalizeWaybill(parcel.projectionTimeline.waybill) === displayWaybill
+    ? {
+        ...parcel.projectionTimeline,
+        provider: parcel.source,
+        waybill: displayWaybill,
+        courierCode,
+        companyName,
+      }
+    : null;
+  // For a projected order, the account-list snapshot still describes order
+  // state. The same-source H5 projection exclusively owns shipment state.
+  const timeline = projectionTimeline && parcel.accountOrder && !unprojectedOrder
+    ? projectionTimeline
+    : projectionTimeline
+      ? mergeTimelinePackage(accountTimeline, projectionTimeline)
+      : accountTimeline;
+  const normalizedStatusScope = parcel.normalizedStatusScope;
+  const statusPresentation =
+      parcel.normalizedStatusSemantic && parcel.normalizedStatusText &&
+      normalizedStatusScope === "ORDER" && unprojectedOrder
+    ? {
+        scope: normalizedStatusScope,
+        semantic: parcel.normalizedStatusSemantic,
+        text: parcel.normalizedStatusText,
+      } as const
+    : undefined;
   return {
     identity: {
       id: `${parcel.source}:account:${ownerId}`,
@@ -276,7 +417,12 @@ export function parcelToShipment(
       phoneTail: associatedPhone.slice(-4),
       phone: associatedPhone,
       courierCode,
+      rawCourierCode: parcel.rawCourierCode,
+      rawCompanyName: parcel.rawCompanyName,
       companyName,
+      carrierIsBuiltIn: parcel.carrierNormalization?.isBuiltIn,
+      carrierKuaidi100Code: parcel.carrierNormalization?.kuaidi100Code,
+      carrierTableVersion: parcel.carrierNormalization?.tableVersion,
       sourceProvider: parcel.sourceProvider,
       orderId: parcel.accountOrder ? parcel.orderId || ownerId : "",
       projectedWaybill: parcel.accountOrder && !unprojectedOrder
@@ -289,6 +435,7 @@ export function parcelToShipment(
     timeline,
     sourceTimeline: timeline,
     manualTimelines: [],
+    statusPresentation,
     route: routeKind ? { kind: routeKind, source: parcel.source } : null,
     accountRecord: detailRecord(parcel, associatedPhone),
     updatedAtMs: now,
@@ -310,7 +457,9 @@ export function parcelToManualShipment(
       timeMs: parseProviderTime(track.timeText),
       detail: track.detail,
       statusCode: track.statusCode,
-      raw: track.statusCode ? { statusCode: track.statusCode } : {},
+      raw: track.statusCode
+        ? { statusCode: track.statusCode, _pipiStatusSource: parcel.source }
+        : { _pipiStatusSource: parcel.source },
     }))
     .filter((track) => Boolean(track.detail));
   const latest = tracks.find((track) => track.timeMs != null) || tracks[0];
@@ -338,7 +487,12 @@ export function parcelToManualShipment(
       sourceId: waybill,
       phoneTail: String(phoneTail || "").slice(-4),
       courierCode: parcel.courierCode,
+      rawCourierCode: parcel.rawCourierCode,
+      rawCompanyName: parcel.rawCompanyName,
       companyName,
+      carrierIsBuiltIn: parcel.carrierNormalization?.isBuiltIn,
+      carrierKuaidi100Code: parcel.carrierNormalization?.kuaidi100Code,
+      carrierTableVersion: parcel.carrierNormalization?.tableVersion,
       sourceProvider: parcel.sourceProvider,
       accountOrder: false,
       manuallyAdded: true,

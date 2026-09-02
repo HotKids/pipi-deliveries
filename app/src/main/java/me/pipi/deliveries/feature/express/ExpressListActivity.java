@@ -63,6 +63,7 @@ import me.pipi.deliveries.network.ExpressDiscoveryClient;
 import me.pipi.deliveries.network.ExpressQueryCancellation;
 import me.pipi.deliveries.network.ExpressSubscriptionClient;
 import me.pipi.deliveries.network.ManualQueryCoordinator;
+import me.pipi.deliveries.network.ManualQueryRoutingPolicy;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -71,6 +72,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Native Material shipment list and manual-query entry point. */
 public final class ExpressListActivity extends AppCompatActivity {
@@ -439,7 +441,9 @@ public final class ExpressListActivity extends AppCompatActivity {
     }
 
     private void queryWaybill() {
-        queryWaybill("", "");
+        String waybill = currentWaybill();
+        queryWaybill("", detectedCarrierHintForQuery(
+                waybill, detectedWaybill, detectedCourierCode));
     }
 
     private void queryWaybill(String suppliedPhoneTail, String suppliedCourierHint) {
@@ -452,12 +456,11 @@ public final class ExpressListActivity extends AppCompatActivity {
             return;
         }
         querying = true;
+        Toast.makeText(this, R.string.manual_querying, Toast.LENGTH_SHORT).show();
         long operationGeneration = ++queryGeneration;
         queryContainer.setError(null);
         queryInput.setEnabled(false);
         hideKeyboard();
-        String detectedAtSubmission = waybill.equals(detectedWaybill)
-                ? detectedCourierCode : "";
         carrierDetectGeneration++;
         if (carrierDetectStart != null) {
             mainHandler.removeCallbacks(carrierDetectStart);
@@ -472,50 +475,81 @@ public final class ExpressListActivity extends AppCompatActivity {
                 new ExpressQueryCancellation(MANUAL_QUERY_TIMEOUT_MS);
         queryCancellation = operationCancellation;
         queryTask = queryWorker.submit(() -> {
-            String attemptedCourierHint = suppliedCourierHint == null
-                    ? "" : suppliedCourierHint;
+            AtomicReference<String> attemptedCourierHint = new AtomicReference<>(
+                    suppliedCourierHint == null ? "" : suppliedCourierHint);
             try {
                 ExpressRepository repository = ExpressRepository.get(this);
                 ExpressItem existing = repository.findByWaybill(waybill, queryBindingSource);
-                ArrayList<String> phones = new ArrayList<>();
-                if (suppliedPhoneTail != null && !suppliedPhoneTail.isEmpty()) {
-                    phones.add(suppliedPhoneTail);
+                ExpressRepository.ManualQueryOwnerClaim ownerClaim = existing == null
+                        ? null : repository.captureManualQueryOwner(existing);
+                if (existing != null && existing.isJingDongSource()
+                        && repository.sourceTimelineHasStart(existing)) {
+                    ExpressItem sourceOwner = existing;
+                    runOnUiThread(() -> {
+                        if (isFinishing() || isDestroyed()
+                                || !queryOperationIsCurrent(
+                                operationGeneration, queryBindingSource)) return;
+                        if (queryCancellation == operationCancellation) {
+                            queryCancellation = null;
+                        }
+                        queryTask = null;
+                        querying = false;
+                        queryInput.setEnabled(true);
+                        queryInput.setText("");
+                        startActivity(new Intent(
+                                this, ExpressDetailActivity.class).putExtra(
+                                ExpressDetailActivity.EXTRA_ROW_ID, sourceOwner.rowId));
+                    });
+                    return;
                 }
-                phones.addAll(repository.phoneCandidates(
-                        existing == null ? "" : existing.phone, queryBindingSource));
-                String liveDetected = detectedAtSubmission;
-                if (liveDetected.isEmpty() && waybill.equals(detectedWaybill)) {
-                    // Never serialize submission behind the decorative classifier preview. The
-                    // selected manual source and its K100 fallback both perform authoritative
-                    // recognition as part of their own bounded request.
-                    liveDetected = detectedCourierCode;
-                }
-                String courierHint = suppliedCourierHint == null
-                        || suppliedCourierHint.isEmpty()
-                        ? !liveDetected.isEmpty()
-                                ? liveDetected
-                                : existing == null ? "" : existing.courierCode
-                        : suppliedCourierHint;
-                attemptedCourierHint = courierHint;
-                ExpressQueryResult result;
-                boolean requireTimedTimeline = existing != null
-                        && existing.isInterface5ShunFengSource();
-                result = ManualQueryCoordinator.queryForBindingSource(
-                        queryBindingSource, requireTimedTimeline,
-                        () -> new ExpressDiscoveryClient().queryManual(
-                                getApplicationContext(), waybill,
-                                repository.phones(queryBindingSource),
-                                operationCancellation),
-                        () -> new ExpressSubscriptionClient().queryManual(
-                                getApplicationContext(), waybill,
-                                operationCancellation),
-                        () -> new ExpressApi(getApplicationContext()).queryWithPhones(
-                                waybill, courierHint, phones, operationCancellation));
+                ExpressApi manualApi = new ExpressApi(getApplicationContext());
+                attemptedCourierHint.set(manualQueryRawCarrierHint(
+                        suppliedCourierHint,
+                        existing == null ? "" : existing.courierCode));
+                ExpressSubscriptionClient meizuApi = new ExpressSubscriptionClient();
+                ManualQueryCoordinator.Batch manualBatch =
+                        ManualQueryCoordinator.queryPickerFirst(
+                                () -> meizuApi.queryManual(
+                                        getApplicationContext(), waybill,
+                                        operationCancellation),
+                                existing == null ? null
+                                        : repository.manualTimelineCandidate(
+                                        existing, "meizu"),
+                                () -> {
+                                    String courierHint = attemptedCourierHint.get();
+                                    if (courierHint.isEmpty()) {
+                                        courierHint = manualApi.detect(
+                                                waybill, operationCancellation);
+                                        attemptedCourierHint.set(courierHint);
+                                    }
+                                    return manualApi.queryMoto(
+                                            waybill, courierHint, operationCancellation);
+                                },
+                                ManualQueryRoutingPolicy.includesMoto(existing),
+                                pickerPreview -> runOnUiThread(() -> {
+                                    if (isFinishing() || isDestroyed()
+                                            || !queryOperationIsCurrent(
+                                            operationGeneration, queryBindingSource)) return;
+                                    startActivity(
+                                            ExpressDetailActivity.transientPickerPreviewIntent(
+                                                    this, pickerPreview,
+                                                    suppliedPhoneTail, queryBindingSource));
+                                }));
+                ExpressQueryResult result = manualBatch.detailSelected();
+                if (result == null) throw new IllegalStateException("暂无轨迹");
                 String queryPhone = !result.phone.isEmpty()
                         ? result.phone
                         : suppliedPhoneTail == null || suppliedPhoneTail.isEmpty()
                         ? existing == null ? "" : existing.phone
                         : suppliedPhoneTail;
+                repository.saveManualQueryBatch(
+                        existing, ownerClaim, manualBatch.successes,
+                        queryPhone, queryBindingSource);
+                if (!Kuaidi100TimelinePolicy.hasTimedTracking(result)
+                        && repository.enqueuePendingManual(
+                        result, queryPhone, queryBindingSource)) {
+                    ExpressScheduler.ensureScheduled(this);
+                }
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()
                             || !queryOperationIsCurrent(
@@ -528,21 +562,32 @@ public final class ExpressListActivity extends AppCompatActivity {
                     queryInput.setEnabled(true);
                     queryInput.setText("");
                     Toast.makeText(this,
-                            (requireTimedTimeline
-                                    ? Kuaidi100TimelinePolicy.hasTimedTracking(result)
-                                    : Kuaidi100TimelinePolicy.hasRealTracking(result))
+                            Kuaidi100TimelinePolicy.hasRealTracking(result)
                                     ? R.string.manual_query_success
                                     : R.string.manual_query_no_track,
                             Toast.LENGTH_SHORT).show();
-                    startActivity(ExpressDetailActivity.previewIntent(
+                    startActivity(ExpressDetailActivity.persistedPreviewIntent(
                             this, result, queryPhone, queryBindingSource));
                 });
             } catch (Throwable failure) {
-                String message = failure instanceof InterruptedException
+                String rawMessage = failure.getMessage() == null ? "" : failure.getMessage();
+                boolean timeout = failure instanceof InterruptedException
+                        || rawMessage.contains("超时");
+                String message = timeout
                         ? getString(R.string.manual_query_timeout)
-                        : failure.getMessage() == null
-                        ? getString(R.string.network_exception) : failure.getMessage();
-                String retryCourierHint = attemptedCourierHint;
+                        : rawMessage.contains("暂无轨迹")
+                        ? getString(R.string.manual_query_no_track)
+                        : getString(R.string.manual_query_failure);
+                String retryCourierHint = attemptedCourierHint.get();
+                boolean needsPhone = failure instanceof ExpressApi.QueryException
+                        && ((ExpressApi.QueryException) failure).needsPhoneTail();
+                if (!needsPhone) {
+                    ExpressRepository repository = ExpressRepository.get(this);
+                    if (repository.enqueuePendingManual(
+                            waybill, suppliedPhoneTail, queryBindingSource)) {
+                        ExpressScheduler.ensureScheduled(this);
+                    }
+                }
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()
                             || !queryOperationIsCurrent(
@@ -565,11 +610,7 @@ public final class ExpressListActivity extends AppCompatActivity {
                         }
                     }
                     queryContainer.setError(null);
-                    boolean unrecognized = isCarrierRecognitionFailure(message);
-                    if (unrecognized) updateCarrierSuffix("");
-                    Toast.makeText(this, unrecognized
-                                    ? getString(R.string.carrier_unrecognized) : message,
-                            Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
                 });
             }
         });
@@ -615,26 +656,21 @@ public final class ExpressListActivity extends AppCompatActivity {
         try {
             ExpressItem existing = ExpressRepository.get(this)
                     .findByWaybill(waybill, bindingSource);
+            String cachedCode = existing == null ? "" : existing.displayCourierCode();
             CarrierRegistry.Carrier cached = existing == null ? null
-                    : CarrierRegistry.resolve(existing.courierCode, existing.companyName);
+                    : CarrierRegistry.resolveKuaidi100Code(cachedCode);
+            if (cached == null && existing != null) {
+                cached = CarrierRegistry.resolveName(existing.displayCompany());
+            }
             if (cached != null) {
-                code = cached.kuaidi100Code;
-                company = CarrierRegistry.displayName(
-                        existing.courierCode, existing.companyName);
+                code = cachedCode;
+                company = existing.displayCompany();
             } else {
-                if ("interface5".equals(bindingSource)) {
-                    ExpressDiscoveryClient.CarrierMatch detected =
-                            new ExpressDiscoveryClient().detectManualCarrier(
-                                    getApplicationContext(), waybill, cancellation);
-                    code = detected.code;
-                    company = CarrierRegistry.displayName(code, detected.name);
-                } else {
-                    code = new ExpressApi(getApplicationContext()).detect(
-                            waybill, cancellation);
-                    CarrierRegistry.Carrier detected = CarrierRegistry.resolve(code, "");
-                    company = detected == null ? ""
-                            : CarrierRegistry.displayName(code, detected.companyName);
-                }
+                code = new ExpressApi(getApplicationContext()).detect(
+                        waybill, cancellation);
+                CarrierRegistry.Carrier detected = CarrierRegistry.resolveKuaidi100Code(code);
+                company = detected == null ? ""
+                        : CarrierRegistry.displayName(code, detected.companyName);
             }
         } catch (Throwable ignored) {
             // Detection is optional. Submission retains its server-side fallback.
@@ -690,6 +726,25 @@ public final class ExpressListActivity extends AppCompatActivity {
                 && expectedBindingSource.equals(currentBindingSource);
     }
 
+    static String manualQueryRawCarrierHint(
+            String suppliedHint,
+            String existingRawCarrier) {
+        String supplied = suppliedHint == null ? "" : suppliedHint.trim();
+        if (!supplied.isEmpty()) return supplied;
+        String existing = existingRawCarrier == null ? "" : existingRawCarrier.trim();
+        return existing;
+    }
+
+    static String detectedCarrierHintForQuery(
+            String currentWaybill,
+            String detectedWaybill,
+            String detectedCourierCode) {
+        String current = currentWaybill == null ? "" : currentWaybill.trim();
+        String detected = detectedWaybill == null ? "" : detectedWaybill.trim();
+        if (current.isEmpty() || !current.equalsIgnoreCase(detected)) return "";
+        return detectedCourierCode == null ? "" : detectedCourierCode.trim();
+    }
+
     private String currentWaybill() {
         return queryInput.getText() == null ? "" : queryInput.getText().toString().trim();
     }
@@ -703,13 +758,6 @@ public final class ExpressListActivity extends AppCompatActivity {
                 recognized
                         ? androidx.appcompat.R.attr.colorPrimary
                         : com.google.android.material.R.attr.colorOnSurfaceVariant)));
-    }
-
-    private static boolean isCarrierRecognitionFailure(String message) {
-        String value = message == null ? "" : message.trim();
-        return value.contains("识别承运商")
-                || value.contains("快递公司")
-                || value.contains("有效的快递单号");
     }
 
     private void showPhoneTailDialog(

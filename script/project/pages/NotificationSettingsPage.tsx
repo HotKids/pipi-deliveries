@@ -79,10 +79,10 @@ export function NotificationSettingsPage(props: {
     try {
       const saved = saveNotificationStatuses(next);
       setEnabled(saved);
-      setNotice("");
+      setNotice("通知设置已保存");
       props.onChanged?.(saved.length);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "无法保存通知设置，请重试");
+    } catch {
+      setNotice("保存失败，请稍后重试");
     }
   }
 

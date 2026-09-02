@@ -168,6 +168,7 @@ assert.equal(scheduled[0]?.body, "快递员正在派送");
 assert.deepEqual(scheduled[0]?.iconImageData, {
   path: "/script/assets/couriers/sf.png",
 });
+assert.deepEqual(scheduled[0]?.userInfo, { shipment: "shipment-1" });
 assert.equal(
   (scheduled[0]?.actions as Array<{ title: string }> | undefined)?.[0]?.title,
   "查看详情",
@@ -200,22 +201,111 @@ await batch;
 assert.equal(batchSettled, true);
 scheduleGate = null;
 
+const scheduledBeforeCancelledGeneration = scheduled.length;
+await notifyShipmentChange(previous, current, () => false);
+await notifyShipmentChanges(
+  new Map([[previous.identity.id, previous]]),
+  [current],
+  () => false,
+);
+assert.equal(scheduled.length, scheduledBeforeCancelledGeneration);
+
 await notifyShipmentChange(null, shipment("DELIVERY", "首次发现"));
 assert.equal(scheduled.length, 3);
 
-saveNotificationStatuses([], 101);
+saveNotificationStatuses(["COMPLETED"], 101);
+const completedJingDong = {
+  ...shipment("COMPLETED", "手动权威包已签收"),
+  identity: {
+    ...shipment("COMPLETED", "手动权威包已签收").identity,
+    courierCode: "RAW",
+    companyName: "原始厂商标签",
+    sourceProvider: "JingDong",
+  },
+  sourceTimeline: {
+    ...shipment("TRANSIT", "源包运输中").timeline,
+    latestDetail: "源包运输中",
+  },
+};
+await notifyShipmentChange(completedJingDong, {
+  ...completedJingDong,
+  identity: {
+    ...completedJingDong.identity,
+    courierCode: "SF",
+    companyName: "顺丰速运",
+  },
+});
+assert.equal(
+  scheduled.length,
+  3,
+  "carrier normalization after a displayed JD completion is not a status notification",
+);
+await notifyShipmentChange(
+  {
+    ...completedJingDong,
+    timeline: shipment("TRANSIT", "运输中").timeline,
+  },
+  completedJingDong,
+);
+assert.equal(scheduled.length, 4, "the initial completion notification is retained");
+
+saveNotificationStatuses(["ORDERED"], 102);
+const orderedJingDong = {
+  ...shipment("ORDERED", "订单已创建"),
+  identity: {
+    ...shipment("ORDERED", "订单已创建").identity,
+    sourceId: "9876543210987654",
+    orderId: "9876543210987654",
+    projectedWaybill: "",
+    accountOrder: true,
+    courierCode: "JD",
+    companyName: "京东购物",
+  },
+  timeline: {
+    ...shipment("ORDERED", "订单已创建").timeline,
+    waybill: "9876543210987654",
+  },
+};
+await notifyShipmentChange(orderedJingDong, {
+  ...orderedJingDong,
+  statusPresentation: {
+    scope: "ORDER",
+    semantic: "COMPLETED",
+    text: "订单已完成",
+  },
+});
+assert.equal(scheduled.length, 5);
+assert.equal(scheduled[4]?.title, "京东购物 7654 · 已完成");
+
+saveNotificationStatuses([], 103);
 assert.deepEqual(loadNotificationStatuses(true), []);
 await notifyShipmentChange(
   shipment("TRANSIT", "快件离开转运中心"),
   shipment("DELIVERY", "再次派送"),
 );
-assert.equal(scheduled.length, 3);
+assert.equal(scheduled.length, 5);
 
 files.clear();
 memory.set(
   "shared:pipi_deliveries_notification_preferences_v1",
-  JSON.stringify({ schema: 1, updatedAtMs: 102, enabled: ["UNKNOWN"] }),
+  JSON.stringify({ schema: 1, updatedAtMs: 104, enabled: ["UNKNOWN"] }),
 );
 assert.deepEqual(loadNotificationStatuses(true), NOTIFICATION_STATUS_OPTIONS);
+
+saveNotificationStatuses(["DELIVERY"], 105);
+const unknownCarrier = {
+  ...shipment("DELIVERY", "未知承运商正在派送"),
+  identity: {
+    ...shipment("DELIVERY", "未知承运商正在派送").identity,
+    courierCode: "UNKNOWN",
+    companyName: "未知快递",
+  },
+};
+await notifyShipmentChange(
+  { ...unknownCarrier, timeline: shipment("TRANSIT", "运输中").timeline },
+  unknownCarrier,
+);
+assert.equal(scheduled.length, 6);
+assert.equal(scheduled[5]?.iconImageData, null);
 
 console.log("notification preference and filtering tests passed");

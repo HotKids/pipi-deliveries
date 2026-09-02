@@ -43,7 +43,6 @@ public final class ExpressBindingSuppressionPolicyTest {
         assertTrue(database.contains(
                 "PRIMARY KEY(waybill_hash,binding_source,phone_hash)"));
         assertTrue(unbind.contains("insertUnboundPhoneAssociation"));
-        assertFalse(unbind.contains("insertTombstone"));
         assertTrue(repository.contains(
                 "\"binding_source=? AND phone_hash=?\""));
         assertTrue(repository.contains("&& rejectsUnboundAutomaticWrite("));

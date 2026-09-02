@@ -42,10 +42,10 @@
 
     <style name="PipiSearchField" parent="Widget.Material3.TextInputLayout.FilledBox">
         <item name="boxBackgroundColor">?attr/colorSurfaceContainer</item>
-        <item name="boxCornerRadiusTopStart">28dp</item>
-        <item name="boxCornerRadiusTopEnd">28dp</item>
-        <item name="boxCornerRadiusBottomStart">28dp</item>
-        <item name="boxCornerRadiusBottomEnd">28dp</item>
+        <item name="boxCornerRadiusTopStart">@dimen/express_search_field_corner_radius</item>
+        <item name="boxCornerRadiusTopEnd">@dimen/express_search_field_corner_radius</item>
+        <item name="boxCornerRadiusBottomStart">@dimen/express_search_field_corner_radius</item>
+        <item name="boxCornerRadiusBottomEnd">@dimen/express_search_field_corner_radius</item>
         <item name="boxStrokeWidth">0dp</item>
         <item name="boxStrokeWidthFocused">0dp</item>
         <item name="hintEnabled">false</item>
@@ -74,6 +74,15 @@
         <item name="android:scaleType">fitCenter</item>
     </style>
 
+    <style name="DeliveriesExpressWidgetSearch">
+        <item name="android:layout_width">22dp</item>
+        <item name="android:layout_height">22dp</item>
+        <item name="android:contentDescription">@string/search_express_hint</item>
+        <item name="android:scaleType">fitCenter</item>
+        <item name="android:src">@drawable/ic_search</item>
+        <item name="android:tint">?attr/colorOnSurfaceVariant</item>
+    </style>
+
     <style name="DeliveriesExpressWideTextColumn">
         <item name="android:layout_width">0dp</item>
         <item name="android:layout_height">wrap_content</item>
@@ -90,15 +99,20 @@
     </style>
 
     <style name="DeliveriesExpressWideCompany">
-        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:layout_weight">1</item>
         <item name="android:ellipsize">end</item>
         <item name="android:includeFontPadding">false</item>
         <item name="android:maxLines">1</item>
         <item name="android:textColor">?attr/colorOnSurface</item>
         <item name="android:textSize">16sp</item>
         <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="DeliveriesExpressWideTitleSpacer">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">0dp</item>
+        <item name="android:layout_weight">1</item>
     </style>
 
     <style name="DeliveriesExpressWideStatus">

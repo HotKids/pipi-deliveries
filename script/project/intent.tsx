@@ -5,8 +5,9 @@ import { refreshAllShipments } from "./services/sync";
 async function run() {
   try {
     const summary = await refreshAllShipments(undefined, {
-      budgetMs: 20_000,
-      accountOrderProjection: false,
+      budgetMs: 120_000,
+      accountOrderProjection: true,
+      backgroundHostSafe: true,
     });
     Script.exit(Intent.text(refreshIntentMessage(summary)));
   } catch {

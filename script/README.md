@@ -1,15 +1,71 @@
-# Scripting source
+# Pipi Deliveries（派派助手 Scripting 版）
 
-`project/` is the reviewable source of the Scripting edition. The release workflow runs its behavior tests, packages it, and verifies the generated `.scripting` archive before publishing.
+Pipi Deliveries 的 iOS 版本以 Scripting 脚本形式提供，核心功能与 Android Lite 版基本一致。脚本在 Scripting App 中运行，快递列表、物流缓存及用户配置保存在本机。
 
-Run the same checks locally with:
+## 功能简介
+
+- 最多绑定五个手机号码，并自动同步与其关联的快递信息；
+- 输入运单号码即可识别承运商并查询物流动态，部分承运商可能需要验证收寄件手机号码后四位；
+- 各轨迹来源分别增量保存，并按完整度整包择优展示，避免不同来源的节点相互拼接；
+- 手动查询提交后会立即进入物流详情；尚未产生有效轨迹的运单仅进入后台查询队列，不显示在本地列表中；获得有效轨迹后再加入列表，24 小时内仍无轨迹则自动清理；
+- 支持应用内列表、物流详情、状态变更通知、快捷指令及 App Intent 刷新；
+- 提供 2 × 2 状态概览和 4 × 2 三行物流动态两种主屏幕小组件；
+- 承运商图标均保存在本地，并支持深色模式；
+- 已取消快递保留四小时，已签收快递保留七日，期满后自动清理相关本地数据。
+
+## 使用说明
+
+使用前需先在 iPhone 或 iPad 上安装 Scripting App，再从 [Releases](https://github.com/HotKids/pipi-deliveries/releases) 下载并导入 `pipi-deliveries.scripting`。也可通过[在线脚本](https://raw.githubusercontent.com/HotKids/pipi-deliveries/main/script/pipi-deliveries.scripting)直接安装或更新。脚本导入后显示为“派派助手”，无法脱离 Scripting App 独立安装或运行。
+
+首次运行时，请按提示允许所需的剪贴板与文件访问，并在“设置”中输入由项目维护者提供的 Access Key。随后可在“管理账号”中绑定手机号码，或直接在首页输入运单号码查询。
+
+在主屏幕添加 Scripting 小组件并选择“派派助手”，即可使用 2 × 2 或 4 × 2 小组件。WidgetKit 的刷新时机由 iOS 调度；需要立即更新时，可运行脚本、快捷指令或 App Intent。
+
+脚本首次打开和从后台恢复时会自动读取最新本地状态并发起刷新，首页下拉则会强制刷新。列表、详情、小组件与状态变更通知共用同一份本地快递状态：刷新结果先写入本地，再更新小组件并判断是否发送通知；点击通知会先读取最新状态并定位到对应快递详情。小组件会在系统分配的执行时间内尝试有界刷新，并请求最早 15 分钟后再次运行；刷新失败或超时时继续显示已有缓存，实际调度时间仍由 WidgetKit 决定。
+
+更新或重新导入同名脚本时，Access Key、手机号码绑定记录、快递列表、物流缓存、待查队列及诊断日志会继续保留。只有执行相应的移除、解绑或删除操作时，相关数据才会被删除。
+
+## 隐私声明
+
+为完成手机号验证、快递同步与物流查询，必要的手机号、验证码、运单号、手机尾号、随机安装身份及网络信息会经 Cloudflare Worker 临时中转至相关服务。部分订单会在本机加载第三方页面以提取运单号。Worker 按当前设计不持久化保存业务数据；Access Key、快递列表与物流缓存保存在本机，第三方服务仍可能依据其政策处理必要的网络日志或 Cookie。
+
+Access Key、手机号码绑定记录、快递列表与物流缓存均保存在本机。为保证覆盖导入后仍可恢复，Access Key 会写入当前脚本的 Keychain 与 App Group 本地恢复文件；App Group 文件可由同一设备上的其他 Scripting 脚本读取，因此脚本版本无法同时提供独立原生应用级别的 Keychain 隔离。
+
+诊断日志仅记录接口类型、状态版本、绑定数量、耗时及错误类别，最多保留二百条并在七日后自动过期；不会记录手机号码、验证码、Access Key、运单号码或网络响应正文，也不会自动上传。
+
+## 平台限制
+
+- WidgetKit 不能保证严格的固定刷新周期，主屏幕小组件也不能上下滚动；
+- 4 × 2 小组件最多显示三条物流动态；
+- 首页与后台刷新只更新会影响列表展示的账号、本地和路由增量缓存，不抓取 H5 轨迹，也不调用最终兜底。手动查件先通过 K100 免费识别接口确定承运商，再以 Meizu Picker 结果进入详情；手动件列表优先显示 Moto 增量轨迹，顺丰来源件列表优先显示 Meizu Picker 整包，两者均保留各自既有轨迹作为兜底。
+- 手动件详情刷新会并行查询 Moto 与 K100 H5，并在成功结果中按完整度整包择优；两者均失败或没有有效带时间节点时，才调用一次 KDNiao。京东账号件与顺丰来源件不查询 Moto，仅查询 K100 H5，失败或无有效轨迹后再调用 KDNiao。K100 H5 与 KDNiao 结果只用于详情，不覆盖列表。
+- 京东购物订单在未取得真实运单号时可执行隔离 H5 投影，但该页面仅用于提取真实运单号，返回的残缺轨迹不会入库。取得运单号后，仅在详情页下拉刷新时通过 K100 查询轨迹；返回承运商不一致的结果不会采用。每次实际下拉均可重新请求；查询结果或上游限制会以归一化提示反馈，且限制仅使本次刷新失败。查询不会打开手机或桌面网页。
+- 各轨迹来源分别增量保存；即使某一来源每轮只返回一个带时间的节点，也只会与该来源之前的节点合并。京东列表、小组件与通知始终使用小米账户增量轨迹；顺丰列表使用 Meizu Picker 整包并以账号粗轨迹兜底；经校验的 K100 整包只负责详情展示，其他来源不会向其中拼接轨迹。
+- App 与小组件共用 App Group 本地状态，但 Scripting 当前未提供同步的跨宿主事务或 CAS；App 与 Widget 恰好同时写入时，尚不能严格证明不会发生后写覆盖，需后续迁移到可事务化的异步存储后再关闭这一限制；
+- 本项目运行于 Scripting 宿主内，不是独立 IPA；Access Key 仅用于访问控制，不能证明脚本源码未经修改。
+
+## 服务可用性声明
+
+本项目的部分功能依赖通过逆向分析获得的第三方接口。因此，相关接口不具备长期可用性保障，并可能在未经通知的情况下停止服务；届时，依赖相关接口的功能可能无法继续使用。
+
+## 免责声明
+
+本项目仅供学习、研究及个人非商业用途使用。项目作者不对第三方接口的持续可用性、查询结果的准确性、完整性或及时性作出任何明示或默示保证。因安装、使用、传播或修改本项目而产生的任何风险、责任或损失，均由使用者自行承担。
+
+## 传播限制
+
+未经项目作者事先明确授权，任何个人或组织不得在中华人民共和国大陆地区传播、分发、转载、镜像、再发布本项目的源代码、脚本包或任何衍生版本。
+
+## 开发与校验
+
+`project/` 保存可审查的 Scripting 源码，`pipi-deliveries.scripting` 为根据该源码生成的发布包。发布流程会运行行为测试、生成脚本包并核对包内文件，避免源码与发布包不一致。
+
+在仓库根目录运行：
 
 ```sh
 sh script/project/tools/test.sh
-sh script/project/tools/package.sh /tmp/pipi-deliveries.scripting
-sh script/project/tools/verify-package.sh /tmp/pipi-deliveries.scripting
+sh script/project/tools/package.sh
+sh script/project/tools/verify-package.sh
 ```
 
-`pipi-deliveries.scripting` is a generated convenience artifact. CI verifies that its file list and contents match `project/` so changes cannot be hidden in the archive.
-
-The repository does not include substitute declarations for Scripting's native module. Exact TypeScript host API checking must use the `.d.ts` files synchronized by `scripting-cli` from the installed Scripting App; the current repository check covers executable behavior tests and package integrity without pretending that broad local stubs are authoritative host typings.
+Scripting 原生模块的精确类型检查应使用 `scripting-cli` 从已安装 Scripting App 同步的 `.d.ts` 声明；仓库测试主要覆盖可执行行为与脚本包完整性。

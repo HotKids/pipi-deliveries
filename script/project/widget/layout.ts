@@ -2,6 +2,10 @@ export type SmallWidgetLayout = {
   outerPadding: number;
   headerSpacing: number;
   statusFont: number;
+  companyFont: number;
+  identitySpacing: number;
+  statusLineHeight: number;
+  companyLineHeight: number;
   detailFont: number;
   iconSize: number;
   pillHeight: number;
@@ -13,8 +17,11 @@ export type SmallWidgetLayout = {
 
 export type SmallWidgetEmptyLayout = {
   padding: number;
-  searchSize: number;
   searchFont: number;
+  searchWidth: number;
+  searchHeight: number;
+  searchTopPadding: number;
+  searchTrailingPadding: number;
   headerHeight: number;
   contentHeight: number;
   contentCenterY: number;
@@ -28,8 +35,11 @@ export type MediumWidgetLayout = {
   horizontalPadding: number;
   verticalPadding: number;
   headerHeight: number;
+  searchFont: number;
+  searchWidth: number;
   rowHeight: number;
   iconSize: number;
+  detailFont: number;
   itemSpacing: number;
   emptyVehicleSize: number;
   emptyLabelFont: number;
@@ -37,6 +47,10 @@ export type MediumWidgetLayout = {
   emptyContentHeight: number;
   emptyContentCenterY: number;
 };
+
+function populatedDetailFont(compact: boolean): number {
+  return compact ? 12 : 13;
+}
 
 export type MediumWidgetPlacement = {
   rowCount: number;
@@ -47,19 +61,51 @@ export type MediumWidgetPlacement = {
   bottomSpace: number;
 };
 
-export function smallWidgetLayout(width: number): SmallWidgetLayout {
-  const compact = Number.isFinite(width) && width <= 148;
+type WidgetSearchLayout = {
+  font: number;
+  width: number;
+  height: number;
+  topPadding: number;
+  trailingPadding: number;
+};
+
+function widgetSearchLayout(height: number): WidgetSearchLayout {
+  const compact = Number.isFinite(height) && height < 155;
+  const topPadding = compact ? 10 : 12;
+  return {
+    font: 18,
+    width: 20,
+    height: 25,
+    topPadding,
+    trailingPadding: Number((topPadding * 1.2).toFixed(1)),
+  };
+}
+
+export function smallWidgetLayout(
+  width: number,
+  height: number,
+): SmallWidgetLayout {
+  const compactWidth = Number.isFinite(width) && width <= 148;
+  const compact = compactWidth
+    || (Number.isFinite(height) && height < 155);
+  const iconSize = compact ? 38 : 42;
+  const identitySpacing = 1;
+  const statusLineHeight = iconSize * 0.6;
   return {
     outerPadding: compact ? 12 : 14,
-    headerSpacing: compact ? 4 : 8,
-    statusFont: compact ? 22 : 25,
-    detailFont: compact ? 12 : 13,
-    iconSize: compact ? 32 : 36,
+    headerSpacing: compact ? 8 : 9,
+    statusFont: 20,
+    companyFont: 12,
+    identitySpacing,
+    statusLineHeight,
+    companyLineHeight: iconSize - identitySpacing - statusLineHeight,
+    detailFont: populatedDetailFont(compact),
+    iconSize,
     pillHeight: 40,
     pillFont: 14,
-    pillIconFont: compact ? 13 : 14,
-    pillSpacing: compact ? 4 : 6,
-    pillHorizontalPadding: compact ? 5 : 11,
+    pillIconFont: compactWidth ? 13 : 14,
+    pillSpacing: compactWidth ? 4 : 6,
+    pillHorizontalPadding: compactWidth ? 5 : 11,
   };
 }
 
@@ -69,6 +115,7 @@ export function smallWidgetEmptyLayout(
 ): SmallWidgetEmptyLayout {
   const compact = Number.isFinite(width) && width <= 148;
   const padding = compact ? 12 : 14;
+  const search = widgetSearchLayout(height);
   const headerHeight = 24;
   const resolvedHeight = Number.isFinite(height) && height > 0
     ? height
@@ -79,8 +126,11 @@ export function smallWidgetEmptyLayout(
   );
   return {
     padding,
-    searchSize: 24,
-    searchFont: 18,
+    searchFont: search.font,
+    searchWidth: search.width,
+    searchHeight: search.height,
+    searchTopPadding: search.topPadding,
+    searchTrailingPadding: search.trailingPadding,
     headerHeight,
     contentHeight,
     contentCenterY: padding + headerHeight + contentHeight / 2,
@@ -91,13 +141,14 @@ export function smallWidgetEmptyLayout(
 }
 
 export function mediumWidgetLayout(height: number): MediumWidgetLayout {
-  const compact = Number.isFinite(height) && height < 155;
+  const search = widgetSearchLayout(height);
+  const compact = search.topPadding === 10;
   const resolvedHeight = Number.isFinite(height) && height > 0
     ? height
     : compact ? 148 : 155;
-  const verticalPadding = compact ? 10 : 12;
-  const horizontalPadding = Number((verticalPadding * 1.2).toFixed(1));
-  const headerHeight = 25;
+  const verticalPadding = search.topPadding;
+  const horizontalPadding = search.trailingPadding;
+  const headerHeight = search.height;
   const itemSpacing = 2;
   const rowLimit = 3;
   const rowHeight = (
@@ -115,8 +166,11 @@ export function mediumWidgetLayout(height: number): MediumWidgetLayout {
     horizontalPadding,
     verticalPadding,
     headerHeight,
+    searchFont: search.font,
+    searchWidth: search.width,
     rowHeight,
     iconSize: compact ? 32 : 33,
+    detailFont: populatedDetailFont(compact),
     itemSpacing,
     emptyVehicleSize: 68,
     emptyLabelFont: 16,

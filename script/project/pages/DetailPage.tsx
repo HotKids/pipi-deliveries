@@ -14,48 +14,87 @@ import {
 import type { AppState, Shipment } from "../models";
 import { CourierIcon } from "../components/CourierIcon";
 import { courierHotline } from "../services/carrier-presentation";
-import { refreshShipmentById } from "../services/sync";
+import {
+  continueManualShipmentPreview,
+  refreshShipmentById,
+  type ManualShipmentPreview,
+} from "../services/sync";
 import {
   displayWaybill,
+  selectShipmentDetailTimeline,
   unprojectedAccountOrder,
 } from "../services/shipment-policy";
 import {
   isProviderErrorDetail,
-  statusLabel,
+  shipmentDetailPresentationStatus,
   statusTint,
 } from "../services/status";
 import { timelineTimeParts } from "../services/time-presentation";
 import { preferNewerShipment } from "../services/ui-state";
 import { copyText } from "../services/clipboard";
-import { transientToast } from "../services/ui-feedback";
+import {
+  manualDetailRefreshToast,
+  transientToast,
+} from "../services/ui-feedback";
+import {
+  diagnosticErrorDetails,
+  writeDiagnostic,
+} from "../services/logger";
 
 export function DetailPage(props: {
   shipment: Shipment;
-  refreshOnAppear?: boolean;
+  manualPreview?: ManualShipmentPreview | null;
+  refreshOnAppear?:
+    | "manual_submit"
+    | "identity_projection"
+    | "detail_open"
+    | false;
   onStateChange?: (state: AppState, shipment: Shipment) => void;
 }) {
   const [shipment, setShipment] = useState(props.shipment);
   const [notice, setNotice] = useState("");
+  const [loadingManualDetail, setLoadingManualDetail] = useState(
+    props.refreshOnAppear === "manual_submit",
+  );
   const refreshGenerationRef = useRef(0);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
-  const displayTracks = shipment.timeline.tracks.filter(
+  const refreshAbortRef = useRef<AbortController | null>(null);
+  const detailTimeline = selectShipmentDetailTimeline(shipment);
+  const usesKuaidi100Detail =
+    detailTimeline.provider.trim().toLowerCase() === "kuaidi100_h5";
+  const detailCourierCode = usesKuaidi100Detail
+    ? detailTimeline.courierCode
+    : shipment.identity.courierCode;
+  const detailCompanyName = usesKuaidi100Detail
+    ? detailTimeline.companyName
+    : shipment.identity.companyName;
+  const displayTracks = detailTimeline.tracks.filter(
     (track) => Boolean(track.detail.trim()) && !isProviderErrorDetail(track.detail),
   );
   const hotline = courierHotline(
-    shipment.identity.courierCode,
-    shipment.identity.companyName,
+    detailCourierCode,
+    detailCompanyName,
   );
   const waybill = displayWaybill(shipment);
+  const presentationStatus = shipmentDetailPresentationStatus(
+    shipment,
+    detailTimeline,
+  );
 
   useEffect(() => {
     setShipment((current) => preferNewerShipment(current, props.shipment));
   }, [props.shipment.identity.id, props.shipment.updatedAtMs]);
 
   useEffect(() => {
-    if (props.refreshOnAppear === false) return;
+    if (!props.refreshOnAppear) return;
+    if (props.refreshOnAppear === "manual_submit") {
+      setLoadingManualDetail(true);
+    }
     void refresh(false);
     return () => {
       refreshGenerationRef.current += 1;
+      refreshAbortRef.current?.abort();
+      refreshAbortRef.current = null;
       refreshInFlightRef.current = null;
     };
   }, [props.shipment.identity.id, props.refreshOnAppear]);
@@ -64,19 +103,76 @@ export function DetailPage(props: {
     if (refreshInFlightRef.current) return refreshInFlightRef.current;
     const generation = refreshGenerationRef.current + 1;
     refreshGenerationRef.current = generation;
+    const controller = new AbortController();
+    refreshAbortRef.current = controller;
     const task = (async () => {
       setNotice("");
       try {
-        const result = await refreshShipmentById(
-          props.shipment.identity.id,
-          { forceAccountOrderProjection: true, forceManualRefresh },
-        );
+        const result = props.refreshOnAppear === "manual_submit" &&
+            props.manualPreview?.roundComplete === false &&
+            !forceManualRefresh
+          ? await continueManualShipmentPreview(props.manualPreview, {
+              signal: controller.signal,
+            })
+          : await refreshShipmentById(props.shipment.identity.id, {
+            forceAccountOrderProjection:
+              forceManualRefresh || props.refreshOnAppear === "identity_projection",
+            forceManualRefresh,
+            includeKdniaoFallback:
+              forceManualRefresh ||
+              props.refreshOnAppear === "manual_submit" ||
+              props.refreshOnAppear === "identity_projection" ||
+              props.refreshOnAppear === "detail_open",
+            trigger: forceManualRefresh
+              ? "detail_pull"
+              : props.refreshOnAppear || "detail_open",
+            signal: controller.signal,
+          });
         if (generation !== refreshGenerationRef.current) return;
         setShipment((current) => preferNewerShipment(current, result.shipment));
         props.onStateChange?.(result.state, result.shipment);
-      } catch {
+        const hasUsableDetail = selectShipmentDetailTimeline(
+          result.shipment,
+        ).tracks.some(
+          (track) =>
+            Boolean(track.detail.trim()) &&
+            !isProviderErrorDetail(track.detail),
+        );
+        if (props.refreshOnAppear === "manual_submit") {
+          setNotice(manualDetailRefreshToast(
+            result.refreshed,
+            hasUsableDetail,
+          ));
+        } else if (forceManualRefresh) {
+          setNotice(
+            result.refreshed && hasUsableDetail
+              ? "轨迹加载成功"
+              : hasUsableDetail
+                ? "当前轨迹已是最新"
+                : "暂未获取到可用轨迹",
+          );
+        }
+      } catch (error) {
         if (generation === refreshGenerationRef.current) {
-          setNotice("暂时无法更新，已显示本地缓存");
+          const errorDetails = diagnosticErrorDetails(error);
+          if (errorDetails.errorCategory === "removed") return;
+          writeDiagnostic("detail.refresh.ui_failed", {
+            trigger: forceManualRefresh
+              ? "detail_pull"
+              : props.refreshOnAppear || "detail_open",
+            ...errorDetails,
+          }, "warning");
+          if (!displayTracks.length) {
+            setNotice("轨迹更新失败，请稍后重试");
+          }
+        }
+      } finally {
+        if (
+          generation === refreshGenerationRef.current &&
+          !forceManualRefresh &&
+          props.refreshOnAppear === "manual_submit"
+        ) {
+          setLoadingManualDetail(false);
         }
       }
     })();
@@ -84,6 +180,9 @@ export function DetailPage(props: {
     void task.then(() => {
       if (refreshInFlightRef.current === task) {
         refreshInFlightRef.current = null;
+      }
+      if (refreshAbortRef.current === controller) {
+        refreshAbortRef.current = null;
       }
     });
     return task;
@@ -108,9 +207,11 @@ export function DetailPage(props: {
       <Section>
         <HStack spacing={14} padding={{ vertical: 12 }}>
           <CourierIcon
-            courierCode={shipment.identity.courierCode}
-            companyName={shipment.identity.companyName}
-            accountOrder={Boolean(unprojectedAccountOrder(shipment))}
+            courierCode={detailCourierCode}
+            companyName={detailCompanyName}
+            accountOrder={Boolean(
+              !usesKuaidi100Detail && unprojectedAccountOrder(shipment),
+            )}
             size={72}
             cornerRadius={17}
           />
@@ -118,17 +219,17 @@ export function DetailPage(props: {
             <Text
               font={17}
               fontWeight="bold"
-              foregroundStyle={statusTint(shipment.timeline.semantic)}
+              foregroundStyle={statusTint(presentationStatus.semantic)}
               lineLimit={1}
             >
-              {statusLabel(shipment.timeline.semantic)}
+              {presentationStatus.text}
             </Text>
             <HStack
               alignment="center"
               spacing={0}
               frame={{ maxWidth: "infinity", alignment: "leading" }}
             >
-              <Text font={15}>{shipment.identity.companyName}：</Text>
+              <Text font={15}>{detailCompanyName}：</Text>
               <HStack alignment="center" spacing={5}>
                 <Text
                   font={15}
@@ -168,7 +269,20 @@ export function DetailPage(props: {
         </HStack>
       </Section>
 
-      <Section header={<Text>物流轨迹</Text>}>
+      <Section
+        header={<Text>物流轨迹</Text>}
+        footer={(
+          <Text
+            font={12}
+            foregroundStyle="tertiaryLabel"
+            frame={{ maxWidth: "infinity", alignment: "center" }}
+          >
+            {loadingManualDetail
+              ? "轨迹详情正在加载中。"
+              : "轨迹不完整时，可尝试下拉刷新。"}
+          </Text>
+        )}
+      >
         {displayTracks.length ? (
           displayTracks.map((track, index) => {
             const time = timelineTimeParts(track.timeText);
@@ -198,7 +312,7 @@ export function DetailPage(props: {
                   font={10}
                   foregroundStyle={
                     index === 0
-                      ? statusTint(shipment.timeline.semantic)
+                      ? statusTint(presentationStatus.semantic)
                       : "tertiaryLabel"
                   }
                   frame={{ width: 12 }}

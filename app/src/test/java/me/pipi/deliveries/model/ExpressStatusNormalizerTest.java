@@ -36,6 +36,7 @@ public final class ExpressStatusNormalizerTest {
     public void identifiesProviderErrorsWithoutRejectingRealEvents() {
         assertTrue(ExpressStatusNormalizer.isProviderErrorDetail("no result"));
         assertTrue(ExpressStatusNormalizer.isProviderErrorDetail("验证码错误，请重试"));
+        assertTrue(ExpressStatusNormalizer.isProviderErrorDetail("查无结果，请检查运单号"));
         assertTrue(ExpressStatusNormalizer.isProviderErrorDetail("暂无物流动态"));
         assertFalse(ExpressStatusNormalizer.isProviderErrorDetail("快件到达杭州转运中心"));
     }

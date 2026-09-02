@@ -198,6 +198,31 @@ public final class ExpressDiscoveryClientTest {
     }
 
     @Test
+    public void sourceProviderUsesProviderNameFallbackWithoutSyntheticDefaults()
+            throws Exception {
+        JSONObject fallback = new JSONObject()
+                .put("mailNo", "SF0000000000003")
+                .put("cpCode", "SF")
+                .put("name", "顺丰速运")
+                .put("providerName", "ShunFeng")
+                .put("stateNum", 104)
+                .put("details", new JSONArray().put(new JSONObject()
+                        .put("time", "2026-08-24 10:00:00")
+                        .put("desc", "快件运输中")));
+        ExpressQueryResult parsed = ExpressDiscoveryClient.parseExpress(fallback, "", "");
+        assertNotNull(parsed);
+        assertEquals("ShunFeng", parsed.sourceProvider);
+
+        ExpressItem unknown = new ExpressItem(
+                2L, "", "UNKNOWN123456", "SF", "顺丰速运",
+                StatusSemantic.TRANSIT, "运输中", "账号来源摘要",
+                "2026-08-24 10:00:00", "[]", "", "INTERFACE5", "",
+                1L, 2L, "INTERFACE5", "", "", "", true,
+                "", "", "[]", "");
+        assertEquals("", ExpressDiscoveryClient.itemSummary(unknown).getString("provider"));
+    }
+
+    @Test
     public void completeDetailWinsWhenAnEmptySummaryComesFirst() throws Exception {
         JSONObject emptySummary = new JSONObject()
                 .put("mailNo", "TEST123456")
@@ -292,7 +317,7 @@ public final class ExpressDiscoveryClientTest {
         assertNotNull(parsed);
         assertEquals("1234567890123456", parsed.waybill);
         assertEquals("JD", parsed.courierCode);
-        assertEquals("京东购物", parsed.companyName);
+        assertEquals("京东物流", parsed.companyName);
         assertEquals("JingDong", parsed.sourceProvider);
         assertEquals(StatusSemantic.TRANSIT, parsed.semantic);
         assertEquals("货物已到达京东深圳分拨中心", parsed.latestDetail);
@@ -396,6 +421,24 @@ public final class ExpressDiscoveryClientTest {
     }
 
     @Test
+    public void detailQueryUsesProviderNameOnlyWhenProviderIsAbsent() throws Exception {
+        JSONObject summary = new JSONObject()
+                .put("mailNo", "SFTEST000003")
+                .put("cpCode", "SF")
+                .put("name", "顺丰速运")
+                .put("providerName", "ShunFeng");
+        JSONObject conflicting = new JSONObject()
+                .put("mailNo", "TEST000004")
+                .put("provider", "CaiNiao")
+                .put("providerName", "ShunFeng");
+
+        assertEquals("ShunFeng",
+                ExpressDiscoveryClient.detailRecord(summary, "").getString("provider"));
+        assertEquals("CaiNiao",
+                ExpressDiscoveryClient.detailRecord(conflicting, "").getString("provider"));
+    }
+
+    @Test
     public void detailQueryKeepsACompleteRawPhoneWithoutAMatchedFallback()
             throws Exception {
         JSONObject summary = new JSONObject()
@@ -413,7 +456,8 @@ public final class ExpressDiscoveryClientTest {
         ExpressItem item = new ExpressItem(
                 1L, "13800138000", "JDORDER00000001", "JD", "京东购物",
                 StatusSemantic.PICKED, "揽件", "", "2026-08-20 16:36:00",
-                "[]", "", "I5-JD", "", 1L, 2L, "I5-JD", "");
+                "[]", "", "I5-JD", "", 1L, 2L, "I5-JD", "", "", "", true,
+                "", "", "", "JingDong");
 
         JSONObject summary = ExpressDiscoveryClient.accountOrderSummary(item);
         JSONObject record = ExpressDiscoveryClient.detailRecord(summary, item.phone);

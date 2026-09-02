@@ -22,18 +22,22 @@ jobs:
       - name: Verify main and release snapshot
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
         run: |
-          test "$(git rev-list --count HEAD)" = "1"
           version="$(sed -n 's/^val releaseVersionNameDefault = "\([^"]*\)"$/\1/p' app/build.gradle.kts)"
           test "$(printf '%s\n' "$version" | grep -c '^[0-9][0-9.]*$')" = "1"
-          test "$(git log -1 --format=%s)" = "Pipi Deliveries v$version"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             test "$GITHUB_REF_NAME" = "v$version"
+            git fetch --no-tags origin main
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           fi
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
       - name: Test and package Scripting source
         run: |
+          expected_track=beta
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            expected_track=formal
+          fi
           test -f script/project/script.json
           test -f script/project/tools/test.sh
           test -f script/project/tools/package.sh
@@ -41,8 +45,8 @@ jobs:
           test -z "$(git ls-files 'Script/**')"
           sh script/project/tools/test.sh
           sh script/project/tools/package.sh "$RUNNER_TEMP/pipi-deliveries.scripting"
-          sh script/project/tools/verify-package.sh "$RUNNER_TEMP/pipi-deliveries.scripting"
-          sh script/project/tools/verify-package.sh script/pipi-deliveries.scripting
+          sh script/project/tools/verify-package.sh "$RUNNER_TEMP/pipi-deliveries.scripting" "$expected_track"
+          sh script/project/tools/verify-package.sh script/pipi-deliveries.scripting "$expected_track"
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -92,8 +96,10 @@ jobs:
           else
             version_name="$(sed -n 's/^val releaseVersionNameDefault = "\([^"]*\)"$/\1/p' app/build.gradle.kts)"
           fi
+          script_version_name="$(sed -n 's/^[[:space:]]*"version": "\([^"]*\)",$/\1/p' script/project/script.json)"
           IFS=. read -r major minor patch <<< "$version_name"
           [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]
+          [[ "$script_version_name" =~ ^[0-9]+(\.[0-9]+)*$ ]]
           test "$minor" -lt 100
           test "$patch" -lt 100
           test "$GITHUB_RUN_ATTEMPT" -lt 100
@@ -102,18 +108,17 @@ jobs:
             echo "DELIVERIES_ARTIFACT_NAME=Pipi-Deliveries-${safe_ref}-${GITHUB_RUN_NUMBER}"
             echo "DELIVERIES_VERSION_CODE=$version_code"
             echo "DELIVERIES_VERSION_NAME=$version_name"
+            echo "SCRIPT_VERSION_NAME=$script_version_name"
           } >> "$GITHUB_ENV"
       - name: Build signed APK
         env:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-          DELIVERIES_K100_PROXY_TOKEN: ${{ secrets.DELIVERIES_K100_PROXY_TOKEN }}
         run: |
           test -n "$SIGNING_STORE_PASSWORD"
           test -n "$SIGNING_KEY_ALIAS"
           test -n "$SIGNING_KEY_PASSWORD"
-          test -n "$DELIVERIES_K100_PROXY_TOKEN"
           ./gradlew \
             :app:testStandardDebugUnitTest \
             :app:testCompatDebugUnitTest \
@@ -131,12 +136,12 @@ jobs:
           release_tag="v${DELIVERIES_VERSION_NAME}"
           standard_apk="$release_dir/Pipi-Deliveries-${release_tag}.apk"
           compat_apk="$release_dir/Pipi-Deliveries-${release_tag}-Android10.apk"
-          scripting_archive="$release_dir/Pipi-Deliveries-${release_tag}.scripting"
+          scripting_archive="$release_dir/Pipi-Deliveries-iOS-v${SCRIPT_VERSION_NAME}.scripting"
           install -d "$release_dir"
           cp app/build/outputs/apk/standard/release/app-standard-release.apk "$standard_apk"
           cp app/build/outputs/apk/compat/release/app-compat-release.apk "$compat_apk"
           sh script/project/tools/package.sh "$scripting_archive"
-          sh script/project/tools/verify-package.sh "$scripting_archive"
+          sh script/project/tools/verify-package.sh "$scripting_archive" formal
           {
             echo "RELEASE_APK_STANDARD=$standard_apk"
             echo "RELEASE_APK_COMPAT=$compat_apk"

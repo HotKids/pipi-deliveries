@@ -26,7 +26,7 @@ export function PrivacyPage() {
 
       <Section header={<Text>诊断日志</Text>}>
         <Text font={14} foregroundStyle="secondaryLabel">
-          诊断日志仅保存在本机，最多保留 100 条并在 7 日后自动过期；不记录手机号、验证码、Access Key、运单号或响应正文，也不会自动上传。
+          诊断日志仅保存在本机，最多保留 200 条并在 7 日后自动过期；不记录手机号、验证码、Access Key、运单号或响应正文，也不会自动上传。
         </Text>
       </Section>
     </List>

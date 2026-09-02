@@ -2,6 +2,7 @@ import {
   Button,
   HStack,
   Image,
+  Keyboard,
   List,
   Navigation,
   NavigationStack,
@@ -16,7 +17,7 @@ import {
   useRef,
   useState,
 } from "scripting";
-import type { AppState, Shipment } from "../models";
+import type { AppState, RefreshSummary, Shipment } from "../models";
 import { ShipmentRow } from "../components/ShipmentRow";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
 import {
@@ -24,20 +25,37 @@ import {
   queryManualShipmentPreview,
   refreshAllShipments,
 } from "../services/sync";
-import type { ManualShipmentPreview } from "../services/sync";
 import { visibleShipments } from "../services/storage";
 import { DetailPage } from "./DetailPage";
-import { selectedShipment } from "../services/ui-state";
+import {
+  consumeShipmentNavigationTarget,
+  manualPreviewNavigationTarget,
+  persistedShipmentNavigationTarget,
+  promotedPendingShipmentNavigationTarget,
+  selectedNavigationShipment,
+  shipmentNavigationTargetId,
+  type ShipmentNavigationTarget,
+} from "../services/ui-state";
 import {
   performShipmentCompletion,
   performShipmentDeletion,
 } from "../services/shipment-actions";
-import { transientToast } from "../services/ui-feedback";
 import {
-  detectManualCarrier,
+  manualQueryToast,
+  refreshSummaryToast,
+} from "../services/ui-feedback";
+import {
+  ManualCarrierDetectionCoordinator,
   type ManualCarrierDetection,
 } from "../services/manual-query";
+import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
 import { normalizeWaybill } from "../services/status";
+import {
+  isJingDongSourceShipment,
+  jingDongAutomaticH5TimelineAvailable,
+  needsAutomaticManualFallback,
+  unprojectedAccountOrder,
+} from "../services/shipment-policy";
 
 function message(error: unknown): string {
   return error instanceof Error && error.message
@@ -49,6 +67,7 @@ export function HomePage(props: {
   state: AppState;
   autoFocusSearch: boolean;
   initialShipmentId: string;
+  navigationRequestGeneration: number;
   onStateChange: (state: AppState) => void;
 }) {
   const dismiss = Navigation.useDismiss();
@@ -62,28 +81,54 @@ export function HomePage(props: {
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState("");
   const [validationNotice, setValidationNotice] = useState("");
-  const [pendingSwipeAction, setPendingSwipeAction] = useState<{
-    kind: "delete" | "complete";
-    id: string;
-  } | null>(null);
-  const [manualPreview, setManualPreview] =
-    useState<ManualShipmentPreview | null>(null);
   const waybillRef = useRef("");
   const phoneTailRef = useRef("");
   const queryingRef = useRef(false);
   const carrierDetectionSequenceRef = useRef(0);
   const carrierDetectionTimerRef = useRef<number | null>(null);
-  const [selectedId, setSelectedId] = useState(() =>
-    props.state.shipments.some(
-      (shipment) => shipment.identity.id === props.initialShipmentId,
-    ) ? props.initialShipmentId : "",
+  const carrierDetectionCoordinatorRef = useRef<
+    ManualCarrierDetectionCoordinator | null
+  >(null);
+  if (!carrierDetectionCoordinatorRef.current) {
+    carrierDetectionCoordinatorRef.current = new ManualCarrierDetectionCoordinator();
+  }
+  const initialNavigationTarget = props.state.shipments.some(
+    (shipment) => shipment.identity.id === props.initialShipmentId,
+  )
+    ? persistedShipmentNavigationTarget(props.initialShipmentId)
+    : null;
+  const [shipmentNavigationTarget, setShipmentNavigationTargetState] = useState<
+    ShipmentNavigationTarget | null
+  >(() => initialNavigationTarget);
+  const shipmentNavigationTargetRef = useRef<ShipmentNavigationTarget | null>(
+    initialNavigationTarget,
   );
   const shipments = visibleShipments(props.state);
-  const selected = selectedShipment(
+  const selected = selectedNavigationShipment(
     props.state,
-    selectedId,
-    manualPreview?.shipment || null,
+    shipmentNavigationTarget,
   );
+  const manualPreview = shipmentNavigationTarget?.kind === "manualPreview"
+    ? shipmentNavigationTarget.preview
+    : null;
+  const phoneTailValidation = validationNotice.includes("手机尾号");
+
+  function setShipmentNavigationTarget(
+    target: ShipmentNavigationTarget | null,
+  ) {
+    shipmentNavigationTargetRef.current = target;
+    setShipmentNavigationTargetState(target);
+  }
+
+  function applyInteractiveRefreshSummary(summary: RefreshSummary) {
+    const promotedTarget = promotedPendingShipmentNavigationTarget(
+      summary,
+      shipmentNavigationTargetRef.current,
+    );
+    props.onStateChange(summary.state);
+    if (promotedTarget) setShipmentNavigationTarget(promotedTarget);
+  }
+
   useEffect(() => {
     let active = true;
     void refreshAllShipments()
@@ -97,6 +142,16 @@ export function HomePage(props: {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!props.initialShipmentId) return;
+    if (!props.state.shipments.some(
+      (shipment) => shipment.identity.id === props.initialShipmentId,
+    )) return;
+    setShipmentNavigationTarget(
+      persistedShipmentNavigationTarget(props.initialShipmentId),
+    );
+  }, [props.navigationRequestGeneration]);
 
   useEffect(() => {
     return () => {
@@ -120,7 +175,7 @@ export function HomePage(props: {
 
     carrierDetectionTimerRef.current = setTimeout(() => {
       carrierDetectionTimerRef.current = null;
-      void detectManualCarrier(normalized)
+      void carrierDetectionCoordinatorRef.current!.resolve(normalized)
         .then((carrier) => {
           if (
             sequence === carrierDetectionSequenceRef.current &&
@@ -137,16 +192,27 @@ export function HomePage(props: {
     }, 250);
   }
 
+  function clearQueryInputs() {
+    carrierDetectionSequenceRef.current += 1;
+    if (carrierDetectionTimerRef.current != null) {
+      clearTimeout(carrierDetectionTimerRef.current);
+      carrierDetectionTimerRef.current = null;
+    }
+    waybillRef.current = "";
+    phoneTailRef.current = "";
+    setWaybill("");
+    setPhoneTail("");
+    setNeedsPhoneTail(false);
+    setDetectedCarrier(null);
+    Keyboard.hide();
+  }
+
   async function query() {
     if (queryingRef.current) return;
     const submittedWaybill = waybillRef.current;
     const submittedPhoneTail = phoneTailRef.current;
     if (normalizeWaybill(submittedWaybill).length < 6) {
       setValidationNotice("请输入有效的快递单号");
-      return;
-    }
-    if (needsPhoneTail && submittedPhoneTail.length !== 4) {
-      setValidationNotice("请输入 4 位手机尾号");
       return;
     }
     queryingRef.current = true;
@@ -160,17 +226,34 @@ export function HomePage(props: {
     setNotice("");
     setValidationNotice("");
     try {
+      let submittedCarrier: ManualCarrierDetection | null = null;
+      try {
+        submittedCarrier = await carrierDetectionCoordinatorRef.current!.resolve(
+          submittedWaybill,
+        );
+      } catch {
+        submittedCarrier = null;
+      }
+      if (submittedCarrier) setDetectedCarrier(submittedCarrier);
+      if (
+        (submittedCarrier?.requiresPhoneTail || needsPhoneTail) &&
+        submittedPhoneTail.length !== 4
+      ) {
+        setNeedsPhoneTail(true);
+        setValidationNotice("请输入 4 位手机尾号");
+        return;
+      }
       const preview = await queryManualShipmentPreview({
         waybill: submittedWaybill,
         phoneTail: submittedPhoneTail,
+        presentation: submittedCarrier,
       });
-      setManualPreview(preview);
-      setSelectedId(preview.shipment.identity.id);
-      waybillRef.current = "";
-      phoneTailRef.current = "";
-      setWaybill("");
-      setPhoneTail("");
-      setNeedsPhoneTail(false);
+      const committed = commitManualShipmentPreview(preview);
+      props.onStateChange(committed);
+      setShipmentNavigationTarget(
+        manualPreviewNavigationTarget(preview, committed),
+      );
+      clearQueryInputs();
     } catch (error) {
       const value = message(error);
       const isValidation = value.includes("快递单号")
@@ -196,10 +279,8 @@ export function HomePage(props: {
       const summary = await refreshAllShipments(undefined, {
         forceManualRefresh: true,
       });
-      props.onStateChange(summary.state);
-      if (summary.failed > 0 && summary.succeeded === 0) {
-        setNotice("刷新失败，请稍后重试");
-      }
+      applyInteractiveRefreshSummary(summary);
+      setNotice(refreshSummaryToast(summary));
     } catch (error) {
       setNotice(message(error));
     } finally {
@@ -215,11 +296,16 @@ export function HomePage(props: {
       return;
     }
     props.onStateChange(result.state);
-    if (selectedId === id) setSelectedId("");
+    setNotice("该快递已删除");
+    if (shipmentNavigationTargetId(shipmentNavigationTarget) === id) {
+      setShipmentNavigationTarget(null);
+    }
   }
 
   function openShipment(shipment: Shipment) {
-    setSelectedId(shipment.identity.id);
+    setShipmentNavigationTarget(
+      persistedShipmentNavigationTarget(shipment.identity.id),
+    );
   }
 
   function forceComplete(id: string) {
@@ -230,17 +316,9 @@ export function HomePage(props: {
       return;
     }
     props.onStateChange(result.state);
-    if (selectedId === id) setSelectedId("");
-  }
-
-  function confirmPendingSwipeAction() {
-    const action = pendingSwipeAction;
-    setPendingSwipeAction(null);
-    if (!action) return;
-    if (action.kind === "delete") {
-      remove(action.id);
-    } else {
-      forceComplete(action.id);
+    setNotice("已标记为签收");
+    if (shipmentNavigationTargetId(shipmentNavigationTarget) === id) {
+      setShipmentNavigationTarget(null);
     }
   }
 
@@ -312,34 +390,54 @@ export function HomePage(props: {
         <HStack
           spacing={9}
           padding={{ horizontal: 14 }}
-          frame={{ minHeight: 48, maxWidth: "infinity" }}
+          frame={{ minHeight: 52, maxWidth: "infinity" }}
           background="tertiarySystemFill"
           clipShape={{ type: "rect", cornerRadius: 24, style: "continuous" }}
         >
-          <Image systemName="number" foregroundStyle="secondaryLabel" />
-          <TextField
-            title="手机尾号"
-            value={phoneTail}
-            onChanged={(value) => {
-              const next = value.replace(/\D/g, "").slice(0, 4);
-              phoneTailRef.current = next;
-              setPhoneTail(next);
-              setValidationNotice("");
-            }}
-            prompt="请输入 4 位手机尾号"
-            keyboardType="numberPad"
-            submitLabel="search"
-            onSubmit={{
-              triggers: "text",
-              action: () => {
-                void query();
-              },
+          <Image
+            systemName="phone"
+            foregroundStyle={phoneTailValidation ? "systemRed" : "secondaryLabel"}
+          />
+          <VStack
+            alignment="leading"
+            spacing={1}
+            frame={{ maxWidth: "infinity", alignment: "leading" }}
+          >
+            <TextField
+              title="手机尾号"
+              value={phoneTail}
+              onChanged={(value) => {
+                const next = value.replace(/\D/g, "").slice(0, 4);
+                phoneTailRef.current = next;
+                setPhoneTail(next);
+                setValidationNotice("");
+              }}
+              prompt={phoneTailValidation
+                ? validationNotice
+                : "请输入 4 位手机尾号"}
+              keyboardType="numberPad"
+              submitLabel="search"
+              onSubmit={{
+                triggers: "text",
+                action: () => {
+                  void query();
+                },
+              }}
+              frame={{ maxWidth: "infinity" }}
+            />
+            {phoneTailValidation && phoneTail ? (
+              <Text font={11} foregroundStyle="systemRed" lineLimit={1}>
+                {validationNotice}
+              </Text>
+            ) : null}
+          </VStack>
+          <Button
+            title={querying ? "查询中…" : "查询"}
+            buttonStyle="plain"
+            action={() => {
+              void query();
             }}
           />
-          <Spacer />
-          <Text font={12} foregroundStyle="tertiaryLabel" monospacedDigit>
-            {phoneTail.length}/4
-          </Text>
         </HStack>
       ) : null}
     </VStack>
@@ -352,7 +450,7 @@ export function HomePage(props: {
       background="systemBackground"
     >
       {searchFields}
-      {validationNotice ? (
+      {validationNotice && !phoneTailValidation ? (
         <Text
           font={12}
           foregroundStyle="systemRed"
@@ -370,30 +468,7 @@ export function HomePage(props: {
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         navigationTitle="我的快递"
         navigationBarTitleDisplayMode="large"
-        toast={transientToast(notice, setNotice)}
-        confirmationDialog={{
-          title: pendingSwipeAction?.kind === "delete"
-            ? "删除快递"
-            : "标记为已签收",
-          isPresented: pendingSwipeAction != null,
-          onChanged: (presented) => {
-            if (!presented) setPendingSwipeAction(null);
-          },
-          message: (
-            <Text>
-              {pendingSwipeAction?.kind === "delete"
-                ? "删除后，该快递及其本地物流轨迹将一并移除。"
-                : "确认将该快递标记为已签收？"}
-            </Text>
-          ),
-          actions: (
-            <Button
-              title={pendingSwipeAction?.kind === "delete" ? "删除" : "签收"}
-              role={pendingSwipeAction?.kind === "delete" ? "destructive" : "confirm"}
-              action={confirmPendingSwipeAction}
-            />
-          ),
-        }}
+        toast={manualQueryToast(querying, notice, setNotice)}
         toolbar={{
           topBarLeading: (
             <Button buttonStyle="plain" action={() => dismiss()}>
@@ -404,22 +479,46 @@ export function HomePage(props: {
               />
             </Button>
           ),
+          topBarTrailing: (
+            <Button
+              buttonStyle="plain"
+              action={() => setNotice("暂未接入")}
+            >
+              <Text
+                font={17}
+                frame={{ width: 44, height: 44 }}
+              >
+                添加
+              </Text>
+            </Button>
+          ),
         }}
         navigationDestination={{
           isPresented: Boolean(selected),
           onChanged: (presented) => {
             if (presented) return;
-            if (manualPreview) {
-              props.onStateChange(commitManualShipmentPreview(manualPreview));
-              setManualPreview(null);
-            }
-            setSelectedId("");
+            const consumed = consumeShipmentNavigationTarget(
+              shipmentNavigationTargetRef.current,
+            );
+            setShipmentNavigationTarget(consumed.nextTarget);
           },
           content: selected ? (
             <DetailPage
               key={selected.identity.id}
               shipment={selected}
-              refreshOnAppear={!manualPreview}
+              manualPreview={manualPreview}
+              refreshOnAppear={manualPreview
+                ? manualPreviewNeedsDetailRefresh(selected)
+                  ? "manual_submit"
+                  : false
+                : unprojectedAccountOrder(selected)
+                  ? "identity_projection"
+                  : isJingDongSourceShipment(selected) &&
+                      !jingDongAutomaticH5TimelineAvailable(selected)
+                    ? "detail_open"
+                  : needsAutomaticManualFallback(selected)
+                    ? "detail_open"
+                    : false}
               onStateChange={(next) => {
                 props.onStateChange(next);
               }}
@@ -430,7 +529,7 @@ export function HomePage(props: {
         {shipments.length ? (
           <List listStyle="plain" refreshable={refresh}>
             <Section
-              footer={validationNotice ? (
+              footer={validationNotice && !phoneTailValidation ? (
                 <Text font={12} foregroundStyle="systemRed">
                   {validationNotice}
                 </Text>
@@ -443,14 +542,8 @@ export function HomePage(props: {
                 key={shipment.identity.id}
                 shipment={shipment}
                 onOpen={() => openShipment(shipment)}
-                onDelete={() => setPendingSwipeAction({
-                  kind: "delete",
-                  id: shipment.identity.id,
-                })}
-                onForceComplete={() => setPendingSwipeAction({
-                  kind: "complete",
-                  id: shipment.identity.id,
-                })}
+                onDelete={() => remove(shipment.identity.id)}
+                onForceComplete={() => forceComplete(shipment.identity.id)}
               />
             ))}
             <VStack
@@ -487,7 +580,7 @@ export function HomePage(props: {
                 alignment: "center",
                 content: (
                   <EmptyDeliveryStateGroup
-                    vehicleSize={102}
+                    vehicleSize={81.6}
                     spacing={6}
                     labelFont={24}
                   />

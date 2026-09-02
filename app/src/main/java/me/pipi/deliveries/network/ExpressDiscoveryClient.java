@@ -37,16 +37,7 @@ public final class ExpressDiscoveryClient {
     private static final long DETAIL_MAX_AGE_MS = 6L * 60L * 60L * 1000L;
     private static final long DETAIL_CACHE_RETENTION_MS = 8L * 24L * 60L * 60L * 1000L;
     private final Set<String> syncedWaybills = new HashSet<>();
-
-    public static final class CarrierMatch {
-        public final String code;
-        public final String name;
-
-        CarrierMatch(String code, String name) {
-            this.code = code == null ? "" : code.trim();
-            this.name = name == null ? "" : name.trim();
-        }
-    }
+    private final Map<String, Set<String>> syncedWaybillsByGeneration = new HashMap<>();
 
     public void sendCode(Context context, String phone) throws Exception {
         requestAccount(context, "/api/express/accounts/code", phone, "");
@@ -81,6 +72,11 @@ public final class ExpressDiscoveryClient {
     public int sync(Context context, List<String> phones) throws Exception {
         ArrayList<String> normalizedPhones = normalizedPhones(phones);
         if (normalizedPhones.isEmpty()) return 0;
+        ExpressRepository repository = ExpressRepository.get(context);
+        Map<String, String> bindingGenerations =
+                repository.bindingGenerations("interface5");
+        syncedWaybills.clear();
+        syncedWaybillsByGeneration.clear();
         SharedPreferences prefs = context.getSharedPreferences(PREFS, 0);
         pruneDetailCache(prefs, System.currentTimeMillis());
         JSONObject request = new JSONObject()
@@ -99,7 +95,7 @@ public final class ExpressDiscoveryClient {
         }
         JSONObject payload = outer.optJSONObject("data");
         if (payload == null) {
-            return 0;
+            throw new IllegalStateException("同步响应缺少 data");
         }
         JSONArray list = payload.optJSONArray("expressList");
         if (list == null) {
@@ -107,10 +103,9 @@ public final class ExpressDiscoveryClient {
             list = data == null ? null : data.optJSONArray("expressList");
         }
         if (list == null) {
-            return 0;
+            throw new IllegalStateException("同步响应缺少 expressList");
         }
 
-        ExpressRepository repository = ExpressRepository.get(context);
         ArrayList<JSONObject> discovered = new ArrayList<>();
         Map<String, ExpressItem> existingBeforeSync = new HashMap<>();
         Set<String> detailCandidates = new HashSet<>();
@@ -121,18 +116,22 @@ public final class ExpressDiscoveryClient {
             if (item == null) continue;
             String waybill = itemIdentity(item);
             if (waybill.isEmpty()) continue;
-            if (repository.isTombstoned(waybill)) continue;
+            String normalizedWaybill = normalize(waybill);
             boolean suppressed = repository.hasUnboundPhoneAssociation(
                     waybill, "interface5");
             String associatedPhone = matchedPhone(
                     item, normalizedPhones, !suppressed);
+            String bindingGeneration = bindingGenerations.get(
+                    associatedPhone.replaceAll("\\D", ""));
             if (ExpressRepository.shouldSuppressAutomaticImport(
-                    suppressed, associatedPhone)) continue;
-            String normalizedWaybill = normalize(waybill);
+                    suppressed, associatedPhone) || bindingGeneration == null) continue;
+            syncedWaybills.add(normalizedWaybill);
+            syncedWaybillsByGeneration
+                    .computeIfAbsent(bindingGeneration, ignored -> new HashSet<>())
+                    .add(normalizedWaybill);
             if (detailCandidates.add(detailCandidateKey(item))) {
                 discovered.add(item);
             }
-            syncedWaybills.add(normalizedWaybill);
             ExpressItem previous = existingBeforeSync.containsKey(normalizedWaybill)
                     ? existingBeforeSync.get(normalizedWaybill)
                     : repository.findByWaybill(waybill, "interface5");
@@ -145,13 +144,15 @@ public final class ExpressDiscoveryClient {
             if (isAccountOrderRecord(item)) {
                 ExpressQueryResult jd = parseAccountOrder(item);
                 if (jd == null) continue;
-                repository.saveInterface5OrderSummary(jd, associatedPhone);
+                repository.saveInterface5OrderSummary(
+                        jd, associatedPhone, bindingGeneration);
                 if (previous == null
                         && repository.findByWaybill(waybill, "interface5") != null
                         && importedWaybills.add(normalizedWaybill)) imported++;
                 continue;
             }
-            if (persistExpress(repository, item, associatedPhone)
+            if (persistExpress(
+                    repository, item, associatedPhone, bindingGeneration)
                     && importedWaybills.add(normalizedWaybill)) imported++;
         }
         // Detail enrichment is deliberately a second phase. A failure here leaves a complete
@@ -165,8 +166,10 @@ public final class ExpressDiscoveryClient {
                         waybill, "interface5");
                 String associatedPhone = matchedPhone(
                         item, normalizedPhones, !suppressed);
+                String bindingGeneration = bindingGenerations.get(
+                        associatedPhone.replaceAll("\\D", ""));
                 if (ExpressRepository.shouldSuppressAutomaticImport(
-                        suppressed, associatedPhone)) continue;
+                        suppressed, associatedPhone) || bindingGeneration == null) continue;
                 JSONObject queried = queryDetails(context, item, associatedPhone);
                 if (queried == null) continue;
                 if (!detailMatchesRequestedIdentity(queried, waybill)) continue;
@@ -177,8 +180,13 @@ public final class ExpressDiscoveryClient {
                         : storedExpress(completeItem, associatedPhone);
                 if (detailed == null
                         || !normalize(waybill).equals(normalize(detailed.waybill))) continue;
-                if (accountOrder) repository.saveInterface5Order(detailed, associatedPhone);
-                else repository.saveInterface5(detailed, associatedPhone);
+                if (accountOrder) {
+                    repository.saveInterface5Order(
+                            detailed, associatedPhone, bindingGeneration);
+                } else {
+                    repository.saveInterface5(
+                            detailed, associatedPhone, bindingGeneration);
+                }
                 boolean realTimeline = Kuaidi100TimelinePolicy.hasRealTracking(detailed);
                 ExpressItem persisted = repository.findByWaybill(waybill, "interface5");
                 if (!ExpressStatusNormalizer.isProviderErrorDetail(detailed.latestDetail)
@@ -200,34 +208,17 @@ public final class ExpressDiscoveryClient {
         return syncedWaybills.contains(normalize(waybill));
     }
 
-    /** Uses only the selected account source to recognize a manually entered waybill. */
-    public CarrierMatch detectManualCarrier(Context context, String waybill) throws Exception {
-        return detectManualCarrier(context, waybill, null);
+    public Set<String> syncedWaybills() {
+        return new HashSet<>(syncedWaybills);
     }
 
-    public CarrierMatch detectManualCarrier(
-            Context context, String waybill, ExpressQueryCancellation cancellation)
-            throws Exception {
-        String number = normalizedWaybill(waybill);
-        JSONObject request = new JSONObject()
-                .put("interface", "v5")
-                .put("mode", "match")
-                .put("identity", ExpressInstallIdentity.get(context))
-                .put("waybill", number)
-                .put("phones", new JSONArray());
-        HttpClient.Response response = new ExpressGatewayClient(context).post(
-                "/api/express/timeline/source", request, cancellation);
-        if (!response.successful()) {
-            throw GatewayHttpErrors.forResponse(response, "暂时无法识别承运商");
+    public Map<String, Set<String>> syncedWaybillsByGeneration() {
+        Map<String, Set<String>> result = new HashMap<>();
+        for (Map.Entry<String, Set<String>> entry
+                : syncedWaybillsByGeneration.entrySet()) {
+            result.put(entry.getKey(), new HashSet<>(entry.getValue()));
         }
-        JSONObject outer = GatewayHttpErrors.parseObject(
-                response, "暂时无法识别承运商");
-        JSONArray values = outer.optJSONArray("data");
-        JSONObject match = values == null ? null : values.optJSONObject(0);
-        if (outer.optInt("code", -1) != 0 || match == null) {
-            throw new IllegalStateException("暂时无法识别承运商");
-        }
-        return new CarrierMatch(first(match, "cpCode"), first(match, "name"));
+        return result;
     }
 
     /** Manual lookup through interface 5 only, including its same-source official retry. */
@@ -283,7 +274,8 @@ public final class ExpressDiscoveryClient {
         if (queried == null) return null;
         if (!detailMatchesRequestedIdentity(queried, item.waybill)) return null;
         JSONObject complete = overlay(summary, queried);
-        ExpressQueryResult result = isAccountOrderRecord(complete)
+        boolean accountOrder = isAccountOrderRecord(complete);
+        ExpressQueryResult result = accountOrder
                 ? parseAccountOrder(complete)
                 : parseExpress(complete, cainiaoUrl(complete, item.waybill, item.courierCode),
                         item.phone);
@@ -299,7 +291,10 @@ public final class ExpressDiscoveryClient {
                 result.latestTime, result.latestDetail,
                 result.tracksJson, result.detailUrl, result.phone,
                 result.timelineProvider, result.routeInterface,
-                result.routeCredential, sourceProvider);
+                result.routeCredential, sourceProvider, result.carrierNormalization)
+                .withCarrierIdentityEvidence(result.carrierIdentityEvidence)
+                .withManualStatusEvidence(
+                        result.statusDescription, result.structuredStatusEvidence);
     }
 
     /** Records a known-item detail refresh only after its caller has persisted the result. */
@@ -309,12 +304,13 @@ public final class ExpressDiscoveryClient {
     }
 
     private boolean persistExpress(
-            ExpressRepository repository, JSONObject item, String phone) {
+            ExpressRepository repository, JSONObject item, String phone,
+            String bindingGeneration) {
         String waybill = itemIdentity(item);
         ExpressQueryResult result = storedExpress(item, phone);
         if (result == null) return false;
         ExpressItem previous = repository.findByWaybill(waybill, "interface5");
-        repository.saveInterface5(result, phone);
+        repository.saveInterface5(result, phone, bindingGeneration);
         return previous == null
                 && repository.findByWaybill(waybill, "interface5") != null;
     }
@@ -513,7 +509,7 @@ public final class ExpressDiscoveryClient {
                 .put("waybill", itemIdentity(item))
                 .put("companyCode", item.optString("cpCode", ""))
                 .put("name", item.optString("name", ""))
-                .put("provider", item.optString("provider", ""))
+                .put("provider", first(item, "provider", "providerName"))
                 .put("stateNumber", item.optInt("stateNum", 0))
                 .put("updateTime", updateTime)
                 .put("phone", phone)
@@ -526,8 +522,7 @@ public final class ExpressDiscoveryClient {
 
     static JSONObject itemSummary(ExpressItem item) throws Exception {
         boolean jd = item.isAccountOrder();
-        String provider = item.sourceProvider.isEmpty()
-                ? (jd ? "JingDong" : "CaiNiao") : item.sourceProvider;
+        String provider = item.sourceProvider;
         return new JSONObject()
                 .put("mailNo", item.waybill)
                 .put("cpCode", item.courierCode.isEmpty() && jd ? "JD" : item.courierCode)
@@ -661,9 +656,12 @@ public final class ExpressDiscoveryClient {
                         detail.optString("context", "")).trim();
                 if (isGenericUpdate(description)) continue;
                 try {
-                    tracks.put(new JSONObject()
+                    JSONObject track = new JSONObject()
                             .put("time", first(detail, "time", "date", "ftime"))
-                            .put("context", description));
+                            .put("context", description)
+                            .put("_pipiStatusSource", "interface5");
+                    copyStatusFields(detail, track);
+                    tracks.put(track);
                 } catch (Throwable ignored) {
                     // Keep earlier same-source nodes when one malformed row cannot be projected.
                 }
@@ -677,10 +675,11 @@ public final class ExpressDiscoveryClient {
         String routeCredential = cainiaoDetailUrl(item);
         String phone = first(item, "phone");
         if (phone.isEmpty()) phone = fallbackPhone == null ? "" : fallbackPhone.trim();
-        return new ExpressQueryResult(
+        String rawCompanyName = item.optString("name", "");
+        ExpressQueryResult result = new ExpressQueryResult(
                 waybill,
                 item.optString("cpCode", ""),
-                item.optString("name", ""),
+                rawCompanyName,
                 semantic,
                 latestTime,
                 latestDetail,
@@ -690,7 +689,9 @@ public final class ExpressDiscoveryClient {
                 "interface5",
                 CainiaoRoute.interfaceFromToken(detailUrl),
                 routeCredential,
-                first(item, "provider"));
+                first(item, "provider", "providerName"));
+        result = result.withRawCarrierNameEvidence(rawCompanyName);
+        return AccountCarrierNormalizer.apply(item, result);
     }
 
     /** Account-order rows expose a stable order id instead of a carrier waybill. */
@@ -712,6 +713,8 @@ public final class ExpressDiscoveryClient {
                 try {
                     track.put("time", first(detail, "time", "date", "ftime"));
                     track.put("context", description);
+                    track.put("_pipiStatusSource", "interface5");
+                    copyStatusFields(detail, track);
                     tracks.put(track);
                 } catch (Throwable ignored) {
                     // Keep any earlier valid account-source nodes.
@@ -724,13 +727,15 @@ public final class ExpressDiscoveryClient {
             semantic = ExpressStatusNormalizer.inferAccountOrderStatus(
                     latest == null ? "" : latest.detail, tracks.toString());
         }
+        // JingDong identifies the business source, not the carrier. Keep the carrier evidence raw;
+        // the order card supplies its own display label until H5 resolves the real parcel.
         String code = item.optString("cpCode", "").trim();
-        if (code.isEmpty()) code = "JD";
         String route = accountOrderH5Url(item);
+        String rawCompanyName = item.optString("name", "").trim();
         return new ExpressQueryResult(
                 orderNo,
                 code,
-                "京东购物",
+                rawCompanyName,
                 semantic,
                 latest == null ? "" : latest.time,
                 latest == null ? "" : latest.detail,
@@ -740,7 +745,8 @@ public final class ExpressDiscoveryClient {
                 "interface5",
                 route.isEmpty() ? "" : "v5",
                 route,
-                first(item, "provider"));
+                first(item, "provider", "providerName"))
+                .withRawCarrierNameEvidence(rawCompanyName);
     }
 
     /** Returns the account row's own raw H5 capability without rebuilding or reordering it. */
@@ -786,6 +792,22 @@ public final class ExpressDiscoveryClient {
             if (!value.isEmpty() && !"null".equalsIgnoreCase(value)) return value;
         }
         return "";
+    }
+
+    private static void copyStatusFields(JSONObject source, JSONObject target) {
+        if (source == null || target == null) return;
+        for (String key : new String[]{
+                "logisticsStatus", "logisticsStatusDesc", "statusCode", "status", "state"
+        }) {
+            Object value = source.opt(key);
+            if (value instanceof String || value instanceof Number) {
+                try {
+                    target.put(key, value);
+                } catch (Throwable ignored) {
+                    // Status metadata is optional; the timed event remains usable without it.
+                }
+            }
+        }
     }
 
     static String matchedPhone(

@@ -113,17 +113,29 @@ assert.deepEqual(buildAccountTimelineRequest({
   },
 });
 assert.deepEqual(buildAccountTimelineRequest({
-  source: "interface6",
+  source: "interface5",
   mode: "manual",
+  identity: v5,
   waybill: "611704092029773",
-  clientVersion: "1.0.0",
-  clientBuild: 1,
+  phones: [
+    "13800138000",
+    "13900139000",
+    "13700137000",
+    "13600136000",
+    "13500135000",
+  ],
 }).payload, {
-  interface: "v6",
+  interface: "v5",
+  identity: v5,
   mode: "manual",
   waybill: "611704092029773",
-  clientVersion: "1.0.0",
-  clientBuild: 1,
+  phones: [
+    "13800138000",
+    "13900139000",
+    "13700137000",
+    "13600136000",
+    "13500135000",
+  ],
 });
 
 async function main(): Promise<void> {

@@ -38,6 +38,18 @@ function encoded(token: string, generation: number): string {
   });
 }
 
+function encodedV4Unavailable(token: string, generation: number): string {
+  return JSON.stringify({
+    schema: 4,
+    token,
+    generation,
+    availability: "unavailable",
+    checksum: fakeChecksum(
+      `credential\n${generation}\nunavailable\n${token}`,
+    ),
+  });
+}
+
 Object.assign(globalThis, {
   Data: {
     fromIntArray(value: number[]) {
@@ -140,7 +152,6 @@ const {
   gatewayCredentialStatus,
   gatewayConfigured,
   loadGatewayCredentials,
-  markGatewayTokenUnavailable,
   removeGatewayToken,
   saveGatewayToken,
 } = await import("../services/credentials");
@@ -159,31 +170,19 @@ assert.equal(memory.has(KEY), true);
 assert.equal(files.has(FILE), true);
 assert.equal(files.has(BACKUP), true);
 
-// A server rejection changes only the availability metadata. The credential remains
-// recoverable, the state survives a fresh Keychain namespace, and an explicit save
-// clears the marker without requiring the old credential to be deleted first.
-assert.equal(markGatewayTokenUnavailable(token), true);
-assert.equal(gatewayCredentialStatus(), "unavailable");
-assert.equal(gatewayConfigured(), false);
-assert.equal(loadGatewayCredentials(), null);
-const unavailableKey = JSON.parse(memory.get(KEY)!);
-const unavailablePrimary = JSON.parse(files.get(FILE)!);
-const unavailableBackup = JSON.parse(files.get(BACKUP)!);
-for (const stored of [
-  unavailableKey,
-  unavailablePrimary,
-  unavailableBackup,
-]) {
-  assert.equal(stored.schema, 4);
-  assert.equal(stored.token, token);
-  assert.equal(stored.availability, "unavailable");
-}
-const writesBeforeIdempotentMark = fileWriteCalls;
-assert.equal(markGatewayTokenUnavailable(token), true);
-assert.equal(fileWriteCalls, writesBeforeIdempotentMark);
+// v1.2.13 stored generic HTTP 401/403 responses as a permanent unavailable
+// marker. Existing records must authorize the next request without requiring the
+// user to save the same Access Key again.
+const unavailableRecord = encodedV4Unavailable(token, Date.now() + 1);
+memory.set(KEY, unavailableRecord);
+files.set(FILE, unavailableRecord);
+files.set(BACKUP, unavailableRecord);
+assert.equal(gatewayCredentialStatus(), "configured");
+assert.equal(gatewayConfigured(), true);
+assert.deepEqual(loadGatewayCredentials(), { token });
 memory.clear();
-assert.equal(gatewayCredentialStatus(), "unavailable");
-assert.equal(JSON.parse(memory.get(KEY)!).availability, "unavailable");
+assert.equal(gatewayCredentialStatus(), "configured");
+assert.deepEqual(loadGatewayCredentials(), { token });
 saveGatewayToken(token);
 assert.equal(gatewayCredentialStatus(), "configured");
 assert.deepEqual(loadGatewayCredentials(), { token });

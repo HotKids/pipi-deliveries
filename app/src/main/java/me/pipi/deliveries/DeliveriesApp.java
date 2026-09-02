@@ -7,6 +7,7 @@ import com.google.android.material.color.DynamicColors;
 
 import me.pipi.deliveries.background.ExpressScheduler;
 import me.pipi.deliveries.data.ExpressRepository;
+import me.pipi.deliveries.network.CarrierAuthority;
 import me.pipi.deliveries.notification.ExpressNotifications;
 
 /** Process entrypoint for the source-native implementation. */
@@ -16,8 +17,9 @@ public final class DeliveriesApp extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+        CarrierAuthority.initialize(this);
         DynamicColors.applyToActivitiesIfAvailable(this);
-        ExpressNotifications.ensureChannel(this);
+        ExpressNotifications.ensureChannels(this);
         ExpressScheduler.ensureScheduled(this);
         runLocalMaintenance();
     }

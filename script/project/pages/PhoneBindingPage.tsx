@@ -150,7 +150,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
       setNowMs(sentAt);
       setResendAtMs(sentAt + 60_000);
       setVerificationPhone(requestedPhone);
-      setNotice("验证码已发送，请注意查收");
+      setNotice("验证码已发送");
       writeDiagnostic("binding.code.succeeded", {
         flowId: flowIdRef.current,
         requestedSource,

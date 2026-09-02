@@ -14,7 +14,7 @@
     "signedRefreshMs": 86400000
   },
   "pendingQueries": {
-    "ttlMs": 604800000,
+    "ttlMs": 86400000,
     "retryMs": 1800000
   },
   "status": {
@@ -55,7 +55,8 @@
   "manualAuthority": {
     "requiresTimedTrack": true,
     "completedOutranksNonTerminal": true,
-    "tieBreakOrder": ["selectedAccountInterface", "kuaidi100", "other"]
+    "terminalCompleteMinTimedTracksByProvider": { "kdniao": 2 },
+    "tieBreakOrder": ["jingdong_h5", "cainiao_h5", "kuaidi100_h5", "moto", "meizu", "oppo", "kdniao", "kuaidi100"]
   },
   "orders": {
     "unprojectedSemantic": "ORDERED",
@@ -66,38 +67,24 @@
     "compactIconLimit": 4
   },
   "carrierQuery": {
-    "waybillPrefixes": {
-      "SF": "SF",
-      "JD": "JD",
-      "JT": "JTSD",
-      "YT": "YTO",
-      "ZTO": "ZTO",
-      "STO": "STO",
-      "YD": "YD",
-      "EMS": "EMS",
-      "KYE": "KYSY",
-      "KY": "KYSY",
-      "ZJS": "ZJS"
-    },
     "records": [
-      { "standardCode": "SF", "kuaidi100Code": "shunfeng", "requiresPhoneTail": true, "aliases": ["SFEXPRESS", "SHUNFENG"] },
-      { "standardCode": "ZTO", "kuaidi100Code": "zhongtong", "requiresPhoneTail": true, "aliases": ["ZHONGTONG"] },
-      { "standardCode": "ZTOKY", "kuaidi100Code": "zhongtongkuaiyun", "requiresPhoneTail": false, "aliases": [] },
-      { "standardCode": "YTO", "kuaidi100Code": "yuantong", "requiresPhoneTail": false, "aliases": ["YUANTONG"] },
-      { "standardCode": "STO", "kuaidi100Code": "shentong", "requiresPhoneTail": false, "aliases": ["SHENTONG"] },
-      { "standardCode": "YD", "kuaidi100Code": "yunda", "requiresPhoneTail": false, "aliases": ["YUNDA"] },
-      { "standardCode": "JD", "kuaidi100Code": "jd", "requiresPhoneTail": false, "aliases": ["JDKD", "JINGDONG"] },
-      { "standardCode": "JDKY", "kuaidi100Code": "jingdongkuaiyun", "requiresPhoneTail": false, "aliases": [] },
-      { "standardCode": "EMS", "kuaidi100Code": "ems", "requiresPhoneTail": false, "aliases": [] },
-      { "standardCode": "EMSGJ", "kuaidi100Code": "emsguoji", "requiresPhoneTail": false, "aliases": [] },
-      { "standardCode": "YZPY", "kuaidi100Code": "youzhengguonei", "requiresPhoneTail": false, "aliases": ["POST", "POSTB", "CHINAPOST", "YOUZHENGGUONEI", "YOUZHENGBK"] },
-      { "standardCode": "JTSD", "kuaidi100Code": "jtexpress", "requiresPhoneTail": false, "aliases": ["JT", "JTEXPRESS"] },
-      { "standardCode": "HTKY", "kuaidi100Code": "huitongkuaidi", "requiresPhoneTail": false, "aliases": ["BEST", "BESTQJT", "HUITONGKUAIDI"] },
-      { "standardCode": "DBL", "kuaidi100Code": "debangkuaidi", "requiresPhoneTail": false, "aliases": ["DBKD", "DEBANGKUAIDI", "DEBANGWULIU"] },
-      { "standardCode": "KYSY", "kuaidi100Code": "kuayue", "requiresPhoneTail": true, "aliases": ["KY", "KUAYUE"] },
-      { "standardCode": "ZJS", "kuaidi100Code": "zhaijisong", "requiresPhoneTail": false, "aliases": ["ZHAIJISONG"] },
-      { "standardCode": "UC", "kuaidi100Code": "youshuwuliu", "requiresPhoneTail": false, "aliases": ["YOUSHUWULIU"] },
-      { "standardCode": "DANNIAO", "kuaidi100Code": "danniao", "requiresPhoneTail": false, "aliases": ["ZMKMKD"] }
+      { "standardCode": "SF", "displayName": "顺丰速运", "kuaidi100Code": "shunfeng", "hotline": "95338", "iconKey": "sf", "requiresPhoneTail": true, "aliases": ["SFEXPRESS", "SHUNFENG"], "nameAliases": ["顺丰", "顺丰快递"] },
+      { "standardCode": "ZTO", "displayName": "中通快递", "kuaidi100Code": "zhongtong", "hotline": "95311", "iconKey": "zto", "requiresPhoneTail": true, "aliases": ["ZHONGTONG"], "nameAliases": ["中通"] },
+      { "standardCode": "ZTOKY", "displayName": "中通快运", "kuaidi100Code": "zhongtongkuaiyun", "hotline": "", "iconKey": "zto", "requiresPhoneTail": false, "aliases": [], "nameAliases": [] },
+      { "standardCode": "YTO", "displayName": "圆通速递", "kuaidi100Code": "yuantong", "hotline": "95554", "iconKey": "yto", "requiresPhoneTail": false, "aliases": ["YUANTONG"], "nameAliases": ["圆通", "圆通快递"] },
+      { "standardCode": "STO", "displayName": "申通快递", "kuaidi100Code": "shentong", "hotline": "95543", "iconKey": "sto", "requiresPhoneTail": false, "aliases": ["SHENTONG"], "nameAliases": ["申通"] },
+      { "standardCode": "YD", "displayName": "韵达快递", "kuaidi100Code": "yunda", "hotline": "95546", "iconKey": "yd", "requiresPhoneTail": false, "aliases": ["YUNDA"], "nameAliases": ["韵达", "韵达速递"] },
+      { "standardCode": "JD", "displayName": "京东快递", "kuaidi100Code": "jd", "hotline": "950616", "iconKey": "jd", "requiresPhoneTail": true, "aliases": ["JDKD", "JINGDONG", "JDLEX"], "codePrefixAliases": ["JD"], "nameAliases": ["京东", "京东物流", "京东快递"] },
+      { "standardCode": "JDKY", "displayName": "京东快运", "kuaidi100Code": "jingdongkuaiyun", "hotline": "950616", "iconKey": "jd", "requiresPhoneTail": false, "aliases": [], "nameAliases": [] },
+      { "standardCode": "EMS", "displayName": "EMS", "kuaidi100Code": "ems", "hotline": "11183", "iconKey": "ems", "requiresPhoneTail": false, "aliases": ["EYB"], "nameAliases": ["邮政EMS", "邮政特快"] },
+      { "standardCode": "YZPY", "displayName": "邮政快递", "kuaidi100Code": "youzhengguonei", "hotline": "11183", "iconKey": "yzpy", "requiresPhoneTail": false, "aliases": ["POST", "POSTB", "CHINAPOST", "YOUZHENGGUONEI", "YOUZHENGBK"], "nameAliases": ["邮政", "邮政快递包裹", "中国邮政", "邮政国内标准", "邮政包裹", "包裹信件"] },
+      { "standardCode": "JTSD", "displayName": "极兔速递", "kuaidi100Code": "jtexpress", "hotline": "956025", "iconKey": "jtsd", "requiresPhoneTail": false, "aliases": ["JT", "J&T", "JTEXPRESS", "JITU"], "nameAliases": ["极兔"] },
+      { "standardCode": "HTKY", "displayName": "极兔速递", "kuaidi100Code": "huitongkuaidi", "hotline": "", "iconKey": "jtsd", "requiresPhoneTail": false, "aliases": ["BEST", "BESTQJT", "HUITONGKUAIDI"], "nameAliases": ["百世", "百世快递", "汇通"] },
+      { "standardCode": "DBL", "displayName": "德邦快递", "kuaidi100Code": "debangkuaidi", "kuaidi100CodeAliases": ["debangwuliu"], "hotline": "95353", "iconKey": "dbl", "requiresPhoneTail": false, "aliases": ["DBKD", "DEBANGKUAIDI", "DEBANGWULIU"], "nameAliases": ["德邦", "德邦物流"] },
+      { "standardCode": "KYSY", "displayName": "跨越速运", "kuaidi100Code": "kuayue", "hotline": "95324", "iconKey": "kysy", "requiresPhoneTail": true, "aliases": ["KY", "KUAYUE", "KYE"], "nameAliases": ["跨越"] },
+      { "standardCode": "ZJS", "displayName": "宅急送", "kuaidi100Code": "zhaijisong", "hotline": "4006789000", "iconKey": "zjs", "requiresPhoneTail": false, "aliases": ["ZHAIJISONG"], "nameAliases": [] },
+      { "standardCode": "UC", "displayName": "优速快递", "kuaidi100Code": "youshuwuliu", "hotline": "", "iconKey": "uc", "requiresPhoneTail": false, "aliases": ["YOUSHUWULIU"], "nameAliases": ["优速"] },
+      { "standardCode": "DANNIAO", "displayName": "丹鸟速递", "kuaidi100Code": "danniao", "hotline": "", "iconKey": "danniao", "requiresPhoneTail": false, "aliases": ["ZMKM", "ZMKMKD"], "nameAliases": ["丹鸟", "丹鸟快递", "菜鸟速递", "菜鸟直送", "菜鸟直送(丹鸟)", "菜鸟直送（丹鸟）"] }
     ]
   },
   "carrierIcons": {
@@ -122,8 +109,6 @@
       "JDKY": "jd",
       "JINGDONGKUAIYUN": "jd",
       "EMS": "ems",
-      "EMSGJ": "emsgj",
-      "EMSGUOJI": "emsgj",
       "YZPY": "yzpy",
       "POST": "yzpy",
       "POSTB": "yzpy",
@@ -132,6 +117,7 @@
       "YOUZHENGBK": "yzpy",
       "JTSD": "jtsd",
       "JT": "jtsd",
+      "JITU": "jtsd",
       "JTEXPRESS": "jtsd",
       "DBL": "dbl",
       "DBKD": "dbl",
@@ -139,12 +125,14 @@
       "DEBANGWULIU": "dbl",
       "KYSY": "kysy",
       "KY": "kysy",
+      "KYE": "kysy",
       "KUAYUE": "kysy",
       "ZJS": "zjs",
       "ZHAIJISONG": "zjs",
       "UC": "uc",
       "YOUSHUWULIU": "uc",
       "DANNIAO": "danniao",
+      "ZMKM": "danniao",
       "ZMKMKD": "danniao"
     },
     "names": {
@@ -168,7 +156,6 @@
       "京东快运": "jd",
       "京东购物": "jdshopping",
       "EMS": "ems",
-      "EMS国际": "emsgj",
       "邮政": "yzpy",
       "邮政快递": "yzpy",
       "邮政包裹": "yzpy",

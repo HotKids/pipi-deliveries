@@ -45,6 +45,7 @@ public final class ExpressDatabaseContractTest {
     public void nativeSidecarsExposeTheirRealKeysAndRetryIdentity() {
         SQLiteDatabase db = helper.getWritableDatabase();
         Map<String, Column> timeline = columns(db, ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE);
+        Map<String, Column> route = columns(db, ExpressDatabase.OWNER_MANUAL_ROUTE_TABLE);
         Map<String, Column> retry = columns(db, ExpressDatabase.OWNER_MANUAL_RETRY_TABLE);
         Map<String, Column> shipments = columns(db, ExpressDatabase.EXPRESS_TABLE);
 
@@ -61,7 +62,23 @@ public final class ExpressDatabaseContractTest {
         assertTrue(shipments.containsKey("projectionRetryAt"));
         assertTrue(shipments.containsKey("projectionRetryRoute"));
         assertTrue(timeline.get("status_event_time").notNull);
-        assertEquals(17, ExpressDatabase.VERSION);
+        assertTrue(timeline.containsKey("status_description"));
+        assertTrue(timeline.get("structured_status").notNull);
+        assertTrue(timeline.containsKey("detail_url"));
+        assertEquals(1, route.get("owner_row_id").primaryKeyOrder);
+        assertEquals(2, route.get("provider").primaryKeyOrder);
+        assertTrue(route.get("normalized_waybill").notNull);
+        assertTrue(route.get("owner_source").notNull);
+        assertTrue(route.get("owner_source_provider").notNull);
+        assertTrue(route.get("binding_source").notNull);
+        assertTrue(route.get("binding_generation").notNull);
+        assertTrue(route.get("detail_url").notNull);
+        assertEquals(20, ExpressDatabase.VERSION);
+        assertTrue(shipments.containsKey("carrierStandardCode"));
+        assertTrue(shipments.containsKey("carrierDisplayName"));
+        assertTrue(shipments.containsKey("carrierKuaidi100Code"));
+        assertTrue(shipments.containsKey("carrierIsBuiltIn"));
+        assertTrue(shipments.containsKey("carrierTableVersion"));
     }
 
     @Test
@@ -80,7 +97,7 @@ public final class ExpressDatabaseContractTest {
 
         SQLiteDatabase upgraded = helper.getWritableDatabase();
 
-        assertEquals(17, upgraded.getVersion());
+        assertEquals(ExpressDatabase.VERSION, upgraded.getVersion());
         assertTrue(columns(upgraded, ExpressDatabase.EXPRESS_TABLE)
                 .containsKey("projectionRetryAt"));
         assertTrue(columns(upgraded, ExpressDatabase.EXPRESS_TABLE)
@@ -163,7 +180,7 @@ public final class ExpressDatabaseContractTest {
 
         SQLiteDatabase upgraded = helper.getWritableDatabase();
 
-        assertEquals(17, upgraded.getVersion());
+        assertEquals(ExpressDatabase.VERSION, upgraded.getVersion());
         Column eventTime = columns(
                 upgraded, ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE)
                 .get("status_event_time");
@@ -208,7 +225,7 @@ public final class ExpressDatabaseContractTest {
 
         SQLiteDatabase upgraded = helper.getWritableDatabase();
 
-        assertEquals(17, upgraded.getVersion());
+        assertEquals(ExpressDatabase.VERSION, upgraded.getVersion());
         assertEquals(5, count(upgraded, ExpressDatabase.EXPRESS_TABLE, null, null));
         assertEquals(0, count(upgraded, ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
                 "owner_row_id=? AND provider=?", new String[]{"101", "interface5"}));
@@ -232,6 +249,84 @@ public final class ExpressDatabaseContractTest {
                 "owner_row_id=?", new String[]{"104"}));
         assertEquals(0, count(upgraded, ExpressDatabase.OWNER_MANUAL_RETRY_TABLE,
                 "owner_row_id=?", new String[]{"105"}));
+    }
+
+    @Test
+    public void version18UpgradeFreezesOnlyEligibleOwnersAndHydratesUniqueLegacyTail() {
+        SQLiteDatabase legacy = context.openOrCreateDatabase(
+                ExpressDatabase.DATABASE, Context.MODE_PRIVATE, null);
+        createVersion14Schema(legacy);
+        ContentValues binding = new ContentValues();
+        binding.put("phone", "13910000009");
+        binding.put("bind_time", 100L);
+        binding.put("sync_status", "interface6");
+        binding.put("uuid", "generation-0009");
+        legacy.insertOrThrow(ExpressDatabase.PHONE_TABLE, null, binding);
+
+        ContentValues automatic = legacyShipment(
+                201L, "MIGRATE000009", "INTERFACE6", "ZTO", "中通快递", "0009");
+        automatic.put("updatedAt", 200L);
+        automatic.put("statusEventTime", 180L);
+        automatic.put("data1", "CaiNiao");
+        legacy.insertOrThrow(ExpressDatabase.EXPRESS_TABLE, null, automatic);
+
+        ContentValues chineseNameOnly = legacyShipment(
+                204L, "MIGRATE000204", "INTERFACE6", "", "顺丰速运", "0009");
+        chineseNameOnly.put("updatedAt", 210L);
+        chineseNameOnly.put("statusEventTime", 190L);
+        chineseNameOnly.put("data1", "CaiNiao");
+        legacy.insertOrThrow(ExpressDatabase.EXPRESS_TABLE, null, chineseNameOnly);
+
+        ContentValues deletedVivoJd = legacyShipment(
+                202L, "VIVOJD000202", "VIVO", "JD", "京东购物", "0009");
+        deletedVivoJd.put("data1", "JingDong");
+        legacy.insertOrThrow(ExpressDatabase.EXPRESS_TABLE, null, deletedVivoJd);
+
+        ContentValues manual = legacyShipment(
+                203L, "MANUAL000203", "KD-100", "SF", "顺丰速运", "");
+        manual.put("data3", "manual");
+        legacy.insertOrThrow(ExpressDatabase.EXPRESS_TABLE, null, manual);
+        legacy.setVersion(18);
+        legacy.close();
+
+        SQLiteDatabase upgraded = helper.getWritableDatabase();
+
+        assertEquals(0, count(upgraded, ExpressDatabase.EXPRESS_TABLE,
+                "normalizedMailNo=?", new String[]{"VIVOJD000202"}));
+        assertEquals(1, count(upgraded, ExpressDatabase.EXPRESS_TABLE,
+                "normalizedMailNo=?", new String[]{"MIGRATE000009"}));
+        assertEquals(0, count(upgraded, ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE,
+                "normalized_waybill=?", new String[]{"MANUAL000203"}));
+        try (Cursor owner = upgraded.query(
+                ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE,
+                new String[]{"owner_provider", "owner_binding_generation", "owner_row_id"},
+                "normalized_waybill=?", new String[]{"MIGRATE000009"},
+                null, null, null)) {
+            assertTrue(owner.moveToFirst());
+            assertEquals("INTERFACE6", owner.getString(0));
+            assertEquals("generation-0009", owner.getString(1));
+            assertEquals(201L, owner.getLong(2));
+        }
+        try (Cursor observation = upgraded.query(
+                ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE,
+                new String[]{"owner_provider", "binding_generation", "qualified"},
+                "normalized_waybill=?", new String[]{"MIGRATE000009"},
+                null, null, null)) {
+            assertTrue(observation.moveToFirst());
+            assertEquals("INTERFACE6", observation.getString(0));
+            assertEquals("generation-0009", observation.getString(1));
+            assertEquals(1, observation.getInt(2));
+        }
+        try (Cursor observation = upgraded.query(
+                ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE,
+                new String[]{"courier_code", "company_name", "qualified"},
+                "normalized_waybill=?", new String[]{"MIGRATE000204"},
+                null, null, null)) {
+            assertTrue(observation.moveToFirst());
+            assertEquals("", observation.getString(0));
+            assertEquals("顺丰速运", observation.getString(1));
+            assertEquals(1, observation.getInt(2));
+        }
     }
 
     private static void createVersion16Schema(SQLiteDatabase db) {
@@ -268,6 +363,25 @@ public final class ExpressDatabaseContractTest {
         values.put("data1", provider);
         values.put("data3", manualMarker);
         db.insertOrThrow(ExpressDatabase.EXPRESS_TABLE, null, values);
+    }
+
+    private static ContentValues legacyShipment(
+            long rowId, String waybill, String owner,
+            String courierCode, String companyName, String phoneTail) {
+        ContentValues values = new ContentValues();
+        values.put("_id", rowId);
+        values.put("mailNo", waybill);
+        values.put("normalizedMailNo", waybill);
+        values.put("subPhone", phoneTail);
+        values.put("cpCode", courierCode);
+        values.put("cpName", companyName);
+        values.put("logsiticsStatus", "TRANSIT");
+        values.put("logisticsStatusDesc", "运输中");
+        values.put("lastLogisticDetail", "运输中");
+        values.put("logisticsGmtModified", "2026-08-30 12:00:00");
+        values.put("fromCp", owner);
+        values.put("stateOwner", owner);
+        return values;
     }
 
     private static void insertManualSidecar(

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="express_search_field_height">48dp</dimen>
+    <dimen name="express_search_field_corner_radius">24dp</dimen>
+    <dimen name="express_widget_search_edge_inset">14dp</dimen>
+</resources>

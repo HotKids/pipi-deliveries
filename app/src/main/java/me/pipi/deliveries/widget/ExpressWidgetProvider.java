@@ -94,6 +94,8 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                     empty ? View.GONE : View.VISIBLE);
             views.setViewVisibility(R.id.widget_compact_empty,
                     empty ? View.VISIBLE : View.GONE);
+            views.setViewVisibility(R.id.widget_compact_empty_search_frame,
+                    empty ? View.VISIBLE : View.GONE);
             int accent;
             if (empty) {
                 accent = ExpressWidgetPalette.emptyAccent(context);
@@ -111,7 +113,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 views.setImageViewResource(R.id.widget_compact_courier_logo,
                         item.displayIconResource());
                 views.setTextViewText(R.id.widget_compact_company,
-                        item.companyName);
+                        ExpressWidgetPresentation.rowIdentity(item));
                 views.setTextViewText(R.id.widget_compact_detail,
                         item.latestDetail.isEmpty()
                                 ? context.getString(R.string.widget_no_logistics_detail)
@@ -145,6 +147,8 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             Bundle options = manager.getAppWidgetOptions(id);
             float hostWidthDp = WidgetHostMetrics.currentWidthDp(context, options);
             float hostHeightDp = WidgetHostMetrics.currentHeightDp(context, options);
+            ExpressWidgetLayout.Medium mediumLayout =
+                    ExpressWidgetLayout.medium(hostHeightDp);
             WidgetTypographyProfile typography =
                     CardSizeProfile.resolve(options, hostWidthDp).typography;
             float density = context.getResources().getDisplayMetrics().density;
@@ -163,19 +167,24 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                     typography.textSize(WidgetTypographyProfile.Token.BODY));
             views.setViewVisibility(R.id.widget_express_empty,
                     empty ? View.VISIBLE : View.GONE);
-            views.setViewVisibility(R.id.widget_express_brand_gradient,
-                    empty ? View.GONE : View.VISIBLE);
+            int accent = empty
+                    ? ExpressWidgetPalette.emptyAccent(context)
+                    : ExpressWidgetPalette.accent(context, displayed.get(0));
+            views.setImageViewResource(R.id.widget_express_brand_gradient,
+                    empty
+                            ? R.drawable.widget_express_empty_gradient_mask
+                            : R.drawable.widget_express_brand_gradient_mask);
+            views.setInt(R.id.widget_express_brand_gradient, "setColorFilter", accent);
+            views.setViewVisibility(R.id.widget_express_brand_gradient, View.VISIBLE);
+            views.setInt(R.id.widget_express_search, "setColorFilter", accent);
             if (empty) {
                 for (int index = 0; index < WIDE_ROW_IDS.length; index++) {
                     hideWideRow(views, index);
                 }
             } else {
-                int accent = ExpressWidgetPalette.accent(context, displayed.get(0));
-                views.setInt(R.id.widget_express_brand_gradient, "setColorFilter", accent);
-                views.setInt(R.id.widget_express_search, "setColorFilter", accent);
                 for (int index = 0; index < WIDE_ROW_IDS.length; index++) {
                     bindWideRow(context, views, displayed, index, id * 10 + index,
-                            rowLayout, typography);
+                            rowLayout, typography, mediumLayout);
                 }
             }
 
@@ -193,7 +202,8 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
     private static void bindWideRow(
             Context context, RemoteViews views, List<ExpressItem> items, int index,
             int requestCode, ExpressWidgetRowPolicy.RowLayout rowLayout,
-            WidgetTypographyProfile typography) {
+            WidgetTypographyProfile typography,
+            ExpressWidgetLayout.Medium mediumLayout) {
         if (index >= rowLayout.visibleRows) {
             hideWideRow(views, index);
             return;
@@ -218,7 +228,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 "setBackgroundResource", statusStyle.background);
         views.setTextColor(WIDE_STATUS_IDS[index], statusStyle.foreground);
         views.setTextViewTextSize(WIDE_DETAIL_IDS[index], TypedValue.COMPLEX_UNIT_SP,
-                typography.textSize(WidgetTypographyProfile.Token.SUPPORT));
+                mediumLayout.detailTextSizeSp);
         views.setTextViewText(WIDE_DETAIL_IDS[index], item.latestDetail);
         views.setViewVisibility(WIDE_DETAIL_IDS[index],
                 item.latestDetail.isEmpty() ? View.GONE : View.VISIBLE);
@@ -226,7 +236,6 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
     }
 
     private static void hideWideRow(RemoteViews views, int index) {
-        views.setImageViewResource(WIDE_LOGO_IDS[index], R.drawable.ic_local_shipping);
         views.setTextViewText(WIDE_COMPANY_IDS[index], "");
         views.setTextViewText(WIDE_STATUS_IDS[index], "");
         views.setTextViewText(WIDE_DETAIL_IDS[index], "");
@@ -242,7 +251,9 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 layout.pillHorizontalPaddingDp * density);
         int logoHorizontalInsetPx = Math.round(
                 layout.logoHorizontalInsetDp * density);
-        int logoVerticalInsetPx = Math.round(layout.logoVerticalInsetDp * density);
+        int compatHeaderVerticalInsetPx = Math.round(
+                layout.logoVerticalInsetDp * density);
+        int pillIconInsetPx = Math.round(layout.pillIconInsetDp * density);
         views.setViewPadding(R.id.widget_compact_content,
                 paddingPx, paddingPx, paddingPx, paddingPx);
         views.setViewPadding(R.id.widget_compact_empty,
@@ -250,12 +261,23 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         views.setViewPadding(R.id.widget_compact_all,
                 pillHorizontalPaddingPx, 0, pillHorizontalPaddingPx, 0);
         if (Build.VERSION.SDK_INT >= 31) {
-            ExpressWidgetApi31.applyCompactLogoSize(views, layout.courierLogoSizeDp);
+            ExpressWidgetApi31.applyCompactHeaderSize(
+                    views, layout.courierLogoSizeDp);
+            ExpressWidgetApi31.applyCompactPillIconSize(
+                    views, layout.pillIconSizeDp);
             views.setViewPadding(R.id.widget_compact_courier_logo, 0, 0, 0, 0);
+            views.setViewPadding(R.id.widget_compact_identity, 0, 0, 0, 0);
+            views.setViewPadding(R.id.widget_compact_all_icon, 0, 0, 0, 0);
         } else {
+            // API 29/30 cannot resize RemoteViews layout params, so the fixed slots
+            // use the same symmetric inset to keep their visible heights aligned.
             views.setViewPadding(R.id.widget_compact_courier_logo,
-                    logoHorizontalInsetPx, logoVerticalInsetPx,
-                    logoHorizontalInsetPx, logoVerticalInsetPx);
+                    logoHorizontalInsetPx, compatHeaderVerticalInsetPx,
+                    logoHorizontalInsetPx, compatHeaderVerticalInsetPx);
+            views.setViewPadding(R.id.widget_compact_identity,
+                    0, compatHeaderVerticalInsetPx, 0, compatHeaderVerticalInsetPx);
+            views.setViewPadding(R.id.widget_compact_all_icon,
+                    pillIconInsetPx, pillIconInsetPx, pillIconInsetPx, pillIconInsetPx);
         }
         views.setTextViewTextSize(R.id.widget_priority_status,
                 TypedValue.COMPLEX_UNIT_SP, layout.statusTextSizeSp);
@@ -263,6 +285,8 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 TypedValue.COMPLEX_UNIT_SP, layout.companyTextSizeSp);
         views.setTextViewTextSize(R.id.widget_compact_detail,
                 TypedValue.COMPLEX_UNIT_SP, layout.detailTextSizeSp);
+        views.setTextViewTextSize(R.id.widget_compact_all_text,
+                TypedValue.COMPLEX_UNIT_SP, layout.pillContentSize);
         views.setInt(R.id.widget_compact_detail,
                 "setMaxLines", layout.detailLineLimit);
     }

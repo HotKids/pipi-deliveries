@@ -1,6 +1,10 @@
-import { Button, HStack, Spacer, Text, VStack } from "scripting";
+import { Button, HStack, Spacer, Text, VStack, useState } from "scripting";
 import type { Shipment } from "../models";
-import { statusLabel, statusTint, waybillSuffix } from "../services/status";
+import {
+  shipmentPresentationStatus,
+  statusTint,
+  waybillSuffix,
+} from "../services/status";
 import {
   displayWaybill,
   unprojectedAccountOrder,
@@ -15,13 +19,49 @@ export function ShipmentRow(props: {
   onForceComplete: () => void;
 }) {
   const item = props.shipment;
+  const [pendingAction, setPendingAction] = useState<
+    "delete" | "complete" | null
+  >(null);
+  const presentationStatus = shipmentPresentationStatus(item);
   const eventTime = compactTimelineTime(item.timeline.latestTimeText);
+
+  function confirmPendingAction() {
+    const action = pendingAction;
+    if (!action) return;
+    setPendingAction(null);
+    setTimeout(() => {
+      if (action === "delete") props.onDelete();
+      else props.onForceComplete();
+    }, 350);
+  }
+
   return (
     <HStack
       spacing={12}
       padding={{ vertical: 10 }}
       contentShape="rect"
       onTapGesture={props.onOpen}
+      confirmationDialog={{
+        title: pendingAction === "delete" ? "删除快递" : "标记为已签收",
+        isPresented: pendingAction != null,
+        onChanged: (presented) => {
+          if (!presented) setPendingAction(null);
+        },
+        message: (
+          <Text>
+            {pendingAction === "delete"
+              ? "删除后，该快递及其本地物流轨迹将一并移除。"
+              : "确认将该快递标记为已签收？"}
+          </Text>
+        ),
+        actions: (
+          <Button
+            title={pendingAction === "delete" ? "删除" : "签收"}
+            role={pendingAction === "delete" ? "destructive" : "confirm"}
+            action={confirmPendingAction}
+          />
+        ),
+      }}
       leadingSwipeActions={
         item.timeline.semantic === "COMPLETED"
           ? undefined
@@ -31,7 +71,7 @@ export function ShipmentRow(props: {
                 <Button
                   title="签收"
                   tint="systemGreen"
-                  action={props.onForceComplete}
+                  action={() => setPendingAction("complete")}
                 />,
               ],
             }
@@ -42,7 +82,7 @@ export function ShipmentRow(props: {
           <Button
             title="删除"
             role="destructive"
-            action={props.onDelete}
+            action={() => setPendingAction("delete")}
           />,
         ],
       }}
@@ -61,9 +101,9 @@ export function ShipmentRow(props: {
           <Text
             font={17}
             fontWeight="semibold"
-            foregroundStyle={statusTint(item.timeline.semantic)}
+            foregroundStyle={statusTint(presentationStatus.semantic)}
           >
-            {statusLabel(item.timeline.semantic)}
+            {presentationStatus.text}
           </Text>
           <Spacer />
           {eventTime ? (

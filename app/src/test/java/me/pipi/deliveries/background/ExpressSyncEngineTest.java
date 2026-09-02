@@ -4,6 +4,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 
 import me.pipi.deliveries.model.ExpressItem;
@@ -59,42 +62,76 @@ public final class ExpressSyncEngineTest {
     }
 
     @Test
-    public void sharedManualRefreshRequiresExactRawSourceEvidence() {
+    public void sharedManualRefreshUsesExactSfOrJdSourceAcrossAccountInterfaces() {
         assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
-                sourceItem("INTERFACE5", "ShunFeng", "ZTO")));
+                sourceItem("INTERFACE5", "ShunFeng", "ZTO", "中通快递")));
         assertFalse(ExpressSyncEngine.usesSharedManualTimeline(
-                sourceItem("INTERFACE5", "CaiNiao", "SF")));
+                sourceItem("INTERFACE5", "CaiNiao", "SF", "顺丰速运")));
         assertFalse(ExpressSyncEngine.usesSharedManualTimeline(
-                sourceItem("INTERFACE6", "ShunFeng", "SF")));
+                sourceItem("INTERFACE5", "", "SF", "顺丰速运")));
+        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
+                sourceItem("INTERFACE6", "ShunFeng", "SF", "顺丰速运")));
+        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
+                sourceItem("INTERFACE6", "JingDong", "JD", "京东快递")));
     }
 
     @Test
-    public void projectedOrderSchedulesItsCarrierTimelineButOrderIdDoesNot() {
-        ExpressItem unprojected = accountOrder("");
-        ExpressItem projected = accountOrder("SF1234567890");
+    public void backgroundDoesNotFetchProjectedOrderTimeline() throws Exception {
+        Path path = Path.of(
+                "app/src/main/java/me/pipi/deliveries/background/ExpressSyncEngine.java");
+        if (!Files.isRegularFile(path)) {
+            path = Path.of(
+                    "src/main/java/me/pipi/deliveries/background/ExpressSyncEngine.java");
+        }
+        String source = Files.readString(path, StandardCharsets.UTF_8);
 
-        assertFalse(ExpressSyncEngine.shouldRefreshProjectedOrder(
-                unprojected, null, 1_800_000_000_000L));
-        assertTrue(ExpressSyncEngine.shouldRefreshProjectedOrder(
-                projected, null, 1_800_000_000_000L));
+        assertFalse(source.contains("shouldRefreshProjectedOrder("));
+        assertFalse(source.contains("saveProjectedOrderTimeline("));
+    }
+
+    @Test
+    public void onlyAnUnresolvedProjectedCarrierUsesSharedWorkerRecognition() {
+        ExpressItem missingCarrier = projectedOrder("");
+        ExpressItem genericCarrier = projectedOrder("快递");
+        ExpressItem resolvedCarrier = projectedOrder("顺丰速运");
+        ExpressItem unprojected = accountOrder("");
+
+        assertTrue(ExpressSyncEngine.needsProjectedCarrierRecognition(missingCarrier));
+        assertTrue(ExpressSyncEngine.needsProjectedCarrierRecognition(genericCarrier));
+        assertFalse(ExpressSyncEngine.needsProjectedCarrierRecognition(resolvedCarrier));
+        assertFalse(ExpressSyncEngine.needsProjectedCarrierRecognition(unprojected));
+        assertEquals("顺丰速运", ExpressSyncEngine.recognizedProjectedCarrier("shunfeng"));
+        assertEquals("", ExpressSyncEngine.recognizedProjectedCarrier("unknown-provider"));
     }
 
     private static ExpressItem sourceItem(
-            String owner, String provider, String courierCode) {
+            String owner, String provider, String courierCode, String companyName) {
         return new ExpressItem(
-                1L, "", "TEST123456", courierCode, "快递",
+                1L, "", "TEST123456", courierCode, companyName,
                 StatusSemantic.TRANSIT, "运输中", "快件运输中",
                 "2026-08-24 10:00:00", "[]", "", owner, "",
                 1L, 2L, owner, "", "", "", true,
                 "", "", "", provider);
     }
 
+    private static ExpressItem projectedOrder(String projectedCompany) {
+        return new ExpressItem(
+                2L, "", "JDORDER123456", "JD", "京东购物",
+                StatusSemantic.TRANSIT, "运输中", "订单运输中",
+                "2026-08-24 10:00:00", "[]", "", "I5-JD", "",
+                1L, 2L, "I5-JD", "I5-JD", "v5",
+                "https://example.jd.com/detail", true,
+                "SFPROJECTED123", projectedCompany, "[]", "JingDong");
+    }
+
     private static ExpressItem accountOrder(String projectedWaybill) {
         return new ExpressItem(
-                1L, "13900000000", "JDORDER123456", "JD", "京东购物",
-                StatusSemantic.ORDERED, "已下单", "订单已完成",
+                3L, "", "JDORDER654321", "JD", "京东购物",
+                StatusSemantic.TRANSIT, "运输中", "订单运输中",
                 "2026-08-24 10:00:00", "[]", "", "I5-JD", "",
-                1L, 2L, "I5-JD", "", "v5", "route", true,
-                projectedWaybill, "顺丰速运", "[]");
+                1L, 2L, "I5-JD", "I5-JD", "v5",
+                "https://example.jd.com/detail", true,
+                projectedWaybill, "", "[]", "JingDong");
     }
+
 }

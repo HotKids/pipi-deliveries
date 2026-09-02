@@ -164,8 +164,12 @@ function decodeToken(raw: unknown): CredentialCandidate {
         return absent();
       }
       generation = Number(stored.generation);
-      availability = stored.availability;
-      checksum = tokenChecksumV4(stored.token, generation, availability);
+      const storedAvailability = stored.availability;
+      checksum = tokenChecksumV4(stored.token, generation, storedAvailability);
+      // Older v1.2.13 builds persisted every HTTP 401/403 as a permanent token
+      // disable marker. The gateway does not expose a durable revocation contract,
+      // so a valid legacy record must remain eligible for the next request.
+      availability = "available";
     } else if (stored.schema === 2) {
       if (!Number.isSafeInteger(stored.generation) || Number(stored.generation) < 1) {
         return absent();
@@ -205,25 +209,25 @@ function decodePendingToken(raw: unknown): PendingCredential | null {
     if (!token) return null;
     const generation = Number(stored.generation);
     const previousKey = stored.previousKey;
-    const availability = stored.schema === 3
+    const storedAvailability = stored.schema === 3
       ? "available"
       : stored.availability;
     if (
-      availability !== "available" &&
-      availability !== "unavailable"
+      storedAvailability !== "available" &&
+      storedAvailability !== "unavailable"
     ) {
       return null;
     }
     const checksum = stored.schema === 3
       ? pendingChecksumV3(token, generation, previousKey)
-      : pendingChecksumV5(token, generation, previousKey, availability);
+      : pendingChecksumV5(token, generation, previousKey, storedAvailability);
     if (stored.checksum.toLowerCase() !== checksum) return null;
     return {
       schema: stored.schema,
       token,
       generation,
       previousKey,
-      availability,
+      availability: "available",
       checksum: stored.checksum,
     };
   } catch {
@@ -610,26 +614,6 @@ function writeCredentialTransaction(
   // read failure cannot turn this committed save into a reported rollback.
   writeKey(token, generation, availability);
   removeSharedTokenBestEffort();
-}
-
-export function markGatewayTokenUnavailable(token: string): boolean {
-  const clean = normalizeScriptingToken(token);
-  if (!clean) return false;
-
-  const resolution = resolveCredentials();
-  if (resolution.status === "conflict") {
-    throw new Error("Access Key 状态保存失败，请重试");
-  }
-  const candidate = resolution.candidate;
-  if (!candidate || candidate.token !== clean) return false;
-  if (candidate.availability === "unavailable") return true;
-
-  writeCredentialTransaction(
-    clean,
-    "unavailable",
-    "Access Key 状态保存失败，请重试",
-  );
-  return true;
 }
 
 export function removeGatewayToken(): void {

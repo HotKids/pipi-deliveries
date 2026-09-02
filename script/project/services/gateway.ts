@@ -1,8 +1,8 @@
 import { fetch } from "scripting";
+import { GATEWAY_ORIGIN } from "./build-track";
 import {
   gatewayCredentialStatus,
   loadGatewayCredentials,
-  markGatewayTokenUnavailable,
 } from "./credentials";
 import {
   SCRIPTING_PROTOCOL_VERSION,
@@ -11,6 +11,7 @@ import {
   scriptingTokenSecret,
 } from "./scripting-auth";
 import {
+  linkedTimeoutSignal,
   OperationTimeoutError,
   remainingTimeoutMs,
 } from "./deadline";
@@ -20,7 +21,6 @@ import {
 } from "./scripting-crypto";
 import { utf8Data } from "./scripting-data";
 
-const GATEWAY_ORIGIN = "https://pipi-gateway.hotki.de";
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const SAFE_GATEWAY_ERROR_CODES = new Set([
@@ -151,7 +151,7 @@ function failureMessage(status: number): string {
   if (status === 401) return "访问授权无效，请检查 Access Key 与系统时间";
   if (status === 403) return "当前授权不可使用此功能";
   if (status === 408) return "请求超时，请稍后重试";
-  if (status === 429) return "操作过于频繁，请稍后重试";
+  if (status === 429) return "请求过于频繁，请稍后重试";
   if (status >= 500) return "服务暂时不可用，请稍后重试";
   return "查询失败，请稍后重试";
 }
@@ -173,17 +173,16 @@ export function gatewayErrorCode(responseText: string): string {
 export async function postGateway<T extends Record<string, unknown>>(
   routeInput: string,
   payload: Record<string, unknown>,
-  options: { timeoutMs?: number; deadlineAtMs?: number } = {},
+  options: {
+    timeoutMs?: number;
+    deadlineAtMs?: number;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<T> {
   const credentialStatus = gatewayCredentialStatus();
   if (credentialStatus === "conflict") {
     throw new GatewayError(
       "本地访问授权记录不一致，请在设置中重新保存 Access Key",
-    );
-  }
-  if (credentialStatus === "unavailable") {
-    throw new GatewayError(
-      "Access Key 已失效，请在设置中保存新的 Access Key",
     );
   }
   const credentials = loadGatewayCredentials();
@@ -214,60 +213,74 @@ export async function postGateway<T extends Record<string, unknown>>(
 
   let response;
   let responseText = "";
-  let credentialStateWriteFailed = false;
   const timeoutMs = remainingTimeoutMs(
     options.deadlineAtMs,
     Math.min(Number(options.timeoutMs) || REQUEST_TIMEOUT_MS, 60_000),
   );
+  const lifecycleDeadlineAtMs = Date.now() + timeoutMs;
+  const lifecycle = linkedTimeoutSignal(timeoutMs, options.signal);
+  let rejectLifecycle: ((reason: Error) => void) | undefined;
+  const abortLifecycle = () => {
+    rejectLifecycle?.(new OperationTimeoutError());
+  };
   try {
-    response = await fetch(`${GATEWAY_ORIGIN}${route}`, {
-      method: SCRIPTING_REQUEST_METHOD,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        ...authHeaders,
-      },
-      body,
-      timeout: timeoutMs / 1000,
-      debugLabel: `Pipi Deliveries ${route}`,
+    if (lifecycle.signal.aborted) throw new OperationTimeoutError();
+    const expired = new Promise<void>((_, reject) => {
+      rejectLifecycle = reject;
     });
-    if (response.status === 401 || response.status === 403) {
-      try {
-        markGatewayTokenUnavailable(credentials.token);
-      } catch {
-        credentialStateWriteFailed = true;
+    lifecycle.signal.addEventListener("abort", abortLifecycle, { once: true });
+    const request = (async () => {
+      response = await fetch(`${GATEWAY_ORIGIN}${route}`, {
+        method: SCRIPTING_REQUEST_METHOD,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          ...authHeaders,
+        },
+        body,
+        timeout: timeoutMs / 1000,
+        signal: lifecycle.signal,
+        debugLabel: `Pipi Deliveries ${route}`,
+      });
+      if (
+        typeof response.expectedContentLength === "number" &&
+        response.expectedContentLength > MAX_RESPONSE_BYTES
+      ) {
+        throw new GatewayError("服务响应异常", response.status);
       }
-    }
-    if (
-      typeof response.expectedContentLength === "number" &&
-      response.expectedContentLength > MAX_RESPONSE_BYTES
-    ) {
-      throw new GatewayError("服务响应异常", response.status);
-    }
-    responseText = await response.text();
-    if (options.deadlineAtMs != null && Date.now() >= options.deadlineAtMs) {
-      throw new OperationTimeoutError();
-    }
-    if (responseText.length > MAX_RESPONSE_BYTES) {
-      throw new GatewayError("服务响应异常", response.status);
-    }
+      const text = await response.text();
+      if (Date.now() >= lifecycleDeadlineAtMs) {
+        throw new OperationTimeoutError();
+      }
+      if (text.length > MAX_RESPONSE_BYTES) {
+        throw new GatewayError("服务响应异常", response.status);
+      }
+      responseText = text;
+    })();
+    await Promise.race([request, expired]);
   } catch (error) {
     if (error instanceof GatewayError || error instanceof OperationTimeoutError) {
       throw error;
     }
-    if (error instanceof Error && error.name === "AbortError") {
+    if (
+      lifecycle.signal.aborted ||
+      (error instanceof Error &&
+        (error.name === "AbortError" || error.name === "TimeoutError"))
+    ) {
       throw new OperationTimeoutError();
     }
     if (options.deadlineAtMs != null && Date.now() >= options.deadlineAtMs) {
       throw new OperationTimeoutError();
     }
-    throw new GatewayError("网络连接失败，请稍后重试");
+    throw new GatewayError("网络连接异常，请稍后重试");
+  } finally {
+    rejectLifecycle = undefined;
+    lifecycle.signal.removeEventListener("abort", abortLifecycle);
+    lifecycle.dispose();
   }
 
   if (!response.ok) {
     throw new GatewayError(
-      credentialStateWriteFailed
-        ? "访问授权已被服务拒绝，但本地状态保存失败，请在设置中重新保存 Access Key"
-        : failureMessage(response.status),
+      failureMessage(response.status),
       response.status,
       gatewayErrorCode(responseText),
       response.status === 401 ? scriptingCryptoRuntimeLabel() : "",

@@ -11,8 +11,6 @@ const state = {
   updatedAtMs: 100,
   activeSource: "interface5",
   bindings: [],
-  suppressions: [],
-  tombstones: [],
   pendingQueries: [{ id: "pending-route" }],
   shipments: [{ identity: { id: "retained-shipment" } }],
 } as AppState;
@@ -55,7 +53,7 @@ const failed = performShipmentDeletion("deleted-shipment", {
 });
 assert.deepEqual(failed, {
   ok: false,
-  message: "删除失败，请稍后重试",
+  message: "操作失败，请稍后重试",
 });
 assert.equal(pruneCalls, 0);
 assert.equal(reloadCalls, 0);

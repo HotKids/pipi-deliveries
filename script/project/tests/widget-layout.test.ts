@@ -14,10 +14,21 @@ import {
   emptyWidgetBackground,
 } from "../widget/palette";
 
-const smallest = smallWidgetLayout(141);
+const smallest = smallWidgetLayout(141, 148);
 assert.equal(smallest.outerPadding, 12);
-assert.equal(smallest.headerSpacing, 4);
-assert.equal(smallest.statusFont, 22);
+assert.equal(smallest.headerSpacing, 8);
+assert.equal(smallest.iconSize, 38);
+assert.equal(smallest.statusFont, 20);
+assert.equal(smallest.companyFont, 12);
+assert.equal(smallest.identitySpacing, 1);
+assert.ok(Math.abs(smallest.statusLineHeight - 22.8) < Number.EPSILON * 100);
+assert.ok(Math.abs(smallest.companyLineHeight - 14.2) < Number.EPSILON * 100);
+assert.equal(
+  smallest.statusLineHeight
+    + smallest.companyLineHeight
+    + smallest.identitySpacing,
+  smallest.iconSize,
+);
 assert.equal(smallest.detailFont, 12);
 assert.equal(smallest.pillHeight, 40);
 assert.equal(smallest.pillFont, 14);
@@ -28,9 +39,17 @@ assert.ok(
   smallest.outerPadding * 2
     + smallest.iconSize
     + smallest.headerSpacing
-    + 84 * 0.9
+    + smallest.statusFont * 3
     <= 141,
-  "compact header must fit the widest four-character status",
+  "compact header must fit every three-character canonical status",
+);
+assert.ok(
+  smallest.outerPadding * 2
+    + smallest.iconSize
+    + smallest.headerSpacing
+    + (smallest.companyFont * 4 + smallest.companyFont * 0.5 + 24) * 0.8
+    <= 141,
+  "compact identity must fit a four-character carrier plus four-digit suffix",
 );
 assert.ok(
   smallest.outerPadding * 2
@@ -42,19 +61,41 @@ assert.ok(
   "compact pill must fit a three-digit shipment total",
 );
 
-const regularSmall = smallWidgetLayout(158);
+const regularSmall = smallWidgetLayout(158, 155);
 assert.equal(regularSmall.outerPadding, 14);
-assert.equal(regularSmall.headerSpacing, 8);
+assert.equal(regularSmall.headerSpacing, 9);
+assert.equal(regularSmall.iconSize, 42);
+assert.equal(regularSmall.statusFont, 20);
+assert.equal(regularSmall.companyFont, 12);
+assert.equal(regularSmall.identitySpacing, 1);
+assert.ok(Math.abs(regularSmall.statusLineHeight - 25.2) < Number.EPSILON * 100);
+assert.ok(Math.abs(regularSmall.companyLineHeight - 15.8) < Number.EPSILON * 100);
+assert.equal(
+  regularSmall.statusLineHeight
+    + regularSmall.companyLineHeight
+    + regularSmall.identitySpacing,
+  regularSmall.iconSize,
+);
 assert.equal(regularSmall.pillHeight, smallest.pillHeight);
 assert.equal(regularSmall.pillFont, 14);
 assert.equal(regularSmall.pillIconFont, 14);
 assert.equal(regularSmall.pillSpacing, 6);
 assert.equal(regularSmall.pillHorizontalPadding, 11);
 
+const shortRegularWidth = smallWidgetLayout(158, 148);
+assert.equal(shortRegularWidth.iconSize, 38);
+assert.equal(shortRegularWidth.pillFont, 14);
+assert.equal(shortRegularWidth.pillIconFont, 14);
+assert.equal(shortRegularWidth.pillSpacing, 6);
+assert.equal(shortRegularWidth.pillHorizontalPadding, 11);
+
 const compactEmpty = smallWidgetEmptyLayout(141, 148);
 assert.equal(compactEmpty.padding, 12);
-assert.equal(compactEmpty.searchSize, 24);
 assert.equal(compactEmpty.searchFont, 18);
+assert.equal(compactEmpty.searchWidth, 20);
+assert.equal(compactEmpty.searchHeight, 25);
+assert.equal(compactEmpty.searchTopPadding, 10);
+assert.equal(compactEmpty.searchTrailingPadding, 12);
 assert.equal(compactEmpty.vehicleSize, 68);
 assert.equal(compactEmpty.labelFont, 16);
 assert.equal(compactEmpty.contentSpacing, 4);
@@ -71,8 +112,11 @@ assert.equal(
 
 const regularEmpty = smallWidgetEmptyLayout(158, 155);
 assert.equal(regularEmpty.padding, 14);
-assert.equal(regularEmpty.searchSize, 24);
 assert.equal(regularEmpty.searchFont, 18);
+assert.equal(regularEmpty.searchWidth, 20);
+assert.equal(regularEmpty.searchHeight, 25);
+assert.equal(regularEmpty.searchTopPadding, 12);
+assert.equal(regularEmpty.searchTrailingPadding, 14.4);
 assert.equal(regularEmpty.vehicleSize, 68);
 assert.equal(regularEmpty.labelFont, 16);
 assert.equal(regularEmpty.contentSpacing, 4);
@@ -98,7 +142,10 @@ assert.deepEqual(
 const compactMedium = mediumWidgetLayout(148);
 assert.equal(compactMedium.rowLimit, 3);
 assert.equal(compactMedium.iconSize, 32);
+assert.equal(compactMedium.detailFont, 12);
 assert.equal(compactMedium.headerHeight, 25);
+assert.equal(compactMedium.searchFont, 18);
+assert.equal(compactMedium.searchWidth, 20);
 assert.equal(compactMedium.itemSpacing, 2);
 assert.equal(compactMedium.verticalPadding, 10);
 assert.equal(compactMedium.horizontalPadding, 12);
@@ -107,6 +154,14 @@ assert.equal(compactMedium.emptyLabelFont, 16);
 assert.equal(compactMedium.emptyContentSpacing, 4);
 assert.equal(compactMedium.emptyContentHeight, 101);
 assert.equal(compactMedium.emptyContentCenterY, 87.5);
+assert.equal(compactEmpty.searchFont, compactMedium.searchFont);
+assert.equal(compactEmpty.searchWidth, compactMedium.searchWidth);
+assert.equal(compactEmpty.searchHeight, compactMedium.headerHeight);
+assert.equal(compactEmpty.searchTopPadding, compactMedium.verticalPadding);
+assert.equal(
+  compactEmpty.searchTrailingPadding,
+  compactMedium.horizontalPadding,
+);
 assert.ok(
   Math.abs(
     compactMedium.horizontalPadding - compactMedium.verticalPadding * 1.2,
@@ -123,7 +178,10 @@ assert.ok(
 const regularMedium = mediumWidgetLayout(155);
 assert.equal(regularMedium.rowLimit, 3);
 assert.equal(regularMedium.iconSize, 33);
+assert.equal(regularMedium.detailFont, 13);
 assert.equal(regularMedium.itemSpacing, 2);
+assert.equal(regularMedium.searchFont, 18);
+assert.equal(regularMedium.searchWidth, 20);
 assert.equal(regularMedium.verticalPadding, 12);
 assert.equal(regularMedium.horizontalPadding, 14.4);
 assert.equal(regularMedium.emptyVehicleSize, 68);
@@ -131,6 +189,16 @@ assert.equal(regularMedium.emptyLabelFont, 16);
 assert.equal(regularMedium.emptyContentSpacing, 4);
 assert.equal(regularMedium.emptyContentHeight, 104);
 assert.equal(regularMedium.emptyContentCenterY, 91);
+assert.equal(regularEmpty.searchFont, regularMedium.searchFont);
+assert.equal(regularEmpty.searchWidth, regularMedium.searchWidth);
+assert.equal(regularEmpty.searchHeight, regularMedium.headerHeight);
+assert.equal(regularEmpty.searchTopPadding, regularMedium.verticalPadding);
+assert.equal(
+  regularEmpty.searchTrailingPadding,
+  regularMedium.horizontalPadding,
+);
+assert.equal(smallWidgetEmptyLayout(158, 154.999).searchTopPadding, 10);
+assert.equal(smallWidgetEmptyLayout(158, 155).searchTopPadding, 12);
 assert.ok(
   Math.abs(
     regularMedium.horizontalPadding - regularMedium.verticalPadding * 1.2,
@@ -247,13 +315,23 @@ assert.equal(
 );
 assert.match(
   smallSource,
+  /const layout = smallWidgetLayout\(props\.displayWidth, props\.displayHeight\);/,
+  "small populated placement must use the actual widget size",
+);
+assert.match(
+  smallSource,
   /const emptyLayout = smallWidgetEmptyLayout\(\s*props\.displayWidth,\s*props\.displayHeight,\s*\);/,
   "small empty placement must use the actual widget height",
 );
 assert.match(
   smallSource,
-  /<Link url=\{props\.openSearchURL\}>\s*<VStack\s+spacing=\{0\}\s+padding=\{emptyLayout\.padding\}[\s\S]*?<HStack[\s\S]*?minHeight: emptyLayout\.headerHeight,[\s\S]*?maxHeight: emptyLayout\.headerHeight,[\s\S]*?<Image[\s\S]*?systemName="magnifyingglass"/,
-  "small empty state must reserve a real top header for search",
+  /<Link url=\{props\.openSearchURL\}>\s*<ZStack[\s\S]*?<VStack\s+spacing=\{0\}\s+padding=\{emptyLayout\.padding\}[\s\S]*?<HStack[\s\S]*?minHeight: emptyLayout\.headerHeight,[\s\S]*?maxHeight: emptyLayout\.headerHeight,/,
+  "small empty state must preserve its body padding and reserved header",
+);
+assert.match(
+  smallSource,
+  /<VStack\s+alignment="trailing"\s+spacing=\{0\}\s+padding=\{\{\s*top: emptyLayout\.searchTopPadding,\s*trailing: emptyLayout\.searchTrailingPadding,[\s\S]*?frame=\{\{\s*maxWidth: "infinity",\s*maxHeight: "infinity",\s*alignment: "topTrailing",\s*\}\}[\s\S]*?<Image\s+systemName="magnifyingglass"\s+font=\{emptyLayout\.searchFont\}[\s\S]*?width: emptyLayout\.searchWidth,\s*height: emptyLayout\.searchHeight,/,
+  "small empty search must be forced to the same top-trailing edge as medium",
 );
 assert.match(
   smallSource,
@@ -278,6 +356,31 @@ assert.match(
   smallSource,
   /font=\{layout\.statusFont\}[\s\S]*?lineLimit=\{1\}[\s\S]*?minScaleFactor=\{0\.9\}[\s\S]*?allowsTightening=\{true\}/,
   "compact populated status must remain complete after the larger outer padding",
+);
+const smallPopulatedBranch = smallSource.slice(
+  smallPopulatedBranchStart,
+  smallEmptyBranchStart,
+);
+assert.match(
+  smallPopulatedBranch,
+  /<VStack\s+alignment="leading"\s+spacing=\{6\}\s+padding=\{layout\.outerPadding\}/,
+  "small populated content must use one equal inset on all four edges",
+);
+const compactIconIndex = smallPopulatedBranch.indexOf("<CourierIcon");
+const compactStatusIndex = smallPopulatedBranch.indexOf("{row.statusLabel}");
+const compactIdentityIndex = smallPopulatedBranch.indexOf(
+  "font={layout.companyFont}",
+);
+assert.ok(
+  compactStatusIndex >= 0
+    && compactIdentityIndex > compactStatusIndex
+    && compactIconIndex > compactIdentityIndex,
+  "small populated header must place status and carrier identity on the left, then the courier icon on the right",
+);
+assert.match(
+  smallPopulatedBranch,
+  /<VStack\s+alignment="leading"\s+spacing=\{layout\.identitySpacing\}[\s\S]*?minHeight: layout\.iconSize,[\s\S]*?maxHeight: layout\.iconSize,[\s\S]*?font=\{layout\.statusFont\}[\s\S]*?minHeight: layout\.statusLineHeight,[\s\S]*?maxHeight: layout\.statusLineHeight,[\s\S]*?alignment: "topLeading",[\s\S]*?\{row\.statusLabel\}[\s\S]*?font=\{layout\.companyFont\}[\s\S]*?minHeight: layout\.companyLineHeight,[\s\S]*?maxHeight: layout\.companyLineHeight,[\s\S]*?alignment: "bottomLeading",[\s\S]*?\{row\.companyName\}[\s\S]*?row\.waybillSuffix/,
+  "small populated text must match the icon height and show status above carrier plus waybill suffix",
 );
 assert.doesNotMatch(smallSource, /点击查询|empty-small-panel|EmptyParcelIcon/);
 
@@ -310,6 +413,11 @@ assert.match(
   mediumSource,
   /systemName="magnifyingglass"[\s\S]*?foregroundStyle=\{accent\}/,
   "medium search must use the same accent source as its gradient",
+);
+assert.match(
+  mediumSource,
+  /systemName="magnifyingglass"\s+font=\{layout\.searchFont\}[\s\S]*?width: layout\.searchWidth,\s*height: layout\.headerHeight,/,
+  "medium search must use the shared responsive search metrics",
 );
 assert.equal(
   mediumSource.match(/systemName="magnifyingglass"/g)?.length,
@@ -369,8 +477,18 @@ assert.match(
 );
 assert.match(
   mediumSource,
-  /props\.detailLineLimit == null \? \(\s*<Text font=\{13\} foregroundStyle="secondaryLabel">/,
+  /props\.detailLineLimit == null \? \(\s*<Text\s+font=\{props\.detailFont\}\s+foregroundStyle="secondaryLabel"\s*>/,
   "the single-row branch must omit lineLimit so the latest detail can use all available height",
+);
+assert.equal(
+  mediumSource.match(/font=\{props\.detailFont\}/g)?.length,
+  2,
+  "every medium detail branch must use the shared responsive detail font",
+);
+assert.match(
+  mediumSource,
+  /detailFont=\{layout\.detailFont\}/,
+  "medium rows must receive the same compact/regular detail font as small",
 );
 assert.doesNotMatch(
   mediumSource,

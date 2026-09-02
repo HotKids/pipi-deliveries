@@ -1,19 +1,30 @@
 import type { AccountParcelDto } from "./account-parser";
-import { projectedCarrierPresentation } from "./carrier-presentation";
+import type { TimelinePackage, TrackNode } from "../models";
 import {
+  builtInCarrierPresentation,
+  projectedCarrierPresentation,
+} from "./carrier-presentation";
+import {
+  isProviderErrorDetail,
   normalizeWaybill,
+  parseProviderTime,
+  semanticFromText,
+  timedTracks,
 } from "./status";
 import {
   OperationTimeoutError,
   remainingTimeoutMs,
 } from "./deadline";
 
-const PROJECTION_TIMEOUT_MS = 9_000;
+// Match Android Lite's foreground order-capture window. This bounds one WebView
+// capture; it is not a deadline for the rest of the refresh round.
+const PROJECTION_TIMEOUT_MS = 20_000;
 
 export type AccountOrderProjection = Readonly<{
   waybill: string;
   courierCode: string;
   companyName: string;
+  timeline?: TimelinePackage;
 }>;
 
 export type AccountOrderProjectionDiagnostics = Readonly<{
@@ -27,6 +38,7 @@ export type AccountOrderProjectionDiagnostics = Readonly<{
   probeRequestCount: number;
   unionSignalSeen: boolean;
   unionResourceSeen: boolean;
+  resourceReplayBlockReason: string;
   domMatched: boolean;
   requestCallbackCount: number;
   evaluationAttempts: number;
@@ -49,6 +61,16 @@ type CapturedRequest = {
 const MAX_CAPTURED_URL_LENGTH = 16_384;
 const MAX_CAPTURED_BODY_BYTES = 512 * 1_024;
 const MAX_CAPTURED_HEADER_LENGTH = 4_096;
+const TRUSTED_JD_RESOURCE_HOST_SUFFIXES = [
+  "jd.com",
+  "jd.hk",
+  "360buyimg.com",
+  "jdcdn.com",
+  "jcloud.com",
+  "jdcloud.com",
+  "jcloudcs.com",
+  "jingxi.com",
+] as const;
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -96,59 +118,192 @@ function validProjectedWaybill(value: unknown, ownerId: string): string {
     : "";
 }
 
-function courierCodeForName(value: string): string {
-  const name = value.replace(/\s+/g, "");
-  if (name.includes("顺丰")) return "SF";
-  if (name.includes("中通")) return "ZTO";
-  if (name.includes("圆通")) return "YTO";
-  if (name.includes("申通")) return "STO";
-  if (name.includes("韵达")) return "YD";
-  if (name.includes("邮政") || /^EMS/i.test(name)) return "EMS";
-  if (name.includes("京东")) return "JD";
-  if (name.includes("极兔")) return "JTSD";
-  if (name.includes("德邦")) return "DBL";
-  if (name.includes("丹鸟") || name.includes("菜鸟直送")) return "DANNIAO";
-  return "";
+const WAYBILL_FIELD_KEYS = [
+  "waybillCode",
+  "waybillNo",
+  "waybillNum",
+  "waybillNumber",
+  "expressNo",
+  "expressCode",
+  "logisticsNo",
+  "logisticsCode",
+  "mailNo",
+] as const;
+
+const COMPANY_FIELD_KEYS = [
+  "expressName",
+  "carrierName",
+  "companyName",
+  "expressCompany",
+  "expressCompanyName",
+  "logisticsCompanyName",
+  "logisticsCompany",
+  "cpName",
+] as const;
+
+const TRACE_FIELD_KEYS = [
+  "traceList",
+  "traces",
+  "trackList",
+  "tracks",
+  "logisticsTraceList",
+  "logisticsTracks",
+] as const;
+
+function recordTraces(value: Record<string, unknown>): readonly unknown[] {
+  for (const key of TRACE_FIELD_KEYS) {
+    const candidate = value[key];
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [];
+}
+
+function projectionRecords(value: unknown): Record<string, unknown>[] {
+  const result: Record<string, unknown>[] = [];
+  const seen = new Set<unknown>();
+  const visit = (candidate: unknown, depth: number) => {
+    if (depth > 8 || result.length >= 5_000 || candidate == null) return;
+    const decoded = decode(candidate);
+    if (decoded !== candidate) {
+      visit(decoded, depth + 1);
+      return;
+    }
+    if (typeof decoded !== "object" || seen.has(decoded)) return;
+    seen.add(decoded);
+    if (Array.isArray(decoded)) {
+      for (const item of decoded) visit(item, depth + 1);
+      return;
+    }
+    const record = object(decoded);
+    result.push(record);
+    for (const nested of Object.values(record)) visit(nested, depth + 1);
+  };
+  visit(value, 0);
+  return result;
+}
+
+function projectionTrack(value: unknown, waybill: string): TrackNode | null {
+  const item = object(value);
+  const itemWaybill = normalizeWaybill(firstText(item, WAYBILL_FIELD_KEYS));
+  if (itemWaybill && itemWaybill !== waybill) return null;
+  const detail = firstText(item, ["desc", "context", "description", "detail"]);
+  if (!detail || isProviderErrorDetail(detail)) return null;
+  const timeText = firstText(item, ["time", "date", "ftime"]);
+  const statusCode = firstText(item, [
+    "statusCode",
+    "status",
+    "state",
+    "stateNum",
+  ]);
+  return {
+    timeText,
+    timeMs: parseProviderTime(timeText),
+    detail,
+    statusCode,
+    raw: statusCode
+      ? { statusCode, _pipiStatusSource: "jingdong_h5" }
+      : { _pipiStatusSource: "jingdong_h5" },
+  };
+}
+
+function projectionTimeline(
+  traces: readonly unknown[],
+  waybill: string,
+  courierCode: string,
+  companyName: string,
+  provider: string,
+  successAtMs: number,
+  complete: boolean,
+): TimelinePackage | null {
+  const tracks = traces
+    .map((item) => projectionTrack(item, waybill))
+    .filter((item): item is TrackNode => item != null)
+    .sort((left, right) => {
+      const byTime = (right.timeMs || 0) - (left.timeMs || 0);
+      return byTime || right.timeText.localeCompare(left.timeText);
+    });
+  const timed = timedTracks(tracks);
+  if (!timed.length) return null;
+  const latest = timed[0];
+  const semantic = semanticFromText(latest.detail);
+  return {
+    provider,
+    complete,
+    structuredStatus: false,
+    waybill,
+    courierCode,
+    companyName,
+    semantic,
+    statusEventAtMs: semantic === "UNKNOWN" ? null : latest.timeMs,
+    latestTimeText: latest.timeText,
+    latestDetail: latest.detail,
+    tracks,
+    successAtMs,
+  };
+}
+
+function projectedWaybills(
+  info: Record<string, unknown>,
+  ownerId: string,
+): string[] {
+  const traces = recordTraces(info);
+  return [
+    ...WAYBILL_FIELD_KEYS.map((key) => info[key]),
+    ...traces.flatMap((item) => {
+      const record = object(item);
+      return WAYBILL_FIELD_KEYS.map((key) => record[key]);
+    }),
+  ].map((candidate) => validProjectedWaybill(candidate, ownerId))
+    .filter(Boolean);
 }
 
 export function projectionFromUnionPayload(
   value: unknown,
   ownerId: string,
+  provider = "interface5",
+  successAtMs = Date.now(),
+  fullProgressRequestedAtStart = false,
 ): AccountOrderProjection | null {
   const root = object(decode(value));
   const data = object(decode(root.data));
   const floors = Array.isArray(data.floors) ? data.floors : [];
-  const info = object(object(object(floors[0]).element).info);
-  const traces = Array.isArray(info.traceList) ? info.traceList : [];
-  const waybill = [
-    info.waybillCode,
-    ...traces.map((item) => object(item).waybillCode),
-  ].map((candidate) => validProjectedWaybill(candidate, ownerId)).find(Boolean) || "";
-  if (!waybill) return null;
-  const companyName = firstText(info, [
-    "expressName",
-    "carrierName",
-    "companyName",
-    "expressCompany",
-    "expressCompanyName",
-    "logisticsCompanyName",
-    "logisticsCompany",
-  ]) || traces.map((item) => firstText(object(item), [
-    "expressName",
-    "carrierName",
-    "companyName",
-    "expressCompany",
-    "expressCompanyName",
-    "cpName",
-  ])).find(Boolean) || "";
-  return {
-    waybill,
-    ...projectedCarrierPresentation(
+  const unionInfo = object(object(object(floors[0]).element).info);
+  const records = projectionRecords(root);
+  if (Object.keys(unionInfo).length) {
+    if (new Set(projectedWaybills(unionInfo, ownerId)).size > 1) return null;
+    records.unshift(unionInfo);
+  }
+  for (const info of records) {
+    const traces = recordTraces(info);
+    const declaredWaybills = projectedWaybills(info, ownerId);
+    if (new Set(declaredWaybills).size > 1) continue;
+    const waybill = declaredWaybills[0] || "";
+    if (!waybill) continue;
+    const companyName = firstText(info, COMPANY_FIELD_KEYS) ||
+      traces.map((item) => firstText(object(item), COMPANY_FIELD_KEYS))
+        .find(Boolean) || "";
+    const builtIn = builtInCarrierPresentation(companyName);
+    const presentation = projectedCarrierPresentation(
       waybill,
-      courierCodeForName(companyName),
-      companyName,
-    ),
-  };
+      builtIn?.courierCode || "",
+      builtIn?.companyName || companyName,
+    );
+    const timeline = projectionTimeline(
+      traces,
+      waybill,
+      presentation.courierCode,
+      presentation.companyName,
+      provider,
+      successAtMs,
+      fullProgressRequestedAtStart,
+    );
+    return {
+      waybill,
+      ...presentation,
+      ...(timeline ? { timeline } : {}),
+    };
+  }
+  return null;
 }
 
 function trustedInitialRoute(value: string): boolean {
@@ -168,16 +323,9 @@ function trustedWebResource(value: string): boolean {
     const url = new URL(value);
     if (url.protocol !== "https:") return false;
     const host = url.hostname.toLowerCase();
-    return [
-      "jd.com",
-      "jd.hk",
-      "360buyimg.com",
-      "jdcdn.com",
-      "jcloud.com",
-      "jdcloud.com",
-      "jcloudcs.com",
-      "jingxi.com",
-    ].some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
+    return TRUSTED_JD_RESOURCE_HOST_SUFFIXES.some(
+      (suffix) => host === suffix || host.endsWith(`.${suffix}`),
+    );
   } catch {
     return false;
   }
@@ -212,6 +360,25 @@ function unionRequest(value: string, body = ""): boolean {
   }
 }
 
+function projectionRequest(value: string, body = ""): boolean {
+  if (unionRequest(value, body)) return true;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:") return false;
+    const raw = `${value}&${body}`;
+    let decoded = raw;
+    try {
+      decoded = decodeURIComponent(raw);
+    } catch {
+      /* the undecoded request can still contain a projection signal */
+    }
+    return /(waybill|logistics|express|orderTrack|track(?:List|Detail|Info|Trace)|delivery(?:Track|Trace|Detail|Info))/i
+      .test(decoded);
+  } catch {
+    return false;
+  }
+}
+
 function replayHeaders(
   values: Readonly<Record<string, string>> | null | undefined,
 ): Record<string, string> {
@@ -237,22 +404,60 @@ function requestKey(value: CapturedRequest): string {
   return JSON.stringify([value.url, value.method, value.body]);
 }
 
-function timeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+function assertProjectionActive(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new OperationTimeoutError();
+}
+
+function timeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new OperationTimeoutError());
+      return;
+    }
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      settle();
+    };
+    const abort = () => finish(() => reject(new OperationTimeoutError()));
     const timer = setTimeout(
-      () => reject(new OperationTimeoutError("提取运单号超时，请稍后重试")),
+      () => finish(() =>
+        reject(new OperationTimeoutError("提取运单号超时，请稍后重试"))
+      ),
       timeoutMs,
     );
+    signal?.addEventListener("abort", abort, { once: true });
     promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
     );
+  });
+}
+
+function pauseWhileActive(durationMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new OperationTimeoutError());
+      return;
+    }
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      settle();
+    };
+    const abort = () => finish(() => reject(new OperationTimeoutError()));
+    const timer = setTimeout(() => finish(resolve), durationMs);
+    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 
@@ -261,16 +466,32 @@ function extractionJavaScript(
   request: CapturedRequest | null,
 ): string {
   const input = JSON.stringify({ ownerId, request });
+  const trustedResourceHostSuffixes = JSON.stringify(
+    TRUSTED_JD_RESOURCE_HOST_SUFFIXES,
+  );
   return `
     return (async () => {
       const input = ${input};
-      const probeKey = "__pipiDeliveriesOrderProjectionProbeV1";
+      const probeKey = "__pipiDeliveriesOrderProjectionProbeV2";
       const clean = (value) => String(value == null ? "" : value).trim();
       const requestSignal = (url, body) => {
         const raw = clean(url) + "&" + clean(body);
         try { return decodeURIComponent(raw); } catch (_) { return raw; }
       };
       const relevant = (url, body) => /getUnionActivity/i.test(requestSignal(url, body));
+      const trustedResourceHostSuffixes = ${trustedResourceHostSuffixes};
+      const trustedJdUrl = (value) => {
+        try {
+          const candidate = new URL(clean(value), window.location.href);
+          const host = candidate.hostname.toLowerCase();
+          return candidate.protocol === "https:" &&
+            trustedResourceHostSuffixes.some((suffix) =>
+              host === suffix || host.endsWith("." + suffix)
+            );
+        } catch (_) {
+          return false;
+        }
+      };
       const parse = (source) => {
         if (source && typeof source === "object") return source;
         const value = clean(source);
@@ -291,41 +512,101 @@ function extractionJavaScript(
           ? candidate
           : "";
       };
-      const projection = (source, extractionSource) => {
+      const projection = (source, extractionSource, fullProgressRequestedAtStart = false) => {
         let root = parse(source) || source;
         if (root && typeof root.data === "string") {
           root.data = parse(root.data) || root.data;
         }
-        const floors = root && root.data && Array.isArray(root.data.floors)
-          ? root.data.floors
-          : [];
-        const info = floors[0] && floors[0].element && floors[0].element.info
-          ? floors[0].element.info
-          : {};
-        const traces = Array.isArray(info.traceList) ? info.traceList : [];
-        const waybillCode = [info.waybillCode, ...traces.map((item) => item && item.waybillCode)]
-          .map(valid)
-          .find(Boolean) || "";
-        if (!waybillCode) return null;
+        const waybillKeys = [
+          "waybillCode", "waybillNo", "waybillNum", "waybillNumber",
+          "expressNo", "expressCode", "logisticsNo", "logisticsCode", "mailNo",
+        ];
         const companyKeys = [
           "expressName", "carrierName", "companyName", "expressCompany",
           "expressCompanyName", "logisticsCompanyName", "logisticsCompany", "cpName",
         ];
-        let companyName = "";
-        for (const key of companyKeys) {
-          companyName = clean(info[key]);
-          if (companyName) break;
-        }
-        if (!companyName) {
-          for (const trace of traces) {
-            for (const key of companyKeys) {
-              companyName = clean(trace && trace[key]);
-              if (companyName) break;
+        const traceKeys = [
+          "traceList", "traces", "trackList", "tracks",
+          "logisticsTraceList", "logisticsTracks",
+        ];
+        const floors = root && root.data && Array.isArray(root.data.floors)
+          ? root.data.floors
+          : [];
+        const unionInfo = floors[0] && floors[0].element && floors[0].element.info
+          ? floors[0].element.info
+          : {};
+        const records = [];
+        const seen = new WeakSet();
+        const visit = (candidate, depth) => {
+          if (depth > 8 || records.length >= 5000 || candidate == null) return;
+          const decoded = typeof candidate === "string" ? parse(candidate) : candidate;
+          if (decoded !== candidate && decoded != null) {
+            visit(decoded, depth + 1);
+            return;
+          }
+          if (decoded == null || typeof decoded !== "object" || seen.has(decoded)) return;
+          seen.add(decoded);
+          if (Array.isArray(decoded)) {
+            for (const item of decoded) visit(item, depth + 1);
+            return;
+          }
+          records.push(decoded);
+          for (const nested of Object.values(decoded)) visit(nested, depth + 1);
+        };
+        visit(root, 0);
+        if (unionInfo && Object.keys(unionInfo).length) records.unshift(unionInfo);
+        for (const info of records) {
+          let traces = [];
+          for (const key of traceKeys) {
+            if (Array.isArray(info[key])) {
+              traces = info[key];
+              break;
             }
+          }
+          const waybillCode = [
+            ...waybillKeys.map((key) => info[key]),
+            ...traces.flatMap((item) => waybillKeys.map((key) => item && item[key])),
+          ].map(valid).find(Boolean) || "";
+          if (!waybillCode) continue;
+          let companyName = "";
+          for (const key of companyKeys) {
+            companyName = clean(info[key]);
             if (companyName) break;
           }
+          if (!companyName) {
+            for (const trace of traces) {
+              for (const key of companyKeys) {
+                companyName = clean(trace && trace[key]);
+                if (companyName) break;
+              }
+              if (companyName) break;
+            }
+          }
+          const projectedTraces = traces.slice(0, 500).map((trace) => {
+            const item = trace && typeof trace === "object" ? trace : {};
+            const first = (keys) => {
+              for (const key of keys) {
+                const value = clean(item[key]);
+                if (value) return value;
+              }
+              return "";
+            };
+            return {
+              waybillCode: first(waybillKeys).slice(0, 64),
+              time: first(["time", "date", "ftime"]).slice(0, 64),
+              desc: first(["desc", "context", "description", "detail"]).slice(0, 4000),
+              statusCode: first(["statusCode", "status", "state", "stateNum"]).slice(0, 128),
+            };
+          }).filter((trace) => trace.desc);
+          return {
+            waybillCode,
+            companyName,
+            traceList: projectedTraces,
+            extractionSource,
+            fullProgressRequestedAtStart: fullProgressRequestedAtStart === true,
+          };
         }
-        return { waybillCode, companyName, extractionSource };
+        return null;
       };
       let pageClass = "invalid";
       try {
@@ -344,30 +625,35 @@ function extractionJavaScript(
         } catch (_) {}
         let unionResourceSeen = false;
         let replayUrl = "";
+        let resourceReplayBlockReason = "";
         for (const entry of entries.slice(0, 5000)) {
           const name = clean(entry && entry.name);
-          if (!name || !relevant(name, "")) continue;
+          if (!name) continue;
+          if (!relevant(name, "")) continue;
           unionResourceSeen = true;
+          if (replayUrl) continue;
+          if (name.length > ${MAX_CAPTURED_URL_LENGTH}) {
+            resourceReplayBlockReason ||= "url_too_long";
+            continue;
+          }
           try {
             const candidate = new URL(name);
-            const host = candidate.hostname.toLowerCase();
-            if (
-              !replayUrl &&
-              name.length <= ${MAX_CAPTURED_URL_LENGTH} &&
-              candidate.protocol === "https:" &&
-              (host === "jd.com" || host.endsWith(".jd.com"))
-            ) replayUrl = name;
-          } catch (_) {}
+            if (trustedJdUrl(candidate.href)) replayUrl = name;
+            else resourceReplayBlockReason ||= "untrusted_host";
+          } catch (_) {
+            resourceReplayBlockReason ||= "invalid_url";
+          }
         }
         return {
           count: Math.min(entries.length, 100000),
           unionResourceSeen,
           replayUrl,
+          resourceReplayBlockReason: replayUrl ? "" : resourceReplayBlockReason,
         };
       };
       const snapshot = (probe, resourceState) => ({
         extractionSource: "diagnostic",
-        probeInstalled: Boolean(probe && probe.version === 1),
+        probeInstalled: Boolean(probe && probe.version === 2),
         probeRequestCount: probe && Number.isFinite(probe.requestCount)
           ? Math.min(Math.max(0, probe.requestCount), 100000)
           : 0,
@@ -377,6 +663,7 @@ function extractionJavaScript(
         ),
         resourceReplayAttempted: Boolean(probe && probe.resourceReplayAttempted),
         resourceReplaySucceeded: Boolean(probe && probe.resourceReplaySucceeded),
+        resourceReplayBlockReason: clean(resourceState.resourceReplayBlockReason),
         resourceCount: resourceState.count,
         pageClass,
         readyState: clean(document && document.readyState) || "unknown",
@@ -387,34 +674,47 @@ function extractionJavaScript(
       if (pageClass !== "jd") return snapshot(null, resourceStateBeforeProbe);
       const installProbe = () => {
         const existing = window[probeKey];
-        if (existing && existing.version === 1) return existing;
+        if (existing && existing.version === 2) return existing;
         const probe = {
-          version: 1,
+          version: 2,
           queue: [],
           requestCount: 0,
           unionSignalSeen: false,
           unionResourceSeen: resourceStateBeforeProbe.unionResourceSeen,
           resourceReplayAttempted: false,
           resourceReplaySucceeded: false,
+          fullProgressClickAttempted: false,
+          fullProgressRequested: false,
+          originalFetch: null,
         };
         window[probeKey] = probe;
-        const enqueue = (source) => {
+        const enqueue = (source, fullProgressRequestedAtStart = false) => {
           try {
-            const result = projection(source, "probe");
+            if (typeof source === "string" && source.length > 1500000) return;
+            const result = projection(source, "probe", fullProgressRequestedAtStart);
             if (!result) return;
             probe.queue.push(result);
             if (probe.queue.length > 4) probe.queue.splice(0, probe.queue.length - 4);
           } catch (_) {}
         };
-        const captureResponse = (response) => {
+        const captureResponse = (response, fullProgressRequestedAtStart) => {
           try {
             if (!response || typeof response.clone !== "function") return;
-            response.clone().text().then(enqueue).catch(() => {});
+            const contentType = clean(response.headers && response.headers.get &&
+              response.headers.get("content-type"));
+            if (contentType && !/(json|javascript|text)/i.test(contentType)) return;
+            const contentLength = Number(response.headers && response.headers.get &&
+              response.headers.get("content-length"));
+            if (Number.isFinite(contentLength) && contentLength > 1500000) return;
+            response.clone().text()
+              .then((source) => enqueue(source, fullProgressRequestedAtStart))
+              .catch(() => {});
           } catch (_) {}
         };
         try {
           const originalFetch = window.fetch;
           if (typeof originalFetch === "function") {
+            probe.originalFetch = originalFetch;
             window.fetch = function(inputValue, initValue) {
               let url = "";
               try {
@@ -429,17 +729,24 @@ function extractionJavaScript(
                   : clean(initValue && initValue.body);
               } catch (_) {}
               probe.requestCount = Math.min(probe.requestCount + 1, 100000);
-              const target = relevant(url, body);
-              if (target) probe.unionSignalSeen = true;
+              const unionTarget = relevant(url, body);
+              const target = trustedJdUrl(url);
+              const fullProgressRequestedAtStart = probe.fullProgressRequested === true &&
+                unionTarget;
+              if (unionTarget) probe.unionSignalSeen = true;
               const response = originalFetch.apply(this, arguments);
-              if (target) Promise.resolve(response).then(captureResponse).catch(() => {});
+              if (target) {
+                Promise.resolve(response)
+                  .then((value) => captureResponse(value, fullProgressRequestedAtStart))
+                  .catch(() => {});
+              }
               return response;
             };
           }
         } catch (_) {}
         try {
           const prototype = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
-          if (prototype && !prototype.__pipiDeliveriesProjectionProbeV1) {
+          if (prototype && !prototype.__pipiDeliveriesProjectionProbeV2) {
             const originalOpen = prototype.open;
             const originalSend = prototype.send;
             prototype.open = function(method, url) {
@@ -448,30 +755,58 @@ function extractionJavaScript(
             };
             prototype.send = function(body) {
               probe.requestCount = Math.min(probe.requestCount + 1, 100000);
-              const target = relevant(this.__pipiDeliveriesProjectionUrl, body);
+              const unionTarget = relevant(this.__pipiDeliveriesProjectionUrl, body);
+              const target = trustedJdUrl(this.__pipiDeliveriesProjectionUrl);
+              const fullProgressRequestedAtStart = probe.fullProgressRequested === true &&
+                unionTarget;
               if (target) {
-                probe.unionSignalSeen = true;
+                if (unionTarget) probe.unionSignalSeen = true;
                 try {
                   this.addEventListener("loadend", () => {
-                    try { enqueue(this.responseText); } catch (_) {}
+                    try {
+                      const contentType = clean(this.getResponseHeader &&
+                        this.getResponseHeader("content-type"));
+                      if (!contentType || /(json|javascript|text)/i.test(contentType)) {
+                        enqueue(this.responseText, fullProgressRequestedAtStart);
+                      }
+                    } catch (_) {}
                   }, { once: true });
                 } catch (_) {}
               }
               return originalSend.apply(this, arguments);
             };
             try {
-              Object.defineProperty(prototype, "__pipiDeliveriesProjectionProbeV1", {
+              Object.defineProperty(prototype, "__pipiDeliveriesProjectionProbeV2", {
                 value: true,
                 configurable: false,
               });
             } catch (_) {
-              prototype.__pipiDeliveriesProjectionProbeV1 = true;
+              prototype.__pipiDeliveriesProjectionProbeV2 = true;
             }
           }
         } catch (_) {}
         return probe;
       };
       const probe = installProbe();
+      if (!probe.fullProgressClickAttempted) {
+        let control = null;
+        try {
+          const candidate = document.querySelector(".logistics-button");
+          const label = candidate && candidate.querySelector(".logistics-button-text");
+          const labelText = clean(label && (label.innerText || label.textContent));
+          if (labelText === "完整物流进度") control = candidate;
+        } catch (_) {}
+        if (control && typeof control.click === "function") {
+          probe.fullProgressClickAttempted = true;
+          probe.fullProgressRequested = true;
+          try {
+            control.click();
+          } catch (_) {
+            probe.fullProgressClickAttempted = false;
+            probe.fullProgressRequested = false;
+          }
+        }
+      }
       const queued = Array.isArray(probe.queue) ? probe.queue.shift() : null;
       if (queued) return {
         ...snapshot(probe, performanceResources()),
@@ -481,13 +816,13 @@ function extractionJavaScript(
         .map((item) => item.textContent || "")
         .join("\\n")
         .slice(0, 1500000);
-      const structured = [...scripts.matchAll(/["']waybillCode["']\\s*:\\s*["']([A-Za-z0-9_-]{6,64})["']/gi)];
+      const structured = [...scripts.matchAll(/["'](?:waybillCode|waybillNo|waybillNum|waybillNumber|expressNo|expressCode|logisticsNo|logisticsCode|mailNo)["']\\s*:\\s*["']([A-Za-z0-9_-]{6,64})["']/gi)];
       for (const match of structured) {
         const waybillCode = valid(match && match[1]);
         if (waybillCode) return { waybillCode, companyName: "", extractionSource: "script" };
       }
       const body = clean(document.body && document.body.innerText).slice(0, 300000);
-      const visible = [...body.matchAll(/(?:运单号|快递单号)\\s*[：:]?\\s*([A-Za-z0-9_-]{6,64})/gi)];
+      const visible = [...body.matchAll(/(?:运单号|快递单号|物流单号|配送单号)\\s*[：:]?\\s*([A-Za-z0-9_-]{6,64})/gi)];
       for (const match of visible) {
         const waybillCode = valid(match && match[1]);
         if (waybillCode) return { waybillCode, companyName: "", extractionSource: "dom" };
@@ -505,9 +840,13 @@ function extractionJavaScript(
           if (options.method !== "GET" && options.method !== "HEAD" && input.request.body) {
             options.body = input.request.body;
           }
-          const response = await window.fetch(input.request.url, options).finally(() => clearTimeout(timer));
+          const replayFetch = typeof probe.originalFetch === "function"
+            ? probe.originalFetch
+            : window.fetch;
+          const response = await replayFetch.call(window, input.request.url, options)
+            .finally(() => clearTimeout(timer));
           if (response.ok) {
-            const result = projection(await response.text(), "replay");
+            const result = projection(await response.text(), "replay", false);
             if (result) return result;
           }
         } catch (_) {}
@@ -519,12 +858,15 @@ function extractionJavaScript(
         try {
           const aborter = new AbortController();
           const timer = setTimeout(() => aborter.abort(), 3000);
-          const response = await window.fetch(resourceState.replayUrl, {
+          const replayFetch = typeof probe.originalFetch === "function"
+            ? probe.originalFetch
+            : window.fetch;
+          const response = await replayFetch.call(window, resourceState.replayUrl, {
             credentials: "include",
             signal: aborter.signal,
           }).finally(() => clearTimeout(timer));
           if (response.ok) {
-            const result = projection(await response.text(), "resource_replay");
+            const result = projection(await response.text(), "resource_replay", false);
             if (result) {
               probe.resourceReplaySucceeded = true;
               return {
@@ -544,11 +886,12 @@ export async function projectAccountOrder(
   parcel: AccountParcelDto,
   deadlineAtMs?: number,
   observe?: (diagnostics: AccountOrderProjectionDiagnostics) => void,
+  signal?: AbortSignal,
 ): Promise<AccountParcelDto> {
+  assertProjectionActive(signal);
   if (
     parcel.source !== "interface5" ||
     !parcel.accountOrder ||
-    normalizeWaybill(parcel.waybill) !== normalizeWaybill(parcel.ownerId) ||
     !trustedInitialRoute(parcel.projectionUrl)
   ) return parcel;
 
@@ -560,6 +903,18 @@ export async function projectAccountOrder(
   );
   const projectionDeadlineAtMs = projectionStartedAtMs + budget;
   const controller = new WebViewController({ ephemeral: true });
+  let disposed = false;
+  const disposeController = () => {
+    if (disposed) return;
+    disposed = true;
+    try {
+      controller.dispose();
+    } catch {
+      /* cancellation still owns the result even when native cleanup reports an error */
+    }
+  };
+  const abort = () => disposeController();
+  signal?.addEventListener("abort", abort, { once: true });
   let captured: CapturedRequest | null = null;
   let loadCompleted = false;
   let replayAttempted = false;
@@ -569,6 +924,7 @@ export async function projectAccountOrder(
   let probeRequestCount = 0;
   let unionSignalSeen = false;
   let unionResourceSeen = false;
+  let resourceReplayBlockReason = "";
   let domMatched = false;
   let requestCallbackCount = 0;
   let resourceCount = 0;
@@ -576,6 +932,7 @@ export async function projectAccountOrder(
   let readyState = "unknown";
   let visibilityState = "unknown";
   let viewportAvailable = false;
+  let bestProjection: AccountOrderProjection | null = null;
   const loadStartedAt = projectionStartedAtMs;
   let loadDurationMs = 0;
   let loadSettled = false;
@@ -583,6 +940,7 @@ export async function projectAccountOrder(
   let evaluationAttempts = 0;
   let evaluationFailures = 0;
   controller.shouldAllowRequest = async (request) => {
+    if (signal?.aborted) return false;
     requestCallbackCount++;
     if (!httpsResource(request.url)) return false;
     if (
@@ -600,7 +958,7 @@ export async function projectAccountOrder(
       // cannot be decoded by this Scripting runtime.
       return true;
     }
-    if (trustedWebResource(request.url) && unionRequest(request.url, body)) {
+    if (trustedWebResource(request.url) && projectionRequest(request.url, body)) {
       const candidate: CapturedRequest = {
         url: request.url,
         method: String(request.method || "GET").toUpperCase(),
@@ -612,17 +970,20 @@ export async function projectAccountOrder(
     return true;
   };
   try {
+    assertProjectionActive(signal);
     // A dynamic page can keep WebKit's load promise pending after its useful requests and DOM are
     // already available. Start navigation without waiting for that promise so capture and DOM
     // polling can run inside the same bounded projection window.
     try {
       void controller.loadURL(parcel.projectionUrl).then(
         (loaded) => {
+          if (signal?.aborted) return;
           loadSettled = true;
           loadCompleted = loaded;
           loadDurationMs = Date.now() - loadStartedAt;
         },
         (error) => {
+          if (signal?.aborted) return;
           loadSettled = true;
           loadFailure = error;
           loadDurationMs = Date.now() - loadStartedAt;
@@ -635,7 +996,17 @@ export async function projectAccountOrder(
     }
     let replayedRequestKey = "";
     while (Date.now() < projectionDeadlineAtMs) {
+      assertProjectionActive(signal);
       if (loadSettled && !loadCompleted && !captured) {
+        if (bestProjection) {
+          return {
+            ...parcel,
+            waybill: bestProjection.waybill,
+            courierCode: bestProjection.courierCode,
+            companyName: bestProjection.companyName,
+            projectionTimeline: bestProjection.timeline || null,
+          };
+        }
         if (loadFailure) throw loadFailure;
         return parcel;
       }
@@ -658,8 +1029,13 @@ export async function projectAccountOrder(
             extractionJavaScript(parcel.ownerId, request),
           ),
           remaining,
+          signal,
         );
+        if (Date.now() >= projectionDeadlineAtMs) {
+          throw new OperationTimeoutError("提取运单号超时，请稍后重试");
+        }
       } catch (error) {
+        assertProjectionActive(signal);
         if (error instanceof OperationTimeoutError) throw error;
         evaluationFailures++;
         const elapsed = Date.now() - loadStartedAt;
@@ -667,15 +1043,17 @@ export async function projectAccountOrder(
           elapsed < 500 ? 20 : 250,
           projectionDeadlineAtMs - Date.now(),
         );
-        if (pause > 0) await new Promise<void>((resolve) => setTimeout(resolve, pause));
+        if (pause > 0) await pauseWhileActive(pause, signal);
         continue;
       }
+      assertProjectionActive(signal);
       const candidate = object(raw);
       const extractionSource = text(candidate.extractionSource);
       probeInstalled ||= candidate.probeInstalled === true;
       probeMatched ||= extractionSource === "probe";
       unionSignalSeen ||= candidate.unionSignalSeen === true;
       unionResourceSeen ||= candidate.unionResourceSeen === true;
+      resourceReplayBlockReason ||= text(candidate.resourceReplayBlockReason);
       replayAttempted ||= candidate.resourceReplayAttempted === true;
       replaySucceeded ||= candidate.resourceReplaySucceeded === true ||
         extractionSource === "replay" || extractionSource === "resource_replay";
@@ -701,25 +1079,47 @@ export async function projectAccountOrder(
         visibilityState = candidateVisibilityState;
       }
       viewportAvailable ||= candidate.viewportAvailable === true;
-      const projection = projectionFromUnionPayload({
-        data: {
-          floors: [{
-            element: {
-              info: {
-                waybillCode: candidate.waybillCode,
-                expressCompanyName: candidate.companyName,
+      const projection = projectionFromUnionPayload(
+        {
+          data: {
+            floors: [{
+              element: {
+                info: {
+                  waybillCode: candidate.waybillCode,
+                  expressCompanyName: candidate.companyName,
+                  traceList: Array.isArray(candidate.traceList)
+                    ? candidate.traceList
+                    : [],
+                },
               },
-            },
-          }],
+            }],
+          },
         },
-      }, parcel.ownerId);
+        parcel.ownerId,
+        parcel.source,
+        Date.now(),
+        candidate.fullProgressRequestedAtStart === true,
+      );
+      const hasCompleteTimeline = Boolean(
+        projection?.timeline?.complete === true &&
+          timedTracks(projection.timeline.tracks).length,
+      );
       if (projection) {
-        return {
-          ...parcel,
-          waybill: projection.waybill,
-          courierCode: projection.courierCode,
-          companyName: projection.companyName,
-        };
+        if (Date.now() >= projectionDeadlineAtMs) {
+          throw new OperationTimeoutError("提取运单号超时，请稍后重试");
+        }
+        if (projection.timeline || !bestProjection?.timeline) {
+          bestProjection = projection;
+        }
+        if (hasCompleteTimeline) {
+          return {
+            ...parcel,
+            waybill: projection.waybill,
+            courierCode: projection.courierCode,
+            companyName: projection.companyName,
+            projectionTimeline: projection.timeline || null,
+          };
+        }
       }
       // Scripting has no document-start injection API. Retry aggressively while the new document
       // is being created so the idempotent response probe has several chances to beat page scripts.
@@ -728,7 +1128,17 @@ export async function projectAccountOrder(
         elapsed < 500 ? 20 : 250,
         projectionDeadlineAtMs - Date.now(),
       );
-      if (pause > 0) await new Promise<void>((resolve) => setTimeout(resolve, pause));
+      if (pause > 0) await pauseWhileActive(pause, signal);
+    }
+    assertProjectionActive(signal);
+    if (bestProjection) {
+      return {
+        ...parcel,
+        waybill: bestProjection.waybill,
+        courierCode: bestProjection.courierCode,
+        companyName: bestProjection.companyName,
+        projectionTimeline: bestProjection.timeline || null,
+      };
     }
     if (Date.now() >= projectionDeadlineAtMs) {
       throw new OperationTimeoutError("提取运单号超时，请稍后重试");
@@ -736,32 +1146,36 @@ export async function projectAccountOrder(
     return parcel;
   } finally {
     if (!loadDurationMs) loadDurationMs = Date.now() - loadStartedAt;
-    try {
-      observe?.({
-        loadSettled,
-        loadCompleted,
-        captureSeen: captured != null,
-        replayAttempted,
-        replaySucceeded,
-        probeInstalled,
-        probeMatched,
-        probeRequestCount,
-        unionSignalSeen,
-        unionResourceSeen,
-        domMatched,
-        requestCallbackCount,
-        evaluationAttempts,
-        evaluationFailures,
-        loadDurationMs,
-        resourceCount,
-        pageClass,
-        readyState,
-        visibilityState,
-        viewportAvailable,
-      });
-    } catch {
-      /* diagnostics are best-effort and must not change the projection result */
+    if (!signal?.aborted) {
+      try {
+        observe?.({
+          loadSettled,
+          loadCompleted,
+          captureSeen: captured != null,
+          replayAttempted,
+          replaySucceeded,
+          probeInstalled,
+          probeMatched,
+          probeRequestCount,
+          unionSignalSeen,
+          unionResourceSeen,
+          resourceReplayBlockReason,
+          domMatched,
+          requestCallbackCount,
+          evaluationAttempts,
+          evaluationFailures,
+          loadDurationMs,
+          resourceCount,
+          pageClass,
+          readyState,
+          visibilityState,
+          viewportAvailable,
+        });
+      } catch {
+        /* diagnostics are best-effort and must not change the projection result */
+      }
     }
-    controller.dispose();
+    signal?.removeEventListener("abort", abort);
+    disposeController();
   }
 }

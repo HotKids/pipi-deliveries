@@ -31,6 +31,9 @@ const v5 = parseAccountSyncResponse("interface5", {
       provider: "JingDong",
       state: "订单已完成",
       stateNum: 101,
+      normalizedStatusScope: "ORDER",
+      normalizedStatusSemantic: "COMPLETED",
+      normalizedStatusText: "已完成",
       jumpList: [{ type: "h5", link: "https://wqs.jd.com/order/987654321098765" }],
     }],
   },
@@ -47,7 +50,11 @@ assert.equal(
 );
 assert.equal(v5[1].accountOrder, true);
 assert.equal(v5[1].companyName, "京东购物");
+assert.equal(v5[1].rawCompanyName, "");
 assert.equal(v5[1].semantic, "ORDERED");
+assert.equal(v5[1].normalizedStatusScope, "ORDER");
+assert.equal(v5[1].normalizedStatusSemantic, "COMPLETED");
+assert.equal(v5[1].normalizedStatusText, "已完成");
 
 const parsedV5 = parseAccountSyncResult("interface5", {
   code: 0,
@@ -98,6 +105,59 @@ assert.equal(providerOrder.waybill, "9876543210987680");
 assert.equal(providerOrder.routeUrl, "");
 assert.equal(providerOrder.projectionUrl, "https://u.jd.com/forward?opaque=1");
 
+const shortProviderOrder = parseAccountSyncResponse("interface5", {
+  code: 0,
+  data: {
+    expressList: [{
+      mailNo: "350365030147",
+      cpCode: "JD",
+      name: "京东快递",
+      provider: "JingDong",
+      state: "已完成",
+      stateNum: 107,
+      details: [{
+        time: "2026-08-25 23:04:00",
+        desc: "您的订单350365030147已完成，感谢您对京东的支持。",
+      }],
+      jumpList: [{
+        type: "h5",
+        link: "https://u.jd.com/forward?short-order=1",
+      }],
+    }],
+  },
+})[0];
+assert.equal(shortProviderOrder.accountOrder, true);
+assert.equal(shortProviderOrder.orderId, "350365030147");
+assert.equal(shortProviderOrder.companyName, "京东购物");
+assert.equal(shortProviderOrder.routeUrl, "");
+assert.equal(
+  shortProviderOrder.projectionUrl,
+  "https://u.jd.com/forward?short-order=1",
+);
+
+const shortJdWaybill = parseAccountSyncResponse("interface5", {
+  code: 0,
+  data: {
+    expressList: [{
+      mailNo: "350365030148",
+      cpCode: "JD",
+      name: "京东快递",
+      provider: "JingDong",
+      state: "运输中",
+      stateNum: 104,
+      details: [{
+        time: "2026-08-25 23:04:00",
+        desc: "快件正在运输中",
+      }],
+    }],
+  },
+})[0];
+assert.equal(
+  shortJdWaybill.accountOrder,
+  false,
+  "a 12-digit JD identifier still needs explicit order evidence",
+);
+
 const jdWaybill = parseAccountSyncResponse("interface5", {
   code: 0,
   data: {
@@ -127,6 +187,35 @@ const providerPrecedence = parseAccountSyncResponse("interface5", {
   },
 })[0];
 assert.equal(providerPrecedence.accountOrder, false);
+
+const providerNameFallback = parseAccountSyncResponse("interface5", {
+  code: 0,
+  data: {
+    expressList: [{
+      mailNo: "SF123456789012",
+      cpCode: "SF",
+      name: "顺丰速运",
+      providerName: "ShunFeng",
+      fromCp: "must-not-own-source-provider",
+      stateNum: 104,
+    }],
+  },
+})[0];
+assert.equal(providerNameFallback.sourceProvider, "ShunFeng");
+
+const missingProvider = parseAccountSyncResponse("interface5", {
+  code: 0,
+  data: {
+    expressList: [{
+      mailNo: "SF123456789013",
+      cpCode: "SF",
+      name: "顺丰速运",
+      fromCp: "must-not-own-source-provider",
+      stateNum: 104,
+    }],
+  },
+})[0];
+assert.equal(missingProvider.sourceProvider, "");
 
 const jdCodeOnly = parseAccountSyncResponse("interface5", {
   code: 0,
@@ -236,12 +325,51 @@ const detail = parseAccountTimelineResponse("interface5", {
 }, {
   waybill: "SF1226181467773",
   courierCode: "SF",
+  rawCourierCode: "SF",
   companyName: "顺丰速运",
   phone: "13800138000",
 });
 assert.equal(detail?.waybill, "SF1226181467773");
 assert.equal(detail?.latestDetail, "快件运输中");
 assert.equal(detail?.receiverPhone, "13800138000");
+assert.equal(detail?.rawCourierCode, "SF");
+
+const normalizedWithoutRaw = parseAccountSyncResponse("interface5", {
+  code: 0,
+  data: {
+    expressList: [{
+      mailNo: "NORMALIZEDWITHOUTRAW001",
+      normalizedCarrierCode: "SF",
+      normalizedCarrierName: "顺丰速运",
+      carrierBuiltIn: true,
+      stateNum: 104,
+    }],
+  },
+})[0];
+assert.equal(normalizedWithoutRaw.courierCode, "SF");
+assert.equal(normalizedWithoutRaw.rawCourierCode, "");
+
+const rawCarrierSurvivesDisplayNormalization = parseAccountSyncResponse(
+  "interface5",
+  {
+    code: 0,
+    data: {
+      expressList: [{
+        mailNo: "RAWVERSUSDISPLAY0001",
+        cpCode: "sfexpress",
+        name: "顺丰来源原名",
+        normalizedCarrierCode: "SF",
+        normalizedCarrierName: "顺丰速运",
+        carrierBuiltIn: true,
+        stateNum: 104,
+      }],
+    },
+  },
+)[0];
+assert.equal(rawCarrierSurvivesDisplayNormalization.rawCourierCode, "sfexpress");
+assert.equal(rawCarrierSurvivesDisplayNormalization.rawCompanyName, "顺丰来源原名");
+assert.equal(rawCarrierSurvivesDisplayNormalization.courierCode, "SF");
+assert.equal(rawCarrierSurvivesDisplayNormalization.companyName, "顺丰速运");
 
 const matchedAmongMultiple = parseAccountTimelineResponse("interface5", {
   code: 0,

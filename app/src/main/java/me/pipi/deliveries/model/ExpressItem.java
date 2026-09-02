@@ -34,6 +34,8 @@ public final class ExpressItem {
     public final String projectedTracksJson;
     /** Exact upstream provider value retained from the account-source record. */
     public final String sourceProvider;
+    /** Display-only carrier projection; raw courierCode/companyName remain untouched. */
+    public final CarrierNormalization carrierNormalization;
     /** True only for rows created by the app's shared manual-query flow. */
     public final boolean manuallyAdded;
     /** Selected durable manual timeline provider; empty before the first successful lookup. */
@@ -266,6 +268,45 @@ public final class ExpressItem {
             String manualTimelineProvider,
             long manualTimelineSuccessAt,
             StatusSemantic sourceSemantic) {
+        this(rowId, phone, waybill, courierCode, companyName, semantic,
+                statusDescription, latestDetail, latestTime, tracksJson, remark,
+                source, detailUrl, statusEventTime, updatedAt, stateOwner, routeOwner,
+                routeInterface, routeCredential, routeCredentialAvailable, projectedWaybill,
+                projectedCompanyName, projectedTracksJson, sourceProvider,
+                manuallyAdded, manualTimelineProvider, manualTimelineSuccessAt,
+                sourceSemantic, CarrierNormalization.NONE);
+    }
+
+    public ExpressItem(
+            long rowId,
+            String phone,
+            String waybill,
+            String courierCode,
+            String companyName,
+            StatusSemantic semantic,
+            String statusDescription,
+            String latestDetail,
+            String latestTime,
+            String tracksJson,
+            String remark,
+            String source,
+            String detailUrl,
+            long statusEventTime,
+            long updatedAt,
+            String stateOwner,
+            String routeOwner,
+            String routeInterface,
+            String routeCredential,
+            boolean routeCredentialAvailable,
+            String projectedWaybill,
+            String projectedCompanyName,
+            String projectedTracksJson,
+            String sourceProvider,
+            boolean manuallyAdded,
+            String manualTimelineProvider,
+            long manualTimelineSuccessAt,
+            StatusSemantic sourceSemantic,
+            CarrierNormalization carrierNormalization) {
         this.rowId = rowId;
         this.phone = clean(phone);
         this.waybill = clean(waybill);
@@ -291,6 +332,8 @@ public final class ExpressItem {
         this.projectedCompanyName = clean(projectedCompanyName);
         this.projectedTracksJson = clean(projectedTracksJson);
         this.sourceProvider = clean(sourceProvider);
+        this.carrierNormalization = carrierNormalization == null
+                ? CarrierNormalization.NONE : carrierNormalization;
         this.manuallyAdded = manuallyAdded;
         this.manualTimelineProvider = clean(manualTimelineProvider).toLowerCase(
                 java.util.Locale.ROOT);
@@ -307,8 +350,24 @@ public final class ExpressItem {
             String projected = CarrierRegistry.displayName("", projectedCompanyName);
             return projected.isEmpty() ? projectedCompanyName : projected;
         }
+        if (!projectedWaybill.isEmpty()) return "快递";
         if (isAccountOrder()) return "京东购物";
+        CarrierRegistry.Carrier exactCarrier = matchingExactCarrierNormalization();
+        if (exactCarrier != null) return exactCarrier.companyName;
+        CarrierRegistry.Carrier rawCarrier = CarrierRegistry.resolveCpCode(courierCode);
+        if (rawCarrier != null) return rawCarrier.companyName;
+        if (carrierNormalization.recognized()) {
+            CarrierRegistry.Carrier current = CarrierRegistry.resolve(
+                    carrierNormalization.standardCode);
+            if (current != null) return current.companyName;
+            if (!carrierNormalization.displayName.isEmpty()) {
+                return carrierNormalization.displayName;
+            }
+        }
         String display = CarrierRegistry.displayName(courierCode, companyName);
+        if (CarrierRegistry.resolveCpCode(courierCode) != null
+                || CarrierRegistry.resolveName(companyName) != null) return display;
+        if (!courierCode.isEmpty()) return courierCode;
         return display.isEmpty() ? "快递" : display;
     }
 
@@ -317,7 +376,19 @@ public final class ExpressItem {
         if (!projectedCompanyName.isEmpty()) {
             return CarrierRegistry.icon("", projectedCompanyName);
         }
+        if (!projectedWaybill.isEmpty()) {
+            return R.drawable.ic_card_express_cp_default;
+        }
         if (isAccountOrder()) return R.drawable.jdshopping;
+        CarrierRegistry.Carrier exactCarrier = matchingExactCarrierNormalization();
+        if (exactCarrier != null) return exactCarrier.iconResource;
+        CarrierRegistry.Carrier rawCarrier = CarrierRegistry.resolveCpCode(courierCode);
+        if (rawCarrier != null) return rawCarrier.iconResource;
+        if (carrierNormalization.recognized()) {
+            return CarrierRegistry.icon(
+                    carrierNormalization.standardCode,
+                    carrierNormalization.displayName);
+        }
         return CarrierRegistry.icon(courierCode, companyName);
     }
 
@@ -325,9 +396,35 @@ public final class ExpressItem {
         return projectedWaybill.isEmpty() ? waybill : projectedWaybill;
     }
 
+    /** A projected real waybill owns carrier identity; sourceProvider remains account provenance. */
     public String displayCourierCode() {
-        return projectedCompanyName.isEmpty()
-                ? courierCode : CarrierRegistry.queryCode("", projectedCompanyName);
+        if (!projectedCompanyName.isEmpty()) {
+            return CarrierRegistry.queryCode("", projectedCompanyName);
+        }
+        if (!projectedWaybill.isEmpty()) return "";
+        CarrierRegistry.Carrier exactCarrier = matchingExactCarrierNormalization();
+        if (exactCarrier != null) return exactCarrier.kuaidi100Code;
+        CarrierRegistry.Carrier rawCarrier = CarrierRegistry.resolveCpCode(courierCode);
+        if (rawCarrier != null) return rawCarrier.kuaidi100Code;
+        if (carrierNormalization.recognized()) {
+            CarrierRegistry.Carrier current = CarrierRegistry.resolve(
+                    carrierNormalization.standardCode);
+            if (current != null) return current.kuaidi100Code;
+            if (!carrierNormalization.kuaidi100Code.isEmpty()) {
+                return carrierNormalization.kuaidi100Code;
+            }
+        }
+        return courierCode;
+    }
+
+    private CarrierRegistry.Carrier matchingExactCarrierNormalization() {
+        if (!carrierNormalization.recognized()) return null;
+        CarrierRegistry.Carrier exact = CarrierRegistry.resolve(courierCode);
+        CarrierRegistry.Carrier normalized = CarrierRegistry.resolve(
+                carrierNormalization.standardCode);
+        return exact != null && normalized != null
+                && exact.standardCode.equalsIgnoreCase(normalized.standardCode)
+                ? exact : null;
     }
 
     public boolean isAccountOrder() {
@@ -338,9 +435,14 @@ public final class ExpressItem {
                 || "I6-JD".equalsIgnoreCase(source))) {
             return false;
         }
-        String code = courierCode.toUpperCase(java.util.Locale.ROOT);
-        return "JD".equals(code) || "JDKD".equals(code) || "JDKY".equals(code)
-                || companyName.contains("京东");
+        return !manuallyAdded;
+    }
+
+    public boolean isInterface5ProjectedOrder() {
+        String owner = stateOwner.isEmpty() ? source : stateOwner;
+        return isAccountOrder() && !projectedWaybill.isEmpty()
+                && ("I5-JD".equalsIgnoreCase(owner)
+                || "I5-JD".equalsIgnoreCase(source));
     }
 
     /** Account timelines are trusted only when the row owns a supported account detail route. */
@@ -358,6 +460,35 @@ public final class ExpressItem {
         return !manuallyAdded
                 && "INTERFACE5".equalsIgnoreCase(owner)
                 && "ShunFeng".equalsIgnoreCase(sourceProvider);
+    }
+
+    /** Exact account-source SF ownership, independent from the selected account interface. */
+    public boolean isShunFengSource() {
+        String owner = stateOwner.isEmpty() ? source : stateOwner;
+        return !manuallyAdded
+                && ("INTERFACE5".equalsIgnoreCase(owner)
+                || "INTERFACE6".equalsIgnoreCase(owner))
+                && "ShunFeng".equalsIgnoreCase(sourceProvider);
+    }
+
+    /** Exact account-source JD ownership after the real carrier identity is available. */
+    public boolean isJingDongSource() {
+        String owner = stateOwner.isEmpty() ? source : stateOwner;
+        return !manuallyAdded
+                && ("INTERFACE5".equalsIgnoreCase(owner)
+                || "INTERFACE6".equalsIgnoreCase(owner)
+                || "I5-JD".equalsIgnoreCase(owner)
+                || "I6-JD".equalsIgnoreCase(owner))
+                && "JingDong".equalsIgnoreCase(sourceProvider);
+    }
+
+    public boolean usesSourceManualTakeover() {
+        return isShunFengSource() || isJingDongSource();
+    }
+
+    /** Cainiao owns presentation through its credentialed H5 or the native owner package. */
+    public boolean isCainiaoSource() {
+        return !manuallyAdded && "CaiNiao".equalsIgnoreCase(sourceProvider);
     }
 
     public boolean hasManualTimelineAuthority() {

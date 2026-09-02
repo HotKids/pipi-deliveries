@@ -15,8 +15,7 @@ export function accountParcelWithProjectionReference(
   if (
     !source ||
     shipment.identity.manuallyAdded ||
-    !shipment.identity.accountOrder ||
-    normalizedProjectedWaybill(shipment.identity)
+    !shipment.identity.accountOrder
   ) {
     return parcel;
   }
@@ -24,21 +23,30 @@ export function accountParcelWithProjectionReference(
     .trim();
   if (!parcel && !trustedReference) return null;
   const timeline = shipment.sourceTimeline || shipment.timeline;
+  const projectedWaybill = normalizedProjectedWaybill(shipment.identity);
   return {
     source,
     ownerId: shipment.identity.sourceId,
-    waybill: parcel?.waybill || shipment.identity.sourceId,
+    waybill: projectedWaybill || parcel?.waybill || shipment.identity.sourceId,
     orderId: shipment.identity.orderId || parcel?.orderId ||
       shipment.identity.sourceId,
     accountOrder: true,
     courierCode: parcel?.courierCode || shipment.identity.courierCode,
+    rawCourierCode:
+      parcel?.rawCourierCode || shipment.identity.rawCourierCode || "",
+    rawCompanyName:
+      parcel?.rawCompanyName || shipment.identity.rawCompanyName || "",
     companyName: parcel?.companyName || shipment.identity.companyName,
+    carrierNormalization: parcel?.carrierNormalization || null,
     sourceProvider: parcel?.sourceProvider ||
       shipment.identity.sourceProvider || "",
     sourceStateCode: parcel?.sourceStateCode ||
       String(shipment.accountRecord?.stateNumber || ""),
     sourceStateText: parcel?.sourceStateText || timeline.semantic,
     semantic: parcel?.semantic || timeline.semantic,
+    normalizedStatusScope: parcel?.normalizedStatusScope,
+    normalizedStatusSemantic: parcel?.normalizedStatusSemantic,
+    normalizedStatusText: parcel?.normalizedStatusText,
     receiverPhone: parcel?.receiverPhone || shipment.identity.phone || "",
     senderPhone: parcel?.senderPhone || "",
     latestTimeText: parcel?.latestTimeText || timeline.latestTimeText,

@@ -5,7 +5,13 @@ plugins {
 }
 
 val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
+    val configuredFile = providers.environmentVariable("DELIVERIES_LOCAL_PROPERTIES_FILE")
+        .orNull?.trim().orEmpty()
+    val file = if (configuredFile.isBlank()) {
+        rootProject.file("local.properties")
+    } else {
+        rootProject.file(configuredFile)
+    }
     if (file.isFile) file.inputStream().use(::load)
 }
 
@@ -25,7 +31,7 @@ fun quoted(value: String): String = "\"" + value
 fun localValueOrDefault(environment: String, property: String, fallback: String): String =
     localValue(environment, property).ifBlank { fallback }
 
-val releaseVersionNameDefault = "1.2.13"
+val releaseVersionNameDefault = "1.3.0"
 val releaseVersionName = providers.environmentVariable("DELIVERIES_VERSION_NAME")
     .orNull?.trim().orEmpty().ifBlank { releaseVersionNameDefault }
 val releaseVersionCode = providers.environmentVariable("DELIVERIES_VERSION_CODE")
@@ -45,6 +51,15 @@ val signingStoreFile = signingStore.takeIf(String::isNotBlank)?.let(rootProject:
 val hasReleaseSigning = listOf(
     signingStore, signingStorePassword, signingAlias, signingKeyPassword
 ).all(String::isNotBlank) && signingStoreFile?.isFile == true
+val releaseTaskRequested = gradle.startParameter.taskNames.any {
+    it.contains("release", ignoreCase = true)
+}
+
+if (releaseTaskRequested) {
+    require(hasReleaseSigning) {
+        "Release signing configuration is required for release builds"
+    }
+}
 
 android {
     namespace = "me.pipi.deliveries"
@@ -62,18 +77,8 @@ android {
             quoted(localValueOrDefault(
                 "DELIVERIES_EXPRESS_GATEWAY_URL",
                 "deliveries.expressGatewayUrl",
-                "https://pipi-gateway.hotki.de",
+                "https://pipiassistant.app",
             )),
-        )
-        buildConfigField(
-            "String", "EXPRESS_GATEWAY_TOKEN",
-            quoted(localValue(
-                "DELIVERIES_EXPRESS_GATEWAY_TOKEN",
-                "deliveries.expressGatewayToken",
-            ).ifBlank {
-                // Backward-compatible with the existing local/CI Deliveries signing secret.
-                localValue("DELIVERIES_K100_PROXY_TOKEN", "deliveries.k100ProxyToken")
-            }),
         )
     }
 
@@ -110,7 +115,7 @@ android {
             applicationIdSuffix = ""
         }
         release {
-            signingConfig = releaseSigning ?: signingConfigs.getByName("debug")
+            signingConfig = releaseSigning
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

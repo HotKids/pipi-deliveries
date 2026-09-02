@@ -8,6 +8,7 @@ const shared = new Map<string, unknown>();
 const files = new Map<string, string>();
 let fetchCalls = 0;
 let responseStatus = 401;
+type FakeFetchInit = { signal?: AbortSignal };
 
 function gatewayResponse(status: number) {
   return {
@@ -20,7 +21,10 @@ function gatewayResponse(status: number) {
   };
 }
 
-let fetchHandler = async () => gatewayResponse(responseStatus);
+let fetchHandler: (
+  init?: FakeFetchInit,
+) => Promise<ReturnType<typeof gatewayResponse>> = async () =>
+  gatewayResponse(responseStatus);
 
 Object.assign(globalThis, {
   Data: {
@@ -96,9 +100,9 @@ Object.assign(globalThis, {
       shared.delete(key);
     },
   },
-  fetch: () => {
+  fetch: (_url: string, init?: FakeFetchInit) => {
     fetchCalls += 1;
-    return fetchHandler();
+    return fetchHandler(init);
   },
 });
 
@@ -109,6 +113,7 @@ const {
   postGateway,
   scriptingAuthHeaders,
 } = await import("../services/gateway");
+const { OperationTimeoutError } = await import("../services/deadline");
 const {
   gatewayCredentialStatus,
   loadGatewayCredentials,
@@ -166,42 +171,44 @@ function rejectedWithStatus(status: number) {
   };
 }
 
-// Explicit authorization failures persist an unavailable marker while retaining the
-// synthetic credential. A later save clears that marker and permits requests again.
+// A generic authorization failure belongs to that request only. The gateway has no
+// durable revocation contract, so the next request must still reach the network.
 saveGatewayToken(token);
 responseStatus = 401;
 await assert.rejects(
   postGateway("/api/express/classify", { waybill: "SYNTHETIC123" }),
   rejectedWithStatus(401),
 );
-assert.equal(gatewayCredentialStatus(), "unavailable");
-assert.equal(loadGatewayCredentials(), null);
-const callsAfterRejection = fetchCalls;
-await assert.rejects(
-  postGateway("/api/express/classify", { waybill: "SYNTHETIC123" }),
-  (error: unknown) => {
-    assert.ok(error instanceof GatewayError);
-    assert.match(error.message, /Access Key 已失效/);
-    return true;
-  },
-);
-assert.equal(fetchCalls, callsAfterRejection);
-
-saveGatewayToken(token);
 assert.equal(gatewayCredentialStatus(), "configured");
+assert.deepEqual(loadGatewayCredentials(), { token });
+const callsAfterRejection = fetchCalls;
+responseStatus = 200;
+await postGateway("/api/express/classify", { waybill: "SYNTHETIC123" });
+assert.equal(fetchCalls, callsAfterRejection + 1);
+
 responseStatus = 403;
 await assert.rejects(
-  postGateway("/api/express/classify", { waybill: "SYNTHETIC456" }),
+  postGateway("/api/express/timeline/preferred", {
+    waybill: "SF-SYNTHETIC456",
+    companyCode: "shunfeng",
+  }),
   rejectedWithStatus(403),
 );
-assert.equal(gatewayCredentialStatus(), "unavailable");
+assert.equal(gatewayCredentialStatus(), "configured");
+const callsAfterShunFengRejection = fetchCalls;
+responseStatus = 200;
+await postGateway("/api/express/timeline/preferred", {
+  waybill: "STO-SYNTHETIC456",
+  companyCode: "shentong",
+});
+assert.equal(fetchCalls, callsAfterShunFengRejection + 1);
 
 const replacementToken = "ZyXwVuTs_987-654";
 saveGatewayToken(replacementToken);
 assert.deepEqual(loadGatewayCredentials(), { token: replacementToken });
 
-// A delayed rejection applies only to the credential that signed that request. It
-// must not invalidate a newer credential saved while the request was in flight.
+// A delayed rejection must not affect a newer credential saved while the request
+// was in flight.
 let resolveDelayedResponse:
   | ((response: ReturnType<typeof gatewayResponse>) => void)
   | undefined;
@@ -219,5 +226,91 @@ resolveDelayedResponse(gatewayResponse(401));
 await assert.rejects(delayedRequest, rejectedWithStatus(401));
 assert.equal(gatewayCredentialStatus(), "configured");
 assert.deepEqual(loadGatewayCredentials(), { token: newestToken });
+
+async function rejectsAsOperationTimeout(promise: Promise<unknown>) {
+  let guard: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await assert.rejects(
+      Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          guard = setTimeout(
+            () => reject(new Error("gateway deadline did not settle")),
+            500,
+          );
+        }),
+      ]),
+      (error: unknown) => error instanceof OperationTimeoutError,
+    );
+  } finally {
+    if (guard != null) clearTimeout(guard);
+  }
+}
+
+let stalledFetchSignal: AbortSignal | undefined;
+fetchHandler = (init) => new Promise((_resolve, reject) => {
+  stalledFetchSignal = init?.signal;
+  init?.signal?.addEventListener("abort", () => {
+    const aborted = new Error("synthetic abort");
+    aborted.name = "AbortError";
+    reject(aborted);
+  }, { once: true });
+});
+await rejectsAsOperationTimeout(postGateway(
+  "/api/express/classify",
+  { waybill: "SYNTHETIC-TIMEOUT-FETCH" },
+  { deadlineAtMs: Date.now() + 20 },
+));
+assert.equal(stalledFetchSignal?.aborted, true);
+
+let stalledBodySignal: AbortSignal | undefined;
+let resolveLateBody: ((value: string) => void) | undefined;
+fetchHandler = async (init) => {
+  stalledBodySignal = init?.signal;
+  return {
+    ...gatewayResponse(200),
+    text: () => new Promise<string>((resolve) => {
+      resolveLateBody = resolve;
+    }),
+  };
+};
+await rejectsAsOperationTimeout(postGateway(
+  "/api/express/classify",
+  { waybill: "SYNTHETIC-TIMEOUT-BODY" },
+  { deadlineAtMs: Date.now() + 20 },
+));
+assert.equal(stalledBodySignal?.aborted, true);
+assert.ok(resolveLateBody);
+resolveLateBody(JSON.stringify({ ok: true }));
+await Promise.resolve();
+
+const parentController = new AbortController();
+let parentControlledSignal: AbortSignal | undefined;
+fetchHandler = async (init) => {
+  parentControlledSignal = init?.signal;
+  return {
+    ...gatewayResponse(200),
+    text: () => new Promise<string>(() => {}),
+  };
+};
+const parentControlledRequest = postGateway(
+  "/api/express/classify",
+  { waybill: "SYNTHETIC-PARENT-ABORT" },
+  { deadlineAtMs: Date.now() + 10_000, signal: parentController.signal },
+);
+await Promise.resolve();
+parentController.abort();
+await rejectsAsOperationTimeout(parentControlledRequest);
+assert.equal(parentControlledSignal?.aborted, true);
+
+const preAborted = new AbortController();
+preAborted.abort();
+const callsBeforePreAbort = fetchCalls;
+await rejectsAsOperationTimeout(postGateway(
+  "/api/express/classify",
+  { waybill: "SYNTHETIC-PRE-ABORT" },
+  { deadlineAtMs: Date.now() + 10_000, signal: preAborted.signal },
+));
+assert.equal(fetchCalls, callsBeforePreAbort);
 
 console.log("gateway error diagnostics tests passed");

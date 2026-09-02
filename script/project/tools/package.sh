@@ -2,7 +2,8 @@
 set -eu
 
 PROJECT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-OUTPUT=${1:-"$PROJECT_DIR/pipi-deliveries.scripting"}
+SCRIPT_DIR=$(CDPATH='' cd -- "$PROJECT_DIR/.." && pwd)
+OUTPUT=${1:-"$SCRIPT_DIR/pipi-deliveries.scripting"}
 
 case "$OUTPUT" in
   /*) ;;
@@ -21,9 +22,9 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 cd "$PROJECT_DIR"
+zip -q -j "$TEMP_OUTPUT" "$SCRIPT_DIR/README.md"
 zip -q -r "$TEMP_OUTPUT" \
   script.json \
-  README.md \
   models.ts \
   index.tsx \
   widget.tsx \

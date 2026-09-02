@@ -28,6 +28,7 @@ public final class ExpressStatusNormalizer {
         return lower.startsWith("noresult")
                 || lower.startsWith("mismatchingcode")
                 || value.startsWith("验证码错误")
+                || value.startsWith("查无结果")
                 || value.equals("暂无状态")
                 || value.equals("暂无物流信息")
                 || value.equals("暂无物流动态")

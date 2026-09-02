@@ -36,7 +36,6 @@
         <activity
             android:name="me.pipi.deliveries.feature.express.ExpressDetailActivity"
             android:exported="false" />
-
         <receiver
             android:name=".background.BootReceiver"
             android:enabled="true"

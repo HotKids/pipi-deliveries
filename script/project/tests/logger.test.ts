@@ -74,6 +74,24 @@ assert.equal(
   "rate_limited",
 );
 assert.equal(
+  classifyDiagnosticError(Object.assign(new Error("上游拒绝"), {
+    code: "upstream_rejected",
+  })),
+  "upstream",
+);
+assert.equal(
+  classifyDiagnosticError(Object.assign(new Error("响应不匹配"), {
+    code: "invalid_upstream_response",
+  })),
+  "protocol",
+);
+assert.equal(
+  classifyDiagnosticError(Object.assign(new Error("承运商不支持"), {
+    code: "invalid_company_code",
+  })),
+  "validation",
+);
+assert.equal(
   classifyDiagnosticError(new Error("Access Key 格式不正确")),
   "authorization",
 );
@@ -143,6 +161,107 @@ assert.deepEqual(first[0]?.details, {
 assert.equal(diagnosticText(first).includes("13800138000"), false);
 assert.equal(diagnosticText(first).includes("secret-token"), false);
 
+writeDiagnostic("detail.refresh.stage_failed", {
+  waybillTail: "9613",
+  sourceProvider: "cainiao",
+  carrierCode: "YTO",
+  routeKind: "cainiao",
+  automatic: true,
+  selected: true,
+  webViewAllowed: true,
+  routePointerPresent: true,
+  routePresent: true,
+  routeTrusted: true,
+  waybillPresent: true,
+  loadSettled: true,
+  loadCompleted: true,
+  evaluationAttempts: 7,
+  evaluationFailures: 2,
+  extractionSource: "dom",
+  rawTrackCount: 4,
+  validTrackCount: 3,
+  effectiveTrackCount: 3,
+  persisted: false,
+  timelineProvider: "interface5",
+  finalTimelineProvider: "interface5",
+  detailTimelineProvider: "kuaidi100_h5",
+  detailEffectiveTrackCount: 5,
+  scriptVersion: "0.5-beta19",
+  clientBuild: 25,
+  exitReason: "no_timed_tracks",
+  skipReason: "deadline_exhausted",
+  routeUrl: "https://page.cainiao.com/secret",
+  fullWaybill: "YT12345678909613",
+} as never, "warning");
+const cainiaoDiagnostic = readDiagnostics()[0]!;
+assert.deepEqual(cainiaoDiagnostic.details, {
+  waybillTail: "9613",
+  sourceProvider: "cainiao",
+  carrierCode: "YTO",
+  routeKind: "cainiao",
+  automatic: true,
+  selected: true,
+  webViewAllowed: true,
+  routePointerPresent: true,
+  routePresent: true,
+  routeTrusted: true,
+  waybillPresent: true,
+  loadSettled: true,
+  loadCompleted: true,
+  evaluationAttempts: 7,
+  evaluationFailures: 2,
+  extractionSource: "dom",
+  rawTrackCount: 4,
+  validTrackCount: 3,
+  effectiveTrackCount: 3,
+  persisted: false,
+  timelineProvider: "interface5",
+  finalTimelineProvider: "interface5",
+  detailTimelineProvider: "kuaidi100_h5",
+  detailEffectiveTrackCount: 5,
+  scriptVersion: "0.5-beta19",
+  clientBuild: 25,
+  exitReason: "no_timed_tracks",
+  skipReason: "deadline_exhausted",
+});
+assert.equal(diagnosticText([cainiaoDiagnostic]).includes("9613"), true);
+assert.equal(
+  diagnosticText([cainiaoDiagnostic]).includes("YT12345678909613"),
+  false,
+);
+assert.equal(
+  diagnosticText([cainiaoDiagnostic]).includes("page.cainiao.com"),
+  false,
+);
+
+writeDiagnostic("detail.refresh.primary_contest.completed", {
+  executionBoundary: "host_budget",
+  routeCaptured: true,
+  motoSupported: true,
+  motoSucceeded: false,
+  kuaidi100Succeeded: true,
+  primarySuccessCount: 1,
+  primaryReachedTimelineStart: true,
+  kdniaoAttempted: false,
+  kdniaoSucceeded: false,
+});
+assert.deepEqual(readDiagnostics()[0]?.details, {
+  executionBoundary: "host_budget",
+  routeCaptured: true,
+  motoSupported: true,
+  motoSucceeded: false,
+  kuaidi100Succeeded: true,
+  primarySuccessCount: 1,
+  primaryReachedTimelineStart: true,
+  kdniaoAttempted: false,
+  kdniaoSucceeded: false,
+});
+
+writeDiagnostic("detail.refresh.stage_failed", {
+  waybillTail: "YT12345678909613",
+} as never, "warning");
+assert.equal(readDiagnostics()[0]?.details.waybillTail, undefined);
+
 writeDiagnostic("binding.code.failed", {
   failureCode: "phone_13800138000",
 } as never, "error");
@@ -155,13 +274,32 @@ writeDiagnostic("binding.code.failed", {
 assert.equal(readDiagnostics()[0]?.details.failureCode, undefined);
 assert.equal(diagnosticText().includes("AbCdEfGhIjKlMnOp"), false);
 
-for (let index = 0; index < 105; index++) {
-writeDiagnostic("refresh.succeeded", {
+for (let index = 0; index < 505; index++) {
+  writeDiagnostic("refresh.succeeded", {
     revision: index,
     result: "succeeded",
   });
 }
-assert.equal(readDiagnostics().length, 100);
+assert.equal(readDiagnostics().length, 200);
+
+clearDiagnostics();
+writeDiagnostic("refresh.stage.started", {
+  flowId: "refresh-terminal-owner",
+  stage: "manual_refresh",
+});
+writeDiagnostic("refresh.failed", {
+  flowId: "refresh-terminal-owner",
+  errorCategory: "timeout",
+});
+writeDiagnostic("refresh.stage.succeeded", {
+  flowId: "refresh-terminal-owner",
+  stage: "manual_refresh",
+});
+assert.deepEqual(
+  readDiagnostics().map((entry) => entry.event),
+  ["refresh.failed", "refresh.stage.started"],
+  "a refresh terminal event must remain the final record for its flow",
+);
 
 rejectWrites = true;
 assert.doesNotThrow(() => {
@@ -268,6 +406,18 @@ memory.set(DIAGNOSTIC_KEY, [{
 }]);
 assert.deepEqual(readDiagnostics(), []);
 assert.equal(memory.has(DIAGNOSTIC_KEY), false);
+
+for (let index = 0; index < 520; index++) {
+  writeDiagnostic("refresh.stage.started", {
+    flowId: `flow-${String(index).padStart(3, "0")}`,
+    stage: "account_detail",
+  });
+}
+const retainedDiagnostics = readDiagnostics();
+assert.equal(retainedDiagnostics.length, 200);
+assert.equal(retainedDiagnostics[0]?.details.flowId, "flow-519");
+assert.equal(retainedDiagnostics.at(-1)?.details.flowId, "flow-320");
+clearDiagnostics();
 
 writeDiagnostic("refresh.succeeded", { result: "succeeded" });
 rejectRemovals = true;

@@ -3,11 +3,13 @@ import {
   List,
   Navigation,
   NavigationStack,
+  Notification,
   Script,
   Section,
   Tab,
   TabView,
   Text,
+  useEffect,
   useState,
 } from "scripting";
 import type { AppState } from "./models";
@@ -20,7 +22,12 @@ import {
   writeDiagnostic,
 } from "./services/logger";
 import { preferNewerState } from "./services/ui-state";
-import { requestWidgetReload } from "./services/widgets";
+import { refreshAllShipments } from "./services/sync";
+import {
+  reloadAndRefreshOnResume,
+  resumeShipmentId,
+} from "./services/app-resume";
+import { initializeCarrierAuthority } from "./services/carrier-authority";
 
 type StartupState = {
   state: AppState | null;
@@ -41,10 +48,44 @@ function readStartupState(): StartupState {
 
 function App() {
   const [startup, setStartup] = useState(readStartupState);
+  const [navigationRequest, setNavigationRequest] = useState(() => ({
+    shipmentId: resumeShipmentId({
+      queryParameters: Script.queryParameters || {},
+      notificationInfo: Notification.current,
+    }),
+    generation: 0,
+  }));
   const state = startup.state;
   const query = Script.queryParameters || {};
   const focusSearch = String(query.focus || "") === "search";
-  const shipmentId = String(query.shipment || "");
+
+  function applyState(next: AppState) {
+    setStartup((current) => {
+      const selected = current.state
+        ? preferNewerState(current.state, next)
+        : next;
+      if (selected === current.state) return current;
+      writeDiagnostic("app.state.applied", diagnosticState(selected));
+      return { state: selected };
+    });
+  }
+
+  useEffect(() => {
+    return Script.onResume((details) => {
+      void reloadAndRefreshOnResume(details, {
+        load: loadState,
+        applyPersisted: (persisted, shipmentId) => {
+          setStartup({ state: persisted });
+          setNavigationRequest((current) => ({
+            shipmentId,
+            generation: current.generation + 1,
+          }));
+        },
+        refresh: () => refreshAllShipments(),
+        applyRefreshed: applyState,
+      });
+    });
+  }, []);
 
   if (!state) {
     return (
@@ -64,24 +105,14 @@ function App() {
     );
   }
 
-  function applyState(next: AppState) {
-    setStartup((current) => {
-      const selected = current.state
-        ? preferNewerState(current.state, next)
-        : next;
-      if (selected === current.state) return current;
-      writeDiagnostic("app.state.applied", diagnosticState(selected));
-      return { state: selected };
-    });
-  }
-
   return (
     <TabView>
       <Tab title="快递" systemImage="shippingbox.fill" value="deliveries">
         <HomePage
           state={state}
           autoFocusSearch={focusSearch}
-          initialShipmentId={shipmentId}
+          initialShipmentId={navigationRequest.shipmentId}
+          navigationRequestGeneration={navigationRequest.generation}
           onStateChange={applyState}
         />
       </Tab>
@@ -93,7 +124,7 @@ function App() {
 }
 
 async function run() {
-  requestWidgetReload();
+  initializeCarrierAuthority();
   await Navigation.present({
     element: <App />,
     modalPresentationStyle: "fullScreen",

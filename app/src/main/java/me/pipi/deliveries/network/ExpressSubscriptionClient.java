@@ -15,10 +15,12 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /** Interface 6 phone subscription and tracking client routed through the shared gateway. */
 public final class ExpressSubscriptionClient {
     private static final String TAG = "ExpressSubscription";
+    private static final int MAX_MANUAL_RESPONSE_DEPTH = 12;
     public void sendCode(Context context, String phone) throws Exception {
         requestBind(context, phone, "");
     }
@@ -103,15 +105,31 @@ public final class ExpressSubscriptionClient {
     static ExpressQueryResult parseManualResponse(String body, String fallbackWaybill)
             throws Exception {
         Object payload = unwrap(body, "查询失败，请稍后重试");
+        String expectedWaybill = normalizeWaybillIdentity(fallbackWaybill);
+        if (!manualResponseIdentitiesMatch(payload, expectedWaybill, 0)) {
+            throw new IllegalStateException("暂未查询到物流信息");
+        }
         JSONObject value = findManualObject(payload);
         if (value == null) throw new IllegalStateException("暂未查询到物流信息");
         String responseNumber = first(value, "nu", "mailNo");
+        if (!responseNumber.isEmpty()
+                && !normalizeWaybillIdentity(responseNumber)
+                .equals(normalizeWaybillIdentity(fallbackWaybill))) {
+            throw new IllegalStateException("暂未查询到物流信息");
+        }
         String code = first(value, "com", "cpCode");
         String name = first(value, "name", "cpName");
         String stateName = first(value, "stateName", "logisticsStatusDesc");
         String status = first(value, "status", "state", "logsiticsStatus");
         String time = first(value, "time", "logisticsGmtModified");
         String detail = first(value, "context", "lastLogisticDetail", "message");
+        boolean providerError = ExpressStatusNormalizer.isProviderErrorDetail(detail);
+        if (providerError) {
+            time = "";
+            detail = "";
+            stateName = "";
+            status = "";
+        }
         JSONArray tracks = value.optJSONArray("data");
         if (tracks == null) tracks = value.optJSONArray("traces");
         if (tracks == null) {
@@ -120,6 +138,21 @@ public final class ExpressSubscriptionClient {
                 tracks.put(new JSONObject().put("time", time).put("context", detail));
             }
         }
+        JSONArray normalizedTracks = new JSONArray();
+        for (int index = 0; index < tracks.length(); index++) {
+            JSONObject track = tracks.optJSONObject(index);
+            if (track == null) continue;
+            String trackDetail = first(track,
+                    "context", "desc", "description", "logisticDetail",
+                    "lastLogisticDetail", "message");
+            if (ExpressStatusNormalizer.isProviderErrorDetail(trackDetail)) {
+                providerError = true;
+                continue;
+            }
+            normalizedTracks.put(new JSONObject(track.toString())
+                    .put("_pipiStatusSource", "meizu"));
+        }
+        tracks = normalizedTracks;
         List<ExpressTimeline.Track> parsed = ExpressTimeline.parse(
                 tracks.toString(), time, detail);
         if (!parsed.isEmpty()) {
@@ -127,17 +160,62 @@ public final class ExpressSubscriptionClient {
             if (time.isEmpty()) time = latest.time;
             if (detail.isEmpty()) detail = latest.detail;
         }
+        if (providerError && parsed.isEmpty()) {
+            throw new IllegalStateException("暂未查询到物流信息");
+        }
         return new ExpressQueryResult(
                 responseNumber.isEmpty() ? fallbackWaybill : responseNumber,
                 code,
-                CarrierRegistry.companyName(code, name),
+                CarrierRegistry.companyNameFromCpCode(code, name),
                 StatusSemantic.fromStored(status, stateName),
                 time,
                 detail,
                 tracks.toString(),
                 first(value, "detailUrl", "url"),
                 first(value, "subPhone", "receiverPhone"),
-                "interface6");
+                "meizu")
+                .withManualStatusEvidence(stateName, !status.isEmpty());
+    }
+
+    private static String normalizeWaybillIdentity(String waybill) {
+        return waybill == null ? "" : waybill.trim().toUpperCase(Locale.ROOT)
+                .replaceAll("[^A-Z0-9]", "");
+    }
+
+    private static boolean manualResponseIdentitiesMatch(
+            Object node, String expectedWaybill, int depth) {
+        if (expectedWaybill.isEmpty() || node == null || node == JSONObject.NULL
+                || depth > MAX_MANUAL_RESPONSE_DEPTH) return true;
+        if (node instanceof JSONObject) {
+            JSONObject object = (JSONObject) node;
+            for (String field : new String[]{"nu", "mailNo"}) {
+                String declared = first(object, field);
+                if (!declared.isEmpty()
+                        && !normalizeWaybillIdentity(declared).equals(expectedWaybill)) {
+                    return false;
+                }
+            }
+            java.util.Iterator<String> keys = object.keys();
+            while (keys.hasNext()) {
+                if (!manualResponseIdentitiesMatch(
+                        object.opt(keys.next()), expectedWaybill, depth + 1)) return false;
+            }
+            return true;
+        }
+        if (node instanceof JSONArray) {
+            JSONArray array = (JSONArray) node;
+            for (int index = 0; index < array.length(); index++) {
+                if (!manualResponseIdentitiesMatch(
+                        array.opt(index), expectedWaybill, depth + 1)) return false;
+            }
+            return true;
+        }
+        if (node instanceof String) {
+            Object decoded = decodeJsonString((String) node);
+            return decoded == node || manualResponseIdentitiesMatch(
+                    decoded, expectedWaybill, depth + 1);
+        }
+        return true;
     }
 
     private JSONObject requestBind(Context context, String phone, String code) throws Exception {
@@ -195,7 +273,7 @@ public final class ExpressSubscriptionClient {
     private static JSONArray findExpressArray(Object node) {
         if (node instanceof JSONArray) {
             JSONArray array = (JSONArray) node;
-            if (array.length() == 0) return null;
+            if (array.length() == 0) return array;
             JSONObject first = array.optJSONObject(0);
             if (first != null && first.has("mailNo")) return array;
             for (int index = 0; index < array.length(); index++) {
@@ -247,7 +325,8 @@ public final class ExpressSubscriptionClient {
     private static JSONObject findManualObject(Object node) {
         if (node instanceof JSONObject) {
             JSONObject object = (JSONObject) node;
-            if (object.has("nu") || object.has("mailNo")) return object;
+            if (object.has("nu") || object.has("mailNo")
+                    || object.has("com") || object.has("cpCode")) return object;
             java.util.Iterator<String> keys = object.keys();
             while (keys.hasNext()) {
                 JSONObject found = findManualObject(object.opt(keys.next()));
@@ -330,19 +409,23 @@ public final class ExpressSubscriptionClient {
         String routeUrl = CainiaoRoute.isLegacyCredentialedUrl(upstreamDetailUrl)
                 ? upstreamDetailUrl : "";
         String detailUrl = routeUrl.isEmpty() ? "" : CainiaoRoute.token("v6");
-        return new ExpressQueryResult(
+        String rawCompanyName = value.optString("cpName", "");
+        ExpressQueryResult result = new ExpressQueryResult(
                 waybill,
                 code,
-                CarrierRegistry.companyName(code, value.optString("cpName", "")),
+                CarrierRegistry.companyNameFromCpCode(code, rawCompanyName),
                 semantic,
                 latestTime,
                 detail,
                 tracksJson,
                 detailUrl,
                 first(value, "subPhone", "receiverPhone"),
-                "",
+                "interface6",
                 routeUrl.isEmpty() ? "" : "v6",
-                routeUrl);
+                routeUrl,
+                first(value, "provider", "providerName"));
+        result = result.withRawCarrierNameEvidence(rawCompanyName);
+        return AccountCarrierNormalizer.apply(value, result);
     }
 
 }

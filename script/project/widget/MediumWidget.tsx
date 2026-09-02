@@ -45,6 +45,7 @@ function Row(props: {
   openURL: string;
   height: number;
   iconSize: number;
+  detailFont: number;
   frameAlignment: "center" | "bottom";
   detailLineLimit: number | null;
 }) {
@@ -90,12 +91,15 @@ function Row(props: {
             <Spacer />
           </HStack>
           {props.detailLineLimit == null ? (
-            <Text font={13} foregroundStyle="secondaryLabel">
+            <Text
+              font={props.detailFont}
+              foregroundStyle="secondaryLabel"
+            >
               {props.row.latestDetail || "暂无物流动态"}
             </Text>
           ) : (
             <Text
-              font={13}
+              font={props.detailFont}
               foregroundStyle="secondaryLabel"
               lineLimit={props.detailLineLimit}
             >
@@ -174,9 +178,12 @@ export function MediumWidget(props: {
           <Link url={props.openSearchURL}>
             <Image
               systemName="magnifyingglass"
-              font={18}
+              font={layout.searchFont}
               foregroundStyle={accent}
-              frame={{ width: 20, height: layout.headerHeight }}
+              frame={{
+                width: layout.searchWidth,
+                height: layout.headerHeight,
+              }}
             />
           </Link>
         </HStack>
@@ -189,6 +196,7 @@ export function MediumWidget(props: {
                 openURL={props.openShipmentURL(row.shipmentId)}
                 height={placement.rowHeight}
                 iconSize={layout.iconSize}
+                detailFont={layout.detailFont}
                 frameAlignment={placement.rowFrameAlignment}
                 detailLineLimit={placement.detailLineLimit}
               />

@@ -8,33 +8,22 @@ import org.junit.Test;
 
 public final class ExpressGatewayClientTest {
     @Test
-    public void signatureCoversTheGatewayRoute() throws Exception {
+    public void signatureCanonicalRequestCoversMethodRouteAndBody() throws Exception {
         assertEquals(
-                "3307996c3754f45d440c7a5f1a75d4084759f94e2e2eb3164c7c7a98e2024d94",
-                ExpressGatewayClient.hmacSha256Hex(
-                        "key", ExpressGatewayClient.canonicalRequest(
-                                1700000000L,
-                                "0123456789abcdef0123456789abcdef",
-                                "/api/express/classify",
-                                "{}")));
-        assertFalse(ExpressGatewayClient.hmacSha256Hex(
-                "key", ExpressGatewayClient.canonicalRequest(
-                        1700000000L,
-                        "0123456789abcdef0123456789abcdef",
+                "1700000000000\n01234567-89ab-cdef-0123-456789abcdef\nPOST\n"
+                        + "/api/express/classify\n"
+                        + "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                GatewaySessionSigner.canonicalRequest(
+                        "1700000000000",
+                        "01234567-89ab-cdef-0123-456789abcdef",
                         "/api/express/classify",
-                        "{}"))
-                .equals(ExpressGatewayClient.hmacSha256Hex(
-                        "key", ExpressGatewayClient.canonicalRequest(
-                                1700000000L,
-                                "0123456789abcdef0123456789abcdef",
-                                "/api/express/detail",
-                                "{}"))));
+                        "{}".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
 
     @Test
     public void sharedGatewayRequiresAPlainHttpsBaseUrl() {
         assertTrue(ExpressGatewayClient.isTrustedGatewayUrl(
-                "https://pipi-gateway.hotki.de"));
+                "https://pipiassistant.app"));
         assertTrue(ExpressGatewayClient.isTrustedGatewayUrl("https://example.com/path/"));
         assertFalse(ExpressGatewayClient.isTrustedGatewayUrl("http://example.com"));
         assertFalse(ExpressGatewayClient.isTrustedGatewayUrl("https://user:pass@example.com"));

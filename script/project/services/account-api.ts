@@ -43,11 +43,11 @@ export type AccountTimelineRequest =
       record: Interface5DetailRecord;
     }>
   | Readonly<{
-      source: "interface6";
+      source: "interface5";
       mode: "manual";
+      identity: Interface5Identity;
       waybill: string;
-      clientVersion: string;
-      clientBuild: number;
+      phones?: readonly string[];
     }>;
 
 export class AccountApiError extends Error {
@@ -206,7 +206,7 @@ function normalizedDetailRecord(record: Interface5DetailRecord): JsonObject {
 export function buildAccountTimelineRequest(
   input: AccountTimelineRequest,
 ): AccountGatewayRequest {
-  if (input.source === "interface5") {
+  if (input.mode === "detail") {
     return {
       route: "/api/express/timeline/source",
       payload: {
@@ -218,21 +218,15 @@ export function buildAccountTimelineRequest(
     };
   }
 
-  const payload: JsonObject = {
-    interface: "v6",
-    mode: "manual",
-    waybill: normalizeWaybill(input.waybill),
+  return {
+    route: "/api/express/timeline/source",
+    payload: {
+      ...commonAccountPayload(input.source, input.identity),
+      mode: "manual",
+      waybill: normalizeWaybill(input.waybill),
+      phones: normalizePhones(input.phones),
+    },
   };
-  const version = clean(input.clientVersion);
-  if (!/^\d+(?:\.\d+){0,3}$/.test(version)
-      || !Number.isInteger(input.clientBuild)
-      || input.clientBuild < 1
-      || input.clientBuild > 1_000_000_000) {
-    throw new AccountApiError("当前脚本版本暂不可用，请更新后重试");
-  }
-  payload.clientVersion = version;
-  payload.clientBuild = input.clientBuild;
-  return { route: "/api/express/timeline/source", payload };
 }
 
 function responseCode(value: JsonObject): number | null {

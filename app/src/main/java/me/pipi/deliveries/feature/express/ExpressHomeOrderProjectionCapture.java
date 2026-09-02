@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 
-import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.network.ExpressAccountSource;
@@ -193,10 +192,6 @@ final class ExpressHomeOrderProjectionCapture {
             if (candidate == null) return;
             String waybill = candidate.waybill;
             String company = candidate.carrier;
-            if (company.isEmpty()) {
-                CarrierRegistry.Carrier inferred = CarrierRegistry.guessByWaybill(waybill);
-                if (inferred != null) company = inferred.companyName;
-            }
             ExpressRepository repository = ExpressRepository.get(host);
             ExpressItem current = repository.find(source.rowId);
             if (!sameUnresolvedSource(current)) {

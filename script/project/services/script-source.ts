@@ -1,7 +1,6 @@
 import type { BindingSource } from "../models";
 
 export const SCRIPT_BINDING_SOURCE = "interface5";
-export const SCRIPT_MANUAL_QUERY_SOURCE = "interface6";
 
 export function requireScriptSource(
   source: BindingSource,
