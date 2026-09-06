@@ -52,7 +52,25 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v5
+      # assemble*Release 会触发 app/build.gradle.kts 里的 hasReleaseSigning 断言，所以这一步
+      # 要拿到和 release-apk 同一套签名材料，否则任何 tag/main 构建都会停在
+      # 「Release signing configuration is required for release builds」（v1.3.0 首次打标签时暴露）。
+      - name: Restore release signing key for verification
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$SIGNING_KEYSTORE_BASE64"
+          install -d -m 700 "$RUNNER_TEMP/deliveries-verify-signing"
+          printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 --decode \
+            > "$RUNNER_TEMP/deliveries-verify-signing/release.jks"
+          chmod 600 "$RUNNER_TEMP/deliveries-verify-signing/release.jks"
+          echo "SIGNING_STORE_FILE=$RUNNER_TEMP/deliveries-verify-signing/release.jks" \
+            >> "$GITHUB_ENV"
       - name: Unit tests, lint and release build
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           ./gradlew \
             :app:testStandardDebugUnitTest \
@@ -103,7 +121,11 @@ jobs:
           test "$minor" -lt 100
           test "$patch" -lt 100
           test "$GITHUB_RUN_ATTEMPT" -lt 100
-          version_code=$((major * 1000000 + minor * 10000 + patch * 100 + GITHUB_RUN_ATTEMPT))
+          # 正式版固定占 patch 段的第 99 号，与 build.sh / build.gradle.kts 同一套编号：
+          # beta 用 01–98，正式版 99，这样任何 beta 都排在它将要成为的正式版之前
+          # （用户定 2026-09-06）。原先用 GITHUB_RUN_ATTEMPT，会产出 1030001 这种低于
+          # 本地正式包 1030099 的版本号，装不回已经装了正式版的机器。
+          version_code=$((major * 1000000 + minor * 10000 + patch * 100 + 99))
           {
             echo "DELIVERIES_ARTIFACT_NAME=Pipi-Deliveries-${safe_ref}-${GITHUB_RUN_NUMBER}"
             echo "DELIVERIES_VERSION_CODE=$version_code"
