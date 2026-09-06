@@ -20,24 +20,23 @@ import {
   mediumWidgetBackground,
 } from "./palette";
 
+/**
+ * 底色跟着 statusTint 的同一个语义色走，而不是另建一张表：原先这里自带一份 switch，
+ * 已下单/已发货被归进蓝色、已签收归进绿色、已取消归进红色，与统一后的状态配色（下单发货黄、
+ * 签收青、取消灰）全都对不上——文字是黄的、外框却是蓝的（用户 2026-09-06 在 iOS 4×2 上发现）。
+ * 这里只保留「系统色 → 同色低透明度填充」的一层映射，语义归属永远由 statusTint 决定。
+ */
+const STATUS_TINT_FILL: Readonly<Record<string, string>> = {
+  systemOrange: "rgba(255, 149, 0, 0.15)",
+  systemGreen: "rgba(52, 199, 89, 0.14)",
+  systemTeal: "rgba(48, 176, 199, 0.14)",
+  systemBlue: "rgba(0, 122, 255, 0.13)",
+  systemYellow: "rgba(255, 204, 0, 0.20)",
+  systemRed: "rgba(255, 59, 48, 0.13)",
+};
+
 function statusBadgeBackground(semantic: WidgetRow["semantic"]): string {
-  switch (semantic) {
-    case "WAITING_PICKUP":
-      return "rgba(255, 149, 0, 0.15)";
-    case "DELIVERY":
-    case "COMPLETED":
-      return "rgba(52, 199, 89, 0.14)";
-    case "TRANSIT":
-    case "PICKED":
-    case "SHIPPED":
-    case "ORDERED":
-      return "rgba(0, 122, 255, 0.13)";
-    case "DANGER":
-    case "CANCELLED":
-      return "rgba(255, 59, 48, 0.13)";
-    default:
-      return "tertiarySystemFill";
-  }
+  return STATUS_TINT_FILL[statusTint(semantic)] || "tertiarySystemFill";
 }
 
 function Row(props: {

@@ -8,7 +8,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.TextPaint;
+import android.util.DisplayMetrics;
 import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.RemoteViews;
 
@@ -115,10 +118,19 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                         item.displayIconResource());
                 views.setTextViewText(R.id.widget_compact_company,
                         ExpressWidgetPresentation.rowIdentity(item));
-                views.setTextViewText(R.id.widget_compact_detail,
-                        item.latestDetail.isEmpty()
-                                ? context.getString(R.string.widget_no_logistics_detail)
-                                : item.latestDetail);
+                String detail = item.latestDetail.isEmpty()
+                        ? context.getString(R.string.widget_no_logistics_detail)
+                        : item.latestDetail;
+                views.setTextViewText(R.id.widget_compact_detail, detail);
+                // 只有一行时整行居中，两行及以上仍然左对齐——与 Pipi compact 同一条规则
+                // （Pipi ExpressWidgetProvider.scaleCompact；用户定 2026-09-06）。
+                boolean singleLineDetail = fitsCompactSingleLine(
+                        context, detail, widthDp * hostRatio, layout);
+                views.setInt(R.id.widget_compact_detail, "setMaxLines",
+                        singleLineDetail ? 1 : layout.detailLineLimit);
+                views.setInt(R.id.widget_compact_detail, "setGravity",
+                        singleLineDetail ? Gravity.CENTER
+                                : Gravity.CENTER_VERTICAL | Gravity.START);
                 views.setTextViewText(R.id.widget_compact_all_text,
                         context.getString(R.string.widget_all_deliveries, items.size()));
                 views.setOnClickPendingIntent(R.id.widget_compact_shipment,
@@ -294,6 +306,22 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 TypedValue.COMPLEX_UNIT_SP, layout.pillContentSize);
         views.setInt(R.id.widget_compact_detail,
                 "setMaxLines", layout.detailLineLimit);
+    }
+
+    /** 与 Pipi 的同名判定同形：单行且量得下才算一行，量不准时按多行处理。 */
+    private static boolean fitsCompactSingleLine(
+            Context context, String text, float widthDp,
+            ExpressWidgetLayout.Compact layout) {
+        if (text == null || text.isEmpty() || text.indexOf('\n') >= 0
+                || !Float.isFinite(widthDp) || widthDp <= 0f) {
+            return false;
+        }
+        float availableDp = Math.max(0f, widthDp - layout.paddingDp * 2f);
+        DisplayMetrics metrics = context.getResources().getDisplayMetrics();
+        TextPaint paint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
+        paint.setTextSize(TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_SP, layout.detailTextSizeSp, metrics));
+        return paint.measureText(text) <= availableDp * metrics.density;
     }
 
     private static PendingIntent openList(Context context, int requestCode) {
