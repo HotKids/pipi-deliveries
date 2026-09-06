@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  fitsSingleLine,
   mediumWidgetLayout,
   mediumWidgetPlacement,
   smallWidgetEmptyLayout,
@@ -502,6 +503,22 @@ assert.doesNotMatch(
   mediumSource.slice(populatedBranchStart, emptyBranchStart),
   /<Spacer \/>/,
   "the populated height budget must not add an uncounted trailing spacer",
+);
+
+// 2×2 的轨迹行只有一行时居中，两行靠左：判定只按字宽估算，宽度不合法时按多行处理。
+assert.equal(fitsSingleLine("拣货完成", 130, 13), true);
+assert.equal(
+  fitsSingleLine("山东济南历城区农科院公司的客服3号线已揽收", 130, 13),
+  false,
+  "一行放不下的长轨迹必须按多行处理",
+);
+assert.equal(fitsSingleLine("", 130, 13), false);
+assert.equal(fitsSingleLine("拣货完成\n第二行", 130, 13), false);
+assert.equal(fitsSingleLine("拣货完成", 0, 13), false);
+assert.equal(
+  fitsSingleLine("JD5256", 130, 13) && !fitsSingleLine("已揽件已揽件已揽件", 60, 13),
+  true,
+  "拉丁字符按窄字宽计入，CJK 按整字宽计入",
 );
 
 console.log("widget responsive layout tests passed");

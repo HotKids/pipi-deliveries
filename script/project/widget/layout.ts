@@ -81,6 +81,27 @@ function widgetSearchLayout(height: number): WidgetSearchLayout {
   };
 }
 
+/**
+ * 估算一段文案能否在给定宽度里排成一行。Scripting 没有文字度量 API，所以按字宽近似：
+ * CJK 与全角标点算一个字宽，其余（拉丁字母、数字、半角标点）算 0.55。
+ * 与 Pipi / Lite 的 fitsCompactSingleLine 同一个用途——只有一行时整行居中（用户定 2026-09-06）。
+ */
+export function fitsSingleLine(
+  text: string,
+  availableWidth: number,
+  fontSize: number,
+): boolean {
+  if (!text || text.indexOf("\n") >= 0) return false;
+  if (!Number.isFinite(availableWidth) || availableWidth <= 0) return false;
+  if (!Number.isFinite(fontSize) || fontSize <= 0) return false;
+  let units = 0;
+  for (const character of text) {
+    const code = character.codePointAt(0) || 0;
+    units += code > 0x2e7f ? 1 : 0.55;
+  }
+  return units * fontSize <= availableWidth;
+}
+
 export function smallWidgetLayout(
   width: number,
   height: number,
