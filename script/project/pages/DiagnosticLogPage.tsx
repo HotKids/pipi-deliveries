@@ -375,7 +375,7 @@ export function DiagnosticLogPage() {
       : ["toggle", "copy"];
     const labels = {
       toggle: { label: recording ? "停止记录" : "开始记录" },
-      copy: { label: "复制全部日志" },
+      copy: { label: "复制日志" },
       clear: { label: "清空日志", destructive: true },
     } as const;
     const index = await Dialog.actionSheet({
