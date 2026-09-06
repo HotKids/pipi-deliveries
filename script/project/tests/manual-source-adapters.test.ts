@@ -56,7 +56,7 @@ assert.deepEqual(localPayload, {
   waybill: "ZT1234567890",
   companyCode: "ZTO",
 });
-assert.equal(local.timeline.provider, "local");
+assert.equal(local.timeline.provider, "v4_query");
 assert.equal(local.timeline.complete, false);
 assert.equal(local.timeline.semantic, "TRANSIT");
 assert.equal(local.timeline.rawCourierCode, "ZTO");
@@ -190,7 +190,7 @@ for (const rawCpCode of ["JD", "JDLEX", "JDVD"]) {
     },
   });
   assert.equal(cainiaoJdMotoCalls, 1);
-  assert.equal(cainiaoJdCarrier.shipment?.timeline.provider, "local");
+  assert.equal(cainiaoJdCarrier.shipment?.timeline.provider, "v4_query");
   assert.equal(cainiaoJdCarrier.shipment?.timeline.courierCode, "JD");
   assert.equal(
     cainiaoJdCarrier.shipment?.timeline.rawCourierCode,
@@ -226,7 +226,7 @@ const route = await queryMeizuShipment({
   },
 });
 assert.equal(routePayload?.mode, "manual");
-assert.equal(route.shipment.timeline.provider, "route");
+assert.equal(route.shipment.timeline.provider, "v6_picker");
 assert.equal(route.shipment.timeline.complete, false);
 assert.equal(route.shipment.timeline.courierCode, "KYSY");
 assert.equal(route.shipment.timeline.rawCourierCode, "KYE");
@@ -273,7 +273,7 @@ const routeWithoutResponseIdentity = await queryMeizuShipment({
     }),
   },
 });
-assert.equal(routeWithoutResponseIdentity.shipment.timeline.provider, "route");
+assert.equal(routeWithoutResponseIdentity.shipment.timeline.provider, "v6_picker");
 assert.equal(routeWithoutResponseIdentity.shipment.timeline.tracks.length, 1);
 
 let preferredPayload: Record<string, unknown> | null = null;
@@ -331,7 +331,7 @@ const retriedRoute = await queryMeizuShipment({
 });
 assert.equal(meizuRetryAttempts, 2);
 assert.equal(retriedRoute.shipment.timeline.tracks.length, 1);
-assert.equal(retriedRoute.shipment.timeline.provider, "route");
+assert.equal(retriedRoute.shipment.timeline.provider, "v6_picker");
 
 let fallbackPayload: Record<string, unknown> | null = null;
 const fallback = await queryKdniaoShipment({
@@ -363,7 +363,7 @@ assert.deepEqual(fallbackPayload, {
   shipperCode: "DANNIAO",
   phone: "",
 });
-assert.equal(fallback.timeline.provider, "fallback");
+assert.equal(fallback.timeline.provider, "kdniao");
 assert.equal(fallback.timeline.complete, true);
 assert.equal(fallback.timeline.courierCode, "DANNIAO");
 assert.equal(fallback.timeline.rawCourierCode, "ZMKM");
@@ -455,7 +455,7 @@ const rawJdManual = await queryManualForSource({
   },
 });
 assert.equal(rawJdMotoCalls, 1);
-assert.equal(rawJdManual.shipment?.timeline.provider, "local");
+assert.equal(rawJdManual.shipment?.timeline.provider, "v4_query");
 
 function dependencies(routes: string[]): ManualSourceDependencies {
   return {
@@ -507,7 +507,7 @@ const cainiao = await queryManualForSource({
   sourceProvider: "CaiNiao",
   dependencies: dependencies(cainiaoRoutes),
 });
-assert.equal(cainiao.shipment?.timeline.provider, "local");
+assert.equal(cainiao.shipment?.timeline.provider, "v4_query");
 assert.deepEqual(cainiaoRoutes, ["/api/express/timeline/public"]);
 
 const sfRoutes: string[] = [];
@@ -551,8 +551,10 @@ assert.deepEqual(sfRoutes, [
   "/api/express/timeline/source",
   "/api/express/timeline/fallback",
 ]);
-assert.equal(sf.shipment?.timeline.provider, "fallback");
+assert.equal(sf.shipment?.timeline.provider, "kdniao");
 
+// 表格「待改 1」：京东这一槽不再直连 K100，统一走 picker；K100 那一页由详情链下一级抓
+// picker 返回的 `detailUrl`。
 const jdRoutes: string[] = [];
 const jd = await queryManualForSource({
   source: "interface5",
@@ -565,35 +567,27 @@ const jd = await queryManualForSource({
     now: () => NOW,
     post: async (path) => {
       jdRoutes.push(path);
+      if (path === "/api/express/timeline/source") {
+        return { code: 200, value: JSON.stringify({
+          nu: "JD1234567890",
+          com: "JD",
+          name: "京东快递",
+          time: "2026-08-30 18:00:00",
+          context: "京东快件运输中",
+          detailUrl: "https://m.kuaidi100.com/result.jsp?nu=JD1234567890",
+        }) };
+      }
       throw new Error(`unexpected gateway route: ${path}`);
-    },
-    queryKuaidi100JdTimeline: async (input) => {
-      assert.equal(input.waybill, "JD1234567890");
-      assert.equal(input.phoneTail, "1515");
-      return {
-        provider: "kuaidi100_h5",
-        complete: true,
-        waybill: "JD1234567890",
-        courierCode: "JD",
-        companyName: "京东快递",
-        semantic: "TRANSIT",
-        statusEventAtMs: NOW,
-        latestTimeText: "2026-08-30 18:00:00",
-        latestDetail: "京东快件运输中",
-        tracks: [{
-          timeText: "2026-08-30 18:00:00",
-          timeMs: NOW,
-          detail: "京东快件运输中",
-          statusCode: "",
-          raw: {},
-        }],
-        successAtMs: NOW,
-      };
     },
   },
 });
-assert.deepEqual(jdRoutes, []);
-assert.equal(jd.shipment?.timeline.provider, "kuaidi100_h5");
+assert.deepEqual(jdRoutes, ["/api/express/timeline/source"]);
+assert.equal(jd.shipment?.timeline.provider, "v6_picker");
+assert.equal(
+  jd.routeUrl,
+  "https://m.kuaidi100.com/result.jsp?nu=JD1234567890",
+  "picker 返回的 detailUrl 必须交出去，它是 K100 H5 那一级的入口",
+);
 assert.equal(jd.pending, null);
 
 const fallbackOnlyRoutes: string[] = [];
@@ -608,6 +602,6 @@ const fallbackOnly = await queryManualForSource({
   dependencies: dependencies(fallbackOnlyRoutes),
 });
 assert.deepEqual(fallbackOnlyRoutes, ["/api/express/timeline/fallback"]);
-assert.equal(fallbackOnly.shipment?.timeline.provider, "fallback");
+assert.equal(fallbackOnly.shipment?.timeline.provider, "kdniao");
 
 console.log("manual source adapter tests passed");

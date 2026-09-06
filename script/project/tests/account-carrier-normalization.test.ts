@@ -237,3 +237,72 @@ assert.match(
 );
 
 console.log("account carrier normalization tests passed");
+
+// R-20 (2026-09-03): a JD-platform raw code on a non-JD real waybill is no carrier evidence.
+{
+  let platformRecognitions = 0;
+  const jt = await normalizeAccountParcelCarrier(parcel({
+    ownerId: "JT4006839564547",
+    waybill: "JT4006839564547",
+    courierCode: "JDKD",
+    rawCourierCode: "JDKD",
+    companyName: "京东快递",
+    sourceProvider: "JingDong",
+  }), {
+    recognize: async () => {
+      platformRecognitions += 1;
+      return {
+        normalization: {
+          standardCode: "JTSD", displayName: "极兔速递", kuaidi100Code: "jtexpress",
+          isBuiltIn: true, tableVersion: "t1",
+        },
+        terminal: false, pendingSecondLevel: false, coolingDown: false,
+      };
+    },
+  });
+  assert.equal(platformRecognitions, 1);
+  assert.equal(jt.courierCode, "JTSD");
+  assert.equal(jt.companyName, "极兔速递");
+
+  // A real JD waybill keeps the built-in JD projection without any recognition call.
+  const jd = await normalizeAccountParcelCarrier(parcel({
+    ownerId: "JDVD10645984010",
+    waybill: "JDVD10645984010",
+    courierCode: "JDKD",
+    rawCourierCode: "JDKD",
+    companyName: "京东快递",
+    sourceProvider: "JingDong",
+  }), {
+    recognize: async () => {
+      throw new Error("a JD waybill must not be recognised");
+    },
+  });
+  assert.equal(jd.courierCode, "JD");
+
+  // A Worker sidecar that only re-states JD on a non-JD waybill is ignored the same way.
+  let sidecarRecognitions = 0;
+  const sidecar = await normalizeAccountParcelCarrier(parcel({
+    ownerId: "JT4006839564547",
+    waybill: "JT4006839564547",
+    courierCode: "JD",
+    companyName: "京东快递",
+    sourceProvider: "JingDong",
+    carrierNormalization: {
+      standardCode: "JD", displayName: "京东快递", kuaidi100Code: "jd",
+      isBuiltIn: true, tableVersion: "t1",
+    },
+  }), {
+    recognize: async () => {
+      sidecarRecognitions += 1;
+      return {
+        normalization: {
+          standardCode: "JTSD", displayName: "极兔速递", kuaidi100Code: "jtexpress",
+          isBuiltIn: true, tableVersion: "t1",
+        },
+        terminal: false, pendingSecondLevel: false, coolingDown: false,
+      };
+    },
+  });
+  assert.equal(sidecarRecognitions, 1);
+  assert.equal(sidecar.courierCode, "JTSD");
+}

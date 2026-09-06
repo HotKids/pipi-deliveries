@@ -18,6 +18,7 @@ import me.pipi.deliveries.feature.express.ExpressListActivity;
 import java.util.List;
 
 import me.pipi.deliveries.R;
+import me.pipi.deliveries.feature.express.ExpressStatusColors;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.network.ExpressAccountSource;
@@ -229,6 +230,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         views.setTextColor(WIDE_STATUS_IDS[index], statusStyle.foreground);
         views.setTextViewTextSize(WIDE_DETAIL_IDS[index], TypedValue.COMPLEX_UNIT_SP,
                 mediumLayout.detailTextSizeSp);
+        views.setInt(WIDE_DETAIL_IDS[index], "setMaxLines", rowLayout.detailMaxLines);
         views.setTextViewText(WIDE_DETAIL_IDS[index], item.latestDetail);
         views.setViewVisibility(WIDE_DETAIL_IDS[index],
                 item.latestDetail.isEmpty() ? View.GONE : View.VISIBLE);
@@ -253,6 +255,8 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 layout.logoHorizontalInsetDp * density);
         int compatHeaderVerticalInsetPx = Math.round(
                 layout.logoVerticalInsetDp * density);
+        int identityBottomInsetPx = Math.round(
+                ExpressWidgetLayout.COMPACT_IDENTITY_BOTTOM_INSET_DP * density);
         int pillIconInsetPx = Math.round(layout.pillIconInsetDp * density);
         views.setViewPadding(R.id.widget_compact_content,
                 paddingPx, paddingPx, paddingPx, paddingPx);
@@ -266,7 +270,8 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             ExpressWidgetApi31.applyCompactPillIconSize(
                     views, layout.pillIconSizeDp);
             views.setViewPadding(R.id.widget_compact_courier_logo, 0, 0, 0, 0);
-            views.setViewPadding(R.id.widget_compact_identity, 0, 0, 0, 0);
+            views.setViewPadding(R.id.widget_compact_identity,
+                    0, 0, 0, identityBottomInsetPx);
             views.setViewPadding(R.id.widget_compact_all_icon, 0, 0, 0, 0);
         } else {
             // API 29/30 cannot resize RemoteViews layout params, so the fixed slots
@@ -275,7 +280,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                     logoHorizontalInsetPx, compatHeaderVerticalInsetPx,
                     logoHorizontalInsetPx, compatHeaderVerticalInsetPx);
             views.setViewPadding(R.id.widget_compact_identity,
-                    0, compatHeaderVerticalInsetPx, 0, compatHeaderVerticalInsetPx);
+                    0, 0, 0, identityBottomInsetPx);
             views.setViewPadding(R.id.widget_compact_all_icon,
                     pillIconInsetPx, pillIconInsetPx, pillIconInsetPx, pillIconInsetPx);
         }
@@ -334,7 +339,11 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 ExpressAccountSource.bindingSource(context));
     }
 
-    private static final class StatusStyle {
+    /**
+     * 小组件状态胶囊（4×2）与状态词（2×2）的颜色只来自三端同一张表 ExpressStatusColors；
+     * 胶囊底色是同一个色的 10% 透明。派送中（绿）与已签收（青）从此不再同色。
+     */
+    static final class StatusStyle {
         final int background;
         final int foreground;
 
@@ -346,27 +355,31 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         static StatusStyle forSemantic(
                 me.pipi.deliveries.model.StatusSemantic semantic) {
             switch (semantic) {
-                case DELIVERY:
-                case WAITING_PICKUP:
-                case COMPLETED:
-                    return new StatusStyle(R.drawable.widget_express_status_green_bg,
-                            0xff05c575);
-                case PICKED:
-                case SHIPPED:
-                case ORDERED:
-                case TRANSIT:
-                case UNKNOWN:
-                    return new StatusStyle(R.drawable.widget_express_status_blue_bg,
-                            0xff0d84ff);
                 case DANGER:
-                    return new StatusStyle(R.drawable.widget_express_status_orange_bg,
-                            0xffff5c5c);
+                    return new StatusStyle(R.drawable.widget_express_status_danger_bg,
+                            ExpressStatusColors.DANGER);
+                case WAITING_PICKUP:
+                    return new StatusStyle(R.drawable.widget_express_status_waiting_bg,
+                            ExpressStatusColors.WAITING_PICKUP);
+                case DELIVERY:
+                    return new StatusStyle(R.drawable.widget_express_status_delivery_bg,
+                            ExpressStatusColors.DELIVERY);
+                case COMPLETED:
+                    return new StatusStyle(R.drawable.widget_express_status_completed_bg,
+                            ExpressStatusColors.COMPLETED);
+                case PICKED:
+                case TRANSIT:
+                    return new StatusStyle(R.drawable.widget_express_status_transit_bg,
+                            ExpressStatusColors.TRANSIT);
+                case ORDERED:
+                case SHIPPED:
+                    return new StatusStyle(R.drawable.widget_express_status_ordered_bg,
+                            ExpressStatusColors.ORDERED);
                 case CANCELLED:
-                    return new StatusStyle(R.drawable.widget_express_status_gray_bg,
-                            0xff8c93b0);
+                case UNKNOWN:
                 default:
-                    return new StatusStyle(R.drawable.widget_express_status_blue_bg,
-                            0xff0d84ff);
+                    return new StatusStyle(R.drawable.widget_express_status_neutral_bg,
+                            ExpressStatusColors.NEUTRAL);
             }
         }
     }

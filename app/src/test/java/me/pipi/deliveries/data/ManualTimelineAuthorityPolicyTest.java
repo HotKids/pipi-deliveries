@@ -75,15 +75,21 @@ public final class ManualTimelineAuthorityPolicyTest {
                 Arrays.asList(partial, complete)));
     }
 
+    /**
+     * 完整判据（揽收 + 与 feed 最新节点相差 ≤30 分钟）排在最前，压过「谁的事件更新」——后者是被
+     * 这条判据取代的旧口径（用户定 2026-09-04，三端同口径）。
+     */
     @Test
-    public void completePackagesUseLatestProviderEventNotQueryCompletionTime() {
-        Candidate latestQuery = candidate(
+    public void packagesWithPickupEvidenceBeatNewerPackagesWithout() {
+        Candidate withPickup = candidate(
                 "kuaidi100", 300L, "10:00:00", "已揽收", true);
-        Candidate latestEvent = candidate(
+        Candidate newerWithoutPickup = candidate(
                 "kdniao", 100L, "13:00:00", "快件到达转运中心", true);
 
-        assertSame(latestEvent, ManualTimelineAuthorityPolicy.select(
-                Arrays.asList(latestQuery, latestEvent)));
+        assertSame(withPickup, ManualTimelineAuthorityPolicy.select(
+                Arrays.asList(newerWithoutPickup, withPickup)));
+        assertSame(withPickup, ManualTimelineAuthorityPolicy.selectDetail(
+                Arrays.asList(newerWithoutPickup, withPickup)));
     }
 
     @Test
@@ -184,27 +190,27 @@ public final class ManualTimelineAuthorityPolicyTest {
                 Collections.singletonList(proseTerminal)));
     }
 
+    /**
+     * 全并列时才回到链上次序：picker → moto → K100 H5 → 付费的快递鸟（表格 2026-09-05，Lite 没接
+     * OPPO）。免费的快递100 排在付费的快递鸟之前——「只有前面几级都没有符合的数据时才调 kdniao」。
+     */
     @Test
-    public void pickerThenMotoThenOppoThenKdniaoThenKuaidi100BreakEqualEventTimeTies() {
+    public void pickerThenMotoThenKuaidi100ThenKdniaoBreakEqualTies() {
         Candidate fallback = candidate(
-                "kuaidi100", 100L, "11:00:00", "快件已到达杭州转运中心", false);
-        Candidate moto = candidate("v4", 300L, "11:00:00", "已揽收", false);
+                "k100_h5", 100L, "11:00:00", "快件已到达杭州转运中心", false);
+        Candidate moto = candidate("v4_query", 300L, "11:00:00", "快件运输中", false);
         Candidate meizu = candidate(
-                "meizu", 250L, "11:00:00", "魅族 Picker 轨迹", false);
-        Candidate oppo = candidate(
-                "oppo", 200L, "11:00:00", "商家已将快件交付承运商", false);
+                "v6_picker", 250L, "11:00:00", "Picker 轨迹", false);
         Candidate kdniao = candidate(
-                "kdniao", 150L, "11:00:00", "快递鸟完整轨迹", false);
+                "kdniao", 150L, "11:00:00", "快递鸟轨迹", false);
 
         assertSame(meizu, ManualTimelineAuthorityPolicy.select(
-                Arrays.asList(fallback, kdniao, moto, meizu, oppo)));
+                Arrays.asList(fallback, kdniao, moto, meizu)));
         assertSame(meizu, ManualTimelineAuthorityPolicy.selectDetail(
-                Arrays.asList(fallback, kdniao, moto, meizu, oppo)));
-        assertSame(meizu, ManualTimelineAuthorityPolicy.select(
-                Arrays.asList(fallback, kdniao, meizu, oppo)));
-        assertSame(oppo, ManualTimelineAuthorityPolicy.select(
-                Arrays.asList(fallback, kdniao, oppo)));
-        assertSame(kdniao, ManualTimelineAuthorityPolicy.select(
+                Arrays.asList(fallback, kdniao, moto, meizu)));
+        assertSame(moto, ManualTimelineAuthorityPolicy.select(
+                Arrays.asList(fallback, kdniao, moto)));
+        assertSame(fallback, ManualTimelineAuthorityPolicy.select(
                 Arrays.asList(fallback, kdniao)));
     }
 
@@ -252,7 +258,7 @@ public final class ManualTimelineAuthorityPolicyTest {
         List<ExpressTimeline.Track> tracks = ExpressTimeline.parse(
                 selected.result.tracksJson, "", "");
 
-        assertEquals("interface5", selected.provider);
+        assertEquals("v5_query", selected.provider);
         assertEquals(200L, selected.successAt);
         assertEquals(2, tracks.size());
         assertEquals("快件离开杭州转运中心", tracks.get(0).detail);
@@ -277,12 +283,10 @@ public final class ManualTimelineAuthorityPolicyTest {
     public void completenessComesFromProviderContract() {
         assertFalse(ManualTimelineAuthorityPolicy.completeByContract("v4"));
         assertFalse(ManualTimelineAuthorityPolicy.completeByContract("meizu"));
-        assertFalse(ManualTimelineAuthorityPolicy.completeByContract("oppo"));
         assertTrue(ManualTimelineAuthorityPolicy.completeByContract("kuaidi100"));
         assertTrue(ManualTimelineAuthorityPolicy.completeByContract("kdniao"));
         assertFalse(ManualTimelineAuthorityPolicy.storedCompleteness("v4", true));
         assertFalse(ManualTimelineAuthorityPolicy.storedCompleteness("meizu", true));
-        assertFalse(ManualTimelineAuthorityPolicy.storedCompleteness("oppo", true));
         assertTrue(ManualTimelineAuthorityPolicy.storedCompleteness("kuaidi100", false));
     }
 
@@ -356,4 +360,61 @@ public final class ManualTimelineAuthorityPolicyTest {
                 .withManualStatusEvidence(semantic.label, structured);
         return new Candidate(provider, result, successAt, complete);
     }
+
+    /** 粘性选包（用户定 2026-09-05 晚）：上一轮显示的包还在就还显示它，只有它不完整而对方完整才换。 */
+    @Test
+    public void stickySelectionKeepsThePreviouslyDisplayedPackageUnlessItIsTheOnlyIncompleteOne() {
+        ExpressQueryResult pickerThree = new ExpressQueryResult(
+                "SF123", "SF", "顺丰速运", StatusSemantic.TRANSIT,
+                "2026-09-05 12:00:00", "运输中",
+                "[{\"time\":\"2026-09-05 12:00:00\",\"context\":\"运输中\"},"
+                        + "{\"time\":\"2026-09-05 10:00:00\",\"context\":\"已到达\"},"
+                        + "{\"time\":\"2026-09-05 09:00:00\",\"context\":\"顺丰速运 已收取快件\"}]",
+                "", "", "meizu");
+        ExpressQueryResult k100Five = new ExpressQueryResult(
+                "SF123", "SF", "顺丰速运", StatusSemantic.TRANSIT,
+                "2026-09-05 12:00:00", "运输中",
+                "[{\"time\":\"2026-09-05 12:00:00\",\"context\":\"运输中\"},"
+                        + "{\"time\":\"2026-09-05 11:00:00\",\"context\":\"离开转运中心\"},"
+                        + "{\"time\":\"2026-09-05 10:00:00\",\"context\":\"已到达\"},"
+                        + "{\"time\":\"2026-09-05 09:30:00\",\"context\":\"快件已发出\"},"
+                        + "{\"time\":\"2026-09-05 09:00:00\",\"context\":\"顺丰速运 已收取快件\"}]",
+                "", "", "kuaidi100");
+        List<ManualTimelineAuthorityPolicy.Candidate> candidates = Arrays.asList(
+                new ManualTimelineAuthorityPolicy.Candidate("meizu", pickerThree, 1_000L, false),
+                new ManualTimelineAuthorityPolicy.Candidate("kuaidi100", k100Five, 2_000L, true));
+        // 两个都完整：排序取节点多的 K100……
+        assertEquals("k100_h5",
+                ManualTimelineAuthorityPolicy.selectDetail(candidates, 0L).provider);
+        // ……但上一轮显示的是 picker 就还是 picker。
+        assertEquals("v6_picker",
+                ManualTimelineAuthorityPolicy.selectDetail(candidates, 0L, "meizu").provider);
+        assertEquals("v6_picker",
+                ManualTimelineAuthorityPolicy.selectDetail(candidates, 0L, "v6_picker").provider);
+        // 上一轮的包不在了（被清掉 / 串包）：照常排序。
+        assertEquals("k100_h5",
+                ManualTimelineAuthorityPolicy.selectDetail(candidates, 0L, "kdniao").provider);
+        // 上一轮显示的包不完整（没有揽收），对方完整：换。
+        ExpressQueryResult pickerNoStart = new ExpressQueryResult(
+                "SF123", "SF", "顺丰速运", StatusSemantic.TRANSIT,
+                "2026-09-05 12:00:00", "运输中",
+                "[{\"time\":\"2026-09-05 12:00:00\",\"context\":\"运输中\"}]",
+                "", "", "meizu");
+        List<ManualTimelineAuthorityPolicy.Candidate> partial = Arrays.asList(
+                new ManualTimelineAuthorityPolicy.Candidate("meizu", pickerNoStart, 1_000L, false),
+                new ManualTimelineAuthorityPolicy.Candidate("kuaidi100", k100Five, 2_000L, true));
+        assertEquals("k100_h5",
+                ManualTimelineAuthorityPolicy.selectDetail(partial, 0L, "meizu").provider);
+        // feed 与手动包之间同一规则：上一轮显示 feed 就留 feed，除非 feed 不完整而手动包完整。
+        ManualTimelineAuthorityPolicy.Candidate k100 =
+                new ManualTimelineAuthorityPolicy.Candidate("kuaidi100", k100Five, 2_000L, true);
+        assertFalse(ManualTimelineAuthorityPolicy.detailOutranksSource(
+                k100, pickerThree, ManualTimelineAuthorityPolicy.PREFERRED_FEED));
+        assertTrue(ManualTimelineAuthorityPolicy.detailOutranksSource(
+                k100, pickerNoStart, ManualTimelineAuthorityPolicy.PREFERRED_FEED));
+        assertTrue(ManualTimelineAuthorityPolicy.detailOutranksSource(
+                new ManualTimelineAuthorityPolicy.Candidate("meizu", pickerThree, 1_000L, false),
+                k100Five, "meizu"));
+    }
+
 }

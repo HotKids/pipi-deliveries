@@ -1,5 +1,6 @@
 package me.pipi.deliveries.network;
 
+import me.pipi.deliveries.data.TimelineSlot;
 import android.content.Context;
 
 import me.pipi.deliveries.data.CarrierRegistry;
@@ -22,8 +23,8 @@ import java.util.Set;
 
 /** Public timeline and carrier-recognition adapters. */
 public final class ExpressApi {
-    public static final String PROVIDER_V4 = "v4";
-    public static final String PROVIDER_KUAIDI100 = "kuaidi100";
+    public static final String PROVIDER_V4 = TimelineSlot.V4_QUERY;
+    public static final String PROVIDER_KUAIDI100 = TimelineSlot.K100_H5;
 
     private final ExpressGatewayTransport gateway;
     private final CarrierRecognitionCoordinator carrierRecognition;
@@ -80,6 +81,19 @@ public final class ExpressApi {
 
     public String detect(String waybill) throws Exception {
         return detect(waybill, null);
+    }
+
+    /**
+     * First recognised built-in carrier for one waybill (free Kuaidi100 level directly, paid
+     * fallback through the Worker) — EXPRESS_OWNERSHIP_PLAN §3.1 裁决 A (2026-09-03): account
+     * rows the Worker's built-in-table sidecar left unresolved are recognised here too.
+     */
+    public me.pipi.deliveries.model.CarrierNormalization recognizeCarrier(
+            String waybill, ExpressQueryCancellation cancellation) throws Exception {
+        List<me.pipi.deliveries.model.CarrierNormalization> candidates =
+                detectCandidates(waybill, cancellation);
+        return candidates.isEmpty()
+                ? me.pipi.deliveries.model.CarrierNormalization.NONE : candidates.get(0);
     }
 
     public String detect(String waybill, ExpressQueryCancellation cancellation)
@@ -193,12 +207,14 @@ public final class ExpressApi {
                 if (trace == null) continue;
                 String time = clean(trace.optString("time", ""));
                 String detail = clean(trace.optString("desc", ""));
-                if (time.isEmpty() || detail.isEmpty()) continue;
+                if (time.isEmpty() || detail.isEmpty()
+                        || ExpressStatusNormalizer.isNonEventDetail(detail)) continue;
                 JSONObject normalized = new JSONObject();
                 try {
                     normalized.put("time", time);
                     normalized.put("context", detail);
-                    normalized.put("_pipiStatusSource", PROVIDER_V4);
+                    // 节点上的 status source 标签是解码 schema，不是缓存槽名；槽名见 TimelineSlot。
+                    normalized.put("_pipiStatusSource", "v4");
                     tracks.put(normalized);
                 } catch (Throwable ignored) {
                     continue;
@@ -289,7 +305,7 @@ public final class ExpressApi {
             if (value == null) continue;
             try {
                 tracks.put(new JSONObject(value.toString())
-                        .put("_pipiStatusSource", PROVIDER_KUAIDI100));
+                        .put("_pipiStatusSource", "kuaidi100"));
             } catch (Throwable ignored) {
                 // One malformed optional node cannot invalidate the rest of the response.
             }

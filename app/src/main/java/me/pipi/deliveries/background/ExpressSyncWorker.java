@@ -40,9 +40,14 @@ public final class ExpressSyncWorker extends Worker {
                 // A launcher-specific widget failure must not suppress list reconciliation.
                 Log.w(TAG, "Widget reconciliation failed", failure);
             }
+            int[] summary = ExpressSyncEngine.lastSummary();
             context.sendBroadcast(new Intent(
                     ExpressRepository.ACTION_SYNC_FINISHED)
-                    .setPackage(context.getPackageName()));
+                    .setPackage(context.getPackageName())
+                    .putExtra(ExpressRepository.EXTRA_SYNC_ATTEMPTED, summary[0])
+                    .putExtra(ExpressRepository.EXTRA_SYNC_SUCCEEDED, summary[1])
+                    .putExtra(ExpressRepository.EXTRA_SYNC_FAILED,
+                            Math.max(0, summary[0] - summary[1])));
         }
     }
 }

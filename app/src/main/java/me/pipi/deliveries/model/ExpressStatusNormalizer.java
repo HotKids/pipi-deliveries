@@ -35,10 +35,20 @@ public final class ExpressStatusNormalizer {
                 || value.equals("快递状态已更新，点击查看>>");
     }
 
+    /**
+     * Anything a provider boundary must drop before a row can become an event: only the provider's
+     * own error placeholders. Forecast notes（「预计9月4日(周五)送达」「温馨提示：…预计…送达」）are
+     * ordinary nodes — AGENTS §107（用户定 2026-09-04，裁决 A 整条撤销，三端同规则）: 来源返回什么就
+     * 显示什么，照常进轨迹、进节点计数，也能当头条。Lite 漏掉了这次撤销，2026-09-06 补齐。
+     */
+    public static boolean isNonEventDetail(String detail) {
+        return isProviderErrorDetail(detail);
+    }
+
     /** A list headline must be a real logistics event, never a duplicate of the state title. */
     public static boolean isHeadlinePlaceholder(String detail, StatusSemantic semantic) {
         String value = clean(detail).replaceAll("\\s+", "");
-        if (value.isEmpty() || isProviderErrorDetail(value)) return true;
+        if (value.isEmpty() || isNonEventDetail(value)) return true;
         if (semantic != null && value.equals(semantic.label.replaceAll("\\s+", ""))) return true;
         return StatusSemantic.fromStored("", value) != StatusSemantic.UNKNOWN;
     }

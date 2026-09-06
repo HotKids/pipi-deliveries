@@ -257,19 +257,19 @@ const projectedWithH5 = parcelToShipment(
         timeMs: Date.UTC(2026, 7, 27, 0, 30, 0),
         detail: "正在派送",
         statusCode: "",
-        raw: {},
+        raw: { _pipiStatusSource: "jingdong_h5" },
       }, {
         timeText: "2026-08-26 14:00:00",
         timeMs: Date.UTC(2026, 7, 26, 6, 0, 0),
         detail: "快件运输中",
         statusCode: "",
-        raw: {},
+        raw: { _pipiStatusSource: "jingdong_h5" },
       }, {
         timeText: "2026-08-25 09:00:00",
         timeMs: Date.UTC(2026, 7, 25, 1, 0, 0),
         detail: "快件已揽收",
         statusCode: "",
-        raw: {},
+        raw: { _pipiStatusSource: "jingdong_h5" },
       }],
       successAtMs: NOW + 1,
     },
@@ -277,16 +277,114 @@ const projectedWithH5 = parcelToShipment(
   [PHONE],
   NOW + 1,
 )!;
-assert.equal(projectedWithH5.timeline.latestDetail, "正在派送");
-assert.equal(projectedWithH5.timeline.tracks.length, 3);
-assert.equal(projectedWithH5.sourceTimeline?.tracks.length, 3);
+// A partial H5 projection only changes the identity: the order's own accumulated account
+// timeline continues, and no partial H5 node is stored.
+assert.equal(projectedWithH5.identity.projectedWaybill, "JD0256747737308");
 assert.equal(
-  projectedWithH5.timeline.tracks.some(
-    (track) => track.detail === "您的订单已离开分拣中心",
+  projectedWithH5.timeline.tracks.some((track) => track.detail === "正在派送"),
+  false,
+  "a partial H5 package contributes no nodes to the shipment timeline",
+);
+assert.deepEqual(
+  projectedWithH5.timeline.tracks.map((track) => track.detail),
+  projected.timeline.tracks.map((track) => track.detail),
+  "the projected order keeps the same accumulated account timeline",
+);
+const projectedWithCompleteH5 = parcelToShipment(
+  {
+    ...order("JD0256747737308", "JD", "京东快递"),
+    projectionTimeline: {
+      provider: "interface5",
+      complete: true,
+      structuredStatus: false,
+      waybill: "JD0256747737308",
+      courierCode: "JD",
+      companyName: "京东快递",
+      semantic: "DELIVERY",
+      statusEventAtMs: Date.UTC(2026, 7, 27, 0, 30, 0),
+      latestTimeText: "2026-08-27 08:30:00",
+      latestDetail: "正在派送",
+      tracks: [{
+        timeText: "2026-08-27 08:30:00",
+        timeMs: Date.UTC(2026, 7, 27, 0, 30, 0),
+        detail: "正在派送",
+        statusCode: "",
+        raw: { _pipiStatusSource: "jingdong_h5" },
+      }],
+      successAtMs: NOW + 1,
+    },
+  },
+  [PHONE],
+  NOW + 1,
+)!;
+// 用户定 2026-09-05 晚：feed 增量与 query 独立，不拼接。完整的 H5 包只住 jd_h5 槽（由详情页
+// 选包）；列表的头条、状态、轨迹都是 feed 自己的包。
+assert.equal(projectedWithCompleteH5.timeline.latestDetail, "您的订单已离开分拣中心");
+assert.equal(projectedWithCompleteH5.timeline.tracks.length, 1);
+assert.equal(projectedWithCompleteH5.timeline.semantic, "TRANSIT");
+assert.equal(projectedWithCompleteH5.manualTimelines?.length, 1);
+assert.equal(projectedWithCompleteH5.manualTimelines?.[0]?.provider, "jd_h5");
+assert.equal(projectedWithCompleteH5.manualTimelines?.[0]?.complete, true);
+assert.equal(projectedWithCompleteH5.manualTimelines?.[0]?.latestDetail, "正在派送");
+assert.equal(projectedWithH5.manualTimelines?.length, 0, "a partial H5 package is not stored");
+
+// 用户定 2026-09-05 晚（改掉 2026-09-04 的「两边轨迹取并集」）：feed 增量与 query 是两个独立的
+// 包。列表头条、状态、轨迹归 feed；完整的 H5 包住 jd_h5 槽，只在详情页参与选包。
+const projectedWithStatuslessCompleteH5 = parcelToShipment(
+  {
+    ...order("JD0256747737308", "JD", "京东快递"),
+    projectionTimeline: {
+      provider: "interface5",
+      complete: true,
+      structuredStatus: false,
+      waybill: "JD0256747737308",
+      courierCode: "JD",
+      companyName: "京东快递",
+      semantic: "UNKNOWN",
+      statusEventAtMs: Date.UTC(2026, 7, 26, 22, 0, 0),
+      latestTimeText: "2026-08-27 06:00:00",
+      latestDetail: "[东莞市]快件离开【东莞虎门转运中心】",
+      tracks: [{
+        timeText: "2026-08-27 06:00:00",
+        timeMs: Date.UTC(2026, 7, 26, 22, 0, 0),
+        detail: "[东莞市]快件离开【东莞虎门转运中心】",
+        statusCode: "",
+        raw: { _pipiStatusSource: "jingdong_h5" },
+      }],
+      successAtMs: NOW + 1,
+    },
+  },
+  [PHONE],
+  NOW + 1,
+)!;
+assert.equal(
+  projectedWithStatuslessCompleteH5.timeline.latestDetail,
+  "您的订单已离开分拣中心",
+  "列表头条归 feed，完整的 H5 包也不得顶掉它",
+);
+assert.equal(
+  projectedWithStatuslessCompleteH5.timeline.tracks.length,
+  1,
+  "source 只装 feed 自己的节点，H5 节点不并进来",
+);
+assert.equal(
+  projectedWithStatuslessCompleteH5.timeline.tracks.some(
+    (track) => track.detail === "[东莞市]快件离开【东莞虎门转运中心】",
   ),
   false,
-  "an order summary must not enter the projected shipment timeline",
+  "H5 的节点不进 feed 的包",
 );
+assert.notEqual(projectedWithStatuslessCompleteH5.timeline.complete, true);
+assert.equal(
+  projectedWithStatuslessCompleteH5.manualTimelines?.[0]?.provider,
+  "jd_h5",
+  "完整的 H5 包住 jd_h5 槽",
+);
+assert.equal(
+  projectedWithStatuslessCompleteH5.manualTimelines?.[0]?.latestDetail,
+  "[东莞市]快件离开【东莞虎门转运中心】",
+);
+assert.equal(projectedWithStatuslessCompleteH5.manualTimelines?.[0]?.complete, true);
 
 const completedH5WithStaleShipmentSidecar = {
   ...projectedWithH5,

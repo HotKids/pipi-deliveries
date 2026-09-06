@@ -9,7 +9,7 @@
     <application
         android:name=".DeliveriesApp"
         android:allowBackup="false"
-        android:icon="@mipmap/aicy_ic_launcher"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/assistant_app_name"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"

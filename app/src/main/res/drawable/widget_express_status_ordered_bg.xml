@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 状态胶囊底色 = ExpressStatusColors 同色 10% 透明（三端同一张表）。 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <solid android:color="#198C93B0" />
+    <solid android:color="#1AFBC02D" />
     <corners android:radius="3dp" />
 </shape>

@@ -247,16 +247,19 @@ public final class ExpressCompatibilityContractTest {
                 layout, "@+id/widget_compact_identity", "</LinearLayout>");
 
         assertTrue(identity.contains("android:layout_width=\"0dp\""));
-        assertTrue(identity.contains("android:layout_height=\"44dp\""));
+        // 用户定 2026-09-05 晚：固定 24dp/14dp 行会把 20sp「运输中」和 12sp「京东快递」
+        // 的下缘裁掉（CJK 自然行高 1.45em > 行槽）。两行改自然行高、公司行上提 2dp、
+        // 块底补 5dp 做视觉居中；容器 wrap_content，logo 在整行里 center_vertical。
+        assertTrue(identity.contains("android:layout_height=\"wrap_content\""));
         assertTrue(identity.contains("android:layout_weight=\"1\""));
-        assertEquals(2, occurrences(identity, "android:layout_height=\"0dp\""));
-        assertEquals(1, occurrences(identity, "android:layout_weight=\"24\""));
-        assertEquals(1, occurrences(identity, "android:layout_weight=\"14\""));
-        assertEquals(2, occurrences(
-                identity, "android:gravity=\"center_vertical|start\""));
+        assertTrue(identity.contains("android:paddingBottom=\"5dp\""));
+        assertFalse(identity.contains("android:gravity=\"center_vertical\"\n"));
+        assertEquals(3, occurrences(identity, "android:layout_height=\"wrap_content\""));
+        assertEquals(1, occurrences(identity, "android:layout_marginTop=\"-2dp\""));
+        assertEquals(0, occurrences(identity, "android:lineHeight="));
+        assertEquals(0, occurrences(identity, "android:layout_height=\"0dp\""));
         assertEquals(2, occurrences(identity, "android:includeFontPadding=\"false\""));
-        assertEquals(1, occurrences(identity, "android:lineHeight=\"24dp\""));
-        assertEquals(1, occurrences(identity, "android:lineHeight=\"14dp\""));
+        assertTrue(metrics.contains("COMPACT_IDENTITY_BOTTOM_INSET_DP = 5f"));
         assertTrue(metrics.contains("final float courierLogoSizeDp"));
         assertTrue(metrics.contains("COMPACT_STATUS_TEXT_SIZE_SP = 20f"));
         assertTrue(metrics.contains("COMPACT_COMPANY_TEXT_SIZE_SP = 12f"));
@@ -265,21 +268,22 @@ public final class ExpressCompatibilityContractTest {
         assertFalse(metrics.contains("COMPACT_STATUS_TO_LOGO_RATIO"));
         assertFalse(metrics.contains("COMPACT_COMPANY_TO_LOGO_RATIO"));
         assertTrue(api31.contains("static void applyCompactHeaderSize("));
-        assertTrue(api31.contains(
+        assertFalse(api31.contains(
                 "setViewLayoutHeight(R.id.widget_compact_identity,"));
-        assertEquals(3, occurrences(
+        assertEquals(2, occurrences(
                 api31, "logoSizeDp, TypedValue.COMPLEX_UNIT_DIP"));
         assertTrue(provider.contains(
                 "ExpressWidgetApi31.applyCompactHeaderSize("));
         assertTrue(provider.contains("views, layout.courierLogoSizeDp"));
         assertTrue(provider.contains(
-                "views.setViewPadding(R.id.widget_compact_identity, 0, 0, 0, 0);"));
-        assertTrue(provider.contains(
                 "layout.logoVerticalInsetDp * density"));
         assertTrue(provider.contains(
-                "views.setViewPadding(R.id.widget_compact_identity,"));
-        assertTrue(provider.contains(
-                "0, compatHeaderVerticalInsetPx, 0, compatHeaderVerticalInsetPx);"));
+                "ExpressWidgetLayout.COMPACT_IDENTITY_BOTTOM_INSET_DP * density"));
+        assertEquals(2, occurrences(provider,
+                "views.setViewPadding(R.id.widget_compact_identity,\n"
+                        + "                    0, 0, 0, identityBottomInsetPx);"));
+        assertFalse(provider.contains(
+                "views.setViewPadding(R.id.widget_compact_identity, 0, 0, 0, 0);"));
     }
 
     @Test
@@ -297,7 +301,7 @@ public final class ExpressCompatibilityContractTest {
         assertTrue(pill.contains("android:layout_height=\"16dp\""));
         assertTrue(pill.contains("android:gravity=\"center\""));
         assertTrue(pill.contains("android:layout_marginStart=\"6dp\""));
-        assertTrue(pill.contains("android:textSize=\"14sp\""));
+        assertTrue(pill.contains("android:textSize=\"15sp\""));
         assertTrue(metrics.contains("final float pillContentSize"));
         assertTrue(metrics.contains("final float pillIconSizeDp"));
         assertTrue(metrics.contains("COMPACT_PILL_TEXT_SIZE_SP,"));

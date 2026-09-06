@@ -51,6 +51,25 @@ assert.equal(nestedMeizu.latestDetail, "待取件");
 assert.equal(nestedMeizu.tracks[0]?.raw._pipiStatusSource, "meizu");
 assert.equal(nestedMeizu.hasStructuredStatus, false);
 
+// picker `refresh`（queryByMailNoOnline）回的是列表记录：最新一条在 lastLogisticDetail /
+// logisticsGmtModified，没有 time/context，也要解成一条带时间的节点。
+const meizuRefresh = parseMeizuTimeline({
+  code: 200,
+  value: JSON.stringify({
+    mailNo: "SF1234567890",
+    cpCode: "SF",
+    logsiticsStatus: "TRANSPORT",
+    lastLogisticDetail: "快件已到达【深圳中转场】",
+    logisticsGmtModified: "2026-09-05 18:20:00",
+    detailUrl: "https://m.kuaidi100.com/result.jsp?nu=SF1234567890",
+  }),
+});
+assert.equal(meizuRefresh.tracks.length, 1);
+assert.equal(meizuRefresh.tracks[0]?.detail, "快件已到达【深圳中转场】");
+assert.equal(meizuRefresh.tracks[0]?.timeText, "2026-09-05 18:20:00");
+assert.equal(meizuRefresh.hasTimedTracking, true);
+assert.equal(meizuRefresh.semantic, "TRANSIT");
+
 const meizuProviderError = parseMeizuTimeline({
   time: "2026-09-02 10:45:00",
   message: "验证码错误，请重试",

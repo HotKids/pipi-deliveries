@@ -1,3 +1,4 @@
+import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
   AccountBinding,
   AppState,
@@ -9,20 +10,24 @@ import type {
 } from "../models";
 import {
   buildWidgetSnapshot,
-  isProviderErrorDetail,
-  normalizeWaybill,
+  isNonEventDetail,
+  mergeTimelineAuthorities,
   normalizedProjectedWaybill,
+  normalizeWaybill,
   pruneShipments,
   sortShipments,
+  splitJingDongH5Nodes,
   timedTracks,
 } from "./status";
 import {
+  mergeAutomaticSourceTimeline,
   absorbHistoricalShipment,
   applyAccountShipment,
   applyManualShipment,
   automaticSourceOf,
   displayWaybill,
   invalidateAutomaticOwner,
+  isForeignManualPackage,
   isHistoricalAccountDuplicate,
   isVerifiedKuaidi100Timeline,
   normalizeAutomaticOwnership,
@@ -56,6 +61,8 @@ import {
 import { utf8Data } from "./scripting-data";
 
 const STATE_KEY = "pipi_deliveries_state_v1";
+/** 只放一个数字：状态最近一次落盘的 revision，供投影等待轮询，不用每次全量 loadState（2026-09-06）。 */
+const STATE_REVISION_KEY = "pipi_deliveries_state_revision_v1";
 const STATE_BACKUP_KEY = "pipi_deliveries_state_backup_v1";
 const STATE_DURABLE_SLOT_A = "state-v3-a.json";
 const STATE_DURABLE_SLOT_B = "state-v3-b.json";
@@ -260,9 +267,14 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
         updatedAtMs: value.updatedAtMs,
         shipments: value.shipments,
       };
+  const feedSlotRebuiltAtMs = isCurrentState(value) && typeof value.feedSlotRebuiltAtMs === "number"
+    ? value.feedSlotRebuiltAtMs
+    : 0;
   const retainedShipments = pruneExpiredManualPlaceholders(
     retainDurableShipments(
-      migrateShipmentSources(base.shipments || []).map(normalizeShipmentAuthorities),
+      migrateShipmentSources(base.shipments || [])
+        .map(normalizeShipmentAuthorities)
+        .map((shipment) => feedSlotRebuiltAtMs ? shipment : markFeedSlotRebuild(shipment)),
       now,
     ),
     now,
@@ -278,7 +290,39 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
       now,
     ),
     shipments: sortShipments(retainedShipments),
+    feedSlotRebuiltAtMs: feedSlotRebuiltAtMs || now,
   };
+}
+
+/**
+ * 一次性修复（2026-09-06）：beta58 之前接口 5 按件详情被并进了 feed 槽，存着的 feed 包里混着详情
+ * 节点，光改合并规则救不回来（增量缓存从不丢节点，混包节点多还会在详情页选包时压过 v5_query）。
+ * 给自动件的 feed 包打上 `feedRebuildPending`，下一次列表同步整包替换；指向 feed 的粘性选包记录
+ * 一并清掉，让详情页重新选。列表里已经没有的行不会再同步，保留原样（只是多显示几条）。
+ */
+function markFeedSlotRebuild(shipment: Shipment): Shipment {
+  if (
+    shipment.identity.manuallyAdded ||
+    shipment.identity.bindingSource !== SCRIPT_BINDING_SOURCE ||
+    !shipment.sourceTimeline ||
+    !timedTracks(shipment.sourceTimeline.tracks).length
+  ) return shipment;
+  const selection = String(shipment.detailSelection?.provider || "").trim().toLowerCase();
+  const pointsAtFeed = selection === "interface5" || selection === "account" ||
+    selection === "v5_list";
+  const marked: Shipment = {
+    ...shipment,
+    sourceTimeline: { ...shipment.sourceTimeline, feedRebuildPending: true },
+  };
+  // 展示包就是 feed 包本身时一起打标记，读盘两次的结果才一致（展示包会从 source 重新选出来）。
+  if (
+    shipment.timeline.provider.trim().toLowerCase() ===
+      shipment.sourceTimeline.provider.trim().toLowerCase()
+  ) {
+    marked.timeline = { ...shipment.timeline, feedRebuildPending: true };
+  }
+  if (pointsAtFeed) delete marked.detailSelection;
+  return marked;
 }
 
 function mirrorBindingBackup(state: AppState): void {
@@ -399,6 +443,13 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
   const validFailedAtMs = Number.isFinite(failedAtMs) && failedAtMs > 0
     ? failedAtMs
     : undefined;
+  // AGENTS §9: a risk-controlled order rests for an hour, not ten minutes. This runs on every
+  // save and every load, so dropping the stamp here would silently shorten the whole window.
+  const riskControlAtMs = Number(rawProjectionRetry?.riskControlAtMs);
+  const validRiskControlAtMs =
+    Number.isFinite(riskControlAtMs) && riskControlAtMs > 0
+      ? riskControlAtMs
+      : undefined;
   const orderProjectionRetry =
     !projectedWaybill &&
       /^[a-f0-9]{64}$/.test(routeHash) &&
@@ -406,11 +457,49 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
       ? {
           routeHash,
           ...(validFailedAtMs != null ? { failedAtMs: validFailedAtMs } : {}),
+          ...(validRiskControlAtMs != null
+            ? { riskControlAtMs: validRiskControlAtMs }
+            : {}),
           ...(attemptId && attemptExpiresAtMs
             ? { attemptId, attemptExpiresAtMs }
             : {}),
         }
       : undefined;
+  // D-13 裁决 (2026-09-04): the reopen cooldown belongs to an order that is already projected,
+  // so it must survive exactly where `orderProjectionRetry` is cleared.
+  const rawReopenRetry = shipment.identity.jingDongH5Retry;
+  const reopenRouteHash = String(rawReopenRetry?.routeHash || "")
+    .trim()
+    .toLowerCase();
+  const reopenFailedAtMs = Number(rawReopenRetry?.failedAtMs);
+  const reopenRiskControlAtMs = Number(rawReopenRetry?.riskControlAtMs);
+  const reopenAttemptId = String(rawReopenRetry?.attemptId || "").trim();
+  const reopenAttemptExpiresAtMs = Number(rawReopenRetry?.attemptExpiresAtMs);
+  const validReopenAttemptId = /^[a-z0-9-]{8,80}$/.test(reopenAttemptId)
+    ? reopenAttemptId
+    : undefined;
+  const validReopenAttemptExpiresAtMs = validReopenAttemptId &&
+      Number.isFinite(reopenAttemptExpiresAtMs) &&
+      reopenAttemptExpiresAtMs > 0
+    ? reopenAttemptExpiresAtMs
+    : undefined;
+  const jingDongH5Retry = /^[a-f0-9]{64}$/.test(reopenRouteHash)
+    ? {
+        routeHash: reopenRouteHash,
+        ...(Number.isFinite(reopenFailedAtMs) && reopenFailedAtMs > 0
+          ? { failedAtMs: reopenFailedAtMs }
+          : {}),
+        ...(Number.isFinite(reopenRiskControlAtMs) && reopenRiskControlAtMs > 0
+          ? { riskControlAtMs: reopenRiskControlAtMs }
+          : {}),
+        ...(validReopenAttemptId && validReopenAttemptExpiresAtMs
+          ? {
+              attemptId: validReopenAttemptId,
+              attemptExpiresAtMs: validReopenAttemptExpiresAtMs,
+            }
+          : {}),
+      }
+    : undefined;
   const projectedPresentation = projectedWaybill
     ? projectedCarrierPresentation(
         projectedWaybill,
@@ -495,6 +584,7 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
         : shipment.identity.sourceOwner,
       projectedWaybill,
       orderProjectionRetry,
+      jingDongH5Retry,
       orderId: repairsJingDongOrder
         ? shipment.identity.sourceId
         : shipment.identity.orderId,
@@ -678,14 +768,16 @@ function migratePendingSources(
 function sanitizeProviderErrorTimeline(
   timeline: TimelinePackage,
 ): TimelinePackage {
+  // Provider errors and forecast notes (AGENTS §9, 2026-09-03) are both non-events: an older
+  // cache that still carries them is repaired here without a data reset.
   const removed = timeline.tracks.filter((track) =>
-    isProviderErrorDetail(track.detail)
+    isNonEventDetail(track.detail)
   );
-  if (!removed.length && !isProviderErrorDetail(timeline.latestDetail)) {
+  if (!removed.length && !isNonEventDetail(timeline.latestDetail)) {
     return timeline;
   }
   const tracks = timeline.tracks.filter((track) =>
-    !isProviderErrorDetail(track.detail)
+    !isNonEventDetail(track.detail)
   );
   const latest = [...tracks].sort(
     (left, right) => (right.timeMs || 0) - (left.timeMs || 0),
@@ -693,7 +785,7 @@ function sanitizeProviderErrorTimeline(
   // Legacy packages did not record whether package-level metadata came from a
   // removed error node or a surviving event, so the old metadata is unusable.
   const invalidatedMetadata = removed.length > 0 ||
-    isProviderErrorDetail(timeline.latestDetail);
+    isNonEventDetail(timeline.latestDetail);
   return {
     ...timeline,
     complete: tracks.length && !invalidatedMetadata
@@ -712,23 +804,60 @@ function sanitizeProviderErrorTimeline(
   };
 }
 
+function isFeedProvider(provider: string): boolean {
+  const raw = String(provider || "").trim().toLowerCase();
+  return raw === "interface5" || raw === "account";
+}
+
 function normalizeShipmentAuthorities(shipment: Shipment): Shipment {
   const manuallyAdded = Boolean(shipment.identity.manuallyAdded);
   const sourceTimelineRaw = manuallyAdded
     ? null
     : shipment.sourceTimeline || shipment.timeline;
-  const sourceTimeline = sourceTimelineRaw
-    ? sanitizeProviderErrorTimeline(sourceTimelineRaw)
+  // 用户定 2026-09-05 晚：feed 增量与 query 独立。老行的 source 里混着联合页嫁接的 H5 节点，
+  // 读盘时拆出去：feed 节点留在 source，完整的 H5 包归 jd_h5 槽。
+  const sourceSplit = sourceTimelineRaw
+    ? splitJingDongH5Nodes(sanitizeProviderErrorTimeline(sourceTimelineRaw))
     : null;
+  // 老数据里 provider=interface5 的「手动包」是 absorbHistoricalShipment 塞进去的 feed，折回 source
+  // 槽，不再改名成 v5_query（2026-09-06：那样 feed 节点会混进 query 包）。
+  const strayFeeds = (Array.isArray(shipment.manualTimelines) ? shipment.manualTimelines : [])
+    .filter((timeline) => isFeedProvider(timeline.provider) && timeline.tracks.length > 0)
+    .map(sanitizeProviderErrorTimeline);
+  const sourceTimeline = strayFeeds.reduce<TimelinePackage | null>(
+    (current, stray) => current ? mergeAutomaticSourceTimeline(stray, current) : stray,
+    sourceSplit ? sourceSplit.feed : null,
+  );
+  const strandedJingDongH5 = sourceSplit?.jdH5 && sourceSplit.jdH5.complete === true &&
+      timedTracks(sourceSplit.jdH5.tracks).length
+    ? sourceSplit.jdH5
+    : null;
+  const anchorShipment: Shipment = { ...shipment, sourceTimeline };
+  // 槽名统一（用户定 2026-09-05）：旧行在读盘时改成统一槽名；旧 `web` 包按票据来源分到
+  // cn_h5 / k100_h5。
+  const legacyWebSlot = !manuallyAdded && String(shipment.identity.sourceProvider || "")
+    .trim()
+    .toLowerCase() === "cainiao"
+    ? TIMELINE_SLOT.CN_H5
+    : TIMELINE_SLOT.K100_H5;
   const manualTimelines = Array.isArray(shipment.manualTimelines)
     ? shipment.manualTimelines
+      .filter((timeline) => !isFeedProvider(timeline.provider))
       .map(sanitizeProviderErrorTimeline)
+      // 校验用旧行原来的 provider 字面量：直连抓取器的旧 id kuaidi100_h5 没有承运商标记就丢，
+      // picker 那页的旧 id web 不要标记；改名要放在校验之后。
       .filter((timeline) =>
         timeline.tracks.length > 0 && (
-          timeline.provider.trim().toLowerCase() !== "kuaidi100_h5" ||
+          normalizeTimelineSlot(timeline.provider) !== TIMELINE_SLOT.K100_H5 ||
           isVerifiedKuaidi100Timeline(timeline)
-        )
+        ) &&
+        // R-29 cache repair: a package from another parcel is dropped on load.
+        !isForeignManualPackage(anchorShipment, timeline)
       )
+      .map((timeline) => ({
+        ...timeline,
+        provider: normalizeTimelineSlot(timeline.provider, legacyWebSlot),
+      }))
     : manuallyAdded
       ? [sanitizeProviderErrorTimeline(shipment.timeline)]
         .filter((timeline) => timeline.tracks.length > 0)
@@ -744,7 +873,12 @@ function normalizeShipmentAuthorities(shipment: Shipment): Shipment {
         ? shipment.route
         : null,
     sourceTimeline,
-    manualTimelines,
+    manualTimelines: strandedJingDongH5 &&
+        !manualTimelines.some((timeline) =>
+          normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.JD_H5
+        )
+      ? mergeTimelineAuthorities(manualTimelines, strandedJingDongH5)
+      : manualTimelines,
     timeline: sourceTimeline || sanitizeProviderErrorTimeline(shipment.timeline),
   };
   const selected = { ...normalized, timeline: selectShipmentTimeline(normalized) };
@@ -911,6 +1045,24 @@ function readDurableState(name: string): StoredStateRead {
   }
 }
 
+function recordStateRevision(revision: number): void {
+  try {
+    Storage.set(STATE_REVISION_KEY, revision, { shared: true });
+  } catch {
+    /* the marker only shortens a wait; the durable state is authoritative */
+  }
+}
+
+/** 最近落盘的 revision；读不到就返回 0（调用方退回全量 loadState）。 */
+export function peekStateRevision(): number {
+  try {
+    const value = Storage.get<unknown>(STATE_REVISION_KEY, { shared: true });
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function mirrorStoredState(
   key: string,
   stored: EncodedState,
@@ -935,16 +1087,29 @@ function matchesEncoded(
     read.valid?.serialized === encoded.serialized;
 }
 
-function chooseStoredState(
+function orderedStoredStates(
   ...reads: readonly StoredStateRead[]
-): DecodedStoredState | null {
+): DecodedStoredState[] {
   return reads
     .map((read) => read.valid)
     .filter((value): value is DecodedStoredState => value != null)
     .sort((left, right) =>
       right.state.revision - left.state.revision ||
       right.state.updatedAtMs - left.state.updatedAtMs
-    )[0] || null;
+    );
+}
+
+function chooseStoredState(
+  ...reads: readonly StoredStateRead[]
+): DecodedStoredState | null {
+  return orderedStoredStates(...reads)[0] || null;
+}
+
+/** 最近一次 loadState 的失败原因（所有副本都迁移失败时），供首页提示；成功一次就清。 */
+let lastStateLoadFailure: "migration_failed" | null = null;
+
+export function stateLoadFailure(): "migration_failed" | null {
+  return lastStateLoadFailure;
 }
 
 function durableSlotForRevision(revision: number): string {
@@ -993,7 +1158,8 @@ export function loadState(now = Date.now()): AppState {
   const backup = readStoredState(STATE_BACKUP_KEY, true);
   const durableA = readDurableState(STATE_DURABLE_SLOT_A);
   const durableB = readDurableState(STATE_DURABLE_SLOT_B);
-  let chosen = chooseStoredState(primary, backup, durableA, durableB);
+  const candidates = orderedStoredStates(primary, backup, durableA, durableB);
+  let chosen = candidates[0] || null;
 
   if (pendingCommit && chosen && pendingIsOlderThan(pendingCommit, chosen)) {
     pendingCommit = null;
@@ -1039,26 +1205,42 @@ export function loadState(now = Date.now()): AppState {
     return restoreInitialBindingBackup(emptyState());
   }
 
-  let restored: AppState;
+  // 迁移按副本从新到旧依次试（2026-09-06 静态审查②）：最新副本顶层合法、内部记录缺字段时，别的
+  // 副本可能还是好的；全部失败才算读取失败，并让首页提示，而不是当成正常空库。原始副本不覆盖。
+  let restored: AppState | null = null;
   let legacyBindingRecoveryDurable = true;
-  try {
-    const migrated = migrate(chosen.state, now);
-    if (recoveredLegacy) {
-      const recovery = restoreLegacyBindingBackup(migrated);
-      restored = recovery.state;
-      legacyBindingRecoveryDurable = recovery.durable;
-    } else {
-      restored = migrated;
-      mirrorBindingBackup(restored);
+  const attempts = recoveredLegacy ? [chosen] : candidates;
+  for (const candidate of attempts) {
+    try {
+      const migrated = migrate(candidate.state, now);
+      if (recoveredLegacy) {
+        const recovery = restoreLegacyBindingBackup(migrated);
+        restored = recovery.state;
+        legacyBindingRecoveryDurable = recovery.durable;
+      } else {
+        restored = migrated;
+        mirrorBindingBackup(restored);
+      }
+      chosen = candidate;
+      break;
+    } catch {
+      writeDiagnostic(
+        "storage.state.rejected",
+        { result: "migration_failed", revision: candidate.state.revision },
+        "warning",
+      );
     }
-  } catch {
+  }
+  if (!restored) {
+    lastStateLoadFailure = "migration_failed";
     writeDiagnostic(
       "storage.state.rejected",
-      { result: "migration_failed" },
+      { result: "migration_failed", attempted: attempts.length },
       "error",
     );
     return restoreInitialBindingBackup(emptyState());
   }
+  lastStateLoadFailure = null;
   if (recoveredLegacy) {
     writeDiagnostic(
       "storage.state.recovered",
@@ -1087,6 +1269,7 @@ export function loadState(now = Date.now()): AppState {
   if (!durableMatches) {
     try {
       writeDurableState(encoded);
+      recordStateRevision(encoded.state.revision);
     } catch {
       writeDiagnostic(
         "storage.state.failed",
@@ -1231,10 +1414,14 @@ export function saveState(
       now,
     ),
     shipments: sortShipments(retainedShipments),
+    // 一次性 feed 槽重建的标记跟着状态走：候选没带就沿用存着的，都没有就从现在起算（只有读盘时
+    // 遇到没标记的老状态才会给包打 feedRebuildPending）。
+    feedSlotRebuiltAtMs: candidate.feedSlotRebuiltAtMs || previous.feedSlotRebuiltAtMs || now,
   };
   const stored = encodeState(next);
   try {
     writeDurableState(stored);
+    recordStateRevision(stored.state.revision);
   } catch {
     writeDiagnostic(
       "storage.state.failed",
@@ -1773,6 +1960,28 @@ export function upsertShipment(incoming: Shipment, now = Date.now()): AppState {
         ),
         shipment,
       ],
+    },
+    now,
+  );
+}
+
+/** 详情页写备注（用户定 2026-09-05 晚）：只改这一票的 note，别的都不动；空串即清除。 */
+export function setShipmentNote(id: string, note: string, now = Date.now()): AppState {
+  const state = loadState(now);
+  const trimmed = String(note || "").trim();
+  const current = state.shipments.find((item) => item.identity.id === id);
+  if (!current || (current.note || "") === trimmed) return state;
+  // 抬一下 updatedAtMs：详情页与父页面用 preferNewerShipment 挑新的那份，不抬的话父页面回传的
+  // 旧对象（同一时间戳）会把刚写的备注盖掉（2026-09-05 晚 iPhone 实测「保存没生效」）。
+  const updated: Shipment = { ...current, updatedAtMs: Math.max(now, current.updatedAtMs + 1) };
+  if (trimmed) updated.note = trimmed;
+  else delete updated.note;
+  return saveState(
+    {
+      ...state,
+      shipments: state.shipments.map((item) =>
+        item.identity.id === id ? updated : item
+      ),
     },
     now,
   );

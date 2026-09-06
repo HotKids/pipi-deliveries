@@ -34,12 +34,13 @@ for (const contract of [
   'item.event === "manual.query.completed"',
   "选中数据源 ${value}",
   "查询数据源 ${value}",
-  'fallback: "KDNiao"',
-  'interface5: "账号缓存"',
-  'moto: "Moto"',
-  'kuaidi100_h5: "K100 H5"',
-  'kuaidi100_query: "K100 H5 轨迹查询"',
-  'meizu: "魅族 Picker"',
+  // 统一用词（2026-09-05）：链上的一级就叫它的 level 词，旧日志里的名字映过去，不再翻成品牌词。
+  'fallback: "kdniao"',
+  'interface5: "v5_query"',
+  'moto: "v4_query"',
+  'kuaidi100_h5: "k100_h5"',
+  'kuaidi100_query: "k100_h5"',
+  'meizu: "v6_picker"',
   "仅采集必要的诊断信息，相关数据仅限本地存储与使用。",
 ]) {
   assert.ok(page.includes(contract), `missing diagnostic UI contract: ${contract}`);

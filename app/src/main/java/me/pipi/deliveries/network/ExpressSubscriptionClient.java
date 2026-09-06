@@ -1,5 +1,6 @@
 package me.pipi.deliveries.network;
 
+import me.pipi.deliveries.data.TimelineSlot;
 import android.content.Context;
 import android.util.Log;
 
@@ -82,6 +83,22 @@ public final class ExpressSubscriptionClient {
     public ExpressQueryResult queryManual(
             Context context, String waybill, ExpressQueryCancellation cancellation)
             throws Exception {
+        return query(context, waybill, cancellation, "manual");
+    }
+
+    /**
+     * picker `refresh`（queryByMailNoOnline）：顺丰在列表轮用它取结构化的最新一条（用户定
+     * 2026-09-04，待改表第 2 项，2026-09-05 三端落地）；`manual` 只在详情/加件那一级拿 detailUrl。
+     */
+    public ExpressQueryResult queryRefresh(
+            Context context, String waybill, ExpressQueryCancellation cancellation)
+            throws Exception {
+        return query(context, waybill, cancellation, "refresh");
+    }
+
+    private ExpressQueryResult query(
+            Context context, String waybill, ExpressQueryCancellation cancellation,
+            String mode) throws Exception {
         String number = waybill == null ? "" : waybill.trim();
         if (number.length() < 6) throw new IllegalArgumentException("请输入正确的快递单号");
         android.content.pm.PackageInfo info = context.getPackageManager()
@@ -90,7 +107,7 @@ public final class ExpressSubscriptionClient {
         long versionCode = info.getLongVersionCode();
         JSONObject payload = new JSONObject()
                 .put("interface", "v6")
-                .put("mode", "manual")
+                .put("mode", mode)
                 .put("waybill", number)
                 .put("clientVersion", versionName)
                 .put("clientBuild", versionCode);
@@ -173,7 +190,7 @@ public final class ExpressSubscriptionClient {
                 tracks.toString(),
                 first(value, "detailUrl", "url"),
                 first(value, "subPhone", "receiverPhone"),
-                "meizu")
+                TimelineSlot.V6_PICKER)
                 .withManualStatusEvidence(stateName, !status.isEmpty());
     }
 
@@ -420,7 +437,7 @@ public final class ExpressSubscriptionClient {
                 tracksJson,
                 detailUrl,
                 first(value, "subPhone", "receiverPhone"),
-                "interface6",
+                TimelineSlot.V6_LIST,
                 routeUrl.isEmpty() ? "" : "v6",
                 routeUrl,
                 first(value, "provider", "providerName"));

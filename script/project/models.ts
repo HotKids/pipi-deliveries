@@ -66,6 +66,11 @@ export type TimelinePackage = {
   latestDetail: string;
   tracks: readonly TrackNode[];
   successAtMs: number;
+  /**
+   * 一次性修复标记（2026-09-06）：老版本把接口 5 按件详情并进了 feed 槽；带这个标记的 feed 包在下一次
+   * 列表同步时被 feed 整包替换而不是增量合并，之后标记消失。按件详情的占位副本保留标记，不清它。
+   */
+  feedRebuildPending?: boolean;
 };
 
 export type ShipmentIdentity = {
@@ -88,6 +93,20 @@ export type ShipmentIdentity = {
   orderProjectionRetry?: {
     routeHash: string;
     failedAtMs?: number;
+    /** Set when the failed attempt saw JD risk control (AGENTS §9 cooldown, 60 min). */
+    riskControlAtMs?: number;
+    attemptId?: string;
+    attemptExpiresAtMs?: number;
+  };
+  /**
+   * AGENTS §9 (2026-09-03, D-13 ruling): a projected JD order without a causally complete H5
+   * timeline reopens the union page on a detail refresh; this records that attempt so the
+   * 10-minute / 60-minute (risk control) cooldown applies to the reopen as well.
+   */
+  jingDongH5Retry?: {
+    routeHash: string;
+    failedAtMs?: number;
+    riskControlAtMs?: number;
     attemptId?: string;
     attemptExpiresAtMs?: number;
   };
@@ -134,6 +153,13 @@ export type Shipment = {
     expiresAtMs: number;
   };
   forcedCompletedAtMs?: number;
+  /** 详情页上一轮显示的包（粘性选包，用户定 2026-09-05 晚）：下一轮默认还显示它。 */
+  detailSelection?: { provider: string; selectedAtMs: number };
+  /**
+   * 用户在详情页填的备注（用户定 2026-09-05 晚）：列表页、详情页、桌面卡片都以「状态词 · 备注」
+   * 显示；只在详情页可以添加或修改。同步合并从不改它。
+   */
+  note?: string;
   route?: ShipmentRoute | null;
   accountRecord?: AccountDetailRecord | null;
   updatedAtMs: number;
@@ -163,6 +189,8 @@ export type AppState = {
   bindings: readonly AccountBinding[];
   pendingQueries: readonly PendingManualQuery[];
   shipments: readonly Shipment[];
+  /** feed 槽一次性重建已标记的时间（见 TimelinePackage.feedRebuildPending）。 */
+  feedSlotRebuiltAtMs?: number;
 };
 
 export type WidgetRow = {
@@ -173,6 +201,8 @@ export type WidgetRow = {
   waybillSuffix: string;
   semantic: StatusSemantic;
   statusLabel: string;
+  /** 用户备注；2×2 不显示，4×2 拼在状态词后面。旧快照没有这个字段，按空处理。 */
+  note?: string;
   latestDetail: string;
 };
 

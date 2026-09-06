@@ -1,3 +1,4 @@
+import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import {
   Button,
   HStack,
@@ -11,11 +12,15 @@ import {
   useRef,
   useState,
 } from "scripting";
-import type { AccountBinding } from "../models";
+import type { AccountBinding, RefreshSummary } from "../models";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
 import { writeDiagnostic } from "../services/logger";
 import { SCRIPT_BINDING_SOURCE } from "../services/script-source";
-import { transientToast } from "../services/ui-feedback";
+import {
+  errorMessage,
+  refreshSummaryToast,
+  transientToast,
+} from "../services/ui-feedback";
 import { PhoneBindingPage } from "./PhoneBindingPage";
 
 type MaybeAsync = void | Promise<void>;
@@ -28,12 +33,8 @@ export type PhoneManagerPageProps = {
   onSendCode: (phone: string, flowId: string) => MaybeAsync;
   onBind: (phone: string, code: string, flowId: string) => MaybeAsync;
   onRemove: (binding: AccountBinding) => MaybeAsync;
-  onRefresh: () => MaybeAsync;
+  onRefresh: () => Promise<RefreshSummary>;
 };
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
 
 export function PhoneManagerPage(props: PhoneManagerPageProps) {
   const [localBusy, setLocalBusy] = useState(false);
@@ -57,7 +58,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     writeDiagnostic("manager.rendered", {
       activeSource: SCRIPT_BINDING_SOURCE,
       revision: props.stateRevision,
-      interface5Bindings: visibleBindings.length,
+      v5Bindings: visibleBindings.length,
     });
   }, [props.stateRevision, visibleBindings.length]);
 
@@ -86,7 +87,17 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   }
 
   async function refresh() {
-    await runAction(props.onRefresh, "刷新失败，请稍后重试", "刷新完成");
+    // Same gesture and same call as HomePage.refresh, so it reports through the same helper:
+    // refreshAllShipments resolves with failed > 0 rather than rejecting, which runAction's
+    // "did it throw" success argument read as 刷新完成. The action sets its own notice and
+    // runAction supplies only the failure fallback — the shape remove() already uses.
+    await runAction(async () => {
+      // 上游文案不外露：拒绝也只报统一的「刷新失败」（AGENTS §11 统一表）。
+      const summary = await props.onRefresh().catch(() => null);
+      if (mountedRef.current) {
+        setNotice(summary ? refreshSummaryToast(summary) : EXPRESS_TOAST_COPY.refreshFailed);
+      }
+    }, EXPRESS_TOAST_COPY.refreshFailed);
   }
 
   function add() {
@@ -104,8 +115,8 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
       });
       if (!confirmed) return;
       await props.onRemove(binding);
-      if (mountedRef.current) setNotice("手机号已解绑");
-    }, "操作失败，请稍后重试");
+      if (mountedRef.current) setNotice(EXPRESS_TOAST_COPY.phoneUnbound);
+    }, EXPRESS_TOAST_COPY.unbindFailed);
   }
 
   return (
@@ -122,7 +133,10 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
             onSendCode={props.onSendCode}
             onBind={async (phone, code, flowId) => {
               await props.onBind(phone, code, flowId);
-              if (mountedRef.current) setBindingPresented(false);
+              if (mountedRef.current) {
+                setBindingPresented(false);
+                setNotice(EXPRESS_TOAST_COPY.phoneBound);
+              }
             }}
           />
         ),
@@ -137,7 +151,11 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
               visibleBindings.length >= EXPRESS_POLICY.sources.maxBindingsPerSource
             }
           >
-            <Image systemName="plus" font={17} />
+            <Image
+              systemName="plus"
+              font={17}
+              frame={{ width: 44, height: 44 }}
+            />
           </Button>
         ),
       }}

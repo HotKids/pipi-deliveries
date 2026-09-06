@@ -24,6 +24,12 @@ public final class Kuaidi100TimelinePolicy {
                 || hasTimedTracking(result);
     }
 
+    /** 一条节点是否可用：时间能解析、文案不是来源报错（K100 页抓取那一级按条过滤时用）。 */
+    public static boolean isValidTrack(String time, String detail) {
+        return ExpressSourcePolicy.parseEventTime(time) > 0L
+                && !ExpressStatusNormalizer.isProviderErrorDetail(detail);
+    }
+
     /** A successful cache write requires a real event paired with a parseable provider time. */
     public static boolean hasTimedTracking(ExpressQueryResult result) {
         if (result == null || ExpressStatusNormalizer.isProviderErrorDetail(
@@ -43,25 +49,61 @@ public final class Kuaidi100TimelinePolicy {
      * account state 102 (shipped) is never confused with Picker/K100 state 102 (ordered).
      */
     public static boolean hasTimelineStart(ExpressQueryResult result) {
+        return hasStartSemantic(result, true);
+    }
+
+    /**
+     * 揽收证据：<strong>只认已揽收，不认已下单</strong>（用户定 2026-09-04）。已下单的件根本还
+     * 没有承运商历史可缺，拿它退掉后面几级会把包裹晾在那里。详情完整判据用的是这一条。
+     */
+    public static boolean hasPickupEvidence(ExpressQueryResult result) {
+        return hasStartSemantic(result, false);
+    }
+
+    private static boolean hasStartSemantic(
+            ExpressQueryResult result, boolean orderedCounts) {
         if (!hasTimedTracking(result)) return false;
-        if (result.semantic == StatusSemantic.ORDERED
-                || result.semantic == StatusSemantic.PICKED) return true;
+        if (result.semantic == StatusSemantic.PICKED
+                || (orderedCounts && result.semantic == StatusSemantic.ORDERED)) return true;
         String provider = normalizeProvider(result.timelineProvider);
         try {
             Object root = new JSONTokener(result.tracksJson).nextValue();
-            return containsTimelineStart(root, provider);
+            return containsTimelineStart(root, provider, orderedCounts);
         } catch (Throwable ignored) {
             return false;
         }
+    }
+
+    /** 该包最新一条**有效**节点的事件时间；没有有效时间节点时返回 0。 */
+    public static long latestTimedEventMillis(ExpressQueryResult result) {
+        if (result == null) return 0L;
+        long latest = 0L;
+        for (ExpressTimeline.Track track : ExpressTimeline.parse(result.tracksJson, "", "")) {
+            if (ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) continue;
+            long time = ExpressSourcePolicy.parseEventTime(track.time);
+            if (time > latest) latest = time;
+        }
+        return latest;
+    }
+
+    /** 有效（带时间、非报错）节点数。 */
+    public static int timedTrackCount(ExpressQueryResult result) {
+        if (result == null) return 0;
+        int count = 0;
+        for (ExpressTimeline.Track track : ExpressTimeline.parse(result.tracksJson, "", "")) {
+            if (ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) continue;
+            if (ExpressSourcePolicy.parseEventTime(track.time) > 0L) count++;
+        }
+        return count;
     }
 
     public static boolean hasTimelineStart(ExpressItem item) {
         if (item == null) return false;
         String owner = item.stateOwner.isEmpty() ? item.source : item.stateOwner;
         String provider = owner.toLowerCase(java.util.Locale.ROOT).contains("interface5")
-                || "i5-jd".equalsIgnoreCase(owner) ? "interface5"
+                || "i5-jd".equalsIgnoreCase(owner) ? TimelineSlot.V5_QUERY
                 : owner.toLowerCase(java.util.Locale.ROOT).contains("interface6")
-                || "i6-jd".equalsIgnoreCase(owner) ? "interface6"
+                || "i6-jd".equalsIgnoreCase(owner) ? TimelineSlot.V6_LIST
                 : item.manualTimelineProvider;
         return hasTimelineStart(new ExpressQueryResult(
                 item.displayWaybill(), item.courierCode, item.companyName,
@@ -70,11 +112,12 @@ public final class Kuaidi100TimelinePolicy {
                 provider, "", "", item.sourceProvider));
     }
 
-    private static boolean containsTimelineStart(Object node, String provider) {
+    private static boolean containsTimelineStart(
+            Object node, String provider, boolean orderedCounts) {
         if (node instanceof JSONArray) {
             JSONArray values = (JSONArray) node;
             for (int index = 0; index < values.length(); index++) {
-                if (containsTimelineStart(values.opt(index), provider)) return true;
+                if (containsTimelineStart(values.opt(index), provider, orderedCounts)) return true;
             }
             return false;
         }
@@ -85,11 +128,19 @@ public final class Kuaidi100TimelinePolicy {
                 "lastLogisticDetail", "message");
         boolean providerError = ExpressStatusNormalizer.isProviderErrorDetail(detail);
         String compactDetail = detail.replaceAll("\\s+", "");
-        if (!providerError && (compactDetail.contains("已下单")
-                || compactDetail.contains("订单已创建")
-                || compactDetail.contains("已揽件") || compactDetail.contains("已揽收")
+        // 三端同一组词（2026-09-05 对齐）：揽收类与下单类；EMS 的「已收寄」「商品已经下单」也算。
+        if (!providerError && (compactDetail.contains("已揽件")
+                || compactDetail.contains("已揽收")
+                || compactDetail.contains("揽收完成")
                 || compactDetail.contains("揽件成功")
-                || compactDetail.contains("揽收成功"))) return true;
+                || compactDetail.contains("揽收成功")
+                || compactDetail.contains("已收寄")
+                // 顺丰揽收节点写「顺丰速运 已收取快件」(2026-09-05 三端同补)。
+                || compactDetail.contains("收取快件"))) return true;
+        if (!providerError && orderedCounts && (compactDetail.contains("已下单")
+                || compactDetail.contains("已经下单")
+                || compactDetail.contains("订单已提交")
+                || compactDetail.contains("订单已创建"))) return true;
         String source = normalizeProvider(first(value, "_pipiStatusSource"));
         if (source.isEmpty()) source = provider;
         if (!providerError) {
@@ -102,7 +153,8 @@ public final class Kuaidi100TimelinePolicy {
             if (semantic == StatusSemantic.UNKNOWN) {
                 semantic = StatusSemantic.fromStored(code, description);
             }
-            if (semantic == StatusSemantic.ORDERED || semantic == StatusSemantic.PICKED) {
+            if (semantic == StatusSemantic.PICKED
+                    || (orderedCounts && semantic == StatusSemantic.ORDERED)) {
                 return true;
             }
         }
@@ -110,14 +162,13 @@ public final class Kuaidi100TimelinePolicy {
         while (keys.hasNext()) {
             Object child = value.opt(keys.next());
             if ((child instanceof JSONArray || child instanceof JSONObject)
-                    && containsTimelineStart(child, source)) return true;
+                    && containsTimelineStart(child, source, orderedCounts)) return true;
         }
         return false;
     }
 
     private static boolean isAccountProvider(String provider) {
-        return "account".equals(provider) || "interface5".equals(provider)
-                || "interface6".equals(provider);
+        return "account".equals(provider) || TimelineSlot.isAccount(provider);
     }
 
     private static String first(JSONObject value, String... keys) {
@@ -145,7 +196,8 @@ public final class Kuaidi100TimelinePolicy {
         // Completeness is an adapter contract. Moto/OPPO and account feeds can be partial even
         // when they contain several nodes or a terminal label. A collapsed KDNiao terminal
         // headline remains partial until its package contains another timed history node.
-        boolean declaredComplete = "kuaidi100".equals(provider) || "kdniao".equals(provider);
+        boolean declaredComplete = TimelineSlot.K100_H5.equals(TimelineSlot.normalize(provider))
+                || TimelineSlot.KDNIAO.equals(TimelineSlot.normalize(provider));
         return !ManualTimelineAuthorityPolicy.isEffectivelyComplete(
                 provider, result, declaredComplete);
     }
@@ -158,7 +210,8 @@ public final class Kuaidi100TimelinePolicy {
             if ("V4".equalsIgnoreCase(owner) || "KD-100".equalsIgnoreCase(owner)
                     || "I5-K100".equalsIgnoreCase(owner)
                     || "I6-K100".equalsIgnoreCase(owner)) {
-                provider = "v4".equalsIgnoreCase(owner) ? "v4" : "kuaidi100";
+                provider = "v4".equalsIgnoreCase(owner)
+                        ? TimelineSlot.V4_QUERY : TimelineSlot.K100_H5;
             }
         }
         return isTimelineIncomplete(new ExpressQueryResult(

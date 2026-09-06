@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import {
   KUAIDI100_H5_QUERY_URL,
   Kuaidi100H5Error,
-  kuaidi100ToastMessage,
   type Kuaidi100H5Diagnostics,
   queryKuaidi100JdTimeline,
 } from "../services/kuaidi100-h5";
@@ -53,7 +52,7 @@ const timeline = await queryKuaidi100JdTimeline({
   },
 });
 assert.deepEqual(order, ["request"]);
-assert.equal(timeline?.provider, "kuaidi100_h5");
+assert.equal(timeline?.provider, "k100_h5");
 assert.equal(timeline?.complete, true);
 assert.equal(timeline?.tracks.length, 2);
 assert.equal(timeline?.rawCourierCode, "jd");
@@ -69,10 +68,6 @@ assert.deepEqual(successDiagnostics, {
   effectiveTrackCount: 2,
   exitReason: "timed_tracks",
 });
-assert.equal(
-  kuaidi100ToastMessage(null, successDiagnostics),
-  "轨迹加载成功",
-);
 
 let noPhoneRequestBody = "";
 const noPhoneTimeline = await queryKuaidi100JdTimeline({
@@ -160,13 +155,6 @@ const immediateRetry = await queryKuaidi100JdTimeline({
 });
 assert.equal(providerAttempts, 2);
 assert.equal(immediateRetry?.tracks.length, 1);
-assert.equal(
-  kuaidi100ToastMessage(
-    new Kuaidi100H5Error("K100 查询过于频繁", "rejected"),
-    null,
-  ),
-  "请求过于频繁，请稍后重试",
-);
 
 let noResultDiagnostics: Kuaidi100H5Diagnostics | null = null;
 const noResult = await queryKuaidi100JdTimeline({
@@ -196,14 +184,6 @@ assert.deepEqual(noResultDiagnostics, {
   effectiveTrackCount: 0,
   exitReason: "no_usable_timed_tracks",
 });
-assert.equal(
-  kuaidi100ToastMessage(null, noResultDiagnostics),
-  "暂未获取到可用轨迹",
-);
-assert.equal(
-  kuaidi100ToastMessage(new OperationTimeoutError(), null),
-  "查询超时，请稍后下拉刷新",
-);
 
 let emptyDiagnostics: Kuaidi100H5Diagnostics | null = null;
 const emptyResult = await queryKuaidi100JdTimeline({

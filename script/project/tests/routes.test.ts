@@ -135,13 +135,15 @@ assert.equal(
   loadOrderProjectionReference(projectionOwner, "interface5", NOW),
   projectionUrl,
 );
+// 用户定 2026-09-05：缓存不按时间过期，只在那一行从列表消失时才清（pruneOrderProjectionReferences
+// 的 retained 判定），8 天后照样读得到。
 assert.equal(
   loadOrderProjectionReference(
     projectionOwner,
     "interface5",
     NOW + 8 * 24 * 60 * 60 * 1000,
   ),
-  "",
+  projectionUrl,
 );
 
 assert.equal(

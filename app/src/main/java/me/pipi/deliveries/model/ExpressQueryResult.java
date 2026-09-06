@@ -139,6 +139,18 @@ public final class ExpressQueryResult {
         this.structuredStatusEvidence = structuredStatusEvidence;
     }
 
+    /** Same package re-keyed under another identity (an order's projected carrier waybill). */
+    public ExpressQueryResult withWaybill(String value) {
+        String next = clean(value);
+        if (next.isEmpty() || next.equals(waybill)) return this;
+        return new ExpressQueryResult(
+                next, courierCode, companyName, semantic, statusEventTime,
+                latestTime, latestDetail, tracksJson, detailUrl, phone,
+                timelineProvider, routeInterface, routeCredential, sourceProvider,
+                carrierNormalization, carrierIdentityEvidence, statusDescription,
+                structuredStatusEvidence);
+    }
+
     public ExpressQueryResult withCarrierNormalization(CarrierNormalization value) {
         return new ExpressQueryResult(
                 waybill, courierCode, companyName, semantic, statusEventTime,

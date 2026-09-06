@@ -13,22 +13,23 @@ import java.util.UUID;
 public final class ExpressDatabase extends SQLiteOpenHelper {
     private static final int LAST_LEGACY_SOURCE_VERSION = 7;
     public static final String DATABASE = "deliveries.db";
-    public static final int VERSION = 20;
+    public static final int VERSION = 21;
     public static final String EXPRESS_TABLE = "server_express";
     public static final String PHONE_TABLE = "express_phone";
-    public static final String KUAIDI100_TIMELINE_TABLE = "aicy_k100_timeline";
-    public static final String V4_TIMELINE_TABLE = "aicy_v4_timeline";
-    public static final String INTERFACE6_TIMELINE_TABLE = "aicy_interface6_timeline";
-    public static final String ACCOUNT_V5_TIMELINE_TABLE = "aicy_account_v5_timeline";
-    public static final String ACCOUNT_V6_TIMELINE_TABLE = "aicy_account_v6_timeline";
-    public static final String OWNER_MANUAL_TIMELINE_TABLE = "aicy_owner_manual_timeline";
-    public static final String OWNER_MANUAL_ROUTE_TABLE = "aicy_owner_manual_route";
-    public static final String OWNER_MANUAL_RETRY_TABLE = "aicy_owner_manual_retry";
-    public static final String KUAIDI100_PENDING_TABLE = "aicy_k100_pending";
-    public static final String ORDER_PROJECTION_TABLE = "aicy_order_projection";
-    public static final String UNBOUND_ASSOCIATION_TABLE = "aicy_unbound_association";
-    public static final String AUTOMATIC_OWNERSHIP_TABLE = "aicy_automatic_ownership";
-    public static final String AUTOMATIC_OBSERVATION_TABLE = "aicy_automatic_observation";
+    public static final String KUAIDI100_TIMELINE_TABLE = "k100_h5_timeline";
+    public static final String V4_TIMELINE_TABLE = "v4_query_timeline";
+    /** 只剩迁移用：项目改名前那张没有接口归属的账号时间线表，升级时并入 v5 后删除。 */
+    private static final String LEGACY_INTERFACE6_TIMELINE_TABLE = "aicy_interface6_timeline";
+    public static final String ACCOUNT_V5_TIMELINE_TABLE = "v5_query_timeline";
+    public static final String ACCOUNT_V6_TIMELINE_TABLE = "v6_list_timeline";
+    public static final String OWNER_MANUAL_TIMELINE_TABLE = "owner_manual_timeline";
+    public static final String OWNER_MANUAL_ROUTE_TABLE = "owner_manual_route";
+    public static final String OWNER_MANUAL_RETRY_TABLE = "owner_manual_retry";
+    public static final String KUAIDI100_PENDING_TABLE = "k100_pending";
+    public static final String ORDER_PROJECTION_TABLE = "order_projection";
+    public static final String UNBOUND_ASSOCIATION_TABLE = "unbound_association";
+    public static final String AUTOMATIC_OWNERSHIP_TABLE = "automatic_ownership";
+    public static final String AUTOMATIC_OBSERVATION_TABLE = "automatic_observation";
     private final Context context;
 
     public ExpressDatabase(Context context) {
@@ -48,6 +49,9 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         // Keep upgrades additive so installed users retain shipments and local timelines.
+        // v21：项目改名，表名去掉 aicy_ 前缀、时间线表按槽名（= 日志 level）命名；先改名再建表，
+        // 否则下面 CREATE IF NOT EXISTS 会先建出空的新表，旧数据就搬不过来了。
+        if (oldVersion < 21) renameLegacyAicyTables(db);
         createExpressTables(db);
         ensureCanonicalColumns(db);
         createNativeSidecars(db);
@@ -58,7 +62,11 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         }
         if (oldVersion < 17) invalidateLegacyInterface5SfManualState(db);
         migrateUnscopedPhoneBindings(db);
-        migrateLegacyAccountTimelines(db);
+        if (tableExists(db, LEGACY_INTERFACE6_TIMELINE_TABLE)) {
+            migrateLegacyAccountTimelines(db);
+            db.execSQL("DROP TABLE " + LEGACY_INTERFACE6_TIMELINE_TABLE);
+        }
+        if (oldVersion < 21) migrateTimelineSlotNames(db);
         if (oldVersion < 11) migratePendingSourceKeys(db);
         sanitizePendingRouteOwnership(db);
         if (oldVersion < 12) migrateOrderProjectionSourceKeys(db);
@@ -93,7 +101,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE IF NOT EXISTS express_phone("
                 + "_id INTEGER PRIMARY KEY AUTOINCREMENT,phone VARCHAR DEFAULT '',"
                 + "bind_time INTEGER DEFAULT 0,sync_status VARCHAR DEFAULT '',uuid VARCHAR DEFAULT '')");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_express_phone_source_idx "
+        db.execSQL("CREATE INDEX IF NOT EXISTS express_phone_source_idx "
                 + "ON express_phone(sync_status,bind_time)");
         db.execSQL("CREATE TABLE IF NOT EXISTS server_express("
                 + "_id INTEGER PRIMARY KEY AUTOINCREMENT,subPhone VARCHAR DEFAULT '',"
@@ -117,7 +125,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 + "carrierTableVersion VARCHAR DEFAULT '',"
                 + "projectionRetryAt INTEGER DEFAULT 0,"
                 + "projectionRetryRoute VARCHAR DEFAULT '')");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_express_mail_idx ON server_express(mailNo)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS express_mail_idx ON server_express(mailNo)");
     }
 
     private static void ensureCanonicalColumns(SQLiteDatabase db) {
@@ -142,7 +150,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 "projectionRetryAt", "INTEGER DEFAULT 0");
         addColumnIfMissing(db, EXPRESS_TABLE,
                 "projectionRetryRoute", "VARCHAR DEFAULT ''");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_express_normalized_mail_idx "
+        db.execSQL("CREATE INDEX IF NOT EXISTS express_normalized_mail_idx "
                 + "ON server_express(normalizedMailNo)");
     }
 
@@ -158,19 +166,13 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     }
 
     private static void createNativeSidecars(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS aicy_k100_timeline("
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + KUAIDI100_TIMELINE_TABLE + "("
                 + "normalized_waybill TEXT PRIMARY KEY NOT NULL,"
                 + "waybill TEXT NOT NULL,courier_code TEXT DEFAULT '',"
                 + "company_name TEXT DEFAULT '',status_code TEXT DEFAULT '',"
                 + "latest_time TEXT DEFAULT '',latest_detail TEXT DEFAULT '',"
                 + "tracks_json TEXT DEFAULT '[]',updated_at INTEGER NOT NULL)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS aicy_v4_timeline("
-                + "normalized_waybill TEXT PRIMARY KEY NOT NULL,"
-                + "waybill TEXT NOT NULL,courier_code TEXT DEFAULT '',"
-                + "company_name TEXT DEFAULT '',status_code TEXT DEFAULT '',"
-                + "latest_time TEXT DEFAULT '',latest_detail TEXT DEFAULT '',"
-                + "tracks_json TEXT DEFAULT '[]',updated_at INTEGER NOT NULL)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS aicy_interface6_timeline("
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + V4_TIMELINE_TABLE + "("
                 + "normalized_waybill TEXT PRIMARY KEY NOT NULL,"
                 + "waybill TEXT NOT NULL,courier_code TEXT DEFAULT '',"
                 + "company_name TEXT DEFAULT '',status_code TEXT DEFAULT '',"
@@ -201,10 +203,10 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 "structured_status", "INTEGER NOT NULL DEFAULT 0");
         addColumnIfMissing(db, OWNER_MANUAL_TIMELINE_TABLE,
                 "detail_url", "TEXT DEFAULT ''");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_owner_manual_timeline_waybill_idx ON "
+        db.execSQL("CREATE INDEX IF NOT EXISTS owner_manual_timeline_waybill_idx ON "
                 + OWNER_MANUAL_TIMELINE_TABLE
                 + "(binding_source,normalized_waybill)");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_owner_manual_timeline_success_idx ON "
+        db.execSQL("CREATE INDEX IF NOT EXISTS owner_manual_timeline_success_idx ON "
                 + OWNER_MANUAL_TIMELINE_TABLE + "(owner_row_id,success_at)");
         db.execSQL("CREATE TABLE IF NOT EXISTS " + OWNER_MANUAL_ROUTE_TABLE + "("
                 + "owner_row_id INTEGER NOT NULL,normalized_waybill TEXT NOT NULL,"
@@ -212,7 +214,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 + "binding_source TEXT NOT NULL,binding_generation TEXT NOT NULL,"
                 + "provider TEXT NOT NULL,detail_url TEXT NOT NULL,"
                 + "success_at INTEGER NOT NULL,PRIMARY KEY(owner_row_id,provider))");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_owner_manual_route_waybill_idx ON "
+        db.execSQL("CREATE INDEX IF NOT EXISTS owner_manual_route_waybill_idx ON "
                 + OWNER_MANUAL_ROUTE_TABLE + "(binding_source,normalized_waybill)");
         db.execSQL("CREATE TABLE IF NOT EXISTS " + OWNER_MANUAL_RETRY_TABLE + "("
                 + "owner_row_id INTEGER PRIMARY KEY NOT NULL,"
@@ -225,9 +227,9 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 "attempt_token", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(db, OWNER_MANUAL_RETRY_TABLE,
                 "active_until", "INTEGER NOT NULL DEFAULT 0");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_owner_manual_retry_due_idx ON "
+        db.execSQL("CREATE INDEX IF NOT EXISTS owner_manual_retry_due_idx ON "
                 + OWNER_MANUAL_RETRY_TABLE + "(binding_source,last_attempt_at)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS aicy_k100_pending("
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + KUAIDI100_PENDING_TABLE + "("
                 + "normalized_waybill TEXT NOT NULL,"
                 + "waybill TEXT NOT NULL,courier_code TEXT DEFAULT '',"
                 + "company_name TEXT DEFAULT '',phone TEXT DEFAULT '',"
@@ -237,17 +239,17 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 + "created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,"
                 + "last_attempt_at INTEGER NOT NULL DEFAULT 0,"
                 + "PRIMARY KEY(normalized_waybill,binding_source))");
-        db.execSQL("CREATE TABLE IF NOT EXISTS aicy_order_projection("
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + ORDER_PROJECTION_TABLE + "("
                 + "normalized_source_id TEXT NOT NULL,binding_source TEXT NOT NULL,"
                 + "source_id TEXT NOT NULL,display_waybill TEXT NOT NULL,"
                 + "normalized_display_waybill TEXT NOT NULL,"
                 + "carrier_name TEXT DEFAULT '',tracks_json TEXT DEFAULT '[]',"
                 + "updated_at INTEGER NOT NULL,"
                 + "PRIMARY KEY(normalized_source_id,binding_source))");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_order_projection_display_idx ON "
+        db.execSQL("CREATE INDEX IF NOT EXISTS order_projection_display_idx ON "
                 + ORDER_PROJECTION_TABLE
                 + "(normalized_display_waybill,binding_source)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS aicy_unbound_association("
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + UNBOUND_ASSOCIATION_TABLE + "("
                 + "waybill_hash TEXT NOT NULL,binding_source TEXT NOT NULL,"
                 + "phone_hash TEXT NOT NULL,"
                 + "PRIMARY KEY(waybill_hash,binding_source,phone_hash))");
@@ -260,10 +262,10 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 "route_credential", "TEXT DEFAULT ''");
         addColumnIfMissing(db, KUAIDI100_PENDING_TABLE,
                 "binding_source", "TEXT DEFAULT 'interface6'");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_k100_pending_attempt_idx "
-                + "ON aicy_k100_pending(binding_source,last_attempt_at,created_at)");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_unbound_association_phone_idx "
-                + "ON aicy_unbound_association(binding_source,phone_hash)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS k100_pending_attempt_idx "
+                + "ON " + KUAIDI100_PENDING_TABLE + "(binding_source,last_attempt_at,created_at)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS unbound_association_phone_idx "
+                + "ON " + UNBOUND_ASSOCIATION_TABLE + "(binding_source,phone_hash)");
     }
 
     private static void createAutomaticOwnershipTables(SQLiteDatabase db) {
@@ -283,7 +285,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 "owner_phone", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(db, AUTOMATIC_OWNERSHIP_TABLE,
                 "owner_binding_generation", "TEXT NOT NULL DEFAULT ''");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_automatic_ownership_provider_idx ON "
+        db.execSQL("CREATE INDEX IF NOT EXISTS automatic_ownership_provider_idx ON "
                 + AUTOMATIC_OWNERSHIP_TABLE
                 + "(owner_provider,owner_binding_generation,owner_row_id)");
         db.execSQL("CREATE TABLE IF NOT EXISTS " + AUTOMATIC_OBSERVATION_TABLE + "("
@@ -315,7 +317,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 "route_interface", "TEXT DEFAULT ''");
         addColumnIfMissing(db, AUTOMATIC_OBSERVATION_TABLE,
                 "route_credential", "TEXT DEFAULT ''");
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_automatic_observation_candidate_idx ON "
+        db.execSQL("CREATE INDEX IF NOT EXISTS automatic_observation_candidate_idx ON "
                 + AUTOMATIC_OBSERVATION_TABLE
                 + "(normalized_waybill,qualified,observed_at,binding_generation)");
     }
@@ -470,7 +472,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         db.execSQL("DROP TABLE " + KUAIDI100_PENDING_TABLE);
         db.execSQL("ALTER TABLE " + replacement + " RENAME TO "
                 + KUAIDI100_PENDING_TABLE);
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_k100_pending_attempt_idx ON "
+        db.execSQL("CREATE INDEX IF NOT EXISTS k100_pending_attempt_idx ON "
                 + KUAIDI100_PENDING_TABLE
                 + "(binding_source,last_attempt_at,created_at)");
     }
@@ -490,7 +492,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         copyOrderProjections(db, replacement, "interface6", "I6-JD", "I5-JD");
         db.execSQL("DROP TABLE " + ORDER_PROJECTION_TABLE);
         db.execSQL("ALTER TABLE " + replacement + " RENAME TO " + ORDER_PROJECTION_TABLE);
-        db.execSQL("CREATE INDEX IF NOT EXISTS aicy_order_projection_display_idx ON "
+        db.execSQL("CREATE INDEX IF NOT EXISTS order_projection_display_idx ON "
                 + ORDER_PROJECTION_TABLE
                 + "(normalized_display_waybill,binding_source)");
         pruneOrphanedKuaidi100Timelines(db);
@@ -643,7 +645,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         // The unscoped legacy sidecar was written only by the account source that is now v5.
         // If another source owns the same identity, fail closed and let it fetch its own timeline.
         db.execSQL("INSERT OR IGNORE INTO " + ACCOUNT_V5_TIMELINE_TABLE + "(" + columns + ") "
-                + "SELECT " + columns + " FROM " + INTERFACE6_TIMELINE_TABLE + " t"
+                + "SELECT " + columns + " FROM " + LEGACY_INTERFACE6_TIMELINE_TABLE + " t"
                 + " WHERE EXISTS (SELECT 1 FROM server_express e WHERE"
                 + " (e.normalizedMailNo=t.normalized_waybill"
                 + " OR UPPER(e.mailNo)=UPPER(t.waybill))"
@@ -886,6 +888,73 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
             if (updatedAt != other.updatedAt) return updatedAt > other.updatedAt;
             return rowId > other.rowId;
         }
+    }
+
+    private static boolean tableExists(SQLiteDatabase db, String table) {
+        try (Cursor cursor = db.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                new String[]{table})) {
+            return cursor.moveToFirst();
+        }
+    }
+
+    /** v21：aicy_ 前缀的表整表改名，索引删旧建新（建新在 createNativeSidecars 里）。 */
+    static String[][] legacyAicyTableRenames() {
+        return new String[][]{
+                {"aicy_k100_timeline", KUAIDI100_TIMELINE_TABLE},
+                {"aicy_v4_timeline", V4_TIMELINE_TABLE},
+                {"aicy_account_v5_timeline", ACCOUNT_V5_TIMELINE_TABLE},
+                {"aicy_account_v6_timeline", ACCOUNT_V6_TIMELINE_TABLE},
+                {"aicy_owner_manual_timeline", OWNER_MANUAL_TIMELINE_TABLE},
+                {"aicy_owner_manual_route", OWNER_MANUAL_ROUTE_TABLE},
+                {"aicy_owner_manual_retry", OWNER_MANUAL_RETRY_TABLE},
+                {"aicy_k100_pending", KUAIDI100_PENDING_TABLE},
+                {"aicy_order_projection", ORDER_PROJECTION_TABLE},
+                {"aicy_unbound_association", UNBOUND_ASSOCIATION_TABLE},
+                {"aicy_automatic_ownership", AUTOMATIC_OWNERSHIP_TABLE},
+                {"aicy_automatic_observation", AUTOMATIC_OBSERVATION_TABLE},
+        };
+    }
+
+    private static final String[] LEGACY_AICY_INDEXES = {
+            "aicy_express_phone_source_idx", "aicy_express_mail_idx",
+            "aicy_express_normalized_mail_idx", "aicy_owner_manual_timeline_waybill_idx",
+            "aicy_owner_manual_timeline_success_idx", "aicy_owner_manual_route_waybill_idx",
+            "aicy_owner_manual_retry_due_idx", "aicy_order_projection_display_idx",
+            "aicy_k100_pending_attempt_idx", "aicy_unbound_association_phone_idx",
+            "aicy_automatic_ownership_provider_idx", "aicy_automatic_observation_candidate_idx",
+    };
+
+    private static void renameLegacyAicyTables(SQLiteDatabase db) {
+        for (String index : LEGACY_AICY_INDEXES) {
+            db.execSQL("DROP INDEX IF EXISTS " + index);
+        }
+        for (String[] rename : legacyAicyTableRenames()) {
+            if (!tableExists(db, rename[0])) continue;
+            db.execSQL("DROP TABLE IF EXISTS " + rename[1]);
+            db.execSQL("ALTER TABLE " + rename[0] + " RENAME TO " + rename[1]);
+        }
+    }
+
+    /**
+     * v21：按行手动 sidecar 的 provider 列改成统一槽名（interface5→v5_query、interface6→v6_list、
+     * v4→v4_query、meizu→v6_picker、kuaidi100/web→k100_h5）；oppo 早已不接入，行直接删。
+     */
+    private static void migrateTimelineSlotNames(SQLiteDatabase db) {
+        String rename = "CASE LOWER(provider)"
+                + " WHEN 'interface5' THEN 'v5_query'"
+                + " WHEN 'interface6' THEN 'v6_list'"
+                + " WHEN 'v4' THEN 'v4_query'"
+                + " WHEN 'meizu' THEN 'v6_picker'"
+                + " WHEN 'kuaidi100' THEN 'k100_h5'"
+                + " WHEN 'web' THEN 'k100_h5'"
+                + " ELSE provider END";
+        db.execSQL("DELETE FROM " + OWNER_MANUAL_TIMELINE_TABLE
+                + " WHERE LOWER(provider)='oppo'");
+        db.execSQL("UPDATE OR REPLACE " + OWNER_MANUAL_TIMELINE_TABLE
+                + " SET provider=" + rename);
+        db.execSQL("UPDATE OR REPLACE " + OWNER_MANUAL_ROUTE_TABLE
+                + " SET provider=" + rename);
     }
 
     private static void dropObsoleteTables(SQLiteDatabase db) {

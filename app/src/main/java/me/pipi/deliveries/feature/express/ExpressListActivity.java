@@ -1,5 +1,6 @@
 package me.pipi.deliveries.feature.express;
 
+import me.pipi.deliveries.data.TimelineSlot;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Dialog;
@@ -55,13 +56,17 @@ import me.pipi.deliveries.background.ExpressScheduler;
 import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
+import me.pipi.deliveries.model.ManualQuerySuccess;
+import me.pipi.deliveries.data.ManualRoutePolicy;
 import me.pipi.deliveries.model.ExpressItem;
+import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.network.ExpressApi;
 import me.pipi.deliveries.network.ExpressAccountSource;
 import me.pipi.deliveries.network.ExpressDiscoveryClient;
 import me.pipi.deliveries.network.ExpressQueryCancellation;
 import me.pipi.deliveries.network.ExpressSubscriptionClient;
+import me.pipi.deliveries.network.ExpressLog;
 import me.pipi.deliveries.network.ManualQueryCoordinator;
 import me.pipi.deliveries.network.ManualQueryRoutingPolicy;
 
@@ -79,13 +84,13 @@ public final class ExpressListActivity extends AppCompatActivity {
     public static final String EXTRA_FOCUS_QUERY = "focus_express_query";
     private static final long CARRIER_DETECT_DELAY_MS = 450L;
     private static final long CARRIER_DETECT_TIMEOUT_MS = 15_000L;
-    private static final long MANUAL_QUERY_TIMEOUT_MS = 30_000L;
+    // 三端同预算（用户定 2026-09-05）：手动链每级 15 秒；Lite 的 picker ∥ v4_query 并发跑，整轮就是 15 秒。
+    private static final long MANUAL_QUERY_TIMEOUT_MS = 15_000L;
     private static final String STATE_PHONE_TAIL_DIALOG = "phone_tail_dialog";
     private static final String STATE_PHONE_TAIL_WAYBILL = "phone_tail_waybill";
     private static final String STATE_PHONE_TAIL_COURIER = "phone_tail_courier";
     private static final String STATE_PHONE_TAIL_MISMATCH = "phone_tail_mismatch";
     private static final String STATE_PHONE_TAIL_VALUE = "phone_tail_value";
-    private static final String STATE_MANUAL_QUERY_CANCELLED = "manual_query_cancelled";
     private final ArrayList<ExpressItem> items = new ArrayList<>();
     private ExpressAdapter adapter;
     private ListView list;
@@ -123,7 +128,18 @@ public final class ExpressListActivity extends AppCompatActivity {
     private ExpressOrderProjectionRetryStore.AttemptToken orderProjectionAttemptToken;
     private boolean orderProjectionCaptureEnabled;
     private boolean resetOrderProjectionAttemptsAfterCapture;
-    private final ManualQueryStopNotice manualQueryStopNotice = new ManualQueryStopNotice();
+    /** 下拉刷新的结果 toast 只在这次手势对应的同步结束时弹一次（AGENTS §11 统一表）。 */
+    private boolean pullRefreshPending;
+    // 15 秒只收起转圈，不下结论：一轮同步（列表 + 逐票详情 + 手动链）常常超过 15 秒，之前这里
+    // 直接弹「刷新失败」，同步其实还在跑、最后还成功了（Fold7 2026-09-05 19:05 实测 25 秒）。
+    // iOS / Pipi 都是等整轮跑完再按计数弹；真正的失败文案只在 60 秒都没等到结束广播时兜底。
+    private final Runnable pullRefreshTimeout = () -> swipeRefresh.setRefreshing(false);
+    private final Runnable pullRefreshHardTimeout = () -> {
+        swipeRefresh.setRefreshing(false);
+        if (!pullRefreshPending) return;
+        pullRefreshPending = false;
+        Toast.makeText(this, ExpressToastCopy.REFRESH_FAILED, Toast.LENGTH_SHORT).show();
+    };
 
     private final BroadcastReceiver changes = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -131,6 +147,7 @@ public final class ExpressListActivity extends AppCompatActivity {
                     && ExpressRepository.ACTION_SYNC_FINISHED.equals(intent.getAction())) {
                 if (orderProjectionCapture == null) attemptedOrderProjections.clear();
                 else resetOrderProjectionAttemptsAfterCapture = true;
+                announcePullRefreshOutcome(intent);
             }
             reload();
         }
@@ -140,14 +157,11 @@ public final class ExpressListActivity extends AppCompatActivity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         orderProjectionRetries = new ExpressOrderProjectionRetryStore(this);
-        if (state != null) {
-            manualQueryStopNotice.restore(
-                    state.getBoolean(STATE_MANUAL_QUERY_CANCELLED, false));
-        }
         setContentView(R.layout.activity_express_list);
         list = findViewById(android.R.id.list);
         empty = findViewById(R.id.emptyView);
         swipeRefresh = findViewById(R.id.swipe_refresh);
+        ExpressPullRefreshStyle.apply(swipeRefresh);
         retentionNotice = getLayoutInflater().inflate(
                 R.layout.footer_express_retention_notice, list, false);
         list.addFooterView(retentionNotice, null, false);
@@ -194,7 +208,9 @@ public final class ExpressListActivity extends AppCompatActivity {
         }
         queryContainer.setStartIconOnClickListener(view -> queryWaybill());
         queryInput.setOnEditorActionListener((view, actionId, event) -> {
-            boolean enter = event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER;
+            // 实体键盘 / adb 的回车会按 DOWN、UP 各回调一次，只认一次，免得已在列表的件开两个详情。
+            boolean enter = event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                    && event.getAction() == KeyEvent.ACTION_DOWN;
             if (actionId == EditorInfo.IME_ACTION_SEARCH || enter) {
                 queryWaybill();
                 return true;
@@ -207,19 +223,15 @@ public final class ExpressListActivity extends AppCompatActivity {
             startActivity(new Intent(this, ExpressManagerActivity.class));
             return true;
         });
-        swipeRefresh.setColorSchemeColors(MaterialColors.getColor(
-                swipeRefresh, androidx.appcompat.R.attr.colorPrimary));
-        swipeRefresh.setProgressBackgroundColorSchemeColor(MaterialColors.getColor(
-                swipeRefresh, com.google.android.material.R.attr.colorSurfaceContainer));
-        float density = getResources().getDisplayMetrics().density;
-        swipeRefresh.setProgressViewOffset(
-                true,
-                0,
-                Math.round(24f * density));
-        swipeRefresh.setDistanceToTriggerSync(Math.round(64f * density));
+        // 下拉刷新圈用 SwipeRefreshLayout 的默认样式（用户定 2026-09-05）：自定义的 24dp 停靠位
+        // 压在第一行文字上，surfaceContainer 底色又跟页面几乎同色，看起来像一块糊住文字的污渍。
         swipeRefresh.setOnRefreshListener(() -> {
+            pullRefreshPending = true;
             ExpressScheduler.requestNow(this);
-            swipeRefresh.postDelayed(() -> swipeRefresh.setRefreshing(false), 15_000L);
+            swipeRefresh.removeCallbacks(pullRefreshTimeout);
+            swipeRefresh.removeCallbacks(pullRefreshHardTimeout);
+            swipeRefresh.postDelayed(pullRefreshTimeout, 15_000L);
+            swipeRefresh.postDelayed(pullRefreshHardTimeout, 60_000L);
         });
         requestNotificationPermission();
         reload();
@@ -267,15 +279,19 @@ public final class ExpressListActivity extends AppCompatActivity {
         }
         reload();
         if (currentWaybill().length() >= 6) scheduleCarrierDetection();
-        if (manualQueryStopNotice.consume()) {
-            Toast.makeText(this, R.string.manual_query_cancelled, Toast.LENGTH_SHORT).show();
-        }
     }
 
     @Override
     protected void onStop() {
-        manualQueryStopNotice.markIfActive(querying);
-        invalidateInteractiveNetworkOperations();
+        pullRefreshPending = false;
+        if (swipeRefresh != null) {
+            swipeRefresh.removeCallbacks(pullRefreshTimeout);
+            swipeRefresh.removeCallbacks(pullRefreshHardTimeout);
+        }
+        // 手动查件不随页面 stop 取消：picker 一回来就开透明预览（另一个 Activity），列表页随即 onStop，
+        // 原来这里把整条手动链连同落库一起取消——Fold7 2026-09-05 三次「查完没进列表」都是它，线程
+        // 转储里根本没有在跑的查询。链在 30 秒 deadline 内自己结束并落库；只有页面销毁才取消。
+        invalidateCarrierDetection();
         orderProjectionCaptureEnabled = false;
         resetOrderProjectionAttemptsAfterCapture = false;
         if (orderProjectionCapture != null) {
@@ -293,8 +309,6 @@ public final class ExpressListActivity extends AppCompatActivity {
 
     @Override
     protected void onSaveInstanceState(Bundle state) {
-        state.putBoolean(STATE_MANUAL_QUERY_CANCELLED,
-                manualQueryStopNotice.snapshot() || querying);
         if (phoneTailDialog != null && phoneTailDialog.isShowing()) {
             state.putBoolean(STATE_PHONE_TAIL_DIALOG, true);
             state.putString(STATE_PHONE_TAIL_WAYBILL, phoneTailWaybill);
@@ -304,28 +318,6 @@ public final class ExpressListActivity extends AppCompatActivity {
                     phoneTailDigits == null ? "" : phoneTail(phoneTailDigits));
         }
         super.onSaveInstanceState(state);
-    }
-
-    static final class ManualQueryStopNotice {
-        private boolean pending;
-
-        void markIfActive(boolean active) {
-            pending |= active;
-        }
-
-        void restore(boolean saved) {
-            pending |= saved;
-        }
-
-        boolean snapshot() {
-            return pending;
-        }
-
-        boolean consume() {
-            boolean result = pending;
-            pending = false;
-            return result;
-        }
     }
 
     @Override
@@ -339,9 +331,24 @@ public final class ExpressListActivity extends AppCompatActivity {
         dismissDialog(phoneTailDialog);
         dismissDialog(deleteConfirmationDialog);
         invalidateInteractiveNetworkOperations();
+        cancelAddChainCapture();
         queryWorker.shutdownNow();
         carrierDetectWorker.shutdownNow();
         super.onDestroy();
+    }
+
+    /** 同步结束：按这轮的计数弹「刷新完成 / 当前已是最新 / 部分 / 失败」，与 iOS 同一套判据。 */
+    private void announcePullRefreshOutcome(Intent intent) {
+        if (!pullRefreshPending) return;
+        pullRefreshPending = false;
+        swipeRefresh.removeCallbacks(pullRefreshTimeout);
+        swipeRefresh.removeCallbacks(pullRefreshHardTimeout);
+        swipeRefresh.setRefreshing(false);
+        Toast.makeText(this, ExpressToastCopy.refreshSummary(
+                intent.getIntExtra(ExpressRepository.EXTRA_SYNC_ATTEMPTED, 0),
+                intent.getIntExtra(ExpressRepository.EXTRA_SYNC_SUCCEEDED, 0),
+                intent.getIntExtra(ExpressRepository.EXTRA_SYNC_FAILED, 0)),
+                Toast.LENGTH_SHORT).show();
     }
 
     private void reload() {
@@ -368,6 +375,25 @@ public final class ExpressListActivity extends AppCompatActivity {
                     orderProjectionRetries.beginAttempt(
                             candidate, System.currentTimeMillis(), false);
             if (token == null) {
+                continue;
+            }
+            // The account feed's own track text may already name the carrier waybill; read it
+            // directly            // and keep the H5 projection for orders whose text never names one.
+            ExpressOrderTextIdentity.Identity textIdentity =
+                    ExpressOrderTextIdentity.fromTracksJson(
+                            candidate.tracksJson, candidate.waybill);
+            if (textIdentity != null) {
+                String owner = candidate.stateOwner.isEmpty()
+                        ? candidate.source : candidate.stateOwner;
+                boolean saved = ExpressRepository.get(this).saveOrderProjection(
+                        candidate, ExpressAccountSource.bindingSourceForOwner(owner),
+                        textIdentity.waybill, textIdentity.companyName);
+                settleOrderProjectionAttempt(candidate, token, saved);
+                if (saved) {
+                    ExpressScheduler.requestNow(this);
+                    reload();
+                    return;
+                }
                 continue;
             }
             ExpressHomeOrderProjectionCapture capture =
@@ -446,17 +472,34 @@ public final class ExpressListActivity extends AppCompatActivity {
                 waybill, detectedWaybill, detectedCourierCode));
     }
 
+    private long lastQuerySubmitAtMs;
+
     private void queryWaybill(String suppliedPhoneTail, String suppliedCourierHint) {
         String waybill = queryInput.getText() == null
                 ? "" : queryInput.getText().toString().trim();
         if (querying) return;
+        // 同一次回车可能既走 IME 动作又走按键事件（实体键盘 / adb），400 毫秒内只认第一次。
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - lastQuerySubmitAtMs < 400L) return;
+        lastQuerySubmitAtMs = now;
         if (waybill.length() < 6) {
-            String message = getString(R.string.invalid_waybill);
-            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+            // 校验类文案内联显示，不弹 toast（AGENTS §11 统一表，三端同）。
+            queryContainer.setError(getString(R.string.invalid_waybill));
+            return;
+        }
+        // 已在列表里的单号不再花一次识别、一轮查询或第二行（用户定 2026-09-04，iOS/Pipi 同）。
+        ExpressItem listed = ExpressRepository.get(this).findByWaybill(
+                waybill, ExpressAccountSource.bindingSource(this));
+        if (listed != null) {
+            queryContainer.setError(null);
+            Toast.makeText(this, ExpressToastCopy.ALREADY_IN_LIST, Toast.LENGTH_SHORT).show();
+            // 用户定 2026-09-05：提示「已在列表」的同时打开那一票的详情（iOS/Pipi 同）。
+            startActivity(new Intent(this, ExpressDetailActivity.class).putExtra(
+                    ExpressDetailActivity.EXTRA_ROW_ID, listed.rowId));
             return;
         }
         querying = true;
-        Toast.makeText(this, R.string.manual_querying, Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, ExpressToastCopy.MANUAL_QUERYING, Toast.LENGTH_SHORT).show();
         long operationGeneration = ++queryGeneration;
         queryContainer.setError(null);
         queryInput.setEnabled(false);
@@ -514,27 +557,26 @@ public final class ExpressListActivity extends AppCompatActivity {
                                         operationCancellation),
                                 existing == null ? null
                                         : repository.manualTimelineCandidate(
-                                        existing, "meizu"),
+                                        existing, TimelineSlot.V6_PICKER),
                                 () -> {
                                     String courierHint = attemptedCourierHint.get();
                                     if (courierHint.isEmpty()) {
+                                        ExpressLog.line("", "v4_query", "manual", "detect_started");
                                         courierHint = manualApi.detect(
                                                 waybill, operationCancellation);
                                         attemptedCourierHint.set(courierHint);
+                                        ExpressLog.line("", "v4_query", "manual", "detect_finished",
+                                                "hint", courierHint.isEmpty() ? "-" : courierHint);
                                     }
+                                    ExpressLog.line("", "v4_query", "manual", "query_started");
                                     return manualApi.queryMoto(
                                             waybill, courierHint, operationCancellation);
                                 },
                                 ManualQueryRoutingPolicy.includesMoto(existing),
-                                pickerPreview -> runOnUiThread(() -> {
-                                    if (isFinishing() || isDestroyed()
-                                            || !queryOperationIsCurrent(
-                                            operationGeneration, queryBindingSource)) return;
-                                    startActivity(
-                                            ExpressDetailActivity.transientPickerPreviewIntent(
-                                                    this, pickerPreview,
-                                                    suppliedPhoneTail, queryBindingSource));
-                                }));
+                                // 用户定 2026-09-05：不再在链跑完前先开 K100 页的透明预览——每次搜索
+                                // 都打开那一页会把设备当天的网页配额用光（iOS/Pipi 只在隐藏 WebView
+                                // 里按需抓），查完直接进落库后的详情。
+                                null);
                 ExpressQueryResult result = manualBatch.detailSelected();
                 if (result == null) throw new IllegalStateException("暂无轨迹");
                 String queryPhone = !result.phone.isEmpty()
@@ -542,14 +584,32 @@ public final class ExpressListActivity extends AppCompatActivity {
                         : suppliedPhoneTail == null || suppliedPhoneTail.isEmpty()
                         ? existing == null ? "" : existing.phone
                         : suppliedPhoneTail;
+                // 用户定 2026-09-05（夜）：加件链与 iOS/Pipi 同链——picker 与 v4_query 都没到起点时，
+                // 抓一次 picker 给的 K100 页当第三级（同一运单 30 分钟冷却），落进本件 K100 槽。
+                List<ManualQuerySuccess> writes = new ArrayList<>(manualBatch.successes);
+                String kuaidi100Route = kuaidi100AddCaptureRoute(manualBatch.successes);
+                if (!kuaidi100Route.isEmpty()) {
+                    ExpressQueryResult captured = captureKuaidi100ForAddChain(
+                            waybill, kuaidi100Route, result, queryPhone, operationCancellation);
+                    if (captured != null) {
+                        writes.add(new ManualQuerySuccess(
+                                TimelineSlot.K100_H5, captured, System.currentTimeMillis(),
+                                false));
+                        if (Kuaidi100TimelinePolicy.timedTrackCount(captured)
+                                > Kuaidi100TimelinePolicy.timedTrackCount(result)) {
+                            result = captured;
+                        }
+                    }
+                }
                 repository.saveManualQueryBatch(
-                        existing, ownerClaim, manualBatch.successes,
+                        existing, ownerClaim, writes,
                         queryPhone, queryBindingSource);
                 if (!Kuaidi100TimelinePolicy.hasTimedTracking(result)
                         && repository.enqueuePendingManual(
                         result, queryPhone, queryBindingSource)) {
                     ExpressScheduler.ensureScheduled(this);
                 }
+                ExpressQueryResult presented = result;
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()
                             || !queryOperationIsCurrent(
@@ -562,22 +622,22 @@ public final class ExpressListActivity extends AppCompatActivity {
                     queryInput.setEnabled(true);
                     queryInput.setText("");
                     Toast.makeText(this,
-                            Kuaidi100TimelinePolicy.hasRealTracking(result)
-                                    ? R.string.manual_query_success
-                                    : R.string.manual_query_no_track,
+                            Kuaidi100TimelinePolicy.hasRealTracking(presented)
+                                    ? ExpressToastCopy.MANUAL_QUERY_SUCCEEDED
+                                    : ExpressToastCopy.MANUAL_QUERY_NO_TRACK,
                             Toast.LENGTH_SHORT).show();
                     startActivity(ExpressDetailActivity.persistedPreviewIntent(
-                            this, result, queryPhone, queryBindingSource));
+                            this, presented, queryPhone, queryBindingSource));
                 });
             } catch (Throwable failure) {
                 String rawMessage = failure.getMessage() == null ? "" : failure.getMessage();
                 boolean timeout = failure instanceof InterruptedException
                         || rawMessage.contains("超时");
                 String message = timeout
-                        ? getString(R.string.manual_query_timeout)
+                        ? ExpressToastCopy.MANUAL_QUERY_TIMEOUT
                         : rawMessage.contains("暂无轨迹")
-                        ? getString(R.string.manual_query_no_track)
-                        : getString(R.string.manual_query_failure);
+                        ? ExpressToastCopy.MANUAL_QUERY_NO_TRACK
+                        : ExpressToastCopy.MANUAL_QUERY_FAILED;
                 String retryCourierHint = attemptedCourierHint.get();
                 boolean needsPhone = failure instanceof ExpressApi.QueryException
                         && ((ExpressApi.QueryException) failure).needsPhoneTail();
@@ -614,6 +674,93 @@ public final class ExpressListActivity extends AppCompatActivity {
                 });
             }
         });
+    }
+
+    private ExpressKuaidi100TimelineCapture addChainCapture;
+
+    /**
+     * 加件链第三级的入口：picker 与 v4_query 都没到起点、且 picker 给了 K100 页地址时返回那个地址，
+     * 否则返回空串（与 iOS/Pipi「三级都没到起点才抓」同闸门）。
+     */
+    static String kuaidi100AddCaptureRoute(List<? extends ManualQuerySuccess> successes) {
+        if (successes == null) return "";
+        String route = "";
+        for (ManualQuerySuccess success : successes) {
+            if (success == null || success.result == null) continue;
+            if (Kuaidi100TimelinePolicy.hasTimelineStart(success.result)) return "";
+            if (TimelineSlot.V6_PICKER.equals(TimelineSlot.normalize(success.provider))) {
+                String candidate = ManualRoutePolicy.safeKuaidi100Url(
+                        success.result.routeCredential);
+                if (!candidate.isEmpty()) route = candidate;
+            }
+        }
+        return route;
+    }
+
+    /** 在工作线程里同步等隐藏 WebView 抓完（最多 8 秒 + 1 秒），抓到就组成 K100 槽的包。 */
+    private ExpressQueryResult captureKuaidi100ForAddChain(
+            String waybill, String route, ExpressQueryResult selected, String phone,
+            ExpressQueryCancellation cancellation) throws InterruptedException {
+        long now = System.currentTimeMillis();
+        String tail = waybill.length() <= 4 ? waybill : waybill.substring(waybill.length() - 4);
+        if (!ExpressKuaidi100CaptureCooldown.due(this, waybill, now)) {
+            ExpressLog.line("", "k100_h5", "manual", "skipped",
+                    "tail", tail, "reason", "cooldown");
+            return null;
+        }
+        ExpressKuaidi100CaptureCooldown.record(this, waybill, now);
+        ExpressLog.line("", "k100_h5", "manual", "started", "tail", tail, "reason", "add_chain");
+        java.util.concurrent.CountDownLatch finished = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<String> tracks =
+                new java.util.concurrent.atomic.AtomicReference<>("");
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed() || cancellation.isCancelled()) {
+                finished.countDown();
+                return;
+            }
+            ExpressKuaidi100TimelineCapture capture = new ExpressKuaidi100TimelineCapture(
+                    this, route, (done, tracksJson) -> {
+                        if (addChainCapture == done) addChainCapture = null;
+                        tracks.set(tracksJson == null ? "" : tracksJson);
+                        finished.countDown();
+                    });
+            addChainCapture = capture;
+            if (!capture.start()) {
+                addChainCapture = null;
+                finished.countDown();
+            }
+        });
+        boolean completed;
+        try {
+            completed = finished.await(
+                    ExpressKuaidi100TimelineCapture.CAPTURE_TIMEOUT_MS + 1_000L,
+                    java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            runOnUiThread(this::cancelAddChainCapture);
+            throw interrupted;
+        }
+        if (!completed) runOnUiThread(this::cancelAddChainCapture);
+        ExpressQueryResult captured = ExpressDetailActivity.kuaidi100CapturedResult(
+                waybill, selected.courierCode, selected.companyName, phone, tracks.get());
+        int nodes = Kuaidi100TimelinePolicy.timedTrackCount(captured);
+        if (nodes == 0) {
+            ExpressLog.line("", "k100_h5", "manual", "failed",
+                    "tail", tail, "reason", "no_tracks",
+                    "elapsedMs", System.currentTimeMillis() - now);
+            return null;
+        }
+        ExpressLog.line("", "k100_h5", "manual", "succeeded",
+                "tail", tail, "nodes", nodes,
+                "start", Kuaidi100TimelinePolicy.hasTimelineStart(captured),
+                "elapsedMs", System.currentTimeMillis() - now);
+        return captured;
+    }
+
+    private void cancelAddChainCapture() {
+        if (addChainCapture != null) {
+            addChainCapture.cancel();
+            addChainCapture = null;
+        }
     }
 
     private void scheduleCarrierDetection() {
@@ -700,7 +847,11 @@ public final class ExpressListActivity extends AppCompatActivity {
         queryTask = null;
         querying = false;
         if (queryInput != null) queryInput.setEnabled(true);
+        invalidateCarrierDetection();
+    }
 
+    /** 承运商识别只服务输入框，页面一停就取消；手动查件本身另算（见 onStop）。 */
+    private void invalidateCarrierDetection() {
         carrierDetectGeneration++;
         if (carrierDetectCancellation != null) carrierDetectCancellation.cancel();
         carrierDetectCancellation = null;
@@ -1015,8 +1166,10 @@ public final class ExpressListActivity extends AppCompatActivity {
         Dialog dialog = new MaterialAlertDialogBuilder(this)
                 .setMessage(R.string.delete_express_confirm)
                 .setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.mzuc_delete, (clickedDialog, which) ->
-                        ExpressRepository.get(this).delete(item.rowId))
+                .setPositiveButton(R.string.mzuc_delete, (clickedDialog, which) -> {
+                    ExpressRepository.get(this).delete(item.rowId);
+                    Toast.makeText(this, ExpressToastCopy.DELETED, Toast.LENGTH_SHORT).show();
+                })
                 .create();
         deleteConfirmationDialog = dialog;
         dialog.setOnDismissListener(ignored -> {
@@ -1077,21 +1230,21 @@ public final class ExpressListActivity extends AppCompatActivity {
         }
     }
 
+    /** 三端同一张状态色表（用户定 2026-09-05）：与详情页 statusColor、Pipi、iOS statusTint 同表。 */
     private static int statusColor(View view, ExpressItem item) {
-        switch (item.semantic) {
-            case CANCELLED:
-            case DANGER:
-                return MaterialColors.getColor(
-                        view, androidx.appcompat.R.attr.colorError);
-            case COMPLETED:
-                return MaterialColors.getColor(
-                        view, com.google.android.material.R.attr.colorTertiary);
-            case UNKNOWN:
-                return MaterialColors.getColor(
-                        view, com.google.android.material.R.attr.colorOnSurfaceVariant);
+        switch (item.semantic == null ? StatusSemantic.UNKNOWN : item.semantic) {
+            case DANGER: return ExpressStatusColors.DANGER;
+            case WAITING_PICKUP: return ExpressStatusColors.WAITING_PICKUP;
+            case DELIVERY: return ExpressStatusColors.DELIVERY;
+            case COMPLETED: return ExpressStatusColors.COMPLETED;
+            case PICKED:
+            case TRANSIT: return ExpressStatusColors.TRANSIT;
+            case ORDERED:
+            case SHIPPED: return ExpressStatusColors.ORDERED;
+            case CANCELLED: return ExpressStatusColors.NEUTRAL;
             default:
                 return MaterialColors.getColor(
-                        view, androidx.appcompat.R.attr.colorPrimary);
+                        view, com.google.android.material.R.attr.colorOnSurfaceVariant);
         }
     }
 

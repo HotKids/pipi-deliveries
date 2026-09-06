@@ -174,9 +174,17 @@ assert.equal(
   "查看详情",
 );
 
+// 与 Pipi 同口径（三端统一，2026-09-05）：状态没变、事件时间也没变的文案改写不是新通知——
+// 否则「摘要换成全量轨迹头条」会把早已签收的件再通知一遍（Lite 上八票同一分钟复发）。
 await notifyShipmentChange(
   shipment("DELIVERY", "快递员正在派送"),
   shipment("DELIVERY", ""),
+);
+assert.equal(scheduled.length, 1);
+const laterDelivery = shipment("DELIVERY", "");
+await notifyShipmentChange(
+  shipment("DELIVERY", "快递员正在派送"),
+  { ...laterDelivery, timeline: { ...laterDelivery.timeline, statusEventAtMs: 3 } },
 );
 assert.equal(scheduled.length, 2);
 assert.equal(scheduled[1]?.body, "物流状态已更新");
@@ -266,6 +274,18 @@ const orderedJingDong = {
     waybill: "9876543210987654",
   },
 };
+// 开关按用户看见的状态判（用户定 2026-09-06）：只开了「已下单」时，订单级展示变成「已完成」不通知；
+// 开了「已完成」才通知，标题也是「已完成」。
+await notifyShipmentChange(orderedJingDong, {
+  ...orderedJingDong,
+  statusPresentation: {
+    scope: "ORDER",
+    semantic: "COMPLETED",
+    text: "订单已完成",
+  },
+});
+assert.equal(scheduled.length, 4, "the displayed status decides the switch, not the underlying one");
+saveNotificationStatuses(["COMPLETED"], 103);
 await notifyShipmentChange(orderedJingDong, {
   ...orderedJingDong,
   statusPresentation: {
@@ -277,7 +297,7 @@ await notifyShipmentChange(orderedJingDong, {
 assert.equal(scheduled.length, 5);
 assert.equal(scheduled[4]?.title, "京东购物 7654 · 已完成");
 
-saveNotificationStatuses([], 103);
+saveNotificationStatuses([], 104);
 assert.deepEqual(loadNotificationStatuses(true), []);
 await notifyShipmentChange(
   shipment("TRANSIT", "快件离开转运中心"),
@@ -288,11 +308,11 @@ assert.equal(scheduled.length, 5);
 files.clear();
 memory.set(
   "shared:pipi_deliveries_notification_preferences_v1",
-  JSON.stringify({ schema: 1, updatedAtMs: 104, enabled: ["UNKNOWN"] }),
+  JSON.stringify({ schema: 1, updatedAtMs: 105, enabled: ["UNKNOWN"] }),
 );
 assert.deepEqual(loadNotificationStatuses(true), NOTIFICATION_STATUS_OPTIONS);
 
-saveNotificationStatuses(["DELIVERY"], 105);
+saveNotificationStatuses(["DELIVERY"], 106);
 const unknownCarrier = {
   ...shipment("DELIVERY", "未知承运商正在派送"),
   identity: {

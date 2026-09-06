@@ -138,7 +138,7 @@ assert.equal(insecureRequestAllowed, false);
 assert.equal(activeUntrustedAllowed, false);
 assert.equal(activeTrustedAllowed, true);
 assert.equal(vueDisposed, 1);
-assert.equal(vueTimeline?.provider, "web");
+assert.equal(vueTimeline?.provider, "cn_h5");
 assert.equal(vueTimeline?.waybill, WAYBILL);
 assert.equal(vueTimeline?.courierCode, "SF");
 assert.equal(vueTimeline?.companyName, "顺丰速运");

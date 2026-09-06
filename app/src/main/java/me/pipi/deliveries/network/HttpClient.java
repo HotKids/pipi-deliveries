@@ -70,6 +70,14 @@ final class HttpClient {
                                     Map<String, String> headers,
                                     ExpressQueryCancellation cancellation) throws Exception {
         if (cancellation != null) cancellation.throwIfCancelled();
+        long startedAt = System.currentTimeMillis();
+        String host;
+        try {
+            host = new URL(url).getHost();
+        } catch (Exception malformed) {
+            host = "-";
+        }
+        ExpressLog.line("", "http", "", "started", "host", host, "method", method);
         HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
         Runnable disconnect = connection::disconnect;
         if (cancellation != null) cancellation.attach(disconnect);
@@ -79,7 +87,7 @@ final class HttpClient {
                     : cancellation.remainingTimeoutMillis(15_000));
             // Opening the request body connects HttpURLConnection, so configure its finite read
             // timeout here; cancellation tears down the live connection instead of mutating it.
-            connection.setReadTimeout(cancellation == null ? 20_000
+            connection.setReadTimeout(cancellation == null ? 25_000
                     : cancellation.remainingTimeoutMillis(20_000));
             connection.setInstanceFollowRedirects(redirects);
             connection.setRequestProperty("Accept", "application/json");
@@ -116,6 +124,8 @@ final class HttpClient {
         } finally {
             if (cancellation != null) cancellation.detach(disconnect);
             disconnect.run();
+            ExpressLog.line("", "http", "", "finished", "host", host,
+                    "elapsedMs", System.currentTimeMillis() - startedAt);
         }
     }
 

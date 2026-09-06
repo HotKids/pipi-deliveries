@@ -43,7 +43,10 @@ public final class ExpressGatewayContractTest {
         assertTrue(subscription.contains("/api/express/accounts/sync"));
         assertTrue(subscription.contains("/api/express/timeline/source"));
         assertTrue(subscription.contains("put(\"interface\", \"v6\")"));
-        assertTrue(subscription.contains("put(\"mode\", \"manual\")"));
+        // 顺丰列表轮用 picker refresh，manual 留给详情/加件（2026-09-05）：同一个 post 按 mode 参数分流。
+        assertTrue(subscription.contains("put(\"mode\", mode)"));
+        assertTrue(subscription.contains("\"manual\""));
+        assertTrue(subscription.contains("\"refresh\""));
 
         assertFalse(api.contains("https://"));
         assertFalse(account.contains("https://"));

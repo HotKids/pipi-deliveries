@@ -1,3 +1,4 @@
+import { TIMELINE_SLOT } from "./timeline-slot";
 import { fetch } from "scripting";
 import type { TimelinePackage } from "../models";
 import {
@@ -82,30 +83,6 @@ export type Kuaidi100H5Diagnostics = Readonly<{
     | "invalid_track_nodes"
     | "no_usable_timed_tracks";
 }>;
-
-export function kuaidi100ToastMessage(
-  error: unknown,
-  diagnostics: Kuaidi100H5Diagnostics | null,
-): string {
-  const trackCount = diagnostics?.effectiveTrackCount || 0;
-  if (trackCount > 0) {
-    return "轨迹加载成功";
-  }
-  if (error instanceof OperationTimeoutError) {
-    return "查询超时，请稍后下拉刷新";
-  }
-  if (error instanceof Kuaidi100H5Error) {
-    if (error.code === "phone_tail") return error.message;
-    if (error.code === "network") return "网络连接异常，请稍后重试";
-    if (error.message.includes("过于频繁")) {
-      return "请求过于频繁，请稍后重试";
-    }
-    if (error.code === "carrier_unknown") return "暂时无法识别承运商";
-    return "暂未获取到可用轨迹";
-  }
-  if (diagnostics) return "暂未获取到可用轨迹";
-  return "暂未获取到可用轨迹";
-}
 
 function jsonObject(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -317,7 +294,7 @@ export async function queryKuaidi100JdTimeline(input: Readonly<{
   });
   if (!parsed.hasTimedTracking) return null;
   return {
-    provider: "kuaidi100_h5",
+    provider: TIMELINE_SLOT.K100_H5,
     complete: true,
     structuredStatus: parsed.hasStructuredStatus,
     waybill,

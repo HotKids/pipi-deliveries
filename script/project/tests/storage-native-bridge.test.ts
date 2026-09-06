@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { AppState, Shipment } from "../models";
+import { setDiagnosticsEnabled } from "../services/logger";
 
 const NOW = Date.UTC(2026, 7, 26, 12, 0, 0);
 const STATE_KEY = "pipi_deliveries_state_v1";
@@ -155,6 +156,10 @@ Object.assign(globalThis, {
   },
 });
 
+// Diagnostics are recorded only when enabled: the formal track ships with recording off
+// (user decision 2026-09-04), so a test that asserts on the log has to opt in explicitly.
+setDiagnosticsEnabled(true);
+
 const {
   emptyState,
   loadState,
@@ -245,6 +250,9 @@ function completeState(): AppState {
 
 function resetStorage(): void {
   memory.clear();
+  // The recording switch lives in the same Storage, so clearing it drops back to the formal
+  // track's default (off). Restore it, or every later diagnostics assertion sees an empty log.
+  setDiagnosticsEnabled(true);
   delayed.clear();
   delayedReads.clear();
   delayStateWrites = false;

@@ -1,5 +1,6 @@
 package me.pipi.deliveries.background;
 
+import me.pipi.deliveries.data.TimelineSlot;
 import android.content.Context;
 import android.util.Log;
 
@@ -9,11 +10,13 @@ import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.ExpressStatusNormalizer;
+import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.model.PendingExpressQuery;
 import me.pipi.deliveries.network.ExpressApi;
 import me.pipi.deliveries.network.ExpressAccountSource;
 import me.pipi.deliveries.network.ExpressDiscoveryClient;
 import me.pipi.deliveries.network.ExpressSubscriptionClient;
+import me.pipi.deliveries.feature.express.ExpressOrderTextIdentity;
 import me.pipi.deliveries.network.ManualQueryCoordinator;
 import me.pipi.deliveries.network.ManualQueryRoutingPolicy;
 
@@ -30,14 +33,23 @@ final class ExpressSyncEngine {
 
     private ExpressSyncEngine() {}
 
+    /** 这轮的 {尝试, 成功} 计数；同步串行执行，工人在广播 ACTION_SYNC_FINISHED 时读它。 */
+    private static volatile int[] currentNetwork = {0, 0};
+
+    static int[] lastSummary() {
+        int[] value = currentNetwork;
+        return new int[]{value[0], value[1]};
+    }
+
     static void syncAll(Context context) {
         ExpressRepository repository = ExpressRepository.get(context);
+        currentNetwork = new int[]{0, 0};
         repository.runInChangeBatch(() -> syncAllUnbatched(context, repository));
     }
 
     private static void syncAllUnbatched(
             Context context, ExpressRepository repository) {
-        int[] network = {0, 0};
+        int[] network = currentNetwork;
         ExpressApi localApi = new ExpressApi(context);
         String bindingSource = ExpressAccountSource.bindingSource(context);
         boolean useInterface5 = "interface5".equals(bindingSource);
@@ -146,6 +158,20 @@ final class ExpressSyncEngine {
                     }
                 }
                 ExpressItem current = repository.findByWaybill(item.waybill, bindingSource);
+                // AGENTS §103: the account feed's own order text may already name the carrier
+                // waybill ("…交付申通快递，运单号为770018906334362"). iOS reads it at parse time for
+                // every order; Lite used to read it only while the list screen was open, so a
+                // background sync left the order unprojected until the user looked at the list.
+                ExpressOrderTextIdentity.Identity textIdentity = textProjectionIdentity(current);
+                if (textIdentity != null) {
+                    String owner = current.stateOwner.isEmpty()
+                            ? current.source : current.stateOwner;
+                    if (repository.saveOrderProjection(
+                            current, ExpressAccountSource.bindingSourceForOwner(owner),
+                            textIdentity.waybill, textIdentity.companyName)) {
+                        current = repository.find(current.rowId);
+                    }
+                }
                 if (needsProjectedCarrierRecognition(current)) {
                     try {
                         String carrierName = recognizedProjectedCarrier(
@@ -165,6 +191,24 @@ final class ExpressSyncEngine {
                                 + failure.getClass().getSimpleName());
                     }
                 }
+                if ((isInterface5Owned(current) || isInterface6Owned(current))
+                        && AccountCarrierRecognition.needsRecognition(current)) {
+                    // §3.1 裁决 A: the free Kuaidi100 level runs on the client for account rows
+                    // the Worker's built-in-table sidecar left unresolved.
+                    try {
+                        ExpressItem owner = current;
+                        if (AccountCarrierRecognition.recognize(repository, owner,
+                                waybill -> localApi.recognizeCarrier(waybill, null))) {
+                            current = repository.find(current.rowId);
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw interrupted;
+                    } catch (Throwable failure) {
+                        Log.w(TAG, "Account carrier recognition failed: "
+                                + failure.getClass().getSimpleName());
+                    }
+                }
                 ExpressRepository.ManualTimelinePollClaim manualClaim =
                         usesSharedManualTimeline(current)
                         && manualChainRequired(repository, current)
@@ -176,12 +220,17 @@ final class ExpressSyncEngine {
                     ExpressRepository.ManualQueryOwnerClaim ownerClaim =
                             repository.captureManualQueryOwner(manualOwner);
                     try {
+                        // 顺丰列表轮用 picker refresh（结构化最新一条），manual 留给详情页拿 detailUrl。
+                        boolean sfListRound = manualOwner.isShunFengSource();
                         ManualQueryCoordinator.Batch manualBatch =
                                 ManualQueryCoordinator.queryPickerFirst(
-                                        () -> subscription.queryManual(
+                                        () -> sfListRound
+                                                ? subscription.queryRefresh(
+                                                context, manualOwner.displayWaybill(), null)
+                                                : subscription.queryManual(
                                                 context, manualOwner.displayWaybill(), null),
                                         repository.manualTimelineCandidate(
-                                                manualOwner, "meizu"),
+                                                manualOwner, TimelineSlot.V6_PICKER),
                                         () -> localApi.queryMoto(
                                                 manualOwner.displayWaybill(),
                                                 manualOwner.courierCode, null),
@@ -210,7 +259,7 @@ final class ExpressSyncEngine {
                                     () -> subscription.queryManual(
                                             context, manualOwner.displayWaybill(), null),
                                     repository.manualTimelineCandidate(
-                                            manualOwner, "meizu"),
+                                            manualOwner, TimelineSlot.V6_PICKER),
                                     () -> localApi.queryMoto(
                                             manualOwner.displayWaybill(),
                                             manualOwner.courierCode, null),
@@ -281,6 +330,27 @@ final class ExpressSyncEngine {
     static boolean usesSharedManualTimeline(ExpressItem item) {
         return item != null && item.usesSourceManualTakeover()
                 && (!item.isAccountOrder() || !item.projectedWaybill.isEmpty());
+    }
+
+    /**
+     * The waybill named by an unprojected account order's own track text, or null. Mirrors the
+     * iOS candidate filter: only orders whose status already reached pickup are projected
+     * (accountOrderReadyForProjection), and the text path needs no H5 and no cooldown.
+     */
+    static ExpressOrderTextIdentity.Identity textProjectionIdentity(ExpressItem current) {
+        if (current == null || !current.isAccountOrder()
+                || !current.projectedWaybill.isEmpty()
+                || !readyForOrderProjection(current.semantic)) {
+            return null;
+        }
+        return ExpressOrderTextIdentity.fromTracksJson(current.tracksJson, current.waybill);
+    }
+
+    static boolean readyForOrderProjection(StatusSemantic semantic) {
+        return semantic == StatusSemantic.PICKED || semantic == StatusSemantic.TRANSIT
+                || semantic == StatusSemantic.DELIVERY
+                || semantic == StatusSemantic.WAITING_PICKUP
+                || semantic == StatusSemantic.COMPLETED;
     }
 
     static boolean needsProjectedCarrierRecognition(ExpressItem item) {

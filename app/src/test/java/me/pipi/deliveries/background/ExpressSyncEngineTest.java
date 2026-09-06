@@ -1,6 +1,7 @@
 package me.pipi.deliveries.background;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -11,6 +12,7 @@ import java.util.Arrays;
 
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
+import me.pipi.deliveries.feature.express.ExpressOrderTextIdentity;
 import me.pipi.deliveries.model.StatusSemantic;
 
 import org.junit.Test;
@@ -102,6 +104,52 @@ public final class ExpressSyncEngineTest {
         assertFalse(ExpressSyncEngine.needsProjectedCarrierRecognition(unprojected));
         assertEquals("顺丰速运", ExpressSyncEngine.recognizedProjectedCarrier("shunfeng"));
         assertEquals("", ExpressSyncEngine.recognizedProjectedCarrier("unknown-provider"));
+    }
+
+    @Test
+    public void backgroundSyncReadsTheWaybillNamedByOrderTrackText() {
+        String tracks = "[{\"time\":\"2026-09-06 11:24:29\",\"context\":"
+                + "\"您的订单由第三方卖家拣货完成，待出库交付申通快递，运单号为770018906334362\"},"
+                + "{\"time\":\"2026-09-06 00:19:43\",\"context\":\"预计9月6日发货\"}]";
+
+        ExpressOrderTextIdentity.Identity identity = ExpressSyncEngine.textProjectionIdentity(
+                accountOrder("", StatusSemantic.PICKED, tracks));
+
+        assertEquals("770018906334362", identity.waybill);
+        assertEquals("申通快递", identity.companyName);
+    }
+
+    @Test
+    public void textProjectionWaitsForPickupAndNeverRepeatsOrLeavesAccountOrders() {
+        String tracks = "[{\"time\":\"2026-09-06 11:24:29\",\"context\":"
+                + "\"待出库交付申通快递，运单号为770018906334362\"}]";
+
+        // iOS accountOrderReadyForProjection: an order still before pickup is not projected.
+        assertNull(ExpressSyncEngine.textProjectionIdentity(
+                accountOrder("", StatusSemantic.ORDERED, tracks)));
+        assertNull(ExpressSyncEngine.textProjectionIdentity(
+                accountOrder("", StatusSemantic.SHIPPED, tracks)));
+        // An already projected order keeps its projection.
+        assertNull(ExpressSyncEngine.textProjectionIdentity(
+                accountOrder("770018906334362", StatusSemantic.PICKED, tracks)));
+        // Text that names no waybill projects nothing.
+        assertNull(ExpressSyncEngine.textProjectionIdentity(
+                accountOrder("", StatusSemantic.PICKED, "[{\"context\":\"已揽收\"}]")));
+        // A plain carrier waybill row is not an account order.
+        assertNull(ExpressSyncEngine.textProjectionIdentity(
+                sourceItem("INTERFACE5", "", "ZTO", "中通快递")));
+        assertNull(ExpressSyncEngine.textProjectionIdentity(null));
+    }
+
+    private static ExpressItem accountOrder(
+            String projectedWaybill, StatusSemantic semantic, String tracksJson) {
+        return new ExpressItem(
+                4L, "", "3613448003874424", "JD", "京东购物",
+                semantic, semantic.label, "订单进行中",
+                "2026-09-06 11:24:29", tracksJson, "", "I5-JD", "",
+                1L, 2L, "I5-JD", "I5-JD", "v5",
+                "https://example.jd.com/detail", true,
+                projectedWaybill, "", "[]", "JingDong");
     }
 
     private static ExpressItem sourceItem(

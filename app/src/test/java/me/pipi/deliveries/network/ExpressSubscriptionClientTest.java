@@ -34,7 +34,7 @@ public final class ExpressSubscriptionClientTest {
 
         assertEquals("2026-08-22 10:00:00", parsed.latestTime);
         assertEquals("快件运输中", parsed.latestDetail);
-        assertEquals("meizu", parsed.timelineProvider);
+        assertEquals("v6_picker", parsed.timelineProvider);
         assertEquals("https://m.kuaidi100.com/result.jsp?nu=TEST123456",
                 parsed.detailUrl);
         assertTrue(Kuaidi100TimelinePolicy.hasRealTracking(parsed));
@@ -195,5 +195,26 @@ public final class ExpressSubscriptionClientTest {
         ExpressSubscriptionClient.parseManualResponse(
                 new JSONObject().put("code", 0).put("data", result).toString(),
                 "JD-EXPECTED-123456");
+    }
+
+    /** picker refresh（queryByMailNoOnline）回的是列表记录形状，也要解成一条带时间的节点。 */
+    @Test
+    public void refreshRecordParsesIntoOneTimedPickerTrack() throws Exception {
+        JSONObject record = new JSONObject()
+                .put("mailNo", "SF1234567890")
+                .put("cpCode", "SF")
+                .put("logsiticsStatus", "3")
+                .put("lastLogisticDetail", "快件已到达【深圳中转场】")
+                .put("logisticsGmtModified", "2026-09-05 18:20:00")
+                .put("detailUrl", "https://m.kuaidi100.com/result.jsp?nu=SF1234567890");
+
+        ExpressQueryResult parsed = ExpressSubscriptionClient.parseManualResponse(
+                new JSONObject().put("code", 200).put("value", record.toString()).toString(),
+                "SF1234567890");
+
+        assertEquals("2026-09-05 18:20:00", parsed.latestTime);
+        assertEquals("快件已到达【深圳中转场】", parsed.latestDetail);
+        assertEquals("v6_picker", parsed.timelineProvider);
+        assertTrue(Kuaidi100TimelinePolicy.hasTimedTracking(parsed));
     }
 }

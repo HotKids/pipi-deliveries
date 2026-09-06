@@ -2,12 +2,10 @@ import {
   Button,
   HStack,
   Image,
-  Keyboard,
   List,
   Navigation,
   NavigationStack,
   ProgressView,
-  Rectangle,
   Section,
   Spacer,
   Text,
@@ -25,7 +23,7 @@ import {
   queryManualShipmentPreview,
   refreshAllShipments,
 } from "../services/sync";
-import { visibleShipments } from "../services/storage";
+import { stateLoadFailure, visibleShipments } from "../services/storage";
 import { DetailPage } from "./DetailPage";
 import {
   consumeShipmentNavigationTarget,
@@ -37,12 +35,14 @@ import {
   type ShipmentNavigationTarget,
 } from "../services/ui-state";
 import {
-  performShipmentCompletion,
   performShipmentDeletion,
 } from "../services/shipment-actions";
 import {
-  manualQueryToast,
+  errorMessage,
+  isManualQueryValidationMessage,
+  manualQueryFailureToast,
   refreshSummaryToast,
+  transientToast,
 } from "../services/ui-feedback";
 import {
   ManualCarrierDetectionCoordinator,
@@ -51,17 +51,13 @@ import {
 import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
 import { normalizeWaybill } from "../services/status";
 import {
+  displayWaybill,
   isJingDongSourceShipment,
   jingDongAutomaticH5TimelineAvailable,
   needsAutomaticManualFallback,
   unprojectedAccountOrder,
 } from "../services/shipment-policy";
-
-function message(error: unknown): string {
-  return error instanceof Error && error.message
-    ? error.message
-    : "查询失败，请稍后重试";
-}
+import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 
 export function HomePage(props: {
   state: AppState;
@@ -79,6 +75,8 @@ export function HomePage(props: {
   >(null);
   const [querying, setQuerying] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const deletingRef = useRef(false);
   const [notice, setNotice] = useState("");
   const [validationNotice, setValidationNotice] = useState("");
   const waybillRef = useRef("");
@@ -131,6 +129,8 @@ export function HomePage(props: {
 
   useEffect(() => {
     let active = true;
+    // 所有副本都迁移失败时不是空库，而是读取失败（2026-09-06 静态审查②）：进页先说一声。
+    if (stateLoadFailure()) setNotice(EXPRESS_TOAST_COPY.stateLoadFailed);
     void refreshAllShipments()
       .then((summary) => {
         if (active) props.onStateChange(summary.state);
@@ -211,8 +211,21 @@ export function HomePage(props: {
     if (queryingRef.current) return;
     const submittedWaybill = waybillRef.current;
     const submittedPhoneTail = phoneTailRef.current;
-    if (normalizeWaybill(submittedWaybill).length < 6) {
+    const submittedNormalized = normalizeWaybill(submittedWaybill);
+    if (submittedNormalized.length < 6) {
       setValidationNotice("请输入有效的快递单号");
+      return;
+    }
+    // Checked before carrier detection and before any provider round: a waybill the list already
+    // tracks must not spend a recognition call, a provider query or a second row.
+    const alreadyListed = props.state.shipments.find(
+      (shipment) => normalizeWaybill(displayWaybill(shipment)) === submittedNormalized,
+    );
+    if (alreadyListed) {
+      setValidationNotice("");
+      setNotice(EXPRESS_TOAST_COPY.alreadyInList);
+      // 用户定 2026-09-05：提示「已在列表」的同时打开那一票的详情（三端同）。
+      openShipment(alreadyListed);
       return;
     }
     queryingRef.current = true;
@@ -223,7 +236,8 @@ export function HomePage(props: {
       carrierDetectionTimerRef.current = null;
     }
     setDetectedCarrier(null);
-    setNotice("");
+    // 统一 toast（AGENTS §11）：提交即短弹一次「正在查询」，不再常驻到查完。
+    setNotice(EXPRESS_TOAST_COPY.manualQuerying);
     setValidationNotice("");
     try {
       let submittedCarrier: ManualCarrierDetection | null = null;
@@ -255,13 +269,12 @@ export function HomePage(props: {
       );
       clearQueryInputs();
     } catch (error) {
-      const value = message(error);
-      const isValidation = value.includes("快递单号")
-        || value.includes("手机尾号");
-      if (isValidation) {
+      // 校验类文案内联显示；其余一律走统一的失败 / 超时 toast，上游文案不外露。
+      const value = errorMessage(error, "");
+      if (isManualQueryValidationMessage(value)) {
         setValidationNotice(value);
       } else {
-        setNotice(value);
+        setNotice(manualQueryFailureToast(error));
       }
       if (value.includes("手机尾号")) setNeedsPhoneTail(true);
       scheduleCarrierDetection(submittedWaybill);
@@ -282,9 +295,38 @@ export function HomePage(props: {
       applyInteractiveRefreshSummary(summary);
       setNotice(refreshSummaryToast(summary));
     } catch (error) {
-      setNotice(message(error));
+      // One gesture, one outcome: refreshAllShipments resolves with failures on the line above
+      // and rejects here, so both branches have to say 刷新失败 rather than 查询失败.
+      setNotice(EXPRESS_TOAST_COPY.refreshFailed);
     } finally {
       setRefreshing(false);
+    }
+  }
+
+  // The same shape PhoneManagerPage.remove uses, down to the in-flight guard and the catch:
+  // `Dialog` is a host global (nothing in this project imports it), rows must sit inside a
+  // Section for the list to keep row identity, and an unguarded throw from a swipe action ends
+  // the whole script session instead of showing a toast (index.tsx:127-129).
+  async function confirmDelete(shipment: Shipment): Promise<void> {
+    if (deletingRef.current) return;
+    deletingRef.current = true;
+    setDeleting(true);
+    setNotice("");
+    try {
+      const confirmed = await Dialog.confirm({
+        title: "要删除此快递吗？",
+        message: "删除后，该快递及其本地物流轨迹将一并移除。",
+        cancelLabel: "取消",
+        confirmLabel: "删除",
+      });
+      if (!confirmed) return;
+      remove(shipment.identity.id);
+    } catch (error) {
+      // 删除这一个手势只有两种结果：该快递已删除 / 删除失败（AGENTS §11 统一表）。
+      setNotice(EXPRESS_TOAST_COPY.deleteFailed);
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
     }
   }
 
@@ -292,11 +334,11 @@ export function HomePage(props: {
     setNotice("");
     const result = performShipmentDeletion(id);
     if (!result.ok) {
-      setNotice(result.message);
+      setNotice(EXPRESS_TOAST_COPY.deleteFailed);
       return;
     }
     props.onStateChange(result.state);
-    setNotice("该快递已删除");
+    setNotice(EXPRESS_TOAST_COPY.deleted);
     if (shipmentNavigationTargetId(shipmentNavigationTarget) === id) {
       setShipmentNavigationTarget(null);
     }
@@ -308,19 +350,6 @@ export function HomePage(props: {
     );
   }
 
-  function forceComplete(id: string) {
-    setNotice("");
-    const result = performShipmentCompletion(id);
-    if (!result.ok) {
-      setNotice(result.message);
-      return;
-    }
-    props.onStateChange(result.state);
-    setNotice("已标记为签收");
-    if (shipmentNavigationTargetId(shipmentNavigationTarget) === id) {
-      setShipmentNavigationTarget(null);
-    }
-  }
 
   const searchFields = (
     <VStack
@@ -468,7 +497,7 @@ export function HomePage(props: {
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         navigationTitle="我的快递"
         navigationBarTitleDisplayMode="large"
-        toast={manualQueryToast(querying, notice, setNotice)}
+        toast={transientToast(notice, setNotice)}
         toolbar={{
           topBarLeading: (
             <Button buttonStyle="plain" action={() => dismiss()}>
@@ -484,12 +513,11 @@ export function HomePage(props: {
               buttonStyle="plain"
               action={() => setNotice("暂未接入")}
             >
-              <Text
+              <Image
+                systemName="plus"
                 font={17}
                 frame={{ width: 44, height: 44 }}
-              >
-                添加
-              </Text>
+              />
             </Button>
           ),
         }}
@@ -511,11 +539,11 @@ export function HomePage(props: {
                 ? manualPreviewNeedsDetailRefresh(selected)
                   ? "manual_submit"
                   : false
+                // 用户定 2026-09-04：京东详情进页只展示 feed 增量缓存，抓 H5 只在下拉。
+                // 原来这里对京东件直接给 detail_open，一进页就补查。identity_projection 保留
+                // ——那是把订单号投影成真实运单号，不是取轨迹。
                 : unprojectedAccountOrder(selected)
                   ? "identity_projection"
-                  : isJingDongSourceShipment(selected) &&
-                      !jingDongAutomaticH5TimelineAvailable(selected)
-                    ? "detail_open"
                   : needsAutomaticManualFallback(selected)
                     ? "detail_open"
                     : false}
@@ -537,26 +565,23 @@ export function HomePage(props: {
             >
               {searchFields}
             </Section>
-            {shipments.map((shipment) => (
-              <ShipmentRow
-                key={shipment.identity.id}
-                shipment={shipment}
-                onOpen={() => openShipment(shipment)}
-                onDelete={() => remove(shipment.identity.id)}
-                onForceComplete={() => forceComplete(shipment.identity.id)}
-              />
-            ))}
+            <Section>
+              {shipments.map((shipment) => (
+                <ShipmentRow
+                  key={shipment.identity.id}
+                  shipment={shipment}
+                  onOpen={() => openShipment(shipment)}
+                  onDelete={() => void confirmDelete(shipment)}
+                  deleteDisabled={deleting}
+                />
+              ))}
+            </Section>
             <VStack
               spacing={8}
               padding={{ bottom: 12 }}
               frame={{ maxWidth: "infinity" }}
               listRowSeparator="hidden"
             >
-              <Rectangle
-                fill="separator"
-                frame={{ minHeight: 0.5, maxHeight: 0.5, maxWidth: "infinity" }}
-                padding={{ leading: 60 }}
-              />
               <Text
                 font={12}
                 foregroundStyle="tertiaryLabel"

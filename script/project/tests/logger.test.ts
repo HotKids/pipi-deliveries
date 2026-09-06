@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setDiagnosticsEnabled } from "../services/logger";
 
 const memory = new Map<string, unknown>();
 let rejectWrites = false;
@@ -21,6 +22,10 @@ Object.assign(globalThis, {
     },
   },
 });
+
+// Diagnostics are recorded only when enabled: the formal track ships with recording off
+// (user decision 2026-09-04), so a test that asserts on the log has to opt in explicitly.
+setDiagnosticsEnabled(true);
 
 const {
   classifyDiagnosticError,
@@ -141,7 +146,7 @@ writeDiagnostic("binding.persisted", {
   source: "interface5",
   activeSource: "interface5",
   revision: 4,
-  interface5Bindings: 1,
+  v5Bindings: 1,
   flowId: "binding-safe",
   result: "succeeded",
   phone: "13800138000",
@@ -150,11 +155,12 @@ writeDiagnostic("binding.persisted", {
 
 const first = readDiagnostics();
 assert.equal(first.length, 1);
+// 统一用词（2026-09-05）：调用点传 interface5，落日志一律写 v5。
 assert.deepEqual(first[0]?.details, {
-  source: "interface5",
-  activeSource: "interface5",
+  source: "v5",
+  activeSource: "v5",
   revision: 4,
-  interface5Bindings: 1,
+  v5Bindings: 1,
   flowId: "binding-safe",
   result: "succeeded",
 });
@@ -195,6 +201,10 @@ writeDiagnostic("detail.refresh.stage_failed", {
 } as never, "warning");
 const cainiaoDiagnostic = readDiagnostics()[0]!;
 assert.deepEqual(cainiaoDiagnostic.details, {
+  // 统一用词（2026-09-05）：由 timelineProvider=interface5 推导出 level / interface；
+  // interface5 是 feed（v5_list），不是按件详情槽 v5_query（2026-09-06）。
+  interface: "v5",
+  level: "v5_list",
   waybillTail: "9613",
   sourceProvider: "cainiao",
   carrierCode: "YTO",
@@ -215,9 +225,10 @@ assert.deepEqual(cainiaoDiagnostic.details, {
   validTrackCount: 3,
   effectiveTrackCount: 3,
   persisted: false,
-  timelineProvider: "interface5",
-  finalTimelineProvider: "interface5",
-  detailTimelineProvider: "kuaidi100_h5",
+  // 统一用词：包名落日志时写 level 词。
+  timelineProvider: "v5_list",
+  finalTimelineProvider: "v5_list",
+  detailTimelineProvider: "k100_h5",
   detailEffectiveTrackCount: 5,
   scriptVersion: "0.5-beta19",
   clientBuild: 25,
@@ -237,9 +248,9 @@ assert.equal(
 writeDiagnostic("detail.refresh.primary_contest.completed", {
   executionBoundary: "host_budget",
   routeCaptured: true,
-  motoSupported: true,
-  motoSucceeded: false,
-  kuaidi100Succeeded: true,
+  v4QuerySupported: true,
+  v4QuerySucceeded: false,
+  k100H5Succeeded: true,
   primarySuccessCount: 1,
   primaryReachedTimelineStart: true,
   kdniaoAttempted: false,
@@ -248,9 +259,9 @@ writeDiagnostic("detail.refresh.primary_contest.completed", {
 assert.deepEqual(readDiagnostics()[0]?.details, {
   executionBoundary: "host_budget",
   routeCaptured: true,
-  motoSupported: true,
-  motoSucceeded: false,
-  kuaidi100Succeeded: true,
+  v4QuerySupported: true,
+  v4QuerySucceeded: false,
+  k100H5Succeeded: true,
   primarySuccessCount: 1,
   primaryReachedTimelineStart: true,
   kdniaoAttempted: false,
@@ -325,7 +336,7 @@ writeDiagnostic("account.sync.parsed", {
   rejectedRecords: 1,
 });
 assert.deepEqual(readDiagnostics()[0].details, {
-  source: "interface5",
+  source: "v5",
   rawRecords: 3,
   records: 2,
   rejectedRecords: 1,
@@ -368,7 +379,7 @@ writeDiagnostic("order.projection.failed", {
   viewportAvailable: false,
 });
 assert.deepEqual(readDiagnostics()[0].details, {
-  source: "interface5",
+  source: "v5",
   stage: "webview",
   errorCategory: "timeout",
   loadSettled: false,

@@ -21,8 +21,6 @@ final class ExpressWidgetApi31 {
                 logoSizeDp, TypedValue.COMPLEX_UNIT_DIP);
         views.setViewLayoutHeight(R.id.widget_compact_courier_logo,
                 logoSizeDp, TypedValue.COMPLEX_UNIT_DIP);
-        views.setViewLayoutHeight(R.id.widget_compact_identity,
-                logoSizeDp, TypedValue.COMPLEX_UNIT_DIP);
     }
 
     static void applyCompactPillIconSize(RemoteViews views, float iconSizeDp) {

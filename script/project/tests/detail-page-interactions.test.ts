@@ -12,7 +12,10 @@ const detailPage = readFileSync(
 assert.ok(detailPage.includes("const result = await copyText(waybill);"));
 assert.equal(detailPage.includes("Required Permissions"), false);
 assert.ok(detailPage.includes('systemName="doc.on.doc"'));
-assert.ok(detailPage.includes("link: `tel:${hotline}`"));
+// 官方电话走系统拨号；打不开按三端统一表提示（AGENTS §11 第 16 行）。
+assert.ok(detailPage.includes("Safari.openURL(`tel:${hotline}`)"));
+assert.ok(detailPage.includes("EXPRESS_TOAST_COPY.dialUnavailable"));
+assert.equal(detailPage.includes("link: `tel:${hotline}`"), false);
 assert.equal(detailPage.includes("<Link url={`tel:${hotline}`}>"), false);
 
 const waybillRowStart = detailPage.indexOf(
@@ -39,7 +42,7 @@ assert.equal(
 );
 assert.ok(
   waybillRow.includes(
-    '<Text font={15}>{detailCompanyName}：</Text>',
+    '<Text font={15}>{shipment.identity.companyName}：</Text>',
   ),
 );
 assert.ok(waybillRow.includes('<HStack alignment="center" spacing={5}>'));
@@ -113,12 +116,21 @@ assert.match(
   /const hasUsableDetail =[\s\S]*?selectShipmentDetailTimeline\(\s*result\.shipment,?\s*\)\.tracks\.some[\s\S]*?props\.refreshOnAppear === "manual_submit"[\s\S]*?manualDetailRefreshToast\(\s*result\.refreshed,\s*hasUsableDetail,?\s*\)/,
   "a manual-detail page must report success only when background enrichment committed usable tracks",
 );
-assert.ok(detailPage.includes("暂未获取到可用轨迹"));
-assert.ok(detailPage.includes("当前轨迹已是最新"));
+// 详情下拉的结果只能从共享文案表取（AGENTS §11）：页面不再写自由文案。
+assert.ok(detailPage.includes("detailPullToast(result.refreshed, hasUsableDetail)"));
+assert.ok(detailPage.includes("EXPRESS_TOAST_COPY.detailRefreshFailed"));
+assert.equal(detailPage.includes("暂未获取到可用轨迹"), false);
+assert.equal(detailPage.includes("当前轨迹已是最新"), false);
 assert.equal(
   detailPage.includes("result.feedback"),
   false,
   "provider-specific background feedback must not override the page-level result",
+);
+// AGENTS §11 (2026-09-03): unified express toasts travel as a typed key and render only through
+// the shared copy table, so the wording stays byte-identical with Pipi and Lite.
+assert.ok(
+  detailPage.includes("EXPRESS_TOAST_COPY[result.expressToast]"),
+  "unified express toasts must render from the shared copy table by key",
 );
 assert.equal(
   detailPage.includes("轨迹更新失败，已显示本地缓存"),
@@ -127,7 +139,7 @@ assert.equal(
 );
 assert.match(
   detailPage,
-  /catch \(error\)[\s\S]*?const errorDetails = diagnosticErrorDetails\(error\)[\s\S]*?if \(errorDetails\.errorCategory === "removed"\) return[\s\S]*?writeDiagnostic\("detail\.refresh\.ui_failed"[\s\S]*?errorDetails[\s\S]*?if \(!displayTracks\.length\)[\s\S]*?setNotice\("轨迹更新失败，请稍后重试"\)/,
+  /catch \(error\)[\s\S]*?const errorDetails = diagnosticErrorDetails\(error\)[\s\S]*?if \(errorDetails\.errorCategory === "removed"\) return[\s\S]*?writeDiagnostic\("detail\.refresh\.ui_failed"[\s\S]*?errorDetails[\s\S]*?if \(!displayTracks\.length\)[\s\S]*?setNotice\(EXPRESS_TOAST_COPY\.detailRefreshFailed\)/,
   "a pre-dispatch detail failure must remain diagnosable instead of disappearing behind the toast",
 );
 assert.match(
@@ -144,6 +156,59 @@ assert.equal(
   detailPage.includes("<Rectangle"),
   false,
   "the refresh hint must not add its own card or line",
+);
+
+// AGENTS §11: the detail sheet reads the same carrier identity the list, widget and notifications
+// read, and repairProjectedShipmentCarrier maintains. A package-local carrier is a snapshot of the
+// grab, so reading it here resurrects the leaked JD order-stage carrier the D-6 repair removed.
+assert.equal(
+  detailPage.includes("usesKuaidi100Detail"),
+  false,
+  "the detail header must not switch carrier presentation by timeline provider",
+);
+assert.equal(
+  /detailTimeline\.(courierCode|companyName)/.test(detailPage),
+  false,
+  "the selected detail package must not own carrier presentation",
+);
+assert.match(
+  detailPage,
+  /courierHotline\(\s*shipment\.identity\.courierCode,\s*shipment\.identity\.companyName,?\s*\)/,
+  "the hotline must resolve from the maintained identity carrier",
+);
+assert.match(
+  detailPage,
+  /courierCode=\{shipment\.identity\.courierCode\}\s*companyName=\{shipment\.identity\.companyName\}\s*accountOrder=\{Boolean\(\s*unprojectedAccountOrder\(shipment\),?\s*\)\}/,
+  "the detail icon must match ShipmentRow's identity-only carrier and account-order inputs",
+);
+
+// AGENTS §11: `detailEffectiveTrackCount` is one counted number across the client — sync.ts and
+// Pipi's ExpressDetailTimelinePolicy.timedTrackCount both count timed nodes — while the rendered
+// list keeps every row the source returned (AGENTS §9), so the two must not be the same expression.
+assert.match(
+  detailPage,
+  /const effectiveTrackCount = timedTracks\(detailTimeline\.tracks\)\.length;/,
+  "the logged detail track count must come from timedTracks, like sync.ts and Pipi",
+);
+assert.match(
+  detailPage,
+  /detailEffectiveTrackCount: effectiveTrackCount,\s*result: effectiveTrackCount === 0\s*\?\s*"no_result"/,
+  "the no_result gate must read the same counted number as the logged count",
+);
+assert.equal(
+  detailPage.includes("detailEffectiveTrackCount: displayTracks.length"),
+  false,
+  "the display list keeps untimed rows and must never be the counted number",
+);
+assert.match(
+  detailPage,
+  /const selectionSignature = \[[\s\S]*?String\(displayTracks\.length\),\s*String\(effectiveTrackCount\),/,
+  "the re-emit signature must notice a counted number that changed on its own",
+);
+assert.match(
+  detailPage,
+  /\{time\.time \|\| "--:--"\}/,
+  "untimed source rows must still render (AGENTS §9)",
 );
 
 console.log("detail page interaction contract tests passed");

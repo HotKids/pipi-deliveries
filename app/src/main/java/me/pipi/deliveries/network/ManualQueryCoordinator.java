@@ -1,5 +1,6 @@
 package me.pipi.deliveries.network;
 
+import me.pipi.deliveries.data.TimelineSlot;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import me.pipi.deliveries.data.ManualTimelineAuthorityPolicy;
 import me.pipi.deliveries.data.ManualRoutePolicy;
@@ -131,8 +132,28 @@ public final class ManualQueryCoordinator {
         ExpressQueryResult bestEffort = null;
         Exception lastFailure = null;
 
-        QueryOutcome pickerOutcome = queryActivatedSource(
-                new ActivatedSource("meizu", picker, false), clock);
+        // 用户定 2026-09-05：picker 与本地那一级并行（iOS 本来就是 Promise.all，Pipi 同步改）；
+        // picker 只决定 K100 那一页。之前串行，picker 一超时整条链白等。
+        ExecutorService localExecutor = null;
+        java.util.concurrent.Future<QueryOutcome> localTask = null;
+        if (includeLocal && local != null) {
+            localExecutor = Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "pipi-manual-local");
+                thread.setDaemon(true);
+                return thread;
+            });
+            localTask = localExecutor.submit(() -> queryActivatedSource(
+                    new ActivatedSource(TimelineSlot.V4_QUERY, local, false), clock));
+        }
+        QueryOutcome pickerOutcome;
+        try {
+            pickerOutcome = queryActivatedSource(
+                    new ActivatedSource(TimelineSlot.V6_PICKER, picker, false), clock);
+        } catch (Exception failure) {
+            if (localTask != null) localTask.cancel(true);
+            if (localExecutor != null) localExecutor.shutdownNow();
+            throw failure;
+        }
         if (pickerOutcome.result != null) bestEffort = pickerOutcome.result;
         if (pickerOutcome.success != null) {
             newSuccesses.add(pickerOutcome.success);
@@ -159,11 +180,22 @@ public final class ManualQueryCoordinator {
         }
         if (pickerOutcome.failure != null) lastFailure = pickerOutcome.failure;
 
-        boolean pickerHasStart = effectivePicker != null
-                && Kuaidi100TimelinePolicy.hasTimelineStart(effectivePicker.result);
-        if (includeLocal && !pickerHasStart) {
-            QueryOutcome localOutcome = queryActivatedSource(
-                    new ActivatedSource("v4", local, false), clock);
+        if (localTask != null) {
+            QueryOutcome localOutcome;
+            try {
+                localOutcome = localTask.get();
+            } catch (InterruptedException interrupted) {
+                localTask.cancel(true);
+                localExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            } catch (ExecutionException failure) {
+                localExecutor.shutdownNow();
+                Throwable cause = failure.getCause();
+                if (cause instanceof Exception) throw (Exception) cause;
+                throw new IllegalStateException("local stage failed", cause);
+            }
+            localExecutor.shutdown();
             if (bestEffort == null && localOutcome.result != null) {
                 bestEffort = localOutcome.result;
             }
@@ -189,8 +221,16 @@ public final class ManualQueryCoordinator {
 
     private static QueryOutcome queryActivatedSource(
             ActivatedSource source, LongSupplier clock) throws Exception {
+        // 与 Pipi 的 `manual level=… event=…` 同一套：每一级何时开始、几秒、几条节点，看 logcat 就够。
+        long startedAt = System.currentTimeMillis();
+        ExpressLog.line("", source.provider, "manual", "started");
         try {
             ExpressQueryResult result = source.query.query();
+            ExpressLog.line("", source.provider, "manual",
+                    result == null ? "failed" : "succeeded",
+                    "tail", ExpressLog.tail(result == null ? "" : result.waybill),
+                    "nodes", Kuaidi100TimelinePolicy.timedTrackCount(result),
+                    "elapsedMs", System.currentTimeMillis() - startedAt);
             Success success = null;
             String provider = result == null || result.timelineProvider.isEmpty()
                     ? source.provider : result.timelineProvider;
@@ -204,6 +244,9 @@ public final class ManualQueryCoordinator {
             Thread.currentThread().interrupt();
             throw interrupted;
         } catch (Exception failure) {
+            ExpressLog.line("", source.provider, "manual", "failed",
+                    "reason", failure.getClass().getSimpleName(),
+                    "elapsedMs", System.currentTimeMillis() - startedAt);
             return new QueryOutcome(source.provider, null, null, failure);
         }
     }

@@ -295,6 +295,9 @@ export function SettingsPage(props: {
                   forceManualRefresh: true,
                 });
                 props.onStateChange(summary.state);
+                // The manager reports the outcome through refreshSummaryToast, exactly as
+                // HomePage does, so the counts must reach it instead of being dropped here.
+                return summary;
               }}
             />
           ) : destination === "privacy" ? (

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import type { AppState, Shipment, TimelinePackage } from "../models";
+import { setDiagnosticsEnabled } from "../services/logger";
 
 type FakeData = { value: string };
 type FakeFetchInit = {
@@ -170,6 +171,10 @@ Object.assign(globalThis, {
   },
 });
 
+// Diagnostics are recorded only when enabled: the formal track ships with recording off
+// (user decision 2026-09-04), so a test that asserts on the log has to opt in explicitly.
+setDiagnosticsEnabled(true);
+
 const { saveGatewayToken } = await import("../services/credentials");
 const { clearDiagnostics, readDiagnostics } = await import("../services/logger");
 const { saveState } = await import("../services/storage");
@@ -281,10 +286,18 @@ assert.deepEqual(
 );
 assert.equal(fallback.state.shipments.length, 1);
 assert.equal(fallback.state.shipments[0]?.identity.id, initialId);
+// 用户定 2026-09-05 晚：feed 增量与 query 独立。行（列表头条）仍是 feed 自己的；按件详情住 v5_query 槽。
 assert.equal(
   fallback.state.shipments[0]?.timeline.latestDetail,
+  "cached detail before refresh",
+  "the list row keeps the feed headline; the per-order detail never rewrites it",
+);
+assert.equal(
+  fallback.state.shipments[0]?.manualTimelines?.find(
+    (timeline) => timeline.provider === "v5_query",
+  )?.latestDetail,
   "cached detail refreshed after list timeout",
-  "the production full-refresh path must run cached account followups",
+  "the production full-refresh path must run cached account followups into the v5_query slot",
 );
 assert.equal(
   readDiagnostics().find((entry) => entry.event === "account.sync.failed")

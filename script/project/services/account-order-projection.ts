@@ -1,11 +1,16 @@
 import type { AccountParcelDto } from "./account-parser";
 import type { TimelinePackage, TrackNode } from "../models";
 import {
+  acquireProjectionViewport,
+  releaseProjectionViewport,
+} from "./projection-viewport";
+import {
   builtInCarrierPresentation,
   projectedCarrierPresentation,
 } from "./carrier-presentation";
 import {
-  isProviderErrorDetail,
+  headlineTrack,
+  isNonEventDetail,
   normalizeWaybill,
   parseProviderTime,
   semanticFromText,
@@ -19,6 +24,9 @@ import {
 // Match Android Lite's foreground order-capture window. This bounds one WebView
 // capture; it is not a deadline for the rest of the refresh round.
 const PROJECTION_TIMEOUT_MS = 20_000;
+
+/** Two timed nodes cannot come from the collapsed first screen, so they prove expansion. */
+const EXPANDED_TIMELINE_MIN_TRACKS = 2;
 
 export type AccountOrderProjection = Readonly<{
   waybill: string;
@@ -40,6 +48,10 @@ export type AccountOrderProjectionDiagnostics = Readonly<{
   unionResourceSeen: boolean;
   resourceReplayBlockReason: string;
   domMatched: boolean;
+  /** Whether this capture produced a package that earned §9 `complete`. */
+  projectionComplete: boolean;
+  /** Timed nodes in the best package this capture produced. */
+  projectionTrackCount: number;
   requestCallbackCount: number;
   evaluationAttempts: number;
   evaluationFailures: number;
@@ -47,9 +59,46 @@ export type AccountOrderProjectionDiagnostics = Readonly<{
   resourceCount: number;
   pageClass: string;
   readyState: string;
-  visibilityState: string;
+    visibilityState: string;
   viewportAvailable: boolean;
+  /** D-15 裁决 A′: whether the visible detail page lent this load a real viewport. */
+  viewportHosted: boolean;
+  identitySource: string;
+  unionResponseStatuses: string;
+  probeCaptureCount: number;
 }>;
+
+function feedTextIdentityDiagnostics(): AccountOrderProjectionDiagnostics {
+  return {
+    loadSettled: true,
+    loadCompleted: true,
+    captureSeen: false,
+    replayAttempted: false,
+    replaySucceeded: false,
+    probeInstalled: false,
+    probeMatched: false,
+    probeRequestCount: 0,
+    unionSignalSeen: false,
+    unionResourceSeen: false,
+    resourceReplayBlockReason: "",
+    domMatched: false,
+    projectionComplete: false,
+    projectionTrackCount: 0,
+    requestCallbackCount: 0,
+    evaluationAttempts: 0,
+    evaluationFailures: 0,
+    loadDurationMs: 0,
+    resourceCount: 0,
+    pageClass: "feed",
+    readyState: "complete",
+    visibilityState: "unknown",
+    viewportAvailable: false,
+    viewportHosted: false,
+    identitySource: "feed_text",
+    unionResponseStatuses: "",
+    probeCaptureCount: 0,
+  };
+}
 
 type CapturedRequest = {
   url: string;
@@ -186,9 +235,13 @@ function projectionTrack(value: unknown, waybill: string): TrackNode | null {
   const item = object(value);
   const itemWaybill = normalizeWaybill(firstText(item, WAYBILL_FIELD_KEYS));
   if (itemWaybill && itemWaybill !== waybill) return null;
-  const detail = firstText(item, ["desc", "context", "description", "detail"]);
-  if (!detail || isProviderErrorDetail(detail)) return null;
-  const timeText = firstText(item, ["time", "date", "ftime"]);
+  // The live union page names its trace fields operateMessage / operateTime (Fold7 DevTools,
+  // 2026-09-03); the older generic keys stay first for the other page families.
+  const detail = firstText(item, [
+    "desc", "context", "description", "detail", "operateMessage",
+  ]);
+  if (!detail || isNonEventDetail(detail)) return null;
+  const timeText = firstText(item, ["time", "date", "ftime", "operateTime"]);
   const statusCode = firstText(item, [
     "statusCode",
     "status",
@@ -214,6 +267,7 @@ function projectionTimeline(
   provider: string,
   successAtMs: number,
   complete: boolean,
+  expansionProofAllowed = true,
 ): TimelinePackage | null {
   const tracks = traces
     .map((item) => projectionTrack(item, waybill))
@@ -224,11 +278,18 @@ function projectionTimeline(
     });
   const timed = timedTracks(tracks);
   if (!timed.length) return null;
-  const latest = timed[0];
+  // The forecast note stays in `tracks`; it just never becomes the headline.
+  const latest = headlineTrack(timed) || timed[0];
   const semantic = semanticFromText(latest.detail);
   return {
     provider,
-    complete,
+    // AGENTS §9 (user decision 2026-09-04): the union page renders a single collapsed node until
+    // 完整物流进度 is expanded, so two or more timed nodes are themselves proof of an expanded
+    // package. Same rule and same threshold as Pipi's JingDongH5Client.isExpandedTimeline.
+    // A modal package that covers fewer nodes than a network package of the same session is
+    // demoted unconditionally and this rule must not promote it back.
+    complete: complete ||
+      (expansionProofAllowed && timed.length >= EXPANDED_TIMELINE_MIN_TRACKS),
     structuredStatus: false,
     waybill,
     courierCode,
@@ -263,6 +324,7 @@ export function projectionFromUnionPayload(
   provider = "interface5",
   successAtMs = Date.now(),
   fullProgressRequestedAtStart = false,
+  expansionProofAllowed = true,
 ): AccountOrderProjection | null {
   const root = object(decode(value));
   const data = object(decode(root.data));
@@ -296,6 +358,7 @@ export function projectionFromUnionPayload(
       provider,
       successAtMs,
       fullProgressRequestedAtStart,
+      expansionProofAllowed,
     );
     return {
       waybill,
@@ -593,8 +656,9 @@ function extractionJavaScript(
             };
             return {
               waybillCode: first(waybillKeys).slice(0, 64),
-              time: first(["time", "date", "ftime"]).slice(0, 64),
-              desc: first(["desc", "context", "description", "detail"]).slice(0, 4000),
+              time: first(["time", "date", "ftime", "operateTime"]).slice(0, 64),
+              desc: first(["desc", "context", "description", "detail", "operateMessage"])
+                .slice(0, 4000),
               statusCode: first(["statusCode", "status", "state", "stateNum"]).slice(0, 128),
             };
           }).filter((trace) => trace.desc);
@@ -667,8 +731,12 @@ function extractionJavaScript(
         resourceCount: resourceState.count,
         pageClass,
         readyState: clean(document && document.readyState) || "unknown",
-        visibilityState: clean(document && document.visibilityState) || "unknown",
+                visibilityState: clean(document && document.visibilityState) || "unknown",
         viewportAvailable: Number(window.innerWidth || 0) > 0 && Number(window.innerHeight || 0) > 0,
+        unionResponseStatuses: probe && Array.isArray(probe.unionStatuses)
+          ? probe.unionStatuses.join(",")
+          : "",
+        probeCaptureCount: probe && Array.isArray(probe.queue) ? probe.queue.length : 0,
       });
       const resourceStateBeforeProbe = performanceResources();
       if (pageClass !== "jd") return snapshot(null, resourceStateBeforeProbe);
@@ -683,9 +751,10 @@ function extractionJavaScript(
           unionResourceSeen: resourceStateBeforeProbe.unionResourceSeen,
           resourceReplayAttempted: false,
           resourceReplaySucceeded: false,
-          fullProgressClickAttempted: false,
+                    fullProgressClickAttempted: false,
           fullProgressRequested: false,
           originalFetch: null,
+          unionStatuses: [],
         };
         window[probeKey] = probe;
         const enqueue = (source, fullProgressRequestedAtStart = false) => {
@@ -693,8 +762,20 @@ function extractionJavaScript(
             if (typeof source === "string" && source.length > 1500000) return;
             const result = projection(source, "probe", fullProgressRequestedAtStart);
             if (!result) return;
+            // The page's own waybill/carrier are the reference for the modal DOM package.
+            if (result.waybillCode && !probe.unionWaybill) {
+              probe.unionWaybill = result.waybillCode;
+              probe.unionCompanyName = result.companyName || "";
+            }
             probe.queue.push(result);
             if (probe.queue.length > 4) probe.queue.splice(0, probe.queue.length - 4);
+          } catch (_) {}
+        };
+                const recordUnionStatus = (status) => {
+          try {
+            if (!Array.isArray(probe.unionStatuses)) probe.unionStatuses = [];
+            probe.unionStatuses.push(Number(status) || 0);
+            while (probe.unionStatuses.length > 8) probe.unionStatuses.shift();
           } catch (_) {}
         };
         const captureResponse = (response, fullProgressRequestedAtStart) => {
@@ -734,10 +815,13 @@ function extractionJavaScript(
               const fullProgressRequestedAtStart = probe.fullProgressRequested === true &&
                 unionTarget;
               if (unionTarget) probe.unionSignalSeen = true;
-              const response = originalFetch.apply(this, arguments);
+                            const response = originalFetch.apply(this, arguments);
               if (target) {
                 Promise.resolve(response)
-                  .then((value) => captureResponse(value, fullProgressRequestedAtStart))
+                  .then((value) => {
+                    if (unionTarget) recordUnionStatus(value && value.status);
+                    captureResponse(value, fullProgressRequestedAtStart);
+                  })
                   .catch(() => {});
               }
               return response;
@@ -762,7 +846,8 @@ function extractionJavaScript(
               if (target) {
                 if (unionTarget) probe.unionSignalSeen = true;
                 try {
-                  this.addEventListener("loadend", () => {
+                                    this.addEventListener("loadend", () => {
+                    if (unionTarget) recordUnionStatus(this.status);
                     try {
                       const contentType = clean(this.getResponseHeader &&
                         this.getResponseHeader("content-type"));
@@ -793,7 +878,10 @@ function extractionJavaScript(
         try {
           const candidate = document.querySelector(".logistics-button");
           const label = candidate && candidate.querySelector(".logistics-button-text");
-          const labelText = clean(label && (label.innerText || label.textContent));
+          // The control's text node reads "完整物流进度 >"; the trailing chevron is decoration.
+          const labelText = clean(label && (label.innerText || label.textContent))
+            .replace(/[>›〉»]+$/, "")
+            .trim();
           if (labelText === "完整物流进度") control = candidate;
         } catch (_) {}
         if (control && typeof control.click === "function") {
@@ -806,6 +894,77 @@ function extractionJavaScript(
             probe.fullProgressRequested = false;
           }
         }
+      }
+      // §9 (2026-09-03): the click opens a modal rendered from data the page already holds and
+      // issues no new request, so the complete package is the modal's own node list: read only
+      // after the exact click, from the modal header (carrier + waybill) and its .child-status
+      // rows; re-read while the list keeps growing. Same rule as Pipi's document-start script.
+      // (This comment lives inside a template literal: never put a backtick in it.)
+      if (probe.fullProgressClickAttempted) {
+        try {
+          let items = document.querySelectorAll(".logistics-status-info.child-status");
+          if (!items.length) items = document.querySelectorAll(".logistics-status-info");
+          const head = document.querySelector(".logistics-top-narrow") ||
+            document.querySelector(".express-info") ||
+            document.querySelector("[class*=logistics-top]");
+          // The header names the carrier and waybill in one or more lines ("极兔速递 JT… 复制");
+          // the waybill is the alphanumeric token carrying digits and must agree with the page's
+          // own response when one was captured (the response also fills a missing token).
+          const networkWaybill = clean(probe.unionWaybill).toUpperCase();
+          const headText = clean(head && head.innerText);
+          const tokens = headText.replace(/复制/g, " ").match(/[A-Za-z0-9-]{8,48}/g) || [];
+          let waybillCode = "";
+          for (const token of tokens) {
+            const candidate = valid(token);
+            if (!candidate || !/\\d/.test(candidate)) continue;
+            if (networkWaybill && candidate === networkWaybill) {
+              waybillCode = candidate;
+              break;
+            }
+            if (!waybillCode) waybillCode = candidate;
+          }
+          if (networkWaybill && waybillCode && waybillCode !== networkWaybill) waybillCode = "";
+          // AGENTS §9: the modal header must name the waybill itself. Substituting the network
+          // response's waybill for an unreadable header makes the header check compare a value
+          // against itself, so an unmatched selector could still pass as a complete package.
+          // No header waybill means no DOM package at all. Same rule as Pipi's JingDongH5Client.
+          const nameMatch = headText.match(/[\\u4e00-\\u9fa5]{2,12}/);
+          const companyName = nameMatch ? nameMatch[0] : clean(probe.unionCompanyName);
+          probe.domModal = { i: items.length, h: Boolean(head), w: Boolean(waybillCode) };
+          if (waybillCode && items.length > (probe.domModalCount || 0)) {
+            {
+              const traceList = [];
+              for (let index = 0; index < items.length && index < 500; index++) {
+                const item = items[index];
+                const read = (selector) => {
+                  const node = item.querySelector(selector);
+                  return clean(node && node.innerText);
+                };
+                const time = read(".status-time");
+                const desc = read(".status-msg");
+                if (time && desc) {
+                  traceList.push({
+                    waybillCode,
+                    time: time.slice(0, 64),
+                    desc: desc.slice(0, 4000),
+                    statusCode: "",
+                  });
+                }
+              }
+              if (traceList.length) {
+                probe.domModalCount = items.length;
+                probe.queue.push({
+                  waybillCode,
+                  companyName,
+                  traceList,
+                  extractionSource: "dom_modal",
+                  fullProgressRequestedAtStart: true,
+                });
+                if (probe.queue.length > 4) probe.queue.splice(0, probe.queue.length - 4);
+              }
+            }
+          }
+        } catch (_) {}
       }
       const queued = Array.isArray(probe.queue) ? probe.queue.shift() : null;
       if (queued) return {
@@ -888,13 +1047,39 @@ export async function projectAccountOrder(
   observe?: (diagnostics: AccountOrderProjectionDiagnostics) => void,
   signal?: AbortSignal,
 ): Promise<AccountParcelDto> {
-  assertProjectionActive(signal);
+    assertProjectionActive(signal);
+  const textIdentity = parcel.textIdentity;
+  if (
+    parcel.source === "interface5" &&
+    parcel.accountOrder &&
+    textIdentity &&
+    textIdentity.waybill
+  ) {
+    // Xiaomi's own track text already names the carrier waybill: read it directly and skip
+    // the H5 page. Orders whose text never names one still go through the projection below.
+    try {
+      observe?.(feedTextIdentityDiagnostics());
+    } catch {
+      /* diagnostics are best-effort */
+    }
+        // The order-stage raw carrier tuple (e.g. JDKD) is not evidence for the carrier waybill and
+    // must never survive the projection.
+    return {
+      ...parcel,
+      waybill: textIdentity.waybill,
+      courierCode: textIdentity.courierCode,
+      rawCourierCode: "",
+      rawCompanyName: textIdentity.companyName,
+      companyName: textIdentity.companyName,
+      carrierNormalization: null,
+      projectionTimeline: null,
+    };
+  }
   if (
     parcel.source !== "interface5" ||
     !parcel.accountOrder ||
     !trustedInitialRoute(parcel.projectionUrl)
   ) return parcel;
-
   const projectionStartedAtMs = Date.now();
   const budget = remainingTimeoutMs(
     deadlineAtMs,
@@ -903,6 +1088,9 @@ export async function projectAccountOrder(
   );
   const projectionDeadlineAtMs = projectionStartedAtMs + budget;
   const controller = new WebViewController({ ephemeral: true });
+  // D-15 裁决 A′ (2026-09-04): borrow the visible page's viewport before loading, so the union
+  // page's floors mount and the 「完整物流进度」 control can be clicked. Headless when no page hosts.
+  let viewportHosted = false;
   let disposed = false;
   const disposeController = () => {
     if (disposed) return;
@@ -926,12 +1114,17 @@ export async function projectAccountOrder(
   let unionResourceSeen = false;
   let resourceReplayBlockReason = "";
   let domMatched = false;
+  let projectionComplete = false;
+  let projectionTrackCount = 0;
   let requestCallbackCount = 0;
   let resourceCount = 0;
   let pageClass = "unknown";
   let readyState = "unknown";
-  let visibilityState = "unknown";
+    let visibilityState = "unknown";
   let viewportAvailable = false;
+  let unionResponseStatuses = "";
+  let networkTraceCount = 0;
+  let probeCaptureCount = 0;
   let bestProjection: AccountOrderProjection | null = null;
   const loadStartedAt = projectionStartedAtMs;
   let loadDurationMs = 0;
@@ -971,6 +1164,10 @@ export async function projectAccountOrder(
   };
   try {
     assertProjectionActive(signal);
+    // The viewport must exist before the first paint: the union page mounts its floors by
+    // intersection, so a page attached after loadURL would not re-run that mount.
+    viewportHosted = await acquireProjectionViewport(controller);
+    assertProjectionActive(signal);
     // A dynamic page can keep WebKit's load promise pending after its useful requests and DOM are
     // already available. Start navigation without waiting for that promise so capture and DOM
     // polling can run inside the same bounded projection window.
@@ -999,12 +1196,15 @@ export async function projectAccountOrder(
       assertProjectionActive(signal);
       if (loadSettled && !loadCompleted && !captured) {
         if (bestProjection) {
-          return {
-            ...parcel,
-            waybill: bestProjection.waybill,
-            courierCode: bestProjection.courierCode,
-            companyName: bestProjection.companyName,
-            projectionTimeline: bestProjection.timeline || null,
+                return {
+        ...parcel,
+        waybill: bestProjection.waybill,
+        courierCode: bestProjection.courierCode,
+        rawCourierCode: "",
+        rawCompanyName: bestProjection.companyName,
+        companyName: bestProjection.companyName,
+        carrierNormalization: null,
+        projectionTimeline: bestProjection.timeline || null,
           };
         }
         if (loadFailure) throw loadFailure;
@@ -1049,15 +1249,26 @@ export async function projectAccountOrder(
       assertProjectionActive(signal);
       const candidate = object(raw);
       const extractionSource = text(candidate.extractionSource);
+      const candidateTraceCount = Array.isArray(candidate.traceList)
+        ? candidate.traceList.length
+        : 0;
+      // §9: a modal DOM package is complete only when it covers every network package the probe
+      // captured in this session; the first-screen response always precedes the click.
+      if (extractionSource === "probe") {
+        networkTraceCount = Math.max(networkTraceCount, candidateTraceCount);
+      }
+      const domModal = extractionSource === "dom_modal";
+      const domModalCoversNetwork = !domModal || candidateTraceCount >= networkTraceCount;
       probeInstalled ||= candidate.probeInstalled === true;
-      probeMatched ||= extractionSource === "probe";
+      probeMatched ||= extractionSource === "probe" || domModal;
       unionSignalSeen ||= candidate.unionSignalSeen === true;
       unionResourceSeen ||= candidate.unionResourceSeen === true;
       resourceReplayBlockReason ||= text(candidate.resourceReplayBlockReason);
       replayAttempted ||= candidate.resourceReplayAttempted === true;
       replaySucceeded ||= candidate.resourceReplaySucceeded === true ||
         extractionSource === "replay" || extractionSource === "resource_replay";
-      domMatched ||= extractionSource === "dom" || extractionSource === "script";
+      domMatched ||= extractionSource === "dom" || extractionSource === "script" ||
+        extractionSource === "dom_modal";
       const candidateProbeRequests = Number(candidate.probeRequestCount);
       if (Number.isFinite(candidateProbeRequests) && candidateProbeRequests >= 0) {
         probeRequestCount = Math.max(probeRequestCount, Math.round(candidateProbeRequests));
@@ -1078,7 +1289,13 @@ export async function projectAccountOrder(
       if (["visible", "hidden", "prerender", "unknown"].includes(candidateVisibilityState)) {
         visibilityState = candidateVisibilityState;
       }
-      viewportAvailable ||= candidate.viewportAvailable === true;
+            viewportAvailable ||= candidate.viewportAvailable === true;
+      const candidateStatuses = text(candidate.unionResponseStatuses);
+      if (candidateStatuses) unionResponseStatuses = candidateStatuses;
+      const candidateCaptures = Number(candidate.probeCaptureCount);
+      if (Number.isFinite(candidateCaptures) && candidateCaptures >= 0) {
+        probeCaptureCount = Math.max(probeCaptureCount, Math.round(candidateCaptures));
+      }
       const projection = projectionFromUnionPayload(
         {
           data: {
@@ -1098,11 +1315,19 @@ export async function projectAccountOrder(
         parcel.ownerId,
         parcel.source,
         Date.now(),
-        candidate.fullProgressRequestedAtStart === true,
+        candidate.fullProgressRequestedAtStart === true && domModalCoversNetwork,
+        domModalCoversNetwork,
       );
       const hasCompleteTimeline = Boolean(
         projection?.timeline?.complete === true &&
           timedTracks(projection.timeline.tracks).length,
+      );
+      // Without this the log cannot say whether a capture earned `complete`; the only other
+      // signal was how early the loop exited, which had to be inferred from timestamps.
+      projectionComplete ||= hasCompleteTimeline;
+      projectionTrackCount = Math.max(
+        projectionTrackCount,
+        projection?.timeline ? timedTracks(projection.timeline.tracks).length : 0,
       );
       if (projection) {
         if (Date.now() >= projectionDeadlineAtMs) {
@@ -1132,11 +1357,14 @@ export async function projectAccountOrder(
     }
     assertProjectionActive(signal);
     if (bestProjection) {
-      return {
+            return {
         ...parcel,
         waybill: bestProjection.waybill,
         courierCode: bestProjection.courierCode,
+        rawCourierCode: "",
+        rawCompanyName: bestProjection.companyName,
         companyName: bestProjection.companyName,
+        carrierNormalization: null,
         projectionTimeline: bestProjection.timeline || null,
       };
     }
@@ -1161,6 +1389,8 @@ export async function projectAccountOrder(
           unionResourceSeen,
           resourceReplayBlockReason,
           domMatched,
+          projectionComplete,
+          projectionTrackCount,
           requestCallbackCount,
           evaluationAttempts,
           evaluationFailures,
@@ -1168,14 +1398,19 @@ export async function projectAccountOrder(
           resourceCount,
           pageClass,
           readyState,
-          visibilityState,
+                    visibilityState,
           viewportAvailable,
+          viewportHosted,
+          identitySource: "webview",
+          unionResponseStatuses,
+          probeCaptureCount,
         });
       } catch {
         /* diagnostics are best-effort and must not change the projection result */
       }
     }
     signal?.removeEventListener("abort", abort);
+    if (viewportHosted) releaseProjectionViewport();
     disposeController();
   }
 }

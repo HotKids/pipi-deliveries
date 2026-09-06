@@ -67,16 +67,20 @@ final class ExpressSourcePolicy {
                 || SOURCE_LEGACY_ACCOUNT_ORDER.equals(normalized);
     }
 
-    /** An order summary becomes carrier state only after identity and timed tracking agree. */
+    /**
+     * 列表状态归 feed（用户定 2026-09-05 晚，与 iOS withAccountPresentation / accountOrderSemantic
+     * 同口径）：已投影到运单的订单直接显示 feed 的状态；还没投影的订单只有终态（已签收 / 已取消）
+     * 照显示，其余一律是订单阶段「已下单」。不再要求行上先有承运商包的带时间节点——那是 query
+     * 包的事，query 不参与列表。
+     */
     static StatusSemantic accountOrderPresentationSemantic(
-            String owner, String projectedWaybill, StatusSemantic sourceSemantic,
-            String sourceTracksJson) {
+            String owner, String projectedWaybill, StatusSemantic sourceSemantic) {
         StatusSemantic fallback = sourceSemantic == null
                 ? StatusSemantic.UNKNOWN : sourceSemantic;
-        boolean projectedCarrierTimeline = !normalizeWaybill(projectedWaybill).isEmpty()
-                && hasTimedCarrierTimeline(sourceTracksJson);
-        return isAccountOrderOwner(owner) && !projectedCarrierTimeline
-                ? StatusSemantic.ORDERED : fallback;
+        if (!isAccountOrderOwner(owner)) return fallback;
+        if (!normalizeWaybill(projectedWaybill).isEmpty()) return fallback;
+        return fallback == StatusSemantic.COMPLETED || fallback == StatusSemantic.CANCELLED
+                ? fallback : StatusSemantic.ORDERED;
     }
 
     static boolean hasTimedCarrierTimeline(String tracksJson) {

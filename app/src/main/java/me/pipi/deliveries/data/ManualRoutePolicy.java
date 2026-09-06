@@ -9,9 +9,10 @@ public final class ManualRoutePolicy {
     private ManualRoutePolicy() {}
 
     public static String meizuKuaidi100Url(String provider, ExpressQueryResult result) {
-        if (result == null || !"meizu".equalsIgnoreCase(clean(provider))) return "";
+        if (result == null || !TimelineSlot.V6_PICKER.equals(TimelineSlot.normalize(provider))) return "";
         String resultProvider = clean(result.timelineProvider);
-        if (!resultProvider.isEmpty() && !"meizu".equalsIgnoreCase(resultProvider)) return "";
+        if (!resultProvider.isEmpty()
+                && !TimelineSlot.V6_PICKER.equals(TimelineSlot.normalize(resultProvider))) return "";
         return safeKuaidi100Url(result.detailUrl);
     }
 

@@ -5,6 +5,7 @@ import {
 } from "./carrier-recognition";
 import {
   activeCarrierTableVersion,
+  normalizeCarrierCode,
   resolveCarrierCpCode,
   resolveCarrierQuery,
 } from "./carrier-query";
@@ -13,6 +14,8 @@ import {
   projectedCarrierPresentation,
 } from "./carrier-presentation";
 import { normalizeWaybill } from "./status";
+import type { Shipment, ShipmentIdentity } from "../models";
+import type { CarrierNormalization } from "./carrier-normalization";
 
 type Recognizer = typeof recognizeNonSyncCarrier;
 
@@ -33,15 +36,33 @@ function realWaybill(parcel: AccountParcelDto): string {
   return waybill;
 }
 
+/**
+ * A JD-platform row (Xiaomi `provider=JingDong`) names the shopping platform in its raw code
+ * (`JDKD`…), not the courier. On a real waybill that is not a JD number, that label — and any
+ * sidecar or name that only re-states JD — is no carrier evidence (R-20); the waybill is
+ * recognised instead.
+ */
+function platformLabelOnly(parcel: AccountParcelDto): boolean {
+  const provider = String(parcel.sourceProvider || "").trim().toLowerCase();
+  if (provider !== "jingdong") return false;
+  const waybill = realWaybill(parcel);
+  return Boolean(waybill) && !/^JD/i.test(waybill);
+}
+
 function directPresentation(parcel: AccountParcelDto): AccountParcelDto | null {
+  const platformOnly = platformLabelOnly(parcel);
   const rawCode = parcel.rawCourierCode
     ? resolveCarrierCpCode(parcel.rawCourierCode)
     : null;
-  if (!rawCode && parcel.carrierNormalization?.isBuiltIn) return parcel;
+  if (
+    !rawCode && parcel.carrierNormalization?.isBuiltIn &&
+    !(platformOnly && parcel.carrierNormalization.standardCode === "JD")
+  ) return parcel;
   const code = rawCode || resolveCarrierQuery(parcel.courierCode);
   const name = builtInCarrierPresentation(parcel.companyName);
   const carrier = code || (name ? resolveCarrierQuery(name.courierCode) : null);
   if (!carrier) return null;
+  if (platformOnly && carrier.standardCode === "JD") return null;
   const presentation = projectedCarrierPresentation(
     parcel.waybill,
     carrier.standardCode,
@@ -94,3 +115,70 @@ export async function normalizeAccountParcelCarrier(
 }
 
 export const normalizeNonSyncAccountParcel = normalizeAccountParcelCarrier;
+
+/**
+ * An already projected account order whose carrier is still the JD order label (or empty) while
+ * its carrier waybill is not a JD number carries a leaked order-stage carrier: recognise the real
+ * carrier from the waybill once and repair the identity.
+ */
+export function needsProjectedCarrierRepair(
+  identity: Pick<ShipmentIdentity, "accountOrder" | "manuallyAdded" | "projectedWaybill" | "courierCode">,
+): boolean {
+  if (!identity.accountOrder || identity.manuallyAdded) return false;
+  const projected = normalizeWaybill(identity.projectedWaybill || "");
+  if (!projected || /^JD/i.test(projected)) return false;
+  const code = normalizeCarrierCode(identity.courierCode || "");
+  if (!code) return true;
+  const record = resolveCarrierQuery(code) || resolveCarrierCpCode(code);
+  return record?.standardCode === "JD";
+}
+
+export function repairProjectedShipmentCarrier(
+  shipment: Shipment,
+  normalization: CarrierNormalization | null | undefined,
+): Shipment {
+  if (!normalization?.isBuiltIn || !needsProjectedCarrierRepair(shipment.identity)) return shipment;
+  const code = normalizeCarrierCode(normalization.standardCode);
+  if (!code || code === "JD" || code === normalizeCarrierCode(shipment.identity.courierCode || "")) {
+    return shipment;
+  }
+  const projected = normalizeWaybill(shipment.identity.projectedWaybill || "");
+  const presentation = projectedCarrierPresentation(projected, code, normalization.displayName);
+  const carrier = {
+    courierCode: presentation.courierCode || code,
+    companyName: presentation.companyName || normalization.displayName,
+    rawCourierCode: "",
+    carrierIsBuiltIn: true,
+    carrierKuaidi100Code: normalization.kuaidi100Code,
+    carrierTableVersion: normalization.tableVersion,
+  };
+  const retag = <T extends { courierCode: string; companyName: string } | null | undefined>(timeline: T): T =>
+    timeline ? { ...timeline, courierCode: carrier.courierCode, companyName: carrier.companyName } : timeline;
+  const identity = { ...shipment.identity, ...carrier };
+  const ownership = shipment.automaticOwnership;
+  return {
+    ...shipment,
+    identity,
+    timeline: retag(shipment.timeline),
+    sourceTimeline: retag(shipment.sourceTimeline),
+    // 手动/H5 包裹里也存着抓取当时的承运商（kuaidi100_h5 直接写 detectedCarrier）。identity 修好了
+    // 却把它们留在原地，泄漏的订单阶段承运商就会从详情页那条链上重新冒出来。
+    manualTimelines: (shipment.manualTimelines || []).map((timeline) =>
+      retag(timeline)
+    ),
+    automaticOwnership: ownership
+      ? {
+          ...ownership,
+          observations: ownership.observations.map((observation) =>
+            observation.identity.id === identity.id
+              ? {
+                  ...observation,
+                  identity: { ...observation.identity, ...carrier },
+                  sourceTimeline: retag(observation.sourceTimeline),
+                }
+              : observation
+          ),
+        }
+      : ownership,
+  };
+}

@@ -11,7 +11,9 @@ import java.util.Enumeration;
 
 /** Stable per-install device namespace used by the subscription endpoint. */
 public final class DeviceIdentity {
-    private static final String PREFS = "aicy_imei";
+    private static final String PREFS = "device_identity";
+    /** 项目改名前的 prefs 文件；首次读取时把已生成的标识搬过来，装置身份不能因为改名换掉。 */
+    private static final String LEGACY_PREFS = "aicy_imei";
     private static final String KEY_IMEI = "imei";
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -19,10 +21,16 @@ public final class DeviceIdentity {
 
     @SuppressLint("ApplySharedPref")
     public static synchronized String imei(Context context) {
-        SharedPreferences prefs = context.getApplicationContext()
-                .getSharedPreferences(PREFS, 0);
+        Context application = context.getApplicationContext();
+        SharedPreferences prefs = application.getSharedPreferences(PREFS, 0);
         String existing = prefs.getString(KEY_IMEI, "");
         if (validImei(existing)) return existing;
+        SharedPreferences legacy = application.getSharedPreferences(LEGACY_PREFS, 0);
+        String inherited = legacy.getString(KEY_IMEI, "");
+        if (validImei(inherited) && prefs.edit().putString(KEY_IMEI, inherited).commit()) {
+            legacy.edit().clear().commit();
+            return inherited;
+        }
         String generated = generateImei();
         if (!prefs.edit().putString(KEY_IMEI, generated).commit()) {
             throw new IllegalStateException("无法保存设备标识，请稍后重试");

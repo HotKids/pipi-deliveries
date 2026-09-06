@@ -33,10 +33,16 @@ assert.doesNotMatch(
   "the app home empty state must not use a fixed-height or visual offset",
 );
 assert.doesNotMatch(homeSource, /EmptyParcelIcon|暂无包裹信息/);
+// 用户定 2026-09-04：这条分隔线是我擅自加的，不要。列表末尾只保留说明文字。
+assert.doesNotMatch(
+  homeSource,
+  /<Rectangle/,
+  "the list must not draw its own separator anywhere",
+);
 assert.match(
   homeSource,
-  /shipments\.map\([\s\S]*?<VStack\s+spacing=\{8\}[\s\S]*?<Rectangle\s+fill="separator"\s+frame=\{\{ minHeight: 0\.5, maxHeight: 0\.5, maxWidth: "infinity" \}\}\s+padding=\{\{ leading: 60 \}\}\s*\/>[\s\S]*?<Text[\s\S]*?font=\{12\}[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?frame=\{\{ maxWidth: "infinity", alignment: "center" \}\}[\s\S]*?>\s*只显示 7 天内的快递信息\s*<\/Text>/,
-  "the populated list must end with an inset separator eight points above the history note",
+  /shipments\.map\([\s\S]*?<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 7 天内的快递信息\s*<\/Text>/,
+  "the populated list still ends with the history note",
 );
 
 console.log("home empty-state presentation tests passed");

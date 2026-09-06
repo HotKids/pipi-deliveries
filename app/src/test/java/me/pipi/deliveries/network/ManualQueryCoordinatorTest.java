@@ -89,7 +89,7 @@ public final class ManualQueryCoordinatorTest {
     }
 
     @Test
-    public void pickerStartSkipsLocalForTheCurrentRun() throws Exception {
+    public void pickerStartKeepsThePickerPresentationWhileLocalRunsAlongside() throws Exception {
         List<String> calls = new ArrayList<>();
         ExpressQueryResult picker = new ExpressQueryResult(
                 "TEST123456", "SF", "顺丰速运", StatusSemantic.TRANSIT,
@@ -108,7 +108,9 @@ public final class ManualQueryCoordinatorTest {
                     return tracked("v4", "v4");
                 }, true, () -> 500L);
 
-        assertEquals(Collections.singletonList("meizu"), calls);
+        // 并行之后本地那一级照常跑（免费），只是 picker 已到起点时展示仍归 picker。
+        assertTrue(calls.contains("meizu"));
+        assertTrue(calls.contains("v4"));
         assertEquals("meizu", batch.selected().timelineProvider);
     }
 
@@ -187,7 +189,9 @@ public final class ManualQueryCoordinatorTest {
                     previews.add(result);
                 }, () -> 800L);
 
-        assertEquals(List.of("meizu", "preview", "v4"), calls);
+        // picker 与本地那一级并行（用户定 2026-09-05）：两级都跑，预览仍在 picker 回来后给出。
+        assertTrue(calls.containsAll(List.of("meizu", "preview", "v4")));
+        assertTrue(calls.indexOf("meizu") < calls.indexOf("preview"));
         assertEquals(1, previews.size());
         assertTrue(previews.get(0).tracksJson.contains("新轨迹"));
         assertTrue(previews.get(0).tracksJson.contains("旧轨迹"));

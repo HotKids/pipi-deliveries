@@ -585,10 +585,29 @@ public final class ExpressDiscoveryClientTest {
     }
 
     @Test
+    public void completedRowWithCompleteCachedDetailNeverRefreshesOnAge() {
+        long now = 2_000_000_000L;
+        long hour = 60L * 60L * 1000L;
+        ExpressItem completed = new ExpressItem(
+                9L, "13800138000", "JD0000000000009", "JD", "京东快递",
+                StatusSemantic.COMPLETED, "已签收", "您的快件已签收，签收人：本人",
+                "2026-09-02 18:33:00", "[]", "", "interface5", "");
+        // 已签收且缓存详情完整：过了 6 小时也不重拉（用户定 2026-09-05）。
+        assertFalse(ExpressDiscoveryClient.shouldQueryDetails(
+                "unchanged", "unchanged", completed, now - 7L * hour, now, true));
+        // 上游头条变了还是要拉。
+        assertTrue(ExpressDiscoveryClient.shouldQueryDetails(
+                "changed", "unchanged", completed, now - 1L, now, true));
+        // 缓存不完整的照旧按 6 小时兜底。
+        assertTrue(ExpressDiscoveryClient.shouldQueryDetails(
+                "unchanged", "unchanged", completed, now - 7L * hour, now, false));
+    }
+
+    @Test
     public void missingLocalRowAlwaysRefreshesDespiteAnOldMatchingSignature() {
         long now = 2_000_000_000L;
         assertTrue(ExpressDiscoveryClient.shouldQueryDetails(
-                "unchanged", "unchanged", null, now - 1L, now));
+                "unchanged", "unchanged", null, now - 1L, now, false));
     }
 
     @Test

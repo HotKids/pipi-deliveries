@@ -6,6 +6,7 @@ import {
   ACCOUNT_LIST_BUDGET_MS,
   ACCOUNT_ORDER_PROJECTION_BUDGET_MS,
   ACCOUNT_ORDER_PROJECTION_RETRY_MS,
+  ACCOUNT_ORDER_PROJECTION_RISK_CONTROL_MS,
   ENRICHMENT_ROTATION_MS,
   accountOrderReadyForProjection,
   accountOrderProjectionAttemptRemainingMs,
@@ -14,6 +15,7 @@ import {
   boundedCursorIndices,
   jingDongH5SkipReason,
   oldestBatchIndices,
+  projectionRiskControlled,
   rotatingBatchIndices,
   rotatingIndices,
   runAccountFollowupCandidates,
@@ -29,12 +31,22 @@ assert.equal(
 );
 assert.equal(
   accountChildDeadline(
-    NOW + 30_000,
+    NOW + 40_000,
     ACCOUNT_LIST_BUDGET_MS,
     ACCOUNT_FOLLOWUP_RESERVE_MS,
     NOW,
   ),
   NOW + ACCOUNT_LIST_BUDGET_MS,
+);
+// 轮次剩余不足时，列表拿到的是「轮次截止 − 跟进预留」，不是整个列表预算。
+assert.equal(
+  accountChildDeadline(
+    NOW + 30_000,
+    ACCOUNT_LIST_BUDGET_MS,
+    ACCOUNT_FOLLOWUP_RESERVE_MS,
+    NOW,
+  ),
+  NOW + 20_000,
 );
 assert.equal(
   accountChildDeadline(
@@ -241,14 +253,15 @@ assert.equal(
   ),
   true,
 );
+// AGENTS §9 (2026-09-04): a user-initiated refresh no longer lifts the ten-minute rest — the
+// detail page used to force one union-page load per visit, which is what triggers JD risk control.
 assert.equal(
   shouldRetryAccountOrderProjection(
     projectionRetry,
     ROUTE_HASH,
     PROJECTION_NOW + 1,
-    true,
   ),
-  true,
+  false,
 );
 
 const activeProjectionAttempt = {
@@ -285,7 +298,16 @@ assert.equal(
     activeProjectionAttempt,
     ROUTE_HASH,
     PROJECTION_NOW + 1,
-    true,
+  ),
+  false,
+);
+// The reservation has expired here, but the attempt it recorded still rests the order: an
+// expired lease is not a licence to reopen the union page 12 seconds later.
+assert.equal(
+  shouldRetryAccountOrderProjection(
+    activeProjectionAttempt,
+    ROUTE_HASH,
+    PROJECTION_NOW + 12_000,
   ),
   false,
 );
@@ -293,8 +315,7 @@ assert.equal(
   shouldRetryAccountOrderProjection(
     activeProjectionAttempt,
     ROUTE_HASH,
-    PROJECTION_NOW + 12_000,
-    true,
+    PROJECTION_NOW + ACCOUNT_ORDER_PROJECTION_RETRY_MS,
   ),
   true,
 );
@@ -328,6 +349,79 @@ assert.equal(
   true,
 );
 
-assert.equal(ACCOUNT_ORDER_PROJECTION_RETRY_MS, 60 * 60 * 1000);
+// AGENTS §9 (2026-09-03, same on Pipi): 10 minutes after any capture attempt, an hour after JD
+// risk control (a 403 among the union request statuses recorded by the probe).
+assert.equal(ACCOUNT_ORDER_PROJECTION_RETRY_MS, 10 * 60 * 1000);
+assert.equal(ACCOUNT_ORDER_PROJECTION_RISK_CONTROL_MS, 60 * 60 * 1000);
+assert.equal(projectionRiskControlled("200,403"), true);
+assert.equal(projectionRiskControlled("403"), true);
+assert.equal(projectionRiskControlled("200,200"), false);
+assert.equal(projectionRiskControlled(""), false);
+assert.equal(projectionRiskControlled(undefined), false);
+
+const RISK_FAILED_AT = 5_000_000;
+const riskRetry = {
+  routeHash: ROUTE_HASH,
+  failedAtMs: RISK_FAILED_AT,
+  riskControlAtMs: RISK_FAILED_AT,
+};
+assert.equal(
+  shouldRetryAccountOrderProjection(
+    riskRetry,
+    ROUTE_HASH,
+    RISK_FAILED_AT + ACCOUNT_ORDER_PROJECTION_RETRY_MS,
+  ),
+  false,
+);
+assert.equal(
+  shouldRetryAccountOrderProjection(
+    riskRetry,
+    ROUTE_HASH,
+    RISK_FAILED_AT + ACCOUNT_ORDER_PROJECTION_RISK_CONTROL_MS - 1,
+  ),
+  false,
+);
+assert.equal(
+  shouldRetryAccountOrderProjection(
+    riskRetry,
+    ROUTE_HASH,
+    RISK_FAILED_AT + ACCOUNT_ORDER_PROJECTION_RISK_CONTROL_MS,
+  ),
+  true,
+);
+// There is no longer a way to force past either rest: the extra argument is gone, and passing
+// one must not resurrect the old bypass.
+// `length` counts parameters before the first default, so this is (retry, routeHash).
+assert.equal(shouldRetryAccountOrderProjection.length, 2);
+assert.equal(
+  (shouldRetryAccountOrderProjection as unknown as (
+    retry: unknown,
+    routeHash: string,
+    now: number,
+    force: boolean,
+  ) => boolean)(
+    { routeHash: ROUTE_HASH, failedAtMs: RISK_FAILED_AT },
+    ROUTE_HASH,
+    RISK_FAILED_AT + 1,
+    true,
+  ),
+  false,
+);
+assert.equal(
+  shouldRetryAccountOrderProjection(
+    { routeHash: ROUTE_HASH, failedAtMs: RISK_FAILED_AT },
+    ROUTE_HASH,
+    RISK_FAILED_AT + ACCOUNT_ORDER_PROJECTION_RETRY_MS,
+  ),
+  true,
+);
+assert.equal(
+  shouldRetryAccountOrderProjection(
+    { routeHash: ROUTE_HASH, failedAtMs: RISK_FAILED_AT },
+    ROUTE_HASH,
+    RISK_FAILED_AT + ACCOUNT_ORDER_PROJECTION_RETRY_MS - 1,
+  ),
+  false,
+);
 
 console.log("account sync budget and rotation tests passed");

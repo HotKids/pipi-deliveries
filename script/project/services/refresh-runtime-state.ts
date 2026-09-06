@@ -43,12 +43,14 @@ type RefreshRuntimeState = Readonly<{
 
 const RUNTIME_STATE_KEY = "pipi_deliveries_refresh_runtime_v1";
 const MAX_PROVIDER_SCHEDULES = 256;
+// 用户定 2026-09-04：手动链各级冷却与京东 H5 一致（10 分钟），只有快递100 H5 是 30 分钟——
+// 那是**快递100 上游自己的限制**，不是我们定的节流，必须遵守。
 const PROVIDER_SUCCESS_INTERVAL_MS: Readonly<Record<RefreshProvider, number>> = {
   account_list: 60_000,
   account_detail: 5 * 60_000,
-  picker: 2 * 60_000,
-  moto: 5 * 60_000,
-  kuaidi100: 5 * 60_000,
+  picker: 10 * 60_000,
+  moto: 10 * 60_000,
+  kuaidi100: 30 * 60_000,
   kdniao: 10 * 60_000,
 };
 
@@ -152,7 +154,8 @@ export function providerNextDueAt(input: Readonly<{
       intervalMs = 24 * 60 * 60_000;
       break;
     case "upstream_rejected":
-      intervalMs = 30 * 60_000;
+      // 风控／上游明确拒绝：歇 60 分钟，与京东 H5 的风控冷却一致（用户定 2026-09-04）。
+      intervalMs = 60 * 60_000;
       break;
     case "no_result":
       intervalMs = 5 * 60_000;

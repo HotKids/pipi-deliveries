@@ -8,7 +8,7 @@ import {
   ZStack,
 } from "scripting";
 import type { WidgetRow, WidgetSnapshot } from "../models";
-import { statusTint } from "../services/status";
+import { statusTint, withNote } from "../services/status";
 import { CourierIcon } from "../components/CourierIcon";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
 import { mediumWidgetLayout, mediumWidgetPlacement } from "./layout";
@@ -86,7 +86,7 @@ function Row(props: {
               }}
               lineLimit={1}
             >
-              {props.row.statusLabel}
+              {withNote(props.row.statusLabel, props.row.note)}
             </Text>
             <Spacer />
           </HStack>

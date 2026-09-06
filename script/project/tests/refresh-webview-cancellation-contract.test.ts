@@ -78,7 +78,7 @@ assert.match(
 );
 assert.match(
   detail,
-  /refreshKuaidi100H5\([\s\S]*?signal/,
+  /refreshWebTimeline\([\s\S]*?signal/,
   "K100 detail work must receive the page cancellation signal",
 );
 assert.match(
@@ -117,9 +117,11 @@ assert.match(
 const runFullRefresh = source.match(
   /async function runFullRefresh\([\s\S]*?\n}\n\nexport function refreshAllShipments/,
 )?.[0] || "";
+// 用户定 2026-09-04：这一段现在无条件调用，靠最后那个 textBackfillOnly 参数区分——
+// 小组件/快捷指令那轮只做文案回填，不开 WebView。lease.signal 仍然是 WebView 的取消源。
 assert.match(
   runFullRefresh,
-  /const projection = await projectAccountOrders\([\s\S]*?hostPolicy\.accountOrderProjection,\s*lease\.signal,/,
+  /const projection = await projectAccountOrders\([\s\S]*?lease\.signal,\s*!hostPolicy\.accountOrderProjection,/,
   "the full-refresh lease signal must own account-order WebView projection",
 );
 assert.match(

@@ -84,6 +84,7 @@ public final class ExpressManagerActivity extends AppCompatActivity {
                     ExpressRepository.get(this).unbindPhone(
                             phone, ExpressAccountSource.bindingSource(this));
                     reloadPhones();
+                    Toast.makeText(this, ExpressToastCopy.PHONE_UNBOUND, Toast.LENGTH_SHORT).show();
                 })
                 .show();
     }

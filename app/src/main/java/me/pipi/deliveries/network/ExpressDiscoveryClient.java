@@ -1,5 +1,6 @@
 package me.pipi.deliveries.network;
 
+import me.pipi.deliveries.data.TimelineSlot;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Log;
@@ -160,7 +161,7 @@ public final class ExpressDiscoveryClient {
         for (JSONObject item : discovered) {
             String waybill = itemIdentity(item);
             if (!shouldQueryDetails(
-                    prefs, item, existingBeforeSync.get(normalize(waybill)))) continue;
+                    prefs, item, existingBeforeSync.get(normalize(waybill)), repository)) continue;
             try {
                 boolean suppressed = repository.hasUnboundPhoneAssociation(
                         waybill, "interface5");
@@ -197,10 +198,12 @@ public final class ExpressDiscoveryClient {
                     rememberDetailRefresh(prefs, item);
                 }
             } catch (Throwable failure) {
-                Log.w(TAG, "Single parcel detail unavailable; keeping list summary");
+                ExpressLog.line("v5", "v5_query", "", "failed",
+                        "tail", tail(waybill), "reason", "timeout");
             }
         }
-        Log.d(TAG, "Discovery summaries=" + list.length() + ", imported=" + imported);
+        ExpressLog.line("v5", "v5_list", "", "succeeded",
+                "records", list.length(), "imported", imported);
         return imported;
     }
 
@@ -258,11 +261,22 @@ public final class ExpressDiscoveryClient {
 
     /** Refreshes an existing interface 5 row even when the latest list omits it. */
     public ExpressQueryResult refreshKnown(Context context, ExpressItem item) throws Exception {
-        if (item == null || !isInterface5Owned(item) || wasSynced(item.waybill)) return null;
+        return refreshKnown(context, item, false);
+    }
+
+    /**
+     * 接口 5 按件详情（`/cpa/express/v2/query`，京东行用订单号）。{@code force} 是详情页主动拉：
+     * 用户定 2026-09-05，京东详情**优先展示这条拉回的轨迹**，不受 6 小时签名缓存和「列表这轮
+     * 已同步过」的闸门约束——那两道闸是给后台轮询省请求的，不该让用户在详情页看不到全量。
+     */
+    public ExpressQueryResult refreshKnown(
+            Context context, ExpressItem item, boolean force) throws Exception {
+        if (item == null || !isInterface5Owned(item)) return null;
+        if (!force && wasSynced(item.waybill)) return null;
         SharedPreferences prefs = context.getSharedPreferences(PREFS, 0);
         JSONObject summary = itemSummary(item);
         String key = detailCacheKey(itemIdentity(summary));
-        if (!shouldRefreshKnownOrder(
+        if (!force && !shouldRefreshKnownOrder(
                 item.semantic,
                 detailSignature(summary),
                 prefs.getString(DETAIL_SIGNATURE_PREFIX + key, ""),
@@ -379,31 +393,51 @@ public final class ExpressDiscoveryClient {
         Object payload = outer.opt("data");
         if (payload == null || payload == JSONObject.NULL) return null;
         JSONObject detail = findDetailObject(payload);
+        JSONObject sent = request.optJSONObject("record");
+        String sentIdentity = sent == null ? "" : sent.optString("waybill", "");
         if (detail != null) {
             JSONArray details = detail.optJSONArray("details");
-            Log.d(TAG, "Single parcel detail nodes="
-                    + (details == null ? 0 : details.length()));
+            // 尾号 + 送出去的身份三件套 + 回来的节点数：只为对照「接口 5 按件详情是否拉到全量」，
+            // 不落任何完整单号或手机号。
+            ExpressLog.line("v5", "v5_query",
+                    ExpressLog.source(sent == null ? "" : sent.optString("provider", ""), false),
+                    "succeeded",
+                    "tail", tail(sentIdentity),
+                    "nodes", details == null ? 0 : details.length(),
+                    "cp", sent == null ? "" : sent.optString("companyCode", ""),
+                    "returnedTail", tail(detail.optString("mailNo", "")));
+        } else {
+            ExpressLog.line("v5", "v5_query", "", "failed",
+                    "tail", tail(sentIdentity), "reason", "no_result");
         }
         return detail;
     }
 
     private static boolean shouldQueryDetails(
-            SharedPreferences prefs, JSONObject item, me.pipi.deliveries.model.ExpressItem existing) {
+            SharedPreferences prefs, JSONObject item, me.pipi.deliveries.model.ExpressItem existing,
+            ExpressRepository repository) {
         String key = detailCacheKey(itemIdentity(item));
         String signature = detailSignature(item);
         String previous = prefs.getString(DETAIL_SIGNATURE_PREFIX + key, "");
         long refreshedAt = prefs.getLong(DETAIL_REFRESH_PREFIX + key, 0L);
         return shouldQueryDetails(
-                signature, previous, existing, refreshedAt, System.currentTimeMillis());
+                signature, previous, existing, refreshedAt, System.currentTimeMillis(),
+                existing != null && repository.accountDetailComplete(existing));
     }
 
+    /**
+     * 列表同步后要不要再拉这一票的按件详情：上游头条变了 / 本地还没有 / 头条只是占位 → 拉；
+     * 已签收且缓存详情完整（有揽收）→ 不拉（用户定 2026-09-05：完整缓存不按时间重拉）；
+     * 其余在途件才按 6 小时兜底重拉一次。
+     */
     static boolean shouldQueryDetails(
             String signature, String previous, ExpressItem existing,
-            long refreshedAt, long now) {
+            long refreshedAt, long now, boolean detailComplete) {
         if (!signature.equals(previous)) return true;
         if (existing == null) return true;
         if (ExpressStatusNormalizer.isHeadlinePlaceholder(
                 existing.latestDetail, existing.semantic)) return true;
+        if (detailComplete) return false;
         return refreshedAt > now || now - refreshedAt >= DETAIL_MAX_AGE_MS;
     }
 
@@ -505,16 +539,31 @@ public final class ExpressDiscoveryClient {
             JSONObject latest = details == null ? null : details.optJSONObject(0);
             if (latest != null) updateTime = first(latest, "time", "date", "ftime");
         }
+        boolean jingDongOrder = isAccountOrderRecord(item);
         return new JSONObject()
                 .put("waybill", itemIdentity(item))
-                .put("companyCode", item.optString("cpCode", ""))
-                .put("name", item.optString("name", ""))
-                .put("provider", first(item, "provider", "providerName"))
+                .put("companyCode", jingDongOrder
+                        ? JING_DONG_ACCOUNT_CP_CODE : item.optString("cpCode", ""))
+                .put("name", jingDongOrder
+                        ? JING_DONG_ACCOUNT_NAME : item.optString("name", ""))
+                .put("provider", jingDongOrder
+                        ? JING_DONG_ACCOUNT_PROVIDER
+                        : first(item, "provider", "providerName"))
                 .put("stateNumber", item.optInt("stateNum", 0))
                 .put("updateTime", updateTime)
                 .put("phone", phone)
                 .put("channel", item.has("channel") ? item.opt("channel") : 1);
     }
+
+    /**
+     * 接口 5 京东来源那一行在上游的身份（用户定 2026-09-05，实网口径；iOS 的同位实现是
+     * account-sync.ts 的 detailRecord）。{@code mailNo} 本来就是京东内部的 16 位 {@code wlOrderId}
+     * （原始合同 §8.6），不是承运商运单号；联合页回填出来的真实承运商只属于展示层，拿它去问
+     * 接口 5，上游不认这一行。所以这三个值按来源固定，不跟着展示层走。
+     */
+    static final String JING_DONG_ACCOUNT_PROVIDER = "JingDong";
+    static final String JING_DONG_ACCOUNT_CP_CODE = "JDKD";
+    static final String JING_DONG_ACCOUNT_NAME = "京东商品快递";
 
     static JSONObject accountOrderSummary(ExpressItem item) throws Exception {
         return itemSummary(item);
@@ -654,7 +703,8 @@ public final class ExpressDiscoveryClient {
                 if (detail == null) continue;
                 String description = detail.optString("desc",
                         detail.optString("context", "")).trim();
-                if (isGenericUpdate(description)) continue;
+                if (isGenericUpdate(description)
+                        || ExpressStatusNormalizer.isNonEventDetail(description)) continue;
                 try {
                     JSONObject track = new JSONObject()
                             .put("time", first(detail, "time", "date", "ftime"))
@@ -686,7 +736,7 @@ public final class ExpressDiscoveryClient {
                 tracks.toString(),
                 detailUrl,
                 phone,
-                "interface5",
+                TimelineSlot.V5_QUERY,
                 CainiaoRoute.interfaceFromToken(detailUrl),
                 routeCredential,
                 first(item, "provider", "providerName"));
@@ -742,7 +792,7 @@ public final class ExpressDiscoveryClient {
                 tracks.toString(),
                 route.isEmpty() ? "" : CainiaoRoute.token("v5"),
                 first(item, "phone", "sendPhone"),
-                "interface5",
+                TimelineSlot.V5_QUERY,
                 route.isEmpty() ? "" : "v5",
                 route,
                 first(item, "provider", "providerName"))
@@ -780,6 +830,11 @@ public final class ExpressDiscoveryClient {
         String mailNo = first(item, "mailNo");
         String provider = first(item, "provider", "providerName");
         return mailNo.matches("^[0-9]{16}$") && "JingDong".equals(provider);
+    }
+
+    private static String tail(String value) {
+        String clean = value == null ? "" : value.trim();
+        return clean.length() <= 4 ? clean : clean.substring(clean.length() - 4);
     }
 
     private static String itemIdentity(JSONObject item) {

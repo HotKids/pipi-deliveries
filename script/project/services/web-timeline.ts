@@ -1,3 +1,5 @@
+import { resolveCarrierQuery } from "./carrier-query";
+import { TIMELINE_SLOT } from "./timeline-slot";
 import type { TimelinePackage, TrackNode } from "../models";
 import {
   OperationTimeoutError,
@@ -56,6 +58,8 @@ function extractionJavaScript(): string {
   return `
     return (() => {
       const clean = (value) => String(value == null ? "" : value).trim().replace(/\\s+/g, " ");
+      // Vue 组件对象里 time/context 同名的常是过滤器函数，序列化就成假节点（Android 同页实测）；只收字符串/数字。
+      const text = (value) => (typeof value === "string" || typeof value === "number") ? clean(value) : "";
       const host = clean(location.hostname).toLowerCase();
       if (!(host === "kuaidi100.com" || host.endsWith(".kuaidi100.com"))) {
         return { tracks: [] };
@@ -68,8 +72,8 @@ function extractionJavaScript(): string {
         if (!item || typeof item !== "object") return;
         let timeText = "";
         let detail = "";
-        for (const key of timeKeys) if (!timeText) timeText = clean(item[key]);
-        for (const key of detailKeys) if (!detail) detail = clean(item[key]);
+        for (const key of timeKeys) if (!timeText) timeText = text(item[key]);
+        for (const key of detailKeys) if (!detail) detail = text(item[key]);
         if (!timeText || !detail || timeText === detail) return;
         const key = timeText + "\\u0000" + detail;
         if (seenTrack.has(key)) return;
@@ -136,6 +140,9 @@ export function webTimelineFromExtraction(
 ): TimelinePackage | null {
   const root = object(value);
   const rows = Array.isArray(root.tracks) ? root.tracks.slice(0, MAX_TRACKS) : [];
+  // k100_h5 槽的包要带 Kuaidi100 承运商标记才算验证过（isVerifiedKuaidi100Timeline）。这一页是
+  // picker 按这张运单号给的 detailUrl，承运商就是行上的承运商，标记取它的 Kuaidi100 编码。
+  const kuaidi100Com = resolveCarrierQuery(input.courierCode)?.kuaidi100Code || "";
   const seen = new Set<string>();
   const tracks: TrackNode[] = [];
   for (const raw of rows) {
@@ -151,7 +158,9 @@ export function webTimelineFromExtraction(
       timeMs,
       detail,
       statusCode: "",
-      raw: { _pipiStatusSource: "web" },
+      raw: kuaidi100Com
+        ? { _pipiStatusSource: "web", _pipiKuaidi100Com: kuaidi100Com }
+        : { _pipiStatusSource: "web" },
     });
   }
   tracks.sort((left, right) => (right.timeMs || 0) - (left.timeMs || 0));
@@ -159,7 +168,7 @@ export function webTimelineFromExtraction(
   if (!timed.length) return null;
   const status = packageSemantic("", tracks);
   return {
-    provider: "web",
+    provider: TIMELINE_SLOT.K100_H5,
     complete: timed.length >= 2,
     waybill: input.waybill,
     courierCode: input.courierCode,

@@ -23,7 +23,7 @@ public final class ExpressWidgetLayoutTest {
         assertEquals(38f, small.courierLogoSizeDp, EPSILON);
         assertEquals(3f, small.logoHorizontalInsetDp, EPSILON);
         assertEquals(3f, small.logoVerticalInsetDp, EPSILON);
-        assertEquals(14f, small.pillContentSize, EPSILON);
+        assertEquals(15f, small.pillContentSize, EPSILON);
         assertEquals(15f, small.pillIconSizeDp, EPSILON);
         assertEquals(0.5f, small.pillIconInsetDp, EPSILON);
         assertEquals(11f, small.pillHorizontalPaddingDp, EPSILON);
@@ -37,7 +37,7 @@ public final class ExpressWidgetLayoutTest {
         assertEquals(42f, reference.courierLogoSizeDp, EPSILON);
         assertEquals(1f, reference.logoHorizontalInsetDp, EPSILON);
         assertEquals(1f, reference.logoVerticalInsetDp, EPSILON);
-        assertEquals(14f, reference.pillContentSize, EPSILON);
+        assertEquals(15f, reference.pillContentSize, EPSILON);
         assertEquals(16f, reference.pillIconSizeDp, EPSILON);
         assertEquals(0f, reference.pillIconInsetDp, EPSILON);
         assertEquals(12f, reference.pillHorizontalPaddingDp, EPSILON);
@@ -51,7 +51,7 @@ public final class ExpressWidgetLayoutTest {
         assertEquals(44f, fold.courierLogoSizeDp, EPSILON);
         assertEquals(0f, fold.logoHorizontalInsetDp, EPSILON);
         assertEquals(0f, fold.logoVerticalInsetDp, EPSILON);
-        assertEquals(14f, fold.pillContentSize, EPSILON);
+        assertEquals(15f, fold.pillContentSize, EPSILON);
         assertEquals(16f, fold.pillIconSizeDp, EPSILON);
         assertEquals(0f, fold.pillIconInsetDp, EPSILON);
         assertEquals(13.2f, fold.pillHorizontalPaddingDp, EPSILON);

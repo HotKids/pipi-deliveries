@@ -1,3 +1,4 @@
+import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
   Shipment,
   ShipmentIdentity,
@@ -101,6 +102,19 @@ export function shipmentPresentationStatus(
   const semantic = shipment.identity.manuallyAdded
     ? timelinePresentationSemantic(statusTimeline)
     : statusTimeline.semantic;
+  // A richer timeline must never cost the row its status. The JD H5 and KDNiao packages carry no
+  // per-node structured status at all, so once the 2026-09-04 node-count rule made them complete
+  // they replaced the feed package and two signed-for rows fell to 暂无状态 with their delivery
+  // text unchanged. The account record's own structured status is the fallback — structured to
+  // structured, never inferred from the node text (AGENTS §9 forbids reading status from prose).
+  if (semantic === "UNKNOWN" && presentation && presentation.semantic !== "UNKNOWN") {
+    return {
+      semantic: presentation.semantic,
+      text: presentation.semantic === "COMPLETED"
+        ? "已完成"
+        : statusLabel(presentation.semantic),
+    };
+  }
   return { semantic, text: statusLabel(semantic) };
 }
 
@@ -116,26 +130,44 @@ export function shipmentDetailPresentationStatus(
   return { semantic, text: statusLabel(semantic) };
 }
 
+/** 备注分隔符（用户定 2026-09-05 晚）：状态词 · 备注。 */
+export const NOTE_SEPARATOR = " · ";
+
+/** 列表页、详情页、4×2 桌面卡片共用：状态词后面拼上用户备注（没有备注就是状态词本身）。 */
+export function withNote(statusText: string, note?: string): string {
+  const trimmed = String(note || "").trim();
+  return trimmed ? `${statusText}${NOTE_SEPARATOR}${trimmed}` : statusText;
+}
+
+export function withShipmentNote(statusText: string, shipment: Shipment): string {
+  return withNote(statusText, shipment.note);
+}
+
 export function widgetStatusLabel(semantic: StatusSemantic): string {
   if (semantic === "DANGER") return "异常件";
   return statusLabel(semantic);
 }
 
+// 三端同一张状态色表（用户定 2026-09-05：派送中与已签收不能同色）：异常红、待取件橙、
+// 派送中绿、已签收青、揽件/运输蓝、下单/发货黄、已取消与未知灰。Pipi ExpressNotificationVisuals、
+// Lite ExpressListActivity/ExpressDetailActivity.statusColor 同表。
 export function statusTint(semantic: StatusSemantic): string {
   switch (semantic) {
     case "WAITING_PICKUP":
       return "systemOrange";
     case "DELIVERY":
-    case "COMPLETED":
       return "systemGreen";
+    case "COMPLETED":
+      return "systemTeal";
     case "TRANSIT":
     case "PICKED":
+      return "systemBlue";
     case "SHIPPED":
     case "ORDERED":
-      return "systemBlue";
+      return "systemYellow";
     case "DANGER":
-    case "CANCELLED":
       return "systemRed";
+    case "CANCELLED":
     default:
       return "secondaryLabel";
   }
@@ -244,17 +276,28 @@ export function semanticFromEventCode(code: string): StatusSemantic {
   }
 }
 
+/**
+ * The client's only text→status table, used where a source carries no structured state at all
+ * (AGENTS §9 keeps status on the structured fields wherever they exist).
+ *
+ * The account parser used to keep a private second copy of this table whose WAITING_PICKUP and
+ * ORDERED branches had drifted wider. The copies are now one function and the union is what
+ * survives: narrowing to the old status.ts wording would have downgraded the JD feed's
+ * 「…拣货完成，待出库…」 row from 已下单 and a 代取件点/待领取 row from 待取件 to 暂无状态, and would have
+ * kept containsTimelineStartTrack blind to a start node the same row already displays as one.
+ */
 export function semanticFromText(value: string): StatusSemantic {
   const text = String(value || "").replace(/\s+/g, "");
   if (!text) return "UNKNOWN";
   if (/已签收|已妥投/.test(text)) return "COMPLETED";
   if (/已取消|订单关闭/.test(text)) return "CANCELLED";
-  if (/待取件|等待取件|取件码/.test(text)) return "WAITING_PICKUP";
+  if (/待取件|代取件|等待取件|待领取|取件码/.test(text)) return "WAITING_PICKUP";
   if (/派送中|正在派送|配送中|正在配送/.test(text)) return "DELIVERY";
-  if (/已揽收|已揽件|揽收完成/.test(text)) return "PICKED";
+  // 顺丰的揽收节点写「顺丰速运 已收取快件」(2026-09-05 三端同补)，否则那包永远判不完整。
+  if (/已揽收|已揽件|揽收完成|揽件成功|揽收成功|已收寄|收取快件/.test(text)) return "PICKED";
   if (/运输中|转运|分拨|已发往|已到达/.test(text)) return "TRANSIT";
   if (/已发货|商家已发货/.test(text)) return "SHIPPED";
-  if (/已下单|订单已提交|订单已完成|配送完成|等待出库|正在打包/.test(text)) {
+  if (/已下单|已经下单|订单已创建|订单已提交|订单已完成|配送完成|等待出库|正在打包|拣货/.test(text)) {
     return "ORDERED";
   }
   if (/异常|问题件/.test(text)) return "DANGER";
@@ -353,13 +396,55 @@ export function accountOrderSemantic(
   return sourceSemantic;
 }
 
+/** 京东联合页嫁接进来的节点带 `_pipiStatusSource: "jingdong_h5"`；feed 自己的节点不带。 */
+export function isJingDongH5Track(track: TrackNode): boolean {
+  return String(track.raw?._pipiStatusSource || "").trim().toLowerCase() === "jingdong_h5";
+}
+
+/**
+ * 用户定 2026-09-05 晚：feed 增量与 query 是两个独立的包，不拼接。把一个 source 包拆成 feed 自己
+ * 的节点（留在 source 槽）和京东联合页嫁接的节点（作为 jd_h5 槽的包，由详情页选包）。H5 只供
+ * 轨迹不供状态，所以拆出去的包语义是 UNKNOWN；`complete` 沿用原包的展开证明。
+ */
+export function splitJingDongH5Nodes(
+  timeline: TimelinePackage,
+): { feed: TimelinePackage; jdH5: TimelinePackage | null } {
+  const h5 = timeline.tracks.filter(isJingDongH5Track);
+  if (!h5.length) return { feed: timeline, jdH5: null };
+  const feedTracks = timeline.tracks.filter((track) => !isJingDongH5Track(track));
+  const feedLatest = timedTracks(feedTracks)[0] || feedTracks[0];
+  const feed: TimelinePackage = {
+    ...timeline,
+    tracks: feedTracks,
+    complete: false,
+    latestTimeText: feedLatest?.timeText || (feedTracks.length ? timeline.latestTimeText : ""),
+    latestDetail: feedLatest?.detail || (feedTracks.length ? timeline.latestDetail : ""),
+  };
+  const sortedH5 = [...h5].sort((left, right) => (right.timeMs || 0) - (left.timeMs || 0));
+  const h5Latest = timedTracks(sortedH5)[0] || sortedH5[0];
+  const jdH5: TimelinePackage = {
+    ...timeline,
+    provider: TIMELINE_SLOT.JD_H5,
+    tracks: sortedH5,
+    complete: timeline.complete === true,
+    structuredStatus: false,
+    semantic: "UNKNOWN",
+    statusEventAtMs: null,
+    latestTimeText: h5Latest.timeText,
+    latestDetail: h5Latest.detail,
+  };
+  return { feed, jdH5 };
+}
+
 export function timedTracks(tracks: readonly TrackNode[]): TrackNode[] {
   return tracks.filter(
     (track) =>
       typeof track.timeMs === "number" &&
       Number.isFinite(track.timeMs) &&
       Boolean(track.detail.trim()) &&
-      !isProviderErrorDetail(track.detail),
+      // AGENTS §9: a forecast note is no more an event than a provider error is, so it may not
+      // be counted, ranked by time, or used to prove a timeline is complete.
+      !isNonEventDetail(track.detail),
   );
 }
 
@@ -418,13 +503,34 @@ export function isProviderErrorDetail(value: string): boolean {
     || clean === "快递状态已更新，点击查看>>";
 }
 
+/**
+ * Anything a provider boundary must drop before a row can become an event.
+ *
+ * Forecast notes are NOT in here, and not anywhere else (user decision 2026-09-04, revoking 裁决 A
+ * outright): the row shows whatever the source returned. No wording test touches the timeline, the
+ * node counts or the headline. What remains is the provider's own error placeholder.
+ */
+export function isNonEventDetail(value: string): boolean {
+  return isProviderErrorDetail(value);
+}
+
+/**
+ * The track a surface should show as the headline: simply the newest one. Mirrors Pipi's
+ * TrackTimelinePolicy headline loop — no wording is filtered.
+ */
+export function headlineTrack(
+  tracks: readonly TrackNode[],
+): TrackNode | null {
+  return tracks.length ? tracks[0] : null;
+}
+
 export function usableTimedTracks(
   tracks: readonly TrackNode[],
 ): TrackNode[] {
   return timedTracks(tracks);
 }
 
-function latestEventEvidence(
+export function latestEventEvidence(
   tracks: readonly TrackNode[],
 ): { semantic: StatusSemantic; eventAtMs: number | null } {
   let newestAt: number | null = null;
@@ -460,7 +566,7 @@ export function packageSemantic(
     (left, right) => (right.timeMs || 0) - (left.timeMs || 0),
   );
   const evidence = latestEventEvidence(tracks.filter(
-    (track) => !track.detail.trim() || !isProviderErrorDetail(track.detail),
+    (track) => !track.detail.trim() || !isNonEventDetail(track.detail),
   ));
   if (timed.length && String(summaryState || "").trim() === "3") {
     return {
@@ -548,6 +654,50 @@ function fillMissingTrackFields(target: TrackNode, source: TrackNode): TrackNode
   };
 }
 
+/** 同包内同文案节点的合并窗口（用户定 2026-09-06，三端同 Pipi CROSS_SOURCE_DUPLICATE_WINDOW_SECONDS）。 */
+export const NEAR_DUPLICATE_WINDOW_MS = 5 * 60_000;
+
+/** 与 Pipi TrackTimelinePolicy.fingerprint 同法：NFKC、「您的快件/订单/包裹」归一、去尾标点、去空白。 */
+function trackFingerprint(detail: string): string {
+  return String(detail || "")
+    .normalize("NFKC")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^您的(?:快件|订单|包裹)\s*/, "您的物流")
+    .replace(/[。.!！?？,，;；、…]+$/, "")
+    .replace(/\s+/g, "");
+}
+
+/**
+ * 同一个包内，文案指纹相同、相距不超过 5 分钟、结构化状态不冲突的两条节点算同一条：保留较新的那条，
+ * 老的只补空字段（用户定 2026-09-06，三端统一；Pipi 早已如此，Lite 原来是相邻同文案不看时间）。
+ * 京东会把同一条提示重发（4424 的两条「预计…」秒数不同）；相隔几十分钟的同文案（0822 的两条
+ * 「温馨提示」）仍是两条事件。
+ */
+function collapseNearTimeDuplicates(sorted: readonly TrackNode[]): TrackNode[] {
+  const output: TrackNode[] = [];
+  for (const candidate of sorted) {
+    const candidateAt = candidate.timeMs;
+    const fingerprint = trackFingerprint(candidate.detail);
+    let duplicateIndex = -1;
+    if (candidateAt != null && fingerprint) {
+      duplicateIndex = output.findIndex((existing) =>
+        existing.timeMs != null &&
+        trackFingerprint(existing.detail) === fingerprint &&
+        Math.abs(existing.timeMs - candidateAt) <= NEAR_DUPLICATE_WINDOW_MS &&
+        compatibleStructuredTrack(existing, candidate)
+      );
+    }
+    if (duplicateIndex < 0) {
+      output.push(candidate);
+    } else {
+      output[duplicateIndex] = fillMissingTrackFields(output[duplicateIndex], candidate);
+    }
+  }
+  return output;
+}
+
 export function mergeTracks(
   current: readonly TrackNode[],
   incoming: readonly TrackNode[],
@@ -576,11 +726,13 @@ export function mergeTracks(
     existing.track = fillMissingTrackFields(existing.track, track);
     existing.structured = structuredTrackKey(existing.track);
   }
-  const sorted = merged.map((entry) => entry.track).sort((left, right) => {
-    const time = (right.timeMs || 0) - (left.timeMs || 0);
-    if (time !== 0) return time;
-    return right.timeText.localeCompare(left.timeText);
-  });
+  const sorted = collapseNearTimeDuplicates(
+    merged.map((entry) => entry.track).sort((left, right) => {
+      const time = (right.timeMs || 0) - (left.timeMs || 0);
+      if (time !== 0) return time;
+      return right.timeText.localeCompare(left.timeText);
+    }),
+  );
   if (sorted.length <= 160) return sorted;
   const retained = new Set(sorted.slice(0, 156));
   for (const track of sorted.slice(156)) {
@@ -619,6 +771,61 @@ function rejectsSameEventRegression(
   return currentRank >= 0 && incomingRank >= 0 && incomingRank < currentRank;
 }
 
+/**
+ * Shipment status progression for a projected account order. An order-scope summary may only
+ * move the status forward: a terminal state always applies, a further stage applies, and an
+ * earlier stage (typically the feed's coarse ORDERED) never rewinds shipment logistics.
+ */
+export function statusProgressionRank(semantic: string): number {
+  switch (String(semantic || "").toUpperCase()) {
+    case "UNKNOWN": return 0;
+    case "ORDERED": return 1;
+    case "PICKED": return 2;
+    case "TRANSIT": return 3;
+    case "DELIVERY": return 4;
+    case "WAITING_PICKUP": return 4;
+    case "COMPLETED": return 6;
+    case "CANCELLED": return 6;
+    default: return 3;
+  }
+}
+export function isTerminalStatusSemantic(semantic: string): boolean {
+  const value = String(semantic || "").toUpperCase();
+  return value === "COMPLETED" || value === "CANCELLED";
+}
+export function incomingStatusAdvances(base: string, incoming: string): boolean {
+  if (isTerminalStatusSemantic(incoming)) return true;
+  if (isTerminalStatusSemantic(base)) return false;
+  return statusProgressionRank(incoming) > statusProgressionRank(base);
+}
+
+/**
+ * Re-reads the headline off a track set that has just grown.
+ *
+ * 用户定 2026-09-04: 头条 = 最新的有效时间节点. A merge installs the union of both track lists while
+ * carrying the winner's stored headline verbatim, so a same-provider refresh that brought strictly
+ * newer nodes but no recognizable state (semantic UNKNOWN) left the row showing 13:53 while
+ * tracks[0] was already 14:57. Pipi fixed the same symptom in
+ * ExpressSourcePolicy.preserveAutomaticOwnerTimeline; this is the single iOS rule for it, shared
+ * with shipment-policy's own supplement step.
+ *
+ * Strictly newer only: an equal-time response from an earlier stage must not take the headline
+ * (mergeTracks orders the incoming copy first among equal timestamps). The merged set only ever
+ * grows, so the headline can never move backwards. Status is untouched — it keeps coming from the
+ * structured fields (AGENTS §9).
+ */
+export function withMergedHeadline(value: TimelinePackage): TimelinePackage {
+  const latest = headlineTrack(timedTracks(value.tracks));
+  if (!latest) return value;
+  // Overtaking is a comparison, so a stored headline whose own time cannot be read is left alone:
+  // this rule exists to stop a newer node from being hidden, not to repair untimed headlines.
+  const retainedAt = parseProviderTime(value.latestTimeText) || 0;
+  if (!retainedAt) return value;
+  return (latest.timeMs || 0) > retainedAt
+    ? { ...value, latestTimeText: latest.timeText, latestDetail: latest.detail }
+    : value;
+}
+
 export function mergeTimelinePackage(
   current: TimelinePackage | null,
   incoming: TimelinePackage,
@@ -631,14 +838,17 @@ export function mergeTimelinePackage(
   if (!incomingTimed.length) return current;
 
   const tracks = mergeTracks(current.tracks, incoming.tracks);
-  const finalize = (value: TimelinePackage): TimelinePackage => {
+  const finalize = (
+    value: TimelinePackage,
+    keepStoredHeadline = false,
+  ): TimelinePackage => {
     const rawCourierCode = String(
       value.rawCourierCode || current.rawCourierCode || incoming.rawCourierCode || "",
     ).trim();
     const retainedRaw = rawCourierCode
       ? { ...value, rawCourierCode }
       : value;
-    return isManualTimelineProvider(value.provider)
+    const merged = isManualTimelineProvider(value.provider)
       ? {
           ...retainedRaw,
           complete:
@@ -649,6 +859,8 @@ export function mergeTimelinePackage(
           structuredStatus: value.structuredStatus === true,
         }
       : retainedRaw;
+    // Every exit installs the merged track set, so every exit re-reads the headline from it.
+    return keepStoredHeadline ? merged : withMergedHeadline(merged);
   };
   const currentTimed = timedTracks(current.tracks);
   const currentCompleted = current.semantic === "COMPLETED" && currentTimed.length > 0;
@@ -657,17 +869,14 @@ export function mergeTimelinePackage(
     EXPRESS_POLICY.manualAuthority.completedOutranksNonTerminal &&
     currentCompleted
   ) {
-    return incomingCompleted
-      ? finalize({
-          ...current,
-          tracks,
-          successAtMs: Math.max(current.successAtMs, incoming.successAtMs),
-        })
-      : finalize({
-          ...current,
-          tracks,
-          successAtMs: Math.max(current.successAtMs, incoming.successAtMs),
-        });
+    // The only exit that keeps its stored headline: a signed row stays on its 已签收 line whatever
+    // the merge absorbs afterwards, which is the whole point of the terminal freeze. Both arms of
+    // the former ternary were identical, so the completed row is frozen either way.
+    return finalize({
+      ...current,
+      tracks,
+      successAtMs: Math.max(current.successAtMs, incoming.successAtMs),
+    }, true);
   }
   if (incomingCompleted) return finalize({ ...incoming, tracks });
   const retainedCurrent = {
@@ -693,17 +902,15 @@ export function mergeTimelinePackage(
 }
 
 const MANUAL_TIMELINE_PROVIDERS = new Set([
-  "local",
-  "route",
-  "web",
-  "fallback",
-  "cainiao_h5",
-  "kuaidi100_h5",
-  "moto",
-  "meizu",
-  "oppo",
-  "kdniao",
-  "kuaidi100",
+  TIMELINE_SLOT.V5_QUERY,
+  TIMELINE_SLOT.V4_QUERY,
+  TIMELINE_SLOT.V6_PICKER,
+  TIMELINE_SLOT.V2_QUERY,
+  TIMELINE_SLOT.CN_H5,
+  TIMELINE_SLOT.K100_H5,
+  TIMELINE_SLOT.JD_H5,
+  TIMELINE_SLOT.KDNIAO,
+  TIMELINE_SLOT.K100_PAID,
 ]);
 
 export type TimelineCapability =
@@ -716,24 +923,26 @@ export type TimelineCapability =
 
 /** Keeps legacy provider ids readable while new state and logs use capability names. */
 export function timelineCapability(provider: unknown): TimelineCapability {
-  const value = String(provider || "").trim().toLowerCase();
-  if (value === "interface5" || value === "interface6" || value === "account") {
-    return "account";
+  const raw = String(provider || "").trim().toLowerCase();
+  if (raw === "interface6" || raw === "interface5" || raw === "account") return "account";
+  const value = normalizeTimelineSlot(raw);
+  if (value === TIMELINE_SLOT.V5_QUERY) return "account";
+  if (value === TIMELINE_SLOT.V4_QUERY) return "local";
+  if (value === TIMELINE_SLOT.V6_PICKER || value === TIMELINE_SLOT.V2_QUERY) {
+    return "route";
   }
-  if (value === "local" || value === "moto") return "local";
-  if (value === "route" || value === "meizu" || value === "oppo") return "route";
   if (
-    value === "web" || value === "jingdong_h5" || value === "cainiao_h5" ||
-    value === "kuaidi100_h5"
+    value === TIMELINE_SLOT.JD_H5 || value === TIMELINE_SLOT.CN_H5 ||
+    value === TIMELINE_SLOT.K100_H5
   ) return "web";
-  if (value === "fallback" || value === "kdniao" || value === "kuaidi100") {
+  if (value === TIMELINE_SLOT.KDNIAO || value === TIMELINE_SLOT.K100_PAID) {
     return "fallback";
   }
   return "unknown";
 }
 
 function isManualTimelineProvider(provider: string): boolean {
-  return MANUAL_TIMELINE_PROVIDERS.has(provider.trim().toLowerCase());
+  return MANUAL_TIMELINE_PROVIDERS.has(normalizeTimelineSlot(provider));
 }
 
 function manualTimelineDeclaredComplete(value: TimelinePackage): boolean {
@@ -743,9 +952,19 @@ function manualTimelineDeclaredComplete(value: TimelinePackage): boolean {
     : timelineCapability(provider) === "fallback";
 }
 
+/**
+ * A declared-complete package still has to look like a whole timeline before it may freeze a row.
+ *
+ * The minimum is keyed by the provider id the package carries, so the contract lists both ids the
+ * KDNiao answer can arrive under: "fallback" is what manual-query writes today, "kdniao" is the id
+ * kept by older persisted rows. Keyed by "kdniao" alone the guard never ran on a real package and a
+ * one-node 已签收 answer outranked a richer partial one. Capability is deliberately not used here:
+ * "fallback" also covers Kuaidi100, whose completeness may only come from its own /query contract
+ * (AGENTS §9), never from counting nodes.
+ */
 export function manualTimelineIsComplete(value: TimelinePackage): boolean {
   if (!manualTimelineDeclaredComplete(value)) return false;
-  const provider = value.provider.trim().toLowerCase();
+  const provider = normalizeTimelineSlot(value.provider);
   const thresholds =
     EXPRESS_POLICY.manualAuthority.terminalCompleteMinTimedTracksByProvider;
   const minimum = thresholds[
@@ -848,10 +1067,22 @@ export function compareTimelinePackageCompleteness(
   return manualProviderRank(left.provider) - manualProviderRank(right.provider);
 }
 
+/**
+ * 详情页排序的最后一把钥匙：既有 provider 次序（用户定 2026-09-04）。
+ * 与 compareTimelinePackageCompleteness 的区别是这里**不看**各家自报的 `complete`，也不看谁的
+ * 事件更新——那两样在详情选包上已被「完整判据 → 有效节点数」取代。
+ */
+export function compareTimelineProviderOrder(
+  left: TimelinePackage,
+  right: TimelinePackage,
+): number {
+  return manualProviderRank(left.provider) - manualProviderRank(right.provider);
+}
+
 function manualProviderRank(provider: string): number {
-  const normalized = provider.trim().toLowerCase();
+  const normalized = normalizeTimelineSlot(provider);
   const capability = timelineCapability(normalized);
-  if (normalized === "route" || normalized === "meizu") return 0;
+  if (normalized === TIMELINE_SLOT.V6_PICKER) return 0;
   const capabilityRank = ["local", "web", "route", "fallback"].indexOf(capability);
   if (capabilityRank >= 0) return capabilityRank + 1;
   const rank = EXPRESS_POLICY.manualAuthority.tieBreakOrder.indexOf(
@@ -1028,9 +1259,9 @@ export function buildWidgetSnapshot(
           normalizedProjectedWaybill(item.identity) || item.timeline.waybill,
         ),
         semantic: presentation.semantic,
-        statusLabel: presentation.semantic === "DANGER"
-          ? "异常件"
-          : presentation.text,
+        statusLabel: presentation.semantic === "DANGER" ? "异常件" : presentation.text,
+        // 备注单独带着：4×2 拼成「状态词 · 备注」，2×2 放不下只显示状态词（用户定 2026-09-06）。
+        note: String(item.note || "").trim(),
         latestDetail: item.timeline.latestDetail,
       };
     }),

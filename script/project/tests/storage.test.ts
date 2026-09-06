@@ -100,17 +100,18 @@ Object.assign(globalThis, {
 
 const {
   addBinding,
-  emptyState,
-  forceCompleteShipment,
   commitRefreshState,
   commitRoutePointers,
   commitTargetShipmentRefresh,
+  emptyState,
+  forceCompleteShipment,
   loadState,
   loadWidgetSnapshot,
   removeBinding,
   removePendingQuery,
   removeShipment,
   saveState,
+  setShipmentNote,
   upsertPendingQuery,
   upsertShipment,
   visibleShipments,
@@ -494,10 +495,10 @@ memory.delete(STATE_KEY);
 const restoredLocal = loadState(NOW + 2).shipments[0]!;
 assert.deepEqual(
   new Set(restoredLocal.manualTimelines?.map((item) => item.provider)),
-  new Set(["moto", "meizu", "oppo"]),
+  new Set(["v4_query", "v6_picker", "v2_query"]),
 );
 const restoredMoto = restoredLocal.manualTimelines?.find(
-  (item) => item.provider === "moto",
+  (item) => item.provider === "v4_query",
 );
 assert.deepEqual(
   new Set(restoredMoto?.tracks.map((track) => track.detail)),
@@ -516,25 +517,25 @@ automaticRawOwner.identity.rawCourierCode = "OWNER_SOURCE_CP";
 automaticRawOwner.sourceTimeline = automaticRawOwner.timeline;
 const rawSidecarIdentities = [
   {
-    provider: "route",
+    provider: "v6_picker",
     rawCourierCode: "KYE",
     courierCode: "KYSY",
     companyName: "跨越速运",
   },
   {
-    provider: "local",
+    provider: "v4_query",
     rawCourierCode: "JDVD",
     courierCode: "JD",
     companyName: "京东快递",
   },
   {
-    provider: "kuaidi100_h5",
+    provider: "k100_h5",
     rawCourierCode: "debangwuliu",
     courierCode: "DBL",
     companyName: "德邦快递",
   },
   {
-    provider: "fallback",
+    provider: "kdniao",
     rawCourierCode: "ZMKM",
     courierCode: "DANNIAO",
     companyName: "丹鸟速递",
@@ -546,7 +547,7 @@ const rawSidecarCodes = new Map(
 const rawSidecars = rawSidecarIdentities.map((identity, index) => ({
   ...automaticRawOwner.timeline,
   ...identity,
-  complete: identity.provider === "kuaidi100_h5" || identity.provider === "fallback",
+  complete: identity.provider === "k100_h5" || identity.provider === "kdniao",
   latestTimeText: `2026-08-26 ${String(10 + index).padStart(2, "0")}:00:00`,
   latestDetail: `${identity.provider} raw sidecar`,
   tracks: [{
@@ -554,7 +555,7 @@ const rawSidecars = rawSidecarIdentities.map((identity, index) => ({
     timeMs: NOW + index,
     detail: `${identity.provider} raw sidecar`,
     statusCode: "",
-    raw: identity.provider === "kuaidi100_h5"
+    raw: identity.provider === "k100_h5"
       ? { _pipiKuaidi100Com: identity.rawCourierCode }
       : {},
   }],
@@ -1657,7 +1658,8 @@ const screenedProjection = commitRefreshState(
 assert.equal(screenedProjection.identity.projectedWaybill, "SF9876543210123");
 assert.equal(screenedProjection.statusPresentation, undefined);
 assert.equal(screenedProjection.timeline.semantic, "COMPLETED");
-assert.equal(screenedProjection.timeline.latestDetail, "手动源完整签收轨迹");
+// 用户定 2026-09-05 晚：列表归 feed；手动包住自己的槽，只在详情页选包。
+assert.equal(screenedProjection.timeline.latestDetail, "真实运单已签收");
 assert.equal(screenedProjection.sourceTimeline?.latestDetail, "真实运单已签收");
 assert.equal(
   screenedProjection.manualTimelines?.some(
@@ -1735,19 +1737,20 @@ saveState({
   shipments: [atomicJdH5Merged],
 }, NOW + 41);
 const restoredAtomicJdH5 = loadState(NOW + 42).shipments[0];
+// 用户定 2026-09-05 晚：feed 增量与 query 独立。H5 节点不留在 source；完整的那一包住 jd_h5 槽，
+// 且仍是一个原子包（不把两次响应拼在一起）。
 assert.deepEqual(
-  restoredAtomicJdH5.sourceTimeline?.tracks.map((track) => track.detail),
-  ["完整物流进度响应"],
-  "durable JD H5 source state must retain exactly one response package",
+  restoredAtomicJdH5.sourceTimeline?.tracks.filter(
+    (track) => track.raw?._pipiStatusSource === "jingdong_h5",
+  ),
+  [],
+  "durable JD source state carries no H5 node",
 );
 assert.deepEqual(
-  restoredAtomicJdH5.automaticOwnership?.observations.find(
-    (observation) =>
-      observation.source === "interface5" &&
-      observation.bindingIdentity === "phone:13800001515",
-  )?.sourceTimeline.tracks.map((track) => track.detail),
+  restoredAtomicJdH5.manualTimelines?.find((timeline) => timeline.provider === "jd_h5")
+    ?.tracks.map((track) => track.detail),
   ["完整物流进度响应"],
-  "durable JD H5 observations must not combine separate responses",
+  "the complete JD H5 response is one atomic package in the jd_h5 slot",
 );
 
 // Older script builds persisted the order-stage label after a waybill had been projected.
@@ -2236,11 +2239,13 @@ assert.deepEqual(
   continuedPartialPicker.shipment.manualTimelines?.map(
     (timeline) => timeline.provider,
   ).sort(),
-  ["fallback", "kuaidi100_h5", "local", "route"],
+  ["k100_h5", "kdniao", "v4_query", "v6_picker"],
 );
+// 四个包都是「一条、无揽收」的摘要：完整判据与有效节点数并列，才轮到自报 complete 当
+// tiebreak；免费的 K100 又排在付费的快递鸟之前。
 assert.equal(
   selectShipmentDetailTimeline(continuedPartialPicker.shipment).provider,
-  "kuaidi100_h5",
+  "k100_h5",
 );
 
 // A newer submit reuses the canonical pending id but owns a distinct
@@ -2899,7 +2904,7 @@ memory.set(STATE_KEY, storedState({
 }, 2));
 const healedMeizu = loadState(NOW).shipments[0]!;
 const healedMeizuTimeline = healedMeizu.manualTimelines?.find(
-  (timeline) => timeline.provider === "route",
+  (timeline) => timeline.provider === "v6_picker",
 )!;
 assert.deepEqual(
   healedMeizuTimeline.tracks.map((track) => track.detail),
@@ -2910,7 +2915,7 @@ assert.equal(healedMeizuTimeline.structuredStatus, false);
 assert.equal(healedMeizuTimeline.semantic, "UNKNOWN");
 assert.equal(healedMeizuTimeline.statusEventAtMs, null);
 const healedMeizuAgain = loadState(NOW).shipments[0]!.manualTimelines?.find(
-  (timeline) => timeline.provider === "route",
+  (timeline) => timeline.provider === "v6_picker",
 )!;
 assert.deepEqual(
   healedMeizuAgain.tracks.map((track) => track.detail),
@@ -2967,4 +2972,112 @@ const changedTargetCommit = commitTargetShipmentRefresh(
 assert.equal(changedTargetCommit.applied, true);
 assert.equal(changedTargetCommit.state.revision, deltaBase.revision + 1);
 
+
+// 备注（用户定 2026-09-05 晚）：只在详情页写，落在 shipment.note 上；账号同步与手动刷新的合并都不改它。
+{
+  memory.clear();
+  const noted = shipment({ id: "interface5:account:note-1", source: "interface5" });
+  saveState({ ...emptyState(), shipments: [noted] }, NOW);
+  const withNote = setShipmentNote("interface5:account:note-1", " 给妈妈的 ", NOW + 1);
+  assert.equal(withNote.shipments[0]?.note, "给妈妈的");
+  assert.equal(loadState(NOW + 2).shipments[0]?.note, "给妈妈的", "the note is persisted");
+  const refreshed = upsertShipment({
+    ...noted,
+    timeline: { ...noted.timeline, latestDetail: "新的轨迹", successAtMs: NOW + 3 },
+    updatedAtMs: NOW + 3,
+  }, NOW + 3);
+  assert.equal(refreshed.shipments[0]?.note, "给妈妈的", "an account refresh keeps the note");
+  const cleared = setShipmentNote("interface5:account:note-1", "", NOW + 4);
+  assert.equal(cleared.shipments[0]?.note, undefined, "an empty note clears it");
+  const manual = shipment({ id: "interface5:manual:note-2", source: "interface5", manuallyAdded: true });
+  // 手动件的 id 落盘时按运单号规范化，所以按存下来的那一行取 id。
+  const storedManual = saveState({ ...emptyState(), shipments: [manual] }, NOW + 5).shipments[0]!;
+  setShipmentNote(storedManual.identity.id, "公司", NOW + 6);
+  const manualRefreshed = upsertShipment({
+    ...storedManual,
+    timeline: { ...storedManual.timeline, latestDetail: "新的轨迹", successAtMs: NOW + 7 },
+    updatedAtMs: NOW + 7,
+  }, NOW + 7);
+  assert.equal(manualRefreshed.shipments[0]?.note, "公司", "a manual refresh keeps the note");
+}
+
 console.log("storage migration and isolation tests passed");
+
+// 一次性修复（2026-09-06）：老状态里接口 5 自动件的 feed 包混着按件详情，读盘时打上 feedRebuildPending，
+// 指向 feed 的粘性选包记录清掉，并在状态上记 feedSlotRebuiltAtMs；已记过的状态不再打标记。
+{
+  memory.clear();
+  const mixedFeedRow: Shipment = {
+    ...shipment({ id: "interface5:account:MIXEDFEED123", source: "interface5", phone: "13800138000" }),
+    detailSelection: { provider: "interface5", selectedAtMs: NOW - 10 },
+  };
+  mixedFeedRow.timeline = { ...mixedFeedRow.timeline, provider: "interface5" };
+  mixedFeedRow.sourceTimeline = mixedFeedRow.timeline;
+  const manualRow = shipment({ id: "interface5:manual:MANUAL999", source: "interface5", manuallyAdded: true });
+  const beforeRebuild = {
+    version: 2,
+    revision: 7,
+    updatedAtMs: NOW - 5,
+    activeSource: "interface5",
+    bindings: [{ source: "interface5", phone: "13800138000", boundAtMs: NOW - 3 }],
+    pendingQueries: [],
+    shipments: [mixedFeedRow, manualRow],
+  };
+  memory.set(STATE_KEY, storedState(beforeRebuild, 2));
+  const rebuilt = loadState(NOW);
+  assert.equal(typeof rebuilt.feedSlotRebuiltAtMs, "number", "the state records the one-time rebuild");
+  const marked = rebuilt.shipments.find((item) => item.identity.id === "interface5:account:MIXEDFEED123");
+  assert.equal(marked?.sourceTimeline?.feedRebuildPending, true, "the automatic feed slot is marked for rebuild");
+  assert.equal(marked?.detailSelection, undefined, "a sticky selection that pointed at the feed is cleared");
+  const manualAfter = rebuilt.shipments.find((item) => item.identity.id === "interface5:manual:MANUAL999");
+  assert.equal(manualAfter?.sourceTimeline?.feedRebuildPending, undefined, "manual rows are untouched");
+
+  const alreadyRebuilt = { ...beforeRebuild, feedSlotRebuiltAtMs: NOW - 100, shipments: [
+    { ...mixedFeedRow, detailSelection: { provider: "interface5", selectedAtMs: NOW - 10 } },
+  ] };
+  memory.set(STATE_KEY, storedState(alreadyRebuilt, 2));
+  const untouched = loadState(NOW);
+  assert.equal(untouched.feedSlotRebuiltAtMs, NOW - 100);
+  const kept = untouched.shipments.find((item) => item.identity.id === "interface5:account:MIXEDFEED123");
+  assert.equal(kept?.sourceTimeline?.feedRebuildPending, undefined, "a state that already rebuilt is not marked again");
+  assert.equal(kept?.detailSelection?.provider, "interface5");
+}
+
+// 迁移按副本从新到旧依次试（2026-09-06 静态审查②）：最新副本坏了就用旧副本；全坏才是读取失败，
+// 首页据 stateLoadFailure() 提示，不当成空库。
+import { stateLoadFailure } from "../services/storage";
+{
+  memory.clear();
+  const goodState = {
+    version: 2,
+    revision: 5,
+    updatedAtMs: NOW - 10,
+    activeSource: "interface5",
+    bindings: [],
+    pendingQueries: [],
+    shipments: [shipment({ id: "interface5:account:GOOD1", source: "interface5" })],
+  };
+  const brokenState = { ...goodState, revision: 9, updatedAtMs: NOW - 1, shipments: [{ broken: true }] };
+  memory.set(STATE_KEY, storedState(brokenState, 2));
+  memory.set("pipi_deliveries_state_backup_v1", storedState(goodState, 2));
+  const recovered = loadState(NOW);
+  assert.equal(stateLoadFailure(), null);
+  assert.deepEqual(
+    recovered.shipments.map((item) => item.identity.id),
+    ["interface5:account:GOOD1"],
+    "an older healthy copy is used when the newest copy cannot be migrated",
+  );
+
+  memory.clear();
+  memory.set(STATE_KEY, storedState(brokenState, 2));
+  memory.set("pipi_deliveries_state_backup_v1", storedState({ ...brokenState, revision: 8 }, 2));
+  const failed = loadState(NOW);
+  assert.equal(failed.shipments.length, 0);
+  assert.equal(stateLoadFailure(), "migration_failed", "every copy failing is a load failure, not an empty store");
+
+  memory.clear();
+  memory.set(STATE_KEY, storedState(goodState, 2));
+  loadState(NOW);
+  assert.equal(stateLoadFailure(), null, "a later successful load clears the failure");
+}
+

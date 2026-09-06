@@ -7,6 +7,7 @@ import {
   applyManualShipment,
   applySameSourceTimeline,
   applyTargetedAccountShipment,
+  asAccountDetailObservation,
   beginManualRefreshAttempt,
   displayWaybill,
   hasCachedKdniaoTimeline,
@@ -163,15 +164,17 @@ const manualWithMeizuPicker: Shipment = {
           timeText: "2026-08-26 14:00:00",
           timeMs: NOW - 2 * 60 * 60 * 1_000,
           detail: "PICKED",
+          statusCode: "1",
         },
       ],
     },
   ],
 };
+// 用户定 2026-09-05：手动件的首页头条跟详情同一套选包，不再由 picker 独占。
 assert.equal(
   selectShipmentTimeline(manualWithMeizuPicker).provider,
-  "route",
-  "a manual Home row must prefer the Meizu Picker package",
+  "web",
+  "a manual Home row follows the same detail ranking (complete → coverage → tier → order)",
 );
 assert.equal(
   selectShipmentDetailTimeline(manualWithMeizuPicker).provider,
@@ -215,9 +218,27 @@ assert.equal(
   false,
   "a complete higher-priority package suppresses the final fallback",
 );
+// 完整的 K100 H5 抓取在实盘里一定带揽收节点——「完整」的判据是揽收 + 时间一致，
+// 不是包自称的 complete 标志（用户定 2026-09-04）。
 const firstHiddenWebIncrement: TimelinePackage = {
   ...timeline("web", "SF1234567890", "COMPLETED"),
   complete: true,
+  tracks: [
+    ...timeline("web", "SF1234567890", "COMPLETED").tracks,
+    {
+      ...timeline("web", "SF1234567890", "TRANSIT").tracks[0]!,
+      timeText: "2026-08-26 14:30:00",
+      timeMs: NOW - 90 * 60 * 1_000,
+      detail: "TRANSIT",
+    },
+    {
+      ...timeline("web", "SF1234567890", "PICKED").tracks[0]!,
+      timeText: "2026-08-26 14:00:00",
+      timeMs: NOW - 2 * 60 * 60 * 1_000,
+      detail: "PICKED",
+      statusCode: "1",
+    },
+  ],
 };
 const manualWithHiddenWeb = applySameSourceTimeline(
   partialManualShipment,
@@ -234,7 +255,7 @@ assert.equal(
   manualWithHiddenWeb.manualTimelines?.find(
     (item) => item.provider === "web",
   )?.tracks.length,
-  1,
+  3,
   "a hidden K100 H5 result must be persisted for a manually added shipment",
 );
 const earlierHiddenWebIncrement: TimelinePackage = {
@@ -262,7 +283,7 @@ assert.equal(
   incrementallyMergedHiddenWeb.manualTimelines?.find(
     (item) => item.provider === "web",
   )?.tracks.length,
-  2,
+  4,
   "hidden K100 H5 responses must merge into their own durable history",
 );
 const shunFengWithHiddenWeb: Shipment = {
@@ -815,6 +836,45 @@ assert.equal(hasCachedKdniaoTimeline({
   timeline: oneTrackMeizu,
   manualTimelines: [oneTrackMeizu, cachedCompleteKdniao],
 }), true);
+// The supplement step restores nodes the selected provider's own refresh omitted, so it follows the
+// same headline rule as every other merge (status.withMergedHeadline): once the track set has grown
+// past the stored headline, the newest node is the headline. One rule, both call sites.
+const completeMeizuWithOlderHeadline: TimelinePackage = {
+  ...timeline("meizu", "SF9988776655", "TRANSIT"),
+  complete: true,
+  latestTimeText: "2026-08-26 13:53:00",
+  latestDetail: "快件已到达深圳中转场",
+  tracks: [{
+    ...timeline("meizu", "SF9988776655", "TRANSIT").tracks[0]!,
+    timeText: "2026-08-26 13:53:00",
+    timeMs: NOW - 127 * 60_000,
+    detail: "快件已到达深圳中转场",
+  }],
+};
+const cachedMeizuWithNewerNode: TimelinePackage = {
+  ...completeMeizuWithOlderHeadline,
+  complete: false,
+  tracks: [{
+    ...completeMeizuWithOlderHeadline.tracks[0]!,
+    timeText: "2026-08-26 14:57:00",
+    timeMs: NOW - 63 * 60_000,
+    detail: "您的快件已发出",
+  }],
+};
+const supplementedHeadline = selectShipmentTimeline({
+  ...emptyCainiaoSource,
+  timeline: completeMeizuWithOlderHeadline,
+  manualTimelines: [completeMeizuWithOlderHeadline, cachedMeizuWithNewerNode],
+});
+assert.equal(supplementedHeadline.provider, "meizu");
+assert.equal(supplementedHeadline.tracks.length, 2);
+assert.equal(
+  supplementedHeadline.latestDetail,
+  "您的快件已发出",
+  "a supplemented history must not leave the row on a node it has already passed",
+);
+assert.equal(supplementedHeadline.latestTimeText, "2026-08-26 14:57:00");
+
 const oneTrackXiaomi = {
   ...timeline("interface5", "SF9988776655", "COMPLETED"),
   latestDetail: "小米仅返回最新签收事件",
@@ -1078,6 +1138,44 @@ const alternateShunFeng = {
 };
 assert.equal(sourceTimelineOwnsShipment(alternateShunFeng), true);
 assert.equal(shouldScheduleManualRefresh(alternateShunFeng, NOW), true);
+// 用户定 2026-09-04：首页/列表页对终态件停止刷新，除非状态还没出来。终态 = 已签收**或已取消**
+// 且已有可用轨迹历史；零轨迹的行不算终态，照常刷。与 Pipi 的 hasSettledTimelineHistory 同判据。
+const cancelledShunFeng = {
+  ...alternateShunFeng,
+  timeline: {
+    ...alternateShunFeng.timeline,
+    semantic: "CANCELLED" as const,
+    // 终态要求 ≥2 条可用轨迹（TERMINAL_HISTORY_MIN_TRACKS），只有一条不算已有历史。
+    tracks: [
+      ...alternateShunFeng.timeline.tracks,
+      {
+        timeText: "2026-08-26 15:00:00",
+        timeMs: NOW - 3_600_000,
+        detail: "运输中",
+        statusCode: "101",
+        raw: {},
+      },
+    ],
+  },
+};
+assert.equal(
+  shouldScheduleManualRefresh(cancelledShunFeng, NOW),
+  false,
+  "已取消且有可用轨迹的行不再排期刷新",
+);
+const settledButEmptyShunFeng = {
+  ...alternateShunFeng,
+  timeline: {
+    ...alternateShunFeng.timeline,
+    semantic: "COMPLETED" as const,
+    tracks: [],
+  },
+};
+assert.equal(
+  shouldScheduleManualRefresh(settledButEmptyShunFeng, NOW),
+  true,
+  "状态到终态但零轨迹的行不算终态，必须照常刷",
+);
 const recentlyAttemptedShunFeng = {
   ...alternateShunFeng,
   manualRefreshAttemptAtMs: NOW,
@@ -1192,6 +1290,22 @@ assert.equal(needsAutomaticManualFallback({
     complete: true,
   },
 }), false, "a complete same-source package must stop cross-source fallback");
+// 「更完整的手动包」现在要真的更完整：带揽收、且最新节点与 feed 对得上（判据见
+// shipment-policy 的 detailTimelineComplete）。只靠节点数相同的一条 COMPLETED 不算。
+const fullerCarrier = {
+  ...completedCarrier,
+  tracks: [
+    ...completedCarrier.tracks,
+    {
+      ...completedCarrier.tracks[0]!,
+      timeText: "2026-08-26 14:00:00",
+      timeMs: NOW - 2 * 60 * 60 * 1_000,
+      detail: "快件已揽收",
+      statusCode: "1",
+      raw: { statusCode: "1" },
+    },
+  ],
+};
 const ordinaryAutomaticWithManualDetail = applyManualShipment(
   ordinaryAutomaticWithoutStart,
   {
@@ -1202,9 +1316,9 @@ const ordinaryAutomaticWithManualDetail = applyManualShipment(
       manuallyAdded: true,
       bindingSource: undefined,
     },
-    timeline: completedCarrier,
+    timeline: fullerCarrier,
     sourceTimeline: null,
-    manualTimelines: [completedCarrier],
+    manualTimelines: [fullerCarrier],
   },
   NOW + 1,
 );
@@ -1314,8 +1428,11 @@ const laterStructuredDelivery = {
   structuredStatus: true,
   statusEventAtMs: NOW + 10_000,
   latestDetail: "稍后出现的派送文案",
+  // The headline is the newest node of the package, so the node carries that same text: a stored
+  // headline that matches no node is not something a provider response can produce.
   tracks: timeline("kdniao", "SF9988776655", "DELIVERY").tracks.map((track) => ({
     ...track,
+    detail: "稍后出现的派送文案",
     timeMs: NOW + 10_000,
   })),
 };
@@ -1511,11 +1628,20 @@ assert.equal(
   false,
   "a pre-click JD H5 summary must continue into Picker, K100 H5, and KDNiao",
 );
+// 用户定 2026-09-05 晚：H5 包住 jd_h5 槽，不再混在 source 里；闸门读的是那个槽。
 assert.equal(
   jingDongAutomaticH5TimelineAvailable({
     ...partialJingDongH5,
     timeline: { ...partialJingDongH5Timeline, complete: true },
     sourceTimeline: { ...partialJingDongH5Timeline, complete: true },
+  }),
+  false,
+  "an H5 package left inside the source never counts; it lives in the jd_h5 slot",
+);
+assert.equal(
+  jingDongAutomaticH5TimelineAvailable({
+    ...partialJingDongH5,
+    manualTimelines: [{ ...partialJingDongH5Timeline, provider: "jd_h5", complete: true }],
   }),
   true,
   "only a causally proven full-progress response may stop the JD fallback chain",
@@ -1531,10 +1657,22 @@ const partialPickedJingDongH5Timeline: TimelinePackage = {
     raw: { statusCode: "1", _pipiStatusSource: "jingdong_h5" },
   }],
 };
+// 真正完整的快递鸟包：带揽收、最新节点与 feed 对齐（判据同 detailTimelineComplete）。
 const completeJingDongFallback: TimelinePackage = {
   ...timeline("kdniao", "JD9988776655", "TRANSIT"),
   complete: true,
   latestDetail: "快递鸟完整包",
+  tracks: [
+    ...timeline("kdniao", "JD9988776655", "TRANSIT").tracks,
+    {
+      ...timeline("kdniao", "JD9988776655", "TRANSIT").tracks[0]!,
+      timeText: "2026-08-26 14:00:00",
+      timeMs: NOW - 2 * 60 * 60 * 1_000,
+      detail: "快件已揽收",
+      statusCode: "1",
+      raw: { statusCode: "1" },
+    },
+  ],
 };
 const partialPickedWithCompleteFallback: Shipment = {
   ...partialJingDongH5,
@@ -1542,10 +1680,11 @@ const partialPickedWithCompleteFallback: Shipment = {
   sourceTimeline: partialPickedJingDongH5Timeline,
   manualTimelines: [completeJingDongFallback],
 };
+// 用户定 2026-09-05 晚：京东行的列表归 feed（source 包本身），完整的快递鸟包只在详情页选包时胜出。
 assert.equal(
   selectShipmentTimeline(partialPickedWithCompleteFallback).provider,
-  "kdniao",
-  "a partial JD H5 pickup node must not outrank a complete fallback package",
+  "interface5",
+  "the JD list row stays on the feed package",
 );
 assert.equal(
   selectShipmentDetailTimeline(partialPickedWithCompleteFallback).provider,
@@ -1579,10 +1718,19 @@ const atomicJingDongMerge = applyAccountShipment(
   },
   NOW + 2,
 );
+// 用户定 2026-09-05 晚：H5 包不进 source；完整的那一包住 jd_h5 槽，仍是一个原子包。
 assert.deepEqual(
-  atomicJingDongMerge.sourceTimeline?.tracks.map((track) => track.detail),
+  atomicJingDongMerge.sourceTimeline?.tracks.filter(
+    (track) => track.raw?._pipiStatusSource === "jingdong_h5",
+  ),
+  [],
+  "the JD source keeps no H5 node",
+);
+assert.deepEqual(
+  atomicJingDongMerge.manualTimelines?.find((timeline) => timeline.provider === "jd_h5")
+    ?.tracks.map((track) => track.detail),
   ["完整物流进度响应"],
-  "a later complete JD H5 response must replace the partial response as one package",
+  "a later complete JD H5 response is one package in the jd_h5 slot",
 );
 const atomicJingDongObservation = atomicJingDongMerge.automaticOwnership
   ?.observations.find((observation) =>
@@ -1590,9 +1738,11 @@ const atomicJingDongObservation = atomicJingDongMerge.automaticOwnership
     observation.bindingIdentity === "phone:13800001515"
   );
 assert.deepEqual(
-  atomicJingDongObservation?.sourceTimeline.tracks.map((track) => track.detail),
-  ["完整物流进度响应"],
-  "the persisted automatic observation must not merge separate JD H5 responses",
+  atomicJingDongObservation?.sourceTimeline.tracks.filter(
+    (track) => track.raw?._pipiStatusSource === "jingdong_h5",
+  ),
+  [],
+  "the persisted automatic observation carries no H5 node either",
 );
 const jingDongInTransit: Shipment = {
   ...jingDongCompleted,
@@ -1625,6 +1775,13 @@ const firstK100JingDong = {
     ...timeline("kuaidi100_h5", "JD9988776655", "TRANSIT").tracks[0],
     detail: "K100 first node",
     raw: { _pipiKuaidi100Com: "jd" },
+  }, {
+    ...timeline("kuaidi100_h5", "JD9988776655", "TRANSIT").tracks[0],
+    timeText: "2026-08-26 14:00:00",
+    timeMs: NOW - 2 * 60 * 60 * 1_000,
+    detail: "快件已揽收",
+    statusCode: "1",
+    raw: { statusCode: "1", _pipiKuaidi100Com: "jd" },
   }],
 };
 const jingDongWithK100 = applySameSourceTimeline(
@@ -1632,7 +1789,8 @@ const jingDongWithK100 = applySameSourceTimeline(
   firstK100JingDong,
   NOW + 1,
 );
-assert.equal(jingDongWithK100.timeline.provider, "kuaidi100_h5");
+// 用户定 2026-09-05 晚：京东行的列表归 feed；K100 包只住自己的槽，由详情页选包。
+assert.equal(jingDongWithK100.timeline.provider, "interface5");
 assert.equal(
   selectShipmentDetailTimeline(jingDongWithK100).provider,
   "kuaidi100_h5",
@@ -1648,8 +1806,9 @@ const jingDongK100AfterAccountCompletion = applySameSourceTimeline(
 );
 assert.equal(
   jingDongK100AfterAccountCompletion.timeline.provider,
-  "kuaidi100_h5",
-  "the JD manual chain must take over when the account increment lacks an order or pickup event",
+  "interface5",
+  // 用户定 2026-09-05 晚：京东行的列表归 feed；手动包只在详情页选包时顶上来。
+  "the JD list row stays on the feed even when the account increment lacks a start event",
 );
 assert.equal(
   selectShipmentDetailTimeline(jingDongK100AfterAccountCompletion).latestDetail,
@@ -1666,8 +1825,9 @@ const jingDongWithLegacyPage = {
 };
 assert.equal(
   selectShipmentTimeline(jingDongWithLegacyPage).provider,
-  "kuaidi100_h5",
-  "a validated direct K100 package owns the JD list until the account source gains an order or pickup event",
+  "interface5",
+  // 用户定 2026-09-05 晚：京东行的列表归 feed；K100 包只在详情页选包。
+  "the JD list row stays on the feed whatever the manual slots hold",
 );
 assert.equal(
   selectShipmentDetailTimeline(jingDongWithLegacyPage).provider,
@@ -1704,8 +1864,8 @@ const jingDongIncremental = applySameSourceTimeline(
   secondK100JingDong,
   NOW + 60_000,
 );
-assert.equal(jingDongIncremental.timeline.provider, "kuaidi100_h5");
-assert.equal(selectShipmentDetailTimeline(jingDongIncremental).tracks.length, 2);
+assert.equal(jingDongIncremental.timeline.provider, "interface5");
+assert.equal(selectShipmentDetailTimeline(jingDongIncremental).tracks.length, 3);
 assert.equal(
   selectShipmentDetailTimeline(jingDongIncremental).latestDetail,
   "K100 second node",
@@ -1719,6 +1879,13 @@ const carrierSwitchedK100 = {
     ...firstK100JingDong.tracks[0],
     detail: "ShunFeng carrier node",
     raw: { _pipiKuaidi100Com: "shunfeng" },
+  }, {
+    ...firstK100JingDong.tracks[0],
+    timeText: "2026-08-26 14:00:00",
+    timeMs: NOW - 2 * 60 * 60 * 1_000,
+    detail: "快件已揽收",
+    statusCode: "1",
+    raw: { statusCode: "1", _pipiKuaidi100Com: "shunfeng" },
   }],
 };
 const jingDongCarrierSwitched = applySameSourceTimeline(
@@ -1732,7 +1899,7 @@ assert.equal(
 );
 assert.equal(
   selectShipmentDetailTimeline(jingDongCarrierSwitched).tracks.length,
-  1,
+  2,
   "K100 caches from different detected carriers must never merge",
 );
 const jingDongReturned = {
@@ -2006,3 +2173,118 @@ assert.equal(
 assert.notEqual(withUntimedHistory.timeline.provider, "legacy-cache");
 
 console.log("shipment projection preservation tests passed");
+
+// 用户定 2026-09-05 晚：feed 增量与 query 独立。接口 5 按件详情（mode=detail）住 v5_query 槽，
+// source 槽只装列表 feed；以前详情节点被并进 source，京东订单 4424 的详情页出现两条同一分钟、秒数
+// 不同的「预计…」（2026-09-06）。
+{
+  const feedTrack = (timeText: string, ms: number, detail: string) => ({
+    timeText,
+    timeMs: ms,
+    detail,
+    statusCode: "101",
+    raw: {},
+  });
+  const feed: TimelinePackage = {
+    ...timeline("interface5", "ORDER123456", "ORDERED"),
+    latestTimeText: "2026-08-26 16:00:43",
+    latestDetail: "预计8月27日发货，8月28日(周四)送达",
+    tracks: [
+      feedTrack("2026-08-26 16:00:43", NOW + 43_000, "预计8月27日发货，8月28日(周四)送达"),
+      feedTrack("2026-08-26 16:00:39", NOW + 39_000, "您的订单已进入第三方卖家仓库，准备出库"),
+    ],
+  };
+  const row: Shipment = {
+    ...order("", "京东购物", "JDKD", null),
+    timeline: feed,
+    sourceTimeline: feed,
+  };
+  const detail: TimelinePackage = {
+    ...timeline("interface5", "ORDER123456", "ORDERED"),
+    latestTimeText: "2026-08-26 16:00:45",
+    latestDetail: "预计8月27日发货，8月28日(周四)送达",
+    tracks: [
+      feedTrack("2026-08-26 16:00:45", NOW + 45_000, "预计8月27日发货，8月28日(周四)送达"),
+      feedTrack("2026-08-26 16:00:39", NOW + 39_000, "您的订单已进入第三方卖家仓库，准备出库"),
+      feedTrack("2026-08-26 16:00:20", NOW + 20_000, "您提交了订单，请等待第三方卖家系统确认"),
+    ],
+  };
+  const incoming: Shipment = { ...row, timeline: detail, sourceTimeline: detail, manualTimelines: [] };
+  const merged = applyTargetedAccountShipment(
+    row,
+    asAccountDetailObservation(row, incoming),
+    NOW + 60_000,
+  );
+  const source = merged.sourceTimeline || merged.timeline;
+  assert.equal(source.provider, "interface5");
+  assert.deepEqual(
+    source.tracks.map((track) => track.timeText),
+    ["2026-08-26 16:00:43", "2026-08-26 16:00:39"],
+    "the feed slot keeps only the list feed's own nodes",
+  );
+  const query = merged.manualTimelines?.find((item) => item.provider === "v5_query");
+  assert.equal(query?.tracks.length, 3, "the per-order detail lives whole in the v5_query slot");
+  assert.equal(
+    merged.timeline.tracks.length,
+    2,
+    "the list row (headline, nodes) is the feed's",
+  );
+  const shown = selectShipmentDetailTimeline(merged);
+  assert.equal(shown.provider, "v5_query", "the detail page picks the query package on node count");
+  assert.equal(shown.tracks.length, 3, "no union with the feed: three nodes, one 「预计」 line");
+
+  // 第二轮详情：同槽增量合并只在 v5_query 内发生，source 仍是 feed。
+  const again = applyTargetedAccountShipment(
+    merged,
+    asAccountDetailObservation(merged, incoming),
+    NOW + 120_000,
+  );
+  assert.equal((again.sourceTimeline || again.timeline).tracks.length, 2);
+  assert.equal(
+    again.manualTimelines?.filter((item) => item.provider === "v5_query").length,
+    1,
+  );
+}
+
+// 一次性修复（2026-09-06）：带 feedRebuildPending 的 feed 槽被下一次列表同步整包替换（标记随之消失）；
+// 按件详情的占位副本带着标记，不触发替换，标记留到真正的列表同步。
+{
+  const mixed: TimelinePackage = {
+    ...timeline("interface5", "ORDER123456", "ORDERED"),
+    feedRebuildPending: true,
+    // 老版本把详情节点并进了 feed：三条各不相同（同文案 5 分钟内的重复另有合并规则，这里不掺）。
+    tracks: [
+      { timeText: "2026-08-26 16:00:43", timeMs: NOW + 43_000, detail: "预计8月27日发货", statusCode: "101", raw: {} },
+      { timeText: "2026-08-26 16:00:39", timeMs: NOW + 39_000, detail: "您的订单已进入第三方卖家仓库，准备出库", statusCode: "101", raw: {} },
+      { timeText: "2026-08-26 16:00:20", timeMs: NOW + 20_000, detail: "您提交了订单", statusCode: "101", raw: {} },
+    ],
+  };
+  const row: Shipment = { ...order("", "京东购物", "JDKD", null), timeline: mixed, sourceTimeline: mixed };
+  const listFeed: TimelinePackage = {
+    ...timeline("interface5", "ORDER123456", "ORDERED"),
+    tracks: [
+      { timeText: "2026-08-26 16:00:43", timeMs: NOW + 43_000, detail: "预计8月27日发货", statusCode: "101", raw: {} },
+      { timeText: "2026-08-26 16:00:39", timeMs: NOW + 39_000, detail: "您的订单已进入第三方卖家仓库，准备出库", statusCode: "101", raw: {} },
+    ],
+  };
+  const detailIncoming: Shipment = { ...row, timeline: listFeed, sourceTimeline: listFeed, manualTimelines: [] };
+  const afterDetail = applyTargetedAccountShipment(
+    row,
+    asAccountDetailObservation(row, { ...detailIncoming, timeline: { ...listFeed, tracks: [...listFeed.tracks, { timeText: "2026-08-26 16:00:20", timeMs: NOW + 20_000, detail: "您提交了订单", statusCode: "101", raw: {} }] } }),
+    NOW + 60_000,
+  );
+  assert.equal((afterDetail.sourceTimeline || afterDetail.timeline).feedRebuildPending, true, "a detail observation keeps the rebuild mark");
+  assert.equal((afterDetail.sourceTimeline || afterDetail.timeline).tracks.length, 3, "a detail observation does not touch the mixed feed slot");
+
+  const afterList = applyAccountShipment(afterDetail, detailIncoming, NOW + 120_000);
+  const rebuilt = afterList.sourceTimeline || afterList.timeline;
+  assert.equal(rebuilt.feedRebuildPending, undefined, "the list sync clears the mark");
+  assert.deepEqual(
+    rebuilt.tracks.map((track) => track.timeText),
+    ["2026-08-26 16:00:43", "2026-08-26 16:00:39"],
+    "the list sync replaces the mixed feed slot with the feed alone",
+  );
+  const afterSecondList = applyAccountShipment(afterList, detailIncoming, NOW + 180_000);
+  assert.equal((afterSecondList.sourceTimeline || afterSecondList.timeline).tracks.length, 2, "later syncs go back to the incremental union");
+}
+

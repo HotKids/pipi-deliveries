@@ -1,5 +1,7 @@
 import type { StatusSemantic, TrackNode } from "../models";
 import {
+  headlineTrack,
+  isNonEventDetail,
   isProviderErrorDetail,
   packageSemantic,
   parseProviderTime,
@@ -70,6 +72,11 @@ function trackFrom(value: unknown, provider: string): TrackNode | null {
   const detail = firstText(item, "context", "desc", "detail");
   const statusCode = firstText(item, "statusCode");
   if (!Object.keys(item).length) return null;
+  // Every provider boundary drops forecast notes (AGENTS §9): K100's direct /query, Moto and
+  // KDNiao all reach this builder, and a "预计…送达" row here would otherwise be counted,
+  // ranked as the latest event, and shown as a track. Provider-error rows stay: they are
+  // evidence of a failed lookup and the diagnostics downstream still classify them.
+  // A forecast note is kept as a node (2026-09-04): only the headline skips it.
   return {
     timeText,
     timeMs: parseProviderTime(timeText),
@@ -93,9 +100,9 @@ function presentation(
 ): ParsedManualTimeline {
   const timed = sortedTracks(usableTimedTracks(tracks));
   const meaningful = sortedTracks(tracks.filter(
-    (track) => Boolean(track.detail.trim()) && !isProviderErrorDetail(track.detail),
+    (track) => Boolean(track.detail.trim()) && !isNonEventDetail(track.detail),
   ));
-  const latest = timed[0] || meaningful[0] || null;
+  const latest = headlineTrack(timed) || headlineTrack(meaningful) || null;
   return {
     tracks: sortedTracks(tracks),
     semantic,
@@ -302,6 +309,7 @@ function meizuPresentation(value: JsonObject): string {
   return firstText(
     value,
     "context",
+    "lastLogisticDetail",
     "message",
     "stateName",
     "logisticsStatusDesc",
@@ -344,7 +352,10 @@ function collectMeizuTimeline(
 
   const item = decoded as JsonObject;
   const structured = structuredMeizuSemantic(item);
-  const eventAtMs = parseProviderTime(firstText(item, "time"));
+  // `refresh`（queryByMailNoOnline）回的是列表记录形状：最新一条在 lastLogisticDetail /
+  // logisticsGmtModified，没有 time/context（用户定 2026-09-04：顺丰列表轮用 refresh）。
+  const eventTimeText = firstText(item, "time", "logisticsGmtModified");
+  const eventAtMs = parseProviderTime(eventTimeText);
   const detail = meizuPresentation(item);
   const providerError = isProviderErrorDetail(detail);
   if (!providerError) {
@@ -358,11 +369,11 @@ function collectMeizuTimeline(
       (!hasMeizuContainer(item) && Boolean(detail))
     )
   ) {
-    collected.nodes.push(
-      detail && !firstText(item, "context")
-        ? { ...item, context: detail }
-        : item,
-    );
+    collected.nodes.push({
+      ...item,
+      ...(detail && !firstText(item, "context") ? { context: detail } : {}),
+      ...(eventTimeText && !firstText(item, "time") ? { time: eventTimeText } : {}),
+    });
   }
 
   collectMeizuTimeline(item.tracks, collected, depth + 1, true);
@@ -387,7 +398,7 @@ export function parseMeizuTimeline(root: JsonObject): ParsedManualTimeline {
     .filter((track): track is TrackNode => {
       if (
         !track || !track.timeText || !track.detail ||
-        isProviderErrorDetail(track.detail)
+        isNonEventDetail(track.detail)
       ) return false;
       const identity = `${track.timeText}\u0000${track.detail}`;
       if (seen.has(identity)) return false;

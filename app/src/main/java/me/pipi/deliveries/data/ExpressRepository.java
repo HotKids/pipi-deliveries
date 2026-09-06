@@ -16,6 +16,7 @@ import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.ManualQuerySuccess;
 import me.pipi.deliveries.model.PendingExpressQuery;
 import me.pipi.deliveries.model.StatusSemantic;
+import me.pipi.deliveries.network.ExpressLog;
 import me.pipi.deliveries.notification.ExpressNotifications;
 import me.pipi.deliveries.widget.ExpressWidgetProvider;
 
@@ -34,6 +35,10 @@ import java.util.UUID;
 /** Single persistence and outward-invalidation boundary for all express changes. */
 public final class ExpressRepository {
     public static final String ACTION_CHANGED = "me.pipi.deliveries.EXPRESS_DATA_CHANGED";
+    /** ACTION_SYNC_FINISHED 附带这轮的计数，列表页据此弹统一的下拉结果 toast。 */
+    public static final String EXTRA_SYNC_ATTEMPTED = "attempted";
+    public static final String EXTRA_SYNC_SUCCEEDED = "succeeded";
+    public static final String EXTRA_SYNC_FAILED = "failed";
     public static final String ACTION_SYNC_FINISHED =
             "me.pipi.deliveries.EXPRESS_SYNC_FINISHED";
     private static volatile ExpressRepository instance;
@@ -44,16 +49,28 @@ public final class ExpressRepository {
     private int changeBatchDepth;
     private boolean invalidationPending;
     private final LinkedHashMap<Long, ExpressItem> notificationPending = new LinkedHashMap<>();
+    /** 本轮变更批次里首次出现的行：同批次内后续再怎么翻状态都不算通知（iOS 新件不通知同口径）。 */
+    private final HashSet<Long> batchFirstSeenRows = new HashSet<>();
     private static final String MIGRATION_PREFS = "deliveries_repository_migrations";
     private static final String CANONICAL_MIGRATION = "canonical_v2";
     private static final String ICON_MIGRATION = "local_icons_v3";
     private static final String HIDDEN_ROW_CLEANUP = "hashed_deletions_v1";
     private static final String ROUTE_CREDENTIAL_MIGRATION = "route_credentials_v1";
+    /**
+     * 2026-09-05 晚一次性清空 v5_query / v6_list 两张 sidecar：老版本把行上的 feed 节点当「初始包」
+     * 存进去，再跟按件详情增量合并，包里就混着 feed 那条（feed 增量与 query 从此独立）。
+     */
+    private static final String ACCOUNT_SIDECAR_PURGE = "account_sidecar_feed_split_v1";
+    /** 详情页上一轮显示的包（粘性选包，用户定 2026-09-05 晚）：rowId + 运单号 → 槽名 / "feed"。 */
+    private static final String DETAIL_SELECTION_PREFS = "express_detail_selection";
+    private static volatile Map<String, String> detailSelections;
     private static final String LAST_RETENTION_PRUNE = "last_signed_prune_at";
     static final long RETENTION_PRUNE_INTERVAL_MS = 60L * 60L * 1000L;
     static final long PENDING_QUERY_RETRY_INTERVAL_MS = 30L * 60L * 1000L;
     static final long PENDING_QUERY_TTL_MS = 24L * 60L * 60L * 1000L;
-    static final long MANUAL_TIMELINE_POLL_INTERVAL_MS = 15L * 60L * 1000L;
+    // 后台手动链每票 10 分钟一次，与 iOS/Pipi 各级 10 分钟冷却同值（用户定 2026-09-05）；
+    // 前台（进详情 / 下拉）仍按 30 秒守门，用户手势不受这条冷却约束。
+    static final long MANUAL_TIMELINE_POLL_INTERVAL_MS = 10L * 60L * 1000L;
     static final long MANUAL_TIMELINE_FAILURE_COOLDOWN_MS = 6L * 60L * 60L * 1000L;
     static final long MANUAL_TIMELINE_FOREGROUND_INTERVAL_MS = 30L * 1000L;
     static final long MANUAL_TIMELINE_ACTIVE_LEASE_MS = 2L * 60L * 1000L;
@@ -64,6 +81,7 @@ public final class ExpressRepository {
     }
 
     ExpressRepository(Context context, ExpressDatabase helper) {
+        loadDetailSelections(context);
         this.context = context.getApplicationContext();
         this.helper = helper;
     }
@@ -172,8 +190,71 @@ public final class ExpressRepository {
                 normalizeLocalIcons();
                 changed = true;
             }
+            if (!preferences.getBoolean(ACCOUNT_SIDECAR_PURGE, false)) {
+                purgeAccountSidecars();
+                preferences.edit().putBoolean(ACCOUNT_SIDECAR_PURGE, true).apply();
+                changed = true;
+            }
         }
         if (changed) emitInvalidation();
+    }
+
+    private static void loadDetailSelections(Context context) {
+        if (detailSelections != null || context == null) return;
+        Map<String, String> loaded = new HashMap<>();
+        try {
+            for (Map.Entry<String, ?> entry : context.getSharedPreferences(
+                    DETAIL_SELECTION_PREFS, 0).getAll().entrySet()) {
+                if (entry.getValue() instanceof String) {
+                    loaded.put(entry.getKey(), (String) entry.getValue());
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // A corrupt preference file only loses the sticky choice, never the caches.
+        }
+        detailSelections = loaded;
+    }
+
+    private static String detailSelectionKey(ExpressItem item) {
+        if (item == null) return "";
+        return item.rowId + "\u0000"
+                + ExpressSourcePolicy.normalizeWaybill(item.displayWaybill());
+    }
+
+    /** 上一轮详情页显示的包；没有记录时为空串（照常排序）。 */
+    static String preferredDetailProvider(ExpressItem item) {
+        Map<String, String> selections = detailSelections;
+        if (selections == null || item == null) return "";
+        String value = selections.get(detailSelectionKey(item));
+        return value == null ? "" : value;
+    }
+
+    /**
+     * 记住详情页这次显示的是哪个包（用户定 2026-09-05 晚：下一轮点进来默认还显示它）。
+     * provider 用统一槽名，行自己的 feed 包记作 {@link ManualTimelineAuthorityPolicy#PREFERRED_FEED}。
+     */
+    public void rememberDetailSelection(ExpressItem item, String provider) {
+        String key = detailSelectionKey(item);
+        String value = provider == null ? "" : provider.trim();
+        if (key.isEmpty() || value.isEmpty()) return;
+        if (!ManualTimelineAuthorityPolicy.PREFERRED_FEED.equals(value)) {
+            value = TimelineSlot.normalize(value);
+        }
+        loadDetailSelections(context);
+        Map<String, String> selections = detailSelections;
+        if (selections == null || value.equals(selections.get(key))) return;
+        selections.put(key, value);
+        context.getSharedPreferences(DETAIL_SELECTION_PREFS, 0).edit()
+                .putString(key, value).apply();
+    }
+
+    /** Drops every account query sidecar so the next detail fetch rebuilds it from the query alone. */
+    private void purgeAccountSidecars() {
+        synchronized (this) {
+            SQLiteDatabase db = helper.getWritableDatabase();
+            db.delete(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE, null, null);
+            db.delete(ExpressDatabase.ACCOUNT_V6_TIMELINE_TABLE, null, null);
+        }
     }
 
     /** Runs the terminal-state retention scan at most once per hour per installation. */
@@ -311,7 +392,10 @@ public final class ExpressRepository {
         if (normalized.isEmpty()) return null;
         AutomaticOwnershipState ownership = automaticOwnershipState(db, normalized);
         if (ownership != null && ownership.ownerRowId > 0L) {
-            ExpressItem owner = findRaw(db, ownership.ownerRowId);
+            // 按投影运单号（如京东订单投影出的极兔单）查到归属行时，也要带上订单投影：
+            // 输入框的承运商后缀、已在列表的判定都靠它，否则京东订单行会退成「京东购物」，
+            // 跟列表行显示的承运商对不上（2026-09-05 Fold7 实测）。
+            ExpressItem owner = findManualOwner(db, ownership.ownerRowId);
             if (owner != null) return owner;
         }
         String selectedSource = clean(bindingSource).toLowerCase(Locale.ROOT);
@@ -371,12 +455,12 @@ public final class ExpressRepository {
 
     /** K100 sidecar; kept separate so provider timelines are never mixed. */
     public synchronized ExpressQueryResult kuaidi100Timeline(String waybill) {
-        return timeline(ExpressDatabase.KUAIDI100_TIMELINE_TABLE, waybill, "kuaidi100");
+        return timeline(ExpressDatabase.KUAIDI100_TIMELINE_TABLE, waybill, TimelineSlot.K100_H5);
     }
 
     /** v4 public sidecar; one complete provider timeline is retained independently. */
     public synchronized ExpressQueryResult v4Timeline(String waybill) {
-        return timeline(ExpressDatabase.V4_TIMELINE_TABLE, waybill, "v4");
+        return timeline(ExpressDatabase.V4_TIMELINE_TABLE, waybill, TimelineSlot.V4_QUERY);
     }
 
     /** Matches Pipi: use the complete v4 timeline when usable, otherwise K100. */
@@ -393,12 +477,33 @@ public final class ExpressRepository {
     /** Each account interface keeps a complete, independent timeline for the same waybill. */
     public synchronized ExpressQueryResult accountTimeline(
             String waybill, String bindingSource) {
-        String source = "interface5".equalsIgnoreCase(clean(bindingSource))
-                ? "interface5" : "interface6";
+        String source = normalizeBindingSource(bindingSource);
         String table = "interface5".equals(source)
                 ? ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE
                 : ExpressDatabase.ACCOUNT_V6_TIMELINE_TABLE;
-        return timeline(table, waybill, source);
+        return timeline(table, waybill, TimelineSlot.forBindingSource(source));
+    }
+
+    /**
+     * 接口 5 账号件缓存里的详情是否已完整：终态、有时间节点、有揽收。完整就不再按时间重拉
+     * （用户定 2026-09-05，三端同一道门）——原来每 6 小时把全部已签收件再拉一遍按件详情，
+     * 首页一刷新就重写这些行（Fold7 实测 13:57 一次 26 票）。
+     */
+    public synchronized boolean accountDetailComplete(ExpressItem item) {
+        if (item == null || item.semantic == null || !item.semantic.terminal()) return false;
+        // 菜鸟/顺丰这类行的按件详情直接写在行上（packageDyn），没有账号时间线 sidecar；
+        // Fold7 15:30 实测六票已签收的菜鸟件仍被重拉，就是只看了 sidecar。
+        ExpressQueryResult own = new ExpressQueryResult(
+                item.waybill, item.courierCode, item.companyName, item.semantic,
+                item.latestTime, item.latestDetail, item.tracksJson);
+        if (Kuaidi100TimelinePolicy.hasTimedTracking(own)
+                && Kuaidi100TimelinePolicy.hasPickupEvidence(own)) return true;
+        ExpressQueryResult chosen = accountTimeline(item.displayWaybill(), "interface5");
+        if (!Kuaidi100TimelinePolicy.hasTimedTracking(chosen)) {
+            chosen = accountTimeline(item.waybill, "interface5");
+        }
+        return Kuaidi100TimelinePolicy.hasTimedTracking(chosen)
+                && Kuaidi100TimelinePolicy.hasPickupEvidence(chosen);
     }
 
     public synchronized boolean hasAccountTimeline(String waybill, String bindingSource) {
@@ -438,27 +543,11 @@ public final class ExpressRepository {
 
     public ExpressQueryResult saveKuaidi100Timeline(ExpressQueryResult result) {
         if (result == null) return null;
-        ArrayList<ExpressItem> owners;
-        ExpressQueryResult previous;
-        ExpressQueryResult saved;
+        // query 包只进 sidecar；已投影订单的列表行（feed）不因此变化，也没有通知可发
+        //（用户定 2026-09-05 晚：feed 增量与 query 独立）。
         synchronized (this) {
-            previous = timeline(
-                    ExpressDatabase.KUAIDI100_TIMELINE_TABLE,
-                    result.waybill, "kuaidi100");
-            owners = projectedOrderOwnersForTimeline(result.waybill);
-            saved = saveTimeline(ExpressDatabase.KUAIDI100_TIMELINE_TABLE, result);
+            return saveTimeline(ExpressDatabase.KUAIDI100_TIMELINE_TABLE, result);
         }
-        if (saved == null) return null;
-        for (ExpressItem owner : owners) {
-            ExpressQueryResult account = owner.isInterface5ProjectedOrder()
-                    ? accountTimeline(owner.displayWaybill(), "interface5") : null;
-            publishChange(
-                    projectOrderTimeline(owner, preferredProjectedOrderTimeline(
-                            owner, account, previous)),
-                    projectOrderTimeline(owner, preferredProjectedOrderTimeline(
-                            owner, account, saved)));
-        }
-        return saved;
     }
 
     public synchronized ExpressQueryResult saveV4Timeline(ExpressQueryResult result) {
@@ -468,7 +557,9 @@ public final class ExpressRepository {
     /** Saves into the result's own sidecar, then returns the currently preferred whole source. */
     public synchronized ExpressQueryResult savePreferredTimeline(ExpressQueryResult result) {
         if (result == null) return null;
-        if ("v4".equalsIgnoreCase(result.timelineProvider)) saveV4Timeline(result);
+        if (TimelineSlot.V4_QUERY.equals(TimelineSlot.normalize(result.timelineProvider))) {
+            saveV4Timeline(result);
+        }
         else saveKuaidi100Timeline(result);
         return preferredLocalTimeline(result.waybill);
     }
@@ -477,7 +568,7 @@ public final class ExpressRepository {
     public synchronized boolean needsKuaidi100Headline(ExpressItem item) {
         if (item == null || item.isInterface5ShunFengSource()) return false;
         ExpressQueryResult cached = timeline(
-                ExpressDatabase.KUAIDI100_TIMELINE_TABLE, item.waybill, "kuaidi100");
+                ExpressDatabase.KUAIDI100_TIMELINE_TABLE, item.waybill, TimelineSlot.K100_H5);
         if (!Kuaidi100TimelinePolicy.shouldRefresh(
                 item, cached, System.currentTimeMillis())) return false;
         if (ExpressStatusNormalizer.isHeadlinePlaceholder(
@@ -522,34 +613,15 @@ public final class ExpressRepository {
     public ExpressQueryResult saveAccountTimeline(
             ExpressQueryResult result, String bindingSource) {
         if (result == null) return null;
-        String source = "interface5".equalsIgnoreCase(clean(bindingSource))
-                ? "interface5" : "interface6";
+        String source = normalizeBindingSource(bindingSource);
         String table = "interface5".equals(source)
                 ? ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE
                 : ExpressDatabase.ACCOUNT_V6_TIMELINE_TABLE;
-        ArrayList<ExpressItem> owners;
-        ExpressQueryResult previous;
-        ExpressQueryResult kuaidi100;
-        ExpressQueryResult saved;
+        // query 包只进 sidecar，列表行（feed）不因此变化，所以这里没有通知可发（用户定
+        // 2026-09-05 晚：feed 增量与 query 独立）。
         synchronized (this) {
-            previous = timeline(table, result.waybill, source);
-            kuaidi100 = timeline(
-                    ExpressDatabase.KUAIDI100_TIMELINE_TABLE,
-                    result.waybill, "kuaidi100");
-            owners = "interface5".equals(source)
-                    ? projectedOrderOwnersForTimeline(result.waybill) : new ArrayList<>();
-            saved = saveTimeline(table, result);
+            return saveTimeline(table, result);
         }
-        if (saved == null) return null;
-        for (ExpressItem owner : owners) {
-            if (!owner.isInterface5ProjectedOrder()) continue;
-            publishChange(
-                    projectOrderTimeline(owner, preferredProjectedOrderTimeline(
-                            owner, previous, kuaidi100)),
-                    projectOrderTimeline(owner, preferredProjectedOrderTimeline(
-                            owner, saved, kuaidi100)));
-        }
-        return saved;
     }
 
     /** Persists a projected order lookup only in the sidecar owned by its actual query source. */
@@ -557,17 +629,25 @@ public final class ExpressRepository {
             ExpressQueryResult result, String bindingSource) {
         if (!Kuaidi100TimelinePolicy.hasTimedTracking(result)) return null;
         String selectedSource = normalizeBindingSource(bindingSource);
-        String provider = clean(result.timelineProvider).toLowerCase(Locale.ROOT);
-        if (selectedSource.equals(provider) || "web".equals(provider)) {
+        String provider = TimelineSlot.normalize(result.timelineProvider);
+        if (TimelineSlot.forBindingSource(selectedSource).equals(provider)) {
             return saveAccountTimeline(result, selectedSource);
         }
-        if ("kuaidi100".equals(provider)) {
+        if (TimelineSlot.K100_H5.equals(provider)) {
             return saveKuaidi100Timeline(result);
         }
-        if ("v4".equals(provider)) {
+        if (TimelineSlot.V4_QUERY.equals(provider)) {
             return saveV4Timeline(result);
         }
         return null;
+    }
+
+    /** 表就是槽：每张时间线表只装一个接口的包（用户定 2026-09-05）。 */
+    private static String slotForTable(String table) {
+        if (ExpressDatabase.V4_TIMELINE_TABLE.equals(table)) return TimelineSlot.V4_QUERY;
+        if (ExpressDatabase.KUAIDI100_TIMELINE_TABLE.equals(table)) return TimelineSlot.K100_H5;
+        if (ExpressDatabase.ACCOUNT_V6_TIMELINE_TABLE.equals(table)) return TimelineSlot.V6_LIST;
+        return TimelineSlot.V5_QUERY;
     }
 
     private ExpressQueryResult saveTimeline(String table, ExpressQueryResult result) {
@@ -584,21 +664,13 @@ public final class ExpressRepository {
                         new String[]{Long.toString(ownership.ownerRowId)});
             }
             return timeline(table, result.waybill,
-                    ExpressDatabase.V4_TIMELINE_TABLE.equals(table) ? "v4"
-                            : ExpressDatabase.KUAIDI100_TIMELINE_TABLE.equals(table)
-                            ? "kuaidi100"
-                            : ExpressDatabase.ACCOUNT_V6_TIMELINE_TABLE.equals(table)
-                            ? "interface6" : "interface5");
+                    slotForTable(table));
         }
         db.beginTransaction();
         try {
             ExpressQueryResult merged = Kuaidi100TimelinePolicy.merge(
                     timeline(table, result.waybill,
-                            ExpressDatabase.V4_TIMELINE_TABLE.equals(table) ? "v4"
-                                    : ExpressDatabase.KUAIDI100_TIMELINE_TABLE.equals(table)
-                            ? "kuaidi100"
-                            : ExpressDatabase.ACCOUNT_V6_TIMELINE_TABLE.equals(table)
-                            ? "interface6" : "interface5"), result);
+                            slotForTable(table)), result);
             ContentValues values = new ContentValues();
             values.put("normalized_waybill", normalized);
             values.put("waybill", merged.waybill);
@@ -614,16 +686,8 @@ public final class ExpressRepository {
             if (inserted < 0L) {
                 throw new IllegalStateException("Timeline persistence failed");
             }
-            if (ownership != null && merged.semantic == StatusSemantic.COMPLETED) {
-                ExpressItem owner = findRaw(db, ownership.ownerRowId);
-                if (owner != null && AutomaticOwnershipPolicy.isJingDongSource(
-                        owner.sourceProvider)) {
-                    ContentValues frozen = new ContentValues();
-                    frozen.put("display_frozen", 1);
-                    db.update(ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE, frozen,
-                            "normalized_waybill=?", new String[]{normalized});
-                }
-            }
+            // 冻结只由 feed 自己的已签收触发（saveAutomaticObservation 的 nowFrozen）；query 包
+            // 落库不碰行的显示状态（用户定 2026-09-05 晚：feed 增量与 query 独立）。
             db.setTransactionSuccessful();
             return merged;
         } finally {
@@ -905,9 +969,18 @@ public final class ExpressRepository {
             boolean ownerOnly, boolean saveSharedTimelines) {
         ArrayList<ManualQueryWrite> writes = manualQueryWrites(
                 successes, fallbackPhone, expectedPending);
-        if (writes.isEmpty()) return expectedOwner;
+        // 手动查完没进列表（Fold7 2026-09-05 实测）却弹了成功、开了预览：这里每一条不落库的分支都打一行，
+        // 下次一眼看出是哪道门。
+        if (writes.isEmpty()) {
+            ExpressLog.manualCommitSkipped("no_timed_result", "", successes == null
+                    ? 0 : successes.size());
+            return expectedOwner;
+        }
         String normalized = ExpressSourcePolicy.normalizeWaybill(writes.get(0).result.waybill);
-        if (normalized.isEmpty()) return expectedOwner;
+        if (normalized.isEmpty()) {
+            ExpressLog.manualCommitSkipped("empty_waybill", "", writes.size());
+            return expectedOwner;
+        }
         if (expectedPending != null && !normalized.equals(
                 ExpressSourcePolicy.normalizeWaybill(expectedPending.waybill))) return null;
         String selectedBindingSource = normalizeBindingSource(bindingSource);
@@ -944,9 +1017,13 @@ public final class ExpressRepository {
                 }
                 // A request that started without an owner may only create that first owner. If an
                 // owner appeared while the request was in flight, it has no captured attribution.
-                if (expectedOwner == null && raw != null) return raw;
+                if (expectedOwner == null && raw != null) {
+                    ExpressLog.manualCommitSkipped("owner_appeared", normalized, writes.size());
+                    return raw;
+                }
                 if (raw != null && !normalized.equals(
                         ExpressSourcePolicy.normalizeWaybill(raw.displayWaybill()))) {
+                    ExpressLog.manualCommitSkipped("owner_waybill_mismatch", normalized, writes.size());
                     return raw;
                 }
                 String rawOwner = raw == null ? ""
@@ -957,15 +1034,22 @@ public final class ExpressRepository {
                 }
                 String incomingOwner = manualOwnerSource(
                         writes.get(0).provider, selectedBindingSource);
-                if (raw == null && expectedOwner != null) return null;
+                if (raw == null && expectedOwner != null) {
+                    ExpressLog.manualCommitSkipped("expected_owner_gone", normalized, writes.size());
+                    return null;
+                }
                 if (raw == null && !selectedBindingSource.equals(
                         ExpressSourcePolicy.bindingSourceForOwner(incomingOwner))) {
+                    ExpressLog.manualCommitSkipped("binding_source_mismatch", normalized, writes.size());
                     return null;
                 }
                 if (raw != null) {
                     String ownerBindingSource = ExpressSourcePolicy.bindingSourceForOwner(rawOwner);
                     if (!selectedBindingSource.equals(ownerBindingSource)
-                            && !raw.manuallyAdded) return raw;
+                            && !raw.manuallyAdded) {
+                        ExpressLog.manualCommitSkipped("automatic_owner_other_binding", normalized, writes.size());
+                        return raw;
+                    }
                 }
 
                 previous = projectManualTimeline(raw);
@@ -1056,7 +1140,6 @@ public final class ExpressRepository {
                         throw new IllegalStateException("Pending manual claim changed");
                     }
                 }
-                if (wroteTimeline && !displayFrozen) latchSelectedManualTerminal(db, raw);
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
@@ -1124,9 +1207,17 @@ public final class ExpressRepository {
     }
 
     private static String manualOwnerSource(String provider, String bindingSource) {
-        if ("interface5".equals(provider)) return ExpressSourcePolicy.SOURCE_INTERFACE5;
-        if ("interface6".equals(provider)) return ExpressSourcePolicy.SOURCE_INTERFACE6;
-        if ("v4".equals(provider)) return ExpressSourcePolicy.SOURCE_V4;
+        String slot = TimelineSlot.normalize(provider);
+        if (TimelineSlot.V5_QUERY.equals(slot)) return ExpressSourcePolicy.SOURCE_INTERFACE5;
+        if (TimelineSlot.V6_LIST.equals(slot)) return ExpressSourcePolicy.SOURCE_INTERFACE6;
+        // 接口 5 账号下，v4_query 只是手动链的一级，不是这行的归属来源：picker 失败、只有 v4_query
+        // 成功时，行仍归 I5-K100（跟 EMS 那票一样），否则 bindingSourceForOwner(V4)=interface6 会被
+        // 当成绑定来源不符而整批丢弃——查完没进列表的第二个真因（Fold7 2026-09-05 17:27 实测）。
+        if (TimelineSlot.V4_QUERY.equals(slot)) {
+            return "interface5".equalsIgnoreCase(bindingSource == null ? "" : bindingSource.trim())
+                    ? ExpressSourcePolicy.kuaidi100FallbackSource(bindingSource)
+                    : ExpressSourcePolicy.SOURCE_V4;
+        }
         return ExpressSourcePolicy.kuaidi100FallbackSource(bindingSource);
     }
 
@@ -1183,7 +1274,7 @@ public final class ExpressRepository {
             SQLiteDatabase db, OwnerAttribution attribution, ManualQueryWrite write) {
         String routeUrl = ManualRoutePolicy.safeKuaidi100Url(write.routeUrl);
         if (routeUrl.isEmpty() || !routeUrl.equals(write.routeUrl)
-                || !"meizu".equals(write.provider)) {
+                || !TimelineSlot.V6_PICKER.equals(write.provider)) {
             throw new IllegalStateException("Manual route validation changed");
         }
         ContentValues values = new ContentValues();
@@ -1193,7 +1284,7 @@ public final class ExpressRepository {
         values.put("owner_source_provider", attribution.ownerSourceProvider);
         values.put("binding_source", attribution.bindingSource);
         values.put("binding_generation", attribution.bindingGeneration);
-        values.put("provider", "meizu");
+        values.put("provider", TimelineSlot.V6_PICKER);
         values.put("detail_url", routeUrl);
         values.put("success_at", write.successAt);
         if (db.insertWithOnConflict(
@@ -1205,13 +1296,13 @@ public final class ExpressRepository {
 
     private void saveSharedManualTimeline(SQLiteDatabase db, ManualQueryWrite write) {
         String table;
-        if ("interface5".equals(write.provider)) {
+        if (TimelineSlot.V5_QUERY.equals(write.provider)) {
             table = ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE;
-        } else if ("interface6".equals(write.provider)) {
+        } else if (TimelineSlot.V6_LIST.equals(write.provider)) {
             table = ExpressDatabase.ACCOUNT_V6_TIMELINE_TABLE;
-        } else if ("v4".equals(write.provider)) {
+        } else if (TimelineSlot.V4_QUERY.equals(write.provider)) {
             table = ExpressDatabase.V4_TIMELINE_TABLE;
-        } else if ("kuaidi100".equals(write.provider)) {
+        } else if (TimelineSlot.K100_H5.equals(write.provider)) {
             table = ExpressDatabase.KUAIDI100_TIMELINE_TABLE;
         } else {
             // Other adapters remain isolated in the owner/provider sidecar above. Sharing the
@@ -1237,18 +1328,6 @@ public final class ExpressRepository {
         }
     }
 
-    private static void latchSelectedManualTerminal(SQLiteDatabase db, ExpressItem owner) {
-        if (owner == null || !AutomaticOwnershipPolicy.isJingDongSource(
-                owner.sourceProvider)) return;
-        ManualTimelineAuthorityPolicy.Candidate selected =
-                ManualTimelineAuthorityPolicy.selectDetail(manualTimelineCandidates(db, owner));
-        if (selected == null || !ManualTimelineAuthorityPolicy.isEffectivelyComplete(selected)
-                || selected.result.semantic != StatusSemantic.COMPLETED) return;
-        ContentValues frozen = new ContentValues();
-        frozen.put("display_frozen", 1);
-        db.update(ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE, frozen,
-                "owner_row_id=?", new String[]{Long.toString(owner.rowId)});
-    }
 
     private static final class ManualQueryWrite {
         final String provider;
@@ -1263,7 +1342,7 @@ public final class ExpressRepository {
                 String provider, ExpressQueryResult result, String phone,
                 long successAt, boolean complete,
                 boolean hasTimeline, String routeUrl) {
-            this.provider = provider;
+            this.provider = TimelineSlot.normalize(provider);
             this.result = result;
             this.phone = phone;
             this.successAt = successAt;
@@ -1355,7 +1434,7 @@ public final class ExpressRepository {
         if (expectedOwner == null || !Kuaidi100TimelinePolicy.hasTimedTracking(result)) {
             return expectedOwner;
         }
-        String provider = clean(result.timelineProvider).toLowerCase(Locale.ROOT);
+        String provider = TimelineSlot.normalize(result.timelineProvider);
         if (provider.isEmpty()) return expectedOwner;
         String normalized = ExpressSourcePolicy.normalizeWaybill(result.waybill);
         if (normalized.isEmpty()) return expectedOwner;
@@ -1419,15 +1498,6 @@ public final class ExpressRepository {
                     if (inserted < 0L) {
                         throw new IllegalStateException("Manual timeline persistence failed");
                     }
-                    if (merged.complete
-                            && merged.result.semantic == StatusSemantic.COMPLETED
-                            && AutomaticOwnershipPolicy.isJingDongSource(
-                            locked.sourceProvider)) {
-                        ContentValues frozen = new ContentValues();
-                        frozen.put("display_frozen", 1);
-                        db.update(ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE, frozen,
-                                "owner_row_id=?", new String[]{Long.toString(locked.rowId)});
-                    }
                 }
                 db.delete(ExpressDatabase.OWNER_MANUAL_RETRY_TABLE,
                         "owner_row_id=?", new String[]{Long.toString(locked.rowId)});
@@ -1470,7 +1540,8 @@ public final class ExpressRepository {
 
     private ManualTimelineAuthorityPolicy.Candidate manualTimelineAuthority(
             SQLiteDatabase db, ExpressItem owner) {
-        return ManualTimelineAuthorityPolicy.select(manualTimelineCandidates(db, owner));
+        return ManualTimelineAuthorityPolicy.selectForOwner(
+                manualTimelineCandidates(db, owner), owner != null && owner.manuallyAdded);
     }
 
     /** Returns Picker's presentation route without projecting it into the shipment owner. */
@@ -1486,10 +1557,10 @@ public final class ExpressRepository {
                 new String[]{"owner_row_id", "normalized_waybill", "owner_source",
                         "owner_source_provider", "binding_source", "binding_generation",
                         "provider", "detail_url"},
-                "owner_row_id=? AND LOWER(provider)='meizu'",
+                "owner_row_id=? AND provider='" + TimelineSlot.V6_PICKER + "'",
                 new String[]{Long.toString(current.rowId)},
                 null, null, null, "1")) {
-            if (!cursor.moveToFirst() || !"meizu".equals(text(cursor, "provider"))) return "";
+            if (!cursor.moveToFirst() || !TimelineSlot.V6_PICKER.equals(text(cursor, "provider"))) return "";
             OwnerAttribution stored = new OwnerAttribution(
                     number(cursor, "owner_row_id"), text(cursor, "normalized_waybill"),
                     text(cursor, "owner_source"), text(cursor, "owner_source_provider"),
@@ -1506,18 +1577,28 @@ public final class ExpressRepository {
         ExpressItem current = findManualOwner(expectedOwner.rowId);
         if (!sameOwnerIdentity(current, expectedOwner)) return null;
         return manualTimelineCandidate(
-                helper.getReadableDatabase(), current,
-                clean(provider).toLowerCase(Locale.ROOT));
+                helper.getReadableDatabase(), current, TimelineSlot.normalize(provider));
     }
 
-    /** Detail may use a fuller provider while Home/status retain Picker ownership. */
+    /**
+     * Detail may use a fuller provider while Home/status retain Picker ownership.
+     *
+     * <p>选包按三端同一套判据（用户定 2026-09-04）：完整判据以 <em>feed 自己</em>最新节点的时间
+     * 为基准，所以这里要把来源包一起交给策略；只在已缓存的包里选，绝不为了展示多发查询。</p>
+     */
     public synchronized ManualTimelineAuthorityPolicy.Candidate manualDetailTimelineAuthority(
             ExpressItem expectedOwner) {
         if (expectedOwner == null) return null;
         ExpressItem current = findManualOwner(expectedOwner.rowId);
         if (!sameOwnerIdentity(current, expectedOwner)) return null;
-        return ManualTimelineAuthorityPolicy.selectDetail(
-                manualTimelineCandidates(helper.getReadableDatabase(), current));
+        String preferred = preferredDetailProvider(current);
+        ManualTimelineAuthorityPolicy.Candidate selected =
+                ManualTimelineAuthorityPolicy.selectDetail(
+                        manualTimelineCandidates(helper.getReadableDatabase(), current),
+                        Kuaidi100TimelinePolicy.latestTimedEventMillis(sourcePackage(current)),
+                        preferred);
+        return ManualTimelineAuthorityPolicy.detailOutranksSource(
+                selected, sourcePackage(current), preferred) ? selected : null;
     }
 
     /** Checks only the account-owned package, never a projected manual sidecar. */
@@ -1693,10 +1774,23 @@ public final class ExpressRepository {
         saveManualOwnerResult(result, phone,
                 ExpressSourcePolicy.kuaidi100FallbackSource(bindingSource), bindingSource,
                 System.currentTimeMillis());
+        ExpressItem owner = findByWaybill(result.waybill, bindingSource);
         if (Kuaidi100TimelinePolicy.hasRealTracking(result)
-                && findByWaybill(result.waybill, bindingSource) != null) {
+                && owner != null
+                && !isForeignManualPackage(owner, result)) {
             saveKuaidi100Timeline(result);
         }
+    }
+
+    /**
+     * R-29 (AGENTS §9, 2026-09-03, same rule on iOS and Pipi): an automatic account row whose
+     * real waybill was projected from a JD order anchors every manual package to its own first
+     * timed feed node; a package with older nodes belongs to another parcel (reused waybill).
+     */
+    static boolean isForeignManualPackage(ExpressItem owner, ExpressQueryResult result) {
+        if (owner == null || result == null || owner.manuallyAdded) return false;
+        if (!"jingdong".equalsIgnoreCase(clean(owner.sourceProvider))) return false;
+        return ExpressTimeline.isForeignPackage(owner.tracksJson, result.tracksJson);
     }
 
     /** Commits a successful foreground/manual result through the existing owner source. */
@@ -1719,27 +1813,18 @@ public final class ExpressRepository {
             ExpressQueryResult result, String phone, String bindingSource,
             long successfulAt, boolean complete) {
         if (result == null) return;
-        String provider = clean(result.timelineProvider).toLowerCase(Locale.ROOT);
-        String source;
-        if ("interface5".equals(provider)) {
-            source = ExpressSourcePolicy.SOURCE_INTERFACE5;
-        } else if ("interface6".equals(provider)) {
-            source = ExpressSourcePolicy.SOURCE_INTERFACE6;
-        } else if ("v4".equals(provider)) {
-            source = ExpressSourcePolicy.SOURCE_V4;
-        } else {
-            source = ExpressSourcePolicy.kuaidi100FallbackSource(bindingSource);
-        }
+        String provider = TimelineSlot.normalize(result.timelineProvider);
+        String source = manualOwnerSource(provider, bindingSource);
         ExpressItem owner = saveManualOwnerResult(
                 result, phone, source, bindingSource, successfulAt, complete);
         if (owner == null) return;
         if (!owner.manuallyAdded && owner.usesSourceManualTakeover()) return;
-        if ("interface5".equals(provider) || "interface6".equals(provider)) {
-            saveAccountTimeline(result, provider);
-        } else if ("v4".equals(provider)) {
+        if (TimelineSlot.isAccount(provider)) {
+            saveAccountTimeline(result, TimelineSlot.bindingSourceOf(provider));
+        } else if (TimelineSlot.V4_QUERY.equals(provider)) {
             saveV4Timeline(result);
-        } else if ("meizu".equals(provider) || "oppo".equals(provider)) {
-            // These partial packages live only in the owner-scoped manual sidecar.
+        } else if (TimelineSlot.V6_PICKER.equals(provider)) {
+            // picker 的包只留在按行的手动 sidecar 里（v6_picker 槽），不进共享表。
         } else {
             saveKuaidi100Timeline(result);
         }
@@ -1762,6 +1847,9 @@ public final class ExpressRepository {
         synchronized (this) {
             owner = findRawByWaybill(result.waybill, bindingSource);
         }
+        // R-29 (AGENTS §9, 2026-09-03): for an account-projected waybill a provider package
+        // older than the order's own first feed node minus a day is another parcel's history.
+        if (isForeignManualPackage(owner, result)) return owner;
         if (owner == null || manualResultMarksOwnerManual(owner)) {
             if (owner == null || !owner.manuallyAdded) {
                 return saveNewManualOwnerTimeline(
@@ -1787,7 +1875,7 @@ public final class ExpressRepository {
             String phone, String source, String bindingSource, long successfulAt,
             boolean complete) {
         String normalized = ExpressSourcePolicy.normalizeWaybill(result.waybill);
-        String provider = clean(result.timelineProvider).toLowerCase(Locale.ROOT);
+        String provider = TimelineSlot.normalize(result.timelineProvider);
         String selectedBindingSource = normalizeBindingSource(bindingSource);
         String incomingOwner = ExpressSourcePolicy.source(source);
         if (normalized.isEmpty() || provider.isEmpty()
@@ -1875,8 +1963,8 @@ public final class ExpressRepository {
             String normalized, String incomingOwner) {
         // Picker's K100 URL is presentation-only manual sidecar state. It must not become the
         // shipment owner's source route when Picker happens to create the first manual package.
-        boolean meizuManualPackage = "meizu".equals(
-                clean(result.timelineProvider).toLowerCase(Locale.ROOT));
+        boolean meizuManualPackage = TimelineSlot.V6_PICKER.equals(
+                TimelineSlot.normalize(result.timelineProvider));
         String selectedRoute = meizuManualPackage ? ""
                 : ExpressSourcePolicy.selectDetailUrl("", result.detailUrl);
         String routeInterface = clean(result.routeInterface);
@@ -2014,10 +2102,24 @@ public final class ExpressRepository {
 
     public void saveInterface5Order(
             ExpressQueryResult result, String phone, String bindingGeneration) {
-        saveInterface5OrderSummary(result, phone, bindingGeneration);
+        // 用户定 2026-09-05 晚：feed 增量与 query 是两个独立的包，不拼接。按件详情（订单号
+        // `/v2/query`）只落账号时间线 sidecar，不再整行写回——行（状态、头条、事件时间、自己那条
+        // 摘要节点）永远归 feed。原来这里先 saveInterface5OrderSummary，把 13 条明细写进行里，
+        // 下一轮列表摘要再被 keepRicherOwnerDetail 并进去，详情页就出现「已揽收完成」两遍
+        // （feed 那条 15:47:29 与 query 那条 15:47:00）。
         if (Kuaidi100TimelinePolicy.hasRealTracking(result)
                 && findByWaybill(result.waybill, "interface5") != null) {
             saveAccountTimeline(result, "interface5");
+            // 接口 5 按件详情按**订单号**回包，可详情页和投影 owner 都按**投影出的运单号**读
+            // 账号时间线（accountTimelineWaybill = displayWaybill，projectedOrderOwnersForTimeline
+            // 按 display_waybill 关联）。已投影的订单要再存一份到那个键下，否则接口 5 拉回的全量
+            // 轨迹存进去了却没人读得到——详情页只剩 feed 摘要那一条（2026-09-05 实测）。
+            String projectedWaybill = orderProjection(result.waybill, "interface5").waybill;
+            if (!projectedWaybill.isEmpty()
+                    && !ExpressSourcePolicy.normalizeWaybill(projectedWaybill).equals(
+                    ExpressSourcePolicy.normalizeWaybill(result.waybill))) {
+                saveAccountTimeline(result.withWaybill(projectedWaybill), "interface5");
+            }
             synchronized (this) {
                 // Old builds may have queried the order id as if it were a K100 waybill.
                 helper.getWritableDatabase().delete(
@@ -2051,6 +2153,14 @@ public final class ExpressRepository {
                         db, effectivePhone, bindingSource, bindingGeneration)) return;
                 if (rejectsUnboundAutomaticWrite(
                         db, normalized, bindingSource, effectivePhone)) return;
+                // 留存窗口外的件不首次入库（Pipi 的 expiredRejected 同口径）：上游列表还会
+                // 列出 8 月底签收的订单，每小时清理后再导入就会「已下单 → 已签收」重新通知。
+                if (findAnyRawByIdentity(db, normalized) == null
+                        && ExpressVisibilityPolicy.isExpiredResult(
+                        result, Math.max(1L, observedAt))) {
+                    ExpressLog.retentionRejected(result, "expired");
+                    return;
+                }
                 boolean qualified = AutomaticOwnershipPolicy.isQualified(packageOwner, result);
                 if (qualified) {
                     upsertAutomaticObservation(
@@ -2222,6 +2332,10 @@ public final class ExpressRepository {
             SQLiteDatabase db, ExpressItem target, ExpressQueryResult result,
             String phone, String packageOwner, long observedAt,
             boolean preserveSameOwnerRoute) {
+        // 列表阶段的摘要不能把行退化（iOS/Pipi 的合并是并集，Lite 原来整行覆盖）：行上已有的按件
+        // 详情比摘要新或一样新时，节点并集、头条和事件时间保留详情那份。Fold7 2026-09-05 15:30
+        // 实测：摘要写回把事件时间清成 0，下一轮详情再写回就被当成新事件，六票已签收件重发通知。
+        result = keepRicherOwnerDetail(target, result);
         ContentValues values = new ContentValues();
         String courierCode = preserveSameOwnerRoute && target != null
                 ? preferNonEmpty(result.courierCode, target.courierCode)
@@ -2317,6 +2431,40 @@ public final class ExpressRepository {
                 new String[]{Long.toString(target.rowId)});
         if (changed != 1) throw new IllegalStateException("Automatic owner changed");
         return target.rowId;
+    }
+
+    static ExpressQueryResult keepRicherOwnerDetail(ExpressItem target, ExpressQueryResult result) {
+        if (target == null || result == null) return result;
+        if (!ExpressSourcePolicy.normalizeWaybill(target.waybill).equals(
+                ExpressSourcePolicy.normalizeWaybill(result.waybill))) return result;
+        ExpressQueryResult existing = new ExpressQueryResult(
+                target.waybill, target.courierCode, target.companyName, target.semantic,
+                target.latestTime, target.latestDetail, target.tracksJson);
+        if (!Kuaidi100TimelinePolicy.hasTimedTracking(existing)) return result;
+        long existingLatest = Kuaidi100TimelinePolicy.latestTimedEventMillis(existing);
+        long incomingLatest = Kuaidi100TimelinePolicy.latestTimedEventMillis(result);
+        if (incomingLatest <= 0L) {
+            incomingLatest = result.statusEventTime > 0L ? result.statusEventTime
+                    : ExpressSourcePolicy.parseEventTime(result.latestTime);
+        }
+        int existingCount = Kuaidi100TimelinePolicy.timedTrackCount(existing);
+        int incomingCount = Kuaidi100TimelinePolicy.timedTrackCount(result);
+        // 摘要更新（更晚的事件）照常覆盖头条；只有摘要不比行新、节点又更少时才保住行上的详情。
+        if (incomingLatest > existingLatest || incomingCount >= existingCount) return result;
+        // 不并集（用户定 2026-09-05 晚）：保住的就是行上原来的节点，摘要那一条不拼进去。
+        String tracks = target.tracksJson;
+        long statusEventTime = target.statusEventTime > 0L
+                ? target.statusEventTime : existingLatest;
+        // 状态跟着摘要走（终态等结构化状态是摘要给的），头条/时间/节点保留详情。
+        return new ExpressQueryResult(
+                result.waybill, result.courierCode, result.companyName, result.semantic,
+                statusEventTime, target.latestTime, target.latestDetail, tracks,
+                result.detailUrl, result.phone, result.timelineProvider,
+                result.routeInterface, result.routeCredential, result.sourceProvider,
+                result.carrierNormalization)
+                .withCarrierIdentityEvidence(result.carrierIdentityEvidence)
+                .withManualStatusEvidence(
+                        result.statusDescription, result.structuredStatusEvidence);
     }
 
     private static void putAutomaticOwnership(
@@ -3540,7 +3688,20 @@ public final class ExpressRepository {
     private void publishChange(ExpressItem previous, ExpressItem current) {
         ExpressItem notifyNow = null;
         synchronized (this) {
-            if (ExpressNotifications.shouldPostUpdate(previous, current)) {
+            // iOS notifyShipmentChanges 比的是同步开始前的快照：这轮才出现的件没有 previous，
+            // 整轮都不通知。Lite 一轮同步里先落列表摘要（已下单）再落按件详情（已签收），
+            // 两次写之间比就把老件当成状态翻了（2026-09-05 17:55 Fold7 三票 8 月签收件）。
+            boolean firstSeenInBatch = false;
+            if (changeBatchDepth > 0 && current != null) {
+                if (previous == null) batchFirstSeenRows.add(current.rowId);
+                firstSeenInBatch = batchFirstSeenRows.contains(current.rowId);
+            }
+            if (firstSeenInBatch && ExpressNotifications.shouldPostUpdate(previous, current)) {
+                ExpressLog.notificationSkipped(current, "first_seen_in_batch");
+            } else if (ExpressNotifications.shouldPostUpdate(previous, current)) {
+                // 2026-09-05 Fold7 又一次同一分钟 14 条「已签收」：先把判定的两边打进 logcat，
+                // 下次再批量发就能看出是状态翻了还是事件时间翻了。
+                ExpressLog.notificationDecided(previous, current, changeBatchDepth > 0);
                 if (changeBatchDepth > 0) notificationPending.put(current.rowId, current);
                 else notifyNow = current;
             }
@@ -3564,6 +3725,7 @@ public final class ExpressRepository {
             invalidationPending = false;
             notifications.addAll(notificationPending.values());
             notificationPending.clear();
+            batchFirstSeenRows.clear();
         }
         for (ExpressItem pending : notifications) {
             ExpressItem current = find(pending.rowId);
@@ -3652,7 +3814,7 @@ public final class ExpressRepository {
                     : projections.getOrDefault(projectionKey, OrderProjection.EMPTY);
         }
         StatusSemantic semantic = ExpressSourcePolicy.accountOrderPresentationSemantic(
-                normalizedOwner, projection.waybill, sourceSemantic, sourceTracksJson);
+                normalizedOwner, projection.waybill, sourceSemantic);
         return new ExpressItem(
                 number(cursor, "_id"),
                 text(cursor, "subPhone"),
@@ -3706,7 +3868,7 @@ public final class ExpressRepository {
         OrderProjection safeProjection = projection == null
                 ? OrderProjection.EMPTY : projection;
         StatusSemantic semantic = ExpressSourcePolicy.accountOrderPresentationSemantic(
-                normalizedOwner, safeProjection.waybill, sourceSemantic, sourceTracksJson);
+                normalizedOwner, safeProjection.waybill, sourceSemantic);
         return new ExpressItem(
                 number(cursor, "_id"),
                 text(cursor, "subPhone"),
@@ -3742,25 +3904,18 @@ public final class ExpressRepository {
         ArrayList<ManualTimelineAuthorityPolicy.Candidate> candidates =
                 manualTimelineCandidates(helper.getReadableDatabase(), owner);
         return projectManualTimeline(
-                owner, ManualTimelineAuthorityPolicy.select(candidates),
-                ManualTimelineAuthorityPolicy.selectStructuredTerminal(candidates));
+                owner, ManualTimelineAuthorityPolicy.selectForOwner(
+                        candidates, owner.manuallyAdded, preferredDetailProvider(owner)),
+                ManualTimelineAuthorityPolicy.selectStructuredStatus(candidates));
     }
 
     private ExpressItem projectTimelineAuthorities(ExpressItem owner) {
         if (owner != null && isAutomaticDisplayFrozen(owner.rowId)) {
             return projectFrozenTimelineAuthorities(owner);
         }
-        ExpressItem manual = projectManualTimeline(owner);
-        if (manual == null || !manual.isAccountOrder()
-                || manual.projectedWaybill.isEmpty()) return manual;
-        ExpressQueryResult kuaidi100 = timeline(
-                ExpressDatabase.KUAIDI100_TIMELINE_TABLE,
-                manual.projectedWaybill, "kuaidi100");
-        ExpressQueryResult account = manual.isInterface5ProjectedOrder()
-                ? timeline(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
-                manual.projectedWaybill, "interface5") : null;
-        return projectOrderTimeline(manual, preferredProjectedOrderTimeline(
-                manual, account, kuaidi100));
+        // 用户定 2026-09-05 晚：列表（状态、头条、时间）归 feed。已投影的京东订单不再把
+        // v5_query / k100_h5 那个包的头条投到列表行上——详情页自己去读 sidecar 选包。
+        return projectManualTimeline(owner);
     }
 
     /** Replays only the completed package that caused a JD-source display freeze. */
@@ -3770,34 +3925,20 @@ public final class ExpressRepository {
         ManualTimelineAuthorityPolicy.Candidate manualAuthority =
                 completedCandidate(manualTimelineAuthority(
                         helper.getReadableDatabase(), owner));
-        ExpressItem manual = projectManualTimeline(owner, manualAuthority);
-        if (!manual.isAccountOrder() || manual.projectedWaybill.isEmpty()) return manual;
-        ExpressQueryResult kuaidi100 = completedResult(timeline(
-                ExpressDatabase.KUAIDI100_TIMELINE_TABLE,
-                manual.projectedWaybill, "kuaidi100"));
-        ExpressQueryResult account = manual.isInterface5ProjectedOrder()
-                ? completedResult(timeline(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
-                manual.projectedWaybill, "interface5")) : null;
-        return projectOrderTimeline(manual, preferredProjectedOrderTimeline(
-                manual, account, kuaidi100));
+        return projectManualTimeline(owner, manualAuthority);
     }
 
     private static ExpressItem projectTimelineAuthorities(
             ExpressItem owner, VisibleProjectionSidecars sidecars) {
         if (owner == null) return null;
         ManualTimelineAuthorityPolicy.Candidate authority =
-                ManualTimelineAuthorityPolicy.select(sidecars.manualTimelines.get(
-                        manualTimelineKey(owner)));
-        ExpressItem manual = projectManualTimeline(
+                ManualTimelineAuthorityPolicy.selectForOwner(sidecars.manualTimelines.get(
+                        manualTimelineKey(owner)), owner.manuallyAdded,
+                        preferredDetailProvider(owner));
+        return projectManualTimeline(
                 owner, authority,
-                ManualTimelineAuthorityPolicy.selectStructuredTerminal(
+                ManualTimelineAuthorityPolicy.selectStructuredStatus(
                         sidecars.manualTimelines.get(manualTimelineKey(owner))));
-        if (manual == null || !manual.isAccountOrder()
-                || manual.projectedWaybill.isEmpty()) return manual;
-        String normalized = ExpressSourcePolicy.normalizeWaybill(manual.projectedWaybill);
-        return projectOrderTimeline(manual, preferredProjectedOrderTimeline(
-                manual, sidecars.interface5Timelines.get(normalized),
-                sidecars.kuaidi100Timelines.get(normalized)));
     }
 
     private static ExpressItem projectFrozenTimelineAuthorities(
@@ -3805,14 +3946,9 @@ public final class ExpressRepository {
         if (owner == null || owner.semantic == StatusSemantic.COMPLETED
                 || owner.sourceSemantic == StatusSemantic.COMPLETED) return owner;
         ManualTimelineAuthorityPolicy.Candidate authority = completedCandidate(
-                ManualTimelineAuthorityPolicy.select(sidecars.manualTimelines.get(
-                        manualTimelineKey(owner))));
-        ExpressItem manual = projectManualTimeline(owner, authority);
-        if (!manual.isAccountOrder() || manual.projectedWaybill.isEmpty()) return manual;
-        String normalized = ExpressSourcePolicy.normalizeWaybill(manual.projectedWaybill);
-        return projectOrderTimeline(manual, preferredProjectedOrderTimeline(
-                manual, completedResult(sidecars.interface5Timelines.get(normalized)),
-                completedResult(sidecars.kuaidi100Timelines.get(normalized))));
+                ManualTimelineAuthorityPolicy.selectForOwner(sidecars.manualTimelines.get(
+                        manualTimelineKey(owner)), owner.manuallyAdded));
+        return projectManualTimeline(owner, authority);
     }
 
     private static ManualTimelineAuthorityPolicy.Candidate completedCandidate(
@@ -3821,17 +3957,7 @@ public final class ExpressRepository {
                 && candidate.result.semantic == StatusSemantic.COMPLETED ? candidate : null;
     }
 
-    private static ExpressQueryResult completedResult(ExpressQueryResult result) {
-        return result != null && result.semantic == StatusSemantic.COMPLETED ? result : null;
-    }
 
-    static ExpressQueryResult preferredProjectedOrderTimeline(
-            ExpressItem owner, ExpressQueryResult account,
-            ExpressQueryResult kuaidi100) {
-        return owner != null && owner.isInterface5ProjectedOrder()
-                && Kuaidi100TimelinePolicy.hasTimedTracking(account)
-                ? account : kuaidi100;
-    }
 
     private static String orderProjectionKey(String sourceId, String bindingSource) {
         return ExpressSourcePolicy.normalizeWaybill(sourceId) + '\u0000'
@@ -3885,7 +4011,7 @@ public final class ExpressRepository {
                 String normalized = ExpressSourcePolicy.normalizeWaybill(
                         text(cursor, "normalized_waybill"));
                 if (!normalized.isEmpty()) {
-                    kuaidi100.put(normalized, timeline(cursor, "kuaidi100"));
+                    kuaidi100.put(normalized, timeline(cursor, TimelineSlot.K100_H5));
                 }
             }
         }
@@ -3897,7 +4023,7 @@ public final class ExpressRepository {
                 String normalized = ExpressSourcePolicy.normalizeWaybill(
                         text(cursor, "normalized_waybill"));
                 if (!normalized.isEmpty()) {
-                    interface5.put(normalized, timeline(cursor, "interface5"));
+                    interface5.put(normalized, timeline(cursor, TimelineSlot.V5_QUERY));
                 }
             }
         }
@@ -3923,59 +4049,7 @@ public final class ExpressRepository {
         }
     }
 
-    /** Projects the carrier timeline while retaining the account row as the identity owner. */
-    static ExpressItem projectOrderTimeline(
-            ExpressItem owner, ExpressQueryResult carrierTimeline) {
-        if (owner == null || !owner.isAccountOrder()
-                || owner.projectedWaybill.isEmpty()
-                || carrierTimeline == null
-                || carrierTimeline.semantic == StatusSemantic.UNKNOWN
-                || !Kuaidi100TimelinePolicy.hasTimedTracking(carrierTimeline)) return owner;
-        ExpressTimeline.Track latest = latestTimedTrack(carrierTimeline);
-        if (latest == null) return owner;
-        long statusEventTime = carrierTimeline.statusEventTime > 0L
-                ? carrierTimeline.statusEventTime
-                : ExpressSourcePolicy.parseEventTime(carrierTimeline.latestTime);
-        if (statusEventTime <= 0L) {
-            statusEventTime = ExpressSourcePolicy.parseEventTime(latest.time);
-        }
-        if (!shouldProjectOrderTimeline(owner, carrierTimeline, statusEventTime)) return owner;
-        String latestTime = clean(carrierTimeline.latestTime);
-        String latestDetail = clean(carrierTimeline.latestDetail);
-        if (ExpressSourcePolicy.parseEventTime(latestTime) <= 0L || latestDetail.isEmpty()) {
-            latestTime = latest.time;
-            latestDetail = latest.detail;
-        }
-        String projectedCompany = preferNonEmpty(
-                owner.projectedCompanyName, carrierTimeline.companyName);
-        return new ExpressItem(
-                owner.rowId, owner.phone, owner.waybill, owner.courierCode, owner.companyName,
-                carrierTimeline.semantic, carrierTimeline.semantic.label,
-                latestDetail, latestTime, carrierTimeline.tracksJson,
-                owner.remark, owner.source, owner.detailUrl,
-                statusEventTime, owner.updatedAt,
-                owner.stateOwner, owner.routeOwner, owner.routeInterface,
-                owner.routeCredential, owner.routeCredentialAvailable,
-                owner.projectedWaybill, projectedCompany, owner.projectedTracksJson,
-                owner.sourceProvider, owner.manuallyAdded,
-                owner.manualTimelineProvider, owner.manualTimelineSuccessAt,
-                owner.sourceSemantic, owner.carrierNormalization);
-    }
 
-    private static boolean shouldProjectOrderTimeline(
-            ExpressItem owner, ExpressQueryResult carrierTimeline,
-            long carrierEventTime) {
-        if (owner.semantic == StatusSemantic.COMPLETED
-                && carrierTimeline.semantic != StatusSemantic.COMPLETED) return false;
-        if (carrierTimeline.semantic == StatusSemantic.COMPLETED
-                && owner.semantic != StatusSemantic.COMPLETED) return true;
-        if (!ExpressSourcePolicy.hasTimedCarrierTimeline(owner.tracksJson)) return true;
-        long ownerEventTime = owner.statusEventTime > 0L
-                ? owner.statusEventTime
-                : ExpressSourcePolicy.parseEventTime(owner.latestTime);
-        return carrierEventTime > 0L
-                && (ownerEventTime <= 0L || carrierEventTime >= ownerEventTime);
-    }
 
     static ExpressItem projectManualTimeline(
             ExpressItem owner, ManualTimelineAuthorityPolicy.Candidate authority) {
@@ -3994,14 +4068,27 @@ public final class ExpressRepository {
                 || !ManualTimelineAuthorityPolicy.isAuthoritative(authority)
                 || !(owner.manuallyAdded || isAutomaticAccountOwner(currentOwner))) return owner;
         if (owner.isCainiaoSource()) return owner;
-        if (owner.isJingDongSource()
-                && Kuaidi100TimelinePolicy.hasTimelineStart(sourcePackage(owner))) {
+        // 京东来源的列表归 feed（用户定 2026-09-05 晚，iOS 同口径：京东行只认 account → fallback）：
+        // feed 有带时间的节点就用 feed；没有时也只有付费兜底（快递鸟）那个包能顶上来。
+        if (!owner.manuallyAdded && owner.isJingDongSource()
+                && (Kuaidi100TimelinePolicy.hasTimedTracking(sourcePackage(owner))
+                || !TimelineSlot.KDNIAO.equals(TimelineSlot.normalize(authority.provider)))) {
+            return owner;
+        }
+        // 其余自动件同 iOS selectShipmentTimeline 的默认次序（account → web → local → route →
+        // fallback）：feed 自己有带时间的节点就归 feed，手动包只在 feed 没有时才上列表；顺丰是
+        // 唯一例外（picker 归 picker）。用户定 2026-09-05 晚：列表归 feed。
+        if (!owner.manuallyAdded && !owner.isShunFengSource()
+                && Kuaidi100TimelinePolicy.hasTimedTracking(sourcePackage(owner))) {
             return owner;
         }
         ExpressTimeline.Track latest = latestTimedTrack(authority.result);
         if (latest == null) return owner;
+        // 结构化状态优先（用户定 2026-09-05）：展示包没有结构化状态时，用同一票别的包里最新的那个。
         ManualTimelineAuthorityPolicy.Candidate statusAuthority =
-                owner.isShunFengSource() && structuredTerminalAuthority != null
+                structuredTerminalAuthority != null
+                        && (owner.isShunFengSource()
+                        || !authority.result.structuredStatusEvidence)
                         ? structuredTerminalAuthority : authority;
         StatusSemantic manualSemantic = statusAuthority.result.semantic == null
                 ? StatusSemantic.UNKNOWN : statusAuthority.result.semantic;
@@ -4310,6 +4397,38 @@ public final class ExpressRepository {
         return saved;
     }
 
+    /**
+     * Fills the display-only carrier normalization of one account row the Worker's built-in-table
+     * sidecar left unresolved (EXPRESS_OWNERSHIP_PLAN §3.1 裁决 A, 2026-09-03). Raw carrier
+     * fields, status and routes never change; the row must still carry the same waybill and raw
+     * carrier code it was recognised for.
+     */
+    public boolean saveRecognizedCarrier(
+            ExpressItem expected, CarrierNormalization normalization) {
+        if (expected == null || normalization == null || !normalization.recognized()) {
+            return false;
+        }
+        ExpressItem previous;
+        ExpressItem current;
+        boolean saved = false;
+        synchronized (this) {
+            ExpressItem before = findRaw(expected.rowId);
+            if (before == null || before.isAccountOrder() || before.manuallyAdded
+                    || !ExpressSourcePolicy.normalizeWaybill(before.waybill).equals(
+                            ExpressSourcePolicy.normalizeWaybill(expected.waybill))
+                    || !before.courierCode.equals(expected.courierCode)) return false;
+            previous = projectTimelineAuthorities(before);
+            SQLiteDatabase db = helper.getWritableDatabase();
+            ContentValues values = new ContentValues();
+            putCarrierNormalization(values, normalization);
+            saved = db.update(ExpressDatabase.EXPRESS_TABLE, values, "_id=?",
+                    new String[]{String.valueOf(before.rowId)}) == 1;
+            current = find(expected.rowId);
+        }
+        if (saved) publishChange(previous, current);
+        return saved;
+    }
+
     /** Converges a provisional order identity on the real carrier waybill in one transaction. */
     private static void rekeyAutomaticIdentity(
             SQLiteDatabase db, String fromIdentity, String toIdentity) {
@@ -4540,7 +4659,8 @@ public final class ExpressRepository {
     }
 
     private static String normalizeBindingSource(String value) {
-        return "interface5".equalsIgnoreCase(clean(value)) ? "interface5" : "interface6";
+        return TimelineSlot.V5_QUERY.equals(TimelineSlot.normalize(value))
+                ? "interface5" : "interface6";
     }
 
     private static String preferNonEmpty(String primary, String fallback) {
@@ -4574,7 +4694,6 @@ public final class ExpressRepository {
         pruneHiddenOwnerManualRetries(db);
         pruneHiddenKuaidi100Timelines(db);
         pruneHiddenTimeline(db, ExpressDatabase.V4_TIMELINE_TABLE);
-        pruneHiddenTimeline(db, ExpressDatabase.INTERFACE6_TIMELINE_TABLE);
         pruneHiddenAccountTimeline(db, ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
                 "'INTERFACE5','I5-JD'");
         pruneHiddenAccountTimeline(db, ExpressDatabase.ACCOUNT_V6_TIMELINE_TABLE,
@@ -4846,8 +4965,6 @@ public final class ExpressRepository {
             }
         }
         db.delete(ExpressDatabase.V4_TIMELINE_TABLE,
-                "normalized_waybill=?", new String[]{normalized});
-        db.delete(ExpressDatabase.INTERFACE6_TIMELINE_TABLE,
                 "normalized_waybill=?", new String[]{normalized});
         db.delete(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
                 "normalized_waybill=?", new String[]{normalized});

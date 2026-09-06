@@ -8,5 +8,5 @@ import {
 
 assert.equal(SCRIPT_BUILD_TRACK, "formal");
 assert.equal(SCRIPT_VERSION, "0.5");
-assert.equal(SCRIPT_CLIENT_BUILD, 39);
+assert.equal(SCRIPT_CLIENT_BUILD, 40);
 assert.equal(GATEWAY_ORIGIN, "https://pipiassistant.app");

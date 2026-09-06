@@ -12,7 +12,9 @@ import {
 import {
   clearDiagnostics,
   diagnosticText,
+  diagnosticsEnabled,
   readDiagnostics,
+  setDiagnosticsEnabled,
   type DiagnosticEntry,
 } from "../services/logger";
 import { copyText } from "../services/clipboard";
@@ -95,16 +97,17 @@ function failureText(item: DiagnosticEntry): string | null {
 
 function stageText(value: string): string {
   return ({
-    account_detail: "账号详情",
-    account_list: "账号列表",
+    // 统一用词（2026-09-05）：这一级就叫它的 level 词，不再翻成品牌词；旧日志里的名字也映过去。
+    account_detail: "v5_query",
+    account_list: "v5_list",
     cainiao: "菜鸟",
-    cainiao_h5: "菜鸟 H5",
-    jingdong_h5: "京东 H5",
-    kdniao_fallback: "备用轨迹查询",
-    kuaidi100_query: "K100 H5 轨迹查询",
-    local: "本地轨迹",
-    route: "路线轨迹",
-    fallback: "KDNiao",
+    cainiao_h5: "cn_h5",
+    jingdong_h5: "jd_h5",
+    kdniao_fallback: "kdniao",
+    kuaidi100_query: "k100_h5",
+    local: "v4_query",
+    route: "v6_picker",
+    fallback: "kdniao",
     manual_fallback: "手动查询兜底",
     manual_refresh: "手动件刷新",
     manual_sources: "手动查件数据源",
@@ -113,8 +116,8 @@ function stageText(value: string): string {
     none: "无",
     route_publish: "路由保存",
     primary_contest: "主数据源查询",
-    moto_query: "本地轨迹查询",
-    web_timeline: "H5 轨迹查询",
+    moto_query: "v4_query",
+    web_timeline: "k100_h5",
     webview: "网页提取",
     webview_commit: "网页结果写入",
     detail_webview: "详情页运单提取",
@@ -133,20 +136,21 @@ function providerText(value: string): string {
   return ({
     cainiao: "菜鸟缓存",
     jingdong: "京东缓存",
-    cainiao_h5: "菜鸟 H5",
-    jingdong_h5: "京东 H5",
-    account: "账号轨迹",
-    web: "H5 轨迹",
-    local: "Moto",
-    moto: "Moto",
-    route: "魅族 Picker",
-    meizu: "魅族 Picker",
-    fallback: "KDNiao",
-    kdniao: "KDNiao",
-    kuaidi100: "Kuaidi100",
-    kuaidi100_h5: "K100 H5",
-    interface5: "账号缓存",
-    interface6: "账号缓存",
+    // 统一用词（2026-09-05）：包名就写 level 词；旧日志里的名字映过去。
+    cainiao_h5: "cn_h5",
+    jingdong_h5: "jd_h5",
+    account: "v5_query",
+    web: "cn_h5",
+    local: "v4_query",
+    moto: "v4_query",
+    route: "v6_picker",
+    meizu: "v6_picker",
+    fallback: "kdniao",
+    kdniao: "kdniao",
+    kuaidi100: "k100_h5",
+    kuaidi100_h5: "k100_h5",
+    interface5: "v5_query",
+    interface6: "v6_list",
     none: "无",
   } as Record<string, string>)[value] || value;
 }
@@ -195,6 +199,24 @@ function reasonText(value: string): string {
   } as Record<string, string>)[value] || value;
 }
 
+/** 旧日志（2026-09-05 统一用词前）的布尔键还要能读出来。 */
+function legacyBool(
+  details: DiagnosticDetails,
+  key: keyof DiagnosticDetails,
+  legacyKey: string,
+): boolean | null {
+  const current = details[key];
+  if (typeof current === "boolean") return current;
+  const legacy = (details as Record<string, unknown>)[legacyKey];
+  return typeof legacy === "boolean" ? legacy : null;
+}
+
+function bindingsCount(details: DiagnosticDetails): number | null {
+  if (details.v5Bindings != null) return details.v5Bindings;
+  const legacy = (details as Record<string, unknown>).interface5Bindings;
+  return typeof legacy === "number" ? legacy : null;
+}
+
 function detailsText(item: DiagnosticEntry): string {
   const details = item.details;
   const hasSource = Boolean(
@@ -217,9 +239,7 @@ function detailsText(item: DiagnosticEntry): string {
     details.baseRevision != null ? `起始版本 ${details.baseRevision}` : null,
     details.revision != null ? `版本 ${details.revision}` : null,
     details.resultRevision != null ? `结果版本 ${details.resultRevision}` : null,
-    details.interface5Bindings != null
-      ? `绑定 ${details.interface5Bindings}`
-      : null,
+    bindingsCount(details) != null ? `绑定 ${bindingsCount(details)}` : null,
     details.attempted != null ? `尝试 ${details.attempted}` : null,
     details.succeeded != null ? `成功 ${details.succeeded}` : null,
     details.failed != null ? `失败 ${details.failed}` : null,
@@ -277,23 +297,23 @@ function detailsText(item: DiagnosticEntry): string {
     details.detailEffectiveTrackCount != null
       ? `详情轨迹 ${details.detailEffectiveTrackCount}`
       : null,
-    details.motoSupported != null
-      ? `Moto ${details.motoSupported ? "适用" : "不适用"}`
+    legacyBool(details, "v4QuerySupported", "motoSupported") != null
+      ? `v4_query ${legacyBool(details, "v4QuerySupported", "motoSupported") ? "适用" : "不适用"}`
       : null,
-    details.motoSucceeded != null
-      ? `Moto ${details.motoSucceeded ? "成功" : "失败"}`
+    legacyBool(details, "v4QuerySucceeded", "motoSucceeded") != null
+      ? `v4_query ${legacyBool(details, "v4QuerySucceeded", "motoSucceeded") ? "成功" : "失败"}`
       : null,
-    details.kuaidi100Succeeded != null
-      ? `K100 ${details.kuaidi100Succeeded ? "成功" : "失败"}`
+    legacyBool(details, "k100H5Succeeded", "kuaidi100Succeeded") != null
+      ? `k100_h5 ${legacyBool(details, "k100H5Succeeded", "kuaidi100Succeeded") ? "成功" : "失败"}`
       : null,
     details.primarySuccessCount != null
       ? `主数据源成功 ${details.primarySuccessCount}`
       : null,
     details.kdniaoAttempted != null
-      ? `KDNiao ${details.kdniaoAttempted ? "已调用" : "未调用"}`
+      ? `kdniao ${details.kdniaoAttempted ? "已调用" : "未调用"}`
       : null,
     details.kdniaoSucceeded != null
-      ? `KDNiao ${details.kdniaoSucceeded ? "成功" : "失败"}`
+      ? `kdniao ${details.kdniaoSucceeded ? "成功" : "失败"}`
       : null,
     details.persisted != null
       ? `结果${details.persisted ? "已写入" : "未写入"}`
@@ -338,17 +358,41 @@ function levelColor(
 export function DiagnosticLogPage() {
   const [items, setItems] = useState(() => readDiagnostics());
   const [notice, setNotice] = useState("");
+  const [recording, setRecording] = useState(() => diagnosticsEnabled());
 
   async function actions() {
+    // 复制 and 清空 act on stored entries, so they are offered only when there are some. That makes
+    // the sheet's indices depend on the log's state, hence the key list instead of fixed offsets.
+    const latest = readDiagnostics();
+    setItems(latest);
+    // Two entries when the log is empty, three when it is not. This is also a live probe: the host
+    // picks the presentation from the action count (one renders as a centred alert, three as a
+    // bottom sheet) and two is untested, so beta23 exists to find out which side it lands on.
+    // 清空 is the only action that is meaningless with an empty log; 复制 already answers with
+    // 暂无可复制的日志, so keeping it costs nothing if two turns out to render as a sheet.
+    const keys: Array<"toggle" | "copy" | "clear"> = latest.length
+      ? ["toggle", "copy", "clear"]
+      : ["toggle", "copy"];
+    const labels = {
+      toggle: { label: recording ? "停止记录" : "开始记录" },
+      copy: { label: "复制全部日志" },
+      clear: { label: "清空日志", destructive: true },
+    } as const;
     const index = await Dialog.actionSheet({
       title: "诊断日志",
       message: "日志仅记录运单号尾 4 位，不包含手机号、验证码、Access Key、完整运单号、H5 地址或网络响应正文。",
-      actions: [
-        { label: "复制全部日志" },
-        { label: "清空日志", destructive: true },
-      ],
+      actions: keys.map((key) => labels[key]),
     });
-    if (index === 0) {
+    const action = index == null || index < 0 ? null : keys[index] ?? null;
+    if (action === "toggle") {
+      const next = !recording;
+      if (!setDiagnosticsEnabled(next)) {
+        setNotice("设置失败，请稍后重试");
+        return;
+      }
+      setRecording(next);
+      setNotice(next ? "已开始记录" : "已停止记录");
+    } else if (action === "copy") {
       const latestItems = readDiagnostics();
       setItems(latestItems);
       if (!latestItems.length) {
@@ -361,7 +405,7 @@ export function DiagnosticLogPage() {
           ? "日志已复制"
           : "复制失败，请稍后重试",
       );
-    } else if (index === 1) {
+    } else if (action === "clear") {
       const confirmed = await Dialog.confirm({
         title: "清空诊断日志",
         message: "清空后无法恢复。是否继续？",
@@ -384,12 +428,19 @@ export function DiagnosticLogPage() {
     <List
       navigationTitle="诊断日志"
       navigationBarTitleDisplayMode="inline"
-      onAppear={() => setItems(readDiagnostics())}
+      onAppear={() => {
+        setItems(readDiagnostics());
+        setRecording(diagnosticsEnabled());
+      }}
       toast={transientToast(notice, setNotice)}
       toolbar={{
         topBarTrailing: (
           <Button buttonStyle="plain" action={actions}>
-            <Image systemName="ellipsis.circle" font={17} />
+            <Image
+              systemName="ellipsis.circle"
+              font={17}
+              frame={{ width: 44, height: 44 }}
+            />
           </Button>
         ),
       }}

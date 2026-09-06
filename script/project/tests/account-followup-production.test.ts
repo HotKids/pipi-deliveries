@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { AppState, Shipment, TimelinePackage } from "../models";
 import type { AccountParcelDto } from "../services/account-parser";
+import { setDiagnosticsEnabled } from "../services/logger";
 
 const diagnosticStorage = new Map<string, unknown>();
 Object.assign(globalThis, {
@@ -17,6 +18,10 @@ Object.assign(globalThis, {
     },
   },
 });
+
+// Diagnostics are recorded only when enabled: the formal track ships with recording off
+// (user decision 2026-09-04), so a test that asserts on the log has to opt in explicitly.
+setDiagnosticsEnabled(true);
 
 const { clearDiagnostics, readDiagnostics } = await import("../services/logger");
 const { runAccountFollowupsForTesting } = await import("../services/sync");
@@ -244,7 +249,7 @@ assert.equal(
     (entry) =>
       entry.event === "refresh.stage.started" &&
       entry.details.flowId === "followup-causal-live" &&
-      entry.details.stage === "account_detail",
+      entry.details.stage === "v5_query",
   ).length,
   3,
   "account-detail start diagnostics must be written when each request actually starts",
@@ -264,7 +269,7 @@ const successDurations = readDiagnostics()
     (entry) =>
       entry.event === "refresh.stage.succeeded" &&
       entry.details.flowId === "followup-causal-live" &&
-      entry.details.stage === "account_detail",
+      entry.details.stage === "v5_query",
   )
   .map((entry) => Number(entry.details.durationMs));
 assert.equal(successDurations.length, 3);
@@ -339,12 +344,15 @@ await runAccountFollowupsForTesting(
     },
   },
 );
+// 用户定 2026-09-04：京东也走按件 feed 详情——「详情页先拉一遍对应接口」对京东同样成立，
+// 原来这里把京东整个排除在 followups 之外。已签收且有可用历史的行仍然被终态闸门挡住。
 assert.deepEqual(
   screenedStarts,
   [
+    "detail:ORDER202608307119",
     "detail:ZT9999",
   ],
-  "homepage followups must keep JD on its Xiaomi account-list cache and refresh only non-JD account detail",
+  "京东与非京东都进按件 feed 详情，只有终态件被挡",
 );
 
 console.log("account followup production-path tests passed");

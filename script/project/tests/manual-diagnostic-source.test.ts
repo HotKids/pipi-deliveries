@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setDiagnosticsEnabled } from "../services/logger";
 
 const memory = new Map<string, unknown>();
 
@@ -16,6 +17,10 @@ Object.assign(globalThis, {
     },
   },
 });
+
+// Diagnostics are recorded only when enabled: the formal track ships with recording off
+// (user decision 2026-09-04), so a test that asserts on the log has to opt in explicitly.
+setDiagnosticsEnabled(true);
 
 const { queryManualForSource } = await import("../services/manual-query");
 const { clearDiagnostics, readDiagnostics } = await import("../services/logger");
@@ -58,7 +63,7 @@ for (const event of [
 ]) {
   const entry = entries.find((candidate) => candidate.event === event);
   assert.ok(entry, `missing ${event}`);
-  assert.equal(entry.details.timelineProvider, "moto");
+  assert.equal(entry.details.timelineProvider, "v4_query");
   if (event !== "manual.source.started") {
     assert.equal(typeof entry.details.durationMs, "number");
   }
@@ -86,7 +91,7 @@ const failed = readDiagnostics().find(
   (entry) => entry.event === "manual.source.failed",
 );
 assert.ok(failed);
-assert.equal(failed.details.timelineProvider, "meizu");
+assert.equal(failed.details.timelineProvider, "v6_picker");
 assert.equal(typeof failed.details.durationMs, "number");
 
 clearDiagnostics();
@@ -155,7 +160,7 @@ const emptyEntries = readDiagnostics();
 assert.equal(
   emptyEntries.find((entry) => entry.event === "manual.source.skipped")
     ?.details.timelineProvider,
-  "moto",
+  "v4_query",
 );
 const emptyCompleted = emptyEntries.find(
   (entry) => entry.event === "manual.query.completed",

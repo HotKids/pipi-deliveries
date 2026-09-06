@@ -42,26 +42,33 @@ public final class ExpressSourcePolicyTest {
         assertEquals("interface6", ExpressSourcePolicy.bindingSourceForOwner("I6-JD"));
     }
 
+    /** 列表状态归 feed（用户定 2026-09-05 晚）：投影后直接用 feed 的状态，投影前只放行终态。 */
     @Test
-    public void accountOrderUsesSourceStateOnlyAfterCarrierIdentityProjection() {
+    public void accountOrderShowsFeedStateOnceProjectedAndOnlyTerminalStatesBefore() {
         assertEquals(StatusSemantic.ORDERED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "", StatusSemantic.PICKED,
-                        timedTracks("快件已揽收")));
+                        "I5-JD", "", StatusSemantic.PICKED));
         assertEquals(StatusSemantic.ORDERED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "JD0256719746857", StatusSemantic.COMPLETED, "[]"));
+                        "I5-JD", "", StatusSemantic.TRANSIT));
         assertEquals(StatusSemantic.COMPLETED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "JD0256719746857", StatusSemantic.COMPLETED,
-                        timedTracks("快件已签收")));
+                        "I5-JD", "", StatusSemantic.COMPLETED));
+        assertEquals(StatusSemantic.CANCELLED,
+                ExpressSourcePolicy.accountOrderPresentationSemantic(
+                        "I5-JD", "", StatusSemantic.CANCELLED));
+        assertEquals(StatusSemantic.COMPLETED,
+                ExpressSourcePolicy.accountOrderPresentationSemantic(
+                        "I5-JD", "JD0256719746857", StatusSemantic.COMPLETED));
         assertEquals(StatusSemantic.TRANSIT,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I6-JD", "YT0256719746857", StatusSemantic.TRANSIT,
-                        timedTracks("快件运输中")));
+                        "I6-JD", "YT0256719746857", StatusSemantic.TRANSIT));
         assertEquals(StatusSemantic.PICKED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "INTERFACE5", "", StatusSemantic.PICKED, "[]"));
+                        "I5-JD", "JD0256719746857", StatusSemantic.PICKED));
+        assertEquals(StatusSemantic.PICKED,
+                ExpressSourcePolicy.accountOrderPresentationSemantic(
+                        "INTERFACE5", "", StatusSemantic.PICKED));
     }
 
     @Test

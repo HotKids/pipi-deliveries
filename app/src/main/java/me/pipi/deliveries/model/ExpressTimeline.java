@@ -1,5 +1,6 @@
 package me.pipi.deliveries.model;
 
+import me.pipi.deliveries.data.TimelineSlot;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
@@ -33,6 +34,7 @@ public final class ExpressTimeline {
     public static List<Track> parse(
             String tracksJson, String fallbackTime, String fallbackDetail) {
         ArrayList<Track> tracks = new ArrayList<>();
+        ArrayList<RawTrack> rawTracks = new ArrayList<>();
         try {
             Object root = new JSONTokener(clean(tracksJson).isEmpty() ? "[]" : tracksJson)
                     .nextValue();
@@ -45,13 +47,19 @@ public final class ExpressTimeline {
                             "context", "desc", "description", "logisticDetail",
                             "lastLogisticDetail", "message");
                     if (detail.isEmpty()
-                            || ExpressStatusNormalizer.isProviderErrorDetail(detail)) continue;
-                    tracks.add(new Track(first(value,
-                            "time", "ftime", "date", "logisticsGmtModified"), detail));
+                            || ExpressStatusNormalizer.isNonEventDetail(detail)) continue;
+                    rawTracks.add(new RawTrack(first(value,
+                            "time", "ftime", "date", "logisticsGmtModified"), detail, value));
                 }
             }
         } catch (Throwable ignored) {
             // The persisted timeline may come from an older provider schema. Fall back below.
+        }
+        // 同包内同文案、5 分钟内、结构化状态不冲突的节点算同一条（用户定 2026-09-06，三端同 Pipi）；
+        // 原来是「相邻同文案不看时间」，会把几小时后重复的真实事件也吞掉。老缓存里的重复也在这里收掉。
+        rawTracks.sort((left, right) -> Long.compare(parseTime(right.time), parseTime(left.time)));
+        for (RawTrack raw : collapseNearTimeDuplicates(rawTracks)) {
+            tracks.add(new Track(raw.time, raw.detail));
         }
         LinkedHashMap<String, Track> unique = new LinkedHashMap<>();
         for (Track track : tracks) {
@@ -61,18 +69,9 @@ public final class ExpressTimeline {
         tracks.clear();
         tracks.addAll(unique.values());
         tracks.sort((left, right) -> Long.compare(parseTime(right.time), parseTime(left.time)));
-        ArrayList<Track> collapsed = new ArrayList<>();
-        String previousEvent = "";
-        for (Track track : tracks) {
-            String event = normalizeEvent(track.detail);
-            if (!event.isEmpty() && event.equals(previousEvent)) continue;
-            collapsed.add(track);
-            previousEvent = event;
-        }
-        tracks.clear();
-        tracks.addAll(collapsed);
+
         if (tracks.isEmpty() && !clean(fallbackDetail).isEmpty()
-                && !ExpressStatusNormalizer.isProviderErrorDetail(fallbackDetail)) {
+                && !ExpressStatusNormalizer.isNonEventDetail(fallbackDetail)) {
             tracks.add(new Track(fallbackTime, fallbackDetail));
         }
         return Collections.unmodifiableList(tracks);
@@ -86,6 +85,33 @@ public final class ExpressTimeline {
             }
         }
         return null;
+    }
+
+    /**
+     * AGENTS §9 / plan R-29 (user decision 2026-09-03, same rule on iOS and Pipi): for an
+     * account-projected waybill, a manual provider package (Picker / K100 / KDNiao) with any node
+     * earlier than the order's own first timed feed node minus a day belongs to another parcel
+     * (reused waybill). The anchor comes only from the account package.
+     */
+    public static final long FOREIGN_PACKAGE_ANCHOR_SLACK_MS = 24L * 60L * 60L * 1000L;
+
+    public static long foreignPackageAnchorMillis(String accountTracksJson) {
+        long earliest = 0L;
+        for (RawTrack track : rawTracks(accountTracksJson)) {
+            long time = parseTime(track.time);
+            if (time > 0L && (earliest == 0L || time < earliest)) earliest = time;
+        }
+        return earliest > 0L ? earliest - FOREIGN_PACKAGE_ANCHOR_SLACK_MS : 0L;
+    }
+
+    public static boolean isForeignPackage(String accountTracksJson, String candidateTracksJson) {
+        long anchor = foreignPackageAnchorMillis(accountTracksJson);
+        if (anchor <= 0L) return false;
+        for (RawTrack track : rawTracks(candidateTracksJson)) {
+            long time = parseTime(track.time);
+            if (time > 0L && time < anchor) return true;
+        }
+        return false;
     }
 
     /** Historical provider failures invalidate their old package-level metadata. */
@@ -122,6 +148,7 @@ public final class ExpressTimeline {
         appendRaw(merged, rawTracks(cachedJson));
         ArrayList<RawTrack> tracks = new ArrayList<>(merged.values());
         tracks.sort((left, right) -> Long.compare(parseTime(right.time), parseTime(left.time)));
+        tracks = collapseNearTimeDuplicates(tracks);
         tracks = compact(tracks);
         JSONArray values = new JSONArray();
         for (RawTrack track : tracks) {
@@ -202,7 +229,7 @@ public final class ExpressTimeline {
         String description = first(value,
                 "logisticsStatusDesc", "stateName", "statusDesc");
         StatusSemantic semantic = "account".equals(provider)
-                || "interface5".equals(provider) || "interface6".equals(provider)
+                || TimelineSlot.isAccount(provider)
                 ? StatusSemantic.fromAccountState(code, description)
                 : StatusSemantic.fromKuaidi100EventCode(code);
         return semantic == StatusSemantic.UNKNOWN
@@ -224,7 +251,7 @@ public final class ExpressTimeline {
                         "lastLogisticDetail", "message");
                 String time = first(value,
                         "time", "ftime", "date", "logisticsGmtModified");
-                if (ExpressStatusNormalizer.isProviderErrorDetail(detail)
+                if (ExpressStatusNormalizer.isNonEventDetail(detail)
                         || detail.isEmpty() && time.isEmpty()) continue;
                 tracks.add(new RawTrack(
                         time, detail, new JSONObject(value.toString())));
@@ -310,6 +337,50 @@ public final class ExpressTimeline {
                 // Optional provider metadata cannot invalidate a durable tracking node.
             }
         }
+    }
+
+    /** 同包内同文案节点的合并窗口（用户定 2026-09-06，三端同 Pipi CROSS_SOURCE_DUPLICATE_WINDOW_SECONDS）。 */
+    static final long NEAR_DUPLICATE_WINDOW_MS = 5L * 60L * 1000L;
+
+    /**
+     * 与 Pipi TrackTimelinePolicy.collapseNearTimeDuplicates 同法：列表已按新到旧排好，指纹相同、
+     * 相距 ≤ 5 分钟、结构化状态不冲突的后一条并进前一条（较新的拥有展示，老的只补空字段）。
+     */
+    private static ArrayList<RawTrack> collapseNearTimeDuplicates(List<RawTrack> sorted) {
+        ArrayList<RawTrack> output = new ArrayList<>();
+        for (RawTrack candidate : sorted) {
+            RawTrack duplicate = null;
+            String fingerprint = fingerprint(candidate.detail);
+            long at = parseTime(candidate.time);
+            if (!fingerprint.isEmpty() && at > 0L) {
+                for (RawTrack existing : output) {
+                    long existingAt = parseTime(existing.time);
+                    if (existingAt <= 0L || !fingerprint.equals(fingerprint(existing.detail))) continue;
+                    if (!compatibleStructuredStatus(existing.value, candidate.value)) continue;
+                    if (Math.abs(existingAt - at) <= NEAR_DUPLICATE_WINDOW_MS) {
+                        duplicate = existing;
+                        break;
+                    }
+                }
+            }
+            if (duplicate == null) {
+                output.add(candidate);
+            } else {
+                fillMissingFields(duplicate.value, candidate.value);
+            }
+        }
+        return output;
+    }
+
+    /** 与 Pipi TrackTimelinePolicy.fingerprint 同法：NFKC、「您的快件/订单/包裹」归一、去尾标点、去空白。 */
+    private static String fingerprint(String detail) {
+        return java.text.Normalizer.normalize(clean(detail), java.text.Normalizer.Form.NFKC)
+                .replace('\u00a0', ' ')
+                .replaceAll("\\s+", " ")
+                .trim()
+                .replaceFirst("^您的(?:快件|订单|包裹)\\s*", "您的物流")
+                .replaceAll("[。.!！?？,，;；、…]+$", "")
+                .replaceAll("\\s+", "");
     }
 
     private static final class RawTrack {

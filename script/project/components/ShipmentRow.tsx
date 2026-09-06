@@ -1,9 +1,10 @@
-import { Button, HStack, Spacer, Text, VStack, useState } from "scripting";
+import { Button, HStack, Spacer, Text, VStack } from "scripting";
 import type { Shipment } from "../models";
 import {
   shipmentPresentationStatus,
   statusTint,
   waybillSuffix,
+  withShipmentNote,
 } from "../services/status";
 import {
   displayWaybill,
@@ -12,28 +13,21 @@ import {
 import { compactTimelineTime } from "../services/time-presentation";
 import { CourierIcon } from "./CourierIcon";
 
+/**
+ * Byte-for-byte the shape PhoneManagerPage already uses for its own swipe-to-delete: rows live
+ * inside a Section, the swipe action calls a page handler, and the page confirms with
+ * `Dialog.confirm`. One operation, one implementation — the earlier attempts here each invented a
+ * different mechanism for this list alone, and every one of them broke.
+ */
 export function ShipmentRow(props: {
   shipment: Shipment;
   onOpen: () => void;
   onDelete: () => void;
-  onForceComplete: () => void;
+  deleteDisabled?: boolean;
 }) {
   const item = props.shipment;
-  const [pendingAction, setPendingAction] = useState<
-    "delete" | "complete" | null
-  >(null);
   const presentationStatus = shipmentPresentationStatus(item);
   const eventTime = compactTimelineTime(item.timeline.latestTimeText);
-
-  function confirmPendingAction() {
-    const action = pendingAction;
-    if (!action) return;
-    setPendingAction(null);
-    setTimeout(() => {
-      if (action === "delete") props.onDelete();
-      else props.onForceComplete();
-    }, 350);
-  }
 
   return (
     <HStack
@@ -41,48 +35,14 @@ export function ShipmentRow(props: {
       padding={{ vertical: 10 }}
       contentShape="rect"
       onTapGesture={props.onOpen}
-      confirmationDialog={{
-        title: pendingAction === "delete" ? "删除快递" : "标记为已签收",
-        isPresented: pendingAction != null,
-        onChanged: (presented) => {
-          if (!presented) setPendingAction(null);
-        },
-        message: (
-          <Text>
-            {pendingAction === "delete"
-              ? "删除后，该快递及其本地物流轨迹将一并移除。"
-              : "确认将该快递标记为已签收？"}
-          </Text>
-        ),
-        actions: (
-          <Button
-            title={pendingAction === "delete" ? "删除" : "签收"}
-            role={pendingAction === "delete" ? "destructive" : "confirm"}
-            action={confirmPendingAction}
-          />
-        ),
-      }}
-      leadingSwipeActions={
-        item.timeline.semantic === "COMPLETED"
-          ? undefined
-          : {
-              allowsFullSwipe: false,
-              actions: [
-                <Button
-                  title="签收"
-                  tint="systemGreen"
-                  action={() => setPendingAction("complete")}
-                />,
-              ],
-            }
-      }
       trailingSwipeActions={{
         allowsFullSwipe: false,
         actions: [
           <Button
             title="删除"
             role="destructive"
-            action={() => setPendingAction("delete")}
+            disabled={props.deleteDisabled === true}
+            action={props.onDelete}
           />,
         ],
       }}
@@ -102,8 +62,9 @@ export function ShipmentRow(props: {
             font={17}
             fontWeight="semibold"
             foregroundStyle={statusTint(presentationStatus.semantic)}
+            lineLimit={1}
           >
-            {presentationStatus.text}
+            {withShipmentNote(presentationStatus.text, item)}
           </Text>
           <Spacer />
           {eventTime ? (

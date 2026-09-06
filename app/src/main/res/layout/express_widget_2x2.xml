@@ -65,33 +65,30 @@
                 <LinearLayout
                     android:id="@+id/widget_compact_identity"
                     android:layout_width="0dp"
-                    android:layout_height="44dp"
+                    android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:paddingBottom="5dp">
 
                     <TextView
                         android:id="@+id/widget_priority_status"
                         android:layout_width="wrap_content"
-                        android:layout_height="0dp"
-                        android:layout_weight="24"
+                        android:layout_height="wrap_content"
                         android:ellipsize="end"
-                        android:fontFamily="sans-serif-medium"
-                        android:gravity="center_vertical|start"
+                        android:fontFamily="sans-serif"
                         android:includeFontPadding="false"
-                        android:lineHeight="24dp"
                         android:maxLines="1"
                         android:textColor="?attr/colorOnSurface"
-                        android:textSize="20sp" />
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
 
                     <TextView
                         android:id="@+id/widget_compact_company"
                         android:layout_width="wrap_content"
-                        android:layout_height="0dp"
-                        android:layout_weight="14"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="-2dp"
                         android:ellipsize="end"
-                        android:gravity="center_vertical|start"
                         android:includeFontPadding="false"
-                        android:lineHeight="14dp"
                         android:maxLines="1"
                         android:textColor="?attr/colorOnSurfaceVariant"
                         android:textSize="12sp" />
@@ -150,7 +147,7 @@
                 android:includeFontPadding="false"
                 android:maxLines="1"
                 android:textColor="#FFFFFFFF"
-                android:textSize="14sp" />
+                android:textSize="15sp" />
         </LinearLayout>
     </LinearLayout>
 

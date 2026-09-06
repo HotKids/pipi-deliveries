@@ -44,8 +44,8 @@ assert.match(
 assert.match(background, /rawCourierCode:\s*current\.identity\.rawCourierCode/);
 assert.match(
   background,
-  /pickerFirst:\s*current\.identity\.manuallyAdded \|\|[\s\S]*?isShunFengSourceShipment\(current\)[\s\S]*?includeKdniaoFallback:\s*true[\s\S]*?hostSafe:\s*true/,
-  "background polling must use Picker first for manual and SF parcels, allow KDNiao, and keep H5 disabled",
+  /pickerFirst:\s*current\.identity\.manuallyAdded \|\|[\s\S]*?isShunFengSourceShipment\(current\)[\s\S]*?includeKdniaoFallback:\s*!isShunFengSourceShipment\(current\)[\s\S]*?hostSafe:\s*true/,
+  "列表层：手动件与顺丰都 Picker 优先；付费的快递鸟只给手动件，顺丰要等到详情页（用户定 2026-09-04）",
 );
 assert.doesNotMatch(
   background,
@@ -121,10 +121,17 @@ assert.match(
   /function storedWebRoute\([\s\S]*?!shipment\.identity\.manuallyAdded && !isShunFengSourceShipment\(shipment\)[\s\S]*?route\?\.kind !== "web"/,
   "manual and SF detail refreshes must reuse their persisted Meizu K100 route",
 );
+// 表格「待改 1」：K100 H5 只能是 picker `manual` 返回的 `detailUrl` 那一页。原来这条钉的是
+// 「picker 没给路由就直连」，那是直连时代的判据。
 assert.match(
   detail,
-  /const requestedDirectKuaidi100Timeline = explicitTimelineRefresh && \([\s\S]*?!manualWebRoute[\s\S]*?original\.identity\.manuallyAdded[\s\S]*?isShunFengSourceShipment\(original\)[\s\S]*?const refreshDue = [\s\S]*?requestedDirectKuaidi100Timeline[\s\S]*?const directKuaidi100PrimaryRequested = requestedDirectKuaidi100Timeline &&[\s\S]*?!requestedJingDongDetailSupplement \|\| jingDongPrimaryRequested[\s\S]*?const h5Kind = \(directKuaidi100PrimaryRequested/,
-  "manual and SF detail refreshes must still issue a direct K100 query when Picker returned no route",
+  /const requestedKuaidi100Timeline = explicitTimelineRefresh && \([\s\S]*?original\.identity\.manuallyAdded[\s\S]*?isShunFengSourceShipment\(original\)[\s\S]*?const refreshDue = [\s\S]*?requestedKuaidi100Timeline[\s\S]*?const kuaidi100PrimaryRequested = requestedKuaidi100Timeline &&[\s\S]*?!requestedJingDongDetailSupplement \|\| jingDongPrimaryRequested/,
+  "K100 那一级仍由手动件/顺丰/京东补充触发",
+);
+assert.doesNotMatch(
+  detail,
+  /!manualWebRoute/,
+  "「没存过路由才跑 K100」的直连时代判据不得留下",
 );
 assert.match(
   detail,
@@ -136,10 +143,17 @@ assert.match(
   /needsAutomaticManualFallback\(selected\)[\s\S]*?"detail_open"/,
   "opening an eligible ordinary automatic detail must start its supplementation round",
 );
+// 表格「待改 1」：直连适配器已删除；K100 那一级抓的是 picker 返回的 `detailUrl` 页，能不能抓
+// 由路由本身决定（只认 kuaidi100.com），不再按行的归属挡人。
 assert.match(
   syncSource,
-  /async function refreshKuaidi100H5\([\s\S]*?!shipment\.identity\.manuallyAdded &&[\s\S]*?!isShunFengSourceShipment\(shipment\)[\s\S]*?!needsAutomaticManualFallback\(shipment\)[\s\S]*?queryKuaidi100JdTimeline\(/,
-  "the direct K100 adapter must accept manual, SF, and eligible ordinary automatic shipments",
+  /async function refreshWebTimeline\([\s\S]*?if \(!trustedWebTimelineRoute\(routeUrl\)\) return null;/,
+  "K100 H5 那一级只校验路由本身",
+);
+assert.doesNotMatch(
+  syncSource,
+  /refreshKuaidi100H5/,
+  "直连 K100 的适配器不得回归",
 );
 assert.match(
   manualDetailSource,
@@ -186,10 +200,18 @@ assert.match(
   /const manualWebRoute = storedWebRoute\(original, startedAt\);[\s\S]*?const requestedWebTimeline = explicitTimelineRefresh && Boolean\(manualWebRoute\);[\s\S]*?const refreshDue = forceAccountOrderProjection \|\|[\s\S]*?requestedWebTimeline/,
   "manual submission must run hidden H5 extraction even when an existing cache already looks complete",
 );
-assert.doesNotMatch(
+// 用户定 2026-09-05：京东来源改成先问接口 5 的按件详情（`/cpa/express/v2/query`，用**订单号**，
+// provider=JingDong / cpCode=JDKD / name=京东商品快递），它能直接返回全量轨迹；其余来源仍复用
+// 列表页缓存，不再多发这一次查询。
+assert.match(
   detail,
-  /await refreshAccountParcel\(/,
-  "detail refresh must reuse the list-page Xiaomi cache",
+  /isJingDongSourceShipment\(original\)[\s\S]{0,1200}?await refreshAccountParcel\(/,
+  "京东来源的详情刷新要先问一遍接口 5 的按件详情",
+);
+assert.match(
+  detail,
+  /refreshProviderDue\(\s*accountDetailKey,\s*"account_detail"/,
+  "这一次按件详情必须仍受 account_detail 的节流约束",
 );
 assert.doesNotMatch(
   detail,

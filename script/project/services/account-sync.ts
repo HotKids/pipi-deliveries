@@ -18,11 +18,14 @@ import {
 } from "./account-parser";
 import { GatewayError, postGateway } from "./gateway";
 import {
+  incomingStatusAdvances,
   mergeTimelinePackage,
   normalizeWaybill,
   normalizedProjectedWaybill,
   parseProviderTime,
   semanticFromText,
+  splitJingDongH5Nodes,
+  timedTracks,
 } from "./status";
 import {
   assertWithinDeadline,
@@ -112,15 +115,29 @@ export async function verifyAccountBinding(
   });
 }
 
+/**
+ * 接口 5 京东来源那一行在上游的身份（用户定 2026-09-05，实网口径）。
+ *
+ * 这三个值加上**订单号**才是 `/cpa/express/v2/query` 认得的那一票；上游那一行的 `mailNo` 本来
+ * 就是京东内部的 16 位 `wlOrderId`（原始合同 §8.6），不是承运商运单号。联合页回填出来的真实
+ * 承运商（极兔、顺丰……）只属于展示层，拿它去问小米，小米不认这一行。
+ */
+const JING_DONG_ACCOUNT_PROVIDER = "JingDong";
+const JING_DONG_ACCOUNT_CP_CODE = "JDKD";
+const JING_DONG_ACCOUNT_NAME = "京东商品快递";
+
 function detailRecord(
   parcel: AccountParcelDto,
   matchedPhone: string,
 ): AccountDetailRecord {
+  const jingDongOrder = parcel.accountOrder === true;
   return {
-    waybill: parcel.ownerId,
-    companyCode: parcel.rawCourierCode || "",
-    name: parcel.rawCompanyName || "",
-    provider: parcel.sourceProvider,
+    waybill: jingDongOrder ? parcel.orderId || parcel.ownerId : parcel.ownerId,
+    companyCode: jingDongOrder
+      ? JING_DONG_ACCOUNT_CP_CODE
+      : parcel.rawCourierCode || "",
+    name: jingDongOrder ? JING_DONG_ACCOUNT_NAME : parcel.rawCompanyName || "",
+    provider: jingDongOrder ? JING_DONG_ACCOUNT_PROVIDER : parcel.sourceProvider,
     stateNumber: Number(parcel.sourceStateCode) || 0,
     updateTime: parcel.latestTimeText,
     phone: matchedPhone,
@@ -309,16 +326,59 @@ export function accountParcelWithExistingProjection(
   );
   const projectedIdentity = projectedAuthority?.identity;
   const projectedWaybill = normalizedProjectedWaybill(projectedIdentity);
+    // Feed text naming the same carrier waybill is fresh carrier evidence for an already
+  // projected owner and repairs an identity that was labelled from the order stage.
+  const textIdentity = parcel.textIdentity;
+  const textCarrier = textIdentity && projectedWaybill &&
+      normalizeWaybill(textIdentity.waybill) === projectedWaybill &&
+      textIdentity.courierCode
+    ? textIdentity
+    : null;
   return projectedWaybill
     ? {
         ...parcel,
         waybill: projectedWaybill,
-        courierCode: projectedIdentity?.courierCode || parcel.courierCode,
-        companyName: projectedIdentity?.companyName || parcel.companyName,
+        courierCode: textCarrier?.courierCode ||
+          projectedIdentity?.courierCode || parcel.courierCode,
+        companyName: textCarrier?.companyName ||
+          projectedIdentity?.companyName || parcel.companyName,
+        ...(textCarrier ? { rawCourierCode: "", carrierNormalization: null } : {}),
         projectionTimeline:
           parcel.projectionTimeline || projectedAuthority?.sourceTimeline || null,
       }
     : parcel;
+}
+
+/**
+ * Status and the list surface belong to the FEED source; the JD H5 package supplies tracks only
+ * (user rule, restated 2026-09-04). A complete projection used to replace the account package
+ * whole, taking its status with it — and the projection's own semantic is derived from the newest
+ * node's text (`semanticFromText`), which AGENTS §9 forbids as status evidence in the first place.
+ * Two signed-for rows fell to 暂无状态 that way, their delivery text unchanged.
+ */
+/**
+ * 用户定 2026-09-04（§9 总纲）：feed 提供的每个字段都归 feed——状态、结构化状态时间、**列表头条**。
+ * H5 只供轨迹。原先这里只把 semantic/statusEventAtMs 拿回来，头条与事件时间仍是 H5 的，于是出现
+ * 「状态跟着 feed 推进、头条却停在抓取那一刻」——极兔那票停在 06:17 且越抓越旧（2026-09-04 观察）。
+ */
+function withAccountPresentation(
+  projected: TimelinePackage,
+  account: TimelinePackage | null,
+  takesHeadline = true,
+): TimelinePackage {
+  if (!account) return projected;
+  return {
+    ...projected,
+    semantic: account.semantic,
+    statusEventAtMs: account.statusEventAtMs,
+    structuredStatus: account.structuredStatus === true,
+    latestTimeText: takesHeadline
+      ? account.latestTimeText || projected.latestTimeText
+      : projected.latestTimeText,
+    latestDetail: takesHeadline
+      ? account.latestDetail || projected.latestDetail
+      : projected.latestDetail,
+  };
 }
 
 export function parcelToShipment(
@@ -391,13 +451,32 @@ export function parcelToShipment(
         companyName,
       }
     : null;
-  // For a projected order, the account-list snapshot still describes order
-  // state. The same-source H5 projection exclusively owns shipment state.
-  const timeline = projectionTimeline && parcel.accountOrder && !unprojectedOrder
-    ? projectionTimeline
-    : projectionTimeline
-      ? mergeTimelinePackage(accountTimeline, projectionTimeline)
-      : accountTimeline;
+  // 用户定 2026-09-05 晚：feed 增量与 query 是两个独立的包，不拼接。行（状态、头条、事件时间、
+  // 自己的节点）永远归 feed：带过来的 source 包只保留 feed 自己的节点，跟这次的 feed 节点做同源
+  // 增量合并。联合页抓到的完整 H5 包只住 jd_h5 槽，由详情页选包；不完整的 H5 包照旧不存。
+  // 之前这里把 H5 节点并进 feed 轨迹（2026-09-04 的「轨迹也归 feed」），详情页就出现同一分钟
+  // 的两条「已揽收完成」——一条 feed 的、一条 H5 的（2026-09-05 晚，京东 0822）。
+  const split = projectionTimeline ? splitJingDongH5Nodes(projectionTimeline) : null;
+  const carriedFeed = split && timedTracks(split.feed.tracks).length ? split.feed : null;
+  // 带过来的 feed 包与这次 feed 摘要同源增量合并。ORDER 级摘要且状态没推进时（一条「订单已完成」
+  // 打在已签收多日的归档行上）整条不参与——既不接管状态/事件时间/头条，也不写节点，否则归档行
+  // 会被拉回列表（2026-09-04 的老规则，跟「不拼接」无关：这是 feed 自己的订单级摘要）；SHIPMENT
+  // 级、或状态确有推进，这次的 feed 才并进增量并接管展示。
+  const summaryParticipates = !carriedFeed ||
+    parcel.normalizedStatusScope === "SHIPMENT" ||
+    incomingStatusAdvances(carriedFeed.semantic, accountTimeline.semantic);
+  const timeline = !carriedFeed
+    ? accountTimeline
+    : summaryParticipates
+      ? withAccountPresentation(
+          mergeTimelinePackage(carriedFeed, accountTimeline),
+          accountTimeline,
+        )
+      : carriedFeed;
+  const projectedJingDongH5 = split?.jdH5 && split.jdH5.complete === true &&
+      timedTracks(split.jdH5.tracks).length
+    ? split.jdH5
+    : null;
   const normalizedStatusScope = parcel.normalizedStatusScope;
   const statusPresentation =
       parcel.normalizedStatusSemantic && parcel.normalizedStatusText &&
@@ -434,7 +513,7 @@ export function parcelToShipment(
     },
     timeline,
     sourceTimeline: timeline,
-    manualTimelines: [],
+    manualTimelines: projectedJingDongH5 ? [projectedJingDongH5] : [],
     statusPresentation,
     route: routeKind ? { kind: routeKind, source: parcel.source } : null,
     accountRecord: detailRecord(parcel, associatedPhone),

@@ -46,7 +46,7 @@ public final class ExpressRepositoryManualTimelineTest {
         assertEquals("快件正在派送", projected.latestDetail);
         assertEquals("2026-08-24 12:30:00", projected.latestTime);
         assertEquals(authority.result.tracksJson, projected.tracksJson);
-        assertEquals("v4", projected.manualTimelineProvider);
+        assertEquals("v4_query", projected.manualTimelineProvider);
         assertEquals(2_000_000L, projected.manualTimelineSuccessAt);
     }
 
@@ -62,7 +62,7 @@ public final class ExpressRepositoryManualTimelineTest {
                         "2026-08-24 12:30:00", "快件运输中"));
         assertEquals(StatusSemantic.PICKED, projected.semantic);
         assertEquals("快件运输中", projected.latestDetail);
-        assertEquals("kuaidi100", projected.manualTimelineProvider);
+        assertEquals("k100_h5", projected.manualTimelineProvider);
     }
 
     @Test
@@ -204,12 +204,12 @@ public final class ExpressRepositoryManualTimelineTest {
                         Arrays.asList(previousProvider, completedKuaidi100));
         ExpressItem projected = ExpressRepository.projectManualTimeline(owner, selected);
 
-        assertEquals("kuaidi100", selected.provider);
+        assertEquals("k100_h5", selected.provider);
         assertEquals(StatusSemantic.WAITING_PICKUP, projected.semantic);
         assertEquals(waitingAt, projected.statusEventTime);
         assertEquals("2026-08-24 12:00:00", projected.latestTime);
         assertEquals("K100 已签收", projected.latestDetail);
-        assertEquals("kuaidi100", projected.manualTimelineProvider);
+        assertEquals("k100_h5", projected.manualTimelineProvider);
         assertEquals("501", new JSONArray(projected.tracksJson)
                 .getJSONObject(0).getString("statusCode"));
         assertEquals(owner.rowId, projected.rowId);
@@ -376,7 +376,7 @@ public final class ExpressRepositoryManualTimelineTest {
         assertEquals(completedAt, projected.statusEventTime);
         assertEquals("K100 完整包头条", projected.latestDetail);
         assertEquals(presentation.result.tracksJson, projected.tracksJson);
-        assertEquals("kuaidi100", projected.manualTimelineProvider);
+        assertEquals("k100_h5", projected.manualTimelineProvider);
     }
 
     @Test

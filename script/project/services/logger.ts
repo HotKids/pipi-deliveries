@@ -1,5 +1,6 @@
 import type { AppState, BindingSource } from "../models";
 import { SCRIPT_BINDING_SOURCE } from "./script-source";
+import { SCRIPT_BUILD_TRACK } from "./build-track";
 
 export type DiagnosticLevel = "info" | "warning" | "error";
 
@@ -13,7 +14,7 @@ export type DiagnosticDetails = {
   baseRevision?: number;
   revision?: number;
   resultRevision?: number;
-  interface5Bindings?: number;
+  v5Bindings?: number;
   attempted?: number;
   succeeded?: number;
   failed?: number;
@@ -26,6 +27,16 @@ export type DiagnosticDetails = {
   waybillTail?: string;
   sourceProvider?: string;
   carrierCode?: string;
+  /** The raw platform code the source sent (JD/JDKD…), before recognition. */
+  rawCarrierCode?: string;
+  /** The code actually shown to the user, after the R-20 display rules. */
+  displayCarrierCode?: string;
+  /** Whitelisted StatusSemantic value. */
+  statusSemantic?: string;
+  /** What started this refresh: detail_pull / detail_open / identity_projection. */
+  trigger?: string;
+  /** Why a chain ran or was skipped: owner_pickup / jd_h5_complete / cooldown / no_evidence. */
+  gateReason?: string;
   routeKind?: string;
   skipReason?: string;
   extractionSource?: string;
@@ -43,6 +54,10 @@ export type DiagnosticDetails = {
   budgetMs?: number;
   blockedMs?: number;
   deadlineLagMs?: number;
+  /** Widget timeline cadence: wall time since this widget last started a run. */
+  sincePreviousMs?: number;
+  /** The reload delay this widget run asked WidgetKit for. */
+  reloadAfterMs?: number;
   readbackMatched?: boolean;
   loadSettled?: boolean;
   loadCompleted?: boolean;
@@ -80,14 +95,18 @@ export type DiagnosticDetails = {
   routeCaptured?: boolean;
   waybillPresent?: boolean;
   persisted?: boolean;
-  motoSupported?: boolean;
-  motoSucceeded?: boolean;
-  kuaidi100Succeeded?: boolean;
+  v4QuerySupported?: boolean;
+  v4QuerySucceeded?: boolean;
+  k100H5Succeeded?: boolean;
   kdniaoAttempted?: boolean;
   kdniaoSucceeded?: boolean;
   result?: string;
   stage?: string;
   errorCategory?: string;
+  /** 统一用词（2026-09-05）：这一行归属的接口，v1…v6；手动件省略。 */
+  interface?: string;
+  /** 统一用词（2026-09-05）：链上的哪一级，见 unifiedLevel()。 */
+  level?: string;
 };
 
 export type DiagnosticEntry = {
@@ -99,6 +118,11 @@ export type DiagnosticEntry = {
 };
 
 const DIAGNOSTIC_KEY = "pipi_deliveries_diagnostic_log_v1";
+/**
+ * Recording can be turned off from the log page. It is ON by default on every track: unlike Pipi,
+ * the iOS formal build keeps the diagnostic log, so this is a user switch rather than a build gate.
+ */
+const DIAGNOSTIC_ENABLED_KEY = "pipi_deliveries_diagnostic_enabled_v1";
 // A single foreground refresh can emit dozens of causally related stage records.
 // Keep enough history to preserve several complete refresh flows for diagnosis.
 const MAX_RECORDS = 200;
@@ -109,6 +133,8 @@ const SOURCES = new Set<BindingSource>([SCRIPT_BINDING_SOURCE]);
 const closedFlowIds = new Set<string>();
 
 const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
+  "interface",
+  "level",
   "flowId",
   "source",
   "requestedSource",
@@ -118,7 +144,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "baseRevision",
   "revision",
   "resultRevision",
-  "interface5Bindings",
+  "v5Bindings",
   "attempted",
   "succeeded",
   "failed",
@@ -131,6 +157,11 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "waybillTail",
   "sourceProvider",
   "carrierCode",
+  "rawCarrierCode",
+  "displayCarrierCode",
+  "statusSemantic",
+  "trigger",
+  "gateReason",
   "routeKind",
   "skipReason",
   "extractionSource",
@@ -148,6 +179,10 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "budgetMs",
   "blockedMs",
   "deadlineLagMs",
+  "sincePreviousMs",
+  "reloadAfterMs",
+  "projectionTrackCount",
+  "cooldownRemainingMs",
   "readbackMatched",
   "loadSettled",
   "loadCompleted",
@@ -176,6 +211,9 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "readyState",
   "visibilityState",
   "viewportAvailable",
+  "viewportHosted",
+  "projectionComplete",
+  "accumulatedStart",
   "automatic",
   "selected",
   "webViewAllowed",
@@ -185,9 +223,9 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "routeCaptured",
   "waybillPresent",
   "persisted",
-  "motoSupported",
-  "motoSucceeded",
-  "kuaidi100Succeeded",
+  "v4QuerySupported",
+  "v4QuerySucceeded",
+  "k100H5Succeeded",
   "kdniaoAttempted",
   "kdniaoSucceeded",
   "result",
@@ -207,7 +245,7 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
   "baseRevision",
   "revision",
   "resultRevision",
-  "interface5Bindings",
+  "v5Bindings",
   "attempted",
   "succeeded",
   "failed",
@@ -221,6 +259,10 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
   "budgetMs",
   "blockedMs",
   "deadlineLagMs",
+  "sincePreviousMs",
+  "reloadAfterMs",
+  "projectionTrackCount",
+  "cooldownRemainingMs",
   "probeRequestCount",
   "requestCallbackCount",
   "evaluationAttempts",
@@ -248,6 +290,9 @@ const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
   "unionResourceSeen",
   "domMatched",
   "viewportAvailable",
+  "viewportHosted",
+  "projectionComplete",
+  "accumulatedStart",
   "automatic",
   "selected",
   "webViewAllowed",
@@ -257,9 +302,9 @@ const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
   "routeCaptured",
   "waybillPresent",
   "persisted",
-  "motoSupported",
-  "motoSucceeded",
-  "kuaidi100Succeeded",
+  "v4QuerySupported",
+  "v4QuerySucceeded",
+  "k100H5Succeeded",
   "primaryReachedTimelineStart",
   "kdniaoAttempted",
   "kdniaoSucceeded",
@@ -328,6 +373,63 @@ function validEntry(value: unknown, now: number): value is DiagnosticEntry {
   );
 }
 
+/**
+ * 统一用词（用户定 2026-09-05，三端同一套）：日志里的参数值一律写规范化后的词——接口 v1…v6，
+ * 链上的一级写 level 词（v5_list / v5_query / v6_picker / v4_query / v2_query / jd_h5 / cn_h5 /
+ * k100_h5 / kdniao / k100_autoCom）。调用点还是按各自的类型传旧名，落日志前在这里统一换掉。
+ */
+const SOURCE_WIRE: Record<string, string> = {
+  interface5: "v5",
+  interface6: "v6",
+};
+const STAGE_WIRE: Record<string, string> = {
+  account_list: "v5_list",
+  account_detail: "v5_query",
+  jingdong_h5: "jd_h5",
+  cainiao_h5: "cn_h5",
+  kuaidi100_query: "k100_h5",
+  web_timeline: "k100_h5",
+  picker_query: "v6_picker",
+  pending_picker: "v6_picker",
+  route: "v6_picker",
+  moto_query: "v4_query",
+  pending_moto: "v4_query",
+  local: "v4_query",
+  kdniao_fallback: "kdniao",
+  pending_kdniao: "kdniao",
+  fallback: "kdniao",
+  classify: "k100_autoCom",
+  carrier_detect: "k100_autoCom",
+};
+const PROVIDER_WIRE: Record<string, string> = {
+  interface5: "v5_list",
+  account: "v5_list",
+  v5_list: "v5_list",
+  meizu: "v6_picker",
+  route: "v6_picker",
+  moto: "v4_query",
+  local: "v4_query",
+  fallback: "kdniao",
+  kuaidi100_h5: "k100_h5",
+  kuaidi100: "k100_h5",
+  jingdong_h5: "jd_h5",
+  cainiao_h5: "cn_h5",
+  web: "cn_h5",
+};
+const PROVIDER_KEYS = new Set<keyof DiagnosticDetails>([
+  "timelineProvider",
+  "finalTimelineProvider",
+  "detailTimelineProvider",
+]);
+const NORMALIZED_SOURCES = new Set(Object.values(SOURCE_WIRE));
+
+function unifiedWire(key: keyof DiagnosticDetails, value: string): string {
+  const lower = value.trim().toLowerCase();
+  if (key === "stage") return STAGE_WIRE[lower] || value;
+  if (PROVIDER_KEYS.has(key)) return PROVIDER_WIRE[lower] || value;
+  return value;
+}
+
 function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
   const result: DiagnosticDetails = {};
   for (const [rawKey, rawValue] of Object.entries(value)) {
@@ -346,8 +448,10 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
       continue;
     }
     if (SOURCE_KEYS.has(key)) {
-      if (SOURCES.has(rawValue as BindingSource)) {
-        (result as Record<string, unknown>)[key] = rawValue;
+      const raw = String(rawValue);
+      const wire = SOURCE_WIRE[raw] || raw;
+      if (SOURCES.has(raw as BindingSource) || NORMALIZED_SOURCES.has(wire)) {
+        (result as Record<string, unknown>)[key] = wire;
       }
       continue;
     }
@@ -364,7 +468,7 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
       }
       continue;
     }
-    const text = String(rawValue || "").trim();
+    const text = unifiedWire(key, String(rawValue || "").trim());
     if (SAFE_TEXT.test(text)) {
       (result as Record<string, unknown>)[key] = text;
     }
@@ -372,18 +476,26 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
   return result;
 }
 
-function storedEntries(now = Date.now()): DiagnosticEntry[] {
+/**
+ * The stored entries, pruned of anything expired or malformed.
+ *
+ * `sanitize` re-runs the whitelist over entries that are already on disk. That is defence in depth
+ * against a record written by an older build, and it belongs on the READ path only: on the write
+ * path it re-sanitized all 200 stored entries for every single line, which — together with the two
+ * whole-array JSON.stringify calls the change check used to do — made each log line cost a full
+ * validate + sanitize + double-serialize pass over the entire log.
+ *
+ * The array itself is still re-read on every write rather than cached in a module variable: the
+ * key is shared, and the widget process appends to the same log, so a cached copy in the app
+ * process would silently drop whatever the widget wrote.
+ */
+function storedEntries(now = Date.now(), sanitize = false): DiagnosticEntry[] {
   try {
     const value = Storage.get<DiagnosticEntry[]>(DIAGNOSTIC_KEY, { shared: true });
     if (!Array.isArray(value)) return [];
-    const retained = value
-      .filter((item) => validEntry(item, now))
-      .map((item) => ({ ...item, details: sanitizeDetails(item.details) }))
-      .slice(-MAX_RECORDS);
-    if (
-      retained.length !== value.length ||
-      JSON.stringify(retained) !== JSON.stringify(value)
-    ) {
+    const kept = value.filter((item) => validEntry(item, now));
+    const retained = kept.length > MAX_RECORDS ? kept.slice(-MAX_RECORDS) : kept;
+    if (retained.length !== value.length) {
       try {
         if (retained.length) {
           Storage.set(DIAGNOSTIC_KEY, retained, { shared: true });
@@ -394,7 +506,9 @@ function storedEntries(now = Date.now()): DiagnosticEntry[] {
         /* expiry cleanup retries the next time diagnostics are read */
       }
     }
-    return retained;
+    return sanitize
+      ? retained.map((item) => ({ ...item, details: sanitizeDetails(item.details) }))
+      : retained;
   } catch {
     return [];
   }
@@ -411,7 +525,7 @@ export function diagnosticState(state: AppState): DiagnosticDetails {
   return {
     activeSource: SCRIPT_BINDING_SOURCE,
     revision: state.revision,
-    interface5Bindings: state.bindings.filter(
+    v5Bindings: state.bindings.filter(
       (binding) => binding.source === "interface5",
     ).length,
   };
@@ -525,15 +639,109 @@ export function diagnosticErrorDetails(error: unknown): DiagnosticDetails {
   };
 }
 
+/** Beta records by default; the formal build stays quiet until the user turns it on. */
+const DIAGNOSTICS_DEFAULT_ENABLED = SCRIPT_BUILD_TRACK === "beta";
+
+export function diagnosticsEnabled(): boolean {
+  try {
+    const stored = Storage.get<boolean>(DIAGNOSTIC_ENABLED_KEY, { shared: true });
+    return typeof stored === "boolean" ? stored : DIAGNOSTICS_DEFAULT_ENABLED;
+  } catch {
+    return DIAGNOSTICS_DEFAULT_ENABLED;
+  }
+}
+
+/** Turning recording off stops every write; the entries already stored are left alone. */
+export function setDiagnosticsEnabled(enabled: boolean): boolean {
+  try {
+    Storage.set(DIAGNOSTIC_ENABLED_KEY, enabled === true, { shared: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 统一用词（用户定 2026-09-05，三端同一套）：每行带 `level`（链上的哪一级）与 `interface`
+ * （归属接口）。旧字段 `stage` / `timelineProvider` 先并存一版方便对照，值来自它们推导：
+ * v5_list / v5_query / v6_picker / v4_query / v2_query / jd_h5 / cn_h5 / k100_h5 / kdniao /
+ * k100_autoCom。iOS 只接接口 5，所以接口相关的行一律 interface=v5。
+ */
+const LEVEL_BY_STAGE: Record<string, string> = {
+  account_list: "v5_list",
+  account_detail: "v5_query",
+  jingdong_h5: "jd_h5",
+  detail_webview: "jd_h5",
+  detail_webview_commit: "jd_h5",
+  cainiao_h5: "cn_h5",
+  kuaidi100_query: "k100_h5",
+  web_timeline: "k100_h5",
+  picker_query: "v6_picker",
+  pending_picker: "v6_picker",
+  route: "v6_picker",
+  moto_query: "v4_query",
+  pending_moto: "v4_query",
+  local: "v4_query",
+  kdniao_fallback: "kdniao",
+  pending_kdniao: "kdniao",
+  fallback: "kdniao",
+  classify: "k100_autoCom",
+  carrier_detect: "k100_autoCom",
+};
+const LEVEL_BY_PROVIDER: Record<string, string> = {
+  interface5: "v5_list",
+  account: "v5_list",
+  v5_list: "v5_list",
+  meizu: "v6_picker",
+  route: "v6_picker",
+  moto: "v4_query",
+  local: "v4_query",
+  kdniao: "kdniao",
+  fallback: "kdniao",
+  kuaidi100_h5: "k100_h5",
+  kuaidi100: "k100_h5",
+  jingdong_h5: "jd_h5",
+  cainiao_h5: "cn_h5",
+  web: "cn_h5",
+  v5_query: "v5_query",
+  v4_query: "v4_query",
+  v6_picker: "v6_picker",
+  v2_query: "v2_query",
+  jd_h5: "jd_h5",
+  cn_h5: "cn_h5",
+  k100_h5: "k100_h5",
+};
+const INTERFACE_LEVELS = new Set(["v5_list", "v5_query"]);
+
+export function unifiedLevel(details: DiagnosticDetails): string {
+  if (details.level) return String(details.level);
+  const stage = String(details.stage || "").trim().toLowerCase();
+  const byStage = LEVEL_BY_STAGE[stage];
+  const provider = String(details.timelineProvider || "").trim().toLowerCase();
+  const byProvider = LEVEL_BY_PROVIDER[provider];
+  // manual_refresh / manual_query / detail_refresh 这类阶段名不指向某一级，看包/来源名。
+  if (byStage) return byStage;
+  if (byProvider) return byProvider;
+  return "";
+}
+
 export function writeDiagnostic(
   event: string,
   details: DiagnosticDetails = {},
   level: DiagnosticLevel = "info",
 ): void {
+  if (!diagnosticsEnabled()) return;
   const cleanEvent = String(event || "").trim();
   if (!SAFE_TEXT.test(cleanEvent)) return;
   const now = Date.now();
-  const cleanDetails = sanitizeDetails(details);
+  const unified = unifiedLevel(details);
+  const cleanDetails = sanitizeDetails({
+    ...details,
+    ...(unified ? { level: unified } : {}),
+    ...(unified && INTERFACE_LEVELS.has(unified) && !details.interface
+      ? { interface: "v5" }
+      : {}),
+  });
   const flowId = cleanDetails.flowId || "";
   if (flowId && closedFlowIds.has(flowId)) return;
   const item: DiagnosticEntry = {
@@ -566,7 +774,7 @@ export function writeDiagnostic(
 }
 
 export function readDiagnostics(): DiagnosticEntry[] {
-  return storedEntries().reverse();
+  return storedEntries(Date.now(), true).reverse();
 }
 
 export function clearDiagnostics(): void {

@@ -1,3 +1,4 @@
+import { TIMELINE_SLOT } from "./timeline-slot";
 import type { TimelinePackage, TrackNode } from "../models";
 import {
   OperationTimeoutError,
@@ -287,7 +288,7 @@ function timelineFromExtraction(
     rawTrackCount,
     validTrackCount: timed.length,
     timeline: {
-      provider: "web",
+      provider: TIMELINE_SLOT.CN_H5,
       complete: timed.length >= 2,
       waybill: String(input.waybill || "").trim(),
       courierCode: String(input.courierCode || "").trim(),

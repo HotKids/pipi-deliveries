@@ -80,56 +80,28 @@ public final class ExpressListActivityContractTest {
         assertTrue(source().contains("detectedCarrierHintForQuery("));
     }
 
+    /**
+     * 页面 stop 只取消承运商识别，不取消手动查件：picker 一回来就开透明预览（另一个 Activity），
+     * 列表页随即 onStop，原来把整条手动链连落库一起取消（Fold7 2026-09-05 三次「查完没进列表」）。
+     * 页面销毁才全部取消。
+     */
     @Test
     public void leavingTheListInvalidatesInteractiveNetworkWork() throws Exception {
         String source = source();
         String onStop = method(
                 source, "protected void onStop()", "protected void onSaveInstanceState");
+        String onDestroy = method(
+                source, "protected void onDestroy()", "@Override");
 
-        assertTrue(onStop.contains("invalidateInteractiveNetworkOperations();"));
+        assertTrue(onStop.contains("invalidateCarrierDetection();"));
+        assertFalse(onStop.contains("invalidateInteractiveNetworkOperations();"));
+        assertTrue(onDestroy.contains("invalidateInteractiveNetworkOperations();"));
         assertTrue(source.contains("!queryOperationIsCurrent("));
         assertTrue(source.contains("!bindingSource.equals("));
         assertTrue(source.contains("ExpressAccountSource.bindingSource(this)"));
         assertTrue(source.contains("queryCancellation.cancel();"));
         assertTrue(source.contains("carrierDetectCancellation.cancel();"));
         assertTrue(source.contains("waybill, courierHint, operationCancellation)"));
-    }
-
-    @Test
-    public void cancelledQueryNoticeIsConsumedExactlyOnce() {
-        ExpressListActivity.ManualQueryStopNotice notice =
-                new ExpressListActivity.ManualQueryStopNotice();
-        notice.markIfActive(false);
-        assertFalse(notice.consume());
-
-        notice.markIfActive(true);
-        assertTrue(notice.snapshot());
-        assertTrue(notice.consume());
-        assertFalse(notice.consume());
-
-        notice.restore(true);
-        assertTrue(notice.consume());
-        assertFalse(notice.consume());
-    }
-
-    @Test
-    public void lifecycleConnectsTheCancellationNoticeBeforeInvalidatingTheQuery()
-            throws Exception {
-        String source = source();
-        String onStart = method(source, "protected void onStart()", "protected void onStop()");
-        String onStop = method(
-                source, "protected void onStop()", "protected void onSaveInstanceState");
-        String onSave = method(
-                source, "protected void onSaveInstanceState(Bundle state)",
-                "protected void onDestroy()");
-
-        int mark = onStop.indexOf("manualQueryStopNotice.markIfActive(querying)");
-        int invalidate = onStop.indexOf("invalidateInteractiveNetworkOperations()");
-        assertTrue(mark >= 0);
-        assertTrue(invalidate > mark);
-        assertTrue(onSave.contains("manualQueryStopNotice.snapshot() || querying"));
-        assertTrue(onStart.contains("manualQueryStopNotice.consume()"));
-        assertTrue(onStart.contains("R.string.manual_query_cancelled"));
     }
 
     @Test
@@ -189,10 +161,11 @@ public final class ExpressListActivityContractTest {
         assertFalse(query.contains("isCarrierRecognitionFailure("));
         assertFalse(query.contains("R.string.carrier_unrecognized"));
         assertFalse(strings.contains("name=\"carrier_unrecognized\""));
-        assertTrue(strings.contains(
-                "<string name=\"manual_query_timeout\">请求超时，请稍后重试</string>"));
-        assertTrue(strings.contains(
-                "<string name=\"manual_query_failure\">查询失败，请稍后重试</string>"));
+        // 手动查件的结果文案走三端共享的 toast 表（AGENTS §11），strings.xml 不再保留副本。
+        assertTrue(query.contains("ExpressToastCopy.MANUAL_QUERY_TIMEOUT"));
+        assertTrue(query.contains("ExpressToastCopy.MANUAL_QUERY_FAILED"));
+        assertFalse(strings.contains("name=\"manual_query_timeout\""));
+        assertFalse(strings.contains("name=\"manual_query_failure\""));
     }
 
     @Test
@@ -224,8 +197,11 @@ public final class ExpressListActivityContractTest {
                 source, "private void reload()",
                 "private void startNextOrderProjectionCapture()");
 
+        // 用户定 2026-09-05：链跑完前不再开 K100 页的透明预览（每次搜索都打开那一页会用光当天配额），
+        // 手动查件只剩「已在列表」和「查完落库」两处跳详情。
+        // 已在列表 → 打开详情；京东来源已有起点 → 打开详情；查完落库 → 打开详情。
         assertEquals(3, occurrences(query, "startActivity("));
-        assertTrue(query.contains("ExpressDetailActivity.transientPickerPreviewIntent("));
+        assertFalse(query.contains("ExpressDetailActivity.transientPickerPreviewIntent("));
         assertTrue(query.contains("ExpressDetailActivity.persistedPreviewIntent("));
         assertFalse(receiver.contains("startActivity("));
         assertFalse(reload.contains("startActivity("));

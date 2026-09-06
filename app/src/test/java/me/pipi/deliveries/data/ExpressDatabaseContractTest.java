@@ -73,7 +73,7 @@ public final class ExpressDatabaseContractTest {
         assertTrue(route.get("binding_source").notNull);
         assertTrue(route.get("binding_generation").notNull);
         assertTrue(route.get("detail_url").notNull);
-        assertEquals(20, ExpressDatabase.VERSION);
+        assertEquals(21, ExpressDatabase.VERSION);
         assertTrue(shipments.containsKey("carrierStandardCode"));
         assertTrue(shipments.containsKey("carrierDisplayName"));
         assertTrue(shipments.containsKey("carrierKuaidi100Code"));
@@ -228,17 +228,17 @@ public final class ExpressDatabaseContractTest {
         assertEquals(ExpressDatabase.VERSION, upgraded.getVersion());
         assertEquals(5, count(upgraded, ExpressDatabase.EXPRESS_TABLE, null, null));
         assertEquals(0, count(upgraded, ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
-                "owner_row_id=? AND provider=?", new String[]{"101", "interface5"}));
+                "owner_row_id=? AND provider=?", new String[]{"101", "v5_query"}));
         assertEquals(0, count(upgraded, ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
-                "owner_row_id=? AND provider=?", new String[]{"101", "kuaidi100"}));
+                "owner_row_id=? AND provider=?", new String[]{"101", "k100_h5"}));
         assertEquals(1, count(upgraded, ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
-                "owner_row_id=? AND provider=?", new String[]{"102", "interface5"}));
+                "owner_row_id=? AND provider=?", new String[]{"102", "v5_query"}));
         assertEquals(1, count(upgraded, ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
-                "owner_row_id=? AND provider=?", new String[]{"103", "interface5"}));
+                "owner_row_id=? AND provider=?", new String[]{"103", "v5_query"}));
         assertEquals(1, count(upgraded, ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
-                "owner_row_id=? AND provider=?", new String[]{"104", "interface5"}));
+                "owner_row_id=? AND provider=?", new String[]{"104", "v5_query"}));
         assertEquals(1, count(upgraded, ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
-                "owner_row_id=? AND provider=?", new String[]{"105", "kuaidi100"}));
+                "owner_row_id=? AND provider=?", new String[]{"105", "k100_h5"}));
         assertEquals(0, count(upgraded, ExpressDatabase.OWNER_MANUAL_RETRY_TABLE,
                 "owner_row_id=?", new String[]{"101"}));
         assertEquals(1, count(upgraded, ExpressDatabase.OWNER_MANUAL_RETRY_TABLE,

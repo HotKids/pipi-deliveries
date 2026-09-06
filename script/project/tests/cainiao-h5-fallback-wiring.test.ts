@@ -121,14 +121,28 @@ assert.equal(
   "interface5",
   "a missing pickup stage alone must not let a stale manual sidecar bypass Cainiao H5",
 );
+// 兜底激活之后 kdniao 才**有资格**进候选；但排序上它是最后一层（付费手动包），本地 feed
+// 增量仍然在它之上（用户定 2026-09-04 的统一优先级）。
 assert.equal(
   selectShipmentDetailTimeline(activateCainiaoManualFallback({
     ...transitOnly,
     manualTimelines: [staleManual],
   }, NOW + 1)).provider,
-  "kdniao",
-  "manual sidecars become eligible only after this shipment's Cainiao H5 failed",
+  "interface5",
+  "本地 feed 增量在付费手动包之上",
 );
+// feed 没有可用节点时，才轮到已缓存的 kdniao 包显示。
+assert.equal(
+  selectShipmentDetailTimeline(activateCainiaoManualFallback({
+    ...transitOnly,
+    sourceTimeline: { ...timeline("TRANSIT", "运输中", "2"), tracks: [] },
+    manualTimelines: [staleManual],
+  }, NOW + 1)).provider,
+  "kdniao",
+  "feed 无可用节点时才显示已缓存的付费兜底包",
+);
+// 用户定 2026-09-04：详情页展示 = 已缓存的包里先筛完整、再取节点最多，**并列时 feed 赢**。
+// 三个包节点数相同且都不完整时，feed（interface5）拿下。
 assert.equal(
   selectShipmentDetailTimeline({
     ...transitOnly,
@@ -137,8 +151,33 @@ assert.equal(
       { ...timeline("COMPLETED", "已签收", "5"), provider: "kdniao" },
     ],
   }).provider,
+  "interface5",
+  "完整性与节点数并列时 feed 赢",
+);
+// 排序是「完整性 → 节点覆盖 → 层级」，层级只当并列时的 tiebreak。2026-09-04 实测的 bug 是
+// 19 条完整的 interface5 被 6 条的 kdniao 顶掉——按覆盖比较就不会再发生。
+const richCainiaoH5: TimelinePackage = {
+  ...cainiaoH5,
+  // 判据是「先筛完整、再取节点最多」，所以这里要跟 feed 同为完整，比较才落在节点数上。
+  complete: true,
+  tracks: [
+    ...cainiaoH5.tracks,
+    {
+      timeText: "2026-08-26 12:00:00",
+      timeMs: Date.UTC(2026, 7, 26, 4, 0, 0),
+      detail: "快件已揽收",
+      statusCode: "1",
+      raw: {},
+    },
+  ],
+};
+assert.equal(
+  selectShipmentDetailTimeline({
+    ...transitOnly,
+    manualTimelines: [richCainiaoH5],
+  }).provider,
   "cainiao_h5",
-  "a successful same-owner Cainiao H5 stays above every later manual package",
+  "完整性与覆盖优先于层级：完整且节点更多的包胜出",
 );
 
 const sync = readFileSync(
@@ -147,13 +186,25 @@ const sync = readFileSync(
 );
 assert.match(
   sync,
-  /const cainiaoH5Requested = explicitTimelineRefresh &&[\s\S]*?cainiaoAutomaticNeedsH5Supplement\(enrichmentBase\)[\s\S]*?await refreshCainiaoH5\([\s\S]*?cainiaoH5Succeeded = true;[\s\S]*?const cainiaoManualFallbackRequested = cainiaoH5Requested &&[\s\S]*?!cainiaoH5Succeeded;[\s\S]*?const pickerSupplementRequested =[\s\S]*?cainiaoManualFallbackRequested[\s\S]*?if \(pickerSupplementRequested\)/,
+  /const cainiaoH5Requested = explicitTimelineRefresh &&[\s\S]*?cainiaoAutomaticNeedsH5Supplement\(enrichmentBase\)[\s\S]*?await refreshCainiaoH5\([\s\S]*?cainiaoH5Succeeded = Boolean\([\s\S]*?containsTimelinePickupTrack\(capturedCainiaoH5\.tracks\)[\s\S]*?const cainiaoManualFallbackRequested = cainiaoH5Requested &&[\s\S]*?!cainiaoH5Succeeded;[\s\S]*?const pickerSupplementRequested =[\s\S]*?cainiaoManualFallbackRequested[\s\S]*?if \(pickerSupplementRequested\)/,
   "Cainiao must finish its gated automatic H5 before the ordinary manual chain may start",
 );
 assert.match(
   sync,
   /const ordinaryAutomaticPrimaryRequested =[\s\S]*?cainiaoManualFallbackRequested[\s\S]*?!hasTimelineStartBeforeKdniao\(enrichmentBase\)[\s\S]*?runManualDetailSourceContest\(/,
   "a failed Cainiao H5 must reuse Picker, Moto plus K100 H5, then gated KDNiao",
+);
+// 用户定 2026-09-04：菜鸟 H5 的终止判据是揽收（PICKED），不是「抓到任意一条带时间的节点」。
+// 只抓到一条「已下单」时链子必须继续往下跑 picker / moto ∥ 快递100 / kdniao。
+assert.doesNotMatch(
+  sync,
+  /cainiaoH5Succeeded = true;/,
+  "抓到节点就终止的旧判据不得回归",
+);
+assert.match(
+  sync,
+  /refreshed = cainiaoH5Succeeded\s*\?\s*clearCainiaoManualFallback\(cainiaoH5\)\s*:\s*cainiaoH5;/,
+  "没到揽收时仍要保留抓到的 H5 包，只是不清兜底标记",
 );
 assert.doesNotMatch(
   sync,

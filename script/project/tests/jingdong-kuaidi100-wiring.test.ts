@@ -39,15 +39,17 @@ assert.match(
   /const stateParcel = parcel;/,
   "JD's own H5 must retain the full captured trace list instead of reducing it to the latest visible event",
 );
-assert.match(
+// 用户定（表格「待改 1」）：K100 H5 只能是 picker `manual` 返回的 `detailUrl` 那一页。
+// 原来这里钉的是「京东详情要用直连 K100 后台查询」，那条裁决已被表格取代。
+assert.doesNotMatch(
   sync,
-  /refreshKuaidi100H5\([\s\S]*?queryKuaidi100JdTimeline\(/,
-  "projected JD details must use the direct K100 background query",
+  /queryKuaidi100JdTimeline\(/,
+  "详情链不得再直连 m.kuaidi100.com/query",
 );
 assert.match(
   sync,
-  /h5Kind === "kuaidi100"[\s\S]*?"kuaidi100_query"/,
-  "direct K100 diagnostics must not identify the request as WebView extraction",
+  /const h5Stage = "kuaidi100_query";/,
+  "抓 picker 的 K100 H5 页仍沿用 kuaidi100_query 这个 stage 名",
 );
 assert.doesNotMatch(
   sync,
@@ -64,10 +66,17 @@ assert.match(
   /const stateParcel = parcel;[\s\S]*?parcelToShipment\([\s\S]*?applyTargetedAccountShipment\(/,
   "the initial projection must commit its waybill, carrier, and traceList to the same automatic owner",
 );
+// 表格「待改 1」落地后，route 槽对所有来源都是 picker；K100 那一页由详情链下一级抓
+// picker 返回的 `detailUrl`，不再有「京东走直连 K100」这条岔路。
 assert.match(
   manual,
-  /isJingDongSource && !input\.pickerOnly[\s\S]*?queryJingDongKuaidi100Shipment\(queryInput\)[\s\S]*?: queryMeizuShipment\(queryInput\)/,
-  "a JD non-Picker route uses K100 while pickerOnly continues to call Meizu",
+  /query: async \(\) => queryMeizuShipment\(\s*queryInput,/,
+  "route 槽统一是 picker",
+);
+assert.doesNotMatch(
+  manual,
+  /queryJingDongKuaidi100Shipment\(queryInput\)/,
+  "京东不得再走直连 K100 的 route 槽",
 );
 assert.match(
   sync,
@@ -76,13 +85,53 @@ assert.match(
 );
 assert.match(
   sync,
-  /const jingDongAutomaticH5Available =[\s\S]*?jingDongAutomaticH5TimelineAvailable\(enrichmentBase\);[\s\S]*?const jingDongManualFallbackRequested =\s*requestedJingDongDetailSupplement &&[\s\S]*?!jingDongAutomaticH5Available;[\s\S]*?if \(pickerSupplementRequested\)[\s\S]*?pickerOnly: true[\s\S]*?const jingDongPrimaryRequested = jingDongManualFallbackRequested &&[\s\S]*?!hasTimelineStartBeforeKdniao\(enrichmentBase\)/,
-  "the initial JD H5 traceList must stop Picker, K100 H5, and KDNiao without another page load",
+  /const jingDongAutomaticH5Available =[\s\S]*?jingDongAutomaticH5TimelineAvailable\(enrichmentBase\);[\s\S]*?const jingDongManualFallbackRequested =\s*requestedJingDongDetailSupplement &&[\s\S]*?!jingDongH5CaptureSufficient\(enrichmentBase\);[\s\S]*?if \(pickerSupplementRequested\)[\s\S]*?pickerOnly: true[\s\S]*?const jingDongPrimaryRequested = jingDongManualFallbackRequested &&[\s\S]*?!hasTimelineStartBeforeKdniao\(enrichmentBase\)/,
+  "京东 H5 抓够了就停住 Picker / 快递100 / KDNiao，不再多开一次页",
+);
+// 用户定 2026-09-04：京东手动链只在两个自动源都不完整时启动，判据是揽收。
+assert.match(
+  sync,
+  /!jingDongFeedReachedPickup\(original\) &&[\s\S]*?parcel\?\.projectionUrl,/,
+  "联合页重开的判据必须是揽收，不是「已下单或揽收」",
+);
+assert.doesNotMatch(
+  sync,
+  /jingDongFeedReachedStart\(original\)/,
+  "ORDERED 也算的旧判据不得留在重开闸门上",
+);
+// 用户定 2026-09-04：complete 只证明「这次抓取展开了列表」，不代表轨迹到此为止。拿它当重开闸门
+// 会把一个还在运输中的包永久冻住（极兔 4547：抓到 9 条止于 06:17 后联合页再也不开）。
+// 用户定 2026-09-04：签收即冻结，但**详情仍不完整时照样可以刷**（iOS 需用户下拉）。
+assert.match(
+  sync,
+  /\(!jingDongTimelineSettled\(original\) \|\|\s*!jingDongH5CaptureSufficient\(original\)\) &&/,
+  "已签收但 H5 还没抓够的行仍可重开联合页",
+);
+assert.doesNotMatch(
+  sync,
+  /!jingDongAutomaticH5TimelineAvailable\(original\) &&/,
+  "「H5 包被判完整就永不重开」的旧闸门不得回归",
 );
 assert.match(
   sync,
-  /const directKuaidi100PrimaryRequested = requestedDirectKuaidi100Timeline &&[\s\S]*?!requestedJingDongDetailSupplement \|\| jingDongPrimaryRequested[\s\S]*?const h5Kind = \(directKuaidi100PrimaryRequested/,
+  /const kuaidi100PrimaryRequested = requestedKuaidi100Timeline &&[\s\S]*?!requestedJingDongDetailSupplement \|\| jingDongPrimaryRequested[\s\S]*?const kuaidi100LevelRequested = \(kuaidi100PrimaryRequested/,
   "a successful automatic JD H5 must prevent the manual K100 primary from starting",
+);
+// 用户定（表格「待改 1」）：K100 H5 只能是 picker `manual` 返回的 `detailUrl` 那一页。
+assert.match(
+  sync,
+  /if \(trustedWebTimelineRoute\(pickerOutcome\.routeUrl \|\| ""\)\) \{\s*webRouteUrl = pickerOutcome\.routeUrl;/,
+  "picker 这一轮拿到的 detailUrl 必须立刻成为 K100 H5 那一级的入口",
+);
+assert.match(
+  sync,
+  /const h5Kind = \(kuaidi100LevelRequested \|\| explicitTimelineRefresh\) &&\s*trustedWebTimelineRoute\(webRouteUrl\)\s*\? "web"\s*: "none";/,
+  "K100 那一级只能抓 picker 的 detailUrl 页，直连分支不得回归",
+);
+assert.doesNotMatch(
+  sync,
+  /refreshKuaidi100H5\(/,
+  "详情链不得再直连 m.kuaidi100.com/query",
 );
 assert.match(
   sync,
@@ -132,10 +181,10 @@ assert.doesNotMatch(
   /kuaidi100-query-guard/,
   "the removed local cooldown module must not remain in the package contract",
 );
-assert.match(
+assert.doesNotMatch(
   sync,
-  /feedback = kuaidi100ToastMessage\(h5Error, kuaidi100Diagnostics\)/,
-  "detail pulls must return normalized K100 results for toast presentation",
+  /kuaidi100ToastMessage|feedback/,
+  "provider free-text feedback was removed: pages render only the shared toast table (AGENTS §11)",
 );
 
 console.log("JingDong direct K100 wiring tests passed");

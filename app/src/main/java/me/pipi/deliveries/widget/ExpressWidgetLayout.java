@@ -6,11 +6,18 @@ final class ExpressWidgetLayout {
     private static final float COMPACT_COMPAT_PILL_ICON_SLOT_DP = 16f;
     private static final float COMPACT_REFERENCE_WIDTH_DP = 157f;
     private static final float COMPACT_REFERENCE_HEIGHT_DP = 189f;
+    /**
+     * 右侧两行文案用自然行高（wrap_content），不再用固定行高裁字。CJK 字面在
+     * 字框里偏下：20sp 状态词上方约 7dp 空气、12sp 公司行下方只有约 2dp，
+     * 所以块底补 5dp，才让两行墨迹的中心对齐 logo 中心（Fold7 2026-09-05 实测）。
+     */
+    static final float COMPACT_IDENTITY_BOTTOM_INSET_DP = 5f;
     private static final float COMPACT_STATUS_TEXT_SIZE_SP = 20f;
     private static final float COMPACT_COMPANY_TEXT_SIZE_SP = 12f;
     private static final float COMPACT_DETAIL_TEXT_SIZE_SP = 12f;
     private static final float REGULAR_DETAIL_TEXT_SIZE_SP = 13f;
-    private static final float COMPACT_PILL_TEXT_SIZE_SP = 14f;
+    // 用户定 2026-09-05：胶囊里的「全部快递 N」再大一点（iOS 小组件是 14pt，Android 上 14sp 显小）。
+    private static final float COMPACT_PILL_TEXT_SIZE_SP = 15f;
 
     private ExpressWidgetLayout() {}
 

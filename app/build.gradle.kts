@@ -116,6 +116,9 @@ android {
         }
         release {
             signingConfig = releaseSigning
+            // 只给排障用：-PdeliveriesDebuggable=true（或 ORG_GRADLE_PROJECT_deliveriesDebuggable=true）
+            // 让 beta 包可 run-as / jdwp 挂调试器，签名不变、数据不丢。正式与日常 beta 构建不传。
+            isDebuggable = (project.findProperty("deliveriesDebuggable") as String?) == "true"
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

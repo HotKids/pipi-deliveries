@@ -7,18 +7,23 @@ import {
   manualTimelineIsComplete,
   mergeTimelinePackage,
   mergeTracks,
+  NOTE_SEPARATOR,
   packageSemantic,
   parseProviderTime,
   pruneShipments,
   selectTimelineAuthority,
   semanticFromAccountState,
+  semanticFromText,
   shipmentDetailPresentationStatus,
   shipmentPresentationStatus,
   sortShipments,
-  statusTint,
   statusLabel,
+  statusTint,
   widgetStatusLabel,
+  withNote,
+  withShipmentNote,
 } from "../services/status";
+import { parseAccountSyncResponse } from "../services/account-parser";
 
 const NOW = Date.UTC(2026, 7, 26, 4, 0, 0);
 
@@ -101,7 +106,10 @@ assert.equal(semanticFromAccountState(106, ""), "WAITING_PICKUP");
 assert.equal(semanticFromAccountState("107", ""), "COMPLETED");
 assert.equal(widgetStatusLabel("DANGER"), "异常件");
 assert.equal(widgetStatusLabel("UNKNOWN"), "暂无状态");
-assert.equal(statusTint("COMPLETED"), "systemGreen");
+assert.equal(statusTint("COMPLETED"), "systemTeal");
+assert.equal(statusTint("DELIVERY"), "systemGreen");
+assert.equal(statusTint("ORDERED"), "systemYellow");
+assert.equal(statusTint("CANCELLED"), "secondaryLabel");
 assert.equal(
   containsTimelineStartTrack([
     track("2026-08-26 11:58:00", "快递已下单", ""),
@@ -122,6 +130,14 @@ assert.equal(
   ]),
   true,
   "pickup prose must identify the earliest carrier scan",
+);
+assert.equal(semanticFromText("顺丰速运 已收取快件"), "PICKED");
+assert.equal(
+  containsTimelineStartTrack([
+    track("2026-09-05 10:00:00", "顺丰速运 已收取快件", ""),
+  ]),
+  true,
+  "ShunFeng's pickup wording 已收取快件 closes the start gate too (2026-09-05)",
 );
 assert.equal(
   containsTimelineStartTrack([
@@ -163,6 +179,44 @@ assert.equal(
   false,
   "track count alone must not mark a timeline as complete",
 );
+
+// One text→status table for the whole client. These three nodes were classified 已下单/待取件 by the
+// account parser's private copy and UNKNOWN by this one, so the same row was 已下单 in the list and
+// "no start node yet" to the fallback chain. The union is what survived the convergence.
+const PICKING_NODE = "您的订单由第三方卖家拣货完成，待出库交付极兔速递";
+const AGENT_PICKUP_NODE = "您的快递已放至代取件点，请及时领取";
+assert.equal(semanticFromText(PICKING_NODE), "ORDERED");
+assert.equal(semanticFromText(AGENT_PICKUP_NODE), "WAITING_PICKUP");
+assert.equal(semanticFromText("包裹已送达，待领取"), "WAITING_PICKUP");
+assert.equal(
+  containsTimelineStartTrack([
+    track("2026-09-03 17:22:00", PICKING_NODE, ""),
+  ]),
+  true,
+  "the order feed's own start node must stop the KDNiao fallback chain",
+);
+const parserSemantics = parseAccountSyncResponse("interface5", {
+  code: 0,
+  data: {
+    expressList: [{
+      mailNo: "79025657335746",
+      cpCode: "ZTO",
+      name: "中通快递",
+      details: [{ time: "2026-09-03 17:22:00", desc: PICKING_NODE }],
+    }, {
+      mailNo: "79025657335747",
+      cpCode: "ZTO",
+      name: "中通快递",
+      details: [{ time: "2026-09-03 17:22:00", desc: AGENT_PICKUP_NODE }],
+    }],
+  },
+}).map((parcel) => parcel.semantic);
+assert.deepEqual(
+  parserSemantics,
+  [semanticFromText(PICKING_NODE), semanticFromText(AGENT_PICKUP_NODE)],
+  "the account parser must read node prose through this table, never through a copy of it",
+);
+assert.deepEqual(parserSemantics, ["ORDERED", "WAITING_PICKUP"]);
 
 const manualDetailOwner = shipment("manual-detail-owner", "UNKNOWN", NOW);
 const manualDetailTimeline = pack("COMPLETED", [
@@ -242,6 +296,8 @@ const newerHeadlineWithoutStatus = packageSemantic("", [
 ]);
 assert.equal(newerHeadlineWithoutStatus.semantic, "WAITING_PICKUP");
 
+// The signed row is the one exit that keeps its stored headline while absorbing newer nodes; every
+// other merge re-reads the headline from the merged set (see 更新头条 below).
 const cachedComplete = pack("COMPLETED", [pickup]);
 const laterTransit = pack("TRANSIT", [
   track("2026-08-26 11:00:00", "运输中", "0"),
@@ -339,6 +395,36 @@ assert.equal(
   "a complete whole package must outrank a newer partial package",
 );
 
+// The package the KDNiao adapter actually writes carries provider "fallback" (manual-query.ts), so
+// the terminal minimum has to be keyed by that id as well — keyed by "kdniao" alone the guard never
+// ran outside these tests, and a one-node 已签收 answer froze the row as a complete package.
+const oneTrackTerminalFallback = {
+  ...oneTrackTerminalKdniao,
+  provider: "fallback",
+};
+assert.equal(
+  manualTimelineIsComplete(oneTrackTerminalFallback),
+  false,
+  "a signed fallback package with a single node is not a complete timeline",
+);
+assert.equal(manualTimelineIsComplete({
+  ...oneTrackTerminalFallback,
+  tracks: [
+    ...oneTrackTerminalFallback.tracks,
+    track("2026-08-25 08:00:00", "快件已揽收", "1"),
+  ],
+}), true);
+const accumulatedTerminalFallback = mergeTimelinePackage(
+  oneTrackTerminalFallback,
+  {
+    ...oneTrackTerminalFallback,
+    tracks: [track("2026-08-25 08:00:00", "快件已揽收", "1")],
+    successAtMs: NOW + 1_000,
+  },
+);
+assert.equal(accumulatedTerminalFallback.complete, true);
+assert.equal(manualTimelineIsComplete(accumulatedTerminalFallback), true);
+
 const fresherCompleteK100 = {
   ...pack("TRANSIT", [track("2026-08-26 14:00:00", "更新完整轨迹", "0")]),
   provider: "kuaidi100",
@@ -404,6 +490,33 @@ const conflicting = mergeTracks(
 );
 assert.equal(conflicting.length, 2);
 
+// 同包内同文案、5 分钟内的节点合并（用户定 2026-09-06，三端同 Pipi）：保留较新的一条，老的补空字段；
+// 相隔更久的同文案仍是两条事件；结构化状态冲突的不合并。
+{
+  const nearDuplicates = mergeTracks(
+    [track("2026-09-06 00:19:43", "预计9月6日发货，9月8日(周二)送达", "")],
+    [track("2026-09-06 00:19:45", "预计9月6日发货，9月8日(周二)送达", "101")],
+  );
+  assert.equal(nearDuplicates.length, 1);
+  assert.equal(nearDuplicates[0].timeText, "2026-09-06 00:19:45");
+  assert.equal(nearDuplicates[0].statusCode, "101");
+  const farApart = mergeTracks(
+    [track("2026-09-05 13:48:17", "温馨提示：您的订单预计9月6日09:00-15:00送达", "")],
+    [track("2026-09-05 14:28:08", "温馨提示：您的订单预计9月6日09:00-15:00送达", "")],
+  );
+  assert.equal(farApart.length, 2);
+  const conflictingNear = mergeTracks(
+    [track("2026-09-06 00:19:43", "您的快件已揽收完成", "501")],
+    [track("2026-09-06 00:19:45", "您的快件已揽收完成。", "3")],
+  );
+  assert.equal(conflictingNear.length, 2, "conflicting structured codes are never collapsed");
+  const punctuationOnly = mergeTracks(
+    [track("2026-09-05 15:47:18", "您的快件已揽收完成。", "")],
+    [track("2026-09-05 15:47:28", "您的快件已揽收完成", "")],
+  );
+  assert.equal(punctuationOnly.length, 1);
+}
+
 const cachedWithoutStatus = track(
   "2026-08-26 10:00:00",
   "  快件 已到达；  ",
@@ -459,6 +572,32 @@ assert.equal(
   "an equal-time lower-stage response must not regress the current status",
 );
 
+// 更新头条: a same-provider refresh may carry strictly newer nodes and no recognizable state at all
+// (「已发出」 matches no pattern), and the row must not keep showing 13:53 while tracks[0] is 14:57.
+const retainedTransit = pack("TRANSIT", [
+  track("2026-08-26 13:53:00", "快件已到达深圳中转场", "0"),
+]);
+const newerUnknownRefresh = pack("UNKNOWN", [
+  track("2026-08-26 14:57:00", "您的快件已发出", ""),
+  track("2026-08-26 14:52:00", "您的快件已打包", ""),
+]);
+const refreshedHeadline = mergeTimelinePackage(
+  retainedTransit,
+  newerUnknownRefresh,
+);
+assert.equal(
+  refreshedHeadline.semantic,
+  "TRANSIT",
+  "an unrecognized refresh proves no new status",
+);
+assert.equal(refreshedHeadline.tracks[0]?.detail, "您的快件已发出");
+assert.equal(
+  refreshedHeadline.latestDetail,
+  "您的快件已发出",
+  "the headline must be the newest node of the merged set, not the retained summary",
+);
+assert.equal(refreshedHeadline.latestTimeText, "2026-08-26 14:57:00");
+
 const compactableTracks = Array.from({ length: 170 }, (_, index) => ({
   ...track("2026-08-26 12:00:00", `运输节点 ${index}`, "0"),
   timeMs: NOW - index * 60_000,
@@ -474,6 +613,23 @@ assert.equal(
   true,
   "track compaction must retain the oldest order or pickup boundary",
 );
+
+// 备注（用户定 2026-09-05 晚）：状态词 · 备注，列表页、详情页、桌面卡片同一格式；没有备注就是状态词。
+{
+  const plain = shipment("noted", "TRANSIT", NOW - 60_000);
+  assert.equal(withShipmentNote("运输中", plain), "运输中");
+  assert.equal(withShipmentNote("运输中", { ...plain, note: "  " }), "运输中");
+  assert.equal(
+    withShipmentNote("运输中", { ...plain, note: "给妈妈的" }),
+    `运输中${NOTE_SEPARATOR}给妈妈的`,
+  );
+  // 桌面卡片：行里状态词与备注分开带；4×2 用 withNote 拼，2×2 放不下只显示状态词（用户定 2026-09-06）。
+  const notedWidget = buildWidgetSnapshot([{ ...plain, note: " 给妈妈的 " }], NOW);
+  assert.equal(notedWidget.rows[0]?.statusLabel, "运输中");
+  assert.equal(notedWidget.rows[0]?.note, "给妈妈的");
+  assert.equal(withNote("运输中", notedWidget.rows[0]?.note), `运输中${NOTE_SEPARATOR}给妈妈的`);
+  assert.equal(withNote("运输中", undefined), "运输中");
+}
 
 const widget = buildWidgetSnapshot([
   shipment("complete", "COMPLETED", NOW - 60_000),

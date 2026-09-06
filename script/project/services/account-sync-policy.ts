@@ -1,15 +1,30 @@
 import { deadlineAfter } from "./deadline";
 import type { AccountStatusSemantic } from "./account-parser";
 
-export const ACCOUNT_LIST_BUDGET_MS = 12_000;
-export const ACCOUNT_DETAIL_BUDGET_MS = 5_000;
+export const ACCOUNT_LIST_BUDGET_MS = 25_000;
+// 用户定 2026-09-05：三端统一——按件详情 10s、手动每级 15s、列表 12s、网关上游 10s。
+// 原 5s：同一票 EMS 0246 的按件详情每次都在 5s 处超时，Lite 同一票 1 秒拿到。
+export const ACCOUNT_DETAIL_BUDGET_MS = 10_000;
 export const ACCOUNT_FOLLOWUP_RESERVE_MS = 10_000;
 export const ACCOUNT_FOLLOWUP_CONCURRENCY = 4;
 export const ACCOUNT_ORDER_PROJECTION_BUDGET_MS = 20_000;
 export const ACCOUNT_H5_BUDGET_MS = 8_000;
 export const ACCOUNT_H5_CONCURRENCY = 2;
 export const ENRICHMENT_ROTATION_MS = 30 * 60 * 1000;
-export const ACCOUNT_ORDER_PROJECTION_RETRY_MS = 60 * 60 * 1000;
+/**
+ * AGENTS §9 (2026-09-03, same on Pipi): the JD union page is reopened per order at most every
+ * 10 minutes after any capture attempt, and not for an hour after a risk-control answer
+ * (HTTP 403 / "刷新几遍还不行"). JD blocks the page after roughly eight loads in half an hour.
+ */
+export const ACCOUNT_ORDER_PROJECTION_RETRY_MS = 10 * 60 * 1000;
+export const ACCOUNT_ORDER_PROJECTION_RISK_CONTROL_MS = 60 * 60 * 1000;
+
+/** True when the union request statuses recorded by the projection probe include a 403. */
+export function projectionRiskControlled(unionResponseStatuses: string | null | undefined): boolean {
+  return String(unionResponseStatuses || "")
+    .split(",")
+    .some((status) => status.trim() === "403");
+}
 
 export type JingDongH5SkipReason =
   | "order_projection_pending"
@@ -30,6 +45,8 @@ export function jingDongH5SkipReason(
 export type AccountOrderProjectionRetry = Readonly<{
   routeHash: string;
   failedAtMs?: number;
+  /** Set when the failed attempt saw JD risk control; extends the rest to an hour. */
+  riskControlAtMs?: number;
   attemptId?: string;
   attemptExpiresAtMs?: number;
 }>;
@@ -59,21 +76,36 @@ export function accountOrderProjectionAttemptRemainingMs(
   return Math.max(0, Math.floor(Number(retry?.attemptExpiresAtMs) - now));
 }
 
+/**
+ * AGENTS §9: every attempt rests the order for ten minutes, and a risk-control answer rests it
+ * for an hour. A user-initiated refresh does not lift either rest — Pipi throws its
+ * `CooldownException` on the detail path too, and a JD order that reopens the union page on
+ * every detail visit is exactly what gets the account risk-controlled.
+ */
 export function shouldRetryAccountOrderProjection(
   retry: AccountOrderProjectionRetry | null | undefined,
   routeHash: string,
   now = Date.now(),
-  force = false,
 ): boolean {
   if (activeAccountOrderProjectionAttempt(retry, routeHash, now)) return false;
-  if (force) return true;
   const normalizedRouteHash = String(routeHash || "").trim().toLowerCase();
   const storedRouteHash = String(retry?.routeHash || "").trim().toLowerCase();
+  const sameRoute = /^[a-f0-9]{64}$/.test(normalizedRouteHash) &&
+    storedRouteHash === normalizedRouteHash;
+  // JD risk control rests the order for an hour even when the user pulls to refresh.
+  const riskControlAtMs = Number(retry?.riskControlAtMs);
+  if (
+    sameRoute &&
+    Number.isFinite(riskControlAtMs) &&
+    riskControlAtMs > 0 &&
+    now >= riskControlAtMs &&
+    now - riskControlAtMs < ACCOUNT_ORDER_PROJECTION_RISK_CONTROL_MS
+  ) {
+    return false;
+  }
   const failedAtMs = Number(retry?.failedAtMs);
   if (
-    !/^[a-f0-9]{64}$/.test(normalizedRouteHash) ||
-    !/^[a-f0-9]{64}$/.test(storedRouteHash) ||
-    storedRouteHash !== normalizedRouteHash ||
+    !sameRoute ||
     !Number.isFinite(failedAtMs) ||
     failedAtMs <= 0 ||
     now < failedAtMs

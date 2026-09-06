@@ -113,11 +113,65 @@ public final class ExpressNotifications {
         if (manager != null) manager.cancel((int) (rowId & 0x7fffffff));
     }
 
+    /**
+     * 与 Pipi 的 ExpressSourcePolicy.shouldNotifyTrackChange 同口径（三端统一）：只有**状态变了**，
+     * 或者**出现了更新的事件**（事件时间更晚且标题/正文确实变了），才是一次新通知。
+     *
+     * <p>原来只比标题/正文文案：接口 5 按件详情把摘要换成全量轨迹的头条时，八票早已签收的件在
+     * 同一分钟被重新通知一遍「已签收」（2026-09-05 Fold7 实测）。文案变了但事件没变，不是新事件。</p>
+     */
     public static boolean shouldPostUpdate(ExpressItem previous, ExpressItem current) {
-        return previous != null && current != null
-                && (!notificationTitle(previous).equals(notificationTitle(current))
-                || !breakableText(previous.latestDetail).toString().equals(
-                        breakableText(current.latestDetail).toString()));
+        if (previous == null || current == null) return false;
+        if (isFrozenJingDong(previous)) return false;
+        return shouldPostUpdate(
+                previous.semantic, notificationTitle(previous), previous.latestDetail,
+                eventTime(previous),
+                current.semantic, notificationTitle(current), current.latestDetail,
+                eventTime(current));
+    }
+
+    /**
+     * iOS isFrozenJingDongShipment 同口径：京东来源、已投影出真实运单（或本来就不是账号订单）、
+     * 且已签收的件就此冻结，之后任何改写都不再通知。
+     */
+    public static boolean isFrozenJingDong(ExpressItem item) {
+        return item != null && item.isJingDongSource()
+                && (!item.isAccountOrder() || !item.projectedWaybill.isEmpty())
+                && item.semantic == StatusSemantic.COMPLETED;
+    }
+
+    static boolean shouldPostUpdate(
+            StatusSemantic previousSemantic, String previousTitle, String previousDetail,
+            long previousEventTime,
+            StatusSemantic currentSemantic, String currentTitle, String currentDetail,
+            long currentEventTime) {
+        boolean statusChanged = previousSemantic != currentSemantic;
+        boolean visibleChanged = !previousTitle.equals(currentTitle)
+                || !breakableText(previousDetail).toString().equals(
+                        breakableText(currentDetail).toString());
+        // 上一版没有事件时间（列表摘要那一轮把行写回成没有时间的摘要，下一轮按件详情再写回
+        // 带时间的全量：Fold7 2026-09-05 15:30 实测六票已签收件 previous=COMPLETED@0 → current@T）
+        // 不算「更新的事件」——那不是新事件，是同一件事的两种写法。
+        boolean newerEvent = previousEventTime > 0L && currentEventTime > previousEventTime;
+        return statusChanged || (visibleChanged && newerEvent);
+    }
+
+    public static long eventTime(ExpressItem item) {
+        if (item.statusEventTime > 0L) return item.statusEventTime;
+        String clean = item.latestTime == null ? "" : item.latestTime.trim();
+        if (clean.isEmpty()) return 0L;
+        for (String pattern : new String[]{"yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss"}) {
+            java.text.SimpleDateFormat parser =
+                    new java.text.SimpleDateFormat(pattern, java.util.Locale.CHINA);
+            parser.setLenient(false);
+            try {
+                java.util.Date parsed = parser.parse(clean);
+                if (parsed != null) return parsed.getTime();
+            } catch (java.text.ParseException ignored) {
+                // Try the next accepted shape.
+            }
+        }
+        return 0L;
     }
 
     static String channelId(StatusSemantic semantic) {

@@ -46,11 +46,19 @@ public final class ManualTimelineIntegrationContractTest {
                 + "                                        success.result"));
         assertTrue(sync.contains("network.ManualQueryCoordinator"));
         assertTrue(list.contains("saveManualQueryBatch("));
-        assertTrue(list.contains("ExpressDetailActivity.transientPickerPreviewIntent("));
-        assertTrue(list.contains("pickerPreview -> runOnUiThread("));
+        // 用户定 2026-09-05：链跑完前不再开 K100 页的透明预览（每次搜索都打开那一页会用光当天配额，
+        // 而且 picker 回来就开另一个 Activity 曾把整条链连落库一起取消）。
+        assertFalse(list.contains("ExpressDetailActivity.transientPickerPreviewIntent("));
+        assertFalse(list.contains("pickerPreview -> runOnUiThread("));
+        assertTrue(list.contains("ExpressDetailActivity.persistedPreviewIntent("));
         assertTrue(detail.contains("EXTRA_TRANSIENT_PICKER_PREVIEW"));
+        // 用户定 2026-09-05（傍晚，取代上午「直接打开 picker 返回的 K100 H5」）：手动件详情先原生，
+        // 优先级 picker 增量 → K100 H5 本地抓取 → K100 H5 网页兜底；查完自动进的那次也走这条链。
+        assertTrue(detail.contains("ensureKuaidi100Presentation(previewResult, \"preview\")"));
+        assertTrue(detail.contains("ensureKuaidi100Presentation(detail, \"after_manual_refresh\")"));
+        assertFalse(detail.contains("else showKuaidi100WebDetail(kuaidi100Url);"));
         assertTrue(detail.contains(
-                "String kuaidi100Url = transientPickerPreview ? \"\" : kuaidi100FallbackUrl();"));
+                "String cainiaoUrl = transientPickerPreview ? \"\" : safeCainiaoUrl(item);"));
         assertTrue(sync.contains("saveOwnerManualQueryBatch("));
         assertTrue(sync.contains("saveManualQueryBatch("));
         assertTrue(sync.contains("savePendingManualQueryBatch("));
@@ -87,7 +95,7 @@ public final class ManualTimelineIntegrationContractTest {
         assertFalse(detail.contains("projectedOrderTimelineCapture"));
         assertFalse(detail.contains("saveProjectedOrderTimeline("));
         assertTrue(detail.contains("ManualQueryRoutingPolicy.includesMoto(requestItem)"));
-        assertTrue(detail.contains("showKuaidi100WebDetail(kuaidi100Url)"));
+        assertTrue(detail.contains("showKuaidi100WebDetail(route)"));
         assertFalse(detail.contains("manualApi.queryWithPhones("));
         assertFalse(sync.contains("queryWithPhones("));
         assertFalse(coordinator.substring(

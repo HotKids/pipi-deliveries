@@ -1,6 +1,6 @@
 # Pipi Deliveries（派派助手 Lite）
 
-Pipi Deliveries 是一款快递管理工具。Android 版本采用原生 Material 3 设计，并支持深色模式与系统动态配色；iOS 版本以 Scripting 脚本形式提供。
+Pipi Deliveries 是一款快递管理工具。Android 版本采用原生 Material 3 设计，并支持深色模式与系统动态配色；iOS 版本以 Scripting 脚本形式提供，仅限白名单授权用户使用。
 
 ## 功能简介
 

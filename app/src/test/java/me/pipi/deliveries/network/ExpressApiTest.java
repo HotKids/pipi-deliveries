@@ -49,7 +49,7 @@ public final class ExpressApiTest {
 
         ExpressQueryResult result = ExpressApi.parseV4("TEST123456", "ZTO", root);
 
-        assertEquals("v4", result.timelineProvider);
+        assertEquals("v4_query", result.timelineProvider);
         assertEquals("ZTO", result.courierCode);
         assertEquals(StatusSemantic.TRANSIT, result.semantic);
         assertTrue(result.structuredStatusEvidence);

@@ -60,12 +60,12 @@ export const EXPRESS_POLICY = {
       "kdniao": 2
     },
     "tieBreakOrder": [
-      "jingdong_h5",
-      "cainiao_h5",
-      "kuaidi100_h5",
-      "moto",
-      "meizu",
-      "oppo",
+      "jd_h5",
+      "cn_h5",
+      "k100_h5",
+      "v4_query",
+      "v6_picker",
+      "v2_query",
       "kdniao",
       "kuaidi100"
     ]

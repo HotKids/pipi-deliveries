@@ -7,7 +7,10 @@ import {
 const ROUTES_KEY = "pipi_deliveries_routes_v1";
 const ORDER_PROJECTION_REFS_KEY =
   "pipi_deliveries_order_projection_refs_v1";
-const ROUTE_MAX_AGE_MS = 8 * 24 * 60 * 60 * 1000;
+// 用户定 2026-09-05：拉到的路由/轨迹按来源缓存，**只在那一行从列表消失时才清**，不按时间过期。
+// 原来 8 天到期就删，会把 picker 给的 K100 详情页地址、菜鸟路由平白丢掉，下一次只能重新拉。
+// 保留各处的判式不改结构，把年龄阈值设成无穷大即等价于「不按时间清」。
+const ROUTE_MAX_AGE_MS = Number.POSITIVE_INFINITY;
 const MAX_ROUTE_LENGTH = 16_384;
 
 type RouteValue = {

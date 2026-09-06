@@ -5,7 +5,6 @@ import static org.junit.Assert.assertTrue;
 
 import android.app.Application;
 import android.content.Context;
-import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -45,12 +44,9 @@ public final class ExpressWidgetHeaderGeometryTest {
         float scaledDensity = context.getResources().getDisplayMetrics().scaledDensity;
 
         assertTrue(logo.getLeft() < identity.getLeft());
-        assertEquals(logo.getTop(), identity.getTop());
-        assertEquals(logo.getBottom(), identity.getBottom());
-        assertEquals(logo.getHeight(), identity.getHeight());
-        assertEquals(0, status.getTop());
-        assertEquals(identity.getHeight(), company.getBottom());
-        assertEquals(logo.getHeight(), status.getHeight() + company.getHeight());
+        // 用户定 2026-09-05 晚：两行用自然行高不裁字，公司行上提 2dp，块底补 5dp；
+        // logo 在整行里居中，所以 logo 中心对齐两行块的中心。
+        assertNaturalTwoLineBlock(context, logo, identity, status, company);
         assertEquals(20f, status.getTextSize() / scaledDensity, 0.01f);
         assertEquals(12f, company.getTextSize() / scaledDensity, 0.01f);
     }
@@ -81,22 +77,24 @@ public final class ExpressWidgetHeaderGeometryTest {
         float scaledDensity = context.getResources().getDisplayMetrics().scaledDensity;
 
         assertEquals(dp(context, 38f), logo.getHeight());
-        assertEquals(logo.getHeight(), identity.getHeight());
-        assertEquals(logo.getHeight(), status.getHeight() + company.getHeight());
-        assertEquals(dp(context, 24f), status.getLineHeight());
-        assertEquals(dp(context, 14f), company.getLineHeight());
-        assertTrue("status height=" + status.getHeight()
-                        + ", lineHeight=" + status.getLineHeight(),
-                status.getHeight() >= status.getLineHeight());
-        assertTrue("company height=" + company.getHeight()
-                        + ", lineHeight=" + company.getLineHeight(),
-                company.getHeight() >= company.getLineHeight());
-        assertEquals(Gravity.CENTER_VERTICAL,
-                status.getGravity() & Gravity.VERTICAL_GRAVITY_MASK);
-        assertEquals(Gravity.CENTER_VERTICAL,
-                company.getGravity() & Gravity.VERTICAL_GRAVITY_MASK);
+        // 缩小的 logo 也只是在整行里居中，两行块仍是自然行高 + 5dp 底补偿。
+        assertNaturalTwoLineBlock(context, logo, identity, status, company);
         assertEquals(20f, status.getTextSize() / scaledDensity, 0.01f);
         assertEquals(12f, company.getTextSize() / scaledDensity, 0.01f);
+    }
+
+    private static void assertNaturalTwoLineBlock(Context context, View logo,
+            View identity, TextView status, TextView company) {
+        assertEquals(0, status.getTop());
+        assertEquals(status.getLayout().getHeight(), status.getHeight());
+        assertEquals(company.getLayout().getHeight(), company.getHeight());
+        assertEquals(status.getBottom() - dp(context, 2f), company.getTop());
+        assertEquals(company.getBottom() + dp(context, 5f), identity.getHeight());
+        assertEquals(dp(context, 5f), identity.getPaddingBottom());
+        int logoCentre = logo.getTop() + logo.getBottom();
+        int identityCentre = identity.getTop() + identity.getBottom();
+        assertTrue("logo centre*2=" + logoCentre + ", identity centre*2=" + identityCentre,
+                Math.abs(logoCentre - identityCentre) <= 2);
     }
 
     private static int dp(Context context, float value) {

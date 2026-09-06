@@ -33,7 +33,32 @@ const successDue = providerNextDueAt({
   consecutiveFailures: 0,
   now,
 });
-assert.ok(successDue >= now + 108_000 && successDue <= now + 132_000);
+// 用户定 2026-09-04：手动链各级冷却 10 分钟（快递100 H5 是 30 分钟的上游限制），带 ±10% 抖动。
+assert.ok(successDue >= now + 540_000 && successDue <= now + 660_000);
+
+const kuaidi100Due = providerNextDueAt({
+  key: "shipment-a",
+  provider: "kuaidi100",
+  result: "success",
+  consecutiveFailures: 0,
+  now,
+});
+assert.ok(
+  kuaidi100Due >= now + 1_620_000 && kuaidi100Due <= now + 1_980_000,
+  "快递100 H5 同一运单号 30 分钟——上游自己的限制",
+);
+
+const rejectedDue = providerNextDueAt({
+  key: "shipment-a",
+  provider: "picker",
+  result: "upstream_rejected",
+  consecutiveFailures: 1,
+  now,
+});
+assert.ok(
+  rejectedDue >= now + 3_240_000 && rejectedDue <= now + 3_960_000,
+  "上游明确拒绝／风控歇 60 分钟，与京东 H5 一致",
+);
 
 const timeoutOne = providerNextDueAt({
   key: "shipment-a",

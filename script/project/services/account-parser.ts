@@ -1,26 +1,22 @@
+import { accountOrderTextIdentity, type AccountOrderTextIdentity } from "./account-order-text-identity";
 import type { AccountSource } from "./account-identity";
-import type { TimelinePackage } from "../models";
+import type { StatusSemantic, TimelinePackage } from "../models";
 import {
-  isProviderErrorDetail,
+  headlineTrack,
+  isNonEventDetail,
   normalizeWaybill,
   parseProviderTime,
+  semanticFromAccountState,
+  semanticFromStored,
+  semanticFromText,
 } from "./status";
 import {
   parseCarrierNormalization,
   type CarrierNormalization,
 } from "./carrier-normalization";
 
-export type AccountStatusSemantic =
-  | "CANCELLED"
-  | "DANGER"
-  | "ORDERED"
-  | "SHIPPED"
-  | "PICKED"
-  | "TRANSIT"
-  | "DELIVERY"
-  | "WAITING_PICKUP"
-  | "COMPLETED"
-  | "UNKNOWN";
+/** The account feed speaks the same status vocabulary as every other source. */
+export type AccountStatusSemantic = StatusSemantic;
 
 export type AccountTrackDto = Readonly<{
   timeText: string;
@@ -55,6 +51,7 @@ export type AccountParcelDto = Readonly<{
   projectionUrl: string;
   /** Same-source timeline extracted from this order's JD H5 page. */
   projectionTimeline?: TimelinePackage | null;
+  textIdentity?: AccountOrderTextIdentity | null;
 }>;
 
 export type AccountParcelDefaults = Readonly<{
@@ -172,7 +169,7 @@ function parseTime(value: string): number | null {
 function track(value: unknown): AccountTrackDto | null {
   const item = object(value);
   const detail = first(item, "desc", "context", "description", "detail");
-  if (isGenericUpdate(detail) || isProviderErrorDetail(detail)) return null;
+  if (isGenericUpdate(detail) || isNonEventDetail(detail)) return null;
   return {
     timeText: first(item, "time", "date", "ftime"),
     detail,
@@ -195,52 +192,6 @@ function tracks(value: JsonObject): AccountTrackDto[] {
       const time = (parseTime(right.timeText) || 0) - (parseTime(left.timeText) || 0);
       return time || right.timeText.localeCompare(left.timeText);
     });
-}
-
-function semanticFromText(value: string): AccountStatusSemantic {
-  const clean = value.replace(/\s+/g, "");
-  if (/已签收|已妥投/.test(clean)) return "COMPLETED";
-  if (/已取消|订单关闭/.test(clean)) return "CANCELLED";
-  if (/待取件|代取件|等待取件|待领取|取件码/.test(clean)) return "WAITING_PICKUP";
-  if (/派送中|正在派送|配送中|正在配送/.test(clean)) return "DELIVERY";
-  if (/已揽收|已揽件|揽收完成/.test(clean)) return "PICKED";
-  if (/运输中|转运|分拨|已发往|已到达/.test(clean)) return "TRANSIT";
-  if (/已发货|商家已发货/.test(clean)) return "SHIPPED";
-  if (/已下单|订单已提交|订单已完成|配送完成|等待出库|正在打包|拣货/.test(clean)) {
-    return "ORDERED";
-  }
-  if (/异常|问题件/.test(clean)) return "DANGER";
-  return "UNKNOWN";
-}
-
-function semanticFromStored(code: string, description: string): AccountStatusSemantic {
-  switch (code.trim().toUpperCase()) {
-    case "CANCEL": case "CANCELLED": return "CANCELLED";
-    case "FAILED": case "PROBLEM": case "EXCEPTION": return "DANGER";
-    case "CREATE": case "ORDER": case "ORDERED": return "ORDERED";
-    case "SHIPPED": case "CONSIGN": return "SHIPPED";
-    case "GOT": case "ACCEPT": case "COLLECT": case "PICKED": return "PICKED";
-    case "TRANSPORT": case "TRANSIT": case "INTRANSIT": return "TRANSIT";
-    case "DELIVERING": case "DELIVERY": case "DISPATCH": return "DELIVERY";
-    case "AGENT_SIGN": case "WAITING_PICKUP": return "WAITING_PICKUP";
-    case "SIGN": case "SIGNED": case "COMPLETED": return "COMPLETED";
-    default: return semanticFromText(description);
-  }
-}
-
-function semanticFromAccountState(code: string, description: string): AccountStatusSemantic {
-  switch (code.trim()) {
-    case "101": return "ORDERED";
-    case "102": return "SHIPPED";
-    case "103": return "PICKED";
-    case "104": return "TRANSIT";
-    case "105": return "DELIVERY";
-    case "106": return "WAITING_PICKUP";
-    case "107": return "COMPLETED";
-    case "108": case "109": case "110": return "DANGER";
-    case "111": return "CANCELLED";
-    default: return semanticFromStored("", description);
-  }
 }
 
 function normalizedStatusScope(value: unknown): "ORDER" | "SHIPMENT" | undefined {
@@ -395,11 +346,12 @@ function parseParcel(
   let semantic = source === "interface5"
     ? semanticFromAccountState(stateCode, stateText)
     : semanticFromStored(stateCode, stateText);
-  const latestTrack = parsedTracks[0];
+  // The forecast note stays in `parsedTracks`; it is skipped only where the row is presented.
+  const latestTrack = headlineTrack(parsedTracks);
   if (semantic === "UNKNOWN" && latestTrack) semantic = semanticFromText(latestTrack.detail);
   const headline = first(value, "lastLogisticDetail", "context", "message");
   const latestDetail = latestTrack?.detail
-    || (isGenericUpdate(headline) || isProviderErrorDetail(headline) ? "" : headline);
+    || (isGenericUpdate(headline) || isNonEventDetail(headline) ? "" : headline);
   if (!isOrder &&
     source === "interface5" &&
     !["COMPLETED", "CANCELLED", "DANGER", "WAITING_PICKUP"].includes(semantic) &&
@@ -460,6 +412,7 @@ function parseParcel(
     tracks: parsedTracks,
     routeUrl: isOrder ? "" : routeUrl(value),
     projectionUrl: isOrder ? orderProjectionUrl(value) : "",
+    textIdentity: isOrder ? accountOrderTextIdentity(parsedTracks) : null,
   };
 }
 
@@ -497,6 +450,7 @@ export function mergeAccountParcel(
     projectionUrl: summary.accountOrder
       ? summary.projectionUrl
       : detail.projectionUrl || summary.projectionUrl,
+    textIdentity: summary.textIdentity || detail.textIdentity || null,
   };
 }
 

@@ -364,8 +364,10 @@ assert.equal(
       }],
     },
   }, ownerId, "interface5", NOW, false)?.timeline?.complete,
-  false,
-  "track count must not turn a pre-click response into a complete package",
+  true,
+  // AGENTS §9 (user decision 2026-09-04, overrides the earlier click-only rule): the collapsed
+  // first screen renders exactly one node, so two timed nodes are themselves proof of expansion.
+  "two timed nodes prove the timeline was expanded, with or without the click proof",
 );
 assert.equal(
   projectionFromUnionPayload(
@@ -579,8 +581,10 @@ const pageDocument = {
   querySelector: (selector: string) => selector === ".logistics-button"
     ? {
       querySelector: (labelSelector: string) =>
+        // The live union page renders the text node as "完整物流进度 >" (Fold7 DevTools,
+        // 2026-09-03); the decorative chevron must not defeat the exact-text match.
         labelSelector === ".logistics-button-text"
-          ? { innerText: "完整物流进度", textContent: "完整物流进度" }
+          ? { innerText: "完整物流进度 >", textContent: "完整物流进度 >" }
           : null,
       click: () => {
         void (pageWindow.fetch as (url: string) => Promise<unknown>)(
@@ -645,6 +649,40 @@ assert.equal((probeDiagnostics?.probeRequestCount || 0) >= 1, true);
 assert.equal(probeDiagnostics?.pageClass, "jd");
 assert.equal(probeDiagnostics?.viewportAvailable, true);
 assert.equal(inPageProbeDisposed, true);
+
+
+// A waybill already named by Xiaomi's own track text is read directly: no WebView is created,
+// no cooldown applies, and the diagnostics say so.
+{
+  const globalRecord = globalThis as Record<string, unknown>;
+  const originalController = globalRecord.WebViewController;
+  class ForbiddenWebView {
+    constructor() {
+      throw new Error("feed text identity must not open a WebView");
+    }
+  }
+  let textDiagnostics: Parameters<NonNullable<Parameters<typeof projectAccountOrder>[2]>>[0] | null = null;
+  try {
+    globalRecord.WebViewController = ForbiddenWebView;
+    const projected = await projectAccountOrder(
+      {
+        ...parcel("https://u.jd.com/feed-text"),
+        textIdentity: { waybill: "JT4006839564547", courierCode: "JTSD", companyName: "极兔速递" },
+      },
+      Date.now() + 1_000,
+      (diagnostics) => {
+        textDiagnostics = diagnostics;
+      },
+    );
+    assert.equal(projected.waybill, "JT4006839564547");
+    assert.equal(projected.courierCode, "JTSD");
+    assert.equal(projected.companyName, "极兔速递");
+    assert.equal(projected.projectionTimeline, null);
+    assert.equal(textDiagnostics?.identitySource, "feed_text");
+  } finally {
+    globalRecord.WebViewController = originalController;
+  }
+}
 
 function probeResponse(payload: string): {
   ok: true;
@@ -1310,5 +1348,55 @@ clearTimeout(blockedProjectionAbort);
 assert.equal(blockedProjectionController.signal.aborted, true);
 assert.equal(blockedEvaluationDisposed, 1);
 assert.equal(blockedEvaluationDiagnostics, 1);
+
+// §9 (2026-09-03): the modal opened by the exact click is read from the DOM as a "dom_modal"
+// package; it is complete only when it covers every network package captured in the session.
+let modalGateEvaluations = 0;
+class ModalGateWebView {
+  shouldAllowRequest?: (request: unknown) => Promise<boolean>;
+
+  async loadURL(): Promise<boolean> {
+    return true;
+  }
+
+  async evaluateJavaScript(source: string): Promise<unknown> {
+    new Function(source);
+    if (!source.includes("getUnionActivity")) return null;
+    modalGateEvaluations++;
+    const trace = (time: string, desc: string) => ({
+      waybillCode: "JT4006839564547",
+      time,
+      desc,
+    });
+    // AGENTS §9 (user decision 2026-09-04): two timed nodes already prove expansion, so the
+    // collapsed first screen must be a single node for the click/modal proof to still matter.
+    const firstScreen = [trace("2026-09-03 17:48:37", "快件已揽收")];
+    const packageOf = (traceList: unknown[], extractionSource: string, full: boolean) => ({
+      waybillCode: "JT4006839564547",
+      companyName: "极兔速递",
+      traceList,
+      extractionSource,
+      fullProgressRequestedAtStart: full,
+    });
+    // 1: the collapsed first screen before the click — one node, no proof, so still partial.
+    if (modalGateEvaluations === 1) return packageOf(firstScreen, "probe", false);
+    // 2: the modal list covers the network package and was read after the exact click → complete.
+    return packageOf(
+      [trace("2026-09-03 22:30:00", "快件已到达派送站"), ...firstScreen],
+      "dom_modal",
+      true,
+    );
+  }
+
+  dispose(): void {}
+}
+
+Object.assign(globalThis, { WebViewController: ModalGateWebView });
+const modalGated = await projectAccountOrder(parcel("https://u.jd.com/modal-gate"));
+assert.equal(modalGated.waybill, "JT4006839564547");
+assert.equal(modalGateEvaluations, 2);
+assert.equal(modalGated.projectionTimeline?.complete, true);
+assert.equal(modalGated.projectionTimeline?.tracks.length, 2);
+assert.equal(modalGated.projectionTimeline?.latestDetail, "快件已到达派送站");
 
 console.log("account order projection tests passed");

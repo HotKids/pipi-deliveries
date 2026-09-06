@@ -1,3 +1,4 @@
+import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import {
   Button,
   Divider,
@@ -17,7 +18,7 @@ import {
   writeDiagnostic,
 } from "../services/logger";
 import { SCRIPT_BINDING_SOURCE } from "../services/script-source";
-import { transientToast } from "../services/ui-feedback";
+import { errorMessage, transientToast } from "../services/ui-feedback";
 
 type MaybeAsync = void | Promise<void>;
 
@@ -32,10 +33,6 @@ export type PhoneBindingPageProps = {
     flowId: string,
   ) => MaybeAsync;
 };
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
 
 function normalizedPhone(value: string): string {
   return value.replace(/\D/g, "").slice(0, 11);
@@ -150,7 +147,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
       setNowMs(sentAt);
       setResendAtMs(sentAt + 60_000);
       setVerificationPhone(requestedPhone);
-      setNotice("验证码已发送");
+      setNotice(EXPRESS_TOAST_COPY.codeSent);
       writeDiagnostic("binding.code.succeeded", {
         flowId: flowIdRef.current,
         requestedSource,
@@ -166,7 +163,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
         "error",
       );
       if (mountedRef.current && requestId === requestSequenceRef.current) {
-        setNotice(errorMessage(error, "验证码发送失败，请稍后重试"));
+        setNotice(errorMessage(error, EXPRESS_TOAST_COPY.codeSendFailed));
       }
     } finally {
       if (mountedRef.current && requestId === requestSequenceRef.current) {
@@ -184,6 +181,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
     requestSequenceRef.current = requestId;
     setBinding(true);
     setNotice("");
+    setBindError("");
 
     try {
       await props.onBind(
@@ -199,7 +197,8 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
       }
     } catch (error) {
       if (mountedRef.current && requestId === requestSequenceRef.current) {
-        setNotice(errorMessage(error, "绑定失败，请稍后重试"));
+        // 绑定失败留在表单内联显示（三端同：Pipi _bindError、Lite showError）。
+        setBindError(errorMessage(error, EXPRESS_TOAST_COPY.bindFailed));
       }
     } finally {
       if (mountedRef.current && requestId === requestSequenceRef.current) {
@@ -208,6 +207,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
     }
   }
 
+  const [bindError, setBindError] = useState("");
   const validationNotice =
     phone.length > 0 && !validPhone(phone)
       ? "请输入有效的 11 位手机号"
@@ -227,9 +227,9 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
         header={<Text>验证手机号</Text>}
         footer={
           <VStack alignment="leading" spacing={5}>
-            {validationNotice ? (
+            {validationNotice || bindError ? (
               <Text font={12} foregroundStyle="systemRed">
-                {validationNotice}
+                {validationNotice || bindError}
               </Text>
             ) : null}
             <Text font={12} foregroundStyle="secondaryLabel">

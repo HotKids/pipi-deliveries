@@ -237,10 +237,18 @@ public final class Kuaidi100TimelinePolicyTest {
                 "[{\"time\":\"2026-08-16 11:00:00\",\"context\":\"快件已揽收\"},"
                         + "{\"time\":\"2026-08-16 12:00:00\",\"context\":\"运输中\"}]",
                 "", "", "meizu");
+        // 顺丰的揽收节点写「顺丰速运 已收取快件」，2026-09-05 三端同补，否则永远判不完整。
+        ExpressQueryResult shunFengPickedByText = new ExpressQueryResult(
+                "TEST123", "SF", "顺丰速运", StatusSemantic.TRANSIT,
+                "2026-09-05 12:00:00", "运输中",
+                "[{\"time\":\"2026-09-05 10:00:00\",\"context\":\"顺丰速运 已收取快件\"},"
+                        + "{\"time\":\"2026-09-05 12:00:00\",\"context\":\"运输中\"}]",
+                "", "", "meizu");
 
         assertFalse(Kuaidi100TimelinePolicy.hasTimelineStart(accountShipped));
         assertTrue(Kuaidi100TimelinePolicy.hasTimelineStart(pickerOrdered));
         assertTrue(Kuaidi100TimelinePolicy.hasTimelineStart(pickedByText));
+        assertTrue(Kuaidi100TimelinePolicy.hasTimelineStart(shunFengPickedByText));
     }
 
     @Test

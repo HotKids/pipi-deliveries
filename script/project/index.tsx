@@ -124,12 +124,24 @@ function App() {
 }
 
 async function run() {
-  initializeCarrierAuthority();
-  await Navigation.present({
-    element: <App />,
-    modalPresentationStyle: "fullScreen",
-  });
-  Script.exit();
+  // Without this the whole session ends on any throw with nothing recorded: `void run()` turns a
+  // rejection into an unhandled one, the presented view is torn down, and the user sees the script
+  // quit back to the app with an empty diagnostic log.
+  try {
+    initializeCarrierAuthority();
+    await Navigation.present({
+      element: <App />,
+      modalPresentationStyle: "fullScreen",
+    });
+  } catch (error) {
+    writeDiagnostic(
+      "app.session.failed",
+      diagnosticErrorDetails(error),
+      "error",
+    );
+  } finally {
+    Script.exit();
+  }
 }
 
 void run();

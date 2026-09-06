@@ -43,6 +43,8 @@ export type ManualQuerySelection = Readonly<{
   selectedRouteUrl: string;
   successes: readonly Shipment[];
   errors: Readonly<Partial<Record<ManualSource, unknown>>>;
+  /** 这一轮真正发出过请求的级数；0 = 全部被冷却/未启用挡住，一个请求都没发。 */
+  attemptedSources: number;
 }>;
 
 export function hasPersistentTracking(shipment: Shipment | null): boolean {
@@ -78,10 +80,12 @@ export async function queryManualSourceChain(
   const candidates: Array<{ shipment: Shipment; routeUrl: string }> = [];
   const successes: Array<{ shipment: Shipment; routeUrl: string }> = [];
   const routes: string[] = [];
+  let attemptedSources = 0;
   const run = async (batch: readonly ManualSourceAdapter[]) => {
     const settled = await Promise.all(batch.map(async (adapter) => {
       assertCanStart();
       const startedAt = Date.now();
+      attemptedSources++;
       observe?.({ source: adapter.source, phase: "started" });
       try {
         const result = await adapter.query();
@@ -192,5 +196,6 @@ export async function queryManualSourceChain(
     selectedRouteUrl: routes[0] || "",
     successes: successes.map((item) => item.shipment),
     errors,
+    attemptedSources,
   };
 }

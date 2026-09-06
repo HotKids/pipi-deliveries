@@ -49,8 +49,9 @@ public final class ExpressDetailLayoutContractTest {
         assertTrue(source.contains("ClipboardManager.class"));
         assertTrue(strings.contains(
                 "<string name=\"copy_waybill\">复制运单号</string>"));
-        assertTrue(strings.contains(
-                "<string name=\"waybill_copied\">运单号已复制</string>"));
+        // 复制结果走三端共享的 toast 表（AGENTS §11），不再放在 strings.xml。
+        assertTrue(source.contains("ExpressToastCopy.WAYBILL_COPIED"));
+        assertFalse(strings.contains("name=\"waybill_copied\""));
     }
 
     @Test

@@ -58,6 +58,32 @@ public final class ExpressTimelineTest {
         assertEquals("已到达网点", tracks.get(2).detail);
     }
 
+    /** 用户定 2026-09-06（三端同 Pipi）：同文案 5 分钟内合并，相隔更久的仍是两条；结构化冲突不合并。 */
+    @Test
+    public void collapsesSameTextWithinFiveMinutesButKeepsLaterRepeats() throws Exception {
+        List<ExpressTimeline.Track> tracks = ExpressTimeline.parse(
+                "[{\"time\":\"2026-09-06 00:19:45\",\"context\":\"预计9月6日发货，9月8日(周二)送达\"},"
+                        + "{\"time\":\"2026-09-06 00:19:43\",\"context\":\"预计9月6日发货，9月8日(周二)送达\"},"
+                        + "{\"time\":\"2026-09-06 00:10:00\",\"context\":\"预计9月6日发货，9月8日(周二)送达\"},"
+                        + "{\"time\":\"2026-09-06 00:05:00\",\"context\":\"您提交了订单\"}]",
+                "", "");
+        assertEquals(3, tracks.size());
+        assertEquals("2026-09-06 00:19:45", tracks.get(0).time);
+        assertEquals("2026-09-06 00:10:00", tracks.get(1).time);
+
+        String merged = ExpressTimeline.mergeJson(
+                "[{\"time\":\"2026-09-05 15:47:18\",\"context\":\"您的快件已揽收完成。\"}]",
+                "[{\"time\":\"2026-09-05 15:47:28\",\"context\":\"您的快件已揽收完成\",\"statusCode\":\"501\"}]");
+        List<ExpressTimeline.Track> mergedTracks = ExpressTimeline.parse(merged, "", "");
+        assertEquals(1, mergedTracks.size());
+        assertEquals("2026-09-05 15:47:28", mergedTracks.get(0).time);
+
+        String conflicting = ExpressTimeline.mergeJson(
+                "[{\"time\":\"2026-09-05 15:47:18\",\"context\":\"您的快件已揽收完成\",\"statusCode\":\"3\"}]",
+                "[{\"time\":\"2026-09-05 15:47:28\",\"context\":\"您的快件已揽收完成\",\"statusCode\":\"501\"}]");
+        assertEquals(2, new org.json.JSONArray(conflicting).length());
+    }
+
     @Test
     public void incrementalMergeKeepsHistoryAndUsesRefreshedNodeAtSameTime() {
         String merged = ExpressTimeline.mergeJson(

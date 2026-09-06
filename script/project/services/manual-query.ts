@@ -1,3 +1,4 @@
+import { TIMELINE_SLOT } from "./timeline-slot";
 import type {
   AccountBinding,
   BindingSource,
@@ -34,6 +35,7 @@ import {
 import {
   applyManualShipment,
   hasTimelineStartBeforeKdniao,
+  isShunFengSourceShipment,
 } from "./shipment-policy";
 import {
   normalizeCarrierCode,
@@ -54,7 +56,6 @@ import {
   diagnosticErrorDetails,
   writeDiagnostic,
 } from "./logger";
-import { queryKuaidi100JdTimeline } from "./kuaidi100-h5";
 import {
   recordRefreshProviderResult,
   refreshProviderDue,
@@ -173,7 +174,6 @@ type ManualGatewayPost = (
 export type ManualSourceDependencies = Readonly<{
   post?: ManualGatewayPost;
   now?: () => number;
-  queryKuaidi100JdTimeline?: typeof queryKuaidi100JdTimeline;
 }>;
 
 function sourcePost(dependencies?: ManualSourceDependencies): ManualGatewayPost {
@@ -643,7 +643,7 @@ export async function queryMotoShipment(
     phoneTail: "",
     ...identity,
     bindingSource: input.bindingSource || null,
-    provider: "local",
+    provider: TIMELINE_SLOT.V4_QUERY,
     complete: false,
     parsed: parseMotoTimeline(root),
     successAtMs: sourceNow(input.dependencies),
@@ -666,18 +666,21 @@ function trustedMeizuDetailUrl(value: unknown): string {
 
 async function queryMeizuShipmentOnce(
   input: ManualSourceShipmentInput,
+  mode: "manual" | "refresh" = "manual",
 ): Promise<{ shipment: Shipment; routeUrl: string }> {
   const waybill = normalizeWaybill(input.waybill);
   assertWithinDeadline(input.deadlineAtMs);
   const root = await sourcePost(input.dependencies)(
     "/api/express/timeline/source",
-    {
-      interface: "v6",
-      mode: "manual",
-      waybill,
-      clientVersion: SCRIPT_VERSION,
-      clientBuild: SCRIPT_CLIENT_BUILD,
-    },
+    mode === "refresh"
+      ? { interface: "v6", mode: "refresh", waybill }
+      : {
+        interface: "v6",
+        mode: "manual",
+        waybill,
+        clientVersion: SCRIPT_VERSION,
+        clientBuild: SCRIPT_CLIENT_BUILD,
+      },
     {
       timeoutMs: remainingTimeoutMs(input.deadlineAtMs, 30_000),
       deadlineAtMs: input.deadlineAtMs,
@@ -717,7 +720,7 @@ async function queryMeizuShipmentOnce(
     phoneTail: "",
     ...identity,
     bindingSource: input.bindingSource || null,
-    provider: "route",
+    provider: TIMELINE_SLOT.V6_PICKER,
     complete: false,
     parsed: parseMeizuTimeline(value),
     successAtMs: sourceNow(input.dependencies),
@@ -730,11 +733,12 @@ async function queryMeizuShipmentOnce(
 
 export async function queryMeizuShipment(
   input: ManualSourceShipmentInput,
+  mode: "manual" | "refresh" = "manual",
 ): Promise<{ shipment: Shipment; routeUrl: string }> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      return await queryMeizuShipmentOnce(input);
+      return await queryMeizuShipmentOnce(input, mode);
     } catch (error) {
       lastError = error;
       const retriable = error instanceof ManualQueryError &&
@@ -744,47 +748,6 @@ export async function queryMeizuShipment(
     }
   }
   throw lastError;
-}
-
-async function queryJingDongKuaidi100Shipment(
-  input: ManualSourceShipmentInput,
-): Promise<{ shipment: Shipment | null; skipReason?: string }> {
-  const waybill = normalizeWaybill(input.waybill);
-  const phoneTail = String(input.phoneTail || "").trim();
-  const carrier = manualInputCarrier(input);
-  const query = input.dependencies?.queryKuaidi100JdTimeline ||
-    queryKuaidi100JdTimeline;
-  const timeline = await query({
-    waybill,
-    phoneTail,
-    courierCode: carrier?.standardCode || "JD",
-    companyName: String(input.companyName || "").trim() ||
-      carrier?.displayName || "京东快递",
-    deadlineAtMs: input.deadlineAtMs,
-    signal: input.signal,
-  });
-  if (!timeline) return { shipment: null, skipReason: "no_timed_tracks" };
-  const now = timeline.successAtMs;
-  return {
-    shipment: {
-      identity: {
-        id: `${input.bindingSource || "legacy"}:manual:${waybill}`,
-        bindingSource: input.bindingSource || null,
-        sourceOwner: "manual",
-        sourceId: waybill,
-        phoneTail,
-        courierCode: timeline.courierCode,
-        rawCourierCode: String(input.rawCourierCode || "").trim() || "JD",
-        companyName: timeline.companyName,
-        manuallyAdded: true,
-        createdAtMs: now,
-      },
-      timeline,
-      sourceTimeline: null,
-      manualTimelines: [timeline],
-      updatedAtMs: now,
-    },
-  };
 }
 
 export async function queryKdniaoShipment(
@@ -862,7 +825,7 @@ export async function queryKdniaoShipment(
       phoneTail: carrier.requiresPhoneTail ? phoneTail : "",
       ...source,
       bindingSource: input.bindingSource || null,
-      provider: "fallback",
+      provider: TIMELINE_SLOT.KDNIAO,
       complete: true,
       parsed: parseKdniaoTimeline(root),
       successAtMs: sourceNow(input.dependencies),
@@ -875,6 +838,11 @@ export type ManualQueryOutcome = {
   shipment: Shipment | null;
   pending: PendingManualQuery | null;
   routeUrl: string;
+  /**
+   * 「没跑」和「跑了没结果」要分开（失败路径裁决：没跑过的一级不是失败）。全链都在冷却里时
+   * 是 "cooldown"——上层既不 attempted++ 也不 failed++，整轮不该因此抬成 ERROR。
+   */
+  skipReason?: "cooldown";
 };
 
 export const SCRIPT_MANUAL_SOURCE_ACTIVATION = {
@@ -886,9 +854,9 @@ export const SCRIPT_MANUAL_SOURCE_ACTIVATION = {
 function diagnosticManualProvider(value: unknown): string {
   const provider = String(value || "").trim().toLowerCase();
   return ({
-    local: "moto",
-    route: "meizu",
-    fallback: "kdniao",
+    local: TIMELINE_SLOT.V4_QUERY,
+    route: TIMELINE_SLOT.V6_PICKER,
+    fallback: TIMELINE_SLOT.KDNIAO,
   } as Record<string, string>)[provider] || provider || "none";
 }
 
@@ -973,8 +941,8 @@ export async function queryManualForSource(input: {
   const waybillTail = waybillSuffix(waybill);
   const routeTimelineProvider = isJingDongSource
     && !input.pickerOnly
-    ? "kuaidi100_h5"
-    : "meizu";
+    ? TIMELINE_SLOT.K100_H5
+    : TIMELINE_SLOT.V6_PICKER;
   const scheduleKey = `${input.source}:${waybill}`;
   const identityFingerprint = [
     rawCarrierCode,
@@ -1017,9 +985,17 @@ export async function queryManualForSource(input: {
         !(input.hostSafe && isJingDongSource) &&
         (input.pickerOnly === true || isJingDongSource ||
           allowsRouteCapabilityForSourceProvider(input.sourceProvider)),
-      query: async () => isJingDongSource && !input.pickerOnly
-        ? queryJingDongKuaidi100Shipment(queryInput)
-        : queryMeizuShipment(queryInput),
+      // 京东这一槽以前直连 m.kuaidi100.com/query。表格定的 K100 H5 只能是 picker `manual`
+      // 返回的 `detailUrl` 那一页，所以这一槽统一是 picker，K100 那一页由详情链下一级去抓。
+      // 顺丰列表轮用 picker `refresh`（queryByMailNoOnline，结构化最新一条），`manual` 只在
+      // 详情/加件那一级拿 detailUrl（用户定 2026-09-04，待改表第 2 项，2026-09-05 落地）。
+      query: async () => queryMeizuShipment(
+        queryInput,
+        input.scheduled && input.currentShipment
+            && isShunFengSourceShipment(input.currentShipment)
+          ? "refresh"
+          : "manual",
+      ),
     },
     {
       source: "fallback",
@@ -1157,6 +1133,7 @@ export async function queryManualForSource(input: {
   if (selected && hasTimed(selected)) {
     return { shipment: selected, pending: null, routeUrl: selectedRouteUrl };
   }
+  const allSkipped = selection.attemptedSources === 0;
   const now = Date.now();
   const pending: PendingManualQuery = {
     id: `${input.source}:${waybill}`,
@@ -1188,5 +1165,6 @@ export async function queryManualForSource(input: {
     shipment: selected,
     pending,
     routeUrl: selectedRouteUrl,
+    ...(allSkipped ? { skipReason: "cooldown" as const } : {}),
   };
 }

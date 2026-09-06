@@ -177,7 +177,8 @@ public final class ExpressDetailScriptTest {
         assertTrue(ExpressDetailActivity.allowsKuaidi100Route(
                 manualAuthorityItem(true, "I6-K100"), null));
         assertFalse(ExpressDetailActivity.allowsKuaidi100Route(jingDong, null));
-        assertTrue(ExpressDetailActivity.allowsKuaidi100Route(
+        // 用户定 2026-09-05：京东来源不走 K100 H5，联合页失败回原生详情（feed 缓存）。
+        assertFalse(ExpressDetailActivity.allowsKuaidi100Route(
                 jingDong, null, true));
         assertFalse(ExpressDetailActivity.allowsKuaidi100Route(
                 interfaceItem("INTERFACE5", "CaiNiao", "ZTO", "中通快递"),
@@ -221,6 +222,8 @@ public final class ExpressDetailScriptTest {
         assertTrue(probe.contains(".logistics-button"));
         assertTrue(probe.contains(".logistics-button-text"));
         assertTrue(probe.contains("完整物流进度"));
+        // The live control text is "完整物流进度 >": only the trailing chevron is stripped.
+        assertTrue(probe.contains(".replace(/[>›〉»]+$/,'')"));
         assertTrue(probe.contains("button.click()"));
         assertFalse(probe.contains("location.href"));
         assertFalse(probe.contains("document.cookie"));
@@ -271,7 +274,7 @@ public final class ExpressDetailScriptTest {
         String source = detailActivitySource();
 
         assertTrue(source.contains("fallbackJingDongWebDetail(view, progress);"));
-        assertTrue(source.contains("String fallbackUrl = kuaidi100FallbackUrl();"));
+        assertTrue(source.contains("kuaidi100FallbackUrl(true)"));
         assertTrue(source.contains("showKuaidi100WebDetail(fallbackUrl);"));
     }
 
@@ -408,8 +411,12 @@ public final class ExpressDetailScriptTest {
 
     @Test
     public void accountOrderWaitsForItsProjectedWaybillBeforeLocalLookup() {
-        assertFalse(ExpressDetailActivity.canRefreshLocalTimeline(
+        // 用户定 2026-09-05：接口 5 的京东订单详情优先按件详情（订单号查 /v2/query），
+        // 所以未投影出运单号也能刷——刷的是账号时间线，不是本地手动链。
+        assertTrue(ExpressDetailActivity.canRefreshLocalTimeline(
                 accountOrder("")));
+        assertTrue(ExpressDetailActivity.prefersAccountTimeline(accountOrder("")));
+        assertFalse(ExpressDetailActivity.prefersAccountTimeline(accountOrder("I6-JD", "")));
         assertTrue(ExpressDetailActivity.canRefreshLocalTimeline(
                 accountOrder("JDWAYBILL123")));
         assertFalse(ExpressDetailActivity.canRefreshLocalTimeline(

@@ -83,10 +83,10 @@ public final class ExpressLoginActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     startResendCountdown();
-                    Toast.makeText(this, R.string.verification_sent, Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, ExpressToastCopy.CODE_SENT, Toast.LENGTH_SHORT).show();
                 });
             } catch (Throwable failure) {
-                showFailure(failure);
+                toastFailure(failure, ExpressToastCopy.CODE_SEND_FAILED);
             } finally {
                 runOnUiThread(() -> {
                     if (!isFinishing() && !isDestroyed()) setBusy(false);
@@ -126,13 +126,13 @@ public final class ExpressLoginActivity extends AppCompatActivity {
                 ExpressScheduler.requestNow(this);
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()) return;
-                    Toast.makeText(this, R.string.phone_bound, Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, ExpressToastCopy.PHONE_BOUND, Toast.LENGTH_SHORT).show();
                 });
                 runOnUiThread(() -> {
                     if (!isFinishing() && !isDestroyed()) finish();
                 });
             } catch (Throwable failure) {
-                showFailure(failure);
+                inlineFailure(failure, ExpressToastCopy.BIND_FAILED);
             } finally {
                 runOnUiThread(() -> {
                     if (!isFinishing() && !isDestroyed()) setBusy(false);
@@ -180,11 +180,23 @@ public final class ExpressLoginActivity extends AppCompatActivity {
         resendTimer.start();
     }
 
-    private void showFailure(Throwable failure) {
-        String message = failure.getMessage() == null
-                ? getString(R.string.network_exception) : failure.getMessage();
+    /** 绑定失败留在表单内联显示（三端同），上游给了原因就显示原因，否则用统一兜底文案。 */
+    private void inlineFailure(Throwable failure, String fallback) {
+        String message = failure.getMessage() == null || failure.getMessage().trim().isEmpty()
+                ? fallback : failure.getMessage();
         runOnUiThread(() -> {
             if (!isFinishing() && !isDestroyed()) showError(message);
+        });
+    }
+
+    /** 验证码发送失败走 toast（AGENTS §11 三端统一）：上游给了原因就显示原因，否则用统一兜底文案。 */
+    private void toastFailure(Throwable failure, String fallback) {
+        String message = failure.getMessage() == null || failure.getMessage().trim().isEmpty()
+                ? fallback : failure.getMessage();
+        runOnUiThread(() -> {
+            if (!isFinishing() && !isDestroyed()) {
+                Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+            }
         });
     }
 
