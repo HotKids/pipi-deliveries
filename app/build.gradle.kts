@@ -39,9 +39,11 @@ val releaseVersionCode = providers.environmentVariable("DELIVERIES_VERSION_CODE"
         require(parts.size == 3 && parts.all { it.toIntOrNull() != null }) {
             "DELIVERIES_VERSION_NAME must use major.minor.patch"
         }
+        // 末两位留给同一版本的预发布：beta 取 1-98，正式版固定 99，因此 beta 装过之后可以
+        // 直接覆盖升级（用户定 2026-09-06）。
         parts[0].toInt() * 1_000_000 +
             parts[1].toInt() * 10_000 +
-            parts[2].toInt() * 100 + 1
+            parts[2].toInt() * 100 + 99
     }
 val signingStore = signingValue("SIGNING_STORE_FILE")
 val signingStorePassword = signingValue("SIGNING_STORE_PASSWORD")

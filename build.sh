@@ -66,7 +66,6 @@ configure_beta_build() {
   local major
   local minor
   local patch
-  local beta_patch
 
   beta_number="$(sed -n \
     's/^export const SCRIPT_VERSION = "[0-9][0-9.]*-beta\([0-9][0-9]*\)";$/\1/p' \
@@ -85,9 +84,15 @@ configure_beta_build() {
     exit 1
   }
 
-  beta_patch=$((patch + 1))
-  DELIVERIES_VERSION_NAME="${major}.${minor}.${beta_patch}-beta${beta_number}"
-  DELIVERIES_VERSION_CODE=$((major * 1000000 + minor * 10000 + beta_patch * 100))
+  # 用户定 2026-09-06：beta 是「即将发布的那一版」的预发布，不再借用 patch + 1。编号落在末两位，
+  # 正式版固定占 99，所以同一版本的 beta 一定低于正式版，beta 装过之后可以直接覆盖升级；
+  # 借用 patch + 1 时 beta 反而比正式版高，装过 beta 的机器只能卸载重装。
+  [[ "$beta_number" =~ ^[0-9]+$ ]] && [ "$beta_number" -ge 1 ] && [ "$beta_number" -le 98 ] || {
+    printf '%s\n' "Beta number must be 1-98 so it stays below the release slot: $beta_number" >&2
+    exit 1
+  }
+  DELIVERIES_VERSION_NAME="${major}.${minor}.${patch}-beta${beta_number}"
+  DELIVERIES_VERSION_CODE=$((major * 1000000 + minor * 10000 + patch * 100 + beta_number))
   DELIVERIES_EXPRESS_GATEWAY_URL="https://beta.pipiassistant.app"
   export DELIVERIES_VERSION_NAME DELIVERIES_VERSION_CODE DELIVERIES_EXPRESS_GATEWAY_URL
 }
