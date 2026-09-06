@@ -43,6 +43,10 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   deleted: "该快递已删除",
   /** 删除失败。 */
   deleteFailed: "删除失败，请稍后重试",
+  /** 右滑签收成功（当前只有 iOS 列表行有这个手势）。 */
+  signed: "已标记为签收",
+  /** 右滑签收失败。 */
+  signFailed: "标记失败，请稍后重试",
   /** 复制运单号成功。 */
   waybillCopied: "运单号已复制",
   /** 复制运单号失败（只有 iOS 宿主会失败，允许的差异）。 */

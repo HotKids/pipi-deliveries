@@ -31,6 +31,13 @@ assert.doesNotMatch(rowSource, /confirmationDialog=/, "the row hosts no presenta
 assert.doesNotMatch(rowSource, /useState/, "the row owns no confirmation state");
 assert.doesNotMatch(rowSource, /setTimeout/);
 
+// 右滑签收（用户定 2026-09-06）走同一条路：行只声明手势，动作交回页面。已签收的行不给这个手势。
+assert.match(
+  rowSource,
+  /leadingSwipeActions=\{[\s\S]*?presentationStatus\.semantic === "COMPLETED"[\s\S]*?allowsFullSwipe: false,[\s\S]*?title="签收"[\s\S]*?action=\{props\.onComplete\}/,
+  "the sign gesture reuses the delete shape and is withheld from a signed row",
+);
+
 // Rows must sit inside a Section: loose rows mixed with a Section and a VStack break row identity.
 assert.match(
   homeSource,
@@ -50,6 +57,25 @@ assert.match(
   /if \(!confirmed\) return;\s*remove\(shipment\.identity\.id\);/,
   "a cancelled confirmation must mutate nothing",
 );
+
+// 签收的确认同样由页面托管，文案取自三端统一表，取消则什么都不改。
+assert.match(
+  homeSource,
+  /async function confirmComplete\(shipment: Shipment\)[\s\S]*?await Dialog\.confirm\(\{[\s\S]*?title: "要标记为已签收吗？"[\s\S]*?cancelLabel: "取消",[\s\S]*?confirmLabel: "签收",/,
+  "the sign confirmation is page-hosted, exactly like the delete one",
+);
+assert.match(
+  homeSource,
+  /if \(!confirmed\) return;\s*complete\(shipment\.identity\.id\);/,
+  "a cancelled sign confirmation must mutate nothing",
+);
+assert.match(
+  homeSource,
+  /performShipmentCompletion\(id\)/,
+  "signing goes through the shared mutation service, not a bespoke write",
+);
+assert.match(homeSource, /EXPRESS_TOAST_COPY\.signed/);
+assert.match(homeSource, /EXPRESS_TOAST_COPY\.signFailed/);
 
 // The detail page carries no delete of its own any more.
 assert.doesNotMatch(detailSource, /systemName="trash"/);

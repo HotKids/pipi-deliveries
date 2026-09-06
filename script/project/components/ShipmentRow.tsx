@@ -18,12 +18,18 @@ import { CourierIcon } from "./CourierIcon";
  * inside a Section, the swipe action calls a page handler, and the page confirms with
  * `Dialog.confirm`. One operation, one implementation — the earlier attempts here each invented a
  * different mechanism for this list alone, and every one of them broke.
+ *
+ * 右滑签收（用户定 2026-09-06，恢复 2026-09-04 撤销的手势）走的是同一套：行只声明手势并把请求
+ * 交回页面，确认与失败提示都在页面。撤销那次崩在行内自持的 `confirmationDialog` 与行状态上，
+ * 这里一个都不用。
  */
 export function ShipmentRow(props: {
   shipment: Shipment;
   onOpen: () => void;
   onDelete: () => void;
+  onComplete: () => void;
   deleteDisabled?: boolean;
+  completeDisabled?: boolean;
 }) {
   const item = props.shipment;
   const presentationStatus = shipmentPresentationStatus(item);
@@ -46,6 +52,21 @@ export function ShipmentRow(props: {
           />,
         ],
       }}
+      leadingSwipeActions={
+        presentationStatus.semantic === "COMPLETED"
+          ? undefined
+          : {
+              allowsFullSwipe: false,
+              actions: [
+                <Button
+                  title="签收"
+                  tint="systemGreen"
+                  disabled={props.completeDisabled === true}
+                  action={props.onComplete}
+                />,
+              ],
+            }
+      }
     >
       <CourierIcon
         courierCode={item.identity.courierCode}

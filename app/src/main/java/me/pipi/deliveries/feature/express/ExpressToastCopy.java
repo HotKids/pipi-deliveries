@@ -63,6 +63,12 @@ final class ExpressToastCopy {
     /** 删除失败。 */
     static final String DELETE_FAILED = "删除失败，请稍后重试";
 
+    /** 右滑签收成功（当前只有 iOS 列表行有这个手势）。 */
+    static final String SIGNED = "已标记为签收";
+
+    /** 右滑签收失败。 */
+    static final String SIGN_FAILED = "标记失败，请稍后重试";
+
     /** 复制运单号成功。 */
     static final String WAYBILL_COPIED = "运单号已复制";
 

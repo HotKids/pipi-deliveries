@@ -35,6 +35,7 @@ import {
   type ShipmentNavigationTarget,
 } from "../services/ui-state";
 import {
+  performShipmentCompletion,
   performShipmentDeletion,
 } from "../services/shipment-actions";
 import {
@@ -77,6 +78,8 @@ export function HomePage(props: {
   const [refreshing, setRefreshing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
+  const [completing, setCompleting] = useState(false);
+  const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
   const [validationNotice, setValidationNotice] = useState("");
   const waybillRef = useRef("");
@@ -344,6 +347,41 @@ export function HomePage(props: {
     }
   }
 
+  // 与 confirmDelete 同一套：行只声明手势，确认在页面，任何抛出都收进 toast。签收之后这一票
+  // 就被 forcedCompletedAtMs 闩住，后续自动同步不再改它；想放开只能删掉，下一轮同步会带回来。
+  async function confirmComplete(shipment: Shipment): Promise<void> {
+    if (completingRef.current) return;
+    completingRef.current = true;
+    setCompleting(true);
+    setNotice("");
+    try {
+      const confirmed = await Dialog.confirm({
+        title: "要标记为已签收吗？",
+        message: "标记后该快递状态不再随自动同步更新，删除后下一轮同步可重新带回。",
+        cancelLabel: "取消",
+        confirmLabel: "签收",
+      });
+      if (!confirmed) return;
+      complete(shipment.identity.id);
+    } catch (error) {
+      setNotice(EXPRESS_TOAST_COPY.signFailed);
+    } finally {
+      completingRef.current = false;
+      setCompleting(false);
+    }
+  }
+
+  function complete(id: string) {
+    setNotice("");
+    const result = performShipmentCompletion(id);
+    if (!result.ok) {
+      setNotice(EXPRESS_TOAST_COPY.signFailed);
+      return;
+    }
+    props.onStateChange(result.state);
+    setNotice(EXPRESS_TOAST_COPY.signed);
+  }
+
   function openShipment(shipment: Shipment) {
     setShipmentNavigationTarget(
       persistedShipmentNavigationTarget(shipment.identity.id),
@@ -572,7 +610,9 @@ export function HomePage(props: {
                   shipment={shipment}
                   onOpen={() => openShipment(shipment)}
                   onDelete={() => void confirmDelete(shipment)}
+                  onComplete={() => void confirmComplete(shipment)}
                   deleteDisabled={deleting}
+                  completeDisabled={completing}
                 />
               ))}
             </Section>
