@@ -1,6 +1,6 @@
 # Pipi Deliveries（派派助手 Scripting 版）
 
-Pipi Deliveries 的 iOS 版本以 Scripting 脚本形式提供，核心功能与 Android Lite 版基本一致。脚本在 Scripting App 中运行，快递列表、物流缓存及用户配置保存在本机。
+Pipi Deliveries 的 iOS 版本以 Scripting 脚本形式提供，仅限白名单授权用户使用，核心功能与 Android Lite 版基本一致。脚本在 Scripting App 中运行，快递列表、物流缓存及用户配置保存在本机。
 
 ## 功能简介
 
