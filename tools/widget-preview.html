@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+    body { background: transparent; }
+    .card {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      border-radius: 96px;
+      background: #fff;
+      color: #000;
+    }
+    .night .card { background: #1c1c1e; color: #fff; }
+    .gradient {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        to top right,
+        rgba(52, 130, 255, 0.333) 0%,
+        rgba(52, 130, 255, 0.094) 55%,
+        rgba(52, 130, 255, 0) 100%
+      );
+    }
+    .line-art {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0.22;
+    }
+    .search {
+      position: absolute;
+      width: 96px;
+      height: 96px;
+      color: #3482ff;
+    }
+    .search::before {
+      content: "";
+      position: absolute;
+      left: 12px;
+      top: 10px;
+      width: 48px;
+      height: 48px;
+      border: 8px solid currentColor;
+      border-radius: 50%;
+    }
+    .search::after {
+      content: "";
+      position: absolute;
+      left: 61px;
+      top: 62px;
+      width: 28px;
+      height: 8px;
+      border-radius: 4px;
+      background: currentColor;
+      transform: rotate(45deg);
+      transform-origin: left center;
+    }
+    .empty-content {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+    .vehicle { width: 272px; height: 272px; object-fit: contain; }
+    .empty-label {
+      color: rgba(0, 0, 0, 0.3);
+      font-size: 64px;
+      font-weight: 500;
+      line-height: 76px;
+      white-space: nowrap;
+    }
+    .night .empty-label { color: rgba(255, 255, 255, 0.3); }
+    .small .search { top: 56px; right: 56px; }
+    .small .empty-content {
+      left: 0;
+      right: 0;
+      top: 154px;
+    }
+    .medium .header {
+      position: absolute;
+      left: 58px;
+      top: 48px;
+      height: 100px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: 60px;
+      font-weight: 600;
+      line-height: 100px;
+      white-space: nowrap;
+    }
+    .medium .chevron {
+      width: 32px;
+      height: 32px;
+      border-top: 8px solid rgba(0, 0, 0, 0.42);
+      border-right: 8px solid rgba(0, 0, 0, 0.42);
+      transform: rotate(45deg);
+      margin-left: -4px;
+    }
+    .night.medium .chevron {
+      border-color: rgba(255, 255, 255, 0.42);
+    }
+    .medium .search { top: 48px; right: 58px; width: 80px; height: 100px; }
+    .medium .search::before { left: 4px; top: 12px; }
+    .medium .search::after { left: 53px; top: 64px; }
+    .medium .empty-content {
+      left: 0;
+      right: 0;
+      top: 208px;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="gradient"></div>
+    <img class="line-art" alt="">
+    <div class="header" hidden>
+      <span>我的快递</span><span>0</span><span class="chevron"></span>
+    </div>
+    <div class="search" aria-hidden="true"></div>
+    <div class="empty-content">
+      <img class="vehicle" src="../app/src/main/res/drawable-nodpi/widget_express_empty_vehicle.png" alt="">
+      <span class="empty-label">暂无快递</span>
+    </div>
+  </main>
+  <script>
+    const query = new URLSearchParams(location.search);
+    const size = query.get("size") === "medium" ? "medium" : "small";
+    const theme = query.get("theme") === "night" ? "night" : "light";
+    document.body.className = `${size} ${theme}`;
+    document.querySelector(".header").hidden = size !== "medium";
+    const prefix = theme === "night" ? "drawable-night-xxhdpi" : "drawable-xxhdpi";
+    const suffix = theme === "night" ? "png" : "webp";
+    document.querySelector(".line-art").src =
+      `../app/src/main/res/${prefix}/widget_express_empty_${size === "medium" ? "4x2" : "2x2"}_bg.${suffix}`;
+  </script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+-keep class me.pipi.deliveries.feature.express.** { *; }
+-keep class me.pipi.deliveries.widget.** { *; }
+-keep class me.pipi.deliveries.background.** { *; }
