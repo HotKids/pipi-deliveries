@@ -1154,7 +1154,25 @@ function latestTimelineTime(shipment: Shipment, now: number): number {
   );
 }
 
+/** 来源给出的终态事件时间：结构化状态时间优先，其次带时间的签收节点。 */
+export function terminalEvidenceAtMs(shipment: Shipment, now = Date.now()): number {
+  let value = Math.max(
+    validLifecycleTime(shipment.timeline.statusEventAtMs, now),
+    latestTimelineTime(shipment, now),
+  );
+  for (const track of shipment.timeline.tracks) {
+    const detail = track.detail.replace(/\s+/g, "");
+    if (!/签收|妥投|配送完成|已取消|订单关闭/.test(detail)) continue;
+    value = Math.max(value, validLifecycleTime(track.timeMs, now));
+  }
+  return value;
+}
+
 function signedAt(shipment: Shipment, now: number): number {
+  // 留存期只认这一行自己的终态戳（第一次进入终态时按来源的事件时间盖的）。以前是每轮按当前
+  // 展示包重算：详情页下拉刷回真实签收时间后，这一行会被当场判过期整行删掉（用户 2026-09-08）。
+  const settled = validLifecycleTime(shipment.settledAtMs, now);
+  if (settled) return settled;
   let value = Math.max(
     validLifecycleTime(shipment.timeline.statusEventAtMs, now),
     latestTimelineTime(shipment, now),
@@ -1169,6 +1187,8 @@ function signedAt(shipment: Shipment, now: number): number {
 }
 
 function cancelledAt(shipment: Shipment, now: number): number {
+  const settled = validLifecycleTime(shipment.settledAtMs, now);
+  if (settled) return settled;
   return Math.max(
     validLifecycleTime(shipment.timeline.statusEventAtMs, now),
     latestTimelineTime(shipment, now),

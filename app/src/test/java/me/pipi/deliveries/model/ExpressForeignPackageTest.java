@@ -35,5 +35,16 @@ public final class ExpressForeignPackageTest {
                 "[{\"context\":\"无时间\"}]", foreignEms));
         assertEquals(0L, ExpressTimeline.foreignPackageAnchorMillis("not json"));
         assertFalse(ExpressTimeline.isForeignPackage(account, "[]"));
+
+        // 用户 2026-09-08 报（三端同改）：签收之后 feed 往往只剩最新那一条节点，它是终点不是
+        // 起点。拿它当锚，这一票自己从揽收开始的历史整包被判成别人的包裹丢掉，列表和详情就成了
+        // 「暂无物流动态」。一条带时间的节点是状态摘要，不是历史，不足以当锚。
+        String signedSummary = new JSONArray()
+                .put(new JSONObject().put("time", "2026-09-06 18:20:00")
+                        .put("context", "您的快件已签收"))
+                .toString();
+        assertEquals(0L, ExpressTimeline.foreignPackageAnchorMillis(signedSummary));
+        assertFalse(ExpressTimeline.isForeignPackage(signedSummary, genuine));
+        assertFalse(ExpressTimeline.isForeignPackage(signedSummary, foreignEms));
     }
 }

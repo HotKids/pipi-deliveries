@@ -724,6 +724,26 @@ assert.equal(
     1,
     "settled a minute ago stays for its retention window",
   );
+  // 用户 2026-09-08 报：签收超过七天的行，在详情页下拉刷新后直接从列表消失、下一轮又被 feed
+  // 当新件带回来（而且没有轨迹）。倒计时只认这一行自己的终态戳，后到的历史不能追溯让它过期。
+  const withHistory: Shipment = {
+    ...blank,
+    settledAtMs: NOW - 60_000,
+    timeline: {
+      ...blank.timeline,
+      statusEventAtMs: NOW - 8 * 24 * 60 * 60 * 1000,
+      tracks: [{
+        timeMs: NOW - 8 * 24 * 60 * 60 * 1000,
+        timeText: "",
+        detail: "您的快件已签收，感谢使用",
+      }],
+    },
+  };
+  assert.equal(
+    pruneShipments([withHistory], NOW).length,
+    1,
+    "a later-arriving eight-day-old signature must not retroactively delete the row",
+  );
 }
 
 console.log("status policy tests passed");

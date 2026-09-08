@@ -82,6 +82,12 @@ export function foreignPackageAnchorMs(shipment: Shipment): number | null {
   // binding — an already-shipped order backfilled on first sync — into a false "foreign" verdict
   // that threw away the parcel's real history.
   if (!times.length) return null;
+  // R-29 锚的是这张订单 feed 的**第一条**节点。签收之后 feed 只回最新那一条（签收），它是终点
+  // 不是起点：拿它当锚会把这一票自己的历史（从揽收开始，早好几天）整包判成「别人的包裹」丢掉，
+  // 于是每一轮全量刷新之后详情页只剩 feed 那个 0 节点的包，列表写「暂无物流动态」
+  // （用户 2026-09-08 报，尾号 0238；本轮定位实测 3 个包进、0 个包出）。
+  // 只有一条带时间的节点时那是状态摘要，不是历史，不足以当起点锚。
+  if (times.length < 2) return null;
   return Math.min(...times) - FOREIGN_PACKAGE_ANCHOR_SLACK_MS;
 }
 
@@ -1916,6 +1922,18 @@ export function applyAccountShipment(
  * 冻结判据本身要求「终态 + 可用历史」，所以一旦节点被抹掉，这一行反而不再冻结、继续参与刷新，
  * 下一轮再抹一次——丢轨迹的行就是这么长期卡住的。这里只兜「不许变少」，变多（更完整的包）照收。
  */
+/**
+ * 「签收之后轨迹不许变少」（用户定 2026-09-07）。除了合并路径，落库前也要过一遍：整行被 feed
+ * 重建（`current` 丢了）时合并里的这道闸根本不会执行，那一行会被写成只有 feed 包的空壳
+ * （用户 2026-09-08 报：签收件每轮刷新之后「暂无物流动态」）。
+ */
+export function preserveSettledShipment(
+  current: Shipment | undefined,
+  merged: Shipment,
+): Shipment {
+  return preserveSettledTimeline(current, merged);
+}
+
 function preserveSettledTimeline(
   current: Shipment | undefined,
   merged: Shipment,

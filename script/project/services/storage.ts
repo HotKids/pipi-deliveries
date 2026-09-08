@@ -18,6 +18,7 @@ import {
   pruneShipments,
   sortShipments,
   splitJingDongH5Nodes,
+  terminalEvidenceAtMs,
   timedTracks,
 } from "./status";
 import {
@@ -61,6 +62,7 @@ import {
 } from "./durable-files";
 import { utf8Data } from "./scripting-data";
 import { shipmentNotificationEvent } from "./notification-events";
+import { preserveSettledShipment } from "./shipment-policy";
 
 const STATE_KEY = "pipi_deliveries_state_v1";
 /** 只放一个数字：状态最近一次落盘的 revision，供投影等待轮询，不用每次全量 loadState（2026-09-06）。 */
@@ -812,7 +814,15 @@ function isFeedProvider(provider: string): boolean {
   return raw === "interface5" || raw === "account";
 }
 
-/** 终态第一次出现时打上时间戳，离开终态就清掉；留存期靠它，不靠会被每次写入刷新的 updatedAtMs。 */
+/**
+ * 终态第一次出现时打上时间戳，离开终态就清掉。留存期只认这个戳：
+ * - 不认 updatedAtMs——每次写入都刷新，倒计时永远归零；
+ * - 也不能每轮按「当前展示包」重算——详情页下拉刷回真实签收时间（8 天前）时，那一行会被
+ *   当场判过期整行删掉，下一轮 feed 再当新件导入，于是「消失又被带回来、还没有轨迹」
+ *   （用户 2026-09-08 报）。
+ * 盖章时优先用来源给的终态事件时间，没有才用现在：留存外的老件一进来就是过期的，
+ * 「留存外老件不导入」照旧成立。
+ */
 function stampSettledAt(shipment: Shipment, now: number): Shipment {
   const terminal = shipment.timeline.semantic === "COMPLETED" ||
     shipment.timeline.semantic === "CANCELLED";
@@ -823,7 +833,7 @@ function stampSettledAt(shipment: Shipment, now: number): Shipment {
   }
   const current = Number(shipment.settledAtMs);
   if (Number.isFinite(current) && current > 0 && current <= now) return shipment;
-  return { ...shipment, settledAtMs: now };
+  return { ...shipment, settledAtMs: terminalEvidenceAtMs(shipment, now) || now };
 }
 
 function normalizeShipmentAuthorities(shipment: Shipment): Shipment {
@@ -1688,7 +1698,10 @@ export function commitRefreshState(
         }
       }
     }
-    shipments = replaceShipment(shipments, incoming);
+    // 落库前的最后一道闸：签收之后轨迹不许变少。整行被 feed 重建时合并里的那道闸拿不到
+    // `current`，根本不会执行（用户 2026-09-08 报：签收件每轮刷新之后「暂无物流动态」）。
+    shipments = replaceShipment(
+      shipments, preserveSettledShipment(current, incoming));
   }
 
   for (const [id, before] of baseShipments) {
@@ -1857,7 +1870,8 @@ export function commitTargetShipmentRefresh(
   const merged = {
     ...latest,
     pendingQueries,
-    shipments: replaceShipment(latest.shipments, incoming),
+    shipments: replaceShipment(
+      latest.shipments, preserveSettledShipment(current, incoming)),
   };
   if (
     refreshContentFingerprint(merged) === refreshContentFingerprint(latest)

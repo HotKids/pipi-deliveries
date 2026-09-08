@@ -134,6 +134,7 @@ const {
   selectShipmentDetailTimeline,
   shouldScheduleManualRefresh,
 } = await import("../services/shipment-policy");
+const { timedTracks } = await import("../services/status");
 const {
   applyAccountOrderProjectionToOwner,
   commitManualShipmentPreview,
@@ -1445,6 +1446,66 @@ const generationCommit = commitRefreshState(
   NOW + 3,
 );
 assert.equal(generationCommit.state.shipments.length, 0);
+
+// 用户 2026-09-08 报（尾号 0238）：详情页把 11 条节点刷进来、提交成功之后，紧接着的一轮全量刷新
+// 把 cn_h5 / v4_query / kdniao 三个包整个从候选里抹掉，列表和详情都回到「暂无物流动态」。落库前
+// 那道「签收之后轨迹不许变少」的闸只在合并路径上跑，整行被 feed 重建时拿不到 current，形同不存在。
+memory.clear();
+const settledSeedTracks = Array.from({ length: 11 }, (_, index) => ({
+  timeText: "2026-09-01 10:00:00",
+  timeMs: NOW - (11 - index) * 60 * 60 * 1000,
+  detail: index === 10 ? "您的快件已签收" : `节点 ${index}`,
+}));
+const settledSeed: Shipment = (() => {
+  const base = shipment({ id: "settled-detail", source: "interface5", phone: phoneA });
+  const detailPackage = {
+    ...base.timeline,
+    provider: "cn_h5",
+    semantic: "COMPLETED" as StatusSemantic,
+    tracks: settledSeedTracks,
+  };
+  const feedPackage = {
+    ...base.timeline,
+    provider: "interface5",
+    semantic: "COMPLETED" as StatusSemantic,
+    tracks: [],
+  };
+  return {
+    ...base,
+    timeline: detailPackage,
+    sourceTimeline: feedPackage,
+    manualTimelines: [detailPackage],
+  };
+})();
+const settledBase = saveState({
+  ...emptyState(),
+  bindings: [{ source: "interface5", phone: phoneA, boundAtMs: NOW }],
+  shipments: [settledSeed],
+}, NOW);
+assert.equal(
+  timedTracks(selectShipmentDetailTimeline(settledBase.shipments[0]).tracks).length,
+  11,
+  "the seeded settled row starts with its detail history",
+);
+const feedOnlyCandidate: Shipment = {
+  ...settledSeed,
+  timeline: { ...settledSeed.sourceTimeline!, tracks: [] },
+  sourceTimeline: { ...settledSeed.sourceTimeline!, tracks: [] },
+  manualTimelines: [],
+};
+const settledCommit = commitRefreshState(
+  settledBase,
+  { ...settledBase, shipments: [feedOnlyCandidate] },
+  "interface5",
+  NOW + 1,
+);
+const settledAfter = settledCommit.state.shipments[0];
+assert.ok(settledAfter, "the settled row must survive a feed-only refresh");
+assert.equal(
+  timedTracks(selectShipmentDetailTimeline(settledAfter).tracks).length,
+  11,
+  "a feed-only refresh must not blank a settled row's detail history",
+);
 
 // A refresh that began before an unbind or deletion cannot undo the user action.
 memory.clear();
