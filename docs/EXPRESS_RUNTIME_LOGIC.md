@@ -7,9 +7,9 @@ parameters but must not change source ownership.
 
 ## Lifecycle evidence
 
-- `ORDERED` and `PICKED` are timeline-start evidence. They include structured
-  provider states and normalized descriptions such as placed, waiting for
-  pickup, picked up, or collected.
+- `ORDERED` and `PICKED` are timeline-start evidence. Text evidence uses the
+  exact shared vocabulary in `AGENTS.md` §9 (2026-09-07); waiting for collection
+  (`待揽收` / `等待揽收`) alone is not start evidence.
 - A provider-aware parser must be used for numeric states. The same numeric
   value from an account feed and Meizu Picker is not assumed to mean the same
   lifecycle state.
@@ -22,6 +22,8 @@ parameters but must not change source ownership.
   from different providers remain separate whole packages.
 - Durable histories are bounded to 156 nodes while retaining the earliest
   order/pickup evidence and terminal evidence required by lifecycle decisions.
+  Lite compaction and its query gate share `containsTimelineStart`, including
+  the same provider-aware structured states and text vocabulary.
 - An equal-time update cannot regress a stronger lifecycle state to a weaker
   one.
 
@@ -128,6 +130,37 @@ parameters but must not change source ownership.
 - Widget freshness is based on the last successful network refresh, not a local
   cache write.
 - Notification aggregation is intentionally unchanged.
+
+## iOS notification delivery
+
+- Refresh checkpoints persist `pendingNotifications` in the same state envelope
+  as the business changes. A full refresh compares against its initial snapshot,
+  suppresses first-seen shipments, and coalesces each shipment within that refresh
+  batch to its final state. Unacknowledged events from earlier batches remain.
+- A timed-out or superseded full refresh cannot commit late results. A subsequent
+  full refresh replays already committed events even when the source returns no
+  further change.
+- Successful scheduling, a deleted shipment, or the current notification
+  preferences making an event inapplicable permits durable acknowledgment.
+  Scheduling or acknowledgment failure retains the event for another attempt.
+- Scripting does not document a caller-provided notification ID or replacement
+  contract. A crash after scheduling succeeds but before acknowledgment can
+  produce a duplicate notification; delivery is not exactly once.
+
+## Lite notification delivery
+
+- A qualifying visible change and its notification obligation commit in the
+  same SQLite transaction. Outbox failure rolls back that business update.
+- `express_notification_outbox` stores only an owner row ID and a revision
+  token. It coalesces each row to its latest committed presentation, preserving
+  batch aggregation and suppression for rows first discovered in that batch.
+- Delivery happens after commit, at the outer batch boundary, and during
+  process startup maintenance. A posting failure retains the obligation for
+  the next attempt; acknowledgment deletes only the matching revision.
+- Deleted rows are discarded. Unsupported notification states or denied
+  notification permission retain the existing skip policy. Successful replay
+  uses the same Android notification ID and `setOnlyAlertOnce(true)`; SQLite
+  and the system notification service do not share one atomic transaction.
 
 ## Failure boundaries
 

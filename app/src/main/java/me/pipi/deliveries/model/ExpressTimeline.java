@@ -1,6 +1,7 @@
 package me.pipi.deliveries.model;
 
 import me.pipi.deliveries.data.TimelineSlot;
+import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
@@ -192,16 +193,8 @@ public final class ExpressTimeline {
     }
 
     private static boolean isStartBoundary(RawTrack track) {
-        StatusSemantic semantic = boundarySemantic(track);
-        if (semantic == StatusSemantic.ORDERED || semantic == StatusSemantic.PICKED) {
-            return true;
-        }
-        String text = boundaryText(track);
-        return text.contains("已下单") || text.contains("待揽收")
-                || text.contains("等待揽收") || text.contains("已揽件")
-                || text.contains("已揽收") || text.contains("揽收成功")
-                || text.contains("picked") || text.contains("collected")
-                || text.contains("order placed");
+        return track != null
+                && Kuaidi100TimelinePolicy.containsTimelineStart(track.value, "", true);
     }
 
     private static boolean isTerminalBoundary(RawTrack track) {

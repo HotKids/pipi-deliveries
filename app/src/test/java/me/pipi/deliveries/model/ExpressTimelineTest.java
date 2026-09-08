@@ -10,6 +10,38 @@ import java.util.List;
 
 public final class ExpressTimelineTest {
     @Test
+    public void compactionRetainsEveryContractStartPhrase() throws Exception {
+        for (String phrase : new String[]{"已揽收", "已揽件", "揽收完成", "揽件成功",
+                "揽收成功", "已收寄", "收取快件", "已下单", "已经下单", "订单已提交",
+                "订单已创建", "订单已完成", "配送完成", "等待出库", "正在打包", "拣货"}) {
+            JSONArray tracks = longHistory(phrase);
+            String compacted = ExpressTimeline.mergeJson(tracks.toString(), "[]");
+            org.junit.Assert.assertTrue(phrase, compacted.contains(phrase));
+            assertEquals(156, new JSONArray(compacted).length());
+        }
+    }
+
+    @Test
+    public void compactionDoesNotTreatWaitingForCollectionAsAStart() throws Exception {
+        for (String phrase : new String[]{"待揽收", "等待揽收"}) {
+            String compacted = ExpressTimeline.mergeJson(longHistory(phrase).toString(), "[]");
+            org.junit.Assert.assertFalse(phrase, compacted.contains(phrase));
+        }
+    }
+
+    private static JSONArray longHistory(String oldestDetail) throws Exception {
+        JSONArray tracks = new JSONArray();
+        tracks.put(new JSONObject().put("time", "2026-08-01 00:00:00")
+                .put("context", oldestDetail));
+        for (int index = 0; index < 160; index++) {
+            tracks.put(new JSONObject().put("time", String.format(java.util.Locale.ROOT,
+                    "2026-09-%02d %02d:00:00", 1 + index / 24, index % 24))
+                    .put("context", "运输节点 " + index));
+        }
+        return tracks;
+    }
+
+    @Test
     public void parsesKuaidi100TracksNewestFirst() {
         List<ExpressTimeline.Track> tracks = ExpressTimeline.parse(
                 "[{\"time\":\"2026-08-14 10:00:00\",\"context\":\"已揽收\"},"

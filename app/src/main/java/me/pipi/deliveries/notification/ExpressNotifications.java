@@ -105,7 +105,8 @@ public final class ExpressNotifications {
         }
         Notification notification = builder.build();
         NotificationManager manager = context.getSystemService(NotificationManager.class);
-        if (manager != null) manager.notify((int) (item.rowId & 0x7fffffff), notification);
+        if (manager == null) throw new IllegalStateException("Notification service unavailable");
+        manager.notify((int) (item.rowId & 0x7fffffff), notification);
     }
 
     public static void cancel(Context context, long rowId) {

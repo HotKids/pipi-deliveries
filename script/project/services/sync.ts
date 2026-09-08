@@ -4979,10 +4979,11 @@ async function runFullRefresh(
       promotedPendingShipmentIds,
     };
   } finally {
+    // 租约的判定在上面 return 之前就做过了。这里再抛一次会把已经跑完并落盘的那次刷新替换成
+    // OperationTimeoutError（出错时还会盖掉真实错误），而重放本身最多又占 15 秒租约。
     if (lease.isCurrent()) {
       await replayPendingShipmentNotifications(lease.isCurrent);
     }
-    lease.assertCurrent();
   }
 }
 

@@ -13,7 +13,8 @@ import java.util.UUID;
 public final class ExpressDatabase extends SQLiteOpenHelper {
     private static final int LAST_LEGACY_SOURCE_VERSION = 7;
     public static final String DATABASE = "deliveries.db";
-    public static final int VERSION = 21;
+    public static final int VERSION = 22;
+    public static final String NOTIFICATION_OUTBOX_TABLE = "express_notification_outbox";
     public static final String EXPRESS_TABLE = "server_express";
     public static final String PHONE_TABLE = "express_phone";
     public static final String KUAIDI100_TIMELINE_TABLE = "k100_h5_timeline";
@@ -166,6 +167,8 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     }
 
     private static void createNativeSidecars(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + NOTIFICATION_OUTBOX_TABLE + "("
+                + "owner_row_id INTEGER PRIMARY KEY NOT NULL,event_token TEXT NOT NULL)");
         db.execSQL("CREATE TABLE IF NOT EXISTS " + KUAIDI100_TIMELINE_TABLE + "("
                 + "normalized_waybill TEXT PRIMARY KEY NOT NULL,"
                 + "waybill TEXT NOT NULL,courier_code TEXT DEFAULT '',"

@@ -21,6 +21,20 @@ public final class ExpressItemTest {
         assertEquals("京东购物", item.displayCompany());
         assertEquals(R.drawable.jdshopping, item.displayIconResource());
         assertEquals(StatusSemantic.ORDERED, item.sourceSemantic);
+        assertEquals("已下单", item.displayStatus());
+    }
+
+    /** 订单阶段自己走完的账号订单写「已完成」，不写「已签收」（用户定 2026-09-06，三端同口径）。 */
+    @Test
+    public void unprojectedAccountOrderCompletionReadsAsOrderCompletion() {
+        ExpressItem item = new ExpressItem(
+                1L, "13800138000", "3610448002878202", "JD", "京东快递",
+                StatusSemantic.COMPLETED, "已签收",
+                "您的订单3610448002878202已完成，感谢您对京东的支持，欢迎再次光临。",
+                "2026-09-07 20:48:38", "[]", "", "I5-JD", "", 1L, 2L, "I5-JD", "");
+
+        assertTrue(item.isAccountOrder());
+        assertEquals("已完成", item.displayStatus());
     }
 
     @Test

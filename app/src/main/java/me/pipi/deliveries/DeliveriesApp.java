@@ -30,6 +30,7 @@ public final class DeliveriesApp extends Application {
                 ExpressRepository repository = ExpressRepository.get(this);
                 repository.runPendingMigrations();
                 repository.pruneExpiredShipmentsIfDue();
+                repository.replayPendingNotifications();
             } catch (Throwable failure) {
                 Log.w(TAG, "Local maintenance failed; a later worker will retry", failure);
             }

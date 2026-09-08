@@ -7,6 +7,6 @@ import {
 } from "../services/build-track";
 
 assert.equal(SCRIPT_BUILD_TRACK, "formal");
-assert.equal(SCRIPT_VERSION, "0.5.1");
-assert.equal(SCRIPT_CLIENT_BUILD, 41);
+assert.equal(SCRIPT_VERSION, "0.5.2");
+assert.equal(SCRIPT_CLIENT_BUILD, 42);
 assert.equal(GATEWAY_ORIGIN, "https://pipiassistant.app");

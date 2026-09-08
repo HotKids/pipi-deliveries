@@ -112,7 +112,7 @@ public final class Kuaidi100TimelinePolicy {
                 provider, "", "", item.sourceProvider));
     }
 
-    private static boolean containsTimelineStart(
+    public static boolean containsTimelineStart(
             Object node, String provider, boolean orderedCounts) {
         if (node instanceof JSONArray) {
             JSONArray values = (JSONArray) node;

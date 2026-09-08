@@ -48,7 +48,6 @@ public final class ExpressRepository {
     private final Object maintenanceLock = new Object();
     private int changeBatchDepth;
     private boolean invalidationPending;
-    private final LinkedHashMap<Long, ExpressItem> notificationPending = new LinkedHashMap<>();
     /** 本轮变更批次里首次出现的行：同批次内后续再怎么翻状态都不算通知（iOS 新件不通知同口径）。 */
     private final HashSet<Long> batchFirstSeenRows = new HashSet<>();
     private static final String MIGRATION_PREFS = "deliveries_repository_migrations";
@@ -267,13 +266,16 @@ public final class ExpressRepository {
             if (!isRetentionPruneDue(previous, now)) return;
             preferences.edit().putLong(LAST_RETENTION_PRUNE, now).apply();
             try {
-                expired = pruneExpiredShipments(now);
+                // Serialize deletion and cancellation with notification replay.
+                synchronized (this) {
+                    expired = pruneExpiredShipments(now);
+                    for (ExpressItem item : expired) ExpressNotifications.cancel(context, item.rowId);
+                }
             } catch (RuntimeException | Error failure) {
                 preferences.edit().remove(LAST_RETENTION_PRUNE).apply();
                 throw failure;
             }
         }
-        for (ExpressItem item : expired) ExpressNotifications.cancel(context, item.rowId);
         if (!expired.isEmpty()) emitInvalidation();
     }
 
@@ -601,13 +603,20 @@ public final class ExpressRepository {
             values.put("lastLogisticDetail", merged.latestDetail);
             values.put("logisticsGmtModified", merged.latestTime);
             values.put("updatedAt", System.currentTimeMillis());
-            helper.getWritableDatabase().update(
-                    ExpressDatabase.EXPRESS_TABLE, values, "_id=?",
-                    new String[]{Long.toString(latest.rowId)});
-            previous = latest;
-            current = findByWaybill(result.waybill, bindingSource);
+            SQLiteDatabase db = helper.getWritableDatabase();
+            db.beginTransaction();
+            try {
+                db.update(ExpressDatabase.EXPRESS_TABLE, values, "_id=?",
+                        new String[]{Long.toString(latest.rowId)});
+                previous = latest;
+                current = findByWaybill(result.waybill, bindingSource);
+                stageNotification(db, previous, current);
+                db.setTransactionSuccessful();
+            } finally {
+                db.endTransaction();
+            }
         }
-        publishChange(previous, current);
+        publishChange();
     }
 
     public ExpressQueryResult saveAccountTimeline(
@@ -1140,13 +1149,14 @@ public final class ExpressRepository {
                         throw new IllegalStateException("Pending manual claim changed");
                     }
                 }
+                current = find(ownerRowId);
+                stageNotification(db, previous, current);
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
             }
-            current = find(ownerRowId);
         }
-        publishChange(previous, current);
+        publishChange();
         return current;
     }
 
@@ -1501,13 +1511,14 @@ public final class ExpressRepository {
                 }
                 db.delete(ExpressDatabase.OWNER_MANUAL_RETRY_TABLE,
                         "owner_row_id=?", new String[]{Long.toString(locked.rowId)});
+                current = projectManualTimeline(findManualOwner(expectedOwner.rowId));
+                stageNotification(db, previous, current);
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
             }
-            current = projectManualTimeline(findManualOwner(expectedOwner.rowId));
         }
-        publishChange(previous, current);
+        publishChange();
         return current;
     }
 
@@ -1948,13 +1959,14 @@ public final class ExpressRepository {
                 }
                 db.delete(ExpressDatabase.KUAIDI100_PENDING_TABLE,
                         "normalized_waybill=?", new String[]{normalized});
+                current = findByWaybill(result.waybill, selectedBindingSource);
+                stageNotification(db, previous, current);
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
             }
-            current = findByWaybill(result.waybill, selectedBindingSource);
         }
-        publishChange(previous, current);
+        publishChange();
         return current;
     }
 
@@ -2260,12 +2272,13 @@ public final class ExpressRepository {
                         changed = true;
                     }
                 }
+                if (changed) stageNotification(db, previousPresented, currentPresented);
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
             }
         }
-        if (changed) publishChange(previousPresented, currentPresented);
+        if (changed) publishChange();
     }
 
     private void upsertAutomaticObservation(
@@ -2615,12 +2628,13 @@ public final class ExpressRepository {
                                 previous,
                                 projectTimelineAuthorities(findRaw(db, rowId))});
                 }
+                for (ExpressItem[] change : changes) stageNotification(db, change[0], change[1]);
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
             }
         }
-        for (ExpressItem[] change : changes) publishChange(change[0], change[1]);
+        if (!changes.isEmpty()) publishChange();
     }
 
     /** Compatibility helper for tests and callers that refresh every current binding together. */
@@ -2926,12 +2940,13 @@ public final class ExpressRepository {
                 }
                 saved = projectTimelineAuthorities(
                         findRawByWaybill(result.waybill, incomingBindingSource));
+                stageNotification(db, previousPresented, saved);
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
             }
         }
-        publishChange(previousPresented, saved);
+        publishChange();
     }
 
     private static boolean shouldMergeRouteLessInterface5History(
@@ -2998,7 +3013,7 @@ public final class ExpressRepository {
                     ExpressDatabase.EXPRESS_TABLE, values, "_id=?",
                     new String[]{Long.toString(rowId)});
         }
-        publishChange(null, null);
+        publishChange();
     }
 
     public void delete(long rowId) {
@@ -3020,7 +3035,7 @@ public final class ExpressRepository {
         }
         if (removedRows.isEmpty()) removedRows.add(rowId);
         for (long removedRow : removedRows) ExpressNotifications.cancel(context, removedRow);
-        publishChange(null, null);
+        publishChange();
     }
 
     public synchronized List<String> phones() {
@@ -3304,7 +3319,7 @@ public final class ExpressRepository {
                 db.endTransaction();
             }
         }
-        publishChange(null, null);
+        publishChange();
     }
 
     /** Captures the exact account generations that one network request is authorized to write. */
@@ -3461,13 +3476,13 @@ public final class ExpressRepository {
                             "phone=? AND LOWER(sync_status)=?",
                             new String[]{removed.phone, removed.source});
                 }
+                for (ExpressItem[] change : changes) stageNotification(db, change[0], change[1]);
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
             }
         }
-        for (ExpressItem[] change : changes) publishChange(change[0], change[1]);
-        publishChange(null, null);
+        publishChange();
     }
 
     private static final class BindingRecord {
@@ -3685,53 +3700,74 @@ public final class ExpressRepository {
         return completed;
     }
 
-    private void publishChange(ExpressItem previous, ExpressItem current) {
-        ExpressItem notifyNow = null;
+    /** Store the obligation in the same transaction as its visible business change. */
+    private void stageNotification(SQLiteDatabase db, ExpressItem previous, ExpressItem current) {
+        if (!db.inTransaction()) throw new IllegalStateException("Notification requires transaction");
+        if (changeBatchDepth > 0 && previous == null && current != null) {
+            batchFirstSeenRows.add(current.rowId);
+        }
+        if (!ExpressNotifications.shouldPostUpdate(previous, current)) return;
+        if (changeBatchDepth > 0 && batchFirstSeenRows.contains(current.rowId)) {
+            ExpressLog.notificationSkipped(current, "first_seen_in_batch");
+            return;
+        }
+        ExpressLog.notificationDecided(previous, current, changeBatchDepth > 0);
+        ContentValues values = new ContentValues();
+        values.put("owner_row_id", current.rowId);
+        values.put("event_token", UUID.randomUUID().toString());
+        if (db.insertWithOnConflict(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null,
+                values, SQLiteDatabase.CONFLICT_REPLACE) < 0L) {
+            throw new IllegalStateException("Notification persistence failed");
+        }
+    }
+
+    private void publishChange() {
         synchronized (this) {
-            // iOS notifyShipmentChanges 比的是同步开始前的快照：这轮才出现的件没有 previous，
-            // 整轮都不通知。Lite 一轮同步里先落列表摘要（已下单）再落按件详情（已签收），
-            // 两次写之间比就把老件当成状态翻了（2026-09-05 17:55 Fold7 三票 8 月签收件）。
-            boolean firstSeenInBatch = false;
-            if (changeBatchDepth > 0 && current != null) {
-                if (previous == null) batchFirstSeenRows.add(current.rowId);
-                firstSeenInBatch = batchFirstSeenRows.contains(current.rowId);
-            }
-            if (firstSeenInBatch && ExpressNotifications.shouldPostUpdate(previous, current)) {
-                ExpressLog.notificationSkipped(current, "first_seen_in_batch");
-            } else if (ExpressNotifications.shouldPostUpdate(previous, current)) {
-                // 2026-09-05 Fold7 又一次同一分钟 14 条「已签收」：先把判定的两边打进 logcat，
-                // 下次再批量发就能看出是状态翻了还是事件时间翻了。
-                ExpressLog.notificationDecided(previous, current, changeBatchDepth > 0);
-                if (changeBatchDepth > 0) notificationPending.put(current.rowId, current);
-                else notifyNow = current;
-            }
             if (changeBatchDepth > 0) {
                 invalidationPending = true;
                 return;
             }
         }
-        if (notifyNow != null) ExpressNotifications.post(context, notifyNow);
+        replayPendingNotifications();
         emitInvalidation();
     }
 
     private void finishChangeBatch() {
-        ArrayList<ExpressItem> notifications = new ArrayList<>();
-        boolean invalidate = false;
+        boolean invalidate;
         synchronized (this) {
             if (changeBatchDepth <= 0) return;
             changeBatchDepth--;
             if (changeBatchDepth > 0) return;
             invalidate = invalidationPending;
             invalidationPending = false;
-            notifications.addAll(notificationPending.values());
-            notificationPending.clear();
             batchFirstSeenRows.clear();
         }
-        for (ExpressItem pending : notifications) {
-            ExpressItem current = find(pending.rowId);
-            if (current != null) ExpressNotifications.post(context, current);
-        }
+        replayPendingNotifications();
         if (invalidate) emitInvalidation();
+    }
+
+    /** Replays the latest committed presentation per row, using its stable Android notification ID. */
+    public synchronized void replayPendingNotifications() {
+        if (changeBatchDepth > 0) return;
+        SQLiteDatabase db = helper.getWritableDatabase();
+        LinkedHashMap<Long, String> pending = new LinkedHashMap<>();
+        try (Cursor cursor = db.query(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE,
+                new String[]{"owner_row_id", "event_token"}, null, null, null, null,
+                "owner_row_id")) {
+            while (cursor.moveToNext()) pending.put(cursor.getLong(0), cursor.getString(1));
+        }
+        for (Map.Entry<Long, String> event : pending.entrySet()) {
+            try {
+                ExpressItem current = find(event.getKey());
+                if (current != null) ExpressNotifications.post(context, current);
+                db.delete(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE,
+                        "owner_row_id=? AND event_token=?",
+                        new String[]{Long.toString(event.getKey()), event.getValue()});
+            } catch (RuntimeException failure) {
+                // Keep the row for the next process startup or completed sync batch.
+                android.util.Log.w("ExpressRepository", "Notification remains pending");
+            }
+        }
     }
 
     private void emitInvalidation() {
@@ -4325,14 +4361,15 @@ public final class ExpressRepository {
                         }
                     }
                 }
+                current = find(expectedOwner.rowId);
+                stageNotification(db, previous, current);
                 db.setTransactionSuccessful();
                 saved = true;
             } finally {
                 db.endTransaction();
             }
-            current = find(expectedOwner.rowId);
         }
-        if (saved) publishChange(previous, current);
+        if (saved) publishChange();
         return saved;
     }
 
@@ -4386,14 +4423,15 @@ public final class ExpressRepository {
                                 ExpressSourcePolicy.normalizeWaybill(locked.waybill),
                                 selectedBindingSource, normalizedDisplay});
                 if (changed != 1) return false;
+                current = find(expectedOwner.rowId);
+                stageNotification(db, previous, current);
                 db.setTransactionSuccessful();
                 saved = true;
             } finally {
                 db.endTransaction();
             }
-            current = find(expectedOwner.rowId);
         }
-        if (saved) publishChange(previous, current);
+        if (saved) publishChange();
         return saved;
     }
 
@@ -4419,13 +4457,20 @@ public final class ExpressRepository {
                     || !before.courierCode.equals(expected.courierCode)) return false;
             previous = projectTimelineAuthorities(before);
             SQLiteDatabase db = helper.getWritableDatabase();
-            ContentValues values = new ContentValues();
-            putCarrierNormalization(values, normalization);
-            saved = db.update(ExpressDatabase.EXPRESS_TABLE, values, "_id=?",
-                    new String[]{String.valueOf(before.rowId)}) == 1;
-            current = find(expected.rowId);
+            db.beginTransaction();
+            try {
+                ContentValues values = new ContentValues();
+                putCarrierNormalization(values, normalization);
+                saved = db.update(ExpressDatabase.EXPRESS_TABLE, values, "_id=?",
+                        new String[]{String.valueOf(before.rowId)}) == 1;
+                current = find(expected.rowId);
+                if (saved) stageNotification(db, previous, current);
+                db.setTransactionSuccessful();
+            } finally {
+                db.endTransaction();
+            }
         }
-        if (saved) publishChange(previous, current);
+        if (saved) publishChange();
         return saved;
     }
 

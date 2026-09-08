@@ -61,8 +61,30 @@ public final class ExpressStatusNormalizerTest {
                                 + "\"context\":\"您的京东订单正在配送中\"},"
                                 + "{\"time\":\"2026-08-16 09:00:00\","
                                 + "\"context\":\"商品已出库\"}]"));
-        assertEquals(StatusSemantic.ORDERED,
+    }
+
+    /**
+     * 用户 2026-09-08 报：订单走完了（唯一节点写「您的订单<单号>已完成」），三端却只有 iOS 显示
+     * 「已完成」。订单级终点与承运商签收同样是 COMPLETED，单号夹在中间也要认出来。
+     */
+    @Test
+    public void accountOrderCompletionIsTerminalEvenWithTheOrderNumberInline() {
+        assertEquals(StatusSemantic.COMPLETED,
                 ExpressStatusNormalizer.inferAccountOrderStatus(
                         "订单已完成，感谢您使用京东物流", "[]"));
+        assertEquals(StatusSemantic.COMPLETED,
+                ExpressStatusNormalizer.inferAccountOrderStatus(
+                        "您的订单3610448002878202已完成，感谢您对京东的支持，欢迎再次光临。"
+                                + "期待您对本次购物进行评价。", "[]"));
+        assertEquals(StatusSemantic.COMPLETED,
+                ExpressStatusNormalizer.inferAccountOrderStatus("配送完成", "[]"));
+        assertEquals(StatusSemantic.COMPLETED,
+                ExpressStatusNormalizer.inferAccountOrderStatus("已完成", "[]"));
+        // 下单阶段的词照旧停在「已下单」。
+        assertEquals(StatusSemantic.ORDERED,
+                ExpressStatusNormalizer.inferAccountOrderStatus(
+                        "您的订单已下单成功，我们将尽快为您备货", "[]"));
+        assertEquals(StatusSemantic.ORDERED,
+                ExpressStatusNormalizer.inferAccountOrderStatus("拣货完成，待出库", "[]"));
     }
 }

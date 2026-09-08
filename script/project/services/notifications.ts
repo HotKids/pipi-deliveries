@@ -47,7 +47,14 @@ export async function replayPendingShipmentNotifications(
       const latest = loadState();
       if (!latest.pendingNotifications?.some((item) => item.id === event.id)) continue;
       const exists = latest.shipments.some((shipment) => shipment.identity.id === event.shipmentId);
-      if (exists && notificationEnabled(event.semantic)) await scheduleEvent(event);
+      try {
+        if (exists && notificationEnabled(event.semantic)) await scheduleEvent(event);
+      } catch {
+        // 一条排不出去的通知不能卡住整条队列：宿主拒绝或 10 秒超时时只跳过这一条，后面的照发，
+        // 这一条留着下一轮重放。以前这里的 catch 在循环外，一条失败等于之后再也不发通知。
+        writeDiagnostic("notification.schedule.failed", { result: "pending_retry" }, "warning");
+        continue;
+      }
       if (!canSchedule() || !lease.isCurrent()) return;
       // The host has no documented caller-selected request ID. A crash after scheduling
       // and before this durable acknowledgement can repeat the notification.

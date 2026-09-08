@@ -46,6 +46,128 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Config(sdk = 31, manifest = Config.NONE, application = Application.class)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 public final class ExpressRepositoryDatabaseTest {
+    @org.robolectric.annotation.Implements(android.app.NotificationManager.class)
+    public static class FailingNotifications extends org.robolectric.shadows.ShadowNotificationManager {
+        static boolean fail;
+        static int attempts;
+
+        @org.robolectric.annotation.Implementation
+        @Override
+        public void notify(int id, android.app.Notification notification) {
+            attempts++;
+            if (fail) throw new IllegalStateException("Synthetic notification failure");
+            super.notify(id, notification);
+        }
+    }
+
+    @Test
+    @Config(shadows = FailingNotifications.class)
+    public void committedNotificationSurvivesDeliveryFailureAndRepositoryRecreation() {
+        FailingNotifications.attempts = 0;
+        FailingNotifications.fail = false;
+        String waybill = "SFNOTIFICATION0001";
+        repository.saveManualKuaidi100(timedResult(waybill,
+                "2026-09-08 09:00:00", "运输中"), "", "interface5");
+        assertEquals(0, FailingNotifications.attempts);
+        FailingNotifications.fail = true;
+        repository.runInChangeBatch(() -> {
+            repository.saveManualKuaidi100(
+                    timedResult(waybill, "2026-09-08 10:00:00", "已签收"),
+                    "", "interface5");
+            assertEquals(1, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, null));
+        });
+        assertEquals(StatusSemantic.COMPLETED,
+                repository.findByWaybill(waybill, "interface5").semantic);
+        assertEquals(1, FailingNotifications.attempts);
+        FailingNotifications.fail = false;
+        database.close();
+        database = new ExpressDatabase(context);
+        repository = new ExpressRepository(context, database);
+        repository.runInChangeBatch(() -> {});
+        assertEquals(2, FailingNotifications.attempts);
+        repository.runInChangeBatch(() -> {});
+        assertEquals(2, FailingNotifications.attempts);
+    }
+
+    @Test
+    public void notificationOutboxFailureRollsBackItsBusinessUpdate() {
+        String waybill = "SFNOTIFICATION0002";
+        repository.saveManualKuaidi100(timedResult(waybill,
+                "2026-09-08 09:00:00", "运输中"), "", "interface5");
+        database.getWritableDatabase().execSQL("CREATE TRIGGER fail_notification_insert "
+                + "BEFORE INSERT ON express_notification_outbox "
+                + "BEGIN SELECT RAISE(ABORT, 'Synthetic outbox failure'); END");
+        try {
+            repository.saveManualKuaidi100(timedResult(waybill,
+                    "2026-09-08 10:00:00", "已签收"), "", "interface5");
+        } catch (RuntimeException expected) {
+            // Business state and the notification obligation must fail together.
+        }
+        assertEquals(StatusSemantic.TRANSIT,
+                repository.findByWaybill(waybill, "interface5").semantic);
+        assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, null));
+    }
+
+    @Test
+    @Config(shadows = FailingNotifications.class)
+    public void newlyDiscoveredBatchNeverCreatesANotificationObligation() {
+        FailingNotifications.attempts = 0;
+        FailingNotifications.fail = false;
+        repository.runInChangeBatch(() -> {
+            repository.saveManualKuaidi100(timedResult("SFNOTIFICATION0003",
+                    "2026-09-08 09:00:00", "运输中"), "", "interface5");
+            repository.saveManualKuaidi100(timedResult("SFNOTIFICATION0003",
+                    "2026-09-08 10:00:00", "已签收"), "", "interface5");
+        });
+        assertEquals(0, FailingNotifications.attempts);
+        assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, null));
+    }
+
+    @Test
+    @Config(shadows = FailingNotifications.class)
+    public void deletedOwnerDiscardsItsPendingNotification() {
+        FailingNotifications.attempts = 0;
+        FailingNotifications.fail = false;
+        String waybill = "SFNOTIFICATION0004";
+        repository.saveManualKuaidi100(timedResult(waybill,
+                "2026-09-08 09:00:00", "运输中"), "", "interface5");
+        FailingNotifications.fail = true;
+        repository.saveManualKuaidi100(timedResult(waybill,
+                "2026-09-08 10:00:00", "已签收"), "", "interface5");
+        assertEquals(1, FailingNotifications.attempts);
+        FailingNotifications.fail = false;
+        repository.delete(repository.findByWaybill(waybill, "interface5").rowId);
+        repository.runInChangeBatch(() -> {});
+        assertEquals(1, FailingNotifications.attempts);
+        assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, null));
+    }
+
+    @Test
+    @Config(shadows = FailingNotifications.class)
+    public void retentionRemovesReplayedNotificationsInEitherOrder() {
+        FailingNotifications.attempts = 0;
+        FailingNotifications.fail = false;
+        for (boolean pruneFirst : new boolean[]{false, true}) {
+            FailingNotifications.attempts = 0;
+            ExpressItem expired = insertOwner("SFEXPIRED" + pruneFirst, "", StatusSemantic.COMPLETED);
+            ContentValues pending = new ContentValues();
+            pending.put("owner_row_id", expired.rowId);
+            pending.put("event_token", "synthetic-event");
+            database.getWritableDatabase().insertOrThrow(
+                    ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, pending);
+            context.getSharedPreferences("deliveries_repository_migrations", 0).edit()
+                    .remove("last_signed_prune_at").commit();
+            if (pruneFirst) repository.pruneExpiredShipmentsIfDue();
+            repository.replayPendingNotifications();
+            if (!pruneFirst) repository.pruneExpiredShipmentsIfDue();
+            assertNull(repository.find(expired.rowId));
+            assertEquals(pruneFirst ? 0 : 1, FailingNotifications.attempts);
+            assertEquals(0, context.getSystemService(android.app.NotificationManager.class)
+                    .getActiveNotifications().length);
+            assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, null));
+        }
+    }
+
     private Context context;
     private ExpressDatabase database;
     private ExpressRepository repository;

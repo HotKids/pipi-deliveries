@@ -1,9 +1,14 @@
 package me.pipi.deliveries.model;
 
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 /** Provider adapter that projects source-specific status evidence into one shared semantic. */
 public final class ExpressStatusNormalizer {
+    /** 与 iOS accountOrderSemantic（status.ts）逐字同表的订单级完成词。 */
+    private static final Pattern ORDER_COMPLETION =
+            Pattern.compile("订单.*已完成|订单完成|配送完成|^已完成$");
+
     private ExpressStatusNormalizer() {}
 
     public static StatusSemantic normalize(
@@ -73,7 +78,9 @@ public final class ExpressStatusNormalizer {
         if (containsAny(value, "订单已取消", "已取消", "订单关闭")) {
             return StatusSemantic.CANCELLED;
         }
-        if (containsAny(value, "已签收", "已妥投")) {
+        // 订单级终点与承运商签收同样是 COMPLETED（与 iOS accountOrderSemantic 逐字同表）：京东写
+        // 「您的订单<单号>已完成」，单号夹在中间，所以这里必须是能跨数字的匹配，不能只 contains。
+        if (containsAny(value, "已签收", "已妥投") || ORDER_COMPLETION.matcher(value).find()) {
             return StatusSemantic.COMPLETED;
         }
         if (containsAny(value, "待取件", "等待取件", "取件码")
