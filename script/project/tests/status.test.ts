@@ -132,6 +132,25 @@ assert.equal(
   "pickup prose must identify the earliest carrier scan",
 );
 assert.equal(semanticFromText("顺丰速运 已收取快件"), "PICKED");
+// 「订单已完成配送」「配送完成」是送完了，不是刚下单（2026-09-08 更正，三端同改）。展示语义改成
+// COMPLETED，起点闸门照旧关——这一票已经走完，没有更早的历史值得再抓，真值表一字不差。
+assert.equal(
+  semanticFromText("订单已完成配送，感谢您选择京东购物，期待再次为您服务"),
+  "COMPLETED",
+);
+assert.equal(semanticFromText("配送完成"), "COMPLETED");
+assert.equal(
+  semanticFromText("您的订单已完成配送，包裹已放入丰巢快递柜，取件码 8-1-2345"),
+  "WAITING_PICKUP",
+  "a compound node keeps its pickup branch: the completion wording sits below it",
+);
+assert.equal(
+  containsTimelineStartTrack([
+    track("2026-09-07 20:48:38", "订单已完成配送，感谢您选择京东购物", ""),
+  ]),
+  true,
+  "terminal order wording still closes the start gate (no new paid fallback)",
+);
 assert.equal(
   containsTimelineStartTrack([
     track("2026-09-05 10:00:00", "顺丰速运 已收取快件", ""),

@@ -99,7 +99,7 @@ public final class ExpressStatusNormalizer {
             return StatusSemantic.TRANSIT;
         }
         if (containsAny(value, "已发货", "商家已发货")) return StatusSemantic.SHIPPED;
-        if (containsAny(value, "已下单", "订单已提交", "订单已完成", "配送完成",
+        if (containsAny(value, "已下单", "订单已提交",
                 "等待出库", "正在出库", "正在打包", "拣货")) {
             return StatusSemantic.ORDERED;
         }

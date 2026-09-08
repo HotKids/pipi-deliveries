@@ -231,6 +231,18 @@ export function HomePage(props: {
       openShipment(alreadyListed);
       return;
     }
+    // 尾号输入框已经在页面上（承运商要尾号）却还没填满四位时，先内联提示，不要先弹「正在查询」——
+    // 用户 2026-09-08 报：顺丰的单号识别出来了、尾号还空着，点查询弹的是「正在查询，请稍候」。
+    if ((needsPhoneTail || detectedCarrier?.requiresPhoneTail)
+      && submittedPhoneTail.length !== 4) {
+      setNeedsPhoneTail(true);
+      // 一个字都没填就是「请输入手机尾号」（与 Lite 的尾号对话框标题同字，用户定 2026-09-08）；
+      // 填了但不满四位才提示位数。
+      setValidationNotice(
+        submittedPhoneTail ? "请输入 4 位手机尾号" : "请输入手机尾号",
+      );
+      return;
+    }
     queryingRef.current = true;
     setQuerying(true);
     carrierDetectionSequenceRef.current += 1;
@@ -257,7 +269,9 @@ export function HomePage(props: {
         submittedPhoneTail.length !== 4
       ) {
         setNeedsPhoneTail(true);
-        setValidationNotice("请输入 4 位手机尾号");
+        setValidationNotice(
+          submittedPhoneTail ? "请输入 4 位手机尾号" : "请输入手机尾号",
+        );
         return;
       }
       const preview = await queryManualShipmentPreview({

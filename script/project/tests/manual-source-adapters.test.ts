@@ -420,8 +420,8 @@ await assert.rejects(
     bindingSource: "interface5",
   }),
   (error: unknown) =>
-    error instanceof Error && error.message === "请输入 4 位手机尾号",
-  "every missing-tail branch must use the shared four-digit wording",
+    error instanceof Error && error.message === "请输入手机尾号",
+  "a missing tail asks for the tail; the four-digit wording is for a partial one",
 );
 
 // Physical JD carrier identity does not make a pure-manual parcel a JingDong

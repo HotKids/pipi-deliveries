@@ -201,7 +201,8 @@ public final class ExpressTimeline {
         if (boundarySemantic(track).terminal()) return true;
         String text = boundaryText(track);
         return text.contains("已签收") || text.contains("签收成功")
-                || text.contains("已完成") || text.contains("已拒收")
+                || text.contains("已完成") || text.contains("配送完成")
+                || text.contains("已拒收")
                 || text.contains("delivered") || text.contains("completed");
     }
 

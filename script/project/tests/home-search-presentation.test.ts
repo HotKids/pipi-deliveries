@@ -124,6 +124,13 @@ assert.match(
   /systemName="phone"/,
   "the phone-tail field must use the telephone symbol",
 );
+// 用户 2026-09-08 报：顺丰单号已经识别、尾号还空着，点查询弹的是「正在查询，请稍候」。尾号栏已经
+// 在页面上却没填满四位时，必须先内联提示，提交 toast 只在真的开跑那一轮弹。
+assert.match(
+  homeSource,
+  /if \(\(needsPhoneTail \|\| detectedCarrier\?\.requiresPhoneTail\)[\s\S]*?"请输入手机尾号",[\s\S]*?return;[\s\S]*?queryingRef\.current = true;[\s\S]*?setNotice\(EXPRESS_TOAST_COPY\.manualQuerying\)/,
+  "an empty phone tail must be caught before the 正在查询 toast",
+);
 assert.doesNotMatch(
   homeSource,
   /\{phoneTail\.length\}\/4/,

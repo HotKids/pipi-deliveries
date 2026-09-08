@@ -37,6 +37,7 @@ assert.equal(
   "upstream text never reaches the page; only the unified copy does",
 );
 assert.equal(isManualQueryValidationMessage("请输入 4 位手机尾号"), true);
+assert.equal(isManualQueryValidationMessage("请输入手机尾号"), true);
 assert.equal(isManualQueryValidationMessage("请输入有效的快递单号"), true);
 assert.equal(isManualQueryValidationMessage("查询失败，请稍后重试"), false);
 assert.equal(detailPullToast(true, true), "轨迹加载成功");

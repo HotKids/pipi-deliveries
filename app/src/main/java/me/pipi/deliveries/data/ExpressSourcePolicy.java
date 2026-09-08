@@ -79,8 +79,11 @@ final class ExpressSourcePolicy {
                 ? StatusSemantic.UNKNOWN : sourceSemantic;
         if (!isAccountOrderOwner(owner)) return fallback;
         if (!normalizeWaybill(projectedWaybill).isEmpty()) return fallback;
-        return fallback == StatusSemantic.COMPLETED || fallback == StatusSemantic.CANCELLED
-                ? fallback : StatusSemantic.ORDERED;
+        // 用户定 2026-09-08：只有「已揽收且还没有运单号」才显示已下单，其余状态照来源显示
+        // （与 iOS accountOrderSemantic 同口径）。结构化状态缺失时停在订单阶段。
+        return fallback == StatusSemantic.PICKED || fallback == StatusSemantic.SHIPPED
+                || fallback == StatusSemantic.UNKNOWN
+                ? StatusSemantic.ORDERED : fallback;
     }
 
     static boolean hasTimedCarrierTimeline(String tracksJson) {

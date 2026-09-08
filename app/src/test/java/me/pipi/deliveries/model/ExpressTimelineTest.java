@@ -9,8 +9,12 @@ import org.junit.Test;
 import java.util.List;
 
 public final class ExpressTimelineTest {
+    /**
+     * 压缩不能丢边界：揽收类、下单类，以及 2026-09-08 从下单类挪出去的终点类
+     * 「订单已完成」「配送完成」——它们仍然关起点闸门（这一票已经走完），只是展示上是 COMPLETED。
+     */
     @Test
-    public void compactionRetainsEveryContractStartPhrase() throws Exception {
+    public void compactionRetainsEveryContractBoundaryPhrase() throws Exception {
         for (String phrase : new String[]{"已揽收", "已揽件", "揽收完成", "揽件成功",
                 "揽收成功", "已收寄", "收取快件", "已下单", "已经下单", "订单已提交",
                 "订单已创建", "订单已完成", "配送完成", "等待出库", "正在打包", "拣货"}) {

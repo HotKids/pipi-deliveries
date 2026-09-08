@@ -48,9 +48,20 @@ public final class ExpressSourcePolicyTest {
         assertEquals(StatusSemantic.ORDERED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
                         "I5-JD", "", StatusSemantic.PICKED));
+        // 用户定 2026-09-08：只有「已揽收（含待揽件）且还没有运单号」才降级成已下单，其余状态
+        // 照来源显示——一票走完的订单以前也被压成「已下单」。
         assertEquals(StatusSemantic.ORDERED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
+                        "I5-JD", "", StatusSemantic.SHIPPED));
+        assertEquals(StatusSemantic.TRANSIT,
+                ExpressSourcePolicy.accountOrderPresentationSemantic(
                         "I5-JD", "", StatusSemantic.TRANSIT));
+        assertEquals(StatusSemantic.DELIVERY,
+                ExpressSourcePolicy.accountOrderPresentationSemantic(
+                        "I5-JD", "", StatusSemantic.DELIVERY));
+        assertEquals(StatusSemantic.WAITING_PICKUP,
+                ExpressSourcePolicy.accountOrderPresentationSemantic(
+                        "I5-JD", "", StatusSemantic.WAITING_PICKUP));
         assertEquals(StatusSemantic.COMPLETED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
                         "I5-JD", "", StatusSemantic.COMPLETED));

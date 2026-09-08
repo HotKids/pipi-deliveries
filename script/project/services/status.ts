@@ -297,9 +297,13 @@ export function semanticFromText(value: string): StatusSemantic {
   if (/已揽收|已揽件|揽收完成|揽件成功|揽收成功|已收寄|收取快件/.test(text)) return "PICKED";
   if (/运输中|转运|分拨|已发往|已到达/.test(text)) return "TRANSIT";
   if (/已发货|商家已发货/.test(text)) return "SHIPPED";
-  if (/已下单|已经下单|订单已创建|订单已提交|订单已完成|配送完成|等待出库|正在打包|拣货/.test(text)) {
+  if (/已下单|已经下单|订单已创建|订单已提交|等待出库|正在打包|拣货/.test(text)) {
     return "ORDERED";
   }
+  // 「订单已完成配送」「配送完成」是送完了，不是刚下单（Fold7 2026-09-02 实测那行的结构化字段就是
+  // 签收 / 订单完成）。2026-09-08 从上面那支挪到这里：位置不动，所以「已放至驿站请及时领取」这类
+  // 复合文案照旧先落在待取件支上，只是这两个词不再冒充「已下单」。
+  if (/订单.*已完成|订单完成|配送完成/.test(text)) return "COMPLETED";
   if (/异常|问题件/.test(text)) return "DANGER";
   return "UNKNOWN";
 }
@@ -448,6 +452,13 @@ export function timedTracks(tracks: readonly TrackNode[]): TrackNode[] {
   );
 }
 
+/**
+ * 终点文案：京东那句原文是「订单已完成配送，感谢您选择京东购物」，说的是送完了，不是刚下单。
+ * 2026-09-08 从 semanticFromText 的下单支挪进完成支；起点闸门照旧认它（这一票已经走完，没有更早的
+ * 历史值得再抓），所以这里单独留一条，闸门的真值表跟以前一字不差。
+ */
+const ORDER_COMPLETION_TEXT = /订单已完成|配送完成/;
+
 export function containsTimelineStartTrack(
   tracks: readonly TrackNode[],
 ): boolean {
@@ -458,7 +469,8 @@ export function containsTimelineStartTrack(
     return codes.some((code) =>
       isStart(semanticFromTrackCode(track, code)) ||
       isStart(semanticFromStored(String(code ?? ""), track.detail))
-    ) || isStart(semanticFromText(track.detail));
+    ) || isStart(semanticFromText(track.detail))
+      || ORDER_COMPLETION_TEXT.test(track.detail.replace(/\s+/g, ""));
   });
 }
 

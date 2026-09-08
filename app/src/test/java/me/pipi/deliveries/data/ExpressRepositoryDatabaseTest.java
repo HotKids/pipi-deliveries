@@ -853,8 +853,10 @@ public final class ExpressRepositoryDatabaseTest {
 
         ExpressItem unprojected = repository.find(rowId);
         assertNotNull(unprojected);
-        assertEquals(StatusSemantic.ORDERED, unprojected.semantic);
-        assertEquals("已下单", unprojected.displayStatus());
+        // 用户定 2026-09-08：只有「已揽收（含待揽件）且还没有运单号」才降级成已下单，运输中这类
+        // 状态照来源显示。
+        assertEquals(StatusSemantic.TRANSIT, unprojected.semantic);
+        assertEquals("运输中", unprojected.displayStatus());
 
         assertTrue(repository.saveOrderProjection(
                 unprojected, "interface5", "YT0256719000104", "圆通速递"));
@@ -898,7 +900,7 @@ public final class ExpressRepositoryDatabaseTest {
                 "", phone, "interface5", "", "", "JingDong"), phone);
         ExpressItem refreshed = repository.find(rowId);
         assertNotNull(refreshed);
-        assertEquals(StatusSemantic.ORDERED, refreshed.semantic);
+        assertEquals(StatusSemantic.TRANSIT, refreshed.semantic);
         assertEquals(StatusSemantic.TRANSIT, refreshed.sourceSemantic);
         assertEquals("订单运输中", refreshed.latestDetail);
 

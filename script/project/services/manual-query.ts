@@ -387,7 +387,7 @@ async function queryCandidate(
   if (rejectKuaidi100Response(root)) {
     if (phoneRejected) {
       throw new ManualQueryError(
-        phoneTail ? "手机尾号不正确，请重新输入" : "请输入 4 位手机尾号",
+        phoneTail ? "手机尾号不正确，请重新输入" : "请输入手机尾号",
         true,
       );
     }
@@ -439,7 +439,7 @@ async function queryCarrierCandidate(
   const carrier = resolveCarrierCpCode(rawCourierCode);
   const tails = queryPhoneTails(carrier, explicitTail, boundTails);
   if (carrier?.requiresPhoneTail && !tails.length) {
-    throw new ManualQueryError("请输入 4 位手机尾号", true);
+    throw new ManualQueryError("请输入手机尾号", true);
   }
 
   let lastError: unknown = null;
@@ -467,7 +467,7 @@ async function queryCarrierCandidate(
   if (!suppliedTails.length) {
     throw lastError instanceof Error
       ? lastError
-      : new ManualQueryError("请输入 4 位手机尾号", true);
+      : new ManualQueryError("请输入手机尾号", true);
   }
   for (const phoneTail of suppliedTails) {
     assertWithinDeadline(deadlineAtMs);
@@ -489,7 +489,7 @@ async function queryCarrierCandidate(
   }
   throw lastError instanceof Error
     ? lastError
-    : new ManualQueryError("请输入 4 位手机尾号", true);
+    : new ManualQueryError("请输入手机尾号", true);
 }
 
 export async function queryKuaidi100Shipment(input: {
@@ -766,7 +766,7 @@ export async function queryKdniaoShipment(
   const tails = carrier.requiresPhoneTail
     ? queryPhoneTails(carrier, explicitTail, input.phoneTails || [])
     : [""];
-  if (!tails.length) throw new ManualQueryError("请输入 4 位手机尾号", true);
+  if (!tails.length) throw new ManualQueryError("请输入手机尾号", true);
   let lastPhoneError: ManualQueryError | null = null;
   for (const phoneTail of tails) {
     assertWithinDeadline(input.deadlineAtMs);
@@ -787,7 +787,7 @@ export async function queryKdniaoShipment(
       const reason = firstText(root, "reason", "message", "msg");
       if (/手机|电话|尾号|phone/i.test(reason)) {
         lastPhoneError = new ManualQueryError(
-          phoneTail ? "手机尾号不正确，请重新输入" : "请输入 4 位手机尾号",
+          phoneTail ? "手机尾号不正确，请重新输入" : "请输入手机尾号",
           true,
         );
         continue;
@@ -831,7 +831,7 @@ export async function queryKdniaoShipment(
       successAtMs: sourceNow(input.dependencies),
     });
   }
-  throw lastPhoneError || new ManualQueryError("请输入 4 位手机尾号", true);
+  throw lastPhoneError || new ManualQueryError("请输入手机尾号", true);
 }
 
 export type ManualQueryOutcome = {
