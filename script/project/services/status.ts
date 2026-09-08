@@ -1211,6 +1211,16 @@ export function pruneShipments(
   });
 }
 
+/** 这一行手上还有没有任何带时间的节点（feed 槽、展示包、各手动槽都算）。 */
+function hasAnyTimedHistory(shipment: Shipment): boolean {
+  if (timedTracks(shipment.timeline.tracks).length) return true;
+  if (timedTracks(shipment.sourceTimeline?.tracks || []).length) return true;
+  for (const timeline of shipment.manualTimelines || []) {
+    if (timedTracks(timeline.tracks).length) return true;
+  }
+  return false;
+}
+
 export function shouldRefreshShipment(
   shipment: Shipment,
   now = Date.now(),
@@ -1220,6 +1230,10 @@ export function shouldRefreshShipment(
     return false;
   }
   if (shipment.timeline.semantic !== "COMPLETED") return true;
+  // 冻结保护的是「已经有的轨迹」。一行签收了却一条带时间的节点都没有（早前被 R-29 误清空、
+  // 或被 feed 空壳覆盖的那批），冻结只会把空壳永久锁死，列表一直写「暂无物流动态」，而且再也
+  // 不会自己补回来（用户 2026-09-08 报「又回来了」）。这种行照旧允许刷新去把轨迹拿回来。
+  if (!hasAnyTimedHistory(shipment)) return true;
   const eventAt = signedAt(shipment, now);
   return !eventAt || now - eventAt < SIGNED_REFRESH_MS;
 }

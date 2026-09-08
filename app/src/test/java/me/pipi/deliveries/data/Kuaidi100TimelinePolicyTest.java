@@ -26,11 +26,27 @@ public final class Kuaidi100TimelinePolicyTest {
 
     @Test
     public void signedShipmentStopsAtTwentyFourHourBoundary() {
+        ExpressQueryResult signedHistory = result(StatusSemantic.COMPLETED,
+                "2026-01-01 00:00:00", "已签收",
+                "[{\"time\":\"2026-01-01 00:00:00\",\"context\":\"快件已签收\"}]");
         assertTrue(Kuaidi100TimelinePolicy.shouldRefresh(
                 item(StatusSemantic.COMPLETED,
                         NOW - Kuaidi100TimelinePolicy.SIGNED_REFRESH_WINDOW_MS + 1L),
-                null, NOW));
+                signedHistory, NOW));
         assertFalse(Kuaidi100TimelinePolicy.shouldRefresh(
+                item(StatusSemantic.COMPLETED,
+                        NOW - Kuaidi100TimelinePolicy.SIGNED_REFRESH_WINDOW_MS),
+                signedHistory, NOW));
+    }
+
+    /**
+     * 用户 2026-09-08 报（三端同改）：一行签收了却一条带时间的节点都没有（被清空过的那批），
+     * 冻结只会把空壳永久锁死，列表一直写「暂无物流动态」且再也不会自己补回来。冻结保护的是
+     * 已经有的轨迹，空壳照旧允许刷新去把轨迹拿回来。
+     */
+    @Test
+    public void signedShipmentWithoutAnyTimedNodeKeepsRefreshing() {
+        assertTrue(Kuaidi100TimelinePolicy.shouldRefresh(
                 item(StatusSemantic.COMPLETED,
                         NOW - Kuaidi100TimelinePolicy.SIGNED_REFRESH_WINDOW_MS),
                 null, NOW));
@@ -51,7 +67,9 @@ public final class Kuaidi100TimelinePolicyTest {
         long afterWindow = ExpressSourcePolicy.parseEventTime(cached.latestTime)
                 + Kuaidi100TimelinePolicy.SIGNED_REFRESH_WINDOW_MS;
         assertFalse(Kuaidi100TimelinePolicy.shouldRefresh(
-                item(StatusSemantic.TRANSIT, 0L), cached, afterWindow));
+                item(StatusSemantic.TRANSIT,
+                        "[{\"time\":\"2026-01-01 00:00:00\",\"context\":\"快件已签收\"}]"),
+                cached, afterWindow));
     }
 
     @Test
@@ -323,6 +341,12 @@ public final class Kuaidi100TimelinePolicyTest {
         assertFalse(Kuaidi100TimelinePolicy.isTimelineIncomplete(twoKdniaoTerminalNodes));
         assertTrue(Kuaidi100TimelinePolicy.isTimelineIncomplete(manyAccountNodes));
         assertTrue(Kuaidi100TimelinePolicy.isTimelineIncomplete(completedMoto));
+    }
+
+    private static ExpressItem item(StatusSemantic semantic, String tracksJson) {
+        return new ExpressItem(1L, "", "TEST123", "ZTO", "中通快递",
+                semantic, semantic.label, "", "", tracksJson, "", "INTERFACE5", "",
+                0L, 0L, "INTERFACE5", "");
     }
 
     private static ExpressItem item(StatusSemantic semantic, long eventTime) {

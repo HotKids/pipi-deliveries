@@ -16,6 +16,7 @@ import {
   semanticFromText,
   shipmentDetailPresentationStatus,
   shipmentPresentationStatus,
+  shouldRefreshShipment,
   sortShipments,
   statusLabel,
   statusTint,
@@ -744,6 +745,39 @@ assert.equal(
     pruneShipments([withHistory], NOW).length,
     0,
     "an eight-day-old signature expires even when the settled stamp is fresh",
+  );
+}
+
+// 用户 2026-09-08 报「又回来了」：早前被清空的签收行手上一条节点都没有，冻结却把这个空壳锁死，
+// 列表永远写「暂无物流动态」且再也不会自己补回来。冻结保护的是已经有的轨迹，空壳照旧允许刷新。
+{
+  const settled = shipment("thaw-empty", "COMPLETED", NOW - 3 * 24 * 60 * 60 * 1000);
+  const withHistory: Shipment = {
+    ...settled,
+    timeline: {
+      ...settled.timeline,
+      tracks: [{
+        timeMs: NOW - 3 * 24 * 60 * 60 * 1000,
+        timeText: "",
+        detail: "您的快件已签收",
+      }],
+    },
+  };
+  assert.equal(
+    shouldRefreshShipment(withHistory, NOW),
+    false,
+    "a settled row that still has its history stays frozen",
+  );
+  const emptied: Shipment = {
+    ...withHistory,
+    timeline: { ...withHistory.timeline, tracks: [] },
+    sourceTimeline: null,
+    manualTimelines: [],
+  };
+  assert.equal(
+    shouldRefreshShipment(emptied, NOW),
+    true,
+    "a settled row with no timed node left must still be allowed to refill",
   );
 }
 

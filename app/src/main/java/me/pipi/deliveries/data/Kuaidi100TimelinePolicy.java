@@ -230,6 +230,14 @@ public final class Kuaidi100TimelinePolicy {
                 item.tracksJson, "", item.phone, provider, "", "", item.sourceProvider));
     }
 
+    private static boolean hasTimedTrack(String tracksJson) {
+        for (ExpressTimeline.Track track : ExpressTimeline.parse(tracksJson, "", "")) {
+            if (ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) continue;
+            if (ExpressSourcePolicy.parseEventTime(track.time) > 0L) return true;
+        }
+        return false;
+    }
+
     /** Refresh on every open until an exact signed event is at least 24 hours old. */
     public static boolean shouldRefresh(
             ExpressItem item, ExpressQueryResult cached, long now) {
@@ -239,6 +247,12 @@ public final class Kuaidi100TimelinePolicy {
             completed = true;
         }
         if (!completed) return true;
+        // 冻结保护的是「已经有的轨迹」。一行签收了却一条带时间的节点都没有，冻结只会把空壳
+        // 永久锁死，列表一直写「暂无物流动态」且再也不会自己补回来（用户 2026-09-08 报，三端同改）。
+        if (timedTrackCount(cached) <= 0
+                && (item == null || !hasTimedTrack(item.tracksJson))) {
+            return true;
+        }
         signedAt = ExpressLifecycleTimes.signedAt(item, cached, now);
         if (signedAt <= 0L) return true;
         return now - signedAt < SIGNED_REFRESH_WINDOW_MS;
