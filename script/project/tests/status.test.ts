@@ -724,8 +724,9 @@ assert.equal(
     1,
     "settled a minute ago stays for its retention window",
   );
-  // 用户 2026-09-08 报：签收超过七天的行，在详情页下拉刷新后直接从列表消失、下一轮又被 feed
-  // 当新件带回来（而且没有轨迹）。倒计时只认这一行自己的终态戳，后到的历史不能追溯让它过期。
+  // 签收就是签收：这一行的签收节点是 8 天前，就算终态戳是刚补的也照样过期（用户 2026-09-08 报
+  // 「为啥 0826 的件还在」）。轨迹不再被 R-29 误清、落库也不再抹掉整包之后，这个证据是稳定的，
+  // 「下拉刷新之后消失又被空壳带回来」不会再发生。
   const withHistory: Shipment = {
     ...blank,
     settledAtMs: NOW - 60_000,
@@ -741,8 +742,8 @@ assert.equal(
   };
   assert.equal(
     pruneShipments([withHistory], NOW).length,
-    1,
-    "a later-arriving eight-day-old signature must not retroactively delete the row",
+    0,
+    "an eight-day-old signature expires even when the settled stamp is fresh",
   );
 }
 

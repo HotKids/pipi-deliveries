@@ -31,7 +31,7 @@ fun quoted(value: String): String = "\"" + value
 fun localValueOrDefault(environment: String, property: String, fallback: String): String =
     localValue(environment, property).ifBlank { fallback }
 
-val releaseVersionNameDefault = "1.3.0"
+val releaseVersionNameDefault = "1.3.1"
 val releaseVersionName = providers.environmentVariable("DELIVERIES_VERSION_NAME")
     .orNull?.trim().orEmpty().ifBlank { releaseVersionNameDefault }
 val releaseVersionCode = providers.environmentVariable("DELIVERIES_VERSION_CODE")

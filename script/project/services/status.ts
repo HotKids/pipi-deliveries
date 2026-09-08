@@ -1169,10 +1169,9 @@ export function terminalEvidenceAtMs(shipment: Shipment, now = Date.now()): numb
 }
 
 function signedAt(shipment: Shipment, now: number): number {
-  // 留存期只认这一行自己的终态戳（第一次进入终态时按来源的事件时间盖的）。以前是每轮按当前
-  // 展示包重算：详情页下拉刷回真实签收时间后，这一行会被当场判过期整行删掉（用户 2026-09-08）。
-  const settled = validLifecycleTime(shipment.settledAtMs, now);
-  if (settled) return settled;
+  // 倒计时先看签收事件本身：签收就是签收，08-26 的件不能因为这两天才补上终态戳而多活七天
+  // （用户 2026-09-08 报）。轨迹不再被 R-29 误清、落库也不再抹掉整包之后，这个证据是稳定的；
+  // 只有证据缺失时才退到行自己的终态戳（首次进入终态时按来源事件时间盖的），而不是 updatedAtMs。
   let value = Math.max(
     validLifecycleTime(shipment.timeline.statusEventAtMs, now),
     latestTimelineTime(shipment, now),
@@ -1187,8 +1186,6 @@ function signedAt(shipment: Shipment, now: number): number {
 }
 
 function cancelledAt(shipment: Shipment, now: number): number {
-  const settled = validLifecycleTime(shipment.settledAtMs, now);
-  if (settled) return settled;
   return Math.max(
     validLifecycleTime(shipment.timeline.statusEventAtMs, now),
     latestTimelineTime(shipment, now),
