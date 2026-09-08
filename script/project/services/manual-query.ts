@@ -1117,6 +1117,9 @@ export async function queryManualForSource(input: {
       : "none",
     effectiveTrackCount: selectedTrackCount,
     records: successes.length,
+    // 这一层被允许跑的级数（顺丰在列表层只许跑 picker，京东不跑 moto…）。没有它，一条只跑了
+    // 一级、那一级又没轨迹的记录看上去像整条链失败（用户 2026-09-08 看日志时的疑问）。
+    attempted: selection.attemptedSources,
     selected: Boolean(selectedTrackCount),
     durationMs: Date.now() - queryStartedAt,
     result: selectedTrackCount
