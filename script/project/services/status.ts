@@ -1168,10 +1168,21 @@ export function terminalEvidenceAtMs(shipment: Shipment, now = Date.now()): numb
   return value;
 }
 
+/**
+ * 留存倒计时只认「第一次进入终态」那个戳（`stampSettledAt` 盖的，盖的时候已经优先用来源给的终态
+ * 事件时间，所以留存外的老件一进来就是过期的，「留存外老件不导入」照旧成立）。
+ *
+ * 不能反过来每轮拿展示包里的签收时间重算：那样一行在详情页下拉刷出真实轨迹（签收在 8 天前）的
+ * 当场就过期、被整行删掉，下一轮列表同步又把它当新件导回来——新行只有 feed 槽，详情抓回来的整包
+ * 轨迹全丢，界面成了「已签收 · 暂无物流动态」，而空壳没有签收证据又永远不再过期。用户 2026-09-08
+ * 报的「一个个点进去把轨迹刷新出来，关掉重新打开又回来了」就是这个循环。
+ *
+ * 戳之所以稳定，前提是过期只是不再展示、不把这一行从本地删掉（storage 的 retainDurableShipments）：
+ * 行还在，下一轮同步就不会重新导入，戳也就不会被重新盖上。
+ */
 function signedAt(shipment: Shipment, now: number): number {
-  // 倒计时先看签收事件本身：签收就是签收，08-26 的件不能因为这两天才补上终态戳而多活七天
-  // （用户 2026-09-08 报）。轨迹不再被 R-29 误清、落库也不再抹掉整包之后，这个证据是稳定的；
-  // 只有证据缺失时才退到行自己的终态戳（首次进入终态时按来源事件时间盖的），而不是 updatedAtMs。
+  const settled = validLifecycleTime(shipment.settledAtMs, now);
+  if (settled) return settled;
   let value = Math.max(
     validLifecycleTime(shipment.timeline.statusEventAtMs, now),
     latestTimelineTime(shipment, now),
@@ -1181,8 +1192,7 @@ function signedAt(shipment: Shipment, now: number): number {
     if (!/签收|妥投|配送完成/.test(detail)) continue;
     value = Math.max(value, validLifecycleTime(track.timeMs, now));
   }
-  // 兜底取「第一次进入终态」的时刻，不取 updatedAtMs：后者每次写入都刷新，倒计时永远归零。
-  return value || validLifecycleTime(shipment.settledAtMs, now);
+  return value;
 }
 
 function cancelledAt(shipment: Shipment, now: number): number {

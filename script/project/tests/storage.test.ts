@@ -2024,7 +2024,10 @@ assert.equal(
   true,
 );
 
-// Retention pruning does not create a durable block; a later fresh automatic feed may re-add it.
+// 留存期到了只是不再展示：账号件这一行还留在本地，轨迹也留着。删了它，下一轮列表同步会把账号
+// 仍在返回的这一票当新件重新导入，新行只有 feed 槽，详情页抓回来的整包轨迹全丢，界面成了
+// 「已签收 · 暂无物流动态」，而空壳没有签收证据又永远不再过期（用户 2026-09-08 报：一个个点进去
+// 把轨迹刷新出来，关掉重新打开又回来了）。
 memory.clear();
 const expiredSigned = shipment({
   id: "expired-signed",
@@ -2043,17 +2046,139 @@ const expiredState = saveState(
   { ...emptyState(), shipments: [expiredSigned] },
   NOW,
 );
-assert.equal(expiredState.shipments.length, 0);
-const refreshedExpired = structuredClone(expiredSigned);
-refreshedExpired.timeline.statusEventAtMs = NOW + 1;
-refreshedExpired.timeline.latestTimeText = "2026-08-26 14:00:01";
-refreshedExpired.timeline.tracks = [{
-  ...refreshedExpired.timeline.tracks[0],
-  timeText: "2026-08-26 14:00:01",
-  timeMs: NOW + 1,
+assert.equal(
+  expiredState.shipments.length,
+  1,
+  "an expired account row stays in local storage so the feed cannot re-import it",
+);
+assert.equal(
+  timedTracks(expiredState.shipments[0]!.timeline.tracks).length,
+  1,
+  "and it keeps the timeline it already had",
+);
+assert.equal(
+  visibleShipments(expiredState, NOW).length,
+  0,
+  "retention still hides it from the list",
+);
+// 手动件不在这条规则里：账号不会替用户把它列回来，过期就真的删掉。
+const expiredManual = shipment({
+  id: "expired-manual",
+  source: "interface5",
+  semantic: "COMPLETED",
+  manuallyAdded: true,
+});
+expiredManual.identity.createdAtMs = signedAt;
+expiredManual.timeline.statusEventAtMs = signedAt;
+expiredManual.timeline.latestTimeText = "2026-08-18 14:00:00";
+expiredManual.timeline.tracks = [{
+  ...expiredManual.timeline.tracks[0],
+  timeText: "2026-08-18 14:00:00",
+  timeMs: signedAt,
 }];
-upsertShipment({ ...refreshedExpired, updatedAtMs: NOW + 1 }, NOW + 1);
-assert.equal(loadState(NOW + 1).shipments.length, 1);
+assert.equal(
+  saveState({ ...emptyState(), shipments: [expiredManual] }, NOW).shipments.length,
+  0,
+);
+
+// 用户 2026-09-08 报：「一个个点进去把轨迹刷新出来，关掉重新打开又回来了」。整条链走一遍——列表
+// 同步导入（feed 一条带时间的节点都没有）→ 详情页抓回 cn_h5 → 落库 → 重新读盘 → 下一轮列表同步。
+// 详情抓回来的那一包必须一路留住。
+memory.clear();
+{
+  const providerTime = (atMs: number) =>
+    new Date(atMs + 8 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+  const signedMs = NOW - 9 * 24 * 60 * 60 * 1000;
+  const waybill = "SF1234567898077";
+  const churnParcel = {
+    source: "interface5",
+    ownerId: waybill,
+    waybill,
+    orderId: "",
+    accountOrder: false,
+    courierCode: "SF",
+    rawCourierCode: "SF",
+    rawCompanyName: "顺丰速运",
+    companyName: "顺丰速运",
+    sourceProvider: "CaiNiao",
+    sourceStateCode: "3",
+    sourceStateText: "已签收",
+    semantic: "COMPLETED",
+    receiverPhone: "13800138000",
+    senderPhone: "",
+    // 签收之后账号 feed 只回结构化状态，一条带时间的节点都没有（设备日志 effectiveTrackCount=0）。
+    latestTimeText: "",
+    latestDetail: "",
+    tracks: [],
+    routeUrl: "https://page.cainiao.com/detail?opaque=churn",
+    projectionUrl: "",
+  } as unknown as AccountParcelDto;
+  addBinding("interface5", "13800138000", NOW - 3 * 24 * 60 * 60 * 1000);
+  let state = loadState(NOW);
+  state = saveState({
+    ...state,
+    shipments: mergeAccountParcel(
+      state, state.shipments, churnParcel, ["13800138000"], "interface5", NOW, new Map(),
+    ),
+  }, NOW);
+  const imported = state.shipments.find((item) => item.identity.sourceId === waybill)!;
+  assert.ok(imported, "the account row must import even with a track-less feed");
+
+  const cainiaoTracks = [0, 2, 20, 40].map((hoursBack, index) => ({
+    timeText: providerTime(signedMs - hoursBack * 60 * 60 * 1000),
+    timeMs: signedMs - hoursBack * 60 * 60 * 1000,
+    detail: index === 0 ? "您的快件已签收，感谢使用顺丰速运" : `节点 ${index}`,
+    statusCode: "",
+    raw: {},
+  }));
+  const cainiaoPackage = {
+    provider: "cn_h5",
+    waybill,
+    courierCode: "SF",
+    companyName: "顺丰速运",
+    semantic: "COMPLETED" as StatusSemantic,
+    statusEventAtMs: signedMs,
+    latestTimeText: cainiaoTracks[0].timeText,
+    latestDetail: cainiaoTracks[0].detail,
+    tracks: cainiaoTracks,
+    successAtMs: NOW,
+    complete: true,
+  };
+  state = saveState({
+    ...state,
+    shipments: [{
+      ...imported,
+      manualTimelines: [...(imported.manualTimelines || []), cainiaoPackage],
+      updatedAtMs: NOW,
+    }],
+  }, NOW);
+
+  const reopened = loadState(NOW);
+  const reopenedRow = reopened.shipments.find((item) => item.identity.sourceId === waybill);
+  assert.equal(
+    timedTracks(reopenedRow?.manualTimelines?.[0]?.tracks || []).length,
+    4,
+    "the detail package survives the restart that follows the refresh",
+  );
+  const synced = saveState({
+    ...reopened,
+    shipments: mergeAccountParcel(
+      reopened, reopened.shipments, churnParcel, ["13800138000"], "interface5", NOW, new Map(),
+    ),
+  }, NOW);
+  const syncedRow = synced.shipments.find((item) => item.identity.sourceId === waybill);
+  assert.equal(
+    timedTracks(syncedRow?.manualTimelines?.[0]?.tracks || []).length,
+    4,
+    "and the next account sync must not replace it with an empty shell",
+  );
+  assert.equal(
+    timedTracks(syncedRow!.timeline.tracks).length,
+    4,
+    "so the list row keeps its headline instead of 暂无物流动态",
+  );
+  assert.equal(visibleShipments(synced, NOW).length, 1);
+}
 
 // A pending promotion cannot commit after the user removed its causal queue row.
 memory.clear();

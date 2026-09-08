@@ -725,9 +725,11 @@ assert.equal(
     1,
     "settled a minute ago stays for its retention window",
   );
-  // 签收就是签收：这一行的签收节点是 8 天前，就算终态戳是刚补的也照样过期（用户 2026-09-08 报
-  // 「为啥 0826 的件还在」）。轨迹不再被 R-29 误清、落库也不再抹掉整包之后，这个证据是稳定的，
-  // 「下拉刷新之后消失又被空壳带回来」不会再发生。
+  // 倒计时只认终态戳，不许每轮拿展示包里的签收时间重算：详情页下拉把 8 天前的真实轨迹刷回来的
+  // 那一刻，这一行会当场过期被整行删掉，下一轮列表同步又把它当新件导回来——新行只有 feed 槽，
+  // 详情抓回来的整包轨迹全丢，界面成了「已签收 · 暂无物流动态」（用户 2026-09-08 报：一个个点进去
+  // 把轨迹刷新出来，关掉重新打开又回来了）。老件照旧会过期——终态戳本来就是按来源给的终态事件
+  // 时间盖的（见 stampSettledAt），feed 自己带签收时间的老件一进来就是过期的。
   const withHistory: Shipment = {
     ...blank,
     settledAtMs: NOW - 60_000,
@@ -743,8 +745,13 @@ assert.equal(
   };
   assert.equal(
     pruneShipments([withHistory], NOW).length,
+    1,
+    "a fresh settled stamp survives a detail refresh that reveals an older signature",
+  );
+  assert.equal(
+    pruneShipments([{ ...withHistory, settledAtMs: undefined }], NOW).length,
     0,
-    "an eight-day-old signature expires even when the settled stamp is fresh",
+    "without a stamp the signature itself still decides",
   );
 }
 

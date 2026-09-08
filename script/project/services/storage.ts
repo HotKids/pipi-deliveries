@@ -277,7 +277,7 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
   const retainedShipments = pruneExpiredManualPlaceholders(
     retainDurableShipments(
       migrateShipmentSources(base.shipments || [])
-        .map(normalizeShipmentAuthorities)
+        .map((shipment) => normalizeShipmentAuthorities(shipment, now))
         .map((shipment) => feedSlotRebuiltAtMs ? shipment : markFeedSlotRebuild(shipment)),
       now,
     ),
@@ -836,7 +836,7 @@ function stampSettledAt(shipment: Shipment, now: number): Shipment {
   return { ...shipment, settledAtMs: terminalEvidenceAtMs(shipment, now) || now };
 }
 
-function normalizeShipmentAuthorities(shipment: Shipment): Shipment {
+function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment {
   const manuallyAdded = Boolean(shipment.identity.manuallyAdded);
   const sourceTimelineRaw = manuallyAdded
     ? null
@@ -909,7 +909,7 @@ function normalizeShipmentAuthorities(shipment: Shipment): Shipment {
     timeline: sourceTimeline || sanitizeProviderErrorTimeline(shipment.timeline),
   };
   const selected = { ...normalized, timeline: selectShipmentTimeline(normalized) };
-  return normalizeAutomaticOwnership(stampSettledAt(selected, Date.now()));
+  return normalizeAutomaticOwnership(stampSettledAt(selected, now), now);
 }
 
 type StoredStateRead = {
@@ -1365,6 +1365,26 @@ function hasDurableOrderProjectionAuthority(shipment: Shipment): boolean {
   );
 }
 
+/**
+ * 过了留存期的账号件在本地再留多久。留存期到了只是**不再展示**；这一行还得留着，否则下一轮列表
+ * 同步会把账号仍在返回的这一票当新件重新导入——新行只有 feed 槽，详情页抓回来的整包轨迹全丢，
+ * 界面成了「已签收 · 暂无物流动态」，而空壳没有签收证据又永远不再过期，于是每刷一次删一次、每同步
+ * 一次带回来一次（用户 2026-09-08 报：一个个点进去把轨迹刷新出来，关掉重新打开又回来了）。
+ * 账号自己的列表窗口比这个短得多，所以到期之后再删就不会被重新导入了。
+ */
+const RETIRED_ACCOUNT_MEMORY_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** 过了留存期、但账号来源随时可能再列出来的行——删了就会被当新件重新导入。 */
+function retainsRetiredAccountRow(shipment: Shipment, now: number): boolean {
+  if (shipment.identity.manuallyAdded) return false;
+  if (shipment.identity.bindingSource !== SCRIPT_BINDING_SOURCE) return false;
+  const settledAtMs = Number(shipment.settledAtMs);
+  if (!Number.isFinite(settledAtMs) || settledAtMs <= 0 || settledAtMs > now) {
+    return false;
+  }
+  return now - settledAtMs < RETIRED_ACCOUNT_MEMORY_MS;
+}
+
 function retainDurableShipments(
   shipments: readonly Shipment[],
   now: number,
@@ -1381,6 +1401,7 @@ function retainDurableShipments(
       shipment.identity.createdAtMs <= now &&
       now - shipment.identity.createdAtMs < PENDING_TTL_MS
     ) ||
+    retainsRetiredAccountRow(shipment, now) ||
     hasDurableOrderProjectionAuthority(shipment)
   );
 }
@@ -1430,7 +1451,7 @@ export function saveState(
   const normalizedShipments = preserveDurableOrderProjections(
     previous.shipments,
     migrateShipmentSources(candidate.shipments)
-      .map(normalizeShipmentAuthorities),
+      .map((shipment) => normalizeShipmentAuthorities(shipment, now)),
     now,
   );
   // UI retention may hide an old signed shipment, but its confirmed
