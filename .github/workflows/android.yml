@@ -32,6 +32,10 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
+      # verify-package.sh 的两处检查要 rg：装在后面等于打包校验先跑、先红（v1.3.1 首次打标签
+      # 时暴露，exit 127）。装在用它的那一步之前。
+      - name: Install ripgrep
+        run: sudo apt-get install --yes --no-install-recommends ripgrep
       - name: Test and package Scripting source
         run: |
           # 仓库里提交的 build-track.ts/script.json 常驻 formal（beta 只在本地临时切换、事后从
@@ -55,8 +59,6 @@ jobs:
       # assemble*Release 会触发 app/build.gradle.kts 里的 hasReleaseSigning 断言，所以这一步
       # 要拿到和 release-apk 同一套签名材料，否则任何 tag/main 构建都会停在
       # 「Release signing configuration is required for release builds」（v1.3.0 首次打标签时暴露）。
-      - name: Install ripgrep
-        run: sudo apt-get install --yes --no-install-recommends ripgrep
       - name: Restore release signing key for verification
         env:
           SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
