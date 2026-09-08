@@ -5,6 +5,7 @@ import type {
   BindingSource,
   PendingManualQuery,
   Shipment,
+  ShipmentNotificationEvent,
   TimelinePackage,
   WidgetSnapshot,
 } from "../models";
@@ -59,6 +60,7 @@ import {
   writeDurableText,
 } from "./durable-files";
 import { utf8Data } from "./scripting-data";
+import { shipmentNotificationEvent } from "./notification-events";
 
 const STATE_KEY = "pipi_deliveries_state_v1";
 /** 只放一个数字：状态最近一次落盘的 revision，供投影等待轮询，不用每次全量 loadState（2026-09-06）。 */
@@ -290,6 +292,7 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
       now,
     ),
     shipments: sortShipments(retainedShipments),
+    pendingNotifications: base.pendingNotifications || [],
     feedSlotRebuiltAtMs: feedSlotRebuiltAtMs || now,
   };
 }
@@ -809,6 +812,20 @@ function isFeedProvider(provider: string): boolean {
   return raw === "interface5" || raw === "account";
 }
 
+/** 终态第一次出现时打上时间戳，离开终态就清掉；留存期靠它，不靠会被每次写入刷新的 updatedAtMs。 */
+function stampSettledAt(shipment: Shipment, now: number): Shipment {
+  const terminal = shipment.timeline.semantic === "COMPLETED" ||
+    shipment.timeline.semantic === "CANCELLED";
+  if (!terminal) {
+    if (shipment.settledAtMs === undefined) return shipment;
+    const { settledAtMs: _dropped, ...rest } = shipment;
+    return rest as Shipment;
+  }
+  const current = Number(shipment.settledAtMs);
+  if (Number.isFinite(current) && current > 0 && current <= now) return shipment;
+  return { ...shipment, settledAtMs: now };
+}
+
 function normalizeShipmentAuthorities(shipment: Shipment): Shipment {
   const manuallyAdded = Boolean(shipment.identity.manuallyAdded);
   const sourceTimelineRaw = manuallyAdded
@@ -882,7 +899,7 @@ function normalizeShipmentAuthorities(shipment: Shipment): Shipment {
     timeline: sourceTimeline || sanitizeProviderErrorTimeline(shipment.timeline),
   };
   const selected = { ...normalized, timeline: selectShipmentTimeline(normalized) };
-  return normalizeAutomaticOwnership(selected);
+  return normalizeAutomaticOwnership(stampSettledAt(selected, Date.now()));
 }
 
 type StoredStateRead = {
@@ -1202,11 +1219,12 @@ export function loadState(now = Date.now()): AppState {
     if (durableFailed) {
       throw new Error("本地快递数据读取失败");
     }
+    lastStateLoadFailure = null;
     return restoreInitialBindingBackup(emptyState());
   }
 
-  // 迁移按副本从新到旧依次试（2026-09-06 静态审查②）：最新副本顶层合法、内部记录缺字段时，别的
-  // 副本可能还是好的；全部失败才算读取失败，并让首页提示，而不是当成正常空库。原始副本不覆盖。
+  // Try older generations before failing. An unreadable existing store must never
+  // become a writable empty state: every writer and cleanup path loads here first.
   let restored: AppState | null = null;
   let legacyBindingRecoveryDurable = true;
   const attempts = recoveredLegacy ? [chosen] : candidates;
@@ -1238,7 +1256,7 @@ export function loadState(now = Date.now()): AppState {
       { result: "migration_failed", attempted: attempts.length },
       "error",
     );
-    return restoreInitialBindingBackup(emptyState());
+    throw new Error("Local delivery data migration failed; original copies were preserved.");
   }
   lastStateLoadFailure = null;
   if (recoveredLegacy) {
@@ -1384,9 +1402,19 @@ function preserveDurableOrderProjections(
   });
 }
 
+export type RefreshNotificationContext = Readonly<{
+  previousById: ReadonlyMap<string, Shipment>;
+  batchId: string;
+}>;
+
 export function saveState(
   candidate: AppState,
   now = Date.now(),
+  notificationCommit: {
+    notifyChanges?: boolean;
+    context?: RefreshNotificationContext;
+    acknowledgedId?: string;
+  } = {},
 ): AppState {
   const previous = loadState(now);
   const normalizedShipments = preserveDurableOrderProjections(
@@ -1414,10 +1442,39 @@ export function saveState(
       now,
     ),
     shipments: sortShipments(retainedShipments),
+    pendingNotifications: (previous.pendingNotifications || []).filter((event) =>
+      event.id !== notificationCommit.acknowledgedId
+    ),
     // 一次性 feed 槽重建的标记跟着状态走：候选没带就沿用存着的，都没有就从现在起算（只有读盘时
     // 遇到没标记的老状态才会给包打 feedRebuildPending）。
     feedSlotRebuiltAtMs: candidate.feedSlotRebuiltAtMs || previous.feedSlotRebuiltAtMs || now,
   };
+  if (notificationCommit.notifyChanges) {
+    const context = notificationCommit.context;
+    const previousById = context?.previousById || new Map(
+      previous.shipments.map((shipment) => [shipment.identity.id, shipment]),
+    );
+    const events: ShipmentNotificationEvent[] = [];
+    for (const shipment of next.shipments) {
+      const event = shipmentNotificationEvent(
+        previousById.get(shipment.identity.id) || null,
+        shipment,
+      );
+      if (event) events.push({
+        ...event,
+        ...(context ? { batchId: context.batchId } : {}),
+        id: checksum({ revision: next.revision, event }),
+      });
+    }
+    // One refresh compares against its initial snapshot and publishes each row's final
+    // state. Earlier runs' unacknowledged events remain separate recovery obligations.
+    next.pendingNotifications = [
+      ...(next.pendingNotifications || []).filter((event) =>
+        !context || event.batchId !== context.batchId
+      ),
+      ...events,
+    ];
+  }
   const stored = encodeState(next);
   try {
     writeDurableState(stored);
@@ -1558,6 +1615,7 @@ export function commitRefreshState(
   bindingSource: BindingSource,
   now = Date.now(),
   fence?: RefreshCommitFence,
+  notificationContext?: RefreshNotificationContext,
 ): RefreshStateCommit {
   requireScriptSource(bindingSource);
   if (fence && !fence.isCurrent()) {
@@ -1685,7 +1743,19 @@ export function commitRefreshState(
   ) {
     return { state: latest, applied: true };
   }
-  return { state: saveState(merged, now), applied: true };
+  return {
+    state: saveState(merged, now, { notifyChanges: true, context: notificationContext }),
+    applied: true,
+  };
+}
+
+export function acknowledgeShipmentNotification(
+  eventId: string,
+  now = Date.now(),
+): AppState {
+  const state = loadState(now);
+  if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
+  return saveState(state, now, { acknowledgedId: eventId });
 }
 
 export function bindingsForSource(
@@ -1794,7 +1864,7 @@ export function commitTargetShipmentRefresh(
   ) {
     return { state: latest, applied: true };
   }
-  return { state: saveState(merged, now), applied: true };
+  return { state: saveState(merged, now, { notifyChanges: true }), applied: true };
 }
 
 export type RoutePointerTarget = {

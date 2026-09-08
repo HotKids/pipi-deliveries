@@ -1,4 +1,4 @@
 export const SCRIPT_BUILD_TRACK = "formal" as const;
-export const SCRIPT_VERSION = "0.5";
-export const SCRIPT_CLIENT_BUILD = 40;
+export const SCRIPT_VERSION = "0.5.1";
+export const SCRIPT_CLIENT_BUILD = 41;
 export const GATEWAY_ORIGIN = "https://pipiassistant.app";

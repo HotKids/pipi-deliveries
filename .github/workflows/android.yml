@@ -34,10 +34,10 @@ jobs:
           node-version: "24"
       - name: Test and package Scripting source
         run: |
-          expected_track=beta
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            expected_track=formal
-          fi
+          # 仓库里提交的 build-track.ts/script.json 常驻 formal（beta 只在本地临时切换、事后从
+          # 备份还原），所以任何引用都按 formal 校验。原先非 tag 一律期望 beta，导致 main 与 PR
+          # 必红而本地永远绿（2026-09-07 审计）。
+          expected_track=formal
           test -f script/project/script.json
           test -f script/project/tools/test.sh
           test -f script/project/tools/package.sh
@@ -55,6 +55,8 @@ jobs:
       # assemble*Release 会触发 app/build.gradle.kts 里的 hasReleaseSigning 断言，所以这一步
       # 要拿到和 release-apk 同一套签名材料，否则任何 tag/main 构建都会停在
       # 「Release signing configuration is required for release builds」（v1.3.0 首次打标签时暴露）。
+      - name: Install ripgrep
+        run: sudo apt-get install --yes --no-install-recommends ripgrep
       - name: Restore release signing key for verification
         env:
           SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
@@ -97,6 +99,8 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v5
+      - name: Install ripgrep for packaging checks
+        run: sudo apt-get install --yes --no-install-recommends ripgrep
       - name: Restore release signing key
         env:
           SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}

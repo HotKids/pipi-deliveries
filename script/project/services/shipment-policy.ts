@@ -618,6 +618,31 @@ export function hasSettledTimelineHistory(shipment: Shipment): boolean {
   ) && timelineHasUsableHistory(timeline);
 }
 
+/**
+ * 展示包空了就借同票别的槽的节点。supplementTimelineHistory 只回填「同 provider 同运单号」的
+ * 缺口，跨槽的救不回来：一行签收之后 feed 只回摘要、按件详情又住在 v5_query，最后落到没有节点的
+ * 占位包上，界面就成了「已签收 · 暂无物流动态」，而这一票的节点其实还在本地存着
+ * （用户 2026-09-07 报）。状态与身份仍以选中的包为准，只借节点。
+ */
+function restoreDisplayableTracks(
+  selected: TimelinePackage,
+  candidates: readonly TimelinePackage[],
+): TimelinePackage {
+  if (timedTracks(selected.tracks).length) return selected;
+  const richest = candidates
+    .filter((candidate) => candidate !== selected)
+    .filter((candidate) => timedTracks(candidate.tracks).length > 0)
+    .sort(compareTimelinePackageCompleteness)[0];
+  if (!richest) return selected;
+  return {
+    ...selected,
+    tracks: richest.tracks,
+    latestTimeText: selected.latestTimeText || richest.latestTimeText,
+    latestDetail: selected.latestDetail || richest.latestDetail,
+    statusEventAtMs: selected.statusEventAtMs ?? richest.statusEventAtMs,
+  };
+}
+
 export function selectShipmentTimeline(shipment: Shipment): TimelinePackage {
   const source = sourceTimeline(shipment);
   const selectedManuals = selectedManualTimelines(shipment);
@@ -699,8 +724,11 @@ export function selectShipmentTimeline(shipment: Shipment): TimelinePackage {
         : terminal || ordered[0] ||
           selectTimelineAuthority(source, manuals) || shipment.timeline;
   }
-  const supplemented = supplementTimelineHistory(
-    selected,
+  const supplemented = restoreDisplayableTracks(
+    supplementTimelineHistory(
+      selected,
+      [...(source ? [source] : []), ...manuals],
+    ),
     [...(source ? [source] : []), ...manuals],
   );
   return applyForcedCompletion(
@@ -1120,9 +1148,15 @@ export function asAccountDetailObservation(
 ): Shipment {
   const detail = incoming.sourceTimeline || incoming.timeline;
   const feed = sourceTimeline(current);
+  // 没有 feed 槽时不要凭空造一个空包盖掉这一行：签收后详情只回摘要的那一轮，占位包会把已经
+  // 存下来的节点整份抹掉，界面变成「已签收 · 暂无物流动态」，而且没有签收时间就连 7 天保留期
+  // 都不会到期（用户 2026-09-07 报，下拉刷新才重新拉回来）。存着的节点优先当占位。
+  const stored = current.timeline;
   const placeholder: TimelinePackage = feed
     ? { ...feed, waybill: detail.waybill || feed.waybill }
-    : { ...detail, tracks: [] };
+    : timedTracks(stored.tracks).length
+      ? { ...stored, waybill: detail.waybill || stored.waybill }
+      : { ...detail, tracks: [] };
   const queryPackage: TimelinePackage = { ...detail, provider: TIMELINE_SLOT.V5_QUERY };
   const manuals = timedTracks(detail.tracks).length
     ? mergeTimelineAuthorities(incoming.manualTimelines || [], queryPackage)
@@ -1876,11 +1910,37 @@ export function applyAccountShipment(
  * 粘性选包的记录以这次刷新盖的为准，没有就沿用存着的。合并函数里有些分支是重新拼对象的，所以在
  * 这里统一兜住，而不是逐个分支补字段。
  */
+/**
+ * 签收（或取消）那一刻的轨迹是这一票的定稿：进入终态之后，后续任何合并都不得让它的节点变少。
+ * 用户定 2026-09-07：「签收之后所有状态、冻结之前的轨迹都要保留，直到生命周期结束」。
+ * 冻结判据本身要求「终态 + 可用历史」，所以一旦节点被抹掉，这一行反而不再冻结、继续参与刷新，
+ * 下一轮再抹一次——丢轨迹的行就是这么长期卡住的。这里只兜「不许变少」，变多（更完整的包）照收。
+ */
+function preserveSettledTimeline(
+  current: Shipment | undefined,
+  merged: Shipment,
+): Shipment {
+  if (!current || !hasSettledTimelineHistory(current)) return merged;
+  const kept = timedTracks(current.timeline.tracks).length;
+  if (!kept) return merged;
+  const next = timedTracks(merged.timeline.tracks).length;
+  if (next >= kept) return merged;
+  return {
+    ...merged,
+    timeline: current.timeline,
+    sourceTimeline: current.sourceTimeline ?? merged.sourceTimeline,
+    manualTimelines: manualTimelines(current).length
+      ? manualTimelines(current)
+      : merged.manualTimelines,
+  };
+}
+
 function preserveUserFields(
   current: Shipment | undefined,
   incoming: Shipment,
-  merged: Shipment,
+  mergedInput: Shipment,
 ): Shipment {
+  const merged = preserveSettledTimeline(current, mergedInput);
   const note = String(merged.note || current?.note || "").trim();
   const detailSelection = merged.detailSelection || incoming.detailSelection ||
     current?.detailSelection;
@@ -2116,6 +2176,11 @@ function applyManualShipmentInner(
         id: current.identity.id,
         bindingSource: current.identity.bindingSource,
         createdAtMs: current.identity.createdAtMs,
+        // 尾号是用户自己输进来的，后续刷新的来源包不一定带它；这里是整份 spread，空值会把它
+        // 覆盖掉，之后需要校验尾号的承运商就再也查不动了（2026-09-07 复查）。空值一律不覆盖。
+        phoneTail: String(incoming.identity.phoneTail || "").trim() ||
+          current.identity.phoneTail,
+        phone: String(incoming.identity.phone || "").trim() || current.identity.phone,
       }
     : current.identity;
   const keepsCainiaoRoute = String(identity.sourceProvider || "")

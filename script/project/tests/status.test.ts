@@ -686,4 +686,25 @@ assert.equal(
   0,
 );
 
+// 没有可信节点时间的终态行，倒计时以 settledAtMs 为准，不再被 updatedAtMs 的每次写入重置
+// （用户 2026-09-07 报：签收七天之后又被带回列表）。
+{
+  const settled = shipment("settled-blank", "COMPLETED", NOW);
+  const blank: Shipment = {
+    ...settled,
+    timeline: { ...settled.timeline, statusEventAtMs: null, tracks: [] },
+    updatedAtMs: NOW,
+  };
+  assert.equal(
+    pruneShipments([{ ...blank, settledAtMs: NOW - 8 * 24 * 60 * 60 * 1000 }], NOW).length,
+    0,
+    "settled eight days ago expires even though it was just written",
+  );
+  assert.equal(
+    pruneShipments([{ ...blank, settledAtMs: NOW - 60_000 }], NOW).length,
+    1,
+    "settled a minute ago stays for its retention window",
+  );
+}
+
 console.log("status policy tests passed");

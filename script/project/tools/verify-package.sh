@@ -5,6 +5,13 @@ PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SCRIPT_DIR=$(CDPATH= cd -- "$PROJECT_DIR/.." && pwd)
 ARCHIVE=${1:-"$SCRIPT_DIR/pipi-deliveries.scripting"}
 EXPECTED_TRACK=${2:-}
+# 下面两道扫描（禁止材料、网络地址白名单）全靠 rg；缺工具时 `if rg …` 会当成「没匹配到」
+# 静默放行，成品包照样打印 verified（2026-09-07 审计）。缺工具必须硬失败。
+if ! command -v rg >/dev/null 2>&1; then
+  printf 'verify-package.sh requires ripgrep (rg) in PATH\n' >&2
+  exit 127
+fi
+
 TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pipi-deliveries-package.XXXXXX")
 trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
 

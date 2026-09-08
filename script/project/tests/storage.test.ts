@@ -3071,13 +3071,160 @@ import { stateLoadFailure } from "../services/storage";
   memory.clear();
   memory.set(STATE_KEY, storedState(brokenState, 2));
   memory.set("pipi_deliveries_state_backup_v1", storedState({ ...brokenState, revision: 8 }, 2));
-  const failed = loadState(NOW);
-  assert.equal(failed.shipments.length, 0);
+  const payload = JSON.stringify(brokenState);
+  const encoded = JSON.stringify({ schema: 3, checksum: sha256(payload), payload });
+  const stateKeys = [STATE_KEY, "pipi_deliveries_state_backup_v1",
+    ...["a", "b"].flatMap((slot) => ["", ".backup"].map((suffix) =>
+      `file:/group/pipi-deliveries/state-v3-${slot}.json${suffix}`)),
+  ];
+  for (const key of stateKeys) memory.set(key, encoded);
+  const snapshots = stateKeys.map((key) => memory.get(key));
+  const candidate = { ...emptyState(), shipments: goodState.shipments };
+  assert.throws(() => loadState(NOW), /Local delivery data migration failed/);
+  assert.throws(() => saveState(candidate, NOW + 1), /Local delivery data migration failed/);
+  assert.throws(() => saveState(candidate, NOW + 2), /Local delivery data migration failed/);
+  assert.throws(() => commitRefreshState(emptyState(), candidate, "interface5", NOW + 3), /Local delivery data migration failed/);
+  assert.deepEqual(stateKeys.map((key) => memory.get(key)), snapshots,
+    "failed reads and ordinary commits must preserve all six original copies byte for byte");
   assert.equal(stateLoadFailure(), "migration_failed", "every copy failing is a load failure, not an empty store");
 
   memory.clear();
   memory.set(STATE_KEY, storedState(goodState, 2));
   loadState(NOW);
   assert.equal(stateLoadFailure(), null, "a later successful load clears the failure");
+  assert.ok(saveState(candidate, NOW + 4).shipments.length > 0);
+  memory.clear();
+  assert.equal(loadState(NOW).shipments.length, 0, "a genuinely empty store remains writable");
+  assert.ok(saveState(candidate, NOW + 5).shipments.length > 0);
 }
 
+
+// A committed refresh retains its notification obligation across runtime loss.
+{
+  memory.clear();
+  const before = saveState({ ...emptyState(), shipments: [shipment({
+    id: "interface5:account:NOTIFY1", source: "interface5", semantic: "TRANSIT",
+  })] }, NOW);
+  const incoming = { ...before.shipments[0], timeline: {
+    ...before.shipments[0].timeline, semantic: "DELIVERY" as const,
+    latestDetail: "Synthetic delivery event", statusEventAtMs: NOW + 1,
+  }, sourceTimeline: undefined, updatedAtMs: NOW + 1 };
+  const committed = commitRefreshState(before, { ...before, shipments: [incoming] }, "interface5", NOW + 1);
+  assert.equal(committed.state.pendingNotifications?.length, 1,
+    "the notification must be in the same committed state as the changed shipment");
+  const restored = loadState(NOW + 2);
+  assert.deepEqual(restored.pendingNotifications, committed.state.pendingNotifications);
+}
+
+{
+  const realNow = Date.now;
+  let clock = NOW + 10;
+  Date.now = () => clock;
+  let failedSchedule = true;
+  let scheduledCount = 0;
+  let scheduleGate: Promise<void> | null = null;
+  const scheduledRequests: Record<string, unknown>[] = [];
+  Object.assign(globalThis, {
+    Script: { directory: "/script", name: "Synthetic", createRunSingleURLScheme: () => "pipi-test://shipment" },
+    Notification: { async schedule(request: Record<string, unknown>) {
+      scheduledCount++;
+      scheduledRequests.push(request);
+      if (scheduleGate) await scheduleGate;
+      if (failedSchedule) throw new Error("synthetic scheduling failure");
+    } },
+  });
+  Object.assign(Data, { fromFile: () => null });
+  const { RefreshCoordinator } = await import("../services/refresh-coordination");
+  const coordinator = new RefreshCoordinator();
+  try {
+    const queued = loadState(clock);
+    const event = queued.pendingNotifications![0];
+    await assert.rejects(coordinator.runFull("interface5", async (_skipped, lease) => {
+      clock += 1_001;
+      lease.assertCurrent();
+      return queued;
+    }, undefined, { operationDeadlineAtMs: clock + 1_000 }), /请求超时/);
+    const restarted = await import("../services/notifications.ts?restarted-notification-runtime");
+    await restarted.replayPendingShipmentNotifications(() => false);
+    assert.equal(scheduledCount, 0, "expired refresh work cannot schedule");
+    await restarted.replayPendingShipmentNotifications();
+    assert.equal(scheduledCount, 1);
+    assert.equal(loadState(clock).pendingNotifications?.[0]?.id, event.id,
+      "a scheduling rejection keeps the committed event for the next runtime");
+    failedSchedule = false;
+    const nextRuntime = await import("../services/notifications.ts?next-notification-runtime");
+    let releaseSchedule!: () => void;
+    scheduleGate = new Promise((resolve) => { releaseSchedule = resolve; });
+    const replay = nextRuntime.replayPendingShipmentNotifications();
+    await Promise.resolve();
+    assert.equal(loadState(clock).pendingNotifications?.length, 1,
+      "scheduling must finish before the durable acknowledgement");
+    releaseSchedule();
+    await replay;
+    scheduleGate = null;
+    assert.equal(scheduledCount, 2);
+    assert.deepEqual(scheduledRequests[1].userInfo, { shipment: event.shipmentId });
+    assert.deepEqual(scheduledRequests[1].actions, [{ title: "查看详情", url: "pipi-test://shipment" }]);
+    assert.deepEqual(loadState(clock).pendingNotifications, []);
+    saveState(queued, ++clock);
+    await nextRuntime.replayPendingShipmentNotifications();
+    assert.equal(scheduledCount, 2, "a stale UI snapshot cannot resurrect an acknowledged event");
+    const same = loadState(clock);
+    commitRefreshState(same, same, "interface5", ++clock);
+    assert.deepEqual(loadState(clock).pendingNotifications, [], "an unchanged response does not recreate the event");
+    const changed = { ...same.shipments[0], timeline: {
+      ...same.shipments[0].timeline, semantic: "WAITING_PICKUP" as const,
+      statusEventAtMs: ++clock, latestDetail: "Synthetic pickup event",
+    }, sourceTimeline: undefined, updatedAtMs: clock };
+    const beforeFailure = new Map(memory);
+    const originalWrite = FileManager.writeAsStringSync;
+    FileManager.writeAsStringSync = () => { throw new Error("synthetic durable write failure"); };
+    try {
+      assert.throws(() => commitRefreshState(same, { ...same, shipments: [changed] }, "interface5", clock), /本地快递数据保存失败/);
+      assert.deepEqual(loadState(clock).pendingNotifications, [], "failed business commits cannot create notification events");
+      for (const [key, value] of beforeFailure) {
+        if (key.includes("state-v3-") || key === STATE_KEY) assert.equal(memory.get(key), value);
+      }
+    } finally { FileManager.writeAsStringSync = originalWrite; }
+    const committed = commitRefreshState(same, { ...same, shipments: [changed] }, "interface5", clock).state;
+    assert.equal(committed.pendingNotifications?.length, 1);
+    FileManager.writeAsStringSync = () => { throw new Error("synthetic acknowledgement failure"); };
+    try { await nextRuntime.replayPendingShipmentNotifications(); }
+    finally { FileManager.writeAsStringSync = originalWrite; }
+    assert.equal(scheduledCount, 3);
+    assert.deepEqual(loadState(clock).pendingNotifications, committed.pendingNotifications,
+      "a failed durable acknowledgement retains an already scheduled event");
+    await nextRuntime.replayPendingShipmentNotifications();
+    assert.equal(scheduledCount, 4, "without a documented host request ID, the schedule/ack crash window may duplicate");
+    assert.deepEqual(loadState(clock).pendingNotifications, []);
+
+  } finally {
+    Date.now = realNow;
+  }
+}
+console.log("durable notification commit and restart tests passed");
+
+{
+  memory.clear();
+  const original = shipment({ id: "interface5:account:ORIGINAL", source: "interface5", semantic: "ORDERED" });
+  const firstSeen = shipment({ id: "interface5:account:FIRSTSEEN", source: "interface5", semantic: "TRANSIT" });
+  const initial = saveState({ ...emptyState(), shipments: [original] }, NOW);
+  const context = { previousById: new Map(initial.shipments.map((row) => [row.identity.id, row])), batchId: "synthetic-full-round" };
+  const update = (row: Shipment, semantic: StatusSemantic, time: number): Shipment => ({
+    ...row, sourceTimeline: undefined,
+    timeline: { ...row.timeline, semantic, latestDetail: `Synthetic ${semantic}`, statusEventAtMs: time },
+    updatedAtMs: time,
+  });
+  const first = commitRefreshState(initial, { ...initial, shipments: [
+    update(original, "TRANSIT", NOW + 1), firstSeen,
+  ] }, "interface5", NOW + 1, undefined, context).state;
+  assert.equal(first.pendingNotifications?.length, 1);
+  const second = commitRefreshState(first, { ...first, shipments: first.shipments.map((row) =>
+    update(row, "DELIVERY", NOW + 2)
+  ) }, "interface5", NOW + 2, undefined, context).state;
+  assert.equal(second.pendingNotifications?.length, 1,
+    "later checkpoints neither notify a first-seen row nor retain an intermediate notification");
+  assert.equal(second.pendingNotifications?.[0]?.shipmentId, original.identity.id);
+  assert.equal(second.pendingNotifications?.[0]?.body, "Synthetic DELIVERY");
+}
+console.log("notification checkpoint baseline and aggregation tests passed");

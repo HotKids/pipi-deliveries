@@ -21,7 +21,7 @@ import {
   type ManualQueryOutcome,
   type ManualSourceDependencies,
 } from "./manual-query";
-import { notifyShipmentChanges } from "./notifications";
+import { replayPendingShipmentNotifications } from "./notifications";
 import { committedPendingPromotionShipmentId } from "./pending-promotion";
 import {
   commitShipmentRouteMutations,
@@ -3336,7 +3336,6 @@ async function runShipmentRefreshById(
     (item) => item.identity.id === shipmentId,
   );
   if (!original) throw new Error("该快递已从列表中移除");
-  const notificationPrevious = original;
   const source = requireScriptSource(
     original.identity.bindingSource || SCRIPT_BINDING_SOURCE,
   );
@@ -4538,10 +4537,7 @@ async function runShipmentRefreshById(
   const persistedDetailTimeline = selectShipmentDetailTimeline(persisted);
   safelyPruneRoutes(next);
   requestWidgetReload();
-  await notifyShipmentChanges(
-    new Map([[notificationPrevious.identity.id, notificationPrevious]]),
-    [persisted],
-  );
+  await replayPendingShipmentNotifications(lease.isCurrent);
   writeDiagnostic("detail.refresh.committed", {
     flowId,
     source,
@@ -4723,22 +4719,24 @@ async function runFullRefresh(
     await refreshCarrierAuthorityIfNeeded();
     lease.assertCurrent();
   }
+  await replayPendingShipmentNotifications(lease.isCurrent);
+  lease.assertCurrent();
   const hostPolicy = fullRefreshHostPolicy({
     accountOrderProjection,
     backgroundHostSafe,
   });
   const startedAt = Date.now();
   const initial = loadState(startedAt);
+  const notificationContext = {
+    previousById: new Map(initial.shipments.map((shipment) => [shipment.identity.id, shipment])),
+    batchId: flowId,
+  };
   let checkpointBase = initial;
   let currentState = initial;
-  let notificationState = initial;
   let attempted = 0;
   let succeeded = 0;
   let failed = 0;
   const promotedPendingShipmentIds: string[] = [];
-  const previousById = new Map(
-    initial.shipments.map((shipment) => [shipment.identity.id, shipment]),
-  );
 
   const checkpoint: RefreshCheckpoint = (candidate, mutations, stage) => {
     lease.assertCurrent();
@@ -4748,6 +4746,7 @@ async function runFullRefresh(
       source,
       Date.now(),
       lease,
+      notificationContext,
     );
     if (!commit.applied) {
       writeDiagnostic("refresh.commit.skipped", {
@@ -4775,7 +4774,6 @@ async function runFullRefresh(
     }
     lease.assertCurrent();
     checkpointBase = next;
-    notificationState = next;
     return next;
   };
 
@@ -4802,6 +4800,7 @@ async function runFullRefresh(
           Date.now(),
         ),
       },
+      notificationContext,
     );
     checkpointBase = commit.state;
     if (!commit.applied) return commit;
@@ -4820,7 +4819,6 @@ async function runFullRefresh(
     }
     lease.assertCurrent();
     checkpointBase = next;
-    notificationState = next;
     return { state: next, applied: true };
   };
 
@@ -4982,14 +4980,9 @@ async function runFullRefresh(
     };
   } finally {
     if (lease.isCurrent()) {
-      await notifyShipmentChanges(
-        previousById,
-        notificationState.shipments.filter(
-          (shipment) => shipment.identity.bindingSource === source,
-        ),
-        lease.isCurrent,
-      );
+      await replayPendingShipmentNotifications(lease.isCurrent);
     }
+    lease.assertCurrent();
   }
 }
 
@@ -5065,6 +5058,14 @@ export function refreshAllShipments(
     source,
     async (skipRefreshIds, lease) => {
       blockedMs = Math.max(0, Date.now() - startedAt);
+      const ownedLease: FullRefreshLease = {
+        ...lease,
+        isCurrent: () => lease.isCurrent() && durableLease.isCurrent(),
+        assertCurrent: () => {
+          lease.assertCurrent();
+          if (!durableLease.isCurrent()) throw new OperationTimeoutError();
+        },
+      };
       return runFullRefresh(
         source,
         deadlineAtMs,
@@ -5073,7 +5074,7 @@ export function refreshAllShipments(
         options.accountOrderProjection !== false,
         Boolean(options.backgroundHostSafe),
         Boolean(options.forceManualRefresh),
-        lease,
+        ownedLease,
       );
     },
     (detail) => detail.refreshed,

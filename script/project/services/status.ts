@@ -1152,14 +1152,15 @@ function signedAt(shipment: Shipment, now: number): number {
     if (!/签收|妥投|配送完成/.test(detail)) continue;
     value = Math.max(value, validLifecycleTime(track.timeMs, now));
   }
-  return value || validLifecycleTime(shipment.updatedAtMs, now);
+  // 兜底取「第一次进入终态」的时刻，不取 updatedAtMs：后者每次写入都刷新，倒计时永远归零。
+  return value || validLifecycleTime(shipment.settledAtMs, now);
 }
 
 function cancelledAt(shipment: Shipment, now: number): number {
   return Math.max(
     validLifecycleTime(shipment.timeline.statusEventAtMs, now),
     latestTimelineTime(shipment, now),
-  ) || validLifecycleTime(shipment.updatedAtMs, now);
+  ) || validLifecycleTime(shipment.settledAtMs, now);
 }
 
 export function pruneShipments(

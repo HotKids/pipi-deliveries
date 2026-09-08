@@ -13,17 +13,12 @@ const runFullRefresh = source.match(
 assert.ok(runFullRefresh, "the full refresh implementation must remain discoverable");
 assert.match(
   runFullRefresh,
-  /let notificationState = initial;/,
-  "notifications must start from the initial persisted snapshot",
+  /await replayPendingShipmentNotifications\(lease\.isCurrent\)/,
+  "a fresh runtime must drain committed notification obligations before account work",
 );
-assert.ok(
-  (runFullRefresh.match(/notificationState = next;/g) || []).length >= 2,
-  "every state checkpoint path must advance the notification snapshot",
-);
-assert.match(
-  runFullRefresh,
-  /finally\s*{[\s\S]*?if \(lease\.isCurrent\(\)\)[\s\S]*?await notifyShipmentChanges\([\s\S]*?notificationState\.shipments[\s\S]*?lease\.isCurrent/,
-  "only the current generation may notify from its last committed checkpoint",
-);
-
+assert.doesNotMatch(runFullRefresh, /notificationState|notifyShipmentChanges/,
+  "notifications must not depend on volatile before/after snapshots");
+assert.match(runFullRefresh,
+  /finally\s*{[\s\S]*?if \(lease\.isCurrent\(\)\)[\s\S]*?await replayPendingShipmentNotifications\(lease\.isCurrent\)/,
+  "only the current generation may drain notifications; skipped events remain durable");
 console.log("refresh notification checkpoint contract tests passed");

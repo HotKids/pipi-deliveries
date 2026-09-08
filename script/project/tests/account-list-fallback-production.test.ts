@@ -14,6 +14,13 @@ const keychain = new Map<string, string>();
 const storage = new Map<string, unknown>();
 const fetchStages: string[] = [];
 let accountListFailure: "timeout" | "unauthorized" = "timeout";
+let accountReply: (() => Promise<ReturnType<typeof jsonResponse>>) | null = null;
+let onStorageRead: ((key: string) => void) | null = null;
+let beforeDetailReply: (() => void) | null = null;
+let rejectNotification = false;
+let notificationAttempts = 0;
+const notificationBodies: unknown[] = [];
+let pickerReply: ((waybill: string) => ReturnType<typeof jsonResponse>) | null = null;
 
 function providerTime(value: number): string {
   const date = new Date(value);
@@ -111,6 +118,7 @@ Object.assign(globalThis, {
   },
   Storage: {
     get<T>(key: string): T | null {
+      onStorageRead?.(key);
       return (storage.get(key) as T | undefined) ?? null;
     },
     set(key: string, value: unknown): boolean {
@@ -122,7 +130,11 @@ Object.assign(globalThis, {
     },
   },
   Notification: {
-    schedule: async () => {},
+    schedule: async (event: { body: string }) => {
+      notificationAttempts++;
+      notificationBodies.push(event.body);
+      if (rejectNotification) throw new Error("synthetic notification failure");
+    },
   },
   Widget: {
     reloadAll() {},
@@ -136,6 +148,7 @@ Object.assign(globalThis, {
     const route = new URL(url).pathname;
     if (route === "/api/express/accounts/sync") {
       fetchStages.push("account_list");
+      if (accountReply) return accountReply();
       if (accountListFailure === "unauthorized") {
         const text = JSON.stringify({ error: "unauthorized" });
         return {
@@ -152,9 +165,12 @@ Object.assign(globalThis, {
     if (route === "/api/express/timeline/source") {
       const body = JSON.parse(String(init?.body || "{}")) as {
         mode?: string;
+        waybill?: string;
       };
+      if ((body.mode === "refresh" || body.mode === "manual") && pickerReply) return pickerReply(body.waybill || "");
       assert.equal(body.mode, "detail");
       fetchStages.push("account_detail");
+      beforeDetailReply?.();
       return jsonResponse({
         code: 0,
         data: {
@@ -177,7 +193,7 @@ setDiagnosticsEnabled(true);
 
 const { saveGatewayToken } = await import("../services/credentials");
 const { clearDiagnostics, readDiagnostics } = await import("../services/logger");
-const { saveState } = await import("../services/storage");
+const { saveState, loadState } = await import("../services/storage");
 const { refreshAllShipments } = await import("../services/sync");
 
 const PHONE = "13800138000";
@@ -351,3 +367,144 @@ assert.equal(
 );
 
 console.log("account-list cached fallback production-path tests passed");
+
+// Two isolated sync modules share only the synthetic durable stores.
+{
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    saveState(state([]), clock);
+    let releaseFirst!: (response: ReturnType<typeof jsonResponse>) => void;
+    let enteredFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { enteredFirst = resolve; });
+    accountReply = () => {
+      enteredFirst();
+      return new Promise((resolve) => { releaseFirst = resolve; });
+    };
+    let reads = 0;
+    onStorageRead = (key) => {
+      if (key === "pipi_deliveries_state_v1" && ++reads === 2) {
+        // Model suspension during the initial state read, before a new network deadline.
+        clock += 120_000;
+        onStorageRead = null;
+      }
+    };
+    const first = refreshAllShipments("interface5", { backgroundHostSafe: true });
+    const firstResult = first.then(() => null, (error) => error);
+    await firstEntered;
+    clock += 6_000;
+    const secondRuntime = await import("../services/sync.ts?second-runtime");
+    accountReply = async () => jsonResponse({ code: 0, data: { expressList: [] } });
+    await secondRuntime.refreshAllShipments("interface5", { backgroundHostSafe: true });
+    const afterSecond = loadState(clock);
+    releaseFirst(jsonResponse({ code: 0, data: { expressList: [{
+      mailNo: "ZTSTALE5901", cpCode: "ZTO", name: "Synthetic carrier",
+      provider: "CaiNiao", phone: PHONE, stateNum: 104,
+      details: [{ time: providerTime(clock - 1_000), desc: "Synthetic late event" }],
+    }] } }));
+    const firstError = await firstResult;
+    assert.ok(firstError, "the expired first runtime must reject its late account result");
+    assert.deepEqual(loadState(clock).shipments, afterSecond.shipments,
+      "a runtime that lost persistent ownership must not publish a late account commit");
+  } finally {
+    Date.now = realNow;
+    accountReply = null;
+    onStorageRead = null;
+  }
+}
+console.log("cross-runtime full refresh fencing tests passed");
+
+// The real full-refresh path must recover a list-stage event after a later stage times out.
+{
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    storage.delete("pipi_deliveries_refresh_runtime_v1");
+    const initial = saveState(state([cachedShipment(clock)]), clock);
+    notificationAttempts = 0;
+    accountReply = async () => jsonResponse({ code: 0, data: { expressList: [{
+      mailNo: WAYBILL, cpCode: "ZTO", name: "中通快递", provider: "CaiNiao",
+      phone: PHONE, stateNum: 104,
+      details: [{ time: providerTime(clock - 1_000), desc: "Synthetic newer account event" }],
+    }] } });
+    beforeDetailReply = () => {
+      assert.ok(loadState(clock).pendingNotifications?.length,
+        "the account-list checkpoint stores its event before the next request");
+      clock += 31_000;
+    };
+    await assert.rejects(refreshAllShipments("interface5", {
+      budgetMs: 30_000, accountOrderProjection: false,
+    }), /请求超时/);
+    assert.equal(notificationAttempts, 0);
+    assert.ok(loadState(clock).revision > initial.revision);
+    assert.equal(loadState(clock).pendingNotifications?.length, 1);
+    beforeDetailReply = null;
+    accountReply = async () => jsonResponse({ code: 0, data: { expressList: [] } });
+    rejectNotification = true;
+    const restarted = await import("../services/sync.ts?notification-restart");
+    await restarted.refreshAllShipments("interface5", { backgroundHostSafe: true });
+    assert.ok(notificationAttempts > 0);
+    assert.equal(loadState(clock).pendingNotifications?.length, 1,
+      "a failed host schedule remains durable even after another successful account round");
+    rejectNotification = false;
+    const anotherRuntime = await import("../services/sync.ts?notification-retry");
+    const beforeSuccess = notificationAttempts;
+    await anotherRuntime.refreshAllShipments("interface5", { backgroundHostSafe: true });
+    assert.equal(notificationAttempts, beforeSuccess + 1);
+    assert.deepEqual(loadState(clock).pendingNotifications, []);
+    await anotherRuntime.refreshAllShipments("interface5", { backgroundHostSafe: true });
+    assert.equal(notificationAttempts, beforeSuccess + 1);
+  } finally {
+    Date.now = realNow;
+    accountReply = null;
+    beforeDetailReply = null;
+    rejectNotification = false;
+  }
+}
+console.log("full refresh timeout notification recovery tests passed");
+
+// A full round publishes the final observation once, and never notifies a row first seen in that round.
+{
+  const now = Date.now();
+  const eventTime = (at: number) => new Date(at + 8 * 60 * 60_000).toISOString().slice(0, 19).replace("T", " ");
+  const existingWaybill = "SFEXIST5901";
+  const newWaybill = "SFNEW5902";
+  const base = cachedShipment(now);
+  const existing: Shipment = {
+    ...base,
+    identity: { ...base.identity, id: `interface5:account:${existingWaybill}`, sourceId: existingWaybill,
+      courierCode: "SF", rawCourierCode: "SF", companyName: "顺丰速运", sourceProvider: "ShunFeng" },
+    timeline: { ...base.timeline, waybill: existingWaybill, courierCode: "SF", companyName: "顺丰速运", semantic: "ORDERED" },
+    sourceTimeline: undefined,
+  };
+  storage.delete("pipi_deliveries_refresh_runtime_v1");
+  saveState(state([existing]), now);
+  notificationAttempts = 0;
+  notificationBodies.length = 0;
+  accountReply = async () => jsonResponse({ code: 0, data: { expressList: [existingWaybill, newWaybill].map((waybill) => ({
+    mailNo: waybill, cpCode: "SF", name: "顺丰速运", provider: "ShunFeng", phone: PHONE,
+    stateNum: 104, details: [{ time: eventTime(now - 5_000), desc: `Synthetic feed ${waybill}` }],
+  })) } });
+  let pickerCalls = 0;
+  pickerReply = (waybill) => {
+    pickerCalls++;
+    return jsonResponse({ code: 200, value: JSON.stringify({
+      nu: waybill, com: "SF", name: "顺丰速运", state: "3",
+      time: eventTime(now), context: `Synthetic final ${waybill}`,
+    }) });
+  };
+  try {
+    const summary = await refreshAllShipments("interface5", { budgetMs: 30_000, forceManualRefresh: true });
+    assert.equal(pickerCalls, 2, "both the existing and newly discovered rows reached the later Picker checkpoint");
+    assert.equal(summary.state.shipments.length, 2);
+    assert.equal(notificationAttempts, 1, "only the pre-existing row gets one final notification for the round");
+    assert.deepEqual(notificationBodies, [`Synthetic final ${existingWaybill}`]);
+    assert.deepEqual(loadState().pendingNotifications, []);
+  } finally {
+    accountReply = null;
+    pickerReply = null;
+  }
+}
+console.log("full refresh notification baseline and aggregation tests passed");

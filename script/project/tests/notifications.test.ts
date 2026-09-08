@@ -4,7 +4,6 @@ import type { Shipment, StatusSemantic } from "../models";
 const memory = new Map<string, unknown>();
 const files = new Map<string, string>();
 const scheduled: Record<string, unknown>[] = [];
-let scheduleGate: Promise<void> | null = null;
 
 Object.assign(globalThis, {
   Path: {
@@ -50,24 +49,7 @@ Object.assign(globalThis, {
       return true;
     },
   },
-  Data: {
-    fromFile(path: string) {
-      return { path };
-    },
-  },
-  Notification: {
-    async schedule(value: Record<string, unknown>) {
-      scheduled.push(value);
-      if (scheduleGate) await scheduleGate;
-    },
-  },
-  Script: {
-    directory: "/script",
-    name: "Pipi Deliveries",
-    createRunSingleURLScheme(_name: string, query: Record<string, string>) {
-      return `pipi://${query.shipment || ""}`;
-    },
-  },
+
 });
 
 const {
@@ -79,9 +61,11 @@ const {
   saveNotificationStatuses,
   setNotificationGroupEnabled,
 } = await import("../services/notification-preferences");
-const { notifyShipmentChange, notifyShipmentChanges } = await import(
-  "../services/notifications"
-);
+const { shipmentNotificationEvent } = await import("../services/notification-events");
+function recordShipmentChange(previous: Shipment | null, current: Shipment): void {
+  const event = shipmentNotificationEvent(previous, current);
+  if (event) scheduled.push(event);
+}
 
 function shipment(
   semantic: StatusSemantic,
@@ -152,73 +136,43 @@ saveNotificationStatuses(["DELIVERY"], 100);
 files.clear();
 assert.deepEqual(loadNotificationStatuses(true), ["DELIVERY"]);
 
-await notifyShipmentChange(
+recordShipmentChange(
   shipment("TRANSIT", "快件离开转运中心"),
   shipment("TRANSIT", "快件到达下一站"),
 );
 assert.equal(scheduled.length, 0);
 
-await notifyShipmentChange(
+recordShipmentChange(
   shipment("TRANSIT", "快件离开转运中心"),
   shipment("DELIVERY", "快递员正在派送"),
 );
 assert.equal(scheduled.length, 1);
 assert.equal(scheduled[0]?.title, "顺丰速运 7890 · 派送中");
 assert.equal(scheduled[0]?.body, "快递员正在派送");
-assert.deepEqual(scheduled[0]?.iconImageData, {
-  path: "/script/assets/couriers/sf.png",
-});
-assert.deepEqual(scheduled[0]?.userInfo, { shipment: "shipment-1" });
-assert.equal(
-  (scheduled[0]?.actions as Array<{ title: string }> | undefined)?.[0]?.title,
-  "查看详情",
-);
+assert.equal(scheduled[0]?.iconName, "sf");
+assert.equal(scheduled[0]?.shipmentId, "shipment-1");
 
 // 与 Pipi 同口径（三端统一，2026-09-05）：状态没变、事件时间也没变的文案改写不是新通知——
 // 否则「摘要换成全量轨迹头条」会把早已签收的件再通知一遍（Lite 上八票同一分钟复发）。
-await notifyShipmentChange(
+recordShipmentChange(
   shipment("DELIVERY", "快递员正在派送"),
   shipment("DELIVERY", ""),
 );
 assert.equal(scheduled.length, 1);
 const laterDelivery = shipment("DELIVERY", "");
-await notifyShipmentChange(
+recordShipmentChange(
   shipment("DELIVERY", "快递员正在派送"),
   { ...laterDelivery, timeline: { ...laterDelivery.timeline, statusEventAtMs: 3 } },
 );
 assert.equal(scheduled.length, 2);
 assert.equal(scheduled[1]?.body, "物流状态已更新");
 
-let releaseSchedule!: () => void;
-scheduleGate = new Promise<void>((resolve) => {
-  releaseSchedule = resolve;
-});
-let batchSettled = false;
-const previous = shipment("TRANSIT", "快件离开转运中心");
-const current = shipment("DELIVERY", "快递员再次派送");
-const batch = notifyShipmentChanges(
-  new Map([[previous.identity.id, previous]]),
-  [current],
-).then(() => {
-  batchSettled = true;
-});
-await Promise.resolve();
-assert.equal(batchSettled, false);
-releaseSchedule();
-await batch;
-assert.equal(batchSettled, true);
-scheduleGate = null;
-
-const scheduledBeforeCancelledGeneration = scheduled.length;
-await notifyShipmentChange(previous, current, () => false);
-await notifyShipmentChanges(
-  new Map([[previous.identity.id, previous]]),
-  [current],
-  () => false,
+recordShipmentChange(
+  shipment("TRANSIT", "快件离开转运中心"),
+  shipment("DELIVERY", "快递员再次派送"),
 );
-assert.equal(scheduled.length, scheduledBeforeCancelledGeneration);
 
-await notifyShipmentChange(null, shipment("DELIVERY", "首次发现"));
+recordShipmentChange(null, shipment("DELIVERY", "首次发现"));
 assert.equal(scheduled.length, 3);
 
 saveNotificationStatuses(["COMPLETED"], 101);
@@ -235,7 +189,7 @@ const completedJingDong = {
     latestDetail: "源包运输中",
   },
 };
-await notifyShipmentChange(completedJingDong, {
+recordShipmentChange(completedJingDong, {
   ...completedJingDong,
   identity: {
     ...completedJingDong.identity,
@@ -248,7 +202,7 @@ assert.equal(
   3,
   "carrier normalization after a displayed JD completion is not a status notification",
 );
-await notifyShipmentChange(
+recordShipmentChange(
   {
     ...completedJingDong,
     timeline: shipment("TRANSIT", "运输中").timeline,
@@ -276,7 +230,7 @@ const orderedJingDong = {
 };
 // 开关按用户看见的状态判（用户定 2026-09-06）：只开了「已下单」时，订单级展示变成「已完成」不通知；
 // 开了「已完成」才通知，标题也是「已完成」。
-await notifyShipmentChange(orderedJingDong, {
+recordShipmentChange(orderedJingDong, {
   ...orderedJingDong,
   statusPresentation: {
     scope: "ORDER",
@@ -286,7 +240,7 @@ await notifyShipmentChange(orderedJingDong, {
 });
 assert.equal(scheduled.length, 4, "the displayed status decides the switch, not the underlying one");
 saveNotificationStatuses(["COMPLETED"], 103);
-await notifyShipmentChange(orderedJingDong, {
+recordShipmentChange(orderedJingDong, {
   ...orderedJingDong,
   statusPresentation: {
     scope: "ORDER",
@@ -299,7 +253,7 @@ assert.equal(scheduled[4]?.title, "京东购物 7654 · 已完成");
 
 saveNotificationStatuses([], 104);
 assert.deepEqual(loadNotificationStatuses(true), []);
-await notifyShipmentChange(
+recordShipmentChange(
   shipment("TRANSIT", "快件离开转运中心"),
   shipment("DELIVERY", "再次派送"),
 );
@@ -321,11 +275,11 @@ const unknownCarrier = {
     companyName: "未知快递",
   },
 };
-await notifyShipmentChange(
+recordShipmentChange(
   { ...unknownCarrier, timeline: shipment("TRANSIT", "运输中").timeline },
   unknownCarrier,
 );
 assert.equal(scheduled.length, 6);
-assert.equal(scheduled[5]?.iconImageData, null);
+assert.equal(scheduled[5]?.iconName, null);
 
 console.log("notification preference and filtering tests passed");

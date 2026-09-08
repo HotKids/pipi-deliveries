@@ -2288,3 +2288,54 @@ console.log("shipment projection preservation tests passed");
   assert.equal((afterSecondList.sourceTimeline || afterSecondList.timeline).tracks.length, 2, "later syncs go back to the incremental union");
 }
 
+// 签收之后轨迹跟状态一起冻结：终态那一刻存下来的节点，后续任何合并都不许让它变少
+// （用户定 2026-09-07。节点被抹空的行连「冻结」判据都不成立，于是继续刷新、再抹一次）。
+const settledWithHistory: Shipment = (() => {
+  const settled: TimelinePackage = {
+    ...timeline("interface5", "SF1234567890", "COMPLETED"),
+    latestDetail: "您的快件已签收",
+    tracks: [
+      {
+        timeText: "2026-09-06 09:00:00",
+        timeMs: NOW - 7_200_000,
+        detail: "快件已到达深圳宝安",
+        statusCode: "0",
+        raw: {},
+      },
+      {
+        timeText: "2026-09-06 11:00:00",
+        timeMs: NOW,
+        detail: "您的快件已签收",
+        statusCode: "3",
+        raw: {},
+      },
+    ],
+  };
+  return {
+    ...shipmentWithCachedHistory,
+    identity: { ...shipmentWithCachedHistory.identity, id: "interface5:account:SF1234567890" },
+    timeline: settled,
+    sourceTimeline: settled,
+    manualTimelines: [],
+  };
+})();
+assert.equal(hasSettledTimelineHistory(settledWithHistory), true);
+
+const summaryOnly: TimelinePackage = {
+  ...timeline("interface5", "SF1234567890", "COMPLETED"),
+  latestDetail: "",
+  latestTimeText: "",
+  tracks: [],
+};
+const afterSummaryRound = applyAccountShipment(
+  settledWithHistory,
+  { ...settledWithHistory, timeline: summaryOnly, sourceTimeline: summaryOnly },
+  NOW + 1,
+);
+assert.equal(
+  afterSummaryRound.timeline.tracks.length,
+  2,
+  "a settled row must not lose its nodes to a later summary-only round",
+);
+assert.equal(hasSettledTimelineHistory(afterSummaryRound), true);
+
