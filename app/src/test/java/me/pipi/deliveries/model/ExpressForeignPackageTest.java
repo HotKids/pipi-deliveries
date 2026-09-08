@@ -42,6 +42,8 @@ public final class ExpressForeignPackageTest {
         String signedSummary = new JSONArray()
                 .put(new JSONObject().put("time", "2026-09-06 18:20:00")
                         .put("context", "您的快件已签收"))
+                .put(new JSONObject().put("time", "2026-09-06 09:00:00")
+                        .put("context", "快件正在派送中"))
                 .toString();
         assertEquals(0L, ExpressTimeline.foreignPackageAnchorMillis(signedSummary));
         assertFalse(ExpressTimeline.isForeignPackage(signedSummary, genuine));

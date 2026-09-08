@@ -82,12 +82,12 @@ export function foreignPackageAnchorMs(shipment: Shipment): number | null {
   // binding — an already-shipped order backfilled on first sync — into a false "foreign" verdict
   // that threw away the parcel's real history.
   if (!times.length) return null;
-  // R-29 锚的是这张订单 feed 的**第一条**节点。签收之后 feed 只回最新那一条（签收），它是终点
-  // 不是起点：拿它当锚会把这一票自己的历史（从揽收开始，早好几天）整包判成「别人的包裹」丢掉，
-  // 于是每一轮全量刷新之后详情页只剩 feed 那个 0 节点的包，列表写「暂无物流动态」
-  // （用户 2026-09-08 报，尾号 0238；本轮定位实测 3 个包进、0 个包出）。
-  // 只有一条带时间的节点时那是状态摘要，不是历史，不足以当起点锚。
-  if (times.length < 2) return null;
+  // R-29 锚的是这张订单 feed 的**第一条**节点——前提是 feed 里真的有这一票自己的起点。签收之后
+  // 账号 feed 往往只剩最近几条（派送、签收），起点早被它自己截掉了：拿这种摘要的最早一条当锚，
+  // 这一票从揽收开始的历史整包会被判成「别人的包裹」丢掉，于是手动刷回来的轨迹下一轮又没了
+  // （用户 2026-09-08 报，尾号 0238；实测 feed 只有「派送+签收」两条时 cn_h5 的 11 条被判外来）。
+  // 所以只有 feed 自己到了起点（揽收/下单）才有资格当锚，条数多少都不作数。
+  if (!containsTimelineStartTrack(anchor.tracks)) return null;
   return Math.min(...times) - FOREIGN_PACKAGE_ANCHOR_SLACK_MS;
 }
 

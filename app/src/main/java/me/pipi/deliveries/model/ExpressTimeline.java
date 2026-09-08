@@ -105,11 +105,19 @@ public final class ExpressTimeline {
             timed++;
             if (earliest == 0L || time < earliest) earliest = time;
         }
-        // 锚的是 feed 的**第一条**节点。签收之后 feed 往往只剩最新那一条（签收），它是终点不是
-        // 起点：拿它当锚会把这一票自己从揽收开始的历史整包判成别人的包裹丢掉，列表和详情就成了
-        // 「暂无物流动态」（用户 2026-09-08 报，三端同改）。一条节点是状态摘要，不是历史。
-        if (timed < 2) return 0L;
+        // 锚的是 feed 的**第一条**节点——前提是 feed 里真的有这一票自己的起点。签收之后账号 feed
+        // 往往只剩最近几条（派送、签收），起点早被它自己截掉了：拿这种摘要的最早一条当锚，这一票
+        // 从揽收开始的历史整包会被判成别人的包裹丢掉（用户 2026-09-08 报，三端同改）。
+        if (timed <= 0 || !hasStartBoundary(accountTracksJson)) return 0L;
         return earliest > 0L ? earliest - FOREIGN_PACKAGE_ANCHOR_SLACK_MS : 0L;
+    }
+
+    /** feed 自己到没到这一票的起点（揽收／下单）。 */
+    private static boolean hasStartBoundary(String tracksJson) {
+        for (RawTrack track : rawTracks(tracksJson)) {
+            if (isStartBoundary(track)) return true;
+        }
+        return false;
     }
 
     public static boolean isForeignPackage(String accountTracksJson, String candidateTracksJson) {

@@ -89,15 +89,17 @@ assert.equal(isForeignManualPackage(order, genuinePicker), false);
 assert.equal(isForeignManualPackage(order, sameDayKdniao), false, "within one day of the first feed node is not foreign");
 assert.equal(isForeignManualPackage(order, accountPackage), false, "the account package is the anchor, never foreign");
 
-// 用户 2026-09-08 报：签收之后 feed 只回最新那一条节点（签收），拿它当「第一条」锚，这一票自己
-// 从揽收开始的历史整包被判成别人的包裹丢掉，于是列表写「暂无物流动态」，每轮刷新都复发。
-// 只有一条带时间节点的 feed 是状态摘要，不是历史，不足以当锚。
+// 用户 2026-09-08 报：签收之后账号 feed 只剩最近几条（派送、签收），起点早被它自己截掉了。
+// 拿这种摘要的最早一条当「第一条」锚，这一票从揽收开始的历史整包被判成别人的包裹丢掉，于是
+// 手动刷回来的轨迹下一轮又没了。feed 自己没到起点就没资格当锚——一条也好两条也好都一样。
+const signedSummary = pkg("interface5", [
+  track(PICKUP + 5 * 24 * 60 * 60 * 1000, "您的快件已签收"),
+  track(PICKUP + 5 * 24 * 60 * 60 * 1000 - 3600 * 1000, "快件正在派送中"),
+]);
 const signedSummaryOnly: Shipment = {
   ...order,
-  timeline: pkg("interface5", [track(PICKUP + 5 * 24 * 60 * 60 * 1000, "您的快件已签收")]),
-  sourceTimeline: pkg("interface5", [
-    track(PICKUP + 5 * 24 * 60 * 60 * 1000, "您的快件已签收"),
-  ]),
+  timeline: signedSummary,
+  sourceTimeline: signedSummary,
 };
 assert.equal(foreignPackageAnchorMs(signedSummaryOnly), null);
 assert.equal(

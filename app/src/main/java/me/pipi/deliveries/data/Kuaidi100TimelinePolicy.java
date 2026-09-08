@@ -148,6 +148,7 @@ public final class Kuaidi100TimelinePolicy {
                 || compactDetail.contains("已经下单")
                 || compactDetail.contains("订单已提交")
                 || compactDetail.contains("订单已创建")
+                || compactDetail.contains("提交了订单")
                 || compactDetail.contains("等待出库")
                 || compactDetail.contains("正在打包")
                 || compactDetail.contains("拣货"))) return true;

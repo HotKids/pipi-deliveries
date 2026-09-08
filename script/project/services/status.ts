@@ -297,7 +297,7 @@ export function semanticFromText(value: string): StatusSemantic {
   if (/已揽收|已揽件|揽收完成|揽件成功|揽收成功|已收寄|收取快件/.test(text)) return "PICKED";
   if (/运输中|转运|分拨|已发往|已到达/.test(text)) return "TRANSIT";
   if (/已发货|商家已发货/.test(text)) return "SHIPPED";
-  if (/已下单|已经下单|订单已创建|订单已提交|等待出库|正在打包|拣货/.test(text)) {
+  if (/已下单|已经下单|订单已创建|订单已提交|提交了订单|等待出库|正在打包|拣货/.test(text)) {
     return "ORDERED";
   }
   // 「订单已完成配送」「配送完成」是送完了，不是刚下单（Fold7 2026-09-02 实测那行的结构化字段就是
@@ -465,7 +465,7 @@ export function containsTimelineStartTrack(
   const isStart = (semantic: StatusSemantic) =>
     semantic === "ORDERED" || semantic === "PICKED";
   return timedTracks(tracks).some((track) => {
-    const codes = [track.statusCode, track.raw.statusCode];
+    const codes = [track.statusCode, track.raw?.statusCode];
     return codes.some((code) =>
       isStart(semanticFromTrackCode(track, code)) ||
       isStart(semanticFromStored(String(code ?? ""), track.detail))
@@ -478,7 +478,7 @@ export function containsTimelinePickupTrack(
   tracks: readonly TrackNode[],
 ): boolean {
   return timedTracks(tracks).some((track) => {
-    const codes = [track.statusCode, track.raw.statusCode];
+    const codes = [track.statusCode, track.raw?.statusCode];
     return codes.some((code) =>
       semanticFromTrackCode(track, code) === "PICKED" ||
       semanticFromStored(String(code ?? ""), track.detail) === "PICKED"
