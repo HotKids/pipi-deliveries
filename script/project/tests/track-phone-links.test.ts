@@ -17,11 +17,10 @@ assert.match(page, /物流信息来自/);
 assert.match(page, /<Text fontWeight="bold">\{timelineSourceName\}<\/Text>/);
 assert.match(page, /sources\/kuaidi100/);
 
-// The three native detail renderers recognize the same spans.
+// Both Deliveries renderers recognize the same spans in the standalone distribution.
 const source = readFileSync(new URL("../services/track-phone-links.ts", import.meta.url), "utf8");
 const pattern = source.match(/const PHONE = \/(.*)\/g;/)![1];
 for (const path of [
-  "../../../../flutter_app/android/app/src/main/java/me/pipi/assistant/express/ExpressTrackPhoneLinks.java",
   "../../../app/src/main/java/me/pipi/deliveries/feature/express/ExpressTrackPhoneLinks.java",
 ]) {
   const java = readFileSync(new URL(path, import.meta.url), "utf8");
