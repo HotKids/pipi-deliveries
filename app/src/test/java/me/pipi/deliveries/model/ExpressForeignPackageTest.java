@@ -10,6 +10,15 @@ import org.junit.Test;
 
 /** AGENTS §9 / R-29 (2026-09-03): provider packages older than the order's first feed node are foreign. */
 public final class ExpressForeignPackageTest {
+    @Test public void completionTextStopsQueriesWithoutProvingTheFeedOrigin() throws Exception {
+        JSONObject terminal = new JSONObject().put("time", "2026-09-06 18:20:00")
+                .put("context", "订单已完成配送，感谢您选择京东购物");
+        assertTrue(me.pipi.deliveries.data.Kuaidi100TimelinePolicy
+                .containsTimelineStart(terminal, "interface5", true));
+        assertEquals(0L, ExpressTimeline.foreignPackageAnchorMillis(
+                new JSONArray().put(terminal).toString()));
+    }
+
     @Test public void packagesOlderThanTheAccountFeedAnchorAreForeign() throws Exception {
         String account = new JSONArray()
                 .put(new JSONObject().put("time", "2026-09-03 17:49:51").put("context", "已取件"))

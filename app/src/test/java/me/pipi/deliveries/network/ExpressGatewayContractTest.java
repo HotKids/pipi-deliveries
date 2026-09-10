@@ -43,9 +43,11 @@ public final class ExpressGatewayContractTest {
         assertTrue(subscription.contains("/api/express/accounts/sync"));
         assertTrue(subscription.contains("/api/express/timeline/source"));
         assertTrue(subscription.contains("put(\"interface\", \"v6\")"));
-        // 顺丰列表轮用 picker refresh，manual 留给详情/加件（2026-09-05）：同一个 post 按 mode 参数分流。
-        assertTrue(subscription.contains("put(\"mode\", mode)"));
-        assertTrue(subscription.contains("\"manual\""));
+        // Online serves existing add, detail and SF list calls without an extra request.
+        assertTrue(subscription.contains("put(\"mode\", \"refresh\")"));
+        assertFalse(subscription.contains("\"manual\""));
+        assertFalse(subscription.contains("\"last_detail\""));
+        assertFalse(subscription.contains("queryRefresh("));
         assertTrue(subscription.contains("\"refresh\""));
 
         assertFalse(api.contains("https://"));
@@ -118,6 +120,8 @@ public final class ExpressGatewayContractTest {
         String detail = source("me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
         String homeCapture = source(
                 "me/pipi/deliveries/feature/express/ExpressHomeOrderProjectionCapture.java");
+        String automaticCapture = source(
+                "me/pipi/deliveries/feature/express/ExpressAutomaticTimelineCapture.java");
         assertFalse(detail.contains("ExpressDetailGateway"));
         assertTrue(detail.contains("item.routeCredentialAvailable"));
         assertTrue(detail.contains("CainiaoRoute.isLegacyCredentialedUrl"));
@@ -127,7 +131,10 @@ public final class ExpressGatewayContractTest {
         assertTrue(detail.contains("intent.getStringExtra(EXTRA_ROUTE_CREDENTIAL)"));
         assertFalse(detail.contains("addJavascriptInterface"));
         assertFalse(detail.contains("@JavascriptInterface"));
-        assertTrue(homeCapture.contains("DOCUMENT_START_SCRIPT"));
+        assertTrue(homeCapture.contains("new ExpressAutomaticTimelineCapture("));
+        assertTrue(automaticCapture.contains("DOCUMENT_START_SCRIPT"));
+        assertFalse(automaticCapture.contains("addJavascriptInterface"));
+        assertFalse(automaticCapture.contains("@JavascriptInterface"));
         assertFalse(homeCapture.contains("addJavascriptInterface"));
         assertFalse(homeCapture.contains("@JavascriptInterface"));
     }

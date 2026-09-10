@@ -78,8 +78,6 @@ assert.deepEqual(widgetHostPolicy, {
   accountOrderProjection: false,
   webViewEnrichment: false,
   accountFollowupReserveMs: 0,
-  accountFollowups: true,
-  manualAndPending: true,
 });
 assert.deepEqual(
   fullRefreshHostPolicy({
@@ -90,8 +88,6 @@ assert.deepEqual(
     accountOrderProjection: true,
     webViewEnrichment: true,
     accountFollowupReserveMs: ACCOUNT_FOLLOWUP_RESERVE_MS,
-    accountFollowups: true,
-    manualAndPending: true,
   },
 );
 
@@ -131,15 +127,27 @@ const synchronizeAccountListSource = syncSource.match(
   /async function synchronizeAccountList\([\s\S]*?\n}\n\nasync function projectAccountOrders/,
 )?.[0] || "";
 const bindPhoneSource = syncSource.match(
-  /export async function bindPhone\([\s\S]*?\n}\n\nexport async function bindPhoneAndSync/,
-)?.[0] || "";
+  /export async function bindPhone\([\s\S]*?^}/m,
+)?.[0];
+assert.ok(bindPhoneSource, "the binding operation must be found before checking its side effects");
 assert.match(
   runFullRefreshSource,
   /synchronizeAccountList\([\s\S]*?hostPolicy\.accountFollowupReserveMs/,
 );
 assert.match(runFullRefreshSource, /hostPolicy\.accountOrderProjection/);
-assert.match(runFullRefreshSource, /hostPolicy\.accountFollowups/);
-assert.match(runFullRefreshSource, /hostPolicy\.manualAndPending/);
+assert.match(
+  runFullRefreshSource,
+  /refreshShipmentEnrichment\([\s\S]*?enrichmentDeadlineAtMs/,
+  "the pipeline must receive the host's enrichment deadline",
+);
+const enrichmentSource = syncSource.match(
+  /async function refreshShipmentEnrichment\([\s\S]*?\n}\n\nasync function runFullRefresh/,
+)?.[0] || "";
+assert.match(
+  enrichmentSource,
+  /while \(active\.size < ACCOUNT_FOLLOWUP_CONCURRENCY && !deadlineExpired\(deadlineAtMs\)\)/,
+  "the pipeline must check the host deadline before admitting either account or manual work",
+);
 assert.doesNotMatch(
   runFullRefreshSource,
   /requestWidgetReload\(\)/,

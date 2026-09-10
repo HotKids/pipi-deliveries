@@ -12,7 +12,7 @@ import me.pipi.deliveries.model.ExpressTimeline;
 /** Selects one successful manual-query timeline without changing shipment ownership. */
 public final class ManualTimelineAuthorityPolicy {
     private static final String PROVIDER_MOTO = TimelineSlot.V4_QUERY;
-    private static final String PROVIDER_MEIZU = TimelineSlot.V6_PICKER;
+    private static final String PROVIDER_MEIZU = TimelineSlot.V6_QUERY;
     private static final String PROVIDER_KDNIAO = TimelineSlot.KDNIAO;
     private static final String PROVIDER_KUAIDI100 = TimelineSlot.K100_H5;
     private static final int KDNIAO_TERMINAL_MIN_TIMED_TRACKS = 2;
@@ -52,13 +52,13 @@ public final class ManualTimelineAuthorityPolicy {
         Map<String, Candidate> byProvider = new LinkedHashMap<>();
         for (Candidate candidate : candidates) {
             if (!isAuthoritative(candidate)) continue;
+            if (TimelineSlot.isAutomaticH5(candidate.provider)) continue;
             Candidate cached = byProvider.get(candidate.provider);
             byProvider.put(candidate.provider,
                     cached == null ? candidate : mergeSameProvider(cached, candidate));
         }
 
-        // Picker owns Home and status as soon as it has a timed package. A fuller provider may
-        // still be selected independently for detail through selectDetail().
+        // Meizu remains the status and polling authority. SF display uses detail selection separately.
         Candidate picker = byProvider.get(PROVIDER_MEIZU);
         if (picker != null) return picker;
 
@@ -66,8 +66,8 @@ public final class ManualTimelineAuthorityPolicy {
     }
 
     /**
-     * 用户定 2026-09-05：手动件的首页头条/状态跟详情同一套选包，不再由 picker 独占；共享手动
-     * 时间线的自动件（顺丰等）照旧 picker 先。
+     * 用户定 2026-09-05：手动件的首页头条/状态跟详情同一套选包，不再由 Meizu 独占；共享手动
+     * 时间线的自动件（顺丰等）照旧 Meizu 先。
      */
     public static Candidate selectForOwner(List<Candidate> candidates, boolean manuallyAdded) {
         return selectForOwner(candidates, manuallyAdded, "");
@@ -161,12 +161,17 @@ public final class ManualTimelineAuthorityPolicy {
 
     public static boolean detailOutranksSource(
             Candidate candidate, ExpressQueryResult sourcePackage, String preferredProvider) {
+        return detailOutranksSource(candidate, sourcePackage, preferredProvider,
+                Kuaidi100TimelinePolicy.latestTimedEventMillis(sourcePackage));
+    }
+
+    public static boolean detailOutranksSource(Candidate candidate,
+            ExpressQueryResult sourcePackage, String preferredProvider, long referenceEventMillis) {
         if (!isAuthoritative(candidate)) return false;
         if (sourcePackage == null
                 || !Kuaidi100TimelinePolicy.hasTimedTracking(sourcePackage)) return true;
-        long feedLatest = Kuaidi100TimelinePolicy.latestTimedEventMillis(sourcePackage);
-        boolean sourceComplete = detailTimelineComplete(sourcePackage, feedLatest);
-        boolean candidateComplete = detailTimelineComplete(candidate.result, feedLatest);
+        boolean sourceComplete = detailTimelineComplete(sourcePackage, referenceEventMillis);
+        boolean candidateComplete = detailTimelineComplete(candidate.result, referenceEventMillis);
         // 粘性选包（用户定 2026-09-05 晚）：上一轮显示的是 feed 就还是 feed，显示的是这个手动包就
         // 还是它；只有留下的那个不完整、对方已完整时才换。
         String preferred = preferredProvider == null ? "" : preferredProvider.trim();
@@ -207,13 +212,21 @@ public final class ManualTimelineAuthorityPolicy {
                 && Kuaidi100TimelinePolicy.hasTimedTracking(candidate.result);
     }
 
+    public static boolean isShunFengManualCandidate(Candidate candidate) {
+        return isAuthoritative(candidate)
+                && (PROVIDER_MEIZU.equals(candidate.provider)
+                || PROVIDER_KUAIDI100.equals(candidate.provider));
+    }
+
     /**
      * Incrementally merges only one provider's successful cache. An unsuccessful refresh leaves
      * the previous success timestamp and result untouched.
      */
     public static Candidate mergeSameProvider(Candidate cached, Candidate refreshed) {
-        if (!isAuthoritative(cached)) return isAuthoritative(refreshed) ? refreshed : null;
-        if (!isAuthoritative(refreshed)) return cached;
+        if (!isAuthoritative(cached) && !hasStructuredStatus(cached)) {
+            return isAuthoritative(refreshed) || hasStructuredStatus(refreshed) ? refreshed : null;
+        }
+        if (!isAuthoritative(refreshed) && !hasStructuredStatus(refreshed)) return cached;
         if (!cached.provider.equals(refreshed.provider)) {
             throw new IllegalArgumentException("manual timeline providers must match");
         }
@@ -284,22 +297,62 @@ public final class ManualTimelineAuthorityPolicy {
      * 用户定 2026-09-05：状态看来源**返回的结构化状态**，不看文案。展示包自己没有结构化状态时
      * （K100 页只有文案），用同一票别的包里事件时间最新的那个结构化状态；一个都没有才轮到文案。
      */
+    static boolean hasStructuredStatus(Candidate candidate) {
+        return candidate != null && !candidate.provider.isEmpty() && candidate.successAt > 0L
+                && hasStructuredStatus(candidate.result);
+    }
+
+    public static boolean hasStructuredStatus(ExpressQueryResult result) {
+        return result != null && result.structuredStatusEvidence && result.semantic != null
+                && result.semantic != me.pipi.deliveries.model.StatusSemantic.UNKNOWN
+                && !me.pipi.deliveries.model.ExpressStatusNormalizer.isProviderErrorDetail(result.latestDetail)
+                && !ExpressTimeline.containsProviderError(result.tracksJson);
+    }
+
     static Candidate selectStructuredStatus(List<Candidate> candidates) {
+        return selectStructuredStatus(candidates, false);
+    }
+
+    static Candidate selectStructuredStatus(List<Candidate> candidates, boolean preserveSigned) {
         if (candidates == null || candidates.isEmpty()) return null;
         Candidate selected = null;
         for (Candidate candidate : candidates) {
-            if (!isAuthoritative(candidate) || candidate.result == null
-                    || !candidate.result.structuredStatusEvidence
-                    || candidate.result.semantic == null
-                    || candidate.result.semantic == me.pipi.deliveries.model.StatusSemantic.UNKNOWN) continue;
-            if (selected == null
-                    || latestEventTime(candidate.result) > latestEventTime(selected.result)
-                    || latestEventTime(candidate.result) == latestEventTime(selected.result)
-                    && queryOrder(candidate.provider) < queryOrder(selected.provider)) {
+            if (!hasStructuredStatus(candidate)) continue;
+            boolean candidateSigned = preserveSigned
+                    && candidate.result.semantic == me.pipi.deliveries.model.StatusSemantic.COMPLETED;
+            boolean selectedSigned = selected != null && preserveSigned
+                    && selected.result.semantic == me.pipi.deliveries.model.StatusSemantic.COMPLETED;
+            if (selected == null || candidateSigned && !selectedSigned
+                    || candidateSigned == selectedSigned
+                    && (candidate.result.statusEventTime > selected.result.statusEventTime
+                    || candidate.result.statusEventTime == selected.result.statusEventTime
+                    && queryOrder(candidate.provider) < queryOrder(selected.provider))) {
                 selected = candidate;
             }
         }
         return selected;
+    }
+
+    /** Transient presentation may borrow a structured pair without changing either source cache. */
+    public static ExpressQueryResult presentationResult(
+            ExpressQueryResult selected, List<Candidate> candidates) {
+        if (selected == null || selected.structuredStatusEvidence
+                && selected.semantic != me.pipi.deliveries.model.StatusSemantic.UNKNOWN) return selected;
+        java.util.ArrayList<Candidate> sameWaybill = new java.util.ArrayList<>();
+        String waybill = ExpressSourcePolicy.normalizeWaybill(selected.waybill);
+        for (Candidate candidate : candidates) {
+            if (candidate != null && candidate.result != null && waybill.equals(
+                    ExpressSourcePolicy.normalizeWaybill(candidate.result.waybill))) sameWaybill.add(candidate);
+        }
+        Candidate donor = selectStructuredStatus(sameWaybill);
+        if (donor == null) return selected;
+        return new ExpressQueryResult(selected.waybill, selected.courierCode, selected.companyName,
+                donor.result.semantic, donor.result.statusEventTime, selected.latestTime,
+                selected.latestDetail, selected.tracksJson, selected.detailUrl, selected.phone,
+                selected.timelineProvider, selected.routeInterface, selected.routeCredential,
+                selected.sourceProvider, selected.carrierNormalization)
+                .withCarrierIdentityEvidence(selected.carrierIdentityEvidence)
+                .withManualStatusEvidence(selected.statusDescription, selected.structuredStatusEvidence);
     }
 
     static Candidate selectStructuredTerminal(List<Candidate> candidates) {
@@ -337,8 +390,7 @@ public final class ManualTimelineAuthorityPolicy {
     /** Returns the persisted provider declaration; effective completeness is checked separately. */
     public static boolean completeByContract(String provider) {
         String normalized = normalizeProvider(provider);
-        return PROVIDER_KUAIDI100.equals(normalized)
-                || PROVIDER_KDNIAO.equals(normalized)
+        return PROVIDER_KDNIAO.equals(normalized)
                 || TimelineSlot.isAccount(normalized);
     }
 

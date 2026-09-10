@@ -171,7 +171,8 @@ const shunFeng = baseShipment({
   manuals: [picker, richerWeb, fallback],
   source: account,
 });
-assert.equal(selectShipmentTimeline(shunFeng).provider, "route");
+assert.equal(selectShipmentTimeline(shunFeng).provider, "fallback",
+  "SF Home and detail select the same complete manual package (user decision 2026-09-09)");
 // 顺丰的 source 是粗略轨迹（层级排最后），且这里只有 1 条、没有揽收；fallback 7 条带揽收，
 // 按「完整性 → 覆盖」胜出。详情不做终态保护——列表状态由 selectShipmentTimeline 负责。
 assert.equal(

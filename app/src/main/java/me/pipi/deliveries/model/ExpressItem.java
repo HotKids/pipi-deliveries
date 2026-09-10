@@ -23,6 +23,8 @@ public final class ExpressItem {
     public final String detailUrl;
     public final long statusEventTime;
     public final long updatedAt;
+    /** Immutable first completion anchor for visibility and deletion, never refresh evidence. */
+    public final long signedRetainedAt;
     public final String stateOwner;
     public final String routeOwner;
     public final String routeInterface;
@@ -307,6 +309,46 @@ public final class ExpressItem {
             long manualTimelineSuccessAt,
             StatusSemantic sourceSemantic,
             CarrierNormalization carrierNormalization) {
+        this(rowId, phone, waybill, courierCode, companyName, semantic,
+                statusDescription, latestDetail, latestTime, tracksJson, remark,
+                source, detailUrl, statusEventTime, updatedAt, stateOwner, routeOwner,
+                routeInterface, routeCredential, routeCredentialAvailable, projectedWaybill,
+                projectedCompanyName, projectedTracksJson, sourceProvider,
+                manuallyAdded, manualTimelineProvider, manualTimelineSuccessAt,
+                sourceSemantic, carrierNormalization, 0L);
+    }
+
+    public ExpressItem(
+            long rowId,
+            String phone,
+            String waybill,
+            String courierCode,
+            String companyName,
+            StatusSemantic semantic,
+            String statusDescription,
+            String latestDetail,
+            String latestTime,
+            String tracksJson,
+            String remark,
+            String source,
+            String detailUrl,
+            long statusEventTime,
+            long updatedAt,
+            String stateOwner,
+            String routeOwner,
+            String routeInterface,
+            String routeCredential,
+            boolean routeCredentialAvailable,
+            String projectedWaybill,
+            String projectedCompanyName,
+            String projectedTracksJson,
+            String sourceProvider,
+            boolean manuallyAdded,
+            String manualTimelineProvider,
+            long manualTimelineSuccessAt,
+            StatusSemantic sourceSemantic,
+            CarrierNormalization carrierNormalization,
+            long signedRetainedAt) {
         this.rowId = rowId;
         this.phone = clean(phone);
         this.waybill = clean(waybill);
@@ -323,6 +365,7 @@ public final class ExpressItem {
         this.detailUrl = clean(detailUrl);
         this.statusEventTime = statusEventTime;
         this.updatedAt = updatedAt;
+        this.signedRetainedAt = Math.max(0L, signedRetainedAt);
         this.stateOwner = clean(stateOwner);
         this.routeOwner = clean(routeOwner);
         this.routeInterface = clean(routeInterface).toLowerCase(java.util.Locale.ROOT);
@@ -338,6 +381,17 @@ public final class ExpressItem {
         this.manualTimelineProvider = clean(manualTimelineProvider).toLowerCase(
                 java.util.Locale.ROOT);
         this.manualTimelineSuccessAt = Math.max(0L, manualTimelineSuccessAt);
+    }
+
+    public ExpressItem withSignedRetainedAt(long value) {
+        if (signedRetainedAt == value) return this;
+        return new ExpressItem(rowId, phone, waybill, courierCode, companyName, semantic,
+                statusDescription, latestDetail, latestTime, tracksJson, remark,
+                source, detailUrl, statusEventTime, updatedAt, stateOwner, routeOwner,
+                routeInterface, routeCredential, routeCredentialAvailable, projectedWaybill,
+                projectedCompanyName, projectedTracksJson, sourceProvider,
+                manuallyAdded, manualTimelineProvider, manualTimelineSuccessAt,
+                sourceSemantic, carrierNormalization, value);
     }
 
     public String displayStatus() {

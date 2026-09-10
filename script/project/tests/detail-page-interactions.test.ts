@@ -13,7 +13,8 @@ assert.ok(detailPage.includes("const result = await copyText(waybill);"));
 assert.equal(detailPage.includes("Required Permissions"), false);
 assert.ok(detailPage.includes('systemName="doc.on.doc"'));
 // 官方电话走系统拨号；打不开按三端统一表提示（AGENTS §11 第 16 行）。
-assert.ok(detailPage.includes("Safari.openURL(`tel:${hotline}`)"));
+assert.ok(detailPage.includes("await dialPhone(hotline)"));
+assert.ok(detailPage.includes("Safari.openURL(`tel:${phone}`)"));
 assert.ok(detailPage.includes("EXPRESS_TOAST_COPY.dialUnavailable"));
 assert.equal(detailPage.includes("link: `tel:${hotline}`"), false);
 assert.equal(detailPage.includes("<Link url={`tel:${hotline}`}>"), false);
@@ -73,7 +74,7 @@ assert.match(
 );
 assert.match(
   detailPage,
-  /props\.refreshOnAppear === "manual_submit" &&[\s\S]*?props\.manualPreview\?\.roundComplete === false[\s\S]*?await continueManualShipmentPreview\(props\.manualPreview, \{\s*signal: controller\.signal,?\s*\}\)/,
+  /props\.refreshOnAppear === "manual_submit" &&[\s\S]*?props\.manualPreview\?\.roundComplete === false[\s\S]*?await continueManualShipmentPreview\(props\.manualPreview, \{\s*signal: controller\.signal,\s*onPreview:/,
   "the just-submitted Picker preview must stay on the current detail page while its first round continues",
 );
 assert.match(
@@ -108,7 +109,7 @@ assert.equal(
 assert.ok(detailPage.includes("轨迹不完整时，可尝试下拉刷新。"));
 assert.match(
   detailPage,
-  /useState\([\s\S]*?props\.refreshOnAppear === "manual_submit"[\s\S]*?loadingManualDetail[\s\S]*?轨迹详情正在加载中。/,
+  /useState\([\s\S]*?props\.refreshOnAppear === "manual_submit"[\s\S]*?loadingManualDetail[\s\S]*?完整轨迹加载中/,
   "only a just-submitted manual query may show the initial detail-loading hint",
 );
 assert.match(
@@ -144,7 +145,7 @@ assert.match(
 );
 assert.match(
   detailPage,
-  /<Section[\s\S]*?header=\{<Text>物流轨迹<\/Text>\}[\s\S]*?footer=\{\(/,
+  /<Section[\s\S]*?header=\{[\s\S]*?物流信息来自[\s\S]*?\}[\s\S]*?footer=\{\(/,
   "the refresh hint must be the timeline section footer",
 );
 assert.equal(

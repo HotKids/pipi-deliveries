@@ -225,8 +225,8 @@ const route = await queryMeizuShipment({
     },
   },
 });
-assert.equal(routePayload?.mode, "manual");
-assert.equal(route.shipment.timeline.provider, "v6_picker");
+assert.equal(routePayload?.mode, "refresh", "manual queries use Online, not the legacy Picker endpoint");
+assert.equal(route.shipment.timeline.provider, "v6_query");
 assert.equal(route.shipment.timeline.complete, false);
 assert.equal(route.shipment.timeline.courierCode, "KYSY");
 assert.equal(route.shipment.timeline.rawCourierCode, "KYE");
@@ -273,7 +273,7 @@ const routeWithoutResponseIdentity = await queryMeizuShipment({
     }),
   },
 });
-assert.equal(routeWithoutResponseIdentity.shipment.timeline.provider, "v6_picker");
+assert.equal(routeWithoutResponseIdentity.shipment.timeline.provider, "v6_query");
 assert.equal(routeWithoutResponseIdentity.shipment.timeline.tracks.length, 1);
 
 let preferredPayload: Record<string, unknown> | null = null;
@@ -331,7 +331,7 @@ const retriedRoute = await queryMeizuShipment({
 });
 assert.equal(meizuRetryAttempts, 2);
 assert.equal(retriedRoute.shipment.timeline.tracks.length, 1);
-assert.equal(retriedRoute.shipment.timeline.provider, "v6_picker");
+assert.equal(retriedRoute.shipment.timeline.provider, "v6_query");
 
 let fallbackPayload: Record<string, unknown> | null = null;
 const fallback = await queryKdniaoShipment({
@@ -582,7 +582,7 @@ const jd = await queryManualForSource({
   },
 });
 assert.deepEqual(jdRoutes, ["/api/express/timeline/source"]);
-assert.equal(jd.shipment?.timeline.provider, "v6_picker");
+assert.equal(jd.shipment?.timeline.provider, "v6_query");
 assert.equal(
   jd.routeUrl,
   "https://m.kuaidi100.com/result.jsp?nu=JD1234567890",

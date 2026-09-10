@@ -19,6 +19,27 @@ import org.junit.Test;
 
 public final class ExpressSyncEngineTest {
     @Test
+    public void missingAccountRowUsesSignatureEvidenceInsteadOfCachePresence() {
+        long now = java.time.Instant.parse("2026-09-08T12:00:00Z").toEpochMilli();
+        ExpressItem signed = new ExpressItem(
+                9L, "13800138000", "JD0000000000009", "JD", "京东快递",
+                StatusSemantic.COMPLETED, "已签收", "已签收",
+                "2026-09-08 10:00:00", "[]", "", "interface5", "");
+        ExpressItem missingTime = new ExpressItem(
+                9L, "13800138000", "JD0000000000009", "JD", "京东快递",
+                StatusSemantic.COMPLETED, "已签收", "已签收", "", "[]", "", "interface5", "");
+        for (boolean missingCache : new boolean[]{false, true}) {
+            assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(signed, missingCache, now));
+            assertTrue(ExpressSyncEngine.shouldRefreshMissingAccountRow(missingTime, missingCache, now));
+        }
+        ExpressItem cancelled = new ExpressItem(
+                9L, "13800138000", "JD0000000000009", "JD", "京东快递",
+                StatusSemantic.CANCELLED, "已取消", "已取消", "", "[]", "", "interface5", "");
+        assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(cancelled, false, now));
+        assertTrue(ExpressSyncEngine.shouldRefreshMissingAccountRow(cancelled, true, now));
+    }
+
+    @Test
     public void placeholderOnlyInterface5ResultAllowsFallback() {
         ExpressQueryResult result = new ExpressQueryResult(
                 "YT001", "YTO", "圆通速递", StatusSemantic.UNKNOWN,
@@ -64,16 +85,16 @@ public final class ExpressSyncEngineTest {
     }
 
     @Test
-    public void sharedManualRefreshUsesExactSfOrJdSourceAcrossAccountInterfaces() {
+    public void listOnlineUsesSfOrMissingV5AutomaticInformation() {
         assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
                 sourceItem("INTERFACE5", "ShunFeng", "ZTO", "中通快递")));
-        assertFalse(ExpressSyncEngine.usesSharedManualTimeline(
+        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
                 sourceItem("INTERFACE5", "CaiNiao", "SF", "顺丰速运")));
-        assertFalse(ExpressSyncEngine.usesSharedManualTimeline(
+        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
                 sourceItem("INTERFACE5", "", "SF", "顺丰速运")));
         assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
                 sourceItem("INTERFACE6", "ShunFeng", "SF", "顺丰速运")));
-        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
+        assertFalse(ExpressSyncEngine.usesSharedManualTimeline(
                 sourceItem("INTERFACE6", "JingDong", "JD", "京东快递")));
     }
 
@@ -138,6 +159,21 @@ public final class ExpressSyncEngineTest {
         assertNull(ExpressSyncEngine.textProjectionIdentity(
                 sourceItem("INTERFACE5", "", "ZTO", "中通快递")));
         assertNull(ExpressSyncEngine.textProjectionIdentity(null));
+    }
+
+    @Test
+    public void orderTextProjectionIsExclusiveToInterface5() {
+        String tracks = "[{\"time\":\"2026-09-09 10:00:00\",\"context\":"
+                + "\"交付申通快递，运单号为770018906334362\"}]";
+        ExpressItem unsupported = new ExpressItem(
+                4L, "", "3613448003874424", "JD", "京东购物",
+                StatusSemantic.PICKED, "已揽收", "订单进行中",
+                "2026-09-09 10:00:00", tracks, "", "I6-JD", "",
+                1L, 2L, "I6-JD", "I6-JD", "v6", "", true,
+                "", "", "[]", "JingDong");
+        assertNull(ExpressSyncEngine.textProjectionIdentity(unsupported));
+        assertEquals("770018906334362", ExpressSyncEngine.textProjectionIdentity(
+                accountOrder("", StatusSemantic.PICKED, tracks)).waybill);
     }
 
     private static ExpressItem accountOrder(

@@ -9,7 +9,7 @@ import {
 
 assert.equal(carrierWidgetAccent("EMS", "EMS"), "#F39400");
 assert.equal(carrierWidgetAccent("JD", "京东快递"), "#D32B2C");
-assert.equal(carrierWidgetAccent("JD", "京东购物", true), "#FE481E");
+assert.equal(carrierWidgetAccent("JD", "京东购物", true), "#FA0352");
 assert.equal(carrierWidgetAccent("UNKNOWN", "未知快递"), "#3482FF");
 
 const background = mediumWidgetBackground("EMS", "EMS");

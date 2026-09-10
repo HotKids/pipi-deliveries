@@ -17,6 +17,7 @@ import {
   shipmentDetailPresentationStatus,
   shipmentPresentationStatus,
   shouldRefreshShipment,
+  terminalEvidenceAtMs,
   sortShipments,
   statusLabel,
   statusTint,
@@ -25,6 +26,10 @@ import {
   withShipmentNote,
 } from "../services/status";
 import { parseAccountSyncResponse } from "../services/account-parser";
+import {
+  selectShipmentDetailTimeline,
+  selectShipmentTimeline,
+} from "../services/shipment-policy";
 
 const NOW = Date.UTC(2026, 7, 26, 4, 0, 0);
 
@@ -239,19 +244,26 @@ assert.deepEqual(
 assert.deepEqual(parserSemantics, ["ORDERED", "WAITING_PICKUP"]);
 
 const manualDetailOwner = shipment("manual-detail-owner", "UNKNOWN", NOW);
-const manualDetailTimeline = pack("COMPLETED", [
-  track("2026-08-26 12:00:00", "已签收", "3"),
-]);
+const manualDetailTimeline: TimelinePackage = {
+  ...pack("COMPLETED", [
+    track("2026-08-26 12:00:00", "已签收", "3"),
+    track("2026-08-26 10:00:00", "快件已揽收", "1"),
+  ]),
+  provider: "kdniao",
+  structuredStatus: true,
+  complete: true,
+};
 assert.deepEqual(
   shipmentDetailPresentationStatus(manualDetailOwner, manualDetailTimeline),
   { semantic: "COMPLETED", text: "已签收" },
   "a manual detail header must follow the timeline displayed on that page",
 );
 const meizuPickerTimeline: TimelinePackage = {
-  ...pack("PICKED", [
-    track("2026-08-26 11:55:00", "快件已揽收", "1"),
+  ...pack("DELIVERY", [
+    track("2026-08-26 11:55:00", "快件正在派送", "5"),
   ]),
   provider: "route",
+  structuredStatus: true,
 };
 const manualWithMeizuPicker: Shipment = {
   ...manualDetailOwner,
@@ -260,16 +272,25 @@ const manualWithMeizuPicker: Shipment = {
 };
 assert.deepEqual(
   shipmentPresentationStatus(manualWithMeizuPicker),
-  { semantic: "PICKED", text: statusLabel("PICKED") },
-  "the Home row for a manual query must keep Meizu Picker status ownership",
+  { semantic: "DELIVERY", text: statusLabel("DELIVERY") },
+  "the Home row must follow Picker while Picker remains the selected package",
+);
+const manualWithSelectedKDNiao: Shipment = {
+  ...manualWithMeizuPicker,
+  timeline: manualDetailTimeline,
+};
+assert.deepEqual(
+  shipmentPresentationStatus(manualWithSelectedKDNiao),
+  { semantic: "COMPLETED", text: statusLabel("COMPLETED") },
+  "the selected KDNiao package must own both the delivered headline and Home status",
 );
 assert.deepEqual(
   shipmentDetailPresentationStatus(
     manualWithMeizuPicker,
     manualDetailTimeline,
   ),
-  { semantic: "PICKED", text: statusLabel("PICKED") },
-  "a richer detail timeline must not replace an available Meizu Picker status",
+  { semantic: "COMPLETED", text: statusLabel("COMPLETED") },
+  "the detail header must follow its selected package despite a stale Picker sidecar",
 );
 const unknownTrackedDetail = pack("UNKNOWN", [
   track("2026-08-26 12:00:00", "快件经过深圳处理中心", ""),
@@ -278,6 +299,58 @@ assert.deepEqual(
   shipmentDetailPresentationStatus(manualDetailOwner, unknownTrackedDetail),
   { semantic: "TRANSIT", text: "运输中" },
   "a raced timeline with real events must not leave a manual detail header without status",
+);
+const unstructuredSelectedTimeline: TimelinePackage = {
+  ...pack("UNKNOWN", [
+    track("2026-08-26 12:00:00", "物流状态已更新", ""),
+    track("2026-08-26 11:00:00", "快件经过深圳处理中心", ""),
+    track("2026-08-26 10:00:00", "快件已揽收", ""),
+  ]),
+  provider: "k100_h5",
+  complete: true,
+  structuredStatus: false,
+};
+const manualMissingSelectedStatus: Shipment = {
+  ...manualDetailOwner,
+  timeline: unstructuredSelectedTimeline,
+  manualTimelines: [
+    unstructuredSelectedTimeline,
+    meizuPickerTimeline,
+    manualDetailTimeline,
+  ],
+};
+for (const selected of [
+  selectShipmentTimeline(manualMissingSelectedStatus),
+  selectShipmentDetailTimeline(manualMissingSelectedStatus),
+]) {
+  assert.equal(selected.provider, "k100_h5");
+  assert.equal(selected.tracks.length, 3);
+  assert.equal(selected.semantic, "COMPLETED",
+    "a selected package without structured state must retain the latest structured sidecar fallback");
+  assert.deepEqual(
+    shipmentPresentationStatus({ ...manualMissingSelectedStatus, timeline: selected }),
+    { semantic: "COMPLETED", text: statusLabel("COMPLETED") },
+  );
+  assert.deepEqual(
+    shipmentDetailPresentationStatus(manualMissingSelectedStatus, selected),
+    { semantic: "COMPLETED", text: statusLabel("COMPLETED") },
+  );
+}
+const manualSelectedTerminal: Shipment = {
+  ...manualMissingSelectedStatus,
+  timeline: { ...unstructuredSelectedTimeline, semantic: "COMPLETED" },
+  manualTimelines: [
+    { ...unstructuredSelectedTimeline, semantic: "COMPLETED" },
+    meizuPickerTimeline,
+  ],
+};
+assert.deepEqual(
+  shipmentDetailPresentationStatus(
+    manualSelectedTerminal,
+    selectShipmentDetailTimeline(manualSelectedTerminal),
+  ),
+  { semantic: "COMPLETED", text: statusLabel("COMPLETED") },
+  "structured fallback must not regress the selected package's existing terminal state",
 );
 const automaticDetailOwner: Shipment = {
   ...manualDetailOwner,
@@ -291,8 +364,8 @@ assert.equal(
     automaticDetailOwner,
     manualDetailTimeline,
   ).semantic,
-  "UNKNOWN",
-  "an automatic shipment must retain source-owned status presentation",
+  "COMPLETED",
+  "an automatic shipment with no owner status may use the selected structured status",
 );
 
 const pickup = track("2026-08-26 10:00:00", "已存放至驿站", "501");
@@ -627,11 +700,12 @@ oldestOrdered.detail = "快递已下单";
 oldestOrdered.statusCode = "101";
 oldestOrdered.raw = { statusCode: "101", _pipiStatusSource: "meizu" };
 const compactedTracks = mergeTracks([], compactableTracks);
-assert.ok(compactedTracks.length <= 160);
+assert.equal(compactedTracks.length, compactableTracks.length,
+  "same-source history must remain intact until the parcel retention deadline");
 assert.equal(
   containsTimelineStartTrack(compactedTracks),
   true,
-  "track compaction must retain the oldest order or pickup boundary",
+  "long histories must retain the oldest order or pickup boundary",
 );
 
 // 备注（用户定 2026-09-05 晚）：状态词 · 备注，列表页、详情页、桌面卡片同一格式；没有备注就是状态词。
@@ -691,9 +765,13 @@ assert.deepEqual(
   ],
 );
 
+assert.equal(pruneShipments([
+  shipment("fourteen-day-boundary", "COMPLETED", NOW - 14 * 86400000 + 1),
+], NOW).length, 1);
+
 assert.equal(
   pruneShipments(
-    [shipment("old-complete", "COMPLETED", NOW - 7 * 24 * 60 * 60 * 1000)],
+    [shipment("old-complete", "COMPLETED", NOW - 14 * 24 * 60 * 60 * 1000)],
     NOW,
   ).length,
   0,
@@ -716,9 +794,9 @@ assert.equal(
     updatedAtMs: NOW,
   };
   assert.equal(
-    pruneShipments([{ ...blank, settledAtMs: NOW - 8 * 24 * 60 * 60 * 1000 }], NOW).length,
+    pruneShipments([{ ...blank, settledAtMs: NOW - 15 * 24 * 60 * 60 * 1000 }], NOW).length,
     0,
-    "settled eight days ago expires even though it was just written",
+    "settled fifteen days ago expires even though it was just written",
   );
   assert.equal(
     pruneShipments([{ ...blank, settledAtMs: NOW - 60_000 }], NOW).length,
@@ -735,9 +813,9 @@ assert.equal(
     settledAtMs: NOW - 60_000,
     timeline: {
       ...blank.timeline,
-      statusEventAtMs: NOW - 8 * 24 * 60 * 60 * 1000,
+      statusEventAtMs: NOW - 15 * 24 * 60 * 60 * 1000,
       tracks: [{
-        timeMs: NOW - 8 * 24 * 60 * 60 * 1000,
+        timeMs: NOW - 15 * 24 * 60 * 60 * 1000,
         timeText: "",
         detail: "您的快件已签收，感谢使用",
       }],
@@ -755,8 +833,7 @@ assert.equal(
   );
 }
 
-// 用户 2026-09-08 报「又回来了」：早前被清空的签收行手上一条节点都没有，冻结却把这个空壳锁死，
-// 列表永远写「暂无物流动态」且再也不会自己补回来。冻结保护的是已经有的轨迹，空壳照旧允许刷新。
+// AGENTS §9: a trusted signature freezes background refresh even when history is missing.
 {
   const settled = shipment("thaw-empty", "COMPLETED", NOW - 3 * 24 * 60 * 60 * 1000);
   const withHistory: Shipment = {
@@ -783,9 +860,31 @@ assert.equal(
   };
   assert.equal(
     shouldRefreshShipment(emptied, NOW),
-    true,
-    "a settled row with no timed node left must still be allowed to refill",
+    false,
+    "missing history does not override a trusted signature for background refresh",
   );
+}
+
+// Terminal retention uses the source event, never a newer unrelated headline.
+{
+  assert.equal(shouldRefreshShipment(shipment("just-signed", "COMPLETED", NOW), NOW), false);
+  assert.equal(shouldRefreshShipment(shipment("clock-skew", "COMPLETED", NOW + 1), NOW), false);
+  assert.equal(shouldRefreshShipment(shipment("invalid-future", "COMPLETED", NOW + 6 * 60000), NOW), true);
+  const old = shipment("terminal-clock", "COMPLETED", NOW - 16 * 24 * 60 * 60 * 1000);
+  const reminder = track("2026-08-25 12:00:00", "售后提醒", "");
+  old.timeline = { ...old.timeline, latestTimeText: reminder.timeText, tracks: [reminder] };
+  assert.equal(terminalEvidenceAtMs(old, NOW), old.timeline.statusEventAtMs);
+  assert.equal(pruneShipments([old], NOW).length, 0);
+  const unknown = { ...old, timeline: { ...old.timeline, statusEventAtMs: null } };
+  assert.equal(terminalEvidenceAtMs(unknown, NOW), 0, "ordinary prose is not terminal time evidence");
+  assert.equal(shouldRefreshShipment(unknown, NOW), true);
+  const signature = track("2026-08-24 12:00:00", "快件已签收", "");
+  assert.equal(terminalEvidenceAtMs({ ...unknown, timeline: {
+    ...unknown.timeline, tracks: [reminder, signature],
+  } }, NOW), signature.timeMs);
+  const cancelled = { ...old, settledAtMs: NOW - 60_000,
+    timeline: { ...old.timeline, semantic: "CANCELLED" as const } };
+  assert.equal(pruneShipments([cancelled], NOW).length, 1, "the first terminal stamp is stable for cancellation too");
 }
 
 console.log("status policy tests passed");

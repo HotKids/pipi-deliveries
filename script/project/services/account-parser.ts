@@ -1,6 +1,8 @@
+import { accountAppTargets, type AccountAppTarget, type AccountAppRoute } from "./account-app-links";
+import type { DiagnosticDetails } from "./logger";
 import { accountOrderTextIdentity, type AccountOrderTextIdentity } from "./account-order-text-identity";
 import type { AccountSource } from "./account-identity";
-import type { StatusSemantic, TimelinePackage } from "../models";
+import type { AccountDetailRecord, StatusSemantic, TimelinePackage } from "../models";
 import {
   headlineTrack,
   isNonEventDetail,
@@ -49,6 +51,8 @@ export type AccountParcelDto = Readonly<{
   tracks: readonly AccountTrackDto[];
   routeUrl: string;
   projectionUrl: string;
+  /** Navigation only; never copied into Shipment or a timeline package. */
+  appRoute?: AccountAppRoute;
   /** Same-source timeline extracted from this order's JD H5 page. */
   projectionTimeline?: TimelinePackage | null;
   textIdentity?: AccountOrderTextIdentity | null;
@@ -381,6 +385,13 @@ function parseParcel(
     : carrierNormalization?.isBuiltIn
     ? carrierNormalization.displayName
     : rawCompanyName || text(defaults.companyName);
+  const appTargets = source === "interface5"
+    ? parseAccountExternalAppRoutes({ code: 0, data: value }, {
+        waybill: identity,
+        provider: first(value, "provider", "providerName"),
+        companyCode: first(value, "cpCode"),
+      })
+    : [];
   return {
     source,
     ownerId: identity,
@@ -412,6 +423,7 @@ function parseParcel(
     tracks: parsedTracks,
     routeUrl: isOrder ? "" : routeUrl(value),
     projectionUrl: isOrder ? orderProjectionUrl(value) : "",
+    ...(appTargets.length ? { appRoute: { targets: appTargets, secretKey: text(value.secretKey) } } : {}),
     textIdentity: isOrder ? accountOrderTextIdentity(parsedTracks) : null,
   };
 }
@@ -571,6 +583,32 @@ export function parseAccountTimelineResponse(
     [defaults.waybill || "", ...(defaults.waybillAliases || [])],
   );
   return record ? parseParcel(source, record, defaults) : null;
+}
+
+/** App navigation uses only the matching source packet, never the projected carrier identity. */
+export function parseAccountExternalAppRoutes(
+  input: unknown,
+  expected: AccountDetailRecord,
+  observe?: (details: DiagnosticDetails) => void,
+): AccountAppTarget[] {
+  const provider = String(expected.provider || "").toLowerCase();
+  const record = findTimelineRecord(unwrap("interface5", input), [expected.waybill]);
+  const links = record && Array.isArray(record.jumpList) ? record.jumpList : [];
+  let result = "links_missing";
+  let targets: AccountAppTarget[] = [];
+  if (!["jingdong", "cainiao", "shunfeng"].includes(provider)) result = "provider_unsupported";
+  else if (!record) result = "record_missing";
+  else if (!expected.waybill || recordIdentity(record) !== expected.waybill) result = "identity_mismatch";
+  else if (first(record, "provider", "providerName").toLowerCase() !== provider) result = "provider_mismatch";
+  else if ((provider === "cainiao" || provider === "shunfeng") &&
+    (!expected.companyCode || first(record, "cpCode") !== expected.companyCode)) {
+    result = "carrier_mismatch";
+  } else if (links.length) {
+    targets = accountAppTargets(links, provider, expected.waybill, expected.companyCode || "", text(record.secretKey));
+    result = targets.length ? "ready" : "links_rejected";
+  }
+  observe?.({ result, rawRecords: links.length, records: targets.length });
+  return targets;
 }
 
 export function normalizePhoneEvidence(value: unknown): string {

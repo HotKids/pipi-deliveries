@@ -162,12 +162,10 @@ export type Shipment = {
   note?: string;
   route?: ShipmentRoute | null;
   accountRecord?: AccountDetailRecord | null;
-  /**
-   * 这一票第一次被观察到进入终态的时刻。留存期（签收 7 天 / 取消 4 小时）在没有可信节点时间时
-   * 以它兜底，而不是 updatedAtMs——后者每次写入都会刷新，等于把倒计时一直归零，签收件既不过期
-   * 也会被下一轮同步重新带回列表（用户 2026-09-07 报）。离开终态即清空。
-   */
+  /** First terminal timestamp; signed rows hide at day 14 and expire at day 21. Cancelled rows hide after 4 hours. */
   settledAtMs?: number;
+  /** An empty signed history exhausted its authorized refresh; hidden for seven days. */
+  emptyTimelineHiddenAtMs?: number;
   updatedAtMs: number;
 };
 
@@ -208,6 +206,13 @@ export type AppState = {
   pendingNotifications?: readonly ShipmentNotificationEvent[];
   /** feed 槽一次性重建已标记的时间（见 TimelinePackage.feedRebuildPending）。 */
   feedSlotRebuiltAtMs?: number;
+  /** Minimal durable identities prevent retired empty histories from being reimported. */
+  emptyTimelineRetirements?: readonly {
+    id: string;
+    source: BindingSource;
+    waybill: string;
+    hiddenAtMs: number;
+  }[];
 };
 
 export type WidgetRow = {

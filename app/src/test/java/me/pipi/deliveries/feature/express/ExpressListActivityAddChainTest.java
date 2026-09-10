@@ -10,8 +10,14 @@ import me.pipi.deliveries.model.ManualQuerySuccess;
 import me.pipi.deliveries.model.StatusSemantic;
 
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.annotation.Config;
+import android.app.Application;
 
-/** 加件链第三级闸门：picker 与 v4_query 都没到起点、且 picker 给了 K100 页地址才抓（同 iOS/Pipi）。 */
+/** K100 keeps the add-chain start gate and uses the requested waybill rather than Picker's URL. */
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 31, manifest = Config.NONE, application = Application.class)
 public final class ExpressListActivityAddChainTest {
     private static final String ROUTE = "https://m.kuaidi100.com/result.jsp?nu=YT0000000001";
 
@@ -22,7 +28,7 @@ public final class ExpressListActivityAddChainTest {
                 start ? StatusSemantic.PICKED : StatusSemantic.TRANSIT,
                 time, detail,
                 "[{\"time\":\"" + time + "\",\"context\":\"" + detail + "\"}]",
-                "", "", TimelineSlot.V6_PICKER, "v6", ROUTE, "");
+                "", "", TimelineSlot.V6_QUERY, "v6", ROUTE, "");
     }
 
     @Test
@@ -32,13 +38,14 @@ public final class ExpressListActivityAddChainTest {
         ManualQuerySuccess started = new ManualQuerySuccess(
                 "meizu", picker("快件已揽收", true), 1L, false);
 
-        assertEquals(ROUTE, ExpressListActivity.kuaidi100AddCaptureRoute(
-                Arrays.asList(partial)));
-        assertEquals("", ExpressListActivity.kuaidi100AddCaptureRoute(
-                Arrays.asList(started)));
-        assertEquals("", ExpressListActivity.kuaidi100AddCaptureRoute(
-                Arrays.asList(partial, new ManualQuerySuccess(
+        assertEquals("https://m.kuaidi100.com/app/query/?nu=YT0000000001", ExpressDetailActivity.kuaidi100AddCaptureRoute(
+                " yt-0000000001 ", Arrays.asList(partial)));
+        assertEquals("", ExpressDetailActivity.kuaidi100AddCaptureRoute(
+                "YT0000000001", Arrays.asList(started)));
+        assertEquals("", ExpressDetailActivity.kuaidi100AddCaptureRoute(
+                "YT0000000001", Arrays.asList(partial, new ManualQuerySuccess(
                         TimelineSlot.V4_QUERY, picker("快件已揽收", true), 1L, false))));
-        assertEquals("", ExpressListActivity.kuaidi100AddCaptureRoute(null));
+        assertEquals("", ExpressDetailActivity.kuaidi100AddCaptureRoute("YT0000000001", null));
+        assertEquals("", ExpressDetailActivity.kuaidi100AddCaptureRoute("", Arrays.asList(partial)));
     }
 }

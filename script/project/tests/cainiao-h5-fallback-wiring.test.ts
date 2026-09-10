@@ -191,7 +191,7 @@ assert.match(
 );
 assert.match(
   sync,
-  /const ordinaryAutomaticPrimaryRequested =[\s\S]*?cainiaoManualFallbackRequested[\s\S]*?!hasTimelineStartBeforeKdniao\(enrichmentBase\)[\s\S]*?runManualDetailSourceContest\(/,
+  /const ordinaryAutomaticPrimaryRequested =[\s\S]*?cainiaoManualFallbackRequested[\s\S]*?!hasPickerTimelineStart\(enrichmentBase\)[\s\S]*?runManualDetailSourceContest\(/,
   "a failed Cainiao H5 must reuse Picker, Moto plus K100 H5, then gated KDNiao",
 );
 // 用户定 2026-09-04：菜鸟 H5 的终止判据是揽收（PICKED），不是「抓到任意一条带时间的节点」。

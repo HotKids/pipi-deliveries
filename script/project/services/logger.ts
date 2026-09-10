@@ -16,6 +16,11 @@ export type DiagnosticDetails = {
   resultRevision?: number;
   v5Bindings?: number;
   attempted?: number;
+  attempt?: number;
+  mode?: "manual" | "refresh" | "last_detail";
+  upstreamCode?: number;
+  valueKind?: string;
+  redirectPresent?: boolean;
   succeeded?: number;
   failed?: number;
   rawRecords?: number;
@@ -33,6 +38,11 @@ export type DiagnosticDetails = {
   displayCarrierCode?: string;
   /** Whitelisted StatusSemantic value. */
   statusSemantic?: string;
+  structuredStatus?: boolean;
+  detailStatusSemantic?: string;
+  missingStatusRefresh?: boolean;
+  unprojectedOrder?: boolean;
+  detailComplete?: boolean;
   /** What started this refresh: detail_pull / detail_open / identity_projection. */
   trigger?: string;
   /** Why a chain ran or was skipped: owner_pickup / jd_h5_complete / cooldown / no_evidence. */
@@ -61,6 +71,30 @@ export type DiagnosticDetails = {
   readbackMatched?: boolean;
   loadSettled?: boolean;
   loadCompleted?: boolean;
+  mainPresent?: boolean;
+  htmlFetchCompleted?: boolean;
+  adScriptRemoved?: boolean;
+  parsedScriptCount?: number;
+  lastParsedScript?: string;
+  vuePresent?: boolean;
+  jqueryPresent?: boolean;
+  phoneChallengeVisible?: boolean;
+  locationNuMatches?: boolean;
+  vmNumMatches?: boolean;
+  lastQueriedNumMatches?: boolean;
+  vmLoading?: boolean;
+  carrierSelected?: boolean;
+  carrierCandidateCount?: number;
+  allListsCount?: number;
+  listsCount?: number;
+  queryErrorType?: string;
+  rawExtractedCount?: number;
+  firstTimePresent?: boolean;
+  firstFtimePresent?: boolean;
+  firstContextPresent?: boolean;
+  firstRowOutcome?: string;
+  phoneVerificationAttempted?: boolean;
+  timedTrackCount?: number;
   captureSeen?: boolean;
   replayAttempted?: boolean;
   replaySucceeded?: boolean;
@@ -146,6 +180,11 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "resultRevision",
   "v5Bindings",
   "attempted",
+  "attempt",
+  "mode",
+  "upstreamCode",
+  "valueKind",
+  "redirectPresent",
   "succeeded",
   "failed",
   "rawRecords",
@@ -160,6 +199,11 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "rawCarrierCode",
   "displayCarrierCode",
   "statusSemantic",
+  "structuredStatus",
+  "detailStatusSemantic",
+  "missingStatusRefresh",
+  "unprojectedOrder",
+  "detailComplete",
   "trigger",
   "gateReason",
   "routeKind",
@@ -186,6 +230,30 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "readbackMatched",
   "loadSettled",
   "loadCompleted",
+  "mainPresent",
+  "htmlFetchCompleted",
+  "adScriptRemoved",
+  "parsedScriptCount",
+  "lastParsedScript",
+  "vuePresent",
+  "jqueryPresent",
+  "phoneChallengeVisible",
+  "locationNuMatches",
+  "vmNumMatches",
+  "lastQueriedNumMatches",
+  "vmLoading",
+  "carrierSelected",
+  "carrierCandidateCount",
+  "allListsCount",
+  "listsCount",
+  "queryErrorType",
+  "rawExtractedCount",
+  "firstTimePresent",
+  "firstFtimePresent",
+  "firstContextPresent",
+  "firstRowOutcome",
+  "phoneVerificationAttempted",
+  "timedTrackCount",
   "captureSeen",
   "replayAttempted",
   "replaySucceeded",
@@ -278,6 +346,26 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
 ]);
 
 const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
+  "htmlFetchCompleted",
+  "adScriptRemoved",
+  "vuePresent",
+  "jqueryPresent",
+  "mainPresent",
+  "phoneChallengeVisible",
+  "locationNuMatches",
+  "vmNumMatches",
+  "lastQueriedNumMatches",
+  "vmLoading",
+  "firstTimePresent",
+  "firstFtimePresent",
+  "firstContextPresent",
+  "carrierSelected",
+  "phoneVerificationAttempted",
+  "redirectPresent",
+  "structuredStatus",
+  "missingStatusRefresh",
+  "unprojectedOrder",
+  "detailComplete",
   "readbackMatched",
   "loadSettled",
   "loadCompleted",
@@ -375,7 +463,7 @@ function validEntry(value: unknown, now: number): value is DiagnosticEntry {
 
 /**
  * 统一用词（用户定 2026-09-05，三端同一套）：日志里的参数值一律写规范化后的词——接口 v1…v6，
- * 链上的一级写 level 词（v5_list / v5_query / v6_picker / v4_query / v2_query / jd_h5 / cn_h5 /
+ * 链上的一级写 level 词（v5_list / v5_query / v6_query / v4_query / v2_query / jd_h5 / cn_h5 /
  * k100_h5 / kdniao / k100_autoCom）。调用点还是按各自的类型传旧名，落日志前在这里统一换掉。
  */
 const SOURCE_WIRE: Record<string, string> = {
@@ -389,9 +477,9 @@ const STAGE_WIRE: Record<string, string> = {
   cainiao_h5: "cn_h5",
   kuaidi100_query: "k100_h5",
   web_timeline: "k100_h5",
-  picker_query: "v6_picker",
-  pending_picker: "v6_picker",
-  route: "v6_picker",
+  picker_query: "v6_query",
+  pending_picker: "v6_query",
+  route: "v6_query",
   moto_query: "v4_query",
   pending_moto: "v4_query",
   local: "v4_query",
@@ -405,8 +493,8 @@ const PROVIDER_WIRE: Record<string, string> = {
   interface5: "v5_list",
   account: "v5_list",
   v5_list: "v5_list",
-  meizu: "v6_picker",
-  route: "v6_picker",
+  meizu: "v6_query",
+  route: "v6_query",
   moto: "v4_query",
   local: "v4_query",
   fallback: "kdniao",
@@ -425,6 +513,10 @@ const NORMALIZED_SOURCES = new Set(Object.values(SOURCE_WIRE));
 
 function unifiedWire(key: keyof DiagnosticDetails, value: string): string {
   const lower = value.trim().toLowerCase();
+  if ((key === "level" || key === "stage" || PROVIDER_KEYS.has(key)) &&
+      (lower === "v6_picker" || lower === "meizu_picker")) return "v6_query";
+  if (key === "sourceProvider") return ({ cainiao: "cainiao", jingdong: "jingdong",
+    shunfeng: "sfexpress", sfexpress: "sfexpress", douyin: "douyin" } as Record<string, string>)[lower] || value;
   if (key === "stage") return STAGE_WIRE[lower] || value;
   if (PROVIDER_KEYS.has(key)) return PROVIDER_WIRE[lower] || value;
   return value;
@@ -435,6 +527,45 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
   for (const [rawKey, rawValue] of Object.entries(value)) {
     const key = rawKey as keyof DiagnosticDetails;
     if (!DETAIL_KEYS.has(key) || rawValue == null) continue;
+    if (key === "readyState") {
+      if (["loading", "interactive", "complete", "unknown"].includes(rawValue as string)) result.readyState = rawValue as string;
+      continue;
+    }
+    if (key === "timedTrackCount" || key === "parsedScriptCount" ||
+        key === "carrierCandidateCount" || key === "allListsCount" || key === "listsCount" || key === "rawExtractedCount") {
+      if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 0 && rawValue <= 100) result[key] = rawValue;
+      continue;
+    }
+    if (key === "firstRowOutcome") {
+      if (["not_object", "missing_time", "missing_detail", "same_text", "not_extracted", "invalid_time", "provider_error", "valid"].includes(rawValue as string)) result.firstRowOutcome = rawValue as string;
+      continue;
+    }
+    if (key === "queryErrorType") {
+      if (["", "empty", "network", "none"].includes(rawValue as string)) result.queryErrorType = rawValue as string;
+      continue;
+    }
+    if (key === "lastParsedScript") {
+      if (["baidinet", "jquery", "app_base", "promotion", "appGuide", "vue", "result", "inline", "other"].includes(rawValue as string)) result.lastParsedScript = rawValue as string;
+      continue;
+    }
+    if (key === "attempt") {
+      if (rawValue === 1 || rawValue === 2) result.attempt = rawValue;
+      continue;
+    }
+    if (key === "upstreamCode") {
+      if (typeof rawValue === "number" && Number.isSafeInteger(rawValue)) result.upstreamCode = rawValue;
+      continue;
+    }
+    if (key === "mode") {
+      if (rawValue === "manual" || rawValue === "refresh" || rawValue === "last_detail") result.mode = rawValue;
+      continue;
+    }
+    if (key === "valueKind") {
+      if (["missing", "null", "object", "array", "string", "number", "boolean"].includes(rawValue as string)) {
+        result.valueKind = rawValue as string;
+      }
+      continue;
+    }
     if (key === "waybillTail") {
       const tail = String(rawValue).trim().toUpperCase();
       if (/^[A-Z0-9]{4}$/.test(tail)) result.waybillTail = tail;
@@ -664,10 +795,12 @@ export function setDiagnosticsEnabled(enabled: boolean): boolean {
 /**
  * 统一用词（用户定 2026-09-05，三端同一套）：每行带 `level`（链上的哪一级）与 `interface`
  * （归属接口）。旧字段 `stage` / `timelineProvider` 先并存一版方便对照，值来自它们推导：
- * v5_list / v5_query / v6_picker / v4_query / v2_query / jd_h5 / cn_h5 / k100_h5 / kdniao /
+ * v5_list / v5_query / v6_query / v4_query / v2_query / jd_h5 / cn_h5 / k100_h5 / kdniao /
  * k100_autoCom。iOS 只接接口 5，所以接口相关的行一律 interface=v5。
  */
 const LEVEL_BY_STAGE: Record<string, string> = {
+  v6_query: "v6_query",
+  v6_refresh: "v6_refresh",
   account_list: "v5_list",
   account_detail: "v5_query",
   jingdong_h5: "jd_h5",
@@ -676,9 +809,9 @@ const LEVEL_BY_STAGE: Record<string, string> = {
   cainiao_h5: "cn_h5",
   kuaidi100_query: "k100_h5",
   web_timeline: "k100_h5",
-  picker_query: "v6_picker",
-  pending_picker: "v6_picker",
-  route: "v6_picker",
+  picker_query: "v6_query",
+  pending_picker: "v6_query",
+  route: "v6_query",
   moto_query: "v4_query",
   pending_moto: "v4_query",
   local: "v4_query",
@@ -692,8 +825,8 @@ const LEVEL_BY_PROVIDER: Record<string, string> = {
   interface5: "v5_list",
   account: "v5_list",
   v5_list: "v5_list",
-  meizu: "v6_picker",
-  route: "v6_picker",
+  meizu: "v6_query",
+  route: "v6_query",
   moto: "v4_query",
   local: "v4_query",
   kdniao: "kdniao",
@@ -705,7 +838,8 @@ const LEVEL_BY_PROVIDER: Record<string, string> = {
   web: "cn_h5",
   v5_query: "v5_query",
   v4_query: "v4_query",
-  v6_picker: "v6_picker",
+  v6_query: "v6_query",
+  v6_refresh: "v6_refresh",
   v2_query: "v2_query",
   jd_h5: "jd_h5",
   cn_h5: "cn_h5",

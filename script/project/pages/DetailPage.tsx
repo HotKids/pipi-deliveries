@@ -4,6 +4,7 @@ import {
   Image,
   List,
   Section,
+  Script,
   Spacer,
   Text,
   VStack,
@@ -13,6 +14,8 @@ import {
   useState,
 } from "scripting";
 import { registerProjectionViewportHost } from "../services/projection-viewport";
+import { accountExternalAppName, fetchAccountExternalAppRoutes } from "../services/account-sync";
+import { trackPhoneText } from "../services/track-phone-links";
 import type { AppState, Shipment } from "../models";
 import { CourierIcon } from "../components/CourierIcon";
 import { courierHotline } from "../services/carrier-presentation";
@@ -38,6 +41,7 @@ import { setShipmentNote } from "../services/storage";
 import { requestWidgetReload } from "../services/widgets";
 import { timelineTimeParts } from "../services/time-presentation";
 import { preferNewerShipment } from "../services/ui-state";
+import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
 import { copyText } from "../services/clipboard";
 import {
   detailPullToast,
@@ -49,6 +53,9 @@ import {
   diagnosticErrorDetails,
   writeDiagnostic,
 } from "../services/logger";
+
+/** 手动加件的查询链还没跑完时，状态词与轨迹区都写这个（用户定 2026-09-08 方案 2）。 */
+const MANUAL_QUERY_IN_FLIGHT_TEXT = "查询中";
 
 export function DetailPage(props: {
   shipment: Shipment;
@@ -62,6 +69,26 @@ export function DetailPage(props: {
 }) {
   const [shipment, setShipment] = useState(props.shipment);
   const [notice, setNotice] = useState("");
+  const [openingExternalApp, setOpeningExternalApp] = useState(false);
+  const externalAppAbortRef = useRef<AbortController | null>(null);
+  const externalAppName = accountExternalAppName(shipment);
+  const timelineSourceIcon = shipment.identity.manuallyAdded
+    ? "sources/kuaidi100"
+    : ({ cainiao: "sources/cainiao", jingdong: "couriers/jdshopping", shunfeng: "sources/sfexpress" } as Record<string, string>)[
+        String(shipment.identity.sourceProvider || "").toLowerCase()
+      ];
+  const timelineSourceName = shipment.identity.manuallyAdded
+    ? "快递100"
+    : ({ cainiao: "菜鸟", jingdong: "京东", shunfeng: "顺丰" } as Record<string, string>)[
+        String(shipment.identity.sourceProvider || "").toLowerCase()
+      ];
+  useEffect(() => {
+    setOpeningExternalApp(false);
+    return () => {
+      externalAppAbortRef.current?.abort();
+      externalAppAbortRef.current = null;
+    };
+  }, [shipment.identity.id, shipment.identity.sourceProvider, shipment.identity.sourceId]);
   // 备注（用户定 2026-09-05 晚）：只在详情页添加，用系统弹窗输入；状态词后面以「 · 备注」显示。
   async function editNote() {
     let value: string | null;
@@ -170,10 +197,17 @@ export function DetailPage(props: {
     shipment.identity.companyName,
   );
   const waybill = displayWaybill(shipment);
+  // 用户定 2026-09-08 方案 2：手动加件先建行再跳详情页，picker 之后的级别是在页面打开之后才跑的
+  // （实测尾号 2410 空窗 3.2 s、尾号 1107 空窗 8 s）。链条没跑完的这段不能写「暂无状态 · 暂无物流
+  // 轨迹」——那读起来像查不到；写「查询中」。跑完还是没有轨迹时，照旧回到「暂无」。
   const presentationStatus = shipmentDetailPresentationStatus(
     shipment,
     detailTimeline,
   );
+  const statusText = loadingManualDetail &&
+      presentationStatus.semantic === "UNKNOWN"
+    ? MANUAL_QUERY_IN_FLIGHT_TEXT
+    : presentationStatus.text;
 
   useEffect(() => {
     setShipment((current) => preferNewerShipment(current, props.shipment));
@@ -239,6 +273,11 @@ export function DetailPage(props: {
             !forceManualRefresh
           ? await continueManualShipmentPreview(props.manualPreview, {
               signal: controller.signal,
+              onPreview: (preview) => {
+                if (controller.signal.aborted || generation !== refreshGenerationRef.current) return;
+                setShipment((current) => preferNewerShipment(current, preview));
+                setLoadingManualDetail(manualPreviewNeedsDetailRefresh(preview));
+              },
             })
           : await refreshShipmentById(props.shipment.identity.id, {
             forceAccountOrderProjection:
@@ -322,20 +361,74 @@ export function DetailPage(props: {
   }
 
   /** 官方电话：交给系统拨号，打不开就按统一表提示（三端同一条，AGENTS §11）。 */
-  async function dial() {
+  async function dialPhone(phone: string) {
     let opened = false;
     try {
-      opened = await Safari.openURL(`tel:${hotline}`);
+      opened = await Safari.openURL(`tel:${phone}`);
     } catch {
       opened = false;
     }
     if (!opened) setNotice(EXPRESS_TOAST_COPY.dialUnavailable);
   }
 
+  async function dial() {
+    await dialPhone(hotline);
+  }
+
+  async function openExternalApp() {
+    if (externalAppAbortRef.current || !externalAppName) return;
+    const controller = new AbortController();
+    externalAppAbortRef.current = controller;
+    setOpeningExternalApp(true);
+    try {
+      const targets = await fetchAccountExternalAppRoutes(shipment, controller.signal);
+      if (controller.signal.aborted) return;
+      if (!targets.length) {
+        setNotice(`来源暂未提供可用的${externalAppName} App 链接`);
+        return;
+      }
+      for (const [index, target] of targets.entries()) {
+        if (controller.signal.aborted) return;
+        let opened = false;
+        let result = "no_handler";
+        try {
+          opened = await Safari.openURL(target.url);
+          result = opened ? "opened" : "no_handler";
+        } catch {
+          result = "open_failed";
+        }
+        writeDiagnostic("detail.external.open", {
+          stage: target.kind, attempted: index + 1, result,
+        }, opened ? "info" : "warning");
+        if (opened || controller.signal.aborted) return;
+      }
+      setNotice(externalAppName === "菜鸟"
+        ? "未能打开菜鸟、淘宝或支付宝，请确认已安装其中一个 App"
+        : `无法打开${externalAppName} App，请确认已安装`);
+    } catch {
+      if (!controller.signal.aborted) setNotice(`打开${externalAppName}失败，请重试`);
+    } finally {
+      if (externalAppAbortRef.current === controller) {
+        externalAppAbortRef.current = null;
+        setOpeningExternalApp(false);
+      }
+    }
+  }
+
   return (
     <List
       navigationTitle="物流详情"
       navigationBarTitleDisplayMode="inline"
+      toolbar={externalAppName ? {
+        topBarTrailing: (
+          <Button
+            title={openingExternalApp ? "正在打开…" : "在外部 App 中打开"}
+            systemImage="arrow.up.forward.app"
+            disabled={openingExternalApp}
+            action={openExternalApp}
+          />
+        ),
+      } : undefined}
       refreshable={() => refresh(true)}
       toast={transientToast(notice, setNotice)}
       background={
@@ -375,7 +468,7 @@ export function DetailPage(props: {
                 foregroundStyle={statusTint(presentationStatus.semantic)}
                 lineLimit={1}
               >
-                {withShipmentNote(presentationStatus.text, shipment)}
+                {withShipmentNote(statusText, shipment)}
               </Text>
               <Button buttonStyle="plain" action={() => void editNote()}>
                 <Image
@@ -428,7 +521,18 @@ export function DetailPage(props: {
       </Section>
 
       <Section
-        header={<Text>物流轨迹</Text>}
+        header={
+          <HStack spacing={6}>
+            {timelineSourceIcon ? (
+              <Image filePath={`${Script.directory}/assets/${timelineSourceIcon}.png`}
+                resizable scaleToFit frame={{ width: 16, height: 16 }} />
+            ) : null}
+            <HStack spacing={0}>
+              <Text>{timelineSourceName ? "物流信息来自" : "物流信息"}</Text>
+              {timelineSourceName ? <Text fontWeight="bold">{timelineSourceName}</Text> : null}
+            </HStack>
+          </HStack>
+        }
         footer={(
           <Text
             font={12}
@@ -436,7 +540,7 @@ export function DetailPage(props: {
             frame={{ maxWidth: "infinity", alignment: "center" }}
           >
             {loadingManualDetail
-              ? "轨迹详情正在加载中。"
+              ? "完整轨迹加载中"
               : "轨迹不完整时，可尝试下拉刷新。"}
           </Text>
         )}
@@ -479,9 +583,8 @@ export function DetailPage(props: {
                   font={15}
                   foregroundStyle={index === 0 ? "label" : "secondaryLabel"}
                   frame={{ maxWidth: "infinity", alignment: "leading" }}
-                >
-                  {track.detail}
-                </Text>
+                  styledText={trackPhoneText(track.detail, (phone) => { void dialPhone(phone); })}
+                />
               </HStack>
             );
           })
@@ -497,7 +600,7 @@ export function DetailPage(props: {
               foregroundStyle="tertiaryLabel"
             />
             <Text font={14} foregroundStyle="secondaryLabel">
-              暂无物流轨迹
+              {loadingManualDetail ? MANUAL_QUERY_IN_FLIGHT_TEXT : "暂无物流轨迹"}
             </Text>
           </VStack>
         )}

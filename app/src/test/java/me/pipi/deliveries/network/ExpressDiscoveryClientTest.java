@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNull;
 
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
@@ -526,6 +527,22 @@ public final class ExpressDiscoveryClientTest {
     }
 
     @Test
+    public void emptyQueryCannotBorrowFeedTracksOrStatus() throws Exception {
+        JSONObject feed = new JSONObject().put("mailNo", "JD0000000000001")
+                .put("provider", "JingDong").put("cpCode", "JD")
+                .put("stateNum", 107).put("state", "已签收")
+                .put("details", new JSONArray().put(new JSONObject()
+                        .put("time", "2026-09-08 10:00:00").put("desc", "Feed-only signature")));
+        for (JSONObject query : new JSONObject[]{new JSONObject(),
+                new JSONObject().put("details", new JSONArray())}) {
+            JSONObject response = ExpressDiscoveryClient.overlay(feed, query);
+            assertFalse(response.has("stateNum"));
+            ExpressQueryResult parsed = ExpressDiscoveryClient.parseExpress(response, "", "");
+            assertNull(parsed);
+        }
+    }
+
+    @Test
     public void knownRefreshCannotTurnASyntheticProviderIntoRawOwnershipEvidence() {
         ExpressQueryResult parsed = new ExpressQueryResult(
                 "WAYBILL-A", "SF", "顺丰速运", StatusSemantic.TRANSIT,
@@ -585,22 +602,24 @@ public final class ExpressDiscoveryClientTest {
     }
 
     @Test
-    public void completedRowWithCompleteCachedDetailNeverRefreshesOnAge() {
-        long now = 2_000_000_000L;
+    public void trustedSignatureStopsBackgroundQueriesRegardlessOfSignatureOrCacheAge() {
+        long now = java.time.Instant.parse("2026-09-08T12:00:00Z").toEpochMilli();
         long hour = 60L * 60L * 1000L;
         ExpressItem completed = new ExpressItem(
                 9L, "13800138000", "JD0000000000009", "JD", "京东快递",
                 StatusSemantic.COMPLETED, "已签收", "您的快件已签收，签收人：本人",
                 "2026-09-02 18:33:00", "[]", "", "interface5", "");
-        // 已签收且缓存详情完整：过了 6 小时也不重拉（用户定 2026-09-05）。
         assertFalse(ExpressDiscoveryClient.shouldQueryDetails(
                 "unchanged", "unchanged", completed, now - 7L * hour, now, true));
-        // 上游头条变了还是要拉。
-        assertTrue(ExpressDiscoveryClient.shouldQueryDetails(
+        assertFalse(ExpressDiscoveryClient.shouldQueryDetails(
                 "changed", "unchanged", completed, now - 1L, now, true));
-        // 缓存不完整的照旧按 6 小时兜底。
-        assertTrue(ExpressDiscoveryClient.shouldQueryDetails(
+        assertFalse(ExpressDiscoveryClient.shouldQueryDetails(
                 "unchanged", "unchanged", completed, now - 7L * hour, now, false));
+        ExpressItem unknownTime = new ExpressItem(
+                9L, "13800138000", "JD0000000000009", "JD", "京东快递",
+                StatusSemantic.COMPLETED, "已签收", "已签收", "", "[]", "", "interface5", "");
+        assertTrue(ExpressDiscoveryClient.shouldQueryDetails(
+                "changed", "unchanged", unknownTime, now - 7L * hour, now, false));
     }
 
     @Test

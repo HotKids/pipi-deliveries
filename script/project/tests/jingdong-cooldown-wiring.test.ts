@@ -54,7 +54,7 @@ assert.match(
 assert.match(storage, /\n {6}jingDongH5Retry,\n/);
 
 // I5: a carrier repair may neither hide a projection error nor compare against itself.
-const errorGate = sync.indexOf("if (!changed && accountError) throw accountError;");
+const errorGate = sync.indexOf("if (!changed && accountError &&");
 const repairChanged = sync.indexOf("if (storedRowBaseline) changed = true;");
 assert.ok(errorGate > 0 && repairChanged > 0);
 assert.ok(

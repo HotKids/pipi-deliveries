@@ -6,6 +6,7 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 import me.pipi.deliveries.model.ExpressItem;
+import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.StatusSemantic;
 
 import org.junit.Test;
@@ -14,13 +15,39 @@ public final class ExpressVisibilityPolicyTest {
     private static final long NOW = 1_800_000_000_000L;
 
     @Test
-    public void signedShipmentExpiresAtSevenDayBoundary() {
+    public void signedShipmentExpiresAtFourteenDayBoundary() {
+        assertEquals(14L * 24L * 60L * 60L * 1000L, ExpressVisibilityPolicy.SIGNED_VISIBLE_MS);
         assertFalse(ExpressVisibilityPolicy.isExpired(
                 item(StatusSemantic.COMPLETED,
                         NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS + 1L), NOW));
         assertTrue(ExpressVisibilityPolicy.isExpired(
                 item(StatusSemantic.COMPLETED,
                         NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS), NOW));
+    }
+
+    @Test
+    public void firstDiscoveryUsesDeletionDeadlineWithoutRestartingSignedAge() {
+        long signedAt = NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS;
+        ExpressQueryResult result = new ExpressQueryResult("TEST123", "ZTO", "Test",
+                StatusSemantic.COMPLETED, signedAt, "", "Signed", "[]", "", "",
+                "interface5", "", "", "CaiNiao");
+        assertFalse(ExpressVisibilityPolicy.isExpiredResult(result, NOW));
+        assertFalse(ExpressVisibilityPolicy.isExpiredResult(result,
+                signedAt + ExpressVisibilityPolicy.SIGNED_DELETE_MS - 1L));
+        assertTrue(ExpressVisibilityPolicy.isExpiredResult(result,
+                signedAt + ExpressVisibilityPolicy.SIGNED_DELETE_MS));
+    }
+
+    @Test
+    public void fixedAnchorControlsBothBoundariesEvenWhenPresentationChanges() {
+        long first = NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS;
+        ExpressItem changed = item(StatusSemantic.TRANSIT, NOW).withSignedRetainedAt(first);
+        assertTrue(ExpressVisibilityPolicy.isExpired(changed, NOW));
+        assertFalse(ExpressVisibilityPolicy.shouldDelete(changed,
+                first + ExpressVisibilityPolicy.SIGNED_DELETE_MS - 1));
+        assertTrue(ExpressVisibilityPolicy.shouldDelete(changed,
+                first + ExpressVisibilityPolicy.SIGNED_DELETE_MS));
+        assertEquals(first, ExpressLifecycleTimes.signedAt(changed, null, NOW));
     }
 
     @Test
@@ -35,7 +62,7 @@ public final class ExpressVisibilityPolicyTest {
     }
 
     @Test
-    public void newerSignedTrackKeepsACompletedShipmentVisible() {
+    public void structuredSignatureOwnsRetentionDespiteNewerTracks() {
         long oldStatusTime = NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS;
         String tracks = "[{\"time\":\"2027-01-14 00:00:00\","
                 + "\"context\":\"包裹已签收\"}]";
@@ -43,16 +70,27 @@ public final class ExpressVisibilityPolicyTest {
                 StatusSemantic.COMPLETED, "已签收", "", "", tracks, "", "INTERFACE5", "",
                 oldStatusTime, oldStatusTime, "INTERFACE5", "");
 
-        assertFalse(ExpressVisibilityPolicy.isExpired(item, NOW));
+        assertTrue(ExpressVisibilityPolicy.isExpired(item, NOW));
     }
 
     @Test
-    public void missingProviderTimeFallsBackToWhenSignedStateWasStored() {
+    public void unrelatedHeadlineCannotDelayTerminalRetention() {
+        long old = NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS;
+        ExpressItem value = new ExpressItem(1L, "", "TEST123", "ZTO", "Test",
+                StatusSemantic.COMPLETED, "已签收", "售后提醒", "2027-01-14 00:00:00",
+                "[]", "", "INTERFACE5", "", old, old, "INTERFACE5", "");
+        assertEquals(old, ExpressLifecycleTimes.signedAt(value, null, NOW));
+        assertTrue(ExpressVisibilityPolicy.isExpired(value, NOW));
+    }
+
+    @Test
+    public void missingProviderTimeRequiresPersistedLocalConfirmation() {
         long storedAt = NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS;
         ExpressItem item = new ExpressItem(1L, "", "TEST123", "ZTO", "中通快递",
                 StatusSemantic.COMPLETED, "已签收", "", "", "[]", "", "INTERFACE5", "",
                 0L, storedAt, "INTERFACE5", "");
-        assertTrue(ExpressVisibilityPolicy.isExpired(item, NOW));
+        assertFalse(ExpressVisibilityPolicy.isExpired(item, NOW));
+        assertTrue(ExpressVisibilityPolicy.isExpired(item.withSignedRetainedAt(storedAt), NOW));
     }
 
     @Test

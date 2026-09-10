@@ -73,7 +73,7 @@ public final class ExpressDatabaseContractTest {
         assertTrue(route.get("binding_source").notNull);
         assertTrue(route.get("binding_generation").notNull);
         assertTrue(route.get("detail_url").notNull);
-        assertEquals(22, ExpressDatabase.VERSION);
+        assertEquals(24, ExpressDatabase.VERSION);
         assertTrue(shipments.containsKey("carrierStandardCode"));
         assertTrue(shipments.containsKey("carrierDisplayName"));
         assertTrue(shipments.containsKey("carrierKuaidi100Code"));

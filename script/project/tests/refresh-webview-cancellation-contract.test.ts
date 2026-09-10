@@ -35,7 +35,7 @@ assert.match(
 );
 
 const projection = source.match(
-  /async function projectAccountOrders\([\s\S]*?\n}\n\nasync function refreshAccountFollowups/,
+  /async function projectAccountOrders\([\s\S]*?\n}\n\nfunction accountFollowupShipments/,
 )?.[0] || "";
 assert.match(
   projection,
@@ -155,7 +155,7 @@ assert.match(
 assert.equal(
   (manualRefresh.match(/"manual_refresh_attempt"/g) || []).length,
   1,
-  "one wave must be persisted atomically instead of one write per row",
+  "each admitted manual task batch must use one atomic reservation before its requests",
 );
 
 console.log("refresh WebView cancellation contract tests passed");

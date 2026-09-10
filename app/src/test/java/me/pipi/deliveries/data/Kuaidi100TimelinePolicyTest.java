@@ -25,31 +25,18 @@ public final class Kuaidi100TimelinePolicyTest {
     }
 
     @Test
-    public void signedShipmentStopsAtTwentyFourHourBoundary() {
+    public void signedShipmentFreezesImmediatelyWithKnownTime() {
         ExpressQueryResult signedHistory = result(StatusSemantic.COMPLETED,
                 "2026-01-01 00:00:00", "已签收",
                 "[{\"time\":\"2026-01-01 00:00:00\",\"context\":\"快件已签收\"}]");
-        assertTrue(Kuaidi100TimelinePolicy.shouldRefresh(
-                item(StatusSemantic.COMPLETED,
-                        NOW - Kuaidi100TimelinePolicy.SIGNED_REFRESH_WINDOW_MS + 1L),
-                signedHistory, NOW));
         assertFalse(Kuaidi100TimelinePolicy.shouldRefresh(
-                item(StatusSemantic.COMPLETED,
-                        NOW - Kuaidi100TimelinePolicy.SIGNED_REFRESH_WINDOW_MS),
-                signedHistory, NOW));
+                item(StatusSemantic.COMPLETED, NOW), signedHistory, NOW));
     }
 
-    /**
-     * 用户 2026-09-08 报（三端同改）：一行签收了却一条带时间的节点都没有（被清空过的那批），
-     * 冻结只会把空壳永久锁死，列表一直写「暂无物流动态」且再也不会自己补回来。冻结保护的是
-     * 已经有的轨迹，空壳照旧允许刷新去把轨迹拿回来。
-     */
     @Test
-    public void signedShipmentWithoutAnyTimedNodeKeepsRefreshing() {
-        assertTrue(Kuaidi100TimelinePolicy.shouldRefresh(
-                item(StatusSemantic.COMPLETED,
-                        NOW - Kuaidi100TimelinePolicy.SIGNED_REFRESH_WINDOW_MS),
-                null, NOW));
+    public void signedShipmentWithoutTracksStillFreezesWithKnownTime() {
+        assertFalse(Kuaidi100TimelinePolicy.shouldRefresh(
+                item(StatusSemantic.COMPLETED, NOW - 1L), null, NOW));
     }
 
     @Test
@@ -57,7 +44,17 @@ public final class Kuaidi100TimelinePolicyTest {
         assertTrue(Kuaidi100TimelinePolicy.shouldRefresh(
                 item(StatusSemantic.COMPLETED, 0L), null, NOW));
         assertTrue(Kuaidi100TimelinePolicy.shouldRefresh(
+                item(StatusSemantic.COMPLETED, NOW + 5L * 60L * 1000L + 1L), null, NOW));
+        assertFalse(Kuaidi100TimelinePolicy.shouldRefresh(
                 item(StatusSemantic.COMPLETED, NOW + 1L), null, NOW));
+    }
+
+    @Test
+    public void storageWriteTimeIsNotSignatureEvidenceForRefresh() {
+        ExpressItem value = new ExpressItem(1L, "", "TEST-UNKNOWN-TIME", "ZTO", "Test",
+                StatusSemantic.COMPLETED, "已签收", "", "", "[]", "", "INTERFACE5", "",
+                0L, NOW, "INTERFACE5", "");
+        assertTrue(Kuaidi100TimelinePolicy.shouldRefresh(value, null, NOW));
     }
 
     @Test
@@ -65,7 +62,7 @@ public final class Kuaidi100TimelinePolicyTest {
         ExpressQueryResult cached = result(StatusSemantic.COMPLETED,
                 "2026-01-01 00:00:00", "已签收", "[]");
         long afterWindow = ExpressSourcePolicy.parseEventTime(cached.latestTime)
-                + Kuaidi100TimelinePolicy.SIGNED_REFRESH_WINDOW_MS;
+                + 1L;
         assertFalse(Kuaidi100TimelinePolicy.shouldRefresh(
                 item(StatusSemantic.TRANSIT,
                         "[{\"time\":\"2026-01-01 00:00:00\",\"context\":\"快件已签收\"}]"),
@@ -79,7 +76,7 @@ public final class Kuaidi100TimelinePolicyTest {
                 "", "已签收", "[{\"time\":\"" + signedTime
                         + "\",\"context\":\"快件已签收\"}]");
         long afterWindow = ExpressSourcePolicy.parseEventTime(signedTime)
-                + Kuaidi100TimelinePolicy.SIGNED_REFRESH_WINDOW_MS;
+                + 1L;
         assertFalse(Kuaidi100TimelinePolicy.shouldRefresh(
                 item(StatusSemantic.COMPLETED, 0L), cached, afterWindow));
     }

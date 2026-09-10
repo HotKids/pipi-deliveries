@@ -34,7 +34,7 @@ public final class ExpressSubscriptionClientTest {
 
         assertEquals("2026-08-22 10:00:00", parsed.latestTime);
         assertEquals("快件运输中", parsed.latestDetail);
-        assertEquals("v6_picker", parsed.timelineProvider);
+        assertEquals("v6_query", parsed.timelineProvider);
         assertEquals("https://m.kuaidi100.com/result.jsp?nu=TEST123456",
                 parsed.detailUrl);
         assertTrue(Kuaidi100TimelinePolicy.hasRealTracking(parsed));
@@ -214,7 +214,7 @@ public final class ExpressSubscriptionClientTest {
 
         assertEquals("2026-09-05 18:20:00", parsed.latestTime);
         assertEquals("快件已到达【深圳中转场】", parsed.latestDetail);
-        assertEquals("v6_picker", parsed.timelineProvider);
+        assertEquals("v6_query", parsed.timelineProvider);
         assertTrue(Kuaidi100TimelinePolicy.hasTimedTracking(parsed));
     }
 }

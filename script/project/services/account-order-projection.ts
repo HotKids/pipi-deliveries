@@ -751,16 +751,17 @@ function extractionJavaScript(
           unionResourceSeen: resourceStateBeforeProbe.unionResourceSeen,
           resourceReplayAttempted: false,
           resourceReplaySucceeded: false,
-                    fullProgressClickAttempted: false,
-          fullProgressRequested: false,
+          fullProgressClickAttempted: false,
+          fullProgressAttempt: null,
           originalFetch: null,
           unionStatuses: [],
         };
         window[probeKey] = probe;
-        const enqueue = (source, fullProgressRequestedAtStart = false) => {
+        // A synchronous XHR may finish before click() returns or throws.
+        const enqueue = (source, clickAttemptAtStart = null) => Promise.resolve().then(() => {
           try {
             if (typeof source === "string" && source.length > 1500000) return;
-            const result = projection(source, "probe", fullProgressRequestedAtStart);
+            const result = projection(source, "probe", Boolean(clickAttemptAtStart && clickAttemptAtStart.succeeded));
             if (!result) return;
             // The page's own waybill/carrier are the reference for the modal DOM package.
             if (result.waybillCode && !probe.unionWaybill) {
@@ -770,7 +771,7 @@ function extractionJavaScript(
             probe.queue.push(result);
             if (probe.queue.length > 4) probe.queue.splice(0, probe.queue.length - 4);
           } catch (_) {}
-        };
+        });
                 const recordUnionStatus = (status) => {
           try {
             if (!Array.isArray(probe.unionStatuses)) probe.unionStatuses = [];
@@ -778,7 +779,7 @@ function extractionJavaScript(
             while (probe.unionStatuses.length > 8) probe.unionStatuses.shift();
           } catch (_) {}
         };
-        const captureResponse = (response, fullProgressRequestedAtStart) => {
+        const captureResponse = (response, clickAttemptAtStart) => {
           try {
             if (!response || typeof response.clone !== "function") return;
             const contentType = clean(response.headers && response.headers.get &&
@@ -788,7 +789,7 @@ function extractionJavaScript(
               response.headers.get("content-length"));
             if (Number.isFinite(contentLength) && contentLength > 1500000) return;
             response.clone().text()
-              .then((source) => enqueue(source, fullProgressRequestedAtStart))
+              .then((source) => enqueue(source, clickAttemptAtStart))
               .catch(() => {});
           } catch (_) {}
         };
@@ -812,15 +813,14 @@ function extractionJavaScript(
               probe.requestCount = Math.min(probe.requestCount + 1, 100000);
               const unionTarget = relevant(url, body);
               const target = trustedJdUrl(url);
-              const fullProgressRequestedAtStart = probe.fullProgressRequested === true &&
-                unionTarget;
+              const clickAttemptAtStart = unionTarget ? probe.fullProgressAttempt : null;
               if (unionTarget) probe.unionSignalSeen = true;
                             const response = originalFetch.apply(this, arguments);
               if (target) {
                 Promise.resolve(response)
                   .then((value) => {
                     if (unionTarget) recordUnionStatus(value && value.status);
-                    captureResponse(value, fullProgressRequestedAtStart);
+                    captureResponse(value, clickAttemptAtStart);
                   })
                   .catch(() => {});
               }
@@ -841,8 +841,7 @@ function extractionJavaScript(
               probe.requestCount = Math.min(probe.requestCount + 1, 100000);
               const unionTarget = relevant(this.__pipiDeliveriesProjectionUrl, body);
               const target = trustedJdUrl(this.__pipiDeliveriesProjectionUrl);
-              const fullProgressRequestedAtStart = probe.fullProgressRequested === true &&
-                unionTarget;
+              const clickAttemptAtStart = unionTarget ? probe.fullProgressAttempt : null;
               if (target) {
                 if (unionTarget) probe.unionSignalSeen = true;
                 try {
@@ -852,7 +851,7 @@ function extractionJavaScript(
                       const contentType = clean(this.getResponseHeader &&
                         this.getResponseHeader("content-type"));
                       if (!contentType || /(json|javascript|text)/i.test(contentType)) {
-                        enqueue(this.responseText, fullProgressRequestedAtStart);
+                        enqueue(this.responseText, clickAttemptAtStart);
                       }
                     } catch (_) {}
                   }, { once: true });
@@ -886,15 +885,19 @@ function extractionJavaScript(
         } catch (_) {}
         if (control && typeof control.click === "function") {
           probe.fullProgressClickAttempted = true;
-          probe.fullProgressRequested = true;
+          // Each request retains its own attempt; a later retry cannot validate a failed click.
+          const attempt = { succeeded: false };
+          probe.fullProgressAttempt = attempt;
           try {
             control.click();
+            attempt.succeeded = true;
           } catch (_) {
             probe.fullProgressClickAttempted = false;
-            probe.fullProgressRequested = false;
           }
         }
       }
+      // Commit already received synchronous XHRs before a shorter modal can end capture.
+      await Promise.resolve();
       // §9 (2026-09-03): the click opens a modal rendered from data the page already holds and
       // issues no new request, so the complete package is the modal's own node list: read only
       // after the exact click, from the modal header (carrier + waybill) and its .child-status

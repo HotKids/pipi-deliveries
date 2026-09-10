@@ -353,9 +353,11 @@ changed.shipments[0] = {
 };
 memory.set(STATE_KEY, nativeRoundTrip(legacyEnvelope(completeState())));
 memory.set(STATE_BACKUP_KEY, nativeRoundTrip(legacyEnvelope(changed)));
-const divergent = loadState(NOW + 5);
-assert.equal(divergent.shipments.length, 0);
-assert.equal(divergent.pendingQueries.length, 0);
+const divergentCopies = [memory.get(STATE_KEY), memory.get(STATE_BACKUP_KEY)];
+assert.throws(() => loadState(NOW + 5), /本地快递数据读取失败/);
+assert.throws(() => saveState(completeState(), NOW + 5), /本地快递数据读取失败/);
+assert.deepEqual([memory.get(STATE_KEY), memory.get(STATE_BACKUP_KEY)], divergentCopies,
+  "unrecoverable legacy replicas must remain intact rather than become a writable empty store");
 
 // A damaged new replica is healed from the independently verified copy.
 resetStorage();

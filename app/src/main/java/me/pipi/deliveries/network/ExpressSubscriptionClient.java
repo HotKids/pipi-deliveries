@@ -31,11 +31,15 @@ public final class ExpressSubscriptionClient {
     }
 
     public List<ExpressQueryResult> query(Context context) throws Exception {
+        return query(context, null);
+    }
+
+    public List<ExpressQueryResult> query(Context context, ExpressQueryCancellation cancellation) throws Exception {
         JSONObject payload = new JSONObject()
                 .put("interface", "v6")
                 .put("identity", identity(context));
         HttpClient.Response response = new ExpressGatewayClient(context).post(
-                "/api/express/accounts/sync", payload);
+                "/api/express/accounts/sync", payload, cancellation);
         if (!response.successful()) {
             throw GatewayHttpErrors.forResponse(response, "快递同步失败");
         }
@@ -72,10 +76,7 @@ public final class ExpressSubscriptionClient {
         return value == null ? null : parseExpress(value, number, company);
     }
 
-    /**
-     * Original app-compatible manual lookup. This endpoint recognizes the carrier from the
-     * waybill and returns its code/name with the latest event and detail URL.
-     */
+    /** Online lookup for existing add, detail and SF list stages; a scalar event stays partial. */
     public ExpressQueryResult queryManual(Context context, String waybill) throws Exception {
         return queryManual(context, waybill, null);
     }
@@ -83,22 +84,6 @@ public final class ExpressSubscriptionClient {
     public ExpressQueryResult queryManual(
             Context context, String waybill, ExpressQueryCancellation cancellation)
             throws Exception {
-        return query(context, waybill, cancellation, "manual");
-    }
-
-    /**
-     * picker `refresh`（queryByMailNoOnline）：顺丰在列表轮用它取结构化的最新一条（用户定
-     * 2026-09-04，待改表第 2 项，2026-09-05 三端落地）；`manual` 只在详情/加件那一级拿 detailUrl。
-     */
-    public ExpressQueryResult queryRefresh(
-            Context context, String waybill, ExpressQueryCancellation cancellation)
-            throws Exception {
-        return query(context, waybill, cancellation, "refresh");
-    }
-
-    private ExpressQueryResult query(
-            Context context, String waybill, ExpressQueryCancellation cancellation,
-            String mode) throws Exception {
         String number = waybill == null ? "" : waybill.trim();
         if (number.length() < 6) throw new IllegalArgumentException("请输入正确的快递单号");
         android.content.pm.PackageInfo info = context.getPackageManager()
@@ -107,16 +92,57 @@ public final class ExpressSubscriptionClient {
         long versionCode = info.getLongVersionCode();
         JSONObject payload = new JSONObject()
                 .put("interface", "v6")
-                .put("mode", mode)
+                .put("mode", "refresh")
                 .put("waybill", number)
                 .put("clientVersion", versionName)
                 .put("clientBuild", versionCode);
+        long startedAt = android.os.SystemClock.elapsedRealtime();
+        ExpressLog.line("v6", "v6_query", "", "request",
+                "mode", "refresh", "tail", ExpressLog.tail(number));
         HttpClient.Response response = new ExpressGatewayClient(context).post(
                 "/api/express/timeline/source", payload, cancellation);
+        logQueryResponse(response, number,
+                android.os.SystemClock.elapsedRealtime() - startedAt);
         if (!response.successful()) {
             throw GatewayHttpErrors.forResponse(response, "查询失败，请稍后重试");
         }
         return parseManualResponse(response.utf8(), number);
+    }
+
+    private static void logQueryResponse(
+            HttpClient.Response response, String waybill, long durationMs) {
+        JSONObject root = null;
+        try {
+            Object parsed = new org.json.JSONTokener(response.utf8()).nextValue();
+            if (parsed instanceof JSONObject) root = (JSONObject) parsed;
+        } catch (org.json.JSONException malformed) {
+            // Keep the response's HTTP status even when its body cannot be parsed.
+        }
+        Object code = root == null ? null : root.opt("code");
+        Object upstreamCode = "unavailable";
+        if (code instanceof Number || code instanceof String) {
+            try {
+                double numeric = Double.parseDouble(code.toString());
+                if (Double.isFinite(numeric) && numeric == Math.rint(numeric)
+                        && numeric >= Integer.MIN_VALUE && numeric <= Integer.MAX_VALUE) {
+                    upstreamCode = (int) numeric;
+                }
+            } catch (NumberFormatException invalid) {
+                // Never emit unrecognized upstream text.
+            }
+        }
+        Object value = root == null ? null
+                : root.has("value") ? root.opt("value") : root.opt("data");
+        String kind = value == null ? "missing" : value == JSONObject.NULL ? "null"
+                : value instanceof JSONObject ? "object" : value instanceof JSONArray ? "array"
+                : value instanceof Number ? "number" : value instanceof Boolean ? "boolean" : "string";
+        Object redirect = root == null ? null : root.opt("redirect");
+        ExpressLog.line("v6", "v6_query", "", "response",
+                "mode", "refresh",
+                "httpStatus", response.status, "upstreamCode", upstreamCode,
+                "valueKind", kind,
+                "redirectPresent", redirect instanceof String && !((String) redirect).trim().isEmpty(),
+                "tail", ExpressLog.tail(waybill), "durationMs", Math.max(0L, durationMs));
     }
 
     static ExpressQueryResult parseManualResponse(String body, String fallbackWaybill)
@@ -124,14 +150,19 @@ public final class ExpressSubscriptionClient {
         Object payload = unwrap(body, "查询失败，请稍后重试");
         String expectedWaybill = normalizeWaybillIdentity(fallbackWaybill);
         if (!manualResponseIdentitiesMatch(payload, expectedWaybill, 0)) {
+            logManualParse(fallbackWaybill, "identity_mismatch", 0);
             throw new IllegalStateException("暂未查询到物流信息");
         }
         JSONObject value = findManualObject(payload);
-        if (value == null) throw new IllegalStateException("暂未查询到物流信息");
+        if (value == null) {
+            logManualParse(fallbackWaybill, "object_missing", 0);
+            throw new IllegalStateException("暂未查询到物流信息");
+        }
         String responseNumber = first(value, "nu", "mailNo");
         if (!responseNumber.isEmpty()
                 && !normalizeWaybillIdentity(responseNumber)
                 .equals(normalizeWaybillIdentity(fallbackWaybill))) {
+            logManualParse(fallbackWaybill, "identity_mismatch", 0);
             throw new IllegalStateException("暂未查询到物流信息");
         }
         String code = first(value, "com", "cpCode");
@@ -178,8 +209,10 @@ public final class ExpressSubscriptionClient {
             if (detail.isEmpty()) detail = latest.detail;
         }
         if (providerError && parsed.isEmpty()) {
+            logManualParse(fallbackWaybill, "provider_error_empty", 0);
             throw new IllegalStateException("暂未查询到物流信息");
         }
+        logManualParse(fallbackWaybill, "accepted", parsed.size());
         return new ExpressQueryResult(
                 responseNumber.isEmpty() ? fallbackWaybill : responseNumber,
                 code,
@@ -190,8 +223,14 @@ public final class ExpressSubscriptionClient {
                 tracks.toString(),
                 first(value, "detailUrl", "url"),
                 first(value, "subPhone", "receiverPhone"),
-                TimelineSlot.V6_PICKER)
+                TimelineSlot.V6_QUERY)
                 .withManualStatusEvidence(stateName, !status.isEmpty());
+    }
+
+    private static void logManualParse(String waybill, String outcome, int nodes) {
+        ExpressLog.line("v6", "v6_query", "", "parsed",
+                "mode", "refresh",
+                "parseOutcome", outcome, "nodes", nodes, "tail", ExpressLog.tail(waybill));
     }
 
     private static String normalizeWaybillIdentity(String waybill) {

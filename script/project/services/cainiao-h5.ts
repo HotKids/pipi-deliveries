@@ -36,6 +36,7 @@ export type CainiaoH5TimelineInput = Readonly<{
   deadlineAtMs?: number;
   successAtMs?: number;
   signal?: AbortSignal;
+  onQueryAttempted?: (authorized: boolean) => void;
 }>;
 
 export type CainiaoH5Diagnostics = Readonly<{
@@ -384,6 +385,7 @@ export async function scrapeCainiaoH5Timeline(
   };
   const abort = () => disposeController();
   input.signal?.addEventListener("abort", abort, { once: true });
+  let requestStarted = false;
   let loadSettled = false;
   let loadCompleted = false;
   let evaluationAttempts = 0;
@@ -402,6 +404,7 @@ export async function scrapeCainiaoH5Timeline(
   try {
     assertCainiaoH5Active(input.signal);
     try {
+      requestStarted = true;
       void controller.loadURL(input.routeUrl).then(
         (loaded) => {
           if (input.signal?.aborted) return;
@@ -468,6 +471,7 @@ export async function scrapeCainiaoH5Timeline(
       : "evaluation_exhausted";
     return null;
   } finally {
+    if (requestStarted) input.onQueryAttempted?.(true);
     if (
       !input.signal?.aborted &&
       !(input.signal && Date.now() >= deadlineAtMs)

@@ -2,21 +2,22 @@ package me.pipi.deliveries.data;
 
 import java.util.Locale;
 
-/**
- * 轨迹缓存的槽名，三端统一等于日志里的 {@code level} 用词（用户定 2026-09-05）：
- * v5_query（接口 5 按件详情）、v6_list（接口 6 账号列表）、v4_query、v6_picker、k100_h5、kdniao。
- * 各接口的缓存互相独立，槽名就是接口名；旧写法（interface5 / interface6 / v4 / meizu / kuaidi100）
- * 只在 {@link #normalize} 里翻译一次。
- */
+/** Canonical provider slots shared by cache writes and diagnostics; old names are read aliases. */
 public final class TimelineSlot {
     public static final String V5_QUERY = "v5_query";
     public static final String V6_LIST = "v6_list";
     public static final String V4_QUERY = "v4_query";
-    public static final String V6_PICKER = "v6_picker";
+    public static final String V6_QUERY = "v6_query";
     public static final String K100_H5 = "k100_h5";
+    public static final String CN_H5 = "cn_h5";
+    public static final String JD_H5 = "jd_h5";
     public static final String KDNIAO = "kdniao";
 
     private TimelineSlot() {}
+
+    public static boolean isAutomaticH5(String value) {
+        return CN_H5.equals(normalize(value)) || JD_H5.equals(normalize(value));
+    }
 
     public static String normalize(String value) {
         String clean = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
@@ -28,7 +29,9 @@ public final class TimelineSlot {
             case "v4":
                 return V4_QUERY;
             case "meizu":
-                return V6_PICKER;
+            case "meizu_picker":
+            case "v6_picker":
+                return V6_QUERY;
             case "kuaidi100":
             case "web":
                 return K100_H5;

@@ -6,7 +6,7 @@ import android.util.Log;
  * 快递日志的统一用词（用户定 2026-09-05，三端同一套）：每行固定 interface / level / source / event，
  * 附 tail、nodes 等。不用品牌词，不用能力档词。
  *
- * <p>level：v1_list…v6_list、v5_list、v5_query、v6_picker、v4_query、v2_query、jd_h5、cn_h5、
+ * <p>level：v1_list…v6_list、v5_list、v5_query、v6_query、v4_query、v2_query、jd_h5、cn_h5、
  * k100_h5、kdniao、k100_autoCom。event：started / succeeded / failed / skipped / selected。</p>
  */
 public final class ExpressLog {
@@ -25,7 +25,7 @@ public final class ExpressLog {
         StringBuilder builder = new StringBuilder(96);
         if (iface != null && !iface.isEmpty()) builder.append("interface=").append(iface).append(' ');
         builder.append("level=").append(level).append(' ');
-        if (source != null && !source.isEmpty()) builder.append("source=").append(source).append(' ');
+        if (source != null && !source.isEmpty()) builder.append("source=").append(source(source, false)).append(' ');
         builder.append("event=").append(event);
         for (int index = 0; index + 1 < keyValues.length; index += 2) {
             builder.append(' ').append(keyValues[index]).append('=').append(keyValues[index + 1]);
@@ -91,10 +91,11 @@ public final class ExpressLog {
                 + " reason=" + reason + " writes=" + writes);
     }
 
-    /** 业务来源：jingdong / cainiao / shunfeng / douyin / manual。 */
+    /** Log-only source label; business provider identities remain unchanged. */
     public static String source(String sourceProvider, boolean manuallyAdded) {
         if (manuallyAdded) return "manual";
         String value = sourceProvider == null ? "" : sourceProvider.trim().toLowerCase(java.util.Locale.ROOT);
+        if ("shunfeng".equals(value)) return "sfexpress";
         return value.isEmpty() ? "" : value;
     }
 }

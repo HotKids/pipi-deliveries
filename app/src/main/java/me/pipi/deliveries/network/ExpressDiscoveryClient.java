@@ -161,7 +161,7 @@ public final class ExpressDiscoveryClient {
         for (JSONObject item : discovered) {
             String waybill = itemIdentity(item);
             if (!shouldQueryDetails(
-                    prefs, item, existingBeforeSync.get(normalize(waybill)), repository)) continue;
+                    prefs, item, repository.findByWaybill(waybill, "interface5"), repository)) continue;
             try {
                 boolean suppressed = repository.hasUnboundPhoneAssociation(
                         waybill, "interface5");
@@ -171,6 +171,7 @@ public final class ExpressDiscoveryClient {
                         associatedPhone.replaceAll("\\D", ""));
                 if (ExpressRepository.shouldSuppressAutomaticImport(
                         suppressed, associatedPhone) || bindingGeneration == null) continue;
+                ExpressItem queryOwner = repository.findByWaybill(waybill, "interface5");
                 JSONObject queried = queryDetails(context, item, associatedPhone);
                 if (queried == null) continue;
                 if (!detailMatchesRequestedIdentity(queried, waybill)) continue;
@@ -181,13 +182,7 @@ public final class ExpressDiscoveryClient {
                         : storedExpress(completeItem, associatedPhone);
                 if (detailed == null
                         || !normalize(waybill).equals(normalize(detailed.waybill))) continue;
-                if (accountOrder) {
-                    repository.saveInterface5Order(
-                            detailed, associatedPhone, bindingGeneration);
-                } else {
-                    repository.saveInterface5(
-                            detailed, associatedPhone, bindingGeneration);
-                }
+                if (!repository.saveInterface5Query(detailed, queryOwner, bindingGeneration)) continue;
                 boolean realTimeline = Kuaidi100TimelinePolicy.hasRealTracking(detailed);
                 ExpressItem persisted = repository.findByWaybill(waybill, "interface5");
                 if (!ExpressStatusNormalizer.isProviderErrorDetail(detailed.latestDetail)
@@ -271,8 +266,14 @@ public final class ExpressDiscoveryClient {
      */
     public ExpressQueryResult refreshKnown(
             Context context, ExpressItem item, boolean force) throws Exception {
+        return refreshKnown(context, item, force, null);
+    }
+
+    public ExpressQueryResult refreshKnown(Context context, ExpressItem item,
+            boolean force, ExpressQueryCancellation cancellation) throws Exception {
         if (item == null || !isInterface5Owned(item)) return null;
-        if (!force && wasSynced(item.waybill)) return null;
+        if (!force && (!Kuaidi100TimelinePolicy.shouldRefresh(
+                item, null, System.currentTimeMillis()) || wasSynced(item.waybill))) return null;
         SharedPreferences prefs = context.getSharedPreferences(PREFS, 0);
         JSONObject summary = itemSummary(item);
         String key = detailCacheKey(itemIdentity(summary));
@@ -284,7 +285,7 @@ public final class ExpressDiscoveryClient {
                 System.currentTimeMillis())) {
             return null;
         }
-        JSONObject queried = queryDetails(context, summary, item.phone);
+        JSONObject queried = queryDetails(context, summary, item.phone, cancellation);
         if (queried == null) return null;
         if (!detailMatchesRequestedIdentity(queried, item.waybill)) return null;
         JSONObject complete = overlay(summary, queried);
@@ -323,6 +324,12 @@ public final class ExpressDiscoveryClient {
         String waybill = itemIdentity(item);
         ExpressQueryResult result = storedExpress(item, phone);
         if (result == null) return false;
+        JSONArray rawTracks = item.optJSONArray("details");
+        ExpressLog.line("v5", "v5_list", ExpressLog.source(result.sourceProvider, false), "parsed",
+                "tail", tail(waybill), "rawNodes", rawTracks == null ? 0 : rawTracks.length(),
+                "nodes", ExpressTimeline.parse(result.tracksJson, "", "").size(),
+                "headlinePresent", !first(item, "lastLogisticDetail", "context", "message").isEmpty(),
+                "semantic", result.semantic.name());
         ExpressItem previous = repository.findByWaybill(waybill, "interface5");
         repository.saveInterface5(result, phone, bindingGeneration);
         return previous == null
@@ -375,13 +382,18 @@ public final class ExpressDiscoveryClient {
 
     private static JSONObject queryDetails(
             Context context, JSONObject summary, String fallbackPhone) throws Exception {
+        return queryDetails(context, summary, fallbackPhone, null);
+    }
+
+    private static JSONObject queryDetails(Context context, JSONObject summary,
+            String fallbackPhone, ExpressQueryCancellation cancellation) throws Exception {
         JSONObject request = new JSONObject()
                 .put("interface", "v5")
                 .put("mode", "detail")
                 .put("identity", ExpressInstallIdentity.get(context))
                 .put("record", detailRecord(summary, fallbackPhone));
         HttpClient.Response response = new ExpressGatewayClient(context).post(
-                "/api/express/timeline/source", request);
+                "/api/express/timeline/source", request, cancellation);
         if (!response.successful()) {
             throw GatewayHttpErrors.forResponse(response, "快递详情同步失败");
         }
@@ -425,14 +437,11 @@ public final class ExpressDiscoveryClient {
                 existing != null && repository.accountDetailComplete(existing));
     }
 
-    /**
-     * 列表同步后要不要再拉这一票的按件详情：上游头条变了 / 本地还没有 / 头条只是占位 → 拉；
-     * 已签收且缓存详情完整（有揽收）→ 不拉（用户定 2026-09-05：完整缓存不按时间重拉）；
-     * 其余在途件才按 6 小时兜底重拉一次。
-     */
+    /** A trusted signature stops background queries even when its cached history is incomplete. */
     static boolean shouldQueryDetails(
             String signature, String previous, ExpressItem existing,
             long refreshedAt, long now, boolean detailComplete) {
+        if (!Kuaidi100TimelinePolicy.shouldRefresh(existing, null, now)) return false;
         if (!signature.equals(previous)) return true;
         if (existing == null) return true;
         if (ExpressStatusNormalizer.isHeadlinePlaceholder(
@@ -664,17 +673,14 @@ public final class ExpressDiscoveryClient {
     }
 
     static JSONObject overlay(JSONObject summary, JSONObject detail) throws Exception {
-        JSONObject merged = new JSONObject(summary.toString());
-        java.util.Iterator<String> keys = detail.keys();
-        while (keys.hasNext()) {
-            String key = keys.next();
-            if ("mailNo".equals(key) || "orderNo".equals(key)
-                    || "orderId".equals(key) || "orderCode".equals(key)
-                    || "provider".equals(key)) continue;
-            Object value = detail.opt(key);
-            if ("details".equals(key) && value instanceof JSONArray
-                    && ((JSONArray) value).length() == 0) continue;
-            if (value != null && value != JSONObject.NULL) merged.put(key, value);
+        JSONObject merged = new JSONObject(detail.toString());
+        // Only request identity is carried across; missing query fields are not feed evidence.
+        for (String key : new String[]{"mailNo", "orderNo", "orderId", "orderCode", "provider"}) {
+            merged.remove(key);
+            if (summary.has(key)) merged.put(key, summary.get(key));
+        }
+        for (String key : new String[]{"cpCode", "name", "phone", "providerName"}) {
+            if (!merged.has(key) && summary.has(key)) merged.put(key, summary.get(key));
         }
         return merged;
     }

@@ -202,6 +202,8 @@ while IFS= read -r network_url; do
   case "$network_url" in
     "$GATEWAY_ORIGIN"|\
     'https://m.kuaidi100.com/query'|\
+    'https://m.kuaidi100.com/app/query/?nu='|\
+    'https://h5.m.taobao.com/'|\
     'https://www.kuaidi100.com/autonumber/autoComNum'|\
     'https://github.com/HotKids'|\
     'https://github.com/HotKids/'*|\

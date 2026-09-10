@@ -314,3 +314,43 @@ await rejectsAsOperationTimeout(postGateway(
 assert.equal(fetchCalls, callsBeforePreAbort);
 
 console.log("gateway error diagnostics tests passed");
+
+// Empty-history retirement may count only a real request that was not denied access.
+for (const status of [200, 401, 403, 502]) {
+  const attempts: boolean[] = [];
+  fetchHandler = async () => gatewayResponse(status);
+  const result = postGateway("/api/express/classify", { waybill: "SYNTHETIC-ATTEMPT" }, {
+    onQueryAttempted: (authorized) => attempts.push(authorized),
+  });
+  if (status === 200) await result;
+  else await assert.rejects(result, rejectedWithStatus(status));
+  assert.deepEqual(attempts, [status !== 401 && status !== 403]);
+}
+const attemptsBeforeDispatch: boolean[] = [];
+await rejectsAsOperationTimeout(postGateway("/api/express/classify", { waybill: "SYNTHETIC-ATTEMPT" }, {
+  signal: preAborted.signal,
+  onQueryAttempted: (authorized) => attemptsBeforeDispatch.push(authorized),
+}));
+assert.deepEqual(attemptsBeforeDispatch, []);
+const failedAttempts: boolean[] = [];
+fetchHandler = async () => { throw new Error("synthetic network failure"); };
+await assert.rejects(postGateway("/api/express/classify", { waybill: "SYNTHETIC-ATTEMPT" }, {
+  onQueryAttempted: (authorized) => failedAttempts.push(authorized),
+}), GatewayError);
+assert.deepEqual(failedAttempts, [true], "a dispatched network failure completes an allowed attempt");
+const timedOutAttempts: boolean[] = [];
+fetchHandler = () => new Promise(() => {});
+await rejectsAsOperationTimeout(postGateway("/api/express/classify", { waybill: "SYNTHETIC-ATTEMPT" }, {
+  deadlineAtMs: Date.now() + 20,
+  onQueryAttempted: (authorized) => timedOutAttempts.push(authorized),
+}));
+assert.deepEqual(timedOutAttempts, [true]);
+memory.clear();
+shared.clear();
+files.clear();
+const missingCredentialAttempts: boolean[] = [];
+await assert.rejects(postGateway("/api/express/classify", { waybill: "SYNTHETIC-ATTEMPT" }, {
+  onQueryAttempted: (authorized) => missingCredentialAttempts.push(authorized),
+}), GatewayError);
+assert.deepEqual(missingCredentialAttempts, [], "credential preflight has not queried a parcel");
+console.log("gateway attempted-query evidence tests passed");

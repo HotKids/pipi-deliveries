@@ -91,7 +91,7 @@ const failed = readDiagnostics().find(
   (entry) => entry.event === "manual.source.failed",
 );
 assert.ok(failed);
-assert.equal(failed.details.timelineProvider, "v6_picker");
+assert.equal(failed.details.timelineProvider, "v6_query");
 assert.equal(typeof failed.details.durationMs, "number");
 
 clearDiagnostics();
@@ -157,15 +157,16 @@ await queryManualForSource({
   },
 });
 const emptyEntries = readDiagnostics();
-assert.equal(
-  emptyEntries.find((entry) => entry.event === "manual.source.skipped")
-    ?.details.timelineProvider,
-  "v4_query",
-);
+const statusOnly = emptyEntries.find((entry) => entry.event === "manual.source.succeeded");
+assert.equal(statusOnly?.details.timelineProvider, "v4_query");
+assert.equal(statusOnly?.details.statusSemantic, "TRANSIT");
+assert.equal(statusOnly?.details.structuredStatus, true);
+assert.equal(statusOnly?.details.result, "status_only");
 const emptyCompleted = emptyEntries.find(
   (entry) => entry.event === "manual.query.completed",
 );
-assert.equal(emptyCompleted?.details.selected, false);
-assert.equal(emptyCompleted?.details.timelineProvider, "none");
+assert.equal(emptyCompleted?.details.selected, true);
+assert.equal(emptyCompleted?.details.timelineProvider, "v4_query");
+assert.equal(emptyCompleted?.details.result, "status_only");
 
 console.log("manual diagnostic source tests passed");

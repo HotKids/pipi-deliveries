@@ -6,15 +6,32 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 /** One finite, cancellable lifetime shared by every request in an express query. */
-public final class ExpressQueryCancellation {
+public final class ExpressQueryCancellation implements AutoCloseable {
     private final Object lock = new Object();
     private final long deadlineNanos;
     private boolean cancelled;
+    private ExpressQueryCancellation parent;
+    private Runnable parentCancellation;
     private final Set<Runnable> activeCancellations = new LinkedHashSet<>();
 
     public ExpressQueryCancellation(long timeoutMillis) {
         if (timeoutMillis <= 0L) throw new IllegalArgumentException("timeout must be positive");
         deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+    }
+
+    /** Each stage keeps its own budget while the screen still cancels the whole chain. */
+    public ExpressQueryCancellation child(long timeoutMillis) throws InterruptedException {
+        int remaining = remainingTimeoutMillis((int) Math.min(Integer.MAX_VALUE, timeoutMillis));
+        ExpressQueryCancellation child = new ExpressQueryCancellation(remaining);
+        child.parent = this;
+        child.parentCancellation = child::cancel;
+        attach(child.parentCancellation);
+        return child;
+    }
+
+    @Override public void close() {
+        cancel();
+        if (parent != null) parent.detach(parentCancellation);
     }
 
     public void cancel() {

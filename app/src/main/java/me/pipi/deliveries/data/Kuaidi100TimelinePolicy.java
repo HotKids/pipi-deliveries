@@ -12,8 +12,6 @@ import org.json.JSONTokener;
 
 /** Refresh lifetime and same-provider incremental-cache policy for local timelines. */
 public final class Kuaidi100TimelinePolicy {
-    static final long SIGNED_REFRESH_WINDOW_MS = 24L * 60L * 60L * 1000L;
-
     private Kuaidi100TimelinePolicy() {}
 
     /** A manual item becomes visible only after a provider supplies a genuine timeline node. */
@@ -114,10 +112,21 @@ public final class Kuaidi100TimelinePolicy {
 
     public static boolean containsTimelineStart(
             Object node, String provider, boolean orderedCounts) {
+        return containsTimelineStart(node, provider, orderedCounts, true);
+    }
+
+    /** R-29 needs an order or pickup event; query completion alone proves no origin. */
+    public static boolean containsTimelineOrigin(Object node, String provider) {
+        return containsTimelineStart(node, provider, true, false);
+    }
+
+    private static boolean containsTimelineStart(
+            Object node, String provider, boolean orderedCounts, boolean completionCounts) {
         if (node instanceof JSONArray) {
             JSONArray values = (JSONArray) node;
             for (int index = 0; index < values.length(); index++) {
-                if (containsTimelineStart(values.opt(index), provider, orderedCounts)) return true;
+                if (containsTimelineStart(
+                        values.opt(index), provider, orderedCounts, completionCounts)) return true;
             }
             return false;
         }
@@ -140,7 +149,8 @@ public final class Kuaidi100TimelinePolicy {
         // 终点文案（2026-09-08 从下单词表挪出来）：京东原文是「订单已完成配送，感谢您选择京东购物」，
         // 说的是送完了，不是刚下单。闸门跟下单类同一档（只在 orderedCounts 时生效）——这一票已经
         // 走完，没有更早的历史值得再抓；展示上它是 COMPLETED，见 ExpressStatusNormalizer。
-        if (!providerError && orderedCounts && (compactDetail.contains("订单已完成")
+        if (!providerError && orderedCounts && completionCounts
+                && (compactDetail.contains("订单已完成")
                 || compactDetail.contains("配送完成"))) return true;
         // 下单类整表（2026-09-07 三端对齐到 iOS semanticFromText）：这几个词 Lite 的展示表
         // ExpressStatusNormalizer 早就认成「已下单」，起点闸门却看不见，同一行自相矛盾。
@@ -173,7 +183,7 @@ public final class Kuaidi100TimelinePolicy {
         while (keys.hasNext()) {
             Object child = value.opt(keys.next());
             if ((child instanceof JSONArray || child instanceof JSONObject)
-                    && containsTimelineStart(child, source, orderedCounts)) return true;
+                    && containsTimelineStart(child, source, orderedCounts, completionCounts)) return true;
         }
         return false;
     }
@@ -231,32 +241,15 @@ public final class Kuaidi100TimelinePolicy {
                 item.tracksJson, "", item.phone, provider, "", "", item.sourceProvider));
     }
 
-    private static boolean hasTimedTrack(String tracksJson) {
-        for (ExpressTimeline.Track track : ExpressTimeline.parse(tracksJson, "", "")) {
-            if (ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) continue;
-            if (ExpressSourcePolicy.parseEventTime(track.time) > 0L) return true;
-        }
-        return false;
-    }
-
-    /** Refresh on every open until an exact signed event is at least 24 hours old. */
+    /** A trusted signature freezes automatic refresh, including rows whose history is missing. */
     public static boolean shouldRefresh(
             ExpressItem item, ExpressQueryResult cached, long now) {
         boolean completed = item != null && item.semantic == StatusSemantic.COMPLETED;
-        long signedAt = 0L;
         if (cached != null && cached.semantic == StatusSemantic.COMPLETED) {
             completed = true;
         }
         if (!completed) return true;
-        // 冻结保护的是「已经有的轨迹」。一行签收了却一条带时间的节点都没有，冻结只会把空壳
-        // 永久锁死，列表一直写「暂无物流动态」且再也不会自己补回来（用户 2026-09-08 报，三端同改）。
-        if (timedTrackCount(cached) <= 0
-                && (item == null || !hasTimedTrack(item.tracksJson))) {
-            return true;
-        }
-        signedAt = ExpressLifecycleTimes.signedAt(item, cached, now);
-        if (signedAt <= 0L) return true;
-        return now - signedAt < SIGNED_REFRESH_WINDOW_MS;
+        return ExpressLifecycleTimes.signedEvidenceAt(item, cached, now) <= 0L;
     }
 
     /** Keeps historical nodes and applies this refresh's additions or node revisions. */
@@ -280,6 +273,8 @@ public final class Kuaidi100TimelinePolicy {
         ExpressQueryResult presentation = frozenCompletedPresentation
                 ? cached : selectedSameProviderPresentation(
                         cached, refreshed, requireStructuredTerminal);
+        ExpressQueryResult headline = requireStructuredTerminal && !hasTimedTracking(presentation)
+                ? hasTimedTracking(refreshed) ? refreshed : cached : presentation;
         me.pipi.deliveries.model.CarrierNormalization normalization =
                 refreshed.carrierNormalization.present()
                         ? refreshed.carrierNormalization : cached.carrierNormalization;
@@ -290,9 +285,10 @@ public final class Kuaidi100TimelinePolicy {
                         prefer(refreshed.courierCode, cached.courierCode)),
                 prefer(presentation.companyName,
                         prefer(refreshed.companyName, cached.companyName)),
-                presentation.semantic, effectiveStatusEventTime(presentation),
-                presentation.latestTime,
-                presentation.latestDetail,
+                presentation.semantic, requireStructuredTerminal
+                        ? presentation.statusEventTime : effectiveStatusEventTime(presentation),
+                headline.latestTime,
+                headline.latestDetail,
                 ExpressTimeline.mergeJson(cached.tracksJson, refreshed.tracksJson),
                 prefer(refreshed.detailUrl, cached.detailUrl),
                 prefer(refreshed.phone, cached.phone),

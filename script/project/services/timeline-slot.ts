@@ -1,15 +1,14 @@
 /**
- * 轨迹缓存的槽名，三端统一等于日志里的 `level` 用词（用户定 2026-09-05）：
- * v5_query（接口 5 按件详情）、v4_query（moto）、v6_picker（魅族 picker）、v2_query（OPPO）、
- * jd_h5、cn_h5、k100_h5（picker 返回的 K100 详情页）、kdniao；`kuaidi100` 是网关付费 poll，留着不用。
- * 旧写法（local / route / fallback / web / moto / meizu / oppo / cainiao_h5 / kuaidi100_h5 /
- * account_detail）只在 {@link normalizeTimelineSlot} 里翻译一次；持久化的旧行在读盘时改名。
- * `interface5` / `account` 是 feed（列表增量，日志名 v5_list），不是 v5_query 槽（2026-09-06）。
+ * Durable provider slots are independent whole-package caches. `v6_query` owns Meizu Online
+ * history; legacy Meizu names normalize to this slot when reading stored rows.
+ * `k100_h5` owns the fixed /app/query/?nu= page. `kuaidi100` is the unused paid poll slot.
+ * Legacy names normalize once through normalizeTimelineSlot when reading stored rows.
+ * `interface5` / `account` are feed packages (log level v5_list), not v5_query.
  */
 export const TIMELINE_SLOT = {
   V5_QUERY: "v5_query",
   V4_QUERY: "v4_query",
-  V6_PICKER: "v6_picker",
+  V6_QUERY: "v6_query",
   V2_QUERY: "v2_query",
   JD_H5: "jd_h5",
   CN_H5: "cn_h5",
@@ -34,7 +33,9 @@ export function normalizeTimelineSlot(
       return TIMELINE_SLOT.V4_QUERY;
     case "route":
     case "meizu":
-      return TIMELINE_SLOT.V6_PICKER;
+    case "meizu_picker":
+    case "v6_picker":
+      return TIMELINE_SLOT.V6_QUERY;
     case "oppo":
       return TIMELINE_SLOT.V2_QUERY;
     case "fallback":

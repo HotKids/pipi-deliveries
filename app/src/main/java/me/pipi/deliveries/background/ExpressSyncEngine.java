@@ -33,23 +33,13 @@ final class ExpressSyncEngine {
 
     private ExpressSyncEngine() {}
 
-    /** 这轮的 {尝试, 成功} 计数；同步串行执行，工人在广播 ACTION_SYNC_FINISHED 时读它。 */
-    private static volatile int[] currentNetwork = {0, 0};
-
-    static int[] lastSummary() {
-        int[] value = currentNetwork;
-        return new int[]{value[0], value[1]};
-    }
-
-    static void syncAll(Context context) {
+    static void syncAll(Context context, int[] network) {
         ExpressRepository repository = ExpressRepository.get(context);
-        currentNetwork = new int[]{0, 0};
-        repository.runInChangeBatch(() -> syncAllUnbatched(context, repository));
+        repository.runInChangeBatch(() -> syncAllUnbatched(context, repository, network));
     }
 
     private static void syncAllUnbatched(
-            Context context, ExpressRepository repository) {
-        int[] network = currentNetwork;
+            Context context, ExpressRepository repository, int[] network) {
         ExpressApi localApi = new ExpressApi(context);
         String bindingSource = ExpressAccountSource.bindingSource(context);
         boolean useInterface5 = "interface5".equals(bindingSource);
@@ -112,10 +102,9 @@ final class ExpressSyncEngine {
                 // Account-order rows use an order id, not a K100-compatible carrier waybill.
                 if (useInterface5 && isInterface5Owned(item)) {
                     if (!discovery.wasSynced(item.waybill)
-                            && (!item.semantic.terminal()
-                            || (item.usesInterface5AccountTimeline()
-                            && !repository.hasAccountTimeline(
-                                    item.waybill, "interface5")))) {
+                            && shouldRefreshMissingAccountRow(item,
+                            item.usesInterface5AccountTimeline() && !repository.hasAccountTimeline(
+                                    item.waybill, "interface5"), System.currentTimeMillis())) {
                         network[0]++;
                         String bindingGeneration = repository.bindingGeneration(
                                 item.phone, "interface5");
@@ -125,13 +114,7 @@ final class ExpressSyncEngine {
                                 refreshed.latestDetail)) {
                             boolean realTimeline = Kuaidi100TimelinePolicy
                                     .hasRealTracking(refreshed);
-                            if (item.isAccountOrder()) {
-                                repository.saveInterface5Order(
-                                        refreshed, item.phone, bindingGeneration);
-                            } else {
-                                repository.saveInterface5(
-                                        refreshed, item.phone, bindingGeneration);
-                            }
+                            if (!repository.saveInterface5Query(refreshed, item, bindingGeneration)) continue;
                             ExpressItem persisted = repository.findByWaybill(
                                     refreshed.waybill, "interface5");
                             if (persisted != null && (!realTimeline
@@ -145,7 +128,7 @@ final class ExpressSyncEngine {
                     }
                 } else if (!useInterface5 && isInterface6Owned(item)
                         && !syncedSubscriptionWaybills.contains(normalizeWaybill(item.waybill))
-                        && !item.semantic.terminal()) {
+                        && shouldRefreshMissingAccountRow(item, false, System.currentTimeMillis())) {
                     network[0]++;
                     String bindingGeneration = repository.bindingGeneration(
                             item.phone, "interface6");
@@ -211,30 +194,26 @@ final class ExpressSyncEngine {
                 }
                 ExpressRepository.ManualTimelinePollClaim manualClaim =
                         usesSharedManualTimeline(current)
-                        && manualChainRequired(repository, current)
                                 ? repository.claimManualTimelinePoll(
                                 current, System.currentTimeMillis()) : null;
                 if (manualClaim != null) {
-                    network[0]++;
                     ExpressItem manualOwner = current;
                     ExpressRepository.ManualQueryOwnerClaim ownerClaim =
                             repository.captureManualQueryOwner(manualOwner);
                     try {
-                        // 顺丰列表轮用 picker refresh（结构化最新一条），manual 留给详情页拿 detailUrl。
-                        boolean sfListRound = manualOwner.isShunFengSource();
+                        if (ownerClaim == null) continue;
+                        network[0]++;
                         ManualQueryCoordinator.Batch manualBatch =
                                 ManualQueryCoordinator.queryPickerFirst(
-                                        () -> sfListRound
-                                                ? subscription.queryRefresh(
-                                                context, manualOwner.displayWaybill(), null)
-                                                : subscription.queryManual(
+                                        () -> subscription.queryManual(
                                                 context, manualOwner.displayWaybill(), null),
                                         repository.manualTimelineCandidate(
-                                                manualOwner, TimelineSlot.V6_PICKER),
+                                                manualOwner, TimelineSlot.V6_QUERY),
                                         () -> localApi.queryMoto(
                                                 manualOwner.displayWaybill(),
                                                 manualOwner.courierCode, null),
-                                        ManualQueryRoutingPolicy.includesMoto(manualOwner));
+                                        false, null, null,
+                                        manualOwner.semantic == StatusSemantic.UNKNOWN);
                         repository.saveOwnerManualQueryBatch(
                                 manualOwner, ownerClaim, manualBatch.successes,
                                 manualOwner.phone, bindingSource);
@@ -259,7 +238,7 @@ final class ExpressSyncEngine {
                                     () -> subscription.queryManual(
                                             context, manualOwner.displayWaybill(), null),
                                     repository.manualTimelineCandidate(
-                                            manualOwner, TimelineSlot.V6_PICKER),
+                                            manualOwner, TimelineSlot.V6_QUERY),
                                     () -> localApi.queryMoto(
                                             manualOwner.displayWaybill(),
                                             manualOwner.courierCode, null),
@@ -328,8 +307,7 @@ final class ExpressSyncEngine {
     }
 
     static boolean usesSharedManualTimeline(ExpressItem item) {
-        return item != null && item.usesSourceManualTakeover()
-                && (!item.isAccountOrder() || !item.projectedWaybill.isEmpty());
+        return ExpressRepository.automaticListQueryRequired(item);
     }
 
     /**
@@ -339,6 +317,8 @@ final class ExpressSyncEngine {
      */
     static ExpressOrderTextIdentity.Identity textProjectionIdentity(ExpressItem current) {
         if (current == null || !current.isAccountOrder()
+                || !"interface5".equals(ExpressAccountSource.bindingSourceForOwner(
+                        current.stateOwner.isEmpty() ? current.source : current.stateOwner))
                 || !current.projectedWaybill.isEmpty()
                 || !readyForOrderProjection(current.semantic)) {
             return null;
@@ -365,13 +345,6 @@ final class ExpressSyncEngine {
         return carrier == null ? "" : carrier.companyName;
     }
 
-    static boolean manualChainRequired(
-            ExpressRepository repository, ExpressItem item) {
-        if (item == null || item.isCainiaoSource() || item.semantic.terminal()) return false;
-        return !item.isJingDongSource()
-                || repository == null || !repository.sourceTimelineHasStart(item);
-    }
-
     private static boolean isInterface6Owned(ExpressItem item) {
         return item != null && ("INTERFACE6".equalsIgnoreCase(item.source)
                 || "INTERFACE6".equalsIgnoreCase(item.stateOwner));
@@ -380,6 +353,14 @@ final class ExpressSyncEngine {
     private static String normalizeWaybill(String value) {
         return value == null ? "" : value.trim().toUpperCase(Locale.ROOT)
                 .replaceAll("[^A-Z0-9]", "");
+    }
+
+    static boolean shouldRefreshMissingAccountRow(
+            ExpressItem item, boolean accountTimelineMissing, long now) {
+        if (item.semantic == StatusSemantic.COMPLETED) {
+            return Kuaidi100TimelinePolicy.shouldRefresh(item, null, now);
+        }
+        return !item.semantic.terminal() || accountTimelineMissing;
     }
 
     static boolean hasUsableInformation(ExpressQueryResult result) {

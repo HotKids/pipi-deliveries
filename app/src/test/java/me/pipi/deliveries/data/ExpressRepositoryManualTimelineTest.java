@@ -331,7 +331,7 @@ public final class ExpressRepositoryManualTimelineTest {
     }
 
     @Test
-    public void pureManualOwnerStillTakesUnstructuredPackageStateAndTime() {
+    public void pureManualOwnerDoesNotTakeH5ProseAsStructuredState() {
         long manualStateTime = ExpressSourcePolicy.parseEventTime("2026-08-24 15:00:00");
         ExpressItem owner = owner(
                 67L, "", "KD-100", "",
@@ -348,10 +348,55 @@ public final class ExpressRepositoryManualTimelineTest {
                 owner, new ManualTimelineAuthorityPolicy.Candidate(
                         "kuaidi100", manual, 20_000L, true));
 
-        assertEquals(StatusSemantic.COMPLETED, projected.semantic);
-        assertEquals(manualStateTime, projected.statusEventTime);
-        assertEquals("已签收", projected.statusDescription);
+        assertEquals(StatusSemantic.UNKNOWN, projected.semantic);
+        assertEquals(0L, projected.statusEventTime);
+        assertEquals(owner.statusDescription, projected.statusDescription);
         assertEquals(manual.tracksJson, projected.tracksJson);
+    }
+
+    @Test
+    public void fallbackStatusKeepsItsOwnMissingTimestampInsteadOfBorrowingHeadline() {
+        ExpressItem owner = owner(70L, "", "KD-100", "", StatusSemantic.UNKNOWN, true, 0L, 9000L);
+        ManualTimelineAuthorityPolicy.Candidate presentation = explicitCandidate(
+                "kuaidi100", 20000L, StatusSemantic.UNKNOWN, 0L,
+                "2026-08-24 15:00:00", "完整物流", "", true, false);
+        ManualTimelineAuthorityPolicy.Candidate donor = explicitCandidate(
+                "v4", 10000L, StatusSemantic.COMPLETED, 0L,
+                "2026-08-24 12:00:00", "结构化签收", "", false, true);
+        ExpressItem projected = ExpressRepository.projectManualTimeline(owner, presentation, donor);
+        assertEquals(StatusSemantic.COMPLETED, projected.semantic);
+        assertEquals(0L, projected.statusEventTime);
+        assertEquals(presentation.result.tracksJson, projected.tracksJson);
+    }
+
+    @Test
+    public void automaticFeedMissingStatusCanBorrowWithoutReplacingItsTimeline() {
+        ExpressItem owner = owner(71L, "13900001234", "INTERFACE5", "DouYin",
+                StatusSemantic.UNKNOWN, false, 0L, 9000L);
+        ManualTimelineAuthorityPolicy.Candidate donor = explicitCandidate(
+                "v4", 10000L, StatusSemantic.DELIVERY, 7000L,
+                "2026-08-24 12:00:00", "结构化派送", "", false, true);
+        ExpressItem projected = ExpressRepository.projectManualTimeline(owner, donor, donor);
+        assertEquals(StatusSemantic.DELIVERY, projected.semantic);
+        assertEquals(7000L, projected.statusEventTime);
+        assertEquals(owner.tracksJson, projected.tracksJson);
+        assertEquals(owner.latestTime, projected.latestTime);
+        assertEquals(owner.latestDetail, projected.latestDetail);
+        assertEquals(owner.sourceSemantic, projected.sourceSemantic);
+    }
+
+    @Test
+    public void validAutomaticFeedStatusSurvivesEvenWhenItHasNoTimeline() {
+        ExpressItem owner = new ExpressItem(72L, "13900001234", "SFOWNER000001", "SF", "顺丰速运",
+                StatusSemantic.DELIVERY, "派送中", "", "", "[]", "", "INTERFACE5", "",
+                7000L, 9000L, "INTERFACE5", "INTERFACE5");
+        ManualTimelineAuthorityPolicy.Candidate donor = explicitCandidate(
+                "v4", 10000L, StatusSemantic.COMPLETED, 8000L,
+                "2026-08-24 12:00:00", "结构化签收", "", false, true);
+        ExpressItem projected = ExpressRepository.projectManualTimeline(owner, donor, donor);
+        assertEquals(StatusSemantic.DELIVERY, projected.semantic);
+        assertEquals(7000L, projected.statusEventTime);
+        assertEquals(donor.result.tracksJson, projected.tracksJson);
     }
 
     @Test

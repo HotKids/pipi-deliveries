@@ -4,15 +4,21 @@ import me.pipi.deliveries.model.ExpressQueryResult;
 
 import java.net.URI;
 
-/** Validation boundary for provider-returned manual detail routes. */
+/** Builds the direct K100 query page and validates provider-returned manual detail routes. */
 public final class ManualRoutePolicy {
     private ManualRoutePolicy() {}
 
+    public static String kuaidi100QueryUrl(String waybill) {
+        String number = ExpressSourcePolicy.normalizeWaybill(waybill);
+        return number.isEmpty() ? ""
+                : "https://m.kuaidi100.com/app/query/?nu=" + android.net.Uri.encode(number);
+    }
+
     public static String meizuKuaidi100Url(String provider, ExpressQueryResult result) {
-        if (result == null || !TimelineSlot.V6_PICKER.equals(TimelineSlot.normalize(provider))) return "";
+        if (result == null || !TimelineSlot.V6_QUERY.equals(TimelineSlot.normalize(provider))) return "";
         String resultProvider = clean(result.timelineProvider);
         if (!resultProvider.isEmpty()
-                && !TimelineSlot.V6_PICKER.equals(TimelineSlot.normalize(resultProvider))) return "";
+                && !TimelineSlot.V6_QUERY.equals(TimelineSlot.normalize(resultProvider))) return "";
         return safeKuaidi100Url(result.detailUrl);
     }
 

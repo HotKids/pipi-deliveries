@@ -20,6 +20,32 @@ import org.junit.Test;
 
 public final class ManualTimelineAuthorityPolicyTest {
     @Test
+    public void transientMissingStatusBorrowsOnlySameTicketStructuredPairWithoutChangingSources() {
+        ExpressQueryResult selected = new ExpressQueryResult("TICKET1", "ZTO", "中通快递",
+                StatusSemantic.UNKNOWN, 0L, "2026-09-09 09:00:00", "快件已揽收",
+                "[{\"time\":\"2026-09-09 09:00:00\",\"context\":\"快件已揽收\"}]",
+                "", "", "kuaidi100", "", "", "");
+        ExpressQueryResult donor = new ExpressQueryResult("TICKET1", "ZTO", "中通快递",
+                StatusSemantic.COMPLETED, 0L, "", "", "[]", "", "", "v4", "", "", "")
+                .withManualStatusEvidence("已签收", true);
+        ExpressQueryResult wrongTicket = new ExpressQueryResult("TICKET2", "ZTO", "中通快递",
+                StatusSemantic.DELIVERY, 999L, "", "", "[]", "", "", "meizu", "", "", "")
+                .withManualStatusEvidence("派送中", true);
+        List<Candidate> candidates = List.of(new Candidate("v4", donor, 1L, false),
+                new Candidate("meizu", wrongTicket, 2L, false));
+        ExpressQueryResult preview = ManualTimelineAuthorityPolicy.presentationResult(selected, candidates);
+        assertEquals(StatusSemantic.COMPLETED, preview.semantic);
+        assertEquals(0L, preview.statusEventTime);
+        assertEquals(selected.tracksJson, preview.tracksJson);
+        assertEquals(selected.timelineProvider, preview.timelineProvider);
+        assertEquals(StatusSemantic.UNKNOWN, selected.semantic);
+        assertEquals("[]", donor.tracksJson);
+        assertSame(donor, ManualTimelineAuthorityPolicy.presentationResult(donor, candidates));
+        assertSame(selected, ManualTimelineAuthorityPolicy.presentationResult(selected,
+                List.of(new Candidate("meizu", wrongTicket, 2L, false))));
+    }
+
+    @Test
     public void completeAndPartialTimedPackagesCanBecomeCandidates() {
         ExpressQueryResult valid = result(
                 "interface5", "2026-08-24 10:00:00", "快件已揽收");
@@ -200,7 +226,7 @@ public final class ManualTimelineAuthorityPolicyTest {
                 "k100_h5", 100L, "11:00:00", "快件已到达杭州转运中心", false);
         Candidate moto = candidate("v4_query", 300L, "11:00:00", "快件运输中", false);
         Candidate meizu = candidate(
-                "v6_picker", 250L, "11:00:00", "Picker 轨迹", false);
+                "v6_query", 250L, "11:00:00", "Picker 轨迹", false);
         Candidate kdniao = candidate(
                 "kdniao", 150L, "11:00:00", "快递鸟轨迹", false);
 
@@ -283,11 +309,14 @@ public final class ManualTimelineAuthorityPolicyTest {
     public void completenessComesFromProviderContract() {
         assertFalse(ManualTimelineAuthorityPolicy.completeByContract("v4"));
         assertFalse(ManualTimelineAuthorityPolicy.completeByContract("meizu"));
-        assertTrue(ManualTimelineAuthorityPolicy.completeByContract("kuaidi100"));
+        assertFalse(ManualTimelineAuthorityPolicy.completeByContract("kuaidi100"));
         assertTrue(ManualTimelineAuthorityPolicy.completeByContract("kdniao"));
         assertFalse(ManualTimelineAuthorityPolicy.storedCompleteness("v4", true));
         assertFalse(ManualTimelineAuthorityPolicy.storedCompleteness("meizu", true));
-        assertTrue(ManualTimelineAuthorityPolicy.storedCompleteness("kuaidi100", false));
+        for (String provider : new String[]{"kuaidi100", "cn_h5", "jd_h5"}) {
+            assertFalse(ManualTimelineAuthorityPolicy.storedCompleteness(provider, false));
+            assertTrue(ManualTimelineAuthorityPolicy.storedCompleteness(provider, true));
+        }
     }
 
     @Test
@@ -387,10 +416,10 @@ public final class ManualTimelineAuthorityPolicyTest {
         assertEquals("k100_h5",
                 ManualTimelineAuthorityPolicy.selectDetail(candidates, 0L).provider);
         // ……但上一轮显示的是 picker 就还是 picker。
-        assertEquals("v6_picker",
+        assertEquals("v6_query",
                 ManualTimelineAuthorityPolicy.selectDetail(candidates, 0L, "meizu").provider);
-        assertEquals("v6_picker",
-                ManualTimelineAuthorityPolicy.selectDetail(candidates, 0L, "v6_picker").provider);
+        assertEquals("v6_query",
+                ManualTimelineAuthorityPolicy.selectDetail(candidates, 0L, "v6_query").provider);
         // 上一轮的包不在了（被清掉 / 串包）：照常排序。
         assertEquals("k100_h5",
                 ManualTimelineAuthorityPolicy.selectDetail(candidates, 0L, "kdniao").provider);

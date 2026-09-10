@@ -11,6 +11,7 @@ import type {
 } from "../models";
 import {
   buildWidgetSnapshot,
+  isHiddenSignedShipment,
   isNonEventDetail,
   mergeTimelineAuthorities,
   normalizedProjectedWaybill,
@@ -20,6 +21,7 @@ import {
   splitJingDongH5Nodes,
   terminalEvidenceAtMs,
   timedTracks,
+  withoutJingDongOrderCompletion,
 } from "./status";
 import {
   mergeAutomaticSourceTimeline,
@@ -54,6 +56,7 @@ import {
   migrateLegacyShipmentRoutes,
   pruneOrderProjectionReferences,
   pruneShipmentRoutes,
+  pruneAccountAppRoutes,
   type LegacyShipmentRouteMigration,
 } from "./routes";
 import {
@@ -145,7 +148,8 @@ function pruneExpiredManualPlaceholders(
   now: number,
 ): Shipment[] {
   return shipments.filter((shipment) => {
-    if (!shipment.identity.manuallyAdded || hasTimedShipmentAuthority(shipment)) {
+    if (shipment.emptyTimelineHiddenAtMs || !shipment.identity.manuallyAdded ||
+        hasTimedShipmentAuthority(shipment)) {
       return true;
     }
     const createdAtMs = Number(shipment.identity.createdAtMs);
@@ -175,6 +179,17 @@ function pruneOrderProjectionReferencesForState(
 }
 
 function pruneShipmentRoutesForState(state: AppState, now: number): void {
+  try {
+    pruneAccountAppRoutes(state.shipments.flatMap((shipment) => {
+      const record = shipment.accountRecord;
+      return shipment.identity.bindingSource === SCRIPT_BINDING_SOURCE &&
+          !shipment.identity.manuallyAdded && record &&
+          state.bindings.some((binding) => binding.source === SCRIPT_BINDING_SOURCE && binding.phone === record.phone)
+        ? [record] : [];
+    }));
+  } catch (error) {
+    writeDiagnostic("detail.external.cache_failed", { stage: "prune" }, "warning");
+  }
   try {
     pruneShipmentRoutes([
       ...state.shipments
@@ -262,6 +277,52 @@ function isCurrentState(value: unknown): value is AppState {
   );
 }
 
+const EMPTY_TIMELINE_HIDDEN_MS = 7 * 24 * 60 * 60 * 1000;
+
+function mergeEmptyTimelineRetirements(
+  previous: AppState["emptyTimelineRetirements"],
+  incoming: AppState["emptyTimelineRetirements"],
+  shipments: readonly Shipment[],
+): NonNullable<AppState["emptyTimelineRetirements"]> {
+  const entries = new Map<string, NonNullable<AppState["emptyTimelineRetirements"]>[number]>();
+  for (const item of [...(Array.isArray(previous) ? previous : []),
+    ...(Array.isArray(incoming) ? incoming : []), ...shipments.flatMap((shipment) => {
+    const hiddenAtMs = Number(shipment.emptyTimelineHiddenAtMs);
+    const source = shipment.identity.bindingSource;
+    return hiddenAtMs > 0 && source ? [{ id: shipment.identity.id, source,
+      waybill: displayWaybill(shipment), hiddenAtMs }] : [];
+  })]) {
+    if (!item || typeof item !== "object") continue;
+    const waybill = normalizeWaybill(item.waybill);
+    if (typeof item.id !== "string" || !item.id || item.source !== SCRIPT_BINDING_SOURCE || !waybill ||
+        !Number.isFinite(item.hiddenAtMs) || item.hiddenAtMs <= 0) continue;
+    const key = `${item.source}:${item.id}:${waybill}`;
+    const previous = entries.get(key);
+    entries.set(key, { id: item.id, source: item.source, waybill,
+      hiddenAtMs: previous ? Math.min(previous.hiddenAtMs, item.hiddenAtMs) : item.hiddenAtMs });
+  }
+  return [...entries.values()];
+}
+
+function applyEmptyTimelineRetirements(
+  shipments: readonly Shipment[],
+  retirements: AppState["emptyTimelineRetirements"],
+  now: number,
+): Shipment[] {
+  return shipments.flatMap((shipment) => {
+    // This is the canonical-waybill comparison used by sameCanonicalWaybill;
+    // the original owner id also catches a later unprojected order-only replay.
+    const matches = (retirements || []).filter((item) =>
+      item.source === shipment.identity.bindingSource && (
+        item.id === shipment.identity.id || item.waybill === displayWaybill(shipment)
+      ));
+    if (!matches.length) return [shipment];
+    const hiddenAtMs = Math.min(...matches.map((item) => item.hiddenAtMs));
+    return now - hiddenAtMs >= EMPTY_TIMELINE_HIDDEN_MS ? []
+      : [{ ...shipment, emptyTimelineHiddenAtMs: hiddenAtMs }];
+  });
+}
+
 function migrate(value: LegacyAppState | AppState, now: number): AppState {
   const base = isCurrentState(value)
     ? value
@@ -274,11 +335,15 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
   const feedSlotRebuiltAtMs = isCurrentState(value) && typeof value.feedSlotRebuiltAtMs === "number"
     ? value.feedSlotRebuiltAtMs
     : 0;
+  const emptyTimelineRetirements = mergeEmptyTimelineRetirements(
+    undefined, base.emptyTimelineRetirements, base.shipments || [],
+  );
   const retainedShipments = pruneExpiredManualPlaceholders(
     retainDurableShipments(
-      migrateShipmentSources(base.shipments || [])
+      applyEmptyTimelineRetirements(migrateShipmentSources(base.shipments || [])
         .map((shipment) => normalizeShipmentAuthorities(shipment, now))
         .map((shipment) => feedSlotRebuiltAtMs ? shipment : markFeedSlotRebuild(shipment)),
+        emptyTimelineRetirements, now),
       now,
     ),
     now,
@@ -296,6 +361,7 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     shipments: sortShipments(retainedShipments),
     pendingNotifications: base.pendingNotifications || [],
     feedSlotRebuiltAtMs: feedSlotRebuiltAtMs || now,
+    ...(emptyTimelineRetirements.length ? { emptyTimelineRetirements } : {}),
   };
 }
 
@@ -837,20 +903,40 @@ function stampSettledAt(shipment: Shipment, now: number): Shipment {
 }
 
 function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment {
+  // The old and current Meizu names identify the same history, including the sticky selection.
+  const canonicalMeizu = (timeline: TimelinePackage): TimelinePackage =>
+    normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.V6_QUERY
+      ? { ...timeline, provider: TIMELINE_SLOT.V6_QUERY }
+      : timeline;
+  shipment = {
+    ...shipment,
+    timeline: canonicalMeizu(shipment.timeline),
+    ...(shipment.sourceTimeline ? { sourceTimeline: canonicalMeizu(shipment.sourceTimeline) } : {}),
+    ...(shipment.manualTimelines ? { manualTimelines: shipment.manualTimelines.map(canonicalMeizu) } : {}),
+    ...(shipment.detailSelection && normalizeTimelineSlot(shipment.detailSelection.provider) === TIMELINE_SLOT.V6_QUERY
+      ? { detailSelection: { ...shipment.detailSelection, provider: TIMELINE_SLOT.V6_QUERY } } : {}),
+  };
   const manuallyAdded = Boolean(shipment.identity.manuallyAdded);
+  const repairedOrderTimeline = withoutJingDongOrderCompletion(
+    shipment.timeline, shipment.identity,
+  );
+  const sanitizeTimeline = (timeline: TimelinePackage): TimelinePackage =>
+    withoutJingDongOrderCompletion(
+      sanitizeProviderErrorTimeline(timeline), shipment.identity,
+    );
   const sourceTimelineRaw = manuallyAdded
     ? null
     : shipment.sourceTimeline || shipment.timeline;
   // 用户定 2026-09-05 晚：feed 增量与 query 独立。老行的 source 里混着联合页嫁接的 H5 节点，
   // 读盘时拆出去：feed 节点留在 source，完整的 H5 包归 jd_h5 槽。
   const sourceSplit = sourceTimelineRaw
-    ? splitJingDongH5Nodes(sanitizeProviderErrorTimeline(sourceTimelineRaw))
+    ? splitJingDongH5Nodes(sanitizeTimeline(sourceTimelineRaw))
     : null;
   // 老数据里 provider=interface5 的「手动包」是 absorbHistoricalShipment 塞进去的 feed，折回 source
   // 槽，不再改名成 v5_query（2026-09-06：那样 feed 节点会混进 query 包）。
   const strayFeeds = (Array.isArray(shipment.manualTimelines) ? shipment.manualTimelines : [])
     .filter((timeline) => isFeedProvider(timeline.provider) && timeline.tracks.length > 0)
-    .map(sanitizeProviderErrorTimeline);
+    .map(sanitizeTimeline);
   const sourceTimeline = strayFeeds.reduce<TimelinePackage | null>(
     (current, stray) => current ? mergeAutomaticSourceTimeline(stray, current) : stray,
     sourceSplit ? sourceSplit.feed : null,
@@ -870,7 +956,7 @@ function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment
   const manualTimelines = Array.isArray(shipment.manualTimelines)
     ? shipment.manualTimelines
       .filter((timeline) => !isFeedProvider(timeline.provider))
-      .map(sanitizeProviderErrorTimeline)
+      .map(sanitizeTimeline)
       // 校验用旧行原来的 provider 字面量：直连抓取器的旧 id kuaidi100_h5 没有承运商标记就丢，
       // picker 那页的旧 id web 不要标记；改名要放在校验之后。
       .filter((timeline) =>
@@ -885,8 +971,10 @@ function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment
         ...timeline,
         provider: normalizeTimelineSlot(timeline.provider, legacyWebSlot),
       }))
+      .reduce<TimelinePackage[]>((values, timeline) => timeline.provider === TIMELINE_SLOT.V6_QUERY
+        ? mergeTimelineAuthorities(values, timeline) : [...values, timeline], [])
     : manuallyAdded
-      ? [sanitizeProviderErrorTimeline(shipment.timeline)]
+      ? [sanitizeTimeline(shipment.timeline)]
         .filter((timeline) => timeline.tracks.length > 0)
       : [];
   const keepsCainiaoRoute = String(shipment.identity.sourceProvider || "")
@@ -894,6 +982,10 @@ function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment
     .toLowerCase() === "cainiao";
   const normalized: Shipment = {
     ...shipment,
+    settledAtMs: repairedOrderTimeline !== shipment.timeline &&
+        shipment.settledAtMs === shipment.timeline.statusEventAtMs
+      ? repairedOrderTimeline.statusEventAtMs || undefined
+      : shipment.settledAtMs,
     route: shipment.route?.kind === "web" && manuallyAdded
       ? shipment.route
       : keepsCainiaoRoute && shipment.route?.kind === "cainiao"
@@ -906,7 +998,9 @@ function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment
         )
       ? mergeTimelineAuthorities(manualTimelines, strandedJingDongH5)
       : manualTimelines,
-    timeline: sourceTimeline || sanitizeProviderErrorTimeline(shipment.timeline),
+    // The selected package may carry a terminal status borrowed from another source.
+    // Keep that evidence separate from the feed when rebuilding display authority.
+    timeline: sanitizeTimeline(shipment.timeline),
   };
   const selected = { ...normalized, timeline: selectShipmentTimeline(normalized) };
   return normalizeAutomaticOwnership(stampSettledAt(selected, now), now);
@@ -1132,10 +1226,10 @@ function chooseStoredState(
   return orderedStoredStates(...reads)[0] || null;
 }
 
-/** 最近一次 loadState 的失败原因（所有副本都迁移失败时），供首页提示；成功一次就清。 */
-let lastStateLoadFailure: "migration_failed" | null = null;
+/** The UI retains the last unrecoverable load failure until a successful read. */
+let lastStateLoadFailure: "read_failed" | "migration_failed" | null = null;
 
-export function stateLoadFailure(): "migration_failed" | null {
+export function stateLoadFailure(): "read_failed" | "migration_failed" | null {
   return lastStateLoadFailure;
 }
 
@@ -1226,7 +1320,9 @@ export function loadState(now = Date.now()): AppState {
     );
   }
   if (!chosen) {
-    if (durableFailed) {
+    if (primary.invalid || backup.invalid || durableInvalid ||
+        primary.failed || backup.failed || durableFailed) {
+      lastStateLoadFailure = "read_failed";
       throw new Error("本地快递数据读取失败");
     }
     lastStateLoadFailure = null;
@@ -1321,6 +1417,9 @@ export function loadState(now = Date.now()): AppState {
     }
   }
   mirrorBindingBackup(encoded.state);
+  if (encoded.state.emptyTimelineRetirements?.length) {
+    pruneShipmentRoutesForState(encoded.state, now);
+  }
   return encoded.state;
 }
 
@@ -1365,16 +1464,9 @@ function hasDurableOrderProjectionAuthority(shipment: Shipment): boolean {
   );
 }
 
-/**
- * 过了留存期的账号件在本地再留多久。留存期到了只是**不再展示**；这一行还得留着，否则下一轮列表
- * 同步会把账号仍在返回的这一票当新件重新导入——新行只有 feed 槽，详情页抓回来的整包轨迹全丢，
- * 界面成了「已签收 · 暂无物流动态」，而空壳没有签收证据又永远不再过期，于是每刷一次删一次、每同步
- * 一次带回来一次（用户 2026-09-08 报：一个个点进去把轨迹刷新出来，关掉重新打开又回来了）。
- * 账号自己的列表窗口比这个短得多，所以到期之后再删就不会被重新导入了。
- */
+// Non-signed account rows keep their existing hidden cache policy.
 const RETIRED_ACCOUNT_MEMORY_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** 过了留存期、但账号来源随时可能再列出来的行——删了就会被当新件重新导入。 */
 function retainsRetiredAccountRow(shipment: Shipment, now: number): boolean {
   if (shipment.identity.manuallyAdded) return false;
   if (shipment.identity.bindingSource !== SCRIPT_BINDING_SOURCE) return false;
@@ -1392,8 +1484,16 @@ function retainDurableShipments(
   const visibleIds = new Set(
     pruneShipments(shipments, now).map((shipment) => shipment.identity.id),
   );
-  return shipments.filter((shipment) =>
-    visibleIds.has(shipment.identity.id) ||
+  return shipments.filter((shipment) => {
+    const hiddenAtMs = Number(shipment.emptyTimelineHiddenAtMs);
+    if (hiddenAtMs > 0) return now - hiddenAtMs < EMPTY_TIMELINE_HIDDEN_MS;
+    // Signed rows retain their history for seven hidden days. Neither an order
+    // projection nor a newly created manual owner can extend the day-21 cutoff.
+    if (shipment.timeline.semantic === "COMPLETED") {
+      const settledAtMs = Number(shipment.settledAtMs) || terminalEvidenceAtMs(shipment, now);
+      return !settledAtMs || now - settledAtMs < EXPRESS_POLICY.retention.signedDeletionMs;
+    }
+    return visibleIds.has(shipment.identity.id) ||
     (
       shipment.identity.manuallyAdded &&
       Number.isFinite(shipment.identity.createdAtMs) &&
@@ -1402,8 +1502,8 @@ function retainDurableShipments(
       now - shipment.identity.createdAtMs < PENDING_TTL_MS
     ) ||
     retainsRetiredAccountRow(shipment, now) ||
-    hasDurableOrderProjectionAuthority(shipment)
-  );
+    hasDurableOrderProjectionAuthority(shipment);
+  });
 }
 
 function preserveDurableOrderProjections(
@@ -1445,21 +1545,34 @@ export function saveState(
     notifyChanges?: boolean;
     context?: RefreshNotificationContext;
     acknowledgedId?: string;
+    deferredId?: string;
   } = {},
 ): AppState {
   const previous = loadState(now);
+  const emptyTimelineRetirements = mergeEmptyTimelineRetirements(
+    previous.emptyTimelineRetirements, candidate.emptyTimelineRetirements, candidate.shipments,
+  );
+  const previousById = new Map(
+    previous.shipments.map((shipment) => [shipment.identity.id, shipment]),
+  );
   const normalizedShipments = preserveDurableOrderProjections(
     previous.shipments,
     migrateShipmentSources(candidate.shipments)
-      .map((shipment) => normalizeShipmentAuthorities(shipment, now)),
+      .map((shipment) => {
+        // A rebuilt feed/detail row may omit the original terminal timestamp.
+        // The persisted owner keeps that clock until the row is actually removed.
+        const settledAtMs = previousById.get(shipment.identity.id)?.settledAtMs;
+        return normalizeShipmentAuthorities(
+          settledAtMs ? { ...shipment, settledAtMs } : shipment,
+          now,
+        );
+      }),
     now,
   );
-  // UI retention may hide an old signed shipment, but its confirmed
-  // order-to-waybill projection remains source authority. Dropping that row
-  // would let the next account summary recreate the order number and trigger
-  // the same hidden WebView capture again.
+  // Hidden signed rows retain all source authority until their deletion cutoff.
   const retainedShipments = pruneExpiredManualPlaceholders(
-    retainDurableShipments(normalizedShipments, now),
+    retainDurableShipments(applyEmptyTimelineRetirements(
+      normalizedShipments, emptyTimelineRetirements, now), now),
     now,
   );
   const next: AppState = {
@@ -1479,7 +1592,15 @@ export function saveState(
     // 一次性 feed 槽重建的标记跟着状态走：候选没带就沿用存着的，都没有就从现在起算（只有读盘时
     // 遇到没标记的老状态才会给包打 feedRebuildPending）。
     feedSlotRebuiltAtMs: candidate.feedSlotRebuiltAtMs || previous.feedSlotRebuiltAtMs || now,
+    ...(emptyTimelineRetirements.length ? { emptyTimelineRetirements } : {}),
   };
+  if (notificationCommit.deferredId) {
+    const events = next.pendingNotifications || [];
+    next.pendingNotifications = [
+      ...events.filter((event) => event.id !== notificationCommit.deferredId),
+      ...events.filter((event) => event.id === notificationCommit.deferredId),
+    ];
+  }
   if (notificationCommit.notifyChanges) {
     const context = notificationCommit.context;
     const previousById = context?.previousById || new Map(
@@ -1487,6 +1608,7 @@ export function saveState(
     );
     const events: ShipmentNotificationEvent[] = [];
     for (const shipment of next.shipments) {
+      if (isHiddenSignedShipment(shipment, now)) continue;
       const event = shipmentNotificationEvent(
         previousById.get(shipment.identity.id) || null,
         shipment,
@@ -1792,6 +1914,15 @@ export function acknowledgeShipmentNotification(
   return saveState(state, now, { acknowledgedId: eventId });
 }
 
+export function deferShipmentNotification(
+  eventId: string,
+  now = Date.now(),
+): AppState {
+  const state = loadState(now);
+  if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
+  return saveState(state, now, { deferredId: eventId });
+}
+
 export function bindingsForSource(
   state: AppState,
   bindingSource: BindingSource = SCRIPT_BINDING_SOURCE,
@@ -1960,7 +2091,11 @@ export function commitRoutePointers(
     const after = candidate.pendingQueries.find((item) => item.id === current.id);
     return after ? { ...current, route: after.route || null } : current;
   });
-  return saveState({ ...latest, shipments, pendingQueries }, now);
+  const merged = { ...latest, shipments, pendingQueries };
+  if (refreshContentFingerprint(merged) === refreshContentFingerprint(latest)) {
+    return latest;
+  }
+  return saveState(merged, now);
 }
 
 export function privateHash(value: string): string {

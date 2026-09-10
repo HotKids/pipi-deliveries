@@ -10,11 +10,15 @@ import me.pipi.deliveries.model.ManualQuerySuccess;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 
 /** Runs the enabled Android manual-query stages and selects their best result. */
@@ -34,11 +38,22 @@ public final class ManualQueryCoordinator {
             Source route, boolean includeRoute, LongSupplier clock) throws Exception {
         ArrayList<ActivatedSource> freeSources = new ArrayList<>();
         if (includeLocal) {
-            freeSources.add(new ActivatedSource("local", local, false));
+            freeSources.add(new ActivatedSource("local", local));
         }
         if (includeRoute) {
-            freeSources.add(new ActivatedSource("route", route, false));
+            freeSources.add(new ActivatedSource("route", route));
         }
+        return queryActivatedSources(freeSources, clock);
+    }
+
+    private static Batch queryActivatedSources(
+            List<ActivatedSource> freeSources, LongSupplier clock) throws Exception {
+        return queryActivatedSources(freeSources, clock, null, false);
+    }
+
+    private static Batch queryActivatedSources(
+            List<ActivatedSource> freeSources, LongSupplier clock,
+            Consumer<Success> progress, boolean requireStructuredStatus) throws Exception {
         ExecutorService executor = freeSources.isEmpty() ? null
                 : Executors.newFixedThreadPool(freeSources.size(), runnable -> {
                     Thread thread = new Thread(runnable, "express-manual-adapter");
@@ -46,17 +61,27 @@ public final class ManualQueryCoordinator {
                     return thread;
                 });
         ArrayList<Future<QueryOutcome>> futures = new ArrayList<>();
-        for (ActivatedSource source : freeSources) {
-            futures.add(executor.submit(() -> queryActivatedSource(source, clock)));
-        }
+        Map<Future<QueryOutcome>, Integer> sourceOrder = new HashMap<>();
+        ArrayList<QueryOutcome> outcomes = new ArrayList<>(
+                Collections.nCopies(freeSources.size(), null));
+        ExecutorCompletionService<QueryOutcome> completed = executor == null ? null
+                : new ExecutorCompletionService<>(executor);
         ArrayList<Success> successes = new ArrayList<>();
         ExpressQueryResult bestEffort = null;
         Exception lastFailure = null;
         try {
-            for (Future<QueryOutcome> future : futures) {
+            for (ActivatedSource source : freeSources) {
+                Future<QueryOutcome> future = completed.submit(
+                        () -> queryActivatedSource(source, clock, requireStructuredStatus));
+                sourceOrder.put(future, futures.size());
+                futures.add(future);
+            }
+            for (int count = 0; count < futures.size(); count++) {
                 QueryOutcome outcome;
                 try {
+                    Future<QueryOutcome> future = completed.take();
                     outcome = future.get();
+                    outcomes.set(sourceOrder.get(future), outcome);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw interrupted;
@@ -66,6 +91,13 @@ public final class ManualQueryCoordinator {
                     if (cause instanceof Exception) throw (Exception) cause;
                     throw new IllegalStateException("manual adapter failed", cause);
                 }
+                if (progress != null && outcome.success != null
+                        && Kuaidi100TimelinePolicy.hasTimedTracking(outcome.success.result)) {
+                    progress.accept(outcome.success);
+                }
+            }
+            // Completion order drives the preview; final arbitration retains query order.
+            for (QueryOutcome outcome : outcomes) {
                 if (outcome.result != null && bestEffort == null) {
                     bestEffort = outcome.result;
                 }
@@ -110,6 +142,36 @@ public final class ManualQueryCoordinator {
                 pickerPreview, System::currentTimeMillis);
     }
 
+    public static Batch queryPickerFirst(
+            Source picker,
+            ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+            Source local,
+            boolean includeLocal,
+            Function<ExpressQueryResult, Source> primaryKuaidi100,
+            Consumer<ExpressQueryResult> pickerPreview) throws Exception {
+        return queryPickerFirst(picker, cachedPicker, local, includeLocal,
+                primaryKuaidi100, pickerPreview, System::currentTimeMillis);
+    }
+
+    public static Batch queryPickerFirst(
+            Source picker, ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+            Source local, boolean includeLocal,
+            Function<ExpressQueryResult, Source> primaryKuaidi100,
+            Consumer<ExpressQueryResult> preview, boolean requireStructuredStatus) throws Exception {
+        return queryPickerFirst(picker, cachedPicker, local, includeLocal,
+                primaryKuaidi100, preview, requireStructuredStatus, false, System::currentTimeMillis);
+    }
+
+    public static Batch queryPickerFirst(
+            Source picker, ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+            Source local, boolean includeLocal,
+            Function<ExpressQueryResult, Source> primaryKuaidi100,
+            Consumer<ExpressQueryResult> preview, boolean requireStructuredStatus,
+            boolean statusOnly) throws Exception {
+        return queryPickerFirst(picker, cachedPicker, local, includeLocal,
+                primaryKuaidi100, preview, requireStructuredStatus, statusOnly, System::currentTimeMillis);
+    }
+
     static Batch queryPickerFirst(
             Source picker,
             ManualTimelineAuthorityPolicy.Candidate cachedPicker,
@@ -127,41 +189,44 @@ public final class ManualQueryCoordinator {
             boolean includeLocal,
             Consumer<ExpressQueryResult> pickerPreview,
             LongSupplier clock) throws Exception {
+        return queryPickerFirst(picker, cachedPicker, local, includeLocal,
+                null, pickerPreview, clock);
+    }
+
+    static Batch queryPickerFirst(
+            Source picker,
+            ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+            Source local,
+            boolean includeLocal,
+            Function<ExpressQueryResult, Source> primaryKuaidi100,
+            Consumer<ExpressQueryResult> pickerPreview,
+            LongSupplier clock) throws Exception {
+        return queryPickerFirst(picker, cachedPicker, local, includeLocal,
+                primaryKuaidi100, pickerPreview, false, false, clock);
+    }
+
+    private static Batch queryPickerFirst(
+            Source picker, ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+            Source local, boolean includeLocal,
+            Function<ExpressQueryResult, Source> primaryKuaidi100,
+            Consumer<ExpressQueryResult> pickerPreview, boolean requireStructuredStatus,
+            boolean statusOnly, LongSupplier clock) throws Exception {
         ArrayList<Success> newSuccesses = new ArrayList<>();
         ArrayList<Success> selectionSuccesses = new ArrayList<>();
         ExpressQueryResult bestEffort = null;
         Exception lastFailure = null;
 
-        // 用户定 2026-09-05：picker 与本地那一级并行（iOS 本来就是 Promise.all，Pipi 同步改）；
-        // picker 只决定 K100 那一页。之前串行，picker 一超时整条链白等。
-        ExecutorService localExecutor = null;
-        java.util.concurrent.Future<QueryOutcome> localTask = null;
-        if (includeLocal && local != null) {
-            localExecutor = Executors.newSingleThreadExecutor(runnable -> {
-                Thread thread = new Thread(runnable, "pipi-manual-local");
-                thread.setDaemon(true);
-                return thread;
-            });
-            localTask = localExecutor.submit(() -> queryActivatedSource(
-                    new ActivatedSource(TimelineSlot.V4_QUERY, local, false), clock));
-        }
-        QueryOutcome pickerOutcome;
-        try {
-            pickerOutcome = queryActivatedSource(
-                    new ActivatedSource(TimelineSlot.V6_PICKER, picker, false), clock);
-        } catch (Exception failure) {
-            if (localTask != null) localTask.cancel(true);
-            if (localExecutor != null) localExecutor.shutdownNow();
-            throw failure;
-        }
+        QueryOutcome pickerOutcome = queryActivatedSource(
+                new ActivatedSource(TimelineSlot.V6_QUERY, picker), clock, requireStructuredStatus);
         if (pickerOutcome.result != null) bestEffort = pickerOutcome.result;
         if (pickerOutcome.success != null) {
             newSuccesses.add(pickerOutcome.success);
         }
         ManualTimelineAuthorityPolicy.Candidate effectivePicker = cachedPicker;
         if (pickerOutcome.success != null
-                && Kuaidi100TimelinePolicy.hasTimedTracking(
-                pickerOutcome.success.result)) {
+                && (Kuaidi100TimelinePolicy.hasTimedTracking(pickerOutcome.success.result)
+                || requireStructuredStatus
+                && ManualTimelineAuthorityPolicy.hasStructuredStatus(pickerOutcome.success.result))) {
             ManualTimelineAuthorityPolicy.Candidate refreshed =
                     new ManualTimelineAuthorityPolicy.Candidate(
                             pickerOutcome.success.provider,
@@ -170,40 +235,59 @@ public final class ManualQueryCoordinator {
                             pickerOutcome.success.complete);
             effectivePicker = ManualTimelineAuthorityPolicy.mergeSameProvider(
                     cachedPicker, refreshed);
-            if (pickerPreview != null && effectivePicker != null) {
+            if (pickerPreview != null && effectivePicker != null
+                    && Kuaidi100TimelinePolicy.hasTimedTracking(effectivePicker.result)) {
                 pickerPreview.accept(effectivePicker.result);
             }
         }
         if (effectivePicker != null
-                && ManualTimelineAuthorityPolicy.isAuthoritative(effectivePicker)) {
+                && (ManualTimelineAuthorityPolicy.isAuthoritative(effectivePicker)
+                || requireStructuredStatus
+                && ManualTimelineAuthorityPolicy.hasStructuredStatus(effectivePicker.result))) {
             selectionSuccesses.add(success(effectivePicker));
         }
         if (pickerOutcome.failure != null) lastFailure = pickerOutcome.failure;
 
-        if (localTask != null) {
-            QueryOutcome localOutcome;
+        // Only the refreshed same-provider Picker history can close its stage before primary
+        // providers start. An existing cache never skips the Picker refresh itself.
+        if (effectivePicker != null && (statusOnly
+                ? ManualTimelineAuthorityPolicy.hasStructuredStatus(effectivePicker.result)
+                : Kuaidi100TimelinePolicy.hasTimelineStart(effectivePicker.result)
+                && (!requireStructuredStatus
+                || ManualTimelineAuthorityPolicy.hasStructuredStatus(effectivePicker.result)))) {
+            return new Batch(newSuccesses, selectionSuccesses, bestEffort);
+        }
+        ArrayList<ActivatedSource> primarySources = new ArrayList<>();
+        if (includeLocal && local != null) {
+            primarySources.add(new ActivatedSource(TimelineSlot.V4_QUERY, local));
+        }
+        if (primaryKuaidi100 != null) {
+            Source kuaidi100 = primaryKuaidi100.apply(pickerOutcome.result);
+            if (kuaidi100 != null) {
+                primarySources.add(new ActivatedSource(TimelineSlot.K100_H5, kuaidi100));
+            }
+        }
+        if (!primarySources.isEmpty()) {
             try {
-                localOutcome = localTask.get();
+                ArrayList<Success> available = new ArrayList<>(selectionSuccesses);
+                ExpressQueryResult[] displayed = {effectivePicker == null ? null : effectivePicker.result};
+                Batch primary = queryActivatedSources(primarySources, clock, success -> {
+                    available.add(success);
+                    ExpressQueryResult selected = new Batch(available, available, null).selected(true, true);
+                    if (pickerPreview != null && selected != null && selected != displayed[0]) {
+                        displayed[0] = selected;
+                        pickerPreview.accept(selected);
+                    }
+                }, requireStructuredStatus);
+                if (bestEffort == null) bestEffort = primary.bestEffort;
+                newSuccesses.addAll(primary.successes);
+                selectionSuccesses.addAll(primary.selectionSuccesses);
             } catch (InterruptedException interrupted) {
-                localTask.cancel(true);
-                localExecutor.shutdownNow();
                 Thread.currentThread().interrupt();
                 throw interrupted;
-            } catch (ExecutionException failure) {
-                localExecutor.shutdownNow();
-                Throwable cause = failure.getCause();
-                if (cause instanceof Exception) throw (Exception) cause;
-                throw new IllegalStateException("local stage failed", cause);
+            } catch (Exception failure) {
+                lastFailure = failure;
             }
-            localExecutor.shutdown();
-            if (bestEffort == null && localOutcome.result != null) {
-                bestEffort = localOutcome.result;
-            }
-            if (localOutcome.success != null) {
-                newSuccesses.add(localOutcome.success);
-                selectionSuccesses.add(localOutcome.success);
-            }
-            if (localOutcome.failure != null) lastFailure = localOutcome.failure;
         }
 
         if (!selectionSuccesses.isEmpty() || bestEffort != null) {
@@ -220,7 +304,7 @@ public final class ManualQueryCoordinator {
     }
 
     private static QueryOutcome queryActivatedSource(
-            ActivatedSource source, LongSupplier clock) throws Exception {
+            ActivatedSource source, LongSupplier clock, boolean requireStructuredStatus) throws Exception {
         // 与 Pipi 的 `manual level=… event=…` 同一套：每一级何时开始、几秒、几条节点，看 logcat 就够。
         long startedAt = System.currentTimeMillis();
         ExpressLog.line("", source.provider, "manual", "started");
@@ -235,11 +319,12 @@ public final class ManualQueryCoordinator {
             String provider = result == null || result.timelineProvider.isEmpty()
                     ? source.provider : result.timelineProvider;
             if (Kuaidi100TimelinePolicy.hasTimedTracking(result)
+                    || requireStructuredStatus && ManualTimelineAuthorityPolicy.hasStructuredStatus(result)
                     || !ManualRoutePolicy.meizuKuaidi100Url(provider, result).isEmpty()) {
                 success = new Success(
-                        provider, result, Math.max(1L, clock.getAsLong()), source.complete);
+                        provider, result, Math.max(1L, clock.getAsLong()), false);
             }
-            return new QueryOutcome(source.provider, result, success, null);
+            return new QueryOutcome(result, success, null);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw interrupted;
@@ -247,20 +332,18 @@ public final class ManualQueryCoordinator {
             ExpressLog.line("", source.provider, "manual", "failed",
                     "reason", failure.getClass().getSimpleName(),
                     "elapsedMs", System.currentTimeMillis() - startedAt);
-            return new QueryOutcome(source.provider, null, null, failure);
+            return new QueryOutcome(null, null, failure);
         }
     }
 
     private static final class QueryOutcome {
-        final String provider;
         final ExpressQueryResult result;
         final Success success;
         final Exception failure;
 
         QueryOutcome(
-                String provider, ExpressQueryResult result,
+                ExpressQueryResult result,
                 Success success, Exception failure) {
-            this.provider = provider;
             this.result = result;
             this.success = success;
             this.failure = failure;
@@ -301,6 +384,10 @@ public final class ManualQueryCoordinator {
         }
 
         private ExpressQueryResult selected(boolean detail) {
+            return selected(detail, false);
+        }
+
+        private ExpressQueryResult selected(boolean detail, boolean preview) {
             ArrayList<ManualTimelineAuthorityPolicy.Candidate> candidates = new ArrayList<>();
             for (Success success : selectionSuccesses) {
                 candidates.add(new ManualTimelineAuthorityPolicy.Candidate(
@@ -309,19 +396,18 @@ public final class ManualQueryCoordinator {
             ManualTimelineAuthorityPolicy.Candidate selected =
                     detail ? ManualTimelineAuthorityPolicy.selectDetail(candidates)
                             : ManualTimelineAuthorityPolicy.select(candidates);
-            return selected == null ? bestEffort : selected.result;
+            ExpressQueryResult result = selected == null ? bestEffort : selected.result;
+            return preview ? ManualTimelineAuthorityPolicy.presentationResult(result, candidates) : result;
         }
     }
 
     private static final class ActivatedSource {
         final String provider;
         final Source query;
-        final boolean complete;
 
-        ActivatedSource(String provider, Source query, boolean complete) {
+        ActivatedSource(String provider, Source query) {
             this.provider = provider;
             this.query = query;
-            this.complete = complete;
         }
     }
 

@@ -1,10 +1,13 @@
-import type { BindingSource, ShipmentRoute } from "../models";
+import type { AccountDetailRecord, BindingSource, ShipmentRoute } from "../models";
+import { accountAppTargets, type AccountAppRoute, type AccountAppTarget } from "./account-app-links";
+import { utf8Data } from "./scripting-data";
 import {
   SCRIPT_BINDING_SOURCE,
   requireScriptSource,
 } from "./script-source";
 
 const ROUTES_KEY = "pipi_deliveries_routes_v1";
+const ACCOUNT_APP_ROUTES_KEY = "pipi_deliveries_account_app_routes_v1";
 const ORDER_PROJECTION_REFS_KEY =
   "pipi_deliveries_order_projection_refs_v1";
 // 用户定 2026-09-05：拉到的路由/轨迹按来源缓存，**只在那一行从列表消失时才清**，不按时间过期。
@@ -12,6 +15,72 @@ const ORDER_PROJECTION_REFS_KEY =
 // 保留各处的判式不改结构，把年龄阈值设成无穷大即等价于「不按时间清」。
 const ROUTE_MAX_AGE_MS = Number.POSITIVE_INFINITY;
 const MAX_ROUTE_LENGTH = 16_384;
+
+type AccountAppRouteValue = AccountAppRoute & { updatedAtMs: number };
+export type AccountAppRouteInput = Readonly<{ record: AccountDetailRecord; route: AccountAppRoute }>;
+
+function accountAppRouteKey(record: AccountDetailRecord): string {
+  const provider = String(record.provider || "").toLowerCase();
+  if (!record.waybill || !record.companyCode || !/^1[3-9]\d{9}$/.test(record.phone || "") ||
+    !["jingdong", "cainiao", "shunfeng"].includes(provider)) return "";
+  return Crypto.sha256(utf8Data(JSON.stringify([
+    SCRIPT_BINDING_SOURCE, provider, record.waybill, record.companyCode, record.phone,
+  ]))).toHexString().toLowerCase();
+}
+
+function readAccountAppRoutes(): Record<string, AccountAppRouteValue> {
+  try {
+    const value = JSON.parse(Keychain.get(ACCOUNT_APP_ROUTES_KEY) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeAccountAppRoutes(value: Record<string, AccountAppRouteValue>): void {
+  if (!Keychain.set(ACCOUNT_APP_ROUTES_KEY, JSON.stringify(value))) {
+    throw new Error("App links could not be saved");
+  }
+}
+
+function validatedAccountAppTargets(record: AccountDetailRecord, route: AccountAppRoute): AccountAppTarget[] {
+  if (!route || !Array.isArray(route.targets) || typeof route.secretKey !== "string") return [];
+  return accountAppTargets(route.targets.map((target) => ({ type: "app", link: target?.url })),
+    String(record.provider || "").toLowerCase(), record.waybill, record.companyCode || "", route.secretKey);
+}
+
+export function saveAccountAppRoutes(inputs: readonly AccountAppRouteInput[], now = Date.now()): number {
+  const routes = readAccountAppRoutes();
+  let saved = 0;
+  for (const { record, route } of inputs) {
+    const key = accountAppRouteKey(record);
+    const targets = validatedAccountAppTargets(record, route);
+    if (!key || !targets.length) continue;
+    routes[key] = { targets, secretKey: route.secretKey, updatedAtMs: now };
+    saved++;
+  }
+  if (saved) writeAccountAppRoutes(routes);
+  return saved;
+}
+
+export function loadAccountAppRoutes(record: AccountDetailRecord, now = Date.now()): AccountAppTarget[] {
+  const route = readAccountAppRoutes()[accountAppRouteKey(record)];
+  return route && Number.isFinite(route.updatedAtMs) && route.updatedAtMs > 0 && route.updatedAtMs <= now
+    ? validatedAccountAppTargets(record, route) : [];
+}
+
+export function pruneAccountAppRoutes(records: readonly AccountDetailRecord[]): void {
+  const retained = new Set(records.map(accountAppRouteKey).filter(Boolean));
+  const routes = readAccountAppRoutes();
+  let changed = false;
+  for (const key of Object.keys(routes)) {
+    if (!retained.has(key)) {
+      delete routes[key];
+      changed = true;
+    }
+  }
+  if (changed) writeAccountAppRoutes(routes);
+}
 
 type RouteValue = {
   url: string;

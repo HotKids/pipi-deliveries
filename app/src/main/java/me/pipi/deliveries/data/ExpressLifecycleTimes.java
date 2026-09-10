@@ -11,26 +11,33 @@ final class ExpressLifecycleTimes {
     private ExpressLifecycleTimes() {}
 
     static long signedAt(ExpressItem item, ExpressQueryResult cached, long now) {
+        if (item != null && item.signedRetainedAt > 0L) return item.signedRetainedAt;
+        return signedEvidenceAt(item, cached, now);
+    }
+
+    static long signedEvidenceAt(ExpressItem item, ExpressQueryResult cached, long now) {
         long signedAt = valid(item == null ? 0L : item.statusEventTime, now);
+        // A newer headline or sidecar must not replace the owner's structured signature.
+        if (signedAt > 0L) return signedAt;
+        if (cached != null) {
+            signedAt = valid(cached.statusEventTime, now);
+            if (signedAt > 0L) return signedAt;
+        }
         if (item != null) {
-            signedAt = newer(signedAt,
-                    valid(ExpressSourcePolicy.parseEventTime(item.latestTime), now));
-            signedAt = newer(signedAt, signedTrackTime(item.tracksJson, now));
+            signedAt = newer(signedTrackTime(item.tracksJson, now),
+                    signedSummaryTime(item.latestDetail, item.latestTime, now));
         }
         if (cached != null) {
-            signedAt = newer(signedAt,
-                    valid(ExpressSourcePolicy.parseEventTime(cached.latestTime), now));
             signedAt = newer(signedAt, signedTrackTime(cached.tracksJson, now));
+            signedAt = newer(signedAt,
+                    signedSummaryTime(cached.latestDetail, cached.latestTime, now));
         }
-        if (signedAt > 0L) return signedAt;
-        return valid(item == null ? 0L : item.updatedAt, now);
+        return signedAt;
     }
 
     static long eventAt(ExpressItem item, long now) {
         if (item == null) return 0L;
         long eventAt = valid(item.statusEventTime, now);
-        eventAt = newer(eventAt,
-                valid(ExpressSourcePolicy.parseEventTime(item.latestTime), now));
         if (eventAt > 0L) return eventAt;
         return valid(item.updatedAt, now);
     }
@@ -38,15 +45,16 @@ final class ExpressLifecycleTimes {
     private static long signedTrackTime(String tracksJson, long now) {
         long result = 0L;
         for (ExpressTimeline.Track track : ExpressTimeline.parse(tracksJson, "", "")) {
-            String detail = track.detail.replaceAll("\\s+", "");
-            if (!(detail.contains("签收") || detail.contains("妥投")
-                    || detail.contains("配送完成"))) {
-                continue;
-            }
-            result = newer(result,
-                    valid(ExpressSourcePolicy.parseEventTime(track.time), now));
+            result = newer(result, signedSummaryTime(track.detail, track.time, now));
         }
         return result;
+    }
+
+    private static long signedSummaryTime(String detail, String time, long now) {
+        String text = detail.replaceAll("\\s+", "");
+        if (!(text.contains("签收") || text.contains("妥投")
+                || text.contains("配送完成") || text.contains("订单已完成"))) return 0L;
+        return valid(ExpressSourcePolicy.parseEventTime(time), now);
     }
 
     private static long valid(long value, long now) {

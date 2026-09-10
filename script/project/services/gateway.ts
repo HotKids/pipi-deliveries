@@ -177,6 +177,7 @@ export async function postGateway<T extends Record<string, unknown>>(
     timeoutMs?: number;
     deadlineAtMs?: number;
     signal?: AbortSignal;
+    onQueryAttempted?: (authorized: boolean) => void;
   } = {},
 ): Promise<T> {
   const credentialStatus = gatewayCredentialStatus();
@@ -212,6 +213,7 @@ export async function postGateway<T extends Record<string, unknown>>(
   }
 
   let response;
+  let requestStarted = false;
   let responseText = "";
   const timeoutMs = remainingTimeoutMs(
     options.deadlineAtMs,
@@ -230,6 +232,7 @@ export async function postGateway<T extends Record<string, unknown>>(
     });
     lifecycle.signal.addEventListener("abort", abortLifecycle, { once: true });
     const request = (async () => {
+      requestStarted = true;
       response = await fetch(`${GATEWAY_ORIGIN}${route}`, {
         method: SCRIPTING_REQUEST_METHOD,
         headers: {
@@ -273,6 +276,10 @@ export async function postGateway<T extends Record<string, unknown>>(
     }
     throw new GatewayError("网络连接异常，请稍后重试");
   } finally {
+    // Access rejection is not evidence that a parcel lookup was permitted.
+    if (requestStarted) {
+      options.onQueryAttempted?.(response?.status !== 401 && response?.status !== 403);
+    }
     rejectLifecycle = undefined;
     lifecycle.signal.removeEventListener("abort", abortLifecycle);
     lifecycle.dispose();

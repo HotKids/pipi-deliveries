@@ -296,7 +296,8 @@ const shunFengWithHiddenWeb: Shipment = {
   sourceTimeline: timeline("interface5", "SF1234567890", "TRANSIT"),
   manualTimelines: [firstHiddenWebIncrement],
 };
-assert.equal(selectShipmentTimeline(shunFengWithHiddenWeb).provider, "interface5");
+assert.equal(selectShipmentTimeline(shunFengWithHiddenWeb).provider, "web",
+  "SF Home uses the same manual K100 package as detail (user decision 2026-09-09)");
 assert.equal(selectShipmentDetailTimeline(shunFengWithHiddenWeb).provider, "web");
 assert.equal(
   needsDetailFallback(shunFengWithHiddenWeb),
@@ -1289,7 +1290,7 @@ assert.equal(needsAutomaticManualFallback({
       ordinaryAutomaticWithoutStart.timeline),
     complete: true,
   },
-}), false, "a complete same-source package must stop cross-source fallback");
+}), true, "a generic source completeness flag cannot replace feed pickup evidence");
 // 「更完整的手动包」现在要真的更完整：带揽收、且最新节点与 feed 对得上（判据见
 // shipment-policy 的 detailTimelineComplete）。只靠节点数相同的一条 COMPLETED 不算。
 const fullerCarrier = {
@@ -1449,17 +1450,18 @@ const cancelledTerminalProtection = applyManualShipment(
   },
   NOW + 10_000,
 );
-assert.equal(cancelledTerminalProtection.timeline.provider, "kdniao");
+assert.equal(cancelledTerminalProtection.timeline.provider, "kuaidi100",
+  "SF Home now follows the existing detail ranking among manual packages");
 assert.equal(
   cancelledTerminalProtection.timeline.latestDetail,
-  "稍后出现的派送文案",
+  "运单已取消",
 );
 assert.equal(
   cancelledTerminalProtection.timeline.semantic,
-  "DELIVERY",
-  "terminal status must not cross provider boundaries",
+  "CANCELLED",
+  "retaining the selected manual package retains its terminal state",
 );
-assert.equal(cancelledTerminalProtection.timeline.statusEventAtMs, NOW + 10_000);
+assert.equal(cancelledTerminalProtection.timeline.statusEventAtMs, NOW);
 
 const waitingPickupSourceTimeline = {
   ...carrierDetailTimeline,
@@ -1523,9 +1525,10 @@ const shunFengLatestManual = applyAccountShipment(
   alternateShunFeng,
   NOW + 3,
 );
-assert.equal(shunFengLatestManual.timeline.provider, "oppo");
-assert.equal(shunFengLatestManual.timeline.semantic, "TRANSIT");
-assert.equal(shunFengLatestManual.timeline.latestDetail, "OPPO 最新完整包");
+assert.equal(shunFengLatestManual.timeline.provider, "kuaidi100",
+  "an unsupported OPPO package cannot replace iOS SF manual authority on Home");
+assert.equal(shunFengLatestManual.timeline.semantic, "COMPLETED");
+assert.equal(shunFengLatestManual.timeline.latestDetail, completedCarrier.latestDetail);
 assert.equal(shunFengLatestManual.identity.sourceProvider, "SHUNFENG");
 assert.equal(usesManualSourceQuery(shunFengWithManual), true);
 assert.equal(usesManualSourceQuery(carrierDetail), false);
@@ -2338,4 +2341,3 @@ assert.equal(
   "a settled row must not lose its nodes to a later summary-only round",
 );
 assert.equal(hasSettledTimelineHistory(afterSummaryRound), true);
-

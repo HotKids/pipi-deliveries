@@ -496,7 +496,7 @@ memory.delete(STATE_KEY);
 const restoredLocal = loadState(NOW + 2).shipments[0]!;
 assert.deepEqual(
   new Set(restoredLocal.manualTimelines?.map((item) => item.provider)),
-  new Set(["v4_query", "v6_picker", "v2_query"]),
+  new Set(["v4_query", "v6_query", "v2_query"]),
 );
 const restoredMoto = restoredLocal.manualTimelines?.find(
   (item) => item.provider === "v4_query",
@@ -518,7 +518,7 @@ automaticRawOwner.identity.rawCourierCode = "OWNER_SOURCE_CP";
 automaticRawOwner.sourceTimeline = automaticRawOwner.timeline;
 const rawSidecarIdentities = [
   {
-    provider: "v6_picker",
+    provider: "v6_query",
     rawCourierCode: "KYE",
     courierCode: "KYSY",
     companyName: "跨越速运",
@@ -736,12 +736,10 @@ assert.equal(
   "the projection-specific refresh commit must durably advance the reserved order owner",
 );
 
-// Signed-row retention and projection retention are different lifecycles. The
-// UI may hide an old signed shipment, but the durable order mapping must remain
-// available so a later account summary cannot recreate the order number or
-// schedule another projection WebView.
+// Hidden signed rows keep their order mapping during the final seven days so
+// a later account summary cannot recreate the order number or its WebView work.
 memory.clear();
-const oldSignedAt = NOW - 8 * 24 * 60 * 60 * 1_000;
+const oldSignedAt = NOW - 15 * 24 * 60 * 60 * 1_000;
 const oldSignedProjection = structuredClone(existingOrderOwner);
 oldSignedProjection.identity.projectedWaybill = projectedWaybill;
 oldSignedProjection.identity.courierCode = "JD";
@@ -756,10 +754,10 @@ oldSignedProjection.timeline = {
   companyName: "京东快递",
   semantic: "COMPLETED",
   statusEventAtMs: oldSignedAt,
-  latestTimeText: "2026-08-18 14:00:00",
+  latestTimeText: "2026-08-11 14:00:00",
   latestDetail: "真实运单已签收",
   tracks: [{
-    timeText: "2026-08-18 14:00:00",
+    timeText: "2026-08-11 14:00:00",
     timeMs: oldSignedAt,
     detail: "真实运单已签收",
     statusCode: "107",
@@ -2034,12 +2032,12 @@ const expiredSigned = shipment({
   source: "interface5",
   semantic: "COMPLETED",
 });
-const signedAt = NOW - 8 * 24 * 60 * 60 * 1000;
+const signedAt = NOW - 15 * 24 * 60 * 60 * 1000;
 expiredSigned.timeline.statusEventAtMs = signedAt;
-expiredSigned.timeline.latestTimeText = "2026-08-18 14:00:00";
+expiredSigned.timeline.latestTimeText = "2026-08-11 14:00:00";
 expiredSigned.timeline.tracks = [{
   ...expiredSigned.timeline.tracks[0],
-  timeText: "2026-08-18 14:00:00",
+  timeText: "2026-08-11 14:00:00",
   timeMs: signedAt,
 }];
 const expiredState = saveState(
@@ -2061,7 +2059,25 @@ assert.equal(
   0,
   "retention still hides it from the list",
 );
-// 手动件不在这条规则里：账号不会替用户把它列回来，过期就真的删掉。
+// A later ordinary feed event must not delay the first persisted terminal timestamp.
+{
+  const reminder = {
+    ...expiredSigned,
+    identity: { ...expiredSigned.identity, id: "expired-with-reminder" },
+    timeline: {
+      ...expiredSigned.timeline,
+      latestTimeText: "2026-08-25 14:00:00",
+      latestDetail: "售后提醒",
+      tracks: [{ timeText: "2026-08-25 14:00:00", timeMs: NOW - 86400000,
+        detail: "售后提醒", statusCode: "", raw: {} }, ...expiredSigned.timeline.tracks],
+    },
+  };
+  const saved = saveState({ ...emptyState(), shipments: [reminder] }, NOW);
+  assert.equal(saved.shipments[0]!.settledAtMs, signedAt);
+  assert.equal(visibleShipments(saved, NOW).length, 0);
+  assert.equal(loadState(NOW).shipments[0]!.settledAtMs, signedAt);
+}
+// Manual rows keep the same seven hidden days of signed history as account rows.
 const expiredManual = shipment({
   id: "expired-manual",
   source: "interface5",
@@ -2070,15 +2086,15 @@ const expiredManual = shipment({
 });
 expiredManual.identity.createdAtMs = signedAt;
 expiredManual.timeline.statusEventAtMs = signedAt;
-expiredManual.timeline.latestTimeText = "2026-08-18 14:00:00";
+expiredManual.timeline.latestTimeText = "2026-08-11 14:00:00";
 expiredManual.timeline.tracks = [{
   ...expiredManual.timeline.tracks[0],
-  timeText: "2026-08-18 14:00:00",
+  timeText: "2026-08-11 14:00:00",
   timeMs: signedAt,
 }];
 assert.equal(
   saveState({ ...emptyState(), shipments: [expiredManual] }, NOW).shipments.length,
-  0,
+  1,
 );
 
 // 用户 2026-09-08 报：「一个个点进去把轨迹刷新出来，关掉重新打开又回来了」。整条链走一遍——列表
@@ -2088,7 +2104,7 @@ memory.clear();
 {
   const providerTime = (atMs: number) =>
     new Date(atMs + 8 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
-  const signedMs = NOW - 9 * 24 * 60 * 60 * 1000;
+  const signedMs = NOW - 16 * 24 * 60 * 60 * 1000;
   const waybill = "SF1234567898077";
   const churnParcel = {
     source: "interface5",
@@ -2236,11 +2252,14 @@ const previewPending = pending({
 previewShipment.identity.createdAtMs = previewPending.createdAtMs;
 previewShipment.timeline.waybill = previewPending.waybill;
 previewShipment.identity.sourceId = previewPending.waybill;
-const preview = prepareManualPreview({
-  shipment: previewShipment,
-  pending: previewPending,
-  routeUrl: "",
-});
+const preview = {
+  ...prepareManualPreview({
+    shipment: previewShipment,
+    pending: previewPending,
+    routeUrl: "",
+  }),
+  commitBase: { shipment: null, pending: null },
+};
 assert.equal(preview.hasTimedResult, false);
 assert.equal(
   loadState().pendingQueries.some((item) => item.id === previewPending.id),
@@ -2312,6 +2331,7 @@ partialPickerShipment.identity.sourceId = partialPickerPending.waybill;
 partialPickerShipment.identity.createdAtMs = manualPreviewNow;
 partialPickerShipment.timeline.waybill = partialPickerPending.waybill;
 const committedPartialPicker = commitManualShipmentPreview({
+  commitBase: { shipment: null, pending: null },
   shipment: partialPickerShipment,
   pending: partialPickerPending,
   routeUrl: "",
@@ -2425,7 +2445,7 @@ assert.deepEqual(
   continuedPartialPicker.shipment.manualTimelines?.map(
     (timeline) => timeline.provider,
   ).sort(),
-  ["k100_h5", "kdniao", "v4_query", "v6_picker"],
+  ["k100_h5", "kdniao", "v4_query", "v6_query"],
 );
 // 四个包都是「一条、无揽收」的摘要：完整判据与有效节点数并列，才轮到自报 complete 当
 // tiebreak；免费的 K100 又排在付费的快递鸟之前。
@@ -2438,6 +2458,7 @@ assert.equal(
 // generation. The older network round must not recreate or replace its row.
 memory.clear();
 commitManualShipmentPreview({
+  commitBase: { shipment: null, pending: null },
   shipment: partialPickerShipment,
   pending: partialPickerPending,
   routeUrl: "",
@@ -2451,6 +2472,7 @@ const replacementPending = {
   attempts: partialPickerPending.attempts + 1,
 };
 commitManualShipmentPreview({
+  commitBase: { shipment: null, pending: loadState(manualPreviewNow).pendingQueries[0] },
   shipment: {
     ...partialPickerShipment,
     identity: {
@@ -2518,6 +2540,7 @@ const fallbackShipment: Shipment = {
   updatedAtMs: manualPreviewNow,
 };
 const promotedManualPreviewState = commitManualShipmentPreview({
+  commitBase: { shipment: null, pending: loadState(manualPreviewNow).pendingQueries[0] },
   shipment: applyManualShipment(
     previewShipment,
     fallbackShipment,
@@ -2546,10 +2569,12 @@ assert.equal(
   "TRANSIT",
   "a promoted manual timeline must retain its track-derived status",
 );
-const retainedAfterEmptyPreview = commitManualShipmentPreview(
-  preview,
-  manualPreviewNow + 1,
+assert.throws(
+  () => commitManualShipmentPreview(preview, manualPreviewNow + 1),
+  /已被移除或更新/,
+  "a stale empty preview must not replace the newer owner",
 );
+const retainedAfterEmptyPreview = loadState(manualPreviewNow + 1);
 assert.equal(retainedAfterEmptyPreview.pendingQueries.length, 0);
 assert.equal(
   visibleShipments(retainedAfterEmptyPreview, manualPreviewNow + 1)[0]
@@ -2568,8 +2593,7 @@ assert.equal(expiredHiddenPreview.pendingQueries.length, 0);
 assert.equal(expiredHiddenPreview.shipments.length, 0);
 
 // A freshly queried, already-old signed shipment stays available to its detail
-// refresh without reappearing in the seven-day Home list. The internal owner
-// expires on the same bounded window as a pending manual query.
+// refresh without reappearing in Home, until day 21 of its terminal lifecycle.
 memory.clear();
 const oldSignedPreview = shipment({
   id: "interface5:manual:WBOLDSIGNED123",
@@ -2577,13 +2601,13 @@ const oldSignedPreview = shipment({
   manuallyAdded: true,
   semantic: "COMPLETED",
 });
-const oldSignedEventAtMs = manualPreviewNow - 8 * 24 * 60 * 60 * 1000;
+const oldSignedEventAtMs = manualPreviewNow - 15 * 24 * 60 * 60 * 1000;
 oldSignedPreview.identity.createdAtMs = manualPreviewNow;
 oldSignedPreview.timeline.statusEventAtMs = oldSignedEventAtMs;
-oldSignedPreview.timeline.latestTimeText = "2026-08-24 08:42:00";
+oldSignedPreview.timeline.latestTimeText = "2026-08-17 08:42:00";
 oldSignedPreview.timeline.latestDetail = "快件已签收";
 oldSignedPreview.timeline.tracks = [{
-  timeText: "2026-08-24 08:42:00",
+  timeText: "2026-08-17 08:42:00",
   timeMs: oldSignedEventAtMs,
   detail: "快件已签收",
   statusCode: "3",
@@ -2600,7 +2624,8 @@ const expiredOldSignedPreview = saveState(
   retainedOldSignedPreview,
   manualPreviewNow + PENDING_TTL_MS,
 );
-assert.equal(expiredOldSignedPreview.shipments.length, 0);
+assert.equal(expiredOldSignedPreview.shipments.length, 1);
+assert.equal(loadState(oldSignedEventAtMs + 21 * 24 * 60 * 60 * 1000).shipments.length, 0);
 
 // A brand-new Home query may have no source-owned carrier code. An exact built-in
 // recognition result dispatches the Picker preview adapter and remains available
@@ -2694,7 +2719,7 @@ saveState({
 }, NOW);
 assert.equal(loadWidgetSnapshot(NOW).rows.length, 1);
 assert.equal(
-  loadWidgetSnapshot(NOW + 7 * 24 * 60 * 60 * 1000).rows.length,
+  loadWidgetSnapshot(NOW + 14 * 24 * 60 * 60 * 1000).rows.length,
   0,
 );
 
@@ -2968,12 +2993,51 @@ assert.equal(
   "https://page.cainiao.com/detail?mailNo=TRANSACTION",
 );
 
+// Refreshing an existing route changes its sidecar without rewriting an unchanged state pointer.
+assert.ok(routeTransactionCommit);
+const repeatedRouteCommit = commitShipmentRouteMutations(
+  [{
+    key: `shipment:${detailOriginal.identity.id}`,
+    kind: "save",
+    targetId: detailOriginal.identity.id,
+    source: "interface5",
+    url: "https://page.cainiao.com/detail?mailNo=TRANSACTION-REFRESHED",
+  }],
+  (publications) => commitRoutePointers(
+    routeTransactionCommit,
+    routeTransactionCommit,
+    publications.map((publication) => ({
+      owner: "shipment" as const,
+      targetId: publication.targetId,
+    })),
+    NOW + 2,
+  ),
+  NOW + 2,
+);
+assert.equal(repeatedRouteCommit?.revision, routeTransactionCommit.revision,
+  "an unchanged route pointer must not create a durable state revision");
+assert.equal(loadState(NOW + 2).revision, routeTransactionCommit.revision);
+assert.equal(
+  loadShipmentRoute(detailOriginal.identity.id, "interface5", NOW + 2),
+  "https://page.cainiao.com/detail?mailNo=TRANSACTION-REFRESHED",
+);
+
 upsertShipment(
   {
     ...routeCommit.shipments[0]!,
     timeline: { ...routeCommit.shipments[0]!.timeline, latestDetail: "CHANGED" },
   },
   NOW + 4,
+);
+assert.throws(
+  () => commitRoutePointers(
+    routeTransactionCommit,
+    routeTransactionCommit,
+    [{ owner: "shipment", targetId: detailOriginal.identity.id }],
+    NOW + 5,
+  ),
+  /快递状态已更新/,
+  "an unchanged pointer must still reject a stale target version",
 );
 assert.throws(
   () => commitRoutePointers(
@@ -3090,7 +3154,7 @@ memory.set(STATE_KEY, storedState({
 }, 2));
 const healedMeizu = loadState(NOW).shipments[0]!;
 const healedMeizuTimeline = healedMeizu.manualTimelines?.find(
-  (timeline) => timeline.provider === "v6_picker",
+  (timeline) => timeline.provider === "v6_query",
 )!;
 assert.deepEqual(
   healedMeizuTimeline.tracks.map((track) => track.detail),
@@ -3101,7 +3165,7 @@ assert.equal(healedMeizuTimeline.structuredStatus, false);
 assert.equal(healedMeizuTimeline.semantic, "UNKNOWN");
 assert.equal(healedMeizuTimeline.statusEventAtMs, null);
 const healedMeizuAgain = loadState(NOW).shipments[0]!.manualTimelines?.find(
-  (timeline) => timeline.provider === "v6_picker",
+  (timeline) => timeline.provider === "v6_query",
 )!;
 assert.deepEqual(
   healedMeizuAgain.tracks.map((track) => track.detail),
@@ -3414,3 +3478,293 @@ console.log("durable notification commit and restart tests passed");
   assert.equal(second.pendingNotifications?.[0]?.body, "Synthetic DELIVERY");
 }
 console.log("notification checkpoint baseline and aggregation tests passed");
+
+// Legacy full feed/query packages must lose shopping completion on load, including
+// owner observations that could otherwise restore it during the next merge.
+{
+  memory.clear();
+  const orderId = "3597448007738003";
+  const completion = `您的订单${orderId}已完成，感谢您对京东的支持，欢迎再次光临。期待您对本次购物进行评价。`;
+  const reward = "您的订单[lululemon 商品标题]已完成，40京豆等您拿，完成评价即有机会获得，不要错过呦！";
+  const signedAt = NOW - 3 * 86400000;
+  const row = shipment({ id: `interface5:account:${orderId}`, source: "interface5",
+    phone: "13800138000", semantic: "COMPLETED" });
+  row.identity = { ...row.identity, sourceId: orderId, orderId,
+    projectedWaybill: "YT3763138154994", courierCode: "YTO", sourceProvider: "JingDong",
+    accountOrder: true };
+  row.timeline = { ...row.timeline, provider: "interface5", waybill: "YT3763138154994",
+    statusEventAtMs: NOW, latestDetail: completion, latestTimeText: "2026-08-26 14:00:00",
+    tracks: [
+      { timeText: "2026-08-26 14:00:00", timeMs: NOW, detail: completion,
+        statusCode: "107", raw: { statusCode: "107", _pipiStatusSource: "interface5" } },
+      { timeText: "2026-08-23 14:00:00", timeMs: signedAt, detail: "您的快件已送达至【家门口】",
+        statusCode: "107", raw: { statusCode: "107", _pipiStatusSource: "interface5" } },
+      { timeText: "2026-08-23 10:00:00", timeMs: signedAt - 4 * 3600000,
+        detail: "温馨提示：您的订单预计今天送达", statusCode: "", raw: {} },
+    ] };
+  row.sourceTimeline = row.timeline;
+  row.manualTimelines = [{ ...row.timeline, provider: "v5_query", latestDetail: reward,
+    tracks: [{ ...row.timeline.tracks[0]!, detail: reward }, ...row.timeline.tracks.slice(1)] }];
+  row.automaticOwnership = {
+    ownerSource: "interface5", ownerBindingIdentity: "phone:13800138000", claimedAtMs: NOW,
+    lastTakeoverAtMs: 0, ownerMisses: 0, takeoverPending: false,
+    observations: [{ source: "interface5", bindingIdentity: "phone:13800138000",
+      bindingValid: true, observedAtMs: NOW, identity: row.identity, sourceTimeline: row.timeline }],
+  };
+  row.settledAtMs = NOW;
+  memory.set(STATE_KEY, storedState({ ...emptyState(), shipments: [row], feedSlotRebuiltAtMs: NOW }, 2));
+  const restored = loadState(NOW + 1).shipments[0]!;
+  for (const timeline of [restored.timeline, restored.sourceTimeline!,
+    ...restored.manualTimelines!, ...restored.automaticOwnership!.observations.map((item) => item.sourceTimeline)]) {
+    assert.equal(timeline.tracks.length, 2);
+    assert.equal(timeline.latestDetail, "您的快件已送达至【家门口】");
+    assert.equal(timeline.latestTimeText, "2026-08-23 14:00:00");
+    assert.equal(timeline.statusEventAtMs, signedAt);
+    assert.equal(timeline.semantic, "COMPLETED");
+    assert.equal(timeline.tracks[1]!.detail, "温馨提示：您的订单预计今天送达");
+  }
+  assert.equal(selectShipmentDetailTimeline(restored).latestDetail, "您的快件已送达至【家门口】");
+  assert.equal(restored.settledAtMs, signedAt, "the rejected order timestamp is not a carrier retention anchor");
+  saveState({ ...emptyState(), shipments: [restored], feedSlotRebuiltAtMs: NOW }, NOW + 2);
+  const reloaded = loadState(NOW + 3).shipments[0]!;
+  assert.deepEqual(reloaded.timeline, restored.timeline, "repeated normalization is idempotent");
+  assert.deepEqual(reloaded.manualTimelines, restored.manualTimelines);
+}
+console.log("JD order completion cache repair tests passed");
+
+// V5 automatic list refresh leaves empty histories to explicit detail repair; existing retirements remain durable.
+{
+  const { runMissingShipmentHistoriesForTesting, runShipmentRefreshForTesting } =
+    await import("../services/sync");
+  const { visibleShipments } = await import("../services/storage");
+  const { isHiddenSignedShipment } = await import("../services/status");
+  const actualNow = Date.now;
+  let clock = NOW;
+  Date.now = () => clock;
+  const day = 86400000;
+  try {
+    for (const semantic of ["COMPLETED", "TRANSIT"] as const) {
+      memory.clear();
+      const row = shipment({ id: `interface5:account:JDHOME${semantic}`, source: "interface5",
+        phone: "13800138000", semantic });
+      row.identity = { ...row.identity, sourceId: `JDHOME${semantic}`, courierCode: "JD",
+        rawCourierCode: "JD", companyName: "京东快递", sourceProvider: "JingDong" };
+      row.timeline = { ...row.timeline, provider: "interface5", waybill: row.identity.sourceId,
+        tracks: [], latestDetail: "", latestTimeText: "", statusEventAtMs: NOW - 60000 };
+      row.sourceTimeline = row.timeline;
+      row.accountRecord = { waybill: row.identity.sourceId, companyCode: "JD", name: "京东快递",
+        provider: "JingDong", stateNumber: semantic === "COMPLETED" ? 107 : 104,
+        updateTime: "2026-08-26 13:59:00", phone: "13800138000", channel: "account" };
+      const before = saveState({ ...emptyState(), shipments: [row],
+        bindings: [{ source: "interface5", phone: "13800138000", boundAtMs: NOW - day }] }, clock);
+      assert.equal(visibleShipments(before, clock).length, 1);
+      let sourceRequests = 0;
+      const refresh = (id: string, options: Parameters<typeof runShipmentRefreshForTesting>[2]) =>
+        runShipmentRefreshForTesting(id, { isCurrent: () => true, deadlineAtMs: clock + 30000 }, options, {
+          refreshAccountParcel: async (_row, _deadline, _signal, started) => {
+            started?.(true); sourceRequests++; return null;
+          },
+          queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "", skipReason: "cooldown" }),
+        });
+      const round = await runMissingShipmentHistoriesForTesting(before, "interface5",
+        (state) => state, clock + 60000, undefined, refresh);
+      assert.equal(sourceRequests, 0, "v5 automatic list refresh must not enter the full detail chain");
+      assert.equal(round.attempted, 0);
+      const refreshed = round.state.shipments[0]!;
+      if (semantic === "TRANSIT") {
+        assert.equal(refreshed.emptyTimelineHiddenAtMs, undefined);
+        assert.equal(visibleShipments(round.state, clock).length, 1,
+          "an empty nonterminal shipment remains visible for later retry");
+        continue;
+      }
+      assert.equal(refreshed.emptyTimelineHiddenAtMs, undefined);
+      assert.equal(visibleShipments(round.state, clock).length, 1,
+        "a frozen v5 automatic row is not immediately retired by the list");
+      // Existing retirement records still survive replay and expire after seven days.
+      saveState({ ...round.state, shipments: [{ ...refreshed, emptyTimelineHiddenAtMs: NOW }] }, clock);
+      const hidden = loadState(clock + 1);
+      assert.equal(hidden.shipments[0]?.emptyTimelineHiddenAtMs, NOW);
+
+      const richer = { ...row, identity: { ...row.identity, id: "replacement-owner" },
+        timeline: { ...row.timeline, tracks: [{ timeText: "2026-08-26 14:01:00",
+          timeMs: NOW + 60000, detail: "真实签收轨迹", statusCode: "107", raw: {} }],
+          latestDetail: "真实签收轨迹" } };
+      richer.sourceTimeline = richer.timeline;
+      clock = NOW + day;
+      const staleWriter = saveState({ ...before, shipments: [richer] }, clock);
+      assert.equal(staleWriter.emptyTimelineRetirements?.length, 1,
+        "a stale writer cannot erase durable retirement");
+      assert.equal(isHiddenSignedShipment(staleWriter.shipments[0]!, clock), true,
+        "a new owner id and richer feed cannot restore the retired canonical waybill");
+      assert.equal(staleWriter.shipments[0]?.emptyTimelineHiddenAtMs, NOW);
+      assert.equal(loadState(NOW + 7 * day - 1).shipments.length, 1);
+      assert.equal(loadState(NOW + 7 * day).shipments.length, 0,
+        "retired cache expires at exactly seven days after hiding");
+      clock = NOW + 8 * day;
+      const replayed = saveState({ ...before, shipments: [row] }, clock);
+      assert.equal(replayed.shipments.length, 0,
+        "the same old feed cannot recreate a deleted retired shipment");
+      assert.deepEqual(new Set(replayed.emptyTimelineRetirements?.map((entry) => entry.id)),
+        new Set([row.identity.id, richer.identity.id]),
+        "a later owner id is retained as an alias for unprojected replay too");
+      const orderOnlyReplay = { ...row, identity: { ...row.identity, id: richer.identity.id,
+        sourceId: "3610448002878202", accountOrder: true },
+        timeline: { ...row.timeline, waybill: "3610448002878202" } };
+      orderOnlyReplay.sourceTimeline = orderOnlyReplay.timeline;
+      assert.equal(saveState({ ...before, shipments: [orderOnlyReplay] }, clock).shipments.length, 0,
+        "a retired replacement owner cannot come back as an unprojected order");
+      clock = NOW;
+    }
+  } finally {
+    Date.now = actualNow;
+  }
+}
+console.log("Home missing history refresh and retirement tests passed");
+
+// The retained manual missing-history repair retires only after transport actually started.
+{
+  const { runMissingShipmentHistoriesForTesting, runShipmentRefreshForTesting } = await import("../services/sync");
+  const { GatewayError } = await import("../services/gateway");
+  const { OperationTimeoutError } = await import("../services/deadline");
+  const day = 86400000;
+  const originalNow = Date.now;
+  Date.now = () => NOW;
+  const emptyRow = (id: string, semantic: StatusSemantic = "COMPLETED", manual = false) => {
+    const row = shipment({ id, source: "interface5", phone: "13800138000", manuallyAdded: manual, semantic });
+    row.identity = { ...row.identity, sourceId: `JD${id}`, courierCode: "JD", rawCourierCode: "JD",
+      companyName: "京东快递", ...(manual ? {} : { sourceProvider: "JingDong" }) };
+    row.timeline = { ...row.timeline, provider: manual ? "v6_query" : "interface5",
+      waybill: row.identity.sourceId, tracks: [], latestDetail: "", latestTimeText: "" };
+    if (!manual) {
+      row.sourceTimeline = row.timeline;
+      row.accountRecord = { waybill: row.identity.sourceId, companyCode: "JD", name: "京东快递",
+        provider: "JingDong", stateNumber: 107, updateTime: "2026-08-26 13:59:00",
+        phone: "13800138000", channel: "account" };
+    }
+    return row;
+  };
+  const seed = (row: Shipment) => saveState({ ...emptyState(), shipments: [row],
+    bindings: [{ source: "interface5", phone: "13800138000", boundAtMs: NOW - day }] }, NOW);
+  const run = (state: AppState, runtime: Parameters<typeof runShipmentRefreshForTesting>[3], signal?: AbortSignal) =>
+    runMissingShipmentHistoriesForTesting(state, "interface5", (next) => next, NOW + 60000, signal,
+      (id, options) => runShipmentRefreshForTesting(id,
+        { isCurrent: () => true, deadlineAtMs: NOW + 30000, signal }, options, runtime));
+  const cooldown = async () => ({ shipment: null, pending: null, routeUrl: "", skipReason: "cooldown" as const });
+  try {
+    for (const failure of ["http", "timeout", "credentials", "unauthorized", "forbidden"] as const) {
+      memory.clear();
+      const row = emptyRow(`failure-${failure}`, "COMPLETED", true);
+      const result = await run(seed(row), {
+        queryManualForSource: async input => {
+          if (failure !== "credentials") input.onQueryAttempted?.(failure !== "unauthorized" && failure !== "forbidden");
+          throw failure === "timeout" ? new OperationTimeoutError()
+            : new GatewayError("synthetic query failure", failure === "http" ? 502 : failure === "unauthorized" ? 401 : failure === "forbidden" ? 403 : 0);
+        },
+      });
+      assert.equal(result.state.shipments[0]?.emptyTimelineHiddenAtMs, undefined,
+        "a failed manual request does not retire the existing row");
+      assert.equal(result.attempted, 0);
+    }
+
+    memory.clear();
+    const cancelled = seed(emptyRow("cancelled-request", "COMPLETED", true));
+    const abort = new AbortController();
+    await assert.rejects(run(cancelled, {
+      queryManualForSource: async input => {
+        input.onQueryAttempted?.(true); abort.abort(); throw new OperationTimeoutError();
+      },
+    }, abort.signal), OperationTimeoutError);
+    assert.equal(loadState(NOW).shipments[0]?.emptyTimelineHiddenAtMs, undefined);
+
+    memory.clear();
+    const forced = emptyRow("forced-manual", "TRANSIT", true);
+    forced.forcedCompletedAtMs = NOW - 60000;
+    const forcedState = seed(forced);
+    const skipped = await run(forcedState, { queryManualForSource: cooldown });
+    assert.equal(skipped.attempted, 0, "all source cooldowns do not retire an empty manual row");
+    assert.equal(skipped.state.shipments[0]?.emptyTimelineHiddenAtMs, undefined);
+    let manualRequests = 0;
+    const repaired = await run(skipped.state, { queryManualForSource: async (input) => {
+      input.onQueryAttempted?.(true); manualRequests++;
+      return { shipment: null, pending: null, routeUrl: "" };
+    } });
+    assert.ok(manualRequests > 0, "this entry may repair a manually frozen empty history");
+    assert.equal(repaired.state.shipments[0]?.forcedCompletedAtMs, NOW - 60000);
+    assert.equal(repaired.state.shipments[0]?.timeline.semantic, "COMPLETED");
+    assert.equal(repaired.state.shipments[0]?.emptyTimelineHiddenAtMs, NOW);
+    assert.equal(loadState(NOW + 7 * day - 1).shipments.length, 1,
+      "manual placeholder expiry cannot shorten the new seven-day hidden period");
+    assert.equal(loadState(NOW + 7 * day).shipments.length, 0);
+
+    for (const semantic of ["TRANSIT", "DELIVERY"] as const) {
+      memory.clear();
+      let state = seed(emptyRow(`ongoing-${semantic}`, semantic));
+      for (let round = 0; round < 3; round++) {
+        state = (await run(state, { refreshAccountParcel: async (_row, _deadline, _signal, started) => {
+          started?.(true); return null;
+        }, queryManualForSource: cooldown })).state;
+        assert.equal(visibleShipments(state, NOW).length, 1);
+        assert.equal(state.emptyTimelineRetirements?.length || 0, 0);
+      }
+      const source = state.shipments[0]!;
+      const signed = { ...source, timeline: { ...source.timeline, semantic: "COMPLETED" as const,
+        statusEventAtMs: NOW, latestDetail: "真实签收动态", tracks: [{ timeText: "2026-08-26 14:00:00",
+          timeMs: NOW, detail: "真实签收动态", statusCode: "107", raw: {} }] } };
+      signed.sourceTimeline = signed.timeline;
+      state = saveState({ ...state, shipments: [signed] }, NOW);
+      assert.equal(visibleShipments(state, NOW)[0]?.timeline.semantic, "COMPLETED",
+        "later genuine status still updates a nonretired row normally");
+    }
+
+    for (const partition of ["headline-only", "cached", "ordinary-hidden", "expired-budget", "locked"] as const) {
+      memory.clear();
+      const row = emptyRow(partition);
+      if (partition === "headline-only") {
+        row.timeline = { ...row.timeline, latestDetail: "快件正在派送，请保持电话畅通", statusEventAtMs: null };
+        row.sourceTimeline = row.timeline;
+      } else if (partition === "cached") {
+        row.manualTimelines = [{ ...row.timeline, provider: "kdniao", complete: true,
+          latestDetail: "完整签收缓存", tracks: [{ timeText: "2026-08-26 13:59:00", timeMs: NOW - 60000,
+            detail: "完整签收缓存", statusCode: "107", raw: {} }] }];
+      } else if (partition === "ordinary-hidden") row.settledAtMs = NOW - 15 * day;
+      const state = seed(row);
+      let calls = 0;
+      const result = await runMissingShipmentHistoriesForTesting(state, "interface5", (next) => next,
+        partition === "expired-budget" ? NOW : NOW + 60000, undefined, async () => {
+          calls++;
+          return { state, shipment: state.shipments[0]!, refreshed: false };
+        });
+      assert.equal(calls, 0, `${partition}: v5 automatic list does not initiate detail repair`);
+      assert.equal(result.attempted, 0);
+      assert.equal(result.state.shipments[0]?.emptyTimelineHiddenAtMs, undefined);
+    }
+
+    memory.clear();
+    const lateHidden = emptyRow("late-hidden");
+    lateHidden.settledAtMs = NOW - 20 * day;
+    lateHidden.emptyTimelineHiddenAtMs = NOW;
+    lateHidden.identity.sourceProvider = "CaiNiao";
+    lateHidden.route = { kind: "cainiao", source: "interface5" };
+    seed(lateHidden);
+    saveShipmentRoute(lateHidden.identity.id, "interface5",
+      "https://page.cainiao.com/detail?mailNo=SYNTHETIC-LATE-HIDDEN", NOW);
+    assert.equal(loadState(NOW + 7 * day - 1).shipments.length, 1,
+      "a new hidden period has priority over the old ordinary signed clock");
+    assert.notEqual(loadShipmentRoute(lateHidden.identity.id, "interface5", NOW + 7 * day - 1), "");
+    assert.equal(loadState(NOW + 7 * day).shipments.length, 0);
+    assert.equal(loadShipmentRoute(lateHidden.identity.id, "interface5", NOW + 7 * day), "",
+      "read-time expiry cleans the stored route after the retired state is durable");
+
+    for (const corrupt of [{}, [null]]) {
+      memory.clear();
+      const state = { ...emptyState(), shipments: [emptyRow("optional-list")],
+        emptyTimelineRetirements: corrupt, feedSlotRebuiltAtMs: NOW };
+      memory.set(STATE_KEY, storedState(state, 2));
+      assert.equal(loadState(NOW).shipments.length, 1,
+        "invalid optional retirement data cannot discard otherwise valid shipments");
+    }
+  } finally {
+    Date.now = originalNow;
+  }
+}
+console.log("Home repair request, freeze and cancellation partition tests passed");

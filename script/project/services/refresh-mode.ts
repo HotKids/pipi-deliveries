@@ -6,8 +6,6 @@ export type FullRefreshHostPolicy = Readonly<{
   accountOrderProjection: boolean;
   webViewEnrichment: boolean;
   accountFollowupReserveMs: number;
-  accountFollowups: boolean;
-  manualAndPending: boolean;
 }>;
 
 export function fullRefreshHostPolicy(options: Readonly<{
@@ -19,15 +17,11 @@ export function fullRefreshHostPolicy(options: Readonly<{
       accountOrderProjection: false,
       webViewEnrichment: false,
       accountFollowupReserveMs: 0,
-      accountFollowups: true,
-      manualAndPending: true,
     };
   }
   return {
     accountOrderProjection: options.accountOrderProjection,
     webViewEnrichment: true,
     accountFollowupReserveMs: ACCOUNT_FOLLOWUP_RESERVE_MS,
-    accountFollowups: true,
-    manualAndPending: true,
   };
 }

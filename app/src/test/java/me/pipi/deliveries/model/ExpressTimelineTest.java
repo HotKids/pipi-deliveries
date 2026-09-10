@@ -9,27 +9,13 @@ import org.junit.Test;
 import java.util.List;
 
 public final class ExpressTimelineTest {
-    /**
-     * 压缩不能丢边界：揽收类、下单类，以及 2026-09-08 从下单类挪出去的终点类
-     * 「订单已完成」「配送完成」——它们仍然关起点闸门（这一票已经走完），只是展示上是 COMPLETED。
-     */
     @Test
-    public void compactionRetainsEveryContractBoundaryPhrase() throws Exception {
-        for (String phrase : new String[]{"已揽收", "已揽件", "揽收完成", "揽件成功",
-                "揽收成功", "已收寄", "收取快件", "已下单", "已经下单", "订单已提交",
-                "订单已创建", "订单已完成", "配送完成", "等待出库", "正在打包", "拣货"}) {
+    public void longHistoryRetainsEventsWithoutRequiringStartOrTerminalEvidence() throws Exception {
+        for (String phrase : new String[]{"待揽收", "等待揽收", "预计明天送达", "到达转运中心"}) {
             JSONArray tracks = longHistory(phrase);
-            String compacted = ExpressTimeline.mergeJson(tracks.toString(), "[]");
-            org.junit.Assert.assertTrue(phrase, compacted.contains(phrase));
-            assertEquals(156, new JSONArray(compacted).length());
-        }
-    }
-
-    @Test
-    public void compactionDoesNotTreatWaitingForCollectionAsAStart() throws Exception {
-        for (String phrase : new String[]{"待揽收", "等待揽收"}) {
-            String compacted = ExpressTimeline.mergeJson(longHistory(phrase).toString(), "[]");
-            org.junit.Assert.assertFalse(phrase, compacted.contains(phrase));
+            JSONArray merged = new JSONArray(ExpressTimeline.mergeJson(tracks.toString(), "[]"));
+            assertEquals(tracks.length(), merged.length());
+            assertEquals(phrase, merged.getJSONObject(merged.length() - 1).getString("context"));
         }
     }
 
@@ -202,7 +188,7 @@ public final class ExpressTimelineTest {
     }
 
     @Test
-    public void incrementalMergeBoundsHistoryAndRetainsEarliestStartBoundary() throws Exception {
+    public void incrementalMergeRetainsEveryCachedAndRefreshedEvent() throws Exception {
         JSONArray cached = new JSONArray();
         for (int index = 0; index < 170; index++) {
             cached.put(new JSONObject()
@@ -215,7 +201,7 @@ public final class ExpressTimelineTest {
                 cached.toString(),
                 "[{\"time\":\"2026-09-01 12:00:00\",\"context\":\"快件已签收\"}]"));
 
-        assertEquals(156, merged.length());
+        assertEquals(171, merged.length());
         boolean hasOrdered = false;
         boolean hasDelivered = false;
         for (int index = 0; index < merged.length(); index++) {
@@ -225,10 +211,11 @@ public final class ExpressTimelineTest {
         }
         assertEquals(true, hasOrdered);
         assertEquals(true, hasDelivered);
+        assertEquals(merged.toString(), ExpressTimeline.mergeJson(merged.toString(), cached.toString()));
     }
 
     @Test
-    public void compactionUsesProviderAwareStructuredStartEvidence() throws Exception {
+    public void longHistoryPreservesProviderStatusMetadata() throws Exception {
         JSONArray cached = new JSONArray();
         for (int index = 0; index < 170; index++) {
             JSONObject value = new JSONObject()
@@ -245,7 +232,7 @@ public final class ExpressTimelineTest {
         JSONArray merged = new JSONArray(ExpressTimeline.mergeJson(
                 cached.toString(), "[]"));
 
-        assertEquals(156, merged.length());
+        assertEquals(cached.length(), merged.length());
         boolean hasPickerOrdered = false;
         for (int index = 0; index < merged.length(); index++) {
             JSONObject value = merged.getJSONObject(index);

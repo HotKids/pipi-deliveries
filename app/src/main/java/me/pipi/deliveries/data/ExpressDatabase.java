@@ -13,7 +13,7 @@ import java.util.UUID;
 public final class ExpressDatabase extends SQLiteOpenHelper {
     private static final int LAST_LEGACY_SOURCE_VERSION = 7;
     public static final String DATABASE = "deliveries.db";
-    public static final int VERSION = 22;
+    public static final int VERSION = 24;
     public static final String NOTIFICATION_OUTBOX_TABLE = "express_notification_outbox";
     public static final String EXPRESS_TABLE = "server_express";
     public static final String PHONE_TABLE = "express_phone";
@@ -49,7 +49,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // Keep upgrades additive so installed users retain shipments and local timelines.
+        // Business rows survive upgrades; invalid source caches may be rebuilt from their owner.
         // v21：项目改名，表名去掉 aicy_ 前缀、时间线表按槽名（= 日志 level）命名；先改名再建表，
         // 否则下面 CREATE IF NOT EXISTS 会先建出空的新表，旧数据就搬不过来了。
         if (oldVersion < 21) renameLegacyAicyTables(db);
@@ -75,7 +75,12 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         if (oldVersion == 19) migrateAutomaticBindingIdentity(db);
         if (oldVersion < 19) migrateAutomaticOwnership(db, activeBindingSource());
         if (oldVersion < 20) hydrateAutomaticOwnerBindingIdentity(db);
-        pruneAccountTimelines(db);
+        if (oldVersion < 23) pruneAccountTimelines(db);
+        if (oldVersion < 23) {
+            // The previous list ingress mixed feed nodes into query history without provenance.
+            // Invalidate only v5 query caches; reconstructing individual nodes would guess origin.
+            db.delete(ACCOUNT_V5_TIMELINE_TABLE, null, null);
+        }
         dropObsoleteTables(db);
     }
 
@@ -116,7 +121,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 + "remark VARCHAR DEFAULT '',isDeleted INTEGER DEFAULT 0,"
                 + "data1 VARCHAR DEFAULT '',data2 VARCHAR DEFAULT '',data3 VARCHAR DEFAULT '',"
                 + "normalizedMailNo VARCHAR DEFAULT '',statusEventTime INTEGER DEFAULT 0,"
-                + "updatedAt INTEGER DEFAULT 0,stateOwner VARCHAR DEFAULT '',"
+                + "updatedAt INTEGER DEFAULT 0,signedRetainedAt INTEGER DEFAULT 0,stateOwner VARCHAR DEFAULT '',"
                 + "routeOwner VARCHAR DEFAULT '',routeInterface VARCHAR DEFAULT '',"
                 + "routeCredential VARCHAR DEFAULT '',"
                 + "carrierStandardCode VARCHAR DEFAULT '',"
@@ -133,6 +138,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         addColumnIfMissing(db, EXPRESS_TABLE, "normalizedMailNo", "VARCHAR DEFAULT ''");
         addColumnIfMissing(db, EXPRESS_TABLE, "statusEventTime", "INTEGER DEFAULT 0");
         addColumnIfMissing(db, EXPRESS_TABLE, "updatedAt", "INTEGER DEFAULT 0");
+        addColumnIfMissing(db, EXPRESS_TABLE, "signedRetainedAt", "INTEGER DEFAULT 0");
         addColumnIfMissing(db, EXPRESS_TABLE, "stateOwner", "VARCHAR DEFAULT ''");
         addColumnIfMissing(db, EXPRESS_TABLE, "routeOwner", "VARCHAR DEFAULT ''");
         addColumnIfMissing(db, EXPRESS_TABLE, "routeInterface", "VARCHAR DEFAULT ''");
@@ -183,6 +189,12 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 + "tracks_json TEXT DEFAULT '[]',updated_at INTEGER NOT NULL)");
         createTimelineTable(db, ACCOUNT_V5_TIMELINE_TABLE);
         createTimelineTable(db, ACCOUNT_V6_TIMELINE_TABLE);
+        addColumnIfMissing(db, ACCOUNT_V5_TIMELINE_TABLE,
+                "status_event_time", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, ACCOUNT_V5_TIMELINE_TABLE,
+                "structured_status", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, ACCOUNT_V5_TIMELINE_TABLE,
+                "status_description", "TEXT NOT NULL DEFAULT ''");
         // Global timeline rows cannot be assigned to an account owner without ownership evidence,
         // so this owner-scoped cache intentionally starts empty on upgrade.
         db.execSQL("CREATE TABLE IF NOT EXISTS " + OWNER_MANUAL_TIMELINE_TABLE + "("
@@ -941,14 +953,14 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
 
     /**
      * v21：按行手动 sidecar 的 provider 列改成统一槽名（interface5→v5_query、interface6→v6_list、
-     * v4→v4_query、meizu→v6_picker、kuaidi100/web→k100_h5）；oppo 早已不接入，行直接删。
+     * v4→v4_query、meizu→v6_query、kuaidi100/web→k100_h5）；oppo 早已不接入，行直接删。
      */
     private static void migrateTimelineSlotNames(SQLiteDatabase db) {
         String rename = "CASE LOWER(provider)"
                 + " WHEN 'interface5' THEN 'v5_query'"
                 + " WHEN 'interface6' THEN 'v6_list'"
                 + " WHEN 'v4' THEN 'v4_query'"
-                + " WHEN 'meizu' THEN 'v6_picker'"
+                + " WHEN 'meizu' THEN 'v6_query'"
                 + " WHEN 'kuaidi100' THEN 'k100_h5'"
                 + " WHEN 'web' THEN 'k100_h5'"
                 + " ELSE provider END";

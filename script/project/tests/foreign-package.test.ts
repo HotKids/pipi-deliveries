@@ -4,6 +4,7 @@ import {
   FOREIGN_PACKAGE_ANCHOR_SLACK_MS,
   applyManualShipment,
   foreignPackageAnchorMs,
+  mergeAutomaticSourceTimeline,
   isForeignManualPackage,
   selectShipmentDetailTimeline,
 } from "../services/shipment-policy";
@@ -162,5 +163,16 @@ const staleCache: Shipment = { ...order, manualTimelines: [foreignEms, genuinePi
 const selected = selectShipmentDetailTimeline(staleCache);
 assert.notEqual(selected.provider, "kuaidi100_h5");
 assert.equal(selected.tracks.some((item) => item.detail.includes("物业代收")), false);
+
+
+
+// Completion can stop a query, but cannot anchor the beginning of a parcel's history.
+const completionSummary = pkg("interface5", [track(PICKUP + 5 * 86400000, "订单已完成配送")]);
+assert.equal(foreignPackageAnchorMs({ ...order, sourceTimeline: completionSummary }), null);
+const accumulatedFeed = mergeAutomaticSourceTimeline(accountPackage, completionSummary);
+assert.equal(foreignPackageAnchorMs({ ...order, sourceTimeline: accumulatedFeed }),
+  ORDER_CREATED - FOREIGN_PACKAGE_ANCHOR_SLACK_MS);
+assert.equal(isForeignManualPackage({ ...order, sourceTimeline: accumulatedFeed }, foreignEms), true);
+assert.equal(isForeignManualPackage({ ...order, sourceTimeline: accumulatedFeed }, genuinePicker), false);
 
 console.log("foreign package tests passed");

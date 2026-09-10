@@ -42,7 +42,7 @@ final class AutomaticOwnershipPolicy {
         if (!result.carrierIdentityEvidence) return false;
         if (result.semantic == null || result.semantic == StatusSemantic.UNKNOWN) return false;
         return ExpressSourcePolicy.bindingSourceForOwner(provider)
-                .equals(clean(result.timelineProvider).toLowerCase(Locale.ROOT));
+                .equals(TimelineSlot.bindingSourceOf(result.timelineProvider));
     }
 
     static boolean isJingDongSource(String sourceProvider) {

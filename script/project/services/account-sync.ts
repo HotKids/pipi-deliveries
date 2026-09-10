@@ -1,3 +1,6 @@
+import type { AccountAppTarget } from "./account-app-links";
+import { loadAccountAppRoutes, saveAccountAppRoutes } from "./routes";
+import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import type {
   AccountBinding,
   AccountDetailRecord,
@@ -23,9 +26,12 @@ import {
   normalizeWaybill,
   normalizedProjectedWaybill,
   parseProviderTime,
+  semanticFromAccountState,
+  semanticFromStored,
   semanticFromText,
   splitJingDongH5Nodes,
   timedTracks,
+  withoutJingDongOrderCompletion,
 } from "./status";
 import {
   assertWithinDeadline,
@@ -48,12 +54,13 @@ export type AccountParcelFetchResult = Readonly<{
   rejectedRecords: number;
 }>;
 
-function accountApi(deadlineAtMs?: number, signal?: AbortSignal): AccountApi {
+function accountApi(deadlineAtMs?: number, signal?: AbortSignal, onQueryAttempted?: (authorized: boolean) => void): AccountApi {
   return new AccountApi((route, payload, timeoutMs) =>
     postGateway(route, payload, {
       timeoutMs: remainingTimeoutMs(deadlineAtMs, timeoutMs),
       deadlineAtMs,
       signal,
+      onQueryAttempted,
     }),
   );
 }
@@ -210,13 +217,14 @@ export async function refreshAccountParcel(
   shipment: Shipment,
   deadlineAtMs?: number,
   signal?: AbortSignal,
+  onQueryAttempted?: (authorized: boolean) => void,
 ): Promise<AccountParcelDto | null> {
   const source = shipment.identity.bindingSource;
   if (!source || shipment.identity.manuallyAdded) return null;
   requireScriptSource(source);
   if (!shipment.accountRecord) return null;
   assertWithinDeadline(deadlineAtMs);
-  const api = accountApi(deadlineAtMs, signal);
+  const api = accountApi(deadlineAtMs, signal, onQueryAttempted);
   const response = await api.timeline({
     source: SCRIPT_BINDING_SOURCE,
     mode: "detail",
@@ -251,6 +259,70 @@ export async function refreshAccountParcel(
   return parcel && shipment.identity.accountOrder
     ? normalizeAccountParcelCarrierBestEffort(parcel, { deadlineAtMs, signal })
     : parcel;
+}
+
+export function accountExternalAppName(shipment: Shipment): string {
+  if (
+    shipment.identity.manuallyAdded ||
+    shipment.identity.bindingSource !== SCRIPT_BINDING_SOURCE ||
+    !shipment.accountRecord ||
+    normalizeWaybill(shipment.accountRecord.waybill) !== shipment.identity.sourceId
+  ) return "";
+  const provider = String(shipment.identity.sourceProvider || "").toLowerCase();
+  if (provider !== String(shipment.accountRecord.provider || "").toLowerCase()) return "";
+  if (provider === "shunfeng") {
+    return loadAccountAppRoutes(shipment.accountRecord).some((target) => target.kind === "sf") ? "顺丰" : "";
+  }
+  return provider === "jingdong" ? "京东" : provider === "cainiao" ? "菜鸟" : "";
+}
+
+/** App links belong to getList entries; /query may return tracks without their jumpList. */
+export async function fetchAccountExternalAppRoutes(
+  shipment: Shipment,
+  signal: AbortSignal,
+): Promise<AccountAppTarget[]> {
+  if (signal.aborted || !accountExternalAppName(shipment) || !shipment.accountRecord) return [];
+  const startedAt = Date.now();
+  const context = { source: SCRIPT_BINDING_SOURCE, sourceProvider: String(shipment.accountRecord.provider || "").toLowerCase() };
+  const cached = loadAccountAppRoutes(shipment.accountRecord);
+  if (cached.length) {
+    writeDiagnostic("detail.external.routes", { ...context, result: "cached", records: cached.length });
+    return cached;
+  }
+  const record = shipment.accountRecord;
+  if (!/^1[3-9]\d{9}$/.test(record.phone || "")) return [];
+  writeDiagnostic("detail.external.request", { ...context, stage: "account_list", result: "started" });
+  try {
+    const response = await accountApi(Date.now() + 15_000, signal).sync({
+      source: SCRIPT_BINDING_SOURCE,
+      identity: loadAccountIdentity(SCRIPT_BINDING_SOURCE),
+      phones: [record.phone!],
+    });
+    if (signal.aborted) return [];
+    const parsed = parseAccountSyncResult(SCRIPT_BINDING_SOURCE, response);
+    const parcel = parsed.parcels.find((item) => item.ownerId === record.waybill &&
+      item.sourceProvider.toLowerCase() === context.sourceProvider &&
+      item.rawCourierCode === record.companyCode && fullPhone(item, [record.phone!]) === record.phone);
+    const route = parcel?.appRoute;
+    const targets = route ? [...route.targets] : [];
+    writeDiagnostic("detail.external.routes", {
+      ...context, stage: "account_list", result: targets.length ? "ready" : parcel ? "links_missing" : "record_missing",
+      records: targets.length, rawRecords: parsed.rawRecords, durationMs: Date.now() - startedAt,
+    });
+    if (route) {
+      try {
+        saveAccountAppRoutes([{ record, route }]);
+      } catch (error) {
+        writeDiagnostic("detail.external.cache_failed", { ...context, ...diagnosticErrorDetails(error) }, "warning");
+      }
+    }
+    return targets;
+  } catch (error) {
+    if (!signal.aborted) writeDiagnostic("detail.external.request_failed", {
+      ...context, ...diagnosticErrorDetails(error), durationMs: Date.now() - startedAt,
+    }, "warning");
+    throw error;
+  }
 }
 
 function trustedRouteKind(
@@ -435,6 +507,11 @@ export function parcelToShipment(
     courierCode,
     companyName,
     semantic,
+    structuredStatus: semantic !== "UNKNOWN" && semantic === (
+      parcel.source === "interface5"
+        ? semanticFromAccountState(parcel.sourceStateCode, "")
+        : semanticFromStored(parcel.sourceStateCode, "")
+    ),
     statusEventAtMs: latest?.timeMs || parseProviderTime(parcel.latestTimeText),
     latestTimeText: latest?.timeText || parcel.latestTimeText,
     latestDetail: latest?.detail || parcel.latestDetail,
@@ -457,22 +534,39 @@ export function parcelToShipment(
   // 之前这里把 H5 节点并进 feed 轨迹（2026-09-04 的「轨迹也归 feed」），详情页就出现同一分钟
   // 的两条「已揽收完成」——一条 feed 的、一条 H5 的（2026-09-05 晚，京东 0822）。
   const split = projectionTimeline ? splitJingDongH5Nodes(projectionTimeline) : null;
-  const carriedFeed = split && timedTracks(split.feed.tracks).length ? split.feed : null;
-  // 带过来的 feed 包与这次 feed 摘要同源增量合并。ORDER 级摘要且状态没推进时（一条「订单已完成」
-  // 打在已签收多日的归档行上）整条不参与——既不接管状态/事件时间/头条，也不写节点，否则归档行
-  // 会被拉回列表（2026-09-04 的老规则，跟「不拼接」无关：这是 feed 自己的订单级摘要）；SHIPMENT
-  // 级、或状态确有推进，这次的 feed 才并进增量并接管展示。
-  const summaryParticipates = !carriedFeed ||
+  const carriedFeed = split?.feed || null;
+  // Restoring a known waybill must not turn an order-completion/evaluation packet into
+  // carrier evidence. Only a carrier-scoped completion may advance an established parcel.
+  const orderCompletion = parcel.normalizedStatusScope === "ORDER" &&
+    accountTimeline.semantic === "COMPLETED";
+  const projectionIdentity = {
+    accountOrder: parcel.accountOrder,
+    manuallyAdded: false,
+    bindingSource: parcel.source,
+    sourceProvider: parcel.sourceProvider,
+    sourceId: ownerId,
+    orderId: parcel.orderId || (parcel.accountOrder ? ownerId : ""),
+    projectedWaybill: unprojectedOrder ? "" : displayWaybill,
+  };
+  const sanitizedAccountTimeline = withoutJingDongOrderCompletion(
+    accountTimeline, projectionIdentity, orderCompletion,
+  );
+  const summaryParticipates = !carriedFeed || (!orderCompletion && (
+    !timedTracks(carriedFeed.tracks).length ||
     parcel.normalizedStatusScope === "SHIPMENT" ||
-    incomingStatusAdvances(carriedFeed.semantic, accountTimeline.semantic);
+    incomingStatusAdvances(carriedFeed.semantic, accountTimeline.semantic)
+  ));
   const timeline = !carriedFeed
-    ? accountTimeline
+    ? sanitizedAccountTimeline
     : summaryParticipates
       ? withAccountPresentation(
-          mergeTimelinePackage(carriedFeed, accountTimeline),
-          accountTimeline,
+          mergeTimelinePackage(
+            withoutJingDongOrderCompletion(carriedFeed, projectionIdentity),
+            sanitizedAccountTimeline,
+          ),
+          sanitizedAccountTimeline,
         )
-      : carriedFeed;
+      : withoutJingDongOrderCompletion(carriedFeed, projectionIdentity);
   const projectedJingDongH5 = split?.jdH5 && split.jdH5.complete === true &&
       timedTracks(split.jdH5.tracks).length
     ? split.jdH5

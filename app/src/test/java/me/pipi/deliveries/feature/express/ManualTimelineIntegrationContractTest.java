@@ -17,21 +17,22 @@ public final class ManualTimelineIntegrationContractTest {
         String detail = source("feature/express/ExpressDetailActivity.java");
         String coordinator = source("network/ManualQueryCoordinator.java");
 
-        assertTrue(list.contains("ManualQueryCoordinator.queryPickerFirst("));
+        assertTrue(list.contains("ExpressDetailActivity.manualQueryIntent("));
+        assertFalse(list.contains("ManualQueryCoordinator.queryPickerFirst("));
         assertTrue(sync.contains("ManualQueryCoordinator.queryPickerFirst("));
         assertTrue(detail.contains("ManualQueryCoordinator.queryPickerFirst("));
         assertFalse(list.contains("OppoManualTimelineClient"));
         assertFalse(sync.contains("OppoManualTimelineClient"));
         assertFalse(detail.contains("OppoManualTimelineClient"));
-        assertTrue(list.contains("new ExpressSubscriptionClient()"));
+        assertTrue(detail.contains("new ExpressSubscriptionClient()"));
         assertTrue(sync.contains("ExpressSubscriptionClient subscription ="
                 + " new ExpressSubscriptionClient()"));
         assertTrue(detail.contains("new ExpressSubscriptionClient()"));
         assertTrue((list + sync + detail).contains("queryMoto("));
         assertTrue((list + sync + detail).contains("queryManual("));
         assertFalse((list + sync + detail).contains("queryWithPhones("));
-        assertTrue(coordinator.contains("new ActivatedSource(\"local\", local, false)"));
-        assertTrue(coordinator.contains("new ActivatedSource(\"route\", route, false)"));
+        assertTrue(coordinator.contains("new ActivatedSource(\"local\", local)"));
+        assertTrue(coordinator.contains("new ActivatedSource(\"route\", route)"));
         assertFalse(coordinator.contains("new ActivatedSource(\"fallback\""));
         assertTrue(coordinator.contains("Executors.newFixedThreadPool"));
         assertFalse(coordinator.contains("includeFallback"));
@@ -39,18 +40,16 @@ public final class ManualTimelineIntegrationContractTest {
         assertTrue(sync.contains("manualOwner.courierCode"));
         assertFalse(sync.contains("manualOwner.displayCourierCode()"));
         assertFalse(sync.contains("saveProjectedOrderTimeline("));
-        assertTrue(detail.contains("requestItem.displayWaybill()"));
-        assertTrue(detail.contains("? \"\" : requestItem.courierCode"));
-        assertTrue(detail.contains("requestItem.isInterface5ProjectedOrder()"));
+        assertTrue(detail.contains("queryOwner.displayWaybill()"));
+        assertTrue(detail.contains("queryOwner.projectedWaybill.isEmpty() ? queryOwner.courierCode : \"\""));
+        assertTrue(detail.contains("queryOwner.isAccountOrder()"));
         assertFalse(detail.contains("saveProjectedOrderTimeline(\n"
                 + "                                        success.result"));
         assertTrue(sync.contains("network.ManualQueryCoordinator"));
-        assertTrue(list.contains("saveManualQueryBatch("));
-        // 用户定 2026-09-05：链跑完前不再开 K100 页的透明预览（每次搜索都打开那一页会用光当天配额，
-        // 而且 picker 回来就开另一个 Activity 曾把整条链连落库一起取消）。
+        assertTrue(detail.contains("repository.saveManualQueryBatch("));
         assertFalse(list.contains("ExpressDetailActivity.transientPickerPreviewIntent("));
-        assertFalse(list.contains("pickerPreview -> runOnUiThread("));
-        assertTrue(list.contains("ExpressDetailActivity.persistedPreviewIntent("));
+        assertTrue(detail.contains("partial -> publishFirstManualPreview(partial, cancellation)"));
+        assertTrue(detail.contains("R.string.loading_complete_logistics"));
         assertTrue(detail.contains("EXTRA_TRANSIENT_PICKER_PREVIEW"));
         // 用户定 2026-09-05（傍晚，取代上午「直接打开 picker 返回的 K100 H5」）：手动件详情先原生，
         // 优先级 picker 增量 → K100 H5 本地抓取 → K100 H5 网页兜底；查完自动进的那次也走这条链。
@@ -69,32 +68,30 @@ public final class ManualTimelineIntegrationContractTest {
     }
 
     @Test
-    public void providerH5DetailsDoNotBecomeLocalTimelineCapture()
+    public void automaticH5DetailsUseTheInterface5CaptureBoundary()
             throws Exception {
         String list = compact(source("feature/express/ExpressListActivity.java"));
         String sync = source("background/ExpressSyncEngine.java");
         String detail = compact(source("feature/express/ExpressDetailActivity.java"));
         String coordinator = source("network/ManualQueryCoordinator.java");
 
-        int pickerFirst = list.indexOf("ManualQueryCoordinator.queryPickerFirst(");
-        int picker = list.indexOf("meizuApi.queryManual(", pickerFirst);
-        int detect = list.indexOf("manualApi.detect(", pickerFirst);
-        int localSource = list.lastIndexOf("() -> {", detect);
-        int moto = list.indexOf("manualApi.queryMoto(", detect);
-        int includesMoto = list.indexOf(
-                "ManualQueryRoutingPolicy.includesMoto(existing)", moto);
+        int pickerFirst = detail.indexOf("ManualQueryCoordinator.queryPickerFirst(");
+        int picker = detail.indexOf("meizuApi.queryManual(", pickerFirst);
+        int detect = detail.indexOf("manualApi.detect(", pickerFirst);
+        int moto = detail.indexOf("manualApi.queryMoto(", detect);
         assertTrue(pickerFirst >= 0);
         assertTrue(picker > pickerFirst);
-        assertTrue(localSource > picker);
-        assertFalse(list.substring(pickerFirst, localSource).contains("manualApi.detect("));
-        assertTrue(detect > localSource);
+        assertTrue(detect > picker);
         assertTrue(moto > detect);
-        assertTrue(includesMoto > moto);
-        assertTrue(detail.contains("showJingDongWebDetail(jingDongUrl);"));
+        assertTrue(detail.contains("ManualQueryRoutingPolicy.includesMoto(existing)"));
+        assertFalse(detail.contains("showJingDongWebDetail("));
+        assertTrue(detail.contains("ExpressAutomaticTimelineCapture.capture("));
+        assertTrue(detail.contains("allowsJingDongCapture(owner, accountDetailGaveTimeline)"));
+        assertTrue(detail.contains("allowsPrimaryKuaidi100(queryOwner)"));
         assertFalse(detail.contains("startProjectedOrderTimelineRefresh"));
         assertFalse(detail.contains("projectedOrderTimelineCapture"));
         assertFalse(detail.contains("saveProjectedOrderTimeline("));
-        assertTrue(detail.contains("ManualQueryRoutingPolicy.includesMoto(requestItem)"));
+        assertTrue(detail.contains("ManualQueryRoutingPolicy.includesMoto(queryOwner)"));
         assertTrue(detail.contains("showKuaidi100WebDetail(route)"));
         assertFalse(detail.contains("manualApi.queryWithPhones("));
         assertFalse(sync.contains("queryWithPhones("));

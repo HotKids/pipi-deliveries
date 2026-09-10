@@ -11,7 +11,6 @@ import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
 
 export const SIGNED_RETENTION_MS = EXPRESS_POLICY.retention.signedMs;
 export const CANCELLED_RETENTION_MS = EXPRESS_POLICY.retention.cancelledMs;
-export const SIGNED_REFRESH_MS = EXPRESS_POLICY.retention.signedRefreshMs;
 
 export const STATUS_LABELS: Readonly<Record<StatusSemantic, string>> =
   EXPRESS_POLICY.status.labels;
@@ -34,19 +33,6 @@ function timelinePresentationSemantic(
   if (!tracks.length) return "UNKNOWN";
   const inferred = packageSemantic("", tracks).semantic;
   return inferred === "UNKNOWN" ? "TRANSIT" : inferred;
-}
-
-function manualPickerStatusTimeline(
-  shipment: Shipment,
-): TimelinePackage | null {
-  const candidates = [
-    shipment.timeline,
-    ...(shipment.manualTimelines || []),
-  ].filter((timeline) =>
-    timelineCapability(timeline.provider) === "route" &&
-    timedTracks(timeline.tracks).length > 0
-  );
-  return selectTimelineAuthority(null, candidates);
 }
 
 export function shipmentPresentationStatus(
@@ -96,12 +82,9 @@ export function shipmentPresentationStatus(
       text: presentation.semantic === "COMPLETED" ? "已完成" : text,
     };
   }
-  const statusTimeline = shipment.identity.manuallyAdded
-    ? manualPickerStatusTimeline(shipment) || shipment.timeline
-    : shipment.timeline;
   const semantic = shipment.identity.manuallyAdded
-    ? timelinePresentationSemantic(statusTimeline)
-    : statusTimeline.semantic;
+    ? timelinePresentationSemantic(shipment.timeline)
+    : shipment.timeline.semantic;
   // A richer timeline must never cost the row its status. The JD H5 and KDNiao packages carry no
   // per-node structured status at all, so once the 2026-09-04 node-count rule made them complete
   // they replaced the feed package and two signed-for rows fell to 暂无状态 with their delivery
@@ -123,10 +106,13 @@ export function shipmentDetailPresentationStatus(
   detailTimeline: TimelinePackage,
 ): Readonly<{ semantic: StatusSemantic; text: string }> {
   if (!shipment.identity.manuallyAdded) {
-    return shipmentPresentationStatus(shipment);
+    const ownerStatus = shipmentPresentationStatus(shipment);
+    return ownerStatus.semantic === "UNKNOWN" && detailTimeline.structuredStatus &&
+        detailTimeline.semantic !== "UNKNOWN"
+      ? { semantic: detailTimeline.semantic, text: statusLabel(detailTimeline.semantic) }
+      : ownerStatus;
   }
-  const statusTimeline = manualPickerStatusTimeline(shipment) || detailTimeline;
-  const semantic = timelinePresentationSemantic(statusTimeline);
+  const semantic = timelinePresentationSemantic(detailTimeline);
   return { semantic, text: statusLabel(semantic) };
 }
 
@@ -440,6 +426,60 @@ export function splitJingDongH5Nodes(
   return { feed, jdH5 };
 }
 
+/** Shopping completion is not a carrier event after this JD order has a waybill. */
+export function withoutJingDongOrderCompletion(
+  timeline: TimelinePackage,
+  identity: Pick<ShipmentIdentity,
+    "accountOrder" | "manuallyAdded" | "sourceId" | "orderId" | "projectedWaybill" |
+    "sourceProvider" | "bindingSource">,
+  orderScopedStatus = false,
+): TimelinePackage {
+  const projectedOrder = identity.accountOrder && normalizedProjectedWaybill(identity);
+  const directJingDongWaybill = !identity.accountOrder &&
+    identity.bindingSource === "interface5" &&
+    String(identity.sourceProvider || "").trim().toLowerCase() === "jingdong" &&
+    Boolean(normalizeWaybill(identity.sourceId)) &&
+    normalizeWaybill(timeline.waybill) === normalizeWaybill(identity.sourceId);
+  if (identity.manuallyAdded || (!projectedOrder && !directJingDongWaybill)) return timeline;
+  const orderId = normalizeWaybill(identity.orderId || (identity.accountOrder ? identity.sourceId : ""));
+  const isCompletion = (detail: string): boolean => {
+    const text = String(detail || "").replace(/\s+/g, "")
+      .replace(/[，。！!]/g, (value) => value === "，" ? "," : value === "。" ? "." : "!");
+    const numbered = text.match(/^您的订单(\d+)已完成,感谢您对京东的支持,欢迎再次光临\.期待您对本次购物进行评价\.?$/);
+    return numbered ? !orderId || numbered[1] === orderId
+      : /^您的订单\[[^\]]+\]已完成,\d+京豆等您拿,完成评价即有机会获得,不要错过呦!?$/.test(text);
+  };
+  const removed = timeline.tracks.filter((track) => isCompletion(track.detail));
+  const removesHeadline = isCompletion(timeline.latestDetail);
+  if (!removed.length && !removesHeadline) return timeline;
+  const tracks = timeline.tracks.filter((track) => !isCompletion(track.detail));
+  const latest = [...timedTracks(tracks)].sort(
+    (left, right) => (right.timeMs || 0) - (left.timeMs || 0),
+  )[0] || tracks[0];
+  // Blank prose while reading the existing enum map: a surviving delivery sentence
+  // alone cannot replace the removed order event's status timestamp.
+  const evidence = latestEventEvidence(tracks.map((track) => ({ ...track, detail: "" })));
+  const removesStatusTime = removed.some((track) =>
+    track.timeMs != null && track.timeMs === timeline.statusEventAtMs
+  ) || (removesHeadline && parseProviderTime(timeline.latestTimeText) === timeline.statusEventAtMs);
+  const invalidatesStatus = removesStatusTime || orderScopedStatus;
+  const semantic = !tracks.length ? "UNKNOWN"
+    : invalidatesStatus ? evidence.semantic : timeline.semantic;
+  return {
+    ...timeline,
+    tracks,
+    latestDetail: latest?.detail || "",
+    latestTimeText: latest?.timeText || "",
+    semantic,
+    statusEventAtMs: !tracks.length || invalidatesStatus
+      ? evidence.semantic === semantic && semantic !== "UNKNOWN" ? evidence.eventAtMs : null
+      : timeline.statusEventAtMs,
+    structuredStatus: invalidatesStatus ? evidence.semantic !== "UNKNOWN"
+      : tracks.length ? timeline.structuredStatus : false,
+    complete: tracks.length ? timeline.complete : false,
+  };
+}
+
 export function timedTracks(tracks: readonly TrackNode[]): TrackNode[] {
   return tracks.filter(
     (track) =>
@@ -462,6 +502,13 @@ const ORDER_COMPLETION_TEXT = /订单已完成|配送完成/;
 export function containsTimelineStartTrack(
   tracks: readonly TrackNode[],
 ): boolean {
+  return containsTimelineOriginTrack(tracks) || timedTracks(tracks).some((track) =>
+    ORDER_COMPLETION_TEXT.test(track.detail.replace(/\s+/g, ""))
+  );
+}
+
+/** Query completion is not evidence of the parcel's historical origin. */
+export function containsTimelineOriginTrack(tracks: readonly TrackNode[]): boolean {
   const isStart = (semantic: StatusSemantic) =>
     semantic === "ORDERED" || semantic === "PICKED";
   return timedTracks(tracks).some((track) => {
@@ -469,8 +516,7 @@ export function containsTimelineStartTrack(
     return codes.some((code) =>
       isStart(semanticFromTrackCode(track, code)) ||
       isStart(semanticFromStored(String(code ?? ""), track.detail))
-    ) || isStart(semanticFromText(track.detail))
-      || ORDER_COMPLETION_TEXT.test(track.detail.replace(/\s+/g, ""));
+    ) || isStart(semanticFromText(track.detail));
   });
 }
 
@@ -745,20 +791,7 @@ export function mergeTracks(
       return right.timeText.localeCompare(left.timeText);
     }),
   );
-  if (sorted.length <= 160) return sorted;
-  const retained = new Set(sorted.slice(0, 156));
-  for (const track of sorted.slice(156)) {
-    const semantic = semanticFromTrackCode(track, track.statusCode) === "UNKNOWN"
-      ? semanticFromText(track.detail)
-      : semanticFromTrackCode(track, track.statusCode);
-    if (
-      semantic === "ORDERED" || semantic === "PICKED" ||
-      semantic === "COMPLETED" || semantic === "CANCELLED"
-    ) {
-      retained.add(track);
-    }
-  }
-  return sorted.filter((track) => retained.has(track));
+  return sorted;
 }
 
 const SAME_EVENT_PROGRESS: readonly StatusSemantic[] = [
@@ -806,6 +839,7 @@ export function isTerminalStatusSemantic(semantic: string): boolean {
   return value === "COMPLETED" || value === "CANCELLED";
 }
 export function incomingStatusAdvances(base: string, incoming: string): boolean {
+  if (base === incoming) return false;
   if (isTerminalStatusSemantic(incoming)) return true;
   if (isTerminalStatusSemantic(base)) return false;
   return statusProgressionRank(incoming) > statusProgressionRank(base);
@@ -847,7 +881,18 @@ export function mergeTimelinePackage(
   if (current.provider.toLowerCase() !== incoming.provider.toLowerCase()) {
     return incoming;
   }
-  if (!incomingTimed.length) return current;
+  const confirmsUnstructuredCompletion = current.semantic === "COMPLETED" &&
+    current.structuredStatus !== true && incoming.semantic === "COMPLETED" &&
+    incoming.structuredStatus === true;
+  if (!incomingTimed.length) {
+    // A structured status-only reply can fill the same provider's cached status gap.
+    // Its absent history must not erase the tracks and headline already stored.
+    return (current.semantic === "UNKNOWN" || confirmsUnstructuredCompletion) && incoming.structuredStatus === true &&
+        incoming.semantic !== "UNKNOWN"
+      ? { ...current, semantic: incoming.semantic,
+          statusEventAtMs: incoming.statusEventAtMs, structuredStatus: true }
+      : current;
+  }
 
   const tracks = mergeTracks(current.tracks, incoming.tracks);
   const finalize = (
@@ -881,11 +926,13 @@ export function mergeTimelinePackage(
     EXPRESS_POLICY.manualAuthority.completedOutranksNonTerminal &&
     currentCompleted
   ) {
-    // The only exit that keeps its stored headline: a signed row stays on its 已签收 line whatever
-    // the merge absorbs afterwards, which is the whole point of the terminal freeze. Both arms of
-    // the former ternary were identical, so the completed row is frozen either way.
+    // Terminal freeze preserves the signed state and headline, but a legacy text-derived
+    // completion must still accept the same provider's structured confirmation and event time.
     return finalize({
       ...current,
+      ...(confirmsUnstructuredCompletion
+        ? { structuredStatus: true, statusEventAtMs: incoming.statusEventAtMs }
+        : {}),
       tracks,
       successAtMs: Math.max(current.successAtMs, incoming.successAtMs),
     }, true);
@@ -916,7 +963,7 @@ export function mergeTimelinePackage(
 const MANUAL_TIMELINE_PROVIDERS = new Set([
   TIMELINE_SLOT.V5_QUERY,
   TIMELINE_SLOT.V4_QUERY,
-  TIMELINE_SLOT.V6_PICKER,
+  TIMELINE_SLOT.V6_QUERY,
   TIMELINE_SLOT.V2_QUERY,
   TIMELINE_SLOT.CN_H5,
   TIMELINE_SLOT.K100_H5,
@@ -940,7 +987,7 @@ export function timelineCapability(provider: unknown): TimelineCapability {
   const value = normalizeTimelineSlot(raw);
   if (value === TIMELINE_SLOT.V5_QUERY) return "account";
   if (value === TIMELINE_SLOT.V4_QUERY) return "local";
-  if (value === TIMELINE_SLOT.V6_PICKER || value === TIMELINE_SLOT.V2_QUERY) {
+  if (value === TIMELINE_SLOT.V6_QUERY || value === TIMELINE_SLOT.V2_QUERY) {
     return "route";
   }
   if (
@@ -1014,7 +1061,8 @@ export function mergeTimelineAuthorities(
 ): TimelinePackage[] {
   if (
     EXPRESS_POLICY.manualAuthority.requiresTimedTrack &&
-    !timedTracks(incoming.tracks).length
+    !timedTracks(incoming.tracks).length &&
+    !(incoming.structuredStatus === true && incoming.semantic !== "UNKNOWN")
   ) {
     return [...current];
   }
@@ -1094,7 +1142,7 @@ export function compareTimelineProviderOrder(
 function manualProviderRank(provider: string): number {
   const normalized = normalizeTimelineSlot(provider);
   const capability = timelineCapability(normalized);
-  if (normalized === TIMELINE_SLOT.V6_PICKER) return 0;
+  if (normalized === TIMELINE_SLOT.V6_QUERY) return 0;
   const capabilityRank = ["local", "web", "route", "fallback"].indexOf(capability);
   if (capabilityRank >= 0) return capabilityRank + 1;
   const rank = EXPRESS_POLICY.manualAuthority.tieBreakOrder.indexOf(
@@ -1147,59 +1195,32 @@ function validLifecycleTime(value: unknown, now: number): number {
     : 0;
 }
 
-function latestTimelineTime(shipment: Shipment, now: number): number {
-  return validLifecycleTime(
-    parseProviderTime(shipment.timeline.latestTimeText),
-    now,
-  );
-}
-
-/** 来源给出的终态事件时间：结构化状态时间优先，其次带时间的签收节点。 */
+/** Structured terminal time owns retention; unrelated headlines cannot move it. */
 export function terminalEvidenceAtMs(shipment: Shipment, now = Date.now()): number {
-  let value = Math.max(
-    validLifecycleTime(shipment.timeline.statusEventAtMs, now),
-    latestTimelineTime(shipment, now),
-  );
+  const structured = validLifecycleTime(shipment.timeline.statusEventAtMs, now);
+  if (structured) return structured;
+  const terminalText = shipment.timeline.semantic === "CANCELLED"
+    ? /已取消|订单关闭/
+    : /签收|妥投|配送完成/;
+  let value = 0;
   for (const track of shipment.timeline.tracks) {
-    const detail = track.detail.replace(/\s+/g, "");
-    if (!/签收|妥投|配送完成|已取消|订单关闭/.test(detail)) continue;
+    if (!terminalText.test(track.detail.replace(/\s+/g, ""))) continue;
     value = Math.max(value, validLifecycleTime(track.timeMs, now));
   }
   return value;
 }
 
-/**
- * 留存倒计时只认「第一次进入终态」那个戳（`stampSettledAt` 盖的，盖的时候已经优先用来源给的终态
- * 事件时间，所以留存外的老件一进来就是过期的，「留存外老件不导入」照旧成立）。
- *
- * 不能反过来每轮拿展示包里的签收时间重算：那样一行在详情页下拉刷出真实轨迹（签收在 8 天前）的
- * 当场就过期、被整行删掉，下一轮列表同步又把它当新件导回来——新行只有 feed 槽，详情抓回来的整包
- * 轨迹全丢，界面成了「已签收 · 暂无物流动态」，而空壳没有签收证据又永远不再过期。用户 2026-09-08
- * 报的「一个个点进去把轨迹刷新出来，关掉重新打开又回来了」就是这个循环。
- *
- * 戳之所以稳定，前提是过期只是不再展示、不把这一行从本地删掉（storage 的 retainDurableShipments）：
- * 行还在，下一轮同步就不会重新导入，戳也就不会被重新盖上。
- */
+// Visibility and storage expiry share the first persisted terminal timestamp.
+// Refreshing a hidden row's history must not start either countdown again.
 function signedAt(shipment: Shipment, now: number): number {
-  const settled = validLifecycleTime(shipment.settledAtMs, now);
-  if (settled) return settled;
-  let value = Math.max(
-    validLifecycleTime(shipment.timeline.statusEventAtMs, now),
-    latestTimelineTime(shipment, now),
-  );
-  for (const track of shipment.timeline.tracks) {
-    const detail = track.detail.replace(/\s+/g, "");
-    if (!/签收|妥投|配送完成/.test(detail)) continue;
-    value = Math.max(value, validLifecycleTime(track.timeMs, now));
-  }
-  return value;
+  return validLifecycleTime(shipment.settledAtMs, now) || terminalEvidenceAtMs(shipment, now);
 }
 
-function cancelledAt(shipment: Shipment, now: number): number {
-  return Math.max(
-    validLifecycleTime(shipment.timeline.statusEventAtMs, now),
-    latestTimelineTime(shipment, now),
-  ) || validLifecycleTime(shipment.settledAtMs, now);
+export function isHiddenSignedShipment(shipment: Shipment, now = Date.now()): boolean {
+  if (Number(shipment.emptyTimelineHiddenAtMs) > 0) return true;
+  if (shipment.timeline.semantic !== "COMPLETED") return false;
+  const eventAt = signedAt(shipment, now);
+  return eventAt > 0 && now - eventAt >= SIGNED_RETENTION_MS;
 }
 
 export function pruneShipments(
@@ -1207,13 +1228,12 @@ export function pruneShipments(
   now = Date.now(),
 ): Shipment[] {
   return shipments.filter((shipment) => {
+    if (Number(shipment.emptyTimelineHiddenAtMs) > 0) return false;
     if (shipment.timeline.semantic === "COMPLETED") {
-      const eventAt = signedAt(shipment, now);
-      if (!eventAt) return true;
-      return now - eventAt < SIGNED_RETENTION_MS;
+      return !isHiddenSignedShipment(shipment, now);
     }
     if (shipment.timeline.semantic === "CANCELLED") {
-      const eventAt = cancelledAt(shipment, now);
+      const eventAt = signedAt(shipment, now);
       if (!eventAt) return true;
       return now - eventAt < CANCELLED_RETENTION_MS;
     }
@@ -1221,31 +1241,19 @@ export function pruneShipments(
   });
 }
 
-/** 这一行手上还有没有任何带时间的节点（feed 槽、展示包、各手动槽都算）。 */
-function hasAnyTimedHistory(shipment: Shipment): boolean {
-  if (timedTracks(shipment.timeline.tracks).length) return true;
-  if (timedTracks(shipment.sourceTimeline?.tracks || []).length) return true;
-  for (const timeline of shipment.manualTimelines || []) {
-    if (timedTracks(timeline.tracks).length) return true;
-  }
-  return false;
-}
-
 export function shouldRefreshShipment(
   shipment: Shipment,
   now = Date.now(),
 ): boolean {
+  if (Number(shipment.emptyTimelineHiddenAtMs) > 0) return false;
   const forcedCompletedAtMs = Number(shipment.forcedCompletedAtMs);
   if (Number.isFinite(forcedCompletedAtMs) && forcedCompletedAtMs > 0) {
     return false;
   }
   if (shipment.timeline.semantic !== "COMPLETED") return true;
-  // 冻结保护的是「已经有的轨迹」。一行签收了却一条带时间的节点都没有（早前被 R-29 误清空、
-  // 或被 feed 空壳覆盖的那批），冻结只会把空壳永久锁死，列表一直写「暂无物流动态」，而且再也
-  // 不会自己补回来（用户 2026-09-08 报「又回来了」）。这种行照旧允许刷新去把轨迹拿回来。
-  if (!hasAnyTimedHistory(shipment)) return true;
-  const eventAt = signedAt(shipment, now);
-  return !eventAt || now - eventAt < SIGNED_REFRESH_MS;
+  // Empty history is repaired through explicit detail refresh, never by thawing background work.
+  const eventAt = terminalEvidenceAtMs(shipment, now);
+  return !eventAt;
 }
 
 export function buildWidgetSnapshot(

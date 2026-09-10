@@ -1,38 +1,56 @@
 package me.pipi.deliveries.feature.express;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
+import android.app.Application;
+import android.app.Activity;
+import android.content.Context;
+import android.os.Looper;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.Locale;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-
 import me.pipi.deliveries.model.ExpressItem;
+import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.StatusSemantic;
-
+import me.pipi.deliveries.data.ExpressRepository;
+import me.pipi.deliveries.data.ExpressDatabase;
+import me.pipi.deliveries.network.ExpressDiscoveryClient;
+import me.pipi.deliveries.network.ExpressQueryCancellation;
+import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.Robolectric;
+import org.robolectric.Shadows;
+import org.robolectric.annotation.Config;
+import org.robolectric.annotation.Implements;
+import org.robolectric.annotation.Implementation;
+import org.robolectric.annotation.SQLiteMode;
 
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 35, manifest = Config.NONE, application = Application.class,
+        shadows = {ExpressHomeOrderProjectionTest.QueryShadow.class,
+                ExpressHomeOrderProjectionTest.CaptureShadow.class})
+@SQLiteMode(SQLiteMode.Mode.NATIVE)
 public final class ExpressHomeOrderProjectionTest {
     private static final String ROUTE_A = "https://order.jd.com/detail?token=a";
     private static final String ROUTE_ROTATED = "https://order.jd.com/detail?token=b";
-    private static final String ROUTE_NEW_ENDPOINT = "https://wqs.jd.com/detail?token=c";
-    private static final String ROUTE_NEW_PATH = "https://order.jd.com/order/detail?token=c";
-    private static final String ROUTE_NEW_PORT = "https://order.jd.com:8443/detail?token=c";
+    private static final long NOW = 1_000_000L;
+    private static final long TEN_MINUTES = 10L * 60L * 1000L;
+    private ExpressOrderProjectionRetryStore retries;
+    private Context context;
 
-    @Test
-    public void onlyUnresolvedOrdersWithAnAvailableRouteAreEligible() {
+    @Before public void setUp() {
+        context = RuntimeEnvironment.getApplication();
+        context.getSharedPreferences("express_jd_h5_cooldown", 0).edit().clear().commit();
+        retries = new ExpressOrderProjectionRetryStore(context);
+    }
+
+    @Test public void onlyUnresolvedInterface5OrdersWithAnAvailableRouteAreEligible() {
         assertTrue(ExpressHomeOrderProjectionCapture.needsProjection(
                 order(1L, "I5-JD", "", true, ROUTE_A)));
-        assertTrue(ExpressHomeOrderProjectionCapture.needsProjection(
+        assertFalse(ExpressHomeOrderProjectionCapture.needsProjection(
                 order(2L, "I6-JD", "", true, ROUTE_A)));
         assertFalse(ExpressHomeOrderProjectionCapture.needsProjection(
                 order(3L, "I5-JD", "JDWAYBILL123", true, ROUTE_A)));
@@ -43,12 +61,10 @@ public final class ExpressHomeOrderProjectionTest {
         assertFalse(ExpressHomeOrderProjectionCapture.needsProjection(normalShipment()));
     }
 
-    @Test
-    public void homeQueueIsFifoAndAttemptsEachRowOncePerBatch() {
+    @Test public void homeQueueIsFifoAndAttemptsEachRowOncePerBatch() {
         ExpressItem first = order(1L, "I5-JD", "", true, ROUTE_A);
         ExpressItem second = order(2L, "I5-JD", "", true, ROUTE_A);
         Set<String> attempted = new HashSet<>();
-
         assertEquals(first, ExpressListActivity.nextOrderProjectionCandidate(
                 Arrays.asList(first, first, second), attempted));
         assertEquals(second, ExpressListActivity.nextOrderProjectionCandidate(
@@ -57,290 +73,183 @@ public final class ExpressHomeOrderProjectionTest {
                 Arrays.asList(first, first, second), attempted));
     }
 
-    @Test
-    public void failedProjectionCoolsOnlyTheSameStableIdentityAndRoute() {
-        long now = 1_000_000L;
-        ExpressItem first = order(1L, "I5-JD", "", true, ROUTE_A);
-        ExpressItem sameIdentity = orderWithIdentity(
-                9L, "I5-JD", "JDORDER1", "", true, ROUTE_A);
-        ExpressItem rotatedCredential = order(
-                1L, "I5-JD", "", true, ROUTE_ROTATED);
-        ExpressItem changedEndpoint = order(
-                1L, "I5-JD", "", true, ROUTE_NEW_ENDPOINT);
-        ExpressItem changedPath = order(
-                1L, "I5-JD", "", true, ROUTE_NEW_PATH);
-        ExpressItem changedPort = order(
-                1L, "I5-JD", "", true, ROUTE_NEW_PORT);
-        ExpressItem alternateSource = order(1L, "I6-JD", "", true, ROUTE_A);
-
-        String failedRoute = ExpressOrderProjectionRetryStore.routeFingerprint(first);
-        assertFalse(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, failedRoute,
-                ExpressOrderProjectionRetryStore.routeFingerprint(sameIdentity), now + 1L));
-        assertFalse(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, failedRoute,
-                ExpressOrderProjectionRetryStore.routeFingerprint(rotatedCredential), now + 1L));
-        assertTrue(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, failedRoute,
-                ExpressOrderProjectionRetryStore.routeFingerprint(changedEndpoint), now + 1L));
-        assertTrue(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, failedRoute,
-                ExpressOrderProjectionRetryStore.routeFingerprint(changedPath), now + 1L));
-        assertTrue(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, failedRoute,
-                ExpressOrderProjectionRetryStore.routeFingerprint(changedPort), now + 1L));
-        assertTrue(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, failedRoute,
-                ExpressOrderProjectionRetryStore.routeFingerprint(alternateSource), now + 1L));
-        assertTrue(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, failedRoute, failedRoute,
-                now + ExpressOrderProjectionRetryStore.FAILURE_COOLDOWN_MS));
-        assertFalse(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, failedRoute, failedRoute,
-                now + ExpressOrderProjectionRetryStore.FAILURE_COOLDOWN_MS - 1L));
-        assertEquals(60L * 60L * 1000L,
-                ExpressOrderProjectionRetryStore.FAILURE_COOLDOWN_MS);
-    }
-
-    @Test
-    public void forcedDetailAttemptBypassesCooldownButNotAnActiveAttempt() {
-        ExpressItem order = order(1L, "I5-JD", "", true, ROUTE_A);
-        long now = 1_000_000L;
-        String route = ExpressOrderProjectionRetryStore.routeFingerprint(order);
-
-        assertFalse(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, route, route, now + 1L));
-        assertTrue(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, route, route, now + 1L, true));
-        ExpressOrderProjectionRetryStore.AttemptToken first =
-                ExpressOrderProjectionRetryStore.acquireAttempt(order);
+    @Test public void releasingOrCancellingAnAttemptKeepsItsTenMinuteCooldown() {
+        ExpressItem item = order(1L, "I5-JD", "", true, ROUTE_A);
+        ExpressOrderProjectionRetryStore.AttemptToken first = retries.beginAttempt(item, NOW);
         assertNotNull(first);
-        assertNull(ExpressOrderProjectionRetryStore.acquireAttempt(order));
-        assertNull(ExpressOrderProjectionRetryStore.acquireAttempt(
-                orderWithIdentity(9L, "I5-JD", order.waybill, "", true,
-                        ROUTE_NEW_ENDPOINT)));
-        ExpressItem otherSource = orderWithIdentity(
-                9L, "I6-JD", order.waybill, "", true, ROUTE_A);
-        ExpressOrderProjectionRetryStore.AttemptToken other =
-                ExpressOrderProjectionRetryStore.acquireAttempt(otherSource);
-        assertNotNull(other);
-        assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(other));
-        assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(first));
-        ExpressOrderProjectionRetryStore.AttemptToken replacement =
-                ExpressOrderProjectionRetryStore.acquireAttempt(order);
-        assertNotNull(replacement);
-        assertFalse(ExpressOrderProjectionRetryStore.releaseAttempt(first));
-        assertNull(ExpressOrderProjectionRetryStore.acquireAttempt(order));
-        assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(replacement));
+        retries.endAttempt(first);
+        assertNull(retries.beginAttempt(item, NOW + TEN_MINUTES - 1L));
+        ExpressOrderProjectionRetryStore.AttemptToken next = retries.beginAttempt(item, NOW + TEN_MINUTES);
+        assertNotNull(next);
+        retries.endAttempt(next);
     }
 
-    @Test
-    public void detailHandoffRechecksTheCurrentUnresolvedOwner() {
-        ExpressItem stale = order(1L, "I5-JD", "", true, ROUTE_A);
-        ExpressItem refreshedRoute = orderWithIdentity(
-                1L, "I5-JD", stale.waybill, "", true, ROUTE_ROTATED);
-        ExpressItem resolvedByHome = orderWithIdentity(
-                1L, "I5-JD", stale.waybill, "JDWAYBILL123", true, ROUTE_ROTATED);
-
-        assertEquals(refreshedRoute,
-                ExpressOrderProjectionRetryStore.currentUnresolvedOwner(
-                        stale, refreshedRoute));
-        assertNull(ExpressOrderProjectionRetryStore.currentUnresolvedOwner(
-                stale, resolvedByHome));
+    @Test public void detailAndHomeShareCooldownAndRouteChangesDoNotBypassIt() {
+        ExpressItem item = order(1L, "I5-JD", "", true, ROUTE_A);
+        ExpressOrderProjectionRetryStore.AttemptToken home = retries.beginAttempt(item, NOW);
+        assertNotNull(home);
+        retries.endAttempt(home);
+        ExpressItem projected = order(1L, "I5-JD", "JDREAL123456", true, ROUTE_ROTATED);
+        assertNull(retries.beginTimelineAttempt(projected, NOW + 1L));
+        assertNull(retries.beginTimelineAttempt(
+                order(1L, "I5-JD", "", true, "https://wqs.jd.com/other"), NOW + 1L));
+        ExpressOrderProjectionRetryStore.AttemptToken detail =
+                retries.beginTimelineAttempt(projected, NOW + TEN_MINUTES);
+        assertNotNull(detail);
+        retries.endAttempt(detail);
+        assertNull(retries.beginAttempt(item, NOW + TEN_MINUTES + 1L));
     }
 
-    @Test
-    public void failedCooldownPersistenceCannotLeakTheActiveAttempt() {
-        ExpressItem order = order(1L, "I5-JD", "", true, ROUTE_A);
-        ExpressOrderProjectionRetryStore.AttemptToken token =
-                ExpressOrderProjectionRetryStore.acquireAttempt(order);
+    @Test public void rateControlExtendsTheSameOrderToSixtyMinutes() {
+        ExpressItem item = order(1L, "I5-JD", "", true, ROUTE_A);
+        ExpressOrderProjectionRetryStore.AttemptToken token = retries.beginAttempt(item, NOW);
         assertNotNull(token);
-        AtomicInteger wakeups = new AtomicInteger();
-        ExpressOrderProjectionRetryStore.WaitToken waiter =
-                ExpressOrderProjectionRetryStore.waitForAttemptRelease(
-                        order, wakeups::incrementAndGet);
-        assertNotNull(waiter);
-        IllegalStateException databaseFailure =
-                new IllegalStateException("database unavailable");
-        AtomicReference<RuntimeException> reportedFailure = new AtomicReference<>();
-        assertFalse(ExpressOrderProjectionRetryStore.completeAttempt(
-                token, () -> { throw databaseFailure; }, reportedFailure::set));
-        assertEquals(1, wakeups.get());
-        assertSame(databaseFailure, reportedFailure.get());
-        assertFalse(ExpressOrderProjectionRetryStore.cancelWait(waiter));
-        ExpressOrderProjectionRetryStore.AttemptToken retry =
-                ExpressOrderProjectionRetryStore.acquireAttempt(order);
-        assertNotNull(retry);
-        ExpressOrderProjectionRetryStore.releaseAttempt(retry);
+        retries.recordTimelineRateLimit(item, NOW + 1_000L);
+        retries.endAttempt(token);
+        assertNull(retries.beginTimelineAttempt(item, NOW + TEN_MINUTES));
+        long until = NOW + 1_000L + 60L * 60L * 1000L;
+        assertNull(retries.beginTimelineAttempt(item, until - 1L));
+        ExpressOrderProjectionRetryStore.AttemptToken next = retries.beginTimelineAttempt(item, until);
+        assertNotNull(next);
+        retries.endAttempt(next);
     }
 
-    @Test
-    public void staleAttemptCannotRunCompletionOrReleaseTheCurrentAttempt() {
-        ExpressItem order = order(1L, "I5-JD", "", true, ROUTE_A);
-        ExpressOrderProjectionRetryStore.AttemptToken stale =
-                ExpressOrderProjectionRetryStore.acquireAttempt(order);
-        assertNotNull(stale);
-        assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(stale));
+    @Test public void anActiveAttemptAndAStaleReleaseCannotAllowASecondCapture() {
+        ExpressItem item = order(1L, "I5-JD", "", true, ROUTE_A);
+        ExpressOrderProjectionRetryStore.AttemptToken first = retries.beginAttempt(item, NOW);
+        assertNotNull(first);
+        assertNull(retries.beginTimelineAttempt(item, NOW + TEN_MINUTES));
+        assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(first));
         ExpressOrderProjectionRetryStore.AttemptToken current =
-                ExpressOrderProjectionRetryStore.acquireAttempt(order);
+                retries.beginTimelineAttempt(item, NOW + TEN_MINUTES);
         assertNotNull(current);
-        AtomicInteger callbacks = new AtomicInteger();
-        AtomicInteger failures = new AtomicInteger();
-
-        assertFalse(ExpressOrderProjectionRetryStore.completeAttempt(
-                stale, callbacks::incrementAndGet,
-                ignored -> failures.incrementAndGet()));
-        assertEquals(0, callbacks.get());
-        assertEquals(0, failures.get());
-        assertNull(ExpressOrderProjectionRetryStore.acquireAttempt(order));
+        assertFalse(ExpressOrderProjectionRetryStore.releaseAttempt(first));
+        assertNull(ExpressOrderProjectionRetryStore.acquireAttempt(item));
         assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(current));
     }
 
-    @Test
-    public void cooldownIdentityIsScopedToSourceAndOrderNotRowId() {
-        ExpressItem first = order(1L, "I5-JD", "", true, ROUTE_A);
-        ExpressItem sameOrderDifferentRow = orderWithIdentity(
-                9L, "I5-JD", "JDORDER1", "", true, ROUTE_A);
-        ExpressItem otherSource = order(1L, "I6-JD", "", true, ROUTE_A);
-
-        assertEquals(ExpressOrderProjectionRetryStore.stableIdentity(first),
-                ExpressOrderProjectionRetryStore.stableIdentity(sameOrderDifferentRow));
-        assertFalse(ExpressOrderProjectionRetryStore.stableIdentity(first).equals(
-                ExpressOrderProjectionRetryStore.stableIdentity(otherSource)));
+    @Test public void feedTextProjectionCanAcquireTheLeaseWithoutOpeningH5() {
+        ExpressItem item = order(1L, "I5-JD", "", true, ROUTE_A);
+        ExpressOrderProjectionRetryStore.AttemptToken h5 = retries.beginAttempt(item, NOW);
+        assertNotNull(h5);
+        retries.endAttempt(h5);
+        assertNull(retries.beginAttempt(item, NOW + 1L));
+        ExpressOrderProjectionRetryStore.AttemptToken text =
+                ExpressOrderProjectionRetryStore.acquireAttempt(item);
+        assertNotNull(text);
+        retries.endAttempt(text);
+        assertNull(retries.beginAttempt(item, NOW + 2L));
     }
 
-    @Test
-    public void bridgeResultCanOnlyApplyToTheSameCurrentUnresolvedOwner() {
-        ExpressItem expected = order(1L, "I5-JD", "", true, ROUTE_A);
-        ExpressItem rotatedRoute = orderWithIdentity(
-                1L, "I5-JD", expected.waybill, "", true, ROUTE_ROTATED);
-        ExpressItem replacedOrder = orderWithIdentity(
-                1L, "I5-JD", "OTHERORDER", "", true, ROUTE_A);
-        ExpressItem otherSource = orderWithIdentity(
-                1L, "I6-JD", expected.waybill, "", true, ROUTE_A);
-        ExpressItem alreadyProjected = orderWithIdentity(
-                1L, "I5-JD", expected.waybill, "SF123456789", true, ROUTE_A);
-
-        assertTrue(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, rotatedRoute));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, replacedOrder));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, otherSource));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, alreadyProjected));
+    @Test public void cooldownKeysContainOnlyTheOrderHash() {
+        ExpressItem item = order(1L, "I5-JD", "", true, ROUTE_A);
+        ExpressOrderProjectionRetryStore.AttemptToken token = retries.beginAttempt(item, NOW);
+        assertNotNull(token);
+        retries.endAttempt(token);
+        Set<String> keys = context.getSharedPreferences("express_jd_h5_cooldown", 0).getAll().keySet();
+        assertEquals(1, keys.size());
+        assertTrue(keys.iterator().next().matches("[0-9a-f]{64}"));
     }
 
-    @Test
-    public void bridgeResultRejectsEveryCaptureContractChange() {
-        ExpressItem expected = order(1L, "I5-JD", "", true, ROUTE_A);
-
-        assertTrue(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, orderWithCaptureIdentity(expected, "JingDong", "JD",
-                        "京东购物", "", "v5", ROUTE_ROTATED)));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, orderWithCaptureIdentity(expected, "OtherProvider", "JD",
-                        "京东购物", "", "v5", ROUTE_A)));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, orderWithCaptureIdentity(expected, "JingDong", "JDKD",
-                        "京东购物", "", "v5", ROUTE_A)));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, orderWithCaptureIdentity(expected, "JingDong", "JD",
-                        "京东快递", "", "v5", ROUTE_A)));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, orderWithCaptureIdentity(expected, "JingDong", "JD",
-                        "京东购物", "INTERFACE5", "v5", ROUTE_A)));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, orderWithCaptureIdentity(expected, "JingDong", "JD",
-                        "京东购物", "", "v6", ROUTE_A)));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, orderWithCaptureIdentity(expected, "JingDong", "JD",
-                        "京东购物", "", "v5", ROUTE_NEW_ENDPOINT)));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, orderWithCaptureIdentity(expected, "JingDong", "JD",
-                        "京东购物", "", "v5", ROUTE_NEW_PATH)));
-        assertFalse(ExpressOrderProjectionBridge.sameUnresolvedOwner(
-                expected, orderWithCaptureIdentity(expected, "JingDong", "JD",
-                        "京东购物", "", "v5", ROUTE_NEW_PORT)));
+    @Test public void interface6CannotOpenTheAutomaticTimelineCapture() {
+        ExpressItem unsupported = order(1L, "I6-JD", "", true, ROUTE_A);
+        assertNull(retries.beginAttempt(unsupported, NOW));
+        assertNull(retries.beginTimelineAttempt(unsupported, NOW));
     }
 
-    @Test
-    public void waitingDetailAttemptResumesExactlyWhenTheActiveCaptureReleases() {
-        ExpressItem order = order(1L, "I5-JD", "", true, ROUTE_A);
-        ExpressOrderProjectionRetryStore.AttemptToken active =
-                ExpressOrderProjectionRetryStore.acquireAttempt(order);
-        assertNotNull(active);
-        AtomicReference<ExpressOrderProjectionRetryStore.AttemptToken> resumed =
-                new AtomicReference<>();
-        AtomicInteger wakeups = new AtomicInteger();
-
-        ExpressOrderProjectionRetryStore.WaitToken wait =
-                ExpressOrderProjectionRetryStore.waitForAttemptRelease(order, () -> {
-                    wakeups.incrementAndGet();
-                    resumed.set(ExpressOrderProjectionRetryStore.acquireAttempt(order));
-                });
-        assertNotNull(wait);
-        assertNull(resumed.get());
-        assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(active));
-        assertEquals(1, wakeups.get());
-        assertNotNull(resumed.get());
-        assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(resumed.get()));
-        assertFalse(ExpressOrderProjectionRetryStore.cancelWait(wait));
-        assertTrue(ExpressDetailActivity.ORDER_CAPTURE_WAIT_TIMEOUT_MS
-                > ExpressDetailActivity.ORDER_CAPTURE_TIMEOUT_MS);
+    @Test public void homeQueriesBeforeH5AndTimedQueryDoesNotConsumeCooldown() throws Exception {
+        verifyHomeQuery(true, false);
     }
 
-    @Test
-    public void destroyedDetailCanCancelItsAttemptReleaseWakeup() {
-        ExpressItem order = order(1L, "I5-JD", "", true, ROUTE_A);
-        ExpressOrderProjectionRetryStore.AttemptToken active =
-                ExpressOrderProjectionRetryStore.acquireAttempt(order);
-        assertNotNull(active);
-        AtomicInteger wakeups = new AtomicInteger();
-        ExpressOrderProjectionRetryStore.WaitToken wait =
-                ExpressOrderProjectionRetryStore.waitForAttemptRelease(
-                        order, wakeups::incrementAndGet);
-
-        assertNotNull(wait);
-        assertTrue(ExpressOrderProjectionRetryStore.cancelWait(wait));
-        assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(active));
-        assertEquals(0, wakeups.get());
+    @Test public void emptyAccountQueryStillAllowsH5AndOnlyThenStartsCooldown() throws Exception {
+        verifyHomeQuery(false, false);
     }
 
-    @Test
-    public void routeChangeCanRetryWithoutWaitingForTheInMemoryBatchToReset() {
-        ExpressItem first = order(1L, "I5-JD", "", true, ROUTE_A);
-        ExpressItem changedRoute = order(
-                1L, "I5-JD", "", true, ROUTE_NEW_ENDPOINT);
-        Set<String> attempted = new HashSet<>();
-
-        assertEquals(first, ExpressListActivity.nextOrderProjectionCandidate(
-                Arrays.asList(first), attempted));
-        assertEquals(changedRoute, ExpressListActivity.nextOrderProjectionCandidate(
-                Arrays.asList(changedRoute), attempted));
+    @Test public void closingHomeDuringAccountQueryDoesNotOpenH5OrConsumeCooldown() throws Exception {
+        verifyHomeQuery(false, true);
     }
 
-    @Test
-    public void upgradedCaptureAlgorithmInvalidatesTheOldFailureCooldown() throws Exception {
-        long now = 1_000_000L;
-        ExpressItem order = order(1L, "I5-JD", "", true, ROUTE_A);
-        String oldFingerprint = legacyFingerprint(order);
-
-        assertTrue(ExpressOrderProjectionRetryStore.shouldAttempt(
-                now, oldFingerprint,
-                ExpressOrderProjectionRetryStore.routeFingerprint(order), now + 1L));
-    }
-
-    private static String legacyFingerprint(ExpressItem item) throws Exception {
-        String input = ExpressOrderProjectionRetryStore.stableIdentity(item)
-                + "\n" + item.routeInterface + ":order.jd.com";
-        byte[] digest = MessageDigest.getInstance("SHA-256").digest(
-                input.getBytes(StandardCharsets.UTF_8));
-        StringBuilder encoded = new StringBuilder(digest.length * 2);
-        for (byte value : digest) {
-            encoded.append(String.format(Locale.ROOT, "%02x", value & 0xff));
+    private void verifyHomeQuery(boolean timed, boolean cancelDuringQuery) throws Exception {
+        context.deleteDatabase(ExpressDatabase.DATABASE);
+        java.lang.reflect.Field singleton = ExpressRepository.class.getDeclaredField("instance");
+        singleton.setAccessible(true);
+        singleton.set(null, null);
+        ExpressRepository repository = ExpressRepository.get(context);
+        String phone = "13800000001";
+        repository.bindPhoneLocally(phone, "interface5");
+        ExpressQueryResult feed = new ExpressQueryResult("JDORDERHOME001", "JD", "京东购物",
+                StatusSemantic.TRANSIT, 0L, "", "", "[]", "", phone,
+                "v5_query", "", "", "JingDong");
+        repository.saveInterface5OrderSummary(feed, phone);
+        ExpressItem stored = repository.findByWaybill(feed.waybill, "interface5");
+        assertNotNull(stored);
+        ExpressItem source = new ExpressItem(stored.rowId, phone, stored.waybill,
+                stored.courierCode, stored.companyName, stored.semantic, stored.statusDescription,
+                stored.latestDetail, stored.latestTime, stored.tracksJson, "", stored.source,
+                "", 0L, stored.updatedAt, stored.stateOwner, "", "v5", ROUTE_A, true,
+                "", "", "[]", "JingDong");
+        QueryShadow.result = timed ? new ExpressQueryResult(source.waybill, "JD", "京东购物",
+                StatusSemantic.TRANSIT, "2026-09-09 10:00:00", "Query event",
+                "[{\"time\":\"2026-09-09 10:00:00\",\"context\":\"Query event\"}]",
+                "", phone, "v5_query", "", "", "JingDong") : null;
+        QueryShadow.calls = 0;
+        QueryShadow.waiting = cancelDuringQuery ? new java.util.concurrent.CountDownLatch(1) : null;
+        CaptureShadow.starts = 0;
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        boolean[] finished = {false};
+        ExpressHomeOrderProjectionCapture capture = new ExpressHomeOrderProjectionCapture(
+                activity, source, (ignored, saved) -> finished[0] = true);
+        try {
+            assertTrue(capture.start());
+            long until = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+            while (System.nanoTime() < until && !finished[0] && CaptureShadow.starts == 0) {
+                Thread.sleep(10);
+                Shadows.shadowOf(Looper.getMainLooper()).idle();
+                if (cancelDuringQuery && QueryShadow.calls > 0) {
+                    capture.cancel();
+                    QueryShadow.waiting.countDown();
+                    break;
+                }
+            }
+            assertEquals("Home must query its account before opening H5", 1, QueryShadow.calls);
+            assertEquals("Only an active empty account query permits H5",
+                    timed || cancelDuringQuery ? 0 : 1, CaptureShadow.starts);
+            assertEquals(timed || cancelDuringQuery,
+                    context.getSharedPreferences("express_jd_h5_cooldown", 0).getAll().isEmpty());
+            if (cancelDuringQuery) {
+                ExpressOrderProjectionRetryStore.AttemptToken reopened =
+                        ExpressOrderProjectionRetryStore.acquireAttempt(source);
+                assertNotNull(reopened);
+                retries.endAttempt(reopened);
+            }
+        } finally {
+            capture.cancel();
+            activity.finish();
+            singleton.set(null, null);
+            java.lang.reflect.Field helper = ExpressRepository.class.getDeclaredField("helper");
+            helper.setAccessible(true);
+            ((ExpressDatabase) helper.get(repository)).close();
         }
-        return encoded.toString();
+    }
+
+    @Implements(value = ExpressDiscoveryClient.class, isInAndroidSdk = false)
+    public static class QueryShadow {
+        static volatile int calls;
+        static ExpressQueryResult result;
+        static java.util.concurrent.CountDownLatch waiting;
+        @Implementation protected ExpressQueryResult refreshKnown(Context ignored,
+                ExpressItem owner, boolean force, ExpressQueryCancellation cancellation) throws InterruptedException {
+            calls++;
+            if (waiting != null) waiting.await(3, java.util.concurrent.TimeUnit.SECONDS);
+            return result;
+        }
+    }
+
+    @Implements(value = ExpressAutomaticTimelineCapture.class, isInAndroidSdk = false)
+    public static class CaptureShadow {
+        static volatile int starts;
+        @Implementation protected void start() { starts++; }
+        @Implementation protected void cancel() {}
     }
 
     private static ExpressItem order(
@@ -359,20 +268,6 @@ public final class ExpressHomeOrderProjectionTest {
                 "2026-08-22 10:00:00", "[]", "", owner, "",
                 1L, 2L, owner, "", "v5", credential, credentialAvailable,
                 projectedWaybill, "", "[]", "JingDong");
-    }
-
-    private static ExpressItem orderWithCaptureIdentity(
-            ExpressItem source, String sourceProvider, String courierCode,
-            String companyName, String routeOwner, String routeInterface,
-            String routeCredential) {
-        return new ExpressItem(
-                source.rowId, source.phone, source.waybill, courierCode, companyName,
-                source.semantic, source.statusDescription, source.latestDetail,
-                source.latestTime, source.tracksJson, source.remark, source.source,
-                source.detailUrl, source.statusEventTime, source.updatedAt,
-                source.stateOwner, routeOwner, routeInterface, routeCredential,
-                source.routeCredentialAvailable, source.projectedWaybill,
-                source.projectedCompanyName, source.projectedTracksJson, sourceProvider);
     }
 
     private static ExpressItem normalShipment() {

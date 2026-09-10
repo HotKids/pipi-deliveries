@@ -5,10 +5,6 @@ import type {
   PendingManualQuery,
   Shipment,
 } from "../models";
-import {
-  SCRIPT_CLIENT_BUILD,
-  SCRIPT_VERSION,
-} from "./build-track";
 import { requireScriptSource } from "./script-source";
 import { postGateway } from "./gateway";
 import {
@@ -34,8 +30,8 @@ import {
 } from "./manual-query-parser";
 import {
   applyManualShipment,
+  hasPickerTimelineStart,
   hasTimelineStartBeforeKdniao,
-  isShunFengSourceShipment,
 } from "./shipment-policy";
 import {
   normalizeCarrierCode,
@@ -168,6 +164,7 @@ type ManualGatewayPost = (
     timeoutMs?: number;
     deadlineAtMs?: number;
     signal?: AbortSignal;
+    onQueryAttempted?: (authorized: boolean) => void;
   },
 ) => Promise<JsonObject>;
 
@@ -545,6 +542,7 @@ export async function queryKuaidi100Shipment(input: {
 
 type ManualSourceShipmentInput = Readonly<{
   waybill: string;
+  diagnosticFlowId?: string;
   phoneTail?: string;
   phoneTails?: readonly string[];
   rawCourierCode?: string;
@@ -666,27 +664,39 @@ function trustedMeizuDetailUrl(value: unknown): string {
 
 async function queryMeizuShipmentOnce(
   input: ManualSourceShipmentInput,
-  mode: "manual" | "refresh" = "manual",
+  attempt: number,
 ): Promise<{ shipment: Shipment; routeUrl: string }> {
   const waybill = normalizeWaybill(input.waybill);
+  const timelineProvider = "v6_query";
   assertWithinDeadline(input.deadlineAtMs);
-  const root = await sourcePost(input.dependencies)(
-    "/api/express/timeline/source",
-    mode === "refresh"
-      ? { interface: "v6", mode: "refresh", waybill }
-      : {
-        interface: "v6",
-        mode: "manual",
-        waybill,
-        clientVersion: SCRIPT_VERSION,
-        clientBuild: SCRIPT_CLIENT_BUILD,
+  const startedAt = Date.now();
+  let root: JsonObject | null = null;
+  try {
+    root = await sourcePost(input.dependencies)(
+      "/api/express/timeline/source",
+      // The public refresh wire selects Online for add, detail and scheduled queries alike.
+      { interface: "v6", mode: "refresh", waybill },
+      {
+        timeoutMs: remainingTimeoutMs(input.deadlineAtMs, 30_000),
+        deadlineAtMs: input.deadlineAtMs,
+        signal: input.signal,
       },
-    {
-      timeoutMs: remainingTimeoutMs(input.deadlineAtMs, 30_000),
-      deadlineAtMs: input.deadlineAtMs,
-      signal: input.signal,
-    },
-  );
+    );
+  } finally {
+    const value = root && ("value" in root ? root.value : root.data);
+    writeDiagnostic("manual.meizu.response", {
+      flowId: input.diagnosticFlowId,
+      stage: timelineProvider,
+      timelineProvider,
+      attempt,
+      mode: "refresh",
+      ...(root ? { upstreamCode: responseCode(root) ?? undefined } : {}),
+      valueKind: !root || value === undefined ? "missing" : value === null ? "null"
+        : Array.isArray(value) ? "array" : typeof value,
+      redirectPresent: typeof root?.redirect === "string" && Boolean(root.redirect.trim()),
+      durationMs: Date.now() - startedAt,
+    });
+  }
   const code = responseCode(root);
   if (code != null && code !== 0 && code !== 200) {
     throw new ManualQueryError(
@@ -720,7 +730,8 @@ async function queryMeizuShipmentOnce(
     phoneTail: "",
     ...identity,
     bindingSource: input.bindingSource || null,
-    provider: TIMELINE_SLOT.V6_PICKER,
+    // Keep the existing same-source Meizu cache slot; a latest-event response stays partial.
+    provider: TIMELINE_SLOT.V6_QUERY,
     complete: false,
     parsed: parseMeizuTimeline(value),
     successAtMs: sourceNow(input.dependencies),
@@ -733,12 +744,11 @@ async function queryMeizuShipmentOnce(
 
 export async function queryMeizuShipment(
   input: ManualSourceShipmentInput,
-  mode: "manual" | "refresh" = "manual",
 ): Promise<{ shipment: Shipment; routeUrl: string }> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      return await queryMeizuShipmentOnce(input, mode);
+      return await queryMeizuShipmentOnce(input, attempt + 1);
     } catch (error) {
       lastError = error;
       const retriable = error instanceof ManualQueryError &&
@@ -855,7 +865,7 @@ function diagnosticManualProvider(value: unknown): string {
   const provider = String(value || "").trim().toLowerCase();
   return ({
     local: TIMELINE_SLOT.V4_QUERY,
-    route: TIMELINE_SLOT.V6_PICKER,
+    route: TIMELINE_SLOT.V6_QUERY,
     fallback: TIMELINE_SLOT.KDNIAO,
   } as Record<string, string>)[provider] || provider || "none";
 }
@@ -895,6 +905,7 @@ export async function queryManualForSource(input: {
   scheduled?: boolean;
   hostSafe?: boolean;
   dependencies?: ManualSourceDependencies;
+  onQueryAttempted?: (authorized: boolean) => void;
   diagnosticFlowId?: string;
   diagnosticStage?: string;
 }): Promise<ManualQueryOutcome> {
@@ -914,7 +925,7 @@ export async function queryManualForSource(input: {
   // A first manual query has no source-owned carrier code yet. The detection result is
   // safe for dispatch only after it resolves back to an exact built-in carrier record.
   const rawCarrierCode = sourceCarrierCode || recognizedCarrier?.standardCode || "";
-  const resolvedRawCarrier = sourceCarrierCode
+  let resolvedRawCarrier = sourceCarrierCode
     ? resolveCarrierCpCode(sourceCarrierCode)
     : recognizedCarrier;
   // Source routing and raw carrier normalization are separate authorities. A
@@ -922,8 +933,17 @@ export async function queryManualForSource(input: {
   // bypasses it for the K100 route.
   const isJingDongSource =
     String(input.sourceProvider || "").trim().toLowerCase() === "jingdong";
+  if (isJingDongSource && !waybill.startsWith("JD") && resolvedRawCarrier?.standardCode === "JD") {
+    const projectedCarrier = resolveCarrierQuery(String(input.presentation?.courierCode || input.courierCode || ""));
+    // R-20: the account's JD platform code is not the carrier of its projected waybill.
+    // Use the confirmed carrier for manual dispatch without changing the account query tuple.
+    if (projectedCarrier && projectedCarrier.standardCode !== "JD") resolvedRawCarrier = projectedCarrier;
+  }
+  const diagnosticFlowId = input.diagnosticFlowId ||
+    createDiagnosticFlowId("manual-query");
   const queryInput: ManualSourceShipmentInput = {
     waybill,
+    diagnosticFlowId,
     phoneTail,
     phoneTails,
     rawCourierCode: rawCarrierCode,
@@ -932,17 +952,17 @@ export async function queryManualForSource(input: {
     bindingSource: input.source,
     deadlineAtMs: input.deadlineAtMs,
     signal: input.signal,
-    dependencies: input.dependencies,
+    dependencies: input.onQueryAttempted
+      ? { ...input.dependencies, post: (route, payload, options) =>
+          sourcePost(input.dependencies)(route, payload, {
+            ...options, onQueryAttempted: input.onQueryAttempted,
+          }) }
+      : input.dependencies,
     resolvedCarrier: resolvedRawCarrier,
   };
-  const diagnosticFlowId = input.diagnosticFlowId ||
-    createDiagnosticFlowId("manual-query");
   const queryStartedAt = Date.now();
   const waybillTail = waybillSuffix(waybill);
-  const routeTimelineProvider = isJingDongSource
-    && !input.pickerOnly
-    ? TIMELINE_SLOT.K100_H5
-    : TIMELINE_SLOT.V6_PICKER;
+  const routeTimelineProvider = "v6_query";
   const scheduleKey = `${input.source}:${waybill}`;
   const identityFingerprint = [
     rawCarrierCode,
@@ -954,7 +974,7 @@ export async function queryManualForSource(input: {
       ? "moto"
       : source === "fallback"
         ? "kdniao"
-        : isJingDongSource ? "kuaidi100" : "picker";
+        : isJingDongSource && !input.pickerOnly ? "kuaidi100" : "picker";
   const providerEnabled = (source: "local" | "route" | "fallback") =>
     !input.scheduled || refreshProviderDue(
       scheduleKey,
@@ -982,20 +1002,10 @@ export async function queryManualForSource(input: {
         providerEnabled("route") &&
         !input.fallbackOnly &&
         !input.motoOnly &&
-        !(input.hostSafe && isJingDongSource) &&
+        !(input.hostSafe && isJingDongSource && !input.pickerOnly) &&
         (input.pickerOnly === true || isJingDongSource ||
           allowsRouteCapabilityForSourceProvider(input.sourceProvider)),
-      // 京东这一槽以前直连 m.kuaidi100.com/query。表格定的 K100 H5 只能是 picker `manual`
-      // 返回的 `detailUrl` 那一页，所以这一槽统一是 picker，K100 那一页由详情链下一级去抓。
-      // 顺丰列表轮用 picker `refresh`（queryByMailNoOnline，结构化最新一条），`manual` 只在
-      // 详情/加件那一级拿 detailUrl（用户定 2026-09-04，待改表第 2 项，2026-09-05 落地）。
-      query: async () => queryMeizuShipment(
-        queryInput,
-        input.scheduled && input.currentShipment
-            && isShunFengSourceShipment(input.currentShipment)
-          ? "refresh"
-          : "manual",
-      ),
+      query: async () => queryMeizuShipment(queryInput),
     },
     {
       source: "fallback",
@@ -1005,12 +1015,9 @@ export async function queryManualForSource(input: {
       query: async () => ({ shipment: await queryKdniaoShipment(queryInput) }),
     },
   ], input.deadlineAtMs, (observation) => {
-    const stage = observation.source;
-    const timelineProvider = observation.result?.shipment?.timeline.provider
-      ? diagnosticManualProvider(observation.result.shipment.timeline.provider)
-      : stage === "route"
-        ? routeTimelineProvider
-        : diagnosticManualProvider(stage);
+    const stage = observation.source === "route" ? routeTimelineProvider : observation.source;
+    const timelineProvider = observation.source === "route" ? routeTimelineProvider
+      : diagnosticManualProvider(observation.result?.shipment?.timeline.provider || observation.source);
     if (observation.phase === "started") {
       writeDiagnostic("manual.source.started", {
         flowId: diagnosticFlowId,
@@ -1055,6 +1062,7 @@ export async function queryManualForSource(input: {
     }
     const timeline = observation.result?.shipment?.timeline || null;
     const trackCount = timeline ? timedTracks(timeline.tracks).length : 0;
+    const statusOnly = !trackCount && timeline?.structuredStatus === true && timeline.semantic !== "UNKNOWN";
     const skipReason = observation.result?.skipReason || "no_timed_tracks";
     if (input.scheduled) {
       recordRefreshProviderResult({
@@ -1065,7 +1073,7 @@ export async function queryManualForSource(input: {
       });
     }
     writeDiagnostic(
-      trackCount ? "manual.source.succeeded" : "manual.source.skipped",
+      trackCount || statusOnly ? "manual.source.succeeded" : "manual.source.skipped",
       {
         flowId: diagnosticFlowId,
         source: input.source,
@@ -1074,19 +1082,23 @@ export async function queryManualForSource(input: {
         timelineProvider,
         durationMs: observation.durationMs,
         effectiveTrackCount: trackCount,
+        statusSemantic: timeline?.semantic || "UNKNOWN",
+        structuredStatus: timeline?.structuredStatus === true,
         result: trackCount
           ? manualTimelineIsComplete(timeline!) ? "complete" : "partial"
-          : skipReason,
+          : statusOnly ? "status_only" : skipReason,
       },
-      trackCount || skipReason === "unsupported_carrier" ? "info" : "warning",
+      trackCount || statusOnly || skipReason === "unsupported_carrier" ? "info" : "warning",
     );
-  }, input.signal, (shipments) => {
+  }, input.signal, (shipments, stage) => {
     let accumulated = input.currentShipment;
     for (const shipment of shipments) {
       accumulated = applyManualShipment(accumulated, shipment, Date.now());
     }
     return Boolean(
-      accumulated && hasTimelineStartBeforeKdniao(accumulated),
+      accumulated && (stage === "picker"
+        ? hasPickerTimelineStart(accumulated)
+        : hasTimelineStartBeforeKdniao(accumulated)),
     );
   }, Boolean(input.pickerFirst));
   const {
@@ -1107,25 +1119,30 @@ export async function queryManualForSource(input: {
   const selectedTrackCount = selected
     ? timedTracks(selected.timeline.tracks).length
     : 0;
+  const selectedStatusOnly = !selectedTrackCount && selected?.timeline.structuredStatus === true &&
+    selected.timeline.semantic !== "UNKNOWN";
   writeDiagnostic("manual.query.completed", {
     flowId: diagnosticFlowId,
     source: input.source,
     stage: input.diagnosticStage || "manual_query",
     waybillTail,
-    timelineProvider: selectedTrackCount
-      ? diagnosticManualProvider(selected?.timeline.provider)
+    timelineProvider: selectedTrackCount || selectedStatusOnly
+      ? selected?.timeline.provider === TIMELINE_SLOT.V6_QUERY
+        ? routeTimelineProvider : diagnosticManualProvider(selected?.timeline.provider)
       : "none",
     effectiveTrackCount: selectedTrackCount,
+    statusSemantic: selected?.timeline.semantic || "UNKNOWN",
+    structuredStatus: selected?.timeline.structuredStatus === true,
     records: successes.length,
     // 这一层被允许跑的级数（顺丰在列表层只许跑 picker，京东不跑 moto…）。没有它，一条只跑了
     // 一级、那一级又没轨迹的记录看上去像整条链失败（用户 2026-09-08 看日志时的疑问）。
     attempted: selection.attemptedSources,
-    selected: Boolean(selectedTrackCount),
+    selected: Boolean(selectedTrackCount || selectedStatusOnly),
     durationMs: Date.now() - queryStartedAt,
     result: selectedTrackCount
       ? manualTimelineIsComplete(selected!.timeline) ? "complete" : "partial"
-      : "no_result",
-  }, selectedTrackCount ? "info" : "warning");
+      : selectedStatusOnly ? "status_only" : "no_result",
+  }, selectedTrackCount || selectedStatusOnly ? "info" : "warning");
   const phoneError = !selected
     ? Object.values(errors).find(
         (error) =>

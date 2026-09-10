@@ -51,8 +51,8 @@ assert.equal(nestedMeizu.latestDetail, "待取件");
 assert.equal(nestedMeizu.tracks[0]?.raw._pipiStatusSource, "meizu");
 assert.equal(nestedMeizu.hasStructuredStatus, false);
 
-// picker `refresh`（queryByMailNoOnline）回的是列表记录：最新一条在 lastLogisticDetail /
-// logisticsGmtModified，没有 time/context，也要解成一条带时间的节点。
+// Online and LastDetail return a scalar latest event in lastLogisticDetail /
+// logisticsGmtModified rather than the legacy Picker time/context fields.
 const meizuRefresh = parseMeizuTimeline({
   code: 200,
   value: JSON.stringify({

@@ -33,7 +33,7 @@ assert.match(
 );
 
 const background = syncSource.slice(
-  syncSource.indexOf("async function refreshManualAndPending"),
+  syncSource.indexOf("function manualRefreshTasks"),
   syncSource.indexOf("export type ManualShipmentPreview"),
 );
 assert.match(
@@ -44,8 +44,8 @@ assert.match(
 assert.match(background, /rawCourierCode:\s*current\.identity\.rawCourierCode/);
 assert.match(
   background,
-  /pickerFirst:\s*current\.identity\.manuallyAdded \|\|[\s\S]*?isShunFengSourceShipment\(current\)[\s\S]*?includeKdniaoFallback:\s*!isShunFengSourceShipment\(current\)[\s\S]*?hostSafe:\s*true/,
-  "列表层：手动件与顺丰都 Picker 优先；付费的快递鸟只给手动件，顺丰要等到详情页（用户定 2026-09-04）",
+  /pickerFirst:\s*true,[\s\S]*?pickerOnly:\s*!current\.identity\.manuallyAdded,[\s\S]*?includeKdniaoFallback:\s*current\.identity\.manuallyAdded,[\s\S]*?hostSafe:\s*true/,
+  "Automatic list supplementation is Online-only; the remaining manual chain belongs to manual rows",
 );
 assert.doesNotMatch(
   background,
@@ -116,26 +116,19 @@ assert.match(
   /runManualDetailSourceContest\(\{[\s\S]*?queryMoto:[\s\S]*?queryKuaidi100:\s*queryH5[\s\S]*?queryKdniao:[\s\S]*?fallbackOnly:\s*true/,
   "manual detail refresh must run its primary sources before the final fallback",
 );
-assert.match(
-  syncSource,
-  /function storedWebRoute\([\s\S]*?!shipment\.identity\.manuallyAdded && !isShunFengSourceShipment\(shipment\)[\s\S]*?route\?\.kind !== "web"/,
-  "manual and SF detail refreshes must reuse their persisted Meizu K100 route",
-);
-// 表格「待改 1」：K100 H5 只能是 picker `manual` 返回的 `detailUrl` 那一页。原来这条钉的是
-// 「picker 没给路由就直连」，那是直连时代的判据。
+// The fixed K100 page changes its URL input, not source-specific stage eligibility.
 assert.match(
   detail,
-  /const requestedKuaidi100Timeline = explicitTimelineRefresh && \([\s\S]*?original\.identity\.manuallyAdded[\s\S]*?isShunFengSourceShipment\(original\)[\s\S]*?const refreshDue = [\s\S]*?requestedKuaidi100Timeline[\s\S]*?const kuaidi100PrimaryRequested = requestedKuaidi100Timeline &&[\s\S]*?!requestedJingDongDetailSupplement \|\| jingDongPrimaryRequested/,
-  "K100 那一级仍由手动件/顺丰/京东补充触发",
+  /const requestedKuaidi100Timeline = explicitTimelineRefresh && \([\s\S]*?original\.identity\.manuallyAdded[\s\S]*?isShunFengSourceShipment\(original\)[\s\S]*?const refreshDue = [\s\S]*?requestedKuaidi100Timeline[\s\S]*?const kuaidi100PrimaryRequested = !missingStatusRefresh && requestedKuaidi100Timeline &&[\s\S]*?!hasPickerTimelineStart\(enrichmentBase\)/,
+  "manual and SF K100 enrichment must follow the accumulated Picker origin gate",
 );
 assert.doesNotMatch(
+  syncSource,
+  /storedWebRoute|manualWebRoute|webRouteUrl/,
+  "K100 stages must not depend on returned or cached Picker URLs",
+);assert.match(
   detail,
-  /!manualWebRoute/,
-  "「没存过路由才跑 K100」的直连时代判据不得留下",
-);
-assert.match(
-  detail,
-  /ordinaryAutomaticSupplementRequested[\s\S]*?pickerOnly:\s*true[\s\S]*?ordinaryAutomaticPrimaryRequested[\s\S]*?!hasTimelineStartBeforeKdniao\(enrichmentBase\)/,
+  /ordinaryAutomaticSupplementRequested[\s\S]*?pickerOnly:\s*true[\s\S]*?ordinaryAutomaticPrimaryRequested[\s\S]*?!hasPickerTimelineStart\(enrichmentBase\)/,
   "ordinary automatic detail must refresh Picker before starting its primary round",
 );
 assert.match(
@@ -143,17 +136,14 @@ assert.match(
   /needsAutomaticManualFallback\(selected\)[\s\S]*?"detail_open"/,
   "opening an eligible ordinary automatic detail must start its supplementation round",
 );
-// 表格「待改 1」：直连适配器已删除；K100 那一级抓的是 picker 返回的 `detailUrl` 页，能不能抓
-// 由路由本身决定（只认 kuaidi100.com），不再按行的归属挡人。
 assert.match(
   syncSource,
-  /async function refreshWebTimeline\([\s\S]*?if \(!trustedWebTimelineRoute\(routeUrl\)\) return null;/,
-  "K100 H5 那一级只校验路由本身",
-);
-assert.doesNotMatch(
+  /async function refreshWebTimeline\([\s\S]*?if \(unprojectedAccountOrder\(shipment\)\) return null;[\s\S]*?scrapeWebTimeline\(\{\s*waybill: displayWaybill\(shipment\)/,
+  "every K100 stage uses the actual waybill, never an unprojected account order number",
+);assert.doesNotMatch(
   syncSource,
   /refreshKuaidi100H5/,
-  "直连 K100 的适配器不得回归",
+  "the obsolete K100 JSON-query adapter must not replace the H5 page stage",
 );
 assert.match(
   manualDetailSource,
@@ -169,11 +159,6 @@ assert.match(
   detail,
   /const motoSupported = primaryContestRequested &&[\s\S]*?!isJingDongSourceShipment\(enrichmentBase\) &&[\s\S]*?!isShunFengSourceShipment\(enrichmentBase\)/,
   "only JingDong-owned and SF source routes skip Moto before KDNiao",
-);
-assert.match(
-  syncSource,
-  /\(!shipment\.identity\.manuallyAdded && !isShunFengSourceShipment\(shipment\)\)[\s\S]*?scrapeWebTimeline\(/,
-  "hidden K100 extraction must accept manual and SF shipments without presenting the webpage",
 );
 assert.doesNotMatch(
   webTimelineSource,
@@ -195,17 +180,12 @@ assert.match(
   /const requestedFinalFallback = Boolean\([\s\S]*?options\.includeKdniaoFallback === true[\s\S]*?explicitTimelineRefresh[\s\S]*?needsDetailFallback\(original\)[\s\S]*?!hasCachedKdniaoTimeline\(original\)[\s\S]*?const refreshDue = forceAccountOrderProjection \|\|[\s\S]*?requestedFinalFallback/,
   "manual submission must not let a settled but incomplete cache skip the requested final fallback",
 );
-assert.match(
-  detail,
-  /const manualWebRoute = storedWebRoute\(original, startedAt\);[\s\S]*?const requestedWebTimeline = explicitTimelineRefresh && Boolean\(manualWebRoute\);[\s\S]*?const refreshDue = forceAccountOrderProjection \|\|[\s\S]*?requestedWebTimeline/,
-  "manual submission must run hidden H5 extraction even when an existing cache already looks complete",
-);
 // 用户定 2026-09-05：京东来源改成先问接口 5 的按件详情（`/cpa/express/v2/query`，用**订单号**，
 // provider=JingDong / cpCode=JDKD / name=京东商品快递），它能直接返回全量轨迹；其余来源仍复用
 // 列表页缓存，不再多发这一次查询。
 assert.match(
   detail,
-  /isJingDongSourceShipment\(original\)[\s\S]{0,1200}?await refreshAccountParcel\(/,
+  /isJingDongSourceShipment\(original\)[\s\S]{0,1200}?await runtime\.refreshAccountParcel\(/,
   "京东来源的详情刷新要先问一遍接口 5 的按件详情",
 );
 assert.match(
@@ -266,8 +246,8 @@ const fullRefresh = syncSource.slice(
 );
 assert.match(
   fullRefresh,
-  /refreshAccountFollowups\([\s\S]*?refreshManualAndPending\(/,
-  "the homepage Xiaomi increment must be followed by the local-source increment queue",
+  /refreshShipmentEnrichment\([\s\S]*?forceManualRefresh, hostPolicy\.webViewEnrichment, lease\.signal/,
+  "homepage account and local increments must share the bounded per-parcel pipeline",
 );
 
 const accountFollowups = syncSource.slice(

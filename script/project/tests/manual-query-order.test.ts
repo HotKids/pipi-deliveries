@@ -203,6 +203,23 @@ assert.equal(routeFirst.selected?.timeline.provider, "route");
 assert.equal(routeFirstLocalCalls, 0);
 assert.equal(routeFirstFallbackCalls, 0);
 
+const partitionedStages: string[] = [];
+const partitionedCalls: string[] = [];
+await queryManualSourceChain(["local", "route", "fallback"].map((source) => ({
+  source: source as ManualSource,
+  enabled: true,
+  query: async () => {
+    partitionedCalls.push(source);
+    return { shipment: shipment(source as ManualSource) };
+  },
+})), undefined, undefined, undefined, (_shipments, stage) => {
+  partitionedStages.push(stage);
+  // Existing non-Picker origin must not suppress primary, but can stop paid fallback.
+  return stage === "primary";
+}, true);
+assert.deepEqual(partitionedCalls, ["route", "local"]);
+assert.deepEqual(partitionedStages, ["picker", "primary"]);
+
 const routeOnly = await queryManualSourceChain([{
   source: "route",
   enabled: true,

@@ -38,16 +38,6 @@ public final class ExpressListActivityContractTest {
     }
 
     @Test
-    public void interactiveResultRequiresSameGenerationAndAccountSource() {
-        assertTrue(ExpressListActivity.operationIsCurrent(
-                7L, "interface6", 7L, "interface6"));
-        assertFalse(ExpressListActivity.operationIsCurrent(
-                7L, "interface6", 8L, "interface6"));
-        assertFalse(ExpressListActivity.operationIsCurrent(
-                7L, "interface6", 7L, "interface5"));
-    }
-
-    @Test
     public void manualQueryPrefersSubmittedThenPersistedCarrier() {
         assertEquals("SF", ExpressListActivity.manualQueryRawCarrierHint("SF", "JD"));
         assertEquals("JD", ExpressListActivity.manualQueryRawCarrierHint("", "JD"));
@@ -66,10 +56,9 @@ public final class ExpressListActivityContractTest {
 
     @Test
     public void manualSubmitDefersOptionalCarrierDetectionUntilMotoRuns() throws Exception {
-        String query = method(
-                source(), "private void queryWaybill(String suppliedPhoneTail",
-                "private void scheduleCarrierDetection()");
-
+        String detail = projectFile("app/src/main/java/me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
+        String query = method(detail, "private void startFirstManualQuery()",
+                "private boolean firstManualQueryIsCurrent(");
         int pickerFirst = query.indexOf("ManualQueryCoordinator.queryPickerFirst(");
         int detect = query.indexOf("manualApi.detect(", pickerFirst);
         int moto = query.indexOf("manualApi.queryMoto(", pickerFirst);
@@ -78,30 +67,23 @@ public final class ExpressListActivityContractTest {
         assertTrue(detect > pickerFirst);
         assertTrue(moto > detect);
         assertTrue(source().contains("detectedCarrierHintForQuery("));
+        assertTrue(source().contains("ExpressDetailActivity.manualQueryIntent("));
+        assertFalse(source().contains("saveManualQueryBatch("));
     }
 
-    /**
-     * 页面 stop 只取消承运商识别，不取消手动查件：picker 一回来就开透明预览（另一个 Activity），
-     * 列表页随即 onStop，原来把整条手动链连落库一起取消（Fold7 2026-09-05 三次「查完没进列表」）。
-     * 页面销毁才全部取消。
-     */
     @Test
-    public void leavingTheListInvalidatesInteractiveNetworkWork() throws Exception {
-        String source = source();
-        String onStop = method(
-                source, "protected void onStop()", "protected void onSaveInstanceState");
-        String onDestroy = method(
-                source, "protected void onDestroy()", "@Override");
-
-        assertTrue(onStop.contains("invalidateCarrierDetection();"));
-        assertFalse(onStop.contains("invalidateInteractiveNetworkOperations();"));
-        assertTrue(onDestroy.contains("invalidateInteractiveNetworkOperations();"));
-        assertTrue(source.contains("!queryOperationIsCurrent("));
-        assertTrue(source.contains("!bindingSource.equals("));
-        assertTrue(source.contains("ExpressAccountSource.bindingSource(this)"));
-        assertTrue(source.contains("queryCancellation.cancel();"));
-        assertTrue(source.contains("carrierDetectCancellation.cancel();"));
-        assertTrue(source.contains("waybill, courierHint, operationCancellation)"));
+    public void leavingTheQueryDetailCancelsItsNetworkWorkAndLatePreview() throws Exception {
+        String list = source();
+        String detail = projectFile("app/src/main/java/me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
+        String onStop = method(detail, "protected void onStop()", "protected void onStart()");
+        assertTrue(onStop.contains("cancelFirstManualQuery();"));
+        assertTrue(detail.contains("firstManualQueryCancellation.cancel();"));
+        assertTrue(detail.contains("firstManualQueryTask.cancel(true);"));
+        assertTrue(detail.contains("if (!firstManualQueryIsCurrent(cancellation)) {"));
+        assertTrue(detail.contains("if (firstManualQueryIsCurrent(cancellation)) renderFirstManualResult(result);"));
+        assertTrue(list.contains("result.getResultCode() == RESULT_OK"));
+        assertTrue(list.contains("RESULT_PHONE_TAIL_REQUIRED"));
+        assertTrue(list.contains("carrierDetectCancellation.cancel();"));
     }
 
     @Test
@@ -162,8 +144,9 @@ public final class ExpressListActivityContractTest {
         assertFalse(query.contains("R.string.carrier_unrecognized"));
         assertFalse(strings.contains("name=\"carrier_unrecognized\""));
         // 手动查件的结果文案走三端共享的 toast 表（AGENTS §11），strings.xml 不再保留副本。
-        assertTrue(query.contains("ExpressToastCopy.MANUAL_QUERY_TIMEOUT"));
-        assertTrue(query.contains("ExpressToastCopy.MANUAL_QUERY_FAILED"));
+        String detail = projectFile("app/src/main/java/me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
+        assertTrue(detail.contains("ExpressToastCopy.MANUAL_QUERY_TIMEOUT"));
+        assertTrue(detail.contains("ExpressToastCopy.MANUAL_QUERY_FAILED"));
         assertFalse(strings.contains("name=\"manual_query_timeout\""));
         assertFalse(strings.contains("name=\"manual_query_failure\""));
     }
@@ -171,16 +154,14 @@ public final class ExpressListActivityContractTest {
     @Test
     public void unavailableManualQueryQueuesHiddenRetryWithoutDisplayCarrierLeak()
             throws Exception {
-        String source = source();
-        String query = method(
-                source, "private void queryWaybill(String suppliedPhoneTail",
-                "private void scheduleCarrierDetection()");
-
-        assertTrue(query.contains("repository.enqueuePendingManual("));
-        assertTrue(query.contains("waybill, suppliedPhoneTail, queryBindingSource"));
-        assertTrue(query.contains("!needsPhone"));
-        assertFalse(query.contains(
-                "enqueuePendingManual(waybill, detectedCourierCode"));
+        String detail = projectFile("app/src/main/java/me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
+        String failure = method(detail, "private void failFirstManualQuery(",
+                "private void finishFirstManualQuery()");
+        assertTrue(detail.contains("repository.enqueuePendingManual("));
+        assertTrue(failure.contains("enqueuePendingManual(waybill, previewPhone, previewBindingSource)"));
+        assertTrue(failure.indexOf("needsPhoneTail()") < failure.indexOf("enqueuePendingManual("));
+        assertTrue(failure.contains("RESULT_PHONE_TAIL_REQUIRED"));
+        assertFalse(failure.contains("enqueuePendingManual(waybill, detectedCourierCode"));
     }
 
     @Test
@@ -197,12 +178,10 @@ public final class ExpressListActivityContractTest {
                 source, "private void reload()",
                 "private void startNextOrderProjectionCapture()");
 
-        // 用户定 2026-09-05：链跑完前不再开 K100 页的透明预览（每次搜索都打开那一页会用光当天配额），
-        // 手动查件只剩「已在列表」和「查完落库」两处跳详情。
-        // 已在列表 → 打开详情；京东来源已有起点 → 打开详情；查完落库 → 打开详情。
-        assertEquals(3, occurrences(query, "startActivity("));
+        // Only an explicit submit opens the detail that owns this query; background sync never does.
+        assertEquals(1, occurrences(query, "startActivity("));
+        assertTrue(query.contains("manualQuery.launch(ExpressDetailActivity.manualQueryIntent("));
         assertFalse(query.contains("ExpressDetailActivity.transientPickerPreviewIntent("));
-        assertTrue(query.contains("ExpressDetailActivity.persistedPreviewIntent("));
         assertFalse(receiver.contains("startActivity("));
         assertFalse(reload.contains("startActivity("));
     }
@@ -237,7 +216,7 @@ public final class ExpressListActivityContractTest {
         assertTrue(layout.contains("android:clipToPadding=\"false\""));
         assertTrue(layout.contains("android:paddingBottom=\"28dp\""));
         assertTrue(strings.contains(
-                "<string name=\"express_retention_notice\">只显示 7 天内的快递信息</string>"));
+                "<string name=\"express_retention_notice\">只显示 14 天内的快递信息</string>"));
     }
 
     private static String method(String source, String start, String next) {

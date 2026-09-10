@@ -32,7 +32,7 @@ public final class ExpressScheduler {
                 PERIODIC_WORK, ExistingPeriodicWorkPolicy.KEEP, request);
     }
 
-    public static void requestNow(Context context) {
+    public static java.util.UUID requestNow(Context context) {
         Constraints constraints = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build();
@@ -42,5 +42,6 @@ public final class ExpressScheduler {
                 .build();
         WorkManager.getInstance(context.getApplicationContext()).enqueueUniqueWork(
                 IMMEDIATE_WORK, ExistingWorkPolicy.REPLACE, request);
+        return request.getId();
     }
 }

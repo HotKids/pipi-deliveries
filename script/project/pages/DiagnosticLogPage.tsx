@@ -97,16 +97,22 @@ function failureText(item: DiagnosticEntry): string | null {
 
 function stageText(value: string): string {
   return ({
+    v6_picker: "v6_query",
+    meizu_picker: "v6_query",
     // 统一用词（2026-09-05）：这一级就叫它的 level 词，不再翻成品牌词；旧日志里的名字也映过去。
     account_detail: "v5_query",
     account_list: "v5_list",
-    cainiao: "菜鸟",
+    cainiao: "cainiao",
+    jingdong: "jingdong",
+    shunfeng: "sfexpress",
+    sfexpress: "sfexpress",
+    douyin: "douyin",
     cainiao_h5: "cn_h5",
     jingdong_h5: "jd_h5",
     kdniao_fallback: "kdniao",
     kuaidi100_query: "k100_h5",
     local: "v4_query",
-    route: "v6_picker",
+    route: "v6_query",
     fallback: "kdniao",
     manual_fallback: "手动查询兜底",
     manual_refresh: "手动件刷新",
@@ -134,8 +140,13 @@ function stageText(value: string): string {
 
 function providerText(value: string): string {
   return ({
-    cainiao: "菜鸟缓存",
-    jingdong: "京东缓存",
+    v6_picker: "v6_query",
+    meizu_picker: "v6_query",
+    cainiao: "cainiao",
+    jingdong: "jingdong",
+    shunfeng: "sfexpress",
+    sfexpress: "sfexpress",
+    douyin: "douyin",
     // 统一用词（2026-09-05）：包名就写 level 词；旧日志里的名字映过去。
     cainiao_h5: "cn_h5",
     jingdong_h5: "jd_h5",
@@ -143,8 +154,8 @@ function providerText(value: string): string {
     web: "cn_h5",
     local: "v4_query",
     moto: "v4_query",
-    route: "v6_picker",
-    meizu: "v6_picker",
+    route: "v6_query",
+    meizu: "v6_query",
     fallback: "kdniao",
     kdniao: "kdniao",
     kuaidi100: "k100_h5",
@@ -230,7 +241,7 @@ function detailsText(item: DiagnosticEntry): string {
     hasSource ? "统一通道" : null,
     details.waybillTail ? `运单尾号 ${details.waybillTail}` : null,
     details.sourceProvider
-      ? `自动来源 ${providerText(details.sourceProvider)}`
+      ? `自动来源 ${details.sourceProvider}`
       : null,
     details.carrierCode ? `承运商 ${details.carrierCode}` : null,
     details.automatic != null
@@ -276,6 +287,31 @@ function detailsText(item: DiagnosticEntry): string {
     details.loadCompleted != null
       ? `页面${details.loadCompleted ? "加载成功" : "未加载成功"}`
       : null,
+    details.mainPresent != null ? `页面主体${details.mainPresent ? "存在" : "缺失"}` : null,
+    details.htmlFetchCompleted != null ? `网页内容${details.htmlFetchCompleted ? "已取得" : "未取得"}` : null,
+    details.adScriptRemoved != null ? `广告脚本${details.adScriptRemoved ? "已移除" : "未移除"}` : null,
+    details.parsedScriptCount != null ? `已解析脚本 ${details.parsedScriptCount}` : null,
+    details.lastParsedScript ? `末个脚本 ${details.lastParsedScript}` : null,
+    details.vuePresent != null ? `Vue ${details.vuePresent ? "已加载" : "未加载"}` : null,
+    details.jqueryPresent != null ? `jQuery ${details.jqueryPresent ? "已加载" : "未加载"}` : null,
+    details.readyState ? `页面状态 ${details.readyState}` : null,
+    details.phoneChallengeVisible != null ? `手机验证${details.phoneChallengeVisible ? "显示" : "未显示"}` : null,
+    details.locationNuMatches != null ? `Page target ${details.locationNuMatches ? "matches" : "differs"}` : null,
+    details.vmNumMatches != null ? `Query target ${details.vmNumMatches ? "matches" : "differs"}` : null,
+    details.lastQueriedNumMatches != null ? `Query entered ${details.lastQueriedNumMatches ? "yes" : "no"}` : null,
+    details.vmLoading != null ? `Query loading ${details.vmLoading ? "yes" : "no"}` : null,
+    details.carrierSelected != null ? `Carrier selected ${details.carrierSelected ? "yes" : "no"}` : null,
+    details.carrierCandidateCount != null ? `Carrier options ${details.carrierCandidateCount}` : null,
+    details.allListsCount != null ? `Full page rows ${details.allListsCount}` : null,
+    details.listsCount != null ? `Displayed page rows ${details.listsCount}` : null,
+    details.queryErrorType != null ? `Page error ${details.queryErrorType || "none reported"}` : null,
+    details.rawExtractedCount != null ? `Extracted rows ${details.rawExtractedCount}` : null,
+    details.firstTimePresent != null ? `First time ${details.firstTimePresent ? "present" : "absent"}` : null,
+    details.firstFtimePresent != null ? `First ftime ${details.firstFtimePresent ? "present" : "absent"}` : null,
+    details.firstContextPresent != null ? `First context ${details.firstContextPresent ? "present" : "absent"}` : null,
+    details.firstRowOutcome ? `First row ${details.firstRowOutcome}` : null,
+    details.phoneVerificationAttempted != null ? `尾号验证${details.phoneVerificationAttempted ? "已尝试" : "未尝试"}` : null,
+    details.timedTrackCount != null ? `页面有效轨迹 ${details.timedTrackCount}` : null,
     details.evaluationAttempts != null
       ? `提取尝试 ${details.evaluationAttempts}`
       : null,

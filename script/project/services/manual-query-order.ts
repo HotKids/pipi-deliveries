@@ -61,7 +61,10 @@ export async function queryManualSourceChain(
   deadlineAtMs?: number,
   observe?: (observation: ManualSourceObservation) => void,
   signal?: AbortSignal,
-  hasAccumulatedTimelineStart?: (shipments: readonly Shipment[]) => boolean,
+  hasAccumulatedTimelineStart?: (
+    shipments: readonly Shipment[],
+    stage: "picker" | "primary",
+  ) => boolean,
   preferRouteFirst = false,
 ): Promise<ManualQuerySelection> {
   const assertNotCancelled = () => {
@@ -146,7 +149,7 @@ export async function queryManualSourceChain(
   if (preferRouteFirst) {
     await run(primary.filter((adapter) => adapter.source === "route"));
     const routeReachedStart = hasAccumulatedTimelineStart
-      ? hasAccumulatedTimelineStart(successes.map((item) => item.shipment))
+      ? hasAccumulatedTimelineStart(successes.map((item) => item.shipment), "picker")
       : successes.some((item) =>
           containsTimelineStartTrack(item.shipment.timeline.tracks)
         );
@@ -161,6 +164,7 @@ export async function queryManualSourceChain(
     !(hasAccumulatedTimelineStart
       ? hasAccumulatedTimelineStart(
           successes.map((item) => item.shipment),
+          "primary",
         )
       : successes.some((item) =>
           containsTimelineStartTrack(item.shipment.timeline.tracks)

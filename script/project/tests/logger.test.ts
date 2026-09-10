@@ -439,4 +439,14 @@ assert.equal(readDiagnostics().length, 1);
 clearDiagnostics();
 assert.deepEqual(readDiagnostics(), []);
 
+writeDiagnostic("detail.refresh.started", {
+  trigger: "identity_projection", statusSemantic: "UNKNOWN", detailStatusSemantic: "UNKNOWN",
+  missingStatusRefresh: true, unprojectedOrder: false, detailComplete: true,
+});
+assert.deepEqual(readDiagnostics()[0]?.details, {
+  trigger: "identity_projection", statusSemantic: "UNKNOWN", detailStatusSemantic: "UNKNOWN",
+  missingStatusRefresh: true, unprojectedOrder: false, detailComplete: true,
+});
+clearDiagnostics();
+
 console.log("diagnostic logger privacy and retention tests passed");

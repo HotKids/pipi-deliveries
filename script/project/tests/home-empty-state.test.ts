@@ -41,8 +41,15 @@ assert.doesNotMatch(
 );
 assert.match(
   homeSource,
-  /shipments\.map\([\s\S]*?<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 7 天内的快递信息\s*<\/Text>/,
+  /shipments\.map\([\s\S]*?<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 14 天内的快递信息\s*<\/Text>/,
   "the populated list still ends with the history note",
 );
 
 console.log("home empty-state presentation tests passed");
+
+const shipmentRowSource = await readFile(resolve(projectDir, "components/ShipmentRow.tsx"), "utf8");
+assert.doesNotMatch(shipmentRowSource, /暂无物流动态/,
+  "Home leaves a genuinely empty subtitle absent instead of inventing a dynamic");
+assert.match(shipmentRowSource, /\{latestDetail \? \(/);
+assert.match(homeSource, /useEffect\(\(\) => \{[\s\S]*?void refreshAllShipments\(\)/,
+  "Home's initial refresh reaches the missing-history repair entry");

@@ -1,6 +1,5 @@
 package me.pipi.deliveries.model;
 
-import me.pipi.deliveries.data.TimelineSlot;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -18,8 +17,6 @@ import java.util.Locale;
 
 /** Normalizes Kuaidi100 and OEM track arrays into the native Pipi timeline. */
 public final class ExpressTimeline {
-    private static final int MAX_PERSISTED_TRACKS = 156;
-
     public static final class Track {
         public final String time;
         public final String detail;
@@ -108,14 +105,15 @@ public final class ExpressTimeline {
         // 锚的是 feed 的**第一条**节点——前提是 feed 里真的有这一票自己的起点。签收之后账号 feed
         // 往往只剩最近几条（派送、签收），起点早被它自己截掉了：拿这种摘要的最早一条当锚，这一票
         // 从揽收开始的历史整包会被判成别人的包裹丢掉（用户 2026-09-08 报，三端同改）。
-        if (timed <= 0 || !hasStartBoundary(accountTracksJson)) return 0L;
+        if (timed <= 0 || !hasOriginBoundary(accountTracksJson)) return 0L;
         return earliest > 0L ? earliest - FOREIGN_PACKAGE_ANCHOR_SLACK_MS : 0L;
     }
 
-    /** feed 自己到没到这一票的起点（揽收／下单）。 */
-    private static boolean hasStartBoundary(String tracksJson) {
+    /** Only a timed order or pickup node proves the feed's origin. */
+    private static boolean hasOriginBoundary(String tracksJson) {
         for (RawTrack track : rawTracks(tracksJson)) {
-            if (isStartBoundary(track)) return true;
+            if (parseTime(track.time) > 0L
+                    && Kuaidi100TimelinePolicy.containsTimelineOrigin(track.value, "")) return true;
         }
         return false;
     }
@@ -165,84 +163,11 @@ public final class ExpressTimeline {
         ArrayList<RawTrack> tracks = new ArrayList<>(merged.values());
         tracks.sort((left, right) -> Long.compare(parseTime(right.time), parseTime(left.time)));
         tracks = collapseNearTimeDuplicates(tracks);
-        tracks = compact(tracks);
         JSONArray values = new JSONArray();
         for (RawTrack track : tracks) {
             values.put(track.value);
         }
         return values.toString();
-    }
-
-    /** Bounds durable history while retaining the lifecycle evidence used by query gates. */
-    private static ArrayList<RawTrack> compact(ArrayList<RawTrack> tracks) {
-        if (tracks.size() <= MAX_PERSISTED_TRACKS) return tracks;
-        boolean[] selected = new boolean[tracks.size()];
-        for (int index = 0; index < MAX_PERSISTED_TRACKS; index++) selected[index] = true;
-
-        int latestTerminal = -1;
-        int earliestStart = -1;
-        for (int index = 0; index < tracks.size(); index++) {
-            RawTrack track = tracks.get(index);
-            if (latestTerminal < 0 && isTerminalBoundary(track)) latestTerminal = index;
-            if (isStartBoundary(track)) earliestStart = index;
-        }
-        retainBoundary(selected, latestTerminal, earliestStart, latestTerminal);
-        retainBoundary(selected, earliestStart, earliestStart, latestTerminal);
-
-        ArrayList<RawTrack> compacted = new ArrayList<>(MAX_PERSISTED_TRACKS);
-        for (int index = 0; index < tracks.size(); index++) {
-            if (selected[index]) compacted.add(tracks.get(index));
-        }
-        return compacted;
-    }
-
-    private static void retainBoundary(
-            boolean[] selected, int boundary, int earliestStart, int latestTerminal) {
-        if (boundary < 0 || selected[boundary]) return;
-        for (int index = MAX_PERSISTED_TRACKS - 1; index > 0; index--) {
-            if (!selected[index] || index == earliestStart || index == latestTerminal) continue;
-            selected[index] = false;
-            selected[boundary] = true;
-            return;
-        }
-    }
-
-    private static boolean isStartBoundary(RawTrack track) {
-        return track != null
-                && Kuaidi100TimelinePolicy.containsTimelineStart(track.value, "", true);
-    }
-
-    private static boolean isTerminalBoundary(RawTrack track) {
-        if (boundarySemantic(track).terminal()) return true;
-        String text = boundaryText(track);
-        return text.contains("已签收") || text.contains("签收成功")
-                || text.contains("已完成") || text.contains("配送完成")
-                || text.contains("已拒收")
-                || text.contains("delivered") || text.contains("completed");
-    }
-
-    private static String boundaryText(RawTrack track) {
-        if (track == null) return "";
-        JSONObject value = track.value;
-        return normalizeText(track.detail + " "
-                + first(value, "logisticsStatusDesc", "status", "statusDesc"))
-                .toLowerCase(Locale.ROOT);
-    }
-
-    private static StatusSemantic boundarySemantic(RawTrack track) {
-        if (track == null || track.value == null) return StatusSemantic.UNKNOWN;
-        JSONObject value = track.value;
-        String provider = first(value, "_pipiStatusSource").toLowerCase(Locale.ROOT);
-        String code = first(value,
-                "logisticsStatus", "statusCode", "status", "state", "action");
-        String description = first(value,
-                "logisticsStatusDesc", "stateName", "statusDesc");
-        StatusSemantic semantic = "account".equals(provider)
-                || TimelineSlot.isAccount(provider)
-                ? StatusSemantic.fromAccountState(code, description)
-                : StatusSemantic.fromKuaidi100EventCode(code);
-        return semantic == StatusSemantic.UNKNOWN
-                ? StatusSemantic.fromStored(code, description) : semantic;
     }
 
     private static List<RawTrack> rawTracks(String tracksJson) {

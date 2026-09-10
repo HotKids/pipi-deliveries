@@ -17,7 +17,7 @@ const ACCENT_BY_ICON: Readonly<Record<string, string>> = {
   ems: "#F39400",
   emsgj: "#FF2600",
   jd: "#D32B2C",
-  jdshopping: "#FE481E",
+  jdshopping: "#FA0352",
   jtsd: "#E33C24",
   kysy: "#762E97",
   sf: "#E3373F",

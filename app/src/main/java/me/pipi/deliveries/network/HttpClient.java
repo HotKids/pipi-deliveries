@@ -7,7 +7,6 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.Collections;
 import java.util.Map;
 
 /** Small bounded HTTPS transport shared by all delivery sources. */
@@ -16,26 +15,11 @@ final class HttpClient {
 
     private HttpClient() {}
 
-    static Response get(String url) throws Exception {
-        return execute(url, "GET", null, null, true, Collections.emptyMap());
-    }
-
-    static Response postForm(String url, String body, boolean redirects) throws Exception {
-        return execute(url, "POST", "application/x-www-form-urlencoded; charset=UTF-8",
-                body.getBytes(StandardCharsets.UTF_8), redirects, Collections.emptyMap());
-    }
-
-    static Response postForm(
-            String url, String body, boolean redirects,
-            ExpressQueryCancellation cancellation) throws Exception {
-        return postForm(url, body, redirects, cancellation, Collections.emptyMap());
-    }
-
     static Response postForm(
             String url, String body, boolean redirects, Map<String, String> headers)
             throws Exception {
         return execute(url, "POST", "application/x-www-form-urlencoded; charset=UTF-8",
-                body.getBytes(StandardCharsets.UTF_8), redirects, headers);
+                body.getBytes(StandardCharsets.UTF_8), redirects, headers, null);
     }
 
     static Response postForm(
@@ -46,16 +30,6 @@ final class HttpClient {
         return execute(url, "POST", "application/x-www-form-urlencoded; charset=UTF-8",
                 body.getBytes(StandardCharsets.UTF_8), redirects,
                 headers, cancellation);
-    }
-
-    static Response postJson(String url, String body) throws Exception {
-        return execute(url, "POST", "application/json; charset=UTF-8",
-                body.getBytes(StandardCharsets.UTF_8), true, Collections.emptyMap());
-    }
-
-    static Response postJson(String url, String body, Map<String, String> headers)
-            throws Exception {
-        return postJson(url, body, headers, true);
     }
 
     static Response postJson(
@@ -71,12 +45,6 @@ final class HttpClient {
         if (cancellation == null) throw new IllegalArgumentException("cancellation is required");
         return execute(url, "POST", "application/json; charset=UTF-8",
                 body.getBytes(StandardCharsets.UTF_8), redirects, headers, cancellation);
-    }
-
-    private static Response execute(String url, String method, String contentType,
-                                    byte[] body, boolean redirects,
-                                    Map<String, String> headers) throws Exception {
-        return execute(url, method, contentType, body, redirects, headers, null);
     }
 
     private static Response execute(String url, String method, String contentType,
@@ -137,7 +105,7 @@ final class HttpClient {
             if (cancellation != null) cancellation.throwIfCancelled();
             InputStream stream = status >= 200 && status < 400
                     ? connection.getInputStream() : connection.getErrorStream();
-            return new Response(status, readBounded(stream, connection, cancellation));
+            return new Response(status, readBounded(stream, cancellation));
         } catch (IOException | RuntimeException networkFailure) {
             if (cancellation != null) cancellation.throwIfCancelled();
             throw networkFailure;
@@ -149,13 +117,8 @@ final class HttpClient {
         }
     }
 
-    private static byte[] readBounded(InputStream input) throws Exception {
-        return readBounded(input, null, null);
-    }
-
     private static byte[] readBounded(
-            InputStream input, HttpURLConnection connection,
-            ExpressQueryCancellation cancellation) throws Exception {
+            InputStream input, ExpressQueryCancellation cancellation) throws Exception {
         if (input == null) return new byte[0];
         try (InputStream stream = input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[8192];

@@ -23,14 +23,17 @@ public final class ExpressSyncWorker extends Worker {
     @NonNull
     @Override
     public Result doWork() {
+        // A cancelled or periodic worker may finish while a newer pull is running.
+        int[] summary = {0, 0};
         try {
             CarrierAuthority.refreshIfDue(getApplicationContext());
             ExpressRepository repository = ExpressRepository.get(getApplicationContext());
             repository.runPendingMigrations();
             repository.pruneExpiredShipmentsIfDue();
-            ExpressSyncEngine.syncAll(getApplicationContext());
+            ExpressSyncEngine.syncAll(getApplicationContext(), summary);
             return Result.success();
         } catch (Throwable failure) {
+            if (summary[0] == 0) summary[0] = 1;
             return getRunAttemptCount() < 3 ? Result.retry() : Result.failure();
         } finally {
             Context context = getApplicationContext();
@@ -40,10 +43,10 @@ public final class ExpressSyncWorker extends Worker {
                 // A launcher-specific widget failure must not suppress list reconciliation.
                 Log.w(TAG, "Widget reconciliation failed", failure);
             }
-            int[] summary = ExpressSyncEngine.lastSummary();
             context.sendBroadcast(new Intent(
                     ExpressRepository.ACTION_SYNC_FINISHED)
                     .setPackage(context.getPackageName())
+                    .putExtra(ExpressRepository.EXTRA_SYNC_WORK_ID, getId().toString())
                     .putExtra(ExpressRepository.EXTRA_SYNC_ATTEMPTED, summary[0])
                     .putExtra(ExpressRepository.EXTRA_SYNC_SUCCEEDED, summary[1])
                     .putExtra(ExpressRepository.EXTRA_SYNC_FAILED,

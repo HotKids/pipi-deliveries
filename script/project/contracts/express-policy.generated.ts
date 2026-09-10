@@ -10,9 +10,9 @@ export const EXPRESS_POLICY = {
     "toggleWindowMs": 1500
   },
   "retention": {
-    "signedMs": 604800000,
-    "cancelledMs": 14400000,
-    "signedRefreshMs": 86400000
+    "signedMs": 1209600000,
+    "signedDeletionMs": 1814400000,
+    "cancelledMs": 14400000
   },
   "pendingQueries": {
     "ttlMs": 86400000,
@@ -64,7 +64,7 @@ export const EXPRESS_POLICY = {
       "cn_h5",
       "k100_h5",
       "v4_query",
-      "v6_picker",
+      "v6_query",
       "v2_query",
       "kdniao",
       "kuaidi100"

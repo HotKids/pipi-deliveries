@@ -56,6 +56,7 @@ import {
   isJingDongSourceShipment,
   jingDongAutomaticH5TimelineAvailable,
   needsAutomaticManualFallback,
+  selectShipmentTimeline,
   unprojectedAccountOrder,
 } from "../services/shipment-policy";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
@@ -591,12 +592,11 @@ export function HomePage(props: {
                 ? manualPreviewNeedsDetailRefresh(selected)
                   ? "manual_submit"
                   : false
-                // 用户定 2026-09-04：京东详情进页只展示 feed 增量缓存，抓 H5 只在下拉。
-                // 原来这里对京东件直接给 detail_open，一进页就补查。identity_projection 保留
-                // ——那是把订单号投影成真实运单号，不是取轨迹。
+                // Complete history can still lack structured status; detail entry may query that missing field.
                 : unprojectedAccountOrder(selected)
                   ? "identity_projection"
-                  : needsAutomaticManualFallback(selected)
+                  : needsAutomaticManualFallback(selected) ||
+                      selectShipmentTimeline(selected).semantic === "UNKNOWN"
                     ? "detail_open"
                     : false}
               onStateChange={(next) => {
@@ -641,7 +641,7 @@ export function HomePage(props: {
                 foregroundStyle="tertiaryLabel"
                 frame={{ maxWidth: "infinity", alignment: "center" }}
               >
-                只显示 7 天内的快递信息
+                只显示 14 天内的快递信息
               </Text>
             </VStack>
           </List>

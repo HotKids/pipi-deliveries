@@ -55,9 +55,10 @@
     <string name="continue_query">继续查询</string>
     <string name="no_logistics">暂无物流信息</string>
     <string name="loading_logistics">正在加载物流信息</string>
+    <string name="loading_complete_logistics">完整轨迹加载中</string>
     <string name="invalid_phone">请输入有效的手机号</string>
     <string name="verification_code_required">请输入短信验证码</string>
-    <string name="express_retention_notice">只显示 7 天内的快递信息</string>
+    <string name="express_retention_notice">只显示 14 天内的快递信息</string>
     <string name="notification_group_important">重要物流节点</string>
     <string name="notification_group_regular">常规物流消息</string>
     <string name="notification_channel_picked">已揽件</string>
