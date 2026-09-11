@@ -218,6 +218,7 @@ public final class Kuaidi100TimelinePolicy {
         // when they contain several nodes or a terminal label. A collapsed KDNiao terminal
         // headline remains partial until its package contains another timed history node.
         boolean declaredComplete = TimelineSlot.K100_H5.equals(TimelineSlot.normalize(provider))
+                || TimelineSlot.JT_H5.equals(TimelineSlot.normalize(provider))
                 || TimelineSlot.KDNIAO.equals(TimelineSlot.normalize(provider));
         return !ManualTimelineAuthorityPolicy.isEffectivelyComplete(
                 provider, result, declaredComplete);

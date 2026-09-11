@@ -96,6 +96,10 @@ Object.assign(globalThis, {
     get<T>(key: string): T | null {
       return (shared.get(key) as T | undefined) ?? null;
     },
+    set(key: string, value: unknown): boolean {
+      shared.set(key, structuredClone(value));
+      return true;
+    },
     remove(key: string): void {
       shared.delete(key);
     },
@@ -227,8 +231,10 @@ await assert.rejects(delayedRequest, rejectedWithStatus(401));
 assert.equal(gatewayCredentialStatus(), "configured");
 assert.deepEqual(loadGatewayCredentials(), { token: newestToken });
 
-async function rejectsAsOperationTimeout(promise: Promise<unknown>) {
+const { diagnosticErrorDetails, writeDiagnostic, readDiagnostics, setDiagnosticsEnabled } = await import("../services/logger");
+async function rejectsAsOperationTimeout(promise: Promise<unknown>, origin?: string, phase?: string) {
   let guard: ReturnType<typeof setTimeout> | undefined;
+  let received: InstanceType<typeof OperationTimeoutError> | undefined;
   try {
     await assert.rejects(
       Promise.race([
@@ -240,11 +246,18 @@ async function rejectsAsOperationTimeout(promise: Promise<unknown>) {
           );
         }),
       ]),
-      (error: unknown) => error instanceof OperationTimeoutError,
+      (error: unknown) => {
+        if (!(error instanceof OperationTimeoutError)) return false;
+        received = error;
+        if (origin) assert.equal(error.requestDetails?.timeoutOrigin, origin);
+        if (phase) assert.equal(error.requestDetails?.requestPhase, phase);
+        return true;
+      },
     );
   } finally {
     if (guard != null) clearTimeout(guard);
   }
+  return received!;
 }
 
 let stalledFetchSignal: AbortSignal | undefined;
@@ -260,7 +273,7 @@ await rejectsAsOperationTimeout(postGateway(
   "/api/express/classify",
   { waybill: "SYNTHETIC-TIMEOUT-FETCH" },
   { deadlineAtMs: Date.now() + 20 },
-));
+), "timeout_signal", "request");
 assert.equal(stalledFetchSignal?.aborted, true);
 
 let stalledBodySignal: AbortSignal | undefined;
@@ -274,12 +287,24 @@ fetchHandler = async (init) => {
     }),
   };
 };
-await rejectsAsOperationTimeout(postGateway(
+const bodyTimeout = await rejectsAsOperationTimeout(postGateway(
   "/api/express/classify",
   { waybill: "SYNTHETIC-TIMEOUT-BODY" },
   { deadlineAtMs: Date.now() + 20 },
-));
+), "timeout_signal", "response_body");
 assert.equal(stalledBodySignal?.aborted, true);
+assert.equal(typeof bodyTimeout.requestDetails?.responseHeadersAfterMs, "number");
+assert.equal(bodyTimeout.requestDetails?.responseBodyAfterMs, undefined);
+setDiagnosticsEnabled(true);
+writeDiagnostic("account.sync.failed", diagnosticErrorDetails(bodyTimeout));
+const savedTimeout = readDiagnostics()[0].details;
+assert.equal(savedTimeout.timeoutOrigin, "timeout_signal");
+assert.equal(savedTimeout.requestPhase, "response_body");
+assert.ok(savedTimeout.requestBudgetMs! > 0);
+assert.ok(savedTimeout.requestElapsedMs! >= savedTimeout.requestBudgetMs!);
+assert.equal(typeof savedTimeout.deadlineLagMs, "number");
+assert.equal(JSON.stringify(savedTimeout).includes("SYNTHETIC-TIMEOUT-BODY"), false);
+setDiagnosticsEnabled(false);
 assert.ok(resolveLateBody);
 resolveLateBody(JSON.stringify({ ok: true }));
 await Promise.resolve();
@@ -300,7 +325,7 @@ const parentControlledRequest = postGateway(
 );
 await Promise.resolve();
 parentController.abort();
-await rejectsAsOperationTimeout(parentControlledRequest);
+await rejectsAsOperationTimeout(parentControlledRequest, "parent_signal", "response_body");
 assert.equal(parentControlledSignal?.aborted, true);
 
 const preAborted = new AbortController();
@@ -312,6 +337,26 @@ await rejectsAsOperationTimeout(postGateway(
   { deadlineAtMs: Date.now() + 10_000, signal: preAborted.signal },
 ));
 assert.equal(fetchCalls, callsBeforePreAbort);
+
+fetchHandler = async () => {
+  const error = new Error("synthetic native timeout"); error.name = "TimeoutError"; throw error;
+};
+await rejectsAsOperationTimeout(postGateway("/api/express/classify", {}, { timeoutMs: 1000 }),
+  "native_timeout", "request");
+const realNow = Date.now;
+const requestClock = realNow();
+Date.now = () => requestClock;
+fetchHandler = async () => ({ ...gatewayResponse(200), text: async () => {
+  Date.now = () => requestClock + 5000;
+  return JSON.stringify({ ok: true });
+} });
+try {
+  const late = await rejectsAsOperationTimeout(postGateway("/api/express/classify", {}, { timeoutMs: 1000 }),
+    "deadline_after_body", "response_complete");
+  assert.equal(late.requestDetails?.responseHeadersAfterMs, 0);
+  assert.equal(late.requestDetails?.responseBodyAfterMs, 5000);
+  assert.equal(late.requestDetails?.deadlineLagMs, 4000);
+} finally { Date.now = realNow; }
 
 console.log("gateway error diagnostics tests passed");
 

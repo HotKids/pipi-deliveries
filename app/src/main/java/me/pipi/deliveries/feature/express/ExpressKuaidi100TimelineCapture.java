@@ -18,14 +18,17 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Collections;
 
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import me.pipi.deliveries.data.ManualRoutePolicy;
+import me.pipi.deliveries.data.TimelineSlot;
 import me.pipi.deliveries.network.ExpressLog;
 
 /**
- * Captures the fixed K100 app/query page with the normalized actual waybill in nu.
- * Existing page-state and DOM extraction stays within K100 hosts and the eight-second budget.
+ * Captures the existing H5 primary stage using the fixed K100 page or the official JT page.
+ * Each parser verifies its own host and parcel identity within the eight-second budget.
  */
 final class ExpressKuaidi100TimelineCapture {
     private static final String TAG = "ExpressK100Capture";
@@ -47,6 +50,9 @@ final class ExpressKuaidi100TimelineCapture {
     private final String route;
     private final String waybill;
     private final String phone;
+    private List<String> phones;
+    private final boolean jtPage;
+    private boolean phoneRequired;
     private final Callback callback;
     private final ArrayList<Runnable> delayed = new ArrayList<>();
     private WebView webView;
@@ -60,7 +66,35 @@ final class ExpressKuaidi100TimelineCapture {
         this.route = route == null ? "" : route.trim();
         this.waybill = waybill;
         this.phone = phone;
+        this.phones = phoneCandidates(phone, Collections.emptyList());
+        this.jtPage = !this.route.isEmpty()
+                && this.route.equals(ManualRoutePolicy.primaryH5Url(waybill, "JTSD"));
+        this.diagnostics.provider = jtPage ? TimelineSlot.JT_H5 : TimelineSlot.K100_H5;
         this.callback = callback;
+    }
+
+    void usePhoneCandidates(List<String> boundPhones) {
+        phones = phoneCandidates(phone, boundPhones);
+    }
+
+    boolean needsPhoneTail() { return phoneRequired; }
+
+    /** A supplied parcel suffix is authoritative; bound numbers are used only when absent. */
+    static List<String> phoneCandidates(String supplied, List<String> boundPhones) {
+        ArrayList<String> tails = new ArrayList<>();
+        String explicit = phoneTail(supplied);
+        if (!explicit.isEmpty()) { tails.add(explicit); return tails; }
+        if (boundPhones != null) for (String candidate : boundPhones) {
+            String tail = phoneTail(candidate);
+            if (!tail.isEmpty() && !tails.contains(tail)) tails.add(tail);
+        }
+        return tails;
+    }
+
+    private static String phoneTail(String phone) {
+        String saved = phone == null ? "" : phone.trim();
+        String tail = saved.length() < 4 ? "" : saved.substring(saved.length() - 4);
+        return tail.matches("[0-9]{4}") ? tail : "";
     }
 
     boolean start() {
@@ -69,7 +103,7 @@ final class ExpressKuaidi100TimelineCapture {
             diagnostics.finish("host_unavailable");
             return false;
         }
-        if (ManualRoutePolicy.safeKuaidi100Url(route).isEmpty()) {
+        if (ManualRoutePolicy.safePrimaryH5Url(route, waybill).isEmpty()) {
             diagnostics.finish("untrusted_route");
             return false;
         }
@@ -94,8 +128,8 @@ final class ExpressKuaidi100TimelineCapture {
                 @Override public boolean shouldOverrideUrlLoading(
                         WebView view, WebResourceRequest request) {
                     return request == null || request.getUrl() == null
-                            || ManualRoutePolicy.safeKuaidi100Url(
-                            request.getUrl().toString()).isEmpty();
+                            || ManualRoutePolicy.safePrimaryH5Url(
+                            request.getUrl().toString(), waybill).isEmpty();
                 }
 
                 @Override public void onReceivedError(
@@ -156,10 +190,13 @@ final class ExpressKuaidi100TimelineCapture {
         if (finished || target == null) return;
         try {
             diagnostics.evaluations++;
-            target.evaluateJavascript(extractionScript(waybill,
-                    diagnostics.phoneVerificationAttempted ? "" : phone), value -> {
+            target.evaluateJavascript(jtPage ? jtExtractionScript(waybill, phones)
+                    : extractionScript(waybill, phones), value -> {
                 if (finished || target != webView) return;
                 diagnostics.accept(value);
+                phoneRequired = phoneRequired(value) || !jtPage && phones.isEmpty()
+                        && Boolean.TRUE.equals(diagnostics.checkCodeVisible);
+                if (phoneRequired) { complete("", "phone_required"); return; }
                 String normalized = normalizedTracks(value);
                 if (!normalized.isEmpty()) {
                     complete(normalized, "tracks");
@@ -222,25 +259,96 @@ final class ExpressKuaidi100TimelineCapture {
         return verificationScript(waybill, phone) + extractionScript();
     }
 
-    /** Submit only this parcel's saved suffix through the page's normal input and action. */
-    static String verificationScript(String waybill, String phone) {
+    static boolean phoneRequired(String payload) {
+        try {
+            JSONObject value = decodedPayload(payload);
+            return value != null && "phone_required".equals(value.optString("outcome"));
+        } catch (org.json.JSONException ignored) { return false; }
+    }
+
+    /** Reads only the verified parcel DOM; verification uses the official visible input event. */
+    static String jtExtractionScript(String waybill, List<String> phones) {
         String number = waybill == null ? "" : waybill.trim().toUpperCase(java.util.Locale.ROOT)
                 .replaceAll("[^A-Z0-9]", "");
-        String saved = phone == null ? "" : phone.trim();
-        String tail = saved.length() < 4 ? "" : saved.substring(saved.length() - 4);
-        if (number.isEmpty() || !tail.matches("[0-9]{4}")) return "";
+        String candidates = new JSONArray(phoneCandidates("", phones)).toString();
+        return "(function(){"
+                + "var expected=" + JSONObject.quote(number) + ",tails=" + candidates + ";"
+                + "var clean=function(v){return String(v==null?'':v).trim();};"
+                + "var result={tracks:[],outcome:'pending',diagnostics:{mainPresent:false,readyState:document.readyState,checkCodeVisible:false,phoneVerificationAttempted:false}};"
+                + "var finish=function(outcome){result.outcome=outcome;return JSON.stringify(result);};"
+                + "if(location.protocol!=='https:'||location.hostname!=='jtsd.jtexpress.com.cn'||location.pathname!=='/pipi')return finish('untrusted_route');"
+                + "var hash=location.hash||'',split=hash.indexOf('?');"
+                + "if(split<0||hash.slice(0,split)!=='#/pages/checkGoods/sendDetail')return finish('untrusted_route');"
+                + "var numbers=new URLSearchParams(hash.slice(split+1)).getAll('waybillNo');"
+                + "if(!expected||numbers.length!==1||numbers[0]!==expected)return finish('identity_mismatch');"
+                + "var state=window.__pipiJtH5||(window.__pipiJtH5={index:0,submitted:false});"
+                + "result.diagnostics.phoneVerificationAttempted=state.submitted||state.index>0;"
+                + "var popup=document.querySelector('.query-popup');"
+                + "var input=popup&&popup.querySelector('input.uni-input-input');"
+                + "var visible=!!(popup&&popup.getClientRects().length);"
+                + "result.diagnostics.checkCodeVisible=visible;"
+                + "if(visible&&input){"
+                + "var toast=document.querySelector('.uni-toast__content');var message=clean(toast&&toast.getClientRects().length?toast.textContent:'');"
+                + "var phoneWarning=/(手机|尾号|后四位|后4位)/.test(message)&&/(错误|不匹配|不正确|有误|验证失败)/.test(message);"
+                + "if(state.waitingWarning){if(phoneWarning)return finish('pending');state.waitingWarning=false;}"
+                + "if(state.submitted&&input.value===''){"
+                + "if(phoneWarning){state.index++;state.submitted=false;if(state.index>=tails.length)return finish('phone_required');state.waitingWarning=true;return finish('pending');}"
+                + "else if(message)return finish('provider_error');"
+                + "}"
+                + "if(!state.submitted){if(state.index>=tails.length)return finish('phone_required');"
+                + "var setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"
+                + "setter.call(input,tails[state.index]);state.submitted=true;"
+                + "input.dispatchEvent(new Event('input',{bubbles:true}));result.diagnostics.phoneVerificationAttempted=true;}"
+                + "return finish('pending');}"
+                + "var header=document.querySelector('.scft-left .cgsllt-right');"
+                + "if(!header||clean(header.textContent)!==expected)return finish('identity_mismatch');"
+                + "var rows=document.querySelectorAll('.scd-route .scdr-list');result.diagnostics.mainPresent=rows.length>0;"
+                + "for(var i=0;i<rows.length&&i<" + MAX_TRACKS + ";i++){"
+                + "var row=rows[i],time=row.querySelector('.scdrlr-time'),right=row.querySelector('.scdrl-right');"
+                + "if(!time||!right)continue;var parts=[];"
+                + "for(var j=0;j<right.children.length;j++){var child=right.children[j];if(!child.classList.contains('scdrlr-time'))parts.push(child.textContent||'');}"
+                + "var status=row.querySelector('.scdrl-left'),detail=clean(parts.join('')),timeText=clean(time.textContent);"
+                + "if(detail&&status&&clean(status.textContent))detail=clean(status.textContent)+' '+detail;"
+                + "if(detail&&timeText)result.tracks.push({time:timeText,context:detail});}"
+                + "return finish(result.tracks.length?'tracks':'no_result');})();";
+    }
+
+    static String extractionScript(String waybill, List<String> phones) {
+        return verificationScript(waybill, phones) + extractionScript();
+    }
+
+    /** Submit only this parcel's saved suffix through the page's normal input and action. */
+    static String verificationScript(String waybill, String phone) {
+        String tail = phoneTail(phone);
+        return tail.isEmpty() || waybill == null || waybill.trim().isEmpty() ? ""
+                : verificationScript(waybill, Collections.singletonList(tail));
+    }
+
+    /** A fresh post-request challenge proves rejection; a pending or failed network request does not. */
+    static String verificationScript(String waybill, List<String> phones) {
+        String number = waybill == null ? "" : waybill.trim().toUpperCase(java.util.Locale.ROOT)
+                .replaceAll("[^A-Z0-9]", "");
+        String candidates = new JSONArray(phoneCandidates("", phones)).toString();
         return "(function(){try{"
-                + "var expected=" + JSONObject.quote(number) + ",tail=" + JSONObject.quote(tail) + ";"
+                + "var expected=" + JSONObject.quote(number) + ",tails=" + candidates + ";"
                 + "if(location.protocol!=='https:'||location.hostname!=='m.kuaidi100.com'||location.pathname!=='/app/query/')return;"
-                + "if(!expected||!/^\\d{4}$/.test(tail)||window.__pipiK100PhoneSubmitted)return;"
                 + "var numbers=new URL(location.href).searchParams.getAll('nu');"
-                + "if(numbers.length!==1||numbers[0]!==expected)return;"
+                + "if(!expected||numbers.length!==1||numbers[0]!==expected)return;"
                 + "var main=document.querySelector('#main'),vue=main&&main.__vue__;"
                 + "if(!vue||typeof vue.num!=='string'||vue.num.toUpperCase().replace(/[^A-Z0-9]/g,'')!==expected)return;"
-                + "if(!vue.checkCode||vue.checkCode.show!==true||typeof vue.doCheckCode!=='function')return;"
-                + "window.__pipiK100PhoneSubmitted=true;"
-                + "vue.checkCode.value=tail;"
-                + "vue.doCheckCode();}catch(e){}})();";
+                + "if(!vue.checkCode||typeof vue.doCheckCode!=='function')return;"
+                + "tails=tails.filter(function(v){return /^\\d{4}$/.test(v);});"
+                + "var state=window.__pipiK100PhoneState||(window.__pipiK100PhoneState={index:0,submitted:false,started:false,outcome:'pending'});"
+                + "if(state.outcome!=='pending')return;"
+                + "if(state.submitted){if(vue.loading===true){state.started=true;return;}if(!state.started)return;"
+                + "var error=vue.errors&&vue.errors.type;"
+                + "if(error==='network'){state.outcome='provider_error';return;}"
+                + "if(vue.loading===false&&vue.checkCode.show===true&&error===''){state.index++;state.submitted=false;state.started=false;}else return;}"
+                + "if(vue.checkCode.show!==true)return;"
+                + "if(state.index>=tails.length){state.outcome='phone_required';return;}"
+                + "state.submitted=true;window.__pipiK100PhoneSubmitted=true;"
+                + "vue.checkCode.value=tails[state.index];vue.doCheckCode();state.started=vue.loading===true;"
+                + "}catch(e){}})();";
     }
 
     /** Existing track extraction stays independent of the private verification input. */
@@ -294,11 +402,12 @@ final class ExpressKuaidi100TimelineCapture {
                 + "if(ready==='loading'||ready==='interactive'||ready==='complete')diagnostics.readyState=ready;"
                 + "var check=privateCheck;"
                 + "if(check&&typeof check.show==='boolean')diagnostics.checkCodeVisible=check.show;}catch(e){}"
-                + "return JSON.stringify({tracks:tracks.slice(0," + MAX_TRACKS + "),diagnostics:diagnostics});})();";
+                + "return JSON.stringify({tracks:tracks.slice(0," + MAX_TRACKS + "),outcome:(window.__pipiK100PhoneState||{}).outcome||'pending',diagnostics:diagnostics});})();";
     }
 
     /** One scalar-only terminal record for either existing K100 loader. */
     static final class Diagnostics {
+        String provider = TimelineSlot.K100_H5;
         int evaluations;
         int evaluationFailures;
         int validTracks;
@@ -337,7 +446,7 @@ final class ExpressKuaidi100TimelineCapture {
         void finish(String reason) {
             if (emitted) return;
             emitted = true;
-            ExpressLog.line("", "k100_h5", "", "capture_finished", "reason", reason,
+            ExpressLog.line("", provider, "", "capture_finished", "reason", reason,
                     "evaluations", evaluations, "evaluationFailures", evaluationFailures,
                     "mainPresent", mainPresent == null ? "unknown" : mainPresent,
                     "readyState", readyState,
@@ -367,6 +476,7 @@ final class ExpressKuaidi100TimelineCapture {
                 JSONObject row = raw.optJSONObject(index);
                 if (row == null) continue;
                 String time = row.optString("time", "").trim();
+                if (time.matches("[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}")) time += ":00";
                 String detail = row.optString("context", "").trim();
                 if (time.isEmpty() || detail.isEmpty()) continue;
                 if (!Kuaidi100TimelinePolicy.isValidTrack(time, detail)) continue;

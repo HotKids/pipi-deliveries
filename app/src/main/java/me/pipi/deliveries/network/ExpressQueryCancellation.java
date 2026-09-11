@@ -51,6 +51,16 @@ public final class ExpressQueryCancellation implements AutoCloseable {
         }
     }
 
+    /** Only the transaction's commit decision shares this lock; database work stays cancellable. */
+    public boolean commitIfActive(Runnable commit) {
+        synchronized (lock) {
+            if (cancelled || deadlineNanos - System.nanoTime() <= 0L
+                    || Thread.currentThread().isInterrupted()) return false;
+            commit.run();
+            return true;
+        }
+    }
+
     public boolean isCancelled() {
         synchronized (lock) {
             return cancelled || deadlineNanos - System.nanoTime() <= 0L;

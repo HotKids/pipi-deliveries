@@ -1,11 +1,16 @@
 import type { AppState, BindingSource } from "../models";
 import { SCRIPT_BINDING_SOURCE } from "./script-source";
-import { SCRIPT_BUILD_TRACK } from "./build-track";
+import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD } from "./build-track";
+import { OperationTimeoutError, type RequestTimeoutDetails } from "./deadline";
 
 export type DiagnosticLevel = "info" | "warning" | "error";
 
-export type DiagnosticDetails = {
+export type DiagnosticDetails = Partial<RequestTimeoutDetails> & {
   flowId?: string;
+  blockingFlowId?: string;
+  blockingTrigger?: string;
+  blockingLeaseAgeMs?: number;
+  blockingLeaseRemainingMs?: number;
   source?: BindingSource;
   requestedSource?: BindingSource;
   handlerSource?: BindingSource;
@@ -16,6 +21,16 @@ export type DiagnosticDetails = {
   resultRevision?: number;
   v5Bindings?: number;
   attempted?: number;
+  candidateCount?: number;
+  availableCandidateCount?: number;
+  captureComplete?: boolean;
+  hasPickup?: boolean;
+  foreignPackage?: boolean;
+  foreignAnchorAtMs?: number;
+  earliestTrackAtMs?: number;
+  waybillMatches?: boolean;
+  waybillMatchesOrder?: boolean;
+  incompleteReason?: string;
   attempt?: number;
   mode?: "manual" | "refresh" | "last_detail";
   upstreamCode?: number;
@@ -40,6 +55,7 @@ export type DiagnosticDetails = {
   statusSemantic?: string;
   structuredStatus?: boolean;
   detailStatusSemantic?: string;
+  latestTrackSemantic?: string;
   missingStatusRefresh?: boolean;
   unprojectedOrder?: boolean;
   detailComplete?: boolean;
@@ -51,7 +67,13 @@ export type DiagnosticDetails = {
   skipReason?: string;
   extractionSource?: string;
   exitReason?: string;
+  historyProvider?: string;
+  headlineProvider?: string;
+  statusProvider?: string;
+  selectionReason?: string;
   timelineProvider?: string;
+  requestProvider?: string;
+  displayTimelineProvider?: string;
   finalTimelineProvider?: string;
   detailTimelineProvider?: string;
   executionBoundary?: "per_stage" | "host_budget";
@@ -72,8 +94,6 @@ export type DiagnosticDetails = {
   loadSettled?: boolean;
   loadCompleted?: boolean;
   mainPresent?: boolean;
-  htmlFetchCompleted?: boolean;
-  adScriptRemoved?: boolean;
   parsedScriptCount?: number;
   lastParsedScript?: string;
   vuePresent?: boolean;
@@ -93,6 +113,7 @@ export type DiagnosticDetails = {
   firstFtimePresent?: boolean;
   firstContextPresent?: boolean;
   firstRowOutcome?: string;
+  startupRecovery?: string;
   phoneVerificationAttempted?: boolean;
   timedTrackCount?: number;
   captureSeen?: boolean;
@@ -114,6 +135,10 @@ export type DiagnosticDetails = {
   validTrackCount?: number;
   effectiveTrackCount?: number;
   detailEffectiveTrackCount?: number;
+  latestEventAtMs?: number;
+  latestTrackAtMs?: number;
+  feedEventAtMs?: number;
+  statusEventAtMs?: number;
   primarySuccessCount?: number;
   primaryReachedTimelineStart?: boolean;
   pageClass?: string;
@@ -153,8 +178,7 @@ export type DiagnosticEntry = {
 
 const DIAGNOSTIC_KEY = "pipi_deliveries_diagnostic_log_v1";
 /**
- * Recording can be turned off from the log page. It is ON by default on every track: unlike Pipi,
- * the iOS formal build keeps the diagnostic log, so this is a user switch rather than a build gate.
+ * Recording is a user switch. Beta defaults to enabled; formal builds require an explicit opt-in.
  */
 const DIAGNOSTIC_ENABLED_KEY = "pipi_deliveries_diagnostic_enabled_v1";
 // A single foreground refresh can emit dozens of causally related stage records.
@@ -165,8 +189,16 @@ const MAX_CLOSED_FLOWS = 256;
 const SAFE_TEXT = /^[A-Za-z0-9._:-]{1,64}$/;
 const SOURCES = new Set<BindingSource>([SCRIPT_BINDING_SOURCE]);
 const closedFlowIds = new Set<string>();
+const flowTriggers = new Map<string, string>();
 
 const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
+  "blockingFlowId", "blockingTrigger", "blockingLeaseAgeMs", "blockingLeaseRemainingMs",
+  "timeoutOrigin", "requestPhase", "requestBudgetMs", "requestElapsedMs", "responseHeadersAfterMs", "responseBodyAfterMs",
+  "foreignAnchorAtMs", "earliestTrackAtMs",
+  "hasPickup", "foreignPackage", "waybillMatches", "waybillMatchesOrder",
+  "candidateCount", "availableCandidateCount", "captureComplete", "incompleteReason",
+  "requestProvider", "displayTimelineProvider",
+  "historyProvider", "headlineProvider", "statusProvider", "selectionReason",
   "interface",
   "level",
   "flowId",
@@ -201,6 +233,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "statusSemantic",
   "structuredStatus",
   "detailStatusSemantic",
+  "latestTrackSemantic",
   "missingStatusRefresh",
   "unprojectedOrder",
   "detailComplete",
@@ -231,8 +264,6 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "loadSettled",
   "loadCompleted",
   "mainPresent",
-  "htmlFetchCompleted",
-  "adScriptRemoved",
   "parsedScriptCount",
   "lastParsedScript",
   "vuePresent",
@@ -252,6 +283,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "firstFtimePresent",
   "firstContextPresent",
   "firstRowOutcome",
+  "startupRecovery",
   "phoneVerificationAttempted",
   "timedTrackCount",
   "captureSeen",
@@ -273,6 +305,10 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "validTrackCount",
   "effectiveTrackCount",
   "detailEffectiveTrackCount",
+  "latestEventAtMs",
+  "latestTrackAtMs",
+  "feedEventAtMs",
+  "statusEventAtMs",
   "primarySuccessCount",
   "primaryReachedTimelineStart",
   "pageClass",
@@ -310,6 +346,10 @@ const SOURCE_KEYS = new Set<keyof DiagnosticDetails>([
 ]);
 
 const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
+  "blockingLeaseAgeMs", "blockingLeaseRemainingMs",
+  "requestBudgetMs", "requestElapsedMs", "responseHeadersAfterMs", "responseBodyAfterMs",
+  "foreignAnchorAtMs", "earliestTrackAtMs",
+  "candidateCount", "availableCandidateCount",
   "baseRevision",
   "revision",
   "resultRevision",
@@ -341,13 +381,17 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
   "validTrackCount",
   "effectiveTrackCount",
   "detailEffectiveTrackCount",
+  "latestEventAtMs",
+  "latestTrackAtMs",
+  "feedEventAtMs",
+  "statusEventAtMs",
   "primarySuccessCount",
   "clientBuild",
 ]);
 
 const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
-  "htmlFetchCompleted",
-  "adScriptRemoved",
+  "hasPickup", "foreignPackage", "waybillMatches", "waybillMatchesOrder",
+  "captureComplete",
   "vuePresent",
   "jqueryPresent",
   "mainPresent",
@@ -505,6 +549,7 @@ const PROVIDER_WIRE: Record<string, string> = {
   web: "cn_h5",
 };
 const PROVIDER_KEYS = new Set<keyof DiagnosticDetails>([
+  "requestProvider", "displayTimelineProvider",
   "timelineProvider",
   "finalTimelineProvider",
   "detailTimelineProvider",
@@ -534,6 +579,10 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
     if (key === "timedTrackCount" || key === "parsedScriptCount" ||
         key === "carrierCandidateCount" || key === "allListsCount" || key === "listsCount" || key === "rawExtractedCount") {
       if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 0 && rawValue <= 100) result[key] = rawValue;
+      continue;
+    }
+    if (key === "startupRecovery") {
+      if (["pending", "applied", "skipped", "failed"].includes(rawValue as string)) result.startupRecovery = rawValue as string;
       continue;
     }
     if (key === "firstRowOutcome") {
@@ -757,6 +806,7 @@ export function diagnosticErrorDetails(error: unknown): DiagnosticDetails {
       : "";
   return {
     errorCategory: classifyDiagnosticError(error),
+    ...(error instanceof OperationTimeoutError ? error.requestDetails : {}),
     ...(Number.isInteger(status) && status >= 100 && status <= 599
       ? { httpStatus: status }
       : {}),
@@ -799,6 +849,7 @@ export function setDiagnosticsEnabled(enabled: boolean): boolean {
  * k100_autoCom。iOS 只接接口 5，所以接口相关的行一律 interface=v5。
  */
 const LEVEL_BY_STAGE: Record<string, string> = {
+  jt_h5: "jt_h5",
   v6_query: "v6_query",
   v6_refresh: "v6_refresh",
   account_list: "v5_list",
@@ -822,6 +873,7 @@ const LEVEL_BY_STAGE: Record<string, string> = {
   carrier_detect: "k100_autoCom",
 };
 const LEVEL_BY_PROVIDER: Record<string, string> = {
+  jt_h5: "jt_h5",
   interface5: "v5_list",
   account: "v5_list",
   v5_list: "v5_list",
@@ -849,6 +901,7 @@ const INTERFACE_LEVELS = new Set(["v5_list", "v5_query"]);
 
 export function unifiedLevel(details: DiagnosticDetails): string {
   if (details.level) return String(details.level);
+  if (details.requestProvider) return String(details.requestProvider);
   const stage = String(details.stage || "").trim().toLowerCase();
   const byStage = LEVEL_BY_STAGE[stage];
   const provider = String(details.timelineProvider || "").trim().toLowerCase();
@@ -871,6 +924,7 @@ export function writeDiagnostic(
   const unified = unifiedLevel(details);
   const cleanDetails = sanitizeDetails({
     ...details,
+    clientBuild: SCRIPT_CLIENT_BUILD,
     ...(unified ? { level: unified } : {}),
     ...(unified && INTERFACE_LEVELS.has(unified) && !details.interface
       ? { interface: "v5" }
@@ -878,6 +932,16 @@ export function writeDiagnostic(
   });
   const flowId = cleanDetails.flowId || "";
   if (flowId && closedFlowIds.has(flowId)) return;
+  if (flowId) {
+    if (cleanDetails.trigger) {
+      flowTriggers.set(flowId, cleanDetails.trigger);
+      while (flowTriggers.size > MAX_CLOSED_FLOWS) {
+        flowTriggers.delete(flowTriggers.keys().next().value!);
+      }
+    } else if (flowTriggers.has(flowId)) {
+      cleanDetails.trigger = flowTriggers.get(flowId);
+    }
+  }
   const item: DiagnosticEntry = {
     id: `${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     at: new Date(now).toISOString(),
@@ -896,6 +960,7 @@ export function writeDiagnostic(
       (cleanEvent === "refresh.succeeded" || cleanEvent === "refresh.failed")
     ) {
       closedFlowIds.add(flowId);
+      flowTriggers.delete(flowId);
       while (closedFlowIds.size > MAX_CLOSED_FLOWS) {
         const oldest = closedFlowIds.values().next().value;
         if (typeof oldest !== "string") break;
@@ -915,6 +980,7 @@ export function clearDiagnostics(): void {
   try {
     Storage.remove(DIAGNOSTIC_KEY, { shared: true });
     closedFlowIds.clear();
+    flowTriggers.clear();
   } catch {
     throw new Error("诊断日志清空失败");
   }

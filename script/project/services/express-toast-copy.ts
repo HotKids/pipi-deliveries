@@ -17,6 +17,8 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   manualQueryFailed: "查询失败，请稍后重试",
   /** 手动查件超时。 */
   manualQueryTimeout: "请求超时，请稍后重试",
+  /** A visible manual query still needs a valid parcel phone suffix after available candidates. */
+  manualPhoneTailRequired: "该运单需要手机号后四位，请重新添加并填写",
   /** A manual query was submitted for a waybill the list already tracks; no provider runs. */
   alreadyInList: "该快递已在列表中",
   /** 列表下拉：全部成功。 */
@@ -25,6 +27,8 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   refreshUpToDate: "当前已是最新",
   /** 列表下拉：部分成功。 */
   refreshPartial: "刷新完成，部分快递暂未更新",
+  /** The account list committed successfully; only per-parcel supplementation failed. */
+  listUpdated: "列表已更新",
   /** 列表下拉：全部失败或整轮抛错。 */
   refreshFailed: "刷新失败，请稍后重试",
   /** 详情下拉：拉到了新轨迹。 */

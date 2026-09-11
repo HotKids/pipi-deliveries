@@ -39,6 +39,9 @@ public final class ExpressManualPreviewTest {
         ExpressDetailActivity activity = controller.get();
         activity.setTheme(R.style.AppTheme);
         controller.create().start().resume();
+        ((java.util.concurrent.ExecutorService) field(activity, "worker", null))
+                .submit(() -> { }).get(3, java.util.concurrent.TimeUnit.SECONDS);
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
         ExpressQueryCancellation cancellation = new ExpressQueryCancellation(15000L);
         field(activity, "firstManualQueryCancellation", cancellation);
         field(activity, "firstManualQueryInFlight", true);

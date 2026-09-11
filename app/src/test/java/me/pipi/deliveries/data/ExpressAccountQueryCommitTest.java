@@ -133,7 +133,7 @@ public final class ExpressAccountQueryCommitTest {
     }
 
     @Test
-    public void structuredQueryStatusSurvivesReloadAndOnlyFillsMissingOwnerStatus() {
+    public void structuredQueryStatusAndActivitySurviveReload() {
         ExpressItem owner = unknownOwner();
         String queryTime = time(1000);
         ExpressQueryResult query = cainiao(real, StatusSemantic.DELIVERY, queryTime,
@@ -152,7 +152,7 @@ public final class ExpressAccountQueryCommitTest {
             assertEquals(StatusSemantic.DELIVERY, shown.semantic);
             assertEquals(query.statusEventTime, shown.statusEventTime);
             assertEquals(StatusSemantic.UNKNOWN, shown.sourceSemantic);
-            assertEquals(owner.latestDetail, shown.latestDetail);
+            assertEquals(query.latestDetail, shown.latestDetail);
             assertEquals(owner.tracksJson, shown.tracksJson);
         }
         assertEquals(StatusSemantic.UNKNOWN, repository.automaticSourceTimeline(owner).semantic);

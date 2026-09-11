@@ -20,6 +20,6 @@ public final class BootReceiverContractTest {
         String source = Files.readString(sourcePath, StandardCharsets.UTF_8);
 
         assertTrue(source.contains("Intent.ACTION_MY_PACKAGE_REPLACED"));
-        assertTrue(source.contains("ExpressWidgetProvider.refreshAll(context);"));
+        assertTrue(source.contains("ExpressScheduler.handoffWidgetRefresh(context,"));
     }
 }

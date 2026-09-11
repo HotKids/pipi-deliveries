@@ -16,14 +16,17 @@ function pack(provider: string, count: number, newestAt: number, pickup: boolean
     tracks: Array.from({ length: count }, (_, index) => ({ timeMs: newestAt - index * 60_000,
       timeText: String(newestAt - index * 60_000),
       detail: pickup && index === count - 1 ? "顺丰速运 已收取快件" : `Parcel passed facility ${index}`,
-      statusCode: "", raw: {} })),
+      statusCode: index === 0 ? "TRANSIT" : "", raw: {} })),
   };
 }
 function seed(sourceProvider = "ShunFeng", completed = false) {
   const source = pack("interface5", 1, oldAt, false);
   const query = pack("v5_query", 5, oldAt, true);
   const h5 = pack("cn_h5", 2, oldAt, true);
-  if (completed) for (const value of [source, query, h5]) value.semantic = "COMPLETED";
+  if (completed) for (const value of [source, query, h5]) {
+    value.semantic = "COMPLETED";
+    value.tracks[0].statusCode = "COMPLETED";
+  }
   const row: Shipment = { identity: { id: `interface5:account:${waybill}`, sourceId: waybill,
     bindingSource: "interface5", sourceOwner: "interface5:parcel", sourceProvider,
     courierCode: "SF", rawCourierCode: "SF", companyName: "顺丰速运", phone: "13800001234",
@@ -39,37 +42,38 @@ function seed(sourceProvider = "ShunFeng", completed = false) {
 const actualNow = Date.now;
 Date.now = () => NOW;
 try {
-  for (const response of ["new-picker", "no-result"] as const) {
+  for (const response of ["new-kdniao", "no-result"] as const) {
     memory.clear();
     const original = seed();
     assert.equal(selectShipmentDetailTimeline(original).provider, "v5_query");
     assert.equal(selectShipmentDetailTimeline(original).tracks.length, 5);
     const calls: string[] = [];
-    const fresh = pack("v6_query", 18, NOW - 60_000, true);
+    const fresh = pack("kdniao", 18, NOW - 60_000, true);
     const result = await runShipmentRefreshForTesting(original.identity.id,
       { isCurrent: () => true, deadlineAtMs: NOW + 30_000 },
       { trigger: "detail_pull", forceManualRefresh: true, includeKdniaoFallback: true }, {
         refreshAccountParcel: async () => { calls.push("account"); return null; },
+        refreshWebTimeline: async () => { calls.push("h5"); return null; },
         queryManualForSource: async (input) => {
-          assert.ok(input.pickerOnly || input.fallbackOnly, "SF keeps its supported Picker/KDNiao adapters");
-          calls.push(input.pickerOnly ? "picker" : "kdniao");
-          return { shipment: response === "new-picker" ? { ...original, timeline: fresh,
+          assert.ok(input.fallbackOnly, "SF pull must not call Online");
+          calls.push("kdniao");
+          return { shipment: response === "new-kdniao" ? { ...original, timeline: fresh,
             sourceTimeline: null, manualTimelines: [fresh] } : null, pending: null, routeUrl: "" };
         },
       });
-    assert.deepEqual(calls, response === "new-picker" ? ["picker"] : ["picker", "kdniao"],
+    assert.deepEqual(calls, ["h5", "kdniao"],
       "only accumulated manual pickup can stop SF supplementation; coarse source history cannot");
     assert.equal(shipmentDetailComplete(original), false);
-    if (response === "new-picker") {
+    if (response === "new-kdniao") {
       assert.equal(result.refreshed, true);
-      assert.equal(selectShipmentDetailTimeline(result.shipment).provider, "v6_query",
-        "a newer complete Picker package must replace history aligned only with the stale SF feed");
+      assert.equal(selectShipmentDetailTimeline(result.shipment).provider, "kdniao",
+        "a newer complete KDNiao package must replace history aligned only with the stale SF feed");
       assert.deepEqual(selectShipmentDetailTimeline(loadState(NOW).shipments[0]!).tracks, fresh.tracks,
         "the selected result survives reloading as one provider package, without feed or query nodes");
-      assert.equal(loadState(NOW).shipments[0]!.manualTimelines?.find(pack => pack.provider === "v6_query")?.tracks.length, 18,
-        "a refreshed Picker result must enter its own durable cache");
+      assert.equal(loadState(NOW).shipments[0]!.manualTimelines?.find(pack => pack.provider === "kdniao")?.tracks.length, 18,
+        "a refreshed KDNiao result must enter its own durable cache");
     } else {
-      assert.equal(result.refreshed, false);
+      assert.equal(result.querySucceeded, false);
       assert.deepEqual(selectShipmentDetailTimeline(result.shipment).tracks, selectShipmentDetailTimeline(original).tracks);
     }
   }
@@ -86,6 +90,10 @@ try {
       delta === 30 * 60_000 ? "k100_h5" : "v6_query",
       "the existing 30-minute window and sticky preference remain exact among manual candidates");
   }
+  const failedWithManual = { ...withCandidate(pack("v6_query", 2, NOW - 60_000, false)),
+    detailSelection: { provider: "v5_query", selectedAtMs: NOW, reason: "sf_refresh_failed" as const } };
+  assert.equal(selectShipmentDetailTimeline(failedWithManual).provider, "v6_query",
+    "legacy failure selections cannot replace an eligible partial manual cache");
   const fresh = pack("v6_query", 18, NOW - 60_000, true);
   const lackingPickup = pack("v6_query", 18, NOW - 60_000, false);
   assert.equal(selectShipmentDetailTimeline(withCandidate(lackingPickup)).provider, "v6_query",
@@ -101,10 +109,10 @@ try {
   assert.equal(shouldRefreshShipment(terminalWithNewerHistory, NOW), false);
   assert.equal(shouldScheduleManualRefresh(terminalWithNewerHistory, NOW), false,
     "a newer candidate cannot reopen a trusted completed shipment for scheduled refresh");
-  for (const [provider, expected] of [["JingDong", "v5_query"], ["CaiNiao", "cn_h5"]]) {
+  for (const [provider, expected] of [["JingDong", "v5_query"], ["CaiNiao", "v5_query"]]) {
     const other = seed(provider);
     assert.equal(selectShipmentDetailTimeline(withCandidate(fresh, other)).provider, expected,
-      "other sources retain their feed reference even with an SF carrier code");
+      "JD/Cainiao retain account-query authority even with an SF carrier code");
   }
   for (const [provider, completed] of [["ShunFeng", true], ["JingDong", false], ["CaiNiao", false]] as const) {
     memory.clear();

@@ -217,8 +217,8 @@ function storedState(state: unknown, schema: 1 | 2): unknown {
   };
 }
 
-// A route-bearing account row can arrive before its timeline qualifies for ownership. The route
-// sidecar and state pointer still have to enter the same deferred publication transaction.
+// A status-only account row owns its source before tracks arrive. Its route sidecar
+// and state pointer still enter the same deferred publication transaction.
 memory.clear();
 const unclaimedRouteMutations = new Map();
 const unclaimedRouteParcel = {
@@ -254,7 +254,7 @@ const unclaimedRouteShipments = mergeAccountParcel(
 );
 assert.equal(
   unclaimedRouteShipments[0]?.automaticOwnership?.ownerSource,
-  null,
+  "interface5",
 );
 assert.equal(
   unclaimedRouteMutations.size,
@@ -3534,7 +3534,7 @@ console.log("JD order completion cache repair tests passed");
 
 // V5 automatic list refresh leaves empty histories to explicit detail repair; existing retirements remain durable.
 {
-  const { runMissingShipmentHistoriesForTesting, runShipmentRefreshForTesting } =
+  const { runShipmentEnrichmentForTesting, runShipmentRefreshForTesting } =
     await import("../services/sync");
   const { visibleShipments } = await import("../services/storage");
   const { isHiddenSignedShipment } = await import("../services/status");
@@ -3566,8 +3566,11 @@ console.log("JD order completion cache repair tests passed");
           },
           queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "", skipReason: "cooldown" }),
         });
-      const round = await runMissingShipmentHistoriesForTesting(before, "interface5",
-        (state) => state, clock + 60000, undefined, refresh);
+      const round = await runShipmentEnrichmentForTesting(before, "interface5", "list-retirement",
+        candidate => saveState(candidate, clock), clock + 60000, new Set(), true, false, undefined, {
+          refreshAccountParcel: async () => { sourceRequests++; return null; },
+          queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "", skipReason: "cooldown" }),
+        });
       assert.equal(sourceRequests, 0, "v5 automatic list refresh must not enter the full detail chain");
       assert.equal(round.attempted, 0);
       const refreshed = round.state.shipments[0]!;
@@ -3621,9 +3624,8 @@ console.log("JD order completion cache repair tests passed");
 }
 console.log("Home missing history refresh and retirement tests passed");
 
-// The retained manual missing-history repair retires only after transport actually started.
+// Previously persisted retirements retain their lifetime and route cleanup after list scheduling changes.
 {
-  const { runMissingShipmentHistoriesForTesting, runShipmentRefreshForTesting } = await import("../services/sync");
   const { GatewayError } = await import("../services/gateway");
   const { OperationTimeoutError } = await import("../services/deadline");
   const day = 86400000;
@@ -3645,100 +3647,7 @@ console.log("Home missing history refresh and retirement tests passed");
   };
   const seed = (row: Shipment) => saveState({ ...emptyState(), shipments: [row],
     bindings: [{ source: "interface5", phone: "13800138000", boundAtMs: NOW - day }] }, NOW);
-  const run = (state: AppState, runtime: Parameters<typeof runShipmentRefreshForTesting>[3], signal?: AbortSignal) =>
-    runMissingShipmentHistoriesForTesting(state, "interface5", (next) => next, NOW + 60000, signal,
-      (id, options) => runShipmentRefreshForTesting(id,
-        { isCurrent: () => true, deadlineAtMs: NOW + 30000, signal }, options, runtime));
-  const cooldown = async () => ({ shipment: null, pending: null, routeUrl: "", skipReason: "cooldown" as const });
   try {
-    for (const failure of ["http", "timeout", "credentials", "unauthorized", "forbidden"] as const) {
-      memory.clear();
-      const row = emptyRow(`failure-${failure}`, "COMPLETED", true);
-      const result = await run(seed(row), {
-        queryManualForSource: async input => {
-          if (failure !== "credentials") input.onQueryAttempted?.(failure !== "unauthorized" && failure !== "forbidden");
-          throw failure === "timeout" ? new OperationTimeoutError()
-            : new GatewayError("synthetic query failure", failure === "http" ? 502 : failure === "unauthorized" ? 401 : failure === "forbidden" ? 403 : 0);
-        },
-      });
-      assert.equal(result.state.shipments[0]?.emptyTimelineHiddenAtMs, undefined,
-        "a failed manual request does not retire the existing row");
-      assert.equal(result.attempted, 0);
-    }
-
-    memory.clear();
-    const cancelled = seed(emptyRow("cancelled-request", "COMPLETED", true));
-    const abort = new AbortController();
-    await assert.rejects(run(cancelled, {
-      queryManualForSource: async input => {
-        input.onQueryAttempted?.(true); abort.abort(); throw new OperationTimeoutError();
-      },
-    }, abort.signal), OperationTimeoutError);
-    assert.equal(loadState(NOW).shipments[0]?.emptyTimelineHiddenAtMs, undefined);
-
-    memory.clear();
-    const forced = emptyRow("forced-manual", "TRANSIT", true);
-    forced.forcedCompletedAtMs = NOW - 60000;
-    const forcedState = seed(forced);
-    const skipped = await run(forcedState, { queryManualForSource: cooldown });
-    assert.equal(skipped.attempted, 0, "all source cooldowns do not retire an empty manual row");
-    assert.equal(skipped.state.shipments[0]?.emptyTimelineHiddenAtMs, undefined);
-    let manualRequests = 0;
-    const repaired = await run(skipped.state, { queryManualForSource: async (input) => {
-      input.onQueryAttempted?.(true); manualRequests++;
-      return { shipment: null, pending: null, routeUrl: "" };
-    } });
-    assert.ok(manualRequests > 0, "this entry may repair a manually frozen empty history");
-    assert.equal(repaired.state.shipments[0]?.forcedCompletedAtMs, NOW - 60000);
-    assert.equal(repaired.state.shipments[0]?.timeline.semantic, "COMPLETED");
-    assert.equal(repaired.state.shipments[0]?.emptyTimelineHiddenAtMs, NOW);
-    assert.equal(loadState(NOW + 7 * day - 1).shipments.length, 1,
-      "manual placeholder expiry cannot shorten the new seven-day hidden period");
-    assert.equal(loadState(NOW + 7 * day).shipments.length, 0);
-
-    for (const semantic of ["TRANSIT", "DELIVERY"] as const) {
-      memory.clear();
-      let state = seed(emptyRow(`ongoing-${semantic}`, semantic));
-      for (let round = 0; round < 3; round++) {
-        state = (await run(state, { refreshAccountParcel: async (_row, _deadline, _signal, started) => {
-          started?.(true); return null;
-        }, queryManualForSource: cooldown })).state;
-        assert.equal(visibleShipments(state, NOW).length, 1);
-        assert.equal(state.emptyTimelineRetirements?.length || 0, 0);
-      }
-      const source = state.shipments[0]!;
-      const signed = { ...source, timeline: { ...source.timeline, semantic: "COMPLETED" as const,
-        statusEventAtMs: NOW, latestDetail: "真实签收动态", tracks: [{ timeText: "2026-08-26 14:00:00",
-          timeMs: NOW, detail: "真实签收动态", statusCode: "107", raw: {} }] } };
-      signed.sourceTimeline = signed.timeline;
-      state = saveState({ ...state, shipments: [signed] }, NOW);
-      assert.equal(visibleShipments(state, NOW)[0]?.timeline.semantic, "COMPLETED",
-        "later genuine status still updates a nonretired row normally");
-    }
-
-    for (const partition of ["headline-only", "cached", "ordinary-hidden", "expired-budget", "locked"] as const) {
-      memory.clear();
-      const row = emptyRow(partition);
-      if (partition === "headline-only") {
-        row.timeline = { ...row.timeline, latestDetail: "快件正在派送，请保持电话畅通", statusEventAtMs: null };
-        row.sourceTimeline = row.timeline;
-      } else if (partition === "cached") {
-        row.manualTimelines = [{ ...row.timeline, provider: "kdniao", complete: true,
-          latestDetail: "完整签收缓存", tracks: [{ timeText: "2026-08-26 13:59:00", timeMs: NOW - 60000,
-            detail: "完整签收缓存", statusCode: "107", raw: {} }] }];
-      } else if (partition === "ordinary-hidden") row.settledAtMs = NOW - 15 * day;
-      const state = seed(row);
-      let calls = 0;
-      const result = await runMissingShipmentHistoriesForTesting(state, "interface5", (next) => next,
-        partition === "expired-budget" ? NOW : NOW + 60000, undefined, async () => {
-          calls++;
-          return { state, shipment: state.shipments[0]!, refreshed: false };
-        });
-      assert.equal(calls, 0, `${partition}: v5 automatic list does not initiate detail repair`);
-      assert.equal(result.attempted, 0);
-      assert.equal(result.state.shipments[0]?.emptyTimelineHiddenAtMs, undefined);
-    }
-
     memory.clear();
     const lateHidden = emptyRow("late-hidden");
     lateHidden.settledAtMs = NOW - 20 * day;

@@ -54,6 +54,11 @@ assert.equal(widgetReloadPolicy(1_000).policy, "after");
 assert.equal(widgetReloadPolicy(1_000).date.getTime(), 1_000 + 15 * 60 * 1_000);
 assert.equal(await bestEffortWidgetRefresh(async () => {}), "completed");
 assert.equal(
+  await bestEffortWidgetRefresh(async () => ({ skipReason: "active_cross_runtime_refresh" as const })),
+  "skipped",
+  "joining another runtime's refresh is not completed network work",
+);
+assert.equal(
   await bestEffortWidgetRefresh(async () => {
     throw new Error("offline");
   }),
@@ -86,7 +91,7 @@ assert.deepEqual(
   }),
   {
     accountOrderProjection: true,
-    webViewEnrichment: true,
+    webViewEnrichment: false,
     accountFollowupReserveMs: ACCOUNT_FOLLOWUP_RESERVE_MS,
   },
 );
@@ -124,7 +129,7 @@ const runFullRefreshSource = syncSource.match(
   /async function runFullRefresh\([\s\S]*?\n}\n\nexport function refreshAllShipments/,
 )?.[0] || "";
 const synchronizeAccountListSource = syncSource.match(
-  /async function synchronizeAccountList\([\s\S]*?\n}\n\nasync function projectAccountOrders/,
+  /async function synchronizeAccountList\([\s\S]*?\n}\n\ntype ManualRefreshTask/,
 )?.[0] || "";
 const bindPhoneSource = syncSource.match(
   /export async function bindPhone\([\s\S]*?^}/m,
@@ -134,7 +139,9 @@ assert.match(
   runFullRefreshSource,
   /synchronizeAccountList\([\s\S]*?hostPolicy\.accountFollowupReserveMs/,
 );
-assert.match(runFullRefreshSource, /hostPolicy\.accountOrderProjection/);
+assert.doesNotMatch(runFullRefreshSource, /refreshMissingShipmentHistories/);
+assert.match(runFullRefreshSource, /projectAccountOrders\([\s\S]*?!hostPolicy\.accountOrderProjection/,
+  "background projection only applies text identity; it cannot load H5");
 assert.match(
   runFullRefreshSource,
   /refreshShipmentEnrichment\([\s\S]*?enrichmentDeadlineAtMs/,
@@ -145,7 +152,7 @@ const enrichmentSource = syncSource.match(
 )?.[0] || "";
 assert.match(
   enrichmentSource,
-  /while \(active\.size < ACCOUNT_FOLLOWUP_CONCURRENCY && !deadlineExpired\(deadlineAtMs\)\)/,
+  /while \(active\.size < MANUAL_REFRESH_CONCURRENCY && queued\.length && !deadlineExpired\(deadlineAtMs\)\)/,
   "the pipeline must check the host deadline before admitting either account or manual work",
 );
 assert.doesNotMatch(

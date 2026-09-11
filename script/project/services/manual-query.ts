@@ -64,6 +64,7 @@ class ManualQueryError extends Error {
     message: string,
     readonly needsPhoneTail = false,
     readonly code = "",
+    readonly retryable = false,
   ) {
     super(message);
     this.name = "ManualQueryError";
@@ -671,6 +672,7 @@ async function queryMeizuShipmentOnce(
   assertWithinDeadline(input.deadlineAtMs);
   const startedAt = Date.now();
   let root: JsonObject | null = null;
+  let requestError: unknown;
   try {
     root = await sourcePost(input.dependencies)(
       "/api/express/timeline/source",
@@ -682,6 +684,9 @@ async function queryMeizuShipmentOnce(
         signal: input.signal,
       },
     );
+  } catch (error) {
+    requestError = error;
+    throw error;
   } finally {
     const value = root && ("value" in root ? root.value : root.data);
     writeDiagnostic("manual.meizu.response", {
@@ -690,10 +695,14 @@ async function queryMeizuShipmentOnce(
       timelineProvider,
       attempt,
       mode: "refresh",
+      result: root ? "received" : "request_failed",
+      ...(requestError ? diagnosticErrorDetails(requestError) : {}),
       ...(root ? { upstreamCode: responseCode(root) ?? undefined } : {}),
-      valueKind: !root || value === undefined ? "missing" : value === null ? "null"
-        : Array.isArray(value) ? "array" : typeof value,
-      redirectPresent: typeof root?.redirect === "string" && Boolean(root.redirect.trim()),
+      ...(root ? {
+        valueKind: value === undefined ? "missing" : value === null ? "null"
+          : Array.isArray(value) ? "array" : typeof value,
+        redirectPresent: typeof root.redirect === "string" && Boolean(root.redirect.trim()),
+      } : {}),
       durationMs: Date.now() - startedAt,
     });
   }
@@ -703,6 +712,7 @@ async function queryMeizuShipmentOnce(
       "路由轨迹查询失败",
       false,
       "upstream_rejected",
+      code === 503,
     );
   }
   const value = decodedJsonObject(root.value ?? root.data ?? root);
@@ -751,9 +761,12 @@ export async function queryMeizuShipment(
       return await queryMeizuShipmentOnce(input, attempt + 1);
     } catch (error) {
       lastError = error;
-      const retriable = error instanceof ManualQueryError &&
-        (error.code === "upstream_rejected" || error.code === "no_result");
+      const details = diagnosticErrorDetails(error);
+      const retriable = error instanceof ManualQueryError
+        ? error.retryable || error.code === "no_result"
+        : details.errorCategory === "network" || details.errorCategory === "service";
       if (!retriable || attempt > 0) throw error;
+      if (input.signal?.aborted) throw error;
       assertWithinDeadline(input.deadlineAtMs);
     }
   }
@@ -845,6 +858,7 @@ export async function queryKdniaoShipment(
 }
 
 export type ManualQueryOutcome = {
+  result?: "success" | "empty_response" | "query_failed" | "cooldown";
   shipment: Shipment | null;
   pending: PendingManualQuery | null;
   routeUrl: string;
@@ -882,6 +896,17 @@ export function allowsLocalCapabilityForSourceProvider(
 ): boolean {
   const provider = String(sourceProvider || "").trim().toLowerCase();
   return !provider || provider === "cainiao";
+}
+
+export function manualProviderSchedule(input: {
+  source: BindingSource; waybill: string; rawCourierCode?: string;
+  phoneTail?: string; sourceProvider?: string;
+}) {
+  return {
+    key: `${input.source}:${normalizeWaybill(input.waybill)}`,
+    identityFingerprint: [String(input.rawCourierCode || "").trim(),
+      String(input.phoneTail || "").trim(), String(input.sourceProvider || "").trim().toLowerCase()].join(":"),
+  };
 }
 
 export async function queryManualForSource(input: {
@@ -963,12 +988,9 @@ export async function queryManualForSource(input: {
   const queryStartedAt = Date.now();
   const waybillTail = waybillSuffix(waybill);
   const routeTimelineProvider = "v6_query";
-  const scheduleKey = `${input.source}:${waybill}`;
-  const identityFingerprint = [
-    rawCarrierCode,
-    phoneTail,
-    String(input.sourceProvider || "").trim().toLowerCase(),
-  ].join(":");
+  const { key: scheduleKey, identityFingerprint } = manualProviderSchedule({
+    ...input, waybill, rawCourierCode: rawCarrierCode, phoneTail,
+  });
   const scheduledProvider = (source: "local" | "route" | "fallback"):
     RefreshProvider => source === "local"
       ? "moto"
@@ -1141,7 +1163,9 @@ export async function queryManualForSource(input: {
     durationMs: Date.now() - queryStartedAt,
     result: selectedTrackCount
       ? manualTimelineIsComplete(selected!.timeline) ? "complete" : "partial"
-      : selectedStatusOnly ? "status_only" : "no_result",
+      : selectedStatusOnly ? "status_only"
+      : selection.attemptedSources === 0 ? "cooldown"
+      : Object.values(errors).some(Boolean) ? "query_failed" : "empty_response",
   }, selectedTrackCount || selectedStatusOnly ? "info" : "warning");
   const phoneError = !selected
     ? Object.values(errors).find(
@@ -1151,7 +1175,7 @@ export async function queryManualForSource(input: {
     : null;
   if (phoneError instanceof Error) throw phoneError;
   if (selected && hasTimed(selected)) {
-    return { shipment: selected, pending: null, routeUrl: selectedRouteUrl };
+    return { shipment: selected, pending: null, routeUrl: selectedRouteUrl, result: "success" };
   }
   const allSkipped = selection.attemptedSources === 0;
   const now = Date.now();
@@ -1185,6 +1209,8 @@ export async function queryManualForSource(input: {
     shipment: selected,
     pending,
     routeUrl: selectedRouteUrl,
+    result: allSkipped ? "cooldown" : selectedStatusOnly ? "success"
+      : Object.values(errors).some(Boolean) ? "query_failed" : "empty_response",
     ...(allSkipped ? { skipReason: "cooldown" as const } : {}),
   };
 }

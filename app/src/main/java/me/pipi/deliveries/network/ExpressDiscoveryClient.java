@@ -737,6 +737,7 @@ public final class ExpressDiscoveryClient {
                 item.optString("cpCode", ""),
                 rawCompanyName,
                 semantic,
+                ExpressTimeline.parseTime(latestTime),
                 latestTime,
                 latestDetail,
                 tracks.toString(),
@@ -746,7 +747,8 @@ public final class ExpressDiscoveryClient {
                 CainiaoRoute.interfaceFromToken(detailUrl),
                 routeCredential,
                 first(item, "provider", "providerName"));
-        result = result.withRawCarrierNameEvidence(rawCompanyName);
+        result = result.withRawCarrierNameEvidence(rawCompanyName)
+                .withManualStatusEvidence(semantic.label, trustedAccountStatus(item, semantic));
         return AccountCarrierNormalizer.apply(item, result);
     }
 
@@ -793,6 +795,7 @@ public final class ExpressDiscoveryClient {
                 code,
                 rawCompanyName,
                 semantic,
+                latest == null ? 0L : ExpressTimeline.parseTime(latest.time),
                 latest == null ? "" : latest.time,
                 latest == null ? "" : latest.detail,
                 tracks.toString(),
@@ -802,7 +805,13 @@ public final class ExpressDiscoveryClient {
                 route.isEmpty() ? "" : "v5",
                 route,
                 first(item, "provider", "providerName"))
-                .withRawCarrierNameEvidence(rawCompanyName);
+                .withRawCarrierNameEvidence(rawCompanyName)
+                .withManualStatusEvidence(semantic.label, trustedAccountStatus(item, semantic));
+    }
+
+    private static boolean trustedAccountStatus(JSONObject item, StatusSemantic semantic) {
+        return semantic != StatusSemantic.UNKNOWN
+                && semantic == StatusSemantic.fromAccountState(item.optString("stateNum", ""), "");
     }
 
     /** Returns the account row's own raw H5 capability without rebuilding or reordering it. */

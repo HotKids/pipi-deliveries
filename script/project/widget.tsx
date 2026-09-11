@@ -126,15 +126,16 @@ async function run() {
       })
     );
     writeDiagnostic(
-      "widget.refresh.completed",
+      outcome === "skipped" ? "widget.refresh.skipped" : "widget.refresh.completed",
       {
         flowId,
         stage: "widget_timeline",
         result: outcome,
+        ...(outcome === "skipped" ? { skipReason: "active_cross_runtime_refresh" } : {}),
         durationMs: Date.now() - refreshStartedAtMs,
         budgetMs: WIDGET_REFRESH_BUDGET_MS,
       },
-      outcome === "completed" ? "info" : "warning",
+      outcome === "completed" || outcome === "skipped" ? "info" : "warning",
     );
   } else {
     writeDiagnostic("widget.refresh.skipped", {

@@ -18,6 +18,7 @@ Object.assign(globalThis, {
 
 const {
   acquireDurableRefreshLease,
+  durableRefreshLeaseDiagnostics,
   lastNetworkRefreshSuccessAtMs,
   providerNextDueAt,
   recordNetworkRefreshSuccess,
@@ -110,5 +111,17 @@ assert.equal(firstLease?.isCurrent(), false);
 const secondLease = acquireDurableRefreshLease("full:interface5", 30_000);
 assert.ok(secondLease);
 secondLease?.release();
+
+const observedLease = acquireDurableRefreshLease("full:interface5", 125_000, now, {
+  flowId: "refresh-synthetic-holder", trigger: "background",
+});
+assert.ok(observedLease);
+assert.deepEqual(durableRefreshLeaseDiagnostics("full:interface5", now + 22_000), {
+  blockingFlowId: "refresh-synthetic-holder", blockingTrigger: "background",
+  blockingLeaseAgeMs: 22_000, blockingLeaseRemainingMs: 103_000,
+});
+assert.deepEqual(durableRefreshLeaseDiagnostics("full:interface5", now + 125_000), {});
+observedLease.release();
+assert.deepEqual(durableRefreshLeaseDiagnostics("full:interface5", now), {});
 
 console.log("refresh runtime scheduling tests passed");

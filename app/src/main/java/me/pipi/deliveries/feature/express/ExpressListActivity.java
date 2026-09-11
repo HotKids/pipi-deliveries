@@ -91,6 +91,11 @@ public final class ExpressListActivity extends AppCompatActivity {
     private View retentionNotice;
     private SwipeRefreshLayout swipeRefresh;
     private final ExecutorService carrierDetectWorker = Executors.newSingleThreadExecutor();
+    private final ExecutorService databaseWorker = Executors.newSingleThreadExecutor();
+    private int reloadGeneration;
+    private int queryLookupGeneration;
+    private boolean queryLookupPending;
+    private ExpressQueryCancellation textProjectionCancellation;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Future<?> carrierDetectTask;
     private ExpressQueryCancellation carrierDetectCancellation;
@@ -293,6 +298,15 @@ public final class ExpressListActivity extends AppCompatActivity {
             swipeRefresh.removeCallbacks(pullRefreshHardTimeout);
         }
         invalidateCarrierDetection();
+        reloadGeneration++;
+        if (queryLookupPending) {
+            queryLookupGeneration++;
+            queryLookupPending = false;
+            querying = false;
+            queryInput.setEnabled(true);
+        }
+        if (textProjectionCancellation != null) textProjectionCancellation.cancel();
+        textProjectionCancellation = null;
         orderProjectionCaptureEnabled = false;
         resetOrderProjectionAttemptsAfterCapture = false;
         if (orderProjectionCapture != null) {
@@ -329,6 +343,7 @@ public final class ExpressListActivity extends AppCompatActivity {
         dismissDialog(deleteConfirmationDialog);
         invalidateInteractiveNetworkOperations();
         carrierDetectWorker.shutdownNow();
+        databaseWorker.shutdown();
         super.onDestroy();
     }
 
@@ -345,26 +360,42 @@ public final class ExpressListActivity extends AppCompatActivity {
         Toast.makeText(this, ExpressToastCopy.refreshSummary(
                 intent.getIntExtra(ExpressRepository.EXTRA_SYNC_ATTEMPTED, 0),
                 intent.getIntExtra(ExpressRepository.EXTRA_SYNC_SUCCEEDED, 0),
-                intent.getIntExtra(ExpressRepository.EXTRA_SYNC_FAILED, 0)),
+                intent.getIntExtra(ExpressRepository.EXTRA_SYNC_FAILED, 0),
+                intent.getBooleanExtra(ExpressRepository.EXTRA_SYNC_ACCOUNT_LIST_UPDATED, false)),
                 Toast.LENGTH_SHORT).show();
     }
 
     private void reload() {
-        List<ExpressItem> fresh = ExpressRepository.get(this).listVisible(
-                ExpressAccountSource.bindingSource(this));
-        items.clear();
-        items.addAll(fresh);
-        adapter.notifyDataSetChanged();
-        boolean isEmpty = items.isEmpty();
-        empty.setVisibility(isEmpty ? View.VISIBLE : View.GONE);
-        list.setVisibility(isEmpty ? View.GONE : View.VISIBLE);
-        retentionNotice.setVisibility(isEmpty ? View.GONE : View.VISIBLE);
-        swipeRefresh.setRefreshing(false);
-        startNextOrderProjectionCapture();
+        int generation = ++reloadGeneration;
+        String bindingSource = ExpressAccountSource.bindingSource(this);
+        databaseWorker.execute(() -> {
+            try {
+                List<ExpressItem> fresh = ExpressRepository.get(this).listVisible(bindingSource);
+                runOnUiThread(() -> {
+                    if (generation != reloadGeneration || isFinishing() || isDestroyed()
+                            || !bindingSource.equals(ExpressAccountSource.bindingSource(this))) return;
+                    items.clear();
+                    items.addAll(fresh);
+                    adapter.notifyDataSetChanged();
+                    boolean isEmpty = items.isEmpty();
+                    empty.setVisibility(isEmpty ? View.VISIBLE : View.GONE);
+                    list.setVisibility(isEmpty ? View.GONE : View.VISIBLE);
+                    retentionNotice.setVisibility(isEmpty ? View.GONE : View.VISIBLE);
+                    swipeRefresh.setRefreshing(false);
+                    startNextOrderProjectionCapture();
+                });
+            } catch (RuntimeException failure) {
+                runOnUiThread(() -> {
+                    if (generation != reloadGeneration || isFinishing() || isDestroyed()) return;
+                    swipeRefresh.setRefreshing(false);
+                    Toast.makeText(this, ExpressToastCopy.STATE_LOAD_FAILED, Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
     }
 
     private void startNextOrderProjectionCapture() {
-        if (!orderProjectionCaptureEnabled || orderProjectionCapture != null
+        if (!orderProjectionCaptureEnabled || orderProjectionCapture != null || textProjectionCancellation != null
                 || isFinishing() || isDestroyed()) return;
         ExpressItem candidate;
         while ((candidate = nextOrderProjectionCandidate(
@@ -377,18 +408,34 @@ public final class ExpressListActivity extends AppCompatActivity {
                 ExpressOrderProjectionRetryStore.AttemptToken token =
                         ExpressOrderProjectionRetryStore.acquireAttempt(candidate);
                 if (token == null) continue;
-                String owner = candidate.stateOwner.isEmpty()
-                        ? candidate.source : candidate.stateOwner;
-                boolean saved = ExpressRepository.get(this).saveOrderProjection(
-                        candidate, ExpressAccountSource.bindingSourceForOwner(owner),
-                        textIdentity.waybill, "");
-                ExpressOrderProjectionRetryStore.releaseAttempt(token);
-                if (saved) {
-                    ExpressScheduler.requestNow(this);
-                    reload();
-                    return;
-                }
-                continue;
+                ExpressItem expected = candidate;
+                String owner = expected.stateOwner.isEmpty() ? expected.source : expected.stateOwner;
+                ExpressQueryCancellation cancellation = new ExpressQueryCancellation(30_000L);
+                textProjectionCancellation = cancellation;
+                databaseWorker.execute(() -> {
+                    boolean saved = false;
+                    try {
+                        saved = ExpressRepository.get(this).saveOrderProjection(expected,
+                                ExpressAccountSource.bindingSourceForOwner(owner),
+                                textIdentity.waybill, "", cancellation);
+                    } catch (RuntimeException failure) {
+                        android.util.Log.w("ExpressOrderProjection", "Text projection could not be saved: "
+                                + failure.getClass().getSimpleName());
+                    } finally {
+                        ExpressOrderProjectionRetryStore.releaseAttempt(token);
+                        boolean committed = saved;
+                        runOnUiThread(() -> {
+                            if (textProjectionCancellation != cancellation) return;
+                            textProjectionCancellation = null;
+                            if (cancellation.isCancelled() || isFinishing() || isDestroyed()) return;
+                            if (committed) {
+                                ExpressScheduler.requestNow(this);
+                                reload();
+                            } else startNextOrderProjectionCapture();
+                        });
+                    }
+                });
+                return;
             }
             ExpressHomeOrderProjectionCapture capture =
                     new ExpressHomeOrderProjectionCapture(
@@ -462,34 +509,60 @@ public final class ExpressListActivity extends AppCompatActivity {
             queryContainer.setError(getString(R.string.invalid_waybill));
             return;
         }
-        // 已在列表里的单号不再花一次识别、一轮查询或第二行（用户定 2026-09-04，iOS/Pipi 同）。
-        ExpressItem listed = ExpressRepository.get(this).findByWaybill(
-                waybill, ExpressAccountSource.bindingSource(this));
-        if (listed != null) {
-            queryContainer.setError(null);
-            Toast.makeText(this, ExpressToastCopy.ALREADY_IN_LIST, Toast.LENGTH_SHORT).show();
-            // 用户定 2026-09-05：提示「已在列表」的同时打开那一票的详情（iOS/Pipi 同）。
-            startActivity(new Intent(this, ExpressDetailActivity.class).putExtra(
-                    ExpressDetailActivity.EXTRA_ROW_ID, listed.rowId));
-            return;
-        }
         querying = true;
-        Toast.makeText(this, ExpressToastCopy.MANUAL_QUERYING, Toast.LENGTH_SHORT).show();
-        queryContainer.setError(null);
+        queryLookupPending = true;
+        int generation = ++queryLookupGeneration;
         queryInput.setEnabled(false);
-        hideKeyboard();
-        carrierDetectGeneration++;
-        if (carrierDetectStart != null) {
-            mainHandler.removeCallbacks(carrierDetectStart);
-            carrierDetectStart = null;
-        }
-        if (carrierDetectCancellation != null) carrierDetectCancellation.cancel();
-        carrierDetectCancellation = null;
-        if (carrierDetectTask != null) carrierDetectTask.cancel(true);
-        carrierDetectTask = null;
-        manualQuery.launch(ExpressDetailActivity.manualQueryIntent(
-                this, waybill, suppliedPhoneTail, suppliedCourierHint,
-                ExpressAccountSource.bindingSource(this)));
+        String bindingSource = ExpressAccountSource.bindingSource(this);
+        databaseWorker.execute(() -> {
+            try {
+                ExpressItem listed = ExpressRepository.get(this).findByWaybill(waybill, bindingSource);
+                runOnUiThread(() -> {
+                    if (generation != queryLookupGeneration || isFinishing() || isDestroyed()) return;
+                    queryLookupPending = false;
+                    if (!bindingSource.equals(ExpressAccountSource.bindingSource(this))) {
+                        querying = false;
+                        queryInput.setEnabled(true);
+                        return;
+                    }
+                    if (listed != null) {
+                        querying = false;
+                        queryInput.setEnabled(true);
+                        queryContainer.setError(null);
+                        Toast.makeText(this, ExpressToastCopy.ALREADY_IN_LIST, Toast.LENGTH_SHORT).show();
+                        // 用户定 2026-09-05：提示「已在列表」的同时打开那一票的详情（iOS/Pipi 同）。
+                        startActivity(new Intent(this, ExpressDetailActivity.class).putExtra(
+                                ExpressDetailActivity.EXTRA_ROW_ID, listed.rowId));
+                        return;
+                    }
+                    querying = true;
+                    Toast.makeText(this, ExpressToastCopy.MANUAL_QUERYING, Toast.LENGTH_SHORT).show();
+                    queryContainer.setError(null);
+                    queryInput.setEnabled(false);
+                    hideKeyboard();
+                    carrierDetectGeneration++;
+                    if (carrierDetectStart != null) {
+                        mainHandler.removeCallbacks(carrierDetectStart);
+                        carrierDetectStart = null;
+                    }
+                    if (carrierDetectCancellation != null) carrierDetectCancellation.cancel();
+                    carrierDetectCancellation = null;
+                    if (carrierDetectTask != null) carrierDetectTask.cancel(true);
+                    carrierDetectTask = null;
+                    manualQuery.launch(ExpressDetailActivity.manualQueryIntent(
+                            this, waybill, suppliedPhoneTail, suppliedCourierHint,
+                            ExpressAccountSource.bindingSource(this)));
+                });
+            } catch (RuntimeException failure) {
+                runOnUiThread(() -> {
+                    if (generation != queryLookupGeneration || isFinishing() || isDestroyed()) return;
+                    queryLookupPending = false;
+                    querying = false;
+                    queryInput.setEnabled(true);
+                    Toast.makeText(this, ExpressToastCopy.STATE_LOAD_FAILED, Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
     }
 
     private void scheduleCarrierDetection() {
@@ -877,8 +950,20 @@ public final class ExpressListActivity extends AppCompatActivity {
                 .setMessage(R.string.delete_express_confirm)
                 .setNegativeButton(R.string.cancel, null)
                 .setPositiveButton(R.string.mzuc_delete, (clickedDialog, which) -> {
-                    ExpressRepository.get(this).delete(item.rowId);
-                    Toast.makeText(this, ExpressToastCopy.DELETED, Toast.LENGTH_SHORT).show();
+                    databaseWorker.execute(() -> {
+                        boolean deleted;
+                        try {
+                            ExpressRepository.get(this).delete(item.rowId);
+                            deleted = true;
+                        } catch (RuntimeException failure) {
+                            deleted = false;
+                        }
+                        String message = deleted ? ExpressToastCopy.DELETED : ExpressToastCopy.DELETE_FAILED;
+                        runOnUiThread(() -> {
+                            if (!isFinishing() && !isDestroyed())
+                                Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+                        });
+                    });
                 })
                 .create();
         deleteConfirmationDialog = dialog;

@@ -75,215 +75,122 @@ let clockNow = NOW;
 Date.now = () => clockNow;
 process.on("exit", () => {Date.now = realNow;});
 
-test("Home pipelines each parcel, refills free slots, and keeps both concurrency limits", async () => {
-  const rows = [row("pipe-sf", false, true), ...[1,2,3,4,5].map(n => row(`pipe-a${n}`)),
-    row("pipe-manual", true), row("pipe-signed", false, false, true)];
-  const h = harness(rows);
-  const gates = new Map<string, ReturnType<typeof deferred>>();
-  const started: string[] = [];
-  let active = 0, manualActive = 0, peak = 0, manualPeak = 0;
-  async function wait(key: string, manual: boolean) {
-    started.push(key); const gate = deferred(); gates.set(key, gate);
-    active++; manualActive += Number(manual);
-    peak = Math.max(peak, active); manualPeak = Math.max(manualPeak, manualActive);
-    await gate.promise;
-    active--; manualActive -= Number(manual);
-  }
-  let drain = false;
-  const run = runShipmentEnrichmentForTesting(h.initial, "interface5", "pipeline-test", h.checkpoint,
+test("list commits finished Online rows before slower peers, with at most two active calls", async () => {
+  const rows = [1,2,3,4].map(n => row(`online-${n}`, true));
+  const h = harness(rows), gates = new Map<string, ReturnType<typeof deferred>>();
+  let drain = false, active = 0, peak = 0;
+  const run = runShipmentEnrichmentForTesting(h.initial, "interface5", "progressive", h.checkpoint,
     NOW+60000, new Set(), true, false, undefined, {
-      refreshAccountParcel: async s => {if (!drain) await wait(`a:${label(s)}`, false); return parcel(s);},
-      queryManualForSource: async options => {
-        const s = options.currentShipment!;
-        if (label(s) === "pipe-sf") {
-          assert.ok(s.manualTimelines?.some(p => p.tracks.some(t => t.detail === "Fresh pipe-sf")),
-            "automatic supplementation uses its own durably committed account result");
-        }
-        if (!drain) await wait(`m:${label(s)}`, true);
-        const timeline = {...s.timeline, provider: "kdniao", latestDetail: `Manual ${label(s)}`};
-        return {shipment: {...s, timeline, manualTimelines: [timeline]}, pending: null, routeUrl: ""};
+      refreshAccountParcel: async () => { assert.fail("list must not fetch account detail"); },
+      queryManualForSource: async input => {
+        assert.equal(input.pickerOnly, true); assert.equal(input.includeKdniaoFallback, false);
+        const current = input.currentShipment!;
+        const gate = deferred(); gates.set(current.identity.id, gate);
+        active++; peak = Math.max(peak, active);
+        if (!drain) await gate.promise;
+        active--;
+        const timeline = { ...current.timeline, provider: "v6_query", latestDetail: `Fresh ${label(current)}`,
+          tracks: [{ ...current.timeline.tracks[0], detail: `Fresh ${label(current)}`, timeMs: NOW }] };
+        return { shipment: { ...current, timeline, manualTimelines: [timeline] }, pending: null, routeUrl: "" };
       },
     });
   try {
-    await tick();
-    assert.ok(started.includes("m:pipe-manual"), `independent manual work must start before unrelated account queries finish: ${JSON.stringify(started)}`);
-    assert.ok(!started.includes("m:pipe-sf"), "automatic supplementation waits for its own account result");
-    assert.ok(!started.some(key => key.includes("pipe-signed")), "signed rows remain skipped");
-    const earlyAccount = started.find(key => key.startsWith("a:") && key !== "a:pipe-sf")!;
-    const beforeCount = started.filter(key => key.startsWith("a:")).length;
-    gates.get(earlyAccount)!.resolve(); await tick();
-    assert.ok(started.filter(key => key.startsWith("a:")).length > beforeCount,
-      "a free slot must accept another account row while the slow first rows remain pending");
-    gates.get("a:pipe-sf")!.resolve(); await tick();
-    assert.ok(started.includes("m:pipe-sf"), "same-parcel manual work must not wait for every account row");
-  } finally {
-    drain = true; for (const gate of gates.values()) gate.resolve(); await run;
-  }
-  assert.ok(peak <= 4, `total concurrent tasks: ${peak}`);
-  assert.ok(manualPeak <= 2, `manual concurrent tasks: ${manualPeak}`);
-  const stored = loadState(NOW);
-  for (const s of rows.filter(s => !s.identity.manuallyAdded && label(s) !== "pipe-signed")) {
-    assert.ok(stored.shipments.find(r => r.identity.id === s.identity.id)?.manualTimelines?.some(
-      p => p.tracks.some(t => t.detail === `Fresh ${label(s)}`)), "parallel commits preserve each other");
-  }
-});
-
-test("Home reevaluates terminal status after the parcel's own account query", async () => {
-  const unsigned = row("freeze-after-query", false, true);
-  unsigned.timeline.semantic = "UNKNOWN";
-  unsigned.timeline.structuredStatus = false;
-  const h = harness([unsigned]);
-  let manualCalls = 0;
-  await runShipmentEnrichmentForTesting(h.initial, "interface5", "terminal-test", h.checkpoint,
-    NOW+60000, new Set(), true, false, undefined, {
-      refreshAccountParcel: async s => parcel(s, true),
-      queryManualForSource: async () => {manualCalls++; return {shipment: null, pending: null, routeUrl: ""};},
-    });
-  assert.equal(manualCalls, 0, "a newly signed parcel must not enter supplementation");
-  assert.equal(loadState(NOW).shipments[0]?.timeline.semantic, "COMPLETED");
-});
-
-test("route-only manual result releases its lease in the result checkpoint", async () => {
-  const s = row("route-only", false, true); s.accountRecord = null;
-  const h = harness([s]);
-  await runShipmentEnrichmentForTesting(h.initial, "interface5", "route-test", h.checkpoint,
-    NOW+60000, new Set(), true, false, undefined, {
-      refreshAccountParcel: async () => {throw new Error("no account record");},
-      queryManualForSource: async options => ({shipment: {...options.currentShipment!,
-        route: {kind: "web", source: "v6_query"},
-        timeline: {...options.currentShipment!.timeline, provider: "v6_query", tracks: []}},
-        pending: null, routeUrl: "https://www.kuaidi100.com/chaxun?com=shunfeng&nu=SF1234560000"}),
-    });
-  assert.deepEqual(h.commits, ["manual_refresh_attempt", "manual_refresh_route"],
-    "route result and lease release must use one state commit");
-  assert.equal(loadState(NOW).shipments[0]?.manualRefreshLease, undefined);
-});
-
-test("Home discovers supplementation that becomes eligible during its account query", async () => {
-  const s = row("expired-lease", false, true);
-  s.manualRefreshLease = {attemptId: "previous-runtime", startedAtMs: NOW-1000, expiresAtMs: NOW+100};
-  const h = harness([s]);
-  let manualCalls = 0;
-  await runShipmentEnrichmentForTesting(h.initial, "interface5", "expired-lease-test", h.checkpoint,
-    NOW+60000, new Set(), true, false, undefined, {
-      refreshAccountParcel: async current => {clockNow = NOW+200; return parcel(current);},
-      queryManualForSource: async () => {manualCalls++; return {shipment: null, pending: null, routeUrl: ""};},
-    });
-  assert.equal(manualCalls, 1);
+    await tick(); assert.equal(gates.size, 2);
+    const id = gates.keys().next().value!;
+    gates.get(id)!.resolve(); await tick();
+    assert.equal(gates.size, 3, "a freed slot is refilled before the slow peer returns");
+    assert.ok(loadState(NOW).shipments.find(s => s.identity.id === id)?.manualTimelines?.some(
+      p => p.provider === "v6_query" && p.tracks.some(t => t.detail.startsWith("Fresh"))));
+  } finally { drain = true; gates.forEach(g => g.resolve()); await run; }
+  assert.equal(peak, 2);
 });
 
 for (const action of ["delete", "sign", "unbind"] as const) {
-  test(`Home rechecks durable eligibility before starting a queued account after ${action}`, async () => {
-    const rows = [1,2,3,4,5].map(n => row(`queued-${action}-${n}`));
-    const h = harness(rows);
-    const gate = deferred();
-    const started: string[] = [];
-    let queuedId = "";
-    const run = runShipmentEnrichmentForTesting(h.initial, "interface5", `queued-${action}`, h.checkpoint,
+  test(`list rechecks queued Online after ${action}`, async () => {
+    const rows = [1,2,3].map(n => row(`queued-${action}-${n}`, false, true));
+    const h = harness(rows), gate = deferred(), started: string[] = [];
+    const run = runShipmentEnrichmentForTesting(h.initial, "interface5", action, h.checkpoint,
       NOW+60000, new Set(), true, false, undefined, {
-        refreshAccountParcel: async s => {started.push(s.identity.id); await gate.promise; return null;},
+        queryManualForSource: async input => {
+          started.push(input.currentShipment!.identity.id); await gate.promise;
+          return { shipment: null, pending: null, routeUrl: "" };
+        },
       });
+    let queuedId = "";
     try {
-      await tick();
-      assert.equal(started.length, 4);
+      await tick(); assert.equal(started.length, 2);
       queuedId = rows.find(s => !started.includes(s.identity.id))!.identity.id;
-      const current = loadState(NOW);
+      const state = loadState(NOW);
       if (action === "unbind") removeBinding("interface5", "13800001234", NOW);
-      else saveState({...current, shipments: current.shipments.flatMap(s =>
-        s.identity.id !== queuedId ? [s] : action === "delete" ? [] :
-          [{...s, forcedCompletedAtMs: NOW}])}, NOW);
-    } finally {
-      gate.resolve(); await run;
-    }
+      else saveState({ ...state, shipments: state.shipments.flatMap(s => s.identity.id !== queuedId ? [s]
+        : action === "delete" ? [] : [{ ...s, forcedCompletedAtMs: NOW }]) }, NOW);
+    } finally { gate.resolve(); await run; }
     assert.equal(started.includes(queuedId), false);
   });
 }
 
-test("Home admits at most two manual tasks and refills their freed slot", async () => {
-  const h = harness([1,2,3,4].map(n => row(`manual-limit-${n}`, true)));
-  const gates: ReturnType<typeof deferred>[] = [];
-  let active = 0, peak = 0, drain = false;
-  const run = runShipmentEnrichmentForTesting(h.initial, "interface5", "manual-limit", h.checkpoint,
-    NOW+60000, new Set(), true, false, undefined, {
-      queryManualForSource: async () => {
-        const gate = deferred(); gates.push(gate);
-        active++; peak = Math.max(peak, active);
-        if (!drain) await gate.promise;
-        active--;
-        return {shipment: null, pending: null, routeUrl: ""};
-      },
-    });
-  try {
-    await tick(); assert.equal(gates.length, 2);
-    gates[0].resolve(); await tick(); assert.equal(gates.length, 3);
-  } finally {
-    drain = true; gates.forEach(g => g.resolve()); await run;
-  }
-  assert.equal(peak, 2);
-});
-
-test("Home cancellation preserves completed rows and rejects late results and queued work", async () => {
-  const rows = [1,2,3,4,5,6].map(n => row(`cancel-${n}`));
-  const h = harness(rows);
-  const gates = new Map<string, ReturnType<typeof deferred>>();
-  const signals: AbortSignal[] = [];
-  let completedId = "";
+test("list cancellation retains earlier commits and rejects outstanding and queued results", async () => {
+  const h = harness([1,2,3,4].map(n => row(`cancel-${n}`, true)));
+  const gates = new Map<string, ReturnType<typeof deferred>>(), signals: AbortSignal[] = [];
   const controller = new AbortController();
-  const run = runShipmentEnrichmentForTesting(h.initial, "interface5", "cancel-test", h.checkpoint,
+  const run = runShipmentEnrichmentForTesting(h.initial, "interface5", "cancel", h.checkpoint,
     NOW+60000, new Set(), true, false, controller.signal, {
-      refreshAccountParcel: async (s, _deadline, signal) => {
-        signals.push(signal!); const gate = deferred(); gates.set(s.identity.id, gate);
-        await gate.promise; return parcel(s);
+      queryManualForSource: async input => {
+        const current = input.currentShipment!, gate = deferred();
+        signals.push(input.signal!); gates.set(current.identity.id, gate); await gate.promise;
+        const timeline = { ...current.timeline, provider: "v6_query" };
+        return { shipment: { ...current, timeline, manualTimelines: [timeline] }, pending: null, routeUrl: "" };
       },
     });
-  const rejection = assert.rejects(run, error => (error as Error).name === "OperationTimeoutError");
-  try {
-    await tick();
-    completedId = gates.keys().next().value!;
-    gates.get(completedId)!.resolve(); await tick();
-    assert.equal(h.commits.length, 1);
-    assert.equal(gates.size, 5);
-    controller.abort(); await tick();
-    assert.ok(signals.every(s => s.aborted));
-  } finally {
-    controller.abort(); gates.forEach(g => g.resolve()); await rejection;
-  }
-  assert.equal(gates.size, 5, "the last queued row must not start");
-  assert.equal(h.commits.length, 1, "late successful network results cannot commit");
-  const saved = loadState(NOW).shipments.find(s => s.identity.id === completedId)!;
-  assert.ok(saved.manualTimelines?.some(p => p.tracks.some(t => t.detail === `Fresh ${label(saved)}`)));
+  const rejected = assert.rejects(run, error => (error as Error).name === "OperationTimeoutError");
+  await tick(); const first = gates.keys().next().value!;
+  gates.get(first)!.resolve(); await tick();
+  assert.equal(gates.size, 3);
+  const commits = h.commits.length;
+  controller.abort(); gates.forEach(g => g.resolve()); await rejected;
+  assert.ok(signals.every(s => s.aborted));
+  assert.equal(gates.size, 3); assert.equal(h.commits.length, commits);
+  assert.ok(loadState(NOW).shipments.find(s => s.identity.id === first)?.manualTimelines?.some(p => p.provider === "v6_query"));
 });
 
-test("Home stops queued work at the existing host deadline", async () => {
-  const h = harness([1,2,3,4,5].map(n => row(`deadline-${n}`)));
-  const gate = deferred();
+test("list stops queued Online at the existing host deadline", async () => {
+  const h = harness([1,2,3].map(n => row(`deadline-${n}`, true))), gate = deferred();
   let calls = 0;
-  const run = runShipmentEnrichmentForTesting(h.initial, "interface5", "deadline-test", h.checkpoint,
+  const run = runShipmentEnrichmentForTesting(h.initial, "interface5", "deadline", h.checkpoint,
     NOW+60000, new Set(), true, false, undefined, {
-      refreshAccountParcel: async () => {calls++; await gate.promise; return null;},
+      queryManualForSource: async () => { calls++; await gate.promise; return { shipment: null, pending: null, routeUrl: "" }; },
     });
-  await tick();
-  clockNow = NOW+60001; gate.resolve(); await run;
-  assert.equal(calls, 4);
+  await tick(); clockNow = NOW+60001; gate.resolve(); await run;
+  assert.equal(calls, 2);
 });
 
-test("Home preserves the original commit failure while cancelling sibling tasks", async () => {
-  const h = harness([1,2,3,4,5].map(n => row(`failure-${n}`)));
-  const gate = deferred();
-  const signals: AbortSignal[] = [];
-  const expected = new Error("synthetic commit failure");
-  let commits = 0;
-  const run = runShipmentEnrichmentForTesting(h.initial, "interface5", "failure-test", () => {
-    commits++; throw expected;
+test("a failed durable result commit cancels its sibling and preserves the error", async () => {
+  const h = harness([1,2,3].map(n => row(`failed-${n}`, true))), gate = deferred();
+  const expected = new Error("synthetic commit failure"), signals: AbortSignal[] = [];
+  const run = runShipmentEnrichmentForTesting(h.initial, "interface5", "commit-failure", (candidate, routes, stage, base) => {
+    if (stage === "manual_refresh") throw expected;
+    return h.checkpoint(candidate, routes, stage, base);
   }, NOW+60000, new Set(), true, false, undefined, {
-    refreshAccountParcel: async (s, _deadline, signal) => {
-      signals.push(signal!); await gate.promise; return parcel(s);
+    queryManualForSource: async input => {
+      signals.push(input.signal!); await gate.promise;
+      const current = input.currentShipment!, timeline = { ...current.timeline, provider: "v6_query" };
+      return { shipment: { ...current, timeline, manualTimelines: [timeline] }, pending: null, routeUrl: "" };
     },
   });
-  const rejection = assert.rejects(run, error => error === expected);
-  await tick(); gate.resolve(); await rejection;
-  assert.equal(commits, 1);
-  assert.equal(signals.length, 4);
-  assert.ok(signals.every(s => s.aborted));
-  assert.equal(loadState(NOW).revision, h.initial.revision);
+  const rejected = assert.rejects(run, error => error === expected);
+  await tick(); gate.resolve(); await rejected;
+  assert.equal(signals.length, 2); assert.ok(signals.every(s => s.aborted));
+  assert.ok(loadState(NOW).shipments.every(s => !s.manualTimelines?.some(p => p.provider === "v6_query")));
+});
+
+test("route-only SF Online result releases ownership in its result commit", async () => {
+  const h = harness([row("route-only", false, true)]);
+  await runShipmentEnrichmentForTesting(h.initial, "interface5", "route", h.checkpoint, NOW+60000,
+    new Set(), true, false, undefined, { queryManualForSource: async input => ({
+      shipment: { ...input.currentShipment!, route: { kind: "web", source: "v6_query" },
+        timeline: { ...input.currentShipment!.timeline, provider: "v6_query", tracks: [] } },
+      pending: null, routeUrl: "https://www.kuaidi100.com/chaxun?com=shunfeng&nu=SF1234560000",
+    }) });
+  assert.deepEqual(h.commits, ["manual_refresh_attempt", "manual_refresh_route"]);
+  assert.equal(loadState(NOW).shipments[0]?.manualRefreshLease, undefined);
 });

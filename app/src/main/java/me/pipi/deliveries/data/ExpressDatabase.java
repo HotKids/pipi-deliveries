@@ -195,6 +195,10 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 "structured_status", "INTEGER NOT NULL DEFAULT 0");
         addColumnIfMissing(db, ACCOUNT_V5_TIMELINE_TABLE,
                 "status_description", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, ACCOUNT_V5_TIMELINE_TABLE,
+                "owner_attribution", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, ACCOUNT_V5_TIMELINE_TABLE,
+                "owner_presentation", "TEXT NOT NULL DEFAULT ''");
         // Global timeline rows cannot be assigned to an account owner without ownership evidence,
         // so this owner-scoped cache intentionally starts empty on upgrade.
         db.execSQL("CREATE TABLE IF NOT EXISTS " + OWNER_MANUAL_TIMELINE_TABLE + "("

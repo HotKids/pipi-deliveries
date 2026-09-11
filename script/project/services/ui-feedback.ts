@@ -31,8 +31,10 @@ export function refreshSummaryToast(summary: Readonly<{
   attempted: number;
   succeeded: number;
   failed: number;
+  accountListUpdated?: boolean;
 }>): string {
   if (summary.failed > 0 && summary.succeeded > 0) {
+    if (summary.accountListUpdated) return EXPRESS_TOAST_COPY.listUpdated;
     return EXPRESS_TOAST_COPY.refreshPartial;
   }
   if (summary.failed > 0) return EXPRESS_TOAST_COPY.refreshFailed;

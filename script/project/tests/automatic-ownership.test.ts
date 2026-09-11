@@ -185,8 +185,8 @@ emptySameSourceTimeline.timeline = {
 emptySameSourceTimeline.sourceTimeline = emptySameSourceTimeline.timeline;
 assert.equal(
   isQualifiedAutomaticShipment(emptySameSourceTimeline, "synthetic-a"),
-  false,
-  "a source label does not replace the required local timeline",
+  true,
+  "a valid account status can establish local source ownership before timed tracks arrive",
 );
 const incompleteEstablishedOwnerUpdate = automatic(
   "synthetic-a",

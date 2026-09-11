@@ -61,6 +61,25 @@ public final class ExpressHomeOrderProjectionTest {
         assertFalse(ExpressHomeOrderProjectionCapture.needsProjection(normalShipment()));
     }
 
+    @Test public void unpickedHomeOrdersWaitWhileDetailStillAllowsIdentityCapture() {
+        for (String detail : new String[]{"已下单", "正在打包", "等待揽收", "预计明天送达"}) {
+            ExpressItem item = orderWithIdentity(1L, "I5-JD", "JDORDER1", "", true,
+                    ROUTE_A, "[{\"time\":\"2026-08-22 10:00:00\",\"context\":\"" + detail + "\"}]");
+            assertFalse(detail, ExpressHomeOrderProjectionCapture.needsProjection(item));
+            assertTrue(detail, ExpressDetailActivity.allowsJingDongCapture(item));
+            assertNull(retries.beginAttempt(item, NOW));
+        }
+    }
+
+    @Test public void textIdentityDoesNotRequirePickupOrAReadyH5Route() {
+        ExpressItem item = orderWithIdentity(1L, "I5-JD", "JDORDER1", "", false, "",
+                "[{\"time\":\"2026-08-22 10:00:00\",\"context\":\"待出库交付中通快递，运单号为 75600000001844\"}]");
+        assertTrue(ExpressHomeOrderProjectionCapture.needsProjection(item));
+        assertEquals(item, ExpressListActivity.nextOrderProjectionCandidate(
+                Arrays.asList(item), new HashSet<>()));
+        assertTrue(context.getSharedPreferences("express_jd_h5_cooldown", 0).getAll().isEmpty());
+    }
+
     @Test public void homeQueueIsFifoAndAttemptsEachRowOncePerBatch() {
         ExpressItem first = order(1L, "I5-JD", "", true, ROUTE_A);
         ExpressItem second = order(2L, "I5-JD", "", true, ROUTE_A);
@@ -157,7 +176,7 @@ public final class ExpressHomeOrderProjectionTest {
         assertNull(retries.beginTimelineAttempt(unsupported, NOW));
     }
 
-    @Test public void homeQueriesBeforeH5AndTimedQueryDoesNotConsumeCooldown() throws Exception {
+    @Test public void timedAccountQueryDoesNotBlockMissingIdentityH5() throws Exception {
         verifyHomeQuery(true, false);
     }
 
@@ -178,7 +197,8 @@ public final class ExpressHomeOrderProjectionTest {
         String phone = "13800000001";
         repository.bindPhoneLocally(phone, "interface5");
         ExpressQueryResult feed = new ExpressQueryResult("JDORDERHOME001", "JD", "京东购物",
-                StatusSemantic.TRANSIT, 0L, "", "", "[]", "", phone,
+                StatusSemantic.TRANSIT, 0L, "2026-09-09 09:00:00", "已揽收",
+                "[{\"time\":\"2026-09-09 09:00:00\",\"context\":\"已揽收\"}]", "", phone,
                 "v5_query", "", "", "JingDong");
         repository.saveInterface5OrderSummary(feed, phone);
         ExpressItem stored = repository.findByWaybill(feed.waybill, "interface5");
@@ -212,9 +232,9 @@ public final class ExpressHomeOrderProjectionTest {
                 }
             }
             assertEquals("Home must query its account before opening H5", 1, QueryShadow.calls);
-            assertEquals("Only an active empty account query permits H5",
-                    timed || cancelDuringQuery ? 0 : 1, CaptureShadow.starts);
-            assertEquals(timed || cancelDuringQuery,
+            assertEquals("An active unresolved identity permits H5 even with timed history",
+                    cancelDuringQuery ? 0 : 1, CaptureShadow.starts);
+            assertEquals(cancelDuringQuery,
                     context.getSharedPreferences("express_jd_h5_cooldown", 0).getAll().isEmpty());
             if (cancelDuringQuery) {
                 ExpressOrderProjectionRetryStore.AttemptToken reopened =
@@ -262,10 +282,17 @@ public final class ExpressHomeOrderProjectionTest {
     private static ExpressItem orderWithIdentity(
             long rowId, String owner, String orderId, String projectedWaybill,
             boolean credentialAvailable, String credential) {
+        return orderWithIdentity(rowId, owner, orderId, projectedWaybill, credentialAvailable,
+                credential, "[{\"time\":\"2026-08-22 10:00:00\",\"context\":\"已揽收\"}]");
+    }
+
+    private static ExpressItem orderWithIdentity(
+            long rowId, String owner, String orderId, String projectedWaybill,
+            boolean credentialAvailable, String credential, String tracks) {
         return new ExpressItem(
                 rowId, "", orderId, "JD", "京东购物",
                 StatusSemantic.TRANSIT, "运输中", "订单正在配送",
-                "2026-08-22 10:00:00", "[]", "", owner, "",
+                "2026-08-22 10:00:00", tracks, "", owner, "",
                 1L, 2L, owner, "", "v5", credential, credentialAvailable,
                 projectedWaybill, "", "[]", "JingDong");
     }

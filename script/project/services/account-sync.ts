@@ -43,6 +43,7 @@ import {
   requireScriptSource,
 } from "./script-source";
 import { projectedCarrierPresentation } from "./carrier-presentation";
+import { accountOrderTextIdentity } from "./account-order-text-identity";
 import {
   normalizeAccountParcelCarrier,
   type AccountCarrierNormalizationOptions,
@@ -256,9 +257,26 @@ export async function refreshAccountParcel(
     provider: shipment.identity.sourceProvider,
     phone: shipment.identity.phone,
   });
-  return parcel && shipment.identity.accountOrder
-    ? normalizeAccountParcelCarrierBestEffort(parcel, { deadlineAtMs, signal })
+  // Detail responses may omit their identifier; the parser has already tied
+  // that single response to the request's original account owner.
+  const sameOrder = parcel && shipment.identity.accountOrder &&
+    normalizeWaybill(parcel.ownerId) === normalizeWaybill(shipment.identity.sourceId) &&
+    parcel.sourceProvider.toLowerCase() === String(shipment.identity.sourceProvider || "").toLowerCase();
+  if (sameOrder && normalizedProjectedWaybill(shipment.identity) &&
+      parcel.normalizedStatusScope === "ORDER" && parcel.semantic === "COMPLETED") return null;
+  const orderParcel = sameOrder
+    ? { ...parcel, accountOrder: true, orderId: shipment.identity.orderId || parcel.orderId,
+        textIdentity: parcel.textIdentity || accountOrderTextIdentity(parcel.tracks) }
     : parcel;
+  // A same-order detail reply retains the confirmed carrier identity, but its
+  // query slot must never inherit the feed history carried by list restoration.
+  const resolved = orderParcel?.accountOrder && !orderParcel.textIdentity
+    ? { ...accountParcelWithExistingProjection(orderParcel, [shipment]),
+        projectionTimeline: orderParcel.projectionTimeline }
+    : orderParcel;
+  return resolved && shipment.identity.accountOrder
+    ? normalizeAccountParcelCarrierBestEffort(resolved, { deadlineAtMs, signal })
+    : resolved;
 }
 
 export function accountExternalAppName(shipment: Shipment): string {
@@ -458,6 +476,14 @@ export function parcelToShipment(
   boundPhones: readonly string[],
   now = Date.now(),
 ): Shipment | null {
+  // Identity extraction is independent of shipment status and history completeness.
+  if (parcel.source === "interface5" && parcel.accountOrder &&
+      normalizeWaybill(parcel.waybill) === normalizeWaybill(parcel.ownerId)) {
+    const identity = parcel.textIdentity || accountOrderTextIdentity(parcel.tracks);
+    if (identity) parcel = { ...parcel, waybill: identity.waybill,
+      courierCode: identity.courierCode, companyName: identity.companyName,
+      rawCourierCode: "", rawCompanyName: identity.companyName, carrierNormalization: null };
+  }
   const ownerId = normalizeWaybill(parcel.ownerId);
   const displayWaybill = normalizeWaybill(parcel.waybill);
   if (!ownerId || !displayWaybill) return null;

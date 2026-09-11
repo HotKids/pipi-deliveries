@@ -31,7 +31,7 @@ for (const event of [
 ]) {
   assert.match(
     widget,
-    new RegExp(`writeDiagnostic\\(\\s*"${event.replace(/\./g, "\\.")}"`),
+    new RegExp(`writeDiagnostic\\(\\s*(?:outcome === "skipped" \\? "widget\\.refresh\\.skipped" : )?"${event.replace(/\./g, "\\.")}"`),
     `widget.tsx must record ${event}`,
   );
 }

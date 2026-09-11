@@ -3,29 +3,10 @@ import type { AppState, Shipment, TimelinePackage } from "../models";
 import type { AccountParcelDto } from "../services/account-parser";
 import { setDiagnosticsEnabled } from "../services/logger";
 
-const diagnosticStorage = new Map<string, unknown>();
-Object.assign(globalThis, {
-  Storage: {
-    get<T>(key: string): T | null {
-      return (diagnosticStorage.get(key) as T | undefined) ?? null;
-    },
-    set(key: string, value: unknown): boolean {
-      diagnosticStorage.set(key, structuredClone(value));
-      return true;
-    },
-    remove(key: string): void {
-      diagnosticStorage.delete(key);
-    },
-  },
-});
-
-// Diagnostics are recorded only when enabled: the formal track ships with recording off
-// (user decision 2026-09-04), so a test that asserts on the log has to opt in explicitly.
-setDiagnosticsEnabled(true);
-
-const { clearDiagnostics, readDiagnostics } = await import("../services/logger");
-const { runAccountFollowupsForTesting } = await import("../services/sync");
-
+import { memory } from "./state-storage-mock";
+import { emptyState, saveState, loadState } from "../services/storage";
+import { clearDiagnostics, readDiagnostics } from "../services/logger";
+import { runShipmentRefreshForTesting } from "../services/sync";
 const PHONE = "13800138000";
 const ROUTE = "https://page.cainiao.com/detail?mailNo=TEST";
 
@@ -205,154 +186,26 @@ function appState(shipments: readonly Shipment[], now: number): AppState {
 }
 
 const now = Date.now();
-const initial = appState(
-  [shipment("5900", now), shipment("7226", now), shipment("0238", now)],
-  now,
-);
-const detailStarts: string[] = [];
-const checkpoints: string[] = [];
-let releaseFirstDetail = () => {};
-const firstDetailGate = new Promise<void>((resolve) => {
-  releaseFirstDetail = resolve;
-});
-clearDiagnostics();
-const successfulRound = runAccountFollowupsForTesting(
-  initial,
-  "interface5",
-  now,
-  "followup-causal-live",
-  (candidate, _mutations, stage) => {
-    checkpoints.push(stage);
-    return candidate;
-  },
-  now + 60_000,
-  new Set(),
-  undefined,
-  {
-    async refreshAccountParcel(value) {
-      detailStarts.push(value.identity.sourceId);
-      if (value.identity.sourceId.endsWith("5900")) await firstDetailGate;
-      return detailParcel(value, now + 1_000);
+memory.clear(); setDiagnosticsEnabled(true);
+const initial = saveState(appState([shipment("5900", now), shipment("7226", now)], now), now);
+let release!: () => void;
+const gate = new Promise<void>(resolve => { release = resolve; });
+const calls: string[] = [];
+const run = (row: Shipment) => runShipmentRefreshForTesting(row.identity.id,
+  { isCurrent: () => true, deadlineAtMs: now + 60000 }, { trigger: "detail_open" }, {
+    refreshAccountParcel: async current => {
+      calls.push(current.identity.id);
+      if (current.identity.sourceId.endsWith("5900")) await gate;
+      return detailParcel(current, now + 1000);
     },
-  },
-);
-
-await Promise.resolve();
-await Promise.resolve();
-assert.deepEqual(
-  detailStarts,
-  ["ZT5900", "ZT7226", "ZT0238"],
-  "all due unfinished rows must enter the production detail queue",
-);
-assert.equal(
-  readDiagnostics().filter(
-    (entry) =>
-      entry.event === "refresh.stage.started" &&
-      entry.details.flowId === "followup-causal-live" &&
-      entry.details.stage === "v5_query",
-  ).length,
-  3,
-  "account-detail start diagnostics must be written when each request actually starts",
-);
-await new Promise((resolve) => setTimeout(resolve, 30));
-releaseFirstDetail();
-const successful = await successfulRound;
-assert.deepEqual(checkpoints, [
-  "account_detail",
-], "homepage followups persist only the Xiaomi account-detail increment");
-assert.deepEqual(
-  { attempted: successful.attempted, succeeded: successful.succeeded, failed: successful.failed },
-  { attempted: 3, succeeded: 3, failed: 0 },
-);
-const successDurations = readDiagnostics()
-  .filter(
-    (entry) =>
-      entry.event === "refresh.stage.succeeded" &&
-      entry.details.flowId === "followup-causal-live" &&
-      entry.details.stage === "v5_query",
-  )
-  .map((entry) => Number(entry.details.durationMs));
-assert.equal(successDurations.length, 3);
-assert.equal(
-  successDurations.filter((duration) => duration >= 25).length,
-  1,
-  "each account-detail duration must stop when that request settles, not when its slowest peer settles",
-);
-assert.equal(
-  readDiagnostics().some(
-    (entry) =>
-      entry.details.flowId === "followup-causal-live" &&
-      entry.details.skipReason === "deadline_exhausted",
-  ),
-  false,
-  "a slow candidate alone must not be labelled as deadline exhaustion",
-);
-
-clearDiagnostics();
-let expiredBoundaryCalls = 0;
-const expired = await runAccountFollowupsForTesting(
-  initial,
-  "interface5",
-  now,
-  "followup-causal-expired",
-  () => {
-    throw new Error("an expired round must not checkpoint");
-  },
-  Date.now() - 1,
-  new Set(),
-  undefined,
-  {
-    async refreshAccountParcel() {
-      expiredBoundaryCalls++;
-      return null;
-    },
-  },
-);
-assert.equal(expiredBoundaryCalls, 0);
-assert.deepEqual(
-  { attempted: expired.attempted, succeeded: expired.succeeded, failed: expired.failed },
-  { attempted: 0, succeeded: 0, failed: 0 },
-);
-assert.equal(
-  readDiagnostics().filter(
-    (entry) =>
-      entry.details.flowId === "followup-causal-expired" &&
-      entry.details.skipReason === "deadline_exhausted",
-  ).length,
-  3,
-  "only the truly expired Xiaomi detail candidates are classified as deadline exhaustion",
-);
-
-const screenedStarts: string[] = [];
-const screenedState = appState(
-  [completedOrder(now), settledShipment("SIGNED", now), shipment("9999", now)],
-  now,
-);
-await runAccountFollowupsForTesting(
-  screenedState,
-  "interface5",
-  now,
-  "followup-completed-order-screen",
-  (candidate) => candidate,
-  now + 60_000,
-  new Set(),
-  undefined,
-  {
-    async refreshAccountParcel(value) {
-      screenedStarts.push(`detail:${value.identity.sourceId}`);
-      return detailParcel(value, now + 1_000);
-    },
-  },
-);
-// 用户定 2026-09-04：京东也走按件 feed 详情——「详情页先拉一遍对应接口」对京东同样成立，
-// 原来这里把京东整个排除在 followups 之外。已签收且有可用历史的行仍然被终态闸门挡住。
-assert.deepEqual(
-  screenedStarts,
-  [
-    "detail:ORDER202608307119",
-    "detail:ZT9999",
-  ],
-  "京东与非京东都进按件 feed 详情，只有终态件被挡",
-);
-
-console.log("account followup production-path tests passed");
+    queryManualForSource: async () => { assert.fail("an incomplete entry result must not cascade to providers"); },
+  });
+const slow = run(initial.shipments.find(row => row.identity.sourceId.endsWith("5900"))!);
+const fast = await run(initial.shipments.find(row => row.identity.sourceId.endsWith("7226"))!);
+assert.equal(fast.querySucceeded, true);
+assert.ok(loadState().shipments.find(s => s.identity.id === fast.shipment.identity.id)?.manualTimelines?.some(p => p.provider === "v5_query"));
+release(); assert.equal((await slow).querySucceeded, true);
+assert.equal(calls.length, 2);
+assert.ok(loadState().shipments.every(s => s.manualTimelines?.some(p => p.provider === "v5_query")),
+  "independent detail entries preserve both committed slots");
+console.log("account detail entry commits independently without starting the history chain");

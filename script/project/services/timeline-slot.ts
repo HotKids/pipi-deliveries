@@ -13,6 +13,7 @@ export const TIMELINE_SLOT = {
   JD_H5: "jd_h5",
   CN_H5: "cn_h5",
   K100_H5: "k100_h5",
+  JT_H5: "jt_h5",
   KDNIAO: "kdniao",
   K100_PAID: "kuaidi100",
 } as const;

@@ -9,6 +9,7 @@ const expression = home.match(/refreshOnAppear=\{([\s\S]*?)\}\s+onStateChange=/)
 assert.ok(expression, "Home must declare the detail entry refresh trigger");
 function trigger(homeStatus: string, detailStatus = homeStatus, preview = false, order = false) {
   return runInNewContext(expression!, {
+    needsDetailEntryQuery: () => homeStatus === "UNKNOWN",
     selected: {}, manualPreview: preview ? {} : null,
     manualPreviewNeedsDetailRefresh: () => true,
     unprojectedAccountOrder: () => order,
@@ -40,11 +41,13 @@ for (const structured of [true, false]) {
   const row = { ...shipment, manualTimelines: [{ ...packageWithStatus("COMPLETED", structured), complete: true }] };
   const homeStatus = selectShipmentTimeline(row).semantic;
   const detailStatus = selectShipmentDetailTimeline(row).semantic;
-  assert.equal(detailStatus, "COMPLETED");
+  assert.equal(detailStatus, structured ? "COMPLETED" : "UNKNOWN");
   assert.equal(homeStatus, structured ? "COMPLETED" : "UNKNOWN");
   assert.equal(trigger(homeStatus, detailStatus), structured ? false : "detail_open",
     "only eligible structured detail evidence can satisfy Home status before querying");
 }
-assert.equal(trigger("UNKNOWN", "UNKNOWN", false, true), "identity_projection");
+assert.equal(trigger("UNKNOWN", "UNKNOWN", false, true), "detail_open");
+assert.equal(trigger("COMPLETED", "COMPLETED", false, true), "detail_open",
+  "an unresolved identity opens automatically even when history is complete");
 assert.equal(trigger("UNKNOWN", "UNKNOWN", true), "manual_submit");
 console.log("Home missing-status entry partitions passed");

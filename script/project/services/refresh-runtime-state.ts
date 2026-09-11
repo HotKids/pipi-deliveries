@@ -30,6 +30,9 @@ type RuntimeLease = Readonly<{
   key: string;
   token: string;
   expiresAtMs: number;
+  startedAtMs?: number;
+  flowId?: string;
+  trigger?: string;
 }>;
 
 type RefreshRuntimeState = Readonly<{
@@ -267,6 +270,7 @@ export function recordNetworkRefreshSuccess(
 export type DurableRefreshLease = Readonly<{
   key: string;
   token: string;
+  expiresAtMs: number;
   release: () => void;
   isCurrent: () => boolean;
 }>;
@@ -275,6 +279,7 @@ export function acquireDurableRefreshLease(
   key: string,
   ttlMs: number,
   now = Date.now(),
+  context?: Readonly<{ flowId: string; trigger: string }>,
 ): DurableRefreshLease | null {
   const current = readRuntimeState(now);
   if (current.leases.some((lease) => lease.key === key && lease.expiresAtMs > now)) {
@@ -285,6 +290,8 @@ export function acquireDurableRefreshLease(
     key,
     token,
     expiresAtMs: now + Math.max(1_000, Math.floor(ttlMs)),
+    startedAtMs: now,
+    ...(context ? { flowId: context.flowId, trigger: context.trigger } : {}),
   };
   if (!writeRuntimeState({
     ...current,
@@ -299,6 +306,7 @@ export function acquireDurableRefreshLease(
   return {
     key,
     token,
+    expiresAtMs: lease.expiresAtMs,
     isCurrent: owns,
     release: () => {
       const latest = readRuntimeState();
@@ -313,5 +321,19 @@ export function acquireDurableRefreshLease(
         ),
       });
     },
+  };
+}
+
+/** Report an observed holder without exposing its ownership token or extending its lifetime. */
+export function durableRefreshLeaseDiagnostics(key: string, now = Date.now()) {
+  const lease = readRuntimeState(now).leases.find(item => item.key === key);
+  if (!lease) return {};
+  return {
+    blockingFlowId: lease.flowId,
+    blockingTrigger: lease.trigger,
+    ...(finiteTimestamp(lease.startedAtMs) ? {
+      blockingLeaseAgeMs: Math.max(0, now - lease.startedAtMs!),
+    } : {}),
+    blockingLeaseRemainingMs: Math.max(0, lease.expiresAtMs - now),
   };
 }

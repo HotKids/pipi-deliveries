@@ -24,8 +24,6 @@ for (const contract of [
   "运单尾号 ${details.waybillTail}",
   "自动来源 ${details.sourceProvider}",
   "页面主体${details.mainPresent",
-  "网页内容${details.htmlFetchCompleted",
-  "广告脚本${details.adScriptRemoved",
   "已解析脚本 ${details.parsedScriptCount}",
   "末个脚本 ${details.lastParsedScript}",
   "Vue ${details.vuePresent",
@@ -77,12 +75,26 @@ for (const name of ["providerText", "stageText"]) {
 
 console.log("diagnostic log presentation contracts passed");
 
-const diagnosticFunctions = ["legacyBool", "bindingsCount", "timelineProviderText", "failureText", "detailsText"].map(name => {
+const diagnosticFunctions = ["legacyBool", "bindingsCount", "providerText", "reasonText", "stageText", "timelineProviderText", "failureText", "detailsText"].map(name => {
   const source = page.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`))?.[0];
   assert.ok(source);
   return stripTypeScriptTypes(source);
 }).join("\n");
 const renderDetails = new Function(`${diagnosticFunctions}; return detailsText;`)();
+const cacheSummary = renderDetails({ event: "detail.timeline.selected", details: {
+  clientBuild: 83, trigger: "cache_read", candidateCount: 6, availableCandidateCount: 5,
+  detailComplete: false, incompleteReason: "latest_unknown",
+} });
+for (const text of ["构建 83", "读取本地缓存", "缓存候选 6", "有轨迹候选 5", "最新节点状态无法识别"]) {
+  assert.ok(cacheSummary.includes(text), text);
+}
+assert.equal(cacheSummary.includes("尝试"), false);
+assert.equal(cacheSummary.includes("成功"), false);
+const requestSummary = renderDetails({ event: "detail.refresh.stage_succeeded", details: {
+  requestProvider: "v5_query", displayTimelineProvider: "cn_h5", trigger: "detail_open",
+} });
+assert.ok(requestSummary.includes("请求接口 v5_query"));
+assert.ok(requestSummary.includes("显示缓存 cn_h5"));
 const queryDetails = { locationNuMatches: true, vmNumMatches: false, lastQueriedNumMatches: false,
   vmLoading: true, carrierSelected: false, carrierCandidateCount: 1,
   allListsCount: 2, listsCount: 2, queryErrorType: "" };

@@ -27,6 +27,9 @@ import java.util.ArrayList;
 public final class ExpressManagerActivity extends AppCompatActivity {
     private static final long TITLE_TAP_WINDOW_MS = 1_500L;
     private final ArrayList<String> phones = new ArrayList<>();
+    private final java.util.concurrent.ExecutorService worker =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    private int reloadGeneration;
     private PhoneAdapter adapter;
     private int titleTapCount;
     private long lastTitleTapAt;
@@ -52,11 +55,32 @@ public final class ExpressManagerActivity extends AppCompatActivity {
         reloadPhones();
     }
 
+    @Override protected void onDestroy() {
+        reloadGeneration++;
+        worker.shutdown();
+        super.onDestroy();
+    }
+
     private void reloadPhones() {
-        phones.clear();
-        phones.addAll(ExpressRepository.get(this).phones(
-                ExpressAccountSource.bindingSource(this)));
-        adapter.notifyDataSetChanged();
+        int generation = ++reloadGeneration;
+        String bindingSource = ExpressAccountSource.bindingSource(this);
+        worker.execute(() -> {
+            try {
+                java.util.List<String> fresh = ExpressRepository.get(this).phones(bindingSource);
+                runOnUiThread(() -> {
+                    if (generation != reloadGeneration || isFinishing() || isDestroyed()
+                            || !bindingSource.equals(ExpressAccountSource.bindingSource(this))) return;
+                    phones.clear();
+                    phones.addAll(fresh);
+                    adapter.notifyDataSetChanged();
+                });
+            } catch (RuntimeException failure) {
+                runOnUiThread(() -> {
+                    if (!isFinishing() && !isDestroyed())
+                        Toast.makeText(this, ExpressToastCopy.STATE_LOAD_FAILED, Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
     }
 
     private void onTitleTapped() {
@@ -81,10 +105,22 @@ public final class ExpressManagerActivity extends AppCompatActivity {
                 .setMessage(getString(R.string.unbind_phone_confirm, phone))
                 .setNegativeButton(R.string.cancel, null)
                 .setPositiveButton(R.string.unbind_phone, (dialog, which) -> {
-                    ExpressRepository.get(this).unbindPhone(
-                            phone, ExpressAccountSource.bindingSource(this));
-                    reloadPhones();
-                    Toast.makeText(this, ExpressToastCopy.PHONE_UNBOUND, Toast.LENGTH_SHORT).show();
+                    String bindingSource = ExpressAccountSource.bindingSource(this);
+                    worker.execute(() -> {
+                        boolean unbound;
+                        try {
+                            ExpressRepository.get(this).unbindPhone(phone, bindingSource);
+                            unbound = true;
+                        } catch (RuntimeException failure) {
+                            unbound = false;
+                        }
+                        String message = unbound ? ExpressToastCopy.PHONE_UNBOUND : ExpressToastCopy.UNBIND_FAILED;
+                        runOnUiThread(() -> {
+                            if (isFinishing() || isDestroyed()) return;
+                            reloadPhones();
+                            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+                        });
+                    });
                 })
                 .show();
     }

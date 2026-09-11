@@ -118,6 +118,7 @@ public final class ExpressSignedRetentionTest {
         database.close();
         database = new ExpressDatabase(context);
         repository = new ExpressRepository(context, database);
+        assertNotNull(repository.find(owner.rowId));
         long first = anchor(owner.rowId);
         assertTrue(first >= now && first <= System.currentTimeMillis());
         assertNotNull(repository.accountTimeline(owner.waybill, "interface5"));

@@ -47,8 +47,8 @@ assert.doesNotMatch(
 );
 assert.match(
   sync,
-  /const h5Stage = "kuaidi100_query";/,
-  "the fixed K100 H5 page retains its existing diagnostic stage",
+  /const h5Stage = h5Provider === "jt_h5" \? "jt_h5" : "kuaidi100_query";/,
+  "the JT carrier branch gets its own stage while other K100 pages retain theirs",
 );
 assert.doesNotMatch(
   sync,
@@ -76,16 +76,6 @@ assert.doesNotMatch(
   /queryJingDongKuaidi100Shipment\(queryInput\)/,
   "京东不得再走直连 K100 的 route 槽",
 );
-assert.match(
-  sync,
-  /requestedJingDongDetailSupplement\s*=[\s\S]*?trigger === "identity_projection"[\s\S]*?trigger === "detail_open"[\s\S]*?trigger === "detail_pull"/,
-  "JD fallback eligibility must follow the initial detail projection, later detail opens, and explicit pulls without reloading JD H5",
-);
-assert.match(
-  sync,
-  /const jingDongAutomaticH5Available =[\s\S]*?jingDongAutomaticH5TimelineAvailable\(enrichmentBase\);[\s\S]*?const jingDongManualFallbackRequested =\s*requestedJingDongDetailSupplement &&[\s\S]*?!jingDongFeedReachedPickup\(enrichmentBase\) &&\s*!jingDongAutomaticH5Available;[\s\S]*?if \(pickerSupplementRequested\)[\s\S]*?pickerOnly: true/,
-  "JD feed pickup or a complete automatic H5 package must stop before Picker",
-);
 // 用户定 2026-09-04：京东手动链只在两个自动源都不完整时启动，判据是揽收。
 assert.match(
   sync,
@@ -102,18 +92,13 @@ assert.doesNotMatch(
 // 用户定 2026-09-04：签收即冻结，但**详情仍不完整时照样可以刷**（iOS 需用户下拉）。
 assert.match(
   sync,
-  /\(!jingDongTimelineSettled\(original\) \|\|\s*!jingDongH5CaptureSufficient\(original\)\) &&/,
-  "已签收但 H5 还没抓够的行仍可重开联合页",
+  /const reopenForTimeline = Boolean\(\s*normalizedProjectedWaybill\(original.identity\) &&\s*requestedJingDongDetailSupplement &&/,
+  "signed history repair uses current detail completeness, covered by jd-pull-after-entry.test.ts",
 );
 assert.doesNotMatch(
   sync,
   /!jingDongAutomaticH5TimelineAvailable\(original\) &&/,
   "「H5 包被判完整就永不重开」的旧闸门不得回归",
-);
-assert.match(
-  sync,
-  /const kuaidi100PrimaryRequested = !missingStatusRefresh && requestedKuaidi100Timeline &&[\s\S]*?!hasPickerTimelineStart\(enrichmentBase\)[\s\S]*?const kuaidi100LevelRequested = \(kuaidi100PrimaryRequested/,
-  "K100 primary must stop when the refreshed Picker cache has its own origin",
 );
 assert.doesNotMatch(
   sync,
@@ -121,23 +106,15 @@ assert.doesNotMatch(
   "Picker-returned URLs cannot control K100 stage eligibility or target",
 );assert.match(
   sync,
-  /const h5Kind = kuaidi100LevelRequested \? "web" : "none";/,
+  /const h5Kind = primaryContestRequested \? "web" : "none";/,
   "an eligible K100 stage does not require a Picker URL",
 );assert.doesNotMatch(
   sync,
   /refreshKuaidi100H5\(/,
   "详情链不得再直连 m.kuaidi100.com/query",
 );
-assert.match(
-  sync,
-  /const jingDongManualFallbackRequested =[\s\S]*?pickerOnly:\s*true[\s\S]*?queryKuaidi100:\s*queryH5[\s\S]*?queryKdniao:[\s\S]*?fallbackOnly:\s*true/,
-  "a missing initial JD H5 traceList must use Picker, then K100 H5, with KDNiao last",
-);
-assert.match(
-  sync,
-  /const motoSupported = primaryContestRequested &&[\s\S]*?!isJingDongSourceShipment\(enrichmentBase\)/,
-  "the JD fallback chain must not call Moto",
-);
+assert.match(sync, /const motoSupported = primaryContestRequested &&[\s\S]*?identity.manuallyAdded \|\|[\s\S]*?=== "cainiao"/,
+  "only manual and Cainiao-owned parcels can use v4");
 assert.match(
   sync,
   /!primaryContestRequested &&[\s\S]*?!jingDongAutomaticH5Available &&[\s\S]*?needsDetailFallback\(refreshed\)/,

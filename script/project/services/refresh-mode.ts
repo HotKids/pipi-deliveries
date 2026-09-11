@@ -21,7 +21,7 @@ export function fullRefreshHostPolicy(options: Readonly<{
   }
   return {
     accountOrderProjection: options.accountOrderProjection,
-    webViewEnrichment: true,
+    webViewEnrichment: false,
     accountFollowupReserveMs: ACCOUNT_FOLLOWUP_RESERVE_MS,
   };
 }

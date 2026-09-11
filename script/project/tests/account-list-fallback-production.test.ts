@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import type { AppState, Shipment, TimelinePackage } from "../models";
 import { setDiagnosticsEnabled } from "../services/logger";
+import { refreshSummaryToast } from "../services/ui-feedback";
 
 type FakeData = { value: string };
 type FakeFetchInit = {
@@ -13,7 +14,7 @@ const files = new Map<string, string>();
 const keychain = new Map<string, string>();
 const storage = new Map<string, unknown>();
 const fetchStages: string[] = [];
-let accountListFailure: "timeout" | "unauthorized" = "timeout";
+let accountListFailure: "timeout" | "unauthorized" | "unavailable" = "timeout";
 let accountReply: (() => Promise<ReturnType<typeof jsonResponse>>) | null = null;
 let onStorageRead: ((key: string) => void) | null = null;
 let beforeDetailReply: (() => void) | null = null;
@@ -158,6 +159,10 @@ Object.assign(globalThis, {
           text: async () => text,
         };
       }
+      if (accountListFailure === "unavailable") {
+        return { ok: false, status: 502,
+          text: async () => JSON.stringify({ error: "upstream_unavailable" }) };
+      }
       const timeout = new Error("synthetic account-list timeout");
       timeout.name = "TimeoutError";
       throw timeout;
@@ -194,7 +199,7 @@ setDiagnosticsEnabled(true);
 const { saveGatewayToken } = await import("../services/credentials");
 const { clearDiagnostics, readDiagnostics } = await import("../services/logger");
 const { saveState, loadState } = await import("../services/storage");
-const { refreshAllShipments } = await import("../services/sync");
+const { refreshAllShipments, subscribeRefreshState } = await import("../services/sync");
 
 const PHONE = "13800138000";
 const WAYBILL = "ZTCACHED5900";
@@ -206,13 +211,13 @@ function timeline(detail: string, successAtMs: number): TimelinePackage {
     waybill: WAYBILL,
     courierCode: "ZTO",
     companyName: "中通快递",
-    semantic: "TRANSIT",
-    statusEventAtMs: null,
+    semantic: "TRANSIT", structuredStatus: true,
+    statusEventAtMs: successAtMs,
     latestTimeText: timeText,
     latestDetail: detail,
     tracks: [{
       timeText,
-      timeMs: null,
+      timeMs: successAtMs,
       detail,
       statusCode: "104",
       raw: {},
@@ -290,17 +295,18 @@ const fallback = await refreshAllShipments("interface5", {
   accountOrderProjection: false,
 });
 
-assert.deepEqual(fetchStages, ["account_list", "account_detail"]);
+assert.deepEqual(fetchStages, ["account_list"]);
 assert.deepEqual(
   {
     attempted: fallback.attempted,
     succeeded: fallback.succeeded,
     failed: fallback.failed,
   },
-  { attempted: 2, succeeded: 1, failed: 1 },
-  "cached same-owner account detail may continue, but a Cainiao shipment must not enter cross-provider manual polling",
+  { attempted: 1, succeeded: 0, failed: 1 },
+  "a list failure with usable cached status and tracks must not trigger per-parcel requests",
 );
 assert.equal(fallback.state.shipments.length, 1);
+assert.notEqual(fallback.accountListUpdated, true, "cached fallback is not a successful list update");
 assert.equal(fallback.state.shipments[0]?.identity.id, initialId);
 // 用户定 2026-09-05 晚：feed 增量与 query 独立。行（列表头条）仍是 feed 自己的；按件详情住 v5_query 槽。
 assert.equal(
@@ -312,8 +318,8 @@ assert.equal(
   fallback.state.shipments[0]?.manualTimelines?.find(
     (timeline) => timeline.provider === "v5_query",
   )?.latestDetail,
-  "cached detail refreshed after list timeout",
-  "the production full-refresh path must run cached account followups into the v5_query slot",
+  undefined,
+  "list failure must not populate the v5_query detail slot",
 );
 assert.equal(
   readDiagnostics().find((entry) => entry.event === "account.sync.failed")
@@ -321,9 +327,9 @@ assert.equal(
   "cached_fallback",
 );
 assert.equal(
-  readDiagnostics().find((entry) => entry.event === "refresh.succeeded")
+  readDiagnostics().find((entry) => entry.event === "refresh.failed")
     ?.details.result,
-  "partial",
+  "failed",
 );
 
 saveState(state([]), Date.now());
@@ -368,6 +374,24 @@ assert.equal(
 
 console.log("account-list cached fallback production-path tests passed");
 
+// A received 502 follows the full failure path and frees the same source immediately.
+{
+  accountListFailure = "unavailable";
+  saveState(state([cachedShipment(Date.now())]), Date.now());
+  clearDiagnostics();
+  const failure = await refreshAllShipments("interface5", { backgroundHostSafe: true, budgetMs: 120_000 });
+  assert.equal(failure.failed, 1);
+  const events = readDiagnostics();
+  assert.equal(events.find(entry => entry.event === "account.sync.failed")?.details.httpStatus, 502);
+  for (const event of ["refresh.account.completed", "refresh.enrichment.completed", "refresh.finalization.completed", "refresh.failed"]) {
+    assert.ok(events.some(entry => entry.event === event), `missing failure boundary: ${event}`);
+  }
+  const secondRuntime = await import("../services/sync.ts?after-502-runtime");
+  const retry = await secondRuntime.refreshAllShipments("interface5", { backgroundHostSafe: true, budgetMs: 120_000 });
+  assert.notEqual(retry.skipReason, "active_cross_runtime_refresh");
+  accountListFailure = "timeout";
+}
+
 // Two isolated sync modules share only the synthetic durable stores.
 {
   const realNow = Date.now;
@@ -393,8 +417,20 @@ console.log("account-list cached fallback production-path tests passed");
     const first = refreshAllShipments("interface5", { backgroundHostSafe: true });
     const firstResult = first.then(() => null, (error) => error);
     await firstEntered;
-    clock += 6_000;
     const secondRuntime = await import("../services/sync.ts?second-runtime");
+    const skipped = await secondRuntime.refreshAllShipments("interface5", { backgroundHostSafe: true });
+    assert.equal(skipped.skipReason, "active_cross_runtime_refresh");
+    assert.equal(skipped.attempted, 0);
+    const blocked = readDiagnostics().find(entry => entry.event === "refresh.skipped" &&
+      entry.details.result === "active_cross_runtime_refresh")!.details;
+    assert.equal(blocked.trigger, "background");
+    assert.equal(blocked.blockingTrigger, "background");
+    assert.equal(blocked.blockingLeaseAgeMs, 120_000);
+    assert.equal(blocked.blockingLeaseRemainingMs, 5_000);
+    assert.ok(readDiagnostics().some(entry => entry.event === "refresh.started" &&
+      entry.details.flowId === blocked.blockingFlowId));
+    assert.equal("token" in blocked, false);
+    clock += 6_000;
     accountReply = async () => jsonResponse({ code: 0, data: { expressList: [] } });
     await secondRuntime.refreshAllShipments("interface5", { backgroundHostSafe: true });
     const afterSecond = loadState(clock);
@@ -415,6 +451,57 @@ console.log("account-list cached fallback production-path tests passed");
 }
 console.log("cross-runtime full refresh fencing tests passed");
 
+// Re-entry in the same runtime must retire a suspended round before reusing its promise.
+{
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  let releaseFirst: ((response: ReturnType<typeof jsonResponse>) => void) | undefined;
+  let firstResult: Promise<unknown> | undefined;
+  try {
+    storage.delete("pipi_deliveries_refresh_runtime_v1");
+    saveState(state([]), clock);
+    let enteredFirst!: () => void;
+    const firstEntered = new Promise<void>(resolve => { enteredFirst = resolve; });
+    accountReply = () => {
+      enteredFirst();
+      return new Promise(resolve => { releaseFirst = resolve; });
+    };
+    const first = refreshAllShipments("interface5");
+    firstResult = first.then(() => null, error => error);
+    await firstEntered;
+    clock += 126_000;
+    let replacementCalls = 0;
+    accountReply = async () => {
+      replacementCalls++;
+      return jsonResponse({ code: 0, data: { expressList: [] } });
+    };
+    const second = refreshAllShipments("interface5");
+    const secondResult = second.then(value => value, error => error);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      secondResult,
+      new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 100); }),
+    ]);
+    clearTimeout(timer);
+    assert.ok(outcome && !(outcome instanceof Error), "same-runtime refresh must not await an expired round");
+    assert.equal(replacementCalls, 1);
+    assert.ok(await firstResult instanceof Error, "old waiters must settle even if the provider ignores cancellation");
+    const afterSecond = loadState(clock);
+    releaseFirst!(jsonResponse({ code: 0, data: { expressList: [{
+      mailNo: "ZTSTALE5901", cpCode: "ZTO", name: "Synthetic carrier", provider: "CaiNiao",
+      phone: PHONE, stateNum: 104, details: [{ time: providerTime(clock), desc: "Synthetic late event" }],
+    }] } }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(loadState(clock), afterSecond, "late work cannot alter the replacement's durable state");
+  } finally {
+    releaseFirst?.(jsonResponse({ code: 0, data: { expressList: [] } }));
+    await firstResult;
+    Date.now = realNow;
+    accountReply = null;
+  }
+}
+
 // The real full-refresh path must recover a list-stage event after a later stage times out.
 {
   const realNow = Date.now;
@@ -422,17 +509,23 @@ console.log("cross-runtime full refresh fencing tests passed");
   Date.now = () => clock;
   try {
     storage.delete("pipi_deliveries_refresh_runtime_v1");
-    const initial = saveState(state([cachedShipment(clock)]), clock);
+    const manual = cachedShipment(clock);
+    manual.identity = { ...manual.identity, id: "interface5:manual:SFTEST0001", sourceId: "SFTEST0001",
+      manuallyAdded: true, sourceProvider: "", courierCode: "SF", rawCourierCode: "SF" };
+    manual.timeline = { ...manual.timeline, provider: "v6_query", waybill: "SFTEST0001", courierCode: "SF" };
+    manual.sourceTimeline = null; manual.manualTimelines = [manual.timeline]; manual.accountRecord = null;
+    const initial = saveState(state([cachedShipment(clock), manual]), clock);
     notificationAttempts = 0;
     accountReply = async () => jsonResponse({ code: 0, data: { expressList: [{
       mailNo: WAYBILL, cpCode: "ZTO", name: "中通快递", provider: "CaiNiao",
       phone: PHONE, stateNum: 104,
       details: [{ time: providerTime(clock - 1_000), desc: "Synthetic newer account event" }],
     }] } });
-    beforeDetailReply = () => {
+    pickerReply = () => {
       assert.ok(loadState(clock).pendingNotifications?.length,
         "the account-list checkpoint stores its event before the next request");
       clock += 31_000;
+      return jsonResponse({ code: 200, value: null });
     };
     await assert.rejects(refreshAllShipments("interface5", {
       budgetMs: 30_000, accountOrderProjection: false,
@@ -440,7 +533,7 @@ console.log("cross-runtime full refresh fencing tests passed");
     assert.equal(notificationAttempts, 0);
     assert.ok(loadState(clock).revision > initial.revision);
     assert.equal(loadState(clock).pendingNotifications?.length, 1);
-    beforeDetailReply = null;
+    pickerReply = null;
     accountReply = async () => jsonResponse({ code: 0, data: { expressList: [] } });
     rejectNotification = true;
     const restarted = await import("../services/sync.ts?notification-restart");
@@ -460,6 +553,7 @@ console.log("cross-runtime full refresh fencing tests passed");
     Date.now = realNow;
     accountReply = null;
     beforeDetailReply = null;
+    pickerReply = null;
     rejectNotification = false;
   }
 }
@@ -487,8 +581,11 @@ console.log("full refresh timeout notification recovery tests passed");
     mailNo: waybill, cpCode: "SF", name: "顺丰速运", provider: "ShunFeng", phone: PHONE,
     stateNum: 104, details: [{ time: eventTime(now - 5_000), desc: `Synthetic feed ${waybill}` }],
   })) } });
+  const published: AppState[] = [];
+  const unsubscribe = subscribeRefreshState(state => published.push(state));
   let pickerCalls = 0;
   pickerReply = (waybill) => {
+    assert.ok(published.some(state => state.shipments.length === 2), "the account batch is visible before Online finishes");
     pickerCalls++;
     return jsonResponse({ code: 200, value: JSON.stringify({
       nu: waybill, com: "SF", name: "顺丰速运", state: "3",
@@ -502,9 +599,99 @@ console.log("full refresh timeout notification recovery tests passed");
     assert.equal(notificationAttempts, 1, "only the pre-existing row gets one final notification for the round");
     assert.deepEqual(notificationBodies, [`Synthetic final ${existingWaybill}`]);
     assert.deepEqual(loadState().pendingNotifications, []);
+    assert.equal(summary.accountListUpdated, true);
+
+    saveState(state([existing]), now);
+    pickerReply = () => jsonResponse({ code: 10000 });
+    const partial = await refreshAllShipments("interface5", { budgetMs: 30_000, forceManualRefresh: true });
+    assert.ok(partial.failed > 0, "Online failures remain in the refresh summary");
+    assert.ok(partial.succeeded > 0);
+    assert.equal(partial.accountListUpdated, true);
+    assert.equal(loadState().shipments.length, 2, "the account list is durably saved despite Online failure");
+    assert.equal(refreshSummaryToast(partial), "列表已更新");
+
+    saveState(state([existing]), now);
+    accountReply = null;
+    accountListFailure = "timeout";
+    pickerReply = (waybill) => jsonResponse({ code: 200, value: JSON.stringify({
+      nu: waybill, com: "SF", name: "顺丰速运", state: "3",
+      time: eventTime(now), context: "Synthetic individual update after list failure",
+    }) });
+    const failedList = await refreshAllShipments("interface5", { budgetMs: 30_000, forceManualRefresh: true });
+    assert.ok(failedList.failed > 0 && failedList.succeeded > 0);
+    assert.equal(failedList.accountListUpdated, false);
+    assert.notEqual(refreshSummaryToast(failedList), "列表已更新");
   } finally {
+    unsubscribe();
     accountReply = null;
     pickerReply = null;
   }
 }
 console.log("full refresh notification baseline and aggregation tests passed");
+
+// Binding refresh reuses account discovery without querying unrelated manual/SF parcels.
+storage.delete("pipi_deliveries_refresh_runtime_v1");
+accountReply = async () => jsonResponse({ code: 0, data: { expressList: [] } });
+pickerReply = () => { assert.fail("binding refresh must not request Online"); };
+try {
+  const summary = await refreshAllShipments("interface5", { accountListOnly: true });
+  assert.equal(summary.attempted, 1); assert.equal(summary.succeeded, 1);
+} finally { accountReply = null; pickerReply = null; }
+
+// Exercise the restored Home account-batch projection through the public refresh entry.
+{
+  const {fullRefreshHostPolicy} = await import("../services/refresh-mode");
+  assert.equal(fullRefreshHostPolicy({accountOrderProjection: true, backgroundHostSafe: false}).accountOrderProjection, true);
+  assert.equal(fullRefreshHostPolicy({accountOrderProjection: true, backgroundHostSafe: true}).accountOrderProjection, false);
+  const globalRecord = globalThis as unknown as Record<string, unknown>;
+  const previousWebView = globalRecord.WebViewController;
+  let captures = 0;
+  const realWaybill = "75600000001844";
+  globalRecord.WebViewController = class {
+    constructor() { captures++; }
+    async loadURL() { return true; }
+    async evaluateJavaScript() {
+      return {waybillCode: realWaybill, companyName: "中通快递", extractionSource: "probe",
+        traceList: [{time: providerTime(Date.now() - 1_000), desc: "已揽收"},
+          {time: providerTime(Date.now() - 2_000), desc: "正在打包"}]};
+    }
+    dispose() {}
+  };
+  let sequence = 0;
+  try {
+    for (const background of [false, true]) {
+      for (const detail of ["已揽收", "已下单", "正在打包", "等待揽收", "预计明天送达",
+        `待出库交付中通快递，运单号为 ${realWaybill}`]) {
+        storage.delete("pipi_deliveries_refresh_runtime_v1");
+        saveState(state([]));
+        captures = 0;
+        fetchStages.length = 0;
+        const order = `361000000000${String(++sequence).padStart(4, "0")}`;
+        const hasTextIdentity = detail.includes("运单号为");
+        accountReply = async () => jsonResponse({code: 0, data: {expressList: [{
+          mailNo: order, cpCode: "JDKD", name: "京东购物", provider: "JingDong", phone: PHONE,
+          stateNum: 102, details: [{time: providerTime(Date.now() - 5_000), desc: detail}],
+          jumpList: [{type: "h5", link: "https://u.jd.com/forward?synthetic=home"}],
+        }]}});
+        pickerReply = () => { assert.fail("identity extraction must not query Online history"); };
+        const expectedCaptures = !background && detail === "已揽收" ? 1 : 0;
+        const expectedWaybill = hasTextIdentity || expectedCaptures ? realWaybill : "";
+        for (let round = 0; round < 2; round++) {
+          const summary = await refreshAllShipments("interface5", {accountOrderProjection: true, backgroundHostSafe: background});
+          assert.equal(summary.accountListUpdated, true);
+          assert.equal(summary.state.shipments.length, 1);
+          assert.equal(summary.state.shipments[0].identity.projectedWaybill || "", expectedWaybill,
+            `Home identity: background=${background}, detail=${detail}, round=${round}`);
+          assert.equal(captures, expectedCaptures, "resolved and unpicked orders must not reopen H5");
+          assert.equal(fetchStages.includes("account_detail"), false, "Home identity does not fetch per-parcel v5 history");
+          if (!expectedCaptures) assert.equal(summary.state.shipments[0].identity.orderProjectionRetry, undefined);
+        }
+      }
+    }
+  } finally {
+    globalRecord.WebViewController = previousWebView;
+    accountReply = null;
+    pickerReply = null;
+  }
+}
+console.log("restored Home identity pipeline and independent pickup/text gates passed");

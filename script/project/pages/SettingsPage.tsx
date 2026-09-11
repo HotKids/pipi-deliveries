@@ -213,7 +213,7 @@ export function SettingsPage(props: {
     const next = await bindPhone(requestedSource, phone, code, flowId);
     props.onStateChange(next);
     setManagerNotice("手机号绑定成功");
-    void refreshAllShipments(requestedSource)
+    void refreshAllShipments(requestedSource, { accountListOnly: true })
       .then((summary) => {
         props.onStateChange(summary.state);
         writeDiagnostic("binding.refresh.succeeded", {

@@ -211,7 +211,7 @@ for (const semantic of ["PICKED", "COMPLETED"] as const) {
     [PHONE], NOW + 86400000)!;
   assert.equal(anotherOrder.timeline.tracks.length, 4,
     "order-like wording must not be removed without the exact owning order identity");
-  const unprojected = parcelToShipment({ ...parcel, waybill: orderId },
+  const unprojected = parcelToShipment({ ...parcel, waybill: orderId, textIdentity: null },
     [PHONE], NOW + 86400000)!;
   assert.equal(unprojected.timeline.tracks.length, 4,
     "an order that has no carrier waybill still owns its shopping status");

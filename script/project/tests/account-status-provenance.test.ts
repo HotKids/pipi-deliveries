@@ -3,7 +3,7 @@ import type { Shipment, TimelinePackage } from "../models";
 import type { AccountParcelDto } from "../services/account-parser";
 import { memory } from "./state-storage-mock";
 import { emptyState, loadState, saveState, visibleShipments } from "../services/storage";
-import { runAccountFollowupsForTesting } from "../services/sync";
+import { runShipmentRefreshForTesting } from "../services/sync";
 import { mergeTimelinePackage } from "../services/status";
 
 // Status flags, counts and event times come from the user's revision-5256 diagnostic.
@@ -59,11 +59,11 @@ try {
   const state = saveState({ ...emptyState(), shipments: rows,
     bindings: [{ source: "interface5", phone, boundAtMs: now - 86400000 }] }, now);
   assert.equal(visibleShipments(state, now).length, 4, "the observed cache bypasses signed retention");
-  const result = await runAccountFollowupsForTesting(state, "interface5", now, "provenance-replay",
-    candidate => saveState(candidate, now), now + 60000, new Set(), undefined, {
-      refreshAccountParcel: async row => incomingById.get(row.identity.id)!,
-    });
-  assert.equal(result.succeeded, 4);
+  for (const row of state.shipments) {
+    const result = await runShipmentRefreshForTesting(row.identity.id, { isCurrent: () => true, deadlineAtMs: now + 60000 },
+      { trigger: "detail_open" }, { refreshAccountParcel: async current => incomingById.get(current.identity.id)! });
+    assert.equal(result.querySucceeded, true);
+  }
   const reloaded = loadState(now);
   for (const item of cases) {
     const row = reloaded.shipments.find(row => row.identity.projectedWaybill?.endsWith(item.tail))!;

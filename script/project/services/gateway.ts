@@ -14,6 +14,7 @@ import {
   linkedTimeoutSignal,
   OperationTimeoutError,
   remainingTimeoutMs,
+  type RequestTimeoutDetails,
 } from "./deadline";
 import {
   scriptingCryptoRuntimeLabel,
@@ -219,14 +220,27 @@ export async function postGateway<T extends Record<string, unknown>>(
     options.deadlineAtMs,
     Math.min(Number(options.timeoutMs) || REQUEST_TIMEOUT_MS, 60_000),
   );
-  const lifecycleDeadlineAtMs = Date.now() + timeoutMs;
+  const requestStartedAtMs = Date.now();
+  const lifecycleDeadlineAtMs = requestStartedAtMs + timeoutMs;
+  let requestPhase: RequestTimeoutDetails["requestPhase"] = "request";
+  let responseHeadersAfterMs: number | undefined;
+  let responseBodyAfterMs: number | undefined;
+  const timeoutError = (timeoutOrigin: RequestTimeoutDetails["timeoutOrigin"]) => {
+    const observedAtMs = Date.now();
+    return new OperationTimeoutError(undefined, {
+      timeoutOrigin, requestPhase, requestBudgetMs: timeoutMs,
+      requestElapsedMs: observedAtMs - requestStartedAtMs,
+      responseHeadersAfterMs, responseBodyAfterMs,
+      deadlineLagMs: Math.max(0, observedAtMs - lifecycleDeadlineAtMs),
+    });
+  };
   const lifecycle = linkedTimeoutSignal(timeoutMs, options.signal);
   let rejectLifecycle: ((reason: Error) => void) | undefined;
   const abortLifecycle = () => {
-    rejectLifecycle?.(new OperationTimeoutError());
+    rejectLifecycle?.(timeoutError(options.signal?.aborted ? "parent_signal" : "timeout_signal"));
   };
   try {
-    if (lifecycle.signal.aborted) throw new OperationTimeoutError();
+    if (lifecycle.signal.aborted) throw timeoutError(options.signal?.aborted ? "parent_signal" : "timeout_signal");
     const expired = new Promise<void>((_, reject) => {
       rejectLifecycle = reject;
     });
@@ -244,6 +258,8 @@ export async function postGateway<T extends Record<string, unknown>>(
         signal: lifecycle.signal,
         debugLabel: `Pipi Deliveries ${route}`,
       });
+      responseHeadersAfterMs = Date.now() - requestStartedAtMs;
+      requestPhase = "response_body";
       if (
         typeof response.expectedContentLength === "number" &&
         response.expectedContentLength > MAX_RESPONSE_BYTES
@@ -251,8 +267,10 @@ export async function postGateway<T extends Record<string, unknown>>(
         throw new GatewayError("服务响应异常", response.status);
       }
       const text = await response.text();
+      responseBodyAfterMs = Date.now() - requestStartedAtMs;
+      requestPhase = "response_complete";
       if (Date.now() >= lifecycleDeadlineAtMs) {
-        throw new OperationTimeoutError();
+        throw timeoutError("deadline_after_body");
       }
       if (text.length > MAX_RESPONSE_BYTES) {
         throw new GatewayError("服务响应异常", response.status);
@@ -264,15 +282,11 @@ export async function postGateway<T extends Record<string, unknown>>(
     if (error instanceof GatewayError || error instanceof OperationTimeoutError) {
       throw error;
     }
-    if (
-      lifecycle.signal.aborted ||
-      (error instanceof Error &&
-        (error.name === "AbortError" || error.name === "TimeoutError"))
-    ) {
-      throw new OperationTimeoutError();
-    }
+    if (lifecycle.signal.aborted) throw timeoutError(options.signal?.aborted ? "parent_signal" : "timeout_signal");
+    if (error instanceof Error && error.name === "TimeoutError") throw timeoutError("native_timeout");
+    if (error instanceof Error && error.name === "AbortError") throw timeoutError("native_abort");
     if (options.deadlineAtMs != null && Date.now() >= options.deadlineAtMs) {
-      throw new OperationTimeoutError();
+      throw timeoutError("deadline_after_error");
     }
     throw new GatewayError("网络连接异常，请稍后重试");
   } finally {

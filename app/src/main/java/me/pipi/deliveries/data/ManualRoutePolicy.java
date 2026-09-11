@@ -14,6 +14,27 @@ public final class ManualRoutePolicy {
                 : "https://m.kuaidi100.com/app/query/?nu=" + android.net.Uri.encode(number);
     }
 
+    /** JT's phone-protected page occupies the existing H5 primary stage. */
+    public static String primaryH5Provider(String courierCode) {
+        CarrierRegistry.Carrier carrier = CarrierRegistry.resolveCpCode(courierCode);
+        if (carrier == null) carrier = CarrierRegistry.resolve(courierCode);
+        return carrier != null && "JTSD".equals(carrier.standardCode)
+                ? TimelineSlot.JT_H5 : TimelineSlot.K100_H5;
+    }
+
+    public static String primaryH5Url(String waybill, String courierCode) {
+        if (!TimelineSlot.JT_H5.equals(primaryH5Provider(courierCode))) return kuaidi100QueryUrl(waybill);
+        String number = ExpressSourcePolicy.normalizeWaybill(waybill);
+        return number.isEmpty() ? "" : "https://jtsd.jtexpress.com.cn/pipi#/pages/checkGoods/sendDetail?waybillNo="
+                + android.net.Uri.encode(number) + "&isFrom=serach";
+    }
+
+    public static String safePrimaryH5Url(String route, String waybill) {
+        String candidate = clean(route);
+        if (candidate.equals(primaryH5Url(waybill, "JTSD")) && !candidate.isEmpty()) return candidate;
+        return safeKuaidi100Url(candidate);
+    }
+
     public static String meizuKuaidi100Url(String provider, ExpressQueryResult result) {
         if (result == null || !TimelineSlot.V6_QUERY.equals(TimelineSlot.normalize(provider))) return "";
         String resultProvider = clean(result.timelineProvider);

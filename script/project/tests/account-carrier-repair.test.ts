@@ -78,6 +78,6 @@ const finalRepair = refreshById.indexOf(
   "if (carrierRepair && needsProjectedCarrierRepair(refreshed.identity))",
 );
 assert.ok(finalRepair > 0);
-assert.ok(finalRepair < refreshById.indexOf("const commit = commitTargetShipmentRefresh("));
+assert.ok(finalRepair < refreshById.lastIndexOf("const commit = commitTargetShipmentRefresh("));
 
 console.log("account carrier repair tests passed");

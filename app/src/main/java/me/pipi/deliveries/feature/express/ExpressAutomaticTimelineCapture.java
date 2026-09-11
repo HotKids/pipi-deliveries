@@ -21,10 +21,15 @@ final class ExpressAutomaticTimelineCapture {
         final ExpressQueryResult timeline;
         final boolean complete;
         final boolean throttled;
+        final boolean phoneRequired;
         Result(ExpressQueryResult timeline, boolean complete, boolean throttled) {
+            this(timeline, complete, throttled, false);
+        }
+        Result(ExpressQueryResult timeline, boolean complete, boolean throttled, boolean phoneRequired) {
             this.timeline = timeline;
             this.complete = complete;
             this.throttled = throttled;
+            this.phoneRequired = phoneRequired;
         }
     }
     private final Activity host;
@@ -34,6 +39,7 @@ final class ExpressAutomaticTimelineCapture {
     private final ExpressQueryCancellation cancellation;
     private final Callback callback;
     private final ExpressKuaidi100TimelineCapture.Diagnostics k100Diagnostics;
+    private List<String> phones;
     private WebView view;
     private boolean finished;
     private Result best;
@@ -48,12 +54,24 @@ final class ExpressAutomaticTimelineCapture {
         this.provider = provider;
         this.cancellation = cancellation;
         this.callback = callback;
-        this.k100Diagnostics = TimelineSlot.K100_H5.equals(provider)
+        this.k100Diagnostics = TimelineSlot.K100_H5.equals(provider) || TimelineSlot.JT_H5.equals(provider)
                 ? new ExpressKuaidi100TimelineCapture.Diagnostics() : null;
+        if (k100Diagnostics != null) k100Diagnostics.provider = provider;
+        this.phones = ExpressKuaidi100TimelineCapture.phoneCandidates(
+                owner == null ? "" : owner.phone, Collections.emptyList());
     }
 
     static Result capture(Activity host, ExpressItem owner, String route, String provider,
             ExpressQueryCancellation cancellation) throws InterruptedException {
+        List<String> phones = ExpressKuaidi100TimelineCapture.phoneCandidates(
+                owner == null ? "" : owner.phone,
+                owner != null && owner.manuallyAdded ? ExpressRepository.get(host).phoneCandidates("")
+                        : Collections.emptyList());
+        return capture(host, owner, route, provider, phones, cancellation);
+    }
+
+    static Result capture(Activity host, ExpressItem owner, String route, String provider,
+            List<String> phones, ExpressQueryCancellation cancellation) throws InterruptedException {
         CountDownLatch done = new CountDownLatch(1);
         Result[] result = new Result[1];
         ExpressAutomaticTimelineCapture capture = new ExpressAutomaticTimelineCapture(
@@ -61,6 +79,8 @@ final class ExpressAutomaticTimelineCapture {
                     result[0] = value;
                     done.countDown();
                 });
+        capture.phones = ExpressKuaidi100TimelineCapture.phoneCandidates(
+                owner == null ? "" : owner.phone, phones);
         host.runOnUiThread(capture::start);
         try {
             while (!done.await(250L, TimeUnit.MILLISECONDS)) cancellation.throwIfCancelled();
@@ -76,8 +96,9 @@ final class ExpressAutomaticTimelineCapture {
         if (TimelineSlot.JD_H5.equals(provider)) {
             return ExpressDetailActivity.allowedOrderHost(Uri.parse(url));
         }
-        if (TimelineSlot.K100_H5.equals(provider)) {
-            return !ManualRoutePolicy.safeKuaidi100Url(url).isEmpty();
+        if (TimelineSlot.K100_H5.equals(provider)) return !ManualRoutePolicy.safeKuaidi100Url(url).isEmpty();
+        if (TimelineSlot.JT_H5.equals(provider) && owner != null) {
+            return !ManualRoutePolicy.safePrimaryH5Url(url, owner.displayWaybill()).isEmpty();
         }
         return CainiaoRoute.isTrustedResolvedUrl(url);
     }
@@ -94,7 +115,7 @@ final class ExpressAutomaticTimelineCapture {
             view.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
             ExpressDetailActivity.configureWebView(view);
             view.getSettings().setCacheMode(WebSettings.LOAD_NO_CACHE);
-            if (TimelineSlot.K100_H5.equals(provider)) view.getSettings().setUserAgentString(
+            if (k100Diagnostics != null) view.getSettings().setUserAgentString(
                     ExpressKuaidi100TimelineCapture.SAFARI_MOBILE_USER_AGENT);
             if (TimelineSlot.JD_H5.equals(provider)
                     && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
@@ -156,14 +177,20 @@ final class ExpressAutomaticTimelineCapture {
         String script = TimelineSlot.JD_H5.equals(provider)
                 ? ExpressJingDongTimelineParser.readScript()
                 : TimelineSlot.CN_H5.equals(provider) ? ExpressCainiaoTimelineParser.readScript()
+                : TimelineSlot.JT_H5.equals(provider) ? ExpressKuaidi100TimelineCapture.jtExtractionScript(
+                        owner.displayWaybill(), phones)
                 : ExpressKuaidi100TimelineCapture.extractionScript(
                         owner == null ? "" : owner.displayWaybill(),
-                        owner == null || k100Diagnostics.phoneVerificationAttempted ? "" : owner.phone);
+                        phones);
         try {
             if (k100Diagnostics != null) k100Diagnostics.evaluations++;
             current.evaluateJavascript(script, payload -> {
                 if (finished || current != view || cancellation.isCancelled()) return;
                 if (k100Diagnostics != null) k100Diagnostics.accept(payload);
+                if (k100Diagnostics != null && (ExpressKuaidi100TimelineCapture.phoneRequired(payload)
+                        || phones.isEmpty() && Boolean.TRUE.equals(k100Diagnostics.checkCodeVisible))) {
+                    finish(new Result(null, false, false, true), "phone_required"); return;
+                }
                 Result candidate;
                 if (TimelineSlot.JD_H5.equals(provider)) {
                     ExpressJingDongTimelineParser.Packet packet = ExpressJingDongTimelineParser.parse(payload, owner);

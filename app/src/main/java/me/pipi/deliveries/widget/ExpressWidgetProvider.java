@@ -21,6 +21,7 @@ import me.pipi.deliveries.feature.express.ExpressListActivity;
 import java.util.List;
 
 import me.pipi.deliveries.R;
+import me.pipi.deliveries.background.ExpressScheduler;
 import me.pipi.deliveries.feature.express.ExpressStatusColors;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.model.ExpressItem;
@@ -28,6 +29,9 @@ import me.pipi.deliveries.network.ExpressAccountSource;
 
 /** Original compact widget plus Pipi's three-row wide widget. */
 public class ExpressWidgetProvider extends AppWidgetProvider {
+    private static final java.util.concurrent.ExecutorService worker =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+
     static final int MAX_WIDE_ITEMS = ExpressWidgetRowPolicy.WIDE_ROW_LIMIT;
     private static final int[] WIDE_ROW_IDS = {
             R.id.widget_express_row1,
@@ -57,25 +61,20 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
 
     @Override
     public void onUpdate(Context context, AppWidgetManager manager, int[] ids) {
-        if (this instanceof Express4x2WidgetProvider) {
-            updateWide(context, manager, ids,
-                    visibleItems(context));
-        } else {
-            updateCompact(context, manager, ids,
-                    visibleItems(context));
-        }
+        updateAsync(context);
     }
 
     @Override
     public void onAppWidgetOptionsChanged(
             Context context, AppWidgetManager manager, int id, Bundle options) {
-        if (this instanceof Express4x2WidgetProvider) {
-            updateWide(context, manager, new int[]{id},
-                    visibleItems(context));
-        } else {
-            updateCompact(context, manager, new int[]{id},
-                    visibleItems(context));
-        }
+        updateAsync(context);
+    }
+
+    private void updateAsync(Context context) {
+        PendingResult pending = goAsync();
+        ExpressScheduler.handoffWidgetRefresh(context, () -> {
+            if (pending != null) pending.finish();
+        });
     }
 
     private static void updateCompact(
@@ -351,6 +350,13 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
     }
 
     public static void refreshAll(Context context) {
+        Context application = context.getApplicationContext();
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
+            worker.execute(() -> refreshAllBlocking(application));
+        else refreshAllBlocking(application);
+    }
+
+    private static void refreshAllBlocking(Context context) {
         AppWidgetManager manager = AppWidgetManager.getInstance(context);
         int[] compactIds = manager.getAppWidgetIds(
                 new ComponentName(context, Express2x2WidgetProvider.class));

@@ -19,6 +19,29 @@ import org.robolectric.shadows.ShadowToast;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 31, manifest = Config.NONE, application = Application.class)
 public class ExpressPullRefreshOutcomeTest {
+    @Test public void committedListWithFailedSupplementReportsListUpdatedOnce() throws Exception {
+        ExpressListActivity activity = Robolectric.buildActivity(ExpressListActivity.class).get();
+        set(activity, "swipeRefresh", new SwipeRefreshLayout(RuntimeEnvironment.getApplication()));
+        set(activity, "pullRefreshPending", true);
+        set(activity, "pullRefreshWorkId", "list-updated");
+        Method announce = ExpressListActivity.class.getDeclaredMethod(
+                "announcePullRefreshOutcome", Intent.class);
+        announce.setAccessible(true);
+        ShadowToast.reset();
+        Intent completed = new Intent(ExpressRepository.ACTION_SYNC_FINISHED)
+                .putExtra(ExpressRepository.EXTRA_SYNC_WORK_ID, "list-updated")
+                .putExtra(ExpressRepository.EXTRA_SYNC_ATTEMPTED, 2)
+                .putExtra(ExpressRepository.EXTRA_SYNC_SUCCEEDED, 1)
+                .putExtra(ExpressRepository.EXTRA_SYNC_FAILED, 1)
+                .putExtra(ExpressRepository.EXTRA_SYNC_ACCOUNT_LIST_UPDATED, true);
+        announce.invoke(activity, completed);
+        assertEquals("列表已更新", ShadowToast.getTextOfLatestToast());
+        announce.invoke(activity, completed);
+        assertEquals(1, ShadowToast.shownToastCount());
+        assertEquals(ExpressToastCopy.REFRESH_PARTIAL,
+                ExpressToastCopy.refreshSummary(2, 1, 1, false));
+    }
+
     @Test public void olderOrPeriodicCompletionCannotFinishTheCurrentPull() throws Exception {
         ExpressListActivity activity = Robolectric.buildActivity(ExpressListActivity.class).get();
         set(activity, "swipeRefresh", new SwipeRefreshLayout(RuntimeEnvironment.getApplication()));
@@ -42,7 +65,7 @@ public class ExpressPullRefreshOutcomeTest {
                 .putExtra(ExpressRepository.EXTRA_SYNC_FAILED, 0);
         announce.invoke(activity, completed);
         assertFalse((Boolean) get(activity, "pullRefreshPending"));
-        assertEquals(ExpressToastCopy.refreshSummary(1, 1, 0), ShadowToast.getTextOfLatestToast());
+        assertEquals(ExpressToastCopy.refreshSummary(1, 1, 0, false), ShadowToast.getTextOfLatestToast());
         assertEquals(1, ShadowToast.shownToastCount());
         announce.invoke(activity, completed);
         assertEquals(1, ShadowToast.shownToastCount());

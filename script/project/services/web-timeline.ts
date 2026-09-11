@@ -1,10 +1,9 @@
-import { fetch } from "scripting";
 import { resolveCarrierQuery } from "./carrier-query";
 import { TIMELINE_SLOT } from "./timeline-slot";
+import { jtH5JavaScript, primaryH5Provider, primaryH5Route, webPhoneTails, WebTimelinePhoneError } from "./jt-h5";
 import type { TimelinePackage, TrackNode } from "../models";
 import {
   OperationTimeoutError,
-  linkedTimeoutSignal,
   remainingTimeoutMs,
 } from "./deadline";
 import {
@@ -20,8 +19,6 @@ const EVALUATION_TIMEOUT_MS = 1_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_ATTEMPTS = 40;
 const MAX_TRACKS = 100;
-const MAX_HTML_LENGTH = 65_536;
-const BLOCKING_AD_TAG = '<script type="text/javascript" src="//a.baidinet.com/common/hc/static/b/common/i/ubd/resource/di.js"></script>';
 const SCRIPT_MARKERS = ["baidinet", "jquery", "app_base", "promotion", "appGuide", "vue", "result", "inline", "other"];
 
 export type WebTimelineDiagnostics = Readonly<{
@@ -29,8 +26,6 @@ export type WebTimelineDiagnostics = Readonly<{
   routeTrusted: boolean;
   loadSettled: boolean;
   loadCompleted: boolean;
-  htmlFetchCompleted: boolean;
-  adScriptRemoved: boolean;
   evaluationAttempts: number;
   evaluationFailures: number;
   trackCount: number;
@@ -54,6 +49,7 @@ export type WebTimelineDiagnostics = Readonly<{
   firstFtimePresent?: boolean;
   firstContextPresent?: boolean;
   firstRowOutcome?: string;
+  startupRecovery?: string;
   phoneVerificationAttempted: boolean;
   readyState?: string;
   timedTrackCount: number;
@@ -66,6 +62,7 @@ export type WebTimelineInput = Readonly<{
   courierCode: string;
   companyName: string;
   phoneTail?: string;
+  phoneTails?: readonly string[];
   deadlineAtMs?: number;
   signal?: AbortSignal;
   onQueryAttempted?: (authorized: boolean) => void;
@@ -96,6 +93,7 @@ function extractionJavaScript(waybill: string): string {
       const main = document.querySelector("#main");
       const page = {
         mainPresent: Boolean(main),
+        startupRecovery: window.__pipiK100StartupRecovery,
         readyState: ["loading", "interactive", "complete"].includes(document.readyState)
           ? document.readyState : "unknown"
       };
@@ -226,6 +224,42 @@ function extractionJavaScript(waybill: string): string {
   `;
 }
 
+/** Resume the observed blocking ad script without changing the page's browser origin. */
+export function k100StartupRecoveryJavaScript(waybill: string, timeoutMs: number): string {
+  return `return (() => {
+    const url = new URL(location.href);
+    const expected = ${JSON.stringify(waybill)};
+    const stalled = () => {
+      const scripts = document.querySelectorAll("script");
+      const last = scripts.length ? new URL(scripts[scripts.length - 1].src, location.href) : null;
+      return document.readyState === "loading" && document.querySelector("#main") &&
+        typeof window.Vue !== "function" && typeof window.jQuery !== "function" &&
+        last?.hostname === "a.baidinet.com" && last.pathname === "/common/hc/static/b/common/i/ubd/resource/di.js";
+    };
+    if (url.origin !== "https://m.kuaidi100.com" || url.pathname !== "/app/query/" ||
+        url.searchParams.get("nu") !== expected || window.__pipiK100StartupRecovery || !stalled()) return false;
+    window.__pipiK100StartupRecovery = "pending";
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ${Math.max(1, Math.floor(timeoutMs))});
+    fetch(url.href, { signal: controller.signal, redirect: "error" }).then(response => {
+      if (!response.ok) throw new Error("startup response failed");
+      return response.text();
+    }).then(html => {
+      const tag = '<script type="text/javascript" src="//a.baidinet.com/common/hc/static/b/common/i/ubd/resource/di.js"></script>';
+      if (controller.signal.aborted || location.href !== url.href || !stalled() || !html.includes(tag)) {
+        window.__pipiK100StartupRecovery = "skipped";
+        return;
+      }
+      document.open();
+      document.write(html.replace(tag, ""));
+      document.close();
+      window.__pipiK100StartupRecovery = "applied";
+    }).catch(() => { window.__pipiK100StartupRecovery = "failed"; })
+      .finally(() => clearTimeout(timer));
+    return true;
+  })();`;
+}
+
 function phoneVerificationJavaScript(waybill: string, phoneTail: string): string {
   return `
     return (() => {
@@ -240,6 +274,7 @@ function phoneVerificationJavaScript(waybill: string, phoneTail: string): string
           typeof vm.doCheckCode !== "function") return;
       vm.checkCode.value = ${JSON.stringify(phoneTail)};
       vm.doCheckCode();
+      return {started: vm.loading === true};
     })();
   `;
 }
@@ -263,7 +298,9 @@ export function webTimelineFromExtraction(
   const root = object(value);
   const rows = Array.isArray(root.tracks) ? root.tracks.slice(0, MAX_TRACKS) : [];
   // The fixed page is queried for this waybill; retain the owner's carrier marker on its isolated K100 package.
-  const kuaidi100Com = resolveCarrierQuery(input.courierCode)?.kuaidi100Code || "";
+  const provider = primaryH5Provider(input.courierCode);
+  const kuaidi100Com = provider === TIMELINE_SLOT.JT_H5 ? ""
+    : resolveCarrierQuery(input.courierCode)?.kuaidi100Code || "";
   const seen = new Set<string>();
   const tracks: TrackNode[] = [];
   for (const raw of rows) {
@@ -289,7 +326,8 @@ export function webTimelineFromExtraction(
   if (!timed.length) return null;
   const status = packageSemantic("", tracks);
   return {
-    provider: TIMELINE_SLOT.K100_H5,
+    provider,
+    structuredStatus: false,
     complete: timed.length >= 2,
     waybill: input.waybill,
     courierCode: input.courierCode,
@@ -334,11 +372,12 @@ export async function scrapeWebTimeline(
   const startedAtMs = Date.now();
   const waybill = normalizeWaybill(input.waybill);
   if (!waybill) return null;
-  const phoneTail = typeof input.phoneTail === "string" && /^\d{4}$/.test(input.phoneTail) ? input.phoneTail : "";
+  const tails = webPhoneTails(input.phoneTail, input.phoneTails);
+  const jt = primaryH5Provider(input.courierCode) === TIMELINE_SLOT.JT_H5;
   // This stage queries the actual waybill directly; Picker links do not own its target page.
-  const routeUrl = "https://m.kuaidi100.com/app/query/?nu=" + encodeURIComponent(waybill);
+  const routeUrl = primaryH5Route(waybill, input.courierCode);
   const routePresent = true;
-  const routeTrusted = trustedWebTimelineRoute(routeUrl);
+  const routeTrusted = jt || trustedWebTimelineRoute(routeUrl);
   if (!routeTrusted) return null;
   const deadlineAtMs = startedAtMs + remainingTimeoutMs(
     input.deadlineAtMs,
@@ -349,8 +388,6 @@ export async function scrapeWebTimeline(
   let requestStarted = false;
   let loadSettled = false;
   let loadCompleted = false;
-  let htmlFetchCompleted = false;
-  let adScriptRemoved = false;
   let attempts = 0;
   let failures = 0;
   let trackCount = 0;
@@ -374,8 +411,13 @@ export async function scrapeWebTimeline(
   let firstFtimePresent: boolean | undefined;
   let firstContextPresent: boolean | undefined;
   let firstRowOutcome: string | undefined;
+  let startupRecovery: string | undefined;
+  let startupRecoveryAttempted = false;
+  let stalledSnapshots = 0;
   let readyState: string | undefined;
   let phoneVerificationAttempted = false;
+  let phoneAttemptIndex = 0;
+  let phoneAttemptStarted = false;
   let exitReason = "no_timed_tracks";
   const dispose = () => { try { controller.dispose(); } catch { /* best effort */ } };
   const abort = () => dispose();
@@ -387,7 +429,7 @@ export async function scrapeWebTimeline(
       if (url.protocol !== "https:") return false;
       return request.navigationType === "other" || !request.navigationType
         ? true
-        : trustedWebTimelineRoute(request.url);
+        : jt ? request.url === routeUrl : trustedWebTimelineRoute(request.url);
     } catch {
       return false;
     }
@@ -395,68 +437,20 @@ export async function scrapeWebTimeline(
   try {
     if (input.signal?.aborted) throw new OperationTimeoutError();
     requestStarted = true;
-    const fetchTimeoutMs = remainingTimeoutMs(deadlineAtMs, LOAD_TIMEOUT_MS);
-    const lifecycle = linkedTimeoutSignal(fetchTimeoutMs, input.signal);
-    const fetchAbort = new AbortController();
-    let rejectFetch: ((error: Error) => void) | undefined;
-    const abortFetch = () => { fetchAbort.abort(); rejectFetch?.(new OperationTimeoutError()); };
-    let html = "";
-    try {
-      const aborted = new Promise<never>((_, reject) => { rejectFetch = reject; });
-      lifecycle.signal.addEventListener("abort", abortFetch, { once: true });
-      if (lifecycle.signal.aborted) throw new OperationTimeoutError();
-      html = await withTimeout(Promise.race([(async () => {
-        const response = await fetch(routeUrl, {
-          method: "GET",
-          timeout: fetchTimeoutMs / 1000,
-          signal: fetchAbort.signal,
-          handleRedirect: async () => null,
-          debugLabel: "Pipi Deliveries K100 page",
-        });
-        if (response.status !== 200 || response.url !== routeUrl ||
-            (response.mimeType && response.mimeType !== "text/html") ||
-            (response.expectedContentLength != null && response.expectedContentLength > MAX_HTML_LENGTH)) {
-          throw new Error("K100 page unavailable");
-        }
-        const body = await response.text();
-        if (!body || body.length > MAX_HTML_LENGTH) throw new Error("K100 page unavailable");
-        if (lifecycle.signal.aborted || Date.now() >= deadlineAtMs) throw new OperationTimeoutError();
-        return body;
-      })(), aborted]), fetchTimeoutMs);
-      htmlFetchCompleted = true;
-    } catch {
-      if (input.signal?.aborted) throw new OperationTimeoutError();
-      exitReason = Date.now() >= deadlineAtMs || lifecycle.signal.aborted ? "deadline_exhausted" : "load_failed";
-      return null;
-    } finally {
-      rejectFetch = undefined;
-      fetchAbort.abort();
-      lifecycle.signal.removeEventListener("abort", abortFetch);
-      lifecycle.dispose();
-    }
-    // iOS did not intercept this parser-blocking ad subresource. Preserve the official page and its base URL,
-    // removing only the observed empty tag before WebKit starts the query and normal phone-verification scripts.
-    const pageHtml = html.replace(BLOCKING_AD_TAG, "");
-    adScriptRemoved = pageHtml !== html;
-    if (input.signal?.aborted) throw new OperationTimeoutError();
-    if (Date.now() >= deadlineAtMs) {
-      exitReason = "deadline_exhausted";
-      return null;
-    }
-    void controller.loadHTML(pageHtml, routeUrl).then(
+    void controller.loadURL(routeUrl).then(
       (loaded) => { loadSettled = true; loadCompleted = loaded; },
       () => { loadSettled = true; },
     );
     while (attempts < MAX_ATTEMPTS && Date.now() < deadlineAtMs) {
       if (input.signal?.aborted) throw new OperationTimeoutError();
-      if (loadSettled && !loadCompleted) {
+      if (loadSettled && !loadCompleted && startupRecovery !== "pending" && startupRecovery !== "applied") {
         exitReason = "load_failed";
         break;
       }
       try {
         attempts++;
         const raw = await withTimeout(
-          controller.evaluateJavaScript<unknown>(extractionJavaScript(waybill)),
+          controller.evaluateJavaScript<unknown>(jt ? jtH5JavaScript(waybill, tails) : extractionJavaScript(waybill)),
           Math.min(EVALUATION_TIMEOUT_MS, deadlineAtMs - Date.now()),
         );
         const page = object(object(raw).page);
@@ -466,7 +460,15 @@ export async function scrapeWebTimeline(
         lastParsedScript = SCRIPT_MARKERS.includes(String(page.lastParsedScript)) ? String(page.lastParsedScript) : undefined;
         vuePresent = typeof page.vuePresent === "boolean" ? page.vuePresent : undefined;
         jqueryPresent = typeof page.jqueryPresent === "boolean" ? page.jqueryPresent : undefined;
+        if (["pending", "applied", "skipped", "failed"].includes(String(page.startupRecovery))) {
+          startupRecovery = String(page.startupRecovery);
+        }
         phoneChallengeVisible = typeof page.phoneChallengeVisible === "boolean" ? page.phoneChallengeVisible : undefined;
+        if (jt && page.phoneVerificationAttempted === true) phoneVerificationAttempted = true;
+        if (jt && (page.phoneFailure === "required" || page.phoneFailure === "rejected")) {
+          exitReason = "phone_tail";
+          throw new WebTimelinePhoneError();
+        }
         locationNuMatches = typeof page.locationNuMatches === "boolean" ? page.locationNuMatches : undefined;
         vmNumMatches = typeof page.vmNumMatches === "boolean" ? page.vmNumMatches : undefined;
         lastQueriedNumMatches = typeof page.lastQueriedNumMatches === "boolean" ? page.lastQueriedNumMatches : undefined;
@@ -482,6 +484,16 @@ export async function scrapeWebTimeline(
           ? page.queryErrorType as string : undefined;
         readyState = ["loading", "interactive", "complete", "unknown"].includes(String(page.readyState))
           ? String(page.readyState) : undefined;
+        stalledSnapshots = !jt && readyState === "loading" && mainPresent &&
+          lastParsedScript === "baidinet" && vuePresent === false && jqueryPresent === false && locationNuMatches
+          ? stalledSnapshots + 1 : 0;
+        if (stalledSnapshots >= 2 && !startupRecoveryAttempted && Date.now() < deadlineAtMs) {
+          startupRecoveryAttempted = true;
+          const started = await withTimeout(controller.evaluateJavaScript<boolean>(
+            k100StartupRecoveryJavaScript(waybill, deadlineAtMs - Date.now())),
+            Math.min(EVALUATION_TIMEOUT_MS, deadlineAtMs - Date.now()));
+          if (started === true) startupRecovery = "pending";
+        }
         const extractedRows = Array.isArray(object(raw).tracks) ? object(raw).tracks as unknown[] : [];
         rawExtractedCount = Math.min(MAX_TRACKS, extractedRows.length);
         firstTimePresent = typeof page.firstTimePresent === "boolean" ? page.firstTimePresent : undefined;
@@ -497,19 +509,41 @@ export async function scrapeWebTimeline(
             : isProviderErrorDetail(detail) ? "provider_error" : "valid";
         }
         const timeline = webTimelineFromExtraction(raw, { ...input, waybill }, startedAtMs);
-        if (phoneTail && phoneChallengeVisible === true && !phoneVerificationAttempted && Date.now() < deadlineAtMs) {
-          // Claim before evaluation: a timeout or rejected form must not resubmit this input.
-          phoneVerificationAttempted = true;
-          await withTimeout(
-            controller.evaluateJavaScript<unknown>(phoneVerificationJavaScript(waybill, phoneTail)),
-            Math.min(EVALUATION_TIMEOUT_MS, deadlineAtMs - Date.now()),
-          );
+        if (!jt && phoneChallengeVisible === true && Date.now() < deadlineAtMs) {
+          if (!tails.length) {
+            exitReason = "phone_tail";
+            throw new WebTimelinePhoneError();
+          }
+          let shouldSubmit = !phoneVerificationAttempted;
+          // Only a later snapshot after an acknowledged query can prove a normal 408 rejection.
+          if (phoneAttemptStarted && vmLoading === false && queryErrorType === "") {
+            phoneAttemptStarted = false;
+            if (phoneAttemptIndex >= tails.length) {
+              exitReason = "phone_tail";
+              throw new WebTimelinePhoneError();
+            }
+            shouldSubmit = true;
+          }
+          if (shouldSubmit) {
+            // Claim before evaluation: an unacknowledged or timed-out submission is never retried.
+            phoneVerificationAttempted = true;
+            const submitted = await withTimeout(
+              controller.evaluateJavaScript<unknown>(phoneVerificationJavaScript(waybill, tails[phoneAttemptIndex++])),
+              Math.min(EVALUATION_TIMEOUT_MS, deadlineAtMs - Date.now()),
+            );
+            phoneAttemptStarted = object(submitted).started === true;
+          } else if (timeline) {
+            trackCount = timeline.tracks.length;
+            exitReason = "timed_tracks";
+            return timeline;
+          }
         } else if (timeline) {
           trackCount = timeline.tracks.length;
           exitReason = "timed_tracks";
           return timeline;
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof WebTimelinePhoneError) throw error;
         failures++;
       }
       const wait = Math.min(POLL_INTERVAL_MS, deadlineAtMs - Date.now());
@@ -527,8 +561,6 @@ export async function scrapeWebTimeline(
         routeTrusted,
         loadSettled,
         loadCompleted,
-        htmlFetchCompleted,
-        adScriptRemoved,
         evaluationAttempts: attempts,
         evaluationFailures: failures,
         trackCount,
@@ -552,6 +584,7 @@ export async function scrapeWebTimeline(
         firstFtimePresent,
         firstContextPresent,
         firstRowOutcome,
+        startupRecovery,
         phoneVerificationAttempted,
         readyState,
         timedTrackCount: trackCount,

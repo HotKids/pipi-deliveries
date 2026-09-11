@@ -404,7 +404,7 @@ public final class ManualTimelineAuthorityPolicy {
     private static int queryOrder(String provider) {
         if (PROVIDER_MEIZU.equals(provider)) return 0;
         if (PROVIDER_MOTO.equals(provider)) return 1;
-        if (PROVIDER_KUAIDI100.equals(provider)) return 2;
+        if (PROVIDER_KUAIDI100.equals(provider) || TimelineSlot.JT_H5.equals(provider)) return 2;
         if (PROVIDER_KDNIAO.equals(provider)) return 3;
         return 4;
     }

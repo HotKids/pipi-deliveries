@@ -14,6 +14,7 @@ import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.network.ExpressQueryCancellation;
 import me.pipi.deliveries.network.ManualQueryCoordinator;
 import org.junit.Test;
+import org.junit.Before;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
@@ -25,13 +26,19 @@ import org.robolectric.annotation.Implements;
 @Config(sdk = 31, manifest = Config.NONE, application = Application.class,
         shadows = ExpressKuaidi100PrimaryTest.CaptureShadow.class)
 public class ExpressKuaidi100PrimaryTest {
+    @Before public void resetCapture() {
+        CaptureShadow.routes.clear();
+        CaptureShadow.expectedProvider = TimelineSlot.K100_H5;
+    }
+
     @Implements(value = ExpressAutomaticTimelineCapture.class, isInAndroidSdk = false)
     public static class CaptureShadow {
         static final List<String> routes = new ArrayList<>();
+        static String expectedProvider = TimelineSlot.K100_H5;
         @Implementation protected static ExpressAutomaticTimelineCapture.Result capture(
                 Activity host, ExpressItem owner, String route, String provider,
-                ExpressQueryCancellation cancellation) {
-            assertEquals(TimelineSlot.K100_H5, provider);
+                List<String> phones, ExpressQueryCancellation cancellation) {
+            assertEquals(expectedProvider, provider);
             routes.add(route);
             ExpressQueryResult result = new ExpressQueryResult(owner.displayWaybill(), "SF", "顺丰速运",
                     StatusSemantic.TRANSIT, "2026-09-10 10:00:00", "运输中",
@@ -40,6 +47,19 @@ public class ExpressKuaidi100PrimaryTest {
                     "", "", provider);
             return new ExpressAutomaticTimelineCapture.Result(result, true, false);
         }
+    }
+
+    @Test public void jtOccupiesTheSamePrimaryStageAndKeepsItsProvider() throws Exception {
+        ExpressDetailActivity activity = Robolectric.buildActivity(ExpressDetailActivity.class).get();
+        CaptureShadow.expectedProvider = TimelineSlot.JT_H5;
+        ExpressItem owner = new ExpressItem(1L, "1234", "JTTEST123456", "JTSD", "Synthetic carrier",
+                StatusSemantic.TRANSIT, "", "", "", "[]", "", "INTERFACE5", "");
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
+                () -> { throw new IllegalStateException("Synthetic Picker failure"); },
+                null, null, false, ignored -> () -> capture(activity, owner), null);
+        assertEquals(TimelineSlot.JT_H5, batch.detailSelected().timelineProvider);
+        assertEquals(List.of("https://jtsd.jtexpress.com.cn/pipi#/pages/checkGoods/sendDetail?waybillNo=JTTEST123456&isFrom=serach"),
+                CaptureShadow.routes);
     }
 
     @Test public void zeroOrFailedPickerStillReachesTheExistingK100StageWithoutAnyRoute() throws Exception {

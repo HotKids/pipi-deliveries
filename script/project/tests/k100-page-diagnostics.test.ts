@@ -1,5 +1,5 @@
+import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
 import assert from "node:assert/strict";
-import "./k100-html-fetch-mock";
 import { memory } from "./state-storage-mock";
 import { scrapeWebTimeline, type WebTimelineDiagnostics } from "../services/web-timeline";
 import { diagnosticText, readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
@@ -27,7 +27,7 @@ try {
     const snapshots: WebTimelineDiagnostics[] = [];
     let evaluations = 0;
     Object.assign(globalThis, { WebViewController: class {
-      loadHTML() { return new Promise<boolean>(() => {}); }
+      loadURL() { return new Promise<boolean>(() => {}); }
       async evaluateJavaScript(script: string) {
         evaluations++;
         const scriptNode = { src: scene.script, get textContent() { assert.fail("never read inline script text"); } };
@@ -57,7 +57,6 @@ try {
     assert.equal(snapshots[0]?.jqueryPresent, scene.jquery, scene.name);
     assert.equal(snapshots[0]?.phoneVerificationAttempted, false, "no tail means no verification attempt");
     assert.equal(snapshots[0]?.loadSettled, false, "document state is independent of the load callback");
-    assert.equal(snapshots[0]?.adScriptRemoved, false, "an unchanged document must not be reported as modified");
     assert.equal(timeline?.tracks.length || 0, scene.tracks ? 1 : 0);
     assert.equal(JSON.stringify(snapshots).includes(withheld), false);
   }
@@ -69,21 +68,18 @@ memory.clear();
 setDiagnosticsEnabled(true);
 writeDiagnostic("detail.refresh.stage_failed", { stage: "k100_h5", mainPresent: true,
   phoneChallengeVisible: true, readyState: "complete", timedTrackCount: 0,
-  htmlFetchCompleted: true, adScriptRemoved: true,
   parsedScriptCount: 2, lastParsedScript: "baidinet", vuePresent: false, jqueryPresent: false } as never);
-assert.deepEqual(readDiagnostics()[0]?.details, { stage: "k100_h5", mainPresent: true,
+assert.deepEqual(readDiagnostics()[0]?.details, { clientBuild: SCRIPT_CLIENT_BUILD, stage: "k100_h5", mainPresent: true,
   phoneChallengeVisible: true, readyState: "complete", timedTrackCount: 0,
-  htmlFetchCompleted: true, adScriptRemoved: true,
   parsedScriptCount: 2, lastParsedScript: "baidinet", vuePresent: false, jqueryPresent: false });
 for (const invalidCount of [-1, 0.5, 101, NaN, Infinity, "2", withheld]) {
   memory.delete("pipi_deliveries_diagnostic_log_v1");
   writeDiagnostic("detail.refresh.stage_failed", { mainPresent: withheld, phoneChallengeVisible: withheld,
     phoneVerificationAttempted: withheld,
-    htmlFetchCompleted: withheld, adScriptRemoved: withheld,
     parsedScriptCount: invalidCount, lastParsedScript: withheld, vuePresent: withheld, jqueryPresent: withheld,
     readyState: withheld, timedTrackCount: invalidCount,
     value: withheld, phone: withheld, url: withheld, body: withheld } as never);
-  assert.deepEqual(readDiagnostics()[0]?.details, {}, "page diagnostics accept only fixed scalar metadata");
+  assert.deepEqual(readDiagnostics()[0]?.details, { clientBuild: SCRIPT_CLIENT_BUILD }, "page diagnostics accept only fixed scalar metadata");
   assert.equal(diagnosticText().includes(withheld), false);
 }
 console.log("K100 page-state extraction and diagnostic privacy tests passed");

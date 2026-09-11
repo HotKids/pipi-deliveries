@@ -21,7 +21,7 @@ assert.doesNotMatch(
 );
 
 const accountList = source.match(
-  /async function synchronizeAccountList\([\s\S]*?\n}\n\nasync function projectAccountOrders/,
+  /async function synchronizeAccountList\([\s\S]*?\n}\n\ntype ManualRefreshTask/,
 )?.[0] || "";
 assert.match(
   accountList,
@@ -32,30 +32,6 @@ assert.match(
   accountList,
   /catch \(error\)\s*{\s*rethrowRefreshCancellation\(error, signal\);[\s\S]*?"account\.sync\.failed"/,
   "account-list cancellation must escape before its stage-failure diagnostic",
-);
-
-const projection = source.match(
-  /async function projectAccountOrders\([\s\S]*?\n}\n\nfunction accountFollowupShipments/,
-)?.[0] || "";
-assert.match(
-  projection,
-  /projectAccountOrderWithCarrier\([\s\S]*?signal,[\s\S]*?assertRefreshSignal\(signal\)/,
-  "account-order projection must pass and re-check the parent signal",
-);
-assert.match(
-  projection,
-  /catch \(error\)\s*{\s*rethrowRefreshCancellation\(error, signal\);[\s\S]*?"order\.projection\.failed"/,
-  "projection cancellation must escape before failure diagnostics and checkpointing",
-);
-assert.doesNotMatch(
-  projection,
-  /isCompletedUnprojectedAccountOrder|result: "order_completed"/,
-  "order completion must not stop batch projection to the real waybill",
-);
-assert.match(
-  projection,
-  /let projectionRetained = false;[\s\S]*?accountParcelWithExistingProjection\([\s\S]*?projectionRetained = normalizeWaybill\([\s\S]*?if \(!projectionRetained\) \{[\s\S]*?recordProjectionFailure\(/,
-  "an extracted projection that is not retained must enter retry cooldown instead of reporting success",
 );
 
 const detail = source.match(
@@ -92,38 +68,11 @@ assert.match(
   "detail KDNiao fallback must receive the page cancellation signal",
 );
 
-const followups = source.match(
-  /async function refreshAccountFollowups\([\s\S]*?\n}\n\nasync function refreshManualAndPending/,
-)?.[0] || "";
-assert.ok(
-  (followups.match(/rethrowRefreshCancellation\([^,]+, signal\);/g) || []).length >= 1,
-  "the Xiaomi detail gather must rethrow parent cancellation",
-);
-assert.doesNotMatch(
-  followups,
-  /refresh(?:JingDong|Cainiao)H5\(/,
-  "homepage followups must not execute H5 timeline WebViews",
-);
-assert.match(
-  followups,
-  /async \(scheduled\)[\s\S]*?if \(deadlineExpired\(accountFollowupDeadlineAtMs\)\)[\s\S]*?outcome: "deadline_exhausted"/,
-  "a queued detail that reaches the deadline must be classified before it starts",
-);
-assert.match(
-  followups,
-  /if \(detailAttempt\.outcome === "deadline_exhausted"\)[\s\S]*?"refresh\.stage\.skipped"[\s\S]*?continue;\s*}\s*attempted\+\+/,
-  "an unstarted detail must not count as attempted or failed",
-);
 const runFullRefresh = source.match(
   /async function runFullRefresh\([\s\S]*?\n}\n\nexport function refreshAllShipments/,
 )?.[0] || "";
-// 用户定 2026-09-04：这一段现在无条件调用，靠最后那个 textBackfillOnly 参数区分——
-// 小组件/快捷指令那轮只做文案回填，不开 WebView。lease.signal 仍然是 WebView 的取消源。
-assert.match(
-  runFullRefresh,
-  /const projection = await projectAccountOrders\([\s\S]*?lease\.signal,\s*!hostPolicy\.accountOrderProjection,/,
-  "the full-refresh lease signal must own account-order WebView projection",
-);
+assert.doesNotMatch(runFullRefresh, /refreshMissingShipmentHistories|refreshAccountFollowups/,
+  "list and background must not enter history work");
 assert.match(
   runFullRefresh,
   /deadlineAtMs: number \| undefined/,
@@ -144,18 +93,9 @@ assert.match(
   "only callers with an explicit host budget may arm the coordinator deadline",
 );
 
-const manualRefresh = source.match(
-  /async function refreshManualAndPending\([\s\S]*?\n}\n\nexport type ManualShipmentPreview/,
-)?.[0] || "";
-assert.match(
-  manualRefresh,
-  /waveStart \+= MANUAL_REFRESH_CONCURRENCY[\s\S]*?"manual_refresh_attempt"[\s\S]*?runAccountFollowupCandidates\(\s*waveTasks/,
-  "manual rows must be claimed immediately before their bounded query wave",
-);
-assert.equal(
-  (manualRefresh.match(/"manual_refresh_attempt"/g) || []).length,
-  1,
-  "each admitted manual task batch must use one atomic reservation before its requests",
-);
-
+const online = source.slice(source.indexOf("async function refreshOnlineShipment"), source.indexOf("export type ManualShipmentPreview"));
+assert.match(online, /beginManualRefreshAttempt[\s\S]*?outcome = await query/,
+  "each Online job must durably own its attempt before dispatch");
+assert.match(online, /assertRefreshSignal\(signal\)/);
+assert.match(source, /active.size < MANUAL_REFRESH_CONCURRENCY/);
 console.log("refresh WebView cancellation contract tests passed");

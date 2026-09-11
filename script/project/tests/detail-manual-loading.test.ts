@@ -18,7 +18,7 @@ const refreshStart = page.indexOf("  function refresh(forceManualRefresh");
 const refreshEnd = page.indexOf("  async function copyWaybill()", refreshStart);
 assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
 const refreshSource = stripTypeScriptTypes(page.slice(refreshStart, refreshEnd));
-const cleanup = capture(/return \(\) => \{\s*(refreshGenerationRef\.current \+= 1;[\s\S]*?)\s*\};\s*\}, \[props\.shipment\.identity\.id, props\.refreshOnAppear\]\);/);
+const cleanup = capture(/return \(\) => \{\s*(refreshGenerationRef\.current \+= 1;[\s\S]*?)\s*\};\s*\}, \[props\.shipment\.identity\.id\]\);/);
 
 function deferred() {
   let resolve!: (value: any) => void;
@@ -45,6 +45,8 @@ function pageHarness(seed = shipment()) {
     refreshGenerationRef: { current: 0 },
     refreshInFlightRef: { current: null },
     refreshAbortRef: { current: null },
+    pullInFlightRef: { current: null },
+    detailEntryRef: { current: undefined },
     displayTracks: seed.timeline.tracks,
     setNotice: (text: string) => { state.notices.push(text); },
     setLoadingManualDetail: (value: boolean) => { state.loading = value; },
@@ -83,10 +85,41 @@ function pageHarness(seed = shipment()) {
     };
   };
   return { state, network, refresh, labels,
+    context,
     preview: (value: any) => onPreview?.(value),
     unmount: () => runInNewContext(cleanup, context),
     aborted: () => signal?.aborted,
   };
+}
+
+// Opening and pulling are different operations, but repeated pulls share the same continuation.
+for (const entryFails of [false, true]) {
+  const page = pageHarness(shipment("TRANSIT", [{ detail: "Cached event" }]));
+  page.context.props.refreshOnAppear = "detail_open";
+  page.context.props.manualPreview = null;
+  const calls: any[] = [];
+  const entry = deferred();
+  const pull = deferred();
+  page.context.refreshShipmentById = (_id: string, options: any) => {
+    calls.push(options);
+    return options.trigger === "detail_open" ? entry.promise : pull.promise;
+  };
+  const opening = page.refresh(false);
+  const pulling = page.refresh(true);
+  assert.equal(page.refresh(true), pulling);
+  assert.equal(calls.length, 1);
+  const observation = { fingerprint: "same-request", gaveTimeline: !entryFails };
+  entry.resolve({ shipment: page.state.shipment, state: {}, refreshed: false,
+    querySucceeded: !entryFails, detailEntry: observation });
+  await opening;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].trigger, "detail_pull");
+  assert.equal(calls[1].detailEntry, observation, "failed entry outcomes travel to pull too");
+  assert.equal(page.refresh(true), page.context.pullInFlightRef.current);
+  pull.resolve({ shipment: page.state.shipment, state: {}, refreshed: false, querySucceeded: false });
+  await pulling;
+  assert.equal(page.state.notices.at(-1), "failed", "cached content does not turn failure into up-to-date");
 }
 
 // A primary provider may finish while its peer is still pending after an empty Picker.

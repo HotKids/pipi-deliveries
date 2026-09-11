@@ -1,5 +1,15 @@
+export type RequestTimeoutDetails = {
+  timeoutOrigin: "timeout_signal" | "parent_signal" | "native_timeout" | "native_abort" | "deadline_after_body" | "deadline_after_error";
+  requestPhase: "request" | "response_body" | "response_complete";
+  requestBudgetMs: number;
+  requestElapsedMs: number;
+  responseHeadersAfterMs?: number;
+  responseBodyAfterMs?: number;
+  deadlineLagMs: number;
+};
+
 export class OperationTimeoutError extends Error {
-  constructor(message = "请求超时，请稍后重试") {
+  constructor(message = "请求超时，请稍后重试", readonly requestDetails?: RequestTimeoutDetails) {
     super(message);
     this.name = "OperationTimeoutError";
   }
@@ -39,14 +49,30 @@ export function assertWithinDeadline(
   if (deadlineExpired(deadlineAtMs, now)) throw new OperationTimeoutError();
 }
 
+/** Waiting consumers can leave without cancelling work still owned by another consumer. */
+export function waitForRefresh<T>(work: Promise<T>, deadlineAtMs: number, signal?: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => finish(() => reject(new OperationTimeoutError()));
+    const timer = setTimeout(abort, Math.max(0, deadlineAtMs - Date.now()));
+    const finish = (complete: () => void) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      complete();
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted || deadlineExpired(deadlineAtMs)) abort();
+    work.then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+  });
+}
+
 export type LinkedTimeoutSignal = Readonly<{
   signal: AbortSignal;
   dispose: () => void;
 }>;
 
 /**
- * Uses the host's native timeout signal so a stalled native request is aborted
- * even when the script event loop cannot run a JavaScript timer promptly.
+ * Propagates timeout and owner cancellation. Forwarding still needs a script
+ * callback; callers must also set the native request timeout.
  */
 export function linkedTimeoutSignal(
   timeoutMsInput: number,

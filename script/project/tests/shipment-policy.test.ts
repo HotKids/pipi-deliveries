@@ -1325,8 +1325,8 @@ const ordinaryAutomaticWithManualDetail = applyManualShipment(
 );
 assert.equal(
   selectShipmentTimeline(ordinaryAutomaticWithManualDetail).provider,
-  "interface5",
-  "automatic Home must retain its account-owner package",
+  "kuaidi100",
+  "automatic Home shares the selected detail history",
 );
 assert.equal(
   selectShipmentDetailTimeline(ordinaryAutomaticWithManualDetail).provider,
@@ -1691,8 +1691,8 @@ assert.equal(
 );
 assert.equal(
   selectShipmentDetailTimeline(partialPickedWithCompleteFallback).provider,
-  "kdniao",
-  "JD detail must display the complete fallback instead of a partial H5 pickup node",
+  "interface5",
+  "a transit fallback cannot prove consistency with the owner's picked status",
 );
 
 const completeAtomicJingDongH5Timeline: TimelinePackage = {
@@ -1792,15 +1792,15 @@ const jingDongWithK100 = applySameSourceTimeline(
   firstK100JingDong,
   NOW + 1,
 );
-// 用户定 2026-09-05 晚：京东行的列表归 feed；K100 包只住自己的槽，由详情页选包。
-assert.equal(jingDongWithK100.timeline.provider, "interface5");
+// Shared presentation uses one history package while account fields retain their authority.
+assert.equal(jingDongWithK100.timeline.provider, "kuaidi100_h5");
 assert.equal(
   selectShipmentDetailTimeline(jingDongWithK100).provider,
   "kuaidi100_h5",
 );
 assert.equal(
   selectShipmentDetailTimeline(jingDongWithK100).latestDetail,
-  "K100 first node",
+  jingDongInTransit.sourceTimeline!.latestDetail,
 );
 const jingDongK100AfterAccountCompletion = applySameSourceTimeline(
   jingDongCompleted,
@@ -1809,13 +1809,13 @@ const jingDongK100AfterAccountCompletion = applySameSourceTimeline(
 );
 assert.equal(
   jingDongK100AfterAccountCompletion.timeline.provider,
-  "interface5",
+  "kuaidi100_h5",
   // 用户定 2026-09-05 晚：京东行的列表归 feed；手动包只在详情页选包时顶上来。
-  "the JD list row stays on the feed even when the account increment lacks a start event",
+  "shared history selection does not replace the completed account status",
 );
 assert.equal(
   selectShipmentDetailTimeline(jingDongK100AfterAccountCompletion).latestDetail,
-  "K100 first node",
+  jingDongCompleted.sourceTimeline!.latestDetail,
 );
 const legacyJingDongPage = {
   ...timeline("jingdong_h5", "JD9988776655", "COMPLETED"),
@@ -1828,9 +1828,9 @@ const jingDongWithLegacyPage = {
 };
 assert.equal(
   selectShipmentTimeline(jingDongWithLegacyPage).provider,
-  "interface5",
+  "kuaidi100_h5",
   // 用户定 2026-09-05 晚：京东行的列表归 feed；K100 包只在详情页选包。
-  "the JD list row stays on the feed whatever the manual slots hold",
+  "shared history selection ignores the unqualified legacy page",
 );
 assert.equal(
   selectShipmentDetailTimeline(jingDongWithLegacyPage).provider,
@@ -1867,11 +1867,11 @@ const jingDongIncremental = applySameSourceTimeline(
   secondK100JingDong,
   NOW + 60_000,
 );
-assert.equal(jingDongIncremental.timeline.provider, "interface5");
+assert.equal(jingDongIncremental.timeline.provider, "kuaidi100_h5");
 assert.equal(selectShipmentDetailTimeline(jingDongIncremental).tracks.length, 3);
 assert.equal(
   selectShipmentDetailTimeline(jingDongIncremental).latestDetail,
-  "K100 second node",
+  jingDongInTransit.sourceTimeline!.latestDetail,
 );
 const carrierSwitchedK100 = {
   ...firstK100JingDong,
@@ -2229,8 +2229,8 @@ console.log("shipment projection preservation tests passed");
   assert.equal(query?.tracks.length, 3, "the per-order detail lives whole in the v5_query slot");
   assert.equal(
     merged.timeline.tracks.length,
-    2,
-    "the list row (headline, nodes) is the feed's",
+    3,
+    "the newer account query supplies the same whole package to Home and detail",
   );
   const shown = selectShipmentDetailTimeline(merged);
   assert.equal(shown.provider, "v5_query", "the detail page picks the query package on node count");

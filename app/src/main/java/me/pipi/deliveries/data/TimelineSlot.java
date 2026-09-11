@@ -9,6 +9,7 @@ public final class TimelineSlot {
     public static final String V4_QUERY = "v4_query";
     public static final String V6_QUERY = "v6_query";
     public static final String K100_H5 = "k100_h5";
+    public static final String JT_H5 = "jt_h5";
     public static final String CN_H5 = "cn_h5";
     public static final String JD_H5 = "jd_h5";
     public static final String KDNIAO = "kdniao";

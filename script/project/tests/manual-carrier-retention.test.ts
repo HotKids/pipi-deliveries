@@ -44,7 +44,7 @@ try {
         const requests: { shipperCode: string; phone: string }[] = [];
         const result = await runShipmentRefreshForTesting(before.identity.id,
           { isCurrent: () => true, deadlineAtMs: now + 30000 },
-          { trigger: "detail_open", includeKdniaoFallback: true }, {
+          { trigger: "detail_pull", includeKdniaoFallback: true }, {
             refreshAccountParcel: async () => null,
             queryManualForSource: async (input) => {
               if (input.pickerOnly) return { shipment: null, pending: null, routeUrl: "" };

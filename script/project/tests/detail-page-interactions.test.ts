@@ -140,7 +140,7 @@ assert.equal(
 );
 assert.match(
   detailPage,
-  /catch \(error\)[\s\S]*?const errorDetails = diagnosticErrorDetails\(error\)[\s\S]*?if \(errorDetails\.errorCategory === "removed"\) return[\s\S]*?writeDiagnostic\("detail\.refresh\.ui_failed"[\s\S]*?errorDetails[\s\S]*?if \(!displayTracks\.length\)[\s\S]*?setNotice\(EXPRESS_TOAST_COPY\.detailRefreshFailed\)/,
+  /catch \(error\)[\s\S]*?const errorDetails = diagnosticErrorDetails\(error\)[\s\S]*?if \(errorDetails\.errorCategory === "removed"\) return[\s\S]*?writeDiagnostic\("detail\.refresh\.ui_failed"[\s\S]*?errorDetails[\s\S]*?if \(forceManualRefresh \|\| !displayTracks\.length\)[\s\S]*?setNotice\(EXPRESS_TOAST_COPY\.detailRefreshFailed\)/,
   "a pre-dispatch detail failure must remain diagnosable instead of disappearing behind the toast",
 );
 assert.match(

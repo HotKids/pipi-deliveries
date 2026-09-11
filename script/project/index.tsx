@@ -71,6 +71,14 @@ function App() {
   }
 
   useEffect(() => {
+    const observe = (phase: "active" | "inactive" | "background") => {
+      writeDiagnostic("app.scene.changed", { result: phase });
+    };
+    AppEvents.scenePhase.addListener(observe);
+    return () => AppEvents.scenePhase.removeListener(observe);
+  }, []);
+
+  useEffect(() => {
     return Script.onResume((details) => {
       void reloadAndRefreshOnResume(details, {
         load: loadState,

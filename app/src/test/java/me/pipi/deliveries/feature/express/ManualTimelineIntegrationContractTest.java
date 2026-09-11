@@ -46,7 +46,7 @@ public final class ManualTimelineIntegrationContractTest {
         assertFalse(detail.contains("saveProjectedOrderTimeline(\n"
                 + "                                        success.result"));
         assertTrue(sync.contains("network.ManualQueryCoordinator"));
-        assertTrue(detail.contains("repository.saveManualQueryBatch("));
+        assertTrue(detail.contains("repository.saveClaimedManualQueryBatch("));
         assertFalse(list.contains("ExpressDetailActivity.transientPickerPreviewIntent("));
         assertTrue(detail.contains("partial -> publishFirstManualPreview(partial, cancellation)"));
         assertTrue(detail.contains("R.string.loading_complete_logistics"));
@@ -58,10 +58,10 @@ public final class ManualTimelineIntegrationContractTest {
         assertFalse(detail.contains("else showKuaidi100WebDetail(kuaidi100Url);"));
         assertTrue(detail.contains(
                 "String cainiaoUrl = transientPickerPreview ? \"\" : safeCainiaoUrl(item);"));
-        assertTrue(sync.contains("saveOwnerManualQueryBatch("));
-        assertTrue(sync.contains("saveManualQueryBatch("));
+        assertTrue(sync.contains("saveClaimedManualQueryBatch("));
+        assertTrue(sync.contains("saveClaimedManualQueryBatch("));
         assertTrue(sync.contains("savePendingManualQueryBatch("));
-        assertTrue(detail.contains("saveOwnerManualQueryBatch("));
+        assertTrue(detail.contains("saveClaimedManualQueryBatch("));
         assertFalse((list + sync + detail).contains(
                 "for (ManualQueryCoordinator.Success"));
         assertFalse((list + sync + detail).contains("queryForBindingSource("));
@@ -86,7 +86,7 @@ public final class ManualTimelineIntegrationContractTest {
         assertTrue(detail.contains("ManualQueryRoutingPolicy.includesMoto(existing)"));
         assertFalse(detail.contains("showJingDongWebDetail("));
         assertTrue(detail.contains("ExpressAutomaticTimelineCapture.capture("));
-        assertTrue(detail.contains("allowsJingDongCapture(owner, accountDetailGaveTimeline)"));
+        assertTrue(detail.contains("allowsJingDongCapture(owner)"));
         assertTrue(detail.contains("allowsPrimaryKuaidi100(queryOwner)"));
         assertFalse(detail.contains("startProjectedOrderTimelineRefresh"));
         assertFalse(detail.contains("projectedOrderTimelineCapture"));

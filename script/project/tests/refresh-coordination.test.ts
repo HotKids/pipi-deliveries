@@ -1,6 +1,33 @@
 import assert from "node:assert/strict";
 import { RefreshCoordinator } from "../services/refresh-coordination";
 
+// Deadline expiry and durable ownership loss need different diagnostic evidence.
+for (const reason of ["deadline", "ownership_lost"] as const) {
+  const coordinator = new RefreshCoordinator<string, string, string, string>();
+  const invalidations: string[] = [];
+  let owns = true;
+  const started = deferred<void>();
+  const gate = deferred<string>();
+  const full = coordinator.runFull("interface5", async () => {
+    started.resolve(); return gate.promise;
+  }, undefined, {
+    operationDeadlineAtMs: Date.now() + (reason === "deadline" ? 20 : 1000),
+    ownership: { expiresAtMs: Date.now() + 1000, isCurrent: () => owns },
+    onInvalidated: value => invalidations.push(value),
+  });
+  const rejected = assert.rejects(full, /请求超时/);
+  await started.promise;
+  if (reason === "ownership_lost") {
+    owns = false;
+    assert.equal(coordinator.full("interface5"), undefined);
+  }
+  await settleWithin(rejected);
+  assert.deepEqual(invalidations, [reason]);
+  gate.resolve("late result");
+  await Promise.resolve();
+  assert.deepEqual(invalidations, [reason], "late completion must not report a second invalidation");
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -427,6 +454,40 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs = 500) {
   );
   await assert.rejects(lateSuccess, /请求超时/);
   assert.equal(lateSignal?.aborted, true);
+  assert.equal(coordinator.full("interface5"), undefined);
+}
+
+{
+  const coordinator = new RefreshCoordinator<string, string, string, string>();
+  let owns = true;
+  const staleGate = deferred<string>();
+  const stale = coordinator.runFull("interface5", async () => staleGate.promise, () => true, {
+    ownership: { expiresAtMs: Date.now() + 1_000, isCurrent: () => owns },
+  });
+  const rejected = assert.rejects(settleWithin(stale), /请求超时/);
+  await Promise.resolve();
+  owns = false;
+  assert.equal(coordinator.full("interface5"), undefined, "losing ownership retires work even before its expiry");
+  const currentGate = deferred<string>();
+  const current = coordinator.runFull("interface5", async () => currentGate.promise);
+  await rejected;
+  staleGate.resolve("late");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(coordinator.full("interface5"), current, "old completion cannot release the new slot");
+  currentGate.resolve("current");
+  assert.equal(await current, "current");
+}
+
+{
+  const coordinator = new RefreshCoordinator<string, string, string, string>();
+  let signal: AbortSignal | undefined;
+  const pending = coordinator.runFull("interface5", async (_skipped, lease) => {
+    signal = lease.signal;
+    assert.equal(lease.deadlineAtMs, undefined, "ownership expiry does not replace per-stage budgets");
+    return new Promise<string>(() => {});
+  }, () => true, { ownership: { expiresAtMs: Date.now() + 20, isCurrent: () => true } });
+  await assert.rejects(settleWithin(pending), /请求超时/);
+  assert.equal(signal?.aborted, true);
   assert.equal(coordinator.full("interface5"), undefined);
 }
 

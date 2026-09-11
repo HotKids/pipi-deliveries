@@ -1,3 +1,4 @@
+import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
 import assert from "node:assert/strict";
 import { memory } from "./state-storage-mock";
 import { queryMeizuShipment } from "../services/manual-query";
@@ -42,8 +43,28 @@ await assert.rejects(queryMeizuShipment({ waybill, dependencies: { post: async (
   error => error === transport, "transport errors retain their existing HTTP metadata and are not retried");
 assert.equal(attempts().length, 1);
 assert.equal(attempts()[0]!.details.mode, "refresh");
-assert.equal(attempts()[0]!.details.valueKind, "missing");
+assert.equal(attempts()[0]!.details.result, "request_failed");
+assert.equal(attempts()[0]!.details.httpStatus, 403);
+assert.equal(attempts()[0]!.details.valueKind, undefined, "a failed request is not an empty upstream response");
 assert.equal(attempts()[0]!.details.upstreamCode, undefined);
+
+memory.delete("pipi_deliveries_diagnostic_log_v1");
+await assert.rejects(queryMeizuShipment({ waybill, dependencies: {
+  post: async () => ({ code: 10000 }),
+} }), /路由轨迹查询失败/);
+assert.equal(attempts().length, 1, "an unknown business rejection is not retried or reclassified as authentication/rate limiting");
+assert.ok(attempts().every(({details}) => details.result === "received" &&
+  details.upstreamCode === 10000 && details.valueKind === "missing"));
+assert.equal(diagnosticText().includes(waybill), false);
+
+memory.delete("pipi_deliveries_diagnostic_log_v1");
+let transientCalls = 0;
+await queryMeizuShipment({ waybill, dependencies: { post: async () => {
+  if (++transientCalls === 1) throw Object.assign(new Error("Upstream unavailable"), { status: 502 });
+  return { code: 200, value: { nu: waybill, com: "SF", state: "2",
+    time: "2026-09-09 23:00:00", context: "Synthetic parcel event" } };
+} } });
+assert.equal(transientCalls, 2, "a transient HTTP service failure may retry once");
 
 memory.delete("pipi_deliveries_diagnostic_log_v1");
 writeDiagnostic("manual.meizu.response", { attempt: 2, mode: "last_detail", upstreamCode: -1001,
@@ -53,6 +74,6 @@ for (const unsafe of [NaN, Infinity, 0.5, Number.MAX_SAFE_INTEGER + 1, "200", wi
   memory.delete("pipi_deliveries_diagnostic_log_v1");
   writeDiagnostic("manual.meizu.response", { attempt: 3, mode: withheld, upstreamCode: unsafe,
     valueKind: withheld, redirectPresent: withheld, msg: withheld, value: withheld, redirect: withheld } as never);
-  assert.deepEqual(attempts()[0]!.details, {}, "only bounded attempt/mode/type/code/boolean metadata is retained");
+  assert.deepEqual(attempts()[0]!.details, { clientBuild: SCRIPT_CLIENT_BUILD }, "only bounded attempt/mode/type/code/boolean metadata is retained");
 }
 console.log("Meizu response metadata diagnostics tests passed");

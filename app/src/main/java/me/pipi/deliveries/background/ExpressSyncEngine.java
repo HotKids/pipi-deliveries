@@ -93,6 +93,7 @@ final class ExpressSyncEngine {
                             seenByGeneration, System.currentTimeMillis());
                 }
                 network[1]++;
+                network[2] = 1;
             } catch (Throwable failure) {
                 Log.w(TAG, "Account refresh failed", failure);
             }
@@ -214,9 +215,9 @@ final class ExpressSyncEngine {
                                                 manualOwner.courierCode, null),
                                         false, null, null,
                                         manualOwner.semantic == StatusSemantic.UNKNOWN);
-                        repository.saveOwnerManualQueryBatch(
+                        repository.saveClaimedManualQueryBatch(
                                 manualOwner, ownerClaim, manualBatch.successes,
-                                manualOwner.phone, bindingSource);
+                                manualOwner.phone, bindingSource, true, manualClaim, null);
                         if (!manualBatch.successes.isEmpty()) {
                             network[1]++;
                             current = repository.find(manualOwner.rowId);
@@ -229,24 +230,31 @@ final class ExpressSyncEngine {
                 if (!isAccountOwned(current)
                         && !current.semantic.terminal()
                         && isLocalTimelineSource(current.source)) {
-                    network[0]++;
-                    ExpressItem manualOwner = current;
-                    ExpressRepository.ManualQueryOwnerClaim ownerClaim =
-                            repository.captureManualQueryOwner(manualOwner);
-                    ManualQueryCoordinator.Batch batch =
-                            ManualQueryCoordinator.queryPickerFirst(
-                                    () -> subscription.queryManual(
-                                            context, manualOwner.displayWaybill(), null),
-                                    repository.manualTimelineCandidate(
-                                            manualOwner, TimelineSlot.V6_QUERY),
-                                    () -> localApi.queryMoto(
-                                            manualOwner.displayWaybill(),
-                                            manualOwner.courierCode, null),
-                                    ManualQueryRoutingPolicy.includesMoto(manualOwner));
-                    repository.saveManualQueryBatch(
-                            manualOwner, ownerClaim, batch.successes,
-                            manualOwner.phone, bindingSource);
-                    if (!batch.successes.isEmpty()) network[1]++;
+                    ExpressRepository.ManualTimelinePollClaim claim = repository.claimManualTimelinePoll(
+                            current, System.currentTimeMillis());
+                    if (claim == null) continue;
+                    try {
+                        network[0]++;
+                        ExpressItem manualOwner = current;
+                        ExpressRepository.ManualQueryOwnerClaim ownerClaim =
+                                repository.captureManualQueryOwner(manualOwner);
+                        ManualQueryCoordinator.Batch batch =
+                                ManualQueryCoordinator.queryPickerFirst(
+                                        () -> subscription.queryManual(
+                                                context, manualOwner.displayWaybill(), null),
+                                        repository.manualTimelineCandidate(
+                                                manualOwner, TimelineSlot.V6_QUERY),
+                                        () -> localApi.queryMoto(
+                                                manualOwner.displayWaybill(),
+                                                manualOwner.courierCode, null),
+                                        ManualQueryRoutingPolicy.includesMoto(manualOwner));
+                        repository.saveClaimedManualQueryBatch(
+                                manualOwner, ownerClaim, batch.successes,
+                                manualOwner.phone, bindingSource, false, claim, null);
+                        if (!batch.successes.isEmpty()) network[1]++;
+                    } finally {
+                        repository.releaseManualTimelinePoll(claim);
+                    }
                 }
             } catch (Throwable failure) {
                 Log.w(TAG, "Express refresh failed", failure);
@@ -311,26 +319,16 @@ final class ExpressSyncEngine {
     }
 
     /**
-     * The waybill named by an unprojected account order's own track text, or null. Mirrors the
-     * iOS candidate filter: only orders whose status already reached pickup are projected
-     * (accountOrderReadyForProjection), and the text path needs no H5 and no cooldown.
+     * A named waybill resolves identity independently of status, H5 and history completeness.
      */
     static ExpressOrderTextIdentity.Identity textProjectionIdentity(ExpressItem current) {
         if (current == null || !current.isAccountOrder()
                 || !"interface5".equals(ExpressAccountSource.bindingSourceForOwner(
                         current.stateOwner.isEmpty() ? current.source : current.stateOwner))
-                || !current.projectedWaybill.isEmpty()
-                || !readyForOrderProjection(current.semantic)) {
+                || !current.projectedWaybill.isEmpty()) {
             return null;
         }
         return ExpressOrderTextIdentity.fromTracksJson(current.tracksJson, current.waybill);
-    }
-
-    static boolean readyForOrderProjection(StatusSemantic semantic) {
-        return semantic == StatusSemantic.PICKED || semantic == StatusSemantic.TRANSIT
-                || semantic == StatusSemantic.DELIVERY
-                || semantic == StatusSemantic.WAITING_PICKUP
-                || semantic == StatusSemantic.COMPLETED;
     }
 
     static boolean needsProjectedCarrierRecognition(ExpressItem item) {

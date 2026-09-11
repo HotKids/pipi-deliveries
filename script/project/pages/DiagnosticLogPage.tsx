@@ -115,7 +115,7 @@ function stageText(value: string): string {
     route: "v6_query",
     fallback: "kdniao",
     manual_fallback: "手动查询兜底",
-    manual_refresh: "手动件刷新",
+    manual_refresh: "在线补查",
     manual_sources: "手动查件数据源",
     manual_source: "手动查件",
     pending_query: "待查件查询",
@@ -190,6 +190,23 @@ function executionBoundaryText(value: string): string {
 
 function reasonText(value: string): string {
   return ({
+    no_tracks: "没有有效时间节点",
+    status_unknown: "当前状态未知",
+    latest_unknown: "最新节点状态无法识别",
+    status_mismatch: "最新节点与当前状态不一致",
+    missing_pickup: "缺少揽收证据",
+    time_mismatch: "详情与列表最新时间不一致",
+    sf_active: "顺丰件尚未进入终态",
+    missing_source_time: "缺少来源时间基准",
+    cache_read: "读取本地缓存",
+    list_pull: "列表下拉",
+    detail_open: "打开详情",
+    detail_pull: "详情下拉",
+    background: "后台刷新",
+    foreground_sync: "前台同步",
+    account_list_only: "账号列表同步",
+    available: "缓存有轨迹",
+    empty: "缓存无轨迹",
     account_record_missing: "缺少账号详情记录",
     background_host_webview_disabled: "后台宿主不允许网页提取",
     coalesced_detail_refresh: "详情刷新已在执行",
@@ -238,6 +255,8 @@ function detailsText(item: DiagnosticEntry): string {
     details.baseActiveSource,
   );
   const parts = [
+    details.clientBuild != null ? `构建 ${details.clientBuild}` : null,
+    details.trigger ? `触发 ${reasonText(details.trigger)}` : null,
     hasSource ? "统一通道" : null,
     details.waybillTail ? `运单尾号 ${details.waybillTail}` : null,
     details.sourceProvider
@@ -254,6 +273,11 @@ function detailsText(item: DiagnosticEntry): string {
     details.attempted != null ? `尝试 ${details.attempted}` : null,
     details.succeeded != null ? `成功 ${details.succeeded}` : null,
     details.failed != null ? `失败 ${details.failed}` : null,
+    details.candidateCount != null ? `缓存候选 ${details.candidateCount}` : null,
+    details.availableCandidateCount != null ? `有轨迹候选 ${details.availableCandidateCount}` : null,
+    details.captureComplete != null ? `来源标记${details.captureComplete ? "完整" : "不完整"}` : null,
+    details.detailComplete != null ? `详情${details.detailComplete ? "完整" : "不完整"}` : null,
+    details.incompleteReason ? `不完整原因 ${reasonText(details.incompleteReason)}` : null,
     details.rawRecords != null ? `原始记录 ${details.rawRecords}` : null,
     details.records != null ? `有效记录 ${details.records}` : null,
     details.rejectedRecords != null ? `拒绝记录 ${details.rejectedRecords}` : null,
@@ -288,8 +312,6 @@ function detailsText(item: DiagnosticEntry): string {
       ? `页面${details.loadCompleted ? "加载成功" : "未加载成功"}`
       : null,
     details.mainPresent != null ? `页面主体${details.mainPresent ? "存在" : "缺失"}` : null,
-    details.htmlFetchCompleted != null ? `网页内容${details.htmlFetchCompleted ? "已取得" : "未取得"}` : null,
-    details.adScriptRemoved != null ? `广告脚本${details.adScriptRemoved ? "已移除" : "未移除"}` : null,
     details.parsedScriptCount != null ? `已解析脚本 ${details.parsedScriptCount}` : null,
     details.lastParsedScript ? `末个脚本 ${details.lastParsedScript}` : null,
     details.vuePresent != null ? `Vue ${details.vuePresent ? "已加载" : "未加载"}` : null,
@@ -310,6 +332,7 @@ function detailsText(item: DiagnosticEntry): string {
     details.firstFtimePresent != null ? `First ftime ${details.firstFtimePresent ? "present" : "absent"}` : null,
     details.firstContextPresent != null ? `First context ${details.firstContextPresent ? "present" : "absent"}` : null,
     details.firstRowOutcome ? `First row ${details.firstRowOutcome}` : null,
+    details.startupRecovery ? `Startup recovery ${details.startupRecovery}` : null,
     details.phoneVerificationAttempted != null ? `尾号验证${details.phoneVerificationAttempted ? "已尝试" : "未尝试"}` : null,
     details.timedTrackCount != null ? `页面有效轨迹 ${details.timedTrackCount}` : null,
     details.evaluationAttempts != null
@@ -355,6 +378,8 @@ function detailsText(item: DiagnosticEntry): string {
       ? `结果${details.persisted ? "已写入" : "未写入"}`
       : null,
     timelineProviderText(item),
+    details.requestProvider ? `请求接口 ${providerText(details.requestProvider)}` : null,
+    details.displayTimelineProvider ? `显示缓存 ${providerText(details.displayTimelineProvider)}` : null,
     details.finalTimelineProvider
       ? `列表数据源 ${providerText(details.finalTimelineProvider)}`
       : null,

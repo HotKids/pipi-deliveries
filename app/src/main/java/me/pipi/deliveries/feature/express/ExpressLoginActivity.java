@@ -106,17 +106,17 @@ public final class ExpressLoginActivity extends AppCompatActivity {
             showError(getString(R.string.verification_code_required));
             return;
         }
-        ExpressRepository repository = ExpressRepository.get(this);
         String bindingSource = ExpressAccountSource.bindingSource(this);
-        java.util.List<String> sourcePhones = repository.phones(bindingSource);
-        if (!sourcePhones.contains(number)
-                && !ExpressPhoneBindingPolicy.hasCapacity(sourcePhones.size())) {
-            showError(ExpressPhoneBindingPolicy.limitMessage());
-            return;
-        }
         setBusy(true);
         activeTask = worker.submit(() -> {
             try {
+                ExpressRepository repository = ExpressRepository.get(this);
+                java.util.List<String> sourcePhones = repository.phones(bindingSource);
+                if (!sourcePhones.contains(number)
+                        && !ExpressPhoneBindingPolicy.hasCapacity(sourcePhones.size())) {
+                    runOnUiThread(() -> showError(ExpressPhoneBindingPolicy.limitMessage()));
+                    return;
+                }
                 if (ExpressAccountSource.isV5(this)) {
                     new ExpressDiscoveryClient().bind(this, number, verification);
                 } else {

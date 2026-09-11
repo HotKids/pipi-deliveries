@@ -1,5 +1,5 @@
+import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
 import assert from "node:assert/strict";
-import "./k100-html-fetch-mock";
 import { memory } from "./state-storage-mock";
 import { scrapeWebTimeline } from "../services/web-timeline";
 import { diagnosticText, readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
@@ -30,7 +30,7 @@ try {
     const pageVm = { checkCode };
     Object.defineProperty(pageVm, "alllists", { value: [scene.row], enumerable: !scene.hidden });
     Object.assign(globalThis, { WebViewController: class {
-      loadHTML() { return new Promise<boolean>(() => {}); }
+      loadURL() { return new Promise<boolean>(() => {}); }
       async evaluateJavaScript(script: string) {
         const main = { __vue__: pageVm };
         const document = { readyState: "interactive", querySelector: () => main,
@@ -62,6 +62,6 @@ for (const invalid of [-1, 0.5, 101, NaN, Infinity, "2", withheld]) {
   writeDiagnostic("detail.refresh.stage_failed", { rawExtractedCount: invalid, firstRowOutcome: withheld,
     firstTimePresent: withheld, firstFtimePresent: withheld, firstContextPresent: withheld,
     firstRowTrackIndex: 0, firstRow: { time, context: withheld } } as never);
-  assert.deepEqual(readDiagnostics()[0]?.details, {});
+  assert.deepEqual(readDiagnostics()[0]?.details, { clientBuild: SCRIPT_CLIENT_BUILD });
 }
 console.log("K100 first-row extraction outcomes and privacy tests passed");

@@ -24,6 +24,9 @@ final class ExpressToastCopy {
     /** 手动查件超时。 */
     static final String MANUAL_QUERY_TIMEOUT = "请求超时，请稍后重试";
 
+    /** A visible manual query needs a usable parcel phone suffix. */
+    static final String MANUAL_PHONE_TAIL_REQUIRED = "该运单需要手机号后四位，请重新添加并填写";
+
     /** A manual query was submitted for a waybill the list already tracks; no provider runs. */
     static final String ALREADY_IN_LIST = "该快递已在列表中";
 
@@ -35,6 +38,8 @@ final class ExpressToastCopy {
 
     /** 列表下拉：部分成功。 */
     static final String REFRESH_PARTIAL = "刷新完成，部分快递暂未更新";
+    /** The account list committed successfully; only per-parcel supplementation failed. */
+    static final String LIST_UPDATED = "列表已更新";
 
     /** 列表下拉：全部失败或整轮抛错。 */
     static final String REFRESH_FAILED = "刷新失败，请稍后重试";
@@ -99,8 +104,8 @@ final class ExpressToastCopy {
     static final String STATE_LOAD_FAILED = "本地快递数据读取失败";
 
     /** 列表下拉的四种结果（与 iOS refreshSummaryToast 同一套判据）。 */
-    static String refreshSummary(int attempted, int succeeded, int failed) {
-        if (failed > 0 && succeeded > 0) return REFRESH_PARTIAL;
+    static String refreshSummary(int attempted, int succeeded, int failed, boolean accountListUpdated) {
+        if (failed > 0 && succeeded > 0) return accountListUpdated ? LIST_UPDATED : REFRESH_PARTIAL;
         if (failed > 0) return REFRESH_FAILED;
         if (attempted == 0) return REFRESH_UP_TO_DATE;
         return REFRESH_DONE;

@@ -44,6 +44,16 @@ assert.equal(detailPullToast(true, true), "轨迹加载成功");
 assert.equal(detailPullToast(false, true), "当前轨迹已是最新");
 assert.equal(detailPullToast(false, false), "暂未获取到可用轨迹");
 assert.equal(
+  refreshSummaryToast({ attempted: 3, succeeded: 2, failed: 1, accountListUpdated: true }),
+  "列表已更新",
+  "a committed account list remains a successful list update when Online supplementation fails",
+);
+assert.equal(
+  refreshSummaryToast({ attempted: 3, succeeded: 2, failed: 1, accountListUpdated: false }),
+  "刷新完成，部分快递暂未更新",
+  "successful individual queries must not claim that a failed account list was updated",
+);
+assert.equal(
   refreshSummaryToast({ attempted: 3, succeeded: 2, failed: 1 }),
   "刷新完成，部分快递暂未更新",
 );

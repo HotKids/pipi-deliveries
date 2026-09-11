@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import "./k100-html-fetch-mock";
 import type { Shipment, TimelinePackage } from "../models";
 import { memory, NOW } from "./state-storage-mock";
 import { commitRefreshState, emptyState, loadState, saveState } from "../services/storage";
@@ -16,7 +15,7 @@ function pack(provider: string, count: number, at: number, pickup = false): Time
     complete: provider === "cn_h5" || provider === "kdniao",
     latestTimeText: String(at), latestDetail: "Parcel in transit", successAtMs: NOW,
     tracks: Array.from({ length: count }, (_, i) => ({ timeMs: at - i * 60_000,
-      timeText: String(at - i * 60_000), statusCode: "", raw: {},
+      timeText: String(at - i * 60_000), statusCode: i === 0 ? "TRANSIT" : "", raw: {},
       detail: pickup && i === count - 1 ? "顺丰速运 已收取快件" : `Parcel passed facility ${i}` })),
   };
 }
@@ -47,7 +46,7 @@ try {
     const calls: string[] = [];
     // Drive the real H5 scraper through its finite deadline without waiting eight wall-clock seconds.
     Object.assign(globalThis, { WebViewController: class {
-      async loadHTML(_html: string, url: string) {
+      async loadURL(url: string) {
         assert.equal(url, `https://m.kuaidi100.com/app/query/?nu=${waybill}`,
           "the K100 stage uses the actual waybill, never the Picker-returned or cached URL");
         calls.push("k100_h5"); return true;
@@ -74,7 +73,7 @@ try {
             sourceTimeline: null, manualTimelines: [manual] }, pending: null, routeUrl: "" };
         },
       });
-    assert.deepEqual(calls, ["picker", "k100_h5", "kdniao"],
+    assert.deepEqual(calls, ["k100_h5", "kdniao"],
       "old SF feed/query/automatic-H5 pickup cannot close the manual chain after an empty Picker and H5 timeout");
     const k100Stage = readDiagnostics().filter(entry => entry.event === "detail.refresh.stage_failed" &&
       entry.details.timelineProvider === "k100_h5");
@@ -85,7 +84,7 @@ try {
     assert.equal(k100Stage[0]?.details.timedTrackCount, 0);
     const persisted = loadState(now).shipments[0]!;
     if (response === "no-result") {
-      assert.equal(result.refreshed, false);
+      assert.equal(result.querySucceeded, false);
       assert.equal(selectShipmentDetailTimeline(persisted).provider, "v5_query");
     } else {
       assert.equal(result.refreshed, true);
@@ -176,6 +175,7 @@ try {
   now = NOW;
   const phoneOwner = saveState({ ...emptyState(), shipments: [seed()], bindings: [
     { source: "interface5", phone: "13800004321", boundAtMs: oldAt },
+    { source: "interface5", phone: "13800001234", boundAtMs: oldAt },
   ] }, now).shipments[0]!;
   let phoneSubmissions = 0;
   const checkCode = { show: true };
@@ -191,7 +191,7 @@ try {
     ];
   } };
   Object.assign(globalThis, { WebViewController: class {
-    async loadHTML(_html: string, url: string) { assert.equal(url, `https://m.kuaidi100.com/app/query/?nu=${waybill}`); return true; }
+    async loadURL(url: string) { assert.equal(url, `https://m.kuaidi100.com/app/query/?nu=${waybill}`); return true; }
     async evaluateJavaScript(script: string) {
       now++;
       const main = { __vue__: vue };
@@ -207,7 +207,7 @@ try {
     { trigger: "detail_pull", forceManualRefresh: true, includeKdniaoFallback: true }, {
       refreshAccountParcel: async () => { assert.fail("SF starts with its manual chain"); },
       queryManualForSource: async (input) => {
-        assert.equal(input.pickerOnly, true, "K100 pickup stops the existing final fallback");
+        assert.fail("K100 pickup stops final fallback and pull never queries Online");
         return { shipment: null, pending: null, routeUrl: "" };
       },
     });

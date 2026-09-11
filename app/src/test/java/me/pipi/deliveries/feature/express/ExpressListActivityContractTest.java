@@ -79,7 +79,7 @@ public final class ExpressListActivityContractTest {
         assertTrue(onStop.contains("cancelFirstManualQuery();"));
         assertTrue(detail.contains("firstManualQueryCancellation.cancel();"));
         assertTrue(detail.contains("firstManualQueryTask.cancel(true);"));
-        assertTrue(detail.contains("if (!firstManualQueryIsCurrent(cancellation)) {"));
+        assertTrue(detail.contains("if (!firstManualQueryIsCurrent(cancellation)) return;"));
         assertTrue(detail.contains("if (firstManualQueryIsCurrent(cancellation)) renderFirstManualResult(result);"));
         assertTrue(list.contains("result.getResultCode() == RESULT_OK"));
         assertTrue(list.contains("RESULT_PHONE_TAIL_REQUIRED"));
@@ -158,7 +158,7 @@ public final class ExpressListActivityContractTest {
         String failure = method(detail, "private void failFirstManualQuery(",
                 "private void finishFirstManualQuery()");
         assertTrue(detail.contains("repository.enqueuePendingManual("));
-        assertTrue(failure.contains("enqueuePendingManual(waybill, previewPhone, previewBindingSource)"));
+        assertTrue(failure.contains("enqueuePendingManual(waybill, phone, bindingSource)"));
         assertTrue(failure.indexOf("needsPhoneTail()") < failure.indexOf("enqueuePendingManual("));
         assertTrue(failure.contains("RESULT_PHONE_TAIL_REQUIRED"));
         assertFalse(failure.contains("enqueuePendingManual(waybill, detectedCourierCode"));

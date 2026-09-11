@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { setDiagnosticsEnabled } from "../services/logger";
+import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
 
 const memory = new Map<string, unknown>();
 let rejectWrites = false;
@@ -157,6 +158,7 @@ const first = readDiagnostics();
 assert.equal(first.length, 1);
 // 统一用词（2026-09-05）：调用点传 interface5，落日志一律写 v5。
 assert.deepEqual(first[0]?.details, {
+  clientBuild: SCRIPT_CLIENT_BUILD,
   source: "v5",
   activeSource: "v5",
   revision: 4,
@@ -231,7 +233,7 @@ assert.deepEqual(cainiaoDiagnostic.details, {
   detailTimelineProvider: "k100_h5",
   detailEffectiveTrackCount: 5,
   scriptVersion: "0.5-beta19",
-  clientBuild: 25,
+  clientBuild: SCRIPT_CLIENT_BUILD,
   exitReason: "no_timed_tracks",
   skipReason: "deadline_exhausted",
 });
@@ -257,6 +259,7 @@ writeDiagnostic("detail.refresh.primary_contest.completed", {
   kdniaoSucceeded: false,
 });
 assert.deepEqual(readDiagnostics()[0]?.details, {
+  clientBuild: SCRIPT_CLIENT_BUILD,
   executionBoundary: "host_budget",
   routeCaptured: true,
   v4QuerySupported: true,
@@ -336,6 +339,7 @@ writeDiagnostic("account.sync.parsed", {
   rejectedRecords: 1,
 });
 assert.deepEqual(readDiagnostics()[0].details, {
+  clientBuild: SCRIPT_CLIENT_BUILD,
   source: "v5",
   rawRecords: 3,
   records: 2,
@@ -348,6 +352,7 @@ writeDiagnostic("refresh.failed", {
   deadlineLagMs: 450,
 });
 assert.deepEqual(readDiagnostics()[0].details, {
+  clientBuild: SCRIPT_CLIENT_BUILD,
   budgetMs: 30_000,
   blockedMs: 2_000,
   deadlineLagMs: 450,
@@ -379,6 +384,7 @@ writeDiagnostic("order.projection.failed", {
   viewportAvailable: false,
 });
 assert.deepEqual(readDiagnostics()[0].details, {
+  clientBuild: SCRIPT_CLIENT_BUILD,
   source: "v5",
   stage: "webview",
   errorCategory: "timeout",
@@ -444,9 +450,43 @@ writeDiagnostic("detail.refresh.started", {
   missingStatusRefresh: true, unprojectedOrder: false, detailComplete: true,
 });
 assert.deepEqual(readDiagnostics()[0]?.details, {
+  clientBuild: SCRIPT_CLIENT_BUILD,
   trigger: "identity_projection", statusSemantic: "UNKNOWN", detailStatusSemantic: "UNKNOWN",
   missingStatusRefresh: true, unprojectedOrder: false, detailComplete: true,
 });
 clearDiagnostics();
 
 console.log("diagnostic logger privacy and retention tests passed");
+
+writeDiagnostic("refresh.started", { flowId: "progress-test", trigger: "list_pull" });
+writeDiagnostic("refresh.stage.started", {
+  flowId: "progress-test", stage: "manual_refresh", requestProvider: "v6_query",
+  displayTimelineProvider: "v5_list",
+});
+const requestLog = readDiagnostics()[0].details;
+assert.equal(requestLog.clientBuild, SCRIPT_CLIENT_BUILD, "every new entry identifies the writer build");
+assert.equal(requestLog.trigger, "list_pull", "child stages retain the owning flow trigger");
+assert.equal(requestLog.level, "v6_query", "the requested provider determines the query level");
+assert.equal(requestLog.requestProvider, "v6_query");
+assert.equal(requestLog.displayTimelineProvider, "v5_list");
+writeDiagnostic("detail.timeline.selected", { trigger: "cache_read", candidateCount: 6,
+  availableCandidateCount: 5, incompleteReason: "latest_unknown", captureComplete: true,
+  latestEventAtMs: 1789073940000, latestTrackAtMs: 1788998300000,
+  feedEventAtMs: 1788998400000, statusEventAtMs: 1789073940000 });
+const cacheLog = readDiagnostics()[0].details;
+assert.equal(cacheLog.candidateCount, 6);
+assert.equal(cacheLog.availableCandidateCount, 5);
+assert.equal(cacheLog.attempted, undefined, "cache candidates are not network attempts");
+assert.equal(cacheLog.incompleteReason, "latest_unknown");
+assert.equal(cacheLog.captureComplete, true);
+assert.equal(cacheLog.latestEventAtMs, 1789073940000);
+assert.equal(cacheLog.latestTrackAtMs, 1788998300000);
+assert.equal(cacheLog.feedEventAtMs, 1788998400000);
+assert.equal(cacheLog.statusEventAtMs, 1789073940000);
+writeDiagnostic("refresh.succeeded", { flowId: "progress-test", result: "succeeded" });
+assert.equal(readDiagnostics()[0].details.trigger, "list_pull");
+clearDiagnostics();
+memory.set(DIAGNOSTIC_KEY, [{ id: "historical", at: new Date().toISOString(), level: "info",
+  event: "refresh.started", details: { stage: "account_list" } }]);
+assert.equal(readDiagnostics()[0].details.clientBuild, undefined, "old records must not be relabeled with this build");
+clearDiagnostics();

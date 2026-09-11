@@ -4,6 +4,7 @@ import {
   accountOrderSemantic,
   buildWidgetSnapshot,
   containsTimelineStartTrack,
+  latestTimelineTrackSemantic,
   manualTimelineIsComplete,
   mergeTimelinePackage,
   mergeTracks,
@@ -138,6 +139,35 @@ assert.equal(
   "pickup prose must identify the earliest carrier scan",
 );
 assert.equal(semanticFromText("顺丰速运 已收取快件"), "PICKED");
+// User-approved fallback wording; collection context must not become recipient delivery.
+for (const detail of [
+  "已签收", "已完成签收", "已确认收货", "已完成配送", "已送货上门",
+  "您的快件已派送至本人", "包裹已送达", "快件已送达至【家门口】",
+  "已将快件送达", "已将快件送达收件人", "快件已放在家门口",
+  "已由本人签收", "快件已由张先生签收", "快件已由 家人 李女士 签收",
+]) {
+  assert.equal(semanticFromText(detail), "COMPLETED", detail);
+  assert.equal(latestTimelineTrackSemantic([track("2026-09-10 12:29:44", detail, "")]), "UNKNOWN",
+    "latest-node consistency uses only node enums, independently of display text fallback");
+  assert.equal(latestTimelineTrackSemantic([track("2026-09-10 12:29:44", detail, "5")]), "DELIVERY",
+    "the latest node's returned status overrides completion wording");
+  assert.equal(semanticFromAccountState("105", detail), "DELIVERY",
+    "an account's returned status overrides completion wording");
+  assert.equal(semanticFromAccountState("", detail), "COMPLETED", "missing account status uses text");
+}
+for (const detail of [
+  "已送达，待领取", "已完成配送，取件码 1234", "已由驿站签收，待取件",
+  "快件已放在快递柜", "已将快件送达菜鸟驿站", "快件已送达代收点",
+  "已派送至快递柜", "已送货上门，未联系到您，已放在驿站待领取",
+]) {
+  assert.equal(semanticFromText(detail), "WAITING_PICKUP", detail);
+  assert.equal(semanticFromAccountState("107", detail), "COMPLETED",
+    "pickup prose does not override a returned signed status");
+}
+for (const detail of ["已派送", "已放在", "已送达转运中心", "已由快递员揽收，等待签收"]) {
+  assert.notEqual(semanticFromText(detail), "COMPLETED", detail);
+}
+assert.equal(semanticFromText("正在派送"), "DELIVERY");
 // 「订单已完成配送」「配送完成」是送完了，不是刚下单（2026-09-08 更正，三端同改）。展示语义改成
 // COMPLETED，起点闸门照旧关——这一票已经走完，没有更早的历史值得再抓，真值表一字不差。
 assert.equal(
@@ -242,6 +272,19 @@ assert.deepEqual(
   "the account parser must read node prose through this table, never through a copy of it",
 );
 assert.deepEqual(parserSemantics, ["ORDERED", "WAITING_PICKUP"]);
+for (const [stateNum, detail, expected] of [
+  [undefined, "快件已由家人签收", "COMPLETED"],
+  [105, "快件已由家人签收", "DELIVERY"],
+  [106, "已完成配送", "WAITING_PICKUP"],
+  [107, "已送达，待领取", "COMPLETED"],
+] as const) {
+  const parsed = parseAccountSyncResponse("interface5", { code: 0, data: { expressList: [{
+    mailNo: "SF123456789012", cpCode: "SF", name: "SF", stateNum,
+    details: [{ time: "2026-09-10 12:29:44", desc: detail }],
+  }] } });
+  assert.equal(parsed[0]?.semantic, expected, "account parsing uses prose only without a valid returned state");
+  assert.equal(parsed[0]?.tracks[0]?.detail, detail, "classification never rewrites the source event");
+}
 
 const manualDetailOwner = shipment("manual-detail-owner", "UNKNOWN", NOW);
 const manualDetailTimeline: TimelinePackage = {
@@ -323,7 +366,7 @@ for (const selected of [
   selectShipmentTimeline(manualMissingSelectedStatus),
   selectShipmentDetailTimeline(manualMissingSelectedStatus),
 ]) {
-  assert.equal(selected.provider, "k100_h5");
+  assert.equal(selected.provider, "k100_h5", "unstructured wording does not veto the otherwise sufficient package with more history");
   assert.equal(selected.tracks.length, 3);
   assert.equal(selected.semantic, "COMPLETED",
     "a selected package without structured state must retain the latest structured sidecar fallback");
@@ -764,6 +807,26 @@ assert.deepEqual(
     "complete",
   ],
 );
+
+{
+  const rows = [
+    ["august-31", "2026-08-31 14:20:00"],
+    ["september-1", "2026-09-01 08:49:00"],
+    ["august-30", "2026-08-30 16:06:00"],
+  ].map(([id, timeText], index) => {
+    const row = shipment(id, "COMPLETED", NOW - index * 1000);
+    row.timeline.latestTimeText = timeText;
+    row.timeline.statusEventAtMs = null;
+    return row;
+  });
+  const expected = ["september-1", "august-31", "august-30"];
+  assert.deepEqual(sortShipments(rows).map((row) => row.identity.id), expected,
+    "same-status rows follow the displayed event time, not sync completion order");
+  for (const row of rows) row.timeline.statusEventAtMs = row.updatedAtMs;
+  assert.deepEqual(sortShipments(rows).map((row) => row.identity.id), expected,
+    "an older structured status time cannot override the displayed headline time");
+  assert.equal(rows[0].identity.id, "august-31", "sorting does not mutate stored input");
+}
 
 assert.equal(pruneShipments([
   shipment("fourteen-day-boundary", "COMPLETED", NOW - 14 * 86400000 + 1),

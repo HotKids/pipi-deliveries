@@ -19,6 +19,16 @@ import org.junit.Test;
 
 public final class ExpressQueryCancellationTest {
     @Test
+    public void onlyAnActiveAttemptCanCommit() {
+        ExpressQueryCancellation cancellation = new ExpressQueryCancellation(10_000L);
+        AtomicInteger commits = new AtomicInteger();
+        assertTrue(cancellation.commitIfActive(commits::incrementAndGet));
+        cancellation.cancel();
+        org.junit.Assert.assertFalse(cancellation.commitIfActive(commits::incrementAndGet));
+        assertEquals(1, commits.get());
+    }
+
+    @Test
     public void cancellationTearsDownTheActiveRequestExactlyOnce() throws Exception {
         ExpressQueryCancellation cancellation = new ExpressQueryCancellation(10_000L);
         AtomicInteger disconnects = new AtomicInteger();

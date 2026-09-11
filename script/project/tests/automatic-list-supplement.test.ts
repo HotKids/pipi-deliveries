@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { Shipment, TimelinePackage } from "../models";
 import { memory, NOW } from "./state-storage-mock";
 import { emptyState, saveState, loadState, commitRefreshState, removeBinding } from "../services/storage";
-import { runShipmentEnrichmentForTesting, runMissingShipmentHistoriesForTesting,
+import { runShipmentEnrichmentForTesting,
   runShipmentRefreshForTesting } from "../services/sync";
 import type { AccountParcelDto } from "../services/account-parser";
 import { queryManualForSource } from "../services/manual-query";
@@ -57,7 +57,7 @@ Object.assign(globalThis, {
   fetch: () => { assert.fail("automatic list supplementation must not call a direct provider"); },
 });
 try {
-  for (const provider of ["JingDong", "CaiNiao", "DouYin"]) {
+  for (const provider of ["JingDong", "CaiNiao"]) {
   for (const background of [true, false]) {
     for (const scenario of ["unknown with history", "known with zero timed tracks", "known with one timed track",
       "empty feed with complete manual cache", "forced", "signed", "hidden", "active lease", "recent attempt",
@@ -122,36 +122,7 @@ try {
     }
   }
   }
-  for (const outcome of ["native fills gap", "native still unknown", "native empty", "unbound during native"] as const) {
-    const owner = row("JingDong", outcome === "native empty" ? "TRANSIT" : "UNKNOWN", outcome === "native empty" ? 0 : 3);
-    attachRecord(owner);
-    let current = seed(owner);
-    const calls: string[] = [];
-    await runShipmentEnrichmentForTesting(current, "interface5", "native-before-supplement", (candidate, _routes, _stage, base) => {
-      const committed = commitRefreshState(base || current, candidate, "interface5", NOW);
-      assert.equal(committed.applied, true);
-      return current = committed.state;
-    }, NOW + 60_000, new Set(), false, false, undefined, {
-      refreshAccountParcel: async input => {
-        calls.push("native");
-        if (outcome === "unbound during native") { removeBinding("interface5", phone, NOW); return null; }
-        return nativeParcel(input, outcome === "native fills gap" ? "TRANSIT" : outcome === "native empty" ? "TRANSIT" : "UNKNOWN",
-          outcome === "native empty" ? 0 : 3);
-      },
-      queryManualForSource: async input => {
-        calls.push("online");
-        assert.equal(input.pickerOnly, true);
-        assert.equal(input.includeKdniaoFallback, false);
-        const persisted = loadState(NOW).shipments[0]!;
-        if (outcome === "native still unknown") assert.ok(persisted.manualTimelines?.some(pack => pack.provider === "v5_query"),
-          "Online must observe its own native result after the durable checkpoint");
-        return { shipment: null, pending: null, routeUrl: "" };
-      },
-    });
-    assert.deepEqual(calls, outcome === "native fills gap" || outcome === "unbound during native" ? ["native"] : ["native", "online"], outcome);
-  }
-
-  // A signed automatic row stays frozen in both list paths; explicit incomplete detail still writes back.
+  // A trusted signed row stays frozen in list and automatic entry; only explicit pull can repair history.
   {
     const owner = row("JingDong", "COMPLETED", 0);
     owner.timeline.latestDetail = "";
@@ -167,33 +138,30 @@ try {
     };
     await runShipmentEnrichmentForTesting(current, "interface5", "signed-list", candidate => current = candidate,
       NOW + 60_000, new Set(), true, true, undefined, runtime);
-    const list = await runMissingShipmentHistoriesForTesting(current, "interface5", candidate => current = candidate,
-      NOW + 60_000, undefined, (id, options) => runShipmentRefreshForTesting(id,
-        { isCurrent: () => true, deadlineAtMs: NOW + 30_000 }, options, runtime));
-    assert.equal(list.attempted, 0);
     assert.equal(nativeCalls, 0, "signed list refresh remains frozen even with no tracks");
     assert.equal(loadState(NOW).shipments[0]!.emptyTimelineHiddenAtMs, undefined);
     const detail = await runShipmentRefreshForTesting(owner.identity.id,
-      { isCurrent: () => true, deadlineAtMs: NOW + 30_000 }, { trigger: "detail_pull", includeKdniaoFallback: true }, runtime);
-    assert.equal(nativeCalls, 1);
-    assert.equal(detail.refreshed, true);
+      { isCurrent: () => true, deadlineAtMs: NOW + 30_000 }, { trigger: "detail_open" }, runtime);
+    assert.equal(nativeCalls, 0, "opening a trusted signed row cannot start an automatic query");
+    assert.equal(detail.refreshed, false);
     const saved = loadState(NOW).shipments[0]!;
-    assert.equal(saved.sourceTimeline!.tracks.length, 0, "detail history stays in its own source slot");
-    assert.equal(selectShipmentTimeline(saved).tracks.length, 3, "the list reads the explicit detail commit");
+    assert.equal(saved.sourceTimeline!.tracks.length, 0);
     assert.equal(selectShipmentTimeline(saved).semantic, "COMPLETED");
   }
 
-  for (const provider of ["JingDong", "CaiNiao", "DouYin"]) {
+  for (const provider of ["JingDong", "CaiNiao"]) {
     const owner = row(provider, "UNKNOWN", 3);
     const before = seed(owner);
     let calls = 0;
     const detail = await runShipmentRefreshForTesting(owner.identity.id,
       { isCurrent: () => true, deadlineAtMs: NOW + 30_000 }, { trigger: "detail_pull", includeKdniaoFallback: true }, {
         refreshAccountParcel: async () => { assert.fail("no source record in this status-only fixture"); },
+        refreshWebTimeline: async () => null,
         queryManualForSource: async input => {
+          if (input.motoOnly) return { shipment: null, pending: null, routeUrl: "" };
           calls++;
-          assert.equal(input.pickerOnly, true);
-          const timeline = pack("DELIVERY", 3, "v6_query");
+          assert.equal(input.fallbackOnly, true);
+          const timeline = pack("DELIVERY", 3, "kdniao");
           return { shipment: { ...input.currentShipment!, timeline, manualTimelines: [timeline] }, pending: null, routeUrl: "" };
         },
       });

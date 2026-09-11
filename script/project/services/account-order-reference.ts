@@ -1,6 +1,7 @@
 import type { Shipment } from "../models";
 import type { AccountParcelDto } from "./account-parser";
 import { normalizedProjectedWaybill } from "./status";
+import { accountOrderTextIdentity } from "./account-order-text-identity";
 
 /**
  * Restores the account-list projection reference without exposing it through AppState. The
@@ -21,8 +22,9 @@ export function accountParcelWithProjectionReference(
   }
   const trustedReference = String(parcel?.projectionUrl || projectionUrl || "")
     .trim();
-  if (!parcel && !trustedReference) return null;
   const timeline = shipment.sourceTimeline || shipment.timeline;
+  const textIdentity = parcel?.textIdentity || accountOrderTextIdentity(timeline.tracks);
+  if (!parcel && !trustedReference && !textIdentity) return null;
   const projectedWaybill = normalizedProjectedWaybill(shipment.identity);
   return {
     source,
@@ -58,5 +60,6 @@ export function accountParcelWithProjectionReference(
     })),
     routeUrl: parcel?.routeUrl || "",
     projectionUrl: trustedReference,
+    textIdentity,
   };
 }

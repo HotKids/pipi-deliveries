@@ -38,9 +38,9 @@ for (const selected of [home, detail]) {
   assert.equal(selected.statusEventAtMs, donor.statusEventAtMs, "borrow status and its time together");
 
 }
-assert.deepEqual(home.tracks, feed.tracks, "Home keeps its feed tracks while borrowing status");
+assert.deepEqual(home.tracks, query.tracks, "Home and detail share the selected query history");
 assert.deepEqual(detail.tracks, query.tracks, "detail keeps its query tracks while borrowing status");
-assert.equal(home.provider, "interface5");
+assert.equal(home.provider, "v5_query");
 assert.equal(detail.provider, "v5_query");
 assert.equal(shipmentDetailPresentationStatus(owner, detail).semantic, "COMPLETED",
   "an automatic detail with an unknown Home status may use its resolved structured status");

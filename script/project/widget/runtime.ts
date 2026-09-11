@@ -1,3 +1,5 @@
+import type { RefreshSummary } from "../models";
+
 export type WidgetPresentationKind = "small" | "medium" | "unsupported";
 
 export const WIDGET_REFRESH_BUDGET_MS = 120_000;
@@ -26,9 +28,9 @@ export function safelyLoadWidgetSnapshot<T>(
 }
 
 export async function bestEffortWidgetRefresh(
-  refresh: () => Promise<unknown>,
+  refresh: () => Promise<Pick<RefreshSummary, "skipReason"> | void>,
   waitMs = WIDGET_REFRESH_WAIT_MS,
-): Promise<"completed" | "failed" | "timed_out"> {
+): Promise<"completed" | "skipped" | "failed" | "timed_out"> {
   let timer: number | null = null;
   const timeout = new Promise<"timed_out">((resolve) => {
     timer = setTimeout(() => resolve("timed_out"), Math.max(1, waitMs));
@@ -36,7 +38,7 @@ export async function bestEffortWidgetRefresh(
   try {
     return await Promise.race([
       refresh().then(
-        () => "completed" as const,
+        summary => summary?.skipReason ? "skipped" as const : "completed" as const,
         () => "failed" as const,
       ),
       timeout,

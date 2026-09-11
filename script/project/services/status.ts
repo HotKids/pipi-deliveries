@@ -275,9 +275,17 @@ export function semanticFromEventCode(code: string): StatusSemantic {
 export function semanticFromText(value: string): StatusSemantic {
   const text = String(value || "").replace(/\s+/g, "");
   if (!text) return "UNKNOWN";
-  if (/已签收|已妥投/.test(text)) return "COMPLETED";
   if (/已取消|订单关闭/.test(text)) return "CANCELLED";
-  if (/待取件|代取件|等待取件|待领取|取件码/.test(text)) return "WAITING_PICKUP";
+  // Collection context precedes completion prose; callers keep valid returned states authoritative.
+  if (/待取件|代取件|等待取件|待领取|取件码/.test(text) ||
+    /已(?:派送|送达|放在|将快件送达)[^，,。；;！？!?]*(?:驿站|快递柜|代收点)/.test(text)) {
+    return "WAITING_PICKUP";
+  }
+  if (/已(?:签收|妥投|完成签收|确认收货|完成配送|送货上门)|已由[^，,。；;！？!?]+签收/.test(text) ||
+    /已(?:派送|送达|将快件送达)(?:至)?【?(?:本人|收件人|家门口)|已放在【?(?:家门口|门口)/.test(text) ||
+    /已(?:送达|将快件送达)(?:[，,。；;！？!?]|$)/.test(text)) {
+    return "COMPLETED";
+  }
   if (/派送中|正在派送|配送中|正在配送/.test(text)) return "DELIVERY";
   // 顺丰的揽收节点写「顺丰速运 已收取快件」(2026-09-05 三端同补)，否则那包永远判不完整。
   if (/已揽收|已揽件|揽收完成|揽件成功|揽收成功|已收寄|收取快件/.test(text)) return "PICKED";
@@ -530,6 +538,27 @@ export function containsTimelinePickupTrack(
       semanticFromStored(String(code ?? ""), track.detail) === "PICKED"
     ) || semanticFromText(track.detail) === "PICKED";
   });
+}
+
+/** Only the latest nodes' own enums can contradict the presented status; prose is unverified. */
+export function latestTimelineTrackStatuses(tracks: readonly TrackNode[]): StatusSemantic[] {
+  const timed = timedTracks(tracks);
+  if (!timed.length) return [];
+  const latestAt = Math.max(...timed.map(track => track.timeMs!));
+  return timed.filter(track => track.timeMs === latestAt).map(track => {
+    for (const code of [track.raw.statusCode, track.statusCode]) {
+      const structured = semanticFromTrackCode({ ...track, detail: "" }, code);
+      if (structured !== "UNKNOWN") return structured;
+      const stored = semanticFromStored(String(code ?? ""), "");
+      if (stored !== "UNKNOWN") return stored;
+    }
+    return "UNKNOWN";
+  });
+}
+
+export function latestTimelineTrackSemantic(tracks: readonly TrackNode[]): StatusSemantic {
+  const latest = latestTimelineTrackStatuses(tracks);
+  return latest.length && latest.every(semantic => semantic === latest[0]) ? latest[0] : "UNKNOWN";
 }
 
 function semanticFromTrackCode(
@@ -881,6 +910,45 @@ export function mergeTimelinePackage(
   if (current.provider.toLowerCase() !== incoming.provider.toLowerCase()) {
     return incoming;
   }
+  if (timelineCapability(incoming.provider) === "account") {
+    // Account increments own fields independently: absent tracks never reject a status packet.
+    const tracks = mergeTracks(current.tracks, incoming.tracks);
+    const currentAt = current.statusEventAtMs || 0;
+    const incomingAt = incoming.statusEventAtMs || 0;
+    const frozen = isTerminalStatusSemantic(current.semantic) && currentAt > 0;
+    const acceptsStatus = incoming.semantic !== "UNKNOWN" && !frozen &&
+      (incoming.structuredStatus === true || current.structuredStatus !== true) &&
+      (current.semantic === "UNKNOWN" ||
+        (incomingAt > 0 && incomingAt >= currentAt &&
+          (incomingAt !== currentAt || !rejectsSameEventRegression(current.semantic, incoming.semantic))) ||
+        (!currentAt && !incomingAt && timelineLatestEventAt(incoming) >= timelineLatestEventAt(current)));
+    const confirmsStatus = current.semantic === incoming.semantic &&
+      current.structuredStatus !== true && incoming.structuredStatus === true && incomingAt > 0;
+    const status = acceptsStatus || confirmsStatus ? incoming : current;
+    const currentHeadlineAt = parseProviderTime(current.latestTimeText) || 0;
+    const incomingHeadlineAt = parseProviderTime(incoming.latestTimeText) || 0;
+    const headline = !frozen && incoming.latestDetail && !isNonEventDetail(incoming.latestDetail) &&
+      (incomingHeadlineAt > currentHeadlineAt ||
+        (incomingHeadlineAt === currentHeadlineAt && acceptsStatus) || !current.latestDetail) ? incoming : current;
+    const merged = {
+      ...current,
+      waybill: incoming.waybill || current.waybill,
+      courierCode: incoming.courierCode || current.courierCode,
+      companyName: incoming.companyName || current.companyName,
+      ...(incoming.rawCourierCode || current.rawCourierCode
+        ? { rawCourierCode: incoming.rawCourierCode || current.rawCourierCode } : {}),
+      tracks,
+      semantic: status.semantic,
+      structuredStatus: status.structuredStatus,
+      statusEventAtMs: status.statusEventAtMs,
+      latestDetail: headline.latestDetail,
+      latestTimeText: headline.latestTimeText,
+      successAtMs: Math.max(current.successAtMs, incoming.successAtMs),
+      ...(current.complete !== undefined || incoming.complete !== undefined
+        ? { complete: current.complete === true || incoming.complete === true } : {}),
+    };
+    return frozen ? merged : withMergedHeadline(merged);
+  }
   const confirmsUnstructuredCompletion = current.semantic === "COMPLETED" &&
     current.structuredStatus !== true && incoming.semantic === "COMPLETED" &&
     incoming.structuredStatus === true;
@@ -967,6 +1035,7 @@ const MANUAL_TIMELINE_PROVIDERS = new Set([
   TIMELINE_SLOT.V2_QUERY,
   TIMELINE_SLOT.CN_H5,
   TIMELINE_SLOT.K100_H5,
+  TIMELINE_SLOT.JT_H5,
   TIMELINE_SLOT.JD_H5,
   TIMELINE_SLOT.KDNIAO,
   TIMELINE_SLOT.K100_PAID,
@@ -992,7 +1061,7 @@ export function timelineCapability(provider: unknown): TimelineCapability {
   }
   if (
     value === TIMELINE_SLOT.JD_H5 || value === TIMELINE_SLOT.CN_H5 ||
-    value === TIMELINE_SLOT.K100_H5
+    value === TIMELINE_SLOT.K100_H5 || value === TIMELINE_SLOT.JT_H5
   ) return "web";
   if (value === TIMELINE_SLOT.KDNIAO || value === TIMELINE_SLOT.K100_PAID) {
     return "fallback";
@@ -1037,6 +1106,11 @@ export function manualTimelineIsComplete(value: TimelinePackage): boolean {
     return false;
   }
   return true;
+}
+
+/** History freshness never inherits the separately selected headline or status clock. */
+export function timelineLatestTrackAt(value: TimelinePackage): number {
+  return Math.max(0, ...timedTracks(value.tracks).map(track => track.timeMs!));
 }
 
 export function timelineLatestEventAt(value: TimelinePackage): number {
@@ -1176,12 +1250,11 @@ export function sortShipments(shipments: readonly Shipment[]): Shipment[] {
     const completionKind = Number(isOrderCompletedFallback(left)) -
       Number(isOrderCompletedFallback(right));
     if (completionKind !== 0) return completionKind;
+    // The row shows the headline time; structured status can describe an older event.
     const event =
-      (right.timeline.statusEventAtMs || 0) -
-      (left.timeline.statusEventAtMs || 0);
+      (parseProviderTime(right.timeline.latestTimeText) ?? right.timeline.statusEventAtMs ?? 0) -
+      (parseProviderTime(left.timeline.latestTimeText) ?? left.timeline.statusEventAtMs ?? 0);
     if (event !== 0) return event;
-    const updated = right.updatedAtMs - left.updatedAtMs;
-    if (updated !== 0) return updated;
     return right.identity.id.localeCompare(left.identity.id);
   });
 }

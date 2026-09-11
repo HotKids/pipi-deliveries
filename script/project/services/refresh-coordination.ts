@@ -1,4 +1,4 @@
-import { OperationTimeoutError } from "./deadline";
+import { OperationTimeoutError, waitForRefresh } from "./deadline";
 
 export type DetailRefreshEntry<Source, Result> = Readonly<{
   source: Source;
@@ -7,7 +7,7 @@ export type DetailRefreshEntry<Source, Result> = Readonly<{
 
 type FullRefreshEntry<Result> = Readonly<{
   promise: Promise<Result>;
-  deadlineAtMs?: number;
+  isCurrent: (now: number) => boolean;
   generation: number;
   abort: () => void;
 }>;
@@ -23,6 +23,8 @@ export type FullRefreshLease = Readonly<{
 export type FullRefreshOptions = Readonly<{
   blockerDeadlineAtMs?: number;
   operationDeadlineAtMs?: number;
+  ownership?: Readonly<{ expiresAtMs: number; isCurrent: () => boolean }>;
+  onInvalidated?: (reason: "deadline" | "ownership_lost" | "superseded") => void;
 }>;
 
 type BlockerState<Result> =
@@ -46,13 +48,52 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
     DetailKey,
     DetailRefreshEntry<Source, DetailResult>
   >();
+  private readonly foreground = new Map<DetailKey, {
+    source: Source;
+    controller: AbortController;
+    consumers: number;
+    promise: Promise<DetailResult>;
+  }>();
+
+  runIndependentDetail(
+    key: DetailKey,
+    source: Source,
+    task: (signal: AbortSignal) => Promise<DetailResult>,
+    deadlineAtMs: number,
+    signal?: AbortSignal,
+  ): Promise<DetailResult> {
+    if (signal?.aborted) return Promise.reject(new OperationTimeoutError());
+    let entry = this.foreground.get(key);
+    if (!entry) {
+      const controller = new AbortController();
+      const promise = Promise.resolve().then(() => task(controller.signal));
+      entry = { source, controller, consumers: 0, promise };
+      this.foreground.set(key, entry);
+    }
+    entry.consumers++;
+    const shared = entry;
+    return waitForRefresh(shared.promise, deadlineAtMs, signal).finally(() => {
+      if (--shared.consumers === 0) {
+        shared.controller.abort();
+        if (this.foreground.get(key) === shared) this.foreground.delete(key);
+      }
+    });
+  }
+
+  async waitForForeground(source: Source, deadlineAtMs: number, signal?: AbortSignal): Promise<void> {
+    while (true) {
+      const pending = [...this.foreground.values()].filter(entry => entry.source === source);
+      if (!pending.length) return;
+      await waitForRefresh(Promise.allSettled(pending.map(entry =>
+        waitForRefresh(entry.promise, deadlineAtMs, entry.controller.signal))), deadlineAtMs, signal);
+    }
+  }
 
   full(source: Source, now = Date.now()): Promise<FullResult> | undefined {
     const entry = this.fullRefreshes.get(source);
     if (!entry) return undefined;
-    if (entry.deadlineAtMs != null && now >= entry.deadlineAtMs) {
+    if (!entry.isCurrent(now)) {
       entry.abort();
-      this.fullRefreshes.delete(source);
       return undefined;
     }
     return entry.promise;
@@ -113,11 +154,22 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
       ([, entry]) => entry.source === source,
     );
     const controller = new AbortController();
+    const expiresAtMs = Math.min(
+      options.operationDeadlineAtMs ?? Infinity,
+      options.ownership?.expiresAtMs ?? Infinity,
+    );
+    let rejectCancellation!: (error: OperationTimeoutError) => void;
+    const cancelled = new Promise<FullResult>((_, reject) => { rejectCancellation = reject; });
     const abortLease = () => {
+      const firstInvalidation = !controller.signal.aborted;
+      const reason = Date.now() >= expiresAtMs ? "deadline"
+        : !(options.ownership?.isCurrent() ?? true) ? "ownership_lost" : "superseded";
       controller.abort();
+      rejectCancellation(new OperationTimeoutError());
       if (this.fullRefreshes.get(source)?.generation === generation) {
         this.fullRefreshes.delete(source);
       }
+      if (firstInvalidation) options.onInvalidated?.(reason);
     };
     const lease: FullRefreshLease = {
       generation,
@@ -128,10 +180,8 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
         return Boolean(
           !controller.signal.aborted &&
           current?.generation === generation &&
-            (
-              options.operationDeadlineAtMs == null ||
-              now < options.operationDeadlineAtMs
-            ),
+          now < expiresAtMs &&
+          (options.ownership?.isCurrent() ?? true),
         );
       },
       assertCurrent: (now = Date.now()) => {
@@ -196,17 +246,11 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
       }
     });
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    const guarded = options.operationDeadlineAtMs == null
-      ? work
-      : Promise.race([
-          work,
-          new Promise<FullResult>((_, reject) => {
-            timeout = setTimeout(() => {
-              abortLease();
-              reject(new OperationTimeoutError());
-            }, Math.max(0, options.operationDeadlineAtMs! - Date.now()));
-          }),
-        ]);
+    // Per-stage requests still have their own budgets; ownership also bounds suspended waiters.
+    if (Number.isFinite(expiresAtMs)) {
+      timeout = setTimeout(abortLease, Math.max(0, expiresAtMs - Date.now()));
+    }
+    const guarded = Promise.race([work, cancelled]);
     promise = guarded.finally(() => {
       if (timeout != null) clearTimeout(timeout);
       if (this.fullRefreshes.get(source)?.promise === promise) {
@@ -215,7 +259,7 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
     });
     this.fullRefreshes.set(source, {
       promise,
-      deadlineAtMs: options.operationDeadlineAtMs,
+      isCurrent: lease.isCurrent,
       generation,
       abort: abortLease,
     });

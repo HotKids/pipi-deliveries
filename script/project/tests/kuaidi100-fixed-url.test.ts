@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import "./k100-html-fetch-mock";
 import { scrapeWebTimeline, type WebTimelineDiagnostics } from "../services/web-timeline";
 
 const loaded: string[] = [];
@@ -11,7 +10,7 @@ const vue = { $data: { lists: [
 ] } };
 let root = "#main";
 Object.assign(globalThis, { WebViewController: class {
-  async loadHTML(_html: string, url: string) { loaded.push(url); return true; }
+  async loadURL(url: string) { loaded.push(url); return true; }
   async evaluateJavaScript(script: string) {
     const document = { querySelector: (selector: string) => selector === root ? { __vue__: vue } : null,
       readyState: "complete", querySelectorAll: (selector: string) =>
@@ -30,7 +29,7 @@ assert.deepEqual(loaded, ["https://m.kuaidi100.com/app/query/?nu=SF123456"]);
 assert.equal(timeline?.waybill, "SF123456");
 assert.equal(timeline?.provider, "k100_h5", "changing the URL does not add or rename a provider slot");
 assert.equal(timeline?.tracks.length, 2);
-assert.equal(timeline?.structuredStatus, undefined, "page text does not become structured status evidence");
+assert.equal(timeline?.structuredStatus, false, "page text does not become structured status evidence");
 assert.equal(observations[0]?.exitReason, "timed_tracks");
 assert.equal(disposed, 1);
 

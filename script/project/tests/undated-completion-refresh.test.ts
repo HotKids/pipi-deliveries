@@ -3,7 +3,7 @@ import { memory, NOW } from "./state-storage-mock";
 import { emptyState, loadState, saveState } from "../services/storage";
 import { hasSettledTimelineHistory, preserveSettledShipment, shouldScheduleManualRefresh } from "../services/shipment-policy";
 import { shouldRefreshShipment, terminalEvidenceAtMs } from "../services/status";
-import { runAccountFollowupsForTesting } from "../services/sync";
+import { runShipmentEnrichmentForTesting } from "../services/sync";
 import type { Shipment, TimelinePackage } from "../models";
 
 const at = NOW - 60_000;
@@ -47,9 +47,9 @@ try {
     assert.equal(hasSettledTimelineHistory(stored), !eligible, mode);
     assert.equal(shouldScheduleManualRefresh(stored, NOW, true), eligible, mode);
     let requests = 0;
-    await runAccountFollowupsForTesting(state, "interface5", NOW, "terminal-refresh-test",
-      candidate => candidate, NOW + 60_000, new Set(), undefined, {
-        refreshAccountParcel: async () => { requests++; return null; },
+    await runShipmentEnrichmentForTesting(state, "interface5", "terminal-refresh-test",
+      candidate => saveState(candidate, NOW), NOW + 60_000, new Set(), true, false, undefined, {
+        queryManualForSource: async () => { requests++; return { shipment: null, pending: null, routeUrl: "" }; },
       });
     assert.equal(requests, eligible ? 1 : 0, mode);
   }

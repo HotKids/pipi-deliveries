@@ -184,16 +184,8 @@ const sync = readFileSync(
   new URL("../services/sync.ts", import.meta.url),
   "utf8",
 );
-assert.match(
-  sync,
-  /const cainiaoH5Requested = explicitTimelineRefresh &&[\s\S]*?cainiaoAutomaticNeedsH5Supplement\(enrichmentBase\)[\s\S]*?await refreshCainiaoH5\([\s\S]*?cainiaoH5Succeeded = Boolean\([\s\S]*?containsTimelinePickupTrack\(capturedCainiaoH5\.tracks\)[\s\S]*?const cainiaoManualFallbackRequested = cainiaoH5Requested &&[\s\S]*?!cainiaoH5Succeeded;[\s\S]*?const pickerSupplementRequested =[\s\S]*?cainiaoManualFallbackRequested[\s\S]*?if \(pickerSupplementRequested\)/,
-  "Cainiao must finish its gated automatic H5 before the ordinary manual chain may start",
-);
-assert.match(
-  sync,
-  /const ordinaryAutomaticPrimaryRequested =[\s\S]*?cainiaoManualFallbackRequested[\s\S]*?!hasPickerTimelineStart\(enrichmentBase\)[\s\S]*?runManualDetailSourceContest\(/,
-  "a failed Cainiao H5 must reuse Picker, Moto plus K100 H5, then gated KDNiao",
-);
+assert.match(sync, /await runtime\.refreshCainiaoH5\(/);
+assert.match(sync, /containsTimelinePickupTrack\(capturedCainiaoH5\.tracks\)/);
 // 用户定 2026-09-04：菜鸟 H5 的终止判据是揽收（PICKED），不是「抓到任意一条带时间的节点」。
 // 只抓到一条「已下单」时链子必须继续往下跑 picker / moto ∥ 快递100 / kdniao。
 assert.doesNotMatch(

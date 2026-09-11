@@ -81,14 +81,14 @@ public final class ExpressDetailScriptTest {
     }
 
     @Test
-    public void jingDongCaptureOnlyFillsMissingIdentityWithoutAQueryTimeline() {
+    public void jingDongCaptureFillsMissingIdentityRegardlessOfQueryTimeline() {
         ExpressItem projected = jingDongWebItem("https://jingfen.jd.com/item", "", 0L);
-        assertFalse(ExpressDetailActivity.allowsJingDongCapture(projected, false));
+        assertFalse(ExpressDetailActivity.allowsJingDongCapture(projected));
         ExpressItem unresolved = interfaceItem("I5-JD", "JingDong", "JD", "京东购物");
-        assertTrue(ExpressDetailActivity.allowsJingDongCapture(unresolved, false));
-        assertFalse(ExpressDetailActivity.allowsJingDongCapture(unresolved, true));
+        assertTrue(ExpressDetailActivity.allowsJingDongCapture(unresolved));
+        assertFalse(ExpressDetailActivity.shouldSkipCompleteCache(unresolved, true));
         assertFalse(ExpressDetailActivity.allowsJingDongCapture(
-                interfaceItem("I6-JD", "JingDong", "JD", "京东购物"), false));
+                interfaceItem("I6-JD", "JingDong", "JD", "京东购物")));
         assertFalse(ExpressDetailActivity.allowsPrimaryKuaidi100(unresolved));
         assertTrue(ExpressDetailActivity.allowsPrimaryKuaidi100(
                 interfaceItem("INTERFACE5", "ShunFeng", "SF", "顺丰速运")));
@@ -320,8 +320,8 @@ public final class ExpressDetailScriptTest {
         assertFalse(ExpressDetailActivity.needsManualSupplement(
                 interfaceItem("INTERFACE5", "DouYin", "ZTO", "中通快递"), complete, null));
         String source = detailActivitySource();
-        assertTrue(source.contains("shouldSkipCompleteCache(item, currentDetailComplete(item))"));
-        assertTrue(source.contains("if (item.semantic == StatusSemantic.UNKNOWN) refreshLocalTimeline(false);"));
+        assertTrue(source.contains("shouldSkipCompleteCache(requestItem, currentDetailComplete(requestItem))"));
+        assertTrue(source.contains("if (item.semantic == StatusSemantic.UNKNOWN || allowsJingDongCapture(item)) refreshLocalTimeline(false);"));
         assertTrue(source.contains("queryOwner.semantic == StatusSemantic.UNKNOWN && currentDetailComplete(queryOwner)"));
     }
 

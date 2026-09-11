@@ -23,6 +23,7 @@ import me.pipi.deliveries.model.CarrierNormalization;
 import me.pipi.deliveries.model.ManualQuerySuccess;
 import me.pipi.deliveries.model.PendingExpressQuery;
 import me.pipi.deliveries.model.StatusSemantic;
+import me.pipi.deliveries.network.ExpressQueryCancellation;
 
 import org.junit.After;
 import org.junit.Before;
@@ -46,6 +47,134 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Config(sdk = 31, manifest = Config.NONE, application = Application.class)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 public final class ExpressRepositoryDatabaseTest {
+    @Test public void newerV5QueryAdvancesHomeAndSurvivesOlderFeedAfterReload() {
+        String waybill = "ZTTESTQUERY011";
+        String phone = "13900000043";
+        String oldTime = relativeTime(-120_000L);
+        String queryTime = relativeTime(-60_000L);
+        repository.bindPhoneLocally(phone, "interface5");
+        ExpressQueryResult feed = accountResult(waybill, phone, StatusSemantic.PICKED,
+                oldTime, "Feed pickup", "[{\"time\":\"" + oldTime + "\",\"context\":\"Feed pickup\"}]", "", "CaiNiao");
+        repository.saveInterface5(feed, phone);
+        ExpressItem owner = repository.findByWaybill(waybill, "interface5");
+        assertTrue(repository.saveInterface5Query(accountResult(waybill, phone, StatusSemantic.DELIVERY,
+                queryTime, "Query delivery", "[{\"time\":\"" + queryTime + "\",\"context\":\"Query delivery\"}]", "", "CaiNiao")
+                        .withManualStatusEvidence("Delivery", true),
+                owner, repository.bindingGeneration(phone, "interface5")));
+        database.close();
+        database = new ExpressDatabase(context);
+        repository = new ExpressRepository(context, database);
+        repository.saveInterface5(feed, phone);
+        ExpressItem presented = repository.findByWaybill(waybill, "interface5");
+        assertEquals("Query delivery", presented.latestDetail);
+        assertEquals(StatusSemantic.DELIVERY, presented.semantic);
+        assertEquals(ExpressSourcePolicy.parseEventTime(queryTime), presented.statusEventTime);
+        assertEquals("Query delivery", repository.listVisible("interface5").get(0).latestDetail);
+        assertEquals("CaiNiao", presented.sourceProvider);
+        String newer = relativeTime(-10_000L);
+        repository.saveInterface5(accountResult(waybill, phone, StatusSemantic.COMPLETED, newer,
+                "New feed signature", "[{\"time\":\"" + newer + "\",\"context\":\"New feed signature\"}]", "", "CaiNiao"), phone);
+        presented = repository.findByWaybill(waybill, "interface5");
+        assertEquals("New feed signature", presented.latestDetail);
+        assertEquals(StatusSemantic.COMPLETED, presented.semantic);
+        assertTrue(repository.accountTimeline(waybill, "interface5").tracksJson.contains("Query delivery"));
+        assertFalse(repository.accountTimeline(waybill, "interface5").tracksJson.contains("New feed signature"));
+    }
+
+    @Test public void unscopedQueryCannotAdvanceAnExistingAccountHeadline() {
+        String phone = "13900000043";
+        String waybill = "ZTTESTUNSCOPED";
+        repository.bindPhoneLocally(phone, "interface5");
+        repository.saveInterface5(accountResult(waybill, phone, StatusSemantic.PICKED,
+                relativeTime(-120_000L), "Feed pickup", "[]", "", "CaiNiao"), phone);
+        repository.saveAccountTimeline(accountResult(waybill, phone, StatusSemantic.DELIVERY,
+                relativeTime(-60_000L), "Unscoped query", "[]", "", "CaiNiao")
+                .withManualStatusEvidence("Delivery", true), "interface5");
+        assertEquals("Feed pickup", repository.findByWaybill(waybill, "interface5").latestDetail);
+        assertEquals("Feed pickup", repository.listVisible("interface5").get(0).latestDetail);
+    }
+
+    @Test public void queryWithoutStructuredEvidenceAdvancesActivityButNotStatus() {
+        String phone = "13900000043";
+        String waybill = "ZTTESTQUERYPROSE";
+        repository.bindPhoneLocally(phone, "interface5");
+        repository.saveInterface5(accountResult(waybill, phone, StatusSemantic.PICKED,
+                relativeTime(-120_000L), "Feed pickup", "[]", "", "CaiNiao"), phone);
+        ExpressItem owner = repository.findByWaybill(waybill, "interface5");
+        String time = relativeTime(-60_000L);
+        assertTrue(repository.saveInterface5Query(accountResult(waybill, phone, StatusSemantic.DELIVERY,
+                time, "Query prose", "[{\"time\":\"" + time + "\",\"context\":\"Query prose\"}]", "", "CaiNiao"),
+                owner, repository.bindingGeneration(phone, "interface5")));
+        ExpressItem presented = repository.findByWaybill(waybill, "interface5");
+        assertEquals("Query prose", presented.latestDetail);
+        assertEquals(StatusSemantic.PICKED, presented.semantic);
+        assertEquals(owner.statusEventTime, presented.statusEventTime);
+    }
+
+    @Test public void queryFromRemovedBindingCannotAdvanceReboundOwner() {
+        String phone = "13900000043";
+        String waybill = "ZTTESTQUERYREBIND";
+        repository.bindPhoneLocally(phone, "interface5");
+        ExpressQueryResult feed = accountResult(waybill, phone, StatusSemantic.PICKED,
+                relativeTime(-120_000L), "Feed pickup", "[]", "", "CaiNiao");
+        repository.saveInterface5(feed, phone);
+        ExpressItem oldOwner = repository.findByWaybill(waybill, "interface5");
+        String oldGeneration = repository.bindingGeneration(phone, "interface5");
+        ExpressQueryResult query = accountResult(waybill, phone, StatusSemantic.DELIVERY,
+                relativeTime(-60_000L), "Old account query", "[]", "", "CaiNiao")
+                .withManualStatusEvidence("Delivery", true);
+        assertTrue(repository.saveInterface5Query(query, oldOwner, oldGeneration));
+        repository.unbindPhone(phone, "interface5");
+        repository.bindPhoneLocally(phone, "interface5");
+        repository.saveInterface5(feed, phone);
+        assertFalse(repository.saveInterface5Query(query, oldOwner, oldGeneration));
+        assertEquals("Feed pickup", repository.findByWaybill(waybill, "interface5").latestDetail);
+    }
+
+    @Test public void jtH5AndLegacyK100PackagesRemainIndependentAfterReload() {
+        ExpressItem owner = insertOwner("JTTEST7496", "13900000002", StatusSemantic.TRANSIT);
+        repository.saveKuaidi100Timeline(timedResult(owner.waybill,
+                "2026-09-10 09:00:00", "Synthetic K100 event", TimelineSlot.K100_H5));
+        repository.saveOwnerManualTimeline(owner,
+                timedResult(owner.waybill, "2026-09-10 09:00:00", "Synthetic K100 event", TimelineSlot.K100_H5),
+                owner.phone, "interface5");
+        repository.saveOwnerManualTimeline(owner,
+                timedResult(owner.waybill, "2026-09-10 10:00:00", "已揽件 Synthetic JT event", TimelineSlot.JT_H5),
+                owner.phone, "interface5");
+        database.close();
+        database = new ExpressDatabase(context);
+        repository = new ExpressRepository(context, database);
+        ManualTimelineAuthorityPolicy.Candidate jt = repository.manualTimelineCandidate(owner, TimelineSlot.JT_H5);
+        ManualTimelineAuthorityPolicy.Candidate k100 = repository.manualTimelineCandidate(owner, TimelineSlot.K100_H5);
+        assertNotNull(jt);
+        assertNotNull(k100);
+        assertEquals(TimelineSlot.JT_H5, jt.result.timelineProvider);
+        assertTrue(jt.result.tracksJson.contains("Synthetic JT event"));
+        assertFalse(jt.result.tracksJson.contains("Synthetic K100 event"));
+        assertTrue(k100.result.tracksJson.contains("Synthetic K100 event"));
+        assertFalse(k100.result.tracksJson.contains("Synthetic JT event"));
+        assertFalse(repository.kuaidi100Timeline(owner.waybill).tracksJson.contains("Synthetic JT event"));
+        repository.saveOwnerManualTimeline(owner, null, owner.phone, "interface5");
+        assertEquals(k100.result.tracksJson,
+                repository.manualTimelineCandidate(owner, TimelineSlot.K100_H5).result.tracksJson);
+    }
+
+    @Test public void jtOnlyManualSuccessCreatesOwnerWithIndependentTimeline() {
+        String waybill = "JTTEST123456";
+        String time = relativeTime(-60_000L);
+        ExpressQueryResult jt = new ExpressQueryResult(waybill, "JTSD", "Synthetic carrier",
+                StatusSemantic.UNKNOWN, time, "已揽件 Synthetic JT event",
+                "[{\"time\":\"" + time + "\",\"context\":\"已揽件 Synthetic JT event\"}]",
+                "", "", TimelineSlot.JT_H5);
+        ExpressItem saved = repository.saveManualQueryBatch(null,
+                Arrays.asList(new ManualQuerySuccess(TimelineSlot.JT_H5, jt, 1_000L, true)),
+                "1234", "interface5");
+        assertNotNull(saved);
+        assertTrue(saved.manuallyAdded);
+        assertEquals(TimelineSlot.JT_H5, repository.manualDetailTimelineAuthority(saved).provider);
+        assertNull(repository.kuaidi100Timeline(waybill));
+    }
+
     @org.robolectric.annotation.Implements(android.app.NotificationManager.class)
     public static class FailingNotifications extends org.robolectric.shadows.ShadowNotificationManager {
         static boolean fail;
@@ -190,7 +319,7 @@ public final class ExpressRepositoryDatabaseTest {
     }
 
     @Test
-    public void manualPollClaimIsOwnerScopedAndSuccessClearsIt() {
+    public void manualPollClaimIsOwnerScopedAndOnlyItsCallerReleasesIt() {
         ExpressItem first = insertOwner("SFTEST000001", "13900000001", StatusSemantic.TRANSIT);
         ExpressItem second = insertOwner("SFTEST000002", "13900000002", StatusSemantic.TRANSIT);
         long now = 2_000_000L;
@@ -212,7 +341,7 @@ public final class ExpressRepositoryDatabaseTest {
                 repository.manualTimelineAuthority(first);
         assertNotNull(authority);
         assertTrue(authority.result.tracksJson.contains("快件已揽收"));
-        assertEquals(0, count(ExpressDatabase.OWNER_MANUAL_RETRY_TABLE,
+        assertEquals(1, count(ExpressDatabase.OWNER_MANUAL_RETRY_TABLE,
                 "owner_row_id=?", new String[]{Long.toString(first.rowId)}));
 
         repository.saveOwnerManualTimeline(
@@ -280,6 +409,148 @@ public final class ExpressRepositoryDatabaseTest {
         assertEquals(waybill, pending.get(0).waybill);
         assertEquals("", pending.get(0).courierCode);
         assertEquals("", pending.get(0).companyName);
+    }
+
+    @Test
+    public void repositoryConstructionDefersDatabaseOpenUntilFirstUse() {
+        database.close();
+        java.io.File file = context.getDatabasePath("deliveries.db");
+        context.deleteDatabase("deliveries.db");
+        database = new ExpressDatabase(context);
+        repository = new ExpressRepository(context, database);
+        assertFalse(file.exists());
+        repository.listVisible("interface5");
+        assertTrue(file.exists());
+    }
+
+    @Test
+    public void foregroundCanCompleteSignedHistoryWhileBackgroundRemainsFrozen() {
+        ExpressItem owner = insertOwner("SFSIGNEDINCOMPLETE", "13900000006", StatusSemantic.COMPLETED);
+        assertNull(repository.claimManualTimelinePoll(owner, 5_000_000L));
+        assertNotNull(repository.claimForegroundManualTimelinePoll(owner, 5_000_000L, false));
+    }
+
+    @Test
+    public void independentH5SaveCannotEraseTheActiveLeaseOrForegroundCadence() {
+        ExpressItem owner = insertOwner("SFH5LEASE", "13900000006", StatusSemantic.TRANSIT);
+        long now = System.currentTimeMillis();
+        ExpressRepository.ManualTimelinePollClaim poll = repository.claimForegroundManualTimelinePoll(owner, now, false);
+        repository.saveOwnerManualTimeline(owner, timedResult(owner.waybill,
+                "2026-09-10 10:00:00", "运输中", TimelineSlot.K100_H5), owner.phone, "interface5");
+        assertNull(repository.claimForegroundManualTimelinePoll(owner, now + 1L, true));
+        repository.releaseManualTimelinePoll(poll);
+        assertNull(repository.claimForegroundManualTimelinePoll(owner, now + 29_999L, false));
+        assertNotNull(repository.claimForegroundManualTimelinePoll(owner, now + 30_000L, false));
+    }
+
+    @Test
+    public void legacyLocalTimelineUsesTheSameLeaseWithoutAnAccountOwner() {
+        ContentValues values = shipmentValues("LEGACYV4LEASE", "", "SF", "顺丰速运",
+                "V4", "", StatusSemantic.TRANSIT);
+        long rowId = database.getWritableDatabase().insertOrThrow(ExpressDatabase.EXPRESS_TABLE, null, values);
+        ExpressItem owner = repository.find(rowId);
+        long now = System.currentTimeMillis();
+        ExpressRepository.ManualTimelinePollClaim background = repository.claimManualTimelinePoll(owner, now);
+        assertNotNull(background);
+        assertNull(repository.claimForegroundManualTimelinePoll(owner, now + 1L, true));
+        repository.releaseManualTimelinePoll(background);
+        assertNotNull(repository.claimForegroundManualTimelinePoll(owner, now + 30_000L, false));
+    }
+
+    @Test
+    public void successfulForegroundCommitRetainsLeaseAndShortCadenceAcrossRecreation() {
+        ExpressQueryResult initial = timedResult("SFLEASESUCCESS", "2026-09-10 09:00:00", "运输中", "v4");
+        ExpressItem owner = repository.saveManualQueryBatch(null,
+                List.of(new ManualQuerySuccess("v4", initial, System.currentTimeMillis(), false)),
+                "", "interface5");
+        assertNotNull(repository.captureManualQueryOwner(owner));
+        long now = System.currentTimeMillis();
+        ExpressRepository.ManualTimelinePollClaim poll = repository.claimForegroundManualTimelinePoll(owner, now, false);
+        ExpressRepository.ManualQueryOwnerClaim claim = repository.captureManualQueryOwner(owner);
+        ExpressQueryResult result = timedResult(owner.waybill, "2026-09-10 10:00:00", "运输中", "v4");
+        assertNotNull(repository.saveClaimedManualQueryBatch(owner, claim,
+                List.of(new ManualQuerySuccess("v4", result, now, false)), owner.phone,
+                "interface5", true, poll, new ExpressQueryCancellation(10_000L)));
+        assertNull(repository.claimForegroundManualTimelinePoll(owner, now + 1L, true));
+        assertNull(repository.claimManualTimelinePoll(owner, now + 1L));
+        repository.releaseManualTimelinePoll(poll);
+        database.close();
+        database = new ExpressDatabase(context);
+        repository = new ExpressRepository(context, database);
+        assertNull(repository.claimForegroundManualTimelinePoll(owner, now + 29_999L, false));
+        assertNotNull(repository.claimForegroundManualTimelinePoll(owner, now + 30_000L, false));
+    }
+
+    @Test
+    public void expiredAttemptCannotWriteOrReleaseTheReplacementLease() {
+        ExpressQueryResult initial = timedResult("SFLEASESTALE", "2026-09-10 09:00:00", "运输中", "v4");
+        ExpressItem owner = repository.saveManualQueryBatch(null,
+                List.of(new ManualQuerySuccess("v4", initial, System.currentTimeMillis(), false)),
+                "", "interface5");
+        assertNotNull(repository.captureManualQueryOwner(owner));
+        long now = System.currentTimeMillis();
+        ExpressRepository.ManualTimelinePollClaim stale = repository.claimForegroundManualTimelinePoll(
+                owner, now - ExpressRepository.MANUAL_TIMELINE_ACTIVE_LEASE_MS, false);
+        ExpressRepository.ManualTimelinePollClaim active = repository.claimForegroundManualTimelinePoll(owner, now, false);
+        assertNotNull(active);
+        ExpressQueryResult result = timedResult(owner.waybill, "2026-09-10 10:00:00", "运输中", "v4");
+        assertNull(repository.saveClaimedManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                List.of(new ManualQuerySuccess("v4", result, now, false)), owner.phone,
+                "interface5", true, stale, new ExpressQueryCancellation(10_000L)));
+        assertEquals("2026-09-10 09:00:00",
+                repository.manualTimelineCandidate(owner, "v4").result.latestTime);
+        repository.releaseManualTimelinePoll(stale);
+        assertNull(repository.claimForegroundManualTimelinePoll(owner, now + 1L, true));
+    }
+
+    @Test
+    public void cancellationWhileWaitingForRepositoryDoesNotCreateManualOwner() throws Exception {
+        ExpressQueryCancellation cancellation = new ExpressQueryCancellation(10_000L);
+        ExpressQueryResult result = timedResult("SFCANCELWAIT", "2026-09-10 10:00:00", "运输中", "v4");
+        java.util.concurrent.ExecutorService worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<ExpressItem> pending;
+            synchronized (repository) {
+                java.util.concurrent.CountDownLatch started = new java.util.concurrent.CountDownLatch(1);
+                pending = worker.submit(() -> {
+                    started.countDown();
+                    return repository.saveClaimedManualQueryBatch(null, null,
+                            List.of(new ManualQuerySuccess("v4", result, System.currentTimeMillis(), false)),
+                            "", "interface5", false, null, cancellation);
+                });
+                assertTrue(started.await(1L, java.util.concurrent.TimeUnit.SECONDS));
+                cancellation.cancel();
+            }
+            assertNull(pending.get(2L, java.util.concurrent.TimeUnit.SECONDS));
+            assertNull(repository.findByWaybill(result.waybill, "interface5"));
+        } finally { worker.shutdownNow(); }
+    }
+
+    @org.robolectric.annotation.Implements(value = me.pipi.deliveries.notification.ExpressNotifications.class,
+            isInAndroidSdk = false)
+    public static class CancelBeforeCommit {
+        static ExpressQueryCancellation cancellation;
+        @org.robolectric.annotation.Implementation
+        protected static boolean shouldPostUpdate(ExpressItem previous, ExpressItem current) {
+            if (cancellation != null) cancellation.cancel();
+            return false;
+        }
+    }
+
+    @Test
+    @Config(shadows = CancelBeforeCommit.class)
+    public void cancellationAfterWritesRollsBackOwnerAndEverySidecar() {
+        ExpressQueryCancellation cancellation = new ExpressQueryCancellation(10_000L);
+        CancelBeforeCommit.cancellation = cancellation;
+        ExpressQueryResult result = timedResult("SFCANCELCOMMIT", "2026-09-10 10:00:00", "运输中", "v4");
+        assertNull(repository.saveClaimedManualQueryBatch(null, null,
+                List.of(new ManualQuerySuccess("v4", result, System.currentTimeMillis(), false)),
+                "", "interface5", false, null, cancellation));
+        assertTrue(cancellation.isCancelled());
+        assertNull(repository.findByWaybill(result.waybill, "interface5"));
+        assertEquals(0, count(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE, null, null));
+        assertEquals(0, count(ExpressDatabase.V4_TIMELINE_TABLE, null, null));
+        assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, null));
     }
 
     @Test
@@ -381,7 +652,7 @@ public final class ExpressRepositoryDatabaseTest {
         ExpressRepository.ManualTimelinePollClaim claim =
                 repository.claimForegroundManualTimelinePoll(owner, 5_000_000L, true);
 
-        assertNull(claim);
+        assertNotNull(claim);
     }
 
     @Test
@@ -400,7 +671,7 @@ public final class ExpressRepositoryDatabaseTest {
         ExpressRepository.ManualTimelinePollClaim claim =
                 repository.claimForegroundManualTimelinePoll(projected, 5_100_000L, true);
 
-        assertNull(claim);
+        assertNotNull(claim);
     }
 
     @Test

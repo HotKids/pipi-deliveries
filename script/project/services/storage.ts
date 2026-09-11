@@ -28,6 +28,7 @@ import {
   absorbHistoricalShipment,
   applyAccountShipment,
   applyManualShipment,
+  applySameSourceTimeline,
   automaticSourceOf,
   displayWaybill,
   invalidateAutomaticOwner,
@@ -1715,6 +1716,50 @@ function rebaseNewAccountProjection(
   };
 }
 
+/** Independent provider results may commit together; a newer result in the same slot wins. */
+function rebaseIndependentTimelines(before: Shipment, current: Shipment, incoming: Shipment, now: number): Shipment | null {
+  const digest = (value: unknown) => checksum(value ?? null);
+  if (digest(before.identity) !== digest(current.identity) ||
+      digest(before.identity) !== digest(incoming.identity) ||
+      before.forcedCompletedAtMs !== current.forcedCompletedAtMs ||
+      before.emptyTimelineHiddenAtMs !== current.emptyTimelineHiddenAtMs) return null;
+  if (digest(before.manualRefreshLease) !== digest(incoming.manualRefreshLease) &&
+      digest(before.manualRefreshLease) !== digest(current.manualRefreshLease)) return null;
+  let merged = current;
+  if (digest(before.sourceTimeline) !== digest(incoming.sourceTimeline)) {
+    if (digest(before.sourceTimeline) !== digest(current.sourceTimeline) || !incoming.sourceTimeline) return null;
+    merged = applyAccountShipment(current, { ...incoming, manualTimelines: current.manualTimelines,
+      detailSelection: current.detailSelection, note: current.note }, now);
+  }
+  const slots = (shipment: Shipment) => new Map((shipment.manualTimelines || []).map(p => [normalizeTimelineSlot(p.provider), p]));
+  const baseSlots = slots(before);
+  const currentSlots = slots(current);
+  for (const [provider, pack] of slots(incoming)) {
+    if (digest(pack) === digest(baseSlots.get(provider))) continue;
+    if (digest(baseSlots.get(provider)) !== digest(currentSlots.get(provider))) return null;
+    merged = applySameSourceTimeline(merged, pack, now);
+  }
+  if (digest(before.detailSelection) !== digest(incoming.detailSelection) &&
+      digest(before.detailSelection) === digest(current.detailSelection)) {
+    merged = { ...merged, detailSelection: incoming.detailSelection };
+  }
+  for (const field of ["manualRefreshLease", "manualRefreshAttemptAtMs", "cainiaoH5FallbackActivatedAtMs", "route"] as const) {
+    if (digest(before[field]) !== digest(incoming[field]) && digest(before[field]) === digest(current[field])) {
+      merged = { ...merged, [field]: incoming[field] };
+    }
+  }
+  return { ...merged, timeline: selectShipmentTimeline(merged), updatedAtMs: now };
+}
+
+function ownsRefreshBinding(base: AppState, latest: AppState, shipment: Shipment): boolean {
+  if (shipment.identity.manuallyAdded || !shipment.identity.phone) return true;
+  const matches = (binding: AccountBinding) => binding.source === shipment.identity.bindingSource &&
+    binding.phone === phone(shipment.identity.phone || "");
+  const original = base.bindings.find(matches);
+  const current = latest.bindings.find(matches);
+  return Boolean(original && current && original.boundAtMs === current.boundAtMs);
+}
+
 /**
  * Rebases one source refresh onto the latest user-owned state. Network work may take tens of
  * seconds, so deletion, unbinding, and manual edits always win over an older refresh snapshot.
@@ -1796,7 +1841,8 @@ export function commitRefreshState(
     if (before && !current) continue;
     let incoming = candidateIncoming;
     if (before && current && checksum(current) !== checksum(before)) {
-      const rebased = rebaseNewAccountProjection(before, current, incoming);
+      const rebased = rebaseNewAccountProjection(before, current, incoming) ||
+        rebaseIndependentTimelines(before, current, incoming, now);
       if (!rebased) continue;
       incoming = rebased;
     }
@@ -2007,9 +2053,14 @@ export function commitTargetShipmentRefresh(
     (fence?.acceptsState != null && !fence.acceptsState(latest)) ||
     !before ||
     !current ||
-    checksum(before) !== checksum(current)
+    !ownsRefreshBinding(base, latest, before)
   ) {
     return { state: latest, applied: false };
+  }
+  if (checksum(before) !== checksum(current)) {
+    const rebased = rebaseIndependentTimelines(before, current, incoming, now);
+    if (!rebased) return { state: latest, applied: false };
+    incoming = rebased;
   }
   const incomingWaybill = displayWaybill(incoming);
   const pendingQueries = hasTimedShipmentAuthority(incoming)

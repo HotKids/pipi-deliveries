@@ -258,10 +258,9 @@ assert.equal(
   blankPending,
   "recognition failure must leave the hidden pending retryable",
 );
-assert.match(
+assert.doesNotMatch(
   await readFile(resolve(projectDir, "services/sync.ts"), "utf8"),
-  /const\s+([A-Za-z_$][\w$]*)\s*=\s*await refreshPendingCarrierPresentation\([\s\S]*?queryManualForSource\(\{[\s\S]*?rawCourierCode:\s*\1\.rawCourierCode/,
-  "background pending refresh must retry presentation separately from query routing",
+  /queryPendingManualRound|await refreshPendingCarrierPresentation/,
+  "list refresh must not resume the first-add history chain; manual submission owns that continuation",
 );
-
 console.log("home search carrier presentation tests passed");

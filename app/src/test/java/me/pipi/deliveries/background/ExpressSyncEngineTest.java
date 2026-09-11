@@ -140,15 +140,15 @@ public final class ExpressSyncEngineTest {
     }
 
     @Test
-    public void textProjectionWaitsForPickupAndNeverRepeatsOrLeavesAccountOrders() {
+    public void textProjectionIgnoresStatusAndNeverRepeatsOrLeavesAccountOrders() {
         String tracks = "[{\"time\":\"2026-09-06 11:24:29\",\"context\":"
                 + "\"待出库交付申通快递，运单号为770018906334362\"}]";
 
-        // iOS accountOrderReadyForProjection: an order still before pickup is not projected.
-        assertNull(ExpressSyncEngine.textProjectionIdentity(
-                accountOrder("", StatusSemantic.ORDERED, tracks)));
-        assertNull(ExpressSyncEngine.textProjectionIdentity(
-                accountOrder("", StatusSemantic.SHIPPED, tracks)));
+        // A returned waybill is identity evidence even before pickup.
+        assertEquals("770018906334362", ExpressSyncEngine.textProjectionIdentity(
+                accountOrder("", StatusSemantic.ORDERED, tracks)).waybill);
+        assertEquals("770018906334362", ExpressSyncEngine.textProjectionIdentity(
+                accountOrder("", StatusSemantic.SHIPPED, tracks)).waybill);
         // An already projected order keeps its projection.
         assertNull(ExpressSyncEngine.textProjectionIdentity(
                 accountOrder("770018906334362", StatusSemantic.PICKED, tracks)));

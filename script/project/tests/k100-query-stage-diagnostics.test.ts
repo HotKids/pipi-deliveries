@@ -1,5 +1,5 @@
+import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
 import assert from "node:assert/strict";
-import "./k100-html-fetch-mock";
 import { memory } from "./state-storage-mock";
 import { scrapeWebTimeline } from "../services/web-timeline";
 import { diagnosticText, readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
@@ -28,7 +28,7 @@ try {
       alllists: Array.from({ length: scene.count }, () => ({})),
       lists: Array.from({ length: scene.count }, () => ({})), errors: { type: scene.error, message: withheld }, checkCode };
     Object.assign(globalThis, { WebViewController: class {
-      loadHTML() { return new Promise<boolean>(() => {}); }
+      loadURL() { return new Promise<boolean>(() => {}); }
       async evaluateJavaScript(script: string) {
         const main = { __vue__: scene.absent ? undefined : pageVm };
         const document = { readyState: "interactive", querySelector: () => main,
@@ -68,6 +68,6 @@ for (const invalid of [-1, 0.5, 101, NaN, Infinity, "2", withheld]) {
     vmLoading: withheld, carrierSelected: withheld, carrierCandidateCount: invalid,
     allListsCount: invalid, listsCount: invalid, queryErrorType: withheld,
   } as never);
-  assert.deepEqual(readDiagnostics()[0]?.details, {}, "only fixed scalar metadata may enter the log");
+  assert.deepEqual(readDiagnostics()[0]?.details, { clientBuild: SCRIPT_CLIENT_BUILD }, "only fixed scalar metadata may enter the log");
 }
 console.log("K100 query-stage diagnostics and log privacy tests passed");

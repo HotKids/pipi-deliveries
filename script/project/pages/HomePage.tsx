@@ -7,7 +7,6 @@ import {
   NavigationStack,
   ProgressView,
   Section,
-  Spacer,
   Text,
   TextField,
   VStack,
@@ -22,6 +21,7 @@ import {
   commitManualShipmentPreview,
   queryManualShipmentPreview,
   refreshAllShipments,
+  subscribeRefreshState,
 } from "../services/sync";
 import { stateLoadFailure, visibleShipments } from "../services/storage";
 import { DetailPage } from "./DetailPage";
@@ -53,10 +53,7 @@ import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
 import { normalizeWaybill } from "../services/status";
 import {
   displayWaybill,
-  isJingDongSourceShipment,
-  jingDongAutomaticH5TimelineAvailable,
-  needsAutomaticManualFallback,
-  selectShipmentTimeline,
+  needsDetailEntryQuery,
   unprojectedAccountOrder,
 } from "../services/shipment-policy";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
@@ -133,6 +130,7 @@ export function HomePage(props: {
 
   useEffect(() => {
     let active = true;
+    const unsubscribe = subscribeRefreshState(props.onStateChange);
     // 所有副本都迁移失败时不是空库，而是读取失败（2026-09-06 静态审查②）：进页先说一声。
     if (stateLoadFailure()) setNotice(EXPRESS_TOAST_COPY.stateLoadFailed);
     void refreshAllShipments()
@@ -144,6 +142,7 @@ export function HomePage(props: {
       });
     return () => {
       active = false;
+      unsubscribe();
     };
   }, []);
 
@@ -592,13 +591,9 @@ export function HomePage(props: {
                 ? manualPreviewNeedsDetailRefresh(selected)
                   ? "manual_submit"
                   : false
-                // Complete history can still lack structured status; detail entry may query that missing field.
                 : unprojectedAccountOrder(selected)
-                  ? "identity_projection"
-                  : needsAutomaticManualFallback(selected) ||
-                      selectShipmentTimeline(selected).semantic === "UNKNOWN"
-                    ? "detail_open"
-                    : false}
+                  ? "detail_open"
+                  : needsDetailEntryQuery(selected) ? "detail_open" : false}
               onStateChange={(next) => {
                 props.onStateChange(next);
               }}

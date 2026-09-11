@@ -361,7 +361,7 @@ public final class ExpressTimeline {
         return "";
     }
 
-    private static long parseTime(String value) {
+    public static long parseTime(String value) {
         SimpleDateFormat parser = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA);
         parser.setLenient(false);
         ParsePosition position = new ParsePosition(0);

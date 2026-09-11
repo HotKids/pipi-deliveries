@@ -23,17 +23,24 @@ import {
   continueManualShipmentPreview,
   refreshShipmentById,
   type ManualShipmentPreview,
+  type DetailEntryObservation,
 } from "../services/sync";
 import {
   displayWaybill,
+  jingDongDetailCandidateEvidence,
   selectShipmentDetailTimeline,
+  shipmentDetailIncompleteReason,
+  shipmentSelectionEvidence,
   unprojectedAccountOrder,
 } from "../services/shipment-policy";
 import {
   isProviderErrorDetail,
+  latestTimelineTrackSemantic,
   shipmentDetailPresentationStatus,
   statusTint,
   timedTracks,
+  timelineLatestEventAt,
+  timelineLatestTrackAt,
   waybillSuffix,
   withShipmentNote,
 } from "../services/status";
@@ -42,6 +49,7 @@ import { requestWidgetReload } from "../services/widgets";
 import { timelineTimeParts } from "../services/time-presentation";
 import { preferNewerShipment } from "../services/ui-state";
 import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
+import { needsManualPhoneTail } from "../services/jt-h5";
 import { copyText } from "../services/clipboard";
 import {
   detailPullToast,
@@ -129,6 +137,8 @@ export function DetailPage(props: {
   // 0×0 viewport, so the union page never mounts the 「完整物流进度」 control.
   const [projectionController, setProjectionController] = useState<unknown>(null);
   const projectionMountRef = useRef<Array<(mounted: boolean) => void>>([]);
+  const detailEntryRef = useRef<DetailEntryObservation | undefined>(undefined);
+  const pullInFlightRef = useRef<Promise<void> | null>(null);
   const detailTimeline = selectShipmentDetailTimeline(shipment);
   const displayTracks = detailTimeline.tracks.filter(
     (track) => Boolean(track.detail.trim()) && !isProviderErrorDetail(track.detail),
@@ -138,14 +148,23 @@ export function DetailPage(props: {
   // ExpressDetailTimelinePolicy.timedTrackCount(detailTracks)；页面自己再数一遍会让同一个包裹在
   // 诊断日志里出现两个「详情轨迹 N」。
   const effectiveTrackCount = timedTracks(detailTimeline.tracks).length;
+  const incompleteReason = shipmentDetailIncompleteReason(shipment);
+  const detailComplete = incompleteReason === null;
+  const latestTrackSemantic = latestTimelineTrackSemantic(detailTimeline.tracks);
   // The read-side display decision, recorded once per change rather than per render. Pipi emits
   // the same two events from ExpressRepository.loadLocalDetail; without them no log line says
   // which package the sheet is actually showing, or what it was weighed against.
   const selectionSignature = [
+    String(shipment.updatedAtMs),
     detailTimeline.provider,
     String(detailTimeline.complete === true),
     String(displayTracks.length),
     String(effectiveTrackCount),
+    String(detailComplete),
+    incompleteReason || "",
+    shipment.timeline.semantic,
+    latestTrackSemantic,
+    detailTimeline.latestTimeText,
   ].join("|");
   useEffect(() => {
     // Same keys as sync.ts shipmentDiagnosticDetails so every express line reads alike; that
@@ -158,6 +177,7 @@ export function DetailPage(props: {
         .toLowerCase(),
       carrierCode: String(shipment.identity.courierCode || "").trim().toUpperCase(),
       statusSemantic: String(shipment.timeline.semantic || "").trim().toUpperCase(),
+      trigger: "cache_read",
     };
     const candidates = [
       ...(shipment.sourceTimeline ? [shipment.sourceTimeline] : []),
@@ -165,16 +185,24 @@ export function DetailPage(props: {
     ];
     writeDiagnostic("detail.timeline.selected", {
       ...identity,
+      ...shipmentSelectionEvidence(shipment),
       stage: "detail_refresh",
       detailTimelineProvider: detailTimeline.provider,
+      detailComplete,
+      incompleteReason: incompleteReason ?? undefined,
+      latestTrackSemantic,
+      latestEventAtMs: timelineLatestEventAt(detailTimeline),
+      latestTrackAtMs: timelineLatestTrackAt(detailTimeline),
+      feedEventAtMs: shipment.sourceTimeline ? timelineLatestEventAt(shipment.sourceTimeline) : 0,
+      statusEventAtMs: detailTimeline.statusEventAtMs || 0,
       detailEffectiveTrackCount: effectiveTrackCount,
       result: effectiveTrackCount === 0
         ? "no_result"
-        : detailTimeline.complete === true
+        : detailComplete
         ? "complete"
         : "partial",
-      attempted: candidates.length,
-      succeeded: candidates.filter(
+      candidateCount: candidates.length,
+      availableCandidateCount: candidates.filter(
         (timeline) => timedTracks(timeline.tracks).length > 0,
       ).length,
       selected: true,
@@ -184,8 +212,16 @@ export function DetailPage(props: {
         ...identity,
         stage: "detail_refresh",
         timelineProvider: candidate.provider,
+        statusSemantic: candidate.semantic,
+        structuredStatus: candidate.structuredStatus === true,
+        latestEventAtMs: timelineLatestEventAt(candidate),
+        latestTrackAtMs: timelineLatestTrackAt(candidate),
+        statusEventAtMs: candidate.statusEventAtMs || 0,
+        latestTrackSemantic: latestTimelineTrackSemantic(candidate.tracks),
         effectiveTrackCount: timedTracks(candidate.tracks).length,
-        result: candidate.complete === true ? "complete" : "partial",
+        captureComplete: candidate.complete === true,
+        ...jingDongDetailCandidateEvidence(shipment, candidate),
+        result: timedTracks(candidate.tracks).length > 0 ? "available" : "empty",
       });
     }
   }, [shipment.identity.id, selectionSignature]);
@@ -256,11 +292,25 @@ export function DetailPage(props: {
       refreshAbortRef.current?.abort();
       refreshAbortRef.current = null;
       refreshInFlightRef.current = null;
+      pullInFlightRef.current = null;
+      detailEntryRef.current = undefined;
     };
-  }, [props.shipment.identity.id, props.refreshOnAppear]);
+  }, [props.shipment.identity.id]);
 
   function refresh(forceManualRefresh = false): Promise<void> {
-    if (refreshInFlightRef.current) return refreshInFlightRef.current;
+    if (forceManualRefresh && pullInFlightRef.current) return pullInFlightRef.current;
+    if (refreshInFlightRef.current) {
+      if (!forceManualRefresh) return refreshInFlightRef.current;
+      const generation = refreshGenerationRef.current;
+      // A pull waits for this page's entry request, then starts the distinct history operation once.
+      const pending = refreshInFlightRef.current.then(() => {
+        if (generation !== refreshGenerationRef.current) return;
+        pullInFlightRef.current = null;
+        return refresh(true);
+      });
+      pullInFlightRef.current = pending;
+      return pending;
+    }
     const generation = refreshGenerationRef.current + 1;
     refreshGenerationRef.current = generation;
     const controller = new AbortController();
@@ -292,8 +342,10 @@ export function DetailPage(props: {
               ? "detail_pull"
               : props.refreshOnAppear || "detail_open",
             signal: controller.signal,
+            detailEntry: detailEntryRef.current,
           });
         if (generation !== refreshGenerationRef.current) return;
+        if (result.detailEntry) detailEntryRef.current = result.detailEntry;
         setShipment((current) => preferNewerShipment(current, result.shipment));
         props.onStateChange?.(result.state, result.shipment);
         const hasUsableDetail = selectShipmentDetailTimeline(
@@ -313,7 +365,9 @@ export function DetailPage(props: {
             hasUsableDetail,
           ));
         } else if (forceManualRefresh) {
-          setNotice(detailPullToast(result.refreshed, hasUsableDetail));
+          setNotice(result.querySucceeded === false
+            ? EXPRESS_TOAST_COPY.detailRefreshFailed
+            : detailPullToast(result.refreshed, hasUsableDetail));
         }
       } catch (error) {
         if (generation === refreshGenerationRef.current) {
@@ -325,7 +379,9 @@ export function DetailPage(props: {
               : props.refreshOnAppear || "detail_open",
             ...errorDetails,
           }, "warning");
-          if (!displayTracks.length) {
+          if (props.shipment.identity.manuallyAdded && needsManualPhoneTail(error)) {
+            setNotice(EXPRESS_TOAST_COPY.manualPhoneTailRequired);
+          } else if (forceManualRefresh || !displayTracks.length) {
             setNotice(EXPRESS_TOAST_COPY.detailRefreshFailed);
           }
         }
@@ -340,6 +396,7 @@ export function DetailPage(props: {
       }
     })();
     refreshInFlightRef.current = task;
+    if (forceManualRefresh) pullInFlightRef.current = task;
     void task.then(() => {
       if (refreshInFlightRef.current === task) {
         refreshInFlightRef.current = null;
@@ -347,6 +404,7 @@ export function DetailPage(props: {
       if (refreshAbortRef.current === controller) {
         refreshAbortRef.current = null;
       }
+      if (pullInFlightRef.current === task) pullInFlightRef.current = null;
     });
     return task;
   }

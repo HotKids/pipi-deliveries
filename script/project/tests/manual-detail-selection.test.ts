@@ -20,16 +20,15 @@ function timeline(
 ): TimelinePackage {
   const courierCode = options.courierCode || "SF";
   const semantic = options.semantic || "TRANSIT";
-  // 详情完整的判据（用户定 2026-09-04）要求轨迹里有揽收，且最新节点与 feed 相差 ≤30 分钟。
-  // 所有 fixture 的最新节点都落在 NOW，时间那一半天然成立；这里给最老的那条补上揽收，
-  // 让「多节点包 = 完整」这个 fixture 语义继续成立。单节点包保持不完整。
+  // Complete fixtures carry pickup history, aligned event time, and a matching latest-node enum.
+  // Single-node fixtures still lack pickup history.
   const tracks = Array.from({ length: count }, (_, index) => ({
     timeText: `2026-09-01 ${String(10 - index).padStart(2, "0")}:00:00`,
     timeMs: NOW - index * 60 * 60 * 1_000,
     detail: count >= 2 && index === count - 1
       ? `${provider} 快件已揽收`
       : `${provider} node ${index + 1}`,
-    statusCode: "",
+    statusCode: index === 0 ? semantic : "",
     raw: options.marker ? { _pipiKuaidi100Com: options.marker } : {},
   }));
   return {
@@ -203,8 +202,8 @@ const jingDong = baseShipment({
 // 用户定 2026-09-05 晚：京东行的列表归 feed；H5 / 手动包各住各的槽，只在详情页参与选包。
 assert.equal(
   selectShipmentTimeline(jingDong).provider,
-  "interface5",
-  "the JD list row is the feed package itself",
+  "fallback",
+  "Home and detail share the selected history while retaining account field authority",
 );
 // 排序是「完整性 → 覆盖 → 层级」：feed 只有 1 条且无揽收，判据不成立；fallback 6 条带揽收
 // 且时间与 feed 对齐，胜出。层级（接口 → feed → 免费手动 → 付费手动）只在前两项并列时才用。

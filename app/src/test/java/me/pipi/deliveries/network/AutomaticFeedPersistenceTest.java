@@ -64,13 +64,13 @@ public class AutomaticFeedPersistenceTest {
   ExpressItem visible=repository.listVisible("interface5").get(0);
   assertEquals("A real same-owner query event must fill the empty Home activity",query.latestDetail,visible.latestDetail);
   assertEquals(query.latestTime,visible.latestTime);
-  assertEquals(StatusSemantic.TRANSIT,visible.semantic);
-  assertEquals(feed.statusEventTime,visible.statusEventTime);
+  assertEquals(StatusSemantic.DELIVERY,visible.semantic);
+  assertEquals(query.statusEventTime,visible.statusEventTime);
   assertEquals("[]",repository.automaticSourceTimeline(visible).tracksJson);
   assertEquals(query.latestDetail,repository.find(owner.rowId).latestDetail);
  }
 
- @Test public void existingFeedActivityStillOwnsHomeWhenQueryIsNewer() throws Exception {
+ @Test public void newerSameAccountQueryAdvancesExistingHomeActivity() throws Exception {
   ExpressQueryResult feed=parse(false);
   repository.saveInterface5(feed,PHONE);
   ExpressItem owner=repository.findByWaybill(feed.waybill,"interface5");
@@ -81,9 +81,10 @@ public class AutomaticFeedPersistenceTest {
   assertTrue(repository.saveInterface5Query(ExpressDiscoveryClient.parseExpress(raw,"",PHONE),
    owner,repository.bindingGeneration(PHONE,"interface5")));
   ExpressItem visible=repository.listVisible("interface5").get(0);
-  assertEquals(feed.latestDetail,visible.latestDetail);
-  assertEquals(feed.latestTime,visible.latestTime);
-  assertEquals(feed.semantic,visible.semantic);
+  assertEquals("快件已到达深圳转运中心",visible.latestDetail);
+  assertEquals("2026-09-09 18:10:00",visible.latestTime);
+  assertEquals(StatusSemantic.DELIVERY,visible.semantic);
+  assertEquals(feed.tracksJson,repository.automaticSourceTimeline(visible).tracksJson);
  }
 
  @Test public void interface6ParserToDatabase() throws Exception {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import "./k100-html-fetch-mock";
 import { scrapeWebTimeline, type WebTimelineDiagnostics } from "../services/web-timeline";
+import { WebTimelinePhoneError } from "../services/jt-h5";
 
 const waybill = "SF123456789012";
 const tail = "7319";
@@ -46,7 +46,7 @@ try {
     const main = { __vue__: vue };
     const snapshots: WebTimelineDiagnostics[] = [];
     Object.assign(globalThis, { WebViewController: class {
-      loadHTML(_html: string, url: string) { assert.equal(url, fixed); assert.equal(url.includes(tail), false); return new Promise<boolean>(() => {}); }
+      loadURL(url: string) { assert.equal(url, fixed); assert.equal(url.includes(tail), false); return new Promise<boolean>(() => {}); }
       async evaluateJavaScript(script: string) {
         evaluations++;
         now += evaluations >= 4 ? 10_001 : 1;
@@ -60,7 +60,11 @@ try {
       dispose() {}
     } });
     const result = await scrapeWebTimeline({ waybill, courierCode: "SF", companyName: "Carrier", phoneTail: scene.phoneTail } as never,
-      snapshot => snapshots.push(snapshot));
+      snapshot => snapshots.push(snapshot)).catch(error => {
+        assert.ok(["missing", "invalid", "non-numeric"].includes(scene.name));
+        assert.ok(error instanceof WebTimelinePhoneError, "an unsatisfied visible challenge is actionable");
+        return null;
+      });
     assert.equal(calls, scene.calls, `${scene.name}: only the eligible normal page action is called, at most once`);
     assert.equal(writes, scene.calls, `${scene.name}: no input is written unless it can be submitted`);
     assert.equal(result?.tracks.length || 0, scene.accepted ? 2 : 0, scene.name);
