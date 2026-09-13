@@ -25,11 +25,8 @@ const notificationBodies: unknown[] = [];
 let pickerReply: ((waybill: string) => ReturnType<typeof jsonResponse>) | null = null;
 
 function providerTime(value: number): string {
-  const date = new Date(value);
-  const part = (input: number) => String(input).padStart(2, "0");
-  return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())} ${
-    part(date.getHours())
-  }:${part(date.getMinutes())}:${part(date.getSeconds())}`;
+  // Provider timestamps use Shanghai time regardless of the test runner's timezone.
+  return new Date(value + 8 * 60 * 60 * 1000).toISOString().slice(0, 19).replace("T", " ");
 }
 
 const detailEventAtMs = Date.now() - 1_000;
