@@ -17,7 +17,7 @@ Pipi Deliveries 是一款快递管理工具。Android 版本采用原生 Materia
 
 点击首页右上角的电话图标可管理已绑定的手机号码；在首页下拉可刷新快递信息。
 
-已取消运单将在列表中保留四小时，已签收运单保留七日；期满后，相关运单及本地物流轨迹缓存将自动清理。删除已绑定的手机号码时，与该号码关联的快递信息亦会同时删除。
+Cancelled shipments remain visible for four hours. Signed shipments remain visible for 14 days, then stay in the local cache until day 21 before deletion. Removing a bound phone also removes shipments associated with that phone.
 
 ## 隐私声明
 

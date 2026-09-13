@@ -19,6 +19,28 @@ import me.pipi.deliveries.model.StatusSemantic;
 import org.junit.Test;
 
 public final class ManualQueryCoordinatorTest {
+    @Test public void detailPullReusesOnlineCacheAndContinuesPrimaryWithoutASecondOnline() throws Exception {
+        AtomicInteger primaryCalls = new AtomicInteger();
+        ExpressQueryResult cached = tracked("meizu", "运输中");
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
+                null, new ManualTimelineAuthorityPolicy.Candidate("meizu", cached, 100L, false),
+                null, false, online -> () -> {
+                    primaryCalls.incrementAndGet();
+                    return tracked("k100_h5", "已揽收");
+                }, null, false);
+        assertEquals(1, primaryCalls.get());
+        assertEquals(1, batch.successes.size());
+        assertEquals("k100_h5", batch.successes.get(0).provider);
+    }
+
+    @Test public void liteNeverIncludesV4ForManualOrAnyBusinessSource() {
+        org.junit.Assert.assertFalse(ManualQueryRoutingPolicy.includesMoto(null));
+        org.junit.Assert.assertFalse(ManualQueryRoutingPolicy.includesMoto(
+                automaticOwner("CaiNiao", "ZTO", "中通快递")));
+        org.junit.Assert.assertFalse(ManualQueryRoutingPolicy.includesMoto(
+                automaticOwner("JingDong", "JD", "京东物流")));
+    }
+
     @Test
     public void enabledLocalCapabilitiesRunConcurrently() throws Exception {
         CountDownLatch started = new CountDownLatch(2);
@@ -90,19 +112,19 @@ public final class ManualQueryCoordinatorTest {
     }
 
     @Test
-    public void pickerStartStopsBeforeStartingThePrimaryRound() throws Exception {
+    public void onlineStartStopsBeforeStartingThePrimaryRound() throws Exception {
         List<String> calls = Collections.synchronizedList(new ArrayList<>());
-        ExpressQueryResult picker = new ExpressQueryResult(
+        ExpressQueryResult online = new ExpressQueryResult(
                 "TEST123456", "SF", "顺丰速运", StatusSemantic.TRANSIT,
                 "2026-08-22 12:00:00", "运输中",
                 "[{\"time\":\"2026-08-22 12:00:00\",\"context\":\"运输中\"},"
                         + "{\"time\":\"2026-08-22 10:00:00\",\"context\":\"快件已揽收\"}]",
                 "", "", "meizu");
 
-        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
                 () -> {
                     calls.add("meizu");
-                    return picker;
+                    return online;
                 }, null,
                 () -> {
                     calls.add("v4");
@@ -114,13 +136,13 @@ public final class ManualQueryCoordinatorTest {
     }
 
     @Test
-    public void physicalSfOwnerNeverEntersMotoOrReplacesThePickerFailure() {
+    public void physicalSfOwnerNeverEntersMotoOrReplacesTheOnlineFailure() {
         AtomicInteger motoCalls = new AtomicInteger();
         ExpressItem owner = automaticOwner("CaiNiao", "SF", "顺丰速运");
 
         try {
-            ManualQueryCoordinator.queryPickerFirst(
-                    () -> { throw new IllegalStateException("picker unavailable"); },
+            ManualQueryCoordinator.queryOnlineFirst(
+                    () -> { throw new IllegalStateException("online unavailable"); },
                     null,
                     () -> {
                         motoCalls.incrementAndGet();
@@ -128,43 +150,43 @@ public final class ManualQueryCoordinatorTest {
                     },
                     ManualQueryRoutingPolicy.includesMoto(owner),
                     () -> 550L);
-            org.junit.Assert.fail("Expected the Picker failure");
+            org.junit.Assert.fail("Expected the Online failure");
         } catch (Exception expected) {
-            assertEquals("picker unavailable", expected.getMessage());
+            assertEquals("online unavailable", expected.getMessage());
         }
         assertEquals(0, motoCalls.get());
     }
 
     @Test
-    public void pickerWithoutStartRunsLocalButKeepsEquivalentDetail() throws Exception {
-        ExpressQueryResult picker = tracked("meizu", "Picker 运输中");
+    public void onlineWithoutStartRunsLocalButKeepsEquivalentDetail() throws Exception {
+        ExpressQueryResult online = tracked("meizu", "Online 运输中");
         ExpressQueryResult local = tracked("v4", "本地完整轨迹");
 
-        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
-                () -> picker, null, () -> local, true, () -> 600L);
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
+                () -> online, null, () -> local, true, () -> 600L);
 
         assertEquals("meizu", batch.selected().timelineProvider);
         assertEquals("meizu", batch.detailSelected().timelineProvider);
     }
 
     @Test
-    public void pickerKuaidi100RouteIsDurableInputButNotATimelineCandidate() throws Exception {
+    public void onlineKuaidi100RouteIsDurableInputButNotATimelineCandidate() throws Exception {
         String route = "https://m.kuaidi100.com/result.jsp?nu=TEST123456";
-        ExpressQueryResult picker = new ExpressQueryResult(
+        ExpressQueryResult online = new ExpressQueryResult(
                 "TEST123456", "ZTO", "中通快递", StatusSemantic.UNKNOWN,
                 "", "", "[]", route, "", "meizu");
 
-        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
-                () -> picker, null, () -> null, false, () -> 700L);
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
+                () -> online, null, () -> null, false, () -> 700L);
 
         assertEquals(1, batch.successes.size());
         assertEquals("meizu", batch.successes.get(0).provider);
         assertTrue(batch.selectionSuccessesForTesting().isEmpty());
-        assertEquals(picker, batch.detailSelected());
+        assertEquals(online, batch.detailSelected());
     }
 
     @Test
-    public void timedPickerPreviewRunsBeforeTheLocalStageAndUsesMergedPickerCache()
+    public void timedOnlinePreviewRunsBeforeTheLocalStageAndUsesMergedOnlineCache()
             throws Exception {
         List<String> calls = Collections.synchronizedList(new ArrayList<>());
         List<ExpressQueryResult> previews = new ArrayList<>();
@@ -174,7 +196,7 @@ public final class ManualQueryCoordinatorTest {
                 new ManualTimelineAuthorityPolicy.Candidate(
                         "meizu", cachedResult, 100L, false);
 
-        ManualQueryCoordinator.queryPickerFirst(
+        ManualQueryCoordinator.queryOnlineFirst(
                 () -> {
                     calls.add("meizu");
                     return trackedAt("meizu", "新轨迹", "2026-08-22 00:00:00");
@@ -195,28 +217,28 @@ public final class ManualQueryCoordinatorTest {
     }
 
     @Test
-    public void cachedPickerStartStillRefreshesPickerThenStopsThePrimaryRound() throws Exception {
+    public void cachedOnlineStartStillRefreshesOnlineThenStopsThePrimaryRound() throws Exception {
         List<String> calls = Collections.synchronizedList(new ArrayList<>());
         ManualTimelineAuthorityPolicy.Candidate cached = new ManualTimelineAuthorityPolicy.Candidate(
                 "meizu", trackedAt("meizu", "订单已提交", "2026-08-21 00:00:00"), 100L, false);
-        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
-                () -> { calls.add("picker"); return tracked("meizu", "运输中"); }, cached,
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
+                () -> { calls.add("online"); return tracked("meizu", "运输中"); }, cached,
                 () -> { calls.add("local"); return tracked("v4", "运输中"); }, true);
-        assertEquals(Collections.singletonList("picker"), calls);
+        assertEquals(Collections.singletonList("online"), calls);
         assertTrue(batch.selected().tracksJson.contains("订单已提交"));
         assertTrue(batch.selected().tracksJson.contains("运输中"));
     }
 
     @Test
-    public void interruptingPickerCannotLeaveAPrimaryProviderRunning() throws Exception {
+    public void interruptingOnlineCannotLeaveAPrimaryProviderRunning() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         AtomicReference<Throwable> failure = new AtomicReference<>();
         Thread coordinator = new Thread(() -> {
             try {
-                ManualQueryCoordinator.queryPickerFirst(
+                ManualQueryCoordinator.queryOnlineFirst(
                         () -> { throw new InterruptedException("cancelled"); }, null,
                         () -> { calls.incrementAndGet(); return tracked("v4", "运输中"); }, true);
-                org.junit.Assert.fail("Picker interruption must propagate");
+                org.junit.Assert.fail("Online interruption must propagate");
             } catch (InterruptedException expected) {
                 if (!Thread.currentThread().isInterrupted()) {
                     failure.set(new AssertionError("The interrupt flag must remain set"));
@@ -233,22 +255,22 @@ public final class ManualQueryCoordinatorTest {
     }
 
     @Test
-    public void eligiblePrimarySourcesRunConcurrentlyAfterPickerPreview() throws Exception {
-        ExpressQueryResult picker = tracked("meizu", "运输中");
+    public void eligiblePrimarySourcesRunConcurrentlyAfterOnlinePreview() throws Exception {
+        ExpressQueryResult online = tracked("meizu", "运输中");
         CountDownLatch started = new CountDownLatch(2);
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger concurrent = new AtomicInteger();
         AtomicInteger maximum = new AtomicInteger();
         List<String> calls = new ArrayList<>();
-        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
-                () -> { calls.add("picker"); return picker; }, null,
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
+                () -> { calls.add("online"); return online; }, null,
                 () -> concurrentResult("v4", started, release, concurrent, maximum), true,
                 fresh -> {
-                    org.junit.Assert.assertSame(picker, fresh);
+                    org.junit.Assert.assertSame(online, fresh);
                     calls.add("primary");
                     return () -> concurrentResult("kuaidi100", started, release, concurrent, maximum);
                 }, preview -> calls.add("preview"));
-        assertEquals(List.of("picker", "preview", "primary"), calls);
+        assertEquals(List.of("online", "preview", "primary"), calls);
         assertEquals(2, maximum.get());
         assertEquals(3, batch.successes.size());
         for (ManualQueryCoordinator.Success success : batch.successes) {
@@ -257,9 +279,9 @@ public final class ManualQueryCoordinatorTest {
     }
 
     @Test
-    public void pickerStartDoesNotCreateTheKuaidi100PrimarySource() throws Exception {
+    public void onlineStartDoesNotCreateTheKuaidi100PrimarySource() throws Exception {
         AtomicInteger creations = new AtomicInteger();
-        ManualQueryCoordinator.queryPickerFirst(
+        ManualQueryCoordinator.queryOnlineFirst(
                 () -> tracked("meizu", "订单已提交"), null, null, false,
                 fresh -> { creations.incrementAndGet(); return () -> tracked("kuaidi100", "运输中"); },
                 null);
@@ -283,7 +305,7 @@ public final class ManualQueryCoordinatorTest {
         };
         Thread coordinator = new Thread(() -> {
             try {
-                ManualQueryCoordinator.queryPickerFirst(
+                ManualQueryCoordinator.queryOnlineFirst(
                         () -> tracked("meizu", "运输中"), null, blocking, true,
                         fresh -> blocking, null);
                 throw new AssertionError("Coordinator interruption must propagate");
@@ -308,7 +330,7 @@ public final class ManualQueryCoordinatorTest {
     }
 
     @Test
-    public void routeOnlyPickerDoesNotOpenATransientPreview() throws Exception {
+    public void routeOnlyOnlineDoesNotOpenATransientPreview() throws Exception {
         List<ExpressQueryResult> previews = new ArrayList<>();
         ExpressQueryResult routeOnly = new ExpressQueryResult(
                 "TEST123456", "ZTO", "中通快递", StatusSemantic.UNKNOWN,
@@ -316,7 +338,7 @@ public final class ManualQueryCoordinatorTest {
                 "https://m.kuaidi100.com/result.jsp?nu=TEST123456",
                 "", "meizu");
 
-        ManualQueryCoordinator.queryPickerFirst(
+        ManualQueryCoordinator.queryOnlineFirst(
                 () -> routeOnly, null, () -> null, false,
                 previews::add, () -> 900L);
 
@@ -324,10 +346,10 @@ public final class ManualQueryCoordinatorTest {
     }
 
     @Test
-    public void firstUsablePrimaryResultPreviewsWhenPickerWasEmpty() throws Exception {
+    public void firstUsablePrimaryResultPreviewsWhenOnlineWasEmpty() throws Exception {
         List<ExpressQueryResult> previews = new ArrayList<>();
         ExpressQueryResult local = tracked("v4", "运输中");
-        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
                 () -> untracked("meizu"), null, () -> local, true, previews::add);
         assertEquals(List.of(local), previews);
         assertEquals(local, batch.detailSelected());
@@ -339,53 +361,53 @@ public final class ManualQueryCoordinatorTest {
                 StatusSemantic.COMPLETED, 0L, "", "", "[]", "", "", "v4", "", "", "")
                 .withManualStatusEvidence("已签收", true);
         List<ExpressQueryResult> previews = new ArrayList<>();
-        ManualQueryCoordinator.Batch explicit = ManualQueryCoordinator.queryPickerFirst(
+        ManualQueryCoordinator.Batch explicit = ManualQueryCoordinator.queryOnlineFirst(
                 () -> null, null, () -> status, true, null, previews::add, true);
         assertEquals(1, explicit.successes.size());
         assertEquals(status, explicit.successes.get(0).result);
         assertTrue(previews.isEmpty());
-        ManualQueryCoordinator.Batch background = ManualQueryCoordinator.queryPickerFirst(
+        ManualQueryCoordinator.Batch background = ManualQueryCoordinator.queryOnlineFirst(
                 () -> null, null, () -> status, true);
         assertTrue(background.successes.isEmpty());
     }
 
     @Test
-    public void completeDetailStatusOnlyModeStopsAtStructuredPickerButFirstQueryStillGetsHistory() throws Exception {
+    public void completeDetailStatusOnlyModeStopsAtStructuredOnlineButFirstQueryStillGetsHistory() throws Exception {
         ExpressQueryResult status = new ExpressQueryResult("TEST123456", "ZTO", "中通快递",
                 StatusSemantic.COMPLETED, 0L, "", "", "[]", "", "", "meizu", "", "", "")
                 .withManualStatusEvidence("已签收", true);
         AtomicInteger calls = new AtomicInteger();
-        ManualQueryCoordinator.queryPickerFirst(() -> status, null,
+        ManualQueryCoordinator.queryOnlineFirst(() -> status, null,
                 () -> { calls.incrementAndGet(); return tracked("v4", "已揽收"); },
                 true, null, null, true, true);
         assertEquals(0, calls.get());
-        ManualQueryCoordinator.queryPickerFirst(() -> status, null,
+        ManualQueryCoordinator.queryOnlineFirst(() -> status, null,
                 () -> { calls.incrementAndGet(); return tracked("v4", "已揽收"); },
                 true, null, null, true);
         assertEquals(1, calls.get());
     }
 
     @Test
-    public void explicitMissingStatusQueryContinuesPastCompleteUnknownPicker() throws Exception {
+    public void explicitMissingStatusQueryContinuesPastCompleteUnknownOnline() throws Exception {
         AtomicInteger localCalls = new AtomicInteger();
         ExpressQueryResult unknown = new ExpressQueryResult("TEST123456", "ZTO", "中通快递",
                 StatusSemantic.UNKNOWN, "2026-08-22 00:00:00", "已揽收",
                 "[{\"time\":\"2026-08-22 00:00:00\",\"context\":\"已揽收\"}]");
         ExpressQueryResult structured = tracked("v4", "运输中")
                 .withManualStatusEvidence("运输中", true);
-        ManualQueryCoordinator.queryPickerFirst(() -> unknown, null,
+        ManualQueryCoordinator.queryOnlineFirst(() -> unknown, null,
                 () -> { localCalls.incrementAndGet(); return structured; }, true, null, null, true);
         assertEquals(1, localCalls.get());
         localCalls.set(0);
-        ManualQueryCoordinator.queryPickerFirst(() -> unknown, null,
+        ManualQueryCoordinator.queryOnlineFirst(() -> unknown, null,
                 () -> { localCalls.incrementAndGet(); return structured; }, true);
         assertEquals("background history-only calls keep their original gate", 0, localCalls.get());
         ExpressQueryResult known = new ExpressQueryResult("TEST123456", "ZTO", "中通快递",
                 StatusSemantic.PICKED, "2026-08-22 00:00:00", "已揽收", unknown.tracksJson)
                 .withManualStatusEvidence("已揽收", true);
-        ManualQueryCoordinator.queryPickerFirst(() -> known, null,
+        ManualQueryCoordinator.queryOnlineFirst(() -> known, null,
                 () -> { localCalls.incrementAndGet(); return structured; }, true, null, null, true);
-        assertEquals("a structured Picker status still stops the explicit chain", 0, localCalls.get());
+        assertEquals("a structured Online status still stops the explicit chain", 0, localCalls.get());
     }
 
     @Test
@@ -399,14 +421,14 @@ public final class ManualQueryCoordinatorTest {
         AtomicReference<Throwable> failure = new AtomicReference<>();
         Thread coordinator = new Thread(() -> {
             try {
-                result.set(ManualQueryCoordinator.queryPickerFirst(
+                result.set(ManualQueryCoordinator.queryOnlineFirst(
                         () -> untracked("meizu"), null,
                         () -> {
                             localStarted.countDown();
                             assertTrue(releaseLocal.await(3, TimeUnit.SECONDS));
                             return tracked("v4", "派送中");
                         }, true,
-                        picker -> () -> {
+                        online -> () -> {
                             assertTrue(localStarted.await(1, TimeUnit.SECONDS));
                             return complete;
                         }, preview -> {

@@ -1,14 +1,9 @@
 import type { AppState } from "../models";
 import {
-  pruneOrderProjectionReferences,
-  pruneShipmentRoutes,
-} from "./routes";
-import { SCRIPT_BINDING_SOURCE } from "./script-source";
-import {
   forceCompleteShipment,
+  pruneRoutesForState as prunePersistedRoutes,
   removeShipment,
 } from "./storage";
-import { normalizedProjectedWaybill } from "./status";
 import { requestWidgetReload } from "./widgets";
 
 type ShipmentMutationDependencies = {
@@ -20,27 +15,6 @@ type ShipmentMutationDependencies = {
 export type ShipmentMutationResult =
   | { ok: true; state: AppState }
   | { ok: false; message: string };
-
-function retainedRouteIds(state: AppState): string[] {
-  return [
-    ...state.shipments.map((shipment) => shipment.identity.id),
-    ...state.pendingQueries.map((pending) => pending.id),
-  ];
-}
-
-function prunePersistedRoutes(state: AppState): void {
-  pruneShipmentRoutes(retainedRouteIds(state));
-  pruneOrderProjectionReferences(
-    state.shipments.flatMap((shipment) => {
-      const source = shipment.identity.bindingSource;
-      return shipment.identity.accountOrder &&
-          !normalizedProjectedWaybill(shipment.identity) &&
-          source === SCRIPT_BINDING_SOURCE
-        ? [{ ownerId: shipment.identity.id, source }]
-        : [];
-    }),
-  );
-}
 
 function performShipmentMutation(
   id: string,

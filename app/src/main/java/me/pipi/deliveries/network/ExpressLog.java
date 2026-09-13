@@ -1,101 +1,146 @@
 package me.pipi.deliveries.network;
 
 import android.util.Log;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+import me.pipi.deliveries.BuildConfig;
+import me.pipi.deliveries.model.ExpressItem;
+import me.pipi.deliveries.model.ExpressQueryResult;
 
-/**
- * 快递日志的统一用词（用户定 2026-09-05，三端同一套）：每行固定 interface / level / source / event，
- * 附 tail、nodes 等。不用品牌词，不用能力档词。
- *
- * <p>level：v1_list…v6_list、v5_list、v5_query、v6_query、v4_query、v2_query、jd_h5、cn_h5、
- * k100_h5、kdniao、k100_autoCom。event：started / succeeded / failed / skipped / selected。</p>
- */
+/** iOS-compatible diagnostic envelope. Values never include full identities or route credentials. */
 public final class ExpressLog {
     public static final String TAG = "PipiExpress";
-
+    private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("yyyy-MM-dd\'T\'HH:mm:ss.SSS\'Z\'", Locale.ROOT).withZone(ZoneOffset.UTC);
+    private static final InheritableThreadLocal<Scope> CURRENT = new InheritableThreadLocal<>();
     private ExpressLog() {}
 
-    /** 只打尾号 4 位；单号、手机号永不落日志。 */
+    public static final class Scope implements AutoCloseable {
+        final Scope previous;
+        final String flowId;
+        final String trigger;
+        final String source;
+        Scope(String flowId, String trigger, String source) {
+            previous = CURRENT.get();
+            this.flowId = flowId;
+            this.trigger = trigger;
+            this.source = source;
+            CURRENT.set(this);
+        }
+        @Override public void close() { CURRENT.set(previous); }
+    }
+
+    public static boolean hasScope() { return CURRENT.get() != null; }
+
+    public static String newFlowId(String prefix) {
+        return prefix + "-" + UUID.randomUUID().toString();
+    }
+
+    public static Scope scope(String flowId, String trigger, String source) {
+        return new Scope(flowId, trigger, source);
+    }
+
     public static String tail(String value) {
         String clean = value == null ? "" : value.trim();
         return clean.length() <= 4 ? clean : clean.substring(clean.length() - 4);
     }
 
-    public static void line(String iface, String level, String source, String event,
-                            Object... keyValues) {
-        StringBuilder builder = new StringBuilder(96);
-        if (iface != null && !iface.isEmpty()) builder.append("interface=").append(iface).append(' ');
-        builder.append("level=").append(level).append(' ');
-        if (source != null && !source.isEmpty()) builder.append("source=").append(source(source, false)).append(' ');
-        builder.append("event=").append(event);
+    public static String format(long atMs, String severity, String event, Object... keyValues) {
+        LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+        Scope scope = CURRENT.get();
+        if (scope != null) {
+            fields.put("flowId", scope.flowId);
+            fields.put("trigger", scope.trigger);
+            fields.put("source", scope.source);
+        }
+        fields.put("clientBuild", BuildConfig.VERSION_CODE);
         for (int index = 0; index + 1 < keyValues.length; index += 2) {
-            builder.append(' ').append(keyValues[index]).append('=').append(keyValues[index + 1]);
+            if (keyValues[index + 1] != null) fields.put(String.valueOf(keyValues[index]), keyValues[index + 1]);
         }
-        emit(builder.toString());
+        StringBuilder text = new StringBuilder(CLOCK.format(Instant.ofEpochMilli(atMs)))
+                .append(' ').append(severity).append(' ').append(event);
+        for (Map.Entry<String, Object> field : fields.entrySet()) {
+            text.append(' ').append(field.getKey()).append('=').append(value(field.getValue()));
+        }
+        return text.toString();
     }
 
-    /** 日志永远不能改变业务行为：纯 JVM 单测里 android.util.Log 没有实现，吞掉即可。 */
+    private static String value(Object input) {
+        String text = String.valueOf(input);
+        if (text.matches("[^\\s=\"]+")) return text;
+        return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r") + "\"";
+    }
+
+    public static void write(String event, Object... fields) {
+        emit(format(System.currentTimeMillis(), event.endsWith(".failed") ? "WARNING" : "INFO", event, fields));
+    }
+
+    public static void line(String iface, String level, String provider, String outcome, Object... fields) {
+        String event = "v6_query".equals(level)
+                && ("request".equals(outcome) || "response".equals(outcome) || "parsed".equals(outcome))
+                ? "manual.meizu." + outcome
+                : "detail".equals(level) ? "detail.refresh." + outcome
+                : "v5_list".equals(level) || "v6_list".equals(level) ? "account.sync." + outcome
+                : "v5_query".equals(level) ? "refresh.stage." + outcome
+                : "manual.source." + outcome;
+        Object[] mapped = new Object[fields.length + 12];
+        mapped[0] = "interface"; mapped[1] = iface == null || iface.isEmpty() ? null : iface;
+        mapped[2] = "level"; mapped[3] = level;
+        mapped[4] = "timelineProvider"; mapped[5] = level;
+        mapped[6] = "sourceProvider"; mapped[7] = source(provider, false);
+        mapped[8] = "result"; mapped[9] = outcome;
+        mapped[10] = "stage"; mapped[11] = level;
+        for (int index = 0; index + 1 < fields.length; index += 2) {
+            String key = String.valueOf(fields[index]);
+            if ("tail".equals(key)) key = "waybillTail";
+            else if ("nodes".equals(key)) key = "effectiveTrackCount";
+            else if ("elapsedMs".equals(key)) key = "durationMs";
+            else if ("semantic".equals(key)) key = "statusSemantic";
+            else if ("reason".equals(key)) key = "failed".equals(outcome) ? "errorCategory" : "skipReason";
+            mapped[index + 12] = key;
+            mapped[index + 13] = fields[index + 1];
+        }
+        write(event, mapped);
+    }
+
     private static void emit(String message) {
-        try {
-            Log.i(TAG, message);
-        } catch (RuntimeException ignored) {
-            // Unit tests without the Android runtime.
-        }
+        try { if (message.contains(" WARNING ")) Log.w(TAG, message); else Log.i(TAG, message); }
+        catch (RuntimeException ignored) { /* Logging cannot affect a query or persistence. */ }
     }
 
-    /** 通知被规则压掉：reason 说明是哪条规则（first_seen_in_batch = 这轮才出现的件）。 */
-    public static void notificationSkipped(
-            me.pipi.deliveries.model.ExpressItem current, String reason) {
-        if (current == null) return;
-        emit("notification event=skipped reason=" + reason
-                + " tail=" + tail(current.displayWaybill())
-                + " source=" + source(current.sourceProvider, current.manuallyAdded)
-                + " current=" + current.semantic + '@'
-                + me.pipi.deliveries.notification.ExpressNotifications.eventTime(current));
+    public static void notificationSkipped(ExpressItem current, String reason) {
+        if (current != null) write("notification.skipped", "skipReason", reason,
+                "waybillTail", tail(current.displayWaybill()), "statusSemantic", current.semantic,
+                "statusEventAtMs", current.statusEventTime, "sourceProvider", source(current.sourceProvider, current.manuallyAdded));
     }
 
-    /** 自动件首次入库被留存规则拒绝：上游还列着、本地早已过了留存窗口的老件。 */
-    public static void retentionRejected(
-            me.pipi.deliveries.model.ExpressQueryResult result, String reason) {
-        if (result == null) return;
-        emit("retention event=rejected reason=" + reason
-                + " tail=" + tail(result.waybill)
-                + " source=" + source(result.sourceProvider, false)
-                + " semantic=" + result.semantic
-                + " eventTime=" + result.statusEventTime
-                + " latestTime=" + result.latestTime);
+    public static void retentionRejected(ExpressQueryResult result, String reason) {
+        if (result != null) write("retention.rejected", "skipReason", reason,
+                "waybillTail", tail(result.waybill), "statusSemantic", result.semantic,
+                "statusEventAtMs", result.statusEventTime, "sourceProvider", source(result.sourceProvider, false));
     }
 
-    /** 通知判定：previous/current 各自的状态与事件时间，看批量通知到底是哪一边翻了。 */
-    public static void notificationDecided(
-            me.pipi.deliveries.model.ExpressItem previous,
-            me.pipi.deliveries.model.ExpressItem current, boolean deferred) {
+    public static void notificationDecided(ExpressItem previous, ExpressItem current, boolean deferred) {
         if (previous == null || current == null) return;
-        emit("notification event=decided tail=" + tail(current.displayWaybill())
-                + " source=" + source(current.sourceProvider, current.manuallyAdded)
-                + " previous=" + previous.semantic + '@'
-                + me.pipi.deliveries.notification.ExpressNotifications.eventTime(previous)
-                + " current=" + current.semantic + '@'
-                + me.pipi.deliveries.notification.ExpressNotifications.eventTime(current)
-                + " previousStatusEventTime=" + previous.statusEventTime
-                + " currentStatusEventTime=" + current.statusEventTime
-                + " previousTitle=" + previous.displayStatus()
-                + " currentTitle=" + current.displayStatus()
-                + " detailChanged=" + !String.valueOf(previous.latestDetail).equals(
-                        String.valueOf(current.latestDetail))
-                + " deferred=" + deferred);
+        write("notification.decided", "waybillTail", tail(current.displayWaybill()),
+                "sourceProvider", source(current.sourceProvider, current.manuallyAdded),
+                "previousStatusSemantic", previous.semantic, "statusSemantic", current.semantic,
+                "previousStatusEventAtMs", previous.statusEventTime, "statusEventAtMs", current.statusEventTime,
+                "detailChanged", !previous.latestDetail.equals(current.latestDetail), "deferred", deferred);
     }
 
-    /** 手动查件落库被哪道门拦下：只打尾号和原因。 */
     public static void manualCommitSkipped(String reason, String waybill, int writes) {
-        emit("manual commit event=skipped tail=" + tail(waybill)
-                + " reason=" + reason + " writes=" + writes);
+        write("manual.query.skipped", "waybillTail", tail(waybill), "skipReason", reason, "writes", writes);
     }
 
-    /** Log-only source label; business provider identities remain unchanged. */
     public static String source(String sourceProvider, boolean manuallyAdded) {
         if (manuallyAdded) return "manual";
-        String value = sourceProvider == null ? "" : sourceProvider.trim().toLowerCase(java.util.Locale.ROOT);
-        if ("shunfeng".equals(value)) return "sfexpress";
-        return value.isEmpty() ? "" : value;
+        String value = sourceProvider == null ? "" : sourceProvider.trim().toLowerCase(Locale.ROOT);
+        return "shunfeng".equals(value) ? "sfexpress" : value;
     }
 }

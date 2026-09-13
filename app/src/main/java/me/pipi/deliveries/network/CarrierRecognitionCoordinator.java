@@ -154,6 +154,10 @@ final class CarrierRecognitionCoordinator {
             }
             state.save(identity, new Snapshot(CarrierNormalization.NONE, 0, 0L, true));
             return new Outcome(Collections.emptyList(), false, true);
+        } catch (RecognitionPending pending) {
+            state.save(identity, new Snapshot(CarrierNormalization.NONE,
+                    previous.networkFailures, Math.min(pending.retryAt, now + RETRY_DELAY_MS), false));
+            return new Outcome(Collections.emptyList(), true, false);
         } catch (InterruptedException interrupted) {
             throw interrupted;
         } catch (Exception networkFailure) {
@@ -170,6 +174,18 @@ final class CarrierRecognitionCoordinator {
         HttpClient.Response response = gateway.post(
                 "/api/express/classify", payload, cancellation);
         if (!response.successful()) {
+            if (response.status == 502) {
+                JSONObject pending = GatewayHttpErrors.parseObject(response, "暂时无法识别承运商");
+                Object value = pending.opt("retryAt");
+                if ("recognition_pending".equals(pending.optString("error", ""))
+                        && value instanceof Number) {
+                    double retryAt = ((Number) value).doubleValue();
+                    if (retryAt == Math.rint(retryAt) && retryAt > clock.now()
+                            && retryAt <= 9_007_199_254_740_991L) {
+                        throw new RecognitionPending((long) retryAt);
+                    }
+                }
+            }
             throw GatewayHttpErrors.forResponse(response, "暂时无法识别承运商");
         }
         JSONObject root = GatewayHttpErrors.parseObject(
@@ -191,6 +207,14 @@ final class CarrierRecognitionCoordinator {
             if (carrier != null) return localNormalization(carrier);
         }
         return CarrierNormalization.NONE;
+    }
+
+    private static final class RecognitionPending extends Exception {
+        final long retryAt;
+        RecognitionPending(long retryAt) {
+            super("carrier recognition pending");
+            this.retryAt = retryAt;
+        }
     }
 
     private void recordNetworkFailure(String identity, Snapshot previous, long now) {

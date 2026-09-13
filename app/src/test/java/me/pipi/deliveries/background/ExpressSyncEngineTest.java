@@ -18,6 +18,26 @@ import me.pipi.deliveries.model.StatusSemantic;
 import org.junit.Test;
 
 public final class ExpressSyncEngineTest {
+    @Test public void omittedV5SfDoesNotIssueAccountQuery() {
+        ExpressItem sf = new ExpressItem(1L, "", "SFTEST123456", "SF", "顺丰速运",
+                StatusSemantic.TRANSIT, "运输中", "运输中", "2026-09-01 10:00:00", "[]",
+                "", "INTERFACE5", "", 1L, 2L, "INTERFACE5", "", "", "", true,
+                "", "", "[]", "ShunFeng");
+        assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(sf, true, 100L, false));
+        assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(sf, true, 100L, true));
+        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(sf, false));
+    }
+
+    @Test public void omittedV6RowsDoNotAddASecondAccountQuery() {
+        for (String provider : new String[]{"ShunFeng", "CaiNiao", ""}) {
+            ExpressItem owner = sourceItem("INTERFACE6", provider, "SF", "顺丰速运");
+            assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(owner, false, 1L, false));
+            assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(owner, true, 1L, true));
+        }
+        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
+                sourceItem("INTERFACE6", "ShunFeng", "SF", "顺丰速运"), true));
+    }
+
     @Test
     public void missingAccountRowUsesSignatureEvidenceInsteadOfCachePresence() {
         long now = java.time.Instant.parse("2026-09-08T12:00:00Z").toEpochMilli();
@@ -29,14 +49,14 @@ public final class ExpressSyncEngineTest {
                 9L, "13800138000", "JD0000000000009", "JD", "京东快递",
                 StatusSemantic.COMPLETED, "已签收", "已签收", "", "[]", "", "interface5", "");
         for (boolean missingCache : new boolean[]{false, true}) {
-            assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(signed, missingCache, now));
-            assertTrue(ExpressSyncEngine.shouldRefreshMissingAccountRow(missingTime, missingCache, now));
+            assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(signed, missingCache, now, false));
+            assertTrue(ExpressSyncEngine.shouldRefreshMissingAccountRow(missingTime, missingCache, now, false));
         }
         ExpressItem cancelled = new ExpressItem(
                 9L, "13800138000", "JD0000000000009", "JD", "京东快递",
                 StatusSemantic.CANCELLED, "已取消", "已取消", "", "[]", "", "interface5", "");
-        assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(cancelled, false, now));
-        assertTrue(ExpressSyncEngine.shouldRefreshMissingAccountRow(cancelled, true, now));
+        assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(cancelled, false, now, false));
+        assertTrue(ExpressSyncEngine.shouldRefreshMissingAccountRow(cancelled, true, now, false));
     }
 
     @Test
@@ -87,15 +107,41 @@ public final class ExpressSyncEngineTest {
     @Test
     public void listOnlineUsesSfOrMissingV5AutomaticInformation() {
         assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
-                sourceItem("INTERFACE5", "ShunFeng", "ZTO", "中通快递")));
-        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
-                sourceItem("INTERFACE5", "CaiNiao", "SF", "顺丰速运")));
-        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
-                sourceItem("INTERFACE5", "", "SF", "顺丰速运")));
-        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
-                sourceItem("INTERFACE6", "ShunFeng", "SF", "顺丰速运")));
+                sourceItem("INTERFACE5", "ShunFeng", "ZTO", "中通快递"), false));
         assertFalse(ExpressSyncEngine.usesSharedManualTimeline(
-                sourceItem("INTERFACE6", "JingDong", "JD", "京东快递")));
+                sourceItem("INTERFACE5", "CaiNiao", "SF", "顺丰速运"), false));
+        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
+                sourceItem("INTERFACE5", "", "SF", "顺丰速运"), false));
+        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
+                sourceItem("INTERFACE6", "ShunFeng", "SF", "顺丰速运"), false));
+        assertFalse(ExpressSyncEngine.usesSharedManualTimeline(
+                sourceItem("INTERFACE6", "JingDong", "JD", "京东快递"), false));
+    }
+
+    @Test public void explicitPullNeverQueriesMissingCainiaoOrEntersItsManualChain() {
+        ExpressItem cainiao = sourceItem("INTERFACE5", "CaiNiao", "ZTO", "中通快递");
+        assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(cainiao, true, 1L, true));
+        assertFalse(ExpressSyncEngine.usesSharedManualTimeline(cainiao, true));
+        assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(cainiao, true, 1L, false));
+        assertFalse(ExpressSyncEngine.usesSharedManualTimeline(cainiao, false));
+        assertTrue(ExpressSyncEngine.usesSharedManualTimeline(
+                sourceItem("INTERFACE5", "ShunFeng", "SF", "顺丰速运"), true));
+        assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(
+                sourceItem("INTERFACE6", "CaiNiao", "ZTO", "中通快递"), true, 1L, true));
+    }
+
+    @Test public void explicitPullNeverQueriesMissingJingdongOrEntersItsManualChain() {
+        ExpressItem waybill = sourceItem("INTERFACE5", "JingDong", "ZTO", "中通快递");
+        ExpressItem projected = accountOrder("JD_SYNTHETIC_001");
+        for (ExpressItem item : new ExpressItem[]{waybill, projected, accountOrder("")}) {
+            assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(item, true, 1L, true));
+            assertFalse(ExpressSyncEngine.usesSharedManualTimeline(item, true));
+            assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(item, true, 1L, false));
+        }
+        assertFalse(ExpressSyncEngine.usesSharedManualTimeline(waybill, false));
+        assertFalse(ExpressSyncEngine.usesSharedManualTimeline(projected, false));
+        assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(
+                sourceItem("INTERFACE6", "JingDong", "JD", "京东快递"), true, 1L, true));
     }
 
     @Test

@@ -2,6 +2,7 @@ package me.pipi.deliveries.data;
 
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
+import me.pipi.deliveries.model.WorkerStatusProjection;
 import me.pipi.deliveries.model.ExpressStatusNormalizer;
 import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.StatusSemantic;
@@ -44,7 +45,7 @@ public final class Kuaidi100TimelinePolicy {
     /**
      * A current query chain is complete enough once one provider package contains the order or
      * pickup boundary. Numeric codes are interpreted with the package's own provider contract so
-     * account state 102 (shipped) is never confused with Picker/K100 state 102 (ordered).
+     * account state 102 (shipped) is never confused with Online/K100 state 102 (ordered).
      */
     public static boolean hasTimelineStart(ExpressQueryResult result) {
         return hasStartSemantic(result, true);
@@ -168,10 +169,11 @@ public final class Kuaidi100TimelinePolicy {
             String code = first(value,
                     "logisticsStatus", "statusCode", "status", "state", "action");
             String description = first(value, "logisticsStatusDesc", "stateName");
-            StatusSemantic semantic = isAccountProvider(source)
+            WorkerStatusProjection projected = WorkerStatusProjection.read(value);
+            StatusSemantic semantic = projected != null ? projected.semantic : isAccountProvider(source)
                     ? StatusSemantic.fromAccountState(code, description)
                     : StatusSemantic.fromKuaidi100EventCode(code);
-            if (semantic == StatusSemantic.UNKNOWN) {
+            if (semantic == StatusSemantic.UNKNOWN && projected == null) {
                 semantic = StatusSemantic.fromStored(code, description);
             }
             if (semantic == StatusSemantic.PICKED
@@ -290,7 +292,8 @@ public final class Kuaidi100TimelinePolicy {
                         ? presentation.statusEventTime : effectiveStatusEventTime(presentation),
                 headline.latestTime,
                 headline.latestDetail,
-                ExpressTimeline.mergeJson(cached.tracksJson, refreshed.tracksJson),
+                WorkerStatusProjection.attach(ExpressTimeline.mergeJson(
+                        cached.tracksJson, refreshed.tracksJson), presentation.workerStatus),
                 prefer(refreshed.detailUrl, cached.detailUrl),
                 prefer(refreshed.phone, cached.phone),
                 prefer(refreshed.timelineProvider, cached.timelineProvider),
@@ -305,6 +308,8 @@ public final class Kuaidi100TimelinePolicy {
     static boolean isCompletedTimedPackage(ExpressQueryResult result) {
         return result != null
                 && result.semantic == StatusSemantic.COMPLETED
+                && (result.workerStatus == null || result.structuredStatusEvidence
+                && result.statusEventTime > 0L && result.statusEventTime <= System.currentTimeMillis())
                 && hasTimedTracking(result);
     }
 
@@ -318,6 +323,11 @@ public final class Kuaidi100TimelinePolicy {
                 && (!requireStructuredTerminal || refreshed.structuredStatusEvidence);
         if (cachedTerminal && !refreshedTerminal) return cached;
         if (refreshedTerminal && !cachedTerminal) return refreshed;
+        if (cached.semantic == refreshed.semantic
+                && WorkerStatusProjection.priority(cached) != WorkerStatusProjection.priority(refreshed)) {
+            return WorkerStatusProjection.priority(cached) > WorkerStatusProjection.priority(refreshed)
+                    ? cached : refreshed;
+        }
         if (refreshed.semantic == StatusSemantic.UNKNOWN) return cached;
         if (cached.semantic == StatusSemantic.UNKNOWN) return refreshed;
         long cachedEvent = effectiveStatusEventTime(cached);
@@ -329,7 +339,7 @@ public final class Kuaidi100TimelinePolicy {
 
     private static long effectiveStatusEventTime(ExpressQueryResult result) {
         if (result == null) return 0L;
-        if (result.statusEventTime > 0L) return result.statusEventTime;
+        if (result.workerStatus != null || result.statusEventTime > 0L) return result.statusEventTime;
         return ExpressSourcePolicy.parseEventTime(result.latestTime);
     }
 

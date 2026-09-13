@@ -21,6 +21,7 @@ import {
   scriptingHmacSha256Hex,
 } from "./scripting-crypto";
 import { utf8Data } from "./scripting-data";
+import { createDiagnosticFlowId, writeDiagnostic } from "./logger";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -54,28 +55,34 @@ const SAFE_GATEWAY_ERROR_CODES = new Set([
   "method_not_allowed",
   "not_found",
   "rate_limited",
+  "recognition_pending",
   "replay_store_unavailable",
   "replayed_request",
   "unauthorized",
   "upstream_unavailable",
+  "upstream_business_error",
+  "phone_verification_required",
 ]);
 
 export class GatewayError extends Error {
   readonly status: number;
   readonly gatewayCode: string;
   readonly authRuntime: string;
+  readonly retryAtMs: number;
 
   constructor(
     message: string,
     status = 0,
     gatewayCode = "",
     authRuntime = "",
+    retryAtMs = 0,
   ) {
     super(message);
     this.name = "GatewayError";
     this.status = status;
     this.gatewayCode = gatewayCode;
     this.authRuntime = authRuntime;
+    this.retryAtMs = retryAtMs;
   }
 }
 
@@ -171,6 +178,12 @@ export function gatewayErrorCode(responseText: string): string {
   }
 }
 
+function recognitionRetryAt(responseText: string): number {
+  if (gatewayErrorCode(responseText) !== "recognition_pending") return 0;
+  const value = (JSON.parse(responseText) as { retryAt?: unknown }).retryAt;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
 export async function postGateway<T extends Record<string, unknown>>(
   routeInput: string,
   payload: Record<string, unknown>,
@@ -215,19 +228,24 @@ export async function postGateway<T extends Record<string, unknown>>(
 
   let response;
   let requestStarted = false;
+  let requestSettled = false;
   let responseText = "";
   const timeoutMs = remainingTimeoutMs(
     options.deadlineAtMs,
     Math.min(Number(options.timeoutMs) || REQUEST_TIMEOUT_MS, 60_000),
   );
   const requestStartedAtMs = Date.now();
+  const requestId = createDiagnosticFlowId("request");
   const lifecycleDeadlineAtMs = requestStartedAtMs + timeoutMs;
   let requestPhase: RequestTimeoutDetails["requestPhase"] = "request";
   let responseHeadersAfterMs: number | undefined;
   let responseBodyAfterMs: number | undefined;
+  let signalAbortAfterMs: number | undefined;
+  let callerSettledAfterMs: number | undefined;
   const timeoutError = (timeoutOrigin: RequestTimeoutDetails["timeoutOrigin"]) => {
     const observedAtMs = Date.now();
     return new OperationTimeoutError(undefined, {
+      requestId, signalAbortAfterMs,
       timeoutOrigin, requestPhase, requestBudgetMs: timeoutMs,
       requestElapsedMs: observedAtMs - requestStartedAtMs,
       responseHeadersAfterMs, responseBodyAfterMs,
@@ -237,6 +255,7 @@ export async function postGateway<T extends Record<string, unknown>>(
   const lifecycle = linkedTimeoutSignal(timeoutMs, options.signal);
   let rejectLifecycle: ((reason: Error) => void) | undefined;
   const abortLifecycle = () => {
+    signalAbortAfterMs = Date.now() - requestStartedAtMs;
     rejectLifecycle?.(timeoutError(options.signal?.aborted ? "parent_signal" : "timeout_signal"));
   };
   try {
@@ -259,6 +278,12 @@ export async function postGateway<T extends Record<string, unknown>>(
         debugLabel: `Pipi Deliveries ${route}`,
       });
       responseHeadersAfterMs = Date.now() - requestStartedAtMs;
+      if (lifecycle.signal.aborted) {
+        throw timeoutError(options.signal?.aborted ? "parent_signal" : "timeout_signal");
+      }
+      if (Date.now() >= lifecycleDeadlineAtMs) {
+        throw timeoutError("deadline_after_headers");
+      }
       requestPhase = "response_body";
       if (
         typeof response.expectedContentLength === "number" &&
@@ -277,6 +302,20 @@ export async function postGateway<T extends Record<string, unknown>>(
       }
       responseText = text;
     })();
+    // A timed-out caller can finish before the native fetch/body callback. Observe
+    // that callback without waiting for it or exposing its request/response data.
+    const observeSettlement = () => {
+      requestSettled = true;
+      if (callerSettledAfterMs == null) return;
+      writeDiagnostic("gateway.request.late_settled", {
+        requestId, signalAbortAfterMs, callerSettledAfterMs,
+        requestPhase, requestBudgetMs: timeoutMs,
+        requestElapsedMs: Date.now() - requestStartedAtMs,
+        responseHeadersAfterMs, responseBodyAfterMs,
+        result: "settled",
+      });
+    };
+    void request.then(observeSettlement, observeSettlement);
     await Promise.race([request, expired]);
   } catch (error) {
     if (error instanceof GatewayError || error instanceof OperationTimeoutError) {
@@ -285,35 +324,54 @@ export async function postGateway<T extends Record<string, unknown>>(
     if (lifecycle.signal.aborted) throw timeoutError(options.signal?.aborted ? "parent_signal" : "timeout_signal");
     if (error instanceof Error && error.name === "TimeoutError") throw timeoutError("native_timeout");
     if (error instanceof Error && error.name === "AbortError") throw timeoutError("native_abort");
-    if (options.deadlineAtMs != null && Date.now() >= options.deadlineAtMs) {
+    if (Date.now() >= lifecycleDeadlineAtMs) {
       throw timeoutError("deadline_after_error");
     }
     throw new GatewayError("网络连接异常，请稍后重试");
   } finally {
+    callerSettledAfterMs = Date.now() - requestStartedAtMs;
+    rejectLifecycle = undefined;
+    lifecycle.signal.removeEventListener("abort", abortLifecycle);
+    lifecycle.cancel();
+    lifecycle.dispose();
+    if (requestStarted && !requestSettled) {
+      writeDiagnostic("gateway.request.wait_ended", {
+        requestId, signalAbortAfterMs, callerSettledAfterMs,
+        requestPhase, requestBudgetMs: timeoutMs,
+        requestElapsedMs: callerSettledAfterMs,
+        responseHeadersAfterMs, responseBodyAfterMs,
+        result: "native_pending",
+      });
+    }
     // Access rejection is not evidence that a parcel lookup was permitted.
     if (requestStarted) {
       options.onQueryAttempted?.(response?.status !== 401 && response?.status !== 403);
     }
-    rejectLifecycle = undefined;
-    lifecycle.signal.removeEventListener("abort", abortLifecycle);
-    lifecycle.dispose();
   }
 
+  let value: unknown;
+  try { value = JSON.parse(responseText) as unknown; } catch { /* HTTP errors can have non-JSON bodies. */ }
+  const root = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+  const normalized = root?.normalizedError as { version?: unknown; code?: unknown } | undefined;
+  if (normalized?.version === 1 && typeof normalized.code === "string") {
+    const code = SAFE_GATEWAY_ERROR_CODES.has(normalized.code)
+      ? normalized.code : "upstream_business_error";
+    throw new GatewayError(
+      code === "phone_verification_required" ? "请输入正确的手机尾号"
+        : failureMessage(code === "rate_limited" ? 429 : code === "unauthorized" ? 401 : response.status),
+      response.status, code,
+    );
+  }
   if (!response.ok) {
     throw new GatewayError(
       failureMessage(response.status),
       response.status,
       gatewayErrorCode(responseText),
       response.status === 401 ? scriptingCryptoRuntimeLabel() : "",
+      response.status === 502 ? recognitionRetryAt(responseText) : 0,
     );
   }
-  try {
-    const value = JSON.parse(responseText) as unknown;
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error("invalid object");
-    }
-    return value as T;
-  } catch {
-    throw new GatewayError("服务响应异常", response.status);
-  }
+  if (!root) throw new GatewayError("服务响应异常", response.status);
+  return root as T;
 }

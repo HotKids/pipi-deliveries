@@ -59,6 +59,7 @@ function pack(
     courierCode: "shunfeng",
     companyName: "顺丰速运",
     semantic,
+    structuredStatus: true,
     statusEventAtMs: latest?.timeMs || null,
     latestTimeText: latest?.timeText || "",
     latestDetail: latest?.detail || "",
@@ -931,7 +932,7 @@ assert.equal(
 // Terminal retention uses the source event, never a newer unrelated headline.
 {
   assert.equal(shouldRefreshShipment(shipment("just-signed", "COMPLETED", NOW), NOW), false);
-  assert.equal(shouldRefreshShipment(shipment("clock-skew", "COMPLETED", NOW + 1), NOW), false);
+  assert.equal(shouldRefreshShipment(shipment("clock-skew", "COMPLETED", NOW + 1), NOW), true);
   assert.equal(shouldRefreshShipment(shipment("invalid-future", "COMPLETED", NOW + 6 * 60000), NOW), true);
   const old = shipment("terminal-clock", "COMPLETED", NOW - 16 * 24 * 60 * 60 * 1000);
   const reminder = track("2026-08-25 12:00:00", "售后提醒", "");
@@ -944,10 +945,52 @@ assert.equal(
   const signature = track("2026-08-24 12:00:00", "快件已签收", "");
   assert.equal(terminalEvidenceAtMs({ ...unknown, timeline: {
     ...unknown.timeline, tracks: [reminder, signature],
-  } }, NOW), signature.timeMs);
+  } }, NOW), 0, "delivery prose cannot supply a missing structured terminal clock");
   const cancelled = { ...old, settledAtMs: NOW - 60_000,
     timeline: { ...old.timeline, semantic: "CANCELLED" as const } };
   assert.equal(pruneShipments([cancelled], NOW).length, 1, "the first terminal stamp is stable for cancellation too");
+}
+
+// Moto's station delivery subtype must follow its status donor across H5 history selection.
+for (const historyStatus of ["UNKNOWN", "DELIVERY"] as const) {
+  const value = shipment("8238522608021", "TRANSIT", NOW - 120_000);
+  const stationTrack = (at: number, detail: string, code = "") => track(
+    new Date(at + 8 * 3_600_000).toISOString().slice(0, 19).replace("T", " "), detail, code);
+  const stationAt = NOW - 60_000;
+  const moto: TimelinePackage = { ...value.timeline, provider: "v4_query", semantic: "DELIVERY",
+    structuredStatus: true, statusEventAtMs: stationAt, complete: false,
+    normalizedStatus: { version: 1, scope: "SHIPMENT", semantic: "DELIVERY", code: "STA_DELIVERING",
+      text: "驿站派送中", priority: 1, eventAtMs: stationAt, structured: true },
+    tracks: [stationTrack(stationAt, "Carrier event", "STA_DELIVERING"),
+      stationTrack(stationAt - 60_000, "已揽收")],
+  };
+  moto.tracks[0].raw = { logisticsStatus: "STA_DELIVERING", _pipiStatusSource: "moto" };
+  const h5: TimelinePackage = { ...moto, provider: "k100_h5", complete: true, normalizedStatus: undefined,
+    semantic: historyStatus, structuredStatus: historyStatus !== "UNKNOWN",
+    statusEventAtMs: historyStatus === "UNKNOWN" ? null : NOW,
+    latestTimeText: new Date(NOW).toISOString(), latestDetail: "H5 latest event",
+    tracks: Array.from({ length: 14 }, (_, index) =>
+      stationTrack(NOW - index * 60_000, index === 13 ? "已揽收" : "H5 event")),
+  };
+  value.manualTimelines = [h5, moto];
+  value.detailSelection = { provider: "k100_h5", selectedAtMs: NOW };
+  const detail = selectShipmentDetailTimeline(value);
+  const selected = selectShipmentTimeline(value);
+  assert.equal(detail.provider, "k100_h5");
+  assert.equal(detail.semantic, "DELIVERY");
+  assert.equal(detail.statusEventAtMs, stationAt);
+  assert.deepEqual(shipmentDetailPresentationStatus(value, detail),
+    { semantic: "DELIVERY", text: "驿站派送中" });
+  const displayed = { ...value, timeline: selected };
+  assert.deepEqual(shipmentPresentationStatus(displayed),
+    { semantic: "DELIVERY", text: "驿站派送中" });
+  assert.equal(buildWidgetSnapshot([displayed], NOW).rows[0].statusLabel, "驿站派送中");
+  assert.equal(shipmentPresentationStatus({ ...displayed, timeline: {
+    ...selected, statusEventAtMs: NOW + 1,
+  } }).text, "派送中", "a different status event cannot inherit the former subtype");
+  assert.equal(shipmentPresentationStatus({ ...displayed, timeline: {
+    ...selected, semantic: "COMPLETED",
+  } }).text, "已签收");
 }
 
 console.log("status policy tests passed");

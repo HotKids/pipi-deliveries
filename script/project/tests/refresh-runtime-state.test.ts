@@ -1,3 +1,4 @@
+import { installSharedFileMock } from "./shared-file-mock";
 import assert from "node:assert/strict";
 
 const memory = new Map<string, unknown>();
@@ -15,6 +16,8 @@ Object.assign(globalThis, {
     },
   },
 });
+installSharedFileMock(memory);
+
 
 const {
   acquireDurableRefreshLease,

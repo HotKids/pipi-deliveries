@@ -16,6 +16,14 @@ export type StatusPresentation = {
   text: string;
 };
 
+export type NormalizedStatus = StatusPresentation & {
+  version: 1;
+  code: string;
+  priority: number;
+  eventAtMs: number;
+  structured: boolean;
+};
+
 export type BindingSource = "interface5" | "interface6";
 
 export type AccountBinding = {
@@ -62,10 +70,14 @@ export type TimelinePackage = {
   companyName: string;
   semantic: StatusSemantic;
   statusEventAtMs: number | null;
+  /** Worker projection from the selected status donor, bound to that same event. */
+  normalizedStatus?: NormalizedStatus;
   latestTimeText: string;
   latestDetail: string;
   tracks: readonly TrackNode[];
   successAtMs: number;
+  /** Earliest list time with origin evidence, retained when list snapshots replace their nodes. */
+  listOriginAtMs?: number;
   /**
    * 一次性修复标记（2026-09-06）：老版本把接口 5 按件详情并进了 feed 槽；带这个标记的 feed 包在下一次
    * 列表同步时被 feed 整包替换而不是增量合并，之后标记消失。按件详情的占位副本保留标记，不清它。
@@ -88,6 +100,8 @@ export type ShipmentIdentity = {
   carrierKuaidi100Code?: string;
   carrierTableVersion?: string;
   sourceProvider?: string;
+  /** Sender evidence belongs to the account list, independently of selected history. */
+  sender?: boolean;
   orderId?: string;
   projectedWaybill?: string;
   orderProjectionRetry?: {
@@ -251,10 +265,7 @@ export type GatewayCredentials = {
   token: string;
 };
 
-export type ManualQueryInput = {
-  waybill: string;
-  phoneTail?: string;
-};
+
 
 export type RefreshSummary = {
   attempted: number;

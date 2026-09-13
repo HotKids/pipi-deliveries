@@ -15,10 +15,13 @@ import {
   diagnosticsEnabled,
   readDiagnostics,
   setDiagnosticsEnabled,
+  writeDiagnostic,
+  writeRuntimeCapabilities,
   type DiagnosticEntry,
 } from "../services/logger";
 import { copyText } from "../services/clipboard";
 import { transientToast } from "../services/ui-feedback";
+import { carrierAuthorityDiagnosticDetails } from "../services/carrier-authority";
 
 const EVENT_TITLES: Record<string, string> = {
   "app.state.applied": "页面状态已更新",
@@ -170,7 +173,8 @@ function timelineProviderText(item: DiagnosticEntry): string | null {
   const provider = item.details.timelineProvider;
   if (!provider) return null;
   const value = providerText(provider);
-  if (item.event === "manual.query.completed") return `选中数据源 ${value}`;
+  if (item.event === "manual.query.completed") return item.details.selectionScope === "query_response"
+    ? `Response source ${value}` : `选中数据源 ${value}`;
   if (
     item.event.startsWith("manual.source.") ||
     item.event.startsWith("detail.refresh.stage_") ||
@@ -255,6 +259,14 @@ function detailsText(item: DiagnosticEntry): string {
     details.baseActiveSource,
   );
   const parts = [
+    details.runtimeHost ? `Host ${details.runtimeHost}` : null,
+    details.sqliteOpenAvailable != null ? `SQLite.open ${details.sqliteOpenAvailable ? "available" : "unavailable"}` : null,
+    details.sharedFilesAvailable != null ? `Shared files ${details.sharedFilesAvailable ? "available" : "unavailable"}` : null,
+    details.hotlineMatchesExpected != null ? `HTKY hotline ${details.hotlineMatchesExpected ? "matches" : "not confirmed"}` : null,
+    details.carrierRefreshRemainingMs != null ? `Carrier refresh in ${Math.ceil(details.carrierRefreshRemainingMs / 60_000)} min` : null,
+    details.waitTimeoutOrigin ? `Wait ended ${details.waitTimeoutOrigin}` : null,
+    details.waitElapsedMs != null ? `Wait elapsed ${details.waitElapsedMs} ms` : null,
+    details.deadlineLagMs != null ? `Deadline lag ${details.deadlineLagMs} ms` : null,
     details.clientBuild != null ? `构建 ${details.clientBuild}` : null,
     details.trigger ? `触发 ${reasonText(details.trigger)}` : null,
     hasSource ? "统一通道" : null,
@@ -350,7 +362,9 @@ function detailsText(item: DiagnosticEntry): string {
     details.validTrackCount != null
       ? `有效轨迹 ${details.validTrackCount}`
       : null,
-    details.effectiveTrackCount != null
+    details.returnedTrackCount != null ? `Returned tracks ${details.returnedTrackCount}` : null,
+    details.displayedTrackCount != null ? `Displayed tracks ${details.displayedTrackCount}` : null,
+    details.returnedTrackCount == null && details.displayedTrackCount == null && details.effectiveTrackCount != null
       ? `当前轨迹 ${details.effectiveTrackCount}`
       : null,
     details.detailEffectiveTrackCount != null
@@ -452,6 +466,11 @@ export function DiagnosticLogPage() {
         return;
       }
       setRecording(next);
+      if (next) {
+        writeRuntimeCapabilities("app");
+        writeDiagnostic("carrier.authority.current", carrierAuthorityDiagnosticDetails());
+        setItems(readDiagnostics());
+      }
       setNotice(next ? "已开始记录" : "已停止记录");
     } else if (action === "copy") {
       const latestItems = readDiagnostics();

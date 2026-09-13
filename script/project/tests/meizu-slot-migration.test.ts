@@ -25,39 +25,40 @@ function seed(shipment: Shipment): void {
   memory.set("pipi_deliveries_state_v1", { schema: 2, checksum: sha256(JSON.stringify(state)), state });
 }
 
-// Legacy primary-only rows must retain their history and selection without requiring a query.
+// Retired slots are discarded, including a selected primary-only history.
 seed(row(true));
 const restored = loadState(NOW).shipments[0]!;
-assert.equal(restored.timeline.provider, "v6_query");
-assert.equal(restored.manualTimelines?.[0]?.provider, "v6_query");
-assert.deepEqual(restored.detailSelection, { provider: "v6_query", selectedAtMs: NOW - 1000 });
-assert.equal(restored.timeline.tracks[0]?.detail, "Older node");
+assert.equal(restored.timeline.provider, "none");
+assert.deepEqual(restored.manualTimelines, []);
+assert.equal(restored.detailSelection, undefined);
+assert.deepEqual(restored.timeline.tracks, []);
 assert.deepEqual(loadState(NOW), loadState(NOW), "migration is idempotent across durable reloads");
 for (const key of ["pipi_deliveries_state_v1", "pipi_deliveries_state_backup_v1"]) {
   assert.equal(JSON.stringify(memory.get(key)).includes("v6_picker"), false, "healed state writes only the canonical slot");
 }
 
-// A partially upgraded row may contain both names. They are one source, while the feed and KDNiao remain separate.
+// The canonical cache remains unchanged; neither retired name contributes history to it.
 const automatic = row(false);
 automatic.timeline = pack("interface5", "Feed node");
 automatic.sourceTimeline = automatic.timeline;
-automatic.manualTimelines = [pack("v6_picker", "Older node", -1000), pack("v6_query", "Newer node"), pack("kdniao", "Other provider")];
+automatic.manualTimelines = [pack("v6_picker", "Older node", -1000), pack("v6_query", "Newer node"), pack("kdniao", "Other provider"), pack("meizu_picker", "Other retired node", -2000)];
 seed(automatic);
 const migrated = loadState(NOW).shipments[0]!;
 const meizu = migrated.manualTimelines?.filter(value => value.provider === "v6_query") || [];
 assert.equal(meizu.length, 1);
-assert.deepEqual(new Set(meizu[0]!.tracks.map(value => value.detail)), new Set(["Older node", "Newer node"]));
+assert.deepEqual(meizu[0], automatic.manualTimelines[1]);
 assert.deepEqual(migrated.sourceTimeline, automatic.sourceTimeline);
 assert.deepEqual(migrated.manualTimelines?.find(value => value.provider === "kdniao"), automatic.manualTimelines[2]);
 assert.equal(migrated.identity.sourceProvider, "ShunFeng", "business ownership is not a timeline slot");
-assert.deepEqual(migrated.detailSelection, { provider: "v6_query", selectedAtMs: NOW - 1000 });
+assert.equal(migrated.detailSelection, undefined);
 const incoming = { ...migrated, timeline: pack("v6_query", "Current response", 1000), manualTimelines: [pack("v6_query", "Current response", 1000)] };
 const saved = saveState({ ...emptyState(), shipments: [applyManualShipment(migrated, incoming, NOW + 1000)] }, NOW + 1000).shipments[0]!;
 assert.deepEqual(new Set(saved.manualTimelines?.find(value => value.provider === "v6_query")?.tracks.map(value => value.detail)),
-  new Set(["Older node", "Newer node", "Current response"]));
+  new Set(["Newer node", "Current response"]));
 assert.equal(JSON.stringify(saved).includes("v6_picker"), false);
+assert.equal(JSON.stringify(saved).includes("meizu_picker"), false);
 
-// Renaming a signed history must not erase its terminal latch or let a later transit packet roll it back.
+// A terminal status held only by a retired cache must not become canonical status evidence.
 const signed = row(true);
 signed.timeline = { ...signed.timeline, semantic: "COMPLETED", statusEventAtMs: NOW - 1000 };
 signed.settledAtMs = NOW - 1000;
@@ -66,10 +67,11 @@ const signedBefore = loadState(NOW).shipments[0]!;
 const transit = { ...signedBefore, timeline: pack("v6_query", "Later transit", 1000), manualTimelines: [pack("v6_query", "Later transit", 1000)] };
 const signedAfter = saveState({ ...emptyState(), shipments: [applyManualShipment(signedBefore, transit, NOW + 1000)] }, NOW + 1000).shipments[0]!;
 assert.equal(signedAfter.timeline.provider, "v6_query");
-assert.equal(signedAfter.timeline.semantic, "COMPLETED");
-assert.equal(signedAfter.settledAtMs, NOW - 1000);
+assert.equal(signedAfter.timeline.semantic, "TRANSIT");
+assert.equal(signedAfter.settledAtMs, undefined);
 
-for (const alias of ["route", "meizu", "meizu_picker", "v6_picker", "v6_query"]) assert.equal(normalizeTimelineSlot(alias), "v6_query");
+for (const alias of ["route", "meizu", "v6_query"]) assert.equal(normalizeTimelineSlot(alias), "v6_query");
+for (const retired of ["meizu_picker", "v6_picker"]) assert.notEqual(normalizeTimelineSlot(retired), "v6_query");
 for (const other of ["v5_query", "k100_h5", "v2_query", "kdniao"]) assert.equal(normalizeTimelineSlot(other), other);
 
 // Old log records and fresh calls that still supply a legacy input display/write the same canonical identity.
@@ -79,4 +81,4 @@ memory.set("pipi_deliveries_diagnostic_log_v1", [{ at: new Date().toISOString(),
 assert.equal(JSON.stringify(readDiagnostics()).includes("v6_picker"), false);
 writeDiagnostic("manual.source.succeeded", { stage: "v6_picker", level: "v6_picker", timelineProvider: "v6_picker" });
 assert.equal(JSON.stringify(memory.get("pipi_deliveries_diagnostic_log_v1")).includes("v6_picker"), false);
-console.log("Meizu canonical slot migration and same-source history tests passed");
+console.log("Meizu retired slot cleanup and canonical history tests passed");

@@ -29,7 +29,7 @@ type CarrierIndexes = Readonly<{
 }>;
 
 export const BOOTSTRAP_TABLE_VERSION =
-  "6e4ec3e45a460dbea446093a9b7ccb81b2da80f716f57369bc32572d640dda0e";
+  "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa";
 export const BOOTSTRAP_TABLE_SOURCE = "embedded-transition";
 
 function normalizeCarrierName(value: string): string {

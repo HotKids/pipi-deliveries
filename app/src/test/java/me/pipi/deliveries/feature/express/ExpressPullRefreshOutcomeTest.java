@@ -38,8 +38,30 @@ public class ExpressPullRefreshOutcomeTest {
         assertEquals("列表已更新", ShadowToast.getTextOfLatestToast());
         announce.invoke(activity, completed);
         assertEquals(1, ShadowToast.shownToastCount());
-        assertEquals(ExpressToastCopy.REFRESH_PARTIAL,
+        assertEquals(ExpressToastCopy.LIST_UPDATED,
                 ExpressToastCopy.refreshSummary(2, 1, 1, false));
+    }
+
+    @Test public void partialWithoutAccountCommitReportsListUpdatedAndKeepsOtherOutcomes() throws Exception {
+        ExpressListActivity activity = Robolectric.buildActivity(ExpressListActivity.class).get();
+        set(activity, "swipeRefresh", new SwipeRefreshLayout(RuntimeEnvironment.getApplication()));
+        set(activity, "pullRefreshPending", true);
+        set(activity, "pullRefreshWorkId", "manual-partial");
+        Method announce = ExpressListActivity.class.getDeclaredMethod("announcePullRefreshOutcome", Intent.class);
+        announce.setAccessible(true);
+        ShadowToast.reset();
+        Intent completed = new Intent(ExpressRepository.ACTION_SYNC_FINISHED)
+                .putExtra(ExpressRepository.EXTRA_SYNC_WORK_ID, "manual-partial")
+                .putExtra(ExpressRepository.EXTRA_SYNC_ATTEMPTED, 5)
+                .putExtra(ExpressRepository.EXTRA_SYNC_SUCCEEDED, 4)
+                .putExtra(ExpressRepository.EXTRA_SYNC_FAILED, 1);
+        announce.invoke(activity, completed);
+        assertEquals("列表已更新", ShadowToast.getTextOfLatestToast());
+        announce.invoke(activity, completed);
+        assertEquals(1, ShadowToast.shownToastCount());
+        assertEquals(ExpressToastCopy.REFRESH_FAILED, ExpressToastCopy.refreshSummary(2, 0, 2, false));
+        assertEquals(ExpressToastCopy.REFRESH_UP_TO_DATE, ExpressToastCopy.refreshSummary(0, 0, 0, false));
+        assertEquals(ExpressToastCopy.REFRESH_DONE, ExpressToastCopy.refreshSummary(2, 2, 0, false));
     }
 
     @Test public void olderOrPeriodicCompletionCannotFinishTheCurrentPull() throws Exception {

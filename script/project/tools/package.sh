@@ -3,6 +3,7 @@ set -eu
 
 PROJECT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SCRIPT_DIR=$(CDPATH='' cd -- "$PROJECT_DIR/.." && pwd)
+REPO_DIR=$(CDPATH='' cd -- "$PROJECT_DIR/../../.." && pwd)
 OUTPUT=${1:-"$SCRIPT_DIR/pipi-deliveries.scripting"}
 
 case "$OUTPUT" in
@@ -12,7 +13,8 @@ esac
 
 OUTPUT_DIR=$(CDPATH='' cd -- "$(dirname -- "$OUTPUT")" && pwd)
 OUTPUT_NAME=$(basename -- "$OUTPUT")
-TEMP_DIR=$(mktemp -d "$OUTPUT_DIR/.pipi-deliveries-package.XXXXXX")
+mkdir -p "$REPO_DIR/project-data/tmp"
+TEMP_DIR=$(mktemp -d "$REPO_DIR/project-data/tmp/pipi-deliveries-package.XXXXXX")
 TEMP_OUTPUT="$TEMP_DIR/$OUTPUT_NAME"
 
 cleanup() {

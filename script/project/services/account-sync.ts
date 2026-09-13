@@ -1,3 +1,4 @@
+import { statusProjectionFields } from "./worker-status";
 import type { AccountAppTarget } from "./account-app-links";
 import { loadAccountAppRoutes, saveAccountAppRoutes } from "./routes";
 import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
@@ -44,7 +45,9 @@ import {
 } from "./script-source";
 import { projectedCarrierPresentation } from "./carrier-presentation";
 import { accountOrderTextIdentity } from "./account-order-text-identity";
+import { displayWaybill } from "./shipment-policy";
 import {
+  directAccountCarrierPresentation,
   normalizeAccountParcelCarrier,
   type AccountCarrierNormalizationOptions,
 } from "./account-carrier-normalization";
@@ -219,6 +222,7 @@ export async function refreshAccountParcel(
   deadlineAtMs?: number,
   signal?: AbortSignal,
   onQueryAttempted?: (authorized: boolean) => void,
+  options: Readonly<{ recognizeCarrier?: boolean }> = {},
 ): Promise<AccountParcelDto | null> {
   const source = shipment.identity.bindingSource;
   if (!source || shipment.identity.manuallyAdded) return null;
@@ -275,7 +279,9 @@ export async function refreshAccountParcel(
         projectionTimeline: orderParcel.projectionTimeline }
     : orderParcel;
   return resolved && shipment.identity.accountOrder
-    ? normalizeAccountParcelCarrierBestEffort(resolved, { deadlineAtMs, signal })
+    ? options.recognizeCarrier === false
+      ? directAccountCarrierPresentation(resolved)
+      : normalizeAccountParcelCarrierBestEffort(resolved, { deadlineAtMs, signal })
     : resolved;
 }
 
@@ -301,7 +307,9 @@ export async function fetchAccountExternalAppRoutes(
 ): Promise<AccountAppTarget[]> {
   if (signal.aborted || !accountExternalAppName(shipment) || !shipment.accountRecord) return [];
   const startedAt = Date.now();
-  const context = { source: SCRIPT_BINDING_SOURCE, sourceProvider: String(shipment.accountRecord.provider || "").toLowerCase() };
+  const context = { source: SCRIPT_BINDING_SOURCE,
+    sourceProvider: String(shipment.accountRecord.provider || "").toLowerCase(),
+    waybillTail: displayWaybill(shipment).slice(-4), carrierCode: shipment.identity.courierCode };
   const cached = loadAccountAppRoutes(shipment.accountRecord);
   if (cached.length) {
     writeDiagnostic("detail.external.routes", { ...context, result: "cached", records: cached.length });
@@ -462,6 +470,7 @@ function withAccountPresentation(
     semantic: account.semantic,
     statusEventAtMs: account.statusEventAtMs,
     structuredStatus: account.structuredStatus === true,
+    ...statusProjectionFields(account, projected),
     latestTimeText: takesHeadline
       ? account.latestTimeText || projected.latestTimeText
       : projected.latestTimeText,
@@ -495,19 +504,19 @@ export function parcelToShipment(
       timeMs: parseProviderTime(track.timeText),
       detail: track.detail,
       statusCode: track.statusCode,
-      raw: track.statusCode
-        ? { statusCode: track.statusCode, _pipiStatusSource: parcel.source }
-        : { _pipiStatusSource: parcel.source },
+      raw: { ...(track.statusCode ? { statusCode: track.statusCode } : {}),
+        ...(track.normalizedStatus ? { normalizedStatus: track.normalizedStatus } : {}),
+        _pipiStatusSource: parcel.source },
     }))
     .filter((track) => Boolean(track.detail));
   const latest = tracks.find((track) => track.timeMs != null) || tracks[0];
   const unprojectedOrder = parcel.accountOrder && displayWaybill === ownerId;
   let semantic = parcel.semantic as StatusSemantic;
-  if (semantic === "UNKNOWN" && latest) {
+  if (!parcel.normalizedStatus && semantic === "UNKNOWN" && latest) {
     semantic = semanticFromText(latest.detail);
   }
   if (
-    unprojectedOrder &&
+    !parcel.normalizedStatus && unprojectedOrder &&
     (
       semantic === "PICKED" ||
       semanticFromText(parcel.latestDetail) === "PICKED"
@@ -533,12 +542,14 @@ export function parcelToShipment(
     courierCode,
     companyName,
     semantic,
-    structuredStatus: semantic !== "UNKNOWN" && semantic === (
+    ...(parcel.normalizedStatus ? { normalizedStatus: parcel.normalizedStatus } : {}),
+    structuredStatus: parcel.normalizedStatus?.structured ?? (semantic !== "UNKNOWN" && semantic === (
       parcel.source === "interface5"
         ? semanticFromAccountState(parcel.sourceStateCode, "")
         : semanticFromStored(parcel.sourceStateCode, "")
-    ),
-    statusEventAtMs: latest?.timeMs || parseProviderTime(parcel.latestTimeText),
+    )),
+    statusEventAtMs: parcel.normalizedStatus ? parcel.normalizedStatus.eventAtMs || null
+      : latest?.timeMs || parseProviderTime(parcel.latestTimeText),
     latestTimeText: latest?.timeText || parcel.latestTimeText,
     latestDetail: latest?.detail || parcel.latestDetail,
     tracks,
@@ -554,16 +565,11 @@ export function parcelToShipment(
         companyName,
       }
     : null;
-  // 用户定 2026-09-05 晚：feed 增量与 query 是两个独立的包，不拼接。行（状态、头条、事件时间、
-  // 自己的节点）永远归 feed：带过来的 source 包只保留 feed 自己的节点，跟这次的 feed 节点做同源
-  // 增量合并。联合页抓到的完整 H5 包只住 jd_h5 槽，由详情页选包；不完整的 H5 包照旧不存。
-  // 之前这里把 H5 节点并进 feed 轨迹（2026-09-04 的「轨迹也归 feed」），详情页就出现同一分钟
-  // 的两条「已揽收完成」——一条 feed 的、一条 H5 的（2026-09-05 晚，京东 0822）。
+  // Keep the list snapshot separate from projected H5 history. An H5-only clock cannot
+  // make the current list response look stale when restoring a known waybill.
   const split = projectionTimeline ? splitJingDongH5Nodes(projectionTimeline) : null;
   const carriedFeed = split?.feed || null;
-  // Restoring a known waybill must not turn an order-completion/evaluation packet into
-  // carrier evidence. Only a carrier-scoped completion may advance an established parcel.
-  const orderCompletion = parcel.normalizedStatusScope === "ORDER" &&
+  const orderScopedCompletion = parcel.normalizedStatusScope === "ORDER" &&
     accountTimeline.semantic === "COMPLETED";
   const projectionIdentity = {
     accountOrder: parcel.accountOrder,
@@ -575,9 +581,16 @@ export function parcelToShipment(
     projectedWaybill: unprojectedOrder ? "" : displayWaybill,
   };
   const sanitizedAccountTimeline = withoutJingDongOrderCompletion(
-    accountTimeline, projectionIdentity, orderCompletion,
+    accountTimeline, projectionIdentity, orderScopedCompletion,
+  );
+  // v5 list scope follows the order-number identity, including real 107 delivery
+  // events. Keep inferred order completion and rejected shopping-review evidence
+  // from advancing a projected parcel, without rejecting structured delivery confirmation.
+  const orderCompletion = orderScopedCompletion && (
+    !accountTimeline.structuredStatus || sanitizedAccountTimeline.semantic !== "COMPLETED"
   );
   const summaryParticipates = !carriedFeed || (!orderCompletion && (
+    (parcel.source === "interface5" && carriedFeed.semantic === accountTimeline.semantic) ||
     !timedTracks(carriedFeed.tracks).length ||
     parcel.normalizedStatusScope === "SHIPMENT" ||
     incomingStatusAdvances(carriedFeed.semantic, accountTimeline.semantic)
@@ -587,8 +600,10 @@ export function parcelToShipment(
     : summaryParticipates
       ? withAccountPresentation(
           mergeTimelinePackage(
-            withoutJingDongOrderCompletion(carriedFeed, projectionIdentity),
+            split?.jdH5 && !carriedFeed.tracks.length && carriedFeed.structuredStatus !== true
+              ? null : withoutJingDongOrderCompletion(carriedFeed, projectionIdentity),
             sanitizedAccountTimeline,
+            parcel.source !== "interface5",
           ),
           sanitizedAccountTimeline,
         )
@@ -623,6 +638,10 @@ export function parcelToShipment(
       carrierKuaidi100Code: parcel.carrierNormalization?.kuaidi100Code,
       carrierTableVersion: parcel.carrierNormalization?.tableVersion,
       sourceProvider: parcel.sourceProvider,
+      // Xiaomi ExpressUtils.isSelfSend uses exact bound-phone membership.
+      sender: parcel.source === "interface5"
+        ? Boolean(parcel.senderPhone && boundPhones.includes(parcel.senderPhone))
+        : undefined,
       orderId: parcel.accountOrder ? parcel.orderId || ownerId : "",
       projectedWaybill: parcel.accountOrder && !unprojectedOrder
         ? displayWaybill
@@ -637,71 +656,6 @@ export function parcelToShipment(
     statusPresentation,
     route: routeKind ? { kind: routeKind, source: parcel.source } : null,
     accountRecord: detailRecord(parcel, associatedPhone),
-    updatedAtMs: now,
-  };
-}
-
-export function parcelToManualShipment(
-  parcel: AccountParcelDto,
-  phoneTail: string,
-  now = Date.now(),
-  bindingSource: BindingSource = SCRIPT_BINDING_SOURCE,
-): Shipment | null {
-  requireScriptSource(bindingSource);
-  const waybill = normalizeWaybill(parcel.waybill || parcel.ownerId);
-  if (!waybill) return null;
-  const tracks: TrackNode[] = parcel.tracks
-    .map((track) => ({
-      timeText: track.timeText,
-      timeMs: parseProviderTime(track.timeText),
-      detail: track.detail,
-      statusCode: track.statusCode,
-      raw: track.statusCode
-        ? { statusCode: track.statusCode, _pipiStatusSource: parcel.source }
-        : { _pipiStatusSource: parcel.source },
-    }))
-    .filter((track) => Boolean(track.detail));
-  const latest = tracks.find((track) => track.timeMs != null) || tracks[0];
-  let semantic = parcel.semantic as StatusSemantic;
-  if (semantic === "UNKNOWN" && latest) semantic = semanticFromText(latest.detail);
-  const companyName = parcel.companyName || parcel.courierCode || "快递";
-  const routeKind = trustedRouteKind(parcel);
-  const timeline = {
-    provider: parcel.source,
-    waybill,
-    courierCode: parcel.courierCode,
-    companyName,
-    semantic,
-    statusEventAtMs: latest?.timeMs || parseProviderTime(parcel.latestTimeText),
-    latestTimeText: latest?.timeText || parcel.latestTimeText,
-    latestDetail: latest?.detail || parcel.latestDetail,
-    tracks,
-    successAtMs: now,
-  } satisfies Shipment["timeline"];
-  return {
-    identity: {
-      id: `${bindingSource}:manual:${waybill}`,
-      bindingSource,
-      sourceOwner: "manual",
-      sourceId: waybill,
-      phoneTail: String(phoneTail || "").slice(-4),
-      courierCode: parcel.courierCode,
-      rawCourierCode: parcel.rawCourierCode,
-      rawCompanyName: parcel.rawCompanyName,
-      companyName,
-      carrierIsBuiltIn: parcel.carrierNormalization?.isBuiltIn,
-      carrierKuaidi100Code: parcel.carrierNormalization?.kuaidi100Code,
-      carrierTableVersion: parcel.carrierNormalization?.tableVersion,
-      sourceProvider: parcel.sourceProvider,
-      accountOrder: false,
-      manuallyAdded: true,
-      createdAtMs: now,
-    },
-    timeline,
-    sourceTimeline: null,
-    manualTimelines: [timeline],
-    route: routeKind ? { kind: routeKind, source: bindingSource } : null,
-    accountRecord: null,
     updatedAtMs: now,
   };
 }

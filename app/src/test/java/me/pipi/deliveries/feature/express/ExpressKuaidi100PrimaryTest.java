@@ -54,21 +54,21 @@ public class ExpressKuaidi100PrimaryTest {
         CaptureShadow.expectedProvider = TimelineSlot.JT_H5;
         ExpressItem owner = new ExpressItem(1L, "1234", "JTTEST123456", "JTSD", "Synthetic carrier",
                 StatusSemantic.TRANSIT, "", "", "", "[]", "", "INTERFACE5", "");
-        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
-                () -> { throw new IllegalStateException("Synthetic Picker failure"); },
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
+                () -> { throw new IllegalStateException("Synthetic Online failure"); },
                 null, null, false, ignored -> () -> capture(activity, owner), null);
         assertEquals(TimelineSlot.JT_H5, batch.detailSelected().timelineProvider);
         assertEquals(List.of("https://jtsd.jtexpress.com.cn/pipi#/pages/checkGoods/sendDetail?waybillNo=JTTEST123456&isFrom=serach"),
                 CaptureShadow.routes);
     }
 
-    @Test public void zeroOrFailedPickerStillReachesTheExistingK100StageWithoutAnyRoute() throws Exception {
+    @Test public void zeroOrFailedOnlineStillReachesTheExistingK100StageWithoutAnyRoute() throws Exception {
         ExpressDetailActivity activity = Robolectric.buildActivity(ExpressDetailActivity.class).get();
         for (boolean failed : new boolean[]{false, true}) {
             ExpressItem owner = owner(failed ? " sf-test-4272 " : " sf-test-4271 ");
-            ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
+            ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
                     () -> {
-                        if (failed) throw new IllegalStateException("Synthetic Picker failure");
+                        if (failed) throw new IllegalStateException("Synthetic Online failure");
                         return null;
                     }, null, null, false,
                     ignored -> () -> capture(activity, owner), null);
@@ -80,14 +80,11 @@ public class ExpressKuaidi100PrimaryTest {
         assertEquals(2, CaptureShadow.routes.size());
     }
 
-    @Test public void existingDetailK100EntryDoesNotRequireTheCachedPickerUrl() throws Exception {
+    @Test public void existingDetailK100EntryDoesNotRequireTheCachedOnlineUrl() throws Exception {
         ExpressDetailActivity activity = Robolectric.buildActivity(ExpressDetailActivity.class).get();
-        java.lang.reflect.Field item = ExpressDetailActivity.class.getDeclaredField("item");
-        item.setAccessible(true);
-        item.set(activity, owner(" sf-test-4273 "));
-        Method method = ExpressDetailActivity.class.getDeclaredMethod("kuaidi100FallbackUrl");
-        method.setAccessible(true);
-        assertEquals("https://m.kuaidi100.com/app/query/?nu=SFTEST4273", method.invoke(activity));
+        CaptureShadow.routes.clear();
+        assertNotNull(capture(activity, owner(" sf-test-4273 ")));
+        assertEquals(List.of("https://m.kuaidi100.com/app/query/?nu=SFTEST4273"), CaptureShadow.routes);
     }
 
     @Test public void primaryEarlyExitReportsReasonWithoutLoadingOrChangingCooldown() throws Exception {
@@ -103,7 +100,9 @@ public class ExpressKuaidi100PrimaryTest {
                 org.robolectric.shadows.ShadowLog.getLogsForTag(
                         me.pipi.deliveries.network.ExpressLog.TAG);
         assertEquals(1, invalid.size());
-        assertEquals("level=k100_h5 event=skipped tail=--- reason=invalid_waybill", invalid.get(0).msg);
+        assertTrue(invalid.get(0).msg.contains(" INFO manual.source.skipped "));
+        assertTrue(invalid.get(0).msg.contains("timelineProvider=k100_h5"));
+        assertTrue(invalid.get(0).msg.contains("skipReason=invalid_waybill"));
 
         org.robolectric.shadows.ShadowLog.clear();
         ExpressItem owner = owner("SFTEST4274");
@@ -115,7 +114,9 @@ public class ExpressKuaidi100PrimaryTest {
                 org.robolectric.shadows.ShadowLog.getLogsForTag(
                         me.pipi.deliveries.network.ExpressLog.TAG);
         assertEquals(1, cooldown.size());
-        assertEquals("level=k100_h5 event=skipped tail=4274 reason=cooldown", cooldown.get(0).msg);
+        assertTrue(cooldown.get(0).msg.contains(" INFO manual.source.skipped "));
+        assertTrue(cooldown.get(0).msg.contains("waybillTail=4274"));
+        assertTrue(cooldown.get(0).msg.contains("skipReason=cooldown"));
         assertFalse(cooldown.get(0).msg.contains(owner.displayWaybill()));
         assertFalse(cooldown.get(0).msg.contains("http"));
         assertTrue(CaptureShadow.routes.isEmpty());

@@ -6,6 +6,7 @@ public final class ExpressQueryResult {
     public final String courierCode;
     public final String companyName;
     public final StatusSemantic semantic;
+    public final WorkerStatusProjection workerStatus;
     /** Provider-owned event time for {@link #semantic}; independent from the headline time. */
     public final long statusEventTime;
     public final String latestTime;
@@ -29,6 +30,9 @@ public final class ExpressQueryResult {
     public final String statusDescription;
     /** True only when an adapter observed an explicit provider status enum/code. */
     public final boolean structuredStatusEvidence;
+    /** Account-list metadata; detail providers cannot establish sender identity or an origin. */
+    public final String senderPhone;
+    public final long listOriginAtMs;
 
     public ExpressQueryResult(
             String waybill, String courierCode, String companyName,
@@ -116,11 +120,28 @@ public final class ExpressQueryResult {
             String sourceProvider, CarrierNormalization carrierNormalization,
             boolean carrierIdentityEvidence, String statusDescription,
             boolean structuredStatusEvidence) {
+        this(waybill, courierCode, companyName, semantic, statusEventTime, latestTime,
+                latestDetail, tracksJson, detailUrl, phone, timelineProvider, routeInterface,
+                routeCredential, sourceProvider, carrierNormalization, carrierIdentityEvidence,
+                statusDescription, structuredStatusEvidence, "", 0L);
+    }
+
+    private ExpressQueryResult(
+            String waybill, String courierCode, String companyName,
+            StatusSemantic semantic, long statusEventTime, String latestTime,
+            String latestDetail, String tracksJson, String detailUrl, String phone,
+            String timelineProvider, String routeInterface, String routeCredential,
+            String sourceProvider, CarrierNormalization carrierNormalization,
+            boolean carrierIdentityEvidence, String statusDescription,
+            boolean structuredStatusEvidence, String senderPhone, long listOriginAtMs) {
         this.waybill = clean(waybill);
         this.courierCode = clean(courierCode);
         this.companyName = clean(companyName);
         this.semantic = semantic == null ? StatusSemantic.UNKNOWN : semantic;
         this.statusEventTime = Math.max(0L, statusEventTime);
+        WorkerStatusProjection projected = WorkerStatusProjection.cached(tracksJson);
+        this.workerStatus = projected != null && projected.matches(this.semantic, this.statusEventTime)
+                ? projected : null;
         this.latestTime = clean(latestTime);
         this.latestDetail = clean(latestDetail);
         String tracks = clean(tracksJson);
@@ -134,9 +155,11 @@ public final class ExpressQueryResult {
         this.carrierNormalization = carrierNormalization == null
                 ? CarrierNormalization.NONE : carrierNormalization;
         this.carrierIdentityEvidence = carrierIdentityEvidence;
-        String coarseStatus = clean(statusDescription);
+        String coarseStatus = workerStatus == null ? clean(statusDescription) : workerStatus.text;
         this.statusDescription = coarseStatus.isEmpty() ? this.semantic.label : coarseStatus;
-        this.structuredStatusEvidence = structuredStatusEvidence;
+        this.structuredStatusEvidence = workerStatus == null ? structuredStatusEvidence : workerStatus.structured;
+        this.senderPhone = clean(senderPhone);
+        this.listOriginAtMs = Math.max(0L, listOriginAtMs);
     }
 
     /** Same package re-keyed under another identity (an order's projected carrier waybill). */
@@ -148,7 +171,7 @@ public final class ExpressQueryResult {
                 latestTime, latestDetail, tracksJson, detailUrl, phone,
                 timelineProvider, routeInterface, routeCredential, sourceProvider,
                 carrierNormalization, carrierIdentityEvidence, statusDescription,
-                structuredStatusEvidence);
+                structuredStatusEvidence, senderPhone, listOriginAtMs);
     }
 
     public ExpressQueryResult withCarrierNormalization(CarrierNormalization value) {
@@ -156,7 +179,7 @@ public final class ExpressQueryResult {
                 waybill, courierCode, companyName, semantic, statusEventTime,
                 latestTime, latestDetail, tracksJson, detailUrl, phone,
                 timelineProvider, routeInterface, routeCredential, sourceProvider, value,
-                carrierIdentityEvidence, statusDescription, structuredStatusEvidence);
+                carrierIdentityEvidence, statusDescription, structuredStatusEvidence, senderPhone, listOriginAtMs);
     }
 
     /** Marks a carrier name captured from the same provider's projection page as raw evidence. */
@@ -167,7 +190,7 @@ public final class ExpressQueryResult {
                 waybill, courierCode, evidence, semantic, statusEventTime,
                 latestTime, latestDetail, tracksJson, detailUrl, phone,
                 timelineProvider, routeInterface, routeCredential, sourceProvider,
-                carrierNormalization, true, statusDescription, structuredStatusEvidence);
+                carrierNormalization, true, statusDescription, structuredStatusEvidence, senderPhone, listOriginAtMs);
     }
 
     /** Marks a Chinese company name read directly from the current provider response. */
@@ -183,7 +206,7 @@ public final class ExpressQueryResult {
                 waybill, courierCode, companyName, semantic, statusEventTime,
                 latestTime, latestDetail, tracksJson, detailUrl, phone,
                 timelineProvider, routeInterface, routeCredential, sourceProvider,
-                carrierNormalization, present, statusDescription, structuredStatusEvidence);
+                carrierNormalization, present, statusDescription, structuredStatusEvidence, senderPhone, listOriginAtMs);
     }
 
     public ExpressQueryResult withManualStatusEvidence(
@@ -192,7 +215,25 @@ public final class ExpressQueryResult {
                 waybill, courierCode, companyName, semantic, statusEventTime,
                 latestTime, latestDetail, tracksJson, detailUrl, phone,
                 timelineProvider, routeInterface, routeCredential, sourceProvider,
-                carrierNormalization, carrierIdentityEvidence, coarseStatus, structured);
+                carrierNormalization, carrierIdentityEvidence, coarseStatus, structured, senderPhone, listOriginAtMs);
+    }
+
+    public ExpressQueryResult withAccountListMetadata(String senderPhone, long originAtMs) {
+        return new ExpressQueryResult(waybill, courierCode, companyName, semantic,
+                statusEventTime, latestTime, latestDetail, tracksJson, detailUrl, phone,
+                timelineProvider, routeInterface, routeCredential, sourceProvider,
+                carrierNormalization, carrierIdentityEvidence, statusDescription,
+                structuredStatusEvidence, senderPhone, originAtMs);
+    }
+
+    public ExpressQueryResult withWorkerStatus(WorkerStatusProjection value) {
+        if (value == null) return this;
+        return new ExpressQueryResult(waybill, courierCode, companyName, value.semantic,
+                value.eventAtMs, latestTime, latestDetail,
+                WorkerStatusProjection.attach(tracksJson, value), detailUrl, phone,
+                timelineProvider, routeInterface, routeCredential, sourceProvider,
+                carrierNormalization, carrierIdentityEvidence, value.text, value.structured,
+                senderPhone, listOriginAtMs);
     }
 
     private static boolean containsHan(String value) {

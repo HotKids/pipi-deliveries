@@ -336,7 +336,7 @@ public class ExpressAutomaticDetailPersistenceTest {
                 .withManualStatusEvidence("Out for delivery", true);
     }
 
-    @Test public void nonShunFengStickyPackageStillUsesItsFeedReference() {
+    @Test public void nonShunFengNewerAccountHistorySupersedesStaleStickyPackage() {
         ExpressItem owner = owner("CNFRESH000001", "CaiNiao", "interface5", false);
         ExpressQueryResult old = detailPackage(owner.waybill, TimelineSlot.V6_QUERY, TIME, true);
         repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
@@ -345,7 +345,7 @@ public class ExpressAutomaticDetailPersistenceTest {
         repository.rememberDetailSelection(owner, TimelineSlot.V6_QUERY);
         repository.saveAccountTimeline(detailPackage(owner.waybill, TimelineSlot.V5_QUERY,
                 "2026-09-10 10:00:00", true), "interface5");
-        assertEquals(TimelineSlot.V6_QUERY, repository.manualDetailTimelineAuthority(owner).provider);
+        assertEquals(TimelineSlot.V5_QUERY, repository.manualDetailTimelineAuthority(owner).provider);
     }
 
     @Test public void shunFengFreshPackageWithoutPickupCannotDisplaceStickyHistory() {

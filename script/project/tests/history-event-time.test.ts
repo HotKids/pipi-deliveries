@@ -5,7 +5,8 @@ import type { Shipment, TimelinePackage } from "../models";
 import {
   selectShipmentTimeline, selectShipmentDetailTimeline, shipmentDetailComplete,
   shipmentDetailIncompleteReason, needsDetailEntryQuery, rankShipmentDetailCandidates,
-  jingDongDetailCandidateEvidence, unprojectedAccountOrder,
+  shipmentDetailCandidateEvidence, unprojectedAccountOrder,
+  applyAccountShipment, shipmentSelectionEvidence,
 } from "../services/shipment-policy";
 import { emptyState, saveState, loadState } from "../services/storage";
 import { timelineLatestEventAt, timelineLatestTrackAt } from "../services/status";
@@ -60,6 +61,107 @@ function assertHistory(value: Shipment, expected: TimelinePackage) {
     assert.deepEqual(result.tracks, expected.tracks, "history is one whole source package");
   }
 }
+
+test("an unprojected order's query history replaces its equal-time list summary", () => {
+  const orderId = "3610000000000001";
+  const source = { ...pack("v5_list", EVENT, 1, false), waybill: orderId,
+    semantic: "ORDERED" as const, structuredStatus: false, latestDetail: "已下单" };
+  const query = { ...pack("v5_query", EVENT, 3, false), waybill: orderId,
+    semantic: "ORDERED" as const, structuredStatus: false };
+  const value = row(source, [query], "v5_list");
+  value.identity = { ...value.identity, sourceId: orderId, accountOrder: true,
+    orderId, projectedWaybill: "" };
+  for (const current of [value, reloaded(value)]) {
+    assert.equal(shipmentDetailCandidateEvidence(current, source).gateReason, "source_summary_only");
+    assert.equal(shipmentDetailCandidateEvidence(current, query).candidateEligible, true);
+    assertHistory(current, query);
+    assert.equal(shipmentSelectionEvidence(current).historyProvider, "v5_query");
+    assert.equal(shipmentSelectionEvidence(current).selectionReason, "only_eligible_history");
+    assert.equal(selectShipmentTimeline(current).semantic, "ORDERED");
+    assert.equal(selectShipmentTimeline(current).statusEventAtMs, EVENT);
+    assert.equal(selectShipmentTimeline(current).latestDetail, source.latestDetail);
+    assert.equal(unprojectedAccountOrder(current), true, "query history cannot establish a real waybill");
+    assert.equal(shipmentDetailIncompleteReason(current), "missing_pickup");
+  }
+});
+
+test("unprojected order history cannot admit a mismatched query or a carrier package", () => {
+  const orderId = "3610000000000001";
+  const source = { ...pack("v5_list", EVENT, 1, false), waybill: orderId,
+    semantic: "ORDERED" as const, structuredStatus: false, latestDetail: "已下单" };
+  const query = pack("v5_query", EVENT, 3, false);
+  const carrier = { ...pack("k100_h5", EVENT, 12), waybill: orderId };
+  const value = row(source, [query, carrier], "k100_h5");
+  value.identity = { ...value.identity, sourceId: orderId, accountOrder: true,
+    orderId, projectedWaybill: "" };
+  assertHistory(value, source);
+  assert.equal(shipmentDetailCandidateEvidence(value, query).gateReason, "waybill_mismatch");
+  assert.equal(shipmentDetailCandidateEvidence(value, carrier).candidateEligible, false);
+});
+
+test("a JingDong list increment advances the existing account query without losing its history", () => {
+  const query = pack("v5_query", OLD_H5_EVENT, 19);
+  const h5 = pack("jd_h5", OLD_H5_EVENT, 18, false);
+  const previous = row(pack("v5_list", OLD_H5_EVENT, 1, false), [query, h5], "v5_query");
+  const incoming = row(pack("v5_list", EVENT, 1, false), [], "");
+  previous.sourceTimeline!.provider = incoming.sourceTimeline!.provider = "interface5";
+  delete incoming.detailSelection;
+  const merged = applyAccountShipment(previous, incoming, NOW);
+  for (const current of [merged, reloaded(merged)]) {
+    const account = current.manualTimelines!.find(value => value.provider === "v5_query")!;
+    assert.equal(account.tracks.length, 20);
+    assert.deepEqual(account.tracks.slice(1), query.tracks);
+    assert.deepEqual(account.tracks[0], incoming.sourceTimeline!.tracks[0]);
+    assert.equal(current.sourceTimeline!.tracks.length, 1, "the raw list snapshot stays separate");
+    assert.deepEqual(current.manualTimelines!.find(value => value.provider === "jd_h5"), h5);
+    assertHistory(current, account);
+    assert.equal(selectShipmentTimeline(current).statusEventAtMs, EVENT);
+    assert.equal(shipmentDetailComplete(current), true);
+  }
+  const repeated = applyAccountShipment(merged, incoming, NOW + 1);
+  assert.equal(repeated.manualTimelines!.find(value => value.provider === "v5_query")!.tracks.length, 20);
+});
+
+test("a lone list summary cannot replace previously loaded H5 history after reload", () => {
+  const h5 = pack("jd_h5", OLD_H5_EVENT, 11);
+  const previous = row(pack("v5_list", OLD_H5_EVENT, 1, false), [h5], "jd_h5");
+  const incoming = row(pack("v5_list", EVENT, 1, false), [], "");
+  previous.sourceTimeline!.provider = incoming.sourceTimeline!.provider = "interface5";
+  delete incoming.detailSelection;
+  const merged = applyAccountShipment(previous, incoming, NOW);
+  for (const current of [merged, reloaded(merged), reloaded({ ...merged, detailSelection: { provider: "v5_list", selectedAtMs: NOW } })]) {
+    assertHistory(current, h5);
+    assert.equal(selectShipmentTimeline(current).statusEventAtMs, EVENT);
+    assert.equal(shipmentDetailIncompleteReason(current), "time_mismatch");
+    assert.equal(needsDetailEntryQuery(current), true);
+  }
+});
+
+test("list increments cannot enter another waybill's query or a Cainiao query", () => {
+  for (const provider of ["JingDong", "CaiNiao"]) {
+    const query = pack("v5_query", OLD_H5_EVENT, 9);
+    if (provider === "JingDong") query.waybill = "JD000000000002";
+    const previous = row(pack("v5_list", OLD_H5_EVENT, 1, false), [query], "v5_query");
+    const incoming = row(pack("v5_list", EVENT, 1, false), [], "");
+    previous.sourceTimeline!.provider = incoming.sourceTimeline!.provider = "interface5";
+    previous.identity.sourceProvider = incoming.identity.sourceProvider = provider;
+    const merged = applyAccountShipment(previous, incoming, NOW);
+    assert.deepEqual(merged.manualTimelines!.find(value => value.provider === "v5_query"), query);
+    if (provider === "JingDong") assertHistory(merged, incoming.sourceTimeline!);
+  }
+});
+
+test("JD query extension uses accepted list evidence, never a rejected stale snapshot", () => {
+  const query = pack("v5_query", OLD_H5_EVENT, 9);
+  const previous = row({ ...pack("v5_list", EVENT, 1, false), provider: "interface5" }, [query], "v5_query");
+  const stale = row({ ...pack("v5_list", EVENT - 60000, 1, false), provider: "interface5" }, [], "");
+  const merged = applyAccountShipment(previous, stale, NOW);
+  const extended = merged.manualTimelines!.find(value => value.provider === "v5_query")!;
+  assert.equal(extended.tracks.length, 10);
+  assert.deepEqual(extended.tracks[0], previous.sourceTimeline!.tracks[0]);
+  assert.deepEqual(extended.tracks.slice(1), query.tracks);
+  assert.equal(extended.tracks.some(track => track.timeMs === EVENT - 60000), false);
+});
 
 test("account display fields cannot make older H5 history complete", () => {
   const h5 = pack("jd_h5", OLD_H5_EVENT, 8);
@@ -119,7 +221,7 @@ test("build 97's complete JD H5 survives the observed two-second feed difference
     projectedWaybill: WAYBILL };
   for (const current of [value, reloaded(value)]) {
     assert.equal(unprojectedAccountOrder(current), false);
-    const evidence = jingDongDetailCandidateEvidence(current, h5);
+    const evidence = shipmentDetailCandidateEvidence(current, h5);
     assert.equal(evidence.waybillMatches, true);
     assert.equal(evidence.foreignPackage, false);
     assert.equal(evidence.hasPickup, true);
@@ -160,13 +262,30 @@ test("a newer partial account history can replace an older complete feed", () =>
   assert.equal(shipmentDetailIncompleteReason(value), "missing_pickup");
 });
 
-test("ranking and final completeness use the same track clock at the 30-minute boundary", () => {
-  for (const [offset, complete] of [[-1800000, true], [-1800001, false], [1800000, true], [1800001, false]] as const) {
+test("ranking and final completeness limit history lag, not newer history", () => {
+  // User decision 2026-09-13: thirty minutes bounds only the older side of the account clock.
+  for (const [offset, complete] of [[-1800000, true], [-1800001, false], [1800000, true],
+    [1800001, true], [7200000, true]] as const) {
     const h5 = pack("jd_h5", EVENT + offset, 8);
     const value = row(pack("v5_list", EVENT, 0), [h5], "jd_h5");
     assert.equal(rankShipmentDetailCandidates(value)?.provider, "jd_h5");
     assert.equal(shipmentDetailComplete(value), complete, `track offset ${offset}`);
     assert.equal(shipmentDetailIncompleteReason(value), complete ? null : "time_mismatch");
+    assert.equal(shipmentDetailCandidateEvidence(value, h5).detailComplete, complete);
+  }
+});
+
+test("newer history still needs pickup and must not contradict the account status", () => {
+  for (const [pickup, statusCode, expected] of [
+    [false, "", "missing_pickup"], [true, "TRANSIT", "status_mismatch"],
+  ] as const) {
+    const h5 = pack("jd_h5", EVENT + 7200000, 8, pickup);
+    h5.tracks[0].statusCode = statusCode;
+    const value = row(pack("v5_list", EVENT, 0), [h5], "jd_h5");
+    assert.equal(shipmentDetailIncompleteReason(value), expected);
+    assert.equal(shipmentDetailCandidateEvidence(value, h5).detailComplete, false);
+    assert.equal(selectShipmentTimeline(value).semantic, "DELIVERY");
+    assert.equal(selectShipmentTimeline(value).statusEventAtMs, EVENT);
   }
 });
 

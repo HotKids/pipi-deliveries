@@ -61,10 +61,11 @@ export type AccountOrderProjectionDiagnostics = Readonly<{
   readyState: string;
     visibilityState: string;
   viewportAvailable: boolean;
-  /** D-15 裁决 A′: whether the visible detail page lent this load a real viewport. */
+  /** Whether the app lent this load a real viewport before navigation. */
   viewportHosted: boolean;
   identitySource: string;
   unionResponseStatuses: string;
+  riskControlSeen?: boolean;
   probeCaptureCount: number;
 }>;
 
@@ -730,6 +731,9 @@ function extractionJavaScript(
         resourceReplayBlockReason: clean(resourceState.resourceReplayBlockReason),
         resourceCount: resourceState.count,
         pageClass,
+        riskControlSeen: pageClass === "jd" && (Boolean(probe && probe.riskControlSeen) ||
+          clean(document && document.body && (document.body.innerText || document.body.textContent))
+            .includes("刷新几遍还不行")),
         readyState: clean(document && document.readyState) || "unknown",
                 visibilityState: clean(document && document.visibilityState) || "unknown",
         viewportAvailable: Number(window.innerWidth || 0) > 0 && Number(window.innerHeight || 0) > 0,
@@ -761,6 +765,7 @@ function extractionJavaScript(
         const enqueue = (source, clickAttemptAtStart = null) => Promise.resolve().then(() => {
           try {
             if (typeof source === "string" && source.length > 1500000) return;
+            if (typeof source === "string" && source.includes("刷新几遍还不行")) probe.riskControlSeen = true;
             const result = projection(source, "probe", Boolean(clickAttemptAtStart && clickAttemptAtStart.succeeded));
             if (!result) return;
             // The page's own waybill/carrier are the reference for the modal DOM package.
@@ -1126,6 +1131,7 @@ export async function projectAccountOrder(
     let visibilityState = "unknown";
   let viewportAvailable = false;
   let unionResponseStatuses = "";
+  let riskControlSeen = false;
   let networkTraceCount = 0;
   let probeCaptureCount = 0;
   let bestProjection: AccountOrderProjection | null = null;
@@ -1169,7 +1175,11 @@ export async function projectAccountOrder(
     assertProjectionActive(signal);
     // The viewport must exist before the first paint: the union page mounts its floors by
     // intersection, so a page attached after loadURL would not re-run that mount.
-    viewportHosted = await acquireProjectionViewport(controller);
+    viewportHosted = await timeout(
+      acquireProjectionViewport(controller),
+      projectionDeadlineAtMs - Date.now(),
+      signal,
+    );
     assertProjectionActive(signal);
     // A dynamic page can keep WebKit's load promise pending after its useful requests and DOM are
     // already available. Start navigation without waiting for that promise so capture and DOM
@@ -1295,6 +1305,7 @@ export async function projectAccountOrder(
             viewportAvailable ||= candidate.viewportAvailable === true;
       const candidateStatuses = text(candidate.unionResponseStatuses);
       if (candidateStatuses) unionResponseStatuses = candidateStatuses;
+      riskControlSeen ||= candidate.riskControlSeen === true;
       const candidateCaptures = Number(candidate.probeCaptureCount);
       if (Number.isFinite(candidateCaptures) && candidateCaptures >= 0) {
         probeCaptureCount = Math.max(probeCaptureCount, Math.round(candidateCaptures));
@@ -1348,6 +1359,10 @@ export async function projectAccountOrder(
             projectionTimeline: projection.timeline || null,
           };
         }
+        // Identity remains useful without an expanded timeline. A headless page cannot open
+        // the progress modal, so return its accepted partial package without spending the
+        // remaining capture budget waiting for that modal. Hosted captures keep waiting.
+        if (!viewportHosted) break;
       }
       // Scripting has no document-start injection API. Retry aggressively while the new document
       // is being created so the idempotent response probe has several chances to beat page scripts.
@@ -1377,43 +1392,43 @@ export async function projectAccountOrder(
     return parcel;
   } finally {
     if (!loadDurationMs) loadDurationMs = Date.now() - loadStartedAt;
-    if (!signal?.aborted) {
-      try {
-        observe?.({
-          loadSettled,
-          loadCompleted,
-          captureSeen: captured != null,
-          replayAttempted,
-          replaySucceeded,
-          probeInstalled,
-          probeMatched,
-          probeRequestCount,
-          unionSignalSeen,
-          unionResourceSeen,
-          resourceReplayBlockReason,
-          domMatched,
-          projectionComplete,
-          projectionTrackCount,
-          requestCallbackCount,
-          evaluationAttempts,
-          evaluationFailures,
-          loadDurationMs,
-          resourceCount,
-          pageClass,
-          readyState,
-                    visibilityState,
-          viewportAvailable,
-          viewportHosted,
-          identitySource: "webview",
-          unionResponseStatuses,
-          probeCaptureCount,
-        });
-      } catch {
-        /* diagnostics are best-effort and must not change the projection result */
-      }
+    try {
+      observe?.({
+        loadSettled,
+        loadCompleted,
+        captureSeen: captured != null,
+        replayAttempted,
+        replaySucceeded,
+        probeInstalled,
+        probeMatched,
+        probeRequestCount,
+        unionSignalSeen,
+        unionResourceSeen,
+        resourceReplayBlockReason,
+        domMatched,
+        projectionComplete,
+        projectionTrackCount,
+        requestCallbackCount,
+        evaluationAttempts,
+        evaluationFailures,
+        loadDurationMs,
+        resourceCount,
+        pageClass,
+        readyState,
+        visibilityState,
+        viewportAvailable,
+        viewportHosted,
+        identitySource: "webview",
+        unionResponseStatuses,
+        riskControlSeen,
+        probeCaptureCount,
+      });
+    } catch {
+      /* diagnostics are best-effort and must not change the projection result */
     }
     signal?.removeEventListener("abort", abort);
-    if (viewportHosted) releaseProjectionViewport();
+    // A timed-out mount still owns a pending page slot even though it never returned true.
+    releaseProjectionViewport();
     disposeController();
   }
 }

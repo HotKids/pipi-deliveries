@@ -15,6 +15,54 @@ import java.util.Map;
 
 public final class CarrierRecognitionCoordinatorTest {
     @Test
+    public void pendingRecognitionPreservesFailuresAndWaitsWithoutProviderCalls() throws Exception {
+        long[] now = {1_000L};
+        int[] publicCalls = {0};
+        int[] gatewayCalls = {0};
+        MemoryState state = new MemoryState();
+        state.value = new CarrierRecognitionCoordinator.Snapshot(
+                me.pipi.deliveries.model.CarrierNormalization.NONE, 2, 0L, false);
+        CarrierRecognitionCoordinator coordinator = coordinator(
+                (url, cancellation) -> { publicCalls[0]++; return response(new JSONArray()); },
+                gateway((path, payload) -> {
+                    gatewayCalls[0]++;
+                    return new HttpClient.Response(502, new JSONObject()
+                            .put("error", "recognition_pending").put("retryAt", now[0] + 60_000L)
+                            .toString().getBytes(StandardCharsets.UTF_8));
+                }), state, () -> now[0]);
+        for (int attempt = 1; attempt <= 4; attempt++) {
+            CarrierRecognitionCoordinator.Outcome result = coordinator.recognize("TEST123456", null);
+            assertTrue(result.deferred);
+            assertFalse(result.terminal);
+            assertEquals(2, state.value.networkFailures);
+            assertEquals(now[0] + 60_000L, state.value.retryAt);
+            coordinator.recognize("TEST123456", null);
+            assertEquals(attempt, publicCalls[0]);
+            assertEquals(attempt, gatewayCalls[0]);
+            now[0] += 60_000L;
+        }
+    }
+
+    @Test
+    public void pendingDeadlineIsBoundedAndGenericErrorsStillCount() throws Exception {
+        long now = 1_000L;
+        MemoryState state = new MemoryState();
+        String[] code = {"recognition_pending"};
+        CarrierRecognitionCoordinator coordinator = coordinator(
+                (url, cancellation) -> response(new JSONArray()),
+                gateway((path, payload) -> new HttpClient.Response(502, new JSONObject()
+                        .put("error", code[0]).put("retryAt", now + 10 * CarrierRecognitionCoordinator.RETRY_DELAY_MS)
+                        .toString().getBytes(StandardCharsets.UTF_8))), state, () -> now);
+        assertTrue(coordinator.recognize("TEST123456", null).deferred);
+        assertEquals(now + CarrierRecognitionCoordinator.RETRY_DELAY_MS, state.value.retryAt);
+        assertEquals(0, state.value.networkFailures);
+        state.value = CarrierRecognitionCoordinator.Snapshot.empty();
+        code[0] = "upstream_unavailable";
+        try { coordinator.recognize("TEST123456", null); org.junit.Assert.fail("must fail"); }
+        catch (IllegalStateException expected) { assertEquals(1, state.value.networkFailures); }
+    }
+
+    @Test
     public void successfulDirectRecognitionIsPersistedAndReused() throws Exception {
         int[] publicCalls = {0};
         MemoryState state = new MemoryState();

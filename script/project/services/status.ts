@@ -1,3 +1,4 @@
+import { responseNormalizedStatus, timelineNormalizedStatus, statusPriority, statusProjectionFields } from "./worker-status";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
   Shipment,
@@ -25,10 +26,15 @@ export function statusLabel(semantic: StatusSemantic): string {
   return STATUS_LABELS[semantic] || STATUS_LABELS.UNKNOWN;
 }
 
+function timelineStatusLabel(timeline: TimelinePackage, semantic = timeline.semantic): string {
+  const projection = timelineNormalizedStatus(timeline);
+  return projection?.semantic === semantic ? projection.text : statusLabel(semantic);
+}
+
 function timelinePresentationSemantic(
   timeline: TimelinePackage,
 ): StatusSemantic {
-  if (timeline.semantic !== "UNKNOWN") return timeline.semantic;
+  if (timelineNormalizedStatus(timeline) || timeline.semantic !== "UNKNOWN") return timeline.semantic;
   const tracks = timedTracks(timeline.tracks);
   if (!tracks.length) return "UNKNOWN";
   const inferred = packageSemantic("", tracks).semantic;
@@ -38,6 +44,8 @@ function timelinePresentationSemantic(
 export function shipmentPresentationStatus(
   shipment: Shipment,
 ): Readonly<{ semantic: StatusSemantic; text: string }> {
+  const projection = timelineNormalizedStatus(shipment.timeline);
+  if (projection) return { semantic: projection.semantic, text: projection.text };
   const presentation = shipment.statusPresentation;
   const unprojectedOrder = Boolean(
     shipment.identity.accountOrder &&
@@ -98,7 +106,7 @@ export function shipmentPresentationStatus(
         : statusLabel(presentation.semantic),
     };
   }
-  return { semantic, text: statusLabel(semantic) };
+  return { semantic, text: timelineStatusLabel(shipment.timeline, semantic) };
 }
 
 export function shipmentDetailPresentationStatus(
@@ -109,11 +117,11 @@ export function shipmentDetailPresentationStatus(
     const ownerStatus = shipmentPresentationStatus(shipment);
     return ownerStatus.semantic === "UNKNOWN" && detailTimeline.structuredStatus &&
         detailTimeline.semantic !== "UNKNOWN"
-      ? { semantic: detailTimeline.semantic, text: statusLabel(detailTimeline.semantic) }
+      ? { semantic: detailTimeline.semantic, text: timelineStatusLabel(detailTimeline) }
       : ownerStatus;
   }
   const semantic = timelinePresentationSemantic(detailTimeline);
-  return { semantic, text: statusLabel(semantic) };
+  return { semantic, text: timelineStatusLabel(detailTimeline, semantic) };
 }
 
 /** 备注分隔符（用户定 2026-09-05 晚）：状态词 · 备注。 */
@@ -428,6 +436,7 @@ export function splitJingDongH5Nodes(
     structuredStatus: false,
     semantic: "UNKNOWN",
     statusEventAtMs: null,
+    normalizedStatus: undefined,
     latestTimeText: h5Latest.timeText,
     latestDetail: h5Latest.detail,
   };
@@ -479,6 +488,7 @@ export function withoutJingDongOrderCompletion(
     latestDetail: latest?.detail || "",
     latestTimeText: latest?.timeText || "",
     semantic,
+    normalizedStatus: !tracks.length || invalidatesStatus ? undefined : timelineNormalizedStatus(timeline),
     statusEventAtMs: !tracks.length || invalidatesStatus
       ? evidence.semantic === semantic && semantic !== "UNKNOWN" ? evidence.eventAtMs : null
       : timeline.statusEventAtMs,
@@ -494,8 +504,6 @@ export function timedTracks(tracks: readonly TrackNode[]): TrackNode[] {
       typeof track.timeMs === "number" &&
       Number.isFinite(track.timeMs) &&
       Boolean(track.detail.trim()) &&
-      // AGENTS §9: a forecast note is no more an event than a provider error is, so it may not
-      // be counted, ranked by time, or used to prove a timeline is complete.
       !isNonEventDetail(track.detail),
   );
 }
@@ -546,6 +554,8 @@ export function latestTimelineTrackStatuses(tracks: readonly TrackNode[]): Statu
   if (!timed.length) return [];
   const latestAt = Math.max(...timed.map(track => track.timeMs!));
   return timed.filter(track => track.timeMs === latestAt).map(track => {
+    const projection = responseNormalizedStatus(track.raw);
+    if (projection) return projection.structured ? projection.semantic : "UNKNOWN";
     for (const code of [track.raw.statusCode, track.statusCode]) {
       const structured = semanticFromTrackCode({ ...track, detail: "" }, code);
       if (structured !== "UNKNOWN") return structured;
@@ -565,6 +575,8 @@ function semanticFromTrackCode(
   track: TrackNode,
   code: unknown,
 ): StatusSemantic {
+  const projection = responseNormalizedStatus(track.raw);
+  if (projection) return projection.structured ? projection.semantic : "UNKNOWN";
   const source = String(track.raw._pipiStatusSource || "")
     .trim()
     .toLowerCase();
@@ -576,7 +588,13 @@ function semanticFromTrackCode(
   return semanticFromEventCode(String(code ?? ""));
 }
 
-/** Provider/service failures are never logistics events or user-facing timeline text. */
+export function isAccountUpdateSummary(value: string): boolean {
+  const clean = String(value || "").replace(/\s+/g, "");
+  return clean === "快递状态已更新" || clean === "快递状态已更新，点击查看>>" ||
+    clean === "快递状态已更新,点击查看>>";
+}
+
+/** Update summaries carry valid event times; only provider failures are discarded. */
 export function isProviderErrorDetail(value: string): boolean {
   const clean = String(value || "").trim().replace(/\s+/g, "");
   const lower = clean.toLowerCase();
@@ -586,8 +604,7 @@ export function isProviderErrorDetail(value: string): boolean {
     || clean.startsWith("查无结果")
     || clean === "暂无状态"
     || clean === "暂无物流信息"
-    || clean === "暂无物流动态"
-    || clean === "快递状态已更新，点击查看>>";
+    || clean === "暂无物流动态";
 }
 
 /**
@@ -623,22 +640,20 @@ export function latestEventEvidence(
   let newestAt: number | null = null;
   let newestSemantic: StatusSemantic = "UNKNOWN";
   for (const track of tracks) {
-    const hasRawStatus = Object.prototype.hasOwnProperty.call(
+    const projection = responseNormalizedStatus(track.raw);
+    const hasRawStatus = Boolean(projection) || Object.prototype.hasOwnProperty.call(
       track.raw,
       "statusCode",
     );
-    if (
-      !hasRawStatus ||
-      track.timeMs == null ||
-      !Number.isFinite(track.timeMs)
-    ) {
-      continue;
-    }
-    const semantic = semanticFromTrackCode(track, track.raw.statusCode);
-    if (newestAt == null || track.timeMs > newestAt) {
-      newestAt = track.timeMs;
+    const eventAtMs = projection ? projection.eventAtMs || null : track.timeMs;
+    if (!hasRawStatus || eventAtMs == null || !Number.isFinite(eventAtMs)) continue;
+    const semantic = projection
+      ? projection.structured ? projection.semantic : "UNKNOWN"
+      : semanticFromTrackCode(track, track.raw.statusCode);
+    if (newestAt == null || eventAtMs > newestAt) {
+      newestAt = eventAtMs;
       newestSemantic = semantic;
-    } else if (track.timeMs === newestAt && semantic !== newestSemantic) {
+    } else if (eventAtMs === newestAt && semantic !== newestSemantic) {
       newestSemantic = "UNKNOWN";
     }
   }
@@ -901,24 +916,47 @@ export function withMergedHeadline(value: TimelinePackage): TimelinePackage {
     : value;
 }
 
+export function accountListOriginAtMs(timeline: TimelinePackage | null): number {
+  if (!timeline) return 0;
+  const times = [timeline.listOriginAtMs || 0,
+    ...(containsTimelineOriginTrack(timeline.tracks)
+      ? timedTracks(timeline.tracks).map(track => track.timeMs || 0) : []),
+  ].filter(value => Number.isFinite(value) && value > 0);
+  return times.length ? Math.min(...times) : 0;
+}
+
+export function withAccountListOrigin(current: TimelinePackage | null, incoming: TimelinePackage): TimelinePackage {
+  const times = [accountListOriginAtMs(current), accountListOriginAtMs(incoming)].filter(value => value > 0);
+  return times.length ? { ...incoming, listOriginAtMs: Math.min(...times) } : incoming;
+}
+
 export function mergeTimelinePackage(
   current: TimelinePackage | null,
   incoming: TimelinePackage,
+  accumulateAccountTracks = true,
 ): TimelinePackage {
+  if (!accumulateAccountTracks && timelineCapability(incoming.provider) === "account") {
+    incoming = withAccountListOrigin(current, incoming);
+  }
   const incomingTimed = timedTracks(incoming.tracks);
   if (!current) return incoming;
   if (current.provider.toLowerCase() !== incoming.provider.toLowerCase()) {
     return incoming;
   }
   if (timelineCapability(incoming.provider) === "account") {
-    // Account increments own fields independently: absent tracks never reject a status packet.
-    const tracks = mergeTracks(current.tracks, incoming.tracks);
     const currentAt = current.statusEventAtMs || 0;
     const incomingAt = incoming.statusEventAtMs || 0;
     const frozen = isTerminalStatusSemantic(current.semantic) && currentAt > 0;
-    const acceptsStatus = incoming.semantic !== "UNKNOWN" && !frozen &&
+    // List responses replace their own snapshot; account detail queries still accumulate history.
+    const tracks = accumulateAccountTracks ? mergeTracks(current.tracks, incoming.tracks)
+      : !frozen && timelineLatestEventAt(incoming) >= timelineLatestEventAt(current)
+        ? incoming.tracks : current.tracks;
+    const sameStatus = current.semantic === incoming.semantic;
+    const higherPriority = sameStatus && statusPriority(incoming) > statusPriority(current);
+    const lowerPriority = sameStatus && statusPriority(incoming) < statusPriority(current);
+    const acceptsStatus = incoming.semantic !== "UNKNOWN" && !frozen && !lowerPriority &&
       (incoming.structuredStatus === true || current.structuredStatus !== true) &&
-      (current.semantic === "UNKNOWN" ||
+      (higherPriority || current.semantic === "UNKNOWN" ||
         (incomingAt > 0 && incomingAt >= currentAt &&
           (incomingAt !== currentAt || !rejectsSameEventRegression(current.semantic, incoming.semantic))) ||
         (!currentAt && !incomingAt && timelineLatestEventAt(incoming) >= timelineLatestEventAt(current)));
@@ -938,9 +976,12 @@ export function mergeTimelinePackage(
       ...(incoming.rawCourierCode || current.rawCourierCode
         ? { rawCourierCode: incoming.rawCourierCode || current.rawCourierCode } : {}),
       tracks,
+      ...(!accumulateAccountTracks && incoming.listOriginAtMs
+        ? { listOriginAtMs: incoming.listOriginAtMs } : {}),
       semantic: status.semantic,
       structuredStatus: status.structuredStatus,
       statusEventAtMs: status.statusEventAtMs,
+      ...statusProjectionFields(status, current),
       latestDetail: headline.latestDetail,
       latestTimeText: headline.latestTimeText,
       successAtMs: Math.max(current.successAtMs, incoming.successAtMs),
@@ -958,7 +999,8 @@ export function mergeTimelinePackage(
     return (current.semantic === "UNKNOWN" || confirmsUnstructuredCompletion) && incoming.structuredStatus === true &&
         incoming.semantic !== "UNKNOWN"
       ? { ...current, semantic: incoming.semantic,
-          statusEventAtMs: incoming.statusEventAtMs, structuredStatus: true }
+          statusEventAtMs: incoming.statusEventAtMs, structuredStatus: true,
+          ...statusProjectionFields(incoming, current) }
       : current;
   }
 
@@ -999,7 +1041,8 @@ export function mergeTimelinePackage(
     return finalize({
       ...current,
       ...(confirmsUnstructuredCompletion
-        ? { structuredStatus: true, statusEventAtMs: incoming.statusEventAtMs }
+        ? { structuredStatus: true, statusEventAtMs: incoming.statusEventAtMs,
+            ...statusProjectionFields(incoming, current) }
         : {}),
       tracks,
       successAtMs: Math.max(current.successAtMs, incoming.successAtMs),
@@ -1013,6 +1056,10 @@ export function mergeTimelinePackage(
   };
   if (incoming.semantic === "UNKNOWN") return finalize(retainedCurrent);
   if (current.semantic === "UNKNOWN") return finalize({ ...incoming, tracks });
+  if (current.semantic === incoming.semantic) {
+    const priorityDifference = statusPriority(incoming) - statusPriority(current);
+    if (priorityDifference) return finalize(priorityDifference > 0 ? { ...incoming, tracks } : retainedCurrent);
+  }
   const currentEvent = timelineLatestEventAt(current);
   const incomingEvent = timelineLatestEventAt(incoming);
   if (incomingEvent <= 0 && currentEvent > 0) return finalize(retainedCurrent);
@@ -1190,15 +1237,7 @@ export function compareTimelinePackageCompleteness(
   left: TimelinePackage,
   right: TimelinePackage,
 ): number {
-  const leftComplete = manualTimelineIsComplete(left);
-  const rightComplete = manualTimelineIsComplete(right);
-  const completeness = Number(rightComplete) - Number(leftComplete);
-  if (completeness !== 0) return completeness;
-  if (leftComplete && rightComplete) {
-    const freshness = timelineLatestEventAt(right) - timelineLatestEventAt(left);
-    if (freshness !== 0) return freshness;
-  }
-  return manualProviderRank(left.provider) - manualProviderRank(right.provider);
+  return compareManualTimelineAuthority(left, right);
 }
 
 /**
@@ -1210,7 +1249,15 @@ export function compareTimelineProviderOrder(
   left: TimelinePackage,
   right: TimelinePackage,
 ): number {
-  return manualProviderRank(left.provider) - manualProviderRank(right.provider);
+  const leftProvider = normalizeTimelineSlot(left.provider);
+  const rightProvider = normalizeTimelineSlot(right.provider);
+  const order: readonly string[] = EXPRESS_POLICY.manualAuthority.tieBreakOrder;
+  const fixedRank = (provider: string) => {
+    const index = order.indexOf(provider);
+    return index < 0 ? order.length : index;
+  };
+  return manualProviderRank(leftProvider) - manualProviderRank(rightProvider) ||
+    fixedRank(leftProvider) - fixedRank(rightProvider) || leftProvider.localeCompare(rightProvider);
 }
 
 function manualProviderRank(provider: string): number {
@@ -1242,45 +1289,34 @@ function isOrderCompletedFallback(shipment: Shipment): boolean {
 }
 
 export function sortShipments(shipments: readonly Shipment[]): Shipment[] {
-  return [...shipments].sort((left, right) => {
-    const leftSemantic = shipmentPresentationStatus(left).semantic;
-    const rightSemantic = shipmentPresentationStatus(right).semantic;
-    const rank = listRank(leftSemantic) - listRank(rightSemantic);
-    if (rank !== 0) return rank;
-    const completionKind = Number(isOrderCompletedFallback(left)) -
-      Number(isOrderCompletedFallback(right));
-    if (completionKind !== 0) return completionKind;
-    // The row shows the headline time; structured status can describe an older event.
-    const event =
-      (parseProviderTime(right.timeline.latestTimeText) ?? right.timeline.statusEventAtMs ?? 0) -
-      (parseProviderTime(left.timeline.latestTimeText) ?? left.timeline.statusEventAtMs ?? 0);
-    if (event !== 0) return event;
-    return right.identity.id.localeCompare(left.identity.id);
-  });
+  return shipments.map((shipment) => ({
+    shipment,
+    rank: listRank(shipmentPresentationStatus(shipment).semantic),
+    completionKind: Number(isOrderCompletedFallback(shipment)),
+    // The row displays the headline time even when structured status is older.
+    eventAt: parseProviderTime(shipment.timeline.latestTimeText) ?? shipment.timeline.statusEventAtMs ?? 0,
+  })).sort((left, right) =>
+    left.rank - right.rank || left.completionKind - right.completionKind ||
+    right.eventAt - left.eventAt ||
+    right.shipment.identity.id.localeCompare(left.shipment.identity.id)
+  ).map(({ shipment }) => shipment);
 }
 
 function validLifecycleTime(value: unknown, now: number): number {
   return typeof value === "number" &&
     Number.isFinite(value) &&
     value > 0 &&
-    value <= now + 5 * 60 * 1000
+    value <= now
     ? value
     : 0;
 }
 
-/** Structured terminal time owns retention; unrelated headlines cannot move it. */
+/** Only a provider's terminal enum/time pair can freeze automatic refresh. */
 export function terminalEvidenceAtMs(shipment: Shipment, now = Date.now()): number {
-  const structured = validLifecycleTime(shipment.timeline.statusEventAtMs, now);
-  if (structured) return structured;
-  const terminalText = shipment.timeline.semantic === "CANCELLED"
-    ? /已取消|订单关闭/
-    : /签收|妥投|配送完成/;
-  let value = 0;
-  for (const track of shipment.timeline.tracks) {
-    if (!terminalText.test(track.detail.replace(/\s+/g, ""))) continue;
-    value = Math.max(value, validLifecycleTime(track.timeMs, now));
-  }
-  return value;
+  const timeline = shipment.timeline;
+  if (timeline.structuredStatus !== true ||
+      (timeline.semantic !== "COMPLETED" && timeline.semantic !== "CANCELLED")) return 0;
+  return validLifecycleTime(timeline.statusEventAtMs, now);
 }
 
 // Visibility and storage expiry share the first persisted terminal timestamp.

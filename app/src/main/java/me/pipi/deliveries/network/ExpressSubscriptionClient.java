@@ -7,6 +7,7 @@ import android.util.Log;
 import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.model.CainiaoRoute;
 import me.pipi.deliveries.model.ExpressQueryResult;
+import me.pipi.deliveries.model.WorkerStatusProjection;
 import me.pipi.deliveries.model.ExpressStatusNormalizer;
 import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.StatusSemantic;
@@ -54,26 +55,6 @@ public final class ExpressSubscriptionClient {
             if (parsed != null) results.add(parsed);
         }
         return results;
-    }
-
-    /** Refreshes one known identity through the mail-number endpoint. */
-    public ExpressQueryResult queryWaybill(
-            Context context, String waybill, String courierCode) throws Exception {
-        String number = waybill == null ? "" : waybill.trim();
-        if (number.isEmpty()) return null;
-        JSONObject payload = new JSONObject()
-                .put("interface", "v6")
-                .put("mode", "refresh")
-                .put("waybill", number);
-        HttpClient.Response response = new ExpressGatewayClient(context).post(
-                "/api/express/timeline/source", payload);
-        if (!response.successful()) {
-            throw GatewayHttpErrors.forResponse(response, "主接口刷新失败");
-        }
-        Object root = unwrap(response.utf8(), "主接口刷新失败");
-        JSONObject value = findExpressObject(root);
-        String company = courierCode == null ? "" : courierCode.trim();
-        return value == null ? null : parseExpress(value, number, company);
     }
 
     /** Online lookup for existing add, detail and SF list stages; a scalar event stays partial. */
@@ -148,22 +129,25 @@ public final class ExpressSubscriptionClient {
     static ExpressQueryResult parseManualResponse(String body, String fallbackWaybill)
             throws Exception {
         Object payload = unwrap(body, "查询失败，请稍后重试");
+        Object wire = new org.json.JSONTokener(body).nextValue();
+        WorkerStatusProjection projected = wire instanceof JSONObject
+                ? WorkerStatusProjection.read((JSONObject) wire) : null;
         String expectedWaybill = normalizeWaybillIdentity(fallbackWaybill);
         if (!manualResponseIdentitiesMatch(payload, expectedWaybill, 0)) {
             logManualParse(fallbackWaybill, "identity_mismatch", 0);
-            throw new IllegalStateException("暂未查询到物流信息");
+            throw new ExpressApi.NoTrackException();
         }
         JSONObject value = findManualObject(payload);
         if (value == null) {
             logManualParse(fallbackWaybill, "object_missing", 0);
-            throw new IllegalStateException("暂未查询到物流信息");
+            throw new ExpressApi.NoTrackException();
         }
         String responseNumber = first(value, "nu", "mailNo");
         if (!responseNumber.isEmpty()
                 && !normalizeWaybillIdentity(responseNumber)
                 .equals(normalizeWaybillIdentity(fallbackWaybill))) {
             logManualParse(fallbackWaybill, "identity_mismatch", 0);
-            throw new IllegalStateException("暂未查询到物流信息");
+            throw new ExpressApi.NoTrackException();
         }
         String code = first(value, "com", "cpCode");
         String name = first(value, "name", "cpName");
@@ -210,7 +194,7 @@ public final class ExpressSubscriptionClient {
         }
         if (providerError && parsed.isEmpty()) {
             logManualParse(fallbackWaybill, "provider_error_empty", 0);
-            throw new IllegalStateException("暂未查询到物流信息");
+            throw new ExpressApi.NoTrackException();
         }
         logManualParse(fallbackWaybill, "accepted", parsed.size());
         return new ExpressQueryResult(
@@ -224,7 +208,8 @@ public final class ExpressSubscriptionClient {
                 first(value, "detailUrl", "url"),
                 first(value, "subPhone", "receiverPhone"),
                 TimelineSlot.V6_QUERY)
-                .withManualStatusEvidence(stateName, !status.isEmpty());
+                .withManualStatusEvidence(stateName, !status.isEmpty())
+                .withWorkerStatus(projected != null ? projected : WorkerStatusProjection.read(value));
     }
 
     private static void logManualParse(String waybill, String outcome, int nodes) {
@@ -410,6 +395,7 @@ public final class ExpressSubscriptionClient {
         }
         if (!(root instanceof JSONObject)) return root;
         JSONObject envelope = (JSONObject) root;
+        GatewayHttpErrors.checkNormalizedError(envelope, fallback);
         if (envelope.has("code")) {
             int code = envelope.optInt("code", -1);
             if (code != 0 && code != 200) {
@@ -446,7 +432,8 @@ public final class ExpressSubscriptionClient {
         String code = value.optString("cpCode", fallbackCode).trim();
         String description = value.optString("logisticsStatusDesc", "");
         String detail = value.optString("lastLogisticDetail", "");
-        StatusSemantic semantic = StatusSemantic.fromStored(
+        WorkerStatusProjection projected = WorkerStatusProjection.read(value);
+        StatusSemantic semantic = projected != null ? projected.semantic : StatusSemantic.fromStored(
                 value.optString("logsiticsStatus",
                         value.optString("logisticsStatus", "")), description);
         // packageDyn is delivery metadata and can contain the route secret. The gateway
@@ -481,7 +468,8 @@ public final class ExpressSubscriptionClient {
                 routeUrl,
                 first(value, "provider", "providerName"));
         result = result.withRawCarrierNameEvidence(rawCompanyName);
-        return AccountCarrierNormalizer.apply(value, result);
+        return AccountCarrierNormalizer.apply(value, result).withWorkerStatus(projected).withAccountListMetadata(
+                first(value, "sendPhone", "senderPhone"), 0L);
     }
 
 }

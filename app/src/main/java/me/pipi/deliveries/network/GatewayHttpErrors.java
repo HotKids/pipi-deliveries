@@ -45,10 +45,26 @@ final class GatewayHttpErrors {
 
     static JSONObject parseObject(HttpClient.Response response, String fallback) {
         try {
-            return new JSONObject(response == null ? "" : response.utf8());
-        } catch (Throwable malformed) {
+            JSONObject result = new JSONObject(response == null ? "" : response.utf8());
+            checkNormalizedError(result, fallback);
+            return result;
+        } catch (org.json.JSONException malformed) {
             throw new IllegalStateException(cleanFallback(fallback));
         }
+    }
+
+    static void checkNormalizedError(JSONObject payload, String fallback) {
+        JSONObject error = payload == null ? null : payload.optJSONObject("normalizedError");
+        if (error == null || error.optInt("version") != 1) return;
+        String code = error.optString("code", "");
+        String message;
+        switch (code) {
+            case "phone_verification_required":
+                message = "请输入收件人手机号后四位"; break;
+            case "upstream_business_error":
+            default: message = cleanFallback(fallback);
+        }
+        throw new IllegalStateException(message);
     }
 
     static String safeMessage(String body) {

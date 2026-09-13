@@ -64,7 +64,7 @@ for (const shipment of [row, (() => {
   assert.equal(selected.semantic, "TRANSIT", "the feed retains status authority");
   assert.equal(latestTimelineTrackSemantic(selected.tracks), "UNKNOWN");
   assert.equal(shipmentDetailComplete(shipment), true, "unverifiable node status does not veto pickup and time evidence");
-  assert.equal(needsDetailEntryQuery(shipment), false, "unknown node wording alone does not schedule an entry query");
+  assert.equal(needsDetailEntryQuery(shipment), true, "active JD account status must be checked even with complete H5 history");
   const home = selectShipmentTimeline(shipment);
   assert.deepEqual(home.tracks, h5.tracks, "Home and detail select the same whole history package");
   assert.equal(home.latestDetail, row.sourceTimeline!.latestDetail);

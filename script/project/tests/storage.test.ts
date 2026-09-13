@@ -1,3 +1,4 @@
+import { installSharedFileMock } from "./shared-file-mock";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type {
@@ -97,10 +98,14 @@ Object.assign(globalThis, {
     },
   },
 });
+installSharedFileMock(memory);
+
 
 const {
   addBinding,
   commitRefreshState,
+  acknowledgeShipmentNotification,
+  refreshValueFingerprint,
   commitRoutePointers,
   commitTargetShipmentRefresh,
   emptyState,
@@ -129,6 +134,7 @@ const {
 const {
   applyAccountShipment,
   applyManualShipment,
+  displayWaybill,
   observeQualifiedAutomaticShipment,
   releaseManualRefreshLease,
   selectShipmentDetailTimeline,
@@ -171,6 +177,7 @@ function shipment(input: {
       courierCode: "TEST",
       companyName: `Carrier ${input.id}`,
       semantic,
+      structuredStatus: true,
       statusEventAtMs: NOW - 60_000,
       latestTimeText: "2026-08-26 13:59:00",
       latestDetail: semantic,
@@ -397,6 +404,7 @@ assert.equal(
 
 // Per-source qualified observations survive durable save/load unchanged.
 const persistedA = shipment({ id: "owner-persist-a", source: null });
+persistedA.identity.sender = true;
 persistedA.identity.sourceOwner = "synthetic-a:parcel";
 persistedA.identity.rawCourierCode = "TEST";
 persistedA.timeline.provider = "synthetic-a";
@@ -424,12 +432,15 @@ const persistedCandidate = observeQualifiedAutomaticShipment(
 );
 saveState({ ...emptyState(), shipments: [persistedCandidate] }, NOW + 2);
 memory.delete(STATE_KEY);
-const restoredOwnership = loadState(NOW + 3).shipments[0]?.automaticOwnership;
+const restoredSenderOwner = loadState(NOW + 3).shipments[0]!;
+assert.equal(restoredSenderOwner.identity.sender, true);
+const restoredOwnership = restoredSenderOwner.automaticOwnership;
 assert.equal(restoredOwnership?.ownerSource, "synthetic-a");
 assert.deepEqual(
   new Set(restoredOwnership?.observations.map((item) => item.source)),
   new Set(["synthetic-a", "synthetic-b"]),
 );
+assert.equal(restoredOwnership?.observations.find(item => item.source === "synthetic-a")?.identity.sender, true);
 
 // Script upgrades reuse the same durable state. Each local provider keeps its
 // own authority, and a later response merges into that provider without
@@ -3222,6 +3233,35 @@ const changedTargetCommit = commitTargetShipmentRefresh(
 assert.equal(changedTargetCommit.applied, true);
 assert.equal(changedTargetCommit.state.revision, deltaBase.revision + 1);
 
+// Two consumers can commit one shared observation. An idempotent second commit still clears
+// its pending query and retains the first commit's clocks instead of restoring older metadata.
+{
+  memory.clear();
+  const seed = shipment({ id: "shared-observation", source: "interface5" });
+  const base = saveState({ ...emptyState(), shipments: [seed] }, NOW);
+  const incoming = structuredClone(base.shipments[0]);
+  incoming.timeline.latestDetail = "Shared account event";
+  incoming.timeline.tracks[0].detail = "Shared account event";
+  if (incoming.sourceTimeline) {
+    incoming.sourceTimeline.latestDetail = "Shared account event";
+    incoming.sourceTimeline.tracks[0].detail = "Shared account event";
+  }
+  const first = commitTargetShipmentRefresh(base, incoming, NOW + 1);
+  assert.equal(first.applied, true);
+  const current = structuredClone(first.state.shipments[0]);
+  current.updatedAtMs = NOW + 20;
+  current.timeline.successAtMs = NOW + 20;
+  if (current.sourceTimeline) current.sourceTimeline.successAtMs = NOW + 20;
+  const latest = saveState({ ...first.state, shipments: [current], pendingQueries: [
+    pending({ id: "shared-pending", source: "interface5", waybill: displayWaybill(current) }),
+  ] }, NOW + 20);
+  assert.equal(latest.pendingQueries.length, 1);
+  const second = commitTargetShipmentRefresh(base, first.state.shipments[0], NOW + 21);
+  assert.equal(second.applied, true);
+  assert.equal(second.state.pendingQueries.length, 0);
+  assert.equal(second.state.shipments[0].timeline.successAtMs, NOW + 20);
+}
+
 
 // 备注（用户定 2026-09-05 晚）：只在详情页写，落在 shipment.note 上；账号同步与手动刷新的合并都不改它。
 {
@@ -3285,6 +3325,7 @@ console.log("storage migration and isolation tests passed");
   const alreadyRebuilt = { ...beforeRebuild, feedSlotRebuiltAtMs: NOW - 100, shipments: [
     { ...mixedFeedRow, detailSelection: { provider: "interface5", selectedAtMs: NOW - 10 } },
   ] };
+  memory.clear();
   memory.set(STATE_KEY, storedState(alreadyRebuilt, 2));
   const untouched = loadState(NOW);
   assert.equal(untouched.feedSlotRebuiltAtMs, NOW - 100);
@@ -3438,7 +3479,10 @@ import { stateLoadFailure } from "../services/storage";
     } finally { FileManager.writeAsStringSync = originalWrite; }
     const committed = commitRefreshState(same, { ...same, shipments: [changed] }, "interface5", clock).state;
     assert.equal(committed.pendingNotifications?.length, 1);
-    FileManager.writeAsStringSync = () => { throw new Error("synthetic acknowledgement failure"); };
+    FileManager.writeAsStringSync = (path, value) => {
+      if (path.endsWith("/state.json")) throw new Error("synthetic acknowledgement failure");
+      originalWrite(path, value);
+    };
     try { await nextRuntime.replayPendingShipmentNotifications(); }
     finally { FileManager.writeAsStringSync = originalWrite; }
     assert.equal(scheduledCount, 3);
@@ -3478,6 +3522,30 @@ console.log("durable notification commit and restart tests passed");
   assert.equal(second.pendingNotifications?.[0]?.body, "Synthetic DELIVERY");
 }
 console.log("notification checkpoint baseline and aggregation tests passed");
+
+assert.equal(refreshValueFingerprint({ semantic: "TRANSIT", updatedAtMs: 1, timeline: { observedAtMs: 2, detail: "same" } }),
+  refreshValueFingerprint({ timeline: { detail: "same", observedAtMs: 3 }, updatedAtMs: 4, semantic: "TRANSIT" }),
+  "key ordering and refresh-only clocks must not create a business change");
+assert.notEqual(refreshValueFingerprint({ semantic: "TRANSIT" }), refreshValueFingerprint({ semantic: "DELIVERY" }));
+
+{
+  memory.clear();
+  const original = shipment({ id: "interface5:account:CONCURRENT", source: "interface5", semantic: "ORDERED" });
+  const initial = saveState({ ...emptyState(), shipments: [original] }, NOW);
+  const context = { previousById: new Map(initial.shipments.map((row) => [row.identity.id, row])), batchId: "synthetic-overlapping-full" };
+  const changed = { ...initial.shipments[0], sourceTimeline: undefined,
+    timeline: { ...initial.shipments[0].timeline, semantic: "DELIVERY" as const,
+      latestDetail: "Synthetic shared event", statusEventAtMs: NOW + 1 }, updatedAtMs: NOW + 1 };
+  const detail = commitRefreshState(initial, { ...initial, shipments: [changed] }, "interface5", NOW + 1).state;
+  assert.equal(detail.pendingNotifications?.length, 1);
+  const full = saveState(detail, NOW + 2, { notifyChanges: true, context });
+  assert.equal(full.pendingNotifications?.length, 1, "a full checkpoint must reuse an event already committed by detail");
+  assert.equal(full.pendingNotifications?.[0]?.id, detail.pendingNotifications?.[0]?.id);
+  acknowledgeShipmentNotification(full.pendingNotifications![0].id, NOW + 3);
+  const afterAck = saveState(loadState(NOW + 3), NOW + 4, { notifyChanges: true, context });
+  assert.equal(afterAck.pendingNotifications?.length, 0, "an initial full snapshot must not resurrect a detail event already acknowledged");
+}
+console.log("overlapping full/detail notification deduplication tests passed");
 
 // Legacy full feed/query packages must lose shopping completion on load, including
 // owner observations that could otherwise restore it during the next merge.
@@ -3677,3 +3745,20 @@ console.log("Home missing history refresh and retirement tests passed");
   }
 }
 console.log("Home repair request, freeze and cancellation partition tests passed");
+
+// The status donor survives durable save/load independently of the selected history packet.
+{
+  memory.clear();
+  const row = shipment({ id: "normalized-status", source: null, manuallyAdded: true, semantic: "DELIVERY" });
+  const projected = { version: 1 as const, scope: "SHIPMENT" as const, semantic: "DELIVERY" as const,
+    code: "STA_DELIVERING", text: "驿站派送中", priority: 1,
+    eventAtMs: NOW - 60_000, structured: true };
+  row.timeline = { ...row.timeline, provider: "v4_query", normalizedStatus: projected };
+  row.manualTimelines = [row.timeline];
+  saveState({ ...emptyState(), shipments: [row] }, NOW);
+  const restored = loadState(NOW + 1).shipments[0];
+  assert.deepEqual(restored.timeline.normalizedStatus, projected);
+  assert.deepEqual(restored.manualTimelines?.[0].normalizedStatus, projected);
+  assert.equal(loadWidgetSnapshot(NOW + 1).rows[0].statusLabel, projected.text);
+}
+console.log("Worker projection persistence tests passed");

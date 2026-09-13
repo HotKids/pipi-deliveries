@@ -47,6 +47,275 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Config(sdk = 31, manifest = Config.NONE, application = Application.class)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 public final class ExpressRepositoryDatabaseTest {
+    @Test public void automaticHistoryExcludesStickyAccountSummaryAfterReload() throws Exception {
+        verifyAutomaticHistoryPool(false);
+    }
+
+    @Test public void newerAccountHistoryNarrowsIncompleteStickyCandidatesAfterReload() throws Exception {
+        verifyAutomaticHistoryPool(true);
+    }
+
+    private void verifyAutomaticHistoryPool(boolean newerAccount) throws Exception {
+        String phone = "13900000043";
+        repository.bindPhoneLocally(phone, "interface5");
+        {
+            String waybill = "ZTALIGNPOOL" + newerAccount;
+            String sourceTime = relativeTime(-4L * 3_600_000L);
+            String historyTime = relativeTime(-2L * 3_600_000L);
+            ExpressQueryResult feed = accountResult(waybill, phone, StatusSemantic.TRANSIT,
+                    sourceTime, "Account summary", timedTracks(sourceTime, "Account summary"), "", "CaiNiao");
+            repository.saveInterface5(feed, phone);
+            ExpressItem owner = repository.findByWaybill(waybill, "interface5");
+            String historyTracks = "[{\"time\":\"" + historyTime + "\",\"context\":\"Carrier history\"},"
+                    + "{\"time\":\"" + sourceTime + "\",\"context\":\"已揽收\"}]";
+            ExpressQueryResult history = new ExpressQueryResult(waybill, "ZTO", "中通快递",
+                    StatusSemantic.TRANSIT, ExpressSourcePolicy.parseEventTime(historyTime), historyTime,
+                    "Carrier history", historyTracks, "", phone, TimelineSlot.K100_H5, "", "", "")
+                    .withManualStatusEvidence("运输中", true);
+            repository.saveOwnerManualTimeline(owner, history, phone, "interface5", 1000L, false);
+            repository.rememberDetailSelection(owner, newerAccount ? TimelineSlot.K100_H5 : "feed");
+            if (newerAccount) {
+                String newest = relativeTime(-60_000L);
+                ExpressQueryResult query = accountResult(waybill, phone, StatusSemantic.TRANSIT,
+                        newest, "New account history", timedTracks(newest, "New account history"), "", "CaiNiao");
+                assertTrue(repository.saveInterface5Query(query, owner,
+                        repository.bindingGeneration(phone, "interface5")));
+            }
+            database.close(); database = new ExpressDatabase(context); repository = new ExpressRepository(context, database);
+            owner = repository.findByWaybill(waybill, "interface5");
+            for (int read = 0; read < 2; read++) {
+                ManualTimelineAuthorityPolicy.Candidate selected = repository.manualDetailTimelineAuthority(owner);
+                assertNotNull(selected);
+                assertEquals(newerAccount ? TimelineSlot.V5_QUERY : TimelineSlot.K100_H5, selected.provider);
+                assertEquals(newerAccount ? "New account history" : "Carrier history", selected.result.latestDetail);
+                if (newerAccount) {
+                    String logged = org.robolectric.shadows.ShadowLog.getLogsForTag(
+                            me.pipi.deliveries.network.ExpressLog.TAG).stream()
+                            .filter(log -> log.msg.contains("detail.timeline.candidate")
+                                    && log.msg.contains("timelineProvider=k100_h5"))
+                            .reduce((first, last) -> last).get().msg;
+                    assertTrue(logged, logged.contains("detailComplete=false"));
+                    assertTrue(logged, logged.contains("incompleteReason=time_mismatch"));
+                }
+            }
+            assertEquals(historyTracks, repository.manualTimelineCandidate(owner, TimelineSlot.K100_H5).result.tracksJson);
+            assertEquals("Account summary", repository.automaticSourceTimeline(owner).latestDetail);
+        }
+    }
+
+    @Test public void workerUndatedCompletionCannotFreezeAnAccountUpdate() throws Exception {
+        String phone = "13900000043";
+        String waybill = "ZTUNDATEDFREEZE";
+        String older = relativeTime(-120_000L);
+        String newer = relativeTime(-60_000L);
+        repository.bindPhoneLocally(phone, "interface5");
+        repository.saveInterface5(accountResult(waybill, phone, StatusSemantic.COMPLETED,
+                older, "Undated source completion", timedTracks(older, "Undated source completion"), "", "CaiNiao")
+                .withWorkerStatus(workerStatus(StatusSemantic.COMPLETED, "已签收", 0, 0)), phone);
+        repository.saveInterface5(accountResult(waybill, phone, StatusSemantic.COMPLETED,
+                newer, "Confirmed source completion", timedTracks(newer, "Confirmed source completion"), "", "CaiNiao")
+                .withWorkerStatus(workerStatus(StatusSemantic.COMPLETED, "已签收", 0,
+                        ExpressSourcePolicy.parseEventTime(newer))), phone);
+        ExpressItem item = repository.findByWaybill(waybill, "interface5");
+        assertEquals(ExpressSourcePolicy.parseEventTime(newer), item.statusEventTime);
+        assertEquals("Confirmed source completion", item.latestDetail);
+    }
+
+    @Test public void expandedJdH5WithoutPickupCannotStopExistingManualSupplement() throws Exception {
+        String phone = "13900000043";
+        String waybill = "ZTH5ORIGINTEST";
+        String time = relativeTime(-60_000L);
+        String older = relativeTime(-120_000L);
+        repository.bindPhoneLocally(phone, "interface5");
+        repository.saveInterface5(accountResult(waybill, phone, StatusSemantic.TRANSIT,
+                time, "Account summary", timedTracks(time, "Account summary"), "", "JingDong"), phone);
+        ExpressItem owner = repository.findByWaybill(waybill, "interface5");
+        java.lang.reflect.Method gate = me.pipi.deliveries.feature.express.ExpressDetailActivity.class
+                .getDeclaredMethod("automaticSourcesHaveOrigin", ExpressRepository.class, ExpressItem.class);
+        gate.setAccessible(true);
+        for (boolean pickup : new boolean[]{false, true}) {
+            String tracks = "[{\"time\":\"" + time + "\",\"context\":\"H5 latest\"},"
+                    + "{\"time\":\"" + older + "\",\"context\":\"" + (pickup ? "已揽收" : "H5 older") + "\"}]";
+            ExpressQueryResult h5 = new ExpressQueryResult(waybill, "ZTO", "中通快递", StatusSemantic.UNKNOWN,
+                    time, "H5 latest", tracks, "", phone, TimelineSlot.JD_H5);
+            assertTrue(repository.saveAutomaticDetailTimeline(owner,
+                    repository.captureManualQueryOwner(owner), h5, true));
+            assertEquals(pickup, gate.invoke(null, repository, owner));
+        }
+    }
+
+    private static me.pipi.deliveries.model.WorkerStatusProjection workerStatus(
+            StatusSemantic semantic, String text, int priority, long time) throws Exception {
+        return me.pipi.deliveries.model.WorkerStatusProjection.read(new org.json.JSONObject()
+                .put("normalizedStatus", new org.json.JSONObject().put("version", 1)
+                        .put("scope", "SHIPMENT").put("semantic", semantic.name())
+                        .put("code", "SERVER_ENUM").put("text", text).put("priority", priority)
+                        .put("eventAtMs", time).put("structured", semantic != StatusSemantic.UNKNOWN)));
+    }
+
+    @Test public void workerStatusPersistsAcrossAccountQueryAndOlderFeedReload() throws Exception {
+        String waybill = "ZTWORKERQUERY001";
+        String phone = "13900000043";
+        String old = relativeTime(-120_000L);
+        String time = relativeTime(-60_000L);
+        long event = ExpressSourcePolicy.parseEventTime(time);
+        repository.bindPhoneLocally(phone, "interface5");
+        ExpressQueryResult feed = accountResult(waybill, phone, StatusSemantic.PICKED,
+                old, "Feed pickup", timedTracks(old, "Feed pickup"), "", "CaiNiao");
+        repository.saveInterface5(feed, phone);
+        ExpressItem owner = repository.findByWaybill(waybill, "interface5");
+        ExpressQueryResult query = accountResult(waybill, phone, StatusSemantic.DELIVERY,
+                time, "Query delivery", timedTracks(time, "Query delivery"), "", "CaiNiao")
+                .withWorkerStatus(workerStatus(StatusSemantic.DELIVERY, "驿站派送中", 1, event));
+        assertTrue(repository.saveInterface5Query(query, owner, repository.bindingGeneration(phone, "interface5")));
+        database.close(); database = new ExpressDatabase(context); repository = new ExpressRepository(context, database);
+        repository.saveInterface5(feed, phone);
+        ExpressItem selected = repository.findByWaybill(waybill, "interface5");
+        assertEquals(StatusSemantic.DELIVERY, selected.semantic);
+        assertEquals("驿站派送中", selected.displayStatus());
+        assertEquals("驿站派送中", repository.listVisible("interface5").get(0).displayStatus());
+        assertEquals(event, selected.statusEventTime);
+        assertEquals("Query delivery", selected.latestDetail);
+    }
+
+    @Test public void workerUnknownAndMissingCompletionTimeCannotBeGuessedAfterDatabaseRead() throws Exception {
+        String phone = "13900000043";
+        String time = relativeTime(-60_000L);
+        repository.bindPhoneLocally(phone, "interface5");
+        ExpressQueryResult unknown = accountResult("ZTWORKERUNKNOWN1", phone, StatusSemantic.UNKNOWN,
+                time, "快件已签收", timedTracks(time, "快件已签收"), "", "CaiNiao")
+                .withWorkerStatus(workerStatus(StatusSemantic.UNKNOWN, "", 0, 0));
+        repository.saveInterface5(unknown, phone);
+        // UNKNOWN cannot claim a new automatic owner; a versioned legacy row still must not infer prose.
+        assertNull(repository.findByWaybill(unknown.waybill, "interface5"));
+        ContentValues cached = shipmentValues(unknown.waybill, phone, "ZTO", "中通快递",
+                "INTERFACE5", "CaiNiao", StatusSemantic.UNKNOWN);
+        cached.put("packageDyn", unknown.tracksJson);
+        cached.put("lastLogisticDetail", "已签收");
+        cached.put("logisticsStatusDesc", "已签收");
+        cached.put("statusEventTime", 0L);
+        long id = database.getWritableDatabase().insertOrThrow(ExpressDatabase.EXPRESS_TABLE, null, cached);
+        ExpressItem item = repository.find(id);
+        assertEquals(StatusSemantic.UNKNOWN, item.semantic);
+        assertEquals("暂无状态", item.displayStatus());
+        assertEquals(0, item.statusEventTime);
+        ExpressQueryResult signed = accountResult("ZTWORKERNOCLOCK", phone, StatusSemantic.COMPLETED,
+                time, "快件已签收", timedTracks(time, "快件已签收"), "", "CaiNiao")
+                .withWorkerStatus(workerStatus(StatusSemantic.COMPLETED, "已签收", 0, 0));
+        repository.saveInterface5(signed, phone);
+        item = repository.findByWaybill(signed.waybill, "interface5");
+        assertEquals(0, item.statusEventTime);
+        assertEquals(0, ExpressLifecycleTimes.signedEvidenceAt(item, null, System.currentTimeMillis()));
+    }
+
+    @Test public void workerSubtypeSurvivesManualSidecarReloadWithDifferentHistoryProvider() throws Exception {
+        ExpressItem owner = insertOwner("SFWORKERSTATUS1", "13900000001", StatusSemantic.PICKED);
+        String time = relativeTime(-60_000L);
+        long event = ExpressSourcePolicy.parseEventTime(time);
+        ExpressQueryResult online = new ExpressQueryResult(owner.waybill, "SF", "顺丰速运",
+                StatusSemantic.DELIVERY, event, time, "Online status", timedTracks(time, "Online status"),
+                "", owner.phone, TimelineSlot.V6_QUERY, "", "", "")
+                .withWorkerStatus(workerStatus(StatusSemantic.DELIVERY, "驿站派送中", 1, event));
+        ExpressQueryResult h5 = new ExpressQueryResult(owner.waybill, "SF", "顺丰速运",
+                StatusSemantic.UNKNOWN, time, "H5 history", "[{\"time\":\"" + time + "\",\"context\":\"H5 history\"},"
+                + "{\"time\":\"" + relativeTime(-120_000L) + "\",\"context\":\"已揽收\"}]",
+                "", owner.phone, TimelineSlot.K100_H5);
+        repository.saveOwnerManualTimeline(owner, online, owner.phone, "interface5", 1000, false);
+        repository.saveOwnerManualTimeline(owner, h5, owner.phone, "interface5", 2000, true);
+        database.close(); database = new ExpressDatabase(context); repository = new ExpressRepository(context, database);
+        ExpressItem result = repository.findByWaybill(owner.waybill, "interface5");
+        assertEquals("驿站派送中", result.displayStatus());
+        assertEquals("H5 history", result.latestDetail);
+        assertEquals(TimelineSlot.K100_H5, result.manualTimelineProvider);
+        assertEquals(event, result.statusEventTime);
+        assertFalse(repository.manualTimelineCandidate(result, TimelineSlot.K100_H5).result.tracksJson.contains("normalizedStatus"));
+    }
+
+    @Test public void equalTimeStatusDonorSurvivesWholeHistoryAndReversedPersistenceOrder() throws Exception {
+        long event = 1789290913000L;
+        for (boolean hasH5 : new boolean[]{false, true}) for (boolean reverse : new boolean[]{false, true}) {
+            String waybill = "EMS_DONOR_DB_" + hasH5 + "_" + reverse;
+            ManualTimelineAuthorityPolicy.Candidate delivery = StatusDonorPolicyTest.candidate(
+                    waybill, "v4_query", StatusSemantic.DELIVERY, 1, event, 4, true, false);
+            ManualTimelineAuthorityPolicy.Candidate transit = StatusDonorPolicyTest.candidate(
+                    waybill, "v6_query", StatusSemantic.TRANSIT, 0, event, 1, false, false);
+            ManualTimelineAuthorityPolicy.Candidate h5 = StatusDonorPolicyTest.candidate(
+                    waybill, "k100_h5", StatusSemantic.UNKNOWN, 0, event, 14, true, true);
+            java.util.ArrayList<ManualQuerySuccess> writes = new java.util.ArrayList<>();
+            for (ManualTimelineAuthorityPolicy.Candidate candidate : Arrays.asList(transit, delivery)) {
+                writes.add(new ManualQuerySuccess(candidate.provider, candidate.result, 1000L, candidate.complete));
+            }
+            if (hasH5) writes.add(new ManualQuerySuccess(h5.provider, h5.result, 1000L, h5.complete));
+            if (reverse) java.util.Collections.reverse(writes);
+            ExpressItem owner = repository.saveManualQueryBatch(null, writes, "", "interface5");
+            assertNotNull(owner);
+            database.close();
+            database = new ExpressDatabase(context);
+            repository = new ExpressRepository(context, database);
+            ExpressItem shown = repository.find(owner.rowId);
+            assertEquals(StatusSemantic.DELIVERY, shown.semantic);
+            assertEquals("驿站派送中", shown.displayStatus());
+            assertEquals(event, shown.statusEventTime);
+            assertEquals(hasH5 ? "k100_h5" : "v4_query", shown.manualTimelineProvider);
+            assertEquals(hasH5 ? 14 : 4, me.pipi.deliveries.model.ExpressTimeline.parse(shown.tracksJson, "", "").size());
+            assertEquals("驿站派送中", repository.listVisible("interface5").stream()
+                    .filter(item -> item.rowId == owner.rowId).findFirst().get().displayStatus());
+            assertEquals(hasH5 ? "k100_h5" : "v4_query", repository.manualDetailTimelineAuthority(shown).provider);
+            assertEquals(StatusSemantic.TRANSIT, repository.manualTimelineCandidate(shown, "v6_query").result.semantic);
+            if (hasH5) assertEquals(StatusSemantic.UNKNOWN,
+                    repository.manualTimelineCandidate(shown, "k100_h5").result.semantic);
+        }
+    }
+
+    @Test public void sameSemanticSubtypeStillUpgradesSelectedHistoryWithNewerOtherStatus() throws Exception {
+        String waybill = "EMS_SUBTYPE_DB";
+        long event = 1789290913000L;
+        ManualTimelineAuthorityPolicy.Candidate selected = StatusDonorPolicyTest.candidate(
+                waybill, "v6_query", StatusSemantic.DELIVERY, 0, event, 14, true, false);
+        ManualTimelineAuthorityPolicy.Candidate station = StatusDonorPolicyTest.candidate(
+                waybill, "v4_query", StatusSemantic.DELIVERY, 1, event, 2, true, false);
+        ManualTimelineAuthorityPolicy.Candidate newer = StatusDonorPolicyTest.candidate(
+                waybill, "k100_h5", StatusSemantic.TRANSIT, 0, event + 1000L, 1, false, false);
+        ExpressItem owner = repository.saveManualQueryBatch(null, Arrays.asList(
+                new ManualQuerySuccess(newer.provider, newer.result, 1000L, false),
+                new ManualQuerySuccess(selected.provider, selected.result, 1000L, false),
+                new ManualQuerySuccess(station.provider, station.result, 1000L, false)), "", "interface5");
+        database.close(); database = new ExpressDatabase(context); repository = new ExpressRepository(context, database);
+        ExpressItem shown = repository.find(owner.rowId);
+        assertEquals("v6_query", shown.manualTimelineProvider);
+        assertEquals(StatusSemantic.DELIVERY, shown.semantic);
+        assertEquals("驿站派送中", shown.displayStatus());
+        assertEquals(14, me.pipi.deliveries.model.ExpressTimeline.parse(shown.tracksJson, "", "").size());
+        assertEquals("驿站派送中", repository.listVisible("interface5").get(0).displayStatus());
+        assertEquals(0, repository.manualTimelineCandidate(shown, "v6_query").result.workerStatus.priority);
+        assertEquals(StatusSemantic.TRANSIT, repository.manualTimelineCandidate(shown, "k100_h5").result.semantic);
+    }
+
+    @Test public void selectedLogNamesTheHistoryAndItsStructuredStatusDonor() {
+        ExpressItem owner = insertOwner("SFDIAGNOSTIC001", "13900000001", StatusSemantic.PICKED);
+        String time = relativeTime(-60_000L);
+        ExpressQueryResult online = new ExpressQueryResult(owner.waybill, "SF", "顺丰速运",
+                StatusSemantic.DELIVERY, me.pipi.deliveries.model.ExpressTimeline.parseTime(time), time,
+                "Online event", timedTracks(time, "Online event"), "", owner.phone, TimelineSlot.V6_QUERY,
+                "", "", "").withManualStatusEvidence("派送中", true);
+        ExpressQueryResult history = new ExpressQueryResult(owner.waybill, "SF", "顺丰速运",
+                StatusSemantic.UNKNOWN, time, "H5 newest", "[{\"time\":\"" + time + "\",\"context\":\"H5 newest\"},"
+                + "{\"time\":\"" + relativeTime(-120_000L) + "\",\"context\":\"已揽收\"}]", "", owner.phone, TimelineSlot.K100_H5);
+        repository.saveOwnerManualTimeline(owner, online, owner.phone, "interface5", 1_000L, false);
+        repository.saveOwnerManualTimeline(owner, history, owner.phone, "interface5", 2_000L, true);
+        org.robolectric.shadows.ShadowLog.clear();
+        assertEquals(TimelineSlot.K100_H5, repository.manualDetailTimelineAuthority(owner).provider);
+        String line = org.robolectric.shadows.ShadowLog.getLogsForTag("PipiExpress").stream()
+                .map(log -> log.msg).filter(value -> value.contains("detail.timeline.selected")).findFirst().orElse("");
+        assertTrue(line, line.contains("detailTimelineProvider=k100_h5"));
+        assertTrue(line, line.contains("statusProvider=v6_query"));
+        assertTrue(line, line.contains("statusSemantic=DELIVERY"));
+        assertTrue(line, line.contains("incompleteReason=sf_active"));
+        assertTrue(line, line.contains("selectionReason=complete_history"));
+        assertTrue(line, line.contains("flowId=detail-"));
+        assertFalse(line.contains(owner.waybill));
+    }
+
     @Test public void newerV5QueryAdvancesHomeAndSurvivesOlderFeedAfterReload() {
         String waybill = "ZTTESTQUERY011";
         String phone = "13900000043";
@@ -295,6 +564,63 @@ public final class ExpressRepositoryDatabaseTest {
                     .getActiveNotifications().length);
             assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, null));
         }
+    }
+
+    @Test
+    @Config(sdk = 33)
+    public void deniedNotificationRemainsPendingUntilPermissionIsGranted() {
+        org.robolectric.Shadows.shadowOf((Application) context)
+                .denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS);
+        String waybill = "SFNOTIFYGRANT0001";
+        repository.saveManualQueryResult(timedResult(waybill,
+                "2026-09-10 09:00:00", "运输中", "v4"), "", "interface5");
+        repository.saveManualQueryResult(timedResult(waybill,
+                "2026-09-10 10:00:00", "已签收", "v4"), "", "interface5");
+        assertEquals(1, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, null));
+        org.robolectric.Shadows.shadowOf((Application) context)
+                .grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS);
+        repository.replayPendingNotifications();
+        assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, null));
+    }
+
+    @Test
+    @Config(shadows = FailingNotifications.class)
+    public void unrelatedBackgroundBatchDoesNotDelayForegroundPublication() throws Exception {
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService worker = java.util.concurrent.Executors.newSingleThreadExecutor();
+        java.util.concurrent.Future<?> batch = worker.submit(() -> repository.runInChangeBatch(() -> {
+            entered.countDown();
+            try { release.await(5L, java.util.concurrent.TimeUnit.SECONDS); }
+            catch (InterruptedException failure) { Thread.currentThread().interrupt(); }
+        }));
+        try {
+            assertTrue(entered.await(2L, java.util.concurrent.TimeUnit.SECONDS));
+            FailingNotifications.attempts = 0;
+            FailingNotifications.fail = false;
+            String waybill = "SFFOREGROUNDBATCH";
+            repository.saveManualQueryResult(timedResult(waybill,
+                    "2026-09-10 09:00:00", "运输中", "v4"), "", "interface5");
+            repository.saveManualQueryResult(timedResult(waybill,
+                    "2026-09-10 10:00:00", "已签收", "v4"), "", "interface5");
+            assertEquals(1, FailingNotifications.attempts);
+        } finally {
+            release.countDown();
+            batch.get(2L, java.util.concurrent.TimeUnit.SECONDS);
+            worker.shutdownNow();
+        }
+    }
+
+    @Test public void hiddenSignedCacheIsNotAnAlreadyListedDuplicate() {
+        String waybill = "SFHIDDENDUPLICATE";
+        long signedAt = System.currentTimeMillis() - 15L * 24L * 60L * 60L * 1000L;
+        ExpressItem owner = insertOwner(waybill, "13900000001", StatusSemantic.COMPLETED);
+        ContentValues values = new ContentValues();
+        values.put("signedRetainedAt", signedAt);
+        database.getWritableDatabase().update(ExpressDatabase.EXPRESS_TABLE, values,
+                "_id=?", new String[]{Long.toString(owner.rowId)});
+        assertNotNull(repository.findByWaybill(waybill, "interface5"));
+        assertNull(repository.findVisibleByWaybill(waybill, "interface5"));
     }
 
     private Context context;
@@ -1378,9 +1704,8 @@ public final class ExpressRepositoryDatabaseTest {
         ExpressItem owner = repository.findByWaybill(waybill, "interface5");
         assertNotNull(owner);
         assertEquals("已签收", owner.latestDetail);
-        assertTrue(owner.tracksJson.contains("已下单"));
-        assertTrue(me.pipi.deliveries.model.ExpressTimeline.isForeignPackage(owner.tracksJson,
-                timedTracks("2025-11-18 12:00:00", "已签收")));
+        assertFalse(owner.tracksJson.contains("已下单"));
+        assertEquals(me.pipi.deliveries.model.ExpressTimeline.parseTime("2026-09-01 12:00:00"), owner.listOriginAtMs);
 
         String realWaybill = "JTFEEDORIGIN0001";
         repository.saveAccountTimeline(accountResultFor(
@@ -1707,56 +2032,34 @@ public final class ExpressRepositoryDatabaseTest {
         assertEquals("待取件", projected.statusDescription);
     }
 
-    @Test
-    public void legacyMeizuSlotsAccumulateIntoCanonicalQueryWithoutLosingHistory() {
+    @Test public void retiredPickerSlotsAreDeletedWithoutMergingIntoCurrentQuery() {
         for (String alias : new String[]{"v6_picker", "meizu_picker"}) {
             String waybill = "SFLEGACY" + alias.replace("_", "").toUpperCase(Locale.ROOT);
             repository.saveManualQueryResult(timedResult(waybill,
-                    "2026-09-08 09:00:00", "Earlier event", "meizu"),
+                    "2026-09-08 09:00:00", "Retired event", "v6_query"),
                     "0061", "interface5", 1_000L, false);
             ExpressItem owner = repository.findByWaybill(waybill, "interface5");
-            ContentValues legacy = new ContentValues();
-            legacy.put("provider", alias);
-            legacy.put("complete", 1);
+            ContentValues legacy = new ContentValues(); legacy.put("provider", alias);
             database.getWritableDatabase().update(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
                     legacy, "owner_row_id=?", new String[]{Long.toString(owner.rowId)});
-
-            ManualTimelineAuthorityPolicy.Candidate cached =
-                    repository.manualTimelineCandidate(owner, "v6_query");
-            assertNotNull(cached);
-            assertEquals("v6_query", cached.provider);
-            assertEquals("v6_query", cached.result.timelineProvider);
-            // The rename preserves stored data; the existing Meizu partial contract still applies.
-            assertFalse(cached.complete);
-            assertEquals(1, count(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
-                    "owner_row_id=? AND complete=1", new String[]{Long.toString(owner.rowId)}));
-
+            assertNull(repository.manualTimelineCandidate(owner, TimelineSlot.V6_QUERY));
             repository.saveOwnerManualTimeline(owner, timedResult(waybill,
-                    "2026-09-08 10:00:00", "Later event", "v6_query"),
+                    "2026-09-08 10:00:00", "Current event", TimelineSlot.V6_QUERY),
                     owner.phone, "interface5", 2_000L, false);
-            ManualTimelineAuthorityPolicy.Candidate updated =
-                    repository.manualTimelineCandidate(owner, "v6_query");
-            assertEquals(2, me.pipi.deliveries.model.ExpressTimeline.parse(
-                    updated.result.tracksJson, "", "").size());
-            assertTrue(updated.result.tracksJson.contains("Earlier event"));
-            assertTrue(updated.result.tracksJson.contains("Later event"));
-            assertEquals(1, count(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
-                    "owner_row_id=? AND provider='v6_query'",
-                    new String[]{Long.toString(owner.rowId)}));
-            repository.saveOwnerManualTimeline(owner, timedResult(waybill,
-                    "2026-09-08 10:00:00", "Later event", alias),
-                    owner.phone, "interface5", 3_000L, false);
-            assertEquals(2, me.pipi.deliveries.model.ExpressTimeline.parse(
-                    repository.manualTimelineCandidate(owner, "v6_query").result.tracksJson,
-                    "", "").size());
+            database.close(); database = new ExpressDatabase(context);
+            repository = new ExpressRepository(context, database);
             assertEquals(0, count(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
-                    "owner_row_id=? AND provider=? AND success_at=3000",
-                    new String[]{Long.toString(owner.rowId), alias}));
+                    "provider=?", new String[]{alias}));
+            var current = repository.manualTimelineCandidate(owner, TimelineSlot.V6_QUERY);
+            assertNotNull(current); assertFalse(current.result.tracksJson.contains("Retired event"));
+            assertTrue(current.result.tracksJson.contains("Current event"));
+            assertNotNull(repository.find(owner.rowId));
+            assertEquals(TimelineSlot.V6_LIST, TimelineSlot.normalize("interface6"));
         }
     }
 
     @Test
-    public void legacyMeizuRouteAndStickySelectionReadAsQueryAndNewRoutesAreCanonical() {
+    public void retiredPickerRouteAndSelectionAreRemovedWhileNewRoutesStayCanonical() {
         String waybill = "SFLEGACYROUTE001";
         String route = "https://m.kuaidi100.com/result.jsp?nu=" + waybill;
         ExpressQueryResult result = new ExpressQueryResult(waybill, "SF", "SF Express",
@@ -1773,27 +2076,28 @@ public final class ExpressRepositoryDatabaseTest {
                 .putString(key, "v6_picker").commit();
         org.robolectric.util.ReflectionHelpers.setStaticField(
                 ExpressRepository.class, "detailSelections", null);
+        database.close(); database = new ExpressDatabase(context);
         repository = new ExpressRepository(context, database);
-        assertEquals(route, repository.meizuManualDetailUrl(owner));
-        assertEquals("v6_query", ExpressRepository.preferredDetailProvider(owner));
+        assertEquals("", repository.meizuManualDetailUrl(owner));
+        assertEquals("", ExpressRepository.preferredDetailProvider(owner));
         repository.saveOwnerManualTimeline(owner, result, owner.phone,
                 "interface5", 2_000L, false);
         assertEquals(1, count(ExpressDatabase.OWNER_MANUAL_ROUTE_TABLE,
                 "owner_row_id=? AND provider='v6_query' AND success_at=2000",
                 new String[]{Long.toString(owner.rowId)}));
         repository.rememberDetailSelection(owner, "meizu_picker");
-        assertEquals("v6_query", context.getSharedPreferences("express_detail_selection", 0)
+        assertEquals("", context.getSharedPreferences("express_detail_selection", 0)
                 .getString(key, ""));
     }
 
     @Test
-    public void meizuPickerRouteStaysInItsProviderSidecarWithoutChangingOwnerRoute() {
+    public void meizuOnlineRouteStaysInItsProviderSidecarWithoutChangingOwnerRoute() {
         String waybill = "MEIZUPICKER0001";
         String route = "https://m.kuaidi100.com/result.jsp?nu=MEIZUPICKER0001";
         ExpressQueryResult meizu = new ExpressQueryResult(
                 waybill, "ZTO", "中通快递", StatusSemantic.TRANSIT,
-                "2026-08-29 12:00:00", "魅族 Picker 运输中",
-                timedTracks("2026-08-29 12:00:00", "魅族 Picker 运输中"),
+                "2026-08-29 12:00:00", "魅族 Online 运输中",
+                timedTracks("2026-08-29 12:00:00", "魅族 Online 运输中"),
                 route, "", "meizu");
 
         repository.saveManualQueryResult(
@@ -2120,8 +2424,8 @@ public final class ExpressRepositoryDatabaseTest {
         String route = "https://m.kuaidi100.com/result.jsp?nu=SFMEIZUOWNER001";
         ExpressQueryResult meizu = new ExpressQueryResult(
                 owner.waybill, "SF", "顺丰速运", StatusSemantic.TRANSIT,
-                "2026-08-29 12:00:00", "Picker 运输中",
-                timedTracks("2026-08-29 12:00:00", "Picker 运输中"),
+                "2026-08-29 12:00:00", "Online 运输中",
+                timedTracks("2026-08-29 12:00:00", "Online 运输中"),
                 route, "", "meizu");
 
         repository.saveOwnerManualTimeline(
@@ -2405,7 +2709,7 @@ public final class ExpressRepositoryDatabaseTest {
     }
 
     @Test
-    public void routeLessInterface5CompletionKeepsSameProviderHistoryInOwnerRow() {
+    public void routeLessInterface5CompletionReplacesTheListSnapshot() {
         String waybill = "ZTTEST000042";
         String phone = "13900000042";
         repository.bindPhoneLocally(phone, "interface5");
@@ -2430,13 +2734,13 @@ public final class ExpressRepositoryDatabaseTest {
         assertEquals(StatusSemantic.COMPLETED, completed.semantic);
         assertEquals("快件已签收", completed.latestDetail);
         assertTrue(completed.tracksJson.contains("快件已签收"));
-        assertTrue(completed.tracksJson.contains("快件到达转运中心"));
-        assertTrue(completed.tracksJson.contains("快件已揽收"));
+        assertFalse(completed.tracksJson.contains("快件到达转运中心"));
+        assertFalse(completed.tracksJson.contains("快件已揽收"));
         assertNull(repository.accountTimeline(waybill, "interface5"));
     }
 
     @Test
-    public void routedInterface5CompletionPreservesFeedAndItsSeparateSidecar() {
+    public void routedInterface5CompletionKeepsQueryHistoryOutsideTheListSnapshot() {
         String waybill = "ZTTEST000043";
         String phone = "13900000043";
         String route = me.pipi.deliveries.model.CainiaoRoute.token("v5");
@@ -2475,7 +2779,7 @@ public final class ExpressRepositoryDatabaseTest {
         assertTrue(sidecar.tracksJson.contains("快件已签收"));
         assertTrue(sidecar.tracksJson.contains("快件到达转运中心"));
         assertTrue(sidecar.tracksJson.contains("快件已揽收"));
-        assertTrue(ownerRow.tracksJson.contains("快件到达转运中心"));
+        assertFalse(ownerRow.tracksJson.contains("快件到达转运中心"));
         assertEquals(1, count(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
                 "normalized_waybill=?", new String[]{
                         ExpressSourcePolicy.normalizeWaybill(waybill)}));
@@ -2696,14 +3000,14 @@ public final class ExpressRepositoryDatabaseTest {
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     public void wholeManualRoundRollsBackTogetherAndPublishesOnce() throws Exception {
         String waybill = "ZTBATCH000001";
-        ExpressQueryResult picker = timedResult(
-                waybill, "2026-09-01 09:00:00", "Picker 运输中", "meizu");
+        ExpressQueryResult online = timedResult(
+                waybill, "2026-09-01 09:00:00", "Online 运输中", "meizu");
         ExpressQueryResult moto = timedResult(
                 waybill, "2026-09-01 10:00:00", "Moto 运输中 1", "v4");
         ExpressQueryResult motoLater = timedResult(
                 waybill, "2026-09-01 11:00:00", "Moto 运输中 2", "v4");
         List<ManualQuerySuccess> successes = Arrays.asList(
-                new ManualQuerySuccess("meizu", picker, 1_000L, false),
+                new ManualQuerySuccess("meizu", online, 1_000L, false),
                 new ManualQuerySuccess("v4", moto, 2_000L, false),
                 new ManualQuerySuccess("v4", motoLater, 3_000L, false));
         AtomicInteger broadcasts = new AtomicInteger();
@@ -2746,20 +3050,20 @@ public final class ExpressRepositoryDatabaseTest {
             assertEquals("I5-K100", saved.stateOwner);
             assertEquals(2, count(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
                     "owner_row_id=?", new String[]{Long.toString(saved.rowId)}));
-            ManualTimelineAuthorityPolicy.Candidate pickerCache =
+            ManualTimelineAuthorityPolicy.Candidate onlineCache =
                     repository.manualTimelineCandidate(saved, "meizu");
             ManualTimelineAuthorityPolicy.Candidate motoCache =
                     repository.manualTimelineCandidate(saved, "v4");
-            assertNotNull(pickerCache);
+            assertNotNull(onlineCache);
             assertNotNull(motoCache);
-            assertTrue(pickerCache.result.tracksJson.contains("Picker 运输中"));
-            assertFalse(pickerCache.result.tracksJson.contains("Moto 运输中 1"));
-            assertFalse(pickerCache.result.tracksJson.contains("Moto 运输中 2"));
+            assertTrue(onlineCache.result.tracksJson.contains("Online 运输中"));
+            assertFalse(onlineCache.result.tracksJson.contains("Moto 运输中 1"));
+            assertFalse(onlineCache.result.tracksJson.contains("Moto 运输中 2"));
             assertTrue(motoCache.result.tracksJson.contains("Moto 运输中 1"));
             assertTrue(motoCache.result.tracksJson.contains("Moto 运输中 2"));
-            assertFalse(motoCache.result.tracksJson.contains("Picker 运输中"));
+            assertFalse(motoCache.result.tracksJson.contains("Online 运输中"));
             assertEquals("v4_query", repository.manualTimelineAuthority(saved).provider);
-            // 列表/状态归 Picker，详情按「完整性 → 有效节点数」独立选：moto 的两条压过 Picker
+            // 列表/状态归 Online，详情按「完整性 → 有效节点数」独立选：moto 的两条压过 Online
             // 的一条（用户定 2026-09-04，三端同口径）。
             assertEquals("v4_query", repository.manualDetailTimelineAuthority(saved).provider);
             org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
@@ -2889,12 +3193,12 @@ public final class ExpressRepositoryDatabaseTest {
                 phone, ExpressSourcePolicy.SOURCE_INTERFACE5, generation, 1_000L);
         ExpressItem owner = repository.findByWaybill(waybill, "interface5");
         assertNotNull(owner);
-        ExpressQueryResult pickerTransit = timedResult(
-                waybill, "2026-09-01 15:00:00", "Picker 运输中", "meizu");
+        ExpressQueryResult onlineTransit = timedResult(
+                waybill, "2026-09-01 15:00:00", "Online 运输中", "meizu");
         ExpressQueryResult completed = timedResult(
                 waybill, "2026-09-01 16:00:00", "K100 已签收", "kuaidi100");
         List<ManualQuerySuccess> successes = Arrays.asList(
-                new ManualQuerySuccess("meizu", pickerTransit, 6_000L, false),
+                new ManualQuerySuccess("meizu", onlineTransit, 6_000L, false),
                 new ManualQuerySuccess("kuaidi100", completed, 7_000L, true));
 
         database.getWritableDatabase().execSQL(
@@ -2950,7 +3254,7 @@ public final class ExpressRepositoryDatabaseTest {
     }
 
     @Test
-    public void borrowedSignedStatusSurvivesNewPickerAndRepositoryRecreationWithUnknownFeed() {
+    public void borrowedSignedStatusSurvivesNewOnlineAndRepositoryRecreationWithUnknownFeed() {
         String waybill = "BORROWEDSIGNED0001";
         String phone = "13900000001";
         repository.bindPhoneLocally(phone, "interface5");
@@ -2981,12 +3285,12 @@ public final class ExpressRepositoryDatabaseTest {
         assertEquals(signedAt, borrowed.statusEventTime);
         assertTrue(borrowed.signedRetainedAt > 0L);
         String newerTime = relativeTime(0L);
-        ExpressQueryResult picker = new ExpressQueryResult(waybill, "ZTO", "中通快递",
+        ExpressQueryResult online = new ExpressQueryResult(waybill, "ZTO", "中通快递",
                 StatusSemantic.TRANSIT, System.currentTimeMillis(), newerTime, "较新的运输节点",
                 timedTracks(newerTime, "较新的运输节点"), "", "", "meizu", "", "", "")
                 .withManualStatusEvidence("运输中", true);
         repository.saveOwnerManualQueryBatch(borrowed, repository.captureManualQueryOwner(borrowed),
-                List.of(new ManualQuerySuccess("meizu", picker, System.currentTimeMillis(), false)),
+                List.of(new ManualQuerySuccess("meizu", online, System.currentTimeMillis(), false)),
                 "", "interface5");
         database.close();
         database = new ExpressDatabase(context);
@@ -3355,7 +3659,7 @@ public final class ExpressRepositoryDatabaseTest {
         }
     }
 
-    /** A sparse feed update preserves its history without mixing in query sidecars. */
+    /** A trustworthy terminal list package stays frozen without mixing query sidecars. */
     @Test
     public void summaryRewriteKeepsTheRicherRowDetail() {
         ExpressItem row = new ExpressItem(
@@ -3373,19 +3677,19 @@ public final class ExpressRepositoryDatabaseTest {
         assertEquals("2026-08-28 10:03:49", kept.latestTime);
         assertEquals(2, Kuaidi100TimelinePolicy.timedTrackCount(kept));
         assertTrue(kept.statusEventTime > 0L);
-        // 摘要带来更晚的事件：照常覆盖。
+        // A newer packet cannot reopen a trustworthy completed owner.
         ExpressQueryResult newer = new ExpressQueryResult(
                 "73724083630238", "ZTO", "中通快递", StatusSemantic.COMPLETED,
                 "2026-08-29 09:00:00", "已取件", "[]");
-        assertEquals("已取件", ExpressRepository.mergeSameOwnerFeed(row, newer).latestDetail);
-        // Both observations belong to the same feed, so its summary remains in the union.
+        assertEquals(row.latestDetail, ExpressRepository.mergeSameOwnerFeed(row, newer).latestDetail);
+        // The terminal freeze also protects the exact snapshot at equal time.
         ExpressQueryResult sameMinuteSummary = new ExpressQueryResult(
                 "73724083630238", "ZTO", "中通快递", StatusSemantic.COMPLETED,
                 "2026-08-28 10:03:49", "已签收",
                 "[{\"time\":\"2026-08-28 10:03:49\",\"context\":\"已签收\"}]");
         ExpressQueryResult keptAgain = ExpressRepository.mergeSameOwnerFeed(
                 row, sameMinuteSummary);
-        assertEquals(3, Kuaidi100TimelinePolicy.timedTrackCount(keptAgain));
-        assertTrue(keptAgain.tracksJson.contains("\"context\":\"已签收\""));
+        assertEquals(2, Kuaidi100TimelinePolicy.timedTrackCount(keptAgain));
+        assertEquals(row.tracksJson, keptAgain.tracksJson);
     }
 }

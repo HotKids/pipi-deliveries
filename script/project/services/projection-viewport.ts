@@ -5,17 +5,17 @@
  * `innerWidth`/`innerHeight` of 0 and `document.visibilityState === "hidden"` (Fold7-paired
  * beta12 device log: `viewportAvailable=false visibilityState=hidden`). The union page mounts
  * its floors by viewport intersection, so the exact 「完整物流进度」 control is never rendered
- * and the post-click modal — the only remaining proof of a complete package under §9 — can
- * never appear.
+ * and the post-click modal cannot appear. A multi-node response can still independently
+ * establish completeness under §9.
  *
- * Scripting can embed a controller in a `<WebView>` view, so the visible detail page lends the
+ * Scripting can embed a controller in a `<WebView>` view, so the app root lends the
  * projection a real viewport: the same controller is rendered transparently behind the page
  * content, which mirrors Pipi's window-attached alpha-0 capture WebView. The page owns the
- * slot, the service borrows it for exactly one load and releases it.
+ * slot across Home/detail navigation; the serialized H5 service borrows it for one load.
  *
  * Nothing here changes what counts as `complete`: the causal gate and the modal-coverage check
- * in `account-order-projection.ts` are unchanged. Without a host (background sync, list
- * refresh) the projection still runs headless and still yields the first-response package.
+ * in `account-order-projection.ts` are unchanged. Without a host, identity extraction returns
+ * its first accepted package without waiting for expansion. Widget sync never opens WebViews.
  */
 
 /** The page-side slot. `mount` resolves once the controller is actually on screen. */
@@ -26,7 +26,7 @@ export type ProjectionViewportHost = Readonly<{
 
 let host: ProjectionViewportHost | null = null;
 
-/** The detail page registers itself while mounted; passing null unregisters. */
+/** The app root registers while mounted; passing null unregisters. */
 export function registerProjectionViewportHost(
   next: ProjectionViewportHost | null,
 ): void {

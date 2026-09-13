@@ -50,8 +50,10 @@ public class ExpressSubscriptionDiagnosticsTest {
             ShadowLog.clear();
             ExpressLog.line("v5", "v5_query", entry[0], "selected", "nodes", 1);
             String message = ShadowLog.getLogsForTag(ExpressLog.TAG).get(0).msg;
-            assertEquals("interface=v5 level=v5_query source=" + entry[1]
-                    + " event=selected nodes=1", message);
+            assertTrue(message.matches("[0-9TZ:.-]+ INFO refresh\\.stage\\.selected .*"));
+            assertTrue(message.contains("interface=v5"));
+            assertTrue(message.contains("sourceProvider="+entry[1]));
+            assertTrue(message.contains("effectiveTrackCount=1"));
             assertEquals(entry[1], ExpressLog.source(entry[0], false));
             assertEquals("manual", ExpressLog.source(entry[0], true));
         }
@@ -74,7 +76,7 @@ public class ExpressSubscriptionDiagnosticsTest {
         assertEquals(3, ShadowLog.getLogsForTag(ExpressLog.TAG).size());
         for (org.robolectric.shadows.ShadowLog.LogItem entry : ShadowLog.getLogsForTag(ExpressLog.TAG)) {
             java.util.regex.Matcher source = java.util.regex.Pattern
-                    .compile("source=(\\S+)").matcher(entry.msg);
+                    .compile("sourceProvider=(\\S+)").matcher(entry.msg);
             assertTrue(source.find());
             assertEquals("sfexpress", source.group(1));
         }
@@ -93,7 +95,7 @@ public class ExpressSubscriptionDiagnosticsTest {
         assertTrue(log.contains("upstreamCode=503"));
         assertTrue(log.contains("valueKind=object"));
         assertTrue(log.contains("redirectPresent=true"));
-        assertTrue(log.contains("tail=4271"));
+        assertTrue(log.contains("waybillTail=4271"));
         assertTrue(log.matches(".*durationMs=[0-9]+.*"));
         assertFalse(log.contains("withheld"));
         assertFalse(log.contains("SFSYNTHETIC"));
@@ -143,8 +145,8 @@ public class ExpressSubscriptionDiagnosticsTest {
             assertTrue(log, log.contains("parseOutcome=" + entry[1]));
             assertTrue(log.contains("level=v6_query"));
             assertTrue(log.contains("mode=refresh"));
-            assertTrue(log.contains("tail=4271"));
-            assertTrue(log.contains("nodes=0"));
+            assertTrue(log.contains("waybillTail=4271"));
+            assertTrue(log.contains("effectiveTrackCount=0"));
             assertFalse(log.contains("withheld"));
             assertFalse(log.contains("WITHHELD"));
             assertFalse(log.contains("SFSYNTHETIC"));
@@ -162,7 +164,7 @@ public class ExpressSubscriptionDiagnosticsTest {
                 + "\"lastLogisticDetail\":\"Synthetic latest event\"}}")
                 .getBytes(StandardCharsets.UTF_8));
         ExpressSubscriptionClient client = new ExpressSubscriptionClient();
-        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
                 () -> client.queryManual(RuntimeEnvironment.getApplication(), "SFSYNTHETIC4271", null),
                 null, null, false);
         assertEquals("v6", request.getString("interface"));
@@ -194,7 +196,7 @@ public class ExpressSubscriptionDiagnosticsTest {
 
     private static String responseLog() {
         return ShadowLog.getLogsForTag(ExpressLog.TAG).stream()
-                .filter(entry -> entry.msg.contains("event=response"))
+                .filter(entry -> entry.msg.contains(" manual.meizu.response "))
                 .map(entry -> entry.msg).findFirst().orElse("");
     }
 }

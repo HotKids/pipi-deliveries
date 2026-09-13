@@ -37,7 +37,7 @@ public final class ExpressBindingSuppressionPolicyTest {
         int unbindStart = repository.indexOf(
                 "public void unbindPhone(String phone, String syncSource)");
         int unbindEnd = repository.indexOf(
-                "private static boolean ownerBelongsToBindingSource", unbindStart);
+                "private static final class BindingRecord", unbindStart);
         String unbind = repository.substring(unbindStart, unbindEnd);
 
         assertTrue(database.contains(

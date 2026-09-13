@@ -36,9 +36,7 @@ final class ExpressToastCopy {
     /** 列表下拉：没有需要刷新的行。 */
     static final String REFRESH_UP_TO_DATE = "当前已是最新";
 
-    /** 列表下拉：部分成功。 */
-    static final String REFRESH_PARTIAL = "刷新完成，部分快递暂未更新";
-    /** The account list committed successfully; only per-parcel supplementation failed. */
+    /** A partially successful visible refresh keeps the updated list available. */
     static final String LIST_UPDATED = "列表已更新";
 
     /** 列表下拉：全部失败或整轮抛错。 */
@@ -105,7 +103,7 @@ final class ExpressToastCopy {
 
     /** 列表下拉的四种结果（与 iOS refreshSummaryToast 同一套判据）。 */
     static String refreshSummary(int attempted, int succeeded, int failed, boolean accountListUpdated) {
-        if (failed > 0 && succeeded > 0) return accountListUpdated ? LIST_UPDATED : REFRESH_PARTIAL;
+        if (failed > 0 && succeeded > 0) return LIST_UPDATED;
         if (failed > 0) return REFRESH_FAILED;
         if (attempted == 0) return REFRESH_UP_TO_DATE;
         return REFRESH_DONE;

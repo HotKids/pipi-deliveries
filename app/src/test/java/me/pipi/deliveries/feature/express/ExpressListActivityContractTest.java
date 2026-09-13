@@ -55,17 +55,17 @@ public final class ExpressListActivityContractTest {
     }
 
     @Test
-    public void manualSubmitDefersOptionalCarrierDetectionUntilMotoRuns() throws Exception {
+    public void manualSubmitUsesOnlineAndTheAllowedH5WithoutMoto() throws Exception {
         String detail = projectFile("app/src/main/java/me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
         String query = method(detail, "private void startFirstManualQuery()",
                 "private boolean firstManualQueryIsCurrent(");
-        int pickerFirst = query.indexOf("ManualQueryCoordinator.queryPickerFirst(");
-        int detect = query.indexOf("manualApi.detect(", pickerFirst);
-        int moto = query.indexOf("manualApi.queryMoto(", pickerFirst);
-        assertTrue(pickerFirst >= 0);
-        assertFalse(query.substring(0, pickerFirst).contains("manualApi.detect("));
-        assertTrue(detect > pickerFirst);
-        assertTrue(moto > detect);
+        int onlineFirst = query.indexOf("ManualQueryCoordinator.queryOnlineFirst(");
+        int detect = query.indexOf("manualApi.detect(", onlineFirst);
+        int moto = query.indexOf("manualApi.queryMoto(", onlineFirst);
+        assertTrue(onlineFirst >= 0);
+        assertFalse(query.substring(0, onlineFirst).contains("manualApi.detect("));
+        assertEquals(-1, detect);
+        assertEquals(-1, moto);
         assertTrue(source().contains("detectedCarrierHintForQuery("));
         assertTrue(source().contains("ExpressDetailActivity.manualQueryIntent("));
         assertFalse(source().contains("saveManualQueryBatch("));
@@ -181,7 +181,7 @@ public final class ExpressListActivityContractTest {
         // Only an explicit submit opens the detail that owns this query; background sync never does.
         assertEquals(1, occurrences(query, "startActivity("));
         assertTrue(query.contains("manualQuery.launch(ExpressDetailActivity.manualQueryIntent("));
-        assertFalse(query.contains("ExpressDetailActivity.transientPickerPreviewIntent("));
+        assertFalse(query.contains("ExpressDetailActivity.transientOnlinePreviewIntent("));
         assertFalse(receiver.contains("startActivity("));
         assertFalse(reload.contains("startActivity("));
     }

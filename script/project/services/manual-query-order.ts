@@ -8,6 +8,7 @@ import {
   assertWithinDeadline,
   deadlineExpired,
   OperationTimeoutError,
+  waitForRefresh,
 } from "./deadline";
 
 export type ManualSource = "local" | "route" | "fallback";
@@ -27,7 +28,7 @@ export type ManualSourceResult = Readonly<{
 export type ManualSourceAdapter = Readonly<{
   source: ManualSource;
   enabled: boolean;
-  query: () => Promise<ManualSourceResult>;
+  query: (signal?: AbortSignal) => Promise<ManualSourceResult>;
 }>;
 
 export type ManualSourceObservation = Readonly<{
@@ -90,8 +91,13 @@ export async function queryManualSourceChain(
       const startedAt = Date.now();
       attemptedSources++;
       observe?.({ source: adapter.source, phase: "started" });
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
       try {
-        const result = await adapter.query();
+        const work = adapter.query(controller.signal);
+        const result = await (deadlineAtMs == null ? work : waitForRefresh(work, deadlineAtMs, signal));
         assertNotCancelled();
         // A result that arrived after its own deadline is not accepted. Results
         // that completed earlier remain available when a peer later times out.
@@ -110,10 +116,8 @@ export async function queryManualSourceChain(
         return item;
       } catch (error) {
         assertNotCancelled();
-        const settledError = error instanceof OperationTimeoutError ||
-            deadlineExpired(deadlineAtMs)
-          ? new OperationTimeoutError()
-          : error;
+        const settledError = error instanceof OperationTimeoutError ? error
+          : deadlineExpired(deadlineAtMs) ? new OperationTimeoutError() : error;
         observe?.({
           source: adapter.source,
           phase: "settled",
@@ -125,6 +129,10 @@ export async function queryManualSourceChain(
           result: null,
           error: settledError,
         } as const;
+      } finally {
+        // A timed-out consumer must also cancel the provider transport it started.
+        controller.abort();
+        signal?.removeEventListener("abort", abort);
       }
     }));
     for (const item of settled) {

@@ -1,3 +1,4 @@
+import { installSharedFileMock } from "./shared-file-mock";
 import assert from "node:assert/strict";
 import {
   generateInterface5Identity,
@@ -78,6 +79,8 @@ Object.assign(globalThis, {
     },
   },
 });
+installSharedFileMock(new Map());
+
 
 function deterministic(count: number): number[] {
   return Array.from({ length: count }, (_, index) => index);

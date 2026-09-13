@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { displayWaybill } from "../services/shipment-policy";
+import { waybillSuffix } from "../services/status";
 
 const page = readFileSync(new URL("../pages/DetailPage.tsx", import.meta.url), "utf8");
 const start = page.indexOf("  async function openExternalApp() {");
@@ -10,6 +12,7 @@ assert.match(page.slice(end), /topBarTrailing:[\s\S]*?action=\{openExternalApp\}
 const action = new Function(
   "externalAppAbortRef", "externalAppName", "setOpeningExternalApp",
   "fetchAccountExternalAppRoutes", "shipment", "setNotice", "Safari", "writeDiagnostic",
+  "displayWaybill", "waybillSuffix",
   `return (${page.slice(start, end).trim()});`,
 );
 
@@ -27,14 +30,15 @@ function scenario(openResult: boolean | Error | (boolean | Error)[] = true, requ
     requests++;
     if (requestFailure) throw new Error("synthetic request failure");
     return route;
-  }, {}, (value: string) => notices.push(value), {
+  }, { identity: { sourceId: "JT0000000000162", courierCode: "HTKY", sourceProvider: "CaiNiao" },
+    timeline: { waybill: "JT0000000000162" } }, (value: string) => notices.push(value), {
     async openURL(value: string) {
       opened.push(value);
       const result = Array.isArray(openResult) ? openResult[opened.length - 1] : openResult;
       if (result instanceof Error) throw result;
       return result;
     },
-  }, (event: string, details: unknown) => diagnostics.push({ event, details })) as () => Promise<void>;
+  }, (event: string, details: unknown) => diagnostics.push({ event, details }), displayWaybill, waybillSuffix) as () => Promise<void>;
   return { run, resolveRoute, resolveTargets, diagnostics, ref, busy, notices, opened, requestCount: () => requests };
 }
 
@@ -47,6 +51,10 @@ repeated.resolveRoute(uri);
 await first;
 assert.deepEqual(repeated.opened, [uri]);
 assert.deepEqual(repeated.busy, [true, false]);
+assert.deepEqual(repeated.diagnostics, [{ event: "detail.external.open", details: {
+  stage: "cainiao", attempted: 1, result: "opened", waybillTail: "0162",
+  carrierCode: "HTKY", sourceProvider: "CaiNiao",
+} }]);
 
 const cancelled = scenario();
 const pending = cancelled.run();

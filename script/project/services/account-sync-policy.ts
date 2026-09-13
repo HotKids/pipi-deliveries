@@ -19,9 +19,9 @@ export const ENRICHMENT_ROTATION_MS = 30 * 60 * 1000;
 export const ACCOUNT_ORDER_PROJECTION_RETRY_MS = 10 * 60 * 1000;
 export const ACCOUNT_ORDER_PROJECTION_RISK_CONTROL_MS = 60 * 60 * 1000;
 
-/** True when the union request statuses recorded by the projection probe include a 403. */
-export function projectionRiskControlled(unionResponseStatuses: string | null | undefined): boolean {
-  return String(unionResponseStatuses || "")
+/** Both a 403 and the exact JD page message establish the same cooldown. */
+export function projectionRiskControlled(unionResponseStatuses: string | null | undefined, riskControlSeen = false): boolean {
+  return riskControlSeen || String(unionResponseStatuses || "")
     .split(",")
     .some((status) => status.trim() === "403");
 }

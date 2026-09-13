@@ -18,8 +18,14 @@ public final class ExpressWidgetRefreshWorker extends Worker {
         try {
             ExpressRepository.get(getApplicationContext()).runPendingMigrations();
             ExpressWidgetProvider.refreshAll(getApplicationContext());
+            String source = me.pipi.deliveries.network.ExpressAccountSource.bindingSource(getApplicationContext());
+            if (!ExpressScheduler.hasRecentNetworkSuccess(getApplicationContext(), source, System.currentTimeMillis())) {
+                ExpressScheduler.enqueueAutomatic(getApplicationContext(), "background", true)
+                        .get(ExpressScheduler.BROADCAST_HANDOFF_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            }
             return Result.success();
-        } catch (RuntimeException failure) {
+        } catch (Exception failure) {
+            if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
             Log.w("ExpressWidgetRefresh", "Local widget refresh failed: " + failure.getClass().getSimpleName());
             return getRunAttemptCount() < 3 ? Result.retry() : Result.failure();
         }

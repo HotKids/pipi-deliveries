@@ -4,6 +4,11 @@ import {
   projectionFromUnionPayload,
 } from "../services/account-order-projection";
 import type { AccountParcelDto } from "../services/account-parser";
+import { registerProjectionViewportHost } from "../services/projection-viewport";
+
+// Expansion fixtures exercise the foreground app's hosted capture path. Headless identity
+// completion is covered separately in projection-identity-viewport.test.ts.
+registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
 
 const ownerId = "1234567890123456";
 const NOW = Date.UTC(2026, 7, 30, 8, 0, 0);
@@ -596,6 +601,7 @@ const pageDocument = {
   querySelectorAll: () => [],
 };
 
+let inPageProgram = "";
 class InPageProbeProjectionWebView {
   shouldAllowRequest?: DelayedProjectionWebView["shouldAllowRequest"];
 
@@ -605,6 +611,7 @@ class InPageProbeProjectionWebView {
 
   async evaluateJavaScript(source: string): Promise<unknown> {
     inPageProbeEvaluationCount++;
+    inPageProgram = source;
     return await new Function(source)();
   }
 
@@ -633,6 +640,12 @@ try {
       probeDiagnostics = diagnostics;
     },
   );
+  assert.equal(probeDiagnostics?.riskControlSeen, false);
+  pageDocument.body.innerText = "刷新几遍还不行";
+  const riskResult = await new Function(inPageProgram)();
+  assert.equal(riskResult.riskControlSeen, true);
+  assert.equal(JSON.stringify(riskResult).includes("刷新几遍还不行"), false,
+    "only the risk-control boolean may leave the page");
 } finally {
   if (hadWindow) globalRecord.window = originalWindow;
   else delete globalRecord.window;
@@ -1259,8 +1272,11 @@ assert.deepEqual(
 );
 
 let cancelledEvaluationCount = 0;
+let evaluationStarted!: () => void;
+const cancelledEvaluationStarted = new Promise<void>((resolve) => { evaluationStarted = resolve; });
 let cancelledDisposeCount = 0;
 let cancelledDiagnosticsCount = 0;
+let cancelledDiagnostics: Parameters<NonNullable<Parameters<typeof projectAccountOrder>[2]>>[0] | null = null;
 class CancelledProjectionWebView {
   shouldAllowRequest?: DelayedProjectionWebView["shouldAllowRequest"];
 
@@ -1270,6 +1286,7 @@ class CancelledProjectionWebView {
 
   evaluateJavaScript(): Promise<unknown> {
     cancelledEvaluationCount++;
+    evaluationStarted();
     return new Promise<unknown>(() => {});
   }
 
@@ -1283,12 +1300,13 @@ const cancelledProjectionController = new AbortController();
 const cancelledProjection = projectAccountOrder(
   parcel("https://u.jd.com/cancelled"),
   Date.now() + 10_000,
-  () => {
+  (diagnostics) => {
     cancelledDiagnosticsCount++;
+    cancelledDiagnostics = diagnostics;
   },
   cancelledProjectionController.signal,
 );
-await Promise.resolve();
+await cancelledEvaluationStarted;
 assert.equal(cancelledEvaluationCount, 1);
 cancelledProjectionController.abort();
 await assert.rejects(
@@ -1296,7 +1314,11 @@ await assert.rejects(
   (error: unknown) => error instanceof Error && error.name === "OperationTimeoutError",
 );
 assert.equal(cancelledDisposeCount, 1);
-assert.equal(cancelledDiagnosticsCount, 0);
+assert.equal(cancelledDiagnosticsCount, 1, "cancellation still reports observed risk for durable cooldown; it publishes no parcel");
+assert.equal(cancelledDiagnostics?.riskControlSeen, false);
+assert.equal(cancelledDiagnostics?.unionResponseStatuses, "");
+assert.equal(cancelledDiagnostics?.captureSeen, false);
+assert.equal(Object.hasOwn(cancelledDiagnostics!, "waybill"), false);
 await new Promise<void>((resolve) => setTimeout(resolve, 20));
 assert.equal(cancelledEvaluationCount, 1);
 
@@ -1399,4 +1421,5 @@ assert.equal(modalGated.projectionTimeline?.complete, true);
 assert.equal(modalGated.projectionTimeline?.tracks.length, 2);
 assert.equal(modalGated.projectionTimeline?.latestDetail, "快件已到达派送站");
 
+registerProjectionViewportHost(null);
 console.log("account order projection tests passed");

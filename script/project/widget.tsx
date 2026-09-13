@@ -19,7 +19,7 @@ import {
   recordWidgetRunAtMs,
   widgetRunGapMs,
 } from "./widget/telemetry";
-import { createDiagnosticFlowId, writeDiagnostic } from "./services/logger";
+import { createDiagnosticFlowId, writeDiagnostic, writeRuntimeCapabilities } from "./services/logger";
 import { loadCarrierAuthorityCache } from "./services/carrier-authority";
 
 function widgetContent() {
@@ -85,6 +85,7 @@ async function run() {
   // `widget.run.started` with no matching `widget.run.presenting` means the extension was killed.
   const startedAtMs = Date.now();
   const flowId = createDiagnosticFlowId("widget");
+  writeRuntimeCapabilities("widget", flowId);
   const gapMs = widgetRunGapMs(readWidgetRunAtMs(), startedAtMs);
   recordWidgetRunAtMs(startedAtMs);
   const kind = widgetPresentationKind(String(Widget.family || ""));
@@ -126,7 +127,9 @@ async function run() {
       })
     );
     writeDiagnostic(
-      outcome === "skipped" ? "widget.refresh.skipped" : "widget.refresh.completed",
+      outcome === "skipped" ? "widget.refresh.skipped"
+        : outcome === "failed" || outcome === "timed_out" ? "widget.refresh.failed"
+        : "widget.refresh.completed",
       {
         flowId,
         stage: "widget_timeline",

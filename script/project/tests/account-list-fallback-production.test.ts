@@ -1,3 +1,4 @@
+import { installSharedFileMock } from "./shared-file-mock";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import type { AppState, Shipment, TimelinePackage } from "../models";
@@ -191,6 +192,8 @@ Object.assign(globalThis, {
     throw new Error(`unexpected synthetic route: ${route}`);
   },
 });
+installSharedFileMock(new Map());
+
 
 // Diagnostics are recorded only when enabled: the formal track ships with recording off
 // (user decision 2026-09-04), so a test that asserts on the log has to opt in explicitly.
@@ -600,6 +603,9 @@ console.log("full refresh timeout notification recovery tests passed");
     assert.deepEqual(notificationBodies, [`Synthetic final ${existingWaybill}`]);
     assert.deepEqual(loadState().pendingNotifications, []);
     assert.equal(summary.accountListUpdated, true);
+    assert.equal(summary.state.revision, loadState().revision,
+      "the returned snapshot includes durable notification acknowledgements from finalization");
+    assert.deepEqual(summary.state.pendingNotifications, []);
 
     saveState(state([existing]), now);
     pickerReply = () => jsonResponse({ code: 10000 });
@@ -620,7 +626,8 @@ console.log("full refresh timeout notification recovery tests passed");
     const failedList = await refreshAllShipments("interface5", { budgetMs: 30_000, forceManualRefresh: true });
     assert.ok(failedList.failed > 0 && failedList.succeeded > 0);
     assert.equal(failedList.accountListUpdated, false);
-    assert.notEqual(refreshSummaryToast(failedList), "列表已更新");
+    assert.equal(refreshSummaryToast(failedList), "列表已更新",
+      "partial success uses the same toast even when only individual updates succeeded");
   } finally {
     unsubscribe();
     accountReply = null;
@@ -677,7 +684,10 @@ try {
         const expectedCaptures = !background && detail === "已揽收" ? 1 : 0;
         const expectedWaybill = hasTextIdentity || expectedCaptures ? realWaybill : "";
         for (let round = 0; round < 2; round++) {
-          const summary = await refreshAllShipments("interface5", {accountOrderProjection: true, backgroundHostSafe: background});
+          const summary = await refreshAllShipments("interface5", {
+            accountOrderProjection: true, backgroundHostSafe: background,
+            accountSourceFollowup: !background,
+          });
           assert.equal(summary.accountListUpdated, true);
           assert.equal(summary.state.shipments.length, 1);
           assert.equal(summary.state.shipments[0].identity.projectedWaybill || "", expectedWaybill,
@@ -695,3 +705,33 @@ try {
   }
 }
 console.log("restored Home identity pipeline and independent pickup/text gates passed");
+
+// A user pull rereads the list after an older round; an omitted Cainiao row has no new update.
+{
+  storage.delete("pipi_deliveries_refresh_runtime_v1");
+  saveState(state([cachedShipment(Date.now())]));
+  fetchStages.length = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let lists = 0;
+  accountReply = async () => {
+    if (++lists === 1) await gate;
+    return jsonResponse({ code: 0, data: { expressList: [] } });
+  };
+  pickerReply = () => { assert.fail("JD/Cainiao Home supplementation cannot enter Online"); };
+  try {
+    const scheduled = refreshAllShipments("interface5", { backgroundHostSafe: true, accountOrderProjection: false });
+    await new Promise(resolve => setImmediate(resolve));
+    const pull = refreshAllShipments("interface5", { forceManualRefresh: true, accountSourceFollowup: true, accountOrderProjection: false });
+    release();
+    await scheduled;
+    const completed = await pull;
+    assert.equal(completed.skipReason, undefined);
+    assert.equal(lists, 2);
+    assert.equal(fetchStages.filter(stage => stage === "account_detail").length, 0,
+      "an omitted cached Cainiao row must not be treated as a new list update");
+  } finally {
+    release(); accountReply = null; pickerReply = null;
+  }
+}
+console.log("explicit Home pull rereads the list without querying omitted Cainiao rows");

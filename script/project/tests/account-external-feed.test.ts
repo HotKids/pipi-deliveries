@@ -4,6 +4,8 @@ import { parseAccountSyncResponse } from "../services/account-parser";
 import { accountExternalAppName, fetchAccountExternalAppRoutes, parcelToShipment } from "../services/account-sync";
 import { memory } from "./state-storage-mock";
 import { loadAccountAppRoutes, pruneAccountAppRoutes, saveAccountAppRoutes } from "../services/routes";
+import { applyAccountShipment, applyManualShipment, applyTargetedAccountShipment, asAccountDetailObservation } from "../services/shipment-policy";
+import { emptyState, saveState, loadState } from "../services/storage";
 
 const phone = "13800138000";
 const order = "9876543210987654";
@@ -79,6 +81,29 @@ try {
   assert.equal(accountExternalAppName(sfShipment), "顺丰");
   assert.deepEqual(await fetchAccountExternalAppRoutes(sfShipment, new AbortController().signal),
     [{ kind: "sf", url: sfLink }], "the original SF URI must open from cache, without an account request");
+  let sfOwner = applyAccountShipment(undefined, sfShipment, Date.now());
+  const preserveSfRoute = () => {
+    saveState({ ...emptyState(), shipments: [sfOwner],
+      bindings: [{ source: "interface5", phone, boundAtMs: Date.now() }] });
+    sfOwner = loadState().shipments[0];
+    assert.equal(accountExternalAppName(sfOwner), "顺丰");
+    assert.deepEqual(loadAccountAppRoutes(sfOwner.accountRecord!), [{ kind: "sf", url: sfLink }]);
+  };
+  preserveSfRoute();
+  const sparseSf = parseAccountSyncResponse("interface5", {
+    code: 0, data: { expressList: [{ ...sf, jumpList: [] }] },
+  })[0];
+  sfOwner = applyAccountShipment(sfOwner, parcelToShipment(sparseSf, [phone])!, Date.now());
+  preserveSfRoute();
+  sfOwner = applyTargetedAccountShipment(sfOwner,
+    asAccountDetailObservation(sfOwner, parcelToShipment(sparseSf, [phone])!), Date.now());
+  preserveSfRoute();
+  for (const provider of ["v6_query", "k100_h5"]) {
+    sfOwner = applyManualShipment(sfOwner, {
+      ...sfOwner, timeline: { ...sfOwner.timeline, provider, complete: provider === "k100_h5" },
+    }, Date.now());
+    preserveSfRoute();
+  }
   for (const replacement of [
     { waybill: "OTHER" }, { companyCode: "YTO" }, { provider: "JingDong" }, { phone: "13900139000" },
   ]) assert.deepEqual(loadAccountAppRoutes({ ...sfShipment.accountRecord!, ...replacement }), []);

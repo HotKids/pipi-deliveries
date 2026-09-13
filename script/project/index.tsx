@@ -9,9 +9,12 @@ import {
   Tab,
   TabView,
   Text,
+  WebView,
   useEffect,
+  useRef,
   useState,
 } from "scripting";
+import { registerProjectionViewportHost } from "./services/projection-viewport";
 import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -20,6 +23,7 @@ import {
   diagnosticErrorDetails,
   diagnosticState,
   writeDiagnostic,
+  writeRuntimeCapabilities,
 } from "./services/logger";
 import { preferNewerState } from "./services/ui-state";
 import { refreshAllShipments } from "./services/sync";
@@ -47,6 +51,9 @@ function readStartupState(): StartupState {
 }
 
 function App() {
+  // One app-owned viewport stays mounted across Home/detail navigation.
+  const [projectionController, setProjectionController] = useState<unknown>(null);
+  const projectionMountRef = useRef<Array<(mounted: boolean) => void>>([]);
   const [startup, setStartup] = useState(readStartupState);
   const [navigationRequest, setNavigationRequest] = useState(() => ({
     shipmentId: resumeShipmentId({
@@ -95,6 +102,35 @@ function App() {
     });
   }, []);
 
+  useEffect(() => {
+    const settle = (mounted: boolean) => {
+      const pending = projectionMountRef.current.splice(0);
+      pending.forEach((resolve) => resolve(mounted));
+    };
+    registerProjectionViewportHost({
+      mount: (controller) =>
+        new Promise<boolean>((resolve) => {
+          projectionMountRef.current.push(resolve);
+          setProjectionController(controller);
+        }),
+      unmount: () => {
+        settle(false);
+        setProjectionController(null);
+      },
+    });
+    return () => {
+      // Dismissal releases any projection still waiting for its viewport.
+      registerProjectionViewportHost(null);
+      settle(false);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!projectionController) return;
+    // The slot is on screen now, so the borrower may start loading.
+    projectionMountRef.current.splice(0).forEach((resolve) => resolve(true));
+  }, [projectionController]);
+
   if (!state) {
     return (
       <NavigationStack>
@@ -114,7 +150,25 @@ function App() {
   }
 
   return (
-    <TabView>
+    <TabView
+      background={
+        projectionController
+          ? {
+              alignment: "topLeading",
+              // Fully transparent, non-interactive and behind every row: the page only lends
+              // its bounds to both Home and detail captures (AGENTS §9).
+              content: (
+                <WebView
+                  controller={projectionController}
+                  frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+                  opacity={0}
+                  disabled={true}
+                />
+              ),
+            }
+          : undefined
+      }
+    >
       <Tab title="快递" systemImage="shippingbox.fill" value="deliveries">
         <HomePage
           state={state}
@@ -137,6 +191,7 @@ async function run() {
   // quit back to the app with an empty diagnostic log.
   try {
     initializeCarrierAuthority();
+    writeRuntimeCapabilities("app");
     await Navigation.present({
       element: <App />,
       modalPresentationStyle: "fullScreen",

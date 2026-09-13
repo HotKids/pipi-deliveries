@@ -20,6 +20,23 @@ Android 10）。两者使用相同包名与签名。release 产物复制至 `dis
 beta 产物复制至 `dist/Pipi-Deliveries-beta.apk` 和
 `dist/Pipi-Deliveries-beta-Android10.apk`，不会覆盖正式版产物。
 
+## Independent Android beta version
+
+When iOS remains on its formal version, set the Android beta version explicitly:
+
+```sh
+DELIVERIES_VERSION_NAME=1.3.5-beta1 ./build.sh beta
+```
+
+The version must match `releaseVersionNameDefault` in `app/build.gradle.kts`, with
+a beta number from 1 to 98. The beta entry derives the version code and fixes the
+beta Worker endpoint; caller-supplied code or endpoint values cannot select a
+different track. Without an explicit version, the existing numbered iOS beta
+version supplies only the beta number. The iOS source and version are not changed.
+Run `python3 tools/test-beta-build.py` to validate this configuration without
+Gradle or signing credentials. Before device installation, verify the installed
+version code and the APK's existing signing identity.
+
 ## 本地配置
 
 网关地址优先读取环境变量，其次读取仓库根目录中未纳入版本控制的
@@ -33,12 +50,12 @@ Android 使用 Android Keystore 硬件证明建立网关会话，并以应用私
 
 配置项仅填写到本机环境或 `local.properties`，不得提交真实凭据。
 在 Git worktree 中构建时，`build.sh` 会自动复用同一仓库其他工作树中的
-`local.properties`；也可通过 `DELIVERIES_LOCAL_PROPERTIES_FILE` 显式指定配置文件。
+`deliveries/local.properties`；也可通过 `DELIVERIES_LOCAL_PROPERTIES_FILE` 显式指定配置文件。
 构建过程只向 Gradle 传递文件路径，不复制或输出配置内容。
 
 ## 正式签名
 
-Gradle 从环境变量或用户级 `~/.gradle/gradle.properties` 读取以下签名配置：
+Gradle 从环境变量或当前 Gradle 用户目录的 `gradle.properties`（由 `GRADLE_USER_HOME` 选择） 读取以下签名配置：
 
 - `SIGNING_STORE_FILE`；
 - `SIGNING_STORE_PASSWORD`；

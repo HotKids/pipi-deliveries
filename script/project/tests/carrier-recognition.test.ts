@@ -10,6 +10,7 @@ import {
   type CarrierRecognitionEntry,
   type CarrierRecognitionStore,
 } from "../services/carrier-recognition";
+import { GatewayError } from "../services/gateway";
 import { OperationTimeoutError } from "../services/deadline";
 
 assert.deepEqual(buildCarrierClassificationRequest(" raw123456789 "), {
@@ -23,7 +24,7 @@ assert.deepEqual(parseCarrierClassificationResponse({
   displayName: "跨越速运",
   kuaidi100Code: "kuayue",
   isBuiltIn: true,
-  tableVersion: "6e4ec3e45a460dbea446093a9b7ccb81b2da80f716f57369bc32572d640dda0e",
+  tableVersion: "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
 });
 assert.equal(parseCarrierClassificationResponse({ auto: [] }), null);
 assert.throws(() => parseCarrierClassificationResponse({}), /RetryableClassificationError/);
@@ -137,7 +138,7 @@ assert.deepEqual(rebuiltResolved.normalization, {
   displayName: "顺丰速运",
   kuaidi100Code: "shunfeng",
   isBuiltIn: true,
-  tableVersion: "6e4ec3e45a460dbea446093a9b7ccb81b2da80f716f57369bc32572d640dda0e",
+  tableVersion: "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
 });
 assert.deepEqual(
   driftedResolvedCache.entries()[0]?.normalization,
@@ -285,3 +286,39 @@ await assert.rejects(
 assert.deepEqual(cancelledClassifierCache.entries(), []);
 
 console.log("carrier recognition persistence tests passed");
+
+{
+// Pending work is durable waiting, even after earlier real network failures.
+const pendingCache = memoryStore([{
+  waybill: "PENDING123456", state: "retry", retryStage: "worker_classify",
+  networkFailures: 2, retryAfterMs: 1_000, updatedAtMs: 0,
+}]);
+let pendingCalls = 0;
+for (let attempt = 0; attempt < 4; attempt++) {
+  const now = 1_000 + attempt * 60_000;
+  const pending = await recognizeNonSyncCarrier("PENDING123456", {
+    now, store: pendingCache.store,
+    detect: async () => { throw new Error("existing classifier retry must retain its stage"); },
+    classify: async () => {
+      pendingCalls++;
+      throw new GatewayError("synthetic pending", 502, "recognition_pending", "", now + 60_000);
+    },
+  });
+  assert.equal(pending.terminal, false);
+  assert.equal(pendingCache.entries()[0].networkFailures, 2);
+  assert.equal(pendingCache.entries()[0].retryAfterMs, now + 60_000);
+  await recognizeNonSyncCarrier("PENDING123456", {
+    now: now + 1, store: pendingCache.store,
+    classify: async () => { throw new Error("must remain in cooldown"); },
+  });
+  assert.equal(pendingCalls, attempt + 1);
+}
+await recognizeNonSyncCarrier("PENDING123456", {
+  now: 241_000, store: pendingCache.store,
+  classify: async () => { throw new Error("real network failure"); },
+});
+assert.equal(pendingCache.entries()[0].networkFailures, 3);
+assert.equal(pendingCache.entries()[0].state, "terminal");
+console.log("carrier recognition pending-state tests passed");
+
+}

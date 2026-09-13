@@ -18,7 +18,8 @@ public final class ManualRoutePolicy {
     public static String primaryH5Provider(String courierCode) {
         CarrierRegistry.Carrier carrier = CarrierRegistry.resolveCpCode(courierCode);
         if (carrier == null) carrier = CarrierRegistry.resolve(courierCode);
-        return carrier != null && "JTSD".equals(carrier.standardCode)
+        if (carrier == null) carrier = CarrierRegistry.resolveKuaidi100Code(courierCode);
+        return carrier != null && ("JTSD".equals(carrier.standardCode) || "HTKY".equals(carrier.standardCode))
                 ? TimelineSlot.JT_H5 : TimelineSlot.K100_H5;
     }
 

@@ -23,7 +23,7 @@ import java.util.regex.Pattern;
 /** Worker-backed courier registry shared by list, detail, widgets and stored icon URIs. */
 public final class CarrierRegistry {
     public static final String AUTHORITY_VERSION =
-            "6e4ec3e45a460dbea446093a9b7ccb81b2da80f716f57369bc32572d640dda0e";
+            "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa";
     public static final String AUTHORITY_SOURCE = "embedded-transition";
 
     private static final Pattern STANDARD_CODE = Pattern.compile("[A-Z0-9]{1,32}");
@@ -551,7 +551,7 @@ public final class CarrierRegistry {
                 definition("JTSD", "极兔速递", "jtexpress", "956025", "jtsd", false,
                         List.of("JT", "J&T", "JTEXPRESS", "JITU"), List.of(), List.of(),
                         List.of("极兔")),
-                definition("HTKY", "极兔速递", "huitongkuaidi", "", "jtsd", false,
+                definition("HTKY", "极兔速递", "huitongkuaidi", "956025", "jtsd", false,
                         List.of("BEST", "BESTQJT", "HUITONGKUAIDI"), List.of(), List.of(),
                         List.of("百世", "百世快递", "汇通")),
                 definition("DBL", "德邦快递", "debangkuaidi", "95353", "dbl", false,

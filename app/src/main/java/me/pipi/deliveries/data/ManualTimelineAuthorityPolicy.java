@@ -6,8 +6,10 @@ import java.util.Locale;
 import java.util.Map;
 
 import me.pipi.deliveries.model.ExpressQueryResult;
+import me.pipi.deliveries.model.WorkerStatusProjection;
 import me.pipi.deliveries.model.ExpressStatusNormalizer;
 import me.pipi.deliveries.model.ExpressTimeline;
+import me.pipi.deliveries.model.StatusSemantic;
 
 /** Selects one successful manual-query timeline without changing shipment ownership. */
 public final class ManualTimelineAuthorityPolicy {
@@ -59,8 +61,8 @@ public final class ManualTimelineAuthorityPolicy {
         }
 
         // Meizu remains the status and polling authority. SF display uses detail selection separately.
-        Candidate picker = byProvider.get(PROVIDER_MEIZU);
-        if (picker != null) return picker;
+        Candidate online = byProvider.get(PROVIDER_MEIZU);
+        if (online != null) return online;
 
         return selectBestDetail(byProvider);
     }
@@ -97,20 +99,134 @@ public final class ManualTimelineAuthorityPolicy {
      */
     public static Candidate selectDetail(
             List<Candidate> candidates, long feedLatestEventMillis, String preferredProvider) {
-        if (candidates == null || candidates.isEmpty()) return null;
+        return selectDetailDecision(candidates, feedLatestEventMillis, preferredProvider).candidate;
+    }
+
+    /** The diagnostic reason is produced by the same branch that selects the package. */
+    public static final class DetailDecision {
+        public final Candidate candidate;
+        public final String reason;
+        public DetailDecision(Candidate candidate, String reason) {
+            this.candidate = candidate;
+            this.reason = reason;
+        }
+    }
+
+    public static DetailDecision selectDetailDecision(
+            List<Candidate> candidates, long feedLatestEventMillis, String preferredProvider) {
         Map<String, Candidate> byProvider = new LinkedHashMap<>();
-        for (Candidate candidate : candidates) {
+        if (candidates != null) for (Candidate candidate : candidates) {
             if (!isAuthoritative(candidate)) continue;
             Candidate cached = byProvider.get(candidate.provider);
             byProvider.put(candidate.provider,
                     cached == null ? candidate : mergeSameProvider(cached, candidate));
         }
         Candidate best = selectBestDetail(byProvider, feedLatestEventMillis);
+        if (best == null) return new DetailDecision(null, "source_policy");
         Candidate preferred = byProvider.get(normalizeProvider(preferredProvider));
-        if (preferred == null || best == null || preferred == best) return best;
-        return detailTimelineComplete(preferred.result, feedLatestEventMillis)
-                || !detailTimelineComplete(best.result, feedLatestEventMillis)
-                ? preferred : best;
+        if (preferred != null && preferred != best) {
+            return rankingComplete(preferred, byProvider, feedLatestEventMillis)
+                    || !rankingComplete(best, byProvider, feedLatestEventMillis)
+                    ? new DetailDecision(preferred, "sticky_history")
+                    : new DetailDecision(best, "complete_replaces_partial");
+        }
+        Candidate runner = null;
+        for (Candidate candidate : byProvider.values()) {
+            if (candidate == best) continue;
+            if (runner == null || compare(candidate, runner, byProvider, feedLatestEventMillis) < 0) {
+                runner = candidate;
+            }
+        }
+        String reason = runner == null ? "only_eligible_history"
+                : rankingComplete(best, byProvider, feedLatestEventMillis)
+                        != rankingComplete(runner, byProvider, feedLatestEventMillis) ? "complete_history"
+                : Kuaidi100TimelinePolicy.timedTrackCount(best.result)
+                        != Kuaidi100TimelinePolicy.timedTrackCount(runner.result) ? "track_coverage"
+                : isEffectivelyComplete(best) != isEffectivelyComplete(runner) ? "capture_complete"
+                : candidateTier(best) != candidateTier(runner) ? "source_tier" : "provider_order";
+        return new DetailDecision(best, reason);
+    }
+
+    /** Ranks the owner and eligible sidecars together before applying account freshness and stickiness. */
+    static DetailDecision selectAutomaticDetailDecision(List<Candidate> candidates,
+            ExpressQueryResult source, ExpressQueryResult accountStatus,
+            long referenceEventMillis, String preferredProvider) {
+        Map<String, Candidate> byProvider = new LinkedHashMap<>();
+        Candidate feed = new Candidate(PREFERRED_FEED, source, 1L, false);
+        if (isAuthoritative(feed)) byProvider.put(feed.provider, feed);
+        if (candidates != null) for (Candidate candidate : candidates) {
+            if (!isAuthoritative(candidate)) continue;
+            Candidate cached = byProvider.get(candidate.provider);
+            byProvider.put(candidate.provider, cached == null ? candidate : mergeSameProvider(cached, candidate));
+        }
+        java.util.ArrayList<Candidate> ranked = new java.util.ArrayList<>(byProvider.values());
+        Map<Candidate, Boolean> complete = new java.util.IdentityHashMap<>();
+        for (Candidate candidate : ranked) {
+            complete.put(candidate, detailTimelineComplete(automaticPresentationResult(
+                    candidate.result, accountStatus, ranked), referenceEventMillis));
+        }
+        boolean hasHistory = ranked.stream().anyMatch(candidate -> candidate != feed
+                && Kuaidi100TimelinePolicy.timedTrackCount(candidate.result) >= SOURCE_TIMELINE_MIN_TRACKS);
+        if (hasHistory && Boolean.FALSE.equals(complete.get(feed))
+                && Kuaidi100TimelinePolicy.timedTrackCount(source) < SOURCE_TIMELINE_MIN_TRACKS) {
+            ranked.remove(feed);
+        }
+        ranked.sort((left, right) -> compareDetailQuality(left, right, complete.get(left), complete.get(right)));
+        if (ranked.isEmpty()) return new DetailDecision(null, "no_eligible_history");
+        long newestAccountAt = 0L;
+        for (Candidate candidate : ranked) if (isAccountHistory(candidate)) {
+            newestAccountAt = Math.max(newestAccountAt, Kuaidi100TimelinePolicy.latestTimedEventMillis(candidate.result));
+        }
+        boolean accountAdvances = newestAccountAt > 0L;
+        for (Candidate candidate : ranked) {
+            long at = Kuaidi100TimelinePolicy.latestTimedEventMillis(candidate.result);
+            if (at <= 0L || !isAccountHistory(candidate) && (at >= newestAccountAt || complete.get(candidate))) {
+                accountAdvances = false;
+            }
+        }
+        boolean narrowed = false;
+        if (accountAdvances) {
+            long newest = newestAccountAt;
+            narrowed = ranked.removeIf(candidate -> !isAccountHistory(candidate)
+                    || Kuaidi100TimelinePolicy.latestTimedEventMillis(candidate.result) != newest);
+        }
+        Candidate winner = ranked.get(0);
+        Candidate preferred = byProvider.get(normalizeProvider(preferredProvider));
+        String reason;
+        if (preferred != null && ranked.contains(preferred) && preferred != winner) {
+            if (complete.get(preferred) || !complete.get(winner)) {
+                winner = preferred;
+                reason = "sticky_history";
+            } else reason = "complete_replaces_partial";
+        } else {
+            Candidate runner = ranked.size() > 1 ? ranked.get(1) : null;
+            reason = narrowed ? "newer_account_history" : runner == null ? "only_eligible_history"
+                    : complete.get(winner) != complete.get(runner) ? "complete_history"
+                    : Kuaidi100TimelinePolicy.timedTrackCount(winner.result)
+                            != Kuaidi100TimelinePolicy.timedTrackCount(runner.result) ? "track_coverage"
+                    : isEffectivelyComplete(winner) != isEffectivelyComplete(runner) ? "capture_complete"
+                    : candidateTier(winner, complete.get(winner)) != candidateTier(runner, complete.get(runner))
+                            ? "source_tier" : "provider_order";
+        }
+        return new DetailDecision(winner == feed ? null : winner, reason);
+    }
+
+    static ExpressQueryResult automaticPresentationResult(ExpressQueryResult history,
+            ExpressQueryResult accountStatus, List<Candidate> candidates) {
+        if (history == null) return null;
+        if (accountStatus == null || accountStatus.semantic == StatusSemantic.UNKNOWN) {
+            return presentationResult(history, candidates);
+        }
+        return new ExpressQueryResult(history.waybill, history.courierCode, history.companyName,
+                accountStatus.semantic, accountStatus.statusEventTime, history.latestTime, history.latestDetail,
+                WorkerStatusProjection.attach(history.tracksJson, accountStatus.workerStatus),
+                history.detailUrl, history.phone, history.timelineProvider,
+                history.routeInterface, history.routeCredential, history.sourceProvider, history.carrierNormalization)
+                .withManualStatusEvidence(accountStatus.statusDescription, accountStatus.structuredStatusEvidence);
+    }
+
+    private static boolean isAccountHistory(Candidate candidate) {
+        return PREFERRED_FEED.equals(candidate.provider) || TimelineSlot.isAccount(candidate.provider);
     }
 
     private static Candidate selectBestDetail(Map<String, Candidate> byProvider) {
@@ -122,31 +238,39 @@ public final class ManualTimelineAuthorityPolicy {
         Candidate selected = null;
         for (Candidate candidate : byProvider.values()) {
             if (selected == null
-                    || compare(candidate, selected, feedLatestEventMillis) < 0) {
+                    || compare(candidate, selected, byProvider, feedLatestEventMillis) < 0) {
                 selected = candidate;
             }
         }
         return selected;
     }
 
-    /** 详情完整判据的容差；三端同值（用户定 2026-09-04：前后 30 分钟）。 */
+    /** History may lag the account reference by at most 30 minutes. */
     public static final long DETAIL_COMPLETE_SKEW_MS = 30L * 60_000L;
 
     /** feed 攒出历史（≥2 条有效节点）才算轨迹；只有一条时它是状态摘要。 */
     public static final int SOURCE_TIMELINE_MIN_TRACKS = 2;
 
-    /**
-     * 详情完整的判据（用户定 2026-09-04，三端同口径）：
-     * {@code |该包最新节点时间 − feed 最新节点时间| ≤ 30 分钟} <strong>且</strong>轨迹里有揽收。
-     * 没有 feed（纯手动件）或 feed 没有有效时间节点时，只看有没有揽收。
-     */
+    /** Ranking requires known, compatible status, trusted completion, pickup and clock alignment. */
     public static boolean detailTimelineComplete(
             ExpressQueryResult result, long feedLatestEventMillis) {
-        if (!Kuaidi100TimelinePolicy.hasPickupEvidence(result)) return false;
-        if (feedLatestEventMillis <= 0L) return true;
+        return detailTimelineIncompleteReason(result, feedLatestEventMillis) == null;
+    }
+
+    public static String detailTimelineIncompleteReason(ExpressQueryResult result, long feedLatestEventMillis) {
+        if (result == null || result.semantic == StatusSemantic.UNKNOWN) return "missing_status";
+        if (result.semantic == StatusSemantic.COMPLETED
+                && ExpressLifecycleTimes.signedEvidenceAt(null, result, System.currentTimeMillis()) <= 0L) {
+            return "missing_source_time";
+        }
+        for (StatusSemantic semantic : ExpressTimeline.latestTrackStatuses(result.tracksJson, result.timelineProvider)) {
+            if (semantic != StatusSemantic.UNKNOWN && semantic != result.semantic) return "status_mismatch";
+        }
+        if (!Kuaidi100TimelinePolicy.hasPickupEvidence(result)) return "missing_pickup";
+        if (feedLatestEventMillis <= 0L) return null;
         long latest = Kuaidi100TimelinePolicy.latestTimedEventMillis(result);
-        if (latest <= 0L) return false;
-        return Math.abs(latest - feedLatestEventMillis) <= DETAIL_COMPLETE_SKEW_MS;
+        if (latest <= 0L) return "missing_source_time";
+        return feedLatestEventMillis - latest <= DETAIL_COMPLETE_SKEW_MS ? null : "time_mismatch";
     }
 
     /**
@@ -167,23 +291,38 @@ public final class ManualTimelineAuthorityPolicy {
 
     public static boolean detailOutranksSource(Candidate candidate,
             ExpressQueryResult sourcePackage, String preferredProvider, long referenceEventMillis) {
-        if (!isAuthoritative(candidate)) return false;
-        if (sourcePackage == null
-                || !Kuaidi100TimelinePolicy.hasTimedTracking(sourcePackage)) return true;
+        return selectOverSource(candidate, sourcePackage, preferredProvider, referenceEventMillis).candidate != null;
+    }
+
+    public static DetailDecision selectOverSource(Candidate candidate, ExpressQueryResult sourcePackage,
+            String preferredProvider, long referenceEventMillis) {
+        if (!isAuthoritative(candidate)) return new DetailDecision(null, "source_policy");
+        if (sourcePackage == null || !Kuaidi100TimelinePolicy.hasTimedTracking(sourcePackage)) {
+            return new DetailDecision(candidate, "only_eligible_history");
+        }
         boolean sourceComplete = detailTimelineComplete(sourcePackage, referenceEventMillis);
         boolean candidateComplete = detailTimelineComplete(candidate.result, referenceEventMillis);
-        // 粘性选包（用户定 2026-09-05 晚）：上一轮显示的是 feed 就还是 feed，显示的是这个手动包就
-        // 还是它；只有留下的那个不完整、对方已完整时才换。
         String preferred = preferredProvider == null ? "" : preferredProvider.trim();
-        if (PREFERRED_FEED.equals(preferred)) return candidateComplete && !sourceComplete;
-        if (!preferred.isEmpty() && normalizeProvider(preferred).equals(candidate.provider)) {
-            return !(sourceComplete && !candidateComplete);
+        if (PREFERRED_FEED.equals(preferred)) {
+            return candidateComplete && !sourceComplete
+                    ? new DetailDecision(candidate, "complete_replaces_partial")
+                    : new DetailDecision(null, "sticky_history");
         }
-        if (sourceComplete != candidateComplete) return candidateComplete;
+        if (!preferred.isEmpty() && normalizeProvider(preferred).equals(candidate.provider)) {
+            return sourceComplete && !candidateComplete
+                    ? new DetailDecision(null, "complete_replaces_partial")
+                    : new DetailDecision(candidate, "sticky_history");
+        }
+        if (sourceComplete != candidateComplete) {
+            return new DetailDecision(candidateComplete ? candidate : null, "complete_history");
+        }
         int sourceTracks = Kuaidi100TimelinePolicy.timedTrackCount(sourcePackage);
         int candidateTracks = Kuaidi100TimelinePolicy.timedTrackCount(candidate.result);
-        if (sourceTracks != candidateTracks) return candidateTracks > sourceTracks;
-        return sourceTier(sourceComplete, sourceTracks) > candidateTier(candidate);
+        if (sourceTracks != candidateTracks) {
+            return new DetailDecision(candidateTracks > sourceTracks ? candidate : null, "track_coverage");
+        }
+        int tier = Integer.compare(sourceTier(sourceComplete, sourceTracks), candidateTier(candidate));
+        return new DetailDecision(tier > 0 ? candidate : null, tier != 0 ? "source_tier" : "provider_order");
     }
 
     private static int sourceTier(boolean sourceComplete, int sourceTracks) {
@@ -193,6 +332,11 @@ public final class ManualTimelineAuthorityPolicy {
     }
 
     private static int candidateTier(Candidate candidate) {
+        return candidateTier(candidate, detailTimelineComplete(candidate.result, 0L));
+    }
+
+    private static int candidateTier(Candidate candidate, boolean complete) {
+        if (isAccountHistory(candidate)) return sourceTier(complete, Kuaidi100TimelinePolicy.timedTrackCount(candidate.result));
         return PROVIDER_KDNIAO.equals(normalizeProvider(candidate.provider))
                 ? TIER_PAID_MANUAL : TIER_FREE_MANUAL;
     }
@@ -248,10 +392,23 @@ public final class ManualTimelineAuthorityPolicy {
      * <p>自报的 complete 退到覆盖之后：它只表示「这次抓取把列表展开了」，2026-09-04 实测过一票
      * 22 条的完整包因为它输给 2 条的包，查到了却不显示。</p>
      */
-    private static int compare(Candidate left, Candidate right, long feedLatestEventMillis) {
-        int completeness = Boolean.compare(
-                detailTimelineComplete(right.result, feedLatestEventMillis),
-                detailTimelineComplete(left.result, feedLatestEventMillis));
+    private static boolean rankingComplete(Candidate candidate, Map<String, Candidate> candidates,
+            long referenceEventMillis) {
+        return detailTimelineComplete(presentationResult(candidate.result,
+                new java.util.ArrayList<>(candidates.values())), referenceEventMillis);
+    }
+
+    private static int compare(Candidate left, Candidate right,
+            Map<String, Candidate> candidates, long feedLatestEventMillis) {
+        return compareDetailQuality(left, right,
+                rankingComplete(left, candidates, feedLatestEventMillis),
+                rankingComplete(right, candidates, feedLatestEventMillis));
+    }
+
+    /** Shared quality ordering accepts completeness evidence without invoking status selection. */
+    private static int compareDetailQuality(Candidate left, Candidate right,
+            boolean leftComplete, boolean rightComplete) {
+        int completeness = Boolean.compare(rightComplete, leftComplete);
         if (completeness != 0) return completeness;
         int coverage = Integer.compare(
                 Kuaidi100TimelinePolicy.timedTrackCount(right.result),
@@ -260,7 +417,7 @@ public final class ManualTimelineAuthorityPolicy {
         int declared = Boolean.compare(
                 isEffectivelyComplete(right), isEffectivelyComplete(left));
         if (declared != 0) return declared;
-        int tier = Integer.compare(candidateTier(left), candidateTier(right));
+        int tier = Integer.compare(candidateTier(left, leftComplete), candidateTier(right, rightComplete));
         if (tier != 0) return tier;
         return Integer.compare(queryOrder(left.provider), queryOrder(right.provider));
     }
@@ -315,44 +472,64 @@ public final class ManualTimelineAuthorityPolicy {
 
     static Candidate selectStructuredStatus(List<Candidate> candidates, boolean preserveSigned) {
         if (candidates == null || candidates.isEmpty()) return null;
-        Candidate selected = null;
+        Map<StatusSemantic, Candidate> bySemantic = new LinkedHashMap<>();
+        // Select subtypes before comparing event clocks across semantics to avoid cyclic comparisons.
         for (Candidate candidate : candidates) {
             if (!hasStructuredStatus(candidate)) continue;
-            boolean candidateSigned = preserveSigned
-                    && candidate.result.semantic == me.pipi.deliveries.model.StatusSemantic.COMPLETED;
+            Candidate current = bySemantic.get(candidate.result.semantic);
+            int priority = current == null ? 0 : Integer.compare(
+                    WorkerStatusProjection.priority(candidate.result), WorkerStatusProjection.priority(current.result));
+            if (current == null || priority > 0
+                    || priority == 0 && compareStatusTimeAndQuality(candidate, current) < 0) {
+                bySemantic.put(candidate.result.semantic, candidate);
+            }
+        }
+        Candidate selected = null;
+        for (Candidate candidate : bySemantic.values()) {
+            boolean candidateSigned = preserveSigned && candidate.result.semantic == StatusSemantic.COMPLETED;
             boolean selectedSigned = selected != null && preserveSigned
-                    && selected.result.semantic == me.pipi.deliveries.model.StatusSemantic.COMPLETED;
+                    && selected.result.semantic == StatusSemantic.COMPLETED;
             if (selected == null || candidateSigned && !selectedSigned
-                    || candidateSigned == selectedSigned
-                    && (candidate.result.statusEventTime > selected.result.statusEventTime
-                    || candidate.result.statusEventTime == selected.result.statusEventTime
-                    && queryOrder(candidate.provider) < queryOrder(selected.provider))) {
+                    || candidateSigned == selectedSigned && compareStatusTimeAndQuality(candidate, selected) < 0) {
                 selected = candidate;
             }
         }
         return selected;
     }
 
+    private static int compareStatusTimeAndQuality(Candidate left, Candidate right) {
+        int time = Long.compare(right.result.statusEventTime, left.result.statusEventTime);
+        if (time != 0) return time;
+        return compareDetailQuality(left, right,
+                detailTimelineComplete(left.result, 0L), detailTimelineComplete(right.result, 0L));
+    }
+
     /** Transient presentation may borrow a structured pair without changing either source cache. */
     public static ExpressQueryResult presentationResult(
             ExpressQueryResult selected, List<Candidate> candidates) {
-        if (selected == null || selected.structuredStatusEvidence
-                && selected.semantic != me.pipi.deliveries.model.StatusSemantic.UNKNOWN) return selected;
+        if (selected == null) return null;
         java.util.ArrayList<Candidate> sameWaybill = new java.util.ArrayList<>();
         String waybill = ExpressSourcePolicy.normalizeWaybill(selected.waybill);
         for (Candidate candidate : candidates) {
             if (candidate != null && candidate.result != null && waybill.equals(
                     ExpressSourcePolicy.normalizeWaybill(candidate.result.waybill))) sameWaybill.add(candidate);
         }
+        if (selected.structuredStatusEvidence && selected.semantic != StatusSemantic.UNKNOWN) {
+            sameWaybill.removeIf(candidate -> candidate.result.semantic != selected.semantic);
+        }
         Candidate donor = selectStructuredStatus(sameWaybill);
-        if (donor == null) return selected;
+        if (donor == null || selected.structuredStatusEvidence
+                && selected.semantic != StatusSemantic.UNKNOWN
+                && !(donor.result.semantic == selected.semantic
+                && WorkerStatusProjection.priority(donor.result) > WorkerStatusProjection.priority(selected))) return selected;
         return new ExpressQueryResult(selected.waybill, selected.courierCode, selected.companyName,
                 donor.result.semantic, donor.result.statusEventTime, selected.latestTime,
-                selected.latestDetail, selected.tracksJson, selected.detailUrl, selected.phone,
+                selected.latestDetail, WorkerStatusProjection.attach(selected.tracksJson, donor.result.workerStatus),
+                selected.detailUrl, selected.phone,
                 selected.timelineProvider, selected.routeInterface, selected.routeCredential,
                 selected.sourceProvider, selected.carrierNormalization)
                 .withCarrierIdentityEvidence(selected.carrierIdentityEvidence)
-                .withManualStatusEvidence(selected.statusDescription, selected.structuredStatusEvidence);
+                .withManualStatusEvidence(donor.result.statusDescription, donor.result.structuredStatusEvidence);
     }
 
     static Candidate selectStructuredTerminal(List<Candidate> candidates) {
@@ -377,14 +554,10 @@ public final class ManualTimelineAuthorityPolicy {
                 && candidate.result.semantic.terminal();
     }
 
-    static long latestEventTime(ExpressQueryResult result) {
+    public static long latestEventTime(ExpressQueryResult result) {
         if (result == null) return 0L;
-        long latest = Math.max(result.statusEventTime,
-                ExpressSourcePolicy.parseEventTime(result.latestTime));
-        for (ExpressTimeline.Track track : ExpressTimeline.parse(result.tracksJson, "", "")) {
-            latest = Math.max(latest, ExpressSourcePolicy.parseEventTime(track.time));
-        }
-        return latest;
+        return Math.max(Kuaidi100TimelinePolicy.latestTimedEventMillis(result),
+                hasStructuredStatus(result) ? result.statusEventTime : 0L);
     }
 
     /** Returns the persisted provider declaration; effective completeness is checked separately. */
@@ -400,7 +573,7 @@ public final class ManualTimelineAuthorityPolicy {
         return stored || completeByContract(normalized);
     }
 
-    /** 链上次序（表格 2026-09-05）：picker → moto → K100 H5 → 付费的快递鸟。Lite 没有接 OPPO。 */
+    /** 链上次序（表格 2026-09-05）：online → moto → K100 H5 → 付费的快递鸟。Lite 没有接 OPPO。 */
     private static int queryOrder(String provider) {
         if (PROVIDER_MEIZU.equals(provider)) return 0;
         if (PROVIDER_MOTO.equals(provider)) return 1;

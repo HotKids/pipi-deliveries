@@ -75,7 +75,7 @@ oldPack.tracks = oldPack.tracks.map(track => ({ ...track, timeMs: track.timeMs! 
 assert.equal(shipmentDetailIncompleteReason(oldHistory), "time_mismatch");
 for (const [offsetMs, expected] of [
   [-30 * 60_000, null], [30 * 60_000, null],
-  [-30 * 60_000 - 1, "time_mismatch"], [30 * 60_000 + 1, "time_mismatch"],
+  [-30 * 60_000 - 1, "time_mismatch"], [30 * 60_000 + 1, null],
 ] as const) {
   const value = shipment("COMPLETED", "Carrier event");
   const candidate = value.manualTimelines![0];
@@ -86,7 +86,7 @@ for (const [offsetMs, expected] of [
   candidate.statusEventAtMs = candidate.tracks[0].timeMs;
   candidate.successAtMs = NOW;
   assert.equal(shipmentDetailIncompleteReason(value), expected,
-    "the existing 30-minute event-time boundary applies even without node enums or after a fresh fetch");
+    "only history lag exceeds the accepted 30-minute boundary; a newer history is not stale");
 }
 const manualActive = shipment("TRANSIT", "运输中", "");
 manualActive.identity.manuallyAdded = true;
@@ -186,7 +186,16 @@ try {
   assert.equal(success.details.effectiveTrackCount, count, "stage count describes its captured provider package");
   assert.deepEqual(Object.keys(success.details).sort(), [
     "clientBuild", "durationMs", "effectiveTrackCount", "flowId", "level", "result", "source", "stage", "timelineProvider", "trigger", "waybillTail",
-  ].sort(), "successful capture keeps concise diagnostics");
+    "automatic", "carrierCode", "displayTimelineProvider", "feedEventAtMs", "headlineProvider",
+    "historyProvider", "latestEventAtMs", "latestTrackAtMs", "requestProvider", "routeKind",
+    "routePointerPresent", "selectionReason", "sourceProvider", "statusEventAtMs", "statusProvider",
+    "statusSemantic", "structuredStatus",
+    "selectionScope", "displayedTrackCount",
+  ].sort(), "successful capture retains parcel identity and distinguishes capture from presentation");
+  assert.equal(success.details.selectionScope, "display");
+  assert.equal(success.details.displayedTrackCount, selectShipmentDetailTimeline(result.shipment).tracks.length);
+  assert.equal(success.details.requestProvider, "k100_h5");
+  assert.equal(success.details.carrierCode, "SF");
   const contest = readDiagnostics().find(entry => entry.event === "detail.refresh.primary_contest.completed")!;
   assert.equal(contest.details.kdniaoSucceeded, undefined, "an unattempted provider is not a failure");
   assert.equal(contest.details.v4QuerySucceeded, undefined, "an unsupported provider is not a failure");

@@ -101,6 +101,10 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         ensureCanonicalColumns(db);
         createNativeSidecars(db);
         dropObsoleteTables(db);
+        db.delete(OWNER_MANUAL_TIMELINE_TABLE, "LOWER(provider) IN (?,?)",
+                new String[]{"v6_picker", "meizu_picker"});
+        db.delete(OWNER_MANUAL_ROUTE_TABLE, "LOWER(provider) IN (?,?)",
+                new String[]{"v6_picker", "meizu_picker"});
     }
 
     private static void createExpressTables(SQLiteDatabase db) {
@@ -137,6 +141,8 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     private static void ensureCanonicalColumns(SQLiteDatabase db) {
         addColumnIfMissing(db, EXPRESS_TABLE, "normalizedMailNo", "VARCHAR DEFAULT ''");
         addColumnIfMissing(db, EXPRESS_TABLE, "statusEventTime", "INTEGER DEFAULT 0");
+        addColumnIfMissing(db, EXPRESS_TABLE, "senderPhone", "VARCHAR DEFAULT ''");
+        addColumnIfMissing(db, EXPRESS_TABLE, "listOriginAtMs", "INTEGER DEFAULT 0");
         addColumnIfMissing(db, EXPRESS_TABLE, "updatedAt", "INTEGER DEFAULT 0");
         addColumnIfMissing(db, EXPRESS_TABLE, "signedRetainedAt", "INTEGER DEFAULT 0");
         addColumnIfMissing(db, EXPRESS_TABLE, "stateOwner", "VARCHAR DEFAULT ''");
@@ -331,6 +337,10 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         addColumnIfMissing(db, AUTOMATIC_OBSERVATION_TABLE,
                 "binding_generation", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(db, AUTOMATIC_OBSERVATION_TABLE,
+                "sender_phone", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, AUTOMATIC_OBSERVATION_TABLE,
+                "list_origin_at_ms", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, AUTOMATIC_OBSERVATION_TABLE,
                 "detail_url", "TEXT DEFAULT ''");
         addColumnIfMissing(db, AUTOMATIC_OBSERVATION_TABLE,
                 "route_interface", "TEXT DEFAULT ''");
@@ -438,7 +448,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         int suffixCount = 0;
         try (Cursor cursor = db.query(
                 PHONE_TABLE, new String[]{"phone", "uuid"},
-                "LOWER(sync_status)=?", new String[]{bindingSource.toLowerCase()},
+                "LOWER(sync_status)=?", new String[]{bindingSource.toLowerCase(java.util.Locale.ROOT)},
                 null, null, null)) {
             while (cursor.moveToNext()) {
                 String generation = value(cursor, "uuid");
@@ -460,7 +470,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     }
 
     private static String legacyGeneration(String bindingSource, String phone) {
-        return "legacy:" + bindingSource.toLowerCase() + ":"
+        return "legacy:" + bindingSource.toLowerCase(java.util.Locale.ROOT) + ":"
                 + Integer.toHexString(phoneDigits(phone).hashCode());
     }
 

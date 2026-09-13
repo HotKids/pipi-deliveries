@@ -358,6 +358,8 @@ assert.equal(projectionRiskControlled("403"), true);
 assert.equal(projectionRiskControlled("200,200"), false);
 assert.equal(projectionRiskControlled(""), false);
 assert.equal(projectionRiskControlled(undefined), false);
+assert.equal(projectionRiskControlled("200", true), true, "HTTP 200 may still contain the exact JD risk-control message");
+assert.equal(projectionRiskControlled("200", false), false);
 
 const RISK_FAILED_AT = 5_000_000;
 const riskRetry = {

@@ -24,6 +24,27 @@ import java.nio.file.Path;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 35, manifest = Config.NONE, application = Application.class)
 public final class ExpressDetailScriptTest {
+    @Test public void oldQueryPickupCannotCompleteANewerListEvent() {
+        ExpressQueryResult old = new ExpressQueryResult("JDPROJECTED123", "JD", "京东物流",
+                StatusSemantic.TRANSIT, "2026-09-01 10:00:00", "运输中",
+                "[{\"time\":\"2026-09-01 10:00:00\",\"context\":\"运输中\"},"
+                + "{\"time\":\"2026-09-01 09:00:00\",\"context\":\"已揽收\"}]",
+                "", "", "v5_query");
+        ExpressItem fresh = new ExpressItem(11L, "", "JDORDER123456", "JD", "京东物流",
+                StatusSemantic.DELIVERY, "派送中", "快件正在派送", "2026-09-12 10:00:00",
+                "[]", "", "I5-JD", "", 1789178400000L, 2L, "I5-JD", "", "", "", true,
+                "JDPROJECTED123", "京东物流", "[]", "JingDong");
+        assertFalse(ExpressDetailActivity.currentDetailComplete(fresh, old,
+                new ManualTimelineAuthorityPolicy.Candidate("v5_query", old, 100L, true)));
+    }
+
+    @Test public void projectedJingdongCanCompleteHistoryWithoutReprojectingIdentity() {
+        ExpressItem projected = jingDongWebItem("https://jingfen.jd.com/item", "", 0L);
+        assertFalse(projected.projectedWaybill.isEmpty());
+        assertTrue(ExpressDetailActivity.allowsJingDongCapture(projected));
+        assertTrue(ExpressDetailActivity.allowsPrimaryKuaidi100(projected));
+    }
+
     @Test
     public void activeShunFengHistoryDoesNotFreezeDetailRefresh() {
         ExpressItem active = interfaceItem("INTERFACE5", "ShunFeng", "SF", "顺丰速运");
@@ -55,7 +76,8 @@ public final class ExpressDetailScriptTest {
             assertFalse(ExpressDetailActivity.currentDetailComplete(owner, account,
                     new ManualTimelineAuthorityPolicy.Candidate(provider, account, 100L, true)));
         }
-        assertTrue(ExpressDetailActivity.currentDetailComplete(owner, account,
+        // Capture/ranking completeness must not disable the active SF primary-stage callback.
+        assertFalse(ExpressDetailActivity.currentDetailComplete(owner, account,
                 new ManualTimelineAuthorityPolicy.Candidate(TimelineSlot.V6_QUERY, account, 100L, true)));
     }
 
@@ -83,7 +105,7 @@ public final class ExpressDetailScriptTest {
     @Test
     public void jingDongCaptureFillsMissingIdentityRegardlessOfQueryTimeline() {
         ExpressItem projected = jingDongWebItem("https://jingfen.jd.com/item", "", 0L);
-        assertFalse(ExpressDetailActivity.allowsJingDongCapture(projected));
+        assertTrue(ExpressDetailActivity.allowsJingDongCapture(projected));
         ExpressItem unresolved = interfaceItem("I5-JD", "JingDong", "JD", "京东购物");
         assertTrue(ExpressDetailActivity.allowsJingDongCapture(unresolved));
         assertFalse(ExpressDetailActivity.shouldSkipCompleteCache(unresolved, true));
@@ -94,7 +116,7 @@ public final class ExpressDetailScriptTest {
                 interfaceItem("INTERFACE5", "ShunFeng", "SF", "顺丰速运")));
         assertTrue(ExpressDetailActivity.allowsPrimaryKuaidi100(
                 interfaceItem("INTERFACE5", "CaiNiao", "ZTO", "中通快递")));
-        assertFalse(ExpressDetailActivity.allowsPrimaryKuaidi100(
+        assertTrue(ExpressDetailActivity.allowsPrimaryKuaidi100(
                 interfaceItem("INTERFACE6", "CaiNiao", "ZTO", "中通快递")));
     }
 
@@ -102,39 +124,31 @@ public final class ExpressDetailScriptTest {
     public void interface6JingDongHasNoPageOrNativeQueryRoute() {
         ExpressItem unsupported = interfaceItem(
                 "INTERFACE6", "JingDong", "JD", "京东快递");
-        assertFalse(ExpressDetailActivity.usesDirectAutomaticH5(unsupported));
+        assertFalse(ExpressDetailActivity.usesNativeAutomaticDetail(unsupported));
         assertFalse(ExpressDetailActivity.allowsJingDongRoute(unsupported));
         assertFalse(ExpressDetailActivity.canRefreshLocalTimeline(unsupported));
         assertFalse(ExpressDetailActivity.canRefreshLocalTimeline(
                 accountOrder("I6-JD", "JDWAYBILL123")));
         assertFalse(ExpressDetailActivity.needsManualSupplement(
                 unsupported, result("interface6", "运输中"), null));
-        assertTrue(ExpressDetailActivity.usesDirectAutomaticH5(
+        assertTrue(ExpressDetailActivity.usesNativeAutomaticDetail(
                 interfaceItem("INTERFACE6", "CaiNiao", "ZTO", "中通快递")));
     }
 
-    @Test
-    public void cainiaoRedirectErrorBlankAndTimeoutFallBackToNative() throws Exception {
-        Path path = Path.of(
-                "app/src/main/java/me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
-        if (!Files.isRegularFile(path)) {
-            path = Path.of(
-                    "src/main/java/me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
-        }
-        String source = Files.readString(path, StandardCharsets.UTF_8);
-
-        assertTrue(source.contains(
-                "if (blocked && (request == null || request.isForMainFrame()))"));
-        assertTrue(source.contains("fallbackWebDetailToNative(view, progress);"));
-        assertTrue(source.contains("revealCainiaoPageOrFallback("));
-        assertTrue(source.contains("if (!\"true\".equals(value))"));
-        assertTrue(source.contains("webView.getVisibility() != View.VISIBLE"));
-        assertFalse(source.contains(
-                "if (!isFinishing() && !isDestroyed()) revealWebView(webView, progress);"));
+    @Test public void automaticDetailsStayNativeAndEntryCannotStartTheManualChain() throws Exception {
+        Path path = Path.of("app/src/main/java/me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
+        if (!Files.isRegularFile(path)) path = Path.of("src/main/java/me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
+        String source=Files.readString(path,StandardCharsets.UTF_8);
+        assertFalse(source.contains("showCainiaoWebDetail("));
+        assertFalse(source.contains("ensureKuaidi100Presentation("));
+        assertTrue(source.contains("detailEntryObserved || !usesNativeAutomaticDetail(item) || item.isShunFengSource()"));
+        int chain=source.indexOf("final ExpressItem queryOwner = refreshedItem;");
+        assertTrue(source.lastIndexOf("if (!detailPull)",chain)>=0);
+        assertTrue(source.contains("if (!detailPull && (!owner.isAccountOrder() || !owner.projectedWaybill.isEmpty())) return owner;"));
     }
 
     @Test
-    public void pickerDetailRouteAcceptsOnlyHttpsKuaidi100Hosts() {
+    public void onlineDetailRouteAcceptsOnlyHttpsKuaidi100Hosts() {
         String trusted = "https://m.kuaidi100.com/result.jsp?nu=TEST123456";
 
         assertEquals(trusted, ExpressDetailActivity.safeKuaidi100Url(trusted));
@@ -176,7 +190,7 @@ public final class ExpressDetailScriptTest {
         assertFalse(source.contains("showJingDongWebDetail("));
         assertFalse(source.contains("orderProjectionProbeScript("));
         assertTrue(source.contains("ExpressAutomaticTimelineCapture.capture("));
-        assertTrue(source.contains("setContentView(R.layout.activity_express_web)"));
+        assertFalse(source.contains("setContentView(R.layout.activity_express_web)"));
         assertFalse(source.contains("startProjectedOrderTimelineRefresh"));
         assertFalse(source.contains("saveProjectedOrderTimeline("));
     }

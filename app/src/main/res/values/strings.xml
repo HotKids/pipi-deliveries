@@ -14,9 +14,7 @@
     <string name="widget_status_danger">异常件</string>
     <string name="widget_status_unknown">暂无状态</string>
     <string name="widget_status_cancelled">已取消</string>
-    <string name="widget_active_packages">%1$d 个包裹在路上</string>
     <string name="widget_express_count">我的快递 %1$d</string>
-    <string name="widget_express_zero">我的快递 0</string>
     <string name="widget_empty_message">暂无快递</string>
     <string name="widget_all_deliveries">全部快递 %1$d</string>
     <string name="widget_no_logistics_detail">暂无物流动态</string>
@@ -32,11 +30,9 @@
     <string name="send_code">获取验证码</string>
     <string name="resend_code_countdown">%1$d 秒后重发</string>
     <string name="sending_code">正在发送…</string>
-    <string name="network_exception">网络连接异常，请稍后重试</string>
     <string name="query">查询</string>
     <string name="open_detail">查看物流详情</string>
     <string name="logistics_detail">物流详情</string>
-    <string name="web_detail_unavailable">暂时无法加载详情</string>
     <string name="express_company_waybill">%1$s：%2$s</string>
     <string name="official_phone">官方电话：</string>
     <string name="bind_phone_title">绑定手机号</string>
@@ -71,4 +67,5 @@
     <string name="notification_channel_transit">运输中</string>
     <string name="notification_channel_completed">已签收</string>
     <string name="notification_channel_description">接收对应快递状态的物流更新</string>
+    <string name="express_sender">寄</string>
 </resources>

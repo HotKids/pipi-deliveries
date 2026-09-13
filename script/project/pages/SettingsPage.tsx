@@ -159,15 +159,15 @@ export function SettingsPage(props: {
   }
 
   async function removeToken() {
-    const confirmed = await Dialog.confirm({
-      title: "移除 Access Key",
-      message:
-        "移除 Access Key 后将无法同步或查询快递。重新保存 Access Key 即可恢复。",
-      cancelLabel: "取消",
-      confirmLabel: "移除",
-    });
-    if (!confirmed) return;
     try {
+      const confirmed = await Dialog.confirm({
+        title: "移除 Access Key",
+        message:
+          "移除 Access Key 后将无法同步或查询快递。重新保存 Access Key 即可恢复。",
+        cancelLabel: "取消",
+        confirmLabel: "移除",
+      });
+      if (!confirmed) return;
       removeGatewayToken();
       setToken("");
       const nextAuthorization = refreshAuthorization();
@@ -183,12 +183,16 @@ export function SettingsPage(props: {
   }
 
   async function manageConfiguredToken() {
-    const index = await Dialog.actionSheet({
-      title: "授权管理",
-      message: "Access Key 已保存。粘贴新的 Access Key 可更新授权。",
-      actions: [{ label: "移除 Access Key", destructive: true }],
-    });
-    if (index === 0) await removeToken();
+    try {
+      const index = await Dialog.actionSheet({
+        title: "授权管理",
+        message: "Access Key 已保存。粘贴新的 Access Key 可更新授权。",
+        actions: [{ label: "移除 Access Key", destructive: true }],
+      });
+      if (index === 0) await removeToken();
+    } catch {
+      setNotice("操作失败，请稍后重试");
+    }
   }
 
   function openPhoneManager() {

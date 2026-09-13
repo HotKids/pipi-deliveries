@@ -223,6 +223,18 @@ assert.equal(moto.hasStructuredStatus, true);
 assert.equal(moto.tracks[0].raw._pipiStatusSource, "moto");
 assert.equal(moto.tracks[0].raw.logisticsStatus, "SIGN");
 
+for (const description of ["", "驿站派送中", "已签收"]) {
+  const station = parseMotoTimeline({ status: 0, normalizedStatus: { version: 1, scope: "SHIPMENT",
+    semantic: "DELIVERY", code: "STA_DELIVERING", text: "驿站派送中", priority: 1,
+    eventAtMs: 1789290913000, structured: true }, data: {
+    logisticsStatus: "STA_DELIVERING", logisticsStatusDesc: description,
+    fullTraceDetail: [{ time: "2026-09-13 17:15:13", desc: "Carrier event" }],
+  } });
+  assert.equal(station.semantic, "DELIVERY");
+  assert.equal(station.hasStructuredStatus, true);
+  assert.equal(station.tracks[0].raw.logisticsStatus, "STA_DELIVERING");
+}
+
 const kdniao = parseKdniaoTimeline({
   success: true,
   state: "2",

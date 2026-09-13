@@ -1,3 +1,5 @@
+import { responseNormalizedStatus } from "./worker-status";
+import type { NormalizedStatus } from "../models";
 import { accountAppTargets, type AccountAppTarget, type AccountAppRoute } from "./account-app-links";
 import type { DiagnosticDetails } from "./logger";
 import { accountOrderTextIdentity, type AccountOrderTextIdentity } from "./account-order-text-identity";
@@ -24,6 +26,7 @@ export type AccountTrackDto = Readonly<{
   timeText: string;
   detail: string;
   statusCode: string;
+  normalizedStatus?: NormalizedStatus;
 }>;
 
 export type AccountParcelDto = Readonly<{
@@ -41,6 +44,7 @@ export type AccountParcelDto = Readonly<{
   sourceStateCode: string;
   sourceStateText: string;
   semantic: AccountStatusSemantic;
+  normalizedStatus?: NormalizedStatus;
   normalizedStatusScope?: "ORDER" | "SHIPMENT";
   normalizedStatusSemantic?: AccountStatusSemantic;
   normalizedStatusText?: string;
@@ -158,14 +162,6 @@ function recordIdentity(value: JsonObject): string {
   return first(value, "mailNo", "nu", "orderNo", "orderId", "orderCode");
 }
 
-function isGenericUpdate(value: string): boolean {
-  const clean = value.replace(/\s+/g, "");
-  return !clean
-    || clean === "快递状态已更新"
-    || clean === "快递状态已更新，点击查看>>"
-    || clean === "快递状态已更新,点击查看>>";
-}
-
 function parseTime(value: string): number | null {
   return parseProviderTime(value);
 }
@@ -173,11 +169,12 @@ function parseTime(value: string): number | null {
 function track(value: unknown): AccountTrackDto | null {
   const item = object(value);
   const detail = first(item, "desc", "context", "description", "detail");
-  if (isGenericUpdate(detail) || isNonEventDetail(detail)) return null;
+  if (!detail.trim() || isNonEventDetail(detail)) return null;
   return {
     timeText: first(item, "time", "date", "ftime"),
     detail,
     statusCode: first(item, "statusCode", "status", "state", "stateNum"),
+    normalizedStatus: responseNormalizedStatus(item),
   };
 }
 
@@ -307,7 +304,7 @@ function accountOrder(value: JsonObject): boolean {
   return isJingDongAccountOrder(
     first(value, "mailNo"),
     first(value, "provider", "providerName"),
-    first(value, "normalizedStatusScope"),
+    responseNormalizedStatus(value)?.scope || first(value, "normalizedStatusScope"),
     [
       first(
         value,
@@ -347,16 +344,16 @@ function parseParcel(
     "stateName",
     "statusText",
   );
-  let semantic = source === "interface5"
+  const projection = responseNormalizedStatus(value);
+  let semantic = projection?.semantic ?? (source === "interface5"
     ? semanticFromAccountState(stateCode, stateText)
-    : semanticFromStored(stateCode, stateText);
-  // The forecast note stays in `parsedTracks`; it is skipped only where the row is presented.
+    : semanticFromStored(stateCode, stateText));
   const latestTrack = headlineTrack(parsedTracks);
-  if (semantic === "UNKNOWN" && latestTrack) semantic = semanticFromText(latestTrack.detail);
+  if (!projection && semantic === "UNKNOWN" && latestTrack) semantic = semanticFromText(latestTrack.detail);
   const headline = first(value, "lastLogisticDetail", "context", "message");
   const latestDetail = latestTrack?.detail
-    || (isGenericUpdate(headline) || isNonEventDetail(headline) ? "" : headline);
-  if (!isOrder &&
+    || (!headline.trim() || isNonEventDetail(headline) ? "" : headline);
+  if (!projection && !isOrder &&
     source === "interface5" &&
     !["COMPLETED", "CANCELLED", "DANGER", "WAITING_PICKUP"].includes(semantic) &&
     confirmedPickupEvent(latestDetail)
@@ -407,15 +404,16 @@ function parseParcel(
     sourceStateCode: stateCode,
     sourceStateText: stateText,
     semantic,
-    normalizedStatusScope: source === "interface5"
+    normalizedStatus: projection,
+    normalizedStatusScope: projection?.scope ?? (source === "interface5"
       ? normalizedStatusScope(value.normalizedStatusScope)
-      : undefined,
-    normalizedStatusSemantic: source === "interface5"
+      : undefined),
+    normalizedStatusSemantic: projection?.semantic ?? (source === "interface5"
       ? normalizedStatusSemantic(value.normalizedStatusSemantic)
-      : undefined,
-    normalizedStatusText: source === "interface5"
+      : undefined),
+    normalizedStatusText: projection?.text ?? (source === "interface5"
       ? first(value, "normalizedStatusText") || undefined
-      : undefined,
+      : undefined),
     receiverPhone: first(value, "phone", "subPhone", "receiverPhone") || text(defaults.phone),
     senderPhone: first(value, "sendPhone", "senderPhone"),
     latestTimeText,
@@ -448,7 +446,8 @@ export function mergeAccountParcel(
       detail.carrierNormalization || summary.carrierNormalization,
     receiverPhone: summary.receiverPhone || detail.receiverPhone,
     senderPhone: summary.senderPhone || detail.senderPhone,
-    semantic: detail.semantic === "UNKNOWN" ? summary.semantic : detail.semantic,
+    semantic: detail.normalizedStatus || detail.semantic !== "UNKNOWN" ? detail.semantic : summary.semantic,
+    normalizedStatus: detail.normalizedStatus || (detail.semantic === "UNKNOWN" ? summary.normalizedStatus : undefined),
     normalizedStatusScope:
       detail.normalizedStatusScope || summary.normalizedStatusScope,
     normalizedStatusSemantic:
@@ -582,7 +581,8 @@ export function parseAccountTimelineResponse(
     payload,
     [defaults.waybill || "", ...(defaults.waybillAliases || [])],
   );
-  return record ? parseParcel(source, record, defaults) : null;
+  return record ? parseParcel(source, { ...record,
+    normalizedStatus: record.normalizedStatus ?? responseNormalizedStatus(input) }, defaults) : null;
 }
 
 /** App navigation uses only the matching source packet, never the projected carrier identity. */

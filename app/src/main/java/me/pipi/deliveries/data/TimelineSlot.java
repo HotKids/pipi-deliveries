@@ -30,9 +30,10 @@ public final class TimelineSlot {
             case "v4":
                 return V4_QUERY;
             case "meizu":
+                return V6_QUERY;
             case "meizu_picker":
             case "v6_picker":
-                return V6_QUERY;
+                return "";
             case "kuaidi100":
             case "web":
                 return K100_H5;

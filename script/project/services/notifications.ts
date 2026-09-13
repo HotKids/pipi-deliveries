@@ -1,5 +1,5 @@
 import { Notification, Script } from "scripting";
-import type { ShipmentNotificationEvent } from "../models";
+import type { AppState, ShipmentNotificationEvent } from "../models";
 import { loadNotificationStatuses, notificationEnabled } from "./notification-preferences";
 import { acknowledgeShipmentNotification, deferShipmentNotification, loadState } from "./storage";
 import { acquireDurableRefreshLease } from "./refresh-runtime-state";
@@ -36,16 +36,18 @@ async function scheduleEvent(event: Omit<ShipmentNotificationEvent, "id">): Prom
 
 export async function replayPendingShipmentNotifications(
   canSchedule: () => boolean = () => true,
-): Promise<void> {
+): Promise<AppState | undefined> {
   if (!canSchedule()) return;
   const lease = acquireDurableRefreshLease("notifications", 15_000);
   if (!lease) return;
+  let current: AppState | undefined;
   try {
     loadNotificationStatuses(true);
-    const events = loadState().pendingNotifications || [];
+    current = loadState();
+    const events = current.pendingNotifications || [];
     for (const event of events) {
-      if (!canSchedule() || !lease.isCurrent()) return;
-      const latest = loadState();
+      if (!canSchedule() || !lease.isCurrent()) return current;
+      const latest = current = loadState();
       if (!latest.pendingNotifications?.some((item) => item.id === event.id)) continue;
       const shipment = latest.shipments.find((shipment) => shipment.identity.id === event.shipmentId);
       try {
@@ -56,20 +58,21 @@ export async function replayPendingShipmentNotifications(
         }
       } catch {
         writeDiagnostic("notification.schedule.failed", { result: "pending_retry" }, "warning");
-        if (!canSchedule() || !lease.isCurrent()) return;
+        if (!canSchedule() || !lease.isCurrent()) return current;
         // Persist rotation before another host wait: a bounded drain may expire
         // before reaching healthy events, which must lead the next attempt.
-        deferShipmentNotification(event.id);
+        current = deferShipmentNotification(event.id);
         continue;
       }
-      if (!canSchedule() || !lease.isCurrent()) return;
+      if (!canSchedule() || !lease.isCurrent()) return current;
       // The host has no documented caller-selected request ID. A crash after scheduling
       // and before this durable acknowledgement can repeat the notification.
-      acknowledgeShipmentNotification(event.id);
+      current = acknowledgeShipmentNotification(event.id);
     }
   } catch {
     writeDiagnostic("notification.replay.failed", { result: "pending_retry" }, "warning");
   } finally {
     lease.release();
   }
+  return current;
 }

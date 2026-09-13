@@ -46,7 +46,7 @@ test("the owning page logs a changed cache even when its selected feed is unchan
 test("JD candidate diagnostics expose the actual completeness and rejection evidence without changing selection", () => {
   const current = row();
   const complete = pack("jd_h5", 18, true);
-  const evidence = (timeline: TimelinePackage) => policy.jingDongDetailCandidateEvidence(current, timeline);
+  const evidence = (timeline: TimelinePackage) => policy.shipmentDetailCandidateEvidence(current, timeline);
   const before = policy.selectShipmentDetailTimeline(current);
   assert.equal(evidence(complete).detailComplete, true);
   assert.equal(evidence(complete).hasPickup, true);
@@ -63,17 +63,21 @@ test("JD candidate diagnostics expose the actual completeness and rejection evid
   assert.equal(evidence(older).foreignPackage, true);
   assert.equal(evidence(older).foreignAnchorAtMs, NOW - 6 * 60000 - 86400000);
   current.identity.sourceProvider = "ShunFeng";
-  assert.deepEqual(evidence(older), {}, "JD evidence must not claim SF's different completeness reference");
+  assert.equal(evidence(older).foreignPackage, true);
+  assert.equal(evidence(older).candidateEligible, false);
+  assert.equal(evidence(older).gateReason, "foreign_package");
 });
 
 test("candidate evidence survives the diagnostic allowlist without node text or identities", () => {
   memory.clear(); setDiagnosticsEnabled(true);
   const current = row();
   writeDiagnostic("detail.timeline.candidate", {
-    timelineProvider: "jd_h5", ...policy.jingDongDetailCandidateEvidence(current, pack("jd_h5", 18, true)),
+    timelineProvider: "jd_h5", ...policy.shipmentDetailCandidateEvidence(current, pack("jd_h5", 18, true)),
   });
   const details = readDiagnostics()[0].details;
   assert.equal(details.hasPickup, true);
+  assert.equal(details.candidateEligible, true);
+  assert.equal(details.cainiaoFallbackActive, false);
   assert.equal(details.foreignPackage, false);
   assert.equal(details.waybillMatches, true);
   assert.equal(details.detailComplete, true);

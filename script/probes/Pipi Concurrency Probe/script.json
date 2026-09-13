@@ -1,0 +1,8 @@
+{
+  "name": "Pipi Concurrency Probe",
+  "icon": "checkmark.shield",
+  "color": "#3478F6",
+  "version": "1.0",
+  "runInApp": true,
+  "description": "Tests shared file publication in Scripting app and widget hosts using synthetic data only."
+}

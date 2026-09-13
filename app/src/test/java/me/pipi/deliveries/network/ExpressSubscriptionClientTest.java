@@ -197,9 +197,9 @@ public final class ExpressSubscriptionClientTest {
                 "JD-EXPECTED-123456");
     }
 
-    /** picker refresh（queryByMailNoOnline）回的是列表记录形状，也要解成一条带时间的节点。 */
+    /** online refresh（queryByMailNoOnline）回的是列表记录形状，也要解成一条带时间的节点。 */
     @Test
-    public void refreshRecordParsesIntoOneTimedPickerTrack() throws Exception {
+    public void refreshRecordParsesIntoOneTimedOnlineTrack() throws Exception {
         JSONObject record = new JSONObject()
                 .put("mailNo", "SF1234567890")
                 .put("cpCode", "SF")

@@ -32,10 +32,11 @@ export function refreshSummaryToast(summary: Readonly<{
   succeeded: number;
   failed: number;
   accountListUpdated?: boolean;
+  skipReason?: "active_cross_runtime_refresh";
 }>): string {
+  if (summary.skipReason) return EXPRESS_TOAST_COPY.refreshFailed;
   if (summary.failed > 0 && summary.succeeded > 0) {
-    if (summary.accountListUpdated) return EXPRESS_TOAST_COPY.listUpdated;
-    return EXPRESS_TOAST_COPY.refreshPartial;
+    return EXPRESS_TOAST_COPY.listUpdated;
   }
   if (summary.failed > 0) return EXPRESS_TOAST_COPY.refreshFailed;
   if (summary.attempted === 0) return EXPRESS_TOAST_COPY.refreshUpToDate;

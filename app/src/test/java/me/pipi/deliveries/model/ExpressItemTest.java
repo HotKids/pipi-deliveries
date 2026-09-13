@@ -197,16 +197,16 @@ public final class ExpressItemTest {
     }
 
     @Test
-    public void motoManualRoutingUsesBusinessSourceInsteadOfRawJdCarrierCode() {
+    public void liteNeverStartsMotoAcrossAccountOrCarrierIdentities() {
         assertFalse(ManualQueryRoutingPolicy.includesMoto(
                 sourceItem("INTERFACE5", "CaiNiao", "SF", "顺丰速运")));
         assertFalse(ManualQueryRoutingPolicy.includesMoto(
                 sourceItem("INTERFACE5", "CaiNiao", "SFEXPRESS", "顺丰速运")));
-        assertTrue(ManualQueryRoutingPolicy.includesMoto(
+        assertFalse(ManualQueryRoutingPolicy.includesMoto(
                 sourceItem("INTERFACE5", "CaiNiao", "JD", "京东快递")));
-        assertTrue(ManualQueryRoutingPolicy.includesMoto(
+        assertFalse(ManualQueryRoutingPolicy.includesMoto(
                 sourceItem("INTERFACE5", "CaiNiao", "JDLEX", "京东快递")));
-        assertTrue(ManualQueryRoutingPolicy.includesMoto(
+        assertFalse(ManualQueryRoutingPolicy.includesMoto(
                 sourceItem("INTERFACE6", "CaiNiao", "JDVD", "京东快递")));
         assertFalse(ManualQueryRoutingPolicy.includesMoto(
                 sourceItem("INTERFACE5", "ShunFeng", "JD", "京东快递")));

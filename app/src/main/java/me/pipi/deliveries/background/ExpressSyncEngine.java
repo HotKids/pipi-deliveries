@@ -13,6 +13,7 @@ import me.pipi.deliveries.model.ExpressStatusNormalizer;
 import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.model.PendingExpressQuery;
 import me.pipi.deliveries.network.ExpressApi;
+import me.pipi.deliveries.network.ExpressLog;
 import me.pipi.deliveries.network.ExpressAccountSource;
 import me.pipi.deliveries.network.ExpressDiscoveryClient;
 import me.pipi.deliveries.network.ExpressSubscriptionClient;
@@ -33,20 +34,42 @@ final class ExpressSyncEngine {
 
     private ExpressSyncEngine() {}
 
-    static void syncAll(Context context, int[] network) {
-        ExpressRepository repository = ExpressRepository.get(context);
-        repository.runInChangeBatch(() -> syncAllUnbatched(context, repository, network));
+    static void syncAll(Context context, int[] network, boolean userPull) {
+        syncAll(context, network, userPull, userPull ? "list_pull" : "background");
+    }
+
+    static void syncAll(Context context, int[] network, boolean userPull, String trigger) {
+        String capturedSource = ExpressAccountSource.bindingSource(context);
+        String refreshTrigger = trigger == null || trigger.isEmpty() ? userPull ? "list_pull" : "background" : trigger;
+        long startedAt = System.currentTimeMillis();
+        try (ExpressLog.Scope diagnostics = ExpressLog.scope(ExpressLog.newFlowId("refresh"),
+                refreshTrigger, "interface5".equals(capturedSource) ? "v5" : "v6")) {
+            ExpressLog.write("refresh.started", "executionBoundary", "work_manager");
+            try {
+                ExpressRepository repository = ExpressRepository.get(context);
+                repository.runInChangeBatch(() -> syncAllUnbatched(context, repository, network, userPull, capturedSource));
+                if (network[2] == 1 || "background".equals(refreshTrigger) && network[1] > 0) {
+                    ExpressScheduler.recordNetworkSuccess(context, capturedSource);
+                }
+                ExpressLog.write("refresh.succeeded", "durationMs", System.currentTimeMillis() - startedAt,
+                        "attempted", network[0], "succeeded", network[1], "failed", Math.max(0, network[0] - network[1]),
+                        "result", network[0] == network[1] ? "succeeded" : "partial");
+            } catch (RuntimeException | Error failure) {
+                ExpressLog.write("refresh.failed", "durationMs", System.currentTimeMillis() - startedAt,
+                        "attempted", network[0], "succeeded", network[1], "failed", Math.max(0, network[0] - network[1]),
+                        "result", "failed", "errorCategory", failure.getClass().getSimpleName());
+                throw failure;
+            }
+        }
     }
 
     private static void syncAllUnbatched(
-            Context context, ExpressRepository repository, int[] network) {
+            Context context, ExpressRepository repository, int[] network, boolean userPull, String bindingSource) {
         ExpressApi localApi = new ExpressApi(context);
-        String bindingSource = ExpressAccountSource.bindingSource(context);
         boolean useInterface5 = "interface5".equals(bindingSource);
         ExpressDiscoveryClient discovery = useInterface5
                 ? new ExpressDiscoveryClient() : null;
         ExpressSubscriptionClient subscription = new ExpressSubscriptionClient();
-        Set<String> syncedSubscriptionWaybills = new HashSet<>();
         List<String> boundPhones = repository.phones(bindingSource);
         Map<String, String> bindingGenerations =
                 repository.bindingGenerations(bindingSource);
@@ -56,7 +79,7 @@ final class ExpressSyncEngine {
             network[0]++;
             try {
                 if (useInterface5) {
-                    discovery.sync(context, boundPhones);
+                    discovery.sync(context, boundPhones, userPull);
                     repository.recordAutomaticRefreshExecuted(
                             "INTERFACE5",
                             discovery.syncedWaybillsByGeneration(),
@@ -66,7 +89,6 @@ final class ExpressSyncEngine {
                     Map<String, Set<String>> seenByGeneration = new HashMap<>();
                     for (ExpressQueryResult result : subscriptionResults) {
                         String normalizedWaybill = normalizeWaybill(result.waybill);
-                        syncedSubscriptionWaybills.add(normalizedWaybill);
                         if (!hasUsableInformation(result)) continue;
                         String association = result.phone.isEmpty()
                                 ? repository.associatedPhone(result.waybill, bindingSource)
@@ -95,9 +117,11 @@ final class ExpressSyncEngine {
                 network[1]++;
                 network[2] = 1;
             } catch (Throwable failure) {
-                Log.w(TAG, "Account refresh failed", failure);
+                ExpressLog.write("refresh.account.failed", "errorCategory", failure.getClass().getSimpleName());
             }
         }
+        java.util.ArrayList<ExpressRepository.ManualTimelinePollClaim> activeClaims = new java.util.ArrayList<>();
+        try (ExpressRefreshQueue requests = new ExpressRefreshQueue()) {
         for (ExpressItem item : repository.listVisible(bindingSource)) {
             try {
                 // Account-order rows use an order id, not a K100-compatible carrier waybill.
@@ -105,7 +129,7 @@ final class ExpressSyncEngine {
                     if (!discovery.wasSynced(item.waybill)
                             && shouldRefreshMissingAccountRow(item,
                             item.usesInterface5AccountTimeline() && !repository.hasAccountTimeline(
-                                    item.waybill, "interface5"), System.currentTimeMillis())) {
+                                    item.waybill, "interface5"), System.currentTimeMillis(), userPull)) {
                         network[0]++;
                         String bindingGeneration = repository.bindingGeneration(
                                 item.phone, "interface5");
@@ -126,19 +150,6 @@ final class ExpressSyncEngine {
                             }
                             network[1]++;
                         }
-                    }
-                } else if (!useInterface5 && isInterface6Owned(item)
-                        && !syncedSubscriptionWaybills.contains(normalizeWaybill(item.waybill))
-                        && shouldRefreshMissingAccountRow(item, false, System.currentTimeMillis())) {
-                    network[0]++;
-                    String bindingGeneration = repository.bindingGeneration(
-                            item.phone, "interface6");
-                    ExpressQueryResult refreshed = subscription.queryWaybill(
-                            context, item.waybill, item.courierCode);
-                    if (hasUsableInformation(refreshed)) {
-                        repository.saveInterface6(
-                                refreshed, item.phone, bindingGeneration);
-                        network[1]++;
                     }
                 }
                 ExpressItem current = repository.findByWaybill(item.waybill, bindingSource);
@@ -194,73 +205,65 @@ final class ExpressSyncEngine {
                     }
                 }
                 ExpressRepository.ManualTimelinePollClaim manualClaim =
-                        usesSharedManualTimeline(current)
-                                ? repository.claimManualTimelinePoll(
-                                current, System.currentTimeMillis()) : null;
+                        usesSharedManualTimeline(current, userPull)
+                                ? userPull ? repository.claimForegroundManualTimelinePoll(
+                                current, System.currentTimeMillis(), true)
+                                : repository.claimManualTimelinePoll(current, System.currentTimeMillis()) : null;
                 if (manualClaim != null) {
-                    ExpressItem manualOwner = current;
-                    ExpressRepository.ManualQueryOwnerClaim ownerClaim =
-                            repository.captureManualQueryOwner(manualOwner);
-                    try {
-                        if (ownerClaim == null) continue;
-                        network[0]++;
-                        ManualQueryCoordinator.Batch manualBatch =
-                                ManualQueryCoordinator.queryPickerFirst(
-                                        () -> subscription.queryManual(
-                                                context, manualOwner.displayWaybill(), null),
-                                        repository.manualTimelineCandidate(
-                                                manualOwner, TimelineSlot.V6_QUERY),
-                                        () -> localApi.queryMoto(
-                                                manualOwner.displayWaybill(),
-                                                manualOwner.courierCode, null),
-                                        false, null, null,
-                                        manualOwner.semantic == StatusSemantic.UNKNOWN);
-                        repository.saveClaimedManualQueryBatch(
-                                manualOwner, ownerClaim, manualBatch.successes,
-                                manualOwner.phone, bindingSource, true, manualClaim, null);
-                        if (!manualBatch.successes.isEmpty()) {
-                            network[1]++;
-                            current = repository.find(manualOwner.rowId);
-                        }
-                    } finally {
-                        repository.releaseManualTimelinePoll(manualClaim);
-                    }
+                    activeClaims.add(manualClaim);
+                    enqueueManualRefresh(context, repository, subscription, requests, network,
+                            current, bindingSource, true, manualClaim);
                 }
                 if (current == null) continue;
                 if (!isAccountOwned(current)
                         && !current.semantic.terminal()
                         && isLocalTimelineSource(current.source)) {
-                    ExpressRepository.ManualTimelinePollClaim claim = repository.claimManualTimelinePoll(
-                            current, System.currentTimeMillis());
+                    ExpressRepository.ManualTimelinePollClaim claim = userPull
+                            ? repository.claimForegroundManualTimelinePoll(current, System.currentTimeMillis(), true)
+                            : repository.claimManualTimelinePoll(current, System.currentTimeMillis());
                     if (claim == null) continue;
-                    try {
-                        network[0]++;
-                        ExpressItem manualOwner = current;
-                        ExpressRepository.ManualQueryOwnerClaim ownerClaim =
-                                repository.captureManualQueryOwner(manualOwner);
-                        ManualQueryCoordinator.Batch batch =
-                                ManualQueryCoordinator.queryPickerFirst(
-                                        () -> subscription.queryManual(
-                                                context, manualOwner.displayWaybill(), null),
-                                        repository.manualTimelineCandidate(
-                                                manualOwner, TimelineSlot.V6_QUERY),
-                                        () -> localApi.queryMoto(
-                                                manualOwner.displayWaybill(),
-                                                manualOwner.courierCode, null),
-                                        ManualQueryRoutingPolicy.includesMoto(manualOwner));
-                        repository.saveClaimedManualQueryBatch(
-                                manualOwner, ownerClaim, batch.successes,
-                                manualOwner.phone, bindingSource, false, claim, null);
-                        if (!batch.successes.isEmpty()) network[1]++;
-                    } finally {
-                        repository.releaseManualTimelinePoll(claim);
-                    }
+                    activeClaims.add(claim);
+                    enqueueManualRefresh(context, repository, subscription, requests, network,
+                            current, bindingSource, false, claim);
                 }
             } catch (Throwable failure) {
-                Log.w(TAG, "Express refresh failed", failure);
+                ExpressLog.write("refresh.stage.failed", "stage", "enrichment", "errorCategory", failure.getClass().getSimpleName());
             }
         }
+        requests.drain();
+        } finally {
+            for (ExpressRepository.ManualTimelinePollClaim claim : activeClaims) repository.releaseManualTimelinePoll(claim);
+        }
         ensureSomeSourceSucceeded(network);
+    }
+
+    private static void enqueueManualRefresh(Context context, ExpressRepository repository,
+            ExpressSubscriptionClient subscription, ExpressRefreshQueue requests, int[] network,
+            ExpressItem owner, String bindingSource, boolean automatic,
+            ExpressRepository.ManualTimelinePollClaim claim) {
+        ExpressRepository.ManualQueryOwnerClaim ownerClaim = repository.captureManualQueryOwner(owner);
+        if (ownerClaim == null) return;
+        var cached = repository.manualTimelineCandidate(owner, TimelineSlot.V6_QUERY);
+        network[0]++;
+        requests.submit(() -> {
+            try {
+                ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
+                        () -> subscription.queryManual(context, owner.displayWaybill(), null),
+                        cached, null, false, null, null, owner.semantic == StatusSemantic.UNKNOWN);
+                return () -> {
+                    repository.saveClaimedManualQueryBatch(owner, ownerClaim, batch.successes,
+                            owner.phone, bindingSource, automatic, claim, null);
+                    if (!batch.successes.isEmpty()) network[1]++;
+                };
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            } catch (Exception failure) {
+                return () -> ExpressLog.write("refresh.stage.failed", "stage", "manual_refresh",
+                        "requestProvider", TimelineSlot.V6_QUERY, "waybillTail", ExpressLog.tail(owner.displayWaybill()),
+                        "errorCategory", failure.getClass().getSimpleName());
+            }
+        });
     }
 
     /** Reuses the available Android sources before promoting a hidden manual item. */
@@ -277,17 +280,15 @@ final class ExpressSyncEngine {
                     continue;
                 }
                 ManualQueryCoordinator.Batch batch =
-                        ManualQueryCoordinator.queryPickerFirst(
+                        ManualQueryCoordinator.queryOnlineFirst(
                         () -> subscription.queryManual(
                                 context, pending.waybill, null),
                         null,
-                        () -> localApi.queryMoto(
-                                pending.waybill, pending.courierCode, null),
-                        true);
+                        null, false);
                 repository.savePendingManualQueryBatch(pending, batch.successes);
             } catch (Throwable failure) {
                 // Keep the claimed item hidden. Its next periodic attempt is rate-limited.
-                Log.w(TAG, "Pending manual express refresh failed", failure);
+                ExpressLog.write("manual.query.failed", "stage", "pending_manual", "errorCategory", failure.getClass().getSimpleName());
             }
         }
     }
@@ -314,8 +315,10 @@ final class ExpressSyncEngine {
                 || item.isAccountOrder());
     }
 
-    static boolean usesSharedManualTimeline(ExpressItem item) {
-        return ExpressRepository.automaticListQueryRequired(item);
+    static boolean usesSharedManualTimeline(ExpressItem item, boolean userPull) {
+        return !(isInterface5Owned(item)
+                && (item.isCainiaoSource() || item.isJingDongSource()))
+                && ExpressRepository.automaticListQueryRequired(item);
     }
 
     /**
@@ -354,7 +357,9 @@ final class ExpressSyncEngine {
     }
 
     static boolean shouldRefreshMissingAccountRow(
-            ExpressItem item, boolean accountTimelineMissing, long now) {
+            ExpressItem item, boolean accountTimelineMissing, long now, boolean userPull) {
+        if (isInterface6Owned(item) || isInterface5Owned(item)
+                && (item.isCainiaoSource() || item.isJingDongSource() || item.isShunFengSource())) return false;
         if (item.semantic == StatusSemantic.COMPLETED) {
             return Kuaidi100TimelinePolicy.shouldRefresh(item, null, now);
         }

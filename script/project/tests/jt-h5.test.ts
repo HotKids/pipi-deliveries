@@ -6,7 +6,10 @@ import { mergeTimelineAuthorities, timelineCapability } from "../services/status
 const waybill = "JT1234567890123";
 const route = primaryH5Route(waybill, "JTSD");
 assert.equal(primaryH5Provider("JT"), "jt_h5");
-assert.equal(primaryH5Provider("HTKY"), "k100_h5");
+for (const code of ["HTKY", "BEST", "huitongkuaidi"]) {
+  assert.equal(primaryH5Provider(code), "jt_h5");
+  assert.equal(primaryH5Route(waybill, code), route);
+}
 assert.equal(primaryH5Provider("SF"), "k100_h5");
 assert.equal(new URL(route).origin, "https://jtsd.jtexpress.com.cn");
 assert.deepEqual(webPhoneTails("1234", ["5678"]), ["1234"]);
@@ -78,6 +81,10 @@ assert.equal(JSON.stringify(retry.read()).includes("5678"), false);
 
 const timeline = webTimelineFromExtraction(extracted, { waybill, courierCode: "JTSD", companyName: "J&T" }, 1);
 assert.equal(timeline?.provider, "jt_h5");
+const htkyTimeline = webTimelineFromExtraction(extracted,
+  { waybill, courierCode: "HTKY", companyName: "极兔速递" }, 1);
+assert.equal(htkyTimeline?.provider, "jt_h5");
+assert.deepEqual(htkyTimeline?.tracks, timeline?.tracks);
 assert.equal(timeline?.structuredStatus, false);
 assert.equal(timeline?.tracks.length, 2);
 assert.equal(timelineCapability("jt_h5"), "web");

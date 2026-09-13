@@ -44,10 +44,20 @@ import org.robolectric.util.ReflectionHelpers;
 public class ExpressWidgetRefreshWorkerTest {
     private Context context;
 
-    @Implements(value = ExpressScheduler.class, isInAndroidSdk = false)
+    @Implements(value = ExpressScheduler.class, isInAndroidSdk = false, callThroughByDefault = true)
     public static class EnqueueShadow {
         static SettableFuture<Operation.State.SUCCESS> future;
         static CountDownLatch requested;
+        static AtomicInteger networkRequests;
+        static boolean failNetworkEnqueue;
+        @Implementation protected static ListenableFuture<Operation.State.SUCCESS> enqueueAutomatic(Context context,
+                String trigger, boolean recentCheck) {
+            assertEquals("background",trigger); assertTrue(recentCheck); networkRequests.incrementAndGet();
+            SettableFuture<Operation.State.SUCCESS> result=SettableFuture.create();
+            if (failNetworkEnqueue) result.setException(new IllegalStateException("Synthetic network enqueue failure"));
+            else result.set(Operation.SUCCESS);
+            return result;
+        }
         @Implementation protected static ListenableFuture<Operation.State.SUCCESS> requestWidgetRefresh(Context context) {
             requested.countDown();
             return future;
@@ -59,6 +69,8 @@ public class ExpressWidgetRefreshWorkerTest {
         context.deleteDatabase(ExpressDatabase.DATABASE);
         context.getSharedPreferences("deliveries_repository_migrations", 0).edit().clear().commit();
         ReflectionHelpers.setStaticField(ExpressRepository.class, "instance", null);
+        context.getSharedPreferences("express_network_success",0).edit().clear().commit();
+        EnqueueShadow.networkRequests=new AtomicInteger(); EnqueueShadow.failNetworkEnqueue=false;
         EnqueueShadow.future = SettableFuture.create();
         EnqueueShadow.requested = new CountDownLatch(1);
     }
@@ -118,6 +130,23 @@ public class ExpressWidgetRefreshWorkerTest {
             assertTrue(cursor.getLong(0) > 0L);
         }
         helper.close();
+    }
+
+    @Test public void localWidgetDrawQueuesNetworkOnlyOutsideRecentSuccessWindow() throws Exception {
+        assertEquals(androidx.work.ListenableWorker.Result.success(),runWorker());
+        assertEquals(1,EnqueueShadow.networkRequests.get());
+        // This shadow instruments only Scheduler's clock; the worker uses the ordinary test clock.
+        context.getSharedPreferences("express_network_success",0).edit().putLong(
+                me.pipi.deliveries.network.ExpressAccountSource.bindingSource(context),
+                System.currentTimeMillis()).commit();
+        assertEquals(androidx.work.ListenableWorker.Result.success(),runWorker());
+        assertEquals(1,EnqueueShadow.networkRequests.get());
+    }
+
+    @Test public void failedNetworkEnqueueDoesNotReportSuccessfulRefresh() throws Exception {
+        EnqueueShadow.failNetworkEnqueue=true;
+        assertEquals(androidx.work.ListenableWorker.Result.retry(),runWorker());
+        assertEquals(1,EnqueueShadow.networkRequests.get());
     }
 
     private androidx.work.ListenableWorker.Result runWorker() throws Exception {

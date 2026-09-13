@@ -1,3 +1,4 @@
+import { installSharedFileMock } from "./shared-file-mock";
 import assert from "node:assert/strict";
 import type { Shipment, StatusSemantic } from "../models";
 
@@ -51,6 +52,8 @@ Object.assign(globalThis, {
   },
 
 });
+installSharedFileMock(memory);
+
 
 const {
   IMPORTANT_NOTIFICATION_STATUSES,

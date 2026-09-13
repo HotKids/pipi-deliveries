@@ -1,14 +1,33 @@
+import { RefreshInvalidatedError } from "./refresh-coordination";
 import type { AppState, BindingSource } from "../models";
 import { SCRIPT_BINDING_SOURCE } from "./script-source";
 import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD } from "./build-track";
-import { OperationTimeoutError, type RequestTimeoutDetails } from "./deadline";
+import { OperationTimeoutError, type RequestTimeoutDetails, type WaitTimeoutDetails } from "./deadline";
 
 export type DiagnosticLevel = "info" | "warning" | "error";
 
-export type DiagnosticDetails = Partial<RequestTimeoutDetails> & {
+export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetails> & {
+  commitProtocol?: "immutable_link";
+  commitSequence?: number;
+  selectionScope?: "query_response" | "display";
+  returnedTrackCount?: number;
+  displayedTrackCount?: number;
+  runtimeHost?: "app" | "widget";
+  sqliteOpenAvailable?: boolean;
+  sharedFilesAvailable?: boolean;
+  carrierTableVersion?: string;
+  carrierFetchedAtMs?: number;
+  carrierLastAttemptAtMs?: number;
+  carrierRefreshRemainingMs?: number;
+  hotlinePresent?: boolean;
+  hotlineMatchesExpected?: boolean;
   flowId?: string;
   blockingFlowId?: string;
   blockingTrigger?: string;
+  readDurationMs?: number;
+  writeDurationMs?: number;
+  verifyDurationMs?: number;
+  pruneDurationMs?: number;
   blockingLeaseAgeMs?: number;
   blockingLeaseRemainingMs?: number;
   source?: BindingSource;
@@ -23,6 +42,8 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails> & {
   attempted?: number;
   candidateCount?: number;
   availableCandidateCount?: number;
+  candidateEligible?: boolean;
+  cainiaoFallbackActive?: boolean;
   captureComplete?: boolean;
   hasPickup?: boolean;
   foreignPackage?: boolean;
@@ -53,6 +74,18 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails> & {
   displayCarrierCode?: string;
   /** Whitelisted StatusSemantic value. */
   statusSemantic?: string;
+  listStateNumber?: number;
+  listStatusScope?: "ORDER" | "SHIPMENT" | "unknown";
+  listStatusSemantic?: string;
+  preparedStatusSemantic?: string;
+  previousFeedStatusSemantic?: string;
+  mergedFeedStatusSemantic?: string;
+  feedStatusSemantic?: string;
+  listEventAtMs?: number;
+  preparedEventAtMs?: number;
+  previousFeedEventAtMs?: number;
+  mergedFeedEventAtMs?: number;
+  bindingMatched?: boolean;
   structuredStatus?: boolean;
   detailStatusSemantic?: string;
   latestTrackSemantic?: string;
@@ -121,9 +154,12 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails> & {
   replaySucceeded?: boolean;
   probeInstalled?: boolean;
   probeMatched?: boolean;
+  riskControlSeen?: boolean;
   probeRequestCount?: number;
   unionSignalSeen?: boolean;
   unionResourceSeen?: boolean;
+  unionResponseStatuses?: string;
+  probeCaptureCount?: number;
   resourceReplayBlockReason?: string;
   domMatched?: boolean;
   requestCallbackCount?: number;
@@ -157,6 +193,7 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails> & {
   v4QuerySupported?: boolean;
   v4QuerySucceeded?: boolean;
   k100H5Succeeded?: boolean;
+  jtH5Succeeded?: boolean;
   kdniaoAttempted?: boolean;
   kdniaoSucceeded?: boolean;
   result?: string;
@@ -192,11 +229,23 @@ const closedFlowIds = new Set<string>();
 const flowTriggers = new Map<string, string>();
 
 const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
+  "listStateNumber", "listStatusScope", "listStatusSemantic", "preparedStatusSemantic",
+  "previousFeedStatusSemantic", "mergedFeedStatusSemantic", "feedStatusSemantic",
+  "listEventAtMs", "preparedEventAtMs", "previousFeedEventAtMs", "mergedFeedEventAtMs", "bindingMatched",
+  "commitProtocol", "commitSequence",
+  "runtimeHost", "sqliteOpenAvailable", "sharedFilesAvailable",
+  "carrierTableVersion", "carrierFetchedAtMs", "carrierLastAttemptAtMs", "carrierRefreshRemainingMs",
+  "hotlinePresent", "hotlineMatchesExpected",
+  "waitTimeoutOrigin", "waitBudgetMs", "waitElapsedMs",
+  "selectionScope", "returnedTrackCount", "displayedTrackCount",
+  "readDurationMs", "writeDurationMs", "verifyDurationMs", "pruneDurationMs",
   "blockingFlowId", "blockingTrigger", "blockingLeaseAgeMs", "blockingLeaseRemainingMs",
   "timeoutOrigin", "requestPhase", "requestBudgetMs", "requestElapsedMs", "responseHeadersAfterMs", "responseBodyAfterMs",
+  "requestId", "signalAbortAfterMs", "callerSettledAfterMs",
   "foreignAnchorAtMs", "earliestTrackAtMs",
   "hasPickup", "foreignPackage", "waybillMatches", "waybillMatchesOrder",
   "candidateCount", "availableCandidateCount", "captureComplete", "incompleteReason",
+  "candidateEligible", "cainiaoFallbackActive",
   "requestProvider", "displayTimelineProvider",
   "historyProvider", "headlineProvider", "statusProvider", "selectionReason",
   "interface",
@@ -291,9 +340,12 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "replaySucceeded",
   "probeInstalled",
   "probeMatched",
+  "riskControlSeen",
   "probeRequestCount",
   "unionSignalSeen",
   "unionResourceSeen",
+  "unionResponseStatuses",
+  "probeCaptureCount",
   "resourceReplayBlockReason",
   "domMatched",
   "requestCallbackCount",
@@ -330,6 +382,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "v4QuerySupported",
   "v4QuerySucceeded",
   "k100H5Succeeded",
+  "jtH5Succeeded",
   "kdniaoAttempted",
   "kdniaoSucceeded",
   "result",
@@ -346,8 +399,14 @@ const SOURCE_KEYS = new Set<keyof DiagnosticDetails>([
 ]);
 
 const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
+  "listEventAtMs", "preparedEventAtMs", "previousFeedEventAtMs", "mergedFeedEventAtMs",
+  "commitSequence",
+  "carrierFetchedAtMs", "carrierLastAttemptAtMs", "carrierRefreshRemainingMs",
+  "waitBudgetMs", "waitElapsedMs", "returnedTrackCount", "displayedTrackCount",
+  "readDurationMs", "writeDurationMs", "verifyDurationMs", "pruneDurationMs",
   "blockingLeaseAgeMs", "blockingLeaseRemainingMs",
   "requestBudgetMs", "requestElapsedMs", "responseHeadersAfterMs", "responseBodyAfterMs",
+  "signalAbortAfterMs", "callerSettledAfterMs",
   "foreignAnchorAtMs", "earliestTrackAtMs",
   "candidateCount", "availableCandidateCount",
   "baseRevision",
@@ -390,6 +449,10 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
 ]);
 
 const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
+  "bindingMatched",
+  "sqliteOpenAvailable", "sharedFilesAvailable", "hotlinePresent", "hotlineMatchesExpected",
+  "candidateEligible", "cainiaoFallbackActive",
+  "riskControlSeen",
   "hasPickup", "foreignPackage", "waybillMatches", "waybillMatchesOrder",
   "captureComplete",
   "vuePresent",
@@ -437,6 +500,7 @@ const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
   "v4QuerySupported",
   "v4QuerySucceeded",
   "k100H5Succeeded",
+  "jtH5Succeeded",
   "primaryReachedTimelineStart",
   "kdniaoAttempted",
   "kdniaoSucceeded",
@@ -477,12 +541,14 @@ const SAFE_FAILURE_CODES = new Set([
   "network",
   "not_found",
   "phone_tail",
+  "phone_verification_required",
   "rate_limited",
   "rejected",
   "replay_store_unavailable",
   "replayed_request",
   "unauthorized",
   "upstream_rejected",
+  "upstream_business_error",
   "upstream_unavailable",
 ]);
 
@@ -572,6 +638,31 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
   for (const [rawKey, rawValue] of Object.entries(value)) {
     const key = rawKey as keyof DiagnosticDetails;
     if (!DETAIL_KEYS.has(key) || rawValue == null) continue;
+    if (key === "listStateNumber") {
+      if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 101 && rawValue <= 111) result[key] = rawValue;
+      continue;
+    }
+    if (key === "listStatusScope") {
+      if (rawValue === "ORDER" || rawValue === "SHIPMENT" || rawValue === "unknown") result[key] = rawValue;
+      continue;
+    }
+    if (key === "listStatusSemantic" || key === "preparedStatusSemantic" ||
+        key === "previousFeedStatusSemantic" || key === "mergedFeedStatusSemantic" || key === "feedStatusSemantic") {
+      if (["UNKNOWN", "ORDERED", "SHIPPED", "PICKED", "TRANSIT", "DELIVERY", "WAITING_PICKUP", "COMPLETED", "CANCELLED", "DANGER"].includes(String(rawValue))) result[key] = String(rawValue);
+      continue;
+    }
+    if (key === "unionResponseStatuses") {
+      if (typeof rawValue === "string" && /^(?:0|[1-5]\d{2})(?:,(?:0|[1-5]\d{2})){0,7}$/.test(rawValue)) {
+        result.unionResponseStatuses = rawValue;
+      }
+      continue;
+    }
+    if (key === "probeCaptureCount") {
+      if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 0 && rawValue <= 4) {
+        result.probeCaptureCount = rawValue;
+      }
+      continue;
+    }
     if (key === "readyState") {
       if (["loading", "interactive", "complete", "unknown"].includes(rawValue as string)) result.readyState = rawValue as string;
       continue;
@@ -712,6 +803,7 @@ export function diagnosticState(state: AppState): DiagnosticDetails {
 }
 
 export function classifyDiagnosticError(error: unknown): string {
+  if (error instanceof RefreshInvalidatedError) return error.reason;
   const name = error instanceof Error ? error.name.toLowerCase() : "";
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   const rawCode = error && typeof error === "object" && "code" in error
@@ -807,6 +899,7 @@ export function diagnosticErrorDetails(error: unknown): DiagnosticDetails {
   return {
     errorCategory: classifyDiagnosticError(error),
     ...(error instanceof OperationTimeoutError ? error.requestDetails : {}),
+    ...(error instanceof OperationTimeoutError ? error.waitDetails : {}),
     ...(Number.isInteger(status) && status >= 100 && status <= 599
       ? { httpStatus: status }
       : {}),
@@ -910,6 +1003,31 @@ export function unifiedLevel(details: DiagnosticDetails): string {
   if (byStage) return byStage;
   if (byProvider) return byProvider;
   return "";
+}
+
+/** Capability presence is host evidence, not proof of a working transaction. */
+export function writeRuntimeCapabilities(runtimeHost: "app" | "widget", flowId?: string): void {
+  if (!diagnosticsEnabled()) return;
+  try {
+    const runtime = globalThis as unknown as {
+      SQLite?: { open?: unknown };
+      FileManager?: {
+        appGroupDocumentsDirectory?: unknown;
+        readAsStringSync?: unknown;
+        writeAsStringSync?: unknown;
+      };
+    };
+    writeDiagnostic("runtime.capabilities", {
+      runtimeHost,
+      flowId,
+      sqliteOpenAvailable: typeof runtime.SQLite?.open === "function",
+      sharedFilesAvailable: typeof runtime.FileManager?.appGroupDocumentsDirectory === "string" &&
+        typeof runtime.FileManager?.readAsStringSync === "function" &&
+        typeof runtime.FileManager?.writeAsStringSync === "function",
+    });
+  } catch {
+    writeDiagnostic("runtime.capabilities", { runtimeHost, flowId, result: "probe_failed" }, "warning");
+  }
 }
 
 export function writeDiagnostic(

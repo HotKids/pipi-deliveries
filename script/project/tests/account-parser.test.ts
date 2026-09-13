@@ -40,8 +40,9 @@ const v5 = parseAccountSyncResponse("interface5", {
 });
 assert.equal(v5.length, 2);
 assert.equal(v5[0].semantic, "WAITING_PICKUP");
-assert.equal(v5[0].tracks.length, 2);
-assert.equal(v5[0].latestDetail, "已存放至驿站");
+assert.equal(v5[0].tracks.length, 3);
+assert.equal(v5[0].latestDetail, "快递状态已更新，点击查看>>");
+assert.equal(v5[0].latestTimeText, "2026-08-16 18:00:00");
 assert.equal(v5[0].routeUrl, "https://page.cainiao.com/detail?opaque=1");
 assert.equal(matchBoundPhone(v5[0], ["13800138000"]), "13800138000");
 assert.equal(

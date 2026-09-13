@@ -1,5 +1,12 @@
 import { OperationTimeoutError, waitForRefresh } from "./deadline";
 
+export class RefreshInvalidatedError extends Error {
+  constructor(readonly reason: "ownership_lost" | "superseded") {
+    super("刷新已中断，请重试");
+    this.name = "RefreshInvalidatedError";
+  }
+}
+
 export type DetailRefreshEntry<Source, Result> = Readonly<{
   source: Source;
   promise: Promise<Result>;
@@ -9,7 +16,7 @@ type FullRefreshEntry<Result> = Readonly<{
   promise: Promise<Result>;
   isCurrent: (now: number) => boolean;
   generation: number;
-  abort: () => void;
+  abort: (now?: number) => void;
 }>;
 
 export type FullRefreshLease = Readonly<{
@@ -93,7 +100,7 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
     const entry = this.fullRefreshes.get(source);
     if (!entry) return undefined;
     if (!entry.isCurrent(now)) {
-      entry.abort();
+      entry.abort(now);
       return undefined;
     }
     return entry.promise;
@@ -158,14 +165,16 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
       options.operationDeadlineAtMs ?? Infinity,
       options.ownership?.expiresAtMs ?? Infinity,
     );
-    let rejectCancellation!: (error: OperationTimeoutError) => void;
+    let rejectCancellation!: (error: Error) => void;
+    let cancellationError: Error | undefined;
     const cancelled = new Promise<FullResult>((_, reject) => { rejectCancellation = reject; });
-    const abortLease = () => {
+    const abortLease = (now = Date.now()) => {
       const firstInvalidation = !controller.signal.aborted;
-      const reason = Date.now() >= expiresAtMs ? "deadline"
+      const reason = now >= expiresAtMs ? "deadline"
         : !(options.ownership?.isCurrent() ?? true) ? "ownership_lost" : "superseded";
+      cancellationError ??= reason === "deadline" ? new OperationTimeoutError() : new RefreshInvalidatedError(reason);
       controller.abort();
-      rejectCancellation(new OperationTimeoutError());
+      rejectCancellation(cancellationError);
       if (this.fullRefreshes.get(source)?.generation === generation) {
         this.fullRefreshes.delete(source);
       }
@@ -186,8 +195,8 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
       },
       assertCurrent: (now = Date.now()) => {
         if (!lease.isCurrent(now)) {
-          abortLease();
-          throw new OperationTimeoutError();
+          abortLease(now);
+          throw cancellationError;
         }
       },
     };

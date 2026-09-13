@@ -3,6 +3,8 @@ package me.pipi.deliveries.data;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.ExpressTimeline;
+import me.pipi.deliveries.model.WorkerStatusProjection;
+import me.pipi.deliveries.model.StatusSemantic;
 
 /** Recovers a trustworthy signed timestamp even when an OEM omits statusEventTime. */
 final class ExpressLifecycleTimes {
@@ -16,23 +18,32 @@ final class ExpressLifecycleTimes {
     }
 
     static long signedEvidenceAt(ExpressItem item, ExpressQueryResult cached, long now) {
-        long signedAt = valid(item == null ? 0L : item.statusEventTime, now);
+        WorkerStatusProjection itemStatus = item == null ? null : WorkerStatusProjection.cached(item.tracksJson);
+        if (itemStatus != null && !itemStatus.matches(item.semantic, item.statusEventTime)) itemStatus = null;
+        long signedAt = itemStatus == null ? valid(item == null ? 0L : item.statusEventTime, now)
+                : workerSignedAt(itemStatus, now);
         // A newer headline or sidecar must not replace the owner's structured signature.
         if (signedAt > 0L) return signedAt;
         if (cached != null) {
-            signedAt = valid(cached.statusEventTime, now);
+            signedAt = cached.workerStatus == null ? valid(cached.statusEventTime, now)
+                    : workerSignedAt(cached.workerStatus, now);
             if (signedAt > 0L) return signedAt;
         }
-        if (item != null) {
+        if (item != null && itemStatus == null) {
             signedAt = newer(signedTrackTime(item.tracksJson, now),
                     signedSummaryTime(item.latestDetail, item.latestTime, now));
         }
-        if (cached != null) {
+        if (cached != null && cached.workerStatus == null) {
             signedAt = newer(signedAt, signedTrackTime(cached.tracksJson, now));
             signedAt = newer(signedAt,
                     signedSummaryTime(cached.latestDetail, cached.latestTime, now));
         }
         return signedAt;
+    }
+
+    private static long workerSignedAt(WorkerStatusProjection status, long now) {
+        return status.structured && status.semantic == StatusSemantic.COMPLETED
+                && status.eventAtMs > 0L && status.eventAtMs <= now ? status.eventAtMs : 0L;
     }
 
     static long eventAt(ExpressItem item, long now) {

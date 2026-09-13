@@ -58,27 +58,29 @@ assert.equal(await acquireProjectionViewport(null), false);
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const detailPage = readFileSync(join(projectRoot, "pages/DetailPage.tsx"), "utf8");
+const app = readFileSync(join(projectRoot, "index.tsx"), "utf8");
 const projection = readFileSync(
   join(projectRoot, "services/account-order-projection.ts"),
   "utf8",
 );
 
-// The page registers itself while mounted and tears the registration down on unmount.
-assert.ok(detailPage.includes("registerProjectionViewportHost({"));
-assert.ok(detailPage.includes("registerProjectionViewportHost(null)"));
+// One app-owned slot survives Home/detail navigation. Popping detail cannot clear Home's host.
+assert.ok(app.includes("registerProjectionViewportHost({"));
+assert.ok(app.includes("registerProjectionViewportHost(null)"));
+assert.equal(detailPage.includes("registerProjectionViewportHost"), false);
 // The slot is transparent, non-interactive and behind the rows — never a visible web page.
 assert.match(
-  detailPage,
-  /background=\{[\s\S]*?<WebView[\s\S]*?controller=\{projectionController\}[\s\S]*?opacity=\{0\}[\s\S]*?disabled=\{true\}/,
+  app,
+  /<TabView[\s\S]*?background=\{[\s\S]*?<WebView[\s\S]*?controller=\{projectionController\}[\s\S]*?opacity=\{0\}[\s\S]*?disabled=\{true\}/,
   "the hosted projection WebView must be an invisible, non-interactive background",
 );
-assert.equal(detailPage.includes("controller.present("), false);
+assert.equal(app.includes("controller.present("), false);
 
 // The viewport is acquired before the load and released in the projection's finally.
-const acquireAt = projection.indexOf("await acquireProjectionViewport(controller)");
+const acquireAt = projection.indexOf("acquireProjectionViewport(controller)");
 const loadAt = projection.indexOf("controller.loadURL(parcel.projectionUrl)");
 assert.ok(acquireAt > 0 && loadAt > 0 && acquireAt < loadAt);
-assert.ok(projection.includes("if (viewportHosted) releaseProjectionViewport();"));
+assert.ok(projection.includes("releaseProjectionViewport();"));
 assert.ok(projection.includes("viewportHosted,"));
 assert.ok(projection.includes("viewportHosted: boolean;"));
 

@@ -20,23 +20,23 @@ import org.robolectric.annotation.Config;
 @Config(sdk = 31, manifest = Config.NONE, application = Application.class)
 public final class ExpressDetailPreviewIntentTest {
     @Test
-    public void onlyTheLivePickerPreviewForcesNativeNonPersistentRendering() {
+    public void onlyTheLiveOnlinePreviewForcesNativeNonPersistentRendering() {
         Context context = RuntimeEnvironment.getApplication();
-        ExpressQueryResult picker = new ExpressQueryResult(
+        ExpressQueryResult online = new ExpressQueryResult(
                 "TEST123456", "ZTO", "中通快递", StatusSemantic.TRANSIT,
                 "2026-09-02 10:00:00", "运输中",
                 "[{\"time\":\"2026-09-02 10:00:00\",\"context\":\"运输中\"}]",
                 "https://m.kuaidi100.com/result.jsp?nu=TEST123456",
                 "", "meizu");
 
-        Intent transientPreview = ExpressDetailActivity.transientPickerPreviewIntent(
-                context, picker, "1234", "interface6");
+        Intent transientPreview = ExpressDetailActivity.transientOnlinePreviewIntent(
+                context, online, "1234", "interface6");
         assertFalse(transientPreview.getBooleanExtra("persist_express_preview", true));
         assertTrue(transientPreview.getBooleanExtra("transient_picker_preview", false));
         assertTrue((transientPreview.getFlags() & Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0);
 
         Intent finalDetail = ExpressDetailActivity.persistedPreviewIntent(
-                context, picker, "1234", "interface6");
+                context, online, "1234", "interface6");
         assertFalse(finalDetail.getBooleanExtra("persist_express_preview", true));
         assertFalse(finalDetail.getBooleanExtra("transient_picker_preview", false));
         assertTrue((finalDetail.getFlags() & Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0);

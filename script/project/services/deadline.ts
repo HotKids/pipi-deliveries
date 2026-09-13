@@ -1,5 +1,8 @@
 export type RequestTimeoutDetails = {
-  timeoutOrigin: "timeout_signal" | "parent_signal" | "native_timeout" | "native_abort" | "deadline_after_body" | "deadline_after_error";
+  requestId?: string;
+  signalAbortAfterMs?: number;
+  callerSettledAfterMs?: number;
+  timeoutOrigin: "timeout_signal" | "parent_signal" | "native_timeout" | "native_abort" | "deadline_after_headers" | "deadline_after_body" | "deadline_after_error";
   requestPhase: "request" | "response_body" | "response_complete";
   requestBudgetMs: number;
   requestElapsedMs: number;
@@ -8,8 +11,19 @@ export type RequestTimeoutDetails = {
   deadlineLagMs: number;
 };
 
+export type WaitTimeoutDetails = {
+  waitTimeoutOrigin: "deadline" | "cancelled";
+  waitBudgetMs: number;
+  waitElapsedMs: number;
+  deadlineLagMs: number;
+};
+
 export class OperationTimeoutError extends Error {
-  constructor(message = "请求超时，请稍后重试", readonly requestDetails?: RequestTimeoutDetails) {
+  constructor(
+    message = "请求超时，请稍后重试",
+    readonly requestDetails?: RequestTimeoutDetails,
+    readonly waitDetails?: WaitTimeoutDetails,
+  ) {
     super(message);
     this.name = "OperationTimeoutError";
   }
@@ -51,22 +65,42 @@ export function assertWithinDeadline(
 
 /** Waiting consumers can leave without cancelling work still owned by another consumer. */
 export function waitForRefresh<T>(work: Promise<T>, deadlineAtMs: number, signal?: AbortSignal): Promise<T> {
+  const startedAtMs = Date.now();
+  const waitBudgetMs = Math.max(0, deadlineAtMs - startedAtMs);
   return new Promise((resolve, reject) => {
-    const abort = () => finish(() => reject(new OperationTimeoutError()));
-    const timer = setTimeout(abort, Math.max(0, deadlineAtMs - Date.now()));
+    let settled = false;
     const finish = (complete: () => void) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       complete();
     };
+    const expire = (waitTimeoutOrigin: WaitTimeoutDetails["waitTimeoutOrigin"]) => {
+      const now = Date.now();
+      finish(() => reject(new OperationTimeoutError(undefined, undefined, {
+        waitTimeoutOrigin,
+        waitBudgetMs,
+        waitElapsedMs: Math.max(0, now - startedAtMs),
+        deadlineLagMs: Math.max(0, now - deadlineAtMs),
+      })));
+    };
+    const abort = () => expire("cancelled");
+    const timer = setTimeout(() => expire("deadline"), waitBudgetMs);
     signal?.addEventListener("abort", abort, { once: true });
-    if (signal?.aborted || deadlineExpired(deadlineAtMs)) abort();
-    work.then(value => finish(() => resolve(value)), error => finish(() => reject(error)));
+    if (signal?.aborted) abort();
+    else if (deadlineExpired(deadlineAtMs)) expire("deadline");
+    work.then(value => {
+      // A resumed runtime can deliver promise callbacks before overdue timers.
+      if (deadlineExpired(deadlineAtMs)) expire("deadline");
+      else finish(() => resolve(value));
+    }, error => finish(() => reject(error)));
   });
 }
 
 export type LinkedTimeoutSignal = Readonly<{
   signal: AbortSignal;
+  cancel: () => void;
   dispose: () => void;
 }>;
 
@@ -87,6 +121,7 @@ export function linkedTimeoutSignal(
   if (timeoutSignal.aborted || parent?.aborted) abort();
   return {
     signal: controller.signal,
+    cancel: abort,
     dispose: () => {
       timeoutSignal.removeEventListener("abort", abort);
       parent?.removeEventListener("abort", abort);

@@ -245,7 +245,15 @@ test("late same-slot detail, delete, sign-off and unbind cannot replace current 
     const state = seed([row("CaiNiao")]);
     const original = state.shipments[0];
     const incoming = captured(original, "v5_query");
-    if (action === "same_slot") commitTargetShipmentRefresh(state, incoming, NOW);
+    if (action === "same_slot") {
+      const newer = structuredClone(incoming);
+      const pack = newer.manualTimelines!.find(value => value.provider === "v5_query")!;
+      pack.tracks[0] = { ...pack.tracks[0], timeMs: NOW + 1, timeText: String(NOW + 1),
+        detail: "A newer independent account observation" };
+      pack.latestDetail = pack.tracks[0].detail;
+      pack.latestTimeText = pack.tracks[0].timeText;
+      commitTargetShipmentRefresh(state, newer, NOW + 1);
+    }
     if (action === "delete") saveState({ ...state, shipments: [] }, NOW);
     if (action === "sign") saveState({ ...state, shipments: [{ ...original, forcedCompletedAtMs: NOW }] }, NOW);
     if (action === "unbind") removeBinding("interface5", "13800001234", NOW);

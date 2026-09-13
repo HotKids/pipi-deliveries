@@ -8,6 +8,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import me.pipi.deliveries.model.ExpressQueryResult;
+import me.pipi.deliveries.model.WorkerStatusProjection;
 import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.StatusSemantic;
 
@@ -36,7 +37,8 @@ final class JingDongOrderCompletionPolicy {
         if (matches(packet.latestDetail, orderId)
                 && time == ExpressSourcePolicy.parseEventTime(packet.latestTime)) return true;
         try {
-            JSONArray tracks = new JSONArray(packet.tracksJson);
+            JSONArray tracks = me.pipi.deliveries.model.ExpressTimeline.findArray(
+                    new org.json.JSONTokener(packet.tracksJson).nextValue());
             for (int index = 0; index < tracks.length(); index++) {
                 JSONObject track = tracks.optJSONObject(index);
                 if (track != null && time == ExpressSourcePolicy.parseEventTime(
@@ -62,7 +64,8 @@ final class JingDongOrderCompletionPolicy {
         StatusSemantic survivingSemantic = StatusSemantic.UNKNOWN;
         long survivingStatusTime = 0L;
         try {
-            JSONArray tracks = new JSONArray(packet.tracksJson);
+            JSONArray tracks = me.pipi.deliveries.model.ExpressTimeline.findArray(
+                    new org.json.JSONTokener(packet.tracksJson).nextValue());
             for (int index = 0; index < tracks.length(); index++) {
                 JSONObject track = tracks.optJSONObject(index);
                 if (track == null) continue;
@@ -79,9 +82,10 @@ final class JingDongOrderCompletionPolicy {
                 if (origin.isEmpty()) origin = packet.timelineProvider;
                 String code = first(track, "stateNum", "logisticsStatus", "statusCode", "status", "state");
                 String description = first(track, "stateText", "logisticsStatusDesc", "stateName", "stateDesc");
-                StatusSemantic state = TimelineSlot.V5_QUERY.equals(TimelineSlot.normalize(origin))
+                WorkerStatusProjection normalized = WorkerStatusProjection.read(track);
+                StatusSemantic state = normalized != null ? normalized.semantic : TimelineSlot.V5_QUERY.equals(TimelineSlot.normalize(origin))
                         ? StatusSemantic.fromAccountState(code, description) : StatusSemantic.UNKNOWN;
-                if (state == StatusSemantic.UNKNOWN) {
+                if (state == StatusSemantic.UNKNOWN && normalized == null) {
                     state = StatusSemantic.fromStored(code, description);
                 }
                 if (state != StatusSemantic.UNKNOWN && time > survivingStatusTime) {
@@ -108,7 +112,8 @@ final class JingDongOrderCompletionPolicy {
         long statusTime = replaceStatus ? survivingStatusTime : packet.statusEventTime;
         return new ExpressQueryResult(packet.waybill, packet.courierCode, packet.companyName,
                 semantic, statusTime, latest == null ? "" : latest.time,
-                latest == null ? "" : latest.detail, kept.toString(), packet.detailUrl,
+                latest == null ? "" : latest.detail, WorkerStatusProjection.attach(kept.toString(),
+                        replaceStatus ? null : packet.workerStatus), packet.detailUrl,
                 packet.phone, packet.timelineProvider, packet.routeInterface,
                 packet.routeCredential, packet.sourceProvider, packet.carrierNormalization)
                 .withCarrierIdentityEvidence(packet.carrierIdentityEvidence)

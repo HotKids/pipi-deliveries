@@ -1,15 +1,13 @@
 package me.pipi.deliveries.model;
 
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
+import me.pipi.deliveries.data.TimelineSlot;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
-import java.text.ParsePosition;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Date;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,10 +18,12 @@ public final class ExpressTimeline {
     public static final class Track {
         public final String time;
         public final String detail;
+        public final long epochMillis;
 
         Track(String time, String detail) {
             this.time = clean(time);
             this.detail = clean(detail);
+            this.epochMillis = parseTime(this.time);
         }
     }
 
@@ -55,7 +55,7 @@ public final class ExpressTimeline {
         }
         // 同包内同文案、5 分钟内、结构化状态不冲突的节点算同一条（用户定 2026-09-06，三端同 Pipi）；
         // 原来是「相邻同文案不看时间」，会把几小时后重复的真实事件也吞掉。老缓存里的重复也在这里收掉。
-        rawTracks.sort((left, right) -> Long.compare(parseTime(right.time), parseTime(left.time)));
+        rawTracks.sort((left, right) -> Long.compare(right.epochMillis, left.epochMillis));
         for (RawTrack raw : collapseNearTimeDuplicates(rawTracks)) {
             tracks.add(new Track(raw.time, raw.detail));
         }
@@ -66,7 +66,6 @@ public final class ExpressTimeline {
         }
         tracks.clear();
         tracks.addAll(unique.values());
-        tracks.sort((left, right) -> Long.compare(parseTime(right.time), parseTime(left.time)));
 
         if (tracks.isEmpty() && !clean(fallbackDetail).isEmpty()
                 && !ExpressStatusNormalizer.isNonEventDetail(fallbackDetail)) {
@@ -85,9 +84,32 @@ public final class ExpressTimeline {
         return null;
     }
 
+    /** Only the latest nodes' provider enums can contradict presentation; prose is not evidence. */
+    public static List<StatusSemantic> latestTrackStatuses(String tracksJson, String provider) {
+        List<RawTrack> tracks = rawTracks(tracksJson);
+        long latest = 0L;
+        for (RawTrack track : tracks) latest = Math.max(latest, track.epochMillis);
+        if (latest <= 0L) return Collections.emptyList();
+        ArrayList<StatusSemantic> statuses = new ArrayList<>();
+        for (RawTrack track : tracks) {
+            if (track.epochMillis != latest || track.detail.isEmpty()) continue;
+            String source = first(track.value, "_pipiStatusSource");
+            if (source.isEmpty()) source = provider;
+            String code = first(track.value, "statusCode", "logisticsStatus", "status", "state", "action");
+            WorkerStatusProjection normalized = WorkerStatusProjection.read(track.value);
+            if (normalized != null) { statuses.add(normalized.semantic); continue; }
+            StatusSemantic semantic = TimelineSlot.isAccount(source) || "account".equals(source)
+                    ? StatusSemantic.fromAccountState(code, "")
+                    : StatusSemantic.fromKuaidi100EventCode(code);
+            if (semantic == StatusSemantic.UNKNOWN) semantic = StatusSemantic.fromStored(code, "");
+            statuses.add(semantic);
+        }
+        return statuses;
+    }
+
     /**
      * AGENTS §9 / plan R-29 (user decision 2026-09-03, same rule on iOS and Pipi): for an
-     * account-projected waybill, a manual provider package (Picker / K100 / KDNiao) with any node
+     * account-projected waybill, a manual provider package (Online / K100 / KDNiao) with any node
      * earlier than the order's own first timed feed node minus a day belongs to another parcel
      * (reused waybill). The anchor comes only from the account package.
      */
@@ -97,7 +119,7 @@ public final class ExpressTimeline {
         long earliest = 0L;
         int timed = 0;
         for (RawTrack track : rawTracks(accountTracksJson)) {
-            long time = parseTime(track.time);
+            long time = track.epochMillis;
             if (time <= 0L) continue;
             timed++;
             if (earliest == 0L || time < earliest) earliest = time;
@@ -109,20 +131,28 @@ public final class ExpressTimeline {
         return earliest > 0L ? earliest - FOREIGN_PACKAGE_ANCHOR_SLACK_MS : 0L;
     }
 
+    public static long accountListOriginAtMillis(String tracksJson) {
+        long anchor = foreignPackageAnchorMillis(tracksJson);
+        return anchor > 0L ? anchor + FOREIGN_PACKAGE_ANCHOR_SLACK_MS : 0L;
+    }
+
     /** Only a timed order or pickup node proves the feed's origin. */
     private static boolean hasOriginBoundary(String tracksJson) {
         for (RawTrack track : rawTracks(tracksJson)) {
-            if (parseTime(track.time) > 0L
+            if (track.epochMillis > 0L
                     && Kuaidi100TimelinePolicy.containsTimelineOrigin(track.value, "")) return true;
         }
         return false;
     }
 
     public static boolean isForeignPackage(String accountTracksJson, String candidateTracksJson) {
-        long anchor = foreignPackageAnchorMillis(accountTracksJson);
+        return isForeignPackage(foreignPackageAnchorMillis(accountTracksJson), candidateTracksJson);
+    }
+
+    public static boolean isForeignPackage(long anchor, String candidateTracksJson) {
         if (anchor <= 0L) return false;
         for (RawTrack track : rawTracks(candidateTracksJson)) {
-            long time = parseTime(track.time);
+            long time = track.epochMillis;
             if (time > 0L && time < anchor) return true;
         }
         return false;
@@ -161,7 +191,7 @@ public final class ExpressTimeline {
         appendRaw(merged, rawTracks(refreshedJson));
         appendRaw(merged, rawTracks(cachedJson));
         ArrayList<RawTrack> tracks = new ArrayList<>(merged.values());
-        tracks.sort((left, right) -> Long.compare(parseTime(right.time), parseTime(left.time)));
+        tracks.sort((left, right) -> Long.compare(right.epochMillis, left.epochMillis));
         tracks = collapseNearTimeDuplicates(tracks);
         JSONArray values = new JSONArray();
         for (RawTrack track : tracks) {
@@ -284,12 +314,12 @@ public final class ExpressTimeline {
         ArrayList<RawTrack> output = new ArrayList<>();
         for (RawTrack candidate : sorted) {
             RawTrack duplicate = null;
-            String fingerprint = fingerprint(candidate.detail);
-            long at = parseTime(candidate.time);
+            String fingerprint = candidate.fingerprint;
+            long at = candidate.epochMillis;
             if (!fingerprint.isEmpty() && at > 0L) {
                 for (RawTrack existing : output) {
-                    long existingAt = parseTime(existing.time);
-                    if (existingAt <= 0L || !fingerprint.equals(fingerprint(existing.detail))) continue;
+                    long existingAt = existing.epochMillis;
+                    if (existingAt <= 0L || !fingerprint.equals(existing.fingerprint)) continue;
                     if (!compatibleStructuredStatus(existing.value, candidate.value)) continue;
                     if (Math.abs(existingAt - at) <= NEAR_DUPLICATE_WINDOW_MS) {
                         duplicate = existing;
@@ -321,15 +351,19 @@ public final class ExpressTimeline {
         final String time;
         final String detail;
         final JSONObject value;
+        final long epochMillis;
+        final String fingerprint;
 
         RawTrack(String time, String detail, JSONObject value) {
             this.time = clean(time);
             this.detail = clean(detail);
             this.value = value;
+            this.epochMillis = parseTime(this.time);
+            this.fingerprint = fingerprint(this.detail);
         }
     }
 
-    private static JSONArray findArray(Object node) {
+    public static JSONArray findArray(Object node) {
         if (node instanceof JSONArray) return (JSONArray) node;
         if (!(node instanceof JSONObject)) return null;
         JSONObject object = (JSONObject) node;
@@ -362,12 +396,7 @@ public final class ExpressTimeline {
     }
 
     public static long parseTime(String value) {
-        SimpleDateFormat parser = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA);
-        parser.setLenient(false);
-        ParsePosition position = new ParsePosition(0);
-        Date parsed = parser.parse(clean(value), position);
-        return parsed == null || position.getIndex() != clean(value).length()
-                ? 0L : parsed.getTime();
+        return ExpressTimeCodec.parse(value);
     }
 
     private static String clean(String value) {

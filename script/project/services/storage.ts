@@ -1,3 +1,5 @@
+import { statusProjectionFields } from "./worker-status";
+import { sharedCommitSequence, sharedData, sharedStateText, publishSharedData, withSharedFileTransaction, SharedCommitConflict } from "./shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
   AccountBinding,
@@ -162,7 +164,7 @@ function pruneExpiredManualPlaceholders(
 function pruneOrderProjectionReferencesForState(
   state: AppState,
   now: number,
-): void {
+): boolean {
   try {
     pruneOrderProjectionReferences(
       state.shipments.flatMap((shipment) => {
@@ -174,12 +176,14 @@ function pruneOrderProjectionReferencesForState(
       }),
       now,
     );
+    return true;
   } catch {
-    /* encrypted projection references remain unavailable and expire automatically */
+    return false;
   }
 }
 
-function pruneShipmentRoutesForState(state: AppState, now: number): void {
+function pruneShipmentRoutesForState(state: AppState, now: number): boolean {
+  let succeeded = true;
   try {
     pruneAccountAppRoutes(state.shipments.flatMap((shipment) => {
       const record = shipment.accountRecord;
@@ -189,6 +193,7 @@ function pruneShipmentRoutesForState(state: AppState, now: number): void {
         ? [record] : [];
     }));
   } catch (error) {
+    succeeded = false;
     writeDiagnostic("detail.external.cache_failed", { stage: "prune" }, "warning");
   }
   try {
@@ -201,8 +206,16 @@ function pruneShipmentRoutesForState(state: AppState, now: number): void {
         .map((pending) => pending.id),
     ], now);
   } catch {
-    /* encrypted routes remain unavailable and expire automatically */
+    succeeded = false;
   }
+  return succeeded;
+}
+
+/** Run after a durable owner or route-pointer transition. */
+export function pruneRoutesForState(state: AppState, now = Date.now()): boolean {
+  const references = pruneOrderProjectionReferencesForState(state, now);
+  const routes = pruneShipmentRoutesForState(state, now);
+  return references && routes;
 }
 
 export function emptyState(): AppState {
@@ -242,8 +255,15 @@ function legacyChecksum(value: unknown): string {
   return hashText(JSON.stringify(value));
 }
 
-function encodeState(state: AppState): EncodedState {
+function encodeState(state: AppState, verified?: DecodedStoredState): EncodedState {
   const payload = stableJson(state);
+  if (verified?.payload === payload && verified.serialized) {
+    return {
+      serialized: verified.serialized,
+      checksum: verified.envelopeChecksum,
+      state: JSON.parse(payload) as AppState,
+    };
+  }
   const checksum = hashText(payload);
   const envelope: StoredStateEnvelope = { schema: 3, checksum, payload };
   return {
@@ -712,10 +732,39 @@ function legacyRouteMigrations(
   return migrations;
 }
 
+function discardRetiredMeizuTimelines(shipment: Shipment): Shipment {
+  const retired = (provider: string): boolean =>
+    ["v6_picker", "meizu_picker"].includes(String(provider || "").trim().toLowerCase());
+  const empty = (timeline: TimelinePackage): TimelinePackage => ({
+    provider: "none", waybill: timeline.waybill, courierCode: timeline.courierCode,
+    rawCourierCode: timeline.rawCourierCode, companyName: timeline.companyName,
+    complete: false, structuredStatus: false, semantic: "UNKNOWN", statusEventAtMs: null,
+    latestTimeText: "", latestDetail: "", tracks: [], successAtMs: 0,
+  });
+  const clean: Shipment = {
+    ...shipment,
+    timeline: retired(shipment.timeline.provider) ? empty(shipment.timeline) : shipment.timeline,
+    ...(shipment.sourceTimeline && retired(shipment.sourceTimeline.provider)
+      ? { sourceTimeline: empty(shipment.sourceTimeline) } : {}),
+    ...(shipment.manualTimelines
+      ? { manualTimelines: shipment.manualTimelines.filter(timeline => !retired(timeline.provider)) } : {}),
+    ...(shipment.automaticOwnership ? { automaticOwnership: {
+      ...shipment.automaticOwnership,
+      observations: (shipment.automaticOwnership.observations || []).map(observation =>
+        observation?.sourceTimeline && retired(observation.sourceTimeline.provider)
+          ? { ...observation, sourceTimeline: empty(observation.sourceTimeline) } : observation),
+    } } : {}),
+  };
+  if (clean.detailSelection && retired(clean.detailSelection.provider)) delete clean.detailSelection;
+  return clean;
+}
+
 function migrateShipmentSources(values: readonly Shipment[]): Shipment[] {
   const automatic: Shipment[] = [];
   const manual = new Map<string, Shipment>();
   const migrated = values
+    // Discard before duplicate owners merge, so retired history cannot enter a current slot.
+    .map(discardRetiredMeizuTimelines)
     .filter((shipment) => {
       if (shipment.identity.manuallyAdded) return true;
       const source = automaticSourceOf(shipment);
@@ -864,6 +913,7 @@ function sanitizeProviderErrorTimeline(
       ? timeline.complete
       : false,
     structuredStatus: invalidatedMetadata ? false : timeline.structuredStatus,
+    normalizedStatus: !tracks.length || invalidatedMetadata ? undefined : timeline.normalizedStatus,
     semantic: !tracks.length || invalidatedMetadata
       ? "UNKNOWN"
       : timeline.semantic,
@@ -904,7 +954,7 @@ function stampSettledAt(shipment: Shipment, now: number): Shipment {
 }
 
 function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment {
-  // The old and current Meizu names identify the same history, including the sticky selection.
+  // Remaining supported Meizu aliases share the current slot and sticky selection.
   const canonicalMeizu = (timeline: TimelinePackage): TimelinePackage =>
     normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.V6_QUERY
       ? { ...timeline, provider: TIMELINE_SLOT.V6_QUERY }
@@ -923,7 +973,7 @@ function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment
   );
   const sanitizeTimeline = (timeline: TimelinePackage): TimelinePackage =>
     withoutJingDongOrderCompletion(
-      sanitizeProviderErrorTimeline(timeline), shipment.identity,
+      sanitizeProviderErrorTimeline({ ...timeline, ...statusProjectionFields(timeline, timeline) }), shipment.identity,
     );
   const sourceTimelineRaw = manuallyAdded
     ? null
@@ -1016,7 +1066,8 @@ type StoredStateRead = {
 
 type DecodedStoredState = {
   state: LegacyAppState | AppState;
-  fingerprint: string;
+  payload?: string;
+  fingerprint?: string;
   serialized: string | null;
   legacySchema: 1 | 2 | null;
   envelopeChecksum: string;
@@ -1074,7 +1125,7 @@ function decodeStoredRaw(raw: unknown): StoredStateRead {
       return {
         valid: {
           state,
-          fingerprint: checksum(state),
+          payload: envelope.payload,
           serialized: raw,
           legacySchema: null,
           envelopeChecksum: envelope.checksum.toLowerCase(),
@@ -1131,9 +1182,9 @@ function decodeStoredRaw(raw: unknown): StoredStateRead {
   }
 }
 
-function readStoredState(key: string, shared: boolean): StoredStateRead {
+function readStoredState(key: string, shared: boolean, decode = decodeStoredRaw): StoredStateRead {
   try {
-    return decodeStoredRaw(Storage.get<unknown>(
+    return decode(Storage.get<unknown>(
       key,
       shared ? { shared: true } : undefined,
     ));
@@ -1147,10 +1198,10 @@ function readStoredState(key: string, shared: boolean): StoredStateRead {
   }
 }
 
-function readDurableState(name: string): StoredStateRead {
+function readDurableState(name: string, decode = decodeStoredRaw): StoredStateRead {
   try {
     const result = readDurableTextResult(name);
-    const reads = result.candidates.map(decodeStoredRaw);
+    const reads = result.candidates.map(decode);
     return {
       valid: chooseStoredState(...reads),
       recoverableLegacy: null,
@@ -1238,12 +1289,21 @@ function durableSlotForRevision(revision: number): string {
   return revision % 2 === 0 ? STATE_DURABLE_SLOT_A : STATE_DURABLE_SLOT_B;
 }
 
+function decodeStateReadback(stored: EncodedState) {
+  // The encoder already verified these bytes. Changed bytes still take the full
+  // integrity path; this comparison is scoped to one write and never cached.
+  return (raw: unknown): StoredStateRead => raw === stored.serialized ? {
+    valid: {state: stored.state, serialized: stored.serialized, legacySchema: null,
+      envelopeChecksum: stored.checksum},
+    recoverableLegacy: null, invalid: false, failed: false,
+  } : decodeStoredRaw(raw);
+}
+
 function writeDurableState(stored: EncodedState): void {
-  const slot = durableSlotForRevision(stored.state.revision);
-  writeDurableText(slot, stored.serialized);
-  if (!matchesEncoded(readDurableState(slot), stored)) {
-    throw new Error("durable state verification failed");
-  }
+  publishSharedData({}, stored.serialized);
+  // Legacy mirrors are recoverable compatibility copies, never publication authority.
+  try { writeDurableText(durableSlotForRevision(stored.state.revision), stored.serialized); }
+  catch { /* The immutable shared generation already owns this commit. */ }
 }
 
 function legacyConsensus(
@@ -1276,152 +1336,175 @@ function pendingIsOlderThan(
 }
 
 export function loadState(now = Date.now()): AppState {
-  const primary = readStoredState(STATE_KEY, false);
-  const backup = readStoredState(STATE_BACKUP_KEY, true);
-  const durableA = readDurableState(STATE_DURABLE_SLOT_A);
-  const durableB = readDurableState(STATE_DURABLE_SLOT_B);
-  const candidates = orderedStoredStates(primary, backup, durableA, durableB);
-  let chosen = candidates[0] || null;
-
-  if (pendingCommit && chosen && pendingIsOlderThan(pendingCommit, chosen)) {
-    pendingCommit = null;
-  }
-
-  let recoveredLegacy = false;
-  if (!chosen) {
-    chosen = legacyConsensus(primary, backup);
-    recoveredLegacy = chosen != null;
-  }
-
-  const durableInvalid = durableA.invalid || durableB.invalid;
-  const durableFailed = durableA.failed || durableB.failed;
-  if (!recoveredLegacy && (primary.invalid || backup.invalid || durableInvalid)) {
-    writeDiagnostic(
-      "storage.state.rejected",
-      {
-        result: durableInvalid
-          ? "invalid_durable"
-          : primary.invalid
-            ? backup.invalid ? "invalid_both" : "invalid_primary"
-            : "invalid_backup",
-      },
-      "warning",
-    );
-  } else if (!recoveredLegacy && (primary.failed || backup.failed || durableFailed)) {
-    writeDiagnostic(
-      "storage.state.rejected",
-      {
-        result: durableFailed
-          ? "read_failed_durable"
-          : primary.failed
-            ? backup.failed ? "read_failed_both" : "read_failed_primary"
-            : "read_failed_backup",
-      },
-      primary.failed && backup.failed && durableFailed ? "error" : "warning",
-    );
-  }
-  if (!chosen) {
-    if (primary.invalid || backup.invalid || durableInvalid ||
-        primary.failed || backup.failed || durableFailed) {
-      lastStateLoadFailure = "read_failed";
-      throw new Error("本地快递数据读取失败");
-    }
-    lastStateLoadFailure = null;
-    return restoreInitialBindingBackup(emptyState());
-  }
-
-  // Try older generations before failing. An unreadable existing store must never
-  // become a writable empty state: every writer and cleanup path loads here first.
-  let restored: AppState | null = null;
-  let legacyBindingRecoveryDurable = true;
-  const attempts = recoveredLegacy ? [chosen] : candidates;
-  for (const candidate of attempts) {
-    try {
-      const migrated = migrate(candidate.state, now);
-      if (recoveredLegacy) {
-        const recovery = restoreLegacyBindingBackup(migrated);
-        restored = recovery.state;
-        legacyBindingRecoveryDurable = recovery.durable;
-      } else {
-        restored = migrated;
-        mirrorBindingBackup(restored);
-      }
-      chosen = candidate;
-      break;
-    } catch {
-      writeDiagnostic(
-        "storage.state.rejected",
-        { result: "migration_failed", revision: candidate.state.revision },
-        "warning",
-      );
-    }
-  }
-  if (!restored) {
-    lastStateLoadFailure = "migration_failed";
-    writeDiagnostic(
-      "storage.state.rejected",
-      { result: "migration_failed", attempted: attempts.length },
-      "error",
-    );
-    throw new Error("Local delivery data migration failed; original copies were preserved.");
-  }
-  lastStateLoadFailure = null;
-  if (recoveredLegacy) {
-    writeDiagnostic(
-      "storage.state.recovered",
-      {
-        revision: chosen.state.revision,
-        result: legacyBindingRecoveryDurable
-          ? "legacy_consensus"
-          : "legacy_consensus_backup_pending",
-      },
-    );
-  }
   try {
-    migrateLegacyShipmentRoutes(legacyRouteMigrations(chosen.state), now);
-  } catch {
-    /* route migration is retried on the next load; local timelines remain available */
-  }
-  pruneOrderProjectionReferencesForState(restored, now);
-  if (recoveredLegacy && !legacyBindingRecoveryDurable) return restored;
-  const encoded = encodeState(restored);
-  const primaryMatches = matchesEncoded(primary, encoded);
-  const backupMatches = matchesEncoded(backup, encoded);
-  const durableMatches = matchesEncoded(
-    readDurableState(durableSlotForRevision(encoded.state.revision)),
-    encoded,
-  );
-  if (!durableMatches) {
-    try {
-      writeDurableState(encoded);
-      recordStateRevision(encoded.state.revision);
-    } catch {
-      writeDiagnostic(
-        "storage.state.failed",
-        { ...diagnosticState(encoded.state), result: "durable_heal_failed" },
-        "error",
-      );
-      return encoded.state;
-    }
-  }
-  if (!primaryMatches || !backupMatches) {
-    if (!primaryMatches) mirrorStoredState(STATE_KEY, encoded, false);
-    if (!backupMatches) mirrorStoredState(STATE_BACKUP_KEY, encoded, true);
-    pendingCommit = encoded;
-    const refreshedPrimary = readStoredState(STATE_KEY, false);
-    const refreshedBackup = readStoredState(STATE_BACKUP_KEY, true);
-    if (
-      matchesEncoded(refreshedPrimary, encoded) &&
-      matchesEncoded(refreshedBackup, encoded)
-    ) {
+  return withSharedFileTransaction(() => {
+    // Read every physical copy, but validate identical bytes only once in this call.
+    // Never retain this map across calls: revisions are advisory and other hosts write here.
+    const decoded = new Map<string, StoredStateRead>();
+    const decode = (raw: unknown): StoredStateRead => {
+      if (typeof raw !== "string") return decodeStoredRaw(raw);
+      const existing = decoded.get(raw);
+      if (existing) return existing;
+      const result = decodeStoredRaw(raw);
+      if (result.valid) decoded.set(raw, result);
+      return result;
+    };
+    const primary = readStoredState(STATE_KEY, false, decode);
+    const backup = readStoredState(STATE_BACKUP_KEY, true, decode);
+    const durableA = readDurableState(STATE_DURABLE_SLOT_A, decode);
+    const durableB = readDurableState(STATE_DURABLE_SLOT_B, decode);
+    const shared = sharedStateText();
+    const candidates = shared == null
+      ? orderedStoredStates(primary, backup, durableA, durableB)
+      : orderedStoredStates(decode(shared), decode(sharedStateText(true)));
+    let chosen = candidates[0] || null;
+
+    if (pendingCommit && chosen && pendingIsOlderThan(pendingCommit, chosen)) {
       pendingCommit = null;
     }
+
+    let recoveredLegacy = false;
+    if (!chosen && shared == null) {
+      chosen = legacyConsensus(primary, backup);
+      recoveredLegacy = chosen != null;
+    }
+
+    const durableInvalid = durableA.invalid || durableB.invalid;
+    const durableFailed = durableA.failed || durableB.failed;
+    if (!recoveredLegacy && (primary.invalid || backup.invalid || durableInvalid)) {
+      writeDiagnostic(
+        "storage.state.rejected",
+        {
+          result: durableInvalid
+            ? "invalid_durable"
+            : primary.invalid
+              ? backup.invalid ? "invalid_both" : "invalid_primary"
+              : "invalid_backup",
+        },
+        "warning",
+      );
+    } else if (!recoveredLegacy && (primary.failed || backup.failed || durableFailed)) {
+      writeDiagnostic(
+        "storage.state.rejected",
+        {
+          result: durableFailed
+            ? "read_failed_durable"
+            : primary.failed
+              ? backup.failed ? "read_failed_both" : "read_failed_primary"
+              : "read_failed_backup",
+        },
+        primary.failed && backup.failed && durableFailed ? "error" : "warning",
+      );
+    }
+    if (!chosen) {
+      if (shared != null || primary.invalid || backup.invalid || durableInvalid ||
+          primary.failed || backup.failed || durableFailed) {
+        lastStateLoadFailure = "read_failed";
+        throw new Error("本地快递数据读取失败");
+      }
+      lastStateLoadFailure = null;
+      return restoreInitialBindingBackup(emptyState());
+    }
+
+    // Try older generations before failing. An unreadable existing store must never
+    // become a writable empty state: every writer and cleanup path loads here first.
+    let restored: AppState | null = null;
+    let legacyBindingRecoveryDurable = true;
+    const attempts = recoveredLegacy ? [chosen] : candidates;
+    for (const candidate of attempts) {
+      try {
+        const migrated = migrate(candidate.state, now);
+        if (recoveredLegacy) {
+          const recovery = restoreLegacyBindingBackup(migrated);
+          restored = recovery.state;
+          legacyBindingRecoveryDurable = recovery.durable;
+        } else {
+          restored = migrated;
+          mirrorBindingBackup(restored);
+        }
+        chosen = candidate;
+        break;
+      } catch {
+        writeDiagnostic(
+          "storage.state.rejected",
+          { result: "migration_failed", revision: candidate.state.revision },
+          "warning",
+        );
+      }
+    }
+    if (!restored) {
+      lastStateLoadFailure = "migration_failed";
+      writeDiagnostic(
+        "storage.state.rejected",
+        { result: "migration_failed", attempted: attempts.length },
+        "error",
+      );
+      throw new Error("Local delivery data migration failed; original copies were preserved.");
+    }
+    lastStateLoadFailure = null;
+    if (recoveredLegacy) {
+      writeDiagnostic(
+        "storage.state.recovered",
+        {
+          revision: chosen.state.revision,
+          result: legacyBindingRecoveryDurable
+            ? "legacy_consensus"
+            : "legacy_consensus_backup_pending",
+        },
+      );
+    }
+    try {
+      migrateLegacyShipmentRoutes(legacyRouteMigrations(chosen.state), now);
+    } catch {
+      /* route migration is retried on the next load; local timelines remain available */
+    }
+    pruneOrderProjectionReferencesForState(restored, now);
+    if (recoveredLegacy && !legacyBindingRecoveryDurable) return restored;
+    const encoded = encodeState(restored, chosen);
+    const primaryMatches = matchesEncoded(primary, encoded);
+    const backupMatches = matchesEncoded(backup, encoded);
+    const durableMatches = shared === encoded.serialized;
+    if (!durableMatches) {
+      try {
+        writeDurableState(encoded);
+        recordStateRevision(encoded.state.revision);
+      } catch (error) {
+        if (error instanceof SharedCommitConflict) throw error;
+        writeDiagnostic(
+          "storage.state.failed",
+          { ...diagnosticState(encoded.state), result: "durable_heal_failed" },
+          "error",
+        );
+        return encoded.state;
+      }
+    }
+    if (!matchesEncoded(readDurableState(durableSlotForRevision(encoded.state.revision), decode), encoded)) {
+      try { writeDurableText(durableSlotForRevision(encoded.state.revision), encoded.serialized); }
+      catch { /* A failed legacy mirror repair cannot replace the shared authority. */ }
+    }
+    if (!primaryMatches || !backupMatches) {
+      if (!primaryMatches) mirrorStoredState(STATE_KEY, encoded, false);
+      if (!backupMatches) mirrorStoredState(STATE_BACKUP_KEY, encoded, true);
+      pendingCommit = encoded;
+      const refreshedPrimary = readStoredState(STATE_KEY, false, decode);
+      const refreshedBackup = readStoredState(STATE_BACKUP_KEY, true, decode);
+      if (
+        matchesEncoded(refreshedPrimary, encoded) &&
+        matchesEncoded(refreshedBackup, encoded)
+      ) {
+        pendingCommit = null;
+      }
+    }
+    if (recoveredLegacy) mirrorBindingBackup(encoded.state);
+    if (encoded.state.emptyTimelineRetirements?.length) {
+      pruneShipmentRoutesForState(encoded.state, now);
+    }
+    return encoded.state;
+  });
+  } catch (error) {
+    if (!(error instanceof SharedCommitConflict) && !lastStateLoadFailure) lastStateLoadFailure = "read_failed";
+    throw error;
   }
-  mirrorBindingBackup(encoded.state);
-  if (encoded.state.emptyTimelineRetirements?.length) {
-    pruneShipmentRoutesForState(encoded.state, now);
-  }
-  return encoded.state;
 }
 
 export function visibleShipments(
@@ -1539,17 +1622,37 @@ export type RefreshNotificationContext = Readonly<{
   batchId: string;
 }>;
 
+type StateSaveOptions = {
+  notifyChanges?: boolean;
+  context?: RefreshNotificationContext;
+  acknowledgedId?: string;
+  deferredId?: string;
+};
+
 export function saveState(
   candidate: AppState,
   now = Date.now(),
-  notificationCommit: {
-    notifyChanges?: boolean;
-    context?: RefreshNotificationContext;
-    acknowledgedId?: string;
-    deferredId?: string;
-  } = {},
+  notificationCommit: StateSaveOptions = {},
 ): AppState {
+  let expectedStateRef: string | undefined;
+  try { expectedStateRef = sharedData().stateRef; }
+  catch { throw new Error("本地快递数据保存失败"); }
+  return withSharedFileTransaction(() => {
+    if (sharedData().stateRef !== expectedStateRef) {
+      throw new Error("Delivery state changed; reload before saving");
+    }
+    return saveStateAndPrune(candidate, now, notificationCommit).state;
+  });
+}
+
+function saveStateAndPrune(
+  candidate: AppState,
+  now: number,
+  notificationCommit: StateSaveOptions,
+): { state: AppState; routesPruned: boolean } {
+  const startedAtMs = Date.now();
   const previous = loadState(now);
+  const readDurationMs = Date.now() - startedAtMs;
   const emptyTimelineRetirements = mergeEmptyTimelineRetirements(
     previous.emptyTimelineRetirements, candidate.emptyTimelineRetirements, candidate.shipments,
   );
@@ -1604,16 +1707,27 @@ export function saveState(
   }
   if (notificationCommit.notifyChanges) {
     const context = notificationCommit.context;
-    const previousById = context?.previousById || new Map(
-      previous.shipments.map((shipment) => [shipment.identity.id, shipment]),
-    );
+    const baselineById = context?.previousById || previousById;
     const events: ShipmentNotificationEvent[] = [];
     for (const shipment of next.shipments) {
       if (isHiddenSignedShipment(shipment, now)) continue;
       const event = shipmentNotificationEvent(
-        previousById.get(shipment.identity.id) || null,
+        baselineById.get(shipment.identity.id) || null,
         shipment,
       );
+      if (event && context && !shipmentNotificationEvent(
+        previousById.get(shipment.identity.id) || null, shipment,
+      )) {
+        // Another writer may have published and acknowledged this same transition.
+        // Only retain this round's still-pending obligation; never recreate it.
+        events.push(...(next.pendingNotifications || []).filter((pending) =>
+          pending.batchId === context.batchId && pending.shipmentId === shipment.identity.id
+        ).map((pending) => pending.title === event.title && pending.body === event.body &&
+            pending.semantic === event.semantic && pending.iconName === event.iconName
+          ? pending
+          : { ...pending, ...event, id: checksum({ revision: next.revision, event }) }));
+        continue;
+      }
       if (event) events.push({
         ...event,
         ...(context ? { batchId: context.batchId } : {}),
@@ -1633,7 +1747,8 @@ export function saveState(
   try {
     writeDurableState(stored);
     recordStateRevision(stored.state.revision);
-  } catch {
+  } catch (error) {
+    if (error instanceof SharedCommitConflict) throw error;
     writeDiagnostic(
       "storage.state.failed",
       { ...diagnosticState(next), result: "durable_write_failed" },
@@ -1641,32 +1756,40 @@ export function saveState(
     );
     throw new Error("本地快递数据保存失败");
   }
+  const writeFinishedAtMs = Date.now();
   const backupStored = mirrorStoredState(STATE_BACKUP_KEY, stored, true);
   let primaryStored = true;
   primaryStored = mirrorStoredState(STATE_KEY, stored, false);
   pendingCommit = stored;
-  const writtenPrimary = readStoredState(STATE_KEY, false);
-  const writtenBackup = readStoredState(STATE_BACKUP_KEY, true);
+  const decode = decodeStateReadback(stored);
+  const writtenPrimary = readStoredState(STATE_KEY, false, decode);
+  const writtenBackup = readStoredState(STATE_BACKUP_KEY, true, decode);
   if (
     matchesEncoded(writtenPrimary, stored) &&
     matchesEncoded(writtenBackup, stored)
   ) {
     pendingCommit = null;
   }
+  const verifyFinishedAtMs = Date.now();
+  const routesPruned = pruneRoutesForState(stored.state, now);
   writeDiagnostic(
     "storage.state.saved",
     {
       ...diagnosticState(stored.state),
+      commitProtocol: "immutable_link",
+      commitSequence: sharedCommitSequence(),
+      durationMs: Date.now() - startedAtMs,
+      readDurationMs,
+      writeDurationMs: writeFinishedAtMs - startedAtMs - readDurationMs,
+      verifyDurationMs: verifyFinishedAtMs - writeFinishedAtMs,
+      pruneDurationMs: Date.now() - verifyFinishedAtMs,
       result: primaryStored && backupStored
         ? "durable_and_mirrors"
         : "durable_only",
     },
     "info",
   );
-  pruneOrderProjectionReferencesForState(stored.state, now);
-  // Cleanup belongs after a durable transition: route publication writes the sidecar first.
-  pruneShipmentRoutesForState(stored.state, now);
-  return stored.state;
+  return { state: stored.state, routesPruned };
 }
 
 function replaceShipment(
@@ -1680,7 +1803,7 @@ function replaceShipment(
 }
 
 function pendingVersion(value: PendingManualQuery | undefined): string {
-  return value ? checksum(value) : "";
+  return value ? stableJson(value) : "";
 }
 
 function rebaseNewAccountProjection(
@@ -1718,7 +1841,7 @@ function rebaseNewAccountProjection(
 
 /** Independent provider results may commit together; a newer result in the same slot wins. */
 function rebaseIndependentTimelines(before: Shipment, current: Shipment, incoming: Shipment, now: number): Shipment | null {
-  const digest = (value: unknown) => checksum(value ?? null);
+  const digest = (value: unknown) => stableJson(value ?? null);
   if (digest(before.identity) !== digest(current.identity) ||
       digest(before.identity) !== digest(incoming.identity) ||
       before.forcedCompletedAtMs !== current.forcedCompletedAtMs ||
@@ -1736,6 +1859,8 @@ function rebaseIndependentTimelines(before: Shipment, current: Shipment, incomin
   const currentSlots = slots(current);
   for (const [provider, pack] of slots(incoming)) {
     if (digest(pack) === digest(baseSlots.get(provider))) continue;
+    const currentPack = currentSlots.get(provider);
+    if (currentPack && refreshValueFingerprint(pack) === refreshValueFingerprint(currentPack)) continue;
     if (digest(baseSlots.get(provider)) !== digest(currentSlots.get(provider))) return null;
     merged = applySameSourceTimeline(merged, pack, now);
   }
@@ -1772,6 +1897,7 @@ export type RefreshCommitFence = Readonly<{
 export type RefreshStateCommit = Readonly<{
   state: AppState;
   applied: boolean;
+  routesPruned?: boolean;
 }>;
 
 const REFRESH_VOLATILE_FIELDS = new Set([
@@ -1791,8 +1917,12 @@ function withoutRefreshVolatility(value: unknown): unknown {
   return normalized;
 }
 
+export function refreshValueFingerprint(value: unknown): string {
+  return stableJson(withoutRefreshVolatility(value));
+}
+
 function refreshContentFingerprint(state: AppState): string {
-  return checksum(withoutRefreshVolatility({
+  return refreshValueFingerprint({
     version: state.version,
     activeSource: state.activeSource,
     bindings: [...state.bindings].sort((left, right) =>
@@ -1804,7 +1934,7 @@ function refreshContentFingerprint(state: AppState): string {
     shipments: [...state.shipments].sort((left, right) =>
       left.identity.id.localeCompare(right.identity.id)
     ),
-  }));
+  });
 }
 
 export function commitRefreshState(
@@ -1815,158 +1945,161 @@ export function commitRefreshState(
   fence?: RefreshCommitFence,
   notificationContext?: RefreshNotificationContext,
 ): RefreshStateCommit {
-  requireScriptSource(bindingSource);
-  if (fence && !fence.isCurrent()) {
-    return { state: loadState(now), applied: false };
-  }
-  const latest = loadState(now);
-  if (fence?.acceptsState && !fence.acceptsState(latest)) {
-    return { state: latest, applied: false };
-  }
-  const baseShipments = new Map(
-    base.shipments
-      .filter((item) => item.identity.bindingSource === bindingSource)
-      .map((item) => [item.identity.id, item]),
-  );
-  const candidateShipments = new Map(
-    candidate.shipments
-      .filter((item) => item.identity.bindingSource === bindingSource)
-      .map((item) => [item.identity.id, item]),
-  );
-  let shipments = [...latest.shipments];
+  return withSharedFileTransaction(() => {
+    requireScriptSource(bindingSource);
+    if (fence && !fence.isCurrent()) {
+      return { state: loadState(now), applied: false };
+    }
+    const latest = loadState(now);
+    if (fence?.acceptsState && !fence.acceptsState(latest)) {
+      return { state: latest, applied: false };
+    }
+    const baseShipments = new Map(
+      base.shipments
+        .filter((item) => item.identity.bindingSource === bindingSource)
+        .map((item) => [item.identity.id, item]),
+    );
+    const candidateShipments = new Map(
+      candidate.shipments
+        .filter((item) => item.identity.bindingSource === bindingSource)
+        .map((item) => [item.identity.id, item]),
+    );
+    const shipmentsById = new Map(latest.shipments.map((item) => [item.identity.id, item]));
 
-  for (const [id, candidateIncoming] of candidateShipments) {
-    const before = baseShipments.get(id);
-    const current = shipments.find((item) => item.identity.id === id);
-    if (before && !current) continue;
-    let incoming = candidateIncoming;
-    if (before && current && checksum(current) !== checksum(before)) {
-      const rebased = rebaseNewAccountProjection(before, current, incoming) ||
-        rebaseIndependentTimelines(before, current, incoming, now);
-      if (!rebased) continue;
-      incoming = rebased;
-    }
-    if (!before && incoming.identity.manuallyAdded) {
-      const canonical = displayWaybill(incoming);
-      const causalPending = base.pendingQueries.find(
-        (pending) =>
-          pending.source === bindingSource &&
-          normalizeWaybill(pending.waybill) === canonical,
-      );
-      if (causalPending) {
-        const currentPending = latest.pendingQueries.find(
-          (pending) => pending.id === causalPending.id,
-        );
-        // A newer submit may reuse the same canonical id. Only the exact
-        // pending generation that caused this network round may create its
-        // first owner; deletion or replacement invalidates the late result.
-        if (
-          pendingVersion(currentPending) !== pendingVersion(causalPending)
-        ) continue;
+    for (const [id, candidateIncoming] of candidateShipments) {
+      const before = baseShipments.get(id);
+      const current = shipmentsById.get(id);
+      if (before && !current) continue;
+      let incoming = candidateIncoming;
+      if (before && current && stableJson(current) !== stableJson(before)) {
+        const rebased = rebaseNewAccountProjection(before, current, incoming) ||
+          rebaseIndependentTimelines(before, current, incoming, now);
+        if (!rebased) continue;
+        incoming = rebased;
       }
-    }
-    if (!incoming.identity.manuallyAdded) {
-      const associatedPhone = phone(incoming.identity.phone || "");
-      if (associatedPhone) {
-        const baselineBinding = base.bindings.find(
-          (binding) =>
-            binding.source === bindingSource &&
-            binding.phone === associatedPhone,
+      if (!before && incoming.identity.manuallyAdded) {
+        const canonical = displayWaybill(incoming);
+        const causalPending = base.pendingQueries.find(
+          (pending) =>
+            pending.source === bindingSource &&
+            normalizeWaybill(pending.waybill) === canonical,
         );
-        const latestBinding = latest.bindings.find(
-          (binding) =>
-            binding.source === bindingSource &&
-            binding.phone === associatedPhone,
-        );
-        if (
-          !baselineBinding ||
-          !latestBinding ||
-          baselineBinding.boundAtMs !== latestBinding.boundAtMs
-        ) {
-          continue;
+        if (causalPending) {
+          const currentPending = latest.pendingQueries.find(
+            (pending) => pending.id === causalPending.id,
+          );
+          // A newer submit may reuse the same canonical id. Only the exact
+          // pending generation that caused this network round may create its
+          // first owner; deletion or replacement invalidates the late result.
+          if (
+            pendingVersion(currentPending) !== pendingVersion(causalPending)
+          ) continue;
         }
       }
+      if (!incoming.identity.manuallyAdded) {
+        const associatedPhone = phone(incoming.identity.phone || "");
+        if (associatedPhone) {
+          const baselineBinding = base.bindings.find(
+            (binding) =>
+              binding.source === bindingSource &&
+              binding.phone === associatedPhone,
+          );
+          const latestBinding = latest.bindings.find(
+            (binding) =>
+              binding.source === bindingSource &&
+              binding.phone === associatedPhone,
+          );
+          if (
+            !baselineBinding ||
+            !latestBinding ||
+            baselineBinding.boundAtMs !== latestBinding.boundAtMs
+          ) {
+            continue;
+          }
+        }
+      }
+      // 落库前的最后一道闸：签收之后轨迹不许变少。整行被 feed 重建时合并里的那道闸拿不到
+      // `current`，根本不会执行（用户 2026-09-08 报：签收件每轮刷新之后「暂无物流动态」）。
+      shipmentsById.set(id, preserveSettledShipment(current, incoming));
     }
-    // 落库前的最后一道闸：签收之后轨迹不许变少。整行被 feed 重建时合并里的那道闸拿不到
-    // `current`，根本不会执行（用户 2026-09-08 报：签收件每轮刷新之后「暂无物流动态」）。
-    shipments = replaceShipment(
-      shipments, preserveSettledShipment(current, incoming));
-  }
 
-  for (const [id, before] of baseShipments) {
-    if (candidateShipments.has(id)) continue;
-    const current = shipments.find((item) => item.identity.id === id);
-    if (current && checksum(current) === checksum(before)) {
-      shipments = shipments.filter((item) => item.identity.id !== id);
+    for (const [id, before] of baseShipments) {
+      if (candidateShipments.has(id)) continue;
+      const current = shipmentsById.get(id);
+      if (current && stableJson(current) === stableJson(before)) {
+        shipmentsById.delete(id);
+      }
     }
-  }
 
-  const basePending = new Map(
-    base.pendingQueries
-      .filter((item) => item.source === bindingSource)
-      .map((item) => [item.id, item]),
-  );
-  const candidatePending = new Map(
-    candidate.pendingQueries
-      .filter((item) => item.source === bindingSource)
-      .map((item) => [item.id, item]),
-  );
-  let pendingQueries = [...latest.pendingQueries];
-  for (const [id, incoming] of candidatePending) {
-    const before = basePending.get(id);
-    const current = pendingQueries.find((item) => item.id === id);
-    if (before && !current) continue;
-    if (before && pendingVersion(current) !== pendingVersion(before)) continue;
-    pendingQueries = [
-      ...pendingQueries.filter((item) => item.id !== id),
-      incoming,
-    ];
-  }
-  for (const [id, before] of basePending) {
-    if (candidatePending.has(id)) continue;
-    const current = pendingQueries.find((item) => item.id === id);
-    if (pendingVersion(current) === pendingVersion(before)) {
-      pendingQueries = pendingQueries.filter((item) => item.id !== id);
+    const basePending = new Map(
+      base.pendingQueries
+        .filter((item) => item.source === bindingSource)
+        .map((item) => [item.id, item]),
+    );
+    const candidatePending = new Map(
+      candidate.pendingQueries
+        .filter((item) => item.source === bindingSource)
+        .map((item) => [item.id, item]),
+    );
+    const pendingById = new Map(latest.pendingQueries.map((item) => [item.id, item]));
+    for (const [id, incoming] of candidatePending) {
+      const before = basePending.get(id);
+      const current = pendingById.get(id);
+      if (before && !current) continue;
+      if (before && pendingVersion(current) !== pendingVersion(before)) continue;
+      pendingById.delete(id);
+      pendingById.set(id, incoming);
     }
-  }
+    for (const [id, before] of basePending) {
+      if (candidatePending.has(id)) continue;
+      const current = pendingById.get(id);
+      if (pendingVersion(current) === pendingVersion(before)) {
+        pendingById.delete(id);
+      }
+    }
 
-  if (
-    fence &&
-    (
-      !fence.isCurrent() ||
-      (fence.acceptsState != null && !fence.acceptsState(latest))
-    )
-  ) {
-    return { state: loadState(now), applied: false };
-  }
-  const merged = { ...latest, shipments, pendingQueries };
-  if (
-    refreshContentFingerprint(merged) === refreshContentFingerprint(latest)
-  ) {
-    return { state: latest, applied: true };
-  }
-  return {
-    state: saveState(merged, now, { notifyChanges: true, context: notificationContext }),
-    applied: true,
-  };
+    if (
+      fence &&
+      (
+        !fence.isCurrent() ||
+        (fence.acceptsState != null && !fence.acceptsState(latest))
+      )
+    ) {
+      return { state: loadState(now), applied: false };
+    }
+    const merged = { ...latest, shipments: [...shipmentsById.values()], pendingQueries: [...pendingById.values()] };
+    if (
+      refreshContentFingerprint(merged) === refreshContentFingerprint(latest)
+    ) {
+      return { state: latest, applied: true };
+    }
+    return {
+      ...saveStateAndPrune(merged, now, { notifyChanges: true, context: notificationContext }),
+      applied: true,
+    };
+  });
 }
 
 export function acknowledgeShipmentNotification(
   eventId: string,
   now = Date.now(),
 ): AppState {
-  const state = loadState(now);
-  if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
-  return saveState(state, now, { acknowledgedId: eventId });
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
+    return saveState(state, now, { acknowledgedId: eventId });
+  });
 }
 
 export function deferShipmentNotification(
   eventId: string,
   now = Date.now(),
 ): AppState {
-  const state = loadState(now);
-  if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
-  return saveState(state, now, { deferredId: eventId });
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
+    return saveState(state, now, { deferredId: eventId });
+  });
 }
 
 export function bindingsForSource(
@@ -1982,32 +2115,34 @@ export function addBinding(
   phoneNumber: string,
   now = Date.now(),
 ): AppState {
-  requireScriptSource(bindingSource);
-  const state = loadState(now);
-  const normalizedPhone = phone(phoneNumber);
-  if (!normalizedPhone) throw new Error("请输入正确的手机号");
-  const existing = bindingsForSource(state, bindingSource);
-  if (
-    !existing.some((binding) => binding.phone === normalizedPhone) &&
-    existing.length >= EXPRESS_POLICY.sources.maxBindingsPerSource
-  ) {
-    throw new Error(`最多可绑定 ${EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号`);
-  }
-  return saveBindingTransition(
-    state,
-    {
-      ...state,
-      activeSource: bindingSource,
-      bindings: [
-        ...state.bindings.filter(
-          (binding) =>
-            binding.source !== bindingSource || binding.phone !== normalizedPhone,
-        ),
-        { source: bindingSource, phone: normalizedPhone, boundAtMs: now },
-      ],
-    },
-    now,
-  );
+  return withSharedFileTransaction(() => {
+    requireScriptSource(bindingSource);
+    const state = loadState(now);
+    const normalizedPhone = phone(phoneNumber);
+    if (!normalizedPhone) throw new Error("请输入正确的手机号");
+    const existing = bindingsForSource(state, bindingSource);
+    if (
+      !existing.some((binding) => binding.phone === normalizedPhone) &&
+      existing.length >= EXPRESS_POLICY.sources.maxBindingsPerSource
+    ) {
+      throw new Error(`最多可绑定 ${EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号`);
+    }
+    return saveBindingTransition(
+      state,
+      {
+        ...state,
+        activeSource: bindingSource,
+        bindings: [
+          ...state.bindings.filter(
+            (binding) =>
+              binding.source !== bindingSource || binding.phone !== normalizedPhone,
+          ),
+          { source: bindingSource, phone: normalizedPhone, boundAtMs: now },
+        ],
+      },
+      now,
+    );
+  });
 }
 
 function saveBindingTransition(
@@ -2035,53 +2170,57 @@ export function commitTargetShipmentRefresh(
   now = Date.now(),
   fence?: RefreshCommitFence,
 ): TargetShipmentRefreshCommit {
-  if (fence && !fence.isCurrent()) {
-    return { state: loadState(now), applied: false };
-  }
-  const latest = loadState(now);
-  if (fence?.acceptsState && !fence.acceptsState(latest)) {
-    return { state: latest, applied: false };
-  }
-  const before = base.shipments.find(
-    (item) => item.identity.id === incoming.identity.id,
-  );
-  const current = latest.shipments.find(
-    (item) => item.identity.id === incoming.identity.id,
-  );
-  if (
-    (fence && !fence.isCurrent()) ||
-    (fence?.acceptsState != null && !fence.acceptsState(latest)) ||
-    !before ||
-    !current ||
-    !ownsRefreshBinding(base, latest, before)
-  ) {
-    return { state: latest, applied: false };
-  }
-  if (checksum(before) !== checksum(current)) {
-    const rebased = rebaseIndependentTimelines(before, current, incoming, now);
-    if (!rebased) return { state: latest, applied: false };
-    incoming = rebased;
-  }
-  const incomingWaybill = displayWaybill(incoming);
-  const pendingQueries = hasTimedShipmentAuthority(incoming)
-    ? latest.pendingQueries.filter(
-        (pending) =>
-          pending.source !== incoming.identity.bindingSource ||
-          normalizeWaybill(pending.waybill) !== incomingWaybill,
-      )
-    : latest.pendingQueries;
-  const merged = {
-    ...latest,
-    pendingQueries,
-    shipments: replaceShipment(
-      latest.shipments, preserveSettledShipment(current, incoming)),
-  };
-  if (
-    refreshContentFingerprint(merged) === refreshContentFingerprint(latest)
-  ) {
-    return { state: latest, applied: true };
-  }
-  return { state: saveState(merged, now, { notifyChanges: true }), applied: true };
+  return withSharedFileTransaction(() => {
+    if (fence && !fence.isCurrent()) {
+      return { state: loadState(now), applied: false };
+    }
+    const latest = loadState(now);
+    if (fence?.acceptsState && !fence.acceptsState(latest)) {
+      return { state: latest, applied: false };
+    }
+    const before = base.shipments.find(
+      (item) => item.identity.id === incoming.identity.id,
+    );
+    const current = latest.shipments.find(
+      (item) => item.identity.id === incoming.identity.id,
+    );
+    if (
+      (fence && !fence.isCurrent()) ||
+      (fence?.acceptsState != null && !fence.acceptsState(latest)) ||
+      !before ||
+      !current ||
+      !ownsRefreshBinding(base, latest, before)
+    ) {
+      return { state: latest, applied: false };
+    }
+    if (stableJson(before) !== stableJson(current)) {
+      const rebased = refreshValueFingerprint(current) === refreshValueFingerprint(incoming)
+        ? current
+        : rebaseIndependentTimelines(before, current, incoming, now);
+      if (!rebased) return { state: latest, applied: false };
+      incoming = rebased;
+    }
+    const incomingWaybill = displayWaybill(incoming);
+    const pendingQueries = hasTimedShipmentAuthority(incoming)
+      ? latest.pendingQueries.filter(
+          (pending) =>
+            pending.source !== incoming.identity.bindingSource ||
+            normalizeWaybill(pending.waybill) !== incomingWaybill,
+        )
+      : latest.pendingQueries;
+    const merged = {
+      ...latest,
+      pendingQueries,
+      shipments: replaceShipment(
+        latest.shipments, preserveSettledShipment(current, incoming)),
+    };
+    if (
+      refreshContentFingerprint(merged) === refreshContentFingerprint(latest)
+    ) {
+      return { state: latest, applied: true };
+    }
+    return { state: saveState(merged, now, { notifyChanges: true }), applied: true };
+  });
 }
 
 export type RoutePointerTarget = {
@@ -2099,42 +2238,43 @@ export function commitRoutePointers(
   targets: readonly RoutePointerTarget[],
   now = Date.now(),
 ): AppState {
-  const latest = loadState(now);
-  const uniqueTargets = new Map(
-    targets.map((target) => [`${target.owner}:${target.targetId}`, target]),
-  );
+  return withSharedFileTransaction(() => {
+    const latest = loadState(now);
+    const uniqueTargets = new Map(
+      targets.map((target) => [`${target.owner}:${target.targetId}`, target]),
+    );
 
-  for (const target of uniqueTargets.values()) {
-    if (target.owner === "shipment") {
-      const before = base.shipments.find(
-        (item) => item.identity.id === target.targetId,
-      );
-      const current = latest.shipments.find(
-        (item) => item.identity.id === target.targetId,
-      );
-      const after = candidate.shipments.find(
-        (item) => item.identity.id === target.targetId,
-      );
-      if (!before || !current || !after || checksum(before) !== checksum(current)) {
+    for (const target of uniqueTargets.values()) {
+      if (target.owner === "shipment") {
+        const before = base.shipments.find(
+          (item) => item.identity.id === target.targetId,
+        );
+        const current = latest.shipments.find(
+          (item) => item.identity.id === target.targetId,
+        );
+        const after = candidate.shipments.find(
+          (item) => item.identity.id === target.targetId,
+        );
+        if (!before || !current || !after || stableJson(before) !== stableJson(current)) {
+          throw new Error("快递状态已更新，请稍后重试");
+        }
+        continue;
+      }
+      const before = base.pendingQueries.find((item) => item.id === target.targetId);
+      const current = latest.pendingQueries.find((item) => item.id === target.targetId);
+      const after = candidate.pendingQueries.find((item) => item.id === target.targetId);
+      if (!before || !current || !after || stableJson(before) !== stableJson(current)) {
         throw new Error("快递状态已更新，请稍后重试");
       }
-      continue;
     }
-    const before = base.pendingQueries.find((item) => item.id === target.targetId);
-    const current = latest.pendingQueries.find((item) => item.id === target.targetId);
-    const after = candidate.pendingQueries.find((item) => item.id === target.targetId);
-    if (!before || !current || !after || checksum(before) !== checksum(current)) {
-      throw new Error("快递状态已更新，请稍后重试");
-    }
-  }
 
-  const shipments = latest.shipments.map((current) => {
-    const target = uniqueTargets.get(`shipment:${current.identity.id}`);
-    if (!target) return current;
-    const after = candidate.shipments.find(
-      (item) => item.identity.id === current.identity.id,
-    );
-    return after ? { ...current, route: after.route || null } : current;
+    const shipments = latest.shipments.map((current) => {
+      const target = uniqueTargets.get(`shipment:${current.identity.id}`);
+      if (!target) return current;
+      const after = candidate.shipments.find(
+        (item) => item.identity.id === current.identity.id,
+      );
+      return after ? { ...current, route: after.route || null } : current;
   });
   const pendingQueries = latest.pendingQueries.map((current) => {
     const target = uniqueTargets.get(`pending:${current.id}`);
@@ -2147,6 +2287,7 @@ export function commitRoutePointers(
     return latest;
   }
   return saveState(merged, now);
+  });
 }
 
 export function privateHash(value: string): string {
@@ -2160,22 +2301,23 @@ export function removeBinding(
   phoneNumber: string,
   now = Date.now(),
 ): AppState {
-  requireScriptSource(bindingSource);
-  const state = loadState(now);
-  const normalizedPhone = phone(phoneNumber);
-  const sourceBindings = bindingsForSource(state, bindingSource);
-  const suffix = normalizedPhone.slice(-4);
-  const uniquelyMatchesTail = (tail: string): boolean =>
-    Boolean(tail) &&
-    tail === suffix &&
-    sourceBindings.filter((binding) => binding.phone.endsWith(tail)).length === 1;
-  const matching = state.shipments.filter((shipment) => {
-    if (shipment.identity.bindingSource !== bindingSource) return false;
-    const ownerPhone = phone(shipment.identity.phone || "");
-    if (ownerPhone) return ownerPhone === normalizedPhone;
-    const tail = shipment.identity.phoneTail || "";
-    if (uniquelyMatchesTail(tail)) return true;
-    return !shipment.identity.manuallyAdded && sourceBindings.length === 1;
+  return withSharedFileTransaction(() => {
+    requireScriptSource(bindingSource);
+    const state = loadState(now);
+    const normalizedPhone = phone(phoneNumber);
+    const sourceBindings = bindingsForSource(state, bindingSource);
+    const suffix = normalizedPhone.slice(-4);
+    const uniquelyMatchesTail = (tail: string): boolean =>
+      Boolean(tail) &&
+      tail === suffix &&
+      sourceBindings.filter((binding) => binding.phone.endsWith(tail)).length === 1;
+    const matching = state.shipments.filter((shipment) => {
+      if (shipment.identity.bindingSource !== bindingSource) return false;
+      const ownerPhone = phone(shipment.identity.phone || "");
+      if (ownerPhone) return ownerPhone === normalizedPhone;
+      const tail = shipment.identity.phoneTail || "";
+      if (uniquelyMatchesTail(tail)) return true;
+      return !shipment.identity.manuallyAdded && sourceBindings.length === 1;
   });
   const matchingIds = new Set(matching.map((shipment) => shipment.identity.id));
   const bindingIdentity = `phone:${normalizedPhone}`;
@@ -2225,129 +2367,142 @@ export function removeBinding(
     },
     now,
   );
+  });
 }
 
 export function upsertShipment(incoming: Shipment, now = Date.now()): AppState {
-  if (incoming.identity.bindingSource != null) {
-    requireScriptSource(incoming.identity.bindingSource);
-  }
-  const state = loadState(now);
-  const current = state.shipments.find(
-    (item) => item.identity.id === incoming.identity.id,
-  );
-  const shipment: Shipment = current
-    ? incoming.identity.manuallyAdded
-      ? applyManualShipment(current, incoming, now)
-      : applyAccountShipment(current, incoming, now)
-    : incoming.identity.manuallyAdded
-      ? applyManualShipment(undefined, incoming, now)
-      : applyAccountShipment(undefined, incoming, now);
-  return saveState(
-    {
-      ...state,
-      shipments: [
-        ...state.shipments.filter(
-          (item) => item.identity.id !== shipment.identity.id,
-        ),
-        shipment,
-      ],
-    },
-    now,
-  );
+  return withSharedFileTransaction(() => {
+    if (incoming.identity.bindingSource != null) {
+      requireScriptSource(incoming.identity.bindingSource);
+    }
+    const state = loadState(now);
+    const current = state.shipments.find(
+      (item) => item.identity.id === incoming.identity.id,
+    );
+    const shipment: Shipment = current
+      ? incoming.identity.manuallyAdded
+        ? applyManualShipment(current, incoming, now)
+        : applyAccountShipment(current, incoming, now)
+      : incoming.identity.manuallyAdded
+        ? applyManualShipment(undefined, incoming, now)
+        : applyAccountShipment(undefined, incoming, now);
+    return saveState(
+      {
+        ...state,
+        shipments: [
+          ...state.shipments.filter(
+            (item) => item.identity.id !== shipment.identity.id,
+          ),
+          shipment,
+        ],
+      },
+      now,
+    );
+  });
 }
 
 /** 详情页写备注（用户定 2026-09-05 晚）：只改这一票的 note，别的都不动；空串即清除。 */
 export function setShipmentNote(id: string, note: string, now = Date.now()): AppState {
-  const state = loadState(now);
-  const trimmed = String(note || "").trim();
-  const current = state.shipments.find((item) => item.identity.id === id);
-  if (!current || (current.note || "") === trimmed) return state;
-  // 抬一下 updatedAtMs：详情页与父页面用 preferNewerShipment 挑新的那份，不抬的话父页面回传的
-  // 旧对象（同一时间戳）会把刚写的备注盖掉（2026-09-05 晚 iPhone 实测「保存没生效」）。
-  const updated: Shipment = { ...current, updatedAtMs: Math.max(now, current.updatedAtMs + 1) };
-  if (trimmed) updated.note = trimmed;
-  else delete updated.note;
-  return saveState(
-    {
-      ...state,
-      shipments: state.shipments.map((item) =>
-        item.identity.id === id ? updated : item
-      ),
-    },
-    now,
-  );
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    const trimmed = String(note || "").trim();
+    const current = state.shipments.find((item) => item.identity.id === id);
+    if (!current || (current.note || "") === trimmed) return state;
+    // 抬一下 updatedAtMs：详情页与父页面用 preferNewerShipment 挑新的那份，不抬的话父页面回传的
+    // 旧对象（同一时间戳）会把刚写的备注盖掉（2026-09-05 晚 iPhone 实测「保存没生效」）。
+    const updated: Shipment = { ...current, updatedAtMs: Math.max(now, current.updatedAtMs + 1) };
+    if (trimmed) updated.note = trimmed;
+    else delete updated.note;
+    return saveState(
+      {
+        ...state,
+        shipments: state.shipments.map((item) =>
+          item.identity.id === id ? updated : item
+        ),
+      },
+      now,
+    );
+  });
 }
 
 export function removeShipment(id: string, now = Date.now()): AppState {
-  const state = loadState(now);
-  const shipment = state.shipments.find((item) => item.identity.id === id);
-  const canonical = shipment ? displayWaybill(shipment) : "";
-  return saveState(
-    {
-      ...state,
-      pendingQueries: shipment
-        ? state.pendingQueries.filter(
-            (pending) =>
-              normalizeWaybill(pending.waybill) !== canonical,
-          )
-        : state.pendingQueries,
-      shipments: state.shipments.filter(
-        (item) => item.identity.id !== id,
-      ),
-    },
-    now,
-  );
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    const shipment = state.shipments.find((item) => item.identity.id === id);
+    const canonical = shipment ? displayWaybill(shipment) : "";
+    return saveState(
+      {
+        ...state,
+        pendingQueries: shipment
+          ? state.pendingQueries.filter(
+              (pending) =>
+                normalizeWaybill(pending.waybill) !== canonical,
+            )
+          : state.pendingQueries,
+        shipments: state.shipments.filter(
+          (item) => item.identity.id !== id,
+        ),
+      },
+      now,
+    );
+  });
 }
 
 export function forceCompleteShipment(
   id: string,
   now = Date.now(),
 ): AppState {
-  const state = loadState(now);
-  const current = state.shipments.find((item) => item.identity.id === id);
-  if (!current || current.timeline.semantic === "COMPLETED") return state;
-  return saveState(
-    {
-      ...state,
-      shipments: state.shipments.map((item) =>
-        item.identity.id === id
-          ? {
-              ...item,
-              forcedCompletedAtMs: now,
-              updatedAtMs: now,
-            }
-          : item
-      ),
-    },
-    now,
-  );
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    const current = state.shipments.find((item) => item.identity.id === id);
+    if (!current || current.timeline.semantic === "COMPLETED") return state;
+    return saveState(
+      {
+        ...state,
+        shipments: state.shipments.map((item) =>
+          item.identity.id === id
+            ? {
+                ...item,
+                forcedCompletedAtMs: now,
+                updatedAtMs: now,
+              }
+            : item
+        ),
+      },
+      now,
+    );
+  });
 }
 
 export function upsertPendingQuery(
   pending: PendingManualQuery,
   now = Date.now(),
 ): AppState {
-  requireScriptSource(pending.source);
-  const state = loadState(now);
-  return saveState(
-    {
-      ...state,
-      pendingQueries: [
-        ...state.pendingQueries.filter((item) => item.id !== pending.id),
-        pending,
-      ],
-    },
-    now,
-  );
+  return withSharedFileTransaction(() => {
+    requireScriptSource(pending.source);
+    const state = loadState(now);
+    return saveState(
+      {
+        ...state,
+        pendingQueries: [
+          ...state.pendingQueries.filter((item) => item.id !== pending.id),
+          pending,
+        ],
+      },
+      now,
+    );
+  });
 }
 
 export function removePendingQuery(id: string, now = Date.now()): AppState {
-  const state = loadState(now);
-  return saveState(
-    {
-      ...state,
-      pendingQueries: state.pendingQueries.filter((item) => item.id !== id),
-    },
-    now,
-  );
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    return saveState(
+      {
+        ...state,
+        pendingQueries: state.pendingQueries.filter((item) => item.id !== id),
+      },
+      now,
+    );
+  });
 }

@@ -1,5 +1,7 @@
+import { RefreshInvalidatedError } from "../services/refresh-coordination";
 import assert from "node:assert/strict";
-import { setDiagnosticsEnabled } from "../services/logger";
+import { setDiagnosticsEnabled, writeRuntimeCapabilities } from "../services/logger";
+import { OperationTimeoutError } from "../services/deadline";
 import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
 
 const memory = new Map<string, unknown>();
@@ -372,6 +374,8 @@ writeDiagnostic("order.projection.failed", {
   probeRequestCount: 3,
   unionSignalSeen: false,
   unionResourceSeen: true,
+  unionResponseStatuses: "200,403",
+  probeCaptureCount: 0,
   domMatched: false,
   requestCallbackCount: 7,
   evaluationAttempts: 2,
@@ -398,6 +402,8 @@ assert.deepEqual(readDiagnostics()[0].details, {
   probeRequestCount: 3,
   unionSignalSeen: false,
   unionResourceSeen: true,
+  unionResponseStatuses: "200,403",
+  probeCaptureCount: 0,
   domMatched: false,
   requestCallbackCount: 7,
   evaluationAttempts: 2,
@@ -413,6 +419,17 @@ assert.equal(diagnosticText([readDiagnostics()[0]!]).includes("loadCompleted=fal
 assert.equal(diagnosticText([readDiagnostics()[0]!]).includes("loadDurationMs=9000"), true);
 assert.equal(diagnosticText([readDiagnostics()[0]!]).includes("probeInstalled=true"), true);
 assert.equal(diagnosticText([readDiagnostics()[0]!]).includes("viewportAvailable=false"), true);
+assert.equal(diagnosticText([readDiagnostics()[0]!]).includes("unionResponseStatuses=200,403"), true);
+assert.equal(diagnosticText([readDiagnostics()[0]!]).includes("probeCaptureCount=0"), true);
+for (const statuses of ["200,response-body", "13800000000", "200,".repeat(9), "999"]) {
+  writeDiagnostic("order.projection.failed", { unionResponseStatuses: statuses });
+  assert.equal(readDiagnostics()[0].details.unionResponseStatuses, undefined);
+}
+for (const count of [-1, 1.5, 5]) {
+  writeDiagnostic("order.projection.failed", { probeCaptureCount: count });
+  assert.equal(readDiagnostics()[0].details.probeCaptureCount, undefined);
+}
+
 
 memory.set(DIAGNOSTIC_KEY, [{
   id: "expired-entry",
@@ -490,3 +507,47 @@ memory.set(DIAGNOSTIC_KEY, [{ id: "historical", at: new Date().toISOString(), le
   event: "refresh.started", details: { stage: "account_list" } }]);
 assert.equal(readDiagnostics()[0].details.clientBuild, undefined, "old records must not be relabeled with this build");
 clearDiagnostics();
+
+assert.equal(classifyDiagnosticError(new RefreshInvalidatedError("ownership_lost")), "ownership_lost");
+assert.equal(classifyDiagnosticError(new RefreshInvalidatedError("superseded")), "superseded");
+
+writeDiagnostic("refresh.failed", diagnosticErrorDetails(new OperationTimeoutError(undefined, undefined, {
+  waitTimeoutOrigin: "deadline", waitBudgetMs: 100, waitElapsedMs: 600, deadlineLagMs: 500,
+})));
+assert.deepEqual(readDiagnostics()[0].details, {
+  errorCategory: "timeout", waitTimeoutOrigin: "deadline", waitBudgetMs: 100,
+  waitElapsedMs: 600, deadlineLagMs: 500, clientBuild: SCRIPT_CLIENT_BUILD,
+});
+writeDiagnostic("refresh.stage.succeeded", {
+  selectionScope: "display", requestProvider: "v6_query",
+  displayTimelineProvider: "k100_h5", displayedTrackCount: 16,
+});
+assert.equal(readDiagnostics()[0].details.displayedTrackCount, 16);
+assert.equal(readDiagnostics()[0].details.selectionScope, "display");
+
+const runtime = globalThis as unknown as Record<string, unknown>;
+delete runtime.SQLite;
+delete runtime.FileManager;
+writeRuntimeCapabilities("widget", "widget-capability-test");
+assert.equal(readDiagnostics()[0].details.runtimeHost, "widget");
+assert.equal(readDiagnostics()[0].details.sqliteOpenAvailable, false);
+assert.equal(readDiagnostics()[0].details.sharedFilesAvailable, false);
+runtime.SQLite = { open() { throw new Error("presence probing must not open a database"); } };
+runtime.FileManager = {
+  appGroupDocumentsDirectory: "/synthetic/private-path",
+  readAsStringSync() {}, writeAsStringSync() {},
+};
+writeRuntimeCapabilities("app");
+assert.equal(readDiagnostics()[0].details.sqliteOpenAvailable, true);
+assert.equal(readDiagnostics()[0].details.sharedFilesAvailable, true);
+assert.equal(diagnosticText().includes("private-path"), false);
+Object.defineProperty(runtime, "SQLite", {
+  configurable: true, get() { throw new Error("synthetic host bridge unavailable"); },
+});
+writeRuntimeCapabilities("widget");
+assert.equal(readDiagnostics()[0].details.result, "probe_failed");
+delete runtime.SQLite;
+setDiagnosticsEnabled(false);
+const diagnosticCount = readDiagnostics().length;
+writeRuntimeCapabilities("app");
+assert.equal(readDiagnostics().length, diagnosticCount);

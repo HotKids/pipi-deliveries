@@ -11,8 +11,9 @@ import {
   displayWaybill,
   unprojectedAccountOrder,
 } from "../services/shipment-policy";
-import { timelineTimeParts } from "../services/time-presentation";
+import { formatListTime } from "../services/time-presentation";
 import { CourierIcon } from "./CourierIcon";
+import { SenderBadge } from "./SenderBadge";
 
 /**
  * Byte-for-byte the shape PhoneManagerPage already uses for its own swipe-to-delete: rows live
@@ -34,8 +35,7 @@ export function ShipmentRow(props: {
 }) {
   const item = props.shipment;
   const presentationStatus = shipmentPresentationStatus(item);
-  const eventTimeParts = timelineTimeParts(item.timeline.latestTimeText);
-  const eventTime = [eventTimeParts.date, eventTimeParts.time].filter(Boolean).join(" ");
+  const eventTime = formatListTime(item.timeline.latestTimeText);
   const latestDetail = item.timeline.latestDetail || timedTracks(item.timeline.tracks)[0]?.detail || "";
 
   return (
@@ -82,14 +82,17 @@ export function ShipmentRow(props: {
       />
       <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity" }}>
         <HStack spacing={8}>
-          <Text
-            font={17}
-            fontWeight="semibold"
-            foregroundStyle={statusTint(presentationStatus.semantic)}
-            lineLimit={1}
-          >
-            {withShipmentNote(presentationStatus.text, item)}
-          </Text>
+          <HStack alignment="center" spacing={6}>
+            <Text
+              font={17}
+              fontWeight="semibold"
+              foregroundStyle={statusTint(presentationStatus.semantic)}
+              lineLimit={1}
+            >
+              {withShipmentNote(presentationStatus.text, item)}
+            </Text>
+            <SenderBadge sender={item.identity.sender} semantic={presentationStatus.semantic} />
+          </HStack>
           <Spacer />
           {eventTime ? (
             <Text font={12} foregroundStyle="secondaryLabel" monospacedDigit>

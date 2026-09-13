@@ -1,10 +1,12 @@
-import { resolveCarrierQuery, resolveCarrierCpCode } from "./carrier-query";
+import { resolveCarrierQuery, resolveCarrierCpCode, resolveCarrierKuaidi100Code } from "./carrier-query";
 import { normalizeWaybill } from "./status";
 import { TIMELINE_SLOT } from "./timeline-slot";
 
 /** Carrier substitution belongs to the existing H5 stage, not to list eligibility. */
 export function primaryH5Provider(courierCode: string): string {
-  return (resolveCarrierQuery(courierCode) || resolveCarrierCpCode(courierCode))?.standardCode === "JTSD"
+  const code = (resolveCarrierQuery(courierCode) || resolveCarrierCpCode(courierCode) ||
+    resolveCarrierKuaidi100Code(courierCode))?.standardCode;
+  return code === "JTSD" || code === "HTKY"
     ? TIMELINE_SLOT.JT_H5 : TIMELINE_SLOT.K100_H5;
 }
 

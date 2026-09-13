@@ -6,7 +6,7 @@ import type {
   Shipment,
 } from "../models";
 import { requireScriptSource } from "./script-source";
-import { postGateway } from "./gateway";
+import { GatewayError, postGateway } from "./gateway";
 import {
   manualTimelineIsComplete,
   normalizeWaybill,
@@ -335,6 +335,7 @@ function shipmentFromTimeline(input: {
     companyName: input.companyName,
     semantic: input.parsed.semantic,
     statusEventAtMs: input.parsed.statusEventAtMs,
+    normalizedStatus: input.parsed.normalizedStatus,
     latestTimeText: input.parsed.latestTimeText,
     latestDetail: input.parsed.latestDetail,
     tracks: input.parsed.tracks,
@@ -380,6 +381,11 @@ async function queryCandidate(
     timeoutMs: remainingTimeoutMs(deadlineAtMs, 30_000),
     deadlineAtMs,
     signal,
+  }).catch(error => {
+    if (error instanceof GatewayError && error.gatewayCode === "phone_verification_required") {
+      throw new ManualQueryError(phoneTail ? "手机尾号不正确，请重新输入" : "请输入手机尾号", true, "phone_tail");
+    }
+    throw error;
   });
   const phoneRejected = kuaidi100PhoneRejected(root);
   if (rejectKuaidi100Response(root)) {
@@ -691,6 +697,8 @@ async function queryMeizuShipmentOnce(
     const value = root && ("value" in root ? root.value : root.data);
     writeDiagnostic("manual.meizu.response", {
       flowId: input.diagnosticFlowId,
+      waybillTail: waybillSuffix(waybill),
+      carrierCode: input.courierCode || input.resolvedCarrier?.standardCode,
       stage: timelineProvider,
       timelineProvider,
       attempt,
@@ -743,7 +751,7 @@ async function queryMeizuShipmentOnce(
     // Keep the existing same-source Meizu cache slot; a latest-event response stays partial.
     provider: TIMELINE_SLOT.V6_QUERY,
     complete: false,
-    parsed: parseMeizuTimeline(value),
+    parsed: parseMeizuTimeline({ ...value, normalizedStatus: root.normalizedStatus ?? value.normalizedStatus }),
     successAtMs: sourceNow(input.dependencies),
   });
   return {
@@ -987,6 +995,11 @@ export async function queryManualForSource(input: {
   };
   const queryStartedAt = Date.now();
   const waybillTail = waybillSuffix(waybill);
+  const diagnosticIdentity = {
+    waybillTail,
+    carrierCode: queryInput.courierCode || resolvedRawCarrier?.standardCode,
+    sourceProvider: input.sourceProvider,
+  };
   const routeTimelineProvider = "v6_query";
   const { key: scheduleKey, identityFingerprint } = manualProviderSchedule({
     ...input, waybill, rawCourierCode: rawCarrierCode, phoneTail,
@@ -1016,7 +1029,7 @@ export async function queryManualForSource(input: {
         !isJingDongSource &&
         (input.motoOnly === true ||
           allowsLocalCapabilityForSourceProvider(input.sourceProvider)),
-      query: async () => ({ shipment: await queryMotoShipment(queryInput) }),
+      query: async signal => ({ shipment: await queryMotoShipment({ ...queryInput, signal }) }),
     },
     {
       source: "route",
@@ -1027,14 +1040,14 @@ export async function queryManualForSource(input: {
         !(input.hostSafe && isJingDongSource && !input.pickerOnly) &&
         (input.pickerOnly === true || isJingDongSource ||
           allowsRouteCapabilityForSourceProvider(input.sourceProvider)),
-      query: async () => queryMeizuShipment(queryInput),
+      query: async signal => queryMeizuShipment({ ...queryInput, signal }),
     },
     {
       source: "fallback",
       enabled: SCRIPT_MANUAL_SOURCE_ACTIVATION.fallback &&
         providerEnabled("fallback") &&
         input.includeKdniaoFallback === true,
-      query: async () => ({ shipment: await queryKdniaoShipment(queryInput) }),
+      query: async signal => ({ shipment: await queryKdniaoShipment({ ...queryInput, signal }) }),
     },
   ], input.deadlineAtMs, (observation) => {
     const stage = observation.source === "route" ? routeTimelineProvider : observation.source;
@@ -1045,7 +1058,7 @@ export async function queryManualForSource(input: {
         flowId: diagnosticFlowId,
         source: input.source,
         stage,
-        waybillTail,
+        ...diagnosticIdentity,
         timelineProvider,
       });
       return;
@@ -1055,9 +1068,9 @@ export async function queryManualForSource(input: {
         const details = diagnosticErrorDetails(observation.error);
         const failure = String(details.failureCode || details.errorCategory || "");
         const result: RefreshProviderResult = failure === "invalid_query" ||
-            failure === "phone_tail"
+            failure === "phone_tail" || failure === "phone_verification_required"
           ? "invalid_query"
-          : failure === "upstream_rejected" || failure === "upstream"
+          : failure === "upstream_rejected" || failure === "upstream_business_error" || failure === "upstream"
             ? "upstream_rejected"
             : failure === "timeout"
               ? "timeout"
@@ -1075,7 +1088,7 @@ export async function queryManualForSource(input: {
         flowId: diagnosticFlowId,
         source: input.source,
         stage,
-        waybillTail,
+        ...diagnosticIdentity,
         timelineProvider,
         durationMs: observation.durationMs,
         ...diagnosticErrorDetails(observation.error),
@@ -1100,7 +1113,7 @@ export async function queryManualForSource(input: {
         flowId: diagnosticFlowId,
         source: input.source,
         stage,
-        waybillTail,
+        ...diagnosticIdentity,
         timelineProvider,
         durationMs: observation.durationMs,
         effectiveTrackCount: trackCount,
@@ -1147,19 +1160,20 @@ export async function queryManualForSource(input: {
     flowId: diagnosticFlowId,
     source: input.source,
     stage: input.diagnosticStage || "manual_query",
-    waybillTail,
+    ...diagnosticIdentity,
     timelineProvider: selectedTrackCount || selectedStatusOnly
       ? selected?.timeline.provider === TIMELINE_SLOT.V6_QUERY
         ? routeTimelineProvider : diagnosticManualProvider(selected?.timeline.provider)
       : "none",
     effectiveTrackCount: selectedTrackCount,
+    selectionScope: "query_response",
+    returnedTrackCount: selectedTrackCount,
     statusSemantic: selected?.timeline.semantic || "UNKNOWN",
     structuredStatus: selected?.timeline.structuredStatus === true,
     records: successes.length,
     // 这一层被允许跑的级数（顺丰在列表层只许跑 picker，京东不跑 moto…）。没有它，一条只跑了
     // 一级、那一级又没轨迹的记录看上去像整条链失败（用户 2026-09-08 看日志时的疑问）。
     attempted: selection.attemptedSources,
-    selected: Boolean(selectedTrackCount || selectedStatusOnly),
     durationMs: Date.now() - queryStartedAt,
     result: selectedTrackCount
       ? manualTimelineIsComplete(selected!.timeline) ? "complete" : "partial"

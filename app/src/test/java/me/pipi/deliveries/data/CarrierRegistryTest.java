@@ -17,7 +17,7 @@ public final class CarrierRegistryTest {
     @Test
     public void finalRegistryHasExactlySeventeenEntriesAndFieldAliases() {
         assertEquals(
-                "6e4ec3e45a460dbea446093a9b7ccb81b2da80f716f57369bc32572d640dda0e",
+                "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
                 CarrierRegistry.AUTHORITY_VERSION);
         assertEquals("embedded-transition", CarrierRegistry.AUTHORITY_SOURCE);
         assertEquals(17, CarrierRegistry.sizeForTesting());
@@ -37,7 +37,7 @@ public final class CarrierRegistryTest {
         assertEquals("EMS", CarrierRegistry.resolveCpCode("EYB").standardCode);
         assertEquals("ems", CarrierRegistry.queryCode("EYB", ""));
         assertEquals("debangkuaidi", CarrierRegistry.queryCode("debangwuliu", ""));
-        assertEquals("", CarrierRegistry.hotline("HTKY", "百世快递"));
+        assertEquals("956025", CarrierRegistry.hotline("HTKY", "百世快递"));
         assertEquals("邮政快递", CarrierRegistry.resolveCpCode("POSTB").companyName);
         assertEquals("丹鸟速递", CarrierRegistry.resolveCpCode("ZMKMKD").companyName);
         assertEquals("丹鸟速递", CarrierRegistry.resolveCpCode("ZMKM").companyName);

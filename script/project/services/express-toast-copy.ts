@@ -25,9 +25,7 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   refreshDone: "刷新完成",
   /** 列表下拉：没有需要刷新的行。 */
   refreshUpToDate: "当前已是最新",
-  /** 列表下拉：部分成功。 */
-  refreshPartial: "刷新完成，部分快递暂未更新",
-  /** The account list committed successfully; only per-parcel supplementation failed. */
+  /** A list refresh completed with both successful and failed updates. */
   listUpdated: "列表已更新",
   /** 列表下拉：全部失败或整轮抛错。 */
   refreshFailed: "刷新失败，请稍后重试",

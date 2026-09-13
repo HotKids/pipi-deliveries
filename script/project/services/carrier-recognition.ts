@@ -120,6 +120,11 @@ async function classifyWithWorker(input: Readonly<{
     if (error instanceof OperationTimeoutError || options.signal?.aborted) {
       throw new OperationTimeoutError();
     }
+    if (error instanceof GatewayError && error.status === 502
+        && error.gatewayCode === "recognition_pending"
+        && Number.isSafeInteger(error.retryAtMs) && error.retryAtMs > 0) {
+      throw error;
+    }
     if (
       !(error instanceof GatewayError) ||
       error.status === 0 ||
@@ -428,7 +433,18 @@ export async function recognizeNonSyncCarrier(
     if (error instanceof OperationTimeoutError || options.signal?.aborted) {
       throw new OperationTimeoutError();
     }
-    if (!(error instanceof RetryableClassificationError) && error instanceof GatewayError) {
+    if (error instanceof GatewayError && error.status === 502
+        && error.gatewayCode === "recognition_pending"
+        && Number.isSafeInteger(error.retryAtMs) && error.retryAtMs > now) {
+      return writeEntry(store, {
+        waybill, state: "retry", retryStage: "worker_classify", candidates,
+        networkFailures: cached?.networkFailures || 0,
+        retryAfterMs: Math.min(error.retryAtMs, now + CARRIER_RETRY_DELAY_MS),
+        updatedAtMs: now,
+      });
+    }
+    if (!(error instanceof RetryableClassificationError) && error instanceof GatewayError
+        && !(error.status === 502 && error.gatewayCode === "recognition_pending")) {
       throw error;
     }
     return networkFailure(

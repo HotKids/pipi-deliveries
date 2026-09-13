@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import type { Shipment, TimelinePackage } from "../models";
-import { selectShipmentTimeline, selectShipmentDetailTimeline } from "../services/shipment-policy";
+import { needsDetailEntryQuery, selectShipmentTimeline, selectShipmentDetailTimeline } from "../services/shipment-policy";
 
 const home = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
 const expression = home.match(/refreshOnAppear=\{([\s\S]*?)\}\s+onStateChange=/)?.[1];
@@ -19,7 +19,7 @@ function trigger(homeStatus: string, detailStatus = homeStatus, preview = false,
   });
 }
 assert.equal(trigger("UNKNOWN"), "detail_open", "opening an unresolved row must reach the status query path");
-assert.equal(trigger("DELIVERY"), false, "complete known-status rows keep the existing no-query entry");
+assert.equal(trigger("DELIVERY"), false, "Home follows a false query-eligibility result");
 const now = Date.UTC(2026, 8, 9);
 const waybill = "SF1234560058";
 function packageWithStatus(semantic: TimelinePackage["semantic"], structuredStatus: boolean): TimelinePackage {
@@ -51,3 +51,17 @@ assert.equal(trigger("COMPLETED", "COMPLETED", false, true), "detail_open",
   "an unresolved identity opens automatically even when history is complete");
 assert.equal(trigger("UNKNOWN", "UNKNOWN", true), "manual_submit");
 console.log("Home missing-status entry partitions passed");
+
+// Exercise the real policy at the Home entry boundary, rather than the status-only stub above.
+for (const carrier of ["JD", "SF", "ZTO"]) {
+  const active = packageWithStatus("DELIVERY", true);
+  active.tracks.push({ timeMs: now - 60000, timeText: new Date(now - 60000).toISOString(),
+    detail: "已揽收", statusCode: "", raw: {} });
+  const row: Shipment = { ...shipment, identity: { ...shipment.identity, courierCode: carrier },
+    timeline: active, sourceTimeline: { ...active, provider: "v5_list" },
+    accountRecord: { waybill, companyCode: carrier, provider: "JingDong", phone: "" } };
+  assert.equal(runInNewContext(expression!, {
+    needsDetailEntryQuery, selected: row, manualPreview: null,
+    unprojectedAccountOrder: () => false,
+  }), "detail_open", "a JD-source row with complete active history starts one entry query");
+}

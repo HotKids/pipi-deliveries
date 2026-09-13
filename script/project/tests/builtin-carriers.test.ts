@@ -29,7 +29,7 @@ assert.deepEqual(records.map((record) => [
   ["EMS", "EMS", "ems", "11183", "ems"],
   ["YZPY", "邮政快递", "youzhengguonei", "11183", "yzpy"],
   ["JTSD", "极兔速递", "jtexpress", "956025", "jtsd"],
-  ["HTKY", "极兔速递", "huitongkuaidi", "", "jtsd"],
+  ["HTKY", "极兔速递", "huitongkuaidi", "956025", "jtsd"],
   ["DBL", "德邦快递", "debangkuaidi", "95353", "dbl"],
   ["KYSY", "跨越速运", "kuayue", "95324", "kysy"],
   ["ZJS", "宅急送", "zhaijisong", "4006789000", "zjs"],

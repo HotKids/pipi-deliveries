@@ -10,6 +10,7 @@ import { saveOrderProjectionReferences } from "../services/routes";
 import { runShipmentRefreshForTesting } from "../services/sync";
 import { shipmentDetailIncompleteReason, selectShipmentDetailTimeline } from "../services/shipment-policy";
 import { readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
+import { buildWidgetSnapshot } from "../services/status";
 
 // Build 95's observed event clocks and counts; identities and node contents are synthetic.
 const EVENT = 1789085861000, OLD_EVENT = 1789056101000, NOW = EVENT + 12 * 3600000;
@@ -22,7 +23,7 @@ function parcel(count = 6, semantic: StatusSemantic = "DELIVERY"): AccountParcel
   return {
     source: "interface5", ownerId: ORDER, orderId: ORDER, accountOrder: true, waybill: WAYBILL,
     courierCode: "JD", rawCourierCode: "JD", companyName: "Synthetic carrier", sourceProvider: "JingDong",
-    sourceStateCode: semantic === "COMPLETED" ? "106" : "105", sourceStateText: semantic,
+    sourceStateCode: semantic === "COMPLETED" ? "107" : "105", sourceStateText: semantic,
     semantic, normalizedStatusScope: "SHIPMENT", normalizedStatusSemantic: semantic,
     normalizedStatusText: semantic, receiverPhone: PHONE, senderPhone: "",
     latestTimeText: tracks[0].timeText, latestDetail: tracks[0].detail, tracks, routeUrl: "",
@@ -122,6 +123,64 @@ test("signed incomplete history may reopen despite an already expanded old H5 pa
   const cached = loadState(NOW).shipments[0];
   assert.equal(selectShipmentDetailTimeline(cached).provider, "jd_h5");
   assert.equal(shipmentDetailIncompleteReason(cached), null);
+});
+
+for (const carrier of ["JD", "SF", "ZTO"]) {
+  test(`complete active JD-source history still checks account status (${carrier})`, async () => {
+    const original = seed("DELIVERY", true);
+    const state = loadState(NOW);
+    const row = { ...original, identity: { ...original.identity, courierCode: carrier } };
+    saveState({ ...state, shipments: [row] }, NOW);
+    assert.equal(shipmentDetailIncompleteReason(row), null, "history coverage is already complete");
+    let queries = 0;
+    const response = parcel(9, "COMPLETED");
+    response.sourceStateCode = "107";
+    response.courierCode = carrier;
+    response.rawCourierCode = carrier;
+    response.latestTimeText = providerTime(EVENT + 3600000);
+    response.latestDetail = "Synthetic shipment delivered";
+    response.tracks[0] = { timeText: response.latestTimeText, detail: response.latestDetail, statusCode: "107" };
+    response.tracks[8].detail = "已揽收";
+    const result = await runShipmentRefreshForTesting(row.identity.id, lease, { trigger: "detail_open" }, {
+      ...noExtraRequests,
+      refreshAccountParcel: async input => {
+        queries++;
+        assert.equal(input.identity.id, row.identity.id);
+        assert.equal(input.identity.sourceProvider?.toLowerCase(), "jingdong");
+        return response;
+      },
+      projectAccountOrderWithCarrier: async () => { assert.fail("status query cannot launch JD H5"); },
+    });
+    assert.equal(queries, 1, "complete active history must not suppress the account query");
+    assert.equal(result.querySucceeded, true);
+    assert.equal(result.shipment.timeline.semantic, "COMPLETED");
+    const stored = loadState(NOW).shipments[0];
+    assert.equal(stored.timeline.semantic, "COMPLETED");
+    assert.equal(selectShipmentDetailTimeline(stored).semantic, "COMPLETED");
+    assert.equal(buildWidgetSnapshot([stored], NOW).rows[0]?.semantic, "COMPLETED");
+    assert.equal(stored.sourceTimeline?.semantic, "DELIVERY", "query must not rewrite the list snapshot");
+    for (const options of [{ trigger: "detail_open" as const }, { ...pull, detailEntry: result.detailEntry }]) {
+      await runShipmentRefreshForTesting(row.identity.id, lease, options, noExtraRequests);
+    }
+  });
+}
+
+test("failed active JD status query keeps complete history and pull does not retry it", async () => {
+  const row = seed("DELIVERY", true);
+  let queries = 0;
+  const entry = await runShipmentRefreshForTesting(row.identity.id, lease, { trigger: "detail_open" }, {
+    ...noExtraRequests,
+    refreshAccountParcel: async () => { queries++; throw new Error("Synthetic upstream failure"); },
+  });
+  assert.equal(queries, 1);
+  assert.equal(entry.querySucceeded, false);
+  assert.equal(selectShipmentDetailTimeline(entry.shipment).provider, "jd_h5");
+  assert.equal(entry.shipment.timeline.semantic, "DELIVERY");
+  await runShipmentRefreshForTesting(row.identity.id, lease, { ...pull, detailEntry: entry.detailEntry }, {
+    ...noExtraRequests,
+    projectAccountOrderWithCarrier: async () => { assert.fail("retained complete history does not need H5"); },
+  });
+  assert.equal(loadState(NOW).shipments[0].timeline.semantic, "DELIVERY");
 });
 
 test("current complete signed history stays frozen on entry and pull", async () => {

@@ -49,6 +49,10 @@ function platformLabelOnly(parcel: AccountParcelDto): boolean {
   return Boolean(waybill) && !/^JD/i.test(waybill);
 }
 
+export function directAccountCarrierPresentation(parcel: AccountParcelDto): AccountParcelDto {
+  return directPresentation(parcel) || parcel;
+}
+
 function directPresentation(parcel: AccountParcelDto): AccountParcelDto | null {
   const platformOnly = platformLabelOnly(parcel);
   const rawCode = parcel.rawCourierCode
@@ -113,8 +117,6 @@ export async function normalizeAccountParcelCarrier(
   );
   return applyRecognition(parcel, recognition);
 }
-
-export const normalizeNonSyncAccountParcel = normalizeAccountParcelCarrier;
 
 /**
  * An already projected account order whose carrier is still the JD order label (or empty) while

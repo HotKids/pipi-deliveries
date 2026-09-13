@@ -52,9 +52,26 @@ assert.equal(WIDGET_RECENT_STATE_MS, 60_000);
 assert.equal(WIDGET_RELOAD_AFTER_MS, 15 * 60 * 1_000);
 assert.equal(widgetReloadPolicy(1_000).policy, "after");
 assert.equal(widgetReloadPolicy(1_000).date.getTime(), 1_000 + 15 * 60 * 1_000);
-assert.equal(await bestEffortWidgetRefresh(async () => {}), "completed");
+for (const summary of [
+  { attempted: 0, succeeded: 0, failed: 0 },
+  { attempted: 2, succeeded: 2, failed: 0 },
+]) {
+  assert.equal(await bestEffortWidgetRefresh(async () => summary), "completed");
+}
 assert.equal(
-  await bestEffortWidgetRefresh(async () => ({ skipReason: "active_cross_runtime_refresh" as const })),
+  await bestEffortWidgetRefresh(async () => ({ attempted: 1, succeeded: 0, failed: 1 })),
+  "failed",
+  "a resolved account failure summary must not report completed widget refresh",
+);
+assert.equal(
+  await bestEffortWidgetRefresh(async () => ({ attempted: 2, succeeded: 1, failed: 1 })),
+  "partial",
+  "mixed stage results remain partial even when cached state can be presented",
+);
+assert.equal(
+  await bestEffortWidgetRefresh(async () => ({
+    attempted: 0, succeeded: 0, failed: 0, skipReason: "active_cross_runtime_refresh" as const,
+  })),
   "skipped",
   "joining another runtime's refresh is not completed network work",
 );
@@ -63,6 +80,11 @@ assert.equal(
     throw new Error("offline");
   }),
   "failed",
+);
+assert.equal(
+  await bestEffortWidgetRefresh(() => { throw new Error("shared state unavailable"); }),
+  "failed",
+  "a failure before the refresh returns its Promise must still allow cached widget presentation",
 );
 assert.equal(
   await bestEffortWidgetRefresh(() => new Promise(() => {}), 1),

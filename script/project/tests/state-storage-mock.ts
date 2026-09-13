@@ -1,3 +1,4 @@
+import { installSharedFileMock } from "./shared-file-mock";
 import { createHash } from "node:crypto";
 const NOW = Date.UTC(2026, 8, 8, 6, 0, 0);
 const memory = new Map<string, unknown>();
@@ -82,6 +83,8 @@ Object.assign(globalThis, {
     },
   },
 });
+installSharedFileMock(memory);
+
 
 
 export { memory, NOW, sha256 };

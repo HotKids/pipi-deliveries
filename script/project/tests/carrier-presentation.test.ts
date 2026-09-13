@@ -54,7 +54,7 @@ assert.equal(courierHotline("JD", "京东快递"), "950616");
 assert.equal(courierHotline("shunfeng", ""), "95338");
 assert.equal(courierHotline("", "邮政快递包裹"), "11183");
 assert.equal(courierHotline("ZTOKY", "中通快运"), "");
-assert.equal(courierHotline("HTKY", "百世快递"), "");
+assert.equal(courierHotline("HTKY", "百世快递"), "956025");
 assert.equal(courierHotline("UNKNOWN", "未知快递"), "");
 
 console.log("carrier presentation contract tests passed");

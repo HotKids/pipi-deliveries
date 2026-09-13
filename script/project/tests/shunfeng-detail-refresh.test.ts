@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import type { Shipment, TimelinePackage } from "../models";
 import { memory, NOW } from "./state-storage-mock";
-import { emptyState, loadState, saveState } from "../services/storage";
+import { emptyState, loadState, saveState, setShipmentNote } from "../services/storage";
+import { readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { runShipmentRefreshForTesting } from "../services/sync";
 import { selectShipmentDetailTimeline, shipmentDetailComplete, shouldScheduleManualRefresh } from "../services/shipment-policy";
 
@@ -125,6 +126,49 @@ try {
         queryManualForSource: async () => { assert.fail("unchanged complete-source gate"); },
       });
     assert.equal(result.refreshed, false);
+  }
+  for (const scheduleFails of [false, true]) {
+    memory.clear();
+    const original = seed();
+    setDiagnosticsEnabled(true);
+    let scheduled = 0;
+    let revisionBeforeAck = 0;
+    Object.assign(globalThis, {
+      Script: { directory: "/synthetic", name: "synthetic", createRunSingleURLScheme: () => "synthetic:detail" },
+      Widget: { reloadAll() {} },
+      Notification: { async schedule() {
+        scheduled++;
+        // Simulate a user edit while the notification host is completing its work.
+        revisionBeforeAck = setShipmentNote(original.identity.id, "Edited during finalization", NOW).revision;
+        if (scheduleFails) throw new Error("synthetic notification failure");
+      } },
+    });
+    Object.assign(Data, { fromFile: () => null });
+    const fresh = pack("k100_h5", 21, NOW - 60_000, true);
+    fresh.semantic = "DELIVERY";
+    fresh.complete = true;
+    fresh.latestDetail = "Parcel is out for delivery";
+    fresh.tracks[0].statusCode = "DELIVERY";
+    const result = await runShipmentRefreshForTesting(original.identity.id,
+      { isCurrent: () => true, deadlineAtMs: NOW + 30_000 },
+      { trigger: "detail_pull", forceManualRefresh: true, includeKdniaoFallback: true }, {
+        refreshAccountParcel: async () => { assert.fail("SF pull must not query the account"); },
+        refreshWebTimeline: async () => ({ ...original, timeline: fresh,
+          sourceTimeline: null, manualTimelines: [fresh] }),
+        queryManualForSource: async () => { assert.fail("complete K100 history stops supplementation"); },
+      });
+    const durable = loadState(NOW);
+    assert.equal(scheduled, 1, "the real notification drain must run after the detail commit");
+    assert.ok(durable.revision > revisionBeforeAck, "notification acknowledgement or deferral was persisted");
+    assert.equal(durable.pendingNotifications?.length || 0, scheduleFails ? 1 : 0);
+    assert.deepEqual(result.state, durable,
+      "detail return must include finalization commits and edits accepted during the host wait");
+    assert.deepEqual(result.shipment, durable.shipments[0]);
+    assert.equal(result.shipment.note, "Edited during finalization");
+    assert.equal(result.shipment.timeline.tracks.length, 21);
+    const committed = readDiagnostics().find(entry => entry.event === "detail.refresh.committed");
+    assert.equal(committed?.details.resultRevision, durable.revision);
+    assert.equal(committed?.details.revision, durable.revision);
   }
 } finally { Date.now = actualNow; }
 

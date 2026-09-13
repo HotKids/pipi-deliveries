@@ -640,9 +640,9 @@ const withCarrierAuthority = applyAccountShipment(
 );
 assert.equal(withCarrierAuthority.sourceTimeline?.semantic, "COMPLETED");
 assert.equal(withCarrierAuthority.timeline.semantic, "COMPLETED");
-assert.equal(withCarrierAuthority.timeline.provider, "interface5");
+assert.equal(withCarrierAuthority.timeline.provider, "kuaidi100");
 assert.equal(
-  withCarrierAuthority.timeline.tracks.some(
+  withCarrierAuthority.sourceTimeline!.tracks.some(
     (track) => track.detail === "manual-only historical node",
   ),
   false,
@@ -769,6 +769,7 @@ assert.equal(hasCachedTimelineBeforeKdniao({
 }), false);
 const cachedCompleteKdniao = {
   ...timeline("kdniao", "SF9988776655", "COMPLETED"),
+  structuredStatus: true,
   complete: true,
   tracks: [
     ...timeline("kdniao", "SF9988776655", "COMPLETED").tracks,
@@ -1146,6 +1147,8 @@ const cancelledShunFeng = {
   timeline: {
     ...alternateShunFeng.timeline,
     semantic: "CANCELLED" as const,
+    structuredStatus: true,
+    statusEventAtMs: NOW,
     // 终态要求 ≥2 条可用轨迹（TERMINAL_HISTORY_MIN_TRACKS），只有一条不算已有历史。
     tracks: [
       ...alternateShunFeng.timeline.tracks,
@@ -1351,7 +1354,8 @@ const shunFengWithManual = {
   manualTimelines: [completedCarrier],
 };
 assert.equal(manualTimelineOwnsShipment(shunFengWithManual), false);
-assert.equal(shouldScheduleManualRefresh(shunFengWithManual, NOW), false);
+assert.equal(shouldScheduleManualRefresh(shunFengWithManual, NOW), true,
+  "unverified terminal history cannot freeze scheduled refresh");
 const oneTrackTerminalKdniao = {
   ...timeline("kdniao", "SF9988776655", "COMPLETED"),
   complete: true,
@@ -1363,6 +1367,7 @@ assert.equal(shouldScheduleManualRefresh({
 }, NOW), true);
 const twoTrackTerminalKdniao = {
   ...oneTrackTerminalKdniao,
+  structuredStatus: true,
   tracks: [
     ...oneTrackTerminalKdniao.tracks,
     {
@@ -1403,7 +1408,7 @@ assert.equal(shouldScheduleManualRefresh({
   ...manualJtBase,
   timeline: completedCarrier,
   manualTimelines: [completedCarrier],
-}, NOW), false);
+}, NOW), true, "unverified manual completion remains refreshable");
 assert.equal(
   shouldScheduleManualRefresh(
     { ...alternateShunFeng, forcedCompletedAtMs: NOW },
@@ -1933,13 +1938,13 @@ const frozenJingDong = applyAccountShipment(
 );
 assert.equal(frozenJingDong.timeline.semantic, "COMPLETED");
 assert.equal(frozenJingDong.timeline.latestDetail, "COMPLETED");
-assert.equal(frozenJingDong.sourceTimeline?.tracks.length, 2);
+assert.equal(frozenJingDong.sourceTimeline?.tracks.length, 1);
 assert.equal(
   frozenJingDong.sourceTimeline?.tracks.some(
     (track) => track.detail === "退回处理中",
   ),
-  true,
-  "a later real-waybill package may add tracks without reopening a terminal shipment",
+  false,
+  "a frozen list snapshot retains its terminal event without accumulating later nodes",
 );
 assert.equal(frozenJingDong.updatedAtMs, NOW + 60_000);
 
@@ -2296,6 +2301,7 @@ console.log("shipment projection preservation tests passed");
 const settledWithHistory: Shipment = (() => {
   const settled: TimelinePackage = {
     ...timeline("interface5", "SF1234567890", "COMPLETED"),
+    structuredStatus: true,
     latestDetail: "您的快件已签收",
     tracks: [
       {

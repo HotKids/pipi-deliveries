@@ -34,7 +34,7 @@ public final class ExpressManualPreviewTest {
         String source = ExpressAccountSource.bindingSource(context);
         ExpressQueryResult complete = result("已揽收", "v4_query");
         ActivityController<ExpressDetailActivity> controller = Robolectric.buildActivity(
-                ExpressDetailActivity.class, ExpressDetailActivity.transientPickerPreviewIntent(
+                ExpressDetailActivity.class, ExpressDetailActivity.transientOnlinePreviewIntent(
                         context, complete, "", source));
         ExpressDetailActivity activity = controller.get();
         activity.setTheme(R.style.AppTheme);

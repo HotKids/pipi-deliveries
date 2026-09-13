@@ -68,7 +68,7 @@ assert.match(
 // Picker retains its own slot; the K100 page remains a separate eligible stage.
 assert.match(
   manual,
-  /query: async \(\) => queryMeizuShipment\(queryInput\)/,
+  /query: async signal => queryMeizuShipment\(\{ \.\.\.queryInput, signal \}\)/,
   "the route stage uses the single Online query without a separate endpoint mode",
 );
 assert.doesNotMatch(

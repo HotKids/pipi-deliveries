@@ -254,7 +254,7 @@ export const EXPRESS_POLICY = {
         "standardCode": "HTKY",
         "displayName": "极兔速递",
         "kuaidi100Code": "huitongkuaidi",
-        "hotline": "",
+        "hotline": "956025",
         "iconKey": "jtsd",
         "requiresPhoneTail": false,
         "aliases": [

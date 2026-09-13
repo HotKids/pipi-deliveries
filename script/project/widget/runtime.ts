@@ -28,9 +28,9 @@ export function safelyLoadWidgetSnapshot<T>(
 }
 
 export async function bestEffortWidgetRefresh(
-  refresh: () => Promise<Pick<RefreshSummary, "skipReason"> | void>,
+  refresh: () => Promise<Pick<RefreshSummary, "attempted" | "succeeded" | "failed" | "skipReason">>,
   waitMs = WIDGET_REFRESH_WAIT_MS,
-): Promise<"completed" | "skipped" | "failed" | "timed_out"> {
+): Promise<"completed" | "partial" | "skipped" | "failed" | "timed_out"> {
   let timer: number | null = null;
   const timeout = new Promise<"timed_out">((resolve) => {
     timer = setTimeout(() => resolve("timed_out"), Math.max(1, waitMs));
@@ -38,11 +38,17 @@ export async function bestEffortWidgetRefresh(
   try {
     return await Promise.race([
       refresh().then(
-        summary => summary?.skipReason ? "skipped" as const : "completed" as const,
+        summary => {
+          if (summary.skipReason) return "skipped" as const;
+          if (summary.attempted > 0 && summary.succeeded === 0) return "failed" as const;
+          return summary.failed > 0 ? "partial" as const : "completed" as const;
+        },
         () => "failed" as const,
       ),
       timeout,
     ]);
+  } catch {
+    return "failed";
   } finally {
     if (timer != null) clearTimeout(timer);
   }

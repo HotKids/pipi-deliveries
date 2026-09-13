@@ -100,7 +100,7 @@ public final class ExpressGatewayContractTest {
         assertTrue(firstLimitCheck >= 0);
         assertTrue(secondLimitCheck > firstLimitCheck);
         assertFalse(account.contains("最多可绑定 4 个手机号"));
-        assertTrue(sync.contains("discovery.sync(context, boundPhones)"));
+        assertTrue(sync.contains("discovery.sync(context, boundPhones, userPull)"));
         assertTrue(sync.contains("subscription.query(context)"));
     }
 

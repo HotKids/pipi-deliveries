@@ -1,3 +1,5 @@
+import { sharedData, publishSharedData, withSharedFileTransaction } from "./shared-file-transaction";
+
 export type RefreshProvider =
   | "account_list"
   | "account_detail"
@@ -45,6 +47,7 @@ type RefreshRuntimeState = Readonly<{
 }>;
 
 const RUNTIME_STATE_KEY = "pipi_deliveries_refresh_runtime_v1";
+const RUNTIME_METADATA_KEY = "pipi_deliveries_refresh_metadata_v1";
 const MAX_PROVIDER_SCHEDULES = 256;
 // 用户定 2026-09-04：手动链各级冷却与京东 H5 一致（10 分钟），只有快递100 H5 是 30 分钟——
 // 那是**快递100 上游自己的限制**，不是我们定的节流，必须遵守。
@@ -73,9 +76,11 @@ function finiteTimestamp(value: unknown): number {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
-function readRuntimeState(now = Date.now()): RefreshRuntimeState {
+function readLegacyRuntimeState(now = Date.now(), key = RUNTIME_STATE_KEY): RefreshRuntimeState {
   try {
-    const raw = Storage.get<Partial<RefreshRuntimeState>>(RUNTIME_STATE_KEY);
+    const raw = Storage.get<Partial<RefreshRuntimeState>>(key) ??
+      (key === RUNTIME_METADATA_KEY
+        ? Storage.get<Partial<RefreshRuntimeState>>(RUNTIME_STATE_KEY) : null);
     if (!raw || raw.version !== 1) return emptyRuntimeState();
     const providers = Array.isArray(raw.providers)
       ? raw.providers.flatMap((item) => {
@@ -122,12 +127,42 @@ function readRuntimeState(now = Date.now()): RefreshRuntimeState {
   }
 }
 
-function writeRuntimeState(state: RefreshRuntimeState): boolean {
-  try {
-    return Storage.set(RUNTIME_STATE_KEY, state) !== false;
-  } catch {
-    return false;
+function readRuntimeState(now = Date.now()): RefreshRuntimeState {
+  const raw = sharedData().refresh as RefreshRuntimeState | undefined;
+  if (!raw) return readLegacyRuntimeState(now);
+  if (raw.version !== 1 || !Array.isArray(raw.leases) || !Array.isArray(raw.providers)) {
+    throw new Error("Invalid shared refresh state");
   }
+  return { ...raw, leases: raw.leases.filter(item => item.expiresAtMs > now) };
+}
+
+function writeRuntimeState(state: RefreshRuntimeState): void {
+  publishSharedData({ refresh: state });
+}
+
+function writeRuntimeMetadata(state: RefreshRuntimeState): void {
+  writeRuntimeState({ ...state, leases: readRuntimeState().leases });
+}
+
+function readRuntimeMetadata(now = Date.now()): RefreshRuntimeState {
+  const legacy = readLegacyRuntimeState(now);
+  const current = sharedData().refresh as RefreshRuntimeState | undefined ||
+    readLegacyRuntimeState(now, RUNTIME_METADATA_KEY);
+  const providers = new Map<string, ProviderSchedule>();
+  // An already-running older widget may still finish into the combined record.
+  for (const item of [...legacy.providers, ...current.providers]) {
+    const key = JSON.stringify([item.key, item.provider]);
+    if ((providers.get(key)?.lastAttemptAtMs ?? -1) <= item.lastAttemptAtMs) {
+      providers.set(key, item);
+    }
+  }
+  return {
+    ...current,
+    lastAccountSyncSuccessAtMs: Math.max(legacy.lastAccountSyncSuccessAtMs, current.lastAccountSyncSuccessAtMs),
+    lastBackgroundPollSuccessAtMs: Math.max(legacy.lastBackgroundPollSuccessAtMs, current.lastBackgroundPollSuccessAtMs),
+    providers: [...providers.values()].sort((left, right) => right.lastAttemptAtMs - left.lastAttemptAtMs)
+      .slice(0, MAX_PROVIDER_SCHEDULES),
+  };
 }
 
 function stableJitter(key: string, intervalMs: number): number {
@@ -188,7 +223,7 @@ export function refreshProviderDue(
   identityFingerprint: string,
   now = Date.now(),
 ): boolean {
-  const current = readRuntimeState(now).providers.find(
+  const current = readRuntimeMetadata(now).providers.find(
     (item) => item.key === key && item.provider === provider,
   );
   if (!current || current.identityFingerprint !== identityFingerprint) {
@@ -204,49 +239,51 @@ export function recordRefreshProviderResult(input: Readonly<{
   result: RefreshProviderResult;
   now?: number;
 }>): void {
-  const now = input.now ?? Date.now();
-  const current = readRuntimeState(now);
-  const previous = current.providers.find(
-    (item) => item.key === input.key && item.provider === input.provider &&
-      item.identityFingerprint === input.identityFingerprint,
-  );
-  const consecutiveFailures = input.result === "success"
-    ? 0
-    : (previous?.consecutiveFailures || 0) + 1;
-  const schedule: ProviderSchedule = {
-    key: input.key,
-    provider: input.provider,
-    identityFingerprint: input.identityFingerprint,
-    lastAttemptAtMs: now,
-    lastSuccessAtMs: input.result === "success"
-      ? now
-      : previous?.lastSuccessAtMs || 0,
-    consecutiveFailures,
-    nextDueAtMs: providerNextDueAt({
+  return withSharedFileTransaction(() => {
+    const now = input.now ?? Date.now();
+    const current = readRuntimeMetadata(now);
+    const previous = current.providers.find(
+      (item) => item.key === input.key && item.provider === input.provider &&
+        item.identityFingerprint === input.identityFingerprint,
+    );
+    const consecutiveFailures = input.result === "success"
+      ? 0
+      : (previous?.consecutiveFailures || 0) + 1;
+    const schedule: ProviderSchedule = {
       key: input.key,
       provider: input.provider,
-      result: input.result,
+      identityFingerprint: input.identityFingerprint,
+      lastAttemptAtMs: now,
+      lastSuccessAtMs: input.result === "success"
+        ? now
+        : previous?.lastSuccessAtMs || 0,
       consecutiveFailures,
-      now,
-    }),
-    lastResult: input.result,
-  };
-  const providers = [
-    ...current.providers.filter((item) =>
-      item.key !== input.key || item.provider !== input.provider
-    ),
-    schedule,
-  ].sort((left, right) => right.lastAttemptAtMs - left.lastAttemptAtMs)
-    .slice(0, MAX_PROVIDER_SCHEDULES);
-  writeRuntimeState({
-    ...current,
-    revision: current.revision + 1,
-    providers,
+      nextDueAtMs: providerNextDueAt({
+        key: input.key,
+        provider: input.provider,
+        result: input.result,
+        consecutiveFailures,
+        now,
+      }),
+      lastResult: input.result,
+    };
+    const providers = [
+      ...current.providers.filter((item) =>
+        item.key !== input.key || item.provider !== input.provider
+      ),
+      schedule,
+    ].sort((left, right) => right.lastAttemptAtMs - left.lastAttemptAtMs)
+      .slice(0, MAX_PROVIDER_SCHEDULES);
+    writeRuntimeMetadata({
+      ...current,
+      revision: current.revision + 1,
+      providers,
+  });
   });
 }
 
 export function lastNetworkRefreshSuccessAtMs(): number {
-  const state = readRuntimeState();
+  const state = readRuntimeMetadata();
   return Math.max(
     state.lastAccountSyncSuccessAtMs,
     state.lastBackgroundPollSuccessAtMs,
@@ -257,13 +294,15 @@ export function recordNetworkRefreshSuccess(
   kind: "account" | "background",
   now = Date.now(),
 ): void {
-  const current = readRuntimeState(now);
-  writeRuntimeState({
-    ...current,
-    revision: current.revision + 1,
-    ...(kind === "account"
-      ? { lastAccountSyncSuccessAtMs: now }
-      : { lastBackgroundPollSuccessAtMs: now }),
+  return withSharedFileTransaction(() => {
+    const current = readRuntimeMetadata(now);
+    writeRuntimeMetadata({
+      ...current,
+      revision: current.revision + 1,
+      ...(kind === "account"
+        ? { lastAccountSyncSuccessAtMs: now }
+        : { lastBackgroundPollSuccessAtMs: now }),
+  });
   });
 }
 
@@ -281,23 +320,24 @@ export function acquireDurableRefreshLease(
   now = Date.now(),
   context?: Readonly<{ flowId: string; trigger: string }>,
 ): DurableRefreshLease | null {
-  const current = readRuntimeState(now);
-  if (current.leases.some((lease) => lease.key === key && lease.expiresAtMs > now)) {
-    return null;
-  }
-  const token = `${now.toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
-  const lease: RuntimeLease = {
-    key,
-    token,
-    expiresAtMs: now + Math.max(1_000, Math.floor(ttlMs)),
-    startedAtMs: now,
-    ...(context ? { flowId: context.flowId, trigger: context.trigger } : {}),
-  };
-  if (!writeRuntimeState({
-    ...current,
-    revision: current.revision + 1,
-    leases: [...current.leases.filter((item) => item.key !== key), lease],
-  })) return null;
+  return withSharedFileTransaction(() => {
+    const current = readRuntimeState(now);
+    if (current.leases.some((lease) => lease.key === key && lease.expiresAtMs > now)) {
+      return null;
+    }
+    const token = `${now.toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+    const lease: RuntimeLease = {
+      key,
+      token,
+      expiresAtMs: now + Math.max(1_000, Math.floor(ttlMs)),
+      startedAtMs: now,
+      ...(context ? { flowId: context.flowId, trigger: context.trigger } : {}),
+    };
+    writeRuntimeState({
+      ...current,
+      revision: current.revision + 1,
+      leases: [...current.leases.filter((item) => item.key !== key), lease],
+  });
   const owns = () => readRuntimeState().leases.some(
     (item) => item.key === key && item.token === token &&
       item.expiresAtMs > Date.now(),
@@ -308,7 +348,7 @@ export function acquireDurableRefreshLease(
     token,
     expiresAtMs: lease.expiresAtMs,
     isCurrent: owns,
-    release: () => {
+    release: () => withSharedFileTransaction(() => {
       const latest = readRuntimeState();
       if (!latest.leases.some((item) => item.key === key && item.token === token)) {
         return;
@@ -320,8 +360,9 @@ export function acquireDurableRefreshLease(
           (item) => item.key !== key || item.token !== token,
         ),
       });
-    },
+    }),
   };
+  });
 }
 
 /** Report an observed holder without exposing its ownership token or extending its lifetime. */

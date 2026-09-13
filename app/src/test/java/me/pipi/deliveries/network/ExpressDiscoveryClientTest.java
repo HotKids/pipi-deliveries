@@ -114,7 +114,7 @@ public final class ExpressDiscoveryClientTest {
     }
 
     @Test
-    public void cainiaoPlaceholderKeepsStateOutOfLatestEvent() throws Exception {
+    public void cainiaoGenericUpdateKeepsStateTimeWithoutBecomingTheHeadline() throws Exception {
         JSONObject item = new JSONObject()
                 .put("mailNo", "79000000000001")
                 .put("cpCode", "ZTO")
@@ -136,10 +136,38 @@ public final class ExpressDiscoveryClientTest {
         assertEquals(StatusSemantic.WAITING_PICKUP, parsed.semantic);
         assertEquals("", parsed.latestDetail);
         assertEquals("", parsed.latestTime);
+        assertEquals(me.pipi.deliveries.model.ExpressTimeline.parseTime("2026-08-15 16:55:25"),
+                parsed.statusEventTime);
         assertEquals("[]", parsed.tracksJson);
         assertEquals("13800138000", parsed.phone);
         assertEquals("v5", parsed.routeInterface);
         assertEquals(item.getString("detailUrl"), parsed.routeCredential);
+    }
+
+    @Test
+    public void genericUpdateKeepsLatestClockAheadOfOlderAccountHistory() throws Exception {
+        JSONObject item = new JSONObject()
+                .put("mailNo", "ZTO_GENERIC_SYNTHETIC")
+                .put("cpCode", "ZTO")
+                .put("provider", "CaiNiao")
+                .put("stateNum", 105)
+                .put("details", new JSONArray()
+                        .put(new JSONObject().put("time", "2026-09-12 10:00:00")
+                                .put("desc", "快递状态已更新，点击查看>>"))
+                        .put(new JSONObject().put("time", "2026-09-11 09:00:00")
+                                .put("desc", "快件已到达转运中心"))
+                        .put(new JSONObject().put("time", "2026-09-12 11:00:00")
+                                .put("desc", "查无结果")));
+        ExpressQueryResult parsed = ExpressDiscoveryClient.parseExpress(item, "", "");
+        assertNotNull(parsed);
+        assertEquals(StatusSemantic.DELIVERY, parsed.semantic);
+        assertEquals("快件已到达转运中心", parsed.latestDetail);
+        assertEquals("2026-09-11 09:00:00", parsed.latestTime);
+        assertEquals(me.pipi.deliveries.model.ExpressTimeline.parseTime("2026-09-12 10:00:00"),
+                parsed.statusEventTime);
+        assertEquals(1, new JSONArray(parsed.tracksJson).length());
+        assertFalse(me.pipi.deliveries.data.Kuaidi100TimelinePolicy
+                .hasPickupEvidence(parsed));
     }
 
     @Test

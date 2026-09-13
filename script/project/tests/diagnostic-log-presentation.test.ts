@@ -95,6 +95,19 @@ const requestSummary = renderDetails({ event: "detail.refresh.stage_succeeded", 
 } });
 assert.ok(requestSummary.includes("请求接口 v5_query"));
 assert.ok(requestSummary.includes("显示缓存 cn_h5"));
+const responseSummary = renderDetails({ event: "manual.query.completed", details: {
+  timelineProvider: "v6_query", selectionScope: "query_response", returnedTrackCount: 1, effectiveTrackCount: 1,
+} });
+assert.ok(responseSummary.includes("Response source v6_query"));
+assert.ok(responseSummary.includes("Returned tracks 1"));
+assert.equal(responseSummary.includes("当前轨迹"), false);
+assert.equal(responseSummary.includes("选中数据源"), false);
+const displaySummary = renderDetails({ event: "refresh.stage.succeeded", details: {
+  requestProvider: "v6_query", displayTimelineProvider: "k100_h5", selectionScope: "display",
+  displayedTrackCount: 16, effectiveTrackCount: 16,
+} });
+assert.ok(displaySummary.includes("Displayed tracks 16"));
+assert.ok(displaySummary.includes("显示缓存 k100_h5"));
 const queryDetails = { locationNuMatches: true, vmNumMatches: false, lastQueriedNumMatches: false,
   vmLoading: true, carrierSelected: false, carrierCandidateCount: 1,
   allListsCount: 2, listsCount: 2, queryErrorType: "" };

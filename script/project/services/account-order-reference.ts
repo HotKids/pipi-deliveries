@@ -1,3 +1,4 @@
+import { responseNormalizedStatus } from "./worker-status";
 import type { Shipment } from "../models";
 import type { AccountParcelDto } from "./account-parser";
 import { normalizedProjectedWaybill } from "./status";
@@ -46,6 +47,7 @@ export function accountParcelWithProjectionReference(
       String(shipment.accountRecord?.stateNumber || ""),
     sourceStateText: parcel?.sourceStateText || timeline.semantic,
     semantic: parcel?.semantic || timeline.semantic,
+    normalizedStatus: parcel?.normalizedStatus || timeline.normalizedStatus,
     normalizedStatusScope: parcel?.normalizedStatusScope,
     normalizedStatusSemantic: parcel?.normalizedStatusSemantic,
     normalizedStatusText: parcel?.normalizedStatusText,
@@ -57,6 +59,7 @@ export function accountParcelWithProjectionReference(
       timeText: track.timeText,
       detail: track.detail,
       statusCode: track.statusCode,
+      normalizedStatus: responseNormalizedStatus(track.raw),
     })),
     routeUrl: parcel?.routeUrl || "",
     projectionUrl: trustedReference,

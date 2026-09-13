@@ -277,8 +277,7 @@ const projectedWithH5 = parcelToShipment(
   [PHONE],
   NOW + 1,
 )!;
-// A partial H5 projection only changes the identity: the order's own accumulated account
-// timeline continues, and no partial H5 node is stored.
+// A partial H5 projection changes the identity while the current list supplies its snapshot.
 assert.equal(projectedWithH5.identity.projectedWaybill, "JD0256747737308");
 assert.equal(
   projectedWithH5.timeline.tracks.some((track) => track.detail === "正在派送"),
@@ -288,7 +287,7 @@ assert.equal(
 assert.deepEqual(
   projectedWithH5.timeline.tracks.map((track) => track.detail),
   projected.timeline.tracks.map((track) => track.detail),
-  "the projected order keeps the same accumulated account timeline",
+  "the projected order keeps the current list snapshot",
 );
 const projectedWithCompleteH5 = parcelToShipment(
   {

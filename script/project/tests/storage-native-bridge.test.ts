@@ -1,3 +1,4 @@
+import { installSharedFileMock } from "./shared-file-mock";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { AppState, Shipment } from "../models";
@@ -155,6 +156,8 @@ Object.assign(globalThis, {
     },
   },
 });
+installSharedFileMock(memory);
+
 
 // Diagnostics are recorded only when enabled: the formal track ships with recording off
 // (user decision 2026-09-04), so a test that asserts on the log has to opt in explicitly.

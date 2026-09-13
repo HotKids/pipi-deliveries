@@ -43,12 +43,12 @@ const cases: [string, () => void][] = [
   ["a source-owned empty feed can establish ownership", () => {
     assert.equal(owner().automaticOwnership?.ownerSource, "interface5");
   }],
-  ["status-only increments update with or without stored tracks", () => {
+  ["a newer status-only list replaces its snapshot with or without stored tracks", () => {
     for (const history of [false, true]) {
       const current = owner(history);
       const updated = applyAccountShipment(current, packet(105, "2026-09-11 07:39:00"), NOW);
       surfaces(updated, "DELIVERY");
-      assert.deepEqual(updated.sourceTimeline!.tracks, current.sourceTimeline!.tracks);
+      assert.deepEqual(updated.sourceTimeline!.tracks, []);
       const stale = applyAccountShipment(updated, packet(103, "2026-09-10 08:00:00"), NOW + 1);
       surfaces(stale, "DELIVERY");
     }

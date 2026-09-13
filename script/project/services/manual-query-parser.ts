@@ -1,4 +1,5 @@
-import type { StatusSemantic, TrackNode } from "../models";
+import { responseNormalizedStatus } from "./worker-status";
+import type { NormalizedStatus, StatusSemantic, TrackNode } from "../models";
 import {
   headlineTrack,
   isNonEventDetail,
@@ -20,6 +21,7 @@ export type ParsedManualTimeline = {
   hasRealTracking: boolean;
   hasTimedTracking: boolean;
   hasStructuredStatus: boolean;
+  normalizedStatus?: NormalizedStatus;
 };
 
 function object(value: unknown): JsonObject {
@@ -43,6 +45,7 @@ function firstText(value: JsonObject, ...keys: string[]): string {
 }
 
 const RETAINED_TRACK_RAW_FIELDS = [
+  "normalizedStatus",
   "statusCode",
   "status",
   "state",
@@ -97,7 +100,9 @@ function presentation(
   semantic: StatusSemantic,
   statusEventAtMs: number | null,
   hasStructuredStatus: boolean,
+  root: JsonObject,
 ): ParsedManualTimeline {
+  const normalizedStatus = responseNormalizedStatus(root) || responseNormalizedStatus(root.data);
   const timed = sortedTracks(usableTimedTracks(tracks));
   const meaningful = sortedTracks(tracks.filter(
     (track) => Boolean(track.detail.trim()) && !isNonEventDetail(track.detail),
@@ -105,13 +110,14 @@ function presentation(
   const latest = headlineTrack(timed) || headlineTrack(meaningful) || null;
   return {
     tracks: sortedTracks(tracks),
-    semantic,
-    statusEventAtMs,
+    semantic: normalizedStatus?.semantic ?? semantic,
+    statusEventAtMs: normalizedStatus ? normalizedStatus.eventAtMs || null : statusEventAtMs,
+    normalizedStatus,
     latestTimeText: latest?.timeText || "",
     latestDetail: latest?.detail || "",
     hasRealTracking: Boolean(timed.length || meaningful.length),
     hasTimedTracking: Boolean(timed.length),
-    hasStructuredStatus,
+    hasStructuredStatus: normalizedStatus?.structured ?? hasStructuredStatus,
   };
 }
 
@@ -211,7 +217,7 @@ export function parseKuaidi100Timeline(root: JsonObject): ParsedManualTimeline {
     .map((value) => trackFrom(value, "kuaidi100"))
     .filter((track): track is TrackNode => track != null);
   const status = packageSemantic(text(root.state), tracks);
-  return presentation(tracks, status.semantic, status.eventAtMs, false);
+  return presentation(tracks, status.semantic, status.eventAtMs, false, root);
 }
 
 /** Parses Lenovo/Moto's verified pubquery response contract. */
@@ -245,6 +251,7 @@ export function parseMotoTimeline(root: JsonObject): ParsedManualTimeline {
     semantic,
     statusEventAt(semantic, tracks),
     Boolean(rawStatus),
+    root,
   );
 }
 
@@ -424,6 +431,7 @@ export function parseMeizuTimeline(root: JsonObject): ParsedManualTimeline {
     semantic,
     eventAtMs,
     false,
+    root,
   );
 }
 
@@ -482,5 +490,6 @@ export function parseKdniaoTimeline(root: JsonObject): ParsedManualTimeline {
     semantic,
     eventAtMs,
     Boolean(stateEx || latestTraceSemantic !== "UNKNOWN"),
+    root,
   );
 }

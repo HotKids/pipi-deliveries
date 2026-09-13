@@ -7,7 +7,10 @@ import {
   installCarrierQueryRecords,
   validateCarrierQueryRecords,
   type CarrierQueryRecord,
+  activeCarrierTableVersion,
+  resolveCarrierQuery,
 } from "./carrier-query";
+import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
 
 const CARRIER_AUTHORITY_ROUTE = "/api/express/carriers";
 const CARRIER_AUTHORITY_FILE = "carrier-authority-v2.json";
@@ -46,6 +49,21 @@ type CarrierAuthorityDependencies = Readonly<{
 let loadedFetchedAtMs = 0;
 let loadedLastAttemptAtMs = 0;
 
+export function carrierAuthorityDiagnosticDetails(nowMs = Date.now()) {
+  const hotline = resolveCarrierQuery("HTKY")?.hotline || "";
+  const latestActivityAtMs = Math.max(loadedFetchedAtMs, loadedLastAttemptAtMs);
+  return {
+    carrierCode: "HTKY",
+    carrierTableVersion: activeCarrierTableVersion(),
+    carrierFetchedAtMs: loadedFetchedAtMs,
+    carrierLastAttemptAtMs: loadedLastAttemptAtMs,
+    carrierRefreshRemainingMs: latestActivityAtMs > 0
+      ? Math.max(0, latestActivityAtMs + REFRESH_INTERVAL_MS - nowMs) : 0,
+    hotlinePresent: Boolean(hotline),
+    hotlineMatchesExpected: hotline === "956025",
+  };
+}
+
 function text(value: unknown, pattern: RegExp, maxLength: number): string | null {
   if (typeof value !== "string") return null;
   const clean = value.trim();
@@ -64,7 +82,7 @@ function list(value: unknown, maxLength = 64): readonly string[] | null {
   return Object.freeze(result);
 }
 
-function entry(value: unknown): CarrierQueryRecord | null {
+function entry(value: unknown, stored = false): CarrierQueryRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
   const standardCode = text(raw.standardCode, /^[A-Z0-9]+$/, 16);
@@ -74,7 +92,8 @@ function entry(value: unknown): CarrierQueryRecord | null {
     ? raw.hotline.trim()
     : null;
   const iconKey = text(raw.iconKey, /^[a-z0-9_-]+$/, 32);
-  const codeAliases = list(raw.codeAliases);
+  // Earlier cache writers serialized the internal record's aliases field.
+  const codeAliases = list(stored && raw.codeAliases === undefined ? raw.aliases : raw.codeAliases);
   const kuaidi100CodeAliases = raw.kuaidi100CodeAliases == null
     ? Object.freeze([] as string[])
     : list(raw.kuaidi100CodeAliases);
@@ -99,9 +118,7 @@ function entry(value: unknown): CarrierQueryRecord | null {
   });
 }
 
-export function parseCarrierAuthorityPayload(
-  value: unknown,
-): CarrierAuthorityPayload | null {
+function parseCarrierPayload(value: unknown, stored = false): CarrierAuthorityPayload | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
   const version = text(raw.version, /^[A-Za-z0-9._-]+$/, 128);
@@ -111,7 +128,7 @@ export function parseCarrierAuthorityPayload(
     raw.entries.length > 256) return null;
   const entries: CarrierQueryRecord[] = [];
   for (const value of raw.entries) {
-    const parsed = entry(value);
+    const parsed = entry(value, stored);
     if (!parsed) return null;
     entries.push(parsed);
   }
@@ -124,13 +141,17 @@ export function parseCarrierAuthorityPayload(
   });
 }
 
+export function parseCarrierAuthorityPayload(value: unknown): CarrierAuthorityPayload | null {
+  return parseCarrierPayload(value);
+}
+
 function storedCandidate(value: string, nowMs: number): StoredCarrierAuthority | null {
   try {
     const raw = JSON.parse(value) as unknown;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
     const stored = raw as Record<string, unknown>;
     const fetchedAtMs = Number(stored.fetchedAtMs);
-    const payload = parseCarrierAuthorityPayload(stored.payload);
+    const payload = parseCarrierPayload(stored.payload, true);
     if (stored.storageSchema !== STORAGE_SCHEMA ||
       !Number.isSafeInteger(fetchedAtMs) || fetchedAtMs <= 0 ||
       fetchedAtMs > nowMs + MAX_CLOCK_SKEW_MS || !payload) return null;
@@ -186,8 +207,16 @@ export function loadCarrierAuthorityCache(nowMs = Date.now()): boolean {
     selected.payload.entries,
     selected.payload.version,
     selected.payload.source,
-  )) return false;
+  )) {
+    writeDiagnostic("carrier.authority.loaded", {
+      ...carrierAuthorityDiagnosticDetails(nowMs), result: "cache_unavailable",
+    });
+    return false;
+  }
   loadedFetchedAtMs = selected.fetchedAtMs;
+  writeDiagnostic("carrier.authority.loaded", {
+    ...carrierAuthorityDiagnosticDetails(nowMs), result: "cache_loaded",
+  });
   return true;
 }
 
@@ -201,7 +230,13 @@ export async function refreshCarrierAuthorityIfNeeded(
     loadedLastAttemptAtMs,
   );
   if (latestActivityAtMs > 0 &&
-    nowMs - latestActivityAtMs < REFRESH_INTERVAL_MS) return false;
+    nowMs - latestActivityAtMs < REFRESH_INTERVAL_MS) {
+    writeDiagnostic("carrier.authority.skipped", {
+      ...carrierAuthorityDiagnosticDetails(nowMs), result: "cooldown",
+    });
+    return false;
+  }
+  const startedAtMs = Date.now();
   try {
     const attempt: StoredCarrierAuthorityAttempt = {
       storageSchema: STORAGE_SCHEMA,
@@ -221,21 +256,47 @@ export async function refreshCarrierAuthorityIfNeeded(
       { timeoutMs: REQUEST_TIMEOUT_MS },
     );
     const payload = parseCarrierAuthorityPayload(response);
-    if (!payload) return false;
+    if (!payload) {
+      writeDiagnostic("carrier.authority.failed", {
+        ...carrierAuthorityDiagnosticDetails(), result: "invalid_payload",
+        durationMs: Date.now() - startedAtMs,
+      }, "warning");
+      return false;
+    }
     const stored: StoredCarrierAuthority = {
       storageSchema: STORAGE_SCHEMA,
       fetchedAtMs: nowMs,
       payload,
     };
-    writeDurableText(CARRIER_AUTHORITY_FILE, JSON.stringify(stored));
+    writeDurableText(CARRIER_AUTHORITY_FILE, JSON.stringify({
+      ...stored,
+      payload: {
+        ...payload,
+        entries: payload.entries.map(({ aliases, ...record }) => ({ ...record, codeAliases: aliases })),
+      },
+    }));
     if (!installCarrierQueryRecords(
       payload.entries,
       payload.version,
       payload.source,
-    )) return false;
+    )) {
+      writeDiagnostic("carrier.authority.failed", {
+        ...carrierAuthorityDiagnosticDetails(), result: "install_rejected",
+        durationMs: Date.now() - startedAtMs,
+      }, "warning");
+      return false;
+    }
     loadedFetchedAtMs = nowMs;
+    writeDiagnostic("carrier.authority.refreshed", {
+      ...carrierAuthorityDiagnosticDetails(), result: "installed",
+      durationMs: Date.now() - startedAtMs,
+    });
     return true;
-  } catch {
+  } catch (error) {
+    writeDiagnostic("carrier.authority.failed", {
+      ...carrierAuthorityDiagnosticDetails(), ...diagnosticErrorDetails(error),
+      durationMs: Date.now() - startedAtMs,
+    }, "warning");
     return false;
   }
 }

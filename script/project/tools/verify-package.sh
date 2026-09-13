@@ -3,6 +3,7 @@ set -eu
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SCRIPT_DIR=$(CDPATH= cd -- "$PROJECT_DIR/.." && pwd)
+REPO_DIR=$(CDPATH= cd -- "$PROJECT_DIR/../../.." && pwd)
 ARCHIVE=${1:-"$SCRIPT_DIR/pipi-deliveries.scripting"}
 EXPECTED_TRACK=${2:-}
 # 下面两道扫描（禁止材料、网络地址白名单）全靠 rg；缺工具时 `if rg …` 会当成「没匹配到」
@@ -12,7 +13,8 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 127
 fi
 
-TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pipi-deliveries-package.XXXXXX")
+mkdir -p "$REPO_DIR/project-data/tmp"
+TEMP_DIR=$(mktemp -d "$REPO_DIR/project-data/tmp/pipi-deliveries-package-check.XXXXXX")
 trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
 
 case "$EXPECTED_TRACK" in

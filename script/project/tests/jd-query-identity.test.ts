@@ -5,7 +5,7 @@ import { memory } from "./state-storage-mock";
 import { parseAccountTimelineResponse } from "../services/account-parser";
 import { parcelToShipment, refreshAccountParcel } from "../services/account-sync";
 import { applyAccountShipment, applyTargetedAccountShipment, asAccountDetailObservation,
-  selectShipmentDetailTimeline, jingDongDetailCandidateEvidence } from "../services/shipment-policy";
+  selectShipmentDetailTimeline, shipmentDetailCandidateEvidence } from "../services/shipment-policy";
 import { emptyState, saveState, loadState } from "../services/storage";
 import { saveGatewayToken } from "../services/credentials";
 import { setDiagnosticsEnabled, writeDiagnostic, readDiagnostics } from "../services/logger";
@@ -89,7 +89,7 @@ test("legacy query diagnostics distinguish an order key without exposing it", ()
   memory.clear(); setDiagnosticsEnabled(true);
   const current = owner();
   const query = { ...current.timeline, provider: "v5_query", waybill: ORDER };
-  writeDiagnostic("detail.timeline.candidate", jingDongDetailCandidateEvidence(current, query));
+  writeDiagnostic("detail.timeline.candidate", shipmentDetailCandidateEvidence(current, query));
   const details = readDiagnostics()[0].details;
   assert.equal(details.waybillMatches, false);
   assert.equal(details.waybillMatchesOrder, true);

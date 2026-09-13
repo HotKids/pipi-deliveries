@@ -290,7 +290,7 @@ public final class ExpressSignedRetentionTest {
     }
 
     @Test @Config(shadows = CountingNotifications.class)
-    public void cancellationAfterSignatureKeepsFourHourRetentionAndNotificationPolicy() throws Exception {
+    public void trustedSignatureCannotBeReplacedByLaterCancellation() throws Exception {
         String id = "ZTRETENTION0012";
         save(id, StatusSemantic.TRANSIT, now - 16 * DAY);
         save(id, StatusSemantic.COMPLETED, now - 15 * DAY);
@@ -299,11 +299,13 @@ public final class ExpressSignedRetentionTest {
         CountingNotifications.attempts = 0;
         save(id, StatusSemantic.CANCELLED, now - 5 * 3600000L);
         ExpressItem cancelled = repository.find(signed.rowId);
-        assertEquals(StatusSemantic.CANCELLED, cancelled.semantic);
+        assertEquals(StatusSemantic.COMPLETED, cancelled.semantic);
         assertEquals(first, anchor(cancelled.rowId));
-        assertEquals(1, CountingNotifications.attempts);
+        assertEquals(0, CountingNotifications.attempts);
         assertTrue(repository.listVisible("interface5").isEmpty());
         prune(now);
+        assertNotNull(repository.find(cancelled.rowId));
+        prune(first + 21 * DAY);
         assertNull(repository.find(cancelled.rowId));
     }
 

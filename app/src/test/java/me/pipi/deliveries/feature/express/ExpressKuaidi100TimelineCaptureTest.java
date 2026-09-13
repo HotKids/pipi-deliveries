@@ -36,12 +36,12 @@ public class ExpressKuaidi100TimelineCaptureTest {
     @Before public void clearLogs() { ShadowLog.clear(); }
 
     @Test public void jtBranchUsesCanonicalIdentityAndKeepsK100Unchanged() {
-        for (String code : new String[]{"JTSD", "JT", "J&T", "JTEXPRESS", "JITU"}) {
+        for (String code : new String[]{"JTSD", "JT", "J&T", "JTEXPRESS", "JITU", "HTKY", "BEST", "huitongkuaidi"}) {
             assertEquals(TimelineSlot.JT_H5, ManualRoutePolicy.primaryH5Provider(code));
             assertEquals("https://jtsd.jtexpress.com.cn/pipi#/pages/checkGoods/sendDetail?waybillNo=JTTEST1&isFrom=serach",
                     ManualRoutePolicy.primaryH5Url(" jt-test-1 ", code));
         }
-        for (String code : new String[]{"HTKY", "SF", "JD", ""}) {
+        for (String code : new String[]{"SF", "JD", ""}) {
             assertEquals(TimelineSlot.K100_H5, ManualRoutePolicy.primaryH5Provider(code));
             assertEquals(ManualRoutePolicy.kuaidi100QueryUrl("JTTEST1"),
                     ManualRoutePolicy.primaryH5Url("JTTEST1", code));
@@ -146,7 +146,17 @@ public class ExpressKuaidi100TimelineCaptureTest {
         @Implementation protected void cancel() { }
     }
 
-    @Test @Config(shadows = CaptureArguments.class)
+    @Implements(value=ExpressAutomaticTimelineCapture.class,isInAndroidSdk=false)
+    public static class AutomaticCaptureArguments {
+        @Implementation protected static ExpressAutomaticTimelineCapture.Result capture(Activity host,
+                ExpressItem owner,String route,String provider,List<String> phones,ExpressQueryCancellation cancellation) {
+            CaptureArguments.waybill=owner.displayWaybill(); CaptureArguments.phone=owner.phone;
+            assertEquals(java.util.Collections.singletonList("1357"),phones);
+            return null;
+        }
+    }
+
+    @Test @Config(shadows = {CaptureArguments.class,AutomaticCaptureArguments.class})
     public void bothDetailCallersPassOnlyTheirExistingParcelPhone() throws Exception {
         ExpressDetailActivity activity = Robolectric.buildActivity(ExpressDetailActivity.class).get();
         CaptureArguments.starts = false;
@@ -175,11 +185,11 @@ public class ExpressKuaidi100TimelineCaptureTest {
         state.setAccessible(true);
         state.set(activity, stateConstructor.newInstance(
                 me.pipi.deliveries.data.ExpressRepository.get(activity), owner, "interface5"));
-        CaptureArguments.starts = true;
+        CaptureArguments.starts = false;
         java.lang.reflect.Method detail = ExpressDetailActivity.class.getDeclaredMethod(
-                "ensureKuaidi100Presentation", ExpressQueryResult.class, String.class);
+                "capturePrimaryKuaidi100", ExpressItem.class, ExpressQueryCancellation.class);
         detail.setAccessible(true);
-        detail.invoke(activity, null, "synthetic");
+        detail.invoke(activity, owner, new ExpressQueryCancellation(10000L));
         assertEquals(owner.displayWaybill(), CaptureArguments.waybill);
         assertEquals(owner.phone, CaptureArguments.phone);
     }
@@ -234,7 +244,7 @@ public class ExpressKuaidi100TimelineCaptureTest {
         automatic.cancel();
         assertEquals(2, captureLogs().size());
         for (String log : captureLogs()) {
-            assertTrue(log.contains("reason=cancelled evaluations=0 evaluationFailures=0"));
+            assertTrue(log.contains("skipReason=cancelled evaluations=0 evaluationFailures=0"));
             assertTrue(log.contains("mainPresent=unknown readyState=unknown checkCodeVisible=unknown"));
         }
         automatic(TimelineSlot.CN_H5, null).cancel();
@@ -254,7 +264,7 @@ public class ExpressKuaidi100TimelineCaptureTest {
         Shadows.shadowOf(view).getWebViewClient().onReceivedHttpError(view, null, response);
         capture.cancel();
         assertEquals(1, captureLogs().size());
-        assertTrue(captureLogs().get(0).contains("reason=main_frame_http_error"));
+        assertTrue(captureLogs().get(0).contains("skipReason=main_frame_http_error"));
         assertTrue(captureLogs().get(0).contains("httpStatus=403"));
         assertFalse(captureLogs().get(0).contains("Synthetic"));
     }
@@ -267,7 +277,7 @@ public class ExpressKuaidi100TimelineCaptureTest {
 
     private static List<String> captureLogs() {
         return ShadowLog.getLogsForTag(ExpressLog.TAG).stream().map(entry -> entry.msg)
-                .filter(message -> message.contains("event=capture_finished"))
+                .filter(message -> message.contains(" manual.source.capture_finished "))
                 .collect(java.util.stream.Collectors.toList());
     }
 

@@ -221,7 +221,7 @@ export function HomePage(props: {
     }
     // Checked before carrier detection and before any provider round: a waybill the list already
     // tracks must not spend a recognition call, a provider query or a second row.
-    const alreadyListed = props.state.shipments.find(
+    const alreadyListed = visibleShipments(props.state).find(
       (shipment) => normalizeWaybill(displayWaybill(shipment)) === submittedNormalized,
     );
     if (alreadyListed) {
@@ -308,6 +308,7 @@ export function HomePage(props: {
     try {
       const summary = await refreshAllShipments(undefined, {
         forceManualRefresh: true,
+        accountSourceFollowup: true,
       });
       applyInteractiveRefreshSummary(summary);
       setNotice(refreshSummaryToast(summary));

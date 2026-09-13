@@ -56,6 +56,11 @@ await queryManualForSource({
 const entries = readDiagnostics().filter(
   (entry) => entry.details.flowId === "manual-source-diagnostic",
 );
+const querySummary = entries.find(entry => entry.event === "manual.query.completed")!;
+assert.equal(querySummary.details.selectionScope, "query_response");
+assert.equal(querySummary.details.returnedTrackCount, 1);
+assert.equal(querySummary.details.selected, undefined,
+  "a query response cannot claim to be the final persisted display selection");
 for (const event of [
   "manual.source.started",
   "manual.source.succeeded",
@@ -165,7 +170,9 @@ assert.equal(statusOnly?.details.result, "status_only");
 const emptyCompleted = emptyEntries.find(
   (entry) => entry.event === "manual.query.completed",
 );
-assert.equal(emptyCompleted?.details.selected, true);
+assert.equal(emptyCompleted?.details.selectionScope, "query_response");
+assert.equal(emptyCompleted?.details.returnedTrackCount, 0);
+assert.equal(emptyCompleted?.details.selected, undefined);
 assert.equal(emptyCompleted?.details.timelineProvider, "v4_query");
 assert.equal(emptyCompleted?.details.result, "status_only");
 

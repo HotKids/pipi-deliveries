@@ -15,7 +15,10 @@ for (const reason of ["deadline", "ownership_lost"] as const) {
     ownership: { expiresAtMs: Date.now() + 1000, isCurrent: () => owns },
     onInvalidated: value => invalidations.push(value),
   });
-  const rejected = assert.rejects(full, /请求超时/);
+  const rejected = assert.rejects(full, error => {
+    assert.equal(error instanceof Error && error.name, reason === "deadline" ? "OperationTimeoutError" : "RefreshInvalidatedError");
+    return true;
+  });
   await started.promise;
   if (reason === "ownership_lost") {
     owns = false;
@@ -464,7 +467,7 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs = 500) {
   const stale = coordinator.runFull("interface5", async () => staleGate.promise, () => true, {
     ownership: { expiresAtMs: Date.now() + 1_000, isCurrent: () => owns },
   });
-  const rejected = assert.rejects(settleWithin(stale), /请求超时/);
+  const rejected = assert.rejects(settleWithin(stale), { name: "RefreshInvalidatedError" });
   await Promise.resolve();
   owns = false;
   assert.equal(coordinator.full("interface5"), undefined, "losing ownership retires work even before its expiry");

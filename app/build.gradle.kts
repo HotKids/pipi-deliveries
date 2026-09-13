@@ -31,20 +31,26 @@ fun quoted(value: String): String = "\"" + value
 fun localValueOrDefault(environment: String, property: String, fallback: String): String =
     localValue(environment, property).ifBlank { fallback }
 
-val releaseVersionNameDefault = "1.3.3"
+val releaseVersionNameDefault = "1.3.5"
 val releaseVersionName = providers.environmentVariable("DELIVERIES_VERSION_NAME")
     .orNull?.trim().orEmpty().ifBlank { releaseVersionNameDefault }
-val releaseVersionCode = providers.environmentVariable("DELIVERIES_VERSION_CODE")
-    .orNull?.toIntOrNull() ?: releaseVersionName.split('.').let { parts ->
-        require(parts.size == 3 && parts.all { it.toIntOrNull() != null }) {
-            "DELIVERIES_VERSION_NAME must use major.minor.patch"
-        }
-        // 末两位留给同一版本的预发布：beta 取 1-98，正式版固定 99，因此 beta 装过之后可以
-        // 直接覆盖升级（用户定 2026-09-06）。
-        parts[0].toInt() * 1_000_000 +
-            parts[1].toInt() * 10_000 +
-            parts[2].toInt() * 100 + 99
-    }
+val versionMatch = Regex("""(\d+)\.(\d+)\.(\d+)(?:-beta(\d+))?""")
+    .matchEntire(releaseVersionName)
+    ?: error("DELIVERIES_VERSION_NAME must use major.minor.patch or major.minor.patch-betaN")
+val versionParts = versionMatch.groupValues.drop(1).take(3).map(String::toInt)
+require(versionParts[1] in 0..99 && versionParts[2] in 0..99) {
+    "Minor and patch versions must be between 0 and 99"
+}
+val betaNumber = versionMatch.groupValues[4].takeIf(String::isNotEmpty)?.toInt()
+require(betaNumber == null || betaNumber in 1..98) { "Beta number must be between 1 and 98" }
+val expectedVersionCode = versionParts[0].toLong() * 1_000_000 +
+    versionParts[1] * 10_000 + versionParts[2] * 100 + (betaNumber ?: 99)
+require(expectedVersionCode in 1..2_100_000_000) { "Version code exceeds Android's supported range" }
+val configuredVersionCode = providers.environmentVariable("DELIVERIES_VERSION_CODE").orNull
+val releaseVersionCode = configuredVersionCode?.toLongOrNull() ?: expectedVersionCode
+require(configuredVersionCode == null || configuredVersionCode.toLongOrNull() == expectedVersionCode) {
+    "DELIVERIES_VERSION_CODE must match the version's beta or formal slot"
+}
 val signingStore = signingValue("SIGNING_STORE_FILE")
 val signingStorePassword = signingValue("SIGNING_STORE_PASSWORD")
 val signingAlias = signingValue("SIGNING_KEY_ALIAS")
@@ -54,7 +60,9 @@ val hasReleaseSigning = listOf(
     signingStore, signingStorePassword, signingAlias, signingKeyPassword
 ).all(String::isNotBlank) && signingStoreFile?.isFile == true
 val releaseTaskRequested = gradle.startParameter.taskNames.any {
-    it.contains("release", ignoreCase = true)
+    it.substringAfterLast(':').matches(
+        Regex("(?:assemble|bundle|package|install).*Release", RegexOption.IGNORE_CASE)
+    )
 }
 
 if (releaseTaskRequested) {
@@ -72,7 +80,7 @@ android {
         applicationId = "me.pipi.deliveries"
         minSdk = 29
         targetSdk = 37
-        versionCode = releaseVersionCode
+        versionCode = releaseVersionCode.toInt()
         versionName = releaseVersionName
         buildConfigField(
             "String", "EXPRESS_GATEWAY_URL",
@@ -113,9 +121,6 @@ android {
     } else null
 
     buildTypes {
-        debug {
-            applicationIdSuffix = ""
-        }
         release {
             signingConfig = releaseSigning
             // 只给排障用：-PdeliveriesDebuggable=true（或 ORG_GRADLE_PROJECT_deliveriesDebuggable=true）

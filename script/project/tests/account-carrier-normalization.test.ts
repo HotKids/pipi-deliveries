@@ -93,7 +93,7 @@ assert.equal(jdPrefix.routeUrl, "pipi-route:opaque-jdvd-route");
 assert.equal(jdPrefix.projectionUrl, "https://projection.invalid/jdvd");
 assert.equal(
   jdPrefix.carrierNormalization?.tableVersion,
-  "6e4ec3e45a460dbea446093a9b7ccb81b2da80f716f57369bc32572d640dda0e",
+  "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
 );
 
 const newlyBuiltInRawCode = await normalizeAccountParcelCarrier(parcel({
@@ -121,7 +121,7 @@ assert.equal(newlyBuiltInRawCode.carrierNormalization?.standardCode, "EMS");
 assert.equal(newlyBuiltInRawCode.carrierNormalization?.kuaidi100Code, "ems");
 assert.equal(
   newlyBuiltInRawCode.carrierNormalization?.tableVersion,
-  "6e4ec3e45a460dbea446093a9b7ccb81b2da80f716f57369bc32572d640dda0e",
+  "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
 );
 
 const internalJdky = await normalizeAccountParcelCarrier(parcel({

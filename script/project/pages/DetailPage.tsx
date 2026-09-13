@@ -8,16 +8,15 @@ import {
   Spacer,
   Text,
   VStack,
-  WebView,
   useEffect,
   useRef,
   useState,
 } from "scripting";
-import { registerProjectionViewportHost } from "../services/projection-viewport";
 import { accountExternalAppName, fetchAccountExternalAppRoutes } from "../services/account-sync";
 import { trackPhoneText } from "../services/track-phone-links";
 import type { AppState, Shipment } from "../models";
 import { CourierIcon } from "../components/CourierIcon";
+import { SenderBadge } from "../components/SenderBadge";
 import { courierHotline } from "../services/carrier-presentation";
 import {
   continueManualShipmentPreview,
@@ -27,7 +26,7 @@ import {
 } from "../services/sync";
 import {
   displayWaybill,
-  jingDongDetailCandidateEvidence,
+  shipmentDetailCandidateEvidence,
   selectShipmentDetailTimeline,
   shipmentDetailIncompleteReason,
   shipmentSelectionEvidence,
@@ -116,15 +115,20 @@ export function DetailPage(props: {
       return;
     }
     if (value == null) return;
-    const state = setShipmentNote(shipment.identity.id, value);
-    const updated = state.shipments.find(
-      (item) => item.identity.id === shipment.identity.id,
-    );
-    if (updated) {
-      setShipment(updated);
-      props.onStateChange?.(state, updated);
+    try {
+      const state = setShipmentNote(shipment.identity.id, value);
+      const updated = state.shipments.find(
+        (item) => item.identity.id === shipment.identity.id,
+      );
+      if (updated) {
+        setShipment(updated);
+        props.onStateChange?.(state, updated);
+      }
+      requestWidgetReload();
+    } catch (error) {
+      writeDiagnostic("detail.note.save_failed", diagnosticErrorDetails(error), "warning");
+      setNotice("保存失败，请稍后重试");
     }
-    requestWidgetReload();
   }
   const [loadingManualDetail, setLoadingManualDetail] = useState(
     props.refreshOnAppear === "manual_submit",
@@ -132,11 +136,6 @@ export function DetailPage(props: {
   const refreshGenerationRef = useRef(0);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
   const refreshAbortRef = useRef<AbortController | null>(null);
-  // D-15 裁决 A′ (2026-09-04): this page lends the JingDong projection a real viewport by
-  // rendering its controller transparently behind the list. A headless controller reports a
-  // 0×0 viewport, so the union page never mounts the 「完整物流进度」 control.
-  const [projectionController, setProjectionController] = useState<unknown>(null);
-  const projectionMountRef = useRef<Array<(mounted: boolean) => void>>([]);
   const detailEntryRef = useRef<DetailEntryObservation | undefined>(undefined);
   const pullInFlightRef = useRef<Promise<void> | null>(null);
   const detailTimeline = selectShipmentDetailTimeline(shipment);
@@ -220,7 +219,7 @@ export function DetailPage(props: {
         latestTrackSemantic: latestTimelineTrackSemantic(candidate.tracks),
         effectiveTrackCount: timedTracks(candidate.tracks).length,
         captureComplete: candidate.complete === true,
-        ...jingDongDetailCandidateEvidence(shipment, candidate),
+        ...shipmentDetailCandidateEvidence(shipment, candidate),
         result: timedTracks(candidate.tracks).length > 0 ? "available" : "empty",
       });
     }
@@ -248,35 +247,6 @@ export function DetailPage(props: {
   useEffect(() => {
     setShipment((current) => preferNewerShipment(current, props.shipment));
   }, [props.shipment.identity.id, props.shipment.updatedAtMs]);
-
-  useEffect(() => {
-    const settle = (mounted: boolean) => {
-      const pending = projectionMountRef.current.splice(0);
-      pending.forEach((resolve) => resolve(mounted));
-    };
-    registerProjectionViewportHost({
-      mount: (controller) =>
-        new Promise<boolean>((resolve) => {
-          projectionMountRef.current.push(resolve);
-          setProjectionController(controller);
-        }),
-      unmount: () => {
-        settle(false);
-        setProjectionController(null);
-      },
-    });
-    return () => {
-      // A page that is going away cannot host anything; the projection continues headless.
-      registerProjectionViewportHost(null);
-      settle(false);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!projectionController) return;
-    // The slot is on screen now, so the borrower may start loading.
-    projectionMountRef.current.splice(0).forEach((resolve) => resolve(true));
-  }, [projectionController]);
 
   useEffect(() => {
     // 卸载时的取消无条件注册：不自动刷新的进入方式下，用户下拉刷新后退出页面，请求也要跟着作废，
@@ -457,6 +427,9 @@ export function DetailPage(props: {
         }
         writeDiagnostic("detail.external.open", {
           stage: target.kind, attempted: index + 1, result,
+          waybillTail: waybillSuffix(displayWaybill(shipment)),
+          carrierCode: shipment.identity.courierCode,
+          sourceProvider: shipment.identity.sourceProvider,
         }, opened ? "info" : "warning");
         if (opened || controller.signal.aborted) return;
       }
@@ -489,23 +462,6 @@ export function DetailPage(props: {
       } : undefined}
       refreshable={() => refresh(true)}
       toast={transientToast(notice, setNotice)}
-      background={
-        projectionController
-          ? {
-              alignment: "topLeading",
-              // Fully transparent, non-interactive and behind every row: the page only lends
-              // its bounds so the union page has a viewport (D-15 裁决 A′).
-              content: (
-                <WebView
-                  controller={projectionController}
-                  frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-                  opacity={0}
-                  disabled={true}
-                />
-              ),
-            }
-          : undefined
-      }
     >
       <Section>
         <HStack spacing={14} padding={{ vertical: 12 }}>
@@ -528,6 +484,7 @@ export function DetailPage(props: {
               >
                 {withShipmentNote(statusText, shipment)}
               </Text>
+              <SenderBadge sender={shipment.identity.sender} semantic={presentationStatus.semantic} />
               <Button buttonStyle="plain" action={() => void editNote()}>
                 <Image
                   systemName={shipment.note ? "note.text" : "square.and.pencil"}

@@ -118,143 +118,144 @@ public final class ManualQueryCoordinator {
     }
 
     /**
-     * Queries Picker first and stops the current chain when its incremental cache already contains
+     * Queries Online first and stops the current chain when its incremental cache already contains
      * the order/pickup boundary. The optional local adapter is used only when that boundary is
      * still absent; source-owned SF/JD callers disable it.
      */
-    public static Batch queryPickerFirst(
-            Source picker,
-            ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+    public static Batch queryOnlineFirst(
+            Source online,
+            ManualTimelineAuthorityPolicy.Candidate cachedOnline,
             Source local,
             boolean includeLocal) throws Exception {
-        return queryPickerFirst(
-                picker, cachedPicker, local, includeLocal, null, System::currentTimeMillis);
+        return queryOnlineFirst(
+                online, cachedOnline, local, includeLocal, null, System::currentTimeMillis);
     }
 
-    public static Batch queryPickerFirst(
-            Source picker,
-            ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+    public static Batch queryOnlineFirst(
+            Source online,
+            ManualTimelineAuthorityPolicy.Candidate cachedOnline,
             Source local,
             boolean includeLocal,
-            Consumer<ExpressQueryResult> pickerPreview) throws Exception {
-        return queryPickerFirst(
-                picker, cachedPicker, local, includeLocal,
-                pickerPreview, System::currentTimeMillis);
+            Consumer<ExpressQueryResult> onlinePreview) throws Exception {
+        return queryOnlineFirst(
+                online, cachedOnline, local, includeLocal,
+                onlinePreview, System::currentTimeMillis);
     }
 
-    public static Batch queryPickerFirst(
-            Source picker,
-            ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+    public static Batch queryOnlineFirst(
+            Source online,
+            ManualTimelineAuthorityPolicy.Candidate cachedOnline,
             Source local,
             boolean includeLocal,
             Function<ExpressQueryResult, Source> primaryKuaidi100,
-            Consumer<ExpressQueryResult> pickerPreview) throws Exception {
-        return queryPickerFirst(picker, cachedPicker, local, includeLocal,
-                primaryKuaidi100, pickerPreview, System::currentTimeMillis);
+            Consumer<ExpressQueryResult> onlinePreview) throws Exception {
+        return queryOnlineFirst(online, cachedOnline, local, includeLocal,
+                primaryKuaidi100, onlinePreview, System::currentTimeMillis);
     }
 
-    public static Batch queryPickerFirst(
-            Source picker, ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+    public static Batch queryOnlineFirst(
+            Source online, ManualTimelineAuthorityPolicy.Candidate cachedOnline,
             Source local, boolean includeLocal,
             Function<ExpressQueryResult, Source> primaryKuaidi100,
             Consumer<ExpressQueryResult> preview, boolean requireStructuredStatus) throws Exception {
-        return queryPickerFirst(picker, cachedPicker, local, includeLocal,
+        return queryOnlineFirst(online, cachedOnline, local, includeLocal,
                 primaryKuaidi100, preview, requireStructuredStatus, false, System::currentTimeMillis);
     }
 
-    public static Batch queryPickerFirst(
-            Source picker, ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+    public static Batch queryOnlineFirst(
+            Source online, ManualTimelineAuthorityPolicy.Candidate cachedOnline,
             Source local, boolean includeLocal,
             Function<ExpressQueryResult, Source> primaryKuaidi100,
             Consumer<ExpressQueryResult> preview, boolean requireStructuredStatus,
             boolean statusOnly) throws Exception {
-        return queryPickerFirst(picker, cachedPicker, local, includeLocal,
+        return queryOnlineFirst(online, cachedOnline, local, includeLocal,
                 primaryKuaidi100, preview, requireStructuredStatus, statusOnly, System::currentTimeMillis);
     }
 
-    static Batch queryPickerFirst(
-            Source picker,
-            ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+    static Batch queryOnlineFirst(
+            Source online,
+            ManualTimelineAuthorityPolicy.Candidate cachedOnline,
             Source local,
             boolean includeLocal,
             LongSupplier clock) throws Exception {
-        return queryPickerFirst(
-                picker, cachedPicker, local, includeLocal, null, clock);
+        return queryOnlineFirst(
+                online, cachedOnline, local, includeLocal, null, clock);
     }
 
-    static Batch queryPickerFirst(
-            Source picker,
-            ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+    static Batch queryOnlineFirst(
+            Source online,
+            ManualTimelineAuthorityPolicy.Candidate cachedOnline,
             Source local,
             boolean includeLocal,
-            Consumer<ExpressQueryResult> pickerPreview,
+            Consumer<ExpressQueryResult> onlinePreview,
             LongSupplier clock) throws Exception {
-        return queryPickerFirst(picker, cachedPicker, local, includeLocal,
-                null, pickerPreview, clock);
+        return queryOnlineFirst(online, cachedOnline, local, includeLocal,
+                null, onlinePreview, clock);
     }
 
-    static Batch queryPickerFirst(
-            Source picker,
-            ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+    static Batch queryOnlineFirst(
+            Source online,
+            ManualTimelineAuthorityPolicy.Candidate cachedOnline,
             Source local,
             boolean includeLocal,
             Function<ExpressQueryResult, Source> primaryKuaidi100,
-            Consumer<ExpressQueryResult> pickerPreview,
+            Consumer<ExpressQueryResult> onlinePreview,
             LongSupplier clock) throws Exception {
-        return queryPickerFirst(picker, cachedPicker, local, includeLocal,
-                primaryKuaidi100, pickerPreview, false, false, clock);
+        return queryOnlineFirst(online, cachedOnline, local, includeLocal,
+                primaryKuaidi100, onlinePreview, false, false, clock);
     }
 
-    private static Batch queryPickerFirst(
-            Source picker, ManualTimelineAuthorityPolicy.Candidate cachedPicker,
+    private static Batch queryOnlineFirst(
+            Source online, ManualTimelineAuthorityPolicy.Candidate cachedOnline,
             Source local, boolean includeLocal,
             Function<ExpressQueryResult, Source> primaryKuaidi100,
-            Consumer<ExpressQueryResult> pickerPreview, boolean requireStructuredStatus,
+            Consumer<ExpressQueryResult> onlinePreview, boolean requireStructuredStatus,
             boolean statusOnly, LongSupplier clock) throws Exception {
         ArrayList<Success> newSuccesses = new ArrayList<>();
         ArrayList<Success> selectionSuccesses = new ArrayList<>();
         ExpressQueryResult bestEffort = null;
         Exception lastFailure = null;
 
-        QueryOutcome pickerOutcome = queryActivatedSource(
-                new ActivatedSource(TimelineSlot.V6_QUERY, picker), clock, requireStructuredStatus);
-        if (pickerOutcome.result != null) bestEffort = pickerOutcome.result;
-        if (pickerOutcome.success != null) {
-            newSuccesses.add(pickerOutcome.success);
+        QueryOutcome onlineOutcome = online == null ? new QueryOutcome(null, null, null)
+                : queryActivatedSource(new ActivatedSource(TimelineSlot.V6_QUERY, online),
+                        clock, requireStructuredStatus);
+        if (onlineOutcome.result != null) bestEffort = onlineOutcome.result;
+        if (onlineOutcome.success != null) {
+            newSuccesses.add(onlineOutcome.success);
         }
-        ManualTimelineAuthorityPolicy.Candidate effectivePicker = cachedPicker;
-        if (pickerOutcome.success != null
-                && (Kuaidi100TimelinePolicy.hasTimedTracking(pickerOutcome.success.result)
+        ManualTimelineAuthorityPolicy.Candidate effectiveOnline = cachedOnline;
+        if (onlineOutcome.success != null
+                && (Kuaidi100TimelinePolicy.hasTimedTracking(onlineOutcome.success.result)
                 || requireStructuredStatus
-                && ManualTimelineAuthorityPolicy.hasStructuredStatus(pickerOutcome.success.result))) {
+                && ManualTimelineAuthorityPolicy.hasStructuredStatus(onlineOutcome.success.result))) {
             ManualTimelineAuthorityPolicy.Candidate refreshed =
                     new ManualTimelineAuthorityPolicy.Candidate(
-                            pickerOutcome.success.provider,
-                            pickerOutcome.success.result,
-                            pickerOutcome.success.successAt,
-                            pickerOutcome.success.complete);
-            effectivePicker = ManualTimelineAuthorityPolicy.mergeSameProvider(
-                    cachedPicker, refreshed);
-            if (pickerPreview != null && effectivePicker != null
-                    && Kuaidi100TimelinePolicy.hasTimedTracking(effectivePicker.result)) {
-                pickerPreview.accept(effectivePicker.result);
+                            onlineOutcome.success.provider,
+                            onlineOutcome.success.result,
+                            onlineOutcome.success.successAt,
+                            onlineOutcome.success.complete);
+            effectiveOnline = ManualTimelineAuthorityPolicy.mergeSameProvider(
+                    cachedOnline, refreshed);
+            if (onlinePreview != null && effectiveOnline != null
+                    && Kuaidi100TimelinePolicy.hasTimedTracking(effectiveOnline.result)) {
+                onlinePreview.accept(effectiveOnline.result);
             }
         }
-        if (effectivePicker != null
-                && (ManualTimelineAuthorityPolicy.isAuthoritative(effectivePicker)
+        if (effectiveOnline != null
+                && (ManualTimelineAuthorityPolicy.isAuthoritative(effectiveOnline)
                 || requireStructuredStatus
-                && ManualTimelineAuthorityPolicy.hasStructuredStatus(effectivePicker.result))) {
-            selectionSuccesses.add(success(effectivePicker));
+                && ManualTimelineAuthorityPolicy.hasStructuredStatus(effectiveOnline.result))) {
+            selectionSuccesses.add(success(effectiveOnline));
         }
-        if (pickerOutcome.failure != null) lastFailure = pickerOutcome.failure;
+        if (onlineOutcome.failure != null) lastFailure = onlineOutcome.failure;
 
-        // Only the refreshed same-provider Picker history can close its stage before primary
-        // providers start. An existing cache never skips the Picker refresh itself.
-        if (effectivePicker != null && (statusOnly
-                ? ManualTimelineAuthorityPolicy.hasStructuredStatus(effectivePicker.result)
-                : Kuaidi100TimelinePolicy.hasTimelineStart(effectivePicker.result)
+        // Only the refreshed same-provider Online history can close its stage before primary
+        // providers start. An existing cache never skips the Online refresh itself.
+        if (online != null && effectiveOnline != null && (statusOnly
+                ? ManualTimelineAuthorityPolicy.hasStructuredStatus(effectiveOnline.result)
+                : Kuaidi100TimelinePolicy.hasTimelineStart(effectiveOnline.result)
                 && (!requireStructuredStatus
-                || ManualTimelineAuthorityPolicy.hasStructuredStatus(effectivePicker.result)))) {
+                || ManualTimelineAuthorityPolicy.hasStructuredStatus(effectiveOnline.result)))) {
             return new Batch(newSuccesses, selectionSuccesses, bestEffort);
         }
         ArrayList<ActivatedSource> primarySources = new ArrayList<>();
@@ -262,7 +263,8 @@ public final class ManualQueryCoordinator {
             primarySources.add(new ActivatedSource(TimelineSlot.V4_QUERY, local));
         }
         if (primaryKuaidi100 != null) {
-            Source kuaidi100 = primaryKuaidi100.apply(pickerOutcome.result);
+            Source kuaidi100 = primaryKuaidi100.apply(onlineOutcome.result != null
+                    ? onlineOutcome.result : effectiveOnline == null ? null : effectiveOnline.result);
             if (kuaidi100 != null) {
                 primarySources.add(new ActivatedSource(TimelineSlot.K100_H5, kuaidi100));
             }
@@ -270,13 +272,13 @@ public final class ManualQueryCoordinator {
         if (!primarySources.isEmpty()) {
             try {
                 ArrayList<Success> available = new ArrayList<>(selectionSuccesses);
-                ExpressQueryResult[] displayed = {effectivePicker == null ? null : effectivePicker.result};
+                ExpressQueryResult[] displayed = {effectiveOnline == null ? null : effectiveOnline.result};
                 Batch primary = queryActivatedSources(primarySources, clock, success -> {
                     available.add(success);
                     ExpressQueryResult selected = new Batch(available, available, null).selected(true, true);
-                    if (pickerPreview != null && selected != null && selected != displayed[0]) {
+                    if (onlinePreview != null && selected != null && selected != displayed[0]) {
                         displayed[0] = selected;
-                        pickerPreview.accept(selected);
+                        onlinePreview.accept(selected);
                     }
                 }, requireStructuredStatus);
                 if (bestEffort == null) bestEffort = primary.bestEffort;
@@ -305,7 +307,6 @@ public final class ManualQueryCoordinator {
 
     private static QueryOutcome queryActivatedSource(
             ActivatedSource source, LongSupplier clock, boolean requireStructuredStatus) throws Exception {
-        // 与 Pipi 的 `manual level=… event=…` 同一套：每一级何时开始、几秒、几条节点，看 logcat 就够。
         long startedAt = System.currentTimeMillis();
         ExpressLog.line("", source.provider, "manual", "started");
         try {
@@ -314,6 +315,11 @@ public final class ManualQueryCoordinator {
                     result == null ? "failed" : "succeeded",
                     "tail", ExpressLog.tail(result == null ? "" : result.waybill),
                     "nodes", Kuaidi100TimelinePolicy.timedTrackCount(result),
+                    "statusSemantic", result == null ? me.pipi.deliveries.model.StatusSemantic.UNKNOWN : result.semantic,
+                    "statusEventAtMs", result == null ? 0L : result.statusEventTime,
+                    "latestTrackAtMs", Kuaidi100TimelinePolicy.latestTimedEventMillis(result),
+                    "latestEventAtMs", ManualTimelineAuthorityPolicy.latestEventTime(result),
+                    "structuredStatus", result != null && result.structuredStatusEvidence,
                     "elapsedMs", System.currentTimeMillis() - startedAt);
             Success success = null;
             String provider = result == null || result.timelineProvider.isEmpty()

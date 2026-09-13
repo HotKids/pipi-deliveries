@@ -28,9 +28,12 @@ function accountAppRouteKey(record: AccountDetailRecord): string {
   ]))).toHexString().toLowerCase();
 }
 
-function readAccountAppRoutes(): Record<string, AccountAppRouteValue> {
+function readAccountAppRoutes(strict = false): Record<string, AccountAppRouteValue> {
+  let raw: string | null;
+  try { raw = Keychain.get(ACCOUNT_APP_ROUTES_KEY); }
+  catch (error) { if (strict) throw error; return {}; }
   try {
-    const value = JSON.parse(Keychain.get(ACCOUNT_APP_ROUTES_KEY) || "{}");
+    const value = JSON.parse(raw || "{}");
     return value && typeof value === "object" && !Array.isArray(value) ? value : {};
   } catch {
     return {};
@@ -70,8 +73,9 @@ export function loadAccountAppRoutes(record: AccountDetailRecord, now = Date.now
 }
 
 export function pruneAccountAppRoutes(records: readonly AccountDetailRecord[]): void {
+  const routes = readAccountAppRoutes(true);
+  if (!Object.keys(routes).length) return;
   const retained = new Set(records.map(accountAppRouteKey).filter(Boolean));
-  const routes = readAccountAppRoutes();
   let changed = false;
   for (const key of Object.keys(routes)) {
     if (!retained.has(key)) {
@@ -167,9 +171,14 @@ function trustedOrderProjectionRoute(value: string): string {
   return "";
 }
 
-function readOrderProjectionRefs(): RouteMapRead {
+function readOrderProjectionRefs(strict = false): RouteMapRead {
+  let raw: string | null;
+  try { raw = Keychain.get(ORDER_PROJECTION_REFS_KEY); }
+  catch (error) {
+    if (strict) throw error;
+    return { values: {}, dirty: true };
+  }
   try {
-    const raw = Keychain.get(ORDER_PROJECTION_REFS_KEY);
     if (!raw) return { values: {}, dirty: false };
     const value = raw ? (JSON.parse(raw) as unknown) : null;
     if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -279,7 +288,7 @@ export function pruneOrderProjectionReferences(
   const retainedSources = new Map(
     retained.map((item) => [item.ownerId, item.source]),
   );
-  const read = readOrderProjectionRefs();
+  const read = readOrderProjectionRefs(true);
   const refs = read.values;
   let changed = read.dirty;
   for (const [ownerId, value] of Object.entries(refs)) {
@@ -298,9 +307,11 @@ export function pruneOrderProjectionReferences(
   if (changed) writeOrderProjectionRefs(refs);
 }
 
-function read(): RouteMap {
+function read(strict = false): RouteMap {
+  let raw: string | null;
+  try { raw = Keychain.get(ROUTES_KEY); }
+  catch (error) { if (strict) throw error; return {}; }
   try {
-    const raw = Keychain.get(ROUTES_KEY);
     const value = raw ? (JSON.parse(raw) as unknown) : null;
     return value && typeof value === "object" && !Array.isArray(value)
       ? (value as RouteMap)
@@ -518,7 +529,7 @@ export function pruneShipmentRoutes(
   now = Date.now(),
 ): void {
   const retained = new Set(retainedIds);
-  const routes = read();
+  const routes = read(true);
   let changed = false;
   for (const [id, value] of Object.entries(routes)) {
     if (

@@ -2,9 +2,21 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-chrome_bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+chrome_bin=${CHROME_BIN:-}
+if [ -z "$chrome_bin" ]; then
+  chrome_bin=$(command -v chromium || command -v chromium-browser || command -v google-chrome || true)
+fi
+if [ -z "$chrome_bin" ] && [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
+  chrome_bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+fi
+[ -x "$chrome_bin" ] || { echo "Set CHROME_BIN to an installed Chromium browser." >&2; exit 1; }
+project_dir=$(CDPATH= cd -- "$repo_dir/.." && pwd)
+[ -d /Volumes/SAMSUNG ] && [ -w "$project_dir" ] || {
+  echo "The external project volume must be mounted and writable." >&2; exit 1;
+}
+mkdir -p "$project_dir/project-data/tmp"
 html_path="$repo_dir/tools/widget-preview.html"
-preview_profile=$(mktemp -d /tmp/pipi-widget-preview.XXXXXX)
+preview_profile=$(mktemp -d "$project_dir/project-data/tmp/pipi-widget-preview.XXXXXX")
 trap 'rm -rf "$preview_profile"' EXIT HUP INT TERM
 
 render() {

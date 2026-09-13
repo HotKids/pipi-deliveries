@@ -36,7 +36,7 @@ public final class CarrierAuthorityFixture {
                 .put(entry("JTSD", "极兔速递", "jtexpress", "956025", "jtsd", false,
                         values("JT", "J&T", "JTEXPRESS", "JITU"), values(), values(),
                         values("极兔")))
-                .put(entry("HTKY", "极兔速递", "huitongkuaidi", "", "jtsd", false,
+                .put(entry("HTKY", "极兔速递", "huitongkuaidi", "956025", "jtsd", false,
                         values("BEST", "BESTQJT", "HUITONGKUAIDI"), values(), values(),
                         values("百世", "百世快递", "汇通")))
                 .put(entry("DBL", "德邦快递", "debangkuaidi", "95353", "dbl", false,

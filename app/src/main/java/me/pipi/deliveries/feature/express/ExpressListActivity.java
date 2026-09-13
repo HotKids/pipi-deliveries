@@ -236,7 +236,7 @@ public final class ExpressListActivity extends AppCompatActivity {
         // 压在第一行文字上，surfaceContainer 底色又跟页面几乎同色，看起来像一块糊住文字的污渍。
         swipeRefresh.setOnRefreshListener(() -> {
             pullRefreshPending = true;
-            pullRefreshWorkId = ExpressScheduler.requestNow(this).toString();
+            pullRefreshWorkId = ExpressScheduler.requestPullRefresh(this).toString();
             swipeRefresh.removeCallbacks(pullRefreshTimeout);
             swipeRefresh.removeCallbacks(pullRefreshHardTimeout);
             swipeRefresh.postDelayed(pullRefreshTimeout, 15_000L);
@@ -273,6 +273,7 @@ public final class ExpressListActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
+        ExpressScheduler.requestForeground(this);
         orderProjectionCaptureEnabled = true;
         attemptedOrderProjections.clear();
         resetOrderProjectionAttemptsAfterCapture = false;
@@ -349,6 +350,7 @@ public final class ExpressListActivity extends AppCompatActivity {
 
     /** 同步结束：按这轮的计数弹「刷新完成 / 当前已是最新 / 部分 / 失败」，与 iOS 同一套判据。 */
     private void announcePullRefreshOutcome(Intent intent) {
+        if (intent.getBooleanExtra(ExpressRepository.EXTRA_SYNC_RETRYING, false)) return;
         if (!pullRefreshPending || pullRefreshWorkId == null
                 || !pullRefreshWorkId.equals(intent.getStringExtra(
                         ExpressRepository.EXTRA_SYNC_WORK_ID))) return;
@@ -516,7 +518,7 @@ public final class ExpressListActivity extends AppCompatActivity {
         String bindingSource = ExpressAccountSource.bindingSource(this);
         databaseWorker.execute(() -> {
             try {
-                ExpressItem listed = ExpressRepository.get(this).findByWaybill(waybill, bindingSource);
+                ExpressItem listed = ExpressRepository.get(this).findVisibleByWaybill(waybill, bindingSource);
                 runOnUiThread(() -> {
                     if (generation != queryLookupGeneration || isFinishing() || isDestroyed()) return;
                     queryLookupPending = false;
@@ -604,7 +606,7 @@ public final class ExpressListActivity extends AppCompatActivity {
         String company = "";
         try {
             ExpressItem existing = ExpressRepository.get(this)
-                    .findByWaybill(waybill, bindingSource);
+                    .findVisibleByWaybill(waybill, bindingSource);
             String cachedCode = existing == null ? "" : existing.displayCourierCode();
             CarrierRegistry.Carrier cached = existing == null ? null
                     : CarrierRegistry.resolveKuaidi100Code(cachedCode);
@@ -980,8 +982,19 @@ public final class ExpressListActivity extends AppCompatActivity {
     private void requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
+                != PackageManager.PERMISSION_GRANTED
+                && !getPreferences(MODE_PRIVATE).getBoolean("notification_permission_requested", false)) {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("notification_permission_requested", true).apply();
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1100);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(requestCode, permissions, grants);
+        if (requestCode == 1100 && grants.length > 0
+                && grants[0] == PackageManager.PERMISSION_GRANTED) {
+            databaseWorker.execute(() -> ExpressRepository.get(this).replayPendingNotifications());
         }
     }
 
@@ -991,6 +1004,7 @@ public final class ExpressListActivity extends AppCompatActivity {
         @Override public int getCount() { return items.size(); }
         @Override public ExpressItem getItem(int position) { return items.get(position); }
         @Override public long getItemId(int position) { return getItem(position).rowId; }
+        @Override public boolean hasStableIds() { return true; }
 
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
@@ -1006,7 +1020,8 @@ public final class ExpressListActivity extends AppCompatActivity {
             holder.icon.setImageResource(item.displayIconResource());
             holder.title.setText(item.displayStatus());
             holder.title.setTextColor(statusColor(holder.title, item));
-            holder.time.setText(item.latestTime);
+            ExpressSenderBadge.apply(holder.sender, item.sender, statusColor(holder.title, item));
+            holder.time.setText(me.pipi.deliveries.model.ExpressTimeCodec.formatListTime(item.latestTime));
             holder.time.setVisibility(item.latestTime.isEmpty() ? View.GONE : View.VISIBLE);
             holder.remark.setText(item.remark);
             holder.remark.setVisibility(item.remark.isEmpty() ? View.GONE : View.VISIBLE);
@@ -1046,6 +1061,7 @@ public final class ExpressListActivity extends AppCompatActivity {
     private static final class Holder {
         final ImageView icon;
         final TextView title;
+        final TextView sender;
         final TextView time;
         final TextView remark;
         final TextView waybill;
@@ -1055,6 +1071,7 @@ public final class ExpressListActivity extends AppCompatActivity {
         Holder(View root) {
             icon = root.findViewById(R.id.iv_cp_icon);
             title = root.findViewById(R.id.tv_cp_name_and_status);
+            sender = root.findViewById(R.id.tv_express_sender);
             time = root.findViewById(R.id.tv_express_time);
             remark = root.findViewById(R.id.tv_remark);
             waybill = root.findViewById(R.id.tv_mail_no);

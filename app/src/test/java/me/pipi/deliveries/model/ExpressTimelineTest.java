@@ -233,13 +233,13 @@ public final class ExpressTimelineTest {
                 cached.toString(), "[]"));
 
         assertEquals(cached.length(), merged.length());
-        boolean hasPickerOrdered = false;
+        boolean hasOnlineOrdered = false;
         for (int index = 0; index < merged.length(); index++) {
             JSONObject value = merged.getJSONObject(index);
-            hasPickerOrdered |= value.optInt("statusCode") == 102
+            hasOnlineOrdered |= value.optInt("statusCode") == 102
                     && "meizu".equals(value.optString("_pipiStatusSource"));
         }
-        assertEquals(true, hasPickerOrdered);
+        assertEquals(true, hasOnlineOrdered);
     }
 
     @Test

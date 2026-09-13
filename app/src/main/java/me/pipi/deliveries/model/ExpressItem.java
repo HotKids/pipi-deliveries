@@ -44,6 +44,10 @@ public final class ExpressItem {
     public final String manualTimelineProvider;
     /** Success clock of the selected manual timeline, independent from account refreshes. */
     public final long manualTimelineSuccessAt;
+    /** Independent metadata from this owner's account list, never a selected detail package. */
+    public final String senderPhone;
+    public final boolean sender;
+    public final long listOriginAtMs;
 
     public ExpressItem(
             long rowId,
@@ -349,6 +353,25 @@ public final class ExpressItem {
             StatusSemantic sourceSemantic,
             CarrierNormalization carrierNormalization,
             long signedRetainedAt) {
+        this(rowId, phone, waybill, courierCode, companyName, semantic,
+                statusDescription, latestDetail, latestTime, tracksJson, remark,
+                source, detailUrl, statusEventTime, updatedAt, stateOwner, routeOwner,
+                routeInterface, routeCredential, routeCredentialAvailable, projectedWaybill,
+                projectedCompanyName, projectedTracksJson, sourceProvider, manuallyAdded,
+                manualTimelineProvider, manualTimelineSuccessAt, sourceSemantic,
+                carrierNormalization, signedRetainedAt, "", 0L, false);
+    }
+
+    private ExpressItem(long rowId, String phone, String waybill, String courierCode,
+            String companyName, StatusSemantic semantic, String statusDescription,
+            String latestDetail, String latestTime, String tracksJson, String remark,
+            String source, String detailUrl, long statusEventTime, long updatedAt,
+            String stateOwner, String routeOwner, String routeInterface, String routeCredential,
+            boolean routeCredentialAvailable, String projectedWaybill, String projectedCompanyName,
+            String projectedTracksJson, String sourceProvider, boolean manuallyAdded,
+            String manualTimelineProvider, long manualTimelineSuccessAt,
+            StatusSemantic sourceSemantic, CarrierNormalization carrierNormalization,
+            long signedRetainedAt, String senderPhone, long listOriginAtMs, boolean sender) {
         this.rowId = rowId;
         this.phone = clean(phone);
         this.waybill = clean(waybill);
@@ -366,6 +389,9 @@ public final class ExpressItem {
         this.statusEventTime = statusEventTime;
         this.updatedAt = updatedAt;
         this.signedRetainedAt = Math.max(0L, signedRetainedAt);
+        this.senderPhone = clean(senderPhone);
+        this.sender = sender;
+        this.listOriginAtMs = Math.max(0L, listOriginAtMs);
         this.stateOwner = clean(stateOwner);
         this.routeOwner = clean(routeOwner);
         this.routeInterface = clean(routeInterface).toLowerCase(java.util.Locale.ROOT);
@@ -400,6 +426,10 @@ public final class ExpressItem {
         if (semantic == StatusSemantic.COMPLETED && isAccountOrder()
                 && projectedWaybill.isEmpty()) {
             return "已完成";
+        }
+        WorkerStatusProjection projected = WorkerStatusProjection.cached(tracksJson);
+        if (projected != null && projected.matches(semantic, statusEventTime)) {
+            return projected.text.isEmpty() ? semantic.label : projected.text;
         }
         return semantic == StatusSemantic.UNKNOWN && !statusDescription.isEmpty()
                 ? statusDescription : semantic.label;
@@ -450,6 +480,20 @@ public final class ExpressItem {
                     carrierNormalization.displayName);
         }
         return CarrierRegistry.icon(courierCode, companyName);
+    }
+
+    public ExpressItem withAccountListMetadata(String senderPhone, long originAtMs) {
+        return withAccountListMetadata(senderPhone, originAtMs, sender);
+    }
+
+    public ExpressItem withAccountListMetadata(String senderPhone, long originAtMs, boolean sender) {
+        return new ExpressItem(rowId, phone, waybill, courierCode, companyName, semantic,
+                statusDescription, latestDetail, latestTime, tracksJson, remark, source,
+                detailUrl, statusEventTime, updatedAt, stateOwner, routeOwner, routeInterface,
+                routeCredential, routeCredentialAvailable, projectedWaybill, projectedCompanyName,
+                projectedTracksJson, sourceProvider, manuallyAdded, manualTimelineProvider,
+                manualTimelineSuccessAt, sourceSemantic, carrierNormalization, signedRetainedAt,
+                senderPhone, originAtMs, sender);
     }
 
     public String displayWaybill() {

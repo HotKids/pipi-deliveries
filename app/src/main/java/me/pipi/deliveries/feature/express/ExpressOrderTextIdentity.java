@@ -34,7 +34,8 @@ public final class ExpressOrderTextIdentity {
         if (tracksJson == null || tracksJson.trim().isEmpty()) return null;
         String owner = normalize(ownerWaybill);
         try {
-            JSONArray tracks = new JSONArray(tracksJson);
+            JSONArray tracks = me.pipi.deliveries.model.ExpressTimeline.findArray(
+                    new org.json.JSONTokener(tracksJson).nextValue());
             for (int index = 0; index < tracks.length(); index++) {
                 JSONObject track = tracks.optJSONObject(index);
                 if (track == null) continue;

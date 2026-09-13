@@ -29,6 +29,9 @@ assert.equal(dismissedMessage, "");
 assert.equal(transientToast("", () => {}).isPresented, false);
 // 统一 toast 表（AGENTS §11，2026-09-05）：手动查件的提示是短 toast 一次，不再常驻到查完。
 assert.equal(EXPRESS_TOAST_COPY.manualQuerying, "正在查询，请稍候");
+assert.equal(refreshSummaryToast({ attempted: 0, succeeded: 0, failed: 0,
+  skipReason: "active_cross_runtime_refresh" }), EXPRESS_TOAST_COPY.refreshFailed,
+  "another runtime's lease is not proof that this user's pull is up to date");
 assert.equal(manualQueryFailureToast(new OperationTimeoutError()), "请求超时，请稍后重试");
 assert.equal(manualQueryFailureToast(new Error("K100 查询超时")), "请求超时，请稍后重试");
 assert.equal(
@@ -50,12 +53,12 @@ assert.equal(
 );
 assert.equal(
   refreshSummaryToast({ attempted: 3, succeeded: 2, failed: 1, accountListUpdated: false }),
-  "刷新完成，部分快递暂未更新",
-  "successful individual queries must not claim that a failed account list was updated",
+  "列表已更新",
+  "partial success has one list-update toast regardless of which stage succeeded",
 );
 assert.equal(
-  refreshSummaryToast({ attempted: 3, succeeded: 2, failed: 1 }),
-  "刷新完成，部分快递暂未更新",
+  refreshSummaryToast({ attempted: 5, succeeded: 4, failed: 1 }),
+  "列表已更新",
 );
 assert.equal(
   refreshSummaryToast({ attempted: 2, succeeded: 0, failed: 2 }),

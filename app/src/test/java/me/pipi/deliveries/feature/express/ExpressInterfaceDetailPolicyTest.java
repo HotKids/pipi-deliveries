@@ -25,18 +25,18 @@ public class ExpressInterfaceDetailPolicyTest {
                 "[{\"time\":\"2026-09-09 10:00:00\",\"context\":\"" + detail + "\"}]");
     }
 
-    @Test public void interface6CainiaoCannotEnterNativeRefresh() {
-        assertFalse(ExpressDetailActivity.canRefreshLocalTimeline(owner("INTERFACE6", "CaiNiao")));
+    @Test public void bothSupportedCainiaoInterfacesUseNativeDetail() {
+        assertTrue(ExpressDetailActivity.canRefreshLocalTimeline(owner("INTERFACE6", "CaiNiao")));
         assertTrue(ExpressDetailActivity.canRefreshLocalTimeline(owner("INTERFACE5", "CaiNiao")));
     }
 
-    @Test public void automaticPickupStopsBeforePickerButOrderOnlyDoesNot() {
+    @Test public void automaticPickupStopsBeforeOnlineButOrderOnlyDoesNot() {
         ExpressItem owner = owner("INTERFACE5", "DouYin");
         assertFalse(ExpressDetailActivity.needsManualSupplement(owner, result("已揽收"), null));
         assertTrue(ExpressDetailActivity.needsManualSupplement(owner, result("订单已提交"), null));
     }
 
-    @Test public void cachedPickerOrderCannotProveAutomaticSourceComplete() {
+    @Test public void cachedOnlineOrderCannotProveAutomaticSourceComplete() {
         assertTrue(ExpressDetailActivity.needsManualSupplement(
                 owner("INTERFACE5", "DouYin"), result("运输中"), result("订单已提交")));
     }

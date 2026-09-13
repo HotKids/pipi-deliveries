@@ -93,7 +93,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     static final String EXTRA_RETRY_MISMATCH = "retry_mismatch";
     private static final String EXTRA_PREVIEW = "express_preview";
     private static final String EXTRA_PERSIST_PREVIEW = "persist_express_preview";
-    private static final String EXTRA_TRANSIENT_PICKER_PREVIEW =
+    private static final String EXTRA_TRANSIENT_ONLINE_PREVIEW =
             "transient_picker_preview";
     private static final String EXTRA_WAYBILL = "preview_waybill";
     private static final String EXTRA_COURIER = "preview_courier";
@@ -124,11 +124,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     static final long ORDER_CAPTURE_TIMEOUT_MS = 20_000L;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
-    private WebView webView;
-    private boolean webNativeFallbackStarted;
     private ExpressKuaidi100TimelineCapture kuaidi100Capture;
     private ExpressQueryCancellation presentationCancellation;
-    private ExpressQueryCancellation directRouteCancellation;
     private LinearLayout timeline;
     private boolean timelineLoadingPlaceholder;
     private LinearProgressIndicator nativeProgress;
@@ -196,7 +193,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 .putExtra(EXTRA_MANUAL_QUERY, true)
                 .putExtra(EXTRA_MANUAL_COURIER_HINT, courierHint)
                 .putExtra(EXTRA_PERSIST_PREVIEW, false)
-                .putExtra(EXTRA_TRANSIENT_PICKER_PREVIEW, true);
+                .putExtra(EXTRA_TRANSIENT_ONLINE_PREVIEW, true);
     }
 
 
@@ -245,11 +242,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
     }
 
-    static Intent transientPickerPreviewIntent(
+    static Intent transientOnlinePreviewIntent(
             Context context, ExpressQueryResult result, String phone, String bindingSource) {
         return previewIntent(context, result, phone, bindingSource)
                 .putExtra(EXTRA_PERSIST_PREVIEW, false)
-                .putExtra(EXTRA_TRANSIENT_PICKER_PREVIEW, true)
+                .putExtra(EXTRA_TRANSIENT_ONLINE_PREVIEW, true)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
     }
 
@@ -305,9 +302,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             finish();
             return;
         }
-        boolean transientPickerPreview = getIntent().getBooleanExtra(
-                EXTRA_TRANSIENT_PICKER_PREVIEW, false);
-        String cainiaoUrl = transientPickerPreview ? "" : safeCainiaoUrl(item);
+        boolean transientOnlinePreview = getIntent().getBooleanExtra(
+                EXTRA_TRANSIENT_ONLINE_PREVIEW, false);
+        String cainiaoUrl = transientOnlinePreview ? "" : safeCainiaoUrl(item);
         // 只打尾号和分支判定，不落完整单号：对照「这一行为什么开了哪一页」。
         me.pipi.deliveries.network.ExpressLog.line(
                 detailLogInterface(item), "detail",
@@ -317,29 +314,23 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 "accountOrder", item.isAccountOrder(),
                 "projected", !item.projectedWaybill.isEmpty(),
                 "preview", previewResult != null,
-                "transient", transientPickerPreview,
+                "transient", transientOnlinePreview,
                 "cainiao", !cainiaoUrl.isEmpty());
-        if (!transientPickerPreview && usesInterface5Automatic(item)) {
+        if (!transientOnlinePreview && usesNativeAutomaticDetail(item)) {
             showNativeDetail();
             if (!item.semantic.terminal()) refreshLocalTimeline(false);
-        } else if (!transientPickerPreview && usesDirectAutomaticH5(item)) {
-            String route = cainiaoUrl;
-            if (route.isEmpty()) recoverDirectAutomaticRoute();
-            else showCainiaoWebDetail(route);
         } else {
-                // Native history precedes K100 capture and its visible webpage fallback.
+                // Entry displays the cached package; an explicit pull owns later H5 capture.
                 me.pipi.deliveries.network.ExpressLog.line(
                         detailLogInterface(item), "detail", "", "selected",
                         "tail", tailOf(item.displayWaybill()), "branch", "native");
                 showNativeDetail();
                 if (getIntent().getBooleanExtra(EXTRA_MANUAL_QUERY, false)) {
                     startFirstManualQuery();
-                } else if (previewResult != null) {
-                    ensureKuaidi100Presentation(previewResult, "preview");
                 }
         }
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
-            @Override public void handleOnBackPressed() { navigateBack(); }
+            @Override public void handleOnBackPressed() { finish(); }
         });
     }
 
@@ -349,8 +340,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         presentationCancellation = null;
         if (kuaidi100Capture != null) kuaidi100Capture.cancel();
         kuaidi100Capture = null;
-        if (directRouteCancellation != null) directRouteCancellation.cancel();
-        directRouteCancellation = null;
         if (localRefreshInFlight) {
             cancelLocalTimelineRefresh(localRefreshGeneration, !isFinishing());
         } else {
@@ -364,8 +353,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         super.onStart();
         showInitialDetailWhenStarted();
         if (!initialDetailShown) return;
-        if (usesDirectAutomaticH5(item) && webView == null && directRouteCancellation == null)
-            recoverDirectAutomaticRoute();
         if (restartLocalRefreshOnStart) {
             restartLocalRefreshOnStart = false;
             restartLocalTimelineRefreshIfNeeded();
@@ -417,18 +404,13 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         courierHint.get(), existing == null ? "" : existing.courierCode));
                 ExpressApi manualApi = new ExpressApi(getApplicationContext());
                 ExpressSubscriptionClient meizuApi = new ExpressSubscriptionClient();
-                ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryPickerFirst(
+                ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
                         () -> meizuApi.queryManual(getApplicationContext(), waybill, cancellation),
                         existing == null ? null : repository.manualTimelineCandidate(
                                 existing, TimelineSlot.V6_QUERY),
-                        () -> {
-                            if (courierHint.get().isEmpty()) {
-                                courierHint.set(manualApi.detect(waybill, cancellation));
-                            }
-                            return manualApi.queryMoto(waybill, courierHint.get(), cancellation);
-                        }, ManualQueryRoutingPolicy.includesMoto(existing), pickerResult -> {
-                            String code = pickerResult != null && !pickerResult.courierCode.isEmpty()
-                                    ? pickerResult.courierCode : courierHint.get();
+                        null, ManualQueryRoutingPolicy.includesMoto(existing), onlineResult -> {
+                            String code = onlineResult != null && !onlineResult.courierCode.isEmpty()
+                                    ? onlineResult.courierCode : courierHint.get();
                             if (!TimelineSlot.JT_H5.equals(ManualRoutePolicy.primaryH5Provider(code))) return null;
                             ExpressQueryResult identity = new ExpressQueryResult(waybill, code, "",
                                     StatusSemantic.UNKNOWN, "", "", "[]");
@@ -441,7 +423,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         partial -> publishFirstManualPreview(partial, cancellation), true);
                 cancellation.throwIfCancelled();
                 ExpressQueryResult selected = firstManualResult(batch.successes, batch.detailSelected());
-                if (selected == null) throw new IllegalStateException("暂无轨迹");
+                if (selected == null) throw new ExpressApi.NoTrackException();
                 String phone = !suppliedPhone.isEmpty() ? suppliedPhone
                         : existing != null && !existing.phone.isEmpty() ? existing.phone : selected.phone;
                 List<ManualQuerySuccess> writes = new ArrayList<>(batch.successes);
@@ -564,7 +546,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             }
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
-                Toast.makeText(this, "暂无轨迹".equals(failure.getMessage())
+                Toast.makeText(this, failure instanceof ExpressApi.NoTrackException
                         ? ExpressToastCopy.MANUAL_QUERY_NO_TRACK
                         : ExpressToastCopy.MANUAL_QUERY_FAILED, Toast.LENGTH_SHORT).show();
                 if (!Kuaidi100TimelinePolicy.hasTimedTracking(previewResult)) finish();
@@ -727,8 +709,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 return;
             }
             if (renderManualTimelineAuthority(snapshot, true)) {
-                // 进详情先跑一次 Meizu 增量（已完整时 refreshLocalTimeline 自己按 complete_cache 跳过），
-                // 跑完由 ensureKuaidi100Presentation 决定要不要抓 K100 页、要不要开网页。
                 refreshLocalTimeline(false);
                 return;
             }
@@ -878,160 +858,13 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 && (!value.isAccountOrder() || !value.projectedWaybill.isEmpty());
     }
 
-    /** Reuse the fixed K100 page and this parcel's saved phone when its local history is incomplete. */
-    private void ensureKuaidi100Presentation(ExpressQueryResult localDetail, String reason) {
-        if (item == null || usesInterface5Automatic(item)
-                || isFinishing() || isDestroyed() || webView != null) return;
-        if (manualPhoneTailRequired && item.manuallyAdded) return;
-        String provider = ManualRoutePolicy.primaryH5Provider(item.displayCourierCode());
-        String route = kuaidi100FallbackUrl();
-        if (route.isEmpty()) return;
-        String tail = tailOf(item.displayWaybill());
-        if (timelineComplete(localDetail)) {
-            me.pipi.deliveries.network.ExpressLog.line(
-                    "", provider, "manual", "skipped",
-                    "tail", tail, "reason", "local_complete");
-            return;
-        }
-        if (kuaidi100Capture != null) return;
-        ExpressItem target = item;
-        List<String> boundPhones = target.manuallyAdded
-                ? detailState.phones : java.util.Collections.emptyList();
-        List<String> phones = ExpressKuaidi100TimelineCapture.phoneCandidates(target.phone, boundPhones);
-        long startedAt = System.currentTimeMillis();
-        // K100 结果页同一运单 30 分钟一次是快递100 上游自己的限制（iOS/Pipi 那一级同一冷却）；
-        // 冷却内不再抓，直接按兜底开网页。
-        if (!ExpressKuaidi100CaptureCooldown.due(this, provider, target.displayWaybill(), phones, startedAt)) {
-            me.pipi.deliveries.network.ExpressLog.line(
-                    "", provider, "manual", "skipped", "tail", tail, "reason", "cooldown");
-            showKuaidi100WebDetail(route);
-            return;
-        }
-        ExpressKuaidi100CaptureCooldown.record(this, provider, target.displayWaybill(), phones, startedAt);
-        me.pipi.deliveries.network.ExpressLog.line(
-                "", provider, "manual", "started", "tail", tail, "reason", reason);
-        ExpressQueryCancellation cancellation = new ExpressQueryCancellation(
-                ExpressKuaidi100TimelineCapture.CAPTURE_TIMEOUT_MS + LOCAL_REFRESH_TIMEOUT_MS);
-        if (presentationCancellation != null) presentationCancellation.cancel();
-        presentationCancellation = cancellation;
-        ExpressRepository.ManualQueryOwnerClaim ownerClaim = detailState == null ? null : detailState.ownerClaim;
-        ExpressKuaidi100TimelineCapture capture = new ExpressKuaidi100TimelineCapture(
-                this, route, target.displayWaybill(), target.phone, (finished, tracksJson) -> {
-                    if (kuaidi100Capture != finished) return;
-                    kuaidi100Capture = null;
-                    if (cancellation.isCancelled() || isFinishing() || isDestroyed() || item == null
-                            || item.rowId != target.rowId || webView != null) return;
-                    long elapsed = System.currentTimeMillis() - startedAt;
-                    ExpressQueryResult captured = kuaidi100CapturedResult(target, tracksJson);
-                    int nodes = Kuaidi100TimelinePolicy.timedTrackCount(captured);
-                    if (nodes == 0) {
-                        if (target.manuallyAdded && finished.needsPhoneTail()) {
-                            Toast.makeText(this, ExpressToastCopy.MANUAL_PHONE_TAIL_REQUIRED,
-                                    Toast.LENGTH_SHORT).show();
-                            return;
-                        }
-                        me.pipi.deliveries.network.ExpressLog.line(
-                                "", provider, "manual", "failed",
-                                "tail", tail, "reason", "no_tracks", "elapsedMs", elapsed);
-                        showKuaidi100WebDetail(route);
-                        return;
-                    }
-                    boolean complete = timelineComplete(captured);
-                    if (complete) {
-                        me.pipi.deliveries.network.ExpressLog.line(
-                                "", provider, "manual", "succeeded",
-                                "tail", tail, "nodes", nodes, "elapsedMs", elapsed);
-                    } else {
-                        // 抓到了却没到起点：记最早一条的前几个字，对照页面到底缺的是哪一段
-                        // （Fold7 2026-09-05 EMS：页 20 条 vs v4_query 22 条，少的正是收寄那两条）。
-                        me.pipi.deliveries.network.ExpressLog.line(
-                                "", provider, "manual", "failed",
-                                "tail", tail, "reason", "incomplete",
-                                "nodes", nodes, "elapsedMs", elapsed,
-                                "earliest", earliestTrackHead(captured));
-                    }
-                    persistKuaidi100Capture(target, ownerClaim, captured, complete, cancellation);
-                    if (!complete) showKuaidi100WebDetail(route);
-                });
-        capture.usePhoneCandidates(boundPhones);
-        kuaidi100Capture = capture;
-        if (!capture.start()) {
-            kuaidi100Capture = null;
-            me.pipi.deliveries.network.ExpressLog.line(
-                    "", provider, "manual", "failed",
-                    "tail", tail, "reason", "capture_unavailable");
-            showKuaidi100WebDetail(route);
-        }
-    }
-
-    /** 抓到的节点按本件的 K100 槽落库；完整时再按详情权威重新渲染。 */
-    private void persistKuaidi100Capture(
-            ExpressItem target, ExpressRepository.ManualQueryOwnerClaim ownerClaim,
-            ExpressQueryResult captured, boolean complete, ExpressQueryCancellation cancellation) {
-        if (target.rowId <= 0L) {
-            if (complete && !cancellation.isCancelled()) renderTimeline(ExpressTimeline.parse(
-                    captured.tracksJson, captured.latestTime, captured.latestDetail));
-            return;
-        }
-        String owner = target.stateOwner.isEmpty() ? target.source : target.stateOwner;
-        String bindingSource = ExpressAccountSource.bindingSourceForOwner(owner);
-        try {
-            worker.execute(() -> {
-                ExpressRepository repository = ExpressRepository.get(this);
-                try {
-                    if (repository.saveClaimedManualQueryBatch(target, ownerClaim,
-                            List.of(new ManualQuerySuccess(captured.timelineProvider, captured,
-                                    System.currentTimeMillis(), complete)), target.phone, bindingSource,
-                            true, null, cancellation) == null) return;
-                } catch (Throwable failure) {
-                    Log.w(MANUAL_LOG_TAG, "K100 capture persist failed rowId="
-                            + target.rowId + " error=" + failure.getClass().getSimpleName());
-                }
-                if (!complete) return;
-                ExpressItem refreshedOwner = repository.find(target.rowId);
-                DetailState snapshot = refreshedOwner == null ? null
-                        : new DetailState(repository, refreshedOwner, bindingSource);
-                ManualTimelineAuthorityPolicy.Candidate authority = snapshot == null ? null : snapshot.selected;
-                runOnUiThread(() -> {
-                    if (cancellation.isCancelled() || isFinishing() || isDestroyed() || item == null
-                            || item.rowId != target.rowId || webView != null
-                            || statusView == null) return;
-                    if (refreshedOwner != null) {
-                        item = refreshedOwner;
-                        detailState = snapshot;
-                    }
-                    ImageView icon = findViewById(R.id.detail_icon);
-                    if (icon != null) icon.setImageResource(item.displayIconResource());
-                    renderHeader(item.displayCourierCode(), item.displayCompany(),
-                            item.displayWaybill(), item.displayStatus(), item.semantic);
-                    ExpressQueryResult detail = authority == null ? captured : authority.result;
-                    rememberDisplayedProvider(
-                            authority == null ? captured.timelineProvider : authority.provider);
-                    renderTimeline(ExpressTimeline.parse(
-                            detail.tracksJson, detail.latestTime, detail.latestDetail));
-                });
-            });
-        } catch (RejectedExecutionException ignored) {
-        }
-    }
-
-    /** 最早一条节点的前 24 个字（只用于日志对照，不落单号/手机号之外的东西）。 */
-    private static String earliestTrackHead(ExpressQueryResult result) {
-        if (result == null) return "";
-        List<ExpressTimeline.Track> tracks = ExpressTimeline.parse(result.tracksJson, "", "");
-        if (tracks.isEmpty()) return "";
-        ExpressTimeline.Track earliest = tracks.get(tracks.size() - 1);
-        String detail = earliest.detail == null ? "" : earliest.detail.replaceAll("\\s+", " ");
-        return earliest.time + " " + detail.substring(0, Math.min(detail.length(), 24));
-    }
-
     /** 「完整轨迹」= 有带时间的节点，且到了起点（揽收或下单，与 needsManualSupplement 同判据）。 */
     static boolean timelineComplete(ExpressQueryResult result) {
         return Kuaidi100TimelinePolicy.hasTimedTracking(result)
                 && Kuaidi100TimelinePolicy.hasTimelineStart(result);
     }
 
-    /** 抓到的节点只是轨迹，状态仍按结构化来源（picker / v4_query）给，与三端「状态看结构化」一致。 */
+    /** 抓到的节点只是轨迹，状态仍按结构化来源（online / v4_query）给，与三端「状态看结构化」一致。 */
     static ExpressQueryResult kuaidi100CapturedResult(ExpressItem owner, String tracksJson) {
         if (owner == null) return null;
         return kuaidi100CapturedResult(
@@ -1039,7 +872,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 owner.phone, tracksJson);
     }
 
-    /** 加件链也用这一份：行还没建时按 picker/v4 给的承运商身份组包。 */
+    /** 加件链也用这一份：行还没建时按 online/v4 给的承运商身份组包。 */
     static ExpressQueryResult kuaidi100CapturedResult(
             String waybill, String courierCode, String companyName, String phone,
             String tracksJson) {
@@ -1056,230 +889,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 "", phone == null ? "" : phone, ManualRoutePolicy.primaryH5Provider(courierCode), "", "", "");
     }
 
-    private String kuaidi100FallbackUrl() {
-        ExpressItem owner = detailState == null ? item : detailState.routeOwner;
-        if (!allowsKuaidi100Route(owner, previewResult)) return "";
-        return ManualRoutePolicy.primaryH5Url(owner == null
-                ? previewResult == null ? "" : previewResult.waybill : owner.displayWaybill(),
-                owner == null ? previewResult == null ? "" : previewResult.courierCode : owner.displayCourierCode());
-    }
-
-    private void showCainiaoWebDetail(String detailUrl) {
-        setContentView(R.layout.activity_express_web);
-        applySystemBarInsets(findViewById(R.id.express_web_root));
-        MaterialToolbar toolbar = findViewById(R.id.web_toolbar);
-        toolbar.setTitle(item.displayCompany());
-        toolbar.setNavigationOnClickListener(view -> navigateBack());
-        ProgressBar progress = findViewById(R.id.web_progress);
-        webView = findViewById(R.id.web_view);
-        configureWebView(webView);
-        int pageSurface = MaterialColors.getColor(webView,
-                com.google.android.material.R.attr.colorSurface);
-        webView.setBackgroundColor(pageSurface);
-        // Keep the provider page hidden until its white/translucent roots have been replaced
-        // with this activity's Material dynamic surface. This avoids both a white flash in dark
-        // mode and an untinted white page when wallpaper colors are active in light mode.
-        webView.setVisibility(View.INVISIBLE);
-        CookieManager.getInstance().setAcceptCookie(true);
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
-        String localLogo = courierLogoDataUri(item);
-        webView.setWebViewClient(new WebViewClient() {
-            @Override public boolean shouldOverrideUrlLoading(
-                    WebView view, WebResourceRequest request) {
-                boolean blocked = request == null || !allowed(request.getUrl());
-                if (blocked && (request == null || request.isForMainFrame())) {
-                    fallbackWebDetailToNative(view, progress);
-                }
-                return blocked;
-            }
-
-            @Override public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                revealCainiaoPageOrFallback(
-                        view, url, localLogo, pageSurface, progress);
-            }
-
-            @Override public void onReceivedError(
-                    WebView view, WebResourceRequest request, WebResourceError error) {
-                super.onReceivedError(view, request, error);
-                if (request == null || request.isForMainFrame()) {
-                    fallbackWebDetailToNative(view, progress);
-                }
-            }
-
-            @Override public void onReceivedHttpError(
-                    WebView view, WebResourceRequest request, WebResourceResponse response) {
-                super.onReceivedHttpError(view, request, response);
-                if (request == null || request.isForMainFrame()) {
-                    fallbackWebDetailToNative(view, progress);
-                }
-            }
-
-            @Override public boolean onRenderProcessGone(
-                    WebView view, RenderProcessGoneDetail detail) {
-                return handleRenderProcessGone(view, progress, true, detail);
-            }
-        });
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override public void onProgressChanged(WebView view, int newProgress) {
-                progress.setProgress(newProgress);
-                progress.setVisibility(newProgress >= 100 ? View.GONE : View.VISIBLE);
-            }
-        });
-        webView.loadUrl(detailUrl);
-        webView.postDelayed(() -> {
-            if (isCurrentDetailWebView(webView)
-                    && webView.getVisibility() != View.VISIBLE) {
-                fallbackWebDetailToNative(webView, progress);
-            }
-        }, 12_000L);
-    }
-
-    /** Opens Picker's K100 route without treating it as a source-owned route atom. */
-    private void showKuaidi100WebDetail(String detailUrl) {
-        pullRefreshRequested = false;
-        setContentView(R.layout.activity_express_web);
-        applySystemBarInsets(findViewById(R.id.express_web_root));
-        MaterialToolbar toolbar = findViewById(R.id.web_toolbar);
-        toolbar.setTitle(item.displayCompany());
-        toolbar.setNavigationOnClickListener(view -> navigateBack());
-        ProgressBar progress = findViewById(R.id.web_progress);
-        webView = findViewById(R.id.web_view);
-        configureWebView(webView);
-        int pageSurface = MaterialColors.getColor(webView,
-                com.google.android.material.R.attr.colorSurface);
-        webView.setBackgroundColor(pageSurface);
-        webView.setVisibility(View.INVISIBLE);
-        CookieManager.getInstance().setAcceptCookie(true);
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
-        webView.setWebViewClient(new WebViewClient() {
-            @Override public boolean shouldOverrideUrlLoading(
-                    WebView view, WebResourceRequest request) {
-                boolean blocked = request == null
-                        || ManualRoutePolicy.safePrimaryH5Url(
-                                request.getUrl().toString(), item.displayWaybill()).isEmpty();
-                if (blocked && (request == null || request.isForMainFrame())) {
-                    fallbackWebDetailToNative(view, progress);
-                }
-                return blocked;
-            }
-
-            @Override public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                revealWebView(view, progress);
-            }
-
-            @Override public void onPageCommitVisible(WebView view, String url) {
-                super.onPageCommitVisible(view, url);
-                revealWebView(view, progress);
-            }
-
-            @Override public void onReceivedError(
-                    WebView view, WebResourceRequest request, WebResourceError error) {
-                super.onReceivedError(view, request, error);
-                if (request == null || request.isForMainFrame()) {
-                    fallbackWebDetailToNative(view, progress);
-                }
-            }
-
-            @Override public void onReceivedHttpError(
-                    WebView view, WebResourceRequest request, WebResourceResponse response) {
-                super.onReceivedHttpError(view, request, response);
-                if (request == null || request.isForMainFrame()) {
-                    fallbackWebDetailToNative(view, progress);
-                }
-            }
-
-            @Override public boolean onRenderProcessGone(
-                    WebView view, RenderProcessGoneDetail detail) {
-                return handleRenderProcessGone(view, progress, true, detail);
-            }
-        });
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override public void onProgressChanged(WebView view, int newProgress) {
-                progress.setProgress(newProgress);
-                progress.setVisibility(newProgress >= 100 ? View.GONE : View.VISIBLE);
-            }
-        });
-        webView.loadUrl(detailUrl);
-        webView.postDelayed(() -> {
-            if (isCurrentDetailWebView(webView)
-                    && webView.getVisibility() != View.VISIBLE) {
-                fallbackWebDetailToNative(webView, progress);
-            }
-        }, 12_000L);
-    }
-
-    private void revealCainiaoPageOrFallback(
-            WebView view, String url, String localLogo,
-            int pageSurface, ProgressBar progress) {
-        if (!isCurrentDetailWebView(view)) return;
-        view.evaluateJavascript(
-                "(function(){var b=document.body;if(!b)return false;"
-                        + "var t=(b.innerText||'').trim();"
-                        + "return t.length>0||!!b.querySelector('img,svg,canvas,video');})()",
-                value -> {
-                    if (!isCurrentDetailWebView(view)) return;
-                    if (!"true".equals(value)) {
-                        fallbackWebDetailToNative(view, progress);
-                        return;
-                    }
-                    decorateCainiaoPage(view, url, localLogo,
-                            pageSurface, () -> revealWebView(view, progress));
-                });
-    }
-
-    private static void revealWebView(WebView view, ProgressBar progress) {
-        if (view != null) view.setVisibility(View.VISIBLE);
-        if (progress != null) progress.setVisibility(View.GONE);
-    }
-
-    /** A provider H5 is presentation-only; failure must preserve the local owner package. */
-    private void fallbackWebDetailToNative(WebView failed, ProgressBar progress) {
-        if (failed == null || failed != webView || webNativeFallbackStarted
-                || isFinishing() || isDestroyed()) return;
-        if (usesDirectAutomaticH5(item)) {
-            webNativeFallbackStarted = true;
-            if (progress != null) progress.setVisibility(View.GONE);
-            Toast.makeText(this, ExpressToastCopy.H5_UNAVAILABLE, Toast.LENGTH_SHORT).show();
-            finish();
-            return;
-        }
-        fallbackWebDetail(failed, progress);
-    }
-
-    private void fallbackWebDetail(
-            WebView failed, ProgressBar progress) {
-        if (webNativeFallbackStarted || failed == null || failed != webView
-                || isFinishing() || isDestroyed()) return;
-        webNativeFallbackStarted = true;
-        webView = null;
-        if (progress != null) progress.setVisibility(View.GONE);
-        failed.stopLoading();
-        ViewGroup parent = (ViewGroup) failed.getParent();
-        if (parent != null) parent.removeView(failed);
-        failed.destroy();
-        showNativeDetail();
-    }
-
-    private boolean handleRenderProcessGone(
-            WebView crashed, ProgressBar progress, boolean closeDetail,
-            RenderProcessGoneDetail detail) {
-        Log.w(ORDER_LOG_TAG, "WebView renderer exited; crashed="
-                + (detail != null && detail.didCrash()));
-        boolean detailWeb = crashed == webView;
-        if (closeDetail && detailWeb && !isFinishing() && !isDestroyed()) {
-            fallbackWebDetailToNative(crashed, progress);
-            return true;
-        }
-        if (detailWeb) webView = null;
-        if (progress != null) progress.setVisibility(View.GONE);
-        ViewGroup parent = crashed == null ? null : (ViewGroup) crashed.getParent();
-        if (parent != null) parent.removeView(crashed);
-        if (crashed != null) crashed.destroy();
-        return true;
-    }
-
     private void refreshLocalTimeline(boolean showProgress) {
         if (item == null || !canRefreshLocalTimeline(item)) {
             if (detailSwipe != null) detailSwipe.setRefreshing(false);
@@ -1291,7 +900,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     /** SF's unchanged coarse feed cannot prove an active parcel has no newer events. */
     static boolean shouldSkipCompleteCache(ExpressItem value, boolean complete) {
-        return value != null && !allowsJingDongCapture(value)
+        return value != null && !(allowsJingDongCapture(value)
+                && value.isAccountOrder() && value.projectedWaybill.isEmpty())
                 && value.semantic != StatusSemantic.UNKNOWN && complete
                 && (!value.isShunFengSource() || value.semantic.terminal());
     }
@@ -1300,9 +910,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private boolean currentDetailComplete(ExpressItem value) {
         try {
             ExpressRepository repository = ExpressRepository.get(this);
-            if (automaticDetailComplete(repository, value)) return true;
-            ExpressQueryResult account = prefersAccountTimeline(value)
-                    ? accountTimelineFor(repository, value, value.displayWaybill(), "interface5") : null;
+            ExpressQueryResult account = repository.automaticSourceTimeline(value);
             return currentDetailComplete(value, account, repository.manualDetailTimelineAuthority(value));
         } catch (RuntimeException failure) {
             return false;
@@ -1311,24 +919,26 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     static boolean currentDetailComplete(ExpressItem value, ExpressQueryResult account,
             ManualTimelineAuthorityPolicy.Candidate selected) {
-        if (value.isShunFengSource() && !value.semantic.terminal()
-                && !ManualTimelineAuthorityPolicy.isShunFengManualCandidate(selected)) return false;
-        if (prefersAccountTimeline(value) && Kuaidi100TimelinePolicy.hasTimedTracking(account)
-                && Kuaidi100TimelinePolicy.hasPickupEvidence(account)) return true;
-        if (selected == null) return false;
-        long feedLatest = value.manuallyAdded ? 0L
-                : Kuaidi100TimelinePolicy.latestTimedEventMillis(itemResult(
-                        value, value.displayWaybill(), TimelineSlot.K100_H5));
-        // Without a feed time baseline, an in-transit manual parcel remains refreshable.
-        if (feedLatest <= 0L) {
-            return value.semantic != null && value.semantic.terminal()
-                    && Kuaidi100TimelinePolicy.hasPickupEvidence(selected.result);
-        }
-        return ManualTimelineAuthorityPolicy.detailTimelineComplete(selected.result, feedLatest);
+        if (value == null || value.isShunFengSource() && !value.semantic.terminal()) return false;
+        ExpressQueryResult detail = selected == null ? account : selected.result;
+        if (detail == null) return false;
+        long reference = value.manuallyAdded ? 0L
+                : Math.max(value.statusEventTime, ExpressTimeline.parseTime(value.latestTime));
+        ExpressQueryResult presented = new ExpressQueryResult(detail.waybill, detail.courierCode,
+                detail.companyName, value.semantic, value.statusEventTime, detail.latestTime,
+                detail.latestDetail, me.pipi.deliveries.model.WorkerStatusProjection.attach(detail.tracksJson,
+                        me.pipi.deliveries.model.WorkerStatusProjection.cached(value.tracksJson)),
+                detail.detailUrl, detail.phone,
+                detail.timelineProvider, detail.routeInterface, detail.routeCredential,
+                detail.sourceProvider, detail.carrierNormalization)
+                .withManualStatusEvidence(value.statusDescription, detail.structuredStatusEvidence);
+        if (reference <= 0L && !value.semantic.terminal()) return false;
+        return ManualTimelineAuthorityPolicy.detailTimelineComplete(presented, reference);
     }
 
     /** 下拉结果只弹一次：有新轨迹 / 已是最新 / 没有可用轨迹 / 抛错且页面上没轨迹可看。 */
     private boolean pullRefreshRequested;
+    private boolean detailEntryObserved;
     private String pullRefreshBaseline = "";
     private volatile boolean localRefreshFailed;
     private volatile boolean manualPhoneTailRequired;
@@ -1368,10 +978,18 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             pullRefreshRequested = false;
             return;
         }
+        if (!pullRefreshRequested) {
+            if (detailEntryObserved || !usesNativeAutomaticDetail(item) || item.isShunFengSource()) {
+                setLocalRefreshProgressVisible(false);
+                return;
+            }
+            detailEntryObserved = true;
+        }
         localRefreshInFlight = true;
         manualPhoneTailRequired = false;
         int generation = ++localRefreshGeneration;
         ExpressItem requestItem = item;
+        boolean detailPull = pullRefreshRequested;
         ExpressQueryCancellation cancellation =
                 new ExpressQueryCancellation(localRefreshBudgetMillis(requestItem));
         localRefreshCancellation = cancellation;
@@ -1382,14 +1000,21 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             localRefreshTask = worker.submit(() -> {
                 if (!taskState.compareAndSet(0, 1)) return;
                 ExpressRepository.ManualTimelinePollClaim claim = null;
-                try {
+                try (ExpressLog.Scope diagnostics = ExpressLog.scope(
+                        ExpressLog.newFlowId("detail"), detailPull ? "detail_pull" : "detail_open",
+                        detailLogInterface(requestItem))) {
+                    ExpressLog.write("detail.refresh.started", "waybillTail", tailOf(requestItem.displayWaybill()));
                     ExpressRepository repository = ExpressRepository.get(this);
                     cancellation.throwIfCancelled();
                     if (shouldSkipCompleteCache(requestItem, currentDetailComplete(requestItem))) return;
                     ExpressItem refreshedItem = requestItem;
-                    if (usesInterface5Automatic(requestItem)) {
-                        refreshedItem = refreshAutomaticDetail(repository, requestItem, cancellation);
+                    if (usesNativeAutomaticDetail(requestItem)) {
+                        refreshedItem = refreshAutomaticDetail(repository, requestItem, cancellation, detailPull);
                         if (refreshedItem == null) return;
+                    }
+                    if (!detailPull) {
+                        renderRefreshedDetail(generation, refreshedItem);
+                        return;
                     }
                     final ExpressItem queryOwner = refreshedItem;
                     ExpressQueryResult feed = repository.automaticSourceTimeline(queryOwner);
@@ -1403,43 +1028,26 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         return;
                     }
                     if (queryOwner.semantic != StatusSemantic.UNKNOWN
-                            && automaticDetailComplete(repository, queryOwner)) {
+                            && automaticSourcesHaveOrigin(repository, queryOwner)) {
                         renderRefreshedDetail(generation, queryOwner);
                         return;
                     }
                     cancellation.throwIfCancelled();
                     claim = repository.claimForegroundManualTimelinePoll(
-                            queryOwner, System.currentTimeMillis(), false);
+                            queryOwner, System.currentTimeMillis(), detailPull);
                     if (claim == null) {
                         renderRefreshedDetail(generation, queryOwner);
                         return;
                     }
                     cancellation.throwIfCancelled();
                     ExpressRepository.ManualQueryOwnerClaim ownerClaim = repository.captureManualQueryOwner(queryOwner);
-                    ExpressApi manualApi = new ExpressApi(getApplicationContext());
-                    ExpressSubscriptionClient picker = new ExpressSubscriptionClient();
-                    ManualQueryCoordinator.Batch manualBatch = ManualQueryCoordinator.queryPickerFirst(
-                            () -> {
-                                try (ExpressQueryCancellation stage = cancellation.child(LOCAL_REFRESH_TIMEOUT_MS)) {
-                                    return picker.queryManual(getApplicationContext(), queryOwner.displayWaybill(), stage);
-                                } catch (InterruptedException stageTimeout) {
-                                    cancellation.throwIfCancelled();
-                                    throw new java.net.SocketTimeoutException("Picker stage timed out");
-                                }
-                            },
+                    ManualQueryCoordinator.Batch manualBatch = ManualQueryCoordinator.queryOnlineFirst(
+                            null,
                             repository.manualTimelineCandidate(queryOwner, TimelineSlot.V6_QUERY),
-                            () -> {
-                                try (ExpressQueryCancellation stage = cancellation.child(LOCAL_REFRESH_TIMEOUT_MS)) {
-                                    return manualApi.queryMoto(queryOwner.displayWaybill(),
-                                            queryOwner.projectedWaybill.isEmpty() ? queryOwner.courierCode : "", stage);
-                                } catch (InterruptedException stageTimeout) {
-                                    cancellation.throwIfCancelled();
-                                    throw new java.net.SocketTimeoutException("Primary stage timed out");
-                                }
-                            },
+                            null,
                             ManualQueryRoutingPolicy.includesMoto(queryOwner),
                             allowsPrimaryKuaidi100(queryOwner) && !currentDetailComplete(queryOwner)
-                                    ? pickerResult -> () -> capturePrimaryKuaidi100(
+                                    ? onlineResult -> () -> capturePrimaryKuaidi100(
                                     queryOwner, cancellation) : null,
                             null, queryOwner.semantic == StatusSemantic.UNKNOWN,
                             queryOwner.semantic == StatusSemantic.UNKNOWN && currentDetailComplete(queryOwner));
@@ -1502,11 +1110,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             renderTimeline(ExpressTimeline.parse(detail == null ? item.tracksJson : detail.tracksJson,
                     detail == null ? item.latestTime : detail.latestTime,
                     detail == null ? item.latestDetail : detail.latestDetail));
-            if (!usesInterface5Automatic(item)) ensureKuaidi100Presentation(detail, "after_manual_refresh");
+
         });
     }
 
-    static boolean automaticDetailComplete(ExpressRepository repository, ExpressItem owner) {
+    static boolean automaticSourcesHaveOrigin(ExpressRepository repository, ExpressItem owner) {
         if (owner == null || owner.manuallyAdded || "ShunFeng".equalsIgnoreCase(owner.sourceProvider)) return false;
         if (Kuaidi100TimelinePolicy.hasPickupEvidence(repository.automaticSourceTimeline(owner))) return true;
         ExpressQueryResult query = accountTimelineFor(repository, owner, owner.displayWaybill(), "interface5");
@@ -1514,13 +1122,13 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         String provider = owner.isCainiaoSource() ? TimelineSlot.CN_H5 : TimelineSlot.JD_H5;
         ManualTimelineAuthorityPolicy.Candidate h5 = repository.manualTimelineCandidate(owner, provider);
         return h5 != null && Kuaidi100TimelinePolicy.hasTimedTracking(h5.result)
-                && (TimelineSlot.CN_H5.equals(provider)
-                        ? Kuaidi100TimelinePolicy.hasPickupEvidence(h5.result) : h5.complete);
+                && Kuaidi100TimelinePolicy.hasPickupEvidence(h5.result);
     }
 
     private ExpressItem refreshAutomaticDetail(ExpressRepository repository, ExpressItem expected,
-            ExpressQueryCancellation cancellation) throws Exception {
-        if (allowsJingDongCapture(expected)) {
+            ExpressQueryCancellation cancellation, boolean detailPull) throws Exception {
+        if (allowsJingDongCapture(expected) && expected.isAccountOrder()
+                && expected.projectedWaybill.isEmpty()) {
             ExpressOrderTextIdentity.Identity text = ExpressOrderTextIdentity.fromTracksJson(
                     expected.tracksJson, expected.waybill);
             if (text != null && repository.saveOrderProjection(expected, "interface5", text.waybill, "", cancellation)) {
@@ -1530,8 +1138,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         }
         ExpressRepository.ManualQueryOwnerClaim claim = repository.captureManualQueryOwner(expected);
         if (claim == null) return null;
-        String bindingGeneration = repository.bindingGeneration(expected.phone, "interface5");
-        if (!"ShunFeng".equalsIgnoreCase(expected.sourceProvider)) {
+        String bindingSource = ExpressAccountSource.bindingSourceForOwner(
+                expected.stateOwner.isEmpty() ? expected.source : expected.stateOwner);
+        String bindingGeneration = repository.bindingGeneration(expected.phone, bindingSource);
+        if (!detailPull && usesInterface5Automatic(expected)
+                && !"ShunFeng".equalsIgnoreCase(expected.sourceProvider)) {
             try (ExpressQueryCancellation stage = cancellation.child(10_000L)) {
                 ExpressQueryResult query = new ExpressDiscoveryClient().refreshKnown(
                         getApplicationContext(), expected, true, stage);
@@ -1558,10 +1169,21 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 localRefreshFailed = true;
             }
         }
+        if (!detailPull && !usesInterface5Automatic(expected) && expected.isCainiaoSource()
+                && safeCainiaoUrl(expected).isEmpty()) {
+            // Interface 6 can recover only its own route through its established account adapter.
+            for (ExpressQueryResult response : new ExpressSubscriptionClient().query(
+                    getApplicationContext(), cancellation)) {
+                cancellation.throwIfCancelled();
+                if (repository.saveRecoveredOwnerRoute(expected, claim, response)) break;
+            }
+        }
         if (!repository.ownsManualQuery(expected, claim)) return null;
         ExpressItem owner = repository.find(expected.rowId);
         if (owner == null) return null;
-        if (!allowsJingDongCapture(owner) && automaticDetailComplete(repository, owner)) {
+        if (!detailPull && (!owner.isAccountOrder() || !owner.projectedWaybill.isEmpty())) return owner;
+        if ((!owner.isAccountOrder() || !owner.projectedWaybill.isEmpty())
+                && currentDetailComplete(owner)) {
             logAutomaticH5Decision(owner, "skipped", "pickup_or_complete_cache");
             return owner;
         }
@@ -1593,7 +1215,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 retries.recordTimelineRateLimit(owner, System.currentTimeMillis());
                 runOnUiThread(() -> {
                     if (!isFinishing() && !isDestroyed()) Toast.makeText(this,
-                            "操作过于频繁，请稍候再试", Toast.LENGTH_SHORT).show();
+                            ExpressToastCopy.JD_RISK_CONTROL, Toast.LENGTH_SHORT).show();
                 });
             }
             if (result != null && result.timeline != null) {
@@ -1603,8 +1225,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         return repository.find(expected.rowId);
     }
 
-    private static void logAutomaticH5Decision(ExpressItem owner, String event, String reason) {
-        ExpressLog.line("v5", owner.isCainiaoSource() ? "cn_h5" : "jd_h5",
+    private void logAutomaticH5Decision(ExpressItem owner, String event, String reason) {
+        ExpressLog.line(detailLogInterface(owner), owner.isCainiaoSource() ? "cn_h5" : "jd_h5",
                 ExpressLog.source(owner.sourceProvider, false), event,
                 "tail", ExpressLog.tail(owner.displayWaybill()), "reason", reason);
     }
@@ -1634,42 +1256,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         return result == null ? null : result.timeline;
     }
 
-    private void recoverDirectAutomaticRoute() {
-        ExpressItem expected = item;
-        FrameLayout loading = new FrameLayout(this);
-        ProgressBar progress = new ProgressBar(this);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-2, -2, android.view.Gravity.CENTER);
-        loading.addView(progress, params);
-        setContentView(loading);
-        ExpressQueryCancellation cancellation = new ExpressQueryCancellation(25_000L);
-        directRouteCancellation = cancellation;
-        worker.execute(() -> {
-            ExpressItem current = null;
-            try {
-                ExpressRepository repository = ExpressRepository.get(this);
-                ExpressRepository.ManualQueryOwnerClaim claim = repository.captureManualQueryOwner(expected);
-                for (ExpressQueryResult result : new ExpressSubscriptionClient().query(getApplicationContext(), cancellation)) {
-                    cancellation.throwIfCancelled();
-                    if (repository.saveRecoveredOwnerRoute(expected, claim, result)) break;
-                }
-                if (repository.ownsManualQuery(expected, claim)) current = repository.find(expected.rowId);
-            } catch (Exception unavailable) { /* The direct H5 surface reports one explicit failure. */ }
-            final ExpressItem recovered = current;
-            runOnUiThread(() -> {
-                if (isFinishing() || isDestroyed() || directRouteCancellation != cancellation) return;
-                directRouteCancellation = null;
-                String route = recovered == null ? "" : safeCainiaoUrl(recovered);
-                if (route.isEmpty()) {
-                    Toast.makeText(this, ExpressToastCopy.H5_UNAVAILABLE, Toast.LENGTH_SHORT).show();
-                    finish();
-                } else {
-                    item = recovered;
-                    showCainiaoWebDetail(route);
-                }
-            });
-        });
-    }
-
     private void scheduleLocalRefreshTimeout(int generation) {
         clearLocalRefreshTimeout();
         localRefreshTimeout = () -> {
@@ -1682,7 +1268,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     static long localRefreshBudgetMillis(ExpressItem owner) {
         return 2L * LOCAL_REFRESH_TIMEOUT_MS
-                + (usesInterface5Automatic(owner) ? 10_000L + ORDER_CAPTURE_TIMEOUT_MS : 0L);
+                + (usesNativeAutomaticDetail(owner) ? 10_000L + ORDER_CAPTURE_TIMEOUT_MS : 0L);
     }
 
     private void finishLocalTimelineRefresh(int generation) {
@@ -1740,6 +1326,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             String status, StatusSemantic semantic) {
         statusView.setText(status);
         statusView.setTextColor(statusColor(semantic));
+        ExpressSenderBadge.apply(findViewById(R.id.detail_sender),
+                item != null && item.sender, statusColor(semantic));
         waybillView.setText(getString(R.string.express_company_waybill, company, waybill));
         waybillView.setOnClickListener(view -> copyWaybill(waybill));
         String hotline = CarrierRegistry.hotline(courierCode, company);
@@ -1956,16 +1544,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             kuaidi100Capture.cancel();
             kuaidi100Capture = null;
         }
-        if (webView != null) {
-            WebView closing = webView;
-            webView = null;
-            closing.stopLoading();
-            closing.loadUrl("about:blank");
-            closing.clearHistory();
-            ViewGroup parent = (ViewGroup) closing.getParent();
-            if (parent != null) parent.removeView(closing);
-            closing.destroy();
-        }
+
         super.onDestroy();
     }
 
@@ -1997,43 +1576,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             return windowInsets;
         });
         ViewCompat.requestApplyInsets(root);
-    }
-
-    private void decorateCainiaoPage(
-            WebView view, String url, String localLogo,
-            int pageSurface, Runnable complete) {
-        if (!isCurrentDetailWebView(view)) return;
-        if (!allowed(Uri.parse(url))) {
-            if (complete != null) complete.run();
-            return;
-        }
-        Runnable applyLogo = () -> {
-            if (!isCurrentDetailWebView(view)) return;
-            if (!localLogo.isEmpty()) {
-                view.evaluateJavascript(courierLogoScript(localLogo), null);
-            }
-            if (complete != null) complete.run();
-        };
-        view.evaluateJavascript(pageSurfaceScript(pageSurface), unused -> {
-            if (isCurrentDetailWebView(view)) applyLogo.run();
-        });
-        view.postDelayed(() -> {
-            if (isCurrentDetailWebView(view)) {
-                view.evaluateJavascript(pageSurfaceScript(pageSurface), null);
-                if (!localLogo.isEmpty()) {
-                    view.evaluateJavascript(courierLogoScript(localLogo), null);
-                }
-            }
-        }, 500L);
-    }
-
-    private boolean isCurrentDetailWebView(WebView view) {
-        return view != null && view == webView && !isFinishing() && !isDestroyed();
-    }
-
-    private void navigateBack() {
-        if (webView != null && webView.canGoBack()) webView.goBack();
-        else finish();
     }
 
     private static ExpressQueryResult previewResult(Intent intent) {
@@ -2073,11 +1615,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 || "I5-K100".equalsIgnoreCase(value.stateOwner)
                 || "V4".equalsIgnoreCase(value.source)
                 || "V4".equalsIgnoreCase(value.stateOwner));
-    }
-
-    private static boolean interface5Kuaidi100OwnsItem(ExpressItem value) {
-        return value != null && ("I5-K100".equalsIgnoreCase(value.source)
-                || "I5-K100".equalsIgnoreCase(value.stateOwner));
     }
 
     private static boolean v4TimelineOwnsItem(ExpressItem value) {
@@ -2166,13 +1703,13 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         value.stateOwner.isEmpty() ? value.source : value.stateOwner));
     }
 
-    static boolean usesDirectAutomaticH5(ExpressItem value) {
-        return value != null && !value.manuallyAdded && !usesInterface5Automatic(value)
-                && value.isCainiaoSource();
+    static boolean usesNativeAutomaticDetail(ExpressItem value) {
+        return usesInterface5Automatic(value)
+                || value != null && !value.manuallyAdded && value.isCainiaoSource();
     }
 
     static boolean canRefreshLocalTimeline(ExpressItem value) {
-        return value != null && !usesDirectAutomaticH5(value)
+        return value != null
                 && (!"JingDong".equalsIgnoreCase(value.sourceProvider) || usesInterface5Automatic(value))
                 && (!value.isAccountOrder() || usesInterface5Automatic(value));
     }
@@ -2279,12 +1816,12 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     static boolean allowsJingDongCapture(ExpressItem item) {
-        return allowsJingDongRoute(item) && item.isAccountOrder() && item.projectedWaybill.isEmpty();
+        return allowsJingDongRoute(item);
     }
 
     static boolean allowsPrimaryKuaidi100(ExpressItem item) {
-        return usesInterface5Automatic(item)
-                && !"JingDong".equalsIgnoreCase(item.sourceProvider);
+        return canRefreshLocalTimeline(item)
+                && (!item.isAccountOrder() || !item.projectedWaybill.isEmpty());
     }
 
     static boolean allowsKuaidi100Route(
@@ -2323,21 +1860,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     private static boolean trustedHost(String host, String parent) {
         return host != null && (host.equals(parent) || host.endsWith("." + parent));
-    }
-
-    private String courierLogoDataUri(ExpressItem value) {
-        int resource = CarrierRegistry.icon(value.courierCode, value.companyName);
-        if (resource == R.drawable.ic_card_express_cp_default) return "";
-        try (InputStream input = getResources().openRawResource(resource)) {
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            byte[] buffer = new byte[8192];
-            int count;
-            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-            return "data:image/png;base64,"
-                    + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
-        } catch (Throwable ignored) {
-            return "";
-        }
     }
 
     static String courierLogoScript(String dataUri) {

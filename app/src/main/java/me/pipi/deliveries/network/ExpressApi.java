@@ -5,6 +5,7 @@ import android.content.Context;
 
 import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.model.ExpressQueryResult;
+import me.pipi.deliveries.model.WorkerStatusProjection;
 import me.pipi.deliveries.model.ExpressStatusNormalizer;
 import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.StatusSemantic;
@@ -12,10 +13,7 @@ import me.pipi.deliveries.model.StatusSemantic;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.text.ParsePosition;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -46,6 +44,13 @@ public final class ExpressApi {
         carrierRecognition = new CarrierRecognitionCoordinator(
                 carrierDetector, gateway, CarrierRecognitionCoordinator.transientState(),
                 System::currentTimeMillis);
+    }
+
+    /** A successful provider response without usable tracking evidence. */
+    public static final class NoTrackException extends IllegalStateException {
+        public NoTrackException() {
+            super("暂无轨迹");
+        }
     }
 
     public static final class QueryException extends Exception {
@@ -294,7 +299,8 @@ public final class ExpressApi {
                 detail,
                 tracks.toString(), "", "", PROVIDER_KUAIDI100,
                 "", "", "")
-                .withManualStatusEvidence(root.optString("stateDesc", ""), structuredStatus);
+                .withManualStatusEvidence(root.optString("stateDesc", ""), structuredStatus)
+                .withWorkerStatus(WorkerStatusProjection.read(root));
     }
 
     private static JSONArray normalizedKuaidi100Tracks(JSONArray source) {
@@ -359,11 +365,7 @@ public final class ExpressApi {
     }
 
     private static long parseTime(String value) {
-        SimpleDateFormat parser = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA);
-        parser.setLenient(false);
-        ParsePosition position = new ParsePosition(0);
-        Date date = parser.parse(value, position);
-        return date == null || position.getIndex() != value.length() ? 0L : date.getTime();
+        return me.pipi.deliveries.model.ExpressTimeCodec.parse(value);
     }
 
     private static String normalizePhone(String phone) {

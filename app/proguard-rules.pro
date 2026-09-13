@@ -1,3 +1,1 @@
--keep class me.pipi.deliveries.feature.express.** { *; }
--keep class me.pipi.deliveries.widget.** { *; }
--keep class me.pipi.deliveries.background.** { *; }
+# Android component entry points are retained by AGP manifest and library consumer rules.

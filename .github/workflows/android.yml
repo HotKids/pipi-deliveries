@@ -16,7 +16,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
       - name: Verify main and release snapshot
@@ -29,7 +29,7 @@ jobs:
             git fetch --no-tags origin main
             git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           fi
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
       # verify-package.sh 的两处检查要 rg：装在后面等于打包校验先跑、先红（v1.3.1 首次打标签
@@ -51,11 +51,11 @@ jobs:
           sh script/project/tools/package.sh "$RUNNER_TEMP/pipi-deliveries.scripting"
           sh script/project/tools/verify-package.sh "$RUNNER_TEMP/pipi-deliveries.scripting" "$expected_track"
           sh script/project/tools/verify-package.sh script/pipi-deliveries.scripting "$expected_track"
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
       # assemble*Release 会触发 app/build.gradle.kts 里的 hasReleaseSigning 断言，所以这一步
       # 要拿到和 release-apk 同一套签名材料，否则任何 tag/main 构建都会停在
       # 「Release signing configuration is required for release builds」（v1.3.0 首次打标签时暴露）。
@@ -92,15 +92,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "21"
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
       - name: Install ripgrep for packaging checks
         run: sudo apt-get install --yes --no-install-recommends ripgrep
       - name: Restore release signing key
@@ -126,7 +126,6 @@ jobs:
           [[ "$script_version_name" =~ ^[0-9]+(\.[0-9]+)*$ ]]
           test "$minor" -lt 100
           test "$patch" -lt 100
-          test "$GITHUB_RUN_ATTEMPT" -lt 100
           # 正式版固定占 patch 段的第 99 号，与 build.sh / build.gradle.kts 同一套编号：
           # beta 用 01–98，正式版 99，这样任何 beta 都排在它将要成为的正式版之前
           # （用户定 2026-09-06）。原先用 GITHUB_RUN_ATTEMPT，会产出 1030001 这种低于
@@ -176,7 +175,7 @@ jobs:
             echo "RELEASE_SCRIPT=$scripting_archive"
           } >> "$GITHUB_ENV"
       - name: Upload signed APK artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ env.DELIVERIES_ARTIFACT_NAME }}
           path: ${{ runner.temp }}/deliveries-release/

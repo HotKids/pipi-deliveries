@@ -9,6 +9,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import androidx.work.Constraints;
+import androidx.work.Data;
 import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.ExistingWorkPolicy;
 import androidx.work.NetworkType;
@@ -23,6 +24,11 @@ import java.util.concurrent.TimeUnit;
 public final class ExpressScheduler {
     private static final String PERIODIC_WORK = "deliveries_periodic_sync";
     private static final String IMMEDIATE_WORK = "deliveries_immediate_sync";
+    static final String USER_PULL = "user_pull";
+    static final String TRIGGER = "trigger";
+    static final String WIDGET_RECENT_CHECK = "widget_recent_check";
+    static final long WIDGET_RECENT_MS = 60_000L;
+    private static final String NETWORK_SUCCESS = "express_network_success";
 
     private static final String WIDGET_WORK = "deliveries_local_widget_refresh";
     static final long BROADCAST_HANDOFF_TIMEOUT_MS = 8_000L;
@@ -85,15 +91,54 @@ public final class ExpressScheduler {
     }
 
     public static java.util.UUID requestNow(Context context) {
-        Constraints constraints = new Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build();
-        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(ExpressSyncWorker.class)
-                .setConstraints(constraints)
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30L, TimeUnit.SECONDS)
-                .build();
+        return requestNow(context, false);
+    }
+
+    public static java.util.UUID requestPullRefresh(Context context) {
+        return requestNow(context, true);
+    }
+
+    private static java.util.UUID requestNow(Context context, boolean userPull) {
+        OneTimeWorkRequest request = immediateRequest(userPull);
         WorkManager.getInstance(context.getApplicationContext()).enqueueUniqueWork(
                 IMMEDIATE_WORK, ExistingWorkPolicy.REPLACE, request);
         return request.getId();
+    }
+
+    public static void requestForeground(Context context) {
+        enqueueAutomatic(context, "foreground", false);
+    }
+
+    static ListenableFuture<Operation.State.SUCCESS> enqueueAutomatic(
+            Context context, String trigger, boolean widgetRecentCheck) {
+        return WorkManager.getInstance(context.getApplicationContext()).enqueueUniqueWork(
+                IMMEDIATE_WORK, ExistingWorkPolicy.KEEP,
+                immediateRequest(false, trigger, widgetRecentCheck)).getResult();
+    }
+
+    public static void recordNetworkSuccess(Context context, String bindingSource) {
+        context.getSharedPreferences(NETWORK_SUCCESS, 0).edit()
+                .putLong(bindingSource, System.currentTimeMillis()).commit();
+    }
+
+    static boolean hasRecentNetworkSuccess(Context context, String bindingSource, long now) {
+        long success = context.getSharedPreferences(NETWORK_SUCCESS, 0).getLong(bindingSource, 0L);
+        return success > 0L && now >= success && now - success < WIDGET_RECENT_MS;
+    }
+
+    static OneTimeWorkRequest immediateRequest(boolean userPull) {
+        return immediateRequest(userPull, userPull ? "list_pull" : "background", false);
+    }
+
+    static OneTimeWorkRequest immediateRequest(boolean userPull, String trigger, boolean widgetRecentCheck) {
+        Constraints constraints = new Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build();
+        return new OneTimeWorkRequest.Builder(ExpressSyncWorker.class)
+                .setConstraints(constraints)
+                .setInputData(new Data.Builder().putBoolean(USER_PULL, userPull)
+                        .putString(TRIGGER, trigger).putBoolean(WIDGET_RECENT_CHECK, widgetRecentCheck).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30L, TimeUnit.SECONDS)
+                .build();
     }
 }

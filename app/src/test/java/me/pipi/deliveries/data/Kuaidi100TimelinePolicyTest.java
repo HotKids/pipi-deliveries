@@ -240,7 +240,7 @@ public final class Kuaidi100TimelinePolicyTest {
                 "[{\"time\":\"2026-08-16 12:00:00\",\"context\":\"已发货\","
                         + "\"statusCode\":\"102\",\"_pipiStatusSource\":\"interface6\"}]",
                 "", "", "interface6");
-        ExpressQueryResult pickerOrdered = new ExpressQueryResult(
+        ExpressQueryResult onlineOrdered = new ExpressQueryResult(
                 "TEST123", "SF", "顺丰速运", StatusSemantic.TRANSIT,
                 "2026-08-16 12:00:00", "已发货",
                 "[{\"time\":\"2026-08-16 12:00:00\",\"context\":\"已发货\","
@@ -261,7 +261,7 @@ public final class Kuaidi100TimelinePolicyTest {
                 "", "", "meizu");
 
         assertFalse(Kuaidi100TimelinePolicy.hasTimelineStart(accountShipped));
-        assertTrue(Kuaidi100TimelinePolicy.hasTimelineStart(pickerOrdered));
+        assertTrue(Kuaidi100TimelinePolicy.hasTimelineStart(onlineOrdered));
         assertTrue(Kuaidi100TimelinePolicy.hasTimelineStart(pickedByText));
         assertTrue(Kuaidi100TimelinePolicy.hasTimelineStart(shunFengPickedByText));
     }

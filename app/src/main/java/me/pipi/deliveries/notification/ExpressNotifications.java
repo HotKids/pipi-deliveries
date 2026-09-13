@@ -13,6 +13,7 @@ import android.graphics.drawable.Icon;
 import android.os.Build;
 
 import me.pipi.deliveries.R;
+import me.pipi.deliveries.feature.express.ExpressStatusColors;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.StatusSemantic;
 
@@ -33,9 +34,12 @@ public final class ExpressNotifications {
     static final String CHANNEL_TRANSIT = "express_transit";
     static final String CHANNEL_COMPLETED = "express_completed";
 
+    private static boolean channelsInitialized;
+
     private ExpressNotifications() {}
 
-    public static void ensureChannels(Context context) {
+    public static synchronized void ensureChannels(Context context) {
+        if (channelsInitialized) return;
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         if (manager == null) return;
         manager.createNotificationChannelGroup(new NotificationChannelGroup(
@@ -70,15 +74,16 @@ public final class ExpressNotifications {
                 R.string.notification_channel_completed, GROUP_REGULAR,
                 NotificationManager.IMPORTANCE_DEFAULT);
         manager.deleteNotificationChannel(LEGACY_CHANNEL);
+        channelsInitialized = true;
     }
 
-    public static void post(Context context, ExpressItem item) {
-        if (item == null) return;
+    public static boolean post(Context context, ExpressItem item) {
+        if (item == null) return true;
         String channelId = channelId(item.semantic);
-        if (channelId == null) return;
+        if (channelId == null) return true;
         if (Build.VERSION.SDK_INT >= 33
                 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) return;
+                != PackageManager.PERMISSION_GRANTED) return false;
         ensureChannels(context);
         Intent open = new Intent(context, ExpressDetailActivity.class)
                 .putExtra(ExpressDetailActivity.EXTRA_ROW_ID, item.rowId);
@@ -107,6 +112,7 @@ public final class ExpressNotifications {
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         if (manager == null) throw new IllegalStateException("Notification service unavailable");
         manager.notify((int) (item.rowId & 0x7fffffff), notification);
+        return true;
     }
 
     public static void cancel(Context context, long rowId) {
@@ -159,20 +165,7 @@ public final class ExpressNotifications {
 
     public static long eventTime(ExpressItem item) {
         if (item.statusEventTime > 0L) return item.statusEventTime;
-        String clean = item.latestTime == null ? "" : item.latestTime.trim();
-        if (clean.isEmpty()) return 0L;
-        for (String pattern : new String[]{"yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss"}) {
-            java.text.SimpleDateFormat parser =
-                    new java.text.SimpleDateFormat(pattern, java.util.Locale.CHINA);
-            parser.setLenient(false);
-            try {
-                java.util.Date parsed = parser.parse(clean);
-                if (parsed != null) return parsed.getTime();
-            } catch (java.text.ParseException ignored) {
-                // Try the next accepted shape.
-            }
-        }
-        return 0L;
+        return me.pipi.deliveries.model.ExpressTimeCodec.parse(item.latestTime);
     }
 
     static String channelId(StatusSemantic semantic) {
@@ -212,15 +205,15 @@ public final class ExpressNotifications {
 
     private static int statusColor(StatusSemantic semantic) {
         switch (semantic == null ? StatusSemantic.UNKNOWN : semantic) {
-            case DANGER: return 0xFFD43D3D;
+            case DANGER: return ExpressStatusColors.DANGER;
             case ORDERED:
-            case SHIPPED: return 0xFFFBC02D;
+            case SHIPPED: return ExpressStatusColors.ORDERED;
             case PICKED:
-            case TRANSIT: return 0xFF3275D6;
-            case DELIVERY: return 0xFF1A8A4A;
-            case WAITING_PICKUP: return 0xFFE65B17;
+            case TRANSIT: return ExpressStatusColors.TRANSIT;
+            case DELIVERY: return ExpressStatusColors.DELIVERY;
+            case WAITING_PICKUP: return ExpressStatusColors.WAITING_PICKUP;
             case COMPLETED: return 0;
-            default: return 0xFF757575;
+            default: return ExpressStatusColors.NEUTRAL;
         }
     }
 

@@ -74,6 +74,28 @@ function shipment(
 assert.deepEqual(MANUAL_SOURCE_ORDER, ["local", "route", "fallback"]);
 assert.equal(hasPersistentTracking(shipment("local", { tracked: false })), false);
 
+// The chain owns its deadline even if a provider never settles its Promise.
+let releaseStalled!: (value: { shipment: Shipment }) => void;
+const stalled = new Promise<{ shipment: Shipment }>(resolve => { releaseStalled = resolve; });
+const timeoutSentinel = new Error("chain did not enforce its own deadline");
+let sentinel: ReturnType<typeof setTimeout>;
+let stalledSignal: AbortSignal | undefined;
+let stalledFallbackCalls = 0;
+try {
+  await assert.rejects(Promise.race([
+    queryManualSourceChain([
+      { source: "route", enabled: true, query: signal => { stalledSignal = signal; return stalled; } },
+      { source: "fallback", enabled: true, query: async () => { stalledFallbackCalls++; return { shipment: null }; } },
+    ], Date.now() + 20),
+    new Promise<never>((_, reject) => { sentinel = setTimeout(() => reject(timeoutSentinel), 200); }),
+  ]), OperationTimeoutError);
+  assert.equal(stalledSignal?.aborted, true, "expiry cancels the owned provider transport");
+  assert.equal(stalledFallbackCalls, 0, "expiry cannot start the paid fallback");
+} finally {
+  clearTimeout(sentinel!);
+  releaseStalled({ shipment: shipment("route") });
+}
+
 const concurrentEvents: string[] = [];
 let releaseLocal!: () => void;
 const localGate = new Promise<void>((resolve) => { releaseLocal = resolve; });

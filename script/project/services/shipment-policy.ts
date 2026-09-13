@@ -1,3 +1,4 @@
+import { timelineNormalizedStatus, statusPriority, statusProjectionFields } from "./worker-status";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
   AutomaticOwnership,
@@ -9,19 +10,23 @@ import type {
 } from "../models";
 import {
   accountOrderSemantic,
+  accountListOriginAtMs,
+  withAccountListOrigin,
   compareTimelinePackageCompleteness,
   compareTimelineProviderOrder,
   containsTimelinePickupTrack,
-  containsTimelineOriginTrack,
   containsTimelineStartTrack,
   latestTimelineTrackStatuses,
   manualTimelineIsComplete,
+  isAccountUpdateSummary,
   isNonEventDetail,
+  headlineTrack,
   mergeTimelineAuthorities,
   mergeTimelinePackage,
   mergeTracks,
   normalizedProjectedWaybill,
   normalizeWaybill,
+  parseProviderTime,
   selectTimelineAuthority,
   splitJingDongH5Nodes,
   terminalEvidenceAtMs,
@@ -48,6 +53,7 @@ import {
   resolveCarrierQuery,
 } from "./carrier-query";
 import { normalizeCarrierCode } from "./carrier-query";
+import { primaryH5Provider } from "./jt-h5";
 
 function sourceTimeline(shipment: Shipment): TimelinePackage | null {
   if (shipment.identity.manuallyAdded) return null;
@@ -85,19 +91,9 @@ function accountAnchorPackage(shipment: Shipment): TimelinePackage | null {
 
 export function foreignPackageAnchorMs(shipment: Shipment): number | null {
   const anchor = accountAnchorPackage(shipment);
-  if (!anchor) return null;
-  const times = timedTracks(anchor.tracks)
-    .map((track) => track.timeMs)
-    .filter((value): value is number => typeof value === "number" && value > 0);
-  // Only the feed's own nodes anchor the package (AGENTS §9, and the same rule in Pipi's
-  // `ExpressDetailTimelinePolicy` and Lite's `ExpressTimeline`). `identity.createdAtMs` is when
-  // this device first saw the order, not when the parcel was created: using it turned a late
-  // binding — an already-shipped order backfilled on first sync — into a false "foreign" verdict
-  // that threw away the parcel's real history.
-  if (!times.length) return null;
-  // A terminal summary cannot establish the origin used to reject older provider history.
-  if (!containsTimelineOriginTrack(anchor.tracks)) return null;
-  return Math.min(...times) - FOREIGN_PACKAGE_ANCHOR_SLACK_MS;
+  // Keep the list's observed origin when its next snapshot replaces older nodes.
+  const originAt = accountListOriginAtMs(anchor);
+  return originAt > 0 ? originAt - FOREIGN_PACKAGE_ANCHOR_SLACK_MS : null;
 }
 
 export function isForeignManualPackage(
@@ -191,6 +187,30 @@ function accountPresentationReference(shipment: Shipment): TimelinePackage | nul
   null);
 }
 
+function cainiaoTimelinePresentation(shipment: Shipment, value: TimelinePackage): TimelinePackage {
+  if (shipment.identity.manuallyAdded || !hasSourceProvider(shipment, "CaiNiao")) return value;
+  const tracks = value.tracks.filter(track => !isAccountUpdateSummary(track.detail));
+  const summaryHeadline = isAccountUpdateSummary(value.latestDetail);
+  if (tracks.length === value.tracks.length && !summaryHeadline) return value;
+  const latest = headlineTrack(tracks);
+  // Keep the raw source clock for change detection; only real nodes belong to the displayed package.
+  return { ...value, tracks,
+    ...(summaryHeadline ? { latestDetail: latest?.detail || "", latestTimeText: latest?.timeText || "" } : {}),
+    ...(tracks.length ? {} : { complete: false }),
+  };
+}
+
+function accountHeadlineReference(shipment: Shipment): TimelinePackage | null {
+  if (!hasSourceProvider(shipment, "CaiNiao")) return accountPresentationReference(shipment);
+  // A generic feed update may share the query's clock but never its actual event text.
+  return accountPresentationCandidates(shipment)
+    .map(candidate => cainiaoTimelinePresentation(shipment, candidate))
+    .filter(candidate => candidate.latestDetail && !isNonEventDetail(candidate.latestDetail))
+    .reduce<TimelinePackage | null>((latest, candidate) => !latest ||
+      (parseProviderTime(candidate.latestTimeText) || 0) > (parseProviderTime(latest.latestTimeText) || 0)
+      ? candidate : latest, null);
+}
+
 const PRE_KDNIAO_TIMELINE_PROVIDERS = new Set<string>([
   TIMELINE_SLOT.V5_QUERY,
   TIMELINE_SLOT.V4_QUERY,
@@ -268,7 +288,8 @@ function preservesTerminalStatus(
   // Matching H5 prose does not replace the structured confirmation already owned by the parcel.
   if (previousTerminal && selected.semantic === previous?.semantic &&
       previous.structuredStatus === true && selected.structuredStatus !== true) {
-    return { ...selected, structuredStatus: true, statusEventAtMs: previous.statusEventAtMs };
+    return { ...selected, structuredStatus: true, statusEventAtMs: previous.statusEventAtMs,
+      ...statusProjectionFields(previous, selected) };
   }
   if (!previousTerminal || selectedTerminal) {
     return selected;
@@ -278,6 +299,7 @@ function preservesTerminalStatus(
     semantic: previous?.semantic === "CANCELLED" ? "CANCELLED" : "COMPLETED",
     statusEventAtMs: previous?.statusEventAtMs ?? null,
     structuredStatus: previous?.structuredStatus,
+    ...statusProjectionFields(previous || undefined, selected),
   };
 }
 
@@ -307,10 +329,10 @@ export function mergeAutomaticSourceTimeline(
   current: TimelinePackage | null,
   incoming: TimelinePackage,
 ): TimelinePackage {
-  // 用户定 2026-09-05 晚：source 槽只装 feed 自己的增量；京东联合页的节点住 jd_h5 槽，不进
-  // source，也不再让一个「完整的 H5 包」整包顶掉 feed 的轨迹。
+  // v5 list owns a replaceable snapshot; query and H5 histories remain in their own slots.
   const feedCurrent = current ? splitJingDongH5Nodes(current).feed : null;
-  return mergeTimelinePackage(feedCurrent, splitJingDongH5Nodes(incoming).feed);
+  const v5List = ["interface5", "account", "v5_list"].includes(incoming.provider.toLowerCase());
+  return mergeTimelinePackage(feedCurrent, splitJingDongH5Nodes(incoming).feed, !v5List);
 }
 
 export function cainiaoAutomaticNeedsH5Supplement(
@@ -351,7 +373,7 @@ export function cainiaoManualFallbackActivated(
     Number.isFinite(activatedAtMs) && activatedAtMs > 0;
 }
 
-/** 京东联合页抓到的包：jd_h5 槽（用户定 2026-09-05 晚：feed 增量与 query 独立）。 */
+/** JingDong H5 remains independent of both account list and query history. */
 export function jingDongH5Package(shipment: Shipment): TimelinePackage | null {
   return manualTimelines(shipment).find((timeline) =>
     normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.JD_H5
@@ -413,6 +435,7 @@ function applyForcedCompletion(
     ...timeline,
     semantic: "COMPLETED",
     statusEventAtMs: completedAtMs,
+    normalizedStatus: undefined,
     successAtMs: Math.max(timeline.successAtMs, completedAtMs),
   };
 }
@@ -648,7 +671,7 @@ function restoreDisplayableTracks(
     .sort(compareTimelinePackageCompleteness)[0];
   if (!richest) return selected;
   return { ...richest, semantic: selected.semantic, structuredStatus: selected.structuredStatus,
-    statusEventAtMs: selected.statusEventAtMs };
+    statusEventAtMs: selected.statusEventAtMs, ...statusProjectionFields(selected, richest) };
 }
 
 export type ShipmentSelectionEvidence = {
@@ -668,8 +691,16 @@ export function shipmentSelectionEvidence(shipment: Shipment): ShipmentSelection
 export function selectShipmentTimeline(
   shipment: Shipment, evidence?: ShipmentSelectionEvidence,
 ): TimelinePackage {
-  const source = sourceTimeline(shipment);
-  const selectedManuals = selectedManualTimelines(shipment);
+  const rawSource = sourceTimeline(shipment);
+  const source = rawSource ? cainiaoTimelinePresentation(shipment, rawSource) : null;
+  const selectedManuals = selectedManualTimelines(shipment)
+    .filter(timeline => !unprojectedAccountOrder(shipment) ||
+      !detailManualRejectionReason(shipment, timeline))
+    // Empty source presentation must not restore a query rejected by the same-waybill rank gate.
+    .filter(timeline => !hasSourceProvider(shipment, "CaiNiao") ||
+      normalizeTimelineSlot(timeline.provider) !== TIMELINE_SLOT.V5_QUERY ||
+      normalizeWaybill(timeline.waybill) === displayWaybill(shipment))
+    .map(timeline => cainiaoTimelinePresentation(shipment, timeline));
   // V5 list gaps may use already persisted detail/Online history without opening H5.
   const manuals = cainiaoAutomaticNeedsH5Supplement(shipment) &&
       !cainiaoManualFallbackActivated(shipment) &&
@@ -682,11 +713,17 @@ export function selectShipmentTimeline(
   let selected: TimelinePackage;
   if (source && unprojectedAccountOrder(shipment)) {
     const orderTimeline = accountPresentationReference(shipment) || source;
+    // Order identity does not exempt its account history from the shared summary gate.
+    const history = rankShipmentDetailCandidates(shipment, reason => {
+      if (evidence) evidence.selectionReason = reason;
+    }) || orderTimeline;
     selected = {
-      ...orderTimeline,
-      semantic: accountOrderSemantic(orderTimeline.latestDetail, source.semantic),
+      ...history,
+      semantic: timelineNormalizedStatus(source) ? source.semantic
+        : accountOrderSemantic(orderTimeline.latestDetail, source.semantic),
       structuredStatus: source.structuredStatus,
       statusEventAtMs: source.statusEventAtMs,
+      ...statusProjectionFields(source, history),
     };
   } else {
     const capabilityTimeline = (
@@ -765,7 +802,7 @@ export function selectShipmentTimeline(
       presented.statusEventAtMs !== resolved.statusEventAtMs)) {
     evidence.statusProvider = shipment.forcedCompletedAtMs ? "forced_completion" : "retained_terminal";
   }
-  return presented;
+  return cainiaoTimelinePresentation(shipment, presented);
 }
 
 /** Account query takeover is independent of H5/manual history selection. */
@@ -778,7 +815,7 @@ function structuredStatusOverride(
       normalizeTimelineSlot(selected.provider) !== TIMELINE_SLOT.V5_QUERY) return selected;
   if (!shipment.identity.manuallyAdded && !isShunFengSourceShipment(shipment)) {
     const source = sourceTimeline(shipment);
-    const reference = accountPresentationReference(shipment);
+    const reference = accountHeadlineReference(shipment);
     // Other providers only fill absent account fields; they do not inherit v5 query authority.
     if (reference?.latestDetail && !isNonEventDetail(reference.latestDetail)) {
       selected = { ...selected, latestDetail: reference.latestDetail, latestTimeText: reference.latestTimeText };
@@ -788,58 +825,113 @@ function structuredStatusOverride(
     for (const candidate of accountPresentationCandidates(shipment)) {
       if (candidate.structuredStatus !== true || candidate.semantic === "UNKNOWN" ||
           !(candidate.statusEventAtMs! > 0)) continue;
-      if (!authority || authority.semantic === "UNKNOWN" ||
-          candidate.statusEventAtMs! > (authority.statusEventAtMs || 0)) authority = candidate;
+      const priorityDifference = authority?.semantic === candidate.semantic
+        ? statusPriority(candidate) - statusPriority(authority) : 0;
+      if (!authority || authority.semantic === "UNKNOWN" || priorityDifference > 0 ||
+          (priorityDifference === 0 && candidate.statusEventAtMs! > (authority.statusEventAtMs || 0))) authority = candidate;
     }
     if (authority?.semantic !== "UNKNOWN" && authority) {
       if (selectionEvidence) selectionEvidence.statusProvider = authority.provider;
       return { ...selected, semantic: authority.semantic, structuredStatus: authority.structuredStatus,
-        statusEventAtMs: authority.statusEventAtMs };
+        statusEventAtMs: authority.statusEventAtMs, ...statusProjectionFields(authority, selected) };
     }
     if (normalizeTimelineSlot(selected.provider) === TIMELINE_SLOT.V5_QUERY) {
-      selected = { ...selected, semantic: "UNKNOWN", structuredStatus: false, statusEventAtMs: null };
+      selected = { ...selected, semantic: "UNKNOWN", structuredStatus: false, statusEventAtMs: null, normalizedStatus: undefined };
       if (selectionEvidence) selectionEvidence.statusProvider = "none";
     }
   }
   // Legacy automatic packages may lack the provenance flag; missing-status fallback
   // does not authorize replacing a status they already own.
-  if (!shipment.identity.manuallyAdded && selected.semantic !== "UNKNOWN") return selected;
+  const preserveAutomaticStatus = !shipment.identity.manuallyAdded && selected.semantic !== "UNKNOWN";
+  if (preserveAutomaticStatus && !isShunFengSourceShipment(shipment)) return selected;
   const evidenceOf = (timeline: TimelinePackage) => {
     if (normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.JD_H5) {
       return { semantic: "UNKNOWN" as const, eventAtMs: null };
     }
+    const projection = timelineNormalizedStatus(timeline);
+    if (projection) return { semantic: projection.structured ? projection.semantic : "UNKNOWN" as const,
+      eventAtMs: projection.eventAtMs || null };
     return timeline.structuredStatus && timeline.semantic !== "UNKNOWN"
       ? { semantic: timeline.semantic, eventAtMs: timeline.statusEventAtMs }
       : latestEventEvidence(timeline.tracks.map((track) => ({ ...track, detail: "" })));
   };
   const selectedEvidence = evidenceOf(selected);
+  const source = sourceTimeline(shipment);
+  const packages = [source, ...selectedManualTimelines(shipment)]
+    .filter((timeline): timeline is TimelinePackage => timeline != null &&
+      normalizeWaybill(timeline.waybill) === displayWaybill(shipment));
+  const donors = packages.flatMap(timeline => {
+    const evidence = evidenceOf(timeline);
+    return evidence.semantic === "UNKNOWN" ? [] : [{ timeline, ...evidence,
+      normalizedStatus: timelineNormalizedStatus(timeline) }];
+  });
+  const coarseSource = isShunFengSourceShipment(shipment);
+  // Missing-status history cannot change the quality reference of status-bearing donors.
+  const reference = coarseSource && donors.length
+    ? donors.map(donor => donor.timeline).reduce((latest, candidate) =>
+      timelineLatestEventAt(candidate) > timelineLatestEventAt(latest) ? candidate : latest)
+    : accountPresentationReference(shipment);
+  type Donor = typeof donors[number];
+  const qualities = new Map<Donor, DetailTimelineQuality>();
+  const quality = (donor: Donor): DetailTimelineQuality => {
+    const existing = qualities.get(donor);
+    if (existing) return existing;
+    const presented = { ...donor.timeline, semantic: donor.semantic,
+      statusEventAtMs: donor.eventAtMs, structuredStatus: true };
+    const value = detailTimelineQuality(donor.timeline,
+      detailTimelineComplete(donor.timeline, reference, donor.semantic,
+        terminalEvidenceAtMs({ ...shipment, timeline: presented })), source, coarseSource);
+    qualities.set(donor, value);
+    return value;
+  };
+  const compareDonors = (left: Donor, right: Donor): number =>
+    (right.eventAtMs || 0) - (left.eventAtMs || 0) ||
+    compareDetailTimelineQuality(quality(left), quality(right));
+  if (selectedEvidence.semantic !== "UNKNOWN") {
+    const preferred = donors.filter(donor =>
+      donor.timeline.semantic === selectedEvidence.semantic && donor.timeline.structuredStatus &&
+      statusPriority(donor.timeline) > statusPriority(selected))
+      .sort((left, right) => statusPriority(right.timeline) - statusPriority(left.timeline) ||
+        compareDonors(left, right))[0]?.timeline;
+    if (preferred) {
+      if (selectionEvidence) selectionEvidence.statusProvider = preferred.provider;
+      return { ...selected, semantic: preferred.semantic, structuredStatus: true,
+        statusEventAtMs: preferred.statusEventAtMs, ...statusProjectionFields(preferred, selected) };
+    }
+  }
+  if (preserveAutomaticStatus) return selected;
   if (selectedEvidence.semantic !== "UNKNOWN") {
     if (selectionEvidence) selectionEvidence.statusProvider = selected.provider;
     return selected.semantic !== "UNKNOWN" ? selected : {
       ...selected, semantic: selectedEvidence.semantic,
-      statusEventAtMs: selectedEvidence.eventAtMs, structuredStatus: true,
+      statusEventAtMs: selectedEvidence.eventAtMs, structuredStatus: true, normalizedStatus: undefined,
     };
   }
-  const packages = [sourceTimeline(shipment), ...selectedManualTimelines(shipment)]
-    .filter((timeline): timeline is TimelinePackage => timeline != null &&
-      normalizeWaybill(timeline.waybill) === displayWaybill(shipment));
-  let best: { semantic: StatusSemantic; eventAtMs: number | null; provider: string } | null = null;
-  for (const timeline of packages) {
-    const evidence = evidenceOf(timeline);
-    if (evidence.semantic === "UNKNOWN") continue;
-    if (!best || (evidence.eventAtMs || 0) > (best.eventAtMs || 0)) best = { ...evidence, provider: timeline.provider };
+  // Pairwise subtype priority versus cross-semantic time can form a comparison cycle.
+  // Choose one representative per semantic before comparing their event clocks.
+  const representatives = new Map<StatusSemantic, Donor>();
+  for (const donor of donors) {
+    const current = representatives.get(donor.semantic);
+    const priorityDifference = (donor.normalizedStatus?.priority || 0) -
+      (current?.normalizedStatus?.priority || 0);
+    if (!current || priorityDifference > 0 ||
+        (priorityDifference === 0 && compareDonors(donor, current) < 0)) {
+      representatives.set(donor.semantic, donor);
+    }
   }
+  const best = [...representatives.values()].sort(compareDonors)[0];
   if (!best) return selected;
   // 终态不退回（表格「若选中的包会丢掉终态，保留」）。
   if (
     (selected.semantic === "COMPLETED" || selected.semantic === "CANCELLED") &&
     best.semantic !== selected.semantic
   ) return selected;
-  if (selectionEvidence) selectionEvidence.statusProvider = best.provider;
+  if (selectionEvidence) selectionEvidence.statusProvider = best.timeline.provider;
   return {
     ...selected,
     semantic: best.semantic,
     statusEventAtMs: best.eventAtMs,
+    normalizedStatus: best.normalizedStatus,
     structuredStatus: true,
   };
 }
@@ -869,6 +961,31 @@ const DETAIL_TIER = {
   coarseSource: 5,
 } as const;
 
+type DetailTimelineQuality = {
+  timeline: TimelinePackage;
+  complete: boolean;
+  coverage: number;
+  declared: boolean;
+  tier: number;
+};
+
+function detailTimelineQuality(timeline: TimelinePackage, complete: boolean,
+  source: TimelinePackage | null, coarseSource: boolean): DetailTimelineQuality {
+  const coverage = timedTracks(timeline.tracks).length;
+  const tier = timeline === source
+    ? coarseSource ? DETAIL_TIER.coarseSource : complete ? DETAIL_TIER.sourceComplete
+      : coverage >= SOURCE_TIMELINE_MIN_TRACKS ? DETAIL_TIER.sourceIncrement : DETAIL_TIER.sourceSummaryOnly
+    : isPaidTimelineProvider(timeline.provider) ? DETAIL_TIER.paidManual : DETAIL_TIER.freeManual;
+  return { timeline, complete, coverage, declared: manualTimelineIsComplete(timeline), tier };
+}
+
+/** History and equal-time status donors share quality rules without invoking selection. */
+function compareDetailTimelineQuality(left: DetailTimelineQuality, right: DetailTimelineQuality): number {
+  return Number(right.complete) - Number(left.complete) || right.coverage - left.coverage ||
+    Number(right.declared) - Number(left.declared) || left.tier - right.tier ||
+    compareTimelineProviderOrder(left.timeline, right.timeline);
+}
+
 /**
  * Missing node enums leave status consistency unverified, not disproven.
  * Known latest-node conflicts still veto history independently of pickup and event-time checks.
@@ -884,7 +1001,8 @@ export function shipmentDetailIncompleteReason(shipment: Shipment): DetailIncomp
   const selected = selectShipmentDetailTimeline(shipment);
   if (!timedTracks(selected.tracks).length) return "no_tracks";
   const expected = shipmentDetailPresentationStatus(shipment, selected).semantic;
-  const statusReason = timelineStatusIncompleteReason(selected, expected);
+  const terminalAt = terminalEvidenceAtMs({ ...shipment, timeline: selected });
+  const statusReason = timelineStatusIncompleteReason(selected, expected, terminalAt);
   if (statusReason) return statusReason;
   // SF's coarse feed can stay unchanged while the carrier adds events; alignment cannot freeze an active parcel.
   if (isShunFengSourceShipment(shipment) && selected.semantic !== "COMPLETED" && selected.semantic !== "CANCELLED") {
@@ -898,19 +1016,24 @@ export function shipmentDetailIncompleteReason(shipment: Shipment): DetailIncomp
     if (selected.semantic !== "COMPLETED" && selected.semantic !== "CANCELLED") return "missing_source_time";
     return containsTimelinePickupTrack(selected.tracks) ? null : "missing_pickup";
   }
-  return detailTimelineIncompleteReason(selected, source, expected);
+  return detailTimelineIncompleteReason(selected, source, expected, terminalAt);
 }
 
 function detailTimelineComplete(
   timeline: TimelinePackage,
   source: TimelinePackage | null,
-  expectedStatus: StatusSemantic = timeline.semantic,
+  expectedStatus: StatusSemantic,
+  terminalAt: number,
 ): boolean {
-  return detailTimelineIncompleteReason(timeline, source, expectedStatus) === null;
+  return detailTimelineIncompleteReason(timeline, source, expectedStatus, terminalAt) === null;
 }
 
-function timelineStatusIncompleteReason(timeline: TimelinePackage, expected: StatusSemantic): DetailIncompleteReason | null {
+function timelineStatusIncompleteReason(
+  timeline: TimelinePackage, expected: StatusSemantic, terminalAt: number,
+): DetailIncompleteReason | null {
   if (expected === "UNKNOWN") return "status_unknown";
+  // Undated completion cannot certify older history or suppress its refresh.
+  if (expected === "COMPLETED" && terminalAt <= 0) return "missing_source_time";
   return latestTimelineTrackStatuses(timeline.tracks).some(
     semantic => semantic !== "UNKNOWN" && semantic !== expected,
   ) ? "status_mismatch" : null;
@@ -920,27 +1043,46 @@ function detailTimelineIncompleteReason(
   timeline: TimelinePackage,
   source: TimelinePackage | null,
   expectedStatus: StatusSemantic,
+  terminalAt: number,
 ): DetailIncompleteReason | null {
-  const statusReason = timelineStatusIncompleteReason(timeline, expectedStatus);
+  const statusReason = timelineStatusIncompleteReason(timeline, expectedStatus, terminalAt);
   if (statusReason) return statusReason;
   if (!containsTimelinePickupTrack(timeline.tracks)) return "missing_pickup";
   const sourceAt = source ? timelineLatestEventAt(source) : 0;
   if (sourceAt <= 0) return null;
   const timelineAt = timelineLatestTrackAt(timeline);
   if (timelineAt <= 0) return "time_mismatch";
-  return Math.abs(timelineAt - sourceAt) <= DETAIL_COMPLETE_SKEW_MS ? null : "time_mismatch";
+  // Account updates may lag carrier history; only older tracks need a tolerance.
+  return sourceAt - timelineAt <= DETAIL_COMPLETE_SKEW_MS ? null : "time_mismatch";
 }
 
-/** Inspect JD candidates using the same guards and account reference as selection. */
-export function jingDongDetailCandidateEvidence(shipment: Shipment, timeline: TimelinePackage) {
-  if (!isJingDongSourceShipment(shipment)) return {};
-  const candidate = withoutJingDongOrderCompletion(timeline, shipment.identity);
+/** Inspect every candidate at the same eligibility and completeness boundaries as selection. */
+export function shipmentDetailCandidateEvidence(shipment: Shipment, timeline: TimelinePackage) {
+  const candidate = cainiaoTimelinePresentation(shipment,
+    withoutJingDongOrderCompletion(timeline, shipment.identity));
   const tracks = timedTracks(candidate.tracks);
+  const presented = withSelectedDetailStatus(shipment, candidate);
+  const pool = detailHistoryCandidates(shipment);
+  const isSource = !shipment.identity.manuallyAdded &&
+    normalizeTimelineSlot(candidate.provider) === normalizeTimelineSlot(sourceTimeline(shipment)?.provider || "");
+  const gateReason = !tracks.length ? "no_tracks" : isSource
+    ? pool.sfManuals.length ? "sf_manual_authority" : pool.sourceSummaryOnly ? "source_summary_only" : null
+    : isForeignManualPackage(shipment, candidate) ? "foreign_package"
+    : !selectedManualTimelines({ ...shipment, manualTimelines: [candidate] }).length ? "provider_not_qualified"
+    : pool.sfManuals.length && !isShunFengManualTimeline(candidate) ? "sf_manual_authority"
+    : detailManualRejectionReason(shipment, candidate);
+  const reference = isShunFengSourceShipment(shipment)
+    ? pool.candidates.reduce<TimelinePackage | null>((latest, value) =>
+      !latest || timelineLatestEventAt(value) > timelineLatestEventAt(latest) ? value : latest, null)
+    : accountPresentationReference(shipment);
   const incompleteReason = tracks.length
-    ? detailTimelineIncompleteReason(candidate, accountPresentationReference(shipment),
-        withSelectedDetailStatus(shipment, candidate).semantic)
+    ? detailTimelineIncompleteReason(candidate, reference,
+        presented.semantic, terminalEvidenceAtMs({ ...shipment, timeline: presented }))
     : "no_tracks";
   return {
+    candidateEligible: gateReason === null,
+    gateReason: gateReason ?? undefined,
+    cainiaoFallbackActive: cainiaoManualFallbackActivated(shipment),
     hasPickup: containsTimelinePickupTrack(candidate.tracks),
     foreignPackage: isForeignManualPackage(shipment, candidate),
     foreignAnchorAtMs: foreignPackageAnchorMs(shipment) || 0,
@@ -963,37 +1105,24 @@ function isPaidTimelineProvider(provider: string): boolean {
   return normalizeTimelineSlot(value) === TIMELINE_SLOT.KDNIAO;
 }
 
-/**
- * 详情页选包（完整判据 → 有效节点数 → 自报 complete → 层级 → 既有次序）；没有候选时返回 null。
- * 用户定 2026-09-05：手动件的首页头条与状态也用这一套选包，不再由 picker 包独占。
- */
-export function rankShipmentDetailCandidates(
-  shipment: Shipment,
-  onSelection?: (reason: string) => void,
-): TimelinePackage | null {
-  const finish = (timeline: TimelinePackage | null, reason: string) => {
-    onSelection?.(reason);
-    return timeline;
-  };
-  const source = sourceTimeline(shipment);
+/** Diagnostics and ranking must reject a cached provider at the same source boundary. */
+function detailManualRejectionReason(shipment: Shipment, timeline: TimelinePackage): string | null {
   const cainiaoNeedsH5 = cainiaoAutomaticNeedsH5Supplement(shipment);
   const cainiaoFallbackActive = cainiaoManualFallbackActivated(shipment);
-  const manuals = selectedManualTimelines(shipment);
   const supportsPrimaryContest = shipment.identity.manuallyAdded ||
     isJingDongSourceShipment(shipment) ||
     isShunFengSourceShipment(shipment) ||
     cainiaoFallbackActive ||
     supportsOrdinaryAutomaticDetailSupplement(shipment);
 
-  // 各来源的差别只体现在**候选资格**：京东链没有 moto、菜鸟在兜底激活前只认同票菜鸟 H5、
-  // 顺丰不跑 moto。资格之外一律走下面同一套排序（用户定 2026-09-04：统一，不再分来源排序）。
-  const eligible = manuals.filter((timeline) => {
-    const capability = timelineCapability(timeline.provider);
-    const provider = normalizeTimelineSlot(timeline.provider);
-    if (provider === TIMELINE_SLOT.V5_QUERY &&
-        normalizeWaybill(timeline.waybill) !== displayWaybill(shipment)) return false;
-    if (cainiaoNeedsH5 && !cainiaoFallbackActive) return provider === TIMELINE_SLOT.CN_H5 ||
-      provider === TIMELINE_SLOT.V5_QUERY;
+  const capability = timelineCapability(timeline.provider);
+  const provider = normalizeTimelineSlot(timeline.provider);
+  if (provider === TIMELINE_SLOT.V5_QUERY &&
+      normalizeWaybill(timeline.waybill) !== displayWaybill(shipment)) return "waybill_mismatch";
+  if (unprojectedAccountOrder(shipment) && provider !== TIMELINE_SLOT.V5_QUERY) return "unprojected_order";
+  if (cainiaoNeedsH5 && !cainiaoFallbackActive) return provider === TIMELINE_SLOT.CN_H5 ||
+    provider === TIMELINE_SLOT.V5_QUERY ? null : "cainiao_h5_required";
+  const allowed = () => {
     // 接口 5 按件详情（v5_query）只有自动件才有，跟 feed 增量先竞争（用户定 2026-09-05 晚）。
     if (capability === "account") return !shipment.identity.manuallyAdded;
     if (!supportsPrimaryContest) return provider === TIMELINE_SLOT.CN_H5;
@@ -1016,24 +1145,56 @@ export function rankShipmentDetailCandidates(
     if (capability === "web") {
       return provider === TIMELINE_SLOT.CN_H5 ||
         (provider === TIMELINE_SLOT.JD_H5 && isJingDongSourceShipment(shipment)) ||
+        (provider === TIMELINE_SLOT.JT_H5 &&
+          primaryH5Provider(shipment.identity.courierCode) === TIMELINE_SLOT.JT_H5 &&
+          normalizeWaybill(timeline.waybill) === displayWaybill(shipment)) ||
         shipment.identity.manuallyAdded ||
         isShunFengSourceShipment(shipment) ||
         isVerifiedKuaidi100Timeline(timeline);
     }
     return capability === "fallback";
-  }).filter((timeline) => timedTracks(timeline.tracks).length > 0);
+  };
+  return allowed() ? null : "source_policy";
+}
 
+function eligibleDetailManuals(shipment: Shipment): TimelinePackage[] {
+  return selectedManualTimelines(shipment)
+    .map(timeline => cainiaoTimelinePresentation(shipment, timeline))
+    .filter(timeline => !detailManualRejectionReason(shipment, timeline) && timedTracks(timeline.tracks).length > 0);
+}
+
+function detailHistoryCandidates(shipment: Shipment) {
+  const rawSource = sourceTimeline(shipment);
+  const source = rawSource ? cainiaoTimelinePresentation(shipment, rawSource) : null;
+  const eligible = eligibleDetailManuals(shipment);
+  const sfManuals = isShunFengSourceShipment(shipment) ? eligible.filter(isShunFengManualTimeline) : [];
+  // A fresh list summary updates presentation, but cannot erase already loaded history.
+  const presentedSource = source ? withSelectedDetailStatus(shipment, source) : null;
+  const sourceSummaryOnly = Boolean(source && timedTracks(source.tracks).length < SOURCE_TIMELINE_MIN_TRACKS &&
+    !detailTimelineComplete(source, accountPresentationReference(shipment), presentedSource!.semantic,
+      terminalEvidenceAtMs({ ...shipment, timeline: presentedSource! })) &&
+    eligible.some(timeline => timedTracks(timeline.tracks).length >= SOURCE_TIMELINE_MIN_TRACKS));
+  const candidates = sfManuals.length ? sfManuals : [
+    ...(source && !sourceSummaryOnly && timedTracks(source.tracks).length ? [source] : []), ...eligible,
+  ];
+  return { source, eligible, sfManuals, sourceSummaryOnly, candidates };
+}
+
+/** Rank eligible whole packages by completeness, coverage, capture proof and source priority. */
+export function rankShipmentDetailCandidates(
+  shipment: Shipment,
+  onSelection?: (reason: string) => void,
+): TimelinePackage | null {
+  const finish = (timeline: TimelinePackage | null, reason: string) => {
+    onSelection?.(reason);
+    return timeline;
+  };
+  const { source, eligible, sfManuals, candidates } = detailHistoryCandidates(shipment);
   const sourceIsCoarseFallback = isShunFengSourceShipment(shipment);
-  const sfManuals = sourceIsCoarseFallback ? eligible.filter(isShunFengManualTimeline) : [];
   if (sourceIsCoarseFallback && !sfManuals.length && shipment.detailSelection?.reason === "sf_refresh_failed") {
     const fallback = eligible.find(timeline => normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.V5_QUERY);
     if (fallback) return finish(fallback, "sf_cached_query_fallback");
   }
-  // A usable SF manual package takes over even when partial; automatic packages only fill an empty manual chain.
-  const candidates = sfManuals.length ? sfManuals : [
-    ...(source && timedTracks(source.tracks).length ? [source] : []),
-    ...eligible,
-  ];
   if (!candidates.length) return finish(null, "no_eligible_history");
 
   const accountReference = accountPresentationReference(shipment);
@@ -1050,39 +1211,19 @@ export function rankShipmentDetailCandidates(
     const presented = withSelectedDetailStatus(shipment, timeline);
     // SF/manual selection can advance its own status; other automatic sources retain owner status.
     const expected = presented.semantic;
-    return detailTimelineComplete(timeline, completenessSource, expected);
+    return detailTimelineComplete(timeline, completenessSource, expected,
+      terminalEvidenceAtMs({ ...shipment, timeline: presented }));
   };
-  const tier = (timeline: TimelinePackage): number => {
-    if (timeline === source) {
-      if (sourceIsCoarseFallback) return DETAIL_TIER.coarseSource;
-      if (complete(timeline)) return DETAIL_TIER.sourceComplete;
-      // 只有一条有效节点的 feed 是**状态摘要，不是轨迹**：两边都只有一条时让它赢，会把详情压回
-      // 「已下单」而丢掉承运商刚给的那条。这条判据越不过前面的完整性和节点数。
-      return timedTracks(timeline.tracks).length >= SOURCE_TIMELINE_MIN_TRACKS
-        ? DETAIL_TIER.sourceIncrement
-        : DETAIL_TIER.sourceSummaryOnly;
-    }
-    return isPaidTimelineProvider(timeline.provider)
-      ? DETAIL_TIER.paidManual
-      : DETAIL_TIER.freeManual;
+  const qualities = new Map<TimelinePackage, DetailTimelineQuality>();
+  const quality = (timeline: TimelinePackage): DetailTimelineQuality => {
+    const existing = qualities.get(timeline);
+    if (existing) return existing;
+    const value = detailTimelineQuality(timeline, complete(timeline), source, sourceIsCoarseFallback);
+    qualities.set(timeline, value);
+    return value;
   };
-  // 先比完整性，再比节点覆盖，**层级只当并列时的 tiebreak**。层级不能压倒一切：一个 kdniao
-  // 包能存在，本身就说明当时前面几级不够（付费兜底只在累计仍无起点时才调），拿「feed 有资格」
-  // 去压它讲不通。这样 25 条完整 feed 胜过 22 条完整 kdniao，而 2 条 partial feed 输给它。
-  const ranked = candidates.slice().sort((left, right) => {
-    const completeness = Number(complete(right)) - Number(complete(left));
-    if (completeness !== 0) return completeness;
-    const coverage = timedTracks(right.tracks).length -
-      timedTracks(left.tracks).length;
-    if (coverage !== 0) return coverage;
-    // 各家自报的 complete 只当同级之间的 tiebreak：它表示「这次抓取把列表展开了」，够格分辨
-    // 两个同样大小的包，但压不过上面的完整判据和节点覆盖。
-    const declared = Number(manualTimelineIsComplete(right)) -
-      Number(manualTimelineIsComplete(left));
-    if (declared !== 0) return declared;
-    return tier(left) - tier(right) ||
-      compareTimelineProviderOrder(left, right);
-  });
+  const ranked = candidates.slice().sort((left, right) =>
+    compareDetailTimelineQuality(quality(left), quality(right)));
   // A newer account clock cannot bypass history that still passes the shared completeness check.
   // Incomplete older history may yield; complete history retains the existing ranking and sticky rules.
   const isAccountCandidate = (timeline: TimelinePackage): boolean =>
@@ -1118,7 +1259,7 @@ export function rankShipmentDetailCandidates(
     : complete(winner) !== complete(runner) ? "complete_history"
     : timedTracks(winner.tracks).length !== timedTracks(runner.tracks).length ? "track_coverage"
     : manualTimelineIsComplete(winner) !== manualTimelineIsComplete(runner) ? "capture_complete"
-    : tier(winner) !== tier(runner) ? "source_tier" : "provider_order";
+    : quality(winner).tier !== quality(runner).tier ? "source_tier" : "provider_order";
   return finish(winner, reason);
 }
 
@@ -1255,13 +1396,22 @@ export function needsAutomaticListSupplement(shipment: Shipment): boolean {
   return selected.semantic === "UNKNOWN" || timedTracks(selected.tracks).length === 0;
 }
 
-/** Existing details only query their own account source on entry. */
+/** Home handles these account sources before considering independent manual work. */
+export function isHomeAccountQuerySource(shipment: Shipment): boolean {
+  const provider = String(shipment.identity.sourceProvider || "").toLowerCase();
+  return !shipment.identity.manuallyAdded && shipment.identity.bindingSource === "interface5" &&
+    (provider === "jingdong" || provider === "cainiao");
+}
+
 export function needsDetailEntryQuery(shipment: Shipment): boolean {
   const provider = String(shipment.identity.sourceProvider || "").toLowerCase();
+  const selected = selectShipmentTimeline(shipment);
   return !shipment.identity.manuallyAdded && Boolean(shipment.accountRecord) &&
-    shouldRefreshShipment({ ...shipment, timeline: selectShipmentTimeline(shipment) }) &&
+    shouldRefreshShipment({ ...shipment, timeline: selected }) &&
     (provider === "jingdong" || provider === "cainiao") &&
-    (!shipmentDetailComplete(shipment) || selectShipmentTimeline(shipment).semantic === "UNKNOWN");
+    // Complete cached JD history does not prove its account status is still current.
+    ((provider === "jingdong" && selected.semantic !== "CANCELLED") ||
+      !shipmentDetailComplete(shipment) || selected.semantic === "UNKNOWN");
 }
 
 export function sameCanonicalWaybill(
@@ -1310,12 +1460,10 @@ function repairedProjectedCarrier(
   return { courierCode: current.courierCode, companyName: current.companyName };
 }
 /**
- * 接口 5 按件详情（mode=detail）是 query 包，住 v5_query 槽；source 槽只装列表 feed 自己的增量
- * （用户定 2026-09-05 晚：feed 增量与 query 独立，不拼接）。以前详情结果原样走 applyAccountShipment，
- * 它的节点被并进了 source 槽——日志里那个 v5_query 其实是 feed ∪ 详情，同一分钟秒数不同的两条
- * 「预计…」就是这么来的（2026-09-06，京东订单 4424；Lite / Pipi 的 v5_query 是独立的 sidecar，
- * 所以没有）。这里把详情包摘到 v5_query 槽，身份、投影、路由、订单级展示仍按原路合并；source 槽
- * 用 current 自己的 feed 占位（带上详情给的运单号，好让投影照常建立），节点不动。
+ * Detail responses belong to v5_query and must not rewrite the raw list snapshot.
+ * JingDong may subsequently extend this query with matching list increments
+ * (user decision, 2026-09-13); H5 and other providers remain independent.
+ * The list placeholder carries accepted identity without copying query nodes.
  */
 export function asAccountDetailObservation(
   current: Shipment,
@@ -1338,6 +1486,9 @@ export function asAccountDetailObservation(
     : incoming.manualTimelines || [];
   return {
     ...incoming,
+    // Query evidence has its own slot; the durable request tuple belongs to the list row.
+    accountRecord: current.accountRecord ?? incoming.accountRecord,
+    identity: { ...incoming.identity, sender: current.identity.sender ?? incoming.identity.sender },
     timeline: placeholder,
     sourceTimeline: placeholder,
     manualTimelines: manuals,
@@ -1458,7 +1609,8 @@ function mergeAccountShipmentPackage(
       timedTracks(incomingSource.tracks).length,
   );
   const mergedSource = establishesProjection || reclassifiesAccountOrder
-    ? withoutFeedRebuildFlag(incomingSource)
+    ? withoutFeedRebuildFlag(establishesProjection
+      ? withAccountListOrigin(currentSource, incomingSource) : incomingSource)
     : rejectsUnprojectedOrderCompletion
     ? currentSource!
     : rebuildsFeedSlot
@@ -1488,6 +1640,18 @@ function mergeAccountShipmentPackage(
     if (isForeignManualPackage(anchorShipment, timeline)) continue;
     manuals = mergeTimelineAuthorities(manuals,
       withoutJingDongOrderCompletion(timeline, incoming.identity));
+  }
+  // JingDong list/detail share account evidence. Only an accepted same-waybill list advance
+  // extends an existing query; independent H5/manual packages remain untouched.
+  if (!rejectsUnprojectedOrderCompletion && !reclassifiesAccountOrder &&
+      isJingDongSourceShipment(incoming) && timelineCapability(mergedSource.provider) === "account" &&
+      ["interface5", "account", "v5_list"].includes(mergedSource.provider.toLowerCase()) &&
+      normalizeWaybill(mergedSource.waybill)) {
+    manuals = manuals.map(timeline => normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.V5_QUERY &&
+      normalizeWaybill(timeline.waybill) === normalizeWaybill(mergedSource.waybill) &&
+      timelineLatestTrackAt(mergedSource) > timelineLatestTrackAt(timeline)
+      ? mergeTimelinePackage(timeline, { ...mergedSource, provider: timeline.provider })
+      : timeline);
   }
   const preservesExistingProjection = Boolean(
     current?.identity.accountOrder &&
@@ -1589,6 +1753,9 @@ function mergeAccountShipmentPackage(
       current?.manualRefreshAttemptAtMs ?? incoming.manualRefreshAttemptAtMs,
     manualRefreshLease:
       current?.manualRefreshLease ?? incoming.manualRefreshLease,
+    // The account response cannot revoke eligibility already established by this owner's H5 attempt.
+    cainiaoH5FallbackActivatedAtMs:
+      current?.cainiaoH5FallbackActivatedAtMs ?? incoming.cainiaoH5FallbackActivatedAtMs,
     route: keepsCainiaoRoute
       ? incoming.route || current?.route || null
       : null,
@@ -1719,7 +1886,7 @@ function mergeAutomaticObservation(
       ? previous.statusPresentation
       : latest.statusPresentation,
     sourceTimeline: establishesProjection
-      ? incoming.sourceTimeline
+      ? withAccountListOrigin(previous.sourceTimeline, incoming.sourceTimeline)
       : rejectsUnprojectedOrderCompletion
       ? previous.sourceTimeline
       : mergeAutomaticSourceTimeline(

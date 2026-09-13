@@ -67,14 +67,6 @@ configure_beta_build() {
   local minor
   local patch
 
-  beta_number="$(sed -n \
-    's/^export const SCRIPT_VERSION = "[0-9][0-9.]*-beta\([0-9][0-9]*\)";$/\1/p' \
-    "$ROOT/script/project/services/build-track.ts" | head -n 1)"
-  [[ -n "$beta_number" ]] || {
-    printf '%s\n' 'The Scripting source is not on a numbered beta track.' >&2
-    exit 1
-  }
-
   release_version="$(sed -n \
     's/^val releaseVersionNameDefault = "\([0-9][0-9.]*\)"$/\1/p' \
     "$ROOT/app/build.gradle.kts" | head -n 1)"
@@ -83,6 +75,22 @@ configure_beta_build() {
     printf '%s\n' 'The Android release version must use major.minor.patch.' >&2
     exit 1
   }
+
+  if [[ -n "${DELIVERIES_VERSION_NAME:-}" ]]; then
+    [[ "$DELIVERIES_VERSION_NAME" =~ ^"${release_version}"-beta([1-9][0-9]?)$ ]] || {
+      printf '%s\n' "Android beta version must use ${release_version}-betaN." >&2
+      exit 1
+    }
+    beta_number="${BASH_REMATCH[1]}"
+  else
+    beta_number="$(sed -n \
+      's/^export const SCRIPT_VERSION = "[0-9][0-9.]*-beta\([0-9][0-9]*\)";$/\1/p' \
+      "$ROOT/script/project/services/build-track.ts" | head -n 1)"
+    [[ -n "$beta_number" ]] || {
+      printf '%s\n' 'Set DELIVERIES_VERSION_NAME for an Android beta when Scripting is not on a numbered beta track.' >&2
+      exit 1
+    }
+  fi
 
   # 用户定 2026-09-06：beta 是「即将发布的那一版」的预发布，不再借用 patch + 1。编号落在末两位，
   # 正式版固定占 99，所以同一版本的 beta 一定低于正式版，beta 装过之后可以直接覆盖升级；
@@ -100,6 +108,7 @@ configure_beta_build() {
 resolve_local_properties() {
   local worktree
   local candidate
+  local project_prefix
 
   if [[ -n "${DELIVERIES_LOCAL_PROPERTIES_FILE:-}" ]]; then
     [[ -f "$DELIVERIES_LOCAL_PROPERTIES_FILE" ]] || {
@@ -116,8 +125,9 @@ resolve_local_properties() {
     return
   fi
 
+  project_prefix="$(git -C "$ROOT" rev-parse --show-prefix 2>/dev/null)" || return
   while IFS= read -r worktree; do
-    candidate="$worktree/local.properties"
+    candidate="$worktree/${project_prefix}local.properties"
     if [[ -f "$candidate" ]]; then
       DELIVERIES_LOCAL_PROPERTIES_FILE="$candidate"
       export DELIVERIES_LOCAL_PROPERTIES_FILE

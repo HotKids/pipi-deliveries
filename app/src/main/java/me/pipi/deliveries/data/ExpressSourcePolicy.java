@@ -1,8 +1,5 @@
 package me.pipi.deliveries.data;
 
-import java.text.ParsePosition;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 import java.util.Locale;
 
 import me.pipi.deliveries.model.CainiaoRoute;
@@ -84,14 +81,6 @@ final class ExpressSourcePolicy {
         return fallback == StatusSemantic.PICKED || fallback == StatusSemantic.SHIPPED
                 || fallback == StatusSemantic.UNKNOWN
                 ? StatusSemantic.ORDERED : fallback;
-    }
-
-    static boolean hasTimedCarrierTimeline(String tracksJson) {
-        for (ExpressTimeline.Track track : ExpressTimeline.parse(tracksJson, "", "")) {
-            if (parseEventTime(track.time) > 0L
-                    && !ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) return true;
-        }
-        return false;
     }
 
     /** Keeps the home/widget projection aligned with the currently selected account interface. */
@@ -178,18 +167,7 @@ final class ExpressSourcePolicy {
     }
 
     static long parseEventTime(String value) {
-        String clean = clean(value);
-        if (clean.isEmpty()) return 0L;
-        for (String pattern : new String[]{"yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss"}) {
-            SimpleDateFormat parser = new SimpleDateFormat(pattern, Locale.CHINA);
-            parser.setLenient(false);
-            ParsePosition position = new ParsePosition(0);
-            Date parsed = parser.parse(clean, position);
-            if (parsed != null && position.getIndex() == clean.length()) {
-                return parsed.getTime();
-            }
-        }
-        return 0L;
+        return me.pipi.deliveries.model.ExpressTimeCodec.parse(value);
     }
 
     private static boolean isDeliveryWaitingPair(
