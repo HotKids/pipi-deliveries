@@ -2,6 +2,7 @@ package me.pipi.deliveries.background;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -16,8 +17,37 @@ import me.pipi.deliveries.feature.express.ExpressOrderTextIdentity;
 import me.pipi.deliveries.model.StatusSemantic;
 
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.annotation.Config;
+import org.robolectric.annotation.SQLiteMode;
 
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 31, manifest = Config.NONE, application = android.app.Application.class)
+@SQLiteMode(SQLiteMode.Mode.NATIVE)
 public final class ExpressSyncEngineTest {
+    @Test public void explicitHomePullKeepsTrustedCompletionFrozenButQueriesUndatedCompletion() {
+        me.pipi.deliveries.data.ExpressRepository repository =
+                me.pipi.deliveries.data.ExpressRepository.get(RuntimeEnvironment.getApplication());
+        long now = System.currentTimeMillis();
+        for (long signedAt : new long[]{now - 60_000L, 0L}) {
+            String waybill = "HOMESIGNED" + signedAt;
+            ExpressQueryResult result = new ExpressQueryResult(waybill, "SF", "SF",
+                    StatusSemantic.COMPLETED, signedAt, "2026-09-01 10:00:00", "Carrier update",
+                    "[{\"time\":\"2026-09-01 10:00:00\",\"context\":\"Carrier update\"}]",
+                    "", "", "k100_h5", "", "", "").withManualStatusEvidence("Delivered", true);
+            ExpressItem owner = repository.saveManualQueryBatch(null, null,
+                    java.util.List.of(new me.pipi.deliveries.model.ManualQuerySuccess(
+                            "k100_h5", result, now, true)), "", "interface5");
+            assertNotNull(owner);
+            me.pipi.deliveries.data.ExpressRepository.ManualTimelinePollClaim claim =
+                    ExpressSyncEngine.claimListManualTimelinePoll(repository, owner, now, true);
+            if (signedAt > 0L) assertNull(claim);
+            else assertNotNull(claim);
+            repository.releaseManualTimelinePoll(claim);
+        }
+    }
     @Test public void omittedV5SfDoesNotIssueAccountQuery() {
         ExpressItem sf = new ExpressItem(1L, "", "SFTEST123456", "SF", "顺丰速运",
                 StatusSemantic.TRANSIT, "运输中", "运输中", "2026-09-01 10:00:00", "[]",
@@ -165,12 +195,10 @@ public final class ExpressSyncEngineTest {
         ExpressItem resolvedCarrier = projectedOrder("顺丰速运");
         ExpressItem unprojected = accountOrder("");
 
-        assertTrue(ExpressSyncEngine.needsProjectedCarrierRecognition(missingCarrier));
-        assertTrue(ExpressSyncEngine.needsProjectedCarrierRecognition(genericCarrier));
-        assertFalse(ExpressSyncEngine.needsProjectedCarrierRecognition(resolvedCarrier));
-        assertFalse(ExpressSyncEngine.needsProjectedCarrierRecognition(unprojected));
-        assertEquals("顺丰速运", ExpressSyncEngine.recognizedProjectedCarrier("shunfeng"));
-        assertEquals("", ExpressSyncEngine.recognizedProjectedCarrier("unknown-provider"));
+        assertTrue(AccountCarrierRecognition.needsRecognition(missingCarrier));
+        assertTrue(AccountCarrierRecognition.needsRecognition(genericCarrier));
+        assertFalse(AccountCarrierRecognition.needsRecognition(resolvedCarrier));
+        assertFalse(AccountCarrierRecognition.needsRecognition(unprojected));
     }
 
     @Test

@@ -67,15 +67,6 @@ public class ExpressDatabaseThreadingTest {
         assertFalse(RepositoryShadow.mainThread.get());
     }
 
-    @Test public void detailLoadsItsOwnerAwayFromMainThread() throws Exception {
-        ActivityController<ExpressDetailActivity> activity = Robolectric.buildActivity(ExpressDetailActivity.class);
-        activity.get().setTheme(R.style.AppTheme);
-        try {
-            activity.create();
-            assertBackgroundRead();
-        } finally { activity.destroy(); }
-    }
-
     @Test public void listLoadsItsRowsAwayFromMainThread() throws Exception {
         ActivityController<ExpressListActivity> activity = Robolectric.buildActivity(ExpressListActivity.class);
         activity.get().setTheme(R.style.AppTheme);

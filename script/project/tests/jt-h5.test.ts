@@ -14,7 +14,10 @@ assert.equal(primaryH5Provider("SF"), "k100_h5");
 assert.equal(new URL(route).origin, "https://jtsd.jtexpress.com.cn");
 assert.deepEqual(webPhoneTails("1234", ["5678"]), ["1234"]);
 assert.deepEqual(webPhoneTails("", ["5678", "5678", "12345", "abcd", "0123"]), ["5678", "0123"]);
-assert.deepEqual(webPhoneTails("invalid", ["5678"]), []);
+assert.deepEqual(webPhoneTails("invalid", ["5678"]), ["5678"]);
+assert.deepEqual(webPhoneTails(undefined, ["5678", "5678"]), ["5678"]);
+assert.deepEqual(webPhoneTails("123", ["5678"]), ["5678"]);
+assert.deepEqual(webPhoneTails(" 0123 ", ["5678"]), ["0123"]);
 
 function scene(options: { url?: string; header?: string; challenge?: boolean; tails?: string[]; toast?: string } = {}) {
   const state: Record<string, unknown> = {};

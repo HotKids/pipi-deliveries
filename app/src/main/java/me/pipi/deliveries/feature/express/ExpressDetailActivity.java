@@ -30,7 +30,6 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -60,6 +59,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import me.pipi.deliveries.R;
 import me.pipi.deliveries.background.ExpressScheduler;
+import me.pipi.deliveries.background.AccountCarrierRecognition;
 import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
@@ -136,8 +136,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private TextView hotlineView;
     private ExpressItem item;
     private DetailState detailState;
-    private boolean initialDetailReady;
-    private boolean initialDetailShown;
 
     private static final class DetailState {
         final ExpressItem owner;
@@ -175,6 +173,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private boolean previewSaveInFlight;
     private boolean persistPreviewOnFinish;
     private boolean localRefreshInFlight;
+    private boolean localRefreshIsPull;
+    private boolean pendingDetailPull;
     private int localRefreshGeneration;
     private Runnable localRefreshTimeout;
     private Future<?> localRefreshTask;
@@ -262,38 +262,10 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     getIntent().getStringExtra(EXTRA_PREVIEW_BINDING_SOURCE))
                     ? "interface5" : "interface6";
             item = previewItem(previewResult);
+        } else {
+            item = ExpressRepository.get(this).find(
+                    getIntent().getLongExtra(EXTRA_ROW_ID, 0L));
         }
-        long rowId = getIntent().getLongExtra(EXTRA_ROW_ID, 0L);
-        ExpressItem preview = item;
-        String bindingSource = ExpressAccountSource.bindingSource(this);
-        setContentView(new ProgressBar(this));
-        worker.execute(() -> {
-            try {
-                ExpressRepository repository = ExpressRepository.get(this);
-                ExpressItem loaded = preview == null ? repository.find(rowId) : preview;
-                DetailState stateSnapshot = loaded == null ? null
-                        : new DetailState(repository, loaded, bindingSource);
-                runOnUiThread(() -> {
-                    if (isFinishing() || isDestroyed()) return;
-                    item = loaded;
-                    detailState = stateSnapshot;
-                    initialDetailReady = true;
-                    showInitialDetailWhenStarted();
-                });
-            } catch (RuntimeException failure) {
-                runOnUiThread(() -> {
-                    if (isFinishing() || isDestroyed()) return;
-                    Toast.makeText(this, ExpressToastCopy.STATE_LOAD_FAILED, Toast.LENGTH_SHORT).show();
-                    ExpressDetailActivity.super.finish();
-                });
-            }
-        });
-    }
-
-    private void showInitialDetailWhenStarted() {
-        if (!initialDetailReady || initialDetailShown || !getLifecycle().getCurrentState()
-                .isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) return;
-        initialDetailShown = true;
         showInitialDetail();
     }
 
@@ -302,6 +274,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             finish();
             return;
         }
+        detailState = new DetailState(ExpressRepository.get(this), item,
+                ExpressAccountSource.bindingSource(this));
         boolean transientOnlinePreview = getIntent().getBooleanExtra(
                 EXTRA_TRANSIENT_ONLINE_PREVIEW, false);
         String cainiaoUrl = transientOnlinePreview ? "" : safeCainiaoUrl(item);
@@ -351,8 +325,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     @Override protected void onStart() {
         super.onStart();
-        showInitialDetailWhenStarted();
-        if (!initialDetailShown) return;
         if (restartLocalRefreshOnStart) {
             restartLocalRefreshOnStart = false;
             restartLocalTimelineRefreshIfNeeded();
@@ -898,11 +870,12 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         refreshLocalTimelineInBackground(showProgress);
     }
 
-    /** SF's unchanged coarse feed cannot prove an active parcel has no newer events. */
+    /** Complete history cannot suppress an active JD entry query or SF's manual refresh. */
     static boolean shouldSkipCompleteCache(ExpressItem value, boolean complete) {
         return value != null && !(allowsJingDongCapture(value)
                 && value.isAccountOrder() && value.projectedWaybill.isEmpty())
                 && value.semantic != StatusSemantic.UNKNOWN && complete
+                && (!allowsJingDongCapture(value) || value.semantic.terminal())
                 && (!value.isShunFengSource() || value.semantic.terminal());
     }
 
@@ -972,9 +945,13 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     private void refreshLocalTimelineInBackground(boolean showProgress) {
-        if (localRefreshInFlight || !canRefreshLocalTimeline(item)) {
+        if (localRefreshInFlight) {
+            // An entry observation cannot satisfy a pull's separate history operation.
+            pendingDetailPull |= pullRefreshRequested && !localRefreshIsPull;
+            return;
+        }
+        if (!canRefreshLocalTimeline(item)) {
             if (detailSwipe != null) detailSwipe.setRefreshing(false);
-            // 已有一轮在跑：这次手势并入它，不重复弹。
             pullRefreshRequested = false;
             return;
         }
@@ -990,6 +967,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         int generation = ++localRefreshGeneration;
         ExpressItem requestItem = item;
         boolean detailPull = pullRefreshRequested;
+        localRefreshIsPull = detailPull;
         ExpressQueryCancellation cancellation =
                 new ExpressQueryCancellation(localRefreshBudgetMillis(requestItem));
         localRefreshCancellation = cancellation;
@@ -1006,11 +984,31 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     ExpressLog.write("detail.refresh.started", "waybillTail", tailOf(requestItem.displayWaybill()));
                     ExpressRepository repository = ExpressRepository.get(this);
                     cancellation.throwIfCancelled();
-                    if (shouldSkipCompleteCache(requestItem, currentDetailComplete(requestItem))) return;
-                    ExpressItem refreshedItem = requestItem;
-                    if (usesNativeAutomaticDetail(requestItem)) {
-                        refreshedItem = refreshAutomaticDetail(repository, requestItem, cancellation, detailPull);
+                    ExpressItem refreshedItem = repository.find(requestItem.rowId);
+                    if (refreshedItem == null || !refreshedItem.waybill.equals(requestItem.waybill)
+                            || !refreshedItem.stateOwner.equals(requestItem.stateOwner)
+                            || !refreshedItem.sourceProvider.equals(requestItem.sourceProvider)) return;
+                    if (AccountCarrierRecognition.needsRecognition(refreshedItem)) {
+                        AccountCarrierRecognition.recognize(repository, refreshedItem,
+                                waybill -> new ExpressApi(getApplicationContext())
+                                        .recognizeCarrier(waybill, cancellation));
+                        refreshedItem = repository.find(requestItem.rowId);
                         if (refreshedItem == null) return;
+                    }
+                    if (shouldSkipCompleteCache(refreshedItem, currentDetailComplete(refreshedItem))) {
+                        renderRefreshedDetail(generation, refreshedItem);
+                        return;
+                    }
+                    if (usesNativeAutomaticDetail(requestItem)) {
+                        refreshedItem = refreshAutomaticDetail(repository, refreshedItem, cancellation, detailPull);
+                        if (refreshedItem == null) return;
+                        if (AccountCarrierRecognition.needsRecognition(refreshedItem)) {
+                            AccountCarrierRecognition.recognize(repository, refreshedItem,
+                                    waybill -> new ExpressApi(getApplicationContext())
+                                            .recognizeCarrier(waybill, cancellation));
+                            refreshedItem = repository.find(requestItem.rowId);
+                            if (refreshedItem == null) return;
+                        }
                     }
                     if (!detailPull) {
                         renderRefreshedDetail(generation, refreshedItem);
@@ -1033,6 +1031,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         return;
                     }
                     cancellation.throwIfCancelled();
+                    ExpressRepository.ManualQueryOwnerClaim ownerClaim = repository.captureManualQueryOwner(queryOwner);
+                    if (ownerClaim == null) return;
+                    repository.activateCainiaoManualFallback(queryOwner, ownerClaim);
                     claim = repository.claimForegroundManualTimelinePoll(
                             queryOwner, System.currentTimeMillis(), detailPull);
                     if (claim == null) {
@@ -1040,7 +1041,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         return;
                     }
                     cancellation.throwIfCancelled();
-                    ExpressRepository.ManualQueryOwnerClaim ownerClaim = repository.captureManualQueryOwner(queryOwner);
                     ManualQueryCoordinator.Batch manualBatch = ManualQueryCoordinator.queryOnlineFirst(
                             null,
                             repository.manualTimelineCandidate(queryOwner, TimelineSlot.V6_QUERY),
@@ -1101,6 +1101,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     || !current.sourceProvider.equals(expected.sourceProvider)) return;
             item = current;
             detailState = snapshot;
+            ((ImageView) findViewById(R.id.detail_icon)).setImageResource(item.displayIconResource());
             renderHeader(item.displayCourierCode(), item.displayCompany(), item.displayWaybill(),
                     item.displayStatus(), item.semantic);
             ManualTimelineAuthorityPolicy.Candidate selected = snapshot.selected;
@@ -1117,8 +1118,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     static boolean automaticSourcesHaveOrigin(ExpressRepository repository, ExpressItem owner) {
         if (owner == null || owner.manuallyAdded || "ShunFeng".equalsIgnoreCase(owner.sourceProvider)) return false;
         if (Kuaidi100TimelinePolicy.hasPickupEvidence(repository.automaticSourceTimeline(owner))) return true;
-        ExpressQueryResult query = accountTimelineFor(repository, owner, owner.displayWaybill(), "interface5");
-        if (usesInterface5Automatic(owner) && Kuaidi100TimelinePolicy.hasPickupEvidence(query)) return true;
         String provider = owner.isCainiaoSource() ? TimelineSlot.CN_H5 : TimelineSlot.JD_H5;
         ManualTimelineAuthorityPolicy.Candidate h5 = repository.manualTimelineCandidate(owner, provider);
         return h5 != null && Kuaidi100TimelinePolicy.hasTimedTracking(h5.result)
@@ -1188,6 +1187,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             return owner;
         }
         ExpressQueryResult feed = repository.automaticSourceTimeline(owner);
+        boolean missingIdentity = owner.isAccountOrder() && owner.projectedWaybill.isEmpty();
+        if (!missingIdentity && Kuaidi100TimelinePolicy.hasPickupEvidence(feed)) {
+            logAutomaticH5Decision(owner, "skipped", "feed_pickup");
+            return owner;
+        }
         boolean cainiao = owner.isCainiaoSource();
         boolean jingDong = "JingDong".equalsIgnoreCase(owner.sourceProvider);
         if (jingDong && !allowsJingDongCapture(owner)) return owner;
@@ -1235,8 +1239,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             ExpressItem owner, ExpressQueryCancellation cancellation) throws InterruptedException {
         String provider = ManualRoutePolicy.primaryH5Provider(owner.displayCourierCode());
         List<String> phones = ExpressKuaidi100TimelineCapture.phoneCandidates(owner.phone,
-                owner.manuallyAdded ? ExpressRepository.get(this).phoneCandidates("")
-                        : java.util.Collections.emptyList());
+                ExpressRepository.get(this).phoneCandidates("", owner.manuallyAdded ? ""
+                        : ExpressAccountSource.bindingSourceForOwner(
+                                owner.stateOwner.isEmpty() ? owner.source : owner.stateOwner)));
         String route = ManualRoutePolicy.primaryH5Url(owner.displayWaybill(), owner.displayCourierCode());
         if (route.isEmpty()) {
             ExpressLog.line("", provider, "", "skipped",
@@ -1278,6 +1283,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         localRefreshCancellation = null;
         localRefreshTaskState = null;
         clearLocalRefreshTimeout();
+        if (pendingDetailPull) {
+            pendingDetailPull = false;
+            refreshLocalTimelineInBackground(true);
+            return;
+        }
         setLocalRefreshProgressVisible(false);
         if (detailSwipe != null) detailSwipe.setRefreshing(false);
         if (timelineLoadingPlaceholder) {
@@ -1290,6 +1300,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         if (!localRefreshInFlight || generation != localRefreshGeneration) return;
         localRefreshGeneration++;
         localRefreshInFlight = false;
+        pendingDetailPull = false;
         restartLocalRefreshOnStart |= restartOnStart;
         ExpressQueryCancellation cancellation = localRefreshCancellation;
         Future<?> task = localRefreshTask;

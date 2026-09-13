@@ -3547,8 +3547,8 @@ assert.notEqual(refreshValueFingerprint({ semantic: "TRANSIT" }), refreshValueFi
 }
 console.log("overlapping full/detail notification deduplication tests passed");
 
-// Legacy full feed/query packages must lose shopping completion on load, including
-// owner observations that could otherwise restore it during the next merge.
+// Legacy feed/query packages hide shopping-review prose on load while retaining
+// their structured status clocks, including the durable owner observations.
 {
   memory.clear();
   const orderId = "3597448007738003";
@@ -3587,12 +3587,13 @@ console.log("overlapping full/detail notification deduplication tests passed");
     assert.equal(timeline.tracks.length, 2);
     assert.equal(timeline.latestDetail, "您的快件已送达至【家门口】");
     assert.equal(timeline.latestTimeText, "2026-08-23 14:00:00");
-    assert.equal(timeline.statusEventAtMs, signedAt);
+    assert.equal(timeline.statusEventAtMs, NOW,
+      "hiding shopping prose cannot rewrite the stored structured status clock");
     assert.equal(timeline.semantic, "COMPLETED");
     assert.equal(timeline.tracks[1]!.detail, "温馨提示：您的订单预计今天送达");
   }
   assert.equal(selectShipmentDetailTimeline(restored).latestDetail, "您的快件已送达至【家门口】");
-  assert.equal(restored.settledAtMs, signedAt, "the rejected order timestamp is not a carrier retention anchor");
+  assert.equal(restored.settledAtMs, NOW, "the accepted signature retains its stored lifecycle anchor");
   saveState({ ...emptyState(), shipments: [restored], feedSlotRebuiltAtMs: NOW }, NOW + 2);
   const reloaded = loadState(NOW + 3).shipments[0]!;
   assert.deepEqual(reloaded.timeline, restored.timeline, "repeated normalization is idempotent");

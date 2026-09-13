@@ -19,10 +19,10 @@ export function primaryH5Route(waybill: string, courierCode: string): string {
     : "https://m.kuaidi100.com/app/query/?nu=" + encodeURIComponent(normalized);
 }
 
-/** An explicit parcel suffix is exclusive; only its absence permits bound candidates. */
+/** Only a usable explicit parcel suffix excludes the client's bound candidates. */
 export function webPhoneTails(explicit: string | undefined, bound: readonly string[] = []): string[] {
   const supplied = String(explicit || "").trim();
-  const values = supplied ? [supplied] : bound;
+  const values = /^\d{4}$/.test(supplied) ? [supplied] : bound;
   return [...new Set(values.filter(value => /^\d{4}$/.test(value)))];
 }
 

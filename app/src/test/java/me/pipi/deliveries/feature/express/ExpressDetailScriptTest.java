@@ -24,6 +24,13 @@ import java.nio.file.Path;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 35, manifest = Config.NONE, application = Application.class)
 public final class ExpressDetailScriptTest {
+    @Test public void completeJingDongHistoryDoesNotSuppressTheActiveEntryQuery() {
+        ExpressItem active = interfaceItem("INTERFACE5", "JingDong", "JD", "京东快递");
+        assertFalse(ExpressDetailActivity.shouldSkipCompleteCache(active, true));
+        assertTrue(ExpressDetailActivity.shouldSkipCompleteCache(
+                interfaceItem("INTERFACE5", "CaiNiao", "JD", "京东快递"), true));
+    }
+
     @Test public void oldQueryPickupCannotCompleteANewerListEvent() {
         ExpressQueryResult old = new ExpressQueryResult("JDPROJECTED123", "JD", "京东物流",
                 StatusSemantic.TRANSIT, "2026-09-01 10:00:00", "运输中",
@@ -334,7 +341,7 @@ public final class ExpressDetailScriptTest {
         assertFalse(ExpressDetailActivity.needsManualSupplement(
                 interfaceItem("INTERFACE5", "DouYin", "ZTO", "中通快递"), complete, null));
         String source = detailActivitySource();
-        assertTrue(source.contains("shouldSkipCompleteCache(requestItem, currentDetailComplete(requestItem))"));
+        assertFalse(ExpressDetailActivity.shouldSkipCompleteCache(owner, true));
         assertTrue(source.contains("if (item.semantic == StatusSemantic.UNKNOWN || allowsJingDongCapture(item)) refreshLocalTimeline(false);"));
         assertTrue(source.contains("queryOwner.semantic == StatusSemantic.UNKNOWN && currentDetailComplete(queryOwner)"));
     }

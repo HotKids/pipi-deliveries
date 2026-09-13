@@ -148,12 +148,12 @@ test("a received row with no matching binding is visible in diagnostics without 
   assert.equal(stored.shipments.length, 1);
 });
 
-test("order-review completion removed during projection is distinguished from the parsed list status", async () => {
+test("removing an order review preserves the first structured completion in list diagnostics", async () => {
   const order = "9999000011112222", waybill = "SF1234563374";
   const row = { ...record(order, "JDKD"), normalizedStatusScope: "ORDER", details: [
     { time: OLD, desc: `交付顺丰速运，运单号为${waybill}` },
   ] };
-  const { entries } = await run([row], [{ ...row, stateNum: 107, details: [
+  const { entries, stored } = await run([row], [{ ...row, stateNum: 107, details: [
     { time: NEW, desc: `您的订单${order}已完成，感谢您对京东的支持，欢迎再次光临。期待您对本次购物进行评价。` },
   ] }]);
   assert.equal(entries.length, 1);
@@ -161,9 +161,11 @@ test("order-review completion removed during projection is distinguished from th
   assert.equal(d.waybillTail, "3374");
   assert.equal(d.listStatusScope, "ORDER");
   assert.equal(d.listStatusSemantic, "COMPLETED");
-  assert.equal(d.preparedStatusSemantic, "DELIVERY");
-  assert.equal(d.feedStatusSemantic, "DELIVERY");
-  assert.ok(d.listEventAtMs! > d.preparedEventAtMs!);
+  assert.equal(d.preparedStatusSemantic, "COMPLETED");
+  assert.equal(d.feedStatusSemantic, "COMPLETED");
+  assert.equal(d.listEventAtMs, d.preparedEventAtMs);
+  assert.equal(stored.shipments[0].timeline.semantic, "COMPLETED");
+  assert.ok(stored.shipments[0].timeline.tracks.every(track => !track.detail.includes("购物进行评价")));
 });
 
 test("diagnostics disabled leaves the same list update and produces no per-record entries", async () => {

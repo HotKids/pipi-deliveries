@@ -273,6 +273,7 @@ function preservesTerminalStatus(
   previous: TimelinePackage | null | undefined,
   selected: TimelinePackage,
   allowCrossProvider = false,
+  preserveCompletedClock = false,
 ): TimelinePackage {
   if (
     !allowCrossProvider && previous?.structuredStatus !== true &&
@@ -285,6 +286,14 @@ function preservesTerminalStatus(
     previous?.semantic === "CANCELLED";
   const selectedTerminal = selected.semantic === "COMPLETED" ||
     selected.semantic === "CANCELLED";
+  // JD list and query are independent packages; a later order completion must
+  // retain the shipment's already accepted signature rather than start its clock again.
+  if (preserveCompletedClock && previous?.semantic === "COMPLETED" &&
+      selected.semantic === "COMPLETED" && previous.structuredStatus === true &&
+      previous.statusEventAtMs! > 0 && previous.statusEventAtMs! <= Date.now()) {
+    return { ...selected, structuredStatus: true, statusEventAtMs: previous.statusEventAtMs,
+      ...statusProjectionFields(previous, selected) };
+  }
   // Matching H5 prose does not replace the structured confirmation already owned by the parcel.
   if (previousTerminal && selected.semantic === previous?.semantic &&
       previous.structuredStatus === true && selected.structuredStatus !== true) {
@@ -796,6 +805,7 @@ export function selectShipmentTimeline(
       withoutJingDongOrderCompletion(shipment.timeline, shipment.identity),
       resolved,
       isFrozenJingDongShipment(shipment) || shipment.timeline.structuredStatus === true,
+      isFrozenJingDongShipment(shipment),
     ),
   );
   if (evidence && (presented.semantic !== resolved.semantic ||
@@ -1291,6 +1301,7 @@ function withSelectedDetailStatus(shipment: Shipment, selected: TimelinePackage)
       withoutJingDongOrderCompletion(shipment.timeline, shipment.identity),
       structuredStatusOverride(shipment, selected),
       shipment.timeline.structuredStatus === true,
+      isFrozenJingDongShipment(shipment),
     ),
   );
 }
@@ -1780,6 +1791,7 @@ function mergeAccountShipmentPackage(
       ? preservesTerminalStatus(
           current ? withoutJingDongOrderCompletion(current.timeline, current.identity) : null,
           selected,
+          isFrozenJingDongShipment(current),
           isFrozenJingDongShipment(current),
         )
       : selected,
@@ -2590,6 +2602,7 @@ function applyManualShipmentInner(
           withoutJingDongOrderCompletion(current.timeline, current.identity),
           selected,
           isFrozenJingDongShipment(current),
+          isFrozenJingDongShipment(current),
         )
       : selected,
   };
@@ -2666,6 +2679,7 @@ export function absorbHistoricalShipment(
       ? preservesTerminalStatus(
           withoutJingDongOrderCompletion(accountOwner.timeline, accountOwner.identity),
           selected,
+          isFrozenJingDongShipment(accountOwner),
           isFrozenJingDongShipment(accountOwner),
         )
       : selected,

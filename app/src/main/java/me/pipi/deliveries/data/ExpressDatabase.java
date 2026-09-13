@@ -13,7 +13,7 @@ import java.util.UUID;
 public final class ExpressDatabase extends SQLiteOpenHelper {
     private static final int LAST_LEGACY_SOURCE_VERSION = 7;
     public static final String DATABASE = "deliveries.db";
-    public static final int VERSION = 24;
+    public static final int VERSION = 25;
     public static final String NOTIFICATION_OUTBOX_TABLE = "express_notification_outbox";
     public static final String EXPRESS_TABLE = "server_express";
     public static final String PHONE_TABLE = "express_phone";
@@ -143,6 +143,8 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         addColumnIfMissing(db, EXPRESS_TABLE, "statusEventTime", "INTEGER DEFAULT 0");
         addColumnIfMissing(db, EXPRESS_TABLE, "senderPhone", "VARCHAR DEFAULT ''");
         addColumnIfMissing(db, EXPRESS_TABLE, "listOriginAtMs", "INTEGER DEFAULT 0");
+        addColumnIfMissing(db, EXPRESS_TABLE, "cainiaoH5FallbackActivatedAtMs", "INTEGER DEFAULT 0");
+        addColumnIfMissing(db, EXPRESS_TABLE, "cainiaoH5FallbackOwner", "VARCHAR DEFAULT ''");
         addColumnIfMissing(db, EXPRESS_TABLE, "updatedAt", "INTEGER DEFAULT 0");
         addColumnIfMissing(db, EXPRESS_TABLE, "signedRetainedAt", "INTEGER DEFAULT 0");
         addColumnIfMissing(db, EXPRESS_TABLE, "stateOwner", "VARCHAR DEFAULT ''");

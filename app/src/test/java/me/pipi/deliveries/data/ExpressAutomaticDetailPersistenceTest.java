@@ -289,9 +289,12 @@ public class ExpressAutomaticDetailPersistenceTest {
                         onlineEvent(owner.waybill, "2026-09-10 01:08:00"), 500L, false)),
                 PHONE, "interface5");
         assertSharedK100Presentation(owner, complete, signed);
-        assertFalse(ExpressRepository.manualTimelinePollDue(repository.find(owner.rowId),
+        assertTrue(ExpressRepository.manualTimelinePollDue(repository.find(owner.rowId),
                 repository.manualTimelineAuthority(owner),
                 500L + ExpressRepository.MANUAL_TIMELINE_POLL_INTERVAL_MS));
+        assertFalse(ExpressRepository.manualTimelinePollDue(repository.find(owner.rowId),
+                repository.manualTimelineAuthority(owner),
+                ExpressSourcePolicy.parseEventTime(signedAt)));
     }
 
     @Test public void nonShunFengAutomaticHomeKeepsItsFeedWhenK100IsFuller() {
@@ -498,7 +501,7 @@ public class ExpressAutomaticDetailPersistenceTest {
         assertNull(repository.accountTimeline("JDREAL000008B", "interface5"));
     }
 
-    @Test public void v5EmptyTimelineCanUseSavedDetailWithoutChangingFeedStatus() {
+    @Test public void v5EmptyTimelineCanUseEligibleSavedDetailWithoutChangingFeedStatus() {
         for (String provider : new String[]{"CaiNiao", "JingDong", "DouYin"}) {
             ExpressItem owner = emptyOwner("EMPTYDETAIL" + provider, provider, "interface5");
             ExpressItem before = repository.find(owner.rowId);
@@ -506,6 +509,10 @@ public class ExpressAutomaticDetailPersistenceTest {
                     repository.claimManualTimelinePoll(before, System.currentTimeMillis());
             assertNotNull(provider, poll);
             repository.releaseManualTimelinePoll(poll);
+            if (provider.equals("CaiNiao")) {
+                assertTrue(repository.activateCainiaoManualFallback(owner,
+                        repository.captureManualQueryOwner(owner)));
+            }
             ExpressQueryResult complete = detailPackage(owner.waybill, TimelineSlot.K100_H5,
                     "2026-09-10 01:50:00", true);
             assertNotNull(repository.saveOwnerManualQueryBatch(owner,
@@ -567,7 +574,7 @@ public class ExpressAutomaticDetailPersistenceTest {
         assertFalse(ExpressRepository.automaticListQueryRequired(saved));
     }
 
-    @Test public void signedEmptyV5ListRemainsFrozen() {
+    @Test public void signedEmptyV5ListRequiresStructuredCompletionToFreeze() throws Exception {
         ExpressItem owner = emptyOwner("FROZENEMPTYV5", "CaiNiao", "interface5");
         ContentValues signed = new ContentValues();
         signed.put("logsiticsStatus", StatusSemantic.COMPLETED.storageCode);
@@ -575,8 +582,21 @@ public class ExpressAutomaticDetailPersistenceTest {
         signed.put("statusEventTime", ExpressSourcePolicy.parseEventTime(TIME));
         database.getWritableDatabase().update(ExpressDatabase.EXPRESS_TABLE,
                 signed, "_id=?", new String[]{Long.toString(owner.rowId)});
+        long now = System.currentTimeMillis();
+        ExpressRepository.ManualTimelinePollClaim untrusted = repository.claimManualTimelinePoll(
+                repository.find(owner.rowId), now);
+        assertNotNull(untrusted);
+        repository.releaseManualTimelinePoll(untrusted);
+        signed.put("packageDyn", WorkerStatusProjection.attach("[]", WorkerStatusProjection.read(
+                new org.json.JSONObject().put("normalizedStatus", new org.json.JSONObject()
+                        .put("version", 1).put("scope", "SHIPMENT").put("semantic", "COMPLETED")
+                        .put("code", "SERVER_ENUM").put("text", "Delivered").put("priority", 0)
+                        .put("eventAtMs", ExpressSourcePolicy.parseEventTime(TIME))
+                        .put("structured", true)))));
+        database.getWritableDatabase().update(ExpressDatabase.EXPRESS_TABLE,
+                signed, "_id=?", new String[]{Long.toString(owner.rowId)});
         assertNull(repository.claimManualTimelinePoll(repository.find(owner.rowId),
-                System.currentTimeMillis()));
+                now + ExpressRepository.MANUAL_TIMELINE_POLL_INTERVAL_MS));
     }
 
     @Test public void cachedDetailFillsTracksButKeepsAnExistingUntimedFeedHeadline() {

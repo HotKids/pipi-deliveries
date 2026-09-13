@@ -24,13 +24,13 @@ public final class JingDongOrderCompletionPolicyTest {
         }
     }
 
-    @Test public void removedStateUsesOnlySurvivingStructuredEvidence() throws Exception {
+    @Test public void reviewRemovalPreservesPacketCompletionAndItsOriginalClock() throws Exception {
         ExpressQueryResult original = packet(new JSONArray().put(track("11:00:00", REVIEW))
                 .put(track("10:00:00", "真实签收").put("statusCode", "107")));
         ExpressQueryResult clean = JingDongOrderCompletionPolicy.clean(original, "123456789");
         assertEquals("真实签收", clean.latestDetail);
         assertEquals(StatusSemantic.COMPLETED, clean.semantic);
-        assertEquals(time("10:00:00"), clean.statusEventTime);
+        assertEquals(time("11:00:00"), clean.statusEventTime);
         assertSame(clean, JingDongOrderCompletionPolicy.clean(clean, "123456789"));
         assertEquals(original.waybill, clean.waybill);
         assertEquals(original.courierCode, clean.courierCode);
@@ -38,13 +38,13 @@ public final class JingDongOrderCompletionPolicyTest {
         assertEquals(original.routeCredential, clean.routeCredential);
     }
 
-    @Test public void deliveryProseCannotSupplyTheRemovedOrderStatus() throws Exception {
+    @Test public void reviewRemovalDoesNotDiscardStructuredCompletionAbovePlainTracks() throws Exception {
         ExpressQueryResult clean = JingDongOrderCompletionPolicy.clean(packet(
                 new JSONArray().put(track("11:00:00", REVIEW))
                         .put(track("10:00:00", "您的快件已送达至家门口"))), "123456789");
-        assertEquals(StatusSemantic.UNKNOWN, clean.semantic);
-        assertEquals(0L, clean.statusEventTime);
-        assertFalse(clean.structuredStatusEvidence);
+        assertEquals(StatusSemantic.COMPLETED, clean.semantic);
+        assertEquals(time("11:00:00"), clean.statusEventTime);
+        assertTrue(clean.structuredStatusEvidence);
         assertEquals("您的快件已送达至家门口", clean.latestDetail);
     }
 
@@ -59,14 +59,15 @@ public final class JingDongOrderCompletionPolicyTest {
         assertEquals(time("10:00:00"), clean.statusEventTime);
     }
 
-    @Test public void emptyHistoryDoesNotKeepTheReviewSummaryOrState() throws Exception {
+    @Test public void reviewOnlyPacketKeepsStructuredCompletionWithoutDisplayingReview() throws Exception {
         ExpressQueryResult clean = JingDongOrderCompletionPolicy.clean(
                 packet(new JSONArray().put(track("11:00:00", REVIEW))), "123456789");
         assertEquals("[]", clean.tracksJson);
         assertEquals("", clean.latestDetail);
         assertEquals("", clean.latestTime);
-        assertEquals(StatusSemantic.UNKNOWN, clean.semantic);
-        assertEquals(0L, clean.statusEventTime);
+        assertEquals(StatusSemantic.COMPLETED, clean.semantic);
+        assertEquals(time("11:00:00"), clean.statusEventTime);
+        assertTrue(clean.structuredStatusEvidence);
     }
 
     @Test public void actualInterface5ParserCodesRecoverStatusWithoutCrossProviderGuessing() throws Exception {
@@ -89,8 +90,23 @@ public final class JingDongOrderCompletionPolicyTest {
         ExpressQueryResult foreignCode = packet(new JSONArray().put(track("11:00:00", REVIEW))
                 .put(track("10:00:00", "其他来源节点").put("statusCode", "107")
                         .put("_pipiStatusSource", "k100_h5")));
-        assertEquals(StatusSemantic.UNKNOWN,
+        assertEquals(StatusSemantic.COMPLETED,
                 JingDongOrderCompletionPolicy.clean(foreignCode, "").semantic);
+    }
+
+    @Test public void reviewRemovalDoesNotInventCompletionOrAMissingStatusClock() throws Exception {
+        for (StatusSemantic semantic : new StatusSemantic[]{StatusSemantic.UNKNOWN, StatusSemantic.COMPLETED}) {
+            ExpressQueryResult packet = new ExpressQueryResult("JDTEST1107", "JD", "京东快递", semantic,
+                    0L, "2026-09-09 11:00:00", REVIEW,
+                    new JSONArray().put(track("11:00:00", REVIEW))
+                            .put(track("10:00:00", "您的快件已送达至家门口")).toString(),
+                    "", "", "v5_query", "", "", "JingDong")
+                    .withManualStatusEvidence(semantic.label, semantic == StatusSemantic.COMPLETED);
+            ExpressQueryResult clean = JingDongOrderCompletionPolicy.clean(packet, "123456789");
+            assertEquals(semantic, clean.semantic);
+            assertEquals(0L, clean.statusEventTime);
+            assertEquals(packet.structuredStatusEvidence, clean.structuredStatusEvidence);
+        }
     }
 
     private static JSONObject track(String hour, String detail) throws Exception {

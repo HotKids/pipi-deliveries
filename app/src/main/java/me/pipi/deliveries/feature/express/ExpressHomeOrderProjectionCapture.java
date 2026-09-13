@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.util.Log;
 
 import me.pipi.deliveries.data.ExpressRepository;
+import me.pipi.deliveries.background.AccountCarrierRecognition;
+import me.pipi.deliveries.network.ExpressApi;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import me.pipi.deliveries.data.TimelineSlot;
 import me.pipi.deliveries.model.ExpressItem;
@@ -136,9 +138,18 @@ final class ExpressHomeOrderProjectionCapture {
                     worker.execute(() -> {
                         boolean saved = false;
                         try {
-                            if (result != null && result.timeline != null)
+                            if (result != null && result.timeline != null) {
                                 saved = repository.saveAutomaticDetailTimeline(
                                         current, claim, result.timeline, result.complete, cancellation);
+                                ExpressItem projected = saved ? repository.find(current.rowId) : null;
+                                if (AccountCarrierRecognition.needsRecognition(projected)) {
+                                    AccountCarrierRecognition.recognize(repository, projected,
+                                            waybill -> new ExpressApi(host.getApplicationContext())
+                                                    .recognizeCarrier(waybill, cancellation));
+                                }
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
                         } catch (RuntimeException failure) {
                             Log.w("ExpressOrderProjection", "Home detail capture could not be saved: "
                                     + failure.getClass().getSimpleName());

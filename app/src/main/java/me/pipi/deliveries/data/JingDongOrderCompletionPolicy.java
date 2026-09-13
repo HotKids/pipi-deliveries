@@ -107,7 +107,9 @@ final class JingDongOrderCompletionPolicy {
             }
         }
         if (latest == null && !remaining.isEmpty()) latest = remaining.get(0);
-        boolean replaceStatus = remaining.isEmpty() || removedStatus;
+        // Hiding a review cannot revoke an independent structured completion.
+        boolean replaceStatus = (remaining.isEmpty() || removedStatus)
+                && !(packet.semantic == StatusSemantic.COMPLETED && packet.structuredStatusEvidence);
         StatusSemantic semantic = replaceStatus ? survivingSemantic : packet.semantic;
         long statusTime = replaceStatus ? survivingStatusTime : packet.statusEventTime;
         return new ExpressQueryResult(packet.waybill, packet.courierCode, packet.companyName,
@@ -119,7 +121,8 @@ final class JingDongOrderCompletionPolicy {
                 .withCarrierIdentityEvidence(packet.carrierIdentityEvidence)
                 .withManualStatusEvidence(replaceStatus ? semantic.label : packet.statusDescription,
                         replaceStatus ? survivingSemantic != StatusSemantic.UNKNOWN
-                                : packet.structuredStatusEvidence);
+                                : packet.structuredStatusEvidence)
+                .withAccountListMetadata(packet.senderPhone, packet.listOriginAtMs);
     }
 
     private static String first(JSONObject value, String... keys) {

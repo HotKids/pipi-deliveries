@@ -6,6 +6,7 @@ import type {
   PendingManualQuery,
   RefreshSummary,
   Shipment,
+  TimelinePackage,
 } from "../models";
 import {
   accountParcelWithExistingProjection,
@@ -658,12 +659,16 @@ function diagnosticTimelineProvider(provider: string): string {
   return normalizeTimelineSlot(raw) || timelineCapability(raw);
 }
 
-function shipmentDiagnosticDetails(shipment: Shipment, requestProvider?: string) {
+function shipmentDiagnosticDetails(
+  shipment: Shipment, requestProvider?: string, response?: TimelinePackage,
+) {
   const presented = selectShipmentTimeline(shipment);
   const displayed = requestProvider ? selectShipmentDetailTimeline(shipment) : presented;
   const displayedTrackCount = timedTracks(displayed.tracks).length;
+  const observed = response || displayed;
+  const status = response || presented;
   return {
-    ...shipmentSelectionEvidence(shipment),
+    ...(!response ? shipmentSelectionEvidence(shipment) : {}),
     waybillTail: safeWaybillTail(shipment),
     automatic: !shipment.identity.manuallyAdded,
     sourceProvider: String(shipment.identity.sourceProvider || "")
@@ -678,15 +683,16 @@ function shipmentDiagnosticDetails(shipment: Shipment, requestProvider?: string)
       requestProvider,
       displayTimelineProvider: diagnosticTimelineProvider(displayed.provider),
     } : { timelineProvider: diagnosticTimelineProvider(shipment.timeline.provider) }),
-    effectiveTrackCount: displayedTrackCount,
-    selectionScope: "display" as const,
+    ...(response ? { timelineProvider: diagnosticTimelineProvider(requestProvider || response.provider) } : {}),
+    effectiveTrackCount: timedTracks(observed.tracks).length,
+    selectionScope: response ? "query_response" as const : "display" as const,
     displayedTrackCount,
-    latestEventAtMs: timelineLatestEventAt(displayed),
-    latestTrackAtMs: timelineLatestTrackAt(displayed),
-    feedEventAtMs: shipment.sourceTimeline ? timelineLatestEventAt(shipment.sourceTimeline) : 0,
-    statusEventAtMs: presented.statusEventAtMs || 0,
-    statusSemantic: presented.semantic,
-    structuredStatus: presented.structuredStatus === true,
+    latestEventAtMs: timelineLatestEventAt(observed),
+    latestTrackAtMs: timelineLatestTrackAt(observed),
+    ...(!response ? { feedEventAtMs: shipment.sourceTimeline ? timelineLatestEventAt(shipment.sourceTimeline) : 0 } : {}),
+    statusEventAtMs: status.statusEventAtMs || 0,
+    statusSemantic: status.semantic,
+    structuredStatus: status.structuredStatus === true,
   };
 }
 
@@ -839,7 +845,7 @@ async function refreshWebTimeline(
     courierCode: shipment.identity.courierCode,
     companyName: shipment.identity.companyName,
     phoneTail: shipment.identity.phoneTail,
-    phoneTails: shipment.identity.manuallyAdded ? boundPhoneTails : [],
+    phoneTails: boundPhoneTails,
     deadlineAtMs,
     signal,
     onQueryAttempted,
@@ -1945,7 +1951,7 @@ async function refreshOnlineShipment(
     commit(releaseManualRefreshLease(merged, attemptId), mutations, "manual_refresh");
     release();
     succeeded++;
-    writeDiagnostic("refresh.stage.succeeded", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || merged, "v6_query"), durationMs: Date.now() - startedAt });
+    writeDiagnostic("refresh.stage.succeeded", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || merged, "v6_query", outcome.shipment.timeline), durationMs: Date.now() - startedAt });
   } else {
     if (outcome?.shipment && outcome.routeUrl && isShunFengSourceShipment(reserved)) {
       commit(releaseManualRefreshLease(deferIncomingRoute(reserved, outcome.shipment, outcome.routeUrl,
@@ -2688,7 +2694,7 @@ async function refreshHomeAccountShipment(
   const next = checkpoint({ ...state, shipments: sortShipments(replaceById(state.shipments,
     withDetailSelection(merged, Date.now()))) }, routes, "account_detail");
   writeDiagnostic("refresh.stage.succeeded", { flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(
-    next.shipments.find(item => item.identity.id === original.identity.id) || merged, "v5_query"),
+    next.shipments.find(item => item.identity.id === original.identity.id) || merged, "v5_query", incoming.timeline),
     durationMs: Date.now() - startedAt });
   return summary(next, 1, 1);
 }
@@ -2766,7 +2772,7 @@ async function runDetailEntryQuery(
     const shipment = state.shipments.find(s => s.identity.id === original.identity.id)!;
     writeDiagnostic("detail.refresh.stage_succeeded", {
       flowId, source, stage: "account_detail", durationMs: Date.now() - startedAt,
-      ...shipmentDiagnosticDetails(shipment, "v5_query"),
+      ...shipmentDiagnosticDetails(shipment, "v5_query", incoming.timeline),
     });
     requestWidgetReload();
     await replayPendingShipmentNotifications(lease.isCurrent);
@@ -3450,9 +3456,8 @@ async function runShipmentRefreshById(
               flowId,
               source,
               stage,
-              ...shipmentDiagnosticDetails(refreshed, TIMELINE_SLOT.CN_H5),
-              timelineProvider: TIMELINE_SLOT.CN_H5,
-              effectiveTrackCount: timedTracks(capturedCainiaoH5?.tracks || []).length,
+              ...shipmentDiagnosticDetails(refreshed, TIMELINE_SLOT.CN_H5,
+                capturedCainiaoH5 || cainiaoH5.timeline),
               durationMs: Date.now() - cainiaoH5StartedAt,
               result: "timed_tracks",
               ...cainiaoH5DiagnosticDetails(cainiaoDiagnostics),
@@ -3712,9 +3717,7 @@ async function runShipmentRefreshById(
           flowId,
           source,
           stage: h5Stage,
-          ...shipmentDiagnosticDetails(refreshed, h5Provider),
-          timelineProvider: h5Provider,
-          effectiveTrackCount: timedTracks(capturedTimeline.tracks).length,
+          ...shipmentDiagnosticDetails(refreshed, h5Provider, capturedTimeline),
           durationMs: Date.now() - h5StartedAt,
           result: "timed_tracks",
         });

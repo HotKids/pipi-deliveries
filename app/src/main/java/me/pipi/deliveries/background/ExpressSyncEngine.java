@@ -5,7 +5,6 @@ import android.content.Context;
 import android.util.Log;
 
 import me.pipi.deliveries.data.ExpressRepository;
-import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
@@ -167,25 +166,6 @@ final class ExpressSyncEngine {
                         current = repository.find(current.rowId);
                     }
                 }
-                if (needsProjectedCarrierRecognition(current)) {
-                    try {
-                        String carrierName = recognizedProjectedCarrier(
-                                localApi.detect(current.projectedWaybill));
-                        if (!carrierName.isEmpty() && repository.saveOrderProjectionCarrier(
-                                current, bindingSource, current.projectedWaybill,
-                                carrierName)) {
-                            current = repository.find(current.rowId);
-                        }
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        throw interrupted;
-                    } catch (Throwable failure) {
-                        // Recognition owns its normalized-waybill cooldown and paid-call memory.
-                        // A carrier-label failure must not suppress the normal manual supplement.
-                        Log.w(TAG, "Projected carrier recognition failed: "
-                                + failure.getClass().getSimpleName());
-                    }
-                }
                 if ((isInterface5Owned(current) || isInterface6Owned(current))
                         && AccountCarrierRecognition.needsRecognition(current)) {
                     // §3.1 裁决 A: the free Kuaidi100 level runs on the client for account rows
@@ -206,9 +186,8 @@ final class ExpressSyncEngine {
                 }
                 ExpressRepository.ManualTimelinePollClaim manualClaim =
                         usesSharedManualTimeline(current, userPull)
-                                ? userPull ? repository.claimForegroundManualTimelinePoll(
-                                current, System.currentTimeMillis(), true)
-                                : repository.claimManualTimelinePoll(current, System.currentTimeMillis()) : null;
+                                ? claimListManualTimelinePoll(repository, current,
+                                        System.currentTimeMillis(), userPull) : null;
                 if (manualClaim != null) {
                     activeClaims.add(manualClaim);
                     enqueueManualRefresh(context, repository, subscription, requests, network,
@@ -216,11 +195,9 @@ final class ExpressSyncEngine {
                 }
                 if (current == null) continue;
                 if (!isAccountOwned(current)
-                        && !current.semantic.terminal()
                         && isLocalTimelineSource(current.source)) {
-                    ExpressRepository.ManualTimelinePollClaim claim = userPull
-                            ? repository.claimForegroundManualTimelinePoll(current, System.currentTimeMillis(), true)
-                            : repository.claimManualTimelinePoll(current, System.currentTimeMillis());
+                    ExpressRepository.ManualTimelinePollClaim claim = claimListManualTimelinePoll(
+                            repository, current, System.currentTimeMillis(), userPull);
                     if (claim == null) continue;
                     activeClaims.add(claim);
                     enqueueManualRefresh(context, repository, subscription, requests, network,
@@ -264,6 +241,15 @@ final class ExpressSyncEngine {
                         "errorCategory", failure.getClass().getSimpleName());
             }
         });
+    }
+
+    /** A Home pull bypasses cadence, but only explicit detail may reopen trusted signed history. */
+    static ExpressRepository.ManualTimelinePollClaim claimListManualTimelinePoll(
+            ExpressRepository repository, ExpressItem owner, long now, boolean userPull) {
+        if (!ExpressRepository.backgroundTimelineRefreshAllowed(owner,
+                repository.manualTimelineAuthority(owner), now)) return null;
+        return userPull ? repository.claimForegroundManualTimelinePoll(owner, now, true)
+                : repository.claimManualTimelinePoll(owner, now);
     }
 
     /** Reuses the available Android sources before promoting a hidden manual item. */
@@ -332,18 +318,6 @@ final class ExpressSyncEngine {
             return null;
         }
         return ExpressOrderTextIdentity.fromTracksJson(current.tracksJson, current.waybill);
-    }
-
-    static boolean needsProjectedCarrierRecognition(ExpressItem item) {
-        return item != null && item.isAccountOrder()
-                && !normalizeWaybill(item.projectedWaybill).isEmpty()
-                && CarrierRegistry.resolveName(item.projectedCompanyName) == null;
-    }
-
-    static String recognizedProjectedCarrier(String kuaidi100Code) {
-        CarrierRegistry.Carrier carrier =
-                CarrierRegistry.resolveKuaidi100Code(kuaidi100Code);
-        return carrier == null ? "" : carrier.companyName;
     }
 
     private static boolean isInterface6Owned(ExpressItem item) {

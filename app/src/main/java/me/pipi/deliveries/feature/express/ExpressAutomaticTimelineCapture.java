@@ -13,6 +13,7 @@ import java.util.concurrent.*;
 import me.pipi.deliveries.data.*;
 import me.pipi.deliveries.model.*;
 import me.pipi.deliveries.network.ExpressQueryCancellation;
+import me.pipi.deliveries.network.ExpressAccountSource;
 
 /** One finite page load for one automatic provider package; never combines page responses. */
 final class ExpressAutomaticTimelineCapture {
@@ -65,8 +66,9 @@ final class ExpressAutomaticTimelineCapture {
             ExpressQueryCancellation cancellation) throws InterruptedException {
         List<String> phones = ExpressKuaidi100TimelineCapture.phoneCandidates(
                 owner == null ? "" : owner.phone,
-                owner != null && owner.manuallyAdded ? ExpressRepository.get(host).phoneCandidates("")
-                        : Collections.emptyList());
+                ExpressRepository.get(host).phoneCandidates("", owner == null || owner.manuallyAdded ? ""
+                        : ExpressAccountSource.bindingSourceForOwner(
+                                owner.stateOwner.isEmpty() ? owner.source : owner.stateOwner)));
         return capture(host, owner, route, provider, phones, cancellation);
     }
 

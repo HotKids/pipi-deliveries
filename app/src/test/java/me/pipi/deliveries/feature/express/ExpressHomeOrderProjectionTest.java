@@ -11,10 +11,12 @@ import java.util.HashSet;
 import java.util.Set;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
+import me.pipi.deliveries.model.CarrierNormalization;
 import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.data.ExpressDatabase;
 import me.pipi.deliveries.network.ExpressDiscoveryClient;
+import me.pipi.deliveries.network.ExpressApi;
 import me.pipi.deliveries.network.ExpressQueryCancellation;
 import org.junit.Before;
 import org.junit.Test;
@@ -26,12 +28,15 @@ import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.Implements;
 import org.robolectric.annotation.Implementation;
+import org.robolectric.annotation.RealObject;
 import org.robolectric.annotation.SQLiteMode;
+import org.robolectric.util.ReflectionHelpers;
 
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 35, manifest = Config.NONE, application = Application.class,
         shadows = {ExpressHomeOrderProjectionTest.QueryShadow.class,
-                ExpressHomeOrderProjectionTest.CaptureShadow.class})
+                ExpressHomeOrderProjectionTest.CaptureShadow.class,
+                ExpressHomeOrderProjectionTest.CarrierShadow.class})
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 public final class ExpressHomeOrderProjectionTest {
     private static final String ROUTE_A = "https://order.jd.com/detail?token=a";
@@ -45,6 +50,9 @@ public final class ExpressHomeOrderProjectionTest {
         context = RuntimeEnvironment.getApplication();
         context.getSharedPreferences("express_jd_h5_cooldown", 0).edit().clear().commit();
         retries = new ExpressOrderProjectionRetryStore(context);
+        CaptureShadow.result = null;
+        CarrierShadow.calls = 0;
+        CarrierShadow.waybill = null;
     }
 
     @Test public void onlyUnresolvedInterface5OrdersWithAnAvailableRouteAreEligible() {
@@ -188,6 +196,81 @@ public final class ExpressHomeOrderProjectionTest {
         verifyHomeQuery(false, true);
     }
 
+    @Test public void homeH5RecognizesAnUnnamedProjectedCarrierBeforeCompleting() throws Exception {
+        context.deleteDatabase(ExpressDatabase.DATABASE);
+        java.lang.reflect.Field singleton = ExpressRepository.class.getDeclaredField("instance");
+        singleton.setAccessible(true);
+        singleton.set(null, null);
+        ExpressRepository repository = ExpressRepository.get(context);
+        String phone = "13800000001";
+        repository.bindPhoneLocally(phone, "interface5");
+        repository.saveInterface5OrderSummary(new ExpressQueryResult(
+                "1234500006403", "JDKD", "京东购物", StatusSemantic.TRANSIT, 0L,
+                "2026-09-09 09:00:00", "已揽收",
+                "[{\"time\":\"2026-09-09 09:00:00\",\"context\":\"已揽收\"}]",
+                "", phone, "v5_query", "", "", "JingDong"), phone);
+        ExpressItem stored = repository.findByWaybill("1234500006403", "interface5");
+        assertNotNull(stored);
+        ExpressItem source = new ExpressItem(stored.rowId, phone, stored.waybill,
+                stored.courierCode, stored.companyName, stored.semantic, stored.statusDescription,
+                stored.latestDetail, stored.latestTime, stored.tracksJson, "", stored.source,
+                "", 0L, stored.updatedAt, stored.stateOwner, "", "v5", ROUTE_A, true,
+                "", "", "[]", "JingDong");
+        QueryShadow.result = null;
+        QueryShadow.calls = 0;
+        QueryShadow.waiting = null;
+        CaptureShadow.starts = 0;
+        CaptureShadow.result = new ExpressAutomaticTimelineCapture.Result(new ExpressQueryResult(
+                "JD00000005481", "", "", StatusSemantic.UNKNOWN,
+                "2026-09-09 10:00:00", "Arrived at station",
+                "[{\"time\":\"2026-09-09 10:00:00\",\"context\":\"Arrived at station\"}]",
+                "", phone, "jd_h5", "", "", "JingDong"), true, false);
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        boolean[] finished = {false};
+        boolean[] saved = {false};
+        ExpressItem[] completed = {null};
+        ExpressHomeOrderProjectionCapture capture = new ExpressHomeOrderProjectionCapture(
+                activity, source, (ignored, committed) -> {
+                    saved[0] = committed;
+                    completed[0] = repository.find(source.rowId);
+                    finished[0] = true;
+                });
+        try {
+            assertTrue(capture.start());
+            long until = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+            while (System.nanoTime() < until && !finished[0]) {
+                Thread.sleep(10);
+                Shadows.shadowOf(Looper.getMainLooper()).idle();
+            }
+            assertTrue("The Home capture must finish", finished[0]);
+            assertTrue(saved[0]);
+            assertEquals(1, QueryShadow.calls);
+            assertEquals(1, CaptureShadow.starts);
+            assertEquals(1, CarrierShadow.calls);
+            assertEquals("JD00000005481", CarrierShadow.waybill);
+            ExpressItem recognized = completed[0];
+            assertNotNull(recognized);
+            assertEquals("JD00000005481", recognized.projectedWaybill);
+            assertEquals("京东快递", recognized.projectedCompanyName);
+            assertEquals("京东快递", recognized.displayCompany());
+            assertEquals("jd", recognized.displayCourierCode());
+            assertEquals(stored.rowId, recognized.rowId);
+            assertEquals(stored.waybill, recognized.waybill);
+            assertEquals(stored.courierCode, recognized.courierCode);
+            assertEquals(stored.companyName, recognized.companyName);
+            assertEquals(stored.phone, recognized.phone);
+            assertEquals(stored.stateOwner, recognized.stateOwner);
+            assertEquals(stored.sourceProvider, recognized.sourceProvider);
+        } finally {
+            capture.cancel();
+            activity.finish();
+            singleton.set(null, null);
+            java.lang.reflect.Field helper = ExpressRepository.class.getDeclaredField("helper");
+            helper.setAccessible(true);
+            ((ExpressDatabase) helper.get(repository)).close();
+        }
+    }
+
     private void verifyHomeQuery(boolean timed, boolean cancelDuringQuery) throws Exception {
         context.deleteDatabase(ExpressDatabase.DATABASE);
         java.lang.reflect.Field singleton = ExpressRepository.class.getDeclaredField("instance");
@@ -268,8 +351,30 @@ public final class ExpressHomeOrderProjectionTest {
     @Implements(value = ExpressAutomaticTimelineCapture.class, isInAndroidSdk = false)
     public static class CaptureShadow {
         static volatile int starts;
-        @Implementation protected void start() { starts++; }
+        static ExpressAutomaticTimelineCapture.Result result;
+        @RealObject private ExpressAutomaticTimelineCapture capture;
+        @Implementation protected void start() {
+            starts++;
+            if (result != null) {
+                ExpressAutomaticTimelineCapture.Callback callback =
+                        ReflectionHelpers.getField(capture, "callback");
+                callback.complete(result);
+            }
+        }
         @Implementation protected void cancel() {}
+    }
+
+    @Implements(value = ExpressApi.class, isInAndroidSdk = false)
+    public static class CarrierShadow {
+        static volatile int calls;
+        static String waybill;
+        @Implementation protected void __constructor__(Context ignored) {}
+        @Implementation protected CarrierNormalization recognizeCarrier(
+                String requestedWaybill, ExpressQueryCancellation cancellation) {
+            calls++;
+            waybill = requestedWaybill;
+            return new CarrierNormalization("JD", "京东快递", "jd", true, "test");
+        }
     }
 
     private static ExpressItem order(

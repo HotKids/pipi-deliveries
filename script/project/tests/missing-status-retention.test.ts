@@ -64,9 +64,11 @@ try {
     row.identity = { ...row.identity, sourceId: orderId, orderId, accountOrder: true,
       projectedWaybill: feed.waybill };
     const restored = saveState({ ...emptyState(), shipments: [row] }, NOW).shipments[0]!;
-    assert.notEqual(restored.timeline.semantic, "COMPLETED", "rejected shopping completion must not become a terminal latch");
+    assert.equal(restored.timeline.semantic, "COMPLETED", "the first structured completion survives review removal");
+    assert.equal(restored.timeline.statusEventAtMs, feed.statusEventAtMs);
     const restarted = loadState(NOW + 1).shipments[0]!;
-    assert.notEqual(restarted.timeline.semantic, "COMPLETED");
+    assert.equal(restarted.timeline.semantic, "COMPLETED");
+    assert.equal(restarted.timeline.statusEventAtMs, feed.statusEventAtMs);
     assert.equal(restarted.timeline.tracks.some((track) => track.detail === evaluation), false);
   } catch (error) {
     failures.push(`JingDong evaluation: ${String(error)}`);

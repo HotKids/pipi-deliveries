@@ -217,7 +217,7 @@ test("opening old cached text repairs identity without H5", async () => {
   assert.equal(result.shipment.identity.projectedWaybill, WAYBILL);
   assert.equal(loadState().shipments[0].identity.projectedWaybill, WAYBILL);
 });
-test("entry stage diagnostics count the same package as their displayed provider", async () => {
+test("entry stage diagnostics distinguish the response from accumulated display history", async () => {
   const state = seed(true);
   const row = state.shipments[0];
   row.sourceTimeline!.tracks[0].statusCode = "103";
@@ -236,8 +236,9 @@ test("entry stage diagnostics count the same package as their displayed provider
     for (const event of ["detail.refresh.stage_started", "detail.refresh.stage_succeeded"]) {
       const details = readDiagnostics().find(entry => entry.event === event)!.details;
       assert.equal(details.displayTimelineProvider, event.endsWith("started") ? "v5_list" : "v5_query");
-      assert.equal(details.effectiveTrackCount, event.endsWith("started") ? 2 : 8,
-        "the pre-projection order query cannot be labelled as the real-waybill query before it is confirmed");
+      assert.equal(details.effectiveTrackCount, 2, "the query returned two nodes");
+      assert.equal(details.displayedTrackCount, event.endsWith("started") ? 2 : 8);
+      assert.equal(details.selectionScope, event.endsWith("started") ? "display" : "query_response");
     }
   } finally {
     setDiagnosticsEnabled(false);

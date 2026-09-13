@@ -351,6 +351,27 @@ public final class ExpressDiscoveryClient {
                 ? parseAccountOrder(complete)
                 : parseExpress(complete, cainiaoUrl(complete, item.waybill, item.courierCode),
                         item.phone);
+        if (result != null) {
+            ExpressLog.write("manual.query.completed", "waybillTail", tail(item.displayWaybill()),
+                    "sourceProvider", ExpressLog.source(item.sourceProvider, false),
+                    "timelineProvider", TimelineSlot.V5_QUERY, "selectionScope", "query_response",
+                    "statusSemantic", result.semantic, "statusEventAtMs", result.statusEventTime,
+                    "structuredStatus", result.structuredStatusEvidence,
+                    "statusScope", result.workerStatus == null ? "" : result.workerStatus.scope,
+                    "rawStateNumber", queried.optInt("stateNum", 0),
+                    "rawStateSemantic", StatusSemantic.fromAccountState(
+                            first(queried, "stateNum"), first(queried, "state")),
+                    "rawStatePresent", !first(queried, "state").isEmpty(),
+                    "rawStateTextSemantic", StatusSemantic.fromAccountState("", first(queried, "state")),
+                    "rawOrderCompleted", "订单已完成".equals(first(queried, "state").replaceAll("\\s", "")),
+                    "rawLogisticsUpdatePresent", !first(queried, "logisticsUpdateTime").isEmpty(),
+                    "rawLogisticsUpdateNumber", queried.optLong("logisticsUpdateTime", 0L),
+                    "rawLogisticsUpdateAtMs", ExpressTimeline.parseTime(first(queried, "logisticsUpdateTime")),
+                    "rawTimePresent", !first(queried, "time").isEmpty(),
+                    "rawTimeNumber", queried.optLong("time", 0L),
+                    "rawTimeAtMs", ExpressTimeline.parseTime(first(queried, "time")),
+                    "effectiveTrackCount", Kuaidi100TimelinePolicy.timedTrackCount(result));
+        }
         return withSourceProvider(result, item.sourceProvider);
     }
 

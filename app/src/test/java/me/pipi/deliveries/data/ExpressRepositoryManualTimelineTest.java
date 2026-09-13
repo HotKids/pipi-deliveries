@@ -236,7 +236,7 @@ public final class ExpressRepositoryManualTimelineTest {
     }
 
     @Test
-    public void partialTerminalPackageKeepsPollingForACompleteFallback() {
+    public void trustedPartialTerminalPackageFreezesBackgroundUntilExplicitDetailRepair() {
         long now = 30_000_000L;
         ExpressItem owner = owner(
                 64L, "13900001234", "INTERFACE5", "ShunFeng",
@@ -246,11 +246,11 @@ public final class ExpressRepositoryManualTimelineTest {
                 StatusSemantic.COMPLETED, 1_000L,
                 "2026-08-24 12:00:00", "Moto 已签收", "501", false);
 
-        assertTrue(ExpressRepository.manualTimelinePollDue(owner, partial, now));
+        assertFalse(ExpressRepository.manualTimelinePollDue(owner, partial, now));
     }
 
     @Test
-    public void singleNodeStructuredKdniaoTerminalKeepsPollingForFallback() {
+    public void trustedSingleNodeStructuredTerminalFreezesBackground() {
         long now = 30_000_000L;
         ExpressItem owner = owner(
                 65L, "13900001234", "INTERFACE5", "ShunFeng",
@@ -260,7 +260,7 @@ public final class ExpressRepositoryManualTimelineTest {
                 StatusSemantic.COMPLETED, 1_000L,
                 "2026-08-24 12:00:00", "结构化已签收", "3", true, true);
 
-        assertTrue(ExpressRepository.manualTimelinePollDue(owner, completed, now));
+        assertFalse(ExpressRepository.manualTimelinePollDue(owner, completed, now));
     }
 
     @Test

@@ -275,7 +275,8 @@ for (const semantic of ["PICKED", "COMPLETED"] as const) {
     "a JD business-source parcel already identified by waybill rejects the same shopping event");
   assert.equal(direct.timeline.semantic, "COMPLETED");
   assert.equal(direct.timeline.latestDetail, "您的快件已送达至【家门口】");
-  assert.equal(direct.timeline.statusEventAtMs, Date.UTC(2026, 8, 3, 9));
+  assert.equal(direct.timeline.statusEventAtMs, Date.UTC(2026, 8, 4, 10),
+    "the structured packet retains its original clock after hiding the review");
   assert.equal(withoutJingDongOrderCompletion({ ...direct.timeline,
     latestDetail: reward, tracks: [{ ...direct.timeline.tracks[0]!, detail: reward }],
   }, { ...direct.identity, manuallyAdded: true }).tracks.length, 1,

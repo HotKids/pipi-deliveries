@@ -73,12 +73,38 @@ public final class ExpressDatabaseContractTest {
         assertTrue(route.get("binding_source").notNull);
         assertTrue(route.get("binding_generation").notNull);
         assertTrue(route.get("detail_url").notNull);
-        assertEquals(24, ExpressDatabase.VERSION);
+        assertEquals(25, ExpressDatabase.VERSION);
+        assertTrue(shipments.containsKey("cainiaoH5FallbackActivatedAtMs"));
+        assertTrue(shipments.containsKey("cainiaoH5FallbackOwner"));
         assertTrue(shipments.containsKey("carrierStandardCode"));
         assertTrue(shipments.containsKey("carrierDisplayName"));
         assertTrue(shipments.containsKey("carrierKuaidi100Code"));
         assertTrue(shipments.containsKey("carrierIsBuiltIn"));
         assertTrue(shipments.containsKey("carrierTableVersion"));
+    }
+
+    @Test
+    public void version24UpgradeAddsInactiveCainiaoFallbackWithoutChangingRows() {
+        SQLiteDatabase legacy = context.openOrCreateDatabase(
+                ExpressDatabase.DATABASE, Context.MODE_PRIVATE, null);
+        createVersion14Schema(legacy);
+        ContentValues row = new ContentValues();
+        row.put("mailNo", "CNSCHEMA0043");
+        row.put("normalizedMailNo", "CNSCHEMA0043");
+        row.put("fromCp", "INTERFACE5");
+        row.put("stateOwner", "INTERFACE5");
+        legacy.insertOrThrow(ExpressDatabase.EXPRESS_TABLE, null, row);
+        legacy.setVersion(24);
+        legacy.close();
+        SQLiteDatabase upgraded = helper.getWritableDatabase();
+        try (Cursor cursor = upgraded.query(ExpressDatabase.EXPRESS_TABLE,
+                new String[]{"mailNo", "cainiaoH5FallbackActivatedAtMs", "cainiaoH5FallbackOwner"},
+                "normalizedMailNo=?", new String[]{"CNSCHEMA0043"}, null, null, null)) {
+            assertTrue(cursor.moveToFirst());
+            assertEquals("CNSCHEMA0043", cursor.getString(0));
+            assertEquals(0L, cursor.getLong(1));
+            assertEquals("", cursor.getString(2));
+        }
     }
 
     @Test

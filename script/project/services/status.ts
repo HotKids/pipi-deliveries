@@ -45,7 +45,14 @@ export function shipmentPresentationStatus(
   shipment: Shipment,
 ): Readonly<{ semantic: StatusSemantic; text: string }> {
   const projection = timelineNormalizedStatus(shipment.timeline);
-  if (projection) return { semantic: projection.semantic, text: projection.text };
+  if (projection) {
+    const signedWaybill = projection.scope === "ORDER" && projection.semantic === "COMPLETED" &&
+      !shipment.identity.manuallyAdded && shipment.identity.bindingSource === "interface5" &&
+      String(shipment.identity.sourceProvider || "").toLowerCase() === "jingdong" &&
+      (!shipment.identity.accountOrder || Boolean(normalizedProjectedWaybill(shipment.identity)));
+    return { semantic: projection.semantic,
+      text: signedWaybill ? statusLabel("COMPLETED") : projection.text };
+  }
   const presentation = shipment.statusPresentation;
   const unprojectedOrder = Boolean(
     shipment.identity.accountOrder &&
@@ -443,7 +450,7 @@ export function splitJingDongH5Nodes(
   return { feed, jdH5 };
 }
 
-/** Shopping completion is not a carrier event after this JD order has a waybill. */
+/** Hide JD shopping-review prose without erasing the packet's structured completion. */
 export function withoutJingDongOrderCompletion(
   timeline: TimelinePackage,
   identity: Pick<ShipmentIdentity,
@@ -473,6 +480,12 @@ export function withoutJingDongOrderCompletion(
   const latest = [...timedTracks(tracks)].sort(
     (left, right) => (right.timeMs || 0) - (left.timeMs || 0),
   )[0] || tracks[0];
+  // The source owns its signed enum and clock, even when the review is its only node.
+  // Unknown node projections cannot revoke that packet-level confirmation.
+  if (timeline.semantic === "COMPLETED" && timeline.structuredStatus === true) {
+    return { ...timeline, tracks, latestDetail: latest?.detail || "",
+      latestTimeText: latest?.timeText || "", complete: tracks.length ? timeline.complete : false };
+  }
   // Blank prose while reading the existing enum map: a surviving delivery sentence
   // alone cannot replace the removed order event's status timestamp.
   const evidence = latestEventEvidence(tracks.map((track) => ({ ...track, detail: "" })));

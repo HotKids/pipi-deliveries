@@ -54,6 +54,7 @@ import com.google.android.material.textfield.TextInputLayout;
 
 import me.pipi.deliveries.R;
 import me.pipi.deliveries.background.ExpressScheduler;
+import me.pipi.deliveries.background.AccountCarrierRecognition;
 import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
@@ -420,6 +421,15 @@ public final class ExpressListActivity extends AppCompatActivity {
                         saved = ExpressRepository.get(this).saveOrderProjection(expected,
                                 ExpressAccountSource.bindingSourceForOwner(owner),
                                 textIdentity.waybill, "", cancellation);
+                        ExpressRepository repository = ExpressRepository.get(this);
+                        ExpressItem projected = saved ? repository.find(expected.rowId) : null;
+                        if (AccountCarrierRecognition.needsRecognition(projected)) {
+                            AccountCarrierRecognition.recognize(repository, projected,
+                                    waybill -> new ExpressApi(getApplicationContext())
+                                            .recognizeCarrier(waybill, cancellation));
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
                     } catch (RuntimeException failure) {
                         android.util.Log.w("ExpressOrderProjection", "Text projection could not be saved: "
                                 + failure.getClass().getSimpleName());

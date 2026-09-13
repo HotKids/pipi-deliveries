@@ -266,14 +266,13 @@ export async function refreshAccountParcel(
   const sameOrder = parcel && shipment.identity.accountOrder &&
     normalizeWaybill(parcel.ownerId) === normalizeWaybill(shipment.identity.sourceId) &&
     parcel.sourceProvider.toLowerCase() === String(shipment.identity.sourceProvider || "").toLowerCase();
-  if (sameOrder && normalizedProjectedWaybill(shipment.identity) &&
-      parcel.normalizedStatusScope === "ORDER" && parcel.semantic === "COMPLETED") return null;
   const orderParcel = sameOrder
     ? { ...parcel, accountOrder: true, orderId: shipment.identity.orderId || parcel.orderId,
         textIdentity: parcel.textIdentity || accountOrderTextIdentity(parcel.tracks) }
     : parcel;
-  // A same-order detail reply retains the confirmed carrier identity, but its
-  // query slot must never inherit the feed history carried by list restoration.
+  // Restore identity before the shared parcel conversion sanitizes order completion;
+  // ORDER scope alone cannot reject surviving structured carrier confirmation.
+  // Query history must never inherit the feed history carried by list restoration.
   const resolved = orderParcel?.accountOrder && !orderParcel.textIdentity
     ? { ...accountParcelWithExistingProjection(orderParcel, [shipment]),
         projectionTimeline: orderParcel.projectionTimeline }

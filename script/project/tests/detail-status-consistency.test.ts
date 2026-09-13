@@ -186,13 +186,14 @@ try {
   assert.equal(success.details.effectiveTrackCount, count, "stage count describes its captured provider package");
   assert.deepEqual(Object.keys(success.details).sort(), [
     "clientBuild", "durationMs", "effectiveTrackCount", "flowId", "level", "result", "source", "stage", "timelineProvider", "trigger", "waybillTail",
-    "automatic", "carrierCode", "displayTimelineProvider", "feedEventAtMs", "headlineProvider",
-    "historyProvider", "latestEventAtMs", "latestTrackAtMs", "requestProvider", "routeKind",
-    "routePointerPresent", "selectionReason", "sourceProvider", "statusEventAtMs", "statusProvider",
+    "automatic", "carrierCode", "displayTimelineProvider",
+    "latestEventAtMs", "latestTrackAtMs", "requestProvider", "routeKind",
+    "routePointerPresent", "sourceProvider", "statusEventAtMs",
     "statusSemantic", "structuredStatus",
     "selectionScope", "displayedTrackCount",
   ].sort(), "successful capture retains parcel identity and distinguishes capture from presentation");
-  assert.equal(success.details.selectionScope, "display");
+  assert.equal(success.details.selectionScope, "query_response");
+  assert.equal(success.details.structuredStatus, false, "capture diagnostics retain the H5 source's evidence");
   assert.equal(success.details.displayedTrackCount, selectShipmentDetailTimeline(result.shipment).tracks.length);
   assert.equal(success.details.requestProvider, "k100_h5");
   assert.equal(success.details.carrierCode, "SF");

@@ -181,8 +181,12 @@ for (const [entry, options] of [
     for (const event of events) {
       assert.ok(event.details.waybillTail, `${event.event} must identify its parcel`);
       assert.ok(event.details.carrierCode, `${event.event} must identify its carrier`);
-      assert.ok(event.details.historyProvider, `${event.event} must retain the selected history source`);
+      assert.ok(event.details.displayTimelineProvider, `${event.event} must identify the displayed history separately`);
       assert.ok(event.details.requestProvider, `${event.event} must separate the requested source`);
+      if (event.event === "refresh.stage.succeeded") {
+        assert.equal(event.details.selectionScope, "query_response");
+        assert.equal(event.details.timelineProvider, event.details.requestProvider);
+      }
     }
     const responses = readDiagnostics().filter(value => value.event === "manual.meizu.response");
     assert.ok(responses.length);

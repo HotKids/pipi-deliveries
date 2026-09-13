@@ -429,6 +429,8 @@ public final class ExpressItem {
         }
         WorkerStatusProjection projected = WorkerStatusProjection.cached(tracksJson);
         if (projected != null && projected.matches(semantic, statusEventTime)) {
+            if (isJingDongSource() && semantic == StatusSemantic.COMPLETED
+                    && "ORDER".equals(projected.scope)) return semantic.label;
             return projected.text.isEmpty() ? semantic.label : projected.text;
         }
         return semantic == StatusSemantic.UNKNOWN && !statusDescription.isEmpty()

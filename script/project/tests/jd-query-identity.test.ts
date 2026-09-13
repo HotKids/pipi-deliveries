@@ -21,8 +21,8 @@ Object.assign(Crypto, {
 function response(mailNo: string, code = 105, detail = "Synthetic query event") {
   return { code: 0, data: { mailNo, provider: "JingDong", cpCode: "JD", name: "Synthetic carrier",
     stateNum: code, normalizedStatusScope: "SHIPMENT", phone: PHONE, details: [
-      { time: "2026-09-11 10:00:00", desc: detail, statusCode: code },
-      { time: "2026-09-10 08:00:00", desc: "已揽收", statusCode: 103 },
+      { time: "2026-09-11 10:00:00", desc: detail, statusCode: String(code) },
+      { time: "2026-09-10 08:00:00", desc: "已揽收", statusCode: "103" },
     ] } };
 }
 function owner() {
@@ -72,12 +72,48 @@ test("an unrelated order cannot borrow the current projection", async () => {
   transport(response("9999000011113333"));
   assert.equal(await refreshAccountParcel(owner(), Date.now() + 1000), null);
 });
-test("order-only completion cannot overwrite a projected carrier query", async () => {
-  const value = response(ORDER, 107, "Synthetic order completion");
+test("projected order query accepts the same surviving carrier completion as list", async () => {
+  const value = response(ORDER, 107, "Synthetic carrier confirmation");
   value.data.normalizedStatusScope = "ORDER";
   transport(value);
-  assert.equal(await refreshAccountParcel(owner(), Date.now() + 1000), null);
+  const current = owner();
+  const dto = await refreshAccountParcel(current, Date.now() + 1000);
+  assert.ok(dto);
+  const incoming = parcelToShipment(dto, [PHONE], NOW + 1)!;
+  const list = parcelToShipment({ ...parseAccountTimelineResponse("interface5", value,
+    { waybill: ORDER })!, waybill: WAYBILL }, [PHONE], NOW + 1)!;
+  assert.equal(incoming.timeline.semantic, "COMPLETED");
+  assert.equal(incoming.timeline.structuredStatus, true);
+  assert.equal(incoming.timeline.statusEventAtMs, Date.UTC(2026, 8, 11, 2));
+  assert.deepEqual(incoming.timeline.tracks, list.timeline.tracks);
+  assert.equal(incoming.timeline.statusEventAtMs, list.timeline.statusEventAtMs);
+  assert.equal(incoming.identity.projectedWaybill, WAYBILL);
+  assert.equal(incoming.accountRecord?.waybill, ORDER);
 });
+for (const remainingCode of ["107", ""] as const) test(
+  `projected query removes shopping completion with surviving enum ${remainingCode || "absent"}`,
+  async () => {
+    const value = response(ORDER, 107,
+      `您的订单${ORDER}已完成，感谢您对京东的支持，欢迎再次光临。期待您对本次购物进行评价。`);
+    value.data.normalizedStatusScope = "ORDER";
+    value.data.details[1] = { time: "2026-09-10 08:00:00",
+      desc: "Synthetic carrier confirmation", statusCode: remainingCode };
+    transport(value);
+    const current = owner();
+    const dto = await refreshAccountParcel(current, Date.now() + 1000);
+    assert.ok(dto, "accepted history must reach the shared order-completion sanitizer");
+    const incoming = parcelToShipment(dto, [PHONE], NOW + 1)!;
+    assert.equal(incoming.timeline.tracks.length, 1);
+    assert.equal(incoming.timeline.latestDetail, "Synthetic carrier confirmation");
+    assert.equal(incoming.timeline.semantic, "COMPLETED");
+    assert.equal(incoming.timeline.statusEventAtMs, Date.UTC(2026, 8, 11, 2),
+      "removing a shopping review does not change the packet's structured signature clock");
+    const merged = applyTargetedAccountShipment(current,
+      asAccountDetailObservation(current, incoming), NOW + 1);
+    assert.equal(merged.timeline.semantic, "COMPLETED",
+      "the accepted packet supplies completion even without a surviving node enum");
+  },
+);
 test("fresh text identity is not replaced by the previous projection", async () => {
   const next = "JD000000000002";
   transport(response(ORDER, 104, `交付京东快递，运单号为 ${next}`));
