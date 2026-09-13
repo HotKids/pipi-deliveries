@@ -75,28 +75,59 @@ assert.deepEqual(MANUAL_SOURCE_ORDER, ["local", "route", "fallback"]);
 assert.equal(hasPersistentTracking(shipment("local", { tracked: false })), false);
 
 // The chain owns its deadline even if a provider never settles its Promise.
-let releaseStalled!: (value: { shipment: Shipment }) => void;
-const stalled = new Promise<{ shipment: Shipment }>(resolve => { releaseStalled = resolve; });
-const timeoutSentinel = new Error("chain did not enforce its own deadline");
-let sentinel: ReturnType<typeof setTimeout>;
-let stalledSignal: AbortSignal | undefined;
-let stalledFallbackCalls = 0;
-try {
-  await assert.rejects(Promise.race([
-    queryManualSourceChain([
-      { source: "route", enabled: true, query: signal => { stalledSignal = signal; return stalled; } },
-      { source: "fallback", enabled: true, query: async () => { stalledFallbackCalls++; return { shipment: null }; } },
-    ], Date.now() + 20),
-    new Promise<never>((_, reject) => { sentinel = setTimeout(() => reject(timeoutSentinel), 200); }),
-  ]), OperationTimeoutError);
-  assert.equal(stalledSignal?.aborted, true, "expiry cancels the owned provider transport");
-  assert.equal(stalledFallbackCalls, 0, "expiry cannot start the paid fallback");
-} finally {
-  clearTimeout(sentinel!);
-  releaseStalled({ shipment: shipment("route") });
+for (const preferRouteFirst of [false, true]) {
+  const realNow = Date.now;
+  // A timer can expire while the wall clock still reads before the deadline.
+  Date.now = () => NOW;
+  let releaseStalled!: (value: { shipment: Shipment }) => void;
+  const stalled = new Promise<{ shipment: Shipment }>(resolve => { releaseStalled = resolve; });
+  const timeoutSentinel = new Error("chain did not enforce its own deadline");
+  let sentinel: ReturnType<typeof setTimeout>;
+  let stalledSignal: AbortSignal | undefined;
+  let stalledFallbackCalls = 0;
+  let stalledLocalCalls = 0;
+  try {
+    await assert.rejects(Promise.race([
+      queryManualSourceChain([
+        { source: "local", enabled: preferRouteFirst, query: async () => { stalledLocalCalls++; return { shipment: null }; } },
+        { source: "route", enabled: true, query: signal => { stalledSignal = signal; return stalled; } },
+        { source: "fallback", enabled: true, query: async () => { stalledFallbackCalls++; return { shipment: null }; } },
+      ], Date.now() + 20, undefined, undefined, undefined, preferRouteFirst),
+      new Promise<never>((_, reject) => { sentinel = setTimeout(() => reject(timeoutSentinel), 200); }),
+    ]), OperationTimeoutError);
+    assert.equal(stalledSignal?.aborted, true, "expiry cancels the owned provider transport");
+    assert.equal(stalledFallbackCalls, 0, "expiry cannot start the paid fallback");
+    assert.equal(stalledLocalCalls, 0, "expiry cannot start a later primary stage");
+  } finally {
+    Date.now = realNow;
+    clearTimeout(sentinel!);
+    releaseStalled({ shipment: shipment("route") });
+  }
 }
 
 const concurrentEvents: string[] = [];
+const clockBeforePartial = Date.now;
+Date.now = () => NOW;
+try {
+  let extraFallbackCalls = 0;
+  const retained = await queryManualSourceChain([
+    { source: "local", enabled: true, query: async () => ({ shipment: shipment("local") }) },
+    { source: "route", enabled: true, query: async () => new Promise(() => {}) },
+    { source: "fallback", enabled: true, query: async () => { extraFallbackCalls++; return { shipment: null }; } },
+  ], NOW + 20);
+  assert.equal(retained.selected?.timeline.provider, "local", "expiry preserves an earlier valid result");
+  assert.equal(extraFallbackCalls, 0);
+} finally {
+  Date.now = clockBeforePartial;
+}
+
+const providerTimeout = await queryManualSourceChain([
+  { source: "route", enabled: true, query: async () => { throw new OperationTimeoutError(); } },
+  { source: "fallback", enabled: true, query: async () => ({ shipment: shipment("fallback") }) },
+], Date.now() + 1_000);
+assert.equal(providerTimeout.selected?.timeline.provider, "fallback",
+  "a provider timeout does not expire the chain's remaining budget");
+
 let releaseLocal!: () => void;
 const localGate = new Promise<void>((resolve) => { releaseLocal = resolve; });
 const concurrent = queryManualSourceChain([

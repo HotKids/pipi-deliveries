@@ -68,11 +68,13 @@ export async function queryManualSourceChain(
   ) => boolean,
   preferRouteFirst = false,
 ): Promise<ManualQuerySelection> {
+  let deadlineReached = false;
   const assertNotCancelled = () => {
     if (signal?.aborted) throw new OperationTimeoutError();
   };
   const assertCanStart = () => {
     assertNotCancelled();
+    if (deadlineReached) throw new OperationTimeoutError();
     assertWithinDeadline(deadlineAtMs);
   };
   assertCanStart();
@@ -118,6 +120,9 @@ export async function queryManualSourceChain(
         assertNotCancelled();
         const settledError = error instanceof OperationTimeoutError ? error
           : deadlineExpired(deadlineAtMs) ? new OperationTimeoutError() : error;
+        // Once the owned wait expires, wall-clock drift cannot reopen this round.
+        if (settledError instanceof OperationTimeoutError &&
+            settledError.waitDetails?.waitTimeoutOrigin === "deadline") deadlineReached = true;
         observe?.({
           source: adapter.source,
           phase: "settled",
@@ -161,7 +166,7 @@ export async function queryManualSourceChain(
       : successes.some((item) =>
           containsTimelineStartTrack(item.shipment.timeline.tracks)
         );
-    if (!routeReachedStart) {
+    if (!routeReachedStart && !deadlineReached) {
       await run(primary.filter((adapter) => adapter.source !== "route"));
     }
   } else {
@@ -178,6 +183,7 @@ export async function queryManualSourceChain(
           containsTimelineStartTrack(item.shipment.timeline.tracks)
         )) &&
     fallback &&
+    !deadlineReached &&
     !deadlineExpired(deadlineAtMs)
   ) {
     await run([fallback]);
