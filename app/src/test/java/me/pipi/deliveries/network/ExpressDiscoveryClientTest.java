@@ -198,7 +198,8 @@ public final class ExpressDiscoveryClientTest {
         assertEquals("在顺丰官网可查看收件信息", parsed.latestDetail);
         assertEquals("2026-08-14 11:59:49", parsed.latestTime);
         assertTrue(parsed.structuredStatusEvidence);
-        assertEquals(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA).parse(parsed.latestTime).getTime(), parsed.statusEventTime);
+        assertEquals(java.time.OffsetDateTime.parse(parsed.latestTime.replace(' ', 'T') + "+08:00")
+                .toInstant().toEpochMilli(), parsed.statusEventTime);
         assertEquals(2, new JSONArray(parsed.tracksJson).length());
     }
 

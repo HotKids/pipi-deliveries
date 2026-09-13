@@ -8,8 +8,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.ArrayList;
 import java.util.List;
-import java.text.SimpleDateFormat;
-import java.util.Locale;
+import java.time.OffsetDateTime;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -132,8 +131,8 @@ public final class ExpressApiTest {
         assertEquals(StatusSemantic.COMPLETED, result.semantic);
         assertEquals(time, result.latestTime);
         assertEquals(detail, result.latestDetail);
-        assertEquals(new SimpleDateFormat(
-                "yyyy-MM-dd HH:mm:ss", Locale.CHINA).parse(time).getTime(),
+        assertEquals(OffsetDateTime.parse(time.replace(' ', 'T') + "+08:00")
+                        .toInstant().toEpochMilli(),
                 result.statusEventTime);
         assertFalse(result.structuredStatusEvidence);
         JSONObject raw = new JSONArray(result.tracksJson).getJSONObject(0);
@@ -206,8 +205,8 @@ public final class ExpressApiTest {
         assertEquals(StatusSemantic.WAITING_PICKUP, result.semantic);
         assertEquals(headlineTime, result.latestTime);
         assertEquals("快件正在运输", result.latestDetail);
-        assertEquals(new SimpleDateFormat(
-                "yyyy-MM-dd HH:mm:ss", Locale.CHINA).parse(statusTime).getTime(),
+        assertEquals(OffsetDateTime.parse(statusTime.replace(' ', 'T') + "+08:00")
+                        .toInstant().toEpochMilli(),
                 result.statusEventTime);
         assertEquals(2, new JSONArray(result.tracksJson).length());
     }
