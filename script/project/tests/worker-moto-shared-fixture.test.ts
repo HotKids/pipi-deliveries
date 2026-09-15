@@ -5,7 +5,7 @@ import { containsTimelineStartTrack, containsTimelinePickupTrack, latestTimeline
 
 // The formal Worker regression also compares its actual output with these shared bytes.
 const response = JSON.parse(readFileSync(new URL(
-  "../../../../flutter_app/android/app/src/test/resources/express/moto-packet-pickup.json",
+  "./fixtures/express/moto-packet-pickup.json",
   import.meta.url,
 ), "utf8"));
 const parsed = parseMotoTimeline(response);
