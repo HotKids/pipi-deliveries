@@ -1130,7 +1130,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 && expected.projectedWaybill.isEmpty()) {
             ExpressOrderTextIdentity.Identity text = ExpressOrderTextIdentity.fromTracksJson(
                     expected.tracksJson, expected.waybill);
-            if (text != null && repository.saveOrderProjection(expected, "interface5", text.waybill, "", cancellation)) {
+            if (text != null && repository.saveOrderProjection(expected, "interface5", text.waybill, text.companyName, cancellation)) {
                 expected = repository.find(expected.rowId);
                 if (expected == null) return null;
             }

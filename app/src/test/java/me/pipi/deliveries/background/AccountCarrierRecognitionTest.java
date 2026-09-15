@@ -73,6 +73,8 @@ public final class AccountCarrierRecognitionTest {
         ExpressItem jt = saved("JT4006839564547", "JDKD", "京东快递", "JingDong");
         assertTrue(AccountCarrierRecognition.platformLabelOnly(jt));
         assertTrue(AccountCarrierRecognition.needsRecognition(jt));
+        assertEquals("", jt.displayCompany());
+        assertEquals("", jt.displayCourierCode());
         assertFalse(AccountCarrierRecognition.recognize(repository, jt, waybill ->
                 new CarrierNormalization("JD", "京东快递", "jd", true, "t1")));
         assertTrue(AccountCarrierRecognition.recognize(repository, jt, waybill ->
@@ -108,6 +110,63 @@ public final class AccountCarrierRecognitionTest {
         assertEquals("京东快递", recognized.displayCompany());
         assertEquals("jd", recognized.displayCourierCode());
         assertFalse(AccountCarrierRecognition.needsRecognition(recognized));
+    }
+
+    @Test public void sameWaybillRefreshCannotDiscardPendingRecognition() throws Exception {
+        ExpressItem item = saved("SF1221489425261", "UNKNOWN", "", "JingDong");
+        assertTrue(AccountCarrierRecognition.recognize(repository, item, waybill -> {
+            saved(waybill, "JDKD", "京东购物", "JingDong");
+            return new CarrierNormalization("SF", "顺丰速运", "shunfeng", true, "t1");
+        }));
+        ExpressItem recognized = repository.find(item.rowId);
+        assertEquals("顺丰速运", recognized.displayCompany());
+        assertEquals("shunfeng", recognized.displayCourierCode());
+        assertEquals(me.pipi.deliveries.R.drawable.sf, recognized.displayIconResource());
+        assertFalse(AccountCarrierRecognition.needsRecognition(recognized));
+        saved(item.waybill, "JDKD", "京东购物", "JingDong");
+        assertEquals("顺丰速运", repository.find(item.rowId).displayCompany());
+    }
+
+    @Test public void staleProjectedPlatformNameDoesNotBlockCarrierRepair() throws Exception {
+        repository.saveInterface5OrderSummary(new ExpressQueryResult(
+                "1234500000002", "JDKD", "京东购物", StatusSemantic.TRANSIT, 0L,
+                "2026-09-13 18:32:15", "Delivery event", "[]", "", PHONE,
+                "interface5", "", "", "JingDong"), PHONE);
+        ExpressItem order = repository.findByWaybill("1234500000002", "interface5");
+        assertTrue(repository.saveOrderProjection(order, "interface5", "SF00000005481", "京东快递"));
+        ExpressItem projected = repository.find(order.rowId);
+        assertTrue(AccountCarrierRecognition.needsRecognition(projected));
+        assertTrue(AccountCarrierRecognition.recognize(repository, projected, waybill ->
+                new CarrierNormalization("SF", "顺丰速运", "shunfeng", true, "builtin")));
+        ExpressItem recognized = repository.find(order.rowId);
+        assertEquals("顺丰速运", recognized.displayCompany());
+        assertEquals("shunfeng", recognized.displayCourierCode());
+        assertFalse(AccountCarrierRecognition.needsRecognition(recognized));
+        assertTrue(repository.saveOrderProjection(recognized, "interface5", "SF00000005481", "京东快递"));
+        assertEquals("顺丰速运", repository.find(order.rowId).displayCompany());
+        assertTrue(repository.saveOrderProjection(repository.find(order.rowId),
+                "interface5", "YT00000005481", ""));
+        assertEquals("", repository.find(order.rowId).displayCompany());
+        assertTrue(AccountCarrierRecognition.needsRecognition(repository.find(order.rowId)));
+    }
+
+    @Test public void projectedRecognitionSurvivesAnAccountCarrierFieldRefresh() throws Exception {
+        String orderId = "1234500000003";
+        repository.saveInterface5OrderSummary(new ExpressQueryResult(
+                orderId, "JDKD", "京东购物", StatusSemantic.TRANSIT, 0L,
+                "2026-09-13 18:32:15", "Delivery event", "[]", "", PHONE,
+                "interface5", "", "", "JingDong"), PHONE);
+        ExpressItem order = repository.findByWaybill(orderId, "interface5");
+        assertTrue(repository.saveOrderProjection(order, "interface5", "SF00000005482", ""));
+        ExpressItem projected = repository.find(order.rowId);
+        assertTrue(AccountCarrierRecognition.recognize(repository, projected, waybill -> {
+            repository.saveInterface5OrderSummary(new ExpressQueryResult(
+                    orderId, "UNKNOWN", "京东购物", StatusSemantic.TRANSIT, 0L,
+                    "2026-09-13 18:33:15", "Next delivery event", "[]", "", PHONE,
+                    "interface5", "", "", "JingDong"), PHONE);
+            return new CarrierNormalization("SF", "顺丰速运", "shunfeng", true, "builtin");
+        }));
+        assertEquals("顺丰速运", repository.find(order.rowId).displayCompany());
     }
 
     private ExpressItem saved(

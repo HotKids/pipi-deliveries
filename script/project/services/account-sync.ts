@@ -531,10 +531,10 @@ export function parcelToShipment(
         parcel.companyName,
       )
     : null;
-  const courierCode = projectedPresentation?.courierCode || parcel.courierCode;
+  const courierCode = projectedPresentation?.courierCode ?? parcel.courierCode;
   const companyName = unprojectedOrder
     ? "京东购物"
-    : projectedPresentation?.companyName || parcel.companyName || courierCode || "快递";
+    : projectedPresentation?.companyName ?? (parcel.companyName || courierCode);
   const accountTimeline = {
     provider: parcel.source,
     waybill: displayWaybill,

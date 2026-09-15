@@ -2981,8 +2981,7 @@ async function runShipmentRefreshById(
    */
   let storedRowBaseline: Shipment | null = null;
   if (needsProjectedCarrierRepair(original.identity)) {
-    // The carrier waybill is not a JD number but the identity still wears the JD order label:
-    // recognise the real carrier from the waybill and repair the projected identity. `base`
+    // The projected identity lacks a valid built-in carrier: recognise the real waybill. `base`
     // stays the stored state: the commit fence compares its copy of the shipment with storage,
     // so the repair travels in `refreshed` only.
     try {

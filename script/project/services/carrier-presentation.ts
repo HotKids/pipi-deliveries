@@ -73,16 +73,14 @@ export function projectedCarrierPresentation(
   const codeRecord = resolveCarrierQuery(normalizedCode) ||
     resolveCarrierCpCode(normalizedCode);
   const nameRecord = resolveCarrierName(normalizedName);
-  const selected = orderStageName ? null : codeRecord || nameRecord;
-  // Do not let the shopping-order JD hint leak into the projected parcel.
-  const resolvedCode = orderStageName
-    ? selected?.standardCode || ""
-    : selected?.standardCode || normalizeCarrierCode(courierCode);
-  const canonicalName = selected?.displayName || rawName;
+  // Discard the shopping label and its JD hint, not an independently known carrier.
+  const selected = orderStageName && codeRecord?.standardCode === "JD"
+    ? null
+    : codeRecord || nameRecord;
+  const resolvedCode = selected?.standardCode || (orderStageName ? "" : normalizedCode);
+  const canonicalName = selected?.displayName || (orderStageName ? "" : rawName);
   return {
     courierCode: resolvedCode,
-    companyName: orderStageName
-      ? selected?.displayName || "快递"
-      : canonicalName || "快递",
+    companyName: canonicalName === "快递" ? "" : canonicalName,
   };
 }

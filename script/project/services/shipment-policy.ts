@@ -1722,7 +1722,7 @@ function mergeAccountShipmentPackage(
           ? incoming.identity.companyName
           : preservesExistingProjection || !nextProjection
           ? repairedProjectedCarrier(current.identity, incoming.identity).companyName
-          : projectedPresentation?.companyName || "快递",
+          : projectedPresentation?.companyName || "",
         sourceProvider: incomingSourceProvider || currentSourceProvider,
       }
     : mergedIdentity;

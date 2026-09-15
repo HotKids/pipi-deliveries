@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AccountParcelDto } from "../services/account-parser";
+import { parseAccountTimelineResponse, type AccountParcelDto } from "../services/account-parser";
 import {
   hasBuiltInAccountCarrierName,
   normalizeAccountParcelCarrier,
@@ -68,6 +68,52 @@ const direct = await normalizeAccountParcelCarrier(parcel({
 assert.equal(recognitionCalls, 0);
 assert.equal(direct.courierCode, "KYSY");
 assert.equal(direct.companyName, "跨越速运");
+
+const retainedSf = await normalizeAccountParcelCarrier(parcel({
+  ownerId: "SF-CACHED-001", waybill: "SF-CACHED-001", sourceProvider: "JingDong",
+  courierCode: "SF", rawCourierCode: "JDKD", companyName: "京东购物",
+  carrierNormalization: {
+    standardCode: "SF", displayName: "顺丰速运", kuaidi100Code: "shunfeng",
+    isBuiltIn: true, tableVersion: "cached",
+  },
+}), {
+  recognize: async () => {
+    throw new Error("a platform raw label cannot bypass already known SF recognition");
+  },
+});
+assert.equal(retainedSf.courierCode, "SF");
+assert.equal(retainedSf.companyName, "顺丰速运");
+assert.equal(retainedSf.rawCourierCode, "JDKD");
+assert.equal(retainedSf.sourceProvider, "JingDong");
+
+const rawNamedSf = parseAccountTimelineResponse("interface5", {
+  code: 0,
+  data: {
+    mailNo: "SF-RAW-NAME-001", cpCode: "UNKNOWN", name: "顺丰速运", provider: "CaiNiao",
+    normalizedCarrierCode: "YTO", normalizedCarrierName: "圆通速递",
+    carrierBuiltIn: true, kuaidi100Code: "yuantong", tableVersion: "cached",
+  },
+});
+assert.ok(rawNamedSf);
+assert.equal(rawNamedSf.courierCode, "YTO");
+assert.equal(rawNamedSf.rawCompanyName, "顺丰速运");
+const localNameSf = await normalizeAccountParcelCarrier(rawNamedSf, {
+  recognize: async () => { throw new Error("a local raw carrier name needs no recognition"); },
+});
+assert.equal(localNameSf.courierCode, "SF", "a local raw carrier name precedes a cached normalization");
+assert.equal(localNameSf.companyName, "顺丰速运");
+assert.equal(localNameSf.rawCourierCode, rawNamedSf.rawCourierCode);
+assert.equal(localNameSf.rawCompanyName, rawNamedSf.rawCompanyName);
+
+const projectedSf = await normalizeAccountParcelCarrier(parcel({
+  ownerId: "SF-PROJECTED-001", waybill: "SF-PROJECTED-001", courierCode: "SF",
+  companyName: "顺丰速运", rawCourierCode: "JDKD", sourceProvider: "JingDong",
+  carrierNormalization: {
+    standardCode: "YTO", displayName: "圆通速递", kuaidi100Code: "yuantong",
+    isBuiltIn: true, tableVersion: "cached",
+  },
+}), { recognize: async () => { throw new Error("valid projected carrier needs no recognition"); } });
+assert.equal(projectedSf.courierCode, "SF", "a valid local projected carrier precedes a cached normalization");
 
 const jdPrefix = await normalizeAccountParcelCarrier(parcel({
   source: "interface2",

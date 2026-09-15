@@ -8,12 +8,15 @@ import {
 import type { CarrierNormalization } from "./carrier-normalization";
 import { GatewayError, postGateway } from "./gateway";
 import { normalizeWaybill } from "./status";
-import { OperationTimeoutError } from "./deadline";
+import { assertWithinDeadline, OperationTimeoutError } from "./deadline";
+import { RefreshCoordinator } from "./refresh-coordination";
 
 const CACHE_KEY = "pipi_deliveries_carrier_recognition_v1";
 export const CARRIER_RETRY_DELAY_MS = 15 * 60 * 1_000;
 export const CARRIER_NETWORK_FAILURE_LIMIT = 3;
 const MAX_TRANSIENT_CACHE_ENTRIES = 256;
+// Existing provider budgets are 15 seconds for detection and 30 for classification.
+const RECOGNITION_WAIT_TIMEOUT_MS = 45_000;
 
 type RetryStage = "auto_com_num" | "worker_classify";
 
@@ -39,6 +42,11 @@ export type CarrierRecognitionResult = Readonly<{
   pendingSecondLevel: boolean;
   coolingDown: boolean;
 }>;
+
+const recognitionCoordinators = new WeakMap<
+  CarrierRecognitionStore,
+  RefreshCoordinator<undefined, string, CarrierRecognitionResult, never>
+>();
 
 type FirstLevelDetector = typeof detectKuaidi100CarrierCandidates;
 type SecondLevelClassifier = (input: Readonly<{
@@ -310,16 +318,18 @@ function networkFailure(
   });
 }
 
+type RecognitionOptions = Readonly<{
+  deadlineAtMs?: number;
+  signal?: AbortSignal;
+  detect?: FirstLevelDetector;
+  classify?: SecondLevelClassifier;
+  store?: CarrierRecognitionStore;
+  now?: number;
+}>;
+
 export async function recognizeNonSyncCarrier(
   waybillInput: string,
-  options: Readonly<{
-    deadlineAtMs?: number;
-    signal?: AbortSignal;
-    detect?: FirstLevelDetector;
-    classify?: SecondLevelClassifier;
-    store?: CarrierRecognitionStore;
-    now?: number;
-  }> = {},
+  options: RecognitionOptions = {},
 ): Promise<CarrierRecognitionResult> {
   const waybill = normalizeWaybill(waybillInput);
   if (!waybill) {
@@ -330,6 +340,27 @@ export async function recognizeNonSyncCarrier(
       coolingDown: false,
     };
   }
+  assertWithinDeadline(options.deadlineAtMs);
+  const store = options.store || storageStore;
+  let coordinator = recognitionCoordinators.get(store);
+  if (!coordinator) {
+    coordinator = new RefreshCoordinator<undefined, string, CarrierRecognitionResult, never>();
+    recognitionCoordinators.set(store, coordinator);
+  }
+  return coordinator.runIndependentDetail(
+    waybill,
+    undefined,
+    signal => runCarrierRecognition(waybill, { ...options, deadlineAtMs: undefined, signal }),
+    options.deadlineAtMs ?? Date.now() + RECOGNITION_WAIT_TIMEOUT_MS,
+    options.signal,
+  );
+}
+
+async function runCarrierRecognition(
+  waybill: string,
+  options: RecognitionOptions,
+): Promise<CarrierRecognitionResult> {
+  if (options.signal?.aborted) throw new OperationTimeoutError();
   const now = options.now ?? Date.now();
   const store = options.store || storageStore;
   const loadedCached = store.load().find(
@@ -373,6 +404,7 @@ export async function recognizeNonSyncCarrier(
         waybill,
         { deadlineAtMs: options.deadlineAtMs, signal: options.signal },
       );
+      if (options.signal?.aborted) throw new OperationTimeoutError();
     } catch (error) {
       if (error instanceof OperationTimeoutError || options.signal?.aborted) {
         throw new OperationTimeoutError();
@@ -409,6 +441,7 @@ export async function recognizeNonSyncCarrier(
       deadlineAtMs: options.deadlineAtMs,
       signal: options.signal,
     });
+    if (options.signal?.aborted) throw new OperationTimeoutError();
     const currentNormalization = currentBuiltInNormalization(normalization);
     if (currentNormalization) {
       return writeEntry(store, {

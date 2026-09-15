@@ -16,14 +16,25 @@ const identity = (overrides: Partial<Shipment["identity"]>): Shipment["identity"
   ...overrides,
 });
 
-// Only a projected non-JD waybill still labelled as JD (or unlabelled) needs the repair.
+// Every projected real waybill without a valid built-in carrier can be repaired.
 assert.equal(needsProjectedCarrierRepair(identity({})), true);
 assert.equal(needsProjectedCarrierRepair(identity({ courierCode: "JDKD" })), true);
 assert.equal(needsProjectedCarrierRepair(identity({ courierCode: "" })), true);
+assert.equal(needsProjectedCarrierRepair(identity({ courierCode: "UNKNOWN_CARRIER" })), true);
+assert.equal(needsProjectedCarrierRepair(identity({
+  projectedWaybill: "JDVD10645984010", courierCode: "", companyName: "",
+})), true);
+assert.equal(needsProjectedCarrierRepair(identity({
+  courierCode: "", companyName: "顺丰速运",
+})), false, "a locally recognized name must not require network recognition");
+assert.equal(needsProjectedCarrierRepair(identity({
+  courierCode: "JD", companyName: "顺丰速运", projectedWaybill: "SF-KNOWN-NAME-001",
+})), false, "an invalid platform code must not hide a valid built-in name");
 assert.equal(needsProjectedCarrierRepair(identity({ courierCode: "JTSD" })), false);
 assert.equal(needsProjectedCarrierRepair(identity({ projectedWaybill: "JDVD10645984010" })), false);
 assert.equal(needsProjectedCarrierRepair(identity({ projectedWaybill: "" })), false);
 assert.equal(needsProjectedCarrierRepair(identity({ accountOrder: false })), false);
+assert.equal(needsProjectedCarrierRepair(identity({ manuallyAdded: true })), false);
 
 const timeline = {
   provider: "interface5", waybill: "JT4006839564547", courierCode: "JD", companyName: "京东快递",
@@ -59,6 +70,19 @@ assert.equal(repaired.manualTimelines?.[0]?.provider, "kuaidi100_h5");
 // Recognition that only re-states JD, or nothing built-in, changes nothing.
 assert.equal(repairProjectedShipmentCarrier(shipment, { standardCode: "JD", displayName: "京东快递", kuaidi100Code: "jd", isBuiltIn: true, tableVersion: "t1" }), shipment);
 assert.equal(repairProjectedShipmentCarrier(shipment, null), shipment);
+
+const jdWithoutCarrier = {
+  ...shipment,
+  identity: identity({ projectedWaybill: "JDVD10645984010", courierCode: "", companyName: "" }),
+};
+const repairedJd = repairProjectedShipmentCarrier(jdWithoutCarrier, {
+  standardCode: "JD", displayName: "京东快递", kuaidi100Code: "jd", isBuiltIn: true, tableVersion: "t1",
+});
+assert.equal(repairedJd.identity.courierCode, "JD");
+assert.equal(repairedJd.identity.companyName, "京东快递");
+assert.equal(repairedJd.identity.projectedWaybill, jdWithoutCarrier.identity.projectedWaybill);
+assert.equal(repairedJd.timeline.semantic, jdWithoutCarrier.timeline.semantic);
+assert.strictEqual(repairedJd.timeline.tracks, jdWithoutCarrier.timeline.tracks);
 
 // Wiring contract: the detail refresh recognises up front, never rewrites `base` (the commit
 // fence compares base's copy of the shipment with storage — a rewritten base is always

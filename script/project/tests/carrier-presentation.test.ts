@@ -46,7 +46,20 @@ assert.deepEqual(
 );
 assert.deepEqual(
   projectedCarrierPresentation("SF0256747737309", "JD", "京东购物"),
-  { courierCode: "", companyName: "快递" },
+  { courierCode: "", companyName: "" },
+);
+assert.deepEqual(
+  projectedCarrierPresentation("SF0256747737309", "SF", ""),
+  { courierCode: "SF", companyName: "顺丰速运" },
+);
+assert.deepEqual(
+  projectedCarrierPresentation("SF0256747737309", "SF", "京东购物"),
+  { courierCode: "SF", companyName: "顺丰速运" },
+  "a shopping label cannot veto an independently known built-in carrier",
+);
+assert.deepEqual(
+  projectedCarrierPresentation("SF0256747737309", "", "快递"),
+  { courierCode: "", companyName: "" },
 );
 assert.equal(courierIconName("UNKNOWN", "未知快递"), "default");
 assert.equal(courierIconName("EMSGJ", "EMS国际"), "default");

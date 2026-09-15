@@ -162,7 +162,7 @@ final class ExpressSyncEngine {
                             ? current.source : current.stateOwner;
                     if (repository.saveOrderProjection(
                             current, ExpressAccountSource.bindingSourceForOwner(owner),
-                            textIdentity.waybill, "")) {
+                            textIdentity.waybill, textIdentity.companyName)) {
                         current = repository.find(current.rowId);
                     }
                 }

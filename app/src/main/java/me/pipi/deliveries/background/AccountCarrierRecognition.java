@@ -25,25 +25,15 @@ public final class AccountCarrierRecognition {
 
     /** R-20: a JD-platform row names the platform in its raw code; on a non-JD waybill that is no evidence. */
     static boolean platformLabelOnly(ExpressItem item) {
-        if (item == null || !"jingdong".equalsIgnoreCase(clean(item.sourceProvider))) return false;
+        if (item == null || !(item.isAccountOrder() || item.isJingDongSource())) return false;
         String waybill = normalize(item.displayWaybill());
         return !waybill.isEmpty() && !waybill.startsWith("JD");
     }
 
     public static boolean needsRecognition(ExpressItem item) {
         if (item == null || item.manuallyAdded) return false;
-        if (item.isAccountOrder()) {
-            return !normalize(item.projectedWaybill).isEmpty()
-                    && CarrierRegistry.resolveName(item.projectedCompanyName) == null;
-        }
-        if (normalize(item.waybill).isEmpty()) return false;
-        boolean platformOnly = platformLabelOnly(item);
-        CarrierRegistry.Carrier raw = CarrierRegistry.resolveCpCode(item.courierCode);
-        if (raw == null) raw = CarrierRegistry.resolveName(item.companyName);
-        if (raw != null && !(platformOnly && "JD".equals(raw.standardCode))) return false;
-        CarrierNormalization current = item.carrierNormalization;
-        return !current.recognized()
-                || (platformOnly && "JD".equals(current.standardCode));
+        if (item.isAccountOrder() && normalize(item.projectedWaybill).isEmpty()) return false;
+        return !normalize(item.displayWaybill()).isEmpty() && item.resolvedCarrier() == null;
     }
 
     public static boolean recognize(

@@ -70,7 +70,7 @@ assert.deepEqual(
   {
     waybill: "SF0256747737309",
     courierCode: "",
-    companyName: "快递",
+    companyName: "",
   },
   "an order-stage label and waybill prefix are not authoritative carrier evidence",
 );
@@ -91,7 +91,7 @@ assert.deepEqual(
   {
     waybill: "UNKNOWN0256747737309",
     courierCode: "",
-    companyName: "快递",
+    companyName: "",
   },
 );
 
@@ -111,7 +111,7 @@ assert.deepEqual(
   {
     waybill: "JD0256747737308",
     courierCode: "",
-    companyName: "快递",
+    companyName: "",
   },
   "a waybill prefix alone must not synthesize a carrier outside the authority table",
 );

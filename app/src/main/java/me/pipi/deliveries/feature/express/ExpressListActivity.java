@@ -420,7 +420,7 @@ public final class ExpressListActivity extends AppCompatActivity {
                     try {
                         saved = ExpressRepository.get(this).saveOrderProjection(expected,
                                 ExpressAccountSource.bindingSourceForOwner(owner),
-                                textIdentity.waybill, "", cancellation);
+                                textIdentity.waybill, textIdentity.companyName, cancellation);
                         ExpressRepository repository = ExpressRepository.get(this);
                         ExpressItem projected = saved ? repository.find(expected.rowId) : null;
                         if (AccountCarrierRecognition.needsRecognition(projected)) {

@@ -211,6 +211,8 @@ public final class ExpressSyncEngineTest {
                 accountOrder("", StatusSemantic.PICKED, tracks));
 
         assertEquals("770018906334362", identity.waybill);
+        assertEquals("STO", identity.courierCode);
+        assertEquals("申通快递", identity.companyName);
     }
 
     @Test

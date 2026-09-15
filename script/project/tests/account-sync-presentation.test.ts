@@ -238,6 +238,27 @@ assert.equal(projected.statusPresentation, undefined);
 assert.equal(projected.timeline.companyName, "京东快递");
 assert.equal(projected.timeline.courierCode, "JD");
 
+const missingProjectedCarrier = parcelToShipment(
+  order("SF0256747737309", "", ""), [PHONE], NOW,
+)!;
+assert.equal(missingProjectedCarrier.identity.companyName, "");
+assert.equal(missingProjectedCarrier.identity.courierCode, "");
+assert.equal(missingProjectedCarrier.timeline.companyName, "");
+const initiallyUnprojected = parcelToShipment(
+  order("ORDER202608270001", "JD", "京东购物"), [PHONE], NOW,
+)!;
+assert.equal(applyAccountShipment(
+  initiallyUnprojected, missingProjectedCarrier, NOW + 1,
+).identity.companyName, "");
+const recognizedSf = parcelToShipment(
+  order("SF0256747737309", "SF", "顺丰速运"), [PHONE], NOW,
+)!;
+const afterCarrierOmission = applyAccountShipment(
+  recognizedSf, missingProjectedCarrier, NOW + 1,
+);
+assert.equal(afterCarrierOmission.identity.courierCode, "SF");
+assert.equal(afterCarrierOmission.identity.companyName, "顺丰速运");
+
 const projectedWithH5 = parcelToShipment(
   {
     ...order("JD0256747737308", "JD", "京东快递"),

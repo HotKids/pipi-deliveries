@@ -6,6 +6,7 @@ import org.json.JSONObject;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import me.pipi.deliveries.data.CarrierRegistry;
 
 /**
  * Carrier identity that the account feed's own JD order track text already names, e.g.
@@ -16,20 +17,22 @@ import java.util.regex.Pattern;
 public final class ExpressOrderTextIdentity {
     private static final Pattern WAYBILL =
             Pattern.compile("运单号\\s*[为是:：]?\\s*([A-Za-z0-9-]{8,32})");
+    private static final Pattern CARRIER_BEFORE_WAYBILL = Pattern.compile(
+            "(?:交付|交由|移交|转交|由)\\s*([一-龥A-Za-z0-9]{2,16}?)\\s*[，,、。；;]?\\s*运单号");
     public static final class Identity {
         public final String waybill;
-        Identity(String waybill) {
+        public final String courierCode;
+        public final String companyName;
+        Identity(String waybill, String courierCode, String companyName) {
             this.waybill = waybill;
+            this.courierCode = courierCode;
+            this.companyName = companyName;
         }
     }
 
     private ExpressOrderTextIdentity() {}
 
-    /**
-     * Returns the waybill the text names, or null when it names none. 用户定 2026-09-08：**只允许
-     * 从轨迹文案里读运单号，不允许读承运商**——承运商只认本地内置表与快递100 识别。此前这里还用
-     * 「交付XX，运单号为…」抓了承运商名（2026-09-05 57b6af1 加的，没有用户授权），已删除。
-     */
+    /** Matches iOS account-order-text-identity; text names resolve only through the local table. */
     public static Identity fromTracksJson(String tracksJson, String ownerWaybill) {
         if (tracksJson == null || tracksJson.trim().isEmpty()) return null;
         String owner = normalize(ownerWaybill);
@@ -56,7 +59,11 @@ public final class ExpressOrderTextIdentity {
         String waybill = normalize(matcher.group(1));
         if (waybill.length() < 8 || waybill.equals(normalize(ownerWaybill))
                 || (waybill.matches("[0-9]+") && waybill.length() > 20)) return null;
-        return new Identity(waybill);
+        Matcher carrierMatch = CARRIER_BEFORE_WAYBILL.matcher(text);
+        String rawCarrier = carrierMatch.find() ? carrierMatch.group(1).trim() : "";
+        CarrierRegistry.Carrier carrier = CarrierRegistry.resolveName(rawCarrier);
+        return new Identity(waybill, carrier == null ? "" : carrier.standardCode,
+                carrier == null ? rawCarrier : carrier.companyName);
     }
 
     private static String firstText(JSONObject value, String... keys) {

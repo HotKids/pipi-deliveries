@@ -7,6 +7,7 @@ import {
   activeCarrierTableVersion,
   normalizeCarrierCode,
   resolveCarrierCpCode,
+  resolveCarrierName,
   resolveCarrierQuery,
 } from "./carrier-query";
 import {
@@ -58,15 +59,16 @@ function directPresentation(parcel: AccountParcelDto): AccountParcelDto | null {
   const rawCode = parcel.rawCourierCode
     ? resolveCarrierCpCode(parcel.rawCourierCode)
     : null;
-  if (
-    !rawCode && parcel.carrierNormalization?.isBuiltIn &&
-    !(platformOnly && parcel.carrierNormalization.standardCode === "JD")
-  ) return parcel;
-  const code = rawCode || resolveCarrierQuery(parcel.courierCode);
-  const name = builtInCarrierPresentation(parcel.companyName);
-  const carrier = code || (name ? resolveCarrierQuery(name.courierCode) : null);
+  const carrier = [
+    rawCode,
+    resolveCarrierName(parcel.rawCompanyName || ""),
+    resolveCarrierQuery(parcel.courierCode),
+    resolveCarrierName(parcel.companyName),
+    parcel.carrierNormalization?.isBuiltIn
+      ? resolveCarrierQuery(parcel.carrierNormalization.standardCode)
+      : null,
+  ].find(record => record && !(platformOnly && record.standardCode === "JD"));
   if (!carrier) return null;
-  if (platformOnly && carrier.standardCode === "JD") return null;
   const presentation = projectedCarrierPresentation(
     parcel.waybill,
     carrier.standardCode,
@@ -119,20 +121,22 @@ export async function normalizeAccountParcelCarrier(
 }
 
 /**
- * An already projected account order whose carrier is still the JD order label (or empty) while
- * its carrier waybill is not a JD number carries a leaked order-stage carrier: recognise the real
- * carrier from the waybill once and repair the identity.
+ * A real projected waybill needs recognition whenever its code and name do not identify a
+ * built-in carrier. The JD platform hint remains invalid evidence on non-JD waybills.
  */
 export function needsProjectedCarrierRepair(
-  identity: Pick<ShipmentIdentity, "accountOrder" | "manuallyAdded" | "projectedWaybill" | "courierCode">,
+  identity: Pick<ShipmentIdentity, "accountOrder" | "manuallyAdded" | "projectedWaybill" | "courierCode" | "companyName">,
 ): boolean {
   if (!identity.accountOrder || identity.manuallyAdded) return false;
   const projected = normalizeWaybill(identity.projectedWaybill || "");
-  if (!projected || /^JD/i.test(projected)) return false;
+  if (!projected) return false;
   const code = normalizeCarrierCode(identity.courierCode || "");
-  if (!code) return true;
-  const record = resolveCarrierQuery(code) || resolveCarrierCpCode(code);
-  return record?.standardCode === "JD";
+  const record = [
+    resolveCarrierQuery(code),
+    resolveCarrierCpCode(code),
+    resolveCarrierName(identity.companyName || ""),
+  ].find(value => value && (value.standardCode !== "JD" || /^JD/i.test(projected)));
+  return !record;
 }
 
 export function repairProjectedShipmentCarrier(
@@ -141,10 +145,11 @@ export function repairProjectedShipmentCarrier(
 ): Shipment {
   if (!normalization?.isBuiltIn || !needsProjectedCarrierRepair(shipment.identity)) return shipment;
   const code = normalizeCarrierCode(normalization.standardCode);
-  if (!code || code === "JD" || code === normalizeCarrierCode(shipment.identity.courierCode || "")) {
+  const projected = normalizeWaybill(shipment.identity.projectedWaybill || "");
+  if (!code || (code === "JD" && !/^JD/i.test(projected)) ||
+      code === normalizeCarrierCode(shipment.identity.courierCode || "")) {
     return shipment;
   }
-  const projected = normalizeWaybill(shipment.identity.projectedWaybill || "");
   const presentation = projectedCarrierPresentation(projected, code, normalization.displayName);
   const carrier = {
     courierCode: presentation.courierCode || code,

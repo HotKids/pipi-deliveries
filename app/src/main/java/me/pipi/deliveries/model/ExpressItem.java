@@ -438,50 +438,25 @@ public final class ExpressItem {
     }
 
     public String displayCompany() {
-        if (!projectedCompanyName.isEmpty()) {
-            String projected = CarrierRegistry.displayName("", projectedCompanyName);
-            return projected.isEmpty() ? projectedCompanyName : projected;
-        }
-        if (!projectedWaybill.isEmpty()) return "快递";
-        if (isAccountOrder()) return "京东购物";
-        CarrierRegistry.Carrier exactCarrier = matchingExactCarrierNormalization();
-        if (exactCarrier != null) return exactCarrier.companyName;
-        CarrierRegistry.Carrier rawCarrier = CarrierRegistry.resolveCpCode(courierCode);
-        if (rawCarrier != null) return rawCarrier.companyName;
-        if (carrierNormalization.recognized()) {
-            CarrierRegistry.Carrier current = CarrierRegistry.resolve(
-                    carrierNormalization.standardCode);
-            if (current != null) return current.companyName;
-            if (!carrierNormalization.displayName.isEmpty()) {
-                return carrierNormalization.displayName;
-            }
+        if (isAccountOrder() && projectedWaybill.isEmpty()) return "京东购物";
+        CarrierRegistry.Carrier carrier = resolvedCarrier();
+        if (carrier != null) return carrier.companyName;
+        if (!projectedWaybill.isEmpty()) {
+            return CarrierRegistry.resolveName(projectedCompanyName) != null
+                    || "快递".equals(projectedCompanyName) ? "" : projectedCompanyName;
         }
         String display = CarrierRegistry.displayName(courierCode, companyName);
         if (CarrierRegistry.resolveCpCode(courierCode) != null
-                || CarrierRegistry.resolveName(companyName) != null) return display;
-        if (!courierCode.isEmpty()) return courierCode;
-        return display.isEmpty() ? "快递" : display;
+                || CarrierRegistry.resolveName(companyName) != null) return "";
+        if (!courierCode.isEmpty() && !"快递".equals(courierCode)) return courierCode;
+        return "快递".equals(display) ? "" : display;
     }
 
     /** Account rows that expose only an order id always use our shopping asset. */
     public int displayIconResource() {
-        if (!projectedCompanyName.isEmpty()) {
-            return CarrierRegistry.icon("", projectedCompanyName);
-        }
-        if (!projectedWaybill.isEmpty()) {
-            return R.drawable.ic_card_express_cp_default;
-        }
-        if (isAccountOrder()) return R.drawable.jdshopping;
-        CarrierRegistry.Carrier exactCarrier = matchingExactCarrierNormalization();
-        if (exactCarrier != null) return exactCarrier.iconResource;
-        CarrierRegistry.Carrier rawCarrier = CarrierRegistry.resolveCpCode(courierCode);
-        if (rawCarrier != null) return rawCarrier.iconResource;
-        if (carrierNormalization.recognized()) {
-            return CarrierRegistry.icon(
-                    carrierNormalization.standardCode,
-                    carrierNormalization.displayName);
-        }
-        return CarrierRegistry.icon(courierCode, companyName);
+        if (isAccountOrder() && projectedWaybill.isEmpty()) return R.drawable.jdshopping;
+        CarrierRegistry.Carrier carrier = resolvedCarrier();
+        return carrier == null ? R.drawable.ic_card_express_cp_default : carrier.iconResource;
     }
 
     public ExpressItem withAccountListMetadata(String senderPhone, long originAtMs) {
@@ -504,23 +479,47 @@ public final class ExpressItem {
 
     /** A projected real waybill owns carrier identity; sourceProvider remains account provenance. */
     public String displayCourierCode() {
-        if (!projectedCompanyName.isEmpty()) {
-            return CarrierRegistry.queryCode("", projectedCompanyName);
-        }
-        if (!projectedWaybill.isEmpty()) return "";
+        CarrierRegistry.Carrier carrier = resolvedCarrier();
+        if (carrier != null) return carrier.kuaidi100Code;
+        return projectedWaybill.isEmpty() && CarrierRegistry.resolveCpCode(courierCode) == null
+                ? courierCode : "";
+    }
+
+    /** Display and recognition use the same local-table decision for this real waybill. */
+    public CarrierRegistry.Carrier resolvedCarrier() {
+        if (isAccountOrder() && projectedWaybill.isEmpty()) return null;
         CarrierRegistry.Carrier exactCarrier = matchingExactCarrierNormalization();
-        if (exactCarrier != null) return exactCarrier.kuaidi100Code;
-        CarrierRegistry.Carrier rawCarrier = CarrierRegistry.resolveCpCode(courierCode);
-        if (rawCarrier != null) return rawCarrier.kuaidi100Code;
+        if (exactCarrier != null && !platformCarrierOnly(exactCarrier)) return exactCarrier;
+        CarrierRegistry.Carrier rawCarrier = rawCarrierForDisplay();
+        if (rawCarrier != null) return rawCarrier;
+        CarrierRegistry.Carrier projected = CarrierRegistry.resolveName(projectedCompanyName);
+        if (projected != null && !platformCarrierOnly(projected)) return projected;
         if (carrierNormalization.recognized()) {
             CarrierRegistry.Carrier current = CarrierRegistry.resolve(
                     carrierNormalization.standardCode);
-            if (current != null) return current.kuaidi100Code;
-            if (!carrierNormalization.kuaidi100Code.isEmpty()) {
-                return carrierNormalization.kuaidi100Code;
-            }
+            if (current != null && !platformCarrierOnly(current)) return current;
         }
-        return courierCode;
+        return null;
+    }
+
+    private boolean platformCarrierOnly(CarrierRegistry.Carrier carrier) {
+        return carrier != null && "JD".equals(carrier.standardCode)
+                && (isAccountOrder() || isJingDongSource())
+                && !displayWaybill().toUpperCase(java.util.Locale.ROOT)
+                        .replaceAll("[^A-Z0-9]", "").startsWith("JD");
+    }
+
+    private CarrierRegistry.Carrier rawCarrierForDisplay() {
+        CarrierRegistry.Carrier carrier = CarrierRegistry.resolveCpCode(courierCode);
+        // JD's platform label is not carrier evidence for a non-JD waybill.
+        if (platformCarrierOnly(carrier) || isAccountOrder()
+                && carrier != null && "JD".equals(carrier.standardCode)) {
+            carrier = null;
+        }
+        if (carrier != null) return carrier;
+        CarrierRegistry.Carrier named = CarrierRegistry.resolveName(companyName);
+        return platformCarrierOnly(named) || isAccountOrder()
+                && named != null && "JD".equals(named.standardCode) ? null : named;
     }
 
     private CarrierRegistry.Carrier matchingExactCarrierNormalization() {

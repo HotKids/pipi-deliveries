@@ -1841,7 +1841,7 @@ const healedProjectedJd = saveState({
 }, NOW).shipments[0];
 assert.equal(healedProjectedJd.identity.projectedWaybill, "JD0256747737308");
 assert.equal(healedProjectedJd.identity.courierCode, "");
-assert.equal(healedProjectedJd.identity.companyName, "快递");
+assert.equal(healedProjectedJd.identity.companyName, "");
 
 // A short numeric JD order was previously stored as a carrier parcel because
 // older builds only recognized 16-digit order identities.

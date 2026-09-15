@@ -11,6 +11,19 @@ import me.pipi.deliveries.network.ManualQueryRoutingPolicy;
 import org.junit.Test;
 
 public final class ExpressItemTest {
+    @Test public void rejectedPlatformCodeStillAllowsTheValidCarrierName() {
+        ExpressItem item = new ExpressItem(
+                14L, "", "SF1234567890123", "JDKD", "顺丰速运",
+                StatusSemantic.TRANSIT, "运输中", "", "", "[]", "",
+                "INTERFACE5", "", 1L, 2L, "INTERFACE5", "", "", "", true,
+                "", "", "", "JingDong", false, "", 0L);
+        assertEquals("顺丰速运", item.displayCompany());
+        assertEquals("shunfeng", item.displayCourierCode());
+        assertEquals(R.drawable.sf, item.displayIconResource());
+        assertFalse(me.pipi.deliveries.background.AccountCarrierRecognition.needsRecognition(item));
+        assertEquals("顺丰速运", sourceItem("INTERFACE5", "JingDong", "SF", "圆通速递").displayCompany());
+    }
+
     @Test
     public void accountOrderIsPresentedAsShoppingOrder() {
         ExpressItem item = new ExpressItem(
@@ -74,7 +87,7 @@ public final class ExpressItemTest {
         assertTrue(prefixed.isInterface5ProjectedOrder());
         assertEquals("", prefixed.displayCourierCode());
         assertEquals("", unknown.displayCourierCode());
-        assertEquals("快递", prefixed.displayCompany());
+        assertEquals("", prefixed.displayCompany());
         assertEquals(R.drawable.ic_card_express_cp_default, prefixed.displayIconResource());
         assertFalse("jd".equalsIgnoreCase(prefixed.displayCourierCode()));
         assertFalse("jd".equalsIgnoreCase(unknown.displayCourierCode()));
@@ -93,6 +106,26 @@ public final class ExpressItemTest {
 
         assertEquals("极兔速递", item.displayCompany());
         assertEquals("huitongkuaidi", item.displayCourierCode());
+    }
+
+    @Test
+    public void projectedWaybillKeepsItsRecognizedCarrierWithoutAnAccountCarrierName() {
+        assertProjectedSfCarrier("");
+        assertProjectedSfCarrier("京东快递");
+    }
+
+    private void assertProjectedSfCarrier(String projectedName) {
+        ExpressItem item = new ExpressItem(
+                3L, "", "1234567890123456", "JD", "京东购物",
+                StatusSemantic.TRANSIT, "运输中", "", "", "[]", "",
+                "I5-JD", "", 1L, 2L, "I5-JD", "", "v5", "route", true,
+                "SF1234567890123", projectedName, "[]", "JingDong", false, "", 0L,
+                StatusSemantic.TRANSIT,
+                new CarrierNormalization("SF", "顺丰速运", "shunfeng", true, "builtin"));
+        assertEquals("顺丰速运", item.displayCompany());
+        assertEquals("shunfeng", item.displayCourierCode());
+        assertEquals(CarrierRegistry.icon("SF", "顺丰速运"), item.displayIconResource());
+        assertFalse(me.pipi.deliveries.background.AccountCarrierRecognition.needsRecognition(item));
     }
 
     @Test

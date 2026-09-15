@@ -12,8 +12,260 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class CarrierRecognitionCoordinatorTest {
+    @Test public void replacementCannotStartUntilPreviousCacheCommitIsFenced() throws Exception {
+        CountDownLatch oldCommitEntered = new CountDownLatch(1);
+        CountDownLatch finishOldCommit = new CountDownLatch(1);
+        CountDownLatch replacementProvider = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<CarrierRecognitionCoordinator.Snapshot> value = new AtomicReference<>(
+                CarrierRecognitionCoordinator.Snapshot.empty());
+        CarrierRecognitionCoordinator.State state = new CarrierRecognitionCoordinator.State() {
+            @Override public CarrierRecognitionCoordinator.Snapshot load(String identity) { return value.get(); }
+            @Override public void save(String identity, CarrierRecognitionCoordinator.Snapshot next) {
+                if (oldCommitEntered.getCount() > 0L) {
+                    oldCommitEntered.countDown();
+                    try {
+                        assertTrue(finishOldCommit.await(3, TimeUnit.SECONDS));
+                    } catch (InterruptedException interrupted) {
+                        throw new AssertionError(interrupted);
+                    }
+                }
+                value.set(next);
+            }
+        };
+        CarrierRecognitionCoordinator coordinator = coordinator((url, cancellation) -> {
+            int call = calls.incrementAndGet();
+            if (call > 1) replacementProvider.countDown();
+            return response(new JSONArray().put(new JSONObject()
+                    .put("comCode", call == 1 ? "shunfeng" : "yuantong")));
+        }, unusedGateway(), state, () -> 1_000L);
+        ExecutorService pool = Executors.newFixedThreadPool(3);
+        AtomicReference<Thread> cancellationThread = new AtomicReference<>();
+        try (ExpressQueryCancellation subscriber = new ExpressQueryCancellation(5_000L)) {
+            Future<?> original = pool.submit(() -> coordinator.recognize("SF1234567890", subscriber));
+            assertTrue(oldCommitEntered.await(2, TimeUnit.SECONDS));
+            Future<?> cancelling = pool.submit(() -> {
+                cancellationThread.set(Thread.currentThread());
+                subscriber.cancel();
+            });
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (System.nanoTime() < deadline && (cancellationThread.get() == null
+                    || cancellationThread.get().getState() != Thread.State.BLOCKED)) Thread.yield();
+            assertEquals(Thread.State.BLOCKED, cancellationThread.get().getState());
+            Future<CarrierRecognitionCoordinator.Outcome> replacement = pool.submit(
+                    () -> coordinator.recognize("SF1234567890", null));
+            boolean overlapped = replacementProvider.await(200, TimeUnit.MILLISECONDS);
+            finishOldCommit.countDown();
+            cancelling.get(2, TimeUnit.SECONDS);
+            try {
+                original.get(2, TimeUnit.SECONDS);
+                org.junit.Assert.fail("Original observer was cancelled");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                assertTrue(expected.getCause() instanceof InterruptedException);
+            }
+            assertEquals("SF", replacement.get(2, TimeUnit.SECONDS).candidates.get(0).standardCode);
+            assertFalse(overlapped);
+            assertEquals(1, calls.get());
+        } finally {
+            finishOldCommit.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test public void finalCallerCancellationStopsClassificationAndCacheCommit() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch aborted = new CountDownLatch(1);
+        AtomicInteger classifyCalls = new AtomicInteger();
+        AtomicInteger writes = new AtomicInteger();
+        CarrierRecognitionCoordinator.State state = new CarrierRecognitionCoordinator.State() {
+            @Override public CarrierRecognitionCoordinator.Snapshot load(String identity) {
+                return CarrierRecognitionCoordinator.Snapshot.empty();
+            }
+            @Override public void save(String identity, CarrierRecognitionCoordinator.Snapshot value) {
+                writes.incrementAndGet();
+            }
+        };
+        CarrierRecognitionCoordinator coordinator = coordinator((url, cancellation) -> {
+            started.countDown();
+            try {
+                while (true) {
+                    cancellation.throwIfCancelled();
+                    Thread.sleep(10L);
+                }
+            } catch (InterruptedException expected) {
+                aborted.countDown();
+                // Even a late successful HTTP body cannot start classification after cancellation.
+                return response(new JSONArray());
+            }
+        }, gateway((path, payload) -> {
+            classifyCalls.incrementAndGet();
+            return response(new JSONObject());
+        }), state, () -> 1_000L);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try (ExpressQueryCancellation subscriber = new ExpressQueryCancellation(5_000L)) {
+            Future<?> result = pool.submit(() -> coordinator.recognize("SF1234567890", subscriber));
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            subscriber.cancel();
+            try {
+                result.get(2, TimeUnit.SECONDS);
+                org.junit.Assert.fail("The final observer must leave");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                assertTrue(expected.getCause() instanceof InterruptedException);
+            }
+            assertTrue(aborted.await(2, TimeUnit.SECONDS));
+            assertEquals(0, classifyCalls.get());
+            assertEquals(0, writes.get());
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test public void cancellingTheFirstCallerKeepsTheJoinedCallerAndTransportAlive() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        KeyedState state = new KeyedState();
+        CarrierRecognitionCoordinator coordinator = coordinator((url, cancellation) -> {
+            calls.incrementAndGet();
+            started.countDown();
+            while (!release.await(10, TimeUnit.MILLISECONDS)) cancellation.throwIfCancelled();
+            return response(new JSONArray().put(new JSONObject().put("comCode", "shunfeng")));
+        }, unusedGateway(), state, () -> 1_000L);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        AtomicReference<Thread> followerThread = new AtomicReference<>();
+        try (ExpressQueryCancellation firstCancellation = new ExpressQueryCancellation(5_000L);
+             ExpressQueryCancellation secondCancellation = new ExpressQueryCancellation(5_000L)) {
+            Future<CarrierRecognitionCoordinator.Outcome> first = pool.submit(
+                    () -> coordinator.recognize("SF1234567890", firstCancellation));
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            Future<CarrierRecognitionCoordinator.Outcome> second = pool.submit(() -> {
+                followerThread.set(Thread.currentThread());
+                return coordinator.recognize("SF1234567890", secondCancellation);
+            });
+            awaitWaiting(followerThread);
+            firstCancellation.cancel();
+            try {
+                first.get(2, TimeUnit.SECONDS);
+                org.junit.Assert.fail("Cancelled observer must leave");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                assertTrue(expected.getCause() instanceof InterruptedException);
+            }
+            release.countDown();
+            assertEquals("SF", second.get(2, TimeUnit.SECONDS).candidates.get(0).standardCode);
+            assertEquals(1, calls.get());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    private static void awaitWaiting(AtomicReference<Thread> thread) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (System.nanoTime() < deadline) {
+            if (thread.get() != null && thread.get().getState() == Thread.State.TIMED_WAITING) return;
+            Thread.yield();
+        }
+        org.junit.Assert.fail("Joined caller never began waiting");
+    }
+    @Test public void followerDeadlineDoesNotCancelOwnerOrSerializeOtherWaybills() throws Exception {
+        CountDownLatch started = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        KeyedState state = new KeyedState();
+        CarrierRecognitionCoordinator coordinator = coordinator((url, cancellation) -> {
+            calls.incrementAndGet();
+            started.countDown();
+            assertTrue(release.await(5, TimeUnit.SECONDS));
+            return response(new JSONArray().put(new JSONObject().put("comCode", "shunfeng")));
+        }, unusedGateway(), state, () -> 1_000L);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<CarrierRecognitionCoordinator.Outcome> first = pool.submit(
+                    () -> coordinator.recognize("SF1234567890", null));
+            Future<CarrierRecognitionCoordinator.Outcome> other = pool.submit(
+                    () -> coordinator.recognize("SF2234567890", null));
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            try (ExpressQueryCancellation observer = new ExpressQueryCancellation(100L)) {
+                try {
+                    coordinator.recognize("SF1234567890", observer);
+                    org.junit.Assert.fail("Follower deadline must end only its own wait");
+                } catch (InterruptedException expected) {
+                    assertFalse(first.isDone());
+                }
+            }
+            release.countDown();
+            assertEquals("SF", first.get(3, TimeUnit.SECONDS).candidates.get(0).standardCode);
+            assertEquals("SF", other.get(3, TimeUnit.SECONDS).candidates.get(0).standardCode);
+            assertEquals(2, calls.get());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test public void cancelledOwnerDoesNotLeaveAPendingEntryOrConsumeFailureBudget() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        MemoryState state = new MemoryState();
+        CarrierRecognitionCoordinator coordinator = coordinator((url, cancellation) -> {
+            if (calls.incrementAndGet() == 1) throw new InterruptedException("Synthetic cancellation");
+            return response(new JSONArray().put(new JSONObject().put("comCode", "shunfeng")));
+        }, unusedGateway(), state, () -> 1_000L);
+        try {
+            coordinator.recognize("SF1234567890", null);
+            org.junit.Assert.fail("Must propagate cancellation");
+        } catch (InterruptedException expected) {
+            assertEquals(0, state.value.networkFailures);
+        }
+        assertEquals("SF", coordinator.recognize("SF1234567890", null).candidates.get(0).standardCode);
+        assertEquals(2, calls.get());
+    }
+    @Test public void sameWaybillSharesPendingWorkAcrossCoordinators() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch duplicate = new CountDownLatch(1);
+        AtomicInteger publicCalls = new AtomicInteger();
+        AtomicInteger classifyCalls = new AtomicInteger();
+        KeyedState state = new KeyedState();
+        Kuaidi100CarrierDetector.Transport transport = (url, cancellation) -> {
+            if (publicCalls.incrementAndGet() > 1) duplicate.countDown();
+            started.countDown();
+            assertTrue(release.await(5, TimeUnit.SECONDS));
+            return response(new JSONArray());
+        };
+        ExpressGatewayTransport gateway = gateway((path, payload) -> {
+            classifyCalls.incrementAndGet();
+            return response(new JSONObject().put("auto", new JSONArray().put(
+                    new JSONObject().put("comCode", "shunfeng"))));
+        });
+        CarrierRecognitionCoordinator first = coordinator(transport, gateway, state, () -> 1_000L);
+        CarrierRecognitionCoordinator second = coordinator(transport, gateway, state, () -> 1_000L);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<CarrierRecognitionCoordinator.Outcome> owner = pool.submit(
+                    () -> first.recognize("SF1234567890", null));
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            Future<CarrierRecognitionCoordinator.Outcome> follower = pool.submit(
+                    () -> second.recognize("sf123-4567890", null));
+            duplicate.await(300, TimeUnit.MILLISECONDS);
+            release.countDown();
+            assertEquals("SF", owner.get(3, TimeUnit.SECONDS).candidates.get(0).standardCode);
+            assertEquals("SF", follower.get(3, TimeUnit.SECONDS).candidates.get(0).standardCode);
+            assertEquals(1, publicCalls.get());
+            assertEquals(1, classifyCalls.get());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
     @Test
     public void pendingRecognitionPreservesFailuresAndWaitsWithoutProviderCalls() throws Exception {
         long[] now = {1_000L};
@@ -259,11 +511,11 @@ public final class CarrierRecognitionCoordinatorTest {
         CarrierRecognitionCoordinator.Snapshot value =
                 CarrierRecognitionCoordinator.Snapshot.empty();
 
-        @Override public CarrierRecognitionCoordinator.Snapshot load(String identity) {
+        @Override public synchronized CarrierRecognitionCoordinator.Snapshot load(String identity) {
             return value;
         }
 
-        @Override public void save(
+        @Override public synchronized void save(
                 String identity, CarrierRecognitionCoordinator.Snapshot snapshot) {
             value = snapshot;
         }
@@ -273,12 +525,12 @@ public final class CarrierRecognitionCoordinatorTest {
         private final Map<String, CarrierRecognitionCoordinator.Snapshot> values =
                 new HashMap<>();
 
-        @Override public CarrierRecognitionCoordinator.Snapshot load(String identity) {
+        @Override public synchronized CarrierRecognitionCoordinator.Snapshot load(String identity) {
             return values.getOrDefault(
                     identity, CarrierRecognitionCoordinator.Snapshot.empty());
         }
 
-        @Override public void save(
+        @Override public synchronized void save(
                 String identity, CarrierRecognitionCoordinator.Snapshot snapshot) {
             values.put(identity, snapshot);
         }

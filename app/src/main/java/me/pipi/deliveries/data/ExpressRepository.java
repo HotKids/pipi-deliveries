@@ -2784,7 +2784,7 @@ public final class ExpressRepository {
                         me.pipi.deliveries.feature.express.ExpressOrderTextIdentity.fromTracksJson(
                                 result.tracksJson, current.waybill);
                 if (identity != null) {
-                    if (!saveOrderProjection(current, "interface5", identity.waybill, "", false)) return false;
+                    if (!saveOrderProjection(current, "interface5", identity.waybill, identity.companyName, false)) return false;
 
                 }
             }
@@ -3111,7 +3111,12 @@ public final class ExpressRepository {
         values.put("cpCode", courierCode);
         values.put("cpName", companyName);
         CarrierNormalization normalization = result.carrierNormalization;
-        if (preserveSameOwnerRoute && target != null && !normalization.present()) {
+        // Recognized carrier identity belongs to the waybill, not the account route.
+        if (target != null
+                && ExpressSourcePolicy.normalizeWaybill(target.waybill).equals(
+                        ExpressSourcePolicy.normalizeWaybill(result.waybill))
+                && ((target.carrierNormalization.recognized() && !normalization.recognized())
+                        || (preserveSameOwnerRoute && !normalization.present()))) {
             normalization = target.carrierNormalization;
         }
         values.put("carrierStandardCode", normalization.standardCode);
@@ -5341,14 +5346,22 @@ public final class ExpressRepository {
                         ExpressSourcePolicy.bindingSourceForOwner(lockedOwner))) return false;
                 OrderProjection existing = orderProjection(
                         db, locked.waybill, selectedBindingSource);
+                boolean sameWaybill = normalizedDisplay.equals(
+                        ExpressSourcePolicy.normalizeWaybill(existing.waybill));
+                CarrierRegistry.Carrier existingCarrier = sameWaybill
+                        ? projectedCarrier(normalizedDisplay, existing.companyName) : null;
+                CarrierRegistry.Carrier incomingCarrier = projectedCarrier(normalizedDisplay, companyName);
+                String projectedCarrier = existingCarrier != null ? existingCarrier.companyName
+                        : incomingCarrier != null ? incomingCarrier.companyName
+                        : clean(companyName).isEmpty() && sameWaybill ? existing.companyName
+                        : clean(companyName);
                 ContentValues values = new ContentValues();
                 values.put("normalized_source_id", normalizedSource);
                 values.put("binding_source", selectedBindingSource);
                 values.put("source_id", locked.waybill);
                 values.put("display_waybill", clean(displayWaybill));
                 values.put("normalized_display_waybill", normalizedDisplay);
-                values.put("carrier_name", clean(companyName).isEmpty()
-                        ? existing.companyName : clean(companyName));
+                values.put("carrier_name", projectedCarrier);
                 // The isolated order page contributes display identity only. Its page timeline is
                 // deliberately not mixed into the one selected local provider timeline.
                 values.put("tracks_json", "[]");
@@ -5377,8 +5390,6 @@ public final class ExpressRepository {
                 if (retryRows != 1) {
                     throw new IllegalStateException("Order projection owner changed");
                 }
-                String projectedCarrier = clean(companyName).isEmpty()
-                        ? existing.companyName : clean(companyName);
                 String generation = bindingGeneration(
                         db, locked.phone, selectedBindingSource);
                 if (!projectedCarrier.isEmpty() && !generation.isEmpty()) {
@@ -5425,12 +5436,30 @@ public final class ExpressRepository {
         return saved;
     }
 
-    /** Fills only a missing projected display carrier after shared Worker recognition. */
+    private static CarrierRegistry.Carrier projectedCarrier(String waybill, String companyName) {
+        CarrierRegistry.Carrier carrier = CarrierRegistry.resolveName(companyName);
+        return carrier != null && "JD".equals(carrier.standardCode)
+                && !ExpressSourcePolicy.normalizeWaybill(waybill).startsWith("JD") ? null : carrier;
+    }
+
+    /** Carrier recognition is independent of a same-order route or raw-carrier refresh. */
+    private static boolean sameProjectedCarrierOwner(ExpressItem expected, ExpressItem current) {
+        if (current == null || !current.isAccountOrder() || current.rowId != expected.rowId
+                || !current.phone.equals(expected.phone)) return false;
+        String expectedOwner = expected.stateOwner.isEmpty() ? expected.source : expected.stateOwner;
+        String currentOwner = current.stateOwner.isEmpty() ? current.source : current.stateOwner;
+        return ExpressSourcePolicy.normalizeWaybill(current.waybill).equals(
+                ExpressSourcePolicy.normalizeWaybill(expected.waybill))
+                && ExpressSourcePolicy.bindingSourceForOwner(currentOwner).equals(
+                        ExpressSourcePolicy.bindingSourceForOwner(expectedOwner));
+    }
+
+    /** Repairs an unresolved projection without replacing a known carrier on the same waybill. */
     public boolean saveOrderProjectionCarrier(
             ExpressItem expectedOwner, String bindingSource, String projectedWaybill,
             String companyName) {
         if (expectedOwner == null || !expectedOwner.isAccountOrder()) return false;
-        CarrierRegistry.Carrier carrier = CarrierRegistry.resolveName(companyName);
+        CarrierRegistry.Carrier carrier = projectedCarrier(projectedWaybill, companyName);
         if (carrier == null) return false;
         String normalizedDisplay = ExpressSourcePolicy.normalizeWaybill(projectedWaybill);
         String expectedDisplay = ExpressSourcePolicy.normalizeWaybill(
@@ -5439,22 +5468,18 @@ public final class ExpressRepository {
         if (normalizedDisplay.isEmpty() || !normalizedDisplay.equals(expectedDisplay)) {
             return false;
         }
-        ExpressOrderProjectionIdentity.Snapshot expectedIdentity =
-                ExpressOrderProjectionIdentity.snapshot(expectedOwner);
         ExpressItem previous;
         ExpressItem current;
         boolean saved = false;
         synchronized (this) {
             ExpressItem before = findRaw(expectedOwner.rowId);
-            if (!ExpressOrderProjectionIdentity.matches(expectedIdentity, before)
-                    || !before.isAccountOrder()) return false;
+            if (!sameProjectedCarrierOwner(expectedOwner, before)) return false;
             previous = projectTimelineAuthorities(before);
             SQLiteDatabase db = database();
             db.beginTransaction();
             try {
                 ExpressItem locked = findRaw(db, expectedOwner.rowId);
-                if (!ExpressOrderProjectionIdentity.matches(expectedIdentity, locked)
-                        || !locked.isAccountOrder()) return false;
+                if (!sameProjectedCarrierOwner(expectedOwner, locked)) return false;
                 String lockedOwner = locked.stateOwner.isEmpty()
                         ? locked.source : locked.stateOwner;
                 if (!selectedBindingSource.equals(
@@ -5463,7 +5488,7 @@ public final class ExpressRepository {
                         db, locked.waybill, selectedBindingSource);
                 if (!normalizedDisplay.equals(
                         ExpressSourcePolicy.normalizeWaybill(projection.waybill))) return false;
-                if (CarrierRegistry.resolveName(projection.companyName) != null) return false;
+                if (projectedCarrier(normalizedDisplay, projection.companyName) != null) return false;
                 ContentValues values = new ContentValues();
                 values.put("carrier_name", carrier.companyName);
                 values.put("updated_at", System.currentTimeMillis());
@@ -5490,8 +5515,8 @@ public final class ExpressRepository {
     /**
      * Fills the display-only carrier normalization of one account row the Worker's built-in-table
      * sidecar left unresolved (EXPRESS_OWNERSHIP_PLAN §3.1 裁决 A, 2026-09-03). Raw carrier
-     * fields, status and routes never change; the row must still carry the same waybill and raw
-     * carrier code it was recognised for.
+     * fields, status and routes never change; the row must still carry the same real waybill.
+     * Account feeds can replace an empty carrier code with a platform label during recognition.
      */
     public boolean saveRecognizedCarrier(
             ExpressItem expected, CarrierNormalization normalization) {
@@ -5505,8 +5530,7 @@ public final class ExpressRepository {
             ExpressItem before = findRaw(expected.rowId);
             if (before == null || before.isAccountOrder() || before.manuallyAdded
                     || !ExpressSourcePolicy.normalizeWaybill(before.waybill).equals(
-                            ExpressSourcePolicy.normalizeWaybill(expected.waybill))
-                    || !before.courierCode.equals(expected.courierCode)) return false;
+                            ExpressSourcePolicy.normalizeWaybill(expected.waybill))) return false;
             previous = projectTimelineAuthorities(before);
             SQLiteDatabase db = database();
             db.beginTransaction();

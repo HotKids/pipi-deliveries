@@ -1740,7 +1740,7 @@ public final class ExpressRepositoryDatabaseTest {
                 order, "interface5", "SFPROJECT00004", ""));
         ExpressItem projected = repository.find(order.rowId);
         assertNotNull(projected);
-        assertEquals("快递", projected.displayCompany());
+        assertEquals("", projected.displayCompany());
         assertEquals("", projected.displayCourierCode());
 
         assertFalse(repository.saveOrderProjectionCarrier(
@@ -1749,7 +1749,7 @@ public final class ExpressRepositoryDatabaseTest {
                 projected, "interface6", "SFPROJECT00004", "顺丰速运"));
         assertFalse(repository.saveOrderProjectionCarrier(
                 projected, "interface5", "SFPROJECT00005", "顺丰速运"));
-        assertEquals("快递", repository.find(order.rowId).displayCompany());
+        assertEquals("", repository.find(order.rowId).displayCompany());
 
         assertTrue(repository.saveOrderProjectionCarrier(
                 projected, "interface5", "SFPROJECT00004", "顺丰速运"));
@@ -2930,6 +2930,39 @@ public final class ExpressRepositoryDatabaseTest {
         assertEquals("pipi-route:v5", transferred.detailUrl);
         assertEquals("v5", transferred.routeInterface);
         assertFalse("pipi-route:v6".equals(transferred.detailUrl));
+    }
+
+    @Test
+    public void sameWaybillOwnerTransferRetainsRecognizedCarrier() {
+        String waybill = "SF1221489425261";
+        String phone6 = "13910000104";
+        String phone5 = "13810000104";
+        repository.bindPhoneLocally(phone6, "interface6");
+        repository.bindPhoneLocally(phone5, "interface5");
+        String generation6 = repository.bindingGeneration(phone6, "interface6");
+        repository.saveAutomaticObservation(
+                automaticPacket(waybill, phone6, "interface6", "RAW", "Upstream",
+                        StatusSemantic.TRANSIT, "First source", "[]", "CaiNiao", "v6")
+                        .withCarrierNormalization(new CarrierNormalization(
+                                "SF", "顺丰速运", "shunfeng", true, "builtin")),
+                phone6, ExpressSourcePolicy.SOURCE_INTERFACE6, generation6, 1_000L);
+        ExpressItem owner = repository.findByWaybill(waybill, "interface6");
+        assertNotNull(owner);
+        assertEquals("顺丰速运", owner.displayCompany());
+        repository.saveAutomaticObservation(
+                automaticPacket(waybill, phone5, "interface5", "RAW", "Upstream",
+                        StatusSemantic.TRANSIT, "Second source", "[]", "CaiNiao", "v5"),
+                phone5, ExpressSourcePolicy.SOURCE_INTERFACE5,
+                repository.bindingGeneration(phone5, "interface5"), 2_000L);
+
+        repository.recordAutomaticRefreshExecuted(
+                ExpressSourcePolicy.SOURCE_INTERFACE6, seenByGeneration(generation6), 3_000L);
+
+        ExpressItem transferred = repository.findByWaybill(waybill, "interface5");
+        assertEquals("INTERFACE5", transferred.stateOwner);
+        assertEquals("pipi-route:v5", transferred.detailUrl);
+        assertEquals("顺丰速运", transferred.displayCompany());
+        assertEquals("SF", transferred.carrierNormalization.standardCode);
     }
 
     @Test

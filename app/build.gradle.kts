@@ -31,7 +31,7 @@ fun quoted(value: String): String = "\"" + value
 fun localValueOrDefault(environment: String, property: String, fallback: String): String =
     localValue(environment, property).ifBlank { fallback }
 
-val releaseVersionNameDefault = "1.3.5"
+val releaseVersionNameDefault = "1.3.6"
 val releaseVersionName = providers.environmentVariable("DELIVERIES_VERSION_NAME")
     .orNull?.trim().orEmpty().ifBlank { releaseVersionNameDefault }
 val versionMatch = Regex("""(\d+)\.(\d+)\.(\d+)(?:-beta(\d+))?""")
