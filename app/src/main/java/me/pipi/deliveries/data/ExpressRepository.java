@@ -4937,20 +4937,25 @@ public final class ExpressRepository {
         WorkerStatusProjection ownerStatus = WorkerStatusProjection.cached(owner.tracksJson);
         int ownerPriority = ownerStatus != null && ownerStatus.matches(owner.semantic, owner.statusEventTime)
                 ? ownerStatus.priority : 0;
-        int queryPriority = WorkerStatusProjection.priority(query);
-        boolean sameSemantic = query.semantic == owner.semantic;
+        // A newer query does not establish a carrier waybill; retain the owning order phase.
+        StatusSemantic querySemantic = ExpressSourcePolicy.accountOrderPresentationSemantic(
+                owner.stateOwner.isEmpty() ? owner.source : owner.stateOwner,
+                owner.projectedWaybill, query.semantic);
+        boolean orderPhase = querySemantic != query.semantic;
+        int queryPriority = orderPhase ? 0 : WorkerStatusProjection.priority(query);
+        boolean sameSemantic = querySemantic == owner.semantic;
         boolean takeStatus = sameAccount && ManualTimelineAuthorityPolicy.hasStructuredStatus(query)
                 && (!sameSemantic || queryPriority >= ownerPriority)
                 && (query.statusEventTime > owner.statusEventTime || sameSemantic && queryPriority > ownerPriority)
-                && !(owner.semantic.terminal() && !query.semantic.terminal());
+                && !(owner.semantic.terminal() && !querySemantic.terminal());
         if (!takeActivity && !takeStatus) return owner;
         return new ExpressItem(
                 owner.rowId, owner.phone, owner.waybill, owner.courierCode, owner.companyName,
-                takeStatus ? query.semantic : owner.semantic,
-                takeStatus ? query.statusDescription : owner.statusDescription,
+                takeStatus ? querySemantic : owner.semantic,
+                takeStatus ? orderPhase ? querySemantic.label : query.statusDescription : owner.statusDescription,
                 takeActivity ? latest.detail : owner.latestDetail,
                 takeActivity ? latest.time : owner.latestTime,
-                WorkerStatusProjection.attach(owner.tracksJson, takeStatus ? query.workerStatus
+                WorkerStatusProjection.attach(owner.tracksJson, takeStatus ? orderPhase ? null : query.workerStatus
                         : WorkerStatusProjection.cached(owner.tracksJson)),
                 owner.remark, owner.source, owner.detailUrl,
                 takeStatus ? query.statusEventTime : owner.statusEventTime, owner.updatedAt,

@@ -515,10 +515,10 @@ export function parcelToShipment(
     semantic = semanticFromText(latest.detail);
   }
   if (
-    !parcel.normalizedStatus && unprojectedOrder &&
+    unprojectedOrder &&
     (
       semantic === "PICKED" ||
-      semanticFromText(parcel.latestDetail) === "PICKED"
+      (!parcel.normalizedStatus && semanticFromText(parcel.latestDetail) === "PICKED")
     )
   ) {
     semantic = "ORDERED";
@@ -541,7 +541,8 @@ export function parcelToShipment(
     courierCode,
     companyName,
     semantic,
-    ...(parcel.normalizedStatus ? { normalizedStatus: parcel.normalizedStatus } : {}),
+    // Order identity still owns presentation until a carrier waybill is resolved.
+    ...(parcel.normalizedStatus?.semantic === semantic ? { normalizedStatus: parcel.normalizedStatus } : {}),
     structuredStatus: parcel.normalizedStatus?.structured ?? (semantic !== "UNKNOWN" && semantic === (
       parcel.source === "interface5"
         ? semanticFromAccountState(parcel.sourceStateCode, "")

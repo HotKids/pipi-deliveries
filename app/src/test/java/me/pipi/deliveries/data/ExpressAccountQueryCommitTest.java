@@ -11,6 +11,7 @@ import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.model.ManualQuerySuccess;
+import me.pipi.deliveries.model.WorkerStatusProjection;
 
 import org.junit.After;
 import org.junit.Before;
@@ -156,6 +157,69 @@ public final class ExpressAccountQueryCommitTest {
             assertEquals(owner.tracksJson, shown.tracksJson);
         }
         assertEquals(StatusSemantic.UNKNOWN, repository.automaticSourceTimeline(owner).semantic);
+    }
+
+    @Test public void newerPickupQueryKeepsUnprojectedOrderPhase() throws Exception {
+        verifyNewerOrderQuery(StatusSemantic.PICKED, false, StatusSemantic.ORDERED);
+    }
+
+    @Test public void newerShippedQueryKeepsUnprojectedOrderPhase() throws Exception {
+        verifyNewerOrderQuery(StatusSemantic.SHIPPED, false, StatusSemantic.ORDERED);
+    }
+
+    @Test public void newerPickupQueryAdvancesProjectedShipment() throws Exception {
+        verifyNewerOrderQuery(StatusSemantic.PICKED, true, StatusSemantic.PICKED);
+    }
+
+    @Test public void newerPickupQueryCannotRegressCompletedOrder() throws Exception {
+        verifyNewerOrderQuery(StatusSemantic.PICKED, false, StatusSemantic.COMPLETED);
+    }
+
+    private void verifyNewerOrderQuery(StatusSemantic queryStatus, boolean projected,
+            StatusSemantic expected) throws Exception {
+        String feedTime = time(120000), queryTime = time(60000);
+        StatusSemantic initial = expected == StatusSemantic.COMPLETED
+                ? StatusSemantic.COMPLETED : StatusSemantic.ORDERED;
+        ExpressQueryResult feed = workerResult(initial, feedTime, "Feed event");
+        repository.saveInterface5OrderSummary(feed, phone);
+        ExpressItem owner = repository.findByWaybill(order, "interface5");
+        if (projected) {
+            assertTrue(repository.saveOrderProjection(owner, "interface5", real, "京东快递"));
+            owner = repository.find(owner.rowId);
+        }
+        ExpressQueryResult query = workerResult(queryStatus, queryTime, "New query event");
+        assertTrue(repository.saveInterface5Query(query, owner,
+                repository.bindingGeneration(phone, "interface5")));
+        long rowId = owner.rowId;
+        database.close();
+        database = new ExpressDatabase(context);
+        repository = new ExpressRepository(context, database);
+        for (ExpressItem shown : new ExpressItem[]{repository.find(rowId),
+                repository.listVisible("interface5").get(0)}) {
+            assertEquals(expected, shown.semantic);
+            assertEquals(expected == StatusSemantic.COMPLETED ? "已完成" : expected.label,
+                    shown.displayStatus());
+            assertEquals(projected ? real : "", shown.projectedWaybill);
+            assertEquals(initial, shown.sourceSemantic);
+            if (expected != StatusSemantic.COMPLETED) {
+                assertEquals(query.statusEventTime, shown.statusEventTime);
+                assertEquals(query.latestDetail, shown.latestDetail);
+                WorkerStatusProjection status = WorkerStatusProjection.cached(shown.tracksJson);
+                assertTrue(status == null || status.matches(shown.semantic, shown.statusEventTime));
+            }
+        }
+        assertEquals(queryStatus, repository.accountTimeline(order, "interface5").semantic);
+        assertEquals(queryStatus, repository.accountTimeline(order, "interface5").workerStatus.semantic);
+    }
+
+    private ExpressQueryResult workerResult(StatusSemantic state, String stamp, String detail)
+            throws Exception {
+        org.json.JSONObject status = new org.json.JSONObject().put("version", 1)
+                .put("scope", "ORDER").put("semantic", state.name()).put("code", state.name())
+                .put("text", state.label).put("priority", 0).put("structured", true)
+                .put("eventAtMs", ExpressSourcePolicy.parseEventTime(stamp));
+        return result(order, state, stamp, detail, tracks(stamp, detail)).withWorkerStatus(
+                WorkerStatusProjection.read(new org.json.JSONObject().put("normalizedStatus", status)));
     }
 
     @Test

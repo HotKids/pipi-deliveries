@@ -46,6 +46,10 @@ export function shipmentPresentationStatus(
 ): Readonly<{ semantic: StatusSemantic; text: string }> {
   const projection = timelineNormalizedStatus(shipment.timeline);
   if (projection) {
+    if (shipment.identity.accountOrder && !normalizedProjectedWaybill(shipment.identity) &&
+        projection.semantic === "PICKED") {
+      return { semantic: "ORDERED", text: statusLabel("ORDERED") };
+    }
     const signedWaybill = projection.scope === "ORDER" && projection.semantic === "COMPLETED" &&
       !shipment.identity.manuallyAdded && shipment.identity.bindingSource === "interface5" &&
       String(shipment.identity.sourceProvider || "").toLowerCase() === "jingdong" &&

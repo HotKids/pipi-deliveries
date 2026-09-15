@@ -339,6 +339,9 @@ function applyEmptyTimelineRetirements(
       ));
     if (!matches.length) return [shipment];
     const hiddenAtMs = Math.min(...matches.map((item) => item.hiddenAtMs));
+    // A new manual submission is a new owner; old generations and automatic imports stay retired.
+    if (shipment.identity.manuallyAdded && shipment.identity.createdAtMs <= now &&
+        matches.every((item) => shipment.identity.createdAtMs > item.hiddenAtMs)) return [shipment];
     return now - hiddenAtMs >= EMPTY_TIMELINE_HIDDEN_MS ? []
       : [{ ...shipment, emptyTimelineHiddenAtMs: hiddenAtMs }];
   });
