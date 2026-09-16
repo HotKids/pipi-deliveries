@@ -53,7 +53,7 @@ public final class GatewayHttpErrorsTest {
     }
 
     @Test
-    public void malformedSuccessPayloadUsesOnlyTheCallerFallback() {
+    public void malformedSuccessPayloadUsesOnlyTheCallerFallback() throws Exception {
         try {
             GatewayHttpErrors.parseObject(response(200, "<html>internal failure</html>"),
                     "查询失败，请稍后重试");

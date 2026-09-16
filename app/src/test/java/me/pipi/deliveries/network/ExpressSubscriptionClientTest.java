@@ -13,6 +13,22 @@ import org.junit.Test;
 
 public final class ExpressSubscriptionClientTest {
     @Test
+    public void normalizedPhoneChallengeSurvivesTheManualQueryRound() throws Exception {
+        String body = new JSONObject().put("normalizedError", new JSONObject()
+                .put("version", 1).put("code", "phone_verification_required")).toString();
+        try {
+            ManualQueryCoordinator.queryOnlineFirst(
+                    () -> ExpressSubscriptionClient.parseManualResponse(body, "TEST123456"),
+                    null, null, false);
+            org.junit.Assert.fail("Expected the phone input challenge");
+        } catch (Exception failure) {
+            assertTrue(failure instanceof ExpressApi.QueryException);
+            assertTrue(((ExpressApi.QueryException) failure).needsPhoneTail());
+            assertEquals(false, ((ExpressApi.QueryException) failure).phoneTailMismatch());
+        }
+    }
+
+    @Test
     public void manualResponseDerivesHeadlineFromTimelineArray() throws Exception {
         JSONObject result = new JSONObject()
                 .put("nu", "TEST123456")

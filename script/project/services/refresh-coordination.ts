@@ -257,7 +257,8 @@ export class RefreshCoordinator<Source, DetailKey, DetailResult, FullResult> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     // Per-stage requests still have their own budgets; ownership also bounds suspended waiters.
     if (Number.isFinite(expiresAtMs)) {
-      timeout = setTimeout(abortLease, Math.max(0, expiresAtMs - Date.now()));
+      // Timer delivery is deadline evidence even before the next wall-clock tick.
+      timeout = setTimeout(() => abortLease(expiresAtMs), Math.max(0, expiresAtMs - Date.now()));
     }
     const guarded = Promise.race([work, cancelled]);
     promise = guarded.finally(() => {

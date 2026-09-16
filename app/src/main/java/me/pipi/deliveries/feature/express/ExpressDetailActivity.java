@@ -136,6 +136,10 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private TextView hotlineView;
     private ExpressItem item;
     private DetailState detailState;
+    private Future<?> initialDetailTask;
+    private int initialDetailGeneration;
+    private boolean initialDetailShown;
+    private boolean detailStarted;
 
     private static final class DetailState {
         final ExpressItem owner;
@@ -262,11 +266,52 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     getIntent().getStringExtra(EXTRA_PREVIEW_BINDING_SOURCE))
                     ? "interface5" : "interface6";
             item = previewItem(previewResult);
-        } else {
-            item = ExpressRepository.get(this).find(
-                    getIntent().getLongExtra(EXTRA_ROW_ID, 0L));
         }
-        showInitialDetail();
+    }
+
+    private void loadInitialDetail() {
+        int generation = ++initialDetailGeneration;
+        long rowId = getIntent().getLongExtra(EXTRA_ROW_ID, 0L);
+        ExpressItem preview = item;
+        String bindingSource = ExpressAccountSource.bindingSource(this);
+        initialDetailTask = worker.submit(() -> {
+            try {
+                ExpressRepository repository = ExpressRepository.get(getApplicationContext());
+                ExpressItem owner = preview == null ? repository.find(rowId) : preview;
+                DetailState snapshot = owner == null ? null
+                        : new DetailState(repository, owner, bindingSource);
+                runOnUiThread(() -> {
+                    if (!initialDetailIsCurrent(generation)) return;
+                    initialDetailTask = null;
+                    if (!bindingSource.equals(ExpressAccountSource.bindingSource(this))) {
+                        finish();
+                        return;
+                    }
+                    item = owner;
+                    detailState = snapshot;
+                    initialDetailShown = true;
+                    showInitialDetail();
+                });
+            } catch (RuntimeException failure) {
+                runOnUiThread(() -> {
+                    if (!initialDetailIsCurrent(generation)) return;
+                    initialDetailTask = null;
+                    Toast.makeText(this, ExpressToastCopy.STATE_LOAD_FAILED, Toast.LENGTH_SHORT).show();
+                    finish();
+                });
+            }
+        });
+    }
+
+    private boolean initialDetailIsCurrent(int generation) {
+        return detailStarted && generation == initialDetailGeneration
+                && !isFinishing() && !isDestroyed();
+    }
+
+    private void cancelInitialDetailLoad() {
+        initialDetailGeneration++;
+        if (initialDetailTask != null) initialDetailTask.cancel(true);
+        initialDetailTask = null;
     }
 
     private void showInitialDetail() {
@@ -274,8 +319,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             finish();
             return;
         }
-        detailState = new DetailState(ExpressRepository.get(this), item,
-                ExpressAccountSource.bindingSource(this));
         boolean transientOnlinePreview = getIntent().getBooleanExtra(
                 EXTRA_TRANSIENT_ONLINE_PREVIEW, false);
         String cainiaoUrl = transientOnlinePreview ? "" : safeCainiaoUrl(item);
@@ -309,6 +352,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     @Override protected void onStop() {
+        detailStarted = false;
+        cancelInitialDetailLoad();
         cancelFirstManualQuery();
         if (presentationCancellation != null) presentationCancellation.cancel();
         presentationCancellation = null;
@@ -325,6 +370,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     @Override protected void onStart() {
         super.onStart();
+        detailStarted = true;
+        if (!initialDetailShown && initialDetailTask == null) loadInitialDetail();
         if (restartLocalRefreshOnStart) {
             restartLocalRefreshOnStart = false;
             restartLocalTimelineRefreshIfNeeded();
@@ -1539,6 +1586,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     @Override protected void onDestroy() {
+        detailStarted = false;
+        cancelInitialDetailLoad();
         cancelFirstManualQuery();
         if (presentationCancellation != null) presentationCancellation.cancel();
         presentationCancellation = null;

@@ -43,7 +43,8 @@ final class GatewayHttpErrors {
                 message.isEmpty() ? cleanFallback(fallback) : message);
     }
 
-    static JSONObject parseObject(HttpClient.Response response, String fallback) {
+    static JSONObject parseObject(HttpClient.Response response, String fallback)
+            throws ExpressApi.QueryException {
         try {
             JSONObject result = new JSONObject(response == null ? "" : response.utf8());
             checkNormalizedError(result, fallback);
@@ -53,14 +54,15 @@ final class GatewayHttpErrors {
         }
     }
 
-    static void checkNormalizedError(JSONObject payload, String fallback) {
+    static void checkNormalizedError(JSONObject payload, String fallback)
+            throws ExpressApi.QueryException {
         JSONObject error = payload == null ? null : payload.optJSONObject("normalizedError");
         if (error == null || error.optInt("version") != 1) return;
         String code = error.optString("code", "");
         String message;
         switch (code) {
             case "phone_verification_required":
-                message = "请输入收件人手机号后四位"; break;
+                throw ExpressApi.QueryException.phoneTailRequired("请输入收件人手机号后四位");
             case "upstream_business_error":
             default: message = cleanFallback(fallback);
         }

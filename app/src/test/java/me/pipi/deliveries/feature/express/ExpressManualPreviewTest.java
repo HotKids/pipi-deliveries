@@ -23,11 +23,50 @@ import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.network.ExpressAccountSource;
+import me.pipi.deliveries.network.ExpressApi;
 import me.pipi.deliveries.network.ExpressQueryCancellation;
 
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 35, manifest = Config.NONE, application = Application.class)
 public final class ExpressManualPreviewTest {
+    @Test
+    public void phoneChallengeReturnsToTheInputFormWithoutPersistingAPendingQuery() throws Exception {
+        Context context = RuntimeEnvironment.getApplication();
+        String source = ExpressAccountSource.bindingSource(context);
+        ExpressQueryResult preview = result("运输中", "v6_query");
+        ActivityController<ExpressDetailActivity> controller = Robolectric.buildActivity(
+                ExpressDetailActivity.class, ExpressDetailActivity.transientOnlinePreviewIntent(
+                        context, preview, "", source));
+        ExpressDetailActivity activity = controller.get();
+        activity.setTheme(R.style.AppTheme);
+        controller.create().start().resume();
+        try {
+            ((java.util.concurrent.ExecutorService) field(activity, "worker", null))
+                    .submit(() -> { }).get(3, java.util.concurrent.TimeUnit.SECONDS);
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+            ExpressQueryCancellation cancellation = new ExpressQueryCancellation(15000L);
+            field(activity, "firstManualQueryCancellation", cancellation);
+            field(activity, "firstManualQueryInFlight", true);
+            Method fail = ExpressDetailActivity.class.getDeclaredMethod("failFirstManualQuery",
+                    Exception.class, String.class, String.class, ExpressQueryCancellation.class);
+            fail.setAccessible(true);
+            fail.invoke(activity, ExpressApi.QueryException.phoneTailRequired("phone required"),
+                    preview.waybill, "ZTO", cancellation);
+            assertTrue(activity.isFinishing());
+            org.robolectric.shadows.ShadowActivity shadow = org.robolectric.Shadows.shadowOf(activity);
+            assertEquals(ExpressDetailActivity.RESULT_PHONE_TAIL_REQUIRED, shadow.getResultCode());
+            assertEquals(preview.waybill, shadow.getResultIntent().getStringExtra(
+                    ExpressDetailActivity.EXTRA_RETRY_WAYBILL));
+            assertEquals("ZTO", shadow.getResultIntent().getStringExtra(
+                    ExpressDetailActivity.EXTRA_RETRY_COURIER));
+            assertFalse(shadow.getResultIntent().getBooleanExtra(
+                    ExpressDetailActivity.EXTRA_RETRY_MISMATCH, true));
+            assertNull(ExpressRepository.get(context).findByWaybill(preview.waybill, source));
+        } finally {
+            controller.pause().stop().destroy();
+        }
+    }
+
     @Test
     public void partialShowsFooterCompleteHidesItAndStoppedPageRejectsLatePreview() throws Exception {
         Context context = RuntimeEnvironment.getApplication();

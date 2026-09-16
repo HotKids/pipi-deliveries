@@ -26,12 +26,19 @@ export async function reloadAndRefreshOnResume(
   details: AppResumeDetails,
   dependencies: Readonly<{
     load: () => AppState;
+    onLoadFailed: (error: unknown) => void;
     applyPersisted: (state: AppState, shipmentId: string) => void;
     refresh: () => Promise<RefreshSummary>;
     applyRefreshed: (state: AppState) => void;
   }>,
 ): Promise<void> {
-  const persisted = dependencies.load();
+  let persisted: AppState;
+  try {
+    persisted = dependencies.load();
+  } catch (error) {
+    dependencies.onLoadFailed(error);
+    return;
+  }
   dependencies.applyPersisted(persisted, resumeShipmentId(details));
   try {
     const summary = await dependencies.refresh();

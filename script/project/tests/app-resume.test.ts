@@ -59,6 +59,7 @@ await reloadAndRefreshOnResume(
     },
   },
   {
+    onLoadFailed: () => assert.fail("unexpected load failure"),
     load: () => {
       events.push("load");
       return persisted;
@@ -90,6 +91,7 @@ assert.deepEqual(events, [
 
 const failureEvents: string[] = [];
 await reloadAndRefreshOnResume({}, {
+  onLoadFailed: () => assert.fail("unexpected load failure"),
   load: () => persisted,
   applyPersisted: () => failureEvents.push("persisted"),
   refresh: async () => {
@@ -99,6 +101,23 @@ await reloadAndRefreshOnResume({}, {
   applyRefreshed: () => failureEvents.push("unexpected"),
 });
 assert.deepEqual(failureEvents, ["persisted", "refresh"]);
+
+const loadFailure = new Error("unreadable persisted state");
+const loadFailureEvents: string[] = [];
+await reloadAndRefreshOnResume({}, {
+  load: () => { throw loadFailure; },
+  onLoadFailed: (error) => {
+    assert.equal(error, loadFailure);
+    loadFailureEvents.push("failed");
+  },
+  applyPersisted: () => assert.fail("unreadable state must not be applied"),
+  refresh: async () => {
+    loadFailureEvents.push("unexpected refresh");
+    throw new Error("must not refresh after load failure");
+  },
+  applyRefreshed: () => assert.fail("must not apply refresh after load failure"),
+});
+assert.deepEqual(loadFailureEvents, ["failed"]);
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const indexSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
@@ -113,6 +132,7 @@ assert.match(
   indexSource,
   /applyPersisted:[\s\S]*?setStartup\(\{ state: persisted \}\)[\s\S]*?setNavigationRequest/,
 );
+assert.match(indexSource, /onLoadFailed:[\s\S]*?"app.resume.failed"[\s\S]*?setStartup\(\{ state: null \}\)/);
 assert.match(indexSource, /refresh: \(\) => refreshAllShipments\(\)/);
 assert.match(
   homeSource,

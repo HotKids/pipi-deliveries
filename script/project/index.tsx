@@ -89,6 +89,10 @@ function App() {
     return Script.onResume((details) => {
       void reloadAndRefreshOnResume(details, {
         load: loadState,
+        onLoadFailed: (error) => {
+          writeDiagnostic("app.resume.failed", diagnosticErrorDetails(error), "error");
+          setStartup({ state: null });
+        },
         applyPersisted: (persisted, shipmentId) => {
           setStartup({ state: persisted });
           setNavigationRequest((current) => ({

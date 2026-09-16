@@ -1,5 +1,41 @@
 import assert from "node:assert/strict";
+import { mock } from "node:test";
 import { RefreshCoordinator } from "../services/refresh-coordination";
+
+// A native timer may fire before the next Date.now() millisecond tick.
+{
+  const coordinator = new RefreshCoordinator<string, string, string, string>();
+  const invalidations: string[] = [];
+  let fireDeadline!: () => void;
+  const clock = mock.method(Date, "now", () => 1019);
+  const timer = mock.method(globalThis, "setTimeout", (callback: () => void) => {
+    fireDeadline = callback;
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  });
+  try {
+    const started = deferred<void>();
+    const gate = deferred<string>();
+    const full = coordinator.runFull("interface5", async () => {
+      started.resolve();
+      return gate.promise;
+    }, undefined, {
+      operationDeadlineAtMs: 1020,
+      onInvalidated: reason => invalidations.push(reason),
+    });
+    const rejected = assert.rejects(full, { name: "OperationTimeoutError" });
+    await started.promise;
+    fireDeadline();
+    await rejected;
+    assert.deepEqual(invalidations, ["deadline"]);
+    assert.equal(coordinator.full("interface5"), undefined);
+    gate.resolve("late result");
+    await Promise.resolve();
+    assert.deepEqual(invalidations, ["deadline"]);
+  } finally {
+    timer.mock.restore();
+    clock.mock.restore();
+  }
+}
 
 // Deadline expiry and durable ownership loss need different diagnostic evidence.
 for (const reason of ["deadline", "ownership_lost"] as const) {
