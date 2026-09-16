@@ -4605,7 +4605,7 @@ public final class ExpressRepository {
             SQLiteDatabase db, ExpressItem item, long now) {
         if (item == null || item.signedRetainedAt > 0L
                 || item.semantic != StatusSemantic.COMPLETED) return item;
-        long anchor = ExpressLifecycleTimes.signedEvidenceAt(item, null, now);
+        long anchor = ExpressLifecycleTimes.signedAt(item, null, now);
         if (anchor <= 0L) anchor = Math.max(1L, now);
         ContentValues values = new ContentValues();
         values.put("signedRetainedAt", anchor);

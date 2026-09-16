@@ -6,9 +6,13 @@ import {
   commitRefreshState, commitTargetShipmentRefresh, emptyState, forceCompleteShipment, loadState,
   loadWidgetSnapshot, removeShipment, saveState, visibleShipments,
 } from "../services/storage.ts";
-import { shouldRefreshShipment } from "../services/status.ts";
+import { isHiddenSignedShipment, shouldRefreshShipment } from "../services/status.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
+
+function listTime(at: number): string {
+  return new Date(at + 8 * 60 * 60 * 1000).toISOString().slice(0, 19).replace("T", " ");
+}
 
 function row(kind: "account" | "manual" | "projected", at = NOW): Shipment {
   const waybill = "JD123456789000";
@@ -16,9 +20,9 @@ function row(kind: "account" | "manual" | "projected", at = NOW): Shipment {
     provider: kind === "manual" ? "v6_query" : "interface5",
     waybill, courierCode: "JD", companyName: "京东快递", complete: true,
     structuredStatus: true, semantic: "COMPLETED" as const,
-    statusEventAtMs: at, latestTimeText: "2026-09-08 14:00:00",
+    statusEventAtMs: at, latestTimeText: listTime(at),
     latestDetail: "快件已签收", successAtMs: at,
-    tracks: [{ timeText: "2026-09-08 14:00:00", timeMs: at,
+    tracks: [{ timeText: listTime(at), timeMs: at,
       detail: "快件已签收", statusCode: "3", raw: {} }],
   };
   return {
@@ -58,12 +62,14 @@ for (const kind of ["account", "manual", "projected"] as const) {
   });
 }
 
-test("a rebuilt account row cannot restart its first terminal timestamp", () => {
+test("a rebuilt account row with the same displayed date cannot restart retention", () => {
   memory.clear();
   saveState({ ...emptyState(), shipments: [row("account")] }, NOW);
   const now = NOW + 15 * DAY;
   const base = loadState(now);
-  const rebuilt = row("account", now);
+  const rebuilt = row("account");
+  rebuilt.updatedAtMs = now;
+  rebuilt.timeline.statusEventAtMs = now;
   delete rebuilt.settledAtMs;
   const state = commitRefreshState(base, { ...base, shipments: [rebuilt] }, "interface5", now).state;
   assert.equal(state.shipments[0]?.settledAtMs, NOW);
@@ -71,13 +77,15 @@ test("a rebuilt account row cannot restart its first terminal timestamp", () => 
   assert.equal(loadState(NOW + 21 * DAY).shipments.length, 0);
 });
 
-test("a signed manual detail refresh retains its original clock and history", () => {
+test("a signed manual detail refresh with the same displayed date retains its clock and history", () => {
   memory.clear();
   saveState({ ...emptyState(), shipments: [row("manual")] }, NOW);
   const now = NOW + 15 * DAY;
   const state = loadState(now);
-  const refreshed = row("manual", now);
-  refreshed.timeline.tracks = [...refreshed.timeline.tracks, ...row("manual").timeline.tracks];
+  const refreshed = row("manual");
+  refreshed.updatedAtMs = now;
+  refreshed.timeline.tracks.push({ ...refreshed.timeline.tracks[0],
+    timeMs: NOW - DAY, timeText: listTime(NOW - DAY) });
   const commit = commitTargetShipmentRefresh(state, refreshed, now);
   assert.equal(commit.applied, true);
   const saved = commit.state;
@@ -102,6 +110,77 @@ test("forced completion uses the same fourteen plus seven day lifecycle", () => 
   assert.equal(loadState(NOW + 21 * DAY).shipments.length, 0);
 });
 
+for (const kind of ["account", "manual", "projected"] as const) {
+  test(`${kind}: an old displayed date is not extended by a newer local completion clock`, () => {
+    memory.clear();
+    const shipment = row(kind);
+    shipment.settledAtMs = NOW + 15 * DAY;
+    shipment.timeline.statusEventAtMs = NOW + 15 * DAY;
+    shipment.updatedAtMs = NOW + 15 * DAY;
+    const state = saveState({ ...emptyState(), shipments: [shipment] }, NOW + 15 * DAY);
+    assert.equal(state.shipments.length, 1, "days 14–21 retain the history");
+    assert.equal(state.shipments[0].timeline.latestTimeText, "2026-09-08 14:00:00");
+    assert.equal(visibleShipments(state, NOW + 15 * DAY).length, 0,
+      "the right-side logistics date controls visibility");
+    assert.equal(loadWidgetSnapshot(NOW + 15 * DAY).rows.length, 0);
+    assert.equal(loadState(NOW + 21 * DAY).shipments.length, 0,
+      "deletion uses the same displayed date as visibility");
+  });
+
+  test(`${kind}: an older completion anchor cannot shorten a recent displayed date`, () => {
+    memory.clear();
+    const shipment = row(kind);
+    shipment.settledAtMs = NOW - 22 * DAY;
+    const state = saveState({ ...emptyState(), shipments: [shipment] }, NOW);
+    assert.equal(state.shipments.length, 1);
+    assert.equal(visibleShipments(state, NOW).length, 1);
+    assert.equal(visibleShipments(loadState(NOW + 14 * DAY), NOW + 14 * DAY).length, 0);
+    assert.equal(loadState(NOW + 21 * DAY).shipments.length, 0);
+  });
+}
+
+test("manual sign-off does not replace the displayed date or change refresh freezing", () => {
+  memory.clear();
+  const pending = row("account");
+  pending.timeline.semantic = "TRANSIT";
+  pending.timeline.latestDetail = "快件运输中";
+  pending.timeline.tracks = [{ ...pending.timeline.tracks[0], detail: "快件运输中", statusCode: "0" }];
+  saveState({ ...emptyState(), shipments: [pending] }, NOW);
+  const now = NOW + 15 * DAY;
+  const forced = forceCompleteShipment(pending.identity.id, now);
+  const shipment = forced.shipments[0];
+  assert.equal(shipment.forcedCompletedAtMs, now);
+  assert.equal(shipment.timeline.semantic, "COMPLETED");
+  assert.equal(shipment.timeline.latestTimeText, listTime(NOW));
+  assert.equal(shouldRefreshShipment(shipment, now), false);
+  assert.equal(visibleShipments(forced, now).length, 0);
+  assert.equal(loadState(NOW + 21 * DAY).shipments.length, 0);
+});
+
+test("retention interprets the list timezone and keeps raw seconds and milliseconds", () => {
+  for (const [text, eventAt] of [
+    ["2026-09-08 14:00", NOW],
+    ["2026-09-08 14:00:19.123", NOW + 19_123],
+    ["2026-09-08T06:00:19.123Z", NOW + 19_123],
+    ["2026-09-08T14:00:19.123+08:00", NOW + 19_123],
+  ] as const) {
+    const shipment = row("account");
+    shipment.timeline.latestTimeText = text;
+    shipment.settledAtMs = NOW + DAY;
+    assert.equal(isHiddenSignedShipment(shipment, eventAt + 14 * DAY - 1), false, text);
+    assert.equal(isHiddenSignedShipment(shipment, eventAt + 14 * DAY), true, text);
+  }
+});
+
+test("missing, invalid and future list dates preserve the existing completion fallback", () => {
+  for (const text of ["", "invalid", "2026-02-30 14:00:00", listTime(NOW + DAY)]) {
+    const shipment = row("account");
+    shipment.timeline.latestTimeText = text;
+    shipment.settledAtMs = NOW - 15 * DAY;
+    assert.equal(isHiddenSignedShipment(shipment, NOW), true, text);
+  }
+});
+
 test("a new query cannot extend a signed row older than twenty-one days", () => {
   memory.clear();
   for (const kind of ["account", "manual", "projected"] as const) {
@@ -117,6 +196,7 @@ test("cancelled rows keep their existing four-hour visibility and account cache"
   const cancelled = row("account");
   cancelled.timeline.semantic = "CANCELLED";
   cancelled.timeline.latestDetail = "订单已取消";
+  cancelled.timeline.latestTimeText = listTime(NOW - 15 * DAY);
   cancelled.timeline.tracks = [{ ...cancelled.timeline.tracks[0], detail: "订单已取消" }];
   saveState({ ...emptyState(), shipments: [cancelled] }, NOW);
   const hiddenAt = NOW + 4 * 60 * 60 * 1000;
@@ -202,6 +282,7 @@ test("hidden signed rows stay in the notification baseline without replaying the
       semantic: "COMPLETED" as const,
       latestDetail: "快件已签收，感谢使用",
       statusEventAtMs: shipment.identity.id === signed.identity.id ? NOW : now,
+      latestTimeText: shipment.identity.id === signed.identity.id ? listTime(NOW) : listTime(now),
     },
     updatedAtMs: now,
   }));
@@ -242,7 +323,8 @@ test("a newer event cannot publish a notification for a hidden signed owner", ()
   const incoming = initial.shipments.map((shipment) => ({
     ...shipment, sourceTimeline: undefined, updatedAtMs: now,
     timeline: { ...shipment.timeline, semantic: "COMPLETED" as const,
-      latestDetail: "快件已签收，配送服务已完成", statusEventAtMs: now },
+      latestDetail: "快件已签收，配送服务已完成", statusEventAtMs: now,
+      latestTimeText: shipment.identity.id === hidden.identity.id ? listTime(NOW) : listTime(now) },
   }));
   const committed = commitRefreshState(initial, { ...initial, shipments: incoming },
     "interface5", now, undefined, {
@@ -273,7 +355,8 @@ test("an outbox event that becomes hidden is acknowledged without blocking the n
     shipments: first.shipments.map((shipment) => shipment.identity.id === active.identity.id ? {
       ...shipment, sourceTimeline: undefined, updatedAtMs: beforeHidden + 1,
       timeline: { ...shipment.timeline, semantic: "COMPLETED" as const,
-        latestDetail: "快件已签收", statusEventAtMs: beforeHidden + 1 },
+        latestDetail: "快件已签收", statusEventAtMs: beforeHidden + 1,
+        latestTimeText: listTime(beforeHidden + 1) },
     } : shipment),
   }, "interface5", beforeHidden + 1).state;
   assert.deepEqual(queued.pendingNotifications?.map((event) => event.shipmentId), [hidden.identity.id, active.identity.id]);

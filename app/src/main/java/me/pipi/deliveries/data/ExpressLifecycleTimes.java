@@ -6,13 +6,17 @@ import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.WorkerStatusProjection;
 import me.pipi.deliveries.model.StatusSemantic;
 
-/** Recovers a trustworthy signed timestamp even when an OEM omits statusEventTime. */
+/** Keeps list retention separate from the signed evidence used to freeze refreshes. */
 final class ExpressLifecycleTimes {
     private static final long FUTURE_TOLERANCE_MS = 5L * 60L * 1000L;
 
     private ExpressLifecycleTimes() {}
 
     static long signedAt(ExpressItem item, ExpressQueryResult cached, long now) {
+        // Retention uses the same packet timestamp as the list row, independently of status freezing.
+        long displayedAt = ExpressSourcePolicy.parseEventTime(
+                item != null ? item.latestTime : cached != null ? cached.latestTime : "");
+        if (displayedAt > 0L && displayedAt <= now) return displayedAt;
         if (item != null && item.signedRetainedAt > 0L) return item.signedRetainedAt;
         return signedEvidenceAt(item, cached, now);
     }

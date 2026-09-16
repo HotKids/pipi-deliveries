@@ -176,7 +176,7 @@ export type Shipment = {
   note?: string;
   route?: ShipmentRoute | null;
   accountRecord?: AccountDetailRecord | null;
-  /** First terminal timestamp; signed rows hide at day 14 and expire at day 21. Cancelled rows hide after 4 hours. */
+  /** Stable fallback when a signed row has no valid list date; also owns the existing 4-hour cancelled window. */
   settledAtMs?: number;
   /** An empty signed history exhausted its authorized refresh; hidden for seven days. */
   emptyTimelineHiddenAtMs?: number;

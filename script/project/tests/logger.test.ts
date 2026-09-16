@@ -37,6 +37,7 @@ const {
   diagnosticText,
   readDiagnostics,
   writeDiagnostic,
+  writeDiagnosticBatch,
 } = await import("../services/logger");
 
 assert.equal(
@@ -551,3 +552,43 @@ setDiagnosticsEnabled(false);
 const diagnosticCount = readDiagnostics().length;
 writeRuntimeCapabilities("app");
 assert.equal(readDiagnostics().length, diagnosticCount);
+
+setDiagnosticsEnabled(true);
+clearDiagnostics();
+writeDiagnostic("refresh.started", { flowId: "batch-log", trigger: "list_pull" });
+const originalGet = Storage.get, originalSet = Storage.set;
+let logReads = 0, logWrites = 0;
+Storage.get = (key, ...options) => {
+  if (key === DIAGNOSTIC_KEY) logReads++;
+  return originalGet(key, ...options);
+};
+Storage.set = (key, value, ...options) => {
+  if (key === DIAGNOSTIC_KEY) logWrites++;
+  return originalSet(key, value, ...options);
+};
+try {
+  writeDiagnosticBatch("account.list.record", [
+    { flowId: "batch-log", waybillTail: "1234", result: "stored", phone: "synthetic-private-value" } as never,
+    { flowId: "batch-log", waybillTail: "5678", result: "omitted" },
+  ]);
+  assert.equal(logReads, 1);
+  assert.equal(logWrites, 1);
+  const records = readDiagnostics().filter(entry => entry.event === "account.list.record");
+  assert.deepEqual(records.map(entry => entry.details.waybillTail), ["5678", "1234"]);
+  assert.ok(records.every(entry => entry.details.trigger === "list_pull"));
+  assert.equal(diagnosticText().includes("synthetic-private-value"), false);
+  writeDiagnostic("widget.run.started", { flowId: "other-runtime" });
+  writeDiagnosticBatch("account.list.record", [{ flowId: "batch-log", waybillTail: "9012" }]);
+  assert.ok(readDiagnostics().some(entry => entry.details.flowId === "other-runtime"),
+    "each batch reads current storage instead of reusing an earlier snapshot");
+  const beforeDisabled = logWrites;
+  setDiagnosticsEnabled(false);
+  writeDiagnosticBatch("account.list.record", [{ flowId: "batch-log" }]);
+  assert.equal(logWrites, beforeDisabled);
+  setDiagnosticsEnabled(true);
+  rejectWrites = true;
+  assert.doesNotThrow(() => writeDiagnosticBatch("account.list.record", [{ flowId: "batch-log" }]));
+} finally {
+  rejectWrites = false;
+  Storage.get = originalGet; Storage.set = originalSet;
+}

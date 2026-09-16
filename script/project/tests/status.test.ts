@@ -854,7 +854,7 @@ assert.equal(
   const settled = shipment("settled-blank", "COMPLETED", NOW);
   const blank: Shipment = {
     ...settled,
-    timeline: { ...settled.timeline, statusEventAtMs: null, tracks: [] },
+    timeline: { ...settled.timeline, latestTimeText: "", statusEventAtMs: null, tracks: [] },
     updatedAtMs: NOW,
   };
   assert.equal(
@@ -867,17 +867,14 @@ assert.equal(
     1,
     "settled a minute ago stays for its retention window",
   );
-  // 倒计时只认终态戳，不许每轮拿展示包里的签收时间重算：详情页下拉把 8 天前的真实轨迹刷回来的
-  // 那一刻，这一行会当场过期被整行删掉，下一轮列表同步又把它当新件导回来——新行只有 feed 槽，
-  // 详情抓回来的整包轨迹全丢，界面成了「已签收 · 暂无物流动态」（用户 2026-09-08 报：一个个点进去
-  // 把轨迹刷新出来，关掉重新打开又回来了）。老件照旧会过期——终态戳本来就是按来源给的终态事件
-  // 时间盖的（见 stampSettledAt），feed 自己带签收时间的老件一进来就是过期的。
+  // The displayed logistics date supersedes a newer local fallback (user decision, 2026-09-16).
   const withHistory: Shipment = {
     ...blank,
     settledAtMs: NOW - 60_000,
     timeline: {
       ...blank.timeline,
       statusEventAtMs: NOW - 15 * 24 * 60 * 60 * 1000,
+      latestTimeText: new Date(NOW - 15 * 24 * 60 * 60 * 1000).toISOString(),
       tracks: [{
         timeMs: NOW - 15 * 24 * 60 * 60 * 1000,
         timeText: "",
@@ -887,13 +884,13 @@ assert.equal(
   };
   assert.equal(
     pruneShipments([withHistory], NOW).length,
-    1,
-    "a fresh settled stamp survives a detail refresh that reveals an older signature",
+    0,
+    "a fresh settled stamp cannot extend the older displayed date",
   );
   assert.equal(
     pruneShipments([{ ...withHistory, settledAtMs: undefined }], NOW).length,
     0,
-    "without a stamp the signature itself still decides",
+    "removing the fallback does not change the displayed-date cutoff",
   );
 }
 
@@ -929,7 +926,7 @@ assert.equal(
   );
 }
 
-// Terminal retention uses the source event, never a newer unrelated headline.
+// The displayed date owns retention; trusted terminal evidence still owns refresh freezing.
 {
   assert.equal(shouldRefreshShipment(shipment("just-signed", "COMPLETED", NOW), NOW), false);
   assert.equal(shouldRefreshShipment(shipment("clock-skew", "COMPLETED", NOW + 1), NOW), true);
@@ -938,7 +935,7 @@ assert.equal(
   const reminder = track("2026-08-25 12:00:00", "售后提醒", "");
   old.timeline = { ...old.timeline, latestTimeText: reminder.timeText, tracks: [reminder] };
   assert.equal(terminalEvidenceAtMs(old, NOW), old.timeline.statusEventAtMs);
-  assert.equal(pruneShipments([old], NOW).length, 0);
+  assert.equal(pruneShipments([old], NOW).length, 1);
   const unknown = { ...old, timeline: { ...old.timeline, statusEventAtMs: null } };
   assert.equal(terminalEvidenceAtMs(unknown, NOW), 0, "ordinary prose is not terminal time evidence");
   assert.equal(shouldRefreshShipment(unknown, NOW), true);

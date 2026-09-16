@@ -60,6 +60,11 @@ Access Key、手机号码绑定记录、快递列表与物流缓存均保存在�
 
 `project/` 保存可审查的 Scripting 源码，`pipi-deliveries.scripting` 为根据该源码生成的发布包。发布流程会运行行为测试、生成脚本包并核对包内文件，避免源码与发布包不一致。
 
+`SCRIPT_CLIENT_BUILD` counts formal iOS releases only. The formal baseline is
+`0.6.2 / build 34`; each subsequent formal release increments the build by one.
+Beta packages retain the last formal build number and use their `-betaN` version
+suffix to identify beta iterations. Beta packaging must not advance this counter.
+
 在仓库根目录运行：
 
 ```sh

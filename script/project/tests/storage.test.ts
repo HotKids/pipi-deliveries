@@ -2070,7 +2070,7 @@ assert.equal(
   0,
   "retention still hides it from the list",
 );
-// A later ordinary feed event must not delay the first persisted terminal timestamp.
+// Retention follows the actual displayed date even when the stored completion time is older.
 {
   const reminder = {
     ...expiredSigned,
@@ -2085,7 +2085,7 @@ assert.equal(
   };
   const saved = saveState({ ...emptyState(), shipments: [reminder] }, NOW);
   assert.equal(saved.shipments[0]!.settledAtMs, signedAt);
-  assert.equal(visibleShipments(saved, NOW).length, 0);
+  assert.equal(visibleShipments(saved, NOW).length, 1);
   assert.equal(loadState(NOW).shipments[0]!.settledAtMs, signedAt);
 }
 // Manual rows keep the same seven hidden days of signed history as account rows.
@@ -2204,7 +2204,8 @@ memory.clear();
     4,
     "so the list row keeps its headline instead of 暂无物流动态",
   );
-  assert.equal(visibleShipments(synced, NOW).length, 1);
+  assert.equal(visibleShipments(synced, NOW).length, 0,
+    "the sixteen-day-old displayed date is hidden while the recovered history remains cached");
 }
 
 // A pending promotion cannot commit after the user removed its causal queue row.
@@ -2612,13 +2613,15 @@ const oldSignedPreview = shipment({
   manuallyAdded: true,
   semantic: "COMPLETED",
 });
-const oldSignedEventAtMs = manualPreviewNow - 15 * 24 * 60 * 60 * 1000;
+const oldSignedEventAtMs = Math.floor(manualPreviewNow / 1000) * 1000 - 15 * 24 * 60 * 60 * 1000;
+const oldSignedTimeText = new Date(oldSignedEventAtMs + 8 * 60 * 60 * 1000)
+  .toISOString().slice(0, 19).replace("T", " ");
 oldSignedPreview.identity.createdAtMs = manualPreviewNow;
 oldSignedPreview.timeline.statusEventAtMs = oldSignedEventAtMs;
-oldSignedPreview.timeline.latestTimeText = "2026-08-17 08:42:00";
+oldSignedPreview.timeline.latestTimeText = oldSignedTimeText;
 oldSignedPreview.timeline.latestDetail = "快件已签收";
 oldSignedPreview.timeline.tracks = [{
-  timeText: "2026-08-17 08:42:00",
+  timeText: oldSignedTimeText,
   timeMs: oldSignedEventAtMs,
   detail: "快件已签收",
   statusCode: "3",

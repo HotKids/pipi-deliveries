@@ -19,6 +19,7 @@ import {
   normalizedProjectedWaybill,
   normalizeWaybill,
   pruneShipments,
+  signedRetentionAtMs,
   sortShipments,
   splitJingDongH5Nodes,
   terminalEvidenceAtMs,
@@ -934,15 +935,7 @@ function isFeedProvider(provider: string): boolean {
   return raw === "interface5" || raw === "account";
 }
 
-/**
- * 终态第一次出现时打上时间戳，离开终态就清掉。留存期只认这个戳：
- * - 不认 updatedAtMs——每次写入都刷新，倒计时永远归零；
- * - 也不能每轮按「当前展示包」重算——详情页下拉刷回真实签收时间（8 天前）时，那一行会被
- *   当场判过期整行删掉，下一轮 feed 再当新件导入，于是「消失又被带回来、还没有轨迹」
- *   （用户 2026-09-08 报）。
- * 盖章时优先用来源给的终态事件时间，没有才用现在：留存外的老件一进来就是过期的，
- * 「留存外老件不导入」照旧成立。
- */
+/** Preserve a stable fallback for undated signed rows and the existing cancelled lifecycle. */
 function stampSettledAt(shipment: Shipment, now: number): Shipment {
   const terminal = shipment.timeline.semantic === "COMPLETED" ||
     shipment.timeline.semantic === "CANCELLED";
@@ -1577,7 +1570,7 @@ function retainDurableShipments(
     // Signed rows retain their history for seven hidden days. Neither an order
     // projection nor a newly created manual owner can extend the day-21 cutoff.
     if (shipment.timeline.semantic === "COMPLETED") {
-      const settledAtMs = Number(shipment.settledAtMs) || terminalEvidenceAtMs(shipment, now);
+      const settledAtMs = signedRetentionAtMs(shipment, now);
       return !settledAtMs || now - settledAtMs < EXPRESS_POLICY.retention.signedDeletionMs;
     }
     return visibleIds.has(shipment.identity.id) ||

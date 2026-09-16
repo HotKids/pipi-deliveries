@@ -158,6 +158,8 @@ import {
   diagnosticState,
   diagnosticsEnabled,
   writeDiagnostic,
+  writeDiagnosticBatch,
+  type DiagnosticDetails,
 } from "./logger";
 import {
   SCRIPT_BINDING_SOURCE,
@@ -707,6 +709,7 @@ function logJingDongListRecords(
 ): void {
   if (!diagnosticsEnabled()) return;
   const receivedOwners = new Set<string>();
+  const records: DiagnosticDetails[] = [];
   for (const parcel of parcels) {
     if (parcel.sourceProvider.toLowerCase() !== "jingdong") continue;
     const ownerId = normalizeWaybill(parcel.ownerId);
@@ -724,7 +727,7 @@ function logJingDongListRecords(
     const mergedOwner = findOwner(merged);
     const storedOwner = findOwner(stored);
     const displayed = storedOwner || prepared || previous;
-    writeDiagnostic("account.list.record", {
+    records.push({
       ...(displayed ? shipmentDiagnosticDetails(displayed, "v5_list") : {}),
       flowId, source: parcel.source, sourceProvider: "jingdong", stage: "account_list",
       ownerFingerprint: projectionOwnerFingerprint(ownerId), revision: stored.revision,
@@ -748,7 +751,7 @@ function logJingDongListRecords(
         previous.identity.sourceProvider?.toLowerCase() !== "jingdong" ||
         receivedOwners.has(normalizeWaybill(previous.identity.sourceId))) continue;
     const current = stored.shipments.find(shipment => shipment.identity.id === previous.identity.id);
-    writeDiagnostic("account.list.record", {
+    records.push({
       ...shipmentDiagnosticDetails(current || previous, "v5_list"),
       flowId, source: SCRIPT_BINDING_SOURCE, stage: "account_list", result: "omitted",
       ownerFingerprint: projectionOwnerFingerprint(normalizeWaybill(previous.identity.sourceId)),
@@ -757,6 +760,7 @@ function logJingDongListRecords(
       feedStatusSemantic: current?.sourceTimeline?.semantic || "UNKNOWN",
     });
   }
+  writeDiagnosticBatch("account.list.record", records);
 }
 
 function cainiaoRouteDiagnosticDetails(
@@ -1379,6 +1383,10 @@ async function synchronizeAccountList(
   );
   let fetched: Awaited<ReturnType<typeof fetchAccountParcels>>;
   try {
+    writeDiagnostic("account.sync.started", {
+      flowId, source, stage: "account_list",
+      budgetMs: stageBudgetMs(listDeadlineAtMs, startedAt),
+    });
     fetched = await fetchAccountParcels(
       source,
       state.bindings,
@@ -4219,18 +4227,22 @@ async function runFullRefresh(
 ): Promise<RefreshSummary> {
   requireScriptSource(source);
   lease.assertCurrent();
+  const preparationStartedAt = Date.now();
+  writeDiagnostic("refresh.preparation.started", { flowId, source, stage: "preparation" });
   if (!backgroundHostSafe) {
     await refreshCarrierAuthorityIfNeeded();
     lease.assertCurrent();
   }
-  await replayPendingShipmentNotifications(lease.isCurrent);
-  lease.assertCurrent();
   const hostPolicy = fullRefreshHostPolicy({
     accountOrderProjection,
     backgroundHostSafe,
   });
   const startedAt = Date.now();
   const initial = loadState(startedAt);
+  writeDiagnostic("refresh.preparation.completed", {
+    flowId, source, stage: "preparation", durationMs: Date.now() - preparationStartedAt,
+    pendingNotifications: initial.pendingNotifications?.length || 0,
+  });
   const notificationContext = {
     previousById: new Map(initial.shipments.map((shipment) => [shipment.identity.id, shipment])),
     batchId: flowId,
@@ -4338,6 +4350,7 @@ async function runFullRefresh(
           startedAt + 1,
           deadlineAtMs - FULL_REFRESH_FINALIZATION_RESERVE_MS,
         );
+    const accountStartedAt = Date.now();
     const account = await synchronizeAccountList(
       initial,
       source,
@@ -4354,6 +4367,7 @@ async function runFullRefresh(
     writeDiagnostic("refresh.account.completed", {
       flowId, source, result: account.canContinue ? "continue" : "stop",
       attempted: account.attempted, succeeded: account.succeeded, failed: account.failed,
+      durationMs: Date.now() - accountStartedAt,
     });
     if (!account.canContinue) {
       return summary = {
@@ -4485,14 +4499,27 @@ async function runFullRefresh(
       promotedPendingShipmentIds,
     };
   } finally {
-    // 租约的判定在上面 return 之前就做过了。这里再抛一次会把已经跑完并落盘的那次刷新替换成
-    // OperationTimeoutError（出错时还会盖掉真实错误），而重放本身最多又占 15 秒租约。
+    // Drain the durable outbox once, after account work, within the remaining host budget.
+    // A best-effort notification timeout must not replace a committed refresh result.
     if (lease.isCurrent()) {
+      const finalizationStartedAt = Date.now();
       writeDiagnostic("refresh.finalization.started", { flowId, source, stage: "notifications" });
-      const finalized = await replayPendingShipmentNotifications(lease.isCurrent);
+      // Keep the existing finalization reserve for durable ACKs and lease release.
+      const notificationDeadlineAtMs = deadlineAtMs == null
+        ? undefined : deadlineAtMs - FULL_REFRESH_FINALIZATION_RESERVE_MS;
+      const finalized = await replayPendingShipmentNotifications(lease.isCurrent, {
+        deadlineAtMs: notificationDeadlineAtMs, flowId,
+      });
       // The return above already captured the summary; include the drain's durable ACKs.
       if (summary && finalized) summary.state = finalized;
-      writeDiagnostic("refresh.finalization.completed", { flowId, source, stage: "notifications" });
+      writeDiagnostic("refresh.finalization.completed", {
+        flowId, source, stage: "notifications", durationMs: Date.now() - finalizationStartedAt,
+      });
+    } else {
+      writeDiagnostic("refresh.finalization.skipped", {
+        flowId, source, stage: "notifications",
+        result: deadlineExpired(deadlineAtMs) ? "budget_exhausted" : "ownership_lost",
+      });
     }
   }
 }

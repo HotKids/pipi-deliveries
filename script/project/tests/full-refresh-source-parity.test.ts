@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHmac } from "node:crypto";
 import { memory } from "./state-storage-mock";
-import { emptyState, loadState, saveState } from "../services/storage";
+import { commitRefreshState, emptyState, loadState, saveState } from "../services/storage";
 import { refreshAllShipments } from "../services/sync";
 import { parseAccountSyncResult } from "../services/account-parser";
 import { parcelToShipment } from "../services/account-sync";
@@ -253,3 +253,106 @@ test("real full refresh keeps an activated Cainiao history when list returns the
   assert.deepEqual(selectShipmentDetailTimeline(persisted).tracks, history.tracks);
   assert.equal(shipmentDetailComplete(persisted), true);
 });
+
+test("a full refresh appends its complete JD diagnostic batch with one log write", async () => {
+  const records = Array.from({ length: 30 }, (_, i) => row(`JDBATCH${1000 + i}`, "JingDong"));
+  seed(records);
+  const originalSet = Storage.set;
+  let batchWrites = 0;
+  Storage.set = (key, value, ...options) => {
+    if (key === "pipi_deliveries_diagnostic_log_v1" &&
+        Array.isArray(value) && value.at(-1)?.event === "account.list.record") batchWrites++;
+    return originalSet(key, value, ...options);
+  };
+  try {
+    await round(records, { backgroundHostSafe: true, budgetMs: 30_000 });
+  } finally { Storage.set = originalSet; }
+  const entries = readDiagnostics().filter(entry => entry.event === "account.list.record");
+  assert.equal(entries.length, records.length, "batching must preserve every parcel record");
+  assert.equal(new Set(entries.map(entry => entry.details.ownerFingerprint)).size, records.length);
+  assert.ok(entries.every(entry => entry.details.trigger === "background"));
+  assert.equal(batchWrites, 1, "one synchronous list batch must not rewrite the log for every row");
+});
+
+test("full refresh traces preparation, account request and one notification drain after account work", async () => {
+  seed([]);
+  await round([], { backgroundHostSafe: true, budgetMs: 30_000 });
+  const entries = readDiagnostics().reverse();
+  const events = entries.map(entry => entry.event);
+  const ordered = ["refresh.preparation.started", "refresh.preparation.completed", "account.sync.started",
+    "account.sync.parsed", "refresh.account.completed", "refresh.finalization.started",
+    "notification.replay.started", "notification.replay.completed", "refresh.finalization.completed",
+    "refresh.succeeded"];
+  for (let i = 0; i < ordered.length; i++) {
+    assert.ok(events.includes(ordered[i]), `${ordered[i]} must be observable`);
+    if (i) assert.ok(events.indexOf(ordered[i - 1]) < events.indexOf(ordered[i]));
+  }
+  assert.equal(events.filter(event => event === "notification.replay.started").length, 1);
+  for (const event of ["refresh.preparation.completed", "refresh.account.completed",
+    "notification.replay.completed", "refresh.finalization.completed"]) {
+    assert.equal(typeof entries.find(entry => entry.event === event)?.details.durationMs, "number");
+  }
+  const replay = entries.find(entry => entry.event === "notification.replay.completed")!;
+  assert.equal(replay.details.pendingNotifications, 0);
+  assert.equal(replay.details.flowId, entries.find(entry => entry.event === "refresh.started")?.details.flowId);
+});
+
+for (const accountFailed of [false, true]) {
+test(`a stalled notification preserves the ${accountFailed ? "failed" : "successful"} account result and releases ownership`, async () => {
+  seed([row("JDNOTIFYBUDGET", "JingDong")]);
+  const records = [row("JDNOTIFYBUDGET", "JingDong", 105, NEW)];
+  const before = loadState(clock);
+  const parsed = parseAccountSyncResult("interface5", { code: 0, data: { expressList: records } });
+  const shipment = applyAccountShipment(before.shipments[0], parcelToShipment(parsed.parcels[0], [PHONE], clock)!, clock);
+  commitRefreshState(before, { ...before, shipments: [shipment] }, "interface5", clock);
+  assert.equal(loadState(clock).pendingNotifications?.length, 1);
+  let listFinished = false, schedules = 0;
+  const originalSchedule = Notification.schedule;
+  Notification.schedule = () => {
+    assert.equal(listFinished, true, "old notifications cannot delay this round's account request");
+    schedules++;
+    return new Promise(() => {});
+  };
+  globalThis.fetch = (async () => {
+    clock += 6_000; listFinished = true;
+    if (accountFailed) return { ok: false, status: 502, text: async () => "Synthetic upstream failure" };
+    return json({ code: 0, data: { expressList: records } });
+  }) as typeof fetch;
+  const originalSetTimeout = globalThis.setTimeout, originalClearTimeout = globalThis.clearTimeout;
+  const timers = new Set<{ at: number; callback: () => void }>();
+  let pumping = false;
+  function pump() {
+    if (pumping) return;
+    pumping = true;
+    setImmediate(() => {
+      pumping = false;
+      const next = [...timers].sort((a, b) => a.at - b.at)[0];
+      if (!next) return;
+      timers.delete(next); clock = Math.max(clock, next.at); next.callback();
+      if (timers.size) pump();
+    });
+  }
+  globalThis.setTimeout = ((callback: () => void, ms: number) => {
+    const timer = { at: clock + ms, callback };
+    timers.add(timer); pump(); return timer;
+  }) as unknown as typeof setTimeout;
+  globalThis.clearTimeout = ((timer: { at: number; callback: () => void }) => timers.delete(timer)) as unknown as typeof clearTimeout;
+  try {
+    const summary = await refreshAllShipments("interface5", { backgroundHostSafe: true, budgetMs: 10_000 });
+    assert.equal(summary.failed, accountFailed ? 1 : 0);
+    assert.equal(summary.succeeded, accountFailed ? 0 : 1);
+    assert.equal(clock, NOW + 7_000, "notification waits leave the existing three-second finalization reserve");
+    assert.equal(schedules, 1);
+    assert.equal(summary.state.pendingNotifications?.length, 1);
+    assert.equal(loadState(clock).pendingNotifications?.length, 1);
+    assert.equal(readDiagnostics().find(entry => entry.event === "notification.replay.completed")?.details.result,
+      "budget_exhausted");
+    const nextOwner = acquireDurableRefreshLease("full:interface5", 1_000, clock);
+    assert.ok(nextOwner, "notification timeout must not strand the full-refresh lease");
+    nextOwner.release();
+  } finally {
+    timers.clear(); Notification.schedule = originalSchedule;
+    globalThis.setTimeout = originalSetTimeout; globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+}

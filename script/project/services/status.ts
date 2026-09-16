@@ -230,6 +230,21 @@ export function parseProviderTime(value: string): number | null {
   return Number.isFinite(millis) ? millis : null;
 }
 
+/** The list label and retention must interpret the same raw logistics timestamp. */
+export function parseListEventTime(value: string): number | null {
+  const match = String(value || "").trim().match(
+    /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(:\d{2})?(\.\d{3})?(Z|[+-]\d{2}:\d{2})?$/,
+  );
+  if (!match) return null;
+  const local = `${match[1]} ${match[2]}${match[3] || ":00"}`;
+  const chinaTime = parseProviderTime(local);
+  if (chinaTime == null) return null;
+  const epoch = match[5]
+    ? Date.parse(`${local.replace(" ", "T")}${match[4] || ""}${match[5]}`)
+    : chinaTime + Number(match[4] || 0) * 1000;
+  return Number.isFinite(epoch) ? epoch : null;
+}
+
 export function semanticFromEventCode(code: string): StatusSemantic {
   switch (String(code || "").trim().toUpperCase()) {
     case "101":
@@ -1336,16 +1351,20 @@ export function terminalEvidenceAtMs(shipment: Shipment, now = Date.now()): numb
   return validLifecycleTime(timeline.statusEventAtMs, now);
 }
 
-// Visibility and storage expiry share the first persisted terminal timestamp.
-// Refreshing a hidden row's history must not start either countdown again.
 function signedAt(shipment: Shipment, now: number): number {
   return validLifecycleTime(shipment.settledAtMs, now) || terminalEvidenceAtMs(shipment, now);
+}
+
+/** Local completion is only a fallback when the displayed logistics date is unavailable. */
+export function signedRetentionAtMs(shipment: Shipment, now = Date.now()): number {
+  return validLifecycleTime(parseListEventTime(shipment.timeline.latestTimeText), now) ||
+    signedAt(shipment, now);
 }
 
 export function isHiddenSignedShipment(shipment: Shipment, now = Date.now()): boolean {
   if (Number(shipment.emptyTimelineHiddenAtMs) > 0) return true;
   if (shipment.timeline.semantic !== "COMPLETED") return false;
-  const eventAt = signedAt(shipment, now);
+  const eventAt = signedRetentionAtMs(shipment, now);
   return eventAt > 0 && now - eventAt >= SIGNED_RETENTION_MS;
 }
 

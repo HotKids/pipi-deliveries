@@ -15,6 +15,53 @@ public final class ExpressVisibilityPolicyTest {
     private static final long NOW = 1_800_000_000_000L;
 
     @Test
+    public void displayedTimeOwnsBothBoundariesDespiteNewerStoredOrStatusTime() {
+        long displayedAt = NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS + 37_000L;
+        long hiddenAt = displayedAt + ExpressVisibilityPolicy.SIGNED_VISIBLE_MS;
+        ExpressItem value = displayedItem(displayedAt, NOW).withSignedRetainedAt(NOW);
+        assertEquals(displayedAt, ExpressLifecycleTimes.signedAt(value, null, NOW));
+        assertFalse(ExpressVisibilityPolicy.isExpired(value, hiddenAt - 1L));
+        assertTrue(ExpressVisibilityPolicy.isExpired(value, hiddenAt));
+        assertFalse(ExpressVisibilityPolicy.shouldDelete(value,
+                displayedAt + ExpressVisibilityPolicy.SIGNED_DELETE_MS - 1L));
+        assertTrue(ExpressVisibilityPolicy.shouldDelete(value,
+                displayedAt + ExpressVisibilityPolicy.SIGNED_DELETE_MS));
+        assertEquals(NOW, ExpressLifecycleTimes.signedEvidenceAt(value, null, NOW));
+    }
+
+    @Test
+    public void displayedTimeAlsoTakesPrecedenceOverAnOlderStoredAnchor() {
+        ExpressItem value = displayedItem(NOW, NOW)
+                .withSignedRetainedAt(NOW - ExpressVisibilityPolicy.SIGNED_DELETE_MS);
+        assertEquals(NOW, ExpressLifecycleTimes.signedAt(value, null, NOW));
+        assertFalse(ExpressVisibilityPolicy.isExpired(value, NOW));
+        assertFalse(ExpressVisibilityPolicy.shouldDelete(value, NOW));
+    }
+
+    @Test
+    public void newDiscoveryUsesDisplayedTimeInsteadOfNewerStructuredCompletion() {
+        long displayedAt = NOW - ExpressVisibilityPolicy.SIGNED_DELETE_MS;
+        ExpressQueryResult value = new ExpressQueryResult("TEST123", "ZTO", "Test",
+                StatusSemantic.COMPLETED, NOW, time(displayedAt), "Signed", "[]", "", "",
+                "interface5", "", "", "CaiNiao");
+        assertFalse(ExpressVisibilityPolicy.isExpiredResult(value, NOW - 1L));
+        assertTrue(ExpressVisibilityPolicy.isExpiredResult(value, NOW));
+    }
+
+    @Test
+    public void invalidDisplayedTimePreservesTheExistingFallback() {
+        long first = NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS;
+        for (String displayed : new String[]{"", "not-a-date", time(NOW + 86400000L)}) {
+            ExpressItem value = new ExpressItem(1L, "", "TEST123", "ZTO", "Test",
+                    StatusSemantic.COMPLETED, "Signed", "Signed", displayed, "[]", "",
+                    "INTERFACE5", "", NOW, NOW, "INTERFACE5", "")
+                    .withSignedRetainedAt(first);
+            assertEquals(first, ExpressLifecycleTimes.signedAt(value, null, NOW));
+            assertTrue(ExpressVisibilityPolicy.isExpired(value, NOW));
+        }
+    }
+
+    @Test
     public void signedShipmentExpiresAtFourteenDayBoundary() {
         assertEquals(14L * 24L * 60L * 60L * 1000L, ExpressVisibilityPolicy.SIGNED_VISIBLE_MS);
         assertFalse(ExpressVisibilityPolicy.isExpired(
@@ -39,7 +86,7 @@ public final class ExpressVisibilityPolicyTest {
     }
 
     @Test
-    public void fixedAnchorControlsBothBoundariesEvenWhenPresentationChanges() {
+    public void missingDisplayedTimeKeepsBothBoundariesOnStoredAnchor() {
         long first = NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS;
         ExpressItem changed = item(StatusSemantic.TRANSIT, NOW).withSignedRetainedAt(first);
         assertTrue(ExpressVisibilityPolicy.isExpired(changed, NOW));
@@ -74,13 +121,15 @@ public final class ExpressVisibilityPolicyTest {
     }
 
     @Test
-    public void unrelatedHeadlineCannotDelayTerminalRetention() {
+    public void validDisplayedTimeControlsRetentionWithoutChangingStatusEvidence() {
         long old = NOW - ExpressVisibilityPolicy.SIGNED_VISIBLE_MS;
         ExpressItem value = new ExpressItem(1L, "", "TEST123", "ZTO", "Test",
                 StatusSemantic.COMPLETED, "已签收", "售后提醒", "2027-01-14 00:00:00",
                 "[]", "", "INTERFACE5", "", old, old, "INTERFACE5", "");
-        assertEquals(old, ExpressLifecycleTimes.signedAt(value, null, NOW));
-        assertTrue(ExpressVisibilityPolicy.isExpired(value, NOW));
+        assertEquals(ExpressSourcePolicy.parseEventTime(value.latestTime),
+                ExpressLifecycleTimes.signedAt(value, null, NOW));
+        assertEquals(old, ExpressLifecycleTimes.signedEvidenceAt(value, null, NOW));
+        assertFalse(ExpressVisibilityPolicy.isExpired(value, NOW));
     }
 
     @Test
@@ -166,6 +215,17 @@ public final class ExpressVisibilityPolicyTest {
 
     private static ExpressItem item(StatusSemantic semantic, long eventTime) {
         return item(semantic, eventTime, "INTERFACE5");
+    }
+
+    private static ExpressItem displayedItem(long displayedAt, long statusAt) {
+        return new ExpressItem(1L, "", "TEST123", "ZTO", "Test",
+                StatusSemantic.COMPLETED, "Signed", "Signed", time(displayedAt), "[]", "",
+                "INTERFACE5", "", statusAt, statusAt, "INTERFACE5", "");
+    }
+
+    private static String time(long at) {
+        return java.time.format.DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss")
+                .format(java.time.Instant.ofEpochMilli(at).atZone(java.time.ZoneId.of("Asia/Shanghai")));
     }
 
     private static ExpressItem item(

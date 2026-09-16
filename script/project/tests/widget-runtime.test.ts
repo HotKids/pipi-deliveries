@@ -197,11 +197,10 @@ assert.doesNotMatch(
   /requestWidgetReload\(\)/,
   "persisting a binding must not launch a widget beside its immediate full refresh",
 );
-assert.equal(
-  (synchronizeAccountListSource.match(
-    /budgetMs: stageBudgetMs\(listDeadlineAtMs, startedAt\)/g,
-  ) || []).length,
-  2,
-);
+for (const event of ["account.sync.started", "account.sync.failed", "account.sync.parsed"]) {
+  assert.match(synchronizeAccountListSource, new RegExp(
+    `writeDiagnostic\\(\\s*"${event.replaceAll(".", "\\.")}"[\\s\\S]*?budgetMs: stageBudgetMs\\(listDeadlineAtMs, startedAt\\)`,
+  ), `${event} must report the account stage budget`);
+}
 
 console.log("widget runtime family dispatch tests passed");

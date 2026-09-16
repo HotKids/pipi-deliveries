@@ -42,11 +42,47 @@ public final class ExpressSignedRetentionTest {
         database = new ExpressDatabase(context);
         repository = new ExpressRepository(context, database);
         repository.bindPhoneLocally(phone, "interface5");
-        now = System.currentTimeMillis();
+        now = System.currentTimeMillis() / 1000L * 1000L;
     }
     @After public void tearDown() { database.close(); context.deleteDatabase(ExpressDatabase.DATABASE); }
 
-    @Test public void hiddenOwnerKeepsIdentityAndAllQueryHistoryUntilDayTwentyOne() throws Exception {
+    @Test @Config(shadows = CountingNotifications.class)
+    public void legacyNewerAnchorCannotKeepOldDisplayedRowOrReplayItsNotification() throws Exception {
+        String id = "ZTRETENTION0014";
+        long displayedAt = (now / 1000L) * 1000L - 15 * DAY;
+        save(id, StatusSemantic.COMPLETED, displayedAt);
+        ExpressItem owner = repository.findByWaybill(id, "interface5");
+        assertNotNull(owner);
+        ContentValues newerAnchor = new ContentValues();
+        newerAnchor.put("signedRetainedAt", now);
+        database.getWritableDatabase().update(ExpressDatabase.EXPRESS_TABLE, newerAnchor, "_id=?",
+                new String[]{Long.toString(owner.rowId)});
+        ContentValues pending = new ContentValues();
+        pending.put("owner_row_id", owner.rowId);
+        pending.put("event_token", "synthetic-legacy-newer-anchor");
+        database.getWritableDatabase().insertOrThrow(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, pending);
+        CountingNotifications.attempts = 0;
+        assertEquals(time(displayedAt), repository.find(owner.rowId).latestTime);
+        assertTrue(repository.listVisible("interface5").isEmpty());
+        repository.replayPendingNotifications();
+        assertEquals(0, CountingNotifications.attempts);
+        assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE));
+        prune(displayedAt + 21 * DAY - 1L);
+        assertNotNull(repository.find(owner.rowId));
+        prune(displayedAt + 21 * DAY);
+        assertNull(repository.find(owner.rowId));
+    }
+
+    @Test public void newDiscoveryWithOldDisplayAndNewStatusIsRejectedAtDayTwentyOne() {
+        String id = "ZTRETENTION0015";
+        long displayedAt = (now / 1000L) * 1000L - 21 * DAY;
+        repository.saveInterface5(new ExpressQueryResult(id, "ZTO", "中通快递",
+                StatusSemantic.COMPLETED, now, time(displayedAt), "已签收", tracks(displayedAt),
+                "", phone, "interface5", "", "", "CaiNiao"), phone);
+        assertNull(repository.findByWaybill(id, "interface5"));
+    }
+
+    @Test public void displayedAccountQueryTimeAdvancesRetentionWithoutReplacingOwnerOrHistory() throws Exception {
         String id = "ZTRETENTION0001";
         long signed = now - 15 * DAY;
         save(id, StatusSemantic.TRANSIT, signed - DAY);
@@ -64,11 +100,12 @@ public final class ExpressSignedRetentionTest {
         save(id, StatusSemantic.COMPLETED, now);
         assertEquals(owner.rowId, repository.findByWaybill(id, "interface5").rowId);
         assertEquals(signed, anchor(owner.rowId));
-        assertTrue(repository.listVisible("interface5").isEmpty());
+        assertEquals(time(now), repository.find(owner.rowId).latestTime);
+        assertEquals(1, repository.listVisible("interface5").size());
         assertTrue(repository.accountTimeline(id, "interface5").tracksJson.contains(time(signed - DAY)));
-        prune(signed + 21 * DAY - 1);
+        prune(now + 21 * DAY - 1);
         assertNotNull(repository.find(owner.rowId));
-        prune(signed + 21 * DAY);
+        prune(now + 21 * DAY);
         assertNull(repository.find(owner.rowId));
         for (String table : new String[]{ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
                 ExpressDatabase.V4_TIMELINE_TABLE, ExpressDatabase.KUAIDI100_TIMELINE_TABLE}) {
@@ -351,7 +388,9 @@ public final class ExpressSignedRetentionTest {
                 "", phone, "interface5", "", "", "CaiNiao");
     }
     private static String time(long at) {
-        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT).format(new Date(at));
+        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT);
+        format.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Shanghai"));
+        return format.format(new Date(at));
     }
     private long anchor(long rowId) {
         try (Cursor cursor = database.getReadableDatabase().rawQuery("SELECT signedRetainedAt FROM "

@@ -59,6 +59,7 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   redirectPresent?: boolean;
   succeeded?: number;
   failed?: number;
+  pendingNotifications?: number;
   rawRecords?: number;
   records?: number;
   rejectedRecords?: number;
@@ -268,6 +269,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "redirectPresent",
   "succeeded",
   "failed",
+  "pendingNotifications",
   "rawRecords",
   "records",
   "rejectedRecords",
@@ -399,6 +401,7 @@ const SOURCE_KEYS = new Set<keyof DiagnosticDetails>([
 ]);
 
 const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
+  "pendingNotifications",
   "listEventAtMs", "preparedEventAtMs", "previousFeedEventAtMs", "mergedFeedEventAtMs",
   "commitSequence",
   "carrierFetchedAtMs", "carrierLastAttemptAtMs", "carrierRefreshRemainingMs",
@@ -766,7 +769,8 @@ function storedEntries(now = Date.now(), sanitize = false): DiagnosticEntry[] {
     if (!Array.isArray(value)) return [];
     const kept = value.filter((item) => validEntry(item, now));
     const retained = kept.length > MAX_RECORDS ? kept.slice(-MAX_RECORDS) : kept;
-    if (retained.length !== value.length) {
+    // Appends already write the pruned array; only standalone reads need cleanup.
+    if (sanitize && retained.length !== value.length) {
       try {
         if (retained.length) {
           Storage.set(DIAGNOSTIC_KEY, retained, { shared: true });
@@ -1035,48 +1039,62 @@ export function writeDiagnostic(
   details: DiagnosticDetails = {},
   level: DiagnosticLevel = "info",
 ): void {
-  if (!diagnosticsEnabled()) return;
+  writeDiagnosticBatch(event, [details], level);
+}
+
+/** Append one synchronous batch without retaining a shared-log snapshot across calls. */
+export function writeDiagnosticBatch(
+  event: string,
+  details: readonly DiagnosticDetails[],
+  level: DiagnosticLevel = "info",
+): void {
+  if (!details.length || !diagnosticsEnabled()) return;
   const cleanEvent = String(event || "").trim();
   if (!SAFE_TEXT.test(cleanEvent)) return;
   const now = Date.now();
-  const unified = unifiedLevel(details);
-  const cleanDetails = sanitizeDetails({
-    ...details,
-    clientBuild: SCRIPT_CLIENT_BUILD,
-    ...(unified ? { level: unified } : {}),
-    ...(unified && INTERFACE_LEVELS.has(unified) && !details.interface
-      ? { interface: "v5" }
-      : {}),
-  });
-  const flowId = cleanDetails.flowId || "";
-  if (flowId && closedFlowIds.has(flowId)) return;
-  if (flowId) {
-    if (cleanDetails.trigger) {
-      flowTriggers.set(flowId, cleanDetails.trigger);
-      while (flowTriggers.size > MAX_CLOSED_FLOWS) {
-        flowTriggers.delete(flowTriggers.keys().next().value!);
+  const entries: DiagnosticEntry[] = [];
+  const terminalFlowIds = new Set<string>();
+  for (const detail of details) {
+    const unified = unifiedLevel(detail);
+    const cleanDetails = sanitizeDetails({
+      ...detail,
+      clientBuild: SCRIPT_CLIENT_BUILD,
+      ...(unified ? { level: unified } : {}),
+      ...(unified && INTERFACE_LEVELS.has(unified) && !detail.interface
+        ? { interface: "v5" }
+        : {}),
+    });
+    const flowId = cleanDetails.flowId || "";
+    if (flowId && (closedFlowIds.has(flowId) || terminalFlowIds.has(flowId))) continue;
+    if (flowId) {
+      if (cleanDetails.trigger) {
+        flowTriggers.set(flowId, cleanDetails.trigger);
+        while (flowTriggers.size > MAX_CLOSED_FLOWS) {
+          flowTriggers.delete(flowTriggers.keys().next().value!);
+        }
+      } else if (flowTriggers.has(flowId)) {
+        cleanDetails.trigger = flowTriggers.get(flowId);
       }
-    } else if (flowTriggers.has(flowId)) {
-      cleanDetails.trigger = flowTriggers.get(flowId);
+    }
+    entries.push({
+      id: `${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      at: new Date(now).toISOString(),
+      level,
+      event: cleanEvent,
+      details: cleanDetails,
+    });
+    if (flowId && (cleanEvent === "refresh.succeeded" || cleanEvent === "refresh.failed")) {
+      terminalFlowIds.add(flowId);
     }
   }
-  const item: DiagnosticEntry = {
-    id: `${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    at: new Date(now).toISOString(),
-    level,
-    event: cleanEvent,
-    details: cleanDetails,
-  };
+  if (!entries.length) return;
   try {
     Storage.set(
       DIAGNOSTIC_KEY,
-      [...storedEntries(now), item].slice(-MAX_RECORDS),
+      [...storedEntries(now), ...entries].slice(-MAX_RECORDS),
       { shared: true },
     );
-    if (
-      flowId &&
-      (cleanEvent === "refresh.succeeded" || cleanEvent === "refresh.failed")
-    ) {
+    for (const flowId of terminalFlowIds) {
       closedFlowIds.add(flowId);
       flowTriggers.delete(flowId);
       while (closedFlowIds.size > MAX_CLOSED_FLOWS) {
