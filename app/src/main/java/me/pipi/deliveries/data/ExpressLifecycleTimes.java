@@ -33,16 +33,9 @@ final class ExpressLifecycleTimes {
                     : workerSignedAt(cached.workerStatus, now);
             if (signedAt > 0L) return signedAt;
         }
-        if (item != null && itemStatus == null) {
-            signedAt = newer(signedTrackTime(item.tracksJson, now),
-                    signedSummaryTime(item.latestDetail, item.latestTime, now));
-        }
-        if (cached != null && cached.workerStatus == null) {
-            signedAt = newer(signedAt, signedTrackTime(cached.tracksJson, now));
-            signedAt = newer(signedAt,
-                    signedSummaryTime(cached.latestDetail, cached.latestTime, now));
-        }
-        return signedAt;
+        // No structured status time: no signed evidence. Text such as 签收 / 妥投 / 订单已完成 is not
+        // guessed into one (audit D10, user 2026-09-25: 冻结要有依据，不靠猜; as on iOS and Pipi).
+        return 0L;
     }
 
     private static long workerSignedAt(WorkerStatusProjection status, long now) {
@@ -50,33 +43,22 @@ final class ExpressLifecycleTimes {
                 && status.eventAtMs > 0L && status.eventAtMs <= now ? status.eventAtMs : 0L;
     }
 
-    static long eventAt(ExpressItem item, long now) {
-        if (item == null) return 0L;
-        long eventAt = valid(item.statusEventTime, now);
-        if (eventAt > 0L) return eventAt;
-        return valid(item.updatedAt, now);
+    /**
+     * The four-hour cancelled window starts at the time the list row shows, like signed retention
+     * (audit L14, user default of 2026-09-25); only an absent or invalid shown time falls back to the
+     * structured status time. The observation time, which every sync moves, never starts it.
+     */
+    static long cancelledAt(ExpressItem item, long now) {
+        return item == null ? 0L : cancelledAt(item.latestTime, item.statusEventTime, now);
     }
 
-    private static long signedTrackTime(String tracksJson, long now) {
-        long result = 0L;
-        for (ExpressTimeline.Track track : ExpressTimeline.parse(tracksJson, "", "")) {
-            result = newer(result, signedSummaryTime(track.detail, track.time, now));
-        }
-        return result;
-    }
-
-    private static long signedSummaryTime(String detail, String time, long now) {
-        String text = detail.replaceAll("\\s+", "");
-        if (!(text.contains("签收") || text.contains("妥投")
-                || text.contains("配送完成") || text.contains("订单已完成"))) return 0L;
-        return valid(ExpressSourcePolicy.parseEventTime(time), now);
+    static long cancelledAt(String displayedTime, long statusEventTime, long now) {
+        long displayedAt = ExpressSourcePolicy.parseEventTime(displayedTime);
+        if (displayedAt > 0L && displayedAt <= now) return displayedAt;
+        return valid(statusEventTime, now);
     }
 
     private static long valid(long value, long now) {
         return value > 0L && value <= now + FUTURE_TOLERANCE_MS ? value : 0L;
-    }
-
-    private static long newer(long left, long right) {
-        return Math.max(left, right);
     }
 }

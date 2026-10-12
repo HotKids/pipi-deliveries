@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { memory, NOW } from "./state-storage-mock";
 import { emptyState, loadState, saveState } from "../services/storage";
-import { hasSettledTimelineHistory, preserveSettledShipment, shouldScheduleManualRefresh } from "../services/shipment-policy";
+import { FORCED_COMPLETION_REFRESH_WINDOW_MS, hasSettledTimelineHistory, preserveSettledShipment,
+  shouldScheduleManualRefresh } from "../services/shipment-policy";
 import { shouldRefreshShipment, terminalEvidenceAtMs } from "../services/status";
 import { runShipmentEnrichmentForTesting } from "../services/sync";
 import type { Shipment, TimelinePackage } from "../models";
@@ -31,8 +32,10 @@ try {
     memory.clear();
     const timeline = { ...pack, semantic: mode === "transit" ? "TRANSIT" as const : "COMPLETED" as const,
       statusEventAtMs: mode === "dated" ? at : null };
+    // 用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「点击后满 3 天也冻结」：右滑签收满 72 小时才硬冻结
+    // （72 小时之内按来源照常刷新，见 signed-freeze.test.ts）。
     saveState({ ...emptyState(), shipments: [{ ...row, timeline, sourceTimeline: timeline,
-      forcedCompletedAtMs: mode === "forced" ? at : undefined }],
+      forcedCompletedAtMs: mode === "forced" ? NOW - FORCED_COMPLETION_REFRESH_WINDOW_MS : undefined }],
       bindings: [{ source: "interface5", phone: "13800001234", boundAtMs: at }] }, NOW);
     const state = loadState(NOW);
     const stored = state.shipments[0]!;

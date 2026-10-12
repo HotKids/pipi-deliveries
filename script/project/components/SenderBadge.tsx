@@ -2,8 +2,8 @@ import { Text } from "scripting";
 import type { StatusSemantic } from "../models";
 import { statusTint } from "../services/status";
 
-export function SenderBadge(props: { sender?: boolean; semantic: StatusSemantic }) {
-  if (props.sender !== true) return null;
+// Rendered only for sender rows: the call site leaves it out, because a component may not return null.
+export function SenderBadge(props: { semantic: StatusSemantic }) {
   const color = statusTint(props.semantic);
   return (
     <Text

@@ -9,6 +9,7 @@ import { applyAccountShipment, applyTargetedAccountShipment, asAccountDetailObse
 import { emptyState, saveState, loadState } from "../services/storage";
 import { saveGatewayToken } from "../services/credentials";
 import { setDiagnosticsEnabled, writeDiagnostic, readDiagnostics } from "../services/logger";
+import { seedRecognizedCarriers } from "./carrier-recognition-seed";
 
 const ORDER = "9999000011112222", WAYBILL = "JDSYNTHETIC0001", PHONE = "13800000000";
 const NOW = Date.UTC(2026, 8, 11, 6);
@@ -90,11 +91,13 @@ test("projected order query accepts the same surviving carrier completion as lis
   assert.equal(incoming.identity.projectedWaybill, WAYBILL);
   assert.equal(incoming.accountRecord?.waybill, ORDER);
 });
+// 2026-09-27: the review is removed only after an earlier structured signing (the surviving 107 node);
+// without one it is the first signing and stays.
 for (const remainingCode of ["107", ""] as const) test(
-  `projected query removes shopping completion with surviving enum ${remainingCode || "absent"}`,
+  `projected query ${remainingCode ? "removes" : "keeps"} shopping completion with surviving enum ${remainingCode || "absent"}`,
   async () => {
-    const value = response(ORDER, 107,
-      `您的订单${ORDER}已完成，感谢您对京东的支持，欢迎再次光临。期待您对本次购物进行评价。`);
+    const review = `您的订单${ORDER}已完成，感谢您对京东的支持，欢迎再次光临。期待您对本次购物进行评价。`;
+    const value = response(ORDER, 107, review);
     value.data.normalizedStatusScope = "ORDER";
     value.data.details[1] = { time: "2026-09-10 08:00:00",
       desc: "Synthetic carrier confirmation", statusCode: remainingCode };
@@ -103,11 +106,11 @@ for (const remainingCode of ["107", ""] as const) test(
     const dto = await refreshAccountParcel(current, Date.now() + 1000);
     assert.ok(dto, "accepted history must reach the shared order-completion sanitizer");
     const incoming = parcelToShipment(dto, [PHONE], NOW + 1)!;
-    assert.equal(incoming.timeline.tracks.length, 1);
-    assert.equal(incoming.timeline.latestDetail, "Synthetic carrier confirmation");
+    assert.equal(incoming.timeline.tracks.length, remainingCode ? 1 : 2);
+    assert.equal(incoming.timeline.latestDetail, remainingCode ? "Synthetic carrier confirmation" : review);
     assert.equal(incoming.timeline.semantic, "COMPLETED");
     assert.equal(incoming.timeline.statusEventAtMs, Date.UTC(2026, 8, 11, 2),
-      "removing a shopping review does not change the packet's structured signature clock");
+      "the shopping review does not change the packet's structured signature clock");
     const merged = applyTargetedAccountShipment(current,
       asAccountDetailObservation(current, incoming), NOW + 1);
     assert.equal(merged.timeline.semantic, "COMPLETED",
@@ -117,6 +120,8 @@ for (const remainingCode of ["107", ""] as const) test(
 test("fresh text identity is not replaced by the previous projection", async () => {
   const next = "JD000000000002";
   transport(response(ORDER, 104, `交付京东快递，运单号为 ${next}`));
+  // T23 (user 2026-09-26, 其余裁决 28): the text waybill is projected once recognition matched its carrier.
+  seedRecognizedCarriers({ [next]: "JD" });
   const dto = await refreshAccountParcel(owner(), Date.now() + 1000);
   assert.ok(dto?.textIdentity);
   assert.equal(parcelToShipment(dto!, [PHONE], NOW)!.identity.projectedWaybill, next);

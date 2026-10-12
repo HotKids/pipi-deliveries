@@ -33,7 +33,7 @@ import org.robolectric.annotation.Implements;
 
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 31, manifest = Config.NONE, application = Application.class,
-        shadows = ExpressDatabaseThreadingTest.RepositoryShadow.class)
+        shadows = {ExpressDatabaseThreadingTest.RepositoryShadow.class, ColdHomeLoadTest.Scheduler.class})
 public class ExpressDatabaseThreadingTest {
     @Implements(value = ExpressRepository.class, isInAndroidSdk = false)
     public static class RepositoryShadow {
@@ -72,6 +72,11 @@ public class ExpressDatabaseThreadingTest {
             return Collections.emptyList();
         }
 
+        @Implementation protected List<ExpressItem> listVisibleForHome(String source) {
+            recordRead();
+            return Collections.emptyList();
+        }
+
         @Implementation protected List<String> phones(String source) {
             recordRead();
             return Collections.emptyList();
@@ -93,9 +98,9 @@ public class ExpressDatabaseThreadingTest {
         ActivityController<ExpressListActivity> activity = Robolectric.buildActivity(ExpressListActivity.class);
         activity.get().setTheme(R.style.AppTheme);
         try {
-            activity.create();
+            activity.create().start();
             assertBackgroundRead();
-        } finally { activity.destroy(); }
+        } finally { activity.stop().destroy(); }
     }
 
     @Test public void managerLoadsItsPhonesAwayFromMainThread() throws Exception {

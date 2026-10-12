@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+case "$#:${1:-all}" in
+  0:all|1:all) preview_size=all ;;
+  1:medium) preview_size=medium ;;
+  *) echo "Usage: $0 [all|medium]" >&2; exit 2 ;;
+esac
+
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 chrome_bin=${CHROME_BIN:-}
 if [ -z "$chrome_bin" ]; then
@@ -55,11 +61,15 @@ render() {
   fi
 }
 
-render small light 640 672 \
-  "$repo_dir/app/src/main/res/drawable-xxxhdpi/widget_express_2x2_preview.png"
-render medium light 1360 672 \
+if [ "$preview_size" = all ]; then
+  render small light 620 620 \
+    "$repo_dir/app/src/main/res/drawable-xxxhdpi/widget_express_2x2_preview.png"
+fi
+render medium light 1324 620 \
   "$repo_dir/app/src/main/res/drawable-xxxhdpi/widget_express_4x2_preview.png"
-render small night 640 672 \
-  "$repo_dir/app/src/main/res/drawable-night-xxxhdpi/widget_express_2x2_preview.png"
-render medium night 1360 672 \
+if [ "$preview_size" = all ]; then
+  render small night 620 620 \
+    "$repo_dir/app/src/main/res/drawable-night-xxxhdpi/widget_express_2x2_preview.png"
+fi
+render medium night 1324 620 \
   "$repo_dir/app/src/main/res/drawable-night-xxxhdpi/widget_express_4x2_preview.png"

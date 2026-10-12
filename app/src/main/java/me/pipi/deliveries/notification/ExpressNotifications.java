@@ -138,6 +138,17 @@ public final class ExpressNotifications {
     }
 
     /**
+     * 用户定 2026-09-25（方案 B）：账号订单投影后并进已有运单行的那一轮只看展示状态——状态变了才通知，更新的事件
+     * 配上换了的文案不算（Pixel 上已签收的圆通运单行并进同样已签收的京东订单，被当成新事件推了一遍）。冻结京东件的
+     * 规则照旧。{@code current} 是这一行合并后在列表和通知里显示的样子。
+     */
+    public static boolean shouldPostStatusChange(ExpressItem previous, ExpressItem current) {
+        if (previous == null || current == null) return false;
+        if (isFrozenJingDong(previous)) return false;
+        return previous.semantic != current.semantic;
+    }
+
+    /**
      * iOS isFrozenJingDongShipment 同口径：京东来源、已投影出真实运单（或本来就不是账号订单）、
      * 且已签收的件就此冻结，之后任何改写都不再通知。
      */
@@ -200,10 +211,11 @@ public final class ExpressNotifications {
                 ? number : number.substring(number.length() - 4);
         String meta = suffix.isEmpty()
                 ? item.displayStatus() : suffix + " · " + item.displayStatus();
-        return item.displayCompany() + " " + meta;
+        return item.displayCarrierLabel() + " " + meta;
     }
 
-    private static int statusColor(StatusSemantic semantic) {
+    /** The shared status colour table; a signed notification is teal too (audit R7, user 2026-09-25). */
+    static int statusColor(StatusSemantic semantic) {
         switch (semantic == null ? StatusSemantic.UNKNOWN : semantic) {
             case DANGER: return ExpressStatusColors.DANGER;
             case ORDERED:
@@ -212,7 +224,7 @@ public final class ExpressNotifications {
             case TRANSIT: return ExpressStatusColors.TRANSIT;
             case DELIVERY: return ExpressStatusColors.DELIVERY;
             case WAITING_PICKUP: return ExpressStatusColors.WAITING_PICKUP;
-            case COMPLETED: return 0;
+            case COMPLETED: return ExpressStatusColors.COMPLETED;
             default: return ExpressStatusColors.NEUTRAL;
         }
     }

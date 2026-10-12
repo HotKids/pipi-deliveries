@@ -216,7 +216,7 @@ public final class ExpressListActivityContractTest {
         assertTrue(layout.contains("android:clipToPadding=\"false\""));
         assertTrue(layout.contains("android:paddingBottom=\"28dp\""));
         assertTrue(strings.contains(
-                "<string name=\"express_retention_notice\">只显示 14 天内的快递信息</string>"));
+                "<string name=\"express_retention_notice\">只显示 14 天内的快递</string>"));
     }
 
     private static String method(String source, String start, String next) {

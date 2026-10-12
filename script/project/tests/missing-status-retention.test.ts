@@ -64,12 +64,13 @@ try {
     row.identity = { ...row.identity, sourceId: orderId, orderId, accountOrder: true,
       projectedWaybill: feed.waybill };
     const restored = saveState({ ...emptyState(), shipments: [row] }, NOW).shipments[0]!;
-    assert.equal(restored.timeline.semantic, "COMPLETED", "the first structured completion survives review removal");
+    assert.equal(restored.timeline.semantic, "COMPLETED", "the first structured completion survives with its review");
     assert.equal(restored.timeline.statusEventAtMs, feed.statusEventAtMs);
     const restarted = loadState(NOW + 1).shipments[0]!;
     assert.equal(restarted.timeline.semantic, "COMPLETED");
     assert.equal(restarted.timeline.statusEventAtMs, feed.statusEventAtMs);
-    assert.equal(restarted.timeline.tracks.some((track) => track.detail === evaluation), false);
+    // 2026-09-27: the review of the first structured completion stays as an ordinary node.
+    assert.equal(restarted.timeline.tracks.some((track) => track.detail === evaluation), true);
   } catch (error) {
     failures.push(`JingDong evaluation: ${String(error)}`);
   }
@@ -77,4 +78,4 @@ try {
   Date.now = actualNow;
 }
 assert.equal(failures.length, 0, failures.join("\n"));
-console.log("borrowed sign-off retention and JingDong evaluation cleanup tests passed");
+console.log("borrowed sign-off retention and JingDong first-signing evaluation tests passed");

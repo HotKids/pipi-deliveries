@@ -12,7 +12,14 @@ API 37 与 Build Tools 37.0.0。
 - `./build.sh compat`：构建 Android 10 及以上版本的兼容 debug APK；
 - `./build.sh check`：运行两个 product flavor 的单元测试、lint 及 debug/release 构建；
 - `./build.sh release`：仅在明确发布正式版时运行，生成两个正式版 APK；
-- `./gradlew :app:testStandardDebugUnitTest :app:testCompatDebugUnitTest`：仅运行单元测试。
+- `./build.sh test`：仅运行两个 product flavor 的单元测试，其余参数（如 `--tests <过滤>`）原样交给 Gradle；
+- `./gradlew :app:testStandardDebugUnitTest :app:testCompatDebugUnitTest`：仅运行单元测试，
+  使用调用方自己的 Gradle 用户目录。
+
+本目录位于 Pipi Assistant 工作区（`deliveries/`，上级目录有 `tools/env.sh`）时，`build.sh`
+的所有模式把 `GRADLE_USER_HOME` 固定为工作区的 `project-data/cache/gradle-lite`，与 Pipi 的
+`tools/env.sh` 同一做法：继承来的 `GRADLE_USER_HOME` 不生效，只有留在工作区内的 `PIPI_DATA_ROOT`
+可以改数据根。独立的 pipi-deliveries 检出不受影响，仍使用调用方或 Gradle 默认的用户目录。
 
 标准包使用 `standard` flavor（最低 Android 12），兼容包使用 `compat` flavor（最低
 Android 10）。两者使用相同包名与签名。release 产物复制至 `dist/Pipi-Deliveries.apk`
@@ -55,7 +62,8 @@ Android 使用 Android Keystore 硬件证明建立网关会话，并以应用私
 
 ## 正式签名
 
-Gradle 从环境变量或当前 Gradle 用户目录的 `gradle.properties`（由 `GRADLE_USER_HOME` 选择） 读取以下签名配置：
+Gradle 从环境变量或当前 Gradle 用户目录的 `gradle.properties`（由 `GRADLE_USER_HOME` 选择） 读取以下签名配置
+（在 Pipi Assistant 工作区内经 `build.sh` 构建时，该目录即上文的 `project-data/cache/gradle-lite`）：
 
 - `SIGNING_STORE_FILE`；
 - `SIGNING_STORE_PASSWORD`；

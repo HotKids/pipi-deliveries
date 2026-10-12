@@ -25,6 +25,21 @@ export type ProjectionViewportHost = Readonly<{
 }>;
 
 let host: ProjectionViewportHost | null = null;
+// The app root mounts on screen and its first scene event may never come.
+let sceneActive = true;
+
+/**
+ * The app root reports its scene phase (user 2026-09-25): a refresh flow opens the union page only
+ * while the scene is active, because a page that is not on screen reports `visibilityState=hidden`
+ * and times out.
+ */
+export function setProjectionSceneActive(active: boolean): void {
+  sceneActive = active;
+}
+
+export function projectionSceneActive(): boolean {
+  return sceneActive;
+}
 
 /** The app root registers while mounted; passing null unregisters. */
 export function registerProjectionViewportHost(

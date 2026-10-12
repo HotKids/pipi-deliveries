@@ -75,10 +75,8 @@ public final class ExpressManagerActivity extends AppCompatActivity {
                     adapter.notifyDataSetChanged();
                 });
             } catch (RuntimeException failure) {
-                runOnUiThread(() -> {
-                    if (!isFinishing() && !isDestroyed())
-                        Toast.makeText(this, ExpressToastCopy.STATE_LOAD_FAILED, Toast.LENGTH_SHORT).show();
-                });
+                // 「本地快递数据读取失败」只在列表加载失败时弹（审计 R8，用户 2026-09-25 默认 #13）：
+                // 绑定管理页读失败时保持原来的列表，不弹。
             }
         });
     }

@@ -111,6 +111,10 @@ export type ShipmentIdentity = {
     riskControlAtMs?: number;
     attemptId?: string;
     attemptExpiresAtMs?: number;
+    /** A completed order's latest unconfirmed empty-shell page (方案 A, user 2026-09-25). */
+    emptyShellAtMs?: number;
+    /** Its second empty-shell page at least one rest later: the page is never reopened. */
+    emptyShellConfirmedAtMs?: number;
   };
   /**
    * AGENTS §9 (2026-09-03, D-13 ruling): a projected JD order without a causally complete H5
@@ -123,6 +127,16 @@ export type ShipmentIdentity = {
     riskControlAtMs?: number;
     attemptId?: string;
     attemptExpiresAtMs?: number;
+  };
+  /**
+   * 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：京粉页给出了这张订单的运单号，那一轮承运商却没对上，
+   * 订单行就保持原样（仍是未投影的订单）。页面拿到的运单号与轨迹存在这里，之后各轮只对它补识别、不再开页；
+   * 认出承运商、投影落地后清掉。
+   */
+  pendingProjection?: {
+    waybill: string;
+    timeline?: TimelinePackage | null;
+    capturedAtMs: number;
   };
   accountOrder?: boolean;
   manuallyAdded: boolean;
@@ -180,7 +194,39 @@ export type Shipment = {
   settledAtMs?: number;
   /** An empty signed history exhausted its authorized refresh; hidden for seven days. */
   emptyTimelineHiddenAtMs?: number;
+  /**
+   * 占号时间（归属-5，用户 2026-09-25）：同一运单号上先占的那一行显示，其余挂靠隐藏。运单行取创建时间，
+   * 订单取投影时刻，升级前已投影的订单记为迁移时刻；同一时刻按 id 排序。手动行不参与，不写这个字段。
+   */
+  occupiedAtMs?: number;
+  /**
+   * 承运商复用旧运单号（用户 2026-10-01/02「C 新件优先（含 A）」，四端）：新件拿走这一行的时刻。这一代之前存的旧件
+   * 不是它的上一次状态：落库时不沿用旧的签收时钟（settledAtMs），这一轮当新件初次出现、不通知。见 services/waybill-reuse.ts。
+   */
+  waybillReuseAtMs?: number;
+  /**
+   * The account list row's own structured status as the Worker reported it, before an unprojected
+   * order's 已揽收 is shown as 已下单 (audit L8, adopted 2026-09-25): the stored-row Home projection gate
+   * reads this instead of re-mapping the raw list state code. Written by every list sync; rows stored
+   * before it existed fall back to the raw code.
+   */
+  listStructuredSemantic?: StatusSemantic;
+  /**
+   * 订单先占号时（用户 2026-09-26 采纳 A）：挂靠在这一行后面的、同一运单自己的承运商记录报出的结构化状态与
+   * 表头。每次落库按挂靠关系重算，只在比订单自己的状态新时被列表采用；轨迹各存各的，这里不存轨迹。
+   */
+  attachedCarrierStatus?: AttachedCarrierStatus;
   updatedAtMs: number;
+};
+
+export type AttachedCarrierStatus = {
+  /** The attached carrier row the status was read from. */
+  shipmentId: string;
+  semantic: StatusSemantic;
+  statusEventAtMs: number;
+  normalizedStatus?: NormalizedStatus;
+  latestTimeText: string;
+  latestDetail: string;
 };
 
 export type PendingManualQuery = {
@@ -207,6 +253,10 @@ export type ShipmentNotificationEvent = Readonly<{
   title: string;
   body: string;
   iconName: string | null;
+  /**
+   * T23（用户 2026-09-26）：排队时这一行的承运商还没对上。不投递；承运商对上的那次存盘按当时的行重新生成标题再放行。
+   */
+  awaitingCarrier?: true;
 }>;
 
 export type AppState = {

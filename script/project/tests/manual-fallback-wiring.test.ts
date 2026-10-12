@@ -28,7 +28,11 @@ const manualDetailSource = await readFile(
 
 assert.match(manualSource, /local:\s*true[\s\S]*route:\s*true[\s\S]*fallback:\s*true/);
 const list = syncSource.slice(syncSource.indexOf("async function refreshOnlineShipment"), syncSource.indexOf("export type ManualShipmentPreview"));
-assert.match(list, /pickerOnly: true, includeKdniaoFallback: false/);
+// 列表（后台）刷新只问一级，从不带快递鸟。用户定 2026-09-24（与 Pipi 对齐）：手动件列表显示 v4_query 时只问
+// v4_query（motoOnly），其余照旧只问 Online（pickerOnly）；行为见 manual-background-list-provider.test.ts。
+assert.match(list,
+  /\{ motoOnly: true \} : \{ pickerFirst: true, pickerOnly: true \}\),\s*includeKdniaoFallback: false,/);
+assert.doesNotMatch(list, /fallbackOnly|includeKdniaoFallback: true/);
 assert.doesNotMatch(list, /refreshWebTimeline|scrapeWebTimeline|queryPendingManualRound/);
 const full = syncSource.slice(syncSource.indexOf("async function runFullRefresh"), syncSource.indexOf("export function refreshAllShipments"));
 assert.doesNotMatch(full, /refreshAccountFollowups|refreshMissingShipmentHistories/);

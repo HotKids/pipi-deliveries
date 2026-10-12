@@ -75,7 +75,13 @@ public class ExpressSyncFlowTest {
                 ()->ExpressSyncEngine.syncAll(context,new int[]{0,0,0},false,"background"));
         assertNotNull(error);
         String logs=ShadowLog.getLogsForTag("PipiExpress").stream().map(row->row.msg).reduce("",(a,b)->a+"\n"+b);
-        assertTrue(logs,logs.contains("WARNING refresh.failed"));
+        // Audit R10 (user 2026-09-25): a failed round is ERROR, as iOS refresh.failed and Pipi
+        // EXPRESS_REFRESH_FAILED are; it used to be WARNING.
+        assertTrue(logs,logs.contains("ERROR refresh.failed"));
+        assertTrue(logs,ShadowLog.getLogsForTag("PipiExpress").stream().anyMatch(row->
+                row.type==android.util.Log.ERROR&&row.msg.contains(" ERROR refresh.failed ")));
+        // The account list failing is ERROR too (iOS account.sync.failed).
+        assertTrue(logs,logs.contains(" ERROR refresh.account.failed "));
         assertTrue(logs,logs.contains("attempted=1"));
         assertTrue(logs,logs.contains("succeeded=0"));
         assertFalse(logs.contains("INFO refresh.succeeded"));

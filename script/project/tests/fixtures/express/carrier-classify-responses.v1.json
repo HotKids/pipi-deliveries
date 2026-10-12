@@ -1,0 +1,609 @@
+{
+  "schemaVersion": 1,
+  "about": "Audit C1/C4 (2026-09-25). `response` is the Worker's real /api/express/classify answer for the recognition state; comCode is a carrier standard code, never a Kuaidi100 code. `reading` is the client contract: success by exact standard code; a 2xx without a resolvable candidate is terminal; 502 recognition_pending with a future integer retryAt is pending; anything else, 4xx included, is a counted failure. A waybill whose paid KDNiao attempts are exhausted (three sent, none answered; user decision 2026-09-27) is answered exactly as an explicit paid no-match.",
+  "readingNowMs": 1790294400000,
+  "cases": [
+    {
+      "name": "recognized SF",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "SF"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "SF",
+              "name": "顺丰速运"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "SF"
+      }
+    },
+    {
+      "name": "recognized ZTO",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "ZTO"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "ZTO",
+              "name": "中通快递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "ZTO"
+      }
+    },
+    {
+      "name": "recognized ZTOKY",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "ZTOKY"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "ZTOKY",
+              "name": "中通快运"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "ZTOKY"
+      }
+    },
+    {
+      "name": "recognized YTO",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "YTO"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "YTO",
+              "name": "圆通速递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "YTO"
+      }
+    },
+    {
+      "name": "recognized STO",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "STO"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "STO",
+              "name": "申通快递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "STO"
+      }
+    },
+    {
+      "name": "recognized YD",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "YD"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "YD",
+              "name": "韵达快递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "YD"
+      }
+    },
+    {
+      "name": "recognized JD",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "JD"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "JD",
+              "name": "京东快递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "JD"
+      }
+    },
+    {
+      "name": "recognized JDKY",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "JDKY"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "JDKY",
+              "name": "京东快运"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "JDKY"
+      }
+    },
+    {
+      "name": "recognized EMS",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "EMS"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "EMS",
+              "name": "EMS"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "EMS"
+      }
+    },
+    {
+      "name": "recognized YZPY",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "YZPY"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "YZPY",
+              "name": "邮政快递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "YZPY"
+      }
+    },
+    {
+      "name": "recognized JTSD",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "JTSD"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "JTSD",
+              "name": "极兔速递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "JTSD"
+      }
+    },
+    {
+      "name": "recognized HTKY",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "HTKY"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "HTKY",
+              "name": "极兔速递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "HTKY"
+      }
+    },
+    {
+      "name": "recognized DBL",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "DBL"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "DBL",
+              "name": "德邦快递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "DBL"
+      }
+    },
+    {
+      "name": "recognized KYSY",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "KYSY"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "KYSY",
+              "name": "跨越速运"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "KYSY"
+      }
+    },
+    {
+      "name": "recognized ZJS",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "ZJS"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "ZJS",
+              "name": "宅急送"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "ZJS"
+      }
+    },
+    {
+      "name": "recognized UC",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "UC"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "UC",
+              "name": "优速快递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "UC"
+      }
+    },
+    {
+      "name": "recognized DANNIAO",
+      "workerState": {
+        "kind": "success",
+        "standardCode": "DANNIAO"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": [
+            {
+              "comCode": "DANNIAO",
+              "name": "丹鸟速递"
+            }
+          ]
+        }
+      },
+      "reading": {
+        "kind": "success",
+        "standardCode": "DANNIAO"
+      }
+    },
+    {
+      "name": "terminal no_match",
+      "workerState": {
+        "kind": "terminal",
+        "reason": "no_match"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": []
+        }
+      },
+      "reading": {
+        "kind": "terminal"
+      }
+    },
+    {
+      "name": "terminal failures",
+      "workerState": {
+        "kind": "terminal",
+        "reason": "failures"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": []
+        }
+      },
+      "reading": {
+        "kind": "terminal"
+      }
+    },
+    {
+      "name": "paid KDNiao attempts exhausted",
+      "workerState": {
+        "kind": "paidFallback",
+        "record": {
+          "schemaVersion": 1,
+          "state": "failure",
+          "attempts": 3
+        }
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "auto": []
+        }
+      },
+      "reading": {
+        "kind": "terminal"
+      }
+    },
+    {
+      "name": "another client holds the recognition lease",
+      "workerState": {
+        "kind": "wait",
+        "retryAt": 1790294460000
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 502,
+        "body": {
+          "error": "recognition_pending",
+          "retryAt": 1790294460000
+        }
+      },
+      "reading": {
+        "kind": "pending",
+        "retryAt": 1790294460000
+      }
+    },
+    {
+      "name": "recognition state unavailable",
+      "workerState": {
+        "kind": "unavailable"
+      },
+      "request": {
+        "waybill": "75627185960079",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 502,
+        "body": {
+          "error": "upstream_unavailable"
+        }
+      },
+      "reading": {
+        "kind": "failure"
+      }
+    },
+    {
+      "name": "invalid waybill",
+      "workerState": {
+        "kind": "none"
+      },
+      "request": {
+        "waybill": "1234",
+        "firstStageCompleted": true
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": "invalid_waybill"
+        }
+      },
+      "reading": {
+        "kind": "failure"
+      }
+    }
+  ],
+  "routeLayer": [
+    {
+      "name": "rate limited",
+      "response": {
+        "status": 429,
+        "body": {
+          "error": "rate_limited"
+        }
+      },
+      "reading": {
+        "kind": "failure"
+      }
+    },
+    {
+      "name": "gateway not configured",
+      "response": {
+        "status": 503,
+        "body": {
+          "error": "gateway_not_configured"
+        }
+      },
+      "reading": {
+        "kind": "failure"
+      }
+    },
+    {
+      "name": "success without an auto list",
+      "response": {
+        "status": 200,
+        "body": {}
+      },
+      "reading": {
+        "kind": "terminal"
+      }
+    }
+  ]
+}

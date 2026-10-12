@@ -9,6 +9,7 @@ import {
 } from "../services/shipment-policy";
 import { emptyState, loadState, saveState } from "../services/storage";
 import type { Shipment, TimelinePackage } from "../models";
+import { seedRecognizedCarriers } from "./carrier-recognition-seed";
 
 const PHONE = "13800000000", ORDER = "9999000011112222", WAYBILL = "SF123456789012";
 const at = (hours: number) => NOW + hours * 3600000;
@@ -19,6 +20,12 @@ function parcel(details: ReturnType<typeof track>[], stateNum = 104) {
     mailNo: ORDER, provider: "JingDong", cpCode: "JDKD", name: "京东商品快递", phone: PHONE,
     stateNum, details,
   }] } }).parcels[0];
+}
+// T23 (user 2026-09-26, 其余裁决 28): the feed-text waybill is projected only once its carrier matched, so every case
+// starts from the recognizer's answer for it (these cases are about the list snapshot, not about recognition).
+function reset() {
+  memory.clear();
+  seedRecognizedCarriers({ [WAYBILL]: "SF" }, NOW);
 }
 function first() {
   return applyAccountShipment(undefined, parcelToShipment(parcel([
@@ -38,7 +45,7 @@ function persist(shipment: Shipment) {
 }
 
 test("a fresh list replaces its snapshot and preserves the JD identity and foreign-package anchor after reload", () => {
-  memory.clear();
+  reset();
   const original = first(), anchor = foreignPackageAnchorMs(original);
   const next = persist(accept(original, [track(-1, "New list event")], 105));
   assert.deepEqual(next.sourceTimeline?.tracks.map(node => node.detail), ["New list event"]);
@@ -55,7 +62,7 @@ test("a fresh list replaces its snapshot and preserves the JD identity and forei
 });
 
 test("an older list cannot replace the latest snapshot or lower its state", () => {
-  memory.clear();
+  reset();
   const latest = accept(first(), [track(-1, "New list event")], 105);
   const stale = persist(accept(latest, [track(-2, "Stale list event")], 104));
   assert.deepEqual(stale.sourceTimeline?.tracks.map(node => node.detail), ["New list event"]);
@@ -64,7 +71,7 @@ test("an older list cannot replace the latest snapshot or lower its state", () =
 });
 
 test("a JD list event advances its snapshot without requiring a status transition after projection", () => {
-  memory.clear();
+  reset();
   const original = first();
   const dto = { ...parcel([track(-1, "Later JD order event")]), normalizedStatusScope: "ORDER" as const };
   const incoming = parcelToShipment(accountParcelWithExistingProjection(dto, [original]), [PHONE], NOW)!;
@@ -75,7 +82,7 @@ test("a JD list event advances its snapshot without requiring a status transitio
 });
 
 test("JD list advances extend the same account query while its raw snapshot remains separate", () => {
-  memory.clear();
+  reset();
   let current = first();
   const query = (hours: number, description: string) => {
     const dto = { ...parcel([track(hours, description)]), waybill: WAYBILL };
@@ -97,7 +104,7 @@ test("JD list advances extend the same account query while its raw snapshot rema
 });
 
 test("first text projection preserves the order anchor while replacing its list snapshot", () => {
-  memory.clear();
+  reset();
   const unresolved = applyAccountShipment(undefined,
     parcelToShipment(parcel([track(-3, "已下单")]), [PHONE], NOW)!, NOW);
   const anchor = foreignPackageAnchorMs(unresolved);

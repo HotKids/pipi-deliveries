@@ -12,7 +12,7 @@ function capture(pattern: RegExp): string {
 }
 const initialLoading = capture(/const \[loadingManualDetail, setLoadingManualDetail\] = useState\(\s*([\s\S]*?),\s*\);/);
 const statusExpression = capture(/const statusText = ([\s\S]*?);/);
-const emptyExpression = capture(/\{(loadingManualDetail \? MANUAL_QUERY_IN_FLIGHT_TEXT : "暂无物流轨迹")\}/);
+const emptyExpression = capture(/\{(loadingManualDetail \? MANUAL_QUERY_IN_FLIGHT_TEXT : "暂无物流信息")\}/);
 const pendingText = capture(/const MANUAL_QUERY_IN_FLIGHT_TEXT = "([^"]+)"/);
 const refreshStart = page.indexOf("  function refresh(forceManualRefresh");
 const refreshEnd = page.indexOf("  async function copyWaybill()", refreshStart);
@@ -117,9 +117,37 @@ for (const entryFails of [false, true]) {
   assert.equal(calls[1].trigger, "detail_pull");
   assert.equal(calls[1].detailEntry, observation, "failed entry outcomes travel to pull too");
   assert.equal(page.refresh(true), page.context.pullInFlightRef.current);
+  const noticesBeforePull = page.state.notices.filter(Boolean).length;
   pull.resolve({ shipment: page.state.shipment, state: {}, refreshed: false, querySucceeded: false });
   await pulling;
-  assert.equal(page.state.notices.at(-1), "failed", "cached content does not turn failure into up-to-date");
+  // User default #10 / audit R3 (2026-09-25): with a cached timeline on screen a failed pull is
+  // silent — neither 「轨迹更新失败」 nor a misleading 「当前轨迹已是最新」.
+  assert.equal(page.state.notices.filter(Boolean).length, noticesBeforePull,
+    "a failed pull over cached content is silent");
+}
+
+// A pull that throws is silent over cached content too, and reports the failure without it.
+for (const [tracks, expected] of [[[{ detail: "Cached event" }], 0], [[], 1]] as const) {
+  const page = pageHarness(shipment("TRANSIT", [...tracks]));
+  page.context.props.refreshOnAppear = "detail_open";
+  page.context.props.manualPreview = null;
+  page.context.refreshShipmentById = async () => { throw new Error("synthetic pull failure"); };
+  const shown = () => page.state.notices.filter(Boolean).length; // setNotice("") only clears the toast
+  const before = shown();
+  await page.refresh(true);
+  assert.equal(shown() - before, expected,
+    `thrown pull with ${tracks.length} cached tracks: ${JSON.stringify(page.state.notices)}`);
+}
+
+// Without any timeline to show, a failed pull still reports the failure.
+{
+  const page = pageHarness(shipment("TRANSIT", []));
+  page.context.props.refreshOnAppear = "detail_open";
+  page.context.props.manualPreview = null;
+  page.context.refreshShipmentById = async () =>
+    ({ shipment: page.state.shipment, state: {}, refreshed: false, querySucceeded: false });
+  await page.refresh(true);
+  assert.equal(page.state.notices.at(-1), "failed", "no cached content: the failure is reported");
 }
 
 // A primary provider may finish while its peer is still pending after an empty Picker.
@@ -172,7 +200,7 @@ for (const fails of [false, true]) {
   else page.network.resolve({ shipment: shipment(), state: {}, refreshed: false });
   await pending;
   assert.equal(page.state.loading, false);
-  assert.deepEqual(page.labels(), { status: "暂无状态", empty: "暂无物流轨迹" });
+  assert.deepEqual(page.labels(), { status: "暂无状态", empty: "暂无物流信息" });
   assert.equal(page.state.notices.at(-1), fails ? "failed" : "empty");
 }
 

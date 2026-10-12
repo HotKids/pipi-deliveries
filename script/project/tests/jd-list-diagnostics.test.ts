@@ -11,6 +11,7 @@ import { applyAccountShipment, applyTargetedAccountShipment, asAccountDetailObse
 import { parseProviderTime } from "../services/status";
 import { saveGatewayToken } from "../services/credentials";
 import { diagnosticText, readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
+import { seedRecognizedCarriers } from "./carrier-recognition-seed";
 
 const PHONE = "13800000000", SECOND_PHONE = "13900000000";
 const OLD = "2026-09-08 08:00:00", NEW = "2026-09-08 10:00:00";
@@ -35,6 +36,9 @@ type Row = ReturnType<typeof record>;
 async function run(before: Row[], after: Row[], phones = [PHONE], enabled = true,
   seed: (shipment: Shipment) => Shipment = shipment => shipment) {
   memory.clear();
+  // T23 (user 2026-09-26, 其余裁决 28): an order's text waybill is projected once recognition matched its carrier; these
+  // cases start from the recognizer's answers so they stay about the list diagnostics.
+  seedRecognizedCarriers({ JD1234567974: "JD", SF1234563374: "SF", "1234567897379": "ZTO" }, NOW);
   const parcels = parseAccountSyncResult("interface5", { code: 0, data: { expressList: before } }).parcels;
   saveState({ ...emptyState(), shipments: parcels.map(parcel => seed(applyAccountShipment(undefined,
     parcelToShipment(parcel, phones, NOW - 3600000)!, NOW - 3600000))),
@@ -148,7 +152,8 @@ test("a received row with no matching binding is visible in diagnostics without 
   assert.equal(stored.shipments.length, 1);
 });
 
-test("removing an order review preserves the first structured completion in list diagnostics", async () => {
+// 2026-09-27: the review of a first structured completion is kept as an ordinary node.
+test("a first-signing order review is kept and preserves the structured completion in list diagnostics", async () => {
   const order = "9999000011112222", waybill = "SF1234563374";
   const row = { ...record(order, "JDKD"), normalizedStatusScope: "ORDER", details: [
     { time: OLD, desc: `交付顺丰速运，运单号为${waybill}` },
@@ -165,7 +170,7 @@ test("removing an order review preserves the first structured completion in list
   assert.equal(d.feedStatusSemantic, "COMPLETED");
   assert.equal(d.listEventAtMs, d.preparedEventAtMs);
   assert.equal(stored.shipments[0].timeline.semantic, "COMPLETED");
-  assert.ok(stored.shipments[0].timeline.tracks.every(track => !track.detail.includes("购物进行评价")));
+  assert.ok(stored.shipments[0].timeline.tracks.some(track => track.detail.includes("购物进行评价")));
 });
 
 test("diagnostics disabled leaves the same list update and produces no per-record entries", async () => {

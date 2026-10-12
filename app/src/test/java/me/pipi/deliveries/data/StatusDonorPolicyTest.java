@@ -28,9 +28,12 @@ public final class StatusDonorPolicyTest {
         for (int i = 0; i < count; i++) tracks.put(new JSONObject()
                 .put("time", format.format(new Date(event - i * 60_000L)))
                 .put("context", pickup && i == count - 1 ? "已揽收" : "Provider event " + i));
+        // The Worker names the 驿站派送中 subtype by its code STA_DELIVERING (status-labels.v1.json);
+        // since audit L5 the displayed word comes from the label table by that code.
         WorkerStatusProjection status = WorkerStatusProjection.read(new JSONObject()
                 .put("normalizedStatus", new JSONObject().put("version", 1).put("scope", "SHIPMENT")
-                        .put("semantic", semantic.name()).put("code", "SERVER_ENUM")
+                        .put("semantic", semantic.name())
+                        .put("code", priority == 1 ? "STA_DELIVERING" : "SERVER_ENUM")
                         .put("text", priority == 1 ? "驿站派送中" : semantic.label)
                         .put("priority", priority).put("eventAtMs", event)
                         .put("structured", semantic != StatusSemantic.UNKNOWN)));

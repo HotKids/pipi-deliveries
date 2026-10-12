@@ -38,6 +38,14 @@ public final class ExpressOrderProjectionIdentity {
                 : value.bindingSource + ":" + value.normalizedOrderId;
     }
 
+    /**
+     * 京粉页按订单存的本地状态（冷却、空壳记号）只用这一个键：订单号（去空白、转大写）的 SHA-256，
+     * 不存订单号本身（AGENTS §9）。
+     */
+    public static String orderHash(String orderId) {
+        return sha256(clean(orderId).toUpperCase(Locale.ROOT));
+    }
+
     public static String routeFingerprint(ExpressItem item) {
         if (item == null) return "";
         String owner = item.stateOwner.isEmpty() ? item.source : item.stateOwner;

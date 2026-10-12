@@ -214,6 +214,9 @@ export const EXPRESS_POLICY = {
         "standardCode": "YZPY",
         "displayName": "邮政快递",
         "kuaidi100Code": "youzhengguonei",
+        "kuaidi100CodeAliases": [
+          "youzhengbk"
+        ],
         "hotline": "11183",
         "iconKey": "yzpy",
         "requiresPhoneTail": false,

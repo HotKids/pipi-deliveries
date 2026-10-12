@@ -595,8 +595,8 @@ assert.deepEqual(
 );
 
 // A JingDong order may project after another automatic source already owns the
-// real waybill. Projection converges both rows under that existing owner while
-// retaining the projected package as its own source observation.
+// real waybill. Since the ownership plan (T1, user 2026-09-25) each record keeps
+// its own row: the projection lands on the order's row and the other row stays as it was.
 const projectedWaybill = "JDPROJECTEDREAL001";
 const projectedPhone = "13800138000";
 const existingRealOwner = shipment({
@@ -861,6 +861,8 @@ memory.clear();
 for (const [key, value] of memoryBeforeProjectionPersistence) {
   memory.set(key, value);
 }
+// 归属方案 T1（用户 2026-09-25 采纳）：订单只写它自己的行。以前这一段断言投影后两行收成一行、并在已有归属方的行下面；
+// 现在另一个来源已占的运单行原样不动，订单在自己的行上挂上真实运单号，两行各有自己的观测槽。
 const screenedCanonicalPeerProjection = mergeAccountParcel(
   emptyState(),
   [existingRealOwner, completedOrderBesideCanonicalPeer],
@@ -870,18 +872,20 @@ const screenedCanonicalPeerProjection = mergeAccountParcel(
   NOW + 3,
   new Map(),
 );
-assert.equal(screenedCanonicalPeerProjection.length, 1);
+const orderRowOf = (rows: readonly Shipment[]) =>
+  rows.find((item) => item.identity.id === existingOrderOwner.identity.id);
+assert.equal(screenedCanonicalPeerProjection.length, 2, "each record keeps its own row");
 assert.equal(
-  screenedCanonicalPeerProjection[0]?.automaticOwnership?.observations.find(
+  orderRowOf(screenedCanonicalPeerProjection)?.automaticOwnership?.observations.find(
     (observation) => observation.source === "interface5",
   )?.identity.projectedWaybill,
   projectedWaybill,
-  "a completed order fallback must still converge on its real waybill",
+  "a completed order fallback must still converge on its real waybill, on its own row",
 );
-assert.equal(
-  screenedCanonicalPeerProjection[0]?.timeline.provider,
-  "interface6",
-  "the established canonical owner remains authoritative",
+assert.deepEqual(
+  screenedCanonicalPeerProjection.find((item) => item.identity.id === existingRealOwner.identity.id),
+  existingRealOwner,
+  "the established owner of the real waybill is not rewritten",
 );
 const projectionWithoutRawCarrier = {
   ...projectionParcel,
@@ -898,7 +902,7 @@ const retainedProjectionWithoutRawCarrier = mergeAccountParcel(
   new Map(),
 );
 assert.equal(
-  retainedProjectionWithoutRawCarrier[0]?.automaticOwnership?.observations.find(
+  orderRowOf(retainedProjectionWithoutRawCarrier)?.automaticOwnership?.observations.find(
     (observation) => observation.source === "interface5",
   )?.identity.projectedWaybill,
   projectedWaybill,
@@ -913,30 +917,28 @@ const convergedProjection = mergeAccountParcel(
   NOW + 4,
   new Map(),
 );
-assert.equal(convergedProjection.length, 1);
-assert.equal(
-  convergedProjection[0]?.automaticOwnership?.ownerSource,
-  "interface6",
+assert.equal(convergedProjection.length, 2);
+const realOwnerAfterProjection = convergedProjection.find(
+  (item) => item.identity.id === existingRealOwner.identity.id,
 );
-assert.equal(convergedProjection[0]?.identity.id, existingRealOwner.identity.id);
-assert.equal(convergedProjection[0]?.timeline.provider, "interface6");
+assert.deepEqual(realOwnerAfterProjection, existingRealOwner,
+  "the order's observation is not written into another record's row");
+assert.equal(realOwnerAfterProjection?.timeline.provider, "interface6");
+assert.equal(orderRowOf(convergedProjection)?.automaticOwnership?.ownerSource, "interface5");
 assert.deepEqual(
-  new Set(
-    convergedProjection[0]?.automaticOwnership?.observations.map(
-      (observation) => observation.source,
-    ),
-  ),
-  new Set(["interface5", "interface6"]),
+  new Set(orderRowOf(convergedProjection)?.automaticOwnership?.observations.map(
+    (observation) => observation.source,
+  )),
+  new Set(["interface5"]),
 );
 assert.equal(
-  convergedProjection[0]?.automaticOwnership?.observations.find(
+  orderRowOf(convergedProjection)?.automaticOwnership?.observations.find(
     (observation) => observation.source === "interface5",
   )?.identity.projectedWaybill,
   projectedWaybill,
 );
 
-// Once an order projection is absorbed under the real-waybill owner, the next
-// account-list summary must resolve that durable observation instead of adding
+// The next account-list summary resolves the order's durable projection on its own row instead of adding
 // the 16-digit order placeholder again.
 const orderSummaryAfterProjection = {
   ...projectionParcel,
@@ -959,28 +961,33 @@ const afterProjectedOrderSummary = mergeAccountParcel(
 );
 assert.equal(
   afterProjectedOrderSummary.length,
-  1,
+  2,
   "the next account sync must not recreate the order-number row",
 );
 assert.equal(
-  afterProjectedOrderSummary[0]?.automaticOwnership?.observations.find(
+  orderRowOf(afterProjectedOrderSummary)?.automaticOwnership?.observations.find(
     (observation) => observation.source === "interface5",
   )?.identity.projectedWaybill,
   projectedWaybill,
   "the confirmed projection must remain the interface5 identity",
 );
 assert.equal(
-  afterProjectedOrderSummary[0]?.automaticOwnership?.observations.find(
+  orderRowOf(afterProjectedOrderSummary)?.automaticOwnership?.observations.find(
     (observation) => observation.source === "interface5",
   )?.sourceTimeline.semantic,
   "TRANSIT",
-  "an order summary must not overwrite the absorbed source observation",
+  "an order summary must not overwrite the projected source observation",
 );
 assert.equal(
-  afterProjectedOrderSummary[0]?.automaticOwnership?.observations.find(
+  orderRowOf(afterProjectedOrderSummary)?.automaticOwnership?.observations.find(
     (observation) => observation.source === "interface5",
   )?.sourceTimeline.latestDetail,
   "projection package",
+);
+assert.deepEqual(
+  afterProjectedOrderSummary.find((item) => item.identity.id === existingRealOwner.identity.id),
+  realOwnerAfterProjection,
+  "the order summary does not touch the other record's row",
 );
 
 for (const semantic of ["DELIVERY", "COMPLETED"] as const) {
@@ -1386,6 +1393,13 @@ const multiBindingB = shipment({
   source: "interface5",
   phone: phoneB,
 });
+// One record seen through two bound phones has one record number (the row id is source + record, never the phone);
+// since the ownership plan (T1, user 2026-09-25) a different record never writes another record's row.
+multiBindingB.identity = {
+  ...multiBindingB.identity,
+  id: multiBindingA.identity.id,
+  sourceId: multiBindingA.identity.sourceId,
+};
 multiBindingB.timeline = {
   ...multiBindingB.timeline,
   provider: "interface5",
@@ -1869,6 +1883,17 @@ legacyShortJdOrder.manualTimelines = [{
   ...legacyShortJdOrder.timeline,
   provider: "kdniao",
 }];
+// Audit L6 / user default #3 (2026-09-25): prose naming the number is no longer order evidence, so a row
+// stored with only that prose stays as it was stored. The repair still runs from the stored Worker ORDER
+// scope, which is the case asserted below.
+const proseOnly = saveState({
+  ...emptyState(),
+  shipments: [legacyShortJdOrder],
+}, NOW).shipments[0];
+assert.equal(proseOnly.identity.accountOrder, false, "timeline prose alone no longer repairs the row");
+assert.equal(proseOnly.identity.companyName, "京东快递");
+memory.clear();
+legacyShortJdOrder.statusPresentation = { scope: "ORDER", semantic: "COMPLETED", text: "已完成" };
 const healedShortJdOrder = saveState({
   ...emptyState(),
   shipments: [legacyShortJdOrder],
@@ -1884,6 +1909,108 @@ assert.deepEqual(healedShortJdOrder.statusPresentation, {
   semantic: "COMPLETED",
   text: "已完成",
 });
+
+// R-30: 京东的「评价赢京豆」广告写的是「您的订单[商品名]已完成」，点的是商品不是单号。它不得把
+// 一张 12 位承运商运单号改写成订单号——那会连带把承运商换成「京东购物」、清掉手动轨迹，并且关掉
+// withoutJingDongOrderCompletion 里本该拦下这条广告的那道门。
+memory.clear();
+const advertOnCarrierWaybill = shipment({
+  id: "interface5:account:751234567890",
+  source: "interface5",
+});
+advertOnCarrierWaybill.identity.sourceId = "751234567890";
+advertOnCarrierWaybill.identity.sourceOwner = "interface5";
+advertOnCarrierWaybill.identity.sourceProvider = "JingDong";
+advertOnCarrierWaybill.identity.courierCode = "ZTO";
+advertOnCarrierWaybill.identity.companyName = "中通快递";
+advertOnCarrierWaybill.identity.orderId = "";
+advertOnCarrierWaybill.identity.accountOrder = false;
+advertOnCarrierWaybill.timeline.waybill = "751234567890";
+advertOnCarrierWaybill.timeline.semantic = "COMPLETED";
+advertOnCarrierWaybill.timeline.latestDetail =
+  "您的订单[农夫山泉婴幼儿...]已完成，20京豆等您拿，完成评价即有机会获得，不要错过呦！";
+advertOnCarrierWaybill.timeline.tracks[0] = {
+  ...advertOnCarrierWaybill.timeline.tracks[0],
+  detail: advertOnCarrierWaybill.timeline.latestDetail,
+};
+advertOnCarrierWaybill.sourceTimeline = advertOnCarrierWaybill.timeline;
+advertOnCarrierWaybill.manualTimelines = [{
+  ...advertOnCarrierWaybill.timeline,
+  provider: "kdniao",
+}];
+const advertKeptItsWaybill = saveState({
+  ...emptyState(),
+  shipments: [advertOnCarrierWaybill],
+}, NOW).shipments[0];
+assert.equal(advertKeptItsWaybill.identity.accountOrder, false);
+assert.equal(advertKeptItsWaybill.identity.orderId, "");
+assert.equal(advertKeptItsWaybill.identity.companyName, "中通快递");
+assert.equal(advertKeptItsWaybill.identity.sourceOwner, "interface5");
+assert.deepEqual(advertKeptItsWaybill.statusPresentation, undefined);
+
+// 已经按包裹存下的 12 位换货单：存盘修复按上游订单身份（JDKD + name「京东商品快递」，name 存在
+// rawCompanyName 里）把它改回订单，不靠文案。
+memory.clear();
+const storedExchangeOrder = shipment({
+  id: "interface5:account:351100058925",
+  source: "interface5",
+});
+storedExchangeOrder.identity.sourceId = "351100058925";
+storedExchangeOrder.identity.sourceOwner = "interface5";
+storedExchangeOrder.identity.sourceProvider = "JingDong";
+storedExchangeOrder.identity.courierCode = "JDKD";
+storedExchangeOrder.identity.rawCourierCode = "JDKD";
+storedExchangeOrder.identity.rawCompanyName = "京东商品快递";
+storedExchangeOrder.identity.companyName = "京东商品快递";
+storedExchangeOrder.identity.orderId = "";
+storedExchangeOrder.identity.accountOrder = false;
+storedExchangeOrder.timeline.waybill = "351100058925";
+storedExchangeOrder.timeline.semantic = "PICKED";
+storedExchangeOrder.timeline.latestDetail = "预计9月24日发货，9月26日(周六)送达";
+storedExchangeOrder.timeline.tracks[0] = {
+  ...storedExchangeOrder.timeline.tracks[0],
+  detail: storedExchangeOrder.timeline.latestDetail,
+};
+storedExchangeOrder.sourceTimeline = storedExchangeOrder.timeline;
+const healedExchangeOrder = saveState({
+  ...emptyState(),
+  shipments: [storedExchangeOrder],
+}, NOW).shipments[0];
+assert.equal(healedExchangeOrder.identity.accountOrder, true);
+assert.equal(healedExchangeOrder.identity.orderId, "351100058925");
+assert.equal(healedExchangeOrder.identity.companyName, "京东购物");
+
+// 用户定 2026-09-24：12 位纯数字的真实承运商运单号也会带 JDKD，但上游 name 是「京东快递」。它不是
+// 订单：存盘修复不得把它改成订单，也不得清掉它的手动轨迹。
+memory.clear();
+const storedJdkdWaybill = shipment({
+  id: "interface5:account:751234567891",
+  source: "interface5",
+});
+storedJdkdWaybill.identity.sourceId = "751234567891";
+storedJdkdWaybill.identity.sourceOwner = "interface5";
+storedJdkdWaybill.identity.sourceProvider = "JingDong";
+storedJdkdWaybill.identity.courierCode = "JDKD";
+storedJdkdWaybill.identity.rawCourierCode = "JDKD";
+storedJdkdWaybill.identity.rawCompanyName = "京东快递";
+storedJdkdWaybill.identity.companyName = "京东快递";
+storedJdkdWaybill.identity.orderId = "";
+storedJdkdWaybill.identity.accountOrder = false;
+storedJdkdWaybill.timeline.waybill = "751234567891";
+storedJdkdWaybill.sourceTimeline = storedJdkdWaybill.timeline;
+storedJdkdWaybill.manualTimelines = [{
+  ...storedJdkdWaybill.timeline,
+  provider: "v6_query",
+}];
+const keptJdkdWaybill = saveState({
+  ...emptyState(),
+  shipments: [storedJdkdWaybill],
+}, NOW).shipments[0];
+assert.equal(keptJdkdWaybill.identity.accountOrder, false);
+assert.equal(keptJdkdWaybill.identity.orderId, "");
+assert.equal(keptJdkdWaybill.identity.sourceOwner, "interface5");
+assert.equal(keptJdkdWaybill.identity.companyName, "京东快递");
+assert.deepEqual(keptJdkdWaybill.manualTimelines?.map((timeline) => timeline.provider), ["v6_query"]);
 
 // Projection retry metadata is durable only for an unprojected order and only when its route
 // fingerprint and failure timestamp are valid.
@@ -2074,19 +2201,31 @@ assert.equal(
 {
   const reminder = {
     ...expiredSigned,
+    settledAtMs: expiredState.shipments[0]!.settledAtMs,
     identity: { ...expiredSigned.identity, id: "expired-with-reminder" },
     timeline: {
       ...expiredSigned.timeline,
       latestTimeText: "2026-08-25 14:00:00",
       latestDetail: "售后提醒",
       tracks: [{ timeText: "2026-08-25 14:00:00", timeMs: NOW - 86400000,
-        detail: "售后提醒", statusCode: "", raw: {} }, ...expiredSigned.timeline.tracks],
+        detail: "售后提醒", statusCode: "", raw: { normalizedStatus: {
+          version: 1, scope: "SHIPMENT", semantic: "COMPLETED", code: "SIGNED", text: "Signed",
+          priority: 0, eventAtMs: NOW - 86400000, structured: true,
+        } } }, ...expiredSigned.timeline.tracks],
     },
   };
   const saved = saveState({ ...emptyState(), shipments: [reminder] }, NOW);
   assert.equal(saved.shipments[0]!.settledAtMs, signedAt);
   assert.equal(visibleShipments(saved, NOW).length, 1);
   assert.equal(loadState(NOW).shipments[0]!.settledAtMs, signedAt);
+  const untypedReminder = { ...reminder, timeline: { ...reminder.timeline,
+    tracks: [{ ...reminder.timeline.tracks[0]!, raw: {} }, ...expiredSigned.timeline.tracks] } };
+  const aligned = saveState({ ...emptyState(), shipments: [untypedReminder] }, NOW);
+  assert.equal(aligned.shipments[0]!.timeline.latestTimeText, expiredSigned.timeline.latestTimeText,
+    "the 10-08 rule rolls an unknown newer headline back to the signing donor");
+  assert.equal(visibleShipments(aligned, NOW).length, 0,
+    "retention still reads the aligned displayed date");
+  assert.equal(aligned.shipments[0]!.settledAtMs, signedAt);
 }
 // Manual rows keep the same seven hidden days of signed history as account rows.
 const expiredManual = shipment({
@@ -3507,11 +3646,14 @@ console.log("durable notification commit and restart tests passed");
   const firstSeen = shipment({ id: "interface5:account:FIRSTSEEN", source: "interface5", semantic: "TRANSIT" });
   const initial = saveState({ ...emptyState(), shipments: [original] }, NOW);
   const context = { previousById: new Map(initial.shipments.map((row) => [row.identity.id, row])), batchId: "synthetic-full-round" };
-  const update = (row: Shipment, semantic: StatusSemantic, time: number): Shipment => ({
-    ...row, sourceTimeline: undefined,
-    timeline: { ...row.timeline, semantic, latestDetail: `Synthetic ${semantic}`, statusEventAtMs: time },
-    updatedAtMs: time,
-  });
+  const update = (row: Shipment, semantic: StatusSemantic, time: number): Shipment => {
+    const timeText = new Date(time + 8 * 3600000).toISOString().slice(0, 19).replace("T", " ");
+    const detail = `Synthetic ${semantic}`;
+    return { ...row, sourceTimeline: undefined,
+      timeline: { ...row.timeline, semantic, latestDetail: detail, latestTimeText: timeText,
+        statusEventAtMs: time, tracks: [{ timeMs: time, timeText, detail, statusCode: "", raw: {} }] },
+      updatedAtMs: time };
+  };
   const first = commitRefreshState(initial, { ...initial, shipments: [
     update(original, "TRANSIT", NOW + 1), firstSeen,
   ] }, "interface5", NOW + 1, undefined, context).state;
@@ -3763,6 +3905,8 @@ console.log("Home repair request, freeze and cancellation partition tests passed
   const restored = loadState(NOW + 1).shipments[0];
   assert.deepEqual(restored.timeline.normalizedStatus, projected);
   assert.deepEqual(restored.manualTimelines?.[0].normalizedStatus, projected);
-  assert.equal(loadWidgetSnapshot(NOW + 1).rows[0].statusLabel, projected.text);
+  // The widget word comes from the label table by the subtype code (用户 2026-10-02「驿站派送中 统一映射成
+  // 待派送」), not from the persisted Worker text.
+  assert.equal(loadWidgetSnapshot(NOW + 1).rows[0].statusLabel, "待派送");
 }
 console.log("Worker projection persistence tests passed");

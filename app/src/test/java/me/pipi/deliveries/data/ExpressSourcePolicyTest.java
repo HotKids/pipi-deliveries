@@ -47,39 +47,56 @@ public final class ExpressSourcePolicyTest {
     public void accountOrderShowsFeedStateOnceProjectedAndOnlyTerminalStatesBefore() {
         assertEquals(StatusSemantic.ORDERED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "", StatusSemantic.PICKED));
+                        "I5-JD", "", StatusSemantic.PICKED, true));
         // 用户定 2026-09-08：只有「已揽收（含待揽件）且还没有运单号」才降级成已下单，其余状态
         // 照来源显示——一票走完的订单以前也被压成「已下单」。
         assertEquals(StatusSemantic.ORDERED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "", StatusSemantic.SHIPPED));
+                        "I5-JD", "", StatusSemantic.SHIPPED, true));
         assertEquals(StatusSemantic.TRANSIT,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "", StatusSemantic.TRANSIT));
+                        "I5-JD", "", StatusSemantic.TRANSIT, true));
         assertEquals(StatusSemantic.DELIVERY,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "", StatusSemantic.DELIVERY));
+                        "I5-JD", "", StatusSemantic.DELIVERY, true));
         assertEquals(StatusSemantic.WAITING_PICKUP,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "", StatusSemantic.WAITING_PICKUP));
+                        "I5-JD", "", StatusSemantic.WAITING_PICKUP, true));
         assertEquals(StatusSemantic.COMPLETED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "", StatusSemantic.COMPLETED));
+                        "I5-JD", "", StatusSemantic.COMPLETED, true));
         assertEquals(StatusSemantic.CANCELLED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "", StatusSemantic.CANCELLED));
+                        "I5-JD", "", StatusSemantic.CANCELLED, true));
         assertEquals(StatusSemantic.COMPLETED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "JD0256719746857", StatusSemantic.COMPLETED));
+                        "I5-JD", "JD0256719746857", StatusSemantic.COMPLETED, true));
         assertEquals(StatusSemantic.TRANSIT,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I6-JD", "YT0256719746857", StatusSemantic.TRANSIT));
+                        "I6-JD", "YT0256719746857", StatusSemantic.TRANSIT, true));
         assertEquals(StatusSemantic.PICKED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "I5-JD", "JD0256719746857", StatusSemantic.PICKED));
+                        "I5-JD", "JD0256719746857", StatusSemantic.PICKED, true));
         assertEquals(StatusSemantic.PICKED,
                 ExpressSourcePolicy.accountOrderPresentationSemantic(
-                        "INTERFACE5", "", StatusSemantic.PICKED));
+                        "INTERFACE5", "", StatusSemantic.PICKED, true));
+    }
+
+    /**
+     * 审计 L1（用户 2026-09-25 采纳）：还没投影出运单号的订单，Worker 明确给的 UNKNOWN 保持 UNKNOWN（「暂无状态」，
+     * 与 iOS、Pipi 同），只有 Worker 没给状态时才停在订单阶段「已下单」。
+     */
+    @Test
+    public void anExplicitWorkerUnknownStaysUnknownOnAnUnprojectedOrder() {
+        assertEquals(StatusSemantic.UNKNOWN,
+                ExpressSourcePolicy.accountOrderPresentationSemantic(
+                        "I5-JD", "", StatusSemantic.UNKNOWN, true));
+        assertEquals(StatusSemantic.ORDERED,
+                ExpressSourcePolicy.accountOrderPresentationSemantic(
+                        "I5-JD", "", StatusSemantic.UNKNOWN, false));
+        assertEquals(StatusSemantic.ORDERED,
+                ExpressSourcePolicy.accountOrderPresentationSemantic(
+                        "I5-JD", "", StatusSemantic.PICKED, false));
     }
 
     @Test

@@ -5,15 +5,22 @@ import static org.junit.Assert.*;
 import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
+import com.google.android.material.progressindicator.LinearProgressIndicator;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import me.pipi.deliveries.R;
 import me.pipi.deliveries.data.ExpressAutomaticDetailPersistenceTest.SyntheticSecretBox;
 import me.pipi.deliveries.data.ExpressDatabase;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
+import me.pipi.deliveries.model.ManualQuerySuccess;
 import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.network.ExpressQueryCancellation;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -48,6 +55,10 @@ public class ExpressDetailH5EligibilityTest {
         CaptureShadow.phones = null;
     }
 
+    @After public void tearDown() {
+        ((ExecutorService) ReflectionHelpers.getField(activity, "worker")).shutdownNow();
+    }
+
     @Test public void staleProjectedHistoryWithFeedPickupDoesNotReopenJdH5() {
         ExpressItem owner = order(true, "已揽收");
         assertFalse(ReflectionHelpers.callInstanceMethod(activity, "currentDetailComplete",
@@ -72,6 +83,47 @@ public class ExpressDetailH5EligibilityTest {
                 ClassParameter.from(ExpressItem.class, owner),
                 ClassParameter.from(ExpressQueryCancellation.class, new ExpressQueryCancellation(1000L)));
         assertEquals(List.of("1234"), CaptureShadow.phones);
+    }
+
+    @Test public void manualDetailRechecksOldHistoryAgainstTheCurrentSignedClock() throws Exception {
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.ROOT);
+        format.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Shanghai"));
+        long signedAt = System.currentTimeMillis() - 60_000L;
+        for (boolean aligned : new boolean[]{false, true}) {
+            String waybill = aligned ? "SFALIGNEDSTOP" : "SFSTALESTOP";
+            String latest = format.format(new java.util.Date(signedAt));
+            String historyAt = format.format(new java.util.Date(aligned ? signedAt : signedAt - 10 * 60 * 60_000L));
+            ExpressQueryResult online = new ExpressQueryResult(waybill, "SF", "顺丰速运",
+                    StatusSemantic.COMPLETED, ExpressTimeline.parseTime(latest), latest,
+                    "Current status", "[{\"time\":\"" + latest + "\",\"context\":\"Current status\"}]",
+                    "", PHONE, "v6_query", "", "", "")
+                    .withManualStatusEvidence("已签收", true);
+            ExpressQueryResult h5 = new ExpressQueryResult(waybill, "SF", "顺丰速运",
+                    StatusSemantic.UNKNOWN, historyAt, "已揽收",
+                    "[{\"time\":\"" + historyAt + "\",\"context\":\"已揽收\"}]",
+                    "", PHONE, "k100_h5");
+            ExpressItem owner = repository.saveManualQueryBatch(null, null, List.of(
+                    new ManualQuerySuccess("v6_query", online, System.currentTimeMillis(), false),
+                    new ManualQuerySuccess("k100_h5", h5, System.currentTimeMillis(), true)), PHONE, "interface5");
+            assertNotNull(owner);
+            assertTrue(owner.manuallyAdded);
+            assertEquals(StatusSemantic.COMPLETED, owner.semantic);
+            assertEquals("k100_h5", repository.manualDetailTimelineAuthority(owner).provider);
+
+            activity.setTheme(R.style.AppTheme);
+            ReflectionHelpers.setField(activity, "nativeProgress", new LinearProgressIndicator(activity));
+            ReflectionHelpers.setField(activity, "item", owner);
+            ReflectionHelpers.setField(activity, "localRefreshInFlight", false);
+            ReflectionHelpers.setField(activity, "pullRefreshRequested", true);
+            CaptureShadow.calls = 0;
+            ReflectionHelpers.callInstanceMethod(activity, "refreshLocalTimelineInBackground",
+                    ClassParameter.from(boolean.class, false));
+            Future<?> task = ReflectionHelpers.getField(activity, "localRefreshTask");
+            task.get(5, TimeUnit.SECONDS);
+            assertFalse(ReflectionHelpers.getField(activity, "localRefreshFailed"));
+            assertEquals("Only history aligned with the latest signed evidence can suppress H5",
+                    aligned ? 0 : 1, CaptureShadow.calls);
+        }
     }
 
     @Test public void staleQueryPickupCannotStopCainiaoFallbackAfterH5MissesPickup() {

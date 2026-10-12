@@ -42,6 +42,22 @@ function firstText(value: JsonObject, ...keys: string[]): string {
   return "";
 }
 
+/**
+ * Kuaidi100's "no match" answer: `result:false` with returnCode 201, written as the string "201" or
+ * as the number 201. Both read as unrecognized, the paid stage decides (user decision 2026-09-26).
+ */
+function isNoMatchAnswer(root: JsonObject): boolean {
+  const code = root.returnCode;
+  return root.result === false &&
+    (typeof code === "string" ? code.trim() === "201" : code === 201);
+}
+
+/**
+ * The free recognizer's answer read the Worker/Pipi way (audit C3, adopted 2026-09-25): a bare array
+ * or an `auto` list gives candidates, the documented no-match answer gives none, and anything else —
+ * an object without `auto` included — is a retryable failure that throws and never reaches the paid
+ * stage (shared cases: tests/fixtures/express/k100-autocomnum-responses.v1.json).
+ */
 export function parseKuaidi100CarrierCandidates(
   value: unknown,
 ): Kuaidi100CarrierCandidate[] {
@@ -50,7 +66,10 @@ export function parseKuaidi100CarrierCandidates(
     ? value
     : Array.isArray(root.auto)
     ? root.auto
-    : [];
+    : Object.keys(root).length && isNoMatchAnswer(root)
+    ? []
+    : null;
+  if (!source) throw new Error("invalid public carrier response");
   const result: Kuaidi100CarrierCandidate[] = [];
   for (const value of source) {
     const item = object(value);
@@ -95,6 +114,10 @@ export async function detectKuaidi100CarrierCandidates(
     const request = (async () => {
       response = await fetch(url, {
         method: "POST",
+        // The endpoint answers a browser UA with 200 and anything else with a 301. Following that
+        // redirect turns the refusal into a 200 carrying non-JSON, which then reads as a parse
+        // failure — the other three callers all pin this and iOS was the only one that did not.
+        redirect: "error",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
           "User-Agent": KUAIDI100_PUBLIC_USER_AGENT,

@@ -103,7 +103,6 @@ const widgetHostPolicy = fullRefreshHostPolicy({
 });
 assert.deepEqual(widgetHostPolicy, {
   accountOrderProjection: false,
-  webViewEnrichment: false,
   accountFollowupReserveMs: 0,
 });
 assert.deepEqual(
@@ -113,7 +112,6 @@ assert.deepEqual(
   }),
   {
     accountOrderProjection: true,
-    webViewEnrichment: false,
     accountFollowupReserveMs: ACCOUNT_FOLLOWUP_RESERVE_MS,
   },
 );

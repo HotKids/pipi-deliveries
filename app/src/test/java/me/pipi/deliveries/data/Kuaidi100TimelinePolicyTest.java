@@ -59,25 +59,54 @@ public final class Kuaidi100TimelinePolicyTest {
 
     @Test
     public void signedKuaidi100CacheControlsLocalDetailLifetime() {
-        ExpressQueryResult cached = result(StatusSemantic.COMPLETED,
+        // The cache proves its signature by its own status time (audit D10, user 2026-09-25): a
+        // 签收 headline or node alone is no signed evidence, so that form refreshes now.
+        long signedAt = ExpressSourcePolicy.parseEventTime("2026-01-01 00:00:00");
+        ExpressQueryResult cached = result(StatusSemantic.COMPLETED, signedAt,
                 "2026-01-01 00:00:00", "已签收", "[]");
-        long afterWindow = ExpressSourcePolicy.parseEventTime(cached.latestTime)
-                + 1L;
-        assertFalse(Kuaidi100TimelinePolicy.shouldRefresh(
-                item(StatusSemantic.TRANSIT,
-                        "[{\"time\":\"2026-01-01 00:00:00\",\"context\":\"快件已签收\"}]"),
-                cached, afterWindow));
+        long afterWindow = signedAt + 1L;
+        ExpressItem transit = item(StatusSemantic.TRANSIT,
+                "[{\"time\":\"2026-01-01 00:00:00\",\"context\":\"快件已签收\"}]");
+        assertFalse(Kuaidi100TimelinePolicy.shouldRefresh(transit, cached, afterWindow));
+        assertTrue(Kuaidi100TimelinePolicy.shouldRefresh(transit, result(StatusSemantic.COMPLETED,
+                "2026-01-01 00:00:00", "已签收", "[]"), afterWindow));
     }
 
+    /**
+     * 审计 D10（用户 2026-09-25 采纳，与 iOS、Pipi 同）：揽收与起点只看节点证据。包自己（或选包时借来的）状态是
+     * PICKED / ORDERED、却没有对应节点时，不算有揽收、不算到了起点；有揽收节点或下单节点才算。
+     */
     @Test
-    public void signedTimelineRecoversMissingTopLevelEventTime() {
+    public void onlyANodeProvesPickupOrTheStart() {
+        String transitOnly = "[{\"time\":\"2026-08-15 10:00:00\",\"context\":\"快件到达转运中心\"}]";
+        assertFalse(Kuaidi100TimelinePolicy.hasPickupEvidence(result(StatusSemantic.PICKED,
+                "2026-08-15 10:00:00", "快件到达转运中心", transitOnly)));
+        assertFalse(Kuaidi100TimelinePolicy.hasTimelineStart(result(StatusSemantic.ORDERED,
+                "2026-08-15 10:00:00", "快件到达转运中心", transitOnly)));
+        String withPickup = "[{\"time\":\"2026-08-15 10:00:00\",\"context\":\"快件到达转运中心\"},"
+                + "{\"time\":\"2026-08-15 08:00:00\",\"context\":\"【上海】已揽收\"}]";
+        assertTrue(Kuaidi100TimelinePolicy.hasPickupEvidence(result(StatusSemantic.TRANSIT,
+                "2026-08-15 10:00:00", "快件到达转运中心", withPickup)));
+        String withOrder = "[{\"time\":\"2026-08-15 08:00:00\",\"context\":\"您的订单已提交\"}]";
+        assertTrue(Kuaidi100TimelinePolicy.hasTimelineStart(result(StatusSemantic.UNKNOWN,
+                "2026-08-15 08:00:00", "您的订单已提交", withOrder)));
+    }
+
+    /**
+     * 审计 D10（用户 2026-09-25 采纳）：没有结构化状态时间时，不再从「签收」文案的节点推出签收时间——冻结要有依据，
+     * 不靠猜（AGENTS §9 签收冻结，与 iOS、Pipi 同）。此前这里断言文案节点能补上缺失的签收时间、停止刷新。
+     */
+    @Test
+    public void aSignedTextNodeIsNoSignedTimeWithoutAStructuredOne() {
         String signedTime = "2026-01-01 00:00:00";
         ExpressQueryResult cached = result(StatusSemantic.COMPLETED,
                 "", "已签收", "[{\"time\":\"" + signedTime
                         + "\",\"context\":\"快件已签收\"}]");
         long afterWindow = ExpressSourcePolicy.parseEventTime(signedTime)
                 + 1L;
-        assertFalse(Kuaidi100TimelinePolicy.shouldRefresh(
+        assertTrue(Kuaidi100TimelinePolicy.shouldRefresh(
+                item(StatusSemantic.COMPLETED, 0L), cached, afterWindow));
+        assertEquals(0L, ExpressLifecycleTimes.signedEvidenceAt(
                 item(StatusSemantic.COMPLETED, 0L), cached, afterWindow));
     }
 
@@ -127,8 +156,9 @@ public final class Kuaidi100TimelinePolicyTest {
         assertEquals("已揽收", tracks.get(3).detail);
     }
 
+    // 用户 2026-09-25 定（审计 D6「换成最新」）：已签收的包状态照旧冻结，签收之后又来的节点照样当表头。
     @Test
-    public void completedTimedPackageFreezesHeaderButMergesLaterHistory() {
+    public void completedTimedPackageFreezesStatusButItsHeadlineFollowsLaterHistory() {
         long completedAt = ExpressSourcePolicy.parseEventTime("2026-08-15 12:00:00");
         long transitAt = ExpressSourcePolicy.parseEventTime("2026-08-15 13:00:00");
         ExpressQueryResult cached = result(
@@ -148,11 +178,104 @@ public final class Kuaidi100TimelinePolicyTest {
 
         assertEquals(StatusSemantic.COMPLETED, merged.semantic);
         assertEquals(completedAt, merged.statusEventTime);
-        assertEquals("2026-08-15 12:00:00", merged.latestTime);
-        assertEquals("已签收", merged.latestDetail);
+        assertEquals("2026-08-15 13:00:00", merged.latestTime);
+        assertEquals("快件到达转运中心", merged.latestDetail);
         assertEquals(2, tracks.size());
         assertEquals("快件到达转运中心", tracks.get(0).detail);
         assertEquals("快件已签收", tracks.get(1).detail);
+    }
+
+    // 用户 2026-09-24 采纳：同源合并的表头对齐 iOS withMergedHeadline（头条 = 最新的有效时间节点）。
+
+    @Test
+    public void aStatuslessRefreshMovesTheHeadlineToTheNewestMergedNode() {
+        ExpressQueryResult cached = result(StatusSemantic.UNKNOWN,
+                "2026-08-15 10:00:00", "到达网点",
+                "[{\"time\":\"2026-08-15 10:00:00\",\"context\":\"到达网点\"},"
+                        + "{\"time\":\"2026-08-15 09:00:00\",\"context\":\"已揽收\"}]");
+        ExpressQueryResult refreshed = result(StatusSemantic.UNKNOWN,
+                "2026-08-15 11:00:00", "离开网点",
+                "[{\"time\":\"2026-08-15 11:00:00\",\"context\":\"离开网点\"},"
+                        + "{\"time\":\"2026-08-15 10:00:00\",\"context\":\"到达网点\"}]");
+
+        ExpressQueryResult merged = Kuaidi100TimelinePolicy.merge(cached, refreshed);
+
+        assertEquals("2026-08-15 11:00:00", merged.latestTime);
+        assertEquals("离开网点", merged.latestDetail);
+        assertEquals(StatusSemantic.UNKNOWN, merged.semantic);
+        assertEquals(3, ExpressTimeline.parse(merged.tracksJson, "", "").size());
+    }
+
+    @Test
+    public void anEqualTimeNodeDoesNotTakeTheHeadline() {
+        ExpressQueryResult cached = result(StatusSemantic.UNKNOWN,
+                "2026-08-15 10:00:00", "到达网点",
+                "[{\"time\":\"2026-08-15 10:00:00\",\"context\":\"到达网点\"}]");
+        ExpressQueryResult refreshed = result(StatusSemantic.UNKNOWN,
+                "2026-08-15 10:00:00", "离开网点",
+                "[{\"time\":\"2026-08-15 10:00:00\",\"context\":\"离开网点\"}]");
+
+        ExpressQueryResult merged = Kuaidi100TimelinePolicy.merge(cached, refreshed);
+
+        assertEquals("2026-08-15 10:00:00", merged.latestTime);
+        assertEquals("到达网点", merged.latestDetail);
+    }
+
+    @Test
+    public void aStoredHeadlineWithoutAReadableTimeIsLeftAlone() {
+        ExpressQueryResult cached = result(StatusSemantic.UNKNOWN, "", "到达网点",
+                "[{\"time\":\"2026-08-15 10:00:00\",\"context\":\"到达网点\"}]");
+        ExpressQueryResult refreshed = result(StatusSemantic.UNKNOWN,
+                "2026-08-15 11:00:00", "离开网点",
+                "[{\"time\":\"2026-08-15 11:00:00\",\"context\":\"离开网点\"}]");
+
+        ExpressQueryResult merged = Kuaidi100TimelinePolicy.merge(cached, refreshed);
+
+        assertEquals("", merged.latestTime);
+        assertEquals("到达网点", merged.latestDetail);
+    }
+
+    @Test
+    public void movingTheHeadlineLeavesStatusAndEvidenceAlone() {
+        long transitAt = ExpressSourcePolicy.parseEventTime("2026-08-15 10:00:00");
+        ExpressQueryResult cached = result(StatusSemantic.TRANSIT, transitAt,
+                "2026-08-15 10:00:00", "运输中",
+                "[{\"time\":\"2026-08-15 10:00:00\",\"context\":\"运输中\"}]")
+                .withManualStatusEvidence("运输中", true);
+        ExpressQueryResult refreshed = result(StatusSemantic.UNKNOWN, 0L,
+                "2026-08-15 11:00:00", "到达网点",
+                "[{\"time\":\"2026-08-15 11:00:00\",\"context\":\"到达网点\"}]");
+
+        ExpressQueryResult merged = Kuaidi100TimelinePolicy.merge(cached, refreshed);
+
+        assertEquals("2026-08-15 11:00:00", merged.latestTime);
+        assertEquals("到达网点", merged.latestDetail);
+        assertEquals(StatusSemantic.TRANSIT, merged.semantic);
+        assertEquals(transitAt, merged.statusEventTime);
+        assertEquals("运输中", merged.statusDescription);
+        assertTrue(merged.structuredStatusEvidence);
+        assertEquals(2, ExpressTimeline.parse(merged.tracksJson, "", "").size());
+    }
+
+    // 用户 2026-09-25 定（D6）：读时也一样，有没有结构化证据的已签收包都取签收之后的最新节点，状态不动。
+    @Test
+    public void aStoredSignedManualPackageTakesItsNewestHeadlineOnRead() {
+        long completedAt = ExpressSourcePolicy.parseEventTime("2026-08-15 12:00:00");
+        String tracks = "[{\"time\":\"2026-08-15 13:00:00\",\"context\":\"签收后补的一条\"},"
+                + "{\"time\":\"2026-08-15 12:00:00\",\"context\":\"已签收\"}]";
+        ExpressQueryResult structured = result(StatusSemantic.COMPLETED, completedAt,
+                "2026-08-15 12:00:00", "已签收", tracks).withManualStatusEvidence("已签收", true);
+        ExpressQueryResult unstructured = result(StatusSemantic.COMPLETED, completedAt,
+                "2026-08-15 12:00:00", "已签收", tracks).withManualStatusEvidence("已签收", false);
+
+        for (ExpressQueryResult stored : new ExpressQueryResult[]{structured, unstructured}) {
+            ExpressQueryResult read = Kuaidi100TimelinePolicy.storedManualHeadline(stored);
+            assertEquals("2026-08-15 13:00:00", read.latestTime);
+            assertEquals("签收后补的一条", read.latestDetail);
+            assertEquals(StatusSemantic.COMPLETED, read.semantic);
+            assertEquals(completedAt, read.statusEventTime);
+            assertEquals(stored.structuredStatusEvidence, read.structuredStatusEvidence);
+        }
     }
 
     @Test

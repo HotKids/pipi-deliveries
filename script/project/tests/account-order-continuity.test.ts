@@ -6,6 +6,7 @@ import type { AccountParcelDto } from "../services/account-parser";
 import { parseAccountSyncResponse } from "../services/account-parser";
 import { mergeAccountParcel } from "../services/sync";
 import { selectShipmentDetailTimeline } from "../services/shipment-policy";
+import { needsProjectedCarrierRepair } from "../services/account-carrier-normalization";
 import { withoutJingDongOrderCompletion } from "../services/status";
 
 const NOW = Date.UTC(2026, 8, 3, 10, 0, 0);
@@ -30,7 +31,7 @@ function orderParcel(overrides: Partial<AccountParcelDto> = {}): AccountParcelDt
       track("2026-09-03 14:49:00", "最快9月3日发货，9月4日(周五)送达"),
     ],
     routeUrl: "", projectionUrl: "https://u.jd.com/forward?token=opaque",
-    textIdentity: { waybill: "JT4006839564547", courierCode: "JTSD", companyName: "极兔速递" },
+    textIdentity: { waybill: "JT4006839564547" },
     ...overrides,
   } as unknown as AccountParcelDto;
 }
@@ -66,8 +67,12 @@ function projectedOwner(semantic: "PICKED" | "DELIVERY" | "COMPLETED", parcel: A
     { shipments: [owner] } as never, [owner], parcel, [PHONE], "interface5", NOW, new Map(),
   )[0]!;
   assert.equal(merged.identity.projectedWaybill, "JT4006839564547");
-  assert.equal(merged.identity.courierCode, "JTSD", "feed text repairs the order-stage carrier");
-  assert.equal(merged.identity.companyName, "极兔速递");
+  // 其余裁决 7 (2026-09-26): feed text names only the waybill and no longer repairs the carrier. The
+  // mislabel (京东快递 on a JT waybill, R-20) is left to the existing projected-carrier repair, which
+  // runs K100 recognition on the next detail refresh.
+  assert.notEqual(merged.identity.courierCode, "JTSD", "feed text supplies no carrier");
+  assert.equal(needsProjectedCarrierRepair(merged.identity), true,
+    "the order-stage mislabel is still queued for recognition");
   // 用户定 2026-09-05 晚：feed 增量与 query 独立。source 只装 feed 自己的四条节点，老行里混进
   // 来的那条 H5 节点拆出去（不完整的 H5 包不存）；列表状态归 feed。
   assert.equal(merged.timeline.tracks.length, 4, "the source keeps only the feed's own nodes");

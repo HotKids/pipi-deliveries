@@ -275,9 +275,9 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
             <Button
               title={
                 sending
-                  ? "发送中…"
+                  ? "正在发送…"
                   : remainingSeconds > 0
-                    ? `${remainingSeconds} 秒后重试`
+                    ? `${remainingSeconds} 秒后重发`
                     : "获取验证码"
               }
               action={sendCode}
@@ -299,7 +299,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
             buttonBorderShape="capsule"
           >
             <Text frame={{ minWidth: 220, minHeight: 44 }}>
-              {binding ? "绑定中…" : "绑定"}
+              {binding ? "正在绑定…" : "绑定"}
             </Text>
           </Button>
         </HStack>

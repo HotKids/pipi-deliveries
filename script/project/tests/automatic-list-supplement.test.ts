@@ -6,7 +6,8 @@ import { runShipmentEnrichmentForTesting,
   runShipmentRefreshForTesting } from "../services/sync";
 import type { AccountParcelDto } from "../services/account-parser";
 import { queryManualForSource } from "../services/manual-query";
-import { selectShipmentTimeline, needsAutomaticListSupplement } from "../services/shipment-policy";
+import { FORCED_COMPLETION_REFRESH_WINDOW_MS, selectShipmentTimeline, needsAutomaticListSupplement }
+  from "../services/shipment-policy";
 
 const waybill = "SF123456789012";
 const phone = "13800001234";
@@ -60,7 +61,8 @@ try {
   for (const provider of ["JingDong", "CaiNiao"]) {
   for (const background of [true, false]) {
     for (const scenario of ["unknown with history", "known with zero timed tracks", "known with one timed track",
-      "empty feed with complete manual cache", "forced", "signed", "hidden", "active lease", "recent attempt",
+      "empty feed with complete manual cache", "forced", "forced within window", "signed", "hidden", "active lease",
+      "recent attempt",
       "order number only", "unbound", "non-v5", "SF normal"] as const) {
       memory.clear();
       const source = scenario === "non-v5" ? "interface6" : "interface5";
@@ -72,7 +74,10 @@ try {
         owner.sourceTimeline = owner.timeline;
         owner.manualTimelines = [pack("TRANSIT", 5, "v6_query")];
       }
-      if (scenario === "forced") owner.forcedCompletedAtMs = NOW - 60_000;
+      // 用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「点击后满 3 天也冻结」「iOS 右滑签收一起改」：
+      // 右滑签收满 72 小时才硬冻结；之前按来源自己的状态照常刷新（这里与 "unknown with history" 同一来源），展示仍是已签收。
+      if (scenario === "forced") owner.forcedCompletedAtMs = NOW - FORCED_COMPLETION_REFRESH_WINDOW_MS;
+      if (scenario === "forced within window") owner.forcedCompletedAtMs = NOW - 60_000;
       if (scenario === "signed") { owner.timeline = pack("COMPLETED", 3); owner.sourceTimeline = owner.timeline; }
       if (scenario === "hidden") owner.emptyTimelineHiddenAtMs = NOW - 60_000;
       if (scenario === "recent attempt") owner.manualRefreshAttemptAtMs = NOW - 1000;
@@ -103,7 +108,8 @@ try {
           } } });
         },
       });
-      const expected = ["unknown with history", "known with zero timed tracks", "SF normal"].includes(scenario) ? 1 : 0;
+      const expected = ["unknown with history", "known with zero timed tracks", "SF normal", "forced within window"]
+        .includes(scenario) ? 1 : 0;
       assert.equal(payloads.length, expected, `${provider} ${background ? "background" : "foreground"}: ${scenario}`);
       if (expected) {
         assert.ok(loadState(NOW).shipments[0]?.manualTimelines?.some(t => t.provider === "v6_query"));
@@ -116,8 +122,9 @@ try {
           assert.equal(selected.statusEventAtMs, owner.timeline.statusEventAtMs, "existing status time remains owned");
         }
         assert.equal(selected.semantic,
-          scenario === "unknown with history" ? "UNKNOWN" : "TRANSIT",
-          "an unstructured Online scalar cannot invent missing structured source status");
+          scenario === "forced within window" ? "COMPLETED"
+            : scenario === "unknown with history" ? "UNKNOWN" : "TRANSIT",
+          "an unstructured Online scalar cannot invent missing structured source status; a sign-off stays shown");
       }
     }
   }

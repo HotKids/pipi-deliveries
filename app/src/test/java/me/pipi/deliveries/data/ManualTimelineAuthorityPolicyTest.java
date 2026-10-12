@@ -19,6 +19,27 @@ import me.pipi.deliveries.model.StatusSemantic;
 import org.junit.Test;
 
 public final class ManualTimelineAuthorityPolicyTest {
+    @Test public void stopGateRetainsOrderedStartAndExistingClockTolerance() {
+        ExpressQueryResult ordered = resultWithTracks("v6_query", StatusSemantic.ORDERED,
+                "2026-09-12 12:00:00", "已下单",
+                "[{\"time\":\"2026-09-12 12:00:00\",\"context\":\"已下单\"}]");
+        long latest = ExpressTimeline.parseTime("2026-09-12 12:00:00");
+        assertTrue(ManualTimelineAuthorityPolicy.timelineStartAligned(ordered, latest));
+        assertTrue(ManualTimelineAuthorityPolicy.timelineStartAligned(ordered, latest + 1_800_000L));
+        assertFalse(ManualTimelineAuthorityPolicy.timelineStartAligned(ordered, latest + 1_800_001L));
+        assertFalse(ManualTimelineAuthorityPolicy.detailTimelineComplete(ordered, latest));
+    }
+
+    @Test public void stopGateUsesLatestStructuredNodeWithoutGuessingFromText() {
+        for (String code : new String[]{"", "5"}) {
+            ExpressQueryResult result = resultWithTracks("v6_query", StatusSemantic.TRANSIT,
+                    "2026-09-12 12:00:00", "已签收",
+                    "[{\"time\":\"2026-09-12 12:00:00\",\"context\":\"已签收\",\"statusCode\":\"" + code + "\"},"
+                            + "{\"time\":\"2026-09-12 10:00:00\",\"context\":\"已揽收\"}]");
+            assertEquals(code.isEmpty(), ManualTimelineAuthorityPolicy.timelineStartAligned(result, 0L));
+        }
+    }
+
     @Test public void historyFreshnessOnlyLimitsLagAndRetainsExactBoundary() {
         long sourceAt = ExpressTimeline.parseTime("2026-09-12 12:00:00");
         for (long delta : new long[]{-1_800_001L, -1_800_000L, 1_800_001L, 7_200_000L}) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { Shipment, TimelinePackage } from "../models";
 import { shouldRefreshShipment, terminalEvidenceAtMs } from "../services/status";
-import { hasSettledTimelineHistory } from "../services/shipment-policy";
+import { FORCED_COMPLETION_REFRESH_WINDOW_MS, hasSettledTimelineHistory } from "../services/shipment-policy";
 
 const now = Date.UTC(2026, 8, 13, 8);
 const timeline: TimelinePackage = {
@@ -54,8 +54,10 @@ check("active status time is not terminal evidence", () => {
   assert.equal(terminalEvidenceAtMs(shipment, now), 0);
   assert.equal(shouldRefreshShipment(shipment, now), true);
 });
+// 用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「点击后满 3 天也冻结」：没有来源签收证据的右滑签收
+// 满 72 小时后硬冻结；72 小时之内按来源照常刷新（signed-freeze.test.ts）。
 check("explicit iOS sign-off remains frozen without provider evidence", () => {
-  const shipment = { ...row, forcedCompletedAtMs: now - 60_000 };
+  const shipment = { ...row, forcedCompletedAtMs: now - FORCED_COMPLETION_REFRESH_WINDOW_MS };
   assert.equal(shouldRefreshShipment(shipment, now), false);
   assert.equal(hasSettledTimelineHistory(shipment, now), true);
 });

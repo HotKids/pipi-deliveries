@@ -124,6 +124,14 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     static final long ORDER_CAPTURE_TIMEOUT_MS = 20_000L;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    /**
+     * 用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒。一次详情刷新（进详情或下拉）按一次操作一份 30 秒：不属于
+     * 同步轮的用户操作每次各一份，用户 2026-09-27 识别 30 秒细则答「这样做」（Lite 详情刷新里的识别从最多 60 秒降到
+     * 30 秒）。这次刷新里的识别——订单投影前、v5_query 文案、京粉页、行的补识别——共用一份预算，这次操作的
+     * cancellation 就是它的身份，下一次操作重新算。
+     */
+    private final java.util.Map<ExpressQueryCancellation, AccountCarrierRecognition.Budget> recognitionBudgets =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
     private ExpressKuaidi100TimelineCapture kuaidi100Capture;
     private ExpressQueryCancellation presentationCancellation;
     private LinearLayout timeline;
@@ -146,11 +154,16 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         final ExpressItem routeOwner;
         final ExpressRepository.ManualQueryOwnerClaim ownerClaim;
         final ManualTimelineAuthorityPolicy.Candidate selected;
+        /** The row's own feed as the sheet shows it (attached order stage appended). */
         final ExpressQueryResult source;
+        /** The selected packet as the sheet shows it (JD order stage appended); never persisted. */
+        final ExpressQueryResult displayed;
         final ExpressQueryResult account;
         final ExpressQueryResult publicTimeline;
         final ExpressQueryResult kuaidi100;
         final List<String> phones;
+        /** Feeds of hidden projected orders attached to this row's waybill (ownership decision 2). */
+        final List<String> attachedOrderFeeds;
 
         DetailState(ExpressRepository repository, ExpressItem owner, String bindingSource) {
             this.owner = owner;
@@ -159,7 +172,13 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     : repository.findByWaybill(owner.displayWaybill(), bindingSource);
             routeOwner = persisted == null ? owner : persisted;
             selected = repository.manualDetailTimelineAuthority(owner);
-            source = repository.automaticSourceTimeline(owner);
+            ExpressQueryResult ownSource = repository.automaticSourceTimeline(owner);
+            attachedOrderFeeds = repository.attachedOrderFeeds(owner);
+            source = ManualTimelineAuthorityPolicy.withAttachedOrderStage(
+                    ownSource, attachedOrderFeeds);
+            displayed = ManualTimelineAuthorityPolicy.withAttachedOrderStage(
+                    ManualTimelineAuthorityPolicy.withOwnerOrderStage(owner, ownSource, selected),
+                    attachedOrderFeeds);
             String accountSource = accountTimelineSource(owner);
             account = accountSource.isEmpty() ? null : accountTimelineFor(
                     repository, owner, accountTimelineWaybill(owner), accountSource);
@@ -167,6 +186,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     ? repository.v4Timeline(owner.displayWaybill()) : null;
             kuaidi100 = repository.kuaidi100Timeline(owner.displayWaybill());
             phones = repository.phoneCandidates("", bindingSource);
+        }
+
+        /** The same attached order stage for a package drawn from the other detail caches. */
+        String withAttachedOrderStage(String tracksJson) {
+            return ExpressTimeline.appendAttachedOrderStage(tracksJson, attachedOrderFeeds);
         }
     }
 
@@ -185,6 +209,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private ExpressQueryCancellation localRefreshCancellation;
     private AtomicInteger localRefreshTaskState;
     private boolean restartLocalRefreshOnStart;
+    /** Set only while onStart restarts a refresh that onStop cancelled. */
+    private boolean localRefreshRestart;
     private ExpressQueryCancellation firstManualQueryCancellation;
     private Future<?> firstManualQueryTask;
     private boolean firstManualQueryInFlight;
@@ -296,7 +322,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     if (!initialDetailIsCurrent(generation)) return;
                     initialDetailTask = null;
-                    Toast.makeText(this, ExpressToastCopy.STATE_LOAD_FAILED, Toast.LENGTH_SHORT).show();
+                    // 「本地快递数据读取失败」只在列表加载失败时弹（审计 R8，用户 2026-09-25 默认 #13）。
                     finish();
                 });
             }
@@ -374,7 +400,14 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         if (!initialDetailShown && initialDetailTask == null) loadInitialDetail();
         if (restartLocalRefreshOnStart) {
             restartLocalRefreshOnStart = false;
-            restartLocalTimelineRefreshIfNeeded();
+            // 用户 2026-09-28：the refresh this restart runs is not the user's pull; it is logged
+            // with the foreground trigger (the word iOS / Pipi / Lite use for a return to the app).
+            localRefreshRestart = true;
+            try {
+                restartLocalTimelineRefreshIfNeeded();
+            } finally {
+                localRefreshRestart = false;
+            }
         }
     }
 
@@ -446,7 +479,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 String phone = !suppliedPhone.isEmpty() ? suppliedPhone
                         : existing != null && !existing.phone.isEmpty() ? existing.phone : selected.phone;
                 List<ManualQuerySuccess> writes = new ArrayList<>(batch.successes);
-                String route = kuaidi100AddCaptureRoute(waybill, selected.courierCode, batch.successes);
+                String route = kuaidi100AddCaptureRoute(waybill, selected.courierCode, batch.accumulatedSuccesses());
                 if (!route.isEmpty()) {
                     ExpressQueryResult captured = captureKuaidi100ForAddChain(
                             waybill, route, selected, phone, cancellation);
@@ -460,16 +493,34 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 }
                 cancellation.throwIfCancelled();
                 ExpressQueryResult result = selected;
-                ExpressItem saved = repository.saveClaimedManualQueryBatch(
+                ExpressItem stored = repository.saveClaimedManualQueryBatch(
                         existing, ownerClaim, writes, phone, bindingSource,
                         false, pollClaim, cancellation);
-                if (saved == null) throw new IllegalStateException("Manual query owner changed");
+                if (stored == null) throw new IllegalStateException("Manual query owner changed");
+                // T23 entry G（用户 2026-09-26）：手动件承运商还没对上就在这一轮补识别（内置表 → 快递100 免费 → 付费），
+                // 识别不出的之后各轮继续补；待定期间不推送。
+                if (AccountCarrierRecognition.needsRecognition(stored)) {
+                    // Its own short stage: a slow recognition never turns a saved add into a timeout.
+                    try (ExpressQueryCancellation stage = cancellation.child(5_000L)) {
+                        if (AccountCarrierRecognition.recognize(repository, stored,
+                                carrierRecognizer(stored, stage))) {
+                            ExpressItem recognized = repository.find(stored.rowId);
+                            if (recognized != null) stored = recognized;
+                        }
+                    } catch (InterruptedException cutOff) {
+                        // The row is saved; a later round recognises its carrier. The stage's own cut-off
+                        // is not the add's: only the add's cancellation below may end it.
+                        Thread.interrupted();
+                    }
+                }
+                ExpressItem saved = stored;
                 if (!Kuaidi100TimelinePolicy.hasTimedTracking(result)
                         && repository.enqueuePendingManual(result, phone, bindingSource)) {
                     ExpressScheduler.ensureScheduled(getApplicationContext());
                 }
                 cancellation.throwIfCancelled();
                 DetailState savedState = new DetailState(repository, saved, bindingSource);
+                boolean phoneTailToast = manualPhoneTailRequired && phoneTailToastDue(saved);
                 runOnUiThread(() -> {
                     if (!firstManualQueryIsCurrent(cancellation)) return;
                     finishFirstManualQuery();
@@ -477,7 +528,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     item = saved;
                     detailState = savedState;
                     setResult(RESULT_OK);
-                    Toast.makeText(this, manualPhoneTailRequired ? ExpressToastCopy.MANUAL_PHONE_TAIL_REQUIRED
+                    Toast.makeText(this, phoneTailToast ? ExpressToastCopy.MANUAL_PHONE_TAIL_REQUIRED
                             : Kuaidi100TimelinePolicy.hasRealTracking(result)
                             ? ExpressToastCopy.MANUAL_QUERY_SUCCEEDED
                             : ExpressToastCopy.MANUAL_QUERY_NO_TRACK, Toast.LENGTH_SHORT).show();
@@ -595,7 +646,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     private ExpressKuaidi100TimelineCapture addChainCapture;
 
-    /** The existing add-chain stage opens the actual waybill only while start evidence is absent. */
+    /** The add chain keeps fetching when a historical start trails newer shipment evidence. */
     static String kuaidi100AddCaptureRoute(
             String waybill, List<? extends ManualQuerySuccess> successes) {
         return kuaidi100AddCaptureRoute(waybill, "", successes);
@@ -604,10 +655,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     static String kuaidi100AddCaptureRoute(
             String waybill, String courierCode, List<? extends ManualQuerySuccess> successes) {
         if (successes == null) return "";
-        for (ManualQuerySuccess success : successes) {
-            if (success == null || success.result == null) continue;
-            if (Kuaidi100TimelinePolicy.hasTimelineStart(success.result)) return "";
-        }
+        if (ManualTimelineAuthorityPolicy.timelineStartAligned(successes, waybill)) return "";
         return ManualRoutePolicy.primaryH5Url(waybill, courierCode);
     }
 
@@ -776,8 +824,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             InitialTimelinePresentation presentation = initialTimelinePresentation(
                     cachedUsable, false);
             if (presentation == InitialTimelinePresentation.TRACKS) {
-                renderTimeline(ExpressTimeline.parse(
-                        cached.tracksJson, cached.latestTime, cached.latestDetail));
+                renderTimeline(ExpressTimeline.parse(snapshot.withAttachedOrderStage(
+                        cached.tracksJson), cached.latestTime, cached.latestDetail));
             } else if (presentation == InitialTimelinePresentation.LOADING) {
                 renderTimelineLoading();
             } else {
@@ -838,8 +886,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         boolean refreshDue = allowsJingDongCapture(item) || needsManualSupplement(item, ownerTimeline, cached);
         if (cachedUsable) {
             rememberDisplayedProvider(cached.timelineProvider);
-            renderTimeline(ExpressTimeline.parse(
-                    cached.tracksJson, cached.latestTime, cached.latestDetail));
+            renderTimeline(ExpressTimeline.parse(snapshot.withAttachedOrderStage(
+                    cached.tracksJson), cached.latestTime, cached.latestDetail));
         } else if (refreshDue) {
             renderTimelineLoading();
         } else {
@@ -857,12 +905,12 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         if (!sharedSource && !manualTimelineOwnsDetail(item)) return false;
         ManualTimelineAuthorityPolicy.Candidate detailAuthority =
                 snapshot.selected;
-        ExpressQueryResult detailResult = detailAuthority == null
-                ? null : detailAuthority.result;
+        ExpressQueryResult detailResult = snapshot.displayed;
         rememberDisplayedProvider(detailAuthority == null
                 ? ManualTimelineAuthorityPolicy.PREFERRED_FEED : detailAuthority.provider);
         renderTimeline(ExpressTimeline.parse(
-                detailResult == null ? item.tracksJson : detailResult.tracksJson,
+                detailResult == null ? snapshot.withAttachedOrderStage(item.tracksJson)
+                        : detailResult.tracksJson,
                 detailResult == null ? item.latestTime : detailResult.latestTime,
                 detailResult == null ? item.latestDetail : detailResult.latestDetail));
         return true;
@@ -917,6 +965,31 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         refreshLocalTimelineInBackground(showProgress);
     }
 
+    /**
+     * A JD web capture more than five minutes behind structured status may query its v5 account
+     * on detail entry. The row ledger shares the alignment's ordinary interval and three-attempt
+     * cap; failures and empty responses remain retryable, and only an advancing slot completes the set.
+     */
+    static boolean claimWebLagEntryQuery(ExpressRepository repository, ExpressItem owner) {
+        if (owner == null || !allowsJingDongCapture(owner)) return false;
+        ExpressRepository.StatusAlignmentProbe probe = repository.statusAlignmentProbe(owner);
+        if (probe == null || !probe.detailFromWebCapture || probe.statusAt <= 0L || probe.detailAt <= 0L
+                || probe.statusAt - probe.detailAt <= ExpressRepository.STATUS_ALIGNMENT_MILLIS) return false;
+        return repository.beginStatusAlignment(owner,
+                probe.statusAt + "|" + probe.headlineAt + "|" + probe.detailAt,
+                System.currentTimeMillis());
+    }
+
+    /** 详情页显示的那一包，与 DetailState 同一口径。 */
+    static ExpressQueryResult detailShown(ExpressRepository repository, ExpressItem owner) {
+        if (owner == null) return null;
+        ManualTimelineAuthorityPolicy.Candidate selected = repository.manualDetailTimelineAuthority(owner);
+        ExpressQueryResult source = repository.automaticSourceTimeline(owner);
+        return ManualTimelineAuthorityPolicy.withAttachedOrderStage(selected == null ? source
+                : ManualTimelineAuthorityPolicy.withOwnerOrderStage(owner, source, selected),
+                repository.attachedOrderFeeds(owner));
+    }
+
     /** Complete history cannot suppress an active JD entry query or SF's manual refresh. */
     static boolean shouldSkipCompleteCache(ExpressItem value, boolean complete) {
         return value != null && !(allowsJingDongCapture(value)
@@ -937,12 +1010,14 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         }
     }
 
-    static boolean currentDetailComplete(ExpressItem value, ExpressQueryResult account,
+    public static boolean currentDetailComplete(ExpressItem value, ExpressQueryResult account,
             ManualTimelineAuthorityPolicy.Candidate selected) {
         if (value == null || value.isShunFengSource() && !value.semantic.terminal()) return false;
         ExpressQueryResult detail = selected == null ? account : selected.result;
         if (detail == null) return false;
-        long reference = value.manuallyAdded ? 0L
+        // 用户 2026-09-27：留作第一条签收的评价只是临时轨迹，完整、完整缓存、进详情的 v5 查询和签收缺口都不算它。
+        detail = ExpressRepository.withoutShoppingReviews(value, detail);
+        long reference = value.manuallyAdded && value.semantic != StatusSemantic.COMPLETED ? 0L
                 : Math.max(value.statusEventTime, ExpressTimeline.parseTime(value.latestTime));
         ExpressQueryResult presented = new ExpressQueryResult(detail.waybill, detail.courierCode,
                 detail.companyName, value.semantic, value.statusEventTime, detail.latestTime,
@@ -954,6 +1029,27 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 .withManualStatusEvidence(value.statusDescription, detail.structuredStatusEvidence);
         if (reference <= 0L && !value.semantic.terminal()) return false;
         return ManualTimelineAuthorityPolicy.detailTimelineComplete(presented, reference);
+    }
+
+    /**
+     * 用户 2026-09-26（其余裁决 20，三端同口径：iOS sync.ts 的 !shipmentDetailComplete、Pipi
+     * ExpressPoller.showsPhoneTailToast）：页面要了手机尾号，这一轮落盘后详情仍不完整才弹提示；完整与否就是
+     * {@link #currentDetailComplete}。
+     */
+    static boolean phoneTailToastDue(ExpressItem settled, ExpressQueryResult account,
+            ManualTimelineAuthorityPolicy.Candidate selected) {
+        return !currentDetailComplete(settled, account, selected);
+    }
+
+    private boolean phoneTailToastDue(ExpressItem settled) {
+        if (settled == null) return true;
+        try {
+            ExpressRepository repository = ExpressRepository.get(this);
+            return phoneTailToastDue(settled, repository.automaticSourceTimeline(settled),
+                    repository.manualDetailTimelineAuthority(settled));
+        } catch (RuntimeException failure) {
+            return true;
+        }
     }
 
     /** 下拉结果只弹一次：有新轨迹 / 已是最新 / 没有可用轨迹 / 抛错且页面上没轨迹可看。 */
@@ -1014,6 +1110,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         int generation = ++localRefreshGeneration;
         ExpressItem requestItem = item;
         boolean detailPull = pullRefreshRequested;
+        String refreshTrigger = localRefreshRestart ? "foreground" : detailPull ? "detail_pull" : "detail_open";
         localRefreshIsPull = detailPull;
         ExpressQueryCancellation cancellation =
                 new ExpressQueryCancellation(localRefreshBudgetMillis(requestItem));
@@ -1025,36 +1122,72 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             localRefreshTask = worker.submit(() -> {
                 if (!taskState.compareAndSet(0, 1)) return;
                 ExpressRepository.ManualTimelinePollClaim claim = null;
-                try (ExpressLog.Scope diagnostics = ExpressLog.scope(
-                        ExpressLog.newFlowId("detail"), detailPull ? "detail_pull" : "detail_open",
-                        detailLogInterface(requestItem))) {
+                // The scope closes in finally, so the end event below keeps this flow's identity.
+                ExpressLog.Scope diagnostics = ExpressLog.detailScope(
+                        ExpressLog.newFlowId("detail"), refreshTrigger, detailLogInterface(requestItem));
+                DetailRefreshEnd end = new DetailRefreshEnd(diagnostics, requestItem);
+                try {
                     ExpressLog.write("detail.refresh.started", "waybillTail", tailOf(requestItem.displayWaybill()));
                     ExpressRepository repository = ExpressRepository.get(this);
                     cancellation.throwIfCancelled();
                     ExpressItem refreshedItem = repository.find(requestItem.rowId);
                     if (refreshedItem == null || !refreshedItem.waybill.equals(requestItem.waybill)
                             || !refreshedItem.stateOwner.equals(requestItem.stateOwner)
-                            || !refreshedItem.sourceProvider.equals(requestItem.sourceProvider)) return;
+                            || !refreshedItem.sourceProvider.equals(requestItem.sourceProvider)) {
+                        end.gate(refreshedItem == null ? "removed" : "state_changed");
+                        return;
+                    }
+                    end.baseline(repository);
                     if (AccountCarrierRecognition.needsRecognition(refreshedItem)) {
                         AccountCarrierRecognition.recognize(repository, refreshedItem,
-                                waybill -> new ExpressApi(getApplicationContext())
-                                        .recognizeCarrier(waybill, cancellation));
+                                carrierRecognizer(refreshedItem, cancellation));
                         refreshedItem = repository.find(requestItem.rowId);
-                        if (refreshedItem == null) return;
+                        if (refreshedItem == null) {
+                            end.gate("removed");
+                            return;
+                        }
                     }
-                    if (shouldSkipCompleteCache(refreshedItem, currentDetailComplete(refreshedItem))) {
+                    ExpressItem cacheOwner = refreshedItem;
+                    // An explicit pull can repair missing history without changing shared signed
+                    // freezing or headline/status alignment. Complete history still stops the pull.
+                    if (signedFrozen(repository, cacheOwner)
+                            && (!detailPull || currentDetailComplete(cacheOwner))) {
+                        end.gate(ExpressRepository.SIGNED_FROZEN);
+                        renderRefreshedDetail(generation, refreshedItem);
+                        return;
+                    }
+                    // A lagging JD web capture cannot be repaired by a background host. Detail entry
+                    // retries its account query under the shared cap; an unchanged response stays unfinished.
+                    boolean completeCache = shouldSkipCompleteCache(cacheOwner, currentDetailComplete(cacheOwner));
+                    boolean webLagQuery = completeCache && !detailPull && claimWebLagEntryQuery(repository, cacheOwner);
+                    if (completeCache && !webLagQuery) {
+                        end.gate("complete_cache");
                         renderRefreshedDetail(generation, refreshedItem);
                         return;
                     }
                     if (usesNativeAutomaticDetail(requestItem)) {
-                        refreshedItem = refreshAutomaticDetail(repository, refreshedItem, cancellation, detailPull);
-                        if (refreshedItem == null) return;
+                        ExpressRepository.StatusAlignmentProbe entryProbe = webLagQuery
+                                ? repository.statusAlignmentProbe(cacheOwner) : null;
+                        java.util.Map<String, Long> before = webLagQuery
+                                ? repository.statusAlignmentEvidence(cacheOwner) : java.util.Collections.emptyMap();
+                        try {
+                            refreshedItem = refreshAutomaticDetail(repository, refreshedItem, cancellation, detailPull);
+                        } finally {
+                            if (entryProbe != null) repository.finishStatusAlignment(cacheOwner,
+                                    entryProbe.statusAt + "|" + entryProbe.headlineAt + "|" + entryProbe.detailAt, before);
+                        }
+                        if (refreshedItem == null) {
+                            end.gate("state_changed");
+                            return;
+                        }
                         if (AccountCarrierRecognition.needsRecognition(refreshedItem)) {
                             AccountCarrierRecognition.recognize(repository, refreshedItem,
-                                    waybill -> new ExpressApi(getApplicationContext())
-                                            .recognizeCarrier(waybill, cancellation));
+                                    carrierRecognizer(refreshedItem, cancellation));
                             refreshedItem = repository.find(requestItem.rowId);
-                            if (refreshedItem == null) return;
+                            if (refreshedItem == null) {
+                                end.gate("removed");
+                                return;
+                            }
                         }
                     }
                     if (!detailPull) {
@@ -1079,11 +1212,15 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     }
                     cancellation.throwIfCancelled();
                     ExpressRepository.ManualQueryOwnerClaim ownerClaim = repository.captureManualQueryOwner(queryOwner);
-                    if (ownerClaim == null) return;
+                    if (ownerClaim == null) {
+                        end.gate("state_changed");
+                        return;
+                    }
                     repository.activateCainiaoManualFallback(queryOwner, ownerClaim);
                     claim = repository.claimForegroundManualTimelinePoll(
                             queryOwner, System.currentTimeMillis(), detailPull);
                     if (claim == null) {
+                        end.gate("refresh_claim_unavailable");
                         renderRefreshedDetail(generation, queryOwner);
                         return;
                     }
@@ -1094,8 +1231,13 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                             null,
                             ManualQueryRoutingPolicy.includesMoto(queryOwner),
                             allowsPrimaryKuaidi100(queryOwner) && !currentDetailComplete(queryOwner)
-                                    ? onlineResult -> () -> capturePrimaryKuaidi100(
-                                    queryOwner, cancellation) : null,
+                                    ? onlineResult -> ManualQueryCoordinator.forRow(() -> capturePrimaryKuaidi100(
+                                    queryOwner, cancellation),
+                                    ExpressLog.source(queryOwner.sourceProvider, queryOwner.manuallyAdded),
+                                    ExpressLog.tail(queryOwner.displayWaybill()),
+                                    ManualRoutePolicy.primaryH5Provider(queryOwner.displayCourierCode()),
+                                    () -> stageDisplay(queryOwner),
+                                    () -> primaryKuaidi100SkipReason(queryOwner)) : null,
                             null, queryOwner.semantic == StatusSemantic.UNKNOWN,
                             queryOwner.semantic == StatusSemantic.UNKNOWN && currentDetailComplete(queryOwner));
                     cancellation.throwIfCancelled();
@@ -1114,10 +1256,16 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                             queryOwner.phone, ExpressAccountSource.bindingSourceForOwner(
                                     queryOwner.stateOwner.isEmpty() ? queryOwner.source : queryOwner.stateOwner),
                             true, claim, cancellation);
+                    if (manualPhoneTailRequired
+                            && !phoneTailToastDue(repository.find(queryOwner.rowId))) {
+                        manualPhoneTailRequired = false;
+                    }
                     renderRefreshedDetail(generation, queryOwner);
                 } catch (InterruptedException cancelled) {
+                    end.interrupted();
                     Thread.currentThread().interrupt();
                 } catch (Throwable failure) {
+                    end.failed(failure);
                     // Keep the cached local timeline visible when every enabled source fails.
                     localRefreshFailed = true;
                     Log.w(MANUAL_LOG_TAG, "Refresh failed rowId="
@@ -1125,6 +1273,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                             + " error=" + failure.getClass().getSimpleName());
                     renderRefreshedDetail(generation, requestItem);
                 } finally {
+                    end.completed(ExpressRepository.get(this));
+                    diagnostics.close();
                     ExpressRepository.get(this).releaseManualTimelinePoll(claim);
                     runOnUiThread(() -> finishLocalTimelineRefresh(generation));
                 }
@@ -1133,6 +1283,16 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         } catch (RejectedExecutionException rejected) {
             cancellation.cancel();
             finishLocalTimelineRefresh(generation);
+        }
+    }
+
+    /** {@link ExpressRepository#signedFrozen(ExpressItem)}; a failed read freezes nothing (the refresh goes on). */
+    private static boolean signedFrozen(ExpressRepository repository, ExpressItem owner) {
+        try {
+            return repository.signedFrozen(owner);
+        } catch (RuntimeException failure) {
+            Log.w(MANUAL_LOG_TAG, "Signed freeze read failed: " + failure.getClass().getSimpleName());
+            return false;
         }
     }
 
@@ -1152,10 +1312,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             renderHeader(item.displayCourierCode(), item.displayCompany(), item.displayWaybill(),
                     item.displayStatus(), item.semantic);
             ManualTimelineAuthorityPolicy.Candidate selected = snapshot.selected;
-            ExpressQueryResult detail = selected == null ? snapshot.source : selected.result;
+            ExpressQueryResult detail = selected == null ? snapshot.source : snapshot.displayed;
             rememberDisplayedProvider(selected == null
                     ? ManualTimelineAuthorityPolicy.PREFERRED_FEED : selected.provider);
-            renderTimeline(ExpressTimeline.parse(detail == null ? item.tracksJson : detail.tracksJson,
+            renderTimeline(ExpressTimeline.parse(detail == null
+                    ? snapshot.withAttachedOrderStage(item.tracksJson) : detail.tracksJson,
                     detail == null ? item.latestTime : detail.latestTime,
                     detail == null ? item.latestDetail : detail.latestDetail));
 
@@ -1167,17 +1328,23 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         if (Kuaidi100TimelinePolicy.hasPickupEvidence(repository.automaticSourceTimeline(owner))) return true;
         String provider = owner.isCainiaoSource() ? TimelineSlot.CN_H5 : TimelineSlot.JD_H5;
         ManualTimelineAuthorityPolicy.Candidate h5 = repository.manualTimelineCandidate(owner, provider);
+        // 用户采纳 2026-09-24：光有揽收节点的缓存 H5 包不能挡手动链，还得详情选包自己也判它完整。Pixel 上 Pipi 实测
+        // （三端同逻辑）的顺丰承运京东单：jd_h5 有「顺丰速运 已收取快件」却停在 16:16、列表已到 17:21，选包不显示它，
+        // K100 又因为它从不跑，历史永远补不全。
         return h5 != null && Kuaidi100TimelinePolicy.hasTimedTracking(h5.result)
-                && Kuaidi100TimelinePolicy.hasPickupEvidence(h5.result);
+                && Kuaidi100TimelinePolicy.hasPickupEvidence(h5.result)
+                && repository.detailRanksPackageComplete(owner, provider);
     }
 
     private ExpressItem refreshAutomaticDetail(ExpressRepository repository, ExpressItem expected,
             ExpressQueryCancellation cancellation, boolean detailPull) throws Exception {
         if (allowsJingDongCapture(expected) && expected.isAccountOrder()
                 && expected.projectedWaybill.isEmpty()) {
-            ExpressOrderTextIdentity.Identity text = ExpressOrderTextIdentity.fromTracksJson(
-                    expected.tracksJson, expected.waybill);
-            if (text != null && repository.saveOrderProjection(expected, "interface5", text.waybill, text.companyName, cancellation)) {
+            // T23（用户 2026-09-26，其余裁决 28）：已经知道的运单号（feed 文案、已存 v5_query 文案、暂存的京粉页）
+            // 先识别承运商，对上才投影；对不上这一票保持原样、不推送。
+            ExpressRepository.PendingProjection pending = repository.pendingProjection(expected);
+            if (pending != null && AccountCarrierRecognition.projectPending(repository, expected,
+                    pending, carrierRecognizer(expected, cancellation), cancellation)) {
                 expected = repository.find(expected.rowId);
                 if (expected == null) return null;
             }
@@ -1195,7 +1362,17 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 cancellation.throwIfCancelled();
                 if (query != null) {
                     repository.saveRecoveredOwnerRoute(expected, claim, query);
-                    boolean committed = repository.saveInterface5Query(query, expected, bindingGeneration);
+                    // T23 entry E: the waybill the reply's text names projects only with its carrier; a
+                    // recognition cut off by the budget still saves the reply, unprojected.
+                    String textCarrier;
+                    try {
+                        textCarrier = AccountCarrierRecognition.queryTextCarrier(
+                                expected, query, carrierRecognizer(expected, cancellation));
+                    } catch (InterruptedException cutOff) {
+                        textCarrier = null;
+                    }
+                    boolean committed = repository.saveInterface5Query(
+                            query, expected, bindingGeneration, textCarrier);
                     if (committed) {
                         ExpressItem current = repository.find(expected.rowId);
                         if (current == null || !current.waybill.equals(expected.waybill)
@@ -1235,13 +1412,22 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         }
         ExpressQueryResult feed = repository.automaticSourceTimeline(owner);
         boolean missingIdentity = owner.isAccountOrder() && owner.projectedWaybill.isEmpty();
-        if (!missingIdentity && Kuaidi100TimelinePolicy.hasPickupEvidence(feed)) {
+        // 走到这里详情已判为不完整（完整的在上面按缓存返回了）。
+        boolean signedHistoryGap = detailPull && signedJingDongHistoryGap(owner, feed,
+                repository.manualTimelineCandidate(owner, TimelineSlot.JD_H5), false,
+                repository.signedUnionPageUsed(owner));
+        if (!missingIdentity && !signedHistoryGap && Kuaidi100TimelinePolicy.hasPickupEvidence(feed)) {
             logAutomaticH5Decision(owner, "skipped", "feed_pickup");
             return owner;
         }
         boolean cainiao = owner.isCainiaoSource();
         boolean jingDong = "JingDong".equalsIgnoreCase(owner.sourceProvider);
         if (jingDong && !allowsJingDongCapture(owner)) return owner;
+        if (missingIdentity && repository.pendingProjection(owner) != null) {
+            // T23: this order already knows its waybill and only waits for the carrier; no page for it.
+            logAutomaticH5Decision(owner, "skipped", "carrier_pending");
+            return owner;
+        }
         if ((!cainiao && !jingDong) || (cainiao && (feed == null || feed.semantic == StatusSemantic.UNKNOWN))) {
             logAutomaticH5Decision(owner, "skipped", "source_status_missing");
             return owner;
@@ -1252,13 +1438,35 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             return owner;
         }
         ExpressOrderProjectionRetryStore retries = jingDong ? new ExpressOrderProjectionRetryStore(this) : null;
+        // 用户 2026-09-25 同意（方案 A）：进详情取号不再重开京粉页已确认是空壳的已完成订单；用户下拉照旧。
+        if (retries != null && !detailPull && retries.pageConfirmedEmpty(owner)) {
+            logAutomaticH5Decision(owner, "skipped", "empty_order_page");
+            return owner;
+        }
+        long attemptAt = System.currentTimeMillis();
         ExpressOrderProjectionRetryStore.AttemptToken token = jingDong
-                ? retries.beginTimelineAttempt(owner, System.currentTimeMillis()) : null;
-        if (jingDong && token == null) return owner;
-        logAutomaticH5Decision(owner, "started", "source_history_incomplete");
+                ? retries.beginTimelineAttempt(owner, attemptAt) : null;
+        if (jingDong && token == null) {
+            // 用户 2026-09-28：a union page this order may not open now is a logged skip (AGENTS §9 cooldown:
+            // the detail refresh skips the H5 stage and goes on), in iOS's words: another capture of the
+            // order is running, the hour after risk control, or the ordinary ten minutes.
+            String reason = retries.timelineSkipReason(owner, attemptAt);
+            if (reason != null) logAutomaticH5Decision(owner, "skipped", reason);
+            return owner;
+        }
+        logAutomaticH5Decision(owner, "started",
+                signedHistoryGap ? "signed_history_gap" : "source_history_incomplete");
         try {
-            ExpressAutomaticTimelineCapture.Result result = ExpressAutomaticTimelineCapture.capture(this,
-                    owner, route, cainiao ? TimelineSlot.CN_H5 : TimelineSlot.JD_H5, cancellation);
+            ExpressAutomaticTimelineCapture.Result result;
+            try {
+                result = ExpressAutomaticTimelineCapture.capture(this,
+                        owner, route, cainiao ? TimelineSlot.CN_H5 : TimelineSlot.JD_H5, cancellation);
+            } catch (InterruptedException cancelled) {
+                // 用户 2026-09-28：a capture cut off by the page stopping (or the refresh's deadline) still
+                // ends its stage; the order's cooldown was claimed before the page opened and stays spent.
+                logAutomaticH5Decision(owner, "failed", "cancelled");
+                throw cancelled;
+            }
             logAutomaticH5Decision(owner, result != null && result.timeline != null ? "succeeded" : "failed",
                     result != null && result.timeline != null ? "timeline_received" : "no_result");
             cancellation.throwIfCancelled();
@@ -1269,11 +1477,132 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                             ExpressToastCopy.JD_RISK_CONTROL, Toast.LENGTH_SHORT).show();
                 });
             }
+            if (retries != null) retries.recordPage(owner, result, System.currentTimeMillis());
+            // 优化 1（用户 2026-10-03「这轮就统一」）：已签收的行，京粉页有了回答就用掉这一代（完成时间 T）的那一次。
+            if (jingDong && unionPageAnswered(result)) repository.recordSignedUnionPage(owner);
             if (result != null && result.timeline != null) {
-                if (!repository.saveAutomaticDetailTimeline(expected, claim, result.timeline, result.complete, cancellation)) return null;
+                // T23 entry F: the page's waybill projects only with a matched carrier; otherwise it is
+                // held (row unchanged, no further page) until a later round matches it.
+                if (!AccountCarrierRecognition.savePageCapture(repository, expected, claim,
+                        result.timeline, result.complete, carrierRecognizer(expected, cancellation),
+                        cancellation)) return null;
             }
         } finally { if (retries != null) retries.endAttempt(token); }
         return repository.find(expected.rowId);
+    }
+
+    /**
+     * Recognition for one row; 京东 is skipped on a JD-platform row's non-JD waybill (R-20, T23 ②). It
+     * waits no longer than what is left of this operation's recognition budget (see
+     * {@link #recognitionBudgets}); once that is spent the row stays held and the operation goes on.
+     */
+    private AccountCarrierRecognition.Recognizer carrierRecognizer(
+            ExpressItem owner, ExpressQueryCancellation cancellation) {
+        // 优化 5: the paid level carries this row's reuse anchor.
+        ExpressApi api = new ExpressApi(getApplicationContext())
+                .forParcel(AccountCarrierRecognition.parcelAnchor(ExpressRepository.get(this), owner));
+        AccountCarrierRecognition.Budget budget = recognitionBudgets.computeIfAbsent(
+                cancellation, ignored -> new AccountCarrierRecognition.Budget());
+        return AccountCarrierRecognition.bounded(budget, waybill -> api.recognizeCarrier(waybill,
+                cancellation, AccountCarrierRecognition.excludesJd(owner, waybill)));
+    }
+
+    /**
+     * A detail refresh's end event (user 2026-09-28, iOS / Pipi names and meanings):
+     * {@code detail.refresh.committed} when what the page shows changed, {@code detail.refresh.skipped}
+     * with the reason when it did not (iOS's removed / state_changed / complete_cache / unchanged /
+     * query_failed / empty_response / not_attempted, Pipi's refresh_claim_unavailable, and
+     * {@code interrupted} for a cancelled flow as Pipi), and {@code detail.refresh.failed} with the
+     * failure's category when the flow threw. Logging never changes the refresh itself.
+     */
+    static final class DetailRefreshEnd {
+        private final ExpressLog.Scope scope;
+        private final ExpressItem owner;
+        private final long startedAt = System.currentTimeMillis();
+        private ExpressRepository.DetailPresentation before;
+        private String gate;
+        private boolean ended;
+
+        DetailRefreshEnd(ExpressLog.Scope scope, ExpressItem owner) {
+            this.scope = scope;
+            this.owner = owner;
+        }
+
+        void baseline(ExpressRepository repository) {
+            try {
+                before = repository.detailPresentation(owner);
+            } catch (RuntimeException ignored) { /* diagnostics only */ }
+        }
+
+        /** Why the flow stopped early; the end event still reports a change made before it stopped. */
+        void gate(String reason) {
+            if (gate == null) gate = reason;
+        }
+
+        void interrupted() {
+            skipped("interrupted");
+        }
+
+        void failed(Throwable failure) {
+            if (ended) return;
+            ended = true;
+            ExpressLog.write("detail.refresh.failed", ExpressLog.errorDetails(failure,
+                    "waybillTail", ExpressLog.tail(owner.displayWaybill()), "result", "failed",
+                    "persisted", false, "durationMs", System.currentTimeMillis() - startedAt));
+        }
+
+        void completed(ExpressRepository repository) {
+            if (ended) return;
+            try {
+                ExpressRepository.DetailPresentation after = before == null ? null
+                        : repository.detailPresentation(owner);
+                if (after != null && after.differsFrom(before)) {
+                    ended = true;
+                    ExpressLog.write("detail.refresh.committed",
+                            "waybillTail", ExpressLog.tail(owner.displayWaybill()), "result", "committed",
+                            "persisted", true, "durationMs", System.currentTimeMillis() - startedAt,
+                            "detailTimelineProvider", after.provider,
+                            "detailEffectiveTrackCount", after.effectiveTrackCount);
+                    return;
+                }
+                if (gate == null && before != null && after == null) {
+                    gate = repository.find(owner.rowId) == null ? "removed" : "state_changed";
+                }
+            } catch (RuntimeException ignored) { /* diagnostics only */ }
+            skipped(gate != null ? gate : scope.unchangedReason());
+        }
+
+        private void skipped(String reason) {
+            if (ended) return;
+            ended = true;
+            ExpressLog.write("detail.refresh.skipped",
+                    "waybillTail", ExpressLog.tail(owner.displayWaybill()), "result", reason,
+                    "skipReason", reason, "persisted", false,
+                    "durationMs", System.currentTimeMillis() - startedAt);
+        }
+    }
+
+    /**
+     * The row's fields a provider stage line carries (用户 2026-09-28; iOS shipmentDiagnosticDetails): whether it
+     * is automatic, its carrier, its route kind (a trusted same-owner Cainiao route, a Meizu web route, or none —
+     * iOS ShipmentRoute), how its detail is shown now, its feed clock and its presented status.
+     */
+    private ManualQueryCoordinator.RowDisplay stageDisplay(ExpressItem owner) {
+        ExpressRepository repository = ExpressRepository.get(this);
+        ExpressItem row = repository.find(owner.rowId);
+        if (row == null) return null;
+        ExpressRepository.DetailPresentation shown = repository.detailPresentation(owner);
+        ExpressQueryResult feed = row.manuallyAdded ? null : repository.automaticSourceTimeline(owner);
+        me.pipi.deliveries.model.WorkerStatusProjection status =
+                me.pipi.deliveries.model.WorkerStatusProjection.cached(row.tracksJson);
+        String routeKind = !safeCainiaoUrl(row).isEmpty() ? "cainiao"
+                : !repository.meizuManualDetailUrl(owner).isEmpty() ? "web" : "none";
+        return new ManualQueryCoordinator.RowDisplay(!row.manuallyAdded,
+                row.displayCourierCode().toUpperCase(java.util.Locale.ROOT), routeKind,
+                shown == null ? "" : shown.provider, shown == null ? 0 : shown.effectiveTrackCount,
+                shown == null ? 0L : shown.latestEventAtMs, shown == null ? 0L : shown.latestTrackAtMs,
+                feed == null ? 0L : Math.max(feed.statusEventTime, Kuaidi100TimelinePolicy.latestTimedEventMillis(feed)),
+                row.statusEventTime, String.valueOf(row.semantic), status != null && status.structured);
     }
 
     private void logAutomaticH5Decision(ExpressItem owner, String event, String reason) {
@@ -1282,13 +1611,30 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 "tail", ExpressLog.tail(owner.displayWaybill()), "reason", reason);
     }
 
-    private ExpressQueryResult capturePrimaryKuaidi100(
-            ExpressItem owner, ExpressQueryCancellation cancellation) throws InterruptedException {
-        String provider = ManualRoutePolicy.primaryH5Provider(owner.displayCourierCode());
-        List<String> phones = ExpressKuaidi100TimelineCapture.phoneCandidates(owner.phone,
+    /**
+     * Why the primary H5 page will not be opened for this row ({@code invalid_waybill}, {@code cooldown}),
+     * or "" when it will: the same checks {@link #capturePrimaryKuaidi100} makes before opening it, read
+     * without side effects so the stage is logged as skipped rather than as an empty answer.
+     */
+    private String primaryKuaidi100SkipReason(ExpressItem owner) {
+        String route = ManualRoutePolicy.primaryH5Url(owner.displayWaybill(), owner.displayCourierCode());
+        if (route.isEmpty()) return "invalid_waybill";
+        return ExpressKuaidi100CaptureCooldown.due(this,
+                ManualRoutePolicy.primaryH5Provider(owner.displayCourierCode()), owner.displayWaybill(),
+                primaryKuaidi100Phones(owner), System.currentTimeMillis()) ? "" : "cooldown";
+    }
+
+    private List<String> primaryKuaidi100Phones(ExpressItem owner) {
+        return ExpressKuaidi100TimelineCapture.phoneCandidates(owner.phone,
                 ExpressRepository.get(this).phoneCandidates("", owner.manuallyAdded ? ""
                         : ExpressAccountSource.bindingSourceForOwner(
                                 owner.stateOwner.isEmpty() ? owner.source : owner.stateOwner)));
+    }
+
+    private ExpressQueryResult capturePrimaryKuaidi100(
+            ExpressItem owner, ExpressQueryCancellation cancellation) throws InterruptedException {
+        String provider = ManualRoutePolicy.primaryH5Provider(owner.displayCourierCode());
+        List<String> phones = primaryKuaidi100Phones(owner);
         String route = ManualRoutePolicy.primaryH5Url(owner.displayWaybill(), owner.displayCourierCode());
         if (route.isEmpty()) {
             ExpressLog.line("", provider, "", "skipped",
@@ -1386,7 +1732,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         statusView.setTextColor(statusColor(semantic));
         ExpressSenderBadge.apply(findViewById(R.id.detail_sender),
                 item != null && item.sender, statusColor(semantic));
-        waybillView.setText(getString(R.string.express_company_waybill, company, waybill));
+        // 其余裁决 35：承运商为空时统一写「快递」；热线仍按原来的承运商名查。
+        waybillView.setText(getString(R.string.express_company_waybill,
+                ExpressItem.carrierLabel(company), waybill));
         waybillView.setOnClickListener(view -> copyWaybill(waybill));
         String hotline = CarrierRegistry.hotline(courierCode, company);
         hotlineRow.setVisibility(hotline.isEmpty() ? View.GONE : View.VISIBLE);
@@ -1723,7 +2071,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private boolean renderInterface5AccountTimeline(DetailState snapshot) {
         if (!usesInterface5Automatic(item)) return false;
         ManualTimelineAuthorityPolicy.Candidate selected = snapshot.selected;
-        ExpressQueryResult detail = selected == null ? snapshot.source : selected.result;
+        ExpressQueryResult detail = selected == null ? snapshot.source : snapshot.displayed;
         if (detail == null) return false;
         rememberDisplayedProvider(selected == null ? ManualTimelineAuthorityPolicy.PREFERRED_FEED : selected.provider);
         renderTimeline(ExpressTimeline.parse(detail.tracksJson, detail.latestTime, detail.latestDetail));
@@ -1877,6 +2225,50 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     static boolean allowsJingDongCapture(ExpressItem item) {
         return allowsJingDongRoute(item);
+    }
+
+    /**
+     * 京东件签收那一条常是被拦掉的评价文案（或者根本没有节点），feed 虽然早有揽收，显示的历史却停在
+     * 「派送中」，签收节点只在京粉页里。已签收（结构化、带完成时间）、已有真实运单号且详情判为不完整时，
+     * 详情下拉放行一次京粉页；手动链照旧被揽收挡住，同单冷却照旧。Pipi ExpressPoller.signedJdHistoryGap
+     * 是用户 2026-09-24 定的，这里与 iOS jingDongSignedHistoryGap 按三端同口径跟上。
+     *
+     * <p>一次完成只放行一次：京东的完成包可能在真正签收几天后才到（自动确认收货），京粉页里最新的签收节点离完成
+     * 时间太远，详情一直判不完整；已经有一个在完成时间当时或之后抓的京粉页包（successAt ≥ 完成时间）时，再抓也
+     * 不会有更新的节点，就不再放行（2026-09-24）。</p>
+     *
+     * <p>优化 1（用户 2026-10-03「这轮就统一」）：这一次记在这一行持久化的签收后台账里，按完成时间 T 分代
+     * （{@code usedForCompletion}，{@link ExpressRepository#signedUnionPageUsed}）。页面有了回答就算用掉——带节点的包、只抓到
+     * 部分包、没有节点的空壳都算；网络失败、超时、风控与冷却跳过不算。</p>
+     */
+    public static boolean signedJingDongHistoryGap(ExpressItem owner, ExpressQueryResult feed,
+            ManualTimelineAuthorityPolicy.Candidate unionPage, boolean detailComplete) {
+        return signedJingDongHistoryGap(owner, feed, unionPage, detailComplete, false);
+    }
+
+    public static boolean signedJingDongHistoryGap(ExpressItem owner, ExpressQueryResult feed,
+            ManualTimelineAuthorityPolicy.Candidate unionPage, boolean detailComplete,
+            boolean usedForCompletion) {
+        if (owner == null || detailComplete || usedForCompletion || owner.manuallyAdded
+                || !owner.isJingDongSource()
+                || owner.semantic != StatusSemantic.COMPLETED || owner.statusEventTime <= 0L
+                || owner.isAccountOrder() && owner.projectedWaybill.isEmpty()) return false;
+        if (unionPage != null && unionPage.successAt >= owner.statusEventTime) return false;
+        me.pipi.deliveries.model.WorkerStatusProjection projected =
+                me.pipi.deliveries.model.WorkerStatusProjection.cached(owner.tracksJson);
+        return projected != null && projected.structured
+                && projected.matches(owner.semantic, owner.statusEventTime)
+                && Kuaidi100TimelinePolicy.hasPickupEvidence(feed);
+    }
+
+    /**
+     * 优化 1：京粉页这一次有了回答——抓到带节点的包（完整或只抓到部分），或者页面完整加载、什么物流都没有的空壳（与空壳记号
+     * {@code ExpressOrderProjectionRetryStore.recordPage} 同一口径），或者见到了带物流的东西。风控、加载失败、没加载完就超时、
+     * 被取消都不是回答（被取消的抓取调用方根本走不到这里）。
+     */
+    static boolean unionPageAnswered(ExpressAutomaticTimelineCapture.Result result) {
+        return result != null && !result.throttled
+                && (result.timeline != null || result.emptyPage || result.logisticsSeen);
     }
 
     static boolean allowsPrimaryKuaidi100(ExpressItem item) {

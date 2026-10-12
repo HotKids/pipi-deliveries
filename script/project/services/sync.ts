@@ -6,14 +6,21 @@ import type {
   PendingManualQuery,
   RefreshSummary,
   Shipment,
+  StatusSemantic,
   TimelinePackage,
 } from "../models";
 import {
+  accountOrderTextWaybill,
+  accountParcelStructuredSemantic,
   accountParcelWithExistingProjection,
   fetchAccountParcels,
   normalizeAccountParcelCarrierBestEffort,
   parcelToShipment,
+  prepareAccountParcelCarrier,
   refreshAccountParcel,
+  withRecognizedAccountOrderTextWaybill,
+  storedAccountListStructuredSemantic,
+  withListStructuredSemantic,
   verifyAccountBinding,
 } from "./account-sync";
 import type { AccountParcelDto } from "./account-parser";
@@ -40,10 +47,11 @@ import {
   type ShipmentRoutePublication,
 } from "./routes";
 import {
-  absorbAutomaticShipment,
   absorbHistoricalShipment,
   absorbManualShipment,
   activateCainiaoManualFallback,
+  accountShipmentIsSupersededRecord,
+  accountShipmentReusesWaybill,
   applyAccountShipment,
   applyManualShipment,
   applySameSourceTimeline,
@@ -55,6 +63,8 @@ import {
   cainiaoAutomaticNeedsH5Supplement,
   clearCainiaoManualFallback,
   displayWaybill,
+  FORCED_COMPLETION_REFRESH_WINDOW_MS,
+  forcedCompletedAt,
   hasCachedKdniaoTimeline,
   hasCachedTimelineBeforeKdniao,
   hasEligibleShunFengManualTimeline,
@@ -66,27 +76,38 @@ import {
   isHistoricalAccountDuplicate,
   isJingDongSourceShipment,
   isShunFengSourceShipment,
+  manualShipmentReusedBy,
+  reusedWaybillShipment,
   shipmentDetailCandidateEvidence,
   jingDongFeedReachedPickup,
+  jingDongOrderPastPickup,
+  jingDongSignedGapCompletionAt,
+  jingDongSignedHistoryGap,
   manualTimelineOwnsShipment,
   needsAutomaticManualFallback,
   needsDetailFallback,
-  needsDetailEntryQuery,
+  detailEntryQueryReason,
   isHomeAccountQuerySource,
   ownsManualRefreshLease,
   recordAutomaticOwnerRefresh,
   releaseManualRefreshLease,
   sameCanonicalWaybill,
-  sameDisplayedWaybill,
   selectShipmentDetailTimeline,
   selectShipmentTimeline,
   shipmentSelectionEvidence,
   shipmentDetailComplete,
   shipmentDetailIncompleteReason,
+  shouldRefreshShipmentRow,
   shouldScheduleManualRefresh,
+  refreshGateView,
+  signedRefreshFrozen,
+  statusAlignmentOutOfStep,
+  statusAlignmentTimes,
+  supportsOrdinaryAutomaticDetailSupplement,
   unprojectedAccountOrder,
   usesManualSourceQuery,
   withDetailSelection,
+  withoutForcedCompletion,
 } from "./shipment-policy";
 import {
   addBinding,
@@ -101,14 +122,14 @@ import {
   peekStateRevision,
   removeBinding,
   saveState,
+  visibleShipments,
+  type RefreshNotificationContext,
 } from "./storage";
 import {
   normalizeWaybill,
   normalizedProjectedWaybill,
   containsTimelinePickupTrack,
-  containsTimelineStartTrack,
   shipmentPresentationStatus,
-  shouldRefreshShipment,
   sortShipments,
   timelineCapability,
   timedTracks,
@@ -117,8 +138,11 @@ import {
   parseProviderTime,
 } from "./status";
 import {
-  acquireDurableRefreshLease,
+  acquireRenewingDurableRefreshLease,
   durableRefreshLeaseDiagnostics,
+  durableRefreshLeaseMaxRemainingMs,
+  durableRefreshLeaseRemainingMs,
+  type DurableRefreshLease,
   recordNetworkRefreshSuccess,
   recordRefreshProviderResult,
   refreshProviderDue,
@@ -141,13 +165,19 @@ import {
   ACCOUNT_LIST_BUDGET_MS,
   ACCOUNT_ORDER_PROJECTION_BUDGET_MS,
   accountOrderReadyForProjection,
+  accountOrderPageConfirmedEmpty,
   accountOrderProjectionAttemptRemainingMs,
+  accountOrderProjectionRouteHash,
   rotatingBatchIndices,
   activeAccountOrderProjectionAttempt,
   accountChildDeadline,
+  nextEmptyShellStrikes,
   oldestBatchIndices,
   projectionRiskControlled,
+  retainedEmptyShellStrikes,
   shouldRetryAccountOrderProjection,
+  shouldRetryAccountOrderProjectionUnprompted,
+  unionPageOutcome,
 } from "./account-sync-policy";
 import type { ExpressToastKey } from "./express-toast-copy";
 import { accountParcelWithProjectionReference } from "./account-order-reference";
@@ -157,9 +187,11 @@ import {
   diagnosticErrorDetails,
   diagnosticState,
   diagnosticsEnabled,
+  openStageCancellationEnd,
   writeDiagnostic,
   writeDiagnosticBatch,
   type DiagnosticDetails,
+  type StageCancellationEnd,
 } from "./logger";
 import {
   SCRIPT_BINDING_SOURCE,
@@ -173,12 +205,22 @@ import {
   projectAccountOrder,
   type AccountOrderProjectionDiagnostics,
 } from "./account-order-projection";
-import { recognizeNonSyncCarrier } from "./carrier-recognition";
+import {
+  CarrierRecognitionBudget,
+  carrierRecognitionDue,
+  carrierRecognitionExhausted,
+  forgetCarrierRecognition,
+  recognizeNonSyncCarrier,
+  truncatedCarrierRecognitionLast,
+  type CarrierRecognitionResult,
+} from "./carrier-recognition";
 import {
   needsProjectedCarrierRepair,
-  normalizeAccountParcelCarrier,
   repairProjectedShipmentCarrier,
 } from "./account-carrier-normalization";
+import { carrierUnmatched } from "./carrier-gate";
+import { projectedCarrierPresentation } from "./carrier-presentation";
+import { activeCarrierTableVersion } from "./carrier-query";
 import { GatewayError } from "./gateway";
 import {
   RefreshCoordinator,
@@ -199,6 +241,13 @@ import {
   FULL_REFRESH_FINALIZATION_RESERVE_MS,
   fullRefreshHostPolicy,
 } from "./refresh-mode";
+import {
+  projectionSceneActive,
+  projectionViewportHostAvailable,
+} from "./projection-viewport";
+import { recordSignedRelease } from "./row-ledger";
+import { firstClassifyAnchor } from "./row-ledger";
+import { shipmentReuseAnchorAtMs } from "./waybill-reuse";
 
 const DETAIL_MANUAL_REFRESH_BUDGET_MS = 15_000;
 const MANUAL_QUERY_BUDGET_MS = 30_000;
@@ -207,7 +256,6 @@ const MANUAL_REFRESH_CONCURRENCY = 2;
 const FULL_REFRESH_COORDINATION_WAIT_MS = 2_000;
 const ACCOUNT_ORDER_PROJECTION_ATTEMPT_MS = 22_000;
 const FORCED_PROJECTION_WAIT_SLICE_MS = 100;
-const ACCOUNT_ORDER_PROJECTION_STRATEGY = "jd-h5-v2";
 
 const refreshStateListeners = new Set<(state: AppState) => void>();
 export function subscribeRefreshState(listener: (state: AppState) => void): () => void {
@@ -219,6 +267,31 @@ function publishRefreshState(state: AppState): void {
   for (const listener of refreshStateListeners) {
     try { listener(state); }
     catch (error) { writeDiagnostic("refresh.presentation.failed", diagnosticErrorDetails(error), "warning"); }
+  }
+}
+
+/**
+ * How a full refresh requested in this runtime ended: it ran and released `full:<source>`, or it
+ * never ran because another runtime (the widget) held that lease. Only the app root listens (the
+ * foreground order projection); widget and App Intent runtimes never subscribe.
+ */
+export type FullRefreshOutcome = Readonly<{
+  source: BindingSource;
+  trigger: "background" | "list_pull" | "account_list_only" | "foreground";
+  skipReason?: "active_cross_runtime_refresh";
+}>;
+
+const fullRefreshOutcomeListeners = new Set<(outcome: FullRefreshOutcome) => void>();
+export function subscribeFullRefreshOutcome(
+  listener: (outcome: FullRefreshOutcome) => void,
+): () => void {
+  fullRefreshOutcomeListeners.add(listener);
+  return () => { fullRefreshOutcomeListeners.delete(listener); };
+}
+
+function publishFullRefreshOutcome(outcome: FullRefreshOutcome): void {
+  for (const listener of fullRefreshOutcomeListeners) {
+    try { listener(outcome); } catch { /* a listener cannot change how the refresh ended */ }
   }
 }
 
@@ -247,6 +320,7 @@ type ShipmentRefreshResult = {
   refreshed: boolean;
   completedSourceQuery?: boolean;
   querySucceeded?: boolean;
+  skipReason?: "signed_frozen";
   detailEntry?: DetailEntryObservation;
   /** Unified express toast (AGENTS §11) chosen by the refresh, rendered from the shared copy table. */
   expressToast?: ExpressToastKey;
@@ -264,16 +338,35 @@ type ShipmentRefreshOptions = {
     | "detail_pull"
     | "manual_submit"
     | "identity_projection"
-    | "missing_history";
+    | "missing_history"
+    /** 用户 2026-10-02 状态对齐强刷（services/status-alignment.ts）：显式下拉的链，越过下拉也挡的那几道闸。 */
+    | "status_alignment";
   signal?: AbortSignal;
   deadlineAtMs?: number;
   detailEntry?: DetailEntryObservation;
+  /** Alignment reserves once at the first actual transport request, after source/ownership gates. */
+  beforeQuery?: () => void;
 };
 type TargetRefreshLease = Readonly<{
   deadlineAtMs?: number;
   isCurrent: () => boolean;
   signal?: AbortSignal;
+  expectedFingerprint?: string;
 }>;
+/**
+ * 用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒。A detail refresh (open or pull) is one user operation outside
+ * the sync round: every carrier recognition it waits for — its nested identity projection included, which runs under
+ * the same lease — shares one 30-second budget.
+ */
+const operationRecognitionBudgets = new WeakMap<TargetRefreshLease, CarrierRecognitionBudget>();
+function operationRecognitionBudget(lease: TargetRefreshLease): CarrierRecognitionBudget {
+  let budget = operationRecognitionBudgets.get(lease);
+  if (!budget) {
+    budget = new CarrierRecognitionBudget();
+    operationRecognitionBudgets.set(lease, budget);
+  }
+  return budget;
+}
 const refreshCoordinator = new RefreshCoordinator<
   BindingSource,
   string,
@@ -641,11 +734,20 @@ function cainiaoListHasUpdate(previous: Shipment | undefined, current: Shipment)
     incoming.semantic !== "UNKNOWN" && incoming.semantic !== stored.semantic;
 }
 
-function canQueryHomeAccount(shipment: Shipment, cainiaoListUpdated: boolean): boolean {
+function canQueryHomeAccount(shipment: Shipment, cainiaoListUpdated: boolean, now = Date.now()): boolean {
+  return homeAccountQueryEligible(shipment, cainiaoListUpdated) && !signedRefreshFrozen(shipment, now);
+}
+
+/**
+ * The Home follow-up's own conditions. A newly reported completion still gets its final detail unless the row has
+ * reached the signed freeze: status, headline and local detail all at the signing (用户 2026-10-02「头条 状态 详情页 都
+ * 推进到了签收状态…就冻结快递 后续不再进行任何刷新」). An explicit sign-off stops it only once hard-frozen (用户 2026-10-02
+ * 「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「iOS 右滑签收一起改」); both are canQueryHomeAccount's freeze check.
+ */
+function homeAccountQueryEligible(shipment: Shipment, cainiaoListUpdated: boolean): boolean {
   if (!isCainiaoAutomaticShipment(shipment)) return false;
-  // A newly reported completion still gets its final detail; explicit sign-off stays final.
   return cainiaoListUpdated && isHomeAccountQuerySource(shipment) && Boolean(shipment.accountRecord) &&
-    !shipment.forcedCompletedAtMs && shipment.timeline.provider !== "demo" &&
+    shipment.timeline.provider !== "demo" &&
     selectShipmentTimeline(shipment).semantic !== "CANCELLED";
 }
 
@@ -817,13 +919,13 @@ async function withH5Controller<T>(
   let release!: () => void;
   const turn = new Promise<void>(resolve => { release = resolve; });
   h5Queue = previous.then(() => turn);
-  let durable: ReturnType<typeof acquireDurableRefreshLease> = null;
+  let durable: DurableRefreshLease | null = null;
   try {
     await waitForRefresh(previous, deadlineAtMs, signal);
     while (!durable) {
       assertRefreshSignal(signal);
       assertWithinDeadline(deadlineAtMs);
-      durable = acquireDurableRefreshLease("detail:h5", deadlineAtMs - Date.now() + 1000);
+      durable = acquireRenewingDurableRefreshLease("detail:h5", deadlineAtMs - Date.now() + 1000);
       if (!durable) await waitForRefresh(new Promise<void>(resolve => setTimeout(resolve, 100)), deadlineAtMs, signal);
     }
     return await capture();
@@ -840,6 +942,7 @@ async function refreshWebTimeline(
   signal?: AbortSignal,
   onQueryAttempted?: (authorized: boolean) => void,
   boundPhoneTails: readonly string[] = [],
+  beforeQuery?: () => void,
 ): Promise<Shipment | null> {
   // Stage eligibility belongs to callers; an order number is never a K100 waybill.
   if (unprojectedAccountOrder(shipment)) return null;
@@ -853,6 +956,7 @@ async function refreshWebTimeline(
     deadlineAtMs,
     signal,
     onQueryAttempted,
+    beforeQuery,
   }, observe), deadlineAtMs, signal);
   if (!timeline) return null;
   const enriched = applySameSourceTimeline(shipment, timeline, now);
@@ -887,6 +991,7 @@ async function refreshCainiaoH5(
   observe?: (diagnostics: CainiaoH5Diagnostics) => void,
   signal?: AbortSignal,
   onQueryAttempted?: (authorized: boolean) => void,
+  beforeQuery?: () => void,
 ): Promise<Shipment | null> {
   assertRefreshSignal(signal);
   if (!isCainiaoAutomaticShipment(shipment) || !routeUrl) return null;
@@ -900,6 +1005,7 @@ async function refreshCainiaoH5(
     successAtMs: now,
     signal,
     onQueryAttempted,
+    beforeQuery,
   }, observe), deadlineAtMs, signal);
   assertRefreshSignal(signal);
   return timeline && timedTracks(timeline.tracks).length
@@ -931,8 +1037,74 @@ function rethrowRefreshCancellation(
   assertRefreshSignal(signal);
 }
 
+/**
+ * 用户 2026-09-28：a stage whose start was logged still ends when the parent refresh is cancelled —
+ * its failure event with errorCategory "cancelled" — before the cancellation propagates exactly as
+ * rethrowRefreshCancellation propagates it. Without a cancelled parent nothing happens here.
+ */
+function rethrowStageCancellation(signal: AbortSignal | undefined, endStage: () => void): void {
+  if (!signal?.aborted) return;
+  endStage();
+  assertRefreshSignal(signal);
+}
+
+/** A stage whose caller writes its cancelled end itself (see projectAccountOrders). */
+const CALLER_ENDS_CANCELLED_STAGE: StageCancellationEnd = { end: () => {}, close: () => {} };
+
 function projectionOwnerId(parcel: AccountParcelDto): string {
   return `${parcel.source}:account:${normalizeWaybill(parcel.ownerId)}`;
+}
+
+/**
+ * 用户 2026-09-25 同意：刷新流程只在 App 在前台（场景 active）时开京粉页，否则这一单跳过、留给前台那一遍
+ * 存盘行投影；不在屏幕上的页面只会超时（visibilityState=hidden）。
+ */
+class UnionPageSkipped extends Error {
+  constructor(readonly reason: "not_foreground") {
+    super("union page left to the on-screen pass");
+    this.name = "UnionPageSkipped";
+  }
+}
+
+/**
+ * 用户 2026-10-03「所有开京粉页的路都检查」（代码 4）：the detail flow's own check, asked right before its union page
+ * loads (the list path's gate also checks its lease).
+ */
+function unionPageSceneGate(): void {
+  if (!projectionSceneActive()) throw new UnionPageSkipped("not_foreground");
+}
+
+/**
+ * 用户 2026-10-03「这轮就统一」（优化 1，口径「拿到回答就算用掉」）：whether one union page load answered. A package —
+ * partial or not — or a fully loaded page without logistics is an answer; risk control, and a load that failed, timed out
+ * or never reached the union request (方案 A's uninformative page), are not.
+ */
+function unionPageGaveAnswer(
+  diagnostics: AccountOrderProjectionDiagnostics | null,
+  captured: TimelinePackage | null | undefined,
+): boolean {
+  if (diagnostics && projectionRiskControlled(diagnostics.unionResponseStatuses, diagnostics.riskControlSeen === true)) {
+    return false;
+  }
+  return timedTracks(captured?.tracks || []).length > 0 || unionPageOutcome(diagnostics) !== "uninformative";
+}
+
+/**
+ * 优化 5 续（用户 2026-10-03「第一次识别时记下锚点，之后不变」）：the anchor a stored row sends with the paid carrier stage —
+ * the one recorded the first time it sent one, else its reuse anchor as it is now (then recorded).
+ */
+function rowClassifyAnchor(shipment: Shipment): () => number | undefined {
+  return () => firstClassifyAnchor(shipment.identity.id, () => shipmentReuseAnchorAtMs(shipment));
+}
+
+/** Puts back one attempt record as it was before a reservation (undefined removes it). */
+function withProjectionAttemptRecord(
+  shipment: Shipment,
+  field: ProjectionAttemptField,
+  retry: Shipment["identity"]["orderProjectionRetry"],
+): Shipment {
+  const { [field]: _reserved, ...identity } = shipment.identity;
+  return { ...shipment, identity: retry ? { ...identity, [field]: retry } : identity };
 }
 
 function projectionCooldownKey(parcel: AccountParcelDto): string {
@@ -941,9 +1113,9 @@ function projectionCooldownKey(parcel: AccountParcelDto): string {
   // sameRoute 不成立，10 分钟与风控 60 分钟的记录当场作废：403 本该歇一小时，实际下一轮又开页。
   // 捕获策略变更仍然使冷却失效（策略串还在哈希里），这是它原本就该有的作用。
   // 持久化字段名仍是 `routeHash`，改名要迁移旧数据，不值得。
-  return privateHash(
-    `${ACCOUNT_ORDER_PROJECTION_STRATEGY}\0${projectionOwnerId(parcel)}`,
-  );
+  // The same hash as before (sha256 of strategy \0 owner id); it moved to the policy module so the
+  // list's visibility check can read an order's empty-page mark too (2026-09-25).
+  return accountOrderProjectionRouteHash(projectionOwnerId(parcel));
 }
 
 function projectionOwnerFingerprint(ownerId: string): string {
@@ -956,17 +1128,172 @@ async function projectAccountOrderWithCarrier(
   recognitionDeadlineAtMs: number | undefined,
   observe?: (diagnostics: AccountOrderProjectionDiagnostics) => void,
   signal?: AbortSignal,
+  beforeLoad?: () => void,
+  /** The round's or operation's recognition wait (用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒). */
+  recognitionBudget?: CarrierRecognitionBudget,
 ): Promise<AccountParcelDto> {
   const projected = await withH5Controller(() => projectAccountOrder(
     parcel,
     projectionDeadlineAtMs,
     observe,
     signal,
+    beforeLoad,
   ), projectionDeadlineAtMs, signal);
-  return normalizeAccountParcelCarrier(projected, {
+  // Best effort (T23, 2026-09-26): a recognition failure must not drop the waybill the page named; an unmatched
+  // carrier holds the projection instead.
+  return normalizeAccountParcelCarrierBestEffort(projected, {
     deadlineAtMs: recognitionDeadlineAtMs,
     signal,
+    budget: recognitionBudget,
   });
+}
+
+/** An order projection whose carrier neither the recognizer nor the page named. */
+function projectionWithoutCarrier(parcel: AccountParcelDto): boolean {
+  if (!parcel.accountOrder ||
+      normalizeWaybill(parcel.waybill) === normalizeWaybill(parcel.ownerId)) return false;
+  return !projectedCarrierPresentation(parcel.waybill, parcel.courierCode, parcel.companyName).companyName;
+}
+
+/**
+ * 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：订单已经拿到真实运单号，承运商却没对上（识别链与页面都
+ * 没给名字）。这样的投影不落地，订单行保持原样——直到识别进入终态（其余裁决 32、33），那时照常落地。
+ */
+function projectionAwaitingCarrier(parcel: AccountParcelDto): boolean {
+  return projectionWithoutCarrier(parcel) && !carrierRecognitionExhausted(parcel.waybill);
+}
+
+/**
+ * 其余裁决 32、33（用户 2026-09-26）：识别已进入终态（连续 3 次失败，或付费级明确认不出，且快递100 没给名字）的投影不再
+ * 停在订单阶段：照常落地，承运商位置填这张订单来源传回的承运商码原样（JDKD 这类，不是平台名）；没传回就空着
+ * （「传回啥 cpcode 就填啥」）。
+ */
+function releaseExhaustedProjection(projected: AccountParcelDto, orderRawCode: string | undefined): AccountParcelDto {
+  if (!projectionWithoutCarrier(projected) || !carrierRecognitionExhausted(projected.waybill)) return projected;
+  const rawCode = String(orderRawCode || "").trim();
+  return {
+    ...projected,
+    courierCode: "",
+    companyName: rawCode,
+    rawCourierCode: rawCode,
+    carrierNormalization: null,
+  };
+}
+
+/** Whether a held or text waybill can be settled now: recognition may answer, or it is exhausted (其余裁决 32、33). */
+function heldCarrierSettleable(waybill: string, now: number): boolean {
+  return carrierRecognitionDue(waybill, now) || carrierRecognitionExhausted(waybill);
+}
+
+type HeldProjection = NonNullable<Shipment["identity"]["pendingProjection"]>;
+
+/** The parcel a held union-page projection stands for, its carrier still to be recognised. */
+function heldProjectionParcel(parcel: AccountParcelDto, held: HeldProjection): AccountParcelDto {
+  return {
+    ...parcel,
+    waybill: held.waybill,
+    courierCode: "",
+    companyName: "",
+    rawCourierCode: "",
+    rawCompanyName: "",
+    carrierNormalization: null,
+    projectionTimeline: held.timeline || null,
+    textIdentity: null,
+  };
+}
+
+/** Keeps a union-page waybill whose carrier did not match, so later rounds only recognise it (T23). */
+function withHeldProjection(
+  shipments: readonly Shipment[],
+  ownerId: string,
+  projected: AccountParcelDto,
+  now: number,
+): Shipment[] {
+  const owner = shipments.find((shipment) => shipment.identity.id === ownerId);
+  if (!owner || normalizedProjectedWaybill(owner.identity)) return [...shipments];
+  return replaceById(shipments, {
+    ...owner,
+    identity: {
+      ...owner.identity,
+      pendingProjection: {
+        waybill: normalizeWaybill(projected.waybill),
+        timeline: projected.projectionTimeline || null,
+        capturedAtMs: now,
+      },
+    },
+  });
+}
+
+/** Puts back the owner's projection record from before a reservation that loaded no page (T23). */
+function withProjectionRetry(
+  shipment: Shipment,
+  retry: Shipment["identity"]["orderProjectionRetry"],
+): Shipment {
+  const { orderProjectionRetry: _reserved, ...identity } = shipment.identity;
+  return { ...shipment, identity: retry ? { ...identity, orderProjectionRetry: retry } : identity };
+}
+
+/**
+ * T23: a recognised carrier on a row that shows a real waybill without one. A projected order is repaired like the
+ * detail repair always did; any other row takes the carrier on its identity. A JD result on a non-JD waybill of a
+ * JD business row stays refused (R-20). Returns the row unchanged when nothing matched.
+ */
+function withRecognizedCarrier(
+  shipment: Shipment,
+  recognition: CarrierRecognitionResult,
+): Shipment {
+  if (!carrierUnmatched(shipment)) return shipment;
+  if (shipment.identity.accountOrder && normalizedProjectedWaybill(shipment.identity)) {
+    return repairProjectedShipmentCarrier(shipment, recognition.normalization, recognition.displayName);
+  }
+  const normalization = recognition.normalization?.isBuiltIn ? recognition.normalization : null;
+  const displayName = String(recognition.displayName || "").trim();
+  if (!normalization && !displayName) return shipment;
+  const carrier = normalization
+    ? {
+        courierCode: normalization.standardCode,
+        companyName: normalization.displayName,
+        ...(shipment.identity.manuallyAdded ? {} : {
+          carrierIsBuiltIn: true,
+          carrierKuaidi100Code: normalization.kuaidi100Code,
+          carrierTableVersion: normalization.tableVersion,
+        }),
+      }
+    : {
+        courierCode: "",
+        companyName: displayName,
+        ...(shipment.identity.manuallyAdded ? {} : {
+          carrierIsBuiltIn: false,
+          carrierKuaidi100Code: "",
+          carrierTableVersion: activeCarrierTableVersion(),
+        }),
+      };
+  const recognized = { ...shipment, identity: { ...shipment.identity, ...carrier } };
+  return carrierUnmatched(recognized) ? shipment : recognized;
+}
+
+/**
+ * T23: asks the recognizer again for a row still without a matched carrier — also one released with its raw code after
+ * an exhausted recognition (其余裁决 32), once the recognizer may answer again. Best effort.
+ */
+async function recognizeAwaitingCarrier(
+  shipment: Shipment,
+  deadlineAtMs: number | undefined,
+  signal?: AbortSignal,
+  budget?: CarrierRecognitionBudget,
+): Promise<Shipment> {
+  if (!carrierUnmatched(shipment)) return shipment;
+  const waybill = displayWaybill(shipment);
+  if (!carrierRecognitionDue(waybill)) return shipment;
+  try {
+    return withRecognizedCarrier(shipment,
+      await recognizeNonSyncCarrier(waybill, { deadlineAtMs, signal, budget,
+        // 优化 5 (user 2026-10-03): the row's own waybill-reuse anchor goes with the paid stage, the one it first sent.
+        parcelAnchorAtMs: rowClassifyAnchor(shipment) }));
+  } catch (error) {
+    rethrowRefreshCancellation(error, signal);
+    return shipment;
+  }
 }
 
 /**
@@ -1000,6 +1327,8 @@ function projectionAttempt(
             previousRiskControlAtMs > 0
           ? { riskControlAtMs: previousRiskControlAtMs }
           : {}),
+        // The reservation must not forget an earlier empty page of this order (方案 A, 2026-09-25).
+        ...(field === "orderProjectionRetry" ? retainedEmptyShellStrikes(previous, routeHash) : {}),
         attemptId,
         attemptExpiresAtMs: Math.min(
           deadlineAtMs || now + ACCOUNT_ORDER_PROJECTION_ATTEMPT_MS,
@@ -1008,6 +1337,18 @@ function projectionAttempt(
       },
     },
   };
+}
+
+/**
+ * The completed orders 方案 A (user 2026-09-25) marks: an unprojected account order the list shows
+ * as 已完成. Every other order keeps retrying under the ordinary rest.
+ */
+function completedUnprojectedOrder(shipment: Shipment | undefined): boolean {
+  return Boolean(
+    shipment &&
+    unprojectedAccountOrder(shipment) &&
+    shipmentPresentationStatus(shipment).semantic === "COMPLETED",
+  );
 }
 
 function ownsProjectionAttempt(
@@ -1111,6 +1452,31 @@ function projectionFailureRetry(
   };
 }
 
+/**
+ * The first-projection record after a load of `owner`'s union page that established no waybill:
+ * the §9 rest above plus the empty-page strikes of 方案 A (user 2026-09-25), counted in the same
+ * order-hashed record and only for a completed order. `waybillFound` is a page that named a
+ * waybill the owner could not keep; like any capture it clears the strikes.
+ */
+function orderProjectionFailureRetry(
+  owner: Shipment | undefined,
+  routeHash: string,
+  diagnostics: AccountOrderProjectionDiagnostics | null | undefined,
+  failedAtMs: number,
+  waybillFound = false,
+): NonNullable<Shipment["identity"]["orderProjectionRetry"]> {
+  return {
+    ...projectionFailureRetry(routeHash, diagnostics, failedAtMs),
+    ...nextEmptyShellStrikes(
+      owner?.identity.orderProjectionRetry,
+      routeHash,
+      unionPageOutcome(diagnostics, waybillFound),
+      completedUnprojectedOrder(owner),
+      failedAtMs,
+    ),
+  };
+}
+
 function retainObservedProjectionRisk(
   ownerId: string,
   routeHash: string,
@@ -1178,6 +1544,7 @@ function recordProjectionFailure(
   routeHash: string,
   failedAtMs: number,
   diagnostics: AccountOrderProjectionDiagnostics | null | undefined = null,
+  waybillFound = false,
 ): Shipment[] {
   const owner = shipments.find((shipment) => shipment.identity.id === ownerId);
   if (!owner || normalizedProjectedWaybill(owner.identity)) return [...shipments];
@@ -1185,7 +1552,9 @@ function recordProjectionFailure(
     ...owner,
     identity: {
       ...owner.identity,
-      orderProjectionRetry: projectionFailureRetry(routeHash, diagnostics, failedAtMs),
+      orderProjectionRetry: orderProjectionFailureRetry(
+        owner, routeHash, diagnostics, failedAtMs, waybillFound,
+      ),
     },
   });
 }
@@ -1231,29 +1600,37 @@ export function mergeAccountParcel(
   source: BindingSource,
   now: number,
   routeMutations: DeferredRouteMutations,
+  /**
+   * Collects every merge of a projected order row with another row of its waybill: surviving row id →
+   * the absorbed automatic waybill row ids (see the end of this function).
+   */
+  orderMerges?: Map<string, string[]>,
 ): Shipment[] {
   let shipments = [...shipmentsInput];
   const resolvedParcel = accountParcelWithExistingProjection(parcel, shipments);
   const incoming = parcelToShipment(resolvedParcel, boundPhones, now);
   if (!incoming) return shipments;
-  const exactCurrent = shipments.find(
+  // 归属方案 T1（用户 2026-09-25 采纳）：一条上游记录只写它自己的行（同一 id）。同一运单号上的另一条自动记录（订单号的
+  // 行、运单号的行、另一张订单）不再被收走，也不再是写入目标；谁先占号谁显示，其余挂靠，由落库时的归属判断决定。
+  const current = shipments.find(
     (item) => item.identity.id === incoming.identity.id,
   );
-  const projectionChangedCanonical = Boolean(
-    exactCurrent &&
-    normalizedProjectedWaybill(incoming.identity) &&
-    displayWaybill(exactCurrent) !== displayWaybill(incoming),
-  );
-  const canonicalPeer = shipments.find(
-    (item) =>
-      !item.identity.manuallyAdded &&
-      item.identity.id !== incoming.identity.id &&
-      sameDisplayedWaybill(item, incoming),
-  );
-  const current = projectionChangedCanonical && canonicalPeer
-    ? canonicalPeer
-    : exactCurrent || canonicalPeer;
-  let merged = applyAccountShipment(current, incoming, now);
+  // 承运商复用旧运单号（用户 2026-10-01/02「C 新件优先（含 A）」「至少晚 24 小时」，四端；services/waybill-reuse.ts）。
+  // 京东业务来源排除：有京东订单投影到这个号码上时（那是一票京东购物的运单）照旧。
+  const jingDongOrderOnNumber = shipments.some((item) =>
+    item.identity.accountOrder && normalizedProjectedWaybill(item.identity) === displayWaybill(incoming));
+  // 号码已被至少晚 24 小时的新件拿走（这一行自己，或同号的手动行）时，再来的旧记录一律不写，不再来回翻（细节 5）。
+  if (!jingDongOrderOnNumber && shipments.some((item) =>
+    (item.identity.id === incoming.identity.id ||
+      (item.identity.manuallyAdded && sameCanonicalWaybill(item, incoming))) &&
+    accountShipmentIsSupersededRecord(item, incoming, now))) {
+    return shipments;
+  }
+  // 新件拿走这一行：当作初次出现（不通知），旧件的轨迹、签收闩锁与用户字段一概不留（shipment-policy reusedWaybillShipment）。
+  let reusedWaybill = !jingDongOrderOnNumber && accountShipmentReusesWaybill(current, incoming, now);
+  let merged = withListStructuredSemantic(reusedWaybill
+    ? reusedWaybillShipment(incoming, now)
+    : applyAccountShipment(current, incoming, now), resolvedParcel);
   const incomingSource = automaticSourceOf(incoming);
   const incomingBindingIdentity = automaticBindingIdentityOf(incoming);
   const ownership = merged.automaticOwnership;
@@ -1278,28 +1655,28 @@ export function mergeAccountParcel(
       routeMutations,
     );
   }
+  // 自动来源照 §5.2 接管同号的手动行（归属-1：投影订单也一样，iOS 照现状并入手动轨迹，手动行随之退出列表）；
+  // 旧版本留下的无来源历史行照旧并入。
   const duplicates = shipments.filter(
     (item) =>
       item.identity.id !== merged.identity.id &&
       (
         (item.identity.manuallyAdded && sameCanonicalWaybill(item, merged)) ||
-        isHistoricalAccountDuplicate(item, merged) ||
-        (
-          projectionChangedCanonical &&
-          item.identity.id === exactCurrent?.identity.id
-        ) ||
-        (
-          !item.identity.manuallyAdded &&
-          item.identity.bindingSource != null &&
-          sameDisplayedWaybill(item, merged)
-        )
+        isHistoricalAccountDuplicate(item, merged)
       ),
   );
   for (const duplicate of duplicates) {
-    if (duplicate.identity.manuallyAdded) {
+    if (duplicate.identity.manuallyAdded && !jingDongOrderOnNumber &&
+        manualShipmentReusedBy(duplicate, incoming, now)) {
+      // 细节 4：已签收的旧手动行同样由新件接管，不并入它的手动轨迹，备注也不带过来。
+      reusedWaybill = true;
+    } else if (reusedWaybill && !duplicate.identity.manuallyAdded) {
+      // 旧版本留下的同号历史行是旧件的：新件接管时一起退出，不把它的轨迹并给新件。
+    } else if (duplicate.identity.manuallyAdded) {
       merged = absorbManualShipment(merged, duplicate, now);
-    } else if (duplicate.identity.bindingSource != null) {
-      merged = absorbAutomaticShipment(merged, duplicate, now);
+      // 归属-6（用户 2026-09-25）：退出列表的那一行的备注，在接管它的行还没有备注时带过去，从不覆盖已有的备注。
+      const note = String(duplicate.note || "").trim();
+      if (note && !String(merged.note || "").trim()) merged = { ...merged, note };
     } else {
       merged = absorbHistoricalShipment(merged, duplicate, now);
       merged = deferPersistedRoute(merged, duplicate, now, routeMutations);
@@ -1307,6 +1684,46 @@ export function mergeAccountParcel(
     shipments = shipments.filter(
       (item) => item.identity.id !== duplicate.identity.id,
     );
+  }
+  if (reusedWaybill) {
+    // Pipi 同一事件：不带运单号、行 id 或手机号。
+    writeDiagnostic("account.owner.superseded", {
+      takeoverReason: "waybill_reuse",
+      fromProvider: !current || current.identity.manuallyAdded ? "manual" : source === "interface6" ? "v6" : "v5",
+      toProvider: source === "interface6" ? "v6" : "v5",
+    });
+    // 细节 2：号码可能换了承运商，这台设备上这个号码的识别记录清掉，下一轮从头识别。
+    try {
+      forgetCarrierRecognition(displayWaybill(merged));
+    } catch (error) {
+      writeDiagnostic("account.owner.superseded", {
+        takeoverReason: "waybill_reuse", result: "recognition_reset_failed", ...diagnosticErrorDetails(error),
+      }, "warning");
+    }
+  }
+  // 用户 2026-09-25（两条合起来）：订单行投影后与同一运单的已有行合并的那一轮，通知判断改用被并入的运单行当
+  // 「上一次状态」，并且只有展示状态变了才推；之后各轮照旧。Either side may survive the merge. When the
+  // projected order row survives, the absorbed automatic waybill rows (not orders, not manual) are
+  // recorded as its baseline candidates; when the waybill row survives, it is itself that baseline.
+  // 归属方案之后自动行之间不再合并，这条规则只在投影订单接管手动行或旧历史行的那一轮还会生效，留作兜底（归属-3）。
+  const absorbedRows = [current, ...duplicates].filter((row): row is Shipment =>
+    Boolean(row && row.identity.id !== merged.identity.id));
+  if (
+    orderMerges &&
+    absorbedRows.length &&
+    [merged, ...absorbedRows].some((row) =>
+      row.identity.accountOrder && normalizedProjectedWaybill(row.identity))
+  ) {
+    const waybillRowIds = merged.identity.accountOrder && normalizedProjectedWaybill(merged.identity)
+      ? absorbedRows
+          .filter((row) => !row.identity.manuallyAdded && !row.identity.accountOrder)
+          .map((row) => row.identity.id)
+      : [];
+    const recorded = orderMerges.get(merged.identity.id) || [];
+    orderMerges.set(merged.identity.id, [
+      ...recorded,
+      ...waybillRowIds.filter((id) => !recorded.includes(id)),
+    ]);
   }
   return [
     ...shipments.filter(
@@ -1351,6 +1768,9 @@ async function synchronizeAccountList(
   deadlineAtMs?: number,
   followupReserveMs = ACCOUNT_FOLLOWUP_RESERVE_MS,
   signal?: AbortSignal,
+  orderMerges?: Map<string, string[]>,
+  /** The sync round's recognition wait (用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒). */
+  recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
 ): Promise<{
   state: AppState;
   parcels: readonly AccountParcelDto[];
@@ -1387,12 +1807,29 @@ async function synchronizeAccountList(
       flowId, source, stage: "account_list",
       budgetMs: stageBudgetMs(listDeadlineAtMs, startedAt),
     });
+    // 用户 2026-09-28：cancelled by the parent refresh, the list stage still ends with its own failure
+    // (errorCategory "cancelled") where the cancellation reaches it; the catch below then lets the
+    // cancellation escape before any stage-failure handling, as before.
+    // Written before the flow's own end even when the coordinator reports that end first (openStageCancellationEnd).
+    const listCancelled = openStageCancellationEnd(flowId, signal, () => writeDiagnostic("account.sync.failed", {
+      flowId, source, stage: "account_list", durationMs: Date.now() - startedAt,
+      budgetMs: stageBudgetMs(listDeadlineAtMs, startedAt), result: "failed", errorCategory: "cancelled",
+    }, "error"));
+    const endCancelledList = () => {
+      if (signal?.aborted) listCancelled.end();
+      else listCancelled.close();
+    };
     fetched = await fetchAccountParcels(
       source,
       state.bindings,
       listDeadlineAtMs,
       signal,
-    );
+      recognitionBudget,
+    ).catch((error: unknown) => {
+      endCancelledList();
+      throw error;
+    });
+    endCancelledList();
     assertRefreshSignal(signal);
   } catch (error) {
     rethrowRefreshCancellation(error, signal);
@@ -1407,7 +1844,7 @@ async function synchronizeAccountList(
       (
         error.status === 401 ||
         error.message.includes("请先配置 Access Key") ||
-        error.message.includes("Access Key 格式不正确")
+        error.message.includes("Access Key 无效或已失效")
       );
     const canContinue = !requiresCredentialRecovery &&
       (cachedShipments > 0 || cachedPendingQueries > 0);
@@ -1469,8 +1906,19 @@ async function synchronizeAccountList(
       source,
       now,
       routeMutations,
+      orderMerges,
     );
   }
+  // T23 (user 2026-09-26): a projected order already stored without a matched carrier is recognised again with
+  // every list round, not only on its detail page.
+  // 用户 2026-09-27 第二轮清单：截断排后。
+  for (const shipment of truncatedCarrierRecognitionLast(shipments, (row) => [displayWaybill(row)])) {
+    if (shipment.identity.bindingSource !== source || !shipment.identity.accountOrder ||
+        !normalizedProjectedWaybill(shipment.identity)) continue;
+    const recognized = await recognizeAwaitingCarrier(shipment, listDeadlineAtMs, signal, recognitionBudget);
+    if (recognized !== shipment) shipments = replaceById(shipments, recognized);
+  }
+  assertRefreshSignal(signal);
   shipments = shipments.map((shipment) => {
     const ownership = shipment.automaticOwnership;
     if (!ownership || ownership.ownerSource !== source) return shipment;
@@ -1500,6 +1948,97 @@ async function synchronizeAccountList(
   };
 }
 
+/** The list row's structured status before parcelToShipment clamps an unprojected 已揽收 to 已下单. */
+type ProjectionListSemantic = (
+  parcel: AccountParcelDto,
+  owner: Shipment,
+) => StatusSemantic | null;
+
+const listParcelStructuredSemantic: ProjectionListSemantic = (parcel) =>
+  accountParcelStructuredSemantic(parcel);
+
+/** A stored row no longer has that list parcel; its raw list state code answers instead. */
+const storedRowStructuredSemantic: ProjectionListSemantic = (_parcel, owner) =>
+  storedAccountListStructuredSemantic(owner);
+
+type AccountOrderProjectionDecision = Readonly<{
+  due: boolean;
+  skipped?: "before_pickup" | "carrier_pending" | ProjectionRestReason;
+}>;
+
+type ProjectionRestReason = "active_attempt" | "confirmed_empty" | "cooldown";
+
+/** Why the union page stays closed for an order `shouldRetryAccountOrderProjectionUnprompted` refused. */
+function projectionRestReason(
+  retry: Shipment["identity"]["orderProjectionRetry"],
+  routeHash: string,
+  now: number,
+): ProjectionRestReason {
+  return activeAccountOrderProjectionAttempt(retry, routeHash, now)
+    ? "active_attempt"
+    : accountOrderPageConfirmedEmpty(retry, routeHash) ? "confirmed_empty" : "cooldown";
+}
+
+/**
+ * The one candidate filter for the union page: the list refresh and the Home stored-row pass
+ * both ask it, so the pickup gate and the per-order cooldown (AGENTS §9) cannot drift apart.
+ * Pure: `skipped` names the reasons the list path logs; the stored-row pre-check stays silent.
+ */
+function accountOrderProjectionDecision(
+  parcel: AccountParcelDto,
+  shipments: readonly Shipment[],
+  now: number,
+  skipRefreshIds: ReadonlySet<string>,
+  textBackfillOnly: boolean,
+  listStructuredSemantic: ProjectionListSemantic,
+  includeCompleted = false,
+): AccountOrderProjectionDecision {
+  if (!parcel.accountOrder) return { due: false };
+  const expectedId = projectionOwnerId(parcel);
+  const existingOwner = shipments.find(
+    (item) => item.identity.id === expectedId,
+  );
+  const heldWaybill = existingOwner?.identity.pendingProjection?.waybill || "";
+  if (!parcel.projectionUrl && !parcel.textIdentity?.waybill && !heldWaybill) return { due: false };
+  if (skipRefreshIds.has(expectedId)) return { due: false };
+  if (normalizedProjectedWaybill(existingOwner?.identity)) return { due: false };
+  // A waybill named by the feed text needs no WebView attempt, so no cooldown applies. T23 (2026-09-26): it is shown
+  // only with a matched carrier, so it is asked again only while the recognizer can still answer.
+  if (parcel.textIdentity?.waybill) {
+    return heldCarrierSettleable(parcel.textIdentity.waybill, now)
+      ? { due: true }
+      : { due: false, skipped: "carrier_pending" };
+  }
+  // T23: a union-page waybill held for its carrier is only recognised again; the page is not reopened for it.
+  if (heldWaybill) {
+    return heldCarrierSettleable(heldWaybill, now)
+      ? { due: true }
+      : { due: false, skipped: "carrier_pending" };
+  }
+  // 只做文案回填的那一轮到此为止：后面每条路都要开 WebView。
+  if (textBackfillOnly) return { due: false };
+  // 未投影订单行上的「已揽收」存盘时被压成了「已下单」，门要看列表这一行压之前的结构化状态。
+  if (!existingOwner ||
+      !jingDongOrderPastPickup(existingOwner, listStructuredSemantic(parcel, existingOwner), includeCompleted)) {
+    return { due: false, skipped: "before_pickup" };
+  }
+  const routeHash = projectionCooldownKey(parcel);
+  // Automatic path: a confirmed empty page stays closed (方案 A, 2026-09-25).
+  if (
+    shouldRetryAccountOrderProjectionUnprompted(
+      existingOwner.identity.orderProjectionRetry,
+      routeHash,
+      now,
+    )
+  ) {
+    return { due: true };
+  }
+  return {
+    due: false,
+    skipped: projectionRestReason(existingOwner.identity.orderProjectionRetry, routeHash, now),
+  };
+}
+
 async function projectAccountOrders(
   state: AppState,
   parcels: readonly AccountParcelDto[],
@@ -1516,6 +2055,23 @@ async function projectAccountOrders(
   // 已经给了运单号的照常回填。原来 hostPolicy.accountOrderProjection 为假时整段都不调用，
   // 把这条零成本的回填一起跳掉了。
   textBackfillOnly = false,
+  listStructuredSemantic: ProjectionListSemantic = listParcelStructuredSemantic,
+  includeCompleted = false,
+  /**
+   * A refresh flow's gate (user 2026-09-25), asked before an order is reserved and again right
+   * before its page loads: it throws the flow's own cancellation when the flow is past its deadline
+   * or ownership, and `UnionPageSkipped` while the app is not in the foreground.
+   */
+  unionPageGate?: () => void,
+  /**
+   * The sync round's recognition wait, or the Home pass's own (用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒).
+   */
+  recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
+  /**
+   * 用户 2026-09-28 (log authorization): the Home pass writes a cancelled attempt's one end itself, with the pass's
+   * reason, so the page stage writes none of its own.
+   */
+  callerEndsCancelledAttempt = false,
 ): Promise<{
   state: AppState;
   attempted: number;
@@ -1546,55 +2102,30 @@ async function projectAccountOrders(
     (binding) => binding.phone,
   );
   const candidates = parcels.filter((parcel) => {
-        if (!parcel.accountOrder) return false;
-    if (!parcel.projectionUrl && !parcel.textIdentity?.waybill) return false;
-    const expectedId = projectionOwnerId(parcel);
-    if (skipRefreshIds.has(expectedId)) return false;
-    const existingOwner = shipments.find(
-      (item) => item.identity.id === expectedId,
+    const decision = accountOrderProjectionDecision(
+      parcel, shipments, now, skipRefreshIds, textBackfillOnly, listStructuredSemantic, includeCompleted,
     );
-    const selected = !normalizedProjectedWaybill(existingOwner?.identity);
-    if (!selected) return false;
-        const routeHash = projectionCooldownKey(parcel);
-    // A waybill named by the feed text needs no WebView attempt, so no cooldown applies.
-    if (parcel.textIdentity?.waybill) return true;
-    // 只做文案回填的那一轮到此为止：后面每条路都要开 WebView。
-    if (textBackfillOnly) return false;
-    if (!existingOwner || !jingDongFeedReachedPickup(existingOwner)) {
+    if (decision.skipped) {
       writeDiagnostic("order.projection.skipped", {
-        flowId, source, stage: "webview", ownerFingerprint: projectionOwnerFingerprint(expectedId),
-        result: "before_pickup",
+        flowId,
+        source,
+        stage: "webview",
+        ownerFingerprint: projectionOwnerFingerprint(projectionOwnerId(parcel)),
+        result: decision.skipped,
       });
-      return false;
     }
-    if (
-      shouldRetryAccountOrderProjection(
-        existingOwner?.identity.orderProjectionRetry,
-        routeHash,
-        now,
-      )
-    ) {
-      return true;
-    }
-    writeDiagnostic("order.projection.skipped", {
-      flowId,
-      source,
-      stage: "webview",
-      ownerFingerprint: projectionOwnerFingerprint(expectedId),
-      result: activeAccountOrderProjectionAttempt(
-          existingOwner?.identity.orderProjectionRetry,
-          routeHash,
-          now,
-        )
-        ? "active_attempt"
-        : "cooldown",
-    });
-    return false;
+    return decision.due;
   });
-  const candidatePositions = rotatingBatchIndices(
-    candidates.length,
-    candidates.length,
-    now,
+  // 用户 2026-09-27 第二轮清单：截断排后。An order whose feed-text or held waybill was cut off in an earlier round
+  // comes after the rest; the rotation keeps its order otherwise. 整个候选排后（这一单本轮开京粉页取号也随之排后）属截断
+  // 排后细则里的「整行（整个任务）排后」，用户 2026-09-27 提交前核对答「这样做」。
+  const candidatePositions = truncatedCarrierRecognitionLast(
+    rotatingBatchIndices(candidates.length, candidates.length, now),
+    (position) => [
+      candidates[position].textIdentity?.waybill,
+      shipments.find((shipment) => shipment.identity.id === projectionOwnerId(candidates[position]))
+        ?.identity.pendingProjection?.waybill,
+    ],
   );
   for (let candidateOffset = 0;
     candidateOffset < candidatePositions.length;
@@ -1634,9 +2165,14 @@ async function projectAccountOrders(
       });
       continue;
     }
+    // T23: a union-page waybill held for its carrier needs no page, only recognition.
+    const heldProjection = !parcel.textIdentity?.waybill && freshOwner?.identity.pendingProjection?.waybill
+      ? freshOwner.identity.pendingProjection
+      : null;
         if (
       !parcel.textIdentity?.waybill &&
-      !shouldRetryAccountOrderProjection(
+      !heldProjection &&
+      !shouldRetryAccountOrderProjectionUnprompted(
         freshOwner?.identity.orderProjectionRetry,
         routeHash,
         Date.now(),
@@ -1648,18 +2184,30 @@ async function projectAccountOrders(
         source,
         stage: "webview",
         ownerFingerprint,
-        result: activeAccountOrderProjectionAttempt(
-            freshOwner?.identity.orderProjectionRetry,
-            routeHash,
-            Date.now(),
-          )
-          ? "active_attempt"
-          : "cooldown",
+        result: projectionRestReason(freshOwner?.identity.orderProjectionRetry, routeHash, Date.now()),
       });
       continue;
     }
     if (freshOwner) shipments = replaceById(shipments, freshOwner);
     if (!freshOwner) continue;
+    // A feed-text waybill loads no page, so only a page load is gated.
+    const pageGate = parcel.textIdentity?.waybill || heldProjection ? undefined : unionPageGate;
+    if (pageGate) {
+      try {
+        pageGate();
+      } catch (error) {
+        if (!(error instanceof UnionPageSkipped)) throw error;
+        // Not reserved: the on-screen pass takes this order as soon as the app is back.
+        writeDiagnostic("order.projection.skipped", {
+          flowId,
+          source,
+          stage: "webview",
+          ownerFingerprint,
+          result: error.reason,
+        });
+        continue;
+      }
+    }
     const attemptId = createDiagnosticFlowId("projection");
     const projectionDeadlineAtMs = accountChildDeadline(
       deadlineAtMs,
@@ -1711,16 +2259,30 @@ async function projectAccountOrders(
     });
     let resolvedParcel: AccountParcelDto | null = null;
     let projectionFailed = false;
+    let pageSkipped: UnionPageSkipped | null = null;
+    // A page left to the on-screen pass ends without the page's diagnostics, as before.
+    const pageCancelled = callerEndsCancelledAttempt ? CALLER_ENDS_CANCELLED_STAGE
+      : openStageCancellationEnd(flowId, signal, () => writeDiagnostic("order.projection.failed", {
+        flowId, source, stage: "webview", ownerFingerprint,
+        ...(pageSkipped ? {} : projectionDiagnostics || {}), errorCategory: "cancelled",
+      }, "warning"));
     try {
-      resolvedParcel = await projectAccountOrderWithCarrier(
-        parcel,
-        projectionDeadlineAtMs,
-        deadlineAtMs,
-        (diagnostics) => {
-          projectionDiagnostics = diagnostics;
-        },
-        signal,
-      );
+      resolvedParcel = heldProjection
+        ? await normalizeAccountParcelCarrierBestEffort(
+            heldProjectionParcel(parcel, heldProjection),
+            { deadlineAtMs, signal, budget: recognitionBudget },
+          )
+        : await projectAccountOrderWithCarrier(
+            parcel,
+            projectionDeadlineAtMs,
+            deadlineAtMs,
+            (diagnostics) => {
+              projectionDiagnostics = diagnostics;
+            },
+            signal,
+            pageGate,
+            recognitionBudget,
+          );
       assertRefreshSignal(signal);
       const extracted = normalizeWaybill(resolvedParcel.waybill) !==
         normalizeWaybill(parcel.ownerId);
@@ -1748,29 +2310,73 @@ async function projectAccountOrders(
       );
       projectionFailed = !extracted;
     } catch (error) {
-      if (signal?.aborted) retainObservedProjectionRisk(
-        expectedId, routeHash, attemptId, "orderProjectionRetry", projectionDiagnostics);
-      rethrowRefreshCancellation(error, signal);
-      projectionFailed = true;
-      writeDiagnostic(
-        "order.projection.failed",
-        {
-          flowId,
-          source,
-          stage: "webview",
-          ownerFingerprint,
-          ...diagnosticErrorDetails(error),
-          ...(projectionDiagnostics || {}),
-        },
-        "warning",
-      );
+      if (error instanceof UnionPageSkipped) {
+        pageSkipped = error;
+      } else {
+        if (signal?.aborted) retainObservedProjectionRisk(
+          expectedId, routeHash, attemptId, "orderProjectionRetry", projectionDiagnostics);
+        rethrowStageCancellation(signal, pageCancelled.end);
+        projectionFailed = true;
+        writeDiagnostic(
+          "order.projection.failed",
+          {
+            flowId,
+            source,
+            stage: "webview",
+            ownerFingerprint,
+            ...diagnosticErrorDetails(error),
+            ...(projectionDiagnostics || {}),
+          },
+          "warning",
+        );
+      }
     }
 
-    assertRefreshSignal(signal);
+    // A page left to the on-screen pass ends as skipped below; cancelled before that, it ends here.
+    rethrowStageCancellation(signal, () => {
+      if (pageSkipped) pageCancelled.end();
+      else pageCancelled.close();
+    });
+    pageCancelled.close();
     const ownershipState = loadState();
     const ownershipOwner = ownershipState.shipments.find(
       (shipment) => shipment.identity.id === expectedId,
     );
+    if (pageSkipped) {
+      // The app left the foreground before the page could load. Nothing was loaded, so the order
+      // gets its record back as it was before this reservation and the on-screen pass takes it.
+      attempted--;
+      if (ownsProjectionAttempt(ownershipOwner, routeHash, attemptId)) {
+        const released = projectionCheckpoint(
+          {
+            ...ownershipState,
+            shipments: sortShipments(replaceById(ownershipState.shipments, {
+              ...ownershipOwner!,
+              identity: {
+                ...ownershipOwner!.identity,
+                orderProjectionRetry: freshOwner.identity.orderProjectionRetry,
+              },
+            })),
+          },
+          new Map(),
+          "webview",
+          { ownerId: expectedId, routeHash, attemptId },
+        );
+        workingState = released.state;
+      } else {
+        workingState = ownershipState;
+      }
+      shipments = [...workingState.shipments];
+      settleProjectionAttempt(expectedId);
+      writeDiagnostic("order.projection.skipped", {
+        flowId,
+        source,
+        stage: "webview",
+        ownerFingerprint,
+        result: pageSkipped.reason,
+      });
+      continue;
+    }
     if (!ownsProjectionAttempt(ownershipOwner, routeHash, attemptId)) {
       workingState = ownershipState;
       shipments = [...ownershipState.shipments];
@@ -1790,7 +2396,44 @@ async function projectAccountOrders(
       normalizeWaybill(resolvedParcel.waybill) !==
         normalizeWaybill(parcel.ownerId);
     let projectionRetained = false;
-    if (extracted) {
+    // 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：运单号拿到了、承运商没对上，这张订单保持原样、不推。
+    // 京粉页给的运单号与轨迹存下来（页面冷却照 §9 记，空壳计数按「页面给过运单号」清零），之后各轮只补识别；
+    // 文案或已挂起的运单号没开页，订单的投影记录恢复成预约前的样子。
+    if (extracted) resolvedParcel = releaseExhaustedProjection(resolvedParcel!, parcel.rawCourierCode);
+    const carrierPending = extracted && projectionAwaitingCarrier(resolvedParcel!);
+    const pageLoaded = !heldProjection && !parcel.textIdentity?.waybill;
+    if (carrierPending) {
+      if (pageLoaded) {
+        candidateShipments = withHeldProjection(
+          recordProjectionFailure(
+            candidateShipments,
+            expectedId,
+            routeHash,
+            Date.now(),
+            projectionDiagnostics,
+            true,
+          ),
+          expectedId,
+          resolvedParcel!,
+          Date.now(),
+        );
+      } else {
+        const owner = candidateShipments.find((shipment) => shipment.identity.id === expectedId);
+        if (owner) {
+          candidateShipments = replaceById(
+            candidateShipments,
+            withProjectionRetry(owner, freshOwner.identity.orderProjectionRetry),
+          );
+        }
+      }
+      writeDiagnostic("order.projection.rejected", {
+        flowId,
+        source,
+        stage: "state",
+        ownerFingerprint,
+        result: "carrier_pending",
+      });
+    } else if (extracted) {
       candidateShipments = applyAccountOrderProjectionToOwner(
         candidateShipments,
         resolvedParcel!,
@@ -1811,6 +2454,7 @@ async function projectAccountOrders(
           routeHash,
           Date.now(),
           projectionDiagnostics,
+          true,
         );
         writeDiagnostic("order.projection.rejected", {
           flowId,
@@ -1849,7 +2493,11 @@ async function projectAccountOrders(
       continue;
     }
     stateChanged = true;
-    if (projectionRetained) {
+    if (carrierPending) {
+      // The page did name a waybill (counted as before); a retry that loaded no page is no projection attempt.
+      if (pageLoaded) succeeded++;
+      else attempted--;
+    } else if (projectionRetained) {
       succeeded++;
       projectedOwnerIds.push(expectedId);
     } else {
@@ -1867,6 +2515,47 @@ async function projectAccountOrders(
   };
 }
 
+/** One `order.projection.committed` line per owner the page projected in this generation. */
+function recordAccountOrderProjectionCommits(
+  projectedOwnerIds: readonly string[],
+  parcels: readonly AccountParcelDto[],
+  state: AppState,
+  flowId: string,
+  source: BindingSource,
+): void {
+  for (const ownerId of projectedOwnerIds) {
+    const persisted = state.shipments.find(
+      (shipment) => shipment.identity.id === ownerId,
+    );
+    const ownerParcel = parcels.find(
+      (parcel) => projectionOwnerId(parcel) === ownerId,
+    );
+    const retainedParcel = ownerParcel
+      ? accountParcelWithExistingProjection(
+          ownerParcel,
+          state.shipments,
+        )
+      : null;
+    const projectionApplied = Boolean(
+      normalizedProjectedWaybill(persisted?.identity) ||
+        (
+          retainedParcel &&
+          normalizeWaybill(retainedParcel.waybill) !==
+            normalizeWaybill(retainedParcel.ownerId)
+        ),
+    );
+    writeDiagnostic("order.projection.committed", {
+      flowId,
+      source,
+      stage: "state",
+      ownerFingerprint: projectionOwnerFingerprint(ownerId),
+      result: projectionApplied
+        ? "applied"
+        : "extracted_not_committed",
+    }, projectionApplied ? "info" : "warning");
+  }
+}
+
 type ManualRefreshTask = { id: string; lastAttemptAtMs: number; accountDetail?: boolean; cainiaoListUpdated?: boolean };
 
 function manualRefreshTasks(
@@ -1874,13 +2563,27 @@ function manualRefreshTasks(
   skipRefreshIds: ReadonlySet<string>, forceManualRefresh: boolean,
   accountSourceFollowup = false,
   updatedCainiaoIds: ReadonlySet<string> = new Set(),
+  /** A Home follow-up the signed freeze stopped (its list did update), for the round's skip line. */
+  onSignedFrozen?: (shipment: Shipment) => void,
 ): ManualRefreshTask[] {
+  const homeFollowup = (current: Shipment): boolean => {
+    const updated = updatedCainiaoIds.has(current.identity.id);
+    if (!homeAccountQueryEligible(current, updated)) return false;
+    if (!signedRefreshFrozen(current, now)) return true;
+    onSignedFrozen?.(current);
+    return false;
+  };
+  // Scheduled, background and Home-pull per-row work: a row at the signed freeze is never queued (用户 2026-10-02
+  // 「头条 状态 详情页 都推进到了签收状态…就冻结快递 后续不再进行任何刷新」); a right-swipe signed row inside its refresh
+  // window is judged by its own status (shouldRefreshShipmentRow / refreshGateView). These rows were already left out
+  // by the terminal freeze before, so no skip line is written for them each round.
   const tasks = state.shipments.filter(current =>
     current.identity.bindingSource === source && !skipRefreshIds.has(current.identity.id) && (
       accountSourceFollowup && isHomeAccountQuerySource(current)
-        ? canQueryHomeAccount(current, updatedCainiaoIds.has(current.identity.id))
-        : shouldRefreshShipment(current, now) && shipmentPresentationStatus(current).semantic !== "CANCELLED" &&
-          !unprojectedAccountOrder(current) && current.timeline.provider !== "demo" &&
+        ? homeFollowup(current)
+        : !unprojectedAccountOrder(current) && current.timeline.provider !== "demo" &&
+          shouldRefreshShipmentRow(current, now) &&
+          shipmentPresentationStatus(refreshGateView(current, now)).semantic !== "CANCELLED" &&
           shouldScheduleManualRefresh(current, now, forceManualRefresh)
     )
   ).map(current => ({ id: current.identity.id, lastAttemptAtMs: Number(current.manualRefreshAttemptAtMs) || 0,
@@ -1890,23 +2593,55 @@ function manualRefreshTasks(
     .map(position => tasks[position]);
 }
 
+/**
+ * 手动件后台刷新（manual_refresh）问哪一级（用户定 2026-09-24，与 Pipi 对齐）：列表正显示的历史来自免费、
+ * 非网页的手动源 v4_query 时，只再问这一级；网页/H5（k100_h5、jt_h5、cn_h5）、付费（kdniao）、v6_query 或
+ * 没有/认不出时，照旧问 Online（v6_query）。v2_query 在 iOS 没有对应的查询，也照旧问 Online。失败、冷却都
+ * 不换级；排程、终态与冷却的门不变。自动件不在此列，照旧问 Online。
+ */
+function manualBackgroundProvider(
+  shipment: Shipment,
+): typeof TIMELINE_SLOT.V4_QUERY | typeof TIMELINE_SLOT.V6_QUERY {
+  if (!shipment.identity.manuallyAdded) return TIMELINE_SLOT.V6_QUERY;
+  const listed = normalizeTimelineSlot(shipmentSelectionEvidence(shipment).historyProvider);
+  return listed === TIMELINE_SLOT.V4_QUERY ? TIMELINE_SLOT.V4_QUERY : TIMELINE_SLOT.V6_QUERY;
+}
+
 async function refreshOnlineShipment(
   state: AppState, source: BindingSource, flowId: string, checkpoint: RefreshCheckpoint,
   task: ManualRefreshTask, deadlineAtMs: number | undefined, forceManualRefresh: boolean,
   signal: AbortSignal, query: typeof queryManualForSource,
+  recognitionBudget?: CarrierRecognitionBudget,
 ): Promise<RefreshSummary> {
   let currentState = state;
   let attempted = 0, succeeded = 0, failed = 0;
   const summary = () => ({ state: currentState, attempted, succeeded, failed, promotedPendingShipmentIds: [] });
-  const current = currentState.shipments.find(item => item.identity.id === task.id);
+  let current = currentState.shipments.find(item => item.identity.id === task.id);
   if (!current || !manualRefreshTasks(currentState, source, Date.now(), new Set(), forceManualRefresh)
     .some(item => item.id === task.id) || deadlineExpired(deadlineAtMs)) return summary();
+  // T23 (user 2026-09-26): a manual row whose carrier never matched is recognised again in every round it is
+  // refreshed in, whatever the provider cooldown below decides.
+  if (current.identity.manuallyAdded) {
+    const recognized = await recognizeAwaitingCarrier(current,
+      accountChildDeadline(deadlineAtMs, MANUAL_REFRESH_TASK_BUDGET_MS), signal, recognitionBudget);
+    assertRefreshSignal(signal);
+    if (recognized !== current) {
+      currentState = checkpoint({ ...currentState,
+        shipments: sortShipments(replaceById(currentState.shipments, recognized)) }, new Map(), "manual_carrier");
+      current = currentState.shipments.find(item => item.identity.id === task.id);
+      if (!current) return summary();
+    }
+  }
   const schedule = manualProviderSchedule({ source, waybill: displayWaybill(current),
     rawCourierCode: current.identity.rawCourierCode, phoneTail: current.identity.phoneTail,
     sourceProvider: current.identity.sourceProvider });
-  if (!forceManualRefresh && !refreshProviderDue(schedule.key, "picker", schedule.identityFingerprint)) {
+  const provider = manualBackgroundProvider(current);
+  const moto = provider === TIMELINE_SLOT.V4_QUERY;
+  // 冷却键沿用这一级自己的（Moto 是 "moto"，Online 是 "picker"），与手动链里同一级共用。
+  if (!forceManualRefresh &&
+      !refreshProviderDue(schedule.key, moto ? "moto" : "picker", schedule.identityFingerprint)) {
     writeDiagnostic("refresh.stage.skipped", { flowId, source, stage: "manual_refresh",
-      ...shipmentDiagnosticDetails(current, "v6_query"), result: "cooldown", skipReason: "cooldown" });
+      ...shipmentDiagnosticDetails(current, provider), result: "cooldown", skipReason: "cooldown" });
     return summary();
   }
   const startedAt = Date.now();
@@ -1927,7 +2662,10 @@ async function refreshOnlineShipment(
     }
   };
   writeDiagnostic("refresh.stage.started", { flowId, source, stage: "manual_refresh",
-    budgetMs: stageBudgetMs(taskDeadline, startedAt), ...shipmentDiagnosticDetails(reserved, "v6_query") });
+    budgetMs: stageBudgetMs(taskDeadline, startedAt), ...shipmentDiagnosticDetails(reserved, provider) });
+  const stageCancelled = openStageCancellationEnd(flowId, signal, () => writeDiagnostic("refresh.stage.failed", {
+    flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || current, provider),
+    durationMs: Date.now() - startedAt, errorCategory: "cancelled" }, "warning"));
   let outcome: Awaited<ReturnType<typeof queryManualForSource>>;
   try {
     outcome = await query({ source, bindings: bindingsForSource(currentState, source),
@@ -1935,20 +2673,22 @@ async function refreshOnlineShipment(
       rawCourierCode: reserved.identity.rawCourierCode, courierCode: reserved.identity.courierCode,
       companyName: reserved.identity.companyName, sourceProvider: reserved.identity.sourceProvider,
       deadlineAtMs: taskDeadline, signal, diagnosticFlowId: flowId, diagnosticStage: "manual_refresh",
-      currentShipment: reserved, pickerFirst: true, pickerOnly: true, includeKdniaoFallback: false,
-      scheduled: !forceManualRefresh, hostSafe: true });
+      currentShipment: reserved, ...(moto ? { motoOnly: true } : { pickerFirst: true, pickerOnly: true }),
+      includeKdniaoFallback: false, scheduled: !forceManualRefresh, hostSafe: true });
     assertRefreshSignal(signal);
+    stageCancelled.close();
   } catch (error) {
-    rethrowRefreshCancellation(error, signal);
+    rethrowStageCancellation(signal, stageCancelled.end);
+    stageCancelled.close();
     release();
     attempted++; failed++;
-    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || current, "v6_query"),
+    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || current, provider),
       durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error) }, "warning");
     return summary();
   }
   if (outcome?.skipReason === "cooldown") {
     release();
-    writeDiagnostic("refresh.stage.skipped", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || current, "v6_query"), result: "cooldown", skipReason: "cooldown" });
+    writeDiagnostic("refresh.stage.skipped", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || current, provider), result: "cooldown", skipReason: "cooldown" });
     return summary();
   }
   attempted++;
@@ -1959,14 +2699,14 @@ async function refreshOnlineShipment(
     commit(releaseManualRefreshLease(merged, attemptId), mutations, "manual_refresh");
     release();
     succeeded++;
-    writeDiagnostic("refresh.stage.succeeded", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || merged, "v6_query", outcome.shipment.timeline), durationMs: Date.now() - startedAt });
+    writeDiagnostic("refresh.stage.succeeded", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || merged, provider, outcome.shipment.timeline), durationMs: Date.now() - startedAt });
   } else {
     if (outcome?.shipment && outcome.routeUrl && isShunFengSourceShipment(reserved)) {
       commit(releaseManualRefreshLease(deferIncomingRoute(reserved, outcome.shipment, outcome.routeUrl,
         Date.now(), mutations), attemptId), mutations, "manual_refresh_route");
     }
     release(); failed++;
-    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || current, "v6_query"), result: outcome?.result || "no_result",
+    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || current, provider), result: outcome?.result || "no_result",
       durationMs: Date.now() - startedAt, routeCaptured: Boolean(outcome?.routeUrl && isShunFengSourceShipment(reserved)) }, "warning");
   }
   return summary();
@@ -2074,16 +2814,7 @@ export async function queryManualShipmentPreview(input: {
     : current || queried || (prepared.pending
       ? pendingManualPreviewShipment(prepared.pending)
       : null);
-  const pickerReachedStart = Boolean(
-    shipment && [
-      ...(shipment.manualTimelines || []),
-      shipment.timeline,
-    ].some(
-      (timeline) =>
-        timelineCapability(timeline.provider) === "route" &&
-        containsTimelineStartTrack(timeline.tracks),
-    ),
-  );
+  const pickerReachedStart = Boolean(shipment && hasPickerTimelineStart(shipment));
   const pending = current || pickerReachedStart
     ? null
     : {
@@ -2373,6 +3104,8 @@ export async function continueManualShipmentPreview(
       bindingSource: source,
       sourceId: canonical,
       createdAtMs: pending.createdAtMs,
+      // 2026-10-08 用户决定 #6：用户填的尾号要随种子身份走，K100 页（refreshWebTimeline 读 identity.phoneTail）才带得上它。
+      phoneTail: pending.phoneTail || seedPreview.identity.phoneTail,
     },
     route: pending.route || null,
   };
@@ -2444,7 +3177,10 @@ export async function continueManualShipmentPreview(
     contest.kuaidi100.shipment,
     contest.kdniao.shipment,
   ], settledAtMs);
-  const phoneToast = !shipmentDetailComplete(accumulated) &&
+  const roundSucceeded = preview.hasTimedResult || [
+    contest.moto.shipment, contest.kuaidi100.shipment, contest.kdniao.shipment,
+  ].some(shipment => shipment && timedTracks(shipment.timeline.tracks).length > 0);
+  const phoneToast = !roundSucceeded && !shipmentDetailComplete(accumulated) &&
     [contest.moto.error, contest.kuaidi100.error, contest.kdniao.error].some(needsManualPhoneTail)
       ? "manualPhoneTailRequired" as const : undefined;
   const acceptsGeneration = (latest: AppState) => {
@@ -2657,13 +3393,14 @@ const interactiveFullRequests = new Map<BindingSource, Promise<RefreshSummary>>(
 function requestAccountDetail(
   shipment: Shipment, state: AppState, query: typeof refreshAccountParcel,
   deadlineAtMs: number | undefined, signal?: AbortSignal,
+  beforeQuery?: () => void,
 ): Promise<AccountParcelDto | null> {
   const source = requireScriptSource(shipment.identity.bindingSource);
   const deadline = accountChildDeadline(deadlineAtMs, ACCOUNT_DETAIL_BUDGET_MS);
   // Share only the live transport observation; each consumer retains its own commit fence.
   return accountDetailRequests.runIndependentDetail(detailRequestFingerprint(shipment, state), source,
     sharedSignal => query(shipment, deadlineAfter(ACCOUNT_DETAIL_BUDGET_MS), sharedSignal, undefined,
-      { recognizeCarrier: false }), deadline, signal);
+      { recognizeCarrier: false, beforeQuery }), deadline, signal);
 }
 
 async function refreshHomeAccountShipment(
@@ -2679,12 +3416,17 @@ async function refreshHomeAccountShipment(
   const startedAt = Date.now();
   writeDiagnostic("refresh.stage.started", { flowId, source, stage: "account_detail",
     budgetMs: ACCOUNT_DETAIL_BUDGET_MS, ...shipmentDiagnosticDetails(original, "v5_query") });
+  const stageCancelled = openStageCancellationEnd(flowId, signal, () => writeDiagnostic("refresh.stage.failed", {
+    flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(original, "v5_query"),
+    durationMs: Date.now() - startedAt, errorCategory: "cancelled" }, "warning"));
   let parcel: AccountParcelDto | null;
   try {
     parcel = await requestAccountDetail(original, state, query, deadlineAtMs, signal);
     assertRefreshSignal(signal);
+    stageCancelled.close();
   } catch (error) {
-    rethrowRefreshCancellation(error, signal);
+    rethrowStageCancellation(signal, stageCancelled.end);
+    stageCancelled.close();
     writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(original, "v5_query"),
       durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error) }, "warning");
     return summary(loadState(), 1, 0, 1);
@@ -2707,17 +3449,45 @@ async function refreshHomeAccountShipment(
   return summary(next, 1, 1);
 }
 
+/**
+ * The rows whose detail page opens with their own per-waybill account query (detailEntryQueryReason), without
+ * its freeze and complete-cache gates: the status alignment run asks that query first (用户 2026-10-02).
+ */
+function statusAlignmentEntryQuerySupported(shipment: Shipment): boolean {
+  const provider = String(shipment.identity.sourceProvider || "").toLowerCase();
+  return !shipment.identity.manuallyAdded && Boolean(shipment.accountRecord) &&
+    (provider === "jingdong" || provider === "cainiao") &&
+    selectShipmentTimeline(shipment).semantic !== "CANCELLED";
+}
+
+/** The app host must have an actual permitted source before reserving an alignment attempt. */
+export function statusAlignmentHasSource(shipment: Shipment): boolean {
+  if (shipment.identity.bindingSource !== SCRIPT_BINDING_SOURCE || shipment.timeline.provider === "demo") return false;
+  if (statusAlignmentEntryQuerySupported(shipment)) return true;
+  if (unprojectedAccountOrder(shipment)) return Boolean(storedJingDongProjectionRoute(shipment, Date.now()));
+  if (displayWaybill(shipment).length < 6) return false;
+  return shipment.identity.manuallyAdded || isShunFengSourceShipment(shipment) ||
+    supportsOrdinaryAutomaticDetailSupplement(shipment) || Boolean(storedCainiaoRoute(shipment));
+}
+
 async function runDetailEntryQuery(
   base: AppState,
   original: Shipment,
   lease: TargetRefreshLease,
   query: typeof refreshAccountParcel,
   flowId: string,
+  /**
+   * 用户 2026-10-02 弹窗「同取件码强刷」：状态对齐强刷先问这一行自己的按件详情（v5_query），签收冻结与完整缓存
+   * 不挡这一次；资格（自动件、有账号记录、京东 / 菜鸟来源）照旧由调用方判。
+   */
+  statusAlignment = false,
+  beforeQuery?: () => void,
 ): Promise<ShipmentRefreshResult> {
   const observation: DetailEntryObservation = {
     fingerprint: detailRequestFingerprint(original, base), gaveTimeline: false,
   };
-  if (!needsDetailEntryQuery(original)) {
+  const reason = statusAlignment ? "status_alignment" : detailEntryQueryReason(original);
+  if (!reason) {
     return { state: base, shipment: original, refreshed: false, detailEntry: observation };
   }
   const source = requireScriptSource(original.identity.bindingSource);
@@ -2726,14 +3496,20 @@ async function runDetailEntryQuery(
   const detailDeadline = accountChildDeadline(lease.deadlineAtMs, ACCOUNT_DETAIL_BUDGET_MS);
   const providerFingerprint = [displayWaybill(original), original.identity.courierCode,
     original.identity.phoneTail].join(":");
+  let reservationFailed = false;
+  const reserveBeforeQuery = beforeQuery ? () => {
+    try { beforeQuery(); }
+    catch (error) { reservationFailed = true; throw error; }
+  } : undefined;
   const routes: DeferredRouteMutations = new Map();
   writeDiagnostic("detail.refresh.stage_started", {
-    flowId, source, trigger: "detail_open", stage: "account_detail", budgetMs: ACCOUNT_DETAIL_BUDGET_MS,
+    flowId, source, trigger: statusAlignment ? "status_alignment" : "detail_open", stage: "account_detail",
+    budgetMs: ACCOUNT_DETAIL_BUDGET_MS,
     ...shipmentDiagnosticDetails(original, "v5_query"),
     incompleteReason: shipmentDetailIncompleteReason(original) ?? undefined,
   });
   try {
-    const parcel = await requestAccountDetail(original, base, query, detailDeadline, lease.signal);
+    const parcel = await requestAccountDetail(original, base, query, detailDeadline, lease.signal, reserveBeforeQuery);
     assertRefreshSignal(lease.signal);
     if (!lease.isCurrent()) throw new OperationTimeoutError();
     const incoming = parcel ? parcelToShipment(parcel, bindingsForSource(base, source).map(b => b.phone), Date.now()) : null;
@@ -2761,9 +3537,12 @@ async function runDetailEntryQuery(
     }
     // Home shares only the account observation. Carrier recognition belongs to this detail
     // consumer and rebases from the committed observation, which Home may have already stored.
-    if (original.identity.accountOrder) {
-      const recognized = await normalizeAccountParcelCarrierBestEffort(parcel,
-        { deadlineAtMs: detailDeadline, signal: lease.signal });
+    // T23 (2026-09-26): the shared observation shows an order's feed-text waybill only with a carrier already
+    // matched, so the text waybill is recognised here and projected in the same commit as its carrier; any other
+    // row still without a matched carrier is recognised here too.
+    if (original.identity.accountOrder || carrierUnmatched(original)) {
+      const recognized = await prepareAccountParcelCarrier(parcel,
+        { deadlineAtMs: detailDeadline, signal: lease.signal, budget: operationRecognitionBudget(lease) });
       assertRefreshSignal(lease.signal);
       if (!lease.isCurrent()) throw new OperationTimeoutError();
       if (recognized !== parcel) {
@@ -2789,9 +3568,13 @@ async function runDetailEntryQuery(
       detailEntry: { fingerprint: detailRequestFingerprint(shipment, state),
         gaveTimeline: timedTracks(incoming.timeline.tracks).length > 0 } };
   } catch (error) {
-    rethrowRefreshCancellation(error, lease.signal);
-    recordRefreshProviderResult({ key, provider: "account_detail", identityFingerprint: providerFingerprint,
-      result: refreshProviderResultForError(error) });
+    rethrowStageCancellation(lease.signal, () => writeDiagnostic("detail.refresh.stage_failed", {
+      flowId, source, stage: "account_detail", durationMs: Date.now() - startedAt,
+      ...shipmentDiagnosticDetails(original, "v5_query"), errorCategory: "cancelled",
+    }, "warning"));
+    // A rejected alignment reservation never reached this provider's transport.
+    if (!reservationFailed) recordRefreshProviderResult({ key, provider: "account_detail",
+      identityFingerprint: providerFingerprint, result: refreshProviderResultForError(error) });
     writeDiagnostic("detail.refresh.stage_failed", {
       flowId, source, stage: "account_detail", durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error),
       ...shipmentDiagnosticDetails(original, "v5_query"),
@@ -2803,17 +3586,41 @@ async function runDetailEntryQuery(
   }
 }
 
+type ShipmentRefreshRuntimeOverrides = Partial<{
+  refreshAccountParcel: typeof refreshAccountParcel;
+  queryManualForSource: typeof queryManualForSource;
+  refreshWebTimeline: typeof refreshWebTimeline;
+  refreshCainiaoH5: typeof refreshCainiaoH5;
+  projectAccountOrderWithCarrier: typeof projectAccountOrderWithCarrier;
+}>;
+
+/**
+ * 用户 2026-09-28：a detail refresh that logged detail.refresh.started still ends when the parent refresh is
+ * cancelled — detail.refresh.skipped with skipReason "interrupted", Lite's and Pipi's end for an interrupted
+ * detail refresh — before the cancellation escapes. The flow's own catches keep letting cancellation escape
+ * first; the end is written here, where it leaves the flow.
+ */
 async function runShipmentRefreshById(
   shipmentId: string,
   lease: TargetRefreshLease,
   options: ShipmentRefreshOptions = {},
-  runtimeOverrides: Partial<{
-    refreshAccountParcel: typeof refreshAccountParcel;
-    queryManualForSource: typeof queryManualForSource;
-    refreshWebTimeline: typeof refreshWebTimeline;
-    refreshCainiaoH5: typeof refreshCainiaoH5;
-    projectAccountOrderWithCarrier: typeof projectAccountOrderWithCarrier;
-  }> = {},
+  runtimeOverrides: ShipmentRefreshRuntimeOverrides = {},
+): Promise<ShipmentRefreshResult> {
+  const interrupted: { end?: () => void } = {};
+  try {
+    return await runShipmentRefreshFlow(shipmentId, lease, options, runtimeOverrides, interrupted);
+  } catch (error) {
+    if (lease.signal?.aborted) interrupted.end?.();
+    throw error;
+  }
+}
+
+async function runShipmentRefreshFlow(
+  shipmentId: string,
+  lease: TargetRefreshLease,
+  options: ShipmentRefreshOptions,
+  runtimeOverrides: ShipmentRefreshRuntimeOverrides,
+  interrupted: { end?: () => void },
 ): Promise<ShipmentRefreshResult> {
   const runtime = { refreshAccountParcel, queryManualForSource, refreshWebTimeline,
     refreshCainiaoH5, projectAccountOrderWithCarrier, ...runtimeOverrides };
@@ -2824,16 +3631,49 @@ async function runShipmentRefreshById(
     (item) => item.identity.id === shipmentId,
   );
   if (!original) throw new Error("该快递已从列表中移除");
+  // The frozen-join repair must keep its identity fence through the scheduled flow startup.
+  if (lease.expectedFingerprint != null && detailRequestFingerprint(original, base) !== lease.expectedFingerprint) {
+    return { state: base, shipment: original, refreshed: false, querySucceeded: false };
+  }
   const source = requireScriptSource(
     original.identity.bindingSource || SCRIPT_BINDING_SOURCE,
   );
   const deadlineAtMs = lease.deadlineAtMs;
   const signal = lease.signal;
   const trigger = options.trigger || "detail_open";
+  // 用户 2026-10-02「加一个限制 头条跟状态有一个更新时 另外（包含本地详情页）就要强制刷新跟上（以时间为准）」，弹窗
+  // 「同取件码强刷（推荐）」：状态对齐强刷跑这一行显式下拉的链（iOS 下拉不问 Online，EXPRESS_THREE_CLIENT_PARITY
+  // ShunFeng 一行；顺丰来源件例外，见下面 picker_query「四端都先问 Picker」），越过签收冻结、完整缓存 / 详情已完整闸、
+  // owner 自身揽收闸与普通冷却；风控冷却、京东联合页按订单冷却、付费快递鸟的触发条件与冷却照旧。
+  const aligning = trigger === "status_alignment";
+  let queryReservationFailed = false;
+  const beforeQuery = aligning && options.beforeQuery ? () => {
+    try { options.beforeQuery!(); }
+    catch (error) { queryReservationFailed = true; throw error; }
+  } : undefined;
+  const pull = trigger === "detail_pull" || aligning;
   let identityApplied = false;
   // Old cached feed text can resolve identity without waiting for another provider response.
+  // T23 (user 2026-09-26, 其余裁决 28): its waybill — or a union-page waybill held for its carrier — is recognised
+  // first and projected only with a matched carrier; otherwise the order stays as it is and no page is opened here.
   if (unprojectedAccountOrder(original)) {
-    const parcel = accountParcelWithProjectionReference(original, null, "");
+    const reference = accountParcelWithProjectionReference(original, null, "");
+    const held = original.identity.pendingProjection;
+    const recognitionDeadlineAtMs = accountChildDeadline(deadlineAtMs, ACCOUNT_DETAIL_BUDGET_MS);
+    let parcel = reference;
+    if (reference && accountOrderTextWaybill(reference)) {
+      parcel = await withRecognizedAccountOrderTextWaybill(reference,
+        { deadlineAtMs: recognitionDeadlineAtMs, signal, budget: operationRecognitionBudget(lease) });
+    } else if (reference && held?.waybill && heldCarrierSettleable(held.waybill, Date.now())) {
+      const candidate = releaseExhaustedProjection(
+        await normalizeAccountParcelCarrierBestEffort(heldProjectionParcel(reference, held),
+          { deadlineAtMs: recognitionDeadlineAtMs, signal, budget: operationRecognitionBudget(lease) }),
+        reference.rawCourierCode,
+      );
+      if (!projectionAwaitingCarrier(candidate)) parcel = candidate;
+    }
+    assertRefreshSignal(signal);
+    if (!lease.isCurrent()) throw new OperationTimeoutError();
     const incoming = parcel && parcelToShipment(parcel, bindingsForSource(base, source).map(b => b.phone), Date.now());
     if (incoming && normalizedProjectedWaybill(incoming.identity)) {
       const local = applyTargetedAccountShipment(original, incoming, Date.now());
@@ -2845,10 +3685,48 @@ async function runShipmentRefreshById(
       if (!original) throw new Error("该快递已从列表中移除");
     }
   }
-  if (Number(original.forcedCompletedAtMs) > 0) {
-    return { state: base, shipment: original, refreshed: identityApplied };
-  }
+  // 签收冻结（用户 2026-10-02「头条 状态 详情页 都推进到了签收状态（之前京东定的那种临时签收例外）就冻结快递 后续不再进行
+  // 任何刷新」）：状态、头条、本地详情都到了签收的行，本机不再为它发任何逐票请求——打开详情、详情下拉、状态对齐强刷、手动链、
+  // 京粉页、快递100、快递鸟都不跑，详情页照常显示缓存。右滑签收的行（用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收
+  // 才冻结」，弹窗「iOS 右滑签收一起改」）在来源三态到签收或点击满 72 小时后硬冻结，之前与普通行一样刷新。
+  // 承运商识别不在冻结之列（协调方规格「身份不是刷新」）：普通行照旧先识别承运商。用户 2026-10-03「硬冻结也照常识别承运商」
+  // （优化 4）：右滑签收硬冻结的行与三态冻结的行一样先识别承运商（只认身份，不刷轨迹、不发通知），再在下面停下。
+  // 还没投影出运单号的京东订单从不冻结（用户 2026-10-02 弹窗「不冻结，取到号再判」，signedTripleReached）。
+  const signedFrozen = signedRefreshFrozen(original, Date.now());
+  const skipSignedFrozen = (shipment: Shipment, state: AppState): ShipmentRefreshResult => {
+    writeDiagnostic("detail.refresh.skipped", {
+      flowId,
+      source: shipment.identity.bindingSource || state.activeSource,
+      trigger,
+      ...diagnosticState(state),
+      ...shipmentDiagnosticDetails(shipment),
+      skipReason: "signed_frozen",
+      result: "signed_frozen",
+    });
+    return { state, shipment, refreshed: identityApplied, skipReason: "signed_frozen" };
+  };
+  // T23 (user 2026-09-26): a row showing a real waybill without a matched carrier is recognised again on its detail
+  // page and on a pull, and the carrier is committed on its own. A manual row has no account query to wait for, so it
+  // is asked here; an automatic row is asked after its own account query (below, and in the entry query), as the
+  // projected-order repair always was.
+  const commitRecognizedCarrier = async (): Promise<void> => {
+    const recognized = await recognizeAwaitingCarrier(original!,
+      accountChildDeadline(deadlineAtMs, ACCOUNT_DETAIL_BUDGET_MS), signal, operationRecognitionBudget(lease));
+    assertRefreshSignal(signal);
+    if (!lease.isCurrent()) throw new OperationTimeoutError();
+    if (recognized === original) return;
+    const commit = commitTargetShipmentRefresh(base, recognized, Date.now(), lease);
+    if (commit.applied) {
+      identityApplied = true;
+      requestWidgetReload();
+    }
+    base = commit.state;
+    original = base.shipments.find(s => s.identity.id === shipmentId);
+    if (!original) throw new Error("该快递已从列表中移除");
+  };
+  if (original.identity.manuallyAdded && carrierUnmatched(original)) await commitRecognizedCarrier();
   if (trigger === "detail_open") {
+    if (signedFrozen) return skipSignedFrozen(original, base);
     const entry = await runDetailEntryQuery(base, original, lease, runtime.refreshAccountParcel, flowId);
     // Entry query text may resolve the identity. Otherwise the original projection path runs
     // independently of history completeness, under the same lease and page cooldown.
@@ -2862,8 +3740,42 @@ async function runShipmentRefreshById(
     }
     return { ...entry, refreshed: identityApplied || entry.refreshed };
   }
+  if (aligning && !signedFrozen && statusAlignmentEntryQuerySupported(original)) {
+    // An explicit pull follows the detail page's own entry query; the alignment run asks it first, past the freeze.
+    const entry = await runDetailEntryQuery(base, original, lease, runtime.refreshAccountParcel, flowId, true, beforeQuery);
+    base = entry.state;
+    original = entry.shipment;
+    identityApplied ||= entry.refreshed;
+    // 用户 2026-10-03「按件查询对齐了就不开菜鸟页」（优化 8-2）：菜鸟来源件按件详情问过以后，状态、头条与本地详情已不再
+    // 对不上（与触发强刷同一个判断：任两个都有的时间相差不过五分钟），这次强刷就到此为止，不再开菜鸟页；仍对不上才往下走。
+    const alignedTimes = statusAlignmentTimes(original, Date.now());
+    if (isCainiaoAutomaticShipment(original) && (!alignedTimes || !statusAlignmentOutOfStep(alignedTimes))) {
+      writeDiagnostic("detail.refresh.skipped", {
+        flowId,
+        source,
+        trigger,
+        ...diagnosticState(base),
+        ...shipmentDiagnosticDetails(original),
+        skipReason: "aligned_after_query",
+        result: "aligned_after_query",
+      });
+      return { ...entry, state: base, shipment: original, refreshed: identityApplied };
+    }
+  }
   if (trigger === "identity_projection" && !unprojectedAccountOrder(original)) {
     return { state: base, shipment: original, refreshed: identityApplied };
+  }
+  // A projected order keeps its own repair below; any other automatic row is asked here (T23).
+  if (!original.identity.manuallyAdded && !original.identity.accountOrder &&
+      carrierUnmatched(original)) await commitRecognizedCarrier();
+  // Only an explicit detail pull can finish incomplete source history after the shared freeze.
+  if (signedFrozen) {
+    const forcedAt = forcedCompletedAt(original);
+    // An explicit pull may finish source history; it cannot bypass the independent 72-hour sign-off freeze.
+    const repairHistory = trigger === "detail_pull" &&
+      (!forcedAt || Date.now() - forcedAt < FORCED_COMPLETION_REFRESH_WINDOW_MS) &&
+      shipmentDetailIncompleteReason(withoutForcedCompletion(original)) !== null;
+    if (!repairHistory) return skipSignedFrozen(original, base);
   }
   const missingHistoryRefresh = trigger === "missing_history" &&
     !hasUsableShipmentDynamics(original) && !original.emptyTimelineHiddenAtMs;
@@ -2872,9 +3784,10 @@ async function runShipmentRefreshById(
   }
   // The shared Home resolver already borrows eligible cached structured status.
   // A detail package's legacy or prose-derived semantic cannot satisfy that gap.
+  // A right-swipe signed row inside its refresh window reads its own status here (用户 2026-10-02「显示已签收、照常刷新」).
   const lacksStatus = (shipment: Shipment) =>
-    selectShipmentTimeline(shipment).semantic === "UNKNOWN";
-  const missingStatusRefresh = trigger === "detail_pull" &&
+    selectShipmentTimeline(refreshGateView(shipment)).semantic === "UNKNOWN";
+  const missingStatusRefresh = pull &&
     !unprojectedAccountOrder(original) && lacksStatus(original);
   const usableManualSupplement = (shipment: Shipment | null | undefined): shipment is Shipment =>
     !!shipment && (timedTracks(shipment.timeline.tracks).length > 0 ||
@@ -2899,14 +3812,16 @@ async function runShipmentRefreshById(
   // repair still needs structured evidence from an allowed provider.
   const incompleteReason = shipmentDetailIncompleteReason(original);
   const detailComplete = incompleteReason === null;
-  const requestedJingDongDetailSupplement = !detailComplete &&
+  // The alignment run is not stopped by complete cached history (用户 2026-10-02「同取件码强刷」).
+  const historyRefreshOpen = aligning || !detailComplete;
+  const requestedJingDongDetailSupplement = historyRefreshOpen &&
     isJingDongSourceShipment(original) && (
-      trigger === "detail_pull" ||
+      pull ||
       missingHistoryRefresh
     );
-  const explicitTimelineRefresh = !detailComplete && (
+  const explicitTimelineRefresh = historyRefreshOpen && (
     missingHistoryRefresh ||
-    trigger === "detail_pull" ||
+    pull ||
     trigger === "manual_submit" ||
     requestedJingDongDetailSupplement
   );
@@ -2927,6 +3842,15 @@ async function runShipmentRefreshById(
     baseActiveSource: base.activeSource,
     baseRevision: base.revision,
     ...shipmentDiagnosticDetails(original),
+  });
+  interrupted.end = () => writeDiagnostic("detail.refresh.skipped", {
+    flowId,
+    source,
+    durationMs: Date.now() - startedAt,
+    ...shipmentDiagnosticDetails(original!),
+    persisted: false,
+    skipReason: "interrupted",
+    result: "interrupted",
   });
   const forceAccountOrderProjection = Boolean(
     unprojectedAccountOrder(original) && isJingDongSourceShipment(original),
@@ -2959,7 +3883,7 @@ async function runShipmentRefreshById(
       Boolean(jingDongProjectionRoute || options.includeKdniaoFallback) ||
       (usesManualQuery || needsAutomaticFallback
         ? shouldScheduleManualRefresh(original, Date.now())
-        : shouldRefreshShipment(original, Date.now()))
+        : shouldRefreshShipmentRow(original, Date.now()))
     ));
   if (!refreshDue) {
     writeDiagnostic("detail.refresh.skipped", {
@@ -2981,8 +3905,7 @@ async function runShipmentRefreshById(
   let changed = false;
   let expressToast: ExpressToastKey | "" = "";
   let stage = "dispatch";
-  let carrierRepair: Awaited<ReturnType<typeof recognizeNonSyncCarrier>>["normalization"] | null =
-    null;
+  let carrierRepair: CarrierRecognitionResult | null = null;
   /**
    * 这一轮开始前**存储里**那一行，让提交栅栏始终拿它跟存储比。承运商修复和下面那次接口 5 按件
    * 详情都会替换 `original`，两者都必须先在这里留下存储版本。
@@ -2995,11 +3918,14 @@ async function runShipmentRefreshById(
     try {
       const recognition = await recognizeNonSyncCarrier(
         normalizedProjectedWaybill(original.identity),
-        { deadlineAtMs, signal },
+        { deadlineAtMs, signal, budget: operationRecognitionBudget(lease),
+          // 优化 5 (user 2026-10-03): the row's own waybill-reuse anchor goes with the paid stage, the one it first sent.
+          parcelAnchorAtMs: rowClassifyAnchor(original) },
       );
-      const repaired = repairProjectedShipmentCarrier(original, recognition.normalization);
+      const repaired = repairProjectedShipmentCarrier(
+        original, recognition.normalization, recognition.displayName);
       if (repaired !== original) {
-        carrierRepair = recognition.normalization;
+        carrierRepair = recognition;
         // The later stages read the repaired carrier from `original`, but the commit fence and
         // the account-error gate must still see the row as it was stored: comparing the repaired
         // row with itself made the repair look like "no change" and never committed it, and an
@@ -3021,8 +3947,12 @@ async function runShipmentRefreshById(
       let accountError: unknown = null;
       // The entry query is already committed. Nonempty query history can still be incomplete;
       // only the shared completeness check above may satisfy the requested history repair.
-      const unionPageAllowed = !isJingDongSourceShipment(original) ||
-        forceAccountOrderProjection || !jingDongFeedReachedPickup(original);
+      // 已签收、feed 有揽收但显示的历史没到签收：只有详情下拉放行一次京粉页（见 jingDongSignedHistoryGap）。
+      const signedHistoryGap = trigger === "detail_pull" && requestedJingDongDetailSupplement &&
+        jingDongSignedHistoryGap(original);
+      // The owner's own pickup does not stop the alignment run; the per-order cooldown below still does.
+      const unionPageAllowed = aligning || !isJingDongSourceShipment(original) ||
+        forceAccountOrderProjection || !jingDongFeedReachedPickup(original) || signedHistoryGap;
       if (original.accountRecord && isJingDongSourceShipment(original) && unionPageAllowed &&
           (requestedJingDongDetailSupplement || forceAccountOrderProjection)) {
         stage = "cached_order_projection";
@@ -3030,7 +3960,19 @@ async function runShipmentRefreshById(
           let projectionCaptured = false;
           let projectionRetry:
             Shipment["identity"]["orderProjectionRetry"] = undefined;
+          // T23: a projection held for its carrier, and a reservation that loaded no page to give back.
+          let heldProjection: HeldProjection | null = null;
+          let projectionRestore: { retry: Shipment["identity"]["orderProjectionRetry"] } | null = null;
           let reopenRetry: Shipment["identity"]["jingDongH5Retry"] = undefined;
+          // 用户 2026-10-03「所有开京粉页的路都检查」（代码 4）：a reservation the scene gate gave back before any page loaded.
+          let pageSkippedRestore: {
+            field: ProjectionAttemptField;
+            retry: Shipment["identity"]["orderProjectionRetry"];
+          } | null = null;
+          let querySucceededBeforePage: boolean | undefined;
+          // 用户 2026-10-03「这轮就统一」（优化 1）：the signed generation this load belongs to, and whether the page answered.
+          const signedGapCompletedAt = jingDongSignedGapCompletionAt(original);
+          let unionPageAnswered = false;
           const savedProjectionUrl = original.identity.accountOrder
             ? loadOrderProjectionReference(
                 original.identity.id,
@@ -3054,8 +3996,13 @@ async function runShipmentRefreshById(
               // feed already reaches 揽收 has nothing to add, and the load would take that order's
               // ten-minute cooldown slot away from a capture that is actually needed. 判据是**揽收**
               // （用户定 2026-09-04）：只有「已下单」不算，与 Pipi 的 hasPickupEvidence 同义。
-              !jingDongFeedReachedPickup(original) &&
+              // 例外（2026-09-24）：已签收而显示的历史没到签收，签收节点只在京粉页里，下拉放行一次。
+              (!jingDongFeedReachedPickup(original) || signedHistoryGap) &&
               parcel?.projectionUrl,
+          ) || Boolean(
+            // 状态对齐强刷（用户 2026-10-02「同取件码强刷」）越过 feed 揽收这道闸；按订单冷却照旧（下面同一个判断）。
+            aligning && normalizedProjectedWaybill(original.identity) &&
+              requestedJingDongDetailSupplement && parcel?.projectionUrl,
           );
           if (
                         parcel?.accountOrder &&
@@ -3086,14 +4033,40 @@ async function runShipmentRefreshById(
                 ownerFingerprint,
                 result: "already_projected",
               });
+            } else if (
+              !reopenForTimeline && (
+                freshOwner?.identity.pendingProjection?.waybill ||
+                (parcel.textIdentity?.waybill &&
+                  !heldCarrierSettleable(parcel.textIdentity.waybill, Date.now()))
+              )
+            ) {
+              // T23 (user 2026-09-26): the order already has its waybill (a held union page, or feed text) and only
+              // lacks a carrier; recognition ran at the start of this refresh, so no page is loaded for it.
+              writeDiagnostic("order.projection.skipped", {
+                flowId,
+                source,
+                stage: "detail_webview",
+                ownerFingerprint,
+                result: "carrier_pending",
+              });
                         } else if (
               (reopenForTimeline || !parcel.textIdentity?.waybill) &&
-              !shouldRetryAccountOrderProjection(
-                reopenForTimeline
-                  ? freshOwner?.identity.jingDongH5Retry
-                  : freshOwner?.identity.orderProjectionRetry,
-                routeHash,
-                Date.now(),
+              !(
+                // 方案 A (2026-09-25): detail entry leaves a confirmed empty page closed; an explicit
+                // pull is the user's own request and only keeps the ordinary rest.
+                trigger === "identity_projection" && !reopenForTimeline
+                  ? shouldRetryAccountOrderProjectionUnprompted(
+                      freshOwner?.identity.orderProjectionRetry,
+                      routeHash,
+                      Date.now(),
+                    )
+                  : shouldRetryAccountOrderProjection(
+                      reopenForTimeline
+                        ? freshOwner?.identity.jingDongH5Retry
+                        : freshOwner?.identity.orderProjectionRetry,
+                      routeHash,
+                      Date.now(),
+                    )
               )
             ) {
               const gatingRetry = reopenForTimeline
@@ -3110,9 +4083,27 @@ async function runShipmentRefreshById(
                     Date.now(),
                   )
                   ? "active_attempt"
+                  : trigger === "identity_projection" && !reopenForTimeline &&
+                      accountOrderPageConfirmedEmpty(gatingRetry, routeHash)
+                    ? "confirmed_empty"
                   : gatingRetry?.riskControlAtMs
                     ? "risk_control_cooldown"
                     : "cooldown",
+                ...(reopenForTimeline ? { reopen: true } : {}),
+              });
+            } else if (
+              freshOwner &&
+              (reopenForTimeline || !parcel.textIdentity?.waybill) &&
+              !projectionSceneActive()
+            ) {
+              // 用户 2026-10-03「所有开京粉页的路都检查」（代码 4）：开京粉页前判 App 是否在前台（场景 active），不在就跳过
+              // 这一级——不预约、不占按订单冷却、不算放行用掉——后面各级照常；与列表全量刷新那条路同一个跳过原因。
+              writeDiagnostic("order.projection.skipped", {
+                flowId,
+                source,
+                stage: "detail_webview",
+                ownerFingerprint,
+                result: "not_foreground",
                 ...(reopenForTimeline ? { reopen: true } : {}),
               });
             } else if (freshOwner) {
@@ -3189,7 +4180,10 @@ async function runShipmentRefreshById(
                 });
                 try {
                   const unresolvedOwner = parcel.ownerId;
+                  const unresolvedParcel = parcel;
+                  const textProjection = !reopenForTimeline && Boolean(parcel.textIdentity?.waybill);
                   const projectedBefore = normalizedProjectedWaybill(original.identity);
+                  querySucceededBeforePage = querySucceeded;
                   querySucceeded = false;
                   parcel = await runtime.projectAccountOrderWithCarrier(
                     // A reopen must load the page: the feed text identity would short-circuit it.
@@ -3200,11 +4194,17 @@ async function runShipmentRefreshById(
                       projectionDiagnostics = diagnostics;
                     },
                     signal,
+                    // 代码 4: asked again right before the page loads (the viewport wait can outlast the foreground).
+                    () => { unionPageSceneGate(); beforeQuery?.(); },
+                    operationRecognitionBudget(lease),
                   );
                   assertRefreshSignal(signal);
                   projectionCaptured = true;
                   // Record the returned package before identity and cache guards can discard it.
                   const captured = parcel.projectionTimeline;
+                  // 优化 1「拿到回答就算用掉」：the page answered — a package, partial or not, or a complete answer without
+                  // logistics; risk control and a load that failed or timed out are no answer.
+                  unionPageAnswered = !textProjection && unionPageGaveAnswer(projectionDiagnostics, captured);
                   writeDiagnostic("detail.timeline.candidate", {
                     flowId, source, stage: "detail_webview", timelineProvider: TIMELINE_SLOT.JD_H5,
                     effectiveTrackCount: timedTracks(captured?.tracks || []).length,
@@ -3233,6 +4233,9 @@ async function runShipmentRefreshById(
                         [original],
                       );
                     }
+                  } else {
+                    // 其余裁决 32: an exhausted recognition no longer holds the order at its order stage.
+                    parcel = releaseExhaustedProjection(parcel, unresolvedParcel.rawCourierCode);
                   }
                   writeDiagnostic(
                     normalizeWaybill(parcel.waybill) !==
@@ -3255,32 +4258,82 @@ async function runShipmentRefreshById(
                     normalizeWaybill(parcel.waybill) ===
                       normalizeWaybill(unresolvedOwner)
                   ) {
-                    projectionRetry = projectionFailureRetry(
+                    projectionRetry = orderProjectionFailureRetry(
+                      original,
                       routeHash,
                       projectionDiagnostics,
                       Date.now(),
                     );
+                  } else if (!reopenForTimeline && projectionAwaitingCarrier(parcel)) {
+                    // T23（用户 2026-09-26，其余裁决 28）：运单号拿到了、承运商没对上——订单保持原样、不推。页面给的运单号
+                    // 与轨迹挂起（页面冷却照 §9 记，空壳计数按「页面给过运单号」清零）；文案没开页，投影记录恢复成预约前。
+                    if (textProjection) {
+                      projectionRestore = { retry: freshOwner.identity.orderProjectionRetry };
+                    } else {
+                      projectionRetry = orderProjectionFailureRetry(
+                        original,
+                        routeHash,
+                        projectionDiagnostics,
+                        Date.now(),
+                        true,
+                      );
+                      heldProjection = {
+                        waybill: normalizeWaybill(parcel.waybill),
+                        timeline: parcel.projectionTimeline || null,
+                        capturedAtMs: Date.now(),
+                      };
+                    }
+                    writeDiagnostic("order.projection.rejected", {
+                      flowId,
+                      source,
+                      stage: "detail_webview",
+                      ownerFingerprint,
+                      result: "carrier_pending",
+                    });
+                    parcel = unresolvedParcel;
                   } else {
                     projectionRetry = undefined;
                   }
                 } catch (error) {
-                  if (signal?.aborted) retainObservedProjectionRisk(
-                    ownerId, routeHash, attemptId, attemptField, projectionDiagnostics);
-                  rethrowRefreshCancellation(error, signal);
-                  projectionRetry = projectionFailureRetry(
-                    routeHash,
-                    projectionDiagnostics,
-                    Date.now(),
-                  );
-                  if (reopenForTimeline) reopenRetry = projectionRetry;
-                  writeDiagnostic("order.projection.failed", {
-                    flowId,
-                    source,
-                    stage: "detail_webview",
-                    ownerFingerprint,
-                    ...diagnosticErrorDetails(error),
-                    ...(projectionDiagnostics || {}),
-                  }, "warning");
+                  if ((error instanceof UnionPageSkipped || queryReservationFailed) && !signal?.aborted) {
+                    // No page loaded when the scene or required alignment reservation refused it; preserve JD's rest.
+                    pageSkippedRestore = { field: attemptField, retry: freshOwner.identity[attemptField] };
+                    querySucceeded = querySucceededBeforePage;
+                    writeDiagnostic("order.projection.skipped", {
+                      flowId,
+                      source,
+                      stage: "detail_webview",
+                      ownerFingerprint,
+                      result: error instanceof UnionPageSkipped ? error.reason : "alignment_reservation_unavailable",
+                      ...(reopenForTimeline ? { reopen: true } : {}),
+                    });
+                  } else {
+                    if (signal?.aborted) retainObservedProjectionRisk(
+                      ownerId, routeHash, attemptId, attemptField, projectionDiagnostics);
+                    rethrowStageCancellation(signal, () => writeDiagnostic("order.projection.failed", {
+                      flowId,
+                      source,
+                      stage: "detail_webview",
+                      ownerFingerprint,
+                      ...(projectionDiagnostics || {}),
+                      errorCategory: "cancelled",
+                    }, "warning"));
+                    projectionRetry = orderProjectionFailureRetry(
+                      original,
+                      routeHash,
+                      projectionDiagnostics,
+                      Date.now(),
+                    );
+                    if (reopenForTimeline) reopenRetry = projectionRetry;
+                    writeDiagnostic("order.projection.failed", {
+                      flowId,
+                      source,
+                      stage: "detail_webview",
+                      ownerFingerprint,
+                      ...diagnosticErrorDetails(error),
+                      ...(projectionDiagnostics || {}),
+                    }, "warning");
+                  }
                 }
                 if (projectionRetry?.riskControlAtMs || reopenRetry?.riskControlAtMs) {
                   // Unified express toast (AGENTS §11): the user asked for this detail and JD
@@ -3306,6 +4359,7 @@ async function runShipmentRefreshById(
                   refreshed = ownershipOwner;
                   parcel = null;
                   projectionRetry = undefined;
+                  pageSkippedRestore = null;
                   writeDiagnostic("order.projection.skipped", {
                     flowId,
                     source,
@@ -3371,6 +4425,25 @@ async function runShipmentRefreshById(
             };
             changed = true;
           }
+          if (projectionRestore && !normalizedProjectedWaybill(refreshed.identity)) {
+            refreshed = withProjectionRetry(refreshed, projectionRestore.retry);
+            changed = true;
+          }
+          if (heldProjection && !normalizedProjectedWaybill(refreshed.identity)) {
+            refreshed = {
+              ...refreshed,
+              identity: { ...refreshed.identity, pendingProjection: heldProjection },
+            };
+            changed = true;
+          }
+          if (pageSkippedRestore) {
+            refreshed = withProjectionAttemptRecord(refreshed, pageSkippedRestore.field, pageSkippedRestore.retry);
+            changed = true;
+          }
+          if (unionPageAnswered && signedGapCompletedAt > 0 && Date.now() >= signedGapCompletedAt) {
+            // 优化 1：签收后（同一个完成时间 T）京粉页有过回答，这一代的签收缺口放行就用掉了（没轨迹、部分包也算）。
+            recordSignedRelease(original.identity.id, signedGapCompletedAt, "jingDongUnionGap");
+          }
           if (reopenRetry) {
             // Every page load rests the order (10 min, 60 min after risk control), whether it
             // was the first projection or a timeline reopen.
@@ -3393,23 +4466,49 @@ async function runShipmentRefreshById(
       const enrichmentStartedAt = Date.now();
       let cainiaoDiagnostics: CainiaoH5Diagnostics | null = null;
       let webDiagnostics: WebTimelineDiagnostics | null = null;
-      const jingDongAutomaticH5Available = (enrichmentBase.manualTimelines || []).some(
-        timeline => normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.JD_H5 &&
-          containsTimelinePickupTrack(timeline.tracks),
+      const cachedJingDongH5 = (enrichmentBase.manualTimelines || []).filter(
+        timeline => normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.JD_H5,
       );
+      // The standalone final fallback below still only asks whether a JD H5 capture has pickup.
+      const jingDongAutomaticH5Available = cachedJingDongH5.some(
+        timeline => containsTimelinePickupTrack(timeline.tracks),
+      );
+      // 用户 2026-09-24 采纳：缓存的京粉页包有揽收 ≠ 显示的历史有揽收。只有详情选包对这一包也判完整
+      // （同一个 shipmentDetailCandidateEvidence：有揽收、最新节点不落后参照超过 30 分钟）时，它才替手动链作主；
+      // 落后于列表的旧包会被更新的账号历史挤掉，显示出来的就没有揽收，K100 / 快递鸟照常要跑。
+      // The alignment run (用户 2026-10-02) is stopped only by a complete page it loaded itself, never by a cached one.
+      const jingDongAutomaticH5Complete = cachedJingDongH5.some(
+        timeline => (!aligning || timeline.successAtMs >= startedAt) &&
+          shipmentDetailCandidateEvidence(enrichmentBase, timeline).detailComplete,
+      );
+      // 用户 2026-10-02「付费快递鸟按原链（前面都没起点证据才问，其冷却也照旧）」：状态对齐强刷越过的那几道闸
+      // （完整缓存、feed 自己的揽收、缓存里完整的京粉页）不替付费快递鸟打开；这一行在普通下拉里问得到快递鸟时，
+      // 强刷才问，问之前照旧看前面各级攒下的起点证据（hasTimelineStartBeforeKdniao）。
+      const paidFallbackGateOpen = !aligning || (!detailComplete && (
+        isJingDongSourceShipment(enrichmentBase)
+          ? !jingDongFeedReachedPickup(enrichmentBase) && !cachedJingDongH5.some(
+            timeline => shipmentDetailCandidateEvidence(enrichmentBase, timeline).detailComplete)
+          : supportsOrdinaryAutomaticDetailSupplement(enrichmentBase)
+            ? needsAutomaticManualFallback(enrichmentBase)
+            : true
+      ));
       // Automatic feed pickup and a complete same-waybill H5 package stop the manual chain
       // before Picker. A cached manual origin is evaluated only after refreshing Picker.
+      // The alignment run passes the owner's own pickup (用户 2026-10-02「同取件码强刷」).
       const jingDongManualFallbackRequested =
         requestedJingDongDetailSupplement &&
         !unprojectedAccountOrder(enrichmentBase) &&
-        !jingDongFeedReachedPickup(enrichmentBase) &&
-        !jingDongAutomaticH5Available;
+        (aligning || !jingDongFeedReachedPickup(enrichmentBase)) &&
+        !jingDongAutomaticH5Complete;
       let cainiaoH5Succeeded = false;
       // 用户定 2026-09-05：缓存里的详情已完整（有揽收）就不再重拉，下拉只绕节流。这道门看的是
       // **选中的详情包**（任一槽），不只是 feed：feed 没揽收但 k100_h5 缓存已完整时同样不跑。
+      // 状态对齐强刷（用户 2026-10-02）越过完整缓存与 feed 揽收这两道闸，打开这一行自己的菜鸟页；只有 feed 本来就缺
+      // 揽收时，菜鸟页落空才照旧转手动链（feed 已有揽收的菜鸟件，手动链的包不进详情选包，跑了也显示不出来）。
+      const cainiaoOwnerNeedsH5 = cainiaoAutomaticNeedsH5Supplement(enrichmentBase);
       const cainiaoH5Requested = explicitTimelineRefresh &&
-        cainiaoAutomaticNeedsH5Supplement(enrichmentBase) &&
-        !shipmentDetailComplete(enrichmentBase);
+        (cainiaoOwnerNeedsH5 || (aligning && isCainiaoAutomaticShipment(enrichmentBase))) &&
+        (aligning || !shipmentDetailComplete(enrichmentBase));
       if (cainiaoH5Requested) {
         querySucceeded = false;
         const cainiaoH5StartedAt = Date.now();
@@ -3438,6 +4537,7 @@ async function runShipmentRefreshById(
             (diagnostics) => { cainiaoDiagnostics = diagnostics; },
             signal,
             onQueryAttempted,
+            beforeQuery,
           );
           assertRefreshSignal(signal);
           if (cainiaoH5) {
@@ -3450,9 +4550,13 @@ async function runShipmentRefreshById(
               (timeline) =>
                 normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.CN_H5,
             ) || null;
+            // 用户 2026-09-24 采纳（三端，审计 D4）：有揽收还不够，这个菜鸟页包还要在详情选包里判完整——有揽收、
+            // 最新节点不落后账号参照超过 30 分钟，与京粉页同一次评判（shipmentDetailCandidateEvidence）；落后于列表的
+            // 旧包不再挡住后面的补查。
             cainiaoH5Succeeded = Boolean(
               capturedCainiaoH5 &&
-                containsTimelinePickupTrack(capturedCainiaoH5.tracks),
+                containsTimelinePickupTrack(capturedCainiaoH5.tracks) &&
+                shipmentDetailCandidateEvidence(cainiaoH5, capturedCainiaoH5).detailComplete,
             );
             refreshed = cainiaoH5Succeeded
               ? clearCainiaoManualFallback(cainiaoH5)
@@ -3483,7 +4587,16 @@ async function runShipmentRefreshById(
             }, "warning");
           }
         } catch (error) {
-          rethrowRefreshCancellation(error, signal);
+          rethrowStageCancellation(signal, () => writeDiagnostic("detail.refresh.stage_failed", {
+            flowId,
+            source,
+            stage,
+            ...shipmentDiagnosticDetails(refreshed, TIMELINE_SLOT.CN_H5),
+            timelineProvider: TIMELINE_SLOT.CN_H5,
+            durationMs: Date.now() - cainiaoH5StartedAt,
+            ...cainiaoH5DiagnosticDetails(cainiaoDiagnostics),
+            errorCategory: "cancelled",
+          }, "warning"));
           queryFailureObserved = true;
           writeDiagnostic("detail.refresh.stage_failed", {
             flowId,
@@ -3498,23 +4611,34 @@ async function runShipmentRefreshById(
         }
       }
       const cainiaoManualFallbackRequested = cainiaoH5Requested &&
-        !cainiaoH5Succeeded;
+        !cainiaoH5Succeeded && cainiaoOwnerNeedsH5;
       if (cainiaoManualFallbackRequested) {
         const activated = activateCainiaoManualFallback(refreshed);
         changed ||= activated !== refreshed;
         refreshed = activated;
         enrichmentBase = activated;
       }
+      // The alignment run passes the owner's own pickup here as well (用户 2026-10-02).
+      const ordinaryAutomaticSupplement = (shipment: Shipment) => aligning
+        ? supportsOrdinaryAutomaticDetailSupplement(shipment)
+        : needsAutomaticManualFallback(shipment);
       const ordinaryAutomaticSupplementRequested = explicitTimelineRefresh &&
-        needsAutomaticManualFallback(enrichmentBase);
+        ordinaryAutomaticSupplement(enrichmentBase);
       const pickerSupplementRequested = missingStatusRefresh
         ? lacksStatus(enrichmentBase)
         : ordinaryAutomaticSupplementRequested || requestedKuaidi100Timeline ||
           jingDongManualFallbackRequested || cainiaoManualFallbackRequested;
-      if (pickerSupplementRequested && trigger !== "detail_pull" && !unprojectedAccountOrder(enrichmentBase)) {
+      // A pull does not ask Online here (EXPRESS_THREE_CLIENT_PARITY ShunFeng row). 用户 2026-10-02 弹窗「四端都先问
+      // Picker（推荐）」：状态对齐强刷里顺丰来源件先问 Online（Picker，v6_query refresh）——顺丰的列表头条归 Picker；
+      // 其余行的强刷照旧不问。问过之后这一轮的其余各级照旧各跑一次。
+      const alignmentAsksOnline = aligning && isShunFengSourceShipment(enrichmentBase);
+      let pickerSupplementSucceeded = false;
+      if (pickerSupplementRequested && (!aligning || alignmentAsksOnline) &&
+          trigger !== "detail_pull" && !unprojectedAccountOrder(enrichmentBase)) {
         stage = "picker_query";
         const pickerOutcome = await runtime.queryManualForSource({
           onQueryAttempted,
+          beforeQuery,
           source,
           bindings: sourceBindings,
           waybill: displayWaybill(enrichmentBase),
@@ -3541,6 +4665,7 @@ async function runShipmentRefreshById(
           { flowId, source, stage, timelineProvider: TIMELINE_SLOT.V6_QUERY },
         );
         if (usableManualSupplement(pickerShipment)) {
+          pickerSupplementSucceeded = true;
           refreshed = applyManualShipment(
             refreshed,
             pickerShipment,
@@ -3555,11 +4680,11 @@ async function runShipmentRefreshById(
       // requested free refresh while the selected current detail is incomplete.
       const primaryNeeded = missingStatusRefresh
         ? lacksStatus(enrichmentBase)
-        : trigger === "detail_pull"
-          ? !shipmentDetailComplete(enrichmentBase)
+        : pull
+          ? aligning || !shipmentDetailComplete(enrichmentBase)
           : !hasPickerTimelineStart(enrichmentBase);
       const ordinaryAutomaticPrimaryRequested = explicitTimelineRefresh && (
-        needsAutomaticManualFallback(enrichmentBase) || cainiaoManualFallbackRequested ||
+        ordinaryAutomaticSupplement(enrichmentBase) || cainiaoManualFallbackRequested ||
         jingDongManualFallbackRequested
       );
       const primaryContestRequested = hasRealWaybill && primaryNeeded && (
@@ -3598,6 +4723,7 @@ async function runShipmentRefreshById(
             signal,
             onQueryAttempted,
             sourceBindings.map(binding => binding.phone.slice(-4)),
+            beforeQuery,
           );
         return result;
       };
@@ -3610,6 +4736,19 @@ async function runShipmentRefreshById(
       let primarySuccessCount = -1;
       let primaryReachedTimelineStart = false;
       let kdniaoAttempted = false;
+      const endH5StageOnCancellation = () => {
+        if (h5Kind === "none") return;
+        writeDiagnostic("detail.refresh.stage_failed", {
+          flowId,
+          source,
+          stage: h5Stage,
+          ...shipmentDiagnosticDetails(refreshed, h5Provider),
+          timelineProvider: h5Provider,
+          durationMs: Date.now() - h5StartedAt,
+          ...(webDiagnostics || {}),
+          errorCategory: "cancelled",
+        }, "warning");
+      };
       if (primaryContestRequested) {
         querySucceeded ??= false;
         const contest = await runManualDetailSourceContest({
@@ -3617,6 +4756,7 @@ async function runShipmentRefreshById(
             if (!motoSupported) return null;
             const outcome = await runtime.queryManualForSource({
               onQueryAttempted,
+              beforeQuery,
               source,
               bindings: sourceBindings,
               waybill: displayWaybill(enrichmentBase),
@@ -3638,12 +4778,13 @@ async function runShipmentRefreshById(
             return usableManualSupplement(outcome.shipment) ? outcome.shipment : null;
           },
           queryKuaidi100: queryH5,
-          ...(options.includeKdniaoFallback === true
+          ...(options.includeKdniaoFallback === true && paidFallbackGateOpen
             ? {
                 queryKdniao: async () => {
                   stage = "kdniao_fallback";
                   const outcome = await runtime.queryManualForSource({
                     onQueryAttempted,
+                    beforeQuery,
                     source,
                     bindings: sourceBindings,
                     waybill: displayWaybill(enrichmentBase),
@@ -3682,7 +4823,7 @@ async function runShipmentRefreshById(
               : hasTimelineStartBeforeKdniao(accumulated);
           },
         });
-        assertRefreshSignal(signal);
+        rethrowStageCancellation(signal, endH5StageOnCancellation);
         motoResult = contest.moto.shipment;
         h5Result = contest.kuaidi100.shipment;
         h5Error = contest.kuaidi100.error;
@@ -3702,7 +4843,7 @@ async function runShipmentRefreshById(
           h5Result = await queryH5();
           assertRefreshSignal(signal);
         } catch (error) {
-          rethrowRefreshCancellation(error, signal);
+          rethrowStageCancellation(signal, endH5StageOnCancellation);
           h5Error = error;
         }
       }
@@ -3769,6 +4910,7 @@ async function runShipmentRefreshById(
         }, "warning");
       }
       if (refreshed.identity.manuallyAdded && explicitTimelineRefresh &&
+          !pickerSupplementSucceeded && !motoResult && !h5Result && !kdniaoResult &&
           !shipmentDetailComplete(refreshed) &&
           [h5Error, kdniaoError].some(needsManualPhoneTail)) {
         expressToast = "manualPhoneTailRequired";
@@ -3798,7 +4940,7 @@ async function runShipmentRefreshById(
       if (
         !primaryContestRequested &&
         !unprojectedAccountOrder(refreshed) &&
-        options.includeKdniaoFallback === true &&
+        options.includeKdniaoFallback === true && paidFallbackGateOpen &&
         !deadlineExpired(deadlineAtMs) && (
           missingStatusRefresh ? lacksStatus(refreshed)
             : !jingDongAutomaticH5Available && !cainiaoH5Succeeded &&
@@ -3811,6 +4953,7 @@ async function runShipmentRefreshById(
         try {
           const outcome = await runtime.queryManualForSource({
             onQueryAttempted,
+            beforeQuery,
             source,
             bindings: sourceBindings,
             waybill: displayWaybill(refreshed),
@@ -3879,7 +5022,8 @@ async function runShipmentRefreshById(
   if (carrierRepair && needsProjectedCarrierRepair(refreshed.identity)) {
     // An ownership reservation or takeover above may have rebuilt the shipment from storage;
     // the recognised carrier must still reach the committed row.
-    const repairedFinal = repairProjectedShipmentCarrier(refreshed, carrierRepair);
+    const repairedFinal = repairProjectedShipmentCarrier(
+      refreshed, carrierRepair.normalization, carrierRepair.displayName);
     if (repairedFinal !== refreshed) {
       refreshed = repairedFinal;
       changed = true;
@@ -3894,7 +5038,7 @@ async function runShipmentRefreshById(
     changed = true;
   }
 
-  if (trigger === "detail_pull" && querySucceeded === false && isShunFengSourceShipment(refreshed) &&
+  if (pull && querySucceeded === false && isShunFengSourceShipment(refreshed) &&
       !hasEligibleShunFengManualTimeline(refreshed)) {
     const fallback = (refreshed.manualTimelines || []).find(timeline =>
       normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.V5_QUERY && timedTracks(timeline.tracks).length > 0);
@@ -4036,15 +5180,74 @@ async function runShipmentRefreshById(
   };
 }
 
+/**
+ * The status-alignment forced refreshes of this runtime, by row, while they hold the row's `detail:<id>` lease
+ * (services/status-alignment.ts). 用户 2026-10-02 弹窗「下拉等那次强刷跑完再显示」: a pull on that row's detail page
+ * meeting one does not start a second refresh and does not return at once (which read as a failed pull when nothing
+ * was cached); it waits for the forced refresh, within the pull's own deadline, and shows its outcome as its own.
+ */
+const statusAlignmentRefreshes = new Map<string, Promise<ShipmentRefreshResult>>();
+
+async function pullAfterStatusAlignment(
+  shipmentId: string,
+  forced: Promise<ShipmentRefreshResult>,
+  options: ShipmentRefreshOptions,
+  runtimeOverrides: ShipmentRefreshRuntimeOverrides,
+): Promise<ShipmentRefreshResult> {
+  const startedAt = Date.now();
+  const deadlineAtMs = options.deadlineAtMs ?? deadlineAfter(MANUAL_QUERY_BUDGET_MS);
+  const waitingState = loadState();
+  const waitingShipment = waitingState.shipments.find(item => item.identity.id === shipmentId);
+  const expectedFingerprint = waitingShipment ? detailRequestFingerprint(waitingShipment, waitingState) : null;
+  let outcome: ShipmentRefreshResult | null = null;
+  try {
+    outcome = await waitForRefresh(forced, deadlineAtMs,
+      options.signal);
+  } catch (error) {
+    // A closed page cancels its pull as before; a forced refresh that failed, or outlived the pull's deadline, reads as
+    // a pull whose query failed.
+    rethrowRefreshCancellation(error, options.signal);
+  }
+  const state = loadState();
+  const shipment = state.shipments.find((item) => item.identity.id === shipmentId);
+  if (!shipment) throw new Error("该快递已从列表中移除");
+  // One line for the pull that joined the forced refresh (the forced refresh logs its own flow).
+  writeDiagnostic("detail.refresh.skipped", {
+    source: SCRIPT_BINDING_SOURCE,
+    trigger: options.trigger,
+    ...shipmentDiagnosticDetails(shipment),
+    skipReason: "coalesced_detail_refresh",
+    result: outcome ? (outcome.refreshed ? "refreshed" : "unchanged") : "failed",
+    durationMs: Date.now() - startedAt,
+  });
+  const forcedAt = forcedCompletedAt(shipment);
+  // Only a no-query frozen outcome leaves the pull's distinct history operation unperformed.
+  // The old pull cannot query for a replacement row or a rebound account after its wait.
+  if (outcome?.skipReason === "signed_frozen" && options.trigger === "detail_pull" &&
+      !options.signal?.aborted && !deadlineExpired(deadlineAtMs) &&
+      expectedFingerprint !== null && detailRequestFingerprint(shipment, state) === expectedFingerprint &&
+      (!forcedAt || Date.now() - forcedAt < FORCED_COMPLETION_REFRESH_WINDOW_MS) &&
+      shipmentDetailIncompleteReason(withoutForcedCompletion(shipment)) !== null) {
+    return runTargetedShipmentRefresh(shipmentId, { ...options, deadlineAtMs }, runtimeOverrides, expectedFingerprint);
+  }
+  return outcome
+    ? { ...outcome, state, shipment, detailEntry: options.detailEntry }
+    : { state, shipment, refreshed: false, querySucceeded: false };
+}
+
 function runTargetedShipmentRefresh(
   shipmentId: string,
   options: ShipmentRefreshOptions,
+  runtimeOverrides: ShipmentRefreshRuntimeOverrides = {},
+  expectedFingerprint?: string,
 ): Promise<ShipmentRefreshResult> {
-  const durableLease = acquireDurableRefreshLease(
+  const durableLease = acquireRenewingDurableRefreshLease(
     `detail:${shipmentId}`,
     35_000,
   );
   if (!durableLease) {
+    const forced = options.trigger === "detail_pull" ? statusAlignmentRefreshes.get(shipmentId) : undefined;
+    if (forced) return pullAfterStatusAlignment(shipmentId, forced, options, runtimeOverrides);
     const state = loadState();
     const shipment = state.shipments.find(
       (item) => item.identity.id === shipmentId,
@@ -4056,16 +5259,25 @@ function runTargetedShipmentRefresh(
   let active = true;
   const lease: TargetRefreshLease = {
     deadlineAtMs: options.deadlineAtMs,
+    expectedFingerprint,
     isCurrent: () =>
       active && durableLease.isCurrent() && !options.signal?.aborted,
     signal: options.signal,
   };
-  return Promise.resolve().then(() =>
-    runShipmentRefreshById(shipmentId, lease, options)
+  const run = Promise.resolve().then(() =>
+    runShipmentRefreshById(shipmentId, lease, options, runtimeOverrides)
   ).finally(() => {
     active = false;
     durableLease.release();
   });
+  if (options.trigger === "status_alignment") {
+    statusAlignmentRefreshes.set(shipmentId, run);
+    const settle = () => {
+      if (statusAlignmentRefreshes.get(shipmentId) === run) statusAlignmentRefreshes.delete(shipmentId);
+    };
+    run.then(settle, settle);
+  }
+  return run;
 }
 
 async function runTargetedShipmentRefreshWithProjectionWait(
@@ -4100,162 +5312,19 @@ export function refreshShipmentById(
     deadlineAtMs, options.signal);
 }
 
-type EnrichmentRuntime = Readonly<{
-  refreshAccountParcel?: typeof refreshAccountParcel;
-  queryManualForSource: typeof queryManualForSource;
-}>;
-
-async function refreshShipmentEnrichment(
-  state: AppState,
+/**
+ * The commit functions of one `full:<source>` generation: every checkpoint rebases onto the latest
+ * durable state and publishes deferred routes; projection commits additionally require the attempt
+ * reservation to still be theirs. Shared by the list refresh and the Home stored-row pass.
+ */
+function fullRefreshCheckpoints(
   source: BindingSource,
   flowId: string,
-  checkpoint: RefreshCheckpoint,
-  deadlineAtMs?: number,
-  skipRefreshIds: ReadonlySet<string> = new Set(),
-  forceManualRefresh = false,
-  webViewEnrichment = true,
-  signal?: AbortSignal,
-  runtimeOverrides: Partial<EnrichmentRuntime> = {},
-  accountSourceFollowup = false,
-  updatedCainiaoIds: ReadonlySet<string> = new Set(),
-): Promise<RefreshSummary> {
-  let currentState = state;
-  let attempted = 0;
-  let succeeded = 0;
-  let failed = 0;
-  const promotedPendingShipmentIds: string[] = [];
-  const now = Date.now();
-  const queued = manualRefreshTasks(currentState, source, now, skipRefreshIds, forceManualRefresh,
-    accountSourceFollowup, updatedCainiaoIds);
-  type Job = ManualRefreshTask;
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  if (signal?.aborted) abort();
-  signal?.addEventListener("abort", abort, {once: true});
-  type JobResult = {job: Job; summary: RefreshSummary} | {job: Job; error: unknown};
-  const active = new Map<Job, Promise<JobResult>>();
-  let firstFailure: {error: unknown} | undefined;
-  const run = async (job: Job): Promise<JobResult> => {
-    let jobBase = currentState;
-    const commit: RefreshCheckpoint = (candidate, mutations, stage) => {
-      assertRefreshSignal(controller.signal);
-      // Each task rebases from what it read, not another task's newer checkpoint.
-      try {
-        currentState = checkpoint(candidate, mutations, stage, jobBase);
-      } catch (error) {
-        firstFailure ??= {error};
-        controller.abort();
-        throw error;
-      }
-      jobBase = currentState;
-      return currentState;
-    };
-    try {
-      assertRefreshSignal(controller.signal);
-      // Queued work must observe deletions, sign-offs, and binding changes made while waiting.
-      currentState = loadState(Date.now());
-      jobBase = currentState;
-      const target = currentState.shipments.find(shipment => shipment.identity.id === job.id);
-      if (target && !target.identity.manuallyAdded) {
-        const phone = String(target.identity.phone || "").replace(/\D/g, "");
-        const originalBinding = state.bindings.find(binding => binding.source === source && binding.phone === phone);
-        const currentBinding = currentState.bindings.find(binding => binding.source === source && binding.phone === phone);
-        if (!originalBinding || !currentBinding || originalBinding.boundAtMs !== currentBinding.boundAtMs) {
-          return {job, summary: {state: currentState, attempted: 0, succeeded: 0, failed: 0,
-            promotedPendingShipmentIds: []}};
-        }
-      }
-      const result = job.accountDetail ? await refreshHomeAccountShipment(
-        currentState, source, flowId, commit, job, deadlineAtMs, controller.signal,
-        runtimeOverrides.refreshAccountParcel || refreshAccountParcel,
-      ) : await refreshOnlineShipment(
-        currentState, source, flowId, commit, job, deadlineAtMs, forceManualRefresh,
-        controller.signal, runtimeOverrides.queryManualForSource || queryManualForSource,
-      );
-      return {job, summary: result};
-    } catch (error) {
-      firstFailure ??= {error};
-      controller.abort();
-      return {job, error};
-    }
-  };
-  try {
-    while (queued.length || active.size) {
-      assertRefreshSignal(controller.signal);
-      while (active.size < MANUAL_REFRESH_CONCURRENCY && queued.length && !deadlineExpired(deadlineAtMs)) {
-        if (!queued[0].accountDetail) {
-          await refreshCoordinator.waitForForeground(source, deadlineAtMs ?? deadlineAfter(MANUAL_QUERY_BUDGET_MS), controller.signal);
-        }
-        assertRefreshSignal(controller.signal);
-        if (deadlineExpired(deadlineAtMs)) break;
-        const job = queued.shift()!;
-        active.set(job, run(job));
-      }
-      if (!active.size) break;
-      const result = await Promise.race(active.values());
-      active.delete(result.job);
-      if ("error" in result) throw result.error;
-      attempted += result.summary.attempted;
-      succeeded += result.summary.succeeded;
-      failed += result.summary.failed;
-      for (const id of result.summary.promotedPendingShipmentIds) {
-        if (!promotedPendingShipmentIds.includes(id)) promotedPendingShipmentIds.push(id);
-      }
-    }
-    assertRefreshSignal(controller.signal);
-    return {state: currentState, attempted, succeeded, failed, promotedPendingShipmentIds};
-  } catch (error) {
-    controller.abort();
-    await Promise.all(active.values());
-    throw firstFailure ? firstFailure.error : error;
-  } finally {
-    signal?.removeEventListener("abort", abort);
-  }
-}
-
-async function runFullRefresh(
-  source: BindingSource,
-  deadlineAtMs: number | undefined,
-  flowId: string,
-  skipRefreshIds: ReadonlySet<string>,
-  accountOrderProjection: boolean,
-  backgroundHostSafe: boolean,
-  forceManualRefresh: boolean,
-  accountListOnly: boolean,
-  accountSourceFollowup: boolean,
   lease: FullRefreshLease,
-): Promise<RefreshSummary> {
-  requireScriptSource(source);
-  lease.assertCurrent();
-  const preparationStartedAt = Date.now();
-  writeDiagnostic("refresh.preparation.started", { flowId, source, stage: "preparation" });
-  if (!backgroundHostSafe) {
-    await refreshCarrierAuthorityIfNeeded();
-    lease.assertCurrent();
-  }
-  const hostPolicy = fullRefreshHostPolicy({
-    accountOrderProjection,
-    backgroundHostSafe,
-  });
-  const startedAt = Date.now();
-  const initial = loadState(startedAt);
-  writeDiagnostic("refresh.preparation.completed", {
-    flowId, source, stage: "preparation", durationMs: Date.now() - preparationStartedAt,
-    pendingNotifications: initial.pendingNotifications?.length || 0,
-  });
-  const notificationContext = {
-    previousById: new Map(initial.shipments.map((shipment) => [shipment.identity.id, shipment])),
-    batchId: flowId,
-  };
+  initial: AppState,
+  notificationContext: RefreshNotificationContext,
+): Readonly<{ checkpoint: RefreshCheckpoint; projectionCheckpoint: ProjectionCheckpoint }> {
   let checkpointBase = initial;
-  let currentState = initial;
-  let attempted = 0;
-  let succeeded = 0;
-  let failed = 0;
-  let accountListUpdated = false;
-  const updatedCainiaoIds = new Set<string>();
-  let summary: RefreshSummary | undefined;
-  const promotedPendingShipmentIds: string[] = [];
 
   const checkpoint: RefreshCheckpoint = (candidate, mutations, stage, base = checkpointBase) => {
     lease.assertCurrent();
@@ -4342,6 +5411,191 @@ async function runFullRefresh(
     return { state: next, applied: true };
   };
 
+  return { checkpoint, projectionCheckpoint };
+}
+
+type EnrichmentRuntime = Readonly<{
+  refreshAccountParcel?: typeof refreshAccountParcel;
+  queryManualForSource: typeof queryManualForSource;
+}>;
+
+async function refreshShipmentEnrichment(
+  state: AppState,
+  source: BindingSource,
+  flowId: string,
+  checkpoint: RefreshCheckpoint,
+  deadlineAtMs?: number,
+  skipRefreshIds: ReadonlySet<string> = new Set(),
+  forceManualRefresh = false,
+  webViewEnrichment = true,
+  signal?: AbortSignal,
+  runtimeOverrides: Partial<EnrichmentRuntime> = {},
+  accountSourceFollowup = false,
+  updatedCainiaoIds: ReadonlySet<string> = new Set(),
+  /** The sync round's recognition wait (用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒). */
+  recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
+): Promise<RefreshSummary> {
+  let currentState = state;
+  let attempted = 0;
+  let succeeded = 0;
+  let failed = 0;
+  const promotedPendingShipmentIds: string[] = [];
+  const now = Date.now();
+  // 用户 2026-09-27 第二轮清单：截断排后。A manual row is recognised at the start of its own task, so a manual row whose
+  // waybill was cut off in an earlier round has its task queued after the others. 整个任务排后（这一行本轮的 provider
+  // 查询也随之排后）属截断排后细则里的「整行（整个任务）排后」，用户 2026-09-27 提交前核对答「这样做」。
+  const queued = truncatedCarrierRecognitionLast(
+    manualRefreshTasks(currentState, source, now, skipRefreshIds, forceManualRefresh,
+      accountSourceFollowup, updatedCainiaoIds, (frozen) => writeDiagnostic("refresh.stage.skipped", {
+        flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(frozen, "v5_query"),
+        result: "signed_frozen", skipReason: "signed_frozen" })),
+    (task) => {
+      const row = currentState.shipments.find((shipment) => shipment.identity.id === task.id);
+      return row?.identity.manuallyAdded && !task.accountDetail ? [displayWaybill(row)] : [];
+    },
+  );
+  type Job = ManualRefreshTask;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) abort();
+  signal?.addEventListener("abort", abort, {once: true});
+  type JobResult = {job: Job; summary: RefreshSummary} | {job: Job; error: unknown};
+  const active = new Map<Job, Promise<JobResult>>();
+  let firstFailure: {error: unknown} | undefined;
+  const run = async (job: Job): Promise<JobResult> => {
+    let jobBase = currentState;
+    const commit: RefreshCheckpoint = (candidate, mutations, stage) => {
+      assertRefreshSignal(controller.signal);
+      // Each task rebases from what it read, not another task's newer checkpoint.
+      try {
+        currentState = checkpoint(candidate, mutations, stage, jobBase);
+      } catch (error) {
+        firstFailure ??= {error};
+        controller.abort();
+        throw error;
+      }
+      jobBase = currentState;
+      return currentState;
+    };
+    try {
+      assertRefreshSignal(controller.signal);
+      // Queued work must observe deletions, sign-offs, and binding changes made while waiting.
+      currentState = loadState(Date.now());
+      jobBase = currentState;
+      const target = currentState.shipments.find(shipment => shipment.identity.id === job.id);
+      if (target && !target.identity.manuallyAdded) {
+        const phone = String(target.identity.phone || "").replace(/\D/g, "");
+        const originalBinding = state.bindings.find(binding => binding.source === source && binding.phone === phone);
+        const currentBinding = currentState.bindings.find(binding => binding.source === source && binding.phone === phone);
+        if (!originalBinding || !currentBinding || originalBinding.boundAtMs !== currentBinding.boundAtMs) {
+          return {job, summary: {state: currentState, attempted: 0, succeeded: 0, failed: 0,
+            promotedPendingShipmentIds: []}};
+        }
+      }
+      const result = job.accountDetail ? await refreshHomeAccountShipment(
+        currentState, source, flowId, commit, job, deadlineAtMs, controller.signal,
+        runtimeOverrides.refreshAccountParcel || refreshAccountParcel,
+      ) : await refreshOnlineShipment(
+        currentState, source, flowId, commit, job, deadlineAtMs, forceManualRefresh,
+        controller.signal, runtimeOverrides.queryManualForSource || queryManualForSource,
+        recognitionBudget,
+      );
+      return {job, summary: result};
+    } catch (error) {
+      firstFailure ??= {error};
+      controller.abort();
+      return {job, error};
+    }
+  };
+  try {
+    while (queued.length || active.size) {
+      assertRefreshSignal(controller.signal);
+      while (active.size < MANUAL_REFRESH_CONCURRENCY && queued.length && !deadlineExpired(deadlineAtMs)) {
+        if (!queued[0].accountDetail) {
+          await refreshCoordinator.waitForForeground(source, deadlineAtMs ?? deadlineAfter(MANUAL_QUERY_BUDGET_MS), controller.signal);
+        }
+        assertRefreshSignal(controller.signal);
+        if (deadlineExpired(deadlineAtMs)) break;
+        const job = queued.shift()!;
+        active.set(job, run(job));
+      }
+      if (!active.size) break;
+      const result = await Promise.race(active.values());
+      active.delete(result.job);
+      if ("error" in result) throw result.error;
+      attempted += result.summary.attempted;
+      succeeded += result.summary.succeeded;
+      failed += result.summary.failed;
+      for (const id of result.summary.promotedPendingShipmentIds) {
+        if (!promotedPendingShipmentIds.includes(id)) promotedPendingShipmentIds.push(id);
+      }
+    }
+    assertRefreshSignal(controller.signal);
+    return {state: currentState, attempted, succeeded, failed, promotedPendingShipmentIds};
+  } catch (error) {
+    controller.abort();
+    await Promise.all(active.values());
+    throw firstFailure ? firstFailure.error : error;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+async function runFullRefresh(
+  source: BindingSource,
+  deadlineAtMs: number | undefined,
+  flowId: string,
+  skipRefreshIds: ReadonlySet<string>,
+  accountOrderProjection: boolean,
+  backgroundHostSafe: boolean,
+  forceManualRefresh: boolean,
+  accountListOnly: boolean,
+  accountSourceFollowup: boolean,
+  lease: FullRefreshLease,
+): Promise<RefreshSummary> {
+  requireScriptSource(source);
+  lease.assertCurrent();
+  const preparationStartedAt = Date.now();
+  writeDiagnostic("refresh.preparation.started", { flowId, source, stage: "preparation" });
+  if (!backgroundHostSafe) {
+    await refreshCarrierAuthorityIfNeeded();
+    lease.assertCurrent();
+  }
+  const hostPolicy = fullRefreshHostPolicy({
+    accountOrderProjection,
+    backgroundHostSafe,
+  });
+  const startedAt = Date.now();
+  const initial = loadState(startedAt);
+  writeDiagnostic("refresh.preparation.completed", {
+    flowId, source, stage: "preparation", durationMs: Date.now() - preparationStartedAt,
+    pendingNotifications: initial.pendingNotifications?.length || 0,
+  });
+  const orderMerges = new Map<string, string[]>();
+  const notificationContext = {
+    previousById: new Map(initial.shipments.map((shipment) => [shipment.identity.id, shipment])),
+    batchId: flowId,
+    orderMerges,
+  };
+  let currentState = initial;
+  let attempted = 0;
+  let succeeded = 0;
+  let failed = 0;
+  let accountListUpdated = false;
+  const updatedCainiaoIds = new Set<string>();
+  let summary: RefreshSummary | undefined;
+  const promotedPendingShipmentIds: string[] = [];
+
+  const { checkpoint, projectionCheckpoint } = fullRefreshCheckpoints(
+    source, flowId, lease, initial, notificationContext,
+  );
+  // 用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒。One sync round: the list's recognition before it is stored,
+  // the projection passes and the manual rows' recognition all wait on this one budget, each stage still within its
+  // own deadline. A waybill left when it runs out stays held (T23) until a later round.
+  // 用户 2026-09-27 第二轮清单：截断排后；同步轮里被任一时限截住的也记，是截断排后细则，用户 2026-09-27 提交前核对答
+  // 「这样做」。The waybills any time limit of this round cuts off go last in the next rounds.
+  const recognitionBudget = new CarrierRecognitionBudget(undefined, { syncRound: true });
+
   try {
     const accountMutations: DeferredRouteMutations = new Map();
     const accountDeadlineAtMs = deadlineAtMs == null
@@ -4360,6 +5614,8 @@ async function runFullRefresh(
       accountDeadlineAtMs,
       hostPolicy.accountFollowupReserveMs,
       lease.signal,
+      orderMerges,
+      recognitionBudget,
     );
     attempted += account.attempted;
     succeeded += account.succeeded;
@@ -4416,6 +5672,11 @@ async function runFullRefresh(
       ? undefined
       : deadlineAtMs - FULL_REFRESH_FINALIZATION_RESERVE_MS;
     if (!accountListOnly && !deadlineExpired(enrichmentDeadlineAtMs)) {
+      // 用户 2026-09-25 同意：刷新流程只在前台开京粉页；已过期限或租约的流程一页都不开，照旧失败收尾。
+      const unionPageGate = () => {
+        lease.assertCurrent();
+        if (!projectionSceneActive()) throw new UnionPageSkipped("not_foreground");
+      };
       const projection = await projectAccountOrders(
       currentState,
       account.parcels,
@@ -4429,43 +5690,19 @@ async function runFullRefresh(
       true,
       lease.signal,
       !hostPolicy.accountOrderProjection,
+      listParcelStructuredSemantic,
+      false,
+      unionPageGate,
+      recognitionBudget,
     );
       attempted += projection.attempted;
       succeeded += projection.succeeded;
       failed += projection.failed;
       currentState = projection.state;
       if (projection.stateChanged) {
-        for (const ownerId of projection.projectedOwnerIds) {
-          const persisted = currentState.shipments.find(
-            (shipment) => shipment.identity.id === ownerId,
-          );
-          const ownerParcel = account.parcels.find(
-            (parcel) => projectionOwnerId(parcel) === ownerId,
-          );
-          const retainedParcel = ownerParcel
-            ? accountParcelWithExistingProjection(
-                ownerParcel,
-                currentState.shipments,
-              )
-            : null;
-          const projectionApplied = Boolean(
-            normalizedProjectedWaybill(persisted?.identity) ||
-              (
-                retainedParcel &&
-                normalizeWaybill(retainedParcel.waybill) !==
-                  normalizeWaybill(retainedParcel.ownerId)
-              ),
-          );
-          writeDiagnostic("order.projection.committed", {
-            flowId,
-            source,
-            stage: "state",
-            ownerFingerprint: projectionOwnerFingerprint(ownerId),
-            result: projectionApplied
-              ? "applied"
-              : "extracted_not_committed",
-          }, projectionApplied ? "info" : "warning");
-        }
+        recordAccountOrderProjectionCommits(
+          projection.projectedOwnerIds, account.parcels, currentState, flowId, source,
+        );
       }
     }
 
@@ -4475,7 +5712,7 @@ async function runFullRefresh(
     } : await refreshShipmentEnrichment(
       currentState, source, flowId, checkpoint, enrichmentDeadlineAtMs,
       skipRefreshIds, forceManualRefresh, hostPolicy.accountOrderProjection, lease.signal,
-      {}, accountSourceFollowup, updatedCainiaoIds,
+      {}, accountSourceFollowup, updatedCainiaoIds, recognitionBudget,
     );
     currentState = enrichment.state;
     attempted += enrichment.attempted;
@@ -4573,17 +5810,19 @@ async function startFullRefresh(
     ? undefined
     : deadlineAfter(budgetMs, startedAt);
   const trigger = options.backgroundHostSafe ? "background" : options.forceManualRefresh ? "list_pull" :
-    options.accountListOnly ? "account_list_only" : "foreground_sync";
-  const leaseTtlMs = Math.max(30_000, (budgetMs || 120_000) + 5_000);
-  let durableLease = acquireDurableRefreshLease(
+    options.accountListOnly ? "account_list_only" : "foreground";
+  // 用户 2026-09-28：the lease itself is valid for 30 seconds and renewed while this refresh runs; this is
+  // the longest the refresh may hold it, and the longest a user's pull waits for another live holder.
+  const leaseMaxMs = Math.max(30_000, (budgetMs || 120_000) + 5_000);
+  let durableLease = acquireRenewingDurableRefreshLease(
     `full:${source}`,
-    leaseTtlMs,
+    leaseMaxMs,
     startedAt,
     { flowId, trigger },
   );
   if (!durableLease && options.forceManualRefresh) {
     // A user's pull must execute after the holder, not finish as a skipped background run.
-    const waitDeadline = deadlineAtMs ?? startedAt + leaseTtlMs;
+    const waitDeadline = deadlineAtMs ?? startedAt + leaseMaxMs;
     writeDiagnostic("refresh.wait.started", { flowId, source, trigger,
       ...durableRefreshLeaseDiagnostics(`full:${source}`) });
     try {
@@ -4591,10 +5830,11 @@ async function startFullRefresh(
         assertWithinDeadline(waitDeadline);
         await new Promise<void>(resolve => setTimeout(resolve, Math.min(250, waitDeadline - Date.now())));
         assertWithinDeadline(waitDeadline);
-        durableLease = acquireDurableRefreshLease(`full:${source}`, leaseTtlMs, Date.now(), { flowId, trigger });
+        durableLease = acquireRenewingDurableRefreshLease(`full:${source}`, leaseMaxMs, Date.now(), { flowId, trigger });
       }
       writeDiagnostic("refresh.wait.completed", { flowId, source, trigger, durationMs: Date.now() - startedAt });
     } catch (error) {
+      durableLease?.release();
       writeDiagnostic("refresh.failed", { flowId, source, trigger, stage: "lease_wait",
         durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error) }, "warning");
       throw error;
@@ -4609,6 +5849,8 @@ async function startFullRefresh(
       trigger,
       ...durableRefreshLeaseDiagnostics(`full:${source}`),
     });
+    // The app root waits for that holder and then runs its stored-row projection pass.
+    publishFullRefreshOutcome({ source, trigger, skipReason: "active_cross_runtime_refresh" });
     return Promise.resolve({
       attempted: 0,
       succeeded: 0,
@@ -4729,12 +5971,257 @@ async function startFullRefresh(
       );
       throw error;
     },
-  ).finally(() => durableLease.release());
+  ).finally(() => {
+    durableLease.release();
+    // Published after the release, so a listener's own pass can take the same lease.
+    publishFullRefreshOutcome({ source, trigger });
+  });
+}
+
+// 用户 2026-09-24 采纳：App 在前台时自己把京东订单的运单号抓回来（京粉页 / 订单投影），不必等用户下拉；
+// 与 Lite ExpressListActivity 首页 onStart / 每轮同步结束后跑 ExpressHomeOrderProjectionCapture 同口径：
+// 用存盘的行，揽收门、按单冷却都一样。小组件、App Intents 照旧从不开网页。
+const STORED_PROJECTION_TRIGGER = "home_projection";
+/**
+ * One order per pass: page ≤ 20 s, carrier recognition ≤ 45 s, then the notification drain. The longest
+ * the pass holds full:<source> (its lease is valid for 30 seconds and renewed meanwhile), and the longest
+ * it waits for another runtime's live holder.
+ */
+const STORED_PROJECTION_LEASE_MAX_MS = 125_000;
+const STORED_PROJECTION_WAIT_SLICE_MS = 500;
+const STORED_PROJECTION_WAIT_MARGIN_MS = 1_000;
+
+export type StoredOrderProjectionResult = Readonly<{
+  result:
+    | "not_app_host"
+    | "inactive"
+    | "busy"
+    | "lease_held"
+    | "nothing_due"
+    | "attempted"
+    | "failed";
+  /** The order handed to projectAccountOrders by this pass. */
+  ownerId?: string;
+  /** Another order that was not excluded was due as well. */
+  moreDue: boolean;
+  /** The state after this pass's commits (attempted only). */
+  state?: AppState;
+}>;
+
+/** An in-process full refresh, or a user's pull still waiting for another runtime's lease. */
+function fullRefreshPendingInProcess(source: BindingSource): boolean {
+  return Boolean(refreshCoordinator.full(source) || interactiveFullRequests.has(source));
+}
+
+/**
+ * The list is still being written: a full refresh or stored-row pass of this runtime, or another runtime holding
+ * `full:<source>`. The status alignment check (services/status-alignment.ts, 用户 2026-10-02) waits for the list
+ * data to settle before it compares a row's times.
+ */
+export function listRefreshInProgress(source: BindingSource = SCRIPT_BINDING_SOURCE): boolean {
+  return fullRefreshPendingInProcess(source) || durableRefreshLeaseRemainingMs(`full:${source}`) > 0;
+}
+
+type StoredProjectionCandidate = Readonly<{ ownerId: string; parcel: AccountParcelDto }>;
+
+/**
+ * Stored unprojected JD orders the union page may open for now, in Home order. No network, no
+ * lease, no log: an empty answer is the pass's whole cost.
+ */
+function storedAccountOrderProjectionCandidates(
+  state: AppState,
+  source: BindingSource,
+  now: number,
+  excludeOwnerIds: ReadonlySet<string>,
+  includeCompleted: boolean,
+): StoredProjectionCandidate[] {
+  const boundPhones = bindingsForSource(state, source).map((binding) => binding.phone);
+  if (!boundPhones.length) return [];
+  const noDetailRefreshes = new Set<string>();
+  return visibleShipments(state, now).flatMap((shipment) => {
+    const ownerId = shipment.identity.id;
+    if (
+      shipment.identity.bindingSource !== source ||
+      !unprojectedAccountOrder(shipment) ||
+      excludeOwnerIds.has(ownerId)
+    ) return [];
+    // The same rebuild as the detail page's cached_order_projection: saved reference or feed text.
+    const parcel = accountParcelWithProjectionReference(
+      shipment,
+      null,
+      loadOrderProjectionReference(ownerId, source, now),
+    );
+    if (
+      !parcel ||
+      projectionOwnerId(parcel) !== ownerId ||
+      !parcelToShipment(parcel, boundPhones, now)
+    ) return [];
+    const decision = accountOrderProjectionDecision(
+      parcel, state.shipments, now, noDetailRefreshes, false, storedRowStructuredSemantic, includeCompleted,
+    );
+    return decision.due ? [{ ownerId, parcel }] : [];
+  });
+}
+
+async function runStoredOrderProjection(
+  source: BindingSource,
+  flowId: string,
+  durableLease: DurableRefreshLease,
+  before: AppState,
+  candidate: StoredProjectionCandidate,
+  moreDue: boolean,
+  includeCompleted: boolean,
+): Promise<StoredOrderProjectionResult> {
+  try {
+    const summary = await refreshCoordinator.runFull(
+      source,
+      async (skipRefreshIds, lease) => {
+        const notificationContext = {
+          previousById: new Map(before.shipments.map((shipment) => [shipment.identity.id, shipment])),
+          batchId: flowId,
+        };
+        const { checkpoint, projectionCheckpoint } = fullRefreshCheckpoints(
+          source, flowId, lease, before, notificationContext,
+        );
+        const projection = await projectAccountOrders(
+          before,
+          [candidate.parcel],
+          source,
+          Date.now(),
+          flowId,
+          checkpoint,
+          projectionCheckpoint,
+          undefined,
+          skipRefreshIds,
+          true,
+          lease.signal,
+          false,
+          storedRowStructuredSemantic,
+          includeCompleted,
+          // 用户 2026-10-03「所有开京粉页的路都检查」（代码 4）：the controller runs this pass only on screen, and the page
+          // is asked again right before it loads; off screen the order is skipped (not_foreground) and left for the next pass.
+          unionPageSceneGate,
+          // 用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒。One Home pass is one operation with its own budget.
+          new CarrierRecognitionBudget(),
+          // The pass's catch below writes a cancelled attempt's end.
+          true,
+        );
+        let state = projection.state;
+        if (projection.stateChanged) {
+          recordAccountOrderProjectionCommits(
+            projection.projectedOwnerIds, [candidate.parcel], state, flowId, source,
+          );
+          // The same drain a full refresh ends with, so a projection's event is not left queued.
+          if (lease.isCurrent()) {
+            state = await replayPendingShipmentNotifications(lease.isCurrent, { flowId }) ?? state;
+          }
+        }
+        return {
+          attempted: projection.attempted,
+          succeeded: projection.succeeded,
+          failed: projection.failed,
+          state,
+          promotedPendingShipmentIds: [],
+        };
+      },
+      (detail) => detail.refreshed,
+      {
+        blockerDeadlineAtMs: deadlineAfter(FULL_REFRESH_COORDINATION_WAIT_MS),
+        ownership: durableLease,
+      },
+    );
+    if (statePresentationFingerprint(summary.state) !== statePresentationFingerprint(before)) {
+      requestWidgetReload();
+    }
+    return { result: "attempted", ownerId: candidate.ownerId, moreDue, state: summary.state };
+  } catch (error) {
+    writeDiagnostic("order.projection.failed", {
+      flowId,
+      source,
+      stage: "webview",
+      ownerFingerprint: projectionOwnerFingerprint(candidate.ownerId),
+      ...diagnosticErrorDetails(error),
+    }, "warning");
+    return { result: "failed", ownerId: candidate.ownerId, moreDue: false };
+  } finally {
+    durableLease.release();
+  }
+}
+
+/**
+ * The Home stored-row projection pass: no account-list request. It opens the union page for at
+ * most one stored order that the list path would open it for (same filter, reservation, cooldown
+ * and commit), under the `full:<source>` lease. When another runtime holds that lease the pass
+ * skips, or, with `waitForOtherRuntime`, waits for the release (bounded by the holder's maximum hold,
+ * abandoned quietly once `isActive` turns false) because that runtime's commits are not final
+ * until then. Only the app root may call it: it refuses to run where no projection viewport is
+ * hosted, which is every widget and App Intent runtime.
+ */
+export async function projectStoredAccountOrders(
+  options: Readonly<{
+    source?: BindingSource;
+    isActive?: () => boolean;
+    waitForOtherRuntime?: boolean;
+    excludeOwnerIds?: ReadonlySet<string>;
+    /** True only while the app is on screen; completed orders are then also projected (2026-09-25). */
+    onScreen?: () => boolean;
+  }> = {},
+): Promise<StoredOrderProjectionResult> {
+  const source = requireScriptSource(options.source || SCRIPT_BINDING_SOURCE);
+  const isActive = options.isActive || (() => true);
+  const excludeOwnerIds = options.excludeOwnerIds || new Set<string>();
+  const leaseKey = `full:${source}`;
+  if (!projectionViewportHostAvailable()) return { result: "not_app_host", moreDue: false };
+  const startedAt = Date.now();
+  let waitUntilMs = 0;
+  while (true) {
+    if (!isActive()) return { result: "inactive", moreDue: false };
+    if (fullRefreshPendingInProcess(source)) return { result: "busy", moreDue: false };
+    const holderRemainingMs = durableRefreshLeaseRemainingMs(leaseKey);
+    if (holderRemainingMs <= 0) {
+      const now = Date.now();
+      const before = loadState(now);
+      const includeCompleted = options.onScreen?.() === true;
+      const due = storedAccountOrderProjectionCandidates(
+        before, source, now, excludeOwnerIds, includeCompleted);
+      if (!due.length) return { result: "nothing_due", moreDue: false };
+      const flowId = createDiagnosticFlowId("home-projection");
+      const durableLease = acquireRenewingDurableRefreshLease(
+        leaseKey,
+        STORED_PROJECTION_LEASE_MAX_MS,
+        now,
+        { flowId, trigger: STORED_PROJECTION_TRIGGER },
+      );
+      if (durableLease) {
+        return runStoredOrderProjection(
+          source, flowId, durableLease, before, due[0], due.length > 1, includeCompleted,
+        );
+      }
+    }
+    if (!options.waitForOtherRuntime) return { result: "lease_held", moreDue: false };
+    // Bounded by how long the holder may still hold its lease, not by the lease's 30-second validity
+    // (a live holder keeps renewing it); a holder that was just replaced cannot extend it forever.
+    waitUntilMs ||= Math.min(
+      Date.now() + Math.max(durableRefreshLeaseMaxRemainingMs(leaseKey), STORED_PROJECTION_WAIT_SLICE_MS) +
+        STORED_PROJECTION_WAIT_MARGIN_MS,
+      startedAt + STORED_PROJECTION_LEASE_MAX_MS + STORED_PROJECTION_WAIT_MARGIN_MS,
+    );
+    const remainingWaitMs = waitUntilMs - Date.now();
+    if (remainingWaitMs <= 0) return { result: "lease_held", moreDue: false };
+    await new Promise<void>((resolve) => setTimeout(
+      resolve,
+      Math.min(STORED_PROJECTION_WAIT_SLICE_MS, remainingWaitMs),
+    ));
+  }
 }
 
 export { runShipmentRefreshById as runShipmentRefreshForTesting };
+/** The lease-holding detail refresh (refreshShipmentById without its in-process coordinator), for tests. */
+export { runTargetedShipmentRefresh as runTargetedShipmentRefreshForTesting };
 export { withH5Controller as runH5CaptureForTesting };
 
 export { refreshShipmentEnrichment as runShipmentEnrichmentForTesting };
+
+export { synchronizeAccountList as synchronizeAccountListForTesting };
 
 export { publishDeferredRoutes as publishDeferredRoutesForTesting };

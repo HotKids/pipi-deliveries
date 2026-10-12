@@ -73,7 +73,14 @@ public final class ExpressDatabaseContractTest {
         assertTrue(route.get("binding_source").notNull);
         assertTrue(route.get("binding_generation").notNull);
         assertTrue(route.get("detail_url").notNull);
-        assertEquals(25, ExpressDatabase.VERSION);
+        assertEquals(26, ExpressDatabase.VERSION);
+        Map<String, Column> observation = columns(db, ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE);
+        assertEquals(1, observation.get("normalized_waybill").primaryKeyOrder);
+        assertEquals(2, observation.get("owner_provider").primaryKeyOrder);
+        assertEquals(3, observation.get("binding_generation").primaryKeyOrder);
+        assertEquals(4, observation.get("record_key").primaryKeyOrder);
+        assertTrue(columns(db, ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE)
+                .get("owner_record_key").notNull);
         assertTrue(shipments.containsKey("cainiaoH5FallbackActivatedAtMs"));
         assertTrue(shipments.containsKey("cainiaoH5FallbackOwner"));
         assertTrue(shipments.containsKey("carrierStandardCode"));
@@ -81,6 +88,112 @@ public final class ExpressDatabaseContractTest {
         assertTrue(shipments.containsKey("carrierKuaidi100Code"));
         assertTrue(shipments.containsKey("carrierIsBuiltIn"));
         assertTrue(shipments.containsKey("carrierTableVersion"));
+    }
+
+    /**
+     * v26 (ownership of projected orders, user decision 2026-09-25): every observation slot gets
+     * its record's own number, exactly the waybill column it already stores, and every owner the
+     * number of the row it points to. No row, slot or owner is rewritten otherwise.
+     */
+    @Test
+    public void version25UpgradeKeysObservationsAndOwnersByTheirRecord() {
+        SQLiteDatabase legacy = context.openOrCreateDatabase(
+                ExpressDatabase.DATABASE, Context.MODE_PRIVATE, null);
+        createVersion14Schema(legacy);
+        legacy.execSQL("CREATE TABLE automatic_ownership("
+                + "normalized_waybill TEXT PRIMARY KEY NOT NULL,"
+                + "owner_provider TEXT NOT NULL DEFAULT '',owner_phone TEXT NOT NULL DEFAULT '',"
+                + "owner_binding_generation TEXT NOT NULL DEFAULT '',"
+                + "owner_row_id INTEGER NOT NULL DEFAULT 0,claimed_at INTEGER NOT NULL DEFAULT 0,"
+                + "last_observed_at INTEGER NOT NULL DEFAULT 0,miss_count INTEGER NOT NULL DEFAULT 0,"
+                + "release_reason TEXT NOT NULL DEFAULT '',cooldown_until INTEGER NOT NULL DEFAULT 0,"
+                + "display_frozen INTEGER NOT NULL DEFAULT 0)");
+        legacy.execSQL("CREATE TABLE automatic_observation("
+                + "normalized_waybill TEXT NOT NULL,owner_provider TEXT NOT NULL,"
+                + "binding_generation TEXT NOT NULL,package_owner TEXT NOT NULL,"
+                + "binding_source TEXT NOT NULL,waybill TEXT NOT NULL,phone TEXT DEFAULT '',"
+                + "courier_code TEXT DEFAULT '',company_name TEXT DEFAULT '',"
+                + "status_code TEXT DEFAULT '',status_event_time INTEGER NOT NULL DEFAULT 0,"
+                + "latest_time TEXT DEFAULT '',latest_detail TEXT DEFAULT '',"
+                + "tracks_json TEXT DEFAULT '[]',source_provider TEXT DEFAULT '',"
+                + "detail_url TEXT DEFAULT '',route_interface TEXT DEFAULT '',"
+                + "route_credential TEXT DEFAULT '',carrier_standard_code TEXT DEFAULT '',"
+                + "carrier_display_name TEXT DEFAULT '',carrier_kuaidi100_code TEXT DEFAULT '',"
+                + "carrier_is_built_in INTEGER NOT NULL DEFAULT -1,"
+                + "carrier_table_version TEXT DEFAULT '',qualified INTEGER NOT NULL DEFAULT 0,"
+                + "observed_at INTEGER NOT NULL,sender_phone TEXT NOT NULL DEFAULT '',"
+                + "list_origin_at_ms INTEGER NOT NULL DEFAULT 0,"
+                + "PRIMARY KEY(normalized_waybill,owner_provider,binding_generation))");
+        ContentValues waybillRow = legacyShipment(
+                301L, "YT-1234567897051", "INTERFACE5", "YTO", "圆通速递", "0579");
+        legacy.insertOrThrow(ExpressDatabase.EXPRESS_TABLE, null, waybillRow);
+        ContentValues orderRow = legacyShipment(
+                302L, "3630448013829999", "I5-JD", "JDKD", "京东商品快递", "0579");
+        legacy.insertOrThrow(ExpressDatabase.EXPRESS_TABLE, null, orderRow);
+        legacy.insertOrThrow("automatic_ownership", null,
+                legacyOwner("YT1234567897051", 301L));
+        legacy.insertOrThrow("automatic_ownership", null,
+                legacyOwner("JT1234567890123", 302L));
+        legacy.insertOrThrow("automatic_observation", null,
+                legacyObservation("YT1234567897051", "YT-1234567897051", "INTERFACE5"));
+        legacy.insertOrThrow("automatic_observation", null,
+                legacyObservation("JT1234567890123", "3630448013829999", "I5-JD"));
+        legacy.setVersion(25);
+        legacy.close();
+
+        SQLiteDatabase upgraded = helper.getWritableDatabase();
+
+        assertEquals(4, columns(upgraded, ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE)
+                .get("record_key").primaryKeyOrder);
+        assertEquals("YT1234567897051", single(upgraded, ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE,
+                "record_key", "normalized_waybill=?", "YT1234567897051"));
+        assertEquals("the order keeps its own number under its projected waybill",
+                "3630448013829999", single(upgraded, ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE,
+                        "record_key", "normalized_waybill=?", "JT1234567890123"));
+        assertEquals("YT1234567897051", single(upgraded, ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE,
+                "owner_record_key", "normalized_waybill=?", "YT1234567897051"));
+        assertEquals("3630448013829999", single(upgraded, ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE,
+                "owner_record_key", "normalized_waybill=?", "JT1234567890123"));
+        assertEquals("302", single(upgraded, ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE,
+                "owner_row_id", "normalized_waybill=?", "JT1234567890123"));
+        assertEquals(2, count(upgraded, ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE, null, null));
+        assertEquals("YT-1234567897051", single(upgraded, ExpressDatabase.EXPRESS_TABLE,
+                "mailNo", "_id=?", "301"));
+    }
+
+    private static ContentValues legacyOwner(String normalizedWaybill, long rowId) {
+        ContentValues values = new ContentValues();
+        values.put("normalized_waybill", normalizedWaybill);
+        values.put("owner_provider", "INTERFACE5");
+        values.put("owner_binding_generation", "generation-0579");
+        values.put("owner_row_id", rowId);
+        values.put("claimed_at", 1_000L);
+        values.put("last_observed_at", 1_000L);
+        return values;
+    }
+
+    private static ContentValues legacyObservation(
+            String normalizedWaybill, String waybill, String packageOwner) {
+        ContentValues values = new ContentValues();
+        values.put("normalized_waybill", normalizedWaybill);
+        values.put("owner_provider", "INTERFACE5");
+        values.put("binding_generation", "generation-0579");
+        values.put("package_owner", packageOwner);
+        values.put("binding_source", "interface5");
+        values.put("waybill", waybill);
+        values.put("qualified", 1);
+        values.put("observed_at", 1_000L);
+        return values;
+    }
+
+    private static String single(
+            SQLiteDatabase db, String table, String column, String selection, String arg) {
+        try (Cursor cursor = db.query(table, new String[]{column}, selection,
+                new String[]{arg}, null, null, null)) {
+            assertTrue(table + " " + arg, cursor.moveToFirst());
+            assertEquals(1, cursor.getCount());
+            return cursor.getString(0);
+        }
     }
 
     @Test

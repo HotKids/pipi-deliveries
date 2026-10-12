@@ -6,14 +6,22 @@ import android.appwidget.AppWidgetProvider;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.SpannableString;
+import android.text.Spanned;
 import android.text.TextPaint;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
+import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.RemoteViews;
+
+import com.google.android.material.color.MaterialColors;
 
 import me.pipi.deliveries.feature.express.ExpressDetailActivity;
 import me.pipi.deliveries.feature.express.ExpressListActivity;
@@ -110,7 +118,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 views.setImageViewResource(R.id.widget_compact_brand_gradient,
                         R.drawable.widget_express_brand_gradient_mask);
                 views.setTextViewText(R.id.widget_priority_status,
-                        context.getString(ExpressWidgetPresentation.priorityLabel(item.semantic)));
+                        ExpressWidgetPresentation.statusText(item));
                 views.setTextColor(R.id.widget_priority_status,
                         StatusStyle.forSemantic(item.semantic).foreground);
                 views.setImageViewResource(R.id.widget_compact_courier_logo,
@@ -168,9 +176,19 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                     displayed.size(), hostHeightDp, density,
                     typography.lineBox(
                             ExpressWidgetRowPolicy.DEFAULT_ROW_CONTENT_HEIGHT_DP));
-            views.setTextViewText(R.id.widget_express_title,
-                    context.getString(R.string.widget_express_count,
-                            ExpressWidgetPresentation.activeCount(items)));
+            String title = context.getString(R.string.widget_express_count,
+                    ExpressWidgetPresentation.activeCount(items));
+            int countStart = title.lastIndexOf(' ') + 1;
+            int secondary = MaterialColors.getColor(
+                    new ContextThemeWrapper(context, R.style.PipiWidgetTheme),
+                    com.google.android.material.R.attr.colorOnSurfaceVariant,
+                    "PipiWidgetTheme");
+            SpannableString header = new SpannableString(title);
+            header.setSpan(new StyleSpan(Typeface.BOLD), 0, countStart,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            header.setSpan(new ForegroundColorSpan(secondary), countStart, title.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            views.setTextViewText(R.id.widget_express_title, header);
             views.setTextViewTextSize(R.id.widget_express_title,
                     TypedValue.COMPLEX_UNIT_SP,
                     typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));
@@ -234,7 +252,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         views.setTextViewText(WIDE_COMPANY_IDS[index],
                 ExpressWidgetPresentation.rowIdentity(item));
         views.setTextViewText(WIDE_STATUS_IDS[index],
-                context.getString(ExpressWidgetPresentation.priorityLabel(item.semantic)));
+                ExpressWidgetPresentation.statusText(item));
         StatusStyle statusStyle = StatusStyle.forSemantic(item.semantic);
         views.setInt(WIDE_STATUS_IDS[index],
                 "setBackgroundResource", statusStyle.background);

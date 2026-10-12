@@ -7,30 +7,94 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 /** Normalizes Kuaidi100 and OEM track arrays into the native Pipi timeline. */
 public final class ExpressTimeline {
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+    private static final Pattern PACKAGE_PREFIX = Pattern.compile("^您的(?:快件|订单|包裹)\\s*");
+    private static final Pattern FINGERPRINT_SUFFIX = Pattern.compile("[。.!！?？,，;；、…]+$");
+    private static final Pattern EVENT_SUFFIX = Pattern.compile("[\\s。！!，,；;：:]+$");
+    private static final ThreadLocal<ReadScope> READ_SCOPE = new ThreadLocal<>();
+
+    private static final class ReadScope {
+        final Map<List<String>, List<Track>> parsed = new HashMap<>();
+        final Map<String, List<RawTrack>> rawRead = new HashMap<>();
+        final Map<String, Boolean> providerErrors = new HashMap<>();
+        boolean reusable = true;
+    }
     public static final class Track {
         public final String time;
         public final String detail;
         public final long epochMillis;
+        public final StatusSemantic semantic;
 
         Track(String time, String detail) {
+            this(time, detail, StatusSemantic.UNKNOWN);
+        }
+
+        private Track(String time, String detail, StatusSemantic semantic, long epochMillis) {
+            this.time = clean(time);
+            this.detail = clean(detail);
+            this.epochMillis = epochMillis;
+            this.semantic = semantic;
+        }
+
+        Track(String time, String detail, StatusSemantic semantic) {
             this.time = clean(time);
             this.detail = clean(detail);
             this.epochMillis = parseTime(this.time);
+            this.semantic = semantic;
         }
     }
 
     private ExpressTimeline() {}
 
+    /** A list read revisits each package while ranking and aligning; reuse nodes only until it ends. */
+    public static <T> T withParsedTracks(Supplier<T> operation) {
+        ReadScope previous = READ_SCOPE.get();
+        READ_SCOPE.set(new ReadScope());
+        try {
+            return operation.get();
+        } finally {
+            if (previous == null) READ_SCOPE.remove();
+            else READ_SCOPE.set(previous);
+        }
+    }
+
+    private static void disableReadReuse() {
+        ReadScope scope = READ_SCOPE.get();
+        if (scope != null) {
+            scope.reusable = false;
+            scope.parsed.clear();
+            scope.rawRead.clear();
+            scope.providerErrors.clear();
+        }
+    }
+
     public static List<Track> parse(
             String tracksJson, String fallbackTime, String fallbackDetail) {
+        return parse(tracksJson, fallbackTime, fallbackDetail, "");
+    }
+
+    public static List<Track> parse(
+            String tracksJson, String fallbackTime, String fallbackDetail, String provider) {
+        ReadScope scope = READ_SCOPE.get();
+        List<String> parseKey = scope != null && scope.reusable
+                ? Arrays.asList(tracksJson, fallbackTime, fallbackDetail, provider) : null;
+        if (parseKey != null) {
+            List<Track> parsed = scope.parsed.get(parseKey);
+            if (parsed != null) return parsed;
+        }
         ArrayList<Track> tracks = new ArrayList<>();
         ArrayList<RawTrack> rawTracks = new ArrayList<>();
         try {
@@ -52,12 +116,13 @@ public final class ExpressTimeline {
             }
         } catch (Throwable ignored) {
             // The persisted timeline may come from an older provider schema. Fall back below.
+            disableReadReuse();
         }
         // 同包内同文案、5 分钟内、结构化状态不冲突的节点算同一条（用户定 2026-09-06，三端同 Pipi）；
         // 原来是「相邻同文案不看时间」，会把几小时后重复的真实事件也吞掉。老缓存里的重复也在这里收掉。
         rawTracks.sort((left, right) -> Long.compare(right.epochMillis, left.epochMillis));
         for (RawTrack raw : collapseNearTimeDuplicates(rawTracks)) {
-            tracks.add(new Track(raw.time, raw.detail));
+            tracks.add(new Track(raw.time, raw.detail, nodeSemantic(raw, provider), raw.epochMillis));
         }
         LinkedHashMap<String, Track> unique = new LinkedHashMap<>();
         for (Track track : tracks) {
@@ -71,7 +136,9 @@ public final class ExpressTimeline {
                 && !ExpressStatusNormalizer.isNonEventDetail(fallbackDetail)) {
             tracks.add(new Track(fallbackTime, fallbackDetail));
         }
-        return Collections.unmodifiableList(tracks);
+        List<Track> parsed = Collections.unmodifiableList(tracks);
+        if (parseKey != null && scope.reusable) scope.parsed.put(parseKey, parsed);
+        return parsed;
     }
 
     /** Returns the newest real provider event, skipping errors and state-only placeholder nodes. */
@@ -86,25 +153,27 @@ public final class ExpressTimeline {
 
     /** Only the latest nodes' provider enums can contradict presentation; prose is not evidence. */
     public static List<StatusSemantic> latestTrackStatuses(String tracksJson, String provider) {
-        List<RawTrack> tracks = rawTracks(tracksJson);
+        List<RawTrack> tracks = rawTracksReadOnly(tracksJson);
         long latest = 0L;
         for (RawTrack track : tracks) latest = Math.max(latest, track.epochMillis);
         if (latest <= 0L) return Collections.emptyList();
         ArrayList<StatusSemantic> statuses = new ArrayList<>();
         for (RawTrack track : tracks) {
             if (track.epochMillis != latest || track.detail.isEmpty()) continue;
-            String source = first(track.value, "_pipiStatusSource");
-            if (source.isEmpty()) source = provider;
-            String code = first(track.value, "statusCode", "logisticsStatus", "status", "state", "action");
-            WorkerStatusProjection normalized = WorkerStatusProjection.read(track.value);
-            if (normalized != null) { statuses.add(normalized.semantic); continue; }
-            StatusSemantic semantic = TimelineSlot.isAccount(source) || "account".equals(source)
-                    ? StatusSemantic.fromAccountState(code, "")
-                    : StatusSemantic.fromKuaidi100EventCode(code);
-            if (semantic == StatusSemantic.UNKNOWN) semantic = StatusSemantic.fromStored(code, "");
-            statuses.add(semantic);
+            statuses.add(nodeSemantic(track, provider));
         }
         return statuses;
+    }
+
+    private static StatusSemantic nodeSemantic(RawTrack track, String provider) {
+        String source = first(track.value, "_pipiStatusSource");
+        if (source.isEmpty()) source = provider;
+        String code = first(track.value, "statusCode", "logisticsStatus", "status", "state", "action");
+        WorkerStatusProjection normalized = WorkerStatusProjection.nodeEvidence(track.value);
+        if (normalized != null) return normalized.semantic;
+        StatusSemantic semantic = TimelineSlot.isAccount(source) || "account".equals(source)
+                ? StatusSemantic.fromAccountState(code, "") : StatusSemantic.fromKuaidi100EventCode(code);
+        return semantic == StatusSemantic.UNKNOWN ? StatusSemantic.fromStored(code, "") : semantic;
     }
 
     /**
@@ -118,7 +187,7 @@ public final class ExpressTimeline {
     public static long foreignPackageAnchorMillis(String accountTracksJson) {
         long earliest = 0L;
         int timed = 0;
-        for (RawTrack track : rawTracks(accountTracksJson)) {
+        for (RawTrack track : rawTracksReadOnly(accountTracksJson)) {
             long time = track.epochMillis;
             if (time <= 0L) continue;
             timed++;
@@ -138,7 +207,7 @@ public final class ExpressTimeline {
 
     /** Only a timed order or pickup node proves the feed's origin. */
     private static boolean hasOriginBoundary(String tracksJson) {
-        for (RawTrack track : rawTracks(tracksJson)) {
+        for (RawTrack track : rawTracksReadOnly(tracksJson)) {
             if (track.epochMillis > 0L
                     && Kuaidi100TimelinePolicy.containsTimelineOrigin(track.value, "")) return true;
         }
@@ -151,7 +220,7 @@ public final class ExpressTimeline {
 
     public static boolean isForeignPackage(long anchor, String candidateTracksJson) {
         if (anchor <= 0L) return false;
-        for (RawTrack track : rawTracks(candidateTracksJson)) {
+        for (RawTrack track : rawTracksReadOnly(candidateTracksJson)) {
             long time = track.epochMillis;
             if (time > 0L && time < anchor) return true;
         }
@@ -160,6 +229,17 @@ public final class ExpressTimeline {
 
     /** Historical provider failures invalidate their old package-level metadata. */
     public static boolean containsProviderError(String tracksJson) {
+        ReadScope scope = READ_SCOPE.get();
+        if (scope != null && scope.reusable) {
+            Boolean cached = scope.providerErrors.get(tracksJson);
+            if (cached != null) return cached;
+        }
+        boolean result = containsProviderErrorUncached(tracksJson);
+        if (scope != null && scope.reusable) scope.providerErrors.put(tracksJson, result);
+        return result;
+    }
+
+    private static boolean containsProviderErrorUncached(String tracksJson) {
         try {
             Object root = new JSONTokener(clean(tracksJson).isEmpty() ? "[]" : tracksJson)
                     .nextValue();
@@ -175,6 +255,7 @@ public final class ExpressTimeline {
             }
         } catch (Throwable ignored) {
             // Malformed history cannot prove that provider error metadata is present.
+            disableReadReuse();
         }
         return false;
     }
@@ -200,6 +281,93 @@ public final class ExpressTimeline {
         return values.toString();
     }
 
+    /** Tags the account feeds write on their own rows (ExpressDiscoveryClient / ExpressSubscriptionClient). */
+    private static final java.util.Set<String> OWNER_FEED_TAGS = new java.util.HashSet<>(
+            java.util.Arrays.asList("interface5", "interface6", "meizu"));
+
+    /**
+     * JD detail presentation (Pipi 1.4.0 ExpressDetailTimelinePolicy.prependOwnerOrderStage; user
+     * decision 2026-09-17, parity backlog D-8): the selected fallback package stays whole and only
+     * the owner feed's own timed nodes older than the package's earliest timed node follow it,
+     * newest first, never interleaved. Rows tagged with another provider (a grafted JD H5 row, a
+     * K100/KDNiao row) are not the feed's own. Unknown shapes return the package unchanged; a
+     * {@code {data:[…],normalizedStatus}} wrapper keeps its status and grows inside {@code data}.
+     */
+    public static String appendOwnerOrderStage(String fallbackTracksJson, String ownerTracksJson) {
+        return appendOrderStage(
+                fallbackTracksJson, Collections.singletonList(ownerTracksJson), false);
+    }
+
+    /**
+     * Ownership decision 2 (user, 2026-09-25; the parity whitelist's one exception to "records never
+     * splice"): the detail page of the row that owns a waybill also shows the order stage of the
+     * hidden projected orders attached to it, by the D-8 rule above: only their own feed nodes older
+     * than the shown package's earliest timed node, behind it, newest first. Detail page only.
+     */
+    public static String appendAttachedOrderStage(
+            String shownTracksJson, List<String> attachedOrderTracksJson) {
+        if (attachedOrderTracksJson == null || attachedOrderTracksJson.isEmpty()) {
+            return shownTracksJson;
+        }
+        return appendOrderStage(shownTracksJson, attachedOrderTracksJson, true);
+    }
+
+    private static String appendOrderStage(
+            String fallbackTracksJson, List<String> ownerTracksJsons, boolean distinct) {
+        long earliest = Long.MAX_VALUE;
+        for (RawTrack track : rawTracks(fallbackTracksJson)) {
+            if (track.epochMillis <= 0L
+                    || ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) continue;
+            if (track.epochMillis < earliest) earliest = track.epochMillis;
+        }
+        if (earliest == Long.MAX_VALUE) return fallbackTracksJson;
+        ArrayList<RawTrack> orderStage = new ArrayList<>();
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        for (String ownerTracksJson : ownerTracksJsons) {
+            for (RawTrack track : rawTracks(ownerTracksJson)) {
+                if (track.epochMillis <= 0L || track.epochMillis >= earliest
+                        || track.detail.isEmpty()
+                        || ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) continue;
+                String tagged = first(track.value, "_pipiStatusSource").toLowerCase(Locale.ROOT);
+                if (!tagged.isEmpty() && !OWNER_FEED_TAGS.contains(tagged)) continue;
+                // Two attached orders can repeat one shared node; one owner's feed is kept as is.
+                if (distinct && !seen.add(track.epochMillis + "\u0000"
+                        + normalizeEvent(track.detail))) continue;
+                orderStage.add(track);
+            }
+        }
+        if (orderStage.isEmpty()) return fallbackTracksJson;
+        orderStage.sort((left, right) -> Long.compare(right.epochMillis, left.epochMillis));
+        try {
+            Object root = new JSONTokener(fallbackTracksJson).nextValue();
+            JSONArray rows = root instanceof JSONArray ? (JSONArray) root
+                    : root instanceof JSONObject
+                            && ((JSONObject) root).opt("data") instanceof JSONArray
+                            ? ((JSONObject) root).getJSONArray("data") : null;
+            if (rows == null) return fallbackTracksJson;
+            for (RawTrack track : orderStage) rows.put(new JSONObject(track.value.toString()));
+            return root.toString();
+        } catch (Throwable ignored) {
+            disableReadReuse();
+            return fallbackTracksJson;
+        }
+    }
+
+    // Merges mutate raw JSON, so only read-only callers may reuse these nodes.
+    private static List<RawTrack> rawTracksReadOnly(String tracksJson) {
+        ReadScope scope = READ_SCOPE.get();
+        if (scope != null && scope.reusable) {
+            List<RawTrack> cached = scope.rawRead.get(tracksJson);
+            if (cached != null) return cached;
+        }
+        List<RawTrack> tracks = rawTracks(tracksJson);
+        if (scope != null && scope.reusable) {
+            tracks = Collections.unmodifiableList(tracks);
+            scope.rawRead.put(tracksJson, tracks);
+        }
+        return tracks;
+    }
+
     private static List<RawTrack> rawTracks(String tracksJson) {
         ArrayList<RawTrack> tracks = new ArrayList<>();
         try {
@@ -221,6 +389,7 @@ public final class ExpressTimeline {
                         time, detail, new JSONObject(value.toString())));
             }
         } catch (Throwable ignored) {
+            disableReadReuse();
             return Collections.emptyList();
         }
         return tracks;
@@ -268,9 +437,23 @@ public final class ExpressTimeline {
             if (!leftValue.isEmpty() && !rightValue.isEmpty()
                     && !leftValue.equals(rightValue)) return false;
         }
+        // An origin tag without a status field is provenance, not a conflicting structured state
+        // (2026-09-11 approved selection; audit D11, user 2026-09-25, Pipi
+        // TrackTimelinePolicy.compatibleStructuredFields): different tags keep two copies apart
+        // only when both copies carry a status field of their own schema.
         String leftSource = structuredValue(left, "_pipiStatusSource");
         String rightSource = structuredValue(right, "_pipiStatusSource");
-        return leftSource.isEmpty() || rightSource.isEmpty() || leftSource.equals(rightSource);
+        return leftSource.isEmpty() || rightSource.isEmpty() || leftSource.equals(rightSource)
+                || !declaresStatus(left) || !declaresStatus(right);
+    }
+
+    private static boolean declaresStatus(JSONObject value) {
+        for (String key : new String[]{
+                "logisticsStatus", "logisticsStatusDesc", "statusCode", "status"
+        }) {
+            if (!structuredValue(value, key).isEmpty()) return true;
+        }
+        return false;
     }
 
     private static String structuredValue(JSONObject value, String key) {
@@ -299,12 +482,23 @@ public final class ExpressTimeline {
                 target.put(key, value);
             } catch (Throwable ignored) {
                 // Optional provider metadata cannot invalidate a durable tracking node.
+                disableReadReuse();
             }
         }
     }
 
     /** 同包内同文案节点的合并窗口（用户定 2026-09-06，三端同 Pipi CROSS_SOURCE_DUPLICATE_WINDOW_SECONDS）。 */
-    static final long NEAR_DUPLICATE_WINDOW_MS = 5L * 60L * 1000L;
+    public static final long NEAR_DUPLICATE_WINDOW_MS = 5L * 60L * 1000L;
+
+    /**
+     * Whether two nodes would fold into one by {@link #collapseNearTimeDuplicates} apart from their times: the
+     * same non-empty fingerprint and no conflicting structured status. The caller checks the window.
+     */
+    public static boolean sameEventText(String leftDetail, JSONObject left, String rightDetail, JSONObject right) {
+        String fingerprint = fingerprint(leftDetail);
+        return !fingerprint.isEmpty() && fingerprint.equals(fingerprint(rightDetail))
+                && compatibleStructuredStatus(left, right);
+    }
 
     /**
      * 与 Pipi TrackTimelinePolicy.collapseNearTimeDuplicates 同法：列表已按新到旧排好，指纹相同、
@@ -336,15 +530,61 @@ public final class ExpressTimeline {
         return output;
     }
 
+    /**
+     * 每个节点在 {@link #collapseNearTimeDuplicates} 之后显示成的时间：被并进更新一条的重复节点取那一条的时间，其余
+     * 取自己的；不带时间或读不出的为 0。只读，不改节点。京东评价节点的去留（用户 2026-09-27，四端同口径）按合并后的
+     * 时间线来判。
+     */
+    public static long[] displayedTimes(JSONArray values) {
+        long[] times = new long[values == null ? 0 : values.length()];
+        ArrayList<RawTrack> tracks = new ArrayList<>();
+        ArrayList<Integer> indexes = new ArrayList<>();
+        for (int index = 0; index < times.length; index++) {
+            JSONObject value = values.optJSONObject(index);
+            if (value == null) continue;
+            String detail = first(value,
+                    "context", "desc", "description", "logisticDetail",
+                    "lastLogisticDetail", "message");
+            RawTrack track = new RawTrack(first(value,
+                    "time", "ftime", "date", "logisticsGmtModified"), detail, value);
+            times[index] = Math.max(0L, track.epochMillis);
+            if (detail.isEmpty() || ExpressStatusNormalizer.isNonEventDetail(detail)) continue;
+            tracks.add(track);
+            indexes.add(index);
+        }
+        ArrayList<Integer> order = new ArrayList<>();
+        for (int position = 0; position < tracks.size(); position++) order.add(position);
+        order.sort((left, right) -> Long.compare(
+                tracks.get(right).epochMillis, tracks.get(left).epochMillis));
+        ArrayList<Integer> shown = new ArrayList<>();
+        for (int position : order) {
+            RawTrack candidate = tracks.get(position);
+            Integer owner = null;
+            if (!candidate.fingerprint.isEmpty() && candidate.epochMillis > 0L) {
+                for (int kept : shown) {
+                    RawTrack existing = tracks.get(kept);
+                    if (existing.epochMillis <= 0L || !candidate.fingerprint.equals(existing.fingerprint)) continue;
+                    if (!compatibleStructuredStatus(existing.value, candidate.value)) continue;
+                    if (Math.abs(existing.epochMillis - candidate.epochMillis) <= NEAR_DUPLICATE_WINDOW_MS) {
+                        owner = kept;
+                        break;
+                    }
+                }
+            }
+            if (owner == null) shown.add(position);
+            else times[indexes.get(position)] = Math.max(0L, tracks.get(owner).epochMillis);
+        }
+        return times;
+    }
+
     /** 与 Pipi TrackTimelinePolicy.fingerprint 同法：NFKC、「您的快件/订单/包裹」归一、去尾标点、去空白。 */
     private static String fingerprint(String detail) {
-        return java.text.Normalizer.normalize(clean(detail), java.text.Normalizer.Form.NFKC)
-                .replace('\u00a0', ' ')
-                .replaceAll("\\s+", " ")
-                .trim()
-                .replaceFirst("^您的(?:快件|订单|包裹)\\s*", "您的物流")
-                .replaceAll("[。.!！?？,，;；、…]+$", "")
-                .replaceAll("\\s+", "");
+        String value = WHITESPACE.matcher(java.text.Normalizer.normalize(clean(detail),
+                        java.text.Normalizer.Form.NFKC).replace('\u00a0', ' ')).replaceAll(" ")
+                .trim();
+        value = PACKAGE_PREFIX.matcher(value).replaceFirst("您的物流");
+        value = FINGERPRINT_SUFFIX.matcher(value).replaceAll("");
+        return WHITESPACE.matcher(value).replaceAll("");
     }
 
     private static final class RawTrack {
@@ -381,6 +621,7 @@ public final class ExpressTimeline {
                     if (nested != null) return nested;
                 } catch (Throwable ignored) {
                     // Try the next known envelope.
+                    disableReadReuse();
                 }
             }
         }
@@ -404,10 +645,10 @@ public final class ExpressTimeline {
     }
 
     private static String normalizeText(String value) {
-        return clean(value).replaceAll("\\s+", " ");
+        return WHITESPACE.matcher(clean(value)).replaceAll(" ");
     }
 
     private static String normalizeEvent(String value) {
-        return normalizeText(value).replaceAll("[\\s。！!，,；;：:]+$", "");
+        return EVENT_SUFFIX.matcher(normalizeText(value)).replaceAll("");
     }
 }

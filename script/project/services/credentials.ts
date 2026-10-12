@@ -552,7 +552,8 @@ export function loadGatewayCredentials(): GatewayCredentials | null {
 
 export function saveGatewayToken(token: string): void {
   const clean = normalizeScriptingToken(token);
-  if (!clean) throw new Error("Access Key 格式不正确");
+  // User decision 2026-09-27: a malformed key reads the same as an invalid one.
+  if (!clean) throw new Error("Access Key 无效或已失效");
 
   writeCredentialTransaction(
     clean,

@@ -380,10 +380,10 @@ public final class ExpressCompatibilityContractTest {
             assertFalse(metadata.contains("android:description="));
             assertTrue(metadata.contains("android:previewImage="));
         }
-        assertTrue(modernSmall.contains(
-                "android:previewLayout=\"@layout/express_widget_2x2\""));
-        assertTrue(modernMedium.contains(
-                "android:previewLayout=\"@layout/express_widget_4x2\""));
+        assertFalse("both picker sizes use dedicated images with the reference aspect ratios",
+                modernSmall.contains("android:previewLayout="));
+        assertFalse("the runtime layout needs RemoteViews actions and is not a standalone preview",
+                modernMedium.contains("android:previewLayout="));
         assertTrue(smallLayout.contains("android:visibility=\"gone\""));
         assertTrue(mediumLayout.contains("android:visibility=\"gone\""));
         assertTrue(previewSource.contains("暂无快递"));
@@ -400,7 +400,7 @@ public final class ExpressCompatibilityContractTest {
                 "app/src/main/res/drawable-night-xxxhdpi/widget_express_2x2_preview.png",
                 "app/src/main/res/drawable-night-xxxhdpi/widget_express_4x2_preview.png"
         };
-        int[][] dimensions = {{640, 672}, {1360, 672}, {640, 672}, {1360, 672}};
+        int[][] dimensions = {{620, 620}, {1324, 620}, {620, 620}, {1324, 620}};
         for (int index = 0; index < paths.length; index++) {
             PngRgba preview = decodeRgbaPng(Files.readAllBytes(projectPath(paths[index])));
             assertEquals(dimensions[index][0], preview.width);

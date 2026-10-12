@@ -38,9 +38,14 @@ for (const projection of [status, unknown]) {
     assert.equal(shipment.timeline.semantic, projection.semantic);
     assert.equal(shipment.timeline.statusEventAtMs, projection.eventAtMs || null);
     assert.deepEqual(shipment.timeline.normalizedStatus, projection);
-    assert.equal(shipmentPresentationStatus(shipment).text, projection.text);
+    // Audit L5 / user default #2 (2026-09-25): the label comes from the status label table, never from
+    // the Worker's text; the subtype code still selects 待派送. A Worker UNKNOWN keeps the Worker's
+    // own text: default #2's 暂无状态 conflicts with the user's 2026-09-09 rule for the Home list and
+    // is pending the user's decision.
+    const label = projection.semantic === "UNKNOWN" ? projection.text : "待派送";
+    assert.equal(shipmentPresentationStatus(shipment).text, label);
     const persisted = JSON.parse(JSON.stringify(shipment));
-    assert.equal(shipmentPresentationStatus(persisted).text, projection.text);
+    assert.equal(shipmentPresentationStatus(persisted).text, label);
     const merged = mergeTimelinePackage(shipment.timeline, { ...shipment.timeline,
       semantic: "COMPLETED", structuredStatus: true, statusEventAtMs: status.eventAtMs + 1,
       normalizedStatus: { ...status, semantic: "COMPLETED", text: "Worker completed",

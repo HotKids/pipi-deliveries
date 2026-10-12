@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import {
   CARRIER_NETWORK_FAILURE_LIMIT,
   CARRIER_RETRY_DELAY_MS,
+  CARRIER_TERMINAL_TTL_MS,
+  terminalStillBinding,
   buildCarrierClassificationRequest,
   parseCarrierRecognitionEntries,
   parseCarrierClassificationResponse,
@@ -17,17 +19,22 @@ assert.deepEqual(buildCarrierClassificationRequest(" raw123456789 "), {
   route: "/api/express/classify",
   payload: { waybill: "RAW123456789", firstStageCompleted: true },
 });
+// Audit C1 (adopted 2026-09-25): the Worker's classify answer names carrier standard codes. This
+// case used to be written in the Kuaidi100 format (comCode "kuayue"), which the Worker never sends.
 assert.deepEqual(parseCarrierClassificationResponse({
-  auto: [{ comCode: "kuayue", name: "旧跨越文案" }],
+  auto: [{ comCode: "KYSY", name: "旧跨越文案" }],
 }), {
   standardCode: "KYSY",
   displayName: "跨越速运",
   kuaidi100Code: "kuayue",
   isBuiltIn: true,
-  tableVersion: "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
+  tableVersion: "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
 });
+// A Kuaidi100 code is not a standard code and resolves nothing.
+assert.equal(parseCarrierClassificationResponse({ auto: [{ comCode: "kuayue" }] }), null);
 assert.equal(parseCarrierClassificationResponse({ auto: [] }), null);
-assert.throws(() => parseCarrierClassificationResponse({}), /RetryableClassificationError/);
+// Audit C4: a 2xx without an `auto` list is terminal like any unresolvable 2xx, not a retry.
+assert.equal(parseCarrierClassificationResponse({}), null);
 
 const durableCapacity = Array.from({ length: 300 }, (_, index) => ({
   waybill: `DURABLE${String(index).padStart(6, "0")}`,
@@ -138,7 +145,7 @@ assert.deepEqual(rebuiltResolved.normalization, {
   displayName: "顺丰速运",
   kuaidi100Code: "shunfeng",
   isBuiltIn: true,
-  tableVersion: "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
+  tableVersion: "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
 });
 assert.deepEqual(
   driftedResolvedCache.entries()[0]?.normalization,
@@ -230,7 +237,8 @@ const classified = await recognizeNonSyncCarrier("RAW123456789", {
     };
   },
 });
-assert.equal(firstLevelCalls, 1, "second-level retry must not repeat autoComNum");
+// Audit C4 (adopted 2026-09-25): every attempt starts with the free stage, the retry included.
+assert.equal(firstLevelCalls, 2, "a retry after a failed paid stage runs autoComNum again");
 assert.deepEqual(classifierInput, {
   waybill: "RAW123456789",
   firstStageCompleted: true,
@@ -298,7 +306,8 @@ for (let attempt = 0; attempt < 4; attempt++) {
   const now = 1_000 + attempt * 60_000;
   const pending = await recognizeNonSyncCarrier("PENDING123456", {
     now, store: pendingCache.store,
-    detect: async () => { throw new Error("existing classifier retry must retain its stage"); },
+    // Audit C4: the retry runs the free stage first; it finds no candidate, so the paid stage answers.
+    detect: async () => [],
     classify: async () => {
       pendingCalls++;
       throw new GatewayError("synthetic pending", 502, "recognition_pending", "", now + 60_000);
@@ -315,6 +324,7 @@ for (let attempt = 0; attempt < 4; attempt++) {
 }
 await recognizeNonSyncCarrier("PENDING123456", {
   now: 241_000, store: pendingCache.store,
+  detect: async () => [],
   classify: async () => { throw new Error("real network failure"); },
 });
 assert.equal(pendingCache.entries()[0].networkFailures, 3);
@@ -322,3 +332,21 @@ assert.equal(pendingCache.entries()[0].state, "terminal");
 console.log("carrier recognition pending-state tests passed");
 
 }
+
+// A terminal verdict states what the upstream knew at one moment, not a permanent fact.
+assert.equal(terminalStillBinding({ updatedAtMs: 10_000 }, 10_000), true);
+assert.equal(
+  terminalStillBinding({ updatedAtMs: 10_000 }, 10_000 + CARRIER_TERMINAL_TTL_MS - 1),
+  true,
+);
+assert.equal(
+  terminalStillBinding({ updatedAtMs: 10_000 }, 10_000 + CARRIER_TERMINAL_TTL_MS),
+  false,
+);
+// A clock that moved backwards is not evidence that the verdict expired.
+assert.equal(terminalStillBinding({ updatedAtMs: 10_000 }, 9_000), true);
+// An entry we cannot date must not outrank one we can; Lite reads its own unreadable
+// entries the same way, so all three clients release them together.
+assert.equal(terminalStillBinding({ updatedAtMs: 0 }, 10_000), false);
+assert.equal(terminalStillBinding({}, 10_000), false);
+console.log("carrier recognition terminal expiry tests passed");

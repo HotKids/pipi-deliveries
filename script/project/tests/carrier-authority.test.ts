@@ -132,7 +132,7 @@ resetCarrierAuthorityRuntimeForTesting();
 resetCarrierQueryRecordsForTesting();
 assert.equal(
   activeCarrierTableVersion(),
-  "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
+  "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
 );
 assert.equal(BOOTSTRAP_TABLE_SOURCE, "embedded-transition");
 assert.equal(activeCarrierTableSource(), "embedded-transition");
@@ -247,3 +247,26 @@ resetCarrierQueryRecordsForTesting();
 assert.equal(loadCarrierAuthorityCache(dueAtMs + 2_000), true);
 assert.equal(resolveCarrierQuery("HTKY")?.hotline, "956025");
 assert.equal(resolveCarrierCpCode("BEST")?.standardCode, "HTKY");
+
+// Audit L5 / user default #2 (2026-09-25): the Worker serves the status label table with the carrier
+// snapshot. A refresh installs and persists it; a restart loads it back from the stored snapshot.
+{
+  const { activeStatusLabelTable, resetStatusLabelTableForTesting } = await import("../services/status-labels");
+  const labels = JSON.parse(readFileSync(join(projectRoot, "tests/fixtures/express/status-labels.v1.json"), "utf8")).table;
+  const served = { ...payload(), version: "carrier-test-labels",
+    statusLabels: { ...labels, labels: { ...labels.labels, DANGER: "问题件（表内）" } } };
+  files.clear();
+  resetCarrierAuthorityRuntimeForTesting();
+  resetCarrierQueryRecordsForTesting();
+  resetStatusLabelTableForTesting();
+  assert.equal(await refreshCarrierAuthorityIfNeeded(5_000_000, { post: async () => served }), true);
+  assert.equal(activeStatusLabelTable().labels.DANGER, "问题件（表内）");
+  resetCarrierAuthorityRuntimeForTesting();
+  resetCarrierQueryRecordsForTesting();
+  resetStatusLabelTableForTesting();
+  assert.equal(activeStatusLabelTable().labels.DANGER, "异常件");
+  assert.equal(loadCarrierAuthorityCache(5_001_000), true);
+  assert.equal(activeStatusLabelTable().labels.DANGER, "问题件（表内）", "the stored snapshot restores its table");
+  resetStatusLabelTableForTesting();
+  console.log("carrier authority status label tests passed");
+}

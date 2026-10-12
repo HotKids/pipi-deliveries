@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 1,
+  "about": "Audit C3 (2026-09-25). recognized: the first candidate whose comCode maps through kuaidi100Code or kuaidi100CodeAliases; unrecognized: no such candidate (the paid stage decides); failure: retryable, counts one network failure and never reaches the paid stage. The repository holds no raw captured autoComNum body; documented cases are the reduced shapes the records quote.",
+  "cases": [
+    {
+      "name": "documented: auto list",
+      "provenance": "curl 2026-09-08 with a browser User-Agent (Pipi Kuaidi100CarrierDetector.java)",
+      "response": {
+        "status": 200,
+        "body": "{\"auto\":[{\"comCode\":\"jd\"}]}"
+      },
+      "expected": {
+        "outcome": "recognized",
+        "standardCode": "JD"
+      }
+    },
+    {
+      "name": "documented: semantic no-match",
+      "provenance": "CARRIER_NORMALIZATION_HANDOFF.md runtime behavior",
+      "response": {
+        "status": 200,
+        "body": "{\"result\":false,\"returnCode\":\"201\"}"
+      },
+      "expected": {
+        "outcome": "unrecognized"
+      }
+    },
+    {
+      "name": "documented: numeric no-match",
+      "provenance": "user decision 2026-09-26: a numeric returnCode 201 is the same no-match",
+      "response": {
+        "status": 200,
+        "body": "{\"result\":false,\"returnCode\":201}"
+      },
+      "expected": {
+        "outcome": "unrecognized"
+      }
+    },
+    {
+      "name": "contract: decimal no-match code",
+      "provenance": "user decision 2026-09-26: 201.0 is the same number as 201",
+      "response": {
+        "status": 200,
+        "body": "{\"result\":false,\"returnCode\":201.0}"
+      },
+      "expected": {
+        "outcome": "unrecognized"
+      }
+    },
+    {
+      "name": "contract: padded no-match code",
+      "provenance": "user decision 2026-09-26: the string form is read trimmed",
+      "response": {
+        "status": 200,
+        "body": "{\"result\":false,\"returnCode\":\" 201 \"}"
+      },
+      "expected": {
+        "outcome": "unrecognized"
+      }
+    },
+    {
+      "name": "contract: result true is not a no-match",
+      "provenance": "user decision 2026-09-26: only result false with 201 is a no-match",
+      "response": {
+        "status": 200,
+        "body": "{\"result\":true,\"returnCode\":201}"
+      },
+      "expected": {
+        "outcome": "failure"
+      }
+    },
+    {
+      "name": "contract: another numeric code",
+      "provenance": "user decision 2026-09-26: any other code stays a retryable failure",
+      "response": {
+        "status": 200,
+        "body": "{\"result\":false,\"returnCode\":500}"
+      },
+      "expected": {
+        "outcome": "failure"
+      }
+    },
+    {
+      "name": "documented: redirect without a browser User-Agent",
+      "provenance": "CARRIER-16 (Kuaidi100 answers 301 to non-browser clients)",
+      "response": {
+        "status": 301,
+        "body": ""
+      },
+      "expected": {
+        "outcome": "failure"
+      }
+    },
+    {
+      "name": "contract: bare array",
+      "provenance": "Worker normalizedKuaidi100Candidates and Pipi parseCandidates accept a bare array",
+      "response": {
+        "status": 200,
+        "body": "[{\"comCode\":\"zhongtong\"}]"
+      },
+      "expected": {
+        "outcome": "recognized",
+        "standardCode": "ZTO"
+      }
+    },
+    {
+      "name": "contract: empty auto list",
+      "provenance": "no candidate: the paid stage decides",
+      "response": {
+        "status": 200,
+        "body": "{\"auto\":[]}"
+      },
+      "expected": {
+        "outcome": "unrecognized"
+      }
+    },
+    {
+      "name": "contract: unknown Kuaidi100 code",
+      "provenance": "worker.test.js: a code outside the table is unrecognized",
+      "response": {
+        "status": 200,
+        "body": "{\"auto\":[{\"comCode\":\"notbuilt\"}]}"
+      },
+      "expected": {
+        "outcome": "unrecognized"
+      }
+    },
+    {
+      "name": "contract: invalid code skipped, reverse alias recognized",
+      "provenance": "kuaidi100CodeAliases is reverse-only (BUILTIN_CARRIERS_FINAL §三)",
+      "response": {
+        "status": 200,
+        "body": "{\"auto\":[{\"comCode\":\"invalid code\"},{\"comCode\":\"debangwuliu\"}]}"
+      },
+      "expected": {
+        "outcome": "recognized",
+        "standardCode": "DBL"
+      }
+    },
+    {
+      "name": "contract: first resolvable candidate wins",
+      "provenance": "huitongkuaidi resolves to HTKY, never JTSD",
+      "response": {
+        "status": 200,
+        "body": "{\"auto\":[{\"comCode\":\"notbuilt\"},{\"comCode\":\"huitongkuaidi\"}]}"
+      },
+      "expected": {
+        "outcome": "recognized",
+        "standardCode": "HTKY"
+      }
+    },
+    {
+      "name": "contract: object without auto",
+      "provenance": "not a no-match: a retryable failure",
+      "response": {
+        "status": 200,
+        "body": "{}"
+      },
+      "expected": {
+        "outcome": "failure"
+      }
+    },
+    {
+      "name": "contract: body is not JSON",
+      "provenance": "Pipi Kuaidi100CarrierDetectorTest",
+      "response": {
+        "status": 200,
+        "body": "not-json"
+      },
+      "expected": {
+        "outcome": "failure"
+      }
+    },
+    {
+      "name": "contract: HTML body",
+      "provenance": "audit C3: non-JSON is a retryable failure",
+      "response": {
+        "status": 200,
+        "body": "<html></html>"
+      },
+      "expected": {
+        "outcome": "failure"
+      }
+    },
+    {
+      "name": "contract: server error",
+      "provenance": "non-2xx is a retryable failure",
+      "response": {
+        "status": 500,
+        "body": ""
+      },
+      "expected": {
+        "outcome": "failure"
+      }
+    }
+  ]
+}

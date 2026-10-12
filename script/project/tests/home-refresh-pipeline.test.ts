@@ -125,7 +125,9 @@ for (const action of ["delete", "sign", "unbind"] as const) {
       else saveState({ ...state, shipments: state.shipments.flatMap(s => s.identity.id !== queuedId ? [s]
         : action === "delete" ? [] : [{ ...s, forcedCompletedAtMs: NOW }]) }, NOW);
     } finally { gate.resolve(); await run; }
-    assert.equal(started.includes(queuedId), false);
+    // 用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「iOS 右滑签收一起改」「显示已签收、照常刷新」：
+    // 刚右滑签收、来源仍在途的行照常刷新，排队的那一票照跑；删除与解绑照旧取消它。
+    assert.equal(started.includes(queuedId), action === "sign");
   });
 }
 

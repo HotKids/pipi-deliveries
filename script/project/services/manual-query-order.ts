@@ -33,7 +33,8 @@ export type ManualSourceAdapter = Readonly<{
 
 export type ManualSourceObservation = Readonly<{
   source: ManualSource;
-  phase: "started" | "settled";
+  /** "cancelled": the parent query was cancelled after this source started (diagnostics only). */
+  phase: "started" | "settled" | "cancelled";
   durationMs?: number;
   result?: ManualSourceResult;
   error?: unknown;
@@ -117,6 +118,10 @@ export async function queryManualSourceChain(
         });
         return item;
       } catch (error) {
+        // 用户 2026-09-28：a source whose start was observed still ends when the parent query is cancelled.
+        if (signal?.aborted) {
+          observe?.({ source: adapter.source, phase: "cancelled", durationMs: Date.now() - startedAt });
+        }
         assertNotCancelled();
         const settledError = error instanceof OperationTimeoutError ? error
           : deadlineExpired(deadlineAtMs) ? new OperationTimeoutError() : error;

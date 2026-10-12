@@ -191,7 +191,25 @@ test("a new query cannot extend a signed row older than twenty-one days", () => 
   }
 });
 
-test("cancelled rows keep their existing four-hour visibility and account cache", () => {
+test("cancelled rows keep their four-hour visibility and account cache", () => {
+  memory.clear();
+  const cancelled = row("account");
+  cancelled.timeline.semantic = "CANCELLED";
+  cancelled.timeline.latestDetail = "订单已取消";
+  cancelled.timeline.latestTimeText = listTime(NOW);
+  cancelled.timeline.tracks = [{ ...cancelled.timeline.tracks[0], detail: "订单已取消" }];
+  saveState({ ...emptyState(), shipments: [cancelled] }, NOW);
+  const hiddenAt = NOW + 4 * 60 * 60 * 1000;
+  assert.equal(visibleShipments(loadState(hiddenAt - 1), hiddenAt - 1).length, 1);
+  assert.equal(visibleShipments(loadState(hiddenAt), hiddenAt).length, 0);
+  assert.equal(loadState(NOW + 21 * DAY).shipments.length, 1);
+  assert.equal(loadState(NOW + 30 * DAY).shipments.length, 0);
+});
+
+// Audit L14 / user default #4 (2026-09-25): the four hours start at the displayed logistics time (the
+// signed-retention clock). This case used to assert that a cancellation displayed 15 days ago still got
+// four hours from the local settle stamp; the account cache retention is unchanged.
+test("the cancelled window starts at the displayed logistics time", () => {
   memory.clear();
   const cancelled = row("account");
   cancelled.timeline.semantic = "CANCELLED";
@@ -199,10 +217,8 @@ test("cancelled rows keep their existing four-hour visibility and account cache"
   cancelled.timeline.latestTimeText = listTime(NOW - 15 * DAY);
   cancelled.timeline.tracks = [{ ...cancelled.timeline.tracks[0], detail: "订单已取消" }];
   saveState({ ...emptyState(), shipments: [cancelled] }, NOW);
-  const hiddenAt = NOW + 4 * 60 * 60 * 1000;
-  assert.equal(visibleShipments(loadState(hiddenAt - 1), hiddenAt - 1).length, 1);
-  assert.equal(visibleShipments(loadState(hiddenAt), hiddenAt).length, 0);
-  assert.equal(loadState(NOW + 21 * DAY).shipments.length, 1);
+  assert.equal(visibleShipments(loadState(NOW), NOW).length, 0, "displayed 15 days ago: past its four hours");
+  assert.equal(loadState(NOW + 21 * DAY).shipments.length, 1, "the account cache is still retained");
   assert.equal(loadState(NOW + 30 * DAY).shipments.length, 0);
 });
 

@@ -1,5 +1,10 @@
-import { responseNormalizedStatus, timelineNormalizedStatus, statusPriority, statusProjectionFields } from "./worker-status";
+import { nodeNormalizedStatus, responseNormalizedStatus, timelineNormalizedStatus, statusPriority, statusProjectionFields } from "./worker-status";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
+import {
+  accountOrderPageConfirmedEmpty,
+  accountOrderProjectionRouteHash,
+} from "./account-sync-policy";
+import { accountOrderTextIdentity } from "./account-order-text-identity";
 import type {
   Shipment,
   ShipmentIdentity,
@@ -9,6 +14,7 @@ import type {
   WidgetSnapshot,
 } from "../models";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
+import { activeStatusLabelTable, statusDisplay } from "./status-labels";
 
 export const SIGNED_RETENTION_MS = EXPRESS_POLICY.retention.signedMs;
 export const CANCELLED_RETENTION_MS = EXPRESS_POLICY.retention.cancelledMs;
@@ -23,12 +29,48 @@ export const WIDGET_PRIORITY: readonly StatusSemantic[] =
   EXPRESS_POLICY.status.widgetPriority;
 
 export function statusLabel(semantic: StatusSemantic): string {
-  return STATUS_LABELS[semantic] || STATUS_LABELS.UNKNOWN;
+  const table = activeStatusLabelTable();
+  return table.labels[semantic] || table.labels.UNKNOWN;
 }
 
-function timelineStatusLabel(timeline: TimelinePackage, semantic = timeline.semantic): string {
+/**
+ * The one presentation of a status (audits L5/L1, user default #2, 2026-09-25): the shown semantic and
+ * its label come from the status label table (bundled, replaced by the Worker snapshot's statusLabels),
+ * never from the Worker's normalizedStatus.text. `orderScope` marks an order row without a real
+ * waybill: its PICKED and SHIPPED show as 已下单 and its completion / cancellation use the order labels.
+ * A Worker subtype code (STA_DELIVERING → 待派送) picks the subtype label.
+ */
+function presentStatus(
+  semantic: StatusSemantic,
+  orderScope: boolean,
+  code = "",
+): Readonly<{ semantic: StatusSemantic; text: string }> {
+  const shown = statusDisplay({ scope: orderScope ? "ORDER" : "SHIPMENT", semantic, code });
+  return { semantic: shown.semantic, text: shown.label };
+}
+
+/**
+ * UNKNOWN is left as it was: a Worker UNKNOWN shows the Worker's own text (an older Worker sends none).
+ * User default #2 would read 暂无状态 everywhere, but on 2026-09-09 the user ruled that the Home list
+ * must not show 暂无状态; that conflict is reported back for a decision instead of being settled here.
+ */
+function workerUnknownPresentation(
+  projection: ReturnType<typeof timelineNormalizedStatus>,
+): Readonly<{ semantic: StatusSemantic; text: string }> | null {
+  return projection?.semantic === "UNKNOWN" ? { semantic: "UNKNOWN", text: projection.text } : null;
+}
+
+function timelinePresentation(
+  timeline: TimelinePackage,
+  semantic: StatusSemantic,
+  orderScope: boolean,
+): Readonly<{ semantic: StatusSemantic; text: string }> {
   const projection = timelineNormalizedStatus(timeline);
-  return projection?.semantic === semantic ? projection.text : statusLabel(semantic);
+  if (projection?.semantic === semantic) {
+    const unknown = workerUnknownPresentation(projection);
+    if (unknown) return unknown;
+  }
+  return presentStatus(semantic, orderScope, projection?.semantic === semantic ? projection.code : "");
 }
 
 function timelinePresentationSemantic(
@@ -44,24 +86,18 @@ function timelinePresentationSemantic(
 export function shipmentPresentationStatus(
   shipment: Shipment,
 ): Readonly<{ semantic: StatusSemantic; text: string }> {
-  const projection = timelineNormalizedStatus(shipment.timeline);
-  if (projection) {
-    if (shipment.identity.accountOrder && !normalizedProjectedWaybill(shipment.identity) &&
-        projection.semantic === "PICKED") {
-      return { semantic: "ORDERED", text: statusLabel("ORDERED") };
-    }
-    const signedWaybill = projection.scope === "ORDER" && projection.semantic === "COMPLETED" &&
-      !shipment.identity.manuallyAdded && shipment.identity.bindingSource === "interface5" &&
-      String(shipment.identity.sourceProvider || "").toLowerCase() === "jingdong" &&
-      (!shipment.identity.accountOrder || Boolean(normalizedProjectedWaybill(shipment.identity)));
-    return { semantic: projection.semantic,
-      text: signedWaybill ? statusLabel("COMPLETED") : projection.text };
-  }
-  const presentation = shipment.statusPresentation;
   const unprojectedOrder = Boolean(
     shipment.identity.accountOrder &&
     !normalizedProjectedWaybill(shipment.identity),
   );
+  const projection = timelineNormalizedStatus(shipment.timeline);
+  // A projected JD waybill's structured order completion reads as a signing (2026-09-14): only an
+  // order row without a real waybill uses the order scope.
+  if (projection) {
+    return workerUnknownPresentation(projection) ||
+      presentStatus(projection.semantic, unprojectedOrder, projection.code);
+  }
+  const presentation = shipment.statusPresentation;
   const usesOrderPresentation = Boolean(
     presentation?.scope === "ORDER" &&
     unprojectedOrder,
@@ -74,12 +110,7 @@ export function shipmentPresentationStatus(
       shipment.timeline.semantic === "CANCELLED"
     )
   ) {
-    return {
-      semantic: shipment.timeline.semantic,
-      text: shipment.timeline.semantic === "COMPLETED"
-        ? "已完成"
-        : statusLabel("CANCELLED"),
-    };
+    return presentStatus(shipment.timeline.semantic, true);
   }
   if (
     usesOrderPresentation && presentation &&
@@ -88,7 +119,7 @@ export function shipmentPresentationStatus(
       semanticFromText(text) === "PICKED"
     )
   ) {
-    return { semantic: "ORDERED", text: statusLabel("ORDERED") };
+    return presentStatus("ORDERED", true);
   }
   if (
     presentation &&
@@ -96,10 +127,7 @@ export function shipmentPresentationStatus(
     Object.prototype.hasOwnProperty.call(STATUS_LABELS, presentation.semantic) &&
     text
   ) {
-    return {
-      semantic: presentation.semantic,
-      text: presentation.semantic === "COMPLETED" ? "已完成" : text,
-    };
+    return presentStatus(presentation.semantic, true);
   }
   const semantic = shipment.identity.manuallyAdded
     ? timelinePresentationSemantic(shipment.timeline)
@@ -110,14 +138,9 @@ export function shipmentPresentationStatus(
   // text unchanged. The account record's own structured status is the fallback — structured to
   // structured, never inferred from the node text (AGENTS §9 forbids reading status from prose).
   if (semantic === "UNKNOWN" && presentation && presentation.semantic !== "UNKNOWN") {
-    return {
-      semantic: presentation.semantic,
-      text: presentation.semantic === "COMPLETED"
-        ? "已完成"
-        : statusLabel(presentation.semantic),
-    };
+    return presentStatus(presentation.semantic, unprojectedOrder);
   }
-  return { semantic, text: timelineStatusLabel(shipment.timeline, semantic) };
+  return timelinePresentation(shipment.timeline, semantic, unprojectedOrder);
 }
 
 export function shipmentDetailPresentationStatus(
@@ -126,13 +149,16 @@ export function shipmentDetailPresentationStatus(
 ): Readonly<{ semantic: StatusSemantic; text: string }> {
   if (!shipment.identity.manuallyAdded) {
     const ownerStatus = shipmentPresentationStatus(shipment);
+    const unprojectedOrder = Boolean(
+      shipment.identity.accountOrder && !normalizedProjectedWaybill(shipment.identity),
+    );
     return ownerStatus.semantic === "UNKNOWN" && detailTimeline.structuredStatus &&
         detailTimeline.semantic !== "UNKNOWN"
-      ? { semantic: detailTimeline.semantic, text: timelineStatusLabel(detailTimeline) }
+      ? timelinePresentation(detailTimeline, detailTimeline.semantic, unprojectedOrder)
       : ownerStatus;
   }
   const semantic = timelinePresentationSemantic(detailTimeline);
-  return { semantic, text: timelineStatusLabel(detailTimeline, semantic) };
+  return timelinePresentation(detailTimeline, semantic, false);
 }
 
 /** 备注分隔符（用户定 2026-09-05 晚）：状态词 · 备注。 */
@@ -469,33 +495,230 @@ export function splitJingDongH5Nodes(
   return { feed, jdH5 };
 }
 
-/** Hide JD shopping-review prose without erasing the packet's structured completion. */
-export function withoutJingDongOrderCompletion(
+/**
+ * The JD order-level completion / shopping-review sentence of order `orderId` (normalized): the
+ * numbered 「您的订单<单号>已完成…期待您对本次购物进行评价」 or the 「您的订单[商品]已完成…京豆…」 review ad.
+ */
+export function isJingDongOrderCompletionText(detail: string, orderId: string): boolean {
+  const text = String(detail || "").replace(/\s+/g, "")
+    .replace(/[，。！!]/g, (value) => value === "，" ? "," : value === "。" ? "." : "!");
+  const numbered = text.match(/^您的订单(\d+)已完成,感谢您对京东的支持,欢迎再次光临\.期待您对本次购物进行评价\.?$/);
+  return numbered ? !orderId || numbered[1] === orderId
+    : /^您的订单\[[^\]]+\]已完成,\d+京豆等您拿,完成评价即有机会获得,不要错过呦!?$/.test(text);
+}
+
+/**
+ * The stored row's first-completion anchor (`settledAtMs`, stamped once by storage when the row turns
+ * terminal) as earlier signed evidence for `withoutJingDongOrderCompletion`. The same stamp also owns
+ * the cancelled four-hour window, so it only counts while the row shows COMPLETED.
+ */
+export function jingDongSignedAnchorAtMs(
+  shipment: Pick<Shipment, "timeline" | "settledAtMs"> | null | undefined,
+): number {
+  const value = Number(shipment?.settledAtMs);
+  return shipment?.timeline.semantic === "COMPLETED" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * The row's stored packages, which show what its `settledAtMs` anchor was (用户 2026-09-28「修，按规则保留」):
+ * `withoutJingDongOrderCompletion` reads what sits at the anchor's second in them.
+ */
+export function jingDongAnchorEvidence(
+  shipment: Pick<Shipment, "timeline" | "sourceTimeline" | "manualTimelines"> | null | undefined,
+): TimelinePackage[] {
+  if (!shipment) return [];
+  return [shipment.timeline, shipment.sourceTimeline, ...shipment.manualTimelines || []]
+    .filter((timeline): timeline is TimelinePackage => Boolean(timeline));
+}
+
+/**
+ * 用户 2026-09-28「修，按规则保留」：a stored completion anchor that is itself a near-duplicate copy of the review
+ * being judged is no earlier signing. It is one when the review is shown no more than five minutes after it and
+ * what sits at that second, in the judged package or the row's stored packages, is a copy of the review: the same
+ * fingerprint and no conflicting structured status, the collapse's own criteria. A different node there, nothing
+ * there, or the review more than five minutes later keeps it earlier signing evidence.
+ */
+function anchorCounts(
+  review: TrackNode,
+  reviewAtMs: number | null,
+  anchorAtMs: number,
+  packages: readonly TimelinePackage[],
+): boolean {
+  if (!(anchorAtMs > 0)) return false;
+  if (typeof reviewAtMs !== "number" || !Number.isFinite(reviewAtMs) || reviewAtMs <= 0 ||
+      reviewAtMs < anchorAtMs || reviewAtMs - anchorAtMs > NEAR_DUPLICATE_WINDOW_MS) return true;
+  const second = Math.floor(anchorAtMs / 1000);
+  const fingerprint = trackFingerprint(review.detail);
+  let copy = false;
+  for (const timeline of packages) {
+    const headlineAt = parseProviderTime(timeline.latestTimeText || "");
+    const nodes: TrackNode[] = [...timeline.tracks];
+    if (timeline.latestDetail?.trim() && headlineAt != null) {
+      nodes.push({ timeText: timeline.latestTimeText, timeMs: headlineAt, detail: timeline.latestDetail,
+        statusCode: "", raw: {} });
+    }
+    for (const node of nodes) {
+      if (typeof node.timeMs !== "number" || Math.floor(node.timeMs / 1000) !== second) continue;
+      if (!node.detail.trim()) continue;
+      if (!fingerprint || trackFingerprint(node.detail) !== fingerprint || !nearDuplicateCompatible(node, review)) {
+        return true;
+      }
+      copy = true;
+    }
+  }
+  return !copy;
+}
+
+/**
+ * A node's own structured signing: a structured Worker projection of COMPLETED (at its clock, else the
+ * node's), or, when the projection is absent or unstructured, the node's raw status enum read without its
+ * prose (at the node's time), as Pipi and Lite read it. Never the text.
+ */
+function trackSigning(track: TrackNode): { signed: boolean; atMs: number } {
+  const projection = responseNormalizedStatus(track.raw);
+  let signed = false;
+  let at = Number(track.timeMs);
+  if (projection?.structured) {
+    signed = projection.semantic === "COMPLETED";
+    if (projection.eventAtMs > 0) at = projection.eventAtMs;
+  } else if (track.raw && Object.prototype.hasOwnProperty.call(track.raw, "statusCode")) {
+    const { normalizedStatus: _unstructured, ...raw } = track.raw;
+    signed = semanticFromTrackCode({ ...track, detail: "", raw }, track.raw.statusCode) === "COMPLETED";
+  }
+  return { signed, atMs: signed && Number.isFinite(at) && at > 0 ? at : 0 };
+}
+
+function trackSignedAtMs(track: TrackNode): number {
+  return trackSigning(track).atMs;
+}
+
+/**
+ * 用户 2026-09-27「要求」：评价只有在它自己的包报了结构化签收（包的结构化 COMPLETED，或某个节点自己的结构化签收）
+ * 时才可能是第一次签收；否则照旧拦掉。
+ */
+function packageReportsStructuredSigning(timeline: TimelinePackage): boolean {
+  return (timeline.structuredStatus === true && timeline.semantic === "COMPLETED") ||
+    timeline.tracks.some((track) => trackSigning(track).signed);
+}
+
+/**
+ * Earliest structured signing of one package: the stored anchor and every node's own structured
+ * COMPLETED (trackSignedAtMs). The package-level statusEventAtMs is no evidence here: for Xiaomi
+ * interface 5 it is the newest node's time, possibly the review's own.
+ */
+function earliestSignedAtMs(tracks: readonly TrackNode[], anchorAtMs: number): number {
+  let earliest = Number.isFinite(anchorAtMs) && anchorAtMs > 0 ? anchorAtMs : 0;
+  // Measured on the K15-collapsed timeline: a copy folded into a newer twin signs at the newer copy's time,
+  // so it never counts as an earlier signing against its own twin.
+  const collapsedAt = collapsedTrackTimes(tracks);
+  for (const track of tracks) {
+    let at = trackSignedAtMs(track);
+    const shownAt = collapsedAt.get(track);
+    if (at > 0 && typeof shownAt === "number" && typeof track.timeMs === "number" && shownAt > track.timeMs) {
+      at = Math.max(at, shownAt);
+    }
+    if (at > 0 && (!earliest || at < earliest)) earliest = at;
+  }
+  return earliest;
+}
+
+/**
+ * K15 (用户 2026-09-06)：同一个包里同文案、相距不超过 5 分钟、结构化不冲突的两条是一条，较新的那条拥有展示。重复推送的
+ * 评价按折叠后的那一条判（助手按用户 2026-09-27 规则对齐），签收证据也按折叠后的时间量（earliestSignedAtMs）：每条的
+ * 时间取它并入的那条较新节点的时间，分组与 mergeTracks 的 collapseNearTimeDuplicates 相同。
+ */
+function collapsedTrackTimes(tracks: readonly TrackNode[]): Map<TrackNode, number | null> {
+  const owners: TrackNode[] = [];
+  const times = new Map<TrackNode, number | null>();
+  const sorted = [...tracks].sort((left, right) =>
+    (right.timeMs || 0) - (left.timeMs || 0) || right.timeText.localeCompare(left.timeText));
+  for (const track of sorted) {
+    const fingerprint = trackFingerprint(track.detail);
+    const owner = track.timeMs != null && fingerprint
+      ? owners.find((existing) => existing.timeMs != null &&
+        trackFingerprint(existing.detail) === fingerprint &&
+        Math.abs(existing.timeMs - track.timeMs!) <= NEAR_DUPLICATE_WINDOW_MS &&
+        nearDuplicateCompatible(existing, track))
+      : undefined;
+    if (!owner) owners.push(track);
+    times.set(track, owner ? owner.timeMs : track.timeMs);
+  }
+  return times;
+}
+
+type OrderCompletionIdentity = Pick<ShipmentIdentity,
+  "accountOrder" | "manuallyAdded" | "sourceId" | "orderId" | "projectedWaybill" |
+  "sourceProvider" | "bindingSource">;
+
+/** The review-template test for this package, or null when the JD order rule does not cover it. */
+function jingDongOrderCompletionMatcher(
   timeline: TimelinePackage,
-  identity: Pick<ShipmentIdentity,
-    "accountOrder" | "manuallyAdded" | "sourceId" | "orderId" | "projectedWaybill" |
-    "sourceProvider" | "bindingSource">,
-  orderScopedStatus = false,
-): TimelinePackage {
+  identity: OrderCompletionIdentity,
+): ((detail: string) => boolean) | null {
+  if (!identity) return null;
   const projectedOrder = identity.accountOrder && normalizedProjectedWaybill(identity);
   const directJingDongWaybill = !identity.accountOrder &&
     identity.bindingSource === "interface5" &&
     String(identity.sourceProvider || "").trim().toLowerCase() === "jingdong" &&
     Boolean(normalizeWaybill(identity.sourceId)) &&
     normalizeWaybill(timeline.waybill) === normalizeWaybill(identity.sourceId);
-  if (identity.manuallyAdded || (!projectedOrder && !directJingDongWaybill)) return timeline;
+  if (identity.manuallyAdded || (!projectedOrder && !directJingDongWaybill)) return null;
   const orderId = normalizeWaybill(identity.orderId || (identity.accountOrder ? identity.sourceId : ""));
-  const isCompletion = (detail: string): boolean => {
-    const text = String(detail || "").replace(/\s+/g, "")
-      .replace(/[，。！!]/g, (value) => value === "，" ? "," : value === "。" ? "." : "!");
-    const numbered = text.match(/^您的订单(\d+)已完成,感谢您对京东的支持,欢迎再次光临\.期待您对本次购物进行评价\.?$/);
-    return numbered ? !orderId || numbered[1] === orderId
-      : /^您的订单\[[^\]]+\]已完成,\d+京豆等您拿,完成评价即有机会获得,不要错过呦!?$/.test(text);
+  return (detail: string): boolean => isJingDongOrderCompletionText(detail, orderId);
+}
+
+/**
+ * Whether `detail` is a review-template node the JD order rule covers in this package. Read on an
+ * already cleaned package it names a review kept as the first signing: a temporary node (用户
+ * 2026-09-27) that a later signing trace may replace as the list headline.
+ */
+export function isJingDongOrderCompletionNode(
+  timeline: TimelinePackage,
+  identity: OrderCompletionIdentity,
+  detail: string,
+): boolean {
+  return jingDongOrderCompletionMatcher(timeline, identity)?.(detail) === true;
+}
+
+/**
+ * Hide JD shopping-review prose without erasing the packet's structured completion.
+ * 用户定 2026-09-27（四端同口径）：只有这一票更早就有结构化签收时才拦——`signedAnchorAtMs`
+ * （存盘行的 settledAtMs，见 jingDongSignedAnchorAtMs）或同包内节点自己的结构化签收（trackSignedAtMs），
+ * 严格早于这条评价才算；否则它就是第一条签收证据，照普通节点留下，状态与时间照来源给的。没有时间的评价只要有更早
+ * 的签收就拦。同日「要求」：它自己的包没报结构化签收时，照旧拦掉（含 orderScopedStatus 失效）。身份从不取自这句文案。
+ */
+export function withoutJingDongOrderCompletion(
+  timeline: TimelinePackage,
+  identity: OrderCompletionIdentity,
+  orderScopedStatus = false,
+  signedAnchorAtMs = 0,
+  anchorEvidence: readonly TimelinePackage[] = [],
+): TimelinePackage {
+  const isCompletion = jingDongOrderCompletionMatcher(timeline, identity);
+  if (!isCompletion) return timeline;
+  if (!timeline.tracks.some((track) => isCompletion(track.detail)) &&
+      !isCompletion(timeline.latestDetail)) return timeline;
+  const signingPackage = packageReportsStructuredSigning(timeline);
+  const nodesSince = earliestSignedAtMs(timeline.tracks, 0);
+  const evidencePackages = [timeline, ...anchorEvidence];
+  const signedBefore = (review: TrackNode, atMs: number | null): boolean => {
+    if (!signingPackage) return true;
+    const signedSince = anchorCounts(review, atMs, signedAnchorAtMs, evidencePackages)
+      ? nodesSince > 0 ? Math.min(nodesSince, signedAnchorAtMs) : signedAnchorAtMs
+      : nodesSince;
+    return signedSince > 0 &&
+      (typeof atMs !== "number" || !Number.isFinite(atMs) || atMs <= 0 || atMs > signedSince);
   };
-  const removed = timeline.tracks.filter((track) => isCompletion(track.detail));
-  const removesHeadline = isCompletion(timeline.latestDetail);
+  const collapsedAt = collapsedTrackTimes(timeline.tracks.filter((track) => isCompletion(track.detail)));
+  const isRemoved = (track: TrackNode): boolean => isCompletion(track.detail) &&
+    signedBefore(track, collapsedAt.has(track) ? collapsedAt.get(track)! : track.timeMs);
+  const removed = timeline.tracks.filter(isRemoved);
+  const headlineAt = parseProviderTime(timeline.latestTimeText);
+  const removesHeadline = isCompletion(timeline.latestDetail) &&
+    signedBefore({ timeText: timeline.latestTimeText, timeMs: headlineAt, detail: timeline.latestDetail,
+      statusCode: "", raw: {} }, headlineAt);
   if (!removed.length && !removesHeadline) return timeline;
-  const tracks = timeline.tracks.filter((track) => !isCompletion(track.detail));
+  const tracks = timeline.tracks.filter((track) => !isRemoved(track));
   const latest = [...timedTracks(tracks)].sort(
     (left, right) => (right.timeMs || 0) - (left.timeMs || 0),
   )[0] || tracks[0];
@@ -547,10 +770,45 @@ export function timedTracks(tracks: readonly TrackNode[]): TrackNode[] {
  */
 const ORDER_COMPLETION_TEXT = /订单已完成|配送完成/;
 
+/**
+ * The start gate's own reading of a prose node (AGENTS §9 起点词表): the pickup words, then the order
+ * words, never 待揽/等待揽. A node counts when it contains one of them, the way Pipi
+ * (`StatusSemantic.startSemanticFromText`) and Lite read it; the display table above first sorts
+ * out pickup, signing and delivery prose, so a mixed 「已揽收，正在派送」 node was no start here only
+ * (audit D11, adopted 2026-09-25).
+ */
+export function startSemanticFromText(value: string): StatusSemantic {
+  const text = String(value || "").replace(/\s+/g, "");
+  if (!text || /待揽|等待揽/.test(text)) return "UNKNOWN";
+  if (/已揽收|已揽件|揽收完成|揽件成功|揽收成功|已收寄|收取快件/.test(text)) return "PICKED";
+  if (/已下单|已经下单|订单已提交|订单已创建|提交了订单|等待出库|正在打包|拣货/.test(text)) return "ORDERED";
+  return "UNKNOWN";
+}
+
+/** The node's own structured statuses, read from its codes and Worker projection without its prose. */
+function trackStructuredSemantics(track: TrackNode): StatusSemantic[] {
+  const codeOnly = { ...track, detail: "" };
+  return [track.statusCode, track.raw?.statusCode].flatMap((code) => [
+    semanticFromTrackCode(codeOnly, code),
+    semanticFromStored(String(code ?? ""), ""),
+  ]).filter((semantic) => semantic !== "UNKNOWN");
+}
+
+/**
+ * A node's start evidence (user 2026-10-02 「三端统一改成结构化优先」, the order of Pipi's
+ * `ExpressDetailTimelinePolicy.hasStartSemantic`): a node with a structured status is decided by it;
+ * the start words count only for a node without one. A no-enum placeholder is no structured status.
+ */
+function trackStartSemantics(track: TrackNode): StatusSemantic[] {
+  const structured = trackStructuredSemantics(track);
+  return structured.length ? structured : [startSemanticFromText(track.detail)];
+}
+
 export function containsTimelineStartTrack(
   tracks: readonly TrackNode[],
 ): boolean {
   return containsTimelineOriginTrack(tracks) || timedTracks(tracks).some((track) =>
+    !trackStructuredSemantics(track).length &&
     ORDER_COMPLETION_TEXT.test(track.detail.replace(/\s+/g, ""))
   );
 }
@@ -559,25 +817,13 @@ export function containsTimelineStartTrack(
 export function containsTimelineOriginTrack(tracks: readonly TrackNode[]): boolean {
   const isStart = (semantic: StatusSemantic) =>
     semantic === "ORDERED" || semantic === "PICKED";
-  return timedTracks(tracks).some((track) => {
-    const codes = [track.statusCode, track.raw?.statusCode];
-    return codes.some((code) =>
-      isStart(semanticFromTrackCode(track, code)) ||
-      isStart(semanticFromStored(String(code ?? ""), track.detail))
-    ) || isStart(semanticFromText(track.detail));
-  });
+  return timedTracks(tracks).some((track) => trackStartSemantics(track).some(isStart));
 }
 
 export function containsTimelinePickupTrack(
   tracks: readonly TrackNode[],
 ): boolean {
-  return timedTracks(tracks).some((track) => {
-    const codes = [track.statusCode, track.raw?.statusCode];
-    return codes.some((code) =>
-      semanticFromTrackCode(track, code) === "PICKED" ||
-      semanticFromStored(String(code ?? ""), track.detail) === "PICKED"
-    ) || semanticFromText(track.detail) === "PICKED";
-  });
+  return timedTracks(tracks).some((track) => trackStartSemantics(track).includes("PICKED"));
 }
 
 /** Only the latest nodes' own enums can contradict the presented status; prose is unverified. */
@@ -586,9 +832,9 @@ export function latestTimelineTrackStatuses(tracks: readonly TrackNode[]): Statu
   if (!timed.length) return [];
   const latestAt = Math.max(...timed.map(track => track.timeMs!));
   return timed.filter(track => track.timeMs === latestAt).map(track => {
-    const projection = responseNormalizedStatus(track.raw);
+    const projection = nodeNormalizedStatus(track.raw);
     if (projection) return projection.structured ? projection.semantic : "UNKNOWN";
-    for (const code of [track.raw.statusCode, track.statusCode]) {
+    for (const code of [track.raw?.statusCode, track.statusCode]) {
       const structured = semanticFromTrackCode({ ...track, detail: "" }, code);
       if (structured !== "UNKNOWN") return structured;
       const stored = semanticFromStored(String(code ?? ""), "");
@@ -607,9 +853,9 @@ function semanticFromTrackCode(
   track: TrackNode,
   code: unknown,
 ): StatusSemantic {
-  const projection = responseNormalizedStatus(track.raw);
+  const projection = nodeNormalizedStatus(track.raw);
   if (projection) return projection.structured ? projection.semantic : "UNKNOWN";
-  const source = String(track.raw._pipiStatusSource || "")
+  const source = String(track.raw?._pipiStatusSource || "")
     .trim()
     .toLowerCase();
   if (
@@ -620,10 +866,25 @@ function semanticFromTrackCode(
   return semanticFromEventCode(String(code ?? ""));
 }
 
+/**
+ * The provider's placeholder for an update it did not show: 「快递状态已更新」, with or without
+ * 「，点击查看」 (full-width or ASCII comma) and the trailing >> (the shared vocabulary's
+ * updateSummaryPattern, compared after removing all whitespace). It is kept in the data, but no
+ * client shows it as a timeline node or a list headline; the real nodes are shown instead (user
+ * instruction 2026-09-12, restated 2026-09-26; audit X4).
+ */
+const UPDATE_SUMMARY = /^快递状态已更新(?:[，,]点击查看(?:>>)?)?$/;
+/**
+ * 「您有包裹运输时效变化，请留意取件安排」, either comma, with or without the trailing >>: handled exactly like
+ * the update placeholder (user 2026-09-28「加进占位清单」; Pipi, Lite and kdbot match the same sentence). Only
+ * this sentence family. Same pattern as the shared vocabulary's transitTimeReminderPattern (user 2026-10-01,
+ * item 6; exported for that check only), compared after removing all whitespace.
+ */
+export const TRANSIT_TIME_REMINDER = /^您有包裹运输时效变化[，,]请留意取件安排(?:>>)?$/;
+
 export function isAccountUpdateSummary(value: string): boolean {
-  const clean = String(value || "").replace(/\s+/g, "");
-  return clean === "快递状态已更新" || clean === "快递状态已更新，点击查看>>" ||
-    clean === "快递状态已更新,点击查看>>";
+  const line = String(value || "").replace(/\s+/g, "");
+  return UPDATE_SUMMARY.test(line) || TRANSIT_TIME_REMINDER.test(line);
 }
 
 /** Update summaries carry valid event times; only provider failures are discarded. */
@@ -672,7 +933,7 @@ export function latestEventEvidence(
   let newestAt: number | null = null;
   let newestSemantic: StatusSemantic = "UNKNOWN";
   for (const track of tracks) {
-    const projection = responseNormalizedStatus(track.raw);
+    const projection = nodeNormalizedStatus(track.raw);
     const hasRawStatus = Boolean(projection) || Object.prototype.hasOwnProperty.call(
       track.raw,
       "statusCode",
@@ -768,6 +1029,27 @@ function compatibleStructuredTrack(left: TrackNode, right: TrackNode): boolean {
   return !leftSource || !rightSource || leftSource === rightSource;
 }
 
+function carriesStatusCode(track: TrackNode): boolean {
+  return STRUCTURED_TRACK_FIELDS.some((field) => Boolean(structuredTrackValue(track, field)));
+}
+
+/**
+ * Near-time duplicates (the 5-minute rule below) conflict only on genuinely different structured
+ * states. An origin tag on a node without any status code is provenance, not a conflicting state
+ * (2026-09-09 approved parity correction; audit D11, adopted 2026-09-25, Pipi's rule).
+ */
+function nearDuplicateCompatible(left: TrackNode, right: TrackNode): boolean {
+  for (const field of STRUCTURED_TRACK_FIELDS) {
+    const leftValue = structuredTrackValue(left, field);
+    const rightValue = structuredTrackValue(right, field);
+    if (leftValue && rightValue && leftValue !== rightValue) return false;
+  }
+  if (!carriesStatusCode(left) || !carriesStatusCode(right)) return true;
+  const leftSource = structuredTrackValue(left, "_pipiStatusSource");
+  const rightSource = structuredTrackValue(right, "_pipiStatusSource");
+  return !leftSource || !rightSource || leftSource === rightSource;
+}
+
 function fillMissingTrackFields(target: TrackNode, source: TrackNode): TrackNode {
   const raw: Record<string, unknown> = { ...target.raw };
   for (const [key, value] of Object.entries(source.raw)) {
@@ -820,7 +1102,7 @@ function collapseNearTimeDuplicates(sorted: readonly TrackNode[]): TrackNode[] {
         existing.timeMs != null &&
         trackFingerprint(existing.detail) === fingerprint &&
         Math.abs(existing.timeMs - candidateAt) <= NEAR_DUPLICATE_WINDOW_MS &&
-        compatibleStructuredTrack(existing, candidate)
+        nearDuplicateCompatible(existing, candidate)
       );
     }
     if (duplicateIndex < 0) {
@@ -1020,7 +1302,9 @@ export function mergeTimelinePackage(
       ...(current.complete !== undefined || incoming.complete !== undefined
         ? { complete: current.complete === true || incoming.complete === true } : {}),
     };
-    return frozen ? merged : withMergedHeadline(merged);
+    // A terminal freeze keeps the status; the headline still follows the newest node (user
+    // 2026-09-25, audit D6: after signing, a later node takes the headline on all clients).
+    return withMergedHeadline(merged);
   }
   const confirmsUnstructuredCompletion = current.semantic === "COMPLETED" &&
     current.structuredStatus !== true && incoming.semantic === "COMPLETED" &&
@@ -1039,7 +1323,6 @@ export function mergeTimelinePackage(
   const tracks = mergeTracks(current.tracks, incoming.tracks);
   const finalize = (
     value: TimelinePackage,
-    keepStoredHeadline = false,
   ): TimelinePackage => {
     const rawCourierCode = String(
       value.rawCourierCode || current.rawCourierCode || incoming.rawCourierCode || "",
@@ -1059,7 +1342,7 @@ export function mergeTimelinePackage(
         }
       : retainedRaw;
     // Every exit installs the merged track set, so every exit re-reads the headline from it.
-    return keepStoredHeadline ? merged : withMergedHeadline(merged);
+    return withMergedHeadline(merged);
   };
   const currentTimed = timedTracks(current.tracks);
   const currentCompleted = current.semantic === "COMPLETED" && currentTimed.length > 0;
@@ -1068,8 +1351,9 @@ export function mergeTimelinePackage(
     EXPRESS_POLICY.manualAuthority.completedOutranksNonTerminal &&
     currentCompleted
   ) {
-    // Terminal freeze preserves the signed state and headline, but a legacy text-derived
-    // completion must still accept the same provider's structured confirmation and event time.
+    // Terminal freeze preserves the signed state (the headline follows the newest node, user
+    // 2026-09-25, audit D6), but a legacy text-derived completion must still accept the same
+    // provider's structured confirmation and event time.
     return finalize({
       ...current,
       ...(confirmsUnstructuredCompletion
@@ -1078,7 +1362,7 @@ export function mergeTimelinePackage(
         : {}),
       tracks,
       successAtMs: Math.max(current.successAtMs, incoming.successAtMs),
-    }, true);
+    });
   }
   if (incomingCompleted) return finalize({ ...incoming, tracks });
   const retainedCurrent = {
@@ -1368,6 +1652,42 @@ export function isHiddenSignedShipment(shipment: Shipment, now = Date.now()): bo
   return eventAt > 0 && now - eventAt >= SIGNED_RETENTION_MS;
 }
 
+/**
+ * 用户 2026-09-25 同意（方案 B，iOS 与 Lite；Pipi、kdbot 不做——三星数据里赠品单与真实订单分不开）：确认没有
+ * 商品物流的京东订单行（赠品单之类）像留存期到了的行一样隐藏：不上首页列表与小组件，隐藏期间不通知；存盘行、
+ * 缓存与留存／删除时间表都不动。三条同时成立才隐藏，任何一条不再成立就自动重新显示：
+ * (i) 接口 5 的京东账号订单，已完成，从未有过真实运单号（没有投影，feed 文案也没点名运单号）；
+ * (ii) 它自己的 feed 历史只有订单级的完成／评价节点，没有物流节点；
+ * (iii) 方案 A 已确认它的京粉页是空壳（两次，见 accountOrderPageConfirmedEmpty）。
+ */
+export function isConfirmedNoItemOrder(shipment: Shipment): boolean {
+  const identity = shipment.identity;
+  if (
+    identity.manuallyAdded ||
+    !identity.accountOrder ||
+    identity.bindingSource !== "interface5" ||
+    String(identity.sourceProvider || "").trim().toLowerCase() !== "jingdong" ||
+    normalizedProjectedWaybill(identity) ||
+    (shipment.automaticOwnership?.observations || []).some((observation) =>
+      normalizedProjectedWaybill(observation?.identity)) ||
+    shipmentPresentationStatus(shipment).semantic !== "COMPLETED"
+  ) return false;
+  const tracks = (shipment.sourceTimeline || shipment.timeline).tracks;
+  const orderId = normalizeWaybill(identity.orderId || identity.sourceId);
+  if (
+    !tracks.length ||
+    accountOrderTextIdentity(tracks) ||
+    !tracks.every((track) => isJingDongOrderCompletionText(track.detail, orderId))
+  ) return false;
+  const retry = identity.orderProjectionRetry;
+  if (!retry?.emptyShellConfirmedAtMs) return false;
+  try {
+    return accountOrderPageConfirmedEmpty(retry, accountOrderProjectionRouteHash(identity.id));
+  } catch {
+    return false;
+  }
+}
+
 export function pruneShipments(
   shipments: readonly Shipment[],
   now = Date.now(),
@@ -1378,7 +1698,10 @@ export function pruneShipments(
       return !isHiddenSignedShipment(shipment, now);
     }
     if (shipment.timeline.semantic === "CANCELLED") {
-      const eventAt = signedAt(shipment, now);
+      // The four hours start at the logistics time the list row displays, the same clock as the
+      // signed retention; only without a valid displayed date does the stable first terminal stamp
+      // apply (audit L14, user default #4, 2026-09-25).
+      const eventAt = signedRetentionAtMs(shipment, now);
       if (!eventAt) return true;
       return now - eventAt < CANCELLED_RETENTION_MS;
     }

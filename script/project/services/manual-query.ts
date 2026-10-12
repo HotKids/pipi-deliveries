@@ -30,6 +30,7 @@ import {
 } from "./manual-query-parser";
 import {
   applyManualShipment,
+  displayWaybill,
   hasPickerTimelineStart,
   hasTimelineStartBeforeKdniao,
 } from "./shipment-policy";
@@ -50,7 +51,9 @@ import { recognizeNonSyncCarrier } from "./carrier-recognition";
 import {
   createDiagnosticFlowId,
   diagnosticErrorDetails,
+  openStageCancellationEnd,
   writeDiagnostic,
+  type StageCancellationEnd,
 } from "./logger";
 import {
   recordRefreshProviderResult,
@@ -166,6 +169,7 @@ type ManualGatewayPost = (
     deadlineAtMs?: number;
     signal?: AbortSignal;
     onQueryAttempted?: (authorized: boolean) => void;
+    beforeQuery?: () => void;
   },
 ) => Promise<JsonObject>;
 
@@ -208,6 +212,33 @@ export type ManualCarrierDetection = {
   requiresPhoneTail: boolean;
 };
 
+/**
+ * The carrier of a waybill the app already holds, without asking anyone.
+ *
+ * Recognition is a network question about an unknown number; a waybill already sitting in the
+ * list is not unknown. Skipping straight to what is stored also survives a recognition cache that
+ * has burnt this waybill to a terminal verdict (真机 2026-09-19: 韵达快递 with eight tracks on
+ * screen while the search chip stayed empty).
+ */
+export function storedCarrierDetection(
+  waybillInput: string,
+  shipments: readonly Shipment[],
+): ManualCarrierDetection | null {
+  const waybill = normalizeWaybill(waybillInput);
+  if (!waybill) return null;
+  for (const shipment of shipments) {
+    if (normalizeWaybill(displayWaybill(shipment)) !== waybill) continue;
+    const carrier = resolveCarrierQuery(shipment.identity.courierCode);
+    if (!carrier) continue;
+    return {
+      courierCode: carrier.standardCode,
+      companyName: carrier.displayName,
+      requiresPhoneTail: carrier.requiresPhoneTail || false,
+    };
+  }
+  return null;
+}
+
 export type ManualCarrierDetector = (
   waybill: string,
   options?: Readonly<{ deadlineAtMs?: number; signal?: AbortSignal }>,
@@ -227,6 +258,11 @@ export async function detectManualCarrier(
   const carrier = recognition.normalization
     ? resolveCarrierQuery(recognition.normalization.standardCode)
     : null;
+  // 表外承运商（用户 2026-09-26，其余裁决 29）：快递100 认得出、内置表里没有，只显示它给的名字，不参与派单。
+  const offTableName = String(recognition.displayName || "").trim();
+  if (!carrier && offTableName) {
+    return { courierCode: "", companyName: offTableName, requiresPhoneTail: false };
+  }
   if (!carrier) return null;
   const presentation = projectedCarrierPresentation(
     waybill,
@@ -411,8 +447,9 @@ async function queryCandidate(
   const returnedCode = providerRawCourierCode || rawCourierCode;
   const returnedCarrier = resolveCarrierKuaidi100Code(returnedCode);
   const resolvedCode = returnedCarrier?.standardCode || returnedCode;
-  const companyName = firstText(root, "companyName", "comName") ||
-    companyNameHint || returnedCarrier?.displayName || resolvedCode;
+  // 2026-10-08 用户决定 #9（「显示和写入都先查表」）：表内承运商写表名，上游名只用于表外承运商。
+  const companyName = returnedCarrier?.displayName ||
+    firstText(root, "companyName", "comName") || companyNameHint || resolvedCode;
   return shipmentFromTimeline({
     waybill,
     phoneTail,
@@ -592,7 +629,8 @@ function sourceIdentity(
     rawCourierCode: responseCode || rawCode,
     providerRawCourierCode: responseCode,
     courierCode,
-    companyName: responseName || carrier?.displayName || nameHint || courierCode,
+    // 2026-10-08 用户决定 #9（「显示和写入都先查表」）：表内承运商写表名，上游名只用于表外承运商。
+    companyName: carrier?.displayName || responseName || nameHint || courierCode,
   };
 }
 
@@ -801,19 +839,34 @@ export async function queryKdniaoShipment(
   let lastPhoneError: ManualQueryError | null = null;
   for (const phoneTail of tails) {
     assertWithinDeadline(input.deadlineAtMs);
-    const root = await sourcePost(input.dependencies)(
-      "/api/express/timeline/fallback",
-      {
-        waybill,
-        shipperCode: carrier.standardCode,
-        phone: carrier.requiresPhoneTail ? phoneTail : "",
-      },
-      {
-        timeoutMs: remainingTimeoutMs(input.deadlineAtMs, 30_000),
-        deadlineAtMs: input.deadlineAtMs,
-        signal: input.signal,
-      },
-    );
+    let root: JsonObject;
+    try {
+      root = await sourcePost(input.dependencies)(
+        "/api/express/timeline/fallback",
+        {
+          waybill,
+          shipperCode: carrier.standardCode,
+          phone: carrier.requiresPhoneTail ? phoneTail : "",
+        },
+        {
+          timeoutMs: remainingTimeoutMs(input.deadlineAtMs, 30_000),
+          deadlineAtMs: input.deadlineAtMs,
+          signal: input.signal,
+        },
+      );
+    } catch (error) {
+      // User 2026-10-02 「补：全不对时提示重新输入」: the Worker names a KDNiao phone-tail rejection, so a
+      // wrong tail moves on to the next one and only a run of wrong tails asks for the tail again.
+      if (error instanceof GatewayError && error.gatewayCode === "phone_verification_required") {
+        lastPhoneError = new ManualQueryError(
+          phoneTail ? "手机尾号不正确，请重新输入" : "请输入手机尾号",
+          true,
+          "phone_tail",
+        );
+        continue;
+      }
+      throw error;
+    }
     if (root.success !== true) {
       const reason = firstText(root, "reason", "message", "msg");
       if (/手机|电话|尾号|phone/i.test(reason)) {
@@ -939,6 +992,7 @@ export async function queryManualForSource(input: {
   hostSafe?: boolean;
   dependencies?: ManualSourceDependencies;
   onQueryAttempted?: (authorized: boolean) => void;
+  beforeQuery?: () => void;
   diagnosticFlowId?: string;
   diagnosticStage?: string;
 }): Promise<ManualQueryOutcome> {
@@ -985,10 +1039,10 @@ export async function queryManualForSource(input: {
     bindingSource: input.source,
     deadlineAtMs: input.deadlineAtMs,
     signal: input.signal,
-    dependencies: input.onQueryAttempted
+    dependencies: input.onQueryAttempted || input.beforeQuery
       ? { ...input.dependencies, post: (route, payload, options) =>
           sourcePost(input.dependencies)(route, payload, {
-            ...options, onQueryAttempted: input.onQueryAttempted,
+            ...options, onQueryAttempted: input.onQueryAttempted, beforeQuery: input.beforeQuery,
           }) }
       : input.dependencies,
     resolvedCarrier: resolvedRawCarrier,
@@ -1019,6 +1073,8 @@ export async function queryManualForSource(input: {
 
   const hasTimed = (shipment: Shipment | null): boolean =>
     Boolean(shipment && timedTracks(shipment.timeline.tracks).length);
+  // 用户 2026-09-28 (log authorization): each started source's cancelled end, written before its flow's own end line.
+  const sourceCancelled = new Map<string, StageCancellationEnd>();
   const selection = await queryManualSourceChain([
     {
       source: "local",
@@ -1061,8 +1117,28 @@ export async function queryManualForSource(input: {
         ...diagnosticIdentity,
         timelineProvider,
       });
+      const startedAt = Date.now();
+      sourceCancelled.set(observation.source, openStageCancellationEnd(diagnosticFlowId, input.signal, () =>
+        // 用户 2026-09-28：cancelled by the parent refresh, the source still ends — diagnostics only, so it records
+        // no provider result and leaves the provider's schedule alone.
+        writeDiagnostic("manual.source.failed", {
+          flowId: diagnosticFlowId,
+          source: input.source,
+          stage,
+          ...diagnosticIdentity,
+          timelineProvider,
+          durationMs: Date.now() - startedAt,
+          errorCategory: "cancelled",
+        }, "warning")));
       return;
     }
+    const cancelledEnd = sourceCancelled.get(observation.source);
+    sourceCancelled.delete(observation.source);
+    if (observation.phase === "cancelled") {
+      cancelledEnd?.end();
+      return;
+    }
+    cancelledEnd?.close();
     if (observation.error) {
       if (input.scheduled) {
         const details = diagnosticErrorDetails(observation.error);

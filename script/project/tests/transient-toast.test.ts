@@ -45,7 +45,7 @@ assert.equal(isManualQueryValidationMessage("请输入有效的快递单号"), t
 assert.equal(isManualQueryValidationMessage("查询失败，请稍后重试"), false);
 assert.equal(detailPullToast(true, true), "轨迹加载成功");
 assert.equal(detailPullToast(false, true), "当前轨迹已是最新");
-assert.equal(detailPullToast(false, false), "暂未获取到可用轨迹");
+assert.equal(detailPullToast(false, false), "暂未查询到或未揽收");
 assert.equal(
   refreshSummaryToast({ attempted: 3, succeeded: 2, failed: 1, accountListUpdated: true }),
   "列表已更新",
@@ -94,7 +94,7 @@ assert.equal(
 assert.equal(manualDetailRefreshToast(true, true), "轨迹加载成功");
 assert.equal(
   manualDetailRefreshToast(false, false),
-  "暂未获取到可用轨迹",
+  "暂未查询到或未揽收",
 );
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -229,7 +229,7 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /topBarTrailing:\s*\([\s\S]*?<Button[\s\S]*?buttonStyle="plain"[\s\S]*?action=\{\(\) => setNotice\("暂未接入"\)\}[\s\S]*?<Image\s+systemName="plus"\s+font=\{17\}\s+frame=\{\{ width: 44, height: 44 \}\}/,
+  /topBarTrailing:\s*\([\s\S]*?<Button[\s\S]*?buttonStyle="plain"[\s\S]*?action=\{\(\) => setNotice\("暂未开放"\)\}[\s\S]*?<Image\s+systemName="plus"\s+font=\{17\}\s+frame=\{\{ width: 44, height: 44 \}\}/,
   "the Home add placeholder must use a plus symbol matching the back control and only show its fixed toast",
 );
 
@@ -239,7 +239,7 @@ const notificationSource = await readFile(
   resolve(projectDir, "pages/NotificationSettingsPage.tsx"),
   "utf8",
 );
-assert.ok(notificationSource.includes('setNotice("保存失败，请稍后重试")'));
+assert.ok(notificationSource.includes('setNotice("保存失败，请重试")'));
 
 const diagnosticsSource = await readFile(
   resolve(projectDir, "pages/DiagnosticLogPage.tsx"),

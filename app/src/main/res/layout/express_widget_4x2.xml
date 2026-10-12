@@ -54,7 +54,7 @@
                     android:layout_height="wrap_content"
                     android:textColor="?attr/colorOnSurface"
                     android:textSize="16sp"
-                    android:textStyle="bold" />
+                    android:textStyle="normal" />
 
                 <ImageView
                     android:layout_width="16dp"

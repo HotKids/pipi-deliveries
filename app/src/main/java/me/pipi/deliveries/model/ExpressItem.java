@@ -2,6 +2,7 @@ package me.pipi.deliveries.model;
 
 import me.pipi.deliveries.R;
 import me.pipi.deliveries.data.CarrierRegistry;
+import me.pipi.deliveries.data.ExpressStatusLabels;
 
 /** Immutable shipment record projected from the local server_express table. */
 public final class ExpressItem {
@@ -48,6 +49,12 @@ public final class ExpressItem {
     public final String senderPhone;
     public final boolean sender;
     public final long listOriginAtMs;
+    /**
+     * Whether {@link #sourceSemantic} is the feed's own structured Worker status, read from the
+     * stored row before any presentation downgrade or takeover (audit L8, user 2026-09-25). A later
+     * v5_query takeover changes the presented status, never this.
+     */
+    public final boolean sourceStatusStructured;
 
     public ExpressItem(
             long rowId,
@@ -359,7 +366,7 @@ public final class ExpressItem {
                 routeInterface, routeCredential, routeCredentialAvailable, projectedWaybill,
                 projectedCompanyName, projectedTracksJson, sourceProvider, manuallyAdded,
                 manualTimelineProvider, manualTimelineSuccessAt, sourceSemantic,
-                carrierNormalization, signedRetainedAt, "", 0L, false);
+                carrierNormalization, signedRetainedAt, "", 0L, false, false);
     }
 
     private ExpressItem(long rowId, String phone, String waybill, String courierCode,
@@ -371,8 +378,10 @@ public final class ExpressItem {
             String projectedTracksJson, String sourceProvider, boolean manuallyAdded,
             String manualTimelineProvider, long manualTimelineSuccessAt,
             StatusSemantic sourceSemantic, CarrierNormalization carrierNormalization,
-            long signedRetainedAt, String senderPhone, long listOriginAtMs, boolean sender) {
+            long signedRetainedAt, String senderPhone, long listOriginAtMs, boolean sender,
+            boolean sourceStatusStructured) {
         this.rowId = rowId;
+        this.sourceStatusStructured = sourceStatusStructured;
         this.phone = clean(phone);
         this.waybill = clean(waybill);
         this.courierCode = clean(courierCode);
@@ -420,30 +429,69 @@ public final class ExpressItem {
                 sourceSemantic, carrierNormalization, value);
     }
 
+    /**
+     * The one status display function behind list, detail, widgets and notification titles (audit
+     * L5, user defaults of 2026-09-25): every word comes from the shared status label table
+     * ({@link CarrierRegistry#statusLabels()}, served by the Worker with the carrier snapshot), so
+     * DANGER reads 异常件 and UNKNOWN reads 暂无状态 whatever text a Worker once stored on the row.
+     * The Worker projection still selects a subtype (待派送) and, on an order row without a real
+     * waybill, the order word (订单已取消); a projected JD parcel reads the ordinary word (已签收).
+     */
     public String displayStatus() {
+        ExpressStatusLabels table = CarrierRegistry.statusLabels();
+        boolean unprojectedOrder = isAccountOrder() && projectedWaybill.isEmpty();
         // 订单阶段自己走完的账号订单写「已完成」，不写「已签收」（用户定 2026-09-06，与 iOS
         // shipmentPresentationStatus 同口径）：这一票从来没有过承运商签收动作，只有订单终点。
-        if (semantic == StatusSemantic.COMPLETED && isAccountOrder()
-                && projectedWaybill.isEmpty()) {
-            return "已完成";
+        if (unprojectedOrder && semantic == StatusSemantic.COMPLETED) {
+            String order = table.orderLabel(StatusSemantic.COMPLETED);
+            if (!order.isEmpty()) return order;
         }
         WorkerStatusProjection projected = WorkerStatusProjection.cached(tracksJson);
         if (projected != null && projected.matches(semantic, statusEventTime)) {
-            if (isJingDongSource() && semantic == StatusSemantic.COMPLETED
-                    && "ORDER".equals(projected.scope)) return semantic.label;
-            return projected.text.isEmpty() ? semantic.label : projected.text;
+            String subtype = table.subtypeLabel(semantic, projected.code);
+            if (!subtype.isEmpty()) return subtype;
+            if ("ORDER".equals(projected.scope) && unprojectedOrder) {
+                String order = table.orderLabel(semantic);
+                if (!order.isEmpty()) return order;
+            }
         }
-        return semantic == StatusSemantic.UNKNOWN && !statusDescription.isEmpty()
-                ? statusDescription : semantic.label;
+        return table.label(semantic);
     }
 
     public String displayCompany() {
+        String shown = matchedCompany();
+        // 其余裁决 32、33：识别进入终态、快递100 也没给名字的件，承运商位置填来源传回的 cpCode 原样（不是「京东快递」），
+        // 没传回就空着（用户：「传回啥 cpcode 就填啥」）。
+        return unmatched(shown) && carrierRecognitionExhausted() ? courierCode : shown;
+    }
+
+    /**
+     * The carrier position as the list, widgets, detail header and notification title show it. 其余裁决 35
+     * （用户 2026-09-27：「算了统一前面加 快递 两个字吧」）：承运商为空时统一写「快递」，例如「快递 4547 · 已揽收」；有承运商名
+     * 或原始码时照旧显示它们。{@link #displayCompany()} itself stays the carrier name, empty when there is none.
+     */
+    public String displayCarrierLabel() {
+        return carrierLabel(displayCompany());
+    }
+
+    /** 其余裁决 35: an empty carrier position reads 快递. */
+    public static String carrierLabel(String company) {
+        String value = company == null ? "" : company.trim();
+        return value.isEmpty() ? "快递" : value;
+    }
+
+    private String matchedCompany() {
         if (isAccountOrder() && projectedWaybill.isEmpty()) return "京东购物";
         CarrierRegistry.Carrier carrier = resolvedCarrier();
         if (carrier != null) return carrier.companyName;
+        // 其余裁决 29：快递100 认得出、内置表没有的承运商，显示它给的名字（只作显示）。
+        String offTable = carrierNormalization.offTableName();
+        if (!offTable.isEmpty()) return offTable;
         if (!projectedWaybill.isEmpty()) {
-            return CarrierRegistry.resolveName(projectedCompanyName) != null
-                    || "快递".equals(projectedCompanyName) ? "" : projectedCompanyName;
+            return CarrierRegistry.resolveProjected(projectedCompanyName) != null
+                    || "快递".equals(projectedCompanyName)
+                    || CarrierNormalization.PROJECTION_EXHAUSTED.equals(projectedCompanyName)
+                    ? "" : projectedCompanyName;
         }
         String display = CarrierRegistry.displayName(courierCode, companyName);
         if (CarrierRegistry.resolveCpCode(courierCode) != null
@@ -452,11 +500,67 @@ public final class ExpressItem {
         return "快递".equals(display) ? "" : display;
     }
 
+    /**
+     * 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：这一行亮出了真实运单号，承运商却还没对上——显示的承运商
+     * 为空，或只是原样搬过来的原始码（内置表认不出）。京东平台标签在非 JD 运单上不算承运商（R-20，已由
+     * {@link #resolvedCarrier()} 拒掉）。内置表结果、快递100 表外名、上游或京粉页给的真名都算对上；未投影的订单显示
+     * 「京东购物」，不在此列。与 iOS carrier-gate.ts carrierAwaitingRecognition 同口径。
+     *
+     * <p>其余裁决 32、33：识别已进入终态、快递100 没给名字的，不再挂着，照常放行；承运商位置是来源传回的 cpCode 原样，没有就
+     * 空着，不造占位文案。</p>
+     */
+    public boolean carrierPending() {
+        if (isAccountOrder() && projectedWaybill.isEmpty()) return false;
+        if (displayWaybill().isEmpty()) return false;
+        if (resolvedCarrier() != null) return false;
+        return unmatched(matchedCompany()) && !carrierRecognitionExhausted();
+    }
+
+    /** What a row shows is no carrier: blank, the generic 快递, or its own raw code copied over. */
+    private boolean unmatched(String shown) {
+        if (shown.isEmpty() || "快递".equals(shown)) return true;
+        return !carrierNormalization.offTableName().equals(shown)
+                && shown.equalsIgnoreCase(courierCode);
+    }
+
+    /**
+     * 其余裁决 32：这一行的承运商识别已进入终态（投影订单记在它的投影上，其它行记在它自己的识别结果上）。
+     */
+    public boolean carrierRecognitionExhausted() {
+        if (isAccountOrder()) {
+            return !projectedWaybill.isEmpty()
+                    && CarrierNormalization.PROJECTION_EXHAUSTED.equals(projectedCompanyName);
+        }
+        return carrierNormalization.recognitionExhausted();
+    }
+
     /** Account rows that expose only an order id always use our shopping asset. */
     public int displayIconResource() {
         if (isAccountOrder() && projectedWaybill.isEmpty()) return R.drawable.jdshopping;
         CarrierRegistry.Carrier carrier = resolvedCarrier();
         return carrier == null ? R.drawable.ic_card_express_cp_default : carrier.iconResource;
+    }
+
+    /** 只换表头（最新一条的文案和时间）；轨迹、状态和其它字段原样保留。 */
+    public ExpressItem withHeadline(String detail, String time) {
+        return new ExpressItem(rowId, phone, waybill, courierCode, companyName, semantic,
+                statusDescription, detail, time, tracksJson, remark, source,
+                detailUrl, statusEventTime, updatedAt, stateOwner, routeOwner, routeInterface,
+                routeCredential, routeCredentialAvailable, projectedWaybill, projectedCompanyName,
+                projectedTracksJson, sourceProvider, manuallyAdded, manualTimelineProvider,
+                manualTimelineSuccessAt, sourceSemantic, carrierNormalization, signedRetainedAt,
+                senderPhone, listOriginAtMs, sender, sourceStatusStructured);
+    }
+
+    /** Display projection only; persisted status and completion evidence stay in the owning row. */
+    public ExpressItem withDisplayStatus(StatusSemantic displayStatus, long displayStatusAt) {
+        return new ExpressItem(rowId, phone, waybill, courierCode, companyName, displayStatus,
+                displayStatus.label, latestDetail, latestTime, tracksJson, remark, source,
+                detailUrl, displayStatusAt, updatedAt, stateOwner, routeOwner, routeInterface,
+                routeCredential, routeCredentialAvailable, projectedWaybill, projectedCompanyName,
+                projectedTracksJson, sourceProvider, manuallyAdded, manualTimelineProvider,
+                manualTimelineSuccessAt, sourceSemantic, carrierNormalization, signedRetainedAt,
+                senderPhone, listOriginAtMs, sender, sourceStatusStructured);
     }
 
     public ExpressItem withAccountListMetadata(String senderPhone, long originAtMs) {
@@ -470,7 +574,19 @@ public final class ExpressItem {
                 routeCredential, routeCredentialAvailable, projectedWaybill, projectedCompanyName,
                 projectedTracksJson, sourceProvider, manuallyAdded, manualTimelineProvider,
                 manualTimelineSuccessAt, sourceSemantic, carrierNormalization, signedRetainedAt,
-                senderPhone, originAtMs, sender);
+                senderPhone, originAtMs, sender, sourceStatusStructured);
+    }
+
+    /** Carries the feed's own structured status flag onto a projected copy (audit L8). */
+    public ExpressItem withSourceStatusStructured(boolean value) {
+        if (sourceStatusStructured == value) return this;
+        return new ExpressItem(rowId, phone, waybill, courierCode, companyName, semantic,
+                statusDescription, latestDetail, latestTime, tracksJson, remark, source,
+                detailUrl, statusEventTime, updatedAt, stateOwner, routeOwner, routeInterface,
+                routeCredential, routeCredentialAvailable, projectedWaybill, projectedCompanyName,
+                projectedTracksJson, sourceProvider, manuallyAdded, manualTimelineProvider,
+                manualTimelineSuccessAt, sourceSemantic, carrierNormalization, signedRetainedAt,
+                senderPhone, listOriginAtMs, sender, value);
     }
 
     public String displayWaybill() {
@@ -492,7 +608,7 @@ public final class ExpressItem {
         if (exactCarrier != null && !platformCarrierOnly(exactCarrier)) return exactCarrier;
         CarrierRegistry.Carrier rawCarrier = rawCarrierForDisplay();
         if (rawCarrier != null) return rawCarrier;
-        CarrierRegistry.Carrier projected = CarrierRegistry.resolveName(projectedCompanyName);
+        CarrierRegistry.Carrier projected = CarrierRegistry.resolveProjected(projectedCompanyName);
         if (projected != null && !platformCarrierOnly(projected)) return projected;
         if (carrierNormalization.recognized()) {
             CarrierRegistry.Carrier current = CarrierRegistry.resolve(

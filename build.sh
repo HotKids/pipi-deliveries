@@ -163,9 +163,38 @@ resolve_android_sdk() {
   export ANDROID_HOME ANDROID_SDK_ROOT
 }
 
+# Inside the Pipi Assistant workspace (this directory is its deliveries/ and the parent carries
+# tools/env.sh), Gradle caches stay in the workspace's project-data/, as Pipi's tools/env.sh does:
+# an inherited GRADLE_USER_HOME is ignored and only PIPI_DATA_ROOT, kept inside the workspace,
+# moves the data root. Lite uses its own cache/gradle-lite beside Pipi's cache/gradle. A
+# standalone pipi-deliveries checkout keeps Gradle's usual user home.
+configure_gradle_user_home() {
+  local workspace
+  local data_root
+
+  [[ "$(basename "$ROOT")" == "deliveries" && -f "$ROOT/../tools/env.sh" ]] || return 0
+  workspace="$(cd "$ROOT/.." && pwd -P)"
+  data_root="${PIPI_DATA_ROOT:-$workspace/project-data}"
+  case "$data_root/" in
+    "$workspace/project-data/validation/"*)
+      printf 'Gradle caches must not persist in project-data/validation: %s\n' "$data_root" >&2
+      exit 1
+      ;;
+    "$workspace"/*) ;;
+    *)
+      printf 'Gradle caches must stay under %s (resolved: %s)\n' "$workspace" "$data_root" >&2
+      exit 1
+      ;;
+  esac
+  GRADLE_USER_HOME="$data_root/cache/gradle-lite"
+  mkdir -p "$GRADLE_USER_HOME"
+  export GRADLE_USER_HOME
+}
+
 resolve_java_home
 resolve_local_properties
 resolve_android_sdk
+configure_gradle_user_home
 
 case "$MODE" in
   beta)
@@ -218,11 +247,17 @@ case "$MODE" in
       :app:assembleStandardDebug :app:assembleCompatDebug \
       :app:assembleStandardRelease :app:assembleCompatRelease
     ;;
+  test)
+    # Unit tests only; extra arguments (for example --tests <filter>) go to Gradle.
+    "$ROOT/gradlew" -p "$ROOT" \
+      :app:testStandardDebugUnitTest \
+      :app:testCompatDebugUnitTest "${@:2}"
+    ;;
   clean)
     "$ROOT/gradlew" -p "$ROOT" clean
     ;;
   *)
-    echo "Usage: $0 [beta|debug|compat|release|check|clean]" >&2
+    echo "Usage: $0 [beta|debug|compat|release|check|test|clean]" >&2
     exit 2
     ;;
 esac

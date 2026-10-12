@@ -83,7 +83,7 @@ public final class WorkerStatusContractTest {
         ExpressItem item = new ExpressItem(1, "", "EMS8021", "EMS", "EMS", chosen.semantic,
                 chosen.statusDescription, chosen.latestDetail, chosen.latestTime, chosen.tracksJson,
                 "", "manual", "", chosen.statusEventTime, 1, "manual", "");
-        assertEquals("驿站派送中", item.displayStatus());
+        assertEquals("待派送", item.displayStatus());
         ExpressItem changedTime = new ExpressItem(1, "", "EMS8021", "EMS", "EMS", chosen.semantic,
                 chosen.statusDescription, chosen.latestDetail, chosen.latestTime, chosen.tracksJson,
                 "", "manual", "", chosen.statusEventTime + 1, 1, "manual", "");

@@ -1,0 +1,387 @@
+{
+  "schemaVersion": 1,
+  "about": "Audit L7 (2026-09-25). A JD row with a real waybill (SHIPMENT scope) is past the order stage: only the exact Illegal Status + 取消 tuple is a cancellation, the exact 待揽件 wire value stays SHIPPED and every other pre-pickup state reads PICKED. Order rows keep the source status, except that a cancellation without the exact tuple goes back to ORDERED (user decision 2026-09-25); `display` applies statusLabels.unprojectedOrder.",
+  "cases": [
+    {
+      "provenance": "observed Samsung JD wire pair (kdbot tests/check_samsung.py)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "揽件",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "揽收",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "揽件",
+        "text": "已揽件",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "PICKED",
+          "label": "已揽件"
+        }
+      }
+    },
+    {
+      "provenance": "observed Samsung JD wire pair (kdbot tests/check_samsung.py)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "派件",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "派件",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "派件",
+        "text": "派送中",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "DELIVERY",
+          "label": "派送中"
+        }
+      }
+    },
+    {
+      "provenance": "exact Samsung JD wire value (Pipi StatusSemantic.isSamsungJdShippedRaw)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "待揽件",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "SHIPPED",
+        "code": "待揽件",
+        "text": "已发货",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "SHIPPED",
+          "label": "已发货"
+        }
+      }
+    },
+    {
+      "provenance": "observed cancellation tuple (Pipi StatusSemantic)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "Illegal Status",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "取消",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "ILLEGAL STATUS",
+        "text": "已取消",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "CANCELLED",
+          "label": "已取消"
+        }
+      }
+    },
+    {
+      "provenance": "verified descriptor tuple (express-status.test.js)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "Illegal Status",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "订单完成",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "ILLEGAL STATUS",
+        "text": "已签收",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "COMPLETED",
+          "label": "已签收"
+        }
+      }
+    },
+    {
+      "provenance": "rule boundary: SHIPPED that is not the exact 待揽件 wire value",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "Illegal Status",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "待揽件",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "ILLEGAL STATUS",
+        "text": "已揽件",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "PICKED",
+          "label": "已揽件"
+        }
+      }
+    },
+    {
+      "provenance": "rule boundary: descriptor outside the verified table",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "Illegal Status",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "评价",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "UNKNOWN",
+        "code": "ILLEGAL STATUS",
+        "text": "暂无状态",
+        "eventAtMs": 0,
+        "display": {
+          "semantic": "UNKNOWN",
+          "label": "暂无状态"
+        }
+      }
+    },
+    {
+      "provenance": "rule boundary: ORDERED code (jdStatusForWaybillPhase lines 554-557)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "CREATE",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "CREATE",
+        "text": "已揽件",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "PICKED",
+          "label": "已揽件"
+        }
+      }
+    },
+    {
+      "provenance": "rule boundary: cancellation without the tuple (lines 548-549)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "CANCEL",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "UNKNOWN",
+        "code": "CANCEL",
+        "text": "暂无状态",
+        "eventAtMs": 0,
+        "display": {
+          "semantic": "UNKNOWN",
+          "label": "暂无状态"
+        }
+      }
+    },
+    {
+      "provenance": "observed Samsung JD wire pair (kdbot tests/check_samsung.py)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "揽件",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "揽收"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "PICKED",
+        "code": "揽件",
+        "text": "已揽件",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "ORDERED",
+          "label": "已下单"
+        }
+      }
+    },
+    {
+      "provenance": "observed Samsung JD wire pair (kdbot tests/check_samsung.py)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "派件",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "派件"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "DELIVERY",
+        "code": "派件",
+        "text": "派送中",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "DELIVERY",
+          "label": "派送中"
+        }
+      }
+    },
+    {
+      "provenance": "exact Samsung JD wire value (Pipi StatusSemantic.isSamsungJdShippedRaw)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "待揽件",
+        "logisticGmtModified": "2026-09-13 15:55:13"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "SHIPPED",
+        "code": "待揽件",
+        "text": "已发货",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "ORDERED",
+          "label": "已下单"
+        }
+      }
+    },
+    {
+      "provenance": "observed cancellation tuple (Pipi StatusSemantic)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "Illegal Status",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "取消"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "CANCELLED",
+        "code": "ILLEGAL STATUS",
+        "text": "订单已取消",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "CANCELLED",
+          "label": "订单已取消"
+        }
+      }
+    },
+    {
+      "provenance": "verified descriptor tuple (express-status.test.js)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "Illegal Status",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "订单完成"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "COMPLETED",
+        "code": "ILLEGAL STATUS",
+        "text": "已完成",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "COMPLETED",
+          "label": "已完成"
+        }
+      }
+    },
+    {
+      "provenance": "rule boundary: SHIPPED that is not the exact 待揽件 wire value",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "Illegal Status",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "待揽件"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "SHIPPED",
+        "code": "ILLEGAL STATUS",
+        "text": "已发货",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "ORDERED",
+          "label": "已下单"
+        }
+      }
+    },
+    {
+      "provenance": "rule boundary: descriptor outside the verified table",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "Illegal Status",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "评价"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "UNKNOWN",
+        "code": "ILLEGAL STATUS",
+        "text": "暂无状态",
+        "eventAtMs": 0,
+        "display": {
+          "semantic": "UNKNOWN",
+          "label": "暂无状态"
+        }
+      }
+    },
+    {
+      "provenance": "rule boundary: ORDERED code (jdStatusForWaybillPhase lines 554-557)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "CREATE",
+        "logisticGmtModified": "2026-09-13 15:55:13"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "ORDERED",
+        "code": "CREATE",
+        "text": "已下单",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "ORDERED",
+          "label": "已下单"
+        }
+      }
+    },
+    {
+      "provenance": "rule boundary: cancellation without the tuple (lines 548-549)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "CANCEL",
+        "logisticGmtModified": "2026-09-13 15:55:13"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "ORDERED",
+        "code": "CANCEL",
+        "text": "已下单",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "ORDERED",
+          "label": "已下单"
+        }
+      }
+    }
+  ]
+}

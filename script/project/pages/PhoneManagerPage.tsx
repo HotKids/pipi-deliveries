@@ -109,7 +109,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     await runAction(async () => {
       const confirmed = await Dialog.confirm({
         title: "解绑手机号",
-        message: `解绑后，与 ${binding.phone} 关联的快递也将一并删除。`,
+        message: `解绑后，将不再同步与 ${binding.phone} 关联的快递。`,
         cancelLabel: "取消",
         confirmLabel: "解绑",
       });

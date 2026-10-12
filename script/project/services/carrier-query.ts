@@ -29,11 +29,15 @@ type CarrierIndexes = Readonly<{
 }>;
 
 export const BOOTSTRAP_TABLE_VERSION =
-  "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa";
+  "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9";
 export const BOOTSTRAP_TABLE_SOURCE = "embedded-transition";
 
+/**
+ * Carrier names match without whitespace and without letter case, as on Pipi, Lite and the Worker
+ * (audit C11, adopted 2026-09-25): a lower-case 「ems」 names the same carrier as 「EMS」.
+ */
 function normalizeCarrierName(value: string): string {
-  return String(value || "").replace(/\s+/g, "").trim();
+  return String(value || "").replace(/\s+/g, "").trim().toUpperCase();
 }
 
 function stringList(value: readonly string[], pattern?: RegExp): string[] | null {
@@ -86,7 +90,7 @@ function buildCarrierIndexes(
   const version = String(versionInput || "").trim();
   const source = String(sourceInput || "").trim();
   if (!/^[A-Za-z0-9._-]{1,128}$/.test(version) ||
-    !source || source.length > 256 || !/^[\x20-\x7E]+$/.test(source)) return null;
+    !source || source.length > 128) return null;
   if (!Array.isArray(values) || values.length < 17 || values.length > 256) return null;
   const records: CarrierQueryRecord[] = [];
   const standardCodes = new Set<string>();

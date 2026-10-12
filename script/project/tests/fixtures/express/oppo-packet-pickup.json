@@ -1,0 +1,48 @@
+{
+  "code": 7000,
+  "data": {
+    "total": 1,
+    "list": [
+      {
+        "expressNo": "TEST8021",
+        "companyCode": "YTO",
+        "company": "圆通速递",
+        "dataSource": "CAINIAO",
+        "state": "TRANSPORT",
+        "stateDesc": "运输中",
+        "updateTime": "2026-09-13 15:55:13",
+        "logisticDetail": "快件已到达【测试转运中心】",
+        "details": [
+          {
+            "time": "2026-09-12 15:55:13",
+            "desc": "【测试市】快件已揽收"
+          },
+          {
+            "time": "2026-09-13 15:55:13",
+            "desc": "快件已到达【测试转运中心】"
+          }
+        ],
+        "normalizedStatus": {
+          "version": 1,
+          "scope": "SHIPMENT",
+          "semantic": "TRANSIT",
+          "code": "TRANSPORT",
+          "text": "运输中",
+          "priority": 0,
+          "eventAtMs": 1789286113000,
+          "structured": true
+        },
+        "normalizedCarrierCode": "YTO",
+        "normalizedCarrierName": "圆通速递",
+        "carrierBuiltIn": true,
+        "carrierNormalization": {
+          "standardCode": "YTO",
+          "displayName": "圆通速递",
+          "kuaidi100Code": "yuantong",
+          "isBuiltIn": true,
+          "tableVersion": "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9"
+        }
+      }
+    ]
+  }
+}

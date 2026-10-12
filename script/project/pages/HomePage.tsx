@@ -24,6 +24,7 @@ import {
   subscribeRefreshState,
 } from "../services/sync";
 import { stateLoadFailure, visibleShipments } from "../services/storage";
+import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { DetailPage } from "./DetailPage";
 import {
   consumeShipmentNavigationTarget,
@@ -47,8 +48,18 @@ import {
 } from "../services/ui-feedback";
 import {
   ManualCarrierDetectionCoordinator,
+  storedCarrierDetection,
   type ManualCarrierDetection,
 } from "../services/manual-query";
+
+/**
+ * The floor all three clients share (Lite ExpressListActivity, Pipi add_express_sheet). Raising it
+ * on one client alone would mean a 6-to-9-character waybill fills the chip on two clients and not
+ * on the third, which is the divergence AGENTS §11 forbids; the debounce below is a local input
+ * detail and carries no cross-client semantics.
+ */
+const CARRIER_DETECTION_MIN_LENGTH = 6;
+const CARRIER_DETECTION_DEBOUNCE_MS = 600;
 import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
 import { normalizeWaybill } from "../services/status";
 import {
@@ -173,8 +184,13 @@ export function HomePage(props: {
       clearTimeout(carrierDetectionTimerRef.current);
       carrierDetectionTimerRef.current = null;
     }
-    setDetectedCarrier(null);
-    if (normalized.length < 6) return;
+    // A waybill already in the list answers for itself, with no request and no cache to consult.
+    const stored = storedCarrierDetection(normalized, props.state.shipments);
+    setDetectedCarrier(stored);
+    if (stored) return;
+    // Recognition is a network question, so it waits for a number that looks finished rather than
+    // firing on every prefix; a 16-digit waybill used to spend ten recognitions on its way in.
+    if (normalized.length < CARRIER_DETECTION_MIN_LENGTH) return;
 
     carrierDetectionTimerRef.current = setTimeout(() => {
       carrierDetectionTimerRef.current = null;
@@ -192,7 +208,7 @@ export function HomePage(props: {
             setDetectedCarrier(null);
           }
         });
-    }, 250);
+    }, CARRIER_DETECTION_DEBOUNCE_MS);
   }
 
   function clearQueryInputs() {
@@ -564,7 +580,7 @@ export function HomePage(props: {
           topBarTrailing: (
             <Button
               buttonStyle="plain"
-              action={() => setNotice("暂未接入")}
+              action={() => setNotice("暂未开放")}
             >
               <Image
                 systemName="plus"
@@ -587,6 +603,7 @@ export function HomePage(props: {
             <DetailPage
               key={selected.identity.id}
               shipment={selected}
+              attachedOrders={attachedProjectedOrders(props.state.shipments, selected)}
               manualPreview={manualPreview}
               refreshOnAppear={manualPreview
                 ? manualPreviewNeedsDetailRefresh(selected)
@@ -637,7 +654,7 @@ export function HomePage(props: {
                 foregroundStyle="tertiaryLabel"
                 frame={{ maxWidth: "infinity", alignment: "center" }}
               >
-                只显示 14 天内的快递信息
+                只显示 14 天内的快递
               </Text>
             </VStack>
           </List>

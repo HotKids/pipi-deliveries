@@ -1,0 +1,292 @@
+{
+  "schemaVersion": 1,
+  "about": "Audit L5/L1 (user defaults 2026-09-25). `table` is served as statusLabels by POST /api/express/carriers. `workerText` is normalizedStatus.text for that projection; `display` is what every surface shows. ORDER cases are order rows without a projected real waybill; the Worker never downgrades their semantic itself.",
+  "table": {
+    "schemaVersion": 1,
+    "labels": {
+      "UNKNOWN": "暂无状态",
+      "ORDERED": "已下单",
+      "SHIPPED": "已发货",
+      "PICKED": "已揽件",
+      "TRANSIT": "运输中",
+      "DELIVERY": "派送中",
+      "WAITING_PICKUP": "待取件",
+      "COMPLETED": "已签收",
+      "DANGER": "异常件",
+      "CANCELLED": "已取消"
+    },
+    "orderLabels": {
+      "COMPLETED": "已完成",
+      "CANCELLED": "订单已取消"
+    },
+    "subtypes": [
+      {
+        "semantic": "DELIVERY",
+        "code": "STA_DELIVERING",
+        "label": "待派送",
+        "priority": 1
+      }
+    ],
+    "unprojectedOrder": {
+      "scope": "ORDER",
+      "displaySemantic": {
+        "PICKED": "ORDERED",
+        "SHIPPED": "ORDERED"
+      }
+    }
+  },
+  "cases": [
+    {
+      "scope": "SHIPMENT",
+      "semantic": "UNKNOWN",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "暂无状态",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "UNKNOWN",
+        "label": "暂无状态"
+      }
+    },
+    {
+      "scope": "SHIPMENT",
+      "semantic": "ORDERED",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "已下单",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "ORDERED",
+        "label": "已下单"
+      }
+    },
+    {
+      "scope": "SHIPMENT",
+      "semantic": "SHIPPED",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "已发货",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "SHIPPED",
+        "label": "已发货"
+      }
+    },
+    {
+      "scope": "SHIPMENT",
+      "semantic": "PICKED",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "已揽件",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "PICKED",
+        "label": "已揽件"
+      }
+    },
+    {
+      "scope": "SHIPMENT",
+      "semantic": "TRANSIT",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "运输中",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "TRANSIT",
+        "label": "运输中"
+      }
+    },
+    {
+      "scope": "SHIPMENT",
+      "semantic": "DELIVERY",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "派送中",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "DELIVERY",
+        "label": "派送中"
+      }
+    },
+    {
+      "scope": "SHIPMENT",
+      "semantic": "WAITING_PICKUP",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "待取件",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "WAITING_PICKUP",
+        "label": "待取件"
+      }
+    },
+    {
+      "scope": "SHIPMENT",
+      "semantic": "COMPLETED",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "已签收",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "COMPLETED",
+        "label": "已签收"
+      }
+    },
+    {
+      "scope": "SHIPMENT",
+      "semantic": "DANGER",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "异常件",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "DANGER",
+        "label": "异常件"
+      }
+    },
+    {
+      "scope": "SHIPMENT",
+      "semantic": "CANCELLED",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "已取消",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "CANCELLED",
+        "label": "已取消"
+      }
+    },
+    {
+      "scope": "SHIPMENT",
+      "semantic": "DELIVERY",
+      "code": "STA_DELIVERING",
+      "projectedWaybill": false,
+      "workerText": "待派送",
+      "workerPriority": 1,
+      "display": {
+        "semantic": "DELIVERY",
+        "label": "待派送"
+      }
+    },
+    {
+      "scope": "ORDER",
+      "semantic": "UNKNOWN",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "暂无状态",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "UNKNOWN",
+        "label": "暂无状态"
+      }
+    },
+    {
+      "scope": "ORDER",
+      "semantic": "ORDERED",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "已下单",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "ORDERED",
+        "label": "已下单"
+      }
+    },
+    {
+      "scope": "ORDER",
+      "semantic": "SHIPPED",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "已发货",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "ORDERED",
+        "label": "已下单"
+      }
+    },
+    {
+      "scope": "ORDER",
+      "semantic": "PICKED",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "已揽件",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "ORDERED",
+        "label": "已下单"
+      }
+    },
+    {
+      "scope": "ORDER",
+      "semantic": "TRANSIT",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "运输中",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "TRANSIT",
+        "label": "运输中"
+      }
+    },
+    {
+      "scope": "ORDER",
+      "semantic": "DELIVERY",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "派送中",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "DELIVERY",
+        "label": "派送中"
+      }
+    },
+    {
+      "scope": "ORDER",
+      "semantic": "WAITING_PICKUP",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "待取件",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "WAITING_PICKUP",
+        "label": "待取件"
+      }
+    },
+    {
+      "scope": "ORDER",
+      "semantic": "COMPLETED",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "已完成",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "COMPLETED",
+        "label": "已完成"
+      }
+    },
+    {
+      "scope": "ORDER",
+      "semantic": "DANGER",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "异常件",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "DANGER",
+        "label": "异常件"
+      }
+    },
+    {
+      "scope": "ORDER",
+      "semantic": "CANCELLED",
+      "code": "",
+      "projectedWaybill": false,
+      "workerText": "订单已取消",
+      "workerPriority": 0,
+      "display": {
+        "semantic": "CANCELLED",
+        "label": "订单已取消"
+      }
+    }
+  ]
+}

@@ -688,8 +688,11 @@ assert.equal(inPageProbeDisposed, true);
       },
     );
     assert.equal(projected.waybill, "JT4006839564547");
-    assert.equal(projected.courierCode, "JTSD");
-    assert.equal(projected.companyName, "极兔速递");
+    // 其余裁决 7 (2026-09-26): only the waybill comes from the text; projectAccountOrderWithCarrier then
+    // resolves the carrier through the built-in table and recognition.
+    assert.equal(projected.courierCode, "");
+    assert.equal(projected.companyName, "");
+    assert.equal(projected.rawCourierCode, "");
     assert.equal(projected.projectionTimeline, null);
     assert.equal(textDiagnostics?.identitySource, "feed_text");
   } finally {

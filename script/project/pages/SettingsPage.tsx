@@ -22,6 +22,11 @@ import {
   saveGatewayToken,
 } from "../services/credentials";
 import type { GatewayCredentialStatus } from "../services/credentials";
+import {
+  ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE,
+  ACCESS_KEY_INVALID_MESSAGE,
+} from "../services/gateway";
+import { savedKeyActivatedElsewhere } from "../services/scripting-activation";
 import { loadState } from "../services/storage";
 import {
   bindPhone,
@@ -129,7 +134,11 @@ export function SettingsPage(props: {
       setAuthorizationNotice(
         credentialStatus === "conflict"
           ? "检测到本地授权记录不一致，请重新保存 Access Key"
-          : "",
+          // User decision 2026-09-27: the only activation prompt on this page; the Worker's
+          // 403 key_activated_elsewhere for the saved key sets it, no save-time check.
+          : next === "authorized" && savedKeyActivatedElsewhere()
+            ? ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE
+            : "",
       );
       return next;
     } catch {
@@ -149,11 +158,11 @@ export function SettingsPage(props: {
       refreshAuthorization();
       const value = error instanceof Error
         ? error.message
-        : "保存失败，请稍后重试";
-      if (value === "Access Key 格式不正确") {
+        : "保存失败，请重试";
+      if (value === ACCESS_KEY_INVALID_MESSAGE) {
         setAuthorizationNotice(value);
       } else {
-        setNotice("保存失败，请稍后重试");
+        setNotice("保存失败，请重试");
       }
     }
   }

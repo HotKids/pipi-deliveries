@@ -22,6 +22,11 @@ import {
 } from "./scripting-crypto";
 import { utf8Data } from "./scripting-data";
 import { createDiagnosticFlowId, writeDiagnostic } from "./logger";
+import {
+  loadScriptingActivation,
+  recordScriptingActivationOutcome,
+  SCRIPTING_ACTIVATION_HEADER,
+} from "./scripting-activation";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -52,6 +57,10 @@ const SAFE_GATEWAY_ERROR_CODES = new Set([
   "invalid_upstream_response",
   "invalid_waybill",
   "invalid_weather_operation",
+  // Access Key activation (CONTRACT §3.3): the two codes this client must tell apart from the
+  // generic 403 forbidden and 5xx answers.
+  "key_activated_elsewhere",
+  "key_store_unavailable",
   "method_not_allowed",
   "not_found",
   "rate_limited",
@@ -106,7 +115,7 @@ function sha256Hex(value: string): string {
 function tokenSecret(token: string): string {
   const secret = scriptingTokenSecret(token);
   if (!secret) {
-    throw new GatewayError("Access Key 格式不正确");
+    throw new GatewayError(ACCESS_KEY_INVALID_MESSAGE);
   }
   return secret;
 }
@@ -155,7 +164,21 @@ function validateRoute(route: string): string {
   return clean;
 }
 
-function failureMessage(status: number): string {
+/**
+ * Access Key copy (user decision 2026-09-27): every invalid-key case — wrong format, mistyped, never
+ * issued, replaced by a newer key, revoked, expired shared Token — is the Worker's single
+ * 401 unauthorized and reads the same. 403 key_activated_elsewhere is its own case; 403 forbidden
+ * and 401 expired_request keep their existing copy.
+ */
+export const ACCESS_KEY_INVALID_MESSAGE = "Access Key 无效或已失效";
+export const ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE = "Access Key 已使用";
+export const ACTIVATION_SAVE_FAILED_MESSAGE = "激活信息保存失败，请重试";
+
+function failureMessage(status: number, gatewayCode = ""): string {
+  if (status === 401 && gatewayCode === "unauthorized") return ACCESS_KEY_INVALID_MESSAGE;
+  if (status === 403 && gatewayCode === "key_activated_elsewhere") {
+    return ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE;
+  }
   if (status === 401) return "访问授权无效，请检查 Access Key 与系统时间";
   if (status === 403) return "当前授权不可使用此功能";
   if (status === 408) return "请求超时，请稍后重试";
@@ -192,6 +215,7 @@ export async function postGateway<T extends Record<string, unknown>>(
     deadlineAtMs?: number;
     signal?: AbortSignal;
     onQueryAttempted?: (authorized: boolean) => void;
+    beforeQuery?: () => void;
   } = {},
 ): Promise<T> {
   const credentialStatus = gatewayCredentialStatus();
@@ -205,6 +229,14 @@ export async function postGateway<T extends Record<string, unknown>>(
     throw new GatewayError("请先配置 Access Key");
   }
   const route = validateRoute(routeInput);
+  // The activation identity is saved before any request carries it; if it cannot be saved nothing
+  // is sent, so a key can never bind to an identity that is lost right after.
+  let activation: string;
+  try {
+    activation = loadScriptingActivation();
+  } catch {
+    throw new GatewayError(ACTIVATION_SAVE_FAILED_MESSAGE);
+  }
   const body = JSON.stringify(payload || {});
   const timestamp = Math.floor(Date.now() / 1000);
   const nonce = requestNonce();
@@ -265,12 +297,15 @@ export async function postGateway<T extends Record<string, unknown>>(
     });
     lifecycle.signal.addEventListener("abort", abortLifecycle, { once: true });
     const request = (async () => {
+      options.beforeQuery?.();
       requestStarted = true;
       response = await fetch(`${GATEWAY_ORIGIN}${route}`, {
         method: SCRIPTING_REQUEST_METHOD,
         headers: {
           "Content-Type": "application/json; charset=utf-8",
           ...authHeaders,
+          // Not part of the protocol-v1 signature (CONTRACT §3.1).
+          [SCRIPTING_ACTIVATION_HEADER]: activation,
         },
         body,
         timeout: timeoutMs / 1000,
@@ -349,6 +384,8 @@ export async function postGateway<T extends Record<string, unknown>>(
     }
   }
 
+  const responseCode = gatewayErrorCode(responseText);
+  recordScriptingActivationOutcome(credentials.token, response.status, responseCode);
   let value: unknown;
   try { value = JSON.parse(responseText) as unknown; } catch { /* HTTP errors can have non-JSON bodies. */ }
   const root = value && typeof value === "object" && !Array.isArray(value)
@@ -365,9 +402,9 @@ export async function postGateway<T extends Record<string, unknown>>(
   }
   if (!response.ok) {
     throw new GatewayError(
-      failureMessage(response.status),
+      failureMessage(response.status, responseCode),
       response.status,
-      gatewayErrorCode(responseText),
+      responseCode,
       response.status === 401 ? scriptingCryptoRuntimeLabel() : "",
       response.status === 502 ? recognitionRetryAt(responseText) : 0,
     );

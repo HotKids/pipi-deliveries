@@ -13,7 +13,8 @@ import java.util.UUID;
 public final class ExpressDatabase extends SQLiteOpenHelper {
     private static final int LAST_LEGACY_SOURCE_VERSION = 7;
     public static final String DATABASE = "deliveries.db";
-    public static final int VERSION = 25;
+    /** v26：观测表按记录号分槽、归属表记归属记录号（投影订单的归属，用户 2026-09-25 采纳）。 */
+    public static final int VERSION = 26;
     public static final String NOTIFICATION_OUTBOX_TABLE = "express_notification_outbox";
     public static final String EXPRESS_TABLE = "server_express";
     public static final String PHONE_TABLE = "express_phone";
@@ -28,6 +29,17 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     public static final String OWNER_MANUAL_RETRY_TABLE = "owner_manual_retry";
     public static final String KUAIDI100_PENDING_TABLE = "k100_pending";
     public static final String ORDER_PROJECTION_TABLE = "order_projection";
+    /**
+     * 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：京粉页给出了订单的运单号，那一轮承运商却没对上，订单行
+     * 保持原样；页面拿到的运单号与页面包暂存在这里，之后各轮只补识别、不再开页，对上时按原京粉页落库路径一次投影。
+     */
+    public static final String HELD_ORDER_PROJECTION_TABLE = "held_order_projection";
+    /**
+     * 优化 1、3（用户 2026-10-03「这轮就统一」「四端都持久化、不因暂时消失删除」）：每一行一份持久化台账，一项一个键——签收后
+     * 京粉页那一次（值是它用掉时的完成时间 T，T 变了就是新的一代）、头条与状态对齐「同组时间只刷一次」（值是那一组时间）。
+     * 只随这一行的真实删除（用户删除、留存删除、运单号被重用）一起删，行暂时不可见时照旧保留。onOpen 建表，不升库版本。
+     */
+    public static final String ROW_LEDGER_TABLE = "row_refresh_ledger";
     public static final String UNBOUND_ASSOCIATION_TABLE = "unbound_association";
     public static final String AUTOMATIC_OWNERSHIP_TABLE = "automatic_ownership";
     public static final String AUTOMATIC_OBSERVATION_TABLE = "automatic_observation";
@@ -81,6 +93,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
             // Invalidate only v5 query caches; reconstructing individual nodes would guess origin.
             db.delete(ACCOUNT_V5_TIMELINE_TABLE, null, null);
         }
+        if (oldVersion < 26) migrateAutomaticRecordKeys(db);
         dropObsoleteTables(db);
     }
 
@@ -276,6 +289,22 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         db.execSQL("CREATE INDEX IF NOT EXISTS order_projection_display_idx ON "
                 + ORDER_PROJECTION_TABLE
                 + "(normalized_display_waybill,binding_source)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + ROW_LEDGER_TABLE + "("
+                + "owner_row_id INTEGER NOT NULL,entry TEXT NOT NULL,value TEXT NOT NULL,"
+                + "updated_at INTEGER NOT NULL,PRIMARY KEY(owner_row_id,entry))");
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + HELD_ORDER_PROJECTION_TABLE + "("
+                + "owner_row_id INTEGER PRIMARY KEY NOT NULL,"
+                + "normalized_source_id TEXT NOT NULL,binding_source TEXT NOT NULL,"
+                + "normalized_waybill TEXT NOT NULL,provider TEXT NOT NULL,"
+                + "waybill TEXT NOT NULL,courier_code TEXT DEFAULT '',"
+                + "company_name TEXT DEFAULT '',status_code TEXT DEFAULT '',"
+                + "status_event_time INTEGER NOT NULL DEFAULT 0,"
+                + "status_description TEXT DEFAULT '',"
+                + "structured_status INTEGER NOT NULL DEFAULT 0,"
+                + "latest_time TEXT DEFAULT '',latest_detail TEXT DEFAULT '',"
+                + "tracks_json TEXT DEFAULT '[]',detail_url TEXT DEFAULT '',"
+                + "phone TEXT DEFAULT '',"
+                + "success_at INTEGER NOT NULL,complete INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE TABLE IF NOT EXISTS " + UNBOUND_ASSOCIATION_TABLE + "("
                 + "waybill_hash TEXT NOT NULL,binding_source TEXT NOT NULL,"
                 + "phone_hash TEXT NOT NULL,"
@@ -307,11 +336,16 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 + "miss_count INTEGER NOT NULL DEFAULT 0,"
                 + "release_reason TEXT NOT NULL DEFAULT '',"
                 + "cooldown_until INTEGER NOT NULL DEFAULT 0,"
-                + "display_frozen INTEGER NOT NULL DEFAULT 0)");
+                + "display_frozen INTEGER NOT NULL DEFAULT 0,"
+                + "owner_record_key TEXT NOT NULL DEFAULT '')");
         addColumnIfMissing(db, AUTOMATIC_OWNERSHIP_TABLE,
                 "owner_phone", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(db, AUTOMATIC_OWNERSHIP_TABLE,
                 "owner_binding_generation", "TEXT NOT NULL DEFAULT ''");
+        // The owning upstream record's own number: an order keeps its order number after it is
+        // projected onto a carrier waybill, so two records on one waybill never share an owner.
+        addColumnIfMissing(db, AUTOMATIC_OWNERSHIP_TABLE,
+                "owner_record_key", "TEXT NOT NULL DEFAULT ''");
         db.execSQL("CREATE INDEX IF NOT EXISTS automatic_ownership_provider_idx ON "
                 + AUTOMATIC_OWNERSHIP_TABLE
                 + "(owner_provider,owner_binding_generation,owner_row_id)");
@@ -335,9 +369,13 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 + "carrier_table_version TEXT DEFAULT '',"
                 + "qualified INTEGER NOT NULL DEFAULT 0,"
                 + "observed_at INTEGER NOT NULL,"
-                + "PRIMARY KEY(normalized_waybill,owner_provider,binding_generation))");
+                + "record_key TEXT NOT NULL DEFAULT '',"
+                + "PRIMARY KEY(normalized_waybill,owner_provider,binding_generation,record_key))");
         addColumnIfMissing(db, AUTOMATIC_OBSERVATION_TABLE,
                 "binding_generation", "TEXT NOT NULL DEFAULT ''");
+        // One slot per upstream record: its own number, the same value as the waybill column.
+        addColumnIfMissing(db, AUTOMATIC_OBSERVATION_TABLE,
+                "record_key", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(db, AUTOMATIC_OBSERVATION_TABLE,
                 "sender_phone", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(db, AUTOMATIC_OBSERVATION_TABLE,
@@ -388,6 +426,52 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         }
         db.execSQL("DROP TABLE " + legacy);
         createAutomaticOwnershipTables(db);
+    }
+
+    /**
+     * v26 (ownership of projected orders, user decision 2026-09-25): the observation key gains the
+     * record's own number, backfilled exactly from the waybill column every slot already stores,
+     * and each owner records which record owns it, backfilled from the owner row's current number.
+     * Rows are neither rewritten nor removed; repairing rows damaged by older builds is separate.
+     */
+    static void migrateAutomaticRecordKeys(SQLiteDatabase db) {
+        String legacy = AUTOMATIC_OBSERVATION_TABLE + "_record_key";
+        db.execSQL("DROP TABLE IF EXISTS " + legacy);
+        db.execSQL("ALTER TABLE " + AUTOMATIC_OBSERVATION_TABLE + " RENAME TO " + legacy);
+        createAutomaticOwnershipTables(db);
+        try (Cursor cursor = db.query(legacy, null, null, null, null, null, null)) {
+            while (cursor.moveToNext()) {
+                android.content.ContentValues values = copyRow(cursor);
+                values.put("record_key", ExpressSourcePolicy.normalizeWaybill(
+                        value(cursor, "waybill")));
+                if (db.insertWithOnConflict(AUTOMATIC_OBSERVATION_TABLE, null, values,
+                        SQLiteDatabase.CONFLICT_REPLACE) < 0L) {
+                    throw new IllegalStateException("Automatic observation record key failed");
+                }
+            }
+        }
+        db.execSQL("DROP TABLE " + legacy);
+        createAutomaticOwnershipTables(db);
+        Map<String, Long> owners = new LinkedHashMap<>();
+        try (Cursor cursor = db.query(AUTOMATIC_OWNERSHIP_TABLE,
+                new String[]{"normalized_waybill", "owner_row_id"},
+                "COALESCE(owner_record_key,'')=''", null, null, null, null)) {
+            while (cursor.moveToNext()) owners.put(cursor.getString(0), cursor.getLong(1));
+        }
+        for (Map.Entry<String, Long> owner : owners.entrySet()) {
+            String recordKey = "";
+            try (Cursor row = db.query(EXPRESS_TABLE, new String[]{"mailNo"}, "_id=?",
+                    new String[]{Long.toString(owner.getValue())}, null, null, null, "1")) {
+                if (row.moveToFirst()) {
+                    recordKey = ExpressSourcePolicy.normalizeWaybill(value(row, "mailNo"));
+                }
+            }
+            if (recordKey.isEmpty()) continue;
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put("owner_record_key", recordKey);
+            db.update(AUTOMATIC_OWNERSHIP_TABLE, values, "normalized_waybill=?",
+                    new String[]{owner.getKey()});
+        }
     }
 
     private static android.content.ContentValues copyRow(Cursor cursor) {

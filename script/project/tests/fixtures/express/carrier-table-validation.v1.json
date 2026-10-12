@@ -1,0 +1,997 @@
+{
+  "schemaVersion": 1,
+  "about": "Audit C5 (2026-09-25). One validation contract: structure, field types and namespace conflicts, never table content (BUILTIN_CARRIERS_FINAL §三, EXPRESS_OWNERSHIP_PLAN §4.2). Apply `operations` to `base` (set a path; delete a path, where an array index removes that element) and validate the result; `valid` is the Worker's verdict. `entryCount` is the accepted number of entries (user decision 2026-09-25: the clients' 17 to 256).",
+  "entryCount": {
+    "min": 17,
+    "max": 256
+  },
+  "base": {
+    "schemaVersion": 2,
+    "version": "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
+    "source": "embedded-transition",
+    "entries": [
+      {
+        "standardCode": "SF",
+        "displayName": "顺丰速运",
+        "kuaidi100Code": "shunfeng",
+        "hotline": "95338",
+        "iconKey": "sf",
+        "codeAliases": [
+          "SFEXPRESS",
+          "SHUNFENG"
+        ],
+        "nameAliases": [
+          "顺丰",
+          "顺丰快递"
+        ],
+        "requiresPhoneTail": true
+      },
+      {
+        "standardCode": "ZTO",
+        "displayName": "中通快递",
+        "kuaidi100Code": "zhongtong",
+        "hotline": "95311",
+        "iconKey": "zto",
+        "codeAliases": [
+          "ZHONGTONG"
+        ],
+        "nameAliases": [
+          "中通"
+        ],
+        "requiresPhoneTail": true
+      },
+      {
+        "standardCode": "ZTOKY",
+        "displayName": "中通快运",
+        "kuaidi100Code": "zhongtongkuaiyun",
+        "hotline": "",
+        "iconKey": "zto",
+        "codeAliases": [],
+        "nameAliases": [],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "YTO",
+        "displayName": "圆通速递",
+        "kuaidi100Code": "yuantong",
+        "hotline": "95554",
+        "iconKey": "yto",
+        "codeAliases": [
+          "YUANTONG"
+        ],
+        "nameAliases": [
+          "圆通",
+          "圆通快递"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "STO",
+        "displayName": "申通快递",
+        "kuaidi100Code": "shentong",
+        "hotline": "95543",
+        "iconKey": "sto",
+        "codeAliases": [
+          "SHENTONG"
+        ],
+        "nameAliases": [
+          "申通"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "YD",
+        "displayName": "韵达快递",
+        "kuaidi100Code": "yunda",
+        "hotline": "95546",
+        "iconKey": "yd",
+        "codeAliases": [
+          "YUNDA"
+        ],
+        "nameAliases": [
+          "韵达",
+          "韵达速递"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "JD",
+        "displayName": "京东快递",
+        "kuaidi100Code": "jd",
+        "hotline": "950616",
+        "iconKey": "jd",
+        "codeAliases": [
+          "JDKD",
+          "JINGDONG",
+          "JDLEX"
+        ],
+        "nameAliases": [
+          "京东",
+          "京东物流",
+          "京东快递"
+        ],
+        "requiresPhoneTail": true,
+        "codePrefixAliases": [
+          "JD"
+        ]
+      },
+      {
+        "standardCode": "JDKY",
+        "displayName": "京东快运",
+        "kuaidi100Code": "jingdongkuaiyun",
+        "hotline": "950616",
+        "iconKey": "jd",
+        "codeAliases": [],
+        "nameAliases": [],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "EMS",
+        "displayName": "EMS",
+        "kuaidi100Code": "ems",
+        "hotline": "11183",
+        "iconKey": "ems",
+        "codeAliases": [
+          "EYB"
+        ],
+        "nameAliases": [
+          "邮政EMS",
+          "邮政特快"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "YZPY",
+        "displayName": "邮政快递",
+        "kuaidi100Code": "youzhengguonei",
+        "hotline": "11183",
+        "iconKey": "yzpy",
+        "codeAliases": [
+          "POST",
+          "POSTB",
+          "CHINAPOST",
+          "YOUZHENGGUONEI",
+          "YOUZHENGBK"
+        ],
+        "nameAliases": [
+          "邮政",
+          "邮政快递包裹",
+          "中国邮政",
+          "邮政国内标准",
+          "邮政包裹",
+          "包裹信件"
+        ],
+        "requiresPhoneTail": false,
+        "kuaidi100CodeAliases": [
+          "youzhengbk"
+        ]
+      },
+      {
+        "standardCode": "JTSD",
+        "displayName": "极兔速递",
+        "kuaidi100Code": "jtexpress",
+        "hotline": "956025",
+        "iconKey": "jtsd",
+        "codeAliases": [
+          "JT",
+          "J&T",
+          "JTEXPRESS",
+          "JITU"
+        ],
+        "nameAliases": [
+          "极兔"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "HTKY",
+        "displayName": "极兔速递",
+        "kuaidi100Code": "huitongkuaidi",
+        "hotline": "956025",
+        "iconKey": "jtsd",
+        "codeAliases": [
+          "BEST",
+          "BESTQJT",
+          "HUITONGKUAIDI"
+        ],
+        "nameAliases": [
+          "百世",
+          "百世快递",
+          "汇通"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "DBL",
+        "displayName": "德邦快递",
+        "kuaidi100Code": "debangkuaidi",
+        "hotline": "95353",
+        "iconKey": "dbl",
+        "codeAliases": [
+          "DBKD",
+          "DEBANGKUAIDI",
+          "DEBANGWULIU"
+        ],
+        "nameAliases": [
+          "德邦",
+          "德邦物流"
+        ],
+        "requiresPhoneTail": false,
+        "kuaidi100CodeAliases": [
+          "debangwuliu"
+        ]
+      },
+      {
+        "standardCode": "KYSY",
+        "displayName": "跨越速运",
+        "kuaidi100Code": "kuayue",
+        "hotline": "95324",
+        "iconKey": "kysy",
+        "codeAliases": [
+          "KY",
+          "KUAYUE",
+          "KYE"
+        ],
+        "nameAliases": [
+          "跨越"
+        ],
+        "requiresPhoneTail": true
+      },
+      {
+        "standardCode": "ZJS",
+        "displayName": "宅急送",
+        "kuaidi100Code": "zhaijisong",
+        "hotline": "4006789000",
+        "iconKey": "zjs",
+        "codeAliases": [
+          "ZHAIJISONG"
+        ],
+        "nameAliases": [],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "UC",
+        "displayName": "优速快递",
+        "kuaidi100Code": "youshuwuliu",
+        "hotline": "",
+        "iconKey": "uc",
+        "codeAliases": [
+          "YOUSHUWULIU"
+        ],
+        "nameAliases": [
+          "优速"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "DANNIAO",
+        "displayName": "丹鸟速递",
+        "kuaidi100Code": "danniao",
+        "hotline": "",
+        "iconKey": "danniao",
+        "codeAliases": [
+          "ZMKM",
+          "ZMKMKD"
+        ],
+        "nameAliases": [
+          "丹鸟",
+          "丹鸟快递",
+          "菜鸟速递",
+          "菜鸟直送",
+          "菜鸟直送(丹鸟)",
+          "菜鸟直送（丹鸟）"
+        ],
+        "requiresPhoneTail": false
+      }
+    ]
+  },
+  "formalStartupBase": {
+    "schemaVersion": 2,
+    "version": "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
+    "source": "embedded-transition",
+    "entries": [
+      {
+        "standardCode": "SF",
+        "displayName": "顺丰速运",
+        "kuaidi100Code": "shunfeng",
+        "hotline": "95338",
+        "iconKey": "sf",
+        "codeAliases": [
+          "SFEXPRESS",
+          "SHUNFENG"
+        ],
+        "nameAliases": [
+          "顺丰",
+          "顺丰快递"
+        ],
+        "requiresPhoneTail": true
+      },
+      {
+        "standardCode": "ZTO",
+        "displayName": "中通快递",
+        "kuaidi100Code": "zhongtong",
+        "hotline": "95311",
+        "iconKey": "zto",
+        "codeAliases": [
+          "ZHONGTONG"
+        ],
+        "nameAliases": [
+          "中通"
+        ],
+        "requiresPhoneTail": true
+      },
+      {
+        "standardCode": "ZTOKY",
+        "displayName": "中通快运",
+        "kuaidi100Code": "zhongtongkuaiyun",
+        "hotline": "",
+        "iconKey": "zto",
+        "codeAliases": [],
+        "nameAliases": [],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "YTO",
+        "displayName": "圆通速递",
+        "kuaidi100Code": "yuantong",
+        "hotline": "95554",
+        "iconKey": "yto",
+        "codeAliases": [
+          "YUANTONG"
+        ],
+        "nameAliases": [
+          "圆通",
+          "圆通快递"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "STO",
+        "displayName": "申通快递",
+        "kuaidi100Code": "shentong",
+        "hotline": "95543",
+        "iconKey": "sto",
+        "codeAliases": [
+          "SHENTONG"
+        ],
+        "nameAliases": [
+          "申通"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "YD",
+        "displayName": "韵达快递",
+        "kuaidi100Code": "yunda",
+        "hotline": "95546",
+        "iconKey": "yd",
+        "codeAliases": [
+          "YUNDA"
+        ],
+        "nameAliases": [
+          "韵达",
+          "韵达速递"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "JD",
+        "displayName": "京东快递",
+        "kuaidi100Code": "jd",
+        "hotline": "950616",
+        "iconKey": "jd",
+        "codeAliases": [
+          "JDKD",
+          "JINGDONG",
+          "JDLEX"
+        ],
+        "nameAliases": [
+          "京东",
+          "京东物流",
+          "京东快递"
+        ],
+        "requiresPhoneTail": true,
+        "codePrefixAliases": [
+          "JD"
+        ]
+      },
+      {
+        "standardCode": "JDKY",
+        "displayName": "京东快运",
+        "kuaidi100Code": "jingdongkuaiyun",
+        "hotline": "950616",
+        "iconKey": "jd",
+        "codeAliases": [],
+        "nameAliases": [],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "EMS",
+        "displayName": "EMS",
+        "kuaidi100Code": "ems",
+        "hotline": "11183",
+        "iconKey": "ems",
+        "codeAliases": [
+          "EYB"
+        ],
+        "nameAliases": [
+          "邮政EMS",
+          "邮政特快"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "YZPY",
+        "displayName": "邮政快递",
+        "kuaidi100Code": "youzhengguonei",
+        "hotline": "11183",
+        "iconKey": "yzpy",
+        "codeAliases": [
+          "POST",
+          "POSTB",
+          "CHINAPOST",
+          "YOUZHENGGUONEI",
+          "YOUZHENGBK"
+        ],
+        "nameAliases": [
+          "邮政",
+          "邮政快递包裹",
+          "中国邮政",
+          "邮政国内标准",
+          "邮政包裹",
+          "包裹信件"
+        ],
+        "requiresPhoneTail": false,
+        "kuaidi100CodeAliases": [
+          "youzhengbk"
+        ]
+      },
+      {
+        "standardCode": "JTSD",
+        "displayName": "极兔速递",
+        "kuaidi100Code": "jtexpress",
+        "hotline": "956025",
+        "iconKey": "jtsd",
+        "codeAliases": [
+          "JT",
+          "J&T",
+          "JTEXPRESS",
+          "JITU"
+        ],
+        "nameAliases": [
+          "极兔"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "HTKY",
+        "displayName": "极兔速递",
+        "kuaidi100Code": "huitongkuaidi",
+        "hotline": "956025",
+        "iconKey": "jtsd",
+        "codeAliases": [
+          "BEST",
+          "BESTQJT",
+          "HUITONGKUAIDI"
+        ],
+        "nameAliases": [
+          "百世",
+          "百世快递",
+          "汇通"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "DBL",
+        "displayName": "德邦快递",
+        "kuaidi100Code": "debangkuaidi",
+        "hotline": "95353",
+        "iconKey": "dbl",
+        "codeAliases": [
+          "DBKD",
+          "DEBANGKUAIDI",
+          "DEBANGWULIU"
+        ],
+        "nameAliases": [
+          "德邦",
+          "德邦物流"
+        ],
+        "requiresPhoneTail": false,
+        "kuaidi100CodeAliases": [
+          "debangwuliu"
+        ]
+      },
+      {
+        "standardCode": "KYSY",
+        "displayName": "跨越速运",
+        "kuaidi100Code": "kuayue",
+        "hotline": "95324",
+        "iconKey": "kysy",
+        "codeAliases": [
+          "KY",
+          "KUAYUE",
+          "KYE"
+        ],
+        "nameAliases": [
+          "跨越"
+        ],
+        "requiresPhoneTail": true
+      },
+      {
+        "standardCode": "ZJS",
+        "displayName": "宅急送",
+        "kuaidi100Code": "zhaijisong",
+        "hotline": "4006789000",
+        "iconKey": "zjs",
+        "codeAliases": [
+          "ZHAIJISONG"
+        ],
+        "nameAliases": [],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "UC",
+        "displayName": "优速快递",
+        "kuaidi100Code": "youshuwuliu",
+        "hotline": "",
+        "iconKey": "uc",
+        "codeAliases": [
+          "YOUSHUWULIU"
+        ],
+        "nameAliases": [
+          "优速"
+        ],
+        "requiresPhoneTail": false
+      },
+      {
+        "standardCode": "DANNIAO",
+        "displayName": "丹鸟速递",
+        "kuaidi100Code": "danniao",
+        "hotline": "",
+        "iconKey": "danniao",
+        "codeAliases": [
+          "ZMKM",
+          "ZMKMKD"
+        ],
+        "nameAliases": [
+          "丹鸟",
+          "丹鸟快递",
+          "菜鸟速递",
+          "菜鸟直送",
+          "菜鸟直送(丹鸟)",
+          "菜鸟直送（丹鸟）"
+        ],
+        "requiresPhoneTail": false
+      }
+    ]
+  },
+  "provenance": {
+    "base": {
+      "track": "beta",
+      "artifactPath": "cloudflare/express-gateway/src/worker.beta.js",
+      "artifactSha256": "273c0818282c8bad0c4b8e4abf2207fa7595d3a5e09eace63087092e51084c88"
+    },
+    "formalStartupBase": {
+      "track": "formal",
+      "artifactPath": "cloudflare/express-gateway/src/worker.js",
+      "artifactSha256": "273c0818282c8bad0c4b8e4abf2207fa7595d3a5e09eace63087092e51084c88"
+    }
+  },
+  "cases": [
+    {
+      "name": "the served table",
+      "operations": [],
+      "valid": true
+    },
+    {
+      "name": "a hotline written with hyphens",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            14,
+            "hotline"
+          ],
+          "value": "400-678-9000"
+        }
+      ],
+      "valid": true
+    },
+    {
+      "name": "a changed display name",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            11,
+            "displayName"
+          ],
+          "value": "百世快递"
+        }
+      ],
+      "valid": true
+    },
+    {
+      "name": "a removed code alias",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            8,
+            "codeAliases"
+          ],
+          "value": []
+        }
+      ],
+      "valid": true
+    },
+    {
+      "name": "no code prefix rule",
+      "operations": [
+        {
+          "delete": [
+            "entries",
+            6,
+            "codePrefixAliases"
+          ]
+        }
+      ],
+      "valid": true
+    },
+    {
+      "name": "an icon key with a hyphen",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            2,
+            "iconKey"
+          ],
+          "value": "zto-ky"
+        }
+      ],
+      "valid": true
+    },
+    {
+      "name": "a lower-case code alias",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            13,
+            "codeAliases"
+          ],
+          "value": [
+            "KY",
+            "KUAYUE",
+            "kye"
+          ]
+        }
+      ],
+      "valid": true
+    },
+    {
+      "name": "no reverse Kuaidi100 alias",
+      "operations": [
+        {
+          "delete": [
+            "entries",
+            12,
+            "kuaidi100CodeAliases"
+          ]
+        }
+      ],
+      "valid": true
+    },
+    {
+      "name": "a Git commit sha as content version",
+      "operations": [
+        {
+          "set": [
+            "version"
+          ],
+          "value": "1203504d3c4df6a419bd67878e20701a2c325bb3"
+        }
+      ],
+      "valid": true
+    },
+    {
+      "name": "schemaVersion 1",
+      "operations": [
+        {
+          "set": [
+            "schemaVersion"
+          ],
+          "value": 1
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "schemaVersion as a string",
+      "operations": [
+        {
+          "set": [
+            "schemaVersion"
+          ],
+          "value": "2"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "no version",
+      "operations": [
+        {
+          "delete": [
+            "version"
+          ]
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "a version with a space",
+      "operations": [
+        {
+          "set": [
+            "version"
+          ],
+          "value": "v 1"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "no source",
+      "operations": [
+        {
+          "delete": [
+            "source"
+          ]
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "sixteen entries",
+      "operations": [
+        {
+          "delete": [
+            "entries",
+            16
+          ]
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "entries is not an array",
+      "operations": [
+        {
+          "set": [
+            "entries"
+          ],
+          "value": {}
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "requiresPhoneTail missing",
+      "operations": [
+        {
+          "delete": [
+            "entries",
+            0,
+            "requiresPhoneTail"
+          ]
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "requiresPhoneTail as a string",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            0,
+            "requiresPhoneTail"
+          ],
+          "value": "true"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "codeAliases as a string",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            6,
+            "codeAliases"
+          ],
+          "value": "JDKD"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "kuaidi100CodeAliases as a string",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            12,
+            "kuaidi100CodeAliases"
+          ],
+          "value": "debangwuliu"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "a literal * in a code prefix",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            6,
+            "codePrefixAliases"
+          ],
+          "value": [
+            "JD*"
+          ]
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "hotline missing",
+      "operations": [
+        {
+          "delete": [
+            "entries",
+            0,
+            "hotline"
+          ]
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "iconKey missing",
+      "operations": [
+        {
+          "delete": [
+            "entries",
+            0,
+            "iconKey"
+          ]
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "an empty display name",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            0,
+            "displayName"
+          ],
+          "value": ""
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "a 17-character standard code",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            0,
+            "standardCode"
+          ],
+          "value": "SFEXPRESSDOMESTIC"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "an upper-case Kuaidi100 code",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            0,
+            "kuaidi100Code"
+          ],
+          "value": "SHUNFENG"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "a duplicate standard code",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            3,
+            "standardCode"
+          ],
+          "value": "SF"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "two carriers share a Kuaidi100 code",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            3,
+            "kuaidi100Code"
+          ],
+          "value": "shunfeng"
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "two carriers share a raw code alias",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            8,
+            "codeAliases"
+          ],
+          "value": [
+            "EYB",
+            "JDKD"
+          ]
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "overlapping code prefixes",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            10,
+            "codePrefixAliases"
+          ],
+          "value": [
+            "J"
+          ]
+        }
+      ],
+      "valid": false
+    },
+    {
+      "name": "a reverse alias that is another carrier's code",
+      "operations": [
+        {
+          "set": [
+            "entries",
+            12,
+            "kuaidi100CodeAliases"
+          ],
+          "value": [
+            "shunfeng"
+          ]
+        }
+      ],
+      "valid": false
+    }
+  ]
+}

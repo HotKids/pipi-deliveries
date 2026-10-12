@@ -19,7 +19,7 @@ public final class ExpressTrackPhoneLinksTest {
     @Test public void onlyPhoneSpansDialAndOriginalTextIsPreserved() {
         Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
         TextView view = new TextView(activity);
-        String original = "快递员电话：17717262250，网点0755-12345678，官方95338。运单SF5111792798482、1238138001380009，日期2026-09-09。";
+        String original = "快递员电话：19900002250，网点0755-12345678，官方95338。运单SF1000000002250、1238138001380009，日期2026-09-09。";
         view.setText(original);
         ExpressTrackPhoneLinks.apply(view, 0xff1e85e5);
         assertEquals(original, view.getText().toString());
@@ -29,6 +29,6 @@ public final class ExpressTrackPhoneLinksTest {
         links[0].onClick(view);
         Intent intent = Shadows.shadowOf(activity).getNextStartedActivity();
         assertEquals(Intent.ACTION_DIAL, intent.getAction());
-        assertEquals("tel:17717262250", intent.getDataString());
+        assertEquals("tel:19900002250", intent.getDataString());
     }
 }

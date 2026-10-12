@@ -362,7 +362,8 @@ await assert.rejects(
     budgetMs: 30_000,
     accountOrderProjection: false,
   }),
-  /访问授权无效/,
+  // User decision 2026-09-27: the Worker's 401 unauthorized reads 「Access Key 无效或已失效」.
+  /Access Key 无效或已失效/,
   "credential recovery must remain fatal even when cached state exists",
 );
 assert.deepEqual(fetchStages, ["account_list"]);
@@ -409,8 +410,9 @@ console.log("account-list cached fallback production-path tests passed");
     let reads = 0;
     onStorageRead = (key) => {
       if (key === "pipi_deliveries_state_v1" && ++reads === 2) {
-        // Model suspension during the initial state read, before a new network deadline.
-        clock += 120_000;
+        // Model suspension during the initial state read, before a new network deadline. Twenty seconds
+        // in, the first runtime's 30-second lease still holds (用户 2026-09-28「30 秒有效 + 每 10 秒续约」).
+        clock += 20_000;
         onStorageRead = null;
       }
     };
@@ -425,14 +427,16 @@ console.log("account-list cached fallback production-path tests passed");
       entry.details.result === "active_cross_runtime_refresh")!.details;
     assert.equal(blocked.trigger, "background");
     assert.equal(blocked.blockingTrigger, "background");
-    assert.equal(blocked.blockingLeaseAgeMs, 120_000);
-    assert.equal(blocked.blockingLeaseRemainingMs, 5_000);
+    assert.equal(blocked.blockingLeaseAgeMs, 20_000);
+    assert.equal(blocked.blockingLeaseRemainingMs, 10_000);
     assert.ok(readDiagnostics().some(entry => entry.event === "refresh.started" &&
       entry.details.flowId === blocked.blockingFlowId));
     assert.equal("token" in blocked, false);
-    clock += 6_000;
+    // Still suspended 120 seconds in, the first runtime never renewed its lease: it no longer blocks the second.
+    clock += 100_000;
     accountReply = async () => jsonResponse({ code: 0, data: { expressList: [] } });
-    await secondRuntime.refreshAllShipments("interface5", { backgroundHostSafe: true });
+    const second = await secondRuntime.refreshAllShipments("interface5", { backgroundHostSafe: true });
+    assert.equal(second.skipReason, undefined, "a runtime suspended past its lease does not block the next one");
     const afterSecond = loadState(clock);
     releaseFirst(jsonResponse({ code: 0, data: { expressList: [{
       mailNo: "ZTSTALE5901", cpCode: "ZTO", name: "Synthetic carrier",
@@ -662,6 +666,10 @@ try {
     dispose() {}
   };
   let sequence = 0;
+  // T23 (user 2026-09-26, 其余裁决 28): a text waybill is projected once recognition matched its carrier, so the
+  // recognizer's answer is in place; the page case below names its own carrier.
+  const { seedRecognizedCarriers } = await import("./carrier-recognition-seed");
+  seedRecognizedCarriers({ [realWaybill]: "ZTO" });
   try {
     for (const background of [false, true]) {
       for (const detail of ["已揽收", "已下单", "正在打包", "等待揽收", "预计明天送达",

@@ -101,7 +101,7 @@ assert.equal(
   "validation",
 );
 assert.equal(
-  classifyDiagnosticError(new Error("Access Key 格式不正确")),
+  classifyDiagnosticError(new Error("Access Key 无效或已失效")),
   "authorization",
 );
 assert.deepEqual(

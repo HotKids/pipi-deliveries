@@ -1,0 +1,207 @@
+{
+  "schemaVersion": 1,
+  "about": "Audit L6 (2026-09-25). The Worker's normalizedStatus.scope (v5 also normalizedStatusScope) is the single order-row rule; clients keep local rules only for rows stored before a Worker projection existed. v5: provider JingDong with a 16-digit mailNo, or a 12-digit mailNo with cpCode JDKD and name 京东商品快递. v3: source JD or JD_EXPRESS without a distinct realWaybillCode.",
+  "cases": [
+    {
+      "interface": "v5",
+      "provenance": "12-digit exchange order (user report 2026-09-24, JD-EXCHANGE-ORDER-20260924)",
+      "row": {
+        "mailNo": "351100058925",
+        "cpCode": "JDKD",
+        "provider": "JingDong",
+        "name": "京东商品快递"
+      },
+      "expected": {
+        "scope": "ORDER"
+      }
+    },
+    {
+      "interface": "v5",
+      "provenance": "16-digit JD order id (Fold7 2026-09-03)",
+      "row": {
+        "mailNo": "3610448002878202",
+        "cpCode": "JDKD",
+        "provider": "JingDong",
+        "name": "京东商品快递"
+      },
+      "expected": {
+        "scope": "ORDER"
+      }
+    },
+    {
+      "interface": "v5",
+      "provenance": "16-digit JD order id under the shopping label",
+      "row": {
+        "mailNo": "3610448002878202",
+        "cpCode": "JDKD",
+        "provider": "JingDong",
+        "name": "京东购物"
+      },
+      "expected": {
+        "scope": "ORDER"
+      }
+    },
+    {
+      "interface": "v5",
+      "provenance": "16-digit order id named through providerName (express_carrier_normalization.test.js)",
+      "row": {
+        "providerName": "JingDong",
+        "mailNo": "1234567890123456",
+        "name": "京东购物"
+      },
+      "expected": {
+        "scope": "ORDER"
+      }
+    },
+    {
+      "interface": "v5",
+      "provenance": "JDKD platform code on a real JT waybill (Fold7 2026-09-03, R-20)",
+      "row": {
+        "mailNo": "JT4006839564547",
+        "cpCode": "JDKD",
+        "provider": "JingDong",
+        "name": "京东快递"
+      },
+      "expected": {
+        "scope": "SHIPMENT"
+      }
+    },
+    {
+      "interface": "v5",
+      "provenance": "JDKD platform code on a real JDVD waybill (Fold7 2026-09-03)",
+      "row": {
+        "mailNo": "JDVD10645984010",
+        "cpCode": "JDKD",
+        "provider": "JingDong",
+        "name": "京东快递"
+      },
+      "expected": {
+        "scope": "SHIPMENT"
+      }
+    },
+    {
+      "interface": "v5",
+      "provenance": "rule boundary: 12 digits with JDKD but a carrier name (2026-09-24 tightening)",
+      "row": {
+        "mailNo": "751234567891",
+        "cpCode": "JDKD",
+        "provider": "JingDong",
+        "name": "京东快递"
+      },
+      "expected": {
+        "scope": "SHIPMENT"
+      }
+    },
+    {
+      "interface": "v5",
+      "provenance": "rule boundary: 12 digits with a real carrier code",
+      "row": {
+        "mailNo": "751234567890",
+        "cpCode": "ZTO",
+        "provider": "JingDong",
+        "name": "中通快递"
+      },
+      "expected": {
+        "scope": "SHIPMENT"
+      }
+    },
+    {
+      "interface": "v5",
+      "provenance": "rule boundary: 16 digits from a non-JD provider",
+      "row": {
+        "provider": "Other",
+        "mailNo": "1234567890123456",
+        "cpCode": "SF",
+        "name": "顺丰速运"
+      },
+      "expected": {
+        "scope": "SHIPMENT"
+      }
+    },
+    {
+      "interface": "v5",
+      "provenance": "ordinary Cainiao parcel (worker.test.js)",
+      "row": {
+        "mailNo": "79025657335745",
+        "cpCode": "ZTO",
+        "provider": "CaiNiao"
+      },
+      "expected": {
+        "scope": "SHIPMENT"
+      }
+    },
+    {
+      "interface": "v3",
+      "provenance": "JD order that already reports a JT waybill (Fold7 2026-09-03)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "realWaybillCode": "JT4006839564547",
+        "source": "JD",
+        "logisticCompanyCode": "JD",
+        "logisticCompanyName": "京东快递"
+      },
+      "expected": {
+        "scope": "SHIPMENT"
+      }
+    },
+    {
+      "interface": "v3",
+      "provenance": "JD order that already reports a JDVD waybill (Fold7 2026-09-03)",
+      "row": {
+        "waybillCode": "3607248016472969",
+        "realWaybillCode": "JDVD10645984010",
+        "source": "JD",
+        "logisticCompanyCode": "JD",
+        "logisticCompanyName": "京东快递"
+      },
+      "expected": {
+        "scope": "SHIPMENT"
+      }
+    },
+    {
+      "interface": "v3",
+      "provenance": "JD order without a real waybill (parity doc 2026-09-08)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD"
+      },
+      "expected": {
+        "scope": "ORDER"
+      }
+    },
+    {
+      "interface": "v3",
+      "provenance": "JD order whose realWaybillCode repeats the order id (kdbot tests/check_samsung.py)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "realWaybillCode": "3610448002878202",
+        "source": "JD"
+      },
+      "expected": {
+        "scope": "ORDER"
+      }
+    },
+    {
+      "interface": "v3",
+      "provenance": "JD_EXPRESS source variant without a real waybill (Samsung source markers)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD_EXPRESS"
+      },
+      "expected": {
+        "scope": "ORDER"
+      }
+    },
+    {
+      "interface": "v3",
+      "provenance": "Cainiao-source row (source CNGG as in express-status.test.js; waybill from the parity doc 2026-09-25)",
+      "row": {
+        "waybillCode": "YT3763429197051",
+        "source": "CNGG"
+      },
+      "expected": {
+        "scope": "SHIPMENT"
+      }
+    }
+  ]
+}

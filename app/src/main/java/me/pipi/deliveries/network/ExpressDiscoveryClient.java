@@ -90,6 +90,42 @@ public final class ExpressDiscoveryClient {
         }
     }
 
+    /**
+     * 代码 5（用户 2026-10-03「照 Pipi / iOS 的做法改」）：the list's parcel records that would add new rows with a carrier still
+     * to recognise wait until the rest of the list (every order summary included) is stored; their carriers are then
+     * recognised and they are stored with them, in list order.
+     */
+    public interface NewRecordCarriers {
+        /** Whether this parcel record adds a new row whose carrier is recognised before it is stored. */
+        boolean recognizedFirst(ExpressQueryResult record);
+
+        /** The carrier each of these records is stored with, by normalized waybill; absent ones are stored as they came. */
+        Map<String, me.pipi.deliveries.model.CarrierNormalization> recognize(List<ExpressQueryResult> records)
+                throws InterruptedException;
+    }
+
+    /** A parcel record of the list kept back until its carrier is recognised (代码 5). */
+    private static final class HeldRecord {
+        final JSONObject item;
+        final ExpressQueryResult parsed;
+        final String associatedPhone;
+        final String bindingGeneration;
+
+        HeldRecord(JSONObject item, ExpressQueryResult parsed, String associatedPhone, String bindingGeneration) {
+            this.item = item;
+            this.parsed = parsed;
+            this.associatedPhone = associatedPhone;
+            this.bindingGeneration = bindingGeneration;
+        }
+    }
+
+    private NewRecordCarriers newRecordCarriers;
+
+    /** The sync round's recognition of new records ({@link NewRecordCarriers}); none recognises nothing first. */
+    public void recognizeNewRecordsWith(NewRecordCarriers carriers) {
+        newRecordCarriers = carriers;
+    }
+
     public int sync(Context context, List<String> phones) throws Exception {
         return sync(context, phones, false);
     }
@@ -131,6 +167,18 @@ public final class ExpressDiscoveryClient {
             throw new IllegalStateException("同步响应缺少 expressList");
         }
 
+        // Audit L11 (user 2026-09-25, aligned with iOS parseAccountSyncResult): a list with a record
+        // that is not an object or names no identity is refused whole, before anything is saved;
+        // a repeated identity keeps its first record.
+        for (int index = 0; index < list.length(); index++) {
+            JSONObject item = list.optJSONObject(index);
+            if (item == null || item.length() == 0 || itemIdentity(item).isEmpty()) {
+                throw new IllegalStateException("同步响应包含无法识别的记录");
+            }
+        }
+        Map<String, Integer> listedRecords = listedRecordIndexes(list, System.currentTimeMillis());
+        NewRecordCarriers carriers = newRecordCarriers;
+        ArrayList<HeldRecord> held = new ArrayList<>();
         ArrayList<JSONObject> discovered = new ArrayList<>();
         Map<String, Integer> changedCainiao = new HashMap<>();
         Map<String, ExpressItem> existingBeforeSync = new HashMap<>();
@@ -138,10 +186,10 @@ public final class ExpressDiscoveryClient {
         int imported = 0;
         for (int index = 0; index < list.length(); index++) {
             JSONObject item = list.optJSONObject(index);
-            if (item == null) continue;
             String waybill = itemIdentity(item);
-            if (waybill.isEmpty()) continue;
             String normalizedWaybill = normalize(waybill);
+            Integer listed = listedRecords.get(normalizedWaybill);
+            if (listed == null || listed != index) continue;
             boolean suppressed = repository.hasUnboundPhoneAssociation(
                     waybill, "interface5");
             String associatedPhone = matchedPhone(
@@ -154,7 +202,6 @@ public final class ExpressDiscoveryClient {
             syncedWaybillsByGeneration
                     .computeIfAbsent(bindingGeneration, ignored -> new HashSet<>())
                     .add(normalizedWaybill);
-            boolean cainiao = isCainiaoListItem(item);
             ExpressItem previous = existingBeforeSync.containsKey(normalizedWaybill)
                     ? existingBeforeSync.get(normalizedWaybill)
                     : repository.findByWaybill(waybill, "interface5");
@@ -165,7 +212,7 @@ public final class ExpressDiscoveryClient {
             // summary before starting any slower per-item detail request, otherwise a killed
             // Worker can lose later order ids that getList may not repeat on the next refresh.
             if (isAccountOrderRecord(item)) {
-                ExpressQueryResult jd = parseAccountOrder(item);
+                ExpressQueryResult jd = parseAccountOrder(item, false, true, associatedPhone);
                 if (jd == null) continue;
                 repository.saveInterface5OrderSummary(
                         jd, associatedPhone, bindingGeneration);
@@ -174,29 +221,25 @@ public final class ExpressDiscoveryClient {
                         && importedWaybills.add(normalizedWaybill)) imported++;
                 continue;
             }
-            if (cainiao) {
-                synchronized (repository) {
-                    ExpressItem before = repository.findByWaybill(waybill, "interface5");
-                    ExpressQueryResult previousSource = before == null ? null
-                            : repository.automaticSourceTimeline(before);
-                    if (persistExpress(repository, item, associatedPhone, bindingGeneration)
-                            && importedWaybills.add(normalizedWaybill)) imported++;
-                    ExpressItem current = repository.findByWaybill(waybill, "interface5");
-                    ExpressQueryResult currentSource = current == null ? null
-                            : repository.automaticSourceTimeline(current);
-                    if (hasCainiaoListUpdate(previousSource, currentSource)) {
-                        Integer pending = changedCainiao.get(normalizedWaybill);
-                        if (pending == null) {
-                            changedCainiao.put(normalizedWaybill, discovered.size());
-                            discovered.add(item);
-                        } else {
-                            discovered.set(pending, item);
-                        }
-                    }
+            if (carriers != null) {
+                ExpressQueryResult parsed = storedExpress(item, associatedPhone, true);
+                if (parsed != null && carriers.recognizedFirst(parsed)) {
+                    held.add(new HeldRecord(item, parsed, associatedPhone, bindingGeneration));
+                    continue;
                 }
-            } else if (persistExpress(repository, item, associatedPhone, bindingGeneration)
-                    && importedWaybills.add(normalizedWaybill)) {
-                imported++;
+            }
+            if (persistParcel(repository, item, associatedPhone, bindingGeneration, null,
+                    discovered, changedCainiao) && importedWaybills.add(normalizedWaybill)) imported++;
+        }
+        // 代码 5: the new rows' carriers are recognised once the rest of the list is stored, and each is stored with it.
+        if (!held.isEmpty()) {
+            ArrayList<ExpressQueryResult> records = new ArrayList<>();
+            for (HeldRecord record : held) records.add(record.parsed);
+            Map<String, me.pipi.deliveries.model.CarrierNormalization> recognized = carriers.recognize(records);
+            for (HeldRecord record : held) {
+                if (persistParcel(repository, record.item, record.associatedPhone, record.bindingGeneration,
+                        recognized, discovered, changedCainiao)
+                        && importedWaybills.add(normalize(itemIdentity(record.item)))) imported++;
             }
         }
         // Persist the list signal before querying. A failed Cainiao query does not turn an
@@ -219,14 +262,18 @@ public final class ExpressDiscoveryClient {
                         || queryOwner.semantic == StatusSemantic.CANCELLED
                         || !bindingGeneration.equals(repository.bindingGeneration(
                                 queryOwner.phone, "interface5")))) continue;
-                JSONObject queried = queryDetails(context, item, associatedPhone);
+                JSONObject queried;
+                try (ExpressQueryCancellation budget =
+                        new ExpressQueryCancellation(ACCOUNT_DETAIL_BUDGET_MS)) {
+                    queried = queryDetails(context, item, associatedPhone, budget);
+                }
                 if (queried == null) continue;
                 if (!detailMatchesRequestedIdentity(queried, waybill)) continue;
                 JSONObject completeItem = overlay(item, queried);
                 boolean accountOrder = isAccountOrderRecord(item);
                 ExpressQueryResult detailed = accountOrder
                         ? parseAccountOrder(completeItem)
-                        : storedExpress(completeItem, associatedPhone);
+                        : storedExpress(completeItem, associatedPhone, false);
                 if (detailed == null
                         || !normalize(waybill).equals(normalize(detailed.waybill))) continue;
                 if (isCainiaoListItem(item)
@@ -242,8 +289,7 @@ public final class ExpressDiscoveryClient {
                     rememberDetailRefresh(prefs, item);
                 }
             } catch (Throwable failure) {
-                ExpressLog.line("v5", "v5_query", "", "failed",
-                        "reason", failure.getClass().getSimpleName());
+                ExpressLog.line("v5", "v5_query", "", "failed", ExpressLog.errorDetails(failure));
             }
         }
         ExpressLog.line("v5", "v5_list", "", "succeeded",
@@ -311,9 +357,18 @@ public final class ExpressDiscoveryClient {
         return result;
     }
 
+    /**
+     * Per-parcel account detail budget (AGENTS §9 三端预算 and audit R6, user default of 2026-09-25):
+     * 10 s on the client, the Worker's own upstream wait being 8 s. Background per-parcel requests
+     * used to wait on the transport alone (15 s connect + 25 s read).
+     */
+    public static final long ACCOUNT_DETAIL_BUDGET_MS = 10_000L;
+
     /** Refreshes an existing interface 5 row even when the latest list omits it. */
     public ExpressQueryResult refreshKnown(Context context, ExpressItem item) throws Exception {
-        return refreshKnown(context, item, false);
+        try (ExpressQueryCancellation budget = new ExpressQueryCancellation(ACCOUNT_DETAIL_BUDGET_MS)) {
+            return refreshKnown(context, item, false, budget);
+        }
     }
 
     /**
@@ -346,9 +401,10 @@ public final class ExpressDiscoveryClient {
         if (queried == null) return null;
         if (!detailMatchesRequestedIdentity(queried, item.waybill)) return null;
         JSONObject complete = overlay(summary, queried);
-        boolean accountOrder = isAccountOrderRecord(complete);
+        // An account order answers as an order even when the reply names it otherwise (audit L4).
+        boolean accountOrder = item.isAccountOrder() || isAccountOrderRecord(complete);
         ExpressQueryResult result = accountOrder
-                ? parseAccountOrder(complete)
+                ? parseAccountOrder(complete, item.isAccountOrder())
                 : parseExpress(complete, cainiaoUrl(complete, item.waybill, item.courierCode),
                         item.phone);
         if (result != null) {
@@ -396,12 +452,49 @@ public final class ExpressDiscoveryClient {
         rememberDetailRefresh(context.getSharedPreferences(PREFS, 0), itemSummary(item));
     }
 
+    /**
+     * Stores one parcel record of the list (a Cainiao record also notes a list update for its detail query); true when
+     * it added a new row. {@code recognized}: the carriers recognised for the held new records (代码 5), or null.
+     */
+    private boolean persistParcel(ExpressRepository repository, JSONObject item, String associatedPhone,
+            String bindingGeneration, Map<String, me.pipi.deliveries.model.CarrierNormalization> recognized,
+            ArrayList<JSONObject> discovered, Map<String, Integer> changedCainiao) {
+        if (!isCainiaoListItem(item)) {
+            return persistExpress(repository, item, associatedPhone, bindingGeneration, recognized);
+        }
+        String waybill = itemIdentity(item);
+        String normalizedWaybill = normalize(waybill);
+        synchronized (repository) {
+            ExpressItem before = repository.findByWaybill(waybill, "interface5");
+            ExpressQueryResult previousSource = before == null ? null
+                    : repository.automaticSourceTimeline(before);
+            boolean added = persistExpress(repository, item, associatedPhone, bindingGeneration, recognized);
+            ExpressItem current = repository.findByWaybill(waybill, "interface5");
+            ExpressQueryResult currentSource = current == null ? null
+                    : repository.automaticSourceTimeline(current);
+            if (hasCainiaoListUpdate(previousSource, currentSource)) {
+                Integer pending = changedCainiao.get(normalizedWaybill);
+                if (pending == null) {
+                    changedCainiao.put(normalizedWaybill, discovered.size());
+                    discovered.add(item);
+                } else {
+                    discovered.set(pending, item);
+                }
+            }
+            return added;
+        }
+    }
+
     private boolean persistExpress(
             ExpressRepository repository, JSONObject item, String phone,
-            String bindingGeneration) {
+            String bindingGeneration,
+            Map<String, me.pipi.deliveries.model.CarrierNormalization> recognized) {
         String waybill = itemIdentity(item);
-        ExpressQueryResult result = storedExpress(item, phone);
+        ExpressQueryResult result = storedExpress(item, phone, true);
         if (result == null) return false;
+        me.pipi.deliveries.model.CarrierNormalization carrier = recognized == null ? null
+                : recognized.get(normalize(result.waybill));
+        if (carrier != null) result = result.withCarrierNormalization(carrier);
         JSONArray rawTracks = item.optJSONArray("details");
         ExpressLog.line("v5", "v5_list", ExpressLog.source(result.sourceProvider, false), "parsed",
                 "tail", tail(waybill), "rawNodes", rawTracks == null ? 0 : rawTracks.length(),
@@ -414,10 +507,11 @@ public final class ExpressDiscoveryClient {
                 && repository.findByWaybill(waybill, "interface5") != null;
     }
 
-    private static ExpressQueryResult storedExpress(JSONObject item, String phone) {
+    private static ExpressQueryResult storedExpress(
+            JSONObject item, String phone, boolean listRecord) {
         String routeUrl = cainiaoDetailUrl(item);
         String link = routeUrl.isEmpty() ? "" : CainiaoRoute.token("v5");
-        return parseExpress(item, link, phone);
+        return parseExpress(item, link, phone, listRecord);
     }
 
     static String normalizedPhone(String phone) {
@@ -656,13 +750,20 @@ public final class ExpressDiscoveryClient {
         return itemSummary(item);
     }
 
+    /**
+     * The per-parcel request rebuilt from a stored row. An account order asks with the order's own
+     * upstream identity (JDKD / 京东商品快递 / JingDong, iOS detailRecord), whatever the carrier table
+     * later made of its stored company name: audit L4 (user 2026-09-25), the 12-digit exchange order
+     * 351100058925 is only recognized as an order under that identity, and its stored name had become
+     * 京东快递, so it was asked for and parsed as an ordinary parcel.
+     */
     static JSONObject itemSummary(ExpressItem item) throws Exception {
         boolean jd = item.isAccountOrder();
-        String provider = item.sourceProvider;
+        String provider = jd ? JING_DONG_ACCOUNT_PROVIDER : item.sourceProvider;
         return new JSONObject()
                 .put("mailNo", item.waybill)
-                .put("cpCode", item.courierCode.isEmpty() && jd ? "JD" : item.courierCode)
-                .put("name", item.companyName.isEmpty() && jd ? "京东购物" : item.companyName)
+                .put("cpCode", jd ? JING_DONG_ACCOUNT_CP_CODE : item.courierCode)
+                .put("name", jd ? JING_DONG_ACCOUNT_NAME : item.companyName)
                 .put("provider", provider)
                 .put("state", item.sourceSemantic.label)
                 .put("stateNum", interface5StateNumber(item.sourceSemantic))
@@ -775,6 +876,17 @@ public final class ExpressDiscoveryClient {
 
     static ExpressQueryResult parseExpress(
             JSONObject item, String detailUrl, String fallbackPhone) {
+        return parseExpress(item, detailUrl, fallbackPhone, false);
+    }
+
+    /**
+     * {@code listRecord}: a record of the account list itself (audit L11, user 2026-09-25, aligned
+     * with iOS parseParcel): without usable details it falls back to its own headline and time and
+     * is kept even with no status. A per-parcel query answer keeps its stricter reading — an empty
+     * answer is no answer.
+     */
+    static ExpressQueryResult parseExpress(
+            JSONObject item, String detailUrl, String fallbackPhone, boolean listRecord) {
         if (item == null || isAccountOrderRecord(item)) return null;
         String waybill = item.optString("mailNo", "").trim();
         if (waybill.isEmpty()) return null;
@@ -811,11 +923,18 @@ public final class ExpressDiscoveryClient {
         }
         List<ExpressTimeline.Track> parsed = ExpressTimeline.parse(tracks.toString(), "", "");
         ExpressTimeline.Track latest = parsed.isEmpty() ? null : parsed.get(0);
-        String latestDetail = latest == null ? "" : latest.detail;
-        String latestTime = latest == null ? "" : latest.time;
-        if (semantic == StatusSemantic.UNKNOWN && latestDetail.isEmpty()) return null;
+        String latestDetail = latest != null ? latest.detail : listRecord ? listHeadline(item) : "";
+        String latestTime = latest != null ? latest.time : listRecord ? listHeadlineTime(item) : "";
+        if (!listRecord && semantic == StatusSemantic.UNKNOWN && latestDetail.isEmpty()) return null;
         String routeCredential = cainiaoDetailUrl(item);
         String phone = first(item, "phone");
+        if (listRecord && fallbackPhone != null) {
+            String matchedPhone = fallbackPhone.replaceAll("\\D", "");
+            if (matchedPhone.matches("^1[3-9]\\d{9}$")) {
+                // The matched account binding owns persistence even when the receiver is someone else.
+                phone = matchedPhone;
+            }
+        }
         if (phone.isEmpty()) phone = fallbackPhone == null ? "" : fallbackPhone.trim();
         String rawCompanyName = item.optString("name", "");
         ExpressQueryResult result = new ExpressQueryResult(
@@ -843,7 +962,25 @@ public final class ExpressDiscoveryClient {
 
     /** Account-order rows expose a stable order id instead of a carrier waybill. */
     static ExpressQueryResult parseAccountOrder(JSONObject item) {
-        if (item == null || !isAccountOrderRecord(item)) return null;
+        return parseAccountOrder(item, false, false);
+    }
+
+    static ExpressQueryResult parseAccountOrder(JSONObject item, boolean knownOrder) {
+        return parseAccountOrder(item, knownOrder, false);
+    }
+
+    /**
+     * {@code knownOrder}: the stored row is an account order, so its own detail answer reads as
+     * one even when the answer names it otherwise (audit L4).
+     */
+    static ExpressQueryResult parseAccountOrder(
+            JSONObject item, boolean knownOrder, boolean listRecord) {
+        return parseAccountOrder(item, knownOrder, listRecord, "");
+    }
+
+    private static ExpressQueryResult parseAccountOrder(
+            JSONObject item, boolean knownOrder, boolean listRecord, String fallbackPhone) {
+        if (item == null || !(knownOrder || isAccountOrderRecord(item))) return null;
         String orderNo = itemIdentity(item);
         if (orderNo.isEmpty()) return null;
         StatusSemantic semantic = interface5Semantic(item);
@@ -854,8 +991,11 @@ public final class ExpressDiscoveryClient {
                 JSONObject detail = details.optJSONObject(index);
                 if (detail == null) continue;
                 String description = first(detail, "desc", "context", "description");
-                if (ExpressStatusNormalizer.isHeadlinePlaceholder(description, semantic)
-                        || isGenericUpdate(description)) continue;
+                // Only an empty line, the update placeholder and provider error lines are dropped
+                // (AGENTS §9). A node that reads just a status word (已签收, 运输中) is an ordinary node:
+                // audit D2 (user 2026-09-25) found no approval for dropping it on order rows.
+                if (isGenericUpdate(description)
+                        || ExpressStatusNormalizer.isNonEventDetail(description)) continue;
                 JSONObject track = new JSONObject();
                 try {
                     track.put("time", first(detail, "time", "date", "ftime"));
@@ -870,26 +1010,31 @@ public final class ExpressDiscoveryClient {
         }
         List<ExpressTimeline.Track> parsed = ExpressTimeline.parse(tracks.toString(), "", "");
         ExpressTimeline.Track latest = parsed.isEmpty() ? null : parsed.get(0);
+        String latestDetail = latest != null ? latest.detail : listRecord ? listHeadline(item) : "";
+        String latestTime = latest != null ? latest.time : listRecord ? listHeadlineTime(item) : "";
         if (semantic == StatusSemantic.UNKNOWN && WorkerStatusProjection.read(item) == null) {
             semantic = ExpressStatusNormalizer.inferAccountOrderStatus(
-                    latest == null ? "" : latest.detail, tracks.toString());
+                    latestDetail, tracks.toString());
         }
         // JingDong identifies the business source, not the carrier. Keep the carrier evidence raw;
         // the order card supplies its own display label until H5 resolves the real parcel.
         String code = item.optString("cpCode", "").trim();
-        String route = accountOrderH5Url(item);
+        String route = accountOrderH5Url(item, knownOrder);
         String rawCompanyName = item.optString("name", "").trim();
+        String phone = first(item, "phone", "sendPhone");
+        String matched = fallbackPhone == null ? "" : fallbackPhone.replaceAll("\\D", "");
+        if (listRecord && matched.matches("^1[3-9]\\d{9}$")) phone = matched;
         return new ExpressQueryResult(
                 orderNo,
                 code,
                 rawCompanyName,
                 semantic,
-                latest == null ? 0L : ExpressTimeline.parseTime(latest.time),
-                latest == null ? "" : latest.time,
-                latest == null ? "" : latest.detail,
+                ExpressTimeline.parseTime(latestTime),
+                latestTime,
+                latestDetail,
                 tracks.toString(),
                 route.isEmpty() ? "" : CainiaoRoute.token("v5"),
-                first(item, "phone", "sendPhone"),
+                phone,
                 TimelineSlot.V5_QUERY,
                 route.isEmpty() ? "" : "v5",
                 route,
@@ -901,6 +1046,20 @@ public final class ExpressDiscoveryClient {
                         ExpressTimeline.accountListOriginAtMillis(tracks.toString()));
     }
 
+    /**
+     * Audit L11 (user 2026-09-25, iOS parseParcel): a list record without usable details still has
+     * its own headline and time, never the update placeholder or a provider error line.
+     */
+    private static String listHeadline(JSONObject item) {
+        String headline = first(item, "lastLogisticDetail", "context", "message");
+        return isGenericUpdate(headline) || ExpressStatusNormalizer.isNonEventDetail(headline)
+                ? "" : headline;
+    }
+
+    private static String listHeadlineTime(JSONObject item) {
+        return first(item, "logisticsGmtModified", "logisticsUpdateTime", "time");
+    }
+
     private static boolean trustedAccountStatus(JSONObject item, StatusSemantic semantic) {
         return semantic != StatusSemantic.UNKNOWN
                 && semantic == StatusSemantic.fromAccountState(item.optString("stateNum", ""), "");
@@ -908,7 +1067,11 @@ public final class ExpressDiscoveryClient {
 
     /** Returns the account row's own raw H5 capability without rebuilding or reordering it. */
     static String accountOrderH5Url(JSONObject item) {
-        if (!isAccountOrderRecord(item)) return "";
+        return accountOrderH5Url(item, false);
+    }
+
+    private static String accountOrderH5Url(JSONObject item, boolean knownOrder) {
+        if (item == null || !(knownOrder || isAccountOrderRecord(item))) return "";
         JSONArray links = item.optJSONArray("jumpList");
         if (links == null) return "";
         for (int index = 0; index < links.length(); index++) {
@@ -936,9 +1099,28 @@ public final class ExpressDiscoveryClient {
 
     static boolean isAccountOrderRecord(JSONObject item) {
         if (item == null) return false;
+        // Audit L6 (user 2026-09-25): the Worker's scope (normalizedStatus.scope, on v5 also
+        // normalizedStatusScope) is the single order-row rule; the local rule below only reads rows
+        // stored before a Worker projection existed. Shared fixture: order-scope-cases.v1.json.
+        String scope = workerScope(item);
+        if (!scope.isEmpty()) return "ORDER".equals(scope);
         String mailNo = first(item, "mailNo");
         String provider = first(item, "provider", "providerName");
-        return mailNo.matches("^[0-9]{16}$") && "JingDong".equals(provider);
+        if (!"JingDong".equals(provider)) return false;
+        if (mailNo.matches("^[0-9]{16}$")) return true;
+        // 12 位纯数字的换货单（351100058925）带的是订单行的身份 cpCode=JDKD、name=京东商品快递，不是承运商；
+        // 只看位数时它被当成包裹，列表上承运商名是空的（2026-09-24）。用户定 2026-09-24：12 位纯数字要 JDKD
+        // 且 name 就是「京东商品快递」才是订单；同样挂 JDKD、名字是「京东快递」这类承运商名的仍是包裹，
+        // R-20 下挂在真实运单号（JT…、JDVD…）上的也是包裹。
+        return mailNo.matches("^[0-9]{12}$")
+                && JING_DONG_ACCOUNT_CP_CODE.equalsIgnoreCase(first(item, "cpCode"))
+                && JING_DONG_ACCOUNT_NAME.equals(first(item, "name"));
+    }
+
+    private static String workerScope(JSONObject item) {
+        WorkerStatusProjection status = WorkerStatusProjection.read(item);
+        String scope = status != null ? status.scope : first(item, "normalizedStatusScope");
+        return "ORDER".equals(scope) || "SHIPMENT".equals(scope) ? scope : "";
     }
 
     private static String tail(String value) {
@@ -948,6 +1130,30 @@ public final class ExpressDiscoveryClient {
 
     private static String itemIdentity(JSONObject item) {
         return first(item, "mailNo", "orderNo", "orderId", "orderCode");
+    }
+
+    /**
+     * The one record each listed identity keeps: the first, except that a list carrying both records of a reused
+     * waybill number keeps the new one whatever their order (user 2026-10-02, detail 5; {@link
+     * me.pipi.deliveries.data.WaybillReusePolicy}). Account-order records keep their first record.
+     */
+    static Map<String, Integer> listedRecordIndexes(JSONArray list, long now) {
+        Map<String, Integer> kept = new HashMap<>();
+        Map<String, ExpressQueryResult> keptRecords = new HashMap<>();
+        for (int index = 0; list != null && index < list.length(); index++) {
+            JSONObject item = list.optJSONObject(index);
+            String identity = normalize(itemIdentity(item));
+            ExpressQueryResult record = parseExpress(item, "", "", true);
+            if (!kept.containsKey(identity)) {
+                kept.put(identity, index);
+                keptRecords.put(identity, record);
+            } else if (me.pipi.deliveries.data.WaybillReusePolicy.supersedes(
+                    keptRecords.get(identity), record, now)) {
+                kept.put(identity, index);
+                keptRecords.put(identity, record);
+            }
+        }
+        return kept;
     }
 
     private static String first(JSONObject item, String... keys) {
@@ -1039,11 +1245,10 @@ public final class ExpressDiscoveryClient {
                 || item.isAccountOrder();
     }
 
+    /** An empty line or the update placeholder in any of its four forms (user 2026-09-12 / 09-26). */
     private static boolean isGenericUpdate(String detail) {
         String value = detail == null ? "" : detail.replaceAll("\\s+", "").trim();
-        return value.isEmpty() || value.equals("快递状态已更新")
-                || value.equals("快递状态已更新，点击查看>>")
-                || value.equals("快递状态已更新,点击查看>>");
+        return value.isEmpty() || ExpressStatusNormalizer.isUpdateSummary(value);
     }
 
     private static String normalize(String waybill) {

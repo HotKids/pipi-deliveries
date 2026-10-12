@@ -71,15 +71,20 @@ final class ExpressSourcePolicy {
      * 包的事，query 不参与列表。
      */
     static StatusSemantic accountOrderPresentationSemantic(
-            String owner, String projectedWaybill, StatusSemantic sourceSemantic) {
+            String owner, String projectedWaybill, StatusSemantic sourceSemantic,
+            boolean workerStated) {
         StatusSemantic fallback = sourceSemantic == null
                 ? StatusSemantic.UNKNOWN : sourceSemantic;
         if (!isAccountOrderOwner(owner)) return fallback;
         if (!normalizeWaybill(projectedWaybill).isEmpty()) return fallback;
         // 用户定 2026-09-08：只有「已揽收且还没有运单号」才显示已下单，其余状态照来源显示
         // （与 iOS accountOrderSemantic 同口径）。结构化状态缺失时停在订单阶段。
+        // 审计 L1（用户 2026-09-25 采纳）：Worker 明确给的 UNKNOWN 保持 UNKNOWN（「暂无状态」，与 iOS、Pipi
+        // 同；共享夹具 status-labels.v1.json 的 ORDER 例），只有 Worker 没给状态时才停在订单阶段。
+        if (fallback == StatusSemantic.UNKNOWN) {
+            return workerStated ? StatusSemantic.UNKNOWN : StatusSemantic.ORDERED;
+        }
         return fallback == StatusSemantic.PICKED || fallback == StatusSemantic.SHIPPED
-                || fallback == StatusSemantic.UNKNOWN
                 ? StatusSemantic.ORDERED : fallback;
     }
 

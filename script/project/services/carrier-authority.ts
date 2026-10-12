@@ -11,6 +11,11 @@ import {
   resolveCarrierQuery,
 } from "./carrier-query";
 import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
+import {
+  installStatusLabelTable,
+  parseStatusLabelTable,
+  type StatusLabelTable,
+} from "./status-labels";
 
 const CARRIER_AUTHORITY_ROUTE = "/api/express/carriers";
 const CARRIER_AUTHORITY_FILE = "carrier-authority-v2.json";
@@ -25,6 +30,11 @@ export type CarrierAuthorityPayload = Readonly<{
   version: string;
   source: string;
   entries: readonly CarrierQueryRecord[];
+  /**
+   * The Worker's status label table (audit L5, user default #2): every surface reads its labels from it.
+   * A snapshot without one (an older Worker) keeps the table already in use.
+   */
+  statusLabels?: StatusLabelTable;
 }>;
 
 type StoredCarrierAuthority = Readonly<{
@@ -122,7 +132,9 @@ function parseCarrierPayload(value: unknown, stored = false): CarrierAuthorityPa
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
   const version = text(raw.version, /^[A-Za-z0-9._-]+$/, 128);
-  const source = text(raw.source, /^[\x20-\x7E]+$/, 256);
+  // The Worker's rule for `source`: any non-empty string of at most 128 characters (user decision
+  // 2026-09-25, audit C5 follow-up 2).
+  const source = text(raw.source, /^[\s\S]+$/, 128);
   if (raw.schemaVersion !== 2 || !version || !source ||
     !Array.isArray(raw.entries) || raw.entries.length < 17 ||
     raw.entries.length > 256) return null;
@@ -133,11 +145,16 @@ function parseCarrierPayload(value: unknown, stored = false): CarrierAuthorityPa
     entries.push(parsed);
   }
   if (!validateCarrierQueryRecords(entries, version)) return null;
+  // A table that is served but malformed rejects the snapshot, as kdbot does: one bad publication must
+  // not silently change the labels in use.
+  const statusLabels = raw.statusLabels === undefined ? undefined : parseStatusLabelTable(raw.statusLabels);
+  if (statusLabels === null) return null;
   return Object.freeze({
     schemaVersion: 2,
     version,
     source,
     entries: Object.freeze(entries),
+    ...(statusLabels ? { statusLabels } : {}),
   });
 }
 
@@ -213,6 +230,7 @@ export function loadCarrierAuthorityCache(nowMs = Date.now()): boolean {
     });
     return false;
   }
+  installStatusLabelTable(selected.payload.statusLabels);
   loadedFetchedAtMs = selected.fetchedAtMs;
   writeDiagnostic("carrier.authority.loaded", {
     ...carrierAuthorityDiagnosticDetails(nowMs), result: "cache_loaded",
@@ -286,6 +304,7 @@ export async function refreshCarrierAuthorityIfNeeded(
       }, "warning");
       return false;
     }
+    installStatusLabelTable(payload.statusLabels);
     loadedFetchedAtMs = nowMs;
     writeDiagnostic("carrier.authority.refreshed", {
       ...carrierAuthorityDiagnosticDetails(), result: "installed",

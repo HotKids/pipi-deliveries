@@ -6,6 +6,7 @@ import android.util.Log;
 import com.google.android.material.color.DynamicColors;
 
 import me.pipi.deliveries.background.ExpressScheduler;
+import me.pipi.deliveries.background.ExpressStatusAlignment;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.network.CarrierAuthority;
 import me.pipi.deliveries.notification.ExpressNotifications;
@@ -21,6 +22,8 @@ public final class DeliveriesApp extends Application {
         DynamicColors.applyToActivitiesIfAvailable(this);
         ExpressNotifications.ensureChannels(this);
         ExpressScheduler.ensureScheduled(this);
+        // 用户 2026-10-02: in this process, a repository commit is followed by the status alignment check.
+        ExpressStatusAlignment.enableLiveChecks();
         runLocalMaintenance();
     }
 

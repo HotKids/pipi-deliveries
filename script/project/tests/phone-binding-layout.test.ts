@@ -22,12 +22,12 @@ assert.match(
 );
 assert.match(
   source,
-  /<HStack[\s\S]*?frame=\{\{ maxWidth: "infinity", alignment: "center" \}\}[\s\S]*?<Button[\s\S]*?action=\{bindPhone\}[\s\S]*?disabled=\{!canBind\}[\s\S]*?buttonStyle="borderedProminent"[\s\S]*?buttonBorderShape="capsule"[\s\S]*?<Text[\s\S]*?frame=\{\{ minWidth: 220, minHeight: 44 \}\}[\s\S]*?>[\s\S]*?\{binding \? "绑定中…" : "绑定"\}[\s\S]*?<\/Text>[\s\S]*?<\/Button>[\s\S]*?<\/HStack>/,
+  /<HStack[\s\S]*?frame=\{\{ maxWidth: "infinity", alignment: "center" \}\}[\s\S]*?<Button[\s\S]*?action=\{bindPhone\}[\s\S]*?disabled=\{!canBind\}[\s\S]*?buttonStyle="borderedProminent"[\s\S]*?buttonBorderShape="capsule"[\s\S]*?<Text[\s\S]*?frame=\{\{ minWidth: 220, minHeight: 44 \}\}[\s\S]*?>[\s\S]*?\{binding \? "正在绑定…" : "绑定"\}[\s\S]*?<\/Text>[\s\S]*?<\/Button>[\s\S]*?<\/HStack>/,
   "the primary capsule must use a stable wide label inside a full-width centered row, including while disabled",
 );
 assert.doesNotMatch(
   source,
-  /title=\{binding \? "绑定中…" : "绑定"\}/,
+  /title=\{binding \? "正在绑定…" : "绑定"\}/,
   "the primary capsule width must come from its custom label, not an outer Button frame",
 );
 assert.match(

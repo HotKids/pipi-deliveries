@@ -1,0 +1,259 @@
+{
+  "schemaVersion": 1,
+  "about": "Audit C4/C10 (2026-09-25). Memory is per normalized waybill. success is final (revalidated against the current carrier table); a paid no-match or the third counted failure is terminal for terminalTtlMs, then the waybill starts again with zero failures; a counted failure cools down for retryDelayMs; pending cools down until min(retryAt, now + retryDelayMs) without counting. Every attempt starts with the free stage. Events: free_* is autoComNum, paid_* is /api/express/classify (read as in carrier-classify-responses.v1.json). request=false means the attempt makes no request. maxTransientEntries caps cooling records only. identityCases are the Worker's paid-claim keys; workerComparable sequences are replayed against the Worker's own Durable Object.",
+  "constants": {
+    "retryDelayMs": 900000,
+    "maxNetworkFailures": 3,
+    "terminalTtlMs": 86400000,
+    "maxTransientEntries": 256
+  },
+  "identityCases": [
+    {
+      "input": "JT4006839564547",
+      "provenance": "real waybill (Fold7 2026-09-03)",
+      "key": "JT4006839564547"
+    },
+    {
+      "input": "jt4006839564547",
+      "provenance": "lower case",
+      "key": "JT4006839564547"
+    },
+    {
+      "input": " JT 4006 8395 64547 ",
+      "provenance": "spaces",
+      "key": "JT4006839564547"
+    },
+    {
+      "input": "JT-4006-839564547",
+      "provenance": "hyphens",
+      "key": "JT4006839564547"
+    },
+    {
+      "input": "75627185960079",
+      "provenance": "digits only (kdbot tests/check_review_a.py)",
+      "key": "75627185960079"
+    },
+    {
+      "input": "京东快递单号",
+      "provenance": "no ASCII letter or digit: keeps the trimmed input",
+      "key": "京东快递单号"
+    },
+    {
+      "input": "1234",
+      "provenance": "shorter than five characters: invalid, classify answers 400",
+      "key": ""
+    }
+  ],
+  "sequences": [
+    {
+      "name": "three failures end in a 24 h terminal, then a fresh start",
+      "workerComparable": true,
+      "steps": [
+        {
+          "atMs": 1790294400000,
+          "event": "free_failure",
+          "expected": {
+            "state": "cooling",
+            "failures": 1,
+            "untilMs": 1790295300000,
+            "request": true
+          }
+        },
+        {
+          "atMs": 1790294700000,
+          "event": "free_failure",
+          "expected": {
+            "state": "cooling",
+            "failures": 1,
+            "untilMs": 1790295300000,
+            "request": false
+          }
+        },
+        {
+          "atMs": 1790295300000,
+          "event": "paid_failure",
+          "expected": {
+            "state": "cooling",
+            "failures": 2,
+            "untilMs": 1790296200000,
+            "request": true
+          }
+        },
+        {
+          "atMs": 1790296200000,
+          "event": "free_failure",
+          "expected": {
+            "state": "terminal",
+            "failures": 3,
+            "untilMs": 1790382600000,
+            "request": true
+          }
+        },
+        {
+          "atMs": 1790299800000,
+          "event": "free_failure",
+          "expected": {
+            "state": "terminal",
+            "failures": 3,
+            "untilMs": 1790382600000,
+            "request": false
+          }
+        },
+        {
+          "atMs": 1790382600000,
+          "event": "paid_success:KYSY",
+          "expected": {
+            "state": "success",
+            "failures": 0,
+            "standardCode": "KYSY",
+            "request": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "a paid no-match is a 24 h terminal",
+      "workerComparable": true,
+      "steps": [
+        {
+          "atMs": 1790294400000,
+          "event": "paid_no_match",
+          "expected": {
+            "state": "terminal",
+            "failures": 0,
+            "untilMs": 1790380800000,
+            "request": true
+          }
+        },
+        {
+          "atMs": 1790377200000,
+          "event": "free_failure",
+          "expected": {
+            "state": "terminal",
+            "failures": 0,
+            "untilMs": 1790380800000,
+            "request": false
+          }
+        },
+        {
+          "atMs": 1790380800000,
+          "event": "free_success:ZTO",
+          "expected": {
+            "state": "success",
+            "failures": 0,
+            "standardCode": "ZTO",
+            "request": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "success is final",
+      "workerComparable": true,
+      "steps": [
+        {
+          "atMs": 1790294400000,
+          "event": "free_success:JD",
+          "expected": {
+            "state": "success",
+            "failures": 0,
+            "standardCode": "JD",
+            "request": true
+          }
+        },
+        {
+          "atMs": 1790298000000,
+          "event": "free_failure",
+          "expected": {
+            "state": "success",
+            "failures": 0,
+            "standardCode": "JD",
+            "request": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "pending waits for retryAt but never more than 15 minutes",
+      "workerComparable": false,
+      "steps": [
+        {
+          "atMs": 1790294400000,
+          "event": "paid_pending:60000",
+          "expected": {
+            "state": "cooling",
+            "failures": 0,
+            "untilMs": 1790294460000,
+            "request": true
+          }
+        },
+        {
+          "atMs": 1790294460000,
+          "event": "paid_pending:3600000",
+          "expected": {
+            "state": "cooling",
+            "failures": 0,
+            "untilMs": 1790295360000,
+            "request": true
+          }
+        },
+        {
+          "atMs": 1790295360000,
+          "event": "paid_success:HTKY",
+          "expected": {
+            "state": "success",
+            "failures": 0,
+            "standardCode": "HTKY",
+            "request": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "pending keeps the failure count",
+      "workerComparable": false,
+      "steps": [
+        {
+          "atMs": 1790294400000,
+          "event": "free_failure",
+          "expected": {
+            "state": "cooling",
+            "failures": 1,
+            "untilMs": 1790295300000,
+            "request": true
+          }
+        },
+        {
+          "atMs": 1790295300000,
+          "event": "paid_pending:60000",
+          "expected": {
+            "state": "cooling",
+            "failures": 1,
+            "untilMs": 1790295360000,
+            "request": true
+          }
+        },
+        {
+          "atMs": 1790295360000,
+          "event": "paid_failure",
+          "expected": {
+            "state": "cooling",
+            "failures": 2,
+            "untilMs": 1790296260000,
+            "request": true
+          }
+        },
+        {
+          "atMs": 1790296260000,
+          "event": "paid_failure",
+          "expected": {
+            "state": "terminal",
+            "failures": 3,
+            "untilMs": 1790382660000,
+            "request": true
+          }
+        }
+      ]
+    }
+  ]
+}

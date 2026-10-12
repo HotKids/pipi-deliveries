@@ -162,6 +162,30 @@ public final class ExpressQueryResult {
         this.listOriginAtMs = Math.max(0L, listOriginAtMs);
     }
 
+    /** Same package with a display-only track list (JD order-stage presentation); caches never store it. */
+    public ExpressQueryResult withTracksJson(String value) {
+        if (value == null || value.equals(tracksJson)) return this;
+        return new ExpressQueryResult(
+                waybill, courierCode, companyName, semantic, statusEventTime,
+                latestTime, latestDetail, value, detailUrl, phone,
+                timelineProvider, routeInterface, routeCredential, sourceProvider,
+                carrierNormalization, carrierIdentityEvidence, statusDescription,
+                structuredStatusEvidence, senderPhone, listOriginAtMs);
+    }
+
+    /** Same package with its headline moved onto one of its own nodes; status, evidence and tracks stay. */
+    public ExpressQueryResult withHeadline(String time, String detail) {
+        String nextTime = clean(time);
+        String nextDetail = clean(detail);
+        if (nextTime.equals(latestTime) && nextDetail.equals(latestDetail)) return this;
+        return new ExpressQueryResult(
+                waybill, courierCode, companyName, semantic, statusEventTime,
+                nextTime, nextDetail, tracksJson, detailUrl, phone,
+                timelineProvider, routeInterface, routeCredential, sourceProvider,
+                carrierNormalization, carrierIdentityEvidence, statusDescription,
+                structuredStatusEvidence, senderPhone, listOriginAtMs);
+    }
+
     /** Same package re-keyed under another identity (an order's projected carrier waybill). */
     public ExpressQueryResult withWaybill(String value) {
         String next = clean(value);
@@ -216,6 +240,16 @@ public final class ExpressQueryResult {
                 latestTime, latestDetail, tracksJson, detailUrl, phone,
                 timelineProvider, routeInterface, routeCredential, sourceProvider,
                 carrierNormalization, carrierIdentityEvidence, coarseStatus, structured, senderPhone, listOriginAtMs);
+    }
+
+    /** Preserve the matched account binding independently from the upstream receiver field. */
+    public ExpressQueryResult withPhone(String value) {
+        if (phone.equals(clean(value))) return this;
+        return new ExpressQueryResult(waybill, courierCode, companyName, semantic,
+                statusEventTime, latestTime, latestDetail, tracksJson, detailUrl, value,
+                timelineProvider, routeInterface, routeCredential, sourceProvider,
+                carrierNormalization, carrierIdentityEvidence, statusDescription,
+                structuredStatusEvidence, senderPhone, listOriginAtMs);
     }
 
     public ExpressQueryResult withAccountListMetadata(String senderPhone, long originAtMs) {

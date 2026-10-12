@@ -20,7 +20,7 @@ test("note storage failure is contained and reported without replacing displayed
     setShipment: () => { published = true; }, props: {}, requestWidgetReload: () => {},
   });
   await edit();
-  assert.equal(notice, "保存失败，请稍后重试");
+  assert.equal(notice, "保存失败，请重试");
   assert.equal(published, false);
 });
 

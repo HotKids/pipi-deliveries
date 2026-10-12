@@ -26,11 +26,14 @@ public final class ExpressApi {
 
     private final ExpressGatewayTransport gateway;
     private final CarrierRecognitionCoordinator carrierRecognition;
+    /** The parcel's reuse anchor sent with the paid classify request (优化 5); 0 sends none. */
+    private final long parcelAnchorAtMs;
 
     public ExpressApi(Context context) {
         if (context == null) throw new IllegalArgumentException("context is required");
         gateway = new ExpressGatewayClient(context);
         carrierRecognition = CarrierRecognitionCoordinator.create(context);
+        parcelAnchorAtMs = 0L;
     }
 
     ExpressApi(
@@ -44,6 +47,32 @@ public final class ExpressApi {
         carrierRecognition = new CarrierRecognitionCoordinator(
                 carrierDetector, gateway, CarrierRecognitionCoordinator.transientState(),
                 System::currentTimeMillis);
+        parcelAnchorAtMs = 0L;
+    }
+
+    private ExpressApi(ExpressApi base, long parcelAnchorAtMs) {
+        gateway = base.gateway;
+        carrierRecognition = base.carrierRecognition;
+        this.parcelAnchorAtMs = Math.max(0L, parcelAnchorAtMs);
+    }
+
+    /**
+     * 优化 5（协调方定的接口约定，用户 2026-10-03「答案按新件分开、总额仍按运单」）：the same client for one parcel — its paid
+     * classify request (sent by {@link CarrierRecognitionCoordinator}) carries {@code parcelAnchorAtMs}, the parcel's own reuse anchor
+     * ({@link me.pipi.deliveries.data.WaybillReusePolicy#parcelAnchorAt}), so the Worker keeps a reused number's paid
+     * answers apart per parcel. An invalid anchor (not positive, or in the future) is not sent; a Worker that ignores
+     * the field answers as before.
+     */
+    public ExpressApi forParcel(long parcelAnchorAtMs) {
+        return new ExpressApi(this, parcelAnchorAtMs);
+    }
+
+    /**
+     * A carrier reused this waybill number for a new parcel (user 2026-10-02, detail 2): this device's recognition
+     * record for the number goes, so the new parcel is recognized afresh. The Worker's own records are not touched.
+     */
+    public static void forgetCarrierRecognition(Context context, String waybill) {
+        if (context != null) CarrierRecognitionCoordinator.forget(context, waybill);
     }
 
     /** A successful provider response without usable tracking evidence. */
@@ -95,10 +124,60 @@ public final class ExpressApi {
      */
     public me.pipi.deliveries.model.CarrierNormalization recognizeCarrier(
             String waybill, ExpressQueryCancellation cancellation) throws Exception {
-        List<me.pipi.deliveries.model.CarrierNormalization> candidates =
-                detectCandidates(waybill, cancellation);
-        return candidates.isEmpty()
-                ? me.pipi.deliveries.model.CarrierNormalization.NONE : candidates.get(0);
+        return recognizedCarrier(waybill, cancellation, false, false);
+    }
+
+    /**
+     * {@link #recognizeCarrier(String, ExpressQueryCancellation)} that skips 京东 for an R-20 platform
+     * row whose waybill does not start with JD (T23 gap ②); any other row takes the ordinary path.
+     */
+    public me.pipi.deliveries.model.CarrierNormalization recognizeCarrier(
+            String waybill, ExpressQueryCancellation cancellation, boolean excludeJd)
+            throws Exception {
+        return excludeJd ? recognizedCarrier(waybill, cancellation, true, false)
+                : recognizeCarrier(waybill, cancellation);
+    }
+
+    /**
+     * A sync round's recognition (用户 2026-09-27 提交前核对答复四，同步轮里单个请求自身超时「四端对齐 iOS」): the same
+     * answer as {@link #recognizeCarrier(String, ExpressQueryCancellation, boolean)}, except that a request its own time
+     * limit ends while the round waits throws {@link CarrierRecognitionTimeoutException}, so the round marks it cut off.
+     * Such a timeout records no failure for any caller (用户 2026-09-27 提交前核对答复五).
+     */
+    public me.pipi.deliveries.model.CarrierNormalization recognizeCarrierInSyncRound(
+            String waybill, boolean excludeJd) throws Exception {
+        return recognizedCarrier(waybill, null, excludeJd, true);
+    }
+
+    /**
+     * The first built-in carrier; without one, the off-table carrier Kuaidi100 names (display only,
+     * 其余裁决 29); without that, the exhausted marker when recognition reached its terminal verdict
+     * (其余裁决 32); otherwise NONE (a retry is still due).
+     */
+    private me.pipi.deliveries.model.CarrierNormalization recognizedCarrier(
+            String waybill, ExpressQueryCancellation cancellation, boolean excludeJd, boolean syncRound)
+            throws Exception {
+        checkCancellation(cancellation);
+        CarrierRecognitionCoordinator.Outcome outcome;
+        try {
+            outcome = carrierRecognition.recognize(waybill, cancellation, excludeJd, syncRound,
+                    parcelAnchorAtMs);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw interrupted;
+        } catch (CarrierRecognitionTimeoutException timedOut) {
+            throw timedOut;
+        } catch (Exception failure) {
+            String message = failure.getMessage();
+            throw new QueryException(message == null || message.trim().isEmpty()
+                    ? "暂时无法识别承运商" : message);
+        }
+        if (!outcome.candidates.isEmpty()) return outcome.candidates.get(0);
+        if (!outcome.offTable.offTableName().isEmpty()) return outcome.offTable;
+        // 其余裁决 32：终态（连续 3 次失败，或付费级明确认不出）且快递100 没给名字。
+        return outcome.terminal
+                ? me.pipi.deliveries.model.CarrierNormalization.exhausted()
+                : me.pipi.deliveries.model.CarrierNormalization.NONE;
     }
 
     public String detect(String waybill, ExpressQueryCancellation cancellation)

@@ -139,7 +139,7 @@ assert.equal(jdPrefix.routeUrl, "pipi-route:opaque-jdvd-route");
 assert.equal(jdPrefix.projectionUrl, "https://projection.invalid/jdvd");
 assert.equal(
   jdPrefix.carrierNormalization?.tableVersion,
-  "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
+  "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
 );
 
 const newlyBuiltInRawCode = await normalizeAccountParcelCarrier(parcel({
@@ -167,7 +167,7 @@ assert.equal(newlyBuiltInRawCode.carrierNormalization?.standardCode, "EMS");
 assert.equal(newlyBuiltInRawCode.carrierNormalization?.kuaidi100Code, "ems");
 assert.equal(
   newlyBuiltInRawCode.carrierNormalization?.tableVersion,
-  "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
+  "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
 );
 
 const internalJdky = await normalizeAccountParcelCarrier(parcel({
@@ -261,10 +261,21 @@ const manualStart = accountSyncSource.indexOf(
 );
 assert.ok(syncStart >= 0 && manualStart > syncStart);
 const syncSource = accountSyncSource.slice(syncStart, manualStart);
+// Audit C2 (adopted 2026-09-25): every account parcel goes through the carrier helper, not only
+// orders; the helper itself returns early without a real waybill. 用户 2026-09-27 第二轮清单：截断排后 changes only the
+// order the parcels are recognised in (every index of the list, those cut off last round at the end); the list keeps
+// its own order (old shape: `for (const parcel of parsed.parcels) { parcels.push(await prepareAccountParcelCarrier(parcel, {`).
 assert.match(
   syncSource,
-  /normalizeAccountParcelCarrier/,
-  "background account sync must normalize a projected real waybill through the shared carrier helper",
+  /const recognitionOrder = truncatedCarrierRecognitionLast\(\s*parsed\.parcels\.map\(\(_parcel, index\) => index\),[\s\S]*?\);\s*for \(const index of recognitionOrder\) \{\s*parcels\[index\] = await prepareAccountParcelCarrier\(parsed\.parcels\[index\], \{/,
+  "background account sync must pass every parcel through the shared carrier helper",
+);
+assert.doesNotMatch(syncSource, /parcel\.accountOrder\s*\?/, "normalization is not gated on order rows");
+// T23 (user 2026-09-26, 其余裁决 28): the helper recognises an order's feed-text waybill first and applies it only with
+// its carrier (old shape: `normalizeAccountParcelCarrierBestEffort(withAccountOrderTextWaybill(parcel), options)`).
+assert.match(
+  accountSyncSource,
+  /export async function prepareAccountParcelCarrier[\s\S]*?normalizeAccountParcelCarrierBestEffort\(\s*await withRecognizedAccountOrderTextWaybill\(parcel, options\),\s*options,\s*\)/,
 );
 const detailStart = accountSyncSource.indexOf(
   "export async function refreshAccountParcel",
@@ -276,10 +287,11 @@ assert.match(
   /normalizeAccountParcelCarrier/,
   "manual account lookup must use the same carrier helper",
 );
+// Audit C2: the per-waybill detail refresh passes every account parcel through the same helper.
 assert.match(
   accountSyncSource.slice(detailStart),
-  /normalizeAccountParcelCarrier/,
-  "detail projection refresh must use the same carrier helper",
+  /return resolved\s*\?\s*options\.recognizeCarrier === false[\s\S]*?prepareAccountParcelCarrier\(resolved,/,
+  "detail projection refresh must use the same carrier helper for every account parcel",
 );
 
 console.log("account carrier normalization tests passed");

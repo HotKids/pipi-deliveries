@@ -43,6 +43,17 @@ public final class WorkerStatusProjection {
         catch (IllegalArgumentException invalidSemantic) { return null; }
     }
 
+    /**
+     * A timeline node's own projection (用户定 2026-10-01「两边都改」, the reader Pipi's
+     * ExpressWorkerStatus.nodeEvidence and iOS status.ts nodeProjection share): structured=false with
+     * an empty code says the node carried no enum, so it is absent and the node's raw fields decide.
+     * An unrecognised code (non-empty) stays an explicit UNKNOWN. Packet projections use {@link #read}.
+     */
+    public static WorkerStatusProjection nodeEvidence(JSONObject node) {
+        WorkerStatusProjection value = read(node);
+        return value == null || (!value.structured && value.code.isEmpty()) ? null : value;
+    }
+
     public static WorkerStatusProjection cached(String tracks) {
         try {
             Object value = new JSONTokener(tracks).nextValue();

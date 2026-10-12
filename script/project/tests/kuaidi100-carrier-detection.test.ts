@@ -18,7 +18,14 @@ assert.deepEqual(
     { courierCode: "zhongtong", companyName: "中通快递" },
   ],
 );
-assert.deepEqual(parseKuaidi100CarrierCandidates({ result: false }), []);
+// Audit C3 (adopted 2026-09-25): only the documented no-match answer (result false, returnCode 201,
+// string or number: user decision 2026-09-26) reads as "no candidate"; an object without `auto` is a
+// retryable failure (it used to read as an empty candidate list and spent the paid stage).
+assert.deepEqual(parseKuaidi100CarrierCandidates({ result: false, returnCode: "201" }), []);
+assert.deepEqual(parseKuaidi100CarrierCandidates({ result: false, returnCode: 201 }), []);
+assert.throws(() => parseKuaidi100CarrierCandidates({ result: false }));
+assert.throws(() => parseKuaidi100CarrierCandidates({ result: false, returnCode: "500" }));
+assert.throws(() => parseKuaidi100CarrierCandidates({}));
 assert.deepEqual(
   parseKuaidi100CarrierCandidates([
     { comCode: "jd", name: "京东快递" },

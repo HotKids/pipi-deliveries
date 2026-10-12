@@ -63,13 +63,20 @@ public final class CarrierRegistryAuthorityTest {
         assertEquals("DBL", CarrierRegistry.resolveCpCode("debangwuliu").standardCode);
     }
 
+    /**
+     * An alias naming another carrier's Kuaidi100 code can never displace it. Since audit C5 (user
+     * 2026-09-25, shared fixture case 「a reverse alias that is another carrier's code」) such a table
+     * is a namespace conflict and is refused whole, as the Worker refuses it; it used to be accepted
+     * with the alias ignored. The active table keeps SF on its own code.
+     */
     @Test
     public void kuaidi100AliasCannotDisplaceAnotherCarriersCanonicalCode() throws Exception {
         JSONObject payload = CarrierAuthorityFixture.payload();
         CarrierAuthorityFixture.entry(payload, "YTO")
                 .getJSONArray("kuaidi100CodeAliases").put("shunfeng");
 
-        CarrierRegistry.installAuthority(CarrierRegistry.prepareAuthority(payload));
+        assertThrows(IllegalArgumentException.class,
+                () -> CarrierRegistry.prepareAuthority(payload));
 
         assertEquals("SF", CarrierRegistry.resolveKuaidi100Code("shunfeng").standardCode);
         assertEquals("YTO", CarrierRegistry.resolveKuaidi100Code("yuantong").standardCode);

@@ -106,6 +106,29 @@ public final class AccountCarrierNormalizerTest {
                 .carrierNormalization.present());
     }
 
+    /**
+     * 审计 C9（用户 2026-09-25 采纳）：Worker 的承运商字段只用码，名称与快递100 码从本地当前表取。Worker 表版本与本地
+     * 不同（名称、快递100 码对不上）时不再整个丢掉，行照样有承运商。
+     */
+    @Test
+    public void workerCodeIsUsedWithTheLocalTablesNameAndCode() throws Exception {
+        JSONObject record = new JSONObject()
+                .put("normalizedCarrierCode", "YTO")
+                .put("normalizedCarrierName", "圆通快递（旧表名）")
+                .put("normalizedKuaidi100Code", "yuantong-old")
+                .put("carrierBuiltIn", true)
+                .put("carrierTableVersion", "older-table");
+
+        ExpressQueryResult normalized = AccountCarrierNormalizer.apply(
+                record, result("RAW", "原始承运商"));
+
+        assertTrue(normalized.carrierNormalization.recognized());
+        assertEquals("YTO", normalized.carrierNormalization.standardCode);
+        assertEquals("圆通速递", normalized.carrierNormalization.displayName);
+        assertEquals("yuantong", normalized.carrierNormalization.kuaidi100Code);
+        assertEquals("RAW", normalized.courierCode);
+    }
+
     private static ExpressQueryResult result(String code, String company) {
         return new ExpressQueryResult(
                 "TEST123456", code, company, StatusSemantic.TRANSIT, 123L,

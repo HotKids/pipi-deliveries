@@ -13,6 +13,7 @@ import {
 } from "../services/shipment-policy";
 import { formatListTime } from "../services/time-presentation";
 import { CourierIcon } from "./CourierIcon";
+import { carrierDisplayName } from "../services/carrier-presentation";
 import { SenderBadge } from "./SenderBadge";
 
 /**
@@ -91,7 +92,9 @@ export function ShipmentRow(props: {
             >
               {withShipmentNote(presentationStatus.text, item)}
             </Text>
-            <SenderBadge sender={item.identity.sender} semantic={presentationStatus.semantic} />
+            {item.identity.sender === true ? (
+              <SenderBadge semantic={presentationStatus.semantic} />
+            ) : null}
           </HStack>
           <Spacer />
           {eventTime ? (
@@ -102,7 +105,7 @@ export function ShipmentRow(props: {
         </HStack>
         <HStack spacing={7}>
           <Text font={14} fontWeight="medium" lineLimit={1}>
-            {item.identity.companyName}
+            {carrierDisplayName(item.identity.companyName)}
           </Text>
           <Text font={14} foregroundStyle="secondaryLabel" monospacedDigit>
             {waybillSuffix(displayWaybill(item))}

@@ -17,7 +17,7 @@ import { trackPhoneText } from "../services/track-phone-links";
 import type { AppState, Shipment } from "../models";
 import { CourierIcon } from "../components/CourierIcon";
 import { SenderBadge } from "../components/SenderBadge";
-import { courierHotline } from "../services/carrier-presentation";
+import { carrierDisplayName, courierHotline } from "../services/carrier-presentation";
 import {
   continueManualShipmentPreview,
   refreshShipmentById,
@@ -26,7 +26,9 @@ import {
 } from "../services/sync";
 import {
   displayWaybill,
+  jingDongOrderStagePrepended,
   shipmentDetailCandidateEvidence,
+  selectShipmentDetailPresentation,
   selectShipmentDetailTimeline,
   shipmentDetailIncompleteReason,
   shipmentSelectionEvidence,
@@ -43,7 +45,7 @@ import {
   waybillSuffix,
   withShipmentNote,
 } from "../services/status";
-import { setShipmentNote } from "../services/storage";
+import { recordShipmentDetailSelection, setShipmentNote } from "../services/storage";
 import { requestWidgetReload } from "../services/widgets";
 import { timelineTimeParts } from "../services/time-presentation";
 import { preferNewerShipment } from "../services/ui-state";
@@ -73,6 +75,8 @@ export function DetailPage(props: {
     | "detail_open"
     | false;
   onStateChange?: (state: AppState, shipment: Shipment) => void;
+  /** 归属-2：挂靠在这一行后面的投影订单；只用来在详情页接上它们更早的订单阶段节点。 */
+  attachedOrders?: readonly Shipment[];
 }) {
   const [shipment, setShipment] = useState(props.shipment);
   const [notice, setNotice] = useState("");
@@ -127,7 +131,7 @@ export function DetailPage(props: {
       requestWidgetReload();
     } catch (error) {
       writeDiagnostic("detail.note.save_failed", diagnosticErrorDetails(error), "warning");
-      setNotice("保存失败，请稍后重试");
+      setNotice("保存失败，请重试");
     }
   }
   const [loadingManualDetail, setLoadingManualDetail] = useState(
@@ -138,7 +142,8 @@ export function DetailPage(props: {
   const refreshAbortRef = useRef<AbortController | null>(null);
   const detailEntryRef = useRef<DetailEntryObservation | undefined>(undefined);
   const pullInFlightRef = useRef<Promise<void> | null>(null);
-  const detailTimeline = selectShipmentDetailTimeline(shipment);
+  const attachedOrders = props.attachedOrders || [];
+  const detailTimeline = selectShipmentDetailPresentation(shipment, attachedOrders);
   const displayTracks = detailTimeline.tracks.filter(
     (track) => Boolean(track.detail.trim()) && !isProviderErrorDetail(track.detail),
   );
@@ -194,6 +199,7 @@ export function DetailPage(props: {
       latestTrackAtMs: timelineLatestTrackAt(detailTimeline),
       feedEventAtMs: shipment.sourceTimeline ? timelineLatestEventAt(shipment.sourceTimeline) : 0,
       statusEventAtMs: detailTimeline.statusEventAtMs || 0,
+      orderStagePrepended: jingDongOrderStagePrepended(shipment, attachedOrders),
       detailEffectiveTrackCount: effectiveTrackCount,
       result: effectiveTrackCount === 0
         ? "no_result"
@@ -222,6 +228,15 @@ export function DetailPage(props: {
         ...shipmentDetailCandidateEvidence(shipment, candidate),
         result: timedTracks(candidate.tracks).length > 0 ? "available" : "empty",
       });
+    }
+    // The package on screen becomes the sticky selection (audit D7, adopted 2026-09-25). A manual query
+    // preview is not a stored row and records nothing.
+    if (!props.manualPreview) {
+      try {
+        recordShipmentDetailSelection(shipment.identity.id);
+      } catch (error) {
+        writeDiagnostic("detail.selection.record_failed", diagnosticErrorDetails(error), "warning");
+      }
     }
   }, [shipment.identity.id, selectionSignature]);
   // 承运商只有一份：identity。列表行、小组件、通知都读它，repairProjectedShipmentCarrier 也只维护
@@ -335,9 +350,13 @@ export function DetailPage(props: {
             hasUsableDetail,
           ));
         } else if (forceManualRefresh) {
-          setNotice(result.querySucceeded === false
-            ? EXPRESS_TOAST_COPY.detailRefreshFailed
-            : detailPullToast(result.refreshed, hasUsableDetail));
+          // A failed pull stays silent while a cached timeline is on screen (user default #10, audit
+          // R3, 2026-09-25; the shared toast table's DETAIL_REFRESH_FAILED row).
+          if (result.querySucceeded !== false) {
+            setNotice(detailPullToast(result.refreshed, hasUsableDetail));
+          } else if (!hasUsableDetail) {
+            setNotice(EXPRESS_TOAST_COPY.detailRefreshFailed);
+          }
         }
       } catch (error) {
         if (generation === refreshGenerationRef.current) {
@@ -351,7 +370,7 @@ export function DetailPage(props: {
           }, "warning");
           if (props.shipment.identity.manuallyAdded && needsManualPhoneTail(error)) {
             setNotice(EXPRESS_TOAST_COPY.manualPhoneTailRequired);
-          } else if (forceManualRefresh || !displayTracks.length) {
+          } else if (!displayTracks.length) {
             setNotice(EXPRESS_TOAST_COPY.detailRefreshFailed);
           }
         }
@@ -484,7 +503,9 @@ export function DetailPage(props: {
               >
                 {withShipmentNote(statusText, shipment)}
               </Text>
-              <SenderBadge sender={shipment.identity.sender} semantic={presentationStatus.semantic} />
+              {shipment.identity.sender === true ? (
+                <SenderBadge semantic={presentationStatus.semantic} />
+              ) : null}
               <Button buttonStyle="plain" action={() => void editNote()}>
                 <Image
                   systemName={shipment.note ? "note.text" : "square.and.pencil"}
@@ -498,7 +519,7 @@ export function DetailPage(props: {
               spacing={0}
               frame={{ maxWidth: "infinity", alignment: "leading" }}
             >
-              <Text font={15}>{shipment.identity.companyName}：</Text>
+              <Text font={15}>{carrierDisplayName(shipment.identity.companyName)}：</Text>
               <HStack alignment="center" spacing={5}>
                 <Text
                   font={15}
@@ -615,7 +636,7 @@ export function DetailPage(props: {
               foregroundStyle="tertiaryLabel"
             />
             <Text font={14} foregroundStyle="secondaryLabel">
-              {loadingManualDetail ? MANUAL_QUERY_IN_FLIGHT_TEXT : "暂无物流轨迹"}
+              {loadingManualDetail ? MANUAL_QUERY_IN_FLIGHT_TEXT : "暂无物流信息"}
             </Text>
           </VStack>
         )}

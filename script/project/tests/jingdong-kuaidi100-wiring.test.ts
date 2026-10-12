@@ -76,11 +76,18 @@ assert.doesNotMatch(
   /queryJingDongKuaidi100Shipment\(queryInput\)/,
   "京东不得再走直连 K100 的 route 槽",
 );
-// 用户定 2026-09-04：京东手动链只在两个自动源都不完整时启动，判据是揽收。
+// 用户定 2026-09-04：京东手动链只在两个自动源都不完整时启动，判据是揽收。唯一例外（Pipi 用户定
+// 2026-09-24，三端同口径）：已签收、feed 有揽收但显示的历史没到签收，只有详情下拉放行一次
+// （行为见 jd-pull-after-entry.test.ts）。
 assert.match(
   sync,
-  /!jingDongFeedReachedPickup\(original\) &&[\s\S]*?parcel\?\.projectionUrl,/,
-  "联合页重开的判据必须是揽收，不是「已下单或揽收」",
+  /\(!jingDongFeedReachedPickup\(original\) \|\| signedHistoryGap\) &&[\s\S]*?parcel\?\.projectionUrl,/,
+  "联合页重开的判据必须是揽收，不是「已下单或揽收」；例外只有已签收的历史缺口",
+);
+assert.match(
+  sync,
+  /const signedHistoryGap = trigger === "detail_pull" && requestedJingDongDetailSupplement &&\s*jingDongSignedHistoryGap\(original\);/,
+  "已签收的历史缺口只在详情下拉时放行",
 );
 assert.doesNotMatch(
   sync,

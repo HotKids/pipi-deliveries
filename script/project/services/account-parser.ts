@@ -18,6 +18,8 @@ import {
   parseCarrierNormalization,
   type CarrierNormalization,
 } from "./carrier-normalization";
+import { resolveCarrierQuery } from "./carrier-query";
+import { parcelSupersedes } from "./waybill-reuse";
 
 /** The account feed speaks the same status vocabulary as every other source. */
 export type AccountStatusSemantic = StatusSemantic;
@@ -286,39 +288,42 @@ function orderProjectionUrl(value: JsonObject): string {
   return "";
 }
 
+/** 上游京东订单行自带的平台码与名称（provider=JingDong、cpCode=JDKD、name=京东商品快递）。 */
+export const JING_DONG_ACCOUNT_CP_CODE = "JDKD";
+export const JING_DONG_ACCOUNT_NAME = "京东商品快递";
+
+/**
+ * The order-row rule for a JingDong row: 16 digits; or 12 digits with JDKD and 京东商品快递, or 12 digits
+ * the Worker scoped ORDER. Timeline prose naming the number is no longer evidence (audit L6, user
+ * default #3, 2026-09-25).
+ */
 export function isJingDongAccountOrder(
   identifier: string,
   provider: string,
   statusScope = "",
-  evidence: readonly string[] = [],
+  courierCode = "",
+  courierName = "",
 ): boolean {
   if (provider !== "JingDong") return false;
   if (/^[0-9]{16}$/.test(identifier)) return true;
   if (!/^[0-9]{12}$/.test(identifier)) return false;
-  return statusScope.trim().toUpperCase() === "ORDER" ||
-    evidence.some((value) => /订单/.test(String(value || "")));
+  // 12 位纯数字的换货单（351100058925）带的是订单行的身份，不是承运商码；只看位数时它被当成包裹，
+  // 平台标签「京东商品快递」就成了承运商名（2026-09-24）。用户定 2026-09-24：cpCode=JDKD 且 name
+  // 恰好是「京东商品快递」才算订单。12 位纯数字的真实承运商运单号也会带 JDKD（R-20，name 是
+  // 「京东快递」之类），它们仍是包裹。
+  if (courierCode.trim().toUpperCase() === JING_DONG_ACCOUNT_CP_CODE &&
+      courierName.trim() === JING_DONG_ACCOUNT_NAME) return true;
+  return statusScope.trim().toUpperCase() === "ORDER";
 }
 
 function accountOrder(value: JsonObject): boolean {
-  const parsedTracks = tracks(value);
   return isJingDongAccountOrder(
     first(value, "mailNo"),
     first(value, "provider", "providerName"),
     responseNormalizedStatus(value)?.scope || first(value, "normalizedStatusScope"),
-    [
-      first(
-        value,
-        "state",
-        "logisticsStatusDesc",
-        "stateName",
-        "statusText",
-        "normalizedStatusText",
-        "lastLogisticDetail",
-        "context",
-        "message",
-      ),
-      ...parsedTracks.map((item) => item.detail),
-    ],
+    first(value, "cpCode", "com"),
+    // 与下面存进 rawCompanyName 的是同一个字段，存盘修复拿到的是同一个值。
+    first(value, "name", "cpName", "companyName"),
   );
 }
 
@@ -377,10 +382,12 @@ function parseParcel(
   const courierCode = carrierNormalization?.isBuiltIn
     ? carrierNormalization.standardCode
     : rawCourierCode || text(defaults.courierCode);
+  // The Worker's standard code is used; its name comes from this client's current table (audit C9,
+  // adopted 2026-09-25), so a table edit shows without waiting for the Worker's copy.
   const companyName = isOrder
     ? "京东购物"
     : carrierNormalization?.isBuiltIn
-    ? carrierNormalization.displayName
+    ? resolveCarrierQuery(carrierNormalization.standardCode)?.displayName || carrierNormalization.displayName
     : rawCompanyName || text(defaults.companyName);
   const appTargets = source === "interface5"
     ? parseAccountExternalAppRoutes({ code: 0, data: value }, {
@@ -551,7 +558,8 @@ export function parseAccountSyncResult(
     ? strictInterface5Rows(input)
     : preferredParcelArray(source, unwrap(source, input));
   const output: AccountParcelDto[] = [];
-  const identities = new Set<string>();
+  const identities = new Map<string, number>();
+  const now = Date.now();
   let rejectedRecords = 0;
   for (const row of rows) {
     const parcel = parseParcel(source, row, {}, input);
@@ -559,8 +567,14 @@ export function parseAccountSyncResult(
       rejectedRecords++;
       continue;
     }
-    if (identities.has(parcel.ownerId)) continue;
-    identities.add(parcel.ownerId);
+    // A repeated identity keeps its first record, except that the new record of a number a carrier reused replaces
+    // the old one whatever their order (user 2026-10-02, detail 5; services/waybill-reuse.ts).
+    const kept = identities.get(parcel.ownerId);
+    if (kept != null) {
+      if (parcelSupersedes(output[kept], parcel, now)) output[kept] = parcel;
+      continue;
+    }
+    identities.set(parcel.ownerId, output.length);
     output.push(parcel);
   }
   if (rejectedRecords > 0) throw new AccountParseError();

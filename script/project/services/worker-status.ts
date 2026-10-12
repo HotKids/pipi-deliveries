@@ -26,6 +26,17 @@ export function responseNormalizedStatus(value: unknown): NormalizedStatus | und
     : undefined;
 }
 
+/**
+ * A timeline node's own projection (用户定 2026-10-01「两边都改」, the reader Pipi's
+ * ExpressWorkerStatus.nodeEvidence and Lite's WorkerStatusProjection.nodeEvidence share): an
+ * unstructured projection with an empty code says the node carried no enum, so it is absent and the
+ * node's raw fields decide. An unrecognised code (non-empty) stays an explicit UNKNOWN.
+ */
+export function nodeNormalizedStatus(value: unknown): NormalizedStatus | undefined {
+  const status = responseNormalizedStatus(value);
+  return status && !status.structured && !status.code ? undefined : status;
+}
+
 /** History selection cannot transfer display metadata to a different status event. */
 export function timelineNormalizedStatus(timeline: TimelinePackage): NormalizedStatus | undefined {
   const status = parseNormalizedStatus(timeline.normalizedStatus);

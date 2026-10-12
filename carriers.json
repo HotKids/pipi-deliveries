@@ -1,0 +1,315 @@
+{
+  "about": "派派快递承运商内置表的公开副本，由 Worker 中台生成，供 kdbot 定时拉取。",
+  "schemaVersion": 2,
+  "version": "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
+  "source": "embedded-transition",
+  "entries": [
+    {
+      "standardCode": "SF",
+      "displayName": "顺丰速运",
+      "kuaidi100Code": "shunfeng",
+      "hotline": "95338",
+      "iconKey": "sf",
+      "codeAliases": [
+        "SFEXPRESS",
+        "SHUNFENG"
+      ],
+      "nameAliases": [
+        "顺丰",
+        "顺丰快递"
+      ],
+      "requiresPhoneTail": true
+    },
+    {
+      "standardCode": "ZTO",
+      "displayName": "中通快递",
+      "kuaidi100Code": "zhongtong",
+      "hotline": "95311",
+      "iconKey": "zto",
+      "codeAliases": [
+        "ZHONGTONG"
+      ],
+      "nameAliases": [
+        "中通"
+      ],
+      "requiresPhoneTail": true
+    },
+    {
+      "standardCode": "ZTOKY",
+      "displayName": "中通快运",
+      "kuaidi100Code": "zhongtongkuaiyun",
+      "hotline": "",
+      "iconKey": "zto",
+      "codeAliases": [],
+      "nameAliases": [],
+      "requiresPhoneTail": false
+    },
+    {
+      "standardCode": "YTO",
+      "displayName": "圆通速递",
+      "kuaidi100Code": "yuantong",
+      "hotline": "95554",
+      "iconKey": "yto",
+      "codeAliases": [
+        "YUANTONG"
+      ],
+      "nameAliases": [
+        "圆通",
+        "圆通快递"
+      ],
+      "requiresPhoneTail": false
+    },
+    {
+      "standardCode": "STO",
+      "displayName": "申通快递",
+      "kuaidi100Code": "shentong",
+      "hotline": "95543",
+      "iconKey": "sto",
+      "codeAliases": [
+        "SHENTONG"
+      ],
+      "nameAliases": [
+        "申通"
+      ],
+      "requiresPhoneTail": false
+    },
+    {
+      "standardCode": "YD",
+      "displayName": "韵达快递",
+      "kuaidi100Code": "yunda",
+      "hotline": "95546",
+      "iconKey": "yd",
+      "codeAliases": [
+        "YUNDA"
+      ],
+      "nameAliases": [
+        "韵达",
+        "韵达速递"
+      ],
+      "requiresPhoneTail": false
+    },
+    {
+      "standardCode": "JD",
+      "displayName": "京东快递",
+      "kuaidi100Code": "jd",
+      "hotline": "950616",
+      "iconKey": "jd",
+      "codeAliases": [
+        "JDKD",
+        "JINGDONG",
+        "JDLEX"
+      ],
+      "nameAliases": [
+        "京东",
+        "京东物流",
+        "京东快递"
+      ],
+      "requiresPhoneTail": true,
+      "codePrefixAliases": [
+        "JD"
+      ]
+    },
+    {
+      "standardCode": "JDKY",
+      "displayName": "京东快运",
+      "kuaidi100Code": "jingdongkuaiyun",
+      "hotline": "950616",
+      "iconKey": "jd",
+      "codeAliases": [],
+      "nameAliases": [],
+      "requiresPhoneTail": false
+    },
+    {
+      "standardCode": "EMS",
+      "displayName": "EMS",
+      "kuaidi100Code": "ems",
+      "hotline": "11183",
+      "iconKey": "ems",
+      "codeAliases": [
+        "EYB"
+      ],
+      "nameAliases": [
+        "邮政EMS",
+        "邮政特快"
+      ],
+      "requiresPhoneTail": false
+    },
+    {
+      "standardCode": "YZPY",
+      "displayName": "邮政快递",
+      "kuaidi100Code": "youzhengguonei",
+      "hotline": "11183",
+      "iconKey": "yzpy",
+      "codeAliases": [
+        "POST",
+        "POSTB",
+        "CHINAPOST",
+        "YOUZHENGGUONEI",
+        "YOUZHENGBK"
+      ],
+      "nameAliases": [
+        "邮政",
+        "邮政快递包裹",
+        "中国邮政",
+        "邮政国内标准",
+        "邮政包裹",
+        "包裹信件"
+      ],
+      "requiresPhoneTail": false,
+      "kuaidi100CodeAliases": [
+        "youzhengbk"
+      ]
+    },
+    {
+      "standardCode": "JTSD",
+      "displayName": "极兔速递",
+      "kuaidi100Code": "jtexpress",
+      "hotline": "956025",
+      "iconKey": "jtsd",
+      "codeAliases": [
+        "JT",
+        "J&T",
+        "JTEXPRESS",
+        "JITU"
+      ],
+      "nameAliases": [
+        "极兔"
+      ],
+      "requiresPhoneTail": false
+    },
+    {
+      "standardCode": "HTKY",
+      "displayName": "极兔速递",
+      "kuaidi100Code": "huitongkuaidi",
+      "hotline": "956025",
+      "iconKey": "jtsd",
+      "codeAliases": [
+        "BEST",
+        "BESTQJT",
+        "HUITONGKUAIDI"
+      ],
+      "nameAliases": [
+        "百世",
+        "百世快递",
+        "汇通"
+      ],
+      "requiresPhoneTail": false
+    },
+    {
+      "standardCode": "DBL",
+      "displayName": "德邦快递",
+      "kuaidi100Code": "debangkuaidi",
+      "hotline": "95353",
+      "iconKey": "dbl",
+      "codeAliases": [
+        "DBKD",
+        "DEBANGKUAIDI",
+        "DEBANGWULIU"
+      ],
+      "nameAliases": [
+        "德邦",
+        "德邦物流"
+      ],
+      "requiresPhoneTail": false,
+      "kuaidi100CodeAliases": [
+        "debangwuliu"
+      ]
+    },
+    {
+      "standardCode": "KYSY",
+      "displayName": "跨越速运",
+      "kuaidi100Code": "kuayue",
+      "hotline": "95324",
+      "iconKey": "kysy",
+      "codeAliases": [
+        "KY",
+        "KUAYUE",
+        "KYE"
+      ],
+      "nameAliases": [
+        "跨越"
+      ],
+      "requiresPhoneTail": true
+    },
+    {
+      "standardCode": "ZJS",
+      "displayName": "宅急送",
+      "kuaidi100Code": "zhaijisong",
+      "hotline": "4006789000",
+      "iconKey": "zjs",
+      "codeAliases": [
+        "ZHAIJISONG"
+      ],
+      "nameAliases": [],
+      "requiresPhoneTail": false
+    },
+    {
+      "standardCode": "UC",
+      "displayName": "优速快递",
+      "kuaidi100Code": "youshuwuliu",
+      "hotline": "",
+      "iconKey": "uc",
+      "codeAliases": [
+        "YOUSHUWULIU"
+      ],
+      "nameAliases": [
+        "优速"
+      ],
+      "requiresPhoneTail": false
+    },
+    {
+      "standardCode": "DANNIAO",
+      "displayName": "丹鸟速递",
+      "kuaidi100Code": "danniao",
+      "hotline": "",
+      "iconKey": "danniao",
+      "codeAliases": [
+        "ZMKM",
+        "ZMKMKD"
+      ],
+      "nameAliases": [
+        "丹鸟",
+        "丹鸟快递",
+        "菜鸟速递",
+        "菜鸟直送",
+        "菜鸟直送(丹鸟)",
+        "菜鸟直送（丹鸟）"
+      ],
+      "requiresPhoneTail": false
+    }
+  ],
+  "statusLabels": {
+    "schemaVersion": 1,
+    "labels": {
+      "UNKNOWN": "暂无状态",
+      "ORDERED": "已下单",
+      "SHIPPED": "已发货",
+      "PICKED": "已揽件",
+      "TRANSIT": "运输中",
+      "DELIVERY": "派送中",
+      "WAITING_PICKUP": "待取件",
+      "COMPLETED": "已签收",
+      "DANGER": "异常件",
+      "CANCELLED": "已取消"
+    },
+    "orderLabels": {
+      "COMPLETED": "已完成",
+      "CANCELLED": "订单已取消"
+    },
+    "subtypes": [
+      {
+        "semantic": "DELIVERY",
+        "code": "STA_DELIVERING",
+        "label": "待派送",
+        "priority": 1
+      }
+    ],
+    "unprojectedOrder": {
+      "scope": "ORDER",
+      "displaySemantic": {
+        "PICKED": "ORDERED",
+        "SHIPPED": "ORDERED"
+      }
+    }
+  }
+}

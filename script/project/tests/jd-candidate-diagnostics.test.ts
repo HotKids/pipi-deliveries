@@ -59,7 +59,11 @@ test("JD candidate diagnostics expose the actual completeness and rejection evid
   assert.equal(evidence({ ...complete, waybill: "JD000000000002" }).waybillMatches, false);
   assert.deepEqual(policy.selectShipmentDetailTimeline(current), before, "inspection cannot change the selected package");
   current.sourceTimeline!.tracks.at(-1)!.detail = "已下单";
-  const older = { ...complete, tracks: complete.tracks.map(t => ({ ...t, timeMs: t.timeMs! - 3 * 86400000 })) };
+  // Audit D1 (adopted 2026-09-25): the anchor judges Picker / K100 H5 / KDNiao packages only; the
+  // order's own union page is never foreign. The anchor evidence is exercised with KDNiao instead.
+  const olderUnionPage = { ...complete, tracks: complete.tracks.map(t => ({ ...t, timeMs: t.timeMs! - 3 * 86400000 })) };
+  assert.equal(evidence(olderUnionPage).foreignPackage, false);
+  const older = { ...olderUnionPage, provider: "kdniao" };
   assert.equal(evidence(older).foreignPackage, true);
   assert.equal(evidence(older).foreignAnchorAtMs, NOW - 6 * 60000 - 86400000);
   current.identity.sourceProvider = "ShunFeng";

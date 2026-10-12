@@ -152,6 +152,30 @@ public final class ExpressVisibilityPolicyTest {
                         NOW - ExpressVisibilityPolicy.CANCELLED_VISIBLE_MS), NOW));
     }
 
+    /**
+     * 审计 L14（用户 2026-09-25 默认 #4）：取消件的 4 小时从列表显示的时间起算，与签收留存同口径；没有可用的显示时间
+     * 才用结构化状态时间；每次观测都会变的 updatedAt 不再起算。
+     */
+    @Test
+    public void cancelledWindowStartsAtTheShownTime() {
+        long shownAt = NOW - ExpressVisibilityPolicy.CANCELLED_VISIBLE_MS;
+        ExpressItem shownEarlier = new ExpressItem(1L, "", "TEST123", "ZTO", "中通快递",
+                StatusSemantic.CANCELLED, "已取消", "已取消", time(shownAt), "[]", "",
+                "INTERFACE5", "", NOW - 60_000L, NOW, "INTERFACE5", "");
+        assertTrue("the shown time owns the window", ExpressVisibilityPolicy.isExpired(shownEarlier, NOW));
+        assertFalse(ExpressVisibilityPolicy.isExpired(shownEarlier, NOW - 1L));
+
+        ExpressItem noTimes = new ExpressItem(1L, "", "TEST123", "ZTO", "中通快递",
+                StatusSemantic.CANCELLED, "已取消", "", "", "[]", "", "INTERFACE5", "",
+                0L, NOW - ExpressVisibilityPolicy.CANCELLED_VISIBLE_MS, "INTERFACE5", "");
+        assertFalse("the observation time never starts it", ExpressVisibilityPolicy.isExpired(noTimes, NOW));
+
+        ExpressQueryResult discovered = new ExpressQueryResult("TEST123", "ZTO", "中通快递",
+                StatusSemantic.CANCELLED, NOW - 60_000L, time(shownAt), "已取消", "[]", "", "",
+                "interface5", "", "", "CaiNiao");
+        assertTrue(ExpressVisibilityPolicy.isExpiredResult(discovered, NOW));
+    }
+
     @Test
     public void accountOrderDoesNotStartCarrierRetentionFromItsOrderState() {
         assertFalse(ExpressVisibilityPolicy.isExpired(

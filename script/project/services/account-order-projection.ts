@@ -65,6 +65,11 @@ export type AccountOrderProjectionDiagnostics = Readonly<{
   viewportHosted: boolean;
   identitySource: string;
   unionResponseStatuses: string;
+  /**
+   * Union requests still unanswered when the page state was last read, i.e. sent but neither
+   * answered nor aborted by the page before the timeout (user decision 2026-09-26, 其余裁决 4).
+   */
+  unionPendingCount?: number;
   riskControlSeen?: boolean;
   probeCaptureCount: number;
 }>;
@@ -740,6 +745,11 @@ function extractionJavaScript(
         unionResponseStatuses: probe && Array.isArray(probe.unionStatuses)
           ? probe.unionStatuses.join(",")
           : "",
+        // Union requests the page sent that had neither answered nor been aborted by the page.
+        unionPendingCount: probe && Number.isFinite(probe.unionRequested) &&
+            Number.isFinite(probe.unionSettled)
+          ? Math.min(Math.max(0, probe.unionRequested - probe.unionSettled), 100000)
+          : 0,
         probeCaptureCount: probe && Array.isArray(probe.queue) ? probe.queue.length : 0,
       });
       const resourceStateBeforeProbe = performanceResources();
@@ -759,6 +769,8 @@ function extractionJavaScript(
           fullProgressAttempt: null,
           originalFetch: null,
           unionStatuses: [],
+          unionRequested: 0,
+          unionSettled: 0,
         };
         window[probeKey] = probe;
         // A synchronous XHR may finish before click() returns or throws.
@@ -822,10 +834,20 @@ function extractionJavaScript(
               if (unionTarget) probe.unionSignalSeen = true;
                             const response = originalFetch.apply(this, arguments);
               if (target) {
+                if (unionTarget) probe.unionRequested = (probe.unionRequested || 0) + 1;
                 Promise.resolve(response)
                   .then((value) => {
-                    if (unionTarget) recordUnionStatus(value && value.status);
+                    if (unionTarget) {
+                      probe.unionSettled = (probe.unionSettled || 0) + 1;
+                      recordUnionStatus(value && value.status);
+                    }
                     captureResponse(value, clickAttemptAtStart);
+                  }, () => {
+                    // A union fetch that failed on the network is a failed answer (status 0).
+                    if (unionTarget) {
+                      probe.unionSettled = (probe.unionSettled || 0) + 1;
+                      recordUnionStatus(0);
+                    }
                   })
                   .catch(() => {});
               }
@@ -849,9 +871,15 @@ function extractionJavaScript(
               const clickAttemptAtStart = unionTarget ? probe.fullProgressAttempt : null;
               if (target) {
                 if (unionTarget) probe.unionSignalSeen = true;
+                if (unionTarget) probe.unionRequested = (probe.unionRequested || 0) + 1;
                 try {
+                  // An error or a timeout ends with status 0, a failed answer; the page aborting
+                  // its own request is no answer at all (Lite reads the same two events).
+                  let aborted = false;
+                  this.addEventListener("abort", () => { aborted = true; }, { once: true });
                                     this.addEventListener("loadend", () => {
-                    if (unionTarget) recordUnionStatus(this.status);
+                    if (unionTarget) probe.unionSettled = (probe.unionSettled || 0) + 1;
+                    if (unionTarget && !aborted) recordUnionStatus(this.status);
                     try {
                       const contentType = clean(this.getResponseHeader &&
                         this.getResponseHeader("content-type"));
@@ -1054,6 +1082,8 @@ export async function projectAccountOrder(
   deadlineAtMs?: number,
   observe?: (diagnostics: AccountOrderProjectionDiagnostics) => void,
   signal?: AbortSignal,
+  /** Asked once the viewport is lent, right before navigation; a throw means no page is loaded. */
+  beforeLoad?: () => void,
 ): Promise<AccountParcelDto> {
     assertProjectionActive(signal);
   const textIdentity = parcel.textIdentity;
@@ -1070,15 +1100,16 @@ export async function projectAccountOrder(
     } catch {
       /* diagnostics are best-effort */
     }
-        // The order-stage raw carrier tuple (e.g. JDKD) is not evidence for the carrier waybill and
-    // must never survive the projection.
+    // The order-stage raw carrier tuple (e.g. JDKD) is not evidence for the carrier waybill and
+    // must never survive the projection; the text names only the waybill (其余裁决 7, 2026-09-26), so
+    // the carrier is resolved afterwards like any real waybill.
     return {
       ...parcel,
       waybill: textIdentity.waybill,
-      courierCode: textIdentity.courierCode,
+      courierCode: "",
       rawCourierCode: "",
-      rawCompanyName: textIdentity.companyName,
-      companyName: textIdentity.companyName,
+      rawCompanyName: "",
+      companyName: "",
       carrierNormalization: null,
       projectionTimeline: null,
     };
@@ -1131,6 +1162,7 @@ export async function projectAccountOrder(
     let visibilityState = "unknown";
   let viewportAvailable = false;
   let unionResponseStatuses = "";
+  let unionPendingCount = 0;
   let riskControlSeen = false;
   let networkTraceCount = 0;
   let probeCaptureCount = 0;
@@ -1181,6 +1213,9 @@ export async function projectAccountOrder(
       signal,
     );
     assertProjectionActive(signal);
+    // The wait for the viewport can outlast the caller's reasons to load (a refresh flow suspended
+    // with the app, 2026-09-25): the caller decides again here, before anything reaches JD.
+    beforeLoad?.();
     // A dynamic page can keep WebKit's load promise pending after its useful requests and DOM are
     // already available. Start navigation without waiting for that promise so capture and DOM
     // polling can run inside the same bounded projection window.
@@ -1305,6 +1340,11 @@ export async function projectAccountOrder(
             viewportAvailable ||= candidate.viewportAvailable === true;
       const candidateStatuses = text(candidate.unionResponseStatuses);
       if (candidateStatuses) unionResponseStatuses = candidateStatuses;
+      // The latest read of the page wins: a request pending earlier may have answered since.
+      const candidatePending = Number(candidate.unionPendingCount);
+      if (Number.isFinite(candidatePending) && candidatePending >= 0) {
+        unionPendingCount = Math.min(Math.round(candidatePending), 100000);
+      }
       riskControlSeen ||= candidate.riskControlSeen === true;
       const candidateCaptures = Number(candidate.probeCaptureCount);
       if (Number.isFinite(candidateCaptures) && candidateCaptures >= 0) {
@@ -1420,6 +1460,7 @@ export async function projectAccountOrder(
         viewportHosted,
         identitySource: "webview",
         unionResponseStatuses,
+        unionPendingCount,
         riskControlSeen,
         probeCaptureCount,
       });

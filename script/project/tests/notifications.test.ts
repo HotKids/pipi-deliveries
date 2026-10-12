@@ -178,6 +178,24 @@ recordShipmentChange(
 recordShipmentChange(null, shipment("DELIVERY", "首次发现"));
 assert.equal(scheduled.length, 3);
 
+// 四端统一成 Lite 的严格口径（用户 2026-09-25）：上一版没有事件时间时，同状态的带时间改写不是新事件
+// （Fold7 2026-09-05 六票已签收件就是这样被重新通知的）；状态变了照常通知。
+{
+  // Only DELIVERY notifications are enabled here, so both shipments are DELIVERY.
+  const untimedDelivery = shipment("DELIVERY", "快递员正在派送");
+  const untimedPrevious = {
+    ...untimedDelivery, timeline: { ...untimedDelivery.timeline, statusEventAtMs: null, tracks: [] },
+  };
+  const timedRewrite = shipment("DELIVERY", "快递员正在派送，请保持电话畅通");
+  assert.equal(shipmentNotificationEvent(untimedPrevious, timedRewrite), null,
+    "a timed rewrite of an untimed version is not a newer event");
+  const untimedTransit = shipment("TRANSIT", "运输中");
+  assert.notEqual(shipmentNotificationEvent(
+    { ...untimedTransit, timeline: { ...untimedTransit.timeline, statusEventAtMs: null, tracks: [] } },
+    timedRewrite,
+  ), null, "a status change still notifies");
+}
+
 saveNotificationStatuses(["COMPLETED"], 101);
 const completedJingDong = {
   ...shipment("COMPLETED", "手动权威包已签收"),
@@ -253,6 +271,22 @@ recordShipmentChange(orderedJingDong, {
 });
 assert.equal(scheduled.length, 5);
 assert.equal(scheduled[4]?.title, "京东购物 7654 · 已完成");
+
+// Audit L2 (adopted 2026-09-25): the switch and the comparison read the presented status. An order
+// without a waybill is shown as 已下单 while the Worker's order-level status reads 已揽件, so that move
+// is no status change and the 已揽件 switch does not apply.
+saveNotificationStatuses(["ORDERED", "PICKED"], 104);
+recordShipmentChange(orderedJingDong, {
+  ...orderedJingDong,
+  statusPresentation: { scope: "ORDER", semantic: "PICKED", text: "已揽件" },
+});
+assert.equal(scheduled.length, 5, "the order stays 已下单 on screen: nothing to notify");
+saveNotificationStatuses(["PICKED"], 104);
+recordShipmentChange({ ...orderedJingDong, timeline: { ...orderedJingDong.timeline, semantic: "UNKNOWN" } }, {
+  ...orderedJingDong,
+  statusPresentation: { scope: "ORDER", semantic: "PICKED", text: "已揽件" },
+});
+assert.equal(scheduled.length, 5, "the presented 已下单 follows the 已下单 switch, which is off");
 
 saveNotificationStatuses([], 104);
 assert.deepEqual(loadNotificationStatuses(true), []);

@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
-import me.pipi.deliveries.R;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.StatusSemantic;
 
@@ -62,20 +61,13 @@ final class ExpressWidgetPresentation {
         return new PriorityStatus(StatusSemantic.UNKNOWN, 0);
     }
 
-    static int priorityLabel(StatusSemantic semantic) {
-        switch (semantic) {
-            case DELIVERY: return R.string.widget_status_delivery;
-            case TRANSIT: return R.string.widget_status_transit;
-            case PICKED: return R.string.widget_status_picked;
-            case SHIPPED: return R.string.widget_status_shipped;
-            case ORDERED: return R.string.widget_status_ordered;
-            case COMPLETED: return R.string.widget_status_completed;
-            case DANGER: return R.string.widget_status_danger;
-            case UNKNOWN: return R.string.widget_status_unknown;
-            case CANCELLED: return R.string.widget_status_cancelled;
-            case WAITING_PICKUP:
-            default: return R.string.widget_status_waiting;
-        }
+    /**
+     * The row's status word, from the one status display function (audit L5, user defaults of
+     * 2026-09-25): the same word the list, detail and notification title show — 已完成 for an
+     * unprojected order, 待派送 for that subtype — never a widget-only copy.
+     */
+    static String statusText(ExpressItem item) {
+        return item.displayStatus();
     }
 
     static List<ExpressItem> sorted(List<ExpressItem> items) {
@@ -101,13 +93,13 @@ final class ExpressWidgetPresentation {
         String suffix = suffix(item.displayWaybill());
         String meta = suffix.isEmpty()
                 ? item.displayStatus() : suffix + " · " + item.displayStatus();
-        return item.displayCompany() + " " + meta;
+        return item.displayCarrierLabel() + " " + meta;
     }
 
     static String rowIdentity(ExpressItem item) {
         String suffix = suffix(item.displayWaybill());
-        return suffix.isEmpty() ? item.displayCompany()
-                : item.displayCompany() + " " + suffix;
+        return suffix.isEmpty() ? item.displayCarrierLabel()
+                : item.displayCarrierLabel() + " " + suffix;
     }
 
     private static int rank(StatusSemantic semantic) {
