@@ -20,6 +20,15 @@ public final class TimelineSlot {
         return CN_H5.equals(normalize(value)) || JD_H5.equals(normalize(value));
     }
 
+    /**
+     * A package this client captured from a web page (the Kuaidi100 or J&T page, the Cainiao page, the JD union page):
+     * only a detail page with an Activity can open those again, never a refresh in a host without one.
+     */
+    public static boolean isWebCapture(String value) {
+        String slot = normalize(value);
+        return K100_H5.equals(slot) || JT_H5.equals(slot) || CN_H5.equals(slot) || JD_H5.equals(slot);
+    }
+
     public static String normalize(String value) {
         String clean = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         switch (clean) {

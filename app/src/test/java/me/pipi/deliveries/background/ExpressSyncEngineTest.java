@@ -13,7 +13,6 @@ import java.util.Arrays;
 
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
-import me.pipi.deliveries.feature.express.ExpressOrderTextIdentity;
 import me.pipi.deliveries.model.StatusSemantic;
 
 import org.junit.Test;
@@ -71,16 +70,24 @@ public final class ExpressSyncEngineTest {
     @Test
     public void missingAccountRowUsesSignatureEvidenceInsteadOfCachePresence() {
         long now = java.time.Instant.parse("2026-09-08T12:00:00Z").toEpochMilli();
+        long signedAt = java.time.Instant.parse("2026-09-08T02:00:00Z").toEpochMilli();
         ExpressItem signed = new ExpressItem(
                 9L, "13800138000", "JD0000000000009", "JD", "京东快递",
                 StatusSemantic.COMPLETED, "已签收", "已签收",
-                "2026-09-08 10:00:00", "[]", "", "interface5", "");
+                "2026-09-08 10:00:00", "[]", "", "interface5", "", signedAt, signedAt,
+                "interface5", "");
         ExpressItem missingTime = new ExpressItem(
                 9L, "13800138000", "JD0000000000009", "JD", "京东快递",
                 StatusSemantic.COMPLETED, "已签收", "已签收", "", "[]", "", "interface5", "");
+        // A 签收 headline with a time but no status time is no signed evidence (audit D10).
+        ExpressItem textOnly = new ExpressItem(
+                9L, "13800138000", "JD0000000000009", "JD", "京东快递",
+                StatusSemantic.COMPLETED, "已签收", "已签收",
+                "2026-09-08 10:00:00", "[]", "", "interface5", "");
         for (boolean missingCache : new boolean[]{false, true}) {
             assertFalse(ExpressSyncEngine.shouldRefreshMissingAccountRow(signed, missingCache, now, false));
             assertTrue(ExpressSyncEngine.shouldRefreshMissingAccountRow(missingTime, missingCache, now, false));
+            assertTrue(ExpressSyncEngine.shouldRefreshMissingAccountRow(textOnly, missingCache, now, false));
         }
         ExpressItem cancelled = new ExpressItem(
                 9L, "13800138000", "JD0000000000009", "JD", "京东快递",
@@ -199,68 +206,6 @@ public final class ExpressSyncEngineTest {
         assertTrue(AccountCarrierRecognition.needsRecognition(genericCarrier));
         assertFalse(AccountCarrierRecognition.needsRecognition(resolvedCarrier));
         assertFalse(AccountCarrierRecognition.needsRecognition(unprojected));
-    }
-
-    @Test
-    public void backgroundSyncReadsTheWaybillNamedByOrderTrackText() {
-        String tracks = "[{\"time\":\"2026-09-06 11:24:29\",\"context\":"
-                + "\"您的订单由第三方卖家拣货完成，待出库交付申通快递，运单号为770018906334362\"},"
-                + "{\"time\":\"2026-09-06 00:19:43\",\"context\":\"预计9月6日发货\"}]";
-
-        ExpressOrderTextIdentity.Identity identity = ExpressSyncEngine.textProjectionIdentity(
-                accountOrder("", StatusSemantic.PICKED, tracks));
-
-        assertEquals("770018906334362", identity.waybill);
-        assertEquals("STO", identity.courierCode);
-        assertEquals("申通快递", identity.companyName);
-    }
-
-    @Test
-    public void textProjectionIgnoresStatusAndNeverRepeatsOrLeavesAccountOrders() {
-        String tracks = "[{\"time\":\"2026-09-06 11:24:29\",\"context\":"
-                + "\"待出库交付申通快递，运单号为770018906334362\"}]";
-
-        // A returned waybill is identity evidence even before pickup.
-        assertEquals("770018906334362", ExpressSyncEngine.textProjectionIdentity(
-                accountOrder("", StatusSemantic.ORDERED, tracks)).waybill);
-        assertEquals("770018906334362", ExpressSyncEngine.textProjectionIdentity(
-                accountOrder("", StatusSemantic.SHIPPED, tracks)).waybill);
-        // An already projected order keeps its projection.
-        assertNull(ExpressSyncEngine.textProjectionIdentity(
-                accountOrder("770018906334362", StatusSemantic.PICKED, tracks)));
-        // Text that names no waybill projects nothing.
-        assertNull(ExpressSyncEngine.textProjectionIdentity(
-                accountOrder("", StatusSemantic.PICKED, "[{\"context\":\"已揽收\"}]")));
-        // A plain carrier waybill row is not an account order.
-        assertNull(ExpressSyncEngine.textProjectionIdentity(
-                sourceItem("INTERFACE5", "", "ZTO", "中通快递")));
-        assertNull(ExpressSyncEngine.textProjectionIdentity(null));
-    }
-
-    @Test
-    public void orderTextProjectionIsExclusiveToInterface5() {
-        String tracks = "[{\"time\":\"2026-09-09 10:00:00\",\"context\":"
-                + "\"交付申通快递，运单号为770018906334362\"}]";
-        ExpressItem unsupported = new ExpressItem(
-                4L, "", "3613448003874424", "JD", "京东购物",
-                StatusSemantic.PICKED, "已揽收", "订单进行中",
-                "2026-09-09 10:00:00", tracks, "", "I6-JD", "",
-                1L, 2L, "I6-JD", "I6-JD", "v6", "", true,
-                "", "", "[]", "JingDong");
-        assertNull(ExpressSyncEngine.textProjectionIdentity(unsupported));
-        assertEquals("770018906334362", ExpressSyncEngine.textProjectionIdentity(
-                accountOrder("", StatusSemantic.PICKED, tracks)).waybill);
-    }
-
-    private static ExpressItem accountOrder(
-            String projectedWaybill, StatusSemantic semantic, String tracksJson) {
-        return new ExpressItem(
-                4L, "", "3613448003874424", "JD", "京东购物",
-                semantic, semantic.label, "订单进行中",
-                "2026-09-06 11:24:29", tracksJson, "", "I5-JD", "",
-                1L, 2L, "I5-JD", "I5-JD", "v5",
-                "https://example.jd.com/detail", true,
-                projectedWaybill, "", "[]", "JingDong");
     }
 
     private static ExpressItem sourceItem(

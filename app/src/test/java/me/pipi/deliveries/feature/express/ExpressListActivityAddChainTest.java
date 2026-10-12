@@ -21,6 +21,23 @@ import android.app.Application;
 public final class ExpressListActivityAddChainTest {
     private static final String ROUTE = "https://m.kuaidi100.com/result.jsp?nu=YT0000000001";
 
+    @Test public void oldStartDoesNotHideANewerIncompletePackage() {
+        ExpressQueryResult newer = new ExpressQueryResult("YT0000000001", "YTO", "YTO",
+                StatusSemantic.TRANSIT, "2026-09-05 20:00:00", "运输中",
+                "[{\"time\":\"2026-09-05 20:00:00\",\"context\":\"运输中\"}]",
+                "", "", TimelineSlot.V6_QUERY);
+        assertEquals("https://m.kuaidi100.com/app/query/?nu=YT0000000001",
+                ExpressDetailActivity.kuaidi100AddCaptureRoute("YT0000000001", Arrays.asList(
+                        new ManualQuerySuccess("meizu", online("已揽收", true), 1L, false),
+                        new ManualQuerySuccess(TimelineSlot.V6_QUERY, newer, 2L, false))));
+    }
+
+    @Test public void anotherWaybillCannotStopTheRequestedCapture() {
+        assertEquals("https://m.kuaidi100.com/app/query/?nu=SF0000000002",
+                ExpressDetailActivity.kuaidi100AddCaptureRoute("SF0000000002", Arrays.asList(
+                        new ManualQuerySuccess("meizu", online("已揽收", true), 1L, false))));
+    }
+
     private static ExpressQueryResult online(String detail, boolean start) {
         String time = "2026-09-05 10:00:00";
         return new ExpressQueryResult(

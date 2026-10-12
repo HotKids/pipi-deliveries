@@ -133,10 +133,13 @@ assert.equal(
   "an order-completed fallback is visible but is not an active shipment",
 );
 
+// Audit L6 / user default #3 (2026-09-25): the Worker's ORDER scope, not the prose naming the number,
+// makes this 12-digit row an order.
 const completedShortOrder = parseAccountSyncResponse("interface5", {
   code: 0,
   data: {
     expressList: [{
+      normalizedStatusScope: "ORDER",
       mailNo: "350365030147",
       cpCode: "JD",
       name: "京东快递",

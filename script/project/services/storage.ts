@@ -13,6 +13,7 @@ import type {
 } from "../models";
 import {
   buildWidgetSnapshot,
+  isConfirmedNoItemOrder,
   isHiddenSignedShipment,
   isNonEventDetail,
   mergeTimelineAuthorities,
@@ -24,6 +25,9 @@ import {
   splitJingDongH5Nodes,
   terminalEvidenceAtMs,
   timedTracks,
+  isJingDongOrderCompletionNode,
+  jingDongAnchorEvidence,
+  jingDongSignedAnchorAtMs,
   withoutJingDongOrderCompletion,
 } from "./status";
 import {
@@ -40,14 +44,22 @@ import {
   isVerifiedKuaidi100Timeline,
   normalizeAutomaticOwnership,
   selectShipmentTimeline,
+  withDetailSelection,
 } from "./shipment-policy";
 import { projectedCarrierPresentation } from "./carrier-presentation";
 import { isJingDongAccountOrder } from "./account-parser";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
 import {
+  createDiagnosticFlowId,
   diagnosticState,
   writeDiagnostic,
 } from "./logger";
+import {
+  attachedShipmentIds,
+  splitMergedOrderRows,
+  withWaybillOwnership,
+  type MergedOrderSplitPlan,
+} from "./waybill-ownership";
 import {
   loadBindingBackup,
   saveBindingBackup,
@@ -68,8 +80,15 @@ import {
   writeDurableText,
 } from "./durable-files";
 import { utf8Data } from "./scripting-data";
-import { shipmentNotificationEvent } from "./notification-events";
+import {
+  shipmentNotificationEvent,
+  shipmentNotificationPresentation,
+} from "./notification-events";
+import { carrierAwaitingRecognition } from "./carrier-gate";
+import { notificationEnabled } from "./notification-preferences";
 import { preserveSettledShipment } from "./shipment-policy";
+import { newerWaybillReuseGeneration } from "./waybill-reuse";
+import { pruneRowLedgerForState } from "./row-ledger";
 
 const STATE_KEY = "pipi_deliveries_state_v1";
 /** 只放一个数字：状态最近一次落盘的 revision，供投影等待轮询，不用每次全量 loadState（2026-09-06）。 */
@@ -363,12 +382,19 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
   const emptyTimelineRetirements = mergeEmptyTimelineRetirements(
     undefined, base.emptyTimelineRetirements, base.shipments || [],
   );
+  // 归属-4：旧版本合并出来的行一次性拆开；只看还没有占号时间的行，下面一步给所有行记上占号时间后就不会再拆。
+  const split = splitMergedOrderRows(migrateShipmentSources(base.shipments || []), now);
+  logMergedOrderSplits(split);
   const retainedShipments = pruneExpiredManualPlaceholders(
     retainDurableShipments(
-      applyEmptyTimelineRetirements(migrateShipmentSources(base.shipments || [])
-        .map((shipment) => normalizeShipmentAuthorities(shipment, now))
-        .map((shipment) => feedSlotRebuiltAtMs ? shipment : markFeedSlotRebuild(shipment)),
-        emptyTimelineRetirements, now),
+      applyEmptyTimelineRetirements(withWaybillOwnership(
+        null,
+        split.shipments
+          .map((shipment) => normalizeShipmentAuthorities(shipment, now))
+          .map((shipment) => feedSlotRebuiltAtMs ? shipment : markFeedSlotRebuild(shipment)),
+        now,
+        (shipment) => normalizeShipmentAuthorities(shipment, now),
+      ), emptyTimelineRetirements, now),
       now,
     ),
     now,
@@ -388,6 +414,30 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     feedSlotRebuiltAtMs: feedSlotRebuiltAtMs || now,
     ...(emptyTimelineRetirements.length ? { emptyTimelineRetirements } : {}),
   };
+}
+
+/**
+ * 归属-4 的日志（AGENTS §10）：只记固定事件、结果、原因与计数，不带任何单号或尾号。拆开与拆不开的行各一条，外加一条汇总，
+ * 同一次迁移共用一个 flowId。
+ */
+function logMergedOrderSplits(plan: MergedOrderSplitPlan): void {
+  if (!plan.splits.length && !plan.skipped.length) return;
+  const flowId = createDiagnosticFlowId("ownership");
+  for (const _split of plan.splits) {
+    writeDiagnostic("ownership.split.applied", { flowId, stage: "state", result: "split" });
+  }
+  for (const reason of plan.skipped) {
+    writeDiagnostic("ownership.split.skipped", {
+      flowId, stage: "state", result: "ambiguous", skipReason: reason,
+    }, "warning");
+  }
+  writeDiagnostic("ownership.split.completed", {
+    flowId,
+    stage: "state",
+    records: plan.splits.length + plan.skipped.length,
+    succeeded: plan.splits.length,
+    failed: plan.skipped.length,
+  });
 }
 
 /**
@@ -509,11 +559,9 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
         shipment.identity.sourceId,
         String(shipment.identity.sourceProvider || ""),
         shipment.statusPresentation?.scope || "",
-        [
-          shipment.timeline.latestDetail,
-          ...(shipment.sourceTimeline?.tracks || shipment.timeline.tracks)
-            .map((track) => track.detail),
-        ],
+        shipment.identity.rawCourierCode || shipment.identity.courierCode,
+        // 上游那一行的 name（account-parser 解析时存进 rawCompanyName），不是展示用的 companyName。
+        shipment.identity.rawCompanyName || "",
       ),
   );
   const projectedWaybill = repairsJingDongOrder
@@ -546,6 +594,9 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
     Number.isFinite(riskControlAtMs) && riskControlAtMs > 0
       ? riskControlAtMs
       : undefined;
+  // 方案 A (user 2026-09-25): the empty-page strikes of a completed order live in the same record.
+  const emptyShellAtMs = Number(rawProjectionRetry?.emptyShellAtMs);
+  const emptyShellConfirmedAtMs = Number(rawProjectionRetry?.emptyShellConfirmedAtMs);
   const orderProjectionRetry =
     !projectedWaybill &&
       /^[a-f0-9]{64}$/.test(routeHash) &&
@@ -558,6 +609,10 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
             : {}),
           ...(attemptId && attemptExpiresAtMs
             ? { attemptId, attemptExpiresAtMs }
+            : {}),
+          ...(Number.isFinite(emptyShellAtMs) && emptyShellAtMs > 0 ? { emptyShellAtMs } : {}),
+          ...(Number.isFinite(emptyShellConfirmedAtMs) && emptyShellConfirmedAtMs > 0
+            ? { emptyShellConfirmedAtMs }
             : {}),
         }
       : undefined;
@@ -724,6 +779,10 @@ function legacyRouteMigrations(
       fromId: shipment.identity.id,
       toId: target.identity.id,
     });
+  }
+  // 归属-4：拆开旧合并行时，运单记录自己的菜鸟路由跟着重建的运单行走（与 migrate 用同一份输入，得到同一份拆分）。
+  for (const split of splitMergedOrderRows(finalShipments, Date.now()).splits) {
+    if (split.routeMoved) migrations.push({ fromId: split.orderId, toId: split.waybillRowId });
   }
   if (isCurrentState(value)) {
     for (const pending of value.pendingQueries || []) {
@@ -950,6 +1009,32 @@ function stampSettledAt(shipment: Shipment, now: number): Shipment {
 }
 
 function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment {
+  const anchorAtMs = jingDongSignedAnchorAtMs(shipment);
+  const normalized = normalizeShipmentAuthoritiesWithAnchor(shipment, now, anchorAtMs);
+  // The save that first stamps settledAtMs cleans JD reviews with that same anchor (助手按用户 2026-09-27 规则对齐),
+  // so the committed row, its pending notification and every later read agree on each review.
+  const stampedAtMs = jingDongSignedAnchorAtMs(normalized);
+  return stampedAtMs > 0 && stampedAtMs !== anchorAtMs && keepsJingDongReviewNode(normalized)
+    ? normalizeShipmentAuthoritiesWithAnchor({ ...shipment, settledAtMs: normalized.settledAtMs }, now, stampedAtMs)
+    : normalized;
+}
+
+/** Whether any package of the row still carries a JD review node the order rule covers. */
+function keepsJingDongReviewNode(shipment: Shipment): boolean {
+  const covers = (timeline: TimelinePackage | null | undefined, identity: Shipment["identity"]) =>
+    Boolean(timeline) && [timeline!.latestDetail, ...timeline!.tracks.map((track) => track.detail)]
+      .some((detail) => isJingDongOrderCompletionNode(timeline!, identity, detail));
+  return [shipment.timeline, shipment.sourceTimeline, ...shipment.manualTimelines || []]
+    .some((timeline) => covers(timeline, shipment.identity)) ||
+    (shipment.automaticOwnership?.observations || [])
+      .some((observation) => covers(observation.sourceTimeline, observation.identity));
+}
+
+function normalizeShipmentAuthoritiesWithAnchor(
+  shipment: Shipment,
+  now: number,
+  signedAnchorAtMs: number,
+): Shipment {
   // Remaining supported Meizu aliases share the current slot and sticky selection.
   const canonicalMeizu = (timeline: TimelinePackage): TimelinePackage =>
     normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.V6_QUERY
@@ -964,12 +1049,17 @@ function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment
       ? { detailSelection: { ...shipment.detailSelection, provider: TIMELINE_SLOT.V6_QUERY } } : {}),
   };
   const manuallyAdded = Boolean(shipment.identity.manuallyAdded);
+  // A review kept as the first signing (its time is not after settledAtMs) leaves the timeline as it
+  // was, so the settledAtMs repair below does not fire for it.
+  // The row's stored packages show what its anchor was (用户 2026-09-28「修，按规则保留」).
+  const anchorEvidence = jingDongAnchorEvidence(shipment);
   const repairedOrderTimeline = withoutJingDongOrderCompletion(
-    shipment.timeline, shipment.identity,
+    shipment.timeline, shipment.identity, false, signedAnchorAtMs, anchorEvidence,
   );
   const sanitizeTimeline = (timeline: TimelinePackage): TimelinePackage =>
     withoutJingDongOrderCompletion(
       sanitizeProviderErrorTimeline({ ...timeline, ...statusProjectionFields(timeline, timeline) }), shipment.identity,
+      false, signedAnchorAtMs, anchorEvidence,
     );
   const sourceTimelineRaw = manuallyAdded
     ? null
@@ -1507,6 +1597,8 @@ export function visibleShipments(
   state: AppState,
   now = Date.now(),
 ): Shipment[] {
+  // 归属方案 T3（用户 2026-09-25）：同一运单号上挂靠在先占号那一行后面的行不进列表、小组件与搜索；行和它的数据都留着。
+  const attached = attachedShipmentIds(state.shipments);
   return pruneShipments(
     state.shipments.filter(
       (shipment) =>
@@ -1514,7 +1606,11 @@ export function visibleShipments(
           shipment.identity.bindingSource == null ||
           shipment.identity.bindingSource === SCRIPT_BINDING_SOURCE
         ) &&
-        (!shipment.identity.manuallyAdded || hasTimedShipmentAuthority(shipment)),
+        (!shipment.identity.manuallyAdded || hasTimedShipmentAuthority(shipment)) &&
+        // 方案 B (user 2026-09-25): a confirmed no-item JD order is hidden like a retention-hidden
+        // row. Only the lists skip it; retention below still sees it, so nothing is deleted early.
+        !isConfirmedNoItemOrder(shipment) &&
+        !attached.has(shipment.identity.id),
     ),
     now,
   );
@@ -1616,6 +1712,13 @@ function preserveDurableOrderProjections(
 export type RefreshNotificationContext = Readonly<{
   previousById: ReadonlyMap<string, Shipment>;
   batchId: string;
+  /**
+   * 用户 2026-09-25（两条合起来）：订单行投影后与同一运单的已有行合并的那一轮，通知判断改用被并入的运单行当
+   * 「上一次状态」，并且只有展示状态变了才推；之后各轮照旧。Surviving row id → the absorbed automatic waybill
+   * row ids of this round's list merges. The first of them in `previousById` is the row's baseline; with
+   * none there the row keeps its own. Either way only a change of the presented status notifies.
+   */
+  orderMerges?: ReadonlyMap<string, readonly string[]>;
 }>;
 
 type StateSaveOptions = {
@@ -1641,6 +1744,58 @@ export function saveState(
   });
 }
 
+function withCarrierHold(
+  event: ShipmentNotificationEvent,
+  hold: boolean,
+): ShipmentNotificationEvent {
+  if (Boolean(event.awaitingCarrier) === hold) return event;
+  if (hold) return { ...event, awaitingCarrier: true };
+  const { awaitingCarrier: _released, ...rest } = event;
+  return rest;
+}
+
+/**
+ * T23（用户 2026-09-26，其余裁决 28）：挂起的通知（排队时承运商未对上）每次存盘结算一次。每行只留最早的一条；行没了、
+ * 隐藏、挂靠或是空壳订单就丢；承运商仍未对上就继续挂着；对上了——这次存盘已给这行排了新事件就丢掉挂起的，否则按
+ * 这一行现在的样子重新生成标题、正文、图标与状态再放行（通知开关看放行时的状态）。
+ */
+function settleCarrierHolds(
+  events: readonly ShipmentNotificationEvent[],
+  shipments: readonly Shipment[],
+  revision: number,
+  now: number,
+  freshEventShipmentIds: ReadonlySet<string>,
+): ShipmentNotificationEvent[] {
+  if (!events.some((event) => event.awaitingCarrier)) return [...events];
+  const byId = new Map(shipments.map((shipment) => [shipment.identity.id, shipment]));
+  const attached = attachedShipmentIds(shipments);
+  const held = new Set<string>();
+  const settled: ShipmentNotificationEvent[] = [];
+  for (const event of events) {
+    if (!event.awaitingCarrier) {
+      settled.push(event);
+      continue;
+    }
+    if (held.has(event.shipmentId)) continue;
+    held.add(event.shipmentId);
+    const shipment = byId.get(event.shipmentId);
+    if (!shipment || isHiddenSignedShipment(shipment, now) || isConfirmedNoItemOrder(shipment) ||
+        attached.has(event.shipmentId)) continue;
+    if (carrierAwaitingRecognition(shipment)) {
+      settled.push(event);
+      continue;
+    }
+    if (freshEventShipmentIds.has(event.shipmentId)) continue;
+    const released = {
+      ...shipmentNotificationPresentation(shipment),
+      ...(event.batchId ? { batchId: event.batchId } : {}),
+    };
+    if (!notificationEnabled(released.semantic)) continue;
+    settled.push({ ...released, id: checksum({ revision, event: released }) });
+  }
+  return settled;
+}
+
 function saveStateAndPrune(
   candidate: AppState,
   now: number,
@@ -1655,19 +1810,28 @@ function saveStateAndPrune(
   const previousById = new Map(
     previous.shipments.map((shipment) => [shipment.identity.id, shipment]),
   );
-  const normalizedShipments = preserveDurableOrderProjections(
+  const normalizedShipments = withWaybillOwnership(
     previous.shipments,
-    migrateShipmentSources(candidate.shipments)
-      .map((shipment) => {
-        // A rebuilt feed/detail row may omit the original terminal timestamp.
-        // The persisted owner keeps that clock until the row is actually removed.
-        const settledAtMs = previousById.get(shipment.identity.id)?.settledAtMs;
-        return normalizeShipmentAuthorities(
-          settledAtMs ? { ...shipment, settledAtMs } : shipment,
-          now,
-        );
-      }),
+    preserveDurableOrderProjections(
+      previous.shipments,
+      migrateShipmentSources(candidate.shipments)
+        .map((shipment) => {
+          // A rebuilt feed/detail row may omit the original terminal timestamp.
+          // The persisted owner keeps that clock until the row is actually removed.
+          // A new parcel on a reused number is not that owner (user 2026-10-02): the old clock stays behind.
+          const persisted = previousById.get(shipment.identity.id);
+          const settledAtMs = newerWaybillReuseGeneration(persisted, shipment)
+            ? undefined
+            : persisted?.settledAtMs;
+          return normalizeShipmentAuthorities(
+            settledAtMs ? { ...shipment, settledAtMs } : shipment,
+            now,
+          );
+        }),
+      now,
+    ),
     now,
+    (shipment) => normalizeShipmentAuthorities(shipment, now),
   );
   // Hidden signed rows retain all source authority until their deletion cutoff.
   const retainedShipments = pruneExpiredManualPlaceholders(
@@ -1675,6 +1839,9 @@ function saveStateAndPrune(
       normalizedShipments, emptyTimelineRetirements, now), now),
     now,
   );
+  const reusedNumberRows = new Set(retainedShipments
+    .filter((shipment) => newerWaybillReuseGeneration(previousById.get(shipment.identity.id), shipment))
+    .map((shipment) => shipment.identity.id));
   const next: AppState = {
     version: 2,
     revision: Math.max(previous.revision, candidate.revision) + 1,
@@ -1686,8 +1853,9 @@ function saveStateAndPrune(
       now,
     ),
     shipments: sortShipments(retainedShipments),
+    // An unsent event of the old parcel goes with it when a new parcel takes the reused number (user 2026-10-02).
     pendingNotifications: (previous.pendingNotifications || []).filter((event) =>
-      event.id !== notificationCommit.acknowledgedId
+      event.id !== notificationCommit.acknowledgedId && !reusedNumberRows.has(event.shipmentId)
     ),
     // 一次性 feed 槽重建的标记跟着状态走：候选没带就沿用存着的，都没有就从现在起算（只有读盘时
     // 遇到没标记的老状态才会给包打 feedRebuildPending）。
@@ -1701,18 +1869,35 @@ function saveStateAndPrune(
       ...events.filter((event) => event.id === notificationCommit.deferredId),
     ];
   }
+  // Rows that received a deliverable event in this save; a held event of theirs is superseded (T23).
+  const freshEventShipmentIds = new Set<string>();
   if (notificationCommit.notifyChanges) {
     const context = notificationCommit.context;
     const baselineById = context?.previousById || previousById;
     const events: ShipmentNotificationEvent[] = [];
+    // 归属方案 T3：挂靠行不通知（它自己的新节点也不单独推送，T7）。
+    const attached = attachedShipmentIds(next.shipments);
     for (const shipment of next.shipments) {
-      if (isHiddenSignedShipment(shipment, now)) continue;
+      if (isHiddenSignedShipment(shipment, now) || isConfirmedNoItemOrder(shipment) ||
+          attached.has(shipment.identity.id)) continue;
+      const merge = context?.orderMerges?.get(shipment.identity.id);
+      const rule = { statusChangeOnly: merge != null };
+      // Merge round: the absorbed waybill row's state in this round's snapshot is the baseline.
+      const absorbedId = merge?.find((id) => baselineById.has(id));
+      // 「当新件初次出现，不通知」（用户 2026-10-02）：新件拿走复用号码的那一行时，旧件不是它的上一次状态。
+      const sameGeneration = (baseline: Shipment | null | undefined) =>
+        baseline && !newerWaybillReuseGeneration(baseline, shipment) ? baseline : null;
       const event = shipmentNotificationEvent(
-        baselineById.get(shipment.identity.id) || null,
+        (absorbedId && baselineById.get(absorbedId)) || sameGeneration(baselineById.get(shipment.identity.id)),
         shipment,
+        rule,
       );
+      // T23（用户 2026-09-26，其余裁决 28）：承运商还没对上的行不带空白承运商排队，事件挂起，承运商对上时再生成标题。
+      const hold = event ? carrierAwaitingRecognition(shipment) : false;
       if (event && context && !shipmentNotificationEvent(
-        previousById.get(shipment.identity.id) || null, shipment,
+        (absorbedId && previousById.get(absorbedId)) || sameGeneration(previousById.get(shipment.identity.id)),
+        shipment,
+        rule,
       )) {
         // Another writer may have published and acknowledged this same transition.
         // Only retain this round's still-pending obligation; never recreate it.
@@ -1721,14 +1906,19 @@ function saveStateAndPrune(
         ).map((pending) => pending.title === event.title && pending.body === event.body &&
             pending.semantic === event.semantic && pending.iconName === event.iconName
           ? pending
-          : { ...pending, ...event, id: checksum({ revision: next.revision, event }) }));
+          : { ...pending, ...event, id: checksum({ revision: next.revision, event }) })
+          .map((pending) => withCarrierHold(pending, hold)));
+        if (!hold) freshEventShipmentIds.add(shipment.identity.id);
         continue;
       }
-      if (event) events.push({
-        ...event,
-        ...(context ? { batchId: context.batchId } : {}),
-        id: checksum({ revision: next.revision, event }),
-      });
+      if (event) {
+        events.push(withCarrierHold({
+          ...event,
+          ...(context ? { batchId: context.batchId } : {}),
+          id: checksum({ revision: next.revision, event }),
+        }, hold));
+        if (!hold) freshEventShipmentIds.add(shipment.identity.id);
+      }
     }
     // One refresh compares against its initial snapshot and publishes each row's final
     // state. Earlier runs' unacknowledged events remain separate recovery obligations.
@@ -1739,6 +1929,9 @@ function saveStateAndPrune(
       ...events,
     ];
   }
+  next.pendingNotifications = settleCarrierHolds(
+    next.pendingNotifications || [], next.shipments, next.revision, now, freshEventShipmentIds,
+  );
   const stored = encodeState(next);
   try {
     writeDurableState(stored);
@@ -1768,6 +1961,14 @@ function saveStateAndPrune(
   }
   const verifyFinishedAtMs = Date.now();
   const routesPruned = pruneRoutesForState(stored.state, now);
+  // 用户 2026-10-03 优化 1、3、5 续：每行台账（签收后放行、状态对齐记录、第一次识别时的锚点）只随行真正删除或运单号被新件
+  // 接管而清掉。
+  pruneRowLedgerForState(
+    previous.shipments.map((shipment) => shipment.identity.id),
+    stored.state.shipments.map((shipment) => shipment.identity.id),
+    reusedNumberRows,
+    now,
+  );
   writeDiagnostic(
     "storage.state.saved",
     {
@@ -2418,6 +2619,27 @@ export function setShipmentNote(id: string, note: string, now = Date.now()): App
       },
       now,
     );
+  });
+}
+
+/**
+ * Sticky detail selection is recorded when the detail page shows a package (audit D7, adopted
+ * 2026-09-25: all three clients record it at display, Lite on every render and Pipi on every detail
+ * load). iOS used to record it only when a detail refresh or entry query committed, so a package
+ * delivered later by the list or a background round could replace the one the user had been looking
+ * at. Only the stored row's own selection changes; returns null when nothing had to be written.
+ */
+export function recordShipmentDetailSelection(id: string, now = Date.now()): AppState | null {
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    const current = state.shipments.find((item) => item.identity.id === id);
+    if (!current) return null;
+    const selected = withDetailSelection(current, now);
+    if (selected === current) return null;
+    return saveState({
+      ...state,
+      shipments: state.shipments.map((item) => item.identity.id === id ? selected : item),
+    }, now);
   });
 }
 

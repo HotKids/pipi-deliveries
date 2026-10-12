@@ -47,7 +47,7 @@ final class ExpressGatewayClient implements ExpressGatewayTransport {
             return send(route, body, cancellation, true);
         } catch (IOException networkFailure) {
             if (cancellation != null) cancellation.throwIfCancelled();
-            throw GatewayHttpErrors.networkFailure();
+            throw GatewayHttpErrors.networkFailure(networkFailure);
         }
     }
 

@@ -44,13 +44,19 @@ final class AccountCarrierNormalizer {
                 first(source, versionKeys));
     }
 
+    /**
+     * Audit C9 (user 2026-09-25): use the Worker's standard code, and take the name and Kuaidi100 code
+     * from the current local table. A Worker running a different table version no longer makes the
+     * row lose its carrier because its name or code differs, and a table fix shows without clearing
+     * any cache. A built-in claim whose code the local table does not know is dropped.
+     */
     private static CarrierNormalization validated(CarrierNormalization value) {
         if (value == null || !value.present()) return CarrierNormalization.NONE;
-        if (Boolean.TRUE.equals(value.builtIn)
-                && !CarrierRegistry.matchesBuiltInContract(value)) {
-            return CarrierNormalization.NONE;
-        }
-        return value;
+        if (!Boolean.TRUE.equals(value.builtIn)) return value;
+        CarrierRegistry.Carrier carrier = CarrierRegistry.resolve(value.standardCode);
+        if (carrier == null) return CarrierNormalization.NONE;
+        return new CarrierNormalization(carrier.standardCode, carrier.companyName,
+                carrier.kuaidi100Code, true, value.tableVersion);
     }
 
     private static Boolean optionalBoolean(JSONObject object, String... keys) {

@@ -11,6 +11,7 @@ import { performShipmentDeletion } from "../services/shipment-actions";
 import { readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { selectShipmentDetailTimeline } from "../services/shipment-policy";
 import { shouldRetryAccountOrderProjection } from "../services/account-sync-policy";
+import { seedRecognizedCarriers } from "./carrier-recognition-seed";
 
 const PHONE = "13800001234", ORDER = "3610000000001844", WAYBILL = "75600000001844";
 const TEXT = `您的订单由第三方卖家拣货完成，待出库交付中通快递，运单号为 ${WAYBILL}`;
@@ -25,8 +26,12 @@ function parcel(text = false): AccountParcelDto {
     tracks, routeUrl: "", projectionUrl: "https://u.jd.com/forward?test=identity",
     textIdentity: accountOrderTextIdentity(tracks) };
 }
-function seed(text = false) {
+// T23 (user 2026-09-26, 其余裁决 28): a text waybill is projected only once recognition matched its carrier. The cases
+// below start from the recognizer's answer — 圆通, deliberately not the 中通 the text names (其余裁决 7) — unless
+// `recognized` is false.
+function seed(text = false, recognized = true) {
   memory.clear();
+  if (recognized) seedRecognizedCarriers({ [WAYBILL]: "YTO" }, NOW);
   const row = parcelToShipment(parcel(false), [PHONE], NOW)!;
   if (text) {
     row.sourceTimeline = { ...row.sourceTimeline!, tracks: row.sourceTimeline!.tracks.map((t, i) =>
@@ -43,9 +48,19 @@ test("list merge applies text identity without a page or cooldown", () => {
   const state = seed();
   const merged = mergeAccountParcel(state, state.shipments, parcel(true), [PHONE], "interface5", NOW, new Map());
   assert.equal(merged[0].identity.projectedWaybill, WAYBILL);
-  assert.equal(merged[0].identity.courierCode, "ZTO");
+  // 其余裁决 7 (2026-09-26): the text's 「交付中通快递」 is not carrier evidence; the carrier is the recognizer's answer,
+  // which the list sync runs before this merge (old expectation, before T23: an empty carrier).
+  assert.equal(merged[0].identity.courierCode, "YTO");
+  assert.equal(merged[0].identity.companyName, "圆通速递");
   assert.equal(merged[0].accountRecord?.waybill, ORDER);
   assert.equal(merged[0].identity.jingDongH5Retry, undefined);
+  // T23: with no carrier matched yet the order stays as it is — no waybill, no empty carrier, still no page or cooldown.
+  const held = seed(false, false);
+  const unmatched = mergeAccountParcel(held, held.shipments, parcel(true), [PHONE], "interface5", NOW, new Map());
+  assert.equal(unmatched[0].identity.projectedWaybill, "");
+  assert.equal(unmatched[0].identity.companyName, "京东购物");
+  assert.equal(unmatched[0].identity.orderProjectionRetry, undefined);
+  assert.equal(unmatched[0].identity.jingDongH5Retry, undefined);
 });
 test("deleting another row preserves the projected JD owner's reusable page reference", () => {
   const state = seed();
@@ -59,6 +74,7 @@ test("deleting another row preserves the projected JD owner's reusable page refe
   assert.equal(loadOrderProjectionReference(owner.identity.id, "interface5"), before);
 });
 test("text identity ignores returned status and never replaces an established waybill", () => {
+  seed();
   for (const semantic of ["ORDERED", "UNKNOWN", "COMPLETED"] as const) {
     const input = {...parcel(true), semantic, normalizedStatusSemantic: semantic};
     assert.equal(parcelToShipment(input, [PHONE], NOW)!.identity.projectedWaybill, WAYBILL);

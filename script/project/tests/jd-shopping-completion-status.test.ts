@@ -44,7 +44,9 @@ function owner(direct: boolean, completed: boolean) {
     details: [{ time: "2026-09-10 08:00:00", desc: "Synthetic accepted carrier event",
       normalizedStatus: normalized(code, OLD_AT, "SHIPMENT") }],
   } }, { waybill: mailNo })!;
-  return applyAccountShipment(undefined, parcelToShipment({ ...dto, waybill: WAYBILL }, [PHONE], NOW)!, NOW);
+  const row = applyAccountShipment(undefined, parcelToShipment({ ...dto, waybill: WAYBILL }, [PHONE], NOW)!, NOW);
+  // A stored signed row carries its first-completion anchor (stampSettledAt), as saveState would give it.
+  return completed ? { ...row, settledAtMs: OLD_AT } : row;
 }
 for (const direct of [false, true]) for (const path of ["query", "list"] as const) {
   for (const reviewOnly of [false, true]) for (const completed of [false, true]) {
@@ -63,10 +65,11 @@ for (const direct of [false, true]) for (const path of ["query", "list"] as cons
         : parseAccountSyncResponse("interface5", { code: 0, data: { expressList: [value.data] } })[0];
       assert.ok(dto);
       const incoming = parcelToShipment({ ...dto, waybill: WAYBILL }, [PHONE], NOW + 1)!;
-      assert.equal(incoming.timeline.semantic, "COMPLETED", "removing review prose must preserve the packet's structured completion");
+      assert.equal(incoming.timeline.semantic, "COMPLETED", "the review must not erase the packet's structured completion");
       assert.equal(incoming.timeline.statusEventAtMs, REVIEW_AT, "the provider owns the original structured status clock");
       assert.deepEqual(incoming.timeline.normalizedStatus, normalized(107, REVIEW_AT));
-      assert.equal(incoming.timeline.tracks.length, reviewOnly ? 0 : 1);
+      // 2026-09-27: the packet reports a structured signing and nothing earlier is known at ingestion, so the review stays.
+      assert.equal(incoming.timeline.tracks.length, reviewOnly ? 1 : 2);
       const merged = path === "query"
         ? applyTargetedAccountShipment(current, asAccountDetailObservation(current, incoming), NOW + 1)
         : mergeAccountParcel({ shipments: [current] } as never, [current], dto, [PHONE],
@@ -77,7 +80,8 @@ for (const direct of [false, true]) for (const path of ["query", "list"] as cons
       assert.equal(shipmentDetailPresentationStatus({ ...merged, timeline: selected }, selected).text, "已签收");
       assert.equal(selected.statusEventAtMs, completed ? OLD_AT : REVIEW_AT,
         "a later shopping completion must not move an already accepted signature time");
-      assert.equal(selected.latestDetail.includes("评价"), false);
+      // 2026-09-27: a first signing keeps its review as the headline; a review after an earlier signing is removed.
+      assert.equal(selected.latestDetail.includes("评价"), !completed);
       assert.equal(merged.identity.sourceId, current.identity.sourceId);
       assert.equal(merged.identity.projectedWaybill, current.identity.projectedWaybill);
       if (path === "query") {

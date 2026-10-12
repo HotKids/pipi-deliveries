@@ -15,25 +15,53 @@ final class GatewayHttpErrors {
         return new IllegalStateException(NETWORK);
     }
 
-    static IllegalStateException forResponse(HttpClient.Response response, String fallback) {
-        String message = safeMessage(response == null ? "" : response.utf8());
-        if (!message.isEmpty()) return new IllegalStateException(message);
+    /**
+     * The same failure as before, with the transport's exception kept as its cause so a sync round can tell a request's
+     * own timeout from other failures (用户 2026-09-27 提交前核对答复四); message and type are unchanged.
+     */
+    static IllegalStateException networkFailure(Throwable cause) {
+        return new IllegalStateException(NETWORK, cause);
+    }
+
+    static GatewayHttpException forResponse(HttpClient.Response response, String fallback) {
+        String body = response == null ? "" : response.utf8();
         int status = response == null ? 0 : response.status;
+        String code = gatewayCode(body);
+        String message = safeMessage(body);
+        if (!message.isEmpty()) return new GatewayHttpException(message, status, code);
         switch (status) {
             case 401:
-                return new IllegalStateException("请求验证失败，请稍后重试");
+                return new GatewayHttpException("请求验证失败，请稍后重试", status, code);
             case 403:
-                return new IllegalStateException("当前请求受限，请稍后重试");
+                return new GatewayHttpException("当前请求受限，请稍后重试", status, code);
             case 408:
             case 504:
-                return new IllegalStateException("请求超时，请稍后重试");
+                return new GatewayHttpException("请求超时，请稍后重试", status, code);
             case 429:
-                return new IllegalStateException("请求过于频繁，请稍后再试");
+                return new GatewayHttpException("请求过于频繁，请稍后再试", status, code);
             default:
                 if (status >= 500 && status <= 599) {
-                    return new IllegalStateException("服务暂时不可用，请稍后重试");
+                    return new GatewayHttpException("服务暂时不可用，请稍后重试", status, code);
                 }
-                return new IllegalStateException(cleanFallback(fallback));
+                return new GatewayHttpException(cleanFallback(fallback), status, code);
+        }
+    }
+
+    /**
+     * iOS gateway.ts gatewayErrorCode: the Worker's top-level {@code error} string, lower case, only when
+     * it is a plain code token; diagnostics further keep only the whitelisted ones.
+     */
+    static String gatewayCode(String body) {
+        if (body == null || body.isEmpty() || body.length() > 4_096) return "";
+        try {
+            Object value = new JSONTokener(body).nextValue();
+            if (!(value instanceof JSONObject)) return "";
+            Object raw = ((JSONObject) value).opt("error");
+            if (!(raw instanceof String)) return "";
+            String code = ((String) raw).trim().toLowerCase(Locale.ROOT);
+            return code.matches("[a-z_]{1,64}") ? code : "";
+        } catch (Throwable ignored) {
+            return "";
         }
     }
 

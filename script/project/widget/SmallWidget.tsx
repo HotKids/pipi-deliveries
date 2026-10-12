@@ -9,6 +9,7 @@ import {
 } from "scripting";
 import type { WidgetSnapshot } from "../models";
 import { CourierIcon } from "../components/CourierIcon";
+import { carrierDisplayName } from "../services/carrier-presentation";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
 import {
   fitsSingleLine,
@@ -38,7 +39,7 @@ export function SmallWidget(props: {
     props.displayHeight,
   );
   // 只有一行时整行居中，两行仍靠左——与 Pipi / Lite 的 compact 同一条规则（用户定 2026-09-06）。
-  const detailText = row ? row.latestDetail || "暂无物流动态" : "";
+  const detailText = row ? row.latestDetail || "暂无物流信息" : "";
   const detailFitsOneLine = fitsSingleLine(
     detailText,
     props.displayWidth - layout.outerPadding * 2,
@@ -115,8 +116,8 @@ export function SmallWidget(props: {
                     }}
                   >
                     {row.waybillSuffix
-                      ? `${row.companyName} ${row.waybillSuffix}`
-                      : row.companyName}
+                      ? `${carrierDisplayName(row.companyName)} ${row.waybillSuffix}`
+                      : carrierDisplayName(row.companyName)}
                   </Text>
                 </VStack>
                 <CourierIcon

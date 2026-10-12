@@ -96,7 +96,9 @@ const repairBlock = refreshById.slice(
   refreshById.indexOf("if (needsProjectedCarrierRepair(original.identity))"),
   refreshById.indexOf("detail.refresh.carrier_repaired"),
 );
-assert.ok(repairBlock.includes("carrierRepair = recognition.normalization"));
+// The whole recognition is kept so an off-table Kuaidi100 name reaches the final repair too (其余裁决 29, 2026-09-26;
+// old shape: `carrierRepair = recognition.normalization`).
+assert.ok(repairBlock.includes("carrierRepair = recognition;"));
 assert.ok(!repairBlock.includes("base = {"));
 const finalRepair = refreshById.indexOf(
   "if (carrierRepair && needsProjectedCarrierRepair(refreshed.identity))",

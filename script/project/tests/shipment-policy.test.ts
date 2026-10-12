@@ -27,6 +27,7 @@ import {
   selectShipmentDetailTimeline,
   selectShipmentTimeline,
   shouldScheduleManualRefresh,
+  FORCED_COMPLETION_REFRESH_WINDOW_MS,
   sourceTimelineOwnsShipment,
   unprojectedAccountOrder,
   usesManualSourceQuery,
@@ -301,8 +302,15 @@ assert.equal(selectShipmentTimeline(shunFengWithHiddenWeb).provider, "web",
 assert.equal(selectShipmentDetailTimeline(shunFengWithHiddenWeb).provider, "web");
 assert.equal(
   needsDetailFallback(shunFengWithHiddenWeb),
+  true,
+  "K100 completion without trusted structured evidence cannot close the SF detail chain",
+);
+const trustedHiddenWeb = { ...firstHiddenWebIncrement, structuredStatus: true };
+assert.equal(
+  needsDetailFallback({ ...shunFengWithHiddenWeb, timeline: trustedHiddenWeb,
+    manualTimelines: [trustedHiddenWeb] }),
   false,
-  "a hidden K100 history returned by Meizu must satisfy the SF detail chain",
+  "the same aligned K100 history with trusted completion closes the SF detail chain",
 );
 current.sourceTimeline = timeline("interface5", "ORDER123456", "COMPLETED");
 current.timeline = current.sourceTimeline;
@@ -990,7 +998,21 @@ const accountOrderWithStaleRoute: Shipment = {
   identity: { ...current.identity, sourceProvider: "CaiNiao" },
   route: cainiaoRoute,
 };
+// 归属方案 T1（用户 2026-09-25）：只有这张订单自己的包（按件详情以它的投影运单号回来）能纠正它的来源；以前这里喂的是
+// 另一个运单号 SF9988776655 的记录，那是另一条记录，现在不写这一行（见下面一条）。
 const correctedAccountOrder = applyAccountShipment(
+  accountOrderWithStaleRoute,
+  { ...carrierDetail, identity: {
+    ...carrierDetail.identity,
+    id: "interface5:account:SF1234567890",
+    sourceId: "SF1234567890",
+    sourceProvider: "ShunFeng",
+  } },
+  NOW + 180_003,
+);
+assert.equal(correctedAccountOrder.identity.sourceProvider, "ShunFeng");
+assert.equal(correctedAccountOrder.route, null);
+const otherRecordOnOrder = applyAccountShipment(
   accountOrderWithStaleRoute,
   { ...carrierDetail, identity: {
     ...carrierDetail.identity,
@@ -998,8 +1020,10 @@ const correctedAccountOrder = applyAccountShipment(
   } },
   NOW + 180_003,
 );
-assert.equal(correctedAccountOrder.identity.sourceProvider, "ShunFeng");
-assert.equal(correctedAccountOrder.route, null);
+assert.equal(otherRecordOnOrder.identity.id, accountOrderWithStaleRoute.identity.id);
+assert.equal(otherRecordOnOrder.identity.sourceProvider, "CaiNiao",
+  "another record of the same source never writes the order's row (T1)");
+assert.deepEqual(otherRecordOnOrder.timeline, accountOrderWithStaleRoute.timeline);
 
 const fullCachedHistory: TimelinePackage = {
   ...timeline("kuaidi100", "YT1234567890", "TRANSIT"),
@@ -1083,11 +1107,21 @@ assert.equal(
   completedWithCachedHistory.manualTimelines?.[0]?.tracks.length,
   fullCachedHistory.tracks.length,
 );
+// 归属方案 T1（用户 2026-09-25）：订单自己的包（同一个记录号）点名一个承运商运单号时照旧投影；以前这里喂的是另一条
+// 记录 SF9988776655，那条记录现在不写这一行（紧接着的断言）。
 const projectedFromDetail = applyAccountShipment(
   current,
-  carrierDetail,
+  { ...carrierDetail, identity: {
+    ...carrierDetail.identity,
+    id: current.identity.id,
+    sourceId: current.identity.sourceId,
+  } },
   NOW + 180_000,
 );
+const otherRecordProjection = applyAccountShipment(current, carrierDetail, NOW + 180_000);
+assert.equal(otherRecordProjection.identity.projectedWaybill, "SF1234567890",
+  "another record of the same source never re-projects the order (T1)");
+assert.equal(otherRecordProjection.identity.id, current.identity.id);
 assert.equal(projectedFromDetail.identity.id, current.identity.id);
 assert.equal(projectedFromDetail.identity.sourceId, current.identity.sourceId);
 assert.equal(projectedFromDetail.identity.sourceOwner, current.identity.sourceOwner);
@@ -1409,12 +1443,18 @@ assert.equal(shouldScheduleManualRefresh({
   timeline: completedCarrier,
   manualTimelines: [completedCarrier],
 }, NOW), true, "unverified manual completion remains refreshable");
+// 用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「点击后满 3 天也冻结」「iOS 右滑签收一起改」：右滑签收
+// 满 72 小时（或来源三态到签收）才硬冻结；之前按来源自己的状态排程，与没签收的同一行一样。
 assert.equal(
   shouldScheduleManualRefresh(
-    { ...alternateShunFeng, forcedCompletedAtMs: NOW },
+    { ...alternateShunFeng, forcedCompletedAtMs: NOW + 1 - FORCED_COMPLETION_REFRESH_WINDOW_MS },
     NOW + 1,
   ),
   false,
+);
+assert.equal(
+  shouldScheduleManualRefresh({ ...alternateShunFeng, forcedCompletedAtMs: NOW }, NOW + 1),
+  shouldScheduleManualRefresh(alternateShunFeng, NOW + 1),
 );
 assert.equal(
   applyAccountShipment(shunFengWithManual, alternateShunFeng, NOW + 1)

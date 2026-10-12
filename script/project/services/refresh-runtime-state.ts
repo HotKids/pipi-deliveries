@@ -32,6 +32,8 @@ type RuntimeLease = Readonly<{
   key: string;
   token: string;
   expiresAtMs: number;
+  /** A renewing holder's hard limit: renewals never carry `expiresAtMs` past it. */
+  maxExpiresAtMs?: number;
   startedAtMs?: number;
   flowId?: string;
   trigger?: string;
@@ -314,11 +316,30 @@ export type DurableRefreshLease = Readonly<{
   isCurrent: () => boolean;
 }>;
 
+/**
+ * 用户 2026-09-28「30 秒有效 + 每 10 秒续约」: a renewing holder's lease is valid for 30 seconds and the
+ * holder extends it every 10 seconds while its work runs. A holder that is replaced, closed or suspended
+ * stops renewing, so its lease lapses within about 30 seconds instead of blocking every other runtime
+ * for its whole maximum operation duration.
+ */
+export const DURABLE_REFRESH_LEASE_TTL_MS = 30_000;
+export const DURABLE_REFRESH_LEASE_RENEW_INTERVAL_MS = 10_000;
+
 export function acquireDurableRefreshLease(
   key: string,
   ttlMs: number,
   now = Date.now(),
   context?: Readonly<{ flowId: string; trigger: string }>,
+): DurableRefreshLease | null {
+  return acquireLease(key, ttlMs, now, context);
+}
+
+function acquireLease(
+  key: string,
+  ttlMs: number,
+  now: number,
+  context?: Readonly<{ flowId: string; trigger: string }>,
+  maxExpiresAtMs?: number,
 ): DurableRefreshLease | null {
   return withSharedFileTransaction(() => {
     const current = readRuntimeState(now);
@@ -330,6 +351,7 @@ export function acquireDurableRefreshLease(
       key,
       token,
       expiresAtMs: now + Math.max(1_000, Math.floor(ttlMs)),
+      ...(maxExpiresAtMs == null ? {} : { maxExpiresAtMs }),
       startedAtMs: now,
       ...(context ? { flowId: context.flowId, trigger: context.trigger } : {}),
     };
@@ -365,6 +387,113 @@ export function acquireDurableRefreshLease(
   });
 }
 
+/**
+ * Extends the holder's lease to 30 seconds from now, never past its hard limit, only while `token` still
+ * holds `key`. False when the lease was released, lapsed or taken by another runtime: a lapsed lease is
+ * not revived, so a holder resuming after a suspension cannot reclaim what another runtime may own.
+ */
+export function renewDurableRefreshLease(key: string, token: string, now = Date.now()): boolean {
+  return withSharedFileTransaction(() => {
+    const current = readRuntimeState(now);
+    const held = current.leases.find((item) => item.key === key && item.token === token);
+    if (!held) return false;
+    const limit = finiteTimestamp(held.maxExpiresAtMs) || held.expiresAtMs;
+    const expiresAtMs = Math.min(limit, now + DURABLE_REFRESH_LEASE_TTL_MS);
+    if (expiresAtMs > held.expiresAtMs) {
+      writeRuntimeState({
+        ...current,
+        revision: current.revision + 1,
+        leases: current.leases.map((item) => item === held ? { ...held, expiresAtMs } : item),
+      });
+    }
+    return true;
+  });
+}
+
+/** The stop functions of this runtime's running renewal loops; every loop ends with its lease. */
+const activeRenewals = new Set<() => void>();
+
+/**
+ * A lease valid for 30 seconds that its holder renews every 10 seconds until `release`, for at most
+ * `maxDurationMs` (the holder's maximum operation duration, which the lease's `expiresAtMs` reports).
+ * Renewal stops on release, when the lease is lost, and at that limit, so no timer outlives the work.
+ */
+export function acquireRenewingDurableRefreshLease(
+  key: string,
+  maxDurationMs: number,
+  now = Date.now(),
+  context?: Readonly<{ flowId: string; trigger: string }>,
+): DurableRefreshLease | null {
+  const maxMs = Math.max(1_000, Math.floor(maxDurationMs));
+  const maxExpiresAtMs = now + maxMs;
+  const lease = acquireLease(
+    key, Math.min(DURABLE_REFRESH_LEASE_TTL_MS, maxMs), now, context, maxExpiresAtMs,
+  );
+  if (!lease) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+    activeRenewals.delete(stop);
+  };
+  // Nothing is left to renew once the lease already runs to its limit.
+  const schedule = () => {
+    if (stopped) return;
+    if (Date.now() + DURABLE_REFRESH_LEASE_TTL_MS >= maxExpiresAtMs) {
+      stop();
+      return;
+    }
+    timer = setTimeout(renew, DURABLE_REFRESH_LEASE_RENEW_INTERVAL_MS);
+  };
+  const renew = () => {
+    timer = undefined;
+    if (stopped) return;
+    let held = true;
+    try {
+      held = renewDurableRefreshLease(key, lease.token);
+    } catch {
+      // A contended shared file is retried on the next tick; the lease still has time left.
+    }
+    if (held) schedule();
+    else stop();
+  };
+  activeRenewals.add(stop);
+  schedule();
+  return {
+    key,
+    token: lease.token,
+    expiresAtMs: maxExpiresAtMs,
+    isCurrent: lease.isCurrent,
+    release: () => {
+      stop();
+      lease.release();
+    },
+  };
+}
+
+function activeRenewalCount(): number {
+  return activeRenewals.size;
+}
+
+/**
+ * How long the current holder of `key` may still hold it: a renewing holder until its hard limit,
+ * any other holder until its lease expires; 0 when nobody holds it. Read-only.
+ */
+export function durableRefreshLeaseMaxRemainingMs(key: string, now = Date.now()): number {
+  const lease = readRuntimeState(now).leases.find(item => item.key === key);
+  if (!lease) return 0;
+  const limit = Math.max(lease.expiresAtMs, finiteTimestamp(lease.maxExpiresAtMs));
+  return Math.max(0, limit - now);
+}
+
+/** How long the current holder of `key` still owns it; 0 when nobody does. Read-only. */
+export function durableRefreshLeaseRemainingMs(key: string, now = Date.now()): number {
+  const lease = readRuntimeState(now).leases.find(item => item.key === key);
+  return lease ? Math.max(0, lease.expiresAtMs - now) : 0;
+}
+
 /** Report an observed holder without exposing its ownership token or extending its lifetime. */
 export function durableRefreshLeaseDiagnostics(key: string, now = Date.now()) {
   const lease = readRuntimeState(now).leases.find(item => item.key === key);
@@ -378,3 +507,5 @@ export function durableRefreshLeaseDiagnostics(key: string, now = Date.now()) {
     blockingLeaseRemainingMs: Math.max(0, lease.expiresAtMs - now),
   };
 }
+
+export { activeRenewalCount as activeDurableLeaseRenewalsForTesting };

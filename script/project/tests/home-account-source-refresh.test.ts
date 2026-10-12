@@ -7,7 +7,7 @@ import type { Shipment } from "../models";
 import { emptyState, saveState, loadState, commitRefreshState, removeBinding, removeShipment } from "../services/storage";
 import { runShipmentEnrichmentForTesting, runShipmentRefreshForTesting } from "../services/sync";
 import { parcelToShipment } from "../services/account-sync";
-import { applyAccountShipment } from "../services/shipment-policy";
+import { applyAccountShipment, FORCED_COMPLETION_REFRESH_WINDOW_MS } from "../services/shipment-policy";
 import { saveGatewayToken } from "../services/credentials";
 
 const realNow = Date.now;
@@ -83,9 +83,17 @@ test("Home account follow-up retains trusted and manual completion freezes", asy
   const signed = row("JingDong", "06");
   signed.timeline = { ...signed.timeline, semantic: "COMPLETED", statusEventAtMs: NOW - 60000 };
   signed.sourceTimeline = signed.timeline;
-  const forced = { ...row("CaiNiao", "07"), forcedCompletedAtMs: NOW - 60000 };
+  // 用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「点击后满 3 天也冻结」：满 72 小时的右滑签收硬冻结。
+  const forced = { ...row("CaiNiao", "07"), forcedCompletedAtMs: NOW - FORCED_COMPLETION_REFRESH_WINDOW_MS };
   const { calls } = await run([signed, forced], true);
   assert.deepEqual(calls, []);
+});
+
+test("a fresh sign-off whose source is still in transit keeps its Home account follow-up", async () => {
+  // 用户 2026-10-02「显示已签收、照常刷新」，弹窗「iOS 右滑签收一起改」：三态没到签收、没满 72 小时，照常跟列表更新查。
+  const forced = { ...row("CaiNiao", "08"), forcedCompletedAtMs: NOW - 60000 };
+  const { calls } = await run([forced], true);
+  assert.deepEqual(calls, [forced.identity.id]);
 });
 
 function freshParcel(shipment: Shipment): AccountParcelDto {
@@ -233,7 +241,9 @@ async function withAccountTransport(run: (transport: {
       stages.push("worker_classify");
       recognitionStarted.resolve();
       await recognitionReply.promise;
-      return json({ auto: [{ comCode: "zhongtong", name: "中通快递" }] });
+      // Audit C1: the Worker answers with the standard code (carrier-classify-responses.v1.json);
+      // this reply used to be written in the Kuaidi100 format, which the Worker never sends.
+      return json({ auto: [{ comCode: "ZTO", name: "中通快递" }] });
     }
     const request = JSON.parse(init.body);
     assert.equal(request.mode, "detail", "only the existing account detail request is allowed");

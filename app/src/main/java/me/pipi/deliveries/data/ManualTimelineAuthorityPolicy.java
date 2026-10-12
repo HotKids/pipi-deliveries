@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
+import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.WorkerStatusProjection;
 import me.pipi.deliveries.model.ExpressStatusNormalizer;
@@ -44,6 +45,42 @@ public final class ManualTimelineAuthorityPolicy {
     }
 
     private ManualTimelineAuthorityPolicy() {}
+
+    /**
+     * JD detail display (Pipi ExpressRepository.withOwnerOrderStage; user decision 2026-09-17,
+     * parity backlog D-8): a JD-source automatic owner shows its selected carrier fallback packet
+     * whole, with its own earlier order-stage nodes appended behind the packet's oldest node. The
+     * feed, the account query and JD H5 already carry that stage. Presentation only: selection,
+     * completeness and every cache keep the raw packet.
+     */
+    public static ExpressQueryResult withOwnerOrderStage(
+            ExpressItem owner, ExpressQueryResult source, Candidate selected) {
+        if (selected == null || selected.result == null) return null;
+        if (owner == null || source == null || !owner.isJingDongSource()
+                || isJdAutomaticSlot(selected.provider)) return selected.result;
+        return selected.result.withTracksJson(ExpressTimeline.appendOwnerOrderStage(
+                selected.result.tracksJson, source.tracksJson));
+    }
+
+    /**
+     * Ownership decision 2 (user, 2026-09-25; parity whitelist): the package the detail page shows
+     * for the row that owns a waybill gains the earlier order stage of the hidden projected orders
+     * attached to it. Presentation only, like D-8: selection, completeness and caches never see it.
+     */
+    public static ExpressQueryResult withAttachedOrderStage(
+            ExpressQueryResult shown, List<String> attachedOrderTracksJson) {
+        if (shown == null || attachedOrderTracksJson == null
+                || attachedOrderTracksJson.isEmpty()) return shown;
+        return shown.withTracksJson(ExpressTimeline.appendAttachedOrderStage(
+                shown.tracksJson, attachedOrderTracksJson));
+    }
+
+    static boolean isJdAutomaticSlot(String provider) {
+        String value = normalizeProvider(provider);
+        return PREFERRED_FEED.equals(value) || TimelineSlot.isAccount(value)
+                || TimelineSlot.JD_H5.equals(TimelineSlot.normalize(value))
+                || "jingdong_h5".equals(value);
+    }
 
     /**
      * Selects one whole provider package. Complete packages beat partial packages and compare by
@@ -106,9 +143,33 @@ public final class ManualTimelineAuthorityPolicy {
     public static final class DetailDecision {
         public final Candidate candidate;
         public final String reason;
+        /** Automatic ranking only: the completeness it gave each ranked provider's package. */
+        private final Map<String, Boolean> rankedComplete;
         public DetailDecision(Candidate candidate, String reason) {
+            this(candidate, reason, java.util.Collections.emptyMap());
+        }
+        DetailDecision(Candidate candidate, String reason, Map<String, Boolean> rankedComplete) {
             this.candidate = candidate;
             this.reason = reason;
+            this.rankedComplete = rankedComplete;
+        }
+
+        /**
+         * Whether the automatic ranking counted this provider's package complete against the account
+         * reference (the evaluation that picks the displayed package); false when it was not ranked.
+         */
+        public boolean rankedComplete(String provider) {
+            return Boolean.TRUE.equals(rankedComplete.get(normalizeProvider(provider)));
+        }
+
+        /** The same ranking outcome, displaying another copy of the winning provider's package. */
+        DetailDecision withCandidate(Candidate displayed) {
+            return displayed == candidate ? this : new DetailDecision(displayed, reason, rankedComplete);
+        }
+
+        /** Another pass's winner and reason, with the completeness this pass gave each package. */
+        DetailDecision withOutcome(DetailDecision winner) {
+            return new DetailDecision(winner.candidate, winner.reason, rankedComplete);
         }
     }
 
@@ -161,9 +222,11 @@ public final class ManualTimelineAuthorityPolicy {
         }
         java.util.ArrayList<Candidate> ranked = new java.util.ArrayList<>(byProvider.values());
         Map<Candidate, Boolean> complete = new java.util.IdentityHashMap<>();
+        Map<String, Boolean> completeByProvider = new LinkedHashMap<>();
         for (Candidate candidate : ranked) {
             complete.put(candidate, detailTimelineComplete(automaticPresentationResult(
                     candidate.result, accountStatus, ranked), referenceEventMillis));
+            completeByProvider.put(candidate.provider, complete.get(candidate));
         }
         boolean hasHistory = ranked.stream().anyMatch(candidate -> candidate != feed
                 && Kuaidi100TimelinePolicy.timedTrackCount(candidate.result) >= SOURCE_TIMELINE_MIN_TRACKS);
@@ -172,7 +235,7 @@ public final class ManualTimelineAuthorityPolicy {
             ranked.remove(feed);
         }
         ranked.sort((left, right) -> compareDetailQuality(left, right, complete.get(left), complete.get(right)));
-        if (ranked.isEmpty()) return new DetailDecision(null, "no_eligible_history");
+        if (ranked.isEmpty()) return new DetailDecision(null, "no_eligible_history", completeByProvider);
         long newestAccountAt = 0L;
         for (Candidate candidate : ranked) if (isAccountHistory(candidate)) {
             newestAccountAt = Math.max(newestAccountAt, Kuaidi100TimelinePolicy.latestTimedEventMillis(candidate.result));
@@ -208,7 +271,7 @@ public final class ManualTimelineAuthorityPolicy {
                     : candidateTier(winner, complete.get(winner)) != candidateTier(runner, complete.get(runner))
                             ? "source_tier" : "provider_order";
         }
-        return new DetailDecision(winner == feed ? null : winner, reason);
+        return new DetailDecision(winner == feed ? null : winner, reason, completeByProvider);
     }
 
     static ExpressQueryResult automaticPresentationResult(ExpressQueryResult history,
@@ -258,6 +321,36 @@ public final class ManualTimelineAuthorityPolicy {
     }
 
     public static String detailTimelineIncompleteReason(ExpressQueryResult result, long feedLatestEventMillis) {
+        return timelineIncompleteReason(result, feedLatestEventMillis, true);
+    }
+
+    /** A historical start can stop supplementation only while the latest evidence still aligns. */
+    public static boolean timelineStartAligned(ExpressQueryResult result, long latestEventMillis) {
+        return timelineIncompleteReason(result,
+                Math.max(latestEventMillis, latestEventTime(result)), false) == null;
+    }
+
+    public static boolean timelineStartAligned(
+            List<? extends me.pipi.deliveries.model.ManualQuerySuccess> successes, String waybill) {
+        if (successes == null) return false;
+        String normalized = ExpressSourcePolicy.normalizeWaybill(waybill);
+        if (normalized.isEmpty()) return false;
+        List<ExpressQueryResult> packets = new java.util.ArrayList<>();
+        long latest = 0L;
+        for (me.pipi.deliveries.model.ManualQuerySuccess success : successes) {
+            if (success == null || success.result == null || !normalized.equals(
+                    ExpressSourcePolicy.normalizeWaybill(success.result.waybill))) continue;
+            packets.add(success.result);
+            latest = Math.max(latest, latestEventTime(success.result));
+        }
+        for (ExpressQueryResult packet : packets) {
+            if (timelineStartAligned(packet, latest)) return true;
+        }
+        return false;
+    }
+
+    private static String timelineIncompleteReason(ExpressQueryResult result,
+            long feedLatestEventMillis, boolean requirePickup) {
         if (result == null || result.semantic == StatusSemantic.UNKNOWN) return "missing_status";
         if (result.semantic == StatusSemantic.COMPLETED
                 && ExpressLifecycleTimes.signedEvidenceAt(null, result, System.currentTimeMillis()) <= 0L) {
@@ -266,7 +359,8 @@ public final class ManualTimelineAuthorityPolicy {
         for (StatusSemantic semantic : ExpressTimeline.latestTrackStatuses(result.tracksJson, result.timelineProvider)) {
             if (semantic != StatusSemantic.UNKNOWN && semantic != result.semantic) return "status_mismatch";
         }
-        if (!Kuaidi100TimelinePolicy.hasPickupEvidence(result)) return "missing_pickup";
+        if (requirePickup ? !Kuaidi100TimelinePolicy.hasPickupEvidence(result)
+                : !Kuaidi100TimelinePolicy.hasTimelineStart(result)) return "missing_pickup";
         if (feedLatestEventMillis <= 0L) return null;
         long latest = Kuaidi100TimelinePolicy.latestTimedEventMillis(result);
         if (latest <= 0L) return "missing_source_time";

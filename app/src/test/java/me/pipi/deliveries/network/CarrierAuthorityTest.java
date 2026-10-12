@@ -2,8 +2,10 @@ package me.pipi.deliveries.network;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import me.pipi.deliveries.SharedExpressFixtures;
 import me.pipi.deliveries.data.CarrierAuthorityFixture;
 import me.pipi.deliveries.data.CarrierRegistry;
 
@@ -58,6 +60,34 @@ public final class CarrierAuthorityTest {
         assertTrue(CarrierAuthority.refreshIfDue(
                 storage, gateway, () -> NOW + CarrierAuthority.REFRESH_INTERVAL_MS));
         assertEquals(2, gateway.calls);
+    }
+
+    @Test
+    public void theServedAliasRefreshesTheLastGoodTableWithoutChangingOtherNamespaces()
+            throws Exception {
+        JSONObject fixture = SharedExpressFixtures.load("carrier-table-validation.v1.json");
+        // Keep the pre-promotion table as the migration input after the served fixture advances.
+        JSONObject legacy = new JSONObject(fixture.getJSONObject("formalStartupBase").toString());
+        legacy.put("version", "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa");
+        CarrierAuthorityFixture.entry(legacy, "YZPY").remove("kuaidi100CodeAliases");
+        install(legacy);
+        assertNull(CarrierRegistry.resolveKuaidi100Code("youzhengbk"));
+        MemoryStorage storage = new MemoryStorage();
+        FakeGateway gateway = new FakeGateway(response(fixture.getJSONObject("base")));
+
+        assertTrue(CarrierAuthority.refreshIfDue(storage, gateway, () -> NOW));
+
+        assertEquals("YZPY", CarrierRegistry.resolveKuaidi100Code("youzhengbk").standardCode);
+        assertEquals("youzhengguonei",
+                CarrierRegistry.resolveKuaidi100Code("youzhengbk").kuaidi100Code);
+        assertNull(CarrierRegistry.resolve("youzhengbk"));
+        assertEquals("YZPY", CarrierRegistry.resolveCpCode("YOUZHENGBK").standardCode);
+        assertEquals("youzhengguonei", CarrierRegistry.queryCode("YZPY", ""));
+        assertEquals("youzhengguonei", CarrierRegistry.queryCode("YOUZHENGBK", ""));
+        assertEquals(fixture.getJSONObject("base").getString("version"),
+                new JSONObject(storage.snapshot).getJSONObject("payload").getString("version"));
+        assertFalse(CarrierAuthority.refreshIfDue(storage, gateway, () -> NOW + 1L));
+        assertEquals(1, gateway.calls);
     }
 
     @Test

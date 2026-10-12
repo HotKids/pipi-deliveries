@@ -1,7 +1,7 @@
 import { RefreshInvalidatedError } from "./refresh-coordination";
 import type { AppState, BindingSource } from "../models";
 import { SCRIPT_BINDING_SOURCE } from "./script-source";
-import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD } from "./build-track";
+import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD, SCRIPT_VERSION } from "./build-track";
 import { OperationTimeoutError, type RequestTimeoutDetails, type WaitTimeoutDetails } from "./deadline";
 
 export type DiagnosticLevel = "info" | "warning" | "error";
@@ -10,6 +10,10 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   commitProtocol?: "immutable_link";
   commitSequence?: number;
   selectionScope?: "query_response" | "display";
+  /** account.owner.superseded（承运商复用旧运单号，用户 2026-10-02；与 Pipi 同一事件与字段）。 */
+  takeoverReason?: "waybill_reuse";
+  fromProvider?: "v5" | "v6" | "manual";
+  toProvider?: "v5" | "v6";
   returnedTrackCount?: number;
   displayedTrackCount?: number;
   runtimeHost?: "app" | "widget";
@@ -93,8 +97,19 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   missingStatusRefresh?: boolean;
   unprojectedOrder?: boolean;
   detailComplete?: boolean;
-  /** What started this refresh: detail_pull / detail_open / identity_projection. */
+  /** What started this refresh: detail_pull / detail_open / identity_projection / status_alignment. */
   trigger?: string;
+  /**
+   * detail.refresh.alignment（用户 2026-10-02 状态对齐强刷）：哪一边落后——status_ahead / headline_ahead /
+   * detail_behind（与 Pipi ExpressStatusAlignment.reason 同一套）。
+   */
+  alignmentReason?: "status_ahead" | "headline_ahead" | "detail_behind";
+  /** The list headline time the alignment check compared (before its headline swap). */
+  headlineAtMs?: number;
+  /** The local detail selection's newest timed node the alignment check compared. */
+  detailAtMs?: number;
+  /** The list already shows the status package's newest node in place of its own headline. */
+  headlineAligned?: boolean;
   /** Why a chain ran or was skipped: owner_pickup / jd_h5_complete / cooldown / no_evidence. */
   gateReason?: string;
   routeKind?: string;
@@ -160,6 +175,7 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   unionSignalSeen?: boolean;
   unionResourceSeen?: boolean;
   unionResponseStatuses?: string;
+  unionPendingCount?: number;
   probeCaptureCount?: number;
   resourceReplayBlockReason?: string;
   domMatched?: boolean;
@@ -172,6 +188,7 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   validTrackCount?: number;
   effectiveTrackCount?: number;
   detailEffectiveTrackCount?: number;
+  orderStagePrepended?: boolean;
   latestEventAtMs?: number;
   latestTrackAtMs?: number;
   feedEventAtMs?: number;
@@ -219,6 +236,8 @@ const DIAGNOSTIC_KEY = "pipi_deliveries_diagnostic_log_v1";
  * Recording is a user switch. Beta defaults to enabled; formal builds require an explicit opt-in.
  */
 const DIAGNOSTIC_ENABLED_KEY = "pipi_deliveries_diagnostic_enabled_v1";
+/** The beta SCRIPT_VERSION that last turned recording back on; shared like the switch itself. */
+const DIAGNOSTIC_BETA_VERSION_KEY = "pipi_deliveries_diagnostic_beta_version_v1";
 // A single foreground refresh can emit dozens of causally related stage records.
 // Keep enough history to preserve several complete refresh flows for diagnosis.
 const MAX_RECORDS = 200;
@@ -250,6 +269,8 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "requestProvider", "displayTimelineProvider",
   "historyProvider", "headlineProvider", "statusProvider", "selectionReason",
   "interface",
+  "takeoverReason", "fromProvider", "toProvider",
+  "alignmentReason", "headlineAtMs", "detailAtMs", "headlineAligned",
   "level",
   "flowId",
   "source",
@@ -347,6 +368,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "unionSignalSeen",
   "unionResourceSeen",
   "unionResponseStatuses",
+  "unionPendingCount",
   "probeCaptureCount",
   "resourceReplayBlockReason",
   "domMatched",
@@ -359,6 +381,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "validTrackCount",
   "effectiveTrackCount",
   "detailEffectiveTrackCount",
+  "orderStagePrepended",
   "latestEventAtMs",
   "latestTrackAtMs",
   "feedEventAtMs",
@@ -412,6 +435,7 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
   "signalAbortAfterMs", "callerSettledAfterMs",
   "foreignAnchorAtMs", "earliestTrackAtMs",
   "candidateCount", "availableCandidateCount",
+  "headlineAtMs", "detailAtMs",
   "baseRevision",
   "revision",
   "resultRevision",
@@ -434,6 +458,7 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
   "projectionTrackCount",
   "cooldownRemainingMs",
   "probeRequestCount",
+  "unionPendingCount",
   "requestCallbackCount",
   "evaluationAttempts",
   "evaluationFailures",
@@ -453,6 +478,8 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
 
 const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
   "bindingMatched",
+  "headlineAligned",
+  "orderStagePrepended",
   "sqliteOpenAvailable", "sharedFilesAvailable", "hotlinePresent", "hotlineMatchesExpected",
   "candidateEligible", "cainiaoFallbackActive",
   "riskControlSeen",
@@ -540,6 +567,8 @@ const SAFE_FAILURE_CODES = new Set([
   "invalid_upstream_response",
   "invalid_waybill",
   "invalid_weather_operation",
+  "key_activated_elsewhere",
+  "key_store_unavailable",
   "method_not_allowed",
   "network",
   "not_found",
@@ -622,6 +651,9 @@ const PROVIDER_KEYS = new Set<keyof DiagnosticDetails>([
   "timelineProvider",
   "finalTimelineProvider",
   "detailTimelineProvider",
+  // Selection evidence names the same packages (audit R10, adopted 2026-09-25): a feed package
+  // is written v5_list here too, never its internal id interface5.
+  "historyProvider", "headlineProvider", "statusProvider",
 ]);
 const NORMALIZED_SOURCES = new Set(Object.values(SOURCE_WIRE));
 
@@ -643,6 +675,12 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
     if (!DETAIL_KEYS.has(key) || rawValue == null) continue;
     if (key === "listStateNumber") {
       if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 101 && rawValue <= 111) result[key] = rawValue;
+      continue;
+    }
+    if (key === "alignmentReason") {
+      if (rawValue === "status_ahead" || rawValue === "headline_ahead" || rawValue === "detail_behind") {
+        result.alignmentReason = rawValue;
+      }
       continue;
     }
     if (key === "listStatusScope") {
@@ -751,6 +789,24 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
 }
 
 /**
+ * 启动 / 回前台刷新的触发名 2026-09-26 由 `foreground_sync` 改为 `foreground`（用户，其余裁决第 21 条）。
+ * 新写入由 sync.ts 直接写 `foreground`；存盘的旧日志不改写，只在读取时翻译（trigger 与记录阻塞方
+ * 触发名的 blockingTrigger 同一口径）。
+ */
+const LEGACY_TRIGGER_WIRE: Record<string, string> = {
+  foreground_sync: "foreground",
+};
+
+function readLegacyTriggers(details: DiagnosticDetails): DiagnosticDetails {
+  const result = { ...details };
+  for (const key of ["trigger", "blockingTrigger"] as const) {
+    const value = result[key];
+    if (value && LEGACY_TRIGGER_WIRE[value]) result[key] = LEGACY_TRIGGER_WIRE[value];
+  }
+  return result;
+}
+
+/**
  * The stored entries, pruned of anything expired or malformed.
  *
  * `sanitize` re-runs the whitelist over entries that are already on disk. That is defence in depth
@@ -782,7 +838,7 @@ function storedEntries(now = Date.now(), sanitize = false): DiagnosticEntry[] {
       }
     }
     return sanitize
-      ? retained.map((item) => ({ ...item, details: sanitizeDetails(item.details) }))
+      ? retained.map((item) => ({ ...item, details: readLegacyTriggers(sanitizeDetails(item.details)) }))
       : retained;
   } catch {
     return [];
@@ -919,8 +975,31 @@ export function diagnosticErrorDetails(error: unknown): DiagnosticDetails {
 
 /** Beta records by default; the formal build stays quiet until the user turns it on. */
 const DIAGNOSTICS_DEFAULT_ENABLED = SCRIPT_BUILD_TRACK === "beta";
+let diagnosticsInstallChecked = false;
+
+/**
+ * 用户 2026-09-27：以后安装 beta 版就默认重新打开，安装正式版就跟随之前的设置（iOS 同 Pipi）。
+ * The first touch of the switch in each runtime (app, widget, App Intent) checks the package once: a
+ * beta whose SCRIPT_VERSION differs from the recorded one turns recording on and records its version,
+ * so a user who turns it off within that same beta keeps it off. Formal builds leave the stored
+ * switch alone (never set → the formal default, off). Storage failures change nothing else; an
+ * unrecorded reopen is retried by the next runtime.
+ */
+function reopenDiagnosticsForNewBeta(): void {
+  if (diagnosticsInstallChecked) return;
+  diagnosticsInstallChecked = true;
+  if (SCRIPT_BUILD_TRACK !== "beta") return;
+  try {
+    if (Storage.get<string>(DIAGNOSTIC_BETA_VERSION_KEY, { shared: true }) === SCRIPT_VERSION) return;
+    if (Storage.set(DIAGNOSTIC_ENABLED_KEY, true, { shared: true }) === false) return;
+    Storage.set(DIAGNOSTIC_BETA_VERSION_KEY, SCRIPT_VERSION, { shared: true });
+  } catch {
+    /* the switch keeps its stored value or the track default */
+  }
+}
 
 export function diagnosticsEnabled(): boolean {
+  reopenDiagnosticsForNewBeta();
   try {
     const stored = Storage.get<boolean>(DIAGNOSTIC_ENABLED_KEY, { shared: true });
     return typeof stored === "boolean" ? stored : DIAGNOSTICS_DEFAULT_ENABLED;
@@ -931,6 +1010,7 @@ export function diagnosticsEnabled(): boolean {
 
 /** Turning recording off stops every write; the entries already stored are left alone. */
 export function setDiagnosticsEnabled(enabled: boolean): boolean {
+  reopenDiagnosticsForNewBeta();
   try {
     Storage.set(DIAGNOSTIC_ENABLED_KEY, enabled === true, { shared: true });
     return true;
@@ -1042,12 +1122,68 @@ export function writeDiagnostic(
   writeDiagnosticBatch(event, [details], level);
 }
 
+type PendingStageEnd = { signal?: AbortSignal; ended: boolean; write: () => void };
+const pendingStageEnds = new Map<string, Set<PendingStageEnd>>();
+
+export type StageCancellationEnd = Readonly<{ end: () => void; close: () => void }>;
+
+/**
+ * 用户 2026-09-28 (log authorization): a stage that logged its start under `flowId` and now waits on work its flow's
+ * `signal` can cut off. Its cancelled end (`write`) is written once: by the stage where the cancellation reaches it
+ * (`end`), or, when the flow's end line comes first, right before that line. The log drops a flow's lines after its end
+ * line, and a refresh's coordinator reports that end as soon as it cancels the refresh, while its stages still unwind.
+ * `close` once the stage no longer waits.
+ */
+export function openStageCancellationEnd(
+  flowId: string | undefined,
+  signal: AbortSignal | undefined,
+  write: () => void,
+): StageCancellationEnd {
+  const entry: PendingStageEnd = { signal, ended: false, write };
+  const key = flowId && signal ? flowId : "";
+  if (key) {
+    const open = pendingStageEnds.get(key) || new Set<PendingStageEnd>();
+    open.add(entry);
+    pendingStageEnds.set(key, open);
+  }
+  const close = () => {
+    const open = key ? pendingStageEnds.get(key) : undefined;
+    if (!open) return;
+    open.delete(entry);
+    if (!open.size) pendingStageEnds.delete(key);
+  };
+  return {
+    end: () => {
+      close();
+      if (entry.ended) return;
+      entry.ended = true;
+      write();
+    },
+    close,
+  };
+}
+
+/** Right before a flow's end line: the cancelled ends its stages still owe it, innermost first. */
+function writePendingStageEnds(flowId: string): void {
+  const open = pendingStageEnds.get(flowId);
+  if (!open) return;
+  pendingStageEnds.delete(flowId);
+  for (const entry of [...open].reverse()) {
+    if (entry.ended || !entry.signal?.aborted) continue;
+    entry.ended = true;
+    entry.write();
+  }
+}
+
 /** Append one synchronous batch without retaining a shared-log snapshot across calls. */
 export function writeDiagnosticBatch(
   event: string,
   details: readonly DiagnosticDetails[],
   level: DiagnosticLevel = "info",
 ): void {
+  if (event === "refresh.succeeded" || event === "refresh.failed") {
+    for (const detail of details) writePendingStageEnds(String(detail.flowId || ""));
+  }
   if (!details.length || !diagnosticsEnabled()) return;
   const cleanEvent = String(event || "").trim();
   if (!SAFE_TEXT.test(cleanEvent)) return;

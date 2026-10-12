@@ -106,6 +106,28 @@ public final class ExpressTimelineTest {
         assertEquals(2, new org.json.JSONArray(conflicting).length());
     }
 
+    /**
+     * 审计 D11（用户 2026-09-25 采纳，合同写法 2026-09-11：来源标签在没有状态码时只是出处）：同文案 5 分钟内的两条，
+     * 来源标签不同但都不带状态字段时照样合成一条；两边都带状态字段时来源不同才分开。
+     */
+    @Test
+    public void anOriginTagWithoutAStatusFieldDoesNotKeepSameTextNodesApart() throws Exception {
+        List<ExpressTimeline.Track> merged = ExpressTimeline.parse(
+                "[{\"time\":\"2026-09-06 00:19:45\",\"context\":\"快件已到达【上海转运中心】\","
+                        + "\"_pipiStatusSource\":\"kuaidi100\"},"
+                        + "{\"time\":\"2026-09-06 00:18:00\",\"context\":\"快件已到达【上海转运中心】\","
+                        + "\"_pipiStatusSource\":\"interface5\"}]", "", "");
+        assertEquals(1, merged.size());
+        assertEquals("2026-09-06 00:19:45", merged.get(0).time);
+
+        List<ExpressTimeline.Track> apart = ExpressTimeline.parse(
+                "[{\"time\":\"2026-09-06 00:19:45\",\"context\":\"快件已到达【上海转运中心】\","
+                        + "\"_pipiStatusSource\":\"kuaidi100\",\"statusCode\":\"0\"},"
+                        + "{\"time\":\"2026-09-06 00:18:00\",\"context\":\"快件已到达【上海转运中心】\","
+                        + "\"_pipiStatusSource\":\"interface5\",\"logisticsStatus\":\"104\"}]", "", "");
+        assertEquals(2, apart.size());
+    }
+
     @Test
     public void incrementalMergeKeepsHistoryAndUsesRefreshedNodeAtSameTime() {
         String merged = ExpressTimeline.mergeJson(

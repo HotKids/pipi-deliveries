@@ -11,7 +11,7 @@
           "scope": "SHIPMENT",
           "semantic": "UNKNOWN",
           "code": "",
-          "text": "",
+          "text": "暂无状态",
           "priority": 0,
           "eventAtMs": 0,
           "structured": false

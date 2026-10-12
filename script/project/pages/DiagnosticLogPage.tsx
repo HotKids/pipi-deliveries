@@ -53,10 +53,12 @@ const EVENT_TITLES: Record<string, string> = {
   "detail.refresh.ui_failed": "详情页刷新失败",
   "detail.refresh.fallback_failed": "详情兜底失败",
   "detail.refresh.primary_contest.completed": "详情主数据源查询完成",
+  "detail.refresh.alignment": "状态与头条对不上，强制刷新",
   "detail.route_publish_failed": "详情路由保存失败",
   "account.identity.generated": "已创建本机身份",
   "account.sync.parsed": "关联快递已解析",
   "account.sync.failed": "账号快递同步失败",
+  "account.owner.superseded": "同一运单换了新包裹，旧件让位",
   "order.projection.started": "正在提取运单号",
   "order.projection.extracted": "已提取运单号",
   "order.projection.committed": "运单号已保存",
@@ -192,6 +194,23 @@ function executionBoundaryText(value: string): string {
   return value === "host_budget" ? "宿主总预算" : "分阶段预算";
 }
 
+/**
+ * The line's title. `detail.refresh.alignment` carries three kinds of line (the forced refresh, a row the signed freeze
+ * stops, and the forced refresh failing), and `detail.refresh.skipped` also closes a pull that joined a running refresh,
+ * so their titles follow the line rather than the event alone.
+ */
+function eventTitle(item: DiagnosticEntry): string {
+  if (item.event === "detail.refresh.alignment") {
+    if (item.details.skipReason === "signed_frozen") return "状态与头条对不上，已签收冻结，不强刷";
+    if (item.details.result === "failed") return "状态对齐强刷失败";
+  }
+  // A pull that met this row's status-alignment refresh waited for it and shows its outcome (user 2026-10-02).
+  if (item.event === "detail.refresh.skipped" && item.details.skipReason === "coalesced_detail_refresh") {
+    return "详情下拉等待正在执行的刷新";
+  }
+  return EVENT_TITLES[item.event] || item.event;
+}
+
 function reasonText(value: string): string {
   return ({
     no_tracks: "没有有效时间节点",
@@ -206,15 +225,26 @@ function reasonText(value: string): string {
     list_pull: "列表下拉",
     detail_open: "打开详情",
     detail_pull: "详情下拉",
+    status_alignment: "状态对齐强刷",
+    status_ahead: "状态比头条新",
+    headline_ahead: "头条比状态新",
+    detail_behind: "详情与列表不一致",
+    signed_frozen: "已签收冻结",
+    aligned_after_query: "按件查询后已对齐",
     background: "后台刷新",
-    foreground_sync: "前台同步",
+    foreground: "前台同步",
     account_list_only: "账号列表同步",
     available: "缓存有轨迹",
     empty: "缓存无轨迹",
     account_record_missing: "缺少账号详情记录",
     background_host_webview_disabled: "后台宿主不允许网页提取",
     coalesced_detail_refresh: "详情刷新已在执行",
+    refreshed: "已更新",
+    unchanged: "没有变化",
     deadline_exhausted: "刷新预算已用尽",
+    home_projection: "首页提取运单号",
+    not_foreground: "不在前台",
+    confirmed_empty: "已确认空页",
     evaluation_exhausted: "已达到页面提取次数上限",
     load_failed: "页面加载失败",
     no_result: "没有可写入的新结果",
@@ -401,6 +431,10 @@ function detailsText(item: DiagnosticEntry): string {
       ? `详情数据源 ${providerText(details.detailTimelineProvider)}`
       : null,
     details.skipReason ? `跳过原因 ${reasonText(details.skipReason)}` : null,
+    details.alignmentReason ? `对不上 ${reasonText(details.alignmentReason)}` : null,
+    details.headlineAligned != null
+      ? `头条${details.headlineAligned ? "已换成状态那一包的最新节点" : "未换"}`
+      : null,
     details.exitReason ? `提取结果 ${reasonText(details.exitReason)}` : null,
     details.durationMs != null ? `耗时 ${details.durationMs}ms` : null,
     details.executionBoundary
@@ -571,7 +605,7 @@ export function DiagnosticLogPage() {
               >
                 <HStack spacing={8} frame={{ maxWidth: "infinity" }}>
                   <Text font={14} fontWeight="semibold">
-                    {EVENT_TITLES[item.event] || item.event}
+                    {eventTitle(item)}
                   </Text>
                   <Spacer />
                   <Text font={11} foregroundStyle="tertiaryLabel" monospacedDigit>

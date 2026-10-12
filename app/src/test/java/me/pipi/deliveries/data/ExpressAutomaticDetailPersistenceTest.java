@@ -235,37 +235,45 @@ public class ExpressAutomaticDetailPersistenceTest {
         assertEquals(TIME, repository.automaticSourceTimeline(owner).latestTime);
     }
 
-    @Test public void shunFengHomeAndDetailKeepCompleteK100AfterLaterOnlinePartial() throws Exception {
-        ExpressItem owner = owner("SFSHARE4271", "ShunFeng", "interface5", false);
-        ExpressQueryResult online = onlineEvent(owner.waybill, "2026-09-10 01:05:00");
+    /**
+     * 夹具时间整体平移到最近（用户 2026-09-24 采纳，只改测试）：签收件在列表里只留 14 天，写死的 09-10 01:50
+     * 在 09-24 01:50 过期后 listVisible 找不到这一行，这条测试就一直挂着。最新的夹具时间落在一小时前，feed
+     * 与各包之间的相对间隔不变。
+     */
+    @Test public void shunFengCompleteK100StaysSelectedWhileUnknownHeadlineAlignsToOnlineStatus() throws Exception {
+        long shift = System.currentTimeMillis() / 1000L * 1000L - 3_600_000L
+                - ExpressSourcePolicy.parseEventTime("2026-09-10 01:50:00");
+        java.util.function.UnaryOperator<String> at = fixed -> shifted(fixed, shift);
+        ExpressItem owner = owner("SFSHARE4271", "ShunFeng", "interface5", false, at.apply(TIME));
+        ExpressQueryResult online = onlineEvent(owner.waybill, at.apply("2026-09-10 01:05:00"));
         repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
                 java.util.List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, online, 100L, false)),
                 PHONE, "interface5");
         repository.rememberDetailSelection(owner, TimelineSlot.V6_QUERY);
         org.json.JSONArray nodes = new org.json.JSONArray();
-        nodes.put(new org.json.JSONObject().put("time", "2026-09-10 01:50:00")
+        nodes.put(new org.json.JSONObject().put("time", at.apply("2026-09-10 01:50:00"))
                 .put("context", "K100 latest event"));
         for (int i = 0; i < 16; i++) nodes.put(new org.json.JSONObject()
-                .put("time", String.format(java.util.Locale.ROOT, "2026-09-09 %02d:00:00", i))
+                .put("time", at.apply(String.format(java.util.Locale.ROOT, "2026-09-09 %02d:00:00", i)))
                 .put("context", i == 0 ? "已揽收" : "K100 history " + i));
         ExpressQueryResult complete = new ExpressQueryResult(owner.waybill, "SF", "SF Express",
-                StatusSemantic.UNKNOWN, 0L, "2026-09-10 01:50:00", "K100 latest event",
+                StatusSemantic.UNKNOWN, 0L, at.apply("2026-09-10 01:50:00"), "K100 latest event",
                 nodes.toString(), "", PHONE, TimelineSlot.K100_H5, "", "", "");
         repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
                 java.util.List.of(new ManualQuerySuccess(TimelineSlot.K100_H5, complete, 200L, true)),
                 PHONE, "interface5");
 
-        assertSharedK100Presentation(owner, complete, online);
-        ExpressQueryResult laterPartial = onlineEvent(owner.waybill, "2026-09-10 01:06:00");
+        assertSharedK100Presentation(owner, complete, online, online);
+        ExpressQueryResult laterPartial = onlineEvent(owner.waybill, at.apply("2026-09-10 01:06:00"));
         repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
                 java.util.List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, laterPartial, 300L, false)),
                 PHONE, "interface5");
-        assertSharedK100Presentation(owner, complete, laterPartial);
+        assertSharedK100Presentation(owner, complete, laterPartial, laterPartial);
         assertEquals(2, ExpressTimeline.parse(repository.manualTimelineCandidate(owner,
                 TimelineSlot.V6_QUERY).result.tracksJson, "", "").size());
         assertEquals(17, ExpressTimeline.parse(repository.manualTimelineCandidate(owner,
                 TimelineSlot.K100_H5).result.tracksJson, "", "").size());
-        assertEquals(TIME, repository.automaticSourceTimeline(owner).latestTime);
+        assertEquals(at.apply(TIME), repository.automaticSourceTimeline(owner).latestTime);
         ManualTimelineAuthorityPolicy.Candidate polling = repository.manualTimelineAuthority(owner);
         assertEquals(TimelineSlot.V6_QUERY, polling.provider);
         assertEquals(300L, polling.successAt);
@@ -274,7 +282,7 @@ public class ExpressAutomaticDetailPersistenceTest {
         assertTrue(ExpressRepository.manualTimelinePollDue(owner, polling,
                 300L + ExpressRepository.MANUAL_TIMELINE_POLL_INTERVAL_MS));
 
-        String signedAt = "2026-09-10 01:07:00";
+        String signedAt = at.apply("2026-09-10 01:07:00");
         ExpressQueryResult signed = new ExpressQueryResult(owner.waybill, "SF", "SF Express",
                 StatusSemantic.COMPLETED, ExpressSourcePolicy.parseEventTime(signedAt), signedAt,
                 "Delivered event", "[{\"time\":\"" + signedAt + "\",\"context\":\"Delivered event\"}]",
@@ -283,18 +291,56 @@ public class ExpressAutomaticDetailPersistenceTest {
         repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
                 java.util.List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, signed, 400L, false)),
                 PHONE, "interface5");
-        assertSharedK100Presentation(owner, complete, signed);
+        assertSharedK100Presentation(owner, complete, signed, signed);
+        ExpressQueryResult laterDelivery = onlineEvent(owner.waybill, at.apply("2026-09-10 01:08:00"));
         repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
                 java.util.List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY,
-                        onlineEvent(owner.waybill, "2026-09-10 01:08:00"), 500L, false)),
+                        laterDelivery, 500L, false)),
                 PHONE, "interface5");
-        assertSharedK100Presentation(owner, complete, signed);
+        // Its node has no enum and is within five minutes of S; the newer donor does not roll S back.
+        assertSharedK100Presentation(owner, complete, signed, laterDelivery);
         assertTrue(ExpressRepository.manualTimelinePollDue(repository.find(owner.rowId),
                 repository.manualTimelineAuthority(owner),
                 500L + ExpressRepository.MANUAL_TIMELINE_POLL_INTERVAL_MS));
         assertFalse(ExpressRepository.manualTimelinePollDue(repository.find(owner.rowId),
                 repository.manualTimelineAuthority(owner),
                 ExpressSourcePolicy.parseEventTime(signedAt)));
+    }
+
+    @Test public void aKnownSameStateK100HeadlineKeepsItsNewestNodeAndItsOnlineStatusSource() throws Exception {
+        long shift = System.currentTimeMillis() / 1000L * 1000L - 3_600_000L
+                - ExpressSourcePolicy.parseEventTime("2026-09-10 01:50:00");
+        java.util.function.UnaryOperator<String> at = fixed -> shifted(fixed, shift);
+        ExpressItem owner = owner("SFSHAREKNOWN4271", "ShunFeng", "interface5", false, at.apply(TIME));
+        ExpressQueryResult online = onlineEvent(owner.waybill, at.apply("2026-09-10 01:05:00"));
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, online, 100L, false)),
+                PHONE, "interface5");
+        org.json.JSONArray nodes = new org.json.JSONArray()
+                .put(new org.json.JSONObject().put("time", at.apply("2026-09-10 01:50:00"))
+                        .put("context", "K100 latest event").put("statusCode", "5"));
+        for (int i = 0; i < 16; i++) nodes.put(new org.json.JSONObject()
+                .put("time", at.apply(String.format(java.util.Locale.ROOT, "2026-09-09 %02d:00:00", i)))
+                .put("context", i == 0 ? "已揽收" : "K100 history " + i));
+        ExpressQueryResult complete = new ExpressQueryResult(owner.waybill, "SF", "SF Express",
+                StatusSemantic.UNKNOWN, 0L, at.apply("2026-09-10 01:50:00"), "K100 latest event",
+                nodes.toString(), "", PHONE, TimelineSlot.K100_H5, "", "", "");
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.K100_H5, complete, 200L, true)),
+                PHONE, "interface5");
+        ManualTimelineAuthorityPolicy.Candidate detail = repository.manualDetailTimelineAuthority(owner);
+        assertEquals(TimelineSlot.K100_H5, detail.provider);
+        assertEquals(17, ExpressTimeline.parse(detail.result.tracksJson, "", "").size());
+        for (ExpressItem home : new ExpressItem[]{repository.find(owner.rowId),
+                repository.listVisible("interface5").stream()
+                        .filter(row -> row.rowId == owner.rowId).findFirst().orElseThrow()}) {
+            assertEquals(complete.latestTime, home.latestTime);
+            assertEquals(complete.latestDetail, home.latestDetail);
+            assertEquals(detail.result.tracksJson, home.tracksJson);
+        }
+        ExpressQueryResult storedStatus = repository.manualTimelineCandidate(owner, TimelineSlot.V6_QUERY).result;
+        assertEquals(online.semantic, storedStatus.semantic);
+        assertEquals(online.statusEventTime, storedStatus.statusEventTime);
     }
 
     @Test public void nonShunFengAutomaticHomeKeepsItsFeedWhenK100IsFuller() {
@@ -314,16 +360,100 @@ public class ExpressAutomaticDetailPersistenceTest {
         }
     }
 
+    /**
+     * Pipi 1.4.0 parity (user decision 2026-09-17, backlog D-8): a JD-source owner's selected
+     * carrier fallback packet is displayed whole with the owner's earlier order-stage nodes behind
+     * it, while the selection, the packet cache and the feed cache all keep their own rows.
+     */
+    @Test public void jdFallbackDisplayKeepsOwnerOrderStageBehindThePacketAndCachesSeparate() {
+        String ownerTracks = "[" + node("2026-09-09 10:00:00", "预计9月10日送达")
+                + "," + node("2026-09-09 09:22:06", "待出库交付极兔速递，运单号为JDSTAGE000001")
+                + "," + node("2026-09-09 08:49:46", "最快9月9日发货")
+                + "," + node("2026-09-09 08:49:42", "您的订单已进入第三方卖家仓库，准备出库") + "]";
+        ExpressItem owner = stagedOwner("JDSTAGE000001", "JingDong", ownerTracks);
+        assertTrue(owner.isJingDongSource());
+        ExpressQueryResult packet = new ExpressQueryResult("JDSTAGE000001", "JT", "极兔速递",
+                StatusSemantic.TRANSIT, "2026-09-09 09:50:00", "快件运输中",
+                "[" + node("2026-09-09 09:50:00", "快件运输中")
+                        + "," + node("2026-09-09 09:48:37", "【DK测试网点】已揽收") + "]",
+                "", PHONE, TimelineSlot.K100_H5);
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.K100_H5, packet, 200L, true)),
+                PHONE, "interface5");
+
+        ManualTimelineAuthorityPolicy.Candidate selected = repository.manualDetailTimelineAuthority(owner);
+        assertNotNull(selected);
+        assertEquals(TimelineSlot.K100_H5, selected.provider);
+        assertEquals(packet.tracksJson, selected.result.tracksJson);
+        ExpressQueryResult source = repository.automaticSourceTimeline(owner);
+        ExpressQueryResult displayed = ManualTimelineAuthorityPolicy.withOwnerOrderStage(owner, source, selected);
+        java.util.List<ExpressTimeline.Track> rows = ExpressTimeline.parse(displayed.tracksJson, "", "");
+        assertEquals(5, rows.size());
+        assertEquals("2026-09-09 09:50:00", rows.get(0).time);
+        assertEquals("2026-09-09 09:48:37", rows.get(1).time);
+        assertEquals("2026-09-09 09:22:06", rows.get(2).time);
+        assertEquals("2026-09-09 08:49:46", rows.get(3).time);
+        assertEquals("2026-09-09 08:49:42", rows.get(4).time);
+        assertFalse(displayed.tracksJson.contains("预计9月10日送达"));
+        assertEquals(packet.latestDetail, displayed.latestDetail);
+        assertEquals(TimelineSlot.K100_H5, displayed.timelineProvider);
+        // Second read: the raw selection and both caches are untouched by the presentation.
+        assertEquals(packet.tracksJson, repository.manualDetailTimelineAuthority(owner).result.tracksJson);
+        assertEquals(packet.tracksJson,
+                repository.manualTimelineCandidate(owner, TimelineSlot.K100_H5).result.tracksJson);
+        assertEquals(4, ExpressTimeline.parse(repository.automaticSourceTimeline(owner).tracksJson, "", "").size());
+        assertFalse(repository.automaticSourceTimeline(owner).tracksJson.contains("已揽收"));
+
+        // Other automatic sources and JD H5 packets are shown exactly as selected.
+        ExpressItem douyin = stagedOwner("DYSTAGE000001", "DouYin", ownerTracks.replace("JDSTAGE000001", "DYSTAGE000001"));
+        assertFalse(douyin.isJingDongSource());
+        ManualTimelineAuthorityPolicy.Candidate douyinPacket = new ManualTimelineAuthorityPolicy.Candidate(
+                TimelineSlot.K100_H5, packet.withWaybill("DYSTAGE000001"), 200L, true);
+        assertSame(douyinPacket.result, ManualTimelineAuthorityPolicy.withOwnerOrderStage(
+                douyin, repository.automaticSourceTimeline(douyin), douyinPacket));
+        ExpressItem order = owner("JDORDER000009", "JingDong", "interface5", true);
+        assertTrue(repository.saveAutomaticDetailTimeline(order, repository.captureManualQueryOwner(order),
+                h5("JDREAL000009", TimelineSlot.JD_H5, "已揽收"), true));
+        order = repository.find(order.rowId);
+        ManualTimelineAuthorityPolicy.Candidate h5Selected = repository.manualDetailTimelineAuthority(order);
+        assertEquals(TimelineSlot.JD_H5, h5Selected.provider);
+        assertSame(h5Selected.result, ManualTimelineAuthorityPolicy.withOwnerOrderStage(
+                order, repository.automaticSourceTimeline(order), h5Selected));
+    }
+
+    private ExpressItem stagedOwner(String waybill, String provider, String tracksJson) {
+        ExpressQueryResult feed = new ExpressQueryResult(waybill, "JT", "极兔速递", StatusSemantic.TRANSIT,
+                ExpressSourcePolicy.parseEventTime("2026-09-09 10:00:00"), "2026-09-09 10:00:00",
+                "预计9月10日送达", tracksJson, "", PHONE, "interface5", "", "", provider);
+        repository.saveInterface5(feed, PHONE);
+        ExpressItem owner = repository.findByWaybill(waybill, "interface5");
+        assertNotNull(owner);
+        assertNotNull(repository.captureManualQueryOwner(owner));
+        return owner;
+    }
+
+    private static String node(String time, String context) {
+        return "{\"time\":\"" + time + "\",\"context\":\"" + context + "\"}";
+    }
+
     private void assertSharedK100Presentation(ExpressItem owner, ExpressQueryResult complete,
-            ExpressQueryResult online) {
+            ExpressQueryResult online, ExpressQueryResult headlineDonor) {
         ManualTimelineAuthorityPolicy.Candidate detail = repository.manualDetailTimelineAuthority(owner);
         assertEquals(TimelineSlot.K100_H5, detail.provider);
-        for (ExpressItem home : new ExpressItem[]{repository.find(owner.rowId),
-                repository.listVisible("interface5").stream()
-                        .filter(row -> row.rowId == owner.rowId).findFirst().orElseThrow()}) {
+        assertEquals(complete.latestTime,
+                repository.manualTimelineCandidate(owner, TimelineSlot.K100_H5).result.latestTime);
+        assertEquals(complete.latestDetail,
+                repository.manualTimelineCandidate(owner, TimelineSlot.K100_H5).result.latestDetail);
+        ExpressItem stored = repository.find(owner.rowId);
+        assertEquals(complete.latestTime, stored.latestTime);
+        assertEquals(complete.latestDetail, stored.latestDetail);
+        ExpressItem displayed = repository.listVisible("interface5").stream()
+                .filter(row -> row.rowId == owner.rowId).findFirst().orElseThrow();
+        // An unknown headline far beyond S uses S's own timed donor, without changing the selected history.
+        assertEquals(headlineDonor.latestTime, displayed.latestTime);
+        assertEquals(headlineDonor.latestDetail, displayed.latestDetail);
+        for (ExpressItem home : new ExpressItem[]{stored, displayed}) {
             assertEquals(TimelineSlot.K100_H5, home.manualTimelineProvider);
-            assertEquals(complete.latestTime, home.latestTime);
-            assertEquals(complete.latestDetail, home.latestDetail);
             assertEquals(detail.result.tracksJson, home.tracksJson);
             assertEquals(online.semantic, home.semantic);
             assertEquals(online.statusEventTime, home.statusEventTime);
@@ -459,6 +589,26 @@ public class ExpressAutomaticDetailPersistenceTest {
         assertNotNull(repository.accountTimeline(projected.displayWaybill(), "interface5"));
         assertEquals("feed运输中", projected.latestDetail);
         assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE));
+    }
+
+    /**
+     * 用户 2026-09-26（其余裁决 7，iOS 与 Lite 同）：小米轨迹文案只取运单号。「…交付极兔速递，运单号为…」投影出
+     * 运单号，承运商留空——不从文案里取，交给内置表 → K100 免费识别 → 既有付费兜底。
+     */
+    @Test public void orderTextProjectsTheWaybillButNeverTheCarrierItNames() {
+        ExpressItem owner = owner("JDORDER000009", "JingDong", "interface5", true);
+        String text = "您的订单由第三方卖家拣货完成，待出库交付极兔速递，运单号为JT4006839564547";
+        ExpressQueryResult query = new ExpressQueryResult(owner.waybill, "JD", "京东快递",
+                StatusSemantic.PICKED, ExpressSourcePolicy.parseEventTime(TIME), TIME,
+                text, tracks(text), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong");
+        assertTrue(repository.saveInterface5Query(query, owner,
+                repository.bindingGeneration(PHONE, "interface5")));
+        ExpressItem projected = repository.find(owner.rowId);
+        assertEquals("JT4006839564547", projected.displayWaybill());
+        assertEquals("", projected.projectedCompanyName);
+        assertNull("the carrier named by the text is not carrier evidence", projected.resolvedCarrier());
+        assertTrue("the projected waybill goes to carrier recognition",
+                me.pipi.deliveries.background.AccountCarrierRecognition.needsRecognition(projected));
     }
 
     @Test public void querySidecarFailureRollsBackTextProjection() {
@@ -631,9 +781,12 @@ public class ExpressAutomaticDetailPersistenceTest {
     }
 
     private ExpressItem owner(String id, String provider, String binding, boolean order) {
+        return owner(id, provider, binding, order, TIME);
+    }
+    private ExpressItem owner(String id, String provider, String binding, boolean order, String time) {
         ExpressQueryResult feed = new ExpressQueryResult(id, order ? "JD" : "ZTO",
                 order ? "京东快递" : "中通快递", StatusSemantic.TRANSIT,
-                ExpressSourcePolicy.parseEventTime(TIME), TIME, "feed运输中", tracks("feed运输中"),
+                ExpressSourcePolicy.parseEventTime(time), time, "feed运输中", tracks("feed运输中", time),
                 "", PHONE, binding, "", "", provider);
         if (order) repository.saveInterface5OrderSummary(feed, PHONE);
         else if (binding.equals("interface5")) repository.saveInterface5(feed, PHONE);
@@ -653,7 +806,16 @@ public class ExpressAutomaticDetailPersistenceTest {
                 PHONE, TimelineSlot.forBindingSource(binding), iface, route, owner.sourceProvider);
     }
     private static String tracks(String detail) {
-        return "[{\"time\":\"" + TIME + "\",\"context\":\"" + detail + "\"}]";
+        return tracks(detail, TIME);
+    }
+    private static String tracks(String detail, String time) {
+        return "[{\"time\":\"" + time + "\",\"context\":\"" + detail + "\"}]";
+    }
+    /** A fixture time moved by {@code shiftMs}, in the same Asia/Shanghai wall clock the parser reads. */
+    private static String shifted(String fixed, long shiftMs) {
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.ROOT);
+        format.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Shanghai"));
+        return format.format(new java.util.Date(ExpressSourcePolicy.parseEventTime(fixed) + shiftMs));
     }
     private String text(long id, String column) {
         try (Cursor cursor = database.getReadableDatabase().query(ExpressDatabase.EXPRESS_TABLE,

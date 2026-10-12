@@ -30,7 +30,7 @@ final class ExpressVisibilityPolicy {
         if (item == null) return false;
         StatusSemantic lifecycleSemantic = item.semantic;
         if (lifecycleSemantic == StatusSemantic.CANCELLED) {
-            long cancelledAt = ExpressLifecycleTimes.eventAt(item, now);
+            long cancelledAt = ExpressLifecycleTimes.cancelledAt(item, now);
             return cancelledAt > 0L && now - cancelledAt >= CANCELLED_VISIBLE_MS;
         }
         if (item.signedRetainedAt > 0L || lifecycleSemantic == StatusSemantic.COMPLETED) {
@@ -48,9 +48,8 @@ final class ExpressVisibilityPolicy {
             return signedAt > 0L && now - signedAt >= SIGNED_DELETE_MS;
         }
         if (result.semantic == StatusSemantic.CANCELLED) {
-            long cancelledAt = Math.max(
-                    result.statusEventTime,
-                    ExpressSourcePolicy.parseEventTime(result.latestTime));
+            long cancelledAt = ExpressLifecycleTimes.cancelledAt(
+                    result.latestTime, result.statusEventTime, now);
             return cancelledAt > 0L && cancelledAt <= now
                     && now - cancelledAt >= CANCELLED_VISIBLE_MS;
         }

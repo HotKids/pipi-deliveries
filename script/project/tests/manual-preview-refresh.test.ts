@@ -10,7 +10,7 @@ function timeline(
   pickupIndex: number | null = null,
 ): TimelinePackage {
   const tracks = Array.from({ length: count }, (_, index) => ({
-    timeText: `2026-09-01 ${String(10 - index).padStart(2, "0")}:00:00`,
+    timeText: new Date(NOW + (8 - index) * 60 * 60_000).toISOString().slice(0, 19).replace("T", " "),
     timeMs: NOW - index * 60 * 60 * 1_000,
     detail: index === pickupIndex ? "快件已揽收" : `${provider} node ${index + 1}`,
     statusCode: index === pickupIndex ? "1" : "",
@@ -22,7 +22,7 @@ function timeline(
     waybill: "SF1234567890",
     courierCode: "SF",
     companyName: "顺丰速运",
-    semantic: "TRANSIT",
+    semantic: pickupIndex === 0 ? "PICKED" : "TRANSIT",
     statusEventAtMs: tracks[0]?.timeMs || null,
     latestTimeText: tracks[0]?.timeText || "",
     latestDetail: tracks[0]?.detail || "",
@@ -35,6 +35,7 @@ function orderedTimeline(provider: string): TimelinePackage {
   const value = timeline(provider, 1);
   return {
     ...value,
+    semantic: "ORDERED",
     tracks: [{
       ...value.tracks[0],
       detail: "快递已下单",
@@ -92,6 +93,20 @@ assert.equal(
   false,
   "one Picker order event is also enough to open directly",
 );
+assert.equal(
+  manualPreviewNeedsDetailRefresh(shipment({ ...timeline("route", 1, 0), semantic: "TRANSIT" })),
+  true,
+  "a latest structured pickup node cannot close a preview displaying transit",
+);
+const oldPicker = timeline("route", 1, 0);
+oldPicker.statusEventAtMs = NOW - 10 * 60 * 60_000;
+oldPicker.latestTimeText = "2026-09-01 08:00:00";
+oldPicker.tracks[0] = { ...oldPicker.tracks[0], timeMs: oldPicker.statusEventAtMs,
+  timeText: oldPicker.latestTimeText };
+const alignedH5 = timeline("k100_h5", 2, 1);
+assert.equal(manualPreviewNeedsDetailRefresh(shipment(alignedH5, {
+  manuals: [oldPicker, alignedH5],
+})), false, "an aligned primary packet ends loading even when Picker remains older");
 
 const cachedSource = timeline("interface5", 21, 20);
 assert.equal(
@@ -100,8 +115,8 @@ assert.equal(
     sourceProvider: "ShunFeng",
     source: cachedSource,
   })),
-  false,
-  "a cached source history containing pickup must not start a redundant detail contest",
+  true,
+  "SF coarse source pickup cannot close the independent Picker preview stage",
 );
 assert.equal(
   manualPreviewNeedsDetailRefresh(shipment(timeline("interface5", 21), {

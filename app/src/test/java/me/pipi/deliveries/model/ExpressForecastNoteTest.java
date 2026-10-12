@@ -16,7 +16,7 @@ import java.util.List;
  */
 public final class ExpressForecastNoteTest {
     private static final String PICKUP =
-            "【DK江门维达网点】的谭秀文（18128210371）已取件，物流问题请联系：0750-2484284为您解决";
+            "【DK测试网点】的测试员（19900000371）已取件，物流问题请联系：0000-1234567为您解决";
 
     @Test public void forecastNotesAreOrdinaryEventsAndOnlyProviderErrorsAreDropped() {
         assertFalse(ExpressStatusNormalizer.isNonEventDetail("预计9月4日(周五)送达"));

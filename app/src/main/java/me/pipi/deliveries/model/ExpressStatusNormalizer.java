@@ -5,6 +5,7 @@ import java.util.regex.Pattern;
 
 /** Provider adapter that projects source-specific status evidence into one shared semantic. */
 public final class ExpressStatusNormalizer {
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
     /** 与 iOS accountOrderSemantic（status.ts）逐字同表的订单级完成词。 */
     private static final Pattern ORDER_COMPLETION =
             Pattern.compile("订单.*已完成|订单完成|配送完成|^已完成$");
@@ -26,9 +27,38 @@ public final class ExpressStatusNormalizer {
                 ? StatusSemantic.WAITING_PICKUP : structured;
     }
 
-    /** Provider/service errors are never valid logistics events or user-facing timeline text. */
+    /**
+     * 「快递状态已更新」, with or without 「，点击查看」 (either comma) and the trailing 「>>」: the provider's
+     * placeholder for an update it did not show. It is never displayed as a node or a headline; the
+     * real nodes are (user instruction 2026-09-12, reaffirmed 2026-09-26; audit X4). Same pattern as
+     * the shared vocabulary's updateSummaryPattern (provider-line-vocabulary.v1.json) and Pipi's
+     * ExpressProviderErrorPolicy.UPDATE_SUMMARY; it compares with all whitespace removed.
+     */
+    private static final Pattern UPDATE_SUMMARY =
+            Pattern.compile("^快递状态已更新(?:[，,]点击查看(?:>>)?)?$");
+    /**
+     * 「您有包裹运输时效变化，请留意取件安排」, either comma, with or without the trailing 「>>」: handled exactly
+     * like the update placeholder (user 2026-09-28「加进占位清单」; Pipi, iOS and kdbot match the same
+     * sentence). Only this sentence family. Same pattern as the shared vocabulary's
+     * transitTimeReminderPattern (user 2026-10-01, item 6).
+     */
+    private static final Pattern TRANSIT_TIME_REMINDER =
+            Pattern.compile("^您有包裹运输时效变化[，,]请留意取件安排(?:>>)?$");
+
+    public static boolean isUpdateSummary(String detail) {
+        String value = WHITESPACE.matcher(clean(detail)).replaceAll("");
+        return UPDATE_SUMMARY.matcher(value).matches() || TRANSIT_TIME_REMINDER.matcher(value).matches();
+    }
+
+    /**
+     * Provider/service errors are never valid logistics events or user-facing timeline text: the
+     * shared vocabulary's lines with {@code kept: false}. The update placeholder is not one of them
+     * in any of its four forms, 「，点击查看>>」 included (user 2026-09-26, parity doc 其余裁决 19): it
+     * is only kept off the display ({@link #isNonEventDetail}), so it never drops a row, voids a
+     * package's status or blocks a borrowed status.
+     */
     public static boolean isProviderErrorDetail(String detail) {
-        String value = clean(detail).replaceAll("\\s+", "");
+        String value = WHITESPACE.matcher(clean(detail)).replaceAll("");
         String lower = value.toLowerCase(Locale.ROOT);
         return lower.startsWith("noresult")
                 || lower.startsWith("mismatchingcode")
@@ -36,25 +66,25 @@ public final class ExpressStatusNormalizer {
                 || value.startsWith("查无结果")
                 || value.equals("暂无状态")
                 || value.equals("暂无物流信息")
-                || value.equals("暂无物流动态")
-                || value.equals("快递状态已更新，点击查看>>");
+                || value.equals("暂无物流动态");
     }
 
     /**
      * Anything a provider boundary must drop before a row can become an event: only the provider's
-     * own error placeholders. Forecast notes（「预计9月4日(周五)送达」「温馨提示：…预计…送达」）are
+     * own error placeholders and the update placeholder in its four forms (user 2026-09-12 / 09-26:
+     * never displayed; the Worker keeps it in its data, the shared vocabulary's {@code displayed}). Forecast notes（「预计9月4日(周五)送达」「温馨提示：…预计…送达」）are
      * ordinary nodes — AGENTS §107（用户定 2026-09-04，裁决 A 整条撤销，三端同规则）: 来源返回什么就
      * 显示什么，照常进轨迹、进节点计数，也能当头条。Lite 漏掉了这次撤销，2026-09-06 补齐。
      */
     public static boolean isNonEventDetail(String detail) {
-        return isProviderErrorDetail(detail);
+        return isProviderErrorDetail(detail) || isUpdateSummary(detail);
     }
 
     /** A list headline must be a real logistics event, never a duplicate of the state title. */
     public static boolean isHeadlinePlaceholder(String detail, StatusSemantic semantic) {
-        String value = clean(detail).replaceAll("\\s+", "");
+        String value = WHITESPACE.matcher(clean(detail)).replaceAll("");
         if (value.isEmpty() || isNonEventDetail(value)) return true;
-        if (semantic != null && value.equals(semantic.label.replaceAll("\\s+", ""))) return true;
+        if (semantic != null && value.equals(WHITESPACE.matcher(semantic.label).replaceAll(""))) return true;
         return StatusSemantic.fromStored("", value) != StatusSemantic.UNKNOWN;
     }
 
@@ -73,7 +103,7 @@ public final class ExpressStatusNormalizer {
     }
 
     private static StatusSemantic inferAccountOrderEvent(String detail) {
-        String value = clean(detail).replaceAll("\\s+", "");
+        String value = WHITESPACE.matcher(clean(detail)).replaceAll("");
         if (value.isEmpty()) return StatusSemantic.UNKNOWN;
         if (containsAny(value, "订单已取消", "已取消", "订单关闭")) {
             return StatusSemantic.CANCELLED;
@@ -111,7 +141,7 @@ public final class ExpressStatusNormalizer {
      * deposit-and-collection wording is accepted; generic arrival or delivery prose fails closed.
      */
     static boolean isConfirmedPickupEvent(String detail) {
-        String value = clean(detail).replaceAll("\\s+", "");
+        String value = WHITESPACE.matcher(clean(detail)).replaceAll("");
         if (value.isEmpty() || value.contains("已签收")) return false;
         if (value.contains("待取件") || value.contains("等待取件")) return true;
         boolean pickupPlace = containsAny(value,

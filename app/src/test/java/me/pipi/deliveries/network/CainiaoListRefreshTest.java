@@ -5,6 +5,9 @@ import static org.junit.Assert.*;
 import android.app.Application;
 import android.content.Context;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -35,6 +38,8 @@ public class CainiaoListRefreshTest {
     private static final String OLD = "2026-09-12 09:00:00";
     private static final String NEW = "2026-09-12 10:00:00";
     private static final String GENERIC = "快递状态已更新，点击查看>>";
+    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+            .withZone(ZoneId.of("Asia/Shanghai"));
     private Context context;
     private ExpressRepository repository;
     private FakeGateway gateway;
@@ -170,13 +175,16 @@ public class CainiaoListRefreshTest {
     }
 
     @Test public void backgroundAndOtherImmediateRunsQueryNewCompletionOnce() throws Exception {
-        gateway.list = new JSONArray().put(item(FIRST, 107, OLD, GENERIC));
+        long now = System.currentTimeMillis();
+        String older = minutesBefore(now, 120), newer = minutesBefore(now, 60);
+        gateway.queryTime = older;
+        gateway.list = new JSONArray().put(item(FIRST, 107, older, GENERIC));
         client.sync(context, Collections.singletonList(PHONE));
         assertEquals(Collections.singletonList(FIRST), gateway.queried);
         gateway.queried.clear();
         client.sync(context, Collections.singletonList(PHONE), false);
         assertTrue(gateway.queried.isEmpty());
-        gateway.list = new JSONArray().put(item(FIRST, 107, NEW, GENERIC));
+        gateway.list = new JSONArray().put(item(FIRST, 107, newer, GENERIC));
         client.sync(context, Collections.singletonList(PHONE), false);
         assertTrue("A trusted completed owner remains frozen", gateway.queried.isEmpty());
     }
@@ -243,7 +251,10 @@ public class CainiaoListRefreshTest {
     }
 
     @Test public void cancelledCainiaoNeverStartsTheQueuedQuery() throws Exception {
-        gateway.list = new JSONArray().put(item(FIRST, 111, NEW, GENERIC));
+        long now = System.currentTimeMillis();
+        String older = minutesBefore(now, 120), newer = minutesBefore(now, 60);
+        gateway.queryTime = older;
+        gateway.list = new JSONArray().put(item(FIRST, 111, newer, GENERIC));
         sync();
         assertTrue(gateway.queried.isEmpty());
     }
@@ -295,6 +306,16 @@ public class CainiaoListRefreshTest {
 
     private void sync() throws Exception {
         client.sync(context, Collections.singletonList(PHONE), true);
+    }
+
+    /**
+     * A terminal parcel is only imported inside its retention window (signed: 21 days, cancelled:
+     * 4 hours after its list time), so the two tests whose first sync has to store one use this
+     * instead of OLD/NEW, keeping their one-hour gap (user approved this test-only clean-up on
+     * 2026-09-25).
+     */
+    private static String minutesBefore(long clock, long minutes) {
+        return TIME.format(Instant.ofEpochMilli(clock - minutes * 60_000L));
     }
 
     private ExpressQueryResult source(String waybill) {

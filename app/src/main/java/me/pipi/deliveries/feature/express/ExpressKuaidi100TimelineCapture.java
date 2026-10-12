@@ -73,6 +73,32 @@ final class ExpressKuaidi100TimelineCapture {
         this.callback = callback;
     }
 
+    /**
+     * A sub-resource the hidden Kuaidi100 capture page may load (用户 2026-10-02 弹窗「Lite 也做，iOS 查文档能做就做
+     * （推荐）」, the same list as Pipi Kuaidi100H5Client.isAllowedCaptureResource): data: and blob: URLs, and
+     * http/https on kuaidi100.com or its subdomains. Anything else is answered with an empty 204.
+     */
+    static boolean isAllowedCaptureResource(String value) {
+        String clean = value == null ? "" : value.trim();
+        if (clean.isEmpty()) return false;
+        try {
+            java.net.URI uri = new java.net.URI(clean);
+            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(java.util.Locale.ROOT);
+            if ("data".equals(scheme) || "blob".equals(scheme)) return true;
+            if (!"https".equals(scheme) && !"http".equals(scheme)) return false;
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(java.util.Locale.ROOT);
+            return "kuaidi100.com".equals(host) || host.endsWith(".kuaidi100.com");
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** The empty answer for a blocked capture sub-resource. */
+    static WebResourceResponse emptyCaptureResponse() {
+        return new WebResourceResponse("text/plain", "utf-8", 204, "No Content",
+                Collections.emptyMap(), new java.io.ByteArrayInputStream(new byte[0]));
+    }
+
     void usePhoneCandidates(List<String> boundPhones) {
         phones = phoneCandidates(phone, boundPhones);
     }
@@ -130,6 +156,22 @@ final class ExpressKuaidi100TimelineCapture {
                     return request == null || request.getUrl() == null
                             || ManualRoutePolicy.safePrimaryH5Url(
                             request.getUrl().toString(), waybill).isEmpty();
+                }
+
+                /**
+                 * 用户 2026-10-02 弹窗「Lite 也做，iOS 查文档能做就做（推荐）」（Pipi 用户定 2026-10-02「快递100 的抓取网页只放行
+                 * 快递100 自己的域名」）：the hidden K100 page loads nothing from outside Kuaidi100; a third-party file
+                 * (its first synchronous script is Baidu analytics) answers empty at once instead of holding the
+                 * document at "loading" behind a proxy that hangs that host. The J&T page is unchanged.
+                 */
+                @Override public WebResourceResponse shouldInterceptRequest(
+                        WebView view, WebResourceRequest request) {
+                    if (jtPage || request == null || request.getUrl() == null
+                            || request.isForMainFrame()
+                            || isAllowedCaptureResource(request.getUrl().toString())) {
+                        return null;
+                    }
+                    return emptyCaptureResponse();
                 }
 
                 @Override public void onReceivedError(

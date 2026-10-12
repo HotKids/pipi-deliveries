@@ -105,8 +105,55 @@ public final class ExpressScheduler {
         return request.getId();
     }
 
+    /**
+     * Audit R4 (user default of 2026-09-25): every client refreshes when it comes to the
+     * foreground, at most once per 2 minutes (user 2026-10-02「改成 2 分钟（三端一起）」; 30 seconds
+     * before). Home's onStart runs on every return, including a return from a detail page, so a
+     * return within the window of the last foreground refresh enqueues nothing. The window lives in
+     * the process: a cold start always refreshes.
+     */
+    static final long FOREGROUND_REFRESH_DEBOUNCE_MS = 120_000L;
+    private static final java.util.concurrent.atomic.AtomicLong LAST_FOREGROUND_REFRESH =
+            new java.util.concurrent.atomic.AtomicLong(0L);
+    /**
+     * 优化 8-1（用户 2026-10-03「Lite 照 Pipi：启动刷过就不再刷」）：when the first sync round of this process started
+     * ({@link android.os.SystemClock#elapsedRealtime}), 0 before any. It is the process's start refresh when the process
+     * was started for it (a periodic or widget round), as Pipi refreshes when its process starts.
+     */
+    private static final java.util.concurrent.atomic.AtomicLong PROCESS_START_ROUND =
+            new java.util.concurrent.atomic.AtomicLong(0L);
+
     public static void requestForeground(Context context) {
+        if (!claimForegroundRefresh(android.os.SystemClock.elapsedRealtime())) return;
         enqueueAutomatic(context, "foreground", false);
+    }
+
+    /** A sync round starts its work in this process; only the process's first round is kept. */
+    static void recordRoundStarted(long now) {
+        PROCESS_START_ROUND.compareAndSet(0L, Math.max(1L, now));
+    }
+
+    /**
+     * 优化 8-1（用户 2026-10-03「Lite 照 Pipi：启动刷过就不再刷」）：the first return to Home in this process does not refresh
+     * again when the process's start round already ran within the two-minute window; like Pipi's MainActivity, that
+     * first return then starts the window. A cold start from the launcher has no earlier round and refreshes as before.
+     */
+    static boolean claimForegroundRefresh(long now) {
+        while (true) {
+            long last = LAST_FOREGROUND_REFRESH.get();
+            if (last > 0L && now >= last && now - last < FOREGROUND_REFRESH_DEBOUNCE_MS) {
+                return false;
+            }
+            long started = PROCESS_START_ROUND.get();
+            boolean startRefreshed = last == 0L && started > 0L && now >= started
+                    && now - started < FOREGROUND_REFRESH_DEBOUNCE_MS;
+            if (LAST_FOREGROUND_REFRESH.compareAndSet(last, Math.max(1L, now))) return !startRefreshed;
+        }
+    }
+
+    static void resetForegroundRefreshForTesting() {
+        LAST_FOREGROUND_REFRESH.set(0L);
+        PROCESS_START_ROUND.set(0L);
     }
 
     static ListenableFuture<Operation.State.SUCCESS> enqueueAutomatic(

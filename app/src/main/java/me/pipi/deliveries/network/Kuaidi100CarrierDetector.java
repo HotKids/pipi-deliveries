@@ -40,7 +40,27 @@ final class Kuaidi100CarrierDetector {
         this.transport = transport;
     }
 
+    /** One autoComNum candidate: its Kuaidi100 code and, when the answer carries one, its name. */
+    static final class Candidate {
+        final String code;
+        final String name;
+
+        Candidate(String code, String name) {
+            this.code = clean(code);
+            this.name = clean(name);
+        }
+    }
+
     List<String> detectCandidates(
+            String waybill, ExpressQueryCancellation cancellation) throws Exception {
+        List<String> codes = new ArrayList<>();
+        for (Candidate candidate : detectNamedCandidates(waybill, cancellation)) {
+            codes.add(candidate.code);
+        }
+        return codes;
+    }
+
+    List<Candidate> detectNamedCandidates(
             String waybill, ExpressQueryCancellation cancellation) throws Exception {
         String number = clean(waybill);
         if (number.length() < 6) return new ArrayList<>();
@@ -52,13 +72,13 @@ final class Kuaidi100CarrierDetector {
             throw interrupted;
         } catch (IOException networkFailure) {
             if (cancellation != null) cancellation.throwIfCancelled();
-            throw GatewayHttpErrors.networkFailure();
+            throw GatewayHttpErrors.networkFailure(networkFailure);
         }
         if (cancellation != null) cancellation.throwIfCancelled();
         if (!response.successful()) {
             throw GatewayHttpErrors.forResponse(response, "暂时无法识别承运商");
         }
-        return parseCandidates(response.utf8());
+        return parseNamedCandidates(response.utf8());
     }
 
     static String requestUrl(String waybill) {
@@ -69,31 +89,72 @@ final class Kuaidi100CarrierDetector {
         }
     }
 
+    /**
+     * Kuaidi100's "no match" answer is {@code {"result":false,"returnCode":"201"}}, the code written
+     * as a string or as the number 201: it reads as unrecognized (the paid stage decides; user
+     * decision 2026-09-26, 其余裁决 5).
+     */
+    private static boolean isNoMatch(JSONObject object) {
+        if (!Boolean.FALSE.equals(object.opt("result"))) return false;
+        Object code = object.opt("returnCode");
+        if (code instanceof String) return "201".equals(((String) code).trim());
+        return code instanceof Number && ((Number) code).doubleValue() == 201d;
+    }
+
+    /**
+     * Audit C3 (user 2026-09-25): one reading with the Worker and Pipi, shared fixture
+     * k100-autocomnum-responses.v1.json. A bare array or an {@code auto} list gives the candidates;
+     * the no-match answer gives none (the paid stage decides); any other body — not JSON, HTML, an
+     * object without {@code auto} — is a retryable failure that never reaches the paid stage.
+     */
     static List<String> parseCandidates(String body) {
-        ArrayList<String> candidates = new ArrayList<>();
+        ArrayList<String> codes = new ArrayList<>();
+        for (Candidate candidate : parseNamedCandidates(body)) codes.add(candidate.code);
+        return codes;
+    }
+
+    /**
+     * {@link #parseCandidates} with each candidate's name, read from {@code name}, {@code comName} or
+     * {@code companyName} as iOS parseKuaidi100CarrierCandidates reads it (其余裁决 29: an off-table
+     * carrier is shown by the name Kuaidi100 gives).
+     */
+    static List<Candidate> parseNamedCandidates(String body) {
+        ArrayList<Candidate> candidates = new ArrayList<>();
+        JSONArray values;
         try {
             Object root = new JSONTokener(body == null ? "" : body).nextValue();
-            JSONArray values;
             if (root instanceof JSONArray) {
                 values = (JSONArray) root;
             } else if (root instanceof JSONObject) {
-                values = ((JSONObject) root).optJSONArray("auto");
+                JSONObject object = (JSONObject) root;
+                values = object.optJSONArray("auto");
+                if (values == null && isNoMatch(object)) return candidates;
             } else {
-                return candidates;
+                values = null;
             }
-            if (values == null) return candidates;
-            for (int index = 0; index < values.length() && candidates.size() < 16; index++) {
-                JSONObject value = values.optJSONObject(index);
-                String code = value == null ? "" : clean(value.optString("comCode", ""));
-                if (!code.matches("^[A-Za-z0-9_-]{1,32}$") || candidates.contains(code)) {
-                    continue;
-                }
-                candidates.add(code);
+        } catch (Throwable invalid) {
+            throw new IllegalArgumentException("invalid public carrier response", invalid);
+        }
+        if (values == null) throw new IllegalArgumentException("invalid public carrier response");
+        ArrayList<String> seen = new ArrayList<>();
+        for (int index = 0; index < values.length() && candidates.size() < 16; index++) {
+            JSONObject value = values.optJSONObject(index);
+            String code = value == null ? "" : clean(value.optString("comCode", ""));
+            if (!code.matches("^[A-Za-z0-9_-]{1,32}$") || seen.contains(code)) {
+                continue;
             }
-        } catch (Throwable ignored) {
-            // An invalid public-classifier body is equivalent to no recognized carrier.
+            seen.add(code);
+            candidates.add(new Candidate(code, firstText(value, "name", "comName", "companyName")));
         }
         return candidates;
+    }
+
+    private static String firstText(JSONObject value, String... keys) {
+        for (String key : keys) {
+            Object raw = value.opt(key);
+            if (raw instanceof String && !((String) raw).trim().isEmpty()) return ((String) raw).trim();
+        }
+        return "";
     }
 
     private static String clean(String value) {

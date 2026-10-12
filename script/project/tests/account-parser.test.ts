@@ -106,10 +106,11 @@ assert.equal(providerOrder.waybill, "9876543210987680");
 assert.equal(providerOrder.routeUrl, "");
 assert.equal(providerOrder.projectionUrl, "https://u.jd.com/forward?opaque=1");
 
-const shortProviderOrder = parseAccountSyncResponse("interface5", {
+const shortOrderRow = (normalizedStatusScope?: "ORDER") => parseAccountSyncResponse("interface5", {
   code: 0,
   data: {
     expressList: [{
+      ...(normalizedStatusScope ? { normalizedStatusScope } : {}),
       mailNo: "350365030147",
       cpCode: "JD",
       name: "京东快递",
@@ -127,6 +128,11 @@ const shortProviderOrder = parseAccountSyncResponse("interface5", {
     }],
   },
 })[0];
+// Audit L6 / user default #3 (2026-09-25): prose naming the number (「您的订单350365030147已完成」) is no
+// longer order evidence; the Worker's scope decides. Without a scope this 12-digit row with a carrier name
+// is a parcel. The same row with the Worker's ORDER scope is the order it used to be.
+assert.equal(shortOrderRow().accountOrder, false, "timeline prose no longer makes an order");
+const shortProviderOrder = shortOrderRow("ORDER");
 assert.equal(shortProviderOrder.accountOrder, true);
 assert.equal(shortProviderOrder.orderId, "350365030147");
 assert.equal(shortProviderOrder.companyName, "京东购物");
@@ -230,6 +236,40 @@ const jdCodeOnly = parseAccountSyncResponse("interface5", {
   },
 })[0];
 assert.equal(jdCodeOnly.accountOrder, false);
+
+// 12 位纯数字的换货单带着订单行的身份（JDKD），worker 旧口径标的 SHIPMENT 也不改变它是订单。
+const exchangeOrder = parseAccountSyncResponse("interface5", {
+  code: 0,
+  data: {
+    expressList: [{
+      mailNo: "351100058925",
+      provider: "JingDong",
+      cpCode: "JDKD",
+      name: "京东商品快递",
+      normalizedStatusScope: "SHIPMENT",
+      stateNum: 103,
+      state: "预计9月24日发货，9月26日(周六)送达",
+    }],
+  },
+})[0];
+assert.equal(exchangeOrder.accountOrder, true);
+assert.equal(exchangeOrder.orderId, "351100058925");
+assert.equal(exchangeOrder.companyName, "京东购物");
+
+// R-20：JDKD 挂在真实运单号上仍是包裹；12 位纯数字配真承运商码也仍是包裹。用户定 2026-09-24：
+// 12 位纯数字带 JDKD 时，name 恰好是「京东商品快递」才算订单；name 是「京东快递」或没有 name 的仍是包裹。
+for (const record of [
+  { mailNo: "JT4006839564547", provider: "JingDong", cpCode: "JDKD", name: "京东快递", stateNum: 104 },
+  { mailNo: "751234567890", provider: "JingDong", cpCode: "ZTO", name: "中通快递", stateNum: 104 },
+  { mailNo: "751234567891", provider: "JingDong", cpCode: "JDKD", name: "京东快递", stateNum: 104 },
+  { mailNo: "751234567892", provider: "JingDong", cpCode: "JDKD", stateNum: 104 },
+]) {
+  const parcel = parseAccountSyncResponse("interface5", {
+    code: 0,
+    data: { expressList: [record] },
+  })[0];
+  assert.equal(parcel.accountOrder, false, record.mailNo);
+}
 
 const orderDetail = parseAccountTimelineResponse("interface5", {
   code: 0,

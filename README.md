@@ -4,20 +4,20 @@ Pipi Deliveries 是一款快递管理工具。Android 版本采用原生 Materia
 
 ## 功能简介
 
-- 绑定手机号码，同步与其关联的菜鸟快递信息；部分京东购物订单也可能被同步，实际结果取决于上游服务返回；
-- 输入运单号码即可识别承运商并查询物流动态；部分承运商可能需要验证收寄件手机号码后四位；
-- Android 的菜鸟快递使用适配后的详情页面；iOS Scripting 从受信任的菜鸟详情页提取轨迹并在本地页面展示，其他快递使用本地物流轨迹页面；
+- 绑定手机号码，同步关联的菜鸟快递信息；部分京东购物订单也可能同步，实际结果以上游服务返回为准；
+- 输入运单号码，识别承运商并查询物流动态；部分承运商可能需要验证收寄件手机号码后四位；
+- Android 为菜鸟快递提供适配后的详情页；iOS Scripting 从受信任的菜鸟详情页提取轨迹并在本地展示；其他快递使用本地物流轨迹页；
 - 支持下拉刷新、后台同步与物流状态变更通知；
 - 提供 2 × 2 状态概览和 4 × 2 物流动态两种桌面小组件，可直接查看快递详情或发起查询；
 - 承运商图标均保存在本地，并支持深色模式与系统动态配色。
 
 ## 使用说明
 
-在首页输入运单号码后即可发起查询。查询到有效物流轨迹时，应用将首先打开全屏详情页面；关闭详情页面后，该运单将被加入快递列表。尚未产生物流轨迹的运单会进入后台查询队列，并在出现首条物流动态后自动显示。
+在首页输入运单号码即可查询物流。查到有效轨迹后，应用先打开全屏详情页，关闭后再将该运单加入快递列表。尚无物流轨迹的运单会进入后台查询队列，并在出现首条物流动态后自动显示。
 
 点击首页右上角的电话图标可管理已绑定的手机号码；在首页下拉可刷新快递信息。
 
-Cancelled shipments remain visible for four hours. Signed shipments remain visible for 14 days, then stay in the local cache until day 21 before deletion. Removing a bound phone also removes shipments associated with that phone.
+已取消的快递显示 4 小时；已签收的快递显示 14 天，随后保留在本地缓存中，至第 21 天删除。解绑手机号码时，同时移除与该号码关联的快递。
 
 ## 隐私声明
 
@@ -37,7 +37,7 @@ Cancelled shipments remain visible for four hours. Signed shipments remain visib
 
 ## 下载与系统要求
 
-最新 Android 安装包与 iOS 脚本请前往 [Releases](https://github.com/HotKids/pipi-deliveries/releases) 页面下载。
+Android 安装包请前往 [Releases](https://github.com/HotKids/pipi-deliveries/releases) 页面下载；iOS 脚本请前往 [script](https://github.com/HotKids/pipi-deliveries/tree/main/script) 目录获取。
 
 - 标准版适用于 Android 12 及更高版本；
 - Android 10 兼容版适用于 Android 10 及更高版本。

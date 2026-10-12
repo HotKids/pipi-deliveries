@@ -7,19 +7,19 @@ import {
   selectShipmentTimeline, selectShipmentDetailTimeline, shipmentDetailComplete,
   needsDetailEntryQuery, shipmentSelectionEvidence,
 } from "../services/shipment-policy";
-import { buildWidgetSnapshot, shipmentDetailPresentationStatus } from "../services/status";
+import { buildWidgetSnapshot, latestTimelineTrackSemantic, shipmentDetailPresentationStatus } from "../services/status";
 import { emptyState, loadState, saveState } from "../services/storage";
 import type { Shipment } from "../models";
 
 const PHONE = "13800000000";
 const NOW = new Date("2026-09-11T10:00:00+08:00").getTime();
-function packet(code: number, time: string, history = false): Shipment {
+function packet(code: number, time: string, history = false, nodeStatus = true): Shipment {
   const parcels = parseAccountSyncResponse("interface5", { code: 0, data: { expressList: [{
     mailNo: "SYNTHETICFEED0001", cpCode: "YTO", name: "Synthetic carrier",
     provider: "CaiNiao", stateNum: code, phone: PHONE,
     logisticsUpdateTime: time, lastLogisticDetail: `Synthetic event ${code}`,
     details: history ? [
-      { time, desc: `Synthetic event ${code}`, statusCode: code },
+      { time, desc: `Synthetic event ${code}`, ...(nodeStatus ? { statusCode: code } : {}) },
       { time: "2026-09-10 08:00:00", desc: "Synthetic pickup", statusCode: 103 },
     ] : [],
   }] } });
@@ -117,14 +117,34 @@ const cases: [string, () => void][] = [
     assert.equal(row.timeline.provider, "v5_query");
     assert.equal(shipmentDetailComplete(row), false);
   }],
-  ["query prose or missing status time cannot replace known status", () => {
+  ["a known query headline advances display without replacing the feed's status", () => {
     for (const change of [{ structuredStatus: false }, { statusEventAtMs: null }]) {
       const current = owner(true);
       const incoming = packet(105, "2026-09-11 07:39:00", true);
       incoming.sourceTimeline = { ...incoming.sourceTimeline!, ...change };
       const row = applyTargetedAccountShipment(current, asAccountDetailObservation(current, incoming), NOW);
-      surfaces(row, "PICKED");
+      surfaces(row, "DELIVERY");
+      assert.equal(row.sourceTimeline!.semantic, "PICKED");
+      assert.deepEqual(row.sourceTimeline, current.sourceTimeline, "query must not mutate the feed slot");
       assert.equal(row.timeline.provider, "v5_query", "valid new history remains displayable");
+      assert.deepEqual(row.manualTimelines!.find(t => t.provider === "v5_query")!.tracks,
+        incoming.sourceTimeline.tracks, "both original query nodes remain intact");
+      assert.equal(row.manualTimelines!.find(t => t.provider === "v5_query")!.tracks[0]!.statusCode, "105");
+    }
+  }],
+  ["query prose without a node enum cannot replace known status", () => {
+    for (const change of [{ structuredStatus: false }, { statusEventAtMs: null }]) {
+      const current = owner(true);
+      const incoming = packet(105, "2026-09-11 07:39:00", true, false);
+      incoming.sourceTimeline = { ...incoming.sourceTimeline!, ...change };
+      const row = applyTargetedAccountShipment(current, asAccountDetailObservation(current, incoming), NOW);
+      surfaces(row, "PICKED");
+      assert.deepEqual(row.sourceTimeline, current.sourceTimeline, "prose must not mutate the feed slot");
+      assert.equal(row.timeline.provider, "v5_query", "valid prose history remains displayable");
+      const query = row.manualTimelines!.find(t => t.provider === "v5_query")!;
+      assert.deepEqual(query.tracks, incoming.sourceTimeline.tracks, "both original query nodes remain intact");
+      assert.equal(query.tracks[0]!.statusCode, "", "the parser received no headline node enum");
+      assert.equal(latestTimelineTrackSemantic([query.tracks[0]!]), "UNKNOWN");
     }
   }],
   ["same event ties keep the existing feed rule", () => {

@@ -175,4 +175,17 @@ assert.equal(foreignPackageAnchorMs({ ...order, sourceTimeline: accumulatedFeed 
 assert.equal(isForeignManualPackage({ ...order, sourceTimeline: accumulatedFeed }, foreignEms), true);
 assert.equal(isForeignManualPackage({ ...order, sourceTimeline: accumulatedFeed }, genuinePicker), false);
 
+// Audit D1 (adopted 2026-09-25): the anchor judges only Picker / K100 H5 / KDNiao packages. The
+// order's own per-waybill query and union page are its own history even when they reach further back
+// than its first feed node (an order bound mid-way, or a list whose first node came a day late).
+const ownQuery = pkg("v5_query", [
+  track(PICKUP, "快件已揽收"),
+  track(ORDER_CREATED - 3 * 24 * 60 * 60 * 1000, "您提交了订单，请等待第三方卖家系统确认"),
+]);
+const ownUnionPage = pkg("jd_h5", ownQuery.tracks);
+const olderKdniao = pkg("kdniao", ownQuery.tracks);
+assert.equal(isForeignManualPackage(order, ownQuery), false, "the order's own v5_query is never foreign");
+assert.equal(isForeignManualPackage(order, ownUnionPage), false, "the order's own union page is never foreign");
+assert.equal(isForeignManualPackage(order, olderKdniao), true, "the same history from KDNiao is still judged");
+
 console.log("foreign package tests passed");

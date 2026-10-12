@@ -6,33 +6,31 @@ import org.json.JSONObject;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import me.pipi.deliveries.data.CarrierRegistry;
 
 /**
- * Carrier identity that the account feed's own JD order track text already names, e.g.
+ * The waybill that the account feed's own JD order track text already names, e.g.
  * "您的订单由第三方卖家拣货完成，待出库交付极兔速递，运单号为JT4006839564547". When present the
  * waybill is read directly and no H5 projection WebView is opened; JD-fulfilled orders whose text
  * never names a waybill keep going through the H5 projection.
+ *
+ * <p>Only the waybill is taken from the text (user ruling 2026-09-26, 其余裁决 7, iOS and Lite
+ * alike): the carrier named next to it (「交付极兔速递」) is never read. The carrier comes from the
+ * built-in table, then the free Kuaidi100 recognition, then the existing paid fallback, like any
+ * other waybill without a raw carrier.</p>
  */
 public final class ExpressOrderTextIdentity {
     private static final Pattern WAYBILL =
             Pattern.compile("运单号\\s*[为是:：]?\\s*([A-Za-z0-9-]{8,32})");
-    private static final Pattern CARRIER_BEFORE_WAYBILL = Pattern.compile(
-            "(?:交付|交由|移交|转交|由)\\s*([一-龥A-Za-z0-9]{2,16}?)\\s*[，,、。；;]?\\s*运单号");
     public static final class Identity {
         public final String waybill;
-        public final String courierCode;
-        public final String companyName;
-        Identity(String waybill, String courierCode, String companyName) {
+        Identity(String waybill) {
             this.waybill = waybill;
-            this.courierCode = courierCode;
-            this.companyName = companyName;
         }
     }
 
     private ExpressOrderTextIdentity() {}
 
-    /** Matches iOS account-order-text-identity; text names resolve only through the local table. */
+    /** Matches iOS account-order-text-identity: the waybill the text names, never its carrier. */
     public static Identity fromTracksJson(String tracksJson, String ownerWaybill) {
         if (tracksJson == null || tracksJson.trim().isEmpty()) return null;
         String owner = normalize(ownerWaybill);
@@ -59,11 +57,7 @@ public final class ExpressOrderTextIdentity {
         String waybill = normalize(matcher.group(1));
         if (waybill.length() < 8 || waybill.equals(normalize(ownerWaybill))
                 || (waybill.matches("[0-9]+") && waybill.length() > 20)) return null;
-        Matcher carrierMatch = CARRIER_BEFORE_WAYBILL.matcher(text);
-        String rawCarrier = carrierMatch.find() ? carrierMatch.group(1).trim() : "";
-        CarrierRegistry.Carrier carrier = CarrierRegistry.resolveName(rawCarrier);
-        return new Identity(waybill, carrier == null ? "" : carrier.standardCode,
-                carrier == null ? rawCarrier : carrier.companyName);
+        return new Identity(waybill);
     }
 
     private static String firstText(JSONObject value, String... keys) {

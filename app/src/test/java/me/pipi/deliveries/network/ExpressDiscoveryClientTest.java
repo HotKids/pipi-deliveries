@@ -352,8 +352,11 @@ public final class ExpressDiscoveryClientTest {
         assertEquals("京东物流", parsed.companyName);
         assertEquals("JingDong", parsed.sourceProvider);
         assertEquals(StatusSemantic.TRANSIT, parsed.semantic);
-        assertEquals("货物已到达京东深圳分拨中心", parsed.latestDetail);
-        assertEquals(1, new JSONArray(parsed.tracksJson).length());
+        // Audit D2 (user 2026-09-25): the node that reads just 运输中 is an ordinary node now; only
+        // the update placeholder is dropped. This used to keep one track and skip the status word.
+        assertEquals("运输中", parsed.latestDetail);
+        assertEquals(2, new JSONArray(parsed.tracksJson).length());
+        assertFalse(parsed.tracksJson.contains("快递状态已更新"));
     }
 
     @Test
@@ -386,6 +389,56 @@ public final class ExpressDiscoveryClientTest {
         assertFalse(ExpressDiscoveryClient.isAccountOrderRecord(jdCodeOnly));
         assertEquals("京东快递",
                 ExpressDiscoveryClient.parseExpress(jdWaybill, "", "").companyName);
+    }
+
+    /** 2026-09-24：12 位换货单带订单行身份 JDKD；R-20 下 JDKD 挂在真实运单号上仍是包裹。 */
+    @Test
+    public void twelveDigitJdkdExchangeOrderIsAnOrderButJdkdOnARealWaybillIsNot()
+            throws Exception {
+        JSONObject exchangeOrder = new JSONObject()
+                .put("mailNo", "351100058925")
+                .put("cpCode", "JDKD")
+                .put("name", "京东商品快递")
+                .put("provider", "JingDong")
+                .put("stateNum", 103);
+        JSONObject jdkdOnJtWaybill = new JSONObject()
+                .put("mailNo", "JT4006839564547")
+                .put("cpCode", "JDKD")
+                .put("name", "京东快递")
+                .put("provider", "JingDong");
+        JSONObject twelveDigitRealCarrier = new JSONObject()
+                .put("mailNo", "751234567890")
+                .put("cpCode", "ZTO")
+                .put("name", "中通快递")
+                .put("provider", "JingDong");
+
+        assertTrue(ExpressDiscoveryClient.isAccountOrderRecord(exchangeOrder));
+        assertFalse(ExpressDiscoveryClient.isAccountOrderRecord(jdkdOnJtWaybill));
+        assertFalse(ExpressDiscoveryClient.isAccountOrderRecord(twelveDigitRealCarrier));
+    }
+
+    /**
+     * 用户定 2026-09-24：12 位纯数字 + JDKD 只有 name 就是「京东商品快递」才算订单；名字是「京东快递」这类
+     * 承运商名的仍是包裹，照旧按运单解析。
+     */
+    @Test
+    public void twelveDigitJdkdIsAnOrderOnlyWhenNamedJingDongShoppingExpress() throws Exception {
+        JSONObject namedCarrier = new JSONObject()
+                .put("mailNo", "351100058926")
+                .put("cpCode", "JDKD")
+                .put("name", "京东快递")
+                .put("provider", "JingDong")
+                .put("stateNum", 104);
+        JSONObject unnamed = new JSONObject()
+                .put("mailNo", "351100058927")
+                .put("cpCode", "JDKD")
+                .put("provider", "JingDong");
+
+        assertFalse(ExpressDiscoveryClient.isAccountOrderRecord(namedCarrier));
+        assertFalse(ExpressDiscoveryClient.isAccountOrderRecord(unnamed));
+        assertNull(ExpressDiscoveryClient.parseAccountOrder(namedCarrier));
+        assertEquals("351100058926",
+                ExpressDiscoveryClient.parseExpress(namedCarrier, "", "").waybill);
     }
 
     @Test
@@ -495,10 +548,73 @@ public final class ExpressDiscoveryClientTest {
         JSONObject record = ExpressDiscoveryClient.detailRecord(summary, item.phone);
 
         assertEquals("JDORDER00000001", record.getString("waybill"));
-        assertEquals("JD", record.getString("companyCode"));
+        // An account order asks with the order's own upstream identity (audit L4, iOS detailRecord):
+        // JDKD / 京东商品快递, whatever its stored carrier code; this used to send the stored "JD".
+        assertEquals("JDKD", record.getString("companyCode"));
+        assertEquals("京东商品快递", record.getString("name"));
         assertEquals("JingDong", record.getString("provider"));
         assertEquals(103, record.getInt("stateNumber"));
         assertEquals("13800138000", record.getString("phone"));
+    }
+
+    /**
+     * 审计 L4（用户 2026-09-25 采纳）：12 位换货单落库后公司名被承运商表改写成「京东快递」，按件请求仍要用订单自己的
+     * 身份（JDKD / 京东商品快递 / JingDong），上游才按订单认它。
+     */
+    @Test
+    public void aStoredExchangeOrderIsAskedForWithTheOrdersOwnIdentity() throws Exception {
+        ExpressItem stored = new ExpressItem(
+                1L, "13800138000", "351100058925", "JDKD", "京东快递",
+                StatusSemantic.ORDERED, "已下单", "", "2026-09-23 16:16:35",
+                "[]", "", "I5-JD", "", 1L, 2L, "I5-JD", "", "", "", true,
+                "", "", "", "JingDong");
+        assertTrue(stored.isAccountOrder());
+
+        JSONObject record = ExpressDiscoveryClient.detailRecord(
+                ExpressDiscoveryClient.itemSummary(stored), stored.phone);
+
+        assertEquals("351100058925", record.getString("waybill"));
+        assertEquals("JDKD", record.getString("companyCode"));
+        assertEquals("京东商品快递", record.getString("name"));
+        assertEquals("JingDong", record.getString("provider"));
+        assertTrue(ExpressDiscoveryClient.isAccountOrderRecord(
+                ExpressDiscoveryClient.itemSummary(stored)));
+
+        // Its own detail answer reads as the order even when the answer names a carrier.
+        JSONObject answer = new JSONObject().put("mailNo", "351100058925").put("cpCode", "JDKD")
+                .put("name", "京东快递").put("provider", "JingDong").put("stateNum", 103)
+                .put("details", new JSONArray().put(new JSONObject()
+                        .put("time", "2026-09-23 16:16:35").put("desc", "您的订单已出库")));
+        assertNull(ExpressDiscoveryClient.parseAccountOrder(answer));
+        ExpressQueryResult order = ExpressDiscoveryClient.parseAccountOrder(answer, true);
+        assertNotNull(order);
+        assertEquals("351100058925", order.waybill);
+        assertEquals("您的订单已出库", order.latestDetail);
+    }
+
+    /**
+     * 审计 D2（用户 2026-09-25 采纳；查不到用户要求过这条过滤）：京东订单行不再丢掉只写着状态词的节点（已签收、运输中），
+     * 它们照常进轨迹；空行、「快递状态已更新」占位与来源报错行照旧不进。
+     */
+    @Test
+    public void anOrderNodeThatReadsJustAStatusWordIsKept() throws Exception {
+        JSONObject order = new JSONObject().put("mailNo", "3610448002878207").put("cpCode", "JDKD")
+                .put("name", "京东商品快递").put("provider", "JingDong").put("stateNum", 107)
+                .put("details", new JSONArray()
+                        .put(new JSONObject().put("time", "2026-09-20 12:00:00").put("desc", "已签收"))
+                        .put(new JSONObject().put("time", "2026-09-20 11:00:00").put("desc", "快递状态已更新"))
+                        .put(new JSONObject().put("time", "2026-09-20 10:30:00").put("desc", "查无结果"))
+                        .put(new JSONObject().put("time", "2026-09-20 10:00:00").put("desc", "运输中"))
+                        .put(new JSONObject().put("time", "2026-09-19 10:00:00").put("desc", "您的订单已出库")));
+
+        ExpressQueryResult parsed = ExpressDiscoveryClient.parseAccountOrder(order);
+
+        java.util.List<me.pipi.deliveries.model.ExpressTimeline.Track> nodes =
+                me.pipi.deliveries.model.ExpressTimeline.parse(parsed.tracksJson, "", "");
+        assertEquals(3, nodes.size());
+        assertEquals("已签收", nodes.get(0).detail);
+        assertEquals("运输中", nodes.get(1).detail);
+        assertEquals("您的订单已出库", nodes.get(2).detail);
     }
 
     @Test
@@ -636,10 +752,12 @@ public final class ExpressDiscoveryClientTest {
     public void trustedSignatureStopsBackgroundQueriesRegardlessOfSignatureOrCacheAge() {
         long now = java.time.Instant.parse("2026-09-08T12:00:00Z").toEpochMilli();
         long hour = 60L * 60L * 1000L;
+        long signedAt = java.time.Instant.parse("2026-09-02T10:33:00Z").toEpochMilli();
         ExpressItem completed = new ExpressItem(
                 9L, "13800138000", "JD0000000000009", "JD", "京东快递",
                 StatusSemantic.COMPLETED, "已签收", "您的快件已签收，签收人：本人",
-                "2026-09-02 18:33:00", "[]", "", "interface5", "");
+                "2026-09-02 18:33:00", "[]", "", "interface5", "", signedAt, signedAt,
+                "interface5", "");
         assertFalse(ExpressDiscoveryClient.shouldQueryDetails(
                 "unchanged", "unchanged", completed, now - 7L * hour, now, true));
         assertFalse(ExpressDiscoveryClient.shouldQueryDetails(
@@ -651,6 +769,13 @@ public final class ExpressDiscoveryClientTest {
                 StatusSemantic.COMPLETED, "已签收", "已签收", "", "[]", "", "interface5", "");
         assertTrue(ExpressDiscoveryClient.shouldQueryDetails(
                 "changed", "unchanged", unknownTime, now - 7L * hour, now, false));
+        // Audit D10: the 签收 text of a headline with no status time is no trusted signature.
+        ExpressItem textOnly = new ExpressItem(
+                9L, "13800138000", "JD0000000000009", "JD", "京东快递",
+                StatusSemantic.COMPLETED, "已签收", "您的快件已签收，签收人：本人",
+                "2026-09-02 18:33:00", "[]", "", "interface5", "");
+        assertTrue(ExpressDiscoveryClient.shouldQueryDetails(
+                "changed", "unchanged", textOnly, now - 7L * hour, now, false));
     }
 
     @Test

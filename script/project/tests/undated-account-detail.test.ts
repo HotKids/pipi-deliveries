@@ -4,7 +4,7 @@ import { memory } from "./state-storage-mock";
 import type { Shipment, TimelinePackage } from "../models";
 import { emptyState, saveState } from "../services/storage";
 import {
-  applySameSourceTimeline, needsDetailEntryQuery, selectShipmentTimeline,
+  applySameSourceTimeline, FORCED_COMPLETION_REFRESH_WINDOW_MS, needsDetailEntryQuery, selectShipmentTimeline,
   shipmentDetailIncompleteReason, shipmentDetailCandidateEvidence,
 } from "../services/shipment-policy";
 import { runShipmentRefreshForTesting } from "../services/sync";
@@ -59,9 +59,14 @@ test("dated completion still freezes while forced completion stays authoritative
   assert.equal(shipmentDetailIncompleteReason(dated), null);
   assert.equal(shouldRefreshShipment(dated, NOW), false);
   assert.equal(needsDetailEntryQuery(dated), false);
-  const forced = { ...row, forcedCompletedAtMs: NOW };
+  // 用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「点击后满 3 天也冻结」「iOS 右滑签收一起改」：
+  // 右滑签收展示照旧是已签收；满 72 小时才硬冻结，之前打开详情与没签收的同一行一样查（这一行缺可信完成时间）。
+  const forced = { ...row, forcedCompletedAtMs: NOW - FORCED_COMPLETION_REFRESH_WINDOW_MS };
   assert.equal(selectShipmentTimeline(forced).semantic, "COMPLETED");
   assert.equal(needsDetailEntryQuery(forced), false);
+  const fresh = { ...row, forcedCompletedAtMs: NOW };
+  assert.equal(selectShipmentTimeline(fresh).semantic, "COMPLETED");
+  assert.equal(needsDetailEntryQuery(fresh), needsDetailEntryQuery(row));
 });
 
 test("entry and pull reach their original providers without a terminal timestamp", async () => {

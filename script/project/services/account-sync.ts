@@ -15,6 +15,8 @@ import { AccountApi } from "./account-api";
 import { loadAccountIdentity } from "./account-identity";
 import type { AccountParcelDto } from "./account-parser";
 import {
+  JING_DONG_ACCOUNT_CP_CODE,
+  JING_DONG_ACCOUNT_NAME,
   matchBoundPhone,
   normalizePhoneEvidence,
   parseAccountSyncResult,
@@ -47,10 +49,20 @@ import { projectedCarrierPresentation } from "./carrier-presentation";
 import { accountOrderTextIdentity } from "./account-order-text-identity";
 import { displayWaybill } from "./shipment-policy";
 import {
+  accountParcelClassifyAnchor,
   directAccountCarrierPresentation,
   normalizeAccountParcelCarrier,
   type AccountCarrierNormalizationOptions,
 } from "./account-carrier-normalization";
+import {
+  cachedCarrierRecognition,
+  CarrierRecognitionBudget,
+  carrierRecognitionExhausted,
+  recognizeNonSyncCarrier,
+  truncatedCarrierRecognitionLast,
+} from "./carrier-recognition";
+import { activeCarrierTableVersion } from "./carrier-query";
+import type { CarrierNormalization } from "./carrier-normalization";
 
 export type AccountParcelFetchResult = Readonly<{
   parcels: readonly AccountParcelDto[];
@@ -58,13 +70,15 @@ export type AccountParcelFetchResult = Readonly<{
   rejectedRecords: number;
 }>;
 
-function accountApi(deadlineAtMs?: number, signal?: AbortSignal, onQueryAttempted?: (authorized: boolean) => void): AccountApi {
+function accountApi(deadlineAtMs?: number, signal?: AbortSignal, onQueryAttempted?: (authorized: boolean) => void,
+  beforeQuery?: () => void): AccountApi {
   return new AccountApi((route, payload, timeoutMs) =>
     postGateway(route, payload, {
       timeoutMs: remainingTimeoutMs(deadlineAtMs, timeoutMs),
       deadlineAtMs,
       signal,
       onQueryAttempted,
+      beforeQuery,
     }),
   );
 }
@@ -73,6 +87,10 @@ function phones(bindings: readonly AccountBinding[], source: BindingSource): str
   return bindings
     .filter((binding) => binding.source === source)
     .map((binding) => binding.phone);
+}
+
+function recognitionInterrupted(error: unknown, signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted || (error instanceof Error && error.name === "AbortError"));
 }
 
 /** Keeps display-only carrier recognition from failing account data retrieval. */
@@ -86,16 +104,121 @@ export async function normalizeAccountParcelCarrierBestEffort(
     if (options.signal?.aborted) throw new OperationTimeoutError();
     return normalized;
   } catch (error) {
-    if (
-      options.signal?.aborted ||
-      (error instanceof Error && error.name === "AbortError")
-    ) throw error;
+    if (recognitionInterrupted(error, options.signal)) throw error;
     if (
       error instanceof GatewayError ||
       error instanceof OperationTimeoutError
-    ) return parcel;
+    ) return directAccountCarrierPresentation(parcel);
     throw error;
   }
+}
+
+/**
+ * The carrier waybill an unprojected order's own feed text names (independent identity extraction,
+ * 2026-09-10); "" when the parcel is not such an order or its text names none.
+ */
+export function accountOrderTextWaybill(parcel: AccountParcelDto): string {
+  if (parcel.source !== "interface5" || !parcel.accountOrder ||
+      normalizeWaybill(parcel.waybill) !== normalizeWaybill(parcel.ownerId)) return "";
+  return (parcel.textIdentity || accountOrderTextIdentity(parcel.tracks))?.waybill || "";
+}
+
+function textWaybillWithCarrier(
+  parcel: AccountParcelDto,
+  waybill: string,
+  carrier: Readonly<{ normalization: CarrierNormalization | null; displayName?: string; exhausted?: boolean }>,
+): AccountParcelDto {
+  const normalization = carrier.normalization?.isBuiltIn ? carrier.normalization : null;
+  const displayName = String(carrier.displayName || "").trim();
+  if (!normalization && !displayName) {
+    // 其余裁决 32、33（用户 2026-09-26）：识别进入终态、快递100 也没给名字——订单不再停在订单阶段，照常投影，承运商位置
+    // 填这张订单来源传回的承运商码原样（JDKD 这类，不是平台名），没传回就空着。只作显示，不当承运商码用。
+    const rawCode = String(parcel.rawCourierCode || "").trim();
+    return carrier.exhausted
+      ? { ...parcel, waybill, courierCode: "", companyName: rawCode, carrierNormalization: null }
+      : parcel;
+  }
+  return {
+    ...parcel,
+    waybill,
+    rawCourierCode: "",
+    rawCompanyName: "",
+    courierCode: normalization ? normalization.standardCode : "",
+    companyName: normalization ? normalization.displayName : displayName,
+    carrierNormalization: normalization || {
+      standardCode: "",
+      displayName,
+      kuaidi100Code: "",
+      isBuiltIn: false,
+      tableVersion: activeCarrierTableVersion(),
+    },
+  };
+}
+
+/**
+ * Applies the carrier waybill that an unprojected order's own feed text names (independent
+ * identity extraction, 2026-09-10). Only the waybill is read (user decision 2026-09-26, 其余裁决 7):
+ * the order-stage raw tuple (JDKD / 京东商品快递) and the carrier the sentence names are both no
+ * evidence for that waybill, so its carrier comes from recognition like any real waybill.
+ *
+ * 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：识别链（内置表 → 快递100 → 付费快递鸟）已经为这张运单
+ * 给出承运商（识别缓存里有）才把运单号亮出来；还没对上时订单保持原样（仍是「京东购物」那一行），文案每轮随 feed
+ * 回来，之后各轮识别出来再投影。
+ */
+export function withAccountOrderTextWaybill(parcel: AccountParcelDto): AccountParcelDto {
+  const waybill = accountOrderTextWaybill(parcel);
+  if (!waybill) return parcel;
+  const cached = cachedCarrierRecognition(waybill);
+  if (cached) return textWaybillWithCarrier(parcel, waybill, cached);
+  return carrierRecognitionExhausted(waybill)
+    ? textWaybillWithCarrier(parcel, waybill, { normalization: null, exhausted: true })
+    : parcel;
+}
+
+/**
+ * T23: runs the recognizer for the carrier waybill an unprojected order's feed text names and applies it only
+ * when a carrier matched. Best effort like the rest of carrier recognition; the order is unchanged otherwise.
+ */
+export async function withRecognizedAccountOrderTextWaybill(
+  parcel: AccountParcelDto,
+  options: AccountCarrierNormalizationOptions = {},
+): Promise<AccountParcelDto> {
+  const waybill = accountOrderTextWaybill(parcel);
+  if (!waybill) return parcel;
+  if (options.signal?.aborted) throw new OperationTimeoutError();
+  try {
+    const recognition = await (options.recognize || recognizeNonSyncCarrier)(
+      waybill,
+      { deadlineAtMs: options.deadlineAtMs, signal: options.signal, budget: options.budget,
+        // 优化 5 (user 2026-10-03): the order row's first anchor goes with the paid stage.
+        parcelAnchorAtMs: accountParcelClassifyAnchor(parcel) },
+    );
+    if (options.signal?.aborted) throw new OperationTimeoutError();
+    return textWaybillWithCarrier(parcel, waybill, recognition);
+  } catch (error) {
+    if (recognitionInterrupted(error, options.signal)) throw error;
+    if (error instanceof GatewayError || error instanceof OperationTimeoutError) {
+      return withAccountOrderTextWaybill(parcel);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Carrier identity for an account parcel: the built-in table, then the free Kuaidi100 recognition and
+ * the existing paid fallback. Every account parcel with a real waybill takes this path (audit C2,
+ * adopted 2026-09-25), so R-20 — a JD platform label on a non-JD waybill is no carrier evidence —
+ * applies to every JD business source, not only to orders (user decision 2026-09-26, Pipi 十二条 2).
+ * An order's feed-text waybill is recognised first and shown only with its carrier (T23, 2026-09-26).
+ */
+export async function prepareAccountParcelCarrier(
+  parcel: AccountParcelDto,
+  options: AccountCarrierNormalizationOptions = {},
+): Promise<AccountParcelDto> {
+  return normalizeAccountParcelCarrierBestEffort(
+    await withRecognizedAccountOrderTextWaybill(parcel, options),
+    options,
+  );
 }
 
 export async function sendAccountCode(
@@ -134,8 +257,6 @@ export async function verifyAccountBinding(
  * 承运商（极兔、顺丰……）只属于展示层，拿它去问小米，小米不认这一行。
  */
 const JING_DONG_ACCOUNT_PROVIDER = "JingDong";
-const JING_DONG_ACCOUNT_CP_CODE = "JDKD";
-const JING_DONG_ACCOUNT_NAME = "京东商品快递";
 
 function detailRecord(
   parcel: AccountParcelDto,
@@ -161,6 +282,11 @@ export async function fetchAccountParcels(
   bindings: readonly AccountBinding[],
   requestDeadlineAtMs?: number,
   signal?: AbortSignal,
+  /**
+   * The sync round's recognition wait, shared with the round's later passes (用户 2026-09-27 第二轮清单：识别总时长三端
+   * 对齐 30 秒). The list request itself spends none of it.
+   */
+  recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
 ): Promise<AccountParcelFetchResult> {
   requireScriptSource(source);
   assertWithinDeadline(requestDeadlineAtMs);
@@ -174,14 +300,19 @@ export async function fetchAccountParcels(
     phones: boundPhones,
   });
   const parsed = parseAccountSyncResult(SCRIPT_BINDING_SOURCE, response);
-  const parcels: AccountParcelDto[] = [];
-  for (const parcel of parsed.parcels) {
-    parcels.push(parcel.accountOrder
-      ? await normalizeAccountParcelCarrierBestEffort(parcel, {
-          deadlineAtMs: requestDeadlineAtMs,
-          signal,
-        })
-      : parcel);
+  const parcels: AccountParcelDto[] = [...parsed.parcels];
+  // 用户 2026-09-27 第二轮清单：截断排后。A waybill cut off in an earlier round is recognised after the others;
+  // the list keeps its own order.
+  const recognitionOrder = truncatedCarrierRecognitionLast(
+    parsed.parcels.map((_parcel, index) => index),
+    (index) => [accountOrderTextWaybill(parsed.parcels[index]), parsed.parcels[index].waybill],
+  );
+  for (const index of recognitionOrder) {
+    parcels[index] = await prepareAccountParcelCarrier(parsed.parcels[index], {
+      deadlineAtMs: requestDeadlineAtMs,
+      signal,
+      budget: recognitionBudget,
+    });
   }
   return {
     parcels,
@@ -222,14 +353,14 @@ export async function refreshAccountParcel(
   deadlineAtMs?: number,
   signal?: AbortSignal,
   onQueryAttempted?: (authorized: boolean) => void,
-  options: Readonly<{ recognizeCarrier?: boolean }> = {},
+  options: Readonly<{ recognizeCarrier?: boolean; beforeQuery?: () => void }> = {},
 ): Promise<AccountParcelDto | null> {
   const source = shipment.identity.bindingSource;
   if (!source || shipment.identity.manuallyAdded) return null;
   requireScriptSource(source);
   if (!shipment.accountRecord) return null;
   assertWithinDeadline(deadlineAtMs);
-  const api = accountApi(deadlineAtMs, signal, onQueryAttempted);
+  const api = accountApi(deadlineAtMs, signal, onQueryAttempted, options.beforeQuery);
   const response = await api.timeline({
     source: SCRIPT_BINDING_SOURCE,
     mode: "detail",
@@ -277,10 +408,10 @@ export async function refreshAccountParcel(
     ? { ...accountParcelWithExistingProjection(orderParcel, [shipment]),
         projectionTimeline: orderParcel.projectionTimeline }
     : orderParcel;
-  return resolved && shipment.identity.accountOrder
+  return resolved
     ? options.recognizeCarrier === false
-      ? directAccountCarrierPresentation(resolved)
-      : normalizeAccountParcelCarrierBestEffort(resolved, { deadlineAtMs, signal })
+      ? directAccountCarrierPresentation(withAccountOrderTextWaybill(resolved))
+      : prepareAccountParcelCarrier(resolved, { deadlineAtMs, signal })
     : resolved;
 }
 
@@ -423,23 +554,16 @@ export function accountParcelWithExistingProjection(
   );
   const projectedIdentity = projectedAuthority?.identity;
   const projectedWaybill = normalizedProjectedWaybill(projectedIdentity);
-    // Feed text naming the same carrier waybill is fresh carrier evidence for an already
-  // projected owner and repairs an identity that was labelled from the order stage.
-  const textIdentity = parcel.textIdentity;
-  const textCarrier = textIdentity && projectedWaybill &&
-      normalizeWaybill(textIdentity.waybill) === projectedWaybill &&
-      textIdentity.courierCode
-    ? textIdentity
-    : null;
+  // Feed text names only the waybill (其余裁决 7, 2026-09-26): it no longer supplies or repairs a carrier.
+  // A projection that already names its carrier without a code (a Kuaidi100 off-table name, or the raw code shown after
+  // an exhausted recognition; 其余裁决 29、32) keeps it: the order's own platform code (JDKD) is no carrier code for it.
   return projectedWaybill
     ? {
         ...parcel,
         waybill: projectedWaybill,
-        courierCode: textCarrier?.courierCode ||
-          projectedIdentity?.courierCode || parcel.courierCode,
-        companyName: textCarrier?.companyName ||
-          projectedIdentity?.companyName || parcel.companyName,
-        ...(textCarrier ? { rawCourierCode: "", carrierNormalization: null } : {}),
+        courierCode: projectedIdentity?.courierCode ||
+          (String(projectedIdentity?.companyName || "").trim() ? "" : parcel.courierCode),
+        companyName: projectedIdentity?.companyName || parcel.companyName,
         projectionTimeline:
           parcel.projectionTimeline || projectedAuthority?.sourceTimeline || null,
       }
@@ -479,19 +603,62 @@ function withAccountPresentation(
   };
 }
 
+/**
+ * 列表这一行的结构化状态，取在 parcelToShipment 把未投影订单的「已揽收」压成「已下单」之前（压完以后行上
+ * 只剩 ORDERED，也不再挂 normalizedStatus）。首页投影门问的是承运商揽收了没有，要看压之前的这一个
+ * （2026-09-24）。结构化的判据与 parcelToShipment 的 structuredStatus 相同；不是结构化的返回 null。
+ */
+export function accountParcelStructuredSemantic(parcel: AccountParcelDto): StatusSemantic | null {
+  if (parcel.normalizedStatus) {
+    return parcel.normalizedStatus.structured ? parcel.normalizedStatus.semantic : null;
+  }
+  const semantic = parcel.semantic;
+  const coded = parcel.source === "interface5"
+    ? semanticFromAccountState(parcel.sourceStateCode, "")
+    : semanticFromStored(parcel.sourceStateCode, "");
+  return semantic !== "UNKNOWN" && semantic === coded ? semantic : null;
+}
+
+const STORED_LIST_SEMANTICS = new Set<StatusSemantic>([
+  "CANCELLED", "DANGER", "ORDERED", "SHIPPED", "PICKED", "TRANSIT", "DELIVERY", "WAITING_PICKUP", "COMPLETED",
+]);
+
+/** Records the list row's pre-clamp structured status on the row it produced (audit L8). */
+export function withListStructuredSemantic(shipment: Shipment, parcel: AccountParcelDto): Shipment {
+  const semantic = parcel.source === "interface5" ? accountParcelStructuredSemantic(parcel) : null;
+  if ((shipment.listStructuredSemantic ?? null) === semantic) return shipment;
+  const next = { ...shipment };
+  if (semantic) next.listStructuredSemantic = semantic;
+  else delete next.listStructuredSemantic;
+  return next;
+}
+
+/**
+ * 存盘行的列表结构化状态（2026-09-24，首页存盘行投影用）。存盘时未投影订单行的「已揽收」已被压成「已下单」、
+ * normalizedStatus 也不再挂，从行上重建的 parcel 交给 accountParcelStructuredSemantic 只会得到 null；列表那一行
+ * 原始的接口 5 状态码还在 accountRecord.stateNumber 里（101…111，与 Worker 小米映射同一张表：103 揽收、
+ * 104 运输、105 派送、106 待取件）。不是接口 5、没有记录或状态码不认识时返回 null。
+ */
+export function storedAccountListStructuredSemantic(shipment: Shipment): StatusSemantic | null {
+  const record = shipment.accountRecord;
+  if (!record || shipment.identity.bindingSource !== "interface5") return null;
+  // The Worker's own pre-clamp status, stored by the list sync (audit L8): it carries the Worker's rules
+  // that the raw state code alone does not.
+  const stored = shipment.listStructuredSemantic;
+  if (stored && STORED_LIST_SEMANTICS.has(stored)) return stored;
+  const code = Number(record.stateNumber);
+  if (!Number.isInteger(code) || code <= 0) return null;
+  const semantic = semanticFromAccountState(code, "");
+  return semantic === "UNKNOWN" ? null : semantic;
+}
+
 export function parcelToShipment(
   parcel: AccountParcelDto,
   boundPhones: readonly string[],
   now = Date.now(),
 ): Shipment | null {
   // Identity extraction is independent of shipment status and history completeness.
-  if (parcel.source === "interface5" && parcel.accountOrder &&
-      normalizeWaybill(parcel.waybill) === normalizeWaybill(parcel.ownerId)) {
-    const identity = parcel.textIdentity || accountOrderTextIdentity(parcel.tracks);
-    if (identity) parcel = { ...parcel, waybill: identity.waybill,
-      courierCode: identity.courierCode, companyName: identity.companyName,
-      rawCourierCode: "", rawCompanyName: identity.companyName, carrierNormalization: null };
-  }
+  parcel = withAccountOrderTextWaybill(parcel);
   const ownerId = normalizeWaybill(parcel.ownerId);
   const displayWaybill = normalizeWaybill(parcel.waybill);
   if (!ownerId || !displayWaybill) return null;

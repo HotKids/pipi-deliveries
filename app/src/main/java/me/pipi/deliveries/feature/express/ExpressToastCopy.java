@@ -16,7 +16,7 @@ final class ExpressToastCopy {
     static final String MANUAL_QUERY_SUCCEEDED = "轨迹加载成功";
 
     /** 手动查件各级都跑完但没有可用轨迹。 */
-    static final String MANUAL_QUERY_NO_TRACK = "暂未获取到可用轨迹";
+    static final String MANUAL_QUERY_NO_TRACK = "暂未查询到或未揽收";
 
     /** 手动查件失败（非校验、非超时）；上游文案不外露。 */
     static final String MANUAL_QUERY_FAILED = "查询失败，请稍后重试";
@@ -25,7 +25,7 @@ final class ExpressToastCopy {
     static final String MANUAL_QUERY_TIMEOUT = "请求超时，请稍后重试";
 
     /** A visible manual query needs a usable parcel phone suffix. */
-    static final String MANUAL_PHONE_TAIL_REQUIRED = "该运单需要手机号后四位，请重新添加并填写";
+    static final String MANUAL_PHONE_TAIL_REQUIRED = "该快递需要验证手机号后 4 位，请重新添加并填写";
 
     /** A manual query was submitted for a waybill the list already tracks; no provider runs. */
     static final String ALREADY_IN_LIST = "该快递已在列表中";
@@ -49,13 +49,13 @@ final class ExpressToastCopy {
     static final String DETAIL_UP_TO_DATE = "当前轨迹已是最新";
 
     /** 详情下拉：跑完了仍没有可用轨迹。 */
-    static final String DETAIL_NO_TRACK = "暂未获取到可用轨迹";
+    static final String DETAIL_NO_TRACK = "暂未查询到或未揽收";
 
     /** 详情下拉抛错且页面上没有任何轨迹可看；有缓存可看时静默。 */
     static final String DETAIL_REFRESH_FAILED = "轨迹更新失败，请稍后重试";
 
     /** JD union page answered with risk control (HTTP 403 / "刷新几遍还不行"); the order rests 60 min. */
-    static final String JD_RISK_CONTROL = "操作过于频繁，请稍候再试";
+    static final String JD_RISK_CONTROL = "操作过于频繁，请稍后再试";
 
     /** 物流 H5 页（菜鸟半屏、K100 页）打不开。 */
     static final String H5_UNAVAILABLE = "暂时无法加载详情";

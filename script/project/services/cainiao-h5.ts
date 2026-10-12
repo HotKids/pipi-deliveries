@@ -37,6 +37,7 @@ export type CainiaoH5TimelineInput = Readonly<{
   successAtMs?: number;
   signal?: AbortSignal;
   onQueryAttempted?: (authorized: boolean) => void;
+  beforeQuery?: () => void;
 }>;
 
 export type CainiaoH5Diagnostics = Readonly<{
@@ -403,6 +404,7 @@ export async function scrapeCainiaoH5Timeline(
   };
   try {
     assertCainiaoH5Active(input.signal);
+    input.beforeQuery?.();
     try {
       requestStarted = true;
       void controller.loadURL(input.routeUrl).then(

@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "about": "Audit D2/X4 (2026-09-25). Compare lines after removing all whitespace; errorPrefixes ignore letter case. `kept`: the Worker keeps the line in its data (only error lines are dropped there). `displayed`: whether a client may show it as a timeline node or headline. Update summaries (「快递状态已更新」, with or without 「，点击查看」 and the trailing >>) are the provider's placeholder for an update it did not show; they are never displayed and clients show the real nodes instead (user instruction 2026-09-12). The transit-time reminder (「您有包裹运输时效变化，请留意取件安排」, either comma, with or without the trailing >>; `transitTimeReminderPattern`) is a placeholder of the same class (user 2026-09-28, joined this vocabulary on 2026-10-01).",
+  "vocabulary": {
+    "schemaVersion": 1,
+    "errorPrefixes": [
+      "noresult",
+      "mismatchingcode",
+      "验证码错误",
+      "查无结果"
+    ],
+    "errorLines": [
+      "暂无状态",
+      "暂无物流信息",
+      "暂无物流动态"
+    ],
+    "updateSummaryPattern": "^快递状态已更新(?:[，,]点击查看(?:>>)?)?$",
+    "transitTimeReminderPattern": "^您有包裹运输时效变化[，,]请留意取件安排(?:>>)?$"
+  },
+  "cases": [
+    {
+      "line": "查无结果",
+      "provenance": "provider error prefix (Worker/Pipi/iOS/Lite error lists)",
+      "class": "error",
+      "kept": false,
+      "displayed": false
+    },
+    {
+      "line": "查无结果，请检查运单号",
+      "provenance": "provider error prefix (repository tests)",
+      "class": "error",
+      "kept": false,
+      "displayed": false
+    },
+    {
+      "line": "noresult",
+      "provenance": "provider error prefix (Worker/Pipi/iOS error lists)",
+      "class": "error",
+      "kept": false,
+      "displayed": false
+    },
+    {
+      "line": "mismatchingcode",
+      "provenance": "provider error prefix (Worker/Pipi/iOS error lists)",
+      "class": "error",
+      "kept": false,
+      "displayed": false
+    },
+    {
+      "line": "验证码错误，请重试",
+      "provenance": "provider error prefix (Worker express-status.test.js)",
+      "class": "error",
+      "kept": false,
+      "displayed": false
+    },
+    {
+      "line": "暂无状态",
+      "provenance": "provider error line (Worker/Pipi/iOS error lists)",
+      "class": "error",
+      "kept": false,
+      "displayed": false
+    },
+    {
+      "line": "暂无物流信息",
+      "provenance": "provider error line (Worker express_status_regressions.test.js)",
+      "class": "error",
+      "kept": false,
+      "displayed": false
+    },
+    {
+      "line": "暂无物流动态",
+      "provenance": "provider error line (Worker/Pipi/iOS error lists)",
+      "class": "error",
+      "kept": false,
+      "displayed": false
+    },
+    {
+      "line": "快递状态已更新，点击查看>>",
+      "provenance": "Xiaomi account update summary (iOS/Lite/Pipi lists)",
+      "class": "updateSummary",
+      "kept": true,
+      "displayed": false
+    },
+    {
+      "line": "快递状态已更新,点击查看>>",
+      "provenance": "Xiaomi account update summary, ASCII comma (iOS/Lite lists)",
+      "class": "updateSummary",
+      "kept": true,
+      "displayed": false
+    },
+    {
+      "line": "快递状态已更新",
+      "provenance": "Xiaomi account update summary, short form (iOS/Lite lists)",
+      "class": "updateSummary",
+      "kept": true,
+      "displayed": false
+    },
+    {
+      "line": "快递状态已更新，点击查看",
+      "provenance": "Xiaomi getList detail without >> (kdbot docs/xiaomi-express.md)",
+      "class": "updateSummary",
+      "kept": true,
+      "displayed": false
+    },
+    {
+      "line": "您有包裹运输时效变化，请留意取件安排 >>",
+      "provenance": "transit-time reminder (Pipi interface 2 headline, docs/PIPI_V3_PICKUP_TAKEOVER_TODO.md; user 2026-09-28)",
+      "class": "updateSummary",
+      "kept": true,
+      "displayed": false
+    },
+    {
+      "line": "您有包裹运输时效变化，请留意取件安排",
+      "provenance": "transit-time reminder without >> (Pipi/iOS/Lite/kdbot lists)",
+      "class": "updateSummary",
+      "kept": true,
+      "displayed": false
+    },
+    {
+      "line": "您有包裹运输时效变化,请留意取件安排 >>",
+      "provenance": "transit-time reminder, ASCII comma (Pipi/iOS/Lite/kdbot lists)",
+      "class": "updateSummary",
+      "kept": true,
+      "displayed": false
+    },
+    {
+      "line": "您有包裹运输时效变化,请留意取件安排",
+      "provenance": "transit-time reminder, ASCII comma without >> (Pipi/iOS/Lite/kdbot lists)",
+      "class": "updateSummary",
+      "kept": true,
+      "displayed": false
+    },
+    {
+      "line": "预计9月4日(周五)送达",
+      "provenance": "forecast note: an ordinary event since 2026-09-04 (AGENTS §9)",
+      "class": "event",
+      "kept": true,
+      "displayed": true
+    },
+    {
+      "line": "快件已由收件人取出",
+      "provenance": "carrier event (iOS contracts status-packages.v1.json)",
+      "class": "event",
+      "kept": true,
+      "displayed": true
+    },
+    {
+      "line": "订单已完成配送，感谢您选择京东购物",
+      "provenance": "JD order text (AGENTS §9 start vocabulary)",
+      "class": "event",
+      "kept": true,
+      "displayed": true
+    },
+    {
+      "line": "您的订单已经打印完成",
+      "provenance": "Samsung JD detail (kdbot tests/check_samsung.py)",
+      "class": "event",
+      "kept": true,
+      "displayed": true
+    }
+  ]
+}

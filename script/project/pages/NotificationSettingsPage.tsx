@@ -82,7 +82,7 @@ export function NotificationSettingsPage(props: {
       setNotice("通知设置已保存");
       props.onChanged?.(saved.length);
     } catch {
-      setNotice("保存失败，请稍后重试");
+      setNotice("保存失败，请重试");
     }
   }
 

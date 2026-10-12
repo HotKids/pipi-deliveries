@@ -10,12 +10,10 @@ const picked = {
 };
 
 // Newest-first track order: the shipped message is older than the pickup message.
+// User decision 2026-09-26 (其余裁决 7): the text names only the waybill; the carrier the sentence
+// names (极兔速递) is not read — it comes from the built-in table, K100 recognition and paid fallback.
 const identity = accountOrderTextIdentity([picked, shipped, { detail: "最快9月3日发货" }]);
-assert.deepEqual(identity, {
-  waybill: "JT4006839564547",
-  courierCode: "JTSD",
-  companyName: "极兔速递",
-});
+assert.deepEqual(identity, { waybill: "JT4006839564547" });
 
 // JD-fulfilled orders never name a waybill in the text: the H5 projection stays responsible.
 assert.equal(
@@ -26,10 +24,10 @@ assert.equal(
   null,
 );
 
-// Unknown carrier names keep the raw name so carrier recognition can still resolve it later.
+// Whatever carrier the sentence names, known or not, only the waybill is taken.
 assert.deepEqual(
   accountOrderTextIdentity([{ detail: "待出库交付某某物流，运单号为 AB12345678" }]),
-  { waybill: "AB12345678", courierCode: "", companyName: "某某物流" },
+  { waybill: "AB12345678" },
 );
 
 // Malformed or absent numbers are ignored.

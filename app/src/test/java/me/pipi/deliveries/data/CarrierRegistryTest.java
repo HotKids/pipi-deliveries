@@ -4,6 +4,9 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import me.pipi.deliveries.BuildConfig;
+import me.pipi.deliveries.SharedExpressFixtures;
+
 import org.junit.Test;
 
 public final class CarrierRegistryTest {
@@ -15,9 +18,12 @@ public final class CarrierRegistryTest {
     }
 
     @Test
-    public void finalRegistryHasExactlySeventeenEntriesAndFieldAliases() {
+    public void finalRegistryHasExactlySeventeenEntriesAndFieldAliases() throws Exception {
         assertEquals(
-                "7d2fb3795fc6858cd633d98e93000fddccb011169e0b97962e8210bad75381fa",
+                SharedExpressFixtures.load("carrier-table-validation.v1.json")
+                        .getJSONObject("https://beta.pipiassistant.app".equals(
+                                BuildConfig.EXPRESS_GATEWAY_URL) ? "base" : "formalStartupBase")
+                        .getString("version"),
                 CarrierRegistry.AUTHORITY_VERSION);
         assertEquals("embedded-transition", CarrierRegistry.AUTHORITY_SOURCE);
         assertEquals(17, CarrierRegistry.sizeForTesting());

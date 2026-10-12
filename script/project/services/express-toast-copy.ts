@@ -12,13 +12,13 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   /** 手动查件拿到带时间的轨迹。 */
   manualQuerySucceeded: "轨迹加载成功",
   /** 手动查件各级都跑完但没有可用轨迹。 */
-  manualQueryNoTrack: "暂未获取到可用轨迹",
+  manualQueryNoTrack: "暂未查询到或未揽收",
   /** 手动查件失败（非校验、非超时）；上游文案不外露。 */
   manualQueryFailed: "查询失败，请稍后重试",
   /** 手动查件超时。 */
   manualQueryTimeout: "请求超时，请稍后重试",
   /** A visible manual query still needs a valid parcel phone suffix after available candidates. */
-  manualPhoneTailRequired: "该运单需要手机号后四位，请重新添加并填写",
+  manualPhoneTailRequired: "该快递需要验证手机号后 4 位，请重新添加并填写",
   /** A manual query was submitted for a waybill the list already tracks; no provider runs. */
   alreadyInList: "该快递已在列表中",
   /** 列表下拉：全部成功。 */
@@ -34,11 +34,11 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   /** 详情下拉：跑完了但没有更新，已有可用轨迹。 */
   detailUpToDate: "当前轨迹已是最新",
   /** 详情下拉：跑完了仍没有可用轨迹。 */
-  detailNoTrack: "暂未获取到可用轨迹",
+  detailNoTrack: "暂未查询到或未揽收",
   /** 详情下拉抛错且页面上没有任何轨迹可看；有缓存可看时静默。 */
   detailRefreshFailed: "轨迹更新失败，请稍后重试",
   /** JD union page answered with risk control (HTTP 403 / "刷新几遍还不行"); the order rests 60 min. */
-  jdRiskControl: "操作过于频繁，请稍候再试",
+  jdRiskControl: "操作过于频繁，请稍后再试",
   /** 物流 H5 页（菜鸟半屏、K100 页）打不开。 */
   h5Unavailable: "暂时无法加载详情",
   /** 删除成功。 */

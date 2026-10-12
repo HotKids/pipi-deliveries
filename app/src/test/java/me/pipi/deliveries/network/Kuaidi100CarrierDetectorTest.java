@@ -37,8 +37,8 @@ public final class Kuaidi100CarrierDetectorTest {
         assertEquals(Arrays.asList("jd", "shunfeng"),
                 Kuaidi100CarrierDetector.parseCandidates(
                         new JSONObject().put("auto", values).toString()));
-        assertEquals(Collections.emptyList(),
-                Kuaidi100CarrierDetector.parseCandidates("not-json"));
+        // A body that is not JSON is no longer an empty answer but a retryable failure (audit C3,
+        // user 2026-09-25): AutoComNumFixtureTest reads the shared fixture's cases.
     }
 
     @Test

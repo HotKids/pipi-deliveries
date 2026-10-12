@@ -10,6 +10,7 @@ import {
 import type { WidgetRow, WidgetSnapshot } from "../models";
 import { statusTint, withNote } from "../services/status";
 import { CourierIcon } from "../components/CourierIcon";
+import { carrierDisplayName } from "../services/carrier-presentation";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
 import { mediumWidgetLayout, mediumWidgetPlacement } from "./layout";
 import { WidgetLineArt } from "./WidgetLineArt";
@@ -70,7 +71,7 @@ function Row(props: {
         <VStack alignment="leading" spacing={1} frame={{ maxWidth: "infinity" }}>
           <HStack spacing={5} frame={{ maxWidth: "infinity" }}>
             <Text font={15} fontWeight="semibold" lineLimit={1}>
-              {props.row.companyName} {props.row.waybillSuffix}
+              {carrierDisplayName(props.row.companyName)} {props.row.waybillSuffix}
             </Text>
             <Text
               font={10}
@@ -94,7 +95,7 @@ function Row(props: {
               font={props.detailFont}
               foregroundStyle="secondaryLabel"
             >
-              {props.row.latestDetail || "暂无物流动态"}
+              {props.row.latestDetail || "暂无物流信息"}
             </Text>
           ) : (
             <Text
@@ -102,7 +103,7 @@ function Row(props: {
               foregroundStyle="secondaryLabel"
               lineLimit={props.detailLineLimit}
             >
-              {props.row.latestDetail || "暂无物流动态"}
+              {props.row.latestDetail || "暂无物流信息"}
             </Text>
           )}
         </VStack>
@@ -162,7 +163,7 @@ export function MediumWidget(props: {
           <Link url={props.openHomeURL}>
             <HStack spacing={5} frame={{ minHeight: layout.headerHeight }}>
               <Text font={15} fontWeight="semibold">我的快递</Text>
-              <Text font={15} fontWeight="semibold">
+              <Text font={15} fontWeight="regular" foregroundStyle="secondaryLabel">
                 {snapshot.activeCount}
               </Text>
               <Image

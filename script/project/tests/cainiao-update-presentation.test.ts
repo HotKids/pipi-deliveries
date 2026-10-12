@@ -114,13 +114,47 @@ for (const desc of [GENERIC, "快递状态已更新,点击查看>>", "快递状�
   assert.equal(summaryOnly.statusEventAtMs, parseProviderTime(FRESH));
 }
 
-// This presentation rule is scoped to Cainiao; other source packages are unchanged.
+// The rule covers every source (user instruction 2026-09-12, restated 2026-09-26; this block used to
+// assert the old Cainiao-only scope): the placeholder is kept in the source package but never shown.
 for (const provider of ["JingDong", "ShunFeng"]) {
-  const incoming = packet([{ time: FRESH, desc: GENERIC }], 105, provider);
-  const other = applyAccountShipment(undefined, incoming, NOW);
-  assert.equal(other.timeline.latestDetail, GENERIC);
-  assert.equal(other.timeline.latestTimeText, FRESH);
-  assert.equal(other.timeline.tracks.length, 1);
+  const incoming = packet([
+    { time: FRESH, desc: GENERIC },
+    { time: OLD, desc: "Earlier real event" },
+  ], 105, provider);
+  const other = stored(applyAccountShipment(undefined, incoming, NOW));
+  assert.equal(other.timeline.latestDetail, "Earlier real event", provider);
+  assert.equal(other.timeline.latestTimeText, OLD, provider);
+  assert.ok(other.timeline.tracks.every(track => track.detail !== GENERIC), provider);
+  assert.ok(other.sourceTimeline?.tracks.some(track => track.detail === GENERIC), `${provider}: kept in the data`);
+}
+
+
+// User 2026-10-02「对齐 Lite」: the feed's only node is the placeholder, so the list falls back to the
+// persisted Cainiao page; an older query headline no longer replaces that page's newer node.
+{
+  const PICK = "2026-09-11 20:00:00", SORTED = "2026-09-12 01:09:00";
+  let signed = applyAccountShipment(undefined, packet([{ time: FRESH, desc: GENERIC }], 107), NOW);
+  signed = applyTargetedAccountShipment(signed, asAccountDetailObservation(signed, packet([
+    { time: SORTED, desc: "Synthetic sorting event" },
+    { time: PICK, desc: "已揽收" },
+  ], 104)), NOW);
+  const queryOnly = selectShipmentTimeline(signed);
+  assert.equal(queryOnly.latestDetail, "Synthetic sorting event", "without a page the query still heads the list");
+  const page = (tracks: { time: string; desc: string }[]) => ({ ...packet(tracks, 107).timeline,
+    provider: "cn_h5", structuredStatus: false, complete: true });
+  const withPage = stored({ ...signed, manualTimelines: [...(signed.manualTimelines || []), page([
+    { time: FRESH, desc: "Synthetic signing event" },
+    { time: SORTED, desc: "Synthetic sorting event" },
+    { time: PICK, desc: "已揽收" },
+  ])] });
+  assert.equal(withPage.timeline.latestDetail, "Synthetic signing event");
+  assert.equal(withPage.timeline.latestTimeText, FRESH);
+  assert.equal(shipmentPresentationStatus(withPage).semantic, "COMPLETED");
+  assert.equal(shipmentSelectionEvidence(withPage).headlineProvider, "cn_h5");
+  // A page that has not reached the query's event leaves the query headline in place.
+  const stalePage = selectShipmentTimeline({ ...signed, manualTimelines: [...(signed.manualTimelines || []),
+    page([{ time: PICK, desc: "已揽收" }])] });
+  assert.equal(stalePage.latestDetail, "Synthetic sorting event");
 }
 
 console.log("cainiao update presentation tests passed");

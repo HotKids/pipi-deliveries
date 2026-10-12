@@ -1,6 +1,6 @@
 import type { PendingManualQuery, Shipment } from "../models";
-import { selectShipmentDetailTimeline } from "./shipment-policy";
-import { containsTimelineStartTrack, timedTracks } from "./status";
+import { hasTimelineStartBeforeKdniao } from "./shipment-policy";
+import { timedTracks } from "./status";
 
 export type ManualPreviewOutcome = {
   shipment: Shipment | null;
@@ -15,14 +15,11 @@ export type PreparedManualPreview = {
   hasTimedResult: boolean;
 };
 
-/** An order or pickup event proves the selected history includes its starting stage. */
+/** Loading ends when a current provider's accumulated origin aligns with the latest parcel evidence. */
 export function manualPreviewNeedsDetailRefresh(
   shipment: Shipment | null,
 ): boolean {
-  if (!shipment) return true;
-  return !containsTimelineStartTrack(
-    selectShipmentDetailTimeline(shipment).tracks,
-  );
+  return !shipment || !hasTimelineStartBeforeKdniao(shipment);
 }
 
 /** Normalizes the preview; the caller commits shipment and retry state atomically. */

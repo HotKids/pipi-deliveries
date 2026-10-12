@@ -69,6 +69,163 @@ public final class ExpressHomeOrderProjectionTest {
         assertFalse(ExpressHomeOrderProjectionCapture.needsProjection(normalShipment()));
     }
 
+    /**
+     * 2026-09-24：京东列表只给最新一条「派送中」、没有揽收字样时，首页从来投影不出运单号，只能靠
+     * 详情页下拉。结构化状态已经过了揽收就该放行；已下单、已发货不算揽收，已签收的老单照旧只认文字。
+     */
+    @Test public void aStructuredPostPickupOrderIsEligibleWithoutPickupText() throws Exception {
+        assertTrue(ExpressHomeOrderProjectionCapture.needsProjection(
+                structuredOrder(StatusSemantic.DELIVERY, "您的订单正在派送中，请您准备签收")));
+        assertTrue(ExpressHomeOrderProjectionCapture.needsProjection(
+                structuredOrder(StatusSemantic.TRANSIT, "您的订单已到达【测试城东站】")));
+        assertFalse(ExpressHomeOrderProjectionCapture.needsProjection(
+                structuredOrder(StatusSemantic.ORDERED, "您提交了订单，请等待系统确认")));
+        assertFalse(ExpressHomeOrderProjectionCapture.needsProjection(
+                structuredOrder(StatusSemantic.SHIPPED, "您的订单已出库")));
+        assertFalse(ExpressHomeOrderProjectionCapture.needsProjection(
+                structuredOrder(StatusSemantic.COMPLETED, "您的订单已完成")));
+    }
+
+    /**
+     * 用户 2026-09-25 同意：首页在屏幕上时，已完成、还没运单号的订单也取一次号（真实运单号出来了就不该再停在
+     * 「京东购物 + 订单号」）；后台轮次与离屏抓取照旧只认揽收。
+     */
+    @Test public void aCompletedOrderIsProjectedOnlyFromTheHomeScreen() throws Exception {
+        ExpressItem completed = structuredOrder(StatusSemantic.COMPLETED,
+                "您的订单已完成，感谢您对京东的支持，欢迎再次光临");
+        assertTrue(ExpressHomeOrderProjectionCapture.needsProjection(completed, true));
+        assertFalse(ExpressHomeOrderProjectionCapture.needsProjection(completed, false));
+        assertSame("the Home queue offers it", completed,
+                ExpressListActivity.nextOrderProjectionCandidate(Arrays.asList(completed), new HashSet<>()));
+        assertTrue("the background round does not",
+                ExpressBackgroundOrderProjection.dueCandidates(Arrays.asList(completed), retries, NOW).isEmpty());
+        assertFalse("an off-window capture refuses it", ExpressHomeOrderProjectionCapture.offWindow(
+                context, completed, (ignored, saved) -> { }).start());
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        ExpressHomeOrderProjectionCapture onScreen = new ExpressHomeOrderProjectionCapture(
+                activity, completed, (ignored, saved) -> { });
+        try {
+            assertTrue("the Home capture starts it", onScreen.start());
+        } finally {
+            onScreen.cancel();
+        }
+    }
+
+    /** 2026-09-24：未投影订单的列表行把结构化「已揽收」压成了「已下单」，门看的是 feed 自己的 sourceSemantic。 */
+    @Test public void aStructuredPickupCountsThoughTheListShowsItAsOrdered() throws Exception {
+        withRepository("13800000924", repository -> {
+            ExpressItem picked = listedOrder(repository, "13800000924", "3630448013820001",
+                    StatusSemantic.PICKED, "2026-09-24 07:58:14", "您的订单已出库");
+            assertEquals("the list shows an unprojected pickup as ordered",
+                    StatusSemantic.ORDERED, picked.semantic);
+            assertTrue(ExpressHomeOrderProjectionCapture.structurallyPastPickup(picked));
+        });
+    }
+
+    /**
+     * 审计 L8（用户 2026-09-25 采纳）：门读的是存盘那一行降级前的 Worker 状态。feed 自己给了结构化「已揽收」，之后更新的
+     * v5_query 把列表状态接管成「运输中」，门照样认 feed 的揽收（原来接管后挂的状态与 sourceSemantic 对不上就不认，
+     * 平行文档 2026-09-24 记为已知差异）。
+     */
+    @Test public void aFeedPickupStillOpensTheHomeGateAfterAQueryTakesOverTheList() throws Exception {
+        String phone = "13800000926";
+        withRepository(phone, repository -> {
+            String order = "3630448013820003";
+            ExpressItem picked = listedOrder(repository, phone, order,
+                    StatusSemantic.PICKED, "2026-09-24 07:58:14", "您的订单已出库");
+            assertTrue(ExpressHomeOrderProjectionCapture.structurallyPastPickup(picked));
+            long queriedAt = me.pipi.deliveries.model.ExpressTimeline.parseTime("2026-09-24 09:10:00");
+            assertTrue(repository.saveInterface5Query(new ExpressQueryResult(order, "JD", "京东快递",
+                    StatusSemantic.TRANSIT, queriedAt, "2026-09-24 09:10:00", "您的订单已到达【测试城东站】",
+                    new org.json.JSONArray().put(new org.json.JSONObject()
+                            .put("time", "2026-09-24 09:10:00").put("context", "您的订单已到达【测试城东站】"))
+                            .toString(), "", phone, "v5_query", "", "", "JingDong")
+                    .withWorkerStatus(structuredStatus(StatusSemantic.TRANSIT, queriedAt)),
+                    picked, repository.bindingGeneration(phone, "interface5")));
+            ExpressItem takenOver = listed(repository, picked.rowId);
+            assertEquals("the list takes the newer query status", StatusSemantic.TRANSIT, takenOver.semantic);
+            assertTrue("the feed's own structured pickup still counts",
+                    ExpressHomeOrderProjectionCapture.structurallyPastPickup(takenOver));
+        });
+    }
+
+    /** v5_query 经 restoreAccountActivity 接管来的「运输中」不算（与 iOS jingDongOrderPastPickup 同口径）。 */
+    @Test public void aQueryStatusTakenOverByTheListDoesNotOpenTheHomeGate() throws Exception {
+        String phone = "13800000925";
+        withRepository(phone, repository -> {
+            String order = "3630448013820002";
+            ExpressItem ordered = listedOrder(repository, phone, order,
+                    StatusSemantic.ORDERED, "2026-09-24 07:58:14", "您提交了订单，请等待系统确认");
+            assertFalse(ExpressHomeOrderProjectionCapture.structurallyPastPickup(ordered));
+            long queriedAt = me.pipi.deliveries.model.ExpressTimeline.parseTime("2026-09-24 09:10:00");
+            assertTrue(repository.saveInterface5Query(new ExpressQueryResult(order, "JD", "京东快递",
+                    StatusSemantic.TRANSIT, queriedAt, "2026-09-24 09:10:00", "您的订单已到达【测试城东站】",
+                    new org.json.JSONArray().put(new org.json.JSONObject()
+                            .put("time", "2026-09-24 09:10:00").put("context", "您的订单已到达【测试城东站】"))
+                            .toString(), "", phone, "v5_query", "", "", "JingDong")
+                    .withWorkerStatus(structuredStatus(StatusSemantic.TRANSIT, queriedAt)),
+                    ordered, repository.bindingGeneration(phone, "interface5")));
+            ExpressItem takenOver = listed(repository, ordered.rowId);
+            assertEquals("the list takes the newer query status", StatusSemantic.TRANSIT, takenOver.semantic);
+            assertFalse(ExpressHomeOrderProjectionCapture.structurallyPastPickup(takenOver));
+        });
+    }
+
+    /**
+     * 首页每次 onStart、同步结束都清空「已试过」；冷却（与详情共用的京粉页冷却）没到的单，强制 v5_query 和
+     * 京粉页都不能发。
+     */
+    @Test public void aCoolingOrderIssuesNeitherTheForcedQueryNorTheUnionPage() throws Exception {
+        context.deleteDatabase(ExpressDatabase.DATABASE);
+        java.lang.reflect.Field singleton = ExpressRepository.class.getDeclaredField("instance");
+        singleton.setAccessible(true);
+        singleton.set(null, null);
+        ExpressRepository repository = ExpressRepository.get(context);
+        String phone = "13800000001";
+        repository.bindPhoneLocally(phone, "interface5");
+        repository.saveInterface5OrderSummary(new ExpressQueryResult("JDORDERHOME002", "JD", "京东购物",
+                StatusSemantic.TRANSIT, 0L, "2026-09-09 09:00:00", "已揽收",
+                "[{\"time\":\"2026-09-09 09:00:00\",\"context\":\"已揽收\"}]", "", phone,
+                "v5_query", "", "", "JingDong"), phone);
+        ExpressItem stored = repository.findByWaybill("JDORDERHOME002", "interface5");
+        assertNotNull(stored);
+        ExpressItem source = new ExpressItem(stored.rowId, phone, stored.waybill,
+                stored.courierCode, stored.companyName, stored.semantic, stored.statusDescription,
+                stored.latestDetail, stored.latestTime, stored.tracksJson, "", stored.source,
+                "", 0L, stored.updatedAt, stored.stateOwner, "", "v5", ROUTE_A, true,
+                "", "", "[]", "JingDong");
+        assertTrue(ExpressHomeOrderProjectionCapture.needsProjection(source));
+        ExpressOrderProjectionRetryStore.AttemptToken earlier =
+                retries.beginAttempt(source, System.currentTimeMillis());
+        assertNotNull(earlier);
+        retries.endAttempt(earlier);
+        QueryShadow.result = null;
+        QueryShadow.calls = 0;
+        QueryShadow.waiting = null;
+        CaptureShadow.starts = 0;
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        ExpressHomeOrderProjectionCapture capture = new ExpressHomeOrderProjectionCapture(
+                activity, source, (ignored, saved) -> { });
+        try {
+            assertFalse(capture.start());
+            Thread.sleep(50);
+            Shadows.shadowOf(Looper.getMainLooper()).idle();
+            assertEquals(0, QueryShadow.calls);
+            assertEquals(0, CaptureShadow.starts);
+            ExpressOrderProjectionRetryStore.AttemptToken lease =
+                    ExpressOrderProjectionRetryStore.acquireAttempt(source);
+            assertNotNull("a skipped start holds no lease", lease);
+            retries.endAttempt(lease);
+        } finally {
+            capture.cancel();
+            activity.finish();
+            singleton.set(null, null);
+            java.lang.reflect.Field helper = ExpressRepository.class.getDeclaredField("helper");
+            helper.setAccessible(true);
+            ((ExpressDatabase) helper.get(repository)).close();
+        }
+    }
+
     @Test public void unpickedHomeOrdersWaitWhileDetailStillAllowsIdentityCapture() {
         for (String detail : new String[]{"已下单", "正在打包", "等待揽收", "预计明天送达"}) {
             ExpressItem item = orderWithIdentity(1L, "I5-JD", "JDORDER1", "", true,
@@ -98,6 +255,37 @@ public final class ExpressHomeOrderProjectionTest {
                 Arrays.asList(first, first, second), attempted));
         assertNull(ExpressListActivity.nextOrderProjectionCandidate(
                 Arrays.asList(first, first, second), attempted));
+    }
+
+    /**
+     * Audit R10 (user 2026-09-25): 「Lite 首页取号的日志没有 trigger 和 flowId」. A Home pass logs its
+     * flow and trigger, as iOS logs its Home projection (flow home-projection-…, trigger home_projection).
+     */
+    @Test public void theHomePassNamesItsFlowAndTrigger() {
+        org.robolectric.shadows.ShadowLog.clear();
+        ExpressItem waiting = order(1L, "I5-JD", "", false, "");
+        assertFalse(ExpressHomeOrderProjectionCapture.needsProjection(waiting, true));
+        assertNull(ExpressListActivity.nextOrderProjectionCandidate(
+                Arrays.asList(waiting), new HashSet<>(), "home-projection-test"));
+        java.util.List<String> lines = org.robolectric.shadows.ShadowLog.getLogsForTag(
+                me.pipi.deliveries.network.ExpressLog.TAG).stream().map(row -> row.msg)
+                .filter(line -> line.contains(" skipReason=projection_prerequisite "))
+                .collect(java.util.stream.Collectors.toList());
+        assertEquals(lines.toString(), 1, lines.size());
+        assertTrue(lines.get(0), lines.get(0).endsWith(
+                " flowId=home-projection-test trigger=home_projection"));
+    }
+
+    /** One Home pass is one flow: the pass hands its flow to the capture it starts. */
+    @Test public void theHomePassHandsItsFlowToItsCapture() throws Exception {
+        java.nio.file.Path path = java.nio.file.Path.of(
+                "app/src/main/java/me/pipi/deliveries/feature/express/ExpressListActivity.java");
+        if (!java.nio.file.Files.isRegularFile(path)) path = java.nio.file.Path.of(
+                "src/main/java/me/pipi/deliveries/feature/express/ExpressListActivity.java");
+        String source = java.nio.file.Files.readString(path, java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(source.contains("String flowId = ExpressHomeOrderProjectionCapture.homeFlowId();"));
+        assertTrue(source.contains("items, attemptedOrderProjections, flowId)) != null) {"));
+        assertTrue(source.contains("this, candidate, this::onOrderProjectionCaptureFinished, flowId);"));
     }
 
     @Test public void releasingOrCancellingAnAttemptKeepsItsTenMinuteCooldown() {
@@ -251,7 +439,8 @@ public final class ExpressHomeOrderProjectionTest {
             ExpressItem recognized = completed[0];
             assertNotNull(recognized);
             assertEquals("JD00000005481", recognized.projectedWaybill);
-            assertEquals("京东快递", recognized.projectedCompanyName);
+            // Stored by its standard code since audit C6 (user 2026-09-25); shown by the table name.
+            assertEquals("JD", recognized.projectedCompanyName);
             assertEquals("京东快递", recognized.displayCompany());
             assertEquals("jd", recognized.displayCourierCode());
             assertEquals(stored.rowId, recognized.rowId);
@@ -400,6 +589,80 @@ public final class ExpressHomeOrderProjectionTest {
                 "2026-08-22 10:00:00", tracks, "", owner, "",
                 1L, 2L, owner, "", "v5", credential, credentialAvailable,
                 projectedWaybill, "", "[]", "JingDong");
+    }
+
+    private static ExpressItem structuredOrder(StatusSemantic semantic, String detail)
+            throws Exception {
+        long eventAt = 1_790_207_894_000L;
+        String tracks = me.pipi.deliveries.model.WorkerStatusProjection.attach(
+                new org.json.JSONArray().put(new org.json.JSONObject()
+                        .put("time", "2026-09-24 07:58:14").put("context", detail)).toString(),
+                me.pipi.deliveries.model.WorkerStatusProjection.read(new org.json.JSONObject()
+                        .put("normalizedStatus", new org.json.JSONObject().put("version", 1)
+                                .put("scope", "ORDER").put("semantic", semantic.name())
+                                .put("code", "SERVER_ENUM").put("text", semantic.label)
+                                .put("priority", 0).put("eventAtMs", eventAt)
+                                .put("structured", true))));
+        // As read from the stored row: the feed's own structured Worker status (audit L8 carries
+        // it on the row as sourceStatusStructured; the gate no longer reads the attached packet).
+        return new ExpressItem(
+                9L, "", "3630448013820516", "JDKD", "京东购物",
+                semantic, semantic.label, detail,
+                "2026-09-24 07:58:14", tracks, "", "I5-JD", "",
+                eventAt, eventAt, "I5-JD", "", "v5", ROUTE_A, true,
+                "", "", "[]", "JingDong").withSourceStatusStructured(true);
+    }
+
+    private interface RepositoryBody {
+        void run(ExpressRepository repository) throws Exception;
+    }
+
+    private void withRepository(String phone, RepositoryBody body) throws Exception {
+        context.deleteDatabase(ExpressDatabase.DATABASE);
+        java.lang.reflect.Field singleton = ExpressRepository.class.getDeclaredField("instance");
+        singleton.setAccessible(true);
+        singleton.set(null, null);
+        ExpressRepository repository = ExpressRepository.get(context);
+        try {
+            repository.bindPhoneLocally(phone, "interface5");
+            body.run(repository);
+        } finally {
+            singleton.set(null, null);
+            java.lang.reflect.Field helper = ExpressRepository.class.getDeclaredField("helper");
+            helper.setAccessible(true);
+            ((ExpressDatabase) helper.get(repository)).close();
+        }
+    }
+
+    private static me.pipi.deliveries.model.WorkerStatusProjection structuredStatus(
+            StatusSemantic semantic, long eventAt) throws Exception {
+        return me.pipi.deliveries.model.WorkerStatusProjection.read(new org.json.JSONObject()
+                .put("normalizedStatus", new org.json.JSONObject().put("version", 1)
+                        .put("scope", "ORDER").put("semantic", semantic.name())
+                        .put("code", "SERVER_ENUM").put("text", semantic.label)
+                        .put("priority", 0).put("eventAtMs", eventAt)
+                        .put("structured", true)));
+    }
+
+    /** 列表页上的这一行（listVisible 同一套投影），feed 带结构化状态、没有揽收字样。 */
+    private static ExpressItem listedOrder(ExpressRepository repository, String phone,
+            String order, StatusSemantic semantic, String time, String detail) throws Exception {
+        long eventAt = me.pipi.deliveries.model.ExpressTimeline.parseTime(time);
+        repository.saveInterface5OrderSummary(new ExpressQueryResult(order, "JD", "京东购物",
+                semantic, eventAt, time, detail, new org.json.JSONArray().put(new org.json.JSONObject()
+                        .put("time", time).put("context", detail)).toString(),
+                "", phone, "interface5", "", "", "JingDong")
+                .withWorkerStatus(structuredStatus(semantic, eventAt)), phone);
+        ExpressItem owner = repository.findByWaybill(order, "interface5");
+        assertNotNull(owner);
+        return listed(repository, owner.rowId);
+    }
+
+    private static ExpressItem listed(ExpressRepository repository, long rowId) {
+        for (ExpressItem item : repository.listVisible("interface5")) {
+            if (item.rowId == rowId) return item;
+        }
+        throw new AssertionError("the order is not listed");
     }
 
     private static ExpressItem normalShipment() {

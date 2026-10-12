@@ -154,4 +154,24 @@ for (const heading of privacyHeadings) {
   previousHeadingIndex = headingIndex;
 }
 
+// Access Key activation (user decision 2026-09-27): the settings page's only activation prompt is
+// "activated on another device", driven by the Worker's 403 key_activated_elsewhere for the saved
+// key; there is no save-time check. The copy itself lives in services/gateway.ts.
+const gateway = readFileSync(join(projectRoot, "services/gateway.ts"), "utf8");
+assert.ok(gateway.includes('ACCESS_KEY_INVALID_MESSAGE = "Access Key 无效或已失效"'));
+assert.ok(gateway.includes('ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE = "Access Key 已使用"'));
+const refreshStart = settings.indexOf("function refreshAuthorization()");
+const refreshEnd = settings.indexOf("function saveToken()", refreshStart);
+assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
+const refreshSource = settings.slice(refreshStart, refreshEnd);
+assert.ok(
+  /next === "authorized" && savedKeyActivatedElsewhere\(\)\s*\?\s*ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE/
+    .test(refreshSource),
+  "the saved key's activated-elsewhere answer must reach the authorization notice",
+);
+const saveStart = settings.indexOf("function saveToken()");
+const saveEnd = settings.indexOf("async function removeToken()", saveStart);
+const saveSource = settings.slice(saveStart, saveEnd);
+assert.equal(saveSource.includes("postGateway"), false, "no save-time validation request");
+
 console.log("settings and privacy copy contract tests passed");

@@ -185,6 +185,12 @@ public final class ExpressSubscriptionClient {
                     .put("_pipiStatusSource", "meizu"));
         }
         tracks = normalizedTracks;
+        // 「快递状态已更新」四种写法只是不显示（用户 2026-09-26，其余裁决 19）：不当头条，由真实节点顶上；
+        // 状态照留，它也不是报错行。
+        if (ExpressStatusNormalizer.isUpdateSummary(detail)) {
+            time = "";
+            detail = "";
+        }
         List<ExpressTimeline.Track> parsed = ExpressTimeline.parse(
                 tracks.toString(), time, detail);
         if (!parsed.isEmpty()) {

@@ -1,4 +1,5 @@
 import {
+  AppEvents,
   Button,
   List,
   Navigation,
@@ -14,7 +15,10 @@ import {
   useRef,
   useState,
 } from "scripting";
-import { registerProjectionViewportHost } from "./services/projection-viewport";
+import {
+  registerProjectionViewportHost,
+  setProjectionSceneActive,
+} from "./services/projection-viewport";
 import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -32,6 +36,9 @@ import {
   resumeShipmentId,
 } from "./services/app-resume";
 import { initializeCarrierAuthority } from "./services/carrier-authority";
+import { startForegroundOrderProjection } from "./services/foreground-order-projection";
+import { startForegroundRefresh } from "./services/foreground-return-refresh";
+import { startStatusAlignment } from "./services/status-alignment";
 
 type StartupState = {
   state: AppState | null;
@@ -78,11 +85,28 @@ function App() {
   }
 
   useEffect(() => {
+    // While the app is on screen it captures JD order waybills by itself (Lite parity, 2026-09-24).
+    const orderProjection = startForegroundOrderProjection({ applyState });
+    // Returning to the foreground refreshes the list, debounced 2 minutes (user 2026-10-02「改成 2 分钟（三端一起）」;
+    // 30 s before, user default #11, audit R4).
+    const foregroundRefresh = startForegroundRefresh({ applyState });
+    // A visible row whose status, headline and detail times are out of step is refreshed once, forced (user 2026-10-02).
+    const statusAlignment = startStatusAlignment({ applyState });
     const observe = (phase: "active" | "inactive" | "background") => {
       writeDiagnostic("app.scene.changed", { result: phase });
+      // Refresh flows open the union page only while the app is active (user 2026-09-25).
+      setProjectionSceneActive(phase === "active");
+      orderProjection.scenePhaseChanged(phase);
+      foregroundRefresh.scenePhaseChanged(phase);
+      statusAlignment.scenePhaseChanged(phase);
     };
     AppEvents.scenePhase.addListener(observe);
-    return () => AppEvents.scenePhase.removeListener(observe);
+    return () => {
+      AppEvents.scenePhase.removeListener(observe);
+      orderProjection.stop();
+      foregroundRefresh.stop();
+      statusAlignment.stop();
+    };
   }, []);
 
   useEffect(() => {

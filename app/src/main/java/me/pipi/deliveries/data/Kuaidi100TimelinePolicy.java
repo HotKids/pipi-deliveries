@@ -10,9 +10,11 @@ import me.pipi.deliveries.model.StatusSemantic;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
+import java.util.regex.Pattern;
 
 /** Refresh lifetime and same-provider incremental-cache policy for local timelines. */
 public final class Kuaidi100TimelinePolicy {
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
     private Kuaidi100TimelinePolicy() {}
 
     /** A manual item becomes visible only after a provider supplies a genuine timeline node. */
@@ -34,7 +36,7 @@ public final class Kuaidi100TimelinePolicy {
         if (result == null || ExpressStatusNormalizer.isProviderErrorDetail(
                 result.latestDetail)) return false;
         for (ExpressTimeline.Track track : ExpressTimeline.parse(result.tracksJson, "", "")) {
-            if (ExpressSourcePolicy.parseEventTime(track.time) > 0L
+            if (track.epochMillis > 0L
                     && !ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) {
                 return true;
             }
@@ -59,11 +61,15 @@ public final class Kuaidi100TimelinePolicy {
         return hasStartSemantic(result, false);
     }
 
+    /**
+     * Only node evidence counts (audit D10, user 2026-09-25, as on iOS and Pipi): a pickup or order
+     * node, by its own structured node status, or by its text when it has none (user 2026-10-02
+     * 「三端统一改成结构化优先」). The package's status alone — which the ranking may have borrowed
+     * from another package — is no start evidence without such a node.
+     */
     private static boolean hasStartSemantic(
             ExpressQueryResult result, boolean orderedCounts) {
         if (!hasTimedTracking(result)) return false;
-        if (result.semantic == StatusSemantic.PICKED
-                || (orderedCounts && result.semantic == StatusSemantic.ORDERED)) return true;
         String provider = normalizeProvider(result.timelineProvider);
         try {
             Object root = new JSONTokener(result.tracksJson).nextValue();
@@ -79,7 +85,7 @@ public final class Kuaidi100TimelinePolicy {
         long latest = 0L;
         for (ExpressTimeline.Track track : ExpressTimeline.parse(result.tracksJson, "", "")) {
             if (ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) continue;
-            long time = ExpressSourcePolicy.parseEventTime(track.time);
+            long time = track.epochMillis;
             if (time > latest) latest = time;
         }
         return latest;
@@ -91,7 +97,7 @@ public final class Kuaidi100TimelinePolicy {
         int count = 0;
         for (ExpressTimeline.Track track : ExpressTimeline.parse(result.tracksJson, "", "")) {
             if (ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) continue;
-            if (ExpressSourcePolicy.parseEventTime(track.time) > 0L) count++;
+            if (track.epochMillis > 0L) count++;
         }
         return count;
     }
@@ -137,40 +143,19 @@ public final class Kuaidi100TimelinePolicy {
                 "context", "desc", "description", "logisticDetail",
                 "lastLogisticDetail", "message");
         boolean providerError = ExpressStatusNormalizer.isProviderErrorDetail(detail);
-        String compactDetail = detail.replaceAll("\\s+", "");
-        // 三端同一组词（2026-09-05 对齐）：揽收类与下单类；EMS 的「已收寄」「商品已经下单」也算。
-        if (!providerError && (compactDetail.contains("已揽件")
-                || compactDetail.contains("已揽收")
-                || compactDetail.contains("揽收完成")
-                || compactDetail.contains("揽件成功")
-                || compactDetail.contains("揽收成功")
-                || compactDetail.contains("已收寄")
-                // 顺丰揽收节点写「顺丰速运 已收取快件」(2026-09-05 三端同补)。
-                || compactDetail.contains("收取快件"))) return true;
-        // 终点文案（2026-09-08 从下单词表挪出来）：京东原文是「订单已完成配送，感谢您选择京东购物」，
-        // 说的是送完了，不是刚下单。闸门跟下单类同一档（只在 orderedCounts 时生效）——这一票已经
-        // 走完，没有更早的历史值得再抓；展示上它是 COMPLETED，见 ExpressStatusNormalizer。
-        if (!providerError && orderedCounts && completionCounts
-                && (compactDetail.contains("订单已完成")
-                || compactDetail.contains("配送完成"))) return true;
-        // 下单类整表（2026-09-07 三端对齐到 iOS semanticFromText）：这几个词 Lite 的展示表
-        // ExpressStatusNormalizer 早就认成「已下单」，起点闸门却看不见，同一行自相矛盾。
-        if (!providerError && orderedCounts && (compactDetail.contains("已下单")
-                || compactDetail.contains("已经下单")
-                || compactDetail.contains("订单已提交")
-                || compactDetail.contains("订单已创建")
-                || compactDetail.contains("提交了订单")
-                || compactDetail.contains("等待出库")
-                || compactDetail.contains("正在打包")
-                || compactDetail.contains("拣货"))) return true;
+        String compactDetail = WHITESPACE.matcher(detail).replaceAll("");
         String source = normalizeProvider(first(value, "_pipiStatusSource"));
         if (source.isEmpty()) source = provider;
+        // 用户定 2026-10-02「三端统一改成结构化优先」（Pipi ExpressDetailTimelinePolicy.hasStartSemantic 同一顺序）：
+        // 节点有真实结构化状态时由状态定；下面的揽收、终点、下单文案只认没有结构化状态的节点。占位投影
+        // （structured=false、code 为空）不算结构化状态。词表本身不变。
+        StatusSemantic semantic = StatusSemantic.UNKNOWN;
         if (!providerError) {
             String code = first(value,
                     "logisticsStatus", "statusCode", "status", "state", "action");
             String description = first(value, "logisticsStatusDesc", "stateName");
-            WorkerStatusProjection projected = WorkerStatusProjection.read(value);
-            StatusSemantic semantic = projected != null ? projected.semantic : isAccountProvider(source)
+            WorkerStatusProjection projected = WorkerStatusProjection.nodeEvidence(value);
+            semantic = projected != null ? projected.semantic : isAccountProvider(source)
                     ? StatusSemantic.fromAccountState(code, description)
                     : StatusSemantic.fromKuaidi100EventCode(code);
             if (semantic == StatusSemantic.UNKNOWN && projected == null) {
@@ -181,6 +166,32 @@ public final class Kuaidi100TimelinePolicy {
                 return true;
             }
         }
+        boolean proseDecides = !providerError && semantic == StatusSemantic.UNKNOWN;
+        // 三端同一组词（2026-09-05 对齐）：揽收类与下单类；EMS 的「已收寄」「商品已经下单」也算。
+        if (proseDecides && (compactDetail.contains("已揽件")
+                || compactDetail.contains("已揽收")
+                || compactDetail.contains("揽收完成")
+                || compactDetail.contains("揽件成功")
+                || compactDetail.contains("揽收成功")
+                || compactDetail.contains("已收寄")
+                // 顺丰揽收节点写「顺丰速运 已收取快件」(2026-09-05 三端同补)。
+                || compactDetail.contains("收取快件"))) return true;
+        // 终点文案（2026-09-08 从下单词表挪出来）：京东原文是「订单已完成配送，感谢您选择京东购物」，
+        // 说的是送完了，不是刚下单。闸门跟下单类同一档（只在 orderedCounts 时生效）——这一票已经
+        // 走完，没有更早的历史值得再抓；展示上它是 COMPLETED，见 ExpressStatusNormalizer。
+        if (proseDecides && orderedCounts && completionCounts
+                && (compactDetail.contains("订单已完成")
+                || compactDetail.contains("配送完成"))) return true;
+        // 下单类整表（2026-09-07 三端对齐到 iOS semanticFromText）：这几个词 Lite 的展示表
+        // ExpressStatusNormalizer 早就认成「已下单」，起点闸门却看不见，同一行自相矛盾。
+        if (proseDecides && orderedCounts && (compactDetail.contains("已下单")
+                || compactDetail.contains("已经下单")
+                || compactDetail.contains("订单已提交")
+                || compactDetail.contains("订单已创建")
+                || compactDetail.contains("提交了订单")
+                || compactDetail.contains("等待出库")
+                || compactDetail.contains("正在打包")
+                || compactDetail.contains("拣货"))) return true;
         java.util.Iterator<String> keys = value.keys();
         while (keys.hasNext()) {
             Object child = value.opt(keys.next());
@@ -271,8 +282,7 @@ public final class Kuaidi100TimelinePolicy {
             boolean requireStructuredTerminal) {
         if (cached == null) return refreshed;
         if (refreshed == null) return cached;
-        boolean frozenCompletedPresentation = isCompletedTimedPackage(cached)
-                && (!requireStructuredTerminal || cached.structuredStatusEvidence);
+        boolean frozenCompletedPresentation = frozenCompletedHeadline(cached, requireStructuredTerminal);
         ExpressQueryResult presentation = frozenCompletedPresentation
                 ? cached : selectedSameProviderPresentation(
                         cached, refreshed, requireStructuredTerminal);
@@ -281,7 +291,7 @@ public final class Kuaidi100TimelinePolicy {
         me.pipi.deliveries.model.CarrierNormalization normalization =
                 refreshed.carrierNormalization.present()
                         ? refreshed.carrierNormalization : cached.carrierNormalization;
-        return new ExpressQueryResult(
+        ExpressQueryResult merged = new ExpressQueryResult(
                 prefer(presentation.waybill,
                         prefer(refreshed.waybill, cached.waybill)),
                 prefer(presentation.courierCode,
@@ -303,6 +313,52 @@ public final class Kuaidi100TimelinePolicy {
                 .withManualStatusEvidence(
                         presentation.statusDescription,
                         presentation.structuredStatusEvidence);
+        return withMergedHeadline(merged);
+    }
+
+    /**
+     * 头条 = 最新的有效时间节点（用户定 2026-09-04）。合并装进两包轨迹的并集，表头却整份照搬选中那一包；
+     * 网页包都不带状态，两边 UNKNOWN 时选的是旧包，轨迹已有新节点、表头还停在第一次抓取（Fold7 2026-09-24，
+     * 1906 的京粉页包）。与 iOS status.ts withMergedHeadline 同一条规则（用户 2026-09-24 采纳对齐）：合并后
+     * 的轨迹里有比存着的表头严格更新的有效节点就换过去，时间相同不换；存着的表头时间解析不了时不动（这条只防
+     * 新节点被挡住，不修没有时间的表头）。状态、状态时间、结构化证据、轨迹都不动。已签收的包也走这里（用户
+     * 2026-09-25 定，审计 D6「换成最新」）：签收之后又来的节点照样当表头，与 iOS、Pipi 同一条规则。
+     */
+    static ExpressQueryResult withMergedHeadline(ExpressQueryResult merged) {
+        ExpressTimeline.Track latest = latestTimedTrack(merged);
+        if (latest == null) return merged;
+        long retainedAt = ExpressSourcePolicy.parseEventTime(merged.latestTime);
+        if (retainedAt <= 0L) return merged;
+        return ExpressSourcePolicy.parseEventTime(latest.time) > retainedAt
+                ? merged.withHeadline(latest.time, latest.detail) : merged;
+    }
+
+    /**
+     * 读时的表头（用户 2026-09-24 采纳第 2 条 2a）：旁表和 v5 查询表里的包都按 {@link #mergeManualProvider} 存，
+     * 读时套同一条表头规则，改之前存下的旧表头不用等同一来源下次抓取（已签收、详情已完整的行可能再也不抓）。
+     * 与 Pipi 读时从轨迹现算同口径；已签收的包也不例外（用户 2026-09-25 定，D6）。
+     */
+    static ExpressQueryResult storedManualHeadline(ExpressQueryResult stored) {
+        return stored == null ? null : withMergedHeadline(stored);
+    }
+
+    /**
+     * 已签收冻结：状态、状态时间与结构化证据停在签收那一包，之后的节点只并进轨迹；手动来源的包还要有结构化
+     * 证据。表头不冻结，照常取最新的有效节点（用户 2026-09-25 定，D6）。
+     */
+    static boolean frozenCompletedHeadline(ExpressQueryResult result, boolean requireStructuredTerminal) {
+        return isCompletedTimedPackage(result)
+                && (!requireStructuredTerminal || result.structuredStatusEvidence);
+    }
+
+    /** 最新的有效（带时间、非报错）节点；解析出来的轨迹按时间倒序，第一条就是。 */
+    static ExpressTimeline.Track latestTimedTrack(ExpressQueryResult result) {
+        if (result == null) return null;
+        for (ExpressTimeline.Track track : ExpressTimeline.parse(result.tracksJson, "", "", result.timelineProvider)) {
+            if (track.epochMillis > 0L
+                    && !ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) return track;
+        }
+        return null;
     }
 
     static boolean isCompletedTimedPackage(ExpressQueryResult result) {

@@ -16,6 +16,9 @@ import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.SQLiteMode;
 
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import me.pipi.deliveries.data.ExpressRepository;
@@ -30,6 +33,8 @@ import me.pipi.deliveries.model.StatusSemantic;
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 public final class AccountCarrierRecognitionTest {
     private static final String PHONE = "13800001515";
+    private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+            .withZone(ZoneId.of("Asia/Shanghai"));
     private Context context;
     private ExpressRepository repository;
 
@@ -90,9 +95,11 @@ public final class AccountCarrierRecognitionTest {
     }
 
     @Test public void projectedCarrierIsResolvedWithoutRewritingTheOrderIdentity() throws Exception {
+        // A completed first discovery is not imported once its list time is 21 days old, so this
+        // order is dated relative to the clock (user approved this test-only clean-up on 2026-09-25).
         repository.saveInterface5OrderSummary(new ExpressQueryResult(
                 "1234500000001", "JDKD", "京东购物", StatusSemantic.COMPLETED, 0L,
-                "2026-09-13 18:32:15", "Delivery event", "[]", "", PHONE,
+                minutesAgo(60), "Delivery event", "[]", "", PHONE,
                 "interface5", "", "", "JingDong"), PHONE);
         ExpressItem order = repository.findByWaybill("1234500000001", "interface5");
         assertTrue(order.isAccountOrder());
@@ -110,6 +117,31 @@ public final class AccountCarrierRecognitionTest {
         assertEquals("京东快递", recognized.displayCompany());
         assertEquals("jd", recognized.displayCourierCode());
         assertFalse(AccountCarrierRecognition.needsRecognition(recognized));
+    }
+
+    /**
+     * 审计 C6（用户 2026-09-25 采纳，备注「汇通都要显示成极兔」）：投影订单的识别结果按标准码存取。汇通（HTKY）的表内显示名
+     * 就是「极兔速递」，所以显示照旧是极兔；按名字存取时读回来会变成同名的极兔（JTSD），查询也用 jtexpress 而不是
+     * huitongkuaidi。
+     */
+    @Test public void aProjectedOrdersRecognizedHuitongStaysHuitongShownAsJitu() throws Exception {
+        repository.saveInterface5OrderSummary(new ExpressQueryResult(
+                "1234500000004", "JDKD", "京东购物", StatusSemantic.TRANSIT, 0L,
+                minutesAgo(60), "Delivery event", "[]", "", PHONE,
+                "interface5", "", "", "JingDong"), PHONE);
+        ExpressItem order = repository.findByWaybill("1234500000004", "interface5");
+        assertTrue(repository.saveOrderProjection(order, "interface5", "BEST00000005481", ""));
+        ExpressItem projected = repository.find(order.rowId);
+        assertTrue(AccountCarrierRecognition.recognize(repository, projected, waybill ->
+                new CarrierNormalization("HTKY", "极兔速递", "huitongkuaidi", true, "t1")));
+        ExpressItem recognized = repository.find(order.rowId);
+        assertEquals("HTKY", recognized.resolvedCarrier().standardCode);
+        assertEquals("极兔速递", recognized.displayCompany());
+        assertEquals("huitongkuaidi", recognized.displayCourierCode());
+        assertFalse(AccountCarrierRecognition.needsRecognition(recognized));
+        // A later same-waybill projection keeps the recognized carrier.
+        assertTrue(repository.saveOrderProjection(recognized, "interface5", "BEST00000005481", ""));
+        assertEquals("HTKY", repository.find(order.rowId).resolvedCarrier().standardCode);
     }
 
     @Test public void sameWaybillRefreshCannotDiscardPendingRecognition() throws Exception {
@@ -167,6 +199,10 @@ public final class AccountCarrierRecognitionTest {
             return new CarrierNormalization("SF", "顺丰速运", "shunfeng", true, "builtin");
         }));
         assertEquals("顺丰速运", repository.find(order.rowId).displayCompany());
+    }
+
+    private static String minutesAgo(long minutes) {
+        return TIME.format(Instant.ofEpochMilli(System.currentTimeMillis() - minutes * 60_000L));
     }
 
     private ExpressItem saved(

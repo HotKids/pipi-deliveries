@@ -118,9 +118,8 @@ public final class ManualQueryCoordinator {
     }
 
     /**
-     * Queries Online first and stops the current chain when its incremental cache already contains
-     * the order/pickup boundary. The optional local adapter is used only when that boundary is
-     * still absent; source-owned SF/JD callers disable it.
+     * Queries Online first and stops only when its incremental history contains a start aligned
+     * with the latest evidence. Source-owned SF/JD callers disable the optional local adapter.
      */
     public static Batch queryOnlineFirst(
             Source online,
@@ -253,7 +252,7 @@ public final class ManualQueryCoordinator {
         // providers start. An existing cache never skips the Online refresh itself.
         if (online != null && effectiveOnline != null && (statusOnly
                 ? ManualTimelineAuthorityPolicy.hasStructuredStatus(effectiveOnline.result)
-                : Kuaidi100TimelinePolicy.hasTimelineStart(effectiveOnline.result)
+                : ManualTimelineAuthorityPolicy.timelineStartAligned(effectiveOnline.result, 0L)
                 && (!requireStructuredStatus
                 || ManualTimelineAuthorityPolicy.hasStructuredStatus(effectiveOnline.result)))) {
             return new Batch(newSuccesses, selectionSuccesses, bestEffort);
@@ -308,6 +307,8 @@ public final class ManualQueryCoordinator {
     private static QueryOutcome queryActivatedSource(
             ActivatedSource source, LongSupplier clock, boolean requireStructuredStatus) throws Exception {
         long startedAt = System.currentTimeMillis();
+        RowSource row = source.query instanceof RowSource ? (RowSource) source.query : null;
+        if (row != null) return queryRowSource(source, row, clock, requireStructuredStatus);
         ExpressLog.line("", source.provider, "manual", "started");
         try {
             ExpressQueryResult result = source.query.query();
@@ -332,14 +333,69 @@ public final class ManualQueryCoordinator {
             }
             return new QueryOutcome(result, success, null);
         } catch (InterruptedException interrupted) {
+            // 用户 2026-09-28：a query cut off mid-way still ends the stage it started.
+            ExpressLog.line("", source.provider, "manual", "failed",
+                    "elapsedMs", System.currentTimeMillis() - startedAt, "errorCategory", "cancelled");
             Thread.currentThread().interrupt();
             throw interrupted;
         } catch (Exception failure) {
-            ExpressLog.line("", source.provider, "manual", "failed",
-                    "reason", failure.getClass().getSimpleName(),
-                    "elapsedMs", System.currentTimeMillis() - startedAt);
+            ExpressLog.line("", source.provider, "manual", "failed", ExpressLog.errorDetails(failure,
+                    "elapsedMs", System.currentTimeMillis() - startedAt));
             return new QueryOutcome(null, null, failure);
         }
+    }
+
+    /**
+     * A row's own query (用户 2026-09-28): its stage lines carry iOS's shipmentDiagnosticDetails for that
+     * row and the slot it asks — the row's identity, how its detail is shown before the answer, and the
+     * answer itself once there is one — and a query cut off mid-way still ends its stage as cancelled.
+     */
+    private static QueryOutcome queryRowSource(ActivatedSource source, RowSource row, LongSupplier clock,
+            boolean requireStructuredStatus) throws Exception {
+        long startedAt = System.currentTimeMillis();
+        String level = row.requestProvider.isEmpty() ? source.provider : row.requestProvider;
+        String skip = row.skipReason();
+        if (!skip.isEmpty()) {
+            // Not attempted: neither an answer nor an empty one (iOS refresh.stage.skipped cooldown).
+            ExpressLog.line("", level, row.sourceProvider, "skipped",
+                    append(row.fields(level, null), "reason", skip));
+            return new QueryOutcome(null, null, null);
+        }
+        ExpressLog.line("", level, row.sourceProvider, "started", row.fields(level, null));
+        try {
+            ExpressQueryResult result = row.query();
+            Object[] fields = row.fields(level, result);
+            // The line's own result stays the stage outcome; the page exit is iOS's exitReason.
+            ExpressLog.line("", level, row.sourceProvider, result == null ? "failed" : "succeeded",
+                    append(fields, "durationMs", System.currentTimeMillis() - startedAt,
+                            "exitReason", Kuaidi100TimelinePolicy.timedTrackCount(result) > 0
+                                    ? "timed_tracks" : "no_timed_tracks"));
+            Success success = null;
+            String provider = result == null || result.timelineProvider.isEmpty()
+                    ? source.provider : result.timelineProvider;
+            if (Kuaidi100TimelinePolicy.hasTimedTracking(result)
+                    || requireStructuredStatus && ManualTimelineAuthorityPolicy.hasStructuredStatus(result)
+                    || !ManualRoutePolicy.meizuKuaidi100Url(provider, result).isEmpty()) {
+                success = new Success(
+                        provider, result, Math.max(1L, clock.getAsLong()), false);
+            }
+            return new QueryOutcome(result, success, null);
+        } catch (InterruptedException interrupted) {
+            ExpressLog.line("", level, row.sourceProvider, "failed", append(row.fields(level, null),
+                    "durationMs", System.currentTimeMillis() - startedAt, "errorCategory", "cancelled"));
+            Thread.currentThread().interrupt();
+            throw interrupted;
+        } catch (Exception failure) {
+            ExpressLog.line("", level, row.sourceProvider, "failed", ExpressLog.errorDetails(failure,
+                    append(row.fields(level, null), "durationMs", System.currentTimeMillis() - startedAt)));
+            return new QueryOutcome(null, null, failure);
+        }
+    }
+
+    private static Object[] append(Object[] fields, Object... more) {
+        Object[] joined = java.util.Arrays.copyOf(fields, fields.length + more.length);
+        System.arraycopy(more, 0, joined, fields.length, more.length);
+        return joined;
     }
 
     private static final class QueryOutcome {
@@ -385,6 +441,11 @@ public final class ManualQueryCoordinator {
             return selected(true);
         }
 
+        /** Stop decisions use accumulated evidence; only fresh successes are persisted. */
+        public List<Success> accumulatedSuccesses() {
+            return selectionSuccesses;
+        }
+
         List<Success> selectionSuccessesForTesting() {
             return selectionSuccesses;
         }
@@ -420,5 +481,138 @@ public final class ManualQueryCoordinator {
     @FunctionalInterface
     public interface Source {
         ExpressQueryResult query() throws Exception;
+    }
+
+    /**
+     * How a row's detail is shown when its stage line is written: iOS shipmentDiagnosticDetails's row
+     * fields, read by the caller that owns the row. Diagnostics only.
+     */
+    public static final class RowDisplay {
+        final boolean automatic;
+        final String carrierCode;
+        final String routeKind;
+        final String displayTimelineProvider;
+        final int displayedTrackCount;
+        final long latestEventAtMs;
+        final long latestTrackAtMs;
+        final long feedEventAtMs;
+        final long statusEventAtMs;
+        final String statusSemantic;
+        final boolean structuredStatus;
+
+        public RowDisplay(boolean automatic, String carrierCode, String routeKind,
+                String displayTimelineProvider, int displayedTrackCount, long latestEventAtMs,
+                long latestTrackAtMs, long feedEventAtMs, long statusEventAtMs, String statusSemantic,
+                boolean structuredStatus) {
+            this.automatic = automatic;
+            this.carrierCode = carrierCode == null ? "" : carrierCode;
+            this.routeKind = routeKind == null || routeKind.isEmpty() ? "none" : routeKind;
+            this.displayTimelineProvider = displayTimelineProvider == null ? "" : displayTimelineProvider;
+            this.displayedTrackCount = displayedTrackCount;
+            this.latestEventAtMs = latestEventAtMs;
+            this.latestTrackAtMs = latestTrackAtMs;
+            this.feedEventAtMs = feedEventAtMs;
+            this.statusEventAtMs = statusEventAtMs;
+            this.statusSemantic = statusSemantic == null ? "" : statusSemantic;
+            this.structuredStatus = structuredStatus;
+        }
+    }
+
+    /**
+     * {@code query} run for one row: its stage lines carry the row's own {@code sourceProvider} (as
+     * {@link ExpressLog#source} gives it), {@code waybillTail}, the slot it asks ({@code requestProvider},
+     * also the line's level) and the row's display fields from {@code display}, instead of the generic
+     * "manual".
+     */
+    public static Source forRow(Source query, String sourceProvider, String waybillTail, String requestProvider,
+            java.util.function.Supplier<RowDisplay> display) {
+        return forRow(query, sourceProvider, waybillTail, requestProvider, display, null);
+    }
+
+    /**
+     * As above, with {@code skipReason} read just before the stage would start: a non-empty reason (the
+     * row's cooldown, no route) skips the stage without starting it, as iOS logs a stage it does not
+     * attempt, and answers what the query itself would have answered in that case (nothing).
+     */
+    public static Source forRow(Source query, String sourceProvider, String waybillTail, String requestProvider,
+            java.util.function.Supplier<RowDisplay> display, java.util.function.Supplier<String> skipReason) {
+        return new RowSource(query, sourceProvider, waybillTail, requestProvider, display, skipReason);
+    }
+
+    private static final class RowSource implements Source {
+        private final Source query;
+        final String sourceProvider;
+        final String waybillTail;
+        final String requestProvider;
+        private final java.util.function.Supplier<RowDisplay> display;
+        private final java.util.function.Supplier<String> skipReason;
+
+        RowSource(Source query, String sourceProvider, String waybillTail, String requestProvider,
+                java.util.function.Supplier<RowDisplay> display, java.util.function.Supplier<String> skipReason) {
+            this.query = query;
+            this.sourceProvider = sourceProvider == null ? "" : sourceProvider;
+            this.waybillTail = waybillTail == null ? "" : waybillTail;
+            this.requestProvider = requestProvider == null ? "" : requestProvider;
+            this.display = display;
+            this.skipReason = skipReason;
+        }
+
+        @Override public ExpressQueryResult query() throws Exception {
+            return query.query();
+        }
+
+        /**
+         * Why this stage will not run, or "" when it will. A check that throws runs the query, which meets
+         * the same failure inside the stage and reports it there as before.
+         */
+        String skipReason() {
+            try {
+                String reason = skipReason == null ? null : skipReason.get();
+                return reason == null ? "" : reason;
+            } catch (RuntimeException unavailable) {
+                return "";
+            }
+        }
+
+        /**
+         * iOS shipmentDiagnosticDetails(row, requestProvider, response): with no response the observed package
+         * is the displayed one; with a response, the answer (its tracks, clocks and status).
+         */
+        Object[] fields(String provider, ExpressQueryResult response) {
+            RowDisplay shown = null;
+            try {
+                shown = display == null ? null : display.get();
+            } catch (RuntimeException ignored) { /* diagnostics only */ }
+            java.util.ArrayList<Object> fields = new java.util.ArrayList<>();
+            java.util.Collections.addAll(fields, "tail", waybillTail);
+            if (shown != null) {
+                java.util.Collections.addAll(fields, "automatic", shown.automatic, "carrierCode", shown.carrierCode,
+                        "routeKind", shown.routeKind, "routePointerPresent", !"none".equals(shown.routeKind));
+            }
+            java.util.Collections.addAll(fields, "requestProvider", provider);
+            if (shown != null) {
+                java.util.Collections.addAll(fields, "displayTimelineProvider", shown.displayTimelineProvider);
+            }
+            if (response == null) {
+                if (shown != null) {
+                    java.util.Collections.addAll(fields, "effectiveTrackCount", shown.displayedTrackCount,
+                            "selectionScope", "display", "displayedTrackCount", shown.displayedTrackCount,
+                            "latestEventAtMs", shown.latestEventAtMs, "latestTrackAtMs", shown.latestTrackAtMs,
+                            "feedEventAtMs", shown.feedEventAtMs, "statusEventAtMs", shown.statusEventAtMs,
+                            "statusSemantic", shown.statusSemantic, "structuredStatus", shown.structuredStatus);
+                }
+            } else {
+                java.util.Collections.addAll(fields,
+                        "effectiveTrackCount", Kuaidi100TimelinePolicy.timedTrackCount(response),
+                        "selectionScope", "query_response");
+                if (shown != null) java.util.Collections.addAll(fields, "displayedTrackCount", shown.displayedTrackCount);
+                java.util.Collections.addAll(fields,
+                        "latestEventAtMs", ManualTimelineAuthorityPolicy.latestEventTime(response),
+                        "latestTrackAtMs", Kuaidi100TimelinePolicy.latestTimedEventMillis(response),
+                        "statusEventAtMs", response.statusEventTime, "statusSemantic", response.semantic,
+                        "structuredStatus", response.structuredStatusEvidence);
+            }
+            return fields.toArray();
+        }
     }
 }

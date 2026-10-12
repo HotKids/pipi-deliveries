@@ -72,15 +72,9 @@ public final class ExpressWidgetPresentationTest {
                 StatusSemantic.ORDERED,
                 StatusSemantic.COMPLETED
         };
-        int[] labels = {
-                me.pipi.deliveries.R.string.widget_status_waiting,
-                me.pipi.deliveries.R.string.widget_status_delivery,
-                me.pipi.deliveries.R.string.widget_status_transit,
-                me.pipi.deliveries.R.string.widget_status_picked,
-                me.pipi.deliveries.R.string.widget_status_shipped,
-                me.pipi.deliveries.R.string.widget_status_ordered,
-                me.pipi.deliveries.R.string.widget_status_completed
-        };
+        // Audit L5 (user defaults 2026-09-25): the word comes from the one status label table
+        // (these used to be widget-only string resources with the same words).
+        String[] labels = {"待取件", "派送中", "运输中", "已揽件", "已发货", "已下单", "已签收"};
 
         for (int index = 0; index < priority.length; index++) {
             ExpressItem[] remaining = new ExpressItem[priority.length - index];
@@ -91,7 +85,8 @@ public final class ExpressWidgetPresentationTest {
                     ExpressWidgetPresentation.priorityStatus(Arrays.asList(remaining));
             assertEquals(priority[index], selected.semantic);
             assertEquals(1, selected.count);
-            assertEquals(labels[index], ExpressWidgetPresentation.priorityLabel(priority[index]));
+            assertEquals(labels[index],
+                    ExpressWidgetPresentation.statusText(item(1L, priority[index])));
         }
     }
 
@@ -109,22 +104,14 @@ public final class ExpressWidgetPresentationTest {
                 StatusSemantic.UNKNOWN,
                 StatusSemantic.CANCELLED
         };
-        int[] labels = {
-                me.pipi.deliveries.R.string.widget_status_waiting,
-                me.pipi.deliveries.R.string.widget_status_delivery,
-                me.pipi.deliveries.R.string.widget_status_transit,
-                me.pipi.deliveries.R.string.widget_status_picked,
-                me.pipi.deliveries.R.string.widget_status_shipped,
-                me.pipi.deliveries.R.string.widget_status_ordered,
-                me.pipi.deliveries.R.string.widget_status_completed,
-                me.pipi.deliveries.R.string.widget_status_danger,
-                me.pipi.deliveries.R.string.widget_status_unknown,
-                me.pipi.deliveries.R.string.widget_status_cancelled
-        };
+        String[] labels = {"待取件", "派送中", "运输中", "已揽件", "已发货", "已下单", "已签收",
+                "异常件", "暂无状态", "已取消"};
 
         for (int index = 0; index < semantics.length; index++) {
-            assertEquals(labels[index],
-                    ExpressWidgetPresentation.priorityLabel(semantics[index]));
+            ExpressItem item = item(1L, semantics[index]);
+            assertEquals(labels[index], ExpressWidgetPresentation.statusText(item));
+            assertEquals("the widget word is the list word", item.displayStatus(),
+                    ExpressWidgetPresentation.statusText(item));
         }
     }
 
@@ -137,8 +124,7 @@ public final class ExpressWidgetPresentationTest {
 
         assertEquals(StatusSemantic.ORDERED, ordered.semantic);
         assertEquals(2, ordered.count);
-        assertEquals(me.pipi.deliveries.R.string.widget_status_ordered,
-                ExpressWidgetPresentation.priorityLabel(ordered.semantic));
+        assertEquals("已下单", ExpressWidgetPresentation.statusText(item(1L, ordered.semantic)));
     }
 
     @Test
@@ -195,6 +181,30 @@ public final class ExpressWidgetPresentationTest {
 
         assertEquals("中通快递 0001 · 待取件", ExpressWidgetPresentation.rowTitle(item));
         assertEquals("中通快递 0001", ExpressWidgetPresentation.rowIdentity(item));
+    }
+
+    /**
+     * Audit L5 (user defaults 2026-09-25): the widget shows the list's word, not a fixed widget copy
+     * — an order that completed without a real waybill reads 已完成 on the list, so it does on the
+     * widget too (it used to read 已签收 there); the 待派送 subtype (STA_DELIVERING) likewise.
+     */
+    @Test
+    public void theWidgetShowsTheListWordForOrdersAndSubtypes() throws Exception {
+        ExpressItem order = new ExpressItem(1L, "", "3610448002878202", "JDKD", "京东商品快递",
+                StatusSemantic.COMPLETED, "", "", "", "[]", "", "I5-JD", "", 1L, 1L, "I5-JD", "");
+        assertEquals("已完成", order.displayStatus());
+        assertEquals("已完成", ExpressWidgetPresentation.statusText(order));
+
+        String station = me.pipi.deliveries.model.WorkerStatusProjection.attach("[]",
+                me.pipi.deliveries.model.WorkerStatusProjection.read(new org.json.JSONObject()
+                        .put("normalizedStatus", new org.json.JSONObject().put("version", 1)
+                                .put("scope", "SHIPMENT").put("semantic", "DELIVERY")
+                                .put("code", "STA_DELIVERING").put("text", "驿站派送中")
+                                .put("priority", 1).put("eventAtMs", 5L).put("structured", true))));
+        ExpressItem parcel = new ExpressItem(2L, "", "YT7000000000001", "YTO", "圆通速递",
+                StatusSemantic.DELIVERY, "", "", "", station, "", "INTERFACE5", "", 5L, 5L,
+                "INTERFACE5", "");
+        assertEquals("待派送", ExpressWidgetPresentation.statusText(parcel));
     }
 
     private static ExpressItem item(long id, StatusSemantic semantic) {

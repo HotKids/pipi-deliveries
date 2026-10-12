@@ -41,15 +41,16 @@ assert.equal(
   false,
   "the waybill text must keep its intrinsic width so copy follows immediately",
 );
+// 其余裁决 35（用户 2026-09-27）：承运商为空时详情页头写「快递」（old shape: `{shipment.identity.companyName}：`).
 assert.ok(
   waybillRow.includes(
-    '<Text font={15}>{shipment.identity.companyName}：</Text>',
+    '<Text font={15}>{carrierDisplayName(shipment.identity.companyName)}：</Text>',
   ),
 );
 assert.ok(waybillRow.includes('<HStack alignment="center" spacing={5}>'));
 assert.ok(waybillRow.includes("{waybill}"));
 assert.equal(
-  waybillRow.includes("{shipment.identity.companyName}：{waybill}"),
+  waybillRow.includes("{carrierDisplayName(shipment.identity.companyName)}：{waybill}"),
   false,
   "the carrier label and waybill must use separate zero-spacing text nodes",
 );
@@ -87,7 +88,15 @@ assert.match(
   /includeKdniaoFallback:[\s\S]*?forceManualRefresh \|\|[\s\S]*?props\.refreshOnAppear === "manual_submit" \|\|[\s\S]*?props\.refreshOnAppear === "detail_open"/,
   "an eligible ordinary automatic detail open must enable the final fallback",
 );
-assert.ok(detailPage.includes("selectShipmentDetailTimeline(shipment)"));
+assert.ok(
+  detailPage.includes("selectShipmentDetailPresentation(shipment, attachedOrders)"),
+  "the sheet renders the shared detail selection plus the JD order-stage presentation (Pipi 1.4.0 parity), " +
+    "and the attached orders' earlier order stage (归属-2, user 2026-09-25)",
+);
+assert.ok(
+  detailPage.includes("orderStagePrepended: jingDongOrderStagePrepended(shipment, attachedOrders)"),
+  "the detail selection log records whether the owner's order stage followed the packet, as Pipi does",
+);
 assert.ok(
   detailPage.includes("shipmentDetailPresentationStatus("),
   "manual details must derive status from the displayed timeline while automatic shipments keep source ownership",
@@ -120,7 +129,8 @@ assert.match(
 // 详情下拉的结果只能从共享文案表取（AGENTS §11）：页面不再写自由文案。
 assert.ok(detailPage.includes("detailPullToast(result.refreshed, hasUsableDetail)"));
 assert.ok(detailPage.includes("EXPRESS_TOAST_COPY.detailRefreshFailed"));
-assert.equal(detailPage.includes("暂未获取到可用轨迹"), false);
+assert.equal(detailPage.includes("暂未查询到或未揽收"), false,
+  "the page reads the no-track toast from the shared copy table, never a literal");
 assert.equal(detailPage.includes("当前轨迹已是最新"), false);
 assert.equal(
   detailPage.includes("result.feedback"),
@@ -140,7 +150,7 @@ assert.equal(
 );
 assert.match(
   detailPage,
-  /catch \(error\)[\s\S]*?const errorDetails = diagnosticErrorDetails\(error\)[\s\S]*?if \(errorDetails\.errorCategory === "removed"\) return[\s\S]*?writeDiagnostic\("detail\.refresh\.ui_failed"[\s\S]*?errorDetails[\s\S]*?if \(forceManualRefresh \|\| !displayTracks\.length\)[\s\S]*?setNotice\(EXPRESS_TOAST_COPY\.detailRefreshFailed\)/,
+  /catch \(error\)[\s\S]*?const errorDetails = diagnosticErrorDetails\(error\)[\s\S]*?if \(errorDetails\.errorCategory === "removed"\) return[\s\S]*?writeDiagnostic\("detail\.refresh\.ui_failed"[\s\S]*?errorDetails[\s\S]*?if \(!displayTracks\.length\)[\s\S]*?setNotice\(EXPRESS_TOAST_COPY\.detailRefreshFailed\)/,
   "a pre-dispatch detail failure must remain diagnosable instead of disappearing behind the toast",
 );
 assert.match(

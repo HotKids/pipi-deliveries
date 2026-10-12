@@ -11,6 +11,7 @@ import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.model.ManualQuerySuccess;
 import java.util.Collections;
+import org.json.JSONArray;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -97,7 +98,7 @@ public final class ExpressSignedRetentionTest {
         assertNotNull("Day 15 hides without deleting the owner", repository.find(owner.rowId));
         assertTrue(repository.saveInterface5Query(result(id, StatusSemantic.COMPLETED, now), owner,
                 repository.bindingGeneration(phone, "interface5")));
-        save(id, StatusSemantic.COMPLETED, now);
+        saveSameParcel(id, StatusSemantic.COMPLETED, now, signed - DAY);
         assertEquals(owner.rowId, repository.findByWaybill(id, "interface5").rowId);
         assertEquals(signed, anchor(owner.rowId));
         assertEquals(time(now), repository.find(owner.rowId).latestTime);
@@ -176,7 +177,7 @@ public final class ExpressSignedRetentionTest {
         assertTrue(repository.listVisible("interface5").isEmpty());
         assertTrue(owner.tracksJson.contains(time(signed)));
         repository.saveAccountTimeline(result(id, StatusSemantic.COMPLETED, signed), "interface5");
-        save(id, StatusSemantic.COMPLETED, now);
+        saveSameParcel(id, StatusSemantic.COMPLETED, now, signed);
         assertEquals(owner.rowId, repository.findByWaybill(id, "interface5").rowId);
         assertEquals(signed, anchor(owner.rowId));
         assertTrue(repository.listVisible("interface5").isEmpty());
@@ -215,15 +216,64 @@ public final class ExpressSignedRetentionTest {
         assertEquals(StatusSemantic.COMPLETED, owner.semantic);
         assertEquals(signed, anchor(owner.rowId));
         assertTrue(repository.listVisible("interface5").isEmpty());
+        // A later completion claim whose displayed node is still the old signature: the displayed
+        // date is unchanged, so it cannot restart retention.
+        ExpressQueryResult laterAuthority = new ExpressQueryResult(id, "ZTO", "中通快递",
+                StatusSemantic.COMPLETED, now, time(signed), "已签收", tracks(signed), "", "",
+                "kuaidi100", "", "", "").withManualStatusEvidence("已签收", true);
         ExpressItem refreshed = repository.saveManualQueryBatch(owner,
-                Collections.singletonList(new ManualQuerySuccess("kuaidi100", manual(id, now), now, true)), "", "interface5");
+                Collections.singletonList(new ManualQuerySuccess("kuaidi100", laterAuthority, now, true)), "", "interface5");
         assertEquals(signed, anchor(refreshed.rowId));
+        assertEquals(time(signed), repository.find(owner.rowId).latestTime);
         prune(signed + 21 * DAY - 1);
         assertNotNull(repository.find(owner.rowId));
         prune(signed + 21 * DAY);
         assertNull(repository.find(owner.rowId));
         assertEquals(0, count(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE));
         assertEquals(0, count(ExpressDatabase.KUAIDI100_TIMELINE_TABLE));
+    }
+
+    // 用户 2026-09-25 定（审计 D6「换成最新」）：签收之后又来的节点当列表头条；列表右边的时间真的变了，
+    // 可见、隐藏与删除就都从新时间起算（用户 2026-09-16 定的签收留存），状态仍是已签收。
+    @Test public void aLaterNodeAfterSigningTakesTheHeadlineAndOwnsTheRetentionCutoff() throws Exception {
+        String id = "ZTRETENTION0008";
+        long signed = now - 15 * DAY;
+        long later = now - DAY;
+        ExpressItem owner = repository.saveManualQueryBatch(null,
+                Collections.singletonList(new ManualQuerySuccess("kuaidi100", manual(id, signed), now, true)), "", "interface5");
+        assertNotNull(owner);
+        assertTrue(repository.listVisible("interface5").isEmpty());
+        JSONArray laterTracks = new JSONArray(manual(id, later).tracksJson);
+        laterTracks.getJSONObject(0).put("statusCode", "3");
+        repository.saveManualQueryBatch(owner,
+                Collections.singletonList(new ManualQuerySuccess("kuaidi100",
+                        manual(id, later).withTracksJson(laterTracks.toString()), now, true)), "", "interface5");
+        ExpressItem found = repository.find(owner.rowId);
+        assertEquals(time(later), found.latestTime);
+        assertEquals(StatusSemantic.COMPLETED, found.semantic);
+        assertEquals(1, repository.listVisible("interface5").size());
+        prune(signed + 21 * DAY);
+        assertNotNull("the old signature no longer owns the cutoff", repository.find(owner.rowId));
+        prune(later + 21 * DAY - 1);
+        assertNotNull(repository.find(owner.rowId));
+        prune(later + 21 * DAY);
+        assertNull(repository.find(owner.rowId));
+    }
+
+    @Test public void anUnknownLaterNodeFallsBackToTheSigningAndKeepsItsRetentionCutoff() throws Exception {
+        String id = "ZTRETENTIONUNKNOWN";
+        long signed = now - 15 * DAY;
+        long later = now - DAY;
+        ExpressItem owner = repository.saveManualQueryBatch(null,
+                Collections.singletonList(new ManualQuerySuccess("kuaidi100", manual(id, signed), now, true)),
+                "", "interface5");
+        repository.saveManualQueryBatch(owner,
+                Collections.singletonList(new ManualQuerySuccess("kuaidi100", manual(id, later), now, true)),
+                "", "interface5");
+        assertEquals("the persisted newest node remains available", time(later), repository.find(owner.rowId).latestTime);
+        assertTrue("display alignment falls back to the older signing", repository.listVisible("interface5").isEmpty());
+        prune(signed + 21 * DAY);
+        assertNull(repository.find(owner.rowId));
     }
 
     @Test public void projectedKeysSurviveUpgradeAndHiddenWeekThenAllExpireTogether() throws Exception {
@@ -379,6 +429,18 @@ public final class ExpressSignedRetentionTest {
 
     private void save(String id, StatusSemantic state, long at) {
         repository.saveInterface5(result(id, state, at), phone);
+    }
+    /**
+     * A later list record of the same parcel, carrying an earlier node of its own history. Since the reused-waybill
+     * rule (user 2026-10-02) a record whose earliest node is at least 24 hours after the signing is a new parcel on
+     * the number; these retention cases are about the same parcel, so its record keeps that earlier node.
+     */
+    private void saveSameParcel(String id, StatusSemantic state, long at, long earlierAt) {
+        String date = time(at);
+        repository.saveInterface5(new ExpressQueryResult(id, "ZTO", "中通快递", state, at, date, state.label,
+                "[{\"time\":\"" + date + "\",\"context\":\"" + state.label + "\"},"
+                        + "{\"time\":\"" + time(earlierAt) + "\",\"context\":\"运输中\"}]",
+                "", phone, "interface5", "", "", "CaiNiao"), phone);
     }
     private ExpressQueryResult result(String id, StatusSemantic state, long at) {
         String date = at <= 0L ? "" : time(at);

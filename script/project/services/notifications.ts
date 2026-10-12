@@ -5,7 +5,8 @@ import { acknowledgeShipmentNotification, deferShipmentNotification, loadState }
 import { acquireDurableRefreshLease } from "./refresh-runtime-state";
 import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { deadlineExpired, remainingTimeoutMs, waitForRefresh } from "./deadline";
-import { isHiddenSignedShipment } from "./status";
+import { isConfirmedNoItemOrder, isHiddenSignedShipment } from "./status";
+import { isAttachedShipment } from "./waybill-ownership";
 
 async function scheduleEvent(event: Omit<ShipmentNotificationEvent, "id">, deadlineAtMs: number): Promise<void> {
   const request = {
@@ -25,6 +26,10 @@ async function scheduleEvent(event: Omit<ShipmentNotificationEvent, "id">, deadl
   const timeoutMs = remainingTimeoutMs(deadlineAtMs, 10_000);
   const scheduleDeadline = Math.min(deadlineAtMs, Date.now() + timeoutMs);
   await waitForRefresh(Notification.schedule(request), scheduleDeadline);
+}
+
+function deliverableEvents(state: AppState): readonly ShipmentNotificationEvent[] {
+  return (state.pendingNotifications || []).filter((event) => !event.awaitingCarrier);
 }
 
 export async function replayPendingShipmentNotifications(
@@ -55,7 +60,9 @@ export async function replayPendingShipmentNotifications(
     const readStartedAt = Date.now();
     loadNotificationStatuses(true);
     current = loadState();
-    const events = current.pendingNotifications || [];
+    // T23 (user 2026-09-26): an event queued while its row's carrier was unmatched waits for the carrier; storage
+    // releases it with a rebuilt title, so it is neither scheduled nor acknowledged here.
+    const events = deliverableEvents(current);
     writeDiagnostic("notification.replay.loaded", {
       ...details, pendingNotifications: events.length, readDurationMs: Date.now() - readStartedAt,
     });
@@ -69,8 +76,10 @@ export async function replayPendingShipmentNotifications(
       attempted++;
       try {
         // A queued event may cross the visibility cutoff before the host accepts it.
-        // Acknowledge hidden owners below so they cannot block later visible events.
-        if (shipment && !isHiddenSignedShipment(shipment) && notificationEnabled(event.semantic)) {
+        // Acknowledge hidden owners below so they cannot block later visible events. A row that has since become
+        // attached to another row's waybill (ownership plan T3, user 2026-09-25) is hidden the same way.
+        if (shipment && !isHiddenSignedShipment(shipment) && !isConfirmedNoItemOrder(shipment) &&
+            !isAttachedShipment(latest.shipments, shipment) && notificationEnabled(event.semantic)) {
           await scheduleEvent(event, deadlineAtMs);
         }
       } catch (error) {
@@ -98,7 +107,7 @@ export async function replayPendingShipmentNotifications(
     }, "warning");
   } finally {
     lease.release();
-    const pendingNotifications = current ? current.pendingNotifications?.length || 0 : undefined;
+    const pendingNotifications = current ? deliverableEvents(current).length : undefined;
     writeDiagnostic("notification.replay.completed", {
       ...details, result: result === "completed" && pendingNotifications ? "pending_retry" : result,
       durationMs: Date.now() - startedAt, pendingNotifications, attempted, succeeded, failed,

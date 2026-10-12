@@ -4,6 +4,9 @@ import {
   accountOrderSemantic,
   buildWidgetSnapshot,
   containsTimelineStartTrack,
+  containsTimelineOriginTrack,
+  containsTimelinePickupTrack,
+  startSemanticFromText,
   latestTimelineTrackSemantic,
   manualTimelineIsComplete,
   mergeTimelinePackage,
@@ -236,6 +239,16 @@ assert.equal(
   "track count alone must not mark a timeline as complete",
 );
 
+// Audit D11 (adopted 2026-09-25): the start gate reads prose with the start words only, like Pipi
+// and Lite. A mixed node naming a pickup is a pickup even though the display table reads it as
+// delivery; 待揽 / 等待揽 never count.
+assert.equal(containsTimelinePickupTrack([track("2026-09-06 09:00:00", "快件已揽收，正在派送中", "")]), true);
+assert.equal(containsTimelineStartTrack([track("2026-09-06 09:00:00", "您已下单，商家已发货", "")]), true);
+assert.equal(containsTimelineOriginTrack([track("2026-09-06 09:00:00", "等待揽收", "")]), false);
+assert.equal(containsTimelinePickupTrack([track("2026-09-06 09:00:00", "待揽件，已揽收前请保持电话畅通", "")]), false);
+assert.equal(startSemanticFromText("顺丰速运 已收取快件"), "PICKED");
+assert.equal(startSemanticFromText("您的订单由第三方卖家拣货完成，待出库交付极兔速递"), "ORDERED");
+
 // One text→status table for the whole client. These three nodes were classified 已下单/待取件 by the
 // account parser's private copy and UNKNOWN by this one, so the same row was 已下单 in the list and
 // "no start node yet" to the fallback chain. The union is what survived the convergence.
@@ -433,16 +446,25 @@ const newerHeadlineWithoutStatus = packageSemantic("", [
 ]);
 assert.equal(newerHeadlineWithoutStatus.semantic, "WAITING_PICKUP");
 
-// The signed row is the one exit that keeps its stored headline while absorbing newer nodes; every
-// other merge re-reads the headline from the merged set (see 更新头条 below).
+// 用户 2026-09-25 定（审计 D6「换成最新」）：已签收的包状态照旧冻结，签收之后又来的节点照样当头条，
+// 与其他合并出口同一条规则（见下面的更新头条）。
 const cachedComplete = pack("COMPLETED", [pickup]);
 const laterTransit = pack("TRANSIT", [
   track("2026-08-26 11:00:00", "运输中", "0"),
 ]);
 const frozenComplete = mergeTimelinePackage(cachedComplete, laterTransit);
 assert.equal(frozenComplete.semantic, "COMPLETED");
-assert.equal(frozenComplete.latestDetail, cachedComplete.latestDetail);
+assert.equal(frozenComplete.latestDetail, "运输中");
+assert.equal(frozenComplete.latestTimeText, "2026-08-26 11:00:00");
 assert.equal(frozenComplete.tracks.length, 2);
+// 账号包（接口 5 列表与 v5_query）走同一条规则：已签收冻结状态，签收之后查回来的新节点照样当头条。
+const signedQuery = { ...pack("COMPLETED", [track("2026-08-26 10:00:00", "已签收", "3")]), provider: "v5_query" };
+const laterQuery = { ...pack("TRANSIT", [track("2026-08-26 12:00:00", "快件已被取出", "0")]), provider: "v5_query" };
+const frozenQuery = mergeTimelinePackage(signedQuery, laterQuery);
+assert.equal(frozenQuery.semantic, "COMPLETED");
+assert.equal(frozenQuery.statusEventAtMs, signedQuery.statusEventAtMs);
+assert.equal(frozenQuery.latestDetail, "快件已被取出");
+assert.equal(frozenQuery.tracks.length, 2);
 assert.equal(frozenComplete.tracks[0]?.detail, "运输中");
 
 const olderComplete = track("2026-08-25 09:00:00", "已签收", "3");
@@ -652,6 +674,21 @@ assert.equal(conflicting.length, 2);
     [track("2026-09-05 15:47:28", "您的快件已揽收完成", "")],
   );
   assert.equal(punctuationOnly.length, 1);
+  // Audit D11 (adopted 2026-09-25; 2026-09-09 parity correction): an origin tag on a node without a
+  // status code is provenance. Two tags on uncoded nodes still collapse; coded nodes of different
+  // origins keep both.
+  const tagged = (time: string, code: string, source: string): TrackNode => ({
+    ...track(time, "快件已到达【上海转运中心】", code),
+    raw: { ...(code ? { statusCode: code } : {}), _pipiStatusSource: source },
+  });
+  assert.equal(mergeTracks([tagged("2026-09-06 08:00:00", "", "interface5")],
+    [tagged("2026-09-06 08:02:00", "", "jingdong_h5")]).length, 1,
+    "an origin tag without a status code does not block the near-time merge");
+  assert.equal(mergeTracks([tagged("2026-09-06 08:00:00", "104", "interface5")],
+    [tagged("2026-09-06 08:02:00", "", "jingdong_h5")]).length, 1);
+  assert.equal(mergeTracks([tagged("2026-09-06 08:00:00", "104", "interface5")],
+    [tagged("2026-09-06 08:02:00", "104", "kdniao")]).length, 2,
+    "coded nodes of different origins are different structured states");
 }
 
 const cachedWithoutStatus = track(
@@ -945,7 +982,17 @@ assert.equal(
   } }, NOW), 0, "delivery prose cannot supply a missing structured terminal clock");
   const cancelled = { ...old, settledAtMs: NOW - 60_000,
     timeline: { ...old.timeline, semantic: "CANCELLED" as const } };
-  assert.equal(pruneShipments([cancelled], NOW).length, 1, "the first terminal stamp is stable for cancellation too");
+  // Audit L14 / user default #4 (2026-09-25): the four cancelled hours start at the displayed logistics
+  // time, like signed retention; this row displays 2026-08-25, so a fresh terminal stamp cannot keep it.
+  assert.equal(pruneShipments([cancelled], NOW).length, 0, "the displayed date owns the cancelled window");
+  const undated = { ...cancelled, timeline: { ...cancelled.timeline, latestTimeText: "" } };
+  assert.equal(pruneShipments([undated], NOW).length, 1,
+    "without a displayed date the first terminal stamp is stable for cancellation too");
+  const recentlyShown = { ...cancelled, settledAtMs: NOW - 5 * 60 * 60 * 1000, timeline: {
+    ...cancelled.timeline, latestTimeText: new Date(NOW - 3 * 60 * 60 * 1000 + 8 * 3_600_000)
+      .toISOString().slice(0, 19).replace("T", " ") } };
+  assert.equal(pruneShipments([recentlyShown], NOW).length, 1,
+    "a cancellation displayed three hours ago stays, whatever the older local stamp");
 }
 
 // Moto's station delivery subtype must follow its status donor across H5 history selection.
@@ -977,11 +1024,11 @@ for (const historyStatus of ["UNKNOWN", "DELIVERY"] as const) {
   assert.equal(detail.semantic, "DELIVERY");
   assert.equal(detail.statusEventAtMs, stationAt);
   assert.deepEqual(shipmentDetailPresentationStatus(value, detail),
-    { semantic: "DELIVERY", text: "驿站派送中" });
+    { semantic: "DELIVERY", text: "待派送" });
   const displayed = { ...value, timeline: selected };
   assert.deepEqual(shipmentPresentationStatus(displayed),
-    { semantic: "DELIVERY", text: "驿站派送中" });
-  assert.equal(buildWidgetSnapshot([displayed], NOW).rows[0].statusLabel, "驿站派送中");
+    { semantic: "DELIVERY", text: "待派送" });
+  assert.equal(buildWidgetSnapshot([displayed], NOW).rows[0].statusLabel, "待派送");
   assert.equal(shipmentPresentationStatus({ ...displayed, timeline: {
     ...selected, statusEventAtMs: NOW + 1,
   } }).text, "派送中", "a different status event cannot inherit the former subtype");

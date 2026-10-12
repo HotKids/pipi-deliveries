@@ -243,8 +243,10 @@ public final class CarrierRecognitionCoordinatorTest {
         };
         ExpressGatewayTransport gateway = gateway((path, payload) -> {
             classifyCalls.incrementAndGet();
+            // The Worker's classify answer names the standard code (audit C1, shared fixture
+            // carrier-classify-responses.v1.json); this used to be the Kuaidi100 code "shunfeng".
             return response(new JSONObject().put("auto", new JSONArray().put(
-                    new JSONObject().put("comCode", "shunfeng"))));
+                    new JSONObject().put("comCode", "SF").put("name", "顺丰速运"))));
         });
         CarrierRecognitionCoordinator first = coordinator(transport, gateway, state, () -> 1_000L);
         CarrierRecognitionCoordinator second = coordinator(transport, gateway, state, () -> 1_000L);

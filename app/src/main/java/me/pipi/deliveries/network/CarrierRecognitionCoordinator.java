@@ -27,10 +27,13 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
 /** One durable two-level carrier-recognition attempt for non-sync waybills. */
 final class CarrierRecognitionCoordinator {
     static final long RETRY_DELAY_MS = 15L * 60L * 1000L;
+    /** Matches the gateway's own terminal self-heal window. */
+    static final long TERMINAL_TTL_MS = 24L * 60L * 60L * 1000L;
     static final int MAX_NETWORK_FAILURES = 3;
     static final int MAX_TRANSIENT_ENTRIES = 256;
     private static final String PREFS = "carrier_recognition_v1";
@@ -41,13 +44,22 @@ final class CarrierRecognitionCoordinator {
         thread.setDaemon(true);
         return thread;
     });
+    /** Test seam: a shorter shared-request budget; 0 uses {@link #SHARED_REQUEST_BUDGET_MS}. */
+    static volatile long sharedRequestBudgetOverrideMillis;
     private static final Map<Object, Map<String, Pending>> IN_FLIGHT =
             new IdentityHashMap<>();
 
     private static final class Pending {
-        final ExpressQueryCancellation cancellation = new ExpressQueryCancellation(SHARED_REQUEST_BUDGET_MS);
+        final ExpressQueryCancellation cancellation = new ExpressQueryCancellation(sharedRequestBudgetMillis());
         FutureTask<Outcome> task;
         int consumers;
+        /** The waiting consumers that are sync rounds (用户 2026-09-27 提交前核对答复四). */
+        int roundConsumers;
+    }
+
+    private static long sharedRequestBudgetMillis() {
+        long override = sharedRequestBudgetOverrideMillis;
+        return override > 0L ? override : SHARED_REQUEST_BUDGET_MS;
     }
 
     interface Clock {
@@ -65,14 +77,27 @@ final class CarrierRecognitionCoordinator {
         final int networkFailures;
         final long retryAt;
         final boolean terminal;
+        /**
+         * 其余裁决 29（用户 2026-09-26）：免费识别给出、内置表换不出标准码的承运商（快递100 的名字与码），付费级也没有
+         * 内置结果时只作显示。iOS carrier-recognition.ts 把免费级候选留在 terminal / classify-stage retry 里同样用。
+         */
+        final CarrierNormalization offTable;
 
         Snapshot(
                 CarrierNormalization success, int networkFailures,
                 long retryAt, boolean terminal) {
+            this(success, networkFailures, retryAt, terminal, CarrierNormalization.NONE);
+        }
+
+        Snapshot(
+                CarrierNormalization success, int networkFailures,
+                long retryAt, boolean terminal, CarrierNormalization offTable) {
             this.success = success == null ? CarrierNormalization.NONE : success;
             this.networkFailures = Math.max(0, networkFailures);
             this.retryAt = Math.max(0L, retryAt);
             this.terminal = terminal;
+            this.offTable = offTable == null || offTable.offTableName().isEmpty()
+                    ? CarrierNormalization.NONE : offTable;
         }
 
         static Snapshot empty() {
@@ -84,12 +109,21 @@ final class CarrierRecognitionCoordinator {
         final List<CarrierNormalization> candidates;
         final boolean deferred;
         final boolean terminal;
+        /** The off-table carrier shown for display when no built-in candidate exists; NONE otherwise. */
+        final CarrierNormalization offTable;
 
         Outcome(List<CarrierNormalization> candidates, boolean deferred, boolean terminal) {
+            this(candidates, deferred, terminal, CarrierNormalization.NONE);
+        }
+
+        Outcome(List<CarrierNormalization> candidates, boolean deferred, boolean terminal,
+                CarrierNormalization offTable) {
             this.candidates = candidates == null
                     ? Collections.emptyList() : Collections.unmodifiableList(candidates);
             this.deferred = deferred;
             this.terminal = terminal;
+            this.offTable = this.candidates.isEmpty() && offTable != null
+                    && !offTable.offTableName().isEmpty() ? offTable : CarrierNormalization.NONE;
         }
     }
 
@@ -105,6 +139,22 @@ final class CarrierRecognitionCoordinator {
                 new Kuaidi100CarrierDetector(), new ExpressGatewayClient(app),
                 new PreferencesState(app.getSharedPreferences(PREFS, 0)),
                 System::currentTimeMillis);
+    }
+
+    /**
+     * Removes the number's durable recognition record (success, failures, cooldown, terminal, off-table name). The
+     * recognition deferral mark ({@code background.CarrierRecognitionDeferrals}) stays: it only orders a round
+     * (coordinator 2026-10-02, the same as Pipi).
+     */
+    static void forget(Context context, String waybill) {
+        String identity = identity(waybill);
+        if (identity.isEmpty()) return;
+        Context app = context.getApplicationContext();
+        if (app == null) app = context;
+        SharedPreferences preferences = app.getSharedPreferences(PREFS, 0);
+        synchronized (preferences) {
+            preferences.edit().remove(identity).apply();
+        }
     }
 
     static State transientState() {
@@ -131,6 +181,40 @@ final class CarrierRecognitionCoordinator {
     }
 
     Outcome recognize(String waybill, ExpressQueryCancellation cancellation) throws Exception {
+        return recognize(waybill, cancellation, false);
+    }
+
+    /**
+     * {@code excludeJd}: R-20 — on a JD-platform row whose waybill does not start with JD, 京东 is never
+     * carrier evidence, so a JD candidate is skipped for the next one and for the paid level, and a
+     * cached JD answer is not reused (T23 gap ②, user 2026-09-26: it used to be cached as a success,
+     * rejected every round and never reached the paid level or a terminal verdict).
+     */
+    Outcome recognize(String waybill, ExpressQueryCancellation cancellation, boolean excludeJd)
+            throws Exception {
+        return recognize(waybill, cancellation, excludeJd, false);
+    }
+
+    /**
+     * {@code syncRound}: the caller is a sync round. A time limit of the request's own — a connect or read timeout, or
+     * {@link #SHARED_REQUEST_BUDGET_MS} — records nothing for the waybill, no failure, no cooldown and no terminal
+     * verdict: in a sync round (用户 2026-09-27 提交前核对答复四，「四端对齐 iOS」) and outside one (用户 2026-09-27
+     * 提交前核对答复五，「四端都不算失败（对齐 iOS）」). While a sync round waits for the shared request, every caller
+     * waiting then is told so with {@link CarrierRecognitionTimeoutException} and the round marks the waybill cut off;
+     * with no round waiting, the callers see the network failure they saw before and nothing is marked. Whether a round
+     * waits is read at the moment the time limit ends the request, since a request is shared per waybill.
+     */
+    Outcome recognize(String waybill, ExpressQueryCancellation cancellation, boolean excludeJd,
+            boolean syncRound) throws Exception {
+        return recognize(waybill, cancellation, excludeJd, syncRound, 0L);
+    }
+
+    /**
+     * {@code parcelAnchorAtMs}: 优化 5 — the asking parcel's reuse anchor, sent with the paid classify request when it is
+     * valid. Callers of one waybill share one request; it carries the anchor of the caller that started it.
+     */
+    Outcome recognize(String waybill, ExpressQueryCancellation cancellation, boolean excludeJd,
+            boolean syncRound, long parcelAnchorAtMs) throws Exception {
         String number = clean(waybill);
         String identity = identity(number);
         if (number.length() < 6 || identity.isEmpty()) {
@@ -138,30 +222,33 @@ final class CarrierRecognitionCoordinator {
         }
         if (cancellation != null) cancellation.throwIfCancelled();
         Object scope = state.coordinationKey();
+        String pendingKey = excludeJd ? identity + "#nojd" : identity;
         Pending work;
         boolean owner;
         synchronized (IN_FLIGHT) {
             Map<String, Pending> pending = IN_FLIGHT.computeIfAbsent(scope, key -> new HashMap<>());
-            work = pending.get(identity);
+            work = pending.get(pendingKey);
             owner = work == null;
             if (owner) {
                 Pending created = new Pending();
                 created.task = new FutureTask<>(() -> {
                     try {
-                        return recognizeOwned(number, identity, created.cancellation);
+                        return recognizeOwned(number, identity, created.cancellation, excludeJd,
+                                () -> roundWaiting(created), parcelAnchorAtMs);
                     } finally {
-                        removePending(scope, identity, created);
+                        removePending(scope, pendingKey, created);
                         created.cancellation.close();
                     }
                 });
-                pending.put(identity, created);
+                pending.put(pendingKey, created);
                 work = created;
             }
             work.consumers++;
+            if (syncRound) work.roundConsumers++;
         }
         Pending observed = work;
         AtomicBoolean detached = new AtomicBoolean();
-        Runnable leave = () -> releaseConsumer(scope, identity, observed, detached);
+        Runnable leave = () -> releaseConsumer(scope, pendingKey, observed, detached, syncRound);
         try {
             if (cancellation != null) cancellation.attach(leave);
             if (owner) RECOGNITION_WORKERS.execute(work.task);
@@ -179,6 +266,12 @@ final class CarrierRecognitionCoordinator {
                 } catch (ExecutionException failed) {
                     if (cancellation != null) cancellation.throwIfCancelled();
                     Throwable cause = failed.getCause();
+                    // 用户 2026-09-27 提交前核对答复四: the shared request's own budget ended it while this round
+                    // waited (no consumer cancels it while one waits); the round is told it timed out, not interrupted.
+                    if (syncRound && cause instanceof InterruptedException
+                            && work.cancellation.isCancelled()) {
+                        throw new CarrierRecognitionTimeoutException();
+                    }
                     if (cause instanceof Exception) throw (Exception) cause;
                     if (cause instanceof Error) throw (Error) cause;
                     throw new IllegalStateException(cause);
@@ -190,15 +283,32 @@ final class CarrierRecognitionCoordinator {
         }
     }
 
-    private static void releaseConsumer(Object scope, String identity, Pending work, AtomicBoolean detached) {
+    private static void releaseConsumer(Object scope, String identity, Pending work, AtomicBoolean detached,
+            boolean syncRound) {
         if (!detached.compareAndSet(false, true)) return;
         synchronized (IN_FLIGHT) {
+            if (syncRound) work.roundConsumers--;
             if (--work.consumers != 0 || work.task.isDone()) return;
             // Fence old cache writes before a replacement can claim the same identity.
             work.cancellation.cancel();
             work.task.cancel(true);
             removePending(scope, identity, work);
         }
+    }
+
+    private static boolean roundWaiting(Pending work) {
+        synchronized (IN_FLIGHT) {
+            return work.roundConsumers > 0;
+        }
+    }
+
+    /** A connect or read timeout of the request itself, however the transport wrapped it. */
+    private static boolean requestTimedOut(Throwable failure) {
+        Throwable cause = failure;
+        for (int depth = 0; cause != null && depth < 8; depth++, cause = cause.getCause()) {
+            if (cause instanceof java.net.SocketTimeoutException) return true;
+        }
+        return false;
     }
 
     private static void removePending(Object scope, String identity, Pending expected) {
@@ -211,38 +321,60 @@ final class CarrierRecognitionCoordinator {
     }
 
     private Outcome recognizeOwned(String number, String identity,
-            ExpressQueryCancellation cancellation) throws Exception {
+            ExpressQueryCancellation cancellation, boolean excludeJd, BooleanSupplier roundWaiting,
+            long parcelAnchorAtMs) throws Exception {
         cancellation.throwIfCancelled();
         Snapshot previous = state.load(identity);
         CarrierNormalization healed = currentNormalization(previous.success);
-        if (healed != null) {
+        if (healed != null && !(excludeJd && isJd(healed))) {
             saveIfActive(identity, new Snapshot(healed, 0, 0L, false), cancellation);
             return new Outcome(Collections.singletonList(healed), false, false);
         }
         if (previous.success.present()) previous = Snapshot.empty();
-        if (previous.terminal) {
-            return new Outcome(Collections.emptyList(), false, true);
-        }
         long now = clock.now();
+        // A terminal verdict states what the upstream knew at one moment, not a permanent fact.
+        // The gateway's own terminal record self-heals on this schedule; a terminal snapshot now
+        // carries its expiry in the same retryAt field a retry uses, so the client stops
+        // outliving the server it asks.
+        if (previous.terminal && previous.retryAt > now) {
+            return new Outcome(Collections.emptyList(), false, true, previous.offTable);
+        }
+        if (previous.terminal) previous = Snapshot.empty();
         if (previous.retryAt > now) {
-            return new Outcome(Collections.emptyList(), true, false);
+            return new Outcome(Collections.emptyList(), true, false, previous.offTable);
         }
 
-        final List<String> publicCandidates;
+        final List<Kuaidi100CarrierDetector.Candidate> publicCandidates;
         try {
-            publicCandidates = publicDetector.detectCandidates(number, cancellation);
+            publicCandidates = publicDetector.detectNamedCandidates(number, cancellation);
         } catch (InterruptedException interrupted) {
             throw interrupted;
         } catch (Exception networkFailure) {
-            recordNetworkFailure(identity, previous, now, cancellation);
+            // The request's own timeout is no failure: in a sync round (用户 2026-09-27 提交前核对答复四), which is told
+            // so to mark it cut off, and outside one (用户 2026-09-27 提交前核对答复五).
+            if (requestTimedOut(networkFailure)) {
+                if (roundWaiting.getAsBoolean()) throw new CarrierRecognitionTimeoutException();
+                throw networkFailure;
+            }
+            recordNetworkFailure(identity, previous, now, cancellation, CarrierNormalization.NONE);
             throw networkFailure;
         }
 
         ArrayList<CarrierNormalization> recognized = new ArrayList<>();
-        for (String candidate : publicCandidates) {
-            CarrierRegistry.Carrier carrier = CarrierRegistry.resolveKuaidi100Code(candidate);
-            if (carrier == null) continue;
-            recognized.add(localNormalization(carrier));
+        CarrierNormalization offTable = CarrierNormalization.NONE;
+        for (Kuaidi100CarrierDetector.Candidate candidate : publicCandidates) {
+            CarrierRegistry.Carrier carrier = CarrierRegistry.resolveKuaidi100Code(candidate.code);
+            if (carrier == null) {
+                // 其余裁决 29: the first named candidate the table cannot place is the display name.
+                if (offTable.offTableName().isEmpty() && !candidate.name.isEmpty()
+                        && !"快递".equals(candidate.name)) {
+                    offTable = CarrierNormalization.offTable(candidate.name, candidate.code);
+                }
+                continue;
+            }
+            CarrierNormalization local = localNormalization(carrier);
+            if (excludeJd && isJd(local)) continue;
+            recognized.add(local);
         }
         if (!recognized.isEmpty()) {
             saveIfActive(identity, new Snapshot(recognized.get(0), 0, 0L, false), cancellation);
@@ -251,32 +383,50 @@ final class CarrierRecognitionCoordinator {
 
         try {
             CarrierNormalization fallback = classifySecondLevel(
-                    number, cancellation);
+                    number, cancellation, excludeJd, parcelAnchorAtMs);
             CarrierNormalization resolved = currentNormalization(fallback);
-            if (resolved != null) {
+            if (resolved != null && !(excludeJd && isJd(resolved))) {
                 saveIfActive(identity, new Snapshot(resolved, 0, 0L, false), cancellation);
                 return new Outcome(Collections.singletonList(resolved), false, false);
             }
-            saveIfActive(identity, new Snapshot(CarrierNormalization.NONE, 0, 0L, true), cancellation);
-            return new Outcome(Collections.emptyList(), false, true);
+            // Same window as a network-failure terminal: an answer the built-in table could not
+            // name is a statement about today's table, not about the waybill.
+            saveIfActive(identity, new Snapshot(CarrierNormalization.NONE, 0,
+                    clock.now() + TERMINAL_TTL_MS, true, offTable), cancellation);
+            return new Outcome(Collections.emptyList(), false, true, offTable);
         } catch (RecognitionPending pending) {
             saveIfActive(identity, new Snapshot(CarrierNormalization.NONE,
-                    previous.networkFailures, Math.min(pending.retryAt, now + RETRY_DELAY_MS), false), cancellation);
-            return new Outcome(Collections.emptyList(), true, false);
+                    previous.networkFailures, Math.min(pending.retryAt, now + RETRY_DELAY_MS), false,
+                    offTable), cancellation);
+            return new Outcome(Collections.emptyList(), true, false, offTable);
         } catch (InterruptedException interrupted) {
             throw interrupted;
         } catch (Exception networkFailure) {
-            recordNetworkFailure(identity, previous, now, cancellation);
+            // The paid level's own timeout, likewise (用户 2026-09-27 提交前核对答复四、答复五).
+            if (requestTimedOut(networkFailure)) {
+                if (roundWaiting.getAsBoolean()) throw new CarrierRecognitionTimeoutException();
+                throw networkFailure;
+            }
+            recordNetworkFailure(identity, previous, now, cancellation, offTable);
             throw networkFailure;
         }
     }
 
+    private static boolean isJd(CarrierNormalization value) {
+        return value != null && "JD".equals(value.standardCode);
+    }
+
     private CarrierNormalization classifySecondLevel(
-            String waybill, ExpressQueryCancellation cancellation) throws Exception {
+            String waybill, ExpressQueryCancellation cancellation, boolean excludeJd,
+            long parcelAnchorAtMs) throws Exception {
         cancellation.throwIfCancelled();
         JSONObject payload = new JSONObject()
                 .put("waybill", waybill)
                 .put("firstStageCompleted", true);
+        // 优化 5（协调方定的接口约定）：the parcel's reuse anchor, only when it is positive and not in the future.
+        if (parcelAnchorAtMs > 0L && parcelAnchorAtMs <= clock.now()) {
+            payload.put("parcelAnchorAtMs", parcelAnchorAtMs);
+        }
         HttpClient.Response response = gateway.post(
                 "/api/express/classify", payload, cancellation);
         cancellation.throwIfCancelled();
@@ -297,21 +447,19 @@ final class CarrierRecognitionCoordinator {
         }
         JSONObject root = GatewayHttpErrors.parseObject(
                 response, "暂时无法识别承运商");
-        CarrierNormalization rootNormalization = AccountCarrierNormalizer.parse(root);
-        if (rootNormalization.recognized()) return rootNormalization;
+        // Audit C1 (user 2026-09-25): the Worker answers with carrier standard codes (KYSY, JTSD,
+        // HTKY …), never Kuaidi100 codes; read them by exact standard code only. A Kuaidi100-code or
+        // display-name lookup turned HTKY into JTSD (both are named 极兔速递) and threw away most
+        // paid answers. Shared fixture: carrier-classify-responses.v1.json.
         JSONArray values = root.optJSONArray("auto");
         if (values == null) return CarrierNormalization.NONE;
         for (int index = 0; index < values.length(); index++) {
             JSONObject value = values.optJSONObject(index);
             if (value == null) continue;
-            CarrierNormalization normalization = AccountCarrierNormalizer.parse(value);
-            if (normalization.recognized()) return normalization;
-            CarrierRegistry.Carrier carrier = CarrierRegistry.resolveKuaidi100Code(
+            CarrierRegistry.Carrier carrier = CarrierRegistry.resolve(
                     value.optString("comCode", ""));
-            if (carrier == null) {
-                carrier = CarrierRegistry.resolveName(value.optString("name", ""));
-            }
-            if (carrier != null) return localNormalization(carrier);
+            if (carrier == null || excludeJd && "JD".equals(carrier.standardCode)) continue;
+            return localNormalization(carrier);
         }
         return CarrierNormalization.NONE;
     }
@@ -325,12 +473,13 @@ final class CarrierRecognitionCoordinator {
     }
 
     private void recordNetworkFailure(String identity, Snapshot previous, long now,
-            ExpressQueryCancellation cancellation) throws InterruptedException {
+            ExpressQueryCancellation cancellation, CarrierNormalization offTable)
+            throws InterruptedException {
         int failures = previous.networkFailures + 1;
         boolean terminal = failures >= MAX_NETWORK_FAILURES;
         saveIfActive(identity, new Snapshot(
                 CarrierNormalization.NONE, failures,
-                terminal ? 0L : now + RETRY_DELAY_MS, terminal), cancellation);
+                now + (terminal ? TERMINAL_TTL_MS : RETRY_DELAY_MS), terminal, offTable), cancellation);
     }
 
     private void saveIfActive(String identity, Snapshot snapshot,
@@ -393,7 +542,9 @@ final class CarrierRecognitionCoordinator {
                         value.optString("tableVersion", ""));
                 return new Snapshot(
                         success, value.optInt("networkFailures", 0),
-                        value.optLong("retryAt", 0L), value.optBoolean("terminal", false));
+                        value.optLong("retryAt", 0L), value.optBoolean("terminal", false),
+                        CarrierNormalization.offTable(value.optString("offTableName", ""),
+                                value.optString("offTableCode", "")));
             } catch (Throwable malformed) {
                 return Snapshot.empty();
             }
@@ -414,6 +565,10 @@ final class CarrierRecognitionCoordinator {
                 value.put("networkFailures", snapshot.networkFailures);
                 value.put("retryAt", snapshot.retryAt);
                 value.put("terminal", snapshot.terminal);
+                if (!snapshot.offTable.offTableName().isEmpty()) {
+                    value.put("offTableName", snapshot.offTable.displayName);
+                    value.put("offTableCode", snapshot.offTable.kuaidi100Code);
+                }
                 value.put("updatedAtMs", System.currentTimeMillis());
                 synchronized (preferences) {
                     SharedPreferences.Editor editor = preferences.edit().putString(identity, value.toString());

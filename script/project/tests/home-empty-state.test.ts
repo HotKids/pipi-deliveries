@@ -41,7 +41,7 @@ assert.doesNotMatch(
 );
 assert.match(
   homeSource,
-  /shipments\.map\([\s\S]*?<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 14 天内的快递信息\s*<\/Text>/,
+  /shipments\.map\([\s\S]*?<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 14 天内的快递\s*<\/Text>/,
   "the populated list still ends with the history note",
 );
 

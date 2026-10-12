@@ -14,7 +14,9 @@ import {
   isProviderErrorDetail,
 } from "./status";
 
-const LOAD_TIMEOUT_MS = 10_000;
+/** K100 and JT page capture share one 8-second budget on all clients (audit R6, user default #12). */
+export const WEB_TIMELINE_LOAD_TIMEOUT_MS = 8_000;
+const LOAD_TIMEOUT_MS = WEB_TIMELINE_LOAD_TIMEOUT_MS;
 const EVALUATION_TIMEOUT_MS = 1_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_ATTEMPTS = 40;
@@ -66,6 +68,7 @@ export type WebTimelineInput = Readonly<{
   deadlineAtMs?: number;
   signal?: AbortSignal;
   onQueryAttempted?: (authorized: boolean) => void;
+  beforeQuery?: () => void;
 }>;
 
 function trustedHost(hostname: string): boolean {
@@ -436,6 +439,7 @@ export async function scrapeWebTimeline(
   };
   try {
     if (input.signal?.aborted) throw new OperationTimeoutError();
+    input.beforeQuery?.();
     requestStarted = true;
     void controller.loadURL(routeUrl).then(
       (loaded) => { loadSettled = true; loadCompleted = loaded; },

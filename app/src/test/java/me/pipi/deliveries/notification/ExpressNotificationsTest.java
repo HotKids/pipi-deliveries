@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertNull;
 
+import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.StatusSemantic;
 
 import org.junit.Test;
@@ -65,6 +66,39 @@ public final class ExpressNotificationsTest {
         assertNull(ExpressNotifications.channelId(null));
     }
 
+    /**
+     * 用户定 2026-09-25（方案 B）：订单投影后并进已有运单行的那一轮只看展示状态。Pixel 上已签收的圆通运单行并进
+     * 同样已签收的京东订单，事件更新、文案变了，照原规则会通知，这一轮不通知；状态真的变了照常通知；冻结京东件照旧。
+     */
+    @Test
+    public void theMergeRoundNotifiesOnlyAShownStatusChange() {
+        ExpressItem signedParcel = parcel(StatusSemantic.COMPLETED, "INTERFACE5", "CaiNiao", "",
+                "您的快件已签收，签收人：家门口", 1_789_560_318_000L);
+        ExpressItem signedOrder = parcel(StatusSemantic.COMPLETED, "I5-JD", "JingDong", "YT1234567897051",
+                "您的包裹已送货上门，放至家门口", 1_789_819_522_000L);
+        assertTrue("the ordinary rule takes the newer event", ExpressNotifications.shouldPostUpdate(
+                signedParcel, signedOrder));
+        assertFalse(ExpressNotifications.shouldPostStatusChange(signedParcel, signedOrder));
+        assertTrue(ExpressNotifications.shouldPostStatusChange(parcel(StatusSemantic.DELIVERY,
+                "INTERFACE5", "CaiNiao", "", "快递员正在派送", 1_789_500_000_000L), signedOrder));
+        assertFalse("a frozen JD row stays frozen", ExpressNotifications.shouldPostStatusChange(
+                parcel(StatusSemantic.COMPLETED, "INTERFACE5", "JingDong", "", "您的快件已签收",
+                        1_789_560_318_000L),
+                parcel(StatusSemantic.DELIVERY, "I5-JD", "JingDong", "YT1234567897051",
+                        "快递员正在派送", 1_789_819_522_000L)));
+        assertFalse(ExpressNotifications.shouldPostStatusChange(null, signedOrder));
+        assertFalse(ExpressNotifications.shouldPostStatusChange(signedParcel, null));
+    }
+
+    private static ExpressItem parcel(StatusSemantic semantic, String owner, String sourceProvider,
+            String projectedWaybill, String detail, long eventAt) {
+        String waybill = owner.equals("I5-JD") ? "3630448013820579" : "YT1234567897051";
+        return new ExpressItem(1L, "", waybill, "YTO", "圆通速递", semantic, semantic.label, detail,
+                "2026-09-19 20:05:22", "[]", "", owner, "", eventAt, eventAt, owner, "", "v5", "",
+                false, projectedWaybill, projectedWaybill.isEmpty() ? "" : "圆通速递", "[]",
+                sourceProvider);
+    }
+
     /** 上一版没有事件时间时，同状态的全量重写不是新事件（Fold7 2026-09-05 15:30 六票已签收件）。 */
     @Test
     public void unknownPreviousEventTimeIsNotANewerEvent() {
@@ -76,5 +110,14 @@ public final class ExpressNotificationsTest {
                 StatusSemantic.TRANSIT, "中通快递 0238 · 运输中", "运输中", 0L,
                 StatusSemantic.COMPLETED, "中通快递 0238 · 已签收",
                 "您的快件已送达，签收人：家门口", 1788234629000L));
+    }
+
+    /** Audit R7 (user 2026-09-25): a signed notification carries the shared teal accent too. */
+    @org.junit.Test
+    public void aSignedNotificationUsesTheSharedTealAccent() {
+        org.junit.Assert.assertEquals(0xFF0F9D8A,
+                ExpressNotifications.statusColor(me.pipi.deliveries.model.StatusSemantic.COMPLETED));
+        org.junit.Assert.assertEquals(0xFF757575,
+                ExpressNotifications.statusColor(me.pipi.deliveries.model.StatusSemantic.UNKNOWN));
     }
 }

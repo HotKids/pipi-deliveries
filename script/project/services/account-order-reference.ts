@@ -25,7 +25,9 @@ export function accountParcelWithProjectionReference(
     .trim();
   const timeline = shipment.sourceTimeline || shipment.timeline;
   const textIdentity = parcel?.textIdentity || accountOrderTextIdentity(timeline.tracks);
-  if (!parcel && !trustedReference && !textIdentity) return null;
+  // T23 (2026-09-26): a union-page waybill held for its carrier is also enough to rebuild the order's parcel.
+  if (!parcel && !trustedReference && !textIdentity &&
+      !shipment.identity.pendingProjection?.waybill) return null;
   const projectedWaybill = normalizedProjectedWaybill(shipment.identity);
   return {
     source,

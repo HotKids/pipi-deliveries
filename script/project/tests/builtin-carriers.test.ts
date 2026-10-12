@@ -36,6 +36,14 @@ assert.deepEqual(records.map((record) => [
   ["UC", "优速快递", "youshuwuliu", "", "uc"],
   ["DANNIAO", "丹鸟速递", "danniao", "", "danniao"],
 ]);
+assert.equal(resolveCarrierKuaidi100Code("youzhengbk")?.standardCode, "YZPY");
+assert.equal(resolveCarrierKuaidi100Code("youzhengbk")?.kuaidi100Code, "youzhengguonei");
+assert.equal(resolveCarrierQuery("youzhengbk"), null);
+assert.equal(resolveCarrierCpCode("YOUZHENGBK")?.standardCode, "YZPY");
+assert.deepEqual(
+  records.find((record) => record.standardCode === "YZPY")?.kuaidi100CodeAliases,
+  ["youzhengbk"],
+);
 assert.equal(resolveCarrierQuery("KYE"), null);
 assert.equal(resolveCarrierQuery("JITU"), null);
 assert.equal(resolveCarrierQuery("JDLEX"), null);

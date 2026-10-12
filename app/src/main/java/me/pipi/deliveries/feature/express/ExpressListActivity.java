@@ -138,6 +138,9 @@ public final class ExpressListActivity extends AppCompatActivity {
     private ExpressHomeOrderProjectionCapture orderProjectionCapture;
     private boolean orderProjectionCaptureEnabled;
     private boolean resetOrderProjectionAttemptsAfterCapture;
+    /** Started Home screens: while one is visible it owns order projection and background rounds defer. */
+    private static final java.util.concurrent.atomic.AtomicInteger STARTED_HOMES =
+            new java.util.concurrent.atomic.AtomicInteger();
     /** 下拉刷新的结果 toast 只在这次手势对应的同步结束时弹一次（AGENTS §11 统一表）。 */
     private boolean pullRefreshPending;
     private String pullRefreshWorkId;
@@ -244,7 +247,6 @@ public final class ExpressListActivity extends AppCompatActivity {
             swipeRefresh.postDelayed(pullRefreshHardTimeout, 60_000L);
         });
         requestNotificationPermission();
-        reload();
         focusQueryIfRequested(getIntent());
         if (state != null && state.getBoolean(STATE_PHONE_TAIL_DIALOG, false)) {
             showPhoneTailDialog(
@@ -274,6 +276,7 @@ public final class ExpressListActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
+        STARTED_HOMES.incrementAndGet();
         ExpressScheduler.requestForeground(this);
         orderProjectionCaptureEnabled = true;
         attemptedOrderProjections.clear();
@@ -294,6 +297,7 @@ public final class ExpressListActivity extends AppCompatActivity {
 
     @Override
     protected void onStop() {
+        STARTED_HOMES.updateAndGet(count -> Math.max(0, count - 1));
         pullRefreshPending = false;
         if (swipeRefresh != null) {
             swipeRefresh.removeCallbacks(pullRefreshTimeout);
@@ -371,9 +375,13 @@ public final class ExpressListActivity extends AppCompatActivity {
     private void reload() {
         int generation = ++reloadGeneration;
         String bindingSource = ExpressAccountSource.bindingSource(this);
+        long requestedAt = android.os.SystemClock.elapsedRealtime();
         databaseWorker.execute(() -> {
+            long startedAt = android.os.SystemClock.elapsedRealtime();
             try {
-                List<ExpressItem> fresh = ExpressRepository.get(this).listVisible(bindingSource);
+                List<ExpressItem> fresh = ExpressRepository.get(this).listVisibleForHome(bindingSource);
+                android.util.Log.i("ExpressHomeLoad", "Local list loaded: waitMs=" + (startedAt - requestedAt)
+                        + " readMs=" + (android.os.SystemClock.elapsedRealtime() - startedAt) + " rows=" + fresh.size());
                 runOnUiThread(() -> {
                     if (generation != reloadGeneration || isFinishing() || isDestroyed()
                             || !bindingSource.equals(ExpressAccountSource.bindingSource(this))) return;
@@ -401,32 +409,43 @@ public final class ExpressListActivity extends AppCompatActivity {
         if (!orderProjectionCaptureEnabled || orderProjectionCapture != null || textProjectionCancellation != null
                 || isFinishing() || isDestroyed()) return;
         ExpressItem candidate;
+        // Audit R10: one Home pass is one diagnostic flow, the capture it starts included.
+        String flowId = ExpressHomeOrderProjectionCapture.homeFlowId();
         while ((candidate = nextOrderProjectionCandidate(
-                items, attemptedOrderProjections)) != null) {
+                items, attemptedOrderProjections, flowId)) != null) {
             // Feed text projection does not open H5 and must not consume its cooldown.
-            ExpressOrderTextIdentity.Identity textIdentity =
-                    ExpressOrderTextIdentity.fromTracksJson(
-                            candidate.tracksJson, candidate.waybill);
+            // AGENTS §9「谁需要自己取运单号」：文案取号只给京东件。
+            ExpressOrderTextIdentity.Identity textIdentity = candidate.isJingDongSource()
+                    ? ExpressOrderTextIdentity.fromTracksJson(candidate.tracksJson, candidate.waybill)
+                    : null;
             if (textIdentity != null) {
                 ExpressOrderProjectionRetryStore.AttemptToken token =
                         ExpressOrderProjectionRetryStore.acquireAttempt(candidate);
                 if (token == null) continue;
                 ExpressItem expected = candidate;
-                String owner = expected.stateOwner.isEmpty() ? expected.source : expected.stateOwner;
                 ExpressQueryCancellation cancellation = new ExpressQueryCancellation(30_000L);
                 textProjectionCancellation = cancellation;
                 databaseWorker.execute(() -> {
                     boolean saved = false;
                     try {
-                        saved = ExpressRepository.get(this).saveOrderProjection(expected,
-                                ExpressAccountSource.bindingSourceForOwner(owner),
-                                textIdentity.waybill, textIdentity.companyName, cancellation);
                         ExpressRepository repository = ExpressRepository.get(this);
+                        ExpressApi api = new ExpressApi(getApplicationContext());
+                        // T23（用户 2026-09-26，其余裁决 28）：先识别文案给出的运单号的承运商，对上才投影并推送；
+                        // 对不上这一票保持原样、不推送，之后的轮次再补识别。
+                        ExpressRepository.PendingProjection pending = repository.pendingProjection(expected);
+                        if (pending != null) {
+                            ExpressApi parcel = api.forParcel(AccountCarrierRecognition.parcelAnchor(repository, expected));
+                            saved = AccountCarrierRecognition.projectPending(repository, expected, pending,
+                                    waybill -> parcel.recognizeCarrier(waybill, cancellation,
+                                            AccountCarrierRecognition.excludesJd(expected, waybill)),
+                                    cancellation);
+                        }
                         ExpressItem projected = saved ? repository.find(expected.rowId) : null;
                         if (AccountCarrierRecognition.needsRecognition(projected)) {
+                            ExpressApi parcel = api.forParcel(AccountCarrierRecognition.parcelAnchor(repository, projected));
                             AccountCarrierRecognition.recognize(repository, projected,
-                                    waybill -> new ExpressApi(getApplicationContext())
-                                            .recognizeCarrier(waybill, cancellation));
+                                    waybill -> parcel.recognizeCarrier(waybill, cancellation,
+                                            AccountCarrierRecognition.excludesJd(projected, waybill)));
                         }
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
@@ -440,10 +459,11 @@ public final class ExpressListActivity extends AppCompatActivity {
                             if (textProjectionCancellation != cancellation) return;
                             textProjectionCancellation = null;
                             if (cancellation.isCancelled() || isFinishing() || isDestroyed()) return;
-                            if (committed) {
-                                ExpressScheduler.requestNow(this);
-                                reload();
-                            } else startNextOrderProjectionCapture();
+                            // Audit R5 (user 2026-09-25, as on iOS): a saved projection commits
+                            // only this row; it never enqueues another full sync, which used to
+                            // replace (REPLACE) a running one, the user's pull included.
+                            if (committed) reload();
+                            else startNextOrderProjectionCapture();
                         });
                     }
                 });
@@ -451,7 +471,7 @@ public final class ExpressListActivity extends AppCompatActivity {
             }
             ExpressHomeOrderProjectionCapture capture =
                     new ExpressHomeOrderProjectionCapture(
-                            this, candidate, this::onOrderProjectionCaptureFinished);
+                            this, candidate, this::onOrderProjectionCaptureFinished, flowId);
             orderProjectionCapture = capture;
             if (capture.start()) return;
             orderProjectionCapture = null;
@@ -467,23 +487,33 @@ public final class ExpressListActivity extends AppCompatActivity {
             attemptedOrderProjections.clear();
         }
         if (!orderProjectionCaptureEnabled || isFinishing() || isDestroyed()) return;
-        if (saved) {
-            ExpressScheduler.requestNow(this);
-            reload();
-        }
+        // Audit R5: the saved row is reloaded; no extra full sync (see the text projection above).
+        if (saved) reload();
         else mainHandler.post(this::startNextOrderProjectionCapture);
+    }
+
+    /** Whether a Home screen is started (onStart..onStop) in this process. */
+    static boolean homeVisible() {
+        return STARTED_HOMES.get() > 0;
     }
 
     static ExpressItem nextOrderProjectionCandidate(
             List<ExpressItem> values, Set<String> attempted) {
+        return nextOrderProjectionCandidate(values, attempted,
+                ExpressHomeOrderProjectionCapture.homeFlowId());
+    }
+
+    static ExpressItem nextOrderProjectionCandidate(
+            List<ExpressItem> values, Set<String> attempted, String flowId) {
         if (values == null || attempted == null) return null;
         for (ExpressItem value : values) {
-            if (!ExpressHomeOrderProjectionCapture.needsProjection(value)) {
+            if (!ExpressHomeOrderProjectionCapture.needsProjection(value, true)) {
                 if (value != null && value.isAccountOrder() && value.projectedWaybill.isEmpty()) {
                     me.pipi.deliveries.network.ExpressLog.line("v5", "jd_h5", "jingdong", "skipped",
                             "tail", me.pipi.deliveries.network.ExpressLog.tail(value.waybill),
                             "reason", "projection_prerequisite", "routePresent", !value.routeCredential.isEmpty(),
-                            "routeAvailable", value.routeCredentialAvailable);
+                            "routeAvailable", value.routeCredentialAvailable, "flowId", flowId,
+                            "trigger", ExpressHomeOrderProjectionCapture.HOME_TRIGGER);
                 }
                 continue;
             }
@@ -571,7 +601,7 @@ public final class ExpressListActivity extends AppCompatActivity {
                     queryLookupPending = false;
                     querying = false;
                     queryInput.setEnabled(true);
-                    Toast.makeText(this, ExpressToastCopy.STATE_LOAD_FAILED, Toast.LENGTH_SHORT).show();
+                    // 「本地快递数据读取失败」只在列表加载失败时弹（审计 R8，用户 2026-09-25 默认 #13）。
                 });
             }
         });
@@ -1029,15 +1059,13 @@ public final class ExpressListActivity extends AppCompatActivity {
             ExpressItem item = getItem(position);
             holder.icon.setImageResource(item.displayIconResource());
             holder.title.setText(item.displayStatus());
-            holder.title.setTextColor(statusColor(holder.title, item));
-            ExpressSenderBadge.apply(holder.sender, item.sender, statusColor(holder.title, item));
+            holder.title.setTextColor(statusColor(item));
+            ExpressSenderBadge.apply(holder.sender, item.sender, statusColor(item));
             holder.time.setText(me.pipi.deliveries.model.ExpressTimeCodec.formatListTime(item.latestTime));
             holder.time.setVisibility(item.latestTime.isEmpty() ? View.GONE : View.VISIBLE);
-            holder.remark.setText(item.remark);
-            holder.remark.setVisibility(item.remark.isEmpty() ? View.GONE : View.VISIBLE);
             holder.waybill.setText(getString(
                     R.string.express_company_waybill,
-                    item.displayCompany(), item.displayWaybill()));
+                    item.displayCarrierLabel(), item.displayWaybill()));
             holder.detail.setText(item.latestDetail);
             holder.detail.setVisibility(item.latestDetail.isEmpty() ? View.GONE : View.VISIBLE);
             holder.deleteButton.setOnClickListener(view -> confirmDelete(item));
@@ -1050,8 +1078,11 @@ public final class ExpressListActivity extends AppCompatActivity {
         }
     }
 
-    /** 三端同一张状态色表（用户定 2026-09-05）：与详情页 statusColor、Pipi、iOS statusTint 同表。 */
-    private static int statusColor(View view, ExpressItem item) {
+    /**
+     * 三端同一张状态色表（用户定 2026-09-05）：与详情页 statusColor、Pipi、iOS statusTint 同表。未知状态与已取消
+     * 同为灰 #757575（审计 R7，用户 2026-09-25 采纳；原来跟随主题色）。
+     */
+    static int statusColor(ExpressItem item) {
         switch (item.semantic == null ? StatusSemantic.UNKNOWN : item.semantic) {
             case DANGER: return ExpressStatusColors.DANGER;
             case WAITING_PICKUP: return ExpressStatusColors.WAITING_PICKUP;
@@ -1061,10 +1092,9 @@ public final class ExpressListActivity extends AppCompatActivity {
             case TRANSIT: return ExpressStatusColors.TRANSIT;
             case ORDERED:
             case SHIPPED: return ExpressStatusColors.ORDERED;
-            case CANCELLED: return ExpressStatusColors.NEUTRAL;
+            case CANCELLED:
             default:
-                return MaterialColors.getColor(
-                        view, com.google.android.material.R.attr.colorOnSurfaceVariant);
+                return ExpressStatusColors.NEUTRAL;
         }
     }
 
@@ -1073,7 +1103,6 @@ public final class ExpressListActivity extends AppCompatActivity {
         final TextView title;
         final TextView sender;
         final TextView time;
-        final TextView remark;
         final TextView waybill;
         final TextView detail;
         final ImageButton deleteButton;
@@ -1083,7 +1112,6 @@ public final class ExpressListActivity extends AppCompatActivity {
             title = root.findViewById(R.id.tv_cp_name_and_status);
             sender = root.findViewById(R.id.tv_express_sender);
             time = root.findViewById(R.id.tv_express_time);
-            remark = root.findViewById(R.id.tv_remark);
             waybill = root.findViewById(R.id.tv_mail_no);
             detail = root.findViewById(R.id.tv_express_detail);
             deleteButton = root.findViewById(R.id.iv_delete);

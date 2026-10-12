@@ -8,6 +8,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.time.temporal.TemporalAccessor;
+import java.time.temporal.ChronoField;
 import java.util.Locale;
 
 /** Provider timestamps without an offset belong to China, independently of device timezone. */
@@ -41,11 +42,10 @@ public final class ExpressTimeCodec {
         if (value.isEmpty()) return 0L;
         for (DateTimeFormatter parser : PROVIDER_FORMATS) {
             try {
-                TemporalAccessor parsed = parser.parseBest(value,
-                        OffsetDateTime::from, LocalDateTime::from);
-                return parsed instanceof OffsetDateTime
-                        ? ((OffsetDateTime) parsed).toInstant().toEpochMilli()
-                        : ((LocalDateTime) parsed).atZone(CHINA).toInstant().toEpochMilli();
+                TemporalAccessor parsed = parser.parse(value);
+                return parsed.isSupported(ChronoField.OFFSET_SECONDS)
+                        ? OffsetDateTime.from(parsed).toInstant().toEpochMilli()
+                        : LocalDateTime.from(parsed).atZone(CHINA).toInstant().toEpochMilli();
             } catch (DateTimeParseException invalid) {
                 // Each accepted shape is the same provider contract as Pipi Assistant.
             }

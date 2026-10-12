@@ -6,8 +6,8 @@ import { commitRefreshState, emptyState, loadState, saveState } from "../service
 import { refreshAllShipments } from "../services/sync";
 import { parseAccountSyncResult } from "../services/account-parser";
 import { parcelToShipment } from "../services/account-sync";
-import { activateCainiaoManualFallback, applyAccountShipment, selectShipmentDetailTimeline,
-  shipmentDetailComplete } from "../services/shipment-policy";
+import { activateCainiaoManualFallback, applyAccountShipment, FORCED_COMPLETION_REFRESH_WINDOW_MS,
+  selectShipmentDetailTimeline, shipmentDetailComplete } from "../services/shipment-policy";
 import { saveGatewayToken } from "../services/credentials";
 import { readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { acquireDurableRefreshLease } from "../services/refresh-runtime-state";
@@ -170,7 +170,7 @@ for (const [entry, options] of [
     const accountStage = readDiagnostics().find(value => value.event === "refresh.stage.started" &&
       value.details.requestProvider === "v5_query");
     assert.equal(accountStage?.details.trigger, entry === "Home" ? "list_pull"
-      : entry === "startup/resume" ? "foreground_sync" : "background");
+      : entry === "startup/resume" ? "foreground" : "background");
     assert.equal(loadState(clock).shipments.find(value => value.identity.sourceId === "CNOLD001")?.timeline.latestDetail,
       "query 实际物流事件");
     const repeat = await round(records, options);
@@ -209,12 +209,21 @@ test("background query failure persists the list baseline and does not retry an 
 });
 
 test("background honors forced/unchanged terminal freeze but hydrates a new completed list signal once", async () => {
-  seed([row("CNFORCED01"), row("CNSIGNED01", "CaiNiao", 107), row("CNFINISH01"), row("SFSIGNED01", "ShunFeng", 107)]);
+  seed([row("CNFORCED01"), row("CNFORCED02"), row("CNSIGNED01", "CaiNiao", 107), row("CNFINISH01"),
+    row("SFSIGNED01", "ShunFeng", 107)]);
+  // 用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「点击后满 3 天也冻结」「iOS 右滑签收一起改」：
+  // 满 72 小时的右滑签收（CNFORCED01）硬冻结；刚签收、来源仍在途的（CNFORCED02）照常跟着列表更新查一次。CNFORCED01 的来源
+  // 不是终态，列表新节点不把它当重用的新件接管（用户 2026-10-02「修，和 Pipi 一致」），闩锁留着。
+  const forcedAt: Record<string, number> = { CNFORCED01: NOW - FORCED_COMPLETION_REFRESH_WINDOW_MS, CNFORCED02: NOW - 1000 };
   saveState({ ...loadState(clock), shipments: loadState(clock).shipments.map(value =>
-    value.identity.sourceId === "CNFORCED01" ? { ...value, forcedCompletedAtMs: NOW - 1000 } : value) }, clock);
-  const records = [row("CNFORCED01", "CaiNiao", 105, NEW), row("CNSIGNED01", "CaiNiao", 107), row("CNFINISH01", "CaiNiao", 107, NEW), row("SFSIGNED01", "ShunFeng", 107)];
+    forcedAt[value.identity.sourceId] ? { ...value, forcedCompletedAtMs: forcedAt[value.identity.sourceId] } : value) },
+    clock);
+  const records = [row("CNFORCED01", "CaiNiao", 105, NEW), row("CNFORCED02", "CaiNiao", 105, NEW),
+    row("CNSIGNED01", "CaiNiao", 107), row("CNFINISH01", "CaiNiao", 107, NEW), row("SFSIGNED01", "ShunFeng", 107)];
   const first = await round(records, { backgroundHostSafe: true, budgetMs: 30_000 });
-  assert.deepEqual(first.query, ["CNFINISH01"]);
+  assert.deepEqual(first.query, ["CNFINISH01", "CNFORCED02"]);
+  assert.equal(loadState(clock).shipments.find(value => value.identity.sourceId === "CNFORCED01")?.forcedCompletedAtMs,
+    NOW - FORCED_COMPLETION_REFRESH_WINDOW_MS);
   assert.deepEqual(first.online, []);
   assert.deepEqual((await round(records, { backgroundHostSafe: true, budgetMs: 30_000 })).query, []);
 });

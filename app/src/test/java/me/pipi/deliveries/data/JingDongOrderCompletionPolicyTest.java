@@ -38,14 +38,15 @@ public final class JingDongOrderCompletionPolicyTest {
         assertEquals(original.routeCredential, clean.routeCredential);
     }
 
-    @Test public void reviewRemovalDoesNotDiscardStructuredCompletionAbovePlainTracks() throws Exception {
+    // 2026-09-27 user rule: a review is kept when it is the first structured signing (no earlier signing here).
+    @Test public void firstStructuredSigningReviewStaysAbovePlainTracks() throws Exception {
         ExpressQueryResult clean = JingDongOrderCompletionPolicy.clean(packet(
                 new JSONArray().put(track("11:00:00", REVIEW))
                         .put(track("10:00:00", "您的快件已送达至家门口"))), "123456789");
         assertEquals(StatusSemantic.COMPLETED, clean.semantic);
         assertEquals(time("11:00:00"), clean.statusEventTime);
         assertTrue(clean.structuredStatusEvidence);
-        assertEquals("您的快件已送达至家门口", clean.latestDetail);
+        assertEquals(REVIEW, clean.latestDetail);
     }
 
     @Test public void independentCarrierStatusTimeSurvivesReviewRemoval() throws Exception {
@@ -59,15 +60,45 @@ public final class JingDongOrderCompletionPolicyTest {
         assertEquals(time("10:00:00"), clean.statusEventTime);
     }
 
-    @Test public void reviewOnlyPacketKeepsStructuredCompletionWithoutDisplayingReview() throws Exception {
+    // 2026-09-27 user rule: a review is kept when it is the first structured signing (no earlier signing here).
+    @Test public void reviewOnlyPacketWithStructuredCompletionKeepsTheReview() throws Exception {
         ExpressQueryResult clean = JingDongOrderCompletionPolicy.clean(
                 packet(new JSONArray().put(track("11:00:00", REVIEW))), "123456789");
-        assertEquals("[]", clean.tracksJson);
-        assertEquals("", clean.latestDetail);
-        assertEquals("", clean.latestTime);
+        assertTrue(clean.tracksJson.contains("期待您"));
+        assertEquals(REVIEW, clean.latestDetail);
+        assertEquals("2026-09-09 11:00:00", clean.latestTime);
         assertEquals(StatusSemantic.COMPLETED, clean.semantic);
         assertEquals(time("11:00:00"), clean.statusEventTime);
         assertTrue(clean.structuredStatusEvidence);
+    }
+
+    /**
+     * 2026-09-27 user rule, removal side: a review is removed when the parcel was signed earlier (here a raw 107
+     * node at 10:00) or when its packet reports no structured signing; the status then recovers from the
+     * surviving nodes as before.
+     */
+    @Test public void aRemovedReviewLetsStatusRecoverFromTheSurvivingNodes() throws Exception {
+        ExpressQueryResult signedEarlier = new ExpressQueryResult("JDTEST1107", "YTO", "圆通速递",
+                StatusSemantic.COMPLETED, time("11:00:00"), "2026-09-09 11:00:00", REVIEW,
+                new JSONArray().put(track("11:00:00", REVIEW))
+                        .put(track("10:00:00", "真实签收").put("statusCode", "107")).toString(),
+                "", "", "v5_query", "", "", "JingDong").withManualStatusEvidence("已签收", false);
+        ExpressQueryResult clean = JingDongOrderCompletionPolicy.clean(signedEarlier, "123456789");
+        assertFalse(clean.tracksJson.contains("期待您"));
+        assertEquals("真实签收", clean.latestDetail);
+        assertEquals(StatusSemantic.COMPLETED, clean.semantic);
+        assertEquals(time("10:00:00"), clean.statusEventTime);
+
+        ExpressQueryResult unsigned = new ExpressQueryResult("JDTEST1107", "YTO", "圆通速递",
+                StatusSemantic.COMPLETED, time("11:00:00"), "2026-09-09 11:00:00", REVIEW,
+                new JSONArray().put(track("11:00:00", REVIEW))
+                        .put(track("10:00:00", "派送中").put("statusCode", "105")).toString(),
+                "", "", "v5_query", "", "", "JingDong").withManualStatusEvidence("已签收", false);
+        clean = JingDongOrderCompletionPolicy.clean(unsigned, "123456789");
+        assertFalse(clean.tracksJson.contains("期待您"));
+        assertEquals("派送中", clean.latestDetail);
+        assertEquals(StatusSemantic.DELIVERY, clean.semantic);
+        assertEquals(time("10:00:00"), clean.statusEventTime);
     }
 
     @Test public void actualInterface5ParserCodesRecoverStatusWithoutCrossProviderGuessing() throws Exception {

@@ -8,7 +8,6 @@
     android:maxResizeWidth="180dp"
     android:maxResizeHeight="110dp"
     android:previewImage="@drawable/widget_express_2x2_preview"
-    android:previewLayout="@layout/express_widget_2x2"
     android:resizeMode="horizontal"
     android:targetCellWidth="2"
     android:targetCellHeight="2"

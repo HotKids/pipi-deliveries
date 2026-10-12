@@ -45,11 +45,98 @@ final class ExpressJingDongTimelineParser {
 
     private ExpressJingDongTimelineParser() {}
 
-    /** Polling also retries the exact expansion control as the viewport mounts its floor. */
+    /**
+     * Polling also retries the exact expansion control as the viewport mounts its floor. It also
+     * reports the page state an empty shell is judged by ({@link #pageState}): the union waybill,
+     * union requests that failed, union requests still unanswered, document readiness and the
+     * viewport.
+     */
     static String readScript() {
         return "(function(){" + probeScript() + ";return JSON.stringify({"
                 + "q:window.__pipiJdUnionCaptures||[],k:window.__pipiJdRisk===1,"
-                + "n:window.__pipiJdNetworkMaxTracks||0});})()";
+                + "n:window.__pipiJdNetworkMaxTracks||0,u:!!window.__pipiJdUnionWaybill,"
+                + "e:window.__pipiJdUnionErrors||0,p:window.__pipiJdUnionPending||0,"
+                + "r:String(document.readyState||''),"
+                + "w:window.innerWidth||0,h:window.innerHeight||0});})()";
+    }
+
+    /**
+     * 用户 2026-09-25 同意（方案 A，三端同一口径）：一次轮询读到的京粉页状态。空壳 = 页面加载完（document
+     * complete）、有真实视口、不是风控，什么带物流的东西都没抓到（没有带节点的包、没有网络节点、没有运单号），而且
+     * getUnionActivity 要么一次都没回，要么回的都是 2xx（iOS 上赠品单 4421 的 union 接口回了 200，只是不带物流）。
+     * union 请求回了非 2xx 或网络失败时与风控一样，既不算空壳也不清零：京东两次故障隔 10 分钟不能把真订单记成空壳
+     * （方案 B 会把它藏起来）。Lite 看的是探针在页面 fetch / XMLHttpRequest 上看到的 union 请求：fetch 的
+     * Response.status 或被拒的 fetch，XMLHttpRequest load 时的 status 与 error、timeout 事件。
+     *
+     * <p>用户 2026-09-26（其余裁决 4，Lite、iOS 同口径）：union 请求发出去了、到超时还没回（探针的 p：已发出、还没
+     * 收到应答也没失败的请求数，页面自己中止的请求同样一直没回），与请求出错一样既不算空壳也不清零；从没发出过
+     * union 请求的页照旧算空壳。</p>
+     */
+    static final class PageState {
+        final boolean loaded;
+        final boolean viewport;
+        final boolean logistics;
+        final boolean riskControl;
+        final boolean unionError;
+        final boolean unionPending;
+
+        PageState(boolean loaded, boolean viewport, boolean logistics, boolean riskControl,
+                boolean unionError, boolean unionPending) {
+            this.loaded = loaded;
+            this.viewport = viewport;
+            this.logistics = logistics;
+            this.riskControl = riskControl;
+            this.unionError = unionError;
+            this.unionPending = unionPending;
+        }
+
+        boolean emptyShell() {
+            return loaded && viewport && !logistics && !riskControl && !unionError && !unionPending;
+        }
+    }
+
+    /** Reads {@link #readScript}'s page state; an unreadable payload proves nothing either way. */
+    static PageState pageState(String payload, ExpressItem owner) {
+        Object decoded = payload == null || payload.length() > 4 * MAX_CAPTURED_BODY_CHARS
+                ? null : decode(payload);
+        if (!(decoded instanceof JSONObject)) return null;
+        JSONObject root = (JSONObject) decoded;
+        boolean logistics = root.optInt("n", 0) > 0 || root.optBoolean("u", false)
+                || queuedLogistics(root.optJSONArray("q"), owner);
+        return new PageState("complete".equals(root.optString("r", "")),
+                root.optInt("w", 0) > 0 && root.optInt("h", 0) > 0,
+                logistics, root.optBoolean("k", false), root.optInt("e", 0) > 0,
+                root.optInt("p", 0) > 0);
+    }
+
+    /**
+     * Whether a queued union response carries logistics: a valid track, or a waybill other than the
+     * order's own number (the same identity rule as {@link #parse}). A bare or unreadable answer
+     * does not.
+     */
+    private static boolean queuedLogistics(JSONArray queue, ExpressItem owner) {
+        if (queue == null) return false;
+        String excluded = owner != null && owner.isAccountOrder() ? normalize(owner.waybill) : "";
+        for (int index = 0; index < queue.length(); index++) {
+            Object envelope = decode(queue.opt(index));
+            if (!(envelope instanceof JSONObject)) continue;
+            Object payload = ((JSONObject) envelope).opt("wholePayload");
+            if (payload instanceof String && ((String) payload).length() > MAX_CAPTURED_BODY_CHARS) continue;
+            ArrayList<JSONObject> records = new ArrayList<>();
+            visit(payload, 0, records, Collections.newSetFromMap(new IdentityHashMap<>()));
+            for (JSONObject record : records) {
+                JSONArray tracks = tracks(record);
+                if (!identities(record, tracks, excluded).isEmpty()) return true;
+                for (int row = 0; row < tracks.length(); row++) {
+                    JSONObject track = tracks.optJSONObject(row);
+                    if (track == null) continue;
+                    String detail = first(track, "desc", "context", "description", "detail", "operateMessage");
+                    String time = first(track, "time", "date", "ftime", "operateTime");
+                    if (!detail.isEmpty() && Kuaidi100TimelinePolicy.isValidTrack(time, detail)) return true;
+                }
+            }
+        }
+        return false;
     }
 
     static Packet parse(String payload, ExpressItem owner) {
@@ -240,6 +327,12 @@ final class ExpressJingDongTimelineParser {
                 + "if(!f)f=fid(b,/(?:^|&)functionId=([A-Za-z0-9_]+)/);return f==='getUnionActivity'};"
                 + "var risk=function(st,v){try{if(st===403||/刷新几遍还不行/.test(String(v||'')))"
                 + "window.__pipiJdRisk=1}catch(e){}};"
+                // A union request that answered with a non-2xx status or failed on the network.
+                + "var bad=function(){window.__pipiJdUnionErrors=(window.__pipiJdUnionErrors||0)+1};"
+                // A union request sent and not yet answered (nor failed); a request the page aborts
+                // never answers and stays counted.
+                + "var pend=function(x){window.__pipiJdUnionPending="
+                + "Math.max(0,(window.__pipiJdUnionPending||0)+x)};"
                 + "var keep=function(v,full,src){try{if(typeof v==='string'&&v.length>"
                 + MAX_CAPTURED_BODY_CHARS + ")return;"
                 + "var r=typeof v==='string'?JSON.parse(v):v;"
@@ -264,27 +357,36 @@ final class ExpressJingDongTimelineParser {
                 + "var f=window.fetch;if(f){"
                 + "window.fetch=function(a,b){var u=a&&a.url||a;"
                 + "var expandedAtStart=window.__pipiJdExpansionAttempt;"
+                + "var union=hit(u,b&&b.body);if(union)pend(1);"
                 + "var pending=f.apply(this,arguments);return pending.then(function(r){"
-                + "if(hit(u,b&&b.body)){var h=r&&r.headers&&r.headers.get;"
+                + "if(union){pend(-1);if(!(r&&r.status>=200&&r.status<300))bad();"
+                + "var h=r&&r.headers&&r.headers.get;"
                 + "var t=String(h&&h.call(r.headers,'content-type')||'');"
                 + "var n=Number(h&&h.call(r.headers,'content-length'));"
                 + "if((!t||/(json|javascript|text)/i.test(t))&&"
                 + "(!Number.isFinite(n)||n<=" + MAX_CAPTURED_BODY_CHARS
                 + "))r.clone().text().then(function(v){risk(r&&r.status,v);"
-                + "keep(v,expandedAtStart)}).catch(function(){})}return r})}}"
+                + "keep(v,expandedAtStart)}).catch(function(){})}return r},"
+                // The page still sees its own failure.
+                + "function(x){if(union){pend(-1);bad()}throw x})}}"
                 + "var o=XMLHttpRequest.prototype.open,s=XMLHttpRequest.prototype.send;"
                 + "XMLHttpRequest.prototype.open=function(m,u){this.__pipiJdUrl=u;"
                 + "return o.apply(this,arguments)};"
                 + "XMLHttpRequest.prototype.send=function(b){"
                 + "var expandedAtStart=window.__pipiJdExpansionAttempt;"
-                + "if(hit(this.__pipiJdUrl,b)){this.addEventListener('load',function(){"
+                + "if(hit(this.__pipiJdUrl,b)){var answered=false;"
+                + "var settle=function(){if(!answered){answered=true;pend(-1)}};pend(1);"
+                + "this.addEventListener('load',function(){settle();"
+                + "if(!(this.status>=200&&this.status<300))bad();"
                 + "var t=String(this.getResponseHeader&&"
                 + "this.getResponseHeader('content-type')||'');"
                 + "var n=Number(this.getResponseHeader&&this.getResponseHeader('content-length'));"
                 + "if((!t||/(json|javascript|text)/i.test(t))&&"
                 + "(!Number.isFinite(n)||n<=" + MAX_CAPTURED_BODY_CHARS
                 + ")){risk(this.status,this.responseText);"
-                + "keep(this.responseText,expandedAtStart)}})}"
+                + "keep(this.responseText,expandedAtStart)}});"
+                + "this.addEventListener('error',function(){settle();bad()});"
+                + "this.addEventListener('timeout',function(){settle();bad()})}"
                 + "return s.apply(this,arguments)};}"
                 + "var button=document.querySelector('.logistics-button');"
                 + "var label=button&&button.querySelector('.logistics-button-text');"

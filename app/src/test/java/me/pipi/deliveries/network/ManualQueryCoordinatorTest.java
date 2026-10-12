@@ -19,6 +19,42 @@ import me.pipi.deliveries.model.StatusSemantic;
 import org.junit.Test;
 
 public final class ManualQueryCoordinatorTest {
+    @Test public void addChainStopKeepsTheOnlineOriginAfterIncrementalRefresh() throws Exception {
+        ExpressQueryResult cached = new ExpressQueryResult("TEST123456", "SF", "SF",
+                StatusSemantic.PICKED, "2026-09-15 10:00:00", "已揽收",
+                "[{\"time\":\"2026-09-15 10:00:00\",\"context\":\"已揽收\"}]",
+                "", "", "v6_query");
+        ExpressQueryResult refreshed = new ExpressQueryResult("TEST123456", "SF", "SF",
+                StatusSemantic.TRANSIT, "2026-09-15 20:00:00", "运输中",
+                "[{\"time\":\"2026-09-15 20:00:00\",\"context\":\"运输中\"}]",
+                "", "", "v6_query");
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
+                () -> refreshed, new ManualTimelineAuthorityPolicy.Candidate(
+                        "v6_query", cached, 1L, false), null, false);
+        assertEquals(1, batch.successes.size());
+        org.junit.Assert.assertFalse(me.pipi.deliveries.data.Kuaidi100TimelinePolicy
+                .hasTimelineStart(batch.successes.get(0).result));
+        assertTrue(ManualTimelineAuthorityPolicy.timelineStartAligned(
+                batch.accumulatedSuccesses(), "TEST123456"));
+    }
+
+    @Test public void oldPickupCannotStopK100WhenOnlineStatusIsNewer() throws Exception {
+        AtomicInteger captures = new AtomicInteger();
+        ExpressQueryResult stale = new ExpressQueryResult(
+                "TEST123456", "SF", "SF", StatusSemantic.COMPLETED,
+                me.pipi.deliveries.model.ExpressTimeline.parseTime("2026-09-15 21:00:00"),
+                "2026-09-15 11:00:00", "已揽收",
+                "[{\"time\":\"2026-09-15 11:00:00\",\"context\":\"已揽收\"}]",
+                "", "", "v6_query", "", "", "").withManualStatusEvidence("COMPLETED", true);
+        ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
+                () -> stale, null, null, false, ignored -> () -> {
+                    captures.incrementAndGet();
+                    return tracked("k100_h5", "已揽收");
+                }, null, false);
+        assertEquals(1, captures.get());
+        assertEquals(2, batch.successes.size());
+    }
+
     @Test public void detailPullReusesOnlineCacheAndContinuesPrimaryWithoutASecondOnline() throws Exception {
         AtomicInteger primaryCalls = new AtomicInteger();
         ExpressQueryResult cached = tracked("meizu", "运输中");
@@ -401,7 +437,8 @@ public final class ManualQueryCoordinatorTest {
         localCalls.set(0);
         ManualQueryCoordinator.queryOnlineFirst(() -> unknown, null,
                 () -> { localCalls.incrementAndGet(); return structured; }, true);
-        assertEquals("background history-only calls keep their original gate", 0, localCalls.get());
+        assertEquals("unknown status cannot prove the latest history is aligned", 1, localCalls.get());
+        localCalls.set(0);
         ExpressQueryResult known = new ExpressQueryResult("TEST123456", "ZTO", "中通快递",
                 StatusSemantic.PICKED, "2026-08-22 00:00:00", "已揽收", unknown.tracksJson)
                 .withManualStatusEvidence("已揽收", true);

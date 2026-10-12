@@ -380,7 +380,8 @@ assert.ok(
 );
 assert.match(
   smallPopulatedBranch,
-  /<VStack\s+alignment="leading"\s+spacing=\{layout\.identitySpacing\}[\s\S]*?minHeight: layout\.iconSize,[\s\S]*?maxHeight: layout\.iconSize,[\s\S]*?font=\{layout\.statusFont\}[\s\S]*?minHeight: layout\.statusLineHeight,[\s\S]*?maxHeight: layout\.statusLineHeight,[\s\S]*?alignment: "topLeading",[\s\S]*?\{row\.statusLabel\}[\s\S]*?font=\{layout\.companyFont\}[\s\S]*?minHeight: layout\.companyLineHeight,[\s\S]*?maxHeight: layout\.companyLineHeight,[\s\S]*?alignment: "bottomLeading",[\s\S]*?\{row\.companyName\}[\s\S]*?row\.waybillSuffix/,
+  /<VStack\s+alignment="leading"\s+spacing=\{layout\.identitySpacing\}[\s\S]*?minHeight: layout\.iconSize,[\s\S]*?maxHeight: layout\.iconSize,[\s\S]*?font=\{layout\.statusFont\}[\s\S]*?minHeight: layout\.statusLineHeight,[\s\S]*?maxHeight: layout\.statusLineHeight,[\s\S]*?alignment: "topLeading",[\s\S]*?\{row\.statusLabel\}[\s\S]*?font=\{layout\.companyFont\}[\s\S]*?minHeight: layout\.companyLineHeight,[\s\S]*?maxHeight: layout\.companyLineHeight,[\s\S]*?alignment: "bottomLeading",[\s\S]*?carrierDisplayName\(row\.companyName\)[\s\S]*?row\.waybillSuffix/,
+  // 其余裁决 35（用户 2026-09-27）：承运商为空时写「快递」（old shape: `${row.companyName}`).
   "small populated text must match the icon height and show status above carrier plus waybill suffix",
 );
 assert.doesNotMatch(smallSource, /点击查询|empty-small-panel|EmptyParcelIcon/);
@@ -407,7 +408,7 @@ assert.match(
 );
 assert.match(
   mediumSource,
-  /<Text font=\{15\} fontWeight="semibold">\s*\{snapshot\.activeCount\}\s*<\/Text>/,
+  /<Text font=\{15\} fontWeight="regular" foregroundStyle="secondaryLabel">\s*\{snapshot\.activeCount\}\s*<\/Text>/,
   "medium header count must come from the same snapshot in every state",
 );
 assert.match(

@@ -1,5 +1,21 @@
 import { deadlineAfter } from "./deadline";
+import { utf8Data } from "./scripting-data";
 import type { AccountStatusSemantic } from "./account-parser";
+import type { AccountOrderProjectionDiagnostics } from "./account-order-projection";
+
+/** The capture strategy the per-order record is bound to: a new strategy starts every order over. */
+export const ACCOUNT_ORDER_PROJECTION_STRATEGY = "jd-h5-v2";
+
+/**
+ * The order-hashed key of an order's projection record (`routeHash`): the strategy and the owner
+ * row id, hashed, so the order number itself is never stored. `ownerId` is the account owner row id
+ * (`interface5:account:<order>`).
+ */
+export function accountOrderProjectionRouteHash(ownerId: string): string {
+  return Crypto.sha256(utf8Data(`${ACCOUNT_ORDER_PROJECTION_STRATEGY}\0${ownerId}`))
+    .toHexString()
+    .toLowerCase();
+}
 
 export const ACCOUNT_LIST_BUDGET_MS = 25_000;
 // 用户定 2026-09-05：三端统一——按件详情 10s、手动每级 15s、列表 12s、网关上游 10s。
@@ -49,7 +65,131 @@ export type AccountOrderProjectionRetry = Readonly<{
   riskControlAtMs?: number;
   attemptId?: string;
   attemptExpiresAtMs?: number;
+  /** The latest empty-shell result not yet confirmed (completed orders only, 方案 A 2026-09-25). */
+  emptyShellAtMs?: number;
+  /** A second empty-shell result at least one rest later: the union page is not opened again. */
+  emptyShellConfirmedAtMs?: number;
 }>;
+
+function positiveTime(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function sameRouteHash(
+  retry: AccountOrderProjectionRetry | null | undefined,
+  routeHash: string,
+): boolean {
+  const normalizedRouteHash = String(routeHash || "").trim().toLowerCase();
+  return /^[a-f0-9]{64}$/.test(normalizedRouteHash) &&
+    String(retry?.routeHash || "").trim().toLowerCase() === normalizedRouteHash;
+}
+
+/**
+ * 用户 2026-09-25 同意（方案 A）：已完成订单的京粉页一旦确认是空壳（完全没有物流接口响应），就记住这一单，
+ * 不再重试。One result is not proof (Lite saw an empty page succeed 13 minutes later), so the mark
+ * needs two empty-shell results of the same order at least one rest apart; see
+ * `nextEmptyShellStrikes`. Bound to the order hash of the record, so a new capture strategy starts over.
+ */
+export function accountOrderPageConfirmedEmpty(
+  retry: AccountOrderProjectionRetry | null | undefined,
+  routeHash: string,
+): boolean {
+  return sameRouteHash(retry, routeHash) && positiveTime(retry?.emptyShellConfirmedAtMs) > 0;
+}
+
+/**
+ * What one union-page result says about the page (方案 A, 2026-09-25; one definition with Lite):
+ * - `logistics`: something logistics-bearing was captured — a waybill came back, the response probe
+ *   queued a package, the modal / DOM / inline script produced one, a replay produced one, or a track
+ *   was read. It clears the strikes.
+ * - `empty_shell`: none of that, from a page that loaded completely in a visible, hosted, non-zero
+ *   viewport without risk control, whose union requests either never answered or only answered
+ *   2xx: iOS saw `unionResponseStatuses=200` with nothing captured, Lite saw no union response at
+ *   all, and both are empty shells.
+ * - `uninformative`: anything else — risk control, a union request that failed (a non-2xx status,
+ *   or 0 for a network failure; two JD outages 10 minutes apart must not mark a real order), a
+ *   union request the page sent that had not answered by the timeout (user decision 2026-09-26,
+ *   其余裁决 4: as neutral as a failed answer; a page that never sent one is still an empty shell),
+ *   a hidden, unhosted or zero-sized page, an incomplete load. It neither counts nor clears.
+ */
+export type UnionPageOutcome = "logistics" | "empty_shell" | "uninformative";
+
+/** Whether any recorded union answer failed: a status outside 200–299, or 0 for a network failure. */
+export function unionRequestFailed(unionResponseStatuses: string | null | undefined): boolean {
+  return String(unionResponseStatuses || "")
+    .split(",")
+    .map((status) => status.trim())
+    .filter(Boolean)
+    .some((status) => {
+      const code = Number(status);
+      return !(code >= 200 && code <= 299);
+    });
+}
+
+export function unionPageOutcome(
+  diagnostics: AccountOrderProjectionDiagnostics | null | undefined,
+  waybillFound = false,
+): UnionPageOutcome {
+  if (waybillFound) return "logistics";
+  if (!diagnostics) return "uninformative";
+  if (
+    Number(diagnostics.probeCaptureCount) > 0 ||
+    diagnostics.probeMatched === true ||
+    diagnostics.domMatched === true ||
+    diagnostics.replaySucceeded === true ||
+    diagnostics.projectionComplete === true ||
+    Number(diagnostics.projectionTrackCount) > 0
+  ) return "logistics";
+  return diagnostics.loadCompleted === true &&
+      diagnostics.viewportHosted === true &&
+      diagnostics.viewportAvailable === true &&
+      diagnostics.visibilityState === "visible" &&
+      !projectionRiskControlled(diagnostics.unionResponseStatuses, diagnostics.riskControlSeen === true) &&
+      !unionRequestFailed(diagnostics.unionResponseStatuses) &&
+      !(Number(diagnostics.unionPendingCount) > 0)
+    ? "empty_shell"
+    : "uninformative";
+}
+
+/**
+ * The strike fields of the next record. Only a completed unprojected order collects strikes; an
+ * empty shell confirms when it comes at least one rest (10 minutes) after the previous one, a
+ * logistics result clears them, and an uninformative one carries them unchanged. A confirmation
+ * stays for as long as the record keeps the same order hash.
+ */
+export function nextEmptyShellStrikes(
+  previous: AccountOrderProjectionRetry | null | undefined,
+  routeHash: string,
+  outcome: UnionPageOutcome,
+  completedOrder: boolean,
+  atMs: number,
+): Pick<AccountOrderProjectionRetry, "emptyShellAtMs" | "emptyShellConfirmedAtMs"> {
+  if (!completedOrder || outcome === "logistics") return {};
+  const { emptyShellAtMs: lastAtMs = 0, emptyShellConfirmedAtMs: confirmedAtMs = 0 } =
+    retainedEmptyShellStrikes(previous, routeHash);
+  if (confirmedAtMs) {
+    return { ...(lastAtMs ? { emptyShellAtMs: lastAtMs } : {}), emptyShellConfirmedAtMs: confirmedAtMs };
+  }
+  if (outcome === "uninformative") return lastAtMs ? { emptyShellAtMs: lastAtMs } : {};
+  return lastAtMs && atMs - lastAtMs >= ACCOUNT_ORDER_PROJECTION_RETRY_MS
+    ? { emptyShellAtMs: lastAtMs, emptyShellConfirmedAtMs: atMs }
+    : { emptyShellAtMs: atMs };
+}
+
+/** The strike fields a new attempt reservation keeps from the record it replaces. */
+export function retainedEmptyShellStrikes(
+  previous: AccountOrderProjectionRetry | null | undefined,
+  routeHash: string,
+): Pick<AccountOrderProjectionRetry, "emptyShellAtMs" | "emptyShellConfirmedAtMs"> {
+  if (!sameRouteHash(previous, routeHash)) return {};
+  const lastAtMs = positiveTime(previous?.emptyShellAtMs);
+  const confirmedAtMs = positiveTime(previous?.emptyShellConfirmedAtMs);
+  return {
+    ...(lastAtMs ? { emptyShellAtMs: lastAtMs } : {}),
+    ...(confirmedAtMs ? { emptyShellConfirmedAtMs: confirmedAtMs } : {}),
+  };
+}
 
 export function activeAccountOrderProjectionAttempt(
   retry: AccountOrderProjectionRetry | null | undefined,
@@ -113,6 +253,20 @@ export function shouldRetryAccountOrderProjection(
     return true;
   }
   return now - failedAtMs >= ACCOUNT_ORDER_PROJECTION_RETRY_MS;
+}
+
+/**
+ * 方案 A's scope (user 2026-09-25): the Home pass, the list refresh and detail-entry identity
+ * projection leave a confirmed empty page closed. An explicit detail pull is a deliberate user action:
+ * it keeps `shouldRetryAccountOrderProjection` alone and may open the page after the ordinary rest.
+ */
+export function shouldRetryAccountOrderProjectionUnprompted(
+  retry: AccountOrderProjectionRetry | null | undefined,
+  routeHash: string,
+  now = Date.now(),
+): boolean {
+  return !accountOrderPageConfirmedEmpty(retry, routeHash) &&
+    shouldRetryAccountOrderProjection(retry, routeHash, now);
 }
 
 export function accountChildDeadline(
