@@ -180,3 +180,42 @@ jobs:
             --verify-tag \
             --title "Pipi Deliveries $GITHUB_REF_NAME" \
             --notes-file ".github/release-notes/${GITHUB_REF_NAME}.md"
+      - name: Remove previous GitHub Releases and tags
+        if: success() && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current_version="${GITHUB_REF_NAME#v}"
+          current_release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.id')"
+          # Check latest after collecting targets to reject a run superseded during pagination.
+          release_ids="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq "
+            .[] | select(.draft == false and .published_at != null)
+            | select(.tag_name | test(\"^(ios-)?v[0-9]+([.][0-9]+){2}$\"))
+            | select((.tag_name | sub(\"^(ios-)?v\"; \"\") | split(\".\") | map(tonumber))
+              < (\"$current_version\" | split(\".\") | map(tonumber)))
+            | .id
+          ")"
+          unpublished_tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft == true or .published_at == null) | .tag_name | @uri')"
+          tag_names="$(gh api --paginate "repos/$GITHUB_REPOSITORY/tags?per_page=100" --jq "
+            .[] | select(.name | test(\"^(ios-)?v[0-9]+([.][0-9]+){2}$\"))
+            | select((.name | sub(\"^(ios-)?v\"; \"\") | split(\".\") | map(tonumber))
+              < (\"$current_version\" | split(\".\") | map(tonumber)))
+            | .name | @uri
+          ")"
+          latest_release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.id')"
+          if [ "$current_release_id" != "$latest_release_id" ]; then
+            echo "Skipping cleanup because this release is no longer latest."
+            exit 0
+          fi
+          for release_id in $release_ids; do
+            if [ "$release_id" != "$current_release_id" ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"
+            fi
+          done
+          for tag_name in $tag_names; do
+            # Unpublished releases can already point to an older numeric tag.
+            if [ "$tag_name" != "$GITHUB_REF_NAME" ] && ! grep -Fqx -- "$tag_name" <<< "$unpublished_tags"; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag_name"
+            fi
+          done
