@@ -4037,8 +4037,10 @@ public final class ExpressRepositoryDatabaseTest {
     }
 
     private static String relativeTime(long offsetMs) {
-        return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA)
-                .format(new java.util.Date(System.currentTimeMillis() + offsetMs));
+        java.text.SimpleDateFormat formatter =
+                new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA);
+        formatter.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Shanghai"));
+        return formatter.format(new java.util.Date(System.currentTimeMillis() + offsetMs));
     }
 
     private static ExpressQueryResult timedResult(
