@@ -88,14 +88,8 @@ final class ExpressToastCopy {
     static final String CODE_SEND_FAILED = "验证码发送失败，请稍后重试";
 
     /** Server-side account ownership needs a new SMS verification. */
-    static final String PHONE_VERIFICATION_REQUIRED = "需验证手机号";
-    static final String VERIFY_PHONE = "验证手机号";
-    public static final String PHONE_VERIFICATION_REQUIRED_MESSAGE = "请验证该手机号后继续同步";
-
-    /** 账号类：绑定成功。 */
-    static final String PHONE_VERIFYING = "正在验证…";
-    static final String PHONE_VERIFIED = "手机号已验证";
-    static final String FLIGHT_PHONE_VERIFICATION_REQUIRED_MESSAGE = "请验证该手机号后继续同步航班，已保存的行程将会保留。";
+    static final String PHONE_VERIFICATION_REQUIRED = "绑定失效";
+    public static final String PHONE_VERIFICATION_REQUIRED_MESSAGE = "绑定失效，请重新绑定手机号";
 
     static final String REAUTHORIZE = "重新授权";
     static final String DEVICE_REAUTHORIZATION_REQUIRED_MESSAGE = "设备授权已过期，请重新授权。现有记录将会保留。";
