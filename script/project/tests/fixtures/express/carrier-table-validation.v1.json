@@ -569,7 +569,7 @@
     "base": {
       "track": "beta",
       "artifactPath": "cloudflare/express-gateway/src/worker.beta.js",
-      "artifactSha256": "4683ea796a39bcfddbc7d20c26ec9379150741507bc5d3e33a24eecd9dfd84f7"
+      "artifactSha256": "fceb6b54ca680784c0f94c3958318acd6f97fa7f63f78a94a006418d67a7675c"
     },
     "formalStartupBase": {
       "track": "formal",
