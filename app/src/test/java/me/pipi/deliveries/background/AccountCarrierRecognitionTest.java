@@ -3,10 +3,12 @@ package me.pipi.deliveries.background;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Application;
 import android.content.Context;
+import android.database.DatabaseUtils;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -22,6 +24,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import me.pipi.deliveries.data.ExpressRepository;
+import me.pipi.deliveries.data.ExpressDatabase;
 import me.pipi.deliveries.model.CarrierNormalization;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
@@ -46,7 +49,8 @@ public final class AccountCarrierRecognitionTest {
 
     @Test public void unresolvedAccountRowsAreRecognisedIntoDisplayOnlyNormalization()
             throws Exception {
-        ExpressItem item = saved("YT9876543210123", "UNKNOWN", "未知快递", "");
+        ExpressItem item = existingAccountRowWithMissingCarrier(
+                "YT9876543210123", "未知快递", "");
         assertTrue(AccountCarrierRecognition.needsRecognition(item));
 
         AtomicInteger calls = new AtomicInteger();
@@ -64,7 +68,8 @@ public final class AccountCarrierRecognitionTest {
         assertFalse(AccountCarrierRecognition.needsRecognition(recognized));
 
         // Failures and empty results change nothing; the coordinator owns retries.
-        ExpressItem other = saved("ZT9876543210123", "UNKNOWN", "未知快递", "");
+        ExpressItem other = existingAccountRowWithMissingCarrier(
+                "ZT9876543210123", "未知快递", "");
         assertFalse(AccountCarrierRecognition.recognize(repository, other, waybill -> {
             throw new IllegalStateException("public carrier classifier unavailable");
         }));
@@ -72,6 +77,22 @@ public final class AccountCarrierRecognitionTest {
                 repository, other, waybill -> CarrierNormalization.NONE));
         assertTrue(AccountCarrierRecognition.needsRecognition(
                 repository.findByWaybill("ZT9876543210123", "interface5")));
+    }
+
+    @Test public void aFreshUnknownCarrierCannotEstablishAccountOwnership() {
+        String waybill = "SF1221489425262";
+        ExpressQueryResult result = new ExpressQueryResult(
+                waybill, "UNKNOWN", "", StatusSemantic.TRANSIT, 0L,
+                "2026-09-03 17:48:37", "Delivery event", "[]",
+                "", PHONE, "interface5", "", "", "JingDong");
+        assertFalse(repository.createsAutomaticRow(result, "interface5"));
+        repository.saveInterface5(result, PHONE);
+        assertNull(repository.findByWaybill(waybill, "interface5"));
+        try (ExpressDatabase database = new ExpressDatabase(context)) {
+            assertEquals(0L, DatabaseUtils.queryNumEntries(database.getReadableDatabase(),
+                    ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE,
+                    "normalized_waybill=?", new String[]{waybill}));
+        }
     }
 
     @Test public void theJdPlatformLabelOnANonJdWaybillIsNoCarrierEvidence() throws Exception {
@@ -145,7 +166,8 @@ public final class AccountCarrierRecognitionTest {
     }
 
     @Test public void sameWaybillRefreshCannotDiscardPendingRecognition() throws Exception {
-        ExpressItem item = saved("SF1221489425261", "UNKNOWN", "", "JingDong");
+        ExpressItem item = existingAccountRowWithMissingCarrier(
+                "SF1221489425261", "", "JingDong");
         assertTrue(AccountCarrierRecognition.recognize(repository, item, waybill -> {
             saved(waybill, "JDKD", "京东购物", "JingDong");
             return new CarrierNormalization("SF", "顺丰速运", "shunfeng", true, "t1");
@@ -203,6 +225,16 @@ public final class AccountCarrierRecognitionTest {
 
     private static String minutesAgo(long minutes) {
         return TIME.format(Instant.ofEpochMilli(System.currentTimeMillis() - minutes * 60_000L));
+    }
+
+    private ExpressItem existingAccountRowWithMissingCarrier(
+            String waybill, String companyName, String sourceProvider) {
+        // These cases repair an existing owner's missing raw carrier, not first admission.
+        ExpressItem previous = saved(waybill, "SYNTHETIC_LEGACY_CARRIER", "", sourceProvider);
+        assertNull(previous.resolvedCarrier());
+        ExpressItem current = saved(waybill, "UNKNOWN", companyName, sourceProvider);
+        assertEquals(previous.rowId, current.rowId);
+        return current;
     }
 
     private ExpressItem saved(

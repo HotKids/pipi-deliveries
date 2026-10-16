@@ -4470,6 +4470,22 @@ public final class ExpressRepository {
         return !normalized.isEmpty() && findAnyRawByIdentity(db, normalized) == null;
     }
 
+    /** Recognition can cache a missing raw carrier; its result never supplies ownership evidence. */
+    public synchronized boolean needsAutomaticCarrierRecognition(
+            ExpressQueryResult result, String bindingSource) {
+        if (result == null) return false;
+        if (result.carrierIdentityEvidence) return createsAutomaticRow(result, bindingSource);
+        String provider = AutomaticOwnershipPolicy.providerForPackageOwner(bindingSource);
+        if (provider.isEmpty() || ExpressStatusNormalizer.isProviderErrorDetail(result.latestDetail)
+                || result.semantic == null || result.semantic == StatusSemantic.UNKNOWN
+                || !ExpressSourcePolicy.bindingSourceForOwner(provider).equals(
+                        TimelineSlot.bindingSourceOf(result.timelineProvider))
+                || ExpressVisibilityPolicy.isExpiredResult(result, System.currentTimeMillis())) return false;
+        SQLiteDatabase db = database();
+        String normalized = automaticIdentity(db, result.waybill, provider);
+        return !normalized.isEmpty() && findAnyRawByIdentity(db, normalized) == null;
+    }
+
     /** Persists one complete automatic observation and applies only the frozen global owner. */
     void saveAutomaticObservation(
             ExpressQueryResult result, String phone, String packageOwner,
