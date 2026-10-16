@@ -6,22 +6,14 @@ import android.appwidget.AppWidgetProvider;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
-import android.text.SpannableString;
-import android.text.Spanned;
 import android.text.TextPaint;
-import android.text.style.ForegroundColorSpan;
-import android.text.style.StyleSpan;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
-import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.RemoteViews;
-
-import com.google.android.material.color.MaterialColors;
 
 import me.pipi.deliveries.feature.express.ExpressDetailActivity;
 import me.pipi.deliveries.feature.express.ExpressListActivity;
@@ -179,17 +171,12 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             String title = context.getString(R.string.widget_express_count,
                     ExpressWidgetPresentation.activeCount(items));
             int countStart = title.lastIndexOf(' ') + 1;
-            int secondary = MaterialColors.getColor(
-                    new ContextThemeWrapper(context, R.style.PipiWidgetTheme),
-                    com.google.android.material.R.attr.colorOnSurfaceVariant,
-                    "PipiWidgetTheme");
-            SpannableString header = new SpannableString(title);
-            header.setSpan(new StyleSpan(Typeface.BOLD), 0, countStart,
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            header.setSpan(new ForegroundColorSpan(secondary), countStart, title.length(),
-                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            views.setTextViewText(R.id.widget_express_title, header);
+            views.setTextViewText(R.id.widget_express_title, title.substring(0, countStart));
+            views.setTextViewText(R.id.widget_express_count, title.substring(countStart));
             views.setTextViewTextSize(R.id.widget_express_title,
+                    TypedValue.COMPLEX_UNIT_SP,
+                    typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));
+            views.setTextViewTextSize(R.id.widget_express_count,
                     TypedValue.COMPLEX_UNIT_SP,
                     typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));
             views.setTextViewTextSize(R.id.widget_express_empty_text,

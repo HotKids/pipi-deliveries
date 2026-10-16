@@ -27,14 +27,42 @@ public final class AutomaticOwnershipPolicyTest {
     }
 
     @Test
-    public void displayOnlyOrEnglishNamesDoNotManufactureRawCarrierEvidence() {
+    public void displayOnlyNamesDoNotManufactureRawCarrierEvidence() {
         assertFalse(AutomaticOwnershipPolicy.isQualified(
                 ExpressSourcePolicy.SOURCE_INTERFACE5,
                 packet("", "顺丰速运", StatusSemantic.TRANSIT, "interface5")));
-        assertFalse(AutomaticOwnershipPolicy.isQualified(
+    }
+
+    @Test
+    public void currentProviderRawEnglishNameSatisfiesTheFirstOwnershipGate() {
+        assertTrue(AutomaticOwnershipPolicy.isQualified(
                 ExpressSourcePolicy.SOURCE_INTERFACE5,
                 packet("", "SF Express", StatusSemantic.TRANSIT, "interface5")
                         .withRawCarrierNameEvidence("SF Express")));
+    }
+
+    @Test
+    public void exactRawPlaceholderCodesAndNamesCannotEstablishOwnership() {
+        for (String placeholder : new String[]{null, "", "  ", "null", "UNKNOWN", " unknown ",
+                "OTHER", " other ", "未知", "其他"}) {
+            for (String owner : new String[]{"INTERFACE5", "INTERFACE6"}) {
+                String provider = owner.toLowerCase(java.util.Locale.ROOT);
+                assertFalse(String.valueOf(placeholder), AutomaticOwnershipPolicy.isQualified(owner,
+                        packet(placeholder, "", StatusSemantic.TRANSIT, provider)));
+                assertFalse(String.valueOf(placeholder), AutomaticOwnershipPolicy.isQualified(owner,
+                        packet("", placeholder, StatusSemantic.TRANSIT, provider)
+                                .withRawCarrierNameEvidence(placeholder)));
+            }
+        }
+        assertTrue(AutomaticOwnershipPolicy.isQualified("INTERFACE5",
+                packet("OTHER", "SF Express", StatusSemantic.TRANSIT, "interface5")
+                        .withRawCarrierNameEvidence("SF Express")));
+        assertTrue(AutomaticOwnershipPolicy.isQualified("INTERFACE5",
+                packet("ZTO", "未知", StatusSemantic.TRANSIT, "interface5")
+                        .withRawCarrierNameEvidence("未知")));
+        assertTrue(AutomaticOwnershipPolicy.isQualified("INTERFACE5",
+                packet("", "Other Express", StatusSemantic.TRANSIT, "interface5")
+                        .withRawCarrierNameEvidence("Other Express")));
     }
 
     @Test

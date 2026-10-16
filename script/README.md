@@ -23,13 +23,13 @@ Pipi Deliveries 的 iOS 版本以 Scripting 脚本形式提供，仅限白名单
 
 脚本首次打开和从后台恢复时会自动读取最新本地状态并发起刷新，首页下拉则会强制刷新。列表、详情、小组件与状态变更通知共用同一份本地快递状态：刷新结果先写入本地，再更新小组件并判断是否发送通知；点击通知会先读取最新状态并定位到对应快递详情。小组件会在系统分配的执行时间内尝试有界刷新，并请求最早 15 分钟后再次运行；刷新失败或超时时继续显示已有缓存，实际调度时间仍由 WidgetKit 决定。
 
-更新或重新导入同名脚本时，Access Key、手机号码绑定记录、快递列表、物流缓存、待查队列及诊断日志会继续保留。只有执行相应的移除、解绑或删除操作时，相关数据才会被删除。
+Updating the same script preserves its existing Keychain credentials. Re-importing after deleting the script may replace its private Keychain scope; obtain a replacement Access Key through kdbot `/key` in that case. Phone bindings, parcel lists, timeline caches, pending queries and diagnostic logs retain their existing local persistence behavior.
 
 ## 隐私声明
 
 为完成手机号验证、快递同步与物流查询，必要的手机号、验证码、运单号、手机尾号、随机安装身份及网络信息会经 Cloudflare Worker 临时中转至相关服务。部分订单会在本机加载第三方页面以提取运单号。Worker 按当前设计不持久化保存业务数据；Access Key、快递列表与物流缓存保存在本机，第三方服务仍可能依据其政策处理必要的网络日志或 Cookie。
 
-Access Key、手机号码绑定记录、快递列表与物流缓存均保存在本机。为保证覆盖导入后仍可恢复，Access Key 会写入当前脚本的 Keychain 与 App Group 本地恢复文件；App Group 文件可由同一设备上的其他 Scripting 脚本读取，因此脚本版本无法同时提供独立原生应用级别的 Keychain 隔离。
+The Access Key is stored only in the script’s existing local Keychain namespace. Its separate activation identity is stored only in the same script’s synchronized Keychain namespace. On first migration of a legacy Keychain credential, the original App Group reader validates only whether a committed deletion must first be preserved in Keychain. Unreadable or invalid deletion evidence stays unavailable until retried or explicitly replaced; no plaintext token grants authorization. After migration, old plaintext App Group files (including backup and interrupted-write files) and shared Storage copies are deleted without loading their contents; cleanup failures are retried without using those copies for authorization. No credential or activation identity is recovered from shared storage. The settings notice for a key activated elsewhere retains only its irreversible fingerprint. Phone bindings, parcel lists and timeline caches keep their existing App Group storage. Deleting the script removes its Keychain scope; a new import can use a replacement Access Key from kdbot.
 
 诊断日志仅记录接口类型、状态版本、绑定数量、耗时及错误类别，最多保留二百条并在七日后自动过期；不会记录手机号码、验证码、Access Key、运单号码或网络响应正文，也不会自动上传。
 
@@ -72,5 +72,35 @@ sh script/project/tools/test.sh
 sh script/project/tools/package.sh
 sh script/project/tools/verify-package.sh
 ```
+
+### Gateway protocol pairing
+
+Scripting uses explicit declarations in `project/services/build-track.ts`; the Android beta
+builder and Worker promotion tool do not rewrite this file. Before delivering an archive,
+select all three values for the exact target Worker artifact:
+
+| Target | `SCRIPT_BUILD_TRACK` | Gateway host (`GATEWAY_ORIGIN` uses HTTPS) | `SCRIPTING_GATEWAY_PROTOCOL_VERSION` |
+| --- | --- | --- | --- |
+| Current v1-only formal, before 2026-11-01 00:00 Asia/Shanghai | `formal` | `pipiassistant.app` | `1` |
+| Beta supporting v2 | `beta` | `beta.pipiassistant.app` | `2` |
+| Promoted formal supporting v2 | `formal` | `pipiassistant.app` | `2` |
+
+Keep `SCRIPT_VERSION` equal to `project/script.json.version`. Beta versions require `-betaN`
+and retain the last formal `SCRIPT_CLIENT_BUILD`. The current archive remains formal `0.7.0`;
+this source update does not select a new release version.
+
+From the Deliveries repository root, after the release owner has verified the exact active
+target artifact, set `verified_worker` to its absolute local path and run:
+
+```sh
+sh script/project/tools/package.sh "$PWD/script/pipi-deliveries.scripting" delivery "$verified_worker"
+sh script/project/tools/verify-package.sh "$PWD/script/pipi-deliveries.scripting" formal delivery "$verified_worker"
+```
+
+Use `beta` instead of `formal` in the verifier for a beta archive. Delivery checks require the
+target artifact's highest supported protocol: a beta or promoted formal v2 target rejects a
+remaining v1 selection. At the fixed November 1 boundary, v1 signing and delivery both stop.
+No request retries with another protocol or origin. Default `source` packaging can preserve an
+undeployed candidate, but it does not authorize distribution, a mirror push, or a Release.
 
 Scripting 原生模块的精确类型检查应使用 `scripting-cli` 从已安装 Scripting App 同步的 `.d.ts` 声明；仓库测试主要覆盖可执行行为与脚本包完整性。

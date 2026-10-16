@@ -252,10 +252,10 @@ for (const order of ["old-first", "new-first"] as const) {
   assert.deepEqual(titles(), [], order);
 }
 
-// An old signed manual row of the number is taken over without its manual timelines or note.
-{
+// Only a structured terminal permits destructive reuse; prose keeps the ordinary manual history and note.
+for (const structuredStatus of [false, true]) {
   const waybill = "YT8100000000008";
-  const manualPackage = k100(waybill);
+  const manualPackage = { ...k100(waybill), structuredStatus };
   const manual: Shipment = {
     identity: {
       id: `interface5:manual:${waybill}`, bindingSource: "interface5", sourceOwner: "manual", sourceId: waybill,
@@ -274,8 +274,9 @@ for (const order of ["old-first", "new-first"] as const) {
   assert.equal(shipments.some((shipment) => shipment.identity.manuallyAdded), false, "the manual row is gone");
   const automatic = byId(`interface5:account:${waybill}`)!;
   assert.equal(automatic.timeline.semantic, "PICKED");
-  assert.equal((automatic.manualTimelines || []).length, 0, "without the old manual timelines");
-  assert.equal(automatic.note, undefined);
+  assert.equal((automatic.manualTimelines || []).length, structuredStatus ? 0 : 1,
+    "only a structured terminal authorizes removing the old manual timeline");
+  assert.equal(automatic.note, structuredStatus ? undefined : manual.note);
   assert.deepEqual(titles(), []);
 }
 

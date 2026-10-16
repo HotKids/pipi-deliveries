@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 
+const realClock = Date.now;
+const clockOffset = Date.parse("2026-10-16T12:00:00+08:00") - realClock();
+Date.now = () => realClock() + clockOffset;
+
 type FakeData = { value: string };
 
 const memory = new Map<string, string>();
@@ -116,6 +120,7 @@ const {
   hmacSha256Hex,
   postGateway,
   scriptingAuthHeaders,
+  SCRIPTING_UPDATE_REQUIRED_MESSAGE,
 } = await import("../services/gateway");
 const { OperationTimeoutError } = await import("../services/deadline");
 const {
@@ -137,26 +142,42 @@ const nonce = "0123456789abcdef0123456789abcdef";
 const route = "/api/express/classify";
 const body = JSON.stringify({ waybill: "SYNTHETIC123" });
 const bodySha256 = createHash("sha256").update(body).digest("hex");
+const activationIdentity = "42".repeat(32);
+const privateRoot = createHash("sha256").update(token).digest("hex");
+const publicId = createHash("sha256").update("pipi-scripting-key-id-v2\n" + privateRoot).digest("hex");
+const macKey = createHmac("sha256", privateRoot).update("pipi-scripting-request-mac-v2").digest("hex");
+const activationHash = createHash("sha256")
+  .update("pipi-scripting-activation-v1\n" + activationIdentity).digest("hex");
+const { GATEWAY_ORIGIN } = await import("../services/build-track");
 const canonical = [
-  "scripting-v1",
+  "scripting-v2",
   String(timestamp),
   nonce,
   "POST",
+  GATEWAY_ORIGIN,
   route,
   bodySha256,
+  publicId,
+  activationHash,
 ].join("\n");
 assert.deepEqual(
-  scriptingAuthHeaders(token, timestamp, nonce, route, bodySha256),
+  scriptingAuthHeaders(token, timestamp, nonce, route, bodySha256, activationIdentity, "2"),
   {
-    "X-Scripting-Version": "1",
-    "X-Scripting-Token": token,
+    "X-Scripting-Version": "2",
+    "X-Scripting-Key-Id": publicId,
+    "X-Scripting-Activation": activationHash,
     "X-Scripting-Timestamp": String(timestamp),
     "X-Scripting-Nonce": nonce,
-    "X-Scripting-Signature": createHmac("sha256", token)
+    "X-Scripting-Signature": createHmac("sha256", macKey)
       .update(canonical)
       .digest("hex"),
   },
 );
+const wire = JSON.stringify(scriptingAuthHeaders(token, timestamp, nonce, route,
+  bodySha256, activationIdentity, "2"));
+for (const secret of [token, privateRoot, macKey, activationIdentity]) {
+  assert.equal(wire.includes(secret), false);
+}
 
 assert.equal(gatewayErrorCode('{"error":"unauthorized"}'), "unauthorized");
 assert.equal(gatewayErrorCode('{"error":"expired_request"}'), "expired_request");
@@ -582,3 +603,14 @@ fetchHandler = async () => ({ ...gatewayResponse(400), text: async () => JSON.st
 }) });
 await assert.rejects(postGateway("/api/express/timeline/preferred", { waybill: "TEST123456" }),
   (error: unknown) => error instanceof GatewayError && error.gatewayCode === "phone_verification_required");
+
+const callsBeforeRetirement = fetchCalls;
+Date.now = () => Date.parse("2026-11-01T00:00:00+08:00");
+try {
+  await assert.rejects(postGateway("/api/express/carriers", {}),
+    (error: unknown) => error instanceof GatewayError && error.message === SCRIPTING_UPDATE_REQUIRED_MESSAGE);
+  assert.equal(fetchCalls, callsBeforeRetirement, "The retired v1 package must not send or retry a request");
+  assert.equal(gatewayCredentialStatus(), "configured", "Retirement does not erase the user's key");
+} finally {
+  Date.now = realClock;
+}

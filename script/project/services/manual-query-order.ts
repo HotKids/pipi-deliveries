@@ -12,6 +12,7 @@ import {
 } from "./deadline";
 
 export type ManualSource = "local" | "route" | "fallback";
+export const MANUAL_SOURCE_BUDGET_MS = 15_000;
 
 export const MANUAL_SOURCE_ORDER: readonly ManualSource[] = [
   "local",
@@ -28,7 +29,7 @@ export type ManualSourceResult = Readonly<{
 export type ManualSourceAdapter = Readonly<{
   source: ManualSource;
   enabled: boolean;
-  query: (signal?: AbortSignal) => Promise<ManualSourceResult>;
+  query: (signal?: AbortSignal, deadlineAtMs?: number) => Promise<ManualSourceResult>;
 }>;
 
 export type ManualSourceObservation = Readonly<{
@@ -92,6 +93,7 @@ export async function queryManualSourceChain(
     const settled = await Promise.all(batch.map(async (adapter) => {
       assertCanStart();
       const startedAt = Date.now();
+      const providerDeadlineAtMs = Math.min(deadlineAtMs ?? Infinity, startedAt + MANUAL_SOURCE_BUDGET_MS);
       attemptedSources++;
       observe?.({ source: adapter.source, phase: "started" });
       const controller = new AbortController();
@@ -99,12 +101,12 @@ export async function queryManualSourceChain(
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) abort();
       try {
-        const work = adapter.query(controller.signal);
-        const result = await (deadlineAtMs == null ? work : waitForRefresh(work, deadlineAtMs, signal));
+        const work = adapter.query(controller.signal, providerDeadlineAtMs);
+        const result = await waitForRefresh(work, providerDeadlineAtMs, signal);
         assertNotCancelled();
         // A result that arrived after its own deadline is not accepted. Results
         // that completed earlier remain available when a peer later times out.
-        if (deadlineExpired(deadlineAtMs)) throw new OperationTimeoutError();
+        if (deadlineExpired(providerDeadlineAtMs)) throw new OperationTimeoutError();
         const item = {
           source: adapter.source,
           result,
@@ -127,7 +129,8 @@ export async function queryManualSourceChain(
           : deadlineExpired(deadlineAtMs) ? new OperationTimeoutError() : error;
         // Once the owned wait expires, wall-clock drift cannot reopen this round.
         if (settledError instanceof OperationTimeoutError &&
-            settledError.waitDetails?.waitTimeoutOrigin === "deadline") deadlineReached = true;
+            settledError.waitDetails?.waitTimeoutOrigin === "deadline" &&
+            (providerDeadlineAtMs === deadlineAtMs || deadlineExpired(deadlineAtMs))) deadlineReached = true;
         observe?.({
           source: adapter.source,
           phase: "settled",

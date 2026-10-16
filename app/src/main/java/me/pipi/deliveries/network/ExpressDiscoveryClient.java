@@ -285,7 +285,7 @@ public final class ExpressDiscoveryClient {
                         && persisted != null
                         && (!realTimeline
                         || !persisted.usesInterface5AccountTimeline()
-                        || repository.hasAccountTimeline(waybill, "interface5"))) {
+                        || repository.hasAccountTimeline(persisted, waybill, "interface5"))) {
                     rememberDetailRefresh(prefs, item);
                 }
             } catch (Throwable failure) {

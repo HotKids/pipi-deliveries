@@ -1,79 +1,54 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import {
   normalizeScriptingToken,
+  SCRIPTING_PROTOCOL_VERSION,
   SCRIPTING_REQUEST_METHOD,
+  scriptingActivationHash,
   scriptingCanonicalRequest,
   scriptingCanonicalRequestForMethod,
-  scriptingTokenSecret,
+  scriptingKeyMaterial,
 } from "../services/scripting-auth";
 
-const token = "AbCdEfGh_123-456";
-
+const token = "Synthetic_Key_16";
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+const hmac = (key: string, value: string) => createHmac("sha256", key).update(value).digest("hex");
 assert.equal(normalizeScriptingToken(`  ${token}\n`), token);
-assert.equal(scriptingTokenSecret(token), token);
 assert.equal(normalizeScriptingToken("AbCdEfGh_123-45"), "");
 assert.equal(normalizeScriptingToken("AbCdEfGh+123/456"), "");
+assert.equal(scriptingKeyMaterial("invalid", sha256, hmac), null);
+const material = scriptingKeyMaterial(token, sha256, hmac)!;
+assert.equal(material.keyId, "c56af1db3e56d2de2c632b4fe9bc602ee717c363e2448a61253a2600c685bc60");
+assert.notEqual(material.keyId, material.macKey);
+assert.notEqual(material.keyId, sha256(token));
+const activation = scriptingActivationHash("42".repeat(32), sha256);
+assert.equal(activation, sha256("pipi-scripting-activation-v1\n" + "42".repeat(32)));
+assert.throws(() => scriptingActivationHash("invalid", sha256), /activation/);
 
-const canonical = scriptingCanonicalRequest(
-  1_777_777_777,
-  "0123456789abcdef0123456789abcdef",
-  "/api/express/classify",
-  "c".repeat(64),
-);
-assert.equal(
-  canonical,
-  [
-    "scripting-v1",
-    "1777777777",
-    "0123456789abcdef0123456789abcdef",
-    "POST",
-    "/api/express/classify",
-    "c".repeat(64),
-  ].join("\n"),
-);
+const fields = { timestamp: 1_777_777_777, nonce: "0123456789abcdef0123456789abcdef",
+  method: "POST", origin: "https://beta.example.invalid", route: "/api/express/classify",
+  body: "c".repeat(64), id: material.keyId, activation };
+function canonical(value: typeof fields): string {
+  return scriptingCanonicalRequestForMethod(value.timestamp, value.nonce, value.method,
+    value.origin, value.route, value.body, value.id, value.activation);
+}
+const expected = ["scripting-v2", "1777777777", fields.nonce, "POST", fields.origin,
+  fields.route, fields.body, material.keyId, activation].join("\n");
+assert.equal(canonical(fields), expected);
+assert.equal(scriptingCanonicalRequest(fields.timestamp, fields.nonce, fields.origin,
+  fields.route, fields.body, material.keyId, activation), expected);
+assert.equal(SCRIPTING_PROTOCOL_VERSION, "2");
 assert.equal(SCRIPTING_REQUEST_METHOD, "POST");
-
-function signature(value: string): string {
-  return createHmac("sha256", token).update(value).digest("hex");
+// Retain the original contract vector as historical evidence, not a client downgrade path.
+assert.equal(hmac("AbCdEfGhIjKlMnOp", ["scripting-v1", "1790000000",
+  "00112233445566778899aabbccddeeff", "POST", "/api/express/carriers", sha256("{}")].join("\n")),
+"9a160c2c3c827241637ba4854f972d59f87f1011d030a461a6818dee9f2be670");
+for (const change of [
+  { timestamp: fields.timestamp + 1 }, { nonce: "11".repeat(16) }, { method: "GET" },
+  { origin: "https://formal.example.invalid" }, { route: "/api/express/timeline/preferred" },
+  { body: "d".repeat(64) }, { id: "e".repeat(64) }, { activation: "f".repeat(64) },
+]) {
+  assert.notEqual(hmac(material.macKey, canonical({ ...fields, ...change })),
+    hmac(material.macKey, expected));
 }
-
-const baselineSignature = signature(canonical);
-const signedFieldVariants = [
-  scriptingCanonicalRequest(
-    1_777_777_778,
-    "0123456789abcdef0123456789abcdef",
-    "/api/express/classify",
-    "c".repeat(64),
-  ),
-  scriptingCanonicalRequest(
-    1_777_777_777,
-    "1123456789abcdef0123456789abcdef",
-    "/api/express/classify",
-    "c".repeat(64),
-  ),
-  scriptingCanonicalRequestForMethod(
-    1_777_777_777,
-    "0123456789abcdef0123456789abcdef",
-    "GET",
-    "/api/express/classify",
-    "c".repeat(64),
-  ),
-  scriptingCanonicalRequest(
-    1_777_777_777,
-    "0123456789abcdef0123456789abcdef",
-    "/api/express/timeline/preferred",
-    "c".repeat(64),
-  ),
-  scriptingCanonicalRequest(
-    1_777_777_777,
-    "0123456789abcdef0123456789abcdef",
-    "/api/express/classify",
-    "d".repeat(64),
-  ),
-];
-for (const variant of signedFieldVariants) {
-  assert.notEqual(signature(variant), baselineSignature);
-}
-
-console.log("scripting auth contract tests passed");
+console.log("scripting v2 auth contract tests passed");

@@ -2,11 +2,14 @@ import { Notification, Script } from "scripting";
 import type { AppState, ShipmentNotificationEvent } from "../models";
 import { loadNotificationStatuses, notificationEnabled } from "./notification-preferences";
 import { acknowledgeShipmentNotification, deferShipmentNotification, loadState } from "./storage";
-import { acquireDurableRefreshLease } from "./refresh-runtime-state";
+import { acquireDurableRefreshLease, durableRefreshLeaseRemainingMs } from "./refresh-runtime-state";
 import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { deadlineExpired, remainingTimeoutMs, waitForRefresh } from "./deadline";
-import { isConfirmedNoItemOrder, isHiddenSignedShipment } from "./status";
+import { isConfirmedNoItemOrder, isHiddenSignedShipment, isHiddenCancelledShipment, shipmentPresentationStatus } from "./status";
 import { isAttachedShipment } from "./waybill-ownership";
+import { shipmentNotificationPresentation } from "./notification-events";
+import { isShunFengSourceShipment, selectShipmentTimeline, shipmentHeadlineMatchesStatus } from "./shipment-policy";
+import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey } from "./row-ledger";
 
 async function scheduleEvent(event: Omit<ShipmentNotificationEvent, "id">, deadlineAtMs: number): Promise<void> {
   const request = {
@@ -34,7 +37,7 @@ function deliverableEvents(state: AppState): readonly ShipmentNotificationEvent[
 
 export async function replayPendingShipmentNotifications(
   canSchedule: () => boolean = () => true,
-  options: { deadlineAtMs?: number; flowId?: string } = {},
+  options: { deadlineAtMs?: number; flowId?: string; alignedShipmentId?: string } = {},
 ): Promise<AppState | undefined> {
   const startedAt = Date.now();
   const deadlineAtMs = Math.min(options.deadlineAtMs ?? Infinity, startedAt + 15_000);
@@ -62,7 +65,8 @@ export async function replayPendingShipmentNotifications(
     current = loadState();
     // T23 (user 2026-09-26): an event queued while its row's carrier was unmatched waits for the carrier; storage
     // releases it with a rebuilt title, so it is neither scheduled nor acknowledged here.
-    const events = deliverableEvents(current);
+    const events = deliverableEvents(current).filter(event => !options.alignedShipmentId ||
+      (event.shipmentId === options.alignedShipmentId && event.semantic === "COMPLETED"));
     writeDiagnostic("notification.replay.loaded", {
       ...details, pendingNotifications: events.length, readDurationMs: Date.now() - readStartedAt,
     });
@@ -73,14 +77,35 @@ export async function replayPendingShipmentNotifications(
       if (!latest.pendingNotifications?.some((item) => item.id === event.id)) continue;
       if (deadlineExpired(deadlineAtMs)) { result = "budget_exhausted"; return current; }
       const shipment = latest.shipments.find((shipment) => shipment.identity.id === event.shipmentId);
+      // Hidden owners still retire their queued events instead of waiting for a repair they no longer run.
+      const deliverable = shipment && !isHiddenSignedShipment(shipment) && !isHiddenCancelledShipment(shipment) &&
+        !isConfirmedNoItemOrder(shipment) && !isAttachedShipment(latest.shipments, shipment) && notificationEnabled(event.semantic);
+      const signedSF = deliverable && event.semantic === "COMPLETED" && isShunFengSourceShipment(shipment) &&
+        shipmentPresentationStatus(shipment).semantic === "COMPLETED";
+      if (signedSF) {
+        const attempt = parseAlignmentAttempt(loadAlignmentRecords()[rowLedgerKey(shipment.identity.id)]);
+        const aligning = attempt && !attempt.finished &&
+          durableRefreshLeaseRemainingMs(`detail:${shipment.identity.id}`) > 0;
+        if (aligning || !shipmentHeadlineMatchesStatus(shipment)) {
+          writeDiagnostic("notification.replay.deferred", {
+            ...details, result: "awaiting_status_alignment",
+            reason: aligning ? "alignment_in_progress" : "same_state_headline_missing",
+          });
+          continue;
+        }
+      }
       attempted++;
       try {
         // A queued event may cross the visibility cutoff before the host accepts it.
         // Acknowledge hidden owners below so they cannot block later visible events. A row that has since become
         // attached to another row's waybill (ownership plan T3, user 2026-09-25) is hidden the same way.
-        if (shipment && !isHiddenSignedShipment(shipment) && !isConfirmedNoItemOrder(shipment) &&
-            !isAttachedShipment(latest.shipments, shipment) && notificationEnabled(event.semantic)) {
-          await scheduleEvent(event, deadlineAtMs);
+        if (deliverable) {
+          // SF signing waits in the durable outbox while alignment settles. Its original payload may
+          // predate that repair, so deliver the same current presentation as the list and widgets.
+          const presentation = signedSF
+            ? shipmentNotificationPresentation({ ...shipment, timeline: selectShipmentTimeline(shipment) })
+            : event;
+          await scheduleEvent(presentation, deadlineAtMs);
         }
       } catch (error) {
         failed++;

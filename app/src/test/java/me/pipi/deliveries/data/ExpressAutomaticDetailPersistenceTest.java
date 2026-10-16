@@ -203,7 +203,7 @@ public class ExpressAutomaticDetailPersistenceTest {
     @Test public void accountQuerySidecarParticipatesInDetailWithoutMergingFeedIntoIt() {
         ExpressItem owner = owner("CNQUERY000001", "CaiNiao", "interface5", false);
         ExpressQueryResult query = h5(owner.waybill, TimelineSlot.V5_QUERY, "已揽收");
-        repository.saveAccountTimeline(query, "interface5");
+        saveOwnedAccountQuery(owner, query);
         ManualTimelineAuthorityPolicy.Candidate detail = repository.manualDetailTimelineAuthority(owner);
         assertNotNull(detail);
         assertEquals(TimelineSlot.V5_QUERY, detail.provider);
@@ -476,8 +476,8 @@ public class ExpressAutomaticDetailPersistenceTest {
                 java.util.List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, old, 100L, true)),
                 PHONE, "interface5");
         repository.rememberDetailSelection(owner, TimelineSlot.V6_QUERY);
-        repository.saveAccountTimeline(detailPackage(owner.waybill, TimelineSlot.V5_QUERY,
-                "2026-09-10 10:00:00", true), "interface5");
+        saveOwnedAccountQuery(owner, detailPackage(owner.waybill, TimelineSlot.V5_QUERY,
+                "2026-09-10 10:00:00", true));
         assertEquals(TimelineSlot.V5_QUERY, repository.manualDetailTimelineAuthority(owner).provider);
     }
 
@@ -519,10 +519,20 @@ public class ExpressAutomaticDetailPersistenceTest {
         repository.rememberDetailSelection(owner, ManualTimelineAuthorityPolicy.PREFERRED_FEED);
         ExpressQueryResult fresh = detailPackage(owner.waybill, TimelineSlot.V5_QUERY,
                 "2026-09-10 10:00:00", true);
-        repository.saveAccountTimeline(fresh, "interface5");
+        saveOwnedAccountQuery(owner, fresh);
         ManualTimelineAuthorityPolicy.Candidate selected = repository.manualDetailTimelineAuthority(owner);
         assertNotNull(selected);
         assertEquals(TimelineSlot.V5_QUERY, selected.provider);
+    }
+
+    private void saveOwnedAccountQuery(ExpressItem owner, ExpressQueryResult result) {
+        ExpressQueryResult raw = new ExpressQueryResult(result.waybill, result.courierCode,
+                result.companyName, result.semantic, result.statusEventTime, result.latestTime,
+                result.latestDetail, result.tracksJson, result.detailUrl, owner.phone,
+                TimelineSlot.V5_QUERY, "", "", owner.sourceProvider)
+                .withManualStatusEvidence(result.statusDescription, result.structuredStatusEvidence);
+        assertTrue(repository.saveInterface5Query(raw, owner,
+                repository.bindingGeneration(owner.phone, "interface5")));
     }
 
     private static ExpressQueryResult detailPackage(String waybill, String provider,

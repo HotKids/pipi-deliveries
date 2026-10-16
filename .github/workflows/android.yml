@@ -32,6 +32,8 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
+      - name: Test Telegram release preflight
+        run: node tools/test-release-bot-identity.mjs
       # verify-package.sh 的两处检查要 rg：装在后面等于打包校验先跑、先红（v1.3.1 首次打标签
       # 时暴露，exit 127）。装在用它的那一步之前。
       - name: Install ripgrep
@@ -219,3 +221,25 @@ jobs:
               gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag_name"
             fi
           done
+
+  notify-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Download the published APKs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: Pipi-Deliveries-*
+          path: release-files
+          merge-multiple: true
+      - name: Publish the release through the dedicated Telegram bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          bash tools/publish-telegram.sh "Pipi Deliveries ${GITHUB_REF_NAME}" \
+            ".github/release-notes/${GITHUB_REF_NAME}.md" \
+            "release-files/Pipi-Deliveries-${GITHUB_REF_NAME}.apk"

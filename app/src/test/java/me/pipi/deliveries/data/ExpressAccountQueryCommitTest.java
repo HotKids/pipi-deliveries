@@ -93,6 +93,237 @@ public final class ExpressAccountQueryCommitTest {
     }
 
     @Test
+    public void staleProjectionSnapshotCannotReadThePreviousWaybillQuery() {
+        repository.saveInterface5OrderSummary(result(order, StatusSemantic.TRANSIT, time(2000),
+                "Order feed", tracks(time(2000), "Order feed")), phone);
+        ExpressItem owner = repository.findByWaybill(order, "interface5");
+        assertTrue(repository.saveOrderProjection(owner, "interface5", real, "京东快递"));
+        ExpressItem oldProjection = repository.find(owner.rowId);
+        assertTrue(repository.saveInterface5Query(result(order, StatusSemantic.DELIVERY, time(1000),
+                "Previous projection detail", tracks(time(1000), "Previous projection detail")),
+                oldProjection, repository.bindingGeneration(phone, "interface5")));
+        assertTrue(repository.saveOrderProjection(oldProjection, "interface5", "JD9990000000085", "京东快递"));
+        assertNotEquals(oldProjection.projectedWaybill, repository.find(owner.rowId).projectedWaybill);
+        assertNull(repository.accountTimeline(oldProjection, real, "interface5"));
+        assertTrue(repository.accountTimeline(real, "interface5").tracksJson.contains("Previous projection detail"));
+    }
+
+    @Test
+    public void unqualifiedRowMovedToAnotherBindingCannotReadOrMergeItsOldAccountQuery() {
+        ExpressQueryResult feed = new ExpressQueryResult(order, "", "京东购物",
+                StatusSemantic.TRANSIT, time(3000), "Own order feed", tracks(time(3000), "Own order feed"),
+                "", phone, "interface5", "", "", "JingDong");
+        repository.saveInterface5OrderSummary(feed, phone);
+        ExpressItem owner = repository.findByWaybill(order, "interface5");
+        String oldGeneration = repository.bindingGeneration(phone, "interface5");
+        assertTrue(repository.saveInterface5Query(result(order, StatusSemantic.COMPLETED,
+                time(1000), "Old binding signed", tracks(time(1000), "Old binding signed"))
+                .withManualStatusEvidence("Signed", true), owner, oldGeneration));
+        String otherPhone = "13800000002";
+        repository.bindPhoneLocally(otherPhone, "interface5");
+        android.content.ContentValues changed = new android.content.ContentValues();
+        changed.put("subPhone", otherPhone);
+        database.getWritableDatabase().update(ExpressDatabase.EXPRESS_TABLE, changed,
+                "_id=?", new String[]{Long.toString(owner.rowId)});
+        ExpressItem current = repository.find(owner.rowId);
+        assertNull(repository.accountTimeline(current, order, "interface5"));
+        assertFalse(repository.saveInterface5Query(feed, owner, oldGeneration));
+        ExpressQueryResult query = new ExpressQueryResult(order, "JD", "京东快递", StatusSemantic.DELIVERY,
+                ExpressSourcePolicy.parseEventTime(time(2000)), time(2000), "Current binding detail",
+                tracks(time(2000), "Current binding detail"), "", otherPhone, "interface5", "", "", "JingDong")
+                .withManualStatusEvidence("Delivery", true);
+        assertTrue(repository.saveInterface5Query(query, current,
+                repository.bindingGeneration(otherPhone, "interface5")));
+        assertFalse(repository.accountTimeline(current, order, "interface5").tracksJson.contains("Old binding signed"));
+        assertTrue(repository.accountTimeline(order, "interface5").tracksJson.contains("Old binding signed"));
+    }
+
+    @Test
+    public void anotherAutomaticOwnerBlocksTheUnqualifiedOrderQuery() {
+        repository.saveInterface5(cainiao(real, StatusSemantic.TRANSIT, time(2000), "Carrier feed"), phone);
+        ExpressItem carrier = repository.findByWaybill(real, "interface5");
+        assertTrue(repository.saveInterface5Query(cainiao(real, StatusSemantic.DELIVERY, time(1000), "Carrier detail"),
+                carrier, repository.bindingGeneration(phone, "interface5")));
+        ExpressQueryResult feed = new ExpressQueryResult(order, "", "京东购物", StatusSemantic.TRANSIT,
+                time(2000), "Own order feed", tracks(time(2000), "Own order feed"),
+                "", phone, "interface5", "", "", "JingDong");
+        repository.saveInterface5OrderSummary(feed, phone);
+        ExpressItem other = repository.findByWaybill(order, "interface5");
+        assertTrue(repository.saveOrderProjection(other, "interface5", real, ""));
+        other = repository.find(other.rowId);
+        assertNull(repository.accountTimeline(other, real, "interface5"));
+        assertFalse(repository.saveInterface5Query(feed, other,
+                repository.bindingGeneration(phone, "interface5")));
+        assertTrue(repository.accountTimeline(real, "interface5").tracksJson.contains("Carrier detail"));
+    }
+
+    @Test
+    public void unqualifiedOrderKeepsItsOwnAccountQueryWithoutCreatingAutomaticOwnership() {
+        ExpressQueryResult feed = new ExpressQueryResult(order, "", "京东购物",
+                StatusSemantic.TRANSIT, time(2000), "Own order feed", tracks(time(2000), "Own order feed"),
+                "", phone, "interface5", "", "", "JingDong");
+        repository.saveInterface5OrderSummary(feed, phone);
+        ExpressItem owner = repository.findByWaybill(order, "interface5");
+        String generation = repository.bindingGeneration(phone, "interface5");
+        assertTrue(repository.saveInterface5Query(result(order, StatusSemantic.DELIVERY,
+                time(1000), "Own order detail", tracks(time(1000), "Own order detail"))
+                .withManualStatusEvidence("Delivery", true), owner, generation));
+        assertTrue(repository.hasAccountTimeline(owner, order, "interface5"));
+        assertTrue(repository.manualDetailTimelineAuthority(owner).result.tracksJson.contains("Own order detail"));
+        try (android.database.Cursor cursor = database.getReadableDatabase().query(
+                ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE, new String[]{"owner_row_id"},
+                "normalized_waybill=?", new String[]{order}, null, null, null)) {
+            assertTrue(!cursor.moveToFirst() || cursor.getLong(0) == 0L);
+        }
+        repository.unbindPhone(phone, "interface5");
+        repository.bindPhoneLocally(phone, "interface5");
+        repository.saveInterface5OrderSummary(feed, phone);
+        ExpressItem rebound = repository.findByWaybill(order, "interface5");
+        assertNull(repository.manualDetailTimelineAuthority(rebound));
+        assertFalse(repository.saveInterface5Query(feed, rebound, generation));
+        assertTrue(repository.accountTimeline(order, "interface5").tracksJson.contains("Own order detail"));
+    }
+
+    @Test
+    public void unattributedHistoryStaysStoredWithoutSupplyingCurrentDetailOrStoppingQuery() {
+        repository.saveInterface5(cainiao(real, StatusSemantic.TRANSIT, time(2000), "Current feed"), phone);
+        ExpressItem owner = repository.findByWaybill(real, "interface5");
+        repository.saveAccountTimeline(cainiao(real, StatusSemantic.DELIVERY, time(1000), "Legacy history"),
+                "interface5");
+        assertTrue(repository.accountTimeline(real, "interface5").tracksJson.contains("Legacy history"));
+        assertNull(repository.manualDetailTimelineAuthority(owner));
+        assertFalse(repository.hasAccountTimeline(owner, real, "interface5"));
+        assertEquals(StatusSemantic.TRANSIT, repository.find(owner.rowId).semantic);
+    }
+
+    @Test
+    public void changedBusinessSourceCannotReadTheOldSourcesCommittedQuery() {
+        repository.saveInterface5(cainiao(real, StatusSemantic.TRANSIT, time(2000), "Current feed"), phone);
+        ExpressItem owner = repository.findByWaybill(real, "interface5");
+        assertTrue(repository.saveInterface5Query(cainiao(real, StatusSemantic.DELIVERY,
+                time(1000), "Other business source").withManualStatusEvidence("Delivery", true),
+                owner, repository.bindingGeneration(phone, "interface5")));
+        android.content.ContentValues changed = new android.content.ContentValues();
+        changed.put("data1", "ShunFeng");
+        database.getWritableDatabase().update(ExpressDatabase.EXPRESS_TABLE, changed, "_id=?",
+                new String[]{Long.toString(owner.rowId)});
+        ExpressItem current = repository.find(owner.rowId);
+        assertNull(repository.manualDetailTimelineAuthority(current));
+        assertFalse(repository.hasAccountTimeline(current, real, "interface5"));
+        assertTrue(repository.accountTimeline(real, "interface5").tracksJson.contains("Other business source"));
+    }
+
+    @Test
+    public void firstOwnershipPersistsOnlyValidRawCarrierEvidence() {
+        int index = 0;
+        for (String value : new String[]{"OTHER", "UNKNOWN", "null", "未知", "其他", "SF Express"}) {
+            String identity = "LITERAWCARRIER" + index++;
+            ExpressQueryResult packet = new ExpressQueryResult(identity, "", value,
+                    StatusSemantic.TRANSIT, time(2000), "Current feed", "[]", "", phone,
+                    "interface5", "", "", "CaiNiao").withRawCarrierNameEvidence(value);
+            repository.saveInterface5(packet, phone);
+            try (android.database.Cursor cursor = database.getReadableDatabase().query(
+                    ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE, new String[]{"owner_row_id"},
+                    "normalized_waybill=?", new String[]{identity}, null, null, null)) {
+                long row = cursor.moveToFirst() ? cursor.getLong(0) : 0L;
+                if ("SF Express".equals(value)) assertTrue(row > 0L);
+                else assertEquals(0L, row);
+            }
+        }
+    }
+
+    @Test
+    public void reboundOwnerCannotReadPreviouslyCommittedQueryAsCurrentDetail() {
+        ExpressQueryResult feed = cainiao(real, StatusSemantic.TRANSIT, time(2000), "Current feed");
+        repository.saveInterface5(feed, phone);
+        ExpressItem owner = repository.findByWaybill(real, "interface5");
+        assertTrue(repository.saveInterface5Query(cainiao(real, StatusSemantic.DELIVERY,
+                time(1000), "Old owner query").withManualStatusEvidence("Out for delivery", true),
+                owner, repository.bindingGeneration(phone, "interface5")));
+        assertNotNull(repository.manualDetailTimelineAuthority(owner));
+        repository.unbindPhone(phone, "interface5");
+        repository.bindPhoneLocally(phone, "interface5");
+        repository.saveInterface5(feed, phone);
+        ExpressItem rebound = repository.findByWaybill(real, "interface5");
+        assertNotNull(repository.accountTimeline(real, "interface5"));
+        assertNull(repository.manualDetailTimelineAuthority(rebound));
+        assertEquals(StatusSemantic.TRANSIT, rebound.semantic);
+    }
+
+    @Test
+    public void recreatedRowCannotReadAnotherRowsCommittedQuery() {
+        ExpressQueryResult feed = cainiao(real, StatusSemantic.TRANSIT, time(2000), "Current feed");
+        repository.saveInterface5(feed, phone);
+        ExpressItem old = repository.findByWaybill(real, "interface5");
+        assertTrue(repository.saveInterface5Query(cainiao(real, StatusSemantic.DELIVERY,
+                time(1000), "Old row detail").withManualStatusEvidence("Delivery", true),
+                old, repository.bindingGeneration(phone, "interface5")));
+        android.content.ContentValues retained = new android.content.ContentValues();
+        try (android.database.Cursor cursor = database.getReadableDatabase().query(
+                ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE, null, null, null, null, null, null)) {
+            assertTrue(cursor.moveToFirst());
+            android.database.DatabaseUtils.cursorRowToContentValues(cursor, retained);
+        }
+        repository.delete(old.rowId);
+        repository.saveInterface5(feed, phone);
+        ExpressItem recreated = repository.findByWaybill(real, "interface5");
+        assertNotEquals(old.rowId, recreated.rowId);
+        database.getWritableDatabase().insertWithOnConflict(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
+                null, retained, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE);
+        assertNull(repository.manualDetailTimelineAuthority(recreated));
+        assertEquals(StatusSemantic.TRANSIT, repository.find(recreated.rowId).semantic);
+        assertTrue(repository.accountTimeline(real, "interface5").tracksJson.contains("Old row detail"));
+    }
+
+    @Test
+    public void sameOwnerIncrementalQueryRetainsItsWholePacketAndStatusAfterReload() {
+        ExpressItem owner = unknownOwner();
+        String generation = repository.bindingGeneration(phone, "interface5");
+        assertTrue(repository.saveInterface5Query(cainiao(real, StatusSemantic.PICKED,
+                time(2000), "Own pickup").withManualStatusEvidence("Picked", true), owner, generation));
+        assertTrue(repository.saveInterface5Query(cainiao(real, StatusSemantic.TRANSIT,
+                time(1000), "Own transit").withManualStatusEvidence("Transit", true), owner, generation));
+        database.close();
+        database = new ExpressDatabase(context);
+        repository = new ExpressRepository(context, database);
+        ManualTimelineAuthorityPolicy.Candidate detail = repository.manualDetailTimelineAuthority(
+                repository.find(owner.rowId));
+        assertNotNull(detail);
+        assertTrue(detail.result.tracksJson.contains("Own pickup"));
+        assertTrue(detail.result.tracksJson.contains("Own transit"));
+        assertEquals(StatusSemantic.TRANSIT, detail.result.semantic);
+        assertEquals(StatusSemantic.TRANSIT, repository.find(owner.rowId).semantic);
+    }
+
+    @Test
+    public void newOwnerQueryRetainsOldHistoryWithoutAdoptingItsStatusOrDetail() {
+        ExpressQueryResult feed = cainiao(real, StatusSemantic.TRANSIT, time(3000), "Current feed");
+        repository.saveInterface5(feed, phone);
+        ExpressItem owner = repository.findByWaybill(real, "interface5");
+        assertTrue(repository.saveInterface5Query(cainiao(real, StatusSemantic.COMPLETED,
+                time(1000), "Old owner signed").withManualStatusEvidence("Signed", true),
+                owner, repository.bindingGeneration(phone, "interface5")));
+        repository.unbindPhone(phone, "interface5");
+        repository.bindPhoneLocally(phone, "interface5");
+        repository.saveInterface5(feed, phone);
+        ExpressItem rebound = repository.findByWaybill(real, "interface5");
+        assertTrue(repository.saveInterface5Query(cainiao(real, StatusSemantic.DELIVERY,
+                time(2000), "New owner detail").withManualStatusEvidence("Delivery", true),
+                rebound, repository.bindingGeneration(phone, "interface5")));
+        database.close();
+        database = new ExpressDatabase(context);
+        repository = new ExpressRepository(context, database);
+        ExpressItem current = repository.find(rebound.rowId);
+        assertTrue(repository.accountTimeline(real, "interface5").tracksJson.contains("Old owner signed"));
+        assertEquals(StatusSemantic.DELIVERY, current.semantic);
+        ManualTimelineAuthorityPolicy.Candidate detail = repository.manualDetailTimelineAuthority(current);
+        assertNotNull(detail);
+        assertEquals(StatusSemantic.DELIVERY, detail.result.semantic);
+        assertTrue(detail.result.tracksJson.contains("New owner detail"));
+        assertFalse(detail.result.tracksJson.contains("Old owner signed"));
+    }
+
+    @Test
     public void signedBackgroundQueryStopsBeforeCacheAgeChecks() throws Exception {
         String now = time(1000);
         repository.saveInterface5(result(real, StatusSemantic.COMPLETED, now, "已签收", "[]"), phone);

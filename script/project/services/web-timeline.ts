@@ -1,5 +1,6 @@
 import { resolveCarrierQuery } from "./carrier-query";
 import { TIMELINE_SLOT } from "./timeline-slot";
+import { claimKuaidi100Capture } from "./refresh-runtime-state";
 import { jtH5JavaScript, primaryH5Provider, primaryH5Route, webPhoneTails, WebTimelinePhoneError } from "./jt-h5";
 import type { TimelinePackage, TrackNode } from "../models";
 import {
@@ -439,7 +440,11 @@ export async function scrapeWebTimeline(
   };
   try {
     if (input.signal?.aborted) throw new OperationTimeoutError();
-    input.beforeQuery?.();
+    if (jt) input.beforeQuery?.();
+    else if (!claimKuaidi100Capture(waybill, input.beforeQuery)) {
+      exitReason = "cooldown";
+      return null;
+    }
     requestStarted = true;
     void controller.loadURL(routeUrl).then(
       (loaded) => { loadSettled = true; loadCompleted = loaded; },

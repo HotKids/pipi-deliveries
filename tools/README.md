@@ -77,3 +77,22 @@ release 构建会直接失败，不会回退到 debug 签名。
 GitHub Actions 使用 `SIGNING_KEYSTORE_BASE64`、`SIGNING_STORE_PASSWORD`、
 `SIGNING_KEY_ALIAS` 与 `SIGNING_KEY_PASSWORD` 四个 Repository Secret，临时还原
 keystore 后构建签名 APK，并在任务结束时删除临时文件。
+
+## Telegram release delivery
+
+After a tagged GitHub Release succeeds, the independent `notify-release` job
+sends the standard APK and the same approved tag notes through
+`@pipireleases_bot`. The mirror repository needs `TELEGRAM_BOT_TOKEN` for that
+bot and `TELEGRAM_CHAT_ID` for the configured destination channel. Both remain
+GitHub Actions secrets; no token is stored in source. The Android 10 compatibility
+APK is not sent to Telegram.
+
+The publisher verifies the bot username and destination administrator rights
+before sending. It uses the cloud Bot API without `logOut` or a local server.
+Every file is checked against the 50,000,000-byte upload budget before any API
+call. Notes over Telegram's message length are attached in full instead of
+truncated. A failed notification fails only its own job, which can be rerun
+without rebuilding, signing, creating or deleting a GitHub Release.
+
+Run `node tools/test-release-bot-identity.mjs` for synthetic, offline preflight and
+delivery checks. This does not validate live secrets, channel access or delivery.

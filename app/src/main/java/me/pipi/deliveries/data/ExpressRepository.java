@@ -463,8 +463,8 @@ public final class ExpressRepository {
         }
         if (isInterface5Automatic(raw)) {
             String key = ExpressSourcePolicy.normalizeWaybill(raw.waybill);
-            ExpressQueryResult query = sidecars.interface5Timelines.get(key);
-            ExpressQueryResult presentation = sidecars.interface5Presentations.get(key);
+            ExpressQueryResult query = ownedAccountQuery(db, raw, raw.waybill);
+            ExpressQueryResult presentation = query == null ? null : sidecars.interface5Presentations.get(key);
             if (query != null && (ManualTimelineAuthorityPolicy.hasStructuredStatus(query)
                     && givesStatus(raw, presented, query)
                     || ManualTimelineAuthorityPolicy.hasStructuredStatus(presentation)
@@ -855,7 +855,12 @@ public final class ExpressRepository {
             // An exact durable duplicate can reconcile a previously failed secondary gate, but publishes no new event.
             if (!committed && !encoded.equals(ledgerValue(row.rowId, LEDGER_STATUS_ALIGNMENT))) return;
             if (advanced) recordWebLagEntryQuery(row, times);
-            if (committed) emitInvalidation();
+            if (committed) {
+                if (!me.pipi.deliveries.background.ExpressStatusAlignment.notificationAlignmentInProgress(row.rowId)) {
+                    replayStatusAlignmentNotification(row);
+                }
+                emitInvalidation();
+            }
         } catch (org.json.JSONException impossible) { throw new IllegalStateException(impossible); }
     }
 
@@ -1663,6 +1668,12 @@ public final class ExpressRepository {
         return "interface5".equals(source) ? cleanJdQuery(result) : result;
     }
 
+    public synchronized ExpressQueryResult accountTimeline(
+            ExpressItem owner, String waybill, String bindingSource) {
+        return "interface5".equals(normalizeBindingSource(bindingSource))
+                ? ownedAccountQuery(database(), owner, waybill) : accountTimeline(waybill, bindingSource);
+    }
+
     /**
      * 接口 5 账号件缓存里的详情是否已完整：终态、有时间节点、有揽收。完整就不再按时间重拉
      * （用户定 2026-09-05，三端同一道门）——原来每 6 小时把全部已签收件再拉一遍按件详情，
@@ -1677,9 +1688,9 @@ public final class ExpressRepository {
                 item.latestTime, item.latestDetail, item.tracksJson);
         if (Kuaidi100TimelinePolicy.hasTimedTracking(own)
                 && Kuaidi100TimelinePolicy.hasPickupEvidence(own)) return true;
-        ExpressQueryResult chosen = accountTimeline(item.displayWaybill(), "interface5");
+        ExpressQueryResult chosen = ownedAccountQuery(database(), item, item.displayWaybill());
         if (!Kuaidi100TimelinePolicy.hasTimedTracking(chosen)) {
-            chosen = accountTimeline(item.waybill, "interface5");
+            chosen = ownedAccountQuery(database(), item, item.waybill);
         }
         return Kuaidi100TimelinePolicy.hasTimedTracking(chosen)
                 && Kuaidi100TimelinePolicy.hasPickupEvidence(chosen);
@@ -1688,6 +1699,10 @@ public final class ExpressRepository {
     public synchronized boolean hasAccountTimeline(String waybill, String bindingSource) {
         return Kuaidi100TimelinePolicy.hasRealTracking(
                 accountTimeline(waybill, bindingSource));
+    }
+
+    public synchronized boolean hasAccountTimeline(ExpressItem owner, String waybill, String bindingSource) {
+        return Kuaidi100TimelinePolicy.hasRealTracking(accountTimeline(owner, waybill, bindingSource));
     }
 
     private ExpressQueryResult timeline(String table, String waybill, String provider) {
@@ -1807,12 +1822,14 @@ public final class ExpressRepository {
                 values.put("structured_status", merged.structuredStatusEvidence ? 1 : 0);
                 values.put("status_description", merged.statusDescription);
                 values.put("owner_attribution", owner == null ? "" : owner.queryKey());
-                // Legacy history stays intact but cannot donate fields to a newly proven owner.
-                ExpressQueryResult previousPresentation = owner != null
-                        && owner.equals(accountQueryOwner(db, result.waybill))
+                // Retain the global history, but merge current-owner evidence only within its attribution.
+                boolean sameOwner = owner != null && owner.equals(accountQueryOwner(db, result.waybill));
+                ExpressQueryResult previousPresentation = sameOwner
                         ? accountQueryPresentation(db, result.waybill) : null;
+                ExpressQueryResult currentPacket = Kuaidi100TimelinePolicy.mergeManualProvider(
+                        sameOwner ? accountQueryPacket(db, result.waybill) : null, result);
                 values.put("owner_presentation", owner == null ? ""
-                        : queryPresentationKey(previousPresentation, cleanJdQuery(result)));
+                        : queryPresentationKey(previousPresentation, cleanJdQuery(currentPacket)));
             }
             values.put("latest_time", merged.latestTime);
             values.put("latest_detail", merged.latestDetail);
@@ -2739,7 +2756,12 @@ public final class ExpressRepository {
                 statusOwner != null && statusOwner.structuredStatusEvidence,
                 statusOwner == null ? "" : statusOwner.statusDescription,
                 statusOwner == null || statusOwner.workerStatus == null
-                        ? org.json.JSONObject.NULL : statusOwner.workerStatus.toJson())).toString();
+                        ? org.json.JSONObject.NULL : statusOwner.workerStatus.toJson(),
+                new org.json.JSONArray(java.util.Arrays.asList(incoming.courierCode, incoming.companyName,
+                        incoming.semantic.storageCode, incoming.statusEventTime, incoming.latestTime,
+                        incoming.latestDetail, incoming.tracksJson, incoming.statusDescription,
+                        incoming.structuredStatusEvidence, incoming.workerStatus == null
+                        ? org.json.JSONObject.NULL : incoming.workerStatus.toJson())))).toString();
     }
 
     private static ExpressQueryResult queryPresentation(ExpressQueryResult query, String value) {
@@ -2768,6 +2790,67 @@ public final class ExpressRepository {
             return cursor.moveToFirst() ? queryPresentation(timeline(cursor, TimelineSlot.V5_QUERY),
                     text(cursor, "owner_presentation")) : null;
         }
+    }
+
+    /** The retained global history and the current attributed packet have separate lifetimes. */
+    private static ExpressQueryResult accountQueryPacket(SQLiteDatabase db, String waybill) {
+        try (Cursor cursor = db.query(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
+                null, "normalized_waybill=?", new String[]{ExpressSourcePolicy.normalizeWaybill(waybill)},
+                null, null, null, "1")) {
+            return cursor.moveToFirst() ? accountQueryPacket(cursor) : null;
+        }
+    }
+
+    private static ExpressQueryResult accountQueryPacket(Cursor cursor) {
+        ExpressQueryResult retained = timeline(cursor, TimelineSlot.V5_QUERY);
+        try {
+            org.json.JSONArray fields = new org.json.JSONArray(text(cursor, "owner_presentation"));
+            // Older attributed caches predate packet isolation; their original same-owner history remains valid.
+            if (fields.length() < 8) return retained;
+            org.json.JSONArray packet = fields.getJSONArray(7);
+            return new ExpressQueryResult(retained.waybill, packet.getString(0), packet.getString(1),
+                    StatusSemantic.fromStored(packet.getString(2), ""), packet.getLong(3), packet.getString(4),
+                    packet.getString(5), packet.getString(6), "", "", TimelineSlot.V5_QUERY, "", "", "")
+                    .withManualStatusEvidence(packet.getString(7), packet.getBoolean(8))
+                    .withWorkerStatus(WorkerStatusProjection.read(new org.json.JSONObject()
+                            .put("normalizedStatus", packet.optJSONObject(9))));
+        } catch (org.json.JSONException invalid) {
+            return retained;
+        }
+    }
+
+    private static ExpressQueryResult ownedAccountQuery(SQLiteDatabase db, ExpressItem owner, String waybill) {
+        OwnerAttribution stored = accountQueryOwner(db, waybill);
+        return stored != null && stored.equals(queryOwnerAttribution(db, owner))
+                ? accountQueryPacket(db, waybill) : null;
+    }
+
+    /** Account detail belongs to its live row and binding even before automatic ownership qualifies. */
+    private static OwnerAttribution queryOwnerAttribution(SQLiteDatabase db, ExpressItem owner) {
+        if (owner == null || owner.manuallyAdded || !isInterface5Automatic(owner)) return null;
+        String ownerSource = ExpressSourcePolicy.source(owner.stateOwner.isEmpty() ? owner.source : owner.stateOwner);
+        try (Cursor cursor = db.query(ExpressDatabase.EXPRESS_TABLE,
+                new String[]{"mailNo", "fromCp", "stateOwner", "data1", "subPhone"},
+                "_id=? AND isDeleted=0", new String[]{Long.toString(owner.rowId)}, null, null, null, "1")) {
+            if (!cursor.moveToFirst()) return null;
+            String storedSource = clean(cursor.getString(2)).isEmpty() ? cursor.getString(1) : cursor.getString(2);
+            if (!ExpressSourcePolicy.normalizeWaybill(cursor.getString(0)).equals(
+                    ExpressSourcePolicy.normalizeWaybill(owner.waybill))
+                    || !ownerSource.equals(ExpressSourcePolicy.source(storedSource))
+                    || !owner.sourceProvider.equals(clean(cursor.getString(3)))
+                    || !normalizePhoneDigits(owner.phone).equals(normalizePhoneDigits(cursor.getString(4)))) return null;
+        }
+        String identity = automaticIdentity(db, owner.waybill, ownerSource);
+        if (!ExpressSourcePolicy.normalizeWaybill(identity).equals(
+                ExpressSourcePolicy.normalizeWaybill(owner.displayWaybill()))) return null;
+        OwnerAttribution established = currentOwnerAttribution(db, owner);
+        if (established != null) return established;
+        AutomaticOwnershipState state = automaticOwnershipState(db, identity);
+        if (state != null && state.ownerRowId > 0L) return null;
+        String generation = bindingGeneration(db, owner.phone, "interface5");
+        return generation.isEmpty() ? null : new OwnerAttribution(owner.rowId,
+                ExpressSourcePolicy.normalizeWaybill(owner.displayWaybill()), ownerSource,
+                owner.sourceProvider, "interface5", generation);
     }
 
     private static OwnerAttribution accountQueryOwner(SQLiteDatabase db, String waybill) {
@@ -3105,8 +3188,9 @@ public final class ExpressRepository {
                         "normalized_waybill=?", new String[]{ExpressSourcePolicy.normalizeWaybill(identity)},
                         null, null, null, "1")) {
                     if (!cursor.moveToFirst()) continue;
-                    ExpressQueryResult candidate = cleanJdTimeline(
-                            timeline(cursor, TimelineSlot.V5_QUERY), current);
+                    OwnerAttribution stored = OwnerAttribution.fromQueryKey(text(cursor, "owner_attribution"));
+                    if (stored == null || !stored.equals(queryOwnerAttribution(db, current))) continue;
+                    ExpressQueryResult candidate = cleanJdTimeline(accountQueryPacket(cursor), current);
                     if (!Kuaidi100TimelinePolicy.hasTimedTracking(candidate)) continue;
                     query = candidate;
                     querySuccessAt = Math.max(1L, number(cursor, "updated_at"));
@@ -3257,6 +3341,9 @@ public final class ExpressRepository {
     private ManualTimelineAuthorityPolicy.DetailDecision selectDetailTimelineDecision(
             ExpressItem current, List<ManualTimelineAuthorityPolicy.Candidate> stored,
             ExpressQueryResult query, long querySuccessAt) {
+        if (query != null && isInterface5Automatic(current)) {
+            query = ownedAccountQuery(database(), current, query.waybill);
+        }
         String preferred = preferredDetailProvider(current);
         ArrayList<ManualTimelineAuthorityPolicy.Candidate> candidates = new ArrayList<>();
         if (stored != null) candidates.addAll(stored);
@@ -3396,7 +3483,8 @@ public final class ExpressRepository {
         return null;
     }
 
-    private static ExpressQueryResult accountStatusPresentation(ExpressItem owner, ExpressQueryResult query) {
+    private ExpressQueryResult accountStatusPresentation(ExpressItem owner, ExpressQueryResult query) {
+        query = query == null ? null : ownedAccountQuery(database(), owner, query.waybill);
         ExpressQueryResult source = sourcePackage(owner);
         ExpressItem presented = restoreAccountActivity(owner, query, true);
         return new ExpressQueryResult(source.waybill, source.courierCode, source.companyName,
@@ -3588,7 +3676,7 @@ public final class ExpressRepository {
         if (text != null) {
             return new PendingProjection(PendingProjectionSource.FEED_TEXT, text.waybill, "");
         }
-        ExpressQueryResult query = accountTimeline(expected.waybill, "interface5");
+        ExpressQueryResult query = ownedAccountQuery(database(), expected, expected.waybill);
         text = query == null ? null
                 : me.pipi.deliveries.feature.express.ExpressOrderTextIdentity.fromTracksJson(
                         query.tracksJson, expected.waybill);
@@ -3686,7 +3774,7 @@ public final class ExpressRepository {
             SQLiteDatabase db = database();
             db.beginTransaction();
             try {
-                ExpressQueryResult query = accountTimeline(expectedOwner.waybill, "interface5");
+                ExpressQueryResult query = ownedAccountQuery(db, expectedOwner, expectedOwner.waybill);
                 ExpressItem previousPresented = projectTimelineAuthorities(findRaw(db, expectedOwner.rowId));
                 if (query == null || !saveOrderProjection(expectedOwner, "interface5",
                         displayWaybill, carrier, false, null)) return false;
@@ -3950,9 +4038,9 @@ public final class ExpressRepository {
                 null, null, null)) {
             if (cursor.moveToFirst()) {
                 OwnerAttribution stored = OwnerAttribution.fromQueryKey(text(cursor, "owner_attribution"));
-                if (stored != null && stored.equals(currentOwnerAttribution(db, owner))) {
+                if (stored != null && stored.equals(queryOwnerAttribution(db, owner))) {
                     retainedCompletion |= trustedCompletion(cleanJdTimeline(
-                            timeline(cursor, TimelineSlot.V5_QUERY), owner), System.currentTimeMillis());
+                            accountQueryPacket(cursor), owner), System.currentTimeMillis());
                 }
             }
         }
@@ -4311,7 +4399,7 @@ public final class ExpressRepository {
                     ExpressSourcePolicy.normalizeWaybill(expectedOwner.projectedWaybill))
                     || !ExpressSourcePolicy.normalizeWaybill(result.waybill).equals(
                     ExpressSourcePolicy.normalizeWaybill(current.waybill))) return false;
-            OwnerAttribution attribution = currentOwnerAttribution(db, current);
+            OwnerAttribution attribution = queryOwnerAttribution(db, current);
             if (attribution == null || !"interface5".equals(attribution.bindingSource)
                     || !clean(bindingGeneration).equals(attribution.bindingGeneration)
                     || !isCurrentBindingGeneration(db, current.phone, "interface5", bindingGeneration)
@@ -4328,7 +4416,7 @@ public final class ExpressRepository {
                             textProjectionCarrier, false)) return false;
                 }
             }
-            attribution = currentOwnerAttribution(db, findManualOwner(db, current.rowId));
+            attribution = queryOwnerAttribution(db, findManualOwner(db, current.rowId));
             if (attribution == null) return false;
             ExpressQueryResult cleanedQuery = cleanJdQuery(result);
             ExpressLog.write("account.query.prepared", "waybillTail", ExpressLog.tail(current.displayWaybill()),
@@ -6733,11 +6821,23 @@ public final class ExpressRepository {
 
     /** Replays the latest committed presentation per row, using its stable Android notification ID. */
     public synchronized void replayPendingNotifications() {
+        replayPendingNotifications(0L);
+    }
+
+    public synchronized void replayStatusAlignmentNotification(ExpressItem row) {
+        ExpressItem current = row == null ? null : find(row.rowId);
+        if (isShunFeng(current) && current.semantic == StatusSemantic.COMPLETED) {
+            replayPendingNotifications(current.rowId);
+        }
+    }
+
+    private void replayPendingNotifications(long onlyRowId) {
         if (changeBatch.get().depth > 0) return;
         SQLiteDatabase db = database();
         LinkedHashMap<Long, String> pending = new LinkedHashMap<>();
         try (Cursor cursor = db.query(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE,
-                new String[]{"owner_row_id", "event_token"}, null, null, null, null,
+                new String[]{"owner_row_id", "event_token"}, onlyRowId > 0L ? "owner_row_id=?" : null,
+                onlyRowId > 0L ? new String[]{Long.toString(onlyRowId)} : null, null, null,
                 "owner_row_id")) {
             while (cursor.moveToNext()) pending.put(cursor.getLong(0), cursor.getString(1));
         }
@@ -6756,8 +6856,11 @@ public final class ExpressRepository {
                     if (current.carrierPending()) continue;
                     ExpressItem displayed = alignHeadlineToStatus(db, raw, current,
                             rowProjectionSidecars(db, current), projection.headline);
-                    if (!ExpressNotifications.post(context,
-                            current.withHeadline(displayed.latestDetail, displayed.latestTime))) continue;
+                    if (!notificationHeadlineReady(db, raw, current, displayed)) {
+                        ExpressLog.notificationDeferred(current, "status_alignment");
+                        continue;
+                    }
+                    if (!ExpressNotifications.post(context, displayed, current.semantic)) continue;
                 }
                 db.delete(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE,
                         "owner_row_id=? AND event_token=?",
@@ -6767,6 +6870,35 @@ public final class ExpressRepository {
                 android.util.Log.w("ExpressRepository", "Notification remains pending");
             }
         }
+    }
+
+    /** SF notifications stay durable until their shared list headline has the same structured state. */
+    private boolean notificationHeadlineReady(SQLiteDatabase db, ExpressItem raw,
+            ExpressItem current, ExpressItem displayed) {
+        if (!isShunFeng(current) || current.semantic != StatusSemantic.COMPLETED
+                || displayed.latestDetail.isEmpty()) return true;
+        if (me.pipi.deliveries.background.ExpressStatusAlignment.notificationAlignmentInProgress(current.rowId)) {
+            return false;
+        }
+        VisibleProjectionSidecars sidecars = rowProjectionSidecars(db, raw);
+        long statusAt = alignmentStatusAt(displayed, statusDonors(db, raw, displayed, sidecars));
+        long headlineAt = ExpressTimeline.parseTime(displayed.latestTime);
+        boolean coarseMatch = false;
+        for (Map.Entry<String, ExpressQueryResult> packet : alignmentPackages(db, raw, sidecars).entrySet()) {
+            for (ExpressTimeline.Track node : ExpressTimeline.parse(packet.getValue().tracksJson,
+                    "", "", packet.getValue().timelineProvider)) {
+                if (node.epochMillis != headlineAt || !node.detail.equals(displayed.latestDetail)) continue;
+                boolean matches = node.semantic == displayed.semantic
+                        || node.semantic == StatusSemantic.UNKNOWN && statusAt > 0L
+                        && Math.abs(node.epochMillis - statusAt) <= STATUS_ALIGNMENT_MILLIS;
+                if (!matches) continue;
+                if (!packet.getKey().equals("feed")) return true;
+                coarseMatch = true;
+            }
+        }
+        if (!coarseMatch) return false;
+        StatusAlignmentProbe probe = statusAlignmentProbe(current);
+        return probe != null && alignmentAttemptFinished(current.rowId, alignmentTimes(probe));
     }
 
     public synchronized long invalidationVersion() {
@@ -6962,7 +7094,7 @@ public final class ExpressRepository {
         ExpressQueryResult query = owner == null ? null : accountTimeline(owner.waybill, "interface5");
         TimelineProjection presented = projectManualTimelineProjection(owner);
         OwnerAttribution cachedOwner = owner == null ? null : accountQueryOwner(database(), owner.waybill);
-        boolean sameAccount = cachedOwner != null && cachedOwner.equals(currentOwnerAttribution(database(), owner));
+        boolean sameAccount = cachedOwner != null && cachedOwner.equals(queryOwnerAttribution(database(), owner));
         TimelineProjection result = adoptAttachedCarrierStatus(database(), restoreAccountActivity(presented,
                 sameAccount ? accountQueryPresentation(database(), owner.waybill) : query, query, sameAccount));
         return result.withItem(result.item
@@ -7003,7 +7135,7 @@ public final class ExpressRepository {
                 () -> detailQuery(owner, sidecars.interface5Timelines::get));
         OwnerAttribution cachedOwner = sidecars.interface5Owners.get(
                 ExpressSourcePolicy.normalizeWaybill(owner.waybill));
-        boolean sameAccount = cachedOwner != null && cachedOwner.equals(currentOwnerAttribution(database(), owner));
+        boolean sameAccount = cachedOwner != null && cachedOwner.equals(queryOwnerAttribution(database(), owner));
         TimelineProjection result = adoptAttachedCarrierStatus(database(), restoreAccountActivity(presented,
                 sameAccount ? sidecars.interface5Presentations.get(
                 ExpressSourcePolicy.normalizeWaybill(owner.waybill)) : query, query, sameAccount));
@@ -7042,12 +7174,13 @@ public final class ExpressRepository {
      * 那份没有带时间的节点再按订单号。按订单号存的那份运单号是订单号，拿去详情选包会被判 waybill_mismatch，
      * 所以签收头条的例外不能用它（2026-09-24）。{@code byNormalizedWaybill} 的键是规范化后的号。
      */
-    private static ExpressQueryResult detailQuery(ExpressItem owner,
+    private ExpressQueryResult detailQuery(ExpressItem owner,
             Function<String, ExpressQueryResult> byNormalizedWaybill) {
         if (!isInterface5Automatic(owner)) return null;
         for (String identity : new String[]{owner.displayWaybill(), owner.waybill}) {
             ExpressQueryResult query = byNormalizedWaybill.apply(
                     ExpressSourcePolicy.normalizeWaybill(identity));
+            query = query == null ? null : ownedAccountQuery(database(), owner, query.waybill);
             if (Kuaidi100TimelinePolicy.hasTimedTracking(cleanJdTimeline(query, owner))) return query;
         }
         return null;
@@ -7108,9 +7241,10 @@ public final class ExpressRepository {
     }
 
     /** Account queries join status arbitration without becoming Home timeline candidates. */
-    private static ManualTimelineAuthorityPolicy.Candidate selectStatusAuthority(ExpressItem owner,
+    private ManualTimelineAuthorityPolicy.Candidate selectStatusAuthority(ExpressItem owner,
             List<ManualTimelineAuthorityPolicy.Candidate> manual, ExpressQueryResult query,
             ManualTimelineAuthorityPolicy.Candidate statusPresentation) {
+        query = query == null ? null : ownedAccountQuery(database(), owner, query.waybill);
         ArrayList<ManualTimelineAuthorityPolicy.Candidate> candidates = new ArrayList<>();
         if (manual != null) candidates.addAll(manual);
         if (owner != null && !owner.manuallyAdded

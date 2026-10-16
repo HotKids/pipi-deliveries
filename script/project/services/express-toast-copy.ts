@@ -60,6 +60,16 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   /** 账号类：验证码发送失败的兜底文案；上游给了原因就显示原因。 */
   codeSendFailed: "验证码发送失败，请稍后重试",
   /** 账号类：绑定成功。 */
+  phoneVerificationRequired: "需验证手机号",
+  verifyPhone: "验证手机号",
+  phoneVerificationRequiredMessage: "请验证该手机号后继续同步",
+  phoneVerifying: "正在验证…",
+  phoneVerified: "手机号已验证",
+  flightPhoneVerificationRequiredMessage: "请验证该手机号后继续同步航班，已保存的行程将会保留。",
+
+  reauthorize: "重新授权",
+  deviceReauthorizationRequiredMessage: "设备授权已过期，请重新授权。现有记录将会保留。",
+
   phoneBound: "手机号已绑定",
   /** 账号类：绑定失败的兜底文案；上游给了原因就显示原因。 */
   bindFailed: "绑定失败，请稍后重试",

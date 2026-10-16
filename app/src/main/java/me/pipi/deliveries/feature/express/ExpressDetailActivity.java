@@ -416,7 +416,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         String waybill = previewResult.waybill;
         String bindingSource = previewBindingSource;
         String suppliedPhone = previewPhone;
-        ExpressQueryCancellation cancellation = new ExpressQueryCancellation(LOCAL_REFRESH_TIMEOUT_MS);
+        ExpressQueryCancellation cancellation = new ExpressQueryCancellation(2L * LOCAL_REFRESH_TIMEOUT_MS);
         firstManualQueryCancellation = cancellation;
         firstManualQueryInFlight = true;
         manualPhoneTailRequired = false;
@@ -457,20 +457,33 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 ExpressApi manualApi = new ExpressApi(getApplicationContext());
                 ExpressSubscriptionClient meizuApi = new ExpressSubscriptionClient();
                 ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
-                        () -> meizuApi.queryManual(getApplicationContext(), waybill, cancellation),
+                        () -> {
+                            try (ExpressQueryCancellation stage = cancellation.child(LOCAL_REFRESH_TIMEOUT_MS)) {
+                                try {
+                                    return meizuApi.queryManual(getApplicationContext(), waybill, stage);
+                                } catch (InterruptedException stopped) {
+                                    cancellation.throwIfCancelled();
+                                    if (!stage.isCancelled()) throw stopped;
+                                    throw new java.net.SocketTimeoutException("Online stage timed out");
+                                }
+                            }
+                        },
                         existing == null ? null : repository.manualTimelineCandidate(
                                 existing, TimelineSlot.V6_QUERY),
                         null, ManualQueryRoutingPolicy.includesMoto(existing), onlineResult -> {
                             String code = onlineResult != null && !onlineResult.courierCode.isEmpty()
                                     ? onlineResult.courierCode : courierHint.get();
-                            if (!TimelineSlot.JT_H5.equals(ManualRoutePolicy.primaryH5Provider(code))) return null;
                             ExpressQueryResult identity = new ExpressQueryResult(waybill, code, "",
                                     StatusSemantic.UNKNOWN, "", "", "[]");
                             String savedPhone = !suppliedPhone.isEmpty() ? suppliedPhone
                                     : existing == null ? "" : existing.phone;
-                            return () -> captureKuaidi100ForAddChain(waybill,
-                                    ManualRoutePolicy.primaryH5Url(waybill, code), identity,
-                                    savedPhone, cancellation);
+                            return () -> {
+                                try (ExpressQueryCancellation stage = cancellation.child(LOCAL_REFRESH_TIMEOUT_MS)) {
+                                    return captureKuaidi100ForAddChain(waybill,
+                                            ManualRoutePolicy.primaryH5Url(waybill, code), identity,
+                                            savedPhone, stage);
+                                }
+                            };
                         },
                         partial -> publishFirstManualPreview(partial, cancellation), true);
                 cancellation.throwIfCancelled();
@@ -700,9 +713,12 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         });
         boolean completed;
         try {
-            completed = finished.await(
-                    ExpressKuaidi100TimelineCapture.CAPTURE_TIMEOUT_MS + 1_000L,
-                    java.util.concurrent.TimeUnit.MILLISECONDS);
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+                    ExpressKuaidi100TimelineCapture.CAPTURE_TIMEOUT_MS + 1_000L);
+            do {
+                cancellation.throwIfCancelled();
+                completed = finished.await(50L, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } while (!completed && System.nanoTime() < deadline);
         } catch (InterruptedException interrupted) {
             runOnUiThread(this::cancelAddChainCapture);
             throw interrupted;
@@ -2085,12 +2101,12 @@ public final class ExpressDetailActivity extends AppCompatActivity {
      */
     static ExpressQueryResult accountTimelineFor(
             ExpressRepository repository, ExpressItem item, String waybill, String source) {
-        ExpressQueryResult byDisplay = repository.accountTimeline(waybill, source);
+        ExpressQueryResult byDisplay = repository.accountTimeline(item, waybill, source);
         if (item == null || !item.isAccountOrder()
                 || Kuaidi100TimelinePolicy.hasTimedTracking(byDisplay)) return byDisplay;
         String orderId = item.waybill == null ? "" : item.waybill.trim();
         if (orderId.isEmpty() || orderId.equalsIgnoreCase(waybill)) return byDisplay;
-        ExpressQueryResult byOrder = repository.accountTimeline(orderId, source);
+        ExpressQueryResult byOrder = repository.accountTimeline(item, orderId, source);
         return Kuaidi100TimelinePolicy.hasTimedTracking(byOrder) ? byOrder : byDisplay;
     }
 

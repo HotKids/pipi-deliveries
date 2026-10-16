@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import "./state-storage-mock";
 import { runInNewContext } from "node:vm";
 import { k100StartupRecoveryJavaScript } from "../services/web-timeline";
 

@@ -1,5 +1,5 @@
 import { fetch } from "scripting";
-import { GATEWAY_ORIGIN } from "./build-track";
+import { GATEWAY_ORIGIN, SCRIPTING_GATEWAY_PROTOCOL_VERSION } from "./build-track";
 import {
   gatewayCredentialStatus,
   loadGatewayCredentials,
@@ -8,7 +8,11 @@ import {
   SCRIPTING_PROTOCOL_VERSION,
   SCRIPTING_REQUEST_METHOD,
   scriptingCanonicalRequest,
-  scriptingTokenSecret,
+  scriptingKeyMaterial,
+  scriptingActivationHash,
+  normalizeScriptingToken,
+  scriptingLegacyCanonicalRequest,
+  SCRIPTING_LEGACY_EXPIRES_AT_SECONDS,
 } from "./scripting-auth";
 import {
   linkedTimeoutSignal,
@@ -25,7 +29,6 @@ import { createDiagnosticFlowId, writeDiagnostic } from "./logger";
 import {
   loadScriptingActivation,
   recordScriptingActivationOutcome,
-  SCRIPTING_ACTIVATION_HEADER,
 } from "./scripting-activation";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -100,8 +103,11 @@ export function canonicalRequest(
   nonce: string,
   route: string,
   bodySha256: string,
+  keyId: string,
+  activationHash: string,
 ): string {
-  return scriptingCanonicalRequest(timestamp, nonce, route, bodySha256);
+  return scriptingCanonicalRequest(timestamp, nonce, GATEWAY_ORIGIN,
+    route, bodySha256, keyId, activationHash);
 }
 
 export function hmacSha256Hex(key: string, value: string): string {
@@ -112,24 +118,19 @@ function sha256Hex(value: string): string {
   return Crypto.sha256(utf8Data(value)).toHexString().toLowerCase();
 }
 
-function tokenSecret(token: string): string {
-  const secret = scriptingTokenSecret(token);
-  if (!secret) {
-    throw new GatewayError(ACCESS_KEY_INVALID_MESSAGE);
-  }
-  return secret;
-}
-
-export type ScriptingAuthHeaders = {
+type SharedScriptingAuthHeaders = {
   "X-Scripting-Version": string;
-  "X-Scripting-Token": string;
+  "X-Scripting-Activation": string;
   "X-Scripting-Timestamp": string;
   "X-Scripting-Nonce": string;
   "X-Scripting-Signature": string;
 };
+export type ScriptingAuthHeaders = SharedScriptingAuthHeaders & (
+  { "X-Scripting-Key-Id": string } | { "X-Scripting-Token": string }
+);
 
 /**
- * Builds the protocol-v1 authentication headers as one atomic contract. The
+ * The package selects one protocol before delivery; a failed request never changes it. The
  * Worker, not the client, enforces timestamp freshness and one-time nonce use.
  */
 export function scriptingAuthHeaders(
@@ -138,16 +139,39 @@ export function scriptingAuthHeaders(
   nonce: string,
   route: string,
   bodySha256: string,
+  activationIdentity: string,
+  protocol: "1" | "2" = SCRIPTING_GATEWAY_PROTOCOL_VERSION,
 ): ScriptingAuthHeaders {
-  const secret = tokenSecret(token);
+  if (protocol === "1") {
+    if (timestamp >= SCRIPTING_LEGACY_EXPIRES_AT_SECONDS) {
+      throw new GatewayError(SCRIPTING_UPDATE_REQUIRED_MESSAGE);
+    }
+    const secret = normalizeScriptingToken(token);
+    if (!secret) throw new GatewayError(ACCESS_KEY_INVALID_MESSAGE);
+    scriptingActivationHash(activationIdentity, sha256Hex);
+    return {
+      "X-Scripting-Version": "1",
+      "X-Scripting-Token": secret,
+      "X-Scripting-Activation": activationIdentity,
+      "X-Scripting-Timestamp": String(timestamp),
+      "X-Scripting-Nonce": nonce,
+      "X-Scripting-Signature": hmacSha256Hex(secret,
+        scriptingLegacyCanonicalRequest(timestamp, nonce, route, bodySha256)),
+    };
+  }
+  if (protocol !== "2") throw new GatewayError(SCRIPTING_UPDATE_REQUIRED_MESSAGE);
+  const material = scriptingKeyMaterial(token, sha256Hex, hmacSha256Hex);
+  if (!material) throw new GatewayError(ACCESS_KEY_INVALID_MESSAGE);
+  const activationHash = scriptingActivationHash(activationIdentity, sha256Hex);
   return {
     "X-Scripting-Version": SCRIPTING_PROTOCOL_VERSION,
-    "X-Scripting-Token": secret,
+    "X-Scripting-Key-Id": material.keyId,
+    "X-Scripting-Activation": activationHash,
     "X-Scripting-Timestamp": String(timestamp),
     "X-Scripting-Nonce": nonce,
     "X-Scripting-Signature": hmacSha256Hex(
-      secret,
-      canonicalRequest(timestamp, nonce, route, bodySha256),
+      material.macKey,
+      canonicalRequest(timestamp, nonce, route, bodySha256, material.keyId, activationHash),
     ),
   };
 }
@@ -173,6 +197,7 @@ function validateRoute(route: string): string {
 export const ACCESS_KEY_INVALID_MESSAGE = "Access Key 无效或已失效";
 export const ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE = "Access Key 已使用";
 export const ACTIVATION_SAVE_FAILED_MESSAGE = "激活信息保存失败，请重试";
+export const SCRIPTING_UPDATE_REQUIRED_MESSAGE = "请更新脚本后重试";
 
 function failureMessage(status: number, gatewayCode = ""): string {
   if (status === 401 && gatewayCode === "unauthorized") return ACCESS_KEY_INVALID_MESSAGE;
@@ -248,8 +273,10 @@ export async function postGateway<T extends Record<string, unknown>>(
       nonce,
       route,
       sha256Hex(body),
+      activation,
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof GatewayError) throw error;
     throw new GatewayError(
       "当前 Scripting 版本的加密组件不可用，请更新后重试",
       0,
@@ -304,8 +331,6 @@ export async function postGateway<T extends Record<string, unknown>>(
         headers: {
           "Content-Type": "application/json; charset=utf-8",
           ...authHeaders,
-          // Not part of the protocol-v1 signature (CONTRACT §3.1).
-          [SCRIPTING_ACTIVATION_HEADER]: activation,
         },
         body,
         timeout: timeoutMs / 1000,

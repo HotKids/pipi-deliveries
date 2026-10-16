@@ -190,7 +190,7 @@ final class ExpressSyncEngine {
                     if (!discovery.wasSynced(item.waybill)
                             && shouldRefreshMissingAccountRow(item,
                             item.usesInterface5AccountTimeline() && !repository.hasAccountTimeline(
-                                    item.waybill, "interface5"), System.currentTimeMillis(), userPull)
+                                    item, item.waybill, "interface5"), System.currentTimeMillis(), userPull)
                             && !skippedSignedFrozen(signedFrozen, item, "v5", TimelineSlot.V5_QUERY)) {
                         network[0]++;
                         String bindingGeneration = repository.bindingGeneration(
@@ -207,7 +207,7 @@ final class ExpressSyncEngine {
                             if (persisted != null && (!realTimeline
                                     || !persisted.usesInterface5AccountTimeline()
                                     || repository.hasAccountTimeline(
-                                    refreshed.waybill, "interface5"))) {
+                                    persisted, refreshed.waybill, "interface5"))) {
                                 discovery.rememberKnownRefresh(context, persisted);
                             }
                             network[1]++;

@@ -5,6 +5,7 @@ import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey, saveAlignmen
 import { SCRIPT_BINDING_SOURCE } from "./script-source";
 import {
   displayWaybill,
+  isShunFengSourceShipment,
   MANUAL_REFRESH_MIN_INTERVAL_MS,
   selectShipmentTimeline,
   signedRefreshFrozen,
@@ -17,6 +18,7 @@ import {
 } from "./shipment-policy";
 import { isAccountUpdateSummary, normalizeWaybill, shipmentPresentationStatus, timelineLatestTrackAt } from "./status";
 import { loadState, peekStateRevision, visibleShipments } from "./storage";
+import { replayPendingShipmentNotifications } from "./notifications";
 import {
   listRefreshInProgress,
   refreshShipmentById,
@@ -254,6 +256,17 @@ export async function runStatusAlignmentPass(
       retryPending: blocked || pendingAlignmentRetry(refreshedState, now, current, dependencies.canAsk) };
   }
   finish(refreshedState);
+  const signedTarget = refreshedState.shipments.find(shipment => shipment.identity.id === target.shipment.identity.id);
+  if (signedTarget && isShunFengSourceShipment(signedTarget) &&
+      shipmentPresentationStatus(signedTarget).semantic === "COMPLETED" &&
+      refreshedState.pendingNotifications?.some(event => event.shipmentId === signedTarget.identity.id &&
+        event.semantic === "COMPLETED" && !event.awaitingCarrier)) {
+    // The existing finished attempt unlocks SF's final coarse fallback even without newer evidence.
+    // Keep its queued signing until the unified presentation has a same-state headline.
+    refreshedState = await replayPendingShipmentNotifications(() => !options.isActive || options.isActive(), {
+      alignedShipmentId: signedTarget.identity.id,
+    }) ?? refreshedState;
+  }
   if (refreshFailed) {
     // The refresh flow records its own failure; this line closes the alignment flow.
     writeDiagnostic("detail.refresh.alignment", {

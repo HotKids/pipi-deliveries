@@ -5,6 +5,8 @@ PROJECT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SCRIPT_DIR=$(CDPATH='' cd -- "$PROJECT_DIR/.." && pwd)
 REPO_DIR=$(CDPATH='' cd -- "$PROJECT_DIR/../../.." && pwd)
 OUTPUT=${1:-"$SCRIPT_DIR/pipi-deliveries.scripting"}
+PURPOSE=${2:-source}
+WORKER_ARTIFACT=${3:-}
 
 case "$OUTPUT" in
   /*) ;;
@@ -39,7 +41,7 @@ zip -q -r "$TEMP_OUTPUT" \
   assets \
   widget
 
-sh "$PROJECT_DIR/tools/verify-package.sh" "$TEMP_OUTPUT" >/dev/null
+sh "$PROJECT_DIR/tools/verify-package.sh" "$TEMP_OUTPUT" "" "$PURPOSE" "$WORKER_ARTIFACT" >/dev/null
 mv -f "$TEMP_OUTPUT" "$OUTPUT"
 rmdir "$TEMP_DIR"
 trap - EXIT HUP INT TERM

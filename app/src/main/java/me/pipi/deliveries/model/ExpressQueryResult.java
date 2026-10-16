@@ -108,7 +108,7 @@ public final class ExpressQueryResult {
         this(waybill, courierCode, companyName, semantic, statusEventTime, latestTime,
                 latestDetail, tracksJson, detailUrl, phone, timelineProvider,
                 routeInterface, routeCredential, sourceProvider, carrierNormalization,
-                !clean(courierCode).isEmpty(),
+                validRawCarrier(courierCode),
                 semantic == null ? "" : semantic.label, false);
     }
 
@@ -217,10 +217,17 @@ public final class ExpressQueryResult {
                 carrierNormalization, true, statusDescription, structuredStatusEvidence, senderPhone, listOriginAtMs);
     }
 
-    /** Marks a Chinese company name read directly from the current provider response. */
+    /** Marks a valid carrier name read directly from the current provider response. */
     public ExpressQueryResult withRawCarrierNameEvidence(String rawCompanyName) {
-        if (!containsHan(rawCompanyName)) return this;
+        if (!validRawCarrier(rawCompanyName)) return this;
         return withCarrierIdentityEvidence(true);
+    }
+
+    private static boolean validRawCarrier(String value) {
+        String normalized = clean(value).toUpperCase(java.util.Locale.ROOT);
+        return !normalized.isEmpty() && !"NULL".equals(normalized)
+                && !"UNKNOWN".equals(normalized) && !"OTHER".equals(normalized)
+                && !"未知".equals(normalized) && !"其他".equals(normalized);
     }
 
     /** Preserves already-validated carrier provenance when an adapter copies a result. */
