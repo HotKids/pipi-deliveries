@@ -45,6 +45,7 @@ import {
 import { projectedCarrierPresentation } from "./carrier-presentation";
 import {
   hasPersistentTracking,
+  MANUAL_SOURCE_BUDGET_MS,
   queryManualSourceChain,
 } from "./manual-query-order";
 import { recognizeNonSyncCarrier } from "./carrier-recognition";
@@ -661,7 +662,7 @@ export async function queryMotoShipment(
     "/api/express/timeline/public",
     { waybill, companyCode: rawCourierCode },
     {
-      timeoutMs: remainingTimeoutMs(input.deadlineAtMs, 30_000),
+      timeoutMs: remainingTimeoutMs(input.deadlineAtMs, MANUAL_SOURCE_BUDGET_MS),
       deadlineAtMs: input.deadlineAtMs,
       signal: input.signal,
     },
@@ -723,7 +724,7 @@ async function queryMeizuShipmentOnce(
       // The public refresh wire selects Online for add, detail and scheduled queries alike.
       { interface: "v6", mode: "refresh", waybill },
       {
-        timeoutMs: remainingTimeoutMs(input.deadlineAtMs, 30_000),
+        timeoutMs: remainingTimeoutMs(input.deadlineAtMs, MANUAL_SOURCE_BUDGET_MS),
         deadlineAtMs: input.deadlineAtMs,
         signal: input.signal,
       },
@@ -849,7 +850,7 @@ export async function queryKdniaoShipment(
           phone: carrier.requiresPhoneTail ? phoneTail : "",
         },
         {
-          timeoutMs: remainingTimeoutMs(input.deadlineAtMs, 30_000),
+          timeoutMs: remainingTimeoutMs(input.deadlineAtMs, MANUAL_SOURCE_BUDGET_MS),
           deadlineAtMs: input.deadlineAtMs,
           signal: input.signal,
         },
@@ -1085,7 +1086,7 @@ export async function queryManualForSource(input: {
         !isJingDongSource &&
         (input.motoOnly === true ||
           allowsLocalCapabilityForSourceProvider(input.sourceProvider)),
-      query: async signal => ({ shipment: await queryMotoShipment({ ...queryInput, signal }) }),
+      query: async (signal, deadlineAtMs) => ({ shipment: await queryMotoShipment({ ...queryInput, signal, deadlineAtMs }) }),
     },
     {
       source: "route",
@@ -1096,14 +1097,14 @@ export async function queryManualForSource(input: {
         !(input.hostSafe && isJingDongSource && !input.pickerOnly) &&
         (input.pickerOnly === true || isJingDongSource ||
           allowsRouteCapabilityForSourceProvider(input.sourceProvider)),
-      query: async signal => queryMeizuShipment({ ...queryInput, signal }),
+      query: async (signal, deadlineAtMs) => queryMeizuShipment({ ...queryInput, signal, deadlineAtMs }),
     },
     {
       source: "fallback",
       enabled: SCRIPT_MANUAL_SOURCE_ACTIVATION.fallback &&
         providerEnabled("fallback") &&
         input.includeKdniaoFallback === true,
-      query: async signal => ({ shipment: await queryKdniaoShipment({ ...queryInput, signal }) }),
+      query: async (signal, deadlineAtMs) => ({ shipment: await queryKdniaoShipment({ ...queryInput, signal, deadlineAtMs }) }),
     },
   ], input.deadlineAtMs, (observation) => {
     const stage = observation.source === "route" ? routeTimelineProvider : observation.source;

@@ -4,6 +4,8 @@ import android.content.Context;
 import android.util.Log;
 
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -48,8 +50,13 @@ public final class ExpressStatusAlignment {
     private static volatile boolean liveChecks;
     private static ScheduledExecutorService executor;
     private static boolean scheduled;
+    private static final Set<Long> ALIGNING = ConcurrentHashMap.newKeySet();
 
     private ExpressStatusAlignment() {}
+
+    public static boolean notificationAlignmentInProgress(long rowId) {
+        return ALIGNING.contains(rowId);
+    }
 
     /** The requests a forced refresh may make in a host without an Activity. */
     interface Sources {
@@ -231,11 +238,15 @@ public final class ExpressStatusAlignment {
             if (!repository.beginStatusAlignment(row, times, System.currentTimeMillis())) return false;
             before = evidence;
             started = true;
+            ALIGNING.add(row.rowId);
             return true;
         }
 
         void finish() {
-            if (started) repository.finishStatusAlignment(row, times, before);
+            if (!started) return;
+            try { repository.finishStatusAlignment(row, times, before); }
+            finally { ALIGNING.remove(row.rowId); }
+            repository.replayStatusAlignmentNotification(row);
         }
     }
 

@@ -78,8 +78,13 @@ public final class ExpressNotifications {
     }
 
     public static boolean post(Context context, ExpressItem item) {
+        return post(context, item, item == null ? StatusSemantic.UNKNOWN : item.semantic);
+    }
+
+    /** Notification eligibility and channel retain the event status; all visible fields use the list projection. */
+    public static boolean post(Context context, ExpressItem item, StatusSemantic eventStatus) {
         if (item == null) return true;
-        String channelId = channelId(item.semantic);
+        String channelId = channelId(eventStatus);
         if (channelId == null) return true;
         if (Build.VERSION.SDK_INT >= 33
                 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)

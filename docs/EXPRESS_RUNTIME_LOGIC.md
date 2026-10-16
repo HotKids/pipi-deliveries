@@ -51,3 +51,22 @@ The independent notification and failure-boundary notes below are retained. They
 - Supported row actions are idempotent state mutations. iOS deletion and manual
   sign-off do not terminate the Scripting process or navigate to the host app;
   this does not add manual sign-off to Lite or Pipi.
+
+## Lite account-query cache ownership
+
+- Retained Interface 5 history remains in its existing normalized-waybill table.
+  Current detail selection, status donors, projection and query-completeness gates
+  require its owner attribution to match the live row, projected identity,
+  business source, adapter and current binding generation. An unqualified
+  account order can retain its own query under that identity without establishing
+  automatic ownership; another automatic owner still blocks the query.
+- The existing `owner_presentation` payload also retains the current attributed
+  packet. Successive packets merge only inside that attribution. The global
+  historical bytes remain available without donating old-owner status or history
+  to the new owner's current packet. Older matching attributed payloads remain
+  readable; no database migration or historical-cache deletion is required.
+- First manual addition previews Online, then reaches the existing K100 primary
+  or official JT alternative when Online cannot close the start gate. Each stage
+  is capped at 15 seconds, the existing H5 capture remains capped at 8 seconds,
+  and the whole first-add operation is capped at 30 seconds. All results still
+  commit with the final owner atomically; leaving the screen cancels the chain.

@@ -1,5 +1,7 @@
-export const SCRIPTING_PROTOCOL_VERSION = "1";
+export const SCRIPTING_PROTOCOL_VERSION = "2";
 export const SCRIPTING_REQUEST_METHOD = "POST";
+export const SCRIPTING_LEGACY_EXPIRES_AT_SECONDS =
+  Date.parse("2026-11-01T00:00:00+08:00") / 1000;
 
 export const SCRIPTING_TOKEN_PATTERN =
   /^[A-Za-z0-9_-]{16}$/;
@@ -9,15 +11,37 @@ export function normalizeScriptingToken(value: string): string {
   return SCRIPTING_TOKEN_PATTERN.test(token) ? token : "";
 }
 
-/**
- * Protocol v1 uses the bearer token itself as the HMAC key and also sends it in
- * X-Scripting-Token. The HMAC binds a request for a legitimate token holder,
- * but it does not keep the token confidential or protect it after disclosure.
- * Changing this derivation requires a coordinated Worker and token-issuer
- * rollout; it cannot be changed by the script alone.
- */
-export function scriptingTokenSecret(tokenInput: string): string {
-  return normalizeScriptingToken(tokenInput);
+/** The current formal Worker uses the original six-line v1 contract until its fixed retirement. */
+export function scriptingLegacyCanonicalRequest(
+  timestamp: number,
+  nonce: string,
+  route: string,
+  bodySha256: string,
+): string {
+  return ["scripting-v1", String(timestamp), nonce.trim(), SCRIPTING_REQUEST_METHOD,
+    route.trim(), bodySha256.trim()].join("\n");
+}
+
+export function scriptingKeyMaterial(
+  tokenInput: string,
+  sha256Hex: (value: string) => string,
+  hmacSha256Hex: (key: string, value: string) => string,
+): { keyId: string; macKey: string } | null {
+  const token = normalizeScriptingToken(tokenInput);
+  if (!token) return null;
+  const root = sha256Hex(token);
+  return {
+    keyId: sha256Hex(`pipi-scripting-key-id-v2\n${root}`),
+    macKey: hmacSha256Hex(root, "pipi-scripting-request-mac-v2"),
+  };
+}
+
+export function scriptingActivationHash(
+  identity: string,
+  sha256Hex: (value: string) => string,
+): string {
+  if (!/^[0-9a-f]{64}$/.test(identity)) throw new Error("Invalid Scripting activation");
+  return sha256Hex(`pipi-scripting-activation-v1\n${identity}`);
 }
 
 /**
@@ -29,30 +53,42 @@ export function scriptingCanonicalRequestForMethod(
   timestamp: number,
   nonce: string,
   method: string,
+  origin: string,
   route: string,
   bodySha256: string,
+  keyId: string,
+  activationHash: string,
 ): string {
   return [
     `scripting-v${SCRIPTING_PROTOCOL_VERSION}`,
     String(timestamp),
     nonce.trim(),
     method.trim().toUpperCase(),
+    origin,
     route.trim(),
     bodySha256.trim(),
+    keyId,
+    activationHash,
   ].join("\n");
 }
 
 export function scriptingCanonicalRequest(
   timestamp: number,
   nonce: string,
+  origin: string,
   route: string,
   bodySha256: string,
+  keyId: string,
+  activationHash: string,
 ): string {
   return scriptingCanonicalRequestForMethod(
     timestamp,
     nonce,
     SCRIPTING_REQUEST_METHOD,
+    origin,
     route,
     bodySha256,
+    keyId,
+    activationHash,
   );
 }

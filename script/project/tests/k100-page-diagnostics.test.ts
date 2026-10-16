@@ -17,6 +17,7 @@ try {
     { name: "loaded empty", main: true, ready: "interactive", challenge: false, tracks: false, script: `https://example.invalid/${withheld}`, marker: "other", vue: true, jquery: true },
     { name: "timed tracks", main: true, ready: "complete", challenge: false, tracks: true, script: "https://cdn.kuaidi100.com/js/util/jquery-1.12.4.min.js", marker: "jquery", vue: true, jquery: true },
   ]) {
+    memory.clear();
     const checkCode = { show: scene.challenge };
     Object.defineProperty(checkCode, "value", { enumerable: true, get() {
       assert.fail("diagnostics and extraction must not read the challenge value");

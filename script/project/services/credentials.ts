@@ -2,15 +2,11 @@ import type { GatewayCredentials } from "../models";
 import {
   normalizeScriptingToken,
 } from "./scripting-auth";
-import {
-  readDurableTextResult,
-  writeDurableText,
-} from "./durable-files";
+import { readDurableTextResult } from "./durable-files";
+import { removeLegacyCredentialCopies } from "./legacy-credential-cleanup";
 import { utf8Data } from "./scripting-data";
 
 const SCRIPTING_TOKEN_KEY = "pipi_deliveries_scripting_token_v1";
-const SCRIPTING_TOKEN_SHARED_KEY = "pipi_deliveries_scripting_token_shared_v1";
-const SCRIPTING_TOKEN_FILE = "gateway-credential-v1.json";
 
 type StoredCredential = {
   schema: number;
@@ -49,11 +45,6 @@ type CredentialResolution = {
   candidate: CredentialCandidate | null;
 };
 
-type DurableCandidateRead = {
-  candidates: readonly CredentialCandidate[];
-  failed: boolean;
-};
-
 type KeyRawRead = {
   value: string | null;
   failed: boolean;
@@ -83,7 +74,8 @@ function encodeToken(
   availability: CredentialAvailability,
 ): string {
   const stored: StoredCredential = {
-    schema: 4,
+    // Schema 6 marks completed shared-replica migration; the V4 checksum stays unchanged.
+    schema: 6,
     token,
     generation,
     availability,
@@ -113,28 +105,6 @@ function pendingChecksumV5(
   );
 }
 
-function encodePendingToken(
-  token: string,
-  generation: number,
-  previousKey: string | null,
-  availability: CredentialAvailability,
-): string {
-  const stored: PendingCredential = {
-    schema: 5,
-    token,
-    generation,
-    previousKey,
-    availability,
-    checksum: pendingChecksumV5(
-      token,
-      generation,
-      previousKey,
-      availability,
-    ),
-  };
-  return JSON.stringify(stored);
-}
-
 function absent(): CredentialCandidate {
   return {
     present: false,
@@ -154,7 +124,7 @@ function decodeToken(raw: unknown): CredentialCandidate {
     let generation = 0;
     let checksum = "";
     let availability: CredentialAvailability = "available";
-    if (stored.schema === 4) {
+    if (stored.schema === 4 || stored.schema === 6) {
       if (
         !Number.isSafeInteger(stored.generation) ||
         Number(stored.generation) < 1 ||
@@ -235,61 +205,10 @@ function decodePendingToken(raw: unknown): PendingCredential | null {
   }
 }
 
-function readDurableCandidates(): DurableCandidateRead {
-  try {
-    const result = readDurableTextResult(SCRIPTING_TOKEN_FILE);
-    return {
-      candidates: result.candidates
-        .map(decodeToken)
-        .filter((candidate) => candidate.present),
-      failed: result.failed,
-    };
-  } catch {
-    return { candidates: [], failed: true };
-  }
-}
-
-function readDurableCandidate(): CredentialCandidate {
-  return readDurableCandidates().candidates[0] ?? absent();
-}
-
-function writeDurableToken(
-  token: string,
-  generation: number,
-  availability: CredentialAvailability,
-): void {
-  writeDurableText(
-    SCRIPTING_TOKEN_FILE,
-    encodeToken(token, generation, availability),
-  );
-}
-
-function readSharedToken(): CredentialCandidate {
-  try {
-    return decodeToken(Storage.get<string>(
-      SCRIPTING_TOKEN_SHARED_KEY,
-      { shared: true },
-    ));
-  } catch {
-    return absent();
-  }
-}
-
-function removeSharedTokenBestEffort(): void {
-  try {
-    Storage.remove(SCRIPTING_TOKEN_SHARED_KEY, { shared: true });
-  } catch {
-    /* A later credential read retries legacy shared-domain cleanup. */
-  }
-}
-
 function readKeyRawResult(): KeyRawRead {
   try {
     const value = Keychain.get(SCRIPTING_TOKEN_KEY);
-    return {
-      value: typeof value === "string" ? value : null,
-      failed: false,
-    };
+    return { value: typeof value === "string" ? value : null, failed: false };
   } catch {
     return { value: null, failed: true };
   }
@@ -300,17 +219,8 @@ function readKeyCandidateFromRaw(value: string | null): CredentialCandidate {
   if (encoded.present) return encoded;
   const token = normalizeScriptingToken(value?.trim() ?? "");
   return token
-    ? {
-      present: true,
-      token,
-      generation: 0,
-      availability: "available",
-    }
+    ? { present: true, token, generation: 0, availability: "available" }
     : absent();
-}
-
-function readKeyCandidate(): CredentialCandidate {
-  return readKeyCandidateFromRaw(readKeyRawResult().value);
 }
 
 function keyRawMatches(raw: string | null): boolean {
@@ -320,226 +230,75 @@ function keyRawMatches(raw: string | null): boolean {
 
 function writeKeyRaw(raw: string): boolean {
   try {
-    return Keychain.set(SCRIPTING_TOKEN_KEY, raw) !== false &&
-      keyRawMatches(raw);
+    return Keychain.set(SCRIPTING_TOKEN_KEY, raw) !== false && keyRawMatches(raw);
   } catch {
     return false;
   }
-}
-
-function writeKey(
-  token: string,
-  generation: number,
-  availability: CredentialAvailability,
-): boolean {
-  return writeKeyRaw(encodeToken(token, generation, availability));
-}
-
-function keyMatches(
-  token: string,
-  generation: number,
-  availability: CredentialAvailability,
-): boolean {
-  const candidate = readKeyCandidate();
-  return candidate.present &&
-    candidate.token === token &&
-    candidate.generation === generation &&
-    candidate.availability === availability;
 }
 
 function restoreKeyRaw(raw: string | null): boolean {
   try {
-    if (raw == null) {
-      if (Keychain.remove(SCRIPTING_TOKEN_KEY) === false) return false;
-    } else {
-      if (Keychain.set(SCRIPTING_TOKEN_KEY, raw) === false) return false;
-    }
-    return keyRawMatches(raw);
+    const restored = raw == null
+      ? Keychain.remove(SCRIPTING_TOKEN_KEY)
+      : Keychain.set(SCRIPTING_TOKEN_KEY, raw);
+    return restored !== false && keyRawMatches(raw);
   } catch {
     return false;
   }
 }
 
-function removeKeyBestEffort(): void {
-  try {
-    Keychain.remove(SCRIPTING_TOKEN_KEY);
-  } catch {
-    /* A durable deletion tombstone still blocks this stale value. */
-  }
-}
-
-function newestGeneration(): number {
-  const keyRaw = readKeyRawResult().value;
-  const pending = decodePendingToken(keyRaw);
-  return [
-    readKeyCandidateFromRaw(keyRaw),
-    readDurableCandidate(),
-    readSharedToken(),
-  ].reduce(
-    (latest, candidate) => candidate.present
-      ? Math.max(latest, candidate.generation)
-      : latest,
-    pending?.generation ?? 0,
-  );
-}
-
-function nextGeneration(): number {
-  return Math.max(Date.now(), newestGeneration() + 1);
-}
-
-function resolved(candidate: CredentialCandidate): CredentialResolution {
-  return {
-    status: candidate.token
-      ? candidate.availability === "unavailable"
-        ? "unavailable"
-        : "configured"
-      : "missing",
-    candidate: candidate.token ? candidate : null,
-  };
-}
-
-function conflict(): CredentialResolution {
-  return { status: "conflict", candidate: null };
-}
-
-function restoreDurableCandidate(
-  candidate: CredentialCandidate,
-): CredentialResolution {
-  if (!candidate.token) {
-    removeKeyBestEffort();
-    removeSharedTokenBestEffort();
-    return { status: "missing", candidate: null };
-  }
-  if (
-    writeKey(
-      candidate.token,
-      candidate.generation,
-      candidate.availability,
-    ) &&
-    keyMatches(
-      candidate.token,
-      candidate.generation,
-      candidate.availability,
-    )
-  ) {
-    removeSharedTokenBestEffort();
-  }
-  return resolved(candidate);
-}
-
-function migrateSharedCandidate(
-  candidate: CredentialCandidate,
-): CredentialResolution {
-  if (!candidate.token) {
-    removeSharedTokenBestEffort();
-    return { status: "missing", candidate: null };
-  }
-  const generation = candidate.generation > 0
-    ? candidate.generation
-    : Math.max(Date.now(), 1);
-  const previousKey = readKeyRawResult();
-  if (previousKey.failed) return conflict();
-
-  // The pending Keychain record is deliberately not a credential candidate. If the
-  // App Group commit fails and restoring the prior key also fails, later reads remain
-  // conflicted instead of authorizing a partially migrated generation.
-  const pending = encodePendingToken(
-    candidate.token,
-    generation,
-    previousKey.value,
-    candidate.availability,
-  );
-  if (!writeKeyRaw(pending)) {
-    restoreKeyRaw(previousKey.value);
-    return conflict();
-  }
-
-  try {
-    writeDurableToken(candidate.token, generation, candidate.availability);
-  } catch {
-    restoreKeyRaw(previousKey.value);
-    return conflict();
-  }
-
-  // writeDurableText verifies the installed primary before returning. That return is
-  // the commit point; replacing the pending record with its compact form is cleanup.
-  writeKey(candidate.token, generation, candidate.availability);
-  removeSharedTokenBestEffort();
-  return resolved({
-    present: true,
-    token: candidate.token,
-    generation,
-    availability: candidate.availability,
-  });
-}
-
-function resolvePendingKey(
-  pending: PendingCredential,
-): CredentialResolution {
-  const durable = readDurableCandidates();
-  const committed = durable.candidates.some((candidate) =>
-    candidate.token === pending.token &&
-    candidate.generation === pending.generation &&
-    candidate.availability === pending.availability
-  );
-  if (committed) {
-    writeKey(pending.token, pending.generation, pending.availability);
-    removeSharedTokenBestEffort();
-    return resolved({
-      present: true,
-      token: pending.token,
-      generation: pending.generation,
-      availability: pending.availability,
-    });
-  }
-
-  // An unreadable durable replica may already contain the pending generation. Keep
-  // the transaction unavailable until a later read can choose commit or rollback.
-  if (durable.failed || !restoreKeyRaw(pending.previousKey)) return conflict();
-
-  const previous = readKeyCandidateFromRaw(pending.previousKey);
-  if (previous.present) return resolved(previous);
-  if (pending.previousKey != null || readSharedToken().present) return conflict();
-  return { status: "missing", candidate: null };
+function keychainOnly(raw: string | null): boolean {
+  try { return JSON.parse(raw ?? "null")?.schema === 6; }
+  catch { return false; }
 }
 
 function resolveCredentials(): CredentialResolution {
+  // Missing credentials stop the gateway before it reaches the activation entry.
+  removeLegacyCredentialCopies("activation");
   const keyRaw = readKeyRawResult();
-  if (keyRaw.failed) return conflict();
+  if (keyRaw.failed) {
+    return { status: "conflict", candidate: null };
+  }
+  let key = readKeyCandidateFromRaw(keyRaw.value);
   const pending = decodePendingToken(keyRaw.value);
-  if (pending) return resolvePendingKey(pending);
-
-  const key = readKeyCandidateFromRaw(keyRaw.value);
-  const durable = readDurableCandidate();
-
-  // An explicit deletion outlives a replaced script Keychain namespace and must also
-  // suppress any older value that survived in the legacy shared Storage domain.
-  if (
-    durable.present &&
-    !durable.token &&
-    (!key.present || durable.generation >= key.generation)
-  ) {
-    removeKeyBestEffort();
-    removeSharedTokenBestEffort();
-    return { status: "missing", candidate: null };
+  if (pending || (key.present && key.token && !keychainOnly(keyRaw.value))) {
+    let legacy: ReturnType<typeof readDurableTextResult>;
+    try { legacy = readDurableTextResult("gateway-credential-v1.json"); }
+    catch { return { status: "conflict", candidate: null }; }
+    const candidates = legacy.candidates.map(decodeToken);
+    // A legacy deletion committed its file before best-effort Keychain removal.
+    // Preserve that evidence until its deletion is confirmed in the protected store.
+    if (legacy.failed || candidates.some((candidate) => !candidate.present)) {
+      return { status: "conflict", candidate: null };
+    }
+    if (pending) {
+      const committed = candidates.some((candidate) =>
+        candidate.token === pending.token && candidate.generation === pending.generation &&
+        candidate.availability === pending.availability);
+      if (committed) {
+        // The replica proves the old commit, but the secret comes from Keychain.
+        key = { present: true, token: pending.token, generation: pending.generation,
+          availability: pending.availability };
+      } else {
+        const previous = readKeyCandidateFromRaw(pending.previousKey);
+        if ((pending.previousKey != null && !previous.present) ||
+            !restoreKeyRaw(pending.previousKey)) {
+          return { status: "conflict", candidate: null };
+        }
+        key = previous;
+      }
+    }
+    for (const candidate of candidates) {
+      if (!candidate.token && candidate.generation >= key.generation) key = candidate;
+    }
+    if (!writeKeyRaw(encodeToken(key.token, key.generation || 1, "available"))) {
+      restoreKeyRaw(keyRaw.value);
+      return { status: "conflict", candidate: null };
+    }
   }
-
-  // Keychain is authoritative during normal operation. Recovery copies never vote
-  // against a valid Keychain value, so a stale mirror cannot disable authorization.
-  if (key.present && key.token) {
-    removeSharedTokenBestEffort();
-    return resolved(key);
-  }
-
-  // The App Group file exists only so a freshly imported script can restore its
-  // per-script Keychain namespace while keeping the user's existing authorization.
-  if (durable.present) return restoreDurableCandidate(durable);
-
-  // Older releases wrote the token to global shared Storage. Consume that value once,
-  // migrate it into Keychain plus the App Group recovery file, then remove the legacy copy.
-  const shared = readSharedToken();
-  return shared.present
-    ? migrateSharedCandidate(shared)
+  removeLegacyCredentialCopies("token");
+  return key.present && key.token
+    ? { status: "configured", candidate: key }
     : { status: "missing", candidate: null };
 }
 
@@ -554,81 +313,26 @@ export function saveGatewayToken(token: string): void {
   const clean = normalizeScriptingToken(token);
   // User decision 2026-09-27: a malformed key reads the same as an invalid one.
   if (!clean) throw new Error("Access Key 无效或已失效");
-
-  writeCredentialTransaction(
-    clean,
-    "available",
-    "Access Key 保存失败，请重试",
-  );
+  writeCredential(clean, "Access Key 保存失败，请重试");
 }
 
-function writeCredentialTransaction(
-  token: string,
-  availability: CredentialAvailability,
-  failureMessage: string,
-): void {
-  const generation = nextGeneration();
-  let previousKey = readKeyRawResult();
-  if (previousKey.failed) {
+function writeCredential(token: string, failureMessage: string): void {
+  const previous = readKeyRawResult();
+  if (previous.failed) throw new Error(failureMessage);
+  const candidate = readKeyCandidateFromRaw(previous.value);
+  const pending = decodePendingToken(previous.value);
+  const generation = Math.max(Date.now(), candidate.generation + 1, (pending?.generation ?? 0) + 1);
+  if (!writeKeyRaw(encodeToken(token, generation, "available"))) {
+    restoreKeyRaw(previous.value);
     throw new Error(failureMessage);
   }
-
-  const existingPending = decodePendingToken(previousKey.value);
-  if (existingPending) {
-    const resolution = resolvePendingKey(existingPending);
-    if (resolution.status === "conflict") {
-      throw new Error(failureMessage);
-    }
-    previousKey = {
-      value: resolution.candidate
-        ? encodeToken(
-          resolution.candidate.token,
-          resolution.candidate.generation,
-          resolution.candidate.availability,
-        )
-        : null,
-      failed: false,
-    };
-  }
-
-  const pending = encodePendingToken(
-    token,
-    generation,
-    previousKey.value,
-    availability,
-  );
-  if (!writeKeyRaw(pending)) {
-    restoreKeyRaw(previousKey.value);
-    throw new Error(failureMessage);
-  }
-
-  try {
-    writeDurableToken(token, generation, availability);
-  } catch {
-    // A failed compensation leaves the pending record in Keychain. resolveCredentials
-    // treats it as conflict, so the uncommitted generation can never become authorized.
-    restoreKeyRaw(previousKey.value);
-    throw new Error(failureMessage);
-  }
-
-  // The durable writer verifies its primary before returning, so a later independent
-  // read failure cannot turn this committed save into a reported rollback.
-  writeKey(token, generation, availability);
-  removeSharedTokenBestEffort();
+  removeLegacyCredentialCopies("token");
 }
 
 export function removeGatewayToken(): void {
-  const generation = nextGeneration();
-  try {
-    writeDurableToken("", generation, "available");
-  } catch {
-    throw new Error("Access Key 删除失败，请重试");
-  }
-
-  // The durable tombstone is the commit. Keychain and shared Storage cleanup can be
-  // retried by later reads without changing the already committed deletion.
-  removeKeyBestEffort();
-  removeSharedTokenBestEffort();
+  // Replace the protected record with an empty credential before acknowledging removal.
+  // Legacy shared files are cleanup only and can never resurrect the removed key.
+  writeCredential("", "Access Key 删除失败，请重试");
 }
 
 export function gatewayConfigured(): boolean {

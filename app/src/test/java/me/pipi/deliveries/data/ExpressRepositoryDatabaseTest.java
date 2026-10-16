@@ -2329,7 +2329,7 @@ public final class ExpressRepositoryDatabaseTest {
                 new String[]{Long.toString(saved.rowId)});
         assertEquals(independentAnchor, repository.find(saved.rowId).signedRetainedAt);
 
-        repository.saveAccountTimeline(packet, "interface5");
+        assertTrue(repository.saveInterface5Query(packet, repaired, generation));
         ExpressQueryResult query = repository.accountTimeline(waybill, "interface5");
         assertEquals("真实承运商签收", query.latestDetail);
         assertFalse(query.tracksJson.contains("京豆"));

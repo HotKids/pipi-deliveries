@@ -5,6 +5,7 @@ import {
   SCRIPT_BUILD_TRACK,
   SCRIPT_CLIENT_BUILD,
   SCRIPT_VERSION,
+  SCRIPTING_GATEWAY_PROTOCOL_VERSION,
 } from "../services/build-track";
 
 const manifest = JSON.parse(readFileSync(
@@ -19,8 +20,10 @@ assert.ok(Number.isSafeInteger(SCRIPT_CLIENT_BUILD) && SCRIPT_CLIENT_BUILD > 0,
 if (track === "beta") {
   assert.match(SCRIPT_VERSION, /^\d+(?:\.\d+)*-beta\d+$/);
   assert.equal(GATEWAY_ORIGIN, "https://beta.pipiassistant.app");
+  assert.equal(SCRIPTING_GATEWAY_PROTOCOL_VERSION, "2");
 } else {
   assert.match(SCRIPT_VERSION, /^\d+(?:\.\d+)*$/);
   assert.equal(GATEWAY_ORIGIN, "https://pipiassistant.app");
 }
+assert.ok(["1", "2"].includes(SCRIPTING_GATEWAY_PROTOCOL_VERSION));
 console.log("build track package consistency tests passed");

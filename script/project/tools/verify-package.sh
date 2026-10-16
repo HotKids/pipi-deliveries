@@ -6,6 +6,12 @@ SCRIPT_DIR=$(CDPATH= cd -- "$PROJECT_DIR/.." && pwd)
 REPO_DIR=$(CDPATH= cd -- "$PROJECT_DIR/../../.." && pwd)
 ARCHIVE=${1:-"$SCRIPT_DIR/pipi-deliveries.scripting"}
 EXPECTED_TRACK=${2:-}
+PURPOSE=${3:-source}
+WORKER_ARTIFACT=${4:-}
+case "$PURPOSE" in
+  source|delivery) ;;
+  *) printf 'Package purpose must be source or delivery\n' >&2; exit 2 ;;
+esac
 # 下面两道扫描（禁止材料、网络地址白名单）全靠 rg；缺工具时 `if rg …` 会当成「没匹配到」
 # 静默放行，成品包照样打印 verified（2026-09-07 审计）。缺工具必须硬失败。
 if ! command -v rg >/dev/null 2>&1; then
@@ -221,5 +227,13 @@ while IFS= read -r network_url; do
 done <<EOF
 $NETWORK_URLS
 EOF
+
+if [ "$PURPOSE" = delivery ]; then
+  if [ -n "$WORKER_ARTIFACT" ]; then
+    python3 "$PROJECT_DIR/tools/verify-gateway-protocol.py" "$ARCHIVE" --worker-artifact "$WORKER_ARTIFACT"
+  else
+    python3 "$PROJECT_DIR/tools/verify-gateway-protocol.py" "$ARCHIVE"
+  fi
+fi
 
 printf 'Package verified: %s (%s, %s)\n' "$ARCHIVE" "$VERSION" "$BUILD_TRACK"

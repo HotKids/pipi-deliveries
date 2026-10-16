@@ -1011,6 +1011,7 @@ function trackBaseKey(track: TrackNode): string {
 
 function structuredTrackKey(track: TrackNode): string {
   return [
+    nodeNormalizedStatus(track.raw)?.semantic || "",
     ...STRUCTURED_TRACK_FIELDS.map((field) =>
       structuredTrackValue(track, field)
     ),
@@ -1019,18 +1020,34 @@ function structuredTrackKey(track: TrackNode): string {
 }
 
 function compatibleStructuredTrack(left: TrackNode, right: TrackNode): boolean {
-  for (const field of STRUCTURED_TRACK_FIELDS) {
-    const leftValue = structuredTrackValue(left, field);
-    const rightValue = structuredTrackValue(right, field);
-    if (leftValue && rightValue && leftValue !== rightValue) return false;
-  }
+  if (conflictingTrackStates(left, right)) return false;
   const leftSource = structuredTrackValue(left, "_pipiStatusSource");
   const rightSource = structuredTrackValue(right, "_pipiStatusSource");
   return !leftSource || !rightSource || leftSource === rightSource;
 }
 
 function carriesStatusCode(track: TrackNode): boolean {
-  return STRUCTURED_TRACK_FIELDS.some((field) => Boolean(structuredTrackValue(track, field)));
+  const projection = nodeNormalizedStatus(track.raw);
+  return projection ? projection.structured && projection.semantic !== "UNKNOWN"
+    : STRUCTURED_TRACK_FIELDS.some((field) => Boolean(structuredTrackValue(track, field)));
+}
+
+function conflictingTrackStates(left: TrackNode, right: TrackNode): boolean {
+  if (nodeNormalizedStatus(left.raw) || nodeNormalizedStatus(right.raw)) {
+    const semantic = (track: TrackNode) => {
+      const projection = nodeNormalizedStatus(track.raw);
+      return projection ? projection.structured ? projection.semantic : "UNKNOWN"
+        : trackStructuredSemantics(track)[0] || "UNKNOWN";
+    };
+    const leftSemantic = semantic(left);
+    const rightSemantic = semantic(right);
+    return leftSemantic !== "UNKNOWN" && rightSemantic !== "UNKNOWN" && leftSemantic !== rightSemantic;
+  }
+  return STRUCTURED_TRACK_FIELDS.some(field => {
+    const leftValue = structuredTrackValue(left, field);
+    const rightValue = structuredTrackValue(right, field);
+    return Boolean(leftValue && rightValue && leftValue !== rightValue);
+  });
 }
 
 /**
@@ -1039,11 +1056,7 @@ function carriesStatusCode(track: TrackNode): boolean {
  * (2026-09-09 approved parity correction; audit D11, adopted 2026-09-25, Pipi's rule).
  */
 function nearDuplicateCompatible(left: TrackNode, right: TrackNode): boolean {
-  for (const field of STRUCTURED_TRACK_FIELDS) {
-    const leftValue = structuredTrackValue(left, field);
-    const rightValue = structuredTrackValue(right, field);
-    if (leftValue && rightValue && leftValue !== rightValue) return false;
-  }
+  if (conflictingTrackStates(left, right)) return false;
   if (!carriesStatusCode(left) || !carriesStatusCode(right)) return true;
   const leftSource = structuredTrackValue(left, "_pipiStatusSource");
   const rightSource = structuredTrackValue(right, "_pipiStatusSource");
@@ -1697,16 +1710,16 @@ export function pruneShipments(
     if (shipment.timeline.semantic === "COMPLETED") {
       return !isHiddenSignedShipment(shipment, now);
     }
-    if (shipment.timeline.semantic === "CANCELLED") {
-      // The four hours start at the logistics time the list row displays, the same clock as the
-      // signed retention; only without a valid displayed date does the stable first terminal stamp
-      // apply (audit L14, user default #4, 2026-09-25).
-      const eventAt = signedRetentionAtMs(shipment, now);
-      if (!eventAt) return true;
-      return now - eventAt < CANCELLED_RETENTION_MS;
-    }
+    if (isHiddenCancelledShipment(shipment, now)) return false;
     return true;
   });
+}
+
+export function isHiddenCancelledShipment(shipment: Shipment, now = Date.now()): boolean {
+  if (shipment.timeline.semantic !== "CANCELLED") return false;
+  // Cancellation uses the displayed logistics date, with the existing stable terminal fallback.
+  const eventAt = signedRetentionAtMs(shipment, now);
+  return eventAt > 0 && now - eventAt >= CANCELLED_RETENTION_MS;
 }
 
 export function shouldRefreshShipment(

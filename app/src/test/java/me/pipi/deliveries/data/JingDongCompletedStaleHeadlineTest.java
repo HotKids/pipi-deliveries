@@ -119,10 +119,9 @@ public final class JingDongCompletedStaleHeadlineTest {
         ExpressItem owner = completedOwner(new String[][]{
                 {at("2026-09-23 11:12:27"), REVIEW},
                 {at("2026-09-23 08:02:00"), DELIVERING}});
-        repository.saveAccountTimeline(new ExpressQueryResult(WAYBILL, "JD", "京东快递",
+        saveOwnedCarrierQuery(owner, new ExpressQueryResult(WAYBILL, "JD", "京东快递",
                 StatusSemantic.UNKNOWN, 0L, SIGNED_CAPTURE[0][0], SIGNED_CAPTURE[0][1],
-                tracks(SIGNED_CAPTURE), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"),
-                "interface5");
+                tracks(SIGNED_CAPTURE), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"));
         assertNull("only the carrier-keyed copy has the signature",
                 repository.accountTimeline(ORDER, "interface5"));
         assertTrue("the signed JD row is display-frozen", displayFrozen(owner.rowId));
@@ -146,10 +145,9 @@ public final class JingDongCompletedStaleHeadlineTest {
                 {at("2026-09-23 11:12:27"), REVIEW},
                 {at("2026-09-23 08:02:00"), DELIVERING}}, false);
         assertFalse(displayFrozen(owner.rowId));
-        repository.saveAccountTimeline(new ExpressQueryResult(WAYBILL, "JD", "京东快递",
+        saveOwnedCarrierQuery(owner, new ExpressQueryResult(WAYBILL, "JD", "京东快递",
                 StatusSemantic.UNKNOWN, 0L, SIGNED_CAPTURE[0][0], SIGNED_CAPTURE[0][1],
-                tracks(SIGNED_CAPTURE), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"),
-                "interface5");
+                tracks(SIGNED_CAPTURE), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"));
         ExpressItem home = listed(owner.rowId);
         assertEquals(REVIEW, home.latestDetail);
         assertEquals(at("2026-09-23 11:12:27"), home.latestTime);
@@ -164,10 +162,9 @@ public final class JingDongCompletedStaleHeadlineTest {
         ExpressItem owner = completedOwner(new String[][]{
                 {at("2026-09-23 11:12:27"), REVIEW},
                 {at("2026-09-23 08:02:00"), DELIVERING}}, true, at("2026-09-23 11:12:23"));
-        repository.saveAccountTimeline(new ExpressQueryResult(WAYBILL, "JD", "京东快递",
+        saveOwnedCarrierQuery(owner, new ExpressQueryResult(WAYBILL, "JD", "京东快递",
                 StatusSemantic.UNKNOWN, 0L, SIGNED_CAPTURE[0][0], SIGNED_CAPTURE[0][1],
-                tracks(SIGNED_CAPTURE), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"),
-                "interface5");
+                tracks(SIGNED_CAPTURE), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"));
         assertTrue(displayFrozen(owner.rowId));
         assertFalse(repository.find(owner.rowId).tracksJson.contains("期待您"));
         ExpressItem home = listed(owner.rowId);
@@ -182,10 +179,9 @@ public final class JingDongCompletedStaleHeadlineTest {
                 {at("2026-09-23 11:12:27"), REVIEW},
                 {at("2026-09-23 08:02:00"), DELIVERING}}, false, at("2026-09-23 11:12:23"));
         assertFalse(displayFrozen(owner.rowId));
-        repository.saveAccountTimeline(new ExpressQueryResult(WAYBILL, "JD", "京东快递",
+        saveOwnedCarrierQuery(owner, new ExpressQueryResult(WAYBILL, "JD", "京东快递",
                 StatusSemantic.UNKNOWN, 0L, SIGNED_CAPTURE[0][0], SIGNED_CAPTURE[0][1],
-                tracks(SIGNED_CAPTURE), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"),
-                "interface5");
+                tracks(SIGNED_CAPTURE), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"));
         ExpressItem home = listed(owner.rowId);
         assertEquals(SIGNED, home.latestDetail);
         assertEquals(at("2026-09-23 11:12:23"), home.latestTime);
@@ -209,10 +205,9 @@ public final class JingDongCompletedStaleHeadlineTest {
         ExpressItem owner = completedOwner(new String[][]{
                 {at("2026-09-23 11:12:27"), REVIEW},
                 {at("2026-09-23 08:02:00"), DELIVERING}});
-        repository.saveAccountTimeline(new ExpressQueryResult(WAYBILL, "JD", "京东快递",
+        saveOwnedCarrierQuery(owner, new ExpressQueryResult(WAYBILL, "JD", "京东快递",
                 StatusSemantic.UNKNOWN, 0L, SIGNED_CAPTURE[0][0], SIGNED_CAPTURE[0][1],
-                tracks(SIGNED_CAPTURE), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"),
-                "interface5");
+                tracks(SIGNED_CAPTURE), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"));
         ExpressItem home = listed(owner.rowId);
         ExpressItem found = repository.find(owner.rowId);
         assertEquals(REVIEW, home.latestDetail);
@@ -309,10 +304,9 @@ public final class JingDongCompletedStaleHeadlineTest {
         ExpressItem owner = completedOwner(FEED_SIGNED_AT_NEWEST, false, at("2026-09-23 11:12:23"));
         assertFalse(displayFrozen(owner.rowId));
         String[][] later = laterCapture();
-        repository.saveAccountTimeline(new ExpressQueryResult(WAYBILL, "JD", "京东快递",
+        saveOwnedCarrierQuery(owner, new ExpressQueryResult(WAYBILL, "JD", "京东快递",
                 StatusSemantic.UNKNOWN, 0L, later[0][0], later[0][1],
-                tracks(later), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"),
-                "interface5");
+                tracks(later), "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong"));
         ExpressItem home = listed(owner.rowId);
         assertEquals(HANDED_OVER, home.latestDetail);
         assertEquals(at("2026-09-23 11:20:00"), home.latestTime);
@@ -437,6 +431,14 @@ public final class JingDongCompletedStaleHeadlineTest {
         assertTrue(repository.saveOrderProjection(
                 owner, "interface5", WAYBILL, owned ? "京东快递" : ""));
         return repository.find(owner.rowId);
+    }
+
+    private void saveOwnedCarrierQuery(ExpressItem owner, ExpressQueryResult result) {
+        assertTrue(repository.saveInterface5Query(result.withWaybill(owner.waybill), owner,
+                repository.bindingGeneration(owner.phone, "interface5")));
+        // This fixture isolates the carrier-keyed copy, as a retained older query cache can.
+        database.getWritableDatabase().delete(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
+                "normalized_waybill=?", new String[]{ExpressSourcePolicy.normalizeWaybill(owner.waybill)});
     }
 
     /** 派送中、已投影、京粉页已抓到签收的订单行（还没收到签收的列表）。 */

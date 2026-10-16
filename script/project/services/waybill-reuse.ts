@@ -1,6 +1,6 @@
 import type { Shipment, TimelinePackage, TrackNode } from "../models";
 import type { AccountParcelDto } from "./account-parser";
-import { parseListEventTime, parseProviderTime, timedTracks } from "./status";
+import { parseListEventTime, parseProviderTime, timedTracks, semanticFromAccountState, semanticFromStored } from "./status";
 
 /**
  * A carrier reusing an old waybill number (user decisions 2026-10-01/02, all four clients): 「C 新件优先（含 A）」,
@@ -20,7 +20,7 @@ import { parseListEventTime, parseProviderTime, timedTracks } from "./status";
  */
 export const WAYBILL_REUSE_MIN_GAP_MS = 24 * 60 * 60 * 1_000;
 
-type ReuseTimeline = Pick<TimelinePackage, "semantic" | "statusEventAtMs" | "latestTimeText" | "tracks">;
+type ReuseTimeline = Pick<TimelinePackage, "semantic" | "structuredStatus" | "statusEventAtMs" | "latestTimeText" | "tracks">;
 
 function validTime(value: unknown, now: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= now ? value : 0;
@@ -32,7 +32,8 @@ function textTime(value: string, now: number): number {
 
 /** The old record's terminal time: the latest of its status time, its shown time and its newest timed node; 0 when not terminal. */
 export function waybillReuseTerminalAtMs(timeline: ReuseTimeline, now: number): number {
-  if (timeline.semantic !== "COMPLETED" && timeline.semantic !== "CANCELLED") return 0;
+  if (timeline.structuredStatus !== true ||
+      (timeline.semantic !== "COMPLETED" && timeline.semantic !== "CANCELLED")) return 0;
   let latest = Math.max(validTime(timeline.statusEventAtMs, now), textTime(timeline.latestTimeText, now));
   for (const track of timedTracks(timeline.tracks)) latest = Math.max(latest, validTime(track.timeMs, now));
   return latest;
@@ -117,6 +118,10 @@ function parcelTimeline(parcel: AccountParcelDto): ReuseTimeline {
   const latest = tracks.find((track) => track.timeMs != null && track.detail);
   return {
     semantic: parcel.semantic,
+    structuredStatus: parcel.normalizedStatus?.structured ?? (parcel.semantic !== "UNKNOWN" && parcel.semantic === (
+      parcel.source === "interface5" ? semanticFromAccountState(parcel.sourceStateCode, "")
+        : semanticFromStored(parcel.sourceStateCode, "")
+    )),
     statusEventAtMs: parcel.normalizedStatus
       ? parcel.normalizedStatus.eventAtMs || null
       : latest?.timeMs ?? parseProviderTime(parcel.latestTimeText),

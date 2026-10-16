@@ -7,6 +7,7 @@ import {
   loadWidgetSnapshot, removeShipment, saveState, visibleShipments,
 } from "../services/storage.ts";
 import { isHiddenSignedShipment, shouldRefreshShipment } from "../services/status.ts";
+import { runStatusAlignmentPass } from "../services/status-alignment.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -372,7 +373,10 @@ test("an outbox event that becomes hidden is acknowledged without blocking the n
       ...shipment, sourceTimeline: undefined, updatedAtMs: beforeHidden + 1,
       timeline: { ...shipment.timeline, semantic: "COMPLETED" as const,
         latestDetail: "快件已签收", statusEventAtMs: beforeHidden + 1,
-        latestTimeText: listTime(beforeHidden + 1) },
+        latestTimeText: listTime(beforeHidden + 1), tracks: [{
+          timeText: listTime(beforeHidden + 1), timeMs: beforeHidden + 1,
+          detail: "快件已签收", statusCode: "SIGNED", raw: {},
+        }, ...shipment.timeline.tracks] },
     } : shipment),
   }, "interface5", beforeHidden + 1).state;
   assert.deepEqual(queued.pendingNotifications?.map((event) => event.shipmentId), [hidden.identity.id, active.identity.id]);
@@ -388,6 +392,10 @@ test("an outbox event that becomes hidden is acknowledged without blocking the n
   });
   Object.assign(Data, { fromFile: () => null });
   try {
+    await runStatusAlignmentPass({}, { appHost: () => true, busy: () => false,
+      now: () => NOW + 15 * DAY,
+      refresh: async (_id, beforeQuery) => { beforeQuery(); return { state: loadState() }; },
+    });
     const { replayPendingShipmentNotifications } = await import("../services/notifications.ts");
     await replayPendingShipmentNotifications();
     assert.deepEqual(scheduled, [active.identity.id], "only the still-visible owner reaches the host");

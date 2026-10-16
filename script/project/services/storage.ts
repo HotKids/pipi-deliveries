@@ -15,6 +15,7 @@ import {
   buildWidgetSnapshot,
   isConfirmedNoItemOrder,
   isHiddenSignedShipment,
+  isHiddenCancelledShipment,
   isNonEventDetail,
   mergeTimelineAuthorities,
   normalizedProjectedWaybill,
@@ -1878,7 +1879,7 @@ function saveStateAndPrune(
     // 归属方案 T3：挂靠行不通知（它自己的新节点也不单独推送，T7）。
     const attached = attachedShipmentIds(next.shipments);
     for (const shipment of next.shipments) {
-      if (isHiddenSignedShipment(shipment, now) || isConfirmedNoItemOrder(shipment) ||
+      if (isHiddenSignedShipment(shipment, now) || isHiddenCancelledShipment(shipment, now) || isConfirmedNoItemOrder(shipment) ||
           attached.has(shipment.identity.id)) continue;
       const merge = context?.orderMerges?.get(shipment.identity.id);
       const rule = { statusChangeOnly: merge != null };

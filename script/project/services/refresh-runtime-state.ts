@@ -62,6 +62,16 @@ const PROVIDER_SUCCESS_INTERVAL_MS: Readonly<Record<RefreshProvider, number>> = 
   kdniao: 10 * 60_000,
 };
 
+function retainProviderSchedules(providers: readonly ProviderSchedule[], now: number): ProviderSchedule[] {
+  let ordinaryCount = 0;
+  return [...providers].sort((left, right) => right.lastAttemptAtMs - left.lastAttemptAtMs).filter(item => {
+    // Evicting an active H5 reservation would reopen an upstream request before its mandatory interval.
+    if (item.provider === "kuaidi100" && item.identityFingerprint === "k100_h5" &&
+        item.key.startsWith("k100_h5:") && now < item.lastAttemptAtMs + PROVIDER_SUCCESS_INTERVAL_MS.kuaidi100) return true;
+    return ordinaryCount++ < MAX_PROVIDER_SCHEDULES;
+  });
+}
+
 function emptyRuntimeState(): RefreshRuntimeState {
   return {
     version: 1,
@@ -162,8 +172,7 @@ function readRuntimeMetadata(now = Date.now()): RefreshRuntimeState {
     ...current,
     lastAccountSyncSuccessAtMs: Math.max(legacy.lastAccountSyncSuccessAtMs, current.lastAccountSyncSuccessAtMs),
     lastBackgroundPollSuccessAtMs: Math.max(legacy.lastBackgroundPollSuccessAtMs, current.lastBackgroundPollSuccessAtMs),
-    providers: [...providers.values()].sort((left, right) => right.lastAttemptAtMs - left.lastAttemptAtMs)
-      .slice(0, MAX_PROVIDER_SCHEDULES),
+    providers: retainProviderSchedules([...providers.values()], now),
   };
 }
 
@@ -234,6 +243,29 @@ export function refreshProviderDue(
   return current.nextDueAtMs <= now;
 }
 
+/** Reserve the upstream's exact per-waybill H5 interval before loading, including failed attempts. */
+export function claimKuaidi100Capture(waybill: string, beforeQuery?: () => void, now = Date.now()): boolean {
+  return withSharedFileTransaction(() => {
+    const current = readRuntimeMetadata(now);
+    const key = `k100_h5:${waybill}`;
+    const previous = current.providers.find(item => item.key === key && item.provider === "kuaidi100");
+    const intervalMs = PROVIDER_SUCCESS_INTERVAL_MS.kuaidi100;
+    if (previous && now < previous.lastAttemptAtMs + intervalMs) return false;
+    beforeQuery?.();
+    const schedule: ProviderSchedule = {
+      key, provider: "kuaidi100", identityFingerprint: "k100_h5",
+      lastAttemptAtMs: now, lastSuccessAtMs: previous?.lastSuccessAtMs || 0,
+      consecutiveFailures: previous?.consecutiveFailures || 0,
+      nextDueAtMs: now + intervalMs, lastResult: "no_result",
+    };
+    writeRuntimeMetadata({ ...current, revision: current.revision + 1,
+      providers: retainProviderSchedules([
+        ...current.providers.filter(item => item.key !== key || item.provider !== "kuaidi100"), schedule,
+      ], now) });
+    return true;
+  });
+}
+
 export function recordRefreshProviderResult(input: Readonly<{
   key: string;
   provider: RefreshProvider;
@@ -269,13 +301,12 @@ export function recordRefreshProviderResult(input: Readonly<{
       }),
       lastResult: input.result,
     };
-    const providers = [
+    const providers = retainProviderSchedules([
       ...current.providers.filter((item) =>
         item.key !== input.key || item.provider !== input.provider
       ),
       schedule,
-    ].sort((left, right) => right.lastAttemptAtMs - left.lastAttemptAtMs)
-      .slice(0, MAX_PROVIDER_SCHEDULES);
+    ], now);
     writeRuntimeMetadata({
       ...current,
       revision: current.revision + 1,

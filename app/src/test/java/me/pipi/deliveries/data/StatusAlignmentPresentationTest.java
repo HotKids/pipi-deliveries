@@ -198,6 +198,8 @@ public final class StatusAlignmentPresentationTest {
         assertEquals(1, posted.size());
         assertEquals("the display override cannot change the notification channel", "express_picked",
                 posted.get(0).getChannelId());
+        assertTrue("the notification title must use the list's promoted display status",
+                posted.get(0).extras.getCharSequence(Notification.EXTRA_TITLE).toString().contains("派送中"));
     }
 
     @Test public void aKnownCoarseHeadlineWaitsForFinishedAlignmentBeforeUsingItsStatusDonor() throws Exception {
@@ -571,6 +573,161 @@ public final class StatusAlignmentPresentationTest {
         assertEquals(listed(owner.rowId, "interface5").latestDetail,
                 posted.get(0).extras.getCharSequence(Notification.EXTRA_TEXT).toString().replace("\u200B", ""));
         assertEquals(StatusSemantic.TRANSIT, repository.find(owner.rowId).semantic);
+    }
+
+    @Test public void aSignedSfNotificationWaitsForTheFirstAlignmentThenUsesItsFinalFallback() throws Exception {
+        ExpressItem owner = sfSigningAfterOlderPicker();
+        assertEquals("a status change cannot publish the old transit headline", 0,
+                context.getSystemService(NotificationManager.class).getActiveNotifications().length);
+        database.close();
+        database = new ExpressDatabase(context);
+        repository = new ExpressRepository(context, database);
+        repository.replayPendingNotifications();
+        assertEquals("repository recreation cannot release the durable pending event early", 0,
+                context.getSystemService(NotificationManager.class).getActiveNotifications().length);
+        ExpressRepository.StatusAlignmentProbe probe = probe(owner.rowId, "interface5");
+        String times = ExpressRepository.alignmentTimes(probe);
+        java.util.Map<String, Long> before = repository.statusAlignmentEvidence(owner);
+        assertTrue(repository.beginStatusAlignment(owner, times, System.currentTimeMillis()));
+        repository.replayPendingNotifications();
+        assertEquals("a reserved request has not finished", 0,
+                context.getSystemService(NotificationManager.class).getActiveNotifications().length);
+        repository.finishStatusAlignment(owner, times, before);
+        List<Notification> posted = Shadows.shadowOf(context.getSystemService(NotificationManager.class))
+                .getAllNotifications();
+        assertEquals(1, posted.size());
+        assertEquals("快件已签收", posted.get(0).extras.getCharSequence(Notification.EXTRA_TEXT)
+                .toString().replace("\u200B", ""));
+        repository.replayPendingNotifications();
+        assertEquals(1, Shadows.shadowOf(context.getSystemService(NotificationManager.class))
+                .getAllNotifications().size());
+    }
+
+    @Test public void aPendingSfSigningUsesTheDetailedSameStateNodeWhenItArrives() throws Exception {
+        ExpressItem owner = sfSigningAfterOlderPicker();
+        assertEquals(0, context.getSystemService(NotificationManager.class).getActiveNotifications().length);
+        String times = ExpressRepository.alignmentTimes(probe(owner.rowId, "interface5"));
+        java.util.Map<String, Long> before = repository.statusAlignmentEvidence(owner);
+        assertTrue(repository.beginStatusAlignment(owner, times, System.currentTimeMillis()));
+        ExpressQueryResult signed = new ExpressQueryResult(SF, "SF", "顺丰速运", StatusSemantic.COMPLETED,
+                base + 110L * MINUTE, at(110), "本人已签收，感谢使用顺丰",
+                new JSONArray().put(new JSONObject().put("time", at(110))
+                        .put("context", "本人已签收，感谢使用顺丰").put("action", "SIGNED"))
+                        .put(new JSONObject().put("time", at(20)).put("context", "快件到达营业点")
+                                .put("action", "TRANSPORT")).toString(),
+                "", PHONE, TimelineSlot.V6_QUERY, "", "", "")
+                .withManualStatusEvidence("已签收", true);
+        java.lang.reflect.Field active = me.pipi.deliveries.background.ExpressStatusAlignment.class
+                .getDeclaredField("ALIGNING");
+        active.setAccessible(true);
+        @SuppressWarnings("unchecked") java.util.Set<Long> aligning = (java.util.Set<Long>) active.get(null);
+        aligning.add(owner.rowId);
+        try {
+            repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                    List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, signed, System.currentTimeMillis(), false)),
+                    PHONE, "interface5");
+            assertEquals("an inner commit cannot publish before the alignment attempt finishes", 0,
+                    context.getSystemService(NotificationManager.class).getActiveNotifications().length);
+        } finally { aligning.remove(owner.rowId); }
+        repository.finishStatusAlignment(owner, times, before);
+        List<Notification> posted = Shadows.shadowOf(context.getSystemService(NotificationManager.class))
+                .getAllNotifications();
+        assertEquals(1, posted.size());
+        assertEquals("本人已签收，感谢使用顺丰", posted.get(0).extras.getCharSequence(Notification.EXTRA_TEXT)
+                .toString().replace("\u200B", ""));
+    }
+
+    @Test public void aKnownConflictingSfNodeCannotReleaseTheSigningWithinFiveMinutes() throws Exception {
+        ExpressItem owner = sfSigningAfterOlderPicker();
+        saveSfNearSigning(owner, true);
+        assertEquals(0, context.getSystemService(NotificationManager.class).getActiveNotifications().length);
+        assertEquals(StatusSemantic.COMPLETED, listed(owner.rowId, "interface5").semantic);
+    }
+
+    @Test public void anUnknownSfNodeMayReleaseTheSigningWithinFiveMinutes() throws Exception {
+        ExpressItem owner = sfSigningAfterOlderPicker();
+        saveSfNearSigning(owner, false);
+        List<Notification> posted = Shadows.shadowOf(context.getSystemService(NotificationManager.class))
+                .getAllNotifications();
+        assertEquals(1, posted.size());
+        assertEquals("最新详细节点", posted.get(0).extras.getCharSequence(Notification.EXTRA_TEXT)
+                .toString().replace("\u200B", ""));
+    }
+
+    @Test public void aNonSignedSfUpdateKeepsItsExistingPublicationTiming() throws Exception {
+        ExpressItem owner = sfChangeAfterOlderPicker(StatusSemantic.DELIVERY);
+        ExpressQueryResult result = new ExpressQueryResult(SF, "SF", "顺丰速运", StatusSemantic.DELIVERY,
+                base + 110L * MINUTE, at(20), "快件到达营业点",
+                tracks(new String[][]{{at(20), "快件到达营业点"}, {at(0), "顺丰速运 已收取快件"}}),
+                "", PHONE, TimelineSlot.V6_QUERY, "", "", "").withManualStatusEvidence("派送中", true);
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, result, System.currentTimeMillis(), false)),
+                PHONE, "interface5");
+        assertEquals(1, context.getSystemService(NotificationManager.class).getActiveNotifications().length);
+    }
+
+    @Test public void finishingSfAlignmentDoesNotReplayAnotherRowsPendingNotification() throws Exception {
+        ExpressItem owner = sfSigningAfterOlderPicker();
+        repository.saveInterface5(new ExpressQueryResult(ZTO, "ZTO", "中通快递", StatusSemantic.TRANSIT,
+                base + 20L * MINUTE, at(20), "Other row event",
+                tracks(new String[][]{{at(20), "Other row event"}}),
+                "", PHONE, "interface5", "", "", "ZhongTong")
+                .withWorkerStatus(structured(StatusSemantic.TRANSIT, base + 20L * MINUTE)), PHONE);
+        ExpressItem other = repository.findByWaybill(ZTO, "interface5");
+        android.content.ContentValues event = new android.content.ContentValues();
+        event.put("owner_row_id", other.rowId);
+        event.put("event_token", "synthetic-other-pending");
+        database.getWritableDatabase().insertOrThrow(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null, event);
+        String times = ExpressRepository.alignmentTimes(probe(owner.rowId, "interface5"));
+        java.util.Map<String, Long> before = repository.statusAlignmentEvidence(owner);
+        assertTrue(repository.beginStatusAlignment(owner, times, System.currentTimeMillis()));
+        repository.finishStatusAlignment(owner, times, before);
+        assertEquals("only the settled SF row is published", 1,
+                context.getSystemService(NotificationManager.class).getActiveNotifications().length);
+        assertEquals(1L, android.database.DatabaseUtils.queryNumEntries(database.getReadableDatabase(),
+                ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, "owner_row_id=?",
+                new String[]{Long.toString(other.rowId)}));
+    }
+
+    private void saveSfNearSigning(ExpressItem owner, boolean knownConflict) throws Exception {
+        JSONObject head = new JSONObject().put("time", at(108)).put("context", "最新详细节点");
+        if (knownConflict) head.put("action", "DELIVERING");
+        ExpressQueryResult result = new ExpressQueryResult(SF, "SF", "顺丰速运", StatusSemantic.DELIVERY,
+                base + 108L * MINUTE, at(108), "最新详细节点", new JSONArray().put(head)
+                        .put(new JSONObject().put("time", at(20)).put("context", "快件到达营业点")
+                                .put("action", "TRANSPORT")).toString(),
+                "", PHONE, TimelineSlot.V6_QUERY, "", "", "").withManualStatusEvidence("派送中", true);
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, result, System.currentTimeMillis(), false)),
+                PHONE, "interface5");
+    }
+
+    private ExpressItem sfSigningAfterOlderPicker() throws Exception {
+        return sfChangeAfterOlderPicker(StatusSemantic.COMPLETED);
+    }
+
+    private ExpressItem sfChangeAfterOlderPicker(StatusSemantic semantic) throws Exception {
+        repository.saveInterface5(new ExpressQueryResult(SF, "SF", "顺丰速运", StatusSemantic.TRANSIT,
+                base + 20L * MINUTE, at(20), "快件到达营业点",
+                tracks(new String[][]{{at(20), "快件到达营业点"}, {at(0), "顺丰速运 已收取快件"}}),
+                "", PHONE, "interface5", "", "", "ShunFeng")
+                .withWorkerStatus(structured(StatusSemantic.TRANSIT, base + 20L * MINUTE)), PHONE);
+        ExpressItem owner = repository.findByWaybill(SF, "interface5");
+        ExpressQueryResult picker = new ExpressQueryResult(SF, "SF", "顺丰速运", StatusSemantic.TRANSIT,
+                base + 20L * MINUTE, at(20), "快件到达营业点",
+                tracks(new String[][]{{at(20), "快件到达营业点"}, {at(0), "顺丰速运 已收取快件"}}),
+                "", PHONE, TimelineSlot.V6_QUERY, "", "", "").withManualStatusEvidence("运输中", true);
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, picker, base + 21L * MINUTE, false)),
+                PHONE, "interface5");
+        context.getSystemService(NotificationManager.class).cancelAll();
+        String detail = semantic == StatusSemantic.COMPLETED ? "快件已签收" : "快件正在派送";
+        repository.saveInterface5(new ExpressQueryResult(SF, "SF", "顺丰速运", semantic,
+                base + 110L * MINUTE, at(110), detail,
+                tracks(new String[][]{{at(110), detail}, {at(0), "顺丰速运 已收取快件"}}),
+                "", PHONE, "interface5", "", "", "ShunFeng")
+                .withWorkerStatus(structured(semantic, base + 110L * MINUTE)), PHONE);
+        return repository.find(owner.rowId);
     }
 
     /** An interface 6 feed carries no nodes: with no captured package its detail has no timed node, no D. */

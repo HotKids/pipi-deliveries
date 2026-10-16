@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { memory } from "./state-storage-mock";
 import { scrapeWebTimeline, type WebTimelineDiagnostics } from "../services/web-timeline";
 import { WebTimelinePhoneError } from "../services/jt-h5";
 
@@ -26,6 +27,7 @@ try {
     { name: "missing Vue waybill", phoneTail: tail, url: fixed, show: true, vueWaybill: "", calls: 0 },
     { name: "submission throws", phoneTail: tail, url: fixed, show: true, throws: true, calls: 1 },
   ]) {
+    memory.clear();
     let calls = 0;
     let writes = 0;
     let evaluations = 0;

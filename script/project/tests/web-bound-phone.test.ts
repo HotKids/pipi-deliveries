@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { memory } from "./state-storage-mock";
 import { scrapeWebTimeline } from "../services/web-timeline";
 import { WebTimelinePhoneError } from "../services/jt-h5";
 
@@ -8,6 +9,7 @@ let now = actualNow();
 Date.now = () => now;
 try {
   for (const kind of ["retry", "explicit", "network", "unacknowledged"] as const) {
+    memory.clear();
     let calls = 0, reads = 0, pending = false, disposed = false;
     const writes: string[] = [];
     const checkCode = { show: true };

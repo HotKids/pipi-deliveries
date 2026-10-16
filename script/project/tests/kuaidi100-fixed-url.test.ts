@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { memory } from "./state-storage-mock";
 import { scrapeWebTimeline, type WebTimelineDiagnostics } from "../services/web-timeline";
 
 const loaded: string[] = [];
@@ -36,6 +37,7 @@ assert.equal(disposed, 1);
 assert.equal(await scrapeWebTimeline({ waybill: " - ", courierCode: "SF", companyName: "Carrier" }), null);
 assert.equal(loaded.length, 1, "an empty normalized waybill must not open a page");
 root = "#app";
+memory.clear();
 const legacy = await scrapeWebTimeline({ waybill: "SF123456", courierCode: "SF", companyName: "Carrier" });
 assert.deepEqual(legacy?.tracks, timeline?.tracks, "existing Vue page roots remain supported");
 console.log("K100 fixed page URL and normalized-waybill tests passed");

@@ -822,6 +822,21 @@ export function shipmentSelectionEvidence(shipment: Shipment): ShipmentSelection
   return evidence;
 }
 
+/** Read the same-state node selected for every surface; prose never supplies a node's state. */
+export function shipmentHeadlineMatchesStatus(shipment: Shipment): boolean {
+  const evidence = { historyProvider: "none", headlineProvider: "none",
+    statusProvider: "none", selectionReason: "source_policy" };
+  const presented = selectShipmentTimeline(shipment, evidence);
+  const reading = alignmentReading(shipment, presented, evidence.headlineProvider);
+  if (reading?.times.needsNonCoarse) {
+    const times = statusAlignmentTimes(shipment);
+    if (!times || !alignmentAttemptFinished(shipment.identity.id,
+      `${times.statusAtMs}|${times.headlineAtMs}|${times.detailAtMs}`)) return false;
+  }
+  return Boolean(reading?.headline &&
+    sameStateNode(reading.headline.track, presented.semantic, reading.times.statusAtMs));
+}
+
 export function selectShipmentTimeline(
   shipment: Shipment, evidence?: ShipmentSelectionEvidence,
 ): TimelinePackage {
@@ -916,14 +931,16 @@ function alignmentReading(shipment: Shipment, list: TimelinePackage,
   const statusAtMs = list.statusEventAtMs || Math.max(0, ...donors.map(timelineLatestTrackAt));
   if (!(statusAtMs > 0)) return null;
   const headlineAtMs = parseProviderTime(list.latestTimeText || "") || 0;
-  const matches = packages.flatMap(timeline => timedTracks(timeline.tracks).filter(track =>
-    track.timeMs === headlineAtMs && track.detail === list.latestDetail).map(track => ({ provider: timeline.provider, track })));
+  // A provider may retain milliseconds in its raw clock while its own time text has only seconds.
+  // Read that exact textual clock as well, retaining package order and each node's original projection.
+  const isHeadline = (track: TrackNode) => track.detail === list.latestDetail &&
+    (track.timeMs === headlineAtMs || parseProviderTime(track.timeText) === headlineAtMs);
+  const matches = packages.flatMap(timeline => timedTracks(timeline.tracks).filter(isHeadline)
+    .map(track => ({ provider: timeline.provider, track })));
   // Selected history may belong to another provider than a metadata-only account headline.
+  const ownHeadline = list.provider === headlineProvider ? timedTracks(list.tracks).find(isHeadline) : null;
   const headline = matches.find(item => item.provider === headlineProvider) ||
-    (list.provider === headlineProvider &&
-      timedTracks(list.tracks).find(track => track.timeMs === headlineAtMs && track.detail === list.latestDetail)
-      ? { provider: list.provider, track: timedTracks(list.tracks).find(track => track.timeMs === headlineAtMs &&
-          track.detail === list.latestDetail)! } : null);
+    (ownHeadline ? { provider: list.provider, track: ownHeadline } : null);
   const headlineSemantic = headline ? latestTimelineTrackSemantic([headline.track]) : "UNKNOWN";
   const detail = newestTrack(list);
   const sf = isShunFengSourceShipment(shipment);
@@ -2854,6 +2871,8 @@ export function isQualifiedAutomaticShipment(
   const sourceTimeline = shipment.sourceTimeline || shipment.timeline;
   const rawCarrierCode = String(shipment.identity.rawCourierCode || "").trim();
   const rawCompanyName = String(shipment.identity.rawCompanyName || "").trim();
+  const validRawCarrier = (value: string) => Boolean(value) &&
+    !["NULL", "OTHER", "UNKNOWN", "未知", "其他"].includes(value.normalize("NFKC").toUpperCase());
   const trustedAccountProjection = Boolean(
     shipment.identity.accountOrder &&
       normalizedProjectedWaybill(shipment.identity),
@@ -2863,7 +2882,7 @@ export function isQualifiedAutomaticShipment(
     declaredSource === source &&
     // JD's order page can establish the carrier waybill even when the account
     // snapshot omits the raw carrier fields required from ordinary list rows.
-    (rawCarrierCode || rawCompanyName || trustedAccountProjection) &&
+    (validRawCarrier(rawCarrierCode) || validRawCarrier(rawCompanyName) || trustedAccountProjection) &&
     sourceTimeline.semantic !== "UNKNOWN" &&
     // Local timeline ownership is the provider identity, not a minimum node count.
     normalizedAutomaticSource(sourceTimeline.provider) === source,
