@@ -64,6 +64,8 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   phoneVerificationRequiredMessage: "绑定失效，请重新绑定手机号",
 
   reauthorize: "重新授权",
+  recoverBasic: "恢复基础模式",
+  recoveringBasic: "正在恢复…",
   deviceReauthorizationRequiredMessage: "设备授权已过期，请重新授权。现有记录将会保留。",
 
   phoneBound: "手机号已绑定",
