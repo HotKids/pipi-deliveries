@@ -17,6 +17,16 @@ public final class ExpressItem {
     public final StatusSemantic semantic;
     public final String statusDescription;
     public final String latestDetail;
+    private final HeadlineDisplay headlineDisplay;
+
+    private static final class HeadlineDisplay {
+        final String time;
+        final String raw;
+        final String body;
+        HeadlineDisplay(String time, String raw, String body) {
+            this.time = time; this.raw = raw; this.body = body;
+        }
+    }
     public final String latestTime;
     public final String tracksJson;
     public final String remark;
@@ -380,6 +390,26 @@ public final class ExpressItem {
             StatusSemantic sourceSemantic, CarrierNormalization carrierNormalization,
             long signedRetainedAt, String senderPhone, long listOriginAtMs, boolean sender,
             boolean sourceStatusStructured) {
+        this(rowId, phone, waybill, courierCode, companyName, semantic, statusDescription, latestDetail,
+                latestTime, tracksJson, remark, source, detailUrl, statusEventTime, updatedAt, stateOwner,
+                routeOwner, routeInterface, routeCredential, routeCredentialAvailable, projectedWaybill,
+                projectedCompanyName, projectedTracksJson, sourceProvider, manuallyAdded,
+                manualTimelineProvider, manualTimelineSuccessAt, sourceSemantic, carrierNormalization,
+                signedRetainedAt, senderPhone, listOriginAtMs, sender, sourceStatusStructured, null);
+    }
+
+    private ExpressItem(long rowId, String phone, String waybill, String courierCode,
+            String companyName, StatusSemantic semantic, String statusDescription,
+            String latestDetail, String latestTime, String tracksJson, String remark,
+            String source, String detailUrl, long statusEventTime, long updatedAt,
+            String stateOwner, String routeOwner, String routeInterface, String routeCredential,
+            boolean routeCredentialAvailable, String projectedWaybill, String projectedCompanyName,
+            String projectedTracksJson, String sourceProvider, boolean manuallyAdded,
+            String manualTimelineProvider, long manualTimelineSuccessAt,
+            StatusSemantic sourceSemantic, CarrierNormalization carrierNormalization,
+            long signedRetainedAt, String senderPhone, long listOriginAtMs, boolean sender,
+            boolean sourceStatusStructured, HeadlineDisplay headlineDisplay) {
+        this.headlineDisplay = headlineDisplay;
         this.rowId = rowId;
         this.sourceStatusStructured = sourceStatusStructured;
         this.phone = clean(phone);
@@ -426,7 +456,7 @@ public final class ExpressItem {
                 routeInterface, routeCredential, routeCredentialAvailable, projectedWaybill,
                 projectedCompanyName, projectedTracksJson, sourceProvider,
                 manuallyAdded, manualTimelineProvider, manualTimelineSuccessAt,
-                sourceSemantic, carrierNormalization, value);
+                sourceSemantic, carrierNormalization, value).withDisplayHint(headlineDisplay);
     }
 
     /**
@@ -541,7 +571,28 @@ public final class ExpressItem {
         return carrier == null ? R.drawable.ic_card_express_cp_default : carrier.iconResource;
     }
 
-    /** 只换表头（最新一条的文案和时间）；轨迹、状态和其它字段原样保留。 */
+    /** Binds a donor's display body without changing the persisted headline or history. */
+    public ExpressItem withHeadlineDisplay(String body) {
+        return withDisplayHint(new HeadlineDisplay(latestTime, latestDetail, body));
+    }
+
+    private ExpressItem withDisplayHint(HeadlineDisplay hint) {
+        return new ExpressItem(rowId, phone, waybill, courierCode, companyName, semantic,
+                statusDescription, latestDetail, latestTime, tracksJson, remark, source,
+                detailUrl, statusEventTime, updatedAt, stateOwner, routeOwner, routeInterface,
+                routeCredential, routeCredentialAvailable, projectedWaybill, projectedCompanyName,
+                projectedTracksJson, sourceProvider, manuallyAdded, manualTimelineProvider,
+                manualTimelineSuccessAt, sourceSemantic, carrierNormalization, signedRetainedAt,
+                senderPhone, listOriginAtMs, sender, sourceStatusStructured, hint);
+    }
+
+    public String headlineDisplay() {
+        if (headlineDisplay == null) return null;
+        return latestTime.equals(headlineDisplay.time) && latestDetail.equals(headlineDisplay.raw)
+                ? headlineDisplay.body : latestDetail;
+    }
+
+    /** Replaces only the headline text and clock; all source fields and history stay unchanged. */
     public ExpressItem withHeadline(String detail, String time) {
         return new ExpressItem(rowId, phone, waybill, courierCode, companyName, semantic,
                 statusDescription, detail, time, tracksJson, remark, source,
@@ -549,7 +600,7 @@ public final class ExpressItem {
                 routeCredential, routeCredentialAvailable, projectedWaybill, projectedCompanyName,
                 projectedTracksJson, sourceProvider, manuallyAdded, manualTimelineProvider,
                 manualTimelineSuccessAt, sourceSemantic, carrierNormalization, signedRetainedAt,
-                senderPhone, listOriginAtMs, sender, sourceStatusStructured);
+                senderPhone, listOriginAtMs, sender, sourceStatusStructured, null);
     }
 
     /** Display projection only; persisted status and completion evidence stay in the owning row. */
@@ -560,7 +611,7 @@ public final class ExpressItem {
                 routeCredential, routeCredentialAvailable, projectedWaybill, projectedCompanyName,
                 projectedTracksJson, sourceProvider, manuallyAdded, manualTimelineProvider,
                 manualTimelineSuccessAt, sourceSemantic, carrierNormalization, signedRetainedAt,
-                senderPhone, listOriginAtMs, sender, sourceStatusStructured);
+                senderPhone, listOriginAtMs, sender, sourceStatusStructured, headlineDisplay);
     }
 
     public ExpressItem withAccountListMetadata(String senderPhone, long originAtMs) {
@@ -574,7 +625,7 @@ public final class ExpressItem {
                 routeCredential, routeCredentialAvailable, projectedWaybill, projectedCompanyName,
                 projectedTracksJson, sourceProvider, manuallyAdded, manualTimelineProvider,
                 manualTimelineSuccessAt, sourceSemantic, carrierNormalization, signedRetainedAt,
-                senderPhone, originAtMs, sender, sourceStatusStructured);
+                senderPhone, originAtMs, sender, sourceStatusStructured, headlineDisplay);
     }
 
     /** Carries the feed's own structured status flag onto a projected copy (audit L8). */
@@ -586,7 +637,7 @@ public final class ExpressItem {
                 routeCredential, routeCredentialAvailable, projectedWaybill, projectedCompanyName,
                 projectedTracksJson, sourceProvider, manuallyAdded, manualTimelineProvider,
                 manualTimelineSuccessAt, sourceSemantic, carrierNormalization, signedRetainedAt,
-                senderPhone, listOriginAtMs, sender, value);
+                senderPhone, listOriginAtMs, sender, value, headlineDisplay);
     }
 
     public String displayWaybill() {

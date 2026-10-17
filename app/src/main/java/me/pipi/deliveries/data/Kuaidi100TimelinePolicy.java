@@ -166,7 +166,9 @@ public final class Kuaidi100TimelinePolicy {
                 return true;
             }
         }
-        boolean proseDecides = !providerError && semantic == StatusSemantic.UNKNOWN;
+        if (!providerError && ExpressTimeline.hasJtStatusLabel(value)) semantic = StatusSemantic.fromJtLabel(value.optString("jtStatusLabel"));
+        if (!providerError && (semantic == StatusSemantic.PICKED || orderedCounts && semantic == StatusSemantic.ORDERED)) return true;
+        boolean proseDecides = !providerError && semantic == StatusSemantic.UNKNOWN && !ExpressTimeline.hasJtStatusLabel(value);
         // 三端同一组词（2026-09-05 对齐）：揽收类与下单类；EMS 的「已收寄」「商品已经下单」也算。
         if (proseDecides && (compactDetail.contains("已揽件")
                 || compactDetail.contains("已揽收")

@@ -52,6 +52,8 @@ export type TrackNode = {
   timeText: string;
   timeMs: number | null;
   detail: string;
+  /** Optional right-column JT text; detail retains the full label and body as evidence. */
+  displayContext?: string;
   statusCode: string;
   raw: Readonly<Record<string, unknown>>;
 };
@@ -74,6 +76,8 @@ export type TimelinePackage = {
   normalizedStatus?: NormalizedStatus;
   latestTimeText: string;
   latestDetail: string;
+  /** Display-only donor metadata, valid only for this exact projected headline. */
+  headlineDisplay?: { provider: string; timeText: string; detail: string; displayContext?: string };
   tracks: readonly TrackNode[];
   successAtMs: number;
   /** Earliest list time with origin evidence, retained when list snapshots replace their nodes. */

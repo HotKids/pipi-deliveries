@@ -312,6 +312,9 @@ export function webTimelineFromExtraction(
     const timeText = normalizeTime(row.timeText);
     const timeMs = parseProviderTime(timeText);
     const detail = String(row.detail || "").trim().replace(/\s+/g, " ").slice(0, 2_000);
+    const jtLabel = provider === TIMELINE_SLOT.JT_H5 && Object.prototype.hasOwnProperty.call(row, "jtStatusLabel");
+    const displayContext = provider === TIMELINE_SLOT.JT_H5 && typeof row.displayContext === "string"
+      ? row.displayContext.trim().replace(/\s+/g, " ").slice(0, 2_000) : "";
     const key = `${timeText}\u0000${detail}`;
     if (timeMs == null || !detail || seen.has(key)) continue;
     seen.add(key);
@@ -319,8 +322,11 @@ export function webTimelineFromExtraction(
       timeText,
       timeMs,
       detail,
+      ...(displayContext ? { displayContext } : {}),
       statusCode: "",
-      raw: kuaidi100Com
+      raw: jtLabel
+        ? { _pipiStatusSource: "jt_h5", jtStatusLabel: typeof row.jtStatusLabel === "string" ? row.jtStatusLabel.trim() : "" }
+        : kuaidi100Com
         ? { _pipiStatusSource: "web", _pipiKuaidi100Com: kuaidi100Com }
         : { _pipiStatusSource: "web" },
     });
@@ -331,7 +337,8 @@ export function webTimelineFromExtraction(
   const status = packageSemantic("", tracks);
   return {
     provider,
-    structuredStatus: false,
+    structuredStatus: provider === TIMELINE_SLOT.JT_H5 && status.semantic !== "UNKNOWN" &&
+      tracks.some(track => track.raw._pipiStatusSource === "jt_h5"),
     complete: timed.length >= 2,
     waybill: input.waybill,
     courierCode: input.courierCode,

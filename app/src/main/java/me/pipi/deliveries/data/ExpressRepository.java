@@ -339,6 +339,7 @@ public final class ExpressRepository {
         boolean sf = isShunFeng(presented);
         ExpressTimeline.Track newest = null;
         ExpressTimeline.Track coarse = null;
+        String newestDisplay = null;
         for (Map.Entry<String, ExpressQueryResult> packet : packages.entrySet()) {
             ExpressQueryResult donor = packet.getValue();
             // Other sources may supply SF's detailed same-state node; account authority still owns status.
@@ -347,13 +348,21 @@ public final class ExpressRepository {
             if (node == null) continue;
             if (sf && packet.getKey().equals("feed")) {
                 if (coarse == null || node.epochMillis > coarse.epochMillis) coarse = node;
-            } else if (newest == null || node.epochMillis > newest.epochMillis) newest = node;
+            } else if (newest == null || node.epochMillis > newest.epochMillis) {
+                newest = node;
+                newestDisplay = TimelineSlot.JT_H5.equals(TimelineSlot.normalize(donor.timelineProvider))
+                        ? node.displayDetail : node.detail;
+            }
         }
         if (newest == null && sf && coarse != null) {
             StatusAlignmentProbe probe = statusAlignmentProbe(presented);
-            if (probe != null && alignmentAttemptFinished(presented.rowId, alignmentTimes(probe))) newest = coarse;
+            if (probe != null && alignmentAttemptFinished(presented.rowId, alignmentTimes(probe))) {
+                newest = coarse;
+                newestDisplay = coarse.detail;
+            }
         }
-        return newest == null ? presented : presented.withHeadline(newest.detail, newest.time);
+        return newest == null ? presented : presented.withHeadline(newest.detail, newest.time)
+                .withHeadlineDisplay(newestDisplay);
     }
 
     private static boolean isShunFeng(ExpressItem row) {
@@ -400,7 +409,19 @@ public final class ExpressRepository {
     private static final class AlignmentNode {
         final StatusSemantic semantic;
         final boolean coarse;
-        AlignmentNode(StatusSemantic semantic, boolean coarse) { this.semantic = semantic; this.coarse = coarse; }
+        final String time;
+        final String detail;
+        final String displayDetail;
+        AlignmentNode(StatusSemantic semantic, boolean coarse) {
+            this(semantic, coarse, null, null, null);
+        }
+        AlignmentNode(ExpressTimeline.Track node, boolean coarse, String displayDetail) {
+            this(node.semantic, coarse, node.time, node.detail, displayDetail);
+        }
+        AlignmentNode(StatusSemantic semantic, boolean coarse, String time, String detail, String displayDetail) {
+            this.semantic = semantic; this.coarse = coarse; this.time = time; this.detail = detail;
+            this.displayDetail = displayDetail;
+        }
     }
 
     /** Request-local provenance follows the branch that actually supplies the displayed headline. */
@@ -409,7 +430,8 @@ public final class ExpressRepository {
         final AlignmentNode headline;
 
         TimelineProjection(ExpressItem item, AlignmentNode headline) {
-            this.item = item;
+            this.item = item != null && item.latestDetail.equals(headline.detail)
+                    && item.latestTime.equals(headline.time) ? item.withHeadlineDisplay(headline.displayDetail) : item;
             this.headline = headline;
         }
 
@@ -419,7 +441,7 @@ public final class ExpressRepository {
 
         TimelineProjection withHeadline(ExpressTimeline.Track node) {
             return node == null ? this : new TimelineProjection(item.withHeadline(node.detail, node.time),
-                    new AlignmentNode(node.semantic, false));
+                    new AlignmentNode(node, false, node.displayDetail));
         }
     }
 
@@ -433,11 +455,14 @@ public final class ExpressRepository {
         if (shown != null && packet != null) {
             for (ExpressTimeline.Track node : ExpressTimeline.parse(packet.tracksJson, "", "", packet.timelineProvider)) {
                 if (node.detail.equals(shown.latestDetail) && node.epochMillis == ExpressTimeline.parseTime(shown.latestTime)) {
-                    return new AlignmentNode(node.semantic, coarse);
+                    return new AlignmentNode(node, coarse,
+                            TimelineSlot.JT_H5.equals(TimelineSlot.normalize(packet.timelineProvider))
+                                    ? node.displayDetail : node.detail);
                 }
             }
         }
-        return new AlignmentNode(StatusSemantic.UNKNOWN, coarse);
+        return shown == null ? new AlignmentNode(StatusSemantic.UNKNOWN, coarse)
+                : new AlignmentNode(StatusSemantic.UNKNOWN, coarse, shown.latestTime, shown.latestDetail, shown.latestDetail);
     }
 
     /**

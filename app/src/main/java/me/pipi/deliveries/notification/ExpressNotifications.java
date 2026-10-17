@@ -1,5 +1,6 @@
 package me.pipi.deliveries.notification;
 
+import me.pipi.deliveries.model.ExpressTimeline;
 import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -95,7 +96,7 @@ public final class ExpressNotifications {
         PendingIntent content = PendingIntent.getActivity(
                 context, (int) (item.rowId & 0x7fffffff), open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        String detail = item.latestDetail;
+        String detail = ExpressTimeline.displayHeadline(item);
         Notification.Builder builder = new Notification.Builder(context, channelId)
                 .setSmallIcon(R.drawable.ic_local_shipping)
                 .setColorized(false)

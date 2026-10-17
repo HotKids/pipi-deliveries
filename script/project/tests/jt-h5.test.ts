@@ -57,6 +57,8 @@ function scene(options: { url?: string; header?: string; challenge?: boolean; ta
 const extracted = scene().read();
 assert.equal(extracted.tracks.length, 2);
 assert.equal(extracted.tracks[1].detail, "已揽件 Parcel collected");
+assert.equal(extracted.tracks[1].displayContext, "Parcel collected");
+assert.equal(extracted.tracks[1].jtStatusLabel, "已揽件");
 assert.equal(scene({ header: "JT0000000000000" }).read().tracks.length, 0);
 assert.equal(scene({ url: route + "&waybillNo=JT0000000000000" }).read().tracks.length, 0);
 assert.equal(scene({ url: route.replace("jtexpress.com.cn", "example.invalid") }).read().tracks.length, 0);
@@ -88,7 +90,8 @@ const htkyTimeline = webTimelineFromExtraction(extracted,
   { waybill, courierCode: "HTKY", companyName: "极兔速递" }, 1);
 assert.equal(htkyTimeline?.provider, "jt_h5");
 assert.deepEqual(htkyTimeline?.tracks, timeline?.tracks);
-assert.equal(timeline?.structuredStatus, false);
+assert.equal(timeline?.structuredStatus, true);
+assert.equal(timeline?.semantic, "COMPLETED");
 assert.equal(timeline?.tracks.length, 2);
 assert.equal(timelineCapability("jt_h5"), "web");
 assert.equal(timeline?.tracks.some(track => track.raw?._pipiKuaidi100Com), false);

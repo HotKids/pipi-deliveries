@@ -40,6 +40,7 @@ import {
   shipmentDetailPresentationStatus,
   statusTint,
   timedTracks,
+  trackDisplayDetail,
   timelineLatestEventAt,
   timelineLatestTrackAt,
   waybillSuffix,
@@ -619,7 +620,7 @@ export function DetailPage(props: {
                   font={15}
                   foregroundStyle={index === 0 ? "label" : "secondaryLabel"}
                   frame={{ maxWidth: "infinity", alignment: "leading" }}
-                  styledText={trackPhoneText(track.detail, (phone) => { void dialPhone(phone); })}
+                  styledText={trackPhoneText(trackDisplayDetail(detailTimeline.provider, track), (phone) => { void dialPhone(phone); })}
                 />
               </HStack>
             );

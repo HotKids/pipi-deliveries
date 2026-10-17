@@ -100,6 +100,23 @@ public enum StatusSemantic {
         }
     }
 
+
+    /** Only the independently captured JT label enters this finite whole-value table. */
+    public static StatusSemantic fromJtLabel(String label) {
+        switch (clean(label)) {
+            case "取消": case "已取消": case "订单取消": case "取消订单": return CANCELLED;
+            case "问题件": case "异常件": case "异常": case "运输异常": return DANGER;
+            case "已下单": return ORDERED;
+            case "已发货": return SHIPPED;
+            case "揽件": case "已揽件": case "已揽收": return PICKED;
+            case "在途": case "运输中": return TRANSIT;
+            case "派件": case "派送中": return DELIVERY;
+            case "待取": case "待取件": case "代取件": case "待领取": return WAITING_PICKUP;
+            case "签收": case "已签收": return COMPLETED;
+            default: return UNKNOWN;
+        }
+    }
+
     private static String clean(String value) {
         return value == null ? "" : value.trim();
     }

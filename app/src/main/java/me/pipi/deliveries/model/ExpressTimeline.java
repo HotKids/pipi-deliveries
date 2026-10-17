@@ -35,6 +35,7 @@ public final class ExpressTimeline {
     public static final class Track {
         public final String time;
         public final String detail;
+        public final String displayDetail;
         public final long epochMillis;
         public final StatusSemantic semantic;
 
@@ -43,17 +44,19 @@ public final class ExpressTimeline {
         }
 
         private Track(String time, String detail, StatusSemantic semantic, long epochMillis) {
+            this(time, detail, semantic, epochMillis, detail);
+        }
+
+        private Track(String time, String detail, StatusSemantic semantic, long epochMillis, String displayDetail) {
             this.time = clean(time);
             this.detail = clean(detail);
+            this.displayDetail = clean(displayDetail);
             this.epochMillis = epochMillis;
             this.semantic = semantic;
         }
 
         Track(String time, String detail, StatusSemantic semantic) {
-            this.time = clean(time);
-            this.detail = clean(detail);
-            this.epochMillis = parseTime(this.time);
-            this.semantic = semantic;
+            this(time, detail, semantic, parseTime(clean(time)));
         }
     }
 
@@ -122,7 +125,8 @@ public final class ExpressTimeline {
         // 原来是「相邻同文案不看时间」，会把几小时后重复的真实事件也吞掉。老缓存里的重复也在这里收掉。
         rawTracks.sort((left, right) -> Long.compare(right.epochMillis, left.epochMillis));
         for (RawTrack raw : collapseNearTimeDuplicates(rawTracks)) {
-            tracks.add(new Track(raw.time, raw.detail, nodeSemantic(raw, provider), raw.epochMillis));
+            tracks.add(new Track(raw.time, raw.detail, nodeSemantic(raw, provider), raw.epochMillis,
+                    displayContext(raw.value, raw.detail)));
         }
         LinkedHashMap<String, Track> unique = new LinkedHashMap<>();
         for (Track track : tracks) {
@@ -166,6 +170,7 @@ public final class ExpressTimeline {
     }
 
     private static StatusSemantic nodeSemantic(RawTrack track, String provider) {
+        if (hasJtStatusLabel(track.value)) return StatusSemantic.fromJtLabel(track.value.optString("jtStatusLabel"));
         String source = first(track.value, "_pipiStatusSource");
         if (source.isEmpty()) source = provider;
         String code = first(track.value, "statusCode", "logisticsStatus", "status", "state", "action");
@@ -174,6 +179,41 @@ public final class ExpressTimeline {
         StatusSemantic semantic = TimelineSlot.isAccount(source) || "account".equals(source)
                 ? StatusSemantic.fromAccountState(code, "") : StatusSemantic.fromKuaidi100EventCode(code);
         return semantic == StatusSemantic.UNKNOWN ? StatusSemantic.fromStored(code, "") : semantic;
+    }
+
+    public static boolean hasJtStatusLabel(JSONObject row) {
+        return row != null && TimelineSlot.JT_H5.equals(row.optString("_pipiStatusSource"))
+                && row.opt("jtStatusLabel") instanceof String;
+    }
+
+    private static String displayContext(JSONObject row, String evidence) {
+        Object body = row.opt("displayContext");
+        return TimelineSlot.JT_H5.equals(row.optString("_pipiStatusSource")) && body instanceof String
+                && !clean((String) body).isEmpty() ? clean((String) body) : evidence;
+    }
+
+    public static String displayHeadline(ExpressItem item) {
+        String projected = item.headlineDisplay();
+        if (projected != null) return projected;
+        long time = parseTime(item.latestTime);
+        for (RawTrack raw : rawTracksReadOnly(item.tracksJson)) {
+            if (time > 0L && time == raw.epochMillis && item.latestDetail.equals(raw.detail)) {
+                return displayContext(raw.value, raw.detail);
+            }
+        }
+        return item.latestDetail;
+    }
+
+    public static Track latestJtStatusEvidence(String tracksJson) {
+        Track newest = null; boolean ambiguous = false;
+        for (RawTrack raw : rawTracksReadOnly(tracksJson)) {
+            if (!hasJtStatusLabel(raw.value) || raw.epochMillis <= 0L) continue;
+            StatusSemantic semantic = StatusSemantic.fromJtLabel(raw.value.optString("jtStatusLabel"));
+            if (newest == null || raw.epochMillis > newest.epochMillis) {
+                newest = new Track(raw.time, raw.detail, semantic, raw.epochMillis); ambiguous = false;
+            } else if (raw.epochMillis == newest.epochMillis && semantic != newest.semantic) ambiguous = true;
+        }
+        return ambiguous || newest == null || newest.semantic == StatusSemantic.UNKNOWN ? null : newest;
     }
 
     /**
@@ -425,10 +465,13 @@ public final class ExpressTimeline {
                 + structuredValue(value, "logisticsStatusDesc") + '\u0001'
                 + structuredValue(value, "statusCode") + '\u0001'
                 + structuredValue(value, "status") + '\u0001'
-                + structuredValue(value, "_pipiStatusSource");
+                + structuredValue(value, "_pipiStatusSource")
+                + (hasJtStatusLabel(value) ? "|jt:" + value.optString("jtStatusLabel") : "");
     }
 
     private static boolean compatibleStructuredStatus(JSONObject left, JSONObject right) {
+        if (hasJtStatusLabel(left) && hasJtStatusLabel(right)
+                && !left.optString("jtStatusLabel").equals(right.optString("jtStatusLabel"))) return false;
         for (String key : new String[]{
                 "logisticsStatus", "logisticsStatusDesc", "statusCode", "status"
         }) {
@@ -448,6 +491,7 @@ public final class ExpressTimeline {
     }
 
     private static boolean declaresStatus(JSONObject value) {
+        if (hasJtStatusLabel(value)) return true;
         for (String key : new String[]{
                 "logisticsStatus", "logisticsStatusDesc", "statusCode", "status"
         }) {
@@ -465,9 +509,16 @@ public final class ExpressTimeline {
 
     private static void fillMissingFields(JSONObject target, JSONObject source) {
         if (target == null || source == null) return;
+        long targetTime = parseTime(target.optString("time", ""));
+        long sourceTime = parseTime(source.optString("time", ""));
+        boolean sameEventTime = targetTime > 0L && targetTime == sourceTime;
+        boolean jtSource = "jt_h5".equals(source.optString("_pipiStatusSource"));
         Iterator<String> keys = source.keys();
         while (keys.hasNext()) {
             String key = keys.next();
+            // DOM label and body belong to their original event, even when text folds nearby.
+            if (jtSource && !sameEventTime && ("jtStatusLabel".equals(key)
+                    || "displayContext".equals(key) || "_pipiStatusSource".equals(key))) continue;
             Object current = target.opt(key);
             if (target.has(key) && !target.isNull(key)
                     && (!(current instanceof String)
