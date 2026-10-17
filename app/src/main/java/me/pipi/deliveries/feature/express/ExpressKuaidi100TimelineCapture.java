@@ -239,7 +239,7 @@ final class ExpressKuaidi100TimelineCapture {
                 phoneRequired = phoneRequired(value) || !jtPage && phones.isEmpty()
                         && Boolean.TRUE.equals(diagnostics.checkCodeVisible);
                 if (phoneRequired) { complete("", "phone_required"); return; }
-                String normalized = normalizedTracks(value);
+                String normalized = normalizedTracks(value, jtPage ? TimelineSlot.JT_H5 : TimelineSlot.K100_H5);
                 if (!normalized.isEmpty()) {
                     complete(normalized, "tracks");
                     return;
@@ -351,7 +351,8 @@ final class ExpressKuaidi100TimelineCapture {
                 + "for(var j=0;j<right.children.length;j++){var child=right.children[j];if(!child.classList.contains('scdrlr-time'))parts.push(child.textContent||'');}"
                 + "var status=row.querySelector('.scdrl-left'),detail=clean(parts.join('')),timeText=clean(time.textContent);"
                 + "if(detail&&status&&clean(status.textContent))detail=clean(status.textContent)+' '+detail;"
-                + "if(detail&&timeText)result.tracks.push({time:timeText,context:detail});}"
+                + "if(detail&&timeText){var track={time:timeText,context:detail,displayContext:clean(parts.join(''))};"
+                + "if(status)track.jtStatusLabel=clean(status.textContent);result.tracks.push(track);}}"
                 + "return finish(result.tracks.length?'tracks':'no_result');})();";
     }
 
@@ -508,6 +509,10 @@ final class ExpressKuaidi100TimelineCapture {
 
     /** evaluateJavascript 回来的是 JSON 编码的字符串，里面才是 {tracks:[...]}；两层都解。 */
     static String normalizedTracks(String payload) {
+        return normalizedTracks(payload, TimelineSlot.K100_H5);
+    }
+
+    static String normalizedTracks(String payload, String provider) {
         try {
             JSONObject decoded = decodedPayload(payload);
             if (decoded == null) return "";
@@ -522,7 +527,14 @@ final class ExpressKuaidi100TimelineCapture {
                 String detail = row.optString("context", "").trim();
                 if (time.isEmpty() || detail.isEmpty()) continue;
                 if (!Kuaidi100TimelinePolicy.isValidTrack(time, detail)) continue;
-                normalized.put(new JSONObject().put("time", time).put("context", detail));
+                JSONObject node = new JSONObject().put("time", time).put("context", detail);
+                if (TimelineSlot.JT_H5.equals(provider)) {
+                    node.put("_pipiStatusSource", provider);
+                    for (String key : new String[]{"displayContext", "jtStatusLabel"}) {
+                        if (row.opt(key) instanceof String) node.put(key, ((String) row.opt(key)).trim());
+                    }
+                }
+                normalized.put(node);
             }
             return normalized.length() == 0 ? "" : normalized.toString();
         } catch (Throwable ignored) {

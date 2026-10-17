@@ -52,7 +52,8 @@ assert.deepEqual(valid.state.writes, ['1234']);
 assert.equal(valid.state.events, 1);
 valid.state.visible = false;
 valid.state.rows = [row];
-assert.deepEqual(valid.read().tracks, [{ time: row.time, context: row.status + ' ' + row.context }]);
+assert.deepEqual(valid.read().tracks, [{ time: row.time, context: row.status + ' ' + row.context,
+  displayContext: row.context, jtStatusLabel: row.status }]);
 assert.equal(JSON.stringify(valid.read()).includes('1234'), false);
 valid.state.header = 'JTOTHER';
 assert.deepEqual(valid.read().tracks, []);

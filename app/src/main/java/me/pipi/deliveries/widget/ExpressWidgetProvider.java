@@ -1,5 +1,6 @@
 package me.pipi.deliveries.widget;
 
+import me.pipi.deliveries.model.ExpressTimeline;
 import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProvider;
@@ -119,7 +120,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                         ExpressWidgetPresentation.rowIdentity(item));
                 String detail = item.latestDetail.isEmpty()
                         ? context.getString(R.string.widget_no_logistics_detail)
-                        : item.latestDetail;
+                        : ExpressTimeline.displayHeadline(item);
                 views.setTextViewText(R.id.widget_compact_detail, detail);
                 // 只有一行时整行居中，两行及以上仍然左对齐——与 Pipi compact 同一条规则
                 // （Pipi ExpressWidgetProvider.scaleCompact；用户定 2026-09-06）。
@@ -247,7 +248,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         views.setTextViewTextSize(WIDE_DETAIL_IDS[index], TypedValue.COMPLEX_UNIT_SP,
                 mediumLayout.detailTextSizeSp);
         views.setInt(WIDE_DETAIL_IDS[index], "setMaxLines", rowLayout.detailMaxLines);
-        views.setTextViewText(WIDE_DETAIL_IDS[index], item.latestDetail);
+        views.setTextViewText(WIDE_DETAIL_IDS[index], ExpressTimeline.displayHeadline(item));
         views.setViewVisibility(WIDE_DETAIL_IDS[index],
                 item.latestDetail.isEmpty() ? View.GONE : View.VISIBLE);
         views.setOnClickPendingIntent(root, openDetail(context, item, requestCode));

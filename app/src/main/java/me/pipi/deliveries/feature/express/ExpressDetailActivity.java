@@ -965,11 +965,16 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         List<ExpressTimeline.Track> tracks = ExpressTimeline.parse(tracksJson, "", "");
         if (tracks.isEmpty()) return null;
         ExpressTimeline.Track latest = tracks.get(0);
+        String provider = ManualRoutePolicy.primaryH5Provider(courierCode);
+        ExpressTimeline.Track evidence = TimelineSlot.JT_H5.equals(provider)
+                ? ExpressTimeline.latestJtStatusEvidence(tracksJson) : null;
         return new ExpressQueryResult(
                 waybill, courierCode == null ? "" : courierCode,
                 companyName == null ? "" : companyName,
-                StatusSemantic.UNKNOWN, latest.time, latest.detail, tracksJson,
-                "", phone == null ? "" : phone, ManualRoutePolicy.primaryH5Provider(courierCode), "", "", "");
+                evidence == null ? StatusSemantic.UNKNOWN : evidence.semantic,
+                evidence == null ? 0L : evidence.epochMillis, latest.time, latest.detail, tracksJson,
+                "", phone == null ? "" : phone, provider, "", "", "")
+                .withManualStatusEvidence("", evidence != null);
     }
 
     private void refreshLocalTimeline(boolean showProgress) {
@@ -1854,7 +1859,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 dp(66), ViewGroup.LayoutParams.WRAP_CONTENT));
         row.addView(buildIndicator(latest, last), new LinearLayout.LayoutParams(
                 dp(28), ViewGroup.LayoutParams.MATCH_PARENT));
-        TextView detail = textView(track.detail, 15.5f, latest ? primary : GRAY);
+        TextView detail = textView(track.displayDetail, 15.5f, latest ? primary : GRAY);
         ExpressTrackPhoneLinks.apply(detail, BLUE);
         detail.setLineSpacing(0, 1.15f);
         detail.setPadding(dp(10), 0, 0, dp(22));

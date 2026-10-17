@@ -9,6 +9,26 @@ import org.junit.Test;
 import java.util.List;
 
 public final class ExpressTimelineTest {
+    @Test public void theSameEventMayRecoverItsMissingJtMetadata() throws Exception {
+        JSONObject original = new JSONObject().put("time", "2026-09-10 12:00:00")
+                .put("context", "运输中 Same evidence");
+        JSONObject captured = new JSONObject(original.toString()).put("jtStatusLabel", "运输中")
+                .put("displayContext", "Same evidence").put("_pipiStatusSource", "jt_h5");
+        String merged = ExpressTimeline.mergeJson(new JSONArray().put(original).toString(),
+                new JSONArray().put(captured).toString());
+        assertEquals("Same evidence", ExpressTimeline.parse(merged, "", "").get(0).displayDetail);
+        assertEquals(StatusSemantic.TRANSIT, ExpressTimeline.latestJtStatusEvidence(merged).semantic);
+    }
+    @Test public void nearDuplicateCollapseCannotMoveJtMetadataToANewerLegacyNode() throws Exception {
+        JSONObject old=new JSONObject().put("time","2026-09-10 12:00:00").put("context","已签收 Same evidence")
+                .put("jtStatusLabel","已签收").put("displayContext","Same evidence").put("_pipiStatusSource","jt_h5");
+        JSONObject fresh=new JSONObject().put("time","2026-09-10 12:01:00").put("context","已签收 Same evidence");
+        JSONArray merged=new JSONArray(ExpressTimeline.mergeJson(new JSONArray().put(fresh).toString(),new JSONArray().put(old).toString()));
+        JSONObject kept=merged.getJSONObject(0);
+        assertEquals("2026-09-10 12:01:00",kept.getString("time"));
+        org.junit.Assert.assertFalse(kept.has("jtStatusLabel"));org.junit.Assert.assertFalse(kept.has("displayContext"));
+        org.junit.Assert.assertFalse(kept.has("_pipiStatusSource"));org.junit.Assert.assertNull(ExpressTimeline.latestJtStatusEvidence(merged.toString()));
+    }
     @Test
     public void longHistoryRetainsEventsWithoutRequiringStartOrTerminalEvidence() throws Exception {
         for (String phrase : new String[]{"待揽收", "等待揽收", "预计明天送达", "到达转运中心"}) {

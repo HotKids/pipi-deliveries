@@ -3,6 +3,7 @@ import { carrierDisplayName, courierIconName } from "./carrier-presentation";
 import {
   normalizedProjectedWaybill,
   shipmentPresentationStatus,
+  timelineDisplayDetail,
   waybillSuffix,
 } from "./status";
 import {
@@ -88,7 +89,7 @@ export function shipmentNotificationPresentation(
     shipmentId: current.identity.id,
     semantic: presentedSemantic(current) as StatusSemantic,
     title: notificationTitle(current),
-    body: selectShipmentTimeline(current).latestDetail.trim() || "物流状态已更新",
+    body: timelineDisplayDetail(selectShipmentTimeline(current)).trim() || "物流状态已更新",
     iconName: !iconName || iconName === "default" ? null : iconName,
   };
 }

@@ -1,5 +1,6 @@
 package me.pipi.deliveries.feature.express;
 
+import me.pipi.deliveries.model.ExpressTimeline;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Dialog;
@@ -1066,7 +1067,7 @@ public final class ExpressListActivity extends AppCompatActivity {
             holder.waybill.setText(getString(
                     R.string.express_company_waybill,
                     item.displayCarrierLabel(), item.displayWaybill()));
-            holder.detail.setText(item.latestDetail);
+            holder.detail.setText(ExpressTimeline.displayHeadline(item));
             holder.detail.setVisibility(item.latestDetail.isEmpty() ? View.GONE : View.VISIBLE);
             holder.deleteButton.setOnClickListener(view -> confirmDelete(item));
             convertView.setOnClickListener(view -> startActivity(

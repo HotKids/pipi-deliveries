@@ -35,6 +35,58 @@ import org.robolectric.shadows.ShadowLog;
 public class ExpressKuaidi100TimelineCaptureTest {
     @Before public void clearLogs() { ShadowLog.clear(); }
 
+    @Test public void jtDisplayAndLabelSurviveCaptureNormalizationWithoutChangingRawContext() throws Exception {
+        String tracks=ExpressKuaidi100TimelineCapture.normalizedTracks("{\"tracks\":[{\"time\":\"2026-09-10 10:00\",\"context\":\"运输中 运输中必须保留\",\"displayContext\":\"运输中必须保留\",\"jtStatusLabel\":\"运输中\"}]}",TimelineSlot.JT_H5);
+        var parsed=me.pipi.deliveries.model.ExpressTimeline.parse(tracks,"","");
+        assertEquals("运输中 运输中必须保留",parsed.get(0).detail);assertEquals("运输中必须保留",parsed.get(0).displayDetail);
+        ExpressQueryResult result=ExpressDetailActivity.kuaidi100CapturedResult("JTTEST1","JTSD","Synthetic carrier","",tracks);
+        assertEquals(StatusSemantic.TRANSIT,result.semantic);assertEquals(me.pipi.deliveries.model.ExpressTimeline.parseTime("2026-09-10 10:00:00"),result.statusEventTime);
+        assertTrue(result.structuredStatusEvidence);
+    }
+
+    @Test public void unknownJtLabelIsNotGuessedFromBodyAndNeverBorrowsAnOlderStatusTime() throws Exception {
+        String tracks=ExpressKuaidi100TimelineCapture.normalizedTracks("{\"tracks\":[{\"time\":\"2026-09-10 10:00\",\"context\":\"UNKNOWN 已签收 已揽收\",\"displayContext\":\"已签收 已揽收\",\"jtStatusLabel\":\"SYNTHETIC_UNKNOWN\"},{\"time\":\"2026-09-09 10:00\",\"context\":\"已签收 Older\",\"jtStatusLabel\":\"已签收\"}]}",TimelineSlot.JT_H5);
+        ExpressQueryResult result=ExpressDetailActivity.kuaidi100CapturedResult("JTTEST1","JTSD","Synthetic carrier","",tracks);
+        assertEquals(StatusSemantic.UNKNOWN,result.semantic);assertEquals(0L,result.statusEventTime);assertFalse(result.structuredStatusEvidence);
+        String one=new JSONArray().put(new JSONArray(tracks).getJSONObject(0)).toString();
+        ExpressQueryResult first=ExpressDetailActivity.kuaidi100CapturedResult("JTTEST1","JTSD","Synthetic carrier","",one);
+        assertFalse(me.pipi.deliveries.data.Kuaidi100TimelinePolicy.hasPickupEvidence(first));
+        assertFalse(me.pipi.deliveries.data.Kuaidi100TimelinePolicy.hasTimelineStart(first));
+        JSONObject old=new JSONArray(one).getJSONObject(0);old.remove("jtStatusLabel");
+        assertTrue(me.pipi.deliveries.data.Kuaidi100TimelinePolicy.hasPickupEvidence(ExpressDetailActivity.kuaidi100CapturedResult("JTTEST1","JTSD","Synthetic carrier","",new JSONArray().put(old).toString())));
+    }
+
+    @Test public void nonJtNormalizationIgnoresTheNewFieldsAndLegacyBodyIsUnchanged() throws Exception {
+        String input="{\"tracks\":[{\"time\":\"2026-09-10 10:00\",\"context\":\"运输中 Legacy body\",\"displayContext\":\"Forged\",\"jtStatusLabel\":\"已签收\"}]}";
+        JSONObject row=new JSONArray(ExpressKuaidi100TimelineCapture.normalizedTracks(input)).getJSONObject(0);
+        assertFalse(row.has("displayContext"));assertFalse(row.has("jtStatusLabel"));
+        assertEquals("运输中 Legacy body",me.pipi.deliveries.model.ExpressTimeline.parse(new JSONArray().put(row).toString(),"","").get(0).displayDetail);
+    }
+
+    @Test public void finiteJtLabelsUseOnlyTheSharedCanonicalAliases() {
+        String[][] groups = {{"CANCELLED", "取消", "已取消", "订单取消", "取消订单"},
+                {"DANGER", "问题件", "异常件", "异常", "运输异常"}, {"ORDERED", "已下单"},
+                {"SHIPPED", "已发货"}, {"PICKED", "揽件", "已揽件", "已揽收"},
+                {"TRANSIT", "在途", "运输中"}, {"DELIVERY", "派件", "派送中"},
+                {"WAITING_PICKUP", "待取", "待取件", "代取件", "待领取"},
+                {"COMPLETED", "签收", "已签收"}};
+        for (String[] group : groups) for (int index = 1; index < group.length; index++) {
+            assertEquals(group[index], StatusSemantic.valueOf(group[0]), StatusSemantic.fromJtLabel(group[index]));
+        }
+        for (String label : new String[]{"", "未知", "SYNTHETIC_UNKNOWN", "已签收更多内容", "快件已揽收"}) {
+            assertEquals(StatusSemantic.UNKNOWN, StatusSemantic.fromJtLabel(label));
+        }
+    }
+
+    @Test public void theDisplayBodyCannotChangeTheOriginalNodeRetentionDecision() {
+        String tracks = "[{\"time\":\"2026-09-10 10:00:00\",\"context\":\"运输中 暂无物流信息\","
+                + "\"displayContext\":\"暂无物流信息\",\"jtStatusLabel\":\"运输中\",\"_pipiStatusSource\":\"jt_h5\"}]";
+        var parsed = me.pipi.deliveries.model.ExpressTimeline.parse(tracks, "", "");
+        assertEquals(1, parsed.size());
+        assertEquals("运输中 暂无物流信息", parsed.get(0).detail);
+        assertEquals("暂无物流信息", parsed.get(0).displayDetail);
+    }
+
     @Test public void jtBranchUsesCanonicalIdentityAndKeepsK100Unchanged() {
         for (String code : new String[]{"JTSD", "JT", "J&T", "JTEXPRESS", "JITU", "HTKY", "BEST", "huitongkuaidi"}) {
             assertEquals(TimelineSlot.JT_H5, ManualRoutePolicy.primaryH5Provider(code));

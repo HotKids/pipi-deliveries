@@ -54,6 +54,108 @@ public class ExpressAutomaticDetailPersistenceTest {
         database.close(); context.deleteDatabase(ExpressDatabase.DATABASE);
     }
 
+    @Test public void jtCaptureDisplayAndLabelSurviveTheActualCacheAndSelectedRead() throws Exception {
+        ExpressItem owner = stagedOwner("JTTEST000001", "CaiNiao",
+                "[" + node(TIME, "Synthetic account event") + "]");
+        java.lang.reflect.Method normalize = Class.forName("me.pipi.deliveries.feature.express.ExpressKuaidi100TimelineCapture")
+                .getDeclaredMethod("normalizedTracks", String.class, String.class);
+        normalize.setAccessible(true);
+        String tracks = (String) normalize.invoke(null,
+                "{\"tracks\":[{\"time\":\"2026-09-10 10:00\",\"context\":\"运输中 运输中必须保留\","
+                        + "\"displayContext\":\"运输中必须保留\",\"jtStatusLabel\":\"运输中\"}]}", TimelineSlot.JT_H5);
+        java.lang.reflect.Method capture = me.pipi.deliveries.feature.express.ExpressDetailActivity.class
+                .getDeclaredMethod("kuaidi100CapturedResult", String.class, String.class,
+                        String.class, String.class, String.class);
+        capture.setAccessible(true);
+        ExpressQueryResult result = (ExpressQueryResult) capture.invoke(null,
+                owner.waybill, "JTSD", "Synthetic carrier", "", tracks);
+        assertNotNull(repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.JT_H5, result, 200L, false)), PHONE, "interface5"));
+        ExpressRepository reopened = new ExpressRepository(context, database);
+        ExpressItem saved = reopened.find(owner.rowId);
+        ManualTimelineAuthorityPolicy.Candidate selected = reopened.manualTimelineCandidate(saved, TimelineSlot.JT_H5);
+        assertNotNull(selected);
+        org.json.JSONObject raw = new org.json.JSONArray(selected.result.tracksJson).getJSONObject(0);
+        assertEquals("运输中 运输中必须保留", raw.getString("context"));
+        assertEquals("运输中", raw.getString("jtStatusLabel"));
+        assertEquals("运输中必须保留", raw.getString("displayContext"));
+        assertEquals("运输中必须保留", ExpressTimeline.parse(selected.result.tracksJson, "", "").get(0).displayDetail);
+        assertEquals(owner.latestDetail, saved.latestDetail);
+        assertEquals(owner.latestDetail, ExpressTimeline.displayHeadline(saved));
+        assertEquals(StatusSemantic.TRANSIT, selected.result.semantic);
+        assertEquals(ExpressTimeline.parseTime("2026-09-10 10:00:00"), selected.result.statusEventTime);
+
+        ExpressItem manual = reopened.saveManualQueryBatch(null, java.util.List.of(
+                new ManualQuerySuccess(TimelineSlot.JT_H5, result.withWaybill("JTTEST000002"), 201L, false)),
+                PHONE, "interface5");
+        assertNotNull(manual);
+        ExpressItem reloaded = reopened.find(manual.rowId);
+        assertEquals("运输中 运输中必须保留", reloaded.latestDetail);
+        assertEquals("运输中必须保留", ExpressTimeline.displayHeadline(reloaded));
+    }
+
+    @Test public void alignmentUsesTheJtDonorBodyWhileKeepingTheOriginalHistory() throws Exception {
+        ExpressItem owner = stagedOwner("JTTEST-DONOR", "DouYin", "[" + node(TIME, "Synthetic old feed") + "]");
+        String raw = "派送中 Synthetic JT donor";
+        long statusAt = ExpressTimeline.parseTime("2026-09-10 10:00:00");
+        String tracks = "[{\"time\":\"2026-09-10 10:00:00\",\"context\":\"" + raw
+                + "\",\"displayContext\":\"Synthetic JT donor\",\"jtStatusLabel\":\"派送中\",\"_pipiStatusSource\":\"jt_h5\"}]";
+        ExpressQueryResult result = new ExpressQueryResult(owner.waybill, "JTSD", "Synthetic carrier",
+                StatusSemantic.DELIVERY, statusAt, "2026-09-10 10:00:00", raw, tracks, "", PHONE,
+                TimelineSlot.JT_H5, "", "", "").withManualStatusEvidence("", true);
+        assertNotNull(repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.JT_H5, result, 200L, false)), PHONE, "interface5"));
+        var stored = repository.manualTimelineCandidate(owner, TimelineSlot.JT_H5);
+        assertNotNull(stored);
+        assertEquals(StatusSemantic.DELIVERY, stored.result.semantic);
+        assertEquals(statusAt, stored.result.statusEventTime);
+        Class<?> sidecars = Class.forName(ExpressRepository.class.getName() + "$VisibleProjectionSidecars");
+        var read = ExpressRepository.class.getDeclaredMethod("rowProjectionSidecars",
+                android.database.sqlite.SQLiteDatabase.class, ExpressItem.class); read.setAccessible(true);
+        Object sources = read.invoke(repository, database.getReadableDatabase(), owner);
+        Class<?> headline = Class.forName(ExpressRepository.class.getName() + "$AlignmentNode");
+        var constructor = headline.getDeclaredConstructor(StatusSemantic.class, boolean.class); constructor.setAccessible(true);
+        Object head = constructor.newInstance(StatusSemantic.UNKNOWN, false);
+        var align = ExpressRepository.class.getDeclaredMethod("alignHeadlineToStatus",
+                android.database.sqlite.SQLiteDatabase.class, ExpressItem.class, ExpressItem.class, sidecars, headline);
+        align.setAccessible(true);
+        ExpressItem projected = (ExpressItem) align.invoke(repository, database.getReadableDatabase(), owner,
+                owner.withDisplayStatus(StatusSemantic.DELIVERY, statusAt), sources, head);
+        assertEquals(raw, projected.latestDetail);
+        assertEquals(owner.tracksJson, projected.tracksJson);
+        assertEquals("Synthetic JT donor", ExpressTimeline.displayHeadline(projected));
+        assertEquals("Synthetic JT donor", ExpressTimeline.displayHeadline(projected.withDisplayStatus(
+                StatusSemantic.DELIVERY, statusAt).withAccountListMetadata("", 0L)
+                .withSourceStatusStructured(!projected.sourceStatusStructured)));
+    }
+
+    @Test public void aFeedHeadlineCannotBorrowTheBodyFromItsDifferentSelectedJtHistory() throws Exception {
+        ExpressItem owner = stagedOwner("JTTEST-FEED", "DouYin", "[]");
+        String raw = "已揽件 Shared source text";
+        ContentValues headline = new ContentValues();
+        headline.put("lastLogisticDetail", raw);
+        headline.put("logisticsGmtModified", TIME);
+        database.getWritableDatabase().update(ExpressDatabase.EXPRESS_TABLE, headline,
+                "_id=?", new String[]{Long.toString(owner.rowId)});
+        owner = repository.find(owner.rowId);
+        String jt = "[{\"time\":\"" + TIME + "\",\"context\":\"" + raw
+                + "\",\"displayContext\":\"Shared source text\",\"jtStatusLabel\":\"已揽件\",\"_pipiStatusSource\":\"jt_h5\"}]";
+        ExpressQueryResult result = new ExpressQueryResult(owner.waybill, "JTSD", "Synthetic carrier",
+                StatusSemantic.PICKED, ExpressTimeline.parseTime(TIME), TIME, raw, jt, "", PHONE,
+                TimelineSlot.JT_H5, "", "", "").withManualStatusEvidence("", true);
+        var candidate = new ManualTimelineAuthorityPolicy.Candidate(TimelineSlot.JT_H5, result, 200L, true);
+        var project = ExpressRepository.class.getDeclaredMethod("projectManualTimelineProjection",
+                ExpressItem.class, ManualTimelineAuthorityPolicy.Candidate.class,
+                ManualTimelineAuthorityPolicy.Candidate.class, ManualTimelineAuthorityPolicy.Candidate.class);
+        project.setAccessible(true);
+        Object projection = project.invoke(null, owner, candidate, null, candidate);
+        var item = projection.getClass().getDeclaredField("item"); item.setAccessible(true);
+        ExpressItem shown = (ExpressItem) item.get(projection);
+        assertEquals(raw, shown.latestDetail);
+        assertTrue(shown.tracksJson.contains("displayContext"));
+        assertEquals(raw, ExpressTimeline.displayHeadline(shown));
+    }
+
     @Test public void cainiaoH5IncrementsItsOwnSlotWithoutChangingFeedOrOtherSources() {
         ExpressItem owner = owner("CNSLOT000001", "CaiNiao", "interface5", false);
         ExpressQueryResult original = repository.automaticSourceTimeline(owner);

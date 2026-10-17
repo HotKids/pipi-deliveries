@@ -846,8 +846,15 @@ export function selectShipmentTimeline(
   const unaligned = selectUnalignedShipmentTimeline(shipment, selectedEvidence, selection);
   // 京东已签收头条例外（AGENTS §9，2026-09-24 / 09-27 / 09-28）选定的头条照旧：2026-10-02 的规则不改它（协调方规格
   // 「不变」一节）；它若仍落后于状态，只由状态对齐强刷去追。
-  return selection.jingDongDetailHeadline ? unaligned
-    : withStatusPackageHeadline(shipment, unaligned, selectedEvidence.headlineProvider, evidence);
+  const presented = selection.jingDongDetailHeadline ? unaligned
+    : withStatusPackageHeadline(shipment, unaligned, selectedEvidence.headlineProvider, selectedEvidence);
+  const provider = selectedEvidence.headlineProvider;
+  const donor = normalizeTimelineSlot(provider) === TIMELINE_SLOT.JT_H5
+    ? alignmentPackages(shipment).filter(value => normalizeTimelineSlot(value.provider) === TIMELINE_SLOT.JT_H5)
+      .flatMap(value => value.tracks).find(track => track.timeText === presented.latestTimeText && track.detail === presented.latestDetail)
+    : undefined;
+  return { ...presented, headlineDisplay: { provider, timeText: presented.latestTimeText, detail: presented.latestDetail,
+    ...(typeof donor?.displayContext === "string" && donor.displayContext.trim() ? { displayContext: donor.displayContext } : {}) } };
 }
 
 /**

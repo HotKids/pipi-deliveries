@@ -80,6 +80,7 @@ function timelinePresentationSemantic(
   const tracks = timedTracks(timeline.tracks);
   if (!tracks.length) return "UNKNOWN";
   const inferred = packageSemantic("", tracks).semantic;
+  if (tracks.some(track => jtNodeSemantic(track) !== undefined)) return inferred;
   return inferred === "UNKNOWN" ? "TRANSIT" : inferred;
 }
 
@@ -787,6 +788,8 @@ export function startSemanticFromText(value: string): StatusSemantic {
 
 /** The node's own structured statuses, read from its codes and Worker projection without its prose. */
 function trackStructuredSemantics(track: TrackNode): StatusSemantic[] {
+  const jt = jtNodeSemantic(track);
+  if (jt !== undefined) return [jt];
   const codeOnly = { ...track, detail: "" };
   return [track.statusCode, track.raw?.statusCode].flatMap((code) => [
     semanticFromTrackCode(codeOnly, code),
@@ -832,6 +835,8 @@ export function latestTimelineTrackStatuses(tracks: readonly TrackNode[]): Statu
   if (!timed.length) return [];
   const latestAt = Math.max(...timed.map(track => track.timeMs!));
   return timed.filter(track => track.timeMs === latestAt).map(track => {
+    const jt = jtNodeSemantic(track);
+    if (jt !== undefined) return jt;
     const projection = nodeNormalizedStatus(track.raw);
     if (projection) return projection.structured ? projection.semantic : "UNKNOWN";
     for (const code of [track.raw?.statusCode, track.statusCode]) {
@@ -855,6 +860,8 @@ function semanticFromTrackCode(
 ): StatusSemantic {
   const projection = nodeNormalizedStatus(track.raw);
   if (projection) return projection.structured ? projection.semantic : "UNKNOWN";
+  const jt = jtNodeSemantic(track);
+  if (jt !== undefined) return jt;
   const source = String(track.raw?._pipiStatusSource || "")
     .trim()
     .toLowerCase();
@@ -864,6 +871,42 @@ function semanticFromTrackCode(
     return semanticFromAccountState(code, track.detail);
   }
   return semanticFromEventCode(String(code ?? ""));
+}
+
+/** Only the separate JT DOM label is an enum; an unknown label never authorizes reading its body. */
+function jtNodeSemantic(track: TrackNode): StatusSemantic | undefined {
+  if (track.raw?._pipiStatusSource !== "jt_h5" ||
+      !Object.prototype.hasOwnProperty.call(track.raw, "jtStatusLabel")) return undefined;
+  switch (typeof track.raw.jtStatusLabel === "string" ? track.raw.jtStatusLabel.trim() : "") {
+    case "取消": case "已取消": case "订单取消": case "取消订单": return "CANCELLED";
+    case "问题件": case "异常件": case "异常": case "运输异常": return "DANGER";
+    case "已下单": return "ORDERED";
+    case "已发货": return "SHIPPED";
+    case "揽件": case "已揽件": case "已揽收": return "PICKED";
+    case "在途": case "运输中": return "TRANSIT";
+    case "派件": case "派送中": return "DELIVERY";
+    case "待取": case "待取件": case "代取件": case "待领取": return "WAITING_PICKUP";
+    case "签收": case "已签收": return "COMPLETED";
+    default: return "UNKNOWN";
+  }
+}
+
+export function trackDisplayDetail(provider: string, track: TrackNode): string {
+  return normalizeTimelineSlot(provider) === TIMELINE_SLOT.JT_H5 &&
+    typeof track.displayContext === "string" && track.displayContext.trim()
+    ? track.displayContext : track.detail;
+}
+
+/** A different source's headline must not borrow the selected history's display text. */
+export function timelineDisplayDetail(timeline: TimelinePackage): string {
+  const hint = timeline.headlineDisplay;
+  if (hint) return hint.timeText === timeline.latestTimeText && hint.detail === timeline.latestDetail &&
+    normalizeTimelineSlot(hint.provider) === TIMELINE_SLOT.JT_H5 &&
+    typeof hint.displayContext === "string" && hint.displayContext.trim()
+    ? hint.displayContext : timeline.latestDetail;
+  const headline = timeline.tracks.find(track => track.timeText === timeline.latestTimeText &&
+    track.detail === timeline.latestDetail);
+  return headline ? trackDisplayDetail(timeline.provider, headline) : timeline.latestDetail;
 }
 
 /**
@@ -934,7 +977,7 @@ export function latestEventEvidence(
   let newestSemantic: StatusSemantic = "UNKNOWN";
   for (const track of tracks) {
     const projection = nodeNormalizedStatus(track.raw);
-    const hasRawStatus = Boolean(projection) || Object.prototype.hasOwnProperty.call(
+    const hasRawStatus = Boolean(projection) || jtNodeSemantic(track) !== undefined || Object.prototype.hasOwnProperty.call(
       track.raw,
       "statusCode",
     );
@@ -970,6 +1013,7 @@ export function packageSemantic(
     };
   }
   if (evidence.semantic !== "UNKNOWN") return evidence;
+  if (tracks.some(track => jtNodeSemantic(track) !== undefined)) return { semantic: "UNKNOWN", eventAtMs: null };
   if (!timed.length) return { semantic: "UNKNOWN", eventAtMs: null };
   const semantic = semanticFromText(timed[0].detail);
   return {
@@ -1012,6 +1056,7 @@ function trackBaseKey(track: TrackNode): string {
 function structuredTrackKey(track: TrackNode): string {
   return [
     nodeNormalizedStatus(track.raw)?.semantic || "",
+    jtNodeSemantic(track) !== undefined ? normalizeTrackText(track.raw.jtStatusLabel) : "",
     ...STRUCTURED_TRACK_FIELDS.map((field) =>
       structuredTrackValue(track, field)
     ),
@@ -1027,12 +1072,15 @@ function compatibleStructuredTrack(left: TrackNode, right: TrackNode): boolean {
 }
 
 function carriesStatusCode(track: TrackNode): boolean {
+  if (jtNodeSemantic(track) !== undefined) return true;
   const projection = nodeNormalizedStatus(track.raw);
   return projection ? projection.structured && projection.semantic !== "UNKNOWN"
     : STRUCTURED_TRACK_FIELDS.some((field) => Boolean(structuredTrackValue(track, field)));
 }
 
 function conflictingTrackStates(left: TrackNode, right: TrackNode): boolean {
+  if (jtNodeSemantic(left) !== undefined && jtNodeSemantic(right) !== undefined &&
+      normalizeTrackText(left.raw.jtStatusLabel) !== normalizeTrackText(right.raw.jtStatusLabel)) return true;
   if (nodeNormalizedStatus(left.raw) || nodeNormalizedStatus(right.raw)) {
     const semantic = (track: TrackNode) => {
       const projection = nodeNormalizedStatus(track.raw);
@@ -1065,7 +1113,12 @@ function nearDuplicateCompatible(left: TrackNode, right: TrackNode): boolean {
 
 function fillMissingTrackFields(target: TrackNode, source: TrackNode): TrackNode {
   const raw: Record<string, unknown> = { ...target.raw };
+  const sameEventTime = target.timeMs != null && source.timeMs != null
+    ? target.timeMs === source.timeMs : target.timeText === source.timeText;
   for (const [key, value] of Object.entries(source.raw)) {
+    // Near-time deduplication may retain a later clock; JT label evidence belongs to its own event.
+    if (!sameEventTime && (key === "jtStatusLabel" || (key === "_pipiStatusSource" && value === "jt_h5"))) continue;
+    if (key === "jtStatusLabel" && jtNodeSemantic(target) !== undefined) continue;
     const current = raw[key];
     if (
       current !== undefined &&
@@ -1076,8 +1129,16 @@ function fillMissingTrackFields(target: TrackNode, source: TrackNode): TrackNode
     }
     raw[key] = value;
   }
+  // An older web response for this same event may omit both pieces of the captured JT label evidence.
+  if (sameEventTime && target.raw._pipiStatusSource === "web" && !carriesStatusCode(target) &&
+      !Object.prototype.hasOwnProperty.call(target.raw, "jtStatusLabel") && jtNodeSemantic(source) !== undefined) {
+    raw._pipiStatusSource = "jt_h5";
+  }
   return {
     ...target,
+    ...(typeof target.displayContext === "string" && target.displayContext.trim()
+      ? {} : sameEventTime && typeof source.displayContext === "string" && source.displayContext.trim()
+        ? { displayContext: source.displayContext } : {}),
     statusCode: target.statusCode.trim() || source.statusCode.trim(),
     raw,
   };
@@ -1805,7 +1866,7 @@ export function buildWidgetSnapshot(
         statusLabel: presentation.semantic === "DANGER" ? "异常件" : presentation.text,
         // 备注单独带着：4×2 拼成「状态词 · 备注」，2×2 放不下只显示状态词（用户定 2026-09-06）。
         note: String(item.note || "").trim(),
-        latestDetail: item.timeline.latestDetail,
+        latestDetail: timelineDisplayDetail(item.timeline),
       };
     }),
   };
