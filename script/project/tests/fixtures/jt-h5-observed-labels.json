@@ -1,0 +1,30 @@
+{
+  "provenance": {
+    "kind": "historical_browser_dom_summary",
+    "sourceArtifact": "project-data/audits/jt-h5-probe-20260910/result.json",
+    "sourceSha256": "2587832c844b4d2e512cf83809f0eff0fa592cdfa40ce5d146eec45b669a1008",
+    "observedOn": "2026-09-10",
+    "limitations": "Only endpoint labels and DOM selectors were retained; intermediate labels and complete row DOM were not retained. This is not a capture of every mapped alias."
+  },
+  "selectors": {
+    "row": ".scd-route .scdr-list",
+    "label": ".scdrl-left",
+    "body": ".scdrl-right",
+    "time": ".scdrlr-time"
+  },
+  "rowCount": 10,
+  "timedRowCount": 10,
+  "nonemptyContextCount": 10,
+  "observedLabels": [
+    {
+      "position": "latest",
+      "label": "已签收",
+      "semantic": "COMPLETED"
+    },
+    {
+      "position": "earliest",
+      "label": "已揽件",
+      "semantic": "PICKED"
+    }
+  ]
+}

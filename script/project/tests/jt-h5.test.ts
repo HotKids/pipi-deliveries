@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { jtH5JavaScript, primaryH5Provider, primaryH5Route, webPhoneTails } from "../services/jt-h5";
 import { scrapeWebTimeline, webTimelineFromExtraction } from "../services/web-timeline";
-import { mergeTimelineAuthorities, timelineCapability } from "../services/status";
+import { containsTimelineOriginTrack, containsTimelinePickupTrack, mergeTimelineAuthorities, timelineCapability,
+  trackDisplayDetail } from "../services/status";
 
 const waybill = "JT1234567890123";
 const route = primaryH5Route(waybill, "JTSD");
@@ -19,12 +21,13 @@ assert.deepEqual(webPhoneTails(undefined, ["5678", "5678"]), ["5678"]);
 assert.deepEqual(webPhoneTails("123", ["5678"]), ["5678"]);
 assert.deepEqual(webPhoneTails(" 0123 ", ["5678"]), ["0123"]);
 
-function scene(options: { url?: string; header?: string; challenge?: boolean; tails?: string[]; toast?: string } = {}) {
+function scene(options: { url?: string; header?: string; challenge?: boolean; tails?: string[]; toast?: string;
+  label?: string | null; body?: string } = {}) {
   const state: Record<string, unknown> = {};
   let submitted = 0;
   const input = { value: "", dispatchEvent() { submitted++; }, getClientRects: () => [1] };
-  const row = (status: string, time: string, content: string) => ({ querySelector(selector: string) {
-    if (selector === ".scdrl-left") return { textContent: status };
+  const row = (status: string | null, time: string, content: string) => ({ querySelector(selector: string) {
+    if (selector === ".scdrl-left") return status === null ? null : { textContent: status };
     if (selector === ".scdrlr-time") return { textContent: time };
     if (selector === ".scdrl-right") return { children: [
       { textContent: content, classList: { contains: () => false } },
@@ -32,7 +35,9 @@ function scene(options: { url?: string; header?: string; challenge?: boolean; ta
     ] };
     return null;
   } });
-  const rows = [row("已签收", "2026-09-10 12:00", "Parcel delivered"), row("已揽件", "2026-09-09 10:00", "Parcel collected")];
+  const rows = options.label !== undefined
+    ? [row(options.label, "2026-09-10 12:00", options.body ?? "已揽件 Synthetic body 010-12345678")]
+    : [row("已签收", "2026-09-10 12:00", "Parcel delivered"), row("已揽件", "2026-09-09 10:00", "Parcel collected")];
   let toast = options.toast || "";
   let toastVisible = true;
   const document = {
@@ -59,6 +64,31 @@ assert.equal(extracted.tracks.length, 2);
 assert.equal(extracted.tracks[1].detail, "已揽件 Parcel collected");
 assert.equal(extracted.tracks[1].displayContext, "Parcel collected");
 assert.equal(extracted.tracks[1].jtStatusLabel, "已揽件");
+for (const label of [null, "", "已揽件", "SYNTHETIC_UNMAPPED"]) {
+  const capture = scene({ label }).read();
+  const node = capture.tracks[0];
+  assert.equal(Object.hasOwn(node, "jtStatusLabel"), label !== null,
+    "a missing label element must preserve legacy body interpretation");
+  assert.equal(node.jtStatusLabel, label === null ? undefined : label);
+  const parsed = webTimelineFromExtraction(capture, { waybill, courierCode: "JTSD", companyName: "J&T" }, 1)!;
+  assert.equal(Object.hasOwn(parsed.tracks[0]!.raw, "jtStatusLabel"), label !== null);
+  assert.equal(parsed.structuredStatus, label === "已揽件");
+  assert.equal(containsTimelineOriginTrack(parsed.tracks), label === null || label === "已揽件");
+  assert.equal(containsTimelinePickupTrack(parsed.tracks), label === null || label === "已揽件");
+  assert.equal(trackDisplayDetail(parsed.provider, parsed.tracks[0]!), "已揽件 Synthetic body 010-12345678");
+  assert.equal(parsed.tracks[0]!.detail,
+    [label, "已揽件 Synthetic body 010-12345678"].filter(Boolean).join(" "));
+}
+const observed = JSON.parse(readFileSync(new URL("./fixtures/jt-h5-observed-labels.json", import.meta.url), "utf8"));
+assert.deepEqual(observed.selectors, { row: ".scd-route .scdr-list", label: ".scdrl-left",
+  body: ".scdrl-right", time: ".scdrlr-time" });
+for (const sample of observed.observedLabels) {
+  // Replay only the captured enum; the original body and intermediate labels were not retained.
+  const capture = scene({ label: sample.label, body: "Synthetic replay body" }).read();
+  const parsed = webTimelineFromExtraction(capture, { waybill, courierCode: "JTSD", companyName: "J&T" }, 1)!;
+  assert.equal(parsed.semantic, sample.semantic);
+  assert.equal(parsed.structuredStatus, true);
+}
 assert.equal(scene({ header: "JT0000000000000" }).read().tracks.length, 0);
 assert.equal(scene({ url: route + "&waybillNo=JT0000000000000" }).read().tracks.length, 0);
 assert.equal(scene({ url: route.replace("jtexpress.com.cn", "example.invalid") }).read().tracks.length, 0);

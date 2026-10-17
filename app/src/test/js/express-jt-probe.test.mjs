@@ -21,7 +21,7 @@ function page(tails = ['1234']) {
   const popup = { getClientRects: () => state.visible ? [{}] : [], querySelector: () => input };
   const rowNode = item => ({ querySelector: selector => ({
     '.scdrlr-time': { textContent: item.time },
-    '.scdrl-left': { textContent: item.status },
+    '.scdrl-left': item.status === null ? null : { textContent: item.status },
     '.scdrl-right': { children: [
       { textContent: item.context, classList: { contains: () => false } },
       { textContent: item.time, classList: { contains: () => true } },
@@ -55,6 +55,16 @@ valid.state.rows = [row];
 assert.deepEqual(valid.read().tracks, [{ time: row.time, context: row.status + ' ' + row.context,
   displayContext: row.context, jtStatusLabel: row.status }]);
 assert.equal(JSON.stringify(valid.read()).includes('1234'), false);
+for (const status of [null, '', '已揽件', 'SYNTHETIC_UNMAPPED']) {
+  const capture = page([]);
+  capture.state.visible = false;
+  capture.state.rows = [{ ...row, status, context: '已揽件 Synthetic body 010-12345678' }];
+  const track = capture.read().tracks[0];
+  assert.equal(Object.hasOwn(track, 'jtStatusLabel'), status !== null);
+  assert.equal(track.jtStatusLabel, status === null ? undefined : status);
+  assert.equal(track.context, [status, '已揽件 Synthetic body 010-12345678'].filter(Boolean).join(' '));
+  assert.equal(track.displayContext, '已揽件 Synthetic body 010-12345678');
+}
 valid.state.header = 'JTOTHER';
 assert.deepEqual(valid.read().tracks, []);
 
