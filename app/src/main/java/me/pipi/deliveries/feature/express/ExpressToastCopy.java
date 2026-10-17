@@ -92,6 +92,8 @@ final class ExpressToastCopy {
     public static final String PHONE_VERIFICATION_REQUIRED_MESSAGE = "绑定失效，请重新绑定手机号";
 
     static final String REAUTHORIZE = "重新授权";
+    static final String RECOVER_BASIC = "恢复基础模式";
+    static final String RECOVERING_BASIC = "正在恢复…";
     static final String DEVICE_REAUTHORIZATION_REQUIRED_MESSAGE = "设备授权已过期，请重新授权。现有记录将会保留。";
 
     static final String PHONE_BOUND = "手机号已绑定";
