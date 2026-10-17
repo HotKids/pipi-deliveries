@@ -98,8 +98,11 @@ export function jtH5JavaScript(waybill: string, phoneTails: readonly string[]): 
         .map(child => child.textContent || '').join('');
       const detail = clean([clean(status && status.textContent), clean(context)].filter(Boolean).join(' '));
       const timeText = clean(time.textContent);
-      if (timeText && detail) output.tracks.push({timeText, detail,
-        displayContext: clean(context), jtStatusLabel: clean(status && status.textContent)});
+      if (timeText && detail) {
+        const track = {timeText, detail, displayContext: clean(context)};
+        if (status) track.jtStatusLabel = clean(status.textContent);
+        output.tracks.push(track);
+      }
     }
     return output;
   })();`;

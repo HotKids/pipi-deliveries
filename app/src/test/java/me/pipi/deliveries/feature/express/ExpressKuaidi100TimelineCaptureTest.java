@@ -63,6 +63,29 @@ public class ExpressKuaidi100TimelineCaptureTest {
         assertEquals("运输中 Legacy body",me.pipi.deliveries.model.ExpressTimeline.parse(new JSONArray().put(row).toString(),"","").get(0).displayDetail);
     }
 
+    @Test public void absentEmptyKnownAndUnknownLabelsKeepDistinctStartEvidence() throws Exception {
+        for (String label : new String[]{null, "", "已揽件", "SYNTHETIC_UNMAPPED"}) {
+            String body = "已揽件 Synthetic body 010-12345678";
+            JSONObject row = new JSONObject().put("time", "2026-09-10 10:00")
+                    .put("context", label == null || label.isEmpty() ? body : label + " " + body)
+                    .put("displayContext", body);
+            if (label != null) row.put("jtStatusLabel", label);
+            String normalized = ExpressKuaidi100TimelineCapture.normalizedTracks(
+                    new JSONObject().put("tracks", new JSONArray().put(row)).toString(), TimelineSlot.JT_H5);
+            JSONObject retained = new JSONArray(normalized).getJSONObject(0);
+            assertEquals(label != null, retained.has("jtStatusLabel"));
+            ExpressQueryResult result = ExpressDetailActivity.kuaidi100CapturedResult(
+                    "JTTEST1", "JTSD", "Synthetic carrier", "", normalized);
+            boolean origin = label == null || "已揽件".equals(label);
+            assertEquals(origin, me.pipi.deliveries.data.Kuaidi100TimelinePolicy.hasTimelineStart(result));
+            assertEquals(origin, me.pipi.deliveries.data.Kuaidi100TimelinePolicy.hasPickupEvidence(result));
+            assertEquals("已揽件".equals(label), result.structuredStatusEvidence);
+            var track = me.pipi.deliveries.model.ExpressTimeline.parse(normalized, "", "").get(0);
+            assertEquals(body, track.displayDetail);
+            assertEquals(row.getString("context"), track.detail);
+        }
+    }
+
     @Test public void finiteJtLabelsUseOnlyTheSharedCanonicalAliases() {
         String[][] groups = {{"CANCELLED", "取消", "已取消", "订单取消", "取消订单"},
                 {"DANGER", "问题件", "异常件", "异常", "运输异常"}, {"ORDERED", "已下单"},
