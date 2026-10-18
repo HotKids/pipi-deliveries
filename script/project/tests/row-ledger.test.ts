@@ -100,9 +100,10 @@ function pageDiagnostics(overrides: Partial<AccountOrderProjectionDiagnostics> =
 async function pullWith(
   id: string,
   answer: "empty" | "partial" | "risk" | "timeout" | "failure",
+  trigger: "detail_pull" | "status_alignment" = "detail_pull",
 ): Promise<number> {
   let pages = 0;
-  await runShipmentRefreshForTesting(id, lease(), PULL, {
+  await runShipmentRefreshForTesting(id, lease(), { ...PULL, trigger }, {
     refreshAccountParcel: async () => null,
     refreshWebTimeline: async () => null,
     queryManualForSource: async () => ({ result: "empty_response" as const, shipment: null, pending: null,
@@ -154,13 +155,14 @@ for (const answer of ["risk", "timeout", "failure"] as const) {
     assert.equal(await pullWith(row.identity.id, answer), 1);
     assert.equal(signedReleaseUsed(row.identity.id, EVENT, "jingDongUnionGap"), false);
     assert.equal(jingDongSignedHistoryGap(loadState(clock).shipments[0]!), true);
-    // A cooldown skip is no answer either; once past it, the pull opens the page again.
+    // Automatic work still rests; a cooldown skip cannot spend the signed-gap allowance.
     clock = NOW + 5 * 60000;
-    assert.equal(await pullWith(row.identity.id, "empty"), 0, "the order still rests");
+    assert.equal(await pullWith(row.identity.id, "empty", answer === "risk" ? "detail_pull" : "status_alignment"),
+      0, "automatic ordinary cooldown and manual risk-control cooldown remain binding");
     assert.ok(readDiagnostics().some(entry => entry.event === "order.projection.skipped" &&
       String(entry.details.result).endsWith("cooldown")));
     assert.equal(jingDongSignedHistoryGap(loadState(clock).shipments[0]!), true, "a cooldown skip uses nothing");
-    clock = NOW + 61 * 60000;
+    if (answer === "risk") clock = NOW + 61 * 60000;
     assert.equal(await pullWith(row.identity.id, "empty"), 1);
     assert.equal(jingDongSignedHistoryGap(loadState(clock).shipments[0]!), false);
   });

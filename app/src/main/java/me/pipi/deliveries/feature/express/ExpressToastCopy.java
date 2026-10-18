@@ -57,6 +57,11 @@ final class ExpressToastCopy {
     /** JD union page answered with risk control (HTTP 403 / "刷新几遍还不行"); the order rests 60 min. */
     static final String JD_RISK_CONTROL = "操作过于频繁，请稍后再试";
 
+    static String jdRiskControlRemaining(long remainingMillis) {
+        long minutes = Math.max(1L, (remainingMillis + 59_999L) / 60_000L);
+        return "京东风控中，请在 " + minutes + " 分钟后重试";
+    }
+
     /** 物流 H5 页（菜鸟半屏、K100 页）打不开。 */
     static final String H5_UNAVAILABLE = "暂时无法加载详情";
 

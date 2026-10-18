@@ -28,8 +28,8 @@ export const ACCOUNT_H5_BUDGET_MS = 8_000;
 export const ACCOUNT_H5_CONCURRENCY = 2;
 export const ENRICHMENT_ROTATION_MS = 30 * 60 * 1000;
 /**
- * AGENTS §9 (2026-09-03, same on Pipi): the JD union page is reopened per order at most every
- * 10 minutes after any capture attempt, and not for an hour after a risk-control answer
+ * Automatic JD union-page reopening rests each order for 10 minutes after any capture attempt,
+ * and every entry rests for an hour after a risk-control answer
  * (HTTP 403 / "刷新几遍还不行"). JD blocks the page after roughly eight loads in half an hour.
  */
 export const ACCOUNT_ORDER_PROJECTION_RETRY_MS = 10 * 60 * 1000;
@@ -216,49 +216,51 @@ export function accountOrderProjectionAttemptRemainingMs(
   return Math.max(0, Math.floor(Number(retry?.attemptExpiresAtMs) - now));
 }
 
-/**
- * AGENTS §9: every attempt rests the order for ten minutes, and a risk-control answer rests it
- * for an hour. A user-initiated refresh does not lift either rest — Pipi throws its
- * `CooldownException` on the detail path too, and a JD order that reopens the union page on
- * every detail visit is exactly what gets the account risk-controlled.
- */
-export function shouldRetryAccountOrderProjection(
+export function accountOrderProjectionRiskRemainingMs(
   retry: AccountOrderProjectionRetry | null | undefined,
   routeHash: string,
   now = Date.now(),
-): boolean {
-  if (activeAccountOrderProjectionAttempt(retry, routeHash, now)) return false;
-  const normalizedRouteHash = String(routeHash || "").trim().toLowerCase();
-  const storedRouteHash = String(retry?.routeHash || "").trim().toLowerCase();
-  const sameRoute = /^[a-f0-9]{64}$/.test(normalizedRouteHash) &&
-    storedRouteHash === normalizedRouteHash;
-  // JD risk control rests the order for an hour even when the user pulls to refresh.
-  const riskControlAtMs = Number(retry?.riskControlAtMs);
-  if (
-    sameRoute &&
-    Number.isFinite(riskControlAtMs) &&
-    riskControlAtMs > 0 &&
-    now >= riskControlAtMs &&
-    now - riskControlAtMs < ACCOUNT_ORDER_PROJECTION_RISK_CONTROL_MS
-  ) {
-    return false;
-  }
+): number {
+  const at = positiveTime(retry?.riskControlAtMs);
+  return sameRouteHash(retry, routeHash) && at > 0 && now >= at
+    ? Math.max(0, at + ACCOUNT_ORDER_PROJECTION_RISK_CONTROL_MS - now) : 0;
+}
+
+/** Only an explicit detail pull bypasses the ordinary rest; forced automatic alignment does not. */
+export function accountOrderProjectionRetryReason(
+  retry: AccountOrderProjectionRetry | null | undefined,
+  routeHash: string,
+  now = Date.now(),
+  trigger: "automatic" | "detail_pull" = "automatic",
+): "active_attempt" | "risk_control_cooldown" | "cooldown" | null {
+  if (activeAccountOrderProjectionAttempt(retry, routeHash, now)) return "active_attempt";
+  if (accountOrderProjectionRiskRemainingMs(retry, routeHash, now) > 0) return "risk_control_cooldown";
+  if (trigger === "detail_pull") return null;
   const failedAtMs = Number(retry?.failedAtMs);
   if (
-    !sameRoute ||
+    !sameRouteHash(retry, routeHash) ||
     !Number.isFinite(failedAtMs) ||
     failedAtMs <= 0 ||
     now < failedAtMs
   ) {
-    return true;
+    return null;
   }
-  return now - failedAtMs >= ACCOUNT_ORDER_PROJECTION_RETRY_MS;
+  return now - failedAtMs >= ACCOUNT_ORDER_PROJECTION_RETRY_MS ? null : "cooldown";
+}
+
+export function shouldRetryAccountOrderProjection(
+  retry: AccountOrderProjectionRetry | null | undefined,
+  routeHash: string,
+  now = Date.now(),
+  trigger: "automatic" | "detail_pull" = "automatic",
+): boolean {
+  return accountOrderProjectionRetryReason(retry, routeHash, now, trigger) === null;
 }
 
 /**
  * 方案 A's scope (user 2026-09-25): the Home pass, the list refresh and detail-entry identity
  * projection leave a confirmed empty page closed. An explicit detail pull is a deliberate user action:
- * it keeps `shouldRetryAccountOrderProjection` alone and may open the page after the ordinary rest.
+ * it bypasses the ordinary rest while preserving active-capture and risk-control gates.
  */
 export function shouldRetryAccountOrderProjectionUnprompted(
   retry: AccountOrderProjectionRetry | null | undefined,

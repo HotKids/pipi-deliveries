@@ -21,6 +21,7 @@ import { carrierDisplayName, courierHotline } from "../services/carrier-presenta
 import {
   continueManualShipmentPreview,
   refreshShipmentById,
+  hasActiveAccountOrderProjection,
   type ManualShipmentPreview,
   type DetailEntryObservation,
 } from "../services/sync";
@@ -33,6 +34,7 @@ import {
   shipmentDetailIncompleteReason,
   shipmentSelectionEvidence,
   unprojectedAccountOrder,
+  isJingDongSourceShipment,
 } from "../services/shipment-policy";
 import {
   isProviderErrorDetail,
@@ -58,7 +60,7 @@ import {
   manualDetailRefreshToast,
   transientToast,
 } from "../services/ui-feedback";
-import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
+import { EXPRESS_TOAST_COPY, jdRiskControlRetryText } from "../services/express-toast-copy";
 import {
   diagnosticErrorDetails,
   writeDiagnostic,
@@ -143,6 +145,7 @@ export function DetailPage(props: {
   const refreshAbortRef = useRef<AbortController | null>(null);
   const detailEntryRef = useRef<DetailEntryObservation | undefined>(undefined);
   const pullInFlightRef = useRef<Promise<void> | null>(null);
+  const joinedJdPullRef = useRef(false);
   const attachedOrders = props.attachedOrders || [];
   const detailTimeline = selectShipmentDetailPresentation(shipment, attachedOrders);
   const displayTracks = detailTimeline.tracks.filter(
@@ -279,6 +282,7 @@ export function DetailPage(props: {
       refreshAbortRef.current = null;
       refreshInFlightRef.current = null;
       pullInFlightRef.current = null;
+      joinedJdPullRef.current = false;
       detailEntryRef.current = undefined;
     };
   }, [props.shipment.identity.id]);
@@ -287,6 +291,12 @@ export function DetailPage(props: {
     if (forceManualRefresh && pullInFlightRef.current) return pullInFlightRef.current;
     if (refreshInFlightRef.current) {
       if (!forceManualRefresh) return refreshInFlightRef.current;
+      // An unresolved JD entry already owns query-to-H5 resolution, even before the page starts loading.
+      if ((isJingDongSourceShipment(props.shipment) && unprojectedAccountOrder(props.shipment)) ||
+          hasActiveAccountOrderProjection(props.shipment.identity.id)) {
+        joinedJdPullRef.current = true;
+        return refreshInFlightRef.current;
+      }
       const generation = refreshGenerationRef.current;
       // A pull waits for this page's entry request, then starts the distinct history operation once.
       const pending = refreshInFlightRef.current.then(() => {
@@ -298,6 +308,7 @@ export function DetailPage(props: {
       return pending;
     }
     const generation = refreshGenerationRef.current + 1;
+    joinedJdPullRef.current = false;
     refreshGenerationRef.current = generation;
     const controller = new AbortController();
     refreshAbortRef.current = controller;
@@ -341,7 +352,9 @@ export function DetailPage(props: {
             Boolean(track.detail.trim()) &&
             !isProviderErrorDetail(track.detail),
         );
-        if (result.expressToast) {
+        if ((forceManualRefresh || joinedJdPullRef.current) && result.expressToastRemainingMs) {
+          setNotice(jdRiskControlRetryText(result.expressToastRemainingMs));
+        } else if (result.expressToast) {
           // Unified express toast (AGENTS §11): a typed key rendered from the shared copy table,
           // e.g. JD risk control; provider free-text feedback still never reaches the page.
           setNotice(EXPRESS_TOAST_COPY[result.expressToast]);

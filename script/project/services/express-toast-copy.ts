@@ -81,3 +81,8 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
 
 /** A refresh reports a unified toast by key; pages render it through the table, never free text. */
 export type ExpressToastKey = keyof typeof EXPRESS_TOAST_COPY;
+
+/** An explicit JD pull reports the persisted risk-control window rather than suggesting an immediate retry. */
+export function jdRiskControlRetryText(remainingMs: number): string {
+  return `京东风控中，请在 ${Math.max(1, Math.ceil(remainingMs / 60_000))} 分钟后重试`;
+}

@@ -352,6 +352,7 @@ public final class JingDongEmptyOrderPageTest {
                 ClassParameter.from(ExpressRepository.class, repository),
                 ClassParameter.from(ExpressItem.class, repository.find(order.rowId)),
                 ClassParameter.from(ExpressQueryCancellation.class, new ExpressQueryCancellation(5_000L)),
+                ClassParameter.from(boolean.class, false),
                 ClassParameter.from(boolean.class, false));
     }
 
