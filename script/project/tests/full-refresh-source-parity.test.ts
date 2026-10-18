@@ -208,7 +208,7 @@ test("background query failure persists the list baseline and does not retry an 
   assert.deepEqual((await round(records, { backgroundHostSafe: true, budgetMs: 30_000 })).query, []);
 });
 
-test("background honors forced/unchanged terminal freeze but hydrates a new completed list signal once", async () => {
+test("background preserves terminal gates while repairing an unmatched signed SF headline", async () => {
   seed([row("CNFORCED01"), row("CNFORCED02"), row("CNSIGNED01", "CaiNiao", 107), row("CNFINISH01"),
     row("SFSIGNED01", "ShunFeng", 107)]);
   // 用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「点击后满 3 天也冻结」「iOS 右滑签收一起改」：
@@ -224,8 +224,10 @@ test("background honors forced/unchanged terminal freeze but hydrates a new comp
   assert.deepEqual(first.query, ["CNFINISH01", "CNFORCED02"]);
   assert.equal(loadState(clock).shipments.find(value => value.identity.sourceId === "CNFORCED01")?.forcedCompletedAtMs,
     NOW - FORCED_COMPLETION_REFRESH_WINDOW_MS);
-  assert.deepEqual(first.online, []);
-  assert.deepEqual((await round(records, { backgroundHostSafe: true, budgetMs: 30_000 })).query, []);
+  assert.deepEqual(first.online, ["SFSIGNED01"], "only the approved unmatched SF signing enters native repair");
+  const second = await round(records, { backgroundHostSafe: true, budgetMs: 30_000 });
+  assert.deepEqual(second.query, []);
+  assert.deepEqual(second.online, [], "a finished repair cannot restart for unchanged detailed history");
 });
 
 test("host budget rejects an over-budget list before launching supplements", async () => {

@@ -325,7 +325,8 @@ export function webTimelineFromExtraction(
       ...(displayContext ? { displayContext } : {}),
       statusCode: "",
       raw: jtLabel
-        ? { _pipiStatusSource: "jt_h5", jtStatusLabel: typeof row.jtStatusLabel === "string" ? row.jtStatusLabel.trim() : "" }
+        ? { _pipiStatusSource: "jt_h5", _pipiJtLabelElementPresent: true,
+          jtStatusLabel: typeof row.jtStatusLabel === "string" ? row.jtStatusLabel.trim() : "" }
         : kuaidi100Com
         ? { _pipiStatusSource: "web", _pipiKuaidi100Com: kuaidi100Com }
         : { _pipiStatusSource: "web" },

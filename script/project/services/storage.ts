@@ -950,6 +950,21 @@ function migratePendingSources(
   return [...result.values()];
 }
 
+function repairLegacyJtLabelEncoding(timeline: TimelinePackage): TimelinePackage {
+  if (normalizeTimelineSlot(timeline.provider) !== TIMELINE_SLOT.JT_H5) return timeline;
+  let repaired = false;
+  const tracks = timeline.tracks.map((track) => {
+    if (track.raw._pipiStatusSource !== "jt_h5" || track.raw.jtStatusLabel !== "" ||
+        track.raw._pipiJtLabelElementPresent === true) return track;
+    // Older captures encoded an absent DOM label as empty. Keep actual empty elements
+    // distinguishable, and repair provenance without deriving parcel status from prose.
+    const { jtStatusLabel: _absent, ...raw } = track.raw;
+    repaired = true;
+    return { ...track, raw: { ...raw, _pipiStatusSource: "web" } };
+  });
+  return repaired ? { ...timeline, tracks } : timeline;
+}
+
 function sanitizeProviderErrorTimeline(
   timeline: TimelinePackage,
 ): TimelinePackage {
@@ -1059,7 +1074,7 @@ function normalizeShipmentAuthoritiesWithAnchor(
   );
   const sanitizeTimeline = (timeline: TimelinePackage): TimelinePackage =>
     withoutJingDongOrderCompletion(
-      sanitizeProviderErrorTimeline({ ...timeline, ...statusProjectionFields(timeline, timeline) }), shipment.identity,
+      sanitizeProviderErrorTimeline(repairLegacyJtLabelEncoding({ ...timeline, ...statusProjectionFields(timeline, timeline) })), shipment.identity,
       false, signedAnchorAtMs, anchorEvidence,
     );
   const sourceTimelineRaw = manuallyAdded
