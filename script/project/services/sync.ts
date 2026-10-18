@@ -64,6 +64,7 @@ import {
   clearCainiaoManualFallback,
   displayWaybill,
   FORCED_COMPLETION_REFRESH_WINDOW_MS,
+  MANUAL_REFRESH_MIN_INTERVAL_MS,
   forcedCompletedAt,
   hasCachedKdniaoTimeline,
   hasCachedTimelineBeforeKdniao,
@@ -95,6 +96,7 @@ import {
   selectShipmentDetailTimeline,
   selectShipmentTimeline,
   shipmentSelectionEvidence,
+  shipmentHeadlineMatchesStatus,
   shipmentDetailComplete,
   shipmentDetailIncompleteReason,
   shouldRefreshShipmentRow,
@@ -103,6 +105,7 @@ import {
   signedRefreshFrozen,
   statusAlignmentOutOfStep,
   statusAlignmentTimes,
+  type StatusAlignmentTimes,
   supportsOrdinaryAutomaticDetailSupplement,
   unprojectedAccountOrder,
   usesManualSourceQuery,
@@ -149,6 +152,11 @@ import {
   type RefreshProviderResult,
 } from "./refresh-runtime-state";
 import { requestWidgetReload } from "./widgets";
+import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey, type AlignmentAttempt } from "./row-ledger";
+import {
+  alignmentAttemptDue, alignmentOwnerCurrent, alignmentTimesKey, reserveAlignmentAttempt,
+  finishAlignmentAttempt, newerAlignmentEvidence, publishAlignmentPresentation,
+} from "./status-alignment-state";
 import { refreshCarrierAuthorityIfNeeded } from "./carrier-authority";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
 import {
@@ -2556,7 +2564,19 @@ function recordAccountOrderProjectionCommits(
   }
 }
 
-type ManualRefreshTask = { id: string; lastAttemptAtMs: number; accountDetail?: boolean; cainiaoListUpdated?: boolean };
+type ManualRefreshTask = { id: string; lastAttemptAtMs: number; accountDetail?: boolean;
+  cainiaoListUpdated?: boolean; backgroundAlignment?: boolean };
+
+/** The signed background exception is Online-only; the foreground retains its complete source chain. */
+function backgroundSfAlignmentTimes(shipment: Shipment, now: number): StatusAlignmentTimes | null {
+  if (shipment.identity.manuallyAdded || !isShunFengSourceShipment(shipment) ||
+      shipment.timeline.provider === "demo" || forcedCompletedAt(shipment) || signedRefreshFrozen(shipment, now) ||
+      shipmentHeadlineMatchesStatus(shipment)) return null;
+  const times = statusAlignmentTimes(shipment, now);
+  if (!times || times.statusSemantic !== "COMPLETED" || !statusAlignmentOutOfStep(times)) return null;
+  const record = parseAlignmentAttempt(loadAlignmentRecords()[rowLedgerKey(shipment.identity.id)]);
+  return alignmentAttemptDue(record, times, now, MANUAL_REFRESH_MIN_INTERVAL_MS) ? times : null;
+}
 
 function manualRefreshTasks(
   state: AppState, source: BindingSource, now: number,
@@ -2565,6 +2585,7 @@ function manualRefreshTasks(
   updatedCainiaoIds: ReadonlySet<string> = new Set(),
   /** A Home follow-up the signed freeze stopped (its list did update), for the round's skip line. */
   onSignedFrozen?: (shipment: Shipment) => void,
+  backgroundStatusAlignment = false,
 ): ManualRefreshTask[] {
   const homeFollowup = (current: Shipment): boolean => {
     const updated = updatedCainiaoIds.has(current.identity.id);
@@ -2581,16 +2602,104 @@ function manualRefreshTasks(
     current.identity.bindingSource === source && !skipRefreshIds.has(current.identity.id) && (
       accountSourceFollowup && isHomeAccountQuerySource(current)
         ? homeFollowup(current)
-        : !unprojectedAccountOrder(current) && current.timeline.provider !== "demo" &&
+        : (backgroundStatusAlignment && Boolean(backgroundSfAlignmentTimes(current, now))) ||
+          (!unprojectedAccountOrder(current) && current.timeline.provider !== "demo" &&
           shouldRefreshShipmentRow(current, now) &&
           shipmentPresentationStatus(refreshGateView(current, now)).semantic !== "CANCELLED" &&
-          shouldScheduleManualRefresh(current, now, forceManualRefresh)
+          shouldScheduleManualRefresh(current, now, forceManualRefresh))
     )
   ).map(current => ({ id: current.identity.id, lastAttemptAtMs: Number(current.manualRefreshAttemptAtMs) || 0,
     accountDetail: accountSourceFollowup && isHomeAccountQuerySource(current),
+    backgroundAlignment: backgroundStatusAlignment && Boolean(backgroundSfAlignmentTimes(current, now)),
     cainiaoListUpdated: updatedCainiaoIds.has(current.identity.id) }));
   return oldestBatchIndices(tasks.map(task => task.lastAttemptAtMs), tasks.length, state.revision)
     .map(position => tasks[position]);
+}
+
+async function refreshBackgroundSfAlignment(
+  state: AppState, source: BindingSource, flowId: string, checkpoint: RefreshCheckpoint,
+  task: ManualRefreshTask, deadlineAtMs: number | undefined, signal: AbortSignal,
+  query: typeof queryManualForSource,
+): Promise<RefreshSummary> {
+  let current = loadState(), attempted = 0, succeeded = 0, failed = 0;
+  const summary = (): RefreshSummary => ({ state: current, attempted, succeeded, failed, promotedPendingShipmentIds: [] });
+  const original = state.shipments.find(item => item.identity.id === task.id);
+  if (!original || !alignmentOwnerCurrent(state, original, current) || signal.aborted || deadlineExpired(deadlineAtMs)) return summary();
+  const times = backgroundSfAlignmentTimes(original, Date.now());
+  if (!times) return summary();
+  const schedule = manualProviderSchedule({ source, waybill: displayWaybill(original),
+    rawCourierCode: original.identity.rawCourierCode, phoneTail: original.identity.phoneTail,
+    sourceProvider: original.identity.sourceProvider });
+  if (!refreshProviderDue(schedule.key, "picker", schedule.identityFingerprint)) return summary();
+  const lease = acquireRenewingDurableRefreshLease(`detail:${task.id}`, 35_000);
+  if (!lease) return summary();
+  let attempt: AlignmentAttempt | undefined, reservationError: unknown;
+  const isCurrent = () => !signal.aborted && lease.isCurrent();
+  const beforeQuery = () => {
+    if (reservationError) throw reservationError;
+    if (attempt) return;
+    try {
+      assertRefreshSignal(signal);
+      assertWithinDeadline(deadlineAtMs);
+      const latest = loadState(), target = latest.shipments.find(item => item.identity.id === task.id);
+      if (!lease.isCurrent() || !alignmentOwnerCurrent(state, original, latest) || !target) throw new Error("Alignment owner changed");
+      const fresh = backgroundSfAlignmentTimes(target, Date.now());
+      if (!fresh || alignmentTimesKey(fresh) !== alignmentTimesKey(times)) throw new Error("Alignment group changed");
+      attempt = reserveAlignmentAttempt(task.id, times, Date.now(), MANUAL_REFRESH_MIN_INTERVAL_MS);
+    } catch (error) { reservationError = error; throw error; }
+  };
+  try {
+    writeDiagnostic("detail.refresh.alignment", { flowId, source, trigger: "status_alignment",
+      ...shipmentDiagnosticDetails(original), statusEventAtMs: times.statusAtMs,
+      headlineAtMs: times.headlineAtMs, detailAtMs: times.detailAtMs });
+    let outcome: ManualQueryOutcome | undefined, queryError: unknown;
+    try {
+      outcome = await query({ source, bindings: bindingsForSource(current, source),
+        waybill: displayWaybill(original), phoneTail: original.identity.phoneTail,
+        rawCourierCode: original.identity.rawCourierCode, courierCode: original.identity.courierCode,
+        companyName: original.identity.companyName, sourceProvider: original.identity.sourceProvider,
+        deadlineAtMs: accountChildDeadline(deadlineAtMs, MANUAL_REFRESH_TASK_BUDGET_MS), signal,
+        diagnosticFlowId: flowId, diagnosticStage: "status_alignment", currentShipment: original,
+        pickerOnly: true, pickerFirst: true, scheduled: true, hostSafe: true,
+        includeKdniaoFallback: false, beforeQuery });
+    } catch (error) { queryError = error; }
+    if (reservationError) throw reservationError;
+    assertRefreshSignal(signal);
+    if (!isCurrent() || !attempt) return summary();
+    attempted = 1;
+    current = loadState();
+    const target = current.shipments.find(item => item.identity.id === task.id);
+    if (!target || !alignmentOwnerCurrent(state, original, current)) return summary();
+    const incoming = rejectForeignManualResult(target, outcome?.shipment ?? null, {
+      flowId, source, stage: "status_alignment", timelineProvider: TIMELINE_SLOT.V6_QUERY,
+    });
+    if (incoming && timedTracks(incoming.timeline.tracks).length) {
+      const mutations: DeferredRouteMutations = new Map();
+      const merged = deferIncomingRoute(applyManualShipment(target, incoming, Date.now()),
+        incoming, outcome?.routeUrl || "", Date.now(), mutations);
+      current = checkpoint({ ...current, shipments: sortShipments(replaceById(current.shipments, merged)) },
+        mutations, "status_alignment");
+      succeeded = 1;
+    } else failed = 1;
+    assertRefreshSignal(signal);
+    if (!isCurrent()) return summary();
+    const after = current.shipments.find(item => item.identity.id === task.id);
+    const complete = newerAlignmentEvidence(original, after);
+    if (finishAlignmentAttempt(task.id, attempt, complete,
+      complete && after ? statusAlignmentTimes(after) : null)) {
+      const published = publishAlignmentPresentation(state, original, attempt, Date.now(), isCurrent);
+      if (published) {
+        current = published;
+        publishRefreshState(current);
+        requestWidgetReload();
+      }
+    }
+    writeDiagnostic("detail.refresh.alignment", { flowId, source, trigger: "status_alignment",
+      ...shipmentDiagnosticDetails(current.shipments.find(item => item.identity.id === task.id) || original),
+      result: failed ? "failed" : "completed", ...(queryError ? diagnosticErrorDetails(queryError) : {}) },
+      failed ? "warning" : "info");
+    return summary();
+  } finally { lease.release(); }
 }
 
 /**
@@ -4656,6 +4765,14 @@ async function runShipmentRefreshFlow(
           diagnosticFlowId: flowId,
           diagnosticStage: stage,
           signal,
+        }).catch((error): ManualQueryOutcome => {
+          if (!(error instanceof OperationTimeoutError) || queryReservationFailed) throw error;
+          rethrowRefreshCancellation(error, signal);
+          // An Online child deadline must not cancel the remaining original chain.
+          writeDiagnostic("detail.refresh.stage_failed", { flowId, source, stage,
+            ...shipmentDiagnosticDetails(refreshed, TIMELINE_SLOT.V6_QUERY),
+            ...diagnosticErrorDetails(error) }, "warning");
+          return { shipment: null, pending: null, routeUrl: "", result: "query_failed" };
         }).then(observeManualOutcome);
 
         assertRefreshSignal(signal);
@@ -5434,6 +5551,7 @@ async function refreshShipmentEnrichment(
   updatedCainiaoIds: ReadonlySet<string> = new Set(),
   /** The sync round's recognition wait (用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒). */
   recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
+  backgroundStatusAlignment = false,
 ): Promise<RefreshSummary> {
   let currentState = state;
   let attempted = 0;
@@ -5448,7 +5566,7 @@ async function refreshShipmentEnrichment(
     manualRefreshTasks(currentState, source, now, skipRefreshIds, forceManualRefresh,
       accountSourceFollowup, updatedCainiaoIds, (frozen) => writeDiagnostic("refresh.stage.skipped", {
         flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(frozen, "v5_query"),
-        result: "signed_frozen", skipReason: "signed_frozen" })),
+        result: "signed_frozen", skipReason: "signed_frozen" }), backgroundStatusAlignment),
     (task) => {
       const row = currentState.shipments.find((shipment) => shipment.identity.id === task.id);
       return row?.identity.manuallyAdded && !task.accountDetail ? [displayWaybill(row)] : [];
@@ -5492,7 +5610,10 @@ async function refreshShipmentEnrichment(
             promotedPendingShipmentIds: []}};
         }
       }
-      const result = job.accountDetail ? await refreshHomeAccountShipment(
+      const result = job.backgroundAlignment ? await refreshBackgroundSfAlignment(
+        currentState, source, flowId, commit, job, deadlineAtMs, controller.signal,
+        runtimeOverrides.queryManualForSource || queryManualForSource,
+      ) : job.accountDetail ? await refreshHomeAccountShipment(
         currentState, source, flowId, commit, job, deadlineAtMs, controller.signal,
         runtimeOverrides.refreshAccountParcel || refreshAccountParcel,
       ) : await refreshOnlineShipment(
@@ -5500,6 +5621,7 @@ async function refreshShipmentEnrichment(
         controller.signal, runtimeOverrides.queryManualForSource || queryManualForSource,
         recognitionBudget,
       );
+      if (job.backgroundAlignment) currentState = loadState(Date.now());
       return {job, summary: result};
     } catch (error) {
       firstFailure ??= {error};
@@ -5712,7 +5834,7 @@ async function runFullRefresh(
     } : await refreshShipmentEnrichment(
       currentState, source, flowId, checkpoint, enrichmentDeadlineAtMs,
       skipRefreshIds, forceManualRefresh, hostPolicy.accountOrderProjection, lease.signal,
-      {}, accountSourceFollowup, updatedCainiaoIds, recognitionBudget,
+      {}, accountSourceFollowup, updatedCainiaoIds, recognitionBudget, backgroundHostSafe,
     );
     currentState = enrichment.state;
     attempted += enrichment.attempted;

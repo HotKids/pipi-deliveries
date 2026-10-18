@@ -1,7 +1,12 @@
 import type { AppState, BindingSource, Shipment } from "../models";
 import { createDiagnosticFlowId, diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { projectionViewportHostAvailable } from "./projection-viewport";
-import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey, saveAlignmentRecords } from "./row-ledger";
+import { parseAlignmentAttempt, rowLedgerKey } from "./row-ledger";
+import {
+  alignmentRecordStore as ledgerRecordStore, alignmentTimesKey as timesKey, alignmentAttemptDue,
+  reserveAlignmentAttempt, finishAlignmentAttempt, newerAlignmentEvidence, publishAlignmentPresentation,
+  type StatusAlignmentRecordStore,
+} from "./status-alignment-state";
 import { SCRIPT_BINDING_SOURCE } from "./script-source";
 import {
   displayWaybill,
@@ -16,7 +21,7 @@ import {
   type StatusAlignmentReason,
   type StatusAlignmentTimes,
 } from "./shipment-policy";
-import { isAccountUpdateSummary, normalizeWaybill, shipmentPresentationStatus, timelineLatestTrackAt } from "./status";
+import { normalizeWaybill, shipmentPresentationStatus } from "./status";
 import { loadState, peekStateRevision, visibleShipments } from "./storage";
 import { replayPendingShipmentNotifications } from "./notifications";
 import {
@@ -35,32 +40,10 @@ import {
  * See docs/EXPRESS_HEAD_STATUS_ALIGNMENT_20261002.md, the 2026-10-08 revision.
  */
 
-export type StatusAlignmentRecordStore = Readonly<{
-  load: () => Record<string, string>;
-  save: (records: Record<string, string>) => void;
-}>;
-
-const ledgerRecordStore: StatusAlignmentRecordStore = {
-  load: loadAlignmentRecords,
-  save: saveAlignmentRecords,
-};
-
-function rowKey(shipment: Shipment): string {
-  return rowLedgerKey(shipment.identity.id);
-}
+export type { StatusAlignmentRecordStore } from "./status-alignment-state";
 
 type Times = Readonly<StatusAlignmentTimes>;
-
-function timesKey(times: Times): string {
-  return `${times.statusAtMs}|${times.headlineAtMs}|${times.detailAtMs}`;
-}
-
-/** A source may correct a known enum without changing its clock; that does not restore consumed attempts. */
-function completionApplies(record: ReturnType<typeof parseAlignmentAttempt>, times: Times): boolean {
-  return Boolean(record?.complete && record.completionStatus && record.completionHeadline &&
-    (!times.statusSemantic || times.statusSemantic === "UNKNOWN" || times.statusSemantic === record.completionStatus) &&
-    (!times.headlineSemantic || times.headlineSemantic === "UNKNOWN" || times.headlineSemantic === record.completionHeadline));
-}
+const rowKey = (shipment: Shipment) => rowLedgerKey(shipment.identity.id);
 
 export type StatusAlignmentCandidate = Readonly<{
   shipment: Shipment;
@@ -87,8 +70,7 @@ export function dueStatusAlignments(
     const times = statusAlignmentTimes(shipment, now);
     if (!times || !statusAlignmentOutOfStep(times)) continue;
     const record = parseAlignmentAttempt(records[rowKey(shipment)]);
-    if (record?.times === timesKey(times) && (completionApplies(record, times) || record.attempts >= 3 ||
-        (!includeWaiting && now - record.lastAttemptAtMs < MANUAL_REFRESH_MIN_INTERVAL_MS))) continue;
+    if (!alignmentAttemptDue(record, times, now, MANUAL_REFRESH_MIN_INTERVAL_MS, includeWaiting)) continue;
     due.push({ shipment, times, reason: statusAlignmentReason(times) });
   }
   return due;
@@ -160,24 +142,6 @@ function pendingAlignmentRetry(state: AppState, now: number, records: Record<str
   });
 }
 
-/** A new capture timestamp alone is not newer logistics evidence. */
-function newerAlignmentEvidence(before: Shipment, after: Shipment | undefined): boolean {
-  if (!after) return false;
-  const packages = (shipment: Shipment) => {
-    const slots = [shipment.sourceTimeline, ...shipment.manualTimelines || []]
-      .filter((timeline): timeline is NonNullable<typeof timeline> => Boolean(timeline));
-    return (slots.length ? slots : [shipment.timeline]).map(timeline => ({ ...timeline,
-      tracks: timeline.tracks.filter(track => !isAccountUpdateSummary(track.detail)) }));
-  };
-  const previous = new Map(packages(before).map(timeline => [timeline.provider, timeline]));
-  return packages(after).some(timeline => {
-    const old = previous.get(timeline.provider);
-    return timelineLatestTrackAt(timeline) > (old ? timelineLatestTrackAt(old) : 0) ||
-      (timeline.structuredStatus === true && timeline.semantic !== "UNKNOWN" &&
-        (timeline.statusEventAtMs || 0) > (old?.structuredStatus ? old.statusEventAtMs || 0 : 0));
-  });
-}
-
 /** One check of the stored list and, when a row is due, its one forced refresh. */
 export async function runStatusAlignmentPass(
   options: Readonly<{ isActive?: () => boolean; excludeIds?: ReadonlySet<string> }> = {},
@@ -194,25 +158,14 @@ export async function runStatusAlignmentPass(
   const target = due.find(candidate => dependencies.canAsk(candidate.shipment));
   if (!target) return { result: "nothing_due", moreDue: false,
     retryPending: pendingAlignmentRetry(state, now, records, dependencies.canAsk) };
-  const key = rowKey(target.shipment), times = timesKey(target.times);
   let attempt: NonNullable<ReturnType<typeof parseAlignmentAttempt>> | undefined;
   let reservationError: unknown;
   const beforeQuery = () => {
     if (reservationError) throw reservationError;
     if (attempt) return;
     try {
-      const current = dependencies.records.load();
-      const old = parseAlignmentAttempt(current[key]);
-      const startedAtMs = dependencies.now();
-      if (old?.times === times && (completionApplies(old, target.times) || old.attempts >= 3 ||
-          startedAtMs - old.lastAttemptAtMs < MANUAL_REFRESH_MIN_INTERVAL_MS)) {
-        throw new Error("Alignment attempt is no longer due");
-      }
-      const reserved = { times, attempts: (old?.times === times ? old.attempts : 0) + 1,
-        lastAttemptAtMs: startedAtMs, complete: false, finished: false };
-      current[key] = JSON.stringify(reserved);
-      dependencies.records.save(current);
-      attempt = reserved;
+      attempt = reserveAlignmentAttempt(target.shipment.identity.id, target.times,
+        dependencies.now(), MANUAL_REFRESH_MIN_INTERVAL_MS, dependencies.records);
     } catch (error) {
       reservationError = error;
       throw error;
@@ -220,18 +173,10 @@ export async function runStatusAlignmentPass(
   };
   const finish = (state?: AppState) => {
     if (!attempt) return;
-    const current = dependencies.records.load();
-    const reserved = parseAlignmentAttempt(current[key]);
-    if (reserved?.lastAttemptAtMs !== attempt.lastAttemptAtMs || reserved.times !== times ||
-        reserved.attempts !== attempt.attempts) return;
     const after = state?.shipments.find(shipment => shipment.identity.id === target.shipment.identity.id);
     const complete = newerAlignmentEvidence(target.shipment, after);
     const snapshot = complete && after ? statusAlignmentTimes(after, now) : null;
-    current[key] = JSON.stringify({ ...attempt, finished: true,
-      complete,
-      ...(snapshot ? { completionStatus: snapshot.statusSemantic || "UNKNOWN",
-        completionHeadline: snapshot.headlineSemantic || "UNKNOWN" } : {}) });
-    dependencies.records.save(current);
+    finishAlignmentAttempt(target.shipment.identity.id, attempt, complete, snapshot, dependencies.records);
   };
   const details = alignmentDiagnosticDetails(target);
   const flowId = details.flowId;
@@ -256,6 +201,8 @@ export async function runStatusAlignmentPass(
       retryPending: blocked || pendingAlignmentRetry(refreshedState, now, current, dependencies.canAsk) };
   }
   finish(refreshedState);
+  refreshedState = publishAlignmentPresentation(state, target.shipment, attempt, dependencies.now(),
+    () => !options.isActive || options.isActive()) ?? refreshedState;
   const signedTarget = refreshedState.shipments.find(shipment => shipment.identity.id === target.shipment.identity.id);
   if (signedTarget && isShunFengSourceShipment(signedTarget) &&
       shipmentPresentationStatus(signedTarget).semantic === "COMPLETED" &&
@@ -277,6 +224,7 @@ export async function runStatusAlignmentPass(
       ...diagnosticErrorDetails(refreshError),
     }, "warning");
     return { result: "failed", shipmentId: target.shipment.identity.id, moreDue: due.length > 1,
+      state: refreshedState,
       retryPending: pendingAlignmentRetry(refreshedState, now, dependencies.records.load(), dependencies.canAsk) };
   }
   return { result: "attempted", shipmentId: target.shipment.identity.id, moreDue: due.length > 1,
