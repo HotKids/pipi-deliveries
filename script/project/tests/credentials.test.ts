@@ -297,3 +297,56 @@ assert.ok(plaintextReads > 0, "only legacy protected keys inspect deletion commi
 assert.equal(sharedReads, 0, "legacy shared tokens never grant authorization");
 assert.equal(plaintextWrites, 0);
 console.log("Keychain-only credential tests passed");
+
+const observation = await import("../services/credentials");
+assert.equal(typeof observation.gatewayAccessKeyRejected, "function");
+const observed: boolean[] = [];
+const unsubscribe = observation.subscribeGatewayAccessKeyRejected(value => observed.push(value));
+assert.equal(observation.gatewayAccessKeyRejected(), false);
+const first = observation.beginGatewayCredentialObservation();
+observation.recordGatewayCredentialOutcome(first, 401, "unauthorized");
+assert.equal(observation.gatewayAccessKeyRejected(), true);
+assert.deepEqual(observed, [false, true]);
+for (const [status, code] of [[401, "expired_request"], [403, "key_activated_elsewhere"],
+  [403, "forbidden"], [500, "unauthorized"], [0, ""]] as const) {
+  observation.recordGatewayCredentialOutcome(observation.beginGatewayCredentialObservation(), status, code);
+  assert.equal(observation.gatewayAccessKeyRejected(), true, "unrelated failures do not reclassify the key");
+}
+observation.recordGatewayCredentialOutcome(observation.beginGatewayCredentialObservation(), 200, "");
+assert.equal(observation.gatewayAccessKeyRejected(), false);
+const older = observation.beginGatewayCredentialObservation();
+const newer = observation.beginGatewayCredentialObservation();
+observation.recordGatewayCredentialOutcome(newer, 200, "");
+observation.recordGatewayCredentialOutcome(older, 401, "unauthorized");
+assert.equal(observation.gatewayAccessKeyRejected(), false, "late old rejection cannot undo newer success");
+for (const [status, code] of [[403, "key_activated_elsewhere"], [503, "upstream_unavailable"]] as const) {
+  const delayed = observation.beginGatewayCredentialObservation();
+  observation.recordGatewayCredentialOutcome(observation.beginGatewayCredentialObservation(), status, code);
+  observation.recordGatewayCredentialOutcome(delayed, 401, "unauthorized");
+  assert.equal(observation.gatewayAccessKeyRejected(), false, "a newer completed HTTP response fences old rejection");
+}
+const olderSuccess = observation.beginGatewayCredentialObservation();
+observation.recordGatewayCredentialOutcome(observation.beginGatewayCredentialObservation(), 401, "unauthorized");
+observation.recordGatewayCredentialOutcome(olderSuccess, 200, "");
+assert.equal(observation.gatewayAccessKeyRejected(), true, "late old success cannot hide newer rejection");
+const previousGeneration = observation.beginGatewayCredentialObservation();
+saveGatewayToken(replacement);
+assert.equal(observation.gatewayAccessKeyRejected(), false, "saving even the same key clears the notice");
+observation.recordGatewayCredentialOutcome(previousGeneration, 401, "unauthorized");
+assert.equal(observation.gatewayAccessKeyRejected(), false);
+const removedGeneration = observation.beginGatewayCredentialObservation();
+removeGatewayToken();
+observation.recordGatewayCredentialOutcome(removedGeneration, 401, "unauthorized");
+assert.equal(observation.gatewayAccessKeyRejected(), false, "missing keys are not reported as expired");
+saveGatewayToken(token);
+const unreadableGeneration = observation.beginGatewayCredentialObservation();
+rejectKeyReads = true;
+observation.recordGatewayCredentialOutcome(unreadableGeneration, 401, "unauthorized");
+assert.equal(observation.gatewayAccessKeyRejected(), false, "configuration conflicts are not expired keys");
+rejectKeyReads = false;
+const callbacksBeforeUnsubscribe = observed.length;
+unsubscribe();
+observation.recordGatewayCredentialOutcome(observation.beginGatewayCredentialObservation(), 401, "unauthorized");
+assert.equal(observed.length, callbacksBeforeUnsubscribe);
+assert.equal(plaintextWrites, 0, "notice state never creates a credential replica");
+console.log("Access Key observation generation, response ordering and subscription tests passed");

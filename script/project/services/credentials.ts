@@ -50,6 +50,68 @@ type KeyRawRead = {
   failed: boolean;
 };
 
+export type GatewayCredentialObservation = {
+  generation: number;
+  sequence: number;
+};
+
+let observedCredential = "";
+let observationGeneration = 0;
+let requestSequence = 0;
+let settledSequence = 0;
+let accessKeyRejected = false;
+const rejectionListeners = new Set<(rejected: boolean) => void>();
+
+function setAccessKeyRejected(rejected: boolean): void {
+  if (accessKeyRejected === rejected) return;
+  accessKeyRejected = rejected;
+  for (const listener of rejectionListeners) {
+    try { listener(rejected); } catch { /* UI observers cannot fail gateway work. */ }
+  }
+}
+
+function observeCredential(resolution: CredentialResolution): void {
+  const candidate = resolution.status === "configured" ? resolution.candidate : null;
+  const identity = candidate ? tokenChecksumV2(candidate.token, candidate.generation) : "";
+  if (identity === observedCredential) return;
+  observedCredential = identity;
+  observationGeneration += 1;
+  settledSequence = 0;
+  setAccessKeyRejected(false);
+}
+
+export function gatewayAccessKeyRejected(): boolean {
+  observeCredential(resolveCredentials());
+  return accessKeyRejected;
+}
+
+export function subscribeGatewayAccessKeyRejected(listener: (rejected: boolean) => void): () => void {
+  const rejected = gatewayAccessKeyRejected();
+  rejectionListeners.add(listener);
+  listener(rejected);
+  return () => { rejectionListeners.delete(listener); };
+}
+
+export function beginGatewayCredentialObservation(): GatewayCredentialObservation {
+  return { generation: observationGeneration, sequence: ++requestSequence };
+}
+
+export function recordGatewayCredentialOutcome(
+  observation: GatewayCredentialObservation,
+  status: number,
+  code: string,
+  bodyAccepted = true,
+): void {
+  observeCredential(resolveCredentials());
+  if (!observedCredential || observation.generation !== observationGeneration ||
+      observation.sequence <= settledSequence) return;
+  if (!Number.isInteger(status) || status < 100 || status > 599) return;
+  // A newer completed response fences older replies without inventing a new diagnosis.
+  settledSequence = observation.sequence;
+  if (status === 401 && code === "unauthorized") setAccessKeyRejected(true);
+  else if (status >= 200 && status < 300 && bodyAccepted) setAccessKeyRejected(false);
+}
+
 function tokenChecksum(value: string): string {
   return Crypto.sha256(utf8Data(value)).toHexString().toLowerCase();
 }
@@ -304,6 +366,7 @@ function resolveCredentials(): CredentialResolution {
 
 export function loadGatewayCredentials(): GatewayCredentials | null {
   const resolution = resolveCredentials();
+  observeCredential(resolution);
   return resolution.status === "configured" && resolution.candidate
     ? { token: resolution.candidate.token }
     : null;
@@ -327,6 +390,7 @@ function writeCredential(token: string, failureMessage: string): void {
     throw new Error(failureMessage);
   }
   removeLegacyCredentialCopies("token");
+  observeCredential(resolveCredentials());
 }
 
 export function removeGatewayToken(): void {
@@ -340,5 +404,7 @@ export function gatewayConfigured(): boolean {
 }
 
 export function gatewayCredentialStatus(): GatewayCredentialStatus {
-  return resolveCredentials().status;
+  const resolution = resolveCredentials();
+  observeCredential(resolution);
+  return resolution.status;
 }

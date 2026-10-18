@@ -68,6 +68,10 @@ import {
   unprojectedAccountOrder,
 } from "../services/shipment-policy";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
+import {
+  gatewayAccessKeyRejected,
+  subscribeGatewayAccessKeyRejected,
+} from "../services/credentials";
 
 export function HomePage(props: {
   state: AppState;
@@ -91,6 +95,8 @@ export function HomePage(props: {
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
   const [validationNotice, setValidationNotice] = useState("");
+  const [accessKeyRejected, setAccessKeyRejected] = useState(gatewayAccessKeyRejected);
+  const [accessKeyNoticeDismissed, setAccessKeyNoticeDismissed] = useState(false);
   const waybillRef = useRef("");
   const phoneTailRef = useRef("");
   const queryingRef = useRef(false);
@@ -138,6 +144,10 @@ export function HomePage(props: {
     props.onStateChange(summary.state);
     if (promotedTarget) setShipmentNavigationTarget(promotedTarget);
   }
+
+  useEffect(() => {
+    return subscribeGatewayAccessKeyRejected(setAccessKeyRejected);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -619,6 +629,37 @@ export function HomePage(props: {
           ) : <Text>快递详情</Text>,
         }}
       >
+        {accessKeyRejected && !accessKeyNoticeDismissed ? (
+          <VStack padding={{ horizontal: 20, vertical: 8 }}>
+            <HStack
+              spacing={0}
+              padding={{ leading: 16, trailing: 12, vertical: 12 }}
+              background="secondarySystemBackground"
+              clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
+            >
+              <Text
+                font={14}
+                foregroundStyle="secondaryLabel"
+                frame={{ maxWidth: "infinity", alignment: "leading" }}
+              >
+                Access Key 已失效，请通过 TG Bot 重新获取。
+              </Text>
+              <Button
+                role="close"
+                buttonStyle="plain"
+                action={() => setAccessKeyNoticeDismissed(true)}
+              >
+                <Image
+                  systemName="xmark"
+                  font={24}
+                  foregroundStyle="secondaryLabel"
+                  frame={{ width: 48, height: 48 }}
+                  contentShape="rect"
+                />
+              </Button>
+            </HStack>
+          </VStack>
+        ) : null}
         {shipments.length ? (
           <List listStyle="plain" refreshable={refresh}>
             <Section

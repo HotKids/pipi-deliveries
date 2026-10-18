@@ -126,6 +126,7 @@ const {
   gatewayCredentialStatus,
   loadGatewayCredentials,
   saveGatewayToken,
+  gatewayAccessKeyRejected,
 } = await import("../services/credentials");
 
 assert.equal(
@@ -228,6 +229,18 @@ await postGateway("/api/express/timeline/preferred", {
 assert.equal(fetchCalls, callsAfterShunFengRejection + 1);
 
 const replacementToken = "ZyXwVuTs_987-654";
+responseStatus = 401;
+await assert.rejects(postGateway("/api/express/classify", {}), rejectedWithStatus(401));
+assert.equal(gatewayAccessKeyRejected(), true, "the shared gateway response boundary publishes unauthorized");
+for (const text of ["invalid JSON", "x".repeat(8 * 1024 * 1024 + 1)]) {
+  fetchHandler = async () => ({ ...gatewayResponse(200), expectedContentLength: 0, text: async () => text });
+  await assert.rejects(postGateway("/api/express/classify", {}), /服务响应异常/);
+  assert.equal(gatewayAccessKeyRejected(), true, "an unusable 2xx body cannot restore the key");
+}
+fetchHandler = async () => gatewayResponse(responseStatus);
+responseStatus = 200;
+await postGateway("/api/express/classify", {});
+assert.equal(gatewayAccessKeyRejected(), false, "a later successful request clears the notice");
 saveGatewayToken(replacementToken);
 assert.deepEqual(loadGatewayCredentials(), { token: replacementToken });
 
@@ -250,6 +263,45 @@ resolveDelayedResponse(gatewayResponse(401));
 await assert.rejects(delayedRequest, rejectedWithStatus(401));
 assert.equal(gatewayCredentialStatus(), "configured");
 assert.deepEqual(loadGatewayCredentials(), { token: newestToken });
+assert.equal(gatewayAccessKeyRejected(), false, "old credential responses cannot publish a notice");
+
+for (const [status, code] of [[401, "expired_request"], [403, "key_activated_elsewhere"],
+  [403, "forbidden"], [502, "upstream_unavailable"]] as const) {
+  fetchHandler = async () => ({ ...gatewayResponse(status), text: async () => JSON.stringify({ error: code }) });
+  await assert.rejects(postGateway("/api/express/classify", {}), rejectedWithStatus(status));
+  assert.equal(gatewayAccessKeyRejected(), false, `${status} ${code} is not an expired key`);
+}
+fetchHandler = async () => { throw new Error("synthetic offline"); };
+await assert.rejects(postGateway("/api/express/classify", {}), /网络连接异常/);
+assert.equal(gatewayAccessKeyRejected(), false, "network failures do not invent key rejection");
+
+let resolveOlder: ((response: ReturnType<typeof gatewayResponse>) => void) | undefined;
+fetchHandler = () => new Promise(resolve => { resolveOlder = resolve; });
+const olderRejection = postGateway("/api/express/classify", {});
+fetchHandler = async () => gatewayResponse(200);
+await postGateway("/api/express/classify", {});
+resolveOlder!(gatewayResponse(401));
+await assert.rejects(olderRejection, rejectedWithStatus(401));
+assert.equal(gatewayAccessKeyRejected(), false, "late old HTTP responses cannot undo newer success");
+for (const [status, code] of [[403, "key_activated_elsewhere"], [503, "upstream_unavailable"]] as const) {
+  fetchHandler = () => new Promise(resolve => { resolveOlder = resolve; });
+  const oldUnauthorized = postGateway("/api/express/classify", {});
+  fetchHandler = async () => ({ ...gatewayResponse(status), text: async () => JSON.stringify({ error: code }) });
+  await assert.rejects(postGateway("/api/express/classify", {}), rejectedWithStatus(status));
+  resolveOlder!(gatewayResponse(401));
+  await assert.rejects(oldUnauthorized, rejectedWithStatus(401));
+  assert.equal(gatewayAccessKeyRejected(), false, "newer completed non-auth HTTP response fences an old 401");
+}
+for (const status of [200, 503]) {
+  fetchHandler = () => new Promise(resolve => { resolveOlder = resolve; });
+  const oldUnauthorized = postGateway("/api/express/classify", {});
+  fetchHandler = async () => ({ ...gatewayResponse(status), expectedContentLength: 0,
+    text: async () => "x".repeat(8 * 1024 * 1024 + 1) });
+  await assert.rejects(postGateway("/api/express/classify", {}), /服务响应异常/);
+  resolveOlder!(gatewayResponse(401));
+  await assert.rejects(oldUnauthorized, rejectedWithStatus(401));
+  assert.equal(gatewayAccessKeyRejected(), false, "a completed oversized response still fences older replies");
+}
 
 const { diagnosticErrorDetails, writeDiagnostic, readDiagnostics, setDiagnosticsEnabled } = await import("../services/logger");
 async function rejectsAsOperationTimeout(promise: Promise<unknown>, origin?: string, phase?: string) {
