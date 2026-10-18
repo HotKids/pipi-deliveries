@@ -53,6 +53,8 @@ final class ExpressHomeOrderProjectionCapture {
     private ExpressAutomaticTimelineCapture automaticCapture;
     private ExpressQueryCancellation cancellation;
     private ExecutorService worker;
+    private int runningWorkers;
+    private boolean cleanupFinished;
     private ExpressOrderProjectionRetryStore.AttemptToken attempt;
     private volatile boolean finished;
     private volatile boolean throttled;
@@ -173,7 +175,7 @@ final class ExpressHomeOrderProjectionCapture {
         if (attempt == null) return false;
         cancellation = new ExpressQueryCancellation(CAPTURE_TIMEOUT_MS + 10_000L);
         worker = Executors.newSingleThreadExecutor();
-        worker.execute(() -> {
+        executeWorker(() -> {
             try {
                 ExpressRepository repository = ExpressRepository.get(context);
                 ExpressRepository.ManualQueryOwnerClaim claim = repository.captureManualQueryOwner(source);
@@ -283,7 +285,7 @@ final class ExpressHomeOrderProjectionCapture {
                         .recordTimelineRateLimit(source, System.currentTimeMillis());
             }
             retries.recordPage(current, result, System.currentTimeMillis());
-            worker.execute(() -> {
+            executeWorker(() -> {
                 boolean saved = false;
                 try {
                     if (result != null && result.timeline != null) {
@@ -363,9 +365,31 @@ final class ExpressHomeOrderProjectionCapture {
         ExpressLog.line("v5", level, "jingdong", outcome, line);
     }
 
+    private void executeWorker(Runnable action) {
+        worker.execute(() -> {
+            synchronized (this) {
+                if (finished) return;
+                runningWorkers++;
+            }
+            try { action.run(); }
+            finally {
+                synchronized (this) { runningWorkers--; }
+                releaseSettledAttempt();
+            }
+        });
+    }
+
+    private synchronized void releaseSettledAttempt() {
+        if (!cleanupFinished || runningWorkers != 0) return;
+        ExpressOrderProjectionRetryStore.releaseAttempt(attempt);
+        attempt = null;
+    }
+
     void cancel() {
-        if (finished) return;
-        finished = true;
+        synchronized (this) {
+            if (finished) return;
+            finished = true;
+        }
         if (cancellation != null) cancellation.cancel();
         if (worker != null) worker.shutdownNow();
         if (automaticCapture != null) automaticCapture.cancel();
@@ -381,8 +405,8 @@ final class ExpressHomeOrderProjectionCapture {
                         + failure.getClass().getSimpleName());
             }
         }
-        ExpressOrderProjectionRetryStore.releaseAttempt(attempt);
-        attempt = null;
+        synchronized (this) { cleanupFinished = true; }
+        releaseSettledAttempt();
     }
 
     private void complete(boolean saved) {

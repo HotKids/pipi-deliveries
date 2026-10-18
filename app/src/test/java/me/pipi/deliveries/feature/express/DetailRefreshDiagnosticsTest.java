@@ -88,6 +88,7 @@ public final class DetailRefreshDiagnosticsTest {
         CaptureShadow.pageCalls = 0;
         CaptureShadow.mode = Mode.EMPTY;
         CaptureShadow.pageMode = Mode.EMPTY;
+        CaptureShadow.duringCapture = null;
         ShadowLog.clear();
     }
 
@@ -122,19 +123,37 @@ public final class DetailRefreshDiagnosticsTest {
                         > System.currentTimeMillis());
     }
 
-    /** ③ A union page still cooling down is a logged skip; the page is not opened. */
-    @Test public void aCoolingUnionPageIsALoggedSkip() throws Exception {
+    @Test public void aPullRetriesAUnionPageDuringOrdinaryCooldown() throws Exception {
         ExpressItem owner = signedProjectedOrder();
         ExpressOrderProjectionRetryStore retries = new ExpressOrderProjectionRetryStore(context);
         retries.endAttempt(retries.beginTimelineAttempt(owner, System.currentTimeMillis()));
         try (ExpressLog.Scope ignored = ExpressLog.scope("detail-test", "detail_pull", "v5")) {
             pullAutomaticDetail(owner);
         }
+        assertEquals(1, CaptureShadow.calls);
+        assertFalse(repository.signedUnionPageUsed(owner));
+        assertTrue(only(lines(), " detail.refresh.stage_failed ").endsWith(" errorCategory=no_result"));
+    }
+
+    @Test public void aTimedOutSignedRepairCanBePulledAgainWithoutConsumingItsAnswer() throws Exception {
+        ExpressItem owner = signedProjectedOrder();
+        CaptureShadow.mode = Mode.TIMEOUT;
+        pullAutomaticDetail(owner);
+        assertFalse(repository.signedUnionPageUsed(owner));
+        CaptureShadow.mode = Mode.SIGNED_PAGE;
+        pullAutomaticDetail(owner);
+        assertEquals(2, CaptureShadow.calls);
+        assertTrue(repository.signedUnionPageUsed(repository.find(owner.rowId)));
+    }
+
+    @Test public void aForegroundRestartKeepsOrdinaryUnionPageCooldown() throws Exception {
+        ExpressItem owner = signedProjectedOrder();
+        ExpressOrderProjectionRetryStore retries = new ExpressOrderProjectionRetryStore(context);
+        retries.endAttempt(retries.beginTimelineAttempt(owner, System.currentTimeMillis()));
+        runPull(owner, true);
         assertEquals(0, CaptureShadow.calls);
         String line = only(lines(), " detail.refresh.stage_skipped ");
-        assertTrue(line, line.contains(" INFO detail.refresh.stage_skipped ")
-                && line.contains(" level=jd_h5 ") && line.contains(" result=skipped "));
-        assertTrue(line, line.endsWith(" gateReason=cooldown"));
+        assertTrue(line, line.contains(" trigger=foreground ") && line.endsWith(" gateReason=cooldown"));
     }
 
     /** ③ A refresh that changed what the page shows ends committed. */
@@ -230,18 +249,89 @@ public final class DetailRefreshDiagnosticsTest {
         assertTrue(line, line.endsWith(" errorCategory=cancelled"));
     }
 
-    /** Left for later ③: an order whose page another capture holds is iOS's active_attempt skip. */
-    @Test public void anOrderWhosePageIsAlreadyOpenIsAnActiveAttemptSkip() throws Exception {
+    @Test public void anAutomaticRefreshWhosePageIsAlreadyOpenIsAnActiveAttemptSkip() throws Exception {
         ExpressItem owner = signedProjectedOrder();
         ExpressOrderProjectionRetryStore.AttemptToken held = ExpressOrderProjectionRetryStore.acquireAttempt(owner);
         assertNotNull(held);
-        try (ExpressLog.Scope ignored = ExpressLog.scope("detail-test", "detail_pull", "v5")) {
-            pullAutomaticDetail(owner);
+        try (ExpressLog.Scope ignored = ExpressLog.detailScope("detail-test", "foreground", "v5")) {
+            pullAutomaticDetail(owner, false);
         } finally {
             ExpressOrderProjectionRetryStore.releaseAttempt(held);
         }
         assertEquals(0, CaptureShadow.calls);
         assertTrue(only(lines(), " detail.refresh.stage_skipped ").endsWith(" gateReason=active_attempt"));
+    }
+
+    @Test public void aPullWaitsForTheHomeAttemptAndReadsItsCommittedTimeline() throws Exception {
+        ExpressItem owner = signedProjectedOrder();
+        ExpressOrderProjectionRetryStore.AttemptToken home = ExpressOrderProjectionRetryStore.acquireAttempt(owner);
+        assertNotNull(home);
+        java.util.concurrent.ExecutorService detailWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<?> pull = detailWorker.submit(() -> pullAutomaticDetail(owner));
+            try {
+                pull.get(100L, TimeUnit.MILLISECONDS);
+                org.junit.Assert.fail("the pull must wait for Home's commit");
+            } catch (java.util.concurrent.TimeoutException expected) { }
+            assertTrue(repository.saveAutomaticDetailTimeline(owner, repository.captureManualQueryOwner(owner),
+                    signedPage(), true));
+            assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(home));
+            pull.get(2L, TimeUnit.SECONDS);
+            assertEquals(0, CaptureShadow.calls);
+            assertEquals(TimelineSlot.JD_H5, repository.manualDetailTimelineAuthority(repository.find(owner.rowId)).provider);
+        } finally {
+            ExpressOrderProjectionRetryStore.releaseAttempt(home);
+            detailWorker.shutdownNow();
+        }
+    }
+
+    @Test public void aFailedHomeAttemptEndsTheWaitingPullWithoutClaimingItIsCurrent() throws Exception {
+        ExpressItem owner = signedProjectedOrder();
+        ExpressOrderProjectionRetryStore.AttemptToken home = ExpressOrderProjectionRetryStore.acquireAttempt(owner);
+        assertNotNull(home);
+        java.util.concurrent.ExecutorService detailWorker = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<?> pull = detailWorker.submit(preparePull(owner, false));
+            try {
+                pull.get(100L, TimeUnit.MILLISECONDS);
+                org.junit.Assert.fail("the pull must join the attempt, even if it will fail");
+            } catch (java.util.concurrent.TimeoutException expected) { }
+            assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(home));
+            pull.get(2L, TimeUnit.SECONDS);
+            assertEquals(0, CaptureShadow.calls);
+            assertEquals(0, CaptureShadow.pageCalls);
+            ReflectionHelpers.setField(activity, "pullRefreshRequested", true);
+            ReflectionHelpers.setField(activity, "renderedTimelineSignature", "cached");
+            ReflectionHelpers.setField(activity, "pullRefreshBaseline", "cached");
+            ReflectionHelpers.callInstanceMethod(activity, "announcePullRefreshOutcome");
+            assertEquals(0, org.robolectric.shadows.ShadowToast.shownToastCount());
+        } finally {
+            ExpressOrderProjectionRetryStore.releaseAttempt(home);
+            detailWorker.shutdownNow();
+        }
+    }
+
+    @Test public void aWaitingPullHonorsItsDeadlineWithoutCancellingHomeOrStartingAnotherPage() throws Exception {
+        ExpressItem owner = signedProjectedOrder();
+        ExpressOrderProjectionRetryStore.AttemptToken home = ExpressOrderProjectionRetryStore.acquireAttempt(owner);
+        assertNotNull(home);
+        long started = System.nanoTime();
+        try {
+            try {
+                pullAutomaticDetail(owner, true, 50L);
+                org.junit.Assert.fail("waiting must stop at the pull's own deadline");
+            } catch (RuntimeException expected) {
+                assertTrue(expected.getCause() instanceof InterruptedException);
+            }
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 1000L);
+            assertEquals(0, CaptureShadow.calls);
+            assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(home));
+            ReflectionHelpers.setField(activity, "pullRefreshRequested", true);
+            ReflectionHelpers.setField(activity, "renderedTimelineSignature", "cached");
+            ReflectionHelpers.setField(activity, "pullRefreshBaseline", "cached");
+            ReflectionHelpers.callInstanceMethod(activity, "announcePullRefreshOutcome");
+            assertEquals(0, org.robolectric.shadows.ShadowToast.shownToastCount());
+        } finally { ExpressOrderProjectionRetryStore.releaseAttempt(home); }
     }
 
     /** Left for later ③: the hour after JD risk control is iOS's risk_control_cooldown, not the ten minutes. */
@@ -253,6 +343,66 @@ public final class DetailRefreshDiagnosticsTest {
         }
         assertEquals(0, CaptureShadow.calls);
         assertTrue(only(lines(), " detail.refresh.stage_skipped ").endsWith(" gateReason=risk_control_cooldown"));
+    }
+
+    @Test public void aRiskControlledPullReportsTheRemainingMinutesInsteadOfUpToDate() throws Exception {
+        ExpressItem owner = signedProjectedOrder();
+        long now = System.currentTimeMillis();
+        new ExpressOrderProjectionRetryStore(context).recordTimelineRateLimit(owner, now - 56L * 60_000L);
+        pullAutomaticDetail(owner);
+        assertEquals(0, CaptureShadow.calls);
+        ReflectionHelpers.setField(activity, "pullRefreshRequested", true);
+        ReflectionHelpers.callInstanceMethod(activity, "announcePullRefreshOutcome");
+        assertEquals("京东风控中，请在 4 分钟后重试", org.robolectric.shadows.ShadowToast.getTextOfLatestToast());
+        assertFalse(ReflectionHelpers.getField(activity, "pullRefreshRequested"));
+        assertEquals(0L, ReflectionHelpers.<Long>getField(activity, "localRefreshRiskControlUntil").longValue());
+        assertEquals("京东风控中，请在 1 分钟后重试", ExpressToastCopy.jdRiskControlRemaining(1L));
+        assertEquals("京东风控中，请在 2 分钟后重试", ExpressToastCopy.jdRiskControlRemaining(60_001L));
+    }
+
+    @Test public void aNewRiskControlledPullReportsOneRemainingTimeOutcome() throws Exception {
+        ExpressItem owner = signedProjectedOrder();
+        CaptureShadow.mode = Mode.RISK_CONTROL;
+        pullAutomaticDetail(owner);
+        assertEquals(1, CaptureShadow.calls);
+        assertFalse(repository.signedUnionPageUsed(owner));
+        assertEquals(0, org.robolectric.shadows.ShadowToast.shownToastCount());
+        ReflectionHelpers.setField(activity, "pullRefreshRequested", true);
+        ReflectionHelpers.setField(activity, "renderedTimelineSignature", "cached");
+        ReflectionHelpers.setField(activity, "pullRefreshBaseline", "cached");
+        ReflectionHelpers.callInstanceMethod(activity, "announcePullRefreshOutcome");
+        assertEquals("京东风控中，请在 60 分钟后重试", org.robolectric.shadows.ShadowToast.getTextOfLatestToast());
+        assertEquals(1, org.robolectric.shadows.ShadowToast.shownToastCount());
+    }
+
+    @Test public void aNonExplicitCaptureKeepsTheExistingRiskControlMessage() throws Exception {
+        ExpressItem owner = signedProjectedOrder();
+        CaptureShadow.mode = Mode.RISK_CONTROL;
+        pullAutomaticDetail(owner, false);
+        assertEquals(1, CaptureShadow.calls);
+        assertEquals(ExpressToastCopy.JD_RISK_CONTROL, org.robolectric.shadows.ShadowToast.getTextOfLatestToast());
+        assertEquals(0L, ReflectionHelpers.<Long>getField(activity, "localRefreshRiskControlUntil").longValue());
+    }
+
+    @Test public void aPullJoiningTheSamePageReceivesTheNewRiskControlRemainingTime() throws Exception {
+        ExpressItem owner = signedProjectedOrder();
+        CaptureShadow.mode = Mode.RISK_CONTROL;
+        ReflectionHelpers.setField(activity, "item", owner);
+        ReflectionHelpers.setField(activity, "localRefreshInFlight", true);
+        ReflectionHelpers.setField(activity, "localRefreshIsPull", false);
+        CaptureShadow.duringCapture = () -> {
+            ReflectionHelpers.setField(activity, "pullRefreshRequested", true);
+            ReflectionHelpers.callInstanceMethod(activity, "refreshLocalTimelineInBackground",
+                    ClassParameter.from(boolean.class, false));
+        };
+        pullAutomaticDetail(owner, false);
+        assertEquals(1, CaptureShadow.calls);
+        assertTrue(ReflectionHelpers.getField(activity, "localRefreshSharedOrderOutcome"));
+        assertFalse(ReflectionHelpers.getField(activity, "pendingDetailPull"));
+        assertEquals(0, org.robolectric.shadows.ShadowToast.shownToastCount());
+        ReflectionHelpers.callInstanceMethod(activity, "announcePullRefreshOutcome");
+        assertEquals("京东风控中，请在 60 分钟后重试", org.robolectric.shadows.ShadowToast.getTextOfLatestToast());
+        assertEquals(1, org.robolectric.shadows.ShadowToast.shownToastCount());
     }
 
     /**
@@ -337,7 +487,7 @@ public final class DetailRefreshDiagnosticsTest {
         ExpressItem owner = signedProjectedOrder(false);
         long now = System.currentTimeMillis();
         ExpressOrderProjectionRetryStore retries = new ExpressOrderProjectionRetryStore(context);
-        retries.endAttempt(retries.beginTimelineAttempt(owner, now));
+        retries.recordTimelineRateLimit(owner, now);
         ExpressKuaidi100CaptureCooldown.record(context, owner.displayWaybill(), now);
         runPull(owner, false);
         assertEquals(0, CaptureShadow.calls);
@@ -356,15 +506,28 @@ public final class DetailRefreshDiagnosticsTest {
     }
 
     private void pullAutomaticDetail(ExpressItem owner) {
+        pullAutomaticDetail(owner, true);
+    }
+
+    private void pullAutomaticDetail(ExpressItem owner, boolean explicitPull) {
+        pullAutomaticDetail(owner, explicitPull, 5_000L);
+    }
+
+    private void pullAutomaticDetail(ExpressItem owner, boolean explicitPull, long budgetMillis) {
         ReflectionHelpers.callInstanceMethod(activity, "refreshAutomaticDetail",
                 ClassParameter.from(ExpressRepository.class, repository),
                 ClassParameter.from(ExpressItem.class, owner),
-                ClassParameter.from(ExpressQueryCancellation.class, new ExpressQueryCancellation(5_000L)),
-                ClassParameter.from(boolean.class, true));
+                ClassParameter.from(ExpressQueryCancellation.class, new ExpressQueryCancellation(budgetMillis)),
+                ClassParameter.from(boolean.class, true),
+                ClassParameter.from(boolean.class, explicitPull));
     }
 
     /** One pull through the page's own background refresh, run on this thread. */
     private void runPull(ExpressItem owner, boolean restartedOnStart) {
+        preparePull(owner, restartedOnStart).run();
+    }
+
+    private Runnable preparePull(ExpressItem owner, boolean restartedOnStart) {
         QueuedExecutor worker = new QueuedExecutor();
         ReflectionHelpers.setField(activity, "worker", worker);
         ReflectionHelpers.setField(activity, "item", owner);
@@ -380,7 +543,7 @@ public final class DetailRefreshDiagnosticsTest {
         // see a superseded refresh and leave the (absent) views alone.
         int generation = ReflectionHelpers.getField(activity, "localRefreshGeneration");
         ReflectionHelpers.setField(activity, "localRefreshGeneration", generation + 1);
-        worker.tasks.get(0).run();
+        return worker.tasks.get(0);
     }
 
     /** 已签收（结构化，完成时间比签收晚八个多小时）、已投影、feed 有揽收、带可信京粉页路由的订单行。 */
@@ -474,7 +637,7 @@ public final class DetailRefreshDiagnosticsTest {
         }
     }
 
-    enum Mode { EMPTY, SIGNED_PAGE, THROW, INTERRUPT }
+    enum Mode { EMPTY, SIGNED_PAGE, THROW, INTERRUPT, TIMEOUT, RISK_CONTROL }
 
     @Implements(ExpressAutomaticTimelineCapture.class)
     public static class CaptureShadow {
@@ -483,6 +646,7 @@ public final class DetailRefreshDiagnosticsTest {
         static Mode mode;
 
         static Mode pageMode;
+        static Runnable duringCapture;
 
         /** The primary H5 page (K100 / J&T) a pull opens: nothing, a cut-off capture, or a three-node page. */
         @Implementation protected static ExpressAutomaticTimelineCapture.Result capture(
@@ -509,9 +673,16 @@ public final class DetailRefreshDiagnosticsTest {
                 Activity host, ExpressItem owner, String route, String provider,
                 ExpressQueryCancellation cancellation) throws InterruptedException {
             calls++;
+            if (duringCapture != null) {
+                Runnable action = duringCapture;
+                duringCapture = null;
+                action.run();
+            }
             switch (mode) {
                 case INTERRUPT: throw new InterruptedException("Express query cancelled");
                 case THROW: throw new IllegalStateException("Synthetic private page failure");
+                case TIMEOUT: return new ExpressAutomaticTimelineCapture.Result(null, false, false);
+                case RISK_CONTROL: return new ExpressAutomaticTimelineCapture.Result(null, false, true);
                 case SIGNED_PAGE:
                     try {
                         return new ExpressAutomaticTimelineCapture.Result(signedPage(), true, false);

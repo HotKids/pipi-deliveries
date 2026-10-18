@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
+import { jdRiskControlRetryText } from "../services/express-toast-copy";
 
 // Exercise the owning page's actual async closure without pretending to render the iOS host.
 const page = readFileSync(new URL("../pages/DetailPage.tsx", import.meta.url), "utf8");
@@ -46,6 +47,7 @@ function pageHarness(seed = shipment()) {
     refreshInFlightRef: { current: null },
     refreshAbortRef: { current: null },
     pullInFlightRef: { current: null },
+    joinedJdPullRef: { current: false },
     detailEntryRef: { current: undefined },
     displayTracks: seed.timeline.tracks,
     setNotice: (text: string) => { state.notices.push(text); },
@@ -59,11 +61,15 @@ function pageHarness(seed = shipment()) {
       return network.promise;
     },
     refreshShipmentById: () => { throw new Error("Initial preview must use continuation"); },
+    hasActiveAccountOrderProjection: () => false,
+    isJingDongSourceShipment: () => false,
+    unprojectedAccountOrder: () => false,
     selectShipmentDetailTimeline: (value: any) => value.timeline,
     manualPreviewNeedsDetailRefresh: (value: any) => value.timeline.complete !== true,
     isProviderErrorDetail: () => false,
     manualDetailRefreshToast: (refreshed: boolean, usable: boolean) => refreshed && usable ? "success" : "empty",
     detailPullToast: () => "pull",
+    jdRiskControlRetryText,
     EXPRESS_TOAST_COPY: { detailRefreshFailed: "failed" },
     diagnosticErrorDetails: () => ({ errorCategory: "unexpected" }),
     writeDiagnostic: () => {},
@@ -126,6 +132,43 @@ for (const entryFails of [false, true]) {
     "a failed pull over cached content is silent");
 }
 
+// A pull during actual JD capture reuses it, including failure, without queuing a second load.
+for (const captureStarted of [false, true]) {
+  const page = pageHarness(shipment("TRANSIT", [{ detail: "Cached JD event" }]));
+  page.context.props.refreshOnAppear = "detail_open";
+  page.context.props.manualPreview = null;
+  page.context.hasActiveAccountOrderProjection = () => captureStarted;
+  page.context.isJingDongSourceShipment = () => true;
+  page.context.unprojectedAccountOrder = () => !captureStarted;
+  const capture = deferred();
+  let calls = 0;
+  page.context.refreshShipmentById = () => { calls++; return capture.promise; };
+  const opening = page.refresh(false);
+  assert.equal(page.refresh(true), opening);
+  assert.equal(page.refresh(true), opening);
+  if (captureStarted) capture.reject(new Error("JD capture timeout"));
+  else capture.resolve({ shipment: page.state.shipment, state: {}, refreshed: false, querySucceeded: false });
+  await opening;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1, "a joined gesture never adds a capture when the first one ends");
+}
+
+// A pull joining the page's entry still receives fresh or persisted risk-control remaining time.
+for (const freshRisk of [true, false]) {
+  const page = pageHarness(shipment("TRANSIT", [{ detail: "Cached JD event" }]));
+  page.context.props.refreshOnAppear = "detail_open";
+  page.context.props.manualPreview = null;
+  page.context.hasActiveAccountOrderProjection = () => true;
+  const capture = deferred();
+  page.context.refreshShipmentById = () => capture.promise;
+  const opening = page.refresh(false);
+  assert.equal(page.refresh(true), opening);
+  capture.resolve({ shipment: page.state.shipment, state: {}, refreshed: false, querySucceeded: false,
+    ...(freshRisk ? { expressToast: "jdRiskControl" } : {}), expressToastRemainingMs: 60_001 });
+  await opening;
+  assert.equal(page.state.notices.at(-1), "京东风控中，请在 2 分钟后重试");
+}
+
 // A pull that throws is silent over cached content too, and reports the failure without it.
 for (const [tracks, expected] of [[[{ detail: "Cached event" }], 0], [[], 1]] as const) {
   const page = pageHarness(shipment("TRANSIT", [...tracks]));
@@ -137,6 +180,19 @@ for (const [tracks, expected] of [[[{ detail: "Cached event" }], 0], [[], 1]] as
   await page.refresh(true);
   assert.equal(shown() - before, expected,
     `thrown pull with ${tracks.length} cached tracks: ${JSON.stringify(page.state.notices)}`);
+}
+
+// A blocked pull reports the remaining risk-control time even while cached history is visible.
+{
+  assert.equal(jdRiskControlRetryText(60_001), "京东风控中，请在 2 分钟后重试");
+  assert.equal(jdRiskControlRetryText(1), "京东风控中，请在 1 分钟后重试");
+  const page = pageHarness(shipment("TRANSIT", [{ detail: "Cached JD event" }]));
+  page.context.props.refreshOnAppear = "detail_open";
+  page.context.props.manualPreview = null;
+  page.context.refreshShipmentById = async () => ({ shipment: page.state.shipment, state: {},
+    refreshed: false, querySucceeded: false, expressToast: "jdRiskControl", expressToastRemainingMs: 60_001 });
+  await page.refresh(true);
+  assert.equal(page.state.notices.at(-1), "京东风控中，请在 2 分钟后重试");
 }
 
 // Without any timeline to show, a failed pull still reports the failure.

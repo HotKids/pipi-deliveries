@@ -391,8 +391,7 @@ assert.equal(
   ),
   true,
 );
-// There is no longer a way to force past either rest: the extra argument is gone, and passing
-// one must not resurrect the old bypass.
+// Legacy force booleans cannot lift either rest; only the explicit detail_pull trigger may bypass the ordinary rest.
 // `length` counts parameters before the first default, so this is (retry, routeHash).
 assert.equal(shouldRetryAccountOrderProjection.length, 2);
 assert.equal(
@@ -425,5 +424,17 @@ assert.equal(
   ),
   false,
 );
+
+// A new explicit pull retries an ordinary failure, but never a live capture or JD risk control.
+assert.equal(shouldRetryAccountOrderProjection(
+  { routeHash: ROUTE_HASH, failedAtMs: RISK_FAILED_AT }, ROUTE_HASH, RISK_FAILED_AT + 1, "detail_pull",
+), true);
+assert.equal(shouldRetryAccountOrderProjection(
+  riskRetry, ROUTE_HASH, RISK_FAILED_AT + ACCOUNT_ORDER_PROJECTION_RETRY_MS, "detail_pull",
+), false);
+assert.equal(shouldRetryAccountOrderProjection(
+  { routeHash: ROUTE_HASH, failedAtMs: RISK_FAILED_AT, attemptId: "projection-live-123",
+    attemptExpiresAtMs: RISK_FAILED_AT + 22_000 }, ROUTE_HASH, RISK_FAILED_AT + 1, "detail_pull",
+), false);
 
 console.log("account sync budget and rotation tests passed");

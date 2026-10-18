@@ -182,6 +182,7 @@ public class ExpressDetailH5EligibilityTest {
                 ClassParameter.from(ExpressRepository.class, repository),
                 ClassParameter.from(ExpressItem.class, owner),
                 ClassParameter.from(ExpressQueryCancellation.class, new ExpressQueryCancellation(1000L)),
+                ClassParameter.from(boolean.class, true),
                 ClassParameter.from(boolean.class, true));
     }
 

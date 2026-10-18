@@ -53,6 +53,8 @@ public final class ExpressHomeOrderProjectionTest {
         CaptureShadow.result = null;
         CarrierShadow.calls = 0;
         CarrierShadow.waybill = null;
+        QueryShadow.ignoreInterrupts = false;
+        QueryShadow.entered = null;
     }
 
     @Test public void onlyUnresolvedInterface5OrdersWithAnAvailableRouteAreEligible() {
@@ -329,6 +331,55 @@ public final class ExpressHomeOrderProjectionTest {
         retries.endAttempt(next);
     }
 
+    @Test public void explicitPullBypassesOnlyOrdinaryRestAndKeepsTheOrderLease() {
+        ExpressItem item = order(1L, "I5-JD", "", true, ROUTE_A);
+        ExpressOrderProjectionRetryStore.AttemptToken automatic = retries.beginAttempt(item, NOW);
+        assertNotNull(automatic);
+        assertNull(retries.beginTimelineAttempt(item, NOW + 1L, true));
+        retries.endAttempt(automatic);
+        retries = new ExpressOrderProjectionRetryStore(context);
+        ExpressOrderProjectionRetryStore.AttemptToken pull =
+                retries.beginTimelineAttempt(item, NOW + 1L, true);
+        assertNotNull(pull);
+        assertNull(retries.beginTimelineAttempt(item, NOW + 2L, true));
+        retries.endAttempt(pull);
+        assertNull(retries.beginAttempt(item, NOW + 2L));
+    }
+
+    @Test public void aPersistedRiskControlDeadlineStillBlocksTheLastMinutesOfItsHour() {
+        ExpressItem item = order(1L, "I5-JD", "", true, ROUTE_A);
+        retries.recordTimelineRateLimit(item, NOW);
+        retries = new ExpressOrderProjectionRetryStore(context);
+        long late = NOW + 56L * 60_000L;
+        assertEquals(4L * 60_000L, retries.riskControlRemainingMillis(item, late));
+        assertNull(retries.beginTimelineAttempt(item, late, true));
+        assertEquals("risk_control_cooldown", retries.timelineSkipReason(item, late));
+        long until = NOW + 60L * 60_000L;
+        ExpressOrderProjectionRetryStore.AttemptToken next = retries.beginTimelineAttempt(item, until, true);
+        assertNotNull(next);
+        retries.endAttempt(next);
+    }
+
+    @Test public void beginOrJoinKeepsTheExactTokenWhenItsOwnerSettlesBeforeWaiting() throws Exception {
+        ExpressItem item = order(1L, "I5-JD", "", true, ROUTE_A);
+        ExpressOrderProjectionRetryStore.AttemptToken home = retries.beginAttempt(item, NOW);
+        assertNotNull(home);
+        ExpressOrderProjectionRetryStore.TimelineAttempt joined =
+                retries.beginOrJoinTimelineAttempt(item, NOW + 1L);
+        assertTrue(joined.joined);
+        assertSame(home, joined.token);
+        assertTrue(ExpressOrderProjectionRetryStore.releaseAttempt(home));
+        joined.token.awaitCompletion(new ExpressQueryCancellation(1_000L));
+        assertTrue(joined.joined);
+        assertNull(ExpressOrderProjectionRetryStore.activeAttempt(item));
+        assertNull(retries.beginAttempt(item, NOW + 2L));
+        ExpressOrderProjectionRetryStore.TimelineAttempt own =
+                retries.beginOrJoinTimelineAttempt(item, NOW + 2L);
+        assertFalse(own.joined);
+        assertNotNull(own.token);
+        retries.endAttempt(own.token);
+    }
+
     @Test public void anActiveAttemptAndAStaleReleaseCannotAllowASecondCapture() {
         ExpressItem item = order(1L, "I5-JD", "", true, ROUTE_A);
         ExpressOrderProjectionRetryStore.AttemptToken first = retries.beginAttempt(item, NOW);
@@ -384,6 +435,53 @@ public final class ExpressHomeOrderProjectionTest {
         verifyHomeQuery(false, true);
     }
 
+    @Test public void cancellingHomeKeepsItsLeaseUntilTheRunningWorkerFinishes() throws Exception {
+        withRepository("13800000001", repository -> {
+            ExpressQueryResult feed = new ExpressQueryResult("JDORDERHOMECANCEL", "JD", "京东购物",
+                    StatusSemantic.TRANSIT, 0L, "2026-09-09 09:00:00", "已揽收",
+                    "[{\"time\":\"2026-09-09 09:00:00\",\"context\":\"已揽收\"}]", "",
+                    "13800000001", "v5_query", "", "", "JingDong");
+            repository.saveInterface5OrderSummary(feed, "13800000001");
+            ExpressItem stored = repository.findByWaybill(feed.waybill, "interface5");
+            ExpressItem source = new ExpressItem(stored.rowId, stored.phone, stored.waybill,
+                    stored.courierCode, stored.companyName, stored.semantic, stored.statusDescription,
+                    stored.latestDetail, stored.latestTime, stored.tracksJson, "", stored.source,
+                    "", 0L, stored.updatedAt, stored.stateOwner, "", "v5", ROUTE_A, true,
+                    "", "", "[]", "JingDong");
+            QueryShadow.result = null;
+            QueryShadow.calls = 0;
+            QueryShadow.waiting = new java.util.concurrent.CountDownLatch(1);
+            QueryShadow.entered = new java.util.concurrent.CountDownLatch(1);
+            QueryShadow.ignoreInterrupts = true;
+            Activity host = Robolectric.buildActivity(Activity.class).setup().get();
+            ExpressHomeOrderProjectionCapture capture = new ExpressHomeOrderProjectionCapture(host, source, null);
+            try {
+                assertTrue(capture.start());
+                assertTrue(QueryShadow.entered.await(1L, java.util.concurrent.TimeUnit.SECONDS));
+                capture.cancel();
+                ExpressOrderProjectionRetryStore.AttemptToken early =
+                        ExpressOrderProjectionRetryStore.acquireAttempt(source);
+                if (early != null) ExpressOrderProjectionRetryStore.releaseAttempt(early);
+                assertNull("a cancelled worker can still be finishing its transaction", early);
+                QueryShadow.waiting.countDown();
+                ExpressOrderProjectionRetryStore.AttemptToken next = null;
+                long until = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2L);
+                while (next == null && System.nanoTime() < until) {
+                    Thread.sleep(5L);
+                    next = ExpressOrderProjectionRetryStore.acquireAttempt(source);
+                }
+                assertNotNull(next);
+                ExpressOrderProjectionRetryStore.releaseAttempt(next);
+            } finally {
+                QueryShadow.waiting.countDown();
+                capture.cancel();
+                host.finish();
+                QueryShadow.ignoreInterrupts = false;
+                QueryShadow.entered = null;
+            }
+        });
+    }
+
     @Test public void homeH5RecognizesAnUnnamedProjectedCarrierBeforeCompleting() throws Exception {
         context.deleteDatabase(ExpressDatabase.DATABASE);
         java.lang.reflect.Field singleton = ExpressRepository.class.getDeclaredField("instance");
@@ -425,12 +523,16 @@ public final class ExpressHomeOrderProjectionTest {
                 });
         try {
             assertTrue(capture.start());
+            ExpressOrderProjectionRetryStore.AttemptToken running =
+                    ExpressOrderProjectionRetryStore.activeAttempt(source);
+            assertNotNull(running);
             long until = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
             while (System.nanoTime() < until && !finished[0]) {
                 Thread.sleep(10);
                 Shadows.shadowOf(Looper.getMainLooper()).idle();
             }
             assertTrue("The Home capture must finish", finished[0]);
+            running.awaitCompletion(new ExpressQueryCancellation(1_000L));
             assertTrue(saved[0]);
             assertEquals(1, QueryShadow.calls);
             assertEquals(1, CaptureShadow.starts);
@@ -509,6 +611,9 @@ public final class ExpressHomeOrderProjectionTest {
             assertEquals(cancelDuringQuery,
                     context.getSharedPreferences("express_jd_h5_cooldown", 0).getAll().isEmpty());
             if (cancelDuringQuery) {
+                ExpressOrderProjectionRetryStore.AttemptToken finishing =
+                        ExpressOrderProjectionRetryStore.activeAttempt(source);
+                if (finishing != null) finishing.awaitCompletion(new ExpressQueryCancellation(2_000L));
                 ExpressOrderProjectionRetryStore.AttemptToken reopened =
                         ExpressOrderProjectionRetryStore.acquireAttempt(source);
                 assertNotNull(reopened);
@@ -529,10 +634,25 @@ public final class ExpressHomeOrderProjectionTest {
         static volatile int calls;
         static ExpressQueryResult result;
         static java.util.concurrent.CountDownLatch waiting;
+        static java.util.concurrent.CountDownLatch entered;
+        static volatile boolean ignoreInterrupts;
         @Implementation protected ExpressQueryResult refreshKnown(Context ignored,
                 ExpressItem owner, boolean force, ExpressQueryCancellation cancellation) throws InterruptedException {
             calls++;
-            if (waiting != null) waiting.await(3, java.util.concurrent.TimeUnit.SECONDS);
+            if (entered != null) entered.countDown();
+            if (waiting != null) {
+                boolean interrupted = false;
+                while (true) {
+                    try {
+                        waiting.await(3, java.util.concurrent.TimeUnit.SECONDS);
+                        break;
+                    } catch (InterruptedException cancelled) {
+                        if (!ignoreInterrupts) throw cancelled;
+                        interrupted = true;
+                    }
+                }
+                if (interrupted) Thread.currentThread().interrupt();
+            }
             return result;
         }
     }

@@ -73,7 +73,7 @@ public final class ExpressQueryCancellation implements AutoCloseable {
         }
     }
 
-    int remainingTimeoutMillis(int maximumMillis) throws InterruptedException {
+    public int remainingTimeoutMillis(int maximumMillis) throws InterruptedException {
         if (maximumMillis <= 0) throw new IllegalArgumentException("maximum must be positive");
         throwIfCancelled();
         long remainingNanos = deadlineNanos - System.nanoTime();

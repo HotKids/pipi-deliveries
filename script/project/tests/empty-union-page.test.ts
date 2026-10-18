@@ -24,7 +24,7 @@ import { emptyState, loadState, saveState } from "../services/storage";
 import { projectStoredAccountOrders, runShipmentRefreshForTesting } from "../services/sync";
 
 // 用户 2026-09-25 同意（方案 A，与 Lite 同一语义）：已完成订单的京粉页一旦确认是空壳，就记住这一单，首页那一遍（含
-// 同一条自动路径的列表刷新）与详情页取号都不再开；用户自己在详情页下拉照样开页（冷却照旧），抓到东西就清掉标记。
+// 同一条自动路径的列表刷新）与详情页取号都不再开；用户自己在详情页下拉可绕过普通冷却，抓到东西就清掉标记。
 // 空壳：页面完整加载、在屏幕上（有宿主、非零尺寸、visible）、没有风控，且什么物流内容都没抓到——没有 probe 抓取、
 // 没有 DOM／弹层包、没有轨迹、没有运单号；京东的 union 接口有没有回、回了 200 都不影响（Lite 上同一类页面根本没有
 // union 响应）。一次空页不算数（Lite 上 …5251 空页 13 分钟后就取到了），要同一张已完成订单两次空壳、相隔至少一个
@@ -118,10 +118,12 @@ const DAY = 86400000;
     "a capture clears the mark");
   assert.equal(shouldRetryAccountOrderProjectionUnprompted(confirmed, hash, NOW + 365 * DAY), false,
     "the Home pass, the list refresh and detail entry never reopen a confirmed empty page");
-  assert.equal(shouldRetryAccountOrderProjection(confirmed, hash, NOW + 365 * DAY), true,
-    "an explicit pull keeps only the ordinary rest");
+  assert.equal(shouldRetryAccountOrderProjection(confirmed, hash, NOW + 365 * DAY, "detail_pull"), true,
+    "an explicit pull may reopen a confirmed empty page");
   assert.equal(shouldRetryAccountOrderProjection(confirmed, hash, NOW + rest - 1), false,
-    "the ordinary rest still holds for a pull");
+    "the ordinary rest still holds for an automatic request");
+  assert.equal(shouldRetryAccountOrderProjection(confirmed, hash, NOW + rest - 1, "detail_pull"), true,
+    "an explicit pull bypasses the ordinary rest without clearing the empty-page mark itself");
   assert.equal(shouldRetryAccountOrderProjectionUnprompted(confirmed, "b".repeat(64), NOW + rest * 2), true);
   assert.equal(shouldRetryAccountOrderProjectionUnprompted(record({ emptyShellAtMs: NOW }), hash, NOW + rest), true,
     "one strike keeps the ordinary ten-minute rest");
@@ -288,19 +290,18 @@ const detail = (trigger: "identity_projection" | "detail_pull", capture: () => P
 }
 
 // An explicit detail pull is the user's own request: on a marked order it still opens the page,
-// after the ordinary rest, and what it captures clears the mark, so the Home pass may try again.
+// inside the ordinary rest, and what it captures clears the mark, so the Home pass may try again.
 {
   seed(completedOrder());
   await markEmpty();
   let opened = 0;
   clock += 60_000;
   let logged = readDiagnostics().length;
-  await detail("detail_pull", () => { opened++; });
-  assert.equal(opened, 0, "inside the ordinary rest a pull is refused like any other load");
-  assert.equal(skipResult(logged)?.result, "cooldown");
+  await detail("identity_projection", () => { opened++; });
+  assert.equal(opened, 0, "automatic identity extraction still respects the confirmed-empty mark");
+  assert.equal(skipResult(logged)?.result, "confirmed_empty");
   assert.ok(retry()?.emptyShellConfirmedAtMs);
 
-  clock = afterRest(retry()!.failedAtMs!);
   logged = readDiagnostics().length;
   await detail("detail_pull", () => { opened++; });
   assert.equal(opened, 1, "the pull opens the page of a marked order");

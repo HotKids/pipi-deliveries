@@ -186,6 +186,8 @@ import {
   retainedEmptyShellStrikes,
   shouldRetryAccountOrderProjection,
   shouldRetryAccountOrderProjectionUnprompted,
+  accountOrderProjectionRetryReason,
+  accountOrderProjectionRiskRemainingMs,
   unionPageOutcome,
 } from "./account-sync-policy";
 import type { ExpressToastKey } from "./express-toast-copy";
@@ -333,6 +335,7 @@ type ShipmentRefreshResult = {
   detailEntry?: DetailEntryObservation;
   /** Unified express toast (AGENTS §11) chosen by the refresh, rendered from the shared copy table. */
   expressToast?: ExpressToastKey;
+  expressToastRemainingMs?: number;
 };
 export type DetailEntryObservation = Readonly<{
   fingerprint: string;
@@ -1374,20 +1377,27 @@ function ownsProjectionAttempt(
 
 const activeProjectionAttempts = new Map<string, { promise: Promise<void>; settle: () => void }>();
 
-function trackProjectionAttempt(shipmentId: string): void {
-  settleProjectionAttempt(shipmentId);
+function trackProjectionAttempt(shipmentId: string): () => void {
+  if (activeProjectionAttempts.has(shipmentId)) throw new Error("JD capture is already running");
   let settle: () => void = () => {};
   const promise = new Promise<void>((resolve) => {
     settle = resolve;
   });
-  activeProjectionAttempts.set(shipmentId, { promise, settle });
+  const entry = { promise, settle };
+  activeProjectionAttempts.set(shipmentId, entry);
+  return () => {
+    if (activeProjectionAttempts.get(shipmentId) !== entry) return;
+    activeProjectionAttempts.delete(shipmentId);
+    settle();
+  };
 }
 
-function settleProjectionAttempt(shipmentId: string): void {
-  const entry = activeProjectionAttempts.get(shipmentId);
-  if (!entry) return;
-  activeProjectionAttempts.delete(shipmentId);
-  entry.settle();
+export function hasActiveAccountOrderProjection(shipmentId: string): boolean {
+  if (activeProjectionAttempts.has(shipmentId)) return true;
+  const shipment = loadState().shipments.find(item => item.identity.id === shipmentId);
+  return [shipment?.identity.orderProjectionRetry, shipment?.identity.jingDongH5Retry].some(
+    retry => accountOrderProjectionAttemptRemainingMs(retry) > 0,
+  );
 }
 
 const PROJECTION_WAIT_MAX_SLICE_MS = 1_000;
@@ -1395,33 +1405,47 @@ const PROJECTION_WAIT_MAX_SLICE_MS = 1_000;
 async function waitForProjectionAttemptRelease(
   shipmentId: string,
   signal?: AbortSignal,
+  deadlineAtMs?: number,
+  explicitPull = false,
 ): Promise<ShipmentRefreshResult | null> {
-  const waitDeadlineAtMs = Date.now() +
-    ACCOUNT_ORDER_PROJECTION_ATTEMPT_MS + FORCED_PROJECTION_WAIT_SLICE_MS;
+  const waitDeadlineAtMs = Math.min(deadlineAtMs ?? Infinity, Date.now() +
+    ACCOUNT_ORDER_PROJECTION_ATTEMPT_MS + FORCED_PROJECTION_WAIT_SLICE_MS);
   let sliceMs = FORCED_PROJECTION_WAIT_SLICE_MS;
   let seenRevision = peekStateRevision();
   let state = loadState();
+  const initial = state.shipments.find(item => item.identity.id === shipmentId);
+  let joined = false;
   while (true) {
     assertRefreshSignal(signal);
     const shipment = state.shipments.find(
       (item) => item.identity.id === shipmentId,
     );
     if (!shipment) throw new Error("该快递已从列表中移除");
-    if (!unprojectedAccountOrder(shipment)) {
-      return { shipment, state, refreshed: true };
-    }
-    const remainingAttemptMs = accountOrderProjectionAttemptRemainingMs(
-      shipment.identity.orderProjectionRetry,
-    );
-    if (remainingAttemptMs <= 0) return null;
-    const remainingWaitMs = waitDeadlineAtMs - Date.now();
-    if (remainingWaitMs <= 0) return null;
+    if (!explicitPull && !unprojectedAccountOrder(shipment)) return { shipment, state, refreshed: true };
     const inProcess = activeProjectionAttempts.get(shipmentId)?.promise || null;
+    const remainingAttemptMs = Math.max(
+      accountOrderProjectionAttemptRemainingMs(shipment.identity.orderProjectionRetry),
+      accountOrderProjectionAttemptRemainingMs(shipment.identity.jingDongH5Retry),
+    );
+    joined ||= Boolean(inProcess || remainingAttemptMs > 0);
+    const remainingWaitMs = waitDeadlineAtMs - Date.now();
+    if ((!inProcess && remainingAttemptMs <= 0) || remainingWaitMs <= 0) {
+      if (!joined || !explicitPull) return null;
+      const refreshed = Boolean(initial && (
+        normalizedProjectedWaybill(initial.identity) !== normalizedProjectedWaybill(shipment.identity) ||
+        JSON.stringify(selectShipmentDetailTimeline(initial)) !== JSON.stringify(selectShipmentDetailTimeline(shipment))
+      ));
+      const riskRemainingMs = Math.max(...[
+        shipment.identity.orderProjectionRetry, shipment.identity.jingDongH5Retry,
+      ].map(retry => accountOrderProjectionRiskRemainingMs(retry, retry?.routeHash || "")));
+      return { shipment, state, refreshed, querySucceeded: refreshed,
+        ...(riskRemainingMs > 0 ? { expressToast: "jdRiskControl", expressToastRemainingMs: riskRemainingMs } : {}) };
+    }
     let inProcessSettled = false;
     await new Promise<void>((resolve) => {
       const timer = setTimeout(
         resolve,
-        Math.max(1, Math.min(sliceMs, remainingAttemptMs, remainingWaitMs)),
+        Math.max(1, Math.min(sliceMs, remainingAttemptMs || sliceMs, remainingWaitMs)),
       );
       if (inProcess) {
         void inProcess.then(() => {
@@ -2032,6 +2056,7 @@ function accountOrderProjectionDecision(
     return { due: false, skipped: "before_pickup" };
   }
   const routeHash = projectionCooldownKey(parcel);
+  if (activeProjectionAttempts.has(expectedId)) return { due: false, skipped: "active_attempt" };
   // Automatic path: a confirmed empty page stays closed (方案 A, 2026-09-25).
   if (
     shouldRetryAccountOrderProjectionUnprompted(
@@ -2181,11 +2206,11 @@ async function projectAccountOrders(
         if (
       !parcel.textIdentity?.waybill &&
       !heldProjection &&
-      !shouldRetryAccountOrderProjectionUnprompted(
+      (activeProjectionAttempts.has(expectedId) || !shouldRetryAccountOrderProjectionUnprompted(
         freshOwner?.identity.orderProjectionRetry,
         routeHash,
         Date.now(),
-      )
+      ))
     ) {
       if (freshOwner) shipments = replaceById(shipments, freshOwner);
       writeDiagnostic("order.projection.skipped", {
@@ -2258,7 +2283,7 @@ async function projectAccountOrders(
       continue;
     }
     attempted++;
-    trackProjectionAttempt(expectedId);
+    const releaseProjectionAttempt = trackProjectionAttempt(expectedId);
     let projectionDiagnostics: AccountOrderProjectionDiagnostics | null = null;
     writeDiagnostic("order.projection.started", {
       flowId,
@@ -2339,6 +2364,8 @@ async function projectAccountOrders(
           "warning",
         );
       }
+    } finally {
+      releaseProjectionAttempt();
     }
 
     // A page left to the on-screen pass ends as skipped below; cancelled before that, it ends here.
@@ -2376,7 +2403,6 @@ async function projectAccountOrders(
         workingState = ownershipState;
       }
       shipments = [...workingState.shipments];
-      settleProjectionAttempt(expectedId);
       writeDiagnostic("order.projection.skipped", {
         flowId,
         source,
@@ -2488,7 +2514,6 @@ async function projectAccountOrders(
       "webview",
       { ownerId: expectedId, routeHash, attemptId },
     );
-    settleProjectionAttempt(expectedId);
     workingState = committed.state;
     shipments = [...committed.state.shipments];
     if (!committed.applied) {
@@ -3724,12 +3749,14 @@ async function runShipmentRefreshById(
   options: ShipmentRefreshOptions = {},
   runtimeOverrides: ShipmentRefreshRuntimeOverrides = {},
 ): Promise<ShipmentRefreshResult> {
-  const interrupted: { end?: () => void } = {};
+  const interrupted: { end?: () => void; releaseProjection?: () => void } = {};
   try {
     return await runShipmentRefreshFlow(shipmentId, lease, options, runtimeOverrides, interrupted);
   } catch (error) {
     if (lease.signal?.aborted) interrupted.end?.();
     throw error;
+  } finally {
+    interrupted.releaseProjection?.();
   }
 }
 
@@ -3738,7 +3765,7 @@ async function runShipmentRefreshFlow(
   lease: TargetRefreshLease,
   options: ShipmentRefreshOptions,
   runtimeOverrides: ShipmentRefreshRuntimeOverrides,
-  interrupted: { end?: () => void },
+  interrupted: { end?: () => void; releaseProjection?: () => void },
 ): Promise<ShipmentRefreshResult> {
   const runtime = { refreshAccountParcel, queryManualForSource, refreshWebTimeline,
     refreshCainiaoH5, projectAccountOrderWithCarrier, ...runtimeOverrides };
@@ -4022,6 +4049,7 @@ async function runShipmentRefreshFlow(
   let cainiaoRouteUrl = storedCainiaoRoute(original, startedAt);
   let changed = false;
   let expressToast: ExpressToastKey | "" = "";
+  let expressToastRemainingMs = 0;
   let stage = "dispatch";
   let carrierRepair: CarrierRecognitionResult | null = null;
   /**
@@ -4169,9 +4197,9 @@ async function runShipmentRefreshFlow(
               });
                         } else if (
               (reopenForTimeline || !parcel.textIdentity?.waybill) &&
-              !(
+              (activeProjectionAttempts.has(ownerId) || !(
                 // 方案 A (2026-09-25): detail entry leaves a confirmed empty page closed; an explicit
-                // pull is the user's own request and only keeps the ordinary rest.
+                // pull is the user's own request and bypasses only the ordinary rest.
                 trigger === "identity_projection" && !reopenForTimeline
                   ? shouldRetryAccountOrderProjectionUnprompted(
                       freshOwner?.identity.orderProjectionRetry,
@@ -4184,29 +4212,27 @@ async function runShipmentRefreshFlow(
                         : freshOwner?.identity.orderProjectionRetry,
                       routeHash,
                       Date.now(),
+                      trigger === "detail_pull" ? "detail_pull" : "automatic",
                     )
-              )
+              ))
             ) {
               const gatingRetry = reopenForTimeline
                 ? freshOwner?.identity.jingDongH5Retry
                 : freshOwner?.identity.orderProjectionRetry;
+              const reason = activeProjectionAttempts.has(ownerId) ? "active_attempt"
+                : trigger === "identity_projection" && !reopenForTimeline &&
+                    accountOrderPageConfirmedEmpty(gatingRetry, routeHash) ? "confirmed_empty"
+                : accountOrderProjectionRetryReason(gatingRetry, routeHash);
+              if (reason === "risk_control_cooldown") {
+                if (trigger === "detail_pull") expressToast = "jdRiskControl";
+                expressToastRemainingMs = accountOrderProjectionRiskRemainingMs(gatingRetry, routeHash);
+              }
               writeDiagnostic("order.projection.skipped", {
                 flowId,
                 source,
                 stage: "detail_webview",
                 ownerFingerprint,
-                result: activeAccountOrderProjectionAttempt(
-                    gatingRetry,
-                    routeHash,
-                    Date.now(),
-                  )
-                  ? "active_attempt"
-                  : trigger === "identity_projection" && !reopenForTimeline &&
-                      accountOrderPageConfirmedEmpty(gatingRetry, routeHash)
-                    ? "confirmed_empty"
-                  : gatingRetry?.riskControlAtMs
-                    ? "risk_control_cooldown"
-                    : "cooldown",
+                result: reason,
                 ...(reopenForTimeline ? { reopen: true } : {}),
               });
             } else if (
@@ -4276,6 +4302,7 @@ async function runShipmentRefreshFlow(
                 base = reservationCommit.state;
                 original = reservedOwner!;
                 refreshed = original;
+                interrupted.releaseProjection = trackProjectionAttempt(ownerId);
                 try {
                   saveOrderProjectionReferences([{
                     ownerId,
@@ -4457,6 +4484,9 @@ async function runShipmentRefreshFlow(
                   // Unified express toast (AGENTS §11): the user asked for this detail and JD
                   // answered with risk control, so say why nothing new arrived.
                   expressToast = "jdRiskControl";
+                  expressToastRemainingMs = accountOrderProjectionRiskRemainingMs(
+                    reopenRetry || projectionRetry, routeHash,
+                  );
                 }
                 const ownershipState = loadState();
                 const ownershipOwner = ownershipState.shipments.find(
@@ -5214,6 +5244,7 @@ async function runShipmentRefreshFlow(
       querySucceeded,
       completedSourceQuery: completedSourceQuery && !sourceAccessRejected,
       ...(expressToast ? { expressToast } : {}),
+      ...(expressToastRemainingMs > 0 ? { expressToastRemainingMs } : {}),
     };
   }
   if (deadlineExpired(deadlineAtMs) || !lease.isCurrent()) {
@@ -5253,6 +5284,7 @@ async function runShipmentRefreshFlow(
       state: committed,
       refreshed: false,
       ...(expressToast ? { expressToast } : {}),
+      ...(expressToastRemainingMs > 0 ? { expressToastRemainingMs } : {}),
     };
   }
   let next = committed;
@@ -5303,6 +5335,7 @@ async function runShipmentRefreshFlow(
     querySucceeded,
     completedSourceQuery: completedSourceQuery && !sourceAccessRejected,
     ...(expressToast ? { expressToast } : {}),
+    ...(expressToastRemainingMs > 0 ? { expressToastRemainingMs } : {}),
   };
 }
 
@@ -5409,15 +5442,18 @@ function runTargetedShipmentRefresh(
 async function runTargetedShipmentRefreshWithProjectionWait(
   shipmentId: string,
   options: ShipmentRefreshOptions,
+  runtimeOverrides: ShipmentRefreshRuntimeOverrides = {},
 ): Promise<ShipmentRefreshResult> {
-  if (options.forceAccountOrderProjection) {
+  if (options.forceAccountOrderProjection || options.trigger === "detail_pull") {
     const completed = await waitForProjectionAttemptRelease(
       shipmentId,
       options.signal,
+      options.deadlineAtMs,
+      options.trigger === "detail_pull",
     );
-    if (completed && !options.includeKdniaoFallback) return completed;
+    if (completed && (options.trigger === "detail_pull" || !options.includeKdniaoFallback)) return completed;
   }
-  return runTargetedShipmentRefresh(shipmentId, options);
+  return runTargetedShipmentRefresh(shipmentId, options, runtimeOverrides);
 }
 
 export function refreshShipmentById(
@@ -6349,6 +6385,7 @@ export async function projectStoredAccountOrders(
 export { runShipmentRefreshById as runShipmentRefreshForTesting };
 /** The lease-holding detail refresh (refreshShipmentById without its in-process coordinator), for tests. */
 export { runTargetedShipmentRefresh as runTargetedShipmentRefreshForTesting };
+export { runTargetedShipmentRefreshWithProjectionWait as runProjectionAwareShipmentRefreshForTesting };
 export { withH5Controller as runH5CaptureForTesting };
 
 export { refreshShipmentEnrichment as runShipmentEnrichmentForTesting };

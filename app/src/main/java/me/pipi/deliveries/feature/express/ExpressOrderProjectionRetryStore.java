@@ -4,10 +4,15 @@ import android.content.Context;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.data.ExpressOrderProjectionIdentity;
 import me.pipi.deliveries.data.JingDongEmptyOrderPages;
+import me.pipi.deliveries.network.ExpressQueryCancellation;
 
 /** Persists a bounded retry delay for an unresolved account-order H5 projection. */
 final class ExpressOrderProjectionRetryStore {
@@ -29,26 +34,58 @@ final class ExpressOrderProjectionRetryStore {
     }
 
     AttemptToken beginTimelineAttempt(ExpressItem item, long now) {
-        return beginTimelineAttempt(item, now, null);
+        return beginTimelineAttempt(item, now, null, false);
+    }
+
+    AttemptToken beginTimelineAttempt(ExpressItem item, long now, boolean explicitPull) {
+        return beginTimelineAttempt(item, now, null, explicitPull);
     }
 
     /** Home holds an order lease while querying; only an actual H5 load starts its cooldown. */
     AttemptToken beginTimelineAttempt(ExpressItem item, long now, AttemptToken pendingQuery) {
-        if (!ExpressDetailActivity.usesInterface5Automatic(item) || !item.isAccountOrder()) return null;
+        return beginTimelineAttempt(item, now, pendingQuery, false);
+    }
+
+    private AttemptToken beginTimelineAttempt(ExpressItem item, long now, AttemptToken pendingQuery,
+            boolean explicitPull) {
+        return claimTimelineAttempt(item, now, pendingQuery, explicitPull, false).token;
+    }
+
+    TimelineAttempt beginOrJoinTimelineAttempt(ExpressItem item, long now) {
+        return claimTimelineAttempt(item, now, null, true, true);
+    }
+
+    private TimelineAttempt claimTimelineAttempt(ExpressItem item, long now, AttemptToken pendingQuery,
+            boolean explicitPull, boolean joinActive) {
+        if (!ExpressDetailActivity.usesInterface5Automatic(item) || !item.isAccountOrder()) return TimelineAttempt.BLOCKED;
         String identity = stableIdentity(item);
-        if (identity.isEmpty()) return null;
+        if (identity.isEmpty()) return TimelineAttempt.BLOCKED;
         synchronized (ACTIVE_ATTEMPTS) {
-            if (pendingQuery == null ? ACTIVE_ATTEMPTS.containsKey(identity)
-                    : ACTIVE_ATTEMPTS.get(identity) != pendingQuery) return null;
+            AttemptToken active = ACTIVE_ATTEMPTS.get(identity);
+            if (pendingQuery == null && active != null) {
+                return joinActive ? new TimelineAttempt(active, true) : TimelineAttempt.BLOCKED;
+            }
+            if (pendingQuery != null && active != pendingQuery) return TimelineAttempt.BLOCKED;
             String key = timelineKey(item);
-            long until = timelineCooldown.getLong(key, 0L);
-            if (until > now && until - now <= FAILURE_COOLDOWN_MS) return null;
+            if (riskControlRemainingMillis(item, now) > 0L
+                    || !explicitPull && !timelineAttemptDue(item, now)) return TimelineAttempt.BLOCKED;
             long claimed = now + 10L * 60_000L;
-            if (!timelineCooldown.edit().putLong(key, claimed).commit()) return null;
+            if (!timelineCooldown.edit().putLong(key, claimed).commit()) return TimelineAttempt.BLOCKED;
             AttemptToken token = pendingQuery == null ? acquireAttemptLocked(identity) : pendingQuery;
             token.claimedAt = now;
             token.claimedUntil = claimed;
-            return token;
+            return new TimelineAttempt(token, false);
+        }
+    }
+
+    static final class TimelineAttempt {
+        static final TimelineAttempt BLOCKED = new TimelineAttempt(null, false);
+        final AttemptToken token;
+        final boolean joined;
+
+        TimelineAttempt(AttemptToken token, boolean joined) {
+            this.token = token;
+            this.joined = joined;
         }
     }
 
@@ -72,7 +109,14 @@ final class ExpressOrderProjectionRetryStore {
     boolean timelineAttemptDue(ExpressItem item, long now) {
         if (stableIdentity(item).isEmpty()) return false;
         long until = timelineCooldown.getLong(timelineKey(item), 0L);
-        return !(until > now && until - now <= FAILURE_COOLDOWN_MS);
+        return riskControlRemainingMillis(item, now) == 0L
+                && !(until > now && until - now <= FAILURE_COOLDOWN_MS);
+    }
+
+    long riskControlRemainingMillis(ExpressItem item, long now) {
+        if (stableIdentity(item).isEmpty()) return 0L;
+        long until = timelineCooldown.getLong(timelineKey(item) + RISK_CONTROL_SUFFIX, 0L);
+        return until > now && until - now <= FAILURE_COOLDOWN_MS ? until - now : 0L;
     }
 
     /**
@@ -86,8 +130,7 @@ final class ExpressOrderProjectionRetryStore {
         synchronized (ACTIVE_ATTEMPTS) {
             String key = timelineKey(item);
             long until = Math.max(timelineCooldown.getLong(key, 0L), now + FAILURE_COOLDOWN_MS);
-            // The risk-control mark only names the rest in diagnostics (iOS riskControlAtMs); the rest itself
-            // is the cooldown above.
+            // Explicit pulls may lift ordinary cooldowns, but never this persisted risk-control deadline.
             if (!timelineCooldown.edit().putLong(key, until).putLong(key + RISK_CONTROL_SUFFIX, until).commit())
                 throw new IllegalStateException("JD cooldown persistence failed");
         }
@@ -107,10 +150,8 @@ final class ExpressOrderProjectionRetryStore {
         synchronized (ACTIVE_ATTEMPTS) {
             if (ACTIVE_ATTEMPTS.containsKey(identity)) return "active_attempt";
         }
-        String key = timelineKey(item);
-        long until = timelineCooldown.getLong(key, 0L);
-        if (!(until > now && until - now <= FAILURE_COOLDOWN_MS)) return null;
-        return timelineCooldown.getLong(key + RISK_CONTROL_SUFFIX, 0L) > now ? "risk_control_cooldown" : "cooldown";
+        if (riskControlRemainingMillis(item, now) > 0L) return "risk_control_cooldown";
+        return timelineAttemptDue(item, now) ? null : "cooldown";
     }
 
     /**
@@ -146,6 +187,12 @@ final class ExpressOrderProjectionRetryStore {
         }
     }
 
+    static AttemptToken activeAttempt(ExpressItem item) {
+        synchronized (ACTIVE_ATTEMPTS) {
+            return ACTIVE_ATTEMPTS.get(stableIdentity(item));
+        }
+    }
+
     private static AttemptToken acquireAttemptLocked(String identity) {
         AttemptToken token = new AttemptToken(identity);
         ACTIVE_ATTEMPTS.put(identity, token);
@@ -161,18 +208,34 @@ final class ExpressOrderProjectionRetryStore {
         synchronized (ACTIVE_ATTEMPTS) {
             if (ACTIVE_ATTEMPTS.get(token.identity) != token) return false;
             ACTIVE_ATTEMPTS.remove(token.identity);
-            return true;
         }
+        token.completion.complete(null);
+        return true;
     }
 
     static final class AttemptToken {
         final String identity;
+        private final CompletableFuture<Void> completion = new CompletableFuture<>();
         /** The union page this attempt opened: when it claimed the cooldown, and the end it claimed; 0 for none. */
         long claimedAt;
         long claimedUntil;
 
         AttemptToken(String identity) {
             this.identity = identity == null ? "" : identity;
+        }
+
+        void awaitCompletion(ExpressQueryCancellation cancellation) throws InterruptedException {
+            while (true) {
+                try {
+                    completion.get(cancellation.remainingTimeoutMillis(250), TimeUnit.MILLISECONDS);
+                    cancellation.throwIfCancelled();
+                    return;
+                } catch (TimeoutException waiting) {
+                    cancellation.throwIfCancelled();
+                } catch (ExecutionException failure) {
+                    throw new IllegalStateException("JD capture completion failed", failure.getCause());
+                }
+            }
         }
     }
 

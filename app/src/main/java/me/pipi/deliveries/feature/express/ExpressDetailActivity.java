@@ -1078,6 +1078,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private boolean detailEntryObserved;
     private String pullRefreshBaseline = "";
     private volatile boolean localRefreshFailed;
+    private volatile long localRefreshRiskControlUntil;
+    private volatile boolean localRefreshJoinedOrderAttempt;
+    private volatile boolean localRefreshSharedOrderOutcome;
     private volatile boolean manualPhoneTailRequired;
     private String renderedTimelineSignature = "";
 
@@ -1090,12 +1093,19 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         if (!pullRefreshRequested) return;
         pullRefreshRequested = false;
         String now = renderedTimelineSignature;
-        String copy = manualPhoneTailRequired ? ExpressToastCopy.MANUAL_PHONE_TAIL_REQUIRED : localRefreshFailed
+        long remainingRiskControl = localRefreshRiskControlUntil - System.currentTimeMillis();
+        String copy = remainingRiskControl > 0L
+                ? ExpressToastCopy.jdRiskControlRemaining(remainingRiskControl)
+                : manualPhoneTailRequired ? ExpressToastCopy.MANUAL_PHONE_TAIL_REQUIRED : localRefreshFailed
                 ? (now.isEmpty() ? ExpressToastCopy.DETAIL_REFRESH_FAILED : "")
+                : localRefreshSharedOrderOutcome && now.equals(pullRefreshBaseline) ? ""
                 : now.isEmpty() ? ExpressToastCopy.DETAIL_NO_TRACK
                 : now.equals(pullRefreshBaseline) ? ExpressToastCopy.DETAIL_UP_TO_DATE
                 : ExpressToastCopy.DETAIL_REFRESHED;
         manualPhoneTailRequired = false;
+        localRefreshRiskControlUntil = 0L;
+        localRefreshJoinedOrderAttempt = false;
+        localRefreshSharedOrderOutcome = false;
         if (!copy.isEmpty()) Toast.makeText(this, copy, Toast.LENGTH_SHORT).show();
     }
 
@@ -1110,8 +1120,16 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     private void refreshLocalTimelineInBackground(boolean showProgress) {
         if (localRefreshInFlight) {
-            // An entry observation cannot satisfy a pull's separate history operation.
-            pendingDetailPull |= pullRefreshRequested && !localRefreshIsPull;
+            // JD pulls share an in-flight page; a gesture must not queue a surprise retry after it ends.
+            boolean sharesJdCapture = false;
+            if (pullRefreshRequested && !localRefreshIsPull && item != null && allowsJingDongCapture(item)) {
+                ExpressOrderProjectionRetryStore.AttemptToken active =
+                        ExpressOrderProjectionRetryStore.activeAttempt(item);
+                sharesJdCapture = item.isAccountOrder() && item.projectedWaybill.isEmpty()
+                        || active != null && active.claimedUntil > 0L;
+            }
+            localRefreshSharedOrderOutcome |= sharesJdCapture;
+            pendingDetailPull |= pullRefreshRequested && !localRefreshIsPull && !sharesJdCapture;
             return;
         }
         if (!canRefreshLocalTimeline(item)) {
@@ -1128,9 +1146,13 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         }
         localRefreshInFlight = true;
         manualPhoneTailRequired = false;
+        localRefreshRiskControlUntil = 0L;
+        localRefreshJoinedOrderAttempt = false;
+        localRefreshSharedOrderOutcome = false;
         int generation = ++localRefreshGeneration;
         ExpressItem requestItem = item;
         boolean detailPull = pullRefreshRequested;
+        boolean explicitDetailPull = detailPull && !localRefreshRestart;
         String refreshTrigger = localRefreshRestart ? "foreground" : detailPull ? "detail_pull" : "detail_open";
         localRefreshIsPull = detailPull;
         ExpressQueryCancellation cancellation =
@@ -1192,13 +1214,18 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         java.util.Map<String, Long> before = webLagQuery
                                 ? repository.statusAlignmentEvidence(cacheOwner) : java.util.Collections.emptyMap();
                         try {
-                            refreshedItem = refreshAutomaticDetail(repository, refreshedItem, cancellation, detailPull);
+                            refreshedItem = refreshAutomaticDetail(repository, refreshedItem, cancellation,
+                                    detailPull, explicitDetailPull);
                         } finally {
                             if (entryProbe != null) repository.finishStatusAlignment(cacheOwner,
                                     entryProbe.statusAt + "|" + entryProbe.headlineAt + "|" + entryProbe.detailAt, before);
                         }
                         if (refreshedItem == null) {
                             end.gate("state_changed");
+                            return;
+                        }
+                        if (localRefreshJoinedOrderAttempt) {
+                            renderRefreshedDetail(generation, refreshedItem);
                             return;
                         }
                         if (AccountCarrierRecognition.needsRecognition(refreshedItem)) {
@@ -1358,7 +1385,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     private ExpressItem refreshAutomaticDetail(ExpressRepository repository, ExpressItem expected,
-            ExpressQueryCancellation cancellation, boolean detailPull) throws Exception {
+            ExpressQueryCancellation cancellation, boolean detailPull, boolean explicitDetailPull) throws Exception {
         if (allowsJingDongCapture(expected) && expected.isAccountOrder()
                 && expected.projectedWaybill.isEmpty()) {
             // T23（用户 2026-09-26，其余裁决 28）：已经知道的运单号（feed 文案、已存 v5_query 文案、暂存的京粉页）
@@ -1465,15 +1492,31 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             return owner;
         }
         long attemptAt = System.currentTimeMillis();
-        ExpressOrderProjectionRetryStore.AttemptToken token = jingDong
-                ? retries.beginTimelineAttempt(owner, attemptAt) : null;
+        ExpressOrderProjectionRetryStore.TimelineAttempt attempt = jingDong && explicitDetailPull
+                ? retries.beginOrJoinTimelineAttempt(owner, attemptAt) : null;
+        ExpressOrderProjectionRetryStore.AttemptToken token = !jingDong ? null : attempt != null
+                ? attempt.token : retries.beginTimelineAttempt(owner, attemptAt);
+        if (attempt != null && attempt.joined) {
+            logAutomaticH5Decision(owner, "skipped", "active_attempt");
+            localRefreshJoinedOrderAttempt = true;
+            localRefreshSharedOrderOutcome = true;
+            try { token.awaitCompletion(cancellation); }
+            catch (InterruptedException interrupted) {
+                localRefreshFailed = true;
+                throw interrupted;
+            }
+            long settledAt = System.currentTimeMillis();
+            long riskRemaining = retries.riskControlRemainingMillis(owner, settledAt);
+            if (riskRemaining > 0L) localRefreshRiskControlUntil = settledAt + riskRemaining;
+            return repository.find(expected.rowId);
+        }
         if (jingDong && token == null) {
-            // 用户 2026-09-28：a union page this order may not open now is a logged skip (AGENTS §9 cooldown:
-            // the detail refresh skips the H5 stage and goes on), in iOS's words: another capture of the
-            // order is running, the hour after risk control, or the ordinary ten minutes.
             String reason = retries.timelineSkipReason(owner, attemptAt);
             if (reason != null) logAutomaticH5Decision(owner, "skipped", reason);
-            return owner;
+            if ((explicitDetailPull || localRefreshSharedOrderOutcome) && "risk_control_cooldown".equals(reason)) {
+                localRefreshRiskControlUntil = attemptAt + retries.riskControlRemainingMillis(owner, attemptAt);
+            }
+            return repository.find(expected.rowId);
         }
         logAutomaticH5Decision(owner, "started",
                 signedHistoryGap ? "signed_history_gap" : "source_history_incomplete");
@@ -1492,8 +1535,12 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     result != null && result.timeline != null ? "timeline_received" : "no_result");
             cancellation.throwIfCancelled();
             if (result != null && result.throttled && retries != null) {
-                retries.recordTimelineRateLimit(owner, System.currentTimeMillis());
-                runOnUiThread(() -> {
+                long riskControlAt = System.currentTimeMillis();
+                retries.recordTimelineRateLimit(owner, riskControlAt);
+                if (explicitDetailPull || localRefreshSharedOrderOutcome) {
+                    localRefreshRiskControlUntil = riskControlAt
+                            + retries.riskControlRemainingMillis(owner, riskControlAt);
+                } else runOnUiThread(() -> {
                     if (!isFinishing() && !isDestroyed()) Toast.makeText(this,
                             ExpressToastCopy.JD_RISK_CONTROL, Toast.LENGTH_SHORT).show();
                 });
@@ -2251,7 +2298,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     /**
      * 京东件签收那一条常是被拦掉的评价文案（或者根本没有节点），feed 虽然早有揽收，显示的历史却停在
      * 「派送中」，签收节点只在京粉页里。已签收（结构化、带完成时间）、已有真实运单号且详情判为不完整时，
-     * 详情下拉放行一次京粉页；手动链照旧被揽收挡住，同单冷却照旧。Pipi ExpressPoller.signedJdHistoryGap
+     * 详情下拉放行一次京粉页；手动链照旧被揽收挡住。Pipi ExpressPoller.signedJdHistoryGap
      * 是用户 2026-09-24 定的，这里与 iOS jingDongSignedHistoryGap 按三端同口径跟上。
      *
      * <p>一次完成只放行一次：京东的完成包可能在真正签收几天后才到（自动确认收货），京粉页里最新的签收节点离完成

@@ -25,6 +25,7 @@ import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey } from "../se
 import { setProjectionSceneActive } from "../services/projection-viewport";
 import { readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { buildWidgetSnapshot } from "../services/status";
+import { OperationTimeoutError } from "../services/deadline";
 
 // Build 95's observed event clocks and counts; identities and node contents are synthetic.
 const EVENT = 1789085861000, OLD_EVENT = 1789056101000, NOW = EVENT + 12 * 3600000;
@@ -137,6 +138,55 @@ test("a nonempty but incomplete entry query does not suppress the requested JD H
   assert.equal(captured.waybillMatches, true);
   assert.equal(readDiagnostics().some(e => e.event === "detail.refresh.stage_skipped" && e.details.stage === "jd_h5"), false,
     "a completed capture must not emit the old feed-count skip event");
+});
+
+test("a new pull immediately retries ordinary timeout while reopening projected JD history", async () => {
+  const row = seed();
+  let captures = 0;
+  const runtime = {
+    ...noExtraRequests,
+    refreshWebTimeline: async () => null,
+    queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "" }),
+    projectAccountOrderWithCarrier: async (input: AccountParcelDto) => {
+      captures++;
+      if (captures === 1) throw new OperationTimeoutError("Synthetic projected history timeout");
+      return { ...input, waybill: WAYBILL, projectionTimeline: history(EVENT) };
+    },
+  };
+  await runShipmentRefreshForTesting(row.identity.id, lease, pull, runtime);
+  const failed = loadState(NOW).shipments[0];
+  assert.equal(failed.identity.projectedWaybill, WAYBILL);
+  assert.ok(failed.identity.jingDongH5Retry?.failedAtMs);
+  assert.equal(failed.identity.jingDongH5Retry?.riskControlAtMs, undefined);
+  assert.ok(shipmentDetailIncompleteReason(failed));
+  const result = await runShipmentRefreshForTesting(row.identity.id, lease, pull, runtime);
+  assert.equal(captures, 2, "history reopen uses the same ordinary-cooldown bypass as first identity capture");
+  assert.equal(result.shipment.identity.projectedWaybill, WAYBILL);
+  assert.equal(shipmentDetailIncompleteReason(result.shipment), null);
+  assert.equal(takeV5Queries(), 0, "neither explicit history pull adds a v5 account query");
+});
+
+test("timeout preserves the signed-gap allowance for the next independent pull", async () => {
+  const row = withJingDongH5CapturedAt(seed("COMPLETED", false, signedParcelWithPickup()), OLD_EVENT + 60000);
+  assert.equal(jingDongSignedHistoryGap(row), true);
+  let captures = 0;
+  const runtime = {
+    ...noExtraRequests,
+    projectAccountOrderWithCarrier: async (input: AccountParcelDto) => {
+      captures++;
+      if (captures === 1) throw new OperationTimeoutError("Synthetic signed-gap timeout");
+      return { ...input, waybill: WAYBILL, projectionTimeline: history(EVENT - 2000) };
+    },
+  };
+  await runShipmentRefreshForTesting(row.identity.id, lease, pull, runtime);
+  const failed = loadState(NOW).shipments[0];
+  assert.ok(failed.identity.jingDongH5Retry?.failedAtMs);
+  assert.equal(jingDongSignedHistoryGap(failed), true, "a timeout supplies no answer and cannot spend the signed gap");
+  const result = await runShipmentRefreshForTesting(row.identity.id, lease, pull, runtime);
+  assert.equal(captures, 2, "a later gesture retries the unspent signed gap without ordinary waiting");
+  assert.equal(shipmentDetailIncompleteReason(result.shipment), null);
+  assert.equal(jingDongSignedHistoryGap(result.shipment), false, "the real answer spends the existing allowance");
+  assert.equal(takeV5Queries(), 0);
 });
 
 // The user's detail-only completeness clarification permits the existing history operation without changing the shared freeze.
@@ -642,13 +692,14 @@ test("a pull whose app leaves before the page loads gives the reservation back",
 });
 
 for (const risk of [false, true]) {
-  test(`repeated pull preserves the ${risk ? "60-minute risk" : "10-minute ordinary"} cooldown`, async () => {
+  test(`${risk ? "repeated pull preserves the 60-minute risk" : "automatic alignment preserves the 10-minute ordinary"} cooldown`, async () => {
     const row = seed(); let captures = 0;
     const runtime = {
       ...noExtraRequests,
       // 2026-09-24 采纳：这里抓回来的京粉页包比列表旧八个多小时，详情选包不判它完整，它就不再替手动链
       // 作主，K100 / 快递鸟照常跑（行为见 jd-h5-stale-pickup-chain.test.ts）；这两个用例只看京粉页冷却。
       refreshWebTimeline: async () => null,
+      refreshAccountParcel: async () => parcel(),
       queryManualForSource: async () => ({ result: "empty_response" as const, shipment: null,
         pending: null, routeUrl: "" }),
       projectAccountOrderWithCarrier: async (input: AccountParcelDto, _projection?: number, _deadline?: number,
@@ -671,9 +722,9 @@ for (const risk of [false, true]) {
     assert.equal(captures, 1);
     Date.now = () => NOW + (risk ? 20 : 5) * 60000;
     try {
-      await runShipmentRefreshForTesting(row.identity.id, { isCurrent: () => true }, pull, runtime);
-      assert.equal(takeV5Queries(), 0, "pull must not repeat v5");
-      assert.equal(captures, 1, "an explicit gesture does not clear the existing cooldown");
+      await runShipmentRefreshForTesting(row.identity.id, { isCurrent: () => true }, risk ? pull : alignmentRun, runtime);
+      assert.equal(captures, 1, risk ? "a user gesture cannot bypass risk control" :
+        "automatic alignment force options cannot bypass ordinary cooldown");
       assert.ok(readDiagnostics().some(e => e.event === "order.projection.skipped" &&
         e.details.result === (risk ? "risk_control_cooldown" : "cooldown")));
     } finally { Date.now = () => NOW; }

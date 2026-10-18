@@ -122,6 +122,7 @@ public final class CainiaoOrderPageTimelineTest {
                 ClassParameter.from(ExpressRepository.class, repository),
                 ClassParameter.from(ExpressItem.class, repository.find(owner.rowId)),
                 ClassParameter.from(ExpressQueryCancellation.class, new ExpressQueryCancellation(5_000L)),
+                ClassParameter.from(boolean.class, pull),
                 ClassParameter.from(boolean.class, pull));
     }
 

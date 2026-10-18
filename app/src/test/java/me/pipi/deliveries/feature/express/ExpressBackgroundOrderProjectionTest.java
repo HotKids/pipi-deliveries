@@ -474,11 +474,15 @@ public final class ExpressBackgroundOrderProjectionTest {
             Future<Integer> round = worker.submit(() -> ExpressBackgroundOrderProjection.run(context,
                     2, 60_000L, System.nanoTime() + TimeUnit.MINUTES.toNanos(9), stopped::get));
             pumpUntil(() -> Query.calls.get() == 1);
+            ExpressOrderProjectionRetryStore.AttemptToken finishing =
+                    ExpressOrderProjectionRetryStore.activeAttempt(order);
+            assertNotNull(finishing);
             stopped.set(true);
 
             assertEquals(0, (int) pump(round));
 
             assertTrue(Page.owners.isEmpty());
+            finishing.awaitCompletion(new ExpressQueryCancellation(2_000L));
             ExpressOrderProjectionRetryStore.AttemptToken lease =
                     ExpressOrderProjectionRetryStore.acquireAttempt(order);
             assertNotNull("the cancelled capture released its lease", lease);

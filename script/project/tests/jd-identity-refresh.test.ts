@@ -5,7 +5,8 @@ import type { AccountParcelDto } from "../services/account-parser";
 import { accountOrderTextIdentity } from "../services/account-order-text-identity";
 import { parcelToShipment } from "../services/account-sync";
 import { emptyState, saveState, loadState } from "../services/storage";
-import { mergeAccountParcel, runShipmentRefreshForTesting } from "../services/sync";
+import { mergeAccountParcel, runShipmentRefreshForTesting, runProjectionAwareShipmentRefreshForTesting } from "../services/sync";
+import { OperationTimeoutError } from "../services/deadline";
 import { saveOrderProjectionReferences, loadOrderProjectionReference } from "../services/routes";
 import { performShipmentDeletion } from "../services/shipment-actions";
 import { readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
@@ -136,6 +137,184 @@ test("failed identity capture retains the order and its existing cooldown", asyn
     {trigger: "detail_open"}, {...runtime, refreshAccountParcel: async () => parcel()});
   assert.equal(captures, 1);
 });
+
+test("a separate detail pull immediately retries a timed-out identity capture", async () => {
+  const state = seed();
+  let captures = 0;
+  const runtime = {
+    projectAccountOrderWithCarrier: async (input: AccountParcelDto) => {
+      captures++;
+      if (captures === 1) throw new OperationTimeoutError("Synthetic identity timeout");
+      return { ...input, waybill: WAYBILL, courierCode: "ZTO", rawCourierCode: "", companyName: "中通快递" };
+    },
+    refreshWebTimeline: async () => null,
+    queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "" }),
+  };
+  const failed = await runShipmentRefreshForTesting(state.shipments[0].identity.id,
+    { isCurrent: () => true }, { trigger: "identity_projection", forceAccountOrderProjection: true }, runtime);
+  assert.equal(failed.shipment.identity.projectedWaybill, "");
+  assert.ok(failed.shipment.identity.orderProjectionRetry?.failedAtMs);
+  assert.equal(failed.shipment.identity.orderProjectionRetry?.riskControlAtMs, undefined);
+  const result = await runShipmentRefreshForTesting(failed.shipment.identity.id,
+    { isCurrent: () => true }, { trigger: "detail_pull", forceAccountOrderProjection: true,
+      forceManualRefresh: true }, runtime);
+  assert.equal(captures, 2, "a new user gesture may retry ordinary timeout without ten minutes of waiting");
+  assert.equal(result.shipment.identity.projectedWaybill, WAYBILL);
+});
+
+for (const trigger of ["detail_open", "identity_projection", "status_alignment"] as const) {
+  test(`${trigger} retains ordinary identity cooldown even with force options`, async () => {
+    const state = seed();
+    let captures = 0;
+    const runtime = {
+      refreshAccountParcel: async () => parcel(),
+      projectAccountOrderWithCarrier: async () => {
+        captures++;
+        throw new OperationTimeoutError("Synthetic identity timeout");
+      },
+      refreshWebTimeline: async () => null,
+      queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "" }),
+    };
+    await runShipmentRefreshForTesting(state.shipments[0].identity.id,
+      { isCurrent: () => true }, { trigger: "identity_projection", forceAccountOrderProjection: true }, runtime);
+    await runShipmentRefreshForTesting(state.shipments[0].identity.id,
+      { isCurrent: () => true }, { trigger, forceAccountOrderProjection: true, forceManualRefresh: true }, runtime);
+    assert.equal(captures, 1, "force flags do not turn automatic entry into a user pull");
+    assert.equal(loadState().shipments[0].identity.projectedWaybill, "");
+  });
+}
+
+for (const risk of ["403", "message"] as const) {
+  test(`a detail pull preserves the hour after JD ${risk} risk control`, async () => {
+    const realNow = Date.now;
+    let clock = NOW;
+    Date.now = () => clock;
+    try {
+      const state = seed();
+      let captures = 0;
+      const runtime = {
+        projectAccountOrderWithCarrier: async (input: AccountParcelDto, _deadline: unknown,
+          _recognitionDeadline: unknown, diagnostics?: (value: any) => void) => {
+          captures++;
+          diagnostics?.({ unionResponseStatuses: risk === "403" ? "403" : "200", riskControlSeen: risk === "message" });
+          return input;
+        },
+        refreshWebTimeline: async () => null,
+        queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "" }),
+      };
+      await runShipmentRefreshForTesting(state.shipments[0].identity.id,
+        { isCurrent: () => true }, { trigger: "identity_projection", forceAccountOrderProjection: true }, runtime);
+      clock += 59 * 60_000;
+      const result = await runShipmentRefreshForTesting(state.shipments[0].identity.id,
+        { isCurrent: () => true }, { trigger: "detail_pull", forceAccountOrderProjection: true,
+          forceManualRefresh: true }, runtime);
+      assert.equal(captures, 1, "ordinary cooldown bypass never removes the last minute of JD risk protection");
+      assert.equal(result.expressToast, "jdRiskControl");
+      assert.equal(result.expressToastRemainingMs, 60_000);
+      clock += 60_000;
+      await runShipmentRefreshForTesting(state.shipments[0].identity.id,
+        { isCurrent: () => true }, { trigger: "detail_pull", forceAccountOrderProjection: true,
+          forceManualRefresh: true }, runtime);
+      assert.equal(captures, 2, "the next independent pull may try once the whole hour has elapsed");
+    } finally {
+      Date.now = realNow;
+    }
+  });
+}
+
+for (const succeeds of [false, true]) {
+  test(`a pull reuses an in-flight identity capture without appending after ${succeeds ? "success" : "timeout"}`, async () => {
+    const state = seed();
+    const owner = state.shipments[0];
+    let open!: () => void;
+    const gate = new Promise<void>(resolve => { open = resolve; });
+    let started!: () => void;
+    const starting = new Promise<void>(resolve => { started = resolve; });
+    let captures = 0;
+    const runtime = {
+      projectAccountOrderWithCarrier: async (input: AccountParcelDto) => {
+        captures++;
+        started();
+        await gate;
+        if (!succeeds) throw new OperationTimeoutError("Synthetic in-flight identity timeout");
+        return { ...input, waybill: WAYBILL, courierCode: "ZTO", rawCourierCode: "", companyName: "中通快递" };
+      },
+      refreshWebTimeline: async () => null,
+      queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "" }),
+    };
+    const first = runProjectionAwareShipmentRefreshForTesting(owner.identity.id,
+      { trigger: "identity_projection", forceAccountOrderProjection: true }, runtime);
+    await starting;
+    let pullFinished = false;
+    const pulled = runProjectionAwareShipmentRefreshForTesting(owner.identity.id,
+      { trigger: "detail_pull", forceAccountOrderProjection: true, forceManualRefresh: true }, runtime)
+      .then(result => { pullFinished = true; return result; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const completedBeforeCapture = pullFinished;
+    open();
+    await Promise.all([first, pulled]);
+    assert.equal(completedBeforeCapture, false, "the pull waits for the capture it reused");
+    assert.equal(captures, 1, "one gesture does not queue a second capture after the first result");
+    assert.equal(loadState().shipments[0].identity.projectedWaybill || "", succeeds ? WAYBILL : "");
+  });
+}
+
+for (const waitExpires of [false, true]) {
+  test(`an expired reservation ${waitExpires ? "ends bounded waiting without another capture" : "still joins its live local capture"}`, async () => {
+    const realNow = Date.now;
+    let clock = NOW;
+    Date.now = () => clock;
+    let open!: () => void;
+    let firstSettled: Promise<unknown> | undefined;
+    try {
+      const state = seed();
+      const owner = state.shipments[0];
+      const gate = new Promise<void>(resolve => { open = resolve; });
+      let started!: () => void;
+      const starting = new Promise<void>(resolve => { started = resolve; });
+      let captures = 0;
+      const runtime = {
+        projectAccountOrderWithCarrier: async () => {
+          captures++;
+          started();
+          await gate;
+          throw new OperationTimeoutError("Synthetic capture settled after reservation expiry");
+        },
+        refreshWebTimeline: async () => null,
+        queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "" }),
+      };
+      firstSettled = runProjectionAwareShipmentRefreshForTesting(owner.identity.id,
+        { trigger: "identity_projection", forceAccountOrderProjection: true }, runtime)
+        .then(result => result, error => error);
+      await starting;
+      clock += 23_000;
+      const retry = loadState().shipments[0].identity.orderProjectionRetry!;
+      assert.ok(retry.attemptExpiresAtMs! < clock, "the 22-second durable reservation has expired");
+      let pullFinished = false;
+      const pulled = runProjectionAwareShipmentRefreshForTesting(owner.identity.id,
+        { trigger: "detail_pull", forceAccountOrderProjection: true, forceManualRefresh: true,
+          deadlineAtMs: clock + 5_000 }, runtime)
+        .then(result => { pullFinished = true; return result; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(pullFinished, false, "the live local promise outlasts its reservation");
+      if (waitExpires) {
+        clock += 6_000;
+        const result = await pulled;
+        assert.equal(result.refreshed, false);
+        assert.equal(captures, 1, "the caller's waiting deadline cannot start a replacement capture");
+        assert.equal(pullFinished, true);
+      }
+      open();
+      await firstSettled;
+      await pulled;
+      assert.equal(captures, 1, "settling the original capture never appends another from this gesture");
+    } finally {
+      open?.();
+      await firstSettled;
+      Date.now = realNow;
+    }
+  });
+}
 
 test("an interrupted identity capture retains its ten-minute cooldown after the attempt lease expires", async () => {
   const state = seed();
