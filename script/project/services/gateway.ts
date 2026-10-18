@@ -3,6 +3,8 @@ import { GATEWAY_ORIGIN, SCRIPTING_GATEWAY_PROTOCOL_VERSION } from "./build-trac
 import {
   gatewayCredentialStatus,
   loadGatewayCredentials,
+  beginGatewayCredentialObservation,
+  recordGatewayCredentialOutcome,
 } from "./credentials";
 import {
   SCRIPTING_PROTOCOL_VERSION,
@@ -253,6 +255,7 @@ export async function postGateway<T extends Record<string, unknown>>(
   if (!credentials) {
     throw new GatewayError("请先配置 Access Key");
   }
+  const credentialObservation = beginGatewayCredentialObservation();
   const route = validateRoute(routeInput);
   // The activation identity is saved before any request carries it; if it cannot be saved nothing
   // is sent, so a key can never bind to an identity that is lost right after.
@@ -378,6 +381,10 @@ export async function postGateway<T extends Record<string, unknown>>(
     void request.then(observeSettlement, observeSettlement);
     await Promise.race([request, expired]);
   } catch (error) {
+    if (error instanceof GatewayError && requestPhase === "response_complete" &&
+        !lifecycle.signal.aborted && Date.now() < lifecycleDeadlineAtMs) {
+      recordGatewayCredentialOutcome(credentialObservation, response.status, "", false);
+    }
     if (error instanceof GatewayError || error instanceof OperationTimeoutError) {
       throw error;
     }
@@ -415,6 +422,7 @@ export async function postGateway<T extends Record<string, unknown>>(
   try { value = JSON.parse(responseText) as unknown; } catch { /* HTTP errors can have non-JSON bodies. */ }
   const root = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : null;
+  recordGatewayCredentialOutcome(credentialObservation, response.status, responseCode, Boolean(root));
   const normalized = root?.normalizedError as { version?: unknown; code?: unknown } | undefined;
   if (normalized?.version === 1 && typeof normalized.code === "string") {
     const code = SAFE_GATEWAY_ERROR_CODES.has(normalized.code)
