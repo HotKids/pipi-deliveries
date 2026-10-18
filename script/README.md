@@ -1,48 +1,35 @@
-# Pipi Deliveries（派派助手 Scripting 版）
+# 派派助手 iOS（Scripting 版）
 
-Pipi Deliveries 的 iOS 版本以 Scripting 脚本形式提供，仅限白名单授权用户使用，核心功能与 Android Lite 版基本一致。脚本在 Scripting App 中运行，快递列表、物流缓存及用户配置保存在本机。
+在 iPhone 或 iPad 上集中查看快递，支持手机号同步、手动查件、物流通知和主屏幕小组件。需在 Scripting App 中运行，查询和同步需要有效的 Access Key。
 
-## 功能简介
+## 安装与首次使用
 
-- 最多绑定五个手机号码，并自动同步与其关联的快递信息；
-- 输入运单号码即可识别承运商并查询物流动态，部分承运商可能需要验证收寄件手机号码后四位；
-- 各轨迹来源分别增量保存，并按完整度整包择优展示，避免不同来源的节点相互拼接；
-- 手动查询提交后会立即进入物流详情；尚未产生有效轨迹的运单仅进入后台查询队列，不显示在本地列表中；获得有效轨迹后再加入列表，24 小时内仍无轨迹则自动清理；
-- 支持应用内列表、物流详情、状态变更通知、快捷指令及 App Intent 刷新；
-- 提供 2 × 2 状态概览和 4 × 2 三行物流动态两种主屏幕小组件；
-- 承运商图标均保存在本地，并支持深色模式；
-- 已取消快递保留四小时，已签收快递保留七日，期满后自动清理相关本地数据。
+1. 在 App Store 安装 **Scripting App**。
+2. 从[官方下载入口](https://raw.githubusercontent.com/HotKids/pipi-deliveries/main/script/pipi-deliveries.scripting)下载并用 Scripting 导入，打开“派派助手”。更新时也使用此入口。
+3. 在 Telegram 私聊“派派助手”机器人，发送 `/key`，点击“领取脚本密钥”；领取资格由管理员管理。将收到的密钥粘贴到“设置 → 授权 → Access Key”，点击“保存”。
+4. 在“设置 → 管理账号”中通过短信验证绑定手机号，或直接在首页输入运单号查询。
 
-## 使用说明
+普通用户每天可领取一次密钥，重新领取会使旧密钥失效。请妥善保存，不要分享；若提示“Access Key 已使用”，可通过 `/key` 重新领取。显示“脚本密钥暂未开放”时，请联系管理员。
 
-使用前需先在 iPhone 或 iPad 上安装 Scripting App，再从 [Releases](https://github.com/HotKids/pipi-deliveries/releases) 下载并导入 `pipi-deliveries.scripting`。也可通过[在线脚本](https://raw.githubusercontent.com/HotKids/pipi-deliveries/main/script/pipi-deliveries.scripting)直接安装或更新。脚本导入后显示为“派派助手”，无法脱离 Scripting App 独立安装或运行。
+## 日常使用
 
-首次运行时，请按提示允许所需的剪贴板与文件访问，并在“设置”中输入由项目维护者提供的 Access Key。随后可在“管理账号”中绑定手机号码，或直接在首页输入运单号码查询。
+- **同步快递**：最多绑定 5 个手机号；首页下拉可刷新，点击快递查看物流详情。部分查件需要收寄件手机号后四位。
+- **物流通知**：在“设置 → 通知管理”选择需要的状态，并在系统中允许 Scripting 发送通知。通知会在成功刷新并检测到变化后发送，并非实时推送。
+- **主屏幕小组件**：添加 Scripting 小组件并选择“派派助手”。2×2 显示状态概览，4×2 最多显示 3 条物流动态；点击可打开脚本。刷新由 iOS 调度，不能保证固定间隔；需要立即更新时，可打开脚本下拉刷新，或通过快捷指令运行刷新。
 
-在主屏幕添加 Scripting 小组件并选择“派派助手”，即可使用 2 × 2 或 4 × 2 小组件。WidgetKit 的刷新时机由 iOS 调度；需要立即更新时，可运行脚本、快捷指令或 App Intent。
+暂无有效轨迹的运单暂不进入列表，后续刷新会继续尝试，超过 24 小时仍无轨迹则清理。第三方服务可能延迟或暂时不可用，以承运商官方信息为准。
 
-脚本首次打开和从后台恢复时会自动读取最新本地状态并发起刷新，首页下拉则会强制刷新。列表、详情、小组件与状态变更通知共用同一份本地快递状态：刷新结果先写入本地，再更新小组件并判断是否发送通知；点击通知会先读取最新状态并定位到对应快递详情。小组件会在系统分配的执行时间内尝试有界刷新，并请求最早 15 分钟后再次运行；刷新失败或超时时继续显示已有缓存，实际调度时间仍由 WidgetKit 决定。
+## 记录与授权
 
-Updating the same script preserves its existing Keychain credentials. Re-importing after deleting the script may replace its private Keychain scope; obtain a replacement Access Key through kdbot `/key` in that case. Phone bindings, parcel lists, timeline caches, pending queries and diagnostic logs retain their existing local persistence behavior.
+- 已签收记录按列表显示的物流时间保留 **14 天**，随后隐藏，满 **21 天**后删除本地记录；已取消记录 **4 小时**后不再显示。
+- 更新原脚本会保留现有授权；删除后重新导入可能需要通过 `/key` 重新领取密钥。
+- 在设置中移除 Access Key 会停止查询与同步；重新保存有效密钥即可恢复，已有快递记录不会因此清空。
 
-## 隐私声明
+## 隐私
 
-为完成手机号验证、快递同步与物流查询，必要的手机号、验证码、运单号、手机尾号、随机安装身份及网络信息会经 Cloudflare Worker 临时中转至相关服务。部分订单会在本机加载第三方页面以提取运单号。Worker 按当前设计不持久化保存业务数据；Access Key、快递列表与物流缓存保存在本机，第三方服务仍可能依据其政策处理必要的网络日志或 Cookie。
+快递列表、物流缓存和设置保存在设备上，Access Key 保存在系统钥匙串。绑定、同步和查件时，必要的手机号、验证码、运单号、手机尾号、随机安装标识及网络信息会经 Cloudflare 中转至相关服务；部分订单需在本机加载第三方页面，相关服务可能按其政策处理网络日志或 Cookie。
 
-The Access Key is stored only in the script’s existing local Keychain namespace. Its separate activation identity is stored only in the same script’s synchronized Keychain namespace. On first migration of a legacy Keychain credential, the original App Group reader validates only whether a committed deletion must first be preserved in Keychain. Unreadable or invalid deletion evidence stays unavailable until retried or explicitly replaced; no plaintext token grants authorization. After migration, old plaintext App Group files (including backup and interrupted-write files) and shared Storage copies are deleted without loading their contents; cleanup failures are retried without using those copies for authorization. No credential or activation identity is recovered from shared storage. The settings notice for a key activated elsewhere retains only its irreversible fingerprint. Phone bindings, parcel lists and timeline caches keep their existing App Group storage. Deleting the script removes its Keychain scope; a new import can use a replacement Access Key from kdbot.
-
-诊断日志仅记录接口类型、状态版本、绑定数量、耗时及错误类别，最多保留二百条并在七日后自动过期；不会记录手机号码、验证码、Access Key、运单号码或网络响应正文，也不会自动上传。
-
-## 平台限制
-
-- WidgetKit 不能保证严格的固定刷新周期，主屏幕小组件也不能上下滚动；
-- 4 × 2 小组件最多显示三条物流动态；
-- 首页与后台刷新只更新会影响列表展示的账号、本地和路由增量缓存，不抓取 H5 轨迹，也不调用最终兜底。手动查件先通过 K100 免费识别接口确定承运商，再以 Meizu Picker 结果进入详情；手动件列表优先显示 Moto 增量轨迹，顺丰来源件列表优先显示 Meizu Picker 整包，两者均保留各自既有轨迹作为兜底。
-- 手动件详情刷新会并行查询 Moto 与 K100 H5，并在成功结果中按完整度整包择优；两者均失败或没有有效带时间节点时，才调用一次 KDNiao。京东账号件与顺丰来源件不查询 Moto，仅查询 K100 H5，失败或无有效轨迹后再调用 KDNiao。K100 H5 与 KDNiao 结果只用于详情，不覆盖列表。
-- 京东购物订单若轨迹文案已写明运单号（如“待出库交付极兔速递，运单号为 …”），直接读取运单号与承运商；否则在未取得真实运单号时可执行隔离 H5 投影，但该页面仅用于提取真实运单号，返回的残缺轨迹不会入库。取得运单号后，仅在详情页下拉刷新时通过 K100 查询轨迹；返回承运商不一致的结果不会采用。每次实际下拉均可重新请求；查询结果或上游限制会以归一化提示反馈，且限制仅使本次刷新失败。查询不会打开手机或桌面网页。
-- 各轨迹来源分别增量保存；即使某一来源每轮只返回一个带时间的节点，也只会与该来源之前的节点合并。京东列表、小组件与通知始终使用小米账户增量轨迹；顺丰列表使用 Meizu Picker 整包并以账号粗轨迹兜底；经校验的 K100 整包只负责详情展示，其他来源不会向其中拼接轨迹。
-- App 与小组件共用 App Group 本地状态，但 Scripting 当前未提供同步的跨宿主事务或 CAS；App 与 Widget 恰好同时写入时，尚不能严格证明不会发生后写覆盖，需后续迁移到可事务化的异步存储后再关闭这一限制；
-- 本项目运行于 Scripting 宿主内，不是独立 IPA；Access Key 仅用于访问控制，不能证明脚本源码未经修改。
+诊断日志仅保存在本机，不会自动上传；不包含手机号、验证码、Access Key、完整运单号或响应正文。
 
 ## 服务可用性声明
 
@@ -55,52 +42,3 @@ The Access Key is stored only in the script’s existing local Keychain namespac
 ## 传播限制
 
 未经项目作者事先明确授权，任何个人或组织不得在中华人民共和国大陆地区传播、分发、转载、镜像、再发布本项目的源代码、脚本包或任何衍生版本。
-
-## 开发与校验
-
-`project/` 保存可审查的 Scripting 源码，`pipi-deliveries.scripting` 为根据该源码生成的发布包。发布流程会运行行为测试、生成脚本包并核对包内文件，避免源码与发布包不一致。
-
-`SCRIPT_CLIENT_BUILD` counts formal iOS releases only. The formal baseline is
-`0.6.2 / build 34`; each subsequent formal release increments the build by one.
-Beta packages retain the last formal build number and use their `-betaN` version
-suffix to identify beta iterations. Beta packaging must not advance this counter.
-
-在仓库根目录运行：
-
-```sh
-sh script/project/tools/test.sh
-sh script/project/tools/package.sh
-sh script/project/tools/verify-package.sh
-```
-
-### Gateway protocol pairing
-
-Scripting uses explicit declarations in `project/services/build-track.ts`; the Android beta
-builder and Worker promotion tool do not rewrite this file. Before delivering an archive,
-select all three values for the exact target Worker artifact:
-
-| Target | `SCRIPT_BUILD_TRACK` | Gateway host (`GATEWAY_ORIGIN` uses HTTPS) | `SCRIPTING_GATEWAY_PROTOCOL_VERSION` |
-| --- | --- | --- | --- |
-| Current v1-only formal, before 2026-11-01 00:00 Asia/Shanghai | `formal` | `pipiassistant.app` | `1` |
-| Beta supporting v2 | `beta` | `beta.pipiassistant.app` | `2` |
-| Promoted formal supporting v2 | `formal` | `pipiassistant.app` | `2` |
-
-Keep `SCRIPT_VERSION` equal to `project/script.json.version`. Beta versions require `-betaN`
-and retain the last formal `SCRIPT_CLIENT_BUILD`. The current archive remains formal `0.7.0`;
-this source update does not select a new release version.
-
-From the Deliveries repository root, after the release owner has verified the exact active
-target artifact, set `verified_worker` to its absolute local path and run:
-
-```sh
-sh script/project/tools/package.sh "$PWD/script/pipi-deliveries.scripting" delivery "$verified_worker"
-sh script/project/tools/verify-package.sh "$PWD/script/pipi-deliveries.scripting" formal delivery "$verified_worker"
-```
-
-Use `beta` instead of `formal` in the verifier for a beta archive. Delivery checks require the
-target artifact's highest supported protocol: a beta or promoted formal v2 target rejects a
-remaining v1 selection. At the fixed November 1 boundary, v1 signing and delivery both stop.
-No request retries with another protocol or origin. Default `source` packaging can preserve an
-undeployed candidate, but it does not authorize distribution, a mirror push, or a Release.
-
-Scripting 原生模块的精确类型检查应使用 `scripting-cli` 从已安装 Scripting App 同步的 `.d.ts` 声明；仓库测试主要覆盖可执行行为与脚本包完整性。
