@@ -243,6 +243,24 @@ export function refreshProviderDue(
   return current.nextDueAtMs <= now;
 }
 
+export function refreshProviderCooldownDetails(
+  key: string,
+  provider: RefreshProvider,
+  identityFingerprint: string,
+  now = Date.now(),
+) {
+  const current = readRuntimeMetadata(now).providers.find(item =>
+    item.key === key && item.provider === provider && item.identityFingerprint === identityFingerprint);
+  if (!current) return {};
+  return {
+    cooldownReason: current.lastResult,
+    cooldownRemainingMs: Math.max(0, current.nextDueAtMs - now),
+    providerLastAttemptAtMs: current.lastAttemptAtMs,
+    providerNextDueAtMs: current.nextDueAtMs,
+    providerFailures: current.consecutiveFailures,
+  };
+}
+
 /** Reserve the upstream's exact per-waybill H5 interval before loading, including failed attempts. */
 export function claimKuaidi100Capture(waybill: string, beforeQuery?: () => void, now = Date.now()): boolean {
   return withSharedFileTransaction(() => {

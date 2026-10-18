@@ -25,6 +25,11 @@
 - 更新原脚本会保留现有授权；删除后重新导入可能需要通过 `/key` 重新领取密钥。
 - 在设置中移除 Access Key 会停止查询与同步；重新保存有效密钥即可恢复，已有快递记录不会因此清空。
 
+Protocol v2 updates retain your personal Access Key and activation when updating
+the same script. If you still use a legacy shared token, obtain a personal Access
+Key through `/key` before using a v2 build; deleting and re-importing the script
+is not required for this update.
+
 ## 隐私
 
 快递列表、物流缓存和设置保存在设备上，Access Key 保存在系统钥匙串。绑定、同步和查件时，必要的手机号、验证码、运单号、手机尾号、随机安装标识及网络信息会经 Cloudflare 中转至相关服务；部分订单需在本机加载第三方页面，相关服务可能按其政策处理网络日志或 Cookie。

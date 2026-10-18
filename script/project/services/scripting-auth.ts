@@ -11,7 +11,7 @@ export function normalizeScriptingToken(value: string): string {
   return SCRIPTING_TOKEN_PATTERN.test(token) ? token : "";
 }
 
-/** The current formal Worker uses the original six-line v1 contract until its fixed retirement. */
+/** Retained six-line v1 compatibility contract until the fixed legacy retirement. */
 export function scriptingLegacyCanonicalRequest(
   timestamp: number,
   nonce: string,

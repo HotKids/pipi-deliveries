@@ -592,3 +592,25 @@ try {
   rejectWrites = false;
   Storage.get = originalGet; Storage.set = originalSet;
 }
+
+clearDiagnostics();
+writeDiagnostic("refresh.stage.skipped", {
+  stage: "manual_refresh", requestProvider: "kdniao", skipReason: "cooldown",
+  cooldownReason: "upstream_rejected", cooldownRemainingMs: 123000,
+  providerLastAttemptAtMs: 1000, providerNextDueAtMs: 124000, providerFailures: 2,
+});
+const cooldown = readDiagnostics()[0].details;
+assert.equal(cooldown.cooldownReason, "upstream_rejected");
+assert.equal(cooldown.cooldownRemainingMs, 123000);
+assert.equal(cooldown.providerLastAttemptAtMs, 1000);
+assert.equal(cooldown.providerNextDueAtMs, 124000);
+assert.equal(cooldown.providerFailures, 2);
+clearDiagnostics();
+writeDiagnostic("refresh.stage.skipped", {
+  cooldownReason: "synthetic-private-value", providerFailures: -1,
+  scheduleKey: "synthetic-private-key", identityFingerprint: "synthetic-private-identity",
+} as never);
+assert.equal(readDiagnostics()[0].details.cooldownReason, undefined);
+assert.equal(readDiagnostics()[0].details.providerFailures, undefined);
+assert.equal(diagnosticText().includes("synthetic-private"), false,
+  "cooldown diagnostics admit only fixed reasons and numeric metadata");

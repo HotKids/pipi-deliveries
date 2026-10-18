@@ -149,6 +149,7 @@ import {
   recordNetworkRefreshSuccess,
   recordRefreshProviderResult,
   refreshProviderDue,
+  refreshProviderCooldownDetails,
   type RefreshProviderResult,
 } from "./refresh-runtime-state";
 import { requestWidgetReload } from "./widgets";
@@ -2702,17 +2703,15 @@ async function refreshBackgroundSfAlignment(
   } finally { lease.release(); }
 }
 
-/**
- * 手动件后台刷新（manual_refresh）问哪一级（用户定 2026-09-24，与 Pipi 对齐）：列表正显示的历史来自免费、
- * 非网页的手动源 v4_query 时，只再问这一级；网页/H5（k100_h5、jt_h5、cn_h5）、付费（kdniao）、v6_query 或
- * 没有/认不出时，照旧问 Online（v6_query）。v2_query 在 iOS 没有对应的查询，也照旧问 Online。失败、冷却都
- * 不换级；排程、终态与冷却的门不变。自动件不在此列，照旧问 Online。
- */
+/** Explicit Home refresh retains Online even when background polling follows a paid history package. */
 function manualBackgroundProvider(
   shipment: Shipment,
-): typeof TIMELINE_SLOT.V4_QUERY | typeof TIMELINE_SLOT.V6_QUERY {
+  backgroundHostSafe: boolean,
+): typeof TIMELINE_SLOT.V4_QUERY | typeof TIMELINE_SLOT.V6_QUERY | typeof TIMELINE_SLOT.KDNIAO {
   if (!shipment.identity.manuallyAdded) return TIMELINE_SLOT.V6_QUERY;
   const listed = normalizeTimelineSlot(shipmentSelectionEvidence(shipment).historyProvider);
+  // The October 19 paid-refresh approval applies only to background hosts and the actual list selection.
+  if (backgroundHostSafe && listed === TIMELINE_SLOT.KDNIAO) return TIMELINE_SLOT.KDNIAO;
   return listed === TIMELINE_SLOT.V4_QUERY ? TIMELINE_SLOT.V4_QUERY : TIMELINE_SLOT.V6_QUERY;
 }
 
@@ -2721,6 +2720,7 @@ async function refreshOnlineShipment(
   task: ManualRefreshTask, deadlineAtMs: number | undefined, forceManualRefresh: boolean,
   signal: AbortSignal, query: typeof queryManualForSource,
   recognitionBudget?: CarrierRecognitionBudget,
+  backgroundHostSafe = false,
 ): Promise<RefreshSummary> {
   let currentState = state;
   let attempted = 0, succeeded = 0, failed = 0;
@@ -2744,13 +2744,16 @@ async function refreshOnlineShipment(
   const schedule = manualProviderSchedule({ source, waybill: displayWaybill(current),
     rawCourierCode: current.identity.rawCourierCode, phoneTail: current.identity.phoneTail,
     sourceProvider: current.identity.sourceProvider });
-  const provider = manualBackgroundProvider(current);
+  const provider = manualBackgroundProvider(current, backgroundHostSafe && !forceManualRefresh);
   const moto = provider === TIMELINE_SLOT.V4_QUERY;
-  // 冷却键沿用这一级自己的（Moto 是 "moto"，Online 是 "picker"），与手动链里同一级共用。
+  const paid = provider === TIMELINE_SLOT.KDNIAO;
+  const scheduleProvider = moto ? "moto" : paid ? "kdniao" : "picker";
   if (!forceManualRefresh &&
-      !refreshProviderDue(schedule.key, moto ? "moto" : "picker", schedule.identityFingerprint)) {
+      !refreshProviderDue(schedule.key, scheduleProvider, schedule.identityFingerprint)) {
     writeDiagnostic("refresh.stage.skipped", { flowId, source, stage: "manual_refresh",
-      ...shipmentDiagnosticDetails(current, provider), result: "cooldown", skipReason: "cooldown" });
+      ...shipmentDiagnosticDetails(current, provider),
+      ...refreshProviderCooldownDetails(schedule.key, scheduleProvider, schedule.identityFingerprint),
+      result: "cooldown", skipReason: "cooldown" });
     return summary();
   }
   const startedAt = Date.now();
@@ -2782,8 +2785,11 @@ async function refreshOnlineShipment(
       rawCourierCode: reserved.identity.rawCourierCode, courierCode: reserved.identity.courierCode,
       companyName: reserved.identity.companyName, sourceProvider: reserved.identity.sourceProvider,
       deadlineAtMs: taskDeadline, signal, diagnosticFlowId: flowId, diagnosticStage: "manual_refresh",
-      currentShipment: reserved, ...(moto ? { motoOnly: true } : { pickerFirst: true, pickerOnly: true }),
-      includeKdniaoFallback: false, scheduled: !forceManualRefresh, hostSafe: true });
+      // Selected paid history is being refreshed directly, not competing with cached free history for fallback.
+      currentShipment: paid ? undefined : reserved,
+      ...(moto ? { motoOnly: true } : paid ? { fallbackOnly: true }
+        : { pickerFirst: true, pickerOnly: true }),
+      includeKdniaoFallback: paid, scheduled: !forceManualRefresh, hostSafe: true });
     assertRefreshSignal(signal);
     stageCancelled.close();
   } catch (error) {
@@ -2797,7 +2803,10 @@ async function refreshOnlineShipment(
   }
   if (outcome?.skipReason === "cooldown") {
     release();
-    writeDiagnostic("refresh.stage.skipped", { flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || current, provider), result: "cooldown", skipReason: "cooldown" });
+    writeDiagnostic("refresh.stage.skipped", { flowId, source, stage: "manual_refresh",
+      ...shipmentDiagnosticDetails(reserved || current, provider),
+      ...refreshProviderCooldownDetails(schedule.key, scheduleProvider, schedule.identityFingerprint),
+      result: "cooldown", skipReason: "cooldown" });
     return summary();
   }
   attempted++;
@@ -5551,7 +5560,7 @@ async function refreshShipmentEnrichment(
   updatedCainiaoIds: ReadonlySet<string> = new Set(),
   /** The sync round's recognition wait (用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒). */
   recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
-  backgroundStatusAlignment = false,
+  backgroundHostSafe = false,
 ): Promise<RefreshSummary> {
   let currentState = state;
   let attempted = 0;
@@ -5566,7 +5575,7 @@ async function refreshShipmentEnrichment(
     manualRefreshTasks(currentState, source, now, skipRefreshIds, forceManualRefresh,
       accountSourceFollowup, updatedCainiaoIds, (frozen) => writeDiagnostic("refresh.stage.skipped", {
         flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(frozen, "v5_query"),
-        result: "signed_frozen", skipReason: "signed_frozen" }), backgroundStatusAlignment),
+        result: "signed_frozen", skipReason: "signed_frozen" }), backgroundHostSafe),
     (task) => {
       const row = currentState.shipments.find((shipment) => shipment.identity.id === task.id);
       return row?.identity.manuallyAdded && !task.accountDetail ? [displayWaybill(row)] : [];
@@ -5619,7 +5628,7 @@ async function refreshShipmentEnrichment(
       ) : await refreshOnlineShipment(
         currentState, source, flowId, commit, job, deadlineAtMs, forceManualRefresh,
         controller.signal, runtimeOverrides.queryManualForSource || queryManualForSource,
-        recognitionBudget,
+        recognitionBudget, backgroundHostSafe,
       );
       if (job.backgroundAlignment) currentState = loadState(Date.now());
       return {job, summary: result};
