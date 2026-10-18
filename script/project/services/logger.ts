@@ -139,6 +139,10 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   sincePreviousMs?: number;
   /** The reload delay this widget run asked WidgetKit for. */
   reloadAfterMs?: number;
+  cooldownReason?: string;
+  providerLastAttemptAtMs?: number;
+  providerNextDueAtMs?: number;
+  providerFailures?: number;
   readbackMatched?: boolean;
   loadSettled?: boolean;
   loadCompleted?: boolean;
@@ -332,6 +336,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "reloadAfterMs",
   "projectionTrackCount",
   "cooldownRemainingMs",
+  "cooldownReason", "providerLastAttemptAtMs", "providerNextDueAtMs", "providerFailures",
   "readbackMatched",
   "loadSettled",
   "loadCompleted",
@@ -424,6 +429,7 @@ const SOURCE_KEYS = new Set<keyof DiagnosticDetails>([
 ]);
 
 const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
+  "providerLastAttemptAtMs", "providerNextDueAtMs", "providerFailures",
   "pendingNotifications",
   "listEventAtMs", "preparedEventAtMs", "previousFeedEventAtMs", "mergedFeedEventAtMs",
   "commitSequence",
@@ -750,6 +756,12 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
     if (key === "waybillTail") {
       const tail = String(rawValue).trim().toUpperCase();
       if (/^[A-Z0-9]{4}$/.test(tail)) result.waybillTail = tail;
+      continue;
+    }
+    if (key === "cooldownReason") {
+      if (["success", "no_result", "invalid_query", "upstream_rejected", "timeout", "network", "failed"].includes(rawValue as string)) {
+        result.cooldownReason = rawValue as string;
+      }
       continue;
     }
     if (key === "failureCode") {

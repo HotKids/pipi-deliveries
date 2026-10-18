@@ -27,6 +27,7 @@ const {
   recordNetworkRefreshSuccess,
   recordRefreshProviderResult,
   refreshProviderDue,
+  refreshProviderCooldownDetails,
 } = await import("../services/refresh-runtime-state");
 
 const now = Date.now();
@@ -100,6 +101,19 @@ assert.equal(
   refreshProviderDue("shipment-a", "picker", "SF:1234", successDue),
   true,
 );
+
+const cooldownDetails = refreshProviderCooldownDetails("shipment-a", "picker", "SF:1234", now + 1);
+assert.deepEqual(cooldownDetails, {
+  cooldownReason: "success", cooldownRemainingMs: successDue - now - 1,
+  providerLastAttemptAtMs: now, providerNextDueAtMs: successDue, providerFailures: 0,
+});
+assert.deepEqual(refreshProviderCooldownDetails("shipment-a", "picker", "SF:5678", now + 1), {},
+  "a different request identity cannot borrow another cooldown");
+assert.deepEqual(refreshProviderCooldownDetails("shipment-a", "moto", "SF:1234", now + 1), {},
+  "provider cooldown diagnostics remain isolated");
+assert.equal(refreshProviderCooldownDetails("shipment-a", "picker", "SF:1234", successDue + 1).cooldownRemainingMs, 0);
+assert.deepEqual(refreshProviderCooldownDetails("shipment-a", "picker", "SF:1234", now + 1), cooldownDetails,
+  "reading diagnostics never renews a cooldown or records an attempt");
 
 recordNetworkRefreshSuccess("account", now - 1_000);
 recordNetworkRefreshSuccess("background", now);

@@ -26,7 +26,7 @@ For native API type checks, use declarations synchronized from the installed Scr
 
 ## Version and track selection
 
-`script/project/script.json.version` must equal `SCRIPT_VERSION` in `services/build-track.ts`; these declarations are the source of truth for the current version. The selected track is formal, client build `36`, origin `https://pipiassistant.app`, gateway protocol `1`.
+`script/project/script.json.version` must equal `SCRIPT_VERSION` in `services/build-track.ts`; these declarations are the source of truth for the current version. Read the selected track, client build, origin and gateway protocol from that same `build-track.ts` declaration rather than copying their values into this guide.
 
 Every new publication to `HotKids/pipi-deliveries/main` advances only the final numeric version component by one, including documentation-only and Android-only mirror updates: `0.7.9 → 0.7.10 → 0.7.11`. It never carries into the minor or major component. From the canonical Pipi Assistant root, run `python3 tools/verify_deliveries_mirror.py --prepare` before committing the candidate. This reads the destination's exact main commit, selects its next patch, updates both declarations and regenerates the package; repeated preparation before publication is idempotent. Commit the reviewed result to local main, then run `python3 tools/verify_deliveries_mirror.py --publish` immediately before exporting the mirror. Publication fails if the destination has advanced or the committed package skips, repeats or rolls over the patch. The default command without flags retains the offline protocol check.
 

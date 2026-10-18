@@ -12,7 +12,7 @@ const shared = new Map<string, unknown>();
 const files = new Map<string, string>();
 let fetchCalls = 0;
 let responseStatus = 401;
-type FakeFetchInit = { signal?: AbortSignal };
+type FakeFetchInit = { signal?: AbortSignal; headers?: Record<string, string> };
 
 function gatewayResponse(status: number) {
   return {
@@ -120,7 +120,6 @@ const {
   hmacSha256Hex,
   postGateway,
   scriptingAuthHeaders,
-  SCRIPTING_UPDATE_REQUIRED_MESSAGE,
 } = await import("../services/gateway");
 const { OperationTimeoutError } = await import("../services/deadline");
 const {
@@ -297,42 +296,71 @@ await rejectsAsOperationTimeout(postGateway(
 ), "timeout_signal", "request");
 assert.equal(stalledFetchSignal?.aborted, true);
 
-let stalledBodySignal: AbortSignal | undefined;
-let resolveLateBody: ((value: string) => void) | undefined;
-fetchHandler = async (init) => {
-  stalledBodySignal = init?.signal;
-  return {
-    ...gatewayResponse(200),
-    text: () => new Promise<string>((resolve) => {
-      resolveLateBody = resolve;
-    }),
+{
+  const bodyNow = Date.now;
+  const bodyTimeoutSignal = AbortSignal.timeout;
+  const bodyController = new AbortController();
+  let bodyClock = Date.now();
+  let bodyBudgetMs: number | undefined;
+  // Use one clock so native timer rounding cannot alter the diagnostic budget.
+  Date.now = () => bodyClock;
+  AbortSignal.timeout = milliseconds => {
+    bodyBudgetMs = milliseconds;
+    return bodyController.signal;
   };
-};
-const bodyTimeout = await rejectsAsOperationTimeout(postGateway(
-  "/api/express/classify",
-  { waybill: "SYNTHETIC-TIMEOUT-BODY" },
-  { deadlineAtMs: Date.now() + 20 },
-), "timeout_signal", "response_body");
-assert.equal(stalledBodySignal?.aborted, true);
-assert.ok(bodyTimeout.requestDetails?.requestId?.startsWith("request-"));
-assert.ok(bodyTimeout.requestDetails?.signalAbortAfterMs! >= bodyTimeout.requestDetails?.requestBudgetMs!);
-assert.equal(typeof bodyTimeout.requestDetails?.responseHeadersAfterMs, "number");
-assert.equal(bodyTimeout.requestDetails?.responseBodyAfterMs, undefined);
-setDiagnosticsEnabled(true);
-writeDiagnostic("account.sync.failed", diagnosticErrorDetails(bodyTimeout));
-const savedTimeout = readDiagnostics()[0].details;
-assert.equal(savedTimeout.timeoutOrigin, "timeout_signal");
-assert.equal(savedTimeout.requestPhase, "response_body");
-assert.ok(savedTimeout.requestBudgetMs! > 0);
-assert.ok(savedTimeout.requestElapsedMs! >= savedTimeout.requestBudgetMs!);
-assert.equal(typeof savedTimeout.deadlineLagMs, "number");
-assert.equal(savedTimeout.requestId, bodyTimeout.requestDetails?.requestId);
-assert.equal(savedTimeout.signalAbortAfterMs, bodyTimeout.requestDetails?.signalAbortAfterMs);
-assert.equal(JSON.stringify(savedTimeout).includes("SYNTHETIC-TIMEOUT-BODY"), false);
-setDiagnosticsEnabled(false);
-assert.ok(resolveLateBody);
-resolveLateBody(JSON.stringify({ ok: true }));
-await Promise.resolve();
+  try {
+    let stalledBodySignal: AbortSignal | undefined;
+    let resolveLateBody: ((value: string) => void) | undefined;
+    fetchHandler = async (init) => {
+      stalledBodySignal = init?.signal;
+      return {
+        ...gatewayResponse(200),
+        text: () => new Promise<string>((resolve) => {
+          resolveLateBody = resolve;
+        }),
+      };
+    };
+    const bodyRequest = postGateway(
+      "/api/express/classify",
+      { waybill: "SYNTHETIC-TIMEOUT-BODY" },
+      { deadlineAtMs: Date.now() + 20 },
+    );
+    let bodySettled = false;
+    void bodyRequest.then(() => { bodySettled = true; }, () => { bodySettled = true; });
+    await Promise.resolve();
+    assert.ok(resolveLateBody);
+    assert.equal(bodyBudgetMs, 20);
+    bodyClock += 19;
+    await Promise.resolve();
+    assert.equal(stalledBodySignal?.aborted, false);
+    assert.equal(bodySettled, false);
+    bodyClock += 1;
+    bodyController.abort();
+    const bodyTimeout = await rejectsAsOperationTimeout(bodyRequest, "timeout_signal", "response_body");
+    assert.equal(stalledBodySignal?.aborted, true);
+    assert.ok(bodyTimeout.requestDetails?.requestId?.startsWith("request-"));
+    assert.ok(bodyTimeout.requestDetails?.signalAbortAfterMs! >= bodyTimeout.requestDetails?.requestBudgetMs!);
+    assert.equal(typeof bodyTimeout.requestDetails?.responseHeadersAfterMs, "number");
+    assert.equal(bodyTimeout.requestDetails?.responseBodyAfterMs, undefined);
+    setDiagnosticsEnabled(true);
+    writeDiagnostic("account.sync.failed", diagnosticErrorDetails(bodyTimeout));
+    const savedTimeout = readDiagnostics()[0].details;
+    assert.equal(savedTimeout.timeoutOrigin, "timeout_signal");
+    assert.equal(savedTimeout.requestPhase, "response_body");
+    assert.ok(savedTimeout.requestBudgetMs! > 0);
+    assert.ok(savedTimeout.requestElapsedMs! >= savedTimeout.requestBudgetMs!);
+    assert.equal(typeof savedTimeout.deadlineLagMs, "number");
+    assert.equal(savedTimeout.requestId, bodyTimeout.requestDetails?.requestId);
+    assert.equal(savedTimeout.signalAbortAfterMs, bodyTimeout.requestDetails?.signalAbortAfterMs);
+    assert.equal(JSON.stringify(savedTimeout).includes("SYNTHETIC-TIMEOUT-BODY"), false);
+    setDiagnosticsEnabled(false);
+    resolveLateBody(JSON.stringify({ ok: true }));
+    await Promise.resolve();
+  } finally {
+    AbortSignal.timeout = bodyTimeoutSignal;
+    Date.now = bodyNow;
+  }
+}
 
 const parentController = new AbortController();
 let parentControlledSignal: AbortSignal | undefined;
@@ -607,9 +635,17 @@ await assert.rejects(postGateway("/api/express/timeline/preferred", { waybill: "
 const callsBeforeRetirement = fetchCalls;
 Date.now = () => Date.parse("2026-11-01T00:00:00+08:00");
 try {
+  fetchHandler = async init => {
+    assert.equal(init?.headers?.["X-Scripting-Version"], "2");
+    assert.equal(init?.headers?.["X-Scripting-Token"], undefined);
+    return gatewayResponse(200);
+  };
+  await postGateway("/api/express/carriers", {});
+  assert.equal(fetchCalls, callsBeforeRetirement + 1, "The v2 package still sends after legacy retirement");
+  fetchHandler = async () => gatewayResponse(401);
   await assert.rejects(postGateway("/api/express/carriers", {}),
-    (error: unknown) => error instanceof GatewayError && error.message === SCRIPTING_UPDATE_REQUIRED_MESSAGE);
-  assert.equal(fetchCalls, callsBeforeRetirement, "The retired v1 package must not send or retry a request");
+    (error: unknown) => error instanceof GatewayError && error.status === 401);
+  assert.equal(fetchCalls, callsBeforeRetirement + 2, "A v2 rejection never retries with legacy v1");
   assert.equal(gatewayCredentialStatus(), "configured", "Retirement does not erase the user's key");
 } finally {
   Date.now = realClock;

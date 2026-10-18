@@ -28,11 +28,22 @@ const manualDetailSource = await readFile(
 
 assert.match(manualSource, /local:\s*true[\s\S]*route:\s*true[\s\S]*fallback:\s*true/);
 const list = syncSource.slice(syncSource.indexOf("async function refreshOnlineShipment"), syncSource.indexOf("export type ManualShipmentPreview"));
-// 列表（后台）刷新只问一级，从不带快递鸟。用户定 2026-09-24（与 Pipi 对齐）：手动件列表显示 v4_query 时只问
-// v4_query（motoOnly），其余照旧只问 Online（pickerOnly）；行为见 manual-background-list-provider.test.ts。
+// The October 19 background exception follows actual selected paid history; it never opens a fallback contest.
+const listProvider = syncSource.slice(syncSource.indexOf("function manualBackgroundProvider("), syncSource.indexOf("async function refreshOnlineShipment"));
+assert.match(listProvider, /if \(!shipment.identity.manuallyAdded\) return TIMELINE_SLOT.V6_QUERY;/);
+assert.match(listProvider, /const listed = normalizeTimelineSlot\(shipmentSelectionEvidence\(shipment\).historyProvider\);/);
+assert.match(listProvider, /if \(backgroundHostSafe && listed === TIMELINE_SLOT.KDNIAO\) return TIMELINE_SLOT.KDNIAO;/);
+assert.match(listProvider, /return listed === TIMELINE_SLOT.V4_QUERY \? TIMELINE_SLOT.V4_QUERY : TIMELINE_SLOT.V6_QUERY;/);
+assert.match(list, /manualBackgroundProvider\(current, backgroundHostSafe && !forceManualRefresh\)/);
+assert.match(list, /const paid = provider === TIMELINE_SLOT.KDNIAO;/);
 assert.match(list,
-  /\{ motoOnly: true \} : \{ pickerFirst: true, pickerOnly: true \}\),\s*includeKdniaoFallback: false,/);
-assert.doesNotMatch(list, /fallbackOnly|includeKdniaoFallback: true/);
+  /\{ motoOnly: true \} : paid \? \{ fallbackOnly: true \}\s*: \{ pickerFirst: true, pickerOnly: true \}\),\s*includeKdniaoFallback: paid, scheduled: !forceManualRefresh, hostSafe: true/);
+assert.doesNotMatch(list, /includeKdniaoFallback:\s*true/);
+assert.match(list, /const scheduleProvider = moto \? "moto" : paid \? "kdniao" : "picker";/);
+assert.match(list, /!refreshProviderDue\(schedule.key, scheduleProvider, schedule.identityFingerprint\)[\s\S]*?return summary\(\);/);
+assert.equal(list.match(/\bawait query\(/g)?.length, 1, "failure or cooldown cannot start another provider query");
+assert.match(list, /catch \(error\) \{[\s\S]*?failed\+\+;[\s\S]*?return summary\(\);/);
+assert.match(list, /if \(outcome\?\.skipReason === "cooldown"\) \{[\s\S]*?return summary\(\);/);
 assert.doesNotMatch(list, /refreshWebTimeline|scrapeWebTimeline|queryPendingManualRound/);
 const full = syncSource.slice(syncSource.indexOf("async function runFullRefresh"), syncSource.indexOf("export function refreshAllShipments"));
 assert.doesNotMatch(full, /refreshAccountFollowups|refreshMissingShipmentHistories/);
