@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import { jdRiskControlRetryText } from "../services/express-toast-copy";
+import type { AccountOrderProjectionDiagnostics } from "../services/account-order-projection";
 
 // Exercise the owning page's actual async closure without pretending to render the iOS host.
 const page = readFileSync(new URL("../pages/DetailPage.tsx", import.meta.url), "utf8");
@@ -277,6 +278,89 @@ for (const fails of [false, true]) {
   assert.equal(page.state.notices.length, notices);
   assert.equal(page.state.shipment.timeline.semantic, "UNKNOWN");
   assert.equal(page.state.loading, true, "unmounted state must not be updated by finally");
+}
+
+// A gesture queued during the account query remains explicit if the entry later starts a capture.
+// Exercise the page closure and real sync state transitions; only provider responses are synthetic.
+{
+  const { memory, NOW } = await import("./state-storage-mock");
+  const { parseAccountSyncResponse } = await import("../services/account-parser");
+  const { parcelToShipment } = await import("../services/account-sync");
+  const { OperationTimeoutError } = await import("../services/deadline");
+  const { emptyState, loadState, saveState } = await import("../services/storage");
+  const { saveOrderProjectionReferences } = await import("../services/routes");
+  const { runProjectionAwareShipmentRefreshForTesting, hasActiveAccountOrderProjection } =
+    await import("../services/sync");
+  const realNow = Date.now;
+  const realFetch = globalThis.fetch;
+  Date.now = () => NOW;
+  globalThis.fetch = async () => { throw new Error("Unexpected network in detail continuation test"); };
+  Object.assign(globalThis, { Widget: { reloadAll() {} }, Notification: { schedule: async () => {} } });
+  try {
+    for (const riskControl of [false, true]) {
+      memory.clear();
+      const order = "3999999000000006";
+      const phone = "13800009996";
+      const route = "https://u.jd.com/forward?synthetic=detail-continuation";
+      const parcel = parseAccountSyncResponse("interface5", { code: 0, data: { expressList: [{
+        mailNo: order, provider: "JingDong", cpCode: "JDKD", name: "京东商品快递", phone, stateNum: 103,
+        details: [{ time: "2026-09-08 13:00:00", desc: "您的订单已出库" }],
+        jumpList: [{ type: "h5", link: route }],
+      }] } })[0]!;
+      const row = parcelToShipment(parcel, [phone], NOW)!;
+      saveState({ ...emptyState(), shipments: [row],
+        bindings: [{ source: "interface5", phone, boundAtMs: NOW - 86400000 }] }, NOW);
+      saveOrderProjectionReferences([{ ownerId: row.identity.id, source: "interface5", url: route }], NOW);
+      const page = pageHarness(row);
+      page.context.props.refreshOnAppear = "detail_open";
+      page.context.props.manualPreview = null;
+      page.context.isJingDongSourceShipment = () => true;
+      page.context.unprojectedAccountOrder = () => true;
+      page.context.hasActiveAccountOrderProjection = () => hasActiveAccountOrderProjection(row.identity.id);
+      const query = deferred();
+      let accountQueries = 0;
+      let captures = 0;
+      const captureActivity: boolean[] = [];
+      const triggers: string[] = [];
+      page.context.refreshShipmentById = (id: string, options: any) => {
+        triggers.push(options.trigger);
+        return runProjectionAwareShipmentRefreshForTesting(id, { ...options, deadlineAtMs: NOW + 30000 }, {
+          refreshAccountParcel: async () => { accountQueries++; await query.promise; return null; },
+          projectAccountOrderWithCarrier: async (_parcel, _pageDeadline, _recognitionDeadline, observe) => {
+            captures++;
+            captureActivity.push(hasActiveAccountOrderProjection(row.identity.id));
+            if (riskControl) observe?.({ unionResponseStatuses: "403", riskControlSeen: true } as
+              AccountOrderProjectionDiagnostics);
+            throw new OperationTimeoutError("Synthetic JD page timeout");
+          },
+          queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "" }),
+          refreshWebTimeline: async () => null,
+        });
+      };
+      const opened = page.refresh(false);
+      for (let i = 0; i < 20 && !accountQueries; i++) await new Promise(resolve => setImmediate(resolve));
+      assert.equal(accountQueries, 1);
+      assert.equal(hasActiveAccountOrderProjection(row.identity.id), false);
+      const pulled = page.refresh(true);
+      assert.notEqual(pulled, opened);
+      assert.equal(page.refresh(true), pulled);
+      query.resolve();
+      await pulled;
+      assert.deepEqual(triggers, ["detail_open", "detail_pull"]);
+      assert.equal(accountQueries, 1, "the explicit pull retains the entry query observation");
+      assert.equal(captures, riskControl ? 1 : 2,
+        "a queued explicit retry bypasses ordinary rest, but never a new risk-control answer");
+      assert.deepEqual(captureActivity, riskControl ? [true] : [true, true]);
+      assert.equal(hasActiveAccountOrderProjection(row.identity.id), false);
+      const retry = loadState().shipments[0]?.identity.orderProjectionRetry;
+      assert.equal(retry?.failedAtMs, NOW);
+      assert.equal(Boolean(retry?.riskControlAtMs), riskControl);
+      if (riskControl) assert.equal(page.state.notices.at(-1), jdRiskControlRetryText(3600000));
+    }
+  } finally {
+    Date.now = realNow;
+    globalThis.fetch = realFetch;
+  }
 }
 
 console.log("manual detail loading lifecycle tests passed");

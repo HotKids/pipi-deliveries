@@ -44,6 +44,28 @@ test("a completed 3-prefixed 12-digit JD placeholder hides without an empty-page
   assert.equal(storedShipmentsForProcessing(loadState(), NOW).length, 1, "projection and alignment keep processing the row");
 });
 
+test("pickup text does not replace an association and another carrier's waybill restores the order", () => {
+  memory.clear();
+  const parcel = parseAccountSyncResponse("interface5", { code: 0, data: { expressList: [{
+    mailNo: ORDER, provider: "JingDong", cpCode: "JDKD", name: "京东商品快递", phone: PHONE, stateNum: 107,
+    details: [
+      { time: "2026-09-08 12:00:00", desc: `您的订单${ORDER}已完成` },
+      { time: "2026-09-08 11:00:00", desc: "【上海市】圆通速递 已揽收" },
+    ],
+  }] } })[0]!;
+  const row = applyAccountShipment(undefined, parcelToShipment(parcel, [PHONE], NOW)!, NOW);
+  assert.ok(row.sourceTimeline?.tracks.some(track => track.detail.includes("已揽收")));
+  saveState(state(row), NOW);
+  assert.equal(visibleShipments(loadState(), NOW).length, 0);
+  assert.equal(loadState().shipments.length, 1);
+  assert.equal(storedShipmentsForProcessing(loadState(), NOW).length, 1);
+
+  row.identity.pendingProjection = { waybill: "YT000000044421", capturedAtMs: NOW };
+  saveState(state(row), NOW + 1);
+  assert.equal(visibleShipments(loadState(), NOW + 1).length, 1);
+  assert.equal(loadState().shipments[0]?.identity.hadRealWaybill, true);
+});
+
 for (const id of ["461100064421", "3500000000044421", "35110006442", "３５１１０００６４４２１"]) {
   test(`the new rule does not widen the approved order-number shape: ${id}`, () => {
     const row = order();
