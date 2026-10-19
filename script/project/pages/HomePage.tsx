@@ -613,6 +613,9 @@ export function HomePage(props: {
             <DetailPage
               key={selected.identity.id}
               shipment={selected}
+              persistedShipment={props.state.shipments.some(
+                (shipment) => shipment.identity.id === selected.identity.id,
+              )}
               attachedOrders={attachedProjectedOrders(props.state.shipments, selected)}
               manualPreview={manualPreview}
               refreshOnAppear={manualPreview

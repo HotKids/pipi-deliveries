@@ -71,7 +71,7 @@ public final class ExpressUiAccessibilityTest {
         String countdown = ((TextView) activity.findViewById(R.id.send_code_button))
                 .getText().toString();
         activity.findViewById(R.id.btn_bind_phone).performClick();
-        assertEquals("Binding…", ((TextView) activity.findViewById(R.id.btn_bind_phone))
+        assertEquals("绑定中…", ((TextView) activity.findViewById(R.id.btn_bind_phone))
                 .getText().toString());
         assertEquals(countdown, ((TextView) activity.findViewById(R.id.send_code_button))
                 .getText().toString());
@@ -179,7 +179,7 @@ public final class ExpressUiAccessibilityTest {
         View waybill = activity.findViewById(R.id.detail_waybill);
         View hotline = activity.findViewById(R.id.detail_hotline_value);
         assertClickLabel(waybill, activity.getString(R.string.copy_waybill));
-        assertClickLabel(hotline, activity.getString(R.string.call_carrier));
+        assertClickLabel(hotline, "拨打客服电话");
         assertTrue(waybill.performAccessibilityAction(AccessibilityNodeInfo.ACTION_CLICK, null));
         ClipboardManager clipboard = activity.getSystemService(ClipboardManager.class);
         assertEquals("JD0265059158261", clipboard.getPrimaryClip().getItemAt(0).getText().toString());
