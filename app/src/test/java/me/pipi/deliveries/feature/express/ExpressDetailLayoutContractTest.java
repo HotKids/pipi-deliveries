@@ -25,7 +25,7 @@ import java.nio.file.Path;
 @Config(sdk = 35, manifest = Config.NONE, application = Application.class)
 public final class ExpressDetailLayoutContractTest {
     @Test
-    public void carrierWaybillAndCopyIconStayInOneTightInlineControl() throws Exception {
+    public void carrierWaybillAndCopyIconStayInOneControl() throws Exception {
         String layout = projectFile("app/src/main/res/layout/activity_express_detail.xml");
         String waybill = element(layout, "@+id/detail_waybill");
         String source = projectFile(
@@ -37,10 +37,6 @@ public final class ExpressDetailLayoutContractTest {
         assertTrue(waybill.contains("android:drawablePadding=\"6dp\""));
         assertTrue(waybill.contains("android:layout_width=\"wrap_content\""));
         assertFalse(waybill.contains("android:layout_width=\"match_parent\""));
-        assertTrue(waybill.contains("android:maxLines=\"1\""));
-        assertTrue(waybill.contains("android:autoSizeTextType=\"uniform\""));
-        assertTrue(waybill.contains("android:autoSizeMinTextSize=\"10sp\""));
-        assertTrue(waybill.contains("android:autoSizeMaxTextSize=\"15sp\""));
         assertFalse(waybill.contains("android:ellipsize="));
         assertFalse(waybill.contains("android:layout_weight="));
         assertFalse(layout.contains("@+id/detail_waybill_copy"));

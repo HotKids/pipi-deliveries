@@ -39,6 +39,7 @@ import androidx.appcompat.content.res.AppCompatResources;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import com.google.android.material.appbar.MaterialToolbar;
@@ -116,8 +117,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private static final String LOGO_STYLE_ID = "__deliveries_courier_logo_style";
     private static final int ORANGE = 0xFFFF8000;
     private static final int BLUE = 0xFF1E85E5;
-    private static final int GRAY = 0xFF9B9B9B;
-    private static final int LIGHT_GRAY = 0xFFB0B0B3;
     private static final int LINE = 0x33888888;
     // 三端同预算（用户定 2026-09-05）：详情页手动刷新 15 秒（iOS DETAIL_MANUAL_REFRESH_BUDGET_MS 同值）。
     private static final long LOCAL_REFRESH_TIMEOUT_MS = 15_000L;
@@ -1803,6 +1802,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         waybillView.setText(getString(R.string.express_company_waybill,
                 ExpressItem.carrierLabel(company), waybill));
         waybillView.setOnClickListener(view -> copyWaybill(waybill));
+        ViewCompat.replaceAccessibilityAction(waybillView,
+                AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,
+                getString(R.string.copy_waybill), null);
         String hotline = CarrierRegistry.hotline(courierCode, company);
         hotlineRow.setVisibility(hotline.isEmpty() ? View.GONE : View.VISIBLE);
         hotlineView.setText(hotline);
@@ -1814,6 +1816,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 Toast.makeText(this, ExpressToastCopy.DIAL_UNAVAILABLE, Toast.LENGTH_SHORT).show();
             }
         });
+        ViewCompat.replaceAccessibilityAction(hotlineView,
+                AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_CLICK,
+                getString(R.string.call_carrier), null);
     }
 
     private void copyWaybill(String waybill) {
@@ -1837,7 +1842,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         renderedTimelineSignature = timelineSignature(tracks);
         timeline.removeAllViews();
         if (tracks.isEmpty()) {
-            TextView empty = textView(R.string.no_logistics, 14f, GRAY);
+            TextView empty = textView(R.string.no_logistics, 14f, secondaryTextColor());
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(0, dp(28), 0, dp(28));
             timeline.addView(empty, new LinearLayout.LayoutParams(
@@ -1857,7 +1862,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     private void appendTimelineLoading(int textResource) {
-        TextView loading = textView(textResource, 14f, GRAY);
+        TextView loading = textView(textResource, 14f, secondaryTextColor());
         loading.setGravity(Gravity.CENTER);
         loading.setPadding(0, dp(28), 0, dp(28));
         timeline.addView(loading, new LinearLayout.LayoutParams(
@@ -1880,6 +1885,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private View buildTrackRow(ExpressTimeline.Track track, boolean latest, boolean last) {
         int primary = MaterialColors.getColor(timeline,
                 com.google.android.material.R.attr.colorOnSurface);
+        int secondary = secondaryTextColor();
         String date = "";
         String clock = track.time;
         int separator = clock.indexOf(' ');
@@ -1895,17 +1901,17 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         LinearLayout timeColumn = new LinearLayout(this);
         timeColumn.setOrientation(LinearLayout.VERTICAL);
         timeColumn.setGravity(Gravity.START);
-        TextView time = textView(clock, 15f, latest ? primary : GRAY);
+        TextView time = textView(clock, 15f, latest ? primary : secondary);
         time.setIncludeFontPadding(false);
         timeColumn.addView(time);
-        TextView day = textView(date, 10.5f, LIGHT_GRAY);
+        TextView day = textView(date, 10.5f, secondary);
         day.setPadding(0, dp(2), 0, 0);
         timeColumn.addView(day);
         row.addView(timeColumn, new LinearLayout.LayoutParams(
                 dp(66), ViewGroup.LayoutParams.WRAP_CONTENT));
         row.addView(buildIndicator(latest, last), new LinearLayout.LayoutParams(
                 dp(28), ViewGroup.LayoutParams.MATCH_PARENT));
-        TextView detail = textView(track.displayDetail, 15.5f, latest ? primary : GRAY);
+        TextView detail = textView(track.displayDetail, 15.5f, latest ? primary : secondary);
         ExpressTrackPhoneLinks.apply(detail, BLUE);
         detail.setLineSpacing(0, 1.15f);
         detail.setPadding(dp(10), 0, 0, dp(22));
@@ -1938,6 +1944,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     private TextView textView(int textRes, float size, int color) {
         return textView(getString(textRes), size, color);
+    }
+
+    private int secondaryTextColor() {
+        return MaterialColors.getColor(timeline,
+                com.google.android.material.R.attr.colorOnSurfaceVariant);
     }
 
     private TextView textView(String text, float size, int color) {

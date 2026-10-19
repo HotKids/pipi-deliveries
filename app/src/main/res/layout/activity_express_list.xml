@@ -15,15 +15,17 @@
         android:layout_height="64dp"
         android:paddingStart="0dp"
         android:paddingEnd="8dp"
+        app:contentInsetStart="24dp"
         app:menu="@menu/express_list_menu"
         app:title="@string/home_title"
-        app:titleTextAppearance="@style/TextAppearance.Material3.TitleLarge" />
+        app:titleMarginStart="0dp"
+        app:titleTextAppearance="@style/TextAppearance.Pipi.HomeTitle" />
 
     <com.google.android.material.textfield.TextInputLayout
         android:id="@+id/home_query_container"
         style="@style/PipiSearchField"
         android:layout_width="match_parent"
-        android:layout_height="@dimen/express_search_field_height"
+        android:layout_height="wrap_content"
         android:layout_marginStart="24dp"
         android:layout_marginEnd="24dp"
         android:layout_marginBottom="12dp"
@@ -33,7 +35,7 @@
         <com.google.android.material.textfield.TextInputEditText
             android:id="@+id/home_query_input"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
+            android:layout_height="wrap_content"
             android:minHeight="@dimen/express_search_field_height"
             android:cursorVisible="false"
             android:gravity="center_vertical"

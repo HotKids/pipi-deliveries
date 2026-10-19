@@ -187,8 +187,8 @@ public final class ExpressListActivity extends AppCompatActivity {
         queryContainer.setErrorEnabled(false);
         TextView carrierSuffix = queryContainer.getSuffixTextView();
         carrierSuffix.setGravity(Gravity.CENTER_VERTICAL);
-        carrierSuffix.setMinHeight(Math.round(
-                56f * getResources().getDisplayMetrics().density));
+        carrierSuffix.setMinHeight(getResources().getDimensionPixelSize(
+                R.dimen.express_search_field_height));
         carrierSuffix.setIncludeFontPadding(false);
         updateCarrierSuffix("");
         queryInput.addTextChangedListener(new TextWatcher() {

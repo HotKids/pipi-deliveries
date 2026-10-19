@@ -11,7 +11,7 @@ import java.nio.file.Path;
 /** Guards the compact search field without shrinking its touch target. */
 public final class ExpressSearchFieldLayoutContractTest {
     @Test
-    public void searchFieldUsesTheCompactFortyEightDpGeometry() throws Exception {
+    public void searchFieldKeepsTheCompactMinimumHeightAndCorners() throws Exception {
         String layout = projectFile("app/src/main/res/layout/activity_express_list.xml");
         String styles = projectFile("app/src/main/res/values/styles.xml");
         String dimensions = projectFile("app/src/main/res/values/dimens.xml");
@@ -20,8 +20,6 @@ public final class ExpressSearchFieldLayoutContractTest {
                 "<dimen name=\"express_search_field_height\">48dp</dimen>"));
         assertTrue(dimensions.contains(
                 "<dimen name=\"express_search_field_corner_radius\">24dp</dimen>"));
-        assertTrue(layout.contains(
-                "android:layout_height=\"@dimen/express_search_field_height\""));
         assertTrue(layout.contains(
                 "android:minHeight=\"@dimen/express_search_field_height\""));
         assertTrue(styles.contains(

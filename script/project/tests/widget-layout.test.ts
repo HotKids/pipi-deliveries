@@ -408,8 +408,18 @@ assert.match(
 );
 assert.match(
   mediumSource,
-  /<Text font=\{15\} fontWeight="regular" foregroundStyle="secondaryLabel">\s*\{snapshot\.activeCount\}\s*<\/Text>/,
-  "medium header count must come from the same snapshot in every state",
+  /<Text font=\{15\} fontWeight="semibold">\s*\{snapshot\.activeCount\}\s*<\/Text>/,
+  "medium header count must retain the same title typography and snapshot in every state",
+);
+assert.match(
+  mediumSource,
+  /<HStack\s+alignment="center"\s+spacing=\{5\}\s+foregroundStyle="label"[\s\S]*?>我的快递<\/Text>\s*<HStack alignment="center" spacing=\{4\}>[\s\S]*?\{snapshot\.activeCount\}[\s\S]*?<Text font=\{15\} fontWeight="semibold">›<\/Text>/,
+  "medium title, count and text chevron must share primary typography and native vertical centering",
+);
+assert.doesNotMatch(
+  mediumSource,
+  /systemName="chevron\.right"/,
+  "medium header must use the same text chevron as the accepted Pipi header",
 );
 assert.match(
   mediumSource,

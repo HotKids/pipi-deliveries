@@ -13,6 +13,11 @@
 
     <style name="PipiWidgetTheme" parent="Theme.Material3.DynamicColors.DayNight" />
 
+    <style name="TextAppearance.Pipi.HomeTitle" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:textSize">22sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+    </style>
+
     <style name="PipiOutlinedField" parent="Widget.Material3.TextInputLayout.OutlinedBox">
         <item name="boxCornerRadiusTopStart">16dp</item>
         <item name="boxCornerRadiusTopEnd">16dp</item>

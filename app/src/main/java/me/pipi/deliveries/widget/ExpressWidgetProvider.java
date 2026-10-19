@@ -172,13 +172,19 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             String title = context.getString(R.string.widget_express_count,
                     ExpressWidgetPresentation.activeCount(items));
             int countStart = title.lastIndexOf(' ') + 1;
-            views.setTextViewText(R.id.widget_express_title, title.substring(0, countStart));
+            views.setTextViewText(R.id.widget_express_title, title.substring(0, countStart).trim());
             views.setTextViewText(R.id.widget_express_count, title.substring(countStart));
             views.setTextViewTextSize(R.id.widget_express_title,
                     TypedValue.COMPLEX_UNIT_SP,
                     typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));
             views.setTextViewTextSize(R.id.widget_express_count,
                     TypedValue.COMPLEX_UNIT_SP,
+                    typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));
+            views.setTextViewTextSize(R.id.widget_express_arrow,
+                    TypedValue.COMPLEX_UNIT_SP,
+                    typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));
+            ExpressWidgetMeasurements.centerHeaderGlyphs(context, views,
+                    title.substring(0, countStart).trim(), title.substring(countStart),
                     typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));
             views.setTextViewTextSize(R.id.widget_express_empty_text,
                     TypedValue.COMPLEX_UNIT_SP,

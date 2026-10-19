@@ -161,17 +161,19 @@ export function MediumWidget(props: {
           frame={{ minHeight: layout.headerHeight, maxWidth: "infinity" }}
         >
           <Link url={props.openHomeURL}>
-            <HStack spacing={5} frame={{ minHeight: layout.headerHeight }}>
+            <HStack
+              alignment="center"
+              spacing={5}
+              foregroundStyle="label"
+              frame={{ minHeight: layout.headerHeight }}
+            >
               <Text font={15} fontWeight="semibold">我的快递</Text>
-              <Text font={15} fontWeight="regular" foregroundStyle="secondaryLabel">
-                {snapshot.activeCount}
-              </Text>
-              <Image
-                systemName="chevron.right"
-                font={10}
-                fontWeight="semibold"
-                foregroundStyle="secondaryLabel"
-              />
+              <HStack alignment="center" spacing={4}>
+                <Text font={15} fontWeight="semibold">
+                  {snapshot.activeCount}
+                </Text>
+                <Text font={15} fontWeight="semibold">›</Text>
+              </HStack>
             </HStack>
           </Link>
           <Spacer />
