@@ -34,7 +34,8 @@ import { seedRecognizedCarriers } from "./carrier-recognition-seed";
 // 节点；(iii) 方案 A 已确认它的京粉页是空壳。
 
 const PHONE = "13800002121";
-const ORDER = "351100064421";
+// Synthetic 16-digit identity keeps the empty-page rule independent of the 3-prefixed 12-digit display rule.
+const ORDER = "3511000000064421";
 const OWNER_ID = `interface5:account:${ORDER}`;
 const REFERENCE = "https://u.jd.com/forward?synthetic=gift-order";
 const REVIEW = `您的订单${ORDER}已完成，感谢您对京东的支持，欢迎再次光临。期待您对本次购物进行评价。`;
@@ -81,9 +82,9 @@ registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
 const providerTime = (at: number) =>
   new Date(at + 8 * 3600000).toISOString().slice(0, 19).replace("T", " ");
 
-function orderRow(details: readonly { at: number; desc: string }[], stateNum = 107): Shipment {
+function orderRow(details: readonly { at: number; desc: string }[], stateNum = 107, orderId = ORDER): Shipment {
   const parcel = parseAccountSyncResponse("interface5", { code: 0, data: { expressList: [{
-    mailNo: ORDER, provider: "JingDong", cpCode: "JDKD", name: "京东商品快递", phone: PHONE, stateNum,
+    mailNo: orderId, provider: "JingDong", cpCode: "JDKD", name: "京东商品快递", phone: PHONE, stateNum,
     details: details.map(({ at, desc }) => ({ time: providerTime(at), desc })),
   }] } })[0]!;
   return applyAccountShipment(undefined, parcelToShipment(parcel, [PHONE], NOW - DAY)!, NOW - DAY);
@@ -244,3 +245,19 @@ const shown = (at = clock) => visibleShipments(loadState(at), at).some((shipment
 }
 
 console.log("confirmed no-item JD order visibility tests passed");
+
+// The new display-only rule must not turn the Home projection queue into a visible-card queue.
+{
+  const shortOrder = "351100064421";
+  const shortId = `interface5:account:${shortOrder}`;
+  seed([orderRow([{ at: NOW - 2 * DAY, desc: `您的订单${shortOrder}已完成` }], 107, shortOrder)]);
+  saveOrderProjectionReferences([{ ownerId: shortId, source: "interface5", url: REFERENCE }], NOW);
+  assert.equal(visibleShipments(loadState(), clock).length, 0);
+  assert.equal((await projectStoredAccountOrders({ onScreen: () => true })).result, "attempted");
+  assert.equal(pageLoads, 1, "a display-hidden order still opens its eligible union page");
+  const retained = loadState().shipments.find(row => row.identity.id === shortId)!;
+  assert.ok(retained.identity.orderProjectionRetry?.emptyShellAtMs);
+  assert.equal(retained.identity.orderProjectionRetry?.emptyShellConfirmedAtMs, undefined);
+  assert.equal((await projectStoredAccountOrders({ onScreen: () => true })).result, "nothing_due",
+    "the existing automatic cooldown still applies");
+}

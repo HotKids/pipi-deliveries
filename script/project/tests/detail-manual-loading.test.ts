@@ -99,10 +99,12 @@ function pageHarness(seed = shipment()) {
 }
 
 // Opening and pulling are different operations, but repeated pulls share the same continuation.
-for (const entryFails of [false, true]) {
+for (const entryFails of [false, true]) for (const unprojectedJd of [false, true]) {
   const page = pageHarness(shipment("TRANSIT", [{ detail: "Cached event" }]));
   page.context.props.refreshOnAppear = "detail_open";
   page.context.props.manualPreview = null;
+  page.context.isJingDongSourceShipment = () => unprojectedJd;
+  page.context.unprojectedAccountOrder = () => unprojectedJd;
   const calls: any[] = [];
   const entry = deferred();
   const pull = deferred();
@@ -133,20 +135,20 @@ for (const entryFails of [false, true]) {
 }
 
 // A pull during actual JD capture reuses it, including failure, without queuing a second load.
-for (const captureStarted of [false, true]) {
+for (const captureFails of [false, true]) {
   const page = pageHarness(shipment("TRANSIT", [{ detail: "Cached JD event" }]));
   page.context.props.refreshOnAppear = "detail_open";
   page.context.props.manualPreview = null;
-  page.context.hasActiveAccountOrderProjection = () => captureStarted;
+  page.context.hasActiveAccountOrderProjection = () => true;
   page.context.isJingDongSourceShipment = () => true;
-  page.context.unprojectedAccountOrder = () => !captureStarted;
+  page.context.unprojectedAccountOrder = () => true;
   const capture = deferred();
   let calls = 0;
   page.context.refreshShipmentById = () => { calls++; return capture.promise; };
   const opening = page.refresh(false);
   assert.equal(page.refresh(true), opening);
   assert.equal(page.refresh(true), opening);
-  if (captureStarted) capture.reject(new Error("JD capture timeout"));
+  if (captureFails) capture.reject(new Error("JD capture timeout"));
   else capture.resolve({ shipment: page.state.shipment, state: {}, refreshed: false, querySucceeded: false });
   await opening;
   await new Promise(resolve => setImmediate(resolve));

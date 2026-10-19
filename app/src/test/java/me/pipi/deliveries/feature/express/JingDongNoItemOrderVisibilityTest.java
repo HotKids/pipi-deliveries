@@ -40,7 +40,8 @@ import org.robolectric.util.ReflectionHelpers;
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 public final class JingDongNoItemOrderVisibilityTest {
     private static final String PHONE = "13800004422";
-    private static final String GIFT = "350000004421";
+    // Synthetic 16-digit identity isolates the existing empty-page rule.
+    private static final String GIFT = "3500000000044421";
     private static final long TEN_MINUTES = 10L * 60L * 1000L;
     private static final String COMPLETED_AT = at("2026-09-20 10:00:00");
     private static final String GIFT_REVIEW = "您的订单" + GIFT
@@ -105,8 +106,8 @@ public final class JingDongNoItemOrderVisibilityTest {
     }
 
     @Test public void aRealOrderWithALogisticsNodeIsNeverHidden() throws Exception {
-        ExpressItem real = order("350000006101", new String[][]{
-                {COMPLETED_AT, "您的订单350000006101已完成，感谢您对京东的支持，欢迎再次光临。期待您对本次购物进行评价。"},
+        ExpressItem real = order("3500000000066101", new String[][]{
+                {COMPLETED_AT, "您的订单3500000000066101已完成，感谢您对京东的支持，欢迎再次光临。期待您对本次购物进行评价。"},
                 {at("2026-09-19 09:00:00"), "【上海市】圆通速递 已揽收"}});
         confirmEmpty(real);
         assertTrue(listed(real));

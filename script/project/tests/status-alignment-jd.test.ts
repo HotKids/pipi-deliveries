@@ -6,7 +6,8 @@ import type { Shipment, StatusSemantic, TimelinePackage } from "../models";
 import { parcelToShipment } from "../services/account-sync";
 import { emptyState, loadState, saveState } from "../services/storage";
 import { saveOrderProjectionReferences } from "../services/routes";
-import { runShipmentRefreshForTesting } from "../services/sync";
+import { runShipmentRefreshForTesting, runProjectionAwareShipmentRefreshForTesting } from "../services/sync";
+import { accountOrderProjectionRouteHash } from "../services/account-sync-policy";
 import {
   jingDongSignedHistoryGap,
   selectShipmentTimeline,
@@ -139,4 +140,65 @@ test("the alignment run keeps the union page's per-order cooldown and the paid f
   assert.deepEqual(second, ["v5_query", "k100_h5"]);
   assert.equal(second.includes("kdniao"), false, "KDNiao keeps its trigger condition");
   assert.equal(second.includes("v6_query"), false, "a pull, the alignment run included, does not ask Online");
+});
+
+
+test("a pull joins the full JD alignment past the capture reservation window", async () => {
+  const row = seed();
+  let clock = NOW;
+  Date.now = () => clock;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const webEntered = new Promise<void>(resolve => { entered = resolve; });
+  const calls: string[] = [];
+  const providers = { ...runtime(calls, null), refreshWebTimeline: async () => {
+    calls.push("k100_h5"); entered(); await gate; return null;
+  } };
+  const forced = runProjectionAwareShipmentRefreshForTesting(row.identity.id,
+    { ...options("status_alignment"), deadlineAtMs: NOW + 30000 }, providers);
+  await webEntered;
+  let pullEnded = false;
+  const pulled = runProjectionAwareShipmentRefreshForTesting(row.identity.id,
+    { ...options("detail_pull"), deadlineAtMs: NOW + 30000 }, providers)
+    .then(result => { pullEnded = true; return result; });
+  try {
+    clock += 22101;
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const endedBeforeAlignment = pullEnded;
+    release();
+    const [alignment, result] = await Promise.all([forced, pulled]);
+    assert.equal(endedBeforeAlignment, false, "the active alignment still owns the pull's complete result");
+    assert.equal(result.querySucceeded, alignment.querySucceeded);
+    assert.equal(result.refreshed, alignment.refreshed);
+    assert.deepEqual(calls, ["v5_query", "jd_h5", "k100_h5"]);
+  } finally { release(); await Promise.allSettled([forced, pulled]); Date.now = () => NOW; }
+});
+
+test("an orphan JD reservation gates the page without swallowing the pull's remaining providers", async () => {
+  memory.clear();
+  const parcel = signedParcel("TRANSIT");
+  parcel.tracks = parcel.tracks.filter(track => track.detail !== "已揽收");
+  const row = parcelToShipment(parcel, [PHONE], NOW)!;
+  row.identity.jingDongH5Retry = {
+    routeHash: accountOrderProjectionRouteHash(row.identity.id), failedAtMs: NOW,
+    attemptId: "synthetic-orphan", attemptExpiresAtMs: NOW + 2000,
+  };
+  saveState({ ...emptyState(), shipments: [row], bindings: [
+    { source: "interface5", phone: PHONE, boundAtMs: NOW - 86400000 },
+  ] }, NOW);
+  saveOrderProjectionReferences([{ ownerId: row.identity.id, source: "interface5", url: parcel.projectionUrl }], NOW);
+  let clock = NOW;
+  Date.now = () => clock;
+  const calls: string[] = [];
+  const pull = runProjectionAwareShipmentRefreshForTesting(row.identity.id,
+    { ...options("detail_pull"), deadlineAtMs: NOW + 30000 }, runtime(calls, null));
+  try {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const dispatchedBeforeExpiry = calls.includes("k100_h5");
+    clock += 2001;
+    await pull;
+    assert.equal(dispatchedBeforeExpiry, true, "a reservation is a page fence, not a promise to join");
+    assert.equal(calls.includes("jd_h5"), false, "the active durable reservation still protects the page");
+  } finally { clock += 30000; await pull; Date.now = () => NOW; }
 });

@@ -57,16 +57,16 @@ public class ExpressDetailRefreshContinuationTest {
         assertFalse(ReflectionHelpers.getField(activity, "localRefreshInFlight"));
     }
 
-    @Test public void aJingDongPullSharesTheEntryCaptureWithoutQueuingAnotherAttempt() {
+    @Test public void anUnprojectedJingDongQueryQueuesOneExplicitHistoryPull() {
         ReflectionHelpers.setField(activity, "item", jingDongOrder(""));
         ReflectionHelpers.setField(activity, "localRefreshInFlight", true);
         ReflectionHelpers.setField(activity, "localRefreshGeneration", 1);
         pull();
         pull();
-        assertFalse(ReflectionHelpers.getField(activity, "pendingDetailPull"));
+        assertTrue(ReflectionHelpers.getField(activity, "pendingDetailPull"));
         finish(1);
-        assertEquals(0, worker.tasks.size());
-        assertFalse(ReflectionHelpers.getField(activity, "localRefreshInFlight"));
+        assertEquals(1, worker.tasks.size());
+        assertTrue(ReflectionHelpers.getField(activity, "localRefreshInFlight"));
     }
 
     @Test public void aProjectedJingDongEntryStillQueuesItsDistinctHistoryPull() {
@@ -86,8 +86,16 @@ public class ExpressDetailRefreshContinuationTest {
         assertFalse(ReflectionHelpers.getField(activity, "localRefreshJoinedOrderAttempt"));
     }
 
+    @Test public void anUnprojectedJingDongEntrySharesAnActualH5Capture() {
+        assertActualCaptureShared("");
+    }
+
     @Test public void aProjectedJingDongEntrySharesAnActualH5Capture() {
-        me.pipi.deliveries.model.ExpressItem owner = jingDongOrder("JD123456789");
+        assertActualCaptureShared("JD123456789");
+    }
+
+    private void assertActualCaptureShared(String waybill) {
+        me.pipi.deliveries.model.ExpressItem owner = jingDongOrder(waybill);
         ReflectionHelpers.setField(activity, "item", owner);
         ExpressOrderProjectionRetryStore retries = new ExpressOrderProjectionRetryStore(activity);
         ExpressOrderProjectionRetryStore.AttemptToken capture =

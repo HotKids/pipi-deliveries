@@ -108,6 +108,8 @@ export type ShipmentIdentity = {
   sender?: boolean;
   orderId?: string;
   projectedWaybill?: string;
+  /** Preserved with this order after its saved association packets are replaced or pruned. */
+  hadRealWaybill?: true;
   orderProjectionRetry?: {
     routeHash: string;
     failedAtMs?: number;

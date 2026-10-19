@@ -136,6 +136,7 @@ public final class ExpressListActivity extends AppCompatActivity {
     private boolean phoneTailMismatch;
     private Dialog deleteConfirmationDialog;
     private final Set<String> attemptedOrderProjections = new HashSet<>();
+    private final List<ExpressItem> orderProjectionItems = new ArrayList<>();
     private ExpressHomeOrderProjectionCapture orderProjectionCapture;
     private boolean orderProjectionCaptureEnabled;
     private boolean resetOrderProjectionAttemptsAfterCapture;
@@ -380,14 +381,16 @@ public final class ExpressListActivity extends AppCompatActivity {
         databaseWorker.execute(() -> {
             long startedAt = android.os.SystemClock.elapsedRealtime();
             try {
-                List<ExpressItem> fresh = ExpressRepository.get(this).listVisibleForHome(bindingSource);
+                ExpressRepository.HomeRows fresh = ExpressRepository.get(this).homeRows(bindingSource);
                 android.util.Log.i("ExpressHomeLoad", "Local list loaded: waitMs=" + (startedAt - requestedAt)
-                        + " readMs=" + (android.os.SystemClock.elapsedRealtime() - startedAt) + " rows=" + fresh.size());
+                        + " readMs=" + (android.os.SystemClock.elapsedRealtime() - startedAt) + " rows=" + fresh.visible.size());
                 runOnUiThread(() -> {
                     if (generation != reloadGeneration || isFinishing() || isDestroyed()
                             || !bindingSource.equals(ExpressAccountSource.bindingSource(this))) return;
                     items.clear();
-                    items.addAll(fresh);
+                    items.addAll(fresh.visible);
+                    orderProjectionItems.clear();
+                    orderProjectionItems.addAll(fresh.processing);
                     adapter.notifyDataSetChanged();
                     boolean isEmpty = items.isEmpty();
                     empty.setVisibility(isEmpty ? View.VISIBLE : View.GONE);
@@ -413,7 +416,7 @@ public final class ExpressListActivity extends AppCompatActivity {
         // Audit R10: one Home pass is one diagnostic flow, the capture it starts included.
         String flowId = ExpressHomeOrderProjectionCapture.homeFlowId();
         while ((candidate = nextOrderProjectionCandidate(
-                items, attemptedOrderProjections, flowId)) != null) {
+                orderProjectionItems, attemptedOrderProjections, flowId)) != null) {
             // Feed text projection does not open H5 and must not consume its cooldown.
             // AGENTS §9「谁需要自己取运单号」：文案取号只给京东件。
             ExpressOrderTextIdentity.Identity textIdentity = candidate.isJingDongSource()

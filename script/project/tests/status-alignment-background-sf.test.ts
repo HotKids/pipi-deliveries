@@ -337,7 +337,7 @@ test("deletion, rebinding or parcel replacement before dispatch cannot reserve t
     memory.clear();
     const original = seed();
     let dispatched = 0;
-    await assert.rejects(background(async input => {
+    const result = await background(async input => {
       const current = loadState(clock);
       saveState({ ...current,
         bindings: change === "rebind" ? current.bindings.map(binding => ({ ...binding, boundAtMs: clock })) : current.bindings,
@@ -349,7 +349,8 @@ test("deletion, rebinding or parcel replacement before dispatch cannot reserve t
       }, clock);
       input.beforeQuery?.(); dispatched++;
       return emptyReply();
-    }), /Alignment owner changed/);
+    });
+    assert.equal(result.attempted, 0, change);
     assert.equal(dispatched, 0, change);
     assert.equal(attempt(original), null, change);
   }
@@ -393,3 +394,37 @@ test("a finished failed query does not invent a signing headline when no same-st
   assert.equal(loadState(clock).shipments[0].timeline.latestDetail, OLD_BODY,
     "a completed enum alone is not a replacement timeline node");
 });
+
+for (const change of ["delete", "group"] as const) {
+  test(`a pre-dispatch ${change} skips only its row while a peer alignment finishes`, async () => {
+    const first = seed();
+    const secondWaybill = "SF900000009045";
+    const second = JSON.parse(JSON.stringify(first).replaceAll(WAYBILL, secondWaybill)) as Shipment;
+    saveState({ ...loadState(clock), shipments: [first, second] }, clock);
+    let bothEntered!: () => void;
+    const peerEntered = new Promise<void>(resolve => { bothEntered = resolve; });
+    let entries = 0, dispatched = 0;
+    const result = await background(async input => {
+      entries++;
+      if (entries === 2) bothEntered();
+      await peerEntered;
+      if (input.waybill === WAYBILL) {
+        const current = loadState(clock);
+        saveState({ ...current, shipments: current.shipments.flatMap(shipment => {
+          if (shipment.identity.id !== first.identity.id) return [shipment];
+          if (change === "delete") return [];
+          return [{ ...shipment, forcedCompletedAtMs: clock - FORCED_COMPLETION_REFRESH_WINDOW_MS }];
+        }) }, clock);
+      } else await new Promise(resolve => setImmediate(resolve));
+      input.beforeQuery?.();
+      assert.equal(input.signal?.aborted, false, "a stale peer must not cancel this dispatch");
+      dispatched++;
+      return emptyReply();
+    });
+    assert.equal(entries, 2);
+    assert.equal(dispatched, 1);
+    assert.equal(result.attempted, 1);
+    assert.equal(attempt(first), null);
+    assert.equal(attempt(second)?.finished, true);
+  });
+}
