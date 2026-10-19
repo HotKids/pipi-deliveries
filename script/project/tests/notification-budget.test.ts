@@ -5,6 +5,7 @@ import { memory, NOW, sha256 } from "./state-storage-mock.ts";
 import { emptyState, loadState } from "../services/storage.ts";
 import { replayPendingShipmentNotifications } from "../services/notifications.ts";
 import { readDiagnostics, setDiagnosticsEnabled } from "../services/logger.ts";
+import { acquireDurableRefreshLease } from "../services/refresh-runtime-state.ts";
 
 let clock = NOW;
 const realNow = Date.now;
@@ -20,7 +21,7 @@ Object.assign(globalThis, {
   } },
 });
 
-function seed() {
+function seed(emptyOutbox = false) {
   memory.clear(); clock = NOW; attempted.length = 0;
   setDiagnosticsEnabled(true);
   const shipments: Shipment[] = ["A", "B", "C"].map(id => ({
@@ -32,12 +33,76 @@ function seed() {
       tracks: [], successAtMs: NOW }, updatedAtMs: NOW,
   }));
   const state: AppState = { ...emptyState(), revision: 1, updatedAtMs: NOW, shipments,
-    pendingNotifications: shipments.map(row => ({ id: `event-${row.identity.id}`, shipmentId: row.identity.id,
+    pendingNotifications: emptyOutbox ? [] : shipments.map(row => ({ id: `event-${row.identity.id}`, shipmentId: row.identity.id,
       semantic: "DELIVERY", title: "Synthetic", body: "Synthetic", iconName: null })) };
   const payload = JSON.stringify(state);
   memory.set("pipi_deliveries_state_v1", JSON.stringify({ schema: 3, checksum: sha256(payload), payload }));
   return state;
 }
+
+test("an empty outbox records one timed completion while retaining real reads and lease cleanup", async () => {
+  const initial = seed(true);
+  const originalGet = Storage.get;
+  let preferenceReads = 0, stateReads = 0;
+  Storage.get = (key, ...options) => {
+    if (key === "pipi_deliveries_notification_preferences_v1") { preferenceReads++; clock += 120; }
+    if (key === "pipi_deliveries_state_v1") { stateReads++; clock += 80; }
+    return originalGet(key, ...options);
+  };
+  try {
+    const result = await replayPendingShipmentNotifications(() => true,
+      { deadlineAtMs: NOW + 1_000, flowId: "empty-outbox" });
+    const readElapsed = clock - NOW;
+    assert.ok(preferenceReads > 0, "empty work still refreshes notification preferences");
+    assert.ok(stateReads > 0, "the current durable outbox is still loaded");
+    assert.deepEqual(result?.pendingNotifications, initial.pendingNotifications);
+    assert.deepEqual(attempted, []);
+    const events = readDiagnostics().filter(entry => entry.event.startsWith("notification.replay."));
+    assert.deepEqual(events.map(entry => entry.event), ["notification.replay.completed"]);
+    assert.deepEqual(events[0].details, {
+      clientBuild: events[0].details.clientBuild,
+      flowId: "empty-outbox", stage: "notifications", result: "completed",
+      budgetMs: 1_000, readDurationMs: readElapsed, durationMs: readElapsed,
+      pendingNotifications: 0, attempted: 0, succeeded: 0, failed: 0,
+    });
+    const next = acquireDurableRefreshLease("notifications", 1_000, clock);
+    assert.ok(next, "the empty drain still releases its acquired notification lease");
+    next.release();
+  } finally {
+    Storage.get = originalGet;
+  }
+});
+
+test("an empty alignment-filtered drain preserves other queued events with one completion", async () => {
+  const initial = seed();
+  await replayPendingShipmentNotifications(() => true, {
+    deadlineAtMs: NOW + 1_000, flowId: "filtered-outbox", alignedShipmentId: "synthetic-other-owner",
+  });
+  assert.deepEqual(attempted, []);
+  assert.deepEqual(loadState().pendingNotifications, initial.pendingNotifications);
+  const events = readDiagnostics().filter(entry => entry.event.startsWith("notification.replay."));
+  assert.deepEqual(events.map(entry => entry.event), ["notification.replay.completed"]);
+  assert.equal(events[0].details.result, "pending_retry");
+  assert.equal(events[0].details.pendingNotifications, 3);
+  assert.equal(events[0].details.budgetMs, 1_000);
+  assert.equal(events[0].details.readDurationMs, 0);
+});
+
+test("a nonempty drain preserves its start, read and completion trace with durable ACKs", async () => {
+  seed();
+  schedule = async () => { clock += 5; };
+  await replayPendingShipmentNotifications(() => true, { deadlineAtMs: NOW + 1_000, flowId: "real-outbox" });
+  const events = readDiagnostics().filter(entry => entry.event.startsWith("notification.replay.")).reverse();
+  assert.deepEqual(events.map(entry => entry.event), [
+    "notification.replay.started", "notification.replay.loaded", "notification.replay.completed",
+  ]);
+  assert.equal(events[0].details.budgetMs, 1_000);
+  assert.equal(events[1].details.pendingNotifications, 3);
+  assert.equal(events[2].details.succeeded, 3);
+  assert.equal(events[2].details.durationMs, 15);
+  assert.equal(attempted.length, 3);
+  assert.equal(loadState().pendingNotifications?.length, 0);
+});
 
 async function withTimers(run: () => Promise<void>) {
   const realSetTimeout = globalThis.setTimeout, realClearTimeout = globalThis.clearTimeout;

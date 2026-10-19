@@ -72,7 +72,13 @@ export type AccountOrderProjectionDiagnostics = Readonly<{
   unionPendingCount?: number;
   riskControlSeen?: boolean;
   probeCaptureCount: number;
-}>;
+  projectionProbeRevision?: number;
+  fullProgressControlSeen?: boolean;
+  fullProgressClicked?: boolean;
+  unionResourceBeforeProbe?: boolean;
+  domModalHeaderPresent?: boolean;
+  domModalWaybillPresent?: boolean;
+} & Partial<Record<typeof PROJECTION_PROBE_COUNT_KEYS[number], number>>>;
 
 function feedTextIdentityDiagnostics(): AccountOrderProjectionDiagnostics {
   return {
@@ -116,6 +122,12 @@ type CapturedRequest = {
 const MAX_CAPTURED_URL_LENGTH = 16_384;
 const MAX_CAPTURED_BODY_BYTES = 512 * 1_024;
 const MAX_CAPTURED_HEADER_LENGTH = 4_096;
+const PROJECTION_PROBE_COUNT_KEYS = [
+  "unionFetchResponseCount", "unionXhrResponseCount", "unionXhrJsonResponseCount",
+  "unionBodyReadCount", "unionBodyReadFailureCount", "unionBodyParseFailureCount",
+  "unionBodyNoIdentityCount", "unionBodyAcceptedCount", "unionBodyTypeRejectedCount",
+  "unionBodySizeRejectedCount", "domModalItemCount",
+] as const;
 const TRUSTED_JD_RESOURCE_HOST_SUFFIXES = [
   "jd.com",
   "jd.hk",
@@ -543,6 +555,10 @@ function extractionJavaScript(
       const input = ${input};
       const probeKey = "__pipiDeliveriesOrderProjectionProbeV2";
       const clean = (value) => String(value == null ? "" : value).trim();
+      const countKeys = ${JSON.stringify(PROJECTION_PROBE_COUNT_KEYS)};
+      const count = (probe, key, enabled = true) => {
+        if (enabled) probe[key] = Math.min((Number(probe[key]) || 0) + 1, 100000);
+      };
       const requestSignal = (url, body) => {
         const raw = clean(url) + "&" + clean(body);
         try { return decodeURIComponent(raw); } catch (_) { return raw; }
@@ -561,15 +577,26 @@ function extractionJavaScript(
           return false;
         }
       };
-      const parse = (source) => {
-        if (source && typeof source === "object") return source;
+      const parse = (source, outcome = null) => {
+        if (source && typeof source === "object") {
+          if (outcome) outcome.parsed = true;
+          return source;
+        }
         const value = clean(source);
         if (!value) return null;
-        try { return JSON.parse(value); } catch (_) {}
+        try {
+          const parsed = JSON.parse(value);
+          if (outcome) outcome.parsed = true;
+          return parsed;
+        } catch (_) {}
         const start = value.indexOf("(");
         const end = value.lastIndexOf(")");
         if (start >= 0 && end > start) {
-          try { return JSON.parse(value.slice(start + 1, end)); } catch (_) {}
+          try {
+            const parsed = JSON.parse(value.slice(start + 1, end));
+            if (outcome) outcome.parsed = true;
+            return parsed;
+          } catch (_) {}
         }
         return null;
       };
@@ -723,6 +750,14 @@ function extractionJavaScript(
       };
       const snapshot = (probe, resourceState) => ({
         extractionSource: "diagnostic",
+        projectionProbeRevision: 3,
+        ...Object.fromEntries(countKeys.map((key) => [key,
+          Math.min(Math.max(Number(probe && probe[key]) || 0, 0), 100000)])),
+        fullProgressControlSeen: Boolean(probe && probe.fullProgressControlSeen),
+        fullProgressClicked: Boolean(probe && probe.fullProgressAttempt && probe.fullProgressAttempt.succeeded),
+        unionResourceBeforeProbe: Boolean(probe && probe.unionResourceBeforeProbe),
+        domModalHeaderPresent: Boolean(probe && probe.domModal && probe.domModal.h),
+        domModalWaybillPresent: Boolean(probe && probe.domModal && probe.domModal.w),
         probeInstalled: Boolean(probe && probe.version === 2),
         probeRequestCount: probe && Number.isFinite(probe.requestCount)
           ? Math.min(Math.max(0, probe.requestCount), 100000)
@@ -763,6 +798,7 @@ function extractionJavaScript(
           requestCount: 0,
           unionSignalSeen: false,
           unionResourceSeen: resourceStateBeforeProbe.unionResourceSeen,
+          unionResourceBeforeProbe: resourceStateBeforeProbe.unionResourceSeen,
           resourceReplayAttempted: false,
           resourceReplaySucceeded: false,
           fullProgressClickAttempted: false,
@@ -774,12 +810,23 @@ function extractionJavaScript(
         };
         window[probeKey] = probe;
         // A synchronous XHR may finish before click() returns or throws.
-        const enqueue = (source, clickAttemptAtStart = null) => Promise.resolve().then(() => {
+        const enqueue = (source, clickAttemptAtStart = null, unionTarget = false) => Promise.resolve().then(() => {
           try {
-            if (typeof source === "string" && source.length > 1500000) return;
+            count(probe, "unionBodyReadCount", unionTarget);
+            if (typeof source === "string" && source.length > 1500000) {
+              count(probe, "unionBodySizeRejectedCount", unionTarget);
+              return;
+            }
             if (typeof source === "string" && source.includes("刷新几遍还不行")) probe.riskControlSeen = true;
             const result = projection(source, "probe", Boolean(clickAttemptAtStart && clickAttemptAtStart.succeeded));
-            if (!result) return;
+            if (!result) {
+              const outcome = { parsed: false };
+              parse(source, outcome);
+              count(probe, outcome.parsed
+                ? "unionBodyNoIdentityCount" : "unionBodyParseFailureCount", unionTarget);
+              return;
+            }
+            count(probe, "unionBodyAcceptedCount", unionTarget);
             // The page's own waybill/carrier are the reference for the modal DOM package.
             if (result.waybillCode && !probe.unionWaybill) {
               probe.unionWaybill = result.waybillCode;
@@ -787,7 +834,7 @@ function extractionJavaScript(
             }
             probe.queue.push(result);
             if (probe.queue.length > 4) probe.queue.splice(0, probe.queue.length - 4);
-          } catch (_) {}
+          } catch (_) { count(probe, "unionBodyParseFailureCount", unionTarget); }
         });
                 const recordUnionStatus = (status) => {
           try {
@@ -796,19 +843,28 @@ function extractionJavaScript(
             while (probe.unionStatuses.length > 8) probe.unionStatuses.shift();
           } catch (_) {}
         };
-        const captureResponse = (response, clickAttemptAtStart) => {
+        const captureResponse = (response, clickAttemptAtStart, unionTarget) => {
           try {
-            if (!response || typeof response.clone !== "function") return;
+            if (!response || typeof response.clone !== "function") {
+              count(probe, "unionBodyReadFailureCount", unionTarget);
+              return;
+            }
             const contentType = clean(response.headers && response.headers.get &&
               response.headers.get("content-type"));
-            if (contentType && !/(json|javascript|text)/i.test(contentType)) return;
+            if (contentType && !/(json|javascript|text)/i.test(contentType)) {
+              count(probe, "unionBodyTypeRejectedCount", unionTarget);
+              return;
+            }
             const contentLength = Number(response.headers && response.headers.get &&
               response.headers.get("content-length"));
-            if (Number.isFinite(contentLength) && contentLength > 1500000) return;
+            if (Number.isFinite(contentLength) && contentLength > 1500000) {
+              count(probe, "unionBodySizeRejectedCount", unionTarget);
+              return;
+            }
             response.clone().text()
-              .then((source) => enqueue(source, clickAttemptAtStart))
-              .catch(() => {});
-          } catch (_) {}
+              .then((source) => enqueue(source, clickAttemptAtStart, unionTarget))
+              .catch(() => { count(probe, "unionBodyReadFailureCount", unionTarget); });
+          } catch (_) { count(probe, "unionBodyReadFailureCount", unionTarget); }
         };
         try {
           const originalFetch = window.fetch;
@@ -838,10 +894,11 @@ function extractionJavaScript(
                 Promise.resolve(response)
                   .then((value) => {
                     if (unionTarget) {
+                      count(probe, "unionFetchResponseCount");
                       probe.unionSettled = (probe.unionSettled || 0) + 1;
                       recordUnionStatus(value && value.status);
                     }
-                    captureResponse(value, clickAttemptAtStart);
+                    captureResponse(value, clickAttemptAtStart, unionTarget);
                   }, () => {
                     // A union fetch that failed on the network is a failed answer (status 0).
                     if (unionTarget) {
@@ -880,13 +937,20 @@ function extractionJavaScript(
                                     this.addEventListener("loadend", () => {
                     if (unionTarget) probe.unionSettled = (probe.unionSettled || 0) + 1;
                     if (unionTarget && !aborted) recordUnionStatus(this.status);
+                    const observedUnion = unionTarget && !aborted;
+                    count(probe, "unionXhrResponseCount", observedUnion);
+                    try {
+                      count(probe, "unionXhrJsonResponseCount", observedUnion && this.responseType === "json");
+                    } catch (_) {}
                     try {
                       const contentType = clean(this.getResponseHeader &&
                         this.getResponseHeader("content-type"));
                       if (!contentType || /(json|javascript|text)/i.test(contentType)) {
-                        enqueue(this.responseText, clickAttemptAtStart);
+                        enqueue(this.responseText, clickAttemptAtStart, observedUnion);
+                      } else {
+                        count(probe, "unionBodyTypeRejectedCount", observedUnion);
                       }
-                    } catch (_) {}
+                    } catch (_) { count(probe, "unionBodyReadFailureCount", observedUnion); }
                   }, { once: true });
                 } catch (_) {}
               }
@@ -917,6 +981,7 @@ function extractionJavaScript(
           if (labelText === "完整物流进度") control = candidate;
         } catch (_) {}
         if (control && typeof control.click === "function") {
+          probe.fullProgressControlSeen = true;
           probe.fullProgressClickAttempted = true;
           // Each request retains its own attempt; a later retry cannot validate a failed click.
           const attempt = { succeeded: false };
@@ -967,6 +1032,7 @@ function extractionJavaScript(
           const nameMatch = headText.match(/[\\u4e00-\\u9fa5]{2,12}/);
           const companyName = nameMatch ? nameMatch[0] : clean(probe.unionCompanyName);
           probe.domModal = { i: items.length, h: Boolean(head), w: Boolean(waybillCode) };
+          probe.domModalItemCount = Math.min(items.length, 100000);
           if (waybillCode && items.length > (probe.domModalCount || 0)) {
             {
               const traceList = [];
@@ -1166,6 +1232,9 @@ export async function projectAccountOrder(
   let riskControlSeen = false;
   let networkTraceCount = 0;
   let probeCaptureCount = 0;
+  const probeDetails: {
+    -readonly [Key in keyof AccountOrderProjectionDiagnostics]?: AccountOrderProjectionDiagnostics[Key];
+  } = {};
   let bestProjection: AccountOrderProjection | null = null;
   const loadStartedAt = projectionStartedAtMs;
   let loadDurationMs = 0;
@@ -1296,6 +1365,17 @@ export async function projectAccountOrder(
       }
       assertProjectionActive(signal);
       const candidate = object(raw);
+      if (candidate.projectionProbeRevision === 3) probeDetails.projectionProbeRevision = 3;
+      for (const key of PROJECTION_PROBE_COUNT_KEYS) {
+        const value = candidate[key];
+        if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100000) {
+          probeDetails[key] = Math.max(probeDetails[key] || 0, value);
+        }
+      }
+      for (const key of ["fullProgressControlSeen", "fullProgressClicked", "unionResourceBeforeProbe",
+        "domModalHeaderPresent", "domModalWaybillPresent"] as const) {
+        if (typeof candidate[key] === "boolean") probeDetails[key] ||= candidate[key];
+      }
       const extractionSource = text(candidate.extractionSource);
       const candidateTraceCount = Array.isArray(candidate.traceList)
         ? candidate.traceList.length
@@ -1434,6 +1514,7 @@ export async function projectAccountOrder(
     if (!loadDurationMs) loadDurationMs = Date.now() - loadStartedAt;
     try {
       observe?.({
+        ...probeDetails,
         loadSettled,
         loadCompleted,
         captureSeen: captured != null,

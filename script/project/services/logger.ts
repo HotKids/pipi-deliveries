@@ -181,6 +181,23 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   unionResponseStatuses?: string;
   unionPendingCount?: number;
   probeCaptureCount?: number;
+  projectionProbeRevision?: number;
+  unionFetchResponseCount?: number;
+  unionXhrResponseCount?: number;
+  unionXhrJsonResponseCount?: number;
+  unionBodyReadCount?: number;
+  unionBodyReadFailureCount?: number;
+  unionBodyParseFailureCount?: number;
+  unionBodyNoIdentityCount?: number;
+  unionBodyAcceptedCount?: number;
+  unionBodyTypeRejectedCount?: number;
+  unionBodySizeRejectedCount?: number;
+  domModalItemCount?: number;
+  fullProgressClicked?: boolean;
+  fullProgressControlSeen?: boolean;
+  unionResourceBeforeProbe?: boolean;
+  domModalHeaderPresent?: boolean;
+  domModalWaybillPresent?: boolean;
   resourceReplayBlockReason?: string;
   domMatched?: boolean;
   requestCallbackCount?: number;
@@ -251,6 +268,13 @@ const SAFE_TEXT = /^[A-Za-z0-9._:-]{1,64}$/;
 const SOURCES = new Set<BindingSource>([SCRIPT_BINDING_SOURCE]);
 const closedFlowIds = new Set<string>();
 const flowTriggers = new Map<string, string>();
+
+const JD_PROBE_COUNT_KEYS = new Set<keyof DiagnosticDetails>([
+  "unionFetchResponseCount", "unionXhrResponseCount", "unionXhrJsonResponseCount",
+  "unionBodyReadCount", "unionBodyReadFailureCount", "unionBodyParseFailureCount",
+  "unionBodyNoIdentityCount", "unionBodyAcceptedCount", "unionBodyTypeRejectedCount",
+  "unionBodySizeRejectedCount", "domModalItemCount",
+]);
 
 const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "listStateNumber", "listStatusScope", "listStatusSemantic", "preparedStatusSemantic",
@@ -375,6 +399,13 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "unionResponseStatuses",
   "unionPendingCount",
   "probeCaptureCount",
+  "projectionProbeRevision",
+  ...JD_PROBE_COUNT_KEYS,
+  "fullProgressClicked",
+  "fullProgressControlSeen",
+  "unionResourceBeforeProbe",
+  "domModalHeaderPresent",
+  "domModalWaybillPresent",
   "resourceReplayBlockReason",
   "domMatched",
   "requestCallbackCount",
@@ -483,6 +514,8 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
 ]);
 
 const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
+  "fullProgressClicked", "fullProgressControlSeen", "unionResourceBeforeProbe",
+  "domModalHeaderPresent", "domModalWaybillPresent",
   "bindingMatched",
   "headlineAligned",
   "orderStagePrepended",
@@ -707,6 +740,13 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
     if (key === "probeCaptureCount") {
       if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 0 && rawValue <= 4) {
         result.probeCaptureCount = rawValue;
+      }
+      continue;
+    }
+    if (key === "projectionProbeRevision" || JD_PROBE_COUNT_KEYS.has(key)) {
+      const maximum = key === "projectionProbeRevision" ? 100 : 100_000;
+      if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 0 && rawValue <= maximum) {
+        (result as Record<string, unknown>)[key] = rawValue;
       }
       continue;
     }
@@ -1113,14 +1153,15 @@ export function writeRuntimeCapabilities(runtimeHost: "app" | "widget", flowId?:
         writeAsStringSync?: unknown;
       };
     };
-    writeDiagnostic("runtime.capabilities", {
-      runtimeHost,
-      flowId,
-      sqliteOpenAvailable: typeof runtime.SQLite?.open === "function",
-      sharedFilesAvailable: typeof runtime.FileManager?.appGroupDocumentsDirectory === "string" &&
-        typeof runtime.FileManager?.readAsStringSync === "function" &&
-        typeof runtime.FileManager?.writeAsStringSync === "function",
-    });
+    const sqliteOpenAvailable = typeof runtime.SQLite?.open === "function";
+    const sharedFilesAvailable = typeof runtime.FileManager?.appGroupDocumentsDirectory === "string" &&
+      typeof runtime.FileManager?.readAsStringSync === "function" &&
+      typeof runtime.FileManager?.writeAsStringSync === "function";
+    if (!sqliteOpenAvailable || !sharedFilesAvailable) {
+      writeDiagnostic("runtime.capabilities", {
+        runtimeHost, flowId, sqliteOpenAvailable, sharedFilesAvailable,
+      }, "warning");
+    }
   } catch {
     writeDiagnostic("runtime.capabilities", { runtimeHost, flowId, result: "probe_failed" }, "warning");
   }

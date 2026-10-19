@@ -41,6 +41,7 @@ export async function replayPendingShipmentNotifications(
 ): Promise<AppState | undefined> {
   const startedAt = Date.now();
   const deadlineAtMs = Math.min(options.deadlineAtMs ?? Infinity, startedAt + 15_000);
+  const budgetMs = Math.max(0, deadlineAtMs - startedAt);
   const details = { flowId: options.flowId, stage: "notifications" };
   if (deadlineExpired(deadlineAtMs) || !canSchedule()) {
     writeDiagnostic("notification.replay.skipped", {
@@ -53,23 +54,25 @@ export async function replayPendingShipmentNotifications(
     writeDiagnostic("notification.replay.skipped", { ...details, result: "active_notification_replay" });
     return;
   }
-  writeDiagnostic("notification.replay.started", {
-    ...details, budgetMs: Math.max(0, deadlineAtMs - Date.now()),
-  });
   let current: AppState | undefined;
   let attempted = 0, succeeded = 0, failed = 0;
   let result = "completed";
+  const readStartedAt = Date.now();
+  let readDurationMs: number | undefined;
   try {
-    const readStartedAt = Date.now();
     loadNotificationStatuses(true);
     current = loadState();
     // T23 (user 2026-09-26): an event queued while its row's carrier was unmatched waits for the carrier; storage
     // releases it with a rebuilt title, so it is neither scheduled nor acknowledged here.
     const events = deliverableEvents(current).filter(event => !options.alignedShipmentId ||
       (event.shipmentId === options.alignedShipmentId && event.semantic === "COMPLETED"));
-    writeDiagnostic("notification.replay.loaded", {
-      ...details, pendingNotifications: events.length, readDurationMs: Date.now() - readStartedAt,
-    });
+    readDurationMs = Date.now() - readStartedAt;
+    if (events.length > 0) {
+      writeDiagnostic("notification.replay.started", { ...details, budgetMs });
+      writeDiagnostic("notification.replay.loaded", {
+        ...details, pendingNotifications: events.length, readDurationMs,
+      });
+    }
     for (const event of events) {
       if (deadlineExpired(deadlineAtMs)) { result = "budget_exhausted"; return current; }
       if (!canSchedule() || !lease.isCurrent()) { result = "ownership_lost"; return current; }
@@ -136,6 +139,7 @@ export async function replayPendingShipmentNotifications(
     writeDiagnostic("notification.replay.completed", {
       ...details, result: result === "completed" && pendingNotifications ? "pending_retry" : result,
       durationMs: Date.now() - startedAt, pendingNotifications, attempted, succeeded, failed,
+      budgetMs, readDurationMs: readDurationMs ?? Date.now() - readStartedAt,
     });
   }
   return current;

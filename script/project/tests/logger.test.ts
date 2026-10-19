@@ -533,15 +533,30 @@ writeRuntimeCapabilities("widget", "widget-capability-test");
 assert.equal(readDiagnostics()[0].details.runtimeHost, "widget");
 assert.equal(readDiagnostics()[0].details.sqliteOpenAvailable, false);
 assert.equal(readDiagnostics()[0].details.sharedFilesAvailable, false);
+assert.equal(readDiagnostics()[0].level, "warning", "missing runtime capabilities remain visible");
 runtime.SQLite = { open() { throw new Error("presence probing must not open a database"); } };
 runtime.FileManager = {
   appGroupDocumentsDirectory: "/synthetic/private-path",
   readAsStringSync() {}, writeAsStringSync() {},
 };
+clearDiagnostics();
+writeRuntimeCapabilities("app");
+writeRuntimeCapabilities("widget");
+assert.deepEqual(readDiagnostics(), [], "healthy runtime capabilities do not produce repeated INFO records");
+assert.equal(diagnosticText().includes("private-path"), false);
+const healthySQLite = runtime.SQLite, healthyFiles = runtime.FileManager;
+delete runtime.SQLite;
+writeRuntimeCapabilities("widget");
+assert.equal(readDiagnostics()[0].details.sqliteOpenAvailable, false);
+assert.equal(readDiagnostics()[0].details.sharedFilesAvailable, true);
+assert.equal(readDiagnostics()[0].level, "warning");
+runtime.SQLite = healthySQLite;
+delete runtime.FileManager;
 writeRuntimeCapabilities("app");
 assert.equal(readDiagnostics()[0].details.sqliteOpenAvailable, true);
-assert.equal(readDiagnostics()[0].details.sharedFilesAvailable, true);
-assert.equal(diagnosticText().includes("private-path"), false);
+assert.equal(readDiagnostics()[0].details.sharedFilesAvailable, false);
+assert.equal(readDiagnostics()[0].level, "warning");
+runtime.FileManager = healthyFiles;
 Object.defineProperty(runtime, "SQLite", {
   configurable: true, get() { throw new Error("synthetic host bridge unavailable"); },
 });
@@ -614,3 +629,53 @@ assert.equal(readDiagnostics()[0].details.cooldownReason, undefined);
 assert.equal(readDiagnostics()[0].details.providerFailures, undefined);
 assert.equal(diagnosticText().includes("synthetic-private"), false,
   "cooldown diagnostics admit only fixed reasons and numeric metadata");
+
+const unionCounterKeys = [
+  "unionFetchResponseCount", "unionXhrResponseCount", "unionXhrJsonResponseCount",
+  "unionBodyReadCount", "unionBodyReadFailureCount", "unionBodyParseFailureCount",
+  "unionBodyNoIdentityCount", "unionBodyAcceptedCount", "unionBodyTypeRejectedCount",
+  "unionBodySizeRejectedCount", "domModalItemCount",
+] as const;
+for (const key of ["projectionProbeRevision", ...unionCounterKeys] as const) {
+  const maximum = key === "projectionProbeRevision" ? 100 : 100_000;
+  for (const value of [0, 3, maximum]) {
+    writeDiagnostic("order.projection.failed", { [key]: value } as never);
+    assert.equal((readDiagnostics()[0].details as Record<string, unknown>)[key], value,
+      `${key} preserves a bounded integer`);
+  }
+  for (const value of [-1, maximum + 1, 0.5, NaN, Infinity, -Infinity, "3", "synthetic-private-value",
+    true, false, {}, [], null, undefined]) {
+    writeDiagnostic("order.projection.failed", { [key]: value } as never);
+    assert.equal((readDiagnostics()[0].details as Record<string, unknown>)[key], undefined,
+      `${key} rejects non-integers and out-of-range metadata`);
+  }
+}
+for (const key of ["fullProgressClicked", "fullProgressControlSeen", "unionResourceBeforeProbe",
+  "domModalHeaderPresent", "domModalWaybillPresent"] as const) {
+  for (const value of [true, false]) {
+    writeDiagnostic("order.projection.failed", { [key]: value } as never);
+    assert.equal((readDiagnostics()[0].details as Record<string, unknown>)[key], value,
+      `${key} preserves a boolean`);
+  }
+  for (const value of [0, 1, "true", "false", "synthetic-private-value", {}, [], null, undefined]) {
+    writeDiagnostic("order.projection.failed", { [key]: value } as never);
+    assert.equal((readDiagnostics()[0].details as Record<string, unknown>)[key], undefined,
+      `${key} rejects values that are not booleans`);
+  }
+}
+clearDiagnostics();
+writeDiagnostic("order.projection.failed", Object.fromEntries([
+  ["projectionProbeRevision", 3],
+  ...unionCounterKeys.map(key => [key, 1]),
+  ["fullProgressClicked", true], ["domModalHeaderPresent", true], ["domModalWaybillPresent", false],
+  ["fullProgressControlSeen", true], ["unionResourceBeforeProbe", false],
+  ["unionBody", "synthetic-private-body"], ["unionUrl", "synthetic-private-url"],
+  ["unionContentType", "synthetic-private-type"], ["xhrResponseType", "synthetic-private-type"],
+]) as never);
+const boundedProbeText = diagnosticText();
+assert.ok(boundedProbeText.includes("projectionProbeRevision=3"));
+assert.ok(boundedProbeText.includes("unionBodyAcceptedCount=1"));
+assert.ok(boundedProbeText.includes("domModalWaybillPresent=false"));
+assert.equal(boundedProbeText.includes("synthetic-private"), false,
+  "probe diagnostics never allow response bodies, URLs, MIME values or arbitrary response types");
+console.log("bounded JD probe diagnostic fields passed");
