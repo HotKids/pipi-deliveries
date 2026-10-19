@@ -616,6 +616,8 @@ export function HomePage(props: {
               persistedShipment={props.state.shipments.some(
                 (shipment) => shipment.identity.id === selected.identity.id,
               )}
+              accountBinding={props.state.bindings.find((binding) =>
+                binding.source === selected.identity.bindingSource && binding.phone === selected.accountRecord?.phone)}
               attachedOrders={attachedProjectedOrders(props.state.shipments, selected)}
               manualPreview={manualPreview}
               refreshOnAppear={manualPreview

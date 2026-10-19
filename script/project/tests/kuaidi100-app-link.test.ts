@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { kuaidi100MiniProgramURL, shunfengKuaidi100FallbackURL } from "../services/kuaidi100-app-link";
-import type { Shipment } from "../models";
+import { accountKuaidi100URL, kuaidi100MiniProgramURL, shunfengKuaidi100FallbackURL } from "../services/kuaidi100-app-link";
+import type { AccountBinding, Shipment } from "../models";
 
 assert.equal(kuaidi100MiniProgramURL(" - \u200b"), "");
 const link = kuaidi100MiniProgramURL("jd 0000-0000-0162");
@@ -36,3 +36,56 @@ for (const current of [undefined,
   { ...sf, accountRecord: { ...sf.accountRecord!, provider: "CaiNiao" } },
   { ...sf, accountRecord: { ...sf.accountRecord!, waybill: "SF000000000163" } },
 ]) assert.equal(shunfengKuaidi100FallbackURL(sf, current), "");
+
+const account = {
+  identity: { id: "synthetic-other-account", manuallyAdded: false, sourceProvider: "OtherAccount", bindingSource: "interface5",
+    sourceOwner: "interface5", sourceId: "JT000000000162", courierCode: "HTKY" },
+  accountRecord: { provider: "OtherAccount", waybill: "JT000000000162", phone: "13800138000", companyCode: "HTKY" },
+  timeline: { waybill: "JT000000000162" },
+} as Shipment;
+const accountBinding: AccountBinding = { source: "interface5", phone: "13800138000", boundAtMs: 5 };
+const scopedAccountURL = (shipment: Shipment, current: Shipment | undefined) =>
+  accountKuaidi100URL(shipment, current, accountBinding, accountBinding);
+assert.equal(accountKuaidi100URL(account, account, undefined, undefined), "",
+  "retained account metadata after unbinding is not an active source capability");
+for (const currentBinding of [undefined,
+  { ...accountBinding, source: "interface6" as const },
+  { ...accountBinding, phone: "13900139000" },
+  { ...accountBinding, boundAtMs: 6 },
+]) assert.equal(accountKuaidi100URL(account, account, accountBinding, currentBinding), "");
+assert.equal(scopedAccountURL(account, account), kuaidi100MiniProgramURL("JT000000000162"));
+assert.equal(scopedAccountURL({ ...account, identity: { ...account.identity, courierCode: "UNMATCHED" } },
+  { ...account, identity: { ...account.identity, courierCode: "UNMATCHED" } }), kuaidi100MiniProgramURL("JT000000000162"),
+  "a direct same-waybill launch does not require carrier recognition");
+for (const provider of ["JingDong", "CaiNiao", "ShunFeng", " CaiNiao "]) {
+  const supported = { ...account, identity: { ...account.identity, sourceProvider: provider },
+    accountRecord: { ...account.accountRecord!, provider } };
+  assert.equal(scopedAccountURL(supported, supported), "", "source App failure is not a missing capability");
+}
+for (const invalid of [
+  { ...account, identity: { ...account.identity, sourceProvider: "" },
+    accountRecord: { ...account.accountRecord!, provider: "" } },
+  { ...account, identity: { ...account.identity, manuallyAdded: true } },
+  { ...account, identity: { ...account.identity, bindingSource: null } },
+  { ...account, identity: { ...account.identity, accountOrder: true } },
+  { ...account, identity: { ...account.identity, sourceProvider: "CaiNiao" } },
+  { ...account, accountRecord: { ...account.accountRecord!, provider: "CaiNiao" } },
+  { ...account, accountRecord: { ...account.accountRecord!, waybill: "JT000000000163" } },
+  { ...account, accountRecord: null },
+  { ...account, timeline: { ...account.timeline, waybill: "" } },
+  { ...account, timeline: { ...account.timeline, waybill: "JT000000000163" } },
+]) assert.equal(scopedAccountURL(invalid, invalid), "");
+for (const current of [undefined,
+  { ...account, identity: { ...account.identity, id: "replacement" } },
+  { ...account, identity: { ...account.identity, sourceOwner: "another-account" } },
+  { ...account, identity: { ...account.identity, sourceId: "JT000000000163" } },
+  { ...account, identity: { ...account.identity, sourceProvider: "ReplacementAccount" },
+    accountRecord: { ...account.accountRecord!, provider: "ReplacementAccount" } },
+  { ...account, accountRecord: { ...account.accountRecord!, phone: "13900139000" } },
+  { ...account, accountRecord: { ...account.accountRecord!, companyCode: "YTO" } },
+]) assert.equal(scopedAccountURL(account, current), "");
+const projectedAccount = { ...account, identity: { ...account.identity, accountOrder: true,
+  sourceId: "351000000162", projectedWaybill: "JT000000000162" },
+  accountRecord: { ...account.accountRecord!, waybill: "351000000162" } };
+assert.equal(scopedAccountURL(projectedAccount, projectedAccount), kuaidi100MiniProgramURL("JT000000000162"),
+  "a projected order opens the real displayed waybill and never the order identifier");
