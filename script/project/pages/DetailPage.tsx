@@ -34,7 +34,6 @@ import {
   shipmentDetailIncompleteReason,
   shipmentSelectionEvidence,
   unprojectedAccountOrder,
-  isJingDongSourceShipment,
 } from "../services/shipment-policy";
 import {
   isProviderErrorDetail,
@@ -291,9 +290,8 @@ export function DetailPage(props: {
     if (forceManualRefresh && pullInFlightRef.current) return pullInFlightRef.current;
     if (refreshInFlightRef.current) {
       if (!forceManualRefresh) return refreshInFlightRef.current;
-      // An unresolved JD entry already owns query-to-H5 resolution, even before the page starts loading.
-      if ((isJingDongSourceShipment(props.shipment) && unprojectedAccountOrder(props.shipment)) ||
-          hasActiveAccountOrderProjection(props.shipment.identity.id)) {
+      // Only an actual capture can consume this gesture; an entry query may still be refused by automatic gates.
+      if (hasActiveAccountOrderProjection(props.shipment.identity.id)) {
         joinedJdPullRef.current = true;
         return refreshInFlightRef.current;
       }

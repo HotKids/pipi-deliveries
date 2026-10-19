@@ -286,7 +286,7 @@ public final class ExpressHomeOrderProjectionTest {
                 "src/main/java/me/pipi/deliveries/feature/express/ExpressListActivity.java");
         String source = java.nio.file.Files.readString(path, java.nio.charset.StandardCharsets.UTF_8);
         assertTrue(source.contains("String flowId = ExpressHomeOrderProjectionCapture.homeFlowId();"));
-        assertTrue(source.contains("items, attemptedOrderProjections, flowId)) != null) {"));
+        assertTrue(source.contains("orderProjectionItems, attemptedOrderProjections, flowId)) != null) {"));
         assertTrue(source.contains("this, candidate, this::onOrderProjectionCaptureFinished, flowId);"));
     }
 

@@ -121,6 +121,7 @@ public final class ExpressRepository {
             // remains retryable, and no later mutation may advance an unanchored legacy row.
             retentionAnchorsInitialized = true;
             try {
+                initializeOrderWaybillHistory(db);
                 initializeSignedRetentionAnchors();
             } catch (RuntimeException failure) {
                 retentionAnchorsInitialized = false;
@@ -164,10 +165,29 @@ public final class ExpressRepository {
      * must not be used to persist route state or start shared background work.
      */
     public synchronized List<ExpressItem> listVisibleForHome(String bindingSource) {
-        ArrayList<ExpressItem> rows = new ArrayList<>();
+        return homeRows(bindingSource).visible;
+    }
+
+    /** Display-only hidden placeholders keep participating in the same Home projection pass. */
+    public synchronized HomeRows homeRows(String bindingSource) {
+        ArrayList<ExpressItem> visible = new ArrayList<>();
+        ArrayList<ExpressItem> processing = new ArrayList<>();
         for (VisibleRow view : visibleRowViews(
-                clean(bindingSource).toLowerCase(Locale.ROOT), true, true)) rows.add(view.shown);
-        return rows;
+                clean(bindingSource).toLowerCase(Locale.ROOT), true, true)) {
+            processing.add(view.shown);
+            if (!hiddenCompletedOrderPlaceholder(database(), view.shown)) visible.add(view.shown);
+        }
+        return new HomeRows(visible, processing);
+    }
+
+    public static final class HomeRows {
+        public final List<ExpressItem> visible;
+        public final List<ExpressItem> processing;
+
+        HomeRows(List<ExpressItem> visible, List<ExpressItem> processing) {
+            this.visible = visible;
+            this.processing = processing;
+        }
     }
 
     private List<ExpressItem> listVisibleInternal(String bindingSource) {
@@ -191,7 +211,10 @@ public final class ExpressRepository {
      */
     private List<ExpressItem> visibleRows(String bindingSource, boolean alignHeadlines) {
         ArrayList<ExpressItem> rows = new ArrayList<>();
-        for (VisibleRow view : visibleRowViews(bindingSource)) rows.add(alignHeadlines ? view.shown : view.projected);
+        for (VisibleRow view : visibleRowViews(bindingSource)) {
+            if (alignHeadlines && hiddenCompletedOrderPlaceholder(database(), view.shown)) continue;
+            rows.add(alignHeadlines ? view.shown : view.projected);
+        }
         return rows;
     }
 
@@ -1543,7 +1566,77 @@ public final class ExpressRepository {
     public synchronized ExpressItem findVisibleByWaybill(String waybill, String bindingSource) {
         ExpressItem item = findByWaybill(waybill, bindingSource);
         return ExpressVisibilityPolicy.isExpired(retentionView(database(), item), System.currentTimeMillis())
-                || hiddenNoItemOrder(database(), item) ? null : item;
+                || hiddenNoItemOrder(database(), item)
+                || hiddenCompletedOrderPlaceholder(database(), item) ? null : item;
+    }
+
+    /** Only presentation is hidden; this is not evidence that the order contains no physical item. */
+    private boolean hiddenCompletedOrderPlaceholder(SQLiteDatabase db, ExpressItem item) {
+        if (item == null || item.manuallyAdded || !item.isAccountOrder() || !item.isJingDongSource()
+                || !item.waybill.matches("3[0-9]{11}") || !item.projectedWaybill.isEmpty()
+                || item.semantic != StatusSemantic.COMPLETED) return false;
+        WorkerStatusProjection status = WorkerStatusProjection.cached(item.tracksJson);
+        if (status == null || !status.structured || !status.matches(item.semantic, item.statusEventTime)) return false;
+        ExpressItem raw = findRaw(db, item.rowId);
+        if (raw == null) return false;
+        return !hasSavedOrderWaybill(db, raw);
+    }
+
+    private static final String LEDGER_ORDER_HAD_WAYBILL = "order_had_waybill";
+
+    private boolean hasSavedOrderWaybill(SQLiteDatabase db, ExpressItem raw) {
+        if (raw == null || raw.manuallyAdded || !raw.isAccountOrder() || !raw.isJingDongSource()) return false;
+        try (Cursor recorded = db.query(ExpressDatabase.ROW_LEDGER_TABLE, new String[]{"value"},
+                "owner_row_id=? AND entry=?", new String[]{Long.toString(raw.rowId), LEDGER_ORDER_HAD_WAYBILL},
+                null, null, null)) {
+            if (recorded.moveToFirst() && "1".equals(recorded.getString(0))) return true;
+        }
+        String binding = ExpressSourcePolicy.bindingSourceForOwner(
+                raw.stateOwner.isEmpty() ? raw.source : raw.stateOwner);
+        String order = ExpressSourcePolicy.normalizeWaybill(raw.waybill);
+        if (!orderProjection(db, raw.waybill, binding).waybill.isEmpty() || pendingProjection(raw) != null) return true;
+        // Ineligible observations and unselected owner caches still prove a saved association.
+        // A carrier's prefix or number length never makes its real waybill an order placeholder.
+        try (Cursor history = db.query(ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE,
+                new String[]{"normalized_waybill", "tracks_json"},
+                "record_key=? AND LOWER(binding_source)=?",
+                new String[]{order, binding}, null, null, null)) {
+            while (history.moveToNext()) {
+                if (savedOrderWaybill(history.getString(0), history.getString(1), order)) return true;
+            }
+        }
+        try (Cursor history = db.query(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
+                new String[]{"waybill", "tracks_json"}, "owner_row_id=?",
+                new String[]{Long.toString(raw.rowId)}, null, null, null)) {
+            while (history.moveToNext()) {
+                if (savedOrderWaybill(history.getString(0), history.getString(1), order)) return true;
+            }
+        }
+        return false;
+    }
+
+    private void rememberOrderWaybill(SQLiteDatabase db, ExpressItem row) {
+        if (!hasSavedOrderWaybill(db, row)) return;
+        // This marker belongs to the order row, not the replaceable packet that established it.
+        db.execSQL("INSERT OR IGNORE INTO " + ExpressDatabase.ROW_LEDGER_TABLE
+                + "(owner_row_id,entry,value,updated_at) VALUES(?,?,?,?)",
+                new Object[]{row.rowId, LEDGER_ORDER_HAD_WAYBILL, "1", System.currentTimeMillis()});
+    }
+
+    private void initializeOrderWaybillHistory(SQLiteDatabase db) {
+        db.beginTransaction();
+        try (Cursor cursor = db.query(ExpressDatabase.EXPRESS_TABLE, null,
+                "isDeleted=0", null, null, null, null)) {
+            while (cursor.moveToNext()) rememberOrderWaybill(db,
+                    readRaw(cursor, OrderProjection.EMPTY, false, true));
+            db.setTransactionSuccessful();
+        } finally { db.endTransaction(); }
+    }
+
+    private static boolean savedOrderWaybill(String waybill, String tracks, String order) {
+        String normalized = ExpressSourcePolicy.normalizeWaybill(waybill);
+        return !normalized.isEmpty() && !normalized.equals(order)
+                || me.pipi.deliveries.feature.express.ExpressOrderTextIdentity.fromTracksJson(tracks, order) != null;
     }
 
     /**
@@ -3761,6 +3854,7 @@ public final class ExpressRepository {
                         values, SQLiteDatabase.CONFLICT_REPLACE) < 0L) {
                     throw new IllegalStateException("Held order projection persistence failed");
                 }
+                rememberOrderWaybill(db, current);
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
@@ -4466,6 +4560,7 @@ public final class ExpressRepository {
             }
             anchorSignedRetention(db, projectTimelineAuthorities(findRaw(db, current.rowId)),
                     System.currentTimeMillis());
+            rememberOrderWaybill(db, findRaw(db, current.rowId));
             // 其余裁决 32（用户 2026-09-26）：v5_query 文案取号投影落地那一轮与其它投影一样按通知规则推送（已下单 → 已揽收等）；
             // 查询本身落库照旧不推。承运商门与挂靠规则照旧在 stageNotification / 重放里。
             if (previousPresented != null) stageNotification(db, previousPresented, find(current.rowId));
@@ -4995,6 +5090,7 @@ public final class ExpressRepository {
                 SQLiteDatabase.CONFLICT_REPLACE) < 0L) {
             throw new IllegalStateException("Automatic observation persistence failed");
         }
+        rememberOrderWaybill(db, findRecordRow(db, recordKey, packageOwner));
     }
 
     private long materializeAutomaticPackage(
@@ -6803,6 +6899,7 @@ public final class ExpressRepository {
     private ExpressItem stageNotification(SQLiteDatabase db, ExpressItem previous, ExpressItem current,
             ExpressItem merged) {
         if (!db.inTransaction()) throw new IllegalStateException("Notification requires transaction");
+        rememberOrderWaybill(db, current);
         current = anchorSignedRetention(db, current, System.currentTimeMillis());
         if (changeBatch.get().depth > 0 && previous == null && current != null) {
             changeBatch.get().firstSeenRows.add(current.rowId);
@@ -6811,7 +6908,7 @@ public final class ExpressRepository {
                 ? ExpressNotifications.shouldPostUpdate(previous, current)
                 : ExpressNotifications.shouldPostStatusChange(previous, merged);
         if (ExpressVisibilityPolicy.isHiddenSigned(retentionView(db, current), System.currentTimeMillis())
-                || hiddenNoItemOrder(db, current) || !update) return current;
+                || hiddenNoItemOrder(db, current) || hiddenCompletedOrderPlaceholder(db, current) || !update) return current;
         if (attachedToAnotherOwner(db, current)) {
             ExpressLog.notificationSkipped(current, "attached");
             return current;
@@ -6890,7 +6987,8 @@ public final class ExpressRepository {
                 // Hidden rows retain their caches, but must not return through a delayed notification.
                 if (current != null && !ExpressVisibilityPolicy.isHiddenSigned(
                         retentionView(db, current), System.currentTimeMillis())
-                        && !hiddenNoItemOrder(db, current) && !attachedToAnotherOwner(db, current)) {
+                        && !hiddenNoItemOrder(db, current) && !hiddenCompletedOrderPlaceholder(db, current)
+                        && !attachedToAnotherOwner(db, current)) {
                     // T23（用户 2026-09-26，其余裁决 28）：承运商还没对上的行不发带空白承运商的通知；义务留在 outbox，
                     // 识别出来的那次存盘（它自己的 publishChange 或所在批次的批末）按当时的行再发。不论哪个线程触发
                     // 重放都一样，另一线程不能把同步线程还没识别完的通知提前推出（缺口①）。
@@ -7922,6 +8020,7 @@ public final class ExpressRepository {
                 if (changed < 0L) {
                     throw new IllegalStateException("Order projection persistence failed");
                 }
+                rememberOrderWaybill(db, locked);
                 // A projection landing by any path ends a held page projection (T23).
                 db.delete(ExpressDatabase.HELD_ORDER_PROJECTION_TABLE, "owner_row_id=?",
                         new String[]{Long.toString(locked.rowId)});

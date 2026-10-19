@@ -14,6 +14,8 @@ import type {
 import {
   buildWidgetSnapshot,
   isConfirmedNoItemOrder,
+  isHiddenCompletedOrderPlaceholder,
+  hasSavedOrderWaybill,
   isHiddenSignedShipment,
   isHiddenCancelledShipment,
   isNonEventDetail,
@@ -1025,6 +1027,9 @@ function stampSettledAt(shipment: Shipment, now: number): Shipment {
 }
 
 function normalizeShipmentAuthorities(shipment: Shipment, now: number): Shipment {
+  if (!shipment.identity.hadRealWaybill && hasSavedOrderWaybill(shipment)) {
+    shipment = { ...shipment, identity: { ...shipment.identity, hadRealWaybill: true } };
+  }
   const anchorAtMs = jingDongSignedAnchorAtMs(shipment);
   const normalized = normalizeShipmentAuthoritiesWithAnchor(shipment, now, anchorAtMs);
   // The save that first stamps settledAtMs cleans JD reviews with that same anchor (助手按用户 2026-09-27 规则对齐),
@@ -1613,6 +1618,11 @@ export function visibleShipments(
   state: AppState,
   now = Date.now(),
 ): Shipment[] {
+  return storedShipmentsForProcessing(state, now).filter(shipment => !isHiddenCompletedOrderPlaceholder(shipment));
+}
+
+/** Preserve projection and alignment work for display-only hidden order placeholders. */
+export function storedShipmentsForProcessing(state: AppState, now = Date.now()): Shipment[] {
   // 归属方案 T3（用户 2026-09-25）：同一运单号上挂靠在先占号那一行后面的行不进列表、小组件与搜索；行和它的数据都留着。
   const attached = attachedShipmentIds(state.shipments);
   return pruneShipments(
@@ -1796,6 +1806,7 @@ function settleCarrierHolds(
     held.add(event.shipmentId);
     const shipment = byId.get(event.shipmentId);
     if (!shipment || isHiddenSignedShipment(shipment, now) || isConfirmedNoItemOrder(shipment) ||
+        isHiddenCompletedOrderPlaceholder(shipment) ||
         attached.has(event.shipmentId)) continue;
     if (carrierAwaitingRecognition(shipment)) {
       settled.push(event);
@@ -1836,6 +1847,10 @@ function saveStateAndPrune(
           // The persisted owner keeps that clock until the row is actually removed.
           // A new parcel on a reused number is not that owner (user 2026-10-02): the old clock stays behind.
           const persisted = previousById.get(shipment.identity.id);
+          if (persisted?.identity.hadRealWaybill && shipment.identity.accountOrder &&
+              persisted.identity.sourceId === shipment.identity.sourceId) {
+            shipment = { ...shipment, identity: { ...shipment.identity, hadRealWaybill: true } };
+          }
           const settledAtMs = newerWaybillReuseGeneration(persisted, shipment)
             ? undefined
             : persisted?.settledAtMs;
@@ -1895,6 +1910,7 @@ function saveStateAndPrune(
     const attached = attachedShipmentIds(next.shipments);
     for (const shipment of next.shipments) {
       if (isHiddenSignedShipment(shipment, now) || isHiddenCancelledShipment(shipment, now) || isConfirmedNoItemOrder(shipment) ||
+          isHiddenCompletedOrderPlaceholder(shipment) ||
           attached.has(shipment.identity.id)) continue;
       const merge = context?.orderMerges?.get(shipment.identity.id);
       const rule = { statusChangeOnly: merge != null };

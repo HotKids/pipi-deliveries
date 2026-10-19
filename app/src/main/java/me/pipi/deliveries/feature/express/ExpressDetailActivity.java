@@ -1125,8 +1125,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             if (pullRefreshRequested && !localRefreshIsPull && item != null && allowsJingDongCapture(item)) {
                 ExpressOrderProjectionRetryStore.AttemptToken active =
                         ExpressOrderProjectionRetryStore.activeAttempt(item);
-                sharesJdCapture = item.isAccountOrder() && item.projectedWaybill.isEmpty()
-                        || active != null && active.claimedUntil > 0L;
+                sharesJdCapture = active != null && active.claimedUntil > 0L;
             }
             localRefreshSharedOrderOutcome |= sharesJdCapture;
             pendingDetailPull |= pullRefreshRequested && !localRefreshIsPull && !sharesJdCapture;

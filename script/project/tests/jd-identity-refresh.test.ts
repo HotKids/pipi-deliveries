@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { memory, NOW } from "./state-storage-mock";
+import { memory, NOW, sha256 } from "./state-storage-mock";
 import type { AccountParcelDto } from "../services/account-parser";
 import { accountOrderTextIdentity } from "../services/account-order-text-identity";
 import { parcelToShipment } from "../services/account-sync";
 import { emptyState, saveState, loadState } from "../services/storage";
-import { mergeAccountParcel, runShipmentRefreshForTesting, runProjectionAwareShipmentRefreshForTesting } from "../services/sync";
+import { mergeAccountParcel, runShipmentRefreshForTesting, runProjectionAwareShipmentRefreshForTesting, projectStoredAccountOrders, hasActiveAccountOrderProjection } from "../services/sync";
 import { OperationTimeoutError } from "../services/deadline";
 import { saveOrderProjectionReferences, loadOrderProjectionReference } from "../services/routes";
 import { performShipmentDeletion } from "../services/shipment-actions";
 import { readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { selectShipmentDetailTimeline } from "../services/shipment-policy";
 import { shouldRetryAccountOrderProjection } from "../services/account-sync-policy";
+import { registerProjectionViewportHost } from "../services/projection-viewport";
 import { seedRecognizedCarriers } from "./carrier-recognition-seed";
 
 const PHONE = "13800001234", ORDER = "3610000000001844", WAYBILL = "75600000001844";
@@ -478,3 +479,44 @@ for (const detail of ["已下单", "正在打包", "等待揽收", "预计明天
     assert.equal(result.shipment.identity.projectedWaybill, WAYBILL);
   });
 }
+
+
+test("a Home held-identity retry cannot overwrite an active detail capture reservation", async () => {
+  const state = seed(false, false), owner = state.shipments[0];
+  const payload = JSON.stringify({ ...state, pendingNotifications: [{
+    id: "synthetic-old-notice", shipmentId: owner.identity.id, semantic: "DELIVERY",
+    title: "Synthetic", body: "Synthetic", iconName: null,
+  }] });
+  memory.clear();
+  memory.set("pipi_deliveries_state_v1", JSON.stringify({ schema: 3, checksum: sha256(payload), payload }));
+  saveOrderProjectionReferences([{ ownerId: owner.identity.id, source: "interface5", url: parcel().projectionUrl }], NOW);
+  setDiagnosticsEnabled(true);
+  const previous = { Notification: globalThis.Notification, Script: globalThis.Script, fetch: globalThis.fetch };
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const notificationEntered = new Promise<void>(resolve => { entered = resolve; });
+  Object.assign(globalThis, {
+    Script: { directory: "/synthetic", name: "Synthetic", createRunSingleURLScheme: () => "synthetic://shipment" },
+    Notification: { schedule: async () => { entered(); await gate; } },
+    fetch: async () => { throw new Error("Unexpected network in the held-identity test"); },
+  });
+  registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
+  const detail = runProjectionAwareShipmentRefreshForTesting(owner.identity.id,
+    { trigger: "identity_projection", forceAccountOrderProjection: true }, {
+      projectAccountOrderWithCarrier: async input => ({ ...input, waybill: "ZZ1234567890",
+        courierCode: "", rawCourierCode: "", companyName: "", projectionTimeline: null }),
+      queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "" }),
+      refreshWebTimeline: async () => null,
+    });
+  try {
+    await notificationEntered;
+    const held = loadState().shipments[0];
+    assert.ok(held.identity.pendingProjection);
+    assert.equal(hasActiveAccountOrderProjection(owner.identity.id), true);
+    const result = await projectStoredAccountOrders({ onScreen: () => true });
+    assert.notEqual(result.result, "failed", "the held path must share the existing owner, not throw after reserving");
+    assert.deepEqual(loadState().shipments[0].identity.orderProjectionRetry, held.identity.orderProjectionRetry);
+    assert.equal(readDiagnostics().some(entry => entry.event === "order.projection.failed"), false);
+  } finally { release(); await detail; registerProjectionViewportHost(null); Object.assign(globalThis, previous); }
+});

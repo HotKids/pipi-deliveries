@@ -22,7 +22,7 @@ import {
   type StatusAlignmentTimes,
 } from "./shipment-policy";
 import { normalizeWaybill, shipmentPresentationStatus } from "./status";
-import { loadState, peekStateRevision, visibleShipments } from "./storage";
+import { loadState, peekStateRevision, storedShipmentsForProcessing } from "./storage";
 import { replayPendingShipmentNotifications } from "./notifications";
 import {
   listRefreshInProgress,
@@ -63,7 +63,7 @@ export function dueStatusAlignments(
   includeWaiting = false,
 ): StatusAlignmentCandidate[] {
   const due: StatusAlignmentCandidate[] = [];
-  for (const shipment of visibleShipments(state, now)) {
+  for (const shipment of storedShipmentsForProcessing(state, now)) {
     if (shipment.timeline.provider === "demo" ||
         shipmentPresentationStatus(shipment).semantic === "CANCELLED") continue;
     if (excludeIds.has(shipment.identity.id) || signedRefreshFrozen(shipment, now)) continue;

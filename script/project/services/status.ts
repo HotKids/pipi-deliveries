@@ -1726,6 +1726,41 @@ export function isHiddenSignedShipment(shipment: Shipment, now = Date.now()): bo
   return eventAt > 0 && now - eventAt >= SIGNED_RETENTION_MS;
 }
 
+/** Display policy only: an unresolved order is still eligible for its existing projection work. */
+export function isHiddenCompletedOrderPlaceholder(shipment: Shipment): boolean {
+  const identity = shipment.identity;
+  const order = String(identity.orderId || identity.sourceId || "").trim();
+  if (identity.manuallyAdded || !identity.accountOrder || identity.bindingSource !== "interface5" ||
+      String(identity.sourceProvider || "").trim().toLowerCase() !== "jingdong" ||
+      !/^3[0-9]{11}$/.test(order) || shipment.timeline.structuredStatus !== true ||
+      shipmentPresentationStatus(shipment).semantic !== "COMPLETED") return false;
+  return !hasSavedOrderWaybill(shipment);
+}
+
+/** Explicit identities already stored for this order, including now-ineligible observations. */
+export function hasSavedOrderWaybill(shipment: Shipment): boolean {
+  const identity = shipment.identity;
+  if (identity.manuallyAdded || !identity.accountOrder ||
+      String(identity.sourceProvider || "").trim().toLowerCase() !== "jingdong") return false;
+  if (identity.hadRealWaybill) return true;
+  const order = normalizeWaybill(identity.orderId || identity.sourceId);
+  const realWaybill = (value: unknown) => {
+    const normalized = normalizeWaybill(String(value || ""));
+    return normalized !== "" && normalized !== order;
+  };
+  const identities = [identity, ...(shipment.automaticOwnership?.observations || [])
+    .map(observation => observation.identity)];
+  if (identities.some(candidate => candidate.hadRealWaybill || realWaybill(candidate.projectedWaybill) ||
+      realWaybill(candidate.pendingProjection?.waybill))) return true;
+  const timelines = [shipment.timeline, shipment.sourceTimeline, ...(shipment.manualTimelines || []),
+    ...identities.map(candidate => candidate.pendingProjection?.timeline),
+    ...(shipment.automaticOwnership?.observations || []).map(observation => observation.sourceTimeline)];
+  // Saved observations remain evidence even after their binding becomes ineligible. Carrier prefixes
+  // and number length do not distinguish a real parcel from an order's own identity.
+  return timelines.some(timeline => timeline && (realWaybill(timeline.waybill) ||
+    realWaybill(accountOrderTextIdentity(timeline.tracks)?.waybill)));
+}
+
 /**
  * 用户 2026-09-25 同意（方案 B，iOS 与 Lite；Pipi、kdbot 不做——三星数据里赠品单与真实订单分不开）：确认没有
  * 商品物流的京东订单行（赠品单之类）像留存期到了的行一样隐藏：不上首页列表与小组件，隐藏期间不通知；存盘行、

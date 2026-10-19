@@ -77,6 +77,13 @@ public class ExpressDatabaseThreadingTest {
             return Collections.emptyList();
         }
 
+        @Implementation protected ExpressRepository.HomeRows homeRows(String source) {
+            recordRead();
+            return org.robolectric.util.ReflectionHelpers.callConstructor(ExpressRepository.HomeRows.class,
+                    org.robolectric.util.ReflectionHelpers.ClassParameter.from(List.class, Collections.emptyList()),
+                    org.robolectric.util.ReflectionHelpers.ClassParameter.from(List.class, Collections.emptyList()));
+        }
+
         @Implementation protected List<String> phones(String source) {
             recordRead();
             return Collections.emptyList();

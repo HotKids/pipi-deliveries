@@ -5,7 +5,7 @@ import { acknowledgeShipmentNotification, deferShipmentNotification, loadState }
 import { acquireDurableRefreshLease, durableRefreshLeaseRemainingMs } from "./refresh-runtime-state";
 import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { deadlineExpired, remainingTimeoutMs, waitForRefresh } from "./deadline";
-import { isConfirmedNoItemOrder, isHiddenSignedShipment, isHiddenCancelledShipment, shipmentPresentationStatus } from "./status";
+import { isHiddenCompletedOrderPlaceholder, isConfirmedNoItemOrder, isHiddenSignedShipment, isHiddenCancelledShipment, shipmentPresentationStatus } from "./status";
 import { isAttachedShipment } from "./waybill-ownership";
 import { shipmentNotificationPresentation } from "./notification-events";
 import { isShunFengSourceShipment, selectShipmentTimeline, shipmentHeadlineMatchesStatus } from "./shipment-policy";
@@ -82,7 +82,7 @@ export async function replayPendingShipmentNotifications(
       const shipment = latest.shipments.find((shipment) => shipment.identity.id === event.shipmentId);
       // Hidden owners still retire their queued events instead of waiting for a repair they no longer run.
       const deliverable = shipment && !isHiddenSignedShipment(shipment) && !isHiddenCancelledShipment(shipment) &&
-        !isConfirmedNoItemOrder(shipment) && !isAttachedShipment(latest.shipments, shipment) && notificationEnabled(event.semantic);
+        !isConfirmedNoItemOrder(shipment) && !isHiddenCompletedOrderPlaceholder(shipment) && !isAttachedShipment(latest.shipments, shipment) && notificationEnabled(event.semantic);
       const signedSF = deliverable && event.semantic === "COMPLETED" && isShunFengSourceShipment(shipment) &&
         shipmentPresentationStatus(shipment).semantic === "COMPLETED";
       if (signedSF) {

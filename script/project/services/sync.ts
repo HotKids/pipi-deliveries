@@ -125,7 +125,7 @@ import {
   peekStateRevision,
   removeBinding,
   saveState,
-  visibleShipments,
+  storedShipmentsForProcessing,
   type RefreshNotificationContext,
 } from "./storage";
 import {
@@ -1393,11 +1393,7 @@ function trackProjectionAttempt(shipmentId: string): () => void {
 }
 
 export function hasActiveAccountOrderProjection(shipmentId: string): boolean {
-  if (activeProjectionAttempts.has(shipmentId)) return true;
-  const shipment = loadState().shipments.find(item => item.identity.id === shipmentId);
-  return [shipment?.identity.orderProjectionRetry, shipment?.identity.jingDongH5Retry].some(
-    retry => accountOrderProjectionAttemptRemainingMs(retry) > 0,
-  );
+  return activeProjectionAttempts.has(shipmentId);
 }
 
 const PROJECTION_WAIT_MAX_SLICE_MS = 1_000;
@@ -1408,8 +1404,10 @@ async function waitForProjectionAttemptRelease(
   deadlineAtMs?: number,
   explicitPull = false,
 ): Promise<ShipmentRefreshResult | null> {
-  const waitDeadlineAtMs = Math.min(deadlineAtMs ?? Infinity, Date.now() +
-    ACCOUNT_ORDER_PROJECTION_ATTEMPT_MS + FORCED_PROJECTION_WAIT_SLICE_MS);
+  const waitDeadlineAtMs = explicitPull
+    ? deadlineAtMs ?? deadlineAfter(MANUAL_QUERY_BUDGET_MS)
+    : Math.min(deadlineAtMs ?? Infinity, Date.now() +
+      ACCOUNT_ORDER_PROJECTION_ATTEMPT_MS + FORCED_PROJECTION_WAIT_SLICE_MS);
   let sliceMs = FORCED_PROJECTION_WAIT_SLICE_MS;
   let seenRevision = peekStateRevision();
   let state = loadState();
@@ -1427,9 +1425,10 @@ async function waitForProjectionAttemptRelease(
       accountOrderProjectionAttemptRemainingMs(shipment.identity.orderProjectionRetry),
       accountOrderProjectionAttemptRemainingMs(shipment.identity.jingDongH5Retry),
     );
-    joined ||= Boolean(inProcess || remainingAttemptMs > 0);
+    // A persisted reservation fences another page load, but has no result for a pull to join.
+    joined ||= Boolean(inProcess || (!explicitPull && remainingAttemptMs > 0));
     const remainingWaitMs = waitDeadlineAtMs - Date.now();
-    if ((!inProcess && remainingAttemptMs <= 0) || remainingWaitMs <= 0) {
+    if ((!inProcess && (explicitPull || remainingAttemptMs <= 0)) || remainingWaitMs <= 0) {
       if (!joined || !explicitPull) return null;
       const refreshed = Boolean(initial && (
         normalizedProjectedWaybill(initial.identity) !== normalizedProjectedWaybill(shipment.identity) ||
@@ -2035,6 +2034,7 @@ function accountOrderProjectionDecision(
   if (!parcel.projectionUrl && !parcel.textIdentity?.waybill && !heldWaybill) return { due: false };
   if (skipRefreshIds.has(expectedId)) return { due: false };
   if (normalizedProjectedWaybill(existingOwner?.identity)) return { due: false };
+  if (activeProjectionAttempts.has(expectedId)) return { due: false, skipped: "active_attempt" };
   // A waybill named by the feed text needs no WebView attempt, so no cooldown applies. T23 (2026-09-26): it is shown
   // only with a matched carrier, so it is asked again only while the recognizer can still answer.
   if (parcel.textIdentity?.waybill) {
@@ -2056,7 +2056,6 @@ function accountOrderProjectionDecision(
     return { due: false, skipped: "before_pickup" };
   }
   const routeHash = projectionCooldownKey(parcel);
-  if (activeProjectionAttempts.has(expectedId)) return { due: false, skipped: "active_attempt" };
   // Automatic path: a confirmed empty page stays closed (方案 A, 2026-09-25).
   if (
     shouldRetryAccountOrderProjectionUnprompted(
@@ -2203,10 +2202,9 @@ async function projectAccountOrders(
     const heldProjection = !parcel.textIdentity?.waybill && freshOwner?.identity.pendingProjection?.waybill
       ? freshOwner.identity.pendingProjection
       : null;
-        if (
-      !parcel.textIdentity?.waybill &&
-      !heldProjection &&
-      (activeProjectionAttempts.has(expectedId) || !shouldRetryAccountOrderProjectionUnprompted(
+    if (
+      activeProjectionAttempts.has(expectedId) ||
+      (!parcel.textIdentity?.waybill && !heldProjection && !shouldRetryAccountOrderProjectionUnprompted(
         freshOwner?.identity.orderProjectionRetry,
         routeHash,
         Date.now(),
@@ -2218,7 +2216,8 @@ async function projectAccountOrders(
         source,
         stage: "webview",
         ownerFingerprint,
-        result: projectionRestReason(freshOwner?.identity.orderProjectionRetry, routeHash, Date.now()),
+        result: activeProjectionAttempts.has(expectedId) ? "active_attempt"
+          : projectionRestReason(freshOwner?.identity.orderProjectionRetry, routeHash, Date.now()),
       });
       continue;
     }
@@ -2660,6 +2659,7 @@ async function refreshBackgroundSfAlignment(
   const lease = acquireRenewingDurableRefreshLease(`detail:${task.id}`, 35_000);
   if (!lease) return summary();
   let attempt: AlignmentAttempt | undefined, reservationError: unknown;
+  const staleReservation = new Error("Alignment owner or group changed");
   const isCurrent = () => !signal.aborted && lease.isCurrent();
   const beforeQuery = () => {
     if (reservationError) throw reservationError;
@@ -2668,9 +2668,9 @@ async function refreshBackgroundSfAlignment(
       assertRefreshSignal(signal);
       assertWithinDeadline(deadlineAtMs);
       const latest = loadState(), target = latest.shipments.find(item => item.identity.id === task.id);
-      if (!lease.isCurrent() || !alignmentOwnerCurrent(state, original, latest) || !target) throw new Error("Alignment owner changed");
+      if (!lease.isCurrent() || !alignmentOwnerCurrent(state, original, latest) || !target) throw staleReservation;
       const fresh = backgroundSfAlignmentTimes(target, Date.now());
-      if (!fresh || alignmentTimesKey(fresh) !== alignmentTimesKey(times)) throw new Error("Alignment group changed");
+      if (!fresh || alignmentTimesKey(fresh) !== alignmentTimesKey(times)) throw staleReservation;
       attempt = reserveAlignmentAttempt(task.id, times, Date.now(), MANUAL_REFRESH_MIN_INTERVAL_MS);
     } catch (error) { reservationError = error; throw error; }
   };
@@ -2689,8 +2689,13 @@ async function refreshBackgroundSfAlignment(
         pickerOnly: true, pickerFirst: true, scheduled: true, hostSafe: true,
         includeKdniaoFallback: false, beforeQuery });
     } catch (error) { queryError = error; }
-    if (reservationError) throw reservationError;
     assertRefreshSignal(signal);
+    // A queued row can become obsolete before dispatch without cancelling unrelated rows in this batch.
+    if (reservationError === staleReservation) {
+      current = loadState();
+      return summary();
+    }
+    if (reservationError) throw reservationError;
     if (!isCurrent() || !attempt) return summary();
     attempted = 1;
     current = loadState();
@@ -4195,9 +4200,9 @@ async function runShipmentRefreshFlow(
                 ownerFingerprint,
                 result: "carrier_pending",
               });
-                        } else if (
-              (reopenForTimeline || !parcel.textIdentity?.waybill) &&
-              (activeProjectionAttempts.has(ownerId) || !(
+            } else if (
+              activeProjectionAttempts.has(ownerId) ||
+              ((reopenForTimeline || !parcel.textIdentity?.waybill) && !(
                 // 方案 A (2026-09-25): detail entry leaves a confirmed empty page closed; an explicit
                 // pull is the user's own request and bypasses only the ordinary rest.
                 trigger === "identity_projection" && !reopenForTimeline
@@ -5444,6 +5449,8 @@ async function runTargetedShipmentRefreshWithProjectionWait(
   options: ShipmentRefreshOptions,
   runtimeOverrides: ShipmentRefreshRuntimeOverrides = {},
 ): Promise<ShipmentRefreshResult> {
+  const forced = options.trigger === "detail_pull" ? statusAlignmentRefreshes.get(shipmentId) : undefined;
+  if (forced) return pullAfterStatusAlignment(shipmentId, forced, options, runtimeOverrides);
   if (options.forceAccountOrderProjection || options.trigger === "detail_pull") {
     const completed = await waitForProjectionAttemptRelease(
       shipmentId,
@@ -6205,7 +6212,7 @@ function storedAccountOrderProjectionCandidates(
   const boundPhones = bindingsForSource(state, source).map((binding) => binding.phone);
   if (!boundPhones.length) return [];
   const noDetailRefreshes = new Set<string>();
-  return visibleShipments(state, now).flatMap((shipment) => {
+  return storedShipmentsForProcessing(state, now).flatMap((shipment) => {
     const ownerId = shipment.identity.id;
     if (
       shipment.identity.bindingSource !== source ||
