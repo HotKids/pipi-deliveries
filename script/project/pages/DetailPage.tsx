@@ -13,9 +13,9 @@ import {
   useState,
 } from "scripting";
 import { accountExternalAppName, fetchAccountExternalAppRoutes } from "../services/account-sync";
-import { kuaidi100MiniProgramURL, shunfengKuaidi100FallbackURL } from "../services/kuaidi100-app-link";
+import { accountKuaidi100URL, kuaidi100MiniProgramURL, shunfengKuaidi100FallbackURL } from "../services/kuaidi100-app-link";
 import { trackPhoneText } from "../services/track-phone-links";
-import type { AppState, Shipment } from "../models";
+import type { AccountBinding, AppState, Shipment } from "../models";
 import { CourierIcon } from "../components/CourierIcon";
 import { SenderBadge } from "../components/SenderBadge";
 import { carrierDisplayName, courierHotline } from "../services/carrier-presentation";
@@ -73,6 +73,7 @@ const MANUAL_QUERY_IN_FLIGHT_TEXT = "查询中";
 export function DetailPage(props: {
   shipment: Shipment;
   persistedShipment?: boolean;
+  accountBinding?: AccountBinding;
   manualPreview?: ManualShipmentPreview | null;
   refreshOnAppear?:
     | "manual_submit"
@@ -87,10 +88,13 @@ export function DetailPage(props: {
   const [notice, setNotice] = useState("");
   const [openingExternalApp, setOpeningExternalApp] = useState(false);
   const externalAppAbortRef = useRef<AbortController | null>(null);
+  const accountBindingRef = useRef(props.accountBinding);
+  const accountExternalAppURL = props.persistedShipment
+    ? accountKuaidi100URL(shipment, shipment, accountBindingRef.current, props.accountBinding) : "";
   const manualExternalAppURL = props.persistedShipment && shipment.identity.manuallyAdded
     ? kuaidi100MiniProgramURL(displayWaybill(shipment))
     : "";
-  const externalAppName = manualExternalAppURL ? "快递100" : accountExternalAppName(shipment);
+  const externalAppName = manualExternalAppURL || accountExternalAppURL ? "快递100" : accountExternalAppName(shipment);
   const timelineSourceIcon = shipment.identity.manuallyAdded
     ? "sources/kuaidi100"
     : ({ cainiao: "sources/cainiao", jingdong: "couriers/jdshopping", shunfeng: "sources/sfexpress" } as Record<string, string>)[
@@ -448,18 +452,23 @@ export function DetailPage(props: {
     try {
       const sfBinding = externalAppName === "顺丰" ? loadState().bindings.find((binding) =>
         binding.source === shipment.identity.bindingSource && binding.phone === shipment.accountRecord?.phone) : undefined;
-      let manualURL = "";
-      if (shipment.identity.manuallyAdded) {
-        const current = loadState().shipments.find((item) => item.identity.id === shipment.identity.id);
-        manualURL = current ? kuaidi100MiniProgramURL(displayWaybill(current)) : "";
-        if (!props.persistedShipment || !current?.identity.manuallyAdded || !manualURL ||
+      let directURL = "";
+      if (externalAppName === "快递100") {
+        const currentState = loadState();
+        const current = currentState.shipments.find((item) => item.identity.id === shipment.identity.id);
+        directURL = shipment.identity.manuallyAdded
+          ? current?.identity.manuallyAdded ? kuaidi100MiniProgramURL(displayWaybill(current)) : ""
+          : accountKuaidi100URL(shipment, current, accountBindingRef.current,
+            currentState.bindings.find((binding) => binding.source === current?.identity.bindingSource &&
+              binding.phone === current?.accountRecord?.phone));
+        if (!props.persistedShipment || !current || !directURL ||
           normalizeWaybill(displayWaybill(current)) !== normalizeWaybill(displayWaybill(shipment))) {
           setNotice("快递信息已更新，请重新打开详情");
           return;
         }
       }
-      const targets = manualURL
-        ? [{ kind: "kuaidi100", url: manualURL }]
+      const targets = directURL
+        ? [{ kind: "kuaidi100", url: directURL }]
         : await fetchAccountExternalAppRoutes(shipment, controller.signal);
       if (controller.signal.aborted) return;
       if (!targets.length) {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { displayWaybill } from "../services/shipment-policy";
 import { normalizeWaybill, waybillSuffix } from "../services/status";
-import { kuaidi100MiniProgramURL, shunfengKuaidi100FallbackURL } from "../services/kuaidi100-app-link";
+import { accountKuaidi100URL, kuaidi100MiniProgramURL, shunfengKuaidi100FallbackURL } from "../services/kuaidi100-app-link";
 import type { AccountBinding, Shipment } from "../models";
 
 const page = readFileSync(new URL("../pages/DetailPage.tsx", import.meta.url), "utf8");
@@ -15,14 +15,14 @@ const action = new Function(
   "externalAppAbortRef", "externalAppName", "setOpeningExternalApp",
   "fetchAccountExternalAppRoutes", "shipment", "setNotice", "Safari", "writeDiagnostic",
   "displayWaybill", "waybillSuffix", "props", "loadState", "kuaidi100MiniProgramURL", "normalizeWaybill",
-  "shunfengKuaidi100FallbackURL", "accountExternalAppName",
+  "shunfengKuaidi100FallbackURL", "accountExternalAppName", "accountKuaidi100URL", "accountBindingRef",
   `return (${page.slice(start, end).trim()});`,
 );
 
 function scenario(openResult: boolean | Error | (boolean | Error)[] = true, requestFailure = false, appName = "菜鸟",
   options: { shipment?: Shipment; persisted?: boolean; current?: Shipment[]; loadFailure?: boolean;
     states?: { shipments: Shipment[]; bindings: AccountBinding[] }[]; currentAppName?: string;
-    cancelAfterOpen?: boolean } = {}) {
+    cancelAfterOpen?: boolean; binding?: AccountBinding } = {}) {
   let resolveTargets!: (targets: { kind: string; url: string }[]) => void;
   const route = new Promise<{ kind: string; url: string }[]>((resolve) => { resolveTargets = resolve; });
   const resolveRoute = (value: string) => resolveTargets(value ? [{ kind: "cainiao", url: value }] : []);
@@ -52,9 +52,9 @@ function scenario(openResult: boolean | Error | (boolean | Error)[] = true, requ
     if (options.loadFailure) throw new Error("synthetic state failure");
     const state = options.states?.[Math.min(stateReads, options.states.length - 1)];
     stateReads++;
-    return state || { shipments: options.current || [], bindings: [] };
+    return state || { shipments: options.current || [], bindings: options.binding ? [options.binding] : [] };
   }, kuaidi100MiniProgramURL, normalizeWaybill, shunfengKuaidi100FallbackURL,
-  () => options.currentAppName ?? "顺丰") as () => Promise<void>;
+  () => options.currentAppName ?? "顺丰", accountKuaidi100URL, { current: options.binding }) as () => Promise<void>;
   return { run, resolveRoute, resolveTargets, diagnostics, ref, busy, notices, opened, requestCount: () => requests };
 }
 
@@ -255,3 +255,83 @@ closedSf.resolveTargets([{ kind: "sf", url: sfNative }]);
 await closedTask;
 assert.deepEqual(closedSf.opened, [sfNative]);
 assert.deepEqual(closedSf.notices, []);
+
+const otherAccount = {
+  identity: { id: "other-account-synthetic", manuallyAdded: false, bindingSource: "interface5",
+    sourceId: "JT000000000162", sourceOwner: "interface5", courierCode: "HTKY", sourceProvider: "OtherAccount" },
+  timeline: { waybill: "JT000000000162" },
+  accountRecord: { waybill: "JT000000000162", companyCode: "HTKY", provider: "OtherAccount", phone: "13800138000" },
+} as Shipment;
+const otherBinding: AccountBinding = { source: "interface5", phone: "13800138000", boundAtMs: 5 };
+const accountDirect = scenario(true, false, "快递100", {
+  shipment: otherAccount, persisted: true, current: [otherAccount], binding: otherBinding,
+});
+accountDirect.resolveRoute("");
+await accountDirect.run();
+assert.deepEqual(accountDirect.opened, [kuaidi100MiniProgramURL(displayWaybill(otherAccount))],
+  "a persisted account parcel without a source App capability opens its actual waybill in K100");
+assert.equal(accountDirect.requestCount(), 0, "the direct action must not query an unsupported source App route");
+
+const accountVisibilityStart = page.indexOf("  const accountExternalAppURL =");
+const accountVisibilityEnd = page.indexOf("\n  const manualExternalAppURL =", accountVisibilityStart);
+assert.ok(accountVisibilityStart >= 0 && accountVisibilityEnd > accountVisibilityStart);
+const visibleAccountURL = new Function("props", "shipment", "accountKuaidi100URL", "accountBindingRef",
+  `${page.slice(accountVisibilityStart, accountVisibilityEnd)}\nreturn accountExternalAppURL;`);
+const accountVisibility = (props: object, shipment = otherAccount) => visibleAccountURL(
+  { accountBinding: otherBinding, ...props }, shipment, accountKuaidi100URL, { current: otherBinding });
+assert.equal(accountVisibility({ persistedShipment: true }),
+  kuaidi100MiniProgramURL(displayWaybill(otherAccount)));
+assert.equal(accountVisibility({ persistedShipment: false }), "");
+assert.equal(accountVisibility({ persistedShipment: true, accountBinding: undefined }), "");
+assert.equal(accountVisibility({ persistedShipment: true, accountBinding: { ...otherBinding, boundAtMs: 6 } }), "");
+
+for (const result of [false, new Error("synthetic WeChat failure")]) {
+  const unavailable = scenario(result, false, "快递100", {
+    shipment: otherAccount, persisted: true, current: [otherAccount], binding: otherBinding,
+  });
+  await unavailable.run();
+  assert.equal(unavailable.opened.length, 1);
+  assert.equal(unavailable.requestCount(), 0);
+  assert.deepEqual(unavailable.notices, ["无法打开快递100小程序，请确认已安装微信"]);
+  assert.deepEqual(unavailable.busy, [true, false]);
+}
+for (const options of [
+  { persisted: false, current: [otherAccount] },
+  { persisted: true, current: [] },
+  { persisted: true, current: [{ ...otherAccount, identity: { ...otherAccount.identity, sourceOwner: "replacement" } }] },
+  { persisted: true, current: [{ ...otherAccount, identity: { ...otherAccount.identity, sourceId: "JT000000000163" },
+    timeline: { ...otherAccount.timeline, waybill: "JT000000000163" },
+    accountRecord: { ...otherAccount.accountRecord!, waybill: "JT000000000163" } }] },
+  { persisted: true, current: [{ ...otherAccount, identity: { ...otherAccount.identity, sourceProvider: "CaiNiao" },
+    accountRecord: { ...otherAccount.accountRecord!, provider: "CaiNiao" } }] },
+  { persisted: true, current: [{ ...otherAccount, accountRecord: { ...otherAccount.accountRecord!, phone: "13900139000" } }] },
+]) {
+  const stale = scenario(true, false, "快递100", { shipment: otherAccount, binding: otherBinding, ...options });
+  await stale.run();
+  assert.deepEqual(stale.opened, []);
+  assert.equal(stale.requestCount(), 0);
+  assert.deepEqual(stale.notices, ["快递信息已更新，请重新打开详情"]);
+}
+for (const bindings of [[], [{ ...otherBinding, boundAtMs: 6 }]]) {
+  const stale = scenario(true, false, "快递100", {
+    shipment: otherAccount, persisted: true, binding: otherBinding,
+    states: [{ shipments: [otherAccount], bindings }],
+  });
+  await stale.run();
+  assert.deepEqual(stale.opened, [], "unbind and rebind invalidate an already visible direct action");
+  assert.equal(stale.requestCount(), 0);
+  assert.deepEqual(stale.notices, ["快递信息已更新，请重新打开详情"]);
+}
+for (const [provider, name] of [["JingDong", "京东"], ["CaiNiao", "菜鸟"], ["ShunFeng", "顺丰"]]) {
+  const known = { ...otherAccount, identity: { ...otherAccount.identity, sourceProvider: provider },
+    accountRecord: { ...otherAccount.accountRecord!, provider } };
+  assert.equal(accountVisibility({ persistedShipment: true }, known), "");
+  for (const failure of [false, true]) {
+    const missing = scenario(true, failure, name, { shipment: known, persisted: true, current: [known] });
+    missing.resolveRoute("");
+    await missing.run();
+    assert.deepEqual(missing.opened, [], "route failure cannot activate the unrelated direct K100 path");
+    assert.equal(missing.requestCount(), 1);
+    assert.deepEqual(missing.notices, [failure ? `打开${name}失败，请重试` : `来源暂未提供可用的${name} App 链接`]);
+  }
+}
