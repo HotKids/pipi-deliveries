@@ -661,6 +661,10 @@ assert.equal(probeDiagnostics?.unionSignalSeen, true);
 assert.equal((probeDiagnostics?.probeRequestCount || 0) >= 1, true);
 assert.equal(probeDiagnostics?.pageClass, "jd");
 assert.equal(probeDiagnostics?.viewportAvailable, true);
+assert.equal(probeDiagnostics?.projectionProbeRevision, 3);
+assert.equal(probeDiagnostics?.unionFetchResponseCount, 1);
+assert.equal(probeDiagnostics?.unionBodyAcceptedCount, 1);
+assert.equal(probeDiagnostics?.fullProgressClicked, true);
 assert.equal(inPageProbeDisposed, true);
 
 

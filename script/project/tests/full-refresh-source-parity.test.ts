@@ -292,19 +292,24 @@ test("full refresh traces preparation, account request and one notification drai
   const events = entries.map(entry => entry.event);
   const ordered = ["refresh.preparation.started", "refresh.preparation.completed", "account.sync.started",
     "account.sync.parsed", "refresh.account.completed", "refresh.finalization.started",
-    "notification.replay.started", "notification.replay.completed", "refresh.finalization.completed",
+    "notification.replay.completed", "refresh.finalization.completed",
     "refresh.succeeded"];
   for (let i = 0; i < ordered.length; i++) {
     assert.ok(events.includes(ordered[i]), `${ordered[i]} must be observable`);
     if (i) assert.ok(events.indexOf(ordered[i - 1]) < events.indexOf(ordered[i]));
   }
-  assert.equal(events.filter(event => event === "notification.replay.started").length, 1);
+  assert.equal(events.filter(event => event === "notification.replay.started").length, 0,
+    "an empty notification drain emits no redundant start line");
+  assert.equal(events.filter(event => event === "notification.replay.completed").length, 1,
+    "empty outboxes still have exactly one observable drain completion");
   for (const event of ["refresh.preparation.completed", "refresh.account.completed",
     "notification.replay.completed", "refresh.finalization.completed"]) {
     assert.equal(typeof entries.find(entry => entry.event === event)?.details.durationMs, "number");
   }
   const replay = entries.find(entry => entry.event === "notification.replay.completed")!;
   assert.equal(replay.details.pendingNotifications, 0);
+  assert.equal(typeof replay.details.readDurationMs, "number");
+  assert.equal(typeof replay.details.budgetMs, "number");
   assert.equal(replay.details.flowId, entries.find(entry => entry.event === "refresh.started")?.details.flowId);
 });
 

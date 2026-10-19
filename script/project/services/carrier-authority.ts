@@ -232,9 +232,10 @@ export function loadCarrierAuthorityCache(nowMs = Date.now()): boolean {
   }
   installStatusLabelTable(selected.payload.statusLabels);
   loadedFetchedAtMs = selected.fetchedAtMs;
-  writeDiagnostic("carrier.authority.loaded", {
-    ...carrierAuthorityDiagnosticDetails(nowMs), result: "cache_loaded",
-  });
+  const details = carrierAuthorityDiagnosticDetails(nowMs);
+  if (!details.hotlineMatchesExpected) {
+    writeDiagnostic("carrier.authority.loaded", { ...details, result: "cache_loaded" }, "warning");
+  }
   return true;
 }
 
@@ -249,9 +250,10 @@ export async function refreshCarrierAuthorityIfNeeded(
   );
   if (latestActivityAtMs > 0 &&
     nowMs - latestActivityAtMs < REFRESH_INTERVAL_MS) {
-    writeDiagnostic("carrier.authority.skipped", {
-      ...carrierAuthorityDiagnosticDetails(nowMs), result: "cooldown",
-    });
+    const details = carrierAuthorityDiagnosticDetails(nowMs);
+    if (!details.hotlineMatchesExpected) {
+      writeDiagnostic("carrier.authority.skipped", { ...details, result: "cooldown" }, "warning");
+    }
     return false;
   }
   const startedAtMs = Date.now();

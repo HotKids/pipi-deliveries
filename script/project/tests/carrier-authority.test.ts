@@ -210,6 +210,8 @@ files.set(primary, JSON.stringify({ storageSchema: 1, fetchedAtMs, payload: oldT
 assert.equal(loadCarrierAuthorityCache(fetchedAtMs + 1_000), true);
 assert.equal(carrierAuthorityDiagnosticDetails(fetchedAtMs + 1_000).hotlinePresent, false);
 assert.equal(carrierAuthorityDiagnosticDetails(fetchedAtMs + 1_000).carrierRefreshRemainingMs, 86_399_000);
+assert.equal(readDiagnostics()[0].event, "carrier.authority.loaded");
+assert.equal(readDiagnostics()[0].level, "warning", "a missing hotline must still report the loaded cache");
 clearDiagnostics();
 let refreshCalls = 0;
 const correctedTable = { ...oldTable, version: "carrier-test-hotline", entries: oldTable.entries.map(record =>
@@ -219,6 +221,7 @@ assert.equal(await refreshCarrierAuthorityIfNeeded(fetchedAtMs + 1_000, dependen
 assert.equal(refreshCalls, 0);
 assert.equal(readDiagnostics()[0].details.hotlineMatchesExpected, false);
 assert.equal(readDiagnostics()[0].details.result, "cooldown");
+assert.equal(readDiagnostics()[0].level, "warning", "cooldown must retain an invalid-hotline warning");
 const dueAtMs = fetchedAtMs + 86_400_001;
 assert.equal(await refreshCarrierAuthorityIfNeeded(dueAtMs, dependencies), true);
 assert.equal(refreshCalls, 1);
@@ -232,6 +235,11 @@ assert.equal(loadCarrierAuthorityCache(dueAtMs + 1_000), true);
 assert.equal(resolveCarrierQuery("HTKY")?.hotline, "956025");
 assert.equal(carrierAuthorityDiagnosticDetails(dueAtMs + 1_000).carrierFetchedAtMs, dueAtMs);
 assert.equal(carrierAuthorityDiagnosticDetails(dueAtMs + 1_000).hotlineMatchesExpected, true);
+clearDiagnostics();
+assert.equal(loadCarrierAuthorityCache(dueAtMs + 2_000), true);
+assert.equal(await refreshCarrierAuthorityIfNeeded(dueAtMs + 2_000, dependencies), false);
+assert.equal(refreshCalls, 1, "quiet cache and cooldown paths must not send another request");
+assert.deepEqual(readDiagnostics(), [], "healthy carrier cache loads and cooldowns are silent");
 
 const storedEntries = JSON.parse(files.get(primary)!).payload.entries;
 assert.equal(storedEntries.every((entry: Record<string, unknown>) =>
@@ -270,3 +278,13 @@ assert.equal(resolveCarrierCpCode("BEST")?.standardCode, "HTKY");
   resetStatusLabelTableForTesting();
   console.log("carrier authority status label tests passed");
 }
+
+files.clear();
+clearDiagnostics();
+const mismatchedHotline = { ...payload(), version: "carrier-test-mismatch", entries: wireEntries().map(record =>
+  record.standardCode === "HTKY" ? { ...record, hotline: "000000" } : record) };
+files.set(primary, JSON.stringify({ storageSchema: 1, fetchedAtMs: 10_000_000, payload: mismatchedHotline }));
+assert.equal(loadCarrierAuthorityCache(10_001_000), true);
+assert.equal(readDiagnostics()[0].details.hotlinePresent, true);
+assert.equal(readDiagnostics()[0].details.hotlineMatchesExpected, false);
+assert.equal(readDiagnostics()[0].level, "warning", "a nonempty but incorrect hotline remains visible");
