@@ -79,6 +79,48 @@ public class ExpressDetailRefreshContinuationTest {
         assertEquals(1, worker.tasks.size());
     }
 
+    @Test public void aPullQueuedBeforeCaptureRetriesAfterAnOrdinaryCaptureFailure() {
+        assertQueuedPullAfterCapture(false);
+    }
+
+    @Test public void aPullQueuedBeforeCaptureCannotBypassItsLaterRiskControl() {
+        assertQueuedPullAfterCapture(true);
+    }
+
+    private void assertQueuedPullAfterCapture(boolean riskControl) {
+        me.pipi.deliveries.model.ExpressItem owner = jingDongOrder("");
+        ReflectionHelpers.setField(activity, "item", owner);
+        ReflectionHelpers.setField(activity, "localRefreshInFlight", true);
+        ReflectionHelpers.setField(activity, "localRefreshGeneration", 1);
+        assertNull(ExpressOrderProjectionRetryStore.activeAttempt(owner));
+        pull();
+        pull();
+        assertTrue(ReflectionHelpers.getField(activity, "pendingDetailPull"));
+
+        ExpressOrderProjectionRetryStore retries = new ExpressOrderProjectionRetryStore(activity);
+        long now = System.currentTimeMillis();
+        ExpressOrderProjectionRetryStore.AttemptToken capture = retries.beginTimelineAttempt(owner, now);
+        assertNotNull(capture);
+        try {
+            // The entry starts its capture after the gesture; a timeout leaves its ordinary rest spent.
+            if (riskControl) retries.recordTimelineRateLimit(owner, now);
+        } finally { retries.endAttempt(capture); }
+        assertFalse(retries.timelineAttemptDue(owner, now));
+        finish(1);
+        assertEquals("repeated gestures still queue only one explicit operation", 1, worker.tasks.size());
+        assertTrue(ReflectionHelpers.getField(activity, "pullRefreshRequested"));
+
+        ExpressOrderProjectionRetryStore.TimelineAttempt next = retries.beginOrJoinTimelineAttempt(owner, now);
+        if (riskControl) {
+            assertNull(next.token);
+            assertEquals("risk_control_cooldown", retries.timelineSkipReason(owner, now));
+        } else {
+            assertNotNull(next.token);
+            assertFalse(next.joined);
+            retries.endAttempt(next.token);
+        }
+    }
+
     @Test public void aSamePageJingDongJoinDoesNotEndTheEntryOperation() {
         ReflectionHelpers.setField(activity, "item", jingDongOrder(""));
         ReflectionHelpers.setField(activity, "localRefreshInFlight", true);

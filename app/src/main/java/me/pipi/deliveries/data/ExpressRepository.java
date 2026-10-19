@@ -195,19 +195,19 @@ public final class ExpressRepository {
     }
 
     /**
-     * The same visible rows in the same order as {@link #listVisible}, each as projected before the display-only
-     * headline alignment ({@link #alignHeadlineToStatus}): what per-row work reads — the round's per-parcel
-     * requests and the account detail summary they send upstream, the order projection, the list/detail
-     * mismatch gate. Only display surfaces (the list, the widgets) read the aligned headline.
+     * Rows for per-row work before display-only headline alignment ({@link #alignHeadlineToStatus}).
+     * Unlike {@link #listVisible}, this includes completed short-order placeholders so their existing
+     * identity-resolution work can discover a real waybill. Existing deletion, retention and confirmed
+     * empty-order filters still apply. Requests, order projection and status alignment read this view;
+     * display surfaces read the aligned headline and omit those placeholders.
      */
     public synchronized List<ExpressItem> listVisibleAsStored(String bindingSource) {
         return visibleRows(clean(bindingSource).toLowerCase(Locale.ROOT), false);
     }
 
     /**
-     * {@code alignHeadlines}: the list as shown, with {@link #alignHeadlineToStatus} applied; false returns the
-     * same rows as projected before it ({@link #listVisibleAsStored}, and the status alignment check compares
-     * those, {@link #statusAlignmentProbes}).
+     * {@code alignHeadlines} selects display rows and applies {@link #alignHeadlineToStatus}; false keeps
+     * short-order placeholders in the processing view described by {@link #listVisibleAsStored}.
      */
     private List<ExpressItem> visibleRows(String bindingSource, boolean alignHeadlines) {
         ArrayList<ExpressItem> rows = new ArrayList<>();

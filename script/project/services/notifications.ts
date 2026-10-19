@@ -132,6 +132,9 @@ export async function replayPendingShipmentNotifications(
     result = "pending_retry";
     writeDiagnostic("notification.replay.failed", {
       ...details, result, ...diagnosticErrorDetails(error),
+      ...(readDurationMs === undefined ? {
+        stage: "notification_read", readDurationMs: Date.now() - readStartedAt,
+      } : {}),
     }, "warning");
   } finally {
     lease.release();

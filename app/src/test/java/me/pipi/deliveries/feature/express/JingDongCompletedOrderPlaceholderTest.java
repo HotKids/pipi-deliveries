@@ -80,6 +80,20 @@ public final class JingDongCompletedOrderPlaceholderTest {
         }
     }
 
+    @Test public void pickupTextDoesNotReplaceAnAssociationAndAnotherCarriersWaybillRestoresTheOrder()
+            throws Exception {
+        ExpressItem row = order(GIFT, new String[][]{{COMPLETED_AT, GIFT_REVIEW},
+                {at("2026-09-19 09:00:00"), "【上海市】圆通速递 已揽收"}});
+        assertTrue(row.tracksJson.contains("已揽收"));
+        assertFalse(listed(row));
+        assertNotNull(repository.find(row.rowId));
+        assertEquals(row.rowId, repository.homeRows("interface5").processing.get(0).rowId);
+        assertFalse(retries.pageConfirmedEmpty(row));
+
+        assertTrue(repository.saveOrderProjection(row, "interface5", "YT000000044421", "圆通速递"));
+        assertTrue(listed(row));
+    }
+
     @Test public void everyThreePrefixWithinTheApprovedLengthIsCovered() throws Exception {
         ExpressItem row = order("310000004421", new String[][]{{COMPLETED_AT, "订单已完成"}});
         assertFalse(listed(row));

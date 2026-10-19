@@ -104,6 +104,39 @@ test("a nonempty drain preserves its start, read and completion trace with durab
   assert.equal(loadState().pendingNotifications?.length, 0);
 });
 
+test("an unreadable outbox reports its read boundary and releases the lease without consuming events", async () => {
+  const initial = seed();
+  const originalGet = Storage.get;
+  Storage.get = (key, ...options) => {
+    if (key === "pipi_deliveries_state_v1") {
+      clock += 40;
+      throw new Error("Synthetic unreadable state");
+    }
+    return originalGet(key, ...options);
+  };
+  try {
+    assert.equal(await replayPendingShipmentNotifications(() => true,
+      { deadlineAtMs: NOW + 1_000, flowId: "unreadable-outbox" }), undefined);
+  } finally {
+    Storage.get = originalGet;
+  }
+  const events = readDiagnostics().filter(entry => entry.event.startsWith("notification.replay.")).reverse();
+  assert.deepEqual(events.map(entry => entry.event), [
+    "notification.replay.failed", "notification.replay.completed",
+  ]);
+  assert.equal(events[0].details.stage, "notification_read");
+  assert.equal(events[0].details.result, "pending_retry");
+  assert.equal(events[0].details.readDurationMs, clock - NOW);
+  assert.ok(Number(events[0].details.readDurationMs) > 0);
+  assert.equal(events[1].details.result, "pending_retry");
+  assert.equal(events[1].details.attempted, 0);
+  assert.deepEqual(attempted, []);
+  assert.deepEqual(loadState().pendingNotifications, initial.pendingNotifications);
+  const next = acquireDurableRefreshLease("notifications", 1_000, clock);
+  assert.ok(next);
+  next.release();
+});
+
 async function withTimers(run: () => Promise<void>) {
   const realSetTimeout = globalThis.setTimeout, realClearTimeout = globalThis.clearTimeout;
   globalThis.setTimeout = ((callback: () => void, ms: number) => {
