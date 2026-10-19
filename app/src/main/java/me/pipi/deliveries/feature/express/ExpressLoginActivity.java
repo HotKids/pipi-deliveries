@@ -35,6 +35,8 @@ public final class ExpressLoginActivity extends AppCompatActivity {
     private CountDownTimer resendTimer;
     private Future<?> activeTask;
     private long resendAvailableAt;
+    private boolean busy;
+    private boolean binding;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -72,6 +74,7 @@ public final class ExpressLoginActivity extends AppCompatActivity {
 
     private void sendVerificationCode() {
         String number = phone.getText().toString();
+        binding = false;
         setBusy(true);
         activeTask = worker.submit(() -> {
             try {
@@ -107,6 +110,7 @@ public final class ExpressLoginActivity extends AppCompatActivity {
             return;
         }
         String bindingSource = ExpressAccountSource.bindingSource(this);
+        binding = true;
         setBusy(true);
         activeTask = worker.submit(() -> {
             try {
@@ -142,12 +146,14 @@ public final class ExpressLoginActivity extends AppCompatActivity {
     }
 
     private void setBusy(boolean busy) {
+        this.busy = busy;
         boolean coolingDown = resendTimer != null;
         phone.setEnabled(!busy);
         code.setEnabled(!busy);
         sendCode.setEnabled(!busy && !coolingDown);
         bind.setEnabled(!busy);
-        if (busy) {
+        bind.setText(busy && binding ? R.string.binding_phone : R.string.card_sub_btn_bind_txt);
+        if (busy && !binding) {
             sendCode.setText(R.string.sending_code);
         } else if (!coolingDown) {
             sendCode.setText(R.string.send_code);
@@ -174,7 +180,7 @@ public final class ExpressLoginActivity extends AppCompatActivity {
                 resendTimer = null;
                 resendAvailableAt = 0L;
                 sendCode.setText(R.string.send_code);
-                sendCode.setEnabled(true);
+                sendCode.setEnabled(!busy);
             }
         };
         resendTimer.start();

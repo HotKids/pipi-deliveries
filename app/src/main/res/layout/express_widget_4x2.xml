@@ -60,19 +60,21 @@
                     android:id="@+id/widget_express_count"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:layout_marginStart="5dp"
+                    android:textColor="?attr/colorOnSurface"
                     android:textSize="16sp"
-                    android:textStyle="normal" />
+                    android:textStyle="bold" />
 
-                <ImageView
-                    android:layout_width="16dp"
-                    android:layout_height="16dp"
-                    android:layout_marginStart="2dp"
-                    android:contentDescription="@null"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_symbol_chevron_right"
-                    android:tint="?attr/colorOnSurfaceVariant"
-                    tools:ignore="UseAppTint" />
+                <TextView
+                    android:id="@+id/widget_express_arrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:importantForAccessibility="no"
+                    android:text="@string/widget_express_header_chevron"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
             </LinearLayout>
 
             <ImageView

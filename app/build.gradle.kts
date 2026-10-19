@@ -31,7 +31,7 @@ fun quoted(value: String): String = "\"" + value
 fun localValueOrDefault(environment: String, property: String, fallback: String): String =
     localValue(environment, property).ifBlank { fallback }
 
-val releaseVersionNameDefault = "1.5.0"
+val releaseVersionNameDefault = "1.6.0"
 val releaseVersionName = providers.environmentVariable("DELIVERIES_VERSION_NAME")
     .orNull?.trim().orEmpty().ifBlank { releaseVersionNameDefault }
 val versionMatch = Regex("""(\d+)\.(\d+)\.(\d+)(?:-beta(\d+))?""")
@@ -143,6 +143,7 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
+            it.maxHeapSize = "1g"
             it.jvmArgs(
                 "--add-opens=java.base/java.lang=ALL-UNNAMED",
                 "--add-opens=java.base/java.util=ALL-UNNAMED",
