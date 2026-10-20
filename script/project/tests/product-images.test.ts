@@ -50,6 +50,13 @@ Object.assign(globalThis, {
     existsSync(path: string) { return files.has(path); },
     readDirectorySync(path: string) { return [...files.keys()].filter(file => file.startsWith(path + "/")); },
     writeAsStringSync(path: string, value: string) { files.set(path, new FakeData(Buffer.from(value))); },
+    statSync(path: string) {
+      const value = files.get(path);
+      if (!value) throw new Error("synthetic cache miss");
+      return { type: "file", size: value.size };
+    },
+    isLinkSync() { return false; },
+    readAsDataSync(path: string) { return files.get(path)!; },
     async stat(path: string) {
       const value = files.get(path);
       if (!value) throw new Error("synthetic cache miss");
@@ -106,6 +113,7 @@ Object.assign(globalThis, {
       bitmapReads++;
       events.push("bitmap");
       return {
+        width: 600, height: 300, scale: 1,
         preparingThumbnail(size: { width: number; height: number }) {
           assert.deepEqual(size, { width: 432, height: 432 });
           return { syntheticThumbnail: true, syntheticKind: value.bytes[0] };
@@ -152,7 +160,7 @@ function response(status: number, url: string) {
     }; } } };
 }
 
-const { loadProductImage } = await import("../services/product-images");
+const { initialProductImage, loadProductImage } = await import("../services/product-images");
 const { cachedProductImage, productImageCacheKey, productImageCacheFiles, rememberProductImage,
   pruneProductImages } = await import("../services/product-image-cache");
 let sequence = 0;
@@ -293,6 +301,16 @@ assert.equal(cachedProductImage(lifetime.key), null, "decoded memory is bounded"
 const restored = await loadProductImage("", undefined, lifetime);
 assert.equal((restored as any).syntheticKind, 9, "a new memory lifetime restores the persistent image without a URL");
 assert.equal(networkCalls, 1);
+evictImages();
+const previousMetadataReads = metadataReads;
+const immediate = initialProductImage(lifetime.key);
+assert.equal((immediate as any).syntheticKind, 9,
+  "the writer's existing immutable cache is available synchronously before the detail first render");
+assert.equal(metadataReads, previousMetadataReads, "first-frame restoration does not wait on asynchronous ImageIO");
+assert.equal(networkCalls, 1);
+const previousBitmapReads = bitmapReads;
+assert.equal(initialProductImage(lifetime.key), immediate, "later renders reuse the restored decoded image");
+assert.equal(bitmapReads, previousBitmapReads);
 pruneProductImages([identity("lifetime")], [identity("lifetime")]);
 assert.ok(files.has(lifetimeFile), "retained rows preserve files even when the list hides them");
 pruneProductImages([identity("lifetime")], []);

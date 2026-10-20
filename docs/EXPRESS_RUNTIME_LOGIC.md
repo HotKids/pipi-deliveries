@@ -8,6 +8,22 @@ Updated: 2026-09-14. The duplicated iOS/Lite provider matrix formerly in this fi
 
 The independent notification and failure-boundary notes below are retained. They do not grant additional provider calls or override current status/terminal rules.
 
+## iOS product image first frame
+
+The detail thumbnail resolves memory and then the retained record's immutable
+local image before its first render. Existing cache files remain readable without
+an image URL or network request. A missing or damaged cache keeps the carrier icon
+and the existing asynchronous image loading path.
+
+Downloads and temporary URL caches still pass ImageIO metadata validation before
+UIImage creation. Immutable record files are published only after that validation;
+their synchronous first-frame restoration checks the file and actual data against
+the 4 MiB limit, creates the native image container at scale 1, checks its pixel
+dimensions against the 16 Mi-pixel limit, and prepares the existing 432-pixel
+thumbnail. It rechecks that lifecycle cleanup has not excluded the exact file
+before remembering the image. First-success retention, record ownership and
+deletion/expiry cleanup remain unchanged.
+
 ## iOS notification delivery
 
 - Refresh checkpoints persist `pendingNotifications` in the same state envelope

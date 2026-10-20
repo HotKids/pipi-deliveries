@@ -228,6 +228,7 @@ const thumbnail = mountHandlers(thumbnailSource.slice(
   thumbnailSource.indexOf("  if (!image) {"),
 ), "ProductThumbnail", imageProps, "image", {
   cachedProductImage: () => null,
+  initialProductImage: () => null,
   productImageCacheKey: (identity: any) => identity.id,
   loadState: () => ({ shipments: [{ identity: { id: imageProps.cacheKey } }] }),
   loadProductImage: (url: string, signal: AbortSignal) => new Promise((finish) => {

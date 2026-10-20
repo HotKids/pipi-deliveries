@@ -1,5 +1,5 @@
 import { AbortController, Image, VStack, useEffect, useState } from "scripting";
-import { loadProductImage } from "../services/product-images";
+import { initialProductImage, loadProductImage } from "../services/product-images";
 import { cachedProductImage, productImageCacheKey } from "../services/product-image-cache";
 import { loadState } from "../services/storage";
 import { CourierIcon } from "./CourierIcon";
@@ -18,7 +18,7 @@ export function ProductThumbnail(props: {
   const [loaded, setLoaded] = useState<{
     key: string;
     image: Awaited<ReturnType<typeof loadProductImage>>;
-  } | null>(() => ({ key: cacheKey, image: cachedProductImage(cacheKey) }));
+  } | null>(() => ({ key: cacheKey, image: initialProductImage(cacheKey) }));
 
   useEffect(() => {
     const remembered = cachedProductImage(cacheKey);
@@ -33,7 +33,7 @@ export function ProductThumbnail(props: {
     return () => controller.abort();
   }, [cacheKey, imageURL]);
 
-  const image = loaded?.key === cacheKey ? loaded.image : cachedProductImage(cacheKey);
+  const image = loaded?.key === cacheKey ? loaded.image : initialProductImage(cacheKey);
   if (!image) {
     return (
       <CourierIcon
