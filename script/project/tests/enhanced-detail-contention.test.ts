@@ -3,11 +3,11 @@ import { createHmac } from "node:crypto";
 import { memory } from "./state-storage-mock";
 import type { AccountParcelDto } from "../services/account-parser";
 import { parcelToShipment } from "../services/account-sync";
-import { ENHANCEMENT_ROUTE } from "../services/enhanced-account";
+import { ENHANCEMENT_ROUTE, loadEnhancementIdentity } from "../services/enhanced-account";
 import { saveGatewayToken } from "../services/credentials";
-import { acquireRenewingDurableRefreshLease } from "../services/refresh-runtime-state";
+import { acquireRenewingDurableRefreshLease, durableRefreshLeaseRemainingMs } from "../services/refresh-runtime-state";
 import { emptyState, loadState, removeBinding, removeShipment, saveState } from "../services/storage";
-import { refreshShipmentById } from "../services/sync";
+import { refreshShipmentById, runTargetedShipmentRefreshForTesting } from "../services/sync";
 
 const PHONE = "13800001234", ORDER = "3650000000000001";
 const WAYBILL = "JD0000000000001", IMAGE = "https://img10.360buyimg.com/product.jpg";
@@ -23,12 +23,15 @@ Object.assign(globalThis, {
   Script: { directory: "/synthetic", name: "Synthetic" },
 });
 let requests = 0, holderActive = false;
+let metadataGate: Promise<void> | null = null, requestStarted: (() => void) | null = null;
 globalThis.fetch = (async (url: string, options: { body: string }) => {
   assert.equal(holderActive, false, "metadata must wait until the actual detail lease is available");
   assert.equal(new URL(url).pathname, ENHANCEMENT_ROUTE,
     "the public image-only entry cannot query a timeline after waiting for its lease");
   assert.deepEqual(JSON.parse(options.body).orders, [{ phone: PHONE, orderId: ORDER }]);
   requests++;
+  requestStarted?.();
+  if (metadataGate) await metadataGate;
   return { ok: true, status: 200, text: async () => JSON.stringify({ records: [
     { phone: PHONE, orderId: ORDER, realWaybill: WAYBILL, imageUrl: IMAGE },
   ], ambiguousOrderIds: [] }) };
@@ -37,6 +40,8 @@ globalThis.fetch = (async (url: string, options: { body: string }) => {
 function seed() {
   memory.clear();
   requests = 0;
+  metadataGate = null;
+  requestStarted = null;
   const now = Date.now();
   const timeText = new Date(now + 8 * 3_600_000).toISOString().replace("T", " ").slice(0, 19);
   const parcel: AccountParcelDto = {
@@ -55,6 +60,7 @@ function seed() {
       enhancedMode: true, enhancedAtMs: now - 1_000 },
   ] }, now);
   saveGatewayToken("AbCdEfGh_123-456");
+  loadEnhancementIdentity();
   return state.shipments[0];
 }
 
@@ -151,5 +157,30 @@ await contend(() => {
 });
 assert.equal(requests, 0, "the old detail request cannot act for a replacement same-phone binding generation");
 assert.equal(loadState().shipments[0].identity.productImageURL, undefined);
+
+const interruptible = seed();
+let finishMetadata!: () => void;
+metadataGate = new Promise<void>(resolve => { finishMetadata = resolve; });
+const imageStarted = new Promise<void>(resolve => { requestStarted = resolve; });
+const imageController = new AbortController();
+const imageRequest = refreshShipmentById(interruptible.identity.id, {
+  trigger: "product_image", requestProductImage: true, signal: imageController.signal,
+});
+await bounded(imageStarted);
+assert.ok(durableRefreshLeaseRemainingMs(`detail:${interruptible.identity.id}`) > 0);
+imageController.abort();
+await assert.rejects(bounded(imageRequest));
+assert.equal(durableRefreshLeaseRemainingMs(`detail:${interruptible.identity.id}`), 0,
+  "cancelling optional metadata releases the actual lease before its native response settles");
+let subsequentQueries = 0;
+await runTargetedShipmentRefreshForTesting(interruptible.identity.id,
+  { trigger: "detail_open", requestProductImage: false, deadlineAtMs: Date.now() + 1_000 }, {
+    refreshAccountParcel: async () => { subsequentQueries++; return null; },
+  });
+assert.equal(subsequentQueries, 1, "the next necessary trajectory request is not consumed by the cancelled image holder");
+finishMetadata();
+for (let step = 0; step < 5; step++) await new Promise(resolve => setImmediate(resolve));
+assert.equal(loadState().shipments[0].identity.productImageURL, undefined,
+  "a native metadata response arriving after cancellation cannot publish its image");
 
 console.log("Enhanced public detail lease contention, cancellation and identity fencing tests passed");

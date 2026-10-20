@@ -12,6 +12,15 @@ import { normalizeWaybill } from "./status";
 export type EnhancementIdentity = Readonly<{ accountId: string; androidId: string }>;
 export const ENHANCEMENT_ROUTE = "/api/express/accounts/enhanced";
 const IDENTITY_FILE = "account-enhancement-identity-v1.json";
+const IDENTITY_KEY = "pipi_deliveries_account_enhancement_identity_v1";
+const IDENTITY_SHARED_KEY = "pipi_deliveries_account_enhancement_identity_shared_v1";
+
+export class EnhancementIdentityMissing extends Error {
+  constructor() {
+    super("增强模式身份已丢失，请重新验证绑定该手机号");
+    this.name = "EnhancementIdentityMissing";
+  }
+}
 
 function validIdentity(value: unknown): value is EnhancementIdentity {
   const identity = value as Partial<EnhancementIdentity> | null;
@@ -19,25 +28,76 @@ function validIdentity(value: unknown): value is EnhancementIdentity {
     /^[0-9a-f]{16}$/.test(identity.androidId || ""));
 }
 
+function encodedIdentity(identity: EnhancementIdentity): string {
+  return JSON.stringify({ identity,
+    checksum: Crypto.sha256(utf8Data(JSON.stringify(identity))).toHexString().toLowerCase() });
+}
+
+function decodedIdentity(raw: unknown): EnhancementIdentity | null {
+  if (typeof raw !== "string") return null;
+  try {
+    const record = JSON.parse(raw);
+    return validIdentity(record.identity) && record.checksum === Crypto.sha256(
+      utf8Data(JSON.stringify(record.identity)),
+    ).toHexString().toLowerCase() ? record.identity : null;
+  } catch { return null; }
+}
+
+function mirrorIdentity(identity: EnhancementIdentity, restoreDurable: boolean): void {
+  const encoded = encodedIdentity(identity);
+  if (restoreDurable) {
+    try { writeDurableText(IDENTITY_FILE, encoded); }
+    catch { /* A verified shared or Keychain copy remains authoritative. */ }
+  }
+  try { Storage.set(IDENTITY_SHARED_KEY, encoded, { shared: true }); }
+  catch { /* The durable or Keychain copy remains usable. */ }
+  try { Keychain.set(IDENTITY_KEY, encoded); }
+  catch { /* The durable or shared copy remains usable. */ }
+}
+
+function readExistingIdentity(): EnhancementIdentity | null {
+  const durable = readDurableTextResult(IDENTITY_FILE);
+  let unreadable = durable.failed || durable.candidates.length > 0;
+  for (const raw of durable.candidates) {
+    const identity = decodedIdentity(raw);
+    if (identity) {
+      mirrorIdentity(identity, false);
+      return identity;
+    }
+  }
+  for (const read of [() => Storage.get<string>(IDENTITY_SHARED_KEY, { shared: true }),
+    () => Keychain.get(IDENTITY_KEY)]) {
+    try {
+      const raw = read();
+      if (raw == null) continue;
+      unreadable = true;
+      const identity = decodedIdentity(raw);
+      if (identity) {
+        mirrorIdentity(identity, true);
+        return identity;
+      }
+    } catch { unreadable = true; }
+  }
+  if (unreadable) throw new Error("增强模式身份读取失败，请稍后重试");
+  return null;
+}
+
+export function existingEnhancementIdentity(): EnhancementIdentity | null {
+  return withSharedFileTransaction(readExistingIdentity);
+}
+
+/** Only the explicit verification flow may create a new subscription identity. */
 export function loadEnhancementIdentity(): EnhancementIdentity {
   return withSharedFileTransaction(() => {
-    const { candidates, failed } = readDurableTextResult(IDENTITY_FILE);
-    for (const raw of candidates) {
-      try {
-        const record = JSON.parse(raw);
-        if (validIdentity(record.identity) && record.checksum === Crypto.sha256(
-          utf8Data(JSON.stringify(record.identity)),
-        ).toHexString().toLowerCase()) return record.identity;
-      } catch { /* Try the existing durable backup before reporting corruption. */ }
-    }
-    if (failed || candidates.length) throw new Error("增强模式身份读取失败，请稍后重试");
+    const existing = readExistingIdentity();
+    if (existing) return existing;
     const identity = {
       accountId: UUID.string().toLowerCase(),
       androidId: Crypto.generateSymmetricKey(128).toHexString().toLowerCase().slice(0, 16),
     };
     if (!validIdentity(identity)) throw new Error("增强模式身份生成失败");
-    writeDurableText(IDENTITY_FILE, JSON.stringify({ identity,
-      checksum: Crypto.sha256(utf8Data(JSON.stringify(identity))).toHexString().toLowerCase() }));
+    writeDurableText(IDENTITY_FILE, encodedIdentity(identity));
+    mirrorIdentity(identity, false);
     return identity;
   });
 }
@@ -53,8 +113,10 @@ export async function enhancementOperation(operation: "code" | "bind" | "unbind"
   if (!/^1[3-9]\d{9}$/.test(phone) || (operation === "bind" && !/^\d{4,8}$/.test(options.code || ""))) {
     throw new Error("请输入正确的手机号和验证码");
   }
+  const identity = operation === "unbind" ? existingEnhancementIdentity() : loadEnhancementIdentity();
+  if (!identity) throw new EnhancementIdentityMissing();
   const result = await postGateway(ENHANCEMENT_ROUTE, { operation, phone,
-    identity: loadEnhancementIdentity(), ...(options.code ? { code: options.code } : {}) }, {
+    identity, ...(options.code ? { code: options.code } : {}) }, {
     timeoutMs: remainingTimeoutMs(options.deadlineAtMs, 25_000), deadlineAtMs: options.deadlineAtMs,
   });
   if (result.ok !== true) throw new Error("增强模式操作失败，请重试");
@@ -127,7 +189,9 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
       deadlineAtMs: options.deadlineAtMs, signal: options.signal,
       timeoutMs: remainingTimeoutMs(options.deadlineAtMs, 25_000),
     }));
-    const response = await request({ operation: "sync", identity: options.identity || loadEnhancementIdentity(), orders: distinctOrders });
+    const identity = options.identity || existingEnhancementIdentity();
+    if (!identity) throw new EnhancementIdentityMissing();
+    const response = await request({ operation: "sync", identity, orders: distinctOrders });
     if (options.signal?.aborted) throw new Error("增强模式同步已取消");
     if (!Array.isArray(response.records) || !Array.isArray(response.ambiguousOrderIds)) throw new Error("增强模式响应异常");
     const ambiguous = new Set(response.ambiguousOrderIds);

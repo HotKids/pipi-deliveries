@@ -4,6 +4,8 @@ import { stripTypeScriptTypes } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
+import "./state-storage-mock";
+import { shouldRequestDetailProductImage } from "../services/sync";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path: string) => readFileSync(join(projectRoot, path), "utf8");
@@ -201,11 +203,12 @@ assert.equal(settingsCalls[3][0], "code");
 await settingsSend(basePhone, "synthetic-flow", false);
 assert.equal(settingsCalls[4][0], "interface5");
 
-const appearStart = detailSource.indexOf("    if (props.refreshOnAppear ||");
+const appearStart = detailSource.indexOf("    if (props.refreshOnAppear) {");
 const appearEnd = detailSource.indexOf("    return () => {", appearStart);
 assert.ok(appearStart >= 0 && appearEnd > appearStart);
 for (const [identity, refreshOnAppear, expectedCalls] of [
-  [{ accountOrder: true, sourceProvider: "jingdong" }, false, 1],
+  [{ accountOrder: true, sourceProvider: "jingdong" }, false, 0],
+  [{ accountOrder: true, sourceProvider: "jingdong", enhancedMode: true }, false, 1],
   [{ accountOrder: true, sourceProvider: "jingdong", productImageURL: "https://img.jd.com/known.jpg" }, false, 0],
   [{ accountOrder: true, sourceProvider: "CaiNiao" }, false, 0],
   [{ manuallyAdded: true }, false, 0],
@@ -213,7 +216,15 @@ for (const [identity, refreshOnAppear, expectedCalls] of [
 ] as const) {
   let refreshes = 0;
   runInNewContext(detailSource.slice(appearStart, appearEnd), {
-    props: { shipment: { identity }, refreshOnAppear },
+    props: { shipment: { identity: { bindingSource: "interface5", sourceId: "synthetic-order",
+      phone: "13800001234", ...identity }, timeline: { tracks: [] } }, refreshOnAppear },
+    refreshGenerationRef: { current: 1 },
+    refreshProductImage: (current: any) => {
+      if (shouldRequestDetailProductImage(current, [{ source: "interface5", phone: "13800001234",
+        boundAtMs: 1, enhancedMode: "enhancedMode" in identity && identity.enhancedMode === true }])) refreshes++;
+    },
+    loadState: () => ({ bindings: [{ source: "interface5", phone: "13800001234",
+      enhancedMode: "enhancedMode" in identity && identity.enhancedMode === true }] }),
     refresh: () => { refreshes++; },
     setLoadingManualDetail: () => {},
   });
@@ -268,8 +279,53 @@ assert.match(managerSource, /foregroundStyle=\{binding\.enhancedMode \? "#0478FB
 assert.ok(managerSource.includes("增强模式不占用绑定数量。"));
 assert.doesNotMatch(managerSource, /disabled=\{\s*busy \|\|\s*visibleBindings\.length/);
 assert.match(detailSource, /<ProductThumbnail[\s\S]*?size=\{72\}[\s\S]*?cornerRadius=\{17\}[\s\S]*?imageURL=\{shipment\.identity\.productImageURL\}/);
-assert.match(detailSource, /refreshShipmentById\(props\.shipment\.identity\.id, \{\s*requestProductImage: true/);
+assert.match(detailSource, /requestProductImage: false/);
+assert.match(detailSource, /trigger: "product_image", requestProductImage: true, signal: controller\.signal/);
 assert.match(thumbnailSource, /cornerRadius: props\.size \* 0\.25/);
 assert.doesNotMatch(thumbnailSource, /imageUrl=|UIImage\.fromURL/);
+
+class SyntheticUnbindUnavailable extends Error {}
+class SyntheticIdentityMissing extends Error {
+  constructor() { super("synthetic identity requires verification"); }
+}
+const enhancedBinding = { ...bindings[0], enhancedMode: true, enhancedAtMs: 2 };
+for (const acceptLocalRemoval of [false, true]) {
+  const confirmations = [true, acceptLocalRemoval];
+  const removeCalls: boolean[] = [];
+  const removal = mountHandlers(managerHandlers, "PhoneManagerPage", {
+    bindings: [enhancedBinding], stateRevision: 1, busy: false,
+    onRemove: async (_binding: unknown, localOnly?: boolean) => {
+      removeCalls.push(Boolean(localOnly));
+      if (!localOnly) throw new SyntheticUnbindUnavailable("synthetic upstream unavailable");
+    },
+  }, "remove, notice, enhancementNotice", {
+    EXPRESS_TOAST_COPY: { phoneUnbound: "unbound", unbindFailed: "failed" },
+    EnhancementUnbindUnavailable: SyntheticUnbindUnavailable,
+    EnhancementIdentityMissing: SyntheticIdentityMissing,
+    existingEnhancementIdentity: () => null,
+    Dialog: { confirm: async (options: any) => {
+      assert.ok(confirmations.length);
+      if (confirmations.length === 1) assert.equal(options.confirmLabel, "仍要解除本机绑定");
+      return confirmations.shift();
+    } },
+  });
+  removal.render();
+  assert.equal(removal.render().enhancementNotice, "synthetic identity requires verification",
+    "an enhanced binding without its original identity visibly requires re-verification");
+  await removal.render().remove(enhancedBinding);
+  assert.deepEqual(removeCalls, acceptLocalRemoval ? [false, true] : [false],
+    "local removal requires the second explicit confirmation after remote failure");
+  assert.equal(removal.render().notice, acceptLocalRemoval ? "unbound" : "failed");
+}
+
+const identityAvailable = mountHandlers(managerHandlers, "PhoneManagerPage", {
+  bindings: [enhancedBinding], stateRevision: 1, busy: false,
+}, "enhancementNotice", {
+  EnhancementIdentityMissing: SyntheticIdentityMissing,
+  existingEnhancementIdentity: () => ({ syntheticIdentity: true }),
+});
+identityAvailable.render();
+assert.equal(identityAvailable.render().enhancementNotice, "", "a valid original identity does not show a recovery warning");
+assert.match(managerSource, /远端退订尚未确认，已保留待处理记录/);
 
 console.log("enhanced mode UI handler tests passed");

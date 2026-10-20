@@ -23,6 +23,7 @@ import { carrierDisplayName, courierHotline } from "../services/carrier-presenta
 import {
   continueManualShipmentPreview,
   refreshShipmentById,
+  shouldRequestDetailProductImage,
   hasActiveAccountOrderProjection,
   type ManualShipmentPreview,
   type DetailEntryObservation,
@@ -153,6 +154,7 @@ export function DetailPage(props: {
   const refreshGenerationRef = useRef(0);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
   const refreshAbortRef = useRef<AbortController | null>(null);
+  const productImageRequestRef = useRef<Promise<void> | null>(null);
   const detailEntryRef = useRef<DetailEntryObservation | undefined>(undefined);
   const pullInFlightRef = useRef<Promise<void> | null>(null);
   const joinedJdPullRef = useRef(false);
@@ -280,19 +282,20 @@ export function DetailPage(props: {
   useEffect(() => {
     // 卸载时的取消无条件注册：不自动刷新的进入方式下，用户下拉刷新后退出页面，请求也要跟着作废，
     // 否则完成后还会改页面状态、弹提示（2026-09-06 静态审查发现）。
-    if (props.refreshOnAppear || (props.shipment.identity.accountOrder &&
-        props.shipment.identity.sourceProvider?.toLowerCase() === "jingdong" &&
-        !props.shipment.identity.productImageURL)) {
+    if (props.refreshOnAppear) {
       if (props.refreshOnAppear === "manual_submit") {
         setLoadingManualDetail(true);
       }
       void refresh(false);
+    } else {
+      void refreshProductImage(props.shipment, refreshGenerationRef.current);
     }
     return () => {
       refreshGenerationRef.current += 1;
       refreshAbortRef.current?.abort();
       refreshAbortRef.current = null;
       refreshInFlightRef.current = null;
+      productImageRequestRef.current = null;
       pullInFlightRef.current = null;
       joinedJdPullRef.current = false;
       detailEntryRef.current = undefined;
@@ -321,11 +324,17 @@ export function DetailPage(props: {
     const generation = refreshGenerationRef.current + 1;
     joinedJdPullRef.current = false;
     refreshGenerationRef.current = generation;
+    const previousImage = productImageRequestRef.current;
+    refreshAbortRef.current?.abort();
     const controller = new AbortController();
     refreshAbortRef.current = controller;
+    let imageShipment: Shipment | undefined;
     const task = (async () => {
       setNotice("");
       try {
+        // Cancelling the page's optional image request releases its lease before the necessary trajectory request.
+        if (previousImage) await previousImage;
+        if (controller.signal.aborted || generation !== refreshGenerationRef.current) return;
         const result = props.refreshOnAppear === "manual_submit" &&
             props.manualPreview?.roundComplete === false &&
             !forceManualRefresh
@@ -338,7 +347,7 @@ export function DetailPage(props: {
               },
             })
           : await refreshShipmentById(props.shipment.identity.id, {
-            requestProductImage: true,
+            requestProductImage: false,
             forceAccountOrderProjection:
               forceManualRefresh || props.refreshOnAppear === "identity_projection",
             forceManualRefresh,
@@ -357,6 +366,7 @@ export function DetailPage(props: {
         if (result.detailEntry) detailEntryRef.current = result.detailEntry;
         setShipment((current) => preferNewerShipment(current, result.shipment));
         props.onStateChange?.(result.state, result.shipment);
+        imageShipment = result.shipment;
         const hasUsableDetail = selectShipmentDetailTimeline(
           result.shipment,
         ).tracks.some(
@@ -420,7 +430,35 @@ export function DetailPage(props: {
         refreshAbortRef.current = null;
       }
       if (pullInFlightRef.current === task) pullInFlightRef.current = null;
+      if (generation === refreshGenerationRef.current && !pullInFlightRef.current && imageShipment) {
+        void refreshProductImage(imageShipment, generation);
+      }
     });
+    return task;
+  }
+
+  function refreshProductImage(current: Shipment, generation: number): Promise<void> {
+    if (productImageRequestRef.current) return productImageRequestRef.current;
+    const controller = new AbortController();
+    const task = Promise.resolve().then(async () => {
+      if (controller.signal.aborted || generation !== refreshGenerationRef.current ||
+          !shouldRequestDetailProductImage(current, loadState().bindings)) return;
+      refreshAbortRef.current = controller;
+      const result = await refreshShipmentById(current.identity.id, {
+        trigger: "product_image", requestProductImage: true, signal: controller.signal,
+      });
+      if (controller.signal.aborted || generation !== refreshGenerationRef.current) return;
+      setShipment((previous) => preferNewerShipment(previous, result.shipment));
+      props.onStateChange?.(result.state, result.shipment);
+    }).catch(error => {
+      if (!controller.signal.aborted && generation === refreshGenerationRef.current) {
+        writeDiagnostic("detail.image.failed", diagnosticErrorDetails(error), "warning");
+      }
+    }).finally(() => {
+      if (productImageRequestRef.current === task) productImageRequestRef.current = null;
+      if (refreshAbortRef.current === controller) refreshAbortRef.current = null;
+    });
+    productImageRequestRef.current = task;
     return task;
   }
 

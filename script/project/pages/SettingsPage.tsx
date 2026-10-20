@@ -295,6 +295,7 @@ export function SettingsPage(props: {
               stateRevision={props.state.revision}
               busy={false}
               notice={managerNotice}
+              pendingEnhancementUnsubscribeCount={props.state.pendingEnhancementUnsubscribes?.length || 0}
               onSendCode={(phone, _flowId, enhanced) => {
                 if (enhanced) {
                   requireEnhancementBinding(loadState().bindings, phone);
@@ -303,9 +304,9 @@ export function SettingsPage(props: {
                 return sendAccountCode(SCRIPT_BINDING_SOURCE, phone);
               }}
               onBind={bindCurrentPhone}
-              onRemove={async (binding) => {
+              onRemove={async (binding, localOnly) => {
                 setManagerNotice("");
-                props.onStateChange(await unbindPhone(binding.source, binding.phone));
+                props.onStateChange(await unbindPhone(binding.source, binding.phone, { localOnly, expectedBinding: binding }));
               }}
               onRefresh={async () => {
                 setManagerNotice("");

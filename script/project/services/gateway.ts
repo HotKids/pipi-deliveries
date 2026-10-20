@@ -202,6 +202,7 @@ export const ACTIVATION_SAVE_FAILED_MESSAGE = "激活信息保存失败，请重
 export const SCRIPTING_UPDATE_REQUIRED_MESSAGE = "请更新脚本后重试";
 
 function failureMessage(status: number, gatewayCode = ""): string {
+  if (gatewayCode === "upstream_unavailable") return "服务暂时不可用，请稍后重试";
   if (status === 401 && gatewayCode === "unauthorized") return ACCESS_KEY_INVALID_MESSAGE;
   if (status === 403 && gatewayCode === "key_activated_elsewhere") {
     return ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE;

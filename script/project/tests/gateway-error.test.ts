@@ -122,6 +122,7 @@ const {
   scriptingAuthHeaders,
 } = await import("../services/gateway");
 const { OperationTimeoutError } = await import("../services/deadline");
+const { diagnosticErrorDetails, writeDiagnostic, readDiagnostics, setDiagnosticsEnabled } = await import("../services/logger");
 const {
   gatewayCredentialStatus,
   loadGatewayCredentials,
@@ -188,10 +189,11 @@ assert.equal(gatewayErrorCode('{"message":"private upstream text"}'), "");
 assert.equal(gatewayErrorCode("not json"), "");
 assert.equal(gatewayErrorCode("x".repeat(4_097)), "");
 
-function rejectedWithStatus(status: number) {
+function rejectedWithStatus(status: number, message?: string) {
   return (error: unknown): boolean => {
     assert.ok(error instanceof GatewayError);
     assert.equal(error.status, status);
+    if (message) assert.equal(error.message, message);
     return true;
   };
 }
@@ -202,7 +204,7 @@ saveGatewayToken(token);
 responseStatus = 401;
 await assert.rejects(
   postGateway("/api/express/classify", { waybill: "SYNTHETIC123" }),
-  rejectedWithStatus(401),
+  rejectedWithStatus(401, "Access Key 无效或已失效"),
 );
 assert.equal(gatewayCredentialStatus(), "configured");
 assert.deepEqual(loadGatewayCredentials(), { token });
@@ -217,7 +219,7 @@ await assert.rejects(
     waybill: "SF-SYNTHETIC456",
     companyCode: "shunfeng",
   }),
-  rejectedWithStatus(403),
+  rejectedWithStatus(403, "当前授权不可使用此功能"),
 );
 assert.equal(gatewayCredentialStatus(), "configured");
 const callsAfterShunFengRejection = fetchCalls;
@@ -271,6 +273,23 @@ for (const [status, code] of [[401, "expired_request"], [403, "key_activated_els
   await assert.rejects(postGateway("/api/express/classify", {}), rejectedWithStatus(status));
   assert.equal(gatewayAccessKeyRejected(), false, `${status} ${code} is not an expired key`);
 }
+for (const status of [401, 403, 502, 503]) {
+  fetchHandler = async () => ({ ...gatewayResponse(status),
+    text: async () => JSON.stringify({ error: "upstream_unavailable" }) });
+  await assert.rejects(postGateway("/api/express/accounts/enhanced", { operation: "code" }), (error: unknown) => {
+    assert.ok(error instanceof GatewayError);
+    assert.equal(error.message, "服务暂时不可用，请稍后重试");
+    assert.equal(error.status, status, "upstream status remains available for diagnosis");
+    assert.equal(error.gatewayCode, "upstream_unavailable");
+    assert.deepEqual(diagnosticErrorDetails(error), {
+      errorCategory: "upstream", httpStatus: status, failureCode: "upstream_unavailable",
+      ...(status === 401 ? { authRuntime: "data-key" } : {}),
+    });
+    return true;
+  });
+  assert.equal(gatewayAccessKeyRejected(), false, "an upstream failure cannot reject the saved Access Key");
+  assert.deepEqual(loadGatewayCredentials(), { token: newestToken });
+}
 fetchHandler = async () => { throw new Error("synthetic offline"); };
 await assert.rejects(postGateway("/api/express/classify", {}), /网络连接异常/);
 assert.equal(gatewayAccessKeyRejected(), false, "network failures do not invent key rejection");
@@ -303,7 +322,6 @@ for (const status of [200, 503]) {
   assert.equal(gatewayAccessKeyRejected(), false, "a completed oversized response still fences older replies");
 }
 
-const { diagnosticErrorDetails, writeDiagnostic, readDiagnostics, setDiagnosticsEnabled } = await import("../services/logger");
 async function rejectsAsOperationTimeout(promise: Promise<unknown>, origin?: string, phase?: string) {
   let guard: ReturnType<typeof setTimeout> | undefined;
   let received: InstanceType<typeof OperationTimeoutError> | undefined;

@@ -4,7 +4,7 @@ import { memory } from "./state-storage-mock";
 import { seedRecognizedCarriers } from "./carrier-recognition-seed";
 import { parseAccountSyncResponse } from "../services/account-parser";
 import { fetchAccountParcels, parcelToShipment } from "../services/account-sync";
-import { ENHANCEMENT_ROUTE } from "../services/enhanced-account";
+import { ENHANCEMENT_ROUTE, loadEnhancementIdentity } from "../services/enhanced-account";
 import { saveGatewayToken } from "../services/credentials";
 import { emptyState, loadState, saveState } from "../services/storage";
 
@@ -42,6 +42,7 @@ globalThis.fetch = (async (url: string, options: { body: string }) => {
 
 function seed(projected = false) {
   memory.clear();
+  loadEnhancementIdentity();
   enhancementRequests = accountRequests = 0;
   seedRecognizedCarriers({ [WAYBILL]: "JD" }, NOW);
   const parcel = parseAccountSyncResponse("interface5", response())[0];

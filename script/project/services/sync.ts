@@ -34,6 +34,7 @@ import {
   type ManualSourceDependencies,
 } from "./manual-query";
 import { replayPendingShipmentNotifications } from "./notifications";
+import { EnhancementUnbindUnavailable, enhancementIdentityFingerprint, replayEnhancementUnsubscribes } from "./enhancement-unsubscribe";
 import { committedPendingPromotionShipmentId } from "./pending-promotion";
 import {
   commitShipmentRouteMutations,
@@ -3539,17 +3540,34 @@ export async function bindPhone(
 export async function unbindPhone(
   source: BindingSource,
   phone: string,
+  options: { localOnly?: boolean; expectedBinding?: AccountBinding } = {},
 ): Promise<AppState> {
   requireScriptSource(source);
   const bindingLease = acquireRenewingDurableRefreshLease(`binding:${privateHash(phone)}`, MANUAL_QUERY_BUDGET_MS + 1_000);
   if (!bindingLease) throw new Error("该手机号正在验证或解绑，请稍后重试");
   try {
     const binding = loadState().bindings.find(value => value.source === source && value.phone === phone);
+    const expected = options.expectedBinding;
+    if (expected && (expected.source !== source || expected.phone !== phone || !binding || binding.boundAtMs !== expected.boundAtMs ||
+        binding.enhancedMode !== expected.enhancedMode || binding.enhancedAtMs !== expected.enhancedAtMs)) {
+      throw new Error("手机号绑定已变更，请重试");
+    }
+    let pendingUnsubscribe: { identityFingerprint: string } | undefined;
     if (binding?.enhancedMode) {
-      await enhancementOperation("unbind", phone, { deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS) });
+      if (options.localOnly) {
+        let identityFingerprint = "";
+        try { identityFingerprint = enhancementIdentityFingerprint(); }
+        catch { /* Keep an unresolved obligation when the original identity cannot be read. */ }
+        pendingUnsubscribe = { identityFingerprint };
+      } else {
+        try { await enhancementOperation("unbind", phone, { deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS) }); }
+        catch (error) {
+          throw new EnhancementUnbindUnavailable(error instanceof Error ? error.message : "远端解绑未完成，请重试");
+        }
+      }
     }
     if (!bindingLease.isCurrent()) throw new Error("手机号解绑已超时，请重试");
-    const next = removeBinding(source, phone, Date.now(), binding);
+    const next = removeBinding(source, phone, Date.now(), binding, pendingUnsubscribe);
     safelyPruneRoutes(next);
     requestWidgetReload();
     return next;
@@ -3605,6 +3623,12 @@ function productImageOwnerFingerprint(shipment: Shipment, state: AppState): stri
     identity.sourceOwner, identity.sourceProvider,
     state.bindings.filter(binding => binding.source === identity.bindingSource && binding.phone === identity.phone),
   ]));
+}
+
+export function shouldRequestDetailProductImage(shipment: Shipment, bindings: readonly AccountBinding[]): boolean {
+  if (shipment.identity.productImageURL) return false;
+  const reference = accountParcelWithProjectionReference(shipment, null, "", true);
+  return Boolean(reference && enhancementPhone(reference, bindings));
 }
 
 const accountDetailRequests = new RefreshCoordinator<BindingSource, string, AccountParcelDto | null, never>();
@@ -3880,7 +3904,8 @@ async function runShipmentRefreshFlow(
   } : undefined;
   const pull = trigger === "detail_pull" || aligning;
   let identityApplied = false;
-  if (options.requestProductImage && !original.identity.productImageURL) {
+  if (trigger === "product_image" && options.requestProductImage &&
+      shouldRequestDetailProductImage(original, base.bindings)) {
     const reference = accountParcelWithProjectionReference(original, null, "", true);
     if (reference) {
       const [metadata] = await enhanceAccountParcels([reference], bindingsForSource(base, source),
@@ -5468,18 +5493,6 @@ async function runShipmentRefreshFlow(
  */
 const statusAlignmentRefreshes = new Map<string, Promise<ShipmentRefreshResult>>();
 
-async function finishRequestedDetailImage(
-  result: ShipmentRefreshResult, shipmentId: string, options: ShipmentRefreshOptions,
-  runtimeOverrides: ShipmentRefreshRuntimeOverrides, expectedImageOwner?: string,
-): Promise<ShipmentRefreshResult> {
-  if (!options.requestProductImage || result.shipment.identity.productImageURL) return result;
-  const metadata = await runTargetedShipmentRefresh(shipmentId, { ...options, trigger: "product_image",
-    forceAccountOrderProjection: false, forceManualRefresh: false, includeKdniaoFallback: false },
-    runtimeOverrides, undefined, expectedImageOwner);
-  return { ...result, state: metadata.state, shipment: metadata.shipment,
-    refreshed: result.refreshed || metadata.refreshed };
-}
-
 async function pullAfterStatusAlignment(
   shipmentId: string,
   forced: Promise<ShipmentRefreshResult>,
@@ -5525,8 +5538,7 @@ async function pullAfterStatusAlignment(
   const result = outcome
     ? { ...outcome, state, shipment, detailEntry: options.detailEntry }
     : { state, shipment, refreshed: false, querySucceeded: false };
-  return finishRequestedDetailImage(result, shipmentId, options, runtimeOverrides,
-    waitingShipment ? productImageOwnerFingerprint(waitingShipment, waitingState) : undefined);
+  return result;
 }
 
 function runTargetedShipmentRefresh(
@@ -5542,11 +5554,14 @@ function runTargetedShipmentRefresh(
   );
   const forced = !durableLease && options.trigger === "detail_pull" ? statusAlignmentRefreshes.get(shipmentId) : undefined;
   if (forced) return pullAfterStatusAlignment(shipmentId, forced, options, runtimeOverrides);
-  if (!durableLease && options.requestProductImage) {
+  if (!durableLease && options.trigger === "product_image" && options.requestProductImage) {
     return (async () => {
       const waitingState = loadState();
       const waitingShipment = waitingState.shipments.find(item => item.identity.id === shipmentId);
       if (!waitingShipment) throw new Error("该快递已从列表中移除");
+      if (!shouldRequestDetailProductImage(waitingShipment, waitingState.bindings)) {
+        return { state: waitingState, shipment: waitingShipment, refreshed: false, querySucceeded: false };
+      }
       const expectedImageOwner = imageOwner || productImageOwnerFingerprint(waitingShipment, waitingState);
       const deadlineAtMs = options.deadlineAtMs ?? deadlineAfter(MANUAL_QUERY_BUDGET_MS);
       // A background detail holder does not perform the visible page's image request.
@@ -5563,8 +5578,7 @@ function runTargetedShipmentRefresh(
       }
       assertRefreshSignal(options.signal);
       assertWithinDeadline(deadlineAtMs);
-      return runTargetedShipmentRefresh(shipmentId, { ...options, deadlineAtMs, trigger: "product_image",
-        forceAccountOrderProjection: false, forceManualRefresh: false, includeKdniaoFallback: false },
+      return runTargetedShipmentRefresh(shipmentId, { ...options, deadlineAtMs },
         runtimeOverrides, undefined, expectedImageOwner);
     })();
   }
@@ -5578,6 +5592,13 @@ function runTargetedShipmentRefresh(
       : Promise.reject(new Error("该快递已从列表中移除"));
   }
   let active = true;
+  const release = () => { active = false; durableLease.release(); };
+  const cancelImage = () => {
+    try { release(); }
+    catch (error) { writeDiagnostic("detail.image.lease_release_failed", diagnosticErrorDetails(error), "warning"); }
+  };
+  // A page can cancel optional metadata before starting its next trajectory operation; its aborted writer cannot commit.
+  if (options.trigger === "product_image") options.signal?.addEventListener("abort", cancelImage, { once: true });
   const lease: TargetRefreshLease = {
     deadlineAtMs: options.deadlineAtMs,
     expectedFingerprint,
@@ -5589,8 +5610,8 @@ function runTargetedShipmentRefresh(
   const run = Promise.resolve().then(() =>
     runShipmentRefreshById(shipmentId, lease, options, runtimeOverrides)
   ).finally(() => {
-    active = false;
-    durableLease.release();
+    options.signal?.removeEventListener("abort", cancelImage);
+    release();
   });
   if (options.trigger === "status_alignment") {
     statusAlignmentRefreshes.set(shipmentId, run);
@@ -5610,8 +5631,6 @@ async function runTargetedShipmentRefreshWithProjectionWait(
   const forced = options.trigger === "detail_pull" ? statusAlignmentRefreshes.get(shipmentId) : undefined;
   if (forced) return pullAfterStatusAlignment(shipmentId, forced, options, runtimeOverrides);
   if (options.forceAccountOrderProjection || options.trigger === "detail_pull") {
-    const waitingState = loadState();
-    const waitingShipment = waitingState.shipments.find(item => item.identity.id === shipmentId);
     const completed = await waitForProjectionAttemptRelease(
       shipmentId,
       options.signal,
@@ -5619,8 +5638,7 @@ async function runTargetedShipmentRefreshWithProjectionWait(
       options.trigger === "detail_pull",
     );
     if (completed && (options.trigger === "detail_pull" || !options.includeKdniaoFallback)) {
-      return finishRequestedDetailImage(completed, shipmentId, options, runtimeOverrides,
-        waitingShipment ? productImageOwnerFingerprint(waitingShipment, waitingState) : undefined);
+      return completed;
     }
   }
   return runTargetedShipmentRefresh(shipmentId, options, runtimeOverrides);
@@ -6087,6 +6105,15 @@ async function runFullRefresh(
       });
       // The return above already captured the summary; include the drain's durable ACKs.
       if (summary && finalized) summary.state = finalized;
+      try {
+        if (lease.isCurrent() && !deadlineExpired(notificationDeadlineAtMs) &&
+            (finalized || loadState()).pendingEnhancementUnsubscribes?.length) {
+          const unsubscribed = await replayEnhancementUnsubscribes({
+            deadlineAtMs: notificationDeadlineAtMs, isCurrent: lease.isCurrent,
+          });
+          if (summary && unsubscribed) summary.state = unsubscribed;
+        }
+      } catch { /* Optional unsubscribe replay cannot replace the committed refresh result. */ }
       writeDiagnostic("refresh.finalization.completed", {
         flowId, source, stage: "notifications", durationMs: Date.now() - finalizationStartedAt,
       });

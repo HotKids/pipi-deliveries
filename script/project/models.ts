@@ -269,6 +269,15 @@ export type ShipmentNotificationEvent = Readonly<{
   awaitingCarrier?: true;
 }>;
 
+export type PendingEnhancementUnsubscribe = Readonly<{
+  id: string;
+  phone: string;
+  boundAtMs: number;
+  enhancedAtMs: number;
+  identityFingerprint: string;
+  createdAtMs: number;
+}>;
+
 export type AppState = {
   version: 2;
   revision: number;
@@ -278,6 +287,7 @@ export type AppState = {
   pendingQueries: readonly PendingManualQuery[];
   shipments: readonly Shipment[];
   pendingNotifications?: readonly ShipmentNotificationEvent[];
+  pendingEnhancementUnsubscribes?: readonly PendingEnhancementUnsubscribe[];
   /** feed 槽一次性重建已标记的时间（见 TimelinePackage.feedRebuildPending）。 */
   feedSlotRebuiltAtMs?: number;
   /** Minimal durable identities prevent retired empty histories from being reimported. */
