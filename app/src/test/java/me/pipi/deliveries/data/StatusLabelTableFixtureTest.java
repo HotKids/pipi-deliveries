@@ -145,6 +145,53 @@ public final class StatusLabelTableFixtureTest {
         assertEquals("暂无状态", described.displayStatus());
     }
 
+    @Test public void orderCancellationDelegatesToTheSameTablesOrdinaryLabel() throws Exception {
+        JSONObject raw = SharedExpressFixtures.load("status-labels.v1.json").getJSONObject("table");
+        raw.getJSONObject("orderLabels").put("CANCELLED", "订单已取消");
+        raw.getJSONObject("labels").put("CANCELLED", "Synthetic cancellation label");
+        ExpressStatusLabels table = ExpressStatusLabels.parse(raw);
+
+        assertEquals("订单已取消", table.orderLabels().get(StatusSemantic.CANCELLED));
+        assertEquals(table.label(StatusSemantic.CANCELLED), table.orderLabel(StatusSemantic.CANCELLED));
+        assertEquals("Synthetic cancellation label", table.orderLabel(StatusSemantic.CANCELLED));
+        assertEquals("已完成", table.orderLabel(StatusSemantic.COMPLETED));
+    }
+
+    @Test public void anOlderServedOrderCancellationWordNormalizesAnExistingStoredOrder()
+            throws Exception {
+        JSONObject table = SharedExpressFixtures.load("status-labels.v1.json").getJSONObject("table");
+        table.getJSONObject("orderLabels").put("CANCELLED", "订单已取消");
+        CarrierRegistry.installAuthority(CarrierRegistry.prepareAuthority(
+                CarrierAuthorityFixture.payload().put("statusLabels", table)));
+        assertEquals("订单已取消", CarrierRegistry.statusLabels().orderLabels()
+                .get(StatusSemantic.CANCELLED));
+        long eventAt = System.currentTimeMillis() - 60_000L;
+        String time = ExpressTimeFormat.format(eventAt);
+        String orderId = "3610448002878297";
+        String detail = "Synthetic cancelled order timeline";
+        String tracks = new JSONArray().put(new JSONObject().put("time", time)
+                .put("context", detail)).toString();
+        WorkerStatusProjection projection = WorkerStatusProjection.read(new JSONObject()
+                .put("normalizedStatus", new JSONObject().put("version", 1).put("scope", "ORDER")
+                        .put("semantic", "CANCELLED").put("code", "SERVER_ENUM")
+                        .put("text", "订单已取消").put("priority", 0)
+                        .put("eventAtMs", eventAt).put("structured", true)));
+        ExpressQueryResult packet = new ExpressQueryResult(orderId, "JDKD", "京东商品快递",
+                StatusSemantic.CANCELLED, eventAt, time, detail, tracks,
+                "", PHONE, TimelineSlot.V5_QUERY, "", "", "JingDong").withWorkerStatus(projection);
+        repository.saveInterface5OrderSummary(packet, PHONE);
+        ExpressItem row = repository.findByWaybill(orderId, "interface5");
+        assertNotNull(row);
+        String storedTracks = row.tracksJson;
+        assertEquals(StatusSemantic.CANCELLED, row.semantic);
+        assertEquals("已取消", row.displayStatus());
+        ExpressItem listed = listed(row.rowId);
+        assertNotNull(listed);
+        assertEquals("已取消", listed.displayStatus());
+        assertEquals(storedTracks, repository.findByWaybill(orderId, "interface5").tracksJson);
+        assertEquals("订单已取消", WorkerStatusProjection.cached(row.tracksJson).text);
+    }
+
     @Test public void theWorkerSnapshotCarriesTheTable() throws Exception {
         JSONObject table = SharedExpressFixtures.load("status-labels.v1.json").getJSONObject("table");
         table.getJSONObject("labels").put("TRANSIT", "在路上").put("UNKNOWN", "状态未知");

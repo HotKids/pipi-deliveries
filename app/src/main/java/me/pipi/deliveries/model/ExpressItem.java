@@ -465,7 +465,8 @@ public final class ExpressItem {
      * ({@link CarrierRegistry#statusLabels()}, served by the Worker with the carrier snapshot), so
      * DANGER reads 异常件 and UNKNOWN reads 暂无状态 whatever text a Worker once stored on the row.
      * The Worker projection still selects a subtype (待派送) and, on an order row without a real
-     * waybill, the order word (订单已取消); a projected JD parcel reads the ordinary word (已签收).
+     * waybill, the completion word (已完成); a projected JD parcel reads the ordinary word (已签收).
+     * Orders and shipments share the cancellation word (已取消).
      */
     public String displayStatus() {
         ExpressStatusLabels table = CarrierRegistry.statusLabels();

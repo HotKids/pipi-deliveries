@@ -72,6 +72,7 @@ public final class ExpressStatusLabels {
 
     /** The word an order row without a projected waybill uses for this semantic, or "". */
     public String orderLabel(StatusSemantic semantic) {
+        if (semantic == StatusSemantic.CANCELLED) return label(semantic);
         String value = semantic == null ? null : orderLabels.get(semantic);
         return value == null ? "" : value;
     }

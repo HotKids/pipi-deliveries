@@ -156,7 +156,7 @@ export function statusDisplay(
     ? table.subtypes.find((value) => value.semantic === semantic && value.code === code)
     : undefined;
   const text = subtype?.label ||
-    (input.scope === "ORDER" ? table.orderLabels[semantic] : undefined) ||
+    (input.scope === "ORDER" && semantic !== "CANCELLED" ? table.orderLabels[semantic] : undefined) ||
     table.labels[semantic] || table.labels.UNKNOWN;
   return { semantic, label: text };
 }

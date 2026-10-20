@@ -37,7 +37,8 @@ export function statusLabel(semantic: StatusSemantic): string {
  * The one presentation of a status (audits L5/L1, user default #2, 2026-09-25): the shown semantic and
  * its label come from the status label table (bundled, replaced by the Worker snapshot's statusLabels),
  * never from the Worker's normalizedStatus.text. `orderScope` marks an order row without a real
- * waybill: its PICKED and SHIPPED show as 已下单 and its completion / cancellation use the order labels.
+ * waybill: its PICKED and SHIPPED show as 已下单 and its completion uses the order label.
+ * Cancellation uses the ordinary 已取消 label for both orders and shipments.
  * A Worker subtype code (STA_DELIVERING → 待派送) picks the subtype label.
  */
 function presentStatus(
