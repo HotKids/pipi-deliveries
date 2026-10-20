@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "about": "Audit L7 (2026-09-25). A JD row with a real waybill (SHIPMENT scope) is past the order stage: only the exact Illegal Status + 取消 tuple is a cancellation, the exact 待揽件 wire value stays SHIPPED and every other pre-pickup state reads PICKED. Order rows keep the source status, except that a cancellation without the exact tuple goes back to ORDERED (user decision 2026-09-25); `display` applies statusLabels.unprojectedOrder.",
+  "about": "Audit L7 (2026-09-25). A JD row with a real waybill (SHIPMENT scope) is past the order stage: only the exact Illegal Status + 取消 tuple is a cancellation, the exact 待揽件 wire value stays SHIPPED and every other pre-pickup state reads PICKED. Order rows keep the source status; the additional observed 疑难 + 取消 tuple is CANCELLED only in ORDER scope (2026-10-20). Other cancellations without the exact Illegal Status tuple go back to ORDERED (user decision 2026-09-25); `display` applies statusLabels.unprojectedOrder.",
   "cases": [
     {
       "provenance": "observed Samsung JD wire pair (kdbot tests/check_samsung.py)",
@@ -86,6 +86,28 @@
         "display": {
           "semantic": "CANCELLED",
           "label": "已取消"
+        }
+      }
+    },
+    {
+      "provenance": "observed JD ORDER cancellation tuple (2026-10-20); identity/time use existing fixture constants, SHIPMENT is a rule boundary",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "疑难",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "取消",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "UNKNOWN",
+        "code": "疑难",
+        "text": "暂无状态",
+        "eventAtMs": 0,
+        "display": {
+          "semantic": "UNKNOWN",
+          "label": "暂无状态"
         }
       }
     },
@@ -272,6 +294,27 @@
         "scope": "ORDER",
         "semantic": "CANCELLED",
         "code": "ILLEGAL STATUS",
+        "text": "订单已取消",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "CANCELLED",
+          "label": "已取消"
+        }
+      }
+    },
+    {
+      "provenance": "observed JD ORDER cancellation tuple (2026-10-20); identity/time use existing fixture constants, SHIPMENT is a rule boundary",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "疑难",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "取消"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "CANCELLED",
+        "code": "疑难",
         "text": "订单已取消",
         "eventAtMs": 1789286113000,
         "display": {
