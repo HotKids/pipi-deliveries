@@ -788,6 +788,8 @@ function shipmentDiagnosticDetails(
   const status = response || presented;
   return {
     ...(!response ? shipmentSelectionEvidence(shipment) : {}),
+    ...(shipment.identity.enhancedMode ? { enhancedMode: true,
+      productImagePresent: Boolean(shipment.identity.productImageURL) } : {}),
     waybillTail: safeWaybillTail(shipment),
     automatic: !shipment.identity.manuallyAdded,
     sourceProvider: String(shipment.identity.sourceProvider || "")

@@ -200,3 +200,18 @@ test("new list diagnostic fields accept only status enums and the documented num
   for (const key of ["listStateNumber", "listStatusScope", "listStatusSemantic", "preparedStatusSemantic",
     "previousFeedStatusSemantic", "mergedFeedStatusSemantic", "feedStatusSemantic"]) assert.ok(!(key in d));
 });
+
+test("enhanced list diagnostics expose image presence without an image URL", async () => {
+  const row = { ...record("9999000011112222", "JDKD"), normalizedStatusScope: "ORDER" };
+  for (const image of [undefined, "https://img10.360buyimg.com/synthetic-private-product.jpg"]) {
+    const { entries } = await run([row], [row], [PHONE], true, shipment => ({ ...shipment,
+      identity: { ...shipment.identity, enhancedMode: true, ...(image ? { productImageURL: image } : {}) } }));
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].details.enhancedMode, true);
+    assert.equal(entries[0].details.productImagePresent, Boolean(image));
+    assert.equal(diagnosticText().includes("synthetic-private-product"), false);
+  }
+  const { entries } = await run([row], [row]);
+  assert.equal(entries[0].details.enhancedMode, undefined);
+  assert.equal(entries[0].details.productImagePresent, undefined, "ordinary rows gain no enhancement fields");
+});

@@ -6,6 +6,16 @@ import { accountOrderTextWaybill, withAccountOrderTextWaybill, parcelToShipment,
   accountParcelWithExistingProjection, prepareAccountParcelCarrier, applyEnhancementMetadata, cachedEnhancementParcels } from "../services/account-sync";
 import { accountParcelWithProjectionReference } from "../services/account-order-reference";
 import { selectShipmentDetailTimeline } from "../services/shipment-policy";
+import { clearDiagnostics, diagnosticText, readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
+import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
+
+const diagnosticStorage = new Map<string, unknown>();
+Object.assign(globalThis, { Storage: {
+  get: (key: string) => diagnosticStorage.get(key) ?? null,
+  set: (key: string, value: unknown) => { diagnosticStorage.set(key, structuredClone(value)); return true; },
+  remove: (key: string) => { diagnosticStorage.delete(key); },
+} });
+setDiagnosticsEnabled(true);
 
 const PHONE = "13800138000", OTHER = "13900139000", ORDER = "3650000000000001";
 const identity = { accountId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", androidId: "0123456789abcdef" };
@@ -113,4 +123,54 @@ const unchanged = await enhanceAccountParcels([parcel], [{ ...binding, enhancedM
 });
 assert.equal(requests, 0);
 assert.strictEqual(unchanged[0], parcel);
+
+clearDiagnostics();
+await enhanceAccountParcels([parcel, parcel], [binding], { identity,
+  request: async () => ({ records: [{ phone: PHONE, orderId: ORDER,
+    imageUrl: "https://img10.360buyimg.com/synthetic-private-product.jpg" }], ambiguousOrderIds: [] }) });
+const completion = readDiagnostics().filter(entry => entry.event === "account.enhanced.completed");
+assert.equal(completion.length, 1, "one batch produces one metadata summary");
+assert.deepEqual(completion[0].details, { clientBuild: SCRIPT_CLIENT_BUILD, stage: "metadata", result: "completed",
+  orders: 2, requestedOrderCount: 1, records: 1, matchedOrderCount: 1,
+  productImageCount: 1, ambiguousOrderCount: 0 });
+for (const value of [PHONE, ORDER, identity.accountId, identity.androidId, "synthetic-private-product"]) {
+  assert.equal(diagnosticText().includes(value), false, "metadata diagnostics exclude identifiers and image URLs");
+}
+
+for (const [records, ambiguousOrderIds, expected] of [
+  [[], [], { matchedOrderCount: 0, productImageCount: 0, ambiguousOrderCount: 0 }],
+  [[{ phone: OTHER, orderId: ORDER, imageUrl: "https://img10.360buyimg.com/p.jpg" }], [],
+    { matchedOrderCount: 0, productImageCount: 0, ambiguousOrderCount: 0 }],
+  [[{ phone: PHONE, orderId: ORDER, imageUrl: "http://img10.360buyimg.com/p.jpg" }], [],
+    { matchedOrderCount: 1, productImageCount: 0, ambiguousOrderCount: 0 }],
+  [[{ phone: PHONE, orderId: ORDER, imageUrl: "https://img10.360buyimg.com/p.jpg" }], [ORDER],
+    { matchedOrderCount: 0, productImageCount: 0, ambiguousOrderCount: 1 }],
+] as const) {
+  clearDiagnostics();
+  await enhanceAccountParcels([parcel], [binding], { identity,
+    request: async () => ({ records: [...records], ambiguousOrderIds: [...ambiguousOrderIds] }) });
+  const details = readDiagnostics().find(entry => entry.event === "account.enhanced.completed")?.details;
+  for (const [key, count] of Object.entries(expected)) {
+    assert.equal((details as Record<string, unknown> | undefined)?.[key], count);
+  }
+}
+
+clearDiagnostics();
+await enhanceAccountParcels([{ ...parcel, receiverPhone: "", senderPhone: "" }],
+  [binding, { source: "interface5", phone: OTHER, boundAtMs: 100 }], {
+    request: async () => { assert.fail("an ambiguous phone cannot make an enhancement request"); },
+  });
+assert.deepEqual(readDiagnostics().map(entry => [entry.event, entry.details.result, entry.details.orders]),
+  [["account.enhanced.skipped", "no_eligible_orders", 1]]);
+clearDiagnostics();
+await enhanceAccountParcels([parcel], [{ ...binding, enhancedMode: undefined }]);
+await enhanceAccountParcels([{ ...parcel, sourceProvider: "CaiNiao" }], [binding]);
+assert.deepEqual(readDiagnostics(), [], "unenhanced bindings and non-JD rows add no metadata noise");
+
+clearDiagnostics();
+await enhanceAccountParcels([parcel], [binding], { identity,
+  request: async () => { throw new Error("synthetic-private-error"); } });
+assert.equal(readDiagnostics().filter(entry => entry.event === "account.enhanced.failed").length, 1);
+assert.equal(readDiagnostics().some(entry => entry.event === "account.enhanced.completed"), false);
+assert.equal(diagnosticText().includes("synthetic-private-error"), false);
 console.log("Enhanced account identity, pair matching, isolation and projection tests passed");

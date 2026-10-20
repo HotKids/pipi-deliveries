@@ -679,3 +679,24 @@ assert.ok(boundedProbeText.includes("domModalWaybillPresent=false"));
 assert.equal(boundedProbeText.includes("synthetic-private"), false,
   "probe diagnostics never allow response bodies, URLs, MIME values or arbitrary response types");
 console.log("bounded JD probe diagnostic fields passed");
+
+for (const key of ["requestedOrderCount", "matchedOrderCount", "productImageCount", "ambiguousOrderCount"] as const) {
+  for (const value of [0, 1, 100_000]) {
+    writeDiagnostic("account.enhanced.completed", { [key]: value } as never);
+    assert.equal(readDiagnostics()[0].details[key], value);
+  }
+  for (const value of [-1, 100_001, 1.5, NaN, Infinity, "1", "13800138000", true, {}, [], null, undefined]) {
+    writeDiagnostic("account.enhanced.completed", { [key]: value } as never);
+    assert.equal(readDiagnostics()[0].details[key], undefined, `${key} accepts only bounded integer counts`);
+  }
+}
+for (const key of ["enhancedMode", "productImagePresent"] as const) {
+  for (const value of [true, false]) {
+    writeDiagnostic("account.list.record", { [key]: value } as never);
+    assert.equal(readDiagnostics()[0].details[key], value);
+  }
+  for (const value of [0, 1, "true", "https://img.jd.com/private.jpg", {}, [], null, undefined]) {
+    writeDiagnostic("account.list.record", { [key]: value } as never);
+    assert.equal(readDiagnostics()[0].details[key], undefined, `${key} accepts only booleans`);
+  }
+}

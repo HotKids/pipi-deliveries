@@ -84,6 +84,8 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
   options: { deadlineAtMs?: number; signal?: AbortSignal;
     identity?: EnhancementIdentity;
     request?: (payload: Record<string, unknown>) => Promise<Record<string, unknown>> } = {}): Promise<AccountParcelDto[]> {
+  const candidateOrders = parcels.filter(parcel => parcel.source === "interface5" && parcel.accountOrder &&
+    parcel.sourceProvider.toLowerCase() === "jingdong");
   const orders = parcels.flatMap(parcel => {
     const phone = enhancementPhone(parcel, bindings);
     return phone ? [{ phone, orderId: parcel.orderId || parcel.ownerId }] : [];
@@ -95,7 +97,13 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
     seen.add(key);
     return true;
   });
-  if (!orders.length) return [...parcels];
+  if (!orders.length) {
+    if (candidateOrders.length && bindings.some(binding => binding.source === "interface5" && binding.enhancedMode)) {
+      writeDiagnostic("account.enhanced.skipped", { stage: "metadata", result: "no_eligible_orders",
+        orders: candidateOrders.length, requestedOrderCount: 0 });
+    }
+    return [...parcels];
+  }
   const marked = parcels.map(parcel => enhancementPhone(parcel, bindings) ? { ...parcel, enhancedMode: true as const } : parcel);
   try {
     const request = options.request || (payload => postGateway(ENHANCEMENT_ROUTE, payload, {
@@ -106,7 +114,8 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
     if (options.signal?.aborted) throw new Error("增强模式同步已取消");
     if (!Array.isArray(response.records) || !Array.isArray(response.ambiguousOrderIds)) throw new Error("增强模式响应异常");
     const ambiguous = new Set(response.ambiguousOrderIds);
-    return marked.map(parcel => {
+    const matched = new Set<string>(), images = new Set<string>();
+    const enriched = marked.map(parcel => {
       const phone = enhancementPhone(parcel, bindings), orderId = parcel.orderId || parcel.ownerId;
       if (!phone || ambiguous.has(orderId)) return parcel;
       const records = response.records.filter(record => record && typeof record === "object" &&
@@ -115,12 +124,20 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
       const record = records[0];
       const waybill = typeof record.realWaybill === "string" ? record.realWaybill.trim() : "";
       const image = allowedImage(record.imageUrl);
+      const pair = `${phone}\0${orderId}`;
+      matched.add(pair);
+      if (image) images.add(pair);
       return { ...parcel, ...(image ? { productImageURL: image } : {}),
         ...(waybill && waybill !== orderId && waybill.length >= 6 && waybill.length <= 64 &&
           !/[\u0000-\u0020\u007f]/.test(waybill)
           ? { enhancedWaybill: waybill }
           : {}) };
     });
+    writeDiagnostic("account.enhanced.completed", { stage: "metadata", result: "completed",
+      orders: candidateOrders.length, requestedOrderCount: distinctOrders.length, records: response.records.length,
+      matchedOrderCount: matched.size, productImageCount: images.size,
+      ambiguousOrderCount: distinctOrders.filter(order => ambiguous.has(order.orderId)).length });
+    return enriched;
   } catch (error) {
     if (options.signal?.aborted) throw error;
     writeDiagnostic("account.enhanced.failed", { ...diagnosticErrorDetails(error), records: orders.length }, "warning");
