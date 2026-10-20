@@ -201,12 +201,35 @@ assert.equal(settingsCalls[3][0], "code");
 await settingsSend(basePhone, "synthetic-flow", false);
 assert.equal(settingsCalls[4][0], "interface5");
 
+const appearStart = detailSource.indexOf("    if (props.refreshOnAppear ||");
+const appearEnd = detailSource.indexOf("    return () => {", appearStart);
+assert.ok(appearStart >= 0 && appearEnd > appearStart);
+for (const [identity, refreshOnAppear, expectedCalls] of [
+  [{ accountOrder: true, sourceProvider: "jingdong" }, false, 1],
+  [{ accountOrder: true, sourceProvider: "jingdong", productImageURL: "https://img.jd.com/known.jpg" }, false, 0],
+  [{ accountOrder: true, sourceProvider: "CaiNiao" }, false, 0],
+  [{ manuallyAdded: true }, false, 0],
+  [{ accountOrder: true, sourceProvider: "jingdong" }, "detail_open", 1],
+] as const) {
+  let refreshes = 0;
+  runInNewContext(detailSource.slice(appearStart, appearEnd), {
+    props: { shipment: { identity }, refreshOnAppear },
+    refresh: () => { refreshes++; },
+    setLoadingManualDetail: () => {},
+  });
+  assert.equal(refreshes, expectedCalls,
+    "a frozen JD detail can request a missing image without enabling other detail refreshes");
+}
+
 const imageRequests: Array<{ url: string; signal: AbortSignal; finish: (image: any) => void }> = [];
-const imageProps = { imageURL: "", courierCode: "JD", companyName: "京东快递", size: 72 };
+const imageProps = { imageURL: "", cacheKey: "", courierCode: "JD", companyName: "京东快递", size: 72 };
 const thumbnail = mountHandlers(thumbnailSource.slice(
   thumbnailSource.indexOf("export function ProductThumbnail("),
   thumbnailSource.indexOf("  if (!image) {"),
 ), "ProductThumbnail", imageProps, "image", {
+  cachedProductImage: () => null,
+  productImageCacheKey: (identity: any) => identity.id,
+  loadState: () => ({ shipments: [{ identity: { id: imageProps.cacheKey } }] }),
   loadProductImage: (url: string, signal: AbortSignal) => new Promise((finish) => {
     imageRequests.push({ url, signal, finish });
   }),
@@ -214,21 +237,27 @@ const thumbnail = mountHandlers(thumbnailSource.slice(
 assert.equal(thumbnail.render().image, null);
 assert.equal(imageRequests.length, 0);
 imageProps.imageURL = "https://img10.360buyimg.com/synthetic-first.png";
+imageProps.cacheKey = "synthetic-order-one";
 assert.equal(thumbnail.render().image, null);
 imageRequests[0].finish({ syntheticImage: 1 });
 await Promise.resolve();
 assert.equal(thumbnail.render().image.syntheticImage, 1);
 imageProps.imageURL = "https://img10.360buyimg.com/synthetic-next.png";
-assert.equal(thumbnail.render().image, null, "a new shipment must never render the previous product image");
+assert.equal(thumbnail.render().image.syntheticImage, 1, "a changed address keeps this record's successful image");
 assert.equal(imageRequests[0].signal.aborted, true);
 imageRequests[1].finish(null);
 await Promise.resolve();
-assert.equal(thumbnail.render().image, null, "loading failure keeps the carrier icon");
+assert.equal(thumbnail.render().image.syntheticImage, 1, "an optional refresh failure keeps this record's successful image");
+imageProps.cacheKey = "synthetic-order-two";
+assert.equal(thumbnail.render().image, null, "a different record immediately hides the previous product image");
+imageRequests[2].finish(null);
+await Promise.resolve();
+assert.equal(thumbnail.render().image, null, "a record without a successful image keeps the carrier icon");
 imageProps.imageURL = "https://img10.360buyimg.com/synthetic-last.png";
 thumbnail.render();
 thumbnail.unmount();
-assert.equal(imageRequests[2].signal.aborted, true);
-imageRequests[2].finish({ syntheticImage: 3 });
+assert.equal(imageRequests[3].signal.aborted, true);
+imageRequests[3].finish({ syntheticImage: 3 });
 await Promise.resolve();
 assert.equal(thumbnail.render().image, null, "a dismissed detail ignores a late product image");
 
@@ -238,6 +267,7 @@ assert.match(managerSource, /foregroundStyle=\{binding\.enhancedMode \? "#0478FB
 assert.ok(managerSource.includes("增强模式不占用绑定数量。"));
 assert.doesNotMatch(managerSource, /disabled=\{\s*busy \|\|\s*visibleBindings\.length/);
 assert.match(detailSource, /<ProductThumbnail[\s\S]*?size=\{72\}[\s\S]*?cornerRadius=\{17\}[\s\S]*?imageURL=\{shipment\.identity\.productImageURL\}/);
+assert.match(detailSource, /refreshShipmentById\(props\.shipment\.identity\.id, \{\s*requestProductImage: true/);
 assert.match(thumbnailSource, /cornerRadius: props\.size \* 0\.25/);
 assert.doesNotMatch(thumbnailSource, /imageUrl=|UIImage\.fromURL/);
 

@@ -1,12 +1,13 @@
 import { AbortController, fetch, Path, type AbortSignal } from "scripting";
 import { utf8Data } from "./scripting-data";
 import { writeDiagnostic, type DiagnosticDetails } from "./logger";
+import { cachedProductImage, productImageCacheFiles, productImageCachePath, rememberProductImage,
+  PRODUCT_IMAGE_TIMEOUT_MS as TIMEOUT_MS } from "./product-image-cache";
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 16 * 1024 * 1024;
 const MAX_REDIRECTS = 4;
 const THUMBNAIL_EDGE = 432;
-const TIMEOUT_MS = 20_000;
 
 function allowedURL(value: string): string | null {
   const trimmed = value.trim();
@@ -55,33 +56,56 @@ function cachePath(url: string): string {
   return Path.join(FileManager.temporaryDirectory, "pipi-product-images", `${hash}.img`);
 }
 
-async function cached(path: string, signal: AbortSignal, details: DiagnosticDetails): Promise<UIImage | null> {
+async function cached(path: string, signal: AbortSignal, details: DiagnosticDetails): Promise<{ image: UIImage; data: Data } | null> {
   try {
     const stat = await FileManager.stat(path);
     if (signal.aborted || stat.type !== "file" || stat.size <= 0 ||
         stat.size > MAX_IMAGE_BYTES || await FileManager.isLink(path)) return null;
-    const image = await decode(await FileManager.readAsData(path), signal, details);
+    const data = await FileManager.readAsData(path);
+    let image: UIImage | null = null;
+    try { image = await decode(data, signal, details); }
+    catch { /* A corrupt encoded cache is replaced by the next successful download. */ }
     if (!image && !signal.aborted) await FileManager.remove(path);
-    return image;
+    return image ? { image, data } : null;
   } catch {
     return null;
   }
 }
 
-async function cache(path: string, data: Data, signal: AbortSignal): Promise<void> {
-  const pending = `${path}.pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+type ImageOwner = { key: string; isRetained: () => boolean };
+
+function retained(owner?: ImageOwner): boolean {
+  try { return !owner || owner.isRetained(); } catch { return false; }
+}
+
+async function cache(path: string, data: Data, signal: AbortSignal, owner?: ImageOwner): Promise<void> {
+  const pending = `${path}.pending-${Date.now()}-${Math.random().toString(36).slice(2) || "0"}`;
   try {
-    if (signal.aborted) return;
-    await FileManager.createDirectory(Path.join(FileManager.temporaryDirectory, "pipi-product-images"), true);
+    if (signal.aborted || !retained(owner)) return;
+    await FileManager.createDirectory(path.slice(0, path.lastIndexOf("/")), true);
     if (signal.aborted) return;
     await FileManager.writeAsData(pending, data);
-    if (signal.aborted) return;
-    await FileManager.rename(pending, path);
+    if (signal.aborted || !retained(owner)) return;
+    // Keep the first published file when two detail views finish together.
+    if (owner) {
+      if (productImageCacheFiles(owner.key).length) return;
+      FileManager.renameSync(pending, path);
+      if (!retained(owner) || productImageCacheFiles(owner.key)[0] !== path) FileManager.removeSync(path);
+    } else {
+      await FileManager.rename(pending, path);
+    }
   } catch {
     // An optional cache failure must not hide an already validated product image.
   } finally {
     try { await FileManager.remove(pending); } catch { /* Already published or absent. */ }
   }
+}
+
+function persistRecordImage(path: string, data: Data, owner: ImageOwner): void {
+  // A decoded image belongs to the retained record even if its detail page closes.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  void cache(path, data, controller.signal, owner).finally(() => clearTimeout(timer));
 }
 
 async function download(url: string, controller: AbortController, details: DiagnosticDetails): Promise<Data | null> {
@@ -152,10 +176,12 @@ async function download(url: string, controller: AbortController, details: Diagn
 }
 
 /** Product images are optional; cancellation and every validation failure return null. */
-export async function loadProductImage(value: string, signal?: AbortSignal): Promise<UIImage | null> {
+export async function loadProductImage(value: string, signal?: AbortSignal, owner?: ImageOwner): Promise<UIImage | null> {
+  if (signal?.aborted || !retained(owner)) return null;
+  const remembered = owner ? cachedProductImage(owner.key) : null;
+  if (remembered) return remembered;
   const url = allowedURL(value);
-  if (signal?.aborted) return null;
-  if (!url) {
+  if (!url && !owner) {
     writeDiagnostic("product.image.completed", { stage: "validation", result: "invalid_url" }, "warning");
     return null;
   }
@@ -172,20 +198,48 @@ export async function loadProductImage(value: string, signal?: AbortSignal): Pro
   try {
     const work = async (): Promise<UIImage | null> => {
       let path: string | null = null;
-      try { path = cachePath(url); } catch { /* A missing cache does not disable downloading. */ }
+      try { path = owner ? productImageCachePath(owner.key) : url ? cachePath(url) : null; }
+      catch { /* A missing cache does not disable downloading. */ }
       if (path) {
-        const image = await cached(path, controller.signal, details);
-        if (image) { details.stage = "cache"; return image; }
+        let paths = [path];
+        try { if (owner) paths = productImageCacheFiles(owner.key); }
+        catch { paths = []; }
+        for (const existingPath of paths) {
+          const existing = await cached(existingPath, controller.signal, details);
+          if (existing) { details.stage = "cache"; return existing.image; }
+        }
       }
+      if (!url) { details.stage = "validation"; details.result = "invalid_url"; return null; }
       if (controller.signal.aborted) return null;
+      if (owner && path) {
+        let previous: Awaited<ReturnType<typeof cached>> = null;
+        try { previous = await cached(cachePath(url), controller.signal, details); }
+        catch { /* The temporary cache is optional, including its address calculation. */ }
+        if (previous) {
+          if (controller.signal.aborted || !retained(owner)) return null;
+          const first = rememberProductImage(owner.key, previous.image);
+          if (first === previous.image) persistRecordImage(path, previous.data, owner);
+          details.stage = "cache";
+          return first;
+        }
+      }
       const data = await download(url, controller, details);
       if (!data || controller.signal.aborted) return null;
       const image = await decode(data, controller.signal, details);
-      if (!image || controller.signal.aborted) return null;
-      if (path) await cache(path, data, controller.signal);
+      if (!image || controller.signal.aborted || !retained(owner)) return null;
+      if (owner) {
+        const first = rememberProductImage(owner.key, image);
+        if (first !== image) return first;
+      }
+      if (path) {
+        if (owner) persistRecordImage(path, data, owner);
+        else await cache(path, data, controller.signal);
+      }
       return controller.signal.aborted ? null : image;
     };
-    const image = await Promise.race([work().catch(() => null), cancelled]);
+    const loaded = await Promise.race([work().catch(() => null), cancelled]);
+    const image = controller.signal.aborted || !retained(owner) ? null
+      : loaded && owner ? rememberProductImage(owner.key, loaded) : loaded;
     if (!signal?.aborted) writeDiagnostic("product.image.completed", {
       ...details, result: timedOut ? "timeout" : image ? "loaded" : details.result,
       durationMs: Date.now() - startedAt,

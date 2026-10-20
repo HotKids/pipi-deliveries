@@ -5,6 +5,8 @@ const MAX_BYTES = 4 * 1024 * 1024;
 const files = new Map<string, FakeData>();
 let metadataReads = 0, bitmapReads = 0, bodyReads = 0, networkCalls = 0;
 let appendedBytes = 0, cancelled = 0, failWrite = false, failRename = false;
+let beforeWrite: (() => Promise<void>) | undefined;
+let afterRename: (() => void) | undefined;
 const events: string[] = [];
 
 class FakeData {
@@ -44,6 +46,10 @@ Object.assign(globalThis, {
   Path: { join: (...parts: string[]) => parts.join("/") },
   FileManager: {
     temporaryDirectory: "/synthetic-cache",
+    appGroupDocumentsDirectory: "/synthetic-group",
+    existsSync(path: string) { return files.has(path); },
+    readDirectorySync(path: string) { return [...files.keys()].filter(file => file.startsWith(path + "/")); },
+    writeAsStringSync(path: string, value: string) { files.set(path, new FakeData(Buffer.from(value))); },
     async stat(path: string) {
       const value = files.get(path);
       if (!value) throw new Error("synthetic cache miss");
@@ -52,14 +58,15 @@ Object.assign(globalThis, {
     async isLink() { return false; },
     async readAsData(path: string) { return files.get(path)!; },
     async createDirectory(path: string, recursive: boolean) {
-      assert.equal(path, "/synthetic-cache/pipi-product-images");
+      assert.ok(["/synthetic-cache/pipi-product-images", "/synthetic-group/pipi-deliveries/product-images"].includes(path));
       assert.equal(recursive, true);
     },
     async writeAsData(path: string, value: FakeData) {
       if (failWrite) throw new Error("synthetic cache denied");
-      assert.match(path, /^\/synthetic-cache\/pipi-product-images\/[a-f0-9]{64}\.img\.pending-/);
+      assert.match(path, /^\/(synthetic-cache\/pipi-product-images\/[a-f0-9]{64}|synthetic-group\/pipi-deliveries\/product-images\/[a-f0-9]{64}\.\d+-[a-z0-9]+)\.img\.pending-/);
       events.push("write-pending");
       files.set(path, value);
+      await beforeWrite?.();
     },
     async rename(before: string, after: string) {
       if (failRename) throw new Error("synthetic publication denied");
@@ -69,6 +76,14 @@ Object.assign(globalThis, {
       files.set(after, files.get(before)!);
       files.delete(before);
     },
+    renameSync(before: string, after: string) {
+      if (failRename || files.has(after)) throw new Error("synthetic publication denied");
+      assert.ok(before.startsWith(after + ".pending-"));
+      files.set(after, files.get(before)!);
+      files.delete(before);
+      afterRename?.();
+    },
+    removeSync(path: string) { files.delete(path); },
     async remove(path: string) { files.delete(path); },
   },
   ImageIO: {
@@ -87,13 +102,13 @@ Object.assign(globalThis, {
     },
   },
   UIImage: {
-    fromData() {
+    fromData(value: FakeData) {
       bitmapReads++;
       events.push("bitmap");
       return {
         preparingThumbnail(size: { width: number; height: number }) {
           assert.deepEqual(size, { width: 432, height: 432 });
-          return { syntheticThumbnail: true };
+          return { syntheticThumbnail: true, syntheticKind: value.bytes[0] };
         },
       };
     },
@@ -138,6 +153,8 @@ function response(status: number, url: string) {
 }
 
 const { loadProductImage } = await import("../services/product-images");
+const { cachedProductImage, productImageCacheKey, productImageCacheFiles, rememberProductImage,
+  pruneProductImages } = await import("../services/product-image-cache");
 let sequence = 0;
 const url = () => `https://img.jd.com/synthetic-${++sequence}.jpg`;
 function reset(value: typeof reply = {}) {
@@ -145,6 +162,7 @@ function reset(value: typeof reply = {}) {
   requested.length = 0;
   metadataReads = bitmapReads = bodyReads = networkCalls = appendedBytes = cancelled = 0;
   failWrite = failRename = false;
+  beforeWrite = afterRename = undefined;
   events.length = 0;
   files.clear();
 }
@@ -248,6 +266,113 @@ globalThis.setTimeout = ((callback: (...args: any[]) => void, delay: number, ...
 }) as typeof setTimeout;
 try { assert.equal(await loadProductImage(url()), null, "the total operation has a finite deadline"); }
 finally { globalThis.setTimeout = realTimeout; }
+
+const identity = (id: string) => ({ id, bindingSource: "interface5", sourceId: "jingdong",
+  phone: "13800000000", orderId: id, createdAtMs: 1 } as any);
+const owner = (id: string) => ({ key: productImageCacheKey(identity(id)), isRetained: () => true });
+const evictImages = () => {
+  for (let index = 0; index < 32; index++) rememberProductImage(`synthetic-eviction-${index}`, {} as UIImage);
+};
+
+reset({ chunks: [data(9)] });
+const lifetime = owner("lifetime");
+const firstImage = await loadProductImage(url(), undefined, lifetime);
+assert.ok(firstImage);
+const lifetimeFile = productImageCacheFiles(lifetime.key)[0]!;
+assert.ok(files.has(lifetimeFile), "successful record images use persistent App Group storage");
+assert.equal(productImageCacheKey({ ...identity("lifetime"), createdAtMs: 900, waybill: "REAL-WAYBILL",
+  productImageURL: "https://img.jd.com/replacement.jpg" }), lifetime.key,
+"account refresh and waybill projection keep the same image identity");
+reply = { status: 503 };
+assert.equal(await loadProductImage(url(), undefined, lifetime), firstImage,
+  "a changed URL cannot replace the first successfully decoded record image");
+assert.equal(await loadProductImage("", undefined, lifetime), firstImage, "missing metadata retains the image");
+assert.equal(networkCalls, 1);
+evictImages();
+assert.equal(cachedProductImage(lifetime.key), null, "decoded memory is bounded");
+const restored = await loadProductImage("", undefined, lifetime);
+assert.equal((restored as any).syntheticKind, 9, "a new memory lifetime restores the persistent image without a URL");
+assert.equal(networkCalls, 1);
+pruneProductImages([identity("lifetime")], [identity("lifetime")]);
+assert.ok(files.has(lifetimeFile), "retained rows preserve files even when the list hides them");
+pruneProductImages([identity("lifetime")], []);
+assert.equal(files.has(lifetimeFile), false);
+assert.equal(cachedProductImage(lifetime.key), null);
+assert.equal(await loadProductImage(url(), undefined, { ...lifetime, isRetained: () => false }), null,
+  "removed rows cannot revive a decoded cache or begin a new request");
+assert.equal(networkCalls, 1);
+
+reset({ chunks: [data(3)] });
+const retryOwner = owner("retry-after-failure");
+assert.equal(await loadProductImage(url(), undefined, retryOwner), null);
+reply = { chunks: [data(10)] };
+assert.ok(await loadProductImage(url(), undefined, retryOwner), "failed downloads do not pin a record to failure");
+assert.equal(networkCalls, 2);
+
+reset();
+const unavailableCache = owner("unavailable-cache-address");
+const originalHash = Crypto.sha256;
+try {
+  (Crypto as any).sha256 = () => { throw new Error("synthetic hash unavailable"); };
+  assert.equal(productImageCacheKey(identity("unavailable")), "");
+  assert.doesNotThrow(() => pruneProductImages([identity("unavailable")], [identity("retained")]));
+  assert.ok(await loadProductImage(url(), undefined, unavailableCache),
+    "an unavailable temporary cache address cannot block a valid record image download");
+} finally { (Crypto as any).sha256 = originalHash; }
+reset();
+failWrite = true;
+const failedCache = owner("cache-write-denied");
+const uncachedImage = await loadProductImage(url(), undefined, failedCache);
+assert.ok(uncachedImage);
+assert.equal(await loadProductImage("", undefined, failedCache), uncachedImage,
+  "a persistent cache write failure still preserves a decoded image for this runtime");
+assert.equal(files.size, 0);
+
+reset();
+const simultaneous = owner("simultaneous");
+const [left, right] = await Promise.all([loadProductImage(url(), undefined, simultaneous),
+  loadProductImage(url(), undefined, simultaneous)]);
+assert.ok(left);
+assert.equal(left, right, "concurrent detail loads share the first successful decoded image");
+assert.equal([...files.keys()].filter(path => path.endsWith(".img")).length, 1);
+
+reset();
+let releaseOptionalWrite!: () => void;
+beforeWrite = () => new Promise<void>(resolve => { releaseOptionalWrite = resolve; });
+const slowDisk = owner("slow-optional-disk");
+assert.ok(await loadProductImage(url(), undefined, slowDisk),
+  "an optional disk write cannot delay the successfully decoded image");
+assert.ok(releaseOptionalWrite);
+releaseOptionalWrite();
+for (let tick = 0; tick < 8; tick++) await Promise.resolve();
+assert.equal(productImageCacheFiles(slowDisk.key).length, 1);
+
+reset();
+let isRetained = true;
+let finishWrite!: () => void;
+let startedWrite!: () => void;
+const writing = new Promise<void>(resolve => { startedWrite = resolve; });
+beforeWrite = () => { startedWrite(); return new Promise<void>(resolve => { finishWrite = resolve; }); };
+const removedDuringWrite = owner("removed-during-write");
+const pendingImage = loadProductImage(url(), undefined, { ...removedDuringWrite, isRetained: () => isRetained });
+await writing;
+isRetained = false;
+pruneProductImages([identity("removed-during-write")], []);
+finishWrite();
+assert.equal(await pendingImage, null);
+assert.equal(files.size, 0, "record deletion during an awaited write leaves no published or pending image");
+assert.equal(cachedProductImage(removedDuringWrite.key), null);
+
+reset();
+isRetained = true;
+const removedAtPublish = owner("removed-at-publish");
+afterRename = () => {
+  isRetained = false;
+  pruneProductImages([identity("removed-at-publish")], []);
+};
+assert.equal(await loadProductImage(url(), undefined, { ...removedAtPublish, isRetained: () => isRetained }), null);
+assert.equal(files.size, 0, "the post-publication retention check removes an image deleted by another writer");
+assert.equal(cachedProductImage(removedAtPublish.key), null);
 
 const diagnosticMemory = new Map<string, unknown>();
 Object.assign(globalThis, { Storage: {

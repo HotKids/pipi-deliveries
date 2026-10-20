@@ -63,7 +63,7 @@ import {
 } from "./carrier-recognition";
 import { activeCarrierTableVersion } from "./carrier-query";
 import type { CarrierNormalization } from "./carrier-normalization";
-import { enhanceAccountParcels, enhancementPhone } from "./enhanced-account";
+import { enhanceAccountParcels, enhancementPhone, withCurrentAccountEnhancement } from "./enhanced-account";
 import { accountParcelWithProjectionReference } from "./account-order-reference";
 
 export type AccountParcelFetchResult = Readonly<{
@@ -284,12 +284,12 @@ function detailRecord(
 export function cachedEnhancementParcels(shipments: readonly Shipment[], bindings: readonly AccountBinding[],
   freshIds: ReadonlySet<string>): AccountParcelDto[] {
   return shipments.flatMap(shipment => {
-    if (!shipment.identity.enhancedMode || freshIds.has(shipment.identity.sourceId)) return [];
+    if (freshIds.has(shipment.identity.sourceId)) return [];
     const observation = shipment.automaticOwnership?.observations.find(value =>
       value.identity.id === shipment.identity.id && value.source === shipment.identity.bindingSource &&
       value.identity.phone === shipment.identity.phone);
     if (observation?.bindingValid === false) return [];
-    const reference = accountParcelWithProjectionReference(shipment, null, "");
+    const reference = accountParcelWithProjectionReference(shipment, null, "", true);
     return reference && enhancementPhone(reference, bindings) ? [reference] : [];
   });
 }
@@ -320,9 +320,12 @@ export async function fetchAccountParcels(
   const parsed = parseAccountSyncResult(SCRIPT_BINDING_SOURCE, response);
   const freshIds = new Set(parsed.parcels.map(parcel => parcel.ownerId));
   const cachedOrders = cachedEnhancementParcels(cachedShipments, bindings, freshIds);
-  const parcels = (await enhanceAccountParcels([...parsed.parcels, ...cachedOrders], bindings,
-    { deadlineAtMs: requestDeadlineAtMs, signal })).map(parcel => parcel.enhancedMode
-      ? accountParcelWithExistingProjection(parcel, cachedShipments) : parcel);
+  const references = [...parsed.parcels, ...cachedOrders].map(parcel => {
+    const current = withCurrentAccountEnhancement(parcel, bindings);
+    return current.enhancedMode ? accountParcelWithExistingProjection(current, cachedShipments) : current;
+  });
+  const parcels = await enhanceAccountParcels(references, bindings,
+    { purpose: "waybill", deadlineAtMs: requestDeadlineAtMs, signal });
   // 用户 2026-09-27 第二轮清单：截断排后。A waybill cut off in an earlier round is recognised after the others;
   // the list keeps its own order.
   const recognitionOrder = truncatedCarrierRecognitionLast(
