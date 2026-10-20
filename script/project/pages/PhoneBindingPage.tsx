@@ -327,33 +327,33 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
             />
           </HStack>
           <Divider />
-        </VStack>
-        <VStack alignment="leading" spacing={6} listRowSeparator="hidden">
-          <Toggle
-            title="增强模式"
-            value={enhanced}
-            onChanged={changeEnhanced}
-            disabled={busy}
-          />
-          <Text font={12} foregroundStyle="secondaryLabel">
-            需先完成同一手机号的基础绑定。开启后可显示京东订单的商品图片，并更及时准确地获取运单号。
-          </Text>
-        </VStack>
-        <HStack
-          frame={{ maxWidth: "infinity", alignment: "center" }}
-          listRowSeparator="hidden"
-        >
-          <Button
-            action={bindPhone}
-            disabled={!canBind}
-            buttonStyle="borderedProminent"
-            buttonBorderShape="capsule"
-          >
-            <Text frame={{ minWidth: 220, minHeight: 44 }}>
-              {binding ? "正在绑定…" : "绑定"}
+          <VStack alignment="leading" spacing={6} padding={{ top: 14 }}>
+            <Toggle
+              title="增强模式"
+              value={enhanced}
+              onChanged={changeEnhanced}
+              disabled={busy}
+            />
+            <Text font={13} lineSpacing={2} foregroundStyle="secondaryLabel">
+              需先完成同一手机号的基础绑定。开启后可显示京东订单的商品图片，并更及时准确地获取运单号。
             </Text>
-          </Button>
-        </HStack>
+          </VStack>
+          <HStack
+            frame={{ maxWidth: "infinity", alignment: "center" }}
+            padding={{ top: 18 }}
+          >
+            <Button
+              action={bindPhone}
+              disabled={!canBind}
+              buttonStyle="borderedProminent"
+              buttonBorderShape="capsule"
+            >
+              <Text frame={{ minWidth: 220, minHeight: 44 }}>
+                {binding ? "正在绑定…" : "绑定"}
+              </Text>
+            </Button>
+          </HStack>
+        </VStack>
       </Section>
     </List>
   );
