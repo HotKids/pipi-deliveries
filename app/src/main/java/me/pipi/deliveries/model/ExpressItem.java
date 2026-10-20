@@ -470,6 +470,7 @@ public final class ExpressItem {
      */
     public String displayStatus() {
         ExpressStatusLabels table = CarrierRegistry.statusLabels();
+        if (semantic == StatusSemantic.CANCELLED) return table.label(semantic);
         boolean unprojectedOrder = isAccountOrder() && projectedWaybill.isEmpty();
         // 订单阶段自己走完的账号订单写「已完成」，不写「已签收」（用户定 2026-09-06，与 iOS
         // shipmentPresentationStatus 同口径）：这一票从来没有过承运商签收动作，只有订单终点。
