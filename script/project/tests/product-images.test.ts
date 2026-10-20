@@ -1,0 +1,252 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+
+const MAX_BYTES = 4 * 1024 * 1024;
+const files = new Map<string, FakeData>();
+let metadataReads = 0, bitmapReads = 0, bodyReads = 0, networkCalls = 0;
+let appendedBytes = 0, cancelled = 0, failWrite = false, failRename = false;
+const events: string[] = [];
+
+class FakeData {
+  constructor(readonly bytes: Buffer) {}
+  get size(): number { return this.bytes.length; }
+  append(other: FakeData): void {
+    appendedBytes += other.size;
+    (this as { bytes: Buffer }).bytes = Buffer.concat([this.bytes, other.bytes]);
+  }
+}
+
+const data = (kind = 1, size = 4) => {
+  const bytes = Buffer.alloc(size);
+  if (size) bytes[0] = kind;
+  return new FakeData(bytes);
+};
+const nativeController = globalThis.AbortController;
+const requested: Array<{ url: string; init: any }> = [];
+let reply: {
+  redirects?: string[];
+  finalURL?: string;
+  mime?: string;
+  length?: string;
+  expected?: number;
+  chunks?: FakeData[];
+  status?: number;
+  pendingBody?: boolean;
+  pendingFetch?: boolean;
+} = {};
+
+Object.assign(globalThis, {
+  Data: {
+    fromIntArray: (value: number[]) => new FakeData(Buffer.from(value)),
+    fromRawString: (value: string) => new FakeData(Buffer.from(value)),
+  },
+  Crypto: { sha256: (value: FakeData) => ({ toHexString: () => createHash("sha256").update(value.bytes).digest("hex") }) },
+  Path: { join: (...parts: string[]) => parts.join("/") },
+  FileManager: {
+    temporaryDirectory: "/synthetic-cache",
+    async stat(path: string) {
+      const value = files.get(path);
+      if (!value) throw new Error("synthetic cache miss");
+      return { type: "file", size: value.size };
+    },
+    async isLink() { return false; },
+    async readAsData(path: string) { return files.get(path)!; },
+    async createDirectory(path: string, recursive: boolean) {
+      assert.equal(path, "/synthetic-cache/pipi-product-images");
+      assert.equal(recursive, true);
+    },
+    async writeAsData(path: string, value: FakeData) {
+      if (failWrite) throw new Error("synthetic cache denied");
+      assert.match(path, /^\/synthetic-cache\/pipi-product-images\/[a-f0-9]{64}\.img\.pending-/);
+      events.push("write-pending");
+      files.set(path, value);
+    },
+    async rename(before: string, after: string) {
+      if (failRename) throw new Error("synthetic publication denied");
+      assert.ok(before.startsWith(after + ".pending-"));
+      assert.ok(files.has(before));
+      events.push("publish");
+      files.set(after, files.get(before)!);
+      files.delete(before);
+    },
+    async remove(path: string) { files.delete(path); },
+  },
+  ImageIO: {
+    async readMetadata(value: FakeData) {
+      metadataReads++;
+      events.push("metadata");
+      switch (value.bytes[0]) {
+        case 2: return { pixelWidth: 0, pixelHeight: 100 };
+        case 3: return { pixelWidth: 5000, pixelHeight: 5000 };
+        case 4: throw new Error("synthetic invalid image");
+        case 5: return { pixelWidth: 100.5, pixelHeight: 100 };
+        case 7: return { pixelWidth: 4096, pixelHeight: 4096 };
+        case 8: return { pixelWidth: 4096, pixelHeight: 4097 };
+        default: return { pixelWidth: 600, pixelHeight: 300 };
+      }
+    },
+  },
+  UIImage: {
+    fromData() {
+      bitmapReads++;
+      events.push("bitmap");
+      return {
+        preparingThumbnail(size: { width: number; height: number }) {
+          assert.deepEqual(size, { width: 432, height: 432 });
+          return { syntheticThumbnail: true };
+        },
+      };
+    },
+  },
+  async fetch(url: string, init: any) {
+    networkCalls++;
+    requested.push({ url, init });
+    assert.equal(init.timeout, 20);
+    assert.ok(init.signal instanceof AbortSignal);
+    assert.deepEqual(init.headers, { Accept: "image/jpeg,image/png,image/webp,image/gif", "Accept-Encoding": "identity" });
+    if (reply.pendingFetch) return new Promise(() => {});
+    let finalURL = url;
+    for (const target of reply.redirects || []) {
+      const redirect = await init.handleRedirect({ url: target, method: "GET", cookies: [{ value: "discard-me" }],
+        headers: { Cookie: "synthetic-only" }, body: data() });
+      if (!redirect) return response(302, finalURL);
+      assert.deepEqual(redirect.cookies, []);
+      assert.equal(redirect.headers.Cookie, undefined);
+      assert.equal(redirect.body, undefined);
+      requested.push({ url: redirect.url, init: redirect });
+      finalURL = redirect.url;
+    }
+    return response(reply.status || 200, reply.finalURL || finalURL);
+  },
+});
+
+function response(status: number, url: string) {
+  let index = 0;
+  const headers = new Headers({ "content-type": reply.mime || "image/jpeg" });
+  if (reply.length != null) headers.set("content-length", reply.length);
+  return { status, ok: status >= 200 && status < 300, url, headers, expectedContentLength: reply.expected,
+    dataStream: { getReader() { return {
+      async read() {
+        bodyReads++;
+        if (reply.pendingBody) return new Promise(() => {});
+        const value = (reply.chunks || [data()])[index++];
+        return { done: !value, value };
+      },
+      async cancel() { cancelled++; },
+      releaseLock() {},
+    }; } } };
+}
+
+const { loadProductImage } = await import("../services/product-images");
+let sequence = 0;
+const url = () => `https://img.jd.com/synthetic-${++sequence}.jpg`;
+function reset(value: typeof reply = {}) {
+  reply = value;
+  requested.length = 0;
+  metadataReads = bitmapReads = bodyReads = networkCalls = appendedBytes = cancelled = 0;
+  failWrite = failRename = false;
+  events.length = 0;
+  files.clear();
+}
+
+for (const invalid of ["", "http://img.jd.com/a", "https://jd.com.evil.test/a", "https://eviljd.com/a",
+  "https://jd.com:444/a", "https://user@jd.com/a", "https://@jd.com/a", "https://jd.com./a",
+  "https://im\ng.jd.com/a", "https://jd.com\\@evil.test/a", "file:///synthetic.jpg"]) {
+  reset();
+  assert.equal(await loadProductImage(invalid), null);
+  assert.equal(networkCalls, 0, "invalid initial URL never reaches the transport");
+}
+for (const valid of ["https://jd.com/a", "https://img.jd.com:443/a", "https://360buyimg.com/a", "https://a.360buyimg.com/a"]) {
+  reset();
+  assert.ok(await loadProductImage(valid));
+  assert.deepEqual(events, ["metadata", "bitmap", "write-pending", "publish"]);
+}
+
+reset({ redirects: ["https://one.jd.com/1", "https://two.360buyimg.com/2", "https://jd.com/3", "https://360buyimg.com/4"] });
+assert.ok(await loadProductImage(url()));
+assert.equal(requested.length, 5, "the initial URL plus four allowed redirects");
+for (const redirects of [["https://off-domain.test/a"], ["http://jd.com/a"], ["https://user@jd.com/a"],
+  ["https://one.jd.com/1", "https://one.jd.com/1"],
+  ["https://jd.com/1", "https://jd.com/2", "https://jd.com/3", "https://jd.com/4", "https://jd.com/5"]]) {
+  reset({ redirects });
+  assert.equal(await loadProductImage(url()), null);
+  assert.equal(bitmapReads, 0);
+  assert.ok(requested.length <= 5);
+  assert.ok(requested.every(request => !request.url.includes("off-domain")));
+}
+reset({ finalURL: "https://off-domain.test/final" });
+assert.equal(await loadProductImage(url()), null, "a transport that bypasses redirect validation is rejected");
+reset({ finalURL: "https://other.jd.com/unobserved" });
+assert.equal(await loadProductImage(url()), null, "the final URL must belong to this redirect chain");
+
+for (const mime of ["image/jpeg", "image/png; charset=binary", "IMAGE/WEBP", "image/gif"]) {
+  reset({ mime });
+  assert.ok(await loadProductImage(url()));
+}
+for (const value of [{ mime: "text/html" }, { mime: "image/svg+xml" }, { status: 404 },
+  { length: String(MAX_BYTES + 1) }, { length: "invalid" }, { expected: MAX_BYTES + 1 }]) {
+  reset(value);
+  assert.equal(await loadProductImage(url()), null);
+  assert.equal(bodyReads, 0, "invalid status, type or length rejects before reading a body");
+}
+reset({ length: String(MAX_BYTES), chunks: [data(1, MAX_BYTES)] });
+assert.ok(await loadProductImage(url()), "exactly four MiB is permitted");
+reset({ chunks: [data(1, MAX_BYTES), data(1, 1)] });
+assert.equal(await loadProductImage(url()), null);
+assert.equal(appendedBytes, MAX_BYTES, "overflowing chunks are never appended");
+assert.equal(bitmapReads, 0);
+assert.equal(cancelled, 1);
+reset({ chunks: [] });
+assert.equal(await loadProductImage(url()), null);
+for (const kind of [2, 3, 4, 5, 8]) {
+  reset({ chunks: [data(kind)] });
+  assert.equal(await loadProductImage(url()), null);
+  assert.equal(bitmapReads, 0, "invalid dimensions or metadata never create a bitmap");
+  assert.equal(files.size, 0);
+}
+reset({ chunks: [data(7)] });
+assert.ok(await loadProductImage(url()), "exactly sixteen million binary pixels is permitted");
+
+reset();
+const cachedURL = url();
+assert.ok(await loadProductImage(cachedURL));
+const cachedFile = [...files.keys()][0];
+assert.match(cachedFile, /^\/synthetic-cache\/pipi-product-images\/[a-f0-9]{64}\.img$/);
+assert.ok(await loadProductImage(cachedURL));
+assert.equal(networkCalls, 1, "a valid cached image needs no second request");
+assert.equal(metadataReads, 2, "cached images are checked before bitmap creation too");
+files.set(cachedFile, data(3));
+assert.ok(await loadProductImage(cachedURL), "an invalid cache entry does not hide a valid download");
+assert.equal(networkCalls, 2);
+for (const field of ["failWrite", "failRename"]) {
+  reset();
+  if (field === "failWrite") failWrite = true;
+  else failRename = true;
+  assert.ok(await loadProductImage(url()), "a cache failure preserves a validated image");
+  assert.equal(files.size, 0, "failed cache publications leave no pending files");
+}
+
+reset();
+const preAborted = new nativeController();
+preAborted.abort();
+assert.equal(await loadProductImage(url(), preAborted.signal), null);
+assert.equal(networkCalls, 0);
+for (const pending of [{ pendingFetch: true }, { pendingBody: true }]) {
+  reset(pending);
+  const controller = new nativeController();
+  const task = loadProductImage(url(), controller.signal);
+  setTimeout(() => controller.abort(), 5);
+  assert.equal(await task, null, "cancellation settles even if a native bridge never resolves");
+  assert.equal(bitmapReads, 0);
+  assert.equal(files.size, 0);
+}
+reset({ pendingBody: true });
+const realTimeout = globalThis.setTimeout;
+globalThis.setTimeout = ((callback: (...args: any[]) => void, delay: number, ...args: any[]) => {
+  assert.equal(delay, 20_000);
+  return realTimeout(callback, 5, ...args);
+}) as typeof setTimeout;
+try { assert.equal(await loadProductImage(url()), null, "the total operation has a finite deadline"); }
+finally { globalThis.setTimeout = realTimeout; }
+
+console.log("product-images: URL, redirects, MIME, streaming bounds, metadata, cache and cancellation passed");

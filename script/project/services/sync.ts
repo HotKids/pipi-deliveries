@@ -17,6 +17,7 @@ import {
   normalizeAccountParcelCarrierBestEffort,
   parcelToShipment,
   prepareAccountParcelCarrier,
+  applyEnhancementMetadata,
   refreshAccountParcel,
   withRecognizedAccountOrderTextWaybill,
   storedAccountListStructuredSemantic,
@@ -114,6 +115,7 @@ import {
 } from "./shipment-policy";
 import {
   addBinding,
+  enableBindingEnhancement,
   bindingsForSource,
   commitRefreshState,
   commitRoutePointers,
@@ -192,6 +194,7 @@ import {
 } from "./account-sync-policy";
 import type { ExpressToastKey } from "./express-toast-copy";
 import { accountParcelWithProjectionReference } from "./account-order-reference";
+import { enhanceAccountParcels, enhancementOperation, requireEnhancementBinding } from "./enhanced-account";
 import { prepareManualPreview } from "./manual-preview";
 import {
   createDiagnosticFlowId,
@@ -1857,6 +1860,7 @@ async function synchronizeAccountList(
       listDeadlineAtMs,
       signal,
       recognitionBudget,
+      state.shipments,
     ).catch((error: unknown) => {
       endCancelledList();
       throw error;
@@ -1906,6 +1910,9 @@ async function synchronizeAccountList(
     };
   }
   const parcels = fetched.parcels;
+  for (const parcel of fetched.cachedEnhancements || []) {
+    shipments = shipments.map(shipment => applyEnhancementMetadata(shipment, parcel, now));
+  }
   succeeded++;
   writeDiagnostic("account.sync.parsed", {
     flowId,
@@ -2025,7 +2032,7 @@ function accountOrderProjectionDecision(
   listStructuredSemantic: ProjectionListSemantic,
   includeCompleted = false,
 ): AccountOrderProjectionDecision {
-  if (!parcel.accountOrder) return { due: false };
+  if (!parcel.accountOrder || parcel.enhancedMode) return { due: false };
   const expectedId = projectionOwnerId(parcel);
   const existingOwner = shipments.find(
     (item) => item.identity.id === expectedId,
@@ -3427,68 +3434,90 @@ export async function bindPhone(
   phone: string,
   code: string,
   diagnosticFlowId?: string,
+  enhanced = false,
 ): Promise<AppState> {
   requireScriptSource(source);
-  const flowId = diagnosticFlowId || createDiagnosticFlowId("bind");
-  const startedAt = Date.now();
-  writeDiagnostic("binding.verify.started", { flowId, source });
+  const bindingLease = acquireRenewingDurableRefreshLease(`binding:${privateHash(phone)}`, MANUAL_QUERY_BUDGET_MS + 1_000);
+  if (!bindingLease) throw new Error("该手机号正在验证或解绑，请稍后重试");
   try {
-    await verifyAccountBinding(
-      source,
-      phone,
-      code,
-      deadlineAfter(MANUAL_QUERY_BUDGET_MS),
-    );
-  } catch (error) {
-    writeDiagnostic(
-      "binding.verify.failed",
-      {
-        flowId,
+    const flowId = diagnosticFlowId || createDiagnosticFlowId("bind");
+    const startedAt = Date.now();
+    writeDiagnostic("binding.verify.started", { flowId, source });
+    if (enhanced) {
+      const binding = requireEnhancementBinding(loadState().bindings, phone);
+      await enhancementOperation("bind", phone, { code, deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS) });
+      if (!bindingLease.isCurrent()) throw new Error("手机号验证已超时，请重试");
+      const next = enableBindingEnhancement(phone, binding.boundAtMs);
+      return next;
+    }
+    try {
+      await verifyAccountBinding(
         source,
-        durationMs: Date.now() - startedAt,
-        ...diagnosticErrorDetails(error),
-      },
-      "error",
-    );
-    throw error;
-  }
-  writeDiagnostic("binding.verify.succeeded", {
-    flowId,
-    source,
-    durationMs: Date.now() - startedAt,
-  });
-  try {
-    const bound = addBinding(source, phone);
-    writeDiagnostic("binding.persisted", {
+        phone,
+        code,
+        deadlineAfter(MANUAL_QUERY_BUDGET_MS),
+      );
+    } catch (error) {
+      writeDiagnostic(
+        "binding.verify.failed",
+        {
+          flowId,
+          source,
+          durationMs: Date.now() - startedAt,
+          ...diagnosticErrorDetails(error),
+        },
+        "error",
+      );
+      throw error;
+    }
+    writeDiagnostic("binding.verify.succeeded", {
       flowId,
       source,
-      ...diagnosticState(bound),
+      durationMs: Date.now() - startedAt,
     });
-    return bound;
-  } catch (error) {
-    writeDiagnostic(
-      "binding.persist.failed",
-      {
+    try {
+      if (!bindingLease.isCurrent()) throw new Error("手机号验证已超时，请重试");
+      const bound = addBinding(source, phone);
+      writeDiagnostic("binding.persisted", {
         flowId,
         source,
-        durationMs: Date.now() - startedAt,
-        ...diagnosticErrorDetails(error),
-      },
-      "error",
-    );
-    throw error;
-  }
+        ...diagnosticState(bound),
+      });
+      return bound;
+    } catch (error) {
+      writeDiagnostic(
+        "binding.persist.failed",
+        {
+          flowId,
+          source,
+          durationMs: Date.now() - startedAt,
+          ...diagnosticErrorDetails(error),
+        },
+        "error",
+      );
+      throw error;
+    }
+  } finally { bindingLease.release(); }
 }
 
-export function unbindPhone(
+export async function unbindPhone(
   source: BindingSource,
   phone: string,
-): AppState {
+): Promise<AppState> {
   requireScriptSource(source);
-  const next = removeBinding(source, phone);
-  safelyPruneRoutes(next);
-  requestWidgetReload();
-  return next;
+  const bindingLease = acquireRenewingDurableRefreshLease(`binding:${privateHash(phone)}`, MANUAL_QUERY_BUDGET_MS + 1_000);
+  if (!bindingLease) throw new Error("该手机号正在验证或解绑，请稍后重试");
+  try {
+    const binding = loadState().bindings.find(value => value.source === source && value.phone === phone);
+    if (binding?.enhancedMode) {
+      await enhancementOperation("unbind", phone, { deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS) });
+    }
+    if (!bindingLease.isCurrent()) throw new Error("手机号解绑已超时，请重试");
+    const next = removeBinding(source, phone, Date.now(), binding);
+    safelyPruneRoutes(next);
+    requestWidgetReload();
+    return next;
+  } finally { bindingLease.release(); }
 }
 
 function releaseTargetManualRefreshLease(
@@ -3803,18 +3832,38 @@ async function runShipmentRefreshFlow(
   } : undefined;
   const pull = trigger === "detail_pull" || aligning;
   let identityApplied = false;
+  if (original.identity.enhancedMode && !original.identity.productImageURL && !unprojectedAccountOrder(original)) {
+    const reference = accountParcelWithProjectionReference(original, null, "");
+    if (reference) {
+      const [metadata] = await enhanceAccountParcels([reference], bindingsForSource(base, source), { deadlineAtMs, signal });
+      const enriched = applyEnhancementMetadata(original, metadata, Date.now());
+      if (enriched !== original) {
+        const commit = commitTargetShipmentRefresh(base, enriched, Date.now(), lease);
+        base = commit.state;
+        original = base.shipments.find(shipment => shipment.identity.id === shipmentId)!;
+        identityApplied = commit.applied;
+        if (!original) throw new Error("该快递已从列表中移除");
+      }
+    }
+  }
   // Old cached feed text can resolve identity without waiting for another provider response.
   // T23 (user 2026-09-26, 其余裁决 28): its waybill — or a union-page waybill held for its carrier — is recognised
   // first and projected only with a matched carrier; otherwise the order stays as it is and no page is opened here.
   if (unprojectedAccountOrder(original)) {
-    const reference = accountParcelWithProjectionReference(original, null, "");
+    let reference = accountParcelWithProjectionReference(original, null, "");
     const held = original.identity.pendingProjection;
     const recognitionDeadlineAtMs = accountChildDeadline(deadlineAtMs, ACCOUNT_DETAIL_BUDGET_MS);
+    if (reference && original.identity.enhancedMode) {
+      reference = (await enhanceAccountParcels([reference], bindingsForSource(base, source),
+        { deadlineAtMs: recognitionDeadlineAtMs, signal }))[0];
+      reference = await prepareAccountParcelCarrier(reference,
+        { deadlineAtMs: recognitionDeadlineAtMs, signal, budget: operationRecognitionBudget(lease) });
+    }
     let parcel = reference;
     if (reference && accountOrderTextWaybill(reference)) {
       parcel = await withRecognizedAccountOrderTextWaybill(reference,
         { deadlineAtMs: recognitionDeadlineAtMs, signal, budget: operationRecognitionBudget(lease) });
-    } else if (reference && held?.waybill && heldCarrierSettleable(held.waybill, Date.now())) {
+    } else if (reference && !original.identity.enhancedMode && held?.waybill && heldCarrierSettleable(held.waybill, Date.now())) {
       const candidate = releaseExhaustedProjection(
         await normalizeAccountParcelCarrierBestEffort(heldProjectionParcel(reference, held),
           { deadlineAtMs: recognitionDeadlineAtMs, signal, budget: operationRecognitionBudget(lease) }),
@@ -3825,8 +3874,11 @@ async function runShipmentRefreshFlow(
     assertRefreshSignal(signal);
     if (!lease.isCurrent()) throw new OperationTimeoutError();
     const incoming = parcel && parcelToShipment(parcel, bindingsForSource(base, source).map(b => b.phone), Date.now());
-    if (incoming && normalizedProjectedWaybill(incoming.identity)) {
-      const local = applyTargetedAccountShipment(original, incoming, Date.now());
+    if (incoming && (normalizedProjectedWaybill(incoming.identity) ||
+      incoming.identity.productImageURL !== original.identity.productImageURL)) {
+      const local = original.identity.enhancedMode
+        ? applyEnhancementMetadata(original, parcel!, Date.now())
+        : applyTargetedAccountShipment(original, incoming, Date.now());
       const commit = commitTargetShipmentRefresh(base, local, Date.now(), lease);
       identityApplied = commit.applied;
       if (identityApplied) requestWidgetReload();
@@ -4157,6 +4209,7 @@ async function runShipmentRefreshFlow(
           );
           if (
                         parcel?.accountOrder &&
+            (!original.identity.enhancedMode || reopenForTimeline) &&
             (parcel.projectionUrl || parcel.textIdentity?.waybill) &&
             (forceAccountOrderProjection || accountOrderReadyForProjection(
               parcel.normalizedStatusSemantic || parcel.semantic,

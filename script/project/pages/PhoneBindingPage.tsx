@@ -7,11 +7,14 @@ import {
   Section,
   Text,
   TextField,
+  Toggle,
   VStack,
   useEffect,
   useRef,
   useState,
 } from "scripting";
+import type { AccountBinding } from "../models";
+import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
 import {
   createDiagnosticFlowId,
   diagnosticErrorDetails,
@@ -23,14 +26,17 @@ import { errorMessage, transientToast } from "../services/ui-feedback";
 type MaybeAsync = void | Promise<void>;
 
 export type PhoneBindingPageProps = {
+  bindings: readonly AccountBinding[];
   onSendCode: (
     phone: string,
     flowId: string,
+    enhanced: boolean,
   ) => MaybeAsync;
   onBind: (
     phone: string,
     code: string,
     flowId: string,
+    enhanced: boolean,
   ) => MaybeAsync;
 };
 
@@ -45,7 +51,9 @@ function validPhone(value: string): boolean {
 export function PhoneBindingPage(props: PhoneBindingPageProps) {
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
+  const [enhanced, setEnhanced] = useState(false);
   const [verificationPhone, setVerificationPhone] = useState("");
+  const [verificationEnhanced, setVerificationEnhanced] = useState(false);
   const [sending, setSending] = useState(false);
   const [binding, setBinding] = useState(false);
   const [notice, setNotice] = useState("");
@@ -54,18 +62,27 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
   const mountedRef = useRef(true);
   const requestSequenceRef = useRef(0);
   const phoneRef = useRef("");
+  const enhancedRef = useRef(false);
   const flowIdRef = useRef(createDiagnosticFlowId("binding"));
 
-  const maxCodeLength = 6;
+  const maxCodeLength = enhanced ? 8 : 6;
   const inputRowHeight = 50;
   const remainingSeconds = Math.max(
     0,
     Math.ceil((resendAtMs - nowMs) / 1_000),
   );
   const busy = sending || binding;
-  const verificationMatches = verificationPhone === phone && validPhone(phone);
+  const visibleBindings = props.bindings.filter(
+    (binding) => binding.source === SCRIPT_BINDING_SOURCE,
+  );
+  const hasBaseBinding = visibleBindings.some((binding) => binding.phone === phone);
+  const bindingAllowed = enhanced
+    ? hasBaseBinding
+    : hasBaseBinding || visibleBindings.length < EXPRESS_POLICY.sources.maxBindingsPerSource;
+  const verificationMatches = verificationPhone === phone &&
+    verificationEnhanced === enhanced && validPhone(phone);
   const codeValid = code.length >= 4;
-  const canBind = verificationMatches && codeValid && !busy;
+  const canBind = bindingAllowed && verificationMatches && codeValid && !busy;
 
   useEffect(() => {
     writeDiagnostic("binding.flow.opened", {
@@ -115,9 +132,21 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
     setNotice("");
   }
 
+  function changeEnhanced(value: boolean) {
+    if (busy || value === enhanced) return;
+    enhancedRef.current = value;
+    setEnhanced(value);
+    requestSequenceRef.current += 1;
+    setCode("");
+    setVerificationPhone("");
+    setBindError("");
+    setNotice("");
+  }
+
   async function sendCode() {
-    if (busy || remainingSeconds > 0 || !validPhone(phone)) return;
+    if (busy || remainingSeconds > 0 || !validPhone(phone) || !bindingAllowed) return;
     const requestedPhone = phone;
+    const requestedEnhanced = enhanced;
     const requestedSource = SCRIPT_BINDING_SOURCE;
     const requestId = requestSequenceRef.current + 1;
     requestSequenceRef.current = requestId;
@@ -135,11 +164,13 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
       await props.onSendCode(
         requestedPhone,
         flowIdRef.current,
+        requestedEnhanced,
       );
       if (
         !mountedRef.current ||
         requestId !== requestSequenceRef.current ||
-        phoneRef.current !== requestedPhone
+        phoneRef.current !== requestedPhone ||
+        enhancedRef.current !== requestedEnhanced
       ) {
         return;
       }
@@ -147,6 +178,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
       setNowMs(sentAt);
       setResendAtMs(sentAt + 60_000);
       setVerificationPhone(requestedPhone);
+      setVerificationEnhanced(requestedEnhanced);
       setNotice(EXPRESS_TOAST_COPY.codeSent);
       writeDiagnostic("binding.code.succeeded", {
         flowId: flowIdRef.current,
@@ -176,6 +208,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
     if (!canBind) return;
     const requestedPhone = phone;
     const requestedCode = code;
+    const requestedEnhanced = enhanced;
     const requestedSource = SCRIPT_BINDING_SOURCE;
     const requestId = requestSequenceRef.current + 1;
     requestSequenceRef.current = requestId;
@@ -188,10 +221,13 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
         requestedPhone,
         requestedCode,
         flowIdRef.current,
+        requestedEnhanced,
       );
       if (
         !mountedRef.current ||
-        requestId !== requestSequenceRef.current
+        requestId !== requestSequenceRef.current ||
+        phoneRef.current !== requestedPhone ||
+        enhancedRef.current !== requestedEnhanced
       ) {
         return;
       }
@@ -209,13 +245,17 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
 
   const [bindError, setBindError] = useState("");
   const validationNotice =
-    phone.length > 0 && !validPhone(phone)
-      ? "请输入有效的 11 位手机号"
-      : code.length > 0 && code.length < 4
-        ? "请输入至少 4 位验证码"
-        : code.length >= 4 && !verificationMatches
-          ? "请先获取该手机号的验证码"
-          : "";
+    enhanced && validPhone(phone) && !hasBaseBinding
+      ? "请先完成该手机号的基础绑定，再开启增强模式"
+      : !enhanced && !bindingAllowed
+        ? `最多可绑定 ${EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号`
+        : phone.length > 0 && !validPhone(phone)
+          ? "请输入有效的 11 位手机号"
+          : code.length > 0 && code.length < 4
+            ? "请输入至少 4 位验证码"
+            : code.length >= 4 && !verificationMatches
+              ? "请先获取该手机号的验证码"
+              : "";
 
   return (
     <List
@@ -281,12 +321,23 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
                     : "获取验证码"
               }
               action={sendCode}
-              disabled={busy || remainingSeconds > 0 || !validPhone(phone)}
+              disabled={busy || remainingSeconds > 0 || !validPhone(phone) || !bindingAllowed}
               buttonStyle="plain"
               frame={{ minWidth: 112, minHeight: 44, alignment: "trailing" }}
             />
           </HStack>
           <Divider />
+        </VStack>
+        <VStack alignment="leading" spacing={6} listRowSeparator="hidden">
+          <Toggle
+            title="增强模式"
+            value={enhanced}
+            onChanged={changeEnhanced}
+            disabled={busy}
+          />
+          <Text font={12} foregroundStyle="secondaryLabel">
+            需先完成基础绑定。开启后京东订单可显示商品图片，运单号更及时准确。
+          </Text>
         </VStack>
         <HStack
           frame={{ maxWidth: "infinity", alignment: "center" }}

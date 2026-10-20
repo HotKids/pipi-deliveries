@@ -8,6 +8,8 @@ export function fetch(...args) {
   return globalThis.fetch(...args);
 }
 
+export const AbortController = globalThis.AbortController;
+
 export const Notification = {
   schedule(...args) {
     return globalThis.Notification.schedule(...args);

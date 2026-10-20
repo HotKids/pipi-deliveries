@@ -267,7 +267,7 @@ const syncSource = accountSyncSource.slice(syncStart, manualStart);
 // its own order (old shape: `for (const parcel of parsed.parcels) { parcels.push(await prepareAccountParcelCarrier(parcel, {`).
 assert.match(
   syncSource,
-  /const recognitionOrder = truncatedCarrierRecognitionLast\(\s*parsed\.parcels\.map\(\(_parcel, index\) => index\),[\s\S]*?\);\s*for \(const index of recognitionOrder\) \{\s*parcels\[index\] = await prepareAccountParcelCarrier\(parsed\.parcels\[index\], \{/,
+  /const parcels = \(await enhanceAccountParcels\(\[\.\.\.parsed\.parcels, \.\.\.cachedOrders\], bindings,[\s\S]*?const recognitionOrder = truncatedCarrierRecognitionLast\(\s*parcels\.map\(\(_parcel, index\) => index\),[\s\S]*?\);\s*for \(const index of recognitionOrder\) \{\s*parcels\[index\] = await prepareAccountParcelCarrier\(parcels\[index\], \{/,
   "background account sync must pass every parcel through the shared carrier helper",
 );
 assert.doesNotMatch(syncSource, /parcel\.accountOrder\s*\?/, "normalization is not gated on order rows");

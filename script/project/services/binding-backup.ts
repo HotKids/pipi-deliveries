@@ -47,6 +47,8 @@ function bindings(values: unknown): AccountBinding[] {
         typeof value.boundAtMs === "number" && Number.isFinite(value.boundAtMs)
           ? value.boundAtMs
           : 0,
+      ...(value.enhancedMode === true ? { enhancedMode: true as const,
+        enhancedAtMs: Number.isFinite(value.enhancedAtMs) ? value.enhancedAtMs : value.boundAtMs } : {}),
     });
   }
   return [...unique.values()];

@@ -143,6 +143,8 @@ function uniqueBindings(values: readonly AccountBinding[]): AccountBinding[] {
         typeof value.boundAtMs === "number" && Number.isFinite(value.boundAtMs)
           ? value.boundAtMs
           : 0,
+      ...(value.enhancedMode === true ? { enhancedMode: true as const,
+        enhancedAtMs: Number.isFinite(value.enhancedAtMs) ? value.enhancedAtMs : value.boundAtMs } : {}),
     });
   }
   return [...result.values()];
@@ -2111,7 +2113,8 @@ function ownsRefreshBinding(base: AppState, latest: AppState, shipment: Shipment
     binding.phone === phone(shipment.identity.phone || "");
   const original = base.bindings.find(matches);
   const current = latest.bindings.find(matches);
-  return Boolean(original && current && original.boundAtMs === current.boundAtMs);
+  return Boolean(original && current && original.boundAtMs === current.boundAtMs &&
+    original.enhancedMode === current.enhancedMode && original.enhancedAtMs === current.enhancedAtMs);
 }
 
 /**
@@ -2241,7 +2244,9 @@ export function commitRefreshState(
           if (
             !baselineBinding ||
             !latestBinding ||
-            baselineBinding.boundAtMs !== latestBinding.boundAtMs
+            baselineBinding.boundAtMs !== latestBinding.boundAtMs ||
+            baselineBinding.enhancedMode !== latestBinding.enhancedMode ||
+            baselineBinding.enhancedAtMs !== latestBinding.enhancedAtMs
           ) {
             continue;
           }
@@ -2366,11 +2371,30 @@ export function addBinding(
             (binding) =>
               binding.source !== bindingSource || binding.phone !== normalizedPhone,
           ),
-          { source: bindingSource, phone: normalizedPhone, boundAtMs: now },
+          { ...existing.find(binding => binding.phone === normalizedPhone),
+            source: bindingSource, phone: normalizedPhone, boundAtMs: now },
         ],
       },
       now,
     );
+  });
+}
+
+export function enableBindingEnhancement(phoneNumber: string, expectedBoundAtMs: number, now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const state = loadState(now), normalizedPhone = phone(phoneNumber);
+    const current = state.bindings.find(binding => binding.source === SCRIPT_BINDING_SOURCE && binding.phone === normalizedPhone);
+    if (!current || current.boundAtMs !== expectedBoundAtMs) throw new Error("手机号绑定已变更，请重试");
+    const mark = (identity: Shipment["identity"]): Shipment["identity"] =>
+      identity.bindingSource === SCRIPT_BINDING_SOURCE && identity.phone === normalizedPhone && identity.accountOrder &&
+      String(identity.sourceProvider || "").toLowerCase() === "jingdong"
+        ? { ...identity, enhancedMode: true } : identity;
+    return saveBindingTransition(state, { ...state, bindings: state.bindings.map(binding =>
+      binding === current ? { ...binding, enhancedMode: true, enhancedAtMs: now } : binding),
+      shipments: state.shipments.map(shipment => ({ ...shipment, identity: mark(shipment.identity),
+        ...(shipment.automaticOwnership ? { automaticOwnership: { ...shipment.automaticOwnership,
+          observations: shipment.automaticOwnership.observations.map(observation =>
+            ({ ...observation, identity: mark(observation.identity) })) } } : {}) })) }, now);
   });
 }
 
@@ -2529,12 +2553,18 @@ export function removeBinding(
   bindingSource: BindingSource,
   phoneNumber: string,
   now = Date.now(),
+  expectedBinding?: AccountBinding,
 ): AppState {
   return withSharedFileTransaction(() => {
     requireScriptSource(bindingSource);
     const state = loadState(now);
     const normalizedPhone = phone(phoneNumber);
     const sourceBindings = bindingsForSource(state, bindingSource);
+    if (expectedBinding && !sourceBindings.some(binding =>
+      binding.phone === normalizedPhone && binding.boundAtMs === expectedBinding.boundAtMs &&
+      binding.enhancedMode === expectedBinding.enhancedMode && binding.enhancedAtMs === expectedBinding.enhancedAtMs)) {
+      throw new Error("手机号绑定已变更，请重试");
+    }
     const suffix = normalizedPhone.slice(-4);
     const uniquelyMatchesTail = (tail: string): boolean =>
       Boolean(tail) &&

@@ -27,7 +27,7 @@ export function accountParcelWithProjectionReference(
   const textIdentity = parcel?.textIdentity || accountOrderTextIdentity(timeline.tracks);
   // T23 (2026-09-26): a union-page waybill held for its carrier is also enough to rebuild the order's parcel.
   if (!parcel && !trustedReference && !textIdentity &&
-      !shipment.identity.pendingProjection?.waybill) return null;
+      !shipment.identity.pendingProjection?.waybill && !shipment.identity.enhancedMode) return null;
   const projectedWaybill = normalizedProjectedWaybill(shipment.identity);
   return {
     source,
@@ -36,6 +36,8 @@ export function accountParcelWithProjectionReference(
     orderId: shipment.identity.orderId || parcel?.orderId ||
       shipment.identity.sourceId,
     accountOrder: true,
+    ...(shipment.identity.enhancedMode ? { enhancedMode: true as const,
+      productImageURL: shipment.identity.productImageURL } : {}),
     courierCode: parcel?.courierCode || shipment.identity.courierCode,
     rawCourierCode:
       parcel?.rawCourierCode || shipment.identity.rawCourierCode || "",
