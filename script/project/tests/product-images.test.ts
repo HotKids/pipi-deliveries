@@ -249,4 +249,57 @@ globalThis.setTimeout = ((callback: (...args: any[]) => void, delay: number, ...
 try { assert.equal(await loadProductImage(url()), null, "the total operation has a finite deadline"); }
 finally { globalThis.setTimeout = realTimeout; }
 
-console.log("product-images: URL, redirects, MIME, streaming bounds, metadata, cache and cancellation passed");
+const diagnosticMemory = new Map<string, unknown>();
+Object.assign(globalThis, { Storage: {
+  get: (key: string) => diagnosticMemory.get(key) ?? null,
+  set: (key: string, value: unknown) => { diagnosticMemory.set(key, structuredClone(value)); return true; },
+  remove: (key: string) => { diagnosticMemory.delete(key); },
+} });
+const { setDiagnosticsEnabled, clearDiagnostics, readDiagnostics } = await import("../services/logger");
+setDiagnosticsEnabled(true);
+for (const [response, stage, result] of [
+  [{ status: 503 }, "response", "http_error"],
+  [{ mime: "text/html" }, "response", "unsupported_type"],
+  [{ chunks: [data(3)] }, "metadata", "invalid_dimensions"],
+  [{ chunks: [data(4)] }, "metadata", "failed"],
+] as const) {
+  reset(response);
+  clearDiagnostics();
+  const imageURL = url();
+  assert.equal(await loadProductImage(imageURL), null);
+  const entries = readDiagnostics();
+  assert.equal(entries.length, 1, "one image attempt records one terminal result");
+  assert.equal(entries[0].event, "product.image.completed");
+  assert.equal(entries[0].details.stage, stage);
+  assert.equal(entries[0].details.result, result);
+  assert.equal(JSON.stringify(entries).includes(imageURL), false, "image addresses never enter diagnostics");
+}
+reset();
+clearDiagnostics();
+const imageIO = (globalThis as any).ImageIO;
+delete (globalThis as any).ImageIO;
+try {
+  assert.equal(await loadProductImage(url()), null);
+  assert.equal(readDiagnostics()[0].details.result, "unavailable_api");
+} finally { (globalThis as any).ImageIO = imageIO; }
+reset();
+clearDiagnostics();
+const loggedCachedURL = url();
+assert.ok(await loadProductImage(loggedCachedURL));
+assert.equal(readDiagnostics()[0].details.result, "loaded");
+clearDiagnostics();
+assert.ok(await loadProductImage(loggedCachedURL));
+assert.equal(readDiagnostics()[0].details.stage, "cache");
+reset({ pendingFetch: true });
+clearDiagnostics();
+const closedPage = new nativeController();
+const cancelledLoad = loadProductImage(url(), closedPage.signal);
+closedPage.abort();
+assert.equal(await cancelledLoad, null);
+assert.equal(readDiagnostics().length, 0, "closing a page does not report an image failure");
+setDiagnosticsEnabled(false);
+reset();
+assert.ok(await loadProductImage(url()));
+assert.equal(readDiagnostics().length, 0, "the existing logging switch remains authoritative");
+
+console.log("product-images: URL, redirects, MIME, streaming bounds, metadata, cache, cancellation and private diagnostics passed");

@@ -68,6 +68,12 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   records?: number;
   rejectedRecords?: number;
   orders?: number;
+  requestedOrderCount?: number;
+  matchedOrderCount?: number;
+  productImageCount?: number;
+  ambiguousOrderCount?: number;
+  enhancedMode?: boolean;
+  productImagePresent?: boolean;
   routableOrders?: number;
   ownerFingerprint?: string;
   waybillTail?: string;
@@ -276,6 +282,10 @@ const JD_PROBE_COUNT_KEYS = new Set<keyof DiagnosticDetails>([
   "unionBodySizeRejectedCount", "domModalItemCount",
 ]);
 
+const ENHANCEMENT_COUNT_KEYS = new Set<keyof DiagnosticDetails>([
+  "requestedOrderCount", "matchedOrderCount", "productImageCount", "ambiguousOrderCount",
+]);
+
 const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "listStateNumber", "listStatusScope", "listStatusSemantic", "preparedStatusSemantic",
   "previousFeedStatusSemantic", "mergedFeedStatusSemantic", "feedStatusSemantic",
@@ -323,6 +333,8 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "records",
   "rejectedRecords",
   "orders",
+  "requestedOrderCount", "matchedOrderCount", "productImageCount", "ambiguousOrderCount",
+  "enhancedMode", "productImagePresent",
   "routableOrders",
   "ownerFingerprint",
   "waybillTail",
@@ -514,6 +526,7 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
 ]);
 
 const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
+  "enhancedMode", "productImagePresent",
   "fullProgressClicked", "fullProgressControlSeen", "unionResourceBeforeProbe",
   "domModalHeaderPresent", "domModalWaybillPresent",
   "bindingMatched",
@@ -743,7 +756,7 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
       }
       continue;
     }
-    if (key === "projectionProbeRevision" || JD_PROBE_COUNT_KEYS.has(key)) {
+    if (key === "projectionProbeRevision" || JD_PROBE_COUNT_KEYS.has(key) || ENHANCEMENT_COUNT_KEYS.has(key)) {
       const maximum = key === "projectionProbeRevision" ? 100 : 100_000;
       if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 0 && rawValue <= maximum) {
         (result as Record<string, unknown>)[key] = rawValue;
