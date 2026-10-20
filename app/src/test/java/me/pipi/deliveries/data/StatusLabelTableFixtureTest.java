@@ -206,6 +206,39 @@ public final class StatusLabelTableFixtureTest {
                 "运输中", item(StatusSemantic.TRANSIT).displayStatus());
     }
 
+    @Test public void cancellationSubtypesCannotOverrideTheOrdinaryCancellationLabel()
+            throws Exception {
+        JSONObject table = SharedExpressFixtures.load("status-labels.v1.json").getJSONObject("table");
+        table.getJSONObject("labels").put("CANCELLED", "Synthetic cancellation label");
+        table.getJSONArray("subtypes").put(new JSONObject().put("semantic", "CANCELLED")
+                .put("code", "LEGACY_CANCELLED").put("label", "订单已取消").put("priority", 1));
+        CarrierRegistry.installAuthority(CarrierRegistry.prepareAuthority(
+                CarrierAuthorityFixture.payload().put("statusLabels", table)));
+        long eventAt = System.currentTimeMillis() - 60_000L;
+        String time = ExpressTimeFormat.format(eventAt);
+        for (String scope : new String[]{"ORDER", "SHIPMENT"}) {
+            boolean order = "ORDER".equals(scope);
+            String id = order ? "3610448002878296" : "YT7000000000096";
+            WorkerStatusProjection projection = WorkerStatusProjection.read(new JSONObject()
+                    .put("normalizedStatus", new JSONObject().put("version", 1).put("scope", scope)
+                            .put("semantic", "CANCELLED").put("code", "LEGACY_CANCELLED")
+                            .put("text", "订单已取消").put("priority", 1)
+                            .put("eventAtMs", eventAt).put("structured", true)));
+            ExpressQueryResult packet = new ExpressQueryResult(id, order ? "JDKD" : "YTO",
+                    order ? "京东商品快递" : "圆通速递", StatusSemantic.CANCELLED, eventAt,
+                    time, "Synthetic cancelled timeline", "[]", "", PHONE,
+                    TimelineSlot.V5_QUERY, "", "", order ? "JingDong" : "CaiNiao")
+                    .withWorkerStatus(projection);
+            if (order) repository.saveInterface5OrderSummary(packet, PHONE);
+            else repository.saveInterface5(packet, PHONE);
+            ExpressItem row = repository.findByWaybill(id, "interface5");
+            assertNotNull(scope, row);
+            assertEquals(scope, "Synthetic cancellation label", row.displayStatus());
+            assertEquals(scope, "Synthetic cancellation label", listed(row.rowId).displayStatus());
+            assertEquals("订单已取消", WorkerStatusProjection.cached(row.tracksJson).text);
+        }
+    }
+
     @Test public void aMalformedTableRejectsTheWholeSnapshot() throws Exception {
         JSONObject table = SharedExpressFixtures.load("status-labels.v1.json").getJSONObject("table");
         table.getJSONObject("labels").remove("UNKNOWN");
