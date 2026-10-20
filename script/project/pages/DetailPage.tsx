@@ -17,6 +17,7 @@ import { accountKuaidi100URL, kuaidi100MiniProgramURL, shunfengKuaidi100Fallback
 import { trackPhoneText } from "../services/track-phone-links";
 import type { AccountBinding, AppState, Shipment } from "../models";
 import { ProductThumbnail } from "../components/ProductThumbnail";
+import { productImageCacheKey } from "../services/product-image-cache";
 import { SenderBadge } from "../components/SenderBadge";
 import { carrierDisplayName, courierHotline } from "../services/carrier-presentation";
 import {
@@ -279,7 +280,9 @@ export function DetailPage(props: {
   useEffect(() => {
     // 卸载时的取消无条件注册：不自动刷新的进入方式下，用户下拉刷新后退出页面，请求也要跟着作废，
     // 否则完成后还会改页面状态、弹提示（2026-09-06 静态审查发现）。
-    if (props.refreshOnAppear) {
+    if (props.refreshOnAppear || (props.shipment.identity.accountOrder &&
+        props.shipment.identity.sourceProvider?.toLowerCase() === "jingdong" &&
+        !props.shipment.identity.productImageURL)) {
       if (props.refreshOnAppear === "manual_submit") {
         setLoadingManualDetail(true);
       }
@@ -335,6 +338,7 @@ export function DetailPage(props: {
               },
             })
           : await refreshShipmentById(props.shipment.identity.id, {
+            requestProductImage: true,
             forceAccountOrderProjection:
               forceManualRefresh || props.refreshOnAppear === "identity_projection",
             forceManualRefresh,
@@ -345,7 +349,7 @@ export function DetailPage(props: {
               props.refreshOnAppear === "detail_open",
             trigger: forceManualRefresh
               ? "detail_pull"
-              : props.refreshOnAppear || "detail_open",
+              : props.refreshOnAppear || "product_image",
             signal: controller.signal,
             detailEntry: detailEntryRef.current,
           });
@@ -387,7 +391,7 @@ export function DetailPage(props: {
           writeDiagnostic("detail.refresh.ui_failed", {
             trigger: forceManualRefresh
               ? "detail_pull"
-              : props.refreshOnAppear || "detail_open",
+              : props.refreshOnAppear || "product_image",
             ...errorDetails,
           }, "warning");
           if (props.shipment.identity.manuallyAdded && needsManualPhoneTail(error)) {
@@ -562,6 +566,8 @@ export function DetailPage(props: {
       <Section>
         <HStack spacing={14} padding={{ vertical: 12 }}>
           <ProductThumbnail
+            cacheKey={shipment.identity.enhancedMode || shipment.identity.productImageURL
+              ? productImageCacheKey(shipment.identity) : ""}
             courierCode={shipment.identity.courierCode}
             companyName={shipment.identity.companyName}
             accountOrder={Boolean(

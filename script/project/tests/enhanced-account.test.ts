@@ -40,35 +40,44 @@ const [enriched] = await enhanceAccountParcels([parcel], [binding], { identity, 
 assert.equal(enriched.enhancedWaybill, "JD0000000000001");
 assert.equal(enriched.waybill, ORDER);
 assert.equal(enriched.enhancedMode, true);
-assert.equal(enriched.productImageURL, "https://img10.360buyimg.com/synthetic.jpg");
+assert.equal(enriched.productImageURL, undefined, "list waybill requests do not acquire images");
 assert.strictEqual(enriched.tracks, parcel.tracks);
 assert.equal(enriched.ownerId, ORDER);
 assert.equal(enriched.semantic, parcel.semantic);
 
-const [unattributed] = await enhanceAccountParcels([parcel], [binding], { identity,
+const [unattributed] = await enhanceAccountParcels([parcel], [binding], { identity, purpose: "image",
   request: async () => ({ records: [{ phone: "", orderId: ORDER,
     realWaybill: "JD0000000000001", imageUrl: "https://img10.360buyimg.com/unattributed.jpg" }], ambiguousOrderIds: [] }) });
 assert.equal(unattributed.productImageURL, "https://img10.360buyimg.com/unattributed.jpg");
-assert.equal(unattributed.enhancedWaybill, "JD0000000000001");
+assert.equal(unattributed.enhancedWaybill, undefined, "image metadata never projects the accompanying number");
 assert.equal(unattributed.receiverPhone, parcel.receiverPhone);
 assert.strictEqual(unattributed.tracks, parcel.tracks);
 assert.equal(unattributed.semantic, parcel.semantic);
+const [unattributedWaybill] = await enhanceAccountParcels([parcel], [binding], { identity,
+  request: async () => ({ records: [{ phone: "", orderId: ORDER,
+    realWaybill: "JD0000000000001", imageUrl: "https://img10.360buyimg.com/unattributed.jpg" }], ambiguousOrderIds: [] }) });
+assert.equal(unattributedWaybill.enhancedWaybill, "JD0000000000001");
+assert.equal(unattributedWaybill.productImageURL, undefined);
 const sharedOrderParcels = [parcel, { ...parcel, receiverPhone: OTHER }];
 const sharedOrderBindings = [binding, { ...binding, phone: OTHER }];
-const sharedUnattributed = await enhanceAccountParcels(sharedOrderParcels, sharedOrderBindings, { identity,
+const sharedUnattributed = await enhanceAccountParcels(sharedOrderParcels, sharedOrderBindings, { identity, purpose: "image",
   request: async () => ({ records: [{ phone: "", orderId: ORDER,
     imageUrl: "https://img10.360buyimg.com/shared.jpg" }], ambiguousOrderIds: [] }) });
 assert.ok(sharedUnattributed.every(value => !value.productImageURL), "unattributed metadata cannot choose between two requested phones");
 for (const phone of [undefined, null, "8000", OTHER]) {
-  const [rejected] = await enhanceAccountParcels([parcel], [binding], { identity,
+  const [rejected] = await enhanceAccountParcels([parcel], [binding], { identity, purpose: "image",
     request: async () => ({ records: [{ phone, orderId: ORDER,
       imageUrl: "https://img10.360buyimg.com/rejected.jpg" }], ambiguousOrderIds: [] }) });
   assert.equal(rejected.productImageURL, undefined, "only the Worker's explicit empty-phone marker permits order matching");
 }
-const [duplicateMetadata] = await enhanceAccountParcels([parcel], [binding], { identity,
+const [duplicateMetadata] = await enhanceAccountParcels([parcel], [binding], { identity, purpose: "image",
   request: async () => ({ records: [PHONE, ""].map(phone => ({ phone, orderId: ORDER,
     imageUrl: "https://img10.360buyimg.com/duplicate.jpg" })), ambiguousOrderIds: [] }) });
 assert.equal(duplicateMetadata.productImageURL, undefined, "duplicate metadata cannot choose a first result");
+const [duplicateWaybill] = await enhanceAccountParcels([parcel], [binding], { identity,
+  request: async () => ({ records: [PHONE, ""].map(phone => ({ phone, orderId: ORDER,
+    realWaybill: "JD0000000000001" })), ambiguousOrderIds: [] }) });
+assert.equal(duplicateWaybill.enhancedWaybill, undefined, "duplicate number metadata cannot choose a first result");
 const carrierPending = await prepareAccountParcelCarrier(enriched, {
   recognize: async () => ({ normalization: null, exhausted: false }),
 });
@@ -84,18 +93,20 @@ for (const record of [
   const [unchanged] = await enhanceAccountParcels([parcel], [binding], { identity,
     request: async () => ({ records: [record], ambiguousOrderIds: [] }) });
   assert.equal(unchanged.waybill, ORDER);
+  assert.equal(unchanged.enhancedWaybill, undefined);
   assert.equal(unchanged.enhancedMode, true);
   assert.equal(accountOrderTextWaybill(unchanged), "");
 }
 const [ambiguous] = await enhanceAccountParcels([parcel], [binding], { identity,
   request: async () => ({ records: [{ phone: PHONE, orderId: ORDER, realWaybill: "JD0000000000001" }], ambiguousOrderIds: [ORDER] }) });
 assert.equal(ambiguous.waybill, ORDER);
-const [imageOnly] = await enhanceAccountParcels([parcel], [binding], { identity,
+assert.equal(ambiguous.enhancedWaybill, undefined);
+const [imageOnly] = await enhanceAccountParcels([parcel], [binding], { identity, purpose: "image",
   request: async () => ({ records: [{ phone: PHONE, orderId: ORDER, realWaybill: "", imageUrl: "https://img10.360buyimg.com/product.jpg" }], ambiguousOrderIds: [] }) });
 assert.equal(imageOnly.waybill, ORDER);
 assert.ok(imageOnly.productImageURL);
 for (const url of ["https://evil.invalid/p.jpg", "http://img10.360buyimg.com/p.jpg", "https://user@jd.com/p.jpg"]) {
-  const [invalidImage] = await enhanceAccountParcels([parcel], [binding], { identity,
+  const [invalidImage] = await enhanceAccountParcels([parcel], [binding], { identity, purpose: "image",
     request: async () => ({ records: [{ phone: PHONE, orderId: ORDER, imageUrl: url }], ambiguousOrderIds: [] }) });
   assert.equal(invalidImage.productImageURL, undefined);
 }
@@ -133,14 +144,14 @@ const withOldInvalidObservation = { ...projected, automaticOwnership: { ...proje
   ...projected.automaticOwnership!.observations,
 ] } };
 assert.equal(cachedEnhancementParcels([withOldInvalidObservation], [binding], new Set()).length, 1);
-const [updatedImage] = await enhanceAccountParcels([reference!], [binding], { identity,
+const [updatedImage] = await enhanceAccountParcels([reference!], [binding], { identity, purpose: "image",
   request: async () => ({ records: [{ phone: PHONE, orderId: ORDER, realWaybill: "JD0000000000001",
     imageUrl: "https://img10.360buyimg.com/new.jpg" }], ambiguousOrderIds: [] }) });
 const imageRefresh = applyEnhancementMetadata(projected, updatedImage, Date.now());
 assert.equal(imageRefresh.identity.productImageURL, "https://img10.360buyimg.com/new.jpg");
 assert.strictEqual(imageRefresh.timeline, projected.timeline);
 assert.equal(imageRefresh.automaticOwnership?.observations[0].observedAtMs, 200);
-const [unattributedRefresh] = await enhanceAccountParcels([reference!], [binding], { identity,
+const [unattributedRefresh] = await enhanceAccountParcels([reference!], [binding], { identity, purpose: "image",
   request: async () => ({ records: [{ phone: "", orderId: ORDER,
     realWaybill: "JD0000000000002", imageUrl: "https://img10.360buyimg.com/unattributed-new.jpg" }], ambiguousOrderIds: [] }) });
 const retainedAssociation = applyEnhancementMetadata(projected, unattributedRefresh, Date.now());
@@ -159,7 +170,7 @@ assert.equal(requests, 0);
 assert.strictEqual(unchanged[0], parcel);
 
 clearDiagnostics();
-await enhanceAccountParcels([parcel, parcel], [binding], { identity,
+await enhanceAccountParcels([parcel, parcel], [binding], { identity, purpose: "image",
   request: async () => ({ records: [{ phone: PHONE, orderId: ORDER,
     imageUrl: "https://img10.360buyimg.com/synthetic-private-product.jpg" }], ambiguousOrderIds: [] }) });
 const completion = readDiagnostics().filter(entry => entry.event === "account.enhanced.completed");
@@ -181,7 +192,7 @@ for (const [records, ambiguousOrderIds, expected] of [
     { matchedOrderCount: 0, productImageCount: 0, ambiguousOrderCount: 1 }],
 ] as const) {
   clearDiagnostics();
-  await enhanceAccountParcels([parcel], [binding], { identity,
+  await enhanceAccountParcels([parcel], [binding], { identity, purpose: "image",
     request: async () => ({ records: [...records], ambiguousOrderIds: [...ambiguousOrderIds] }) });
   const details = readDiagnostics().find(entry => entry.event === "account.enhanced.completed")?.details;
   for (const [key, count] of Object.entries(expected)) {

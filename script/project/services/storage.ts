@@ -92,6 +92,7 @@ import { notificationEnabled } from "./notification-preferences";
 import { preserveSettledShipment } from "./shipment-policy";
 import { newerWaybillReuseGeneration } from "./waybill-reuse";
 import { pruneRowLedgerForState } from "./row-ledger";
+import { pruneProductImages } from "./product-image-cache";
 
 const STATE_KEY = "pipi_deliveries_state_v1";
 /** 只放一个数字：状态最近一次落盘的 revision，供投影等待轮询，不用每次全量 loadState（2026-09-06）。 */
@@ -1608,6 +1609,8 @@ export function loadState(now = Date.now()): AppState {
     if (encoded.state.emptyTimelineRetirements?.length) {
       pruneShipmentRoutesForState(encoded.state, now);
     }
+    pruneProductImages(chosen.state.shipments.map(shipment => shipment.identity),
+      encoded.state.shipments.map(shipment => shipment.identity), now);
     return encoded.state;
   });
   } catch (error) {
@@ -1995,6 +1998,8 @@ function saveStateAndPrune(
   }
   const verifyFinishedAtMs = Date.now();
   const routesPruned = pruneRoutesForState(stored.state, now);
+  pruneProductImages(previous.shipments.map(shipment => shipment.identity),
+    stored.state.shipments.map(shipment => shipment.identity), now);
   // 用户 2026-10-03 优化 1、3、5 续：每行台账（签收后放行、状态对齐记录、第一次识别时的锚点）只随行真正删除或运单号被新件
   // 接管而清掉。
   pruneRowLedgerForState(

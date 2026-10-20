@@ -336,7 +336,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
             disabled={busy}
           />
           <Text font={12} foregroundStyle="secondaryLabel">
-            需先完成基础绑定。开启后京东订单可显示商品图片，运单号更及时准确。
+            需先完成同一手机号的基础绑定。开启后可显示京东订单的商品图片，并更及时准确地获取运单号。
           </Text>
         </VStack>
         <HStack

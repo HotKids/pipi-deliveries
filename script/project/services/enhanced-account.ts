@@ -7,6 +7,7 @@ import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { readDurableTextResult, writeDurableText } from "./durable-files";
 import { withSharedFileTransaction } from "./shared-file-transaction";
 import { utf8Data } from "./scripting-data";
+import { normalizeWaybill } from "./status";
 
 export type EnhancementIdentity = Readonly<{ accountId: string; androidId: string }>;
 export const ENHANCEMENT_ROUTE = "/api/express/accounts/enhanced";
@@ -80,15 +81,32 @@ export function enhancementPhone(parcel: AccountParcelDto, bindings: readonly Ac
     ? phone : "";
 }
 
+/** A cached row flag cannot outlive its current same-phone enhancement binding. */
+export function withCurrentAccountEnhancement(parcel: AccountParcelDto, bindings: readonly AccountBinding[]): AccountParcelDto {
+  const active = Boolean(enhancementPhone(parcel, bindings));
+  if (active === Boolean(parcel.enhancedMode)) return parcel;
+  return { ...parcel, enhancedMode: active ? true : undefined, enhancedWaybill: undefined };
+}
+
+function enhancementRequested(parcel: AccountParcelDto, purpose: "waybill" | "image"): boolean {
+  if (!parcel.enhancedMode) return false;
+  if (purpose === "image") return !parcel.productImageURL;
+  // Use the upstream list enum: an unprojected 103 is presented locally as ORDERED.
+  return /^(10[2-9]|110)$/.test(parcel.sourceStateCode) && !parcel.enhancedWaybill &&
+    normalizeWaybill(parcel.waybill) === normalizeWaybill(parcel.ownerId);
+}
+
 export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[], bindings: readonly AccountBinding[],
-  options: { deadlineAtMs?: number; signal?: AbortSignal;
+  options: { purpose?: "waybill" | "image"; deadlineAtMs?: number; signal?: AbortSignal;
     identity?: EnhancementIdentity;
     request?: (payload: Record<string, unknown>) => Promise<Record<string, unknown>> } = {}): Promise<AccountParcelDto[]> {
   const candidateOrders = parcels.filter(parcel => parcel.source === "interface5" && parcel.accountOrder &&
     parcel.sourceProvider.toLowerCase() === "jingdong");
-  const orders = parcels.flatMap(parcel => {
+  const purpose = options.purpose || "waybill";
+  const marked = parcels.map(parcel => withCurrentAccountEnhancement(parcel, bindings));
+  const orders = marked.flatMap(parcel => {
     const phone = enhancementPhone(parcel, bindings);
-    return phone ? [{ phone, orderId: parcel.orderId || parcel.ownerId }] : [];
+    return phone && enhancementRequested(parcel, purpose) ? [{ phone, orderId: parcel.orderId || parcel.ownerId }] : [];
   });
   const seen = new Set<string>();
   const distinctOrders = orders.filter(order => {
@@ -102,9 +120,8 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
       writeDiagnostic("account.enhanced.skipped", { stage: "metadata", result: "no_eligible_orders",
         orders: candidateOrders.length, requestedOrderCount: 0 });
     }
-    return [...parcels];
+    return marked;
   }
-  const marked = parcels.map(parcel => enhancementPhone(parcel, bindings) ? { ...parcel, enhancedMode: true as const } : parcel);
   try {
     const request = options.request || (payload => postGateway(ENHANCEMENT_ROUTE, payload, {
       deadlineAtMs: options.deadlineAtMs, signal: options.signal,
@@ -117,7 +134,7 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
     const matched = new Set<string>(), images = new Set<string>();
     const enriched = marked.map(parcel => {
       const phone = enhancementPhone(parcel, bindings), orderId = parcel.orderId || parcel.ownerId;
-      if (!phone || ambiguous.has(orderId)) return parcel;
+      if (!phone || !enhancementRequested(parcel, purpose) || ambiguous.has(orderId)) return parcel;
       const uniqueOrder = distinctOrders.filter(order => order.orderId === orderId).length === 1;
       const records = response.records.filter(record => record && typeof record === "object" &&
         (record as Record<string, unknown>).orderId === orderId &&
@@ -126,12 +143,12 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
       if (records.length !== 1) return parcel;
       const record = records[0];
       const waybill = typeof record.realWaybill === "string" ? record.realWaybill.trim() : "";
-      const image = allowedImage(record.imageUrl);
+      const image = purpose === "image" ? allowedImage(record.imageUrl) : "";
       const pair = `${phone}\0${orderId}`;
       matched.add(pair);
       if (image) images.add(pair);
       return { ...parcel, ...(image ? { productImageURL: image } : {}),
-        ...(waybill && waybill !== orderId && waybill.length >= 6 && waybill.length <= 64 &&
+        ...(purpose === "waybill" && waybill && waybill !== orderId && waybill.length >= 6 && waybill.length <= 64 &&
           !/[\u0000-\u0020\u007f]/.test(waybill)
           ? { enhancedWaybill: waybill }
           : {}) };

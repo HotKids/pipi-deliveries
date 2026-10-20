@@ -1,6 +1,7 @@
 import { withSharedFileTransaction } from "./shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
+  AccountBinding,
   AppState,
   BindingSource,
   PendingManualQuery,
@@ -194,7 +195,8 @@ import {
 } from "./account-sync-policy";
 import type { ExpressToastKey } from "./express-toast-copy";
 import { accountParcelWithProjectionReference } from "./account-order-reference";
-import { enhanceAccountParcels, enhancementOperation, requireEnhancementBinding } from "./enhanced-account";
+import { enhanceAccountParcels, enhancementOperation, requireEnhancementBinding,
+  enhancementPhone, withCurrentAccountEnhancement } from "./enhanced-account";
 import { prepareManualPreview } from "./manual-preview";
 import {
   createDiagnosticFlowId,
@@ -345,12 +347,15 @@ export type DetailEntryObservation = Readonly<{
   gaveTimeline: boolean;
 }>;
 type ShipmentRefreshOptions = {
+  /** Only the visible detail page may request product-image metadata. */
+  requestProductImage?: boolean;
   forceAccountOrderProjection?: boolean;
   forceManualRefresh?: boolean;
   includeKdniaoFallback?: boolean;
   trigger?:
     | "detail_open"
     | "detail_pull"
+    | "product_image"
     | "manual_submit"
     | "identity_projection"
     | "missing_history"
@@ -367,6 +372,7 @@ type TargetRefreshLease = Readonly<{
   isCurrent: () => boolean;
   signal?: AbortSignal;
   expectedFingerprint?: string;
+  expectedImageOwner?: string;
 }>;
 /**
  * 用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒。A detail refresh (open or pull) is one user operation outside
@@ -1077,7 +1083,7 @@ function projectionOwnerId(parcel: AccountParcelDto): string {
  * 存盘行投影；不在屏幕上的页面只会超时（visibilityState=hidden）。
  */
 class UnionPageSkipped extends Error {
-  constructor(readonly reason: "not_foreground") {
+  constructor(readonly reason: "not_foreground" | "enhancement_active") {
     super("union page left to the on-screen pass");
     this.name = "UnionPageSkipped";
   }
@@ -1089,6 +1095,10 @@ class UnionPageSkipped extends Error {
  */
 function unionPageSceneGate(): void {
   if (!projectionSceneActive()) throw new UnionPageSkipped("not_foreground");
+}
+
+function legacyOrderNumberGate(parcel: AccountParcelDto): void {
+  if (enhancementPhone(parcel, loadState().bindings)) throw new UnionPageSkipped("enhancement_active");
 }
 
 /**
@@ -1539,6 +1549,25 @@ function retainObservedProjectionRisk(
     isCurrent: () => true,
     acceptsState: latest => matchesAttempt(latest.shipments.find(shipment => shipment.identity.id === ownerId)),
   });
+}
+
+function restoreEnhancementBlockedProjection(
+  ownerId: string,
+  routeHash: string,
+  attemptId: string,
+  field: ProjectionAttemptField,
+  retry: Shipment["identity"]["orderProjectionRetry"],
+): AppState {
+  const state = loadState();
+  const matchesAttempt = (owner: Shipment | undefined) =>
+    owner?.identity[field]?.attemptId === attemptId && owner.identity[field]?.routeHash === routeHash;
+  const owner = state.shipments.find(shipment => shipment.identity.id === ownerId);
+  if (!owner || !matchesAttempt(owner)) return state;
+  // A binding change rejects old business results, but this exact unloaded page still owns its reservation cleanup.
+  return commitTargetShipmentRefresh(state, withProjectionAttemptRecord(owner, field, retry), Date.now(), {
+    isCurrent: () => true,
+    acceptsState: latest => matchesAttempt(latest.shipments.find(shipment => shipment.identity.id === ownerId)),
+  }).state;
 }
 
 /**
@@ -2033,8 +2062,9 @@ function accountOrderProjectionDecision(
   textBackfillOnly: boolean,
   listStructuredSemantic: ProjectionListSemantic,
   includeCompleted = false,
+  bindings: readonly AccountBinding[] = [],
 ): AccountOrderProjectionDecision {
-  if (!parcel.accountOrder || parcel.enhancedMode) return { due: false };
+  if (!parcel.accountOrder || enhancementPhone(parcel, bindings)) return { due: false };
   const expectedId = projectionOwnerId(parcel);
   const existingOwner = shipments.find(
     (item) => item.identity.id === expectedId,
@@ -2143,9 +2173,9 @@ async function projectAccountOrders(
   const boundPhones = bindingsForSource(state, source).map(
     (binding) => binding.phone,
   );
-  const candidates = parcels.filter((parcel) => {
+  const candidates = parcels.map(parcel => withCurrentAccountEnhancement(parcel, state.bindings)).filter((parcel) => {
     const decision = accountOrderProjectionDecision(
-      parcel, shipments, now, skipRefreshIds, textBackfillOnly, listStructuredSemantic, includeCompleted,
+      parcel, shipments, now, skipRefreshIds, textBackfillOnly, listStructuredSemantic, includeCompleted, state.bindings,
     );
     if (decision.skipped) {
       writeDiagnostic("order.projection.skipped", {
@@ -2232,8 +2262,12 @@ async function projectAccountOrders(
     }
     if (freshOwner) shipments = replaceById(shipments, freshOwner);
     if (!freshOwner) continue;
+    if (enhancementPhone(parcel, freshState.bindings)) continue;
     // A feed-text waybill loads no page, so only a page load is gated.
-    const pageGate = parcel.textIdentity?.waybill || heldProjection ? undefined : unionPageGate;
+    const pageGate = parcel.textIdentity?.waybill || heldProjection ? undefined : () => {
+      legacyOrderNumberGate(parcel);
+      unionPageGate?.();
+    };
     if (pageGate) {
       try {
         pageGate();
@@ -3564,6 +3598,15 @@ function detailRequestFingerprint(shipment: Shipment, state: AppState): string {
   }));
 }
 
+function productImageOwnerFingerprint(shipment: Shipment, state: AppState): string {
+  const identity = shipment.identity;
+  return privateHash(JSON.stringify([
+    identity.id, identity.bindingSource, identity.sourceId, identity.phone, identity.orderId,
+    identity.sourceOwner, identity.sourceProvider,
+    state.bindings.filter(binding => binding.source === identity.bindingSource && binding.phone === identity.phone),
+  ]));
+}
+
 const accountDetailRequests = new RefreshCoordinator<BindingSource, string, AccountParcelDto | null, never>();
 const accountSourceFullRequests = new WeakSet<Promise<RefreshSummary>>();
 const forcedManualFullRequests = new WeakSet<Promise<RefreshSummary>>();
@@ -3816,6 +3859,9 @@ async function runShipmentRefreshFlow(
   if (lease.expectedFingerprint != null && detailRequestFingerprint(original, base) !== lease.expectedFingerprint) {
     return { state: base, shipment: original, refreshed: false, querySucceeded: false };
   }
+  if (lease.expectedImageOwner != null && productImageOwnerFingerprint(original, base) !== lease.expectedImageOwner) {
+    return { state: base, shipment: original, refreshed: false, querySucceeded: false };
+  }
   const source = requireScriptSource(
     original.identity.bindingSource || SCRIPT_BINDING_SOURCE,
   );
@@ -3834,10 +3880,11 @@ async function runShipmentRefreshFlow(
   } : undefined;
   const pull = trigger === "detail_pull" || aligning;
   let identityApplied = false;
-  if (original.identity.enhancedMode && !original.identity.productImageURL && !unprojectedAccountOrder(original)) {
-    const reference = accountParcelWithProjectionReference(original, null, "");
+  if (options.requestProductImage && !original.identity.productImageURL) {
+    const reference = accountParcelWithProjectionReference(original, null, "", true);
     if (reference) {
-      const [metadata] = await enhanceAccountParcels([reference], bindingsForSource(base, source), { deadlineAtMs, signal });
+      const [metadata] = await enhanceAccountParcels([reference], bindingsForSource(base, source),
+        { purpose: "image", deadlineAtMs, signal });
       const enriched = applyEnhancementMetadata(original, metadata, Date.now());
       if (enriched !== original) {
         const commit = commitTargetShipmentRefresh(base, enriched, Date.now(), lease);
@@ -3848,24 +3895,20 @@ async function runShipmentRefreshFlow(
       }
     }
   }
+  if (trigger === "product_image") return { state: base, shipment: original, refreshed: identityApplied };
   // Old cached feed text can resolve identity without waiting for another provider response.
   // T23 (user 2026-09-26, 其余裁决 28): its waybill — or a union-page waybill held for its carrier — is recognised
   // first and projected only with a matched carrier; otherwise the order stays as it is and no page is opened here.
   if (unprojectedAccountOrder(original)) {
-    let reference = accountParcelWithProjectionReference(original, null, "");
+    const cachedReference = accountParcelWithProjectionReference(original, null, "");
+    const reference = cachedReference && withCurrentAccountEnhancement(cachedReference, base.bindings);
     const held = original.identity.pendingProjection;
     const recognitionDeadlineAtMs = accountChildDeadline(deadlineAtMs, ACCOUNT_DETAIL_BUDGET_MS);
-    if (reference && original.identity.enhancedMode) {
-      reference = (await enhanceAccountParcels([reference], bindingsForSource(base, source),
-        { deadlineAtMs: recognitionDeadlineAtMs, signal }))[0];
-      reference = await prepareAccountParcelCarrier(reference,
-        { deadlineAtMs: recognitionDeadlineAtMs, signal, budget: operationRecognitionBudget(lease) });
-    }
     let parcel = reference;
     if (reference && accountOrderTextWaybill(reference)) {
       parcel = await withRecognizedAccountOrderTextWaybill(reference,
         { deadlineAtMs: recognitionDeadlineAtMs, signal, budget: operationRecognitionBudget(lease) });
-    } else if (reference && !original.identity.enhancedMode && held?.waybill && heldCarrierSettleable(held.waybill, Date.now())) {
+    } else if (reference && !reference.enhancedMode && held?.waybill && heldCarrierSettleable(held.waybill, Date.now())) {
       const candidate = releaseExhaustedProjection(
         await normalizeAccountParcelCarrierBestEffort(heldProjectionParcel(reference, held),
           { deadlineAtMs: recognitionDeadlineAtMs, signal, budget: operationRecognitionBudget(lease) }),
@@ -3878,7 +3921,7 @@ async function runShipmentRefreshFlow(
     const incoming = parcel && parcelToShipment(parcel, bindingsForSource(base, source).map(b => b.phone), Date.now());
     if (incoming && (normalizedProjectedWaybill(incoming.identity) ||
       incoming.identity.productImageURL !== original.identity.productImageURL)) {
-      const local = original.identity.enhancedMode
+      const local = reference?.enhancedMode
         ? applyEnhancementMetadata(original, parcel!, Date.now())
         : applyTargetedAccountShipment(original, incoming, Date.now());
       const commit = commitTargetShipmentRefresh(base, local, Date.now(), lease);
@@ -3937,6 +3980,7 @@ async function runShipmentRefreshFlow(
     if (unprojectedAccountOrder(entry.shipment)) {
       const projection = await runShipmentRefreshById(shipmentId, lease, {
         ...options, trigger: "identity_projection", forceAccountOrderProjection: true,
+        requestProductImage: false,
         forceManualRefresh: false, includeKdniaoFallback: false,
       }, runtimeOverrides);
       return { ...projection, refreshed: identityApplied || entry.refreshed || projection.refreshed,
@@ -4171,8 +4215,12 @@ async function runShipmentRefreshFlow(
           let reopenRetry: Shipment["identity"]["jingDongH5Retry"] = undefined;
           // 用户 2026-10-03「所有开京粉页的路都检查」（代码 4）：a reservation the scene gate gave back before any page loaded.
           let pageSkippedRestore: {
+            ownerId: string;
+            routeHash: string;
+            attemptId: string;
             field: ProjectionAttemptField;
             retry: Shipment["identity"]["orderProjectionRetry"];
+            enhancementBlocked: boolean;
           } | null = null;
           let querySucceededBeforePage: boolean | undefined;
           // 用户 2026-10-03「这轮就统一」（优化 1）：the signed generation this load belongs to, and whether the page answered.
@@ -4211,7 +4259,7 @@ async function runShipmentRefreshFlow(
           );
           if (
                         parcel?.accountOrder &&
-            (!original.identity.enhancedMode || reopenForTimeline) &&
+            (!enhancementPhone(parcel, base.bindings) || reopenForTimeline) &&
             (parcel.projectionUrl || parcel.textIdentity?.waybill) &&
             (forceAccountOrderProjection || accountOrderReadyForProjection(
               parcel.normalizedStatusSemantic || parcel.semantic,
@@ -4400,7 +4448,10 @@ async function runShipmentRefreshFlow(
                     },
                     signal,
                     // 代码 4: asked again right before the page loads (the viewport wait can outlast the foreground).
-                    () => { unionPageSceneGate(); beforeQuery?.(); },
+                    () => {
+                      if (!reopenForTimeline) legacyOrderNumberGate(parcel!);
+                      unionPageSceneGate(); beforeQuery?.();
+                    },
                     operationRecognitionBudget(lease),
                   );
                   assertRefreshSignal(signal);
@@ -4502,7 +4553,9 @@ async function runShipmentRefreshFlow(
                 } catch (error) {
                   if ((error instanceof UnionPageSkipped || queryReservationFailed) && !signal?.aborted) {
                     // No page loaded when the scene or required alignment reservation refused it; preserve JD's rest.
-                    pageSkippedRestore = { field: attemptField, retry: freshOwner.identity[attemptField] };
+                    pageSkippedRestore = { ownerId, routeHash, attemptId, field: attemptField,
+                      retry: freshOwner.identity[attemptField],
+                      enhancementBlocked: error instanceof UnionPageSkipped && error.reason === "enhancement_active" };
                     querySucceeded = querySucceededBeforePage;
                     writeDiagnostic("order.projection.skipped", {
                       flowId,
@@ -4645,6 +4698,14 @@ async function runShipmentRefreshFlow(
             changed = true;
           }
           if (pageSkippedRestore) {
+            if (pageSkippedRestore.enhancementBlocked) {
+              const state = restoreEnhancementBlockedProjection(pageSkippedRestore.ownerId,
+                pageSkippedRestore.routeHash, pageSkippedRestore.attemptId,
+                pageSkippedRestore.field, pageSkippedRestore.retry);
+              const shipment = state.shipments.find(item => item.identity.id === pageSkippedRestore.ownerId);
+              if (!shipment) throw new Error("该快递已从列表中移除");
+              return { state, shipment, refreshed: identityApplied };
+            }
             refreshed = withProjectionAttemptRecord(refreshed, pageSkippedRestore.field, pageSkippedRestore.retry);
             changed = true;
           }
@@ -5407,6 +5468,18 @@ async function runShipmentRefreshFlow(
  */
 const statusAlignmentRefreshes = new Map<string, Promise<ShipmentRefreshResult>>();
 
+async function finishRequestedDetailImage(
+  result: ShipmentRefreshResult, shipmentId: string, options: ShipmentRefreshOptions,
+  runtimeOverrides: ShipmentRefreshRuntimeOverrides, expectedImageOwner?: string,
+): Promise<ShipmentRefreshResult> {
+  if (!options.requestProductImage || result.shipment.identity.productImageURL) return result;
+  const metadata = await runTargetedShipmentRefresh(shipmentId, { ...options, trigger: "product_image",
+    forceAccountOrderProjection: false, forceManualRefresh: false, includeKdniaoFallback: false },
+    runtimeOverrides, undefined, expectedImageOwner);
+  return { ...result, state: metadata.state, shipment: metadata.shipment,
+    refreshed: result.refreshed || metadata.refreshed };
+}
+
 async function pullAfterStatusAlignment(
   shipmentId: string,
   forced: Promise<ShipmentRefreshResult>,
@@ -5449,9 +5522,11 @@ async function pullAfterStatusAlignment(
       shipmentDetailIncompleteReason(withoutForcedCompletion(shipment)) !== null) {
     return runTargetedShipmentRefresh(shipmentId, { ...options, deadlineAtMs }, runtimeOverrides, expectedFingerprint);
   }
-  return outcome
+  const result = outcome
     ? { ...outcome, state, shipment, detailEntry: options.detailEntry }
     : { state, shipment, refreshed: false, querySucceeded: false };
+  return finishRequestedDetailImage(result, shipmentId, options, runtimeOverrides,
+    waitingShipment ? productImageOwnerFingerprint(waitingShipment, waitingState) : undefined);
 }
 
 function runTargetedShipmentRefresh(
@@ -5459,14 +5534,41 @@ function runTargetedShipmentRefresh(
   options: ShipmentRefreshOptions,
   runtimeOverrides: ShipmentRefreshRuntimeOverrides = {},
   expectedFingerprint?: string,
+  imageOwner?: string,
 ): Promise<ShipmentRefreshResult> {
   const durableLease = acquireRenewingDurableRefreshLease(
     `detail:${shipmentId}`,
     35_000,
   );
+  const forced = !durableLease && options.trigger === "detail_pull" ? statusAlignmentRefreshes.get(shipmentId) : undefined;
+  if (forced) return pullAfterStatusAlignment(shipmentId, forced, options, runtimeOverrides);
+  if (!durableLease && options.requestProductImage) {
+    return (async () => {
+      const waitingState = loadState();
+      const waitingShipment = waitingState.shipments.find(item => item.identity.id === shipmentId);
+      if (!waitingShipment) throw new Error("该快递已从列表中移除");
+      const expectedImageOwner = imageOwner || productImageOwnerFingerprint(waitingShipment, waitingState);
+      const deadlineAtMs = options.deadlineAtMs ?? deadlineAfter(MANUAL_QUERY_BUDGET_MS);
+      // A background detail holder does not perform the visible page's image request.
+      while (durableRefreshLeaseRemainingMs(`detail:${shipmentId}`) > 0) {
+        assertRefreshSignal(options.signal);
+        assertWithinDeadline(deadlineAtMs);
+        await waitForRefresh(new Promise<void>(resolve => setTimeout(resolve, 100)), deadlineAtMs, options.signal);
+        const currentState = loadState();
+        const current = currentState.shipments.find(item => item.identity.id === shipmentId);
+        if (!current) throw new Error("该快递已从列表中移除");
+        if (productImageOwnerFingerprint(current, currentState) !== expectedImageOwner) {
+          return { state: currentState, shipment: current, refreshed: false, querySucceeded: false };
+        }
+      }
+      assertRefreshSignal(options.signal);
+      assertWithinDeadline(deadlineAtMs);
+      return runTargetedShipmentRefresh(shipmentId, { ...options, deadlineAtMs, trigger: "product_image",
+        forceAccountOrderProjection: false, forceManualRefresh: false, includeKdniaoFallback: false },
+        runtimeOverrides, undefined, expectedImageOwner);
+    })();
+  }
   if (!durableLease) {
-    const forced = options.trigger === "detail_pull" ? statusAlignmentRefreshes.get(shipmentId) : undefined;
-    if (forced) return pullAfterStatusAlignment(shipmentId, forced, options, runtimeOverrides);
     const state = loadState();
     const shipment = state.shipments.find(
       (item) => item.identity.id === shipmentId,
@@ -5479,6 +5581,7 @@ function runTargetedShipmentRefresh(
   const lease: TargetRefreshLease = {
     deadlineAtMs: options.deadlineAtMs,
     expectedFingerprint,
+    expectedImageOwner: imageOwner,
     isCurrent: () =>
       active && durableLease.isCurrent() && !options.signal?.aborted,
     signal: options.signal,
@@ -5507,13 +5610,18 @@ async function runTargetedShipmentRefreshWithProjectionWait(
   const forced = options.trigger === "detail_pull" ? statusAlignmentRefreshes.get(shipmentId) : undefined;
   if (forced) return pullAfterStatusAlignment(shipmentId, forced, options, runtimeOverrides);
   if (options.forceAccountOrderProjection || options.trigger === "detail_pull") {
+    const waitingState = loadState();
+    const waitingShipment = waitingState.shipments.find(item => item.identity.id === shipmentId);
     const completed = await waitForProjectionAttemptRelease(
       shipmentId,
       options.signal,
       options.deadlineAtMs,
       options.trigger === "detail_pull",
     );
-    if (completed && (options.trigger === "detail_pull" || !options.includeKdniaoFallback)) return completed;
+    if (completed && (options.trigger === "detail_pull" || !options.includeKdniaoFallback)) {
+      return finishRequestedDetailImage(completed, shipmentId, options, runtimeOverrides,
+        waitingShipment ? productImageOwnerFingerprint(waitingShipment, waitingState) : undefined);
+    }
   }
   return runTargetedShipmentRefresh(shipmentId, options, runtimeOverrides);
 }
@@ -5529,6 +5637,7 @@ export function refreshShipmentById(
   const trigger = options.trigger || "detail_open";
   const deadlineAtMs = options.deadlineAtMs ?? deadlineAfter(MANUAL_QUERY_BUDGET_MS);
   const key = JSON.stringify([shipmentId, detailRequestFingerprint(shipment, state), trigger,
+    Boolean(options.requestProductImage),
     Boolean(options.includeKdniaoFallback), Boolean(options.forceManualRefresh),
     Boolean(options.forceAccountOrderProjection), options.detailEntry]);
   return refreshCoordinator.runIndependentDetail(key, source, signal =>
@@ -6275,18 +6384,19 @@ function storedAccountOrderProjectionCandidates(
       excludeOwnerIds.has(ownerId)
     ) return [];
     // The same rebuild as the detail page's cached_order_projection: saved reference or feed text.
-    const parcel = accountParcelWithProjectionReference(
+    const reference = accountParcelWithProjectionReference(
       shipment,
       null,
       loadOrderProjectionReference(ownerId, source, now),
     );
+    const parcel = reference && withCurrentAccountEnhancement(reference, state.bindings);
     if (
       !parcel ||
       projectionOwnerId(parcel) !== ownerId ||
       !parcelToShipment(parcel, boundPhones, now)
     ) return [];
     const decision = accountOrderProjectionDecision(
-      parcel, state.shipments, now, noDetailRefreshes, false, storedRowStructuredSemantic, includeCompleted,
+      parcel, state.shipments, now, noDetailRefreshes, false, storedRowStructuredSemantic, includeCompleted, state.bindings,
     );
     return decision.due ? [{ ownerId, parcel }] : [];
   });

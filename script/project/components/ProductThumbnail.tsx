@@ -1,9 +1,12 @@
 import { AbortController, Image, VStack, useEffect, useState } from "scripting";
 import { loadProductImage } from "../services/product-images";
+import { cachedProductImage, productImageCacheKey } from "../services/product-image-cache";
+import { loadState } from "../services/storage";
 import { CourierIcon } from "./CourierIcon";
 
 export function ProductThumbnail(props: {
   imageURL?: string;
+  cacheKey: string;
   courierCode: string;
   companyName: string;
   accountOrder?: boolean;
@@ -11,24 +14,26 @@ export function ProductThumbnail(props: {
   cornerRadius?: number;
 }) {
   const imageURL = props.imageURL || "";
+  const cacheKey = props.cacheKey;
   const [loaded, setLoaded] = useState<{
-    url: string;
+    key: string;
     image: Awaited<ReturnType<typeof loadProductImage>>;
-  } | null>(null);
+  } | null>(() => ({ key: cacheKey, image: cachedProductImage(cacheKey) }));
 
   useEffect(() => {
-    setLoaded(null);
-    if (!imageURL) return;
+    const remembered = cachedProductImage(cacheKey);
+    if (remembered) { setLoaded({ key: cacheKey, image: remembered }); return; }
+    if (!imageURL && !cacheKey) return;
     const controller = new AbortController();
-    void loadProductImage(imageURL, controller.signal).then((image) => {
-      if (!controller.signal.aborted) setLoaded({ url: imageURL, image });
-    }).catch(() => {
-      if (!controller.signal.aborted) setLoaded(null);
-    });
+    void loadProductImage(imageURL, controller.signal, cacheKey ? { key: cacheKey,
+      isRetained: () => loadState().shipments.some(shipment => productImageCacheKey(shipment.identity) === cacheKey),
+    } : undefined).then((image) => {
+      if (!controller.signal.aborted && image) setLoaded({ key: cacheKey, image });
+    }).catch(() => { /* Keep an already successful image during an optional refresh failure. */ });
     return () => controller.abort();
-  }, [imageURL]);
+  }, [cacheKey, imageURL]);
 
-  const image = loaded?.url === imageURL ? loaded.image : null;
+  const image = loaded?.key === cacheKey ? loaded.image : cachedProductImage(cacheKey);
   if (!image) {
     return (
       <CourierIcon
