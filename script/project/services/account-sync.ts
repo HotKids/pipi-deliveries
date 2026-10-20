@@ -63,11 +63,14 @@ import {
 } from "./carrier-recognition";
 import { activeCarrierTableVersion } from "./carrier-query";
 import type { CarrierNormalization } from "./carrier-normalization";
+import { enhanceAccountParcels, enhancementPhone } from "./enhanced-account";
+import { accountParcelWithProjectionReference } from "./account-order-reference";
 
 export type AccountParcelFetchResult = Readonly<{
   parcels: readonly AccountParcelDto[];
   rawRecords: number;
   rejectedRecords: number;
+  cachedEnhancements?: readonly AccountParcelDto[];
 }>;
 
 function accountApi(deadlineAtMs?: number, signal?: AbortSignal, onQueryAttempted?: (authorized: boolean) => void,
@@ -118,7 +121,7 @@ export async function normalizeAccountParcelCarrierBestEffort(
  * 2026-09-10); "" when the parcel is not such an order or its text names none.
  */
 export function accountOrderTextWaybill(parcel: AccountParcelDto): string {
-  if (parcel.source !== "interface5" || !parcel.accountOrder ||
+  if (parcel.enhancedMode || parcel.source !== "interface5" || !parcel.accountOrder ||
       normalizeWaybill(parcel.waybill) !== normalizeWaybill(parcel.ownerId)) return "";
   return (parcel.textIdentity || accountOrderTextIdentity(parcel.tracks))?.waybill || "";
 }
@@ -166,7 +169,7 @@ function textWaybillWithCarrier(
  * 回来，之后各轮识别出来再投影。
  */
 export function withAccountOrderTextWaybill(parcel: AccountParcelDto): AccountParcelDto {
-  const waybill = accountOrderTextWaybill(parcel);
+  const waybill = parcel.enhancedMode ? parcel.enhancedWaybill || "" : accountOrderTextWaybill(parcel);
   if (!waybill) return parcel;
   const cached = cachedCarrierRecognition(waybill);
   if (cached) return textWaybillWithCarrier(parcel, waybill, cached);
@@ -183,7 +186,8 @@ export async function withRecognizedAccountOrderTextWaybill(
   parcel: AccountParcelDto,
   options: AccountCarrierNormalizationOptions = {},
 ): Promise<AccountParcelDto> {
-  const waybill = accountOrderTextWaybill(parcel);
+  // Samsung metadata enters the same carrier gate; its source never enables prose extraction.
+  const waybill = parcel.enhancedMode ? parcel.enhancedWaybill || "" : accountOrderTextWaybill(parcel);
   if (!waybill) return parcel;
   if (options.signal?.aborted) throw new OperationTimeoutError();
   try {
@@ -277,6 +281,19 @@ function detailRecord(
   };
 }
 
+export function cachedEnhancementParcels(shipments: readonly Shipment[], bindings: readonly AccountBinding[],
+  freshIds: ReadonlySet<string>): AccountParcelDto[] {
+  return shipments.flatMap(shipment => {
+    if (!shipment.identity.enhancedMode || freshIds.has(shipment.identity.sourceId)) return [];
+    const observation = shipment.automaticOwnership?.observations.find(value =>
+      value.identity.id === shipment.identity.id && value.source === shipment.identity.bindingSource &&
+      value.identity.phone === shipment.identity.phone);
+    if (observation?.bindingValid === false) return [];
+    const reference = accountParcelWithProjectionReference(shipment, null, "");
+    return reference && enhancementPhone(reference, bindings) ? [reference] : [];
+  });
+}
+
 export async function fetchAccountParcels(
   source: BindingSource,
   bindings: readonly AccountBinding[],
@@ -287,6 +304,7 @@ export async function fetchAccountParcels(
    * 对齐 30 秒). The list request itself spends none of it.
    */
   recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
+  cachedShipments: readonly Shipment[] = [],
 ): Promise<AccountParcelFetchResult> {
   requireScriptSource(source);
   assertWithinDeadline(requestDeadlineAtMs);
@@ -300,25 +318,55 @@ export async function fetchAccountParcels(
     phones: boundPhones,
   });
   const parsed = parseAccountSyncResult(SCRIPT_BINDING_SOURCE, response);
-  const parcels: AccountParcelDto[] = [...parsed.parcels];
+  const freshIds = new Set(parsed.parcels.map(parcel => parcel.ownerId));
+  const cachedOrders = cachedEnhancementParcels(cachedShipments, bindings, freshIds);
+  const parcels = (await enhanceAccountParcels([...parsed.parcels, ...cachedOrders], bindings,
+    { deadlineAtMs: requestDeadlineAtMs, signal })).map(parcel => parcel.enhancedMode
+      ? accountParcelWithExistingProjection(parcel, cachedShipments) : parcel);
   // 用户 2026-09-27 第二轮清单：截断排后。A waybill cut off in an earlier round is recognised after the others;
   // the list keeps its own order.
   const recognitionOrder = truncatedCarrierRecognitionLast(
-    parsed.parcels.map((_parcel, index) => index),
-    (index) => [accountOrderTextWaybill(parsed.parcels[index]), parsed.parcels[index].waybill],
+    parcels.map((_parcel, index) => index),
+    (index) => [parcels[index].enhancedWaybill || accountOrderTextWaybill(parcels[index]), parcels[index].waybill],
   );
   for (const index of recognitionOrder) {
-    parcels[index] = await prepareAccountParcelCarrier(parsed.parcels[index], {
+    parcels[index] = await prepareAccountParcelCarrier(parcels[index], {
       deadlineAtMs: requestDeadlineAtMs,
       signal,
       budget: recognitionBudget,
     });
   }
   return {
-    parcels,
+    parcels: parcels.slice(0, parsed.parcels.length),
     rawRecords: parsed.rawRecords,
     rejectedRecords: parsed.rejectedRecords,
+    cachedEnhancements: parcels.slice(parsed.parcels.length),
   };
+}
+
+/** Metadata cannot manufacture a fresh Xiaomi event or a new automatic-source observation. */
+export function applyEnhancementMetadata(shipment: Shipment, parcel: AccountParcelDto, now: number): Shipment {
+  if (!parcel.enhancedMode || !shipment.identity.accountOrder || shipment.identity.bindingSource !== parcel.source ||
+      shipment.identity.sourceId !== parcel.ownerId || shipment.identity.phone !== fullPhone(parcel, [shipment.identity.phone || ""])) return shipment;
+  const image = parcel.productImageURL || shipment.identity.productImageURL;
+  const currentWaybill = normalizedProjectedWaybill(shipment.identity);
+  const incomingWaybill = normalizeWaybill(parcel.waybill) !== normalizeWaybill(parcel.ownerId) ? parcel.waybill : "";
+  const incoming = incomingWaybill && !currentWaybill ? parcelToShipment(parcel, [shipment.identity.phone!], now) : null;
+  if (!incoming && shipment.identity.productImageURL === image && shipment.identity.enhancedMode) return shipment;
+  const waybill = incoming ? normalizedProjectedWaybill(incoming.identity) : "";
+  const identity = { ...shipment.identity, enhancedMode: true as const,
+    ...(image ? { productImageURL: image } : {}),
+    ...(incoming ? { projectedWaybill: waybill, hadRealWaybill: true,
+      courierCode: incoming.identity.courierCode, companyName: incoming.identity.companyName,
+      carrierIsBuiltIn: incoming.identity.carrierIsBuiltIn,
+      carrierKuaidi100Code: incoming.identity.carrierKuaidi100Code,
+      carrierTableVersion: incoming.identity.carrierTableVersion } : {}) };
+  return { ...shipment, identity, updatedAtMs: Math.max(now, shipment.updatedAtMs + 1),
+    ...(incoming ? { occupiedAtMs: now } : {}),
+    ...(shipment.automaticOwnership ? { automaticOwnership: { ...shipment.automaticOwnership,
+      observations: shipment.automaticOwnership.observations.map(observation =>
+        observation.identity.id === identity.id && observation.identity.phone === identity.phone && observation.bindingValid !== false
+          ? { ...observation, identity } : observation) } } : {}) };
 }
 
 export async function queryAccountManual(
@@ -399,7 +447,9 @@ export async function refreshAccountParcel(
     parcel.sourceProvider.toLowerCase() === String(shipment.identity.sourceProvider || "").toLowerCase();
   const orderParcel = sameOrder
     ? { ...parcel, accountOrder: true, orderId: shipment.identity.orderId || parcel.orderId,
-        textIdentity: parcel.textIdentity || accountOrderTextIdentity(parcel.tracks) }
+        textIdentity: parcel.textIdentity || accountOrderTextIdentity(parcel.tracks),
+        ...(shipment.identity.enhancedMode ? { enhancedMode: true as const,
+          productImageURL: shipment.identity.productImageURL } : {}) }
     : parcel;
   // Restore identity before the shared parcel conversion sanitizes order completion;
   // ORDER scope alone cannot reject surviving structured carrier confirmation.
@@ -554,6 +604,8 @@ export function accountParcelWithExistingProjection(
   );
   const projectedIdentity = projectedAuthority?.identity;
   const projectedWaybill = normalizedProjectedWaybill(projectedIdentity);
+  const previousImage = authorities.find(({ identity }) => identity.productImageURL)?.identity.productImageURL;
+  if (parcel.enhancedMode && !parcel.productImageURL && previousImage) parcel = { ...parcel, productImageURL: previousImage };
   // Feed text names only the waybill (其余裁决 7, 2026-09-26): it no longer supplies or repairs a carrier.
   // A projection that already names its carrier without a code (a Kuaidi100 off-table name, or the raw code shown after
   // an exhausted recognition; 其余裁决 29、32) keeps it: the order's own platform code (JDKD) is no carrier code for it.
@@ -561,6 +613,7 @@ export function accountParcelWithExistingProjection(
     ? {
         ...parcel,
         waybill: projectedWaybill,
+        ...(parcel.enhancedMode ? { enhancedWaybill: undefined } : {}),
         courierCode: projectedIdentity?.courierCode ||
           (String(projectedIdentity?.companyName || "").trim() ? "" : parcel.courierCode),
         companyName: projectedIdentity?.companyName || parcel.companyName,
@@ -810,6 +863,8 @@ export function parcelToShipment(
         ? Boolean(parcel.senderPhone && boundPhones.includes(parcel.senderPhone))
         : undefined,
       orderId: parcel.accountOrder ? parcel.orderId || ownerId : "",
+      ...(parcel.enhancedMode ? { enhancedMode: true as const } : {}),
+      ...(parcel.productImageURL ? { productImageURL: parcel.productImageURL } : {}),
       projectedWaybill: parcel.accountOrder && !unprojectedOrder
         ? displayWaybill
         : "",

@@ -30,8 +30,8 @@ export type PhoneManagerPageProps = {
   stateRevision: number;
   busy: boolean;
   notice?: string;
-  onSendCode: (phone: string, flowId: string) => MaybeAsync;
-  onBind: (phone: string, code: string, flowId: string) => MaybeAsync;
+  onSendCode: (phone: string, flowId: string, enhanced: boolean) => MaybeAsync;
+  onBind: (phone: string, code: string, flowId: string, enhanced: boolean) => MaybeAsync;
   onRemove: (binding: AccountBinding) => MaybeAsync;
   onRefresh: () => Promise<RefreshSummary>;
 };
@@ -42,6 +42,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   const [bindingPresented, setBindingPresented] = useState(false);
   const mountedRef = useRef(true);
   const actionInFlightRef = useRef(false);
+  const bindingGenerationRef = useRef(0);
 
   const visibleBindings = props.bindings.filter(
     (binding) => binding.source === SCRIPT_BINDING_SOURCE,
@@ -102,7 +103,20 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
 
   function add() {
     if (busy) return;
-    setBindingPresented(true);
+    changeBindingPresentation(true);
+  }
+
+  function changeBindingPresentation(presented: boolean) {
+    bindingGenerationRef.current += 1;
+    setBindingPresented(presented);
+  }
+
+  async function bind(phone: string, code: string, flowId: string, enhanced: boolean) {
+    const generation = bindingGenerationRef.current;
+    await props.onBind(phone, code, flowId, enhanced);
+    if (!mountedRef.current || generation !== bindingGenerationRef.current) return;
+    changeBindingPresentation(false);
+    setNotice(EXPRESS_TOAST_COPY.phoneBound);
   }
 
   async function remove(binding: AccountBinding) {
@@ -127,17 +141,12 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
       toast={transientToast(notice, setNotice)}
       navigationDestination={{
         isPresented: bindingPresented,
-        onChanged: setBindingPresented,
+        onChanged: changeBindingPresentation,
         content: (
           <PhoneBindingPage
+            bindings={props.bindings}
             onSendCode={props.onSendCode}
-            onBind={async (phone, code, flowId) => {
-              await props.onBind(phone, code, flowId);
-              if (mountedRef.current) {
-                setBindingPresented(false);
-                setNotice(EXPRESS_TOAST_COPY.phoneBound);
-              }
-            }}
+            onBind={bind}
           />
         ),
       }}
@@ -146,10 +155,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
           <Button
             buttonStyle="plain"
             action={add}
-            disabled={
-              busy ||
-              visibleBindings.length >= EXPRESS_POLICY.sources.maxBindingsPerSource
-            }
+            disabled={busy}
           >
             <Image
               systemName="plus"
@@ -168,7 +174,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         }
         footer={
           <Text font={12} foregroundStyle="secondaryLabel">
-            最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号；绑定后，将自动同步关联的快递信息。
+            最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号；绑定后，将自动同步关联的快递信息。增强模式不占用绑定数量。
           </Text>
         }
       >
@@ -190,7 +196,10 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
                 ],
               }}
             >
-              <Image systemName="phone.fill" foregroundStyle="accentColor" />
+              <Image
+                systemName="phone.fill"
+                foregroundStyle={binding.enhancedMode ? "#0478FB" : "#FF6900"}
+              />
               <Text font={17} monospacedDigit>
                 {binding.phone}
               </Text>

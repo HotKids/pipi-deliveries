@@ -16,7 +16,7 @@ import { accountExternalAppName, fetchAccountExternalAppRoutes } from "../servic
 import { accountKuaidi100URL, kuaidi100MiniProgramURL, shunfengKuaidi100FallbackURL } from "../services/kuaidi100-app-link";
 import { trackPhoneText } from "../services/track-phone-links";
 import type { AccountBinding, AppState, Shipment } from "../models";
-import { CourierIcon } from "../components/CourierIcon";
+import { ProductThumbnail } from "../components/ProductThumbnail";
 import { SenderBadge } from "../components/SenderBadge";
 import { carrierDisplayName, courierHotline } from "../services/carrier-presentation";
 import {
@@ -561,7 +561,7 @@ export function DetailPage(props: {
     >
       <Section>
         <HStack spacing={14} padding={{ vertical: 12 }}>
-          <CourierIcon
+          <ProductThumbnail
             courierCode={shipment.identity.courierCode}
             companyName={shipment.identity.companyName}
             accountOrder={Boolean(
@@ -569,6 +569,7 @@ export function DetailPage(props: {
             )}
             size={72}
             cornerRadius={17}
+            imageURL={shipment.identity.productImageURL}
           />
           <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity" }}>
             <HStack alignment="center" spacing={6}>

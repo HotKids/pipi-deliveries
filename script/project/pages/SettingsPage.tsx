@@ -28,6 +28,7 @@ import {
 } from "../services/gateway";
 import { savedKeyActivatedElsewhere } from "../services/scripting-activation";
 import { loadState } from "../services/storage";
+import { enhancementOperation, requireEnhancementBinding } from "../services/enhanced-account";
 import {
   bindPhone,
   refreshAllShipments,
@@ -213,6 +214,7 @@ export function SettingsPage(props: {
     phone: string,
     code: string,
     flowId: string,
+    enhanced = false,
   ) {
     const requestedSource = SCRIPT_BINDING_SOURCE;
     const handlerSource = SCRIPT_BINDING_SOURCE;
@@ -223,9 +225,8 @@ export function SettingsPage(props: {
       ...diagnosticState(props.state),
       stage: "ui_handler",
     });
-    const next = await bindPhone(requestedSource, phone, code, flowId);
+    const next = await bindPhone(requestedSource, phone, code, flowId, enhanced);
     props.onStateChange(next);
-    setManagerNotice("手机号绑定成功");
     void refreshAllShipments(requestedSource, { accountListOnly: true })
       .then((summary) => {
         props.onStateChange(summary.state);
@@ -294,13 +295,17 @@ export function SettingsPage(props: {
               stateRevision={props.state.revision}
               busy={false}
               notice={managerNotice}
-              onSendCode={(phone) =>
-                sendAccountCode(SCRIPT_BINDING_SOURCE, phone)
-              }
+              onSendCode={(phone, _flowId, enhanced) => {
+                if (enhanced) {
+                  requireEnhancementBinding(loadState().bindings, phone);
+                  return enhancementOperation("code", phone);
+                }
+                return sendAccountCode(SCRIPT_BINDING_SOURCE, phone);
+              }}
               onBind={bindCurrentPhone}
-              onRemove={(binding) => {
+              onRemove={async (binding) => {
                 setManagerNotice("");
-                props.onStateChange(unbindPhone(binding.source, binding.phone));
+                props.onStateChange(await unbindPhone(binding.source, binding.phone));
               }}
               onRefresh={async () => {
                 setManagerNotice("");

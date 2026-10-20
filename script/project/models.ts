@@ -30,6 +30,8 @@ export type AccountBinding = {
   source: BindingSource;
   phone: string;
   boundAtMs: number;
+  enhancedMode?: true;
+  enhancedAtMs?: number;
 };
 
 export type AccountDetailRecord = {
@@ -107,6 +109,8 @@ export type ShipmentIdentity = {
   /** Sender evidence belongs to the account list, independently of selected history. */
   sender?: boolean;
   orderId?: string;
+  enhancedMode?: true;
+  productImageURL?: string;
   projectedWaybill?: string;
   /** Preserved with this order after its saved association packets are replaced or pruned. */
   hadRealWaybill?: true;

@@ -62,6 +62,9 @@ export type AccountParcelDto = Readonly<{
   /** Same-source timeline extracted from this order's JD H5 page. */
   projectionTimeline?: TimelinePackage | null;
   textIdentity?: AccountOrderTextIdentity | null;
+  enhancedMode?: true;
+  enhancedWaybill?: string;
+  productImageURL?: string;
 }>;
 
 export type AccountParcelDefaults = Readonly<{
