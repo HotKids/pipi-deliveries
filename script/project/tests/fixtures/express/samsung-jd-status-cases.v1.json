@@ -276,7 +276,7 @@
         "eventAtMs": 1789286113000,
         "display": {
           "semantic": "CANCELLED",
-          "label": "订单已取消"
+          "label": "已取消"
         }
       }
     },

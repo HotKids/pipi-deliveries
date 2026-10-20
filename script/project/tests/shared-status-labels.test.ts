@@ -7,8 +7,13 @@ import {
   installStatusLabelTable,
   parseStatusLabelTable,
   resetStatusLabelTableForTesting,
+  statusDisplay,
 } from "../services/status-labels";
-import { buildWidgetSnapshot, shipmentPresentationStatus } from "../services/status";
+import {
+  buildWidgetSnapshot,
+  shipmentDetailPresentationStatus,
+  shipmentPresentationStatus,
+} from "../services/status";
 import { parseCarrierAuthorityPayload } from "../services/carrier-authority";
 
 // Audits L5 and L1 (user defaults 2026-09-25): one status label table, served by the Worker as
@@ -46,6 +51,43 @@ function row(scope: "ORDER" | "SHIPMENT", semantic: StatusSemantic, projection?:
     timeline: packet, sourceTimeline: packet, manualTimelines: [], route: null, accountRecord: null,
     ...(presentation ? { statusPresentation: presentation } : {}), updatedAtMs: NOW,
   };
+}
+
+// Presentation normalizes cancellation without rewriting an older authority table or timeline.
+{
+  const remote = parseStatusLabelTable({
+    ...BOOTSTRAP_STATUS_LABEL_TABLE,
+    orderLabels: { ...BOOTSTRAP_STATUS_LABEL_TABLE.orderLabels, CANCELLED: "订单已取消" },
+  })!;
+  assert.ok(remote);
+  assert.equal(installStatusLabelTable(remote), true);
+  assert.equal(activeStatusLabelTable().orderLabels.CANCELLED, "订单已取消");
+  assert.deepEqual(statusDisplay({ scope: "ORDER", semantic: "CANCELLED" }),
+    { semantic: "CANCELLED", label: "已取消" }, "an older remote order label is display-only normalized");
+  assert.deepEqual(statusDisplay({ scope: "ORDER", semantic: "COMPLETED" }),
+    { semantic: "COMPLETED", label: "已完成" }, "order completion retains its distinct label");
+  assert.deepEqual(statusDisplay({ scope: "SHIPMENT", semantic: "CANCELLED" }),
+    { semantic: "CANCELLED", label: "已取消" });
+
+  const cancelled = row("ORDER", "CANCELLED", {
+    version: 1, scope: "ORDER", semantic: "CANCELLED", code: "", text: "订单已取消",
+    priority: 0, eventAtMs: NOW, structured: true,
+  });
+  cancelled.timeline.latestDetail = "订单已取消";
+  cancelled.timeline.latestTimeText = new Date(NOW).toISOString();
+  cancelled.timeline.tracks = [{
+    timeText: cancelled.timeline.latestTimeText, timeMs: NOW, detail: "订单已取消", statusCode: "", raw: {},
+  }];
+  const original = JSON.stringify(cancelled);
+  assert.deepEqual(shipmentPresentationStatus(cancelled), { semantic: "CANCELLED", text: "已取消" });
+  assert.deepEqual(shipmentDetailPresentationStatus(cancelled, cancelled.timeline),
+    { semantic: "CANCELLED", text: "已取消" });
+  const widget = buildWidgetSnapshot([cancelled], NOW);
+  assert.equal(widget.rows[0].statusLabel, "已取消");
+  assert.equal(widget.headline, null, "cancellation keeps the existing widget summary priority");
+  assert.equal(JSON.stringify(cancelled), original, "presentation preserves raw Worker and timeline text");
+  assert.equal(activeStatusLabelTable().orderLabels.CANCELLED, "订单已取消");
+  resetStatusLabelTableForTesting();
 }
 
 for (const item of shared.cases) {
