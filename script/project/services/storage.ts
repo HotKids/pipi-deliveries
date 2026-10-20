@@ -6,6 +6,7 @@ import type {
   AppState,
   BindingSource,
   PendingManualQuery,
+  PendingEnhancementUnsubscribe,
   Shipment,
   ShipmentNotificationEvent,
   TimelinePackage,
@@ -162,6 +163,20 @@ function prunePending(
       value.createdAtMs <= now &&
       now - value.createdAtMs < PENDING_TTL_MS,
   );
+}
+
+function normalizeEnhancementUnsubscribes(values: readonly PendingEnhancementUnsubscribe[] = []): PendingEnhancementUnsubscribe[] {
+  const entries = new Map<string, PendingEnhancementUnsubscribe>();
+  for (const value of Array.isArray(values) ? values : []) {
+    if (!value || !/^[a-f0-9]{64}$/.test(value.id) || phone(value.phone) !== value.phone ||
+        !Number.isFinite(value.boundAtMs) || value.boundAtMs < 0 ||
+        !Number.isFinite(value.enhancedAtMs) || value.enhancedAtMs < 0 ||
+        !Number.isFinite(value.createdAtMs) || value.createdAtMs <= 0 ||
+        (value.identityFingerprint !== "" && !/^[a-f0-9]{64}$/.test(value.identityFingerprint))) continue;
+    entries.set(value.id, { id: value.id, phone: value.phone, boundAtMs: value.boundAtMs,
+      enhancedAtMs: value.enhancedAtMs, identityFingerprint: value.identityFingerprint, createdAtMs: value.createdAtMs });
+  }
+  return [...entries.values()];
 }
 
 function hasTimedShipmentAuthority(shipment: Shipment): boolean {
@@ -417,6 +432,9 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     ),
     shipments: sortShipments(retainedShipments),
     pendingNotifications: base.pendingNotifications || [],
+    ...(base.pendingEnhancementUnsubscribes?.length ? {
+      pendingEnhancementUnsubscribes: normalizeEnhancementUnsubscribes(base.pendingEnhancementUnsubscribes),
+    } : {}),
     feedSlotRebuiltAtMs: feedSlotRebuiltAtMs || now,
     ...(emptyTimelineRetirements.length ? { emptyTimelineRetirements } : {}),
   };
@@ -1757,6 +1775,8 @@ type StateSaveOptions = {
   context?: RefreshNotificationContext;
   acknowledgedId?: string;
   deferredId?: string;
+  enhancementUnsubscribe?: PendingEnhancementUnsubscribe;
+  acknowledgedEnhancementUnsubscribeId?: string;
 };
 
 export function saveState(
@@ -1878,6 +1898,14 @@ function saveStateAndPrune(
   const reusedNumberRows = new Set(retainedShipments
     .filter((shipment) => newerWaybillReuseGeneration(previousById.get(shipment.identity.id), shipment))
     .map((shipment) => shipment.identity.id));
+  // This outbox has one owner; an older refresh snapshot cannot erase or revive its obligations.
+  const unsubscribes = normalizeEnhancementUnsubscribes(previous.pendingEnhancementUnsubscribes).filter(item =>
+    item.id !== notificationCommit.acknowledgedEnhancementUnsubscribeId);
+  if (notificationCommit.enhancementUnsubscribe) {
+    const [pending] = normalizeEnhancementUnsubscribes([notificationCommit.enhancementUnsubscribe]);
+    if (!pending) throw new Error("本机解绑记录保存失败");
+    if (!unsubscribes.some(item => item.id === pending.id)) unsubscribes.push(pending);
+  }
   const next: AppState = {
     version: 2,
     revision: Math.max(previous.revision, candidate.revision) + 1,
@@ -1893,6 +1921,7 @@ function saveStateAndPrune(
     pendingNotifications: (previous.pendingNotifications || []).filter((event) =>
       event.id !== notificationCommit.acknowledgedId && !reusedNumberRows.has(event.shipmentId)
     ),
+    ...(unsubscribes.length ? { pendingEnhancementUnsubscribes: unsubscribes } : {}),
     // 一次性 feed 槽重建的标记跟着状态走：候选没带就沿用存着的，都没有就从现在起算（只有读盘时
     // 遇到没标记的老状态才会给包打 feedRebuildPending）。
     feedSlotRebuiltAtMs: candidate.feedSlotRebuiltAtMs || previous.feedSlotRebuiltAtMs || now,
@@ -2341,6 +2370,14 @@ export function deferShipmentNotification(
   });
 }
 
+export function acknowledgeEnhancementUnsubscribe(id: string, now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    if (!state.pendingEnhancementUnsubscribes?.some(item => item.id === id)) return state;
+    return saveState(state, now, { acknowledgedEnhancementUnsubscribeId: id });
+  });
+}
+
 export function bindingsForSource(
   state: AppState,
   bindingSource: BindingSource = SCRIPT_BINDING_SOURCE,
@@ -2407,8 +2444,9 @@ function saveBindingTransition(
   _previous: AppState,
   candidate: AppState,
   now: number,
+  options: StateSaveOptions = {},
 ): AppState {
-  const saved = saveState(candidate, now);
+  const saved = saveState(candidate, now, options);
   mirrorBindingBackup(saved);
   return saved;
 }
@@ -2559,6 +2597,7 @@ export function removeBinding(
   phoneNumber: string,
   now = Date.now(),
   expectedBinding?: AccountBinding,
+  pendingUnsubscribe?: { identityFingerprint: string },
 ): AppState {
   return withSharedFileTransaction(() => {
     requireScriptSource(bindingSource);
@@ -2571,6 +2610,13 @@ export function removeBinding(
       throw new Error("手机号绑定已变更，请重试");
     }
     const suffix = normalizedPhone.slice(-4);
+    const currentBinding = sourceBindings.find(binding => binding.phone === normalizedPhone);
+    const enhancementUnsubscribe: PendingEnhancementUnsubscribe | undefined = pendingUnsubscribe && currentBinding?.enhancedMode ? {
+      id: privateHash(JSON.stringify([normalizedPhone, currentBinding.boundAtMs, currentBinding.enhancedAtMs || 0,
+        pendingUnsubscribe.identityFingerprint])),
+      phone: normalizedPhone, boundAtMs: currentBinding.boundAtMs,
+      enhancedAtMs: currentBinding.enhancedAtMs || 0, identityFingerprint: pendingUnsubscribe.identityFingerprint, createdAtMs: now,
+    } : undefined;
     const uniquelyMatchesTail = (tail: string): boolean =>
       Boolean(tail) &&
       tail === suffix &&
@@ -2630,6 +2676,7 @@ export function removeBinding(
       }),
     },
     now,
+    { enhancementUnsubscribe },
   );
   });
 }

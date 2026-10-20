@@ -43,10 +43,14 @@ function pageHarness(seed = shipment()) {
       manualPreview: { shipment: seed, roundComplete: false },
       onStateChange: () => { state.updates++; },
     },
+    shipment: seed,
+    shouldRequestDetailProductImage: () => false,
+    loadState: () => ({ bindings: [] }),
     AbortController,
     refreshGenerationRef: { current: 0 },
     refreshInFlightRef: { current: null },
     refreshAbortRef: { current: null },
+    productImageRequestRef: { current: null },
     pullInFlightRef: { current: null },
     joinedJdPullRef: { current: false },
     detailEntryRef: { current: undefined },
@@ -360,6 +364,53 @@ for (const fails of [false, true]) {
   } finally {
     Date.now = realNow;
     globalThis.fetch = realFetch;
+  }
+}
+
+// Optional metadata has its own existing image-only request; it cannot extend or replace the trajectory outcome.
+for (const imageOutcome of ["timeout", "next-pull", "dismiss"] as const) {
+  const page = pageHarness(shipment("TRANSIT", [{ detail: "Cached event" }]));
+  page.context.props.refreshOnAppear = "detail_open";
+  page.context.props.manualPreview = null;
+  page.context.shouldRequestDetailProductImage = () => true;
+  const calls: string[] = [];
+  const images: Array<{ request: ReturnType<typeof deferred>; signal: AbortSignal }> = [];
+  page.context.refreshShipmentById = (_id: string, options: any) => {
+    calls.push(options.trigger);
+    if (options.trigger !== "product_image") {
+      assert.equal(options.requestProductImage, false, "necessary trajectory requests never await image metadata");
+      return Promise.resolve({ shipment: page.state.shipment, state: {}, refreshed: true, querySucceeded: true });
+    }
+    assert.equal(options.requestProductImage, true);
+    const request = deferred();
+    options.signal.addEventListener("abort", () => request.reject(new Error("Synthetic cancelled metadata")), { once: true });
+    images.push({ request, signal: options.signal });
+    return request.promise;
+  };
+  await page.refresh(false);
+  for (let step = 0; step < 10 && !images.length; step++) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ["detail_open", "product_image"]);
+  assert.equal(page.state.updates, 1, "the trajectory result is already presented while image metadata never resolves");
+  assert.equal(page.context.refreshInFlightRef.current, null, "the trajectory operation is complete before optional metadata");
+  const notices = [...page.state.notices];
+  const imageTask = page.context.productImageRequestRef.current;
+  if (imageOutcome === "timeout") {
+    images[0].request.reject(new Error("Synthetic metadata deadline expired"));
+    await imageTask;
+    assert.deepEqual(page.state.notices, notices, "a later metadata timeout cannot replace the trajectory's feedback");
+    assert.equal(page.state.updates, 1);
+  } else if (imageOutcome === "dismiss") {
+    page.unmount();
+    await imageTask;
+    assert.equal(images[0].signal.aborted, true);
+    assert.equal(page.state.updates, 1, "a dismissed detail cannot apply late image metadata");
+  } else {
+    await page.refresh(true);
+    assert.equal(images[0].signal.aborted, true, "the next trajectory operation cancels the page's pending optional metadata");
+    assert.equal(calls.filter(trigger => trigger === "detail_pull").length, 1,
+      "a never-resolving image cannot consume or replace the next explicit history pull");
+    page.unmount();
+    await page.context.productImageRequestRef.current;
   }
 }
 

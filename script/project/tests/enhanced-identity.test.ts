@@ -11,6 +11,8 @@ assert.deepEqual(loadEnhancementIdentity(), initial);
 assert.equal(generated, 1, "relaunch and widget consumers keep the same installation identity");
 const files = [...memory.keys()].filter(key => key.includes("account-enhancement-identity-v1.json"));
 assert.ok(files.length);
+memory.delete("pipi_deliveries_account_enhancement_identity_shared_v1");
+memory.delete("keychain:pipi_deliveries_account_enhancement_identity_v1");
 for (const key of files) memory.set(key, "invalid identity record");
 assert.throws(() => loadEnhancementIdentity(), /身份读取失败/);
 assert.equal(generated, 1, "corruption cannot silently rotate an upstream binding identity");

@@ -104,6 +104,20 @@ assert.equal(
   classifyDiagnosticError(new Error("Access Key 无效或已失效")),
   "authorization",
 );
+for (const status of [401, 403, 502, 503]) {
+  assert.deepEqual(diagnosticErrorDetails(Object.assign(new Error("服务暂时不可用，请稍后重试"), {
+    status, gatewayCode: "upstream_unavailable",
+  })), {
+    errorCategory: "upstream", httpStatus: status, failureCode: "upstream_unavailable",
+  });
+}
+for (const [status, gatewayCode] of [[401, "unauthorized"], [403, "forbidden"]] as const) {
+  assert.deepEqual(diagnosticErrorDetails(Object.assign(new Error("授权失败"), {
+    status, gatewayCode,
+  })), {
+    errorCategory: "authorization", httpStatus: status, failureCode: gatewayCode,
+  });
+}
 assert.deepEqual(
   diagnosticErrorDetails(Object.assign(new Error("授权失败"), {
     status: 401,

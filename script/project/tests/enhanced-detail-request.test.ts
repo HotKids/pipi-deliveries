@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { memory } from "./state-storage-mock";
 import type { AccountParcelDto } from "../services/account-parser";
 import { parcelToShipment } from "../services/account-sync";
-import { ENHANCEMENT_ROUTE } from "../services/enhanced-account";
+import { ENHANCEMENT_ROUTE, loadEnhancementIdentity } from "../services/enhanced-account";
 import { saveGatewayToken } from "../services/credentials";
 import { emptyState, enableBindingEnhancement, loadState, saveState } from "../services/storage";
 import { runShipmentRefreshForTesting } from "../services/sync";
@@ -62,6 +62,7 @@ function seed(options: { marked?: boolean; image?: string; enhanced?: boolean; b
       ...(options.enhanced === false ? {} : { enhancedMode: true as const, enhancedAtMs: NOW - 1_000 }) },
   ] }, NOW);
   saveGatewayToken("AbCdEfGh_123-456");
+  loadEnhancementIdentity();
   saveOrderProjectionReferences([{ ownerId: row.identity.id, source: "interface5", url: parcel.projectionUrl }], NOW);
   return state.shipments[0];
 }

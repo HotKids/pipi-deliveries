@@ -935,6 +935,9 @@ export function classifyDiagnosticError(error: unknown): string {
     ? (error as { code?: unknown }).code
     : "";
   const code = typeof rawCode === "string" ? rawCode.trim().toLowerCase() : "";
+  const rawGatewayCode = error && typeof error === "object" && "gatewayCode" in error
+    ? (error as { gatewayCode?: unknown }).gatewayCode
+    : "";
   const status = Number(
     error && typeof error === "object" && "status" in error
       ? (error as { status?: unknown }).status
@@ -942,6 +945,7 @@ export function classifyDiagnosticError(error: unknown): string {
   );
   if (name.includes("abort") || message.includes("取消")) return "cancelled";
   if (name.includes("timeout") || message.includes("超时")) return "timeout";
+  if (typeof rawGatewayCode === "string" && rawGatewayCode.trim().toLowerCase() === "upstream_unavailable") return "upstream";
   if (status === 401 || status === 403) return "authorization";
   if (status === 408) return "timeout";
   if (status === 429) return "rate_limited";

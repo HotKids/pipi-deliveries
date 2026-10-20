@@ -22,6 +22,8 @@ import {
   transientToast,
 } from "../services/ui-feedback";
 import { PhoneBindingPage } from "./PhoneBindingPage";
+import { existingEnhancementIdentity, EnhancementIdentityMissing } from "../services/enhanced-account";
+import { EnhancementUnbindUnavailable } from "../services/enhancement-unsubscribe";
 
 type MaybeAsync = void | Promise<void>;
 
@@ -30,15 +32,17 @@ export type PhoneManagerPageProps = {
   stateRevision: number;
   busy: boolean;
   notice?: string;
+  pendingEnhancementUnsubscribeCount?: number;
   onSendCode: (phone: string, flowId: string, enhanced: boolean) => MaybeAsync;
   onBind: (phone: string, code: string, flowId: string, enhanced: boolean) => MaybeAsync;
-  onRemove: (binding: AccountBinding) => MaybeAsync;
+  onRemove: (binding: AccountBinding, localOnly?: boolean) => MaybeAsync;
   onRefresh: () => Promise<RefreshSummary>;
 };
 
 export function PhoneManagerPage(props: PhoneManagerPageProps) {
   const [localBusy, setLocalBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [enhancementNotice, setEnhancementNotice] = useState("");
   const [bindingPresented, setBindingPresented] = useState(false);
   const mountedRef = useRef(true);
   const actionInFlightRef = useRef(false);
@@ -48,6 +52,16 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     (binding) => binding.source === SCRIPT_BINDING_SOURCE,
   );
   const busy = props.busy || localBusy;
+  const hasEnhancement = visibleBindings.some(binding => binding.enhancedMode);
+
+  useEffect(() => {
+    if (!hasEnhancement) { setEnhancementNotice(""); return; }
+    try {
+      setEnhancementNotice(existingEnhancementIdentity() ? "" : new EnhancementIdentityMissing().message);
+    } catch (error) {
+      setEnhancementNotice(errorMessage(error, "增强模式身份读取失败，请稍后重试"));
+    }
+  }, [props.stateRevision, hasEnhancement]);
 
   useEffect(() => {
     return () => {
@@ -128,7 +142,19 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         confirmLabel: "解绑",
       });
       if (!confirmed) return;
-      await props.onRemove(binding);
+      try { await props.onRemove(binding); }
+      catch (error) {
+        if (!(error instanceof EnhancementUnbindUnavailable) || !binding.enhancedMode || !mountedRef.current) throw error;
+        const localOnly = await Dialog.confirm({
+          title: "远端解绑未完成",
+          message: "本机解绑后将停止同步，远端订阅可能仍保留。将保留退订记录，供后续重试。",
+          cancelLabel: "保留绑定",
+          confirmLabel: "仍要解除本机绑定",
+        });
+        if (!localOnly) throw error;
+        if (!mountedRef.current) return;
+        await props.onRemove(binding, true);
+      }
       if (mountedRef.current) setNotice(EXPRESS_TOAST_COPY.phoneUnbound);
     }, EXPRESS_TOAST_COPY.unbindFailed);
   }
@@ -173,9 +199,15 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
           </Text>
         }
         footer={
-          <Text font={12} foregroundStyle="secondaryLabel">
-            最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号；绑定后，将自动同步关联的快递信息。增强模式不占用绑定数量。
-          </Text>
+          <VStack alignment="leading" spacing={6}>
+            <Text font={12} foregroundStyle="secondaryLabel">
+              最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号；绑定后，将自动同步关联的快递信息。增强模式不占用绑定数量。
+            </Text>
+            {enhancementNotice ? <Text font={12} foregroundStyle="systemRed">{enhancementNotice}</Text> : null}
+            {props.pendingEnhancementUnsubscribeCount ? (
+              <Text font={12} foregroundStyle="secondaryLabel">远端退订尚未确认，已保留待处理记录。</Text>
+            ) : null}
+          </VStack>
         }
       >
         {visibleBindings.length ? (
