@@ -72,6 +72,31 @@ async function cached(path: string, signal: AbortSignal, details: DiagnosticDeta
   }
 }
 
+export function initialProductImage(key: string): UIImage | null {
+  const remembered = cachedProductImage(key);
+  if (remembered) return remembered;
+  let paths: string[];
+  try { paths = productImageCacheFiles(key); }
+  catch { return null; }
+  for (const path of paths) {
+    try {
+      const stat = FileManager.statSync(path);
+      if (stat.type !== "file" || stat.size <= 0 || stat.size > MAX_IMAGE_BYTES || FileManager.isLinkSync(path)) continue;
+      const data = FileManager.readAsDataSync(path);
+      if (data.size <= 0 || data.size > MAX_IMAGE_BYTES) continue;
+      // Only immutable record files published after ImageIO validation enter this synchronous first-frame path.
+      const source = UIImage.fromData(data, 1);
+      if (!source) continue;
+      const width = source.width, height = source.height;
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
+          width <= 0 || height <= 0 || width * height > MAX_IMAGE_PIXELS) continue;
+      const image = source.preparingThumbnail({ width: THUMBNAIL_EDGE, height: THUMBNAIL_EDGE });
+      if (image && productImageCacheFiles(key).includes(path)) return rememberProductImage(key, image);
+    } catch { /* Missing or damaged cache files keep the normal asynchronous recovery path. */ }
+  }
+  return null;
+}
+
 type ImageOwner = { key: string; isRetained: () => boolean };
 
 function retained(owner?: ImageOwner): boolean {
