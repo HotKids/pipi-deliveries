@@ -44,6 +44,31 @@ assert.equal(enriched.productImageURL, "https://img10.360buyimg.com/synthetic.jp
 assert.strictEqual(enriched.tracks, parcel.tracks);
 assert.equal(enriched.ownerId, ORDER);
 assert.equal(enriched.semantic, parcel.semantic);
+
+const [unattributed] = await enhanceAccountParcels([parcel], [binding], { identity,
+  request: async () => ({ records: [{ phone: "", orderId: ORDER,
+    realWaybill: "JD0000000000001", imageUrl: "https://img10.360buyimg.com/unattributed.jpg" }], ambiguousOrderIds: [] }) });
+assert.equal(unattributed.productImageURL, "https://img10.360buyimg.com/unattributed.jpg");
+assert.equal(unattributed.enhancedWaybill, "JD0000000000001");
+assert.equal(unattributed.receiverPhone, parcel.receiverPhone);
+assert.strictEqual(unattributed.tracks, parcel.tracks);
+assert.equal(unattributed.semantic, parcel.semantic);
+const sharedOrderParcels = [parcel, { ...parcel, receiverPhone: OTHER }];
+const sharedOrderBindings = [binding, { ...binding, phone: OTHER }];
+const sharedUnattributed = await enhanceAccountParcels(sharedOrderParcels, sharedOrderBindings, { identity,
+  request: async () => ({ records: [{ phone: "", orderId: ORDER,
+    imageUrl: "https://img10.360buyimg.com/shared.jpg" }], ambiguousOrderIds: [] }) });
+assert.ok(sharedUnattributed.every(value => !value.productImageURL), "unattributed metadata cannot choose between two requested phones");
+for (const phone of [undefined, null, "8000", OTHER]) {
+  const [rejected] = await enhanceAccountParcels([parcel], [binding], { identity,
+    request: async () => ({ records: [{ phone, orderId: ORDER,
+      imageUrl: "https://img10.360buyimg.com/rejected.jpg" }], ambiguousOrderIds: [] }) });
+  assert.equal(rejected.productImageURL, undefined, "only the Worker's explicit empty-phone marker permits order matching");
+}
+const [duplicateMetadata] = await enhanceAccountParcels([parcel], [binding], { identity,
+  request: async () => ({ records: [PHONE, ""].map(phone => ({ phone, orderId: ORDER,
+    imageUrl: "https://img10.360buyimg.com/duplicate.jpg" })), ambiguousOrderIds: [] }) });
+assert.equal(duplicateMetadata.productImageURL, undefined, "duplicate metadata cannot choose a first result");
 const carrierPending = await prepareAccountParcelCarrier(enriched, {
   recognize: async () => ({ normalization: null, exhausted: false }),
 });
@@ -115,6 +140,15 @@ const imageRefresh = applyEnhancementMetadata(projected, updatedImage, Date.now(
 assert.equal(imageRefresh.identity.productImageURL, "https://img10.360buyimg.com/new.jpg");
 assert.strictEqual(imageRefresh.timeline, projected.timeline);
 assert.equal(imageRefresh.automaticOwnership?.observations[0].observedAtMs, 200);
+const [unattributedRefresh] = await enhanceAccountParcels([reference!], [binding], { identity,
+  request: async () => ({ records: [{ phone: "", orderId: ORDER,
+    realWaybill: "JD0000000000002", imageUrl: "https://img10.360buyimg.com/unattributed-new.jpg" }], ambiguousOrderIds: [] }) });
+const retainedAssociation = applyEnhancementMetadata(projected, unattributedRefresh, Date.now());
+assert.equal(retainedAssociation.identity.projectedWaybill, projected.identity.projectedWaybill);
+assert.equal(retainedAssociation.identity.productImageURL, "https://img10.360buyimg.com/unattributed-new.jpg");
+assert.strictEqual(retainedAssociation.timeline, projected.timeline);
+assert.strictEqual(retainedAssociation.sourceTimeline, projected.sourceTimeline);
+assert.equal(retainedAssociation.automaticOwnership?.observations[0].observedAtMs, 200);
 const changed = accountParcelWithExistingProjection({ ...enriched, waybill: "JD0000000000002" }, [saved]);
 assert.equal(changed.waybill, "JD0000000000001", "an existing association is retained under the October 20 user choice");
 let requests = 0;

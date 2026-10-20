@@ -118,8 +118,11 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
     const enriched = marked.map(parcel => {
       const phone = enhancementPhone(parcel, bindings), orderId = parcel.orderId || parcel.ownerId;
       if (!phone || ambiguous.has(orderId)) return parcel;
+      const uniqueOrder = distinctOrders.filter(order => order.orderId === orderId).length === 1;
       const records = response.records.filter(record => record && typeof record === "object" &&
-        (record as Record<string, unknown>).phone === phone && (record as Record<string, unknown>).orderId === orderId) as Record<string, unknown>[];
+        (record as Record<string, unknown>).orderId === orderId &&
+        ((record as Record<string, unknown>).phone === phone ||
+          (uniqueOrder && (record as Record<string, unknown>).phone === ""))) as Record<string, unknown>[];
       if (records.length !== 1) return parcel;
       const record = records[0];
       const waybill = typeof record.realWaybill === "string" ? record.realWaybill.trim() : "";
