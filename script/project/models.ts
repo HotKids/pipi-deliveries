@@ -32,6 +32,7 @@ export type AccountBinding = {
   boundAtMs: number;
   enhancedMode?: true;
   enhancedAtMs?: number;
+  enhancedIdentityFingerprint?: string;
 };
 
 export type AccountDetailRecord = {

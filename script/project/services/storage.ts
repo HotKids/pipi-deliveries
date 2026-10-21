@@ -146,7 +146,9 @@ function uniqueBindings(values: readonly AccountBinding[]): AccountBinding[] {
           ? value.boundAtMs
           : 0,
       ...(value.enhancedMode === true ? { enhancedMode: true as const,
-        enhancedAtMs: Number.isFinite(value.enhancedAtMs) ? value.enhancedAtMs : value.boundAtMs } : {}),
+        enhancedAtMs: Number.isFinite(value.enhancedAtMs) ? value.enhancedAtMs : value.boundAtMs,
+        ...(typeof value.enhancedIdentityFingerprint === "string" && /^[a-f0-9]{64}$/.test(value.enhancedIdentityFingerprint)
+          ? { enhancedIdentityFingerprint: value.enhancedIdentityFingerprint } : {}) } : {}),
     });
   }
   return [...result.values()];
@@ -2148,7 +2150,8 @@ function ownsRefreshBinding(base: AppState, latest: AppState, shipment: Shipment
   const original = base.bindings.find(matches);
   const current = latest.bindings.find(matches);
   return Boolean(original && current && original.boundAtMs === current.boundAtMs &&
-    original.enhancedMode === current.enhancedMode && original.enhancedAtMs === current.enhancedAtMs);
+    original.enhancedMode === current.enhancedMode && original.enhancedAtMs === current.enhancedAtMs &&
+    original.enhancedIdentityFingerprint === current.enhancedIdentityFingerprint);
 }
 
 /**
@@ -2280,7 +2283,8 @@ export function commitRefreshState(
             !latestBinding ||
             baselineBinding.boundAtMs !== latestBinding.boundAtMs ||
             baselineBinding.enhancedMode !== latestBinding.enhancedMode ||
-            baselineBinding.enhancedAtMs !== latestBinding.enhancedAtMs
+            baselineBinding.enhancedAtMs !== latestBinding.enhancedAtMs ||
+            baselineBinding.enhancedIdentityFingerprint !== latestBinding.enhancedIdentityFingerprint
           ) {
             continue;
           }
@@ -2422,7 +2426,11 @@ export function addBinding(
   });
 }
 
-export function enableBindingEnhancement(phoneNumber: string, expectedBoundAtMs: number, now = Date.now()): AppState {
+export function enableBindingEnhancement(phoneNumber: string, expectedBoundAtMs: number, now = Date.now(),
+  identityFingerprint?: string): AppState {
+  if (identityFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(identityFingerprint)) {
+    throw new Error("增强模式身份校验失败，请重新验证绑定该手机号");
+  }
   return withSharedFileTransaction(() => {
     const state = loadState(now), normalizedPhone = phone(phoneNumber);
     const current = state.bindings.find(binding => binding.source === SCRIPT_BINDING_SOURCE && binding.phone === normalizedPhone);
@@ -2432,7 +2440,8 @@ export function enableBindingEnhancement(phoneNumber: string, expectedBoundAtMs:
       String(identity.sourceProvider || "").toLowerCase() === "jingdong"
         ? { ...identity, enhancedMode: true } : identity;
     return saveBindingTransition(state, { ...state, bindings: state.bindings.map(binding =>
-      binding === current ? { ...binding, enhancedMode: true, enhancedAtMs: now } : binding),
+      binding === current ? { ...binding, enhancedMode: true, enhancedAtMs: now,
+        enhancedIdentityFingerprint: identityFingerprint } : binding),
       shipments: state.shipments.map(shipment => ({ ...shipment, identity: mark(shipment.identity),
         ...(shipment.automaticOwnership ? { automaticOwnership: { ...shipment.automaticOwnership,
           observations: shipment.automaticOwnership.observations.map(observation =>
@@ -2606,7 +2615,8 @@ export function removeBinding(
     const sourceBindings = bindingsForSource(state, bindingSource);
     if (expectedBinding && !sourceBindings.some(binding =>
       binding.phone === normalizedPhone && binding.boundAtMs === expectedBinding.boundAtMs &&
-      binding.enhancedMode === expectedBinding.enhancedMode && binding.enhancedAtMs === expectedBinding.enhancedAtMs)) {
+      binding.enhancedMode === expectedBinding.enhancedMode && binding.enhancedAtMs === expectedBinding.enhancedAtMs &&
+      binding.enhancedIdentityFingerprint === expectedBinding.enhancedIdentityFingerprint)) {
       throw new Error("手机号绑定已变更，请重试");
     }
     const suffix = normalizedPhone.slice(-4);

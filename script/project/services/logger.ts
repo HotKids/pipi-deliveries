@@ -70,7 +70,11 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   orders?: number;
   requestedOrderCount?: number;
   matchedOrderCount?: number;
+  /** Accepted metadata only; an image address does not prove a decoded image. */
+  realWaybillCount?: number;
+  imageURLCount?: number;
   productImageCount?: number;
+  purpose?: "waybill" | "image";
   ambiguousOrderCount?: number;
   enhancedMode?: boolean;
   productImagePresent?: boolean;
@@ -283,7 +287,7 @@ const JD_PROBE_COUNT_KEYS = new Set<keyof DiagnosticDetails>([
 ]);
 
 const ENHANCEMENT_COUNT_KEYS = new Set<keyof DiagnosticDetails>([
-  "requestedOrderCount", "matchedOrderCount", "productImageCount", "ambiguousOrderCount",
+  "requestedOrderCount", "matchedOrderCount", "realWaybillCount", "imageURLCount", "productImageCount", "ambiguousOrderCount",
 ]);
 
 const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
@@ -333,7 +337,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "records",
   "rejectedRecords",
   "orders",
-  "requestedOrderCount", "matchedOrderCount", "productImageCount", "ambiguousOrderCount",
+  "requestedOrderCount", "matchedOrderCount", "realWaybillCount", "imageURLCount", "productImageCount", "ambiguousOrderCount", "purpose",
   "enhancedMode", "productImagePresent",
   "routableOrders",
   "ownerFingerprint",
@@ -729,6 +733,10 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
       if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 101 && rawValue <= 111) result[key] = rawValue;
       continue;
     }
+    if (key === "purpose") {
+      if (rawValue === "waybill" || rawValue === "image") result.purpose = rawValue;
+      continue;
+    }
     if (key === "alignmentReason") {
       if (rawValue === "status_ahead" || rawValue === "headline_ahead" || rawValue === "detail_behind") {
         result.alignmentReason = rawValue;
@@ -1092,7 +1100,7 @@ export function setDiagnosticsEnabled(enabled: boolean): boolean {
  * 统一用词（用户定 2026-09-05，三端同一套）：每行带 `level`（链上的哪一级）与 `interface`
  * （归属接口）。旧字段 `stage` / `timelineProvider` 先并存一版方便对照，值来自它们推导：
  * v5_list / v5_query / v6_query / v4_query / v2_query / jd_h5 / cn_h5 / k100_h5 / kdniao /
- * k100_autoCom。iOS 只接接口 5，所以接口相关的行一律 interface=v5。
+ * k100_autoCom。账号归属仍是 v5；三星增强的批量元数据请求是 v3_list / interface=v3。
  */
 const LEVEL_BY_STAGE: Record<string, string> = {
   jt_h5: "jt_h5",

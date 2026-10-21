@@ -8,6 +8,7 @@ import { accountParcelWithProjectionReference } from "../services/account-order-
 import { selectShipmentDetailTimeline } from "../services/shipment-policy";
 import { clearDiagnostics, diagnosticText, readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
+import { OperationTimeoutError } from "../services/deadline";
 
 const diagnosticStorage = new Map<string, unknown>();
 Object.assign(globalThis, { Storage: {
@@ -175,9 +176,11 @@ await enhanceAccountParcels([parcel, parcel], [binding], { identity, purpose: "i
     imageUrl: "https://img10.360buyimg.com/synthetic-private-product.jpg" }], ambiguousOrderIds: [] }) });
 const completion = readDiagnostics().filter(entry => entry.event === "account.enhanced.completed");
 assert.equal(completion.length, 1, "one batch produces one metadata summary");
-assert.deepEqual(completion[0].details, { clientBuild: SCRIPT_CLIENT_BUILD, stage: "metadata", result: "completed",
+assert.ok(Number.isInteger(completion[0].details.durationMs) && completion[0].details.durationMs! >= 0);
+assert.deepEqual(completion[0].details, { durationMs: completion[0].details.durationMs, clientBuild: SCRIPT_CLIENT_BUILD, stage: "v3_list", result: "completed",
+  interface: "v3", requestProvider: "v3_list", level: "v3_list", source: "v5", sourceProvider: "jingdong", purpose: "image",
   orders: 2, requestedOrderCount: 1, records: 1, matchedOrderCount: 1,
-  productImageCount: 1, ambiguousOrderCount: 0 });
+  realWaybillCount: 0, imageURLCount: 1, productImageCount: 1, ambiguousOrderCount: 0 });
 for (const value of [PHONE, ORDER, identity.accountId, identity.androidId, "synthetic-private-product"]) {
   assert.equal(diagnosticText().includes(value), false, "metadata diagnostics exclude identifiers and image URLs");
 }
@@ -200,6 +203,20 @@ for (const [records, ambiguousOrderIds, expected] of [
   }
 }
 
+for (const realWaybill of ["JD0000000000001", ORDER, "", "short", "JD invalid", "J".repeat(65), 123]) {
+  clearDiagnostics();
+  const result = await enhanceAccountParcels([parcel, parcel], [binding], { identity,
+    request: async () => ({ records: [{ phone: PHONE, orderId: ORDER, realWaybill,
+      imageUrl: "https://img10.360buyimg.com/synthetic.jpg" }], ambiguousOrderIds: [] }) });
+  const details = readDiagnostics().find(entry => entry.event === "account.enhanced.completed")!.details;
+  const accepted = realWaybill === "JD0000000000001";
+  assert.equal(details.purpose, "waybill");
+  assert.equal(details.matchedOrderCount, 1, "matching is distinct from accepting a real waybill");
+  assert.equal(details.realWaybillCount, accepted ? 1 : 0, "count only distinct accepted real waybills");
+  assert.equal(details.imageURLCount, 0, "waybill requests do not accept image addresses");
+  assert.equal(result[0].enhancedWaybill, accepted ? realWaybill : undefined);
+}
+
 clearDiagnostics();
 await enhanceAccountParcels([{ ...parcel, receiverPhone: "", senderPhone: "" }],
   [binding, { source: "interface5", phone: OTHER, boundAtMs: 100 }], {
@@ -218,4 +235,40 @@ await enhanceAccountParcels([parcel], [binding], { identity,
 assert.equal(readDiagnostics().filter(entry => entry.event === "account.enhanced.failed").length, 1);
 assert.equal(readDiagnostics().some(entry => entry.event === "account.enhanced.completed"), false);
 assert.equal(diagnosticText().includes("synthetic-private-error"), false);
+assert.deepEqual(readDiagnostics()[0].details, { durationMs: readDiagnostics()[0].details.durationMs, clientBuild: SCRIPT_CLIENT_BUILD,
+  interface: "v3", requestProvider: "v3_list", level: "v3_list", source: "v5", sourceProvider: "jingdong", purpose: "waybill", stage: "v3_list", result: "failed",
+  orders: 1, requestedOrderCount: 1, matchedOrderCount: 0, realWaybillCount: 0,
+  imageURLCount: 0, productImageCount: 0, errorCategory: "unknown" });
+clearDiagnostics();
+await enhanceAccountParcels([parcel], [binding], { identity, purpose: "image",
+  request: async () => { throw new OperationTimeoutError(undefined, { timeoutOrigin: "timeout_signal",
+    requestPhase: "request", requestBudgetMs: 14295, requestElapsedMs: 14299, deadlineLagMs: 4 }); } });
+const timedOut = readDiagnostics()[0].details;
+assert.equal(timedOut.interface, "v3");
+assert.equal(timedOut.level, "v3_list");
+assert.equal(timedOut.purpose, "image");
+assert.equal(timedOut.result, "failed");
+assert.equal(timedOut.requestBudgetMs, 14295);
+assert.equal(timedOut.errorCategory, "timeout");
+assert.equal(timedOut.realWaybillCount, 0, "failed requests applied no real-waybill result");
+assert.equal(timedOut.imageURLCount, 0, "failed requests applied no image-address result");
+clearDiagnostics();
+const originalNow = Date.now;
+let diagnosticNow = originalNow();
+Date.now = () => diagnosticNow;
+let timedMetadata: ReturnType<typeof readDiagnostics>[number]["details"];
+try {
+  await enhanceAccountParcels([parcel], [binding], { identity, purpose: "image",
+    flowId: "detail-enhanced-image", trigger: "product_image",
+    request: async () => {
+      diagnosticNow += 37;
+      return { records: [], ambiguousOrderIds: [] };
+    } });
+  timedMetadata = readDiagnostics()[0].details;
+} finally { Date.now = originalNow; }
+assert.equal(timedMetadata.durationMs, 37, "enhancement elapsed time measures its own metadata work");
+assert.equal(timedMetadata.flowId, "detail-enhanced-image");
+assert.equal(timedMetadata.trigger, "product_image");
+assert.equal(timedMetadata.source, "v5", "the owning account stays v5 while the request uses interface v3");
+assert.equal(timedMetadata.sourceProvider, "jingdong", "business source is independent of the enhancement adapter");
 console.log("Enhanced account identity, pair matching, isolation and projection tests passed");

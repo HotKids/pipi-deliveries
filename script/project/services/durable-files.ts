@@ -91,15 +91,19 @@ export function writeDurableText(name: string, value: string): void {
   const rollback = `${path}.rollback-${transaction}`;
   const backupPending = `${backup}.pending-${transaction}`;
   const backupRollback = `${backup}.rollback-${transaction}`;
-  FileManager.writeAsStringSync(pending, value);
-  if (!verifiedText(pending, value)) {
-    removeIfPresent(pending);
-    throw new Error("Durable file verification failed");
-  }
-  const pathExists = FileManager.existsSync(path);
-  if (pathExists && !FileManager.isFileSync(path)) {
+  let pathExists: boolean;
+  try {
+    FileManager.writeAsStringSync(pending, value);
+    if (!verifiedText(pending, value)) {
+      throw new Error("Durable file verification failed");
+    }
+    pathExists = FileManager.existsSync(path);
+    if (pathExists && !FileManager.isFileSync(path)) {
+      throw new Error("Durable file path is not a file");
+    }
+  } catch (error) {
     removeBestEffort(pending);
-    throw new Error("Durable file path is not a file");
+    throw error;
   }
   let currentMoved = false;
   try {

@@ -3917,12 +3917,17 @@ console.log("Worker projection persistence tests passed");
   memory.clear();
   const phone = "13800138000";
   const base = addBinding("interface5", phone, NOW);
-  const enabled = enableBindingEnhancement(phone, NOW, NOW + 1);
+  const identityFingerprint = "a".repeat(64);
+  const enabled = enableBindingEnhancement(phone, NOW, NOW + 1, identityFingerprint);
   assert.equal(enabled.bindings.length, 1);
   assert.equal(loadState(NOW + 2).bindings[0].enhancedMode, true);
   assert.equal(loadState(NOW + 2).bindings[0].enhancedAtMs, NOW + 1);
+  assert.equal(loadState(NOW + 2).bindings[0].enhancedIdentityFingerprint, identityFingerprint,
+    "the verified subscription identity survives durable binding normalization");
   const { loadBindingBackup } = await import("../services/binding-backup");
   assert.equal(loadBindingBackup()?.bindings[0].enhancedMode, true);
+  assert.equal(loadBindingBackup()?.bindings[0].enhancedIdentityFingerprint, identityFingerprint,
+    "restoring the binding backup retains its original subscription identity evidence");
   const row = shipment({ id: "late-before-enhancement", source: "interface5", phone });
   const late = commitRefreshState(base, { ...base, shipments: [row] }, "interface5", NOW + 2);
   assert.equal(late.state.shipments.some(value => value.identity.id === row.identity.id), false,
@@ -3937,3 +3942,19 @@ console.log("Worker projection persistence tests passed");
   assert.throws(() => enableBindingEnhancement(phone, NOW, NOW + 7), /绑定已变更/);
 }
 console.log("Enhanced binding persistence and stale-result fences passed");
+
+{
+  memory.clear();
+  const phone = "13800138000";
+  addBinding("interface5", phone, NOW);
+  const original = enableBindingEnhancement(phone, NOW, NOW + 1, "a".repeat(64));
+  const captured = original.bindings[0];
+  saveState({ ...original, bindings: [{ ...captured, enhancedIdentityFingerprint: "b".repeat(64) }] }, NOW + 2);
+  assert.throws(() => removeBinding("interface5", phone, NOW + 3, captured), /绑定已变更/,
+    "an identity-only binding replacement invalidates a captured local-removal generation");
+  const row = shipment({ id: "stale-subscription-identity", source: "interface5", phone });
+  const stale = commitRefreshState(original, { ...original, shipments: [row] }, "interface5", NOW + 4);
+  assert.equal(stale.state.shipments.some(value => value.identity.id === row.identity.id), false,
+    "a list response from another subscription identity cannot create a row despite equal binding timestamps");
+  assert.equal(stale.state.bindings[0].enhancedIdentityFingerprint, "b".repeat(64));
+}

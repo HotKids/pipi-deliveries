@@ -48,7 +48,9 @@ function bindings(values: unknown): AccountBinding[] {
           ? value.boundAtMs
           : 0,
       ...(value.enhancedMode === true ? { enhancedMode: true as const,
-        enhancedAtMs: Number.isFinite(value.enhancedAtMs) ? value.enhancedAtMs : value.boundAtMs } : {}),
+        enhancedAtMs: Number.isFinite(value.enhancedAtMs) ? value.enhancedAtMs : value.boundAtMs,
+        ...(typeof value.enhancedIdentityFingerprint === "string" && /^[a-f0-9]{64}$/.test(value.enhancedIdentityFingerprint)
+          ? { enhancedIdentityFingerprint: value.enhancedIdentityFingerprint } : {}) } : {}),
     });
   }
   return [...unique.values()];

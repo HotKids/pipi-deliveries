@@ -305,6 +305,7 @@ export async function fetchAccountParcels(
    */
   recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
   cachedShipments: readonly Shipment[] = [],
+  diagnosticContext: { flowId?: string; trigger?: string } = {},
 ): Promise<AccountParcelFetchResult> {
   requireScriptSource(source);
   assertWithinDeadline(requestDeadlineAtMs);
@@ -325,7 +326,7 @@ export async function fetchAccountParcels(
     return current.enhancedMode ? accountParcelWithExistingProjection(current, cachedShipments) : current;
   });
   const parcels = await enhanceAccountParcels(references, bindings,
-    { purpose: "waybill", deadlineAtMs: requestDeadlineAtMs, signal });
+    { purpose: "waybill", deadlineAtMs: requestDeadlineAtMs, signal, ...diagnosticContext });
   // 用户 2026-09-27 第二轮清单：截断排后。A waybill cut off in an earlier round is recognised after the others;
   // the list keeps its own order.
   const recognitionOrder = truncatedCarrierRecognitionLast(

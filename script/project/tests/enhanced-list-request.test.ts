@@ -5,6 +5,7 @@ import { seedRecognizedCarriers } from "./carrier-recognition-seed";
 import { parseAccountSyncResponse } from "../services/account-parser";
 import { fetchAccountParcels, parcelToShipment } from "../services/account-sync";
 import { ENHANCEMENT_ROUTE, loadEnhancementIdentity } from "../services/enhanced-account";
+import { readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
 import { saveGatewayToken } from "../services/credentials";
 import { emptyState, loadState, saveState } from "../services/storage";
 
@@ -42,6 +43,7 @@ globalThis.fetch = (async (url: string, options: { body: string }) => {
 
 function seed(projected = false) {
   memory.clear();
+  setDiagnosticsEnabled(true);
   loadEnhancementIdentity();
   enhancementRequests = accountRequests = 0;
   seedRecognizedCarriers({ [WAYBILL]: "JD" }, NOW);
@@ -55,7 +57,9 @@ function seed(projected = false) {
 }
 async function fetchList() {
   const state = loadState();
-  return fetchAccountParcels("interface5", state.bindings, NOW + 30_000, undefined, undefined, state.shipments);
+  writeDiagnostic("refresh.started", { flowId: "refresh-enhanced-list", trigger: "list_pull" });
+  return fetchAccountParcels("interface5", state.bindings, NOW + 30_000, undefined, undefined, state.shipments,
+    { flowId: "refresh-enhanced-list" });
 }
 
 for (const excluded of [101, 111]) {
@@ -74,6 +78,13 @@ seed();
 const missing = await fetchList();
 assert.equal(enhancementRequests, 1, "the list requests a missing number for upstream 103 even though the UI may show ORDERED");
 assert.equal(missing.parcels[0].waybill, WAYBILL);
+const numberLog = readDiagnostics().find(entry => entry.event === "account.enhanced.completed")!.details;
+assert.equal(numberLog.flowId, "refresh-enhanced-list", "the list metadata request stays in the refresh flow");
+assert.equal(numberLog.trigger, "list_pull", "the metadata event inherits its owning flow trigger");
+assert.equal(numberLog.level, "v3_list");
+assert.equal(numberLog.interface, "v3");
+assert.equal(numberLog.source, "v5");
+assert.equal(numberLog.sourceProvider, "jingdong");
 assert.equal(missing.parcels[0].productImageURL, undefined, "a list number response does not acquire its accompanying product image");
 
 stateNumber = 104;

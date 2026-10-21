@@ -90,6 +90,36 @@ function row(scope: "ORDER" | "SHIPMENT", semantic: StatusSemantic, projection?:
   resetStatusLabelTableForTesting();
 }
 
+{
+  const remote = parseStatusLabelTable({
+    ...BOOTSTRAP_STATUS_LABEL_TABLE,
+    labels: { ...BOOTSTRAP_STATUS_LABEL_TABLE.labels, CANCELLED: "Synthetic cancellation label" },
+    subtypes: [...BOOTSTRAP_STATUS_LABEL_TABLE.subtypes,
+      { semantic: "CANCELLED", code: "LEGACY_CANCELLED", label: "Legacy cancellation subtype", priority: 1 }],
+  })!;
+  assert.ok(remote);
+  assert.equal(installStatusLabelTable(remote), true);
+  for (const scope of ["ORDER", "SHIPMENT"] as const) {
+    assert.deepEqual(statusDisplay({ scope, semantic: "CANCELLED", code: "LEGACY_CANCELLED" }),
+      { semantic: "CANCELLED", label: "Synthetic cancellation label" });
+    const cancelled = row(scope, "CANCELLED", {
+      version: 1, scope, semantic: "CANCELLED", code: "LEGACY_CANCELLED", text: "Legacy cancellation subtype",
+      priority: 1, eventAtMs: NOW, structured: true,
+    });
+    cancelled.timeline.latestTimeText = new Date(NOW).toISOString();
+    const original = JSON.stringify(cancelled);
+    assert.deepEqual(shipmentPresentationStatus(cancelled),
+      { semantic: "CANCELLED", text: "Synthetic cancellation label" });
+    assert.deepEqual(shipmentDetailPresentationStatus(cancelled, cancelled.timeline),
+      { semantic: "CANCELLED", text: "Synthetic cancellation label" });
+    assert.equal(buildWidgetSnapshot([cancelled], NOW).rows[0].statusLabel, "Synthetic cancellation label");
+    assert.equal(JSON.stringify(cancelled), original);
+  }
+  assert.equal(activeStatusLabelTable().subtypes.at(-1)?.label, "Legacy cancellation subtype");
+  assert.equal(activeStatusLabelTable().orderLabels.CANCELLED, "订单已取消");
+  resetStatusLabelTableForTesting();
+}
+
 for (const item of shared.cases) {
   const label = `${item.scope} ${item.semantic} ${item.code}`;
   const projection: NormalizedStatus = { version: 1, scope: item.scope, semantic: item.semantic, code: item.code,

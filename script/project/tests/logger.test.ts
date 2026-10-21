@@ -694,7 +694,7 @@ assert.equal(boundedProbeText.includes("synthetic-private"), false,
   "probe diagnostics never allow response bodies, URLs, MIME values or arbitrary response types");
 console.log("bounded JD probe diagnostic fields passed");
 
-for (const key of ["requestedOrderCount", "matchedOrderCount", "productImageCount", "ambiguousOrderCount"] as const) {
+for (const key of ["requestedOrderCount", "matchedOrderCount", "realWaybillCount", "imageURLCount", "productImageCount", "ambiguousOrderCount"] as const) {
   for (const value of [0, 1, 100_000]) {
     writeDiagnostic("account.enhanced.completed", { [key]: value } as never);
     assert.equal(readDiagnostics()[0].details[key], value);
@@ -704,6 +704,21 @@ for (const key of ["requestedOrderCount", "matchedOrderCount", "productImageCoun
     assert.equal(readDiagnostics()[0].details[key], undefined, `${key} accepts only bounded integer counts`);
   }
 }
+for (const purpose of ["waybill", "image"]) {
+  writeDiagnostic("account.enhanced.completed", { interface: "v3", requestProvider: "v3_list", purpose } as never);
+  const details = readDiagnostics()[0].details;
+  assert.equal(details.interface, "v3");
+  assert.equal(details.level, "v3_list");
+  assert.equal(details.requestProvider, "v3_list");
+  assert.equal(details.purpose, purpose);
+}
+for (const purpose of ["synthetic-private-purpose", "13800138000", 1, {}, null]) {
+  writeDiagnostic("account.enhanced.failed", { purpose } as never);
+  assert.equal(readDiagnostics()[0].details.purpose, undefined, "only request-purpose enums enter diagnostics");
+}
+writeDiagnostic("product.image.completed", { stage: "decode", result: "loaded" });
+assert.equal(readDiagnostics()[0].details.interface, undefined, "image bytes are loaded separately from interface v3 metadata");
+assert.equal(readDiagnostics()[0].details.requestProvider, undefined);
 for (const key of ["enhancedMode", "productImagePresent"] as const) {
   for (const value of [true, false]) {
     writeDiagnostic("account.list.record", { [key]: value } as never);
