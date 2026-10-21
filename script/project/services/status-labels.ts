@@ -151,12 +151,13 @@ export function statusDisplay(
   const semantic = input.scope === table.unprojectedOrder.scope
     ? table.unprojectedOrder.displaySemantic[input.semantic] || input.semantic
     : input.semantic;
+  if (semantic === "CANCELLED") return { semantic, label: table.labels.CANCELLED };
   const code = String(input.code || "");
   const subtype = code
     ? table.subtypes.find((value) => value.semantic === semantic && value.code === code)
     : undefined;
   const text = subtype?.label ||
-    (input.scope === "ORDER" && semantic !== "CANCELLED" ? table.orderLabels[semantic] : undefined) ||
+    (input.scope === "ORDER" ? table.orderLabels[semantic] : undefined) ||
     table.labels[semantic] || table.labels.UNKNOWN;
   return { semantic, label: text };
 }

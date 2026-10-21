@@ -4,6 +4,7 @@ import { memory } from "./state-storage-mock";
 import type { AccountParcelDto } from "../services/account-parser";
 import { parcelToShipment } from "../services/account-sync";
 import { ENHANCEMENT_ROUTE, loadEnhancementIdentity } from "../services/enhanced-account";
+import { readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { saveGatewayToken } from "../services/credentials";
 import { emptyState, enableBindingEnhancement, loadState, saveState } from "../services/storage";
 import { runShipmentRefreshForTesting } from "../services/sync";
@@ -52,6 +53,7 @@ globalThis.fetch = (async (url: string, options: { body: string }) => {
 
 function seed(options: { marked?: boolean; image?: string; enhanced?: boolean; bound?: boolean } = {}) {
   memory.clear();
+  setDiagnosticsEnabled(true);
   requests = timelineCalls = h5Calls = 0;
   responseGate = null;
   requestStarted = null;
@@ -88,6 +90,12 @@ for (const marked of [true, false]) {
   const result = await runShipmentRefreshForTesting(row.identity.id, lease,
     { trigger: "product_image", requestProductImage: true }, runtime);
   assert.equal(requests, 1, "a visible detail page may acquire image metadata using the current enabled phone binding");
+  const metadataLog = readDiagnostics().find(entry => entry.event === "account.enhanced.completed")!.details;
+  assert.match(metadataLog.flowId!, /^detail-/);
+  assert.equal(metadataLog.trigger, "product_image");
+  assert.equal(metadataLog.requestProvider, "v3_list");
+  assert.equal(metadataLog.interface, "v3");
+  assert.equal(metadataLog.sourceProvider, "jingdong");
   assert.equal(timelineCalls, 0, "metadata-only detail entry does not query tracking");
   assert.equal(h5Calls, 0);
   assert.equal(result.shipment.identity.productImageURL, IMAGE);

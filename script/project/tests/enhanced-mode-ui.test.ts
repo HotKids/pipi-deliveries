@@ -167,6 +167,22 @@ assert.equal(manager.render().bindingPresented, false, "the current form closes 
 assert.equal(manager.render().notice, "bound");
 manager.unmount();
 
+for (const [pending, unresolved, expected] of [
+  [0, 0, ""],
+  [1, 0, "将在原身份可用时重试"],
+  [2, 1, "无法自动重试"],
+] as const) {
+  const pendingManager = mountHandlers(managerHandlers, "PhoneManagerPage", {
+    bindings: [], stateRevision: 1, busy: false,
+    pendingEnhancementUnsubscribeCount: pending,
+    unresolvedEnhancementUnsubscribeCount: unresolved,
+  }, "unsubscribeNotice");
+  const notice = pendingManager.render().unsubscribeNotice;
+  if (pending) assert.ok(notice.includes(expected));
+  else assert.equal(notice, "", "acknowledged obligations have no pending notice");
+  pendingManager.unmount();
+}
+
 const settingsCalls: any[][] = [];
 const settingsBindings = { bindings };
 const settingsScope = {
@@ -305,7 +321,11 @@ for (const acceptLocalRemoval of [false, true]) {
     existingEnhancementIdentity: () => null,
     Dialog: { confirm: async (options: any) => {
       assert.ok(confirmations.length);
-      if (confirmations.length === 1) assert.equal(options.confirmLabel, "仍要解除本机绑定");
+      if (confirmations.length === 1) {
+        assert.equal(options.confirmLabel, "仍要解除本机绑定");
+        assert.ok(options.message.includes("仅在原身份可确认且可用时重试"),
+          "local-only removal must not promise a retry without the original identity evidence");
+      }
       return confirmations.shift();
     } },
   });

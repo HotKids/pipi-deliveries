@@ -13,11 +13,6 @@ export class EnhancementUnbindUnavailable extends Error {
   }
 }
 
-export function enhancementIdentityFingerprint(): string {
-  const identity = existingEnhancementIdentity();
-  return identity ? privateHash(JSON.stringify(identity)) : "";
-}
-
 /** Replay only the original subscription identity; local removal never proves remote absence. */
 export async function replayEnhancementUnsubscribes(options: {
   deadlineAtMs?: number; isCurrent?: () => boolean;
@@ -41,7 +36,8 @@ export async function replayEnhancementUnsubscribes(options: {
           writeDiagnostic("account.enhanced.unsubscribe_skipped", { stage: "metadata", result: "identity_unavailable" });
           continue;
         }
-        const active = current.bindings.some(binding => binding.phone === pending.phone && binding.enhancedMode);
+        const active = current.bindings.find(binding => binding.phone === pending.phone && binding.enhancedMode);
+        if (active && active.enhancedIdentityFingerprint !== pending.identityFingerprint) continue;
         const canSend = () => lease.isCurrent() && isCurrent() && !deadlineExpired(deadlineAtMs);
         if (!canSend()) continue;
         if (!active) {

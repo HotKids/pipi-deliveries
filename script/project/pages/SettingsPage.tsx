@@ -296,6 +296,8 @@ export function SettingsPage(props: {
               busy={false}
               notice={managerNotice}
               pendingEnhancementUnsubscribeCount={props.state.pendingEnhancementUnsubscribes?.length || 0}
+              unresolvedEnhancementUnsubscribeCount={props.state.pendingEnhancementUnsubscribes?.filter(
+                item => !item.identityFingerprint).length || 0}
               onSendCode={(phone, _flowId, enhanced) => {
                 if (enhanced) {
                   requireEnhancementBinding(loadState().bindings, phone);

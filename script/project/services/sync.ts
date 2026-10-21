@@ -34,7 +34,7 @@ import {
   type ManualSourceDependencies,
 } from "./manual-query";
 import { replayPendingShipmentNotifications } from "./notifications";
-import { EnhancementUnbindUnavailable, enhancementIdentityFingerprint, replayEnhancementUnsubscribes } from "./enhancement-unsubscribe";
+import { EnhancementUnbindUnavailable, replayEnhancementUnsubscribes } from "./enhancement-unsubscribe";
 import { committedPendingPromotionShipmentId } from "./pending-promotion";
 import {
   commitShipmentRouteMutations,
@@ -1893,6 +1893,7 @@ async function synchronizeAccountList(
       signal,
       recognitionBudget,
       state.shipments,
+      { flowId },
     ).catch((error: unknown) => {
       endCancelledList();
       throw error;
@@ -3482,9 +3483,9 @@ export async function bindPhone(
     writeDiagnostic("binding.verify.started", { flowId, source });
     if (enhanced) {
       const binding = requireEnhancementBinding(loadState().bindings, phone);
-      await enhancementOperation("bind", phone, { code, deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS) });
+      const identityFingerprint = await enhancementOperation("bind", phone, { code, deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS) });
       if (!bindingLease.isCurrent()) throw new Error("手机号验证已超时，请重试");
-      const next = enableBindingEnhancement(phone, binding.boundAtMs);
+      const next = enableBindingEnhancement(phone, binding.boundAtMs, Date.now(), identityFingerprint);
       return next;
     }
     try {
@@ -3549,18 +3550,18 @@ export async function unbindPhone(
     const binding = loadState().bindings.find(value => value.source === source && value.phone === phone);
     const expected = options.expectedBinding;
     if (expected && (expected.source !== source || expected.phone !== phone || !binding || binding.boundAtMs !== expected.boundAtMs ||
-        binding.enhancedMode !== expected.enhancedMode || binding.enhancedAtMs !== expected.enhancedAtMs)) {
+        binding.enhancedMode !== expected.enhancedMode || binding.enhancedAtMs !== expected.enhancedAtMs ||
+        binding.enhancedIdentityFingerprint !== expected.enhancedIdentityFingerprint)) {
       throw new Error("手机号绑定已变更，请重试");
     }
     let pendingUnsubscribe: { identityFingerprint: string } | undefined;
     if (binding?.enhancedMode) {
       if (options.localOnly) {
-        let identityFingerprint = "";
-        try { identityFingerprint = enhancementIdentityFingerprint(); }
-        catch { /* Keep an unresolved obligation when the original identity cannot be read. */ }
-        pendingUnsubscribe = { identityFingerprint };
+        // A currently readable identity does not establish a legacy binding's original subscription.
+        pendingUnsubscribe = { identityFingerprint: binding.enhancedIdentityFingerprint || "" };
       } else {
-        try { await enhancementOperation("unbind", phone, { deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS) }); }
+        try { await enhancementOperation("unbind", phone, { deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS),
+          expectedIdentityFingerprint: binding.enhancedIdentityFingerprint }); }
         catch (error) {
           throw new EnhancementUnbindUnavailable(error instanceof Error ? error.message : "远端解绑未完成，请重试");
         }
@@ -3909,7 +3910,7 @@ async function runShipmentRefreshFlow(
     const reference = accountParcelWithProjectionReference(original, null, "", true);
     if (reference) {
       const [metadata] = await enhanceAccountParcels([reference], bindingsForSource(base, source),
-        { purpose: "image", deadlineAtMs, signal });
+        { purpose: "image", deadlineAtMs, signal, flowId, trigger });
       const enriched = applyEnhancementMetadata(original, metadata, Date.now());
       if (enriched !== original) {
         const commit = commitTargetShipmentRefresh(base, enriched, Date.now(), lease);

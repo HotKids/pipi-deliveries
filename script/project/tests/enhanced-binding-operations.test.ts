@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { memory, NOW } from "./state-storage-mock";
 import { saveGatewayToken } from "../services/credentials";
-import { ENHANCEMENT_ROUTE, loadEnhancementIdentity } from "../services/enhanced-account";
+import { ENHANCEMENT_ROUTE, enhancementIdentityFingerprint, loadEnhancementIdentity } from "../services/enhanced-account";
 import { acquireDurableRefreshLease } from "../services/refresh-runtime-state";
-import { emptyState, loadState, privateHash, saveState } from "../services/storage";
+import { emptyState, enableBindingEnhancement, loadState, privateHash, saveState } from "../services/storage";
 import { bindPhone, unbindPhone } from "../services/sync";
 
 const PHONE = "13800000000";
@@ -54,7 +54,8 @@ function seed(base = true, enhanced = false) {
   saveState({ ...emptyState(), bindings: base ? [{ source: "interface5", phone: PHONE,
     boundAtMs: BOUND_AT, ...(enhanced ? { enhancedMode: true as const, enhancedAtMs: NOW - 500 } : {}) }] : [] }, clock);
   saveGatewayToken("AbCdEfGh_123-456");
-  if (enhanced) loadEnhancementIdentity();
+  if (enhanced) enableBindingEnhancement(PHONE, BOUND_AT, NOW - 500,
+    enhancementIdentityFingerprint(loadEnhancementIdentity()));
 }
 
 function assertReleased() {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { memory, NOW } from "./state-storage-mock";
 import { saveGatewayToken } from "../services/credentials";
-import { loadEnhancementIdentity } from "../services/enhanced-account";
+import { enhancementIdentityFingerprint, loadEnhancementIdentity } from "../services/enhanced-account";
 import { addBinding, commitRefreshState, emptyState, enableBindingEnhancement,
   loadState, privateHash, saveState } from "../services/storage";
 import { refreshAllShipments, unbindPhone } from "../services/sync";
@@ -32,7 +32,8 @@ function seed(withIdentity = true) {
   saveState({ ...emptyState(), bindings: [{ source: "interface5", phone: PHONE,
     boundAtMs: NOW - 1_000, enhancedMode: true, enhancedAtMs: NOW - 500 }] });
   saveGatewayToken("AbCdEfGh_123-456");
-  if (withIdentity) loadEnhancementIdentity();
+  if (withIdentity) enableBindingEnhancement(PHONE, NOW - 1_000, NOW - 500,
+    enhancementIdentityFingerprint(loadEnhancementIdentity()));
   return loadState().bindings[0];
 }
 
@@ -94,7 +95,7 @@ const oldBinding = seed();
 await unbindPhone("interface5", PHONE, { localOnly: true, expectedBinding: oldBinding });
 const reenabledAt = Date.now();
 addBinding("interface5", PHONE, reenabledAt);
-enableBindingEnhancement(PHONE, reenabledAt, reenabledAt + 1);
+enableBindingEnhancement(PHONE, reenabledAt, reenabledAt + 1, enhancementIdentityFingerprint(loadEnhancementIdentity()));
 await replayEnhancementUnsubscribes({ deadlineAtMs: Date.now() + 1_000 });
 assert.equal(requests, 0, "re-enhancement under the original identity cancels old cleanup without unsubscribing the active phone");
 assert.equal(loadState().bindings[0].enhancedMode, true);
@@ -117,7 +118,7 @@ assert.equal(requests, 0, "a later identity cannot unsubscribe an obligation bel
 assert.equal(loadState().pendingEnhancementUnsubscribes?.length, 1);
 const newBoundAt = Date.now();
 addBinding("interface5", PHONE, newBoundAt);
-enableBindingEnhancement(PHONE, newBoundAt, newBoundAt + 1);
+enableBindingEnhancement(PHONE, newBoundAt, newBoundAt + 1, enhancementIdentityFingerprint(loadEnhancementIdentity()));
 await replayEnhancementUnsubscribes({ deadlineAtMs: Date.now() + 1_000 });
 assert.equal(requests, 0);
 assert.equal(loadState().pendingEnhancementUnsubscribes?.length, 1,

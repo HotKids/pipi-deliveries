@@ -33,6 +33,7 @@ export type PhoneManagerPageProps = {
   busy: boolean;
   notice?: string;
   pendingEnhancementUnsubscribeCount?: number;
+  unresolvedEnhancementUnsubscribeCount?: number;
   onSendCode: (phone: string, flowId: string, enhanced: boolean) => MaybeAsync;
   onBind: (phone: string, code: string, flowId: string, enhanced: boolean) => MaybeAsync;
   onRemove: (binding: AccountBinding, localOnly?: boolean) => MaybeAsync;
@@ -53,6 +54,10 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   );
   const busy = props.busy || localBusy;
   const hasEnhancement = visibleBindings.some(binding => binding.enhancedMode);
+  const unsubscribeNotice = !props.pendingEnhancementUnsubscribeCount ? ""
+    : props.unresolvedEnhancementUnsubscribeCount
+      ? "部分退订记录无法确认原订阅身份，无法自动重试；已保留待处理记录，远端退订尚未确认。"
+      : "远端退订尚未确认，已保留待处理记录；将在原身份可用时重试。";
 
   useEffect(() => {
     if (!hasEnhancement) { setEnhancementNotice(""); return; }
@@ -147,7 +152,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         if (!(error instanceof EnhancementUnbindUnavailable) || !binding.enhancedMode || !mountedRef.current) throw error;
         const localOnly = await Dialog.confirm({
           title: "远端解绑未完成",
-          message: "本机解绑后将停止同步，远端订阅可能仍保留。将保留退订记录，供后续重试。",
+          message: "本机解绑后将停止同步，远端订阅可能仍保留。将保留退订记录，仅在原身份可确认且可用时重试。",
           cancelLabel: "保留绑定",
           confirmLabel: "仍要解除本机绑定",
         });
@@ -204,8 +209,10 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
               最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号；绑定后，将自动同步关联的快递信息。增强模式不占用绑定数量。
             </Text>
             {enhancementNotice ? <Text font={12} foregroundStyle="systemRed">{enhancementNotice}</Text> : null}
-            {props.pendingEnhancementUnsubscribeCount ? (
-              <Text font={12} foregroundStyle="secondaryLabel">远端退订尚未确认，已保留待处理记录。</Text>
+            {unsubscribeNotice ? (
+              <Text font={12} foregroundStyle="secondaryLabel">
+                {unsubscribeNotice}
+              </Text>
             ) : null}
           </VStack>
         }
