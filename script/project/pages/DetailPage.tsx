@@ -119,10 +119,10 @@ export function DetailPage(props: {
     let value: string | null;
     try {
       value = await Dialog.prompt({
-        title: "备注",
-        message: "为运单号添加备注，留空则删除",
+        title: "编辑备注",
+        message: "清空后保存可删除备注",
         defaultValue: shipment.note || "",
-        placeholder: "输入备注",
+        placeholder: "请输入备注",
         cancelLabel: "取消",
         confirmLabel: "保存",
       });

@@ -4,10 +4,11 @@
     android:height="24dp"
     android:viewportWidth="960"
     android:viewportHeight="960">
-    <!-- Material Symbols Rounded: close. -->
-    <group android:translateY="960">
+    <!-- Material Symbols Outlined: close (U+E5CD), FILL=1, wght=400, GRAD=0, opsz=24, package=4.2960.0. Generated; do not edit by hand. -->
+    <group
+        android:translateY="960">
         <path
             android:fillColor="#FFFFFFFF"
-            android:pathData="M 256 -200 L 200 -256 L 424 -480 L 200 -704 L 256 -760 L 480 -536 L 704 -760 L 760 -704 L 536 -480 L 760 -256 L 704 -200 L 480 -424 Z" />
+            android:pathData="M 256 -200 L 200 -256 L 424 -480 L 200 -704 L 256 -760 L 480 -536 L 704 -760 L 760 -704 L 536 -480 L 760 -256 L 704 -200 L 480 -424 Z M 256 -200 " />
     </group>
 </vector>
