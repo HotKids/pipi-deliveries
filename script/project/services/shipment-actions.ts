@@ -2,12 +2,12 @@ import type { AppState } from "../models";
 import {
   forceCompleteShipment,
   pruneRoutesForState as prunePersistedRoutes,
-  removeShipment,
+  removeShipmentWithCleanup,
 } from "./storage";
 import { requestWidgetReload } from "./widgets";
 
 type ShipmentMutationDependencies = {
-  mutate: (id: string) => AppState;
+  mutate: (id: string) => AppState | { state: AppState; routesPruned: boolean };
   pruneRoutes: (state: AppState) => void;
   reloadWidgets: () => void;
 };
@@ -22,16 +22,23 @@ function performShipmentMutation(
   dependencies: ShipmentMutationDependencies,
 ): ShipmentMutationResult {
   let state: AppState;
+  let routesPruned = false;
   try {
-    state = dependencies.mutate(id);
+    const committed = dependencies.mutate(id);
+    if ("state" in committed) {
+      state = committed.state;
+      routesPruned = committed.routesPruned;
+    } else {
+      state = committed;
+    }
   } catch {
     return { ok: false, message: failureMessage };
   }
 
   try {
-    dependencies.pruneRoutes(state);
+    if (!routesPruned) dependencies.pruneRoutes(state);
   } catch {
-    /* stale encrypted routes expire automatically after the durable state change */
+    /* later durable state transitions retry route cleanup */
   }
   try {
     dependencies.reloadWidgets();
@@ -44,7 +51,7 @@ function performShipmentMutation(
 export function performShipmentDeletion(
   id: string,
   dependencies: ShipmentMutationDependencies = {
-    mutate: removeShipment,
+    mutate: removeShipmentWithCleanup,
     pruneRoutes: prunePersistedRoutes,
     reloadWidgets: requestWidgetReload,
   },

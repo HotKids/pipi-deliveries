@@ -2768,11 +2768,18 @@ export function recordShipmentDetailSelection(id: string, now = Date.now()): App
 }
 
 export function removeShipment(id: string, now = Date.now()): AppState {
+  return removeShipmentWithCleanup(id, now).state;
+}
+
+export function removeShipmentWithCleanup(
+  id: string,
+  now = Date.now(),
+): { state: AppState; routesPruned: boolean } {
   return withSharedFileTransaction(() => {
     const state = loadState(now);
     const shipment = state.shipments.find((item) => item.identity.id === id);
     const canonical = shipment ? displayWaybill(shipment) : "";
-    return saveState(
+    return saveStateAndPrune(
       {
         ...state,
         pendingQueries: shipment
@@ -2786,6 +2793,7 @@ export function removeShipment(id: string, now = Date.now()): AppState {
         ),
       },
       now,
+      {},
     );
   });
 }

@@ -4,6 +4,7 @@ import { memory, NOW } from "./state-storage-mock";
 import { emptyState, saveState, commitRefreshState, pruneRoutesForState } from "../services/storage";
 import { pruneAccountAppRoutes } from "../services/routes";
 import { publishDeferredRoutesForTesting } from "../services/sync";
+import { performShipmentDeletion } from "../services/shipment-actions";
 
 Date.now = () => NOW;
 const routesKey = "pipi_deliveries_routes_v1";
@@ -72,6 +73,31 @@ test("failed cleanup retries at publication without failing the durable business
       publishDeferredRoutesForTesting(commit.state, new Map(), NOW, commit);
       assert.deepEqual(JSON.parse(String(memory.get(`keychain:${routesKey}`))), {});
     } finally { Keychain.get = get; Keychain.set = set; }
+  }
+});
+
+test("deletion reuses successful cleanup and retries only a failed cleanup", () => {
+  for (const failFirst of [false, true]) {
+    memory.clear();
+    saveState(emptyState(), NOW);
+    memory.set(`keychain:${routesKey}`, JSON.stringify({ deleted: {
+      url: "https://page.cainiao.com/detail?synthetic=delete", source: "interface5", updatedAtMs: NOW,
+    } }));
+    const get = Keychain.get;
+    let reads = 0;
+    Keychain.get = key => {
+      if (key === routesKey) {
+        reads++;
+        if (failFirst && reads === 1) throw new Error("synthetic cleanup read failure");
+      }
+      return get(key);
+    };
+    try {
+      assert.equal(performShipmentDeletion("deleted-shipment").ok, true);
+      assert.equal(reads, failFirst ? 2 : 1,
+        "successful durable cleanup must not be repeated; failed cleanup remains retryable");
+      assert.deepEqual(JSON.parse(String(memory.get(`keychain:${routesKey}`))), {});
+    } finally { Keychain.get = get; }
   }
 });
 
