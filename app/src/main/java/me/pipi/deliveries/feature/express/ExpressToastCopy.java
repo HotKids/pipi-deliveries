@@ -65,6 +65,9 @@ final class ExpressToastCopy {
     /** 物流 H5 页（菜鸟半屏、K100 页）打不开。 */
     static final String H5_UNAVAILABLE = "暂时无法加载详情";
 
+    /** An explicit note edit cannot load its current persisted owner or note. */
+    static final String USER_NOTE_UNAVAILABLE = "暂时无法编辑，请重试";
+
     /** 删除成功。 */
     static final String DELETED = "该快递已删除";
 

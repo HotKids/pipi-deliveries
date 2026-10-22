@@ -41,6 +41,8 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   jdRiskControl: "操作过于频繁，请稍后再试",
   /** 物流 H5 页（菜鸟半屏、K100 页）打不开。 */
   h5Unavailable: "暂时无法加载详情",
+  /** An explicit note edit cannot load its current persisted owner or note. */
+  userNoteUnavailable: "暂时无法编辑，请重试",
   /** 删除成功。 */
   deleted: "该快递已删除",
   /** 删除失败。 */
