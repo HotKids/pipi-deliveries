@@ -4,16 +4,19 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Rect;
+import android.graphics.drawable.Drawable;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.RemoteViews;
 import android.widget.TextView;
 
 import me.pipi.deliveries.R;
 
-/** Measures the express header with the host's actual fonts. */
+/** Measures the express header and rows with the host's actual fonts. */
 final class ExpressWidgetMeasurements {
     private ExpressWidgetMeasurements() {}
 
@@ -42,11 +45,17 @@ final class ExpressWidgetMeasurements {
     }
 
     private static float glyphCenterY(TextView text) {
+        return text.getTop() + glyphBounds(text).exactCenterY();
+    }
+
+    private static Rect glyphBounds(TextView text) {
         int width = text.getWidth(), height = text.getHeight();
-        if (width <= 0 || height <= 0) return text.getTop() + height / 2f;
+        if (width <= 0 || height <= 0) return new Rect(0, 0, width, height);
         // CJK fallback fonts and the chevron have different ink bounds inside centered line boxes.
         Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        Drawable background = text.getBackground();
         try {
+            text.setBackground(null);
             text.setTextColor(Color.BLACK);
             text.draw(new Canvas(bitmap));
             int top = height, bottom = -1;
@@ -59,9 +68,48 @@ final class ExpressWidgetMeasurements {
                     bottom = Math.max(bottom, y);
                 }
             }
-            return text.getTop() + (bottom < top ? height / 2f : (top + bottom + 1) / 2f);
+            return new Rect(0, bottom < top ? 0 : top, width,
+                    bottom < top ? height : bottom + 1);
         } finally {
+            text.setBackground(background);
             bitmap.recycle();
         }
+    }
+
+    static void centerRowGlyphs(Context context, RemoteViews views, int rowId,
+            int logoFrameId, int logoId, int companyId, int statusId, int detailId,
+            float widthDp, int detailMaxLines) {
+        views.setViewPadding(logoFrameId, 0, 0, 0, 0);
+        if (detailMaxLines > 1 || widthDp <= 0f) return;
+
+        View shell = views.apply(context, new FrameLayout(context));
+        int width = Math.max(1, Math.round(TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP, widthDp,
+                context.getResources().getDisplayMetrics())));
+        shell.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        shell.layout(0, 0, shell.getMeasuredWidth(), shell.getMeasuredHeight());
+
+        ViewGroup row = shell.findViewById(rowId);
+        View frame = row.findViewById(logoFrameId);
+        View logo = row.findViewById(logoId);
+        TextView detail = row.findViewById(detailId);
+        int top = Math.round((frame.getHeight() - logo.getHeight()) / 2f);
+        if (detail.getVisibility() == View.VISIBLE) {
+            Rect ink = new Rect();
+            for (int id : new int[] {companyId, statusId, detailId}) {
+                TextView text = row.findViewById(id);
+                Rect glyphs = glyphBounds(text);
+                row.offsetDescendantRectToMyCoords(text, glyphs);
+                ink.union(glyphs);
+            }
+            Rect frameBounds = new Rect(0, 0, frame.getWidth(), frame.getHeight());
+            row.offsetDescendantRectToMyCoords(frame, frameBounds);
+            top = Math.round(ink.exactCenterY() - frameBounds.top - logo.getHeight() / 2f);
+        }
+        top = Math.max(0, Math.min(frame.getHeight() - logo.getHeight(), top));
+        // Move the fixed-size child inside its existing envelope; padding is also supported
+        // by Android 10 RemoteViews and never scales the carrier artwork itself.
+        views.setViewPadding(logoFrameId, 0, top, 0, -top);
     }
 }

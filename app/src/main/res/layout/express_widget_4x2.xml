@@ -111,70 +111,115 @@
                 android:textSize="16sp" />
         </LinearLayout>
 
-        <LinearLayout
+        <FrameLayout
             android:id="@+id/widget_express_row1"
             style="@style/DeliveriesExpressWideRow">
-            <ImageView
-                android:id="@+id/widget_express_logo1"
-                style="@style/DeliveriesExpressWideLogo" />
-            <LinearLayout style="@style/DeliveriesExpressWideTextColumn">
-                <LinearLayout style="@style/DeliveriesExpressWideTitleLine">
+            <LinearLayout
+                android:id="@+id/widget_express_row_content1"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:layout_gravity="center_vertical"
+                android:gravity="center_vertical"
+                android:minHeight="40dp"
+                android:orientation="horizontal">
+                <FrameLayout
+                    android:id="@+id/widget_express_logo_frame1"
+                    android:layout_width="40dp"
+                    android:layout_height="match_parent">
+                    <ImageView
+                        android:id="@+id/widget_express_logo1"
+                        style="@style/DeliveriesExpressWideLogo"
+                        android:layout_gravity="top" />
+                </FrameLayout>
+                <LinearLayout style="@style/DeliveriesExpressWideTextColumn">
+                    <LinearLayout style="@style/DeliveriesExpressWideTitleLine">
+                        <TextView
+                            android:id="@+id/widget_express_company1"
+                            style="@style/DeliveriesExpressWideCompany" />
+                        <TextView
+                            android:id="@+id/widget_express_status1"
+                            style="@style/DeliveriesExpressWideStatus" />
+                        <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
+                    </LinearLayout>
                     <TextView
-                        android:id="@+id/widget_express_company1"
-                        style="@style/DeliveriesExpressWideCompany" />
-                    <TextView
-                        android:id="@+id/widget_express_status1"
-                        style="@style/DeliveriesExpressWideStatus" />
-                    <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
+                        android:id="@+id/widget_express_detail1"
+                        style="@style/DeliveriesExpressWideDetail" />
                 </LinearLayout>
-                <TextView
-                    android:id="@+id/widget_express_detail1"
-                    style="@style/DeliveriesExpressWideDetail" />
             </LinearLayout>
-        </LinearLayout>
+        </FrameLayout>
 
-        <LinearLayout
+        <FrameLayout
             android:id="@+id/widget_express_row2"
             style="@style/DeliveriesExpressWideRow">
-            <ImageView
-                android:id="@+id/widget_express_logo2"
-                style="@style/DeliveriesExpressWideLogo" />
-            <LinearLayout style="@style/DeliveriesExpressWideTextColumn">
-                <LinearLayout style="@style/DeliveriesExpressWideTitleLine">
+            <LinearLayout
+                android:id="@+id/widget_express_row_content2"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:layout_gravity="center_vertical"
+                android:gravity="center_vertical"
+                android:minHeight="40dp"
+                android:orientation="horizontal">
+                <FrameLayout
+                    android:id="@+id/widget_express_logo_frame2"
+                    android:layout_width="40dp"
+                    android:layout_height="match_parent">
+                    <ImageView
+                        android:id="@+id/widget_express_logo2"
+                        style="@style/DeliveriesExpressWideLogo"
+                        android:layout_gravity="top" />
+                </FrameLayout>
+                <LinearLayout style="@style/DeliveriesExpressWideTextColumn">
+                    <LinearLayout style="@style/DeliveriesExpressWideTitleLine">
+                        <TextView
+                            android:id="@+id/widget_express_company2"
+                            style="@style/DeliveriesExpressWideCompany" />
+                        <TextView
+                            android:id="@+id/widget_express_status2"
+                            style="@style/DeliveriesExpressWideStatus" />
+                        <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
+                    </LinearLayout>
                     <TextView
-                        android:id="@+id/widget_express_company2"
-                        style="@style/DeliveriesExpressWideCompany" />
-                    <TextView
-                        android:id="@+id/widget_express_status2"
-                        style="@style/DeliveriesExpressWideStatus" />
-                    <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
+                        android:id="@+id/widget_express_detail2"
+                        style="@style/DeliveriesExpressWideDetail" />
                 </LinearLayout>
-                <TextView
-                    android:id="@+id/widget_express_detail2"
-                    style="@style/DeliveriesExpressWideDetail" />
             </LinearLayout>
-        </LinearLayout>
+        </FrameLayout>
 
-        <LinearLayout
+        <FrameLayout
             android:id="@+id/widget_express_row3"
             style="@style/DeliveriesExpressWideRow">
-            <ImageView
-                android:id="@+id/widget_express_logo3"
-                style="@style/DeliveriesExpressWideLogo" />
-            <LinearLayout style="@style/DeliveriesExpressWideTextColumn">
-                <LinearLayout style="@style/DeliveriesExpressWideTitleLine">
+            <LinearLayout
+                android:id="@+id/widget_express_row_content3"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:layout_gravity="center_vertical"
+                android:gravity="center_vertical"
+                android:minHeight="40dp"
+                android:orientation="horizontal">
+                <FrameLayout
+                    android:id="@+id/widget_express_logo_frame3"
+                    android:layout_width="40dp"
+                    android:layout_height="match_parent">
+                    <ImageView
+                        android:id="@+id/widget_express_logo3"
+                        style="@style/DeliveriesExpressWideLogo"
+                        android:layout_gravity="top" />
+                </FrameLayout>
+                <LinearLayout style="@style/DeliveriesExpressWideTextColumn">
+                    <LinearLayout style="@style/DeliveriesExpressWideTitleLine">
+                        <TextView
+                            android:id="@+id/widget_express_company3"
+                            style="@style/DeliveriesExpressWideCompany" />
+                        <TextView
+                            android:id="@+id/widget_express_status3"
+                            style="@style/DeliveriesExpressWideStatus" />
+                        <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
+                    </LinearLayout>
                     <TextView
-                        android:id="@+id/widget_express_company3"
-                        style="@style/DeliveriesExpressWideCompany" />
-                    <TextView
-                        android:id="@+id/widget_express_status3"
-                        style="@style/DeliveriesExpressWideStatus" />
-                    <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
+                        android:id="@+id/widget_express_detail3"
+                        style="@style/DeliveriesExpressWideDetail" />
                 </LinearLayout>
-                <TextView
-                    android:id="@+id/widget_express_detail3"
-                    style="@style/DeliveriesExpressWideDetail" />
             </LinearLayout>
-        </LinearLayout>
+        </FrameLayout>
     </LinearLayout>
 </FrameLayout>

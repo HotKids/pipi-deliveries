@@ -13,6 +13,14 @@ import org.robolectric.annotation.GraphicsMode;
         qualifiers = "port-notnight-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public final class ExpressWidgetCompatHeaderTest {
+    @Test public void android10WideRowsKeepArtworkSizeAndVisibleGlyphAlignment() throws Exception {
+        ExpressWidgetHeaderGeometryTest.assertWideRowsCenterArtworkOnVisibleGlyphs();
+    }
+
+    @Test public void android10ExpandedAndMissingRowsClearCachedOpticalPlacement() throws Exception {
+        ExpressWidgetHeaderGeometryTest.assertWideRowsRestoreCachedArtworkPlacement();
+    }
+
     @Test public void android10LargeTextKeepsHeaderGlyphsCentered() throws Exception {
         for (int count : new int[] {0, 2, 12}) {
             ExpressWidgetHeaderThemeTest.assertCachedHeaderColors(false, true, count, 1.3f);

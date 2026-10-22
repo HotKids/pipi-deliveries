@@ -27,6 +27,8 @@ type MaybeAsync = void | Promise<void>;
 
 export type PhoneBindingPageProps = {
   bindings: readonly AccountBinding[];
+  initialPhone?: string;
+  initialEnhanced?: boolean;
   onSendCode: (
     phone: string,
     flowId: string,
@@ -49,9 +51,9 @@ function validPhone(value: string): boolean {
 }
 
 export function PhoneBindingPage(props: PhoneBindingPageProps) {
-  const [phone, setPhone] = useState("");
+  const [phone, setPhone] = useState(() => normalizedPhone(props.initialPhone || ""));
   const [code, setCode] = useState("");
-  const [enhanced, setEnhanced] = useState(false);
+  const [enhanced, setEnhanced] = useState(props.initialEnhanced === true);
   const [verificationPhone, setVerificationPhone] = useState("");
   const [verificationEnhanced, setVerificationEnhanced] = useState(false);
   const [sending, setSending] = useState(false);
@@ -61,8 +63,8 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const mountedRef = useRef(true);
   const requestSequenceRef = useRef(0);
-  const phoneRef = useRef("");
-  const enhancedRef = useRef(false);
+  const phoneRef = useRef(phone);
+  const enhancedRef = useRef(enhanced);
   const flowIdRef = useRef(createDiagnosticFlowId("binding"));
 
   const maxCodeLength = enhanced ? 8 : 6;
