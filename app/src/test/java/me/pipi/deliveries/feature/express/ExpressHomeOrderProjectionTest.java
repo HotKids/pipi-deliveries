@@ -53,6 +53,8 @@ public final class ExpressHomeOrderProjectionTest {
         CaptureShadow.result = null;
         CarrierShadow.calls = 0;
         CarrierShadow.waybill = null;
+        CarrierShadow.entered = null;
+        CarrierShadow.release = null;
         QueryShadow.ignoreInterrupts = false;
         QueryShadow.entered = null;
     }
@@ -435,6 +437,48 @@ public final class ExpressHomeOrderProjectionTest {
         verifyHomeQuery(false, true);
     }
 
+    @Test public void pendingTextRecognitionDoesNotBlockLocalListReadsAndStillCancelsItsCommit() throws Exception {
+        withRepository("13800000001", repository -> {
+            String orderId = "3610000000006403";
+            String text = "您的订单由第三方卖家拣货完成，待出库交付京东快递，运单号为 JD000000006403";
+            java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA);
+            format.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Shanghai"));
+            ExpressItem pending = listedOrder(repository, "13800000001", orderId,
+                    StatusSemantic.TRANSIT, format.format(new java.util.Date()), text);
+            ExpressListActivity activity = Robolectric.buildActivity(ExpressListActivity.class).get();
+            ReflectionHelpers.setField(activity, "orderProjectionCaptureEnabled", true);
+            java.util.List<ExpressItem> candidates = ReflectionHelpers.getField(activity, "orderProjectionItems");
+            candidates.add(pending);
+            CarrierShadow.entered = new java.util.concurrent.CountDownLatch(1);
+            CarrierShadow.release = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.ExecutorService local = ReflectionHelpers.getField(activity, "databaseWorker");
+            java.util.concurrent.ExecutorService network = ReflectionHelpers.getField(activity, "carrierDetectWorker");
+            try {
+                ReflectionHelpers.callInstanceMethod(activity, "startNextOrderProjectionCapture");
+                assertTrue(CarrierShadow.entered.await(2L, java.util.concurrent.TimeUnit.SECONDS));
+                assertNotNull(local.submit(() -> repository.homeRows("interface5"))
+                        .get(1L, java.util.concurrent.TimeUnit.SECONDS));
+                network.submit(() -> {}).get(1L, java.util.concurrent.TimeUnit.SECONDS);
+                ExpressQueryCancellation cancellation = ReflectionHelpers.getField(activity, "textProjectionCancellation");
+                assertNotNull(cancellation);
+                cancellation.cancel();
+                ReflectionHelpers.setField(activity, "textProjectionCancellation", null);
+                CarrierShadow.release.countDown();
+                network.shutdown();
+                assertTrue(network.awaitTermination(3L, java.util.concurrent.TimeUnit.SECONDS));
+                assertEquals("", repository.find(pending.rowId).projectedWaybill);
+            } finally {
+                CarrierShadow.release.countDown();
+                local.shutdownNow();
+                network.shutdownNow();
+                assertTrue(network.awaitTermination(3L, java.util.concurrent.TimeUnit.SECONDS));
+                CarrierShadow.entered = null;
+                CarrierShadow.release = null;
+                activity.finish();
+            }
+        });
+    }
+
     @Test public void cancellingHomeKeepsItsLeaseUntilTheRunningWorkerFinishes() throws Exception {
         withRepository("13800000001", repository -> {
             ExpressQueryResult feed = new ExpressQueryResult("JDORDERHOMECANCEL", "JD", "京东购物",
@@ -677,11 +721,15 @@ public final class ExpressHomeOrderProjectionTest {
     public static class CarrierShadow {
         static volatile int calls;
         static String waybill;
+        static java.util.concurrent.CountDownLatch entered;
+        static java.util.concurrent.CountDownLatch release;
         @Implementation protected void __constructor__(Context ignored) {}
         @Implementation protected CarrierNormalization recognizeCarrier(
-                String requestedWaybill, ExpressQueryCancellation cancellation) {
+                String requestedWaybill, ExpressQueryCancellation cancellation) throws InterruptedException {
             calls++;
             waybill = requestedWaybill;
+            if (entered != null) entered.countDown();
+            if (release != null) release.await(3L, java.util.concurrent.TimeUnit.SECONDS);
             return new CarrierNormalization("JD", "京东快递", "jd", true, "test");
         }
     }

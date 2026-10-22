@@ -92,7 +92,7 @@ public final class ExpressListActivity extends AppCompatActivity {
     private View empty;
     private View retentionNotice;
     private SwipeRefreshLayout swipeRefresh;
-    private final ExecutorService carrierDetectWorker = Executors.newSingleThreadExecutor();
+    private final ExecutorService carrierDetectWorker = Executors.newFixedThreadPool(2);
     private final ExecutorService databaseWorker = Executors.newSingleThreadExecutor();
     private int reloadGeneration;
     private int queryLookupGeneration;
@@ -429,7 +429,7 @@ public final class ExpressListActivity extends AppCompatActivity {
                 ExpressItem expected = candidate;
                 ExpressQueryCancellation cancellation = new ExpressQueryCancellation(30_000L);
                 textProjectionCancellation = cancellation;
-                databaseWorker.execute(() -> {
+                carrierDetectWorker.execute(() -> {
                     boolean saved = false;
                     try {
                         ExpressRepository repository = ExpressRepository.get(this);
@@ -1038,7 +1038,7 @@ public final class ExpressListActivity extends AppCompatActivity {
         super.onRequestPermissionsResult(requestCode, permissions, grants);
         if (requestCode == 1100 && grants.length > 0
                 && grants[0] == PackageManager.PERMISSION_GRANTED) {
-            databaseWorker.execute(() -> ExpressRepository.get(this).replayPendingNotifications());
+            ExpressRepository.get(this).requestPendingNotificationReplay();
         }
     }
 

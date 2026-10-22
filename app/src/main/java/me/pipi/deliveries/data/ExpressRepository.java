@@ -28,6 +28,9 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,9 +56,18 @@ public final class ExpressRepository {
     public static final String ACTION_SYNC_FINISHED =
             "me.pipi.deliveries.EXPRESS_SYNC_FINISHED";
     private static volatile ExpressRepository instance;
+    private static final ExecutorService PUBLICATION_WORKER = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "deliveries-publication");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    private static final Object NOTIFICATION_PUBLICATION_LOCK = new Object();
+    private static final String NOTIFICATION_CANCEL_PREFIX = "cancel:";
 
     private final Context context;
     private final ExpressDatabase helper;
+    private final Executor publicationWorker;
     private final Object maintenanceLock = new Object();
     private long invalidationVersion;
     private static final class ChangeBatch {
@@ -103,13 +115,19 @@ public final class ExpressRepository {
     private static final int PENDING_QUERY_BATCH_SIZE = 20;
 
     ExpressRepository(Context context) {
-        this(context, new ExpressDatabase(context.getApplicationContext()));
+        this(context, new ExpressDatabase(context.getApplicationContext()), PUBLICATION_WORKER);
     }
 
+    /** Database fixtures can reconcile side effects inline; application instances use the process queue. */
     ExpressRepository(Context context, ExpressDatabase helper) {
+        this(context, helper, Runnable::run);
+    }
+
+    ExpressRepository(Context context, ExpressDatabase helper, Executor publicationWorker) {
         loadDetailSelections(context);
         this.context = context.getApplicationContext();
         this.helper = helper;
+        this.publicationWorker = publicationWorker;
     }
 
     private boolean retentionAnchorsInitialized;
@@ -905,7 +923,7 @@ public final class ExpressRepository {
             if (advanced) recordWebLagEntryQuery(row, times);
             if (committed) {
                 if (!me.pipi.deliveries.background.ExpressStatusAlignment.notificationAlignmentInProgress(row.rowId)) {
-                    replayStatusAlignmentNotification(row);
+                    publicationWorker.execute(() -> replayStatusAlignmentNotification(row));
                 }
                 emitInvalidation();
             }
@@ -1439,17 +1457,13 @@ public final class ExpressRepository {
             if (!isRetentionPruneDue(previous, now)) return;
             preferences.edit().putLong(LAST_RETENTION_PRUNE, now).apply();
             try {
-                // Serialize deletion and cancellation with notification replay.
-                synchronized (this) {
-                    expired = pruneExpiredShipments(now);
-                    for (ExpressItem item : expired) ExpressNotifications.cancel(context, item.rowId);
-                }
+                synchronized (this) { expired = pruneExpiredShipments(now); }
             } catch (RuntimeException | Error failure) {
                 preferences.edit().remove(LAST_RETENTION_PRUNE).apply();
                 throw failure;
             }
         }
-        if (!expired.isEmpty()) emitInvalidation();
+        if (!expired.isEmpty()) publishChange();
     }
 
     static boolean isRetentionPruneDue(long previous, long now) {
@@ -4938,9 +4952,8 @@ public final class ExpressRepository {
         return removed;
     }
 
-    /** After the commit: the old rows' notifications and remembered detail selection, and the number's recognition. */
+    /** A replacement must not inherit the old rows' detail selections or the number's recognition. */
     private void forgetReusedWaybill(String normalized, List<Long> removedRows) {
-        for (long removedRow : removedRows) ExpressNotifications.cancel(context, removedRow);
         synchronized (ExpressRepository.class) {
             loadDetailSelections(context);
             Map<String, String> selections = detailSelections;
@@ -6167,7 +6180,6 @@ public final class ExpressRepository {
     }
 
     public void delete(long rowId) {
-        ArrayList<Long> removedRows = new ArrayList<>();
         synchronized (this) {
             SQLiteDatabase db = database();
             db.beginTransaction();
@@ -6175,16 +6187,15 @@ public final class ExpressRepository {
                 ExpressItem target = find(rowId);
                 if (target != null) {
                     String normalized = ExpressSourcePolicy.normalizeWaybill(target.waybill);
-                    collectRowIds(db, normalized, removedRows);
                     deleteWaybillRows(db, normalized, rowId);
+                } else {
+                    stageNotificationCancellation(db, rowId);
                 }
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
             }
         }
-        if (removedRows.isEmpty()) removedRows.add(rowId);
-        for (long removedRow : removedRows) ExpressNotifications.cancel(context, removedRow);
         publishChange();
     }
 
@@ -6939,8 +6950,7 @@ public final class ExpressRepository {
                 return;
             }
         }
-        replayPendingNotifications();
-        emitInvalidation();
+        emitInvalidation(true);
     }
 
     private void finishChangeBatch() {
@@ -6953,61 +6963,109 @@ public final class ExpressRepository {
             changeBatch.get().invalidationPending = false;
             changeBatch.get().firstSeenRows.clear();
         }
-        replayPendingNotifications();
-        if (invalidate) emitInvalidation();
+        if (invalidate) emitInvalidation(true);
+        else reconcilePublication(true, false);
     }
 
     /** Replays the latest committed presentation per row, using its stable Android notification ID. */
-    public synchronized void replayPendingNotifications() {
+    public void replayPendingNotifications() {
         replayPendingNotifications(0L);
     }
 
-    public synchronized void replayStatusAlignmentNotification(ExpressItem row) {
-        ExpressItem current = row == null ? null : find(row.rowId);
-        if (isShunFeng(current) && current.semantic == StatusSemantic.COMPLETED) {
-            replayPendingNotifications(current.rowId);
+    public void requestPendingNotificationReplay() {
+        reconcilePublication(true, false);
+    }
+
+    public void replayStatusAlignmentNotification(ExpressItem row) {
+        boolean ready;
+        synchronized (this) {
+            ExpressItem current = row == null ? null : find(row.rowId);
+            ready = isShunFeng(current) && current.semantic == StatusSemantic.COMPLETED;
         }
+        if (ready) replayPendingNotifications(row.rowId);
     }
 
     private void replayPendingNotifications(long onlyRowId) {
         if (changeBatch.get().depth > 0) return;
-        SQLiteDatabase db = database();
-        LinkedHashMap<Long, String> pending = new LinkedHashMap<>();
-        try (Cursor cursor = db.query(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE,
-                new String[]{"owner_row_id", "event_token"}, onlyRowId > 0L ? "owner_row_id=?" : null,
-                onlyRowId > 0L ? new String[]{Long.toString(onlyRowId)} : null, null, null,
-                "owner_row_id")) {
-            while (cursor.moveToNext()) pending.put(cursor.getLong(0), cursor.getString(1));
-        }
-        for (Map.Entry<Long, String> event : pending.entrySet()) {
-            try {
-                ExpressItem raw = findManualOwner(db, event.getKey());
-                TimelineProjection projection = projectTimelineProjection(raw);
-                ExpressItem current = projection.item;
-                // Hidden rows retain their caches, but must not return through a delayed notification.
-                if (current != null && !ExpressVisibilityPolicy.isHiddenSigned(
-                        retentionView(db, current), System.currentTimeMillis())
-                        && !hiddenNoItemOrder(db, current) && !hiddenCompletedOrderPlaceholder(db, current)
-                        && !attachedToAnotherOwner(db, current)) {
-                    // T23（用户 2026-09-26，其余裁决 28）：承运商还没对上的行不发带空白承运商的通知；义务留在 outbox，
-                    // 识别出来的那次存盘（它自己的 publishChange 或所在批次的批末）按当时的行再发。不论哪个线程触发
-                    // 重放都一样，另一线程不能把同步线程还没识别完的通知提前推出（缺口①）。
-                    if (current.carrierPending()) continue;
-                    ExpressItem displayed = alignHeadlineToStatus(db, raw, current,
-                            rowProjectionSidecars(db, current), projection.headline);
-                    if (!notificationHeadlineReady(db, raw, current, displayed)) {
-                        ExpressLog.notificationDeferred(current, "status_alignment");
-                        continue;
-                    }
-                    if (!ExpressNotifications.post(context, displayed, current.semantic)) continue;
+        // Posts and cancellation share this boundary, never the repository monitor across Binder.
+        synchronized (NOTIFICATION_PUBLICATION_LOCK) {
+            LinkedHashMap<Long, String> pending = new LinkedHashMap<>();
+            synchronized (this) {
+                try (Cursor cursor = database().query(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE,
+                        new String[]{"owner_row_id", "event_token"}, onlyRowId > 0L ? "owner_row_id=?" : null,
+                        onlyRowId > 0L ? new String[]{Long.toString(onlyRowId)} : null, null, null, "owner_row_id")) {
+                    while (cursor.moveToNext()) pending.put(cursor.getLong(0), cursor.getString(1));
                 }
-                db.delete(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE,
-                        "owner_row_id=? AND event_token=?",
-                        new String[]{Long.toString(event.getKey()), event.getValue()});
-            } catch (RuntimeException failure) {
-                // Keep the row for the next process startup or completed sync batch.
-                android.util.Log.w("ExpressRepository", "Notification remains pending");
             }
+            for (Map.Entry<Long, String> event : pending.entrySet()) {
+                try {
+                    ExpressItem displayed = null;
+                    StatusSemantic semantic = StatusSemantic.UNKNOWN;
+                    boolean cancel;
+                    synchronized (this) {
+                        SQLiteDatabase db = database();
+                        if (!event.getValue().equals(notificationToken(db, event.getKey()))) continue;
+                        ExpressItem raw = findManualOwner(db, event.getKey());
+                        cancel = event.getValue().startsWith(NOTIFICATION_CANCEL_PREFIX) || raw == null;
+                        if (!cancel) {
+                            TimelineProjection projection = projectTimelineProjection(raw);
+                            ExpressItem current = projection.item;
+                            if (current != null && !ExpressVisibilityPolicy.isHiddenSigned(
+                                    retentionView(db, current), System.currentTimeMillis())
+                                    && !hiddenNoItemOrder(db, current) && !hiddenCompletedOrderPlaceholder(db, current)
+                                    && !attachedToAnotherOwner(db, current)) {
+                                if (current.carrierPending()) continue;
+                                displayed = alignHeadlineToStatus(db, raw, current,
+                                        rowProjectionSidecars(db, current), projection.headline);
+                                if (!notificationHeadlineReady(db, raw, current, displayed)) {
+                                    ExpressLog.notificationDeferred(current, "status_alignment");
+                                    continue;
+                                }
+                                semantic = current.semantic;
+                            }
+                        }
+                    }
+                    if (cancel) ExpressNotifications.cancel(context, event.getKey());
+                    else if (displayed != null && !ExpressNotifications.post(context, displayed, semantic)) continue;
+                    synchronized (this) { acknowledgeNotification(event.getKey(), event.getValue()); }
+                    // A deletion can commit during notify(). Cancel its durable successor before
+                    // unrelated widget work; an old post must never acknowledge that successor.
+                    String successor;
+                    synchronized (this) { successor = notificationToken(database(), event.getKey()); }
+                    if (successor.startsWith(NOTIFICATION_CANCEL_PREFIX)) {
+                        ExpressNotifications.cancel(context, event.getKey());
+                        synchronized (this) { acknowledgeNotification(event.getKey(), successor); }
+                    }
+                } catch (RuntimeException failure) {
+                    android.util.Log.w("ExpressRepository", "Notification remains pending");
+                }
+            }
+        }
+    }
+
+    private static String notificationToken(SQLiteDatabase db, long rowId) {
+        try (Cursor cursor = db.query(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE,
+                new String[]{"event_token"}, "owner_row_id=?", new String[]{Long.toString(rowId)}, null, null, null, "1")) {
+            return cursor.moveToFirst() ? cursor.getString(0) : "";
+        }
+    }
+
+    private void acknowledgeNotification(long rowId, String token) {
+        database().delete(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, "owner_row_id=? AND event_token=?",
+                new String[]{Long.toString(rowId), token});
+    }
+
+    private static void stageNotificationCancellation(SQLiteDatabase db, long rowId) {
+        // This outbox obligation is not a waybill deletion fence. AUTOINCREMENT gives
+        // a re-added parcel a different notification ID while cancellation retries.
+        if (rowId <= 0L) return;
+        if (!db.inTransaction()) throw new IllegalStateException("Notification cancellation requires transaction");
+        ContentValues values = new ContentValues();
+        values.put("owner_row_id", rowId);
+        values.put("event_token", NOTIFICATION_CANCEL_PREFIX + UUID.randomUUID());
+        if (db.insertWithOnConflict(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE, null,
+                values, SQLiteDatabase.CONFLICT_REPLACE) < 0L) {
+            throw new IllegalStateException("Notification cancellation persistence failed");
         }
     }
 
@@ -7045,11 +7103,36 @@ public final class ExpressRepository {
     }
 
     private void emitInvalidation() {
-        ExpressWidgetProvider.refreshAll(context);
+        emitInvalidation(false);
+    }
+
+    private void emitInvalidation(boolean replayNotifications) {
         synchronized (this) { invalidationVersion++; }
         context.sendBroadcast(new Intent(ACTION_CHANGED).setPackage(context.getPackageName()));
         // Every committed list checks whether status, headline and detail need alignment.
         me.pipi.deliveries.background.ExpressStatusAlignment.listChanged(context);
+        reconcilePublication(replayNotifications, true);
+    }
+
+    private void reconcilePublication(boolean replayNotifications, boolean refreshWidgets) {
+        // The durable outbox and startup replay retain notification recovery if this process exits.
+        // Rendering or delivering notifications must not hold the committing caller's local queue.
+        publicationWorker.execute(() -> {
+            if (replayNotifications) {
+                try { replayPendingNotifications(); }
+                catch (RuntimeException failure) {
+                    android.util.Log.w("ExpressRepository", "Notification replay remains pending: "
+                            + failure.getClass().getSimpleName());
+                }
+            }
+            if (refreshWidgets) {
+                try { ExpressWidgetProvider.refreshAll(context); }
+                catch (RuntimeException failure) {
+                    android.util.Log.w("ExpressRepository", "Widget refresh could not complete: "
+                            + failure.getClass().getSimpleName());
+                }
+            }
+        });
     }
 
     private static boolean winsCanonical(ExpressItem candidate, ExpressItem current) {
@@ -8712,6 +8795,7 @@ public final class ExpressRepository {
         for (ExpressItem item : expired) {
             String normalized = ExpressSourcePolicy.normalizeWaybill(item.waybill);
             if (normalized.isEmpty()) {
+                stageNotificationCancellation(db, item.rowId);
                 deleteRowLedger(db, "", item.rowId);
                 db.delete(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE, "owner_row_id=?",
                         new String[]{Long.toString(item.rowId)});
@@ -8788,6 +8872,10 @@ public final class ExpressRepository {
     }
 
     private static void deleteWaybillRows(SQLiteDatabase db, String normalized, long fallbackRowId) {
+        ArrayList<Long> removedRows = new ArrayList<>();
+        if (normalized != null && !normalized.isEmpty()) collectRowIds(db, normalized, removedRows);
+        if (!removedRows.contains(fallbackRowId)) removedRows.add(fallbackRowId);
+        for (long removedRow : removedRows) stageNotificationCancellation(db, removedRow);
         // 优化 1、3: the rows' ledger goes with them (user deletion, retention deletion, a reused waybill).
         deleteRowLedger(db, normalized, fallbackRowId);
         if (normalized == null || normalized.isEmpty()) {

@@ -346,14 +346,23 @@ public final class ExpressSignedRetentionTest {
         String id = "ZTRETENTION0009";
         save(id, StatusSemantic.TRANSIT, now - 16 * DAY);
         save(id, StatusSemantic.COMPLETED, now - 15 * DAY);
+        long oldOwner = repository.findByWaybill(id, "interface5").rowId;
         CountingNotifications.attempts = 0;
         repository.runInChangeBatch(() -> {
             repository.saveInterface5(new ExpressQueryResult(id, "ZTO", "中通快递",
                     StatusSemantic.COMPLETED, now, time(now), "已签收，售后服务更新", tracks(now),
                     "", phone, "interface5", "", "", "CaiNiao"), phone);
-            assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE));
+            try (var pending = database.getReadableDatabase().query(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE,
+                    new String[]{"owner_row_id", "event_token"}, null, null, null, null, null)) {
+                assertTrue(pending.moveToFirst());
+                assertEquals(oldOwner, pending.getLong(0));
+                assertTrue(pending.getString(1).startsWith("cancel:"));
+                assertFalse("A hidden commit cannot create a post notification", pending.moveToNext());
+            }
+            assertNull(repository.find(oldOwner));
         });
         assertEquals(0, CountingNotifications.attempts);
+        assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE));
         assertNotNull(repository.findByWaybill(id, "interface5"));
     }
 
