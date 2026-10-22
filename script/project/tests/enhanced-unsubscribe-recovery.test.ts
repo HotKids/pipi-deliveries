@@ -159,6 +159,24 @@ test("a legacy binding cannot mistake the current identity for its unrecorded or
     "a later readable identity does not prove which subscription owns a legacy obligation");
 });
 
+test("explicit re-verification lets a legacy binding unsubscribe its verified identity normally", async () => {
+  const original = seed();
+  const legacy = saveState({ ...loadState(), bindings: [{ source: "interface5", phone: PHONE,
+    boundAtMs: BOUND_AT, enhancedMode: true, enhancedAtMs: NOW - 1 }] }, NOW).bindings[0];
+  await assert.rejects(unbindPhone("interface5", PHONE, { expectedBinding: legacy }),
+    error => error instanceof EnhancementUnbindUnavailable);
+  assert.equal(requests.length, 0);
+  const verified = await verifiedBinding();
+  assert.equal(verified.enhancedIdentityFingerprint, original.fingerprint);
+  assert.equal(verified.boundAtMs, legacy.boundAtMs, "re-verification keeps the base binding generation");
+  const removed = await unbindPhone("interface5", PHONE, { expectedBinding: verified });
+  assert.equal(removed.bindings.length, 0);
+  assert.deepEqual(requests.map(request => request.operation), ["bind", "unbind"]);
+  assert.ok(requests.every(request => request.identityFingerprint === original.fingerprint));
+  assert.equal(removed.pendingEnhancementUnsubscribes?.length || 0, 0,
+    "a confirmed remote unbind does not create an unresolved local-only obligation");
+});
+
 for (const active of ["same", "different", "unknown"] as const) {
   test(`an active binding with ${active} provenance acknowledges only a proven same-identity obligation`, async () => {
     const original = seed(), binding = await verifiedBinding();

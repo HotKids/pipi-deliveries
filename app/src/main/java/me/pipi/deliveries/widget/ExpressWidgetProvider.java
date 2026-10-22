@@ -39,6 +39,16 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             R.id.widget_express_row2,
             R.id.widget_express_row3
     };
+    private static final int[] WIDE_CONTENT_IDS = {
+            R.id.widget_express_row_content1,
+            R.id.widget_express_row_content2,
+            R.id.widget_express_row_content3
+    };
+    private static final int[] WIDE_LOGO_FRAME_IDS = {
+            R.id.widget_express_logo_frame1,
+            R.id.widget_express_logo_frame2,
+            R.id.widget_express_logo_frame3
+    };
     private static final int[] WIDE_LOGO_IDS = {
             R.id.widget_express_logo1,
             R.id.widget_express_logo2,
@@ -208,7 +218,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             } else {
                 for (int index = 0; index < WIDE_ROW_IDS.length; index++) {
                     bindWideRow(context, views, displayed, index, id * 10 + index,
-                            rowLayout, typography, mediumLayout);
+                            rowLayout, typography, mediumLayout, hostWidthDp);
                 }
             }
 
@@ -227,7 +237,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             Context context, RemoteViews views, List<ExpressItem> items, int index,
             int requestCode, ExpressWidgetRowPolicy.RowLayout rowLayout,
             WidgetTypographyProfile typography,
-            ExpressWidgetLayout.Medium mediumLayout) {
+            ExpressWidgetLayout.Medium mediumLayout, float hostWidthDp) {
         if (index >= rowLayout.visibleRows) {
             hideWideRow(views, index);
             return;
@@ -257,6 +267,13 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         views.setTextViewText(WIDE_DETAIL_IDS[index], ExpressTimeline.displayHeadline(item));
         views.setViewVisibility(WIDE_DETAIL_IDS[index],
                 item.latestDetail.isEmpty() ? View.GONE : View.VISIBLE);
+        boolean expandedDetail = rowLayout.detailMaxLines > 1 && !item.latestDetail.isEmpty();
+        views.setInt(WIDE_CONTENT_IDS[index], "setGravity",
+                expandedDetail ? Gravity.TOP : Gravity.CENTER_VERTICAL);
+        ExpressWidgetMeasurements.centerRowGlyphs(context, views, root,
+                WIDE_LOGO_FRAME_IDS[index], WIDE_LOGO_IDS[index],
+                WIDE_COMPANY_IDS[index], WIDE_STATUS_IDS[index], WIDE_DETAIL_IDS[index],
+                hostWidthDp, expandedDetail ? rowLayout.detailMaxLines : 1);
         views.setOnClickPendingIntent(root, openDetail(context, item, requestCode));
     }
 

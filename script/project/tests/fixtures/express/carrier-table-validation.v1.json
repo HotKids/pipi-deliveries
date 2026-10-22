@@ -569,12 +569,12 @@
     "base": {
       "track": "beta",
       "artifactPath": "cloudflare/express-gateway/src/worker.beta.js",
-      "artifactSha256": "ae88d9bcafb72a224b09a4d11bd3389fd79a36d906a5dcd7974418b443aefada"
+      "artifactSha256": "d4f16a601fa6ac39be7e6d3fb639ce25a776adf2fd5399e72cb02c1e8f46f89b"
     },
     "formalStartupBase": {
       "track": "formal",
       "artifactPath": "cloudflare/express-gateway/src/worker.js",
-      "artifactSha256": "ae88d9bcafb72a224b09a4d11bd3389fd79a36d906a5dcd7974418b443aefada"
+      "artifactSha256": "d4f16a601fa6ac39be7e6d3fb639ce25a776adf2fd5399e72cb02c1e8f46f89b"
     }
   },
   "cases": [

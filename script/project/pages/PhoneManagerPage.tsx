@@ -45,6 +45,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   const [notice, setNotice] = useState("");
   const [enhancementNotice, setEnhancementNotice] = useState("");
   const [bindingPresented, setBindingPresented] = useState(false);
+  const [bindingTarget, setBindingTarget] = useState<AccountBinding | undefined>(undefined);
   const mountedRef = useRef(true);
   const actionInFlightRef = useRef(false);
   const bindingGenerationRef = useRef(0);
@@ -122,6 +123,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
 
   function add() {
     if (busy) return;
+    setBindingTarget(undefined);
     changeBindingPresentation(true);
   }
 
@@ -150,9 +152,28 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
       try { await props.onRemove(binding); }
       catch (error) {
         if (!(error instanceof EnhancementUnbindUnavailable) || !binding.enhancedMode || !mountedRef.current) throw error;
+        if (!binding.enhancedIdentityFingerprint) {
+          const choice = await Dialog.actionSheet({
+            title: "解绑手机号",
+            message: "此绑定需重新验证增强模式后才能远端解绑。仅解除本机绑定无法确认远端退订，也无法自动重试。",
+            actions: [
+              { label: "重新验证" },
+              { label: "仅解除本机绑定", destructive: true },
+            ],
+          });
+          if (!mountedRef.current) return;
+          if (choice === 0) {
+            setBindingTarget(binding);
+            changeBindingPresentation(true);
+            return;
+          }
+          if (choice !== 1) return;
+        }
         const localOnly = await Dialog.confirm({
           title: "远端解绑未完成",
-          message: "本机解绑后将停止同步，远端订阅可能仍保留。将保留退订记录，仅在原身份可确认且可用时重试。",
+          message: binding.enhancedIdentityFingerprint
+            ? "本机解绑后将停止同步，远端订阅可能仍保留。将保留退订记录，仅在原身份可确认且可用时重试。"
+            : "本机解绑后将停止同步，远端退订尚未确认。将保留待处理记录，但无法自动重试。",
           cancelLabel: "保留绑定",
           confirmLabel: "仍要解除本机绑定",
         });
@@ -176,6 +197,9 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         content: (
           <PhoneBindingPage
             bindings={props.bindings}
+            key={`binding:${bindingGenerationRef.current}`}
+            initialPhone={bindingTarget?.phone}
+            initialEnhanced={bindingTarget?.enhancedMode}
             onSendCode={props.onSendCode}
             onBind={bind}
           />

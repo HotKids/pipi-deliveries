@@ -304,7 +304,8 @@ class SyntheticUnbindUnavailable extends Error {}
 class SyntheticIdentityMissing extends Error {
   constructor() { super("synthetic identity requires verification"); }
 }
-const enhancedBinding = { ...bindings[0], enhancedMode: true, enhancedAtMs: 2 };
+const enhancedBinding = { ...bindings[0], enhancedMode: true, enhancedAtMs: 2,
+  enhancedIdentityFingerprint: "synthetic-original-identity" };
 for (const acceptLocalRemoval of [false, true]) {
   const confirmations = [true, acceptLocalRemoval];
   const removeCalls: boolean[] = [];
@@ -337,6 +338,64 @@ for (const acceptLocalRemoval of [false, true]) {
     "local removal requires the second explicit confirmation after remote failure");
   assert.equal(removal.render().notice, acceptLocalRemoval ? "unbound" : "failed");
 }
+
+for (const choice of [null, 0, 1] as const) {
+  const legacyBinding = { ...enhancedBinding, enhancedIdentityFingerprint: undefined };
+  const removeCalls: boolean[] = [];
+  let recoveryChoices = 0;
+  const legacy = mountHandlers(managerHandlers, "PhoneManagerPage", {
+    bindings: [legacyBinding], stateRevision: 1, busy: false,
+    onRemove: async (_binding: unknown, localOnly?: boolean) => {
+      removeCalls.push(Boolean(localOnly));
+      if (!localOnly) throw new SyntheticUnbindUnavailable("original subscription identity is unknown");
+    },
+  }, "remove, add, bindingPresented, bindingTarget: typeof bindingTarget === 'undefined' ? undefined : bindingTarget, notice", {
+    EXPRESS_TOAST_COPY: { phoneUnbound: "unbound", unbindFailed: "failed" },
+    EnhancementUnbindUnavailable: SyntheticUnbindUnavailable,
+    existingEnhancementIdentity: () => ({ syntheticIdentity: true }),
+    Dialog: {
+      confirm: async (options: any) => {
+        if (options.title === "远端解绑未完成") {
+          assert.equal(choice, 1, "only an explicit local-only choice may reach removal confirmation");
+          assert.match(options.message, /无法自动重试/);
+        }
+        return true;
+      },
+      actionSheet: async (options: any) => {
+        recoveryChoices++;
+        assert.deepEqual(Array.from(options.actions, (action: any) => action.label),
+          ["重新验证", "仅解除本机绑定"]);
+        return choice;
+      },
+    },
+  });
+  await legacy.render().remove(legacyBinding);
+  assert.equal(recoveryChoices, 1, "legacy removal must offer re-verification before local-only confirmation");
+  assert.deepEqual(removeCalls, choice === 1 ? [false, true] : [false]);
+  assert.equal(legacy.render().bindingPresented, choice === 0);
+  assert.equal(legacy.render().bindingTarget?.phone, choice === 0 ? basePhone : undefined);
+  assert.equal(legacy.render().notice, choice === 1 ? "unbound" : "");
+  if (choice === 0) {
+    legacy.render().add();
+    assert.equal(legacy.render().bindingTarget, undefined, "ordinary add must clear the recovery target");
+  }
+  legacy.unmount();
+}
+
+const prefilledRequests: any[][] = [];
+const prefilled = mountHandlers(handlers, "PhoneBindingPage", {
+  bindings, initialPhone: basePhone, initialEnhanced: true,
+  onSendCode: async (...args: any[]) => { prefilledRequests.push(args); },
+  onBind: async () => {},
+}, "phone, enhanced, sendCode");
+assert.equal(prefilled.render().phone, basePhone);
+assert.equal(prefilled.render().enhanced, true);
+await prefilled.render().sendCode();
+assert.equal(prefilledRequests[0][0], basePhone);
+assert.equal(prefilledRequests[0][2], true, "the prefilled form must use the existing enhancement verification path");
+prefilled.unmount();
+assert.match(managerSource, /initialPhone=\{bindingTarget\?\.phone\}/);
+assert.match(managerSource, /initialEnhanced=\{bindingTarget\?\.enhancedMode\}/);
 
 const identityAvailable = mountHandlers(managerHandlers, "PhoneManagerPage", {
   bindings: [enhancedBinding], stateRevision: 1, busy: false,
