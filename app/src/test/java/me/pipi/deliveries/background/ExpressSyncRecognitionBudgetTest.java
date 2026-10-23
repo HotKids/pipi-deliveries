@@ -21,6 +21,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -87,7 +88,14 @@ public final class ExpressSyncRecognitionBudgetTest {
         Api.reset();
     }
 
-    @After public void tearDown() {
+    private static void awaitPublications() throws Exception {
+        // Notification assertions observe the real queued publication, outside the recognition budget.
+        ExecutorService worker = ReflectionHelpers.getStaticField(ExpressRepository.class, "PUBLICATION_WORKER");
+        worker.submit(() -> {}).get(3L, TimeUnit.SECONDS);
+    }
+
+    @After public void tearDown() throws Exception {
+        awaitPublications();
         AccountCarrierRecognition.budgetMillisOverride = 0L;
         Api.reset();
         ((ExpressDatabase) ReflectionHelpers.getField(repository, "helper")).close();
@@ -111,6 +119,7 @@ public final class ExpressSyncRecognitionBudgetTest {
         long started = System.nanoTime();
         ExpressSyncEngine.syncAll(context, new int[]{0, 0, 0}, false, "background");
         long tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+        awaitPublications();
         assertTrue("the round stops waiting at its budget, took " + tookMs + " ms", tookMs < 2_000L);
         assertFalse("the round's own thread is not left interrupted",
                 Thread.currentThread().isInterrupted());
@@ -124,6 +133,7 @@ public final class ExpressSyncRecognitionBudgetTest {
         Api.delayMillis = 0L;
         Api.answer = YTO;
         ExpressSyncEngine.syncAll(context, new int[]{0, 0, 0}, false, "background");
+        awaitPublications();
         assertFalse(repository.find(first.rowId).carrierPending());
         assertFalse(repository.find(second.rowId).carrierPending());
         assertEquals(0, outbox());

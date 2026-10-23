@@ -16,6 +16,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import me.pipi.deliveries.data.ExpressDatabase;
@@ -77,7 +79,8 @@ public final class ExpressSyncCarrierFirstTest {
         Api.answer = CarrierNormalization.NONE;
     }
 
-    @After public void tearDown() {
+    @After public void tearDown() throws Exception {
+        awaitPublications();
         ((ExpressDatabase) ReflectionHelpers.getField(repository, "helper")).close();
         ReflectionHelpers.setStaticField(ExpressRepository.class, "instance", null);
         context.deleteDatabase(ExpressDatabase.DATABASE);
@@ -100,6 +103,7 @@ public final class ExpressSyncCarrierFirstTest {
         assertEquals("", order.projectedWaybill);
 
         ExpressSyncEngine.syncAll(context, new int[]{0, 0, 0}, false, "background");
+        awaitPublications();
         ExpressItem kept = repository.find(order.rowId);
         assertTrue("the round asked for the carrier", Api.calls.get() > 0);
         assertEquals("unmatched: the order stays as it was", "", kept.projectedWaybill);
@@ -109,6 +113,7 @@ public final class ExpressSyncCarrierFirstTest {
 
         Api.answer = new CarrierNormalization("STO", "申通快递", "shentong", true, "t23");
         ExpressSyncEngine.syncAll(context, new int[]{0, 0, 0}, false, "background");
+        awaitPublications();
         ExpressItem projected = repository.find(order.rowId);
         assertEquals("770018906334362", projected.projectedWaybill);
         assertEquals("申通快递", projected.displayCompany());
@@ -132,10 +137,17 @@ public final class ExpressSyncCarrierFirstTest {
         ExpressItem order = repository.findByWaybill("3630448013822502", "interface5");
         Api.answer = CarrierNormalization.exhausted();
         ExpressSyncEngine.syncAll(context, new int[]{0, 0, 0}, false, "background");
+        awaitPublications();
         ExpressItem projected = repository.find(order.rowId);
         assertEquals("770018906334372", projected.projectedWaybill);
         assertEquals("JDKD", projected.displayCompany());
         assertEquals(List.of("JDKD 4372 · 已揽件"), postedTitles());
+    }
+
+    private static void awaitPublications() throws Exception {
+        // A sync round commits before Android notification delivery; observe the real queued work.
+        ExecutorService worker = ReflectionHelpers.getStaticField(ExpressRepository.class, "PUBLICATION_WORKER");
+        worker.submit(() -> {}).get(3L, TimeUnit.SECONDS);
     }
 
     private List<String> postedTitles() {
