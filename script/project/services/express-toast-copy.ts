@@ -43,6 +43,9 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   h5Unavailable: "暂时无法加载详情",
   /** An explicit note edit cannot load its current persisted owner or note. */
   userNoteUnavailable: "暂时无法编辑，请重试",
+  /** Shared copy only; this does not add Pipi note recovery to iOS. */
+  userNoteRecoveryFailed: "处理失败，请重试",
+  userNoteChanged: "快递信息已变更，请重新打开备注",
   /** 删除成功。 */
   deleted: "该快递已删除",
   /** 删除失败。 */
