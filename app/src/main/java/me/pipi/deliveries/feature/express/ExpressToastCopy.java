@@ -71,6 +71,9 @@ final class ExpressToastCopy {
     /** Shared copy only; this does not add Pipi note recovery to Lite. */
     static final String USER_NOTE_RECOVERY_FAILED = "处理失败，请重试";
     static final String USER_NOTE_CHANGED = "快递信息已变更，请重新打开备注";
+    static final String USER_NOTE_SAVED = "备注已保存";
+    static final String USER_NOTE_DELETED = "备注已删除";
+    static final String PICKUP_RECORD_DELETED = "该取件码已删除";
 
     /** 删除成功。 */
     static final String DELETED = "该快递已删除";
@@ -87,7 +90,7 @@ final class ExpressToastCopy {
     /** 复制运单号成功。 */
     static final String WAYBILL_COPIED = "运单号已复制";
 
-    /** 复制运单号失败（只有 iOS 宿主会失败，允许的差异）。 */
+    /** An explicit copy request could not write to the clipboard. */
     static final String COPY_FAILED = "复制失败，请稍后重试";
 
     /** 官方电话打不开拨号界面。 */

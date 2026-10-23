@@ -1825,9 +1825,17 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     private void copyWaybill(String waybill) {
         ClipboardManager clipboard = getSystemService(ClipboardManager.class);
-        if (clipboard == null) return;
-        clipboard.setPrimaryClip(ClipData.newPlainText(
-                getString(R.string.copy_waybill), waybill));
+        if (clipboard == null) {
+            Toast.makeText(this, ExpressToastCopy.COPY_FAILED, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            clipboard.setPrimaryClip(ClipData.newPlainText(
+                    getString(R.string.copy_waybill), waybill));
+        } catch (RuntimeException unavailable) {
+            Toast.makeText(this, ExpressToastCopy.COPY_FAILED, Toast.LENGTH_SHORT).show();
+            return;
+        }
         Toast.makeText(this, ExpressToastCopy.WAYBILL_COPIED, Toast.LENGTH_SHORT).show();
     }
 
