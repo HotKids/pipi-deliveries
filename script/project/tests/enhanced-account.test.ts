@@ -106,7 +106,14 @@ const [imageOnly] = await enhanceAccountParcels([parcel], [binding], { identity,
   request: async () => ({ records: [{ phone: PHONE, orderId: ORDER, realWaybill: "", imageUrl: "https://img10.360buyimg.com/product.jpg" }], ambiguousOrderIds: [] }) });
 assert.equal(imageOnly.waybill, ORDER);
 assert.ok(imageOnly.productImageURL);
-for (const url of ["https://evil.invalid/p.jpg", "http://img10.360buyimg.com/p.jpg", "https://user@jd.com/p.jpg"]) {
+for (const url of ["https:jd.com/x", "https:/jd.com/x", " https://@jd.com/x"]) {
+  const [normalizedImage] = await enhanceAccountParcels([parcel], [binding], { identity, purpose: "image",
+    request: async () => ({ records: [{ phone: PHONE, orderId: ORDER, imageUrl: url }], ambiguousOrderIds: [] }) });
+  assert.equal(normalizedImage.productImageURL, "https://jd.com/x",
+    "metadata retains its established normalization before the downloader's separate raw-URL boundary");
+}
+for (const url of ["https://evil.invalid/p.jpg", "http://img10.360buyimg.com/p.jpg", "https://user@jd.com/p.jpg",
+  "https://@jd.com/p.jpg", "https://jd.com?email=@", "\nhttps://img.jd.com/a"]) {
   const [invalidImage] = await enhanceAccountParcels([parcel], [binding], { identity, purpose: "image",
     request: async () => ({ records: [{ phone: PHONE, orderId: ORDER, imageUrl: url }], ambiguousOrderIds: [] }) });
   assert.equal(invalidImage.productImageURL, undefined);

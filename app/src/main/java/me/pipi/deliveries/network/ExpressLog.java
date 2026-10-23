@@ -62,6 +62,21 @@ public final class ExpressLog {
 
     public static boolean hasScope() { return CURRENT.get() != null; }
 
+    /** Pooled threads inherit only their first caller; each task carries its actual request owner. */
+    public static <T> java.util.concurrent.Callable<T> withCurrentScope(
+            java.util.concurrent.Callable<T> operation) {
+        Scope captured = CURRENT.get();
+        return () -> {
+            Scope previous = CURRENT.get();
+            CURRENT.set(captured);
+            try {
+                return operation.call();
+            } finally {
+                CURRENT.set(previous);
+            }
+        };
+    }
+
     public static String newFlowId(String prefix) {
         return prefix + "-" + UUID.randomUUID().toString();
     }

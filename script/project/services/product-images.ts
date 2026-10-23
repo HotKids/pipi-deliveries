@@ -1,3 +1,4 @@
+import { allowedProductImageURL } from "./product-image-url";
 import { AbortController, fetch, Path, type AbortSignal } from "scripting";
 import { utf8Data } from "./scripting-data";
 import { writeDiagnostic, type DiagnosticDetails } from "./logger";
@@ -8,23 +9,6 @@ const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 16 * 1024 * 1024;
 const MAX_REDIRECTS = 4;
 const THUMBNAIL_EDGE = 432;
-
-function allowedURL(value: string): string | null {
-  const trimmed = value.trim();
-  if (/[\u0000-\u001f\u007f\\]/.test(trimmed)) return null;
-  try {
-    const url = new URL(trimmed);
-    const authority = trimmed.match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i)?.[1];
-    const host = url.hostname.toLowerCase();
-    return url.protocol === "https:" && authority != null && !authority.includes("@") &&
-      (!url.port || url.port === "443") &&
-      (host === "jd.com" || host.endsWith(".jd.com") ||
-        host === "360buyimg.com" || host.endsWith(".360buyimg.com"))
-      ? url.href : null;
-  } catch {
-    return null;
-  }
-}
 
 async function decode(data: Data, signal: AbortSignal, details: DiagnosticDetails): Promise<UIImage | null> {
   if (signal.aborted || data.size <= 0 || data.size > MAX_IMAGE_BYTES) return null;
@@ -72,7 +56,8 @@ async function cached(path: string, signal: AbortSignal, details: DiagnosticDeta
   }
 }
 
-export function initialProductImage(key: string): UIImage | null {
+export function initialProductImage(key: string, isRetained?: () => boolean): UIImage | null {
+  try { if (isRetained && !isRetained()) return null; } catch { return null; }
   const remembered = cachedProductImage(key);
   if (remembered) return remembered;
   let paths: string[];
@@ -91,7 +76,9 @@ export function initialProductImage(key: string): UIImage | null {
       if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
           width <= 0 || height <= 0 || width * height > MAX_IMAGE_PIXELS) continue;
       const image = source.preparingThumbnail({ width: THUMBNAIL_EDGE, height: THUMBNAIL_EDGE });
-      if (image && productImageCacheFiles(key).includes(path)) return rememberProductImage(key, image);
+      if (image && productImageCacheFiles(key).includes(path)) return rememberProductImage(key, image,
+        () => (!isRetained || isRetained()) && FileManager.existsSync(path) &&
+          !FileManager.existsSync(path.replace(/\.img$/, ".deleted")));
     } catch { /* Missing or damaged cache files keep the normal asynchronous recovery path. */ }
   }
   return null;
@@ -146,7 +133,7 @@ async function download(url: string, controller: AbortController, details: Diagn
       "Accept-Encoding": "identity",
     },
     handleRedirect: async (request) => {
-      const target = allowedURL(request.url);
+      const target = allowedProductImageURL(request.url.trim());
       if (controller.signal.aborted || !target || visited.has(target) || ++redirects > MAX_REDIRECTS) {
         rejectedRedirect = true;
         details.result = "redirect_rejected";
@@ -164,7 +151,7 @@ async function download(url: string, controller: AbortController, details: Diagn
   const mime = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
   const length = response.headers.get("content-length");
   const expected = response.expectedContentLength;
-  const finalURL = allowedURL(response.url);
+  const finalURL = allowedProductImageURL(response.url.trim());
   if (controller.signal.aborted || rejectedRedirect || !response.ok ||
       !finalURL || !visited.has(finalURL) ||
       !["image/jpeg", "image/png", "image/webp", "image/gif"].includes(mime) ||
@@ -205,7 +192,7 @@ export async function loadProductImage(value: string, signal?: AbortSignal, owne
   if (signal?.aborted || !retained(owner)) return null;
   const remembered = owner ? cachedProductImage(owner.key) : null;
   if (remembered) return remembered;
-  const url = allowedURL(value);
+  const url = allowedProductImageURL(value.trim());
   if (!url && !owner) {
     writeDiagnostic("product.image.completed", { stage: "validation", result: "invalid_url" }, "warning");
     return null;
@@ -231,7 +218,12 @@ export async function loadProductImage(value: string, signal?: AbortSignal, owne
         catch { paths = []; }
         for (const existingPath of paths) {
           const existing = await cached(existingPath, controller.signal, details);
-          if (existing) { details.stage = "cache"; return existing.image; }
+          if (existing) {
+            details.stage = "cache";
+            return owner ? rememberProductImage(owner.key, existing.image,
+              () => retained(owner) && FileManager.existsSync(existingPath) &&
+                !FileManager.existsSync(existingPath.replace(/\.img$/, ".deleted"))) : existing.image;
+          }
         }
       }
       if (!url) { details.stage = "validation"; details.result = "invalid_url"; return null; }
@@ -242,7 +234,7 @@ export async function loadProductImage(value: string, signal?: AbortSignal, owne
         catch { /* The temporary cache is optional, including its address calculation. */ }
         if (previous) {
           if (controller.signal.aborted || !retained(owner)) return null;
-          const first = rememberProductImage(owner.key, previous.image);
+          const first = rememberProductImage(owner.key, previous.image, owner.isRetained);
           if (first === previous.image) persistRecordImage(path, previous.data, owner);
           details.stage = "cache";
           return first;
@@ -253,7 +245,7 @@ export async function loadProductImage(value: string, signal?: AbortSignal, owne
       const image = await decode(data, controller.signal, details);
       if (!image || controller.signal.aborted || !retained(owner)) return null;
       if (owner) {
-        const first = rememberProductImage(owner.key, image);
+        const first = rememberProductImage(owner.key, image, owner.isRetained);
         if (first !== image) return first;
       }
       if (path) {
@@ -264,7 +256,7 @@ export async function loadProductImage(value: string, signal?: AbortSignal, owne
     };
     const loaded = await Promise.race([work().catch(() => null), cancelled]);
     const image = controller.signal.aborted || !retained(owner) ? null
-      : loaded && owner ? rememberProductImage(owner.key, loaded) : loaded;
+      : loaded && owner ? rememberProductImage(owner.key, loaded, owner.isRetained) : loaded;
     if (!signal?.aborted) writeDiagnostic("product.image.completed", {
       ...details, result: timedOut ? "timeout" : image ? "loaded" : details.result,
       durationMs: Date.now() - startedAt,

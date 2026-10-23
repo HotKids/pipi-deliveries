@@ -231,7 +231,7 @@ final class CarrierRecognitionCoordinator {
             owner = work == null;
             if (owner) {
                 Pending created = new Pending();
-                created.task = new FutureTask<>(() -> {
+                created.task = new FutureTask<>(ExpressLog.withCurrentScope(() -> {
                     try {
                         return recognizeOwned(number, identity, created.cancellation, excludeJd,
                                 () -> roundWaiting(created), parcelAnchorAtMs);
@@ -239,7 +239,7 @@ final class CarrierRecognitionCoordinator {
                         removePending(scope, pendingKey, created);
                         created.cancellation.close();
                     }
-                });
+                }));
                 pending.put(pendingKey, created);
                 work = created;
             }

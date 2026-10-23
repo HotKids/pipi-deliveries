@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 
-const { emptyState, loadState, saveState, removeShipment, visibleShipments } = await import("../services/storage");
+const { emptyState, isStoredShipmentRetained, loadState, saveState, removeShipment, visibleShipments } = await import("../services/storage");
 const { cachedProductImage, productImageCacheKey, productImageCachePath,
   rememberProductImage } = await import("../services/product-image-cache");
 const DAY = 86_400_000;
@@ -39,6 +39,9 @@ const image = seedImage(signed);
 const hidden = loadState(NOW + 15 * DAY);
 assert.equal(visibleShipments(hidden, NOW + 15 * DAY).length, 0);
 assert.equal(hidden.shipments.length, 1, "a display-hidden row remains in the stored retention window");
+assert.equal(isStoredShipmentRetained(hidden.shipments[0], NOW + 15 * DAY), true);
+assert.equal(isStoredShipmentRetained(hidden.shipments[0], NOW + 22 * DAY), false,
+  "the lightweight retention predicate uses the actual durable signed deletion cutoff");
 assert.ok(memory.has(`file:${image.path}`), "hiding a row does not remove its persistent image");
 assert.ok(cachedProductImage(image.key));
 assert.equal(loadState(NOW + 22 * DAY).shipments.length, 0);
@@ -125,4 +128,59 @@ try {
 saveState(loadState(NOW), NOW + 1);
 assert.equal(memory.has(`file:${oldPending}`), false, "a future load/save retries failed orphan cleanup without needing its deleted row");
 
-console.log("product image lifecycle: retention, deletion retry, re-import isolation and abandoned-write recovery passed");
+// Another host has already committed deletion, so a subsequent local load has no previous row to diff.
+memory.clear();
+const elsewhereDeleted = row("another-runtime-delete");
+saveState({ ...emptyState(), shipments: [elsewhereDeleted] }, NOW);
+const warmImage = seedImage(elsewhereDeleted);
+replay([elsewhereDeleted.identity], [], NOW + 1);
+assert.equal(memory.has(`file:${warmImage.path}`), false);
+const { pruneProductImages } = await import("../services/product-image-cache");
+pruneProductImages([], [], NOW + 2);
+assert.equal(cachedProductImage(warmImage.key), null,
+  "an authoritative empty state invalidates every local memory entry even without a previous deleted row");
+
+let retained = true;
+const memoryOnly = { syntheticMemoryOnly: true } as unknown as UIImage;
+rememberProductImage(warmImage.key, memoryOnly, () => retained);
+assert.equal(cachedProductImage(warmImage.key), memoryOnly, "an optional disk failure does not hide a valid in-memory image");
+retained = false;
+assert.equal(cachedProductImage(warmImage.key), null,
+  "an image from a deleted lifecycle cannot survive a same-key reimport before this host next loads state");
+
+// Execute the actual component's owner closure against actual storage and another committed runtime's snapshot.
+const { sharedData, sharedStateText, publishSharedData, withSharedFileTransaction } = await import("../services/shared-file-transaction");
+const { shipmentLifecycleKey } = await import("../services/shipment-lifecycle");
+const thumbnail = readFileSync(new URL("../components/ProductThumbnail.tsx", import.meta.url), "utf8");
+const ownerSource = stripTypeScriptTypes(thumbnail.slice(thumbnail.indexOf("  const lifecycle ="), thumbnail.indexOf("  const [loaded,")));
+const oldClock = Date.now;
+Date.now = () => NOW;
+try {
+  memory.clear();
+  const stored = saveState({ ...emptyState(), shipments: [row("two-runtime-owner")] }, NOW).shipments[0];
+  const key = productImageCacheKey(stored.identity);
+  const isRetained = Function("scope", `with(scope) { ${ownerSource}; return isRetained; }`)({
+    props: { shipment: stored }, cacheKey: key, shipmentLifecycleKey, productImageCacheKey,
+    isStoredShipmentRetained, loadState, sharedData, withSharedFileTransaction,
+  });
+  const original = { syntheticOriginal: true } as unknown as UIImage;
+  rememberProductImage(key, original, isRetained);
+  assert.equal(cachedProductImage(key), original);
+  // B deletes and reimports while A does not read either intermediate state. A's cache map is isolated from B's prune.
+  replay([stored.identity], [], NOW + 1);
+  withSharedFileTransaction(() => {
+    const envelope = JSON.parse(sharedStateText()!);
+    const state = JSON.parse(envelope.payload);
+    state.shipments = [{ ...stored, identity: { ...stored.identity, createdAtMs: NOW + 2 } }];
+    state.revision++;
+    state.updatedAtMs = NOW + 2;
+    envelope.payload = JSON.stringify(state);
+    envelope.checksum = Crypto.sha256(envelope.payload as unknown as Data).toHexString();
+    publishSharedData({ ...sharedData() }, JSON.stringify(envelope));
+  });
+  assert.equal(cachedProductImage(key), null,
+    "a real shared-state change and nested loadState/prune cannot revive an old runtime's memory entry");
+  assert.equal(cachedProductImage(key), null, "the stale entry stays evicted after the callback returns");
+} finally { Date.now = oldClock; }
+
+console.log("product image lifecycle: retention, deletion retry, cross-runtime invalidation and abandoned-write recovery passed");

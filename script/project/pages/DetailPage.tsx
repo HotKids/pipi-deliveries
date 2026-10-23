@@ -134,7 +134,7 @@ export function DetailPage(props: {
     }
     if (value == null) return;
     try {
-      const state = setShipmentNote(shipment.identity.id, value);
+      const state = setShipmentNote(shipment, value);
       const updated = state.shipments.find(
         (item) => item.identity.id === shipment.identity.id,
       );
@@ -604,6 +604,7 @@ export function DetailPage(props: {
       <Section>
         <HStack spacing={14} padding={{ vertical: 12 }}>
           <ProductThumbnail
+            shipment={shipment}
             cacheKey={shipment.identity.enhancedMode || shipment.identity.productImageURL
               ? productImageCacheKey(shipment.identity) : ""}
             courierCode={shipment.identity.courierCode}

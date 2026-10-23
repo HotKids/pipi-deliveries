@@ -2904,7 +2904,13 @@ function projectAutomaticObservation(
 ): Shipment {
   const candidate: Shipment = {
     ...current,
-    identity: { ...observation.identity, manuallyAdded: false },
+    identity: {
+      ...observation.identity,
+      manuallyAdded: false,
+      // A refreshed observation of the same row does not restart its lifetime.
+      createdAtMs: observation.identity.id === current.identity.id
+        ? current.identity.createdAtMs : observation.identity.createdAtMs,
+    },
     timeline: observation.sourceTimeline,
     sourceTimeline: observation.sourceTimeline,
     statusPresentation: observation.statusPresentation,

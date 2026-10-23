@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import "./state-storage-mock";
 import { shouldRequestDetailProductImage } from "../services/sync";
+import { shipmentLifecycleKey } from "../services/shipment-lifecycle";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path: string) => readFileSync(join(projectRoot, path), "utf8");
@@ -249,7 +250,8 @@ for (const [identity, refreshOnAppear, expectedCalls] of [
 }
 
 const imageRequests: Array<{ url: string; signal: AbortSignal; finish: (image: any) => void }> = [];
-const imageProps = { imageURL: "", cacheKey: "", courierCode: "JD", companyName: "京东快递", size: 72 };
+const imageProps = { imageURL: "", cacheKey: "", courierCode: "JD", companyName: "京东快递", size: 72,
+  get shipment() { return { identity: { id: this.cacheKey, createdAtMs: 1 } }; } };
 const thumbnail = mountHandlers(thumbnailSource.slice(
   thumbnailSource.indexOf("export function ProductThumbnail("),
   thumbnailSource.indexOf("  if (!image) {"),
@@ -257,7 +259,10 @@ const thumbnail = mountHandlers(thumbnailSource.slice(
   cachedProductImage: () => null,
   initialProductImage: () => null,
   productImageCacheKey: (identity: any) => identity.id,
-  loadState: () => ({ shipments: [{ identity: { id: imageProps.cacheKey } }] }),
+  shipmentLifecycleKey, isStoredShipmentRetained: () => true,
+  sharedData: () => ({ stateRef: imageProps.cacheKey }),
+  withSharedFileTransaction: (fn: () => unknown) => fn(),
+  loadState: () => ({ shipments: [imageProps.shipment] }),
   loadProductImage: (url: string, signal: AbortSignal) => new Promise((finish) => {
     imageRequests.push({ url, signal, finish });
   }),

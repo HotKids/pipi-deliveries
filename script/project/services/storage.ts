@@ -92,6 +92,7 @@ import { carrierAwaitingRecognition } from "./carrier-gate";
 import { notificationEnabled } from "./notification-preferences";
 import { preserveSettledShipment } from "./shipment-policy";
 import { newerWaybillReuseGeneration } from "./waybill-reuse";
+import { shipmentLifecycleKey } from "./shipment-lifecycle";
 import { pruneRowLedgerForState } from "./row-ledger";
 import { pruneProductImages } from "./product-image-cache";
 
@@ -1733,6 +1734,15 @@ function retainDurableShipments(
   });
 }
 
+export function isStoredShipmentRetained(shipment: Shipment, now = Date.now()): boolean {
+  return pruneExpiredManualPlaceholders(retainDurableShipments([shipment], now), now).length > 0;
+}
+
+export function stateRetentionExpired(state: AppState, now = Date.now()): boolean {
+  return prunePending(state.pendingQueries, now).length !== state.pendingQueries.length ||
+    state.shipments.some(shipment => !isStoredShipmentRetained(shipment, now));
+}
+
 function preserveDurableOrderProjections(
   previousShipments: readonly Shipment[],
   candidateShipments: readonly Shipment[],
@@ -2723,12 +2733,15 @@ export function upsertShipment(incoming: Shipment, now = Date.now()): AppState {
 }
 
 /** 详情页写备注（用户定 2026-09-05 晚）：只改这一票的 note，别的都不动；空串即清除。 */
-export function setShipmentNote(id: string, note: string, now = Date.now()): AppState {
+export function setShipmentNote(expected: Shipment, note: string, now = Date.now()): AppState {
   return withSharedFileTransaction(() => {
     const state = loadState(now);
     const trimmed = String(note || "").trim();
-    const current = state.shipments.find((item) => item.identity.id === id);
-    if (!current || (current.note || "") === trimmed) return state;
+    const current = state.shipments.find((item) => item.identity.id === expected.identity.id);
+    if (!current || shipmentLifecycleKey(current) !== shipmentLifecycleKey(expected)) {
+      throw new Error("Shipment lifecycle changed; reopen the detail before editing.");
+    }
+    if ((current.note || "") === trimmed) return state;
     // 抬一下 updatedAtMs：详情页与父页面用 preferNewerShipment 挑新的那份，不抬的话父页面回传的
     // 旧对象（同一时间戳）会把刚写的备注盖掉（2026-09-05 晚 iPhone 实测「保存没生效」）。
     const updated: Shipment = { ...current, updatedAtMs: Math.max(now, current.updatedAtMs + 1) };
@@ -2738,7 +2751,7 @@ export function setShipmentNote(id: string, note: string, now = Date.now()): App
       {
         ...state,
         shipments: state.shipments.map((item) =>
-          item.identity.id === id ? updated : item
+          item.identity.id === current.identity.id ? updated : item
         ),
       },
       now,

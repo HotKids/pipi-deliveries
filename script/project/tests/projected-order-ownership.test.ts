@@ -299,7 +299,7 @@ for (const withWaybillRow of [true, false]) {
   await projectStoredAccountOrders({ onScreen: () => true });
   assert.equal(byId(WAYBILL_ID)!.note, "订单备注");
   assert.equal(byId(ORDER_ID)!.note, undefined, "the remark moved rather than copied");
-  setShipmentNote(WAYBILL_ID, "", clock);
+  setShipmentNote(byId(WAYBILL_ID)!, "", clock);
   await listRound([order(1), inTransit], NOW + 60_000);
   assert.equal(byId(WAYBILL_ID)!.note, undefined, "a cleared remark stays cleared");
   seed([{ ...row(order(0)), note: "订单备注" }, { ...row(inTransit), note: "菜鸟备注" }]);

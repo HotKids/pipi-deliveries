@@ -3411,7 +3411,7 @@ assert.equal(changedTargetCommit.state.revision, deltaBase.revision + 1);
   memory.clear();
   const noted = shipment({ id: "interface5:account:note-1", source: "interface5" });
   saveState({ ...emptyState(), shipments: [noted] }, NOW);
-  const withNote = setShipmentNote("interface5:account:note-1", " 给妈妈的 ", NOW + 1);
+  const withNote = setShipmentNote(noted, " 给妈妈的 ", NOW + 1);
   assert.equal(withNote.shipments[0]?.note, "给妈妈的");
   assert.equal(loadState(NOW + 2).shipments[0]?.note, "给妈妈的", "the note is persisted");
   const refreshed = upsertShipment({
@@ -3420,12 +3420,12 @@ assert.equal(changedTargetCommit.state.revision, deltaBase.revision + 1);
     updatedAtMs: NOW + 3,
   }, NOW + 3);
   assert.equal(refreshed.shipments[0]?.note, "给妈妈的", "an account refresh keeps the note");
-  const cleared = setShipmentNote("interface5:account:note-1", "", NOW + 4);
+  const cleared = setShipmentNote(noted, "", NOW + 4);
   assert.equal(cleared.shipments[0]?.note, undefined, "an empty note clears it");
   const manual = shipment({ id: "interface5:manual:note-2", source: "interface5", manuallyAdded: true });
   // 手动件的 id 落盘时按运单号规范化，所以按存下来的那一行取 id。
   const storedManual = saveState({ ...emptyState(), shipments: [manual] }, NOW + 5).shipments[0]!;
-  setShipmentNote(storedManual.identity.id, "公司", NOW + 6);
+  setShipmentNote(storedManual, "公司", NOW + 6);
   const manualRefreshed = upsertShipment({
     ...storedManual,
     timeline: { ...storedManual.timeline, latestDetail: "新的轨迹", successAtMs: NOW + 7 },
