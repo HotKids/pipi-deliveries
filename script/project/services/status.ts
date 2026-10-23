@@ -206,6 +206,59 @@ export function statusTint(semantic: StatusSemantic): string {
   }
 }
 
+// Text gets a separate tone; statusTint remains the owner of accent and fill semantics.
+const STATUS_RGB: Readonly<Record<string, number>> = {
+  systemOrange: 0xff9500, systemGreen: 0x34c759, systemTeal: 0x30b0c7,
+  systemBlue: 0x007aff, systemYellow: 0xffcc00, systemRed: 0xff3b30,
+  secondaryLabel: 0x757575,
+};
+
+function blendStatusColor(color: number, target: number, amount: number): number {
+  let result = 0;
+  for (const shift of [16, 8, 0]) {
+    const from = (color >> shift) & 255;
+    result |= Math.round(from + (((target >> shift) & 255) - from) * amount) << shift;
+  }
+  return result;
+}
+
+function statusLuminance(color: number): number {
+  return [16, 8, 0].reduce((sum, shift, index) => {
+    const channel = ((color >> shift) & 255) / 255;
+    const linear = channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    return sum + linear * [0.2126, 0.7152, 0.0722][index];
+  }, 0);
+}
+
+export function statusTextTint(
+  semantic: StatusSemantic,
+  options: { badgeOpacity?: number; brandAccent?: string } = {},
+): { light: string; dark: string } {
+  // The neutral widget fill is a platform style, so use the highest-contrast neutral text.
+  if (options.brandAccent && statusTint(semantic) === "secondaryLabel") {
+    return { light: "#000000", dark: "#ffffff" };
+  }
+  const accent = STATUS_RGB[statusTint(semantic)] ?? STATUS_RGB.secondaryLabel;
+  const tone = (surface: number): string => {
+    const brand = options.brandAccent ? Number.parseInt(options.brandAccent.slice(1), 16) : surface;
+    const backgrounds = [surface, blendStatusColor(surface, brand, 0x55 / 255)]
+      .map((background) => blendStatusColor(background, accent, options.badgeOpacity ?? 0));
+    const contrast = (color: number) => Math.min(...backgrounds.map((background) => {
+      const a = statusLuminance(color), b = statusLuminance(background);
+      return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    }));
+    const target = contrast(0) >= contrast(0xffffff) ? 0 : 0xffffff;
+    for (let step = 0; step <= 100; step++) {
+      const candidate = blendStatusColor(accent, target, step / 100);
+      if (contrast(candidate) >= 4.5) return `#${candidate.toString(16).padStart(6, "0")}`;
+    }
+    return `#${target.toString(16).padStart(6, "0")}`;
+  };
+  return options.brandAccent
+    ? { light: tone(0xffffff), dark: tone(0x1c1c1e) }
+    : { light: tone(0xf2f2f7), dark: tone(0x2c2c2e) };
+}
+
 export function normalizeWaybill(value: string): string {
   return String(value || "")
     .toUpperCase()

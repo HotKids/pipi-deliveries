@@ -8,7 +8,7 @@ import {
   ZStack,
 } from "scripting";
 import type { WidgetRow, WidgetSnapshot } from "../models";
-import { statusTint, withNote } from "../services/status";
+import { statusTint, statusTextTint, withNote } from "../services/status";
 import { CourierIcon } from "../components/CourierIcon";
 import { carrierDisplayName } from "../services/carrier-presentation";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
@@ -42,6 +42,7 @@ function statusBadgeBackground(semantic: WidgetRow["semantic"]): string {
 
 function Row(props: {
   row: WidgetRow;
+  brandAccent: string;
   openURL: string;
   height: number;
   iconSize: number;
@@ -76,7 +77,11 @@ function Row(props: {
             <Text
               font={10}
               fontWeight="medium"
-              foregroundStyle={statusTint(props.row.semantic)}
+              foregroundStyle={statusTextTint(props.row.semantic, {
+                brandAccent: props.brandAccent,
+                badgeOpacity: ({ systemOrange: .15, systemGreen: .14, systemTeal: .14,
+                  systemBlue: .13, systemYellow: .20, systemRed: .13 } as Record<string, number>)[statusTint(props.row.semantic)],
+              })}
               padding={{ horizontal: 5, vertical: 2 }}
               background={statusBadgeBackground(props.row.semantic)}
               clipShape={{
@@ -193,6 +198,7 @@ export function MediumWidget(props: {
           <>
             {snapshot.rows.slice(0, placement.rowCount).map((row) => (
               <Row
+                brandAccent={accent}
                 key={row.shipmentId}
                 row={row}
                 openURL={props.openShipmentURL(row.shipmentId)}

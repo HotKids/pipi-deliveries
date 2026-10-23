@@ -17,7 +17,11 @@ final class ExpressSenderBadge {
         view.setText(me.pipi.deliveries.R.string.express_sender);
         view.setTextSize(11);
         view.setTypeface(view.getTypeface(), Typeface.BOLD);
-        view.setTextColor(color);
+        int surface = com.google.android.material.color.MaterialColors.getColor(view,
+                com.google.android.material.R.attr.colorSurface);
+        int fill = (color & 0x00ffffff) | 0x1a000000;
+        view.setTextColor(ExpressStatusColors.textOn(color,
+                androidx.core.graphics.ColorUtils.compositeColors(fill, surface)));
         view.setIncludeFontPadding(false);
         view.setSingleLine(true);
         view.setPadding(Math.round(6 * density), Math.round(2 * density),

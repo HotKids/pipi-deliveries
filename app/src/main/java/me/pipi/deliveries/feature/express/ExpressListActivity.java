@@ -1063,7 +1063,9 @@ public final class ExpressListActivity extends AppCompatActivity {
             ExpressItem item = getItem(position);
             holder.icon.setImageResource(item.displayIconResource());
             holder.title.setText(item.displayStatus());
-            holder.title.setTextColor(statusColor(item));
+            holder.title.setTextColor(ExpressStatusColors.textOn(statusColor(item),
+                    com.google.android.material.color.MaterialColors.getColor(holder.title,
+                            com.google.android.material.R.attr.colorSurface)));
             ExpressSenderBadge.apply(holder.sender, item.sender, statusColor(item));
             holder.time.setText(me.pipi.deliveries.model.ExpressTimeCodec.formatListTime(item.latestTime));
             holder.time.setVisibility(item.latestTime.isEmpty() ? View.GONE : View.VISIBLE);

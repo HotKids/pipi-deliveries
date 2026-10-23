@@ -44,6 +44,7 @@ import {
   normalizeWaybill,
   shipmentDetailPresentationStatus,
   statusTint,
+  statusTextTint,
   timedTracks,
   trackDisplayDetail,
   timelineLatestEventAt,
@@ -621,7 +622,7 @@ export function DetailPage(props: {
               <Text
                 font={17}
                 fontWeight="bold"
-                foregroundStyle={statusTint(presentationStatus.semantic)}
+                foregroundStyle={statusTextTint(presentationStatus.semantic)}
                 lineLimit={1}
               >
                 {withShipmentNote(statusText, shipment)}

@@ -5,7 +5,7 @@ import {
   timelineDisplayDetail,
   trackDisplayDetail,
   timedTracks,
-  statusTint,
+  statusTextTint,
   waybillSuffix,
   withShipmentNote,
 } from "../services/status";
@@ -91,7 +91,7 @@ export function ShipmentRow(props: {
             <Text
               font={17}
               fontWeight="semibold"
-              foregroundStyle={statusTint(presentationStatus.semantic)}
+              foregroundStyle={statusTextTint(presentationStatus.semantic)}
               lineLimit={1}
             >
               {withShipmentNote(presentationStatus.text, item)}
