@@ -142,6 +142,7 @@ export function DetailPage(props: {
       if (updated) {
         setShipment(updated);
         props.onStateChange?.(state, updated);
+        setNotice(updated.note ? EXPRESS_TOAST_COPY.userNoteSaved : EXPRESS_TOAST_COPY.userNoteDeleted);
       }
       requestWidgetReload();
     } catch (error) {

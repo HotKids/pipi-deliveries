@@ -46,6 +46,9 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   /** Shared copy only; this does not add Pipi note recovery to iOS. */
   userNoteRecoveryFailed: "处理失败，请重试",
   userNoteChanged: "快递信息已变更，请重新打开备注",
+  userNoteSaved: "备注已保存",
+  userNoteDeleted: "备注已删除",
+  pickupRecordDeleted: "该取件码已删除",
   /** 删除成功。 */
   deleted: "该快递已删除",
   /** 删除失败。 */
@@ -56,7 +59,7 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   signFailed: "标记失败，请稍后重试",
   /** 复制运单号成功。 */
   waybillCopied: "运单号已复制",
-  /** 复制运单号失败（只有 iOS 宿主会失败，允许的差异）。 */
+  /** An explicit copy request could not write to the clipboard. */
   copyFailed: "复制失败，请稍后重试",
   /** 官方电话打不开拨号界面。 */
   dialUnavailable: "无法打开拨号界面",

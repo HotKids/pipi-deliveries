@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { memory, NOW } from "./state-storage-mock";
 import type { Shipment } from "../models";
+import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import { emptyState, isStoredShipmentRetained, loadState, removeShipment, saveState, setShipmentNote, upsertShipment } from "../services/storage";
 import { absorbAutomaticShipment, applyAccountShipment, applyManualShipment, applyTargetedAccountShipment } from "../services/shipment-policy";
 import { cachedProductImage, productImageCacheKey, pruneProductImages, rememberProductImage } from "../services/product-image-cache";
@@ -50,7 +51,7 @@ try {
     let submit!: (value: string) => void;
     let published = false, notice = "";
     const edit = Function("scope", `with(scope) { ${action}; return editNote; }`)({
-      shipment: original, Dialog: { prompt: () => new Promise<string>(resolve => { submit = resolve; }) }, setShipmentNote,
+      EXPRESS_TOAST_COPY, shipment: original, Dialog: { prompt: () => new Promise<string>(resolve => { submit = resolve; }) }, setShipmentNote,
       setShipment: () => { published = true; }, props: {}, requestWidgetReload() {},
       setNotice: (value: string) => { notice = value; }, writeDiagnostic() {}, diagnosticErrorDetails: () => ({}),
     });
@@ -93,9 +94,22 @@ try {
     } else {
       assert.equal(current?.note, "Draft from the open dialog", `${change} preserves same-lifecycle editing`);
       assert.equal(published, true);
-      assert.equal(notice, "");
+      assert.equal(notice, EXPRESS_TOAST_COPY.userNoteSaved);
       assert.equal(cachedProductImage(key), image, `${change} keeps the original thumbnail owner`);
     }
+  }
+  for (const draft of [null, ""] as const) {
+    memory.clear();
+    const original = saveState({ ...emptyState(), shipments: [{ ...row(), note: "Existing note" }] }, NOW).shipments[0];
+    const notices: string[] = [];
+    const edit = Function("scope", `with(scope) { ${action}; return editNote; }`)({
+      EXPRESS_TOAST_COPY, shipment: original, Dialog: { prompt: async () => draft }, setShipmentNote,
+      setShipment() {}, props: {}, requestWidgetReload() {},
+      setNotice: (value: string) => notices.push(value), writeDiagnostic() {}, diagnosticErrorDetails: () => ({}),
+    });
+    await edit();
+    assert.deepEqual(notices, draft == null ? [] : [EXPRESS_TOAST_COPY.userNoteDeleted]);
+    assert.equal(loadState().shipments[0]?.note, draft == null ? "Existing note" : undefined);
   }
 } finally { Date.now = clock; }
 console.log("shipment note lifecycle: stale dialog/image rejection and ordinary merge, first ownership, absorption and projection preservation passed");
