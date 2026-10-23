@@ -25,6 +25,25 @@ import org.junit.Test;
 public final class CarrierRecognitionBudgetCancellationTest {
     private static final String WAYBILL = "SF1234567890";
 
+    @Test public void boundedRecognitionInstallsEachSubmittingScope() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<String> logged =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AccountCarrierRecognition.Recognizer recognizer = AccountCarrierRecognition.bounded(
+                new AccountCarrierRecognition.Budget(5_000L), waybill -> {
+                    logged.set(ExpressLog.format(0L, "INFO", "http.started"));
+                    return CarrierNormalization.NONE;
+                });
+        for (int round = 0; round < 4; round++) {
+            String flow = "bounded-" + round;
+            try (ExpressLog.Scope ignored = ExpressLog.scope(flow, "background", "v5")) {
+                recognizer.recognize(WAYBILL);
+            }
+            assertTrue(logged.get(), logged.get().contains("flowId=" + flow + " "));
+        }
+        recognizer.recognize(WAYBILL);
+        assertFalse(logged.get(), logged.get().contains("flowId="));
+    }
+
     /** The free level hangs until it is cancelled; four cut rounds leave no cooldown and no terminal verdict. */
     @Test(timeout = 20_000L)
     public void aFreeLevelRequestCutAtTheBudgetRecordsNoFailure() throws Exception {

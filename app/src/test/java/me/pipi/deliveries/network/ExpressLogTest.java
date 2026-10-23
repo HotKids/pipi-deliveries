@@ -2,6 +2,26 @@ package me.pipi.deliveries.network;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class ExpressLogTest {
+ @Test public void transferredScopeSharesCountersAndRestoresAfterFailure() throws Exception {
+  java.util.concurrent.Callable<Void> operation;
+  ExpressLog.Scope request;
+  try (ExpressLog.Scope active = ExpressLog.detailScope("request", "detail_pull", "v6")) {
+   request = active;
+   operation = ExpressLog.withCurrentScope(() -> {
+    assertTrue(ExpressLog.format(0L, "INFO", "started").contains("flowId=request "));
+    ExpressLog.line("v6", "k100", "manual", "succeeded");
+    throw new java.io.IOException("synthetic");
+   });
+  }
+  try (ExpressLog.Scope ignored = ExpressLog.scope("worker", "background", "v5")) {
+   try { operation.call(); fail("Expected the operation failure"); }
+   catch (java.io.IOException expected) { assertEquals("synthetic", expected.getMessage()); }
+   assertTrue(ExpressLog.format(0L, "INFO", "finished").contains("flowId=worker "));
+  }
+  assertEquals("unchanged", request.unchangedReason());
+  assertFalse(ExpressLog.hasScope());
+ }
+
  @Test public void envelopeHasMillisecondsFlowAndIosFieldNames() {
   try (ExpressLog.Scope ignored=ExpressLog.scope("refresh-test","list_pull","v6")) {
    String line=ExpressLog.format(0L,"INFO","detail.timeline.selected","timelineProvider","k100_h5", "statusProvider","v6_query","waybillTail","3089");

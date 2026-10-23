@@ -285,6 +285,9 @@ const invalidated = invalidateAutomaticOwner(
 );
 assert.equal(invalidated.automaticOwnership?.ownerSource, "synthetic-b");
 assert.equal(invalidated.identity.sourceOwner, "synthetic-b:parcel");
+assert.notEqual(invalidated.identity.id, candidate.identity.id);
+assert.equal(invalidated.identity.createdAtMs, NOW + 1_000,
+  "a different owner row keeps its own creation time when replacing the visible identity");
 assert.equal(invalidated.identity.courierCode, "JD");
 assert.equal(invalidated.timeline.latestDetail, "synthetic-b-TRANSIT");
 assert.equal(invalidated.route, null);

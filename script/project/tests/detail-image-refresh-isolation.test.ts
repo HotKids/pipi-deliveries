@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { memory } from "./state-storage-mock";
-import { emptyState, loadState, saveState } from "../services/storage";
+import { emptyState, loadState, removeShipment, saveState } from "../services/storage";
+import { sharedData } from "../services/shared-file-transaction";
 import { acquireRenewingDurableRefreshLease } from "../services/refresh-runtime-state";
 import { runShipmentRefreshForTesting, runTargetedShipmentRefreshForTesting } from "../services/sync";
 import { parcelToShipment } from "../services/account-sync";
@@ -99,6 +100,59 @@ for (const kind of ["manual", "other-source", "basic-jd", "known-image"] as cons
   } finally { holder.release(); }
   await pending;
   assert.equal(metadataCalls, 0);
+}
+
+{
+  const waiting = seed("enhanced-jd");
+  const holder = acquireRenewingDurableRefreshLease(`detail:${waiting.identity.id}`, 35_000)!;
+  const originalGet = Storage.get;
+  let stateReads = 0;
+  Storage.get = (key: string) => { if (key === "pipi_deliveries_state_v1") stateReads++; return originalGet(key); };
+  const pending = runTargetedShipmentRefreshForTesting(waiting.identity.id, {
+    trigger: "product_image", requestProductImage: true, deadlineAtMs: Date.now() + 2_000,
+  });
+  try {
+    const readsAfterEntry = stateReads;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    assert.equal(stateReads, readsAfterEntry, "unchanged image lease polls must not decode and scan the entire durable state");
+  } finally { holder.release(); await pending; Storage.get = originalGet; }
+  assert.equal(metadataCalls, 1, "image work resumes after the existing detail lease releases");
+}
+
+for (const stop of ["delete", "cancel", "deadline", "expiry"] as const) {
+  let waiting = seed("enhanced-jd");
+  const realClock = Date.now;
+  let clockValue = realClock();
+  if (stop === "expiry") {
+    Date.now = () => clockValue;
+    const signedAt = clockValue - 21 * 86_400_000 + 1_000;
+    const timeline = { ...waiting.timeline, semantic: "COMPLETED" as const, structuredStatus: true,
+      statusEventAtMs: signedAt, latestTimeText: String(signedAt), latestDetail: "Signed",
+      tracks: [{ timeText: String(signedAt), timeMs: signedAt, detail: "Signed", statusCode: "107", raw: {} }] };
+    waiting = saveState({ ...loadState(), shipments: [{ ...waiting, timeline, sourceTimeline: timeline,
+      settledAtMs: signedAt, identity: { ...waiting.identity, projectedWaybill: "JD0000000000001", hadRealWaybill: true },
+      accountRecord: { ...waiting.accountRecord!, stateNumber: 107 } }] }).shipments[0];
+    assert.ok(waiting, "the row starts just inside its durable retention window");
+  }
+  const holder = acquireRenewingDurableRefreshLease(`detail:${waiting.identity.id}`, 35_000)!;
+  const controller = new AbortController();
+  const task = runTargetedShipmentRefreshForTesting(waiting.identity.id, {
+    trigger: "product_image", requestProductImage: true, signal: controller.signal,
+    deadlineAtMs: Date.now() + (stop === "deadline" ? 150 : 3_000),
+  });
+  const rejected = assert.rejects(task, stop === "delete" || stop === "expiry" ? /移除/ : /cancel|deadline|abort|取消|超时|timed out/i);
+  try {
+    if (stop === "delete") removeShipment(waiting.identity.id);
+    if (stop === "cancel") controller.abort();
+    if (stop === "expiry") {
+      const stateRef = sharedData().stateRef;
+      clockValue += 1_001;
+      assert.equal(sharedData().stateRef, stateRef, "time advances without a business-state commit");
+    }
+    await rejected;
+    assert.equal(metadataCalls, 0, `${stop} must fence metadata while the other holder is still active`);
+    if (stop === "expiry") assert.equal(loadState().shipments.length, 0, "the waiting path durably performs time-driven retention");
+  } finally { holder.release(); Date.now = realClock; }
 }
 
 const order = seed("enhanced-jd");

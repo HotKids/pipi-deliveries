@@ -3,7 +3,7 @@ import type { ShipmentIdentity } from "../models";
 import { utf8Data } from "./scripting-data";
 import { writeDiagnostic } from "./logger";
 
-const images = new Map<string, UIImage>();
+const images = new Map<string, { image: UIImage; isRetained?: () => boolean }>();
 const MEMORY_LIMIT = 32;
 export const PRODUCT_IMAGE_TIMEOUT_MS = 20_000;
 const IMAGE_NAME = /^[a-f0-9]{64}\.\d+-[a-z0-9]+\.img$/;
@@ -21,7 +21,7 @@ function cacheNames(): string[] {
 }
 
 export function productImageCacheKey(identity: ShipmentIdentity): string {
-  // Account refresh rebuilds createdAtMs; the owner and order remain stable across projection.
+  // Keep the persistent address stable across account refresh and order projection; memory validates its original lifecycle.
   try {
     return Crypto.sha256(utf8Data(JSON.stringify([
       identity.bindingSource, identity.id, identity.sourceId, identity.phone || "", identity.orderId || "",
@@ -45,18 +45,21 @@ export function productImageCacheFiles(key: string): string[] {
 
 export function cachedProductImage(key: string): UIImage | null {
   if (!key) return null;
-  const image = images.get(key);
-  if (!image) return null;
+  const entry = images.get(key);
+  if (!entry) return null;
+  try {
+    if (entry.isRetained && !entry.isRetained()) { images.delete(key); return null; }
+  } catch { return null; }
   images.delete(key);
-  images.set(key, image);
-  return image;
+  images.set(key, entry);
+  return entry.image;
 }
 
-export function rememberProductImage(key: string, image: UIImage): UIImage {
+export function rememberProductImage(key: string, image: UIImage, isRetained?: () => boolean): UIImage {
   if (!key) return image;
   const existing = cachedProductImage(key);
   if (existing) return existing;
-  images.set(key, image);
+  images.set(key, { image, isRetained });
   if (images.size > MEMORY_LIMIT) images.delete(images.keys().next().value!);
   return image;
 }
@@ -66,6 +69,7 @@ export function pruneProductImages(previous: readonly ShipmentIdentity[], retain
   try {
     const keep = new Set(retained.map(productImageCacheKey));
     if (keep.has("")) throw new Error("Product image identity unavailable");
+    for (const key of images.keys()) if (!keep.has(key)) images.delete(key);
     const names = cacheNames();
     for (const key of new Set(previous.map(productImageCacheKey))) {
       if (!key || keep.has(key)) continue;

@@ -107,7 +107,8 @@ public final class AccountCarrierRecognition {
         return waybill -> {
             if (budget.spent()) throw new BudgetSpentException(false);
             long started = System.nanoTime();
-            Future<CarrierNormalization> call = BOUNDED_WAITS.submit(() -> recognizer.recognize(waybill));
+            Future<CarrierNormalization> call = BOUNDED_WAITS.submit(
+                    ExpressLog.withCurrentScope(() -> recognizer.recognize(waybill)));
             try {
                 return call.get(budget.remainingNanos(), TimeUnit.NANOSECONDS);
             } catch (TimeoutException timeout) {

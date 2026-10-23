@@ -278,6 +278,20 @@ finally { globalThis.setTimeout = realTimeout; }
 const identity = (id: string) => ({ id, bindingSource: "interface5", sourceId: "jingdong",
   phone: "13800000000", orderId: id, createdAtMs: 1 } as any);
 const owner = (id: string) => ({ key: productImageCacheKey(identity(id)), isRetained: () => true });
+for (const failure of ["write", "rename"] as const) {
+  reset();
+  let retained = true;
+  const memoryOnlyOwner = { ...owner(`memory-only-${failure}`), isRetained: () => retained };
+  if (failure === "write") failWrite = true;
+  else failRename = true;
+  const image = await loadProductImage(url(), undefined, memoryOnlyOwner);
+  assert.ok(image, "a failed record-cache publication preserves its validated in-memory image");
+  for (let tick = 0; tick < 30; tick++) await Promise.resolve();
+  assert.equal(cachedProductImage(memoryOnlyOwner.key), image);
+  assert.equal(productImageCacheFiles(memoryOnlyOwner.key).length, 0);
+  retained = false;
+  assert.equal(cachedProductImage(memoryOnlyOwner.key), null, "memory-only images remain fenced by the original owner lifecycle");
+}
 const evictImages = () => {
   for (let index = 0; index < 32; index++) rememberProductImage(`synthetic-eviction-${index}`, {} as UIImage);
 };

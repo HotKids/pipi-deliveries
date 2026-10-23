@@ -21,6 +21,25 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class CarrierRecognitionCoordinatorTest {
+    @Test public void reusedRecognitionWorkersUseTheCurrentRequestScope() throws Exception {
+        AtomicReference<String> logged = new AtomicReference<>();
+        CarrierRecognitionCoordinator coordinator = coordinator((url, cancellation) -> {
+            logged.set(ExpressLog.format(0L, "INFO", "http.started"));
+            return response(new JSONArray().put(new JSONObject().put("comCode", "shunfeng")));
+        }, unusedGateway(), new KeyedState(), () -> 1_000L);
+        // More requests than workers exercise reuse even when this test creates the pool.
+        for (int round = 0; round < 4; round++) {
+            String flow = "recognition-" + round;
+            try (ExpressLog.Scope ignored = ExpressLog.scope(flow, "detail_pull", "v6")) {
+                coordinator.recognize("SYNTHETICFLOW" + round, null);
+            }
+            assertTrue(logged.get(), logged.get().contains("flowId=" + flow + " "));
+            assertTrue(logged.get(), logged.get().contains("trigger=detail_pull source=v6"));
+        }
+        coordinator.recognize("SYNTHETICUNSCOPED", null);
+        assertFalse(logged.get(), logged.get().contains("flowId="));
+    }
+
     @Test public void replacementCannotStartUntilPreviousCacheCommitIsFenced() throws Exception {
         CountDownLatch oldCommitEntered = new CountDownLatch(1);
         CountDownLatch finishOldCommit = new CountDownLatch(1);
@@ -133,23 +152,30 @@ public final class CarrierRecognitionCoordinatorTest {
         CountDownLatch started = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         AtomicInteger calls = new AtomicInteger();
+        AtomicReference<String> completedScope = new AtomicReference<>();
         KeyedState state = new KeyedState();
         CarrierRecognitionCoordinator coordinator = coordinator((url, cancellation) -> {
             calls.incrementAndGet();
             started.countDown();
             while (!release.await(10, TimeUnit.MILLISECONDS)) cancellation.throwIfCancelled();
+            completedScope.set(ExpressLog.format(0L, "INFO", "http.completed"));
             return response(new JSONArray().put(new JSONObject().put("comCode", "shunfeng")));
         }, unusedGateway(), state, () -> 1_000L);
         ExecutorService pool = Executors.newFixedThreadPool(2);
         AtomicReference<Thread> followerThread = new AtomicReference<>();
         try (ExpressQueryCancellation firstCancellation = new ExpressQueryCancellation(5_000L);
              ExpressQueryCancellation secondCancellation = new ExpressQueryCancellation(5_000L)) {
-            Future<CarrierRecognitionCoordinator.Outcome> first = pool.submit(
-                    () -> coordinator.recognize("SF1234567890", firstCancellation));
+            Future<CarrierRecognitionCoordinator.Outcome> first = pool.submit(() -> {
+                try (ExpressLog.Scope ignored = ExpressLog.scope("owner", "background", "v5")) {
+                    return coordinator.recognize("SF1234567890", firstCancellation);
+                }
+            });
             assertTrue(started.await(2, TimeUnit.SECONDS));
             Future<CarrierRecognitionCoordinator.Outcome> second = pool.submit(() -> {
                 followerThread.set(Thread.currentThread());
-                return coordinator.recognize("SF1234567890", secondCancellation);
+                try (ExpressLog.Scope ignored = ExpressLog.scope("follower", "detail_pull", "v6")) {
+                    return coordinator.recognize("SF1234567890", secondCancellation);
+                }
             });
             awaitWaiting(followerThread);
             firstCancellation.cancel();
@@ -162,6 +188,8 @@ public final class CarrierRecognitionCoordinatorTest {
             release.countDown();
             assertEquals("SF", second.get(2, TimeUnit.SECONDS).candidates.get(0).standardCode);
             assertEquals(1, calls.get());
+            assertTrue(completedScope.get(), completedScope.get().contains(
+                    "flowId=owner trigger=background source=v5"));
         } finally {
             release.countDown();
             pool.shutdownNow();

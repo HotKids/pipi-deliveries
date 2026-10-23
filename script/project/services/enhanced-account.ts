@@ -1,3 +1,4 @@
+import { normalizedProductImageMetadataURL } from "./product-image-url";
 import type { AccountBinding } from "../models";
 import type { AccountParcelDto } from "./account-parser";
 import { matchBoundPhone } from "./account-parser";
@@ -136,18 +137,6 @@ export async function enhancementOperation(operation: "code" | "bind" | "unbind"
   if (operation === "bind") return identityFingerprint;
 }
 
-function allowedImage(value: unknown): string {
-  if (typeof value !== "string" || /[\u0000-\u001f\u007f\\]/.test(value)) return "";
-  try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase();
-    return url.protocol === "https:" && !url.username && !url.password &&
-      !value.match(/^https:\/\/[^/]*@/i) && (!url.port || url.port === "443") &&
-      (host === "jd.com" || host.endsWith(".jd.com") || host === "360buyimg.com" || host.endsWith(".360buyimg.com"))
-      ? url.href : "";
-  } catch { return ""; }
-}
-
 export function enhancementPhone(parcel: AccountParcelDto, bindings: readonly AccountBinding[]): string {
   if (parcel.source !== "interface5" || !parcel.accountOrder || parcel.sourceProvider.toLowerCase() !== "jingdong") return "";
   const phones = bindings.filter(binding => binding.source === "interface5").map(binding => binding.phone);
@@ -226,7 +215,7 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
       if (records.length !== 1) return parcel;
       const record = records[0];
       const waybill = typeof record.realWaybill === "string" ? record.realWaybill.trim() : "";
-      const image = purpose === "image" ? allowedImage(record.imageUrl) : "";
+      const image = purpose === "image" ? (normalizedProductImageMetadataURL(record.imageUrl) || "") : "";
       const pair = `${phone}\0${orderId}`;
       matched.add(pair);
       if (image) images.add(pair);

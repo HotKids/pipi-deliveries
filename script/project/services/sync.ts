@@ -1,4 +1,4 @@
-import { withSharedFileTransaction } from "./shared-file-transaction";
+import { sharedData, withSharedFileTransaction } from "./shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
   AccountBinding,
@@ -123,6 +123,7 @@ import {
   commitRoutePointers,
   commitTargetShipmentRefresh,
   loadState,
+  stateRetentionExpired,
   privateHash,
   pruneRoutesForState as safelyPruneRoutes,
   refreshValueFingerprint as shipmentEffectiveFingerprint,
@@ -5557,7 +5558,12 @@ function runTargetedShipmentRefresh(
   if (forced) return pullAfterStatusAlignment(shipmentId, forced, options, runtimeOverrides);
   if (!durableLease && options.trigger === "product_image" && options.requestProductImage) {
     return (async () => {
-      const waitingState = loadState();
+      const readWaitingState = () => withSharedFileTransaction(() => {
+        const state = loadState();
+        return { state, stateRef: sharedData().stateRef };
+      });
+      let snapshot = readWaitingState();
+      const waitingState = snapshot.state;
       const waitingShipment = waitingState.shipments.find(item => item.identity.id === shipmentId);
       if (!waitingShipment) throw new Error("该快递已从列表中移除");
       if (!shouldRequestDetailProductImage(waitingShipment, waitingState.bindings)) {
@@ -5566,16 +5572,32 @@ function runTargetedShipmentRefresh(
       const expectedImageOwner = imageOwner || productImageOwnerFingerprint(waitingShipment, waitingState);
       const deadlineAtMs = options.deadlineAtMs ?? deadlineAfter(MANUAL_QUERY_BUDGET_MS);
       // A background detail holder does not perform the visible page's image request.
-      while (durableRefreshLeaseRemainingMs(`detail:${shipmentId}`) > 0) {
-        assertRefreshSignal(options.signal);
-        assertWithinDeadline(deadlineAtMs);
-        await waitForRefresh(new Promise<void>(resolve => setTimeout(resolve, 100)), deadlineAtMs, options.signal);
-        const currentState = loadState();
-        const current = currentState.shipments.find(item => item.identity.id === shipmentId);
-        if (!current) throw new Error("该快递已从列表中移除");
-        if (productImageOwnerFingerprint(current, currentState) !== expectedImageOwner) {
-          return { state: currentState, shipment: current, refreshed: false, querySucceeded: false };
+      try {
+        while (durableRefreshLeaseRemainingMs(`detail:${shipmentId}`) > 0) {
+          assertRefreshSignal(options.signal);
+          assertWithinDeadline(deadlineAtMs);
+          await waitForRefresh(new Promise<void>(resolve => setTimeout(resolve, 100)), deadlineAtMs, options.signal);
+          // Lease renewal advances the journal without changing its authoritative state blob.
+          if (snapshot.stateRef && sharedData().stateRef === snapshot.stateRef && !stateRetentionExpired(snapshot.state)) continue;
+          snapshot = readWaitingState();
+          const current = snapshot.state.shipments.find(item => item.identity.id === shipmentId);
+          if (!current) throw new Error("该快递已从列表中移除");
+          if (productImageOwnerFingerprint(current, snapshot.state) !== expectedImageOwner) {
+            return { state: snapshot.state, shipment: current, refreshed: false, querySucceeded: false };
+          }
         }
+      } catch (error) {
+        // Retry optional cleanup on every exit without replacing cancellation/deadline failures.
+        try { loadState(); } catch (cleanupError) {
+          writeDiagnostic("detail.image.wait_cleanup_failed", diagnosticErrorDetails(cleanupError), "warning");
+        }
+        throw error;
+      }
+      const currentState = loadState();
+      const current = currentState.shipments.find(item => item.identity.id === shipmentId);
+      if (!current) throw new Error("该快递已从列表中移除");
+      if (productImageOwnerFingerprint(current, currentState) !== expectedImageOwner) {
+        return { state: currentState, shipment: current, refreshed: false, querySucceeded: false };
       }
       assertRefreshSignal(options.signal);
       assertWithinDeadline(deadlineAtMs);

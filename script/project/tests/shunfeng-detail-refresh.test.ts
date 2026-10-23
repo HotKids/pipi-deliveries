@@ -139,7 +139,7 @@ try {
       Notification: { async schedule() {
         scheduled++;
         // Simulate a user edit while the notification host is completing its work.
-        revisionBeforeAck = setShipmentNote(original.identity.id, "Edited during finalization", NOW).revision;
+        revisionBeforeAck = setShipmentNote(original, "Edited during finalization", NOW).revision;
         if (scheduleFails) throw new Error("synthetic notification failure");
       } },
     });
