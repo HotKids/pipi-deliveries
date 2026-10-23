@@ -1795,7 +1795,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             String courierCode, String company, String waybill,
             String status, StatusSemantic semantic) {
         statusView.setText(status);
-        statusView.setTextColor(statusColor(semantic));
+        statusView.setTextColor(ExpressStatusColors.textOn(statusColor(semantic),
+                com.google.android.material.color.MaterialColors.getColor(statusView,
+                        com.google.android.material.R.attr.colorSurface)));
         ExpressSenderBadge.apply(findViewById(R.id.detail_sender),
                 item != null && item.sender, statusColor(semantic));
         // 其余裁决 35：承运商为空时统一写「快递」；热线仍按原来的承运商名查。

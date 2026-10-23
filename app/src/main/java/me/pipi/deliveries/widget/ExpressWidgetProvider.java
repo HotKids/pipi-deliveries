@@ -123,7 +123,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 views.setTextViewText(R.id.widget_priority_status,
                         ExpressWidgetPresentation.statusText(item));
                 views.setTextColor(R.id.widget_priority_status,
-                        StatusStyle.forSemantic(item.semantic).foreground);
+                        statusTextColor(context, item, accent, false));
                 views.setImageViewResource(R.id.widget_compact_courier_logo,
                         item.displayIconResource());
                 views.setTextViewText(R.id.widget_compact_company,
@@ -260,7 +260,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         StatusStyle statusStyle = StatusStyle.forSemantic(item.semantic);
         views.setInt(WIDE_STATUS_IDS[index],
                 "setBackgroundResource", statusStyle.background);
-        views.setTextColor(WIDE_STATUS_IDS[index], statusStyle.foreground);
+        views.setTextColor(WIDE_STATUS_IDS[index], statusTextColor(context, item, ExpressWidgetPalette.accent(context, items.get(0)), true));
         views.setTextViewTextSize(WIDE_DETAIL_IDS[index], TypedValue.COMPLEX_UNIT_SP,
                 mediumLayout.detailTextSizeSp);
         views.setInt(WIDE_DETAIL_IDS[index], "setMaxLines", rowLayout.detailMaxLines);
@@ -406,6 +406,19 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
      * 小组件状态胶囊（4×2）与状态词（2×2）的颜色只来自三端同一张表 ExpressStatusColors；
      * 胶囊底色是同一个色的 10% 透明。派送中（绿）与已签收（青）从此不再同色。
      */
+    static int statusTextColor(Context context, ExpressItem item, int accent, boolean badge) {
+        int surface = context.getColor(R.color.widget_surface);
+        int tinted = androidx.core.graphics.ColorUtils.compositeColors(
+                (accent & 0x00ffffff) | 0x55000000, surface);
+        int status = StatusStyle.forSemantic(item.semantic).foreground;
+        if (badge) {
+            int fill = (status & 0x00ffffff) | 0x1a000000;
+            surface = androidx.core.graphics.ColorUtils.compositeColors(fill, surface);
+            tinted = androidx.core.graphics.ColorUtils.compositeColors(fill, tinted);
+        }
+        return ExpressStatusColors.textOn(status, surface, tinted);
+    }
+
     static final class StatusStyle {
         final int background;
         final int foreground;

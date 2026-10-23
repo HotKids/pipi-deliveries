@@ -1,6 +1,6 @@
 import { Text } from "scripting";
 import type { StatusSemantic } from "../models";
-import { statusTint } from "../services/status";
+import { statusTint, statusTextTint } from "../services/status";
 
 // Rendered only for sender rows: the call site leaves it out, because a component may not return null.
 export function SenderBadge(props: { semantic: StatusSemantic }) {
@@ -9,7 +9,7 @@ export function SenderBadge(props: { semantic: StatusSemantic }) {
     <Text
       font={11}
       fontWeight="bold"
-      foregroundStyle={color}
+      foregroundStyle={statusTextTint(props.semantic, { badgeOpacity: 0.1 })}
       lineLimit={1}
       padding={{ horizontal: 6, vertical: 2 }}
       background={{ color, opacity: 0.1 }}
