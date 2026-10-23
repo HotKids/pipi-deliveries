@@ -68,6 +68,10 @@ final class ExpressToastCopy {
     /** An explicit note edit cannot load its current persisted owner or note. */
     static final String USER_NOTE_UNAVAILABLE = "暂时无法编辑，请重试";
 
+    /** Shared copy only; this does not add Pipi note recovery to Lite. */
+    static final String USER_NOTE_RECOVERY_FAILED = "处理失败，请重试";
+    static final String USER_NOTE_CHANGED = "快递信息已变更，请重新打开备注";
+
     /** 删除成功。 */
     static final String DELETED = "该快递已删除";
 
