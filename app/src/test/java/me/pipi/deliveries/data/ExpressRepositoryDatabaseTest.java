@@ -1469,7 +1469,9 @@ public final class ExpressRepositoryDatabaseTest {
     @Test
     public void expiredManualLeaseCanRecoverAndPartialTerminalStillSeeksACompletePackage() {
         ExpressItem owner = insertOwner(
-                "SFTEST000004", "13900000004", StatusSemantic.TRANSIT);
+                "SFTEST000004", "13900000004", StatusSemantic.UNKNOWN);
+        assertEquals(StatusSemantic.UNKNOWN, owner.semantic);
+        assertEquals(0L, owner.statusEventTime);
         long now = 4_000_000L;
         assertNotNull(repository.claimForegroundManualTimelinePoll(owner, now, true));
 
@@ -1481,6 +1483,7 @@ public final class ExpressRepositoryDatabaseTest {
 
         ExpressQueryResult completed = timedResult(
                 owner.waybill, "2026-08-24 12:00:00", "快件已签收", "v4");
+        assertEquals(0L, completed.statusEventTime);
         assertNotNull(repository.saveOwnerManualTimeline(
                 owner, completed, owner.phone, "interface5"));
         ExpressItem current = repository.find(owner.rowId);
@@ -1493,6 +1496,30 @@ public final class ExpressRepositoryDatabaseTest {
                         true);
         assertNotNull(fallback);
         repository.releaseManualTimelinePoll(fallback);
+    }
+
+    @Test
+    public void shunFengUndatedManualTerminalCannotReplaceKnownUndatedStatus() {
+        ExpressItem owner = insertOwner(
+                "SFUNDATE000004", "13900000004", StatusSemantic.TRANSIT);
+        assertEquals(StatusSemantic.TRANSIT, owner.semantic);
+        assertEquals(0L, owner.statusEventTime);
+        ExpressQueryResult completed = timedResult(
+                owner.waybill, "2026-08-24 12:00:00", "快件已签收", "v4");
+        assertEquals(0L, completed.statusEventTime);
+        assertNotNull(repository.saveOwnerManualTimeline(owner, completed, owner.phone, "interface5"));
+        ExpressItem current = repository.find(owner.rowId);
+        assertEquals(StatusSemantic.TRANSIT, current.semantic);
+        assertEquals(0L, current.statusEventTime);
+        ManualTimelineAuthorityPolicy.Candidate raw = repository.manualTimelineCandidate(current, "v4");
+        assertNotNull(raw);
+        assertEquals(StatusSemantic.COMPLETED, raw.result.semantic);
+        assertEquals(0L, raw.result.statusEventTime);
+        assertTrue(raw.result.tracksJson.contains("2026-08-24 12:00:00"));
+        ExpressRepository.ManualTimelinePollClaim claim =
+                repository.claimForegroundManualTimelinePoll(current, 5_000_000L, true);
+        assertNotNull(claim);
+        repository.releaseManualTimelinePoll(claim);
     }
 
     @Test
