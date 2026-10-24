@@ -92,7 +92,7 @@ import { carrierAwaitingRecognition } from "./carrier-gate";
 import { notificationEnabled } from "./notification-preferences";
 import { preserveSettledShipment } from "./shipment-policy";
 import { newerWaybillReuseGeneration } from "./waybill-reuse";
-import { shipmentLifecycleKey } from "./shipment-lifecycle";
+import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "./shipment-lifecycle";
 import { pruneRowLedgerForState } from "./row-ledger";
 import { pruneProductImages } from "./product-image-cache";
 
@@ -2739,7 +2739,7 @@ export function setShipmentNote(expected: Shipment, note: string, now = Date.now
     const trimmed = String(note || "").trim();
     const current = state.shipments.find((item) => item.identity.id === expected.identity.id);
     if (!current || shipmentLifecycleKey(current) !== shipmentLifecycleKey(expected)) {
-      throw new Error("Shipment lifecycle changed; reopen the detail before editing.");
+      throw new ShipmentLifecycleChangedError();
     }
     if ((current.note || "") === trimmed) return state;
     // 抬一下 updatedAtMs：详情页与父页面用 preferNewerShipment 挑新的那份，不抬的话父页面回传的

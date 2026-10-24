@@ -53,6 +53,7 @@ import {
   withShipmentNote,
 } from "../services/status";
 import { loadState, recordShipmentDetailSelection, setShipmentNote } from "../services/storage";
+import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
 import { requestWidgetReload } from "../services/widgets";
 import { timelineTimeParts } from "../services/time-presentation";
 import { preferNewerShipment } from "../services/ui-state";
@@ -147,7 +148,8 @@ export function DetailPage(props: {
       requestWidgetReload();
     } catch (error) {
       writeDiagnostic("detail.note.save_failed", diagnosticErrorDetails(error), "warning");
-      setNotice("保存失败，请重试");
+      setNotice(error instanceof ShipmentLifecycleChangedError
+        ? EXPRESS_TOAST_COPY.userNoteChanged : "保存失败，请重试");
     }
   }
   const [loadingManualDetail, setLoadingManualDetail] = useState(
