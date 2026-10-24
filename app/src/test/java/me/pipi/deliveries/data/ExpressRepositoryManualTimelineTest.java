@@ -20,9 +20,10 @@ public final class ExpressRepositoryManualTimelineTest {
         ExpressItem owner = owner(
                 41L, "13900001234", "INTERFACE5", "ShunFeng",
                 StatusSemantic.PICKED, false, 987654L);
-        ManualTimelineAuthorityPolicy.Candidate authority = candidate(
+        ManualTimelineAuthorityPolicy.Candidate authority = explicitCandidate(
                 "v4", 2_000_000L, StatusSemantic.DELIVERY,
-                "2026-08-24 12:30:00", "快件正在派送");
+                ExpressSourcePolicy.parseEventTime("2026-08-24 12:30:00"),
+                "2026-08-24 12:30:00", "快件正在派送", "5", false, true);
 
         ExpressItem projected = ExpressRepository.projectManualTimeline(owner, authority);
 
@@ -63,6 +64,34 @@ public final class ExpressRepositoryManualTimelineTest {
         assertEquals(StatusSemantic.PICKED, projected.semantic);
         assertEquals("快件运输中", projected.latestDetail);
         assertEquals("k100_h5", projected.manualTimelineProvider);
+    }
+
+    @Test
+    public void shunFengAcceptedClockProtectsOlderAndConflictingOnlineButAllowsNewEvidence() {
+        for (long incoming : new long[]{99L, 100L, 101L}) {
+            ExpressItem owner = owner(81L, "13900001234", "INTERFACE5", "ShunFeng",
+                    StatusSemantic.DELIVERY, false, 100L, 0L);
+            ManualTimelineAuthorityPolicy.Candidate online = explicitCandidate("v6_query", 200L,
+                    StatusSemantic.TRANSIT, incoming, "2026-08-24 12:30:00", "Synthetic transit", "0", true, true);
+            ExpressItem shown = ExpressRepository.projectManualTimeline(owner, online);
+            assertEquals(incoming > 100L ? StatusSemantic.TRANSIT : StatusSemantic.DELIVERY, shown.semantic);
+            assertEquals(Math.max(incoming, 100L), shown.statusEventTime);
+            if (incoming <= 100L) assertEquals(owner.statusDescription, shown.statusDescription);
+        }
+    }
+
+    @Test
+    public void shunFengFutureClockDoesNotBlockCorrectionAndUnknownZeroCanBorrowStatus() {
+        for (StatusSemantic semantic : new StatusSemantic[]{StatusSemantic.DELIVERY, StatusSemantic.UNKNOWN}) {
+            long accepted = semantic == StatusSemantic.UNKNOWN ? 0L : System.currentTimeMillis() + 86_400_000L;
+            ExpressItem owner = owner(82L, "13900001234", "INTERFACE5", "ShunFeng",
+                    semantic, false, accepted, 0L);
+            ManualTimelineAuthorityPolicy.Candidate online = explicitCandidate("v6_query", 200L,
+                    StatusSemantic.TRANSIT, 100L, "2026-08-24 12:30:00", "Synthetic transit", "0", true, true);
+            ExpressItem shown = ExpressRepository.projectManualTimeline(owner, online);
+            assertEquals(StatusSemantic.TRANSIT, shown.semantic);
+            assertEquals(100L, shown.statusEventTime);
+        }
     }
 
     @Test
@@ -292,7 +321,7 @@ public final class ExpressRepositoryManualTimelineTest {
         long completedAt = ExpressSourcePolicy.parseEventTime("2026-08-24 12:00:00");
         ExpressItem owner = owner(
                 63L, "13900001234", "INTERFACE5", "ShunFeng",
-                StatusSemantic.WAITING_PICKUP, false, completedAt + 1_000L, 9_000L);
+                StatusSemantic.WAITING_PICKUP, false, completedAt - 1_000L, 9_000L);
         ManualTimelineAuthorityPolicy.Candidate completed = explicitCandidate(
                 "v4", 20_000L, StatusSemantic.COMPLETED,
                 completedAt, "2026-08-24 12:00:00", "已签收", "501");

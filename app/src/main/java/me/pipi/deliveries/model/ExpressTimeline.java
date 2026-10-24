@@ -157,9 +157,16 @@ public final class ExpressTimeline {
 
     /** Only the latest nodes' provider enums can contradict presentation; prose is not evidence. */
     public static List<StatusSemantic> latestTrackStatuses(String tracksJson, String provider) {
+        return latestTrackStatuses(tracksJson, provider, Long.MAX_VALUE);
+    }
+
+    /** SF reference reads exclude future nodes without rewriting the cached package. */
+    public static List<StatusSemantic> latestTrackStatuses(String tracksJson, String provider, long notAfter) {
         List<RawTrack> tracks = rawTracksReadOnly(tracksJson);
         long latest = 0L;
-        for (RawTrack track : tracks) latest = Math.max(latest, track.epochMillis);
+        for (RawTrack track : tracks) {
+            if (track.epochMillis <= notAfter) latest = Math.max(latest, track.epochMillis);
+        }
         if (latest <= 0L) return Collections.emptyList();
         ArrayList<StatusSemantic> statuses = new ArrayList<>();
         for (RawTrack track : tracks) {

@@ -143,7 +143,7 @@ public final class ManualTimelineAuthorityPolicy {
     public static final class DetailDecision {
         public final Candidate candidate;
         public final String reason;
-        /** Automatic ranking only: the completeness it gave each ranked provider's package. */
+        /** Per-provider completeness from automatic or SF ranking, when supplied by its owner. */
         private final Map<String, Boolean> rankedComplete;
         public DetailDecision(Candidate candidate, String reason) {
             this(candidate, reason, java.util.Collections.emptyMap());
@@ -155,8 +155,8 @@ public final class ManualTimelineAuthorityPolicy {
         }
 
         /**
-         * Whether the automatic ranking counted this provider's package complete against the account
-         * reference (the evaluation that picks the displayed package); false when it was not ranked.
+         * Whether the owning ranking counted this provider's package complete against its reference;
+         * false when it was not ranked.
          */
         public boolean rankedComplete(String provider) {
             return Boolean.TRUE.equals(rankedComplete.get(normalizeProvider(provider)));
@@ -182,30 +182,37 @@ public final class ManualTimelineAuthorityPolicy {
             byProvider.put(candidate.provider,
                     cached == null ? candidate : mergeSameProvider(cached, candidate));
         }
-        Candidate best = selectBestDetail(byProvider, feedLatestEventMillis);
-        if (best == null) return new DetailDecision(null, "source_policy");
+        Map<String, Boolean> complete = new LinkedHashMap<>();
+        for (Candidate candidate : byProvider.values()) {
+            complete.put(candidate.provider, rankingComplete(candidate, byProvider, feedLatestEventMillis));
+        }
+        DetailDecision selected = selectDetailDecision(byProvider, complete, preferredProvider);
+        return new DetailDecision(selected.candidate, selected.reason);
+    }
+
+    /** SF supplies completeness against its accepted pair without rewriting provider packages. */
+    static DetailDecision selectDetailDecision(Map<String, Candidate> byProvider,
+            Map<String, Boolean> complete, String preferredProvider) {
+        java.util.ArrayList<Candidate> ranked = new java.util.ArrayList<>(byProvider.values());
+        ranked.sort((left, right) -> compareDetailQuality(left, right,
+                Boolean.TRUE.equals(complete.get(left.provider)), Boolean.TRUE.equals(complete.get(right.provider))));
+        if (ranked.isEmpty()) return new DetailDecision(null, "source_policy", complete);
+        Candidate best = ranked.get(0);
         Candidate preferred = byProvider.get(normalizeProvider(preferredProvider));
         if (preferred != null && preferred != best) {
-            return rankingComplete(preferred, byProvider, feedLatestEventMillis)
-                    || !rankingComplete(best, byProvider, feedLatestEventMillis)
-                    ? new DetailDecision(preferred, "sticky_history")
-                    : new DetailDecision(best, "complete_replaces_partial");
+            return Boolean.TRUE.equals(complete.get(preferred.provider))
+                    || !Boolean.TRUE.equals(complete.get(best.provider))
+                    ? new DetailDecision(preferred, "sticky_history", complete)
+                    : new DetailDecision(best, "complete_replaces_partial", complete);
         }
-        Candidate runner = null;
-        for (Candidate candidate : byProvider.values()) {
-            if (candidate == best) continue;
-            if (runner == null || compare(candidate, runner, byProvider, feedLatestEventMillis) < 0) {
-                runner = candidate;
-            }
-        }
+        Candidate runner = ranked.size() > 1 ? ranked.get(1) : null;
         String reason = runner == null ? "only_eligible_history"
-                : rankingComplete(best, byProvider, feedLatestEventMillis)
-                        != rankingComplete(runner, byProvider, feedLatestEventMillis) ? "complete_history"
+                : !java.util.Objects.equals(complete.get(best.provider), complete.get(runner.provider)) ? "complete_history"
                 : Kuaidi100TimelinePolicy.timedTrackCount(best.result)
                         != Kuaidi100TimelinePolicy.timedTrackCount(runner.result) ? "track_coverage"
                 : isEffectivelyComplete(best) != isEffectivelyComplete(runner) ? "capture_complete"
                 : candidateTier(best) != candidateTier(runner) ? "source_tier" : "provider_order";
-        return new DetailDecision(best, reason);
+        return new DetailDecision(best, reason, complete);
     }
 
     /** Ranks the owner and eligible sidecars together before applying account freshness and stickiness. */

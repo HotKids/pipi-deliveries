@@ -15,9 +15,12 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import me.pipi.deliveries.R;
 import me.pipi.deliveries.data.ExpressRepository;
+import me.pipi.deliveries.model.ExpressTimeline;
+import me.pipi.deliveries.model.ManualQuerySuccess;
 import me.pipi.deliveries.data.TimelineSlot;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
+import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.network.ExpressQueryCancellation;
 import me.pipi.deliveries.network.ExpressSubscriptionClient;
 import org.junit.Before;
@@ -36,13 +39,17 @@ import org.robolectric.annotation.RealObject;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 35, manifest = Config.NONE, application = Application.class,
         shadows = {ExpressFirstManualQueryTest.OnlineShadow.class,
-                ExpressFirstManualQueryTest.CaptureShadow.class})
+                ExpressFirstManualQueryTest.CaptureShadow.class,
+                me.pipi.deliveries.data.ExpressAutomaticDetailPersistenceTest.SyntheticSecretBox.class})
 public final class ExpressFirstManualQueryTest {
     @Before public void reset() {
         OnlineShadow.fail = false;
         OnlineShadow.expired = false;
         OnlineShadow.stageBudget = 0;
         OnlineShadow.operationBudget = 0;
+        OnlineShadow.result = null;
+        OnlineShadow.beforeReturn = null;
+        OnlineShadow.cancelOperation = false;
         CaptureShadow.routes.clear();
     }
 
@@ -52,6 +59,9 @@ public final class ExpressFirstManualQueryTest {
         static boolean expired;
         static int stageBudget;
         static int operationBudget;
+        static ExpressQueryResult result;
+        static Runnable beforeReturn;
+        static boolean cancelOperation;
         @Implementation protected ExpressQueryResult queryManual(Context context, String waybill,
                 ExpressQueryCancellation cancellation) throws Exception {
             Method budget = ExpressQueryCancellation.class.getDeclaredMethod(
@@ -62,12 +72,17 @@ public final class ExpressFirstManualQueryTest {
             parent.setAccessible(true);
             ExpressQueryCancellation operation = (ExpressQueryCancellation) parent.get(cancellation);
             operationBudget = (Integer) budget.invoke(operation == null ? cancellation : operation, 60000);
+            if (cancelOperation) {
+                operation.cancel();
+                throw new java.util.concurrent.CancellationException("Synthetic whole-query cancellation");
+            }
             if (expired) {
                 cancellation.cancel();
                 throw new InterruptedException("Synthetic Online stage deadline");
             }
             if (fail) throw new IllegalStateException("Synthetic Online failure");
-            return null;
+            if (beforeReturn != null) beforeReturn.run();
+            return result;
         }
     }
 
@@ -112,6 +127,135 @@ public final class ExpressFirstManualQueryTest {
         verifyFirstAdd("LITEFIRSTJT1234", "JTSD", true,
                 "https://jtsd.jtexpress.com.cn/pipi#/pages/checkGoods/sendDetail?waybillNo=LITEFIRSTJT1234&isFrom=serach",
                 TimelineSlot.JT_H5);
+    }
+
+    @Test public void ordinaryCancellationKeepsTheFirstManualPreviewOpen() throws Exception {
+        Context context = RuntimeEnvironment.getApplication();
+        OnlineShadow.cancelOperation = true;
+        ActivityController<ExpressDetailActivity> controller = Robolectric.buildActivity(
+                ExpressDetailActivity.class, ExpressDetailActivity.manualQueryIntent(
+                        context, "LITECANCELKEEP1234", "", "SF", "interface6"));
+        ExpressDetailActivity activity = controller.get();
+        activity.setTheme(R.style.AppTheme);
+        controller.create().start().resume();
+        try {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < deadline) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle();
+                if (OnlineShadow.stageBudget > 0 && !(Boolean) field(activity, "firstManualQueryInFlight")) break;
+                Thread.sleep(5);
+            }
+            assertTrue(OnlineShadow.stageBudget > 0);
+            assertFalse((Boolean) field(activity, "firstManualQueryInFlight"));
+            assertFalse(activity.isFinishing());
+            assertNotNull(field(activity, "previewResult"));
+            ExpressQueryCancellation cancelled = new ExpressQueryCancellation(30000L);
+            cancelled.cancel();
+            org.robolectric.util.ReflectionHelpers.setField(activity, "firstManualQueryInFlight", true);
+            org.robolectric.util.ReflectionHelpers.setField(activity, "firstManualQueryCancellation", cancelled);
+            Method fail = ExpressDetailActivity.class.getDeclaredMethod("failFirstManualQuery",
+                    Exception.class, String.class, String.class, ExpressQueryCancellation.class);
+            fail.setAccessible(true);
+            fail.invoke(activity, new java.util.concurrent.CancellationException("Synthetic cancellation callback"),
+                    "LITECANCELKEEP1234", "SF", cancelled);
+            assertFalse(activity.isFinishing());
+            assertNotNull(field(activity, "previewResult"));
+        } finally {
+            controller.pause().stop().destroy();
+        }
+    }
+
+    @Test public void deletingExistingSfDuringOnlineDoesNotQueryPrimaryOrQueueTheDeletedRow() throws Exception {
+        Context context = RuntimeEnvironment.getApplication();
+        ExpressRepository repository = ExpressRepository.get(context);
+        String waybill = "LITEDELETEDSF1234", phone = "13800000001";
+        repository.bindPhoneLocally(phone, "interface6");
+        repository.saveInterface6(sfPacket(waybill, phone, "interface6", "2026-10-14 10:00:00",
+                StatusSemantic.TRANSIT, "ShunFeng"), phone);
+        ExpressItem owner = repository.findByWaybill(waybill, "interface6");
+        OnlineShadow.beforeReturn = () -> repository.delete(owner.rowId);
+        OnlineShadow.result = sfPacket(waybill, phone, TimelineSlot.V6_QUERY,
+                "2026-10-15 10:00:00", StatusSemantic.TRANSIT, "");
+        ActivityController<ExpressDetailActivity> controller = Robolectric.buildActivity(
+                ExpressDetailActivity.class, ExpressDetailActivity.manualQueryIntent(
+                        context, waybill, phone, "SF", "interface6"));
+        ExpressDetailActivity activity = controller.get();
+        activity.setTheme(R.style.AppTheme);
+        controller.create().start().resume();
+        try {
+            ExecutorService worker = (ExecutorService) field(activity, "worker");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < deadline && !activity.isFinishing()) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle();
+                Thread.sleep(5);
+            }
+            worker.submit(() -> {}).get(1, TimeUnit.SECONDS);
+            Shadows.shadowOf(Looper.getMainLooper()).idle();
+            assertTrue(activity.isFinishing());
+            assertTrue(CaptureShadow.routes.toString(), CaptureShadow.routes.isEmpty());
+            assertNull(repository.find(owner.rowId));
+            assertTrue(repository.claimPendingManualQueries(System.currentTimeMillis(), "interface6").isEmpty());
+        } finally {
+            controller.pause().stop().destroy();
+        }
+    }
+
+    @Test public void addingExistingSfRendersTheAcceptedSavedPacketAfterTheQuery() throws Exception {
+        Context context = RuntimeEnvironment.getApplication();
+        ExpressRepository repository = ExpressRepository.get(context);
+        String waybill = "LITEEXISTINGSF1234", phone = "13800000001";
+        repository.bindPhoneLocally(phone, "interface6");
+        ExpressQueryResult feed = sfPacket(waybill, phone, "interface6", "2026-10-14 10:00:00",
+                StatusSemantic.TRANSIT, "ShunFeng");
+        repository.saveInterface6(feed, phone);
+        ExpressItem owner = repository.findByWaybill(waybill, "interface6");
+        ExpressQueryResult accepted = sfPacket(waybill, phone, TimelineSlot.K100_H5,
+                "2026-10-16 10:00:00", StatusSemantic.DELIVERY, "");
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                List.of(new ManualQuerySuccess(TimelineSlot.K100_H5, accepted, 100L, false)), phone, "interface6");
+        repository.rememberDetailSelection(owner, TimelineSlot.K100_H5);
+        OnlineShadow.result = sfPacket(waybill, phone, TimelineSlot.V6_QUERY,
+                "2026-10-15 10:00:00", StatusSemantic.TRANSIT, "");
+        ActivityController<ExpressDetailActivity> controller = Robolectric.buildActivity(
+                ExpressDetailActivity.class, ExpressDetailActivity.manualQueryIntent(
+                        context, waybill, phone, "SF", "interface6"));
+        ExpressDetailActivity activity = controller.get();
+        activity.setTheme(R.style.AppTheme);
+        controller.create().start().resume();
+        try {
+            ExecutorService worker = (ExecutorService) field(activity, "worker");
+            Future<?> drained = worker.submit(() -> {});
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < deadline) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle();
+                if (drained.isDone()) {
+                    if (OnlineShadow.stageBudget > 0
+                            && !(Boolean) field(activity, "firstManualQueryInFlight")) break;
+                    drained = worker.submit(() -> {});
+                }
+                Thread.sleep(5);
+            }
+            drained.get(1, TimeUnit.SECONDS);
+            Shadows.shadowOf(Looper.getMainLooper()).idle();
+            assertEquals(Activity.RESULT_OK, Shadows.shadowOf(activity).getResultCode());
+            assertEquals(StatusSemantic.DELIVERY, repository.find(owner.rowId).semantic);
+            ExpressQueryResult displayed = (ExpressQueryResult) field(activity, "previewResult");
+            assertEquals(StatusSemantic.DELIVERY, displayed.semantic);
+            assertEquals(accepted.statusEventTime, displayed.statusEventTime);
+            assertEquals(accepted.latestDetail, displayed.latestDetail);
+        } finally {
+            controller.pause().stop().destroy();
+        }
+    }
+
+    private static ExpressQueryResult sfPacket(String waybill, String phone, String provider,
+            String at, StatusSemantic status, String source) {
+        String detail = "Synthetic " + status;
+        return new ExpressQueryResult(waybill, "SF", "SF Express", status,
+                ExpressTimeline.parseTime(at), at, detail,
+                "[{\"time\":\"" + at + "\",\"context\":\"" + detail + "\",\"statusCode\":\""
+                        + (status == StatusSemantic.DELIVERY ? "5" : "0") + "\"}]",
+                "", phone, provider, "", "", source).withManualStatusEvidence(status.label, true);
     }
 
     private void verifyFirstAdd(String waybill, String code, boolean failed, String route,

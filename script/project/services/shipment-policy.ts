@@ -615,15 +615,16 @@ function hasAlignedTimelineStart(input: Shipment, packages: readonly TimelinePac
   const pool = detailHistoryCandidates(shipment);
   const waybill = displayWaybill(shipment);
   const now = Date.now();
-  const usesManualReference = isShunFengSourceShipment(shipment) || shipment.identity.manuallyAdded;
-  const references = isShunFengSourceShipment(shipment) ? pool.sfManuals : pool.candidates;
-  const reference = usesManualReference
+  const sf = isShunFengSourceShipment(shipment);
+  const references = sf ? pool.sfManuals : pool.candidates;
+  const reference = sf ? null : shipment.identity.manuallyAdded
     ? references.filter(candidate => normalizeWaybill(candidate.waybill) === waybill &&
       timelineLatestEventAt(candidate) > 0 && timelineLatestEventAt(candidate) <= now)
       .reduce<TimelinePackage | null>((latest, candidate) =>
       !latest || timelineLatestEventAt(candidate) > timelineLatestEventAt(latest) ? candidate : latest, null)
     : accountPresentationReference(shipment);
-  const referenceAt = Math.max(reference ? timelineLatestEventAt(reference) : 0, acceptedShunFengStatusAt(shipment));
+  const sfReferenceAt = shunFengHistoryReferenceAt(shipment, references);
+  const referenceAt = Math.max(reference ? timelineLatestEventAt(reference) : 0, sfReferenceAt);
   if (!(referenceAt > 0 && referenceAt <= now)) return false;
   const selected = selectShipmentDetailTimeline(shipment);
   const expected = shipmentDetailPresentationStatus(shipment, selected).semantic;
@@ -632,7 +633,7 @@ function hasAlignedTimelineStart(input: Shipment, packages: readonly TimelinePac
     normalizeWaybill(timeline.waybill) === waybill &&
     !isForeignManualPackage(shipment, timeline) &&
     detailTimelineIncompleteReason(timeline, reference, expected, terminalAt,
-      containsTimelineStartTrack(timeline.tracks), acceptedShunFengStatusAt(shipment), pool.sfManuals) === null
+      containsTimelineStartTrack(timeline.tracks), sfReferenceAt, pool.sfManuals) === null
   );
 }
 
@@ -1457,8 +1458,8 @@ function structuredStatusOverride(
   const incomingAt = resolved.statusEventAtMs || 0;
   if (isShunFengSourceShipment(shipment) && accepted.structuredStatus === true && accepted.semantic !== "UNKNOWN" &&
       acceptedAt >= 0 && acceptedAt <= Date.now() &&
-      isShunFengManualTimeline({ ...resolved, provider: evidence.statusProvider }) && (incomingAt < acceptedAt ||
-      incomingAt === acceptedAt && resolved.semantic !== accepted.semantic)) {
+      (incomingAt < acceptedAt || incomingAt === acceptedAt && resolved.semantic !== accepted.semantic &&
+      isShunFengManualTimeline({ ...resolved, provider: evidence.statusProvider }))) {
     if (selectionEvidence) selectionEvidence.statusProvider = accepted.provider;
     return { ...resolved, semantic: accepted.semantic, structuredStatus: true,
       statusEventAtMs: acceptedAt, ...statusProjectionFields(accepted, resolved) };
@@ -1470,6 +1471,30 @@ function acceptedShunFengStatusAt(shipment: Shipment): number {
   const at = Number(shipment.timeline.statusEventAtMs) || 0;
   return isShunFengSourceShipment(shipment) && shipment.timeline.structuredStatus === true &&
     shipment.timeline.semantic !== "UNKNOWN" && at > 0 && at <= Date.now() ? at : 0;
+}
+
+function validShunFengReferenceTracks(timeline: TimelinePackage): TrackNode[] {
+  const now = Date.now();
+  return timedTracks(timeline.tracks).filter(track => track.timeMs! > 0 && track.timeMs! <= now);
+}
+
+function shunFengLatestReferenceTrackAt(timeline: TimelinePackage): number {
+  return Math.max(0, ...validShunFengReferenceTracks(timeline).map(track => track.timeMs!));
+}
+
+/** A future node cannot erase valid history in the same SF provider packet. */
+function shunFengHistoryReferenceAt(shipment: Shipment, timelines: readonly TimelinePackage[]): number {
+  if (!isShunFengSourceShipment(shipment)) return 0;
+  const now = Date.now();
+  let reference = acceptedShunFengStatusAt(shipment);
+  for (const timeline of timelines) {
+    if (normalizeWaybill(timeline.waybill) !== displayWaybill(shipment)) continue;
+    for (const at of [timeline.statusEventAtMs || 0, parseProviderTime(timeline.latestTimeText) || 0,
+      shunFengLatestReferenceTrackAt(timeline)]) {
+      if (at > reference && at <= now) reference = at;
+    }
+  }
+  return reference;
 }
 
 function resolveStructuredStatus(
@@ -1775,12 +1800,8 @@ export function shipmentDetailIncompleteReason(input: Shipment): DetailIncomplet
     return "sf_active";
   }
   const sfManuals = isShunFengSourceShipment(shipment) ? detailHistoryCandidates(shipment).sfManuals : [];
-  const source = isShunFengSourceShipment(shipment)
-    ? sfManuals.filter(timeline => timelineLatestEventAt(timeline) > 0 && timelineLatestEventAt(timeline) <= Date.now())
-      .reduce<TimelinePackage | null>((latest, timeline) =>
-        !latest || timelineLatestEventAt(timeline) > timelineLatestEventAt(latest) ? timeline : latest, null)
-    : accountPresentationReference(shipment);
-  const acceptedAt = acceptedShunFengStatusAt(shipment);
+  const source = isShunFengSourceShipment(shipment) ? null : accountPresentationReference(shipment);
+  const acceptedAt = shunFengHistoryReferenceAt(shipment, sfManuals);
   const sourceAt = Math.max(source ? timelineLatestEventAt(source) : 0, acceptedAt);
   // 没有 feed 作时间基准（纯手动件、feed 没有有效时间）时判不了「到此为止」：只有终态才算完整，
   // 在途的照常允许重拉——beta51 实测 EMS 手动件下拉被当成已完整、100ms 就跳过了。
@@ -1825,8 +1846,8 @@ function detailTimelineIncompleteReason(
   if (statusReason) return statusReason;
   const known = latestTimelineTrackStatuses(timeline.tracks).filter(status => status !== "UNKNOWN");
   // A newer eligible SF node can disprove an old origin without replacing sticky history or deriving status from prose.
-  if (statusReferences.some(reference => timelineLatestTrackAt(reference) >= timelineLatestTrackAt(timeline) &&
-      latestTimelineTrackStatuses(reference.tracks).some(status => status !== "UNKNOWN" &&
+  if (statusReferences.some(reference => shunFengLatestReferenceTrackAt(reference) >= timelineLatestTrackAt(timeline) &&
+      latestTimelineTrackStatuses(validShunFengReferenceTracks(reference)).some(status => status !== "UNKNOWN" &&
         known.some(candidate => candidate !== status)))) return "status_mismatch";
   if (!hasStart) return "missing_pickup";
   const sourceAt = Math.max(source ? timelineLatestEventAt(source) : 0, acceptedAt);
@@ -1858,14 +1879,14 @@ export function shipmentDetailCandidateEvidence(input: Shipment, timeline: Timel
     : detailManualRejectionReason(shipment, candidate);
   // A gate (sync's cached JD H5 check): judged as HEAD did, without temporary reviews (助手按用户 2026-09-27 规则对齐).
   const evaluated = withoutKeptReviewNodes(shipment, candidate);
-  const reference = isShunFengSourceShipment(shipment) || shipment.identity.manuallyAdded
+  const reference = isShunFengSourceShipment(shipment) ? null : shipment.identity.manuallyAdded
     ? pool.candidates.reduce<TimelinePackage | null>((latest, value) =>
       !latest || timelineLatestEventAt(value) > timelineLatestEventAt(latest) ? value : latest, null)
     : accountPresentationReference(withoutTemporaryReviews(shipment));
   const incompleteReason = timedTracks(evaluated.tracks).length
     ? detailTimelineIncompleteReason(evaluated, reference,
         presented.semantic, terminalEvidenceAtMs({ ...shipment, timeline: presented }),
-        containsTimelinePickupTrack(evaluated.tracks), acceptedShunFengStatusAt(shipment), pool.sfManuals)
+        containsTimelinePickupTrack(evaluated.tracks), shunFengHistoryReferenceAt(shipment, pool.sfManuals), pool.sfManuals)
     : "no_tracks";
   return {
     candidateEligible: gateReason === null,
@@ -2043,7 +2064,7 @@ function rankDetailPackages(
   // 优先级（用户定 2026-09-04）：接口完整轨迹 → 本地 feed 增量 → 免费手动包 → 付费手动包。
   // 顺丰是唯一例外：它的 feed 只有粗略轨迹，退到最后兜底，Picker 才是第一优先级。
   // SF's coarse feed is not a freshness ceiling. Only eligible same-parcel packages may advance the reference.
-  const completenessSource = sourceIsCoarseFallback || shipment.identity.manuallyAdded
+  const completenessSource = sourceIsCoarseFallback ? null : shipment.identity.manuallyAdded
     ? view(candidates.reduce((latest, candidate) =>
       timelineLatestEventAt(view(candidate)) > timelineLatestEventAt(view(latest)) ? candidate : latest
     ))
@@ -2054,7 +2075,7 @@ function rankDetailPackages(
     const expected = presented.semantic;
     return detailTimelineIncompleteReason(view(timeline), completenessSource, expected,
       terminalEvidenceAtMs({ ...shipment, timeline: presented }),
-      containsTimelinePickupTrack(view(timeline).tracks), acceptedShunFengStatusAt(shipment), sfManuals) === null;
+      containsTimelinePickupTrack(view(timeline).tracks), shunFengHistoryReferenceAt(shipment, sfManuals), sfManuals) === null;
   };
   const qualities = new Map<TimelinePackage, DetailTimelineQuality>();
   const quality = (timeline: TimelinePackage): DetailTimelineQuality => {

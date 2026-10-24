@@ -470,6 +470,10 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         existing == null ? null : repository.manualTimelineCandidate(
                                 existing, TimelineSlot.V6_QUERY),
                         null, ManualQueryRoutingPolicy.includesMoto(existing), onlineResult -> {
+                            if (existing != null && existing.isShunFengSource()
+                                    && !repository.ownsManualQuery(existing, ownerClaim)) {
+                                throw new ExpressRepository.ManualQueryOwnerChangedException();
+                            }
                             String code = onlineResult != null && !onlineResult.courierCode.isEmpty()
                                     ? onlineResult.courierCode : courierHint.get();
                             ExpressQueryResult identity = new ExpressQueryResult(waybill, code, "",
@@ -484,8 +488,16 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                                 }
                             };
                         },
-                        partial -> publishFirstManualPreview(partial, cancellation), true);
+                        partial -> {
+                            ExpressQueryResult preview = repository.manualQueryPreview(existing, ownerClaim, partial);
+                            if (preview != null) publishFirstManualPreview(preview, cancellation);
+                        }, true, false, existing != null && existing.isShunFengSource()
+                                ? online -> repository.shunFengOnlineHistoryAligned(existing, ownerClaim, online) : null);
                 cancellation.throwIfCancelled();
+                if (existing != null && existing.isShunFengSource()
+                        && !repository.ownsManualQuery(existing, ownerClaim)) {
+                    throw new ExpressRepository.ManualQueryOwnerChangedException();
+                }
                 ExpressQueryResult selected = firstManualResult(batch.successes, batch.detailSelected());
                 if (selected == null) throw new ExpressApi.NoTrackException();
                 String phone = !suppliedPhone.isEmpty() ? suppliedPhone
@@ -500,15 +512,23 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         writes.add(new ManualQuerySuccess(
                                 captured.timelineProvider, captured, System.currentTimeMillis(), timelineComplete(captured)));
                         selected = firstManualResult(writes, selected);
-                        publishFirstManualPreview(selected, cancellation);
+                        ExpressQueryResult preview = repository.manualQueryPreview(existing, ownerClaim, selected);
+                        if (preview != null) publishFirstManualPreview(preview, cancellation);
                     }
                 }
                 cancellation.throwIfCancelled();
-                ExpressQueryResult result = selected;
                 ExpressItem stored = repository.saveClaimedManualQueryBatch(
                         existing, ownerClaim, writes, phone, bindingSource,
                         false, pollClaim, cancellation);
-                if (stored == null) throw new IllegalStateException("Manual query owner changed");
+                if (stored == null) {
+                    if (existing != null && existing.isShunFengSource()) {
+                        throw new ExpressRepository.ManualQueryOwnerChangedException();
+                    }
+                    throw new IllegalStateException("Manual query owner changed");
+                }
+                ExpressQueryResult result = existing != null && existing.isShunFengSource()
+                        ? repository.manualQueryPreview(existing, ownerClaim, null) : selected;
+                if (result == null) throw new ExpressRepository.ManualQueryOwnerChangedException();
                 // T23 entry G（用户 2026-09-26）：手动件承运商还没对上就在这一轮补识别（内置表 → 快递100 免费 → 付费），
                 // 识别不出的之后各轮继续补；待定期间不推送。
                 if (AccountCarrierRecognition.needsRecognition(stored)) {
@@ -600,6 +620,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             finishFirstManualQuery();
             renderFirstManualResult(previewResult);
             Toast.makeText(this, ExpressToastCopy.MANUAL_QUERY_TIMEOUT, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (failure instanceof ExpressRepository.ManualQueryOwnerChangedException) {
+            finishFirstManualQuery();
+            finish();
             return;
         }
         finishFirstManualQuery();
