@@ -3,9 +3,10 @@ import { test } from "node:test";
 import { memory, NOW } from "./state-storage-mock";
 import { emptyState, loadState, removeShipment, saveState } from "../services/storage";
 import { runShipmentRefreshForTesting } from "../services/sync";
+import { OperationTimeoutError } from "../services/deadline";
 import type { Shipment, StatusSemantic, TimelinePackage } from "../models";
 import { applyManualShipment, applyTargetedAccountShipment, hasPickerTimelineStart,
-  hasTimelineStartBeforeKdniao, selectShipmentDetailTimeline, shipmentDetailIncompleteReason,
+  hasTimelineStartBeforeKdniao, selectShipmentDetailTimeline, selectShipmentTimeline, shipmentDetailIncompleteReason,
   shipmentDetailCandidateEvidence, signedTripleReached } from "../services/shipment-policy";
 
 const waybill = "SFONLINE20261024", recent = NOW - 60_000, old = recent - 10 * 60_000;
@@ -31,6 +32,147 @@ function row(selected = packet("kdniao", recent, "DELIVERY")): Shipment {
 function incoming(base: Shipment, timeline: TimelinePackage): Shipment {
   return { ...base, timeline, sourceTimeline: null, manualTimelines: [timeline], detailSelection: undefined };
 }
+function mixedHistory(): Shipment {
+  const history = { ...packet("k100_h5", old, "UNKNOWN"), structuredStatus: false,
+    statusEventAtMs: null, tracks: packet("k100_h5", old, "UNKNOWN").tracks.map(track => ({ ...track, statusCode: "" })) };
+  const before = row(history);
+  before.manualTimelines = [history, packet("kdniao", recent, "DELIVERY")];
+  before.timeline = selectShipmentTimeline(before);
+  assert.equal(before.timeline.provider, "k100_h5");
+  assert.equal(before.timeline.semantic, "DELIVERY");
+  assert.equal(before.timeline.statusEventAtMs, recent);
+  return before;
+}
+for (const response of ["query_failed", "empty_response", "success"] as const)
+test(`Online ${response} rebase never writes displayed SF status into the K100 cache`, async () => {
+  memory.clear();
+  const before = mixedHistory();
+  const saved = saveState({ ...emptyState(), shipments: [before], bindings: [
+    { source: "interface5", phone: before.identity.phone!, boundAtMs: old - 86_400_000 },
+  ] }, NOW).shipments[0]!;
+  const originalHistory = saved.manualTimelines!.find(timeline => timeline.provider === "k100_h5")!;
+  let stageShipment: Shipment | undefined;
+  const output = await runShipmentRefreshForTesting(saved.identity.id,
+    { isCurrent: () => true, deadlineAtMs: NOW + 30_000 },
+    { trigger: "manual_submit", forceManualRefresh: true, includeKdniaoFallback: true }, {
+      refreshWebTimeline: async shipment => {
+        stageShipment = shipment;
+        return null;
+      },
+      queryManualForSource: async input => ({ shipment: input.pickerOnly && response === "success"
+        ? incoming(saved, packet("v6_query", old, "TRANSIT")) : null,
+        pending: null, routeUrl: "", result: response }),
+    });
+  assert.ok(stageShipment);
+  assert.deepEqual(stageShipment.manualTimelines!.find(timeline => timeline.provider === "k100_h5"), originalHistory);
+  assert.deepEqual(output.shipment.manualTimelines!.find(timeline => timeline.provider === "k100_h5"), originalHistory);
+  assert.equal(output.shipment.timeline.semantic, "DELIVERY");
+  assert.deepEqual(output.state, loadState());
+});
+test("an account-only SF wait does not invent a manual feed cache", async () => {
+  memory.clear();
+  const before = row(packet("interface5", old, "TRANSIT"));
+  before.sourceTimeline = before.timeline;
+  before.manualTimelines = [];
+  const saved = saveState({ ...emptyState(), shipments: [before], bindings: [
+    { source: "interface5", phone: before.identity.phone!, boundAtMs: old - 86_400_000 },
+  ] }, NOW).shipments[0]!;
+  let stageShipment: Shipment | undefined;
+  await runShipmentRefreshForTesting(saved.identity.id,
+    { isCurrent: () => true, deadlineAtMs: NOW + 30_000 },
+    { trigger: "manual_submit", forceManualRefresh: true, includeKdniaoFallback: true }, {
+      refreshWebTimeline: async shipment => { stageShipment = shipment; return null; },
+      queryManualForSource: async () => ({ shipment: null, pending: null, routeUrl: "", result: "query_failed" }),
+    });
+  assert.ok(stageShipment);
+  assert.deepEqual(stageShipment.manualTimelines, []);
+  assert.deepEqual(loadState().shipments[0]!.manualTimelines, []);
+});
+for (const response of ["query_failed", "empty_response", "timeout", "success"] as const)
+test(`SF fallback selection survives cached rebase until an actual ${response} response`, async () => {
+  memory.clear();
+  const before = row(packet("v5_query", old, "TRANSIT"));
+  before.detailSelection = { provider: "v5_query", selectedAtMs: old, reason: "sf_refresh_failed" };
+  const saved = saveState({ ...emptyState(), shipments: [before], bindings: [
+    { source: "interface5", phone: before.identity.phone!, boundAtMs: old - 86_400_000 },
+  ] }, NOW).shipments[0]!;
+  const expected = response === "success" ? undefined : "sf_refresh_failed";
+  let stageShipment: Shipment | undefined;
+  const output = await runShipmentRefreshForTesting(saved.identity.id,
+    { isCurrent: () => true, deadlineAtMs: NOW + 30_000 },
+    { trigger: "manual_submit", forceManualRefresh: true, includeKdniaoFallback: true }, {
+      refreshWebTimeline: async shipment => { stageShipment = shipment; return null; },
+      queryManualForSource: async input => {
+        if (input.pickerOnly && response === "timeout") throw new OperationTimeoutError();
+        return { shipment: input.pickerOnly && response === "success"
+          ? incoming(saved, packet("v6_query", recent, "TRANSIT")) : null,
+          pending: null, routeUrl: "", result: response === "timeout" ? "query_failed" : response };
+      },
+    });
+  assert.ok(stageShipment);
+  assert.equal(stageShipment.detailSelection?.reason, expected);
+  assert.equal(output.shipment.detailSelection?.reason, expected);
+});
+for (const during of ["online", "h5"] as const)
+test(`mixed-package SF cache provenance survives a concurrent commit during ${during}`, async () => {
+  memory.clear();
+  const before = mixedHistory();
+  const saved = saveState({ ...emptyState(), shipments: [before], bindings: [
+    { source: "interface5", phone: before.identity.phone!, boundAtMs: old - 86_400_000 },
+  ] }, NOW).shipments[0]!;
+  const originalHistory = saved.manualTimelines!.find(timeline => timeline.provider === "k100_h5")!;
+  const newer = packet("kdniao", recent + 1, "DELIVERY");
+  const advance = () => {
+    const state = loadState();
+    saveState({ ...state, shipments: [applyManualShipment(state.shipments[0]!, incoming(saved, newer), NOW)] }, NOW);
+  };
+  const output = await runShipmentRefreshForTesting(saved.identity.id,
+    { isCurrent: () => true, deadlineAtMs: NOW + 30_000 },
+    { trigger: "manual_submit", forceManualRefresh: true, includeKdniaoFallback: true }, {
+      refreshWebTimeline: async () => { if (during === "h5") advance(); return null; },
+      queryManualForSource: async input => {
+        if (input.pickerOnly) {
+          if (during === "online") advance();
+          return { shipment: incoming(saved, packet("v6_query", old, "TRANSIT")),
+            pending: null, routeUrl: "", result: "success" };
+        }
+        return { shipment: null, pending: null, routeUrl: "", result: "empty_response" };
+      },
+    });
+  assert.deepEqual(output.shipment.manualTimelines!.find(timeline => timeline.provider === "k100_h5"), originalHistory);
+  assert.equal(output.shipment.manualTimelines!.find(timeline => timeline.provider === "kdniao")?.statusEventAtMs, recent + 1);
+  assert.ok(output.shipment.manualTimelines!.some(timeline => timeline.provider === "v6_query"));
+  assert.equal(output.shipment.timeline.semantic, "DELIVERY");
+  assert.equal(output.shipment.timeline.statusEventAtMs, recent + 1);
+  assert.deepEqual(output.state, loadState());
+});
+for (const acceptedAt of [NOW, NOW + 1])
+test(`the SF accepted status guard validates the current-clock boundary ${acceptedAt}`, () => {
+  const before = row(packet("kdniao", acceptedAt, "DELIVERY"));
+  before.manualTimelines = [];
+  const after = applyManualShipment(before, incoming(before, packet("v6_query", recent, "TRANSIT", true)), NOW);
+  assert.equal(after.timeline.semantic, acceptedAt > NOW ? "TRANSIT" : "DELIVERY");
+  assert.equal(after.timeline.statusEventAtMs, acceptedAt > NOW ? recent : acceptedAt);
+});
+for (const acceptedAt of [NOW, NOW + 1])
+test(`the SF completeness reference validates the current-clock boundary ${acceptedAt}`, () => {
+  const history = packet("v6_query", NOW - 31 * 60_000, "DELIVERY", true);
+  const before = row({ ...history, statusEventAtMs: acceptedAt });
+  before.manualTimelines = [history];
+  before.sourceTimeline = packet("interface5", NOW - 31 * 60_000, "DELIVERY");
+  assert.equal(hasPickerTimelineStart(before), acceptedAt > NOW);
+  assert.equal(hasTimelineStartBeforeKdniao(before), acceptedAt > NOW);
+});
+test("a future accepted signing preserves terminal status without certifying transit history", () => {
+  const before = row(packet("kdniao", NOW + 1, "COMPLETED"));
+  before.manualTimelines = [];
+  const after = applyManualShipment(before, incoming(before, packet("v6_query", recent, "TRANSIT", true)), NOW);
+  assert.equal(after.timeline.semantic, "COMPLETED");
+  assert.equal(shipmentDetailIncompleteReason(after), "missing_source_time");
+  assert.equal(hasPickerTimelineStart(after), false);
+  assert.equal(hasTimelineStartBeforeKdniao(after), false);
+  assert.equal(signedTripleReached(after, NOW), false);
+});
 for (const semantic of ["TRANSIT", "DELIVERY"] as const) test(`older complete Online cannot replace the selected newer partial manual packet (${semantic})`, () => {
   memory.clear();
   const before = row();

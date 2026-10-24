@@ -3515,17 +3515,25 @@ export function applyManualShipment(
   );
 }
 
+/** A cache rebase is not a provider response: displayed status and failure markers keep their owners. */
+export function rebaseManualTimelineCaches(
+  current: Shipment,
+  incoming: Shipment,
+  now: number,
+): Shipment {
+  return preserveUserFields(current, current,
+    applyManualShipmentInner(current, current, now, incoming.manualTimelines || []));
+}
+
 function applyManualShipmentInner(
   current: Shipment | undefined,
   incoming: Shipment,
   now: number,
+  timelines: readonly TimelinePackage[] = [...(incoming.manualTimelines || []), incoming.timeline],
 ): Shipment {
   if (!current) {
     let manuals: TimelinePackage[] = [];
-    for (const timeline of [
-      ...(incoming.manualTimelines || []),
-      incoming.timeline,
-    ]) {
+    for (const timeline of timelines) {
       manuals = mergeTimelineAuthorities(manuals, timeline);
     }
     const keepsCainiaoRoute = String(incoming.identity.sourceProvider || "")
@@ -3547,10 +3555,7 @@ function applyManualShipmentInner(
   }
   const source = sourceTimeline(current);
   let manuals = withoutForeignManualPackages(current, manualTimelines(current));
-  for (const timeline of [
-    ...(incoming.manualTimelines || []),
-    incoming.timeline,
-  ]) {
+  for (const timeline of timelines) {
     // R-29: a provider package from another parcel never enters the cache.
     if (isForeignManualPackage(current, timeline)) continue;
     manuals = mergeTimelineAuthorities(manuals, timeline);

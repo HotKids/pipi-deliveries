@@ -57,6 +57,7 @@ import {
   accountShipmentReusesWaybill,
   applyAccountShipment,
   applyManualShipment,
+  rebaseManualTimelineCaches,
   applySameSourceTimeline,
   applyTargetedAccountShipment,
   asAccountDetailObservation,
@@ -4971,7 +4972,7 @@ async function runShipmentRefreshFlow(
             return { state: latest, shipment: current, refreshed: false };
           }
           // Online completion must be judged against state accepted while the request was pending.
-          refreshed = applyManualShipment(current!, refreshed, Date.now());
+          refreshed = rebaseManualTimelineCaches(current!, refreshed, Date.now());
           enrichmentBase = refreshed;
         }
         const pickerShipment = rejectForeignManualResult(
@@ -5131,7 +5132,7 @@ async function runShipmentRefreshFlow(
               // A provider wait cannot decide paid work using an obsolete status or parcel owner.
               if (!alignmentOwnerCurrent(base, original, latest)) return true;
               const current = latest.shipments.find(item => item.identity.id === original.identity.id)!;
-              accumulated = applyManualShipment(current, enrichmentBase, Date.now());
+              accumulated = rebaseManualTimelineCaches(current, enrichmentBase, Date.now());
             }
             for (const shipment of shipments) {
               accumulated = applyManualShipment(
