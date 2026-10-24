@@ -4963,6 +4963,17 @@ async function runShipmentRefreshFlow(
         }).then(observeManualOutcome);
 
         assertRefreshSignal(signal);
+        if (isShunFengSourceShipment(enrichmentBase)) {
+          const latest = loadState();
+          const current = latest.shipments.find(item => item.identity.id === original.identity.id);
+          if (!alignmentOwnerCurrent(base, original, latest)) {
+            if (!current) throw new Error("该快递已从列表中移除");
+            return { state: latest, shipment: current, refreshed: false };
+          }
+          // Online completion must be judged against state accepted while the request was pending.
+          refreshed = applyManualShipment(current!, refreshed, Date.now());
+          enrichmentBase = refreshed;
+        }
         const pickerShipment = rejectForeignManualResult(
           refreshed,
           pickerOutcome.shipment,
@@ -5115,6 +5126,13 @@ async function runShipmentRefreshFlow(
             !signal?.aborted && !deadlineExpired(deadlineAtMs),
           hasAccumulatedTimelineStart: (shipments) => {
             let accumulated = enrichmentBase;
+            if (isShunFengSourceShipment(enrichmentBase)) {
+              const latest = loadState();
+              // A provider wait cannot decide paid work using an obsolete status or parcel owner.
+              if (!alignmentOwnerCurrent(base, original, latest)) return true;
+              const current = latest.shipments.find(item => item.identity.id === original.identity.id)!;
+              accumulated = applyManualShipment(current, enrichmentBase, Date.now());
+            }
             for (const shipment of shipments) {
               accumulated = applyManualShipment(
                 accumulated,

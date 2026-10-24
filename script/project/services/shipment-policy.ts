@@ -623,7 +623,7 @@ function hasAlignedTimelineStart(input: Shipment, packages: readonly TimelinePac
       .reduce<TimelinePackage | null>((latest, candidate) =>
       !latest || timelineLatestEventAt(candidate) > timelineLatestEventAt(latest) ? candidate : latest, null)
     : accountPresentationReference(shipment);
-  const referenceAt = reference ? timelineLatestEventAt(reference) : 0;
+  const referenceAt = Math.max(reference ? timelineLatestEventAt(reference) : 0, acceptedShunFengStatusAt(shipment));
   if (!(referenceAt > 0 && referenceAt <= now)) return false;
   const selected = selectShipmentDetailTimeline(shipment);
   const expected = shipmentDetailPresentationStatus(shipment, selected).semantic;
@@ -632,7 +632,7 @@ function hasAlignedTimelineStart(input: Shipment, packages: readonly TimelinePac
     normalizeWaybill(timeline.waybill) === waybill &&
     !isForeignManualPackage(shipment, timeline) &&
     detailTimelineIncompleteReason(timeline, reference, expected, terminalAt,
-      containsTimelineStartTrack(timeline.tracks)) === null
+      containsTimelineStartTrack(timeline.tracks), acceptedShunFengStatusAt(shipment), pool.sfManuals) === null
   );
 }
 
@@ -1449,6 +1449,34 @@ function structuredStatusOverride(
   selected: TimelinePackage,
   selectionEvidence?: ShipmentSelectionEvidence,
 ): TimelinePackage {
+  const evidence = selectionEvidence || { historyProvider: selected.provider, headlineProvider: selected.provider,
+    statusProvider: selected.provider, selectionReason: "source_policy" };
+  const resolved = resolveStructuredStatus(shipment, selected, evidence);
+  const accepted = shipment.timeline;
+  const acceptedAt = Number(accepted.statusEventAtMs) || 0;
+  const incomingAt = resolved.statusEventAtMs || 0;
+  if (isShunFengSourceShipment(shipment) && accepted.structuredStatus === true && accepted.semantic !== "UNKNOWN" &&
+      acceptedAt >= 0 && acceptedAt <= Date.now() &&
+      isShunFengManualTimeline({ ...resolved, provider: evidence.statusProvider }) && (incomingAt < acceptedAt ||
+      incomingAt === acceptedAt && resolved.semantic !== accepted.semantic)) {
+    if (selectionEvidence) selectionEvidence.statusProvider = accepted.provider;
+    return { ...resolved, semantic: accepted.semantic, structuredStatus: true,
+      statusEventAtMs: acceptedAt, ...statusProjectionFields(accepted, resolved) };
+  }
+  return resolved;
+}
+
+function acceptedShunFengStatusAt(shipment: Shipment): number {
+  const at = Number(shipment.timeline.statusEventAtMs) || 0;
+  return isShunFengSourceShipment(shipment) && shipment.timeline.structuredStatus === true &&
+    shipment.timeline.semantic !== "UNKNOWN" && at > 0 && at <= Date.now() ? at : 0;
+}
+
+function resolveStructuredStatus(
+  shipment: Shipment,
+  selected: TimelinePackage,
+  selectionEvidence?: ShipmentSelectionEvidence,
+): TimelinePackage {
   if (unprojectedAccountOrder(shipment) &&
       normalizeTimelineSlot(selected.provider) !== TIMELINE_SLOT.V5_QUERY) return selected;
   if (!shipment.identity.manuallyAdded && !isShunFengSourceShipment(shipment)) {
@@ -1746,15 +1774,22 @@ export function shipmentDetailIncompleteReason(input: Shipment): DetailIncomplet
   if (isShunFengSourceShipment(shipment) && selected.semantic !== "COMPLETED" && selected.semantic !== "CANCELLED") {
     return "sf_active";
   }
-  const source = accountPresentationReference(shipment);
-  const sourceAt = source ? timelineLatestEventAt(source) : 0;
+  const sfManuals = isShunFengSourceShipment(shipment) ? detailHistoryCandidates(shipment).sfManuals : [];
+  const source = isShunFengSourceShipment(shipment)
+    ? sfManuals.filter(timeline => timelineLatestEventAt(timeline) > 0 && timelineLatestEventAt(timeline) <= Date.now())
+      .reduce<TimelinePackage | null>((latest, timeline) =>
+        !latest || timelineLatestEventAt(timeline) > timelineLatestEventAt(latest) ? timeline : latest, null)
+    : accountPresentationReference(shipment);
+  const acceptedAt = acceptedShunFengStatusAt(shipment);
+  const sourceAt = Math.max(source ? timelineLatestEventAt(source) : 0, acceptedAt);
   // 没有 feed 作时间基准（纯手动件、feed 没有有效时间）时判不了「到此为止」：只有终态才算完整，
   // 在途的照常允许重拉——beta51 实测 EMS 手动件下拉被当成已完整、100ms 就跳过了。
   if (sourceAt <= 0) {
     if (selected.semantic !== "COMPLETED" && selected.semantic !== "CANCELLED") return "missing_source_time";
     return containsTimelinePickupTrack(selected.tracks) ? null : "missing_pickup";
   }
-  return detailTimelineIncompleteReason(selected, source, expected, terminalAt);
+  return detailTimelineIncompleteReason(selected, source, expected, terminalAt,
+    containsTimelinePickupTrack(selected.tracks), acceptedAt, sfManuals);
 }
 
 function detailTimelineComplete(
@@ -1783,11 +1818,18 @@ function detailTimelineIncompleteReason(
   expectedStatus: StatusSemantic,
   terminalAt: number,
   hasStart = containsTimelinePickupTrack(timeline.tracks),
+  acceptedAt = 0,
+  statusReferences: readonly TimelinePackage[] = [],
 ): DetailIncompleteReason | null {
   const statusReason = timelineStatusIncompleteReason(timeline, expectedStatus, terminalAt);
   if (statusReason) return statusReason;
+  const known = latestTimelineTrackStatuses(timeline.tracks).filter(status => status !== "UNKNOWN");
+  // A newer eligible SF node can disprove an old origin without replacing sticky history or deriving status from prose.
+  if (statusReferences.some(reference => timelineLatestTrackAt(reference) >= timelineLatestTrackAt(timeline) &&
+      latestTimelineTrackStatuses(reference.tracks).some(status => status !== "UNKNOWN" &&
+        known.some(candidate => candidate !== status)))) return "status_mismatch";
   if (!hasStart) return "missing_pickup";
-  const sourceAt = source ? timelineLatestEventAt(source) : 0;
+  const sourceAt = Math.max(source ? timelineLatestEventAt(source) : 0, acceptedAt);
   if (sourceAt <= 0) return null;
   const timelineAt = timelineLatestTrackAt(timeline);
   if (timelineAt <= 0) return "time_mismatch";
@@ -1822,7 +1864,8 @@ export function shipmentDetailCandidateEvidence(input: Shipment, timeline: Timel
     : accountPresentationReference(withoutTemporaryReviews(shipment));
   const incompleteReason = timedTracks(evaluated.tracks).length
     ? detailTimelineIncompleteReason(evaluated, reference,
-        presented.semantic, terminalEvidenceAtMs({ ...shipment, timeline: presented }))
+        presented.semantic, terminalEvidenceAtMs({ ...shipment, timeline: presented }),
+        containsTimelinePickupTrack(evaluated.tracks), acceptedShunFengStatusAt(shipment), pool.sfManuals)
     : "no_tracks";
   return {
     candidateEligible: gateReason === null,
@@ -2009,8 +2052,9 @@ function rankDetailPackages(
     const presented = withSelectedDetailStatus(shipment, timeline);
     // SF/manual selection can advance its own status; other automatic sources retain owner status.
     const expected = presented.semantic;
-    return detailTimelineComplete(view(timeline), completenessSource, expected,
-      terminalEvidenceAtMs({ ...shipment, timeline: presented }));
+    return detailTimelineIncompleteReason(view(timeline), completenessSource, expected,
+      terminalEvidenceAtMs({ ...shipment, timeline: presented }),
+      containsTimelinePickupTrack(view(timeline).tracks), acceptedShunFengStatusAt(shipment), sfManuals) === null;
   };
   const qualities = new Map<TimelinePackage, DetailTimelineQuality>();
   const quality = (timeline: TimelinePackage): DetailTimelineQuality => {
@@ -2044,7 +2088,11 @@ function rankDetailPackages(
     ? finalists.find((timeline) => timeline.provider.trim().toLowerCase() === preferredProvider)
     : undefined;
   if (preferred && preferred !== winner) {
-    return complete(preferred) || !complete(winner)
+    // Older Online coverage cannot replace the newer manual packet already shown for this SF lifecycle.
+    const olderOnline = sourceIsCoarseFallback && normalizeTimelineSlot(winner.provider) === TIMELINE_SLOT.V6_QUERY &&
+      isShunFengManualTimeline(preferred) && normalizeTimelineSlot(preferred.provider) !== TIMELINE_SLOT.V6_QUERY &&
+      latestTrackAt(winner) > 0 && latestTrackAt(winner) < latestTrackAt(preferred);
+    return complete(preferred) || !complete(winner) || olderOnline
       ? [preferred, "sticky_history"]
       : [winner, "complete_replaces_partial"];
   }
@@ -2581,7 +2629,9 @@ function mergeAccountShipmentPackage(
   const candidate: Shipment = {
     ...incoming,
     identity,
-    timeline: mergedSource,
+    timeline: current && isShunFengSourceShipment(current) && !(mergedSource.structuredStatus === true &&
+      mergedSource.semantic !== "UNKNOWN" && (mergedSource.statusEventAtMs || 0) >= (current.timeline.statusEventAtMs || 0))
+      ? current.timeline : mergedSource,
     sourceTimeline: mergedSource,
     manualTimelines: manuals,
     statusPresentation:
@@ -3532,7 +3582,7 @@ function applyManualShipmentInner(
   const candidate: Shipment = {
     ...current,
     identity,
-    timeline: source || incoming.timeline,
+    timeline: isShunFengSourceShipment(current) ? current.timeline : source || incoming.timeline,
     sourceTimeline: source,
     manualTimelines: manuals,
     route,
