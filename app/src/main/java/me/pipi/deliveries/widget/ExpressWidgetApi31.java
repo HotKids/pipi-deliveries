@@ -12,6 +12,10 @@ import me.pipi.deliveries.R;
 final class ExpressWidgetApi31 {
     private ExpressWidgetApi31() {}
 
+    static void applyStatusTextColor(RemoteViews views, int id, int day, int night) {
+        views.setColorInt(id, "setTextColor", day, night);
+    }
+
     static void applyWideRowHeight(RemoteViews views, int rowId, int heightPx) {
         views.setViewLayoutHeight(rowId, heightPx, TypedValue.COMPLEX_UNIT_PX);
     }

@@ -7,6 +7,7 @@ import android.app.Application;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProvider;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -160,6 +161,58 @@ public final class ExpressWidgetHeaderGeometryTest {
         ink.union(inkBounds(row, root.findViewById(R.id.widget_express_detail1)));
         assertEquals("Reappearing details must regain optical alignment", ink.exactCenterY(),
                 bounds(row, logo).exactCenterY(), 1f);
+    }
+
+    @Test @Config(sdk = 35)
+    public void cachedWidgetsResolveStatusToneAgainWhenHostChangesAppearance() throws Exception {
+        Context application = RuntimeEnvironment.getApplication();
+        for (boolean compact : new boolean[]{true, false}) {
+            for (int sourceMode : new int[]{Configuration.UI_MODE_NIGHT_NO, Configuration.UI_MODE_NIGHT_YES}) {
+                Context source = appearance(application, sourceMode);
+                AppWidgetManager manager = AppWidgetManager.getInstance(source);
+                var shadow = Shadows.shadowOf(manager);
+                int layout = compact ? R.layout.express_widget_2x2 : R.layout.express_widget_4x2;
+                int widgetId = shadow.createWidget(NoOpWidgetProvider.class, layout);
+                ExpressItem item = new ExpressItem(1, "", "TEST", "JD", "京东快递",
+                        StatusSemantic.ORDERED, "已下单", DETAIL, "", "[]", "", "interface5", "");
+                Method update = ExpressWidgetProvider.class.getDeclaredMethod(
+                        compact ? "updateCompact" : "updateWide", Context.class,
+                        AppWidgetManager.class, int[].class, List.class);
+                update.setAccessible(true);
+                update.invoke(null, source, manager, new int[]{widgetId}, List.of(item));
+                Map<Integer, ?> infos = ReflectionHelpers.getField(shadow, "widgetInfos");
+                RemoteViews cached = ReflectionHelpers.getField(infos.get(widgetId), "lastRemoteViews");
+                View root = cached.apply(source, new FrameLayout(source));
+                int accent = ExpressWidgetPalette.accent(source, item);
+                for (int hostMode : new int[]{Configuration.UI_MODE_NIGHT_NO, Configuration.UI_MODE_NIGHT_YES}) {
+                    Context host = appearance(application, hostMode);
+                    root.getResources().updateConfiguration(host.getResources().getConfiguration(),
+                            host.getResources().getDisplayMetrics());
+                    cached.reapply(host, root);
+                    TextView status = root.findViewById(compact
+                            ? R.id.widget_priority_status : R.id.widget_express_status1);
+                    assertEquals("A cached widget must resolve the host's current appearance",
+                            ExpressWidgetProvider.statusTextColor(host, item, accent, !compact),
+                            status.getCurrentTextColor());
+                    int surface = host.getColor(R.color.widget_surface);
+                    int tinted = androidx.core.graphics.ColorUtils.compositeColors(
+                            (accent & 0xffffff) | 0x55000000, surface);
+                    for (int background : new int[]{surface, tinted}) {
+                        if (!compact) background = androidx.core.graphics.ColorUtils.compositeColors(
+                                (me.pipi.deliveries.feature.express.ExpressStatusColors.ORDERED & 0xffffff)
+                                        | 0x1a000000, background);
+                        assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
+                                status.getCurrentTextColor(), background) >= 4.5);
+                    }
+                }
+            }
+        }
+    }
+
+    private static Context appearance(Context context, int mode) {
+        Configuration configuration = new Configuration(context.getResources().getConfiguration());
+        configuration.uiMode = (configuration.uiMode & ~Configuration.UI_MODE_NIGHT_MASK) | mode;
+        return context.createConfigurationContext(configuration);
     }
 
     private static RemoteViews wideViews(Context context, int count, int width, String detail) throws Exception {

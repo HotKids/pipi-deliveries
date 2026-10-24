@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
 
 function action(path: string, begin: string, end: string, scope: Record<string, unknown>) {
   const source = readFileSync(new URL(path, import.meta.url), "utf8");
@@ -14,6 +15,7 @@ function action(path: string, begin: string, end: string, scope: Record<string, 
 test("note storage failure is contained and reported without replacing displayed data", async () => {
   let notice = "", published = false;
   const edit = action("../pages/DetailPage.tsx", "async function editNote()", "const [loadingManualDetail", {
+    ShipmentLifecycleChangedError,
     Dialog: { prompt: async () => "Synthetic note" }, shipment: { identity: { id: "synthetic" } },
     setShipmentNote: () => { throw new Error("Synthetic storage failure"); },
     writeDiagnostic: () => {}, diagnosticErrorDetails: () => ({}), setNotice: (value: string) => { notice = value; },

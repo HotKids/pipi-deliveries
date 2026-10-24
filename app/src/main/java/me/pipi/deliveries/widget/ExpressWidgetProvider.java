@@ -7,6 +7,7 @@ import android.appwidget.AppWidgetProvider;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.TextPaint;
@@ -122,8 +123,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                         R.drawable.widget_express_brand_gradient_mask);
                 views.setTextViewText(R.id.widget_priority_status,
                         ExpressWidgetPresentation.statusText(item));
-                views.setTextColor(R.id.widget_priority_status,
-                        statusTextColor(context, item, accent, false));
+                applyStatusTextColor(context, views, R.id.widget_priority_status, item, accent, false);
                 views.setImageViewResource(R.id.widget_compact_courier_logo,
                         item.displayIconResource());
                 views.setTextViewText(R.id.widget_compact_company,
@@ -260,7 +260,8 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         StatusStyle statusStyle = StatusStyle.forSemantic(item.semantic);
         views.setInt(WIDE_STATUS_IDS[index],
                 "setBackgroundResource", statusStyle.background);
-        views.setTextColor(WIDE_STATUS_IDS[index], statusTextColor(context, item, ExpressWidgetPalette.accent(context, items.get(0)), true));
+        applyStatusTextColor(context, views, WIDE_STATUS_IDS[index], item,
+                ExpressWidgetPalette.accent(context, items.get(0)), true);
         views.setTextViewTextSize(WIDE_DETAIL_IDS[index], TypedValue.COMPLEX_UNIT_SP,
                 mediumLayout.detailTextSizeSp);
         views.setInt(WIDE_DETAIL_IDS[index], "setMaxLines", rowLayout.detailMaxLines);
@@ -406,6 +407,22 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
      * 小组件状态胶囊（4×2）与状态词（2×2）的颜色只来自三端同一张表 ExpressStatusColors；
      * 胶囊底色是同一个色的 10% 透明。派送中（绿）与已签收（青）从此不再同色。
      */
+    private static void applyStatusTextColor(Context context, RemoteViews views, int id,
+            ExpressItem item, int accent, boolean badge) {
+        if (Build.VERSION.SDK_INT >= 31) {
+            Configuration appearance = new Configuration(context.getResources().getConfiguration());
+            appearance.uiMode = (appearance.uiMode & ~Configuration.UI_MODE_NIGHT_MASK)
+                    | Configuration.UI_MODE_NIGHT_NO;
+            int day = statusTextColor(context.createConfigurationContext(appearance), item, accent, badge);
+            appearance.uiMode = (appearance.uiMode & ~Configuration.UI_MODE_NIGHT_MASK)
+                    | Configuration.UI_MODE_NIGHT_YES;
+            int night = statusTextColor(context.createConfigurationContext(appearance), item, accent, badge);
+            ExpressWidgetApi31.applyStatusTextColor(views, id, day, night);
+        } else {
+            views.setTextColor(id, statusTextColor(context, item, accent, badge));
+        }
+    }
+
     static int statusTextColor(Context context, ExpressItem item, int accent, boolean badge) {
         int surface = context.getColor(R.color.widget_surface);
         int tinted = androidx.core.graphics.ColorUtils.compositeColors(

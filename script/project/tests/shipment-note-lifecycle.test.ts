@@ -7,7 +7,7 @@ import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import { emptyState, isStoredShipmentRetained, loadState, removeShipment, saveState, setShipmentNote, upsertShipment } from "../services/storage";
 import { absorbAutomaticShipment, applyAccountShipment, applyManualShipment, applyTargetedAccountShipment } from "../services/shipment-policy";
 import { cachedProductImage, productImageCacheKey, pruneProductImages, rememberProductImage } from "../services/product-image-cache";
-import { shipmentLifecycleKey } from "../services/shipment-lifecycle";
+import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { sharedData, withSharedFileTransaction } from "../services/shared-file-transaction";
 
 const clock = Date.now;
@@ -51,7 +51,7 @@ try {
     let submit!: (value: string) => void;
     let published = false, notice = "";
     const edit = Function("scope", `with(scope) { ${action}; return editNote; }`)({
-      EXPRESS_TOAST_COPY, shipment: original, Dialog: { prompt: () => new Promise<string>(resolve => { submit = resolve; }) }, setShipmentNote,
+      EXPRESS_TOAST_COPY, ShipmentLifecycleChangedError, shipment: original, Dialog: { prompt: () => new Promise<string>(resolve => { submit = resolve; }) }, setShipmentNote,
       setShipment: () => { published = true; }, props: {}, requestWidgetReload() {},
       setNotice: (value: string) => { notice = value; }, writeDiagnostic() {}, diagnosticErrorDetails: () => ({}),
     });
@@ -89,7 +89,7 @@ try {
     if (["delete", "reimport", "reuse"].includes(change)) {
       assert.equal(current?.note, change === "delete" ? undefined : "Replacement note", `${change} rejects the stale dialog draft`);
       assert.equal(published, false, `${change} does not report a successful edit`);
-      assert.ok(notice, `${change} remains a recoverable page action`);
+      assert.equal(notice, EXPRESS_TOAST_COPY.userNoteChanged, `${change} asks to reopen the changed parcel instead of retrying the stale dialog`);
       assert.equal(cachedProductImage(key), null, `${change} invalidates the original thumbnail owner`);
     } else {
       assert.equal(current?.note, "Draft from the open dialog", `${change} preserves same-lifecycle editing`);
@@ -103,7 +103,7 @@ try {
     const original = saveState({ ...emptyState(), shipments: [{ ...row(), note: "Existing note" }] }, NOW).shipments[0];
     const notices: string[] = [];
     const edit = Function("scope", `with(scope) { ${action}; return editNote; }`)({
-      EXPRESS_TOAST_COPY, shipment: original, Dialog: { prompt: async () => draft }, setShipmentNote,
+      EXPRESS_TOAST_COPY, ShipmentLifecycleChangedError, shipment: original, Dialog: { prompt: async () => draft }, setShipmentNote,
       setShipment() {}, props: {}, requestWidgetReload() {},
       setNotice: (value: string) => notices.push(value), writeDiagnostic() {}, diagnosticErrorDetails: () => ({}),
     });
