@@ -20,6 +20,7 @@ import java.util.concurrent.Future;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 
 /** Runs the enabled Android manual-query stages and selects their best result. */
 public final class ManualQueryCoordinator {
@@ -210,6 +211,27 @@ public final class ManualQueryCoordinator {
             Function<ExpressQueryResult, Source> primaryKuaidi100,
             Consumer<ExpressQueryResult> onlinePreview, boolean requireStructuredStatus,
             boolean statusOnly, LongSupplier clock) throws Exception {
+        return queryOnlineFirst(online, cachedOnline, local, includeLocal, primaryKuaidi100,
+                onlinePreview, requireStructuredStatus, statusOnly, null, clock);
+    }
+
+    public static Batch queryOnlineFirst(
+            Source online, ManualTimelineAuthorityPolicy.Candidate cachedOnline,
+            Source local, boolean includeLocal,
+            Function<ExpressQueryResult, Source> primaryKuaidi100,
+            Consumer<ExpressQueryResult> preview, boolean requireStructuredStatus,
+            boolean statusOnly, Predicate<ExpressQueryResult> acceptedHistoryAligned) throws Exception {
+        return queryOnlineFirst(online, cachedOnline, local, includeLocal, primaryKuaidi100,
+                preview, requireStructuredStatus, statusOnly, acceptedHistoryAligned, System::currentTimeMillis);
+    }
+
+    private static Batch queryOnlineFirst(
+            Source online, ManualTimelineAuthorityPolicy.Candidate cachedOnline,
+            Source local, boolean includeLocal,
+            Function<ExpressQueryResult, Source> primaryKuaidi100,
+            Consumer<ExpressQueryResult> onlinePreview, boolean requireStructuredStatus,
+            boolean statusOnly, Predicate<ExpressQueryResult> acceptedHistoryAligned,
+            LongSupplier clock) throws Exception {
         ArrayList<Success> newSuccesses = new ArrayList<>();
         ArrayList<Success> selectionSuccesses = new ArrayList<>();
         ExpressQueryResult bestEffort = null;
@@ -250,7 +272,9 @@ public final class ManualQueryCoordinator {
 
         // Only the refreshed same-provider Online history can close its stage before primary
         // providers start. An existing cache never skips the Online refresh itself.
-        if (online != null && effectiveOnline != null && (statusOnly
+        boolean historyAligned = acceptedHistoryAligned == null
+                || acceptedHistoryAligned.test(effectiveOnline == null ? null : effectiveOnline.result);
+        if (online != null && effectiveOnline != null && historyAligned && (statusOnly
                 ? ManualTimelineAuthorityPolicy.hasStructuredStatus(effectiveOnline.result)
                 : ManualTimelineAuthorityPolicy.timelineStartAligned(effectiveOnline.result, 0L)
                 && (!requireStructuredStatus

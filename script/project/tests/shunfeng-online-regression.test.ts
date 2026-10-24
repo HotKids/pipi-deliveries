@@ -163,6 +163,34 @@ test(`the SF completeness reference validates the current-clock boundary ${accep
   assert.equal(hasPickerTimelineStart(before), acceptedAt > NOW);
   assert.equal(hasTimelineStartBeforeKdniao(before), acceptedAt > NOW);
 });
+for (const futureNode of [false, true]) test(`SF reference excludes future evidence while raw sticky ordering stays unchanged (future node: ${futureNode})`, () => {
+  const cached = { ...packet("k100_h5", old, "TRANSIT"), statusEventAtMs: NOW + 60_000 };
+  if (futureNode) {
+    cached.tracks.unshift({ ...packet("k100_h5", NOW + 60_000, "TRANSIT").tracks[0]!, statusCode: "" });
+    cached.latestTimeText = String(NOW + 60_000);
+  }
+  const online = packet("v6_query", recent, "TRANSIT", true);
+  const before = row(cached);
+  before.manualTimelines = [cached, online];
+  assert.equal(selectShipmentDetailTimeline(before).provider, futureNode ? "k100_h5" : "v6_query");
+  assert.equal(hasPickerTimelineStart(before), true);
+  assert.equal(shipmentDetailCandidateEvidence(before, online).detailComplete, true);
+  assert.equal(cached.statusEventAtMs, NOW + 60_000);
+});
+test("SF stop checks retain valid newer nodes beneath a future provider node", () => {
+  const cached = packet("k100_h5", NOW + 60_000, "TRANSIT");
+  cached.tracks = [
+    { ...cached.tracks[0]!, statusCode: "" },
+    { ...packet("k100_h5", recent, "TRANSIT").tracks[0]!, statusCode: "" },
+  ];
+  const online = packet("v6_query", recent - 60 * 60_000, "TRANSIT", true);
+  const before = row(cached);
+  before.manualTimelines = [cached, online];
+  assert.equal(hasPickerTimelineStart(before), false);
+  assert.equal(hasTimelineStartBeforeKdniao(before), false);
+  assert.equal(shipmentDetailCandidateEvidence(before, online).incompleteReason, "time_mismatch");
+  assert.equal(cached.tracks[0]!.timeMs, NOW + 60_000);
+});
 test("a future accepted signing preserves terminal status without certifying transit history", () => {
   const before = row(packet("kdniao", NOW + 1, "COMPLETED"));
   before.manualTimelines = [];
@@ -207,6 +235,28 @@ test("an ordinary old account snapshot cannot reset the accepted manual state ba
   const after = applyTargetedAccountShipment(before, { ...before, timeline: feed, sourceTimeline: feed, manualTimelines: [] }, NOW);
   assert.equal(after.timeline.semantic, "DELIVERY");
   assert.equal(after.timeline.statusEventAtMs, recent);
+});
+test("an old account snapshot cannot reset accepted SF state when manual caches are absent", () => {
+  const before = row();
+  before.manualTimelines = [];
+  const feed = packet("interface5", old, "TRANSIT");
+  const after = applyTargetedAccountShipment(before,
+    { ...before, timeline: feed, sourceTimeline: feed, manualTimelines: [] }, NOW);
+  assert.equal(after.timeline.semantic, "DELIVERY");
+  assert.equal(after.timeline.statusEventAtMs, recent);
+  assert.deepEqual(after.manualTimelines, [], "accepted status does not fabricate provider caches");
+  assert.equal(after.sourceTimeline?.statusEventAtMs, old, "raw account evidence stays independent");
+});
+for (const acceptedAt of [recent, NOW + 1])
+test(`account state can advance without manual caches from accepted clock ${acceptedAt}`, () => {
+  const before = row(packet("kdniao", acceptedAt, "DELIVERY"));
+  before.manualTimelines = [];
+  const feed = packet("interface5", recent + 1, "TRANSIT");
+  const after = applyTargetedAccountShipment(before,
+    { ...before, timeline: feed, sourceTimeline: feed, manualTimelines: [] }, NOW);
+  assert.equal(after.timeline.semantic, "TRANSIT");
+  assert.equal(after.timeline.statusEventAtMs, recent + 1);
+  assert.deepEqual(after.manualTimelines, []);
 });
 for (const lag of [30 * 60_000, 30 * 60_000 + 1]) test(`SF stop gate includes accepted status clock at lag ${lag}`, () => {
   const online = packet("v6_query", recent - lag, "DELIVERY", true);

@@ -314,6 +314,197 @@ public class ExpressAutomaticDetailPersistenceTest {
         assertEquals("feed运输中", repository.find(owner.rowId).latestDetail);
     }
 
+    @Test public void shunFengOldOnlineCannotReplaceAcceptedK100Pair() {
+        assertShunFengOnlineRetained("SFOLDONLINE", "2026-09-10 07:32:00");
+    }
+
+    @Test public void shunFengSameClockConflictCannotReplaceAcceptedK100Pair() {
+        assertShunFengOnlineRetained("SFSAMEONLINE", "2026-09-10 07:50:00");
+    }
+
+    private void assertShunFengOnlineRetained(String id, String onlineAt) {
+        ExpressItem owner = owner(id, "ShunFeng", "interface5", false);
+        ExpressQueryResult accepted = sfEvent(id, TimelineSlot.K100_H5,
+                "2026-09-10 07:50:00", StatusSemantic.DELIVERY, false);
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.K100_H5, accepted, 100L, false)),
+                PHONE, "interface5");
+        repository.rememberDetailSelection(owner, TimelineSlot.K100_H5);
+        ExpressRepository.ManualQueryOwnerClaim inFlight = repository.captureManualQueryOwner(owner);
+        ExpressQueryResult online = sfEvent(id, TimelineSlot.V6_QUERY, onlineAt, StatusSemantic.TRANSIT, true);
+        repository.saveOwnerManualQueryBatch(owner, inFlight,
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, online, 200L, true)),
+                PHONE, "interface5");
+        ExpressRepository reopened = new ExpressRepository(context, database);
+        ExpressItem shown = reopened.find(owner.rowId);
+        assertEquals(StatusSemantic.DELIVERY, shown.semantic);
+        assertEquals(accepted.statusEventTime, shown.statusEventTime);
+        assertEquals(accepted.latestDetail, shown.latestDetail);
+        assertEquals(TimelineSlot.K100_H5, reopened.manualDetailTimelineAuthority(owner).provider);
+        assertEquals(accepted.tracksJson, reopened.manualTimelineCandidate(owner, TimelineSlot.K100_H5).result.tracksJson);
+        assertEquals(online.tracksJson, reopened.manualTimelineCandidate(owner, TimelineSlot.V6_QUERY).result.tracksJson);
+        assertEquals(StatusSemantic.TRANSIT, reopened.manualTimelineCandidate(owner, TimelineSlot.V6_QUERY).result.semantic);
+        assertEquals(200L, reopened.manualTimelineAuthority(owner).successAt);
+        assertEquals(TIME, reopened.automaticSourceTimeline(owner).latestTime);
+    }
+
+    @Test public void shunFengFutureAcceptedCacheCannotPoisonValidHistoryReference() {
+        ExpressItem owner = owner("SFFUTURECACHE", "ShunFeng", "interface5", false);
+        ExpressQueryResult packet = sfEvent(owner.waybill, TimelineSlot.K100_H5,
+                "2026-09-10 07:32:00", StatusSemantic.DELIVERY, false);
+        long future = System.currentTimeMillis() + 86_400_000L;
+        ExpressQueryResult accepted = new ExpressQueryResult(packet.waybill, packet.courierCode,
+                packet.companyName, packet.semantic, future, packet.latestTime, packet.latestDetail,
+                packet.tracksJson, "", PHONE, packet.timelineProvider, "", "", "")
+                .withManualStatusEvidence(packet.statusDescription, true);
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.K100_H5, accepted, 100L, false)), PHONE, "interface5");
+        repository.rememberDetailSelection(owner, TimelineSlot.K100_H5);
+        ExpressQueryResult valid = sfEvent(owner.waybill, TimelineSlot.V6_QUERY,
+                "2026-09-10 07:50:00", StatusSemantic.TRANSIT, true);
+        assertTrue(repository.shunFengOnlineHistoryAligned(owner, repository.captureManualQueryOwner(owner), valid));
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, valid, 200L, true)), PHONE, "interface5");
+        assertEquals(TimelineSlot.V6_QUERY, repository.manualDetailTimelineAuthority(owner).provider);
+        assertEquals(StatusSemantic.TRANSIT, repository.find(owner.rowId).semantic);
+        assertEquals(valid.statusEventTime, repository.find(owner.rowId).statusEventTime);
+        assertEquals(future, repository.manualTimelineCandidate(owner, TimelineSlot.K100_H5).result.statusEventTime);
+    }
+
+    @Test public void shunFengHistoryReferenceRetainsValidNodesBeneathAFutureNode() {
+        ExpressItem owner = owner("SFFUTURENODE", "ShunFeng", "interface5", false);
+        long future = System.currentTimeMillis() + 86_400_000L;
+        String futureText = java.time.Instant.ofEpochMilli(future).atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        String tracks = "[{\"time\":\"" + futureText + "\",\"context\":\"Future provider node\"},"
+                + "{\"time\":\"2026-09-10 10:00:00\",\"context\":\"Current provider node\"}]";
+        ExpressQueryResult cached = new ExpressQueryResult(owner.waybill, "SF", "SF Express",
+                StatusSemantic.DELIVERY, future, futureText, "Future provider node", tracks,
+                "", PHONE, TimelineSlot.K100_H5, "", "", "").withManualStatusEvidence("Delivery", true);
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.K100_H5, cached, 100L, false)), PHONE, "interface5");
+        repository.rememberDetailSelection(owner, TimelineSlot.K100_H5);
+        ExpressQueryResult old = sfEvent(owner.waybill, TimelineSlot.V6_QUERY,
+                "2026-09-10 08:00:00", StatusSemantic.TRANSIT, true);
+        assertFalse(repository.shunFengOnlineHistoryAligned(owner, repository.captureManualQueryOwner(owner), old));
+        assertEquals(tracks, repository.manualTimelineCandidate(owner, TimelineSlot.K100_H5).result.tracksJson);
+        assertEquals(future, repository.manualTimelineCandidate(owner, TimelineSlot.K100_H5).result.statusEventTime);
+    }
+
+    @Test public void shunFengStatusReferenceUsesTheValidSiblingBelowAFutureNode() {
+        for (boolean validConflict : new boolean[]{false, true}) {
+            ExpressItem owner = owner("SFFUTURESTATUS" + validConflict, "ShunFeng", "interface5", false);
+            long future = System.currentTimeMillis() + 86_400_000L;
+            String futureText = java.time.Instant.ofEpochMilli(future).atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            String tracks = "[{\"time\":\"" + futureText + "\",\"context\":\"Future node\",\"statusCode\":\""
+                    + (validConflict ? "0" : "5") + "\"},"
+                    + "{\"time\":\"2026-09-10 08:00:00\",\"context\":\"Current node\",\"statusCode\":\""
+                    + (validConflict ? "5" : "0") + "\"}]";
+            ExpressQueryResult cached = new ExpressQueryResult(owner.waybill, "SF", "SF Express",
+                    StatusSemantic.TRANSIT, future, futureText, "Future node", tracks,
+                    "", PHONE, TimelineSlot.K100_H5, "", "", "").withManualStatusEvidence("Transit", true);
+            repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                    java.util.List.of(new ManualQuerySuccess(TimelineSlot.K100_H5, cached, 100L, false)), PHONE, "interface5");
+            repository.rememberDetailSelection(owner, TimelineSlot.K100_H5);
+            ExpressQueryResult online = sfEvent(owner.waybill, TimelineSlot.V6_QUERY,
+                    "2026-09-10 08:00:00", StatusSemantic.TRANSIT, true);
+            assertEquals(!validConflict,
+                    repository.shunFengOnlineHistoryAligned(owner, repository.captureManualQueryOwner(owner), online));
+            assertEquals(tracks, repository.manualTimelineCandidate(owner, TimelineSlot.K100_H5).result.tracksJson);
+        }
+    }
+
+    @Test public void shunFengCandidateDiagnosticsUseTheAcceptedPairCompleteness() {
+        ExpressItem owner = owner("SFDIAGNOSTICPAIR", "ShunFeng", "interface5", false);
+        ExpressQueryResult accepted = sfEvent(owner.waybill, TimelineSlot.K100_H5,
+                "2026-09-10 07:50:00", StatusSemantic.DELIVERY, true);
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.K100_H5, accepted, 100L, true)), PHONE, "interface5");
+        repository.rememberDetailSelection(owner, TimelineSlot.K100_H5);
+        ExpressQueryResult online = sfEvent(owner.waybill, TimelineSlot.V6_QUERY,
+                "2026-09-10 07:50:00", StatusSemantic.TRANSIT, true);
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, online, 200L, true)), PHONE, "interface5");
+        org.robolectric.shadows.ShadowLog.clear();
+        assertEquals(TimelineSlot.K100_H5, repository.manualDetailTimelineAuthority(owner).provider);
+        String line = org.robolectric.shadows.ShadowLog.getLogs().stream()
+                .map(item -> item.msg).filter(value -> value.contains(" detail.timeline.candidate ")
+                        && value.contains(" timelineProvider=v6_query ")).findFirst().orElseThrow();
+        assertTrue(line, line.contains(" detailComplete=false "));
+        assertTrue(line, line.contains(" incompleteReason=status_mismatch "));
+        assertTrue(line, line.contains(" statusSemantic=TRANSIT "));
+    }
+
+    @Test public void shunFengOwnerChangeDuringOnlineStopsBeforeStartingPrimary() throws Exception {
+        for (boolean rebind : new boolean[]{false, true}) for (boolean resultPresent : new boolean[]{false, true}) {
+            repository.bindPhoneLocally(PHONE, "interface5");
+            ExpressItem owner = owner("SFOWNERWAIT" + rebind + resultPresent, "ShunFeng", "interface5", false);
+            ExpressRepository.ManualQueryOwnerClaim claim = repository.captureManualQueryOwner(owner);
+            ExpressQueryResult online = sfEvent(owner.waybill, TimelineSlot.V6_QUERY,
+                    "2026-09-10 08:00:00", StatusSemantic.TRANSIT, true);
+            AtomicInteger primaryCalls = new AtomicInteger();
+            assertThrows(java.util.concurrent.CancellationException.class, () ->
+                    me.pipi.deliveries.network.ManualQueryCoordinator.queryOnlineFirst(() -> {
+                        if (rebind) {
+                            repository.unbindPhone(PHONE, "interface5");
+                            repository.bindPhoneLocally(PHONE, "interface5");
+                        } else repository.delete(owner.rowId);
+                        return resultPresent ? online : null;
+                    }, null, null, false, partial -> () -> {
+                        primaryCalls.incrementAndGet();
+                        return online;
+                    }, null, true, false, partial -> repository.shunFengOnlineHistoryAligned(owner, claim, partial)));
+            assertEquals(0, primaryCalls.get());
+        }
+    }
+
+    @Test public void shunFengOnlineWaitRechecksAcceptedStateBeforePreviewAndStopping() throws Exception {
+        ExpressItem owner = owner("SFONLINEWAIT", "ShunFeng", "interface5", false);
+        ExpressRepository.ManualQueryOwnerClaim claim = repository.captureManualQueryOwner(owner);
+        ExpressQueryResult accepted = sfEvent(owner.waybill, TimelineSlot.K100_H5,
+                "2026-09-10 07:50:00", StatusSemantic.DELIVERY, false);
+        ExpressQueryResult old = sfEvent(owner.waybill, TimelineSlot.V6_QUERY,
+                "2026-09-10 07:32:00", StatusSemantic.TRANSIT, true);
+        AtomicInteger primaryCalls = new AtomicInteger();
+        java.util.ArrayList<ExpressQueryResult> previews = new java.util.ArrayList<>();
+        me.pipi.deliveries.network.ManualQueryCoordinator.Batch batch =
+                me.pipi.deliveries.network.ManualQueryCoordinator.queryOnlineFirst(() -> {
+                    repository.saveOwnerManualQueryBatch(owner, claim, java.util.List.of(
+                            new ManualQuerySuccess(TimelineSlot.K100_H5, accepted, 100L, false)), PHONE, "interface5");
+                    repository.rememberDetailSelection(owner, TimelineSlot.K100_H5);
+                    return old;
+                }, null, null, false, online -> () -> {
+                    primaryCalls.incrementAndGet();
+                    return accepted;
+                }, partial -> previews.add(repository.manualQueryPreview(owner, claim, partial)),
+                true, false, online -> repository.shunFengOnlineHistoryAligned(owner, claim, online));
+        assertEquals(1, primaryCalls.get());
+        assertFalse(previews.isEmpty());
+        for (ExpressQueryResult preview : previews) {
+            assertNotNull(preview);
+            assertEquals(StatusSemantic.DELIVERY, preview.semantic);
+            assertEquals(accepted.statusEventTime, preview.statusEventTime);
+            assertEquals(accepted.latestDetail, preview.latestDetail);
+        }
+        assertNull("A preview cannot persist an Online cache", repository.manualTimelineCandidate(owner, TimelineSlot.V6_QUERY));
+        repository.saveOwnerManualQueryBatch(owner, claim, batch.successes, PHONE, "interface5");
+        assertEquals(StatusSemantic.DELIVERY, repository.find(owner.rowId).semantic);
+        assertEquals(old.tracksJson, repository.manualTimelineCandidate(owner, TimelineSlot.V6_QUERY).result.tracksJson);
+    }
+
+    private static ExpressQueryResult sfEvent(String id, String provider, String time,
+            StatusSemantic semantic, boolean pickup) {
+        String code = semantic == StatusSemantic.DELIVERY ? "5" : "0";
+        String detail = "Synthetic " + semantic;
+        String nodes = "[{\"time\":\"" + time + "\",\"context\":\"" + detail
+                + "\",\"statusCode\":\"" + code + "\"}"
+                + (pickup ? ",{\"time\":\"2026-09-09 09:00:00\",\"context\":\"已揽收\",\"statusCode\":\"1\"}" : "") + "]";
+        return new ExpressQueryResult(id, "SF", "SF Express", semantic,
+                ExpressSourcePolicy.parseEventTime(time), time, detail, nodes,
+                "", PHONE, provider, "", "", "").withManualStatusEvidence(semantic.label, true);
+    }
+
     @Test public void shunFengFreshEligiblePackageCanReplaceAnOldStickyDetail() {
         ExpressItem owner = owner("SFFRESH000001", "ShunFeng", "interface5", false);
         ExpressQueryResult old = detailPackage(owner.waybill, TimelineSlot.V6_QUERY,

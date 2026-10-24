@@ -3222,6 +3222,71 @@ public final class ExpressRepository {
         return "";
     }
 
+    public static final class ManualQueryOwnerChangedException extends java.util.concurrent.CancellationException {
+        public ManualQueryOwnerChangedException() { super("Manual query owner changed"); }
+    }
+
+    /** Rechecks the accepted pair after Online returns; no response is persisted by this gate. */
+    public synchronized boolean shunFengOnlineHistoryAligned(ExpressItem expected,
+            ManualQueryOwnerClaim claim, ExpressQueryResult online) {
+        ExpressItem current = expected == null ? null : findManualOwner(expected.rowId);
+        if (!sameOwnerIdentity(current, expected) || claim == null
+                || !manualQueryOwnerClaimMatches(database(), current, claim)) {
+            throw new ManualQueryOwnerChangedException();
+        }
+        if (!current.isShunFengSource()) return true;
+        List<ManualTimelineAuthorityPolicy.Candidate> stored = eligibleManualCandidates(current,
+                manualTimelineCandidates(database(), current));
+        ExpressItem accepted = sfAcceptedOwner(current, stored, preferredDetailProvider(current));
+        List<ManualTimelineAuthorityPolicy.Candidate> candidates = sfQueryCandidates(stored, online);
+        long reference = accepted.statusEventTime > 0L
+                && accepted.statusEventTime <= System.currentTimeMillis() ? accepted.statusEventTime : 0L;
+        for (ManualTimelineAuthorityPolicy.Candidate candidate : candidates) {
+            reference = Math.max(reference, sfHistoryReference(candidate.result));
+        }
+        for (ManualTimelineAuthorityPolicy.Candidate candidate : candidates) {
+            if (TimelineSlot.V6_QUERY.equals(candidate.provider)) {
+                return ManualTimelineAuthorityPolicy.timelineStartAligned(
+                        sfPresentation(accepted, candidate, candidates).result, reference)
+                        && !sfLatestNodeConflict(candidate.result, candidates);
+            }
+        }
+        return false;
+    }
+
+    /** Existing SF rows preview the same independently ranked packets as their saved detail. */
+    public synchronized ExpressQueryResult manualQueryPreview(ExpressItem expected,
+            ManualQueryOwnerClaim claim, ExpressQueryResult incoming) {
+        if (expected == null || !expected.isShunFengSource()) return incoming;
+        ExpressItem current = findManualOwner(expected.rowId);
+        if (!sameOwnerIdentity(current, expected) || claim == null
+                || !manualQueryOwnerClaimMatches(database(), current, claim)) return null;
+        List<ManualTimelineAuthorityPolicy.Candidate> stored = eligibleManualCandidates(current,
+                manualTimelineCandidates(database(), current));
+        ExpressItem accepted = sfAcceptedOwner(current, stored, preferredDetailProvider(current));
+        List<ManualTimelineAuthorityPolicy.Candidate> candidates = sfQueryCandidates(stored, incoming);
+        ManualTimelineAuthorityPolicy.Candidate selected = selectDetailTimelineDecision(
+                accepted, candidates, null, 0L).candidate;
+        return selected == null ? null : sfPresentation(accepted, selected, candidates).result;
+    }
+
+    private static List<ManualTimelineAuthorityPolicy.Candidate> sfQueryCandidates(
+            List<ManualTimelineAuthorityPolicy.Candidate> stored, ExpressQueryResult incoming) {
+        ArrayList<ManualTimelineAuthorityPolicy.Candidate> candidates = new ArrayList<>(stored);
+        if (incoming == null) return candidates;
+        ManualTimelineAuthorityPolicy.Candidate response = new ManualTimelineAuthorityPolicy.Candidate(
+                incoming.timelineProvider, incoming, Math.max(1L, System.currentTimeMillis()), false);
+        for (int i = 0; i < candidates.size(); i++) {
+            ManualTimelineAuthorityPolicy.Candidate candidate = candidates.get(i);
+            if (candidate.provider.equals(response.provider)) {
+                candidates.set(i, ManualTimelineAuthorityPolicy.mergeSameProvider(candidate, response));
+                return candidates;
+            }
+        }
+        if (ManualTimelineAuthorityPolicy.isAuthoritative(response)) candidates.add(response);
+        return candidates;
+    }
+
     /** Returns one exact provider cache without exposing a mixed timeline package. */
     public synchronized ManualTimelineAuthorityPolicy.Candidate manualTimelineCandidate(
             ExpressItem expectedOwner, String provider) {
@@ -3333,20 +3398,22 @@ public final class ExpressRepository {
         List<ManualTimelineAuthorityPolicy.Candidate> candidates = manualTimelineCandidates(db, current);
         ManualTimelineAuthorityPolicy.DetailDecision decision = selectDetailTimelineDecision(
                 current, candidates, query, querySuccessAt);
-        if (logSelection) logDetailSelection(current, candidates, query, decision.candidate, decision.reason);
+        if (logSelection) logDetailSelection(current, candidates, query, decision);
         return decision;
     }
 
     private void logDetailSelection(ExpressItem owner,
             List<ManualTimelineAuthorityPolicy.Candidate> stored, ExpressQueryResult query,
-            ManualTimelineAuthorityPolicy.Candidate selected, String selectionReason) {
+            ManualTimelineAuthorityPolicy.DetailDecision decision) {
         if (!ExpressLog.hasScope()) {
             try (ExpressLog.Scope ignored = ExpressLog.scope(ExpressLog.newFlowId("detail"), "cache_read",
                     "interface5".equals(ExpressSourcePolicy.bindingSourceForOwner(owner.stateOwner)) ? "v5" : "v6")) {
-                logDetailSelection(owner, stored, query, selected, selectionReason);
+                logDetailSelection(owner, stored, query, decision);
             }
             return;
         }
+        ManualTimelineAuthorityPolicy.Candidate selected = decision.candidate;
+        String selectionReason = decision.reason;
         String sourceProvider = ExpressLog.source(owner.sourceProvider, owner.manuallyAdded);
         String feedProvider = "interface5".equals(ExpressSourcePolicy.bindingSourceForOwner(
                 owner.stateOwner.isEmpty() ? owner.source : owner.stateOwner)) ? "v5_list" : TimelineSlot.V6_LIST;
@@ -3364,12 +3431,26 @@ public final class ExpressRepository {
         boolean accountPresentation = !owner.manuallyAdded && !owner.isShunFengSource();
         ExpressQueryResult accountStatus = accountPresentation ? accountStatusPresentation(owner, query) : null;
         if (accountPresentation) reference = accountHistoryReference(feed, candidates);
+        ExpressItem sfOwner = sfManual ? sfAcceptedOwner(owner, eligible, preferredDetailProvider(owner)) : owner;
+        if (sfManual) {
+            reference = sfOwner.statusEventTime > 0L && sfOwner.statusEventTime <= System.currentTimeMillis()
+                    ? sfOwner.statusEventTime : 0L;
+            for (ManualTimelineAuthorityPolicy.Candidate candidate : eligible) {
+                reference = Math.max(reference, sfHistoryReference(candidate.result));
+            }
+        }
         for (ManualTimelineAuthorityPolicy.Candidate candidate : candidates) {
             if (candidate == null || candidate.result == null) continue;
             ExpressQueryResult result = candidate.result;
-            ExpressQueryResult quality = accountPresentation
-                    ? ManualTimelineAuthorityPolicy.automaticPresentationResult(result, accountStatus, candidates)
-                    : ManualTimelineAuthorityPolicy.presentationResult(result, candidates);
+            boolean sfCandidate = sfManual && ManualTimelineAuthorityPolicy.isShunFengManualCandidate(candidate);
+            ExpressQueryResult quality = sfCandidate ? sfPresentation(sfOwner, candidate, eligible).result
+                    : accountPresentation
+                        ? ManualTimelineAuthorityPolicy.automaticPresentationResult(result, accountStatus, candidates)
+                        : ManualTimelineAuthorityPolicy.presentationResult(result, candidates);
+            boolean detailComplete = sfCandidate ? decision.rankedComplete(candidate.provider)
+                    : ManualTimelineAuthorityPolicy.detailTimelineComplete(quality, reference);
+            String incompleteReason = ManualTimelineAuthorityPolicy.detailTimelineIncompleteReason(quality, reference);
+            if (sfCandidate && !detailComplete && incompleteReason == null) incompleteReason = "status_mismatch";
             boolean usable = Kuaidi100TimelinePolicy.hasTimedTracking(result);
             available++;
             String gateReason = !usable ? "no_tracks"
@@ -3391,8 +3472,8 @@ public final class ExpressRepository {
                     "latestTrackAtMs", Kuaidi100TimelinePolicy.latestTimedEventMillis(result),
                     "latestEventAtMs", ManualTimelineAuthorityPolicy.latestEventTime(result),
                     "effectiveTrackCount", Kuaidi100TimelinePolicy.timedTrackCount(result),
-                    "detailComplete", ManualTimelineAuthorityPolicy.detailTimelineComplete(quality, reference),
-                    "incompleteReason", ManualTimelineAuthorityPolicy.detailTimelineIncompleteReason(quality, reference),
+                    "detailComplete", detailComplete,
+                    "incompleteReason", incompleteReason,
                     "hasPickup", Kuaidi100TimelinePolicy.hasPickupEvidence(result),
                     "candidateEligible", gateReason == null, "gateReason", gateReason,
                     "cainiaoFallbackActive", cainiaoActive,
@@ -3411,6 +3492,10 @@ public final class ExpressRepository {
         String provider = selected == null ? feedProvider : selected.provider;
         ManualTimelineAuthorityPolicy.Candidate statusPresentation = ManualTimelineAuthorityPolicy.selectForOwner(
                 eligible, owner.manuallyAdded, preferredDetailProvider(owner));
+        if (owner.isShunFengSource() && selected != null) {
+            owner = sfAcceptedOwner(owner, eligible, preferredDetailProvider(owner));
+            statusPresentation = sfPresentation(owner, selected, eligible);
+        }
         ManualTimelineAuthorityPolicy.Candidate status = statusPresentationAuthority(owner,
                 selectStatusAuthority(owner, eligible, query, statusPresentation), statusPresentation);
         boolean borrowed = hasStructuredStatus(status)
@@ -3481,17 +3566,27 @@ public final class ExpressRepository {
         if (stored != null) candidates.addAll(stored);
         if (current.isShunFengSource()) {
             ArrayList<ManualTimelineAuthorityPolicy.Candidate> manuals = new ArrayList<>();
-            long latestManualEvent = 0L;
+            long latestManualEvent = current.statusEventTime > 0L
+                    && current.statusEventTime <= System.currentTimeMillis() ? current.statusEventTime : 0L;
             for (ManualTimelineAuthorityPolicy.Candidate candidate : candidates) {
                 if (!ManualTimelineAuthorityPolicy.isShunFengManualCandidate(candidate)) continue;
                 manuals.add(candidate);
                 latestManualEvent = Math.max(latestManualEvent,
-                        ManualTimelineAuthorityPolicy.latestEventTime(candidate.result));
+                        sfHistoryReference(candidate.result));
+            }
+            ExpressItem accepted = sfAcceptedOwner(current, manuals, preferred);
+            Map<String, ManualTimelineAuthorityPolicy.Candidate> histories = new LinkedHashMap<>();
+            Map<String, Boolean> complete = new LinkedHashMap<>();
+            for (ManualTimelineAuthorityPolicy.Candidate candidate : manuals) {
+                histories.put(candidate.provider, candidate);
+                ExpressQueryResult presentation = sfPresentation(accepted, candidate, manuals).result;
+                complete.put(candidate.provider, ManualTimelineAuthorityPolicy.detailTimelineComplete(
+                        presentation, latestManualEvent) && !sfLatestNodeConflict(candidate.result, manuals));
             }
             ManualTimelineAuthorityPolicy.DetailDecision manual =
-                    ManualTimelineAuthorityPolicy.selectDetailDecision(manuals, latestManualEvent, preferred);
+                    ManualTimelineAuthorityPolicy.selectDetailDecision(histories, complete, preferred);
             if (manual.candidate != null) return new ManualTimelineAuthorityPolicy.DetailDecision(manual.candidate,
-                    "only_eligible_history".equals(manual.reason) ? "sf_manual_history" : manual.reason);
+                    "only_eligible_history".equals(manual.reason) ? "sf_manual_history" : manual.reason, complete);
             candidates.removeIf(candidate -> candidate == null
                     || !TimelineSlot.isAccount(candidate.provider)
                     && !TimelineSlot.isAutomaticH5(candidate.provider));
@@ -7381,6 +7476,10 @@ public final class ExpressRepository {
                 || isAutomaticAccountOwner(owner.stateOwner.isEmpty() ? owner.source : owner.stateOwner)
                 && !Kuaidi100TimelinePolicy.hasTimedTracking(sourcePackage(owner))
                 ? selectDetailTimeline(owner, candidates, query, 1L) : null;
+        if (owner.isShunFengSource() && displayed != null) {
+            owner = sfAcceptedOwner(owner, candidates, preferred);
+            statusPresentation = sfPresentation(owner, displayed, candidates);
+        }
         ManualTimelineAuthorityPolicy.Candidate statusAuthority =
                 selectStatusAuthority(owner, candidates, query, statusPresentation);
         TimelineProjection presented = projectManualTimelineProjection(owner,
@@ -7839,6 +7938,9 @@ public final class ExpressRepository {
         }
         ExpressTimeline.Track latest = latestTimedTrack(authority.result);
         if (latest == null) return feedProjection(owner);
+        boolean retainedSfStatus = owner.isShunFengSource() && hasStructuredStatus(statusAuthority)
+                && rejectsSfStatus(owner, statusAuthority.result);
+        if (retainedSfStatus) statusAuthority = null;
         StatusSemantic manualSemantic = hasStructuredStatus(statusAuthority)
                 ? statusAuthority.result.semantic : StatusSemantic.UNKNOWN;
         boolean takeStructuredStatus = manualSemantic != StatusSemantic.UNKNOWN
@@ -7868,7 +7970,7 @@ public final class ExpressRepository {
         boolean unstructuredH5 = !hasStructuredStatus(descriptionAuthority)
                 && (TimelineSlot.K100_H5.equals(TimelineSlot.normalize(descriptionAuthority.provider))
                 || TimelineSlot.isAutomaticH5(descriptionAuthority.provider));
-        String statusDescription = descriptionAuthority.providerErrorMetadataInvalidated || unstructuredH5
+        String statusDescription = retainedSfStatus || descriptionAuthority.providerErrorMetadataInvalidated || unstructuredH5
                 || isInterface5Automatic(owner) && !owner.isShunFengSource()
                 ? owner.statusDescription : descriptionAuthority.result.statusDescription;
         ExpressItem presented = new ExpressItem(
@@ -7885,6 +7987,87 @@ public final class ExpressRepository {
                 authority.provider, authority.successAt, owner.sourceSemantic,
                 owner.carrierNormalization, owner.signedRetainedAt);
         return new TimelineProjection(presented, headlineNode(presented, headlinePacket, false));
+    }
+
+    private static long sfHistoryReference(ExpressQueryResult result) {
+        long now = System.currentTimeMillis();
+        long statusAt = result.statusEventTime;
+        return Math.max(statusAt > 0L && statusAt <= now ? statusAt : 0L, sfLatestReferenceTrackAt(result, now));
+    }
+
+    private static long sfLatestReferenceTrackAt(ExpressQueryResult result, long now) {
+        long reference = 0L;
+        for (ExpressTimeline.Track track : ExpressTimeline.parse(result.tracksJson, "", "")) {
+            if (!ExpressStatusNormalizer.isProviderErrorDetail(track.detail)
+                    && track.epochMillis > reference && track.epochMillis <= now) reference = track.epochMillis;
+        }
+        return reference;
+    }
+
+    private static boolean rejectsSfStatus(ExpressItem accepted, ExpressQueryResult incoming) {
+        return accepted != null && accepted.isShunFengSource() && incoming != null
+                && accepted.semantic != StatusSemantic.UNKNOWN && accepted.statusEventTime >= 0L
+                && accepted.statusEventTime <= System.currentTimeMillis()
+                && (incoming.statusEventTime < accepted.statusEventTime
+                || incoming.statusEventTime == accepted.statusEventTime && incoming.semantic != accepted.semantic);
+    }
+
+    private static ExpressItem sfAcceptedOwner(ExpressItem owner,
+            List<ManualTimelineAuthorityPolicy.Candidate> candidates, String preferred) {
+        if (!owner.isShunFengSource()) return owner;
+        for (ManualTimelineAuthorityPolicy.Candidate candidate : candidates) {
+            if (candidate.provider.equals(preferred) && hasStructuredStatus(candidate)
+                    && !rejectsSfStatus(owner, candidate.result)
+                    && !(owner.semantic.terminal() && !candidate.result.semantic.terminal())) {
+                return withBorrowedStatus(owner, candidate.result);
+            }
+        }
+        return owner;
+    }
+
+    /** Presentation only: accepted status never becomes another provider's cache. */
+    private static ManualTimelineAuthorityPolicy.Candidate sfPresentation(ExpressItem accepted,
+            ManualTimelineAuthorityPolicy.Candidate history,
+            List<ManualTimelineAuthorityPolicy.Candidate> candidates) {
+        ExpressQueryResult result = ManualTimelineAuthorityPolicy.presentationResult(history.result, candidates);
+        if (rejectsSfStatus(accepted, result)
+                || accepted.semantic.terminal() && !result.semantic.terminal()) {
+            ExpressQueryResult status = new ExpressQueryResult(accepted.waybill, accepted.courierCode,
+                    accepted.companyName, accepted.semantic, accepted.statusEventTime,
+                    accepted.latestTime, accepted.latestDetail, accepted.tracksJson, "", accepted.phone,
+                    "", "", "", "").withManualStatusEvidence(accepted.statusDescription, true);
+            result = ManualTimelineAuthorityPolicy.automaticPresentationResult(result, status, candidates);
+        }
+        String statusProvider = history.provider;
+        if (result != history.result) {
+            statusProvider = ManualTimelineAuthorityPolicy.PREFERRED_FEED;
+            for (ManualTimelineAuthorityPolicy.Candidate donor : candidates) {
+                if (hasStructuredStatus(donor) && donor.result.semantic == result.semantic
+                        && donor.result.statusEventTime == result.statusEventTime) {
+                    statusProvider = donor.provider;
+                    break;
+                }
+            }
+        }
+        return new ManualTimelineAuthorityPolicy.Candidate(statusProvider, result, history.successAt,
+                history.complete, history.providerErrorMetadataInvalidated);
+    }
+
+    private static boolean sfLatestNodeConflict(ExpressQueryResult history,
+            List<ManualTimelineAuthorityPolicy.Candidate> candidates) {
+        long latest = Kuaidi100TimelinePolicy.latestTimedEventMillis(history);
+        long now = System.currentTimeMillis();
+        List<StatusSemantic> known = ExpressTimeline.latestTrackStatuses(history.tracksJson, history.timelineProvider);
+        for (ManualTimelineAuthorityPolicy.Candidate candidate : candidates) {
+            long reference = sfLatestReferenceTrackAt(candidate.result, now);
+            if (reference < latest || reference <= 0L) continue;
+            for (StatusSemantic status : ExpressTimeline.latestTrackStatuses(
+                    candidate.result.tracksJson, candidate.provider, now)) {
+                if (status != StatusSemantic.UNKNOWN && known.stream().anyMatch(
+                        value -> value != StatusSemantic.UNKNOWN && value != status)) return true;
+            }
+        }
+        return false;
     }
 
     private static ManualTimelineAuthorityPolicy.Candidate statusPresentationAuthority(ExpressItem owner,

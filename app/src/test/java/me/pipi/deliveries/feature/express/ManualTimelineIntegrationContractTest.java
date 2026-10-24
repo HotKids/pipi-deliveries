@@ -23,7 +23,9 @@ public final class ManualTimelineIntegrationContractTest {
         assertTrue(sync.contains("saveClaimedManualQueryBatch("));
         assertTrue(sync.contains("savePendingManualQueryBatch("));
         assertTrue(detail.contains("repository.saveClaimedManualQueryBatch("));
-        assertTrue(detail.contains("partial -> publishFirstManualPreview(partial, cancellation)"));
+        assertTrue(detail.contains("repository.manualQueryPreview(existing, ownerClaim, partial)"));
+        assertTrue(detail.contains("publishFirstManualPreview(preview, cancellation)"));
+        assertTrue(detail.contains("repository.shunFengOnlineHistoryAligned(existing, ownerClaim, online)"));
         assertFalse(detail.contains("ensureKuaidi100Presentation("));
     }
 
