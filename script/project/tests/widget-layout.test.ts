@@ -413,13 +413,13 @@ assert.match(
 );
 assert.match(
   mediumSource,
-  /<HStack\s+alignment="center"\s+spacing=\{5\}\s+foregroundStyle="label"[\s\S]*?>我的快递<\/Text>\s*<HStack alignment="center" spacing=\{4\}>[\s\S]*?\{snapshot\.activeCount\}[\s\S]*?<Image\s+systemName="chevron\.right"\s+font=\{15\}\s+fontWeight="semibold"/,
-  "medium title and count retain their typography while the larger symbol centers vertically",
+  /<HStack\s+alignment="firstTextBaseline"\s+spacing=\{5\}\s+foregroundStyle="label"[\s\S]*?>我的快递<\/Text>\s*<HStack alignment="firstTextBaseline" spacing=\{4\}>[\s\S]*?\{snapshot\.activeCount\}[\s\S]*?<Text\s+font=\{15 \* 1\.25\}\s+fontWeight="semibold"\s+frame=\{\{ height: 15 \}\}\s*>›<\/Text>/,
+  "medium header uses the Android text chevron and enlargement ratio without enlarging its line box",
 );
 assert.doesNotMatch(
   mediumSource,
-  />›<\/Text>/,
-  "medium header must not retain the undersized text chevron",
+  /systemName="chevron\.right"/,
+  "medium header must not substitute the visually larger system-symbol chevron",
 );
 assert.match(
   mediumSource,
