@@ -183,7 +183,9 @@ public final class ExpressWidgetHeaderThemeTest {
         }
         assertNotNull(chevron);
         assertEquals(title.getTypeface().getWeight(), chevron.getTypeface().getWeight());
-        assertEquals(title.getTextSize(), chevron.getTextSize(), .01f);
+        assertEquals(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
+                typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE) * 1.25f,
+                root.getResources().getDisplayMetrics()), chevron.getTextSize(), .01f);
         assertEquals(title.getCurrentTextColor(), chevron.getCurrentTextColor());
         assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_NO, chevron.getImportantForAccessibility());
         float density = root.getResources().getDisplayMetrics().density;

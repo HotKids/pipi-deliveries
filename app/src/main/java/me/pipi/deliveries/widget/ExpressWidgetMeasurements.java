@@ -29,9 +29,15 @@ final class ExpressWidgetMeasurements {
         TextView arrow = shell.findViewById(R.id.widget_express_arrow);
         title.setText(titleText);
         count.setText(countText);
-        for (TextView text : new TextView[] {title, count, arrow}) {
+        for (TextView text : new TextView[] {title, count}) {
             text.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
         }
+        title.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+        // Enlarge the ink inside the original title-height envelope, preserving row placement.
+        arrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, size * 1.25f);
+        arrow.setHeight(title.getMeasuredHeight());
+        views.setTextViewTextSize(R.id.widget_express_arrow, TypedValue.COMPLEX_UNIT_SP, size * 1.25f);
+        views.setInt(R.id.widget_express_arrow, "setHeight", title.getMeasuredHeight());
         View header = (View) title.getParent();
         header.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
         header.layout(0, 0, header.getMeasuredWidth(), header.getMeasuredHeight());

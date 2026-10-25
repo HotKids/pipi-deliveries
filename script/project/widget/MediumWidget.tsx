@@ -155,7 +155,11 @@ export function MediumWidget(props: {
                 <Text font={15} fontWeight="semibold">
                   {snapshot.activeCount}
                 </Text>
-                <Text font={15} fontWeight="semibold">›</Text>
+                <Image
+                  systemName="chevron.right"
+                  font={15}
+                  fontWeight="semibold"
+                />
               </HStack>
             </HStack>
           </Link>

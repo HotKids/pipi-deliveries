@@ -190,9 +190,6 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             views.setTextViewTextSize(R.id.widget_express_count,
                     TypedValue.COMPLEX_UNIT_SP,
                     typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));
-            views.setTextViewTextSize(R.id.widget_express_arrow,
-                    TypedValue.COMPLEX_UNIT_SP,
-                    typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));
             ExpressWidgetMeasurements.centerHeaderGlyphs(context, views,
                     title.substring(0, countStart).trim(), title.substring(countStart),
                     typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));

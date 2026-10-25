@@ -413,13 +413,13 @@ assert.match(
 );
 assert.match(
   mediumSource,
-  /<HStack\s+alignment="center"\s+spacing=\{5\}\s+foregroundStyle="label"[\s\S]*?>我的快递<\/Text>\s*<HStack alignment="center" spacing=\{4\}>[\s\S]*?\{snapshot\.activeCount\}[\s\S]*?<Text font=\{15\} fontWeight="semibold">›<\/Text>/,
-  "medium title, count and text chevron must share primary typography and native vertical centering",
+  /<HStack\s+alignment="center"\s+spacing=\{5\}\s+foregroundStyle="label"[\s\S]*?>我的快递<\/Text>\s*<HStack alignment="center" spacing=\{4\}>[\s\S]*?\{snapshot\.activeCount\}[\s\S]*?<Image\s+systemName="chevron\.right"\s+font=\{15\}\s+fontWeight="semibold"/,
+  "medium title and count retain their typography while the larger symbol centers vertically",
 );
 assert.doesNotMatch(
   mediumSource,
-  /systemName="chevron\.right"/,
-  "medium header must use the same text chevron as the accepted Pipi header",
+  />›<\/Text>/,
+  "medium header must not retain the undersized text chevron",
 );
 assert.match(
   mediumSource,
