@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { StatusSemantic } from "../models";
 import { statusTextTint, statusTint } from "../services/status";
-import { carrierWidgetAccent, mediumWidgetBackground } from "../widget/palette";
+import { widgetStatusStyle } from "../widget/palette";
 
 const accents: Record<string, [number, number]> = {
   systemOrange: [0xff9500, .15], systemGreen: [0x34c759, .14],
@@ -22,7 +22,7 @@ function check(text: string, background: number[], description: string) {
 }
 const semantics: StatusSemantic[] = ["ORDERED", "SHIPPED", "PICKED", "TRANSIT", "DELIVERY", "WAITING_PICKUP", "COMPLETED", "DANGER", "CANCELLED", "UNKNOWN"];
 for (const semantic of semantics) {
-  const [accent, opacity] = accents[statusTint(semantic)];
+  const [accent] = accents[statusTint(semantic)];
   for (const badgeOpacity of [0, .1]) {
     const text = statusTextTint(semantic, { badgeOpacity });
     for (const [mode, surfaces] of [["light", [0xffffff, 0xf2f2f7]], ["dark", [0, 0x1c1c1e, 0x2c2c2e]]] as const) {
@@ -32,19 +32,19 @@ for (const semantic of semantics) {
       }
     }
   }
-  for (const courier of ["sto", "jd", "sf", "yd", "yto", "zto", "yzpy", "ems", "unknown"]) {
-    const brandAccent = carrierWidgetAccent(courier, "");
-    const text = statusTextTint(semantic, { brandAccent, badgeOpacity: opacity });
-    const background = mediumWidgetBackground(courier, "");
-    for (const mode of ["light", "dark"] as const) {
-      for (const stop of background[mode].gradient) {
-        const channels = stop.color.match(/[\d.]+/g)!.slice(0, 3).map(Number);
-        const filled = channels.map((c, i) => Math.round(c + (rgb(accent)[i] - c) * opacity));
-        check(text[mode], filled, `${semantic} ${mode} ${courier}`);
-      }
-    }
-  }
 }
 assert.equal(statusTint("ORDERED"), "systemYellow");
 assert.equal(statusTint("COMPLETED"), "systemTeal");
-console.log("status text contrast: app, sender badge and widget gradient matrix passed");
+console.log("status text contrast: app and sender badge contrast passed; wide widget uses Lite semantic colors");
+
+const liteColors: Record<string, number> = {
+  ORDERED: 0xfbc02d, SHIPPED: 0xfbc02d, PICKED: 0x3275d6, TRANSIT: 0x3275d6,
+  DELIVERY: 0x1a8a4a, WAITING_PICKUP: 0xe65b17, COMPLETED: 0x0f9d8a,
+  DANGER: 0xd43d3d, CANCELLED: 0x757575, UNKNOWN: 0x757575,
+};
+for (const semantic of semantics) {
+  const style = widgetStatusStyle(semantic);
+  assert.equal(style.foreground, `#${liteColors[semantic].toString(16).padStart(6, "0")}`);
+  assert.equal(Number(style.background.match(/[\d.]+/g)![3]), 0x1a / 255);
+  assert.deepEqual(style.background.match(/[\d.]+/g)!.slice(0, 3).map(Number), rgb(liteColors[semantic]));
+}

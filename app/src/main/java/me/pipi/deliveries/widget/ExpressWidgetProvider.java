@@ -428,11 +428,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         int tinted = androidx.core.graphics.ColorUtils.compositeColors(
                 (accent & 0x00ffffff) | 0x55000000, surface);
         int status = StatusStyle.forSemantic(item.semantic).foreground;
-        if (badge) {
-            int fill = (status & 0x00ffffff) | 0x1a000000;
-            surface = androidx.core.graphics.ColorUtils.compositeColors(fill, surface);
-            tinted = androidx.core.graphics.ColorUtils.compositeColors(fill, tinted);
-        }
+        if (badge) return status;
         return ExpressStatusColors.textOn(status, surface, tinted);
     }
 
