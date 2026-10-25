@@ -314,6 +314,20 @@ public class ExpressAutomaticDetailPersistenceTest {
         assertEquals("feed运输中", repository.find(owner.rowId).latestDetail);
     }
 
+    @Test public void shunFengFutureIncomingCannotReplaceValidAcceptedPair() {
+        ExpressItem owner = owner("SFFUTUREINCOMING", "ShunFeng", "interface5", false);
+        long future = System.currentTimeMillis() + 3600000L;
+        String time = java.time.Instant.ofEpochMilli(future).atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        ExpressQueryResult incoming = sfEvent(owner.waybill, TimelineSlot.V6_QUERY, time, StatusSemantic.DELIVERY, true);
+        repository.saveOwnerManualQueryBatch(owner, repository.captureManualQueryOwner(owner),
+                java.util.List.of(new ManualQuerySuccess(TimelineSlot.V6_QUERY, incoming, 200L, true)), PHONE, "interface5");
+        ExpressItem after = repository.find(owner.rowId);
+        assertEquals(owner.semantic, after.semantic);
+        assertEquals(owner.statusEventTime, after.statusEventTime);
+        assertEquals(incoming.tracksJson, repository.manualTimelineCandidate(owner, TimelineSlot.V6_QUERY).result.tracksJson);
+    }
+
     @Test public void shunFengOldOnlineCannotReplaceAcceptedK100Pair() {
         assertShunFengOnlineRetained("SFOLDONLINE", "2026-09-10 07:32:00");
     }

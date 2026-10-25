@@ -192,6 +192,7 @@ public final class ExpressFirstManualQueryTest {
             worker.submit(() -> {}).get(1, TimeUnit.SECONDS);
             Shadows.shadowOf(Looper.getMainLooper()).idle();
             assertTrue(activity.isFinishing());
+            assertEquals(ExpressToastCopy.DELETED, org.robolectric.shadows.ShadowToast.getTextOfLatestToast());
             assertTrue(CaptureShadow.routes.toString(), CaptureShadow.routes.isEmpty());
             assertNull(repository.find(owner.rowId));
             assertTrue(repository.claimPendingManualQueries(System.currentTimeMillis(), "interface6").isEmpty());

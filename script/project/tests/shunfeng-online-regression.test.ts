@@ -269,6 +269,22 @@ test("a same-clock conflicting origin cannot stop the permitted remaining query 
   assert.equal(hasPickerTimelineStart(before), false);
   assert.equal(hasTimelineStartBeforeKdniao(before), false);
 });
+test("a future incoming SF clock cannot supersede the valid accepted pair", () => {
+  const before = row(packet("interface5", recent, "TRANSIT"));
+  before.sourceTimeline = before.timeline; before.manualTimelines = [];
+  const after = applyManualShipment(before, incoming(before, packet("v6_query", NOW + 3600000, "DELIVERY")), NOW);
+  assert.equal(after.timeline.semantic, "TRANSIT");
+  assert.equal(after.timeline.statusEventAtMs, recent);
+  assert.equal(after.manualTimelines?.find(p => p.provider === "v6_query")?.statusEventAtMs, NOW + 3600000);
+});
+test("an undated structured signing can replace undated transit", () => {
+  const before = row(packet("kdniao", 0, "TRANSIT")); before.manualTimelines = [];
+  before.sourceTimeline = packet("interface5", 0, "TRANSIT");
+  const after = applyManualShipment(before, incoming(before, packet("v6_query", 0, "COMPLETED")), NOW);
+  assert.equal(after.timeline.semantic, "COMPLETED");
+  assert.equal(after.timeline.statusEventAtMs || 0, 0);
+  assert.equal(signedTripleReached(after, NOW), false);
+});
 test("known zero-clock status stays paired while an unknown status can initialize", () => {
   for (const semantic of ["DELIVERY", "UNKNOWN"] as const) {
     const before = row(packet("kdniao", 0, semantic)); before.manualTimelines = [];

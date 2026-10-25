@@ -8005,11 +8005,15 @@ public final class ExpressRepository {
     }
 
     private static boolean rejectsSfStatus(ExpressItem accepted, ExpressQueryResult incoming) {
-        return accepted != null && accepted.isShunFengSource() && incoming != null
+        if (accepted == null || incoming == null) return false;
+        long now = System.currentTimeMillis();
+        boolean undatedSigning = accepted.statusEventTime == 0L && incoming.statusEventTime == 0L
+                && accepted.semantic == StatusSemantic.TRANSIT && incoming.semantic == StatusSemantic.COMPLETED;
+        return accepted.isShunFengSource()
                 && accepted.semantic != StatusSemantic.UNKNOWN && accepted.statusEventTime >= 0L
-                && accepted.statusEventTime <= System.currentTimeMillis()
-                && (incoming.statusEventTime < accepted.statusEventTime
-                || incoming.statusEventTime == accepted.statusEventTime && incoming.semantic != accepted.semantic);
+                && accepted.statusEventTime <= now
+                && (incoming.statusEventTime > now || incoming.statusEventTime < accepted.statusEventTime
+                || incoming.statusEventTime == accepted.statusEventTime && incoming.semantic != accepted.semantic && !undatedSigning);
     }
 
     private static ExpressItem sfAcceptedOwner(ExpressItem owner,

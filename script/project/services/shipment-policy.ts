@@ -1456,9 +1456,11 @@ function structuredStatusOverride(
   const accepted = shipment.timeline;
   const acceptedAt = Number(accepted.statusEventAtMs) || 0;
   const incomingAt = resolved.statusEventAtMs || 0;
+  const undatedSigning = acceptedAt === 0 && incomingAt === 0 &&
+    accepted.semantic === "TRANSIT" && resolved.semantic === "COMPLETED";
   if (isShunFengSourceShipment(shipment) && accepted.structuredStatus === true && accepted.semantic !== "UNKNOWN" &&
       acceptedAt >= 0 && acceptedAt <= Date.now() &&
-      (incomingAt < acceptedAt || incomingAt === acceptedAt && resolved.semantic !== accepted.semantic &&
+      (incomingAt > Date.now() || incomingAt < acceptedAt || incomingAt === acceptedAt && !undatedSigning && resolved.semantic !== accepted.semantic &&
       isShunFengManualTimeline({ ...resolved, provider: evidence.statusProvider }))) {
     if (selectionEvidence) selectionEvidence.statusProvider = accepted.provider;
     return { ...resolved, semantic: accepted.semantic, structuredStatus: true,
