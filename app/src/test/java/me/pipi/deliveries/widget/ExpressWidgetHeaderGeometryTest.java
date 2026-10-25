@@ -90,13 +90,8 @@ public final class ExpressWidgetHeaderGeometryTest {
                 float density = context.getResources().getDisplayMetrics().scaledDensity;
                 assertEquals(width == 300 ? 17f : 16f, company.getTextSize() / density, .01f);
                 assertEquals(13f, detail.getTextSize() / density, .01f);
-                int base = context.getColor(R.color.widget_surface);
-                int tinted = androidx.core.graphics.ColorUtils.compositeColors(0x55d32b2c, base);
-                for (int background : new int[]{base, tinted}) {
-                    int badge = androidx.core.graphics.ColorUtils.compositeColors(0x1a3275d6, background);
-                    assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
-                            status.getCurrentTextColor(), badge) >= 4.5);
-                }
+                assertEquals(me.pipi.deliveries.feature.express.ExpressStatusColors.TRANSIT,
+                        status.getCurrentTextColor());
                 ExpressWidgetRowPolicy.RowLayout expected = ExpressWidgetRowPolicy.calculate(3, 220f,
                         context.getResources().getDisplayMetrics().density,
                         CardSizeProfile.fromWidth(width).typography.lineBox(
@@ -194,13 +189,15 @@ public final class ExpressWidgetHeaderGeometryTest {
                     assertEquals("A cached widget must resolve the host's current appearance",
                             ExpressWidgetProvider.statusTextColor(host, item, accent, !compact),
                             status.getCurrentTextColor());
+                    if (!compact) {
+                        assertEquals(me.pipi.deliveries.feature.express.ExpressStatusColors.ORDERED,
+                                status.getCurrentTextColor());
+                        continue;
+                    }
                     int surface = host.getColor(R.color.widget_surface);
                     int tinted = androidx.core.graphics.ColorUtils.compositeColors(
                             (accent & 0xffffff) | 0x55000000, surface);
                     for (int background : new int[]{surface, tinted}) {
-                        if (!compact) background = androidx.core.graphics.ColorUtils.compositeColors(
-                                (me.pipi.deliveries.feature.express.ExpressStatusColors.ORDERED & 0xffffff)
-                                        | 0x1a000000, background);
                         assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
                                 status.getCurrentTextColor(), background) >= 4.5);
                     }

@@ -8,7 +8,7 @@ import {
   ZStack,
 } from "scripting";
 import type { WidgetRow, WidgetSnapshot } from "../models";
-import { statusTint, statusTextTint, withNote } from "../services/status";
+import { withNote } from "../services/status";
 import { CourierIcon } from "../components/CourierIcon";
 import { carrierDisplayName } from "../services/carrier-presentation";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
@@ -19,30 +19,11 @@ import {
   EMPTY_WIDGET_ACCENT,
   emptyWidgetBackground,
   mediumWidgetBackground,
+  widgetStatusStyle,
 } from "./palette";
-
-/**
- * 底色跟着 statusTint 的同一个语义色走，而不是另建一张表：原先这里自带一份 switch，
- * 已下单/已发货被归进蓝色、已签收归进绿色、已取消归进红色，与统一后的状态配色（下单发货黄、
- * 签收青、取消灰）全都对不上——文字是黄的、外框却是蓝的（用户 2026-09-06 在 iOS 4×2 上发现）。
- * 这里只保留「系统色 → 同色低透明度填充」的一层映射，语义归属永远由 statusTint 决定。
- */
-const STATUS_TINT_FILL: Readonly<Record<string, string>> = {
-  systemOrange: "rgba(255, 149, 0, 0.15)",
-  systemGreen: "rgba(52, 199, 89, 0.14)",
-  systemTeal: "rgba(48, 176, 199, 0.14)",
-  systemBlue: "rgba(0, 122, 255, 0.13)",
-  systemYellow: "rgba(255, 204, 0, 0.20)",
-  systemRed: "rgba(255, 59, 48, 0.13)",
-};
-
-function statusBadgeBackground(semantic: WidgetRow["semantic"]): string {
-  return STATUS_TINT_FILL[statusTint(semantic)] || "tertiarySystemFill";
-}
 
 function Row(props: {
   row: WidgetRow;
-  brandAccent: string;
   openURL: string;
   height: number;
   iconSize: number;
@@ -50,6 +31,7 @@ function Row(props: {
   frameAlignment: "center" | "bottom";
   detailLineLimit: number | null;
 }) {
+  const statusStyle = widgetStatusStyle(props.row.semantic);
   return (
     <Link url={props.openURL}>
       <HStack
@@ -70,23 +52,19 @@ function Row(props: {
           cornerRadius={Math.max(8, Math.round(props.iconSize * 0.26))}
         />
         <VStack alignment="leading" spacing={1} frame={{ maxWidth: "infinity" }}>
-          <HStack spacing={5} frame={{ maxWidth: "infinity" }}>
+          <HStack spacing={6} frame={{ maxWidth: "infinity" }}>
             <Text font={15} fontWeight="semibold" lineLimit={1}>
               {carrierDisplayName(props.row.companyName)} {props.row.waybillSuffix}
             </Text>
             <Text
-              font={10}
+              font={11}
               fontWeight="medium"
-              foregroundStyle={statusTextTint(props.row.semantic, {
-                brandAccent: props.brandAccent,
-                badgeOpacity: ({ systemOrange: .15, systemGreen: .14, systemTeal: .14,
-                  systemBlue: .13, systemYellow: .20, systemRed: .13 } as Record<string, number>)[statusTint(props.row.semantic)],
-              })}
+              foregroundStyle={statusStyle.foreground}
               padding={{ horizontal: 5, vertical: 2 }}
-              background={statusBadgeBackground(props.row.semantic)}
+              background={statusStyle.background}
               clipShape={{
                 type: "rect",
-                cornerRadius: 6,
+                cornerRadius: 3,
                 style: "continuous",
               }}
               lineLimit={1}
@@ -198,7 +176,6 @@ export function MediumWidget(props: {
           <>
             {snapshot.rows.slice(0, placement.rowCount).map((row) => (
               <Row
-                brandAccent={accent}
                 key={row.shipmentId}
                 row={row}
                 openURL={props.openShipmentURL(row.shipmentId)}
