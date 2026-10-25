@@ -624,6 +624,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         }
         if (failure instanceof ExpressRepository.ManualQueryOwnerChangedException) {
             finishFirstManualQuery();
+            Toast.makeText(this, ExpressToastCopy.DELETED, Toast.LENGTH_SHORT).show();
             finish();
             return;
         }

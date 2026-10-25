@@ -1499,7 +1499,7 @@ public final class ExpressRepositoryDatabaseTest {
     }
 
     @Test
-    public void shunFengUndatedManualTerminalCannotReplaceKnownUndatedStatus() {
+    public void shunFengUndatedManualSigningCanReplaceUndatedTransit() {
         ExpressItem owner = insertOwner(
                 "SFUNDATE000004", "13900000004", StatusSemantic.TRANSIT);
         assertEquals(StatusSemantic.TRANSIT, owner.semantic);
@@ -1509,7 +1509,7 @@ public final class ExpressRepositoryDatabaseTest {
         assertEquals(0L, completed.statusEventTime);
         assertNotNull(repository.saveOwnerManualTimeline(owner, completed, owner.phone, "interface5"));
         ExpressItem current = repository.find(owner.rowId);
-        assertEquals(StatusSemantic.TRANSIT, current.semantic);
+        assertEquals(StatusSemantic.COMPLETED, current.semantic);
         assertEquals(0L, current.statusEventTime);
         ManualTimelineAuthorityPolicy.Candidate raw = repository.manualTimelineCandidate(current, "v4");
         assertNotNull(raw);
