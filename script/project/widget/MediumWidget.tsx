@@ -145,21 +145,21 @@ export function MediumWidget(props: {
         >
           <Link url={props.openHomeURL}>
             <HStack
-              alignment="center"
+              alignment="firstTextBaseline"
               spacing={5}
               foregroundStyle="label"
               frame={{ minHeight: layout.headerHeight }}
             >
               <Text font={15} fontWeight="semibold">我的快递</Text>
-              <HStack alignment="center" spacing={4}>
+              <HStack alignment="firstTextBaseline" spacing={4}>
                 <Text font={15} fontWeight="semibold">
                   {snapshot.activeCount}
                 </Text>
-                <Image
-                  systemName="chevron.right"
-                  font={15}
+                <Text
+                  font={15 * 1.25}
                   fontWeight="semibold"
-                />
+                  frame={{ height: 15 }}
+                >›</Text>
               </HStack>
             </HStack>
           </Link>
