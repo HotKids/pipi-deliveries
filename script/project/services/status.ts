@@ -232,13 +232,13 @@ function statusLuminance(color: number): number {
 
 export function statusTextTint(
   semantic: StatusSemantic,
-  options: { badgeOpacity?: number; brandAccent?: string } = {},
+  options: { badgeOpacity?: number; brandAccent?: string; accentRGB?: number } = {},
 ): { light: string; dark: string } {
   // The neutral widget fill is a platform style, so use the highest-contrast neutral text.
-  if (options.brandAccent && statusTint(semantic) === "secondaryLabel") {
+  if (options.brandAccent && options.accentRGB == null && statusTint(semantic) === "secondaryLabel") {
     return { light: "#000000", dark: "#ffffff" };
   }
-  const accent = STATUS_RGB[statusTint(semantic)] ?? STATUS_RGB.secondaryLabel;
+  const accent = options.accentRGB ?? STATUS_RGB[statusTint(semantic)] ?? STATUS_RGB.secondaryLabel;
   const tone = (surface: number): string => {
     const brand = options.brandAccent ? Number.parseInt(options.brandAccent.slice(1), 16) : surface;
     const backgrounds = [surface, blendStatusColor(surface, brand, 0x55 / 255)]

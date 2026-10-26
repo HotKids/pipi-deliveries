@@ -90,8 +90,10 @@ public final class ExpressWidgetHeaderGeometryTest {
                 float density = context.getResources().getDisplayMetrics().scaledDensity;
                 assertEquals(width == 300 ? 17f : 16f, company.getTextSize() / density, .01f);
                 assertEquals(13f, detail.getTextSize() / density, .01f);
-                assertEquals(me.pipi.deliveries.feature.express.ExpressStatusColors.TRANSIT,
-                        status.getCurrentTextColor());
+                int badgeSurface = androidx.core.graphics.ColorUtils.compositeColors(
+                        0x1a3275d6, context.getColor(R.color.widget_surface));
+                assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
+                        status.getCurrentTextColor(), badgeSurface) >= 4.5);
                 ExpressWidgetRowPolicy.RowLayout expected = ExpressWidgetRowPolicy.calculate(3, 220f,
                         context.getResources().getDisplayMetrics().density,
                         CardSizeProfile.fromWidth(width).typography.lineBox(
@@ -189,15 +191,12 @@ public final class ExpressWidgetHeaderGeometryTest {
                     assertEquals("A cached widget must resolve the host's current appearance",
                             ExpressWidgetProvider.statusTextColor(host, item, accent, !compact),
                             status.getCurrentTextColor());
-                    if (!compact) {
-                        assertEquals(me.pipi.deliveries.feature.express.ExpressStatusColors.ORDERED,
-                                status.getCurrentTextColor());
-                        continue;
-                    }
                     int surface = host.getColor(R.color.widget_surface);
                     int tinted = androidx.core.graphics.ColorUtils.compositeColors(
                             (accent & 0xffffff) | 0x55000000, surface);
                     for (int background : new int[]{surface, tinted}) {
+                        if (!compact) background = androidx.core.graphics.ColorUtils.compositeColors(
+                                0x1afbc02d, background);
                         assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
                                 status.getCurrentTextColor(), background) >= 4.5);
                     }
