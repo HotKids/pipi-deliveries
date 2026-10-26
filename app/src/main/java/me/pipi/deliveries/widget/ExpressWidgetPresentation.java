@@ -8,7 +8,7 @@ import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.StatusSemantic;
 
 /** Pure presentation policy shared by the express widgets. */
-final class ExpressWidgetPresentation {
+public final class ExpressWidgetPresentation {
     private static final StatusSemantic[] COMPACT_STATUS_PRIORITY = {
             StatusSemantic.WAITING_PICKUP,
             StatusSemantic.DELIVERY,
@@ -70,7 +70,7 @@ final class ExpressWidgetPresentation {
         return item.displayStatus();
     }
 
-    static List<ExpressItem> sorted(List<ExpressItem> items) {
+    public static List<ExpressItem> sorted(List<ExpressItem> items) {
         ArrayList<ExpressItem> sorted = new ArrayList<>(items);
         // Stable sort preserves the repository's newest-first order inside each state.
         sorted.sort(Comparator.comparingInt(item -> rank(item.semantic)));

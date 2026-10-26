@@ -98,7 +98,7 @@ public final class CarrierExhaustedAndLandingTest {
         ExpressItem released = repository.find(row.rowId);
         assertFalse(released.carrierPending());
         assertEquals("MMKD", released.displayCompany());
-        assertEquals(List.of("MMKD 9071 · 派送中"), postedTitles());
+        assertDeliveryLive("MMKD", "MM7700189071");
         assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE));
 
         // A later list write without a built-in answer keeps the verdict; a built-in answer replaces it.
@@ -132,7 +132,7 @@ public final class CarrierExhaustedAndLandingTest {
         assertTrue(postedTitles().isEmpty());
         assertTrue(AccountCarrierRecognition.recognize(repository, repository.find(row.rowId), EXHAUSTED));
         assertEquals("JDKD", repository.find(row.rowId).displayCompany());
-        assertEquals(List.of("JDKD 4572 · 派送中"), postedTitles());
+        assertDeliveryLive("JDKD", "JT4006839564572");
     }
 
     /**
@@ -160,7 +160,7 @@ public final class CarrierExhaustedAndLandingTest {
         assertFalse(released.carrierPending());
         // 其余裁决 35 (migrated from 33's bare "9073 · 派送中"): an empty carrier position reads 快递.
         assertEquals("快递", released.displayCarrierLabel());
-        assertEquals(List.of("快递 9073 · 派送中"), postedTitles());
+        assertDeliveryLive("快递", waybill);
         assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE));
     }
 
@@ -361,6 +361,16 @@ public final class CarrierExhaustedAndLandingTest {
                 tracks(new String[][]{{time, detail}}), "", "", TimelineSlot.V6_QUERY, "", "", "")
                 .withManualStatusEvidence(semantic.label, true)
                 .withCarrierNormalization(new CarrierNormalization("", "", "", false, "worker"));
+    }
+
+    private void assertDeliveryLive(String company, String waybill) {
+        List<Notification> posted = Shadows.shadowOf(context.getSystemService(NotificationManager.class)).getAllNotifications();
+        assertEquals(1, posted.size());
+        Notification live = posted.get(0);
+        assertEquals("express_live", live.getChannelId());
+        assertEquals("派送中 1 件", live.extras.getCharSequence(Notification.EXTRA_TITLE).toString());
+        String body = live.extras.getCharSequence(Notification.EXTRA_BIG_TEXT).toString().replace("\u200B", "");
+        assertTrue(body, body.startsWith(company + " · " + waybill));
     }
 
     private List<String> postedTitles() {

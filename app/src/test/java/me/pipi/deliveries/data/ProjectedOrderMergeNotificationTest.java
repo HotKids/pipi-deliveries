@@ -300,6 +300,8 @@ public final class ProjectedOrderMergeNotificationTest {
         List<String> titles = new ArrayList<>();
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         for (Notification notification : Shadows.shadowOf(manager).getAllNotifications()) {
+            // This fixture protects ordinary status events; aggregate live replacement is separate.
+            if ("express_live".equals(notification.getChannelId())) continue;
             CharSequence title = notification.extras.getCharSequence(Notification.EXTRA_TITLE);
             titles.add(title == null ? "" : title.toString());
         }

@@ -138,10 +138,13 @@ public final class ExpressSyncRecognitionBudgetTest {
         assertFalse(repository.find(second.rowId).carrierPending());
         assertEquals(0, outbox());
         List<String> titles = postedTitles();
-        assertEquals("the next round releases both", posted + 2, titles.size());
-        for (String title : titles.subList(posted, titles.size())) {
-            assertTrue(title, title.startsWith("圆通速递 "));
-        }
+        assertEquals("the next round releases both into one live activity", posted + 1, titles.size());
+        assertEquals("派送中 2 件", titles.get(titles.size() - 1));
+        Notification live = Shadows.shadowOf(context.getSystemService(NotificationManager.class))
+                .getAllNotifications().stream().filter(n -> "express_live".equals(n.getChannelId()))
+                .findFirst().orElseThrow();
+        String body = live.extras.getCharSequence(Notification.EXTRA_BIG_TEXT).toString().replace("\u200B", "");
+        assertTrue(body, body.startsWith("圆通速递 · YT7700189164"));
     }
 
     /**

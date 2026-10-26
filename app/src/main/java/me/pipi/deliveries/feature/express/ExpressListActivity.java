@@ -278,6 +278,8 @@ public final class ExpressListActivity extends AppCompatActivity {
     protected void onStart() {
         super.onStart();
         STARTED_HOMES.incrementAndGet();
+        me.pipi.deliveries.notification.ExpressLiveNotifications.restoreOnForeground(this);
+        ExpressRepository.get(this).requestPendingNotificationReplay();
         ExpressScheduler.requestForeground(this);
         orderProjectionCaptureEnabled = true;
         attemptedOrderProjections.clear();

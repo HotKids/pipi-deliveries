@@ -78,6 +78,16 @@ public final class ExpressNotifications {
         channelsInitialized = true;
     }
 
+    static void clearReplacedDeliveryNotifications(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        for (android.service.notification.StatusBarNotification active : manager.getActiveNotifications()) {
+            if (CHANNEL_DELIVERY.equals(active.getNotification().getChannelId())) {
+                manager.cancel(active.getTag(), active.getId());
+            }
+        }
+    }
+
     public static boolean post(Context context, ExpressItem item) {
         return post(context, item, item == null ? StatusSemantic.UNKNOWN : item.semantic);
     }
@@ -85,6 +95,12 @@ public final class ExpressNotifications {
     /** Notification eligibility and channel retain the event status; all visible fields use the list projection. */
     public static boolean post(Context context, ExpressItem item, StatusSemantic eventStatus) {
         if (item == null) return true;
+        // Lite has no pickup-code notifications: delivery is represented by the live surface,
+        // including when that surface is disabled, matching Pipi's no-pickup-info rule.
+        if (eventStatus == StatusSemantic.DELIVERY) {
+            clearReplacedDeliveryNotifications(context);
+            return true;
+        }
         String channelId = channelId(eventStatus);
         if (channelId == null) return true;
         if (Build.VERSION.SDK_INT >= 33
@@ -235,7 +251,7 @@ public final class ExpressNotifications {
         }
     }
 
-    private static CharSequence breakableText(String value) {
+    static CharSequence breakableText(String value) {
         if (value == null || value.isEmpty()) return "";
         StringBuilder output = new StringBuilder(value.length() * 2);
         for (int index = 0; index < value.length(); index++) {

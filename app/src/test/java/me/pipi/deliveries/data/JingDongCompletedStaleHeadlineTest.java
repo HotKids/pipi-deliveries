@@ -482,6 +482,8 @@ public final class JingDongCompletedStaleHeadlineTest {
                 context.getSystemService(Context.NOTIFICATION_SERVICE);
         for (android.app.Notification notification
                 : org.robolectric.Shadows.shadowOf(manager).getAllNotifications()) {
+            // This fixture observes ordinary signing events, not the replaced delivery live card.
+            if ("express_live".equals(notification.getChannelId())) continue;
             CharSequence text = notification.extras.getCharSequence(android.app.Notification.EXTRA_TEXT);
             texts.add(text == null ? "" : text.toString().replace("\u200B", ""));
         }

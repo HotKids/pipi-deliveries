@@ -1,5 +1,7 @@
 package me.pipi.deliveries.data;
 
+import me.pipi.deliveries.network.ExpressAccountSource;
+
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -7071,6 +7073,31 @@ public final class ExpressRepository {
         reconcilePublication(true, false);
     }
 
+    /** Rebuilds the live surface even when a first import produced no ordinary outbox event. */
+    public void reconcileLiveNotifications() {
+        synchronized (NOTIFICATION_PUBLICATION_LOCK) {
+            for (int attempt = 0; attempt < 2; attempt++) {
+                String source = ExpressAccountSource.bindingSource(context);
+                boolean delivery = me.pipi.deliveries.notification.ExpressLiveNotifications.deliveryEnabled(context);
+                boolean pickup = me.pipi.deliveries.notification.ExpressLiveNotifications.pickupEnabled(context);
+                long version;
+                List<ExpressItem> visible;
+                synchronized (this) {
+                    version = invalidationVersion;
+                    visible = listVisible(source);
+                }
+                me.pipi.deliveries.notification.ExpressLiveNotifications.sync(context, visible);
+                if (version == invalidationVersion()
+                        && source.equals(ExpressAccountSource.bindingSource(context))
+                        && delivery == me.pipi.deliveries.notification.ExpressLiveNotifications.deliveryEnabled(context)
+                        && pickup == me.pipi.deliveries.notification.ExpressLiveNotifications.pickupEnabled(context)) return;
+                // A commit or interface/settings change during Binder publication invalidates the
+                // whole aggregate. The already queued publication will also read the latest state.
+                me.pipi.deliveries.notification.ExpressLiveNotifications.cancelPublication(context);
+            }
+        }
+    }
+
     public void replayStatusAlignmentNotification(ExpressItem row) {
         boolean ready;
         synchronized (this) {
@@ -7213,6 +7240,11 @@ public final class ExpressRepository {
         // The durable outbox and startup replay retain notification recovery if this process exits.
         // Rendering or delivering notifications must not hold the committing caller's local queue.
         publicationWorker.execute(() -> {
+            try { reconcileLiveNotifications(); }
+            catch (RuntimeException failure) {
+                android.util.Log.w("ExpressRepository", "Live notification reconciliation remains pending: "
+                        + failure.getClass().getSimpleName());
+            }
             if (replayNotifications) {
                 try { replayPendingNotifications(); }
                 catch (RuntimeException failure) {

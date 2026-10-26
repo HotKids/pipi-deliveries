@@ -94,8 +94,7 @@ public final class CarrierBeforePushTest {
         assertTrue(repository.saveRecognizedCarrier(repository.find(row.rowId), YTO));
         List<String> titles = postedTitles();
         assertEquals("the round that matches the carrier pushes the change", posted + 1, titles.size());
-        String title = titles.get(titles.size() - 1);
-        assertTrue(title, title.startsWith("圆通速递 9063 · "));
+        assertDeliveryLive("圆通速递", "YT7700189063");
         assertEquals(0, count(ExpressDatabase.NOTIFICATION_OUTBOX_TABLE));
     }
 
@@ -122,7 +121,7 @@ public final class CarrierBeforePushTest {
         assertEquals("nothing leaves before the carrier is matched", posted, seenDuringRound.size());
         List<String> titles = postedTitles();
         assertEquals(posted + 1, titles.size());
-        assertTrue(titles.get(titles.size() - 1), titles.get(titles.size() - 1).startsWith("圆通速递 "));
+        assertDeliveryLive("圆通速递", "YT7700189064");
     }
 
     @Test public void carrierPendingFollowsWhatTheRowShows() {
@@ -158,7 +157,7 @@ public final class CarrierBeforePushTest {
         assertFalse(shown.carrierPending());
         List<String> titles = postedTitles();
         assertEquals(posted + 1, titles.size());
-        assertTrue(titles.get(titles.size() - 1), titles.get(titles.size() - 1).startsWith("某某速运 "));
+        assertDeliveryLive("某某速运", "MM7700189065");
 
         // A later list write whose Worker sidecar has no built-in answer keeps the name; a built-in answer
         // replaces it.
@@ -414,6 +413,15 @@ public final class CarrierBeforePushTest {
                 "2026-09-26 10:00:00", "[]", "", "INTERFACE5", "",
                 1L, 2L, "INTERFACE5", "", "", "", true,
                 "", "", "[]", "", false, "", 0L, StatusSemantic.TRANSIT, normalization);
+    }
+
+    private void assertDeliveryLive(String company, String waybill) {
+        List<Notification> posted = Shadows.shadowOf(context.getSystemService(NotificationManager.class)).getAllNotifications();
+        Notification live = posted.stream().filter(n -> "express_live".equals(n.getChannelId())).findFirst().orElseThrow();
+        assertEquals("派送中 1 件", live.extras.getCharSequence(Notification.EXTRA_TITLE).toString());
+        String body = live.extras.getCharSequence(Notification.EXTRA_BIG_TEXT).toString().replace("\u200B", "");
+        assertTrue(body, body.startsWith(company + " · " + waybill));
+        assertTrue(posted.stream().noneMatch(n -> "express_delivery".equals(n.getChannelId())));
     }
 
     private List<String> postedTitles() {

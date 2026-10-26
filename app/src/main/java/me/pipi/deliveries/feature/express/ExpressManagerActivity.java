@@ -20,6 +20,7 @@ import me.pipi.deliveries.R;
 import me.pipi.deliveries.background.ExpressScheduler;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.network.ExpressAccountSource;
+import me.pipi.deliveries.notification.ExpressLiveNotifications;
 import me.pipi.deliveries.widget.ExpressWidgetProvider;
 
 import java.util.ArrayList;
@@ -41,6 +42,18 @@ public final class ExpressManagerActivity extends AppCompatActivity {
         MaterialToolbar toolbar = findViewById(R.id.top_app_bar);
         toolbar.setNavigationOnClickListener(view -> finish());
         toolbar.setOnClickListener(view -> onTitleTapped());
+        com.google.android.material.materialswitch.MaterialSwitch delivery = findViewById(R.id.live_delivery);
+        com.google.android.material.materialswitch.MaterialSwitch pickup = findViewById(R.id.live_pickup);
+        delivery.setChecked(ExpressLiveNotifications.deliveryEnabled(this));
+        pickup.setChecked(ExpressLiveNotifications.pickupEnabled(this));
+        delivery.setOnCheckedChangeListener((button, enabled) -> {
+            ExpressLiveNotifications.setDeliveryEnabled(this, enabled);
+            ExpressRepository.get(this).requestPendingNotificationReplay();
+        });
+        pickup.setOnCheckedChangeListener((button, enabled) -> {
+            ExpressLiveNotifications.setPickupEnabled(this, enabled);
+            ExpressRepository.get(this).requestPendingNotificationReplay();
+        });
         ListView list = findViewById(android.R.id.list);
         list.setEmptyView(findViewById(R.id.phone_empty));
         adapter = new PhoneAdapter();
@@ -89,6 +102,7 @@ public final class ExpressManagerActivity extends AppCompatActivity {
         if (titleTapCount < 3) return;
         titleTapCount = 0;
         String selected = ExpressAccountSource.toggle(this);
+        ExpressRepository.get(this).requestPendingNotificationReplay();
         reloadPhones();
         ExpressWidgetProvider.refreshAll(this);
         ExpressScheduler.requestNow(this);
