@@ -8,6 +8,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.TextPaint;
@@ -430,7 +431,15 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             surface = androidx.core.graphics.ColorUtils.compositeColors(fill, surface);
             tinted = androidx.core.graphics.ColorUtils.compositeColors(fill, tinted);
         }
-        return ExpressStatusColors.textOn(status, surface, tinted);
+        int text = ExpressStatusColors.textOn(status, surface, tinted);
+        // Daytime badges use the approved midpoint; night keeps the full contrast tone.
+        if (badge && (context.getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK) != Configuration.UI_MODE_NIGHT_YES) {
+            return Color.rgb((Color.red(status) + Color.red(text) + 1) / 2,
+                    (Color.green(status) + Color.green(text) + 1) / 2,
+                    (Color.blue(status) + Color.blue(text) + 1) / 2);
+        }
+        return text;
     }
 
     static final class StatusStyle {

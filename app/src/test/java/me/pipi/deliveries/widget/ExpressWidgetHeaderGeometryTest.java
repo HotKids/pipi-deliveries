@@ -93,7 +93,8 @@ public final class ExpressWidgetHeaderGeometryTest {
                 int badgeSurface = androidx.core.graphics.ColorUtils.compositeColors(
                         0x1a3275d6, context.getColor(R.color.widget_surface));
                 assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
-                        status.getCurrentTextColor(), badgeSurface) >= 4.5);
+                        status.getCurrentTextColor(), badgeSurface)
+                        >= androidx.core.graphics.ColorUtils.calculateContrast(0xff3275d6, badgeSurface));
                 ExpressWidgetRowPolicy.RowLayout expected = ExpressWidgetRowPolicy.calculate(3, 220f,
                         context.getResources().getDisplayMetrics().density,
                         CardSizeProfile.fromWidth(width).typography.lineBox(
@@ -198,7 +199,9 @@ public final class ExpressWidgetHeaderGeometryTest {
                         if (!compact) background = androidx.core.graphics.ColorUtils.compositeColors(
                                 0x1afbc02d, background);
                         assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
-                                status.getCurrentTextColor(), background) >= 4.5);
+                                status.getCurrentTextColor(), background)
+                                >= (!compact && hostMode == Configuration.UI_MODE_NIGHT_NO
+                                ? androidx.core.graphics.ColorUtils.calculateContrast(0xfffbc02d, background) : 4.5));
                     }
                 }
             }

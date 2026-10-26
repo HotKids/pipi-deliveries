@@ -213,7 +213,7 @@ const STATUS_RGB: Readonly<Record<string, number>> = {
   secondaryLabel: 0x757575,
 };
 
-function blendStatusColor(color: number, target: number, amount: number): number {
+export function blendStatusColor(color: number, target: number, amount: number): number {
   let result = 0;
   for (const shift of [16, 8, 0]) {
     const from = (color >> shift) & 255;

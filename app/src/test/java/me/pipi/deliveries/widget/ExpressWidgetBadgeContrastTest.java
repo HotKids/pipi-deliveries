@@ -5,6 +5,7 @@ import static org.junit.Assert.assertTrue;
 
 import android.app.Application;
 import android.content.Context;
+import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.view.View;
@@ -43,7 +44,7 @@ public class ExpressWidgetBadgeContrastTest {
         RuntimeEnvironment.setQualifiers("port-notnight-mdpi");
     }
 
-    @Test public void everyStatusRemainsReadableAcrossEveryCarrierGradient() {
+    @Test public void everyStatusUsesApprovedLightMidpointAndReadableNightTones() {
         for (boolean night : new boolean[] {false, true}) {
             RuntimeEnvironment.setQualifiers(qualifiers(night));
             Context context = RuntimeEnvironment.getApplication();
@@ -60,16 +61,25 @@ public class ExpressWidgetBadgeContrastTest {
                         badge.getCornerRadius(), 0f);
                 for (int brand : CARRIER_ACCENTS) {
                     int text = ExpressWidgetProvider.statusTextColor(context, item, brand, true);
+                    int tinted = ColorUtils.compositeColors(
+                            ColorUtils.setAlphaComponent(brand, 0x55), surface);
+                    int contrasted = ExpressStatusColors.textOn(style.foreground,
+                            ColorUtils.compositeColors(fill, surface),
+                            ColorUtils.compositeColors(fill, tinted));
+                    int expected = night ? contrasted : Color.rgb(
+                            Math.round((Color.red(style.foreground) + Color.red(contrasted)) / 2f),
+                            Math.round((Color.green(style.foreground) + Color.green(contrasted)) / 2f),
+                            Math.round((Color.blue(style.foreground) + Color.blue(contrasted)) / 2f));
+                    assertEquals("Use the approved 50% daylight tone; retain night contrast", expected, text);
                     for (int opacity = 0; opacity <= 0x55; opacity++) {
                         int gradient = ColorUtils.compositeColors(
                                 ColorUtils.setAlphaComponent(brand, opacity), surface);
                         int painted = ColorUtils.compositeColors(fill, gradient);
                         assertTrue(semantic + " night=" + night + " brand="
                                         + Integer.toHexString(brand) + " opacity=" + opacity,
-                                ColorUtils.calculateContrast(text, painted) >= 4.5);
+                                ColorUtils.calculateContrast(text, painted) >= (night ? 4.5
+                                        : ColorUtils.calculateContrast(style.foreground, painted)));
                     }
-                    int tinted = ColorUtils.compositeColors(
-                            ColorUtils.setAlphaComponent(brand, 0x55), surface);
                     assertEquals("The 2x2 non-badge path is unchanged",
                             ExpressStatusColors.textOn(style.foreground, surface, tinted),
                             ExpressWidgetProvider.statusTextColor(context, item, brand, false));
