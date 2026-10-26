@@ -35,7 +35,7 @@ for (const semantic of semantics) {
 }
 assert.equal(statusTint("ORDERED"), "systemYellow");
 assert.equal(statusTint("COMPLETED"), "systemTeal");
-console.log("status text contrast: app and sender badge contrast passed; wide widget uses Lite semantic colors");
+console.log("status text contrast: app and sender badge contrast passed");
 
 const liteColors: Record<string, number> = {
   ORDERED: 0xfbc02d, SHIPPED: 0xfbc02d, PICKED: 0x3275d6, TRANSIT: 0x3275d6,
@@ -43,8 +43,19 @@ const liteColors: Record<string, number> = {
   DANGER: 0xd43d3d, CANCELLED: 0x757575, UNKNOWN: 0x757575,
 };
 for (const semantic of semantics) {
-  const style = widgetStatusStyle(semantic);
-  assert.equal(style.foreground, `#${liteColors[semantic].toString(16).padStart(6, "0")}`);
-  assert.equal(Number(style.background.match(/[\d.]+/g)![3]), 0x1a / 255);
-  assert.deepEqual(style.background.match(/[\d.]+/g)!.slice(0, 3).map(Number), rgb(liteColors[semantic]));
+  for (const brand of ["#3B2000", "#00519E", "#F39400", "#FF2600", "#D32B2C", "#FA0352", "#E33C24", "#762E97", "#E3373F", "#F57A00", "#72388A", "#F7CD23", "#581A7E", "#008E4F", "#009D51", "#0480BB", "#3482FF"]) {
+    const style = widgetStatusStyle(semantic, brand);
+    assert.equal(Number(style.background.match(/[\d.]+/g)![3]), 0x1a / 255);
+    assert.deepEqual(style.background.match(/[\d.]+/g)!.slice(0, 3).map(Number), rgb(liteColors[semantic]));
+    for (const [mode, surface] of [["light", 0xffffff], ["dark", 0x1c1c1e]] as const) {
+      for (let alpha = 0; alpha <= 0x55; alpha++) {
+        const background = rgb(surface).map((c, i) => {
+          const tinted = Math.round(c + (rgb(parseInt(brand.slice(1), 16))[i] - c) * alpha / 255);
+          return Math.round(tinted + (rgb(liteColors[semantic])[i] - tinted) * 0x1a / 255);
+        });
+        check(style.foreground[mode], background, `${semantic} ${brand} ${mode} gradient=${alpha}`);
+      }
+    }
+  }
 }
+console.log("widget badge contrast: semantic fills retained; all carrier gradients passed");

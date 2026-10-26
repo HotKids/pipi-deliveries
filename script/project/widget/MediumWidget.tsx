@@ -24,6 +24,7 @@ import {
 
 function Row(props: {
   row: WidgetRow;
+  brandAccent: string;
   openURL: string;
   height: number;
   iconSize: number;
@@ -31,7 +32,7 @@ function Row(props: {
   frameAlignment: "center" | "bottom";
   detailLineLimit: number | null;
 }) {
-  const statusStyle = widgetStatusStyle(props.row.semantic);
+  const statusStyle = widgetStatusStyle(props.row.semantic, props.brandAccent);
   return (
     <Link url={props.openURL}>
       <HStack
@@ -182,6 +183,7 @@ export function MediumWidget(props: {
               <Row
                 key={row.shipmentId}
                 row={row}
+                brandAccent={accent}
                 openURL={props.openShipmentURL(row.shipmentId)}
                 height={placement.rowHeight}
                 iconSize={layout.iconSize}

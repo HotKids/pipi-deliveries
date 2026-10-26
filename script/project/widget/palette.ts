@@ -1,6 +1,6 @@
 import { courierIconName } from "../services/carrier-presentation";
 import type { StatusSemantic } from "../models";
-import { statusTint } from "../services/status";
+import { statusTextTint, statusTint } from "../services/status";
 
 // Wide widget badges follow Lite's ExpressStatusColors; other surfaces retain system colors.
 const WIDGET_STATUS_RGB: Readonly<Record<string, number>> = {
@@ -9,12 +9,12 @@ const WIDGET_STATUS_RGB: Readonly<Record<string, number>> = {
   secondaryLabel: 0x757575,
 };
 
-export function widgetStatusStyle(semantic: StatusSemantic) {
+export function widgetStatusStyle(semantic: StatusSemantic, brandAccent: string) {
   const accent = WIDGET_STATUS_RGB[statusTint(semantic)] ?? WIDGET_STATUS_RGB.secondaryLabel;
   const opacity = 0x1a / 255;
   return {
     background: `rgba(${accent >> 16 & 255}, ${accent >> 8 & 255}, ${accent & 255}, ${opacity})`,
-    foreground: `#${accent.toString(16).padStart(6, "0")}`,
+    foreground: statusTextTint(semantic, { brandAccent, badgeOpacity: opacity, accentRGB: accent }),
   };
 }
 
