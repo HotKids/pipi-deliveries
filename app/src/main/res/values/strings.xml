@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="notification_channel_live">快递实时活动</string>
+    <string name="notification_channel_live_description">派送中与待取件快递的实时信息</string>
+    <string name="live_delivery">派件信息</string>
+    <string name="live_pickup">取件提醒</string>
     <string name="assistant_app_name">Deliveries</string>
     <string name="home_title">我的快递</string>
     <string name="card_settings_express_title">快递动态</string>

@@ -21,6 +21,7 @@ public final class DeliveriesApp extends Application {
         CarrierAuthority.initialize(this);
         DynamicColors.applyToActivitiesIfAvailable(this);
         ExpressNotifications.ensureChannels(this);
+        me.pipi.deliveries.notification.ExpressLiveNotifications.ensureChannel(this);
         ExpressScheduler.ensureScheduled(this);
         // 用户 2026-10-02: in this process, a repository commit is followed by the status alignment check.
         ExpressStatusAlignment.enableLiveChecks();
@@ -33,6 +34,7 @@ public final class DeliveriesApp extends Application {
                 ExpressRepository repository = ExpressRepository.get(this);
                 repository.runPendingMigrations();
                 repository.pruneExpiredShipmentsIfDue();
+                repository.reconcileLiveNotifications();
                 repository.replayPendingNotifications();
             } catch (Throwable failure) {
                 Log.w(TAG, "Local maintenance failed; a later worker will retry", failure);

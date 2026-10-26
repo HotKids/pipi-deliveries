@@ -22,7 +22,11 @@ import org.robolectric.util.ReflectionHelpers;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 31, application = Application.class, shadows = ColdHomeLoadTest.Scheduler.class)
 public final class ColdHomeLoadTest {
-    @Test public void theFirstLifecycleQueuesOneLocalReadAndReturningQueuesAnother() {
+    @Test public void theFirstLifecycleQueuesOneLocalReadAndReturningQueuesAnother() throws Exception {
+        Application app = org.robolectric.RuntimeEnvironment.getApplication();
+        // Match ExpressListReceiverPrivacyTest: Robolectric does not grant declared signature permissions.
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(
+                app.getPackageName() + ".DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION");
         ActivityController<ExpressListActivity> controller = Robolectric.buildActivity(ExpressListActivity.class);
         QueuedReads reads = new QueuedReads();
         ReflectionHelpers.setField(controller.get(), "databaseWorker", reads);
@@ -31,6 +35,14 @@ public final class ColdHomeLoadTest {
         controller.stop().start();
         assertEquals("a later return still reloads persisted state", 2, reads.tasks.size());
         controller.stop().destroy();
+        awaitPublications();
+    }
+
+    static void awaitPublications() throws Exception {
+        // Keep background publication inside this test's lifetime, before Robolectric removes its runtime.
+        java.util.concurrent.ExecutorService worker = ReflectionHelpers.getStaticField(
+                me.pipi.deliveries.data.ExpressRepository.class, "PUBLICATION_WORKER");
+        worker.submit(() -> {}).get(3L, TimeUnit.SECONDS);
     }
 
     @Implements(value = ExpressScheduler.class, isInAndroidSdk = false)

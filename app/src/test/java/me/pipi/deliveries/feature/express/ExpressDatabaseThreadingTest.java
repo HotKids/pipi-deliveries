@@ -38,6 +38,7 @@ public class ExpressDatabaseThreadingTest {
     @Implements(value = ExpressRepository.class, isInAndroidSdk = false)
     public static class RepositoryShadow {
         static CountDownLatch read;
+        static CountDownLatch homeRead;
         static volatile CountDownLatch release;
         static final AtomicBoolean mainThread = new AtomicBoolean();
 
@@ -79,6 +80,7 @@ public class ExpressDatabaseThreadingTest {
 
         @Implementation protected ExpressRepository.HomeRows homeRows(String source) {
             recordRead();
+            homeRead.countDown();
             return org.robolectric.util.ReflectionHelpers.callConstructor(ExpressRepository.HomeRows.class,
                     org.robolectric.util.ReflectionHelpers.ClassParameter.from(List.class, Collections.emptyList()),
                     org.robolectric.util.ReflectionHelpers.ClassParameter.from(List.class, Collections.emptyList()));
@@ -91,7 +93,12 @@ public class ExpressDatabaseThreadingTest {
     }
 
     @Before public void reset() {
+        Application app = RuntimeEnvironment.getApplication();
+        // Match the existing receiver-privacy fixture without bypassing registration or database reads.
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(
+                app.getPackageName() + ".DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION");
         RepositoryShadow.read = new CountDownLatch(1);
+        RepositoryShadow.homeRead = new CountDownLatch(1);
         RepositoryShadow.release = null;
         RepositoryShadow.mainThread.set(false);
     }
@@ -101,11 +108,17 @@ public class ExpressDatabaseThreadingTest {
         assertFalse(RepositoryShadow.mainThread.get());
     }
 
+    @org.junit.After public void finishPublications() throws Exception {
+        ColdHomeLoadTest.awaitPublications();
+    }
+
     @Test public void listLoadsItsRowsAwayFromMainThread() throws Exception {
         ActivityController<ExpressListActivity> activity = Robolectric.buildActivity(ExpressListActivity.class);
         activity.get().setTheme(R.style.AppTheme);
         try {
             activity.create().start();
+            assertTrue("the Home read itself must complete, not just live publication",
+                    RepositoryShadow.homeRead.await(3L, TimeUnit.SECONDS));
             assertBackgroundRead();
         } finally { activity.stop().destroy(); }
     }

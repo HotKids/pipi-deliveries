@@ -195,11 +195,14 @@ public final class StatusAlignmentPresentationTest {
         assertEquals(StatusSemantic.PICKED, repository.find(owner.rowId).semantic);
         List<Notification> posted = Shadows.shadowOf(context.getSystemService(NotificationManager.class))
                 .getAllNotifications();
-        assertEquals(1, posted.size());
+        assertEquals("the displayed delivery also owns one aggregate live surface", 2, posted.size());
+        Notification ordinary = posted.stream().filter(n -> "express_picked".equals(n.getChannelId())).findFirst().orElseThrow();
+        Notification live = posted.stream().filter(n -> "express_live".equals(n.getChannelId())).findFirst().orElseThrow();
+        assertEquals("派送中 1 件", live.extras.getCharSequence(Notification.EXTRA_TITLE).toString());
         assertEquals("the display override cannot change the notification channel", "express_picked",
-                posted.get(0).getChannelId());
+                ordinary.getChannelId());
         assertTrue("the notification title must use the list's promoted display status",
-                posted.get(0).extras.getCharSequence(Notification.EXTRA_TITLE).toString().contains("派送中"));
+                ordinary.extras.getCharSequence(Notification.EXTRA_TITLE).toString().contains("派送中"));
     }
 
     @Test public void aKnownCoarseHeadlineWaitsForFinishedAlignmentBeforeUsingItsStatusDonor() throws Exception {

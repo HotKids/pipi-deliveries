@@ -86,6 +86,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private static final String ORDER_LOG_TAG = "ExpressOrderProjection";
     private static final String MANUAL_LOG_TAG = "ExpressManualTimeline";
     public static final String EXTRA_ROW_ID = "express_row_id";
+    public static final String EXTRA_MISSING_OPENS_LIST = "express_missing_opens_list";
     private static final String EXTRA_MANUAL_QUERY = "first_manual_query";
     private static final String EXTRA_MANUAL_COURIER_HINT = "manual_courier_hint";
     static final int RESULT_PHONE_TAIL_REQUIRED = RESULT_FIRST_USER;
@@ -341,6 +342,10 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     private void showInitialDetail() {
         if (item == null) {
+            if (getIntent().getBooleanExtra(EXTRA_MISSING_OPENS_LIST, false)) {
+                startActivity(new Intent(this, ExpressListActivity.class)
+                        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP));
+            }
             finish();
             return;
         }

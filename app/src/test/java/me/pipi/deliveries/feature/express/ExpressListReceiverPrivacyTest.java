@@ -53,6 +53,7 @@ public final class ExpressListReceiverPrivacyTest {
             }
         } finally {
             controller.stop().destroy();
+            ColdHomeLoadTest.awaitPublications();
         }
         assertFalse(Shadows.shadowOf(app).hasReceiverForIntent(
                 new android.content.Intent(ExpressRepository.ACTION_CHANGED)));

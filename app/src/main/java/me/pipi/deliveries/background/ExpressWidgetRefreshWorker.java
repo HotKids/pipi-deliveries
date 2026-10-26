@@ -17,6 +17,7 @@ public final class ExpressWidgetRefreshWorker extends Worker {
     @NonNull @Override public Result doWork() {
         try {
             ExpressRepository.get(getApplicationContext()).runPendingMigrations();
+            ExpressRepository.get(getApplicationContext()).reconcileLiveNotifications();
             ExpressWidgetProvider.refreshAll(getApplicationContext());
             String source = me.pipi.deliveries.network.ExpressAccountSource.bindingSource(getApplicationContext());
             if (!ExpressScheduler.hasRecentNetworkSuccess(getApplicationContext(), source, System.currentTimeMillis())) {

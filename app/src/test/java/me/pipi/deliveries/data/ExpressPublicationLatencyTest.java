@@ -103,6 +103,34 @@ public final class ExpressPublicationLatencyTest {
         assertNotNull(repository.findByWaybill("SFLATENCY0001", "interface5"));
     }
 
+    @Test public void blockedLivePublicationCannotSurviveConcurrentDeletion() throws Exception {
+        BlockingWidgets.release.countDown();
+        BlockingNotifications.entered = new CountDownLatch(1);
+        BlockingNotifications.release = new CountDownLatch(1);
+        repository.saveManualQueryResult(result("SFLIVEDELETE0001", StatusSemantic.DELIVERY), "", "interface5");
+        assertTrue(BlockingNotifications.entered.await(2L, TimeUnit.SECONDS));
+        long id = repository.findByWaybill("SFLIVEDELETE0001", "interface5").rowId;
+        caller.submit(() -> repository.delete(id)).get(1L, TimeUnit.SECONDS);
+        assertNull(repository.find(id));
+        BlockingNotifications.release.countDown();
+        drain();
+        assertEquals(0, context.getSystemService(android.app.NotificationManager.class).getActiveNotifications().length);
+    }
+
+    @Test public void settingChangeDuringNotifyInvalidatesItsSnapshotWithoutARepositoryWrite() throws Exception {
+        BlockingWidgets.release.countDown();
+        BlockingNotifications.entered = new CountDownLatch(1);
+        BlockingNotifications.release = new CountDownLatch(1);
+        repository.saveManualQueryResult(result("SFLIVESETTING0001", StatusSemantic.DELIVERY), "", "interface5");
+        assertTrue(BlockingNotifications.entered.await(2L, TimeUnit.SECONDS));
+        long version = repository.invalidationVersion();
+        me.pipi.deliveries.notification.ExpressLiveNotifications.setDeliveryEnabled(context, false);
+        assertEquals(version, repository.invalidationVersion());
+        BlockingNotifications.release.countDown();
+        drain();
+        assertEquals(0, context.getSystemService(android.app.NotificationManager.class).getActiveNotifications().length);
+    }
+
     @Test public void deferredNotificationsKeepTheirOutboxAndCannotReviveADeletedOwner() throws Exception {
         java.util.concurrent.Future<?> saved = caller.submit(() -> repository.saveManualQueryResult(
                 result("SFLATENCY0002", StatusSemantic.TRANSIT), "", "interface5"));
