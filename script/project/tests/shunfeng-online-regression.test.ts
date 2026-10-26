@@ -277,6 +277,29 @@ test("a future incoming SF clock cannot supersede the valid accepted pair", () =
   assert.equal(after.timeline.statusEventAtMs, recent);
   assert.equal(after.manualTimelines?.find(p => p.provider === "v6_query")?.statusEventAtMs, NOW + 3600000);
 });
+test("retained future SF evidence becomes eligible when its clock arrives", () => {
+  const futureAt = NOW + 3_600_000;
+  const before = row(packet("interface5", recent, "TRANSIT"));
+  before.sourceTimeline = before.timeline;
+  before.manualTimelines = [];
+  const future = packet("v6_query", futureAt, "DELIVERY");
+  const raw = structuredClone(future);
+  const retained = applyManualShipment(before, incoming(before, future), NOW);
+  assert.equal(retained.timeline.semantic, "TRANSIT");
+  assert.equal(retained.timeline.statusEventAtMs, recent);
+  assert.deepEqual(retained.manualTimelines?.find(p => p.provider === "v6_query"), raw);
+
+  Date.now = () => futureAt;
+  try {
+    const selected = selectShipmentTimeline(retained);
+    assert.equal(selected.semantic, "DELIVERY");
+    assert.equal(selected.statusEventAtMs, futureAt);
+    assert.deepEqual(selected.tracks, raw.tracks);
+    assert.deepEqual(retained.manualTimelines?.find(p => p.provider === "v6_query"), raw);
+  } finally {
+    Date.now = () => NOW;
+  }
+});
 test("an undated structured signing can replace undated transit", () => {
   const before = row(packet("kdniao", 0, "TRANSIT")); before.manualTimelines = [];
   before.sourceTimeline = packet("interface5", 0, "TRANSIT");

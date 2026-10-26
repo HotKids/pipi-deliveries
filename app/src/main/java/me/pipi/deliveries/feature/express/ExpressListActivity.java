@@ -2,7 +2,6 @@ package me.pipi.deliveries.feature.express;
 
 import me.pipi.deliveries.model.ExpressTimeline;
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.app.Dialog;
 import android.content.BroadcastReceiver;
 import android.content.res.ColorStateList;
@@ -42,6 +41,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.RequiresApi;
+import androidx.core.content.ContextCompat;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import com.google.android.material.appbar.MaterialToolbar;
@@ -274,7 +274,6 @@ public final class ExpressListActivity extends AppCompatActivity {
         }
     }
 
-    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     @Override
     protected void onStart() {
         super.onStart();
@@ -286,11 +285,7 @@ public final class ExpressListActivity extends AppCompatActivity {
         if (!receiverRegistered) {
             IntentFilter filter = new IntentFilter(ExpressRepository.ACTION_CHANGED);
             filter.addAction(ExpressRepository.ACTION_SYNC_FINISHED);
-            if (Build.VERSION.SDK_INT >= 33) {
-                registerReceiver(changes, filter, Context.RECEIVER_NOT_EXPORTED);
-            } else {
-                registerReceiver(changes, filter);
-            }
+            ContextCompat.registerReceiver(this, changes, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
             receiverRegistered = true;
         }
         reload();
