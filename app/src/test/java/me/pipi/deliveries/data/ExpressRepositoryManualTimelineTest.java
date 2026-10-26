@@ -81,6 +81,24 @@ public final class ExpressRepositoryManualTimelineTest {
     }
 
     @Test
+    public void shunFengZeroClockDeliveryCannotRegressToZeroClockTransit() {
+        ExpressItem owner = owner(83L, "13900001234", "INTERFACE5", "ShunFeng",
+                StatusSemantic.DELIVERY, false, 0L, 0L);
+        ManualTimelineAuthorityPolicy.Candidate online = explicitCandidate("v6_query", 200L,
+                StatusSemantic.TRANSIT, 0L, "2026-08-24 12:30:00",
+                "Synthetic transit", "0", true, true);
+
+        ExpressItem shown = ExpressRepository.projectManualTimeline(owner, online);
+
+        assertEquals(StatusSemantic.DELIVERY, shown.semantic);
+        assertEquals(0L, shown.statusEventTime);
+        assertEquals(owner.statusDescription, shown.statusDescription);
+        assertEquals(online.result.tracksJson, shown.tracksJson);
+        assertEquals(StatusSemantic.TRANSIT, online.result.semantic);
+        assertEquals(0L, online.result.statusEventTime);
+    }
+
+    @Test
     public void shunFengFutureClockDoesNotBlockCorrectionAndUnknownZeroCanBorrowStatus() {
         for (StatusSemantic semantic : new StatusSemantic[]{StatusSemantic.DELIVERY, StatusSemantic.UNKNOWN}) {
             long accepted = semantic == StatusSemantic.UNKNOWN ? 0L : System.currentTimeMillis() + 86_400_000L;
