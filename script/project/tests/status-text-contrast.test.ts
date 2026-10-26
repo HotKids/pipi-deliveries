@@ -16,9 +16,12 @@ function luminance(channels: number[]): number {
     return sum + (c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4) * [.2126, .7152, .0722][i];
   }, 0);
 }
-function check(text: string, background: number[], description: string) {
+function contrast(text: string, background: number[]): number {
   const values = [luminance(rgb(parseInt(text.slice(1), 16))), luminance(background)].sort((a, b) => a - b);
-  assert.ok((values[1] + .05) / (values[0] + .05) >= 4.5, description);
+  return (values[1] + .05) / (values[0] + .05);
+}
+function check(text: string, background: number[], description: string, minimum = 4.5) {
+  assert.ok(contrast(text, background) >= minimum, description);
 }
 const semantics: StatusSemantic[] = ["ORDERED", "SHIPPED", "PICKED", "TRANSIT", "DELIVERY", "WAITING_PICKUP", "COMPLETED", "DANGER", "CANCELLED", "UNKNOWN"];
 for (const semantic of semantics) {
@@ -45,6 +48,13 @@ const liteColors: Record<string, number> = {
 for (const semantic of semantics) {
   for (const brand of ["#3B2000", "#00519E", "#F39400", "#FF2600", "#D32B2C", "#FA0352", "#E33C24", "#762E97", "#E3373F", "#F57A00", "#72388A", "#F7CD23", "#581A7E", "#008E4F", "#009D51", "#0480BB", "#3482FF"]) {
     const style = widgetStatusStyle(semantic, brand);
+    const adjusted = statusTextTint(semantic, { brandAccent: brand, badgeOpacity: 0x1a / 255, accentRGB: liteColors[semantic] });
+    const rawText = `#${liteColors[semantic].toString(16).padStart(6, "0")}`;
+    const original = rgb(liteColors[semantic]);
+    const corrected = rgb(parseInt(adjusted.light.slice(1), 16));
+    const midpoint = `#${original.map((c, i) => Math.round((c + corrected[i]) / 2).toString(16).padStart(2, "0")).join("")}`;
+    assert.equal(style.foreground.light, midpoint);
+    assert.equal(style.foreground.dark, adjusted.dark);
     assert.equal(Number(style.background.match(/[\d.]+/g)![3]), 0x1a / 255);
     assert.deepEqual(style.background.match(/[\d.]+/g)!.slice(0, 3).map(Number), rgb(liteColors[semantic]));
     for (const [mode, surface] of [["light", 0xffffff], ["dark", 0x1c1c1e]] as const) {
@@ -53,9 +63,10 @@ for (const semantic of semantics) {
           const tinted = Math.round(c + (rgb(parseInt(brand.slice(1), 16))[i] - c) * alpha / 255);
           return Math.round(tinted + (rgb(liteColors[semantic])[i] - tinted) * 0x1a / 255);
         });
-        check(style.foreground[mode], background, `${semantic} ${brand} ${mode} gradient=${alpha}`);
+        check(style.foreground[mode], background, `${semantic} ${brand} ${mode} gradient=${alpha}`,
+          mode === "light" ? contrast(rawText, background) : 4.5);
       }
     }
   }
 }
-console.log("widget badge contrast: semantic fills retained; all carrier gradients passed");
+console.log("widget badge contrast: light midpoint, dark contrast and unchanged fills passed");
