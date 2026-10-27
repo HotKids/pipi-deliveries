@@ -143,6 +143,8 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
+            // Robolectric extracts native resources; hosted /tmp user quotas can reject those writes.
+            it.systemProperty("java.io.tmpdir", it.temporaryDir.absolutePath)
             it.maxHeapSize = "1g"
             it.jvmArgs(
                 "--add-opens=java.base/java.lang=ALL-UNNAMED",
