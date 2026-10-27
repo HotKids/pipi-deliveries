@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Git-owned working files shared by packaging and mirror version preparation."""
+"""Package files from the Git index, or a source archive without a work tree."""
 import argparse
 import os
 from pathlib import Path
@@ -17,11 +17,27 @@ def is_ios_file(path):
 
 
 def package_files(project):
-    indexed = subprocess.check_output(["git", "ls-files", "--cached", "-z", "--", ".", "../README.md"],
-                                      cwd=project)
+    project = project.resolve()
+    ceilings = {Path(path).resolve() for path in os.environ.get("GIT_CEILING_DIRECTORIES", "").split(os.pathsep)
+                if path}
+    git_owned = bool(os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE"))
+    for parent in (project, *project.parents):
+        if parent != project and parent in ceilings:
+            break
+        if os.path.lexists(parent / ".git"):
+            git_owned = True
+            break
+    if git_owned:
+        # Broken metadata or a missing Git executable must not include untracked files.
+        indexed = subprocess.check_output(
+            ["git", "ls-files", "--cached", "-z", "--", ".", "../README.md"],
+            cwd=project, stderr=subprocess.PIPE)
+        paths = (os.fsdecode(raw) for raw in indexed.split(b"\0"))
+    else:
+        paths = ["../README.md", *(path.relative_to(project).as_posix()
+                                  for path in project.rglob("*") if path.is_file())]
     files = {}
-    for raw in indexed.split(b"\0"):
-        path = os.fsdecode(raw)
+    for path in paths:
         relative = "README.md" if path == "../README.md" else path
         source = project / path
         if (path == "../README.md" or is_ios_file(path)) and source.is_file():

@@ -19,14 +19,9 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:minHeight="48dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
         android:text="@string/live_pickup" />
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/live_pickup_summary"
-        android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
-        android:textColor="?attr/colorOnSurfaceVariant" />
 
     <com.google.android.material.materialswitch.MaterialSwitch
         android:id="@+id/live_delivery"
@@ -34,14 +29,9 @@
         android:layout_height="wrap_content"
         android:minHeight="48dp"
         android:layout_marginTop="8dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
         android:text="@string/live_delivery" />
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/live_delivery_summary"
-        android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
-        android:textColor="?attr/colorOnSurfaceVariant" />
 
     <TextView
         android:layout_width="match_parent"

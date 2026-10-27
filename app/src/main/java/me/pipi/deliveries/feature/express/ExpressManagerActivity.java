@@ -2,6 +2,10 @@ package me.pipi.deliveries.feature.express;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.TextAppearanceSpan;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -15,6 +19,8 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.color.MaterialColors;
+import com.google.android.material.materialswitch.MaterialSwitch;
 
 import me.pipi.deliveries.R;
 import me.pipi.deliveries.background.ExpressScheduler;
@@ -44,11 +50,14 @@ public final class ExpressManagerActivity extends AppCompatActivity {
         toolbar.setNavigationOnClickListener(view -> finish());
         toolbar.setOnClickListener(view -> onTitleTapped());
         ListView list = findViewById(android.R.id.list);
+        list.setItemsCanFocus(true);
         View header = getLayoutInflater().inflate(R.layout.header_express_manager, list, false);
         list.addHeaderView(header, null, false);
         phoneEmpty = header.findViewById(R.id.phone_empty);
-        com.google.android.material.materialswitch.MaterialSwitch delivery = header.findViewById(R.id.live_delivery);
-        com.google.android.material.materialswitch.MaterialSwitch pickup = header.findViewById(R.id.live_pickup);
+        MaterialSwitch delivery = header.findViewById(R.id.live_delivery);
+        MaterialSwitch pickup = header.findViewById(R.id.live_pickup);
+        setSwitchSummary(delivery, R.string.live_delivery_summary);
+        setSwitchSummary(pickup, R.string.live_pickup_summary);
         delivery.setChecked(ExpressLiveNotifications.deliveryEnabled(this));
         pickup.setChecked(ExpressLiveNotifications.pickupEnabled(this));
         delivery.setOnCheckedChangeListener((button, enabled) -> {
@@ -63,6 +72,19 @@ public final class ExpressManagerActivity extends AppCompatActivity {
         list.setAdapter(adapter);
         findViewById(R.id.btn_bind_phone).setOnClickListener(view ->
                 startActivity(new Intent(this, ExpressLoginActivity.class)));
+    }
+
+    private void setSwitchSummary(MaterialSwitch toggle, int summaryResource) {
+        CharSequence title = toggle.getText();
+        SpannableString label = new SpannableString(title + "\n" + getString(summaryResource));
+        int summaryStart = title.length() + 1;
+        label.setSpan(new TextAppearanceSpan(this,
+                        com.google.android.material.R.style.TextAppearance_Material3_BodyMedium),
+                summaryStart, label.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        label.setSpan(new ForegroundColorSpan(MaterialColors.getColor(toggle,
+                        com.google.android.material.R.attr.colorOnSurfaceVariant)),
+                summaryStart, label.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        toggle.setText(label);
     }
 
     @Override
