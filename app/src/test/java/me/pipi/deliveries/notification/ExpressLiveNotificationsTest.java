@@ -142,6 +142,45 @@ public class ExpressLiveNotificationsTest {
                 manager.getActiveNotifications()[0].getNotification().getChannelId());
     }
 
+    @Test public void deliveryReplacesOnlyItsRowsEarlierOrdinaryNotification() {
+        for (StatusSemantic previous : new StatusSemantic[]{StatusSemantic.TRANSIT, StatusSemantic.PICKED}) {
+            for (boolean enabled : new boolean[]{true, false}) {
+                manager.cancelAll();
+                ExpressLiveNotifications.setDeliveryEnabled(context, enabled);
+                assertTrue(ExpressNotifications.post(context, item(1, previous)));
+                assertTrue(ExpressNotifications.post(context, item(2, StatusSemantic.WAITING_PICKUP)));
+                assertTrue(ExpressLiveNotifications.sync(context, List.of(item(2, StatusSemantic.WAITING_PICKUP))));
+                assertNotNull(Shadows.shadowOf(manager).getNotification(1));
+                assertEquals(3, manager.getActiveNotifications().length);
+
+                assertTrue(ExpressNotifications.post(context, item(1, StatusSemantic.DELIVERY)));
+                assertNull(Shadows.shadowOf(manager).getNotification(1));
+                assertNotNull(Shadows.shadowOf(manager).getNotification(2));
+                assertNotNull(live());
+                assertTrue(ExpressNotifications.post(context, item(1, StatusSemantic.DELIVERY)));
+                assertEquals(2, manager.getActiveNotifications().length);
+            }
+        }
+    }
+
+    @Test public void deliveryEventCancelsTheRowWithoutCancellingAnotherRowsDeliveryChannel() {
+        assertTrue(ExpressNotifications.post(context, item(1, StatusSemantic.TRANSIT)));
+        manager.createNotificationChannel(new NotificationChannel(ExpressNotifications.CHANNEL_DELIVERY, "legacy", 3));
+        manager.notify(2, new Notification.Builder(context, ExpressNotifications.CHANNEL_DELIVERY)
+                .setSmallIcon(android.R.drawable.ic_dialog_info).build());
+
+        assertTrue(ExpressNotifications.post(context, item(1, StatusSemantic.TRANSIT), StatusSemantic.DELIVERY));
+        assertNull(Shadows.shadowOf(manager).getNotification(1));
+        assertNotNull(Shadows.shadowOf(manager).getNotification(2));
+    }
+
+    @Test public void pickupEventStillPostsWhenTheVisibleRowIsDelivery() {
+        assertTrue(ExpressNotifications.post(context, item(1, StatusSemantic.DELIVERY), StatusSemantic.WAITING_PICKUP));
+        Notification notification = Shadows.shadowOf(manager).getNotification(1);
+        assertNotNull(notification);
+        assertEquals(ExpressNotifications.CHANNEL_WAITING_PICKUP, notification.getChannelId());
+    }
+
     @Test public void existingChannelPreferencesArePreserved() {
         NotificationChannel channel = new NotificationChannel(ExpressLiveNotifications.CHANNEL, "user", 1);
         channel.setSound(android.net.Uri.parse("content://synthetic/tone"), null);

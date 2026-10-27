@@ -32,6 +32,7 @@ public final class ExpressManagerActivity extends AppCompatActivity {
             java.util.concurrent.Executors.newSingleThreadExecutor();
     private int reloadGeneration;
     private PhoneAdapter adapter;
+    private TextView phoneEmpty;
     private int titleTapCount;
     private long lastTitleTapAt;
 
@@ -42,8 +43,12 @@ public final class ExpressManagerActivity extends AppCompatActivity {
         MaterialToolbar toolbar = findViewById(R.id.top_app_bar);
         toolbar.setNavigationOnClickListener(view -> finish());
         toolbar.setOnClickListener(view -> onTitleTapped());
-        com.google.android.material.materialswitch.MaterialSwitch delivery = findViewById(R.id.live_delivery);
-        com.google.android.material.materialswitch.MaterialSwitch pickup = findViewById(R.id.live_pickup);
+        ListView list = findViewById(android.R.id.list);
+        View header = getLayoutInflater().inflate(R.layout.header_express_manager, list, false);
+        list.addHeaderView(header, null, false);
+        phoneEmpty = header.findViewById(R.id.phone_empty);
+        com.google.android.material.materialswitch.MaterialSwitch delivery = header.findViewById(R.id.live_delivery);
+        com.google.android.material.materialswitch.MaterialSwitch pickup = header.findViewById(R.id.live_pickup);
         delivery.setChecked(ExpressLiveNotifications.deliveryEnabled(this));
         pickup.setChecked(ExpressLiveNotifications.pickupEnabled(this));
         delivery.setOnCheckedChangeListener((button, enabled) -> {
@@ -54,8 +59,6 @@ public final class ExpressManagerActivity extends AppCompatActivity {
             ExpressLiveNotifications.setPickupEnabled(this, enabled);
             ExpressRepository.get(this).requestPendingNotificationReplay();
         });
-        ListView list = findViewById(android.R.id.list);
-        list.setEmptyView(findViewById(R.id.phone_empty));
         adapter = new PhoneAdapter();
         list.setAdapter(adapter);
         findViewById(R.id.btn_bind_phone).setOnClickListener(view ->
@@ -85,6 +88,7 @@ public final class ExpressManagerActivity extends AppCompatActivity {
                             || !bindingSource.equals(ExpressAccountSource.bindingSource(this))) return;
                     phones.clear();
                     phones.addAll(fresh);
+                    phoneEmpty.setVisibility(phones.isEmpty() ? View.VISIBLE : View.GONE);
                     adapter.notifyDataSetChanged();
                 });
             } catch (RuntimeException failure) {

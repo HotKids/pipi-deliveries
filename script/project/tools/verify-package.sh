@@ -36,25 +36,7 @@ unzip -q "$ARCHIVE" -d "$TEMP_DIR"
 
 SOURCE_LIST="$TEMP_DIR/.expected-files"
 ARCHIVE_LIST="$TEMP_DIR/.archive-files"
-{
-  printf '%s\n' \
-    script.json \
-    README.md \
-    models.ts \
-    index.tsx \
-    widget.tsx \
-    intent.tsx \
-    app_intents.tsx
-  find \
-    "$PROJECT_DIR/components" \
-    "$PROJECT_DIR/pages" \
-    "$PROJECT_DIR/services" \
-    "$PROJECT_DIR/contracts" \
-    "$PROJECT_DIR/assets" \
-    "$PROJECT_DIR/widget" \
-    -type f \
-    | sed "s#^$PROJECT_DIR/##"
-} | LC_ALL=C sort > "$SOURCE_LIST"
+python3 "$PROJECT_DIR/tools/package-files.py" | LC_ALL=C sort > "$SOURCE_LIST"
 
 find "$TEMP_DIR" -type f \
   ! -name '.expected-files' \

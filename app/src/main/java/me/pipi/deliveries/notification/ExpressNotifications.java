@@ -98,7 +98,7 @@ public final class ExpressNotifications {
         // Lite has no pickup-code notifications: delivery is represented by the live surface,
         // including when that surface is disabled, matching Pipi's no-pickup-info rule.
         if (eventStatus == StatusSemantic.DELIVERY) {
-            clearReplacedDeliveryNotifications(context);
+            cancel(context, item.rowId);
             return true;
         }
         String channelId = channelId(eventStatus);
