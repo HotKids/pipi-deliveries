@@ -36,7 +36,8 @@ unzip -q "$ARCHIVE" -d "$TEMP_DIR"
 
 SOURCE_LIST="$TEMP_DIR/.expected-files"
 ARCHIVE_LIST="$TEMP_DIR/.archive-files"
-python3 "$PROJECT_DIR/tools/package-files.py" | LC_ALL=C sort > "$SOURCE_LIST"
+python3 "$PROJECT_DIR/tools/package-files.py" > "$SOURCE_LIST"
+LC_ALL=C sort -o "$SOURCE_LIST" "$SOURCE_LIST"
 
 find "$TEMP_DIR" -type f \
   ! -name '.expected-files' \
