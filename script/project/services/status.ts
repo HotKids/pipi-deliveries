@@ -234,10 +234,6 @@ export function statusTextTint(
   semantic: StatusSemantic,
   options: { badgeOpacity?: number; brandAccent?: string; accentRGB?: number } = {},
 ): { light: string; dark: string } {
-  // The neutral widget fill is a platform style, so use the highest-contrast neutral text.
-  if (options.brandAccent && options.accentRGB == null && statusTint(semantic) === "secondaryLabel") {
-    return { light: "#000000", dark: "#ffffff" };
-  }
   const accent = options.accentRGB ?? STATUS_RGB[statusTint(semantic)] ?? STATUS_RGB.secondaryLabel;
   const tone = (surface: number): string => {
     const brand = options.brandAccent ? Number.parseInt(options.brandAccent.slice(1), 16) : surface;
