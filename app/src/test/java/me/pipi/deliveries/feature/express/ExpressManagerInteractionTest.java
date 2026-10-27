@@ -5,7 +5,12 @@ import static org.junit.Assert.*;
 import android.app.Application;
 import android.content.Context;
 import android.os.Looper;
+import android.os.SystemClock;
+import android.view.InputEvent;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ListView;
 import android.widget.TextView;
 import androidx.appcompat.app.AlertDialog;
@@ -31,6 +36,7 @@ import org.robolectric.annotation.GraphicsMode;
 import org.robolectric.annotation.Implementation;
 import org.robolectric.annotation.Implements;
 import org.robolectric.shadows.ShadowDialog;
+import org.robolectric.util.ReflectionHelpers;
 
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 36, manifest = Config.NONE, application = Application.class, qualifiers = "mdpi",
@@ -105,6 +111,81 @@ public class ExpressManagerInteractionTest {
         }
     }
 
+    @Test @Config(sdk = {Config.OLDEST_SDK, 36})
+    public void switchSummariesBelongToTheToggleTargetAndSpokenLabel() throws Exception {
+        RuntimeEnvironment.setFontScale(2f);
+        try (ActivityController<ExpressManagerActivity> controller = open()) {
+            controller.visible().windowFocusChanged(true);
+            Shadows.shadowOf(Looper.getMainLooper()).idle();
+            ExpressManagerActivity activity = controller.get();
+            layout(activity, 360, 640);
+            for (int[] setting : new int[][]{
+                    {R.id.live_pickup, R.string.live_pickup, R.string.live_pickup_summary},
+                    {R.id.live_delivery, R.string.live_delivery, R.string.live_delivery_summary}}) {
+                MaterialSwitch toggle = activity.findViewById(setting[0]);
+                assertTrue(toggle.getText().toString().contains(activity.getString(setting[2])));
+                AccessibilityNodeInfo node = toggle.createAccessibilityNodeInfo();
+                assertTrue(node.isCheckable());
+                assertTrue(node.isChecked());
+                assertTrue(node.isClickable());
+                assertTrue(node.getText().toString().contains(activity.getString(setting[1])));
+                assertTrue(node.getText().toString().contains(activity.getString(setting[2])));
+                assertEquals(0, node.getChildCount());
+                assertTrue(toggle.getHeight() >= toggle.getTotalPaddingTop()
+                        + toggle.getLayout().getHeight() + toggle.getTotalPaddingBottom());
+                int callbacks = Repository.replays.get();
+                float x = toggle.getCompoundPaddingLeft() + 8;
+                float y = toggle.getTotalPaddingTop() + toggle.getLayout().getLineBottom(
+                        toggle.getLayout().getLineCount() - 1) - 2;
+                long now = SystemClock.uptimeMillis();
+                MotionEvent down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0);
+                MotionEvent up = MotionEvent.obtain(now, now + 16, MotionEvent.ACTION_UP, x, y, 0);
+                try {
+                    assertTrue(toggle.dispatchTouchEvent(down));
+                    assertTrue(toggle.dispatchTouchEvent(up));
+                } finally {
+                    down.recycle();
+                    up.recycle();
+                }
+                Shadows.shadowOf(Looper.getMainLooper()).idle();
+                assertFalse(toggle.isChecked());
+                assertFalse(toggle.createAccessibilityNodeInfo().isChecked());
+                assertEquals(callbacks + 1, Repository.replays.get());
+            }
+        }
+    }
+
+    @Test @Config(sdk = {Config.OLDEST_SDK, 36})
+    public void keyboardAndDpadCanReachBothHeaderSwitchesFromTheToolbar() throws Exception {
+        for (int key : new int[]{KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_DPAD_DOWN}) {
+            try (ActivityController<ExpressManagerActivity> controller = open()) {
+                controller.visible().windowFocusChanged(true);
+                Shadows.shadowOf(Looper.getMainLooper()).idle();
+                ExpressManagerActivity activity = controller.get();
+                layout(activity, 360, 640);
+                View decor = activity.getWindow().getDecorView();
+                ArrayList<View> navigation = new ArrayList<>();
+                activity.findViewById(R.id.top_app_bar).findViewsWithText(navigation,
+                        activity.getString(R.string.navigate_back), View.FIND_VIEWS_WITH_CONTENT_DESCRIPTION);
+                assertEquals(1, navigation.size());
+                View back = navigation.get(0);
+                back.setFocusableInTouchMode(true);
+                assertTrue(back.requestFocus());
+                assertEquals(back, decor.findFocus());
+                for (int toggleId : new int[]{R.id.live_pickup, R.id.live_delivery}) {
+                    View toggle = activity.findViewById(toggleId);
+                    for (int attempts = 0; attempts < 6 && decor.findFocus() != toggle; attempts++) {
+                        sendKey(activity, key);
+                    }
+                    assertEquals("Key " + key + " must reach header toggle", toggle, decor.findFocus());
+                    int callbacks = Repository.replays.get();
+                    sendKey(activity, KeyEvent.KEYCODE_DPAD_CENTER);
+                    assertEquals(callbacks + 1, Repository.replays.get());
+                }
+            }
+        }
+    }
+
     @Test public void headerDoesNotShiftUnbindTargetsAndStaysVisibleWhenTheLastPhoneIsRemoved() throws Exception {
         Repository.phones.addAll(List.of("13800000001", "13800000002"));
         try (ActivityController<ExpressManagerActivity> controller = open()) {
@@ -130,6 +211,17 @@ public class ExpressManagerInteractionTest {
             assertEquals(View.VISIBLE, list.getVisibility());
             assertEquals(View.VISIBLE, activity.findViewById(R.id.phone_empty).getVisibility());
             assertNotNull(activity.findViewById(R.id.live_pickup));
+        }
+    }
+
+    private static void sendKey(ExpressManagerActivity activity, int key) {
+        View decor = activity.getWindow().getDecorView();
+        Object viewRoot = ReflectionHelpers.callInstanceMethod(decor, "getViewRootImpl");
+        // Robolectric's UiAutomation stops at View.dispatchKeyEvent and skips focus navigation.
+        for (int action : new int[]{KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP}) {
+            ReflectionHelpers.callInstanceMethod(viewRoot, "enqueueInputEvent",
+                    ReflectionHelpers.ClassParameter.from(InputEvent.class, new KeyEvent(action, key)));
+            Shadows.shadowOf(Looper.getMainLooper()).idle();
         }
     }
 
