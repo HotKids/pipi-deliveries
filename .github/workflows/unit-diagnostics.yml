@@ -1,0 +1,63 @@
+name: Unit test environment comparison
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'tools/unit-test-diagnostics.gradle'
+      - '.github/workflows/unit-diagnostics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+      - name: Run unchanged unit suites with failure diagnostics
+        shell: bash
+        run: |
+          mkdir -p project-data/diagnostics
+          telemetry() {
+            date -u
+            uname -a
+            df -h . "$RUNNER_TEMP" /tmp
+            df -i . "$RUNNER_TEMP" /tmp
+            findmnt --target "$RUNNER_TEMP"
+            findmnt --target /tmp
+            free -h
+            ulimit -n
+            cat /proc/sys/fs/file-nr
+            du -sh app/build "$RUNNER_TEMP" /tmp 2>/dev/null || true
+          }
+          telemetry > project-data/diagnostics/before.txt
+          trap 'telemetry > project-data/diagnostics/after.txt' EXIT
+          ./gradlew :app:testStandardDebugUnitTest :app:testCompatDebugUnitTest \
+            --init-script tools/unit-test-diagnostics.gradle \
+            --continue --stacktrace --console=plain 2>&1 | tee project-data/diagnostics/gradle.log
+      - name: Preserve diagnostics and test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unit-diagnostics-${{ matrix.os }}-${{ github.run_attempt }}
+          path: |
+            project-data/diagnostics/
+            app/build/test-results/test*DebugUnitTest/
+            app/build/reports/tests/test*DebugUnitTest/
+          retention-days: 7
+          if-no-files-found: warn
