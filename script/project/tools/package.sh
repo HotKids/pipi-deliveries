@@ -25,21 +25,7 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-cd "$PROJECT_DIR"
-zip -q -j "$TEMP_OUTPUT" "$SCRIPT_DIR/README.md"
-zip -q -r "$TEMP_OUTPUT" \
-  script.json \
-  models.ts \
-  index.tsx \
-  widget.tsx \
-  intent.tsx \
-  app_intents.tsx \
-  components \
-  pages \
-  services \
-  contracts \
-  assets \
-  widget
+python3 "$PROJECT_DIR/tools/package-files.py" --archive "$TEMP_OUTPUT"
 
 sh "$PROJECT_DIR/tools/verify-package.sh" "$TEMP_OUTPUT" "" "$PURPOSE" "$WORKER_ARTIFACT" >/dev/null
 mv -f "$TEMP_OUTPUT" "$OUTPUT"

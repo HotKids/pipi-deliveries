@@ -2,8 +2,12 @@
 <resources>
     <string name="notification_channel_live">快递实时活动</string>
     <string name="notification_channel_live_description">派送中与待取件快递的实时信息</string>
+    <string name="live_activities">实时活动</string>
     <string name="live_delivery">派件信息</string>
+    <string name="live_delivery_summary">在实时活动中显示正在派件信息</string>
     <string name="live_pickup">取件提醒</string>
+    <string name="live_pickup_summary">在实时活动中显示待取快递信息</string>
+    <string name="live_notification_effects">普通取件通知不受开关影响；派件信息关闭后，不再显示派送通知。</string>
     <string name="assistant_app_name">Deliveries</string>
     <string name="home_title">我的快递</string>
     <string name="card_settings_express_title">快递动态</string>

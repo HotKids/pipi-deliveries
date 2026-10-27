@@ -12,7 +12,7 @@ import java.nio.file.Path;
 public final class ExpressManagerLayoutContractTest {
     @Test
     public void explanationStatesTheFivePhoneLimitAndAutomaticSync() throws Exception {
-        String layout = projectFile("app/src/main/res/layout/activity_express_manager.xml");
+        String layout = projectFile("app/src/main/res/layout/header_express_manager.xml");
         String strings = projectFile("app/src/main/res/values/strings.xml");
 
         assertTrue(layout.contains(

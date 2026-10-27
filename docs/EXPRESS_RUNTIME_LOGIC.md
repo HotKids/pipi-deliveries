@@ -54,6 +54,10 @@ deletion/expiry cleanup remain unchanged.
   notification permission retain the existing skip policy. Successful replay
   uses the same Android notification ID and `setOnlyAlertOnce(true)`; SQLite
   and the system notification service do not share one atomic transaction.
+- An ordinary delivery event consumed by the live-activity policy first cancels
+  the same row's previous ordinary notification. The live switch does not revive
+  ordinary delivery alerts; waiting-pickup and other state rules remain unchanged.
+  A cancellation exception leaves the existing outbox obligation available to retry.
 
 ## Failure boundaries
 
