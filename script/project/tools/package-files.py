@@ -29,10 +29,17 @@ def package_files(project):
             break
     if git_owned:
         # Broken metadata or a missing Git executable must not include untracked files.
+        root = Path(subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"], cwd=project,
+            stderr=subprocess.PIPE).decode().strip()).resolve()
+        if not project.is_relative_to(root):
+            raise RuntimeError("The discovered Git work tree does not own this Scripting project")
         indexed = subprocess.check_output(
             ["git", "ls-files", "--cached", "-z", "--", ".", "../README.md"],
             cwd=project, stderr=subprocess.PIPE)
-        paths = (os.fsdecode(raw) for raw in indexed.split(b"\0"))
+        paths = [os.fsdecode(raw) for raw in indexed.split(b"\0")]
+        if "script.json" not in paths:
+            raise RuntimeError("The discovered Git index does not track this project's script.json")
     else:
         paths = ["../README.md", *(path.relative_to(project).as_posix()
                                   for path in project.rglob("*") if path.is_file())]
@@ -45,11 +52,27 @@ def package_files(project):
     return dict(sorted(files.items()))
 
 
+def temporary_root(project):
+    mirror = project.resolve().parents[1]
+    canonical = mirror.parent
+    root = canonical if mirror.name == "deliveries" and (canonical / "flutter_app/pubspec.yaml").is_file() else mirror
+    return root / "project-data/tmp"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path)
+    parser.add_argument("--temp-root", action="store_true")
     args = parser.parse_args()
-    files = package_files(Path(__file__).resolve().parents[1])
+    project = Path(__file__).resolve().parents[1]
+    if args.temp_root:
+        print(temporary_root(project))
+        return
+    try:
+        files = package_files(project)
+    except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
+        message = str(error) if isinstance(error, RuntimeError) else "Cannot read the Scripting project's Git work tree or index"
+        parser.exit(1, message + "\n")
     if args.archive is None:
         for relative in files:
             print(relative)

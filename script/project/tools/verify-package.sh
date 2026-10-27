@@ -3,7 +3,7 @@ set -eu
 
 PROJECT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SCRIPT_DIR=$(CDPATH= cd -- "$PROJECT_DIR/.." && pwd)
-REPO_DIR=$(CDPATH= cd -- "$PROJECT_DIR/../../.." && pwd)
+TEMP_ROOT=$(python3 "$PROJECT_DIR/tools/package-files.py" --temp-root)
 ARCHIVE=${1:-"$SCRIPT_DIR/pipi-deliveries.scripting"}
 EXPECTED_TRACK=${2:-}
 PURPOSE=${3:-source}
@@ -19,8 +19,8 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 127
 fi
 
-mkdir -p "$REPO_DIR/project-data/tmp"
-TEMP_DIR=$(mktemp -d "$REPO_DIR/project-data/tmp/pipi-deliveries-package-check.XXXXXX")
+mkdir -p "$TEMP_ROOT"
+TEMP_DIR=$(mktemp -d "$TEMP_ROOT/pipi-deliveries-package-check.XXXXXX")
 trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
 
 case "$EXPECTED_TRACK" in
