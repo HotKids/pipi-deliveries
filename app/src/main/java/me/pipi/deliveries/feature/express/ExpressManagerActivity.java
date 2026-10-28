@@ -49,6 +49,7 @@ public final class ExpressManagerActivity extends AppCompatActivity {
         MaterialToolbar toolbar = findViewById(R.id.top_app_bar);
         toolbar.setNavigationOnClickListener(view -> finish());
         toolbar.setOnClickListener(view -> onTitleTapped());
+        toolbar.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         ListView list = findViewById(android.R.id.list);
         list.setItemsCanFocus(true);
         View header = getLayoutInflater().inflate(R.layout.header_express_manager, list, false);
@@ -75,6 +76,7 @@ public final class ExpressManagerActivity extends AppCompatActivity {
     }
 
     private void setSwitchSummary(MaterialSwitch toggle, int summaryResource) {
+        toggle.setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodyLarge);
         CharSequence title = toggle.getText();
         SpannableString label = new SpannableString(title + "\n" + getString(summaryResource));
         int summaryStart = title.length() + 1;

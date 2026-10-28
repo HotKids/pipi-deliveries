@@ -21,8 +21,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import me.pipi.deliveries.R;
+import me.pipi.deliveries.background.ExpressScheduler;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.notification.ExpressLiveNotifications;
+import me.pipi.deliveries.network.ExpressAccountSource;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -56,6 +58,15 @@ public class ExpressManagerInteractionTest {
         }
     }
 
+    @Implements(value = ExpressScheduler.class, isInAndroidSdk = false)
+    public static class Scheduler {
+        static int requests;
+        @Implementation protected static java.util.UUID requestNow(Context context) {
+            requests++;
+            return java.util.UUID.randomUUID();
+        }
+    }
+
     @Before public void reset() {
         RuntimeEnvironment.setFontScale(1f);
         Repository.phones.clear();
@@ -63,6 +74,33 @@ public class ExpressManagerInteractionTest {
         Repository.replays.set(0);
         RuntimeEnvironment.getApplication().getSharedPreferences("express_live_settings", Context.MODE_PRIVATE)
                 .edit().clear().commit();
+        RuntimeEnvironment.getApplication().getSharedPreferences("express_account_source", Context.MODE_PRIVATE)
+                .edit().clear().commit();
+    }
+
+    @Test @Config(shadows = {Repository.class, Scheduler.class})
+    public void hiddenTitleEntryKeepsItsTextAndPhysicalTripleTap() throws Exception {
+        Scheduler.requests = 0;
+        try (ActivityController<ExpressManagerActivity> controller = open()) {
+            ExpressManagerActivity activity = controller.get();
+            layout(activity, 360, 640);
+            View toolbar = activity.findViewById(R.id.top_app_bar);
+            assertFalse(toolbar.isImportantForAccessibility());
+            ArrayList<View> titleViews = new ArrayList<>();
+            toolbar.findViewsWithText(titleViews, activity.getString(R.string.manage_phone),
+                    View.FIND_VIEWS_WITH_TEXT);
+            assertEquals(1, titleViews.size());
+            assertTrue(titleViews.get(0).isImportantForAccessibility());
+            assertEquals(activity.getString(R.string.manage_phone),
+                    titleViews.get(0).createAccessibilityNodeInfo().getText().toString());
+            toolbar.performClick();
+            toolbar.performClick();
+            assertEquals(ExpressAccountSource.V6, ExpressAccountSource.current(activity));
+            toolbar.performClick();
+            assertEquals(ExpressAccountSource.V5, ExpressAccountSource.current(activity));
+            assertEquals(1, Repository.replays.get());
+            assertEquals(1, Scheduler.requests);
+        }
     }
 
     @Test public void scrollingKeepsTheLastBindingAndAddButtonReachable() throws Exception {
@@ -123,6 +161,10 @@ public class ExpressManagerInteractionTest {
                     {R.id.live_pickup, R.string.live_pickup, R.string.live_pickup_summary},
                     {R.id.live_delivery, R.string.live_delivery, R.string.live_delivery_summary}}) {
                 MaterialSwitch toggle = activity.findViewById(setting[0]);
+                TextView bodyLarge = new TextView(activity);
+                bodyLarge.setTextAppearance(
+                        com.google.android.material.R.style.TextAppearance_Material3_BodyLarge);
+                assertEquals(bodyLarge.getTextSize(), toggle.getTextSize(), 0.01f);
                 assertTrue(toggle.getText().toString().contains(activity.getString(setting[2])));
                 AccessibilityNodeInfo node = toggle.createAccessibilityNodeInfo();
                 assertTrue(node.isCheckable());
