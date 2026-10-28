@@ -1,15 +1,6 @@
 name: Unit test environment comparison
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'app/**'
-      - 'gradle/**'
-      - '*.gradle.kts'
-      - 'gradle.properties'
-      - 'tools/unit-test-diagnostics.gradle'
-      - '.github/workflows/unit-diagnostics.yml'
   workflow_dispatch:
 
 permissions:
