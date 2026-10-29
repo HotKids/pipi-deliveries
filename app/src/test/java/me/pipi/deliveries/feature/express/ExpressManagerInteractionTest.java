@@ -82,6 +82,8 @@ public class ExpressManagerInteractionTest {
     public void hiddenTitleEntryKeepsItsTextAndPhysicalTripleTap() throws Exception {
         Scheduler.requests = 0;
         try (ActivityController<ExpressManagerActivity> controller = open()) {
+            controller.visible().windowFocusChanged(true);
+            Shadows.shadowOf(Looper.getMainLooper()).idle();
             ExpressManagerActivity activity = controller.get();
             layout(activity, 360, 640);
             View toolbar = activity.findViewById(R.id.top_app_bar);
@@ -91,6 +93,7 @@ public class ExpressManagerInteractionTest {
                     View.FIND_VIEWS_WITH_TEXT);
             assertEquals(1, titleViews.size());
             assertTrue(titleViews.get(0).isImportantForAccessibility());
+            assertTrue(titleViews.get(0).createAccessibilityNodeInfo().isHeading());
             assertEquals(activity.getString(R.string.manage_phone),
                     titleViews.get(0).createAccessibilityNodeInfo().getText().toString());
             toolbar.performClick();
@@ -239,6 +242,8 @@ public class ExpressManagerInteractionTest {
                 assertEquals(phone, list.getItemAtPosition(1));
                 View row = list.getChildAt(1 - list.getFirstVisiblePosition());
                 assertEquals(phone, ((TextView) row.findViewById(R.id.phone_text)).getText().toString());
+                assertEquals("解绑，手机号尾号 " + phone.substring(phone.length() - 4),
+                        row.findViewById(R.id.delete_phone).getContentDescription().toString());
                 row.findViewById(R.id.delete_phone).performClick();
                 AlertDialog dialog = (AlertDialog) ShadowDialog.getLatestDialog();
                 assertTrue(((TextView) dialog.findViewById(android.R.id.message)).getText().toString().contains(phone));
