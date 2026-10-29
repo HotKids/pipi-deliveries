@@ -302,6 +302,51 @@ assert.deepEqual(preferredPayload, {
 assert.equal(preferred.timeline.courierCode, "DBL");
 assert.equal(preferred.timeline.rawCourierCode, "debangwuliu");
 
+for (const explicitTail of ["", "1357"]) {
+  const sentPhones: unknown[] = [];
+  const shipment = await queryKuaidi100Shipment({
+    waybill: "SF900000006296",
+    rawCourierCode: "SF",
+    phoneTail: explicitTail,
+    phoneTails: ["2468"],
+    dependencies: {
+      now: () => NOW,
+      post: async (_path, payload) => {
+        sentPhones.push(payload.phone);
+        return {
+          status: "200",
+          com: "shunfeng",
+          data: [{ time: "2026-08-30 17:30:00", context: "Synthetic transit event" }],
+        };
+      },
+    },
+  });
+  assert.deepEqual(sentPhones, [explicitTail || "2468"]);
+  assert.equal(shipment.identity.phoneTail, explicitTail,
+    "a successful K100 candidate is a request parameter, not parcel phone ownership");
+}
+
+const challengedPhones: unknown[] = [];
+const challengedK100 = await queryKuaidi100Shipment({
+  waybill: "YT900000006296",
+  rawCourierCode: "YTO",
+  phoneTails: ["2468"],
+  dependencies: {
+    now: () => NOW,
+    post: async (_path, payload) => {
+      challengedPhones.push(payload.phone);
+      return payload.phone
+        ? { status: "200", com: "yuantong", data: [
+          { time: "2026-08-30 17:30:00", context: "Synthetic transit event" },
+        ] }
+        : { result: false, returnCode: "408", message: "Phone verification failed" };
+    },
+  },
+});
+assert.deepEqual(challengedPhones, ["", "2468"]);
+assert.equal(challengedK100.identity.phoneTail, "",
+  "answering a K100 verification challenge must not persist the candidate phone");
+
 let meizuRetryAttempts = 0;
 const retriedRoute = await queryMeizuShipment({
   waybill: "SF1234567890",
@@ -418,10 +463,14 @@ await assert.rejects(
     waybill: "ZT1234567890",
     rawCourierCode: "ZTO",
     bindingSource: "interface5",
+    dependencies: { post: async (_path, payload) => {
+      assert.equal(payload.phone, "", "missing input is queried before asking for a tail");
+      return { success: false, reason: "请输入手机尾号" };
+    } },
   }),
   (error: unknown) =>
     error instanceof Error && error.message === "请输入手机尾号",
-  "a missing tail asks for the tail; the four-digit wording is for a partial one",
+  "an upstream requirement asks for the missing tail; partial input keeps its separate validation",
 );
 
 // Physical JD carrier identity does not make a pure-manual parcel a JingDong

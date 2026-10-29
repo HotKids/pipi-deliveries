@@ -401,6 +401,7 @@ function shipmentFromTimeline(input: {
 async function queryCandidate(
   waybill: string,
   phoneTail: string,
+  identityPhoneTail: string,
   protocolCode: string,
   rawCourierCode: string,
   companyNameHint: string,
@@ -453,7 +454,8 @@ async function queryCandidate(
     firstText(root, "companyName", "comName") || companyNameHint || resolvedCode;
   return shipmentFromTimeline({
     waybill,
-    phoneTail,
+    // A successful candidate proves query access, not the parcel's phone identity.
+    phoneTail: identityPhoneTail,
     rawCourierCode: returnedCode,
     providerRawCourierCode,
     courierCode: resolvedCode,
@@ -491,6 +493,7 @@ async function queryCarrierCandidate(
       return await queryCandidate(
         waybill,
         firstTail,
+        explicitTail,
         protocolCode,
         rawCourierCode,
         companyNameHint,
@@ -517,6 +520,7 @@ async function queryCarrierCandidate(
       return await queryCandidate(
         waybill,
         phoneTail,
+        explicitTail,
         protocolCode,
         rawCourierCode,
         companyNameHint,
@@ -836,7 +840,7 @@ export async function queryKdniaoShipment(
   const tails = carrier.requiresPhoneTail
     ? queryPhoneTails(carrier, explicitTail, input.phoneTails || [])
     : [""];
-  if (!tails.length) throw new ManualQueryError("请输入手机尾号", true);
+  if (carrier.requiresPhoneTail && !explicitTail) tails.unshift("");
   let lastPhoneError: ManualQueryError | null = null;
   for (const phoneTail of tails) {
     assertWithinDeadline(input.deadlineAtMs);
@@ -858,7 +862,8 @@ export async function queryKdniaoShipment(
     } catch (error) {
       // User 2026-10-02 「补：全不对时提示重新输入」: the Worker names a KDNiao phone-tail rejection, so a
       // wrong tail moves on to the next one and only a run of wrong tails asks for the tail again.
-      if (error instanceof GatewayError && error.gatewayCode === "phone_verification_required") {
+      if (carrier.requiresPhoneTail && error instanceof GatewayError
+        && error.gatewayCode === "phone_verification_required") {
         lastPhoneError = new ManualQueryError(
           phoneTail ? "手机尾号不正确，请重新输入" : "请输入手机尾号",
           true,
@@ -868,9 +873,12 @@ export async function queryKdniaoShipment(
       }
       throw error;
     }
-    if (root.success !== true) {
-      const reason = firstText(root, "reason", "message", "msg");
-      if (/手机|电话|尾号|phone/i.test(reason)) {
+    const reason = firstText(root, "reason", "message", "msg");
+    const requiresPhone = carrier.requiresPhoneTail
+      && /手机号|手机尾号|手机后四位|电话号码|电话尾号|尾号|后四位|phone|customername/i.test(reason)
+      && /请输入|请填写|需填写|需要|必填|不能为空|未填|缺少|不匹配|不正确|错误|有误|验证失败|校验失败|校验不通过|required|missing|mismatch|does not match|incorrect|wrong|invalid|empty/i.test(reason);
+    if (root.success !== true || (!Array.isArray(root.traces) || !root.traces.length) && requiresPhone) {
+      if (requiresPhone) {
         lastPhoneError = new ManualQueryError(
           phoneTail ? "手机尾号不正确，请重新输入" : "请输入手机尾号",
           true,
@@ -907,7 +915,8 @@ export async function queryKdniaoShipment(
     );
     return shipmentFromTimeline({
       waybill,
-      phoneTail: carrier.requiresPhoneTail ? phoneTail : "",
+      // KDNiao can return cached tracking for a trial tail; it cannot establish phone ownership.
+      phoneTail: carrier.requiresPhoneTail ? explicitTail : "",
       ...source,
       bindingSource: input.bindingSource || null,
       provider: TIMELINE_SLOT.KDNIAO,
