@@ -50,6 +50,7 @@
     <string name="delete_express_confirm">要删除此快递吗？</string>
     <string name="delete_express">删除快递</string>
     <string name="unbind_phone">解绑</string>
+    <string name="unbind_phone_tail">解绑，手机号尾号 %1$s</string>
     <string name="no_bound_phone">尚未绑定手机号</string>
     <string name="unbind_phone_confirm">解绑 %1$s 后，将不再同步其关联的快递。</string>
     <string name="account_source_switched">已切换至%1$s</string>

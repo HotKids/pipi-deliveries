@@ -50,6 +50,13 @@ public final class ExpressManagerActivity extends AppCompatActivity {
         toolbar.setNavigationOnClickListener(view -> finish());
         toolbar.setOnClickListener(view -> onTitleTapped());
         toolbar.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        for (int i = 0; i < toolbar.getChildCount(); i++) {
+            View child = toolbar.getChildAt(i);
+            if (child instanceof TextView && android.text.TextUtils.equals(
+                    ((TextView) child).getText(), toolbar.getTitle())) {
+                child.setAccessibilityHeading(true);
+            }
+        }
         ListView list = findViewById(android.R.id.list);
         list.setItemsCanFocus(true);
         View header = getLayoutInflater().inflate(R.layout.header_express_manager, list, false);
@@ -184,6 +191,8 @@ public final class ExpressManagerActivity extends AppCompatActivity {
             }
             String phone = getItem(position);
             holder.phone.setText(phone);
+            holder.delete.setContentDescription(getString(R.string.unbind_phone_tail,
+                    phone.substring(Math.max(0, phone.length() - 4))));
             holder.delete.setOnClickListener(view -> confirmUnbind(phone));
             return convertView;
         }
