@@ -153,7 +153,8 @@ test("the real manual Gateway and H5 starts share one reservation after their ow
   assert.ok(requests.includes("web"));
   assert.ok(reservedBeforeRequests.length >= 2 && reservedBeforeRequests.every(Boolean),
     JSON.stringify({ requests, reservedBeforeRequests }));
-  assert.equal(requests.some(path => path.includes("fallback")), false);
+  assert.equal(requests.filter(path => path === "/api/express/timeline/fallback").length, 1,
+    "the approved no-phone KDNiao attempt shares this round's existing reservation");
   assert.equal(parseAlignmentAttempt(loadAlignmentRecords()[rowLedgerKey(id)])!.attempts, 1);
 });
 
