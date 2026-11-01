@@ -1198,7 +1198,7 @@ function fillMissingTrackFields(target: TrackNode, source: TrackNode): TrackNode
 export const NEAR_DUPLICATE_WINDOW_MS = 5 * 60_000;
 
 /** 与 Pipi TrackTimelinePolicy.fingerprint 同法：NFKC、「您的快件/订单/包裹」归一、去尾标点、去空白。 */
-function trackFingerprint(detail: string): string {
+export function trackFingerprint(detail: string): string {
   return String(detail || "")
     .normalize("NFKC")
     .replace(/\u00a0/g, " ")

@@ -1723,7 +1723,7 @@ function withJingDongOwnerOrderStage(shipment: Shipment, selected: TimelinePacka
 }
 
 /** Grafted JD H5 rows and provider-tagged rows are not the feed's own nodes (Pipi sameSourceOwnerTracks). */
-function isOwnerFeedTrack(track: TrackNode): boolean {
+export function isOwnerFeedTrack(track: TrackNode): boolean {
   const tagged = String(track.raw?._pipiStatusSource || "").trim().toLowerCase();
   return !tagged || timelineCapability(tagged) === "account";
 }

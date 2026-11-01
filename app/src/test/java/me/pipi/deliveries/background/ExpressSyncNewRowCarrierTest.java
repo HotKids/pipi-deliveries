@@ -129,6 +129,28 @@ public final class ExpressSyncNewRowCarrierTest {
         assertFalse(repository.findByWaybill(waybill, "interface6").carrierPending());
     }
 
+    @Test public void aDeletedShipmentWaitsForNewAccountTracksBeforeRecognitionAndImport() throws Exception {
+        String waybill = "YT7700500006";
+        ExpressQueryResult old = record(waybill, 30);
+        Subscription.list = List.of(old); Api.answer = YTO;
+        ExpressSyncEngine.syncAll(context, new int[]{0, 0, 0}, false, "background");
+        ExpressItem row = repository.findByWaybill(waybill, "interface6"); assertNotNull(row);
+        repository.delete(row.rowId);
+        Api.reset(); Api.answer = YTO;
+
+        ExpressSyncEngine.syncAll(context, new int[]{0, 0, 0}, false, "background");
+        assertTrue("An unchanged deleted shipment must not enter carrier recognition", Api.asked.isEmpty());
+        assertNull(repository.findByWaybill(waybill, "interface6"));
+
+        String newer = minutesAgo(5);
+        Subscription.list = List.of(new ExpressQueryResult(waybill, "UNKNOWNCODE", "", StatusSemantic.TRANSIT,
+                ExpressTimeline.parseTime(newer), newer, "快件到达新站点", tracks(newer, "快件到达新站点"),
+                "", PHONE, TimelineSlot.V6_LIST, "", "", "DouYin"));
+        ExpressSyncEngine.syncAll(context, new int[]{0, 0, 0}, false, "background");
+        assertEquals(List.of(waybill), Api.asked);
+        assertNotNull(repository.findByWaybill(waybill, "interface6"));
+    }
+
     /**
      * 优化 5 续（用户 2026-10-03「第一次识别时记下锚点，之后不变」）：the anchor the row's first recognition sent (its earliest
      * node then) is the one every later recognition sends, though its earliest node moves more than 24 hours; a real

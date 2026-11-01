@@ -635,8 +635,8 @@ public final class ExpressTimeline {
         return times;
     }
 
-    /** 与 Pipi TrackTimelinePolicy.fingerprint 同法：NFKC、「您的快件/订单/包裹」归一、去尾标点、去空白。 */
-    private static String fingerprint(String detail) {
+    /** Pipi-compatible event identity, shared by timeline deduplication and deletion fences. */
+    public static String fingerprint(String detail) {
         String value = WHITESPACE.matcher(java.text.Normalizer.normalize(clean(detail),
                         java.text.Normalizer.Form.NFKC).replace('\u00a0', ' ')).replaceAll(" ")
                 .trim();

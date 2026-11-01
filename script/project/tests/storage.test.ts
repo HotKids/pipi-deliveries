@@ -2132,8 +2132,17 @@ assert.equal(
   loadState(NOW + 2).shipments.some(
     (item) => item.identity.id === automaticDeleteTarget.identity.id,
   ),
-  true,
+  false,
 );
+// The approved automatic deletion fence now requires a qualified, genuinely newer owner event.
+const advancedAutomatic = { ...automaticDeleteTarget,
+  identity: { ...automaticDeleteTarget.identity, phone: phoneA, phoneTail: phoneA.slice(-4) },
+  timeline: { ...automaticDeleteTarget.timeline, provider: "interface5", tracks: [{
+    ...automaticDeleteTarget.timeline.tracks[0], timeMs: NOW + 2, detail: "Synthetic new trajectory",
+  }] }, sourceTimeline: undefined, updatedAtMs: NOW + 3 };
+upsertShipment(advancedAutomatic, NOW + 3);
+assert.equal(loadState(NOW + 3).shipments.some(item => item.identity.id === automaticDeleteTarget.identity.id), true);
+assert.equal(loadState(NOW + 3).automaticDeletionFences?.length || 0, 0);
 
 // Deleting a projected account order does not block its extracted carrier waybill.
 memory.clear();
