@@ -84,8 +84,15 @@ public final class ExpressAccountQueryCommitTest {
                 "Current feed", tracks(now, "Current feed"));
         repository.saveInterface5OrderSummary(feed, phone);
         ExpressItem old = repository.findByWaybill(order, "interface5");
+        String generation = repository.bindingGeneration(phone, "interface5");
         repository.delete(old.rowId);
         repository.saveInterface5OrderSummary(feed, phone);
+        assertNull(repository.findByWaybill(order, "interface5"));
+        String later = time(0);
+        assertTrue(ExpressSourcePolicy.parseEventTime(later) > ExpressSourcePolicy.parseEventTime(now));
+        repository.saveInterface5OrderSummary(result(order, StatusSemantic.TRANSIT, later,
+                "New source feed", tracks(later, "New source feed")), phone);
+        assertEquals(generation, repository.bindingGeneration(phone, "interface5"));
         assertNotEquals(old.rowId, repository.findByWaybill(order, "interface5").rowId);
         assertFalse(repository.saveInterface5Query(feed, old,
                 repository.bindingGeneration(phone, "interface5")));
@@ -266,6 +273,10 @@ public final class ExpressAccountQueryCommitTest {
         }
         repository.delete(old.rowId);
         repository.saveInterface5(feed, phone);
+        assertNull(repository.findByWaybill(real, "interface5"));
+        String later = time(0);
+        assertTrue(ExpressSourcePolicy.parseEventTime(later) > ExpressSourcePolicy.parseEventTime(feed.latestTime));
+        repository.saveInterface5(cainiao(real, StatusSemantic.TRANSIT, later, "New source feed"), phone);
         ExpressItem recreated = repository.findByWaybill(real, "interface5");
         assertNotEquals(old.rowId, recreated.rowId);
         database.getWritableDatabase().insertWithOnConflict(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
