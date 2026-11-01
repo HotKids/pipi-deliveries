@@ -267,8 +267,8 @@ const syncSource = accountSyncSource.slice(syncStart, manualStart);
 // its own order (old shape: `for (const parcel of parsed.parcels) { parcels.push(await prepareAccountParcelCarrier(parcel, {`).
 assert.match(
   syncSource,
-  /const references = \[\.\.\.parsed\.parcels, \.\.\.cachedOrders\]\.map\([\s\S]*?const parcels = await enhanceAccountParcels\(references, bindings,[\s\S]*?const recognitionOrder = truncatedCarrierRecognitionLast\(\s*parcels\.map\(\(_parcel, index\) => index\),[\s\S]*?\);\s*for \(const index of recognitionOrder\) \{\s*parcels\[index\] = await prepareAccountParcelCarrier\(parcels\[index\], \{/,
-  "background account sync must pass every parcel through the shared carrier helper",
+  /const freshReferences = parsed\.parcels\.map\(reference\)\.filter\(admitAutomaticParcel\);[\s\S]*?const references = \[\.\.\.freshReferences, \.\.\.cachedOrders\.map\(reference\)\.filter\(admitAutomaticParcel\)\];[\s\S]*?const parcels = await enhanceAccountParcels\(references, bindings,[\s\S]*?const recognitionOrder = truncatedCarrierRecognitionLast\(\s*admittedParcels\.map\(\(_parcel, index\) => index\),[\s\S]*?\);\s*for \(const index of recognitionOrder\) \{\s*if \(!admitAutomaticParcel\(admittedParcels\[index\]\)\) continue;\s*admittedParcels\[index\] = await prepareAccountParcelCarrier\(admittedParcels\[index\], \{/,
+  "background account sync must pass every admitted parcel through the shared carrier helper",
 );
 assert.doesNotMatch(syncSource, /parcel\.accountOrder\s*\?/, "normalization is not gated on order rows");
 // T23 (user 2026-09-26, 其余裁决 28): the helper recognises an order's feed-text waybill first and applies it only with

@@ -68,7 +68,8 @@ test("deleting another row preserves the projected JD owner's reusable page refe
   const state = seed();
   const owner = state.shipments[0];
   owner.identity = { ...owner.identity, projectedWaybill: WAYBILL };
-  const other = { ...owner, identity: { ...owner.identity, id: "interface5:account:SYNTHETIC-OTHER" } };
+  const other = { ...owner, identity: { ...owner.identity, id: "interface5:account:SYNTHETIC-OTHER",
+    sourceId: "SYNTHETIC-OTHER", orderId: "SYNTHETIC-OTHER" } };
   saveState({ ...state, shipments: [owner, other] }, Date.now());
   const before = loadOrderProjectionReference(owner.identity.id, "interface5");
   assert.ok(before);

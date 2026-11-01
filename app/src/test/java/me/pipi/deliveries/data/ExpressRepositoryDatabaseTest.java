@@ -1601,7 +1601,7 @@ public final class ExpressRepositoryDatabaseTest {
     }
 
     @Test
-    public void automaticFeedCanRecreateAUserClearedShipment() {
+    public void automaticFeedRecreatesAUserClearedShipmentOnlyAfterANewTimedTrajectory() {
         String waybill = "ZTTEST000013";
         String phone = "13900000013";
         repository.bindPhoneLocally(phone, "interface5");
@@ -1614,11 +1614,19 @@ public final class ExpressRepositoryDatabaseTest {
 
         repository.delete(saved.rowId);
         assertNull(repository.findByWaybill(waybill, "interface5"));
+        repository.saveInterface5(first, phone);
+        assertNull(repository.findByWaybill(waybill, "interface5"));
 
         ExpressQueryResult nextFeed = accountResult(
                 waybill, phone, StatusSemantic.TRANSIT,
                 "2026-08-24 10:00:00", "快件运输中", "[]", "", "CaiNiao");
         repository.saveInterface5(nextFeed, phone);
+        assertNull("A newer response summary alone is not a new trajectory",
+                repository.findByWaybill(waybill, "interface5"));
+        repository.saveInterface5(accountResult(
+                waybill, phone, StatusSemantic.TRANSIT,
+                "2026-08-24 10:00:00", "快件运输中",
+                timedTracks("2026-08-24 10:00:00", "快件运输中"), "", "CaiNiao"), phone);
 
         ExpressItem recreated = repository.findByWaybill(waybill, "interface5");
         assertNotNull(recreated);

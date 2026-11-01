@@ -194,6 +194,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     }
 
     private static void createNativeSidecars(SQLiteDatabase db) {
+        db.execSQL(ExpressAutomaticDeletionFence.CREATE);
         db.execSQL("CREATE TABLE IF NOT EXISTS " + NOTIFICATION_OUTBOX_TABLE + "("
                 + "owner_row_id INTEGER PRIMARY KEY NOT NULL,event_token TEXT NOT NULL)");
         db.execSQL("CREATE TABLE IF NOT EXISTS " + KUAIDI100_TIMELINE_TABLE + "("

@@ -306,6 +306,7 @@ export async function fetchAccountParcels(
   recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
   cachedShipments: readonly Shipment[] = [],
   diagnosticContext: { flowId?: string; trigger?: string } = {},
+  admitAutomaticParcel: (parcel: AccountParcelDto) => boolean = () => true,
 ): Promise<AccountParcelFetchResult> {
   requireScriptSource(source);
   assertWithinDeadline(requestDeadlineAtMs);
@@ -321,30 +322,37 @@ export async function fetchAccountParcels(
   const parsed = parseAccountSyncResult(SCRIPT_BINDING_SOURCE, response);
   const freshIds = new Set(parsed.parcels.map(parcel => parcel.ownerId));
   const cachedOrders = cachedEnhancementParcels(cachedShipments, bindings, freshIds);
-  const references = [...parsed.parcels, ...cachedOrders].map(parcel => {
+  const reference = (parcel: AccountParcelDto) => {
     const current = withCurrentAccountEnhancement(parcel, bindings);
     return current.enhancedMode ? accountParcelWithExistingProjection(current, cachedShipments) : current;
-  });
+  };
+  const freshReferences = parsed.parcels.map(reference).filter(admitAutomaticParcel);
+  const references = [...freshReferences, ...cachedOrders.map(reference).filter(admitAutomaticParcel)];
   const parcels = await enhanceAccountParcels(references, bindings,
     { purpose: "waybill", deadlineAtMs: requestDeadlineAtMs, signal, ...diagnosticContext });
+  // Deletion or unbinding can commit while the account/enhancement request is in flight.
+  const admitted = parcels.map((parcel, index) => ({ parcel, fresh: index < freshReferences.length }))
+    .filter(({ parcel }) => admitAutomaticParcel(parcel));
+  const admittedParcels = admitted.map(({ parcel }) => parcel);
   // 用户 2026-09-27 第二轮清单：截断排后。A waybill cut off in an earlier round is recognised after the others;
   // the list keeps its own order.
   const recognitionOrder = truncatedCarrierRecognitionLast(
-    parcels.map((_parcel, index) => index),
-    (index) => [parcels[index].enhancedWaybill || accountOrderTextWaybill(parcels[index]), parcels[index].waybill],
+    admittedParcels.map((_parcel, index) => index),
+    (index) => [admittedParcels[index].enhancedWaybill || accountOrderTextWaybill(admittedParcels[index]), admittedParcels[index].waybill],
   );
   for (const index of recognitionOrder) {
-    parcels[index] = await prepareAccountParcelCarrier(parcels[index], {
+    if (!admitAutomaticParcel(admittedParcels[index])) continue;
+    admittedParcels[index] = await prepareAccountParcelCarrier(admittedParcels[index], {
       deadlineAtMs: requestDeadlineAtMs,
       signal,
       budget: recognitionBudget,
     });
   }
   return {
-    parcels: parcels.slice(0, parsed.parcels.length),
+    parcels: admittedParcels.filter((parcel, index) => admitted[index].fresh && admitAutomaticParcel(parcel)),
     rawRecords: parsed.rawRecords,
     rejectedRecords: parsed.rejectedRecords,
-    cachedEnhancements: parcels.slice(parsed.parcels.length),
+    cachedEnhancements: admittedParcels.filter((parcel, index) => !admitted[index].fresh && admitAutomaticParcel(parcel)),
   };
 }
 

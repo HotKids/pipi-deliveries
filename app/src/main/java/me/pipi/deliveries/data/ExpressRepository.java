@@ -4698,6 +4698,8 @@ public final class ExpressRepository {
                 || ExpressVisibilityPolicy.isExpiredResult(result, System.currentTimeMillis())) return false;
         SQLiteDatabase db = database();
         String normalized = automaticIdentity(db, result.waybill, owner);
+        if (ExpressAutomaticDeletionFence.blocks(db, automaticDeletionKey(result.waybill, owner),
+                result, true, System.currentTimeMillis())) return false;
         return !normalized.isEmpty() && findAnyRawByIdentity(db, normalized) == null;
     }
 
@@ -4714,6 +4716,8 @@ public final class ExpressRepository {
                 || ExpressVisibilityPolicy.isExpiredResult(result, System.currentTimeMillis())) return false;
         SQLiteDatabase db = database();
         String normalized = automaticIdentity(db, result.waybill, provider);
+        if (ExpressAutomaticDeletionFence.blocks(db, automaticDeletionKey(result.waybill, provider),
+                result, true, System.currentTimeMillis())) return false;
         return !normalized.isEmpty() && findAnyRawByIdentity(db, normalized) == null;
     }
 
@@ -4762,6 +4766,9 @@ public final class ExpressRepository {
                 if (cleaned != result && !Kuaidi100TimelinePolicy.hasTimedTracking(cleaned)
                         && !ManualTimelineAuthorityPolicy.hasStructuredStatus(cleaned)) return;
                 result = cleaned;
+                String deletionKey = automaticDeletionKey(result.waybill, packageOwner);
+                if (ExpressAutomaticDeletionFence.blocks(db, deletionKey, result,
+                        AutomaticOwnershipPolicy.isQualified(packageOwner, result), System.currentTimeMillis())) return;
                 // 承运商复用旧运单号（用户 2026-10-01/02「C 新件优先（含 A）」「至少晚 24 小时」「当新件初次出现，不通知」，
                 // 四端）：新件把这一行拿走——旧记录按一次留存删除处理，新件随后照首次出现入库、不通知；已被新件拿走的
                 // 号码上再来的旧记录不再写入。
@@ -4972,8 +4979,11 @@ public final class ExpressRepository {
                         changed = true;
                     }
                 }
-                if (acceptedRowId > 0L) extendJingDongQueryWithListIncrement(db, acceptedRowId,
-                        acceptedBefore == null ? result.waybill : acceptedBefore.waybill, result.waybill);
+                if (acceptedRowId > 0L) {
+                    extendJingDongQueryWithListIncrement(db, acceptedRowId,
+                            acceptedBefore == null ? result.waybill : acceptedBefore.waybill, result.waybill);
+                    if (qualified) ExpressAutomaticDeletionFence.release(db, deletionKey);
+                }
                 if (changed) currentPresented = stageNotification(
                         db, previousPresented, currentPresented, mergedPresented);
                 if (lenderOwnerBefore != null) {
@@ -5038,10 +5048,7 @@ public final class ExpressRepository {
         return "interface6".equals(source) ? "v6" : "interface5".equals(source) ? "v5" : "";
     }
 
-    /**
-     * 「C 新件优先（含 A）」：旧记录按一次留存删除处理——这个号码的所有行、sidecar（v4 / v5 / v6 / 快递100）、手动链缓存
-     * 与路由、归属与观测一并删掉，签收闩锁和备注随行而去；与 {@link #delete} 同一个删除，不留墓碑。返回删掉的行。
-     */
+    /** Retention of a reused number removes its former rows and caches, without a user-deletion fence. */
     private static ArrayList<Long> retireReusedWaybill(SQLiteDatabase db, String normalized) {
         ArrayList<Long> removed = new ArrayList<>();
         collectRowIds(db, normalized, removed);
@@ -6284,6 +6291,7 @@ public final class ExpressRepository {
                 ExpressItem target = find(rowId);
                 if (target != null) {
                     String normalized = ExpressSourcePolicy.normalizeWaybill(target.waybill);
+                    if (!target.manuallyAdded) rememberAutomaticDeletion(db, target, normalized);
                     deleteWaybillRows(db, normalized, rowId);
                 } else {
                     stageNotificationCancellation(db, rowId);
@@ -6294,6 +6302,41 @@ public final class ExpressRepository {
             }
         }
         publishChange();
+    }
+
+    private static String automaticDeletionKey(String waybill, String owner) {
+        String normalized = ExpressSourcePolicy.normalizeWaybill(waybill);
+        // T1 keeps an order's own record after projection; deleting it leaves real-waybill siblings intact.
+        return ExpressSourcePolicy.isAccountOrderOwner(owner)
+                ? "order:" + ExpressSourcePolicy.bindingSourceForOwner(owner) + ":" + normalized
+                : "waybill:" + normalized;
+    }
+
+    private void rememberAutomaticDeletion(SQLiteDatabase db, ExpressItem target, String normalized) {
+        String owner = target.stateOwner.isEmpty() ? target.source : target.stateOwner;
+        if (!AutomaticOwnershipPolicy.isAutomaticPackageOwner(owner)) return;
+        ArrayList<ExpressQueryResult> evidence = new ArrayList<>();
+        try (Cursor rows = db.query(ExpressDatabase.EXPRESS_TABLE, null, "normalizedMailNo=? OR _id=?",
+                new String[]{normalized, Long.toString(target.rowId)}, null, null, null)) {
+            while (rows.moveToNext()) {
+                ExpressItem raw = readRaw(rows, OrderProjection.EMPTY);
+                evidence.add(deletionEvidence(raw));
+                evidence.add(deletionEvidence(projectTimelineAuthorities(findManualOwner(db, raw.rowId))));
+            }
+        }
+        try (Cursor rows = db.query(ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE,
+                new String[]{"waybill", "status_code", "latest_time", "latest_detail", "tracks_json"},
+                "record_key=? OR normalized_waybill=?", new String[]{normalized, normalized}, null, null, null)) {
+            while (rows.moveToNext()) evidence.add(new ExpressQueryResult(rows.getString(0), "", "",
+                    StatusSemantic.fromStored(rows.getString(1), ""), rows.getString(2), rows.getString(3), rows.getString(4)));
+        }
+        ExpressAutomaticDeletionFence.remember(db, automaticDeletionKey(target.waybill, owner),
+                evidence, System.currentTimeMillis());
+    }
+
+    private static ExpressQueryResult deletionEvidence(ExpressItem row) {
+        return row == null ? null : new ExpressQueryResult(row.waybill, "", "", row.semantic,
+                row.latestTime, row.latestDetail, row.tracksJson);
     }
 
     public synchronized List<String> phones() {
