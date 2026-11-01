@@ -292,8 +292,13 @@ public class ExpressAutomaticDetailPersistenceTest {
     @Test public void deletedOwnerClaimCannotWriteIntoRecreatedParcel() {
         ExpressItem original = owner("CNRECREATE000001", "CaiNiao", "interface5", false);
         ExpressRepository.ManualQueryOwnerClaim claim = repository.captureManualQueryOwner(original);
+        ExpressQueryResult unchanged = repository.automaticSourceTimeline(original);
+        assertNotNull(unchanged);
         repository.delete(original.rowId);
-        ExpressItem recreated = owner(original.waybill, "CaiNiao", "interface5", false);
+        repository.saveInterface5(unchanged, PHONE);
+        assertNull(repository.findByWaybill(original.waybill, "interface5"));
+        ExpressItem recreated = owner(original.waybill, "CaiNiao", "interface5", false,
+                shifted(TIME, 10L * 60L * 1000L));
         assertNotEquals(original.rowId, recreated.rowId);
         assertFalse(repository.ownsManualQuery(original, claim));
         assertFalse(repository.ownsManualQuery(recreated, claim));
