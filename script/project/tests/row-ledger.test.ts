@@ -269,14 +269,8 @@ test("an alignment record goes with the deleted row and comes back with nothing"
   assert.ok(loadRowLedger()[rowLedgerKey(row.identity.id)]?.alignment, "an ordinary save keeps the record");
   removeShipment(row.identity.id, clock);
   assert.deepEqual(loadRowLedger(), {}, "a real deletion clears it");
-  // A genuinely corrected node can restore the parcel without changing its S/H/D clocks.
-  const replacement = outOfStepRow();
-  replacement.sourceTimeline = { ...replacement.sourceTimeline!, latestDetail: "Synthetic corrected signing event",
-    tracks: replacement.sourceTimeline!.tracks.map(track => ({ ...track, detail: "Synthetic corrected signing event" })) };
-  replacement.timeline = replacement.sourceTimeline;
-  const restored = saveState({ ...loadState(clock), shipments: [replacement] }, clock);
-  assert.deepEqual(statusAlignmentTimes(restored.shipments[0]), statusAlignmentTimes(row),
-    "the reset remains independent of a new alignment clock");
+  // The same parcel added again with the same times is a new row: it is forced once more.
+  saveState({ ...loadState(clock), shipments: [outOfStepRow()] }, clock);
   assert.equal((await alignmentPass(calls)).result, "attempted");
   assert.equal(calls.length, 2);
 });

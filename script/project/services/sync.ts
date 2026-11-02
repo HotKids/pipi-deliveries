@@ -1,5 +1,4 @@
 import { sharedData, withSharedFileTransaction } from "./shared-file-transaction";
-import { automaticDeletionAllows } from "./automatic-deletion";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
   AccountBinding,
@@ -1680,8 +1679,6 @@ export function mergeAccountParcel(
   const resolvedParcel = accountParcelWithExistingProjection(parcel, shipments);
   const incoming = parcelToShipment(resolvedParcel, boundPhones, now);
   if (!incoming) return shipments;
-  // A valid event may arrive while the account request is pending, after the round's start clock.
-  if (!automaticDeletionAllows(state, incoming, Date.now())) return shipments;
   // 归属方案 T1（用户 2026-09-25 采纳）：一条上游记录只写它自己的行（同一 id）。同一运单号上的另一条自动记录（订单号的
   // 行、运单号的行、另一张订单）不再被收走，也不再是写入目标；谁先占号谁显示，其余挂靠，由落库时的归属判断决定。
   const current = shipments.find(
@@ -1899,11 +1896,6 @@ async function synchronizeAccountList(
       recognitionBudget,
       state.shipments,
       { flowId },
-      (parcel) => {
-        const current = loadState();
-        const incoming = parcelToShipment(parcel, sourceBindings.map(binding => binding.phone), now);
-        return !incoming || automaticDeletionAllows(current, incoming, Date.now(), false, state.bindings);
-      },
     ).catch((error: unknown) => {
       endCancelledList();
       throw error;

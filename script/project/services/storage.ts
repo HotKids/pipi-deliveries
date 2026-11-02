@@ -95,8 +95,6 @@ import { newerWaybillReuseGeneration } from "./waybill-reuse";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "./shipment-lifecycle";
 import { pruneRowLedgerForState } from "./row-ledger";
 import { pruneProductImages } from "./product-image-cache";
-import { AutomaticDeletionStateError, automaticDeletionAllows, normalizeAutomaticDeletions, rememberAutomaticDeletion,
-  remainingAutomaticDeletions } from "./automatic-deletion";
 
 const STATE_KEY = "pipi_deliveries_state_v1";
 /** 只放一个数字：状态最近一次落盘的 revision，供投影等待轮询，不用每次全量 loadState（2026-09-06）。 */
@@ -408,7 +406,6 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
   const emptyTimelineRetirements = mergeEmptyTimelineRetirements(
     undefined, base.emptyTimelineRetirements, base.shipments || [],
   );
-  const automaticDeletionFences = normalizeAutomaticDeletions(base.automaticDeletionFences);
   // 归属-4：旧版本合并出来的行一次性拆开；只看还没有占号时间的行，下面一步给所有行记上占号时间后就不会再拆。
   const split = splitMergedOrderRows(migrateShipmentSources(base.shipments || []), now);
   logMergedOrderSplits(split);
@@ -443,7 +440,6 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     } : {}),
     feedSlotRebuiltAtMs: feedSlotRebuiltAtMs || now,
     ...(emptyTimelineRetirements.length ? { emptyTimelineRetirements } : {}),
-    ...(automaticDeletionFences.length ? { automaticDeletionFences } : {}),
   };
 }
 
@@ -1559,12 +1555,7 @@ export function loadState(now = Date.now()): AppState {
         }
         chosen = candidate;
         break;
-      } catch (error) {
-        // An older generation predates the deletion decision and cannot safely replace a damaged fence.
-        if (error instanceof AutomaticDeletionStateError) {
-          lastStateLoadFailure = "migration_failed";
-          throw error;
-        }
+      } catch {
         writeDiagnostic(
           "storage.state.rejected",
           { result: "migration_failed", revision: candidate.state.revision },
@@ -1798,7 +1789,6 @@ type StateSaveOptions = {
   deferredId?: string;
   enhancementUnsubscribe?: PendingEnhancementUnsubscribe;
   acknowledgedEnhancementUnsubscribeId?: string;
-  automaticDeletionId?: string;
 };
 
 export function saveState(
@@ -1881,12 +1871,6 @@ function saveStateAndPrune(
   const emptyTimelineRetirements = mergeEmptyTimelineRetirements(
     previous.emptyTimelineRetirements, candidate.emptyTimelineRetirements, candidate.shipments,
   );
-  // Only a deletion inside this transaction can add a fence; stale snapshots cannot restore consumed decisions.
-  const automaticDeletionFences = notificationCommit.automaticDeletionId
-    ? rememberAutomaticDeletion(previous.automaticDeletionFences,
-      previous.shipments.find(item => item.identity.id === notificationCommit.automaticDeletionId), previous.shipments, now)
-    : normalizeAutomaticDeletions(previous.automaticDeletionFences);
-  const deletionState = { bindings: uniqueBindings(candidate.bindings), automaticDeletionFences };
   const previousById = new Map(
     previous.shipments.map((shipment) => [shipment.identity.id, shipment]),
   );
@@ -1895,7 +1879,6 @@ function saveStateAndPrune(
     preserveDurableOrderProjections(
       previous.shipments,
       migrateShipmentSources(candidate.shipments)
-        .filter(shipment => automaticDeletionAllows(deletionState, shipment, now))
         .map((shipment) => {
           // A rebuilt feed/detail row may omit the original terminal timestamp.
           // The persisted owner keeps that clock until the row is actually removed.
@@ -1924,7 +1907,6 @@ function saveStateAndPrune(
       normalizedShipments, emptyTimelineRetirements, now), now),
     now,
   );
-  const remainingDeletions = remainingAutomaticDeletions(deletionState, retainedShipments, now);
   const reusedNumberRows = new Set(retainedShipments
     .filter((shipment) => newerWaybillReuseGeneration(previousById.get(shipment.identity.id), shipment))
     .map((shipment) => shipment.identity.id));
@@ -1956,7 +1938,6 @@ function saveStateAndPrune(
     // 遇到没标记的老状态才会给包打 feedRebuildPending）。
     feedSlotRebuiltAtMs: candidate.feedSlotRebuiltAtMs || previous.feedSlotRebuiltAtMs || now,
     ...(emptyTimelineRetirements.length ? { emptyTimelineRetirements } : {}),
-    ...(remainingDeletions.length ? { automaticDeletionFences: remainingDeletions } : {}),
   };
   if (notificationCommit.deferredId) {
     const events = next.pendingNotifications || [];
@@ -2321,7 +2302,6 @@ export function commitRefreshState(
       }
       // 落库前的最后一道闸：签收之后轨迹不许变少。整行被 feed 重建时合并里的那道闸拿不到
       // `current`，根本不会执行（用户 2026-09-08 报：签收件每轮刷新之后「暂无物流动态」）。
-      if (!automaticDeletionAllows(latest, incoming, now, true, base.bindings)) continue;
       shipmentsById.set(id, preserveSettledShipment(current, incoming));
     }
 
@@ -2727,7 +2707,6 @@ export function upsertShipment(incoming: Shipment, now = Date.now()): AppState {
       requireScriptSource(incoming.identity.bindingSource);
     }
     const state = loadState(now);
-    if (!automaticDeletionAllows(state, incoming, now)) return state;
     const current = state.shipments.find(
       (item) => item.identity.id === incoming.identity.id,
     );
@@ -2827,7 +2806,7 @@ export function removeShipmentWithCleanup(
         ),
       },
       now,
-      { automaticDeletionId: id },
+      {},
     );
   });
 }
