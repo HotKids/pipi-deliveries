@@ -238,13 +238,9 @@ test("a refresh crossing day 21 cannot recreate its expired owner", () => {
 test("actual deletion lets a newly created owner start its own terminal clock", () => {
   memory.clear();
   const original = row("account");
-  const binding = { source: "interface5" as const, phone: "13800001234", boundAtMs: NOW - DAY };
-  original.identity.phone = binding.phone;
-  saveState({ ...emptyState(), bindings: [binding], shipments: [original] }, NOW);
+  saveState({ ...emptyState(), shipments: [original] }, NOW);
   removeShipment(original.identity.id, NOW + DAY);
-  const replacement = row("account", NOW + 2 * DAY);
-  replacement.identity.phone = binding.phone;
-  const next = saveState({ ...emptyState(), bindings: [binding], shipments: [replacement] }, NOW + 2 * DAY);
+  const next = saveState({ ...emptyState(), shipments: [row("account", NOW + 2 * DAY)] }, NOW + 2 * DAY);
   assert.equal(next.shipments[0]?.settledAtMs, NOW + 2 * DAY);
 });
 

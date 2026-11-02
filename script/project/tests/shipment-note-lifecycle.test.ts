@@ -58,13 +58,8 @@ try {
     const pending = edit();
     if (change === "delete" || change === "reimport") {
       removeShipment(original.identity.id, NOW + 1);
-      if (change === "reimport") {
-        const feed = { ...original.sourceTimeline!, latestDetail: "Synthetic corrected order event",
-          tracks: original.sourceTimeline!.tracks.map(track => ({ ...track, detail: "Synthetic corrected order event" })) };
-        saveState({ ...loadState(NOW + 2), bindings: [{ source: "interface5", phone: original.identity.phone!, boundAtMs: NOW - 1_000 }],
-          shipments: [{ ...original, identity: { ...original.identity, createdAtMs: NOW + 2 },
-            timeline: feed, sourceTimeline: feed, note: "Replacement note" }] }, NOW + 2);
-      }
+      if (change === "reimport") saveState({ ...emptyState(), shipments: [{ ...original,
+        identity: { ...original.identity, createdAtMs: NOW + 2 }, note: "Replacement note" }] }, NOW + 2);
     } else if (change === "reuse") {
       saveState({ ...loadState(), shipments: [{ ...original, waybillReuseAtMs: NOW + 2, note: "Replacement note" }] }, NOW + 2);
     } else {

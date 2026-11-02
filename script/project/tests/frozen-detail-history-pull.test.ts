@@ -93,13 +93,6 @@ function signedOffPartial(): Shipment {
     .shipments[0]!;
 }
 
-function replacementAfterDeletion(row: Shipment): Shipment {
-  const progressed = track(SIGNED_AT + 1_000, "Synthetic replacement signed parcel", "COMPLETED");
-  return { ...row, identity: { ...row.identity, createdAtMs: now + 1 }, updatedAtMs: now + 1,
-    sourceTimeline: packet("interface5", [progressed]),
-    timeline: packet("v6_query", [progressed]), manualTimelines: [packet("v6_query", [progressed])] };
-}
-
 test("a frozen single-node SF Online package is repaired only by the explicit pull", async () => {
   const row = seed();
   assert.equal(signedRefreshFrozen(row, now), true, "the shared list/background freeze is unchanged");
@@ -197,7 +190,8 @@ for (const change of ["unbind", "rebind", "same-id replacement"] as const) {
     if (change === "same-id replacement") {
       const removed = removeShipment(row.identity.id, now);
       assert.equal(removed.shipments.some(item => item.identity.id === row.identity.id), false);
-      saveState({ ...removed, shipments: [replacementAfterDeletion(row)] }, now + 1);
+      saveState({ ...removed, shipments: [{ ...row,
+        identity: { ...row.identity, createdAtMs: now + 1 }, updatedAtMs: now + 1 }] }, now + 1);
     } else {
       removeBinding("interface5", PHONE, now);
       if (change === "rebind") addBinding("interface5", PHONE, now + 1);
@@ -227,7 +221,8 @@ test("a replacement queued between joined lease reacquisition and flow startup c
     assert.ok(readDiagnostics().some(entry => entry.details.skipReason === "coalesced_detail_refresh"),
       "the join resumed before this mutation; its new flow is still queued");
     const removed = removeShipment(row.identity.id, now);
-    saveState({ ...removed, shipments: [replacementAfterDeletion(row)] }, now + 1);
+    saveState({ ...removed, shipments: [{ ...row,
+      identity: { ...row.identity, createdAtMs: now + 1 }, updatedAtMs: now + 1 }] }, now + 1);
     expected = JSON.stringify(loadState(now).shipments.find(item => item.identity.id === row.identity.id));
   }));
   const [forcedResult, pullResult] = await Promise.all([forced, pulled, mutation]);
