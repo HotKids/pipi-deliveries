@@ -30,6 +30,8 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   blockingTrigger?: string;
   readDurationMs?: number;
   writeDurationMs?: number;
+  /** Notification replay scheduling phase, including preparation and the host wait. */
+  scheduleDurationMs?: number;
   verifyDurationMs?: number;
   pruneDurationMs?: number;
   blockingLeaseAgeMs?: number;
@@ -300,7 +302,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "hotlinePresent", "hotlineMatchesExpected",
   "waitTimeoutOrigin", "waitBudgetMs", "waitElapsedMs",
   "selectionScope", "returnedTrackCount", "displayedTrackCount",
-  "readDurationMs", "writeDurationMs", "verifyDurationMs", "pruneDurationMs",
+  "readDurationMs", "writeDurationMs", "scheduleDurationMs", "verifyDurationMs", "pruneDurationMs",
   "blockingFlowId", "blockingTrigger", "blockingLeaseAgeMs", "blockingLeaseRemainingMs",
   "timeoutOrigin", "requestPhase", "requestBudgetMs", "requestElapsedMs", "responseHeadersAfterMs", "responseBodyAfterMs",
   "requestId", "signalAbortAfterMs", "callerSettledAfterMs",
@@ -482,7 +484,7 @@ const NUMBER_KEYS = new Set<keyof DiagnosticDetails>([
   "commitSequence",
   "carrierFetchedAtMs", "carrierLastAttemptAtMs", "carrierRefreshRemainingMs",
   "waitBudgetMs", "waitElapsedMs", "returnedTrackCount", "displayedTrackCount",
-  "readDurationMs", "writeDurationMs", "verifyDurationMs", "pruneDurationMs",
+  "readDurationMs", "writeDurationMs", "scheduleDurationMs", "verifyDurationMs", "pruneDurationMs",
   "blockingLeaseAgeMs", "blockingLeaseRemainingMs",
   "requestBudgetMs", "requestElapsedMs", "responseHeadersAfterMs", "responseBodyAfterMs",
   "signalAbortAfterMs", "callerSettledAfterMs",

@@ -577,6 +577,18 @@ Object.defineProperty(runtime, "SQLite", {
 writeRuntimeCapabilities("widget");
 assert.equal(readDiagnostics()[0].details.result, "probe_failed");
 delete runtime.SQLite;
+
+writeDiagnostic("notification.replay.completed", {
+  scheduleDurationMs: 21.5,
+  writeDurationMs: 33,
+});
+assert.equal(readDiagnostics()[0].details.scheduleDurationMs, 22);
+assert.equal(readDiagnostics()[0].details.writeDurationMs, 33);
+assert.equal(diagnosticText([readDiagnostics()[0]!]).includes("scheduleDurationMs=22"), true);
+for (const invalid of [-1, Infinity, NaN, "synthetic private value"]) {
+  writeDiagnostic("notification.replay.completed", { scheduleDurationMs: invalid as number });
+  assert.equal(readDiagnostics()[0].details.scheduleDurationMs, undefined);
+}
 setDiagnosticsEnabled(false);
 const diagnosticCount = readDiagnostics().length;
 writeRuntimeCapabilities("app");

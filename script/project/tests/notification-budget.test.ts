@@ -63,6 +63,7 @@ test("an empty outbox records one timed completion while retaining real reads an
       clientBuild: events[0].details.clientBuild,
       flowId: "empty-outbox", stage: "notifications", result: "completed",
       budgetMs: 1_000, readDurationMs: readElapsed, durationMs: readElapsed,
+      scheduleDurationMs: 0, writeDurationMs: 0,
       pendingNotifications: 0, attempted: 0, succeeded: 0, failed: 0,
     });
     const next = acquireDurableRefreshLease("notifications", 1_000, clock);
@@ -196,4 +197,106 @@ test("a schedule response after ownership loss cannot acknowledge its event", as
   await replayPendingShipmentNotifications(() => current, { deadlineAtMs: NOW + 500, flowId: "lost-owner" });
   assert.equal(attempted.length, 1);
   assert.deepEqual(loadState().pendingNotifications, initial.pendingNotifications);
+  const end = readDiagnostics().find(entry => entry.event === "notification.replay.completed")!;
+  assert.equal(end.details.result, "ownership_lost", "parent ownership loss before the deadline stays distinct");
+  assert.equal(end.details.failed, 0);
+});
+
+test("the default drain budget expiring with its own lease is not reported as an ownership takeover", async () => {
+  const initial = seed();
+  let resolveLate!: () => void;
+  schedule = () => {
+    if (attempted.length === 1) { clock += 6_000; return Promise.resolve(); }
+    return new Promise(resolve => { resolveLate = resolve; });
+  };
+  await withTimers(() => replayPendingShipmentNotifications(() => true, { flowId: "default-budget" }).then(() => {}));
+  const end = readDiagnostics().find(entry => entry.event === "notification.replay.completed")!;
+  assert.equal(end.details.budgetMs, 15_000);
+  assert.equal(end.details.durationMs, 15_000);
+  assert.equal(end.details.result, "budget_exhausted");
+  assert.equal(end.details.attempted, 2);
+  assert.equal(end.details.succeeded, 1);
+  assert.equal(end.details.failed, 1);
+  const remaining = loadState().pendingNotifications!;
+  assert.deepEqual(remaining, initial.pendingNotifications!.slice(1));
+  resolveLate(); await Promise.resolve();
+  assert.deepEqual(loadState().pendingNotifications, remaining, "late host completion cannot consume the retained event");
+  schedule = async () => {};
+  await replayPendingShipmentNotifications();
+  assert.equal(loadState().pendingNotifications?.length, 0);
+  assert.equal(attempted.filter(id => id === initial.shipments[0].identity.id).length, 1,
+    "the event durably acknowledged before the deadline is not sent again");
+});
+
+test("a failed host schedule after parent ownership loss before budget expiry preserves the event", async () => {
+  const initial = seed();
+  let current = true;
+  schedule = async () => {
+    clock += 20;
+    current = false;
+    throw new Error("Synthetic host rejection after parent cancellation");
+  };
+  await replayPendingShipmentNotifications(() => current, { deadlineAtMs: NOW + 1_000, flowId: "failed-lost-owner" });
+  const end = readDiagnostics().find(entry => entry.event === "notification.replay.completed")!;
+  assert.equal(end.details.result, "ownership_lost");
+  assert.equal(end.details.durationMs, 20);
+  assert.equal(end.details.failed, 1);
+  assert.equal(end.details.scheduleDurationMs, 20);
+  assert.equal(readDiagnostics().find(entry => entry.event === "notification.schedule.failed")?.details.durationMs, 20);
+  assert.equal(attempted.length, 1);
+  assert.deepEqual(loadState().pendingNotifications, initial.pendingNotifications);
+});
+
+test("notification timing separates host waits from aggregate durable acknowledgements", async () => {
+  seed();
+  loadState();
+  schedule = async () => { clock += 7; };
+  const originalWrite = FileManager.writeAsStringSync;
+  FileManager.writeAsStringSync = (path, value) => {
+    if (path.endsWith("/state.json")) clock += 11;
+    originalWrite(path, value);
+  };
+  try {
+    await replayPendingShipmentNotifications(() => true, { flowId: "notification-timing" });
+  } finally {
+    FileManager.writeAsStringSync = originalWrite;
+  }
+  const events = readDiagnostics();
+  assert.equal(events.some(entry => entry.event === "notification.schedule.succeeded"), false,
+    "successful sends must not add per-event synchronous diagnostic appends");
+  const end = events.find(entry => entry.event === "notification.replay.completed")!;
+  assert.equal(end.details.scheduleDurationMs, 21);
+  assert.equal(end.details.writeDurationMs, 33, "ACK timings include their owning durable calls");
+  assert.equal(end.details.durationMs, 54);
+  assert.equal(end.details.succeeded, 3);
+  assert.equal(loadState().pendingNotifications?.length, 0);
+});
+
+test("failed scheduling and durable rotation contribute to their own aggregate phases", async () => {
+  const initial = seed();
+  loadState();
+  schedule = async () => {
+    clock += 7;
+    if (attempted.length === 1) throw new Error("Synthetic schedule rejection");
+  };
+  const originalWrite = FileManager.writeAsStringSync;
+  FileManager.writeAsStringSync = (path, value) => {
+    if (path.endsWith("/state.json")) clock += 11;
+    originalWrite(path, value);
+  };
+  try {
+    await replayPendingShipmentNotifications(() => true, { flowId: "notification-rotation-timing" });
+  } finally {
+    FileManager.writeAsStringSync = originalWrite;
+  }
+  const events = readDiagnostics();
+  const end = events.find(entry => entry.event === "notification.replay.completed")!;
+  assert.equal(end.details.result, "pending_retry");
+  assert.equal(end.details.scheduleDurationMs, 21);
+  assert.equal(end.details.writeDurationMs, 33, "one durable rotation and two ACKs are timed");
+  assert.equal(end.details.durationMs, 54);
+  assert.equal(end.details.succeeded, 2);
+  assert.equal(end.details.failed, 1);
+  assert.equal(events.find(entry => entry.event === "notification.schedule.failed")?.details.durationMs, 7);
+  assert.deepEqual(loadState().pendingNotifications, [initial.pendingNotifications![0]]);
 });
