@@ -56,9 +56,19 @@ export async function replayPendingShipmentNotifications(
   }
   let current: AppState | undefined;
   let attempted = 0, succeeded = 0, failed = 0;
+  let scheduleDurationMs = 0, writeDurationMs = 0;
   let result = "completed";
   const readStartedAt = Date.now();
   let readDurationMs: number | undefined;
+  const commitEvent = (eventId: string, deferred = false) => {
+    const commitStartedAt = Date.now();
+    try {
+      return deferred ? deferShipmentNotification(eventId) : acknowledgeShipmentNotification(eventId);
+    } finally {
+      // Include the owning mutation's reads and cleanup, separately from host scheduling.
+      writeDurationMs += Date.now() - commitStartedAt;
+    }
+  };
   try {
     loadNotificationStatuses(true);
     current = loadState();
@@ -98,34 +108,46 @@ export async function replayPendingShipmentNotifications(
         }
       }
       attempted++;
+      const scheduleStartedAt = Date.now();
       try {
         // A queued event may cross the visibility cutoff before the host accepts it.
         // Acknowledge hidden owners below so they cannot block later visible events. A row that has since become
         // attached to another row's waybill (ownership plan T3, user 2026-09-25) is hidden the same way.
         if (deliverable) {
-          // SF signing waits in the durable outbox while alignment settles. Its original payload may
-          // predate that repair, so deliver the same current presentation as the list and widgets.
-          const presentation = signedSF
-            ? shipmentNotificationPresentation({ ...shipment, timeline: selectShipmentTimeline(shipment) })
-            : event;
-          await scheduleEvent(presentation, deadlineAtMs);
+          try {
+            // SF signing waits in the durable outbox while alignment settles. Its original payload may
+            // predate that repair, so deliver the same current presentation as the list and widgets.
+            const presentation = signedSF
+              ? shipmentNotificationPresentation({ ...shipment, timeline: selectShipmentTimeline(shipment) })
+              : event;
+            await scheduleEvent(presentation, deadlineAtMs);
+          } finally {
+            scheduleDurationMs += Date.now() - scheduleStartedAt;
+          }
         }
       } catch (error) {
         failed++;
         writeDiagnostic("notification.schedule.failed", {
-          ...details, result: "pending_retry", ...diagnosticErrorDetails(error),
+          ...details, result: "pending_retry", durationMs: Date.now() - scheduleStartedAt,
+          ...diagnosticErrorDetails(error),
         }, "warning");
-        if (!canSchedule() || !lease.isCurrent()) { result = "ownership_lost"; return current; }
+        if (!canSchedule() || !lease.isCurrent()) {
+          result = deadlineExpired(deadlineAtMs) ? "budget_exhausted" : "ownership_lost";
+          return current;
+        }
         // Persist rotation before another host wait: a bounded drain may expire
         // before reaching healthy events, which must lead the next attempt.
-        current = deferShipmentNotification(event.id);
+        current = commitEvent(event.id, true);
         if (deadlineExpired(deadlineAtMs)) { result = "budget_exhausted"; return current; }
         continue;
       }
-      if (!canSchedule() || !lease.isCurrent()) { result = "ownership_lost"; return current; }
+      if (!canSchedule() || !lease.isCurrent()) {
+        result = deadlineExpired(deadlineAtMs) ? "budget_exhausted" : "ownership_lost";
+        return current;
+      }
       // The host has no documented caller-selected request ID. A crash after scheduling
       // and before this durable acknowledgement can repeat the notification.
-      current = acknowledgeShipmentNotification(event.id);
+      current = commitEvent(event.id);
       succeeded++;
     }
   } catch (error) {
@@ -143,6 +165,8 @@ export async function replayPendingShipmentNotifications(
       ...details, result: result === "completed" && pendingNotifications ? "pending_retry" : result,
       durationMs: Date.now() - startedAt, pendingNotifications, attempted, succeeded, failed,
       budgetMs, readDurationMs: readDurationMs ?? Date.now() - readStartedAt,
+      // Durable totals already include the separately logged storage subphases.
+      scheduleDurationMs, writeDurationMs,
     });
   }
   return current;

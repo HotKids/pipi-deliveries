@@ -122,13 +122,14 @@ function retire(frame: Frame): void {
   // Retire complete parent directories, never just their next links: stale publishers must
   // fail in a missing parent rather than recreate a previously occupied publication slot.
   const keep = new Set([frame.id, frame.data.stateRef, frame.data.previousStateRef]);
-  for (const name of entries()) {
+  const names = entries();
+  for (const name of names) {
     const generation = ID.exec(name);
     if (generation && Number(generation[1]) < frame.sequence - 2 && !keep.has(name)) {
       removeBestEffort(path(name));
     }
   }
-  for (const name of entries()) {
+  for (const name of names) {
     if (/^head-\d+$/.test(name) && Number(name.slice(5)) < frame.sequence - 2) {
       removeBestEffort(`${root()}/${name}`);
     }

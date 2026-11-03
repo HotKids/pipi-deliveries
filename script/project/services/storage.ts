@@ -1864,9 +1864,11 @@ function saveStateAndPrune(
   candidate: AppState,
   now: number,
   notificationCommit: StateSaveOptions,
+  previousInTransaction?: AppState,
 ): { state: AppState; routesPruned: boolean } {
   const startedAtMs = Date.now();
-  const previous = loadState(now);
+  // ACK/defer read inside this transaction; its CAS retry re-reads before reusing the snapshot.
+  const previous = previousInTransaction ?? loadState(now);
   const readDurationMs = Date.now() - startedAtMs;
   const emptyTimelineRetirements = mergeEmptyTimelineRetirements(
     previous.emptyTimelineRetirements, candidate.emptyTimelineRetirements, candidate.shipments,
@@ -2369,7 +2371,7 @@ export function acknowledgeShipmentNotification(
   return withSharedFileTransaction(() => {
     const state = loadState(now);
     if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
-    return saveState(state, now, { acknowledgedId: eventId });
+    return saveStateAndPrune(state, now, { acknowledgedId: eventId }, state).state;
   });
 }
 
@@ -2380,7 +2382,7 @@ export function deferShipmentNotification(
   return withSharedFileTransaction(() => {
     const state = loadState(now);
     if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
-    return saveState(state, now, { deferredId: eventId });
+    return saveStateAndPrune(state, now, { deferredId: eventId }, state).state;
   });
 }
 
