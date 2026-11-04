@@ -1499,6 +1499,37 @@ function shunFengHistoryReferenceAt(shipment: Shipment, timelines: readonly Time
   return reference;
 }
 
+function projectedJdOrderAccount(shipment: Shipment, account: TimelinePackage | null): boolean {
+  return !shipment.identity.manuallyAdded && Boolean(shipment.identity.accountOrder) &&
+    isJingDongSourceShipment(shipment) && Boolean(normalizedProjectedWaybill(shipment.identity)) &&
+    Boolean(account && timelineNormalizedStatus(account)?.scope === "ORDER" &&
+      account.semantic !== "COMPLETED" && account.semantic !== "CANCELLED");
+}
+
+/** Legacy K100 history lacks the enum needed to resolve this order's shipment status. */
+function projectedJdCarrierStatusMissing(shipment: Shipment, timeline: TimelinePackage): boolean {
+  const status = timelineNormalizedStatus(timeline);
+  return projectedJdOrderAccount(shipment, accountPresentationReference(shipment)) &&
+    normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.K100_H5 &&
+    normalizeWaybill(timeline.waybill) === displayWaybill(shipment) &&
+    !(status?.scope === "SHIPMENT" && status.structured && status.semantic !== "UNKNOWN");
+}
+
+/** A resolved JD order summary cannot displace a qualified carrier response (owner, 2026-11-05). */
+function projectedJdKuaidi100Status(shipment: Shipment, account: TimelinePackage | null): TimelinePackage | null {
+  if (!projectedJdOrderAccount(shipment, account)) return null;
+  return eligibleDetailManuals(shipment).filter(candidate => {
+    const projection = timelineNormalizedStatus(candidate);
+    const at = Number(candidate.statusEventAtMs) || 0;
+    return normalizeTimelineSlot(candidate.provider) === TIMELINE_SLOT.K100_H5 &&
+      normalizeWaybill(candidate.waybill) === displayWaybill(shipment) &&
+      candidate.complete === true && candidate.structuredStatus === true && projection?.structured === true &&
+      projection.scope === "SHIPMENT" && candidate.semantic !== "UNKNOWN" && at > 0 && at <= Date.now() &&
+      detailTimelineComplete(candidate, account, candidate.semantic,
+        terminalEvidenceAtMs({ ...shipment, timeline: candidate }));
+  }).sort((left, right) => (right.statusEventAtMs || 0) - (left.statusEventAtMs || 0))[0] || null;
+}
+
 function resolveStructuredStatus(
   shipment: Shipment,
   selected: TimelinePackage,
@@ -1523,6 +1554,16 @@ function resolveStructuredStatus(
         ? statusPriority(candidate) - statusPriority(authority) : 0;
       if (!authority || authority.semantic === "UNKNOWN" || priorityDifference > 0 ||
           (priorityDifference === 0 && candidate.statusEventAtMs! > (authority.statusEventAtMs || 0))) authority = candidate;
+    }
+    const carrier = projectedJdKuaidi100Status(shipment, authority);
+    if (carrier) {
+      if (selectionEvidence) {
+        selectionEvidence.statusProvider = carrier.provider;
+        selectionEvidence.headlineProvider = carrier.provider;
+      }
+      return { ...selected, semantic: carrier.semantic, structuredStatus: true,
+        statusEventAtMs: carrier.statusEventAtMs, ...statusProjectionFields(carrier, selected),
+        latestDetail: carrier.latestDetail, latestTimeText: carrier.latestTimeText };
     }
     if (authority?.semantic !== "UNKNOWN" && authority) {
       if (selectionEvidence) selectionEvidence.statusProvider = authority.provider;
@@ -1793,6 +1834,7 @@ export function shipmentDetailIncompleteReason(input: Shipment): DetailIncomplet
   const shipment = withoutTemporaryReviews(refreshGateView(input));
   const selected = selectShipmentDetailTimeline(shipment);
   if (!timedTracks(selected.tracks).length) return "no_tracks";
+  if (projectedJdCarrierStatusMissing(shipment, selected)) return "status_unknown";
   const expected = shipmentDetailPresentationStatus(shipment, selected).semantic;
   const terminalAt = terminalEvidenceAtMs({ ...shipment, timeline: selected });
   const statusReason = timelineStatusIncompleteReason(selected, expected, terminalAt);
@@ -1885,7 +1927,8 @@ export function shipmentDetailCandidateEvidence(input: Shipment, timeline: Timel
     ? pool.candidates.reduce<TimelinePackage | null>((latest, value) =>
       !latest || timelineLatestEventAt(value) > timelineLatestEventAt(latest) ? value : latest, null)
     : accountPresentationReference(withoutTemporaryReviews(shipment));
-  const incompleteReason = timedTracks(evaluated.tracks).length
+  const incompleteReason = projectedJdCarrierStatusMissing(shipment, candidate) ? "status_unknown"
+    : timedTracks(evaluated.tracks).length
     ? detailTimelineIncompleteReason(evaluated, reference,
         presented.semantic, terminalEvidenceAtMs({ ...shipment, timeline: presented }),
         containsTimelinePickupTrack(evaluated.tracks), shunFengHistoryReferenceAt(shipment, pool.sfManuals), pool.sfManuals)
