@@ -983,6 +983,7 @@ async function refreshWebTimeline(
     signal,
     onQueryAttempted,
     beforeQuery,
+    ...(isJingDongAutomaticShipment(shipment) ? { projectedJdOrder: true as const } : {}),
   }, observe), deadlineAtMs, signal);
   if (!timeline) return null;
   const enriched = applySameSourceTimeline(shipment, timeline, now);

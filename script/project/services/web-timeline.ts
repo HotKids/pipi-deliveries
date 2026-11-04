@@ -9,6 +9,8 @@ import {
 } from "./deadline";
 import {
   packageSemantic,
+  semanticFromEventCode,
+  statusLabel,
   normalizeWaybill,
   parseProviderTime,
   usableTimedTracks,
@@ -70,6 +72,7 @@ export type WebTimelineInput = Readonly<{
   signal?: AbortSignal;
   onQueryAttempted?: (authorized: boolean) => void;
   beforeQuery?: () => void;
+  projectedJdOrder?: true;
 }>;
 
 function trustedHost(hostname: string): boolean {
@@ -88,7 +91,7 @@ export function trustedWebTimelineRoute(value: string): boolean {
   }
 }
 
-function extractionJavaScript(waybill: string): string {
+function extractionJavaScript(waybill: string, kuaidi100Com: string, projectedJdOrder: boolean): string {
   return `
     return (() => {
       const clean = (value) => String(value == null ? "" : value).trim().replace(/\\s+/g, " ");
@@ -167,8 +170,15 @@ function extractionJavaScript(waybill: string): string {
         seenTrack.add(key);
         tracks.push({ timeText, detail });
       };
-      const queue = [window.__INITIAL_STATE__, window.__NUXT__, window.__NEXT_DATA__];
-      for (const node of document.querySelectorAll("body,#main,#app,.container")) {
+      // showList assigns state, nu, com and alllists from one response (official result.js).
+      const packet = ${projectedJdOrder} && vm && vm.loading === false && page.locationNuMatches &&
+        (!vm.errors || vm.errors.type === "") && !(checkCode && checkCode.show === true) &&
+        vm.num === expectedWaybill && vm.lastnum === expectedWaybill && vm.nu === expectedWaybill &&
+        vm.com === ${JSON.stringify(kuaidi100Com)} && Array.isArray(vm.alllists) && vm.alllists.length &&
+        text(vm.state) ? { state: text(vm.state), waybill: expectedWaybill, com: vm.com } : null;
+      if (packet) for (const row of vm.alllists) append(row);
+      const queue = packet ? [] : [window.__INITIAL_STATE__, window.__NUXT__, window.__NEXT_DATA__];
+      for (const node of packet ? [] : document.querySelectorAll("body,#main,#app,.container")) {
         if (node && node.__vue__) queue.push(node.__vue__);
       }
       const seen = new Set();
@@ -190,7 +200,7 @@ function extractionJavaScript(waybill: string): string {
           if (child && typeof child === "object") queue.push(child);
         }
       }
-      if (!tracks.length) {
+      if (!packet && !tracks.length) {
         const selectors = [
           ".result-list li", ".result-list .item", ".result-list .row",
           ".trace-list li", ".timeline li", ".logistics li", "[class*=trace] li"
@@ -223,7 +233,7 @@ function extractionJavaScript(waybill: string): string {
           }
         }
       } catch { /* row diagnostics must not change extraction success */ }
-      return { tracks: tracks.slice(0, ${MAX_TRACKS}), page };
+      return { tracks: tracks.slice(0, ${MAX_TRACKS}), page, ...(packet ? { kuaidi100: packet } : {}) };
     })();
   `;
 }
@@ -335,11 +345,20 @@ export function webTimelineFromExtraction(
   tracks.sort((left, right) => (right.timeMs || 0) - (left.timeMs || 0));
   const timed = usableTimedTracks(tracks);
   if (!timed.length) return null;
-  const status = packageSemantic("", tracks);
+  const captured = object(root.kuaidi100);
+  const code = typeof captured.state === "string" || typeof captured.state === "number"
+    ? String(captured.state).trim() : "";
+  const semantic = semanticFromEventCode(code);
+  const structuredK100 = input.projectedJdOrder === true && provider === TIMELINE_SLOT.K100_H5 &&
+    normalizeWaybill(captured.waybill as string) === normalizeWaybill(input.waybill) &&
+    Boolean(kuaidi100Com) && captured.com === kuaidi100Com && semantic !== "UNKNOWN";
+  const status = structuredK100 ? { semantic, eventAtMs: timed[0].timeMs } : packageSemantic("", tracks);
   return {
     provider,
-    structuredStatus: provider === TIMELINE_SLOT.JT_H5 && status.semantic !== "UNKNOWN" &&
+    structuredStatus: structuredK100 || provider === TIMELINE_SLOT.JT_H5 && status.semantic !== "UNKNOWN" &&
       tracks.some(track => track.raw._pipiStatusSource === "jt_h5"),
+    ...(structuredK100 ? { normalizedStatus: { version: 1 as const, scope: "SHIPMENT" as const,
+      semantic, code, text: statusLabel(semantic), priority: 0, eventAtMs: timed[0].timeMs!, structured: true } } : {}),
     complete: timed.length >= 2,
     waybill: input.waybill,
     courierCode: input.courierCode,
@@ -467,7 +486,7 @@ export async function scrapeWebTimeline(
       try {
         attempts++;
         const raw = await withTimeout(
-          controller.evaluateJavaScript<unknown>(jt ? jtH5JavaScript(waybill, tails) : extractionJavaScript(waybill)),
+          controller.evaluateJavaScript<unknown>(jt ? jtH5JavaScript(waybill, tails) : extractionJavaScript(waybill, resolveCarrierQuery(input.courierCode)?.kuaidi100Code || "", input.projectedJdOrder === true)),
           Math.min(EVALUATION_TIMEOUT_MS, deadlineAtMs - Date.now()),
         );
         const page = object(object(raw).page);
