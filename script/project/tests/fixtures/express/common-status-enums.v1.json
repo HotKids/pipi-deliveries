@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "about": "Canonical structured status aliases owned by express-status.js; every projection is checked against the generated Beta Worker. Provider-specific and retained client compatibility rules remain separate.",
+  "about": "Canonical structured status aliases and Samsung presentation policy owned by express-status.js; every projection is checked against the generated Beta Worker. Retained client compatibility rules remain separate.",
   "aliases": {
     "CREATE": "ORDERED",
     "ORDER": "ORDERED",
@@ -176,6 +176,945 @@
       "取消": "CANCELLED"
     }
   },
+  "samsungJdPresentationPolicy": {
+    "schemaVersion": 1,
+    "sources": [
+      "JD",
+      "JD_EXPRESS",
+      ""
+    ],
+    "orderStageSemantics": [
+      "ORDERED",
+      "SHIPPED",
+      "PICKED"
+    ],
+    "preservedDescriptions": [
+      "评价赢京豆",
+      "取消"
+    ],
+    "statusAliases": {
+      "待揽件": "SHIPPED",
+      "揽收": "PICKED",
+      "揽件": "PICKED",
+      "签收/订单完成": "COMPLETED",
+      "签收": "COMPLETED",
+      "订单完成": "COMPLETED",
+      "评价赢京豆": "COMPLETED",
+      "快递柜存放": "WAITING_PICKUP",
+      "派件": "DELIVERY",
+      "分拣": "TRANSIT",
+      "中转到(中转场/分拣中心)": "TRANSIT",
+      "中转发(中转场/分拣中心)": "TRANSIT",
+      "开始跨境运输": "TRANSIT",
+      "问题件": "DANGER",
+      "已签收": "COMPLETED",
+      "派送": "DELIVERY"
+    },
+    "statusAliasSources": [
+      "JD",
+      "JD_EXPRESS"
+    ],
+    "descriptorStatus": "ILLEGAL STATUS"
+  },
+  "samsungJdPresentationCases": [
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "CREATE",
+        "logisticStatusDesc": "",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "ORDERED",
+        "orderStageOnly": true
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "CREATE",
+        "logisticStatusDesc": "",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "待揽件",
+        "logisticStatusDesc": "",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "SHIPPED",
+        "orderStageOnly": true
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "待揽件",
+        "logisticStatusDesc": "",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "SHIPPED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": true
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "中转到(中转场/分拣中心)",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": true
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "中转到(中转场/分拣中心)",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "",
+        "logisticStatusDesc": "中转到(中转场/分拣中心)",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "",
+        "logisticStatusDesc": "中转到(中转场/分拣中心)",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": true
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "开始跨境运输",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "TRANSIT",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "开始跨境运输",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "TRANSIT",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "其他",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "其他",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "",
+        "logisticStatusDesc": "评价赢京豆",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "",
+        "logisticStatusDesc": "评价赢京豆",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "评价赢京豆",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "COMPLETED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "评价赢京豆",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "COMPLETED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "取消",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "CANCELLED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "取消",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "CANCELLED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "疑难",
+        "logisticStatusDesc": "取消",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "CANCELLED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "疑难",
+        "logisticStatusDesc": "取消",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "签收",
+        "logisticStatusDesc": "",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "COMPLETED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "签收",
+        "logisticStatusDesc": "",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "COMPLETED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "已签收",
+        "logisticStatusDesc": "",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "COMPLETED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "已签收",
+        "logisticStatusDesc": "",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "COMPLETED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "旧已签收状态",
+        "logisticStatusDesc": "",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "旧已签收状态",
+        "logisticStatusDesc": "",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "派件",
+        "logisticStatusDesc": "开始跨境运输",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "TRANSIT",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "派件",
+        "logisticStatusDesc": "开始跨境运输",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "TRANSIT",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "派件",
+        "logisticStatusDesc": "快递柜存放",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "WAITING_PICKUP",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "派件",
+        "logisticStatusDesc": "快递柜存放",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "WAITING_PICKUP",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD_EXPRESS",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": true
+      }
+    },
+    {
+      "row": {
+        "source": "JD_EXPRESS",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD_EXPRESS",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": true
+      }
+    },
+    {
+      "row": {
+        "source": "JD_EXPRESS",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "jd",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": true
+      }
+    },
+    {
+      "row": {
+        "source": "jd",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "jd",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "jd",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "jd_express",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": true
+      }
+    },
+    {
+      "row": {
+        "source": "jd_express",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "jd_express",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "jd_express",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": true
+      }
+    },
+    {
+      "row": {
+        "source": "",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "KDNIAO",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "KDNIAO",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "KDNIAO",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "KDNIAO",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "SF0000000007301",
+        "logisticStatus": "Illegal Status",
+        "logisticStatusDesc": "揽件",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event"
+      },
+      "scope": "SHIPMENT",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "Synthetic event",
+        "detail": "noresult"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "UNKNOWN",
+        "orderStageOnly": false
+      }
+    },
+    {
+      "row": {
+        "source": "JD",
+        "waybillCode": "3668000000000001",
+        "realWaybillCode": "3668000000000001",
+        "logisticStatus": "揽件",
+        "logisticStatusDesc": "揽收",
+        "logisticGmtModified": "2026-11-04 19:17:00",
+        "logisticStatusDetail": "noresult"
+      },
+      "scope": "ORDER",
+      "expected": {
+        "semantic": "PICKED",
+        "orderStageOnly": true
+      }
+    }
+  ],
   "cases": [
     {
       "code": "CREATE",
