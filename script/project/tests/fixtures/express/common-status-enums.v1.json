@@ -1,0 +1,2434 @@
+{
+  "schemaVersion": 1,
+  "about": "Canonical structured status aliases owned by express-status.js; every projection is checked against the generated Beta Worker. Provider-specific and retained client compatibility rules remain separate.",
+  "aliases": {
+    "CREATE": "ORDERED",
+    "ORDER": "ORDERED",
+    "ORDERED": "ORDERED",
+    "CREATED": "ORDERED",
+    "WAREHOUSE_ACCEPT": "ORDERED",
+    "WAREHOUSE_PROCESS": "ORDERED",
+    "SHIPPED": "SHIPPED",
+    "CONSIGN": "SHIPPED",
+    "WAREHOUSE_CONFIRMED": "SHIPPED",
+    "ACCEPT": "PICKED",
+    "GOT": "PICKED",
+    "COLLECT": "PICKED",
+    "PICKED": "PICKED",
+    "ACCEPTED": "PICKED",
+    "COLLECTED": "PICKED",
+    "PICK": "PICKED",
+    "揽件": "PICKED",
+    "已揽件": "PICKED",
+    "TRANSPORT": "TRANSIT",
+    "TRANSIT": "TRANSIT",
+    "INTRANSIT": "TRANSIT",
+    "DEPARTURE": "TRANSIT",
+    "ARRIVAL": "TRANSIT",
+    "SHIPPING": "TRANSIT",
+    "TRANSFER": "TRANSIT",
+    "LH_HO": "TRANSIT",
+    "CC_HO": "TRANSIT",
+    "在途": "TRANSIT",
+    "DELIVERING": "DELIVERY",
+    "DELIVERY": "DELIVERY",
+    "DELIVER": "DELIVERY",
+    "DISPATCH": "DELIVERY",
+    "DISPATCHED": "DELIVERY",
+    "STA_DELIVERING": "DELIVERY",
+    "派件": "DELIVERY",
+    "AGENT_SIGN": "WAITING_PICKUP",
+    "WAITING_PICKUP": "WAITING_PICKUP",
+    "待取": "WAITING_PICKUP",
+    "SIGN": "COMPLETED",
+    "SIGNED": "COMPLETED",
+    "FINISH": "COMPLETED",
+    "FINISHED": "COMPLETED",
+    "COMPLETED": "COMPLETED",
+    "MANUAL_SIGN": "COMPLETED",
+    "签收": "COMPLETED",
+    "FAILED": "DANGER",
+    "FAIL": "DANGER",
+    "REJECT": "DANGER",
+    "REJECTED": "DANGER",
+    "PROBLEM": "DANGER",
+    "EXCEPTION": "DANGER",
+    "RETURN": "DANGER",
+    "RETURNED": "DANGER",
+    "CANCEL": "CANCELLED",
+    "CANCELLED": "CANCELLED",
+    "CANCELED": "CANCELLED",
+    "CLOSE": "CANCELLED",
+    "CLOSED": "CANCELLED",
+    "取消": "CANCELLED"
+  },
+  "providerAliases": {
+    "k100": {
+      "0": "TRANSIT",
+      "1": "PICKED",
+      "2": "DANGER",
+      "3": "COMPLETED",
+      "4": "DANGER",
+      "5": "DELIVERY",
+      "6": "DANGER",
+      "7": "TRANSIT",
+      "8": "TRANSIT",
+      "10": "TRANSIT",
+      "11": "TRANSIT",
+      "12": "TRANSIT",
+      "13": "DANGER",
+      "14": "DANGER",
+      "101": "ORDERED",
+      "102": "ORDERED",
+      "103": "PICKED",
+      "201": "DANGER",
+      "202": "DANGER",
+      "203": "DANGER",
+      "204": "DANGER",
+      "205": "DANGER",
+      "206": "DANGER",
+      "207": "DANGER",
+      "208": "DANGER",
+      "209": "DANGER",
+      "210": "DANGER",
+      "301": "COMPLETED",
+      "302": "COMPLETED",
+      "303": "COMPLETED",
+      "304": "COMPLETED",
+      "401": "CANCELLED",
+      "501": "WAITING_PICKUP",
+      "1001": "TRANSIT",
+      "1002": "TRANSIT",
+      "1003": "TRANSIT"
+    },
+    "kdniao": {
+      "1": "PICKED",
+      "2": "TRANSIT",
+      "3": "COMPLETED",
+      "4": "DANGER",
+      "201": "TRANSIT",
+      "202": "DELIVERY",
+      "204": "TRANSIT",
+      "211": "WAITING_PICKUP",
+      "301": "COMPLETED",
+      "302": "COMPLETED",
+      "304": "COMPLETED",
+      "311": "COMPLETED",
+      "401": "DANGER",
+      "402": "DANGER",
+      "403": "DANGER",
+      "404": "DANGER",
+      "405": "DANGER",
+      "406": "COMPLETED",
+      "407": "DANGER",
+      "412": "WAITING_PICKUP"
+    },
+    "v5": {
+      "CREATE": "ORDERED",
+      "已下单": "ORDERED",
+      "SHIPPED": "SHIPPED",
+      "GOT": "PICKED",
+      "COLLECT": "PICKED",
+      "ACCEPT": "PICKED",
+      "揽件": "PICKED",
+      "已揽收": "PICKED",
+      "揽收": "PICKED",
+      "已揽件": "PICKED",
+      "TRANSPORT": "TRANSIT",
+      "DEPARTURE": "TRANSIT",
+      "ARRIVAL": "TRANSIT",
+      "SENT_SCAN": "TRANSIT",
+      "在途": "TRANSIT",
+      "运输中": "TRANSIT",
+      "分拣": "TRANSIT",
+      "中转到(中转场/分拣中心)": "TRANSIT",
+      "入站(站点)": "TRANSIT",
+      "中转发(中转场/分拣中心)": "TRANSIT",
+      "DELIVERING": "DELIVERY",
+      "DISPATCH": "DELIVERY",
+      "STA_INBOUND": "DELIVERY",
+      "STA_DELIVERING": "DELIVERY",
+      "派件": "DELIVERY",
+      "派送中": "DELIVERY",
+      "派件中": "DELIVERY",
+      "出站(站点)": "DELIVERY",
+      "AGENT_SIGN": "WAITING_PICKUP",
+      "待取": "WAITING_PICKUP",
+      "待取件": "WAITING_PICKUP",
+      "代取件": "WAITING_PICKUP",
+      "SIGN": "COMPLETED",
+      "SIGNED": "COMPLETED",
+      "STA_SIGN": "COMPLETED",
+      "FINISH": "COMPLETED",
+      "签收": "COMPLETED",
+      "已签收": "COMPLETED",
+      "订单完成": "COMPLETED",
+      "评价赢京豆": "COMPLETED",
+      "FAILED": "DANGER",
+      "REJECT": "DANGER",
+      "PROBLEM": "DANGER",
+      "ABANDONED": "DANGER",
+      "问题件": "DANGER",
+      "CANCELED": "CANCELLED",
+      "CANCELLED": "CANCELLED",
+      "CANCEL": "CANCELLED",
+      "已取消": "CANCELLED",
+      "取消": "CANCELLED"
+    }
+  },
+  "cases": [
+    {
+      "code": "CREATE",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "ORDERED",
+        "code": "CREATE",
+        "text": "已下单",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "ORDER",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "ORDERED",
+        "code": "ORDER",
+        "text": "已下单",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "ORDERED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "ORDERED",
+        "code": "ORDERED",
+        "text": "已下单",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "CREATED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "ORDERED",
+        "code": "CREATED",
+        "text": "已下单",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "WAREHOUSE_ACCEPT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "ORDERED",
+        "code": "WAREHOUSE_ACCEPT",
+        "text": "已下单",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "WAREHOUSE_PROCESS",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "ORDERED",
+        "code": "WAREHOUSE_PROCESS",
+        "text": "已下单",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "SHIPPED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "SHIPPED",
+        "code": "SHIPPED",
+        "text": "已发货",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "CONSIGN",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "SHIPPED",
+        "code": "CONSIGN",
+        "text": "已发货",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "WAREHOUSE_CONFIRMED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "SHIPPED",
+        "code": "WAREHOUSE_CONFIRMED",
+        "text": "已发货",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "ACCEPT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "ACCEPT",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "GOT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "GOT",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "COLLECT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "COLLECT",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "PICKED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "PICKED",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "ACCEPTED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "ACCEPTED",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "COLLECTED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "COLLECTED",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "PICK",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "PICK",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "揽件",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "揽件",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "已揽件",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "已揽件",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "TRANSPORT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "TRANSPORT",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "TRANSIT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "TRANSIT",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "INTRANSIT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "INTRANSIT",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "DEPARTURE",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "DEPARTURE",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "ARRIVAL",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "ARRIVAL",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "SHIPPING",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "SHIPPING",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "TRANSFER",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "TRANSFER",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "LH_HO",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "LH_HO",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "CC_HO",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "CC_HO",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "在途",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "在途",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "DELIVERING",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "DELIVERING",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "DELIVERY",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "DELIVERY",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "DELIVER",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "DELIVER",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "DISPATCH",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "DISPATCH",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "DISPATCHED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "DISPATCHED",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "STA_DELIVERING",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "STA_DELIVERING",
+        "text": "待派送",
+        "priority": 1,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "派件",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "派件",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "AGENT_SIGN",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "AGENT_SIGN",
+        "text": "待取件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "WAITING_PICKUP",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "WAITING_PICKUP",
+        "text": "待取件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "待取",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "待取",
+        "text": "待取件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "SIGN",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "SIGN",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "SIGNED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "SIGNED",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "FINISH",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "FINISH",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "FINISHED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "FINISHED",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "COMPLETED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "COMPLETED",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "MANUAL_SIGN",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "MANUAL_SIGN",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "签收",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "签收",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "FAILED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "FAILED",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "FAIL",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "FAIL",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "REJECT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "REJECT",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "REJECTED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "REJECTED",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "PROBLEM",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "PROBLEM",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "EXCEPTION",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "EXCEPTION",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "RETURN",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "RETURN",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "RETURNED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "RETURNED",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "CANCEL",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "CANCEL",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "CANCELLED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "CANCELLED",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "CANCELED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "CANCELED",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "CLOSE",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "CLOSE",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "CLOSED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "CLOSED",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "code": "取消",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "取消",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    }
+  ],
+  "providerCases": [
+    {
+      "provider": "k100",
+      "code": "0",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "0",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "1",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "1",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "2",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "2",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "3",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "3",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "4",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "4",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "5",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "5",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "6",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "6",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "7",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "7",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "8",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "8",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "10",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "10",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "11",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "11",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "12",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "12",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "13",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "13",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "14",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "14",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "101",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "ORDERED",
+        "code": "101",
+        "text": "已下单",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "102",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "ORDERED",
+        "code": "102",
+        "text": "已下单",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "103",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "103",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "201",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "201",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "202",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "202",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "203",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "203",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "204",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "204",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "205",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "205",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "206",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "206",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "207",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "207",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "208",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "208",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "209",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "209",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "210",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "210",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "301",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "301",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "302",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "302",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "303",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "303",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "304",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "304",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "401",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "401",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "501",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "501",
+        "text": "待取件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "1001",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "1001",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "1002",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "1002",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "k100",
+      "code": "1003",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "1003",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "1",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "1",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "2",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "2",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "3",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "3",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "4",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "4",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "201",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "201",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "202",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "202",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "204",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "204",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "211",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "211",
+        "text": "待取件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "301",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "301",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "302",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "302",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "304",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "304",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "311",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "311",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "401",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "401",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "402",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "402",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "403",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "403",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "404",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "404",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "405",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "405",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "406",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "406",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "407",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "407",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "412",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "412",
+        "text": "待取件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "CREATE",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "ORDERED",
+        "code": "CREATE",
+        "text": "已下单",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "已下单",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "ORDERED",
+        "code": "已下单",
+        "text": "已下单",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "SHIPPED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "SHIPPED",
+        "code": "SHIPPED",
+        "text": "已发货",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "GOT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "GOT",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "COLLECT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "COLLECT",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "ACCEPT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "ACCEPT",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "揽件",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "揽件",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "已揽收",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "已揽收",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "揽收",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "揽收",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "已揽件",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "PICKED",
+        "code": "已揽件",
+        "text": "已揽件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "TRANSPORT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "TRANSPORT",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "DEPARTURE",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "DEPARTURE",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "ARRIVAL",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "ARRIVAL",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "SENT_SCAN",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "SENT_SCAN",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "在途",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "在途",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "运输中",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "运输中",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "分拣",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "分拣",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "中转到(中转场/分拣中心)",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "中转到(中转场/分拣中心)",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "入站(站点)",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "入站(站点)",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "中转发(中转场/分拣中心)",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "中转发(中转场/分拣中心)",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "DELIVERING",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "DELIVERING",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "DISPATCH",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "DISPATCH",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "STA_INBOUND",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "STA_INBOUND",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "STA_DELIVERING",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "STA_DELIVERING",
+        "text": "待派送",
+        "priority": 1,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "派件",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "派件",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "派送中",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "派送中",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "派件中",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "派件中",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "出站(站点)",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "出站(站点)",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "AGENT_SIGN",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "AGENT_SIGN",
+        "text": "待取件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "待取",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "待取",
+        "text": "待取件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "待取件",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "待取件",
+        "text": "待取件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "代取件",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "代取件",
+        "text": "待取件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "SIGN",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "SIGN",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "SIGNED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "SIGNED",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "STA_SIGN",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "STA_SIGN",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "FINISH",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "FINISH",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "签收",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "签收",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "已签收",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "已签收",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "订单完成",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "订单完成",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "评价赢京豆",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "评价赢京豆",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "FAILED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "FAILED",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "REJECT",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "REJECT",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "PROBLEM",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "PROBLEM",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "ABANDONED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "ABANDONED",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "问题件",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "问题件",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "CANCELED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "CANCELED",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "CANCELLED",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "CANCELLED",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "CANCEL",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "CANCEL",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "已取消",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "已取消",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "v5",
+      "code": "取消",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "CANCELLED",
+        "code": "取消",
+        "text": "已取消",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    }
+  ]
+}
