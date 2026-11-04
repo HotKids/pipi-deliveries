@@ -1,0 +1,301 @@
+{
+  "schemaVersion": 1,
+  "about": "Provider-shaped packets normalized by the generated Beta Worker, plus event-clock boundaries. Client state retention, grouping and source-specific admission remain separate.",
+  "cases": [
+    {
+      "name": "vivo-delivery-alias",
+      "provider": "v1",
+      "mode": "sync",
+      "input": {
+        "retcode": 0,
+        "data": {
+          "decodedPayload": "[{\"mailNo\":\"TEST8021\",\"cpCode\":\"EMS\",\"middle\":20,\"logisticsStatus\":\"DELIVERY\",\"logisticsGmtModified\":\"2026-11-04 11:27:41\"}]"
+        }
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "DELIVERY",
+        "text": "派送中",
+        "priority": 0,
+        "eventAtMs": 1793762861000,
+        "structured": true
+      }
+    },
+    {
+      "name": "vivo-completed-alias",
+      "provider": "v1",
+      "mode": "sync",
+      "input": {
+        "retcode": 0,
+        "data": {
+          "decodedPayload": "[{\"mailNo\":\"TEST8021\",\"cpCode\":\"EMS\",\"middle\":20,\"logisticsStatus\":\"COMPLETED\",\"logisticsGmtModified\":\"2026-11-04 11:27:41\"}]"
+        }
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "COMPLETED",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 1793762861000,
+        "structured": true
+      }
+    },
+    {
+      "name": "xiaomi-explicit-unknown-number",
+      "provider": "v5",
+      "mode": "timeline",
+      "input": {
+        "code": 0,
+        "data": {
+          "mailNo": "TEST8021",
+          "stateNum": 999,
+          "state": "运输中",
+          "logisticsUpdateTime": "2026-11-04 11:27:41",
+          "details": [
+            {
+              "time": "2026-11-04 11:27:41",
+              "desc": "Synthetic event"
+            }
+          ]
+        }
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "UNKNOWN",
+        "code": "999",
+        "text": "暂无状态",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": false
+      }
+    },
+    {
+      "name": "xiaomi-known-number-wins",
+      "provider": "v5",
+      "mode": "timeline",
+      "input": {
+        "code": 0,
+        "data": {
+          "mailNo": "TEST8021",
+          "stateNum": 104,
+          "state": "取消",
+          "logisticsUpdateTime": "2026-11-04 11:27:41"
+        }
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "104",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 1793762861000,
+        "structured": true
+      }
+    },
+    {
+      "name": "xiaomi-exact-text-fallback",
+      "provider": "v5",
+      "mode": "timeline",
+      "input": {
+        "code": 0,
+        "data": {
+          "mailNo": "TEST8021",
+          "state": "中转到(中转场/分拣中心)",
+          "logisticsUpdateTime": "2026-11-04 11:27:41"
+        }
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "中转到(中转场/分拣中心)",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 1793762861000,
+        "structured": true
+      }
+    },
+    {
+      "name": "k100-explicit-unknown-state",
+      "provider": "k100",
+      "mode": "timeline",
+      "input": {
+        "status": "200",
+        "state": "FUTURE_STATE",
+        "data": [
+          {
+            "ftime": "2026-11-04 11:27:41",
+            "context": "Synthetic event"
+          }
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "UNKNOWN",
+        "code": "200",
+        "text": "暂无状态",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": false
+      }
+    },
+    {
+      "name": "kdn-state-only-completion",
+      "provider": "kdniao",
+      "mode": "timeline",
+      "input": {
+        "Success": true,
+        "State": "3",
+        "Traces": []
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "3",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "name": "kdn-equal-time-conflict",
+      "provider": "kdniao",
+      "mode": "timeline",
+      "input": {
+        "Success": true,
+        "State": "2",
+        "Traces": [
+          {
+            "Action": "202",
+            "AcceptTime": "2026-11-04 11:27:41",
+            "AcceptStation": "Synthetic event A"
+          },
+          {
+            "Action": "211",
+            "AcceptTime": "2026-11-04 11:27:41",
+            "AcceptStation": "Synthetic event B"
+          }
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "UNKNOWN",
+        "code": "",
+        "text": "暂无状态",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": false
+      }
+    },
+    {
+      "name": "kdn-top-completion-retained",
+      "provider": "kdniao",
+      "mode": "timeline",
+      "input": {
+        "Success": true,
+        "State": "3",
+        "Traces": [
+          {
+            "Action": "202",
+            "AcceptTime": "2026-11-04 11:27:41",
+            "AcceptStation": "Synthetic event"
+          }
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "3",
+        "text": "已签收",
+        "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    }
+  ],
+  "clocks": [
+    {
+      "input": "2026-11-04 11:27:41",
+      "expectedMs": 1793762861000
+    },
+    {
+      "input": "2026-11-04T03:27:41Z",
+      "expectedMs": 1793762861000
+    },
+    {
+      "input": "2026-11-04T03:27:41z",
+      "expectedMs": 1793762861000
+    },
+    {
+      "input": "2026-11-04T11:27:41+08:00",
+      "expectedMs": 1793762861000
+    },
+    {
+      "input": "2026/11/04 11:27:41",
+      "expectedMs": 1793762861000
+    },
+    {
+      "input": "2026-11-04 11:27",
+      "expectedMs": 1793762820000
+    },
+    {
+      "input": "2026-11-04T03:27:41.1Z",
+      "expectedMs": 1793762861100
+    },
+    {
+      "input": "2026-11-04T03:27:41.123456Z",
+      "expectedMs": 1793762861123
+    },
+    {
+      "input": "1793762861",
+      "expectedMs": 1793762861000
+    },
+    {
+      "input": "1793762861000",
+      "expectedMs": 1793762861000
+    },
+    {
+      "input": "1",
+      "expectedMs": 1000
+    },
+    {
+      "input": "20261104",
+      "expectedMs": 20261104000
+    },
+    {
+      "input": "0",
+      "expectedMs": 0
+    },
+    {
+      "input": "-1",
+      "expectedMs": 0
+    },
+    {
+      "input": "2026-11-04",
+      "expectedMs": 0
+    },
+    {
+      "input": "2026-02-30 12:00:00",
+      "expectedMs": 0
+    },
+    {
+      "input": "2026-11-04 25:00:00",
+      "expectedMs": 0
+    },
+    {
+      "input": "2026-11-04T03:27:41+24:00",
+      "expectedMs": 0
+    }
+  ]
+}

@@ -220,6 +220,113 @@
       }
     },
     {
+      "provenance": "owner-approved exact finer structured descriptor (2026-11-04, item 10)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "派件",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "开始跨境运输",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "派件",
+        "text": "运输中",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "TRANSIT",
+          "label": "运输中"
+        }
+      }
+    },
+    {
+      "provenance": "owner-approved exact finer structured descriptor (2026-11-04, item 11)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "派件",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "快递柜存放",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "WAITING_PICKUP",
+        "code": "派件",
+        "text": "待取件",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "WAITING_PICKUP",
+          "label": "待取件"
+        }
+      }
+    },
+    {
+      "provenance": "owner-approved exact Samsung status variant (2026-11-04, item 14)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "问题件",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "问题件",
+        "text": "异常件",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "DANGER",
+          "label": "异常件"
+        }
+      }
+    },
+    {
+      "provenance": "owner-approved exact Samsung status variant (2026-11-04, item 15)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "已签收",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "COMPLETED",
+        "code": "已签收",
+        "text": "已签收",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "COMPLETED",
+          "label": "已签收"
+        }
+      }
+    },
+    {
+      "provenance": "owner-approved exact Samsung status variant (2026-11-04, item 16)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "派送",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "realWaybillCode": "JT4006839564547"
+      },
+      "expected": {
+        "scope": "SHIPMENT",
+        "semantic": "DELIVERY",
+        "code": "派送",
+        "text": "派送中",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "DELIVERY",
+          "label": "派送中"
+        }
+      }
+    },
+    {
       "provenance": "observed Samsung JD wire pair (kdbot tests/check_samsung.py)",
       "row": {
         "waybillCode": "3610448002878202",
@@ -423,6 +530,108 @@
         "display": {
           "semantic": "ORDERED",
           "label": "已下单"
+        }
+      }
+    },
+    {
+      "provenance": "owner-approved exact finer structured descriptor (2026-11-04, item 10)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "派件",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "开始跨境运输"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "TRANSIT",
+        "code": "派件",
+        "text": "运输中",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "TRANSIT",
+          "label": "运输中"
+        }
+      }
+    },
+    {
+      "provenance": "owner-approved exact finer structured descriptor (2026-11-04, item 11)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "派件",
+        "logisticGmtModified": "2026-09-13 15:55:13",
+        "logisticStatusDesc": "快递柜存放"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "WAITING_PICKUP",
+        "code": "派件",
+        "text": "待取件",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "WAITING_PICKUP",
+          "label": "待取件"
+        }
+      }
+    },
+    {
+      "provenance": "owner-approved exact Samsung status variant (2026-11-04, item 14)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "问题件",
+        "logisticGmtModified": "2026-09-13 15:55:13"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "DANGER",
+        "code": "问题件",
+        "text": "异常件",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "DANGER",
+          "label": "异常件"
+        }
+      }
+    },
+    {
+      "provenance": "owner-approved exact Samsung status variant (2026-11-04, item 15)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "已签收",
+        "logisticGmtModified": "2026-09-13 15:55:13"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "COMPLETED",
+        "code": "已签收",
+        "text": "已完成",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "COMPLETED",
+          "label": "已完成"
+        }
+      }
+    },
+    {
+      "provenance": "owner-approved exact Samsung status variant (2026-11-04, item 16)",
+      "row": {
+        "waybillCode": "3610448002878202",
+        "source": "JD",
+        "logisticStatus": "派送",
+        "logisticGmtModified": "2026-09-13 15:55:13"
+      },
+      "expected": {
+        "scope": "ORDER",
+        "semantic": "DELIVERY",
+        "code": "派送",
+        "text": "派送中",
+        "eventAtMs": 1789286113000,
+        "display": {
+          "semantic": "DELIVERY",
+          "label": "派送中"
         }
       }
     }
