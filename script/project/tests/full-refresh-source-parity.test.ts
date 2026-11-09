@@ -268,16 +268,17 @@ test("real full refresh keeps an activated Cainiao history when list returns the
 test("a full refresh appends its complete JD diagnostic batch with one log write", async () => {
   const records = Array.from({ length: 30 }, (_, i) => row(`JDBATCH${1000 + i}`, "JingDong"));
   seed(records);
-  const originalSet = Storage.set;
+  const originalPublish = FileManager.createLinkSync;
   let batchWrites = 0;
-  Storage.set = (key, value, ...options) => {
-    if (key === "pipi_deliveries_diagnostic_log_v1" &&
-        Array.isArray(value) && value.at(-1)?.event === "account.list.record") batchWrites++;
-    return originalSet(key, value, ...options);
+  FileManager.createLinkSync = (path, target) => {
+    if (path.endsWith(".ready") && FileManager.readDirectorySync(target, false)
+      .filter(name => /r[0-9]+\.json$/.test(name)).some(name => JSON.parse(FileManager.readAsStringSync(
+        `${target}/${name.split("/").pop()}`)).event === "account.list.record")) batchWrites++;
+    return originalPublish(path, target);
   };
   try {
     await round(records, { backgroundHostSafe: true, budgetMs: 30_000 });
-  } finally { Storage.set = originalSet; }
+  } finally { FileManager.createLinkSync = originalPublish; }
   const entries = readDiagnostics().filter(entry => entry.event === "account.list.record");
   assert.equal(entries.length, records.length, "batching must preserve every parcel record");
   assert.equal(new Set(entries.map(entry => entry.details.ownerFingerprint)).size, records.length);

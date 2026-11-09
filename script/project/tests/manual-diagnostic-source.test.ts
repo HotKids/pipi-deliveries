@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { setDiagnosticsEnabled } from "../services/logger";
+import { installSharedFileMock } from "./shared-file-mock";
 
 const memory = new Map<string, unknown>();
 
@@ -17,6 +18,7 @@ Object.assign(globalThis, {
     },
   },
 });
+installSharedFileMock(memory);
 
 // Diagnostics are recorded only when enabled: the formal track ships with recording off
 // (user decision 2026-09-04), so a test that asserts on the log has to opt in explicitly.

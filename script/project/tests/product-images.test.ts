@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { installSharedFileMock } from "./shared-file-mock";
 import { createHash } from "node:crypto";
 
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -407,6 +408,7 @@ assert.equal(files.size, 0, "the post-publication retention check removes an ima
 assert.equal(cachedProductImage(removedAtPublish.key), null);
 
 const diagnosticMemory = new Map<string, unknown>();
+installSharedFileMock(diagnosticMemory);
 Object.assign(globalThis, { Storage: {
   get: (key: string) => diagnosticMemory.get(key) ?? null,
   set: (key: string, value: unknown) => { diagnosticMemory.set(key, structuredClone(value)); return true; },

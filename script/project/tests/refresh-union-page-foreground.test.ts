@@ -236,8 +236,10 @@ for (const phase of ["inactive", "background"] as const) {
   assert.deepEqual(loadedUrls, [], "a background host refresh never opens the union page");
   for (const entry of ["widget.tsx", "app_intents.tsx", "intent.tsx"]) {
     const source = readFileSync(new URL(`../${entry}`, import.meta.url), "utf8");
-    assert.match(source, /backgroundHostSafe: true/, `${entry} refreshes as a background host`);
+    assert.match(source, /backgroundRefreshOptions\(/, `${entry} refreshes through the shared background options`);
   }
+  const { backgroundRefreshOptions } = await import("../services/background-refresh");
+  assert.equal(backgroundRefreshOptions().backgroundHostSafe, true);
 }
 
 // 代码 4: the detail refresh paths check the scene right before the union page too — detail entry's identity projection,

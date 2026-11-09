@@ -69,6 +69,7 @@ Object.assign(globalThis, {
       memory.set(key, structuredClone(value));
       return true;
     },
+    remove(key: string): void { memory.delete(key); },
   },
   Keychain: {
     get(key: string): string | null {

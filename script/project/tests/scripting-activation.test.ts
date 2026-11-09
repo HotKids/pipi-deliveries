@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { GATEWAY_ORIGIN, SCRIPTING_GATEWAY_PROTOCOL_VERSION } from "../services/build-track";
+import { installSharedFileMock } from "./shared-file-mock";
 
 const realClock = Date.now;
 const clockOffset = Date.parse("2026-10-16T12:00:00+08:00") - realClock();
@@ -115,6 +116,7 @@ Object.assign(globalThis, {
   },
 });
 
+installSharedFileMock(shared);
 let fetchCalls: Array<{ url: string; init: FakeFetchInit }> = [];
 let fetchHandler: (init: FakeFetchInit) => Promise<unknown> = async () => ok({ ok: true });
 Object.assign(globalThis, {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { backgroundRefreshOptions } from "../services/background-refresh";
 import {
   bestEffortWidgetRefresh,
   safelyLoadWidgetSnapshot,
@@ -140,9 +141,13 @@ const syncSource = await readFile(
 );
 assert.match(
   widgetSource,
-  /shouldRunWidgetNetworkRefresh\(\s*lastNetworkRefreshSuccessAtMs\(\),?\s*\)[\s\S]*?if \(shouldRefresh\)[\s\S]*?await bestEffortWidgetRefresh[\s\S]*?budgetMs: WIDGET_REFRESH_BUDGET_MS[\s\S]*?accountOrderProjection: true[\s\S]*?backgroundHostSafe: true[\s\S]*?Widget\.present\(widgetContent\(\)/,
+  /shouldRunWidgetNetworkRefresh\(\s*lastNetworkRefreshSuccessAtMs\(\),?\s*\)[\s\S]*?if \(shouldRefresh\)[\s\S]*?await bestEffortWidgetRefresh[\s\S]*?backgroundRefreshOptions\(WIDGET_REFRESH_BUDGET_MS\)[\s\S]*?Widget\.present\(content,/,
   "widget freshness must be based on successful network work rather than unrelated local state writes",
 );
+assert.deepEqual(backgroundRefreshOptions(WIDGET_REFRESH_BUDGET_MS), {
+  budgetMs: WIDGET_REFRESH_BUDGET_MS, accountOrderProjection: true, backgroundHostSafe: true,
+});
+assert.equal(fullRefreshHostPolicy(backgroundRefreshOptions(WIDGET_REFRESH_BUDGET_MS)).accountOrderProjection, false);
 assert.doesNotMatch(widgetSource, /BackgroundKeeper/);
 
 const runFullRefreshSource = syncSource.match(

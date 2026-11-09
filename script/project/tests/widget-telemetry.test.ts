@@ -68,13 +68,16 @@ for (const [summary, result, event, level] of [
   const entries: { event: string; details: Record<string, unknown>; level?: string }[] = [];
   const cached = { rows: [] };
   let presented = 0;
+  let flushes = 0;
   await runInNewContext(`${runSource}\nrun();`, {
     ...runtime,
     bestEffortWidgetRefresh: (refresh: Parameters<typeof runtime.bestEffortWidgetRefresh>[0]) =>
       runtime.bestEffortWidgetRefresh(refresh, 1),
     refreshAllShipments: () => summary ? Promise.resolve(summary) : new Promise(() => {}),
     createDiagnosticFlowId: () => "widget-test",
-    writeRuntimeCapabilities() {}, loadCarrierAuthorityCache() {}, recordWidgetRunAtMs() {},
+    writeRuntimeCapabilities() {}, backgroundHostBootstrap() {}, recordWidgetRunAtMs() {},
+    backgroundRefreshOptions: (budgetMs: number) => ({ budgetMs, accountOrderProjection: true, backgroundHostSafe: true }),
+    flushDiagnostics: () => { flushes++; },
     readWidgetRunAtMs: () => 0, lastNetworkRefreshSuccessAtMs: () => 0, widgetRunGapMs,
     writeDiagnostic: (event: string, details: Record<string, unknown>, level?: string) =>
       entries.push({ event, details, level }),
@@ -82,6 +85,7 @@ for (const [summary, result, event, level] of [
     Widget: { family: "systemMedium", present: (content: unknown) => {
       assert.equal(content, cached);
       assert.equal(entries.at(-1)?.event, "widget.run.presenting");
+      assert.equal(flushes, 1, "all host logs are flushed before presentation destroys the context");
       presented++;
     } },
   });

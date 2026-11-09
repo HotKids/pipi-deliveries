@@ -11,13 +11,17 @@ import { memory } from "./state-storage-mock";
 import { emptyState, saveState } from "../services/storage";
 import { refreshAllShipments, subscribeFullRefreshOutcome, type FullRefreshOutcome } from "../services/sync";
 import { saveGatewayToken } from "../services/credentials";
-import { diagnosticText, readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
+import { diagnosticText, flushDiagnostics, readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
 import { durableRefreshLeaseDiagnostics } from "../services/refresh-runtime-state";
+import { diagnosticFiles } from "../services/diagnostic-store";
 
 const DIAGNOSTIC_KEY = "pipi_deliveries_diagnostic_log_v1";
 const PHONE = "13800000000";
 type StoredEntry = { id: string; at: string; level: string; event: string; details: Record<string, unknown> };
-const rawEntries = () => (memory.get(DIAGNOSTIC_KEY) as StoredEntry[] | undefined) ?? [];
+const rawEntries = () => [
+  ...((memory.get(DIAGNOSTIC_KEY) as StoredEntry[] | undefined) ?? []),
+  ...diagnosticFiles().map(row => row.value as StoredEntry),
+];
 
 Object.assign(Crypto, {
   hmacSHA256: (value: string, key: string) => ({ toHexString: () => createHmac("sha256", key).update(value).digest("hex") }),
@@ -93,6 +97,7 @@ Object.assign(globalThis, {
 
   // 翻译只在读取路径：写入按调用方给的原值落盘，新写入的 foreground 靠 sync.ts 自己写对。
   writeDiagnostic("refresh.started", { flowId: "refresh-new1", source: "interface5", trigger: "foreground_sync" });
+  flushDiagnostics();
   assert.equal(rawEntries().at(-1)!.details.trigger, "foreground_sync", "the write path does not translate");
 }
 

@@ -3,6 +3,10 @@ import type { AppState, BindingSource } from "../models";
 import { SCRIPT_BINDING_SOURCE } from "./script-source";
 import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD, SCRIPT_VERSION } from "./build-track";
 import { OperationTimeoutError, type RequestTimeoutDetails, type WaitTimeoutDetails } from "./deadline";
+import {
+  clearDiagnosticFiles, diagnosticBatchId, diagnosticEpoch, diagnosticFiles,
+  diagnosticLegacyImported, markDiagnosticLegacyImported, pruneDiagnosticFiles, publishDiagnosticBatch,
+} from "./diagnostic-store";
 
 export type DiagnosticLevel = "info" | "warning" | "error";
 
@@ -280,6 +284,11 @@ const SAFE_TEXT = /^[A-Za-z0-9._:-]{1,64}$/;
 const SOURCES = new Set<BindingSource>([SCRIPT_BINDING_SOURCE]);
 const closedFlowIds = new Set<string>();
 const flowTriggers = new Map<string, string>();
+const bufferedEntries: DiagnosticEntry[] = [];
+const FLUSH_RECORDS = 20;
+let flushScheduled = false;
+let bufferedEpoch: string | undefined;
+let pendingPublication: { id: string; epoch: string; entries: DiagnosticEntry[] } | undefined;
 
 const JD_PROBE_COUNT_KEYS = new Set<keyof DiagnosticDetails>([
   "unionFetchResponseCount", "unionXhrResponseCount", "unionXhrJsonResponseCount",
@@ -881,43 +890,55 @@ function readLegacyTriggers(details: DiagnosticDetails): DiagnosticDetails {
   return result;
 }
 
-/**
- * The stored entries, pruned of anything expired or malformed.
- *
- * `sanitize` re-runs the whitelist over entries that are already on disk. That is defence in depth
- * against a record written by an older build, and it belongs on the READ path only: on the write
- * path it re-sanitized all 200 stored entries for every single line, which — together with the two
- * whole-array JSON.stringify calls the change check used to do — made each log line cost a full
- * validate + sanitize + double-serialize pass over the entire log.
- *
- * The array itself is still re-read on every write rather than cached in a module variable: the
- * key is shared, and the widget process appends to the same log, so a cached copy in the app
- * process would silently drop whatever the widget wrote.
- */
+function cleanStoredEntry(entry: DiagnosticEntry, translate = true): DiagnosticEntry {
+  const details = sanitizeDetails(entry.details);
+  return { id: entry.id, at: entry.at, level: entry.level, event: entry.event,
+    details: translate ? readLegacyTriggers(details) : details };
+}
+
 function storedEntries(now = Date.now(), sanitize = false): DiagnosticEntry[] {
+  let legacy: unknown = null;
+  let epoch = "legacy";
+  let files: ReturnType<typeof diagnosticFiles> = [];
   try {
-    const value = Storage.get<DiagnosticEntry[]>(DIAGNOSTIC_KEY, { shared: true });
-    if (!Array.isArray(value)) return [];
-    const kept = value.filter((item) => validEntry(item, now));
-    const retained = kept.length > MAX_RECORDS ? kept.slice(-MAX_RECORDS) : kept;
-    // Appends already write the pruned array; only standalone reads need cleanup.
-    if (sanitize && retained.length !== value.length) {
-      try {
-        if (retained.length) {
-          Storage.set(DIAGNOSTIC_KEY, retained, { shared: true });
-        } else {
-          Storage.remove(DIAGNOSTIC_KEY, { shared: true });
-        }
-      } catch {
-        /* expiry cleanup retries the next time diagnostics are read */
-      }
-    }
-    return sanitize
-      ? retained.map((item) => ({ ...item, details: readLegacyTriggers(sanitizeDetails(item.details)) }))
-      : retained;
+    epoch = diagnosticEpoch();
+    files = diagnosticFiles(epoch);
+    if (epoch === "legacy" && !diagnosticLegacyImported()) legacy = Storage.get(DIAGNOSTIC_KEY, { shared: true });
   } catch {
-    return [];
+    // Without the current clear epoch, an old shared array cannot safely become visible again.
   }
+  const rows = [
+    ...(Array.isArray(legacy) ? legacy.map((value, index) => ({ value, path: "", order: `0-${String(index).padStart(4, "0")}` })) : []),
+    ...files,
+  ].filter((row): row is { value: DiagnosticEntry; path: string; order: string } => validEntry(row.value, now));
+  rows.sort((a, b) => a.order.localeCompare(b.order));
+  const unique = new Map<string, typeof rows[number]>();
+  for (const row of rows) unique.set(row.value.id, row);
+  const kept = [...unique.values()].slice(-MAX_RECORDS);
+  if (sanitize) {
+    if (epoch === "legacy" && Array.isArray(legacy) && legacy.length
+      && !legacy.some(entry => validEntry(entry, now))) {
+      try { migrateLegacyDiagnostics(now); } catch { /* Legacy cleanup remains retryable. */ }
+    }
+    // Another runtime can publish after this read's clock snapshot; it is not an expired record.
+    const observed = files.filter(row => !(row.value && typeof row.value === "object"
+      && typeof (row.value as DiagnosticEntry).at === "string" && Date.parse((row.value as DiagnosticEntry).at) > now));
+    try { pruneDiagnosticFiles(new Set(kept.map(row => row.path)), epoch, observed); }
+    catch { /* Optional cleanup retries at the next boundary. */ }
+  }
+  return kept.map(row => sanitize ? cleanStoredEntry(row.value) : row.value);
+}
+
+function migrateLegacyDiagnostics(now: number): void {
+  if (diagnosticEpoch() !== "legacy" || diagnosticLegacyImported()) return;
+  let value: unknown;
+  try { value = Storage.get(DIAGNOSTIC_KEY, { shared: true }); } catch { return; }
+  const entries = Array.isArray(value) ? value.filter(entry => validEntry(entry, now)).slice(-MAX_RECORDS)
+    .map(entry => cleanStoredEntry(entry, false)) : [];
+  if (entries.length) publishDiagnosticBatch(diagnosticBatchId(), "legacy", entries);
+  markDiagnosticLegacyImported();
+  try { Storage.remove(DIAGNOSTIC_KEY, { shared: true }); }
+  catch { /* Published immutable records remain authoritative if legacy cleanup fails. */ }
 }
 
 export function createDiagnosticFlowId(prefix: string): string {
@@ -1087,11 +1108,12 @@ export function diagnosticsEnabled(): boolean {
   }
 }
 
-/** Turning recording off stops every write; the entries already stored are left alone. */
+/** Turning recording off stops new records; existing diagnostics remain readable. */
 export function setDiagnosticsEnabled(enabled: boolean): boolean {
   reopenDiagnosticsForNewBeta();
   try {
     Storage.set(DIAGNOSTIC_ENABLED_KEY, enabled === true, { shared: true });
+    if (!enabled) { bufferedEntries.length = 0; pendingPublication = undefined; }
     return true;
   } catch {
     return false;
@@ -1199,7 +1221,16 @@ export function writeDiagnostic(
   details: DiagnosticDetails = {},
   level: DiagnosticLevel = "info",
 ): void {
-  writeDiagnosticBatch(event, [details], level);
+  if (!bufferDiagnosticBatch(event, [details], level)) return;
+  if (bufferedEntries.length >= FLUSH_RECORDS || event === "refresh.succeeded" || event === "refresh.failed") {
+    flushDiagnostics();
+  } else if (!flushScheduled) {
+    flushScheduled = true;
+    void Promise.resolve().then(() => {
+      flushScheduled = false;
+      flushDiagnostics();
+    });
+  }
 }
 
 type PendingStageEnd = { signal?: AbortSignal; ended: boolean; write: () => void };
@@ -1255,18 +1286,17 @@ function writePendingStageEnds(flowId: string): void {
   }
 }
 
-/** Append one synchronous batch without retaining a shared-log snapshot across calls. */
-export function writeDiagnosticBatch(
+function bufferDiagnosticBatch(
   event: string,
   details: readonly DiagnosticDetails[],
   level: DiagnosticLevel = "info",
-): void {
+): boolean {
   if (event === "refresh.succeeded" || event === "refresh.failed") {
     for (const detail of details) writePendingStageEnds(String(detail.flowId || ""));
   }
-  if (!details.length || !diagnosticsEnabled()) return;
+  if (!details.length || !diagnosticsEnabled()) return false;
   const cleanEvent = String(event || "").trim();
-  if (!SAFE_TEXT.test(cleanEvent)) return;
+  if (!SAFE_TEXT.test(cleanEvent)) return false;
   const now = Date.now();
   const entries: DiagnosticEntry[] = [];
   const terminalFlowIds = new Set<string>();
@@ -1303,36 +1333,107 @@ export function writeDiagnosticBatch(
       terminalFlowIds.add(flowId);
     }
   }
-  if (!entries.length) return;
+  if (!entries.length) return false;
+  if (!bufferedEntries.length && !pendingPublication) bufferedEpoch = undefined;
   try {
-    Storage.set(
-      DIAGNOSTIC_KEY,
-      [...storedEntries(now), ...entries].slice(-MAX_RECORDS),
-      { shared: true },
-    );
-    for (const flowId of terminalFlowIds) {
-      closedFlowIds.add(flowId);
-      flowTriggers.delete(flowId);
-      while (closedFlowIds.size > MAX_CLOSED_FLOWS) {
-        const oldest = closedFlowIds.values().next().value;
-        if (typeof oldest !== "string") break;
-        closedFlowIds.delete(oldest);
-      }
+    const epoch = diagnosticEpoch();
+    if (bufferedEpoch !== undefined && bufferedEpoch !== epoch
+      || bufferedEpoch === undefined && bufferedEntries.length > 0 && epoch !== "legacy") {
+      bufferedEntries.length = 0;
+      pendingPublication = undefined;
     }
+    bufferedEpoch = epoch;
+  } catch { /* Keep the sanitized buffer available when native file APIs are unavailable. */ }
+  bufferedEntries.push(...entries);
+  if (bufferedEntries.length > MAX_RECORDS) bufferedEntries.splice(0, bufferedEntries.length - MAX_RECORDS);
+  for (const flowId of terminalFlowIds) {
+    closedFlowIds.add(flowId);
+    flowTriggers.delete(flowId);
+    while (closedFlowIds.size > MAX_CLOSED_FLOWS) {
+      const oldest = closedFlowIds.values().next().value;
+      if (typeof oldest !== "string") break;
+      closedFlowIds.delete(oldest);
+    }
+  }
+  return true;
+}
+
+/** Each runtime publishes an independent batch; no shared array is read/modified/overwritten. */
+export function flushDiagnostics(): void {
+  if (!bufferedEntries.length) return;
+  if (!diagnosticsEnabled()) {
+    bufferedEntries.length = 0;
+    pendingPublication = undefined;
+    return;
+  }
+  const now = Date.now();
+  try {
+    const epoch = diagnosticEpoch();
+    if (bufferedEpoch !== undefined && bufferedEpoch !== epoch) {
+      bufferedEntries.length = 0;
+      pendingPublication = undefined;
+      bufferedEpoch = epoch;
+      return;
+    }
+    // An unobserved clear cannot authorize publishing older records into its new epoch.
+    if (bufferedEpoch === undefined && epoch !== "legacy") return;
+    bufferedEpoch = epoch;
+    migrateLegacyDiagnostics(now);
+    for (let pass = 0; pass < 2 && bufferedEntries.length; pass++) {
+      if (!pendingPublication) pendingPublication = {
+        id: diagnosticBatchId(), epoch, entries: bufferedEntries.filter(entry => validEntry(entry, now)),
+      };
+      if (pendingPublication.entries.length) {
+        publishDiagnosticBatch(pendingPublication.id, pendingPublication.epoch, pendingPublication.entries);
+      }
+      const published = new Set(pendingPublication.entries.map(entry => entry.id));
+      for (let index = bufferedEntries.length - 1; index >= 0; index--) {
+        if (published.has(bufferedEntries[index]!.id) || !validEntry(bufferedEntries[index], now)) bufferedEntries.splice(index, 1);
+      }
+      pendingPublication = undefined;
+    }
+    storedEntries(now, true);
   } catch {
     /* diagnostics must never change app behavior */
   }
 }
 
+/** Append one synchronous batch, including this runtime's preceding buffered records. */
+export function writeDiagnosticBatch(
+  event: string,
+  details: readonly DiagnosticDetails[],
+  level: DiagnosticLevel = "info",
+): void {
+  if (bufferDiagnosticBatch(event, details, level)) flushDiagnostics();
+}
+
 export function readDiagnostics(): DiagnosticEntry[] {
-  return storedEntries(Date.now(), true).reverse();
+  flushDiagnostics();
+  const now = Date.now();
+  const entries = storedEntries(now, true);
+  const unique = new Map(entries.map(entry => [entry.id, entry]));
+  let showPending = false;
+  try { showPending = diagnosticEpoch() === bufferedEpoch; }
+  catch { showPending = bufferedEpoch === undefined; }
+  if (showPending) {
+    for (const entry of bufferedEntries.filter(entry => validEntry(entry, now))) {
+      unique.set(entry.id, cleanStoredEntry(entry));
+    }
+  }
+  return [...unique.values()].slice(-MAX_RECORDS).reverse();
 }
 
 export function clearDiagnostics(): void {
   try {
+    migrateLegacyDiagnostics(Date.now());
     Storage.remove(DIAGNOSTIC_KEY, { shared: true });
+    clearDiagnosticFiles();
+    bufferedEntries.length = 0;
+    pendingPublication = undefined;
+    bufferedEpoch = diagnosticEpoch();
     closedFlowIds.clear();
     flowTriggers.clear();
+    storedEntries(Date.now(), true);
   } catch {
     throw new Error("诊断日志清空失败");
   }

@@ -66,16 +66,21 @@ export function rememberProductImage(key: string, image: UIImage, isRetained?: (
 
 export function pruneProductImages(previous: readonly ShipmentIdentity[], retained: readonly ShipmentIdentity[], now = Date.now()): void {
   let failed = false;
+  const names = new Set(cacheNames());
   try {
     const keep = new Set(retained.map(productImageCacheKey));
     if (keep.has("")) throw new Error("Product image identity unavailable");
     for (const key of images.keys()) if (!keep.has(key)) images.delete(key);
-    const names = cacheNames();
     for (const key of new Set(previous.map(productImageCacheKey))) {
       if (!key || keep.has(key)) continue;
       images.delete(key);
-      for (const name of names.filter(value => IMAGE_NAME.test(value) && value.startsWith(`${key}.`))) {
-        try { FileManager.writeAsStringSync(Path.join(directory(), name.replace(/\.img$/, ".deleted")), ""); }
+      for (const name of names) {
+        if (!IMAGE_NAME.test(name) || !name.startsWith(`${key}.`)) continue;
+        try {
+          const marker = name.replace(/\.img$/, ".deleted");
+          FileManager.writeAsStringSync(Path.join(directory(), marker), "");
+          names.add(marker);
+        }
         catch {
           failed = true;
           try { FileManager.removeSync(Path.join(directory(), name)); } catch { /* Leave the successful cleanup markers replayable. */ }
@@ -84,9 +89,9 @@ export function pruneProductImages(previous: readonly ShipmentIdentity[], retain
     }
   } catch { failed = true; }
   try {
-    const names = cacheNames();
     // Markers name immutable files, so retrying an old deletion cannot remove a re-imported record's image.
-    for (const name of names.filter(value => DELETE_NAME.test(value))) {
+    for (const name of names) {
+      if (!DELETE_NAME.test(name)) continue;
       try {
         const path = Path.join(directory(), name.replace(/\.deleted$/, ".img"));
         if (FileManager.existsSync(path)) FileManager.removeSync(path);
