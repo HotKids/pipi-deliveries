@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { setDiagnosticsEnabled, writeRuntimeCapabilities } from "../services/logger";
 import { OperationTimeoutError } from "../services/deadline";
 import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
+import { installSharedFileMock } from "./shared-file-mock";
 
 const memory = new Map<string, unknown>();
 let rejectWrites = false;
@@ -25,6 +26,7 @@ Object.assign(globalThis, {
     },
   },
 });
+installSharedFileMock(memory);
 
 // Diagnostics are recorded only when enabled: the formal track ships with recording off
 // (user decision 2026-09-04), so a test that asserts on the log has to opt in explicitly.
@@ -446,6 +448,8 @@ for (const count of [-1, 1.5, 5]) {
 }
 
 
+memory.clear();
+setDiagnosticsEnabled(true);
 memory.set(DIAGNOSTIC_KEY, [{
   id: "expired-entry",
   at: new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString(),
@@ -518,6 +522,8 @@ assert.equal(cacheLog.statusEventAtMs, 1789073940000);
 writeDiagnostic("refresh.succeeded", { flowId: "progress-test", result: "succeeded" });
 assert.equal(readDiagnostics()[0].details.trigger, "list_pull");
 clearDiagnostics();
+memory.clear();
+setDiagnosticsEnabled(true);
 memory.set(DIAGNOSTIC_KEY, [{ id: "historical", at: new Date().toISOString(), level: "info",
   event: "refresh.started", details: { stage: "account_list" } }]);
 assert.equal(readDiagnostics()[0].details.clientBuild, undefined, "old records must not be relabeled with this build");
@@ -541,6 +547,7 @@ assert.equal(readDiagnostics()[0].details.displayedTrackCount, 16);
 assert.equal(readDiagnostics()[0].details.selectionScope, "display");
 
 const runtime = globalThis as unknown as Record<string, unknown>;
+const completeFileApi = runtime.FileManager as Record<string, unknown>;
 delete runtime.SQLite;
 delete runtime.FileManager;
 writeRuntimeCapabilities("widget", "widget-capability-test");
@@ -550,8 +557,8 @@ assert.equal(readDiagnostics()[0].details.sharedFilesAvailable, false);
 assert.equal(readDiagnostics()[0].level, "warning", "missing runtime capabilities remain visible");
 runtime.SQLite = { open() { throw new Error("presence probing must not open a database"); } };
 runtime.FileManager = {
+  ...completeFileApi,
   appGroupDocumentsDirectory: "/synthetic/private-path",
-  readAsStringSync() {}, writeAsStringSync() {},
 };
 clearDiagnostics();
 writeRuntimeCapabilities("app");
@@ -598,6 +605,7 @@ setDiagnosticsEnabled(true);
 clearDiagnostics();
 writeDiagnostic("refresh.started", { flowId: "batch-log", trigger: "list_pull" });
 const originalGet = Storage.get, originalSet = Storage.set;
+const originalPublish = FileManager.createLinkSync;
 let logReads = 0, logWrites = 0;
 Storage.get = (key, ...options) => {
   if (key === DIAGNOSTIC_KEY) logReads++;
@@ -607,12 +615,13 @@ Storage.set = (key, value, ...options) => {
   if (key === DIAGNOSTIC_KEY) logWrites++;
   return originalSet(key, value, ...options);
 };
+FileManager.createLinkSync = (path, target) => { if (path.endsWith(".ready")) logWrites++; return originalPublish(path, target); };
 try {
   writeDiagnosticBatch("account.list.record", [
     { flowId: "batch-log", waybillTail: "1234", result: "stored", phone: "synthetic-private-value" } as never,
     { flowId: "batch-log", waybillTail: "5678", result: "omitted" },
   ]);
-  assert.equal(logReads, 1);
+  assert.equal(logReads, 0, "new batches do not read the retired shared array");
   assert.equal(logWrites, 1);
   const records = readDiagnostics().filter(entry => entry.event === "account.list.record");
   assert.deepEqual(records.map(entry => entry.details.waybillTail), ["5678", "1234"]);
@@ -630,6 +639,7 @@ try {
   rejectWrites = true;
   assert.doesNotThrow(() => writeDiagnosticBatch("account.list.record", [{ flowId: "batch-log" }]));
 } finally {
+  FileManager.createLinkSync = originalPublish;
   rejectWrites = false;
   Storage.get = originalGet; Storage.set = originalSet;
 }

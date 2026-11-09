@@ -9,6 +9,7 @@ import { selectShipmentDetailTimeline } from "../services/shipment-policy";
 import { clearDiagnostics, diagnosticText, readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
 import { OperationTimeoutError } from "../services/deadline";
+import { installSharedFileMock } from "./shared-file-mock";
 
 const diagnosticStorage = new Map<string, unknown>();
 Object.assign(globalThis, { Storage: {
@@ -16,6 +17,7 @@ Object.assign(globalThis, { Storage: {
   set: (key: string, value: unknown) => { diagnosticStorage.set(key, structuredClone(value)); return true; },
   remove: (key: string) => { diagnosticStorage.delete(key); },
 } });
+installSharedFileMock(diagnosticStorage);
 setDiagnosticsEnabled(true);
 
 const PHONE = "13800138000", OTHER = "13900139000", ORDER = "3650000000000001";

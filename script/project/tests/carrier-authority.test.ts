@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installSharedFileMock } from "./shared-file-mock";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const syncSource = readFileSync(join(projectRoot, "services/sync.ts"), "utf8");
 const widgetSource = readFileSync(join(projectRoot, "widget.tsx"), "utf8");
+const shortcutSource = readFileSync(join(projectRoot, "intent.tsx"), "utf8");
+const backgroundSource = readFileSync(join(projectRoot, "services/background-refresh.ts"), "utf8");
 const appIntentsSource = readFileSync(
   join(projectRoot, "app_intents.tsx"),
   "utf8",
@@ -38,6 +41,7 @@ Object.assign(globalThis, {
     removeSync: (path: string) => files.delete(path),
   },
 });
+installSharedFileMock(diagnosticMemory);
 
 const {
   loadCarrierAuthorityCache,
@@ -178,9 +182,10 @@ assert.match(
 for (const [host, source] of [
   ["Widget", widgetSource],
   ["App Intent", appIntentsSource],
+  ["Shortcuts", shortcutSource],
 ] as const) {
   assert.ok(
-    source.includes("loadCarrierAuthorityCache()"),
+    source.includes("backgroundHostBootstrap()"),
     `${host} must load the last-good carrier cache`,
   );
   assert.equal(
@@ -190,10 +195,21 @@ for (const [host, source] of [
   );
   assert.match(
     source,
-    /backgroundHostSafe:\s*true/,
+    /backgroundRefreshOptions\(/,
     `${host} sync must remain cache-only for carrier authority`,
   );
 }
+assert.match(backgroundSource, /loadCarrierAuthorityCache\(\)/);
+assert.doesNotMatch(backgroundSource, /refreshCarrierAuthorityIfNeeded|fetch\(/);
+const { backgroundHostBootstrap, backgroundRefreshOptions } = await import("../services/background-refresh");
+assert.deepEqual(backgroundRefreshOptions(), {
+  budgetMs: 120_000, accountOrderProjection: true, backgroundHostSafe: true,
+});
+resetCarrierAuthorityRuntimeForTesting();
+resetCarrierQueryRecordsForTesting();
+backgroundHostBootstrap();
+assert.notEqual(activeCarrierTableSource(), BOOTSTRAP_TABLE_SOURCE,
+  "the shared background bootstrap installs the existing last-good cache without a request");
 
 console.log("carrier authority cache tests passed");
 

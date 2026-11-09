@@ -26,6 +26,7 @@ import { loadState } from "./services/storage";
 import {
   diagnosticErrorDetails,
   diagnosticState,
+  flushDiagnostics,
   writeDiagnostic,
   writeRuntimeCapabilities,
 } from "./services/logger";
@@ -231,6 +232,7 @@ async function run() {
       "error",
     );
   } finally {
+    flushDiagnostics();
     Script.exit();
   }
 }

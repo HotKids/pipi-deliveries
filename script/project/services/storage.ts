@@ -305,7 +305,8 @@ function encodeState(state: AppState, verified?: DecodedStoredState): EncodedSta
     return {
       serialized: verified.serialized,
       checksum: verified.envelopeChecksum,
-      state: JSON.parse(payload) as AppState,
+      // This load already parsed a private clone; reuse it only after normalized byte equality.
+      state: verified.state as AppState,
     };
   }
   const checksum = hashText(payload);

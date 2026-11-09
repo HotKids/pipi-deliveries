@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
+import { installSharedFileMock } from "./shared-file-mock";
 
 // 用户 2026-09-27：以后安装 beta 版就默认重新打开，安装正式版就跟随之前的设置（iOS 同 Pipi）。
 // Importing a beta package whose SCRIPT_VERSION differs from the recorded one turns the diagnostic
@@ -33,6 +34,7 @@ Object.assign(globalThis, {
     },
   },
 });
+installSharedFileMock(memory);
 
 // Each import below is a fresh logger instance — one host runtime (app launch, widget run, App
 // Intent) — built against the track and version named in its URL, independent of the checked-in

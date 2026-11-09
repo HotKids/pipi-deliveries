@@ -19,8 +19,8 @@ import {
   recordWidgetRunAtMs,
   widgetRunGapMs,
 } from "./widget/telemetry";
-import { createDiagnosticFlowId, writeDiagnostic, writeRuntimeCapabilities } from "./services/logger";
-import { loadCarrierAuthorityCache } from "./services/carrier-authority";
+import { createDiagnosticFlowId, flushDiagnostics, writeDiagnostic, writeRuntimeCapabilities } from "./services/logger";
+import { backgroundHostBootstrap, backgroundRefreshOptions } from "./services/background-refresh";
 
 function widgetContent() {
   const kind = widgetPresentationKind(String(Widget.family || ""));
@@ -105,10 +105,12 @@ async function run() {
       durationMs: Date.now() - startedAtMs,
       reloadAfterMs: WIDGET_RELOAD_AFTER_MS,
     });
-    Widget.present(widgetContent(), { reloadPolicy: widgetReloadPolicy() });
+    const content = widgetContent();
+    flushDiagnostics();
+    Widget.present(content, { reloadPolicy: widgetReloadPolicy() });
     return;
   }
-  loadCarrierAuthorityCache();
+  backgroundHostBootstrap();
   let shouldRefresh = true;
   try {
     shouldRefresh = shouldRunWidgetNetworkRefresh(
@@ -120,11 +122,7 @@ async function run() {
   if (shouldRefresh) {
     const refreshStartedAtMs = Date.now();
     const outcome = await bestEffortWidgetRefresh(() =>
-      refreshAllShipments(undefined, {
-        budgetMs: WIDGET_REFRESH_BUDGET_MS,
-        accountOrderProjection: true,
-        backgroundHostSafe: true,
-      })
+      refreshAllShipments(undefined, backgroundRefreshOptions(WIDGET_REFRESH_BUDGET_MS))
     );
     writeDiagnostic(
       outcome === "skipped" ? "widget.refresh.skipped"
@@ -157,7 +155,9 @@ async function run() {
     durationMs: Date.now() - startedAtMs,
     reloadAfterMs: WIDGET_RELOAD_AFTER_MS,
   });
-  Widget.present(widgetContent(), { reloadPolicy: widgetReloadPolicy() });
+  const content = widgetContent();
+  flushDiagnostics();
+  Widget.present(content, { reloadPolicy: widgetReloadPolicy() });
 }
 
 void run();

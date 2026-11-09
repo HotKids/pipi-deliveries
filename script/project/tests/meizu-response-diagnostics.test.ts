@@ -2,7 +2,7 @@ import { SCRIPT_CLIENT_BUILD } from "../services/build-track";
 import assert from "node:assert/strict";
 import { memory } from "./state-storage-mock";
 import { queryMeizuShipment } from "../services/manual-query";
-import { diagnosticText, readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
+import { clearDiagnostics, diagnosticText, readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
 
 memory.clear();
 setDiagnosticsEnabled(true);
@@ -37,7 +37,7 @@ assert.equal(diagnosticText().includes(withheld), false);
 assert.equal(diagnosticText().includes(waybill), false);
 assert.equal(diagnosticText().includes("https"), false);
 
-memory.delete("pipi_deliveries_diagnostic_log_v1");
+clearDiagnostics();
 const transport = Object.assign(new Error(withheld), { status: 403 });
 await assert.rejects(queryMeizuShipment({ waybill, dependencies: { post: async () => { throw transport; } } }),
   error => error === transport, "transport errors retain their existing HTTP metadata and are not retried");
@@ -48,7 +48,7 @@ assert.equal(attempts()[0]!.details.httpStatus, 403);
 assert.equal(attempts()[0]!.details.valueKind, undefined, "a failed request is not an empty upstream response");
 assert.equal(attempts()[0]!.details.upstreamCode, undefined);
 
-memory.delete("pipi_deliveries_diagnostic_log_v1");
+clearDiagnostics();
 await assert.rejects(queryMeizuShipment({ waybill, dependencies: {
   post: async () => ({ code: 10000 }),
 } }), /路由轨迹查询失败/);
@@ -57,7 +57,7 @@ assert.ok(attempts().every(({details}) => details.result === "received" &&
   details.upstreamCode === 10000 && details.valueKind === "missing"));
 assert.equal(diagnosticText().includes(waybill), false);
 
-memory.delete("pipi_deliveries_diagnostic_log_v1");
+clearDiagnostics();
 let transientCalls = 0;
 await queryMeizuShipment({ waybill, dependencies: { post: async () => {
   if (++transientCalls === 1) throw Object.assign(new Error("Upstream unavailable"), { status: 502 });
@@ -66,12 +66,12 @@ await queryMeizuShipment({ waybill, dependencies: { post: async () => {
 } } });
 assert.equal(transientCalls, 2, "a transient HTTP service failure may retry once");
 
-memory.delete("pipi_deliveries_diagnostic_log_v1");
+clearDiagnostics();
 writeDiagnostic("manual.meizu.response", { attempt: 2, mode: "last_detail", upstreamCode: -1001,
   valueKind: "array", redirectPresent: false });
 assert.equal(attempts()[0]!.details.upstreamCode, -1001, "negative integer business codes remain diagnostic");
 for (const unsafe of [NaN, Infinity, 0.5, Number.MAX_SAFE_INTEGER + 1, "200", withheld]) {
-  memory.delete("pipi_deliveries_diagnostic_log_v1");
+  clearDiagnostics();
   writeDiagnostic("manual.meizu.response", { attempt: 3, mode: withheld, upstreamCode: unsafe,
     valueKind: withheld, redirectPresent: withheld, msg: withheld, value: withheld, redirect: withheld } as never);
   assert.deepEqual(attempts()[0]!.details, { clientBuild: SCRIPT_CLIENT_BUILD }, "only bounded attempt/mode/type/code/boolean metadata is retained");

@@ -4,7 +4,8 @@ import { memory, NOW, sha256 } from "./state-storage-mock";
 import { emptyState, loadState, saveState } from "../services/storage";
 import { applyManualShipment } from "../services/shipment-policy";
 import { normalizeTimelineSlot } from "../services/timeline-slot";
-import { readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
+import { flushDiagnostics, readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
+import { diagnosticFiles } from "../services/diagnostic-store";
 
 const waybill = "SF123456789012";
 function pack(provider: string, detail: string, offset = 0): TimelinePackage {
@@ -76,9 +77,10 @@ for (const other of ["v5_query", "k100_h5", "v2_query", "kdniao"]) assert.equal(
 
 // Old log records and fresh calls that still supply a legacy input display/write the same canonical identity.
 setDiagnosticsEnabled(true);
-memory.set("pipi_deliveries_diagnostic_log_v1", [{ at: new Date().toISOString(), level: "info", event: "manual.source.succeeded",
+memory.set("pipi_deliveries_diagnostic_log_v1", [{ id: "old-retired-slot", at: new Date().toISOString(), level: "info", event: "manual.source.succeeded",
   details: { stage: "v6_picker", level: "v6_picker", timelineProvider: "v6_picker", detailTimelineProvider: "v6_picker" } }]);
 assert.equal(JSON.stringify(readDiagnostics()).includes("v6_picker"), false);
 writeDiagnostic("manual.source.succeeded", { stage: "v6_picker", level: "v6_picker", timelineProvider: "v6_picker" });
-assert.equal(JSON.stringify(memory.get("pipi_deliveries_diagnostic_log_v1")).includes("v6_picker"), false);
+flushDiagnostics();
+assert.equal(JSON.stringify(diagnosticFiles().map(row => row.value)).includes("v6_picker"), false);
 console.log("Meizu retired slot cleanup and canonical history tests passed");

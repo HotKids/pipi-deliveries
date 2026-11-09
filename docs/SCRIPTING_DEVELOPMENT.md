@@ -10,6 +10,26 @@ The package contains `script/README.md` as its root `README.md`, followed by the
 
 Current entry points are `index.tsx` (app), `widget.tsx` (Home Screen widgets), `intent.tsx` (Shortcuts) and `app_intents.tsx` (registered refresh intent). The native Scripting host is required; this is not an independent IPA.
 
+## Background hosts and optional caches
+
+Widget, Shortcuts and the registered App Intent share the cache-only bootstrap and refresh options in `services/background-refresh.ts`. Bootstrap installs the existing last-good carrier authority cache without fetching it. Keep each host's current call order and budget. The shared options still pass `accountOrderProjection: true`; the owning `fullRefreshHostPolicy` disables it for background hosts.
+
+The registered App Intent keeps a void result contract. Its error boundary rejects with the existing safe refresh-failure message, including bootstrap failures. The installed declarations allow a generic return type, but the [official AppIntent documentation](https://scriptingapp.github.io/guide/AppIntent.md) does not establish text-result presentation. Do not substitute the separate Shortcuts `Intent.text` API.
+
+Product-image pruning takes one directory inventory per call. Successfully created deletion markers join that inventory so they replay immediately. Existing immutable-file markers, optional cleanup failures and the 20-second pending-writer deadline remain unchanged. Do not reuse an old process-local inventory to skip another host's deletions.
+
+## Diagnostic buffering
+
+Single diagnostic records are sanitized before entering a process-local buffer. Flush occurs at the end of the current tick, at 20 queued records, on full-refresh terminal records, on read/export, and before host exit or widget presentation. Explicit `writeDiagnosticBatch` remains synchronous and includes preceding buffered records. Recording disabled or a successful clear discards pending records; the existing 200-record/seven-day retention and exported text format remain unchanged.
+
+The owner accepted losing unflushed records when a runtime dies. Published records use `services/diagnostic-store.ts` under the shared App Group's `pipi-deliveries/diagnostics-v2`. Each flush prepares an independently named batch, verifies individual immutable record files, then publishes its `.ready` symbolic link. Readers never accept a batch before that publication. A lost publication acknowledgement is checked against the same ready link before retrying; app and widget writers never overwrite a shared log array. Filenames contain only internal UUIDs, counters and clocks.
+
+Clear publishes an immutable marker containing an ordered sequence and UUID in its filename. Concurrent clears with the same sequence have a deterministic order. Every enqueue and flush reads the current marker; buffered records retain the epoch they observed, rather than using a process-local cache as authority. A later flush cannot move pre-clear records into the new epoch. New records enqueued after a completed clear use the new epoch. Old shared-array records remain readable until a verified, sanitized immutable migration is published; the migration marker precedes best-effort removal of the old array. A clear never reimports that retired array.
+
+Reads merge published batches by internal publication order and deduplicate record IDs. Retention removes individual files outside the existing 200-record/seven-day window, including partially retained batches. A cleaner only deletes current-epoch rows from its own read snapshot, so it cannot delete a batch published concurrently. Records newer than that snapshot's clock are left for the next read. Older clear epochs and expired unpublished staging directories are cleaned without changing business-state retention. Unflushed staging files are never accepted as durable diagnostics.
+
+Recording disabled discards pending records. Missing or failing native file APIs preserve a bounded sanitized buffer for retry; there is no non-atomic shared-array write fallback. A buffer already tagged with an epoch stays hidden unless a fresh read confirms the same epoch, including when the native file bridge fails after another runtime clears. A new buffer that has never observed a file epoch can still expose its sanitized capability warning, but cannot publish into an existing clear epoch. Failure of optional logging never fails a parcel refresh. The existing text export and diagnostic privacy whitelist remain unchanged. Shared-file concurrency, clear ordering, capability failure after another process clears, process death before publication, lost acknowledgements and physical retention are exercised with separate Node processes and a synthetic App Group. Actual iOS host performance and filesystem integration still require device validation.
+
 ## Source checks and packaging
 
 Run these commands from the Deliveries directory (`deliveries/` in the canonical workspace):
