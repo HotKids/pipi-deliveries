@@ -105,6 +105,7 @@ import {
   shipmentDetailIncompleteReason,
   shouldRefreshShipmentRow,
   shouldScheduleManualRefresh,
+  manualPullHistoryIncomplete,
   refreshGateView,
   signedRefreshFrozen,
   statusAlignmentOutOfStep,
@@ -2679,7 +2680,7 @@ function manualRefreshTasks(
           (!unprojectedAccountOrder(current) && current.timeline.provider !== "demo" &&
           shouldRefreshShipmentRow(current, now) &&
           shipmentPresentationStatus(refreshGateView(current, now)).semantic !== "CANCELLED" &&
-          shouldScheduleManualRefresh(current, now, forceManualRefresh))
+          shouldScheduleManualRefresh(current, now))
     )
   ).map(current => ({ id: current.identity.id, lastAttemptAtMs: Number(current.manualRefreshAttemptAtMs) || 0,
     accountDetail: accountSourceFollowup && isHomeAccountQuerySource(current),
@@ -2693,6 +2694,8 @@ async function refreshBackgroundSfAlignment(
   state: AppState, source: BindingSource, flowId: string, checkpoint: RefreshCheckpoint,
   task: ManualRefreshTask, deadlineAtMs: number | undefined, signal: AbortSignal,
   query: typeof queryManualForSource,
+  /** C1: called once this task is past its cooldown and lease gates, right before it queries. */
+  onQueryStarted: () => void = () => {},
 ): Promise<RefreshSummary> {
   let current = loadState(), attempted = 0, succeeded = 0, failed = 0;
   const summary = (): RefreshSummary => ({ state: current, attempted, succeeded, failed, promotedPendingShipmentIds: [] });
@@ -2706,6 +2709,7 @@ async function refreshBackgroundSfAlignment(
   if (!refreshProviderDue(schedule.key, "picker", schedule.identityFingerprint)) return summary();
   const lease = acquireRenewingDurableRefreshLease(`detail:${task.id}`, 35_000);
   if (!lease) return summary();
+  onQueryStarted();
   let attempt: AlignmentAttempt | undefined, reservationError: unknown;
   const staleReservation = new Error("Alignment owner or group changed");
   const isCurrent = () => !signal.aborted && lease.isCurrent();
@@ -2799,6 +2803,8 @@ async function refreshOnlineShipment(
   signal: AbortSignal, query: typeof queryManualForSource,
   recognitionBudget?: CarrierRecognitionBudget,
   backgroundHostSafe = false,
+  /** C1: called once this task is past its cooldown and lease gates, right before it queries. */
+  onQueryStarted: () => void = () => {},
 ): Promise<RefreshSummary> {
   let currentState = state;
   let attempted = 0, succeeded = 0, failed = 0;
@@ -2826,7 +2832,9 @@ async function refreshOnlineShipment(
   const moto = provider === TIMELINE_SLOT.V4_QUERY;
   const paid = provider === TIMELINE_SLOT.KDNIAO;
   const scheduleProvider = moto ? "moto" : paid ? "kdniao" : "picker";
-  if (!forceManualRefresh &&
+  // Owner 2026-11-10 (item 1): a Home list pull obeys the same per-waybill Picker/Moto cooldown as scheduled work;
+  // only a row whose listed history is still incomplete may pull inside it (the 30-second minimum still applies).
+  if ((!forceManualRefresh || !manualPullHistoryIncomplete(current)) &&
       !refreshProviderDue(schedule.key, scheduleProvider, schedule.identityFingerprint)) {
     writeDiagnostic("refresh.stage.skipped", { flowId, source, stage: "manual_refresh",
       ...shipmentDiagnosticDetails(current, provider),
@@ -2834,6 +2842,8 @@ async function refreshOnlineShipment(
       result: "cooldown", skipReason: "cooldown" });
     return summary();
   }
+  // A pull's answer is recorded in the provider schedule too (recordSchedule), so the next pull or background round
+  // sees it (owner 2026-11-10, item 1).
   const startedAt = Date.now();
   const taskDeadline = accountChildDeadline(deadlineAtMs, MANUAL_REFRESH_TASK_BUDGET_MS, 0, startedAt);
   const attemptId = createDiagnosticFlowId("manual");
@@ -2845,6 +2855,7 @@ async function refreshOnlineShipment(
   commit(beginManualRefreshAttempt(current, attemptId, startedAt, taskDeadline), new Map(), "manual_refresh_attempt");
   let reserved = currentState.shipments.find(item => item.identity.id === task.id);
   if (!reserved || !ownsManualRefreshLease(reserved, attemptId)) return summary();
+  onQueryStarted();
   const release = () => {
     reserved = currentState.shipments.find(item => item.identity.id === task.id);
     if (reserved && ownsManualRefreshLease(reserved, attemptId)) {
@@ -2867,7 +2878,7 @@ async function refreshOnlineShipment(
       currentShipment: paid ? undefined : reserved,
       ...(moto ? { motoOnly: true } : paid ? { fallbackOnly: true }
         : { pickerFirst: true, pickerOnly: true }),
-      includeKdniaoFallback: paid, scheduled: !forceManualRefresh, hostSafe: true });
+      includeKdniaoFallback: paid, scheduled: !forceManualRefresh, recordSchedule: true, hostSafe: true });
     assertRefreshSignal(signal);
     stageCancelled.close();
   } catch (error) {
@@ -3657,12 +3668,15 @@ async function refreshHomeAccountShipment(
   state: AppState, source: BindingSource, flowId: string, checkpoint: RefreshCheckpoint,
   task: ManualRefreshTask, deadlineAtMs: number | undefined, signal: AbortSignal,
   query: typeof refreshAccountParcel,
+  /** C1: called once this task passed its gates, right before it queries. */
+  onQueryStarted: () => void = () => {},
 ): Promise<RefreshSummary> {
   const original = state.shipments.find(item => item.identity.id === task.id);
   const summary = (next: AppState, attempted = 0, succeeded = 0, failed = 0) =>
     ({ state: next, attempted, succeeded, failed, promotedPendingShipmentIds: [] });
   if (!original || !canQueryHomeAccount(original, Boolean(task.cainiaoListUpdated)) ||
       deadlineExpired(deadlineAtMs)) return summary(state);
+  onQueryStarted();
   const startedAt = Date.now();
   writeDiagnostic("refresh.stage.started", { flowId, source, stage: "account_detail",
     budgetMs: ACCOUNT_DETAIL_BUDGET_MS, ...shipmentDiagnosticDetails(original, "v5_query") });
@@ -5829,6 +5843,12 @@ async function refreshShipmentEnrichment(
   /** The sync round's recognition wait (用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒). */
   recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
   backgroundHostSafe = false,
+  /**
+   * E1/PF5: called when the first job actually queries (the per-shipment phase has work). C1: a job only
+   * calls it after its own cooldown and lease gates, so a round whose every job is skipped (cooldown,
+   * 30-second floor, another owner) never reports 「轨迹在后台继续更新」.
+   */
+  onWorkStarted: () => void = () => {},
 ): Promise<RefreshSummary> {
   let currentState = state;
   let attempted = 0;
@@ -5889,14 +5909,14 @@ async function refreshShipmentEnrichment(
       }
       const result = job.backgroundAlignment ? await refreshBackgroundSfAlignment(
         currentState, source, flowId, commit, job, deadlineAtMs, controller.signal,
-        runtimeOverrides.queryManualForSource || queryManualForSource,
+        runtimeOverrides.queryManualForSource || queryManualForSource, onWorkStarted,
       ) : job.accountDetail ? await refreshHomeAccountShipment(
         currentState, source, flowId, commit, job, deadlineAtMs, controller.signal,
-        runtimeOverrides.refreshAccountParcel || refreshAccountParcel,
+        runtimeOverrides.refreshAccountParcel || refreshAccountParcel, onWorkStarted,
       ) : await refreshOnlineShipment(
         currentState, source, flowId, commit, job, deadlineAtMs, forceManualRefresh,
         controller.signal, runtimeOverrides.queryManualForSource || queryManualForSource,
-        recognitionBudget, backgroundHostSafe,
+        recognitionBudget, backgroundHostSafe, onWorkStarted,
       );
       if (job.backgroundAlignment) currentState = loadState(Date.now());
       return {job, summary: result};
@@ -5951,6 +5971,7 @@ async function runFullRefresh(
   accountListOnly: boolean,
   accountSourceFollowup: boolean,
   lease: FullRefreshLease,
+  onAccountPhase?: (summary: RefreshSummary) => void,
 ): Promise<RefreshSummary> {
   requireScriptSource(source);
   lease.assertCurrent();
@@ -6067,6 +6088,25 @@ async function runFullRefresh(
       );
     }
 
+    // E1 (owner 2026-11-10): the account phase is stored (checkpointed and published above). A list pull
+    // waiting for this refresh is answered with the account part's counts while the order projection and
+    // per-shipment enrichment below go on in this same refresh, under the same full:<source> lease.
+    // PF5: the answer is given only when that work actually starts (a union page is about to be reserved
+    // or the first enrichment job starts); a refresh with nothing left answers once, at its end, with
+    // the ordinary summary instead of 「轨迹在后台继续更新」.
+    const accountPhaseSummary: RefreshSummary = {
+      attempted, succeeded, failed, accountListUpdated, continuing: true,
+      state: currentState, promotedPendingShipmentIds: [],
+    };
+    let accountPhaseAnswered = false;
+    const answerAccountPhase = () => {
+      if (accountPhaseAnswered || !onAccountPhase || accountListOnly) return;
+      accountPhaseAnswered = true;
+      try {
+        onAccountPhase(accountPhaseSummary);
+      } catch { /* answering the pull cannot change the refresh */ }
+    };
+
     const enrichmentDeadlineAtMs = deadlineAtMs == null
       ? undefined
       : deadlineAtMs - FULL_REFRESH_FINALIZATION_RESERVE_MS;
@@ -6075,6 +6115,7 @@ async function runFullRefresh(
       const unionPageGate = () => {
         lease.assertCurrent();
         if (!projectionSceneActive()) throw new UnionPageSkipped("not_foreground");
+        answerAccountPhase();
       };
       const projection = await projectAccountOrders(
       currentState,
@@ -6112,6 +6153,7 @@ async function runFullRefresh(
       currentState, source, flowId, checkpoint, enrichmentDeadlineAtMs,
       skipRefreshIds, forceManualRefresh, hostPolicy.accountOrderProjection, lease.signal,
       {}, accountSourceFollowup, updatedCainiaoIds, recognitionBudget, backgroundHostSafe,
+      answerAccountPhase,
     );
     currentState = enrichment.state;
     attempted += enrichment.attempted;
@@ -6176,13 +6218,55 @@ export function refreshAllShipments(
   const source = requireScriptSource(sourceOverride || SCRIPT_BINDING_SOURCE);
   const pending = interactiveFullRequests.get(source);
   if (options.forceManualRefresh && pending) return pending;
-  const request = startFullRefresh(source, options);
+  let answerAccountPhase: (summary: RefreshSummary) => void = () => {};
+  const accountPhase = new Promise<RefreshSummary>((resolve) => { answerAccountPhase = resolve; });
+  const request = startFullRefresh(source, options.forceManualRefresh
+    ? {
+        ...options,
+        onAccountPhase: (summary) => {
+          answerAccountPhase(summary);
+          options.onAccountPhase?.(summary);
+        },
+      }
+    : options);
   if (!options.forceManualRefresh) return request;
   const tracked = request.finally(() => {
     if (interactiveFullRequests.get(source) === tracked) interactiveFullRequests.delete(source);
+    if (interactiveAccountPhases.get(source)?.completion === tracked) interactiveAccountPhases.delete(source);
   });
   interactiveFullRequests.set(source, tracked);
+  // The pull's answer: the account phase, or the whole refresh when it never reaches one (it then wins the race).
+  const answer = Promise.race([accountPhase, tracked]);
+  // Observed by the pull that awaits it; a refresh nobody pulls must not report an unhandled rejection.
+  answer.catch(() => undefined);
+  interactiveAccountPhases.set(source, { completion: tracked, accountPhase: answer });
   return tracked;
+}
+
+/** E1: the interactive (pull) refresh in flight per source, with its account-phase answer. */
+const interactiveAccountPhases = new Map<BindingSource, {
+  completion: Promise<RefreshSummary>;
+  accountPhase: Promise<RefreshSummary>;
+}>();
+
+/**
+ * E1 (owner 2026-11-10): the express list pull. Resolves as soon as the refresh it starts or joins has
+ * stored its account phase (`summary.continuing`, the account part's counts); `completion` is that whole
+ * refresh, whose per-shipment work goes on in the background and reaches the page through
+ * subscribeRefreshState. A refresh that ends before an account phase answers with its full summary.
+ */
+export async function refreshAllShipmentsForPull(
+  sourceOverride?: BindingSource,
+  options: Parameters<typeof startFullRefresh>[1] = {},
+): Promise<{ summary: RefreshSummary; completion: Promise<RefreshSummary> }> {
+  const source = requireScriptSource(sourceOverride || SCRIPT_BINDING_SOURCE);
+  const pulled = { ...options, forceManualRefresh: true };
+  const completion = refreshAllShipments(source, pulled);
+  const tracked = interactiveAccountPhases.get(source);
+  const summary = tracked && tracked.completion === completion
+    ? await tracked.accountPhase
+    : await completion;
+  return { summary, completion };
 }
 
 async function startFullRefresh(
@@ -6195,6 +6279,8 @@ async function startFullRefresh(
     accountListOnly?: boolean;
     /** Legacy caller hint; all non-list-only refreshes now share the account follow-up policy. */
     accountSourceFollowup?: boolean;
+    /** E1: called once when the refresh's account phase is stored and enrichment follows. */
+    onAccountPhase?: (summary: RefreshSummary) => void;
   } = {},
 ): Promise<RefreshSummary> {
   const source = requireScriptSource(
@@ -6309,6 +6395,7 @@ async function startFullRefresh(
         Boolean(options.accountListOnly),
         accountSourceFollowup,
         lease,
+        options.onAccountPhase,
       );
     },
     (detail) => detail.refreshed,

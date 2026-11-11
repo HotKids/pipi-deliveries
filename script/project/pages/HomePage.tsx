@@ -21,6 +21,7 @@ import {
   commitManualShipmentPreview,
   queryManualShipmentPreview,
   refreshAllShipments,
+  refreshAllShipmentsForPull,
   subscribeRefreshState,
 } from "../services/sync";
 import { stateLoadFailure, visibleShipments } from "../services/storage";
@@ -91,6 +92,8 @@ export function HomePage(props: {
   const [refreshing, setRefreshing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
+  /** E1: a pull's background completion applies its result only while this page is mounted. */
+  const mountedRef = useRef(true);
   const [completing, setCompleting] = useState(false);
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
@@ -151,6 +154,7 @@ export function HomePage(props: {
 
   useEffect(() => {
     let active = true;
+    mountedRef.current = true;
     const unsubscribe = subscribeRefreshState(props.onStateChange);
     // 所有副本都迁移失败时不是空库，而是读取失败（2026-09-06 静态审查②）：进页先说一声。
     if (stateLoadFailure()) setNotice(EXPRESS_TOAST_COPY.stateLoadFailed);
@@ -163,6 +167,7 @@ export function HomePage(props: {
       });
     return () => {
       active = false;
+      mountedRef.current = false;
       unsubscribe();
     };
   }, []);
@@ -327,17 +332,26 @@ export function HomePage(props: {
     }
   }
 
+  /** E1: the rest of a pull's refresh lands after its account phase was shown. */
+  function followPullCompletion(completion: Promise<RefreshSummary>) {
+    void completion
+      .then((finished) => { if (mountedRef.current) applyInteractiveRefreshSummary(finished); })
+      .catch(() => { /* the account part is already shown; a later failure keeps the cached list */ });
+  }
+
   async function refresh() {
     if (refreshing) return;
     setRefreshing(true);
     setNotice("");
     try {
-      const summary = await refreshAllShipments(undefined, {
-        forceManualRefresh: true,
+      // E1 (owner 2026-11-10): the spinner ends once the account phase is stored; the per-shipment work
+      // goes on in the same refresh and reaches this page through subscribeRefreshState.
+      const { summary, completion } = await refreshAllShipmentsForPull(undefined, {
         accountSourceFollowup: true,
       });
       applyInteractiveRefreshSummary(summary);
       setNotice(refreshSummaryToast(summary));
+      if (summary.continuing) followPullCompletion(completion);
     } catch (error) {
       // One gesture, one outcome: refreshAllShipments resolves with failures on the line above
       // and rejects here, so both branches have to say 刷新失败 rather than 查询失败.

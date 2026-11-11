@@ -1232,9 +1232,10 @@ assert.equal(
   ),
   true,
 );
+// Owner 2026-11-10 (item 1): a list pull no longer bypasses the 30-second minimum interval.
 assert.equal(
-  shouldScheduleManualRefresh(recentlyAttemptedShunFeng, NOW + 1, true),
-  true,
+  shouldScheduleManualRefresh(recentlyAttemptedShunFeng, NOW + 1),
+  false,
 );
 assert.equal(
   shouldScheduleManualRefresh(recentlyAttemptedShunFeng, NOW - 1),
@@ -1249,15 +1250,15 @@ const activeManualAttempt = beginManualRefreshAttempt(
 assert.equal(activeManualRefreshLease(activeManualAttempt, NOW), true);
 assert.equal(ownsManualRefreshLease(activeManualAttempt, "manual-attempt-active"), true);
 assert.equal(
-  shouldScheduleManualRefresh(activeManualAttempt, NOW + 1, true),
+  shouldScheduleManualRefresh(activeManualAttempt, NOW + 1),
   false,
 );
 assert.equal(
-  shouldScheduleManualRefresh(activeManualAttempt, NOW + 30_000, true),
+  shouldScheduleManualRefresh(activeManualAttempt, NOW + 30_000),
   true,
 );
 assert.equal(
-  shouldScheduleManualRefresh(activeManualAttempt, NOW - 1, true),
+  shouldScheduleManualRefresh(activeManualAttempt, NOW - 1),
   true,
 );
 assert.equal(
@@ -2058,7 +2059,7 @@ assert.deepEqual(
 );
 assert.equal(normalizedFrozenJingDong.updatedAtMs, NOW + 120_000);
 assert.equal(
-  shouldScheduleManualRefresh(normalizedFrozenJingDong, NOW + 180_000, true),
+  shouldScheduleManualRefresh(normalizedFrozenJingDong, NOW + 180_000),
   false,
   "JD must not enter the local or route capability refresh queue",
 );

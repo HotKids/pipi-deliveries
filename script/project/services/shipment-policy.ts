@@ -2260,7 +2260,6 @@ export function releaseManualRefreshLease(
 export function shouldScheduleManualRefresh(
   input: Shipment,
   now: number,
-  force = false,
 ): boolean {
   // A right-swipe signed row inside its refresh window is scheduled by its own status (用户 2026-10-02「显示已签收、
   // 照常刷新」); once hard-frozen the latch below stops it, as before.
@@ -2271,8 +2270,8 @@ export function shouldScheduleManualRefresh(
   if (hasSettledTimelineHistory(shipment, now)) return false;
   if (activeManualRefreshLease(shipment, now)) return false;
   const lastAttemptAtMs = Number(shipment.manualRefreshAttemptAtMs);
+  // Owner 2026-11-10 (item 1): a Home list pull keeps this 30-second minimum too; it no longer bypasses it.
   if (
-    !force &&
     Number.isFinite(lastAttemptAtMs) &&
     lastAttemptAtMs > 0 &&
     now >= lastAttemptAtMs &&
@@ -2300,6 +2299,16 @@ export function shouldScheduleManualRefresh(
     );
   }
   return needsAutomaticListSupplement(shipment);
+}
+
+/**
+ * Owner 2026-11-10 (item 1): a Home list pull skips a manual/SF row inside its per-waybill Picker/Moto cooldown unless
+ * the history the list currently shows is incomplete — unknown status, no timed node, or no start (ordered/pickup) node.
+ */
+export function manualPullHistoryIncomplete(shipment: Shipment): boolean {
+  const selected = selectShipmentTimeline(withoutTemporaryReviews(shipment));
+  return selected.semantic === "UNKNOWN" || timedTracks(selected.tracks).length === 0 ||
+    !containsTimelineStartTrack(selected.tracks);
 }
 
 /** List supplementation fills missing status or timed history after same-ticket cache selection. */

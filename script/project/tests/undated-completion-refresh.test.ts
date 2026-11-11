@@ -48,7 +48,7 @@ try {
     }
     assert.equal(shouldRefreshShipment(stored, NOW), eligible, mode);
     assert.equal(hasSettledTimelineHistory(stored), !eligible, mode);
-    assert.equal(shouldScheduleManualRefresh(stored, NOW, true), eligible, mode);
+    assert.equal(shouldScheduleManualRefresh(stored, NOW), eligible, mode);
     let requests = 0;
     await runShipmentEnrichmentForTesting(state, "interface5", "terminal-refresh-test",
       candidate => saveState(candidate, NOW), NOW + 60_000, new Set(), true, false, undefined, {
@@ -60,10 +60,10 @@ try {
     const manual = { ...pack, provider: "kdniao" };
     const shipment = { ...row, identity: { ...row.identity, manuallyAdded },
       timeline: manual, manualTimelines: [manual] };
-    assert.equal(shouldScheduleManualRefresh(shipment, NOW, true), true,
+    assert.equal(shouldScheduleManualRefresh(shipment, NOW), true,
       "a complete manual package without a terminal timestamp must remain eligible");
     const dated = { ...manual, statusEventAtMs: at };
-    assert.equal(shouldScheduleManualRefresh({ ...shipment, timeline: dated, manualTimelines: [dated] }, NOW, true), false);
+    assert.equal(shouldScheduleManualRefresh({ ...shipment, timeline: dated, manualTimelines: [dated] }, NOW), false);
   }
 } finally { Date.now = realNow; }
 

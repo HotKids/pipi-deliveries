@@ -344,6 +344,11 @@ export type RefreshSummary = {
   failed: number;
   accountListUpdated?: boolean;
   skipReason?: "active_cross_runtime_refresh";
+  /**
+   * E1 (owner 2026-11-10): a list pull was answered after the refresh's account phase was stored; the
+   * counts are that phase's and the refresh's per-shipment work goes on in the background.
+   */
+  continuing?: boolean;
   state: AppState;
   promotedPendingShipmentIds: readonly string[];
 };

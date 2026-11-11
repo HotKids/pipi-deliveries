@@ -64,6 +64,42 @@ public class ExpressPullRefreshOutcomeTest {
         assertEquals(ExpressToastCopy.REFRESH_DONE, ExpressToastCopy.refreshSummary(2, 2, 0, false));
     }
 
+    /** E1 (owner 2026-11-10): the account phase ends the pull once; the round's end shows no second toast. */
+    @Test public void accountPhaseEndsThePullAndTheRoundEndDoesNotToastAgain() throws Exception {
+        ExpressListActivity activity = Robolectric.buildActivity(ExpressListActivity.class).get();
+        set(activity, "swipeRefresh", new SwipeRefreshLayout(RuntimeEnvironment.getApplication()));
+        set(activity, "pullRefreshPending", true);
+        set(activity, "pullRefreshWorkId", "pull-work");
+        Method announce = ExpressListActivity.class.getDeclaredMethod(
+                "announcePullRefreshOutcome", Intent.class, boolean.class);
+        announce.setAccessible(true);
+        Method finished = ExpressListActivity.class.getDeclaredMethod(
+                "announcePullRefreshOutcome", Intent.class);
+        finished.setAccessible(true);
+        ShadowToast.reset();
+        Intent accountPhase = new Intent(ExpressRepository.ACTION_SYNC_ACCOUNT_PHASE)
+                .putExtra(ExpressRepository.EXTRA_SYNC_WORK_ID, "pull-work")
+                .putExtra(ExpressRepository.EXTRA_SYNC_ATTEMPTED, 1)
+                .putExtra(ExpressRepository.EXTRA_SYNC_SUCCEEDED, 1)
+                .putExtra(ExpressRepository.EXTRA_SYNC_FAILED, 0)
+                .putExtra(ExpressRepository.EXTRA_SYNC_ACCOUNT_LIST_UPDATED, true);
+        announce.invoke(activity, accountPhase, true);
+        assertEquals(ExpressToastCopy.REFRESH_CONTINUING, ShadowToast.getTextOfLatestToast());
+        assertFalse(((SwipeRefreshLayout) get(activity, "swipeRefresh")).isRefreshing());
+        Intent roundEnd = new Intent(ExpressRepository.ACTION_SYNC_FINISHED)
+                .putExtra(ExpressRepository.EXTRA_SYNC_WORK_ID, "pull-work")
+                .putExtra(ExpressRepository.EXTRA_SYNC_ATTEMPTED, 4)
+                .putExtra(ExpressRepository.EXTRA_SYNC_SUCCEEDED, 3)
+                .putExtra(ExpressRepository.EXTRA_SYNC_FAILED, 1);
+        finished.invoke(activity, roundEnd);
+        assertEquals(1, ShadowToast.shownToastCount());
+        // A failed account part is still reported as a failure, and a partial one as 列表已更新.
+        assertEquals(ExpressToastCopy.REFRESH_FAILED, ExpressToastCopy.refreshSummary(1, 0, 1, false, true));
+        assertEquals(ExpressToastCopy.LIST_UPDATED, ExpressToastCopy.refreshSummary(2, 1, 1, true, true));
+        assertEquals(ExpressToastCopy.REFRESH_CONTINUING, ExpressToastCopy.refreshSummary(0, 0, 0, false, true));
+        assertEquals("列表已更新，轨迹在后台继续更新", ExpressToastCopy.REFRESH_CONTINUING);
+    }
+
     @Test public void olderOrPeriodicCompletionCannotFinishTheCurrentPull() throws Exception {
         ExpressListActivity activity = Robolectric.buildActivity(ExpressListActivity.class).get();
         set(activity, "swipeRefresh", new SwipeRefreshLayout(RuntimeEnvironment.getApplication()));

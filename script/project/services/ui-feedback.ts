@@ -33,12 +33,15 @@ export function refreshSummaryToast(summary: Readonly<{
   failed: number;
   accountListUpdated?: boolean;
   skipReason?: "active_cross_runtime_refresh";
+  /** E1: the pull was answered after the account part; per-waybill work goes on in the background. */
+  continuing?: boolean;
 }>): string {
   if (summary.skipReason) return EXPRESS_TOAST_COPY.refreshFailed;
   if (summary.failed > 0 && summary.succeeded > 0) {
     return EXPRESS_TOAST_COPY.listUpdated;
   }
   if (summary.failed > 0) return EXPRESS_TOAST_COPY.refreshFailed;
+  if (summary.continuing) return EXPRESS_TOAST_COPY.refreshContinuing;
   if (summary.attempted === 0) return EXPRESS_TOAST_COPY.refreshUpToDate;
   return EXPRESS_TOAST_COPY.refreshDone;
 }

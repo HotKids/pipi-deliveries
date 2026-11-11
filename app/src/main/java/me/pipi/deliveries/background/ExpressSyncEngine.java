@@ -38,6 +38,16 @@ final class ExpressSyncEngine {
     }
 
     static void syncAll(Context context, int[] network, boolean userPull, String trigger) {
+        syncAll(context, network, userPull, trigger, null);
+    }
+
+    /**
+     * E1 (owner 2026-11-10): {@code onAccountPhase} runs on this thread once the account list has been
+     * stored and published ({@link ExpressRepository#publishAccountPhase}), before the per-parcel work
+     * of the same round; {@code network} then holds the account part's counts.
+     */
+    static void syncAll(Context context, int[] network, boolean userPull, String trigger,
+            Runnable onAccountPhase) {
         String capturedSource = ExpressAccountSource.bindingSource(context);
         String refreshTrigger = trigger == null || trigger.isEmpty() ? userPull ? "list_pull" : "background" : trigger;
         long startedAt = System.currentTimeMillis();
@@ -49,7 +59,8 @@ final class ExpressSyncEngine {
             try {
                 ExpressRepository repository = ExpressRepository.get(context);
                 repository.runInChangeBatch(() -> syncAllUnbatched(
-                        context, repository, network, userPull, capturedSource, sourceFailure));
+                        context, repository, network, userPull, capturedSource, sourceFailure,
+                        onAccountPhase));
                 if (network[2] == 1 || "background".equals(refreshTrigger) && network[1] > 0) {
                     ExpressScheduler.recordNetworkSuccess(context, capturedSource);
                 }
@@ -70,6 +81,20 @@ final class ExpressSyncEngine {
         }
     }
 
+    /** Runs {@code callback} at most once; answering the pull cannot change the round. */
+    static Runnable answerOnce(Runnable callback) {
+        if (callback == null) return () -> {};
+        java.util.concurrent.atomic.AtomicBoolean answered = new java.util.concurrent.atomic.AtomicBoolean();
+        return () -> {
+            if (!answered.compareAndSet(false, true)) return;
+            try {
+                callback.run();
+            } catch (RuntimeException ignored) {
+                // Answering the pull cannot change the round.
+            }
+        };
+    }
+
     /** The round's own failure when no source succeeded; its message and type are unchanged for callers. */
     static final class AllSourcesFailed extends IllegalStateException {
         AllSourcesFailed() {
@@ -79,7 +104,7 @@ final class ExpressSyncEngine {
 
     private static void syncAllUnbatched(
             Context context, ExpressRepository repository, int[] network, boolean userPull, String bindingSource,
-            java.util.concurrent.atomic.AtomicReference<Throwable> sourceFailure) {
+            java.util.concurrent.atomic.AtomicReference<Throwable> sourceFailure, Runnable onAccountPhase) {
         ExpressApi localApi = new ExpressApi(context);
         boolean useInterface5 = "interface5".equals(bindingSource);
         ExpressDiscoveryClient discovery = useInterface5
@@ -170,6 +195,11 @@ final class ExpressSyncEngine {
                         "durationMs", System.currentTimeMillis() - accountStartedAt));
             }
         }
+        // E1 (owner 2026-11-10): the account phase is stored; publish it. A waiting pull is answered
+        // with the account part's counts when the round's per-parcel trajectory work actually starts
+        // (PF5); a round with none left answers once, at its end, with the ordinary summary.
+        repository.publishAccountPhase();
+        Runnable answerAccountPhase = answerOnce(onAccountPhase);
         java.util.ArrayList<ExpressRepository.ManualTimelinePollClaim> activeClaims = new java.util.ArrayList<>();
         // 用户 2026-10-02「头条 状态 详情页 都推进到了签收状态…就冻结快递 后续不再进行任何刷新」，弹窗「只停本机发起的请求」：
         // read once the account list above has landed; the rows' per-parcel query and Picker below stop for these,
@@ -192,6 +222,7 @@ final class ExpressSyncEngine {
                             item.usesInterface5AccountTimeline() && !repository.hasAccountTimeline(
                                     item, item.waybill, "interface5"), System.currentTimeMillis(), userPull)
                             && !skippedSignedFrozen(signedFrozen, item, "v5", TimelineSlot.V5_QUERY)) {
+                        answerAccountPhase.run();
                         network[0]++;
                         String bindingGeneration = repository.bindingGeneration(
                                 item.phone, "interface5");
@@ -272,6 +303,7 @@ final class ExpressSyncEngine {
                                         System.currentTimeMillis(), userPull) : null;
                 if (manualClaim != null) {
                     activeClaims.add(manualClaim);
+                    answerAccountPhase.run();
                     enqueueManualRefresh(context, repository, subscription, requests, network,
                             current, bindingSource, true, manualClaim, sourceFailure);
                 }
@@ -283,6 +315,7 @@ final class ExpressSyncEngine {
                             repository, current, System.currentTimeMillis(), userPull);
                     if (claim == null) continue;
                     activeClaims.add(claim);
+                    answerAccountPhase.run();
                     enqueueManualRefresh(context, repository, subscription, requests, network,
                             current, bindingSource, false, claim, sourceFailure);
                 }
@@ -386,12 +419,16 @@ final class ExpressSyncEngine {
         return true;
     }
 
-    /** A Home pull bypasses cadence, but only explicit detail may reopen trusted signed history. */
+    /**
+     * A Home pull bypasses the background cadence, but only explicit detail may reopen trusted signed history.
+     * Owner 2026-11-10 (item 1): the pull keeps the 30-second minimum and the per-waybill 10-minute Picker cooldown;
+     * a row whose selected history is incomplete is exempt from the cooldown.
+     */
     static ExpressRepository.ManualTimelinePollClaim claimListManualTimelinePoll(
             ExpressRepository repository, ExpressItem owner, long now, boolean userPull) {
         if (!ExpressRepository.backgroundTimelineRefreshAllowed(owner,
                 repository.manualTimelineAuthority(owner), now)) return null;
-        return userPull ? repository.claimForegroundManualTimelinePoll(owner, now, true)
+        return userPull ? repository.claimListPullManualTimelinePoll(owner, now)
                 : repository.claimManualTimelinePoll(owner, now);
     }
 

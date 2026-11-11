@@ -55,6 +55,12 @@ public final class ExpressRepository {
     public static final String EXTRA_SYNC_WORK_ID = "workId";
     public static final String EXTRA_SYNC_RETRYING = "retrying";
     public static final String EXTRA_SYNC_ACCOUNT_LIST_UPDATED = "accountListUpdated";
+    /**
+     * E1 (owner 2026-11-10): a pull's sync stored its account phase; the extras are that phase's counts
+     * (EXTRA_SYNC_*), and the round's per-parcel work continues until ACTION_SYNC_FINISHED.
+     */
+    public static final String ACTION_SYNC_ACCOUNT_PHASE =
+            "me.pipi.deliveries.EXPRESS_SYNC_ACCOUNT_PHASE";
     public static final String ACTION_SYNC_FINISHED =
             "me.pipi.deliveries.EXPRESS_SYNC_FINISHED";
     private static volatile ExpressRepository instance;
@@ -103,7 +109,8 @@ public final class ExpressRepository {
     static final long PENDING_QUERY_RETRY_INTERVAL_MS = 30L * 60L * 1000L;
     static final long PENDING_QUERY_TTL_MS = 24L * 60L * 60L * 1000L;
     // 后台手动链每票 10 分钟一次，与 iOS/Pipi 各级 10 分钟冷却同值（用户定 2026-09-05）；
-    // 前台（进详情 / 下拉）仍按 30 秒守门，用户手势不受这条冷却约束。
+    // 前台进详情 / 详情下拉仍按 30 秒守门，不受这条冷却约束。首页列表下拉（owner 2026-11-10）保留 30 秒，
+    // 并按所选 authority 的 successAt 遵守这 10 分钟；所选历史不完整的行只豁免 10 分钟（claimListPullManualTimelinePoll）。
     static final long MANUAL_TIMELINE_POLL_INTERVAL_MS = 10L * 60L * 1000L;
     static final long MANUAL_TIMELINE_FAILURE_COOLDOWN_MS = 6L * 60L * 60L * 1000L;
     static final long MANUAL_TIMELINE_FOREGROUND_INTERVAL_MS = 30L * 1000L;
@@ -2061,7 +2068,7 @@ public final class ExpressRepository {
     /** Atomically reserves one background refresh across concurrent worker executions. */
     public synchronized ManualTimelinePollClaim claimManualTimelinePoll(
             ExpressItem owner, long now) {
-        return claimManualTimelinePoll(owner, now, false, false);
+        return claimManualTimelinePoll(owner, now, false, false, false);
     }
 
     /**
@@ -2070,7 +2077,44 @@ public final class ExpressRepository {
      */
     public synchronized ManualTimelinePollClaim claimForegroundManualTimelinePoll(
             ExpressItem owner, long now, boolean force) {
-        return claimManualTimelinePoll(owner, now, true, force);
+        return claimManualTimelinePoll(owner, now, true, force, false);
+    }
+
+    /**
+     * Owner 2026-11-10 (item 1): a Home list pull's Picker claim. It keeps the 30-second foreground minimum and obeys
+     * the per-waybill 10-minute cooldown measured from the selected authority's {@code successAt}; a row whose
+     * selected history is incomplete ({@link #manualTimelineListPullIncomplete}) is exempt from that cooldown only.
+     * Detail entry and detail pull keep {@link #claimForegroundManualTimelinePoll}.
+     */
+    public synchronized ManualTimelinePollClaim claimListPullManualTimelinePoll(
+            ExpressItem owner, long now) {
+        return claimManualTimelinePoll(owner, now, true, false, true);
+    }
+
+    /**
+     * The row's listed history (its projected list presentation) has unknown status, no timed node, or no
+     * order/pickup start node. PF15: the same reading as iOS {@code manualPullHistoryIncomplete}, which
+     * judges the row's selected (listed) timeline rather than only the manual authority.
+     */
+    static boolean manualTimelineListPullIncomplete(ExpressItem listed) {
+        if (listed == null || listed.semantic == null || listed.semantic == StatusSemantic.UNKNOWN) return true;
+        // The listed history of a manual-timeline row comes from its selected manual package: read its nodes
+        // with that package's own provider contract, not the row's account binding.
+        if (listed.manualTimelineProvider == null || listed.manualTimelineProvider.isEmpty()) {
+            return !Kuaidi100TimelinePolicy.hasTimelineStart(listed);
+        }
+        return !Kuaidi100TimelinePolicy.hasTimelineStart(new ExpressQueryResult(
+                listed.displayWaybill(), listed.courierCode, listed.companyName,
+                listed.semantic, listed.statusEventTime, listed.latestTime,
+                listed.latestDetail, listed.tracksJson, "", listed.phone,
+                listed.manualTimelineProvider, "", "", listed.sourceProvider));
+    }
+
+    /** Whether the selected authority's last success is still inside the 10-minute per-waybill cooldown. */
+    static boolean manualTimelineListPullCoolingDown(
+            ManualTimelineAuthorityPolicy.Candidate authority, long now) {
+        return authority != null && authority.successAt > 0L && now >= authority.successAt
+                && now - authority.successAt < MANUAL_TIMELINE_POLL_INTERVAL_MS;
     }
 
     /**
@@ -2103,7 +2147,7 @@ public final class ExpressRepository {
     }
 
     private ManualTimelinePollClaim claimManualTimelinePoll(
-            ExpressItem owner, long now, boolean foreground, boolean force) {
+            ExpressItem owner, long now, boolean foreground, boolean force, boolean listPull) {
         if (owner == null) return null;
         ExpressItem current = findManualOwner(owner.rowId);
         if (!sameOwnerIdentity(current, owner)) return null;
@@ -2118,6 +2162,10 @@ public final class ExpressRepository {
             if (!manualTimelineActiveLeaseAvailable(retry, now)) return null;
             if (foreground && !force && !manualTimelineForegroundIntervalDue(
                     retry.lastAttempt, now)) {
+                return null;
+            }
+            if (listPull && manualTimelineListPullCoolingDown(authority, now)
+                    && !manualTimelineListPullIncomplete(projectManualTimeline(locked))) {
                 return null;
             }
             // Foreground cadence is owned by the short interval gate above. Background success
@@ -7091,6 +7139,23 @@ public final class ExpressRepository {
             }
         }
         emitInvalidation(true);
+    }
+
+    /**
+     * E1 (owner 2026-11-10): the account phase of the change batch running on this thread has been
+     * stored; the list, its live notification and the widgets are refreshed now, so a pull can end
+     * while the batch's per-parcel work continues. Status notifications are not replayed here — they
+     * still go out once, when the batch finishes — and the batch's first-seen rows stay silent for
+     * the whole batch. Outside a batch, or with nothing pending, this does nothing.
+     */
+    public void publishAccountPhase() {
+        synchronized (this) {
+            if (changeBatch.get().depth <= 0 || !changeBatch.get().invalidationPending) return;
+            invalidationVersion++;
+            // invalidationPending stays set: the batch's end publishes again with the notification replay.
+        }
+        context.sendBroadcast(new Intent(ACTION_CHANGED).setPackage(context.getPackageName()));
+        reconcilePublication(false, true);
     }
 
     private void finishChangeBatch() {
