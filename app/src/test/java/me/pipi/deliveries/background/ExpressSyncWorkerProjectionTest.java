@@ -127,8 +127,9 @@ public class ExpressSyncWorkerProjectionTest {
         static volatile boolean fail;
         static final AtomicInteger calls = new AtomicInteger();
 
+        // The worker calls the E1 overload that carries the account-phase callback.
         @Implementation protected static void syncAll(
-                Context context, int[] network, boolean userPull, String trigger) {
+                Context context, int[] network, boolean userPull, String trigger, Runnable onAccountPhase) {
             calls.incrementAndGet();
             network[0] = 1;
             if (fail) throw new IllegalStateException("All delivery sources failed");

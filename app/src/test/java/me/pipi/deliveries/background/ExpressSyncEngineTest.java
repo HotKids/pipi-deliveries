@@ -26,6 +26,28 @@ import org.robolectric.annotation.SQLiteMode;
 @Config(sdk = 31, manifest = Config.NONE, application = android.app.Application.class)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 public final class ExpressSyncEngineTest {
+    /** PF5: the pull's account-phase answer is given at most once and cannot fail the round. */
+    @Test public void accountPhaseAnswerRunsOnceAndSwallowsItsFailure() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        Runnable answer = ExpressSyncEngine.answerOnce(() -> {
+            calls.incrementAndGet();
+            throw new IllegalStateException("synthetic");
+        });
+        answer.run();
+        answer.run();
+        assertEquals(1, calls.get());
+        ExpressSyncEngine.answerOnce(null).run();
+        // The answer is deferred to the first per-parcel trajectory request, never given right after publication.
+        Path path = Path.of("app/src/main/java/me/pipi/deliveries/background/ExpressSyncEngine.java");
+        if (!Files.isRegularFile(path)) path = Path.of("src/main/java/me/pipi/deliveries/background/ExpressSyncEngine.java");
+        String source = Files.readString(path, StandardCharsets.UTF_8);
+        int published = source.indexOf("repository.publishAccountPhase();");
+        assertTrue(published > 0);
+        assertFalse(source.substring(published, source.indexOf("ExpressRefreshQueue requests", published))
+                .contains("answerAccountPhase.run()"));
+        assertEquals(3, source.split("answerAccountPhase\\.run\\(\\)", -1).length - 1);
+    }
+
     @Test public void explicitHomePullKeepsTrustedCompletionFrozenButQueriesUndatedCompletion() {
         me.pipi.deliveries.data.ExpressRepository repository =
                 me.pipi.deliveries.data.ExpressRepository.get(RuntimeEnvironment.getApplication());
@@ -47,6 +69,50 @@ public final class ExpressSyncEngineTest {
             repository.releaseManualTimelinePoll(claim);
         }
     }
+    /** Owner 2026-11-10 (item 1): a Home pull obeys the 10-minute Picker cooldown; incomplete rows keep 30 s only. */
+    @Test public void homePullObeysPickerCooldownUnlessHistoryIsIncomplete() {
+        me.pipi.deliveries.data.ExpressRepository repository =
+                me.pipi.deliveries.data.ExpressRepository.get(RuntimeEnvironment.getApplication());
+        long now = System.currentTimeMillis();
+        String completeTracks = "[{\"time\":\"2026-09-01 12:00:00\",\"context\":\"【杭州市】快件运输中\"},"
+                + "{\"time\":\"2026-09-01 08:00:00\",\"context\":\"【杭州市】快件已揽收\"}]";
+        String partialTracks = "[{\"time\":\"2026-09-01 12:00:00\",\"context\":\"【杭州市】快件运输中\"}]";
+        ExpressItem complete = savedPickerRow(repository, "PULLCOOL0001", completeTracks, now - 60_000L);
+        assertNull("a complete row inside the cooldown is not pulled",
+                ExpressSyncEngine.claimListManualTimelinePoll(repository, complete, now, true));
+        me.pipi.deliveries.data.ExpressRepository.ManualTimelinePollClaim due =
+                ExpressSyncEngine.claimListManualTimelinePoll(repository, complete,
+                        now - 60_000L + 10L * 60_000L, true);
+        assertNotNull("the cooldown ends ten minutes after the last success", due);
+        repository.releaseManualTimelinePoll(due);
+
+        ExpressItem partial = savedPickerRow(repository, "PULLCOOL0002", partialTracks, now - 60_000L);
+        me.pipi.deliveries.data.ExpressRepository.ManualTimelinePollClaim exempt =
+                ExpressSyncEngine.claimListManualTimelinePoll(repository, partial, now, true);
+        assertNotNull("an incomplete row is exempt from the cooldown", exempt);
+        repository.releaseManualTimelinePoll(exempt);
+        assertNull("the exempt row still keeps the 30-second minimum",
+                ExpressSyncEngine.claimListManualTimelinePoll(repository, partial, now + 10_000L, true));
+        me.pipi.deliveries.data.ExpressRepository.ManualTimelinePollClaim later =
+                ExpressSyncEngine.claimListManualTimelinePoll(repository, partial, now + 30_000L, true);
+        assertNotNull(later);
+        repository.releaseManualTimelinePoll(later);
+    }
+
+    private static ExpressItem savedPickerRow(me.pipi.deliveries.data.ExpressRepository repository,
+            String waybill, String tracks, long successAt) {
+        ExpressQueryResult result = new ExpressQueryResult(waybill, "ZTO", "ZTO",
+                StatusSemantic.TRANSIT, successAt, "2026-09-01 12:00:00", "【杭州市】快件运输中",
+                tracks, "", "", "v6_query", "", "", "")
+                // A listed status is structured evidence; an unstructured one lists as UNKNOWN (incomplete).
+                .withManualStatusEvidence("运输中", true);
+        ExpressItem owner = repository.saveManualQueryBatch(null, null,
+                java.util.List.of(new me.pipi.deliveries.model.ManualQuerySuccess(
+                        "v6_query", result, successAt, true)), "", "interface5");
+        assertNotNull(owner);
+        return owner;
+    }
+
     @Test public void omittedV5SfDoesNotIssueAccountQuery() {
         ExpressItem sf = new ExpressItem(1L, "", "SFTEST123456", "SF", "顺丰速运",
                 StatusSemantic.TRANSIT, "运输中", "运输中", "2026-09-01 10:00:00", "[]",

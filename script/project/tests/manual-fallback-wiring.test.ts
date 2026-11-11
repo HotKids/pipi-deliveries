@@ -37,7 +37,7 @@ assert.match(listProvider, /return listed === TIMELINE_SLOT.V4_QUERY \? TIMELINE
 assert.match(list, /manualBackgroundProvider\(current, backgroundHostSafe && !forceManualRefresh\)/);
 assert.match(list, /const paid = provider === TIMELINE_SLOT.KDNIAO;/);
 assert.match(list,
-  /\{ motoOnly: true \} : paid \? \{ fallbackOnly: true \}\s*: \{ pickerFirst: true, pickerOnly: true \}\),\s*includeKdniaoFallback: paid, scheduled: !forceManualRefresh, hostSafe: true/);
+  /\{ motoOnly: true \} : paid \? \{ fallbackOnly: true \}\s*: \{ pickerFirst: true, pickerOnly: true \}\),\s*includeKdniaoFallback: paid, scheduled: !forceManualRefresh, recordSchedule: true, hostSafe: true/);
 assert.doesNotMatch(list, /includeKdniaoFallback:\s*true/);
 assert.match(list, /const scheduleProvider = moto \? "moto" : paid \? "kdniao" : "picker";/);
 assert.match(list, /!refreshProviderDue\(schedule.key, scheduleProvider, schedule.identityFingerprint\)[\s\S]*?return summary\(\);/);

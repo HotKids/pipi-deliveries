@@ -39,6 +39,9 @@ final class ExpressToastCopy {
     /** A partially successful visible refresh keeps the updated list available. */
     static final String LIST_UPDATED = "列表已更新";
 
+    /** 列表下拉：账号部分已完成并落库，逐票更新仍在后台继续（E1，owner 2026-11-10；四端同一文案）。 */
+    static final String REFRESH_CONTINUING = "列表已更新，轨迹在后台继续更新";
+
     /** 列表下拉：全部失败或整轮抛错。 */
     static final String REFRESH_FAILED = "刷新失败，请稍后重试";
 
@@ -126,8 +129,15 @@ final class ExpressToastCopy {
 
     /** 列表下拉的四种结果（与 iOS refreshSummaryToast 同一套判据）。 */
     static String refreshSummary(int attempted, int succeeded, int failed, boolean accountListUpdated) {
+        return refreshSummary(attempted, succeeded, failed, accountListUpdated, false);
+    }
+
+    /** E1: {@code continuing} — answered after the account part, per-parcel work goes on in the background. */
+    static String refreshSummary(int attempted, int succeeded, int failed, boolean accountListUpdated,
+            boolean continuing) {
         if (failed > 0 && succeeded > 0) return LIST_UPDATED;
         if (failed > 0) return REFRESH_FAILED;
+        if (continuing) return REFRESH_CONTINUING;
         if (attempted == 0) return REFRESH_UP_TO_DATE;
         return REFRESH_DONE;
     }

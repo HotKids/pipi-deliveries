@@ -11,6 +11,15 @@ import type { Shipment } from "../models";
 import { ENHANCEMENT_ROUTE, loadEnhancementIdentity } from "../services/enhanced-account";
 import { saveGatewayToken } from "../services/credentials";
 
+// The fixture's account records are dated 2026-10-20. Run the suite on a clock that advances
+// normally but starts the next day, so signed-retention (day 21) cannot expire the fixture as
+// the wall clock moves on. Expectations are unchanged.
+{
+  const wallClock = Date.now.bind(Date);
+  const offsetMs = wallClock() - Date.parse("2026-10-21T10:00:00+08:00");
+  Date.now = () => wallClock() - offsetMs;
+}
+
 const PHONE = "13800001234", ORDER = "3650000000000001";
 const IMAGE = "https://img10.360buyimg.com/product.jpg";
 Object.assign(Crypto, {

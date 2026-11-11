@@ -999,6 +999,8 @@ export async function queryManualForSource(input: {
   currentShipment?: Shipment;
   pickerFirst?: boolean;
   scheduled?: boolean;
+  /** Record provider results in the refresh schedule even when `scheduled` does not gate them (owner 2026-11-10). */
+  recordSchedule?: boolean;
   hostSafe?: boolean;
   dependencies?: ManualSourceDependencies;
   onQueryAttempted?: (authorized: boolean) => void;
@@ -1074,6 +1076,7 @@ export async function queryManualForSource(input: {
       : source === "fallback"
         ? "kdniao"
         : isJingDongSource && !input.pickerOnly ? "kuaidi100" : "picker";
+  const recordsSchedule = input.scheduled === true || input.recordSchedule === true;
   const providerEnabled = (source: "local" | "route" | "fallback") =>
     !input.scheduled || refreshProviderDue(
       scheduleKey,
@@ -1150,7 +1153,7 @@ export async function queryManualForSource(input: {
     }
     cancelledEnd?.close();
     if (observation.error) {
-      if (input.scheduled) {
+      if (recordsSchedule) {
         const details = diagnosticErrorDetails(observation.error);
         const failure = String(details.failureCode || details.errorCategory || "");
         const result: RefreshProviderResult = failure === "invalid_query" ||
@@ -1185,7 +1188,7 @@ export async function queryManualForSource(input: {
     const trackCount = timeline ? timedTracks(timeline.tracks).length : 0;
     const statusOnly = !trackCount && timeline?.structuredStatus === true && timeline.semantic !== "UNKNOWN";
     const skipReason = observation.result?.skipReason || "no_timed_tracks";
-    if (input.scheduled) {
+    if (recordsSchedule) {
       recordRefreshProviderResult({
         key: scheduleKey,
         provider: scheduledProvider(observation.source),

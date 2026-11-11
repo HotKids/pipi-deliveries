@@ -175,7 +175,8 @@ for (const [entry, options] of [
       "query 实际物流事件");
     const repeat = await round(records, options);
     assert.deepEqual(repeat.query, []);
-    assert.deepEqual(repeat.online, entry === "Home" ? ["SFSYNTH001"] : [], "scheduled Online retains cooldown");
+    // Owner 2026-11-10 (item 1): a Home pull no longer bypasses the 30-second minimum or the Picker cooldown.
+    assert.deepEqual(repeat.online, [], "Online retains its cooldown and minimum interval, including a Home pull");
     const events = readDiagnostics().filter(value => value.event.startsWith("refresh.stage.") &&
       ["manual_refresh", "account_detail"].includes(String(value.details.stage)));
     for (const event of events) {

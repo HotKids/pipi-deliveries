@@ -27,6 +27,8 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   refreshUpToDate: "当前已是最新",
   /** A list refresh completed with both successful and failed updates. */
   listUpdated: "列表已更新",
+  /** 列表下拉：账号部分已完成，逐票更新仍在后台继续（E1，四端同一文案）。 */
+  refreshContinuing: "列表已更新，轨迹在后台继续更新",
   /** 列表下拉：全部失败或整轮抛错。 */
   refreshFailed: "刷新失败，请稍后重试",
   /** 详情下拉：拉到了新轨迹。 */

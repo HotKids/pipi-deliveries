@@ -44,7 +44,10 @@ for (const scene of ["stalled", "healthy", "wrong-ticket", "missing-tag", "late-
 console.log("K100 same-document parser recovery boundaries passed");
 
 // Execute the actual capture loop, including its second-snapshot gate and normal phone form.
-const { scrapeWebTimeline } = await import("../services/web-timeline");
+// The capture loop polls every 250 ms through several snapshots; a fixed 3 s budget was
+// exhausted under full-suite load. Use the production load budget; the loop still exits as soon
+// as timed tracks arrive.
+const { scrapeWebTimeline, WEB_TIMELINE_LOAD_TIMEOUT_MS } = await import("../services/web-timeline");
 let recovered = false, fetches = 0, loads = 0, disposed = 0, submitted = 0;
 const window: any = {};
 const vm: any = { num: waybill, checkCode: { show: true }, $data: { lists: [] }, doCheckCode() {
@@ -80,7 +83,7 @@ Object.assign(globalThis, { WebViewController: class {
   dispose() { disposed++; }
 } });
 let diagnostic: any;
-const timeline = await scrapeWebTimeline({ waybill, courierCode: "SF", companyName: "Carrier", phoneTail: "1234", deadlineAtMs: Date.now() + 3000 },
+const timeline = await scrapeWebTimeline({ waybill, courierCode: "SF", companyName: "Carrier", phoneTail: "1234", deadlineAtMs: Date.now() + WEB_TIMELINE_LOAD_TIMEOUT_MS },
   value => { diagnostic = value; });
 assert.equal(timeline?.tracks.length, 2);
 assert.equal(fetches, 1); assert.equal(loads, 1); assert.equal(disposed, 1); assert.equal(submitted, 1);

@@ -164,6 +164,11 @@ public final class ExpressListActivity extends AppCompatActivity {
                 if (orderProjectionCapture == null) attemptedOrderProjections.clear();
                 else resetOrderProjectionAttemptsAfterCapture = true;
                 announcePullRefreshOutcome(intent);
+            } else if (intent != null
+                    && ExpressRepository.ACTION_SYNC_ACCOUNT_PHASE.equals(intent.getAction())) {
+                // E1 (owner 2026-11-10): the pull ends once its account phase is stored; the round's
+                // per-parcel work goes on and the list follows it through ACTION_CHANGED.
+                announcePullRefreshOutcome(intent, true);
             }
             reload();
         }
@@ -287,6 +292,7 @@ public final class ExpressListActivity extends AppCompatActivity {
         if (!receiverRegistered) {
             IntentFilter filter = new IntentFilter(ExpressRepository.ACTION_CHANGED);
             filter.addAction(ExpressRepository.ACTION_SYNC_FINISHED);
+            filter.addAction(ExpressRepository.ACTION_SYNC_ACCOUNT_PHASE);
             ContextCompat.registerReceiver(this, changes, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
             receiverRegistered = true;
         }
@@ -354,6 +360,11 @@ public final class ExpressListActivity extends AppCompatActivity {
 
     /** 同步结束：按这轮的计数弹「刷新完成 / 当前已是最新 / 部分 / 失败」，与 iOS 同一套判据。 */
     private void announcePullRefreshOutcome(Intent intent) {
+        announcePullRefreshOutcome(intent, false);
+    }
+
+    /** {@code continuing}: answered at the account phase (E1); the counts are the account part's. */
+    private void announcePullRefreshOutcome(Intent intent, boolean continuing) {
         if (intent.getBooleanExtra(ExpressRepository.EXTRA_SYNC_RETRYING, false)) return;
         if (!pullRefreshPending || pullRefreshWorkId == null
                 || !pullRefreshWorkId.equals(intent.getStringExtra(
@@ -367,7 +378,8 @@ public final class ExpressListActivity extends AppCompatActivity {
                 intent.getIntExtra(ExpressRepository.EXTRA_SYNC_ATTEMPTED, 0),
                 intent.getIntExtra(ExpressRepository.EXTRA_SYNC_SUCCEEDED, 0),
                 intent.getIntExtra(ExpressRepository.EXTRA_SYNC_FAILED, 0),
-                intent.getBooleanExtra(ExpressRepository.EXTRA_SYNC_ACCOUNT_LIST_UPDATED, false)),
+                intent.getBooleanExtra(ExpressRepository.EXTRA_SYNC_ACCOUNT_LIST_UPDATED, false),
+                continuing),
                 Toast.LENGTH_SHORT).show();
     }
 

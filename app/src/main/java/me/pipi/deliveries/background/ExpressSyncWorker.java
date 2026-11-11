@@ -46,9 +46,20 @@ public final class ExpressSyncWorker extends Worker {
             invalidationBeforeSync = repository.invalidationVersion();
             repository.runPendingMigrations();
             repository.pruneExpiredShipmentsIfDue();
-            ExpressSyncEngine.syncAll(getApplicationContext(), summary,
-                    getInputData().getBoolean(ExpressScheduler.USER_PULL, false),
-                    getInputData().getString(ExpressScheduler.TRIGGER));
+            boolean userPull = getInputData().getBoolean(ExpressScheduler.USER_PULL, false);
+            Context app = getApplicationContext();
+            // E1 (owner 2026-11-10): a pull is answered with the account part once it is stored.
+            ExpressSyncEngine.syncAll(app, summary, userPull,
+                    getInputData().getString(ExpressScheduler.TRIGGER),
+                    userPull ? () -> app.sendBroadcast(new Intent(
+                            ExpressRepository.ACTION_SYNC_ACCOUNT_PHASE)
+                            .setPackage(app.getPackageName())
+                            .putExtra(ExpressRepository.EXTRA_SYNC_WORK_ID, getId().toString())
+                            .putExtra(ExpressRepository.EXTRA_SYNC_ATTEMPTED, summary[0])
+                            .putExtra(ExpressRepository.EXTRA_SYNC_SUCCEEDED, summary[1])
+                            .putExtra(ExpressRepository.EXTRA_SYNC_ACCOUNT_LIST_UPDATED, summary[2] == 1)
+                            .putExtra(ExpressRepository.EXTRA_SYNC_FAILED,
+                                    Math.max(0, summary[0] - summary[1]))) : null);
             // 用户定 2026-09-24：后台只有京东订单投影能开京粉页（离屏），且只在这一轮提交成功之后跑。
             ExpressBackgroundOrderProjection.afterCommittedRound(
                     getApplicationContext(), startedAtNanos, this::isStopped);
