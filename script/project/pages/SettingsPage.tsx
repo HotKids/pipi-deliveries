@@ -159,11 +159,11 @@ export function SettingsPage(props: {
       refreshAuthorization();
       const value = error instanceof Error
         ? error.message
-        : "保存失败，请重试";
+        : "保存失败，请稍后重试";
       if (value === ACCESS_KEY_INVALID_MESSAGE) {
         setAuthorizationNotice(value);
       } else {
-        setNotice("保存失败，请重试");
+        setNotice("保存失败，请稍后重试");
       }
     }
   }

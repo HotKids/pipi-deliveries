@@ -72,6 +72,9 @@ try {
       + " (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
   });
   assert.equal(calls[0].init.timeout, 15);
+  const handleRedirect = calls[0].init.handleRedirect;
+  assert.ok(typeof handleRedirect === "function");
+  assert.equal(await handleRedirect(), null);
   assert.equal(
     calls[0].init.debugLabel,
     "Pipi Deliveries Kuaidi100 carrier detection",

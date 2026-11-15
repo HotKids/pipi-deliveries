@@ -219,6 +219,25 @@ public final class ExpressDetailScriptTest {
                 android.net.Uri.parse("https://jd.com.evil.invalid/item")));
         assertFalse(ExpressDetailActivity.allowedOrderHost(
                 android.net.Uri.parse("https://evil.invalid/item")));
+        assertFalse(ExpressDetailActivity.allowedOrderHost(
+                android.net.Uri.parse("https://plogin.m.jd.com/login")));
+    }
+
+    @Test
+    public void anUntrustedJingDongJumpDoesNotEndTheCaptureSession() throws Exception {
+        Path path = Path.of(
+                "app/src/main/java/me/pipi/deliveries/feature/express/ExpressAutomaticTimelineCapture.java");
+        if (!Files.isRegularFile(path)) {
+            path = Path.of(
+                    "src/main/java/me/pipi/deliveries/feature/express/ExpressAutomaticTimelineCapture.java");
+        }
+        String source = Files.readString(path, StandardCharsets.UTF_8);
+        int start = source.indexOf("public boolean shouldOverrideUrlLoading");
+        assertTrue(start >= 0);
+        int end = source.indexOf("public WebResourceResponse shouldInterceptRequest", start);
+        String block = source.substring(start, end);
+        assertTrue(block.contains("!trusted("));
+        assertFalse(block.contains("finish("));
     }
 
     private static String detailActivitySource() throws Exception {

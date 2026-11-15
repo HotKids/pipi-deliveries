@@ -19,7 +19,7 @@ public final class GatewayHttpErrorsTest {
                 response(401, "{\"error\":\"signature_invalid\"}"), "验证失败").getMessage());
         assertEquals("当前请求受限，请稍后重试", GatewayHttpErrors.forResponse(
                 response(403, "{}"), "验证失败").getMessage());
-        assertEquals("请求过于频繁，请稍后再试", GatewayHttpErrors.forResponse(
+        assertEquals("操作过于频繁，请稍后重试", GatewayHttpErrors.forResponse(
                 response(429, "{}"), "验证失败").getMessage());
         assertEquals("请求超时，请稍后重试", GatewayHttpErrors.forResponse(
                 response(504, "{}"), "验证失败").getMessage());

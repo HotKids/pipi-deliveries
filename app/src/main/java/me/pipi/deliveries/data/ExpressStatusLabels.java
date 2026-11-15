@@ -9,6 +9,7 @@ import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -49,11 +50,14 @@ public final class ExpressStatusLabels {
     private final List<Subtype> subtypes;
     private final String unprojectedOrderScope;
     private final Map<StatusSemantic, StatusSemantic> unprojectedOrderSemantics;
+    private final JSONObject statusRules;
+    private final JSONObject proseRules;
 
     private ExpressStatusLabels(
             Map<StatusSemantic, String> labels, Map<StatusSemantic, String> orderLabels,
             List<Subtype> subtypes, String unprojectedOrderScope,
-            Map<StatusSemantic, StatusSemantic> unprojectedOrderSemantics) {
+            Map<StatusSemantic, StatusSemantic> unprojectedOrderSemantics,
+            JSONObject statusRules, JSONObject proseRules) {
         this.labels = Collections.unmodifiableMap(new EnumMap<>(labels));
         this.orderLabels = orderLabels.isEmpty() ? Collections.emptyMap()
                 : Collections.unmodifiableMap(new EnumMap<>(orderLabels));
@@ -62,6 +66,8 @@ public final class ExpressStatusLabels {
         this.unprojectedOrderSemantics = unprojectedOrderSemantics.isEmpty()
                 ? Collections.emptyMap()
                 : Collections.unmodifiableMap(new EnumMap<>(unprojectedOrderSemantics));
+        this.statusRules = statusRules;
+        this.proseRules = proseRules;
     }
 
     /** The word for one semantic; a valid table has one for every semantic, UNKNOWN included. */
@@ -117,29 +123,158 @@ public final class ExpressStatusLabels {
     }
 
     private static final ExpressStatusLabels BUNDLED = createBundled();
+    private static volatile ExpressStatusLabels installed;
+
+    /** Publishes the table that code lookup reads. Parse itself does not publish. */
+    public static void adopt(ExpressStatusLabels table) {
+        if (table != null) installed = table;
+    }
+
+    /** The published mapping table, or the bundled copy before the first publish. */
+    public static ExpressStatusLabels rules() {
+        ExpressStatusLabels current = installed;
+        return current != null ? current : BUNDLED;
+    }
 
     private static ExpressStatusLabels createBundled() {
-        EnumMap<StatusSemantic, String> labels = new EnumMap<>(StatusSemantic.class);
-        labels.put(StatusSemantic.UNKNOWN, "暂无状态");
-        labels.put(StatusSemantic.ORDERED, "已下单");
-        labels.put(StatusSemantic.SHIPPED, "已发货");
-        labels.put(StatusSemantic.PICKED, "已揽件");
-        labels.put(StatusSemantic.TRANSIT, "运输中");
-        labels.put(StatusSemantic.DELIVERY, "派送中");
-        labels.put(StatusSemantic.WAITING_PICKUP, "待取件");
-        labels.put(StatusSemantic.COMPLETED, "已签收");
-        labels.put(StatusSemantic.DANGER, "异常件");
-        labels.put(StatusSemantic.CANCELLED, "已取消");
-        EnumMap<StatusSemantic, String> orderLabels = new EnumMap<>(StatusSemantic.class);
-        orderLabels.put(StatusSemantic.COMPLETED, "已完成");
-        orderLabels.put(StatusSemantic.CANCELLED, "订单已取消");
-        List<Subtype> subtypes = new ArrayList<>();
-        // 用户 2026-10-02「驿站派送中 统一映射成 待派送」: the subtype's word; its semantic stays DELIVERY.
-        subtypes.add(new Subtype(StatusSemantic.DELIVERY, "STA_DELIVERING", "待派送", 1));
-        EnumMap<StatusSemantic, StatusSemantic> unprojected = new EnumMap<>(StatusSemantic.class);
-        unprojected.put(StatusSemantic.PICKED, StatusSemantic.ORDERED);
-        unprojected.put(StatusSemantic.SHIPPED, StatusSemantic.ORDERED);
-        return new ExpressStatusLabels(labels, orderLabels, subtypes, "ORDER", unprojected);
+        try {
+            return parse(new JSONObject(StatusLabelRulesJson.JSON));
+        } catch (Exception failure) {
+            throw new ExceptionInInitializerError(failure);
+        }
+    }
+
+    /**
+     * Whole-token lookup in one statusRules group (semantic → codes). A missing group or code
+     * returns null so the caller's existing switch stays in force.
+     */
+    public StatusSemantic code(String group, String rawCode) {
+        if (statusRules == null || group == null || group.isEmpty()) return null;
+        String wanted = rawCode == null ? "" : rawCode.trim();
+        if (wanted.isEmpty()) return null;
+        String folded = wanted.toUpperCase(Locale.ROOT);
+        Object groupRaw = statusRules.opt(group);
+        if (!(groupRaw instanceof JSONObject)) return null;
+        JSONObject groupObject = (JSONObject) groupRaw;
+        Iterator<String> keys = groupObject.keys();
+        while (keys.hasNext()) {
+            String semanticName = keys.next();
+            StatusSemantic semantic = semantic(semanticName);
+            if (semantic == null || semantic == StatusSemantic.UNKNOWN) continue;
+            Object codes = groupObject.opt(semanticName);
+            if (!(codes instanceof JSONArray)) continue;
+            JSONArray array = (JSONArray) codes;
+            for (int index = 0; index < array.length(); index++) {
+                Object item = array.opt(index);
+                if (!(item instanceof String)) continue;
+                if (folded.equals(((String) item).trim().toUpperCase(Locale.ROOT))) return semantic;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Samsung JD descriptor override: raw status "派件" plus a listed description uses that
+     * description's status alias. Missing policy returns null.
+     */
+    public StatusSemantic samsungDescriptorOverride(String raw, String description) {
+        if (statusRules == null) return null;
+        Object samsung = statusRules.opt("v3JD");
+        if (!(samsung instanceof JSONObject)) return null;
+        JSONObject policy = (JSONObject) samsung;
+        Object overrides = policy.opt("descriptorOverrides");
+        if (!(overrides instanceof JSONObject)) return null;
+        String rawKey = raw == null ? "" : raw.trim();
+        String described = description == null ? "" : description.trim();
+        if (rawKey.isEmpty() || described.isEmpty()) return null;
+        Object listed = ((JSONObject) overrides).opt(rawKey);
+        if (!(listed instanceof JSONArray)) return null;
+        boolean hit = false;
+        JSONArray array = (JSONArray) listed;
+        for (int index = 0; index < array.length(); index++) {
+            Object item = array.opt(index);
+            if (item instanceof String && described.equals(((String) item).trim())) {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit) return null;
+        Object aliases = policy.opt("statusAliases");
+        if (!(aliases instanceof JSONObject)) return null;
+        Object semanticName = ((JSONObject) aliases).opt(described);
+        if (!(semanticName instanceof String)) return null;
+        StatusSemantic semantic = semantic((String) semanticName);
+        return semantic == null || semantic == StatusSemantic.UNKNOWN ? null : semantic;
+    }
+
+    /** Exact v3JD.statusAliases lookup. Missing policy or key returns null. */
+    public StatusSemantic samsungJdStatusAlias(String description) {
+        JSONObject policy = objectAt(statusRules, "v3JD");
+        if (policy == null) return null;
+        JSONObject aliases = objectAt(policy, "statusAliases");
+        if (aliases == null) return null;
+        String described = description == null ? "" : description.trim();
+        if (described.isEmpty()) return null;
+        Object semanticName = aliases.opt(described);
+        if (!(semanticName instanceof String)) return null;
+        StatusSemantic semantic = semantic((String) semanticName);
+        return semantic == null || semantic == StatusSemantic.UNKNOWN ? null : semantic;
+    }
+
+    /** samsungJd.descriptorStatus, or "" when the policy is missing. */
+    public String samsungJdDescriptorStatus() {
+        JSONObject policy = objectAt(statusRules, "v3JD");
+        if (policy == null) return "";
+        Object value = policy.opt("descriptorStatus");
+        return value instanceof String ? ((String) value).trim() : "";
+    }
+
+    /** Exact OPPO JD cancelled-SIGN tuple from oppoJd.cancelledSignTuple. */
+    public boolean oppoJdCancelledSign(String state, String stateDescription, String logisticDetail) {
+        JSONObject policy = objectAt(statusRules, "v2JD");
+        if (policy == null) return false;
+        JSONObject tuple = objectAt(policy, "cancelledSignTuple");
+        if (tuple == null) return false;
+        return textEquals(tuple.opt("state"), state)
+                && textEquals(tuple.opt("stateDesc"), stateDescription)
+                && textEquals(tuple.opt("detail"), logisticDetail);
+    }
+
+    /** proseRules[group][field] string list. Missing group or field returns empty. */
+    public List<String> proseWords(String group, String field) {
+        JSONObject grouped = objectAt(proseRules, group);
+        if (grouped == null || field == null || field.isEmpty()) return Collections.emptyList();
+        Object listed = grouped.opt(field);
+        if (!(listed instanceof JSONArray)) return Collections.emptyList();
+        JSONArray array = (JSONArray) listed;
+        List<String> words = new ArrayList<>();
+        for (int index = 0; index < array.length(); index++) {
+            Object item = array.opt(index);
+            if (!(item instanceof String)) continue;
+            String word = ((String) item).trim();
+            if (!word.isEmpty()) words.add(word);
+        }
+        return words;
+    }
+
+    /** True when compactText contains any word from proseRules[group][field]. */
+    public boolean proseContains(String group, String field, String compactText) {
+        if (compactText == null || compactText.isEmpty()) return false;
+        for (String word : proseWords(group, field)) {
+            if (compactText.contains(word)) return true;
+        }
+        return false;
+    }
+
+    private static JSONObject objectAt(JSONObject root, String key) {
+        if (root == null || key == null || key.isEmpty()) return null;
+        Object value = root.opt(key);
+        return value instanceof JSONObject ? (JSONObject) value : null;
+    }
+
+    private static boolean textEquals(Object expected, String actual) {
+        if (!(expected instanceof String)) return false;
+        return ((String) expected).trim().equals(actual == null ? "" : actual.trim());
     }
 
     /**
@@ -192,7 +327,51 @@ public final class ExpressStatusLabels {
                 unprojected.put(from, to);
             }
         }
-        return new ExpressStatusLabels(labels, orderLabels, subtypes, scope, unprojected);
+        JSONObject statusRules = root.opt("statusRules") instanceof JSONObject
+                ? root.optJSONObject("statusRules") : null;
+        JSONObject proseRules = root.opt("proseRules") instanceof JSONObject
+                ? root.optJSONObject("proseRules") : null;
+        statusRules = mergeBundledGroups(statusRules, BUNDLED == null ? null : BUNDLED.statusRules);
+        proseRules = mergeBundledGroups(proseRules, BUNDLED == null ? null : BUNDLED.proseRules);
+        return new ExpressStatusLabels(
+                labels, orderLabels, subtypes, scope, unprojected, statusRules, proseRules);
+    }
+
+    /**
+     * Remote tables overlay bundled groups wholesale. A missing group, or a missing
+     * {@code statusRules}/{@code proseRules} object, keeps the bundled snapshot so G2 still
+     * maps after a carrier refresh that omits the rules.
+     */
+    private static JSONObject mergeBundledGroups(JSONObject remote, JSONObject bundled) {
+        if (bundled == null) return remote;
+        JSONObject merged = copyObject(bundled);
+        if (remote == null) return merged;
+        Iterator<String> keys = remote.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            Object value = remote.opt(key);
+            try {
+                if (value instanceof JSONObject) {
+                    merged.put(key, new JSONObject(value.toString()));
+                } else if (value instanceof JSONArray) {
+                    merged.put(key, new JSONArray(value.toString()));
+                } else {
+                    merged.put(key, value);
+                }
+            } catch (org.json.JSONException failure) {
+                throw new IllegalArgumentException(failure);
+            }
+        }
+        return merged;
+    }
+
+    private static JSONObject copyObject(JSONObject source) {
+        if (source == null) return null;
+        try {
+            return new JSONObject(source.toString());
+        } catch (org.json.JSONException failure) {
+            throw new IllegalArgumentException(failure);
+        }
     }
 
     private static EnumMap<StatusSemantic, String> semanticWords(Object raw, String field) {

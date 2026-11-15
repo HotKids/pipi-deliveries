@@ -60,7 +60,7 @@ function readStartupState(): StartupState {
 
 function App() {
   // One app-owned viewport stays mounted across Home/detail navigation.
-  const [projectionController, setProjectionController] = useState<unknown>(null);
+  const [projectionController, setProjectionController] = useState<WebViewController | null>(null);
   const projectionMountRef = useRef<Array<(mounted: boolean) => void>>([]);
   const [startup, setStartup] = useState(readStartupState);
   const [navigationRequest, setNavigationRequest] = useState(() => ({

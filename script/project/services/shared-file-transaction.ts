@@ -1,5 +1,5 @@
 import { writeDiagnostic } from "./logger";
-import { utf8Data } from "./scripting-data";
+import { sha256Hex } from "./scripting-data";
 
 type SharedData = { refresh?: unknown; stateRef?: string; previousStateRef?: string };
 type Frame = { id: string; sequence: number; data: SharedData };
@@ -20,7 +20,6 @@ function path(id: string): string {
   if (!ID.test(id)) throw new Error("Invalid shared generation");
   return `${root()}/${id}`;
 }
-function hash(value: string): string { return Crypto.sha256(utf8Data(value)).toHexString().toLowerCase(); }
 function writeVerified(name: string, text: string): void {
   FileManager.writeAsStringSync(name, text);
   if (FileManager.readAsStringSync(name) !== text) throw new Error("Shared file verification failed");
@@ -41,7 +40,7 @@ function linkedId(name: string): string | null {
 }
 function readFrame(id: string): Frame {
   const envelope = JSON.parse(FileManager.readAsStringSync(`${path(id)}/record.json`));
-  if (typeof envelope?.payload !== "string" || hash(envelope.payload) !== envelope.checksum) {
+  if (typeof envelope?.payload !== "string" || sha256Hex(envelope.payload) !== envelope.checksum) {
     throw new Error("Invalid shared record checksum");
   }
   const frame = JSON.parse(envelope.payload);
@@ -62,7 +61,7 @@ function prepare(sequence: number, data: SharedData, blob?: string): Frame {
       frame.data.stateRef = id;
     }
     const payload = JSON.stringify(frame);
-    writeVerified(`${path(id)}/record.json`, JSON.stringify({ payload, checksum: hash(payload) }));
+    writeVerified(`${path(id)}/record.json`, JSON.stringify({ payload, checksum: sha256Hex(payload) }));
     return frame;
   } catch (error) {
     removeBestEffort(path(id));

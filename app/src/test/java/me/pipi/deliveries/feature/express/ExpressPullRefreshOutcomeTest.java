@@ -97,7 +97,7 @@ public class ExpressPullRefreshOutcomeTest {
         assertEquals(ExpressToastCopy.REFRESH_FAILED, ExpressToastCopy.refreshSummary(1, 0, 1, false, true));
         assertEquals(ExpressToastCopy.LIST_UPDATED, ExpressToastCopy.refreshSummary(2, 1, 1, true, true));
         assertEquals(ExpressToastCopy.REFRESH_CONTINUING, ExpressToastCopy.refreshSummary(0, 0, 0, false, true));
-        assertEquals("列表已更新，轨迹在后台继续更新", ExpressToastCopy.REFRESH_CONTINUING);
+        assertEquals("列表已更新", ExpressToastCopy.REFRESH_CONTINUING);
     }
 
     @Test public void olderOrPeriodicCompletionCannotFinishTheCurrentPull() throws Exception {

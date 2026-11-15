@@ -1,3 +1,4 @@
+import type { ColorStringHex, ColorStringRGBA } from "scripting";
 import { courierIconName } from "../services/carrier-presentation";
 import type { StatusSemantic } from "../models";
 import { blendStatusColor, statusTextTint, statusTint } from "../services/status";
@@ -15,9 +16,9 @@ export function widgetStatusStyle(semantic: StatusSemantic, brandAccent: string)
   const foreground = statusTextTint(semantic, { brandAccent, badgeOpacity: opacity, accentRGB: accent });
   const light = blendStatusColor(accent, Number.parseInt(foreground.light.slice(1), 16), 0.5);
   return {
-    background: `rgba(${accent >> 16 & 255}, ${accent >> 8 & 255}, ${accent & 255}, ${opacity})`,
+    background: `rgba(${accent >> 16 & 255}, ${accent >> 8 & 255}, ${accent & 255}, ${opacity})` as ColorStringRGBA,
     foreground: { light: `#${light.toString(16).padStart(6, "0")}`, dark: foreground.dark },
-  };
+  } as const;
 }
 
 export const EMPTY_WIDGET_ACCENT = "#3482FF";
@@ -25,13 +26,13 @@ export const EMPTY_WIDGET_ACCENT = "#3482FF";
 export const EMPTY_WIDGET_TEXT_COLOR = {
   light: "rgba(0, 0, 0, 0.3)",
   dark: "rgba(255, 255, 255, 0.3)",
-};
+} as const;
 
 const FALLBACK_ACCENT = EMPTY_WIDGET_ACCENT;
 
 // These values are generated from the bundled courier artwork with the same
 // dominant-color filter used by the Android widget.
-const ACCENT_BY_ICON: Readonly<Record<string, string>> = {
+const ACCENT_BY_ICON: Readonly<Partial<Record<string, ColorStringHex>>> = {
   danniao: "#3B2000",
   dbl: "#00519E",
   ems: "#F39400",
@@ -54,7 +55,7 @@ type RGB = readonly [number, number, number];
 
 export type WidgetLinearGradient = {
   gradient: {
-    color: string;
+    color: ColorStringRGBA;
     location: number;
   }[];
   startPoint: { x: number; y: number };
@@ -75,11 +76,11 @@ function hexToRGB(value: string): RGB {
   ];
 }
 
-function blend(base: RGB, accent: RGB, amount: number): string {
+function blend(base: RGB, accent: RGB, amount: number): ColorStringRGBA {
   const channel = (index: number) => Math.round(
     base[index] + (accent[index] - base[index]) * amount,
   );
-  return `rgba(${channel(0)}, ${channel(1)}, ${channel(2)}, 1)`;
+  return `rgba(${channel(0)}, ${channel(1)}, ${channel(2)}, 1)` as ColorStringRGBA;
 }
 
 function brandGradient(base: RGB, accent: RGB): WidgetLinearGradient {
@@ -98,7 +99,7 @@ export function carrierWidgetAccent(
   courierCode: string,
   companyName: string,
   accountOrder = false,
-): string {
+): ColorStringHex {
   const icon = courierIconName(courierCode, companyName, accountOrder);
   return ACCENT_BY_ICON[icon] || FALLBACK_ACCENT;
 }

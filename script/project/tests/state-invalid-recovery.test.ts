@@ -22,13 +22,13 @@ const damaged = JSON.stringify({
 });
 for (const key of keys) memory.set(key, damaged);
 const before = keys.map(key => memory.get(key));
-assert.throws(() => loadState(NOW), /本地快递数据读取失败/);
+assert.throws(() => loadState(NOW), /本地快递数据读取失败，请稍后重试/);
 assert.equal(stateLoadFailure(), "read_failed");
-assert.throws(() => saveState(emptyState(), NOW + 1), /本地快递数据读取失败/);
-assert.throws(() => saveState(emptyState(), NOW + 2), /本地快递数据读取失败/);
-assert.throws(() => removeShipment("synthetic", NOW + 3), /本地快递数据读取失败/);
+assert.throws(() => saveState(emptyState(), NOW + 1), /本地快递数据读取失败，请稍后重试/);
+assert.throws(() => saveState(emptyState(), NOW + 2), /本地快递数据读取失败，请稍后重试/);
+assert.throws(() => removeShipment("synthetic", NOW + 3), /本地快递数据读取失败，请稍后重试/);
 assert.throws(() => commitRefreshState(emptyState(), emptyState(), "interface5", NOW + 4),
-  /本地快递数据读取失败/);
+  /本地快递数据读取失败，请稍后重试/);
 assert.deepEqual(keys.map(key => memory.get(key)), before,
   "read and write failures must preserve every existing invalid copy");
 
@@ -42,13 +42,13 @@ assert.doesNotThrow(() => saveState(emptyState(), NOW + 1));
 
 memory.clear();
 memory.set(keys[0], "{");
-assert.throws(() => loadState(NOW), /本地快递数据读取失败/,
+assert.throws(() => loadState(NOW), /本地快递数据读取失败，请稍后重试/,
   "a malformed existing mirror is not an absent first-launch store");
 memory.clear();
 const originalGet = Storage.get;
 Storage.get = () => { throw new Error("synthetic Storage read failure"); };
 try {
-  assert.throws(() => loadState(NOW), /本地快递数据读取失败/,
+  assert.throws(() => loadState(NOW), /本地快递数据读取失败，请稍后重试/,
     "a failed legacy read must not be treated as an absent store");
 } finally { Storage.get = originalGet; }
 assert.equal(loadState(NOW).revision, 0, "an absent store remains a normal first launch");

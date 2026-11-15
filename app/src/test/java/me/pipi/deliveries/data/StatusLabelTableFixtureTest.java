@@ -78,6 +78,14 @@ public final class StatusLabelTableFixtureTest {
         assertEquals(bundled.labels(), CarrierRegistry.statusLabels().labels());
     }
 
+    @Test public void aRemoteTableWithoutStatusRulesStillMapsSamsungJdCrossBorderToTransit()
+            throws Exception {
+        JSONObject remote = new JSONObject(StatusLabelRulesJson.JSON);
+        remote.remove("statusRules");
+        ExpressStatusLabels parsed = ExpressStatusLabels.parse(remote);
+        assertEquals(StatusSemantic.TRANSIT, parsed.samsungDescriptorOverride("派件", "开始跨境运输"));
+    }
+
     /** Every case read back from the database: the stored row's semantic and its one display word. */
     @Test public void everySharedDisplayCaseReadsBackAsTheFixtureSays() throws Exception {
         JSONArray cases = SharedExpressFixtures.load("status-labels.v1.json").getJSONArray("cases");

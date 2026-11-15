@@ -129,7 +129,7 @@ async function requestJson(input: Readonly<{
     const expired = new Promise<void>((_, reject) => {
       rejectLifecycle = reject;
     });
-    lifecycle.signal.addEventListener("abort", abortLifecycle, { once: true });
+    lifecycle.signal.addEventListener("abort", abortLifecycle);
     let response: Kuaidi100Response | undefined;
     let responseText = "";
     const request = (async () => {

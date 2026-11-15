@@ -7,6 +7,7 @@ import {
   installStatusLabelTable,
   parseStatusLabelTable,
   resetStatusLabelTableForTesting,
+  samsungDescriptorOverride,
   statusDisplay,
 } from "../services/status-labels";
 import {
@@ -27,6 +28,16 @@ const NOW = Date.UTC(2026, 8, 25, 0, 0, 0);
 assert.deepEqual(JSON.parse(JSON.stringify(BOOTSTRAP_STATUS_LABEL_TABLE)), shared.table,
   "the bundled table equals the Worker's");
 assert.deepEqual(parseStatusLabelTable(shared.table), BOOTSTRAP_STATUS_LABEL_TABLE);
+
+{
+  const { statusRules: _statusRules, ...withoutRules } = BOOTSTRAP_STATUS_LABEL_TABLE;
+  const remote = parseStatusLabelTable(withoutRules);
+  assert.ok(remote);
+  assert.equal(installStatusLabelTable(remote), true);
+  assert.equal(samsungDescriptorOverride("派件", "开始跨境运输"), "TRANSIT",
+    "a remote table without statusRules still maps G2 跨境件 to TRANSIT");
+  resetStatusLabelTableForTesting();
+}
 
 function timeline(semantic: StatusSemantic, normalizedStatus?: NormalizedStatus): TimelinePackage {
   return {

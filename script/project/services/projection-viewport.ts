@@ -20,7 +20,7 @@
 
 /** The page-side slot. `mount` resolves once the controller is actually on screen. */
 export type ProjectionViewportHost = Readonly<{
-  mount: (controller: unknown) => Promise<boolean>;
+  mount: (controller: WebViewController) => Promise<boolean>;
   unmount: () => void;
 }>;
 
@@ -58,7 +58,7 @@ export function projectionViewportHostAvailable(): boolean {
  * failing the projection.
  */
 export async function acquireProjectionViewport(
-  controller: unknown,
+  controller: WebViewController,
 ): Promise<boolean> {
   const current = host;
   if (!current || controller == null) return false;

@@ -1,6 +1,6 @@
 import { removeLegacyCredentialCopies } from "./legacy-credential-cleanup";
 import { loadGatewayCredentials } from "./credentials";
-import { utf8Data } from "./scripting-data";
+import { sha256Hex } from "./scripting-data";
 import { writeDiagnostic } from "./logger";
 
 /**
@@ -29,9 +29,6 @@ export class ScriptingActivationUnavailableError extends Error {
 function validActivation(value: unknown): string {
   const text = typeof value === "string" ? value.trim() : "";
   return ACTIVATION_PATTERN.test(text) ? text : "";
-}
-function sha256Hex(value: string): string {
-  return Crypto.sha256(utf8Data(value)).toHexString().toLowerCase();
 }
 function readSyncedKeychain(): string {
   return validActivation(Keychain.get(ACTIVATION_KEYCHAIN_KEY, SYNCED_KEYCHAIN));

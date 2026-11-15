@@ -210,6 +210,7 @@ import {
   openStageCancellationEnd,
   writeDiagnostic,
   writeDiagnosticBatch,
+  changedSinceLastLogged,
   type DiagnosticDetails,
   type StageCancellationEnd,
 } from "./logger";
@@ -404,23 +405,13 @@ type DeferredRouteMutation = ShipmentRouteMutation & {
   owner: DeferredRouteOwner;
   expectedVersion: string;
 };
-type DeferredRouteMutationInput =
-  | {
-      owner: DeferredRouteOwner;
-      expectedVersion: string;
-      kind: "save";
-      targetId: string;
-      source: BindingSource;
-      url: string;
-    }
-  | {
-      owner: DeferredRouteOwner;
-      expectedVersion: string;
-      kind: "move";
-      fromId: string;
-      targetId: string;
-      source: BindingSource;
-    };
+type DeferredRouteMutationInput = {
+  owner: DeferredRouteOwner;
+  expectedVersion: string;
+} & (
+  | Omit<Extract<ShipmentRouteMutation, { kind: "save" }>, "key">
+  | Omit<Extract<ShipmentRouteMutation, { kind: "move" }>, "key">
+);
 type DeferredRouteMutations = Map<string, DeferredRouteMutation>;
 type RefreshCheckpoint = (
   candidate: AppState,
@@ -496,7 +487,7 @@ function queueRouteMutation(
   mutation: DeferredRouteMutationInput,
 ): void {
   const key = routeMutationKey(mutation.owner, mutation.targetId);
-  mutations.set(key, { ...mutation, key } as DeferredRouteMutation);
+  mutations.set(key, { ...mutation, key });
 }
 
 function deferIncomingRoute(
@@ -584,32 +575,6 @@ function deferPendingRoute(
     });
   }
   return merged;
-}
-
-function deferPendingRouteUpdate(
-  current: PendingManualQuery,
-  incoming: PendingManualQuery,
-  routeUrl: string,
-  now: number,
-  mutations: DeferredRouteMutations,
-): PendingManualQuery {
-  const pointer = incoming.route || null;
-  const existingRoute = current.route && Boolean(
-    loadShipmentRoute(current.id, current.route.source, now, current.route.kind),
-  ) ? current.route : null;
-  if (!pointer || !routeUrl) {
-    return { ...incoming, route: existingRoute };
-  }
-  queueRouteMutation(mutations, {
-    owner: "pending",
-    expectedVersion: pendingRouteVersion(incoming),
-    kind: "save",
-    targetId: incoming.id,
-    source: pointer.source,
-    routeKind: pointer.kind,
-    url: routeUrl,
-  });
-  return { ...incoming, route: existingRoute };
 }
 
 function stateWithRoutePublications(
@@ -889,18 +854,16 @@ function logJingDongListRecords(
       feedStatusSemantic: current?.sourceTimeline?.semantic || "UNKNOWN",
     });
   }
-  writeDiagnosticBatch("account.list.record", records);
-}
-
-function cainiaoRouteDiagnosticDetails(
-  shipment: Shipment,
-  routeUrl: string,
-) {
-  return {
-    ...shipmentDiagnosticDetails(shipment),
-    routePresent: Boolean(String(routeUrl || "").trim()),
-    routeTrusted: trustedCainiaoH5Route(routeUrl),
-  };
+  // A row the list repeats unchanged is not logged again on every sync (2026-11-12 清理, Pipi parity):
+  // the line is written when its content changes, otherwise at most every six hours.
+  const changed = records.filter((record) => {
+    const { flowId: _flowId, revision: _revision, ...content } = record;
+    return changedSinceLastLogged(
+      `account.list.record\u0000${String(record.source || "")}\u0000${String(record.ownerFingerprint || "")}`,
+      JSON.stringify(content),
+    );
+  });
+  if (changed.length) writeDiagnosticBatch("account.list.record", changed);
 }
 
 function cainiaoH5DiagnosticDetails(
@@ -1585,7 +1548,7 @@ function rejectForeignManualResult(
   result: Shipment | null,
   details: Readonly<{
     flowId: string;
-    source: string;
+    source: BindingSource;
     stage: string;
     timelineProvider: string;
   }>,
@@ -3149,7 +3112,8 @@ export function commitManualShipmentPreview(
     }
 
     if (!preview.shipment) return state;
-    const merged = applyManualShipment(current, preview.shipment, now);
+    const requested = preview.shipment;
+    const merged = applyManualShipment(current, requested, now);
     const existingRoute = current?.route && Boolean(
       loadShipmentRoute(
         current.identity.id,
@@ -3161,7 +3125,7 @@ export function commitManualShipmentPreview(
     let shipment: Shipment = { ...merged, route: existingRoute };
     const queued = state.pendingQueries.find(
       (pending) =>
-        pending.source === preview.shipment.identity.bindingSource &&
+        pending.source === requested.identity.bindingSource &&
         normalizeWaybill(pending.waybill) === canonical,
     );
     let next = saveState(
@@ -3169,7 +3133,7 @@ export function commitManualShipmentPreview(
         ...state,
         pendingQueries: state.pendingQueries.filter(
           (pending) =>
-            pending.source !== preview.shipment.identity.bindingSource ||
+            pending.source !== requested.identity.bindingSource ||
             normalizeWaybill(pending.waybill) !== displayWaybill(shipment),
         ),
         shipments: replaceById(
@@ -3177,7 +3141,7 @@ export function commitManualShipmentPreview(
             (item) =>
               item.identity.id === shipment.identity.id ||
               item.identity.bindingSource !==
-                preview.shipment.identity.bindingSource ||
+                requested.identity.bindingSource ||
               displayWaybill(item) !== canonical,
           ),
           shipment,
@@ -3498,7 +3462,7 @@ export async function bindPhone(
     if (enhanced) {
       const binding = requireEnhancementBinding(loadState().bindings, phone);
       const identityFingerprint = await enhancementOperation("bind", phone, { code, deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS) });
-      if (!bindingLease.isCurrent()) throw new Error("手机号验证已超时，请重试");
+      if (!bindingLease.isCurrent()) throw new Error("手机号验证已超时，请稍后重试");
       const next = enableBindingEnhancement(phone, binding.boundAtMs, Date.now(), identityFingerprint);
       return next;
     }
@@ -3528,7 +3492,7 @@ export async function bindPhone(
       durationMs: Date.now() - startedAt,
     });
     try {
-      if (!bindingLease.isCurrent()) throw new Error("手机号验证已超时，请重试");
+      if (!bindingLease.isCurrent()) throw new Error("手机号验证已超时，请稍后重试");
       const bound = addBinding(source, phone);
       writeDiagnostic("binding.persisted", {
         flowId,
@@ -3566,7 +3530,7 @@ export async function unbindPhone(
     if (expected && (expected.source !== source || expected.phone !== phone || !binding || binding.boundAtMs !== expected.boundAtMs ||
         binding.enhancedMode !== expected.enhancedMode || binding.enhancedAtMs !== expected.enhancedAtMs ||
         binding.enhancedIdentityFingerprint !== expected.enhancedIdentityFingerprint)) {
-      throw new Error("手机号绑定已变更，请重试");
+      throw new Error("手机号绑定已变更，请稍后重试");
     }
     let pendingUnsubscribe: { identityFingerprint: string } | undefined;
     if (binding?.enhancedMode) {
@@ -3577,47 +3541,16 @@ export async function unbindPhone(
         try { await enhancementOperation("unbind", phone, { deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS),
           expectedIdentityFingerprint: binding.enhancedIdentityFingerprint }); }
         catch (error) {
-          throw new EnhancementUnbindUnavailable(error instanceof Error ? error.message : "远端解绑未完成，请重试");
+          throw new EnhancementUnbindUnavailable(error instanceof Error ? error.message : "远端解绑未完成，请稍后重试");
         }
       }
     }
-    if (!bindingLease.isCurrent()) throw new Error("手机号解绑已超时，请重试");
+    if (!bindingLease.isCurrent()) throw new Error("手机号解绑已超时，请稍后重试");
     const next = removeBinding(source, phone, Date.now(), binding, pendingUnsubscribe);
     safelyPruneRoutes(next);
     requestWidgetReload();
     return next;
   } finally { bindingLease.release(); }
-}
-
-function releaseTargetManualRefreshLease(
-  shipmentId: string,
-  attemptId: string,
-  now = Date.now(),
-): AppState {
-  let latest = loadState(now);
-  for (let retry = 0; retry < 2; retry++) {
-    const current = latest.shipments.find(
-      (shipment) => shipment.identity.id === shipmentId,
-    );
-    if (!current || !ownsManualRefreshLease(current, attemptId)) return latest;
-    const commit = commitTargetShipmentRefresh(
-      latest,
-      releaseManualRefreshLease(current, attemptId),
-      now,
-      {
-        isCurrent: () => true,
-        acceptsState: (state) => ownsManualRefreshLease(
-          state.shipments.find(
-            (shipment) => shipment.identity.id === shipmentId,
-          ),
-          attemptId,
-        ),
-      },
-    );
-    latest = commit.state;
-    if (commit.applied) return latest;
-  }
-  return latest;
 }
 
 function detailRequestFingerprint(shipment: Shipment, state: AppState): string {
@@ -3893,10 +3826,11 @@ async function runShipmentRefreshFlow(
   const startedAt = Date.now();
   const flowId = createDiagnosticFlowId("detail");
   let base = loadState(startedAt);
-  let original = base.shipments.find(
+  const initial = base.shipments.find(
     (item) => item.identity.id === shipmentId,
   );
-  if (!original) throw new Error("该快递已从列表中移除");
+  if (!initial) throw new Error("该快递已从列表中移除");
+  let original = initial;
   // The frozen-join repair must keep its identity fence through the scheduled flow startup.
   if (lease.expectedFingerprint != null && detailRequestFingerprint(original, base) !== lease.expectedFingerprint) {
     return { state: base, shipment: original, refreshed: false, querySucceeded: false };
@@ -4011,8 +3945,9 @@ async function runShipmentRefreshFlow(
       requestWidgetReload();
     }
     base = commit.state;
-    original = base.shipments.find(s => s.identity.id === shipmentId);
-    if (!original) throw new Error("该快递已从列表中移除");
+    const current = base.shipments.find(s => s.identity.id === shipmentId);
+    if (!current) throw new Error("该快递已从列表中移除");
+    original = current;
   };
   if (original.identity.manuallyAdded && carrierUnmatched(original)) await commitRecognizedCarrier();
   if (trigger === "detail_open") {
@@ -4122,7 +4057,6 @@ async function runShipmentRefreshFlow(
     flowId,
     source,
     trigger,
-    statusSemantic: selectShipmentTimeline(original).semantic,
     detailStatusSemantic: selectShipmentDetailTimeline(original).semantic,
     missingStatusRefresh,
     unprojectedOrder: unprojectedAccountOrder(original),
@@ -4383,7 +4317,7 @@ async function runShipmentRefreshFlow(
                 source,
                 stage: "detail_webview",
                 ownerFingerprint,
-                result: reason,
+                result: reason ?? undefined,
                 ...(reopenForTimeline ? { reopen: true } : {}),
               });
             } else if (
@@ -5655,7 +5589,7 @@ function runTargetedShipmentRefresh(
     catch (error) { writeDiagnostic("detail.image.lease_release_failed", diagnosticErrorDetails(error), "warning"); }
   };
   // A page can cancel optional metadata before starting its next trajectory operation; its aborted writer cannot commit.
-  if (options.trigger === "product_image") options.signal?.addEventListener("abort", cancelImage, { once: true });
+  if (options.trigger === "product_image") options.signal?.addEventListener("abort", cancelImage);
   const lease: TargetRefreshLease = {
     deadlineAtMs: options.deadlineAtMs,
     expectedFingerprint,
@@ -5846,7 +5780,7 @@ async function refreshShipmentEnrichment(
   /**
    * E1/PF5: called when the first job actually queries (the per-shipment phase has work). C1: a job only
    * calls it after its own cooldown and lease gates, so a round whose every job is skipped (cooldown,
-   * 30-second floor, another owner) never reports 「轨迹在后台继续更新」.
+   * 30-second floor, another owner) never reports 「列表已更新」.
    */
   onWorkStarted: () => void = () => {},
 ): Promise<RefreshSummary> {
@@ -5873,7 +5807,7 @@ async function refreshShipmentEnrichment(
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (signal?.aborted) abort();
-  signal?.addEventListener("abort", abort, {once: true});
+  signal?.addEventListener("abort", abort);
   type JobResult = {job: Job; summary: RefreshSummary} | {job: Job; error: unknown};
   const active = new Map<Job, Promise<JobResult>>();
   let firstFailure: {error: unknown} | undefined;
@@ -6093,7 +6027,7 @@ async function runFullRefresh(
     // per-shipment enrichment below go on in this same refresh, under the same full:<source> lease.
     // PF5: the answer is given only when that work actually starts (a union page is about to be reserved
     // or the first enrichment job starts); a refresh with nothing left answers once, at its end, with
-    // the ordinary summary instead of 「轨迹在后台继续更新」.
+    // the ordinary summary instead of the early `refreshContinuing` answer.
     const accountPhaseSummary: RefreshSummary = {
       attempted, succeeded, failed, accountListUpdated, continuing: true,
       state: currentState, promotedPendingShipmentIds: [],

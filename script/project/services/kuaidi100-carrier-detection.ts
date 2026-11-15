@@ -99,25 +99,24 @@ export async function detectKuaidi100CarrierCandidates(
     REQUEST_TIMEOUT_MS,
   );
   const url = `${KUAIDI100_AUTO_URL}?text=${encodeURIComponent(waybill)}`;
-  let response;
-  let responseText = "";
   const lifecycleDeadlineAtMs = Date.now() + timeoutMs;
+  let result: { ok: boolean; text: string };
   const lifecycle = linkedTimeoutSignal(timeoutMs, options.signal);
   let rejectLifecycle: ((reason: Error) => void) | undefined;
   const abortLifecycle = () => rejectLifecycle?.(new OperationTimeoutError());
   try {
     if (lifecycle.signal.aborted) throw new OperationTimeoutError();
-    const expired = new Promise<void>((_, reject) => {
+    const expired = new Promise<never>((_, reject) => {
       rejectLifecycle = reject;
     });
-    lifecycle.signal.addEventListener("abort", abortLifecycle, { once: true });
+    lifecycle.signal.addEventListener("abort", abortLifecycle);
     const request = (async () => {
-      response = await fetch(url, {
+      const response = await fetch(url, {
         method: "POST",
         // The endpoint answers a browser UA with 200 and anything else with a 301. Following that
         // redirect turns the refusal into a 200 carrying non-JSON, which then reads as a parse
         // failure — the other three callers all pin this and iOS was the only one that did not.
-        redirect: "error",
+        handleRedirect: async () => null,
         headers: {
           "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
           "User-Agent": KUAIDI100_PUBLIC_USER_AGENT,
@@ -137,9 +136,9 @@ export async function detectKuaidi100CarrierCandidates(
       if (Date.now() >= lifecycleDeadlineAtMs) {
         throw new OperationTimeoutError();
       }
-      responseText = text;
+      return { ok: response.ok, text };
     })();
-    await Promise.race([request, expired]);
+    result = await Promise.race([request, expired]);
   } catch (error) {
     if (error instanceof OperationTimeoutError) throw error;
     if (
@@ -161,11 +160,11 @@ export async function detectKuaidi100CarrierCandidates(
     lifecycle.signal.removeEventListener("abort", abortLifecycle);
     lifecycle.dispose();
   }
-  if (!response.ok || responseText.length > MAX_RESPONSE_BYTES) {
+  if (!result.ok || result.text.length > MAX_RESPONSE_BYTES) {
     throw new Error("暂时无法识别承运商");
   }
   try {
-    return parseKuaidi100CarrierCandidates(JSON.parse(responseText));
+    return parseKuaidi100CarrierCandidates(JSON.parse(result.text));
   } catch {
     throw new Error("暂时无法识别承运商");
   }

@@ -1,10 +1,11 @@
 import type { StatusSemantic } from "../models";
+import { GENERATED_STATUS_LABEL_TABLE } from "./status-label-table.generated";
 
 /**
  * The status label table (audit L5, user default #2, 2026-09-25): one table for every surface — the
  * list, detail, widgets and notification titles — served by the Worker as `statusLabels` next to the
- * carrier authority snapshot (POST /api/express/carriers). The bundled copy below is the bootstrap until
- * the first verified snapshot arrives; it must equal the Worker's table (shared fixture
+ * carrier authority snapshot (POST /api/express/carriers). The bundled generated table is the bootstrap
+ * until the first verified snapshot arrives; it must equal the Worker's table (shared fixture
  * tests/fixtures/express/status-labels.v1.json). DANGER reads 异常件 and UNKNOWN reads 暂无状态 everywhere.
  *
  * Unprojected order rows (an order without a real waybill yet) show PICKED and SHIPPED as ORDERED
@@ -26,6 +27,8 @@ export type StatusLabelTable = Readonly<{
     scope: "ORDER";
     displaySemantic: Readonly<Partial<Record<StatusSemantic, StatusSemantic>>>;
   }>;
+  statusRules?: Readonly<Record<string, unknown>>;
+  proseRules?: Readonly<Record<string, unknown>>;
 }>;
 
 export const STATUS_SEMANTIC_VALUES: readonly StatusSemantic[] = [
@@ -33,33 +36,8 @@ export const STATUS_SEMANTIC_VALUES: readonly StatusSemantic[] = [
   "DANGER", "CANCELLED",
 ];
 
-export const BOOTSTRAP_STATUS_LABEL_TABLE: StatusLabelTable = Object.freeze({
-  schemaVersion: 1,
-  labels: Object.freeze({
-    UNKNOWN: "暂无状态",
-    ORDERED: "已下单",
-    SHIPPED: "已发货",
-    PICKED: "已揽件",
-    TRANSIT: "运输中",
-    DELIVERY: "派送中",
-    WAITING_PICKUP: "待取件",
-    COMPLETED: "已签收",
-    DANGER: "异常件",
-    CANCELLED: "已取消",
-  }),
-  orderLabels: Object.freeze({
-    COMPLETED: "已完成",
-    CANCELLED: "订单已取消",
-  }),
-  subtypes: Object.freeze([
-    // 用户 2026-10-02「驿站派送中 统一映射成 待派送」: the subtype's word; its semantic stays DELIVERY.
-    Object.freeze({ semantic: "DELIVERY", code: "STA_DELIVERING", label: "待派送", priority: 1 }),
-  ]),
-  unprojectedOrder: Object.freeze({
-    scope: "ORDER",
-    displaySemantic: Object.freeze({ PICKED: "ORDERED", SHIPPED: "ORDERED" }),
-  }),
-}) as StatusLabelTable;
+export const BOOTSTRAP_STATUS_LABEL_TABLE =
+  GENERATED_STATUS_LABEL_TABLE as unknown as StatusLabelTable;
 
 let activeTable: StatusLabelTable = BOOTSTRAP_STATUS_LABEL_TABLE;
 
@@ -111,13 +89,101 @@ export function parseStatusLabelTable(value: unknown): StatusLabelTable | null {
     if (!isSemantic(from) || !isSemantic(to)) return null;
     displaySemantic[from] = to;
   }
+  if (value.statusRules !== undefined && !isObject(value.statusRules)) return null;
+  if (value.proseRules !== undefined && !isObject(value.proseRules)) return null;
+  const statusRules = mergeRuleGroups(value.statusRules, BOOTSTRAP_STATUS_LABEL_TABLE.statusRules);
+  const proseRules = mergeRuleGroups(value.proseRules, BOOTSTRAP_STATUS_LABEL_TABLE.proseRules);
   return Object.freeze({
     schemaVersion: 1,
     labels: Object.freeze(labels),
     orderLabels: Object.freeze(orderLabels),
     subtypes: Object.freeze(subtypes),
     unprojectedOrder: Object.freeze({ scope: "ORDER", displaySemantic: Object.freeze(displaySemantic) }),
+    ...(statusRules ? { statusRules } : {}),
+    ...(proseRules ? { proseRules } : {}),
   }) as StatusLabelTable;
+}
+
+function cloneRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!isObject(value)) return undefined;
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+/** Remote groups overlay the bootstrap wholesale; missing groups keep the bundled snapshot. */
+function mergeRuleGroups(
+  remote: unknown,
+  bundled: Readonly<Record<string, unknown>> | undefined,
+): Readonly<Record<string, unknown>> | undefined {
+  const merged = cloneRecord(bundled) ?? {};
+  if (remote === undefined) {
+    return Object.keys(merged).length ? merged : undefined;
+  }
+  if (!isObject(remote)) return undefined;
+  for (const [key, value] of Object.entries(remote)) {
+    merged[key] = JSON.parse(JSON.stringify(value));
+  }
+  return merged;
+}
+
+/** Samsung JD descriptor override. Missing policy returns null. */
+export function samsungDescriptorOverride(raw: string, description: string): StatusSemantic | null {
+  const policy = activeTable.statusRules?.v3JD;
+  if (!isObject(policy)) return null;
+  const overrides = policy.descriptorOverrides;
+  if (!isObject(overrides)) return null;
+  const rawKey = String(raw ?? "").trim();
+  const described = String(description ?? "").trim();
+  if (!rawKey || !described) return null;
+  const listed = overrides[rawKey];
+  if (!Array.isArray(listed) || !listed.some((item) => typeof item === "string" && item.trim() === described)) {
+    return null;
+  }
+  const aliases = policy.statusAliases;
+  if (!isObject(aliases) || typeof aliases[described] !== "string") return null;
+  const semantic = aliases[described];
+  return isSemantic(semantic) && semantic !== "UNKNOWN" ? semantic : null;
+}
+
+/** proseRules[group][field] string list. Missing group or field returns empty. */
+export function proseWords(group: string, field: string): readonly string[] {
+  const rules = activeTable.proseRules?.[group];
+  if (!isObject(rules) || !field) return [];
+  const listed = rules[field];
+  if (!Array.isArray(listed)) return [];
+  return listed.flatMap((item) => typeof item === "string" && item.trim() ? [item.trim()] : []);
+}
+
+/** True when compactText contains any word from proseRules[group][field]. */
+export function proseContains(group: string, field: string, compactText: string): boolean {
+  const text = String(compactText ?? "");
+  if (!text) return false;
+  return proseWords(group, field).some((word) => text.includes(word));
+}
+
+/** Whole-token lookup in `statusRules[group]` (semantic → string[]). Missing rules return null. */
+export function statusRuleSemantic(group: string, code: string): StatusSemantic | null {
+  const token = String(code ?? "").trim().toUpperCase();
+  if (!token) return null;
+  const rules = activeTable.statusRules?.[group];
+  if (!isObject(rules)) return null;
+  for (const semantic of STATUS_SEMANTIC_VALUES) {
+    const tokens = rules[semantic];
+    if (!Array.isArray(tokens)) continue;
+    for (const raw of tokens) {
+      if (typeof raw === "string" && raw.trim().toUpperCase() === token) return semantic;
+    }
+  }
+  return null;
+}
+
+/** Exact structured description, not prose. Empty text returns null. */
+export function exactStructuredSemantic(text: string): StatusSemantic | null {
+  return statusRuleSemantic("structuredDescriptions", text);
+}
+
+/** Exact JT DOM label. Empty text returns null. */
+export function jtLabelSemantic(text: string): StatusSemantic | null {
+  return statusRuleSemantic("jtLabels", text);
 }
 
 /** Installs a verified table from the Worker snapshot; the previous table stays on any defect. */

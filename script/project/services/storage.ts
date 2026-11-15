@@ -83,7 +83,7 @@ import {
   readDurableTextResult,
   writeDurableText,
 } from "./durable-files";
-import { utf8Data } from "./scripting-data";
+import { sha256Hex } from "./scripting-data";
 import {
   shipmentNotificationEvent,
   shipmentNotificationPresentation,
@@ -274,10 +274,6 @@ export function emptyState(): AppState {
   };
 }
 
-function hashText(value: string): string {
-  return Crypto.sha256(utf8Data(value)).toHexString().toLowerCase();
-}
-
 function stableJson(value: unknown): string {
   const serialized = JSON.stringify(value, (_key, item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return item;
@@ -292,11 +288,11 @@ function stableJson(value: unknown): string {
 }
 
 function checksum(value: unknown): string {
-  return hashText(stableJson(value));
+  return sha256Hex(stableJson(value));
 }
 
 function legacyChecksum(value: unknown): string {
-  return hashText(JSON.stringify(value));
+  return sha256Hex(JSON.stringify(value));
 }
 
 function encodeState(state: AppState, verified?: DecodedStoredState): EncodedState {
@@ -309,7 +305,7 @@ function encodeState(state: AppState, verified?: DecodedStoredState): EncodedSta
       state: verified.state as AppState,
     };
   }
-  const checksum = hashText(payload);
+  const checksum = sha256Hex(payload);
   const envelope: StoredStateEnvelope = { schema: 3, checksum, payload };
   return {
     serialized: JSON.stringify(envelope),
@@ -1236,7 +1232,7 @@ function decodeStoredRaw(raw: unknown): StoredStateRead {
         typeof envelope.checksum !== "string" ||
         !/^[a-f0-9]{64}$/i.test(envelope.checksum) ||
         typeof envelope.payload !== "string" ||
-        hashText(envelope.payload) !== envelope.checksum.toLowerCase()
+        sha256Hex(envelope.payload) !== envelope.checksum.toLowerCase()
       ) {
         return {
           valid: null,
@@ -1489,7 +1485,7 @@ export function loadState(now = Date.now()): AppState {
     const candidates = shared == null
       ? orderedStoredStates(primary, backup, durableA, durableB)
       : orderedStoredStates(decode(shared), decode(sharedStateText(true)));
-    let chosen = candidates[0] || null;
+    let chosen: DecodedStoredState | null = candidates[0] ?? null;
 
     if (pendingCommit && chosen && pendingIsOlderThan(pendingCommit, chosen)) {
       pendingCommit = null;
@@ -1532,7 +1528,7 @@ export function loadState(now = Date.now()): AppState {
       if (shared != null || primary.invalid || backup.invalid || durableInvalid ||
           primary.failed || backup.failed || durableFailed) {
         lastStateLoadFailure = "read_failed";
-        throw new Error("本地快递数据读取失败");
+        throw new Error("本地快递数据读取失败，请稍后重试");
       }
       lastStateLoadFailure = null;
       return restoreInitialBindingBackup(emptyState());
@@ -2447,7 +2443,7 @@ export function enableBindingEnhancement(phoneNumber: string, expectedBoundAtMs:
   return withSharedFileTransaction(() => {
     const state = loadState(now), normalizedPhone = phone(phoneNumber);
     const current = state.bindings.find(binding => binding.source === SCRIPT_BINDING_SOURCE && binding.phone === normalizedPhone);
-    if (!current || current.boundAtMs !== expectedBoundAtMs) throw new Error("手机号绑定已变更，请重试");
+    if (!current || current.boundAtMs !== expectedBoundAtMs) throw new Error("手机号绑定已变更，请稍后重试");
     const mark = (identity: Shipment["identity"]): Shipment["identity"] =>
       identity.bindingSource === SCRIPT_BINDING_SOURCE && identity.phone === normalizedPhone && identity.accountOrder &&
       String(identity.sourceProvider || "").toLowerCase() === "jingdong"
@@ -2609,9 +2605,7 @@ export function commitRoutePointers(
 }
 
 export function privateHash(value: string): string {
-  return Crypto.sha256(utf8Data(String(value || "")))
-    .toHexString()
-    .toLowerCase();
+  return sha256Hex(String(value || ""));
 }
 
 export function removeBinding(
@@ -2630,7 +2624,7 @@ export function removeBinding(
       binding.phone === normalizedPhone && binding.boundAtMs === expectedBinding.boundAtMs &&
       binding.enhancedMode === expectedBinding.enhancedMode && binding.enhancedAtMs === expectedBinding.enhancedAtMs &&
       binding.enhancedIdentityFingerprint === expectedBinding.enhancedIdentityFingerprint)) {
-      throw new Error("手机号绑定已变更，请重试");
+      throw new Error("手机号绑定已变更，请稍后重试");
     }
     const suffix = normalizedPhone.slice(-4);
     const currentBinding = sourceBindings.find(binding => binding.phone === normalizedPhone);

@@ -134,6 +134,27 @@ public final class ExpressRepositoryManualTimelineTest {
     }
 
     @Test
+    public void aSuccessfulManualRowCoolsBackgroundForTenMinutesWithoutBlockingForegroundInterval() {
+        long now = 30_000_000L;
+        ExpressItem owner = owner(
+                80L, "13900001234", "KD-100", "",
+                StatusSemantic.TRANSIT, true, now);
+        ManualTimelineAuthorityPolicy.Candidate recent = candidate(
+                "kuaidi100", now - 1L, StatusSemantic.TRANSIT,
+                "2026-08-24 12:30:00", "快件运输中");
+        ManualTimelineAuthorityPolicy.Candidate neverSucceeded = candidate(
+                "kuaidi100", 0L, StatusSemantic.TRANSIT,
+                "2026-08-24 12:30:00", "快件运输中");
+        assertTrue(ExpressRepository.manualTimelineListPullCoolingDown(recent, now));
+        assertFalse(ExpressRepository.manualTimelinePollDue(owner, recent, now));
+        assertTrue(ExpressRepository.manualTimelineForegroundIntervalDue(0L, now));
+        assertFalse(ExpressRepository.manualTimelineListPullCoolingDown(null, now));
+        assertFalse(ExpressRepository.manualTimelineListPullCoolingDown(neverSucceeded, now));
+        assertFalse(ExpressRepository.manualTimelineListPullCoolingDown(
+                recent, now + ExpressRepository.MANUAL_TIMELINE_POLL_INTERVAL_MS));
+    }
+
+    @Test
     public void pollClockUsesOnlyLastManualSuccess() {
         long now = 3_000_000L;
         ExpressItem owner = owner(

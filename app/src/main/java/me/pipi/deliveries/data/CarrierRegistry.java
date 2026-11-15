@@ -124,6 +124,10 @@ public final class CarrierRegistry {
             buildSnapshot(bootstrapDefinitions(BETA_BOOTSTRAP), ExpressStatusLabels.bundled());
     private static volatile Snapshot active = BOOTSTRAP;
 
+    static {
+        ExpressStatusLabels.adopt(BOOTSTRAP.statusLabels);
+    }
+
     private CarrierRegistry() {}
 
     /** Validates the complete Worker envelope and builds every replacement index off to the side. */
@@ -174,6 +178,7 @@ public final class CarrierRegistry {
             throw new IllegalArgumentException("prepared carrier authority is required");
         }
         active = prepared.snapshot;
+        ExpressStatusLabels.adopt(active.statusLabels);
     }
 
     /** The status label table of the active snapshot (audit L5); the bundled copy until one is served. */
@@ -309,6 +314,7 @@ public final class CarrierRegistry {
 
     static void resetForTesting() {
         active = BOOTSTRAP;
+        ExpressStatusLabels.adopt(active.statusLabels);
     }
 
     private static Snapshot buildSnapshot(

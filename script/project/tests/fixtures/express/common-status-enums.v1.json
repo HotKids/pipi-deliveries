@@ -176,7 +176,7 @@
       "取消": "CANCELLED"
     }
   },
-  "samsungJdPresentationPolicy": {
+  "v3JDPresentationPolicy": {
     "schemaVersion": 1,
     "sources": [
       "JD",
@@ -216,7 +216,7 @@
     ],
     "descriptorStatus": "ILLEGAL STATUS"
   },
-  "samsungJdPresentationCases": [
+  "v3JDPresentationCases": [
     {
       "row": {
         "source": "JD",

@@ -133,7 +133,7 @@ export async function enhancementOperation(operation: "code" | "bind" | "unbind"
     identity, ...(options.code ? { code: options.code } : {}) }, {
     timeoutMs: remainingTimeoutMs(options.deadlineAtMs, 25_000), deadlineAtMs: options.deadlineAtMs,
   });
-  if (result.ok !== true) throw new Error("增强模式操作失败，请重试");
+  if (result.ok !== true) throw new Error("增强模式操作失败，请稍后重试");
   if (operation === "bind") return identityFingerprint;
 }
 
@@ -201,14 +201,15 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
     if (!identity) throw new EnhancementIdentityMissing();
     const response = await request({ operation: "sync", identity, orders: distinctOrders });
     if (options.signal?.aborted) throw new Error("增强模式同步已取消");
-    if (!Array.isArray(response.records) || !Array.isArray(response.ambiguousOrderIds)) throw new Error("增强模式响应异常");
-    const ambiguous = new Set(response.ambiguousOrderIds);
+    const { records: responseRecords, ambiguousOrderIds } = response;
+    if (!Array.isArray(responseRecords) || !Array.isArray(ambiguousOrderIds)) throw new Error("增强模式响应异常");
+    const ambiguous = new Set(ambiguousOrderIds);
     const matched = new Set<string>(), waybills = new Set<string>(), images = new Set<string>();
     const enriched = marked.map(parcel => {
       const phone = enhancementPhone(parcel, bindings), orderId = parcel.orderId || parcel.ownerId;
       if (!phone || !enhancementRequested(parcel, purpose) || ambiguous.has(orderId)) return parcel;
       const uniqueOrder = distinctOrders.filter(order => order.orderId === orderId).length === 1;
-      const records = response.records.filter(record => record && typeof record === "object" &&
+      const records = responseRecords.filter(record => record && typeof record === "object" &&
         (record as Record<string, unknown>).orderId === orderId &&
         ((record as Record<string, unknown>).phone === phone ||
           (uniqueOrder && (record as Record<string, unknown>).phone === ""))) as Record<string, unknown>[];
@@ -226,7 +227,7 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
         ...(enhancedWaybill ? { enhancedWaybill } : {}) };
     });
     writeDiagnostic("account.enhanced.completed", { ...diagnostic, result: "completed", durationMs: Date.now() - startedAt,
-      requestedOrderCount: distinctOrders.length, records: response.records.length,
+      requestedOrderCount: distinctOrders.length, records: responseRecords.length,
       matchedOrderCount: matched.size, productImageCount: images.size,
       realWaybillCount: waybills.size, imageURLCount: images.size,
       ambiguousOrderCount: distinctOrders.filter(order => ambiguous.has(order.orderId)).length });

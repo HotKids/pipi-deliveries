@@ -33,10 +33,6 @@ final class ExpressSyncEngine {
 
     private ExpressSyncEngine() {}
 
-    static void syncAll(Context context, int[] network, boolean userPull) {
-        syncAll(context, network, userPull, userPull ? "list_pull" : "background");
-    }
-
     static void syncAll(Context context, int[] network, boolean userPull, String trigger) {
         syncAll(context, network, userPull, trigger, null);
     }
@@ -372,9 +368,10 @@ final class ExpressSyncEngine {
         var cached = repository.manualTimelineCandidate(owner, TimelineSlot.V6_QUERY);
         network[0]++;
         requests.submit(() -> {
-            try {
+            try (me.pipi.deliveries.network.ExpressQueryCancellation stage =
+                    new me.pipi.deliveries.network.ExpressQueryCancellation(15_000L)) {
                 ManualQueryCoordinator.Batch batch = ManualQueryCoordinator.queryOnlineFirst(
-                        () -> subscription.queryManual(context, owner.displayWaybill(), null),
+                        () -> subscription.queryManual(context, owner.displayWaybill(), stage),
                         cached, null, false, null, null, owner.semantic == StatusSemantic.UNKNOWN);
                 return () -> {
                     repository.saveClaimedManualQueryBatch(owner, ownerClaim, batch.successes,
@@ -445,13 +442,16 @@ final class ExpressSyncEngine {
                     repository.removePendingManual(pending.waybill, pending.bindingSource);
                     continue;
                 }
-                ManualQueryCoordinator.Batch batch =
-                        ManualQueryCoordinator.queryOnlineFirst(
-                        () -> subscription.queryManual(
-                                context, pending.waybill, null),
-                        null,
-                        null, false);
-                repository.savePendingManualQueryBatch(pending, batch.successes);
+                try (me.pipi.deliveries.network.ExpressQueryCancellation stage =
+                        new me.pipi.deliveries.network.ExpressQueryCancellation(15_000L)) {
+                    ManualQueryCoordinator.Batch batch =
+                            ManualQueryCoordinator.queryOnlineFirst(
+                            () -> subscription.queryManual(
+                                    context, pending.waybill, stage),
+                            null,
+                            null, false);
+                    repository.savePendingManualQueryBatch(pending, batch.successes);
+                }
             } catch (Throwable failure) {
                 // Keep the claimed item hidden. Its next periodic attempt is rate-limited.
                 ExpressLog.error("manual.query.failed", ExpressLog.errorDetails(failure, "stage", "pending_manual"));

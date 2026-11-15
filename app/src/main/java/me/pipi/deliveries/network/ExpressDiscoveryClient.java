@@ -322,41 +322,6 @@ public final class ExpressDiscoveryClient {
         return result;
     }
 
-    /** Manual lookup through interface 5 only, including its same-source official retry. */
-    public ExpressQueryResult queryManual(
-            Context context, String waybill, List<String> phones) throws Exception {
-        return queryManual(context, waybill, phones, null);
-    }
-
-    public ExpressQueryResult queryManual(
-            Context context, String waybill, List<String> phones,
-            ExpressQueryCancellation cancellation) throws Exception {
-        String number = normalizedWaybill(waybill);
-        JSONObject request = new JSONObject()
-                .put("interface", "v5")
-                .put("mode", "manual")
-                .put("identity", ExpressInstallIdentity.get(context))
-                .put("waybill", number)
-                .put("phones", new JSONArray(normalizedPhonesAllowEmpty(phones)));
-        HttpClient.Response response = new ExpressGatewayClient(context).post(
-                "/api/express/timeline/source", request, cancellation);
-        if (!response.successful()) {
-            throw GatewayHttpErrors.forResponse(response, "查询失败，请稍后重试");
-        }
-        JSONObject outer = GatewayHttpErrors.parseObject(
-                response, "查询失败，请稍后重试");
-        if (outer.optInt("code", -1) != 0) {
-            throw new ExpressApi.NoTrackException();
-        }
-        JSONObject item = findDetailObject(outer);
-        if (item == null) throw new ExpressApi.NoTrackException();
-        String credential = cainiaoDetailUrl(item);
-        ExpressQueryResult result = parseExpress(
-                item, credential.isEmpty() ? "" : CainiaoRoute.token("v5"), "");
-        if (result == null) throw new ExpressApi.NoTrackException();
-        return result;
-    }
-
     /**
      * Per-parcel account detail budget (AGENTS §9 三端预算 and audit R6, user default of 2026-09-25):
      * 10 s on the client, the Worker's own upstream wait being 8 s. Background per-parcel requests
@@ -533,28 +498,10 @@ public final class ExpressDiscoveryClient {
         return result;
     }
 
-    private static ArrayList<String> normalizedPhonesAllowEmpty(List<String> phones) {
-        ArrayList<String> result = new ArrayList<>();
-        if (phones == null) return result;
-        for (String phone : phones) {
-            String value = phone == null ? "" : phone.replaceAll("\\D", "");
-            if (value.isEmpty()) continue;
-            String normalized = normalizedPhone(value);
-            if (!result.contains(normalized)) result.add(normalized);
-        }
-        ExpressPhoneBindingPolicy.requireWithinLimit(result.size());
-        return result;
-    }
-
     private static String normalizedWaybill(String waybill) {
         String value = waybill == null ? "" : waybill.trim();
         if (value.length() < 6) throw new IllegalArgumentException("请输入正确的快递单号");
         return value;
-    }
-
-    private JSONObject queryDetails(
-            Context context, JSONObject summary, String fallbackPhone) throws Exception {
-        return queryDetails(context, summary, fallbackPhone, null);
     }
 
     private JSONObject queryDetails(Context context, JSONObject summary,

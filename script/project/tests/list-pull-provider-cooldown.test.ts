@@ -137,7 +137,7 @@ test("an incomplete row still keeps the 30-second minimum interval", async () =>
   assert.deepEqual(pull.paths, []);
 });
 
-// C1 / T3 (review 2026-11-11): the pull is answered early (「列表已更新，轨迹在后台继续更新」) only when a job actually
+// C1 / T3 (review 2026-11-11): the pull is answered early (「列表已更新」) only when a job actually
 // queries. A round whose every row is skipped by its cooldown or the 30-second floor must not report work started.
 test("a round whose rows are all cooling never reports per-shipment work started (C1)", async () => {
   const row = manualRow(true);

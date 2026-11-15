@@ -7,8 +7,10 @@ import { refreshAllShipments, subscribeFullRefreshOutcome, type FullRefreshOutco
  * 2026-10-02「改成 2 分钟（三端一起）」, 30 seconds before; IOS_REFRESH_PLAN asks
  * for 「启动 / 回前台」). `Script.onResume` does not fire on an ordinary return, so the app root drives
  * this from the scene phase. Only a return from the background counts; an inactive moment (Control
- * Center, a system sheet) is not a return. Any foreground full refresh of this runtime — the launch
- * refresh, a resume or a pull — restarts the debounce.
+ * Center, a system sheet) is not a return. Restarting that window is not the same on every client:
+ * iOS stamps lastRefreshAtMs on any non-background full refresh, including a pull. Pipi stamps the
+ * window only in MainActivity.onResume. Lite's requestPullRefresh does not call claimForegroundRefresh
+ * (only requestForeground does).
  */
 export const FOREGROUND_REFRESH_DEBOUNCE_MS = 120_000;
 

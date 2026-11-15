@@ -475,15 +475,6 @@ export function forgetCarrierRecognition(
   }
 }
 
-/** 用户 2026-09-27 第二轮清单：截断排后。Whether a sync round cut this waybill off and it has not settled since. */
-export function carrierRecognitionTruncated(
-  waybillInput: string,
-  store: CarrierRecognitionStore = storageStore,
-): boolean {
-  const waybill = normalizeWaybill(waybillInput);
-  return Boolean(waybill) && loadTruncations(store).some((mark) => mark.waybill === waybill);
-}
-
 /**
  * 用户 2026-09-27 第二轮清单：截断排后（「被截断的下一轮排到最后」）。Orders a round's recognition work, as Pipi and Lite
  * do: first the items no round cut off, then those a round left unasked, last those whose request a round cut off in

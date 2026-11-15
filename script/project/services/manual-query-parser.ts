@@ -9,6 +9,7 @@ import {
   semanticFromStored,
   usableTimedTracks,
 } from "./status";
+import { statusRuleSemantic } from "./status-labels";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -130,29 +131,13 @@ function statusEventAt(
 }
 
 function kdniaoSemantic(value: string): StatusSemantic {
-  switch (value.trim().toUpperCase()) {
-    case "1": return "PICKED";
-    case "2":
-    case "201":
-    case "204": return "TRANSIT";
-    case "202": return "DELIVERY";
-    case "211":
-    case "412": return "WAITING_PICKUP";
-    case "3":
-    case "301":
-    case "302":
-    case "304":
-    case "311":
-    case "406": return "COMPLETED";
-    case "4":
-    case "401":
-    case "402":
-    case "403":
-    case "404":
-    case "405":
-    case "407": return "DANGER";
-    default: return "UNKNOWN";
-  }
+  return statusRuleSemantic("kdniao", value) ?? "UNKNOWN";
+}
+
+function kdniaoStateSemantic(value: string): StatusSemantic {
+  return statusRuleSemantic("kdniaoTopState", value)
+    ?? statusRuleSemantic("kdniao", value)
+    ?? "UNKNOWN";
 }
 
 function semanticRank(value: StatusSemantic): number {
@@ -270,7 +255,7 @@ type CollectedMeizuTimeline = {
   ambiguousNewestStatus: boolean;
 };
 
-function decodeMeizuEnvelope(value: unknown): unknown {
+export function decodeMeizuEnvelope(value: unknown): unknown {
   if (typeof value !== "string") return value;
   const candidate = value.trim();
   const structured = (
@@ -480,7 +465,7 @@ export function parseKdniaoTimeline(root: JsonObject): ParsedManualTimeline {
   const state = firstText(root, "state");
   const topSemantic = kdniaoSemantic(stateEx) !== "UNKNOWN"
     ? kdniaoSemantic(stateEx)
-    : kdniaoSemantic(state);
+    : kdniaoStateSemantic(state);
   const semantic = laterSemantic(topSemantic, latestTraceSemantic);
   const eventAtMs = semantic === latestTraceSemantic && semantic !== "UNKNOWN"
     ? latestTraceStatusAt || null

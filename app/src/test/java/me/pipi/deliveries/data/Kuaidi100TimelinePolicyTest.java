@@ -10,6 +10,8 @@ import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.StatusSemantic;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.junit.Test;
 
 import java.util.List;
@@ -76,6 +78,19 @@ public final class Kuaidi100TimelinePolicyTest {
      * 审计 D10（用户 2026-09-25 采纳，与 iOS、Pipi 同）：揽收与起点只看节点证据。包自己（或选包时借来的）状态是
      * PICKED / ORDERED、却没有对应节点时，不算有揽收、不算到了起点；有揽收节点或下单节点才算。
      */
+    @Test
+    public void awaitingCollectionKeepsPickupAndOrderOutButCompletionStillCounts() throws Exception {
+        JSONArray waiting = new JSONArray().put(new JSONObject()
+                .put("time", "2026-08-15 08:00:00").put("context", "已下单，等待揽收"));
+        assertFalse(Kuaidi100TimelinePolicy.containsTimelineStart(waiting, "k100_h5", true));
+        JSONArray picked = new JSONArray().put(new JSONObject()
+                .put("time", "2026-08-15 08:00:00").put("context", "已揽收"));
+        assertTrue(Kuaidi100TimelinePolicy.containsTimelineStart(picked, "k100_h5", false));
+        JSONArray completed = new JSONArray().put(new JSONObject()
+                .put("time", "2026-08-15 08:00:00").put("context", "订单已完成配送"));
+        assertTrue(Kuaidi100TimelinePolicy.containsTimelineStart(completed, "k100_h5", true));
+    }
+
     @Test
     public void onlyANodeProvesPickupOrTheStart() {
         String transitOnly = "[{\"time\":\"2026-08-15 10:00:00\",\"context\":\"快件到达转运中心\"}]";

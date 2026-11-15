@@ -98,7 +98,7 @@ export async function queryManualSourceChain(
       observe?.({ source: adapter.source, phase: "started" });
       const controller = new AbortController();
       const abort = () => controller.abort();
-      signal?.addEventListener("abort", abort, { once: true });
+      signal?.addEventListener("abort", abort);
       if (signal?.aborted) abort();
       try {
         const work = adapter.query(controller.signal, providerDeadlineAtMs);

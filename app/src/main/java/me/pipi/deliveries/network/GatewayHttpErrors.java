@@ -38,7 +38,7 @@ final class GatewayHttpErrors {
             case 504:
                 return new GatewayHttpException("请求超时，请稍后重试", status, code);
             case 429:
-                return new GatewayHttpException("请求过于频繁，请稍后再试", status, code);
+                return new GatewayHttpException("操作过于频繁，请稍后重试", status, code);
             default:
                 if (status >= 500 && status <= 599) {
                     return new GatewayHttpException("服务暂时不可用，请稍后重试", status, code);

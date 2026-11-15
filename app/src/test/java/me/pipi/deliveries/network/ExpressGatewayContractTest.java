@@ -92,13 +92,11 @@ public final class ExpressGatewayContractTest {
         assertTrue(login.contains("ExpressPhoneBindingPolicy.hasCapacity("));
         assertTrue(login.contains("ExpressPhoneBindingPolicy.limitMessage()"));
         assertFalse(login.contains("最多可绑定 4 个手机号"));
-        int firstLimitCheck = account.indexOf(
-                "ExpressPhoneBindingPolicy.requireWithinLimit(result.size())");
-        int secondLimitCheck = account.indexOf(
-                "ExpressPhoneBindingPolicy.requireWithinLimit(result.size())",
-                firstLimitCheck + 1);
-        assertTrue(firstLimitCheck >= 0);
-        assertTrue(secondLimitCheck > firstLimitCheck);
+        assertTrue(account.contains("ArrayList<String> normalizedPhones = normalizedPhones(phones)"));
+        String phoneNormalizer = account.substring(
+                account.indexOf("static ArrayList<String> normalizedPhones(List<String> phones)"));
+        assertTrue(phoneNormalizer.substring(0, phoneNormalizer.indexOf("return result;\n    }"))
+                .contains("ExpressPhoneBindingPolicy.requireWithinLimit(result.size())"));
         assertFalse(account.contains("最多可绑定 4 个手机号"));
         assertTrue(sync.contains("discovery.sync(context, boundPhones, userPull)"));
         assertTrue(sync.contains("subscription.query(context)"));

@@ -49,10 +49,6 @@ final class AutomaticOwnershipPolicy {
         return "jingdong".equals(clean(sourceProvider).toLowerCase(Locale.ROOT));
     }
 
-    static boolean isShunFengSource(String sourceProvider) {
-        return "shunfeng".equals(clean(sourceProvider).toLowerCase(Locale.ROOT));
-    }
-
     private static String clean(String value) {
         return value == null ? "" : value.trim();
     }

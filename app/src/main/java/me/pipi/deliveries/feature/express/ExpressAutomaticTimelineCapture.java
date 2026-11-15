@@ -177,9 +177,7 @@ final class ExpressAutomaticTimelineCapture {
                         web.evaluateJavascript(ExpressJingDongTimelineParser.probeScript(), null);
                 }
                 @Override public boolean shouldOverrideUrlLoading(WebView web, WebResourceRequest request) {
-                    boolean blocked = request == null || !trusted(request.getUrl().toString());
-                    if (blocked && (request == null || request.isForMainFrame())) finish(best, "untrusted_route");
-                    return blocked;
+                    return request == null || request.getUrl() == null || !trusted(request.getUrl().toString());
                 }
                 /**
                  * 用户 2026-10-02 弹窗「Lite 也做，iOS 查文档能做就做（推荐）」：the hidden Kuaidi100 page (the detail

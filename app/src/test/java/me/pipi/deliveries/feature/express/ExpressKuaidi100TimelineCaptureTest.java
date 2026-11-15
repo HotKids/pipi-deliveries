@@ -153,8 +153,9 @@ public class ExpressKuaidi100TimelineCaptureTest {
         List<String> first = java.util.Arrays.asList("1234");
         List<String> corrected = java.util.Arrays.asList("5678");
         ExpressKuaidi100CaptureCooldown.record(context, TimelineSlot.JT_H5, "JTTEST1", first, now);
-        assertFalse(ExpressKuaidi100CaptureCooldown.due(context, TimelineSlot.JT_H5, "JTTEST1", first, now + 1));
+        assertTrue(ExpressKuaidi100CaptureCooldown.due(context, TimelineSlot.JT_H5, "JTTEST1", first, now + 1));
         assertTrue(ExpressKuaidi100CaptureCooldown.due(context, TimelineSlot.JT_H5, "JTTEST1", corrected, now + 1));
+        assertTrue(context.getSharedPreferences("express_k100_capture_cooldown", 0).getAll().isEmpty());
         assertTrue(ExpressKuaidi100CaptureCooldown.due(context, TimelineSlot.K100_H5, "JTTEST1", first, now + 1));
         ExpressKuaidi100CaptureCooldown.record(context, TimelineSlot.K100_H5, "JTTEST1", first, now);
         assertFalse(ExpressKuaidi100CaptureCooldown.due(context, TimelineSlot.K100_H5, "JTTEST1", corrected, now + 1));

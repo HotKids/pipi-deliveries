@@ -149,7 +149,7 @@ export function DetailPage(props: {
     } catch (error) {
       writeDiagnostic("detail.note.save_failed", diagnosticErrorDetails(error), "warning");
       setNotice(error instanceof ShipmentLifecycleChangedError
-        ? EXPRESS_TOAST_COPY.userNoteChanged : "保存失败，请重试");
+        ? EXPRESS_TOAST_COPY.userNoteChanged : "保存失败，请稍后重试");
     }
   }
   const [loadingManualDetail, setLoadingManualDetail] = useState(
@@ -518,7 +518,7 @@ export function DetailPage(props: {
         : await fetchAccountExternalAppRoutes(shipment, controller.signal);
       if (controller.signal.aborted) return;
       if (!targets.length) {
-        setNotice(`来源暂未提供可用的${externalAppName} App 链接`);
+        setNotice(`来源暂未提供可用的${externalAppName}应用链接`);
         return;
       }
       for (const [index, target] of targets.entries()) {
@@ -539,7 +539,7 @@ export function DetailPage(props: {
         }, opened ? "info" : "warning");
         if (opened || controller.signal.aborted) return;
         if (target.kind === "sf" && result === "open_failed") {
-          setNotice("打开顺丰失败，请重试");
+          setNotice("打开顺丰失败，请稍后重试");
           return;
         }
       }
@@ -570,16 +570,16 @@ export function DetailPage(props: {
           sourceProvider: current.identity.sourceProvider,
         }, opened ? "info" : "warning");
         if (!opened && !controller.signal.aborted)
-          setNotice("无法打开快递100小程序，请确认已安装微信");
+          setNotice("暂时无法打开快递100小程序，请稍后重试");
         return;
       }
       setNotice(externalAppName === "菜鸟"
-        ? "未能打开菜鸟、淘宝或支付宝，请确认已安装其中一个 App"
+        ? "未能打开菜鸟、淘宝或支付宝，请确认已安装其中任一应用"
         : externalAppName === "快递100"
-        ? "无法打开快递100小程序，请确认已安装微信"
-        : `无法打开${externalAppName} App，请确认已安装`);
+        ? "暂时无法打开快递100小程序，请稍后重试"
+        : `无法打开${externalAppName}，请确认已安装该应用`);
     } catch {
-      if (!controller.signal.aborted) setNotice(`打开${externalAppName}失败，请重试`);
+      if (!controller.signal.aborted) setNotice(`打开${externalAppName}失败，请稍后重试`);
     } finally {
       if (externalAppAbortRef.current === controller) {
         externalAppAbortRef.current = null;

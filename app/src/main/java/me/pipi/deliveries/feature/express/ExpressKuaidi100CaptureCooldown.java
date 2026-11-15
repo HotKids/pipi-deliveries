@@ -23,27 +23,15 @@ final class ExpressKuaidi100CaptureCooldown {
 
     static boolean due(Context context, String provider, String waybill,
             java.util.List<String> phones, long now) {
-        return due(context, scopedWaybill(provider, waybill, phones), now);
+        // JT takes no 30-minute lock and does not occupy the K100 waybill key.
+        if (me.pipi.deliveries.data.TimelineSlot.JT_H5.equals(provider)) return true;
+        return due(context, waybill, now);
     }
 
     static void record(Context context, String provider, String waybill,
             java.util.List<String> phones, long now) {
-        record(context, scopedWaybill(provider, waybill, phones), now);
-    }
-
-    /** Correcting a JT suffix changes the request; ordinary retries retain the attempt cooldown. */
-    private static String scopedWaybill(String provider, String waybill, java.util.List<String> phones) {
-        if (!me.pipi.deliveries.data.TimelineSlot.JT_H5.equals(provider)) return waybill;
-        try {
-            String input = String.join(",", ExpressKuaidi100TimelineCapture.phoneCandidates("", phones));
-            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder();
-            for (byte value : hash) hex.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
-            return "jt_h5:" + waybill + ":" + hex;
-        } catch (java.security.NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 unavailable", impossible);
-        }
+        if (me.pipi.deliveries.data.TimelineSlot.JT_H5.equals(provider)) return;
+        record(context, waybill, now);
     }
 
     static void record(Context context, String waybill, long now) {

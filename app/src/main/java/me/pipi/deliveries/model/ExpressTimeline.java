@@ -40,7 +40,7 @@ public final class ExpressTimeline {
         public final StatusSemantic semantic;
 
         Track(String time, String detail) {
-            this(time, detail, StatusSemantic.UNKNOWN);
+            this(time, detail, StatusSemantic.UNKNOWN, parseTime(clean(time)));
         }
 
         private Track(String time, String detail, StatusSemantic semantic, long epochMillis) {
@@ -53,10 +53,6 @@ public final class ExpressTimeline {
             this.displayDetail = clean(displayDetail);
             this.epochMillis = epochMillis;
             this.semantic = semantic;
-        }
-
-        Track(String time, String detail, StatusSemantic semantic) {
-            this(time, detail, semantic, parseTime(clean(time)));
         }
     }
 

@@ -18,8 +18,10 @@ import {
 } from "./status";
 import {
   OperationTimeoutError,
+  pauseWhileActive,
   remainingTimeoutMs,
 } from "./deadline";
+import { httpsRequest } from "./cainiao-h5";
 
 // Match Android Lite's foreground order-capture window. This bounds one WebView
 // capture; it is not a deadline for the rest of the refresh round.
@@ -412,14 +414,6 @@ function trustedWebResource(value: string): boolean {
   }
 }
 
-function httpsResource(value: string): boolean {
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 function passiveResourceRequest(navigationType: string | undefined): boolean {
   return navigationType === "other";
 }
@@ -514,31 +508,11 @@ function timeout<T>(
       ),
       timeoutMs,
     );
-    signal?.addEventListener("abort", abort, { once: true });
+    signal?.addEventListener("abort", abort);
     promise.then(
       (value) => finish(() => resolve(value)),
       (error) => finish(() => reject(error)),
     );
-  });
-}
-
-function pauseWhileActive(durationMs: number, signal?: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new OperationTimeoutError());
-      return;
-    }
-    let settled = false;
-    const finish = (settle: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", abort);
-      settle();
-    };
-    const abort = () => finish(() => reject(new OperationTimeoutError()));
-    const timer = setTimeout(() => finish(resolve), durationMs);
-    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 
@@ -1207,7 +1181,7 @@ export async function projectAccountOrder(
     }
   };
   const abort = () => disposeController();
-  signal?.addEventListener("abort", abort, { once: true });
+  signal?.addEventListener("abort", abort);
   let captured: CapturedRequest | null = null;
   let loadCompleted = false;
   let replayAttempted = false;
@@ -1245,7 +1219,7 @@ export async function projectAccountOrder(
   controller.shouldAllowRequest = async (request) => {
     if (signal?.aborted) return false;
     requestCallbackCount++;
-    if (!httpsResource(request.url)) return false;
+    if (!httpsRequest(request.url)) return false;
     if (
       !trustedWebResource(request.url) &&
       !passiveResourceRequest(request.navigationType)
@@ -1348,9 +1322,6 @@ export async function projectAccountOrder(
           remaining,
           signal,
         );
-        if (Date.now() >= projectionDeadlineAtMs) {
-          throw new OperationTimeoutError("提取运单号超时，请稍后重试");
-        }
       } catch (error) {
         assertProjectionActive(signal);
         if (error instanceof OperationTimeoutError) throw error;
@@ -1464,9 +1435,6 @@ export async function projectAccountOrder(
         projection?.timeline ? timedTracks(projection.timeline.tracks).length : 0,
       );
       if (projection) {
-        if (Date.now() >= projectionDeadlineAtMs) {
-          throw new OperationTimeoutError("提取运单号超时，请稍后重试");
-        }
         if (projection.timeline || !bestProjection?.timeline) {
           bestProjection = projection;
         }

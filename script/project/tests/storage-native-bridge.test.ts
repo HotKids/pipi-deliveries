@@ -357,8 +357,8 @@ changed.shipments[0] = {
 memory.set(STATE_KEY, nativeRoundTrip(legacyEnvelope(completeState())));
 memory.set(STATE_BACKUP_KEY, nativeRoundTrip(legacyEnvelope(changed)));
 const divergentCopies = [memory.get(STATE_KEY), memory.get(STATE_BACKUP_KEY)];
-assert.throws(() => loadState(NOW + 5), /本地快递数据读取失败/);
-assert.throws(() => saveState(completeState(), NOW + 5), /本地快递数据读取失败/);
+assert.throws(() => loadState(NOW + 5), /本地快递数据读取失败，请稍后重试/);
+assert.throws(() => saveState(completeState(), NOW + 5), /本地快递数据读取失败，请稍后重试/);
 assert.deepEqual([memory.get(STATE_KEY), memory.get(STATE_BACKUP_KEY)], divergentCopies,
   "unrecoverable legacy replicas must remain intact rather than become a writable empty store");
 
@@ -437,7 +437,7 @@ assert.notEqual(memory.get(durablePrimaryKey!), "");
 // replacing inaccessible user data with a blank state.
 resetStorage();
 rejectDurableReads = true;
-assert.throws(() => loadState(NOW + 15), /本地快递数据读取失败/);
+assert.throws(() => loadState(NOW + 15), /本地快递数据读取失败，请稍后重试/);
 rejectDurableReads = false;
 assert.equal(
   readDiagnostics().some((item) =>

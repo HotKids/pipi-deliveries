@@ -380,11 +380,6 @@ public final class ManualTimelineAuthorityPolicy {
      * 排在手动包之后；付费的快递鸟排在 feed 增量之后。
      */
     public static boolean detailOutranksSource(
-            Candidate candidate, ExpressQueryResult sourcePackage) {
-        return detailOutranksSource(candidate, sourcePackage, "");
-    }
-
-    public static boolean detailOutranksSource(
             Candidate candidate, ExpressQueryResult sourcePackage, String preferredProvider) {
         return detailOutranksSource(candidate, sourcePackage, preferredProvider,
                 Kuaidi100TimelinePolicy.latestTimedEventMillis(sourcePackage));

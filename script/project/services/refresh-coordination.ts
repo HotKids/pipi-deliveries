@@ -1,8 +1,9 @@
+import { AbortController, type AbortSignal } from "scripting";
 import { OperationTimeoutError, waitForRefresh } from "./deadline";
 
 export class RefreshInvalidatedError extends Error {
   constructor(readonly reason: "ownership_lost" | "superseded") {
-    super("刷新已中断，请重试");
+    super("刷新已中断，请稍后重试");
     this.name = "RefreshInvalidatedError";
   }
 }

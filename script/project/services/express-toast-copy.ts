@@ -28,7 +28,7 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   /** A list refresh completed with both successful and failed updates. */
   listUpdated: "列表已更新",
   /** 列表下拉：账号部分已完成，逐票更新仍在后台继续（E1，四端同一文案）。 */
-  refreshContinuing: "列表已更新，轨迹在后台继续更新",
+  refreshContinuing: "列表已更新",
   /** 列表下拉：全部失败或整轮抛错。 */
   refreshFailed: "刷新失败，请稍后重试",
   /** 详情下拉：拉到了新轨迹。 */
@@ -40,13 +40,13 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   /** 详情下拉抛错且页面上没有任何轨迹可看；有缓存可看时静默。 */
   detailRefreshFailed: "轨迹更新失败，请稍后重试",
   /** JD union page answered with risk control (HTTP 403 / "刷新几遍还不行"); the order rests 60 min. */
-  jdRiskControl: "操作过于频繁，请稍后再试",
+  jdRiskControl: "操作过于频繁，请稍后重试",
   /** 物流 H5 页（菜鸟半屏、K100 页）打不开。 */
   h5Unavailable: "暂时无法加载详情",
   /** An explicit note edit cannot load its current persisted owner or note. */
-  userNoteUnavailable: "暂时无法编辑，请重试",
+  userNoteUnavailable: "暂时无法编辑，请稍后重试",
   /** Shared copy only; this does not add Pipi note recovery to iOS. */
-  userNoteRecoveryFailed: "处理失败，请重试",
+  userNoteRecoveryFailed: "处理失败，请稍后重试",
   userNoteChanged: "快递信息已变更，请重新打开备注",
   userNoteSaved: "备注已保存",
   userNoteDeleted: "备注已删除",
@@ -76,7 +76,7 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   reauthorize: "重新授权",
   recoverBasic: "恢复基础模式",
   recoveringBasic: "正在恢复…",
-  deviceReauthorizationRequiredMessage: "设备授权已过期，请重新授权。现有记录将会保留。",
+  deviceReauthorizationRequiredMessage: "设备授权已过期，请重新授权，现有记录将保留",
 
   phoneBound: "手机号已绑定",
   /** 账号类：绑定失败的兜底文案；上游给了原因就显示原因。 */
@@ -86,7 +86,7 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   /** 账号类：解绑失败。 */
   unbindFailed: "解绑失败，请稍后重试",
   /** 存储类：本地状态每个副本都无法迁移时的提示，不当成空列表（2026-09-06）。 */
-  stateLoadFailed: "本地快递数据读取失败",
+  stateLoadFailed: "本地快递数据读取失败，请稍后重试",
 });
 
 /** A refresh reports a unified toast by key; pages render it through the table, never free text. */

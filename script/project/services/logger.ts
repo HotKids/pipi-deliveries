@@ -11,6 +11,9 @@ import {
 export type DiagnosticLevel = "info" | "warning" | "error";
 
 export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetails> & {
+  cooldownRemainingMs?: number;
+  projectionComplete?: boolean;
+  accumulatedStart?: boolean;
   commitProtocol?: "immutable_link";
   commitSequence?: number;
   selectionScope?: "query_response" | "display";
@@ -221,6 +224,8 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   evaluationFailures?: number;
   loadDurationMs?: number;
   resourceCount?: number;
+  projectionTrackCount?: number;
+  viewportHosted?: boolean;
   rawTrackCount?: number;
   validTrackCount?: number;
   effectiveTrackCount?: number;
@@ -1074,7 +1079,8 @@ export function diagnosticErrorDetails(error: unknown): DiagnosticDetails {
 }
 
 /** Beta records by default; the formal build stays quiet until the user turns it on. */
-const DIAGNOSTICS_DEFAULT_ENABLED = SCRIPT_BUILD_TRACK === "beta";
+const diagnosticsTrack: string = SCRIPT_BUILD_TRACK;
+const DIAGNOSTICS_DEFAULT_ENABLED = diagnosticsTrack === "beta";
 let diagnosticsInstallChecked = false;
 
 /**
@@ -1088,7 +1094,7 @@ let diagnosticsInstallChecked = false;
 function reopenDiagnosticsForNewBeta(): void {
   if (diagnosticsInstallChecked) return;
   diagnosticsInstallChecked = true;
-  if (SCRIPT_BUILD_TRACK !== "beta") return;
+  if (!DIAGNOSTICS_DEFAULT_ENABLED) return;
   try {
     if (Storage.get<string>(DIAGNOSTIC_BETA_VERSION_KEY, { shared: true }) === SCRIPT_VERSION) return;
     if (Storage.set(DIAGNOSTIC_ENABLED_KEY, true, { shared: true }) === false) return;
@@ -1423,8 +1429,39 @@ export function readDiagnostics(): DiagnosticEntry[] {
   return [...unique.values()].slice(-MAX_RECORDS).reverse();
 }
 
+/**
+ * 2026-11-12 诊断日志清理（与 Pipi AppDiagnosticLog.changedSinceLastLogged 同一规则）: an unchanged
+ * per-row line is written again only after this long, so a parcel that sits still is not re-logged on
+ * every sync while the log still shows it a few times a day.
+ */
+export const REPEAT_RELOG_MS = 6 * 60 * 60 * 1000;
+const REPEAT_KEYS = 512;
+const repeatedLines = new Map<string, { fingerprint: string; atMs: number }>();
+
+/**
+ * Whether a repeating info line for `key` carries something new: its first sighting in this script
+ * session, a changed `fingerprint`, or REPEAT_RELOG_MS since it was last written. Only memory holds the
+ * key and fingerprint; nothing is persisted. Clearing the log forgets every key. Warnings and errors
+ * never go through this filter.
+ */
+export function changedSinceLastLogged(key: string, fingerprint: string, now = Date.now()): boolean {
+  const last = repeatedLines.get(key);
+  if (last && last.fingerprint === fingerprint && now - last.atMs >= 0 && now - last.atMs < REPEAT_RELOG_MS) {
+    return false;
+  }
+  repeatedLines.delete(key);
+  repeatedLines.set(key, { fingerprint, atMs: now });
+  while (repeatedLines.size > REPEAT_KEYS) {
+    const eldest = repeatedLines.keys().next().value;
+    if (eldest === undefined) break;
+    repeatedLines.delete(eldest);
+  }
+  return true;
+}
+
 export function clearDiagnostics(): void {
   try {
+    repeatedLines.clear();
     migrateLegacyDiagnostics(Date.now());
     Storage.remove(DIAGNOSTIC_KEY, { shared: true });
     clearDiagnosticFiles();

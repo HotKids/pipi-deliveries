@@ -5,11 +5,23 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertNull;
 
+import android.app.Application;
+import android.app.Notification;
+import android.app.NotificationManager;
+import android.content.Context;
+
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.StatusSemantic;
 
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.Shadows;
+import org.robolectric.annotation.Config;
 
+@RunWith(RobolectricTestRunner.class)
+@Config(sdk = 31, manifest = Config.NONE, application = Application.class)
 public final class ExpressNotificationsTest {
     /** 与 Pipi 同口径：文案变了但事件没变，不是新通知——已签收的件不得被重新通知（2026-09-05）。 */
     @Test
@@ -119,5 +131,23 @@ public final class ExpressNotificationsTest {
                 ExpressNotifications.statusColor(me.pipi.deliveries.model.StatusSemantic.COMPLETED));
         org.junit.Assert.assertEquals(0xFF757575,
                 ExpressNotifications.statusColor(me.pipi.deliveries.model.StatusSemantic.UNKNOWN));
+    }
+
+    /** G17: an empty headline still posts, with iOS's 「物流状态已更新」 body. */
+    @Test
+    public void anEmptyHeadlineFallsBackToTheSharedStatusUpdatedCopy() {
+        Context context = RuntimeEnvironment.getApplication();
+        Shadows.shadowOf((Application) context)
+                .grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS);
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        manager.cancelAll();
+        ExpressItem item = new ExpressItem(42L, "", "SF1234567890", "SF", "顺丰速运",
+                StatusSemantic.TRANSIT, StatusSemantic.TRANSIT.label, "",
+                "", "[]", "", "INTERFACE5", "");
+        assertTrue(ExpressNotifications.post(context, item));
+        Notification posted = Shadows.shadowOf(manager).getNotification((int) (42L & 0x7fffffff));
+        org.junit.Assert.assertNotNull(posted);
+        assertEquals("物流状态已更新",
+                posted.extras.getCharSequence(Notification.EXTRA_TEXT).toString());
     }
 }

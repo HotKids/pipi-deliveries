@@ -194,12 +194,13 @@ function bootstrapRecords(): CarrierQueryRecord[] {
   });
 }
 
-const BOOTSTRAP_INDEXES = buildCarrierIndexes(
+const bootstrapIndexes = buildCarrierIndexes(
   bootstrapRecords(),
   BOOTSTRAP_TABLE_VERSION,
   BOOTSTRAP_TABLE_SOURCE,
 );
-if (!BOOTSTRAP_INDEXES) throw new Error("Invalid built-in carrier table");
+if (!bootstrapIndexes) throw new Error("Invalid built-in carrier table");
+const BOOTSTRAP_INDEXES = bootstrapIndexes;
 let ACTIVE_INDEXES = BOOTSTRAP_INDEXES;
 
 /** Atomically replaces every carrier lookup index after validating the entire snapshot. */

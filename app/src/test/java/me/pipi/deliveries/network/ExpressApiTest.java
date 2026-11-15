@@ -310,7 +310,7 @@ public final class ExpressApiTest {
             api.detect("TEST123456");
             org.junit.Assert.fail("Expected rate-limit failure");
         } catch (ExpressApi.QueryException expected) {
-            assertEquals("请求过于频繁，请稍后再试", expected.getMessage());
+            assertEquals("操作过于频繁，请稍后重试", expected.getMessage());
         }
     }
 
