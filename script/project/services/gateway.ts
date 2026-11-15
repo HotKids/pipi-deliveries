@@ -26,7 +26,7 @@ import {
   scriptingCryptoRuntimeLabel,
   scriptingHmacSha256Hex,
 } from "./scripting-crypto";
-import { utf8Data } from "./scripting-data";
+import { sha256Hex } from "./scripting-data";
 import { createDiagnosticFlowId, writeDiagnostic } from "./logger";
 import {
   loadScriptingActivation,
@@ -100,24 +100,8 @@ export class GatewayError extends Error {
   }
 }
 
-export function canonicalRequest(
-  timestamp: number,
-  nonce: string,
-  route: string,
-  bodySha256: string,
-  keyId: string,
-  activationHash: string,
-): string {
-  return scriptingCanonicalRequest(timestamp, nonce, GATEWAY_ORIGIN,
-    route, bodySha256, keyId, activationHash);
-}
-
 export function hmacSha256Hex(key: string, value: string): string {
   return scriptingHmacSha256Hex(key, value);
-}
-
-function sha256Hex(value: string): string {
-  return Crypto.sha256(utf8Data(value)).toHexString().toLowerCase();
 }
 
 type SharedScriptingAuthHeaders = {
@@ -173,7 +157,15 @@ export function scriptingAuthHeaders(
     "X-Scripting-Nonce": nonce,
     "X-Scripting-Signature": hmacSha256Hex(
       material.macKey,
-      canonicalRequest(timestamp, nonce, route, bodySha256, material.keyId, activationHash),
+      scriptingCanonicalRequest(
+        timestamp,
+        nonce,
+        GATEWAY_ORIGIN,
+        route,
+        bodySha256,
+        material.keyId,
+        activationHash,
+      ),
     ),
   };
 }
@@ -198,7 +190,7 @@ function validateRoute(route: string): string {
  */
 export const ACCESS_KEY_INVALID_MESSAGE = "Access Key 无效或已失效";
 export const ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE = "Access Key 已使用";
-export const ACTIVATION_SAVE_FAILED_MESSAGE = "激活信息保存失败，请重试";
+export const ACTIVATION_SAVE_FAILED_MESSAGE = "激活信息保存失败，请稍后重试";
 export const SCRIPTING_UPDATE_REQUIRED_MESSAGE = "请更新脚本后重试";
 
 function failureMessage(status: number, gatewayCode = ""): string {
@@ -289,7 +281,10 @@ export async function postGateway<T extends Record<string, unknown>>(
     );
   }
 
-  let response;
+  const observation: {
+    response?: Awaited<ReturnType<typeof fetch>>;
+    phase: RequestTimeoutDetails["requestPhase"];
+  } = { phase: "request" };
   let requestStarted = false;
   let requestSettled = false;
   let responseText = "";
@@ -300,7 +295,6 @@ export async function postGateway<T extends Record<string, unknown>>(
   const requestStartedAtMs = Date.now();
   const requestId = createDiagnosticFlowId("request");
   const lifecycleDeadlineAtMs = requestStartedAtMs + timeoutMs;
-  let requestPhase: RequestTimeoutDetails["requestPhase"] = "request";
   let responseHeadersAfterMs: number | undefined;
   let responseBodyAfterMs: number | undefined;
   let signalAbortAfterMs: number | undefined;
@@ -309,7 +303,7 @@ export async function postGateway<T extends Record<string, unknown>>(
     const observedAtMs = Date.now();
     return new OperationTimeoutError(undefined, {
       requestId, signalAbortAfterMs,
-      timeoutOrigin, requestPhase, requestBudgetMs: timeoutMs,
+      timeoutOrigin, requestPhase: observation.phase, requestBudgetMs: timeoutMs,
       requestElapsedMs: observedAtMs - requestStartedAtMs,
       responseHeadersAfterMs, responseBodyAfterMs,
       deadlineLagMs: Math.max(0, observedAtMs - lifecycleDeadlineAtMs),
@@ -326,11 +320,11 @@ export async function postGateway<T extends Record<string, unknown>>(
     const expired = new Promise<void>((_, reject) => {
       rejectLifecycle = reject;
     });
-    lifecycle.signal.addEventListener("abort", abortLifecycle, { once: true });
+    lifecycle.signal.addEventListener("abort", abortLifecycle);
     const request = (async () => {
       options.beforeQuery?.();
       requestStarted = true;
-      response = await fetch(`${GATEWAY_ORIGIN}${route}`, {
+      const response = await fetch(`${GATEWAY_ORIGIN}${route}`, {
         method: SCRIPTING_REQUEST_METHOD,
         headers: {
           "Content-Type": "application/json; charset=utf-8",
@@ -341,6 +335,7 @@ export async function postGateway<T extends Record<string, unknown>>(
         signal: lifecycle.signal,
         debugLabel: `Pipi Deliveries ${route}`,
       });
+      observation.response = response;
       responseHeadersAfterMs = Date.now() - requestStartedAtMs;
       if (lifecycle.signal.aborted) {
         throw timeoutError(options.signal?.aborted ? "parent_signal" : "timeout_signal");
@@ -348,7 +343,7 @@ export async function postGateway<T extends Record<string, unknown>>(
       if (Date.now() >= lifecycleDeadlineAtMs) {
         throw timeoutError("deadline_after_headers");
       }
-      requestPhase = "response_body";
+      observation.phase = "response_body";
       if (
         typeof response.expectedContentLength === "number" &&
         response.expectedContentLength > MAX_RESPONSE_BYTES
@@ -357,7 +352,7 @@ export async function postGateway<T extends Record<string, unknown>>(
       }
       const text = await response.text();
       responseBodyAfterMs = Date.now() - requestStartedAtMs;
-      requestPhase = "response_complete";
+      observation.phase = "response_complete";
       if (Date.now() >= lifecycleDeadlineAtMs) {
         throw timeoutError("deadline_after_body");
       }
@@ -373,7 +368,7 @@ export async function postGateway<T extends Record<string, unknown>>(
       if (callerSettledAfterMs == null) return;
       writeDiagnostic("gateway.request.late_settled", {
         requestId, signalAbortAfterMs, callerSettledAfterMs,
-        requestPhase, requestBudgetMs: timeoutMs,
+        requestPhase: observation.phase, requestBudgetMs: timeoutMs,
         requestElapsedMs: Date.now() - requestStartedAtMs,
         responseHeadersAfterMs, responseBodyAfterMs,
         result: "settled",
@@ -382,9 +377,9 @@ export async function postGateway<T extends Record<string, unknown>>(
     void request.then(observeSettlement, observeSettlement);
     await Promise.race([request, expired]);
   } catch (error) {
-    if (error instanceof GatewayError && requestPhase === "response_complete" &&
+    if (error instanceof GatewayError && observation.response && observation.phase === "response_complete" &&
         !lifecycle.signal.aborted && Date.now() < lifecycleDeadlineAtMs) {
-      recordGatewayCredentialOutcome(credentialObservation, response.status, "", false);
+      recordGatewayCredentialOutcome(credentialObservation, observation.response.status, "", false);
     }
     if (error instanceof GatewayError || error instanceof OperationTimeoutError) {
       throw error;
@@ -405,7 +400,7 @@ export async function postGateway<T extends Record<string, unknown>>(
     if (requestStarted && !requestSettled) {
       writeDiagnostic("gateway.request.wait_ended", {
         requestId, signalAbortAfterMs, callerSettledAfterMs,
-        requestPhase, requestBudgetMs: timeoutMs,
+        requestPhase: observation.phase, requestBudgetMs: timeoutMs,
         requestElapsedMs: callerSettledAfterMs,
         responseHeadersAfterMs, responseBodyAfterMs,
         result: "native_pending",
@@ -413,10 +408,12 @@ export async function postGateway<T extends Record<string, unknown>>(
     }
     // Access rejection is not evidence that a parcel lookup was permitted.
     if (requestStarted) {
-      options.onQueryAttempted?.(response?.status !== 401 && response?.status !== 403);
+      options.onQueryAttempted?.(observation.response?.status !== 401 && observation.response?.status !== 403);
     }
   }
 
+  const response = observation.response;
+  if (!response) throw new GatewayError("服务响应异常");
   const responseCode = gatewayErrorCode(responseText);
   recordScriptingActivationOutcome(credentials.token, response.status, responseCode);
   let value: unknown;

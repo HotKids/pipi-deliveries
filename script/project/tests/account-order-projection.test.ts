@@ -1342,6 +1342,7 @@ class BlockingProjectionWebView {
     const startedAt = Date.now();
     while (Date.now() - startedAt < 40) {
       // Simulate a native bridge that blocks JS timers past the parent deadline.
+      // A projection already read after that deadline is kept.
     }
     return Promise.resolve({
       waybillCode: "SF1122334455",
@@ -1361,17 +1362,17 @@ const blockedProjectionAbort = setTimeout(
   () => blockedProjectionController.abort(),
   5,
 );
-await assert.rejects(
-  projectAccountOrder(
-    parcel("https://u.jd.com/blocked"),
-    Date.now() + 5,
-    () => {
-      blockedEvaluationDiagnostics++;
-    },
-    blockedProjectionController.signal,
-  ),
-  (error: unknown) => error instanceof Error && error.name === "OperationTimeoutError",
+const blockedProjection = await projectAccountOrder(
+  parcel("https://u.jd.com/blocked"),
+  Date.now() + 5,
+  () => {
+    blockedEvaluationDiagnostics++;
+  },
+  blockedProjectionController.signal,
 );
+assert.equal(blockedProjection.waybill, "SF1122334455");
+assert.equal(blockedProjection.courierCode, "SF");
+assert.equal(blockedProjection.companyName, "顺丰速运");
 await new Promise<void>((resolve) => setTimeout(resolve, 0));
 clearTimeout(blockedProjectionAbort);
 assert.equal(blockedProjectionController.signal.aborted, true);

@@ -58,10 +58,6 @@ public final class ExpressSubscriptionClient {
     }
 
     /** Online lookup for existing add, detail and SF list stages; a scalar event stays partial. */
-    public ExpressQueryResult queryManual(Context context, String waybill) throws Exception {
-        return queryManual(context, waybill, null);
-    }
-
     public ExpressQueryResult queryManual(
             Context context, String waybill, ExpressQueryCancellation cancellation)
             throws Exception {

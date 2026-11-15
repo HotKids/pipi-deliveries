@@ -19,6 +19,7 @@ import {
   remainingTimeoutMs,
 } from "./deadline";
 import {
+  decodeMeizuEnvelope,
   kuaidi100PhoneRejected,
   parseKdniaoTimeline,
   parseKuaidi100Timeline,
@@ -102,29 +103,13 @@ function decodedJsonObject(value: unknown): JsonObject {
 
 const MEIZU_IDENTITY_MAX_DEPTH = 12;
 
-function decodedJsonContainer(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  const candidate = value.trim();
-  const structured = (
-    candidate.startsWith("{") && candidate.endsWith("}")
-  ) || (
-    candidate.startsWith("[") && candidate.endsWith("]")
-  );
-  if (!structured) return value;
-  try {
-    return JSON.parse(candidate) as unknown;
-  } catch {
-    return value;
-  }
-}
-
 function collectMeizuWaybillIdentities(
   raw: unknown,
   identities: Set<string>,
   depth = 0,
 ): void {
   if (raw == null || depth > MEIZU_IDENTITY_MAX_DEPTH) return;
-  const decoded = decodedJsonContainer(raw);
+  const decoded = decodeMeizuEnvelope(raw);
   if (Array.isArray(decoded)) {
     for (const value of decoded) {
       collectMeizuWaybillIdentities(value, identities, depth + 1);
@@ -193,18 +178,6 @@ function responseCode(root: JsonObject): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const candidate = text(value);
   return /^-?\d+$/.test(candidate) ? Number(candidate) : null;
-}
-
-function uniquePhoneTails(
-  explicitTail: string,
-  boundTails: readonly string[],
-  includeEmpty: boolean,
-): string[] {
-  return [includeEmpty ? "" : explicitTail, explicitTail, ...boundTails]
-    .map((value) => String(value || "").trim())
-    .filter((value, index, values) =>
-      (value === "" || /^\d{4}$/.test(value)) && values.indexOf(value) === index
-    );
 }
 
 export type ManualCarrierDetection = {

@@ -119,7 +119,7 @@ test("a pull with no per-shipment work left is answered once with the whole refr
   assert.equal(other, 0, "fixture premise: the unchanged list leaves no per-shipment request");
   assert.notEqual(summary.continuing, true, "nothing continues in the background");
   assert.equal(summary, finished);
-  assert.notEqual(refreshSummaryToast(summary), EXPRESS_TOAST_COPY.refreshContinuing);
+  assert.equal(refreshSummaryToast(summary), "刷新完成");
 });
 
 test("a pull whose account phase failed is answered with that failure", async () => {
@@ -155,7 +155,7 @@ test("an ordinary forced refresh still resolves with the whole refresh", async (
 });
 
 test("the continuing toast keeps failure precedence and the four-client copy", () => {
-  assert.equal(EXPRESS_TOAST_COPY.refreshContinuing, "列表已更新，轨迹在后台继续更新");
+  assert.equal(EXPRESS_TOAST_COPY.refreshContinuing, "列表已更新");
   assert.equal(refreshSummaryToast({ attempted: 1, succeeded: 0, failed: 1, continuing: true }),
     EXPRESS_TOAST_COPY.refreshFailed);
   assert.equal(refreshSummaryToast({ attempted: 2, succeeded: 1, failed: 1, continuing: true }),

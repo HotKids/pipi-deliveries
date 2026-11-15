@@ -111,11 +111,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private static final String EXTRA_ROUTE_INTERFACE = "preview_route_interface";
     private static final String EXTRA_ROUTE_CREDENTIAL = "preview_route_credential";
     private static final String EXTRA_PREVIEW_BINDING_SOURCE = "preview_binding_source";
-    private static final String LOGO_SELECTOR =
-            "body.mcn > .container > .cp-info.physical-border > .cp-info_thumb > img";
-    private static final String LOGO_WRAPPER_SELECTOR =
-            "body.mcn > .container > .cp-info.physical-border > .cp-info_thumb";
-    private static final String LOGO_STYLE_ID = "__deliveries_courier_logo_style";
     private static final int ORANGE = 0xFFFF8000;
     private static final int BLUE = 0xFF1E85E5;
     private static final int LINE = 0x33888888;
@@ -226,16 +221,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 .putExtra(EXTRA_TRANSIENT_ONLINE_PREVIEW, true);
     }
 
-
-    public static Intent previewIntent(Context context, ExpressQueryResult result) {
-        return previewIntent(context, result, "");
-    }
-
-    public static Intent previewIntent(
-            Context context, ExpressQueryResult result, String phone) {
-        return previewIntent(context, result, phone, "interface6");
-    }
-
     public static Intent previewIntent(
             Context context, ExpressQueryResult result, String phone, String bindingSource) {
         StatusSemantic semantic = result == null || result.semantic == null
@@ -322,7 +307,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     if (!initialDetailIsCurrent(generation)) return;
                     initialDetailTask = null;
-                    // 「本地快递数据读取失败」只在列表加载失败时弹（审计 R8，用户 2026-09-25 默认 #13）。
+                    // 「本地快递数据读取失败，请稍后重试」只在列表加载失败时弹（审计 R8，用户 2026-09-25 默认 #13）。
                     finish();
                 });
             }
@@ -434,6 +419,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         firstManualQueryTask = worker.submit(() -> {
             AtomicReference<String> courierHint = new AtomicReference<>(
                     getIntent().getStringExtra(EXTRA_MANUAL_COURIER_HINT));
+            AtomicReference<List<String>> primaryJtTails = new AtomicReference<>();
             ExpressRepository.ManualTimelinePollClaim pollClaim = null;
             try {
                 ExpressRepository repository = ExpressRepository.get(this);
@@ -487,9 +473,12 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                                     : existing == null ? "" : existing.phone;
                             return () -> {
                                 try (ExpressQueryCancellation stage = cancellation.child(LOCAL_REFRESH_TIMEOUT_MS)) {
+                                    String route = ManualRoutePolicy.primaryH5Url(waybill, code);
+                                    if (TimelineSlot.JT_H5.equals(ManualRoutePolicy.primaryH5Provider(code))) {
+                                        primaryJtTails.set(addChainPhoneTails(savedPhone));
+                                    }
                                     return captureKuaidi100ForAddChain(waybill,
-                                            ManualRoutePolicy.primaryH5Url(waybill, code), identity,
-                                            savedPhone, stage);
+                                            route, identity, savedPhone, stage);
                                 }
                             };
                         },
@@ -509,7 +498,10 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         : existing != null && !existing.phone.isEmpty() ? existing.phone : selected.phone;
                 List<ManualQuerySuccess> writes = new ArrayList<>(batch.successes);
                 String route = kuaidi100AddCaptureRoute(waybill, selected.courierCode, batch.accumulatedSuccesses());
-                if (!route.isEmpty()) {
+                boolean repeatedJtQuery = TimelineSlot.JT_H5.equals(
+                        ManualRoutePolicy.primaryH5Provider(selected.courierCode))
+                        && addChainPhoneTails(phone).equals(primaryJtTails.get());
+                if (!route.isEmpty() && !repeatedJtQuery) {
                     ExpressQueryResult captured = captureKuaidi100ForAddChain(
                             waybill, route, selected, phone, cancellation);
                     cancellation.throwIfCancelled();
@@ -700,6 +692,11 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         if (successes == null) return "";
         if (ManualTimelineAuthorityPolicy.timelineStartAligned(successes, waybill)) return "";
         return ManualRoutePolicy.primaryH5Url(waybill, courierCode);
+    }
+
+    private List<String> addChainPhoneTails(String phone) {
+        return ExpressKuaidi100TimelineCapture.phoneCandidates(phone,
+                ExpressRepository.get(this).phoneCandidates("", previewBindingSource));
     }
 
     /** 在工作线程里同步等隐藏 WebView 抓完（最多 8 秒 + 1 秒），抓到就组成 K100 槽的包。 */
@@ -2412,7 +2409,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     static boolean allowedOrderHost(Uri uri) {
         if (uri == null || !"https".equalsIgnoreCase(uri.getScheme())) return false;
-        return trustedHost(uri.getHost(), "jd.com");
+        String host = uri.getHost();
+        return !"plogin.m.jd.com".equalsIgnoreCase(host) && trustedHost(host, "jd.com");
     }
 
     static String normalizeIdentity(String value) {
@@ -2431,60 +2429,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     private static boolean trustedHost(String host, String parent) {
         return host != null && (host.equals(parent) || host.endsWith("." + parent));
-    }
-
-    static String courierLogoScript(String dataUri) {
-        return "(function(){try{"
-                + "var selector='" + LOGO_SELECTOR + "';"
-                + "var wrapperSelector='" + LOGO_WRAPPER_SELECTOR + "';"
-                + "var styleId='" + LOGO_STYLE_ID + "';"
-                + "var local='" + dataUri + "';"
-                + "var token=(window.__deliveriesCourierLogoGeneration||0)+1;"
-                + "window.__deliveriesCourierLogoGeneration=token;"
-                + "function active(){return window.__deliveriesCourierLogoGeneration===token;}"
-                + "function ensureStyle(){var style=document.getElementById(styleId);"
-                + "if(!style){style=document.createElement('style');style.id=styleId;"
-                + "style.textContent=wrapperSelector+'{border-color:transparent!important;}';"
-                + "(document.head||document.documentElement).appendChild(style);}}"
-                + "function patch(){if(!active())return;ensureStyle();"
-                + "var image=document.querySelector(selector);if(!image)return;"
-                + "image.removeAttribute('srcset');"
-                + "if((image.getAttribute('src')||'')!==local)image.setAttribute('src',local);}"
-                + "if(window.__deliveriesCourierLogoObserver)"
-                + "window.__deliveriesCourierLogoObserver.disconnect();"
-                + "var probe=new Image();probe.onload=function(){if(!active())return;patch();"
-                + "if(!active())return;var observer=new MutationObserver(function(){"
-                + "if(!active()){observer.disconnect();return;}patch();});"
-                + "window.__deliveriesCourierLogoObserver=observer;"
-                + "observer.observe(document.documentElement,{childList:true,subtree:true,"
-                + "attributes:true,attributeFilter:['src','srcset']});};probe.src=local;"
-                + "}catch(e){}})()";
-    }
-
-    static String pageSurfaceScript(int surfaceColor) {
-        String color = String.format(Locale.US, "#%06X", surfaceColor & 0xFFFFFF);
-        return "(function(){try{var c='" + color + "';function paint(){"
-                + "var s=document.getElementById('__deliveries_surface_style');"
-                + "if(!s){s=document.createElement('style');s.id='__deliveries_surface_style';"
-                + "s.textContent='html,body,#app,#root{background-color:'+c+' !important;}';"
-                + "(document.head||document.documentElement).appendChild(s);}"
-                + "var nodes=[document.documentElement,document.body,"
-                + "document.getElementById('app'),document.getElementById('root')];"
-                + "if(document.body){for(var i=0;i<document.body.children.length;i++)"
-                + "nodes.push(document.body.children[i]);}"
-                + "nodes.forEach(function(e){if(e)e.style.setProperty('background-color',c,'important');});"
-                + "document.querySelectorAll('div,section,main,article,header,footer,ul,li,.app,.page,.page-container,.main,.content,.layout').forEach(function(e){"
-                + "var b=getComputedStyle(e).backgroundColor;var r=e.getBoundingClientRect();"
-                + "if((b==='rgb(255, 255, 255)'||b==='rgba(0, 0, 0, 0)'||b==='transparent')"
-                + "&&r.width>=window.innerWidth*.55)e.style.setProperty('background-color',c,'important');});"
-                + "var m=document.querySelector('meta[name=theme-color]');"
-                + "if(!m){m=document.createElement('meta');m.name='theme-color';document.head.appendChild(m);}m.content=c;}"
-                + "paint();if(!window.__deliveriesSurfaceObserver){"
-                + "window.__deliveriesSurfaceObserver=new MutationObserver(paint);"
-                + "window.__deliveriesSurfaceObserver.observe(document.documentElement,"
-                + "{childList:true,subtree:true,attributes:true,"
-                + "attributeFilter:['class','src','hidden','aria-hidden']});}"
-                + "}catch(e){}})()";
     }
 
     private int dp(float value) {

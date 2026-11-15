@@ -605,7 +605,7 @@ export function parseAccountTimelineResponse(
 /** App navigation uses only the matching source packet, never the projected carrier identity. */
 export function parseAccountExternalAppRoutes(
   input: unknown,
-  expected: AccountDetailRecord,
+  expected: Pick<AccountDetailRecord, "provider" | "waybill" | "companyCode">,
   observe?: (details: DiagnosticDetails) => void,
 ): AccountAppTarget[] {
   const provider = String(expected.provider || "").toLowerCase();

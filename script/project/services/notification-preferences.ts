@@ -151,7 +151,7 @@ export function saveNotificationStatuses(
   } catch {
     shared = false;
   }
-  if (!durable && !shared) throw new Error("无法保存通知设置，请重试");
+  if (!durable && !shared) throw new Error("无法保存通知设置，请稍后重试");
   cachedEnabled = stored.enabled;
   return [...cachedEnabled];
 }

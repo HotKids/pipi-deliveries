@@ -361,6 +361,7 @@ class BlockingCainiaoWebView {
     const startedAt = Date.now();
     while (Date.now() - startedAt < 40) {
       // Simulate a native bridge that blocks JS timers past the parent deadline.
+      // A timeline already parsed after that deadline is kept.
     }
     return Promise.resolve({
       extractionSource: "dom",
@@ -383,23 +384,22 @@ const blockedCainiaoAbort = setTimeout(
   () => blockedCainiaoController.abort(),
   5,
 );
-await assert.rejects(
-  scrapeCainiaoH5Timeline({
-    routeUrl: ROUTE,
-    waybill: WAYBILL,
-    courierCode: "SF",
-    companyName: "顺丰速运",
-    deadlineAtMs: Date.now() + 5,
-    signal: blockedCainiaoController.signal,
-  }, () => {
-    blockedEvaluationDiagnostics++;
-  }),
-  (error: unknown) => error instanceof Error && error.name === "OperationTimeoutError",
-);
+const blockedCainiaoTimeline = await scrapeCainiaoH5Timeline({
+  routeUrl: ROUTE,
+  waybill: WAYBILL,
+  courierCode: "SF",
+  companyName: "顺丰速运",
+  deadlineAtMs: Date.now() + 5,
+  signal: blockedCainiaoController.signal,
+}, () => {
+  blockedEvaluationDiagnostics++;
+});
+assert.equal(blockedCainiaoTimeline?.latestDetail, "快件运输中");
+assert.equal(blockedCainiaoTimeline?.tracks.length, 1);
 await new Promise<void>((resolve) => setTimeout(resolve, 0));
 clearTimeout(blockedCainiaoAbort);
 assert.equal(blockedCainiaoController.signal.aborted, true);
 assert.equal(blockedEvaluationDisposed, 1);
-assert.equal(blockedEvaluationDiagnostics, 0);
+assert.equal(blockedEvaluationDiagnostics, 1);
 
 console.log("Cainiao H5 timeline tests passed");

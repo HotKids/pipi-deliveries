@@ -10,7 +10,7 @@ import java.util.stream.Stream;
 import org.junit.Test;
 
 /**
- * Audit R8 (user default #13 of 2026-09-25): 「本地快递数据读取失败」 is shown only when the list
+ * Audit R8 (user default #13 of 2026-09-25): 「本地快递数据读取失败，请稍后重试」 is shown only when the list
  * fails to load — as on iOS; the query box, the detail page and the account manager no longer
  * show it.
  */

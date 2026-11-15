@@ -1,3 +1,4 @@
+import type { Color, ColorStringHex } from "scripting";
 import { nodeNormalizedStatus, responseNormalizedStatus, timelineNormalizedStatus, statusPriority, statusProjectionFields } from "./worker-status";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import {
@@ -14,7 +15,13 @@ import type {
   WidgetSnapshot,
 } from "../models";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
-import { activeStatusLabelTable, statusDisplay } from "./status-labels";
+import {
+  activeStatusLabelTable,
+  jtLabelSemantic,
+  proseContains,
+  statusDisplay,
+  statusRuleSemantic,
+} from "./status-labels";
 
 export const SIGNED_RETENTION_MS = EXPRESS_POLICY.retention.signedMs;
 export const CANCELLED_RETENTION_MS = EXPRESS_POLICY.retention.cancelledMs;
@@ -184,7 +191,7 @@ export function widgetStatusLabel(semantic: StatusSemantic): string {
 // 三端同一张状态色表（用户定 2026-09-05：派送中与已签收不能同色）：异常红、待取件橙、
 // 派送中绿、已签收青、揽件/运输蓝、下单/发货黄、已取消与未知灰。Pipi ExpressNotificationVisuals、
 // Lite ExpressListActivity/ExpressDetailActivity.statusColor 同表。
-export function statusTint(semantic: StatusSemantic): string {
+export function statusTint(semantic: StatusSemantic): Color {
   switch (semantic) {
     case "WAITING_PICKUP":
       return "systemOrange";
@@ -233,9 +240,9 @@ function statusLuminance(color: number): number {
 export function statusTextTint(
   semantic: StatusSemantic,
   options: { badgeOpacity?: number; brandAccent?: string; accentRGB?: number } = {},
-): { light: string; dark: string } {
+): { light: ColorStringHex; dark: ColorStringHex } {
   const accent = options.accentRGB ?? STATUS_RGB[statusTint(semantic)] ?? STATUS_RGB.secondaryLabel;
-  const tone = (surface: number): string => {
+  const tone = (surface: number): ColorStringHex => {
     const brand = options.brandAccent ? Number.parseInt(options.brandAccent.slice(1), 16) : surface;
     const backgrounds = [surface, blendStatusColor(surface, brand, 0x55 / 255)]
       .map((background) => blendStatusColor(background, accent, options.badgeOpacity ?? 0));
@@ -323,6 +330,8 @@ export function parseListEventTime(value: string): number | null {
 }
 
 export function semanticFromEventCode(code: string): StatusSemantic {
+  const ruled = statusRuleSemantic("k100", code);
+  if (ruled !== null) return ruled;
   switch (String(code || "").trim().toUpperCase()) {
     case "101":
     case "102":
@@ -417,7 +426,12 @@ export function semanticFromStored(
   code: string,
   description: string,
 ): StatusSemantic {
-  switch (String(code || "").trim().toUpperCase()) {
+  const normalized = String(code || "").trim();
+  if (normalized) {
+    const ruled = statusRuleSemantic("storedCodes", normalized);
+    if (ruled !== null) return ruled;
+  }
+  switch (normalized.toUpperCase()) {
     case "CANCEL":
     case "CANCELLED":
       return "CANCELLED";
@@ -461,7 +475,10 @@ export function semanticFromAccountState(
   stateNumber: unknown,
   stateText: string,
 ): StatusSemantic {
-  switch (String(stateNumber ?? "").trim()) {
+  const stateCode = String(stateNumber ?? "").trim();
+  const ruled = statusRuleSemantic("v5StateNum", stateCode);
+  if (ruled !== null) return ruled;
+  switch (stateCode) {
     case "101":
       return "ORDERED";
     case "102":
@@ -815,13 +832,6 @@ export function timedTracks(tracks: readonly TrackNode[]): TrackNode[] {
 }
 
 /**
- * 终点文案：京东那句原文是「订单已完成配送，感谢您选择京东购物」，说的是送完了，不是刚下单。
- * 2026-09-08 从 semanticFromText 的下单支挪进完成支；起点闸门照旧认它（这一票已经走完，没有更早的
- * 历史值得再抓），所以这里单独留一条，闸门的真值表跟以前一字不差。
- */
-const ORDER_COMPLETION_TEXT = /订单已完成|配送完成/;
-
-/**
  * The start gate's own reading of a prose node (AGENTS §9 起点词表): the pickup words, then the order
  * words, never 待揽/等待揽. A node counts when it contains one of them, the way Pipi
  * (`StatusSemantic.startSemanticFromText`) and Lite read it; the display table above first sorts
@@ -830,9 +840,9 @@ const ORDER_COMPLETION_TEXT = /订单已完成|配送完成/;
  */
 export function startSemanticFromText(value: string): StatusSemantic {
   const text = String(value || "").replace(/\s+/g, "");
-  if (!text || /待揽|等待揽/.test(text)) return "UNKNOWN";
-  if (/已揽收|已揽件|揽收完成|揽件成功|揽收成功|已收寄|收取快件/.test(text)) return "PICKED";
-  if (/已下单|已经下单|订单已提交|订单已创建|提交了订单|等待出库|正在打包|拣货/.test(text)) return "ORDERED";
+  if (!text || proseContains("timelineStart", "notStartWords", text)) return "UNKNOWN";
+  if (proseContains("timelineStart", "pickedWords", text)) return "PICKED";
+  if (proseContains("timelineStart", "orderedWords", text)) return "ORDERED";
   return "UNKNOWN";
 }
 
@@ -862,7 +872,7 @@ export function containsTimelineStartTrack(
 ): boolean {
   return containsTimelineOriginTrack(tracks) || timedTracks(tracks).some((track) =>
     !trackStructuredSemantics(track).length &&
-    ORDER_COMPLETION_TEXT.test(track.detail.replace(/\s+/g, ""))
+    proseContains("timelineStart", "orderCompletionWords", track.detail.replace(/\s+/g, ""))
   );
 }
 
@@ -927,7 +937,12 @@ function semanticFromTrackCode(
 function jtNodeSemantic(track: TrackNode): StatusSemantic | undefined {
   if (track.raw?._pipiStatusSource !== "jt_h5" ||
       !Object.prototype.hasOwnProperty.call(track.raw, "jtStatusLabel")) return undefined;
-  switch (typeof track.raw.jtStatusLabel === "string" ? track.raw.jtStatusLabel.trim() : "") {
+  const label = typeof track.raw.jtStatusLabel === "string" ? track.raw.jtStatusLabel.trim() : "";
+  if (label) {
+    const ruled = jtLabelSemantic(label);
+    if (ruled !== null) return ruled;
+  }
+  switch (label) {
     case "取消": case "已取消": case "订单取消": case "取消订单": return "CANCELLED";
     case "问题件": case "异常件": case "异常": case "运输异常": return "DANGER";
     case "已下单": return "ORDERED";
@@ -1008,9 +1023,9 @@ export function isNonEventDetail(value: string): boolean {
  * The track a surface should show as the headline: simply the newest one. Mirrors Pipi's
  * TrackTimelinePolicy headline loop — no wording is filtered.
  */
-export function headlineTrack(
-  tracks: readonly TrackNode[],
-): TrackNode | null {
+export function headlineTrack<Track>(
+  tracks: readonly Track[],
+): Track | null {
   return tracks.length ? tracks[0] : null;
 }
 
@@ -1515,7 +1530,7 @@ export function mergeTimelinePackage(
   return finalize({ ...incoming, tracks });
 }
 
-const MANUAL_TIMELINE_PROVIDERS = new Set([
+const MANUAL_TIMELINE_PROVIDERS = new Set<string>([
   TIMELINE_SLOT.V5_QUERY,
   TIMELINE_SLOT.V4_QUERY,
   TIMELINE_SLOT.V6_QUERY,

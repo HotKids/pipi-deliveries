@@ -12,7 +12,8 @@ export async function copyText(text: string): Promise<CopyTextResult> {
   }
 
   try {
-    await Pasteboard.setItems([{ "public.plain-text": value }]);
+    // One pasteboard item carries only the supplied representations.
+    await Pasteboard.setItems([{ "public.plain-text": value } as Pasteboard.Item]);
     return "copied";
   } catch {
     // Fall through to the deprecated API for older Scripting builds.

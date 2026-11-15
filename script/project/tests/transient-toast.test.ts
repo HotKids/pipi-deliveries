@@ -239,7 +239,7 @@ const notificationSource = await readFile(
   resolve(projectDir, "pages/NotificationSettingsPage.tsx"),
   "utf8",
 );
-assert.ok(notificationSource.includes('setNotice("保存失败，请重试")'));
+assert.ok(notificationSource.includes('setNotice("保存失败，请稍后重试")'));
 
 const diagnosticsSource = await readFile(
   resolve(projectDir, "pages/DiagnosticLogPage.tsx"),

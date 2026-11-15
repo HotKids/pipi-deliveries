@@ -1,3 +1,5 @@
+import { AbortController, AbortSignal } from "scripting";
+
 export type RequestTimeoutDetails = {
   requestId?: string;
   signalAbortAfterMs?: number;
@@ -87,7 +89,7 @@ export function waitForRefresh<T>(work: Promise<T>, deadlineAtMs: number, signal
     };
     const abort = () => expire("cancelled");
     const timer = setTimeout(() => expire("deadline"), waitBudgetMs);
-    signal?.addEventListener("abort", abort, { once: true });
+    signal?.addEventListener("abort", abort);
     if (signal?.aborted) abort();
     else if (deadlineExpired(deadlineAtMs)) expire("deadline");
     work.then(value => {
@@ -116,8 +118,8 @@ export function linkedTimeoutSignal(
   const controller = new AbortController();
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const abort = () => controller.abort();
-  timeoutSignal.addEventListener("abort", abort, { once: true });
-  parent?.addEventListener("abort", abort, { once: true });
+  timeoutSignal.addEventListener("abort", abort);
+  parent?.addEventListener("abort", abort);
   if (timeoutSignal.aborted || parent?.aborted) abort();
   return {
     signal: controller.signal,
@@ -127,4 +129,27 @@ export function linkedTimeoutSignal(
       parent?.removeEventListener("abort", abort);
     },
   };
+}
+
+export function pauseWhileActive(
+  durationMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new OperationTimeoutError());
+      return;
+    }
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      settle();
+    };
+    const abort = () => finish(() => reject(new OperationTimeoutError()));
+    const timer = setTimeout(() => finish(resolve), durationMs);
+    signal?.addEventListener("abort", abort);
+  });
 }

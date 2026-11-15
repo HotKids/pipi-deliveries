@@ -546,15 +546,7 @@ public final class ManualQueryCoordinator {
      * {@code query} run for one row: its stage lines carry the row's own {@code sourceProvider} (as
      * {@link ExpressLog#source} gives it), {@code waybillTail}, the slot it asks ({@code requestProvider},
      * also the line's level) and the row's display fields from {@code display}, instead of the generic
-     * "manual".
-     */
-    public static Source forRow(Source query, String sourceProvider, String waybillTail, String requestProvider,
-            java.util.function.Supplier<RowDisplay> display) {
-        return forRow(query, sourceProvider, waybillTail, requestProvider, display, null);
-    }
-
-    /**
-     * As above, with {@code skipReason} read just before the stage would start: a non-empty reason (the
+     * "manual". With {@code skipReason} read just before the stage would start: a non-empty reason (the
      * row's cooldown, no route) skips the stage without starting it, as iOS logs a stage it does not
      * attempt, and answers what the query itself would have answered in that case (nothing).
      */

@@ -169,31 +169,21 @@ public final class Kuaidi100TimelinePolicy {
         if (!providerError && ExpressTimeline.hasJtStatusLabel(value)) semantic = StatusSemantic.fromJtLabel(value.optString("jtStatusLabel"));
         if (!providerError && (semantic == StatusSemantic.PICKED || orderedCounts && semantic == StatusSemantic.ORDERED)) return true;
         boolean proseDecides = !providerError && semantic == StatusSemantic.UNKNOWN && !ExpressTimeline.hasJtStatusLabel(value);
+        ExpressStatusLabels rules = ExpressStatusLabels.rules();
+        // 「待揽 / 等待揽」不是起点：下面三支文案不返回真，子节点仍递归。词表本身不变。
+        boolean awaitingCollection = rules.proseContains("timelineStart", "notStartWords", compactDetail);
         // 三端同一组词（2026-09-05 对齐）：揽收类与下单类；EMS 的「已收寄」「商品已经下单」也算。
-        if (proseDecides && (compactDetail.contains("已揽件")
-                || compactDetail.contains("已揽收")
-                || compactDetail.contains("揽收完成")
-                || compactDetail.contains("揽件成功")
-                || compactDetail.contains("揽收成功")
-                || compactDetail.contains("已收寄")
-                // 顺丰揽收节点写「顺丰速运 已收取快件」(2026-09-05 三端同补)。
-                || compactDetail.contains("收取快件"))) return true;
+        if (!awaitingCollection && proseDecides
+                && rules.proseContains("timelineStart", "pickedWords", compactDetail)) return true;
         // 终点文案（2026-09-08 从下单词表挪出来）：京东原文是「订单已完成配送，感谢您选择京东购物」，
         // 说的是送完了，不是刚下单。闸门跟下单类同一档（只在 orderedCounts 时生效）——这一票已经
         // 走完，没有更早的历史值得再抓；展示上它是 COMPLETED，见 ExpressStatusNormalizer。
         if (proseDecides && orderedCounts && completionCounts
-                && (compactDetail.contains("订单已完成")
-                || compactDetail.contains("配送完成"))) return true;
+                && rules.proseContains("timelineStart", "orderCompletionWords", compactDetail)) return true;
         // 下单类整表（2026-09-07 三端对齐到 iOS semanticFromText）：这几个词 Lite 的展示表
         // ExpressStatusNormalizer 早就认成「已下单」，起点闸门却看不见，同一行自相矛盾。
-        if (proseDecides && orderedCounts && (compactDetail.contains("已下单")
-                || compactDetail.contains("已经下单")
-                || compactDetail.contains("订单已提交")
-                || compactDetail.contains("订单已创建")
-                || compactDetail.contains("提交了订单")
-                || compactDetail.contains("等待出库")
-                || compactDetail.contains("正在打包")
-                || compactDetail.contains("拣货"))) return true;
+        if (!awaitingCollection && proseDecides && orderedCounts
+                && rules.proseContains("timelineStart", "orderedWords", compactDetail)) return true;
         java.util.Iterator<String> keys = value.keys();
         while (keys.hasNext()) {
             Object child = value.opt(keys.next());

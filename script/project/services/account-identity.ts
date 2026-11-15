@@ -2,7 +2,7 @@ import {
   readDurableTextCandidates,
   writeDurableText,
 } from "./durable-files";
-import { utf8Data } from "./scripting-data";
+import { sha256Hex } from "./scripting-data";
 import { writeDiagnostic } from "./logger";
 
 export type AccountSource = "interface5" | "interface6";
@@ -71,14 +71,10 @@ function hex(values: readonly number[]): string {
   return values.map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-function durableChecksum(value: string): string {
-  return Crypto.sha256(utf8Data(value)).toHexString().toLowerCase();
-}
-
 function encodedIdentity(value: string): string {
   return JSON.stringify({
     schema: 1,
-    checksum: durableChecksum(value),
+    checksum: sha256Hex(value),
     payload: value,
   });
 }
@@ -91,7 +87,7 @@ function decodedIdentity(raw: unknown): string {
     const checksum = clean(stored.checksum).toLowerCase();
     return stored.schema === 1 &&
       payload &&
-      checksum === durableChecksum(payload) &&
+      checksum === sha256Hex(payload) &&
       isInterface5Identity(parseObject(payload))
       ? payload
       : "";

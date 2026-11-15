@@ -85,19 +85,19 @@ const missingTask = missing.run();
 missing.resolveRoute("");
 await missingTask;
 assert.deepEqual(missing.opened, []);
-assert.deepEqual(missing.notices, ["来源暂未提供可用的菜鸟 App 链接"]);
+assert.deepEqual(missing.notices, ["来源暂未提供可用的菜鸟应用链接"]);
 
 const unavailable = scenario(false);
 const unavailableTask = unavailable.run();
 unavailable.resolveRoute(uri);
 await unavailableTask;
-assert.deepEqual(unavailable.notices, ["未能打开菜鸟、淘宝或支付宝，请确认已安装其中一个 App"]);
+assert.deepEqual(unavailable.notices, ["未能打开菜鸟、淘宝或支付宝，请确认已安装其中任一应用"]);
 
 for (const failed of [scenario(true, true)]) {
   const task = failed.run();
   failed.resolveRoute(uri);
   await task;
-  assert.deepEqual(failed.notices, ["打开菜鸟失败，请重试"]);
+  assert.deepEqual(failed.notices, ["打开菜鸟失败，请稍后重试"]);
   assert.deepEqual(failed.busy, [true, false]);
 }
 
@@ -133,7 +133,7 @@ for (const opened of [true, false]) {
   sf.resolveTargets([{ kind: "sf", url: uri }]);
   await task;
   assert.deepEqual(sf.opened, [uri]);
-  assert.deepEqual(sf.notices, opened ? [] : ["无法打开顺丰 App，请确认已安装"]);
+  assert.deepEqual(sf.notices, opened ? [] : ["无法打开顺丰，请确认已安装该应用"]);
 }
 
 const manual = {
@@ -149,7 +149,7 @@ for (const result of [true, false, new Error("synthetic native failure")]) {
   assert.deepEqual(test.opened, [manualUrl], "one direct launch must not query account credentials or duplicate taps");
   assert.equal(test.requestCount(), 0);
   assert.deepEqual(test.busy, [true, false]);
-  assert.deepEqual(test.notices, result === true ? [] : ["无法打开快递100小程序，请确认已安装微信"]);
+  assert.deepEqual(test.notices, result === true ? [] : ["暂时无法打开快递100小程序，请稍后重试"]);
   assert.ok(!JSON.stringify(test.diagnostics).includes("://"));
   assert.ok(!JSON.stringify(test.diagnostics).includes("JD000000000162"));
 }
@@ -192,7 +192,7 @@ for (const options of [
 const stateFailure = scenario(true, false, "快递100", { shipment: manual, persisted: true, loadFailure: true });
 await stateFailure.run();
 assert.deepEqual(stateFailure.opened, []);
-assert.deepEqual(stateFailure.notices, ["打开快递100失败，请重试"]);
+assert.deepEqual(stateFailure.notices, ["打开快递100失败，请稍后重试"]);
 assert.deepEqual(stateFailure.busy, [true, false]);
 
 const sfShipment = {
@@ -208,9 +208,9 @@ const sfMiniProgram = kuaidi100MiniProgramURL(displayWaybill(sfShipment));
 for (const [results, expected, notice] of [
   [[true], [sfNative], []],
   [[false, true], [sfNative, sfMiniProgram], []],
-  [[false, false], [sfNative, sfMiniProgram], ["无法打开快递100小程序，请确认已安装微信"]],
-  [[false, new Error("synthetic WeChat open error")], [sfNative, sfMiniProgram], ["无法打开快递100小程序，请确认已安装微信"]],
-  [[new Error("synthetic SF open error")], [sfNative], ["打开顺丰失败，请重试"]],
+  [[false, false], [sfNative, sfMiniProgram], ["暂时无法打开快递100小程序，请稍后重试"]],
+  [[false, new Error("synthetic WeChat open error")], [sfNative, sfMiniProgram], ["暂时无法打开快递100小程序，请稍后重试"]],
+  [[new Error("synthetic SF open error")], [sfNative], ["打开顺丰失败，请稍后重试"]],
 ] as const) {
   const attempt = scenario([...results], false, "顺丰", { shipment: sfShipment, states: [sfState] });
   const task = attempt.run();
@@ -292,7 +292,7 @@ for (const result of [false, new Error("synthetic WeChat failure")]) {
   await unavailable.run();
   assert.equal(unavailable.opened.length, 1);
   assert.equal(unavailable.requestCount(), 0);
-  assert.deepEqual(unavailable.notices, ["无法打开快递100小程序，请确认已安装微信"]);
+  assert.deepEqual(unavailable.notices, ["暂时无法打开快递100小程序，请稍后重试"]);
   assert.deepEqual(unavailable.busy, [true, false]);
 }
 for (const options of [
@@ -332,6 +332,6 @@ for (const [provider, name] of [["JingDong", "京东"], ["CaiNiao", "菜鸟"], [
     await missing.run();
     assert.deepEqual(missing.opened, [], "route failure cannot activate the unrelated direct K100 path");
     assert.equal(missing.requestCount(), 1);
-    assert.deepEqual(missing.notices, [failure ? `打开${name}失败，请重试` : `来源暂未提供可用的${name} App 链接`]);
+    assert.deepEqual(missing.notices, [failure ? `打开${name}失败，请稍后重试` : `来源暂未提供可用的${name}应用链接`]);
   }
 }

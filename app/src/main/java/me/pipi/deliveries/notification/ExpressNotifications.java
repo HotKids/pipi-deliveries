@@ -112,7 +112,8 @@ public final class ExpressNotifications {
         PendingIntent content = PendingIntent.getActivity(
                 context, (int) (item.rowId & 0x7fffffff), open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        String detail = ExpressTimeline.displayHeadline(item);
+        String rawDetail = ExpressTimeline.displayHeadline(item);
+        String detail = rawDetail == null || rawDetail.trim().isEmpty() ? "物流状态已更新" : rawDetail;
         Notification.Builder builder = new Notification.Builder(context, channelId)
                 .setSmallIcon(R.drawable.ic_local_shipping)
                 .setColorized(false)

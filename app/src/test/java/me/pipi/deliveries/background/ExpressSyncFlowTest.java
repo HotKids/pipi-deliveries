@@ -43,6 +43,7 @@ public class ExpressSyncFlowTest {
         repository=ExpressRepository.get(context);
         repository.bindPhoneLocally(PHONE,"interface6");
         Subscription.accountQueries.set(0); Subscription.onlineQueries.set(0); Subscription.failList=false;
+        Subscription.lastCancellation=null; Subscription.lastBudgetMs=null;
         ShadowLog.clear();
     }
     @After public void close() {
@@ -88,10 +89,24 @@ public class ExpressSyncFlowTest {
         assertFalse(logs.contains("Synthetic private response"));
         assertFalse(ExpressScheduler.hasRecentNetworkSuccess(context,"interface6",System.currentTimeMillis()));
     }
+    @Test public void aManualQueryCapturesAFifteenSecondBudgetInsideTheStage() {
+        String time="2026-09-12 10:00:00";
+        ExpressQueryResult feed=new ExpressQueryResult(WAYBILL,"SF","顺丰速运",StatusSemantic.PICKED,
+                ExpressTimeline.parseTime(time),time,"已揽收","[{\"time\":\""+time+"\",\"context\":\"已揽收\"}]",
+                "",PHONE,TimelineSlot.V6_LIST,"","","ShunFeng").withAccountListMetadata(PHONE,ExpressTimeline.parseTime(time));
+        repository.saveInterface6(feed,PHONE,repository.bindingGeneration(PHONE,"interface6"));
+        ExpressSyncEngine.syncAll(context,new int[]{0,0,0},true,"list_pull");
+        assertNotNull(Subscription.lastCancellation);
+        assertNotNull(Subscription.lastBudgetMs);
+        assertTrue("remaining budget is still open", Subscription.lastBudgetMs > 0);
+        assertTrue("manual refresh stage is 15s", Subscription.lastBudgetMs <= 15_000);
+    }
     @Implements(value=ExpressSubscriptionClient.class,isInAndroidSdk=false,callThroughByDefault=true)
     public static class Subscription {
         static final AtomicInteger accountQueries=new AtomicInteger(),onlineQueries=new AtomicInteger();
         static boolean failList;
+        static ExpressQueryCancellation lastCancellation;
+        static Integer lastBudgetMs;
         @Implementation protected List<ExpressQueryResult> query(Context context) {
             if (failList) throw new IllegalStateException("Synthetic private response");
             return List.of();
@@ -101,6 +116,12 @@ public class ExpressSyncFlowTest {
             return null;
         }
         @Implementation protected ExpressQueryResult queryManual(Context context,String waybill,ExpressQueryCancellation cancellation) {
+            lastCancellation = cancellation;
+            try {
+                lastBudgetMs = cancellation == null ? null : cancellation.remainingTimeoutMillis(60_000);
+            } catch (InterruptedException ignored) {
+                lastBudgetMs = null;
+            }
             onlineQueries.incrementAndGet();
             String time="2026-09-12 11:00:00";
             return new ExpressQueryResult(waybill,"SF","顺丰速运",StatusSemantic.TRANSIT,

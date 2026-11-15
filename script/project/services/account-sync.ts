@@ -1,14 +1,16 @@
 import { statusProjectionFields } from "./worker-status";
 import type { AccountAppTarget } from "./account-app-links";
 import { loadAccountAppRoutes, saveAccountAppRoutes } from "./routes";
-import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
+import { diagnosticErrorDetails, writeDiagnostic, type DiagnosticDetails } from "./logger";
 import type {
   AccountBinding,
   AccountDetailRecord,
   BindingSource,
   Shipment,
+  ShipmentIdentity,
   ShipmentRoute,
   StatusSemantic,
+  TimelinePackage,
   TrackNode,
 } from "../models";
 import { AccountApi } from "./account-api";
@@ -358,7 +360,7 @@ export function applyEnhancementMetadata(shipment: Shipment, parcel: AccountParc
   const incoming = incomingWaybill && !currentWaybill ? parcelToShipment(parcel, [shipment.identity.phone!], now) : null;
   if (!incoming && shipment.identity.productImageURL === image && shipment.identity.enhancedMode) return shipment;
   const waybill = incoming ? normalizedProjectedWaybill(incoming.identity) : "";
-  const identity = { ...shipment.identity, enhancedMode: true as const,
+  const identity: ShipmentIdentity = { ...shipment.identity, enhancedMode: true,
     ...(image ? { productImageURL: image } : {}),
     ...(incoming ? { projectedWaybill: waybill, hadRealWaybill: true,
       courierCode: incoming.identity.courierCode, companyName: incoming.identity.companyName,
@@ -438,7 +440,7 @@ export async function refreshAccountParcel(
             : "",
           kuaidi100Code: shipment.identity.carrierKuaidi100Code || "",
           isBuiltIn: shipment.identity.carrierIsBuiltIn === true,
-          tableVersion: shipment.identity.carrierTableVersion,
+          tableVersion: shipment.identity.carrierTableVersion ?? "",
         }
       : null,
     provider: shipment.identity.sourceProvider,
@@ -491,9 +493,12 @@ export async function fetchAccountExternalAppRoutes(
 ): Promise<AccountAppTarget[]> {
   if (signal.aborted || !accountExternalAppName(shipment) || !shipment.accountRecord) return [];
   const startedAt = Date.now();
-  const context = { source: SCRIPT_BINDING_SOURCE,
+  const context = {
+    source: SCRIPT_BINDING_SOURCE,
     sourceProvider: String(shipment.accountRecord.provider || "").toLowerCase(),
-    waybillTail: displayWaybill(shipment).slice(-4), carrierCode: shipment.identity.courierCode };
+    waybillTail: displayWaybill(shipment).slice(-4),
+    carrierCode: shipment.identity.courierCode,
+  } satisfies DiagnosticDetails;
   const cached = loadAccountAppRoutes(shipment.accountRecord);
   if (cached.length) {
     writeDiagnostic("detail.external.routes", { ...context, result: "cached", records: cached.length });

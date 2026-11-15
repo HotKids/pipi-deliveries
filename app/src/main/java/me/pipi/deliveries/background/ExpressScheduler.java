@@ -94,6 +94,10 @@ public final class ExpressScheduler {
         return requestNow(context, false);
     }
 
+    /**
+     * A Home list pull does not stamp the 2-minute foreground debounce.
+     * Only {@link #requestForeground} → {@link #claimForegroundRefresh} does.
+     */
     public static java.util.UUID requestPullRefresh(Context context) {
         return requestNow(context, true);
     }
@@ -137,6 +141,8 @@ public final class ExpressScheduler {
      * 优化 8-1（用户 2026-10-03「Lite 照 Pipi：启动刷过就不再刷」）：the first return to Home in this process does not refresh
      * again when the process's start round already ran within the two-minute window; like Pipi's MainActivity, that
      * first return then starts the window. A cold start from the launcher has no earlier round and refreshes as before.
+     * A Home list pull ({@code requestPullRefresh}) does not stamp this debounce; only
+     * {@code requestForeground} → {@code claimForegroundRefresh} does.
      */
     static boolean claimForegroundRefresh(long now) {
         while (true) {

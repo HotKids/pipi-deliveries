@@ -9,6 +9,7 @@ export function fetch(...args) {
 }
 
 export const AbortController = globalThis.AbortController;
+export const AbortSignal = globalThis.AbortSignal;
 
 export const Notification = {
   schedule(...args) {

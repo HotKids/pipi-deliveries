@@ -382,7 +382,7 @@ function pause(ms: number, signal?: AbortSignal): Promise<void> {
       signal?.removeEventListener("abort", abort);
       error ? reject(error) : resolve();
     }
-    signal?.addEventListener("abort", abort, { once: true });
+    signal?.addEventListener("abort", abort);
   });
 }
 
@@ -452,7 +452,7 @@ export async function scrapeWebTimeline(
   let exitReason = "no_timed_tracks";
   const dispose = () => { try { controller.dispose(); } catch { /* best effort */ } };
   const abort = () => dispose();
-  input.signal?.addEventListener("abort", abort, { once: true });
+  input.signal?.addEventListener("abort", abort);
   controller.shouldAllowRequest = async (request) => {
     if (input.signal?.aborted) return false;
     try {

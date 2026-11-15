@@ -638,22 +638,8 @@ function hasAlignedTimelineStart(input: Shipment, packages: readonly TimelinePac
 }
 
 /**
- * The account order's own incremental feed cache reaching the timeline start. A partial JD H5
- * projection is merged into the same source package, so its grafted pickup node must not count
- * here: AGENTS §9 lets a complete manual package outrank a partial H5, but never outrank the
- * feed's own 揽收 (user design 2026-09-04). Pipi has no equivalent test because its owner row is
- * never written by the H5 capture.
- */
-export function jingDongFeedReachedStart(shipment: Shipment): boolean {
-  if (!isJingDongSourceShipment(shipment)) return false;
-  const source = sourceTimeline(shipment);
-  return Boolean(source && containsFeedTimelineStartTrack(source.tracks));
-}
-
-/**
  * 用户定 2026-09-04：抓取的判据是**揽收**，只有「已下单」不算。这是 Pipi
- * `ExpressDetailTimelinePolicy.hasPickupEvidence`（orderedCounts=false）在 iOS 的同位实现；
- * 上面的 jingDongFeedReachedStart 仍认「已下单或揽收」，那是展示选包用的，两者不可互换。
+ * `ExpressDetailTimelinePolicy.hasPickupEvidence`（orderedCounts=false）在 iOS 的同位实现。
  */
 export function jingDongFeedReachedPickup(shipment: Shipment): boolean {
   if (!isJingDongSourceShipment(shipment)) return false;

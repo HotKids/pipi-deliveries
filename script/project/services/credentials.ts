@@ -4,7 +4,7 @@ import {
 } from "./scripting-auth";
 import { readDurableTextResult } from "./durable-files";
 import { removeLegacyCredentialCopies } from "./legacy-credential-cleanup";
-import { utf8Data } from "./scripting-data";
+import { sha256Hex } from "./scripting-data";
 
 const SCRIPTING_TOKEN_KEY = "pipi_deliveries_scripting_token_v1";
 
@@ -112,12 +112,8 @@ export function recordGatewayCredentialOutcome(
   else if (status >= 200 && status < 300 && bodyAccepted) setAccessKeyRejected(false);
 }
 
-function tokenChecksum(value: string): string {
-  return Crypto.sha256(utf8Data(value)).toHexString().toLowerCase();
-}
-
 function tokenChecksumV2(token: string, generation: number): string {
-  return tokenChecksum(`${generation}\n${token}`);
+  return sha256Hex(`${generation}\n${token}`);
 }
 
 function tokenChecksumV4(
@@ -125,7 +121,7 @@ function tokenChecksumV4(
   generation: number,
   availability: CredentialAvailability,
 ): string {
-  return tokenChecksum(
+  return sha256Hex(
     `credential\n${generation}\n${availability}\n${token}`,
   );
 }
@@ -151,7 +147,7 @@ function pendingChecksumV3(
   generation: number,
   previousKey: string | null,
 ): string {
-  return tokenChecksum(
+  return sha256Hex(
     `pending\n${generation}\n${token}\n${JSON.stringify(previousKey)}`,
   );
 }
@@ -162,7 +158,7 @@ function pendingChecksumV5(
   previousKey: string | null,
   availability: CredentialAvailability,
 ): string {
-  return tokenChecksum(
+  return sha256Hex(
     `pending\n${generation}\n${availability}\n${token}\n${JSON.stringify(previousKey)}`,
   );
 }
@@ -185,7 +181,6 @@ function decodeToken(raw: unknown): CredentialCandidate {
     }
     let generation = 0;
     let checksum = "";
-    let availability: CredentialAvailability = "available";
     if (stored.schema === 4 || stored.schema === 6) {
       if (
         !Number.isSafeInteger(stored.generation) ||
@@ -201,7 +196,6 @@ function decodeToken(raw: unknown): CredentialCandidate {
       // Older v1.2.13 builds persisted every HTTP 401/403 as a permanent token
       // disable marker. The gateway does not expose a durable revocation contract,
       // so a valid legacy record must remain eligible for the next request.
-      availability = "available";
     } else if (stored.schema === 2) {
       if (!Number.isSafeInteger(stored.generation) || Number(stored.generation) < 1) {
         return absent();
@@ -209,15 +203,14 @@ function decodeToken(raw: unknown): CredentialCandidate {
       generation = Number(stored.generation);
       checksum = tokenChecksumV2(stored.token, generation);
     } else if (stored.schema === 1) {
-      checksum = tokenChecksum(stored.token);
+      checksum = sha256Hex(stored.token);
     } else {
       return absent();
     }
     if (stored.checksum.toLowerCase() !== checksum) return absent();
     const token = normalizeScriptingToken(stored.token);
     if (stored.token && !token) return absent();
-    if (!token && availability === "unavailable") return absent();
-    return { present: true, token, generation, availability };
+    return { present: true, token, generation, availability: "available" };
   } catch {
     return absent();
   }
@@ -376,7 +369,7 @@ export function saveGatewayToken(token: string): void {
   const clean = normalizeScriptingToken(token);
   // User decision 2026-09-27: a malformed key reads the same as an invalid one.
   if (!clean) throw new Error("Access Key 无效或已失效");
-  writeCredential(clean, "Access Key 保存失败，请重试");
+  writeCredential(clean, "Access Key 保存失败，请稍后重试");
 }
 
 function writeCredential(token: string, failureMessage: string): void {
@@ -396,7 +389,7 @@ function writeCredential(token: string, failureMessage: string): void {
 export function removeGatewayToken(): void {
   // Replace the protected record with an empty credential before acknowledging removal.
   // Legacy shared files are cleanup only and can never resurrect the removed key.
-  writeCredential("", "Access Key 删除失败，请重试");
+  writeCredential("", "Access Key 删除失败，请稍后重试");
 }
 
 export function gatewayConfigured(): boolean {

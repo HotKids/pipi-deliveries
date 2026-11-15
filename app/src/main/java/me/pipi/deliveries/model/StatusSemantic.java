@@ -2,6 +2,8 @@ package me.pipi.deliveries.model;
 
 import java.util.Locale;
 
+import me.pipi.deliveries.data.ExpressStatusLabels;
+
 /** Provider-neutral delivery state used by every app surface. */
 public enum StatusSemantic {
     CANCELLED("CANCELLED", "已取消"),
@@ -29,6 +31,8 @@ public enum StatusSemantic {
 
     public static StatusSemantic fromStored(String code, String description) {
         String value = clean(code).toUpperCase(Locale.ROOT);
+        StatusSemantic ruled = ExpressStatusLabels.rules().code("storedCodes", value);
+        if (ruled != null) return ruled;
         switch (value) {
             case "CANCEL": case "CANCELLED": return CANCELLED;
             case "FAILED": case "PROBLEM": case "EXCEPTION": return DANGER;
@@ -46,6 +50,8 @@ public enum StatusSemantic {
     /** Kuaidi100 resultv2=4 event status; response-summary state is intentionally excluded. */
     public static StatusSemantic fromKuaidi100EventCode(String code) {
         String value = clean(code).toUpperCase(Locale.ROOT);
+        StatusSemantic ruled = ExpressStatusLabels.rules().code("k100", value);
+        if (ruled != null) return ruled;
         switch (value) {
             case "101": case "102": return ORDERED;
             case "1": case "103": return PICKED;
@@ -69,7 +75,10 @@ public enum StatusSemantic {
 
     /** Account-source ExpressState stateNum contract (101 through 111). */
     public static StatusSemantic fromAccountState(String stateNum, String stateText) {
-        switch (clean(stateNum)) {
+        String state = clean(stateNum);
+        StatusSemantic ruled = ExpressStatusLabels.rules().code("v5StateNum", state);
+        if (ruled != null) return ruled;
+        switch (state) {
             case "101": return ORDERED;
             case "102": return SHIPPED;
             case "103": return PICKED;
@@ -86,7 +95,10 @@ public enum StatusSemantic {
     }
 
     private static StatusSemantic fromLabel(String description) {
-        switch (clean(description)) {
+        String value = clean(description);
+        StatusSemantic ruled = ExpressStatusLabels.rules().code("structuredDescriptions", value);
+        if (ruled != null) return ruled;
+        switch (value) {
             case "取消": case "已取消": return CANCELLED;
             case "问题件": case "异常件": case "异常": case "运输异常": return DANGER;
             case "已下单": return ORDERED;
@@ -103,7 +115,10 @@ public enum StatusSemantic {
 
     /** Only the independently captured JT label enters this finite whole-value table. */
     public static StatusSemantic fromJtLabel(String label) {
-        switch (clean(label)) {
+        String value = clean(label);
+        StatusSemantic ruled = ExpressStatusLabels.rules().code("jtLabels", value);
+        if (ruled != null) return ruled;
+        switch (value) {
             case "取消": case "已取消": case "订单取消": case "取消订单": return CANCELLED;
             case "问题件": case "异常件": case "异常": case "运输异常": return DANGER;
             case "已下单": return ORDERED;

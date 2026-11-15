@@ -219,11 +219,11 @@ function readOrderProjectionRefs(strict = false): RouteMapRead {
 function writeOrderProjectionRefs(value: RouteMap): void {
   try {
     if (!Keychain.set(ORDER_PROJECTION_REFS_KEY, JSON.stringify(value))) {
-      throw new Error("订单详情保存失败，请重试");
+      throw new Error("订单详情保存失败，请稍后重试");
     }
   } catch (error) {
     if (error instanceof Error) throw error;
-    throw new Error("订单详情保存失败，请重试");
+    throw new Error("订单详情保存失败，请稍后重试");
   }
 }
 
@@ -324,11 +324,11 @@ function read(strict = false): RouteMap {
 function write(value: RouteMap): void {
   try {
     if (!Keychain.set(ROUTES_KEY, JSON.stringify(value))) {
-      throw new Error("快递详情保存失败，请重试");
+      throw new Error("快递详情保存失败，请稍后重试");
     }
   } catch (error) {
     if (error instanceof Error) throw error;
-    throw new Error("快递详情保存失败，请重试");
+    throw new Error("快递详情保存失败，请稍后重试");
   }
 }
 

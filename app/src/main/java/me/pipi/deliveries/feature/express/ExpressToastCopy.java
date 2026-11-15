@@ -40,7 +40,7 @@ final class ExpressToastCopy {
     static final String LIST_UPDATED = "列表已更新";
 
     /** 列表下拉：账号部分已完成并落库，逐票更新仍在后台继续（E1，owner 2026-11-10；四端同一文案）。 */
-    static final String REFRESH_CONTINUING = "列表已更新，轨迹在后台继续更新";
+    static final String REFRESH_CONTINUING = "列表已更新";
 
     /** 列表下拉：全部失败或整轮抛错。 */
     static final String REFRESH_FAILED = "刷新失败，请稍后重试";
@@ -58,7 +58,7 @@ final class ExpressToastCopy {
     static final String DETAIL_REFRESH_FAILED = "轨迹更新失败，请稍后重试";
 
     /** JD union page answered with risk control (HTTP 403 / "刷新几遍还不行"); the order rests 60 min. */
-    static final String JD_RISK_CONTROL = "操作过于频繁，请稍后再试";
+    static final String JD_RISK_CONTROL = "操作过于频繁，请稍后重试";
 
     static String jdRiskControlRemaining(long remainingMillis) {
         long minutes = Math.max(1L, (remainingMillis + 59_999L) / 60_000L);
@@ -69,10 +69,10 @@ final class ExpressToastCopy {
     static final String H5_UNAVAILABLE = "暂时无法加载详情";
 
     /** An explicit note edit cannot load its current persisted owner or note. */
-    static final String USER_NOTE_UNAVAILABLE = "暂时无法编辑，请重试";
+    static final String USER_NOTE_UNAVAILABLE = "暂时无法编辑，请稍后重试";
 
     /** Shared copy only; this does not add Pipi note recovery to Lite. */
-    static final String USER_NOTE_RECOVERY_FAILED = "处理失败，请重试";
+    static final String USER_NOTE_RECOVERY_FAILED = "处理失败，请稍后重试";
     static final String USER_NOTE_CHANGED = "快递信息已变更，请重新打开备注";
     static final String USER_NOTE_SAVED = "备注已保存";
     static final String USER_NOTE_DELETED = "备注已删除";
@@ -112,7 +112,7 @@ final class ExpressToastCopy {
     static final String REAUTHORIZE = "重新授权";
     static final String RECOVER_BASIC = "恢复基础模式";
     static final String RECOVERING_BASIC = "正在恢复…";
-    static final String DEVICE_REAUTHORIZATION_REQUIRED_MESSAGE = "设备授权已过期，请重新授权。现有记录将会保留。";
+    static final String DEVICE_REAUTHORIZATION_REQUIRED_MESSAGE = "设备授权已过期，请重新授权，现有记录将保留";
 
     static final String PHONE_BOUND = "手机号已绑定";
 
@@ -125,7 +125,7 @@ final class ExpressToastCopy {
     /** 账号类：解绑失败。 */
     static final String UNBIND_FAILED = "解绑失败，请稍后重试";
     /** 存储类：本地状态每个副本都无法迁移时的提示，不当成空列表（2026-09-06，iOS 先用）。 */
-    static final String STATE_LOAD_FAILED = "本地快递数据读取失败";
+    static final String STATE_LOAD_FAILED = "本地快递数据读取失败，请稍后重试";
 
     /** 列表下拉的四种结果（与 iOS refreshSummaryToast 同一套判据）。 */
     static String refreshSummary(int attempted, int succeeded, int failed, boolean accountListUpdated) {
@@ -140,12 +140,6 @@ final class ExpressToastCopy {
         if (continuing) return REFRESH_CONTINUING;
         if (attempted == 0) return REFRESH_UP_TO_DATE;
         return REFRESH_DONE;
-    }
-
-    /** 校验类文案（单号 / 手机尾号）不是 toast，由页面内联显示。 */
-    static boolean isValidationMessage(String message) {
-        String value = message == null ? "" : message;
-        return value.contains("快递单号") || value.contains("手机尾号");
     }
 
     private ExpressToastCopy() {}

@@ -4,3 +4,7 @@ export function utf8Data(value: string): Data {
   if (!data) throw new Error("Unable to encode UTF-8 data");
   return data;
 }
+
+export function sha256Hex(value: string): string {
+  return Crypto.sha256(utf8Data(value)).toHexString().toLowerCase();
+}

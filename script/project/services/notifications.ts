@@ -102,7 +102,6 @@ export async function replayPendingShipmentNotifications(
         if (aligning || !shipmentHeadlineMatchesStatus(shipment)) {
           writeDiagnostic("notification.replay.deferred", {
             ...details, result: "awaiting_status_alignment",
-            reason: aligning ? "alignment_in_progress" : "same_state_headline_missing",
           });
           continue;
         }

@@ -112,6 +112,7 @@ public final class ExpressRepository {
     // 前台进详情 / 详情下拉仍按 30 秒守门，不受这条冷却约束。首页列表下拉（owner 2026-11-10）保留 30 秒，
     // 并按所选 authority 的 successAt 遵守这 10 分钟；所选历史不完整的行只豁免 10 分钟（claimListPullManualTimelinePoll）。
     static final long MANUAL_TIMELINE_POLL_INTERVAL_MS = 10L * 60L * 1000L;
+    // 6 hours is the automatic-row background failure rest, not the 10-minute success interval.
     static final long MANUAL_TIMELINE_FAILURE_COOLDOWN_MS = 6L * 60L * 60L * 1000L;
     static final long MANUAL_TIMELINE_FOREGROUND_INTERVAL_MS = 30L * 1000L;
     static final long MANUAL_TIMELINE_ACTIVE_LEASE_MS = 2L * 60L * 1000L;
@@ -589,16 +590,6 @@ public final class ExpressRepository {
         public final boolean headlineCoarse;
         public final boolean detailCoarse;
         public final boolean statusTimeFallback;
-
-        StatusAlignmentProbe(ExpressItem row, long statusAt, long headlineAt, long detailAt) {
-            this(row, statusAt, headlineAt, detailAt, false);
-        }
-
-        StatusAlignmentProbe(ExpressItem row, long statusAt, long headlineAt, long detailAt,
-                boolean detailFromWebCapture) {
-            this(row, statusAt, headlineAt, detailAt, detailFromWebCapture, StatusSemantic.UNKNOWN,
-                    StatusSemantic.UNKNOWN, false, false, false);
-        }
 
         StatusAlignmentProbe(ExpressItem row, long statusAt, long headlineAt, long detailAt,
                 boolean detailFromWebCapture, StatusSemantic headlineSemantic, StatusSemantic detailSemantic,
@@ -1787,11 +1778,6 @@ public final class ExpressRepository {
         return timeline(ExpressDatabase.V4_TIMELINE_TABLE, waybill, TimelineSlot.V4_QUERY);
     }
 
-    /** Matches Pipi: use the complete v4 timeline when usable, otherwise K100. */
-    public synchronized ExpressQueryResult preferredLocalTimeline(String waybill) {
-        return preferredLocalTimeline(v4Timeline(waybill), kuaidi100Timeline(waybill));
-    }
-
     static ExpressQueryResult preferredLocalTimeline(
             ExpressQueryResult publicTimeline, ExpressQueryResult kuaidi100Timeline) {
         return Kuaidi100TimelinePolicy.hasRealTracking(publicTimeline)
@@ -1835,11 +1821,6 @@ public final class ExpressRepository {
         }
         return Kuaidi100TimelinePolicy.hasTimedTracking(chosen)
                 && Kuaidi100TimelinePolicy.hasPickupEvidence(chosen);
-    }
-
-    public synchronized boolean hasAccountTimeline(String waybill, String bindingSource) {
-        return Kuaidi100TimelinePolicy.hasRealTracking(
-                accountTimeline(waybill, bindingSource));
     }
 
     public synchronized boolean hasAccountTimeline(ExpressItem owner, String waybill, String bindingSource) {
@@ -2175,6 +2156,7 @@ public final class ExpressRepository {
                     : locked.manuallyAdded || !isAutomaticAccountOwner(
                             locked.stateOwner.isEmpty() ? locked.source : locked.stateOwner)
                             ? backgroundTimelineRefreshAllowed(locked, authority, now)
+                                    && !manualTimelineListPullCoolingDown(authority, now)
                             : manualTimelinePollDue(projectManualTimeline(locked), authority,
                                     retry.lastAttempt, now);
             if (!due) return null;
@@ -4232,12 +4214,6 @@ public final class ExpressRepository {
                 candidate.provider, sanitized, candidate.successAt,
                 !invalidatedMetadata && candidate.complete,
                 invalidatedMetadata || candidate.providerErrorMetadataInvalidated);
-    }
-
-    public void saveQuery(ExpressQueryResult result, String phone, String source) {
-        saveManualOwnerResult(result, phone, source,
-                ExpressSourcePolicy.bindingSourceForOwner(source),
-                System.currentTimeMillis());
     }
 
     /**
@@ -6408,11 +6384,6 @@ public final class ExpressRepository {
         return values;
     }
 
-    /** Preferred shipment phone first, then every bound phone, de-duplicated by last four digits. */
-    public synchronized List<String> phoneCandidates(String preferred) {
-        return phoneCandidates(preferred, "");
-    }
-
     /** Limits K100 tail candidates to the interface that initiated the lookup. */
     public synchronized List<String> phoneCandidates(String preferred, String bindingSource) {
         ArrayList<String> candidates = new ArrayList<>();
@@ -6420,11 +6391,6 @@ public final class ExpressRepository {
         addPhoneCandidate(candidates, tails, preferred);
         for (String phone : phones(bindingSource)) addPhoneCandidate(candidates, tails, phone);
         return candidates;
-    }
-
-    /** Stores an untracked manual query outside the visible shipment table. */
-    public boolean enqueuePendingManual(ExpressQueryResult result, String phone) {
-        return enqueuePendingManual(result, phone, "interface6");
     }
 
     /** Queues a new manual waybill without turning display recognition into raw carrier data. */
@@ -6522,11 +6488,6 @@ public final class ExpressRepository {
                 db.endTransaction();
             }
         }
-    }
-
-    /** Claims due hidden manual items so simultaneous workers cannot query one item twice. */
-    public synchronized List<PendingExpressQuery> claimPendingManualQueries(long now) {
-        return claimPendingManualQueries(now, "interface6");
     }
 
     /** Claims hidden manual items independently from the currently selected automatic interface. */
@@ -6725,10 +6686,6 @@ public final class ExpressRepository {
         String expected = clean(generation);
         return !expected.isEmpty()
                 && expected.equals(bindingGeneration(db, phone, bindingSource));
-    }
-
-    public void unbindPhone(String phone) {
-        unbindPhone(phone, "");
     }
 
     /** Removes one source's binding without touching the same phone bound to another source. */

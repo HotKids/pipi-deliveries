@@ -2,6 +2,7 @@ import { TIMELINE_SLOT } from "./timeline-slot";
 import type { TimelinePackage, TrackNode } from "../models";
 import {
   OperationTimeoutError,
+  pauseWhileActive,
   remainingTimeoutMs,
 } from "./deadline";
 import {
@@ -86,7 +87,7 @@ export function trustedCainiaoH5Route(value: string): boolean {
   }
 }
 
-function httpsRequest(value: string): boolean {
+export function httpsRequest(value: string): boolean {
   try {
     return new URL(value).protocol === "https:";
   } catch {
@@ -205,7 +206,7 @@ function timeout<T>(
       ),
       Math.max(1, timeoutMs),
     );
-    signal?.addEventListener("abort", abort, { once: true });
+    signal?.addEventListener("abort", abort);
     promise.then(
       (value) => finish(() => resolve(value)),
       (error) => finish(() => reject(error)),
@@ -305,26 +306,6 @@ function timelineFromExtraction(
   };
 }
 
-function pause(durationMs: number, signal?: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new OperationTimeoutError());
-      return;
-    }
-    let settled = false;
-    const finish = (settle: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", abort);
-      settle();
-    };
-    const abort = () => finish(() => reject(new OperationTimeoutError()));
-    const timer = setTimeout(() => finish(resolve), durationMs);
-    signal?.addEventListener("abort", abort, { once: true });
-  });
-}
-
 export async function scrapeCainiaoH5Timeline(
   input: CainiaoH5TimelineInput,
   observe?: (diagnostics: CainiaoH5Diagnostics) => void,
@@ -385,7 +366,7 @@ export async function scrapeCainiaoH5Timeline(
     }
   };
   const abort = () => disposeController();
-  input.signal?.addEventListener("abort", abort, { once: true });
+  input.signal?.addEventListener("abort", abort);
   let requestStarted = false;
   let loadSettled = false;
   let loadCompleted = false;
@@ -440,10 +421,6 @@ export async function scrapeCainiaoH5Timeline(
           input.signal,
         );
         assertCainiaoH5Active(input.signal);
-        if (Date.now() >= deadlineAtMs) {
-          exitReason = "deadline_exhausted";
-          throw new OperationTimeoutError("读取菜鸟物流超时，请稍后重试");
-        }
         const extracted = timelineFromExtraction(raw, input, successAtMs);
         extractionSource = extracted.extractionSource;
         rawTrackCount = Math.max(rawTrackCount, extracted.rawTrackCount);
@@ -452,6 +429,10 @@ export async function scrapeCainiaoH5Timeline(
           trackCount = extracted.timeline.tracks.length;
           exitReason = "timed_tracks";
           return extracted.timeline;
+        }
+        if (Date.now() >= deadlineAtMs) {
+          exitReason = "deadline_exhausted";
+          throw new OperationTimeoutError("读取菜鸟物流超时，请稍后重试");
         }
       } catch (error) {
         if (input.signal?.aborted) throw new OperationTimeoutError();
@@ -465,7 +446,7 @@ export async function scrapeCainiaoH5Timeline(
         CAINIAO_H5_POLL_INTERVAL_MS,
         deadlineAtMs - Date.now(),
       );
-      if (delay > 0) await pause(delay, input.signal);
+      if (delay > 0) await pauseWhileActive(delay, input.signal);
     }
     assertCainiaoH5Active(input.signal);
     exitReason = Date.now() >= deadlineAtMs
@@ -476,7 +457,7 @@ export async function scrapeCainiaoH5Timeline(
     if (requestStarted) input.onQueryAttempted?.(true);
     if (
       !input.signal?.aborted &&
-      !(input.signal && Date.now() >= deadlineAtMs)
+      (exitReason === "timed_tracks" || !(input.signal && Date.now() >= deadlineAtMs))
     ) {
       try {
         observe?.({

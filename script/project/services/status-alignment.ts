@@ -1,5 +1,5 @@
 import type { AppState, BindingSource, Shipment } from "../models";
-import { createDiagnosticFlowId, diagnosticErrorDetails, writeDiagnostic } from "./logger";
+import { createDiagnosticFlowId, diagnosticErrorDetails, writeDiagnostic, type DiagnosticDetails } from "./logger";
 import { projectionViewportHostAvailable } from "./projection-viewport";
 import { parseAlignmentAttempt, rowLedgerKey } from "./row-ledger";
 import {
@@ -93,7 +93,7 @@ function alignmentDiagnosticDetails(candidate: StatusAlignmentCandidate) {
     sourceProvider: String(candidate.shipment.identity.sourceProvider || "").trim().toLowerCase(),
     carrierCode: String(candidate.shipment.identity.courierCode || "").trim().toUpperCase(),
     statusSemantic: shipmentPresentationStatus(candidate.shipment).semantic,
-  };
+  } satisfies DiagnosticDetails;
 }
 
 export type StatusAlignmentPassResult = Readonly<{
