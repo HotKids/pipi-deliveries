@@ -83,15 +83,15 @@ for (const legacyUntimedFeed of [false, true]) {
   assert.equal(stored.sourceTimeline?.latestDetail, GENERIC);
   assert.ok(stored.sourceTimeline?.tracks.some(track => track.detail === GENERIC && track.timeMs === parseProviderTime(FRESH_TIME)));
   assert.equal(stored.accountRecord?.updateTime, FRESH_TIME);
-  assert.equal(displayed.semantic, "DELIVERY");
-  assert.equal(displayed.statusEventAtMs, parseProviderTime(FRESH_TIME));
+  assert.equal(displayed.semantic, "TRANSIT");
+  assert.equal(displayed.statusEventAtMs, parseProviderTime("2026-09-12 09:00:00"));
   assert.equal(displayed.latestDetail, "Cached query event");
   assert.equal(displayed.latestTimeText, "2026-09-12 09:00:00");
-  assert.equal(stored.timeline.semantic, "DELIVERY");
+  assert.equal(stored.timeline.semantic, "TRANSIT");
   assert.equal(stored.timeline.latestDetail, "Cached query event");
   assert.equal(stored.timeline.latestTimeText, "2026-09-12 09:00:00");
-  assert.equal(stored.timeline.statusEventAtMs, parseProviderTime(FRESH_TIME));
-  assert.equal(shipmentPresentationStatus(stored).semantic, "DELIVERY");
+  assert.equal(stored.timeline.statusEventAtMs, parseProviderTime("2026-09-12 09:00:00"));
+  assert.equal(shipmentPresentationStatus(stored).semantic, "TRANSIT");
   assert.deepEqual(stored.manualTimelines, priorQuery, "feed must not overwrite or splice the cached query history");
 }
 
