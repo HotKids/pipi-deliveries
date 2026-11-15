@@ -92,7 +92,7 @@ final class Kuaidi100CarrierDetector {
     /**
      * Kuaidi100's "no match" answer is {@code {"result":false,"returnCode":"201"}}, the code written
      * as a string or as the number 201: it reads as unrecognized (the paid stage decides; user
-     * decision 2026-09-26, 其余裁决 5).
+     * decision 2026-09-26, 跨端对齐裁决 #5).
      */
     private static boolean isNoMatch(JSONObject object) {
         if (!Boolean.FALSE.equals(object.opt("result"))) return false;
@@ -115,7 +115,7 @@ final class Kuaidi100CarrierDetector {
 
     /**
      * {@link #parseCandidates} with each candidate's name, read from {@code name}, {@code comName} or
-     * {@code companyName} as iOS parseKuaidi100CarrierCandidates reads it (其余裁决 29: an off-table
+     * {@code companyName} as iOS parseKuaidi100CarrierCandidates reads it (跨端对齐裁决 #29: an off-table
      * carrier is shown by the name Kuaidi100 gives).
      */
     static List<Candidate> parseNamedCandidates(String body) {

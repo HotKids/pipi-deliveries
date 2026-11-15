@@ -6,7 +6,7 @@ const SEMANTICS = new Set([
 ]);
 
 /** Validate the wire shape only; enum interpretation belongs to the Worker. */
-export function parseNormalizedStatus(value: unknown): NormalizedStatus | undefined {
+function parseNormalizedStatus(value: unknown): NormalizedStatus | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const status = value as NormalizedStatus;
   if (status.version !== 1 || !["ORDER", "SHIPMENT"].includes(status.scope) ||
@@ -15,9 +15,18 @@ export function parseNormalizedStatus(value: unknown): NormalizedStatus | undefi
       !Number.isSafeInteger(status.priority) || status.priority < 0 ||
       !Number.isSafeInteger(status.eventAtMs) || status.eventAtMs < 0 ||
       typeof status.structured !== "boolean") return undefined;
-  return { version: 1, scope: status.scope, semantic: status.semantic, code: status.code,
-    text: status.text, priority: status.priority, eventAtMs: status.eventAtMs,
-    structured: status.structured };
+  const orderStageOnly = status.scope === "ORDER" && status.orderStageOnly === true;
+  return {
+    version: 1,
+    scope: status.scope,
+    semantic: status.semantic,
+    code: status.code,
+    text: status.text,
+    priority: status.priority,
+    eventAtMs: status.eventAtMs,
+    structured: status.structured,
+    ...(orderStageOnly ? { orderStageOnly: true } : {}),
+  };
 }
 
 export function responseNormalizedStatus(value: unknown): NormalizedStatus | undefined {

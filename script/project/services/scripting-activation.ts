@@ -19,7 +19,7 @@ const SYNCED_KEYCHAIN = { synchronizable: true } as const;
 const ACTIVATION_PATTERN = /^[0-9a-f]{64}$/;
 export type ScriptingActivationSource = "synced_keychain" | "generated";
 
-export class ScriptingActivationUnavailableError extends Error {
+class ScriptingActivationUnavailableError extends Error {
   constructor() {
     super("activation identity could not be saved");
     this.name = "ScriptingActivationUnavailableError";

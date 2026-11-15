@@ -48,7 +48,7 @@ public final class WaybillReusePolicy {
     }
 
     /**
-     * 优化 5（协调方定的接口约定）：the parcel's own reuse anchor as the paid classify request carries it — its earliest timed
+     * 优化 5（按新件锚点区分付费识别缓存协议）：the parcel's own reuse anchor as the paid classify request carries it — its earliest timed
      * node, else its status time, else its latest time, each only when positive and not after {@code now}; 0 (not sent)
      * when there is none.
      */

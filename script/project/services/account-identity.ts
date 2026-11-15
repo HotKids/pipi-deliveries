@@ -3,6 +3,7 @@ import {
   writeDurableText,
 } from "./durable-files";
 import { sha256Hex } from "./scripting-data";
+import { asPlainObject as object, cleanString as clean } from "./value-guards";
 import { writeDiagnostic } from "./logger";
 
 export type AccountSource = "interface5" | "interface6";
@@ -25,16 +26,6 @@ const INTERFACE5_IDENTITY_KEY = "pipi_deliveries_account_v5_identity_v1";
 const INTERFACE5_IDENTITY_SHARED_KEY =
   "pipi_deliveries_account_v5_identity_shared_v1";
 const INTERFACE5_IDENTITY_FILE = "account-identity-v1.json";
-
-function clean(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function object(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
 
 function parseObject(value: string): Record<string, unknown> {
   try {

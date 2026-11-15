@@ -4,7 +4,7 @@ import type { AccountStatusSemantic } from "./account-parser";
 import type { AccountOrderProjectionDiagnostics } from "./account-order-projection";
 
 /** The capture strategy the per-order record is bound to: a new strategy starts every order over. */
-export const ACCOUNT_ORDER_PROJECTION_STRATEGY = "jd-h5-v2";
+const ACCOUNT_ORDER_PROJECTION_STRATEGY = "jd-h5-v2";
 
 /**
  * The order-hashed key of an order's projection record (`routeHash`): the strategy and the owner
@@ -22,7 +22,7 @@ export const ACCOUNT_LIST_BUDGET_MS = 25_000;
 // 原 5s：同一票 EMS 0246 的按件详情每次都在 5s 处超时，Lite 同一票 1 秒拿到。
 export const ACCOUNT_DETAIL_BUDGET_MS = 10_000;
 export const ACCOUNT_FOLLOWUP_RESERVE_MS = 10_000;
-export const ACCOUNT_FOLLOWUP_CONCURRENCY = 4;
+const ACCOUNT_FOLLOWUP_CONCURRENCY = 4;
 export const ACCOUNT_ORDER_PROJECTION_BUDGET_MS = 20_000;
 export const ACCOUNT_H5_BUDGET_MS = 8_000;
 export const ACCOUNT_H5_CONCURRENCY = 2;
@@ -110,7 +110,7 @@ export function accountOrderPageConfirmedEmpty(
  * - `uninformative`: anything else — risk control, a union request that failed (a non-2xx status,
  *   or 0 for a network failure; two JD outages 10 minutes apart must not mark a real order), a
  *   union request the page sent that had not answered by the timeout (user decision 2026-09-26,
- *   其余裁决 4: as neutral as a failed answer; a page that never sent one is still an empty shell),
+ *   跨端对齐裁决 #4: as neutral as a failed answer; a page that never sent one is still an empty shell),
  *   a hidden, unhosted or zero-sized page, an incomplete load. It neither counts nor clears.
  */
 export type UnionPageOutcome = "logistics" | "empty_shell" | "uninformative";

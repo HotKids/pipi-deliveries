@@ -14,6 +14,7 @@ import java.util.Map;
 import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.ExpressStatusNormalizer;
 import me.pipi.deliveries.model.ExpressTimeline;
+import me.pipi.deliveries.util.Hex;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -119,11 +120,12 @@ final class ExpressAutomaticDeletionFence {
 
     private static String digest(String value) {
         try {
-            byte[] bytes = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder(bytes.length * 2);
-            for (byte element : bytes) result.append(String.format(java.util.Locale.ROOT, "%02x", element & 0xff));
-            return result.toString();
-        } catch (NoSuchAlgorithmException unavailable) { throw new IllegalStateException("SHA-256 unavailable", unavailable); }
+            byte[] bytes = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return Hex.encodeLower(bytes);
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 unavailable", unavailable);
+        }
     }
 
     private static final class Node {

@@ -170,7 +170,7 @@ function applyRecognition(
       carrierNormalization: carrier,
     };
   }
-  // 表外承运商（用户 2026-09-26，其余裁决 29）：快递100 认得出、内置表里没有，只在这一行还没有承运商时显示它给的名字；
+  // 表外承运商（用户 2026-09-26，跨端对齐裁决 #29）：快递100 认得出、内置表里没有，只在这一行还没有承运商时显示它给的名字；
   // 不进表、没有专属图标，原始元组不动。
   const displayName = String(recognition.displayName || "").trim();
   if (displayName && !namesCarrier(parcel)) {
@@ -188,7 +188,7 @@ function applyRecognition(
     };
   }
   const unlabelled = withoutPlatformLabel(parcel);
-  // 其余裁决 32、33（用户 2026-09-26）：识别进入终态、快递100 也没给名字时，承运商位置填来源传回的承运商码原样（JDKD、ZTKY
+  // 跨端对齐裁决 #32、33（用户 2026-09-26）：识别进入终态、快递100 也没给名字时，承运商位置填来源传回的承运商码原样（JDKD、ZTKY
   // 这类，不是平台名「京东快递」），没传回就空着（这一行照样放行，见 carrier-gate）。原始码只作显示，不当承运商码用。订单的
   // 投影由同步层用订单自己的原始码处理。
   const rawCode = String(parcel.rawCourierCode || "").trim();
@@ -252,7 +252,7 @@ export function needsProjectedCarrierRepair(
 export function repairProjectedShipmentCarrier(
   shipment: Shipment,
   normalization: CarrierNormalization | null | undefined,
-  /** 表外承运商的快递100 名（其余裁决 29）：只补承运商名为空的投影行。 */
+  /** 表外承运商的快递100 名（跨端对齐裁决 #29）：只补承运商名为空的投影行。 */
   offTableName = "",
 ): Shipment {
   if (!needsProjectedCarrierRepair(shipment.identity)) return shipment;
@@ -282,7 +282,7 @@ export function repairProjectedShipmentCarrier(
     };
   } else {
     // Only a row still without a carrier takes the Kuaidi100 name: blank, the R-20 label, or the raw code shown after an
-    // exhausted recognition (其余裁决 29、32).
+    // exhausted recognition (跨端对齐裁决 #29、32).
     const displayName = String(offTableName || "").trim();
     if (!displayName || !carrierUnmatched(shipment)) return shipment;
     carrier = {

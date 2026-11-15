@@ -51,12 +51,9 @@ public final class ExpressDetailLayoutContractTest {
     }
 
     @Test
-    public void webAndNativeRootsApplySystemBarInsetsExactlyOnce() throws Exception {
-        String web = projectFile("app/src/main/res/layout/activity_express_web.xml");
+    public void nativeRootAppliesSystemBarInsetsExactlyOnce() throws Exception {
         String detail = projectFile("app/src/main/res/layout/activity_express_detail.xml");
-        assertTrue(web.contains("android:id=\"@+id/express_web_root\""));
         assertTrue(detail.contains("android:id=\"@+id/express_detail_root\""));
-        assertFalse(web.contains("android:fitsSystemWindows="));
         assertFalse(detail.contains("android:fitsSystemWindows="));
 
         View root = new View(RuntimeEnvironment.getApplication());

@@ -21,7 +21,7 @@ import {
 export type ScenePhase = "active" | "inactive" | "background";
 
 /** How often, while on screen, the persisted revision is read (one shared-defaults read). */
-export const STATE_REVISION_WATCH_INTERVAL_MS = 3_000;
+const STATE_REVISION_WATCH_INTERVAL_MS = 3_000;
 
 export type ForegroundOrderProjectionDependencies = Readonly<{
   runPass: (options: Readonly<{

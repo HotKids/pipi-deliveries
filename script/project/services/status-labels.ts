@@ -1,5 +1,10 @@
 import type { StatusSemantic } from "../models";
 import { GENERATED_STATUS_LABEL_TABLE } from "./status-label-table.generated";
+import {
+  cloneJsonRecord,
+  cloneJsonValue,
+  isPlainObject as isObject,
+} from "./value-guards";
 
 /**
  * The status label table (audit L5, user default #2, 2026-09-25): one table for every surface — the
@@ -31,7 +36,7 @@ export type StatusLabelTable = Readonly<{
   proseRules?: Readonly<Record<string, unknown>>;
 }>;
 
-export const STATUS_SEMANTIC_VALUES: readonly StatusSemantic[] = [
+const STATUS_SEMANTIC_VALUES: readonly StatusSemantic[] = [
   "UNKNOWN", "ORDERED", "SHIPPED", "PICKED", "TRANSIT", "DELIVERY", "WAITING_PICKUP", "COMPLETED",
   "DANGER", "CANCELLED",
 ];
@@ -40,10 +45,6 @@ export const BOOTSTRAP_STATUS_LABEL_TABLE =
   GENERATED_STATUS_LABEL_TABLE as unknown as StatusLabelTable;
 
 let activeTable: StatusLabelTable = BOOTSTRAP_STATUS_LABEL_TABLE;
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function isSemantic(value: unknown): value is StatusSemantic {
   return typeof value === "string" && STATUS_SEMANTIC_VALUES.includes(value as StatusSemantic);
@@ -104,23 +105,18 @@ export function parseStatusLabelTable(value: unknown): StatusLabelTable | null {
   }) as StatusLabelTable;
 }
 
-function cloneRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!isObject(value)) return undefined;
-  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-}
-
 /** Remote groups overlay the bootstrap wholesale; missing groups keep the bundled snapshot. */
 function mergeRuleGroups(
   remote: unknown,
   bundled: Readonly<Record<string, unknown>> | undefined,
 ): Readonly<Record<string, unknown>> | undefined {
-  const merged = cloneRecord(bundled) ?? {};
+  const merged = cloneJsonRecord(bundled) ?? {};
   if (remote === undefined) {
     return Object.keys(merged).length ? merged : undefined;
   }
   if (!isObject(remote)) return undefined;
   for (const [key, value] of Object.entries(remote)) {
-    merged[key] = JSON.parse(JSON.stringify(value));
+    merged[key] = cloneJsonValue(value);
   }
   return merged;
 }

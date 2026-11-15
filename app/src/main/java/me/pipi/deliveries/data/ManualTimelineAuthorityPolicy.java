@@ -594,10 +594,18 @@ public final class ManualTimelineAuthorityPolicy {
     }
 
     private static int compareStatusTimeAndQuality(Candidate left, Candidate right) {
-        int time = Long.compare(right.result.statusEventTime, left.result.statusEventTime);
+        long now = System.currentTimeMillis();
+        int time = compareStatusClock(right.result.statusEventTime, left.result.statusEventTime, now);
         if (time != 0) return time;
         return compareDetailQuality(left, right,
                 detailTimelineComplete(left.result, 0L), detailTimelineComplete(right.result, 0L));
+    }
+
+    private static int compareStatusClock(long firstClock, long secondClock, long nowMs) {
+        boolean firstValid = firstClock > 0L && firstClock <= nowMs;
+        boolean secondValid = secondClock > 0L && secondClock <= nowMs;
+        if (firstValid != secondValid) return firstValid ? 1 : -1;
+        return Long.compare(firstClock, secondClock);
     }
 
     /** Transient presentation may borrow a structured pair without changing either source cache. */
@@ -630,13 +638,18 @@ public final class ManualTimelineAuthorityPolicy {
 
     static Candidate selectStructuredTerminal(List<Candidate> candidates) {
         if (candidates == null || candidates.isEmpty()) return null;
+        long now = System.currentTimeMillis();
         Candidate selected = null;
         for (Candidate candidate : candidates) {
             if (!isAuthoritative(candidate) || !isStructuredTerminal(candidate)) continue;
-            if (selected == null
-                    || latestEventTime(candidate.result) > latestEventTime(selected.result)
-                    || latestEventTime(candidate.result) == latestEventTime(selected.result)
-                    && queryOrder(candidate.provider) < queryOrder(selected.provider)) {
+            if (selected == null) {
+                selected = candidate;
+                continue;
+            }
+            int clockOrder = compareStatusClock(
+                    latestEventTime(candidate.result), latestEventTime(selected.result), now);
+            if (clockOrder > 0
+                    || clockOrder == 0 && queryOrder(candidate.provider) < queryOrder(selected.provider)) {
                 selected = candidate;
             }
         }

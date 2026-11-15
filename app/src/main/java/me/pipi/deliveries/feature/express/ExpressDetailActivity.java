@@ -1080,7 +1080,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     /**
-     * 用户 2026-09-26（其余裁决 20，三端同口径：iOS sync.ts 的 !shipmentDetailComplete、Pipi
+     * 用户 2026-09-26（跨端对齐裁决 #20，三端同口径：iOS sync.ts 的 !shipmentDetailComplete、Pipi
      * ExpressPoller.showsPhoneTailToast）：页面要了手机尾号，这一轮落盘后详情仍不完整才弹提示；完整与否就是
      * {@link #currentDetailComplete}。
      */
@@ -1414,7 +1414,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             ExpressQueryCancellation cancellation, boolean detailPull, boolean explicitDetailPull) throws Exception {
         if (allowsJingDongCapture(expected) && expected.isAccountOrder()
                 && expected.projectedWaybill.isEmpty()) {
-            // T23（用户 2026-09-26，其余裁决 28）：已经知道的运单号（feed 文案、已存 v5_query 文案、暂存的京粉页）
+            // T23（用户 2026-09-26，跨端对齐裁决 #28）：已经知道的运单号（feed 文案、已存 v5_query 文案、暂存的京粉页）
             // 先识别承运商，对上才投影；对不上这一票保持原样、不推送。
             ExpressRepository.PendingProjection pending = repository.pendingProjection(expected);
             if (pending != null && AccountCarrierRecognition.projectPending(repository, expected,
@@ -1439,14 +1439,24 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     // T23 entry E: the waybill the reply's text names projects only with its carrier; a
                     // recognition cut off by the budget still saves the reply, unprojected.
                     String textCarrier;
+                    boolean cutOffInterrupted = false;
                     try {
                         textCarrier = AccountCarrierRecognition.queryTextCarrier(
-                                expected, query, carrierRecognizer(expected, cancellation));
+                                expected, query, carrierRecognizer(expected, stage));
                     } catch (InterruptedException cutOff) {
+                        cutOffInterrupted = Thread.interrupted() || !stage.isCancelled();
                         textCarrier = null;
                     }
-                    boolean committed = repository.saveInterface5Query(
-                            query, expected, bindingGeneration, textCarrier);
+                    boolean committed;
+                    try {
+                        committed = repository.saveInterface5Query(
+                                query, expected, bindingGeneration, textCarrier);
+                    } finally {
+                        if (cutOffInterrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                    cancellation.throwIfCancelled();
                     if (committed) {
                         ExpressItem current = repository.find(expected.rowId);
                         if (current == null || !current.waybill.equals(expected.waybill)
@@ -1828,7 +1838,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         com.google.android.material.R.attr.colorSurface)));
         ExpressSenderBadge.apply(findViewById(R.id.detail_sender),
                 item != null && item.sender, statusColor(semantic));
-        // 其余裁决 35：承运商为空时统一写「快递」；热线仍按原来的承运商名查。
+        // 跨端对齐裁决 #35：承运商为空时统一写「快递」；热线仍按原来的承运商名查。
         waybillView.setText(getString(R.string.express_company_waybill,
                 ExpressItem.carrierLabel(company), waybill));
         waybillView.setOnClickListener(view -> copyWaybill(waybill));

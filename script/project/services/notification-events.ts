@@ -19,7 +19,7 @@ function notificationTitle(shipment: Shipment): string {
   const meta = suffix
     ? `${suffix} · ${presentation.text}`
     : presentation.text;
-  // 其余裁决 35: an empty carrier reads 「快递」 in the title (display only).
+  // 跨端对齐裁决 #35: an empty carrier reads 「快递」 in the title (display only).
   return `${carrierDisplayName(shipment.identity.companyName)} ${meta}`.trim();
 }
 

@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 
 import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.model.CarrierNormalization;
+import me.pipi.deliveries.util.Hex;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -53,7 +54,7 @@ final class CarrierRecognitionCoordinator {
         final ExpressQueryCancellation cancellation = new ExpressQueryCancellation(sharedRequestBudgetMillis());
         FutureTask<Outcome> task;
         int consumers;
-        /** The waiting consumers that are sync rounds (用户 2026-09-27 提交前核对答复四). */
+        /** The waiting consumers that are sync rounds (用户 2026-09-27 同步轮单请求超时与表外名落库规则). */
         int roundConsumers;
     }
 
@@ -78,7 +79,7 @@ final class CarrierRecognitionCoordinator {
         final long retryAt;
         final boolean terminal;
         /**
-         * 其余裁决 29（用户 2026-09-26）：免费识别给出、内置表换不出标准码的承运商（快递100 的名字与码），付费级也没有
+         * 跨端对齐裁决 #29（用户 2026-09-26）：免费识别给出、内置表换不出标准码的承运商（快递100 的名字与码），付费级也没有
          * 内置结果时只作显示。iOS carrier-recognition.ts 把免费级候选留在 terminal / classify-stage retry 里同样用。
          */
         final CarrierNormalization offTable;
@@ -198,8 +199,8 @@ final class CarrierRecognitionCoordinator {
     /**
      * {@code syncRound}: the caller is a sync round. A time limit of the request's own — a connect or read timeout, or
      * {@link #SHARED_REQUEST_BUDGET_MS} — records nothing for the waybill, no failure, no cooldown and no terminal
-     * verdict: in a sync round (用户 2026-09-27 提交前核对答复四，「四端对齐 iOS」) and outside one (用户 2026-09-27
-     * 提交前核对答复五，「四端都不算失败（对齐 iOS）」). While a sync round waits for the shared request, every caller
+     * verdict: in a sync round (用户 2026-09-27 同步轮单请求超时与表外名落库规则，「四端对齐 iOS」) and outside one (用户 2026-09-27
+     * 单请求超时免计失败与已放弃记录免淘汰规则，「四端都不算失败（对齐 iOS）」). While a sync round waits for the shared request, every caller
      * waiting then is told so with {@link CarrierRecognitionTimeoutException} and the round marks the waybill cut off;
      * with no round waiting, the callers see the network failure they saw before and nothing is marked. Whether a round
      * waits is read at the moment the time limit ends the request, since a request is shared per waybill.
@@ -266,7 +267,7 @@ final class CarrierRecognitionCoordinator {
                 } catch (ExecutionException failed) {
                     if (cancellation != null) cancellation.throwIfCancelled();
                     Throwable cause = failed.getCause();
-                    // 用户 2026-09-27 提交前核对答复四: the shared request's own budget ended it while this round
+                    // 用户 2026-09-27 同步轮单请求超时与表外名落库规则: the shared request's own budget ended it while this round
                     // waited (no consumer cancels it while one waits); the round is told it timed out, not interrupted.
                     if (syncRound && cause instanceof InterruptedException
                             && work.cancellation.isCancelled()) {
@@ -350,8 +351,8 @@ final class CarrierRecognitionCoordinator {
         } catch (InterruptedException interrupted) {
             throw interrupted;
         } catch (Exception networkFailure) {
-            // The request's own timeout is no failure: in a sync round (用户 2026-09-27 提交前核对答复四), which is told
-            // so to mark it cut off, and outside one (用户 2026-09-27 提交前核对答复五).
+            // The request's own timeout is no failure: in a sync round (用户 2026-09-27 同步轮单请求超时与表外名落库规则), which is told
+            // so to mark it cut off, and outside one (用户 2026-09-27 单请求超时免计失败与已放弃记录免淘汰规则).
             if (requestTimedOut(networkFailure)) {
                 if (roundWaiting.getAsBoolean()) throw new CarrierRecognitionTimeoutException();
                 throw networkFailure;
@@ -365,7 +366,7 @@ final class CarrierRecognitionCoordinator {
         for (Kuaidi100CarrierDetector.Candidate candidate : publicCandidates) {
             CarrierRegistry.Carrier carrier = CarrierRegistry.resolveKuaidi100Code(candidate.code);
             if (carrier == null) {
-                // 其余裁决 29: the first named candidate the table cannot place is the display name.
+                // 跨端对齐裁决 #29: the first named candidate the table cannot place is the display name.
                 if (offTable.offTableName().isEmpty() && !candidate.name.isEmpty()
                         && !"快递".equals(candidate.name)) {
                     offTable = CarrierNormalization.offTable(candidate.name, candidate.code);
@@ -402,7 +403,7 @@ final class CarrierRecognitionCoordinator {
         } catch (InterruptedException interrupted) {
             throw interrupted;
         } catch (Exception networkFailure) {
-            // The paid level's own timeout, likewise (用户 2026-09-27 提交前核对答复四、答复五).
+            // The paid level's own timeout, likewise (Owner 2026-09-27 同步轮及轮外单请求超时免计失败规则).
             if (requestTimedOut(networkFailure)) {
                 if (roundWaiting.getAsBoolean()) throw new CarrierRecognitionTimeoutException();
                 throw networkFailure;
@@ -423,7 +424,7 @@ final class CarrierRecognitionCoordinator {
         JSONObject payload = new JSONObject()
                 .put("waybill", waybill)
                 .put("firstStageCompleted", true);
-        // 优化 5（协调方定的接口约定）：the parcel's reuse anchor, only when it is positive and not in the future.
+        // 优化 5（按新件锚点区分付费识别缓存协议）：the parcel's reuse anchor, only when it is positive and not in the future.
         if (parcelAnchorAtMs > 0L && parcelAnchorAtMs <= clock.now()) {
             payload.put("parcelAnchorAtMs", parcelAnchorAtMs);
         }
@@ -508,9 +509,7 @@ final class CarrierRecognitionCoordinator {
             if (canonical.length() < 6) return "";
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(
                     canonical.getBytes(StandardCharsets.UTF_8));
-            StringBuilder value = new StringBuilder(digest.length * 2);
-            for (byte item : digest) value.append(String.format("%02x", item & 0xff));
-            return value.toString();
+            return Hex.encodeLower(digest);
         } catch (Exception impossible) {
             return "";
         }

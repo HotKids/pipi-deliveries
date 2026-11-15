@@ -57,13 +57,14 @@ export function readDurableTextCandidates(name: string): readonly string[] {
   return readDurableTextResult(name).candidates;
 }
 
-function removeIfPresent(path: string): void {
-  if (FileManager.existsSync(path)) FileManager.removeSync(path);
-}
-
-function removeBestEffort(path: string): void {
+export function removeBestEffort(path: string): void {
   try {
-    removeIfPresent(path);
+    if (
+      FileManager.existsSync(path) ||
+      (typeof FileManager.isLinkSync === "function" && FileManager.isLinkSync(path))
+    ) {
+      FileManager.removeSync(path);
+    }
   } catch {
     /* cleanup failure must not invalidate an already verified generation */
   }

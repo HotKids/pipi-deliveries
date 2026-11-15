@@ -15,6 +15,7 @@ import me.pipi.deliveries.model.CainiaoRoute;
 import me.pipi.deliveries.model.ExpressStatusNormalizer;
 import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.StatusSemantic;
+import me.pipi.deliveries.util.Hex;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -91,7 +92,7 @@ public final class ExpressDiscoveryClient {
     }
 
     /**
-     * 代码 5（用户 2026-10-03「照 Pipi / iOS 的做法改」）：the list's parcel records that would add new rows with a carrier still
+     * 同源账号记录归属判定（用户 2026-10-03「照 Pipi / iOS 的做法改」）：the list's parcel records that would add new rows with a carrier still
      * to recognise wait until the rest of the list (every order summary included) is stored; their carriers are then
      * recognised and they are stored with them, in list order.
      */
@@ -646,11 +647,7 @@ public final class ExpressDiscoveryClient {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(normalize(waybill).getBytes(StandardCharsets.UTF_8));
-            StringBuilder output = new StringBuilder(24);
-            for (int index = 0; index < 12; index++) {
-                output.append(String.format(Locale.US, "%02x", digest[index] & 0xff));
-            }
-            return output.toString();
+            return Hex.encodeLower(digest, 0, 12);
         } catch (Exception impossible) {
             return Integer.toHexString(normalize(waybill).hashCode());
         }

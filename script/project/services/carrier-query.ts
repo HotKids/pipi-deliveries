@@ -28,7 +28,7 @@ type CarrierIndexes = Readonly<{
   byName: ReadonlyMap<string, CarrierQueryRecord>;
 }>;
 
-export const BOOTSTRAP_TABLE_VERSION =
+const BOOTSTRAP_TABLE_VERSION =
   "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9";
 export const BOOTSTRAP_TABLE_SOURCE = "embedded-transition";
 

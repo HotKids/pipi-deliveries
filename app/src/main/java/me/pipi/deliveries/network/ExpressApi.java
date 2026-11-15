@@ -57,7 +57,7 @@ public final class ExpressApi {
     }
 
     /**
-     * 优化 5（协调方定的接口约定，用户 2026-10-03「答案按新件分开、总额仍按运单」）：the same client for one parcel — its paid
+     * 优化 5（按新件锚点区分付费识别缓存协议，用户 2026-10-03「答案按新件分开、总额仍按运单」）：the same client for one parcel — its paid
      * classify request (sent by {@link CarrierRecognitionCoordinator}) carries {@code parcelAnchorAtMs}, the parcel's own reuse anchor
      * ({@link me.pipi.deliveries.data.WaybillReusePolicy#parcelAnchorAt}), so the Worker keeps a reused number's paid
      * answers apart per parcel. An invalid anchor (not positive, or in the future) is not sent; a Worker that ignores
@@ -135,10 +135,10 @@ public final class ExpressApi {
     }
 
     /**
-     * A sync round's recognition (用户 2026-09-27 提交前核对答复四，同步轮里单个请求自身超时「四端对齐 iOS」): the same
+     * A sync round's recognition (用户 2026-09-27 同步轮单请求超时与表外名落库规则，同步轮里单个请求自身超时「四端对齐 iOS」): the same
      * answer as {@link #recognizeCarrier(String, ExpressQueryCancellation, boolean)}, except that a request its own time
      * limit ends while the round waits throws {@link CarrierRecognitionTimeoutException}, so the round marks it cut off.
-     * Such a timeout records no failure for any caller (用户 2026-09-27 提交前核对答复五).
+     * Such a timeout records no failure for any caller (用户 2026-09-27 单请求超时免计失败与已放弃记录免淘汰规则).
      */
     public me.pipi.deliveries.model.CarrierNormalization recognizeCarrierInSyncRound(
             String waybill, boolean excludeJd) throws Exception {
@@ -147,8 +147,8 @@ public final class ExpressApi {
 
     /**
      * The first built-in carrier; without one, the off-table carrier Kuaidi100 names (display only,
-     * 其余裁决 29); without that, the exhausted marker when recognition reached its terminal verdict
-     * (其余裁决 32); otherwise NONE (a retry is still due).
+     * 跨端对齐裁决 #29); without that, the exhausted marker when recognition reached its terminal verdict
+     * (跨端对齐裁决 #32); otherwise NONE (a retry is still due).
      */
     private me.pipi.deliveries.model.CarrierNormalization recognizedCarrier(
             String waybill, ExpressQueryCancellation cancellation, boolean excludeJd, boolean syncRound)
@@ -170,7 +170,7 @@ public final class ExpressApi {
         }
         if (!outcome.candidates.isEmpty()) return outcome.candidates.get(0);
         if (!outcome.offTable.offTableName().isEmpty()) return outcome.offTable;
-        // 其余裁决 32：终态（连续 3 次失败，或付费级明确认不出）且快递100 没给名字。
+        // 跨端对齐裁决 #32：终态（连续 3 次失败，或付费级明确认不出）且快递100 没给名字。
         return outcome.terminal
                 ? me.pipi.deliveries.model.CarrierNormalization.exhausted()
                 : me.pipi.deliveries.model.CarrierNormalization.NONE;

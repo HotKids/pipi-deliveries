@@ -1,6 +1,7 @@
 import type { Shipment, TimelinePackage, TrackNode } from "../models";
 import type { AccountParcelDto } from "./account-parser";
 import { parseListEventTime, parseProviderTime, timedTracks, semanticFromAccountState, semanticFromStored } from "./status";
+import { positiveFiniteTime as validTime } from "./value-guards";
 
 /**
  * A carrier reusing an old waybill number (user decisions 2026-10-01/02, all four clients): 「C 新件优先（含 A）」,
@@ -22,16 +23,12 @@ export const WAYBILL_REUSE_MIN_GAP_MS = 24 * 60 * 60 * 1_000;
 
 type ReuseTimeline = Pick<TimelinePackage, "semantic" | "structuredStatus" | "statusEventAtMs" | "latestTimeText" | "tracks">;
 
-function validTime(value: unknown, now: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= now ? value : 0;
-}
-
 function textTime(value: string, now: number): number {
   return validTime(parseListEventTime(value) ?? parseProviderTime(value), now);
 }
 
 /** The old record's terminal time: the latest of its status time, its shown time and its newest timed node; 0 when not terminal. */
-export function waybillReuseTerminalAtMs(timeline: ReuseTimeline, now: number): number {
+function waybillReuseTerminalAtMs(timeline: ReuseTimeline, now: number): number {
   if (timeline.structuredStatus !== true ||
       (timeline.semantic !== "COMPLETED" && timeline.semantic !== "CANCELLED")) return 0;
   let latest = Math.max(validTime(timeline.statusEventAtMs, now), textTime(timeline.latestTimeText, now));
@@ -40,7 +37,7 @@ export function waybillReuseTerminalAtMs(timeline: ReuseTimeline, now: number): 
 }
 
 /** The record's earliest timed node; without nodes its own status time, then its latest time; 0 without a time. */
-export function waybillReuseAnchorAtMs(timeline: ReuseTimeline, now: number): number {
+function waybillReuseAnchorAtMs(timeline: ReuseTimeline, now: number): number {
   let earliest = 0;
   for (const track of timedTracks(timeline.tracks)) {
     const at = validTime(track.timeMs, now);
@@ -49,7 +46,7 @@ export function waybillReuseAnchorAtMs(timeline: ReuseTimeline, now: number): nu
   return earliest || validTime(timeline.statusEventAtMs, now) || textTime(timeline.latestTimeText, now);
 }
 
-export function reusesWaybill(oldTerminalAtMs: number, newAnchorAtMs: number): boolean {
+function reusesWaybill(oldTerminalAtMs: number, newAnchorAtMs: number): boolean {
   return oldTerminalAtMs > 0 && newAnchorAtMs > 0 && newAnchorAtMs - oldTerminalAtMs >= WAYBILL_REUSE_MIN_GAP_MS;
 }
 
@@ -94,7 +91,7 @@ export function shipmentReusesWaybill(current: Shipment, incoming: Shipment, now
 }
 
 /** The takeover generation of a row; 0 for a row never taken over. */
-export function waybillReuseGeneration(shipment: Shipment | null | undefined): number {
+function waybillReuseGeneration(shipment: Shipment | null | undefined): number {
   const value = Number(shipment?.waybillReuseAtMs);
   return Number.isFinite(value) && value > 0 ? value : 0;
 }

@@ -22,6 +22,7 @@ export type NormalizedStatus = StatusPresentation & {
   priority: number;
   eventAtMs: number;
   structured: boolean;
+  orderStageOnly?: boolean;
 };
 
 export type BindingSource = "interface5" | "interface6";

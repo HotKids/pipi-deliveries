@@ -1,7 +1,5 @@
 package me.pipi.deliveries.data;
 
-import me.pipi.deliveries.network.ExpressAccountSource;
-
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -9,43 +7,63 @@ import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 
+import org.json.JSONObject;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.regex.Pattern;
+
 import me.pipi.deliveries.BuildConfig;
+import me.pipi.deliveries.model.CainiaoRoute;
+import me.pipi.deliveries.model.CarrierNormalization;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressQueryResult;
-import me.pipi.deliveries.model.WorkerStatusProjection;
-import me.pipi.deliveries.model.CarrierNormalization;
-import me.pipi.deliveries.model.CainiaoRoute;
 import me.pipi.deliveries.model.ExpressStatusNormalizer;
 import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.ManualQuerySuccess;
 import me.pipi.deliveries.model.PendingExpressQuery;
 import me.pipi.deliveries.model.StatusSemantic;
+import me.pipi.deliveries.model.WorkerStatusProjection;
+import me.pipi.deliveries.network.ExpressAccountSource;
 import me.pipi.deliveries.network.ExpressLog;
 import me.pipi.deliveries.network.ExpressQueryCancellation;
 import me.pipi.deliveries.notification.ExpressNotifications;
+import me.pipi.deliveries.util.Hex;
 import me.pipi.deliveries.widget.ExpressWidgetProvider;
 
-import org.json.JSONObject;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.Locale;
-import java.util.UUID;
-import java.util.function.Function;
-import java.util.function.Supplier;
-
-/** Single persistence and outward-invalidation boundary for all express changes. */
+/**
+ * Pipi Deliveries Android（Lite）快递领域唯一持久化与广播发布边界（AGENTS §9 / §11）。
+ *
+ * <ul>
+ *   <li><b>职责边界</b>：承载接口 5 / 接口 6 自动账号源与手动链（Online / K100 H5）的独立槽位落库、
+ *       归属占号、京东订单投影合并、签收三态冻结、留存窗口裁剪以及通知/小组件失效广播。</li>
+ *   <li><b>并发与事务纪律</b>：所有写事务经仓储监视器串行化并在提交后广播 {@link #ACTION_CHANGED}；
+ *       {@link #listVisible} 与 {@link #homeRows} 通过 {@link ExpressReadSidePool} 独立 WAL 只读侧连接
+ *       与 {@code PRAGMA data_version} 快照缓存无锁并发读取，锁序严格遵循
+ *       {@code NOTIFICATION_PUBLICATION_LOCK -> ExpressRepository.this -> sideConnectionLock}，
+ *       且持 {@code ExpressRepository.this} 时严禁重入 {@code listProjectionLock}。</li>
+ *   <li><b>跨端对等文件</b>：Pipi {@code flutter_app/.../express/ExpressRepository.java}、
+ *       iOS {@code deliveries/script/project/services/{storage,shipment-policy,sync}.ts}、
+ *       Bot {@code pipi-bot/{bot,express}.py}。</li>
+ * </ul>
+ */
 public final class ExpressRepository {
     public static final String ACTION_CHANGED = "me.pipi.deliveries.EXPRESS_DATA_CHANGED";
     /** ACTION_SYNC_FINISHED 附带这轮的计数，列表页据此弹统一的下拉结果 toast。 */
@@ -64,6 +82,7 @@ public final class ExpressRepository {
     public static final String ACTION_SYNC_FINISHED =
             "me.pipi.deliveries.EXPRESS_SYNC_FINISHED";
     private static volatile ExpressRepository instance;
+    private static final Map<Context, ExpressRepository> BY_CONTEXT = new WeakHashMap<>();
     private static final ExecutorService PUBLICATION_WORKER = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "deliveries-publication");
         thread.setDaemon(true);
@@ -76,8 +95,9 @@ public final class ExpressRepository {
     private final Context context;
     private final ExpressDatabase helper;
     private final Executor publicationWorker;
+    private final ExpressReadSidePool readSidePool;
     private final Object maintenanceLock = new Object();
-    private long invalidationVersion;
+    private volatile long invalidationVersion;
     private static final class ChangeBatch {
         int depth;
         boolean invalidationPending;
@@ -125,7 +145,7 @@ public final class ExpressRepository {
     private static final int PENDING_QUERY_BATCH_SIZE = 20;
 
     ExpressRepository(Context context) {
-        this(context, new ExpressDatabase(context.getApplicationContext()), PUBLICATION_WORKER);
+        this(context, ExpressDatabase.shared(context.getApplicationContext()), PUBLICATION_WORKER);
     }
 
     /** Database fixtures can reconcile side effects inline; application instances use the process queue. */
@@ -138,9 +158,11 @@ public final class ExpressRepository {
         this.context = context.getApplicationContext();
         this.helper = helper;
         this.publicationWorker = publicationWorker;
+        this.readSidePool = new ExpressReadSidePool(this.context, helper);
     }
 
     private boolean retentionAnchorsInitialized;
+    private volatile boolean sideReadReady;
 
     private synchronized SQLiteDatabase database() {
         SQLiteDatabase db = helper.getWritableDatabase();
@@ -151,23 +173,58 @@ public final class ExpressRepository {
             try {
                 initializeOrderWaybillHistory(db);
                 initializeSignedRetentionAnchors();
+                migrateLegacyStatusAlignment(db);
+                sideReadReady = true;
             } catch (RuntimeException failure) {
                 retentionAnchorsInitialized = false;
+                sideReadReady = false;
                 throw failure;
             }
+        } else if (!sideReadReady) {
+            migrateLegacyStatusAlignment(db);
+            sideReadReady = true;
         }
         return db;
     }
 
     public static ExpressRepository get(Context context) {
+        Context app = context == null ? null : context.getApplicationContext();
+        Context key = app == null ? context : app;
         ExpressRepository local = instance;
-        if (local == null) {
-            synchronized (ExpressRepository.class) {
-                local = instance;
-                if (local == null) instance = local = new ExpressRepository(context);
-            }
+        if (local != null && (local.context == null
+                || (local.context == key && (local.helper == null || !local.helper.isClosed())))) {
+            return local;
         }
-        return local;
+        synchronized (ExpressRepository.class) {
+            local = instance;
+            if (local != null && (local.context == null
+                    || (local.context == key && (local.helper == null || !local.helper.isClosed())))) {
+                return local;
+            }
+            if (local == null || (local.helper != null && local.helper.isClosed())) {
+                ExpressRepository created = new ExpressRepository(key);
+                if (key != null) {
+                    BY_CONTEXT.put(key, created);
+                }
+                instance = created;
+                return created;
+            }
+            if (key != null && BY_CONTEXT.containsKey(key)) {
+                ExpressRepository stale = BY_CONTEXT.get(key);
+                if (stale != null && (stale.helper == null || !stale.helper.isClosed())) {
+                    return stale;
+                }
+                ExpressRepository recreated = new ExpressRepository(key);
+                BY_CONTEXT.put(key, recreated);
+                return recreated;
+            }
+            ExpressRepository created = new ExpressRepository(key);
+            if (key != null) {
+                BY_CONTEXT.put(key, created);
+            }
+            instance = created;
+            return created;
+        }
     }
 
     /** Coalesces a multi-provider sync into one widget refresh and one app broadcast. */
@@ -183,8 +240,40 @@ public final class ExpressRepository {
     }
 
     /** Visible rows projected for one selected account interface. */
-    public synchronized List<ExpressItem> listVisible(String bindingSource) {
-        return listVisibleInternal(clean(bindingSource).toLowerCase(Locale.ROOT));
+    public List<ExpressItem> listVisible(String bindingSource) {
+        String normalized = clean(bindingSource).toLowerCase(Locale.ROOT);
+        if (!sideReadReady) {
+            synchronized (this) {
+                database();
+            }
+        }
+        if (canUseSideRead()) {
+            SQLiteDatabase writer = helper.openedDatabaseOrNull();
+            Map<String, String> selections = detailSelectionsSnapshot();
+            List<ExpressItem> shared = readSidePool.sharedListVisible(
+                    writer, normalized, invalidationVersion, selections);
+            if (shared != null) return new ArrayList<>(shared);
+            List<ExpressItem> unlocked = readSidePool.computeListVisibleReadOnly(
+                    writer, normalized, invalidationVersion, selections,
+                    db -> visibleRows(db, normalized, true));
+            if (unlocked != null) return new ArrayList<>(unlocked);
+        }
+        synchronized (this) {
+            SQLiteDatabase db = database();
+            if (!Boolean.TRUE.equals(TEMPORARY_REVIEWS_ABSENT.get())) {
+                Map<String, String> selections = detailSelectionsSnapshot();
+                List<ExpressItem> shared = readSidePool.sharedListVisible(
+                        db, normalized, invalidationVersion, selections);
+                if (shared != null) return new ArrayList<>(shared);
+                ExpressReadSidePool.Stamp preStamp = readSidePool.captureStamp(
+                        db, normalized, invalidationVersion, selections);
+                long startedAtNanos = System.nanoTime();
+                List<ExpressItem> computed = visibleRows(db, normalized, true);
+                readSidePool.recordLockedComputation(preStamp, startedAtNanos, computed);
+                return computed;
+            }
+            return visibleRows(db, normalized, true);
+        }
     }
 
     /**
@@ -192,20 +281,59 @@ public final class ExpressRepository {
      * {@link #listVisible}: non-pending rows in this view may defer their detail route and
      * must not be used to persist route state or start shared background work.
      */
-    public synchronized List<ExpressItem> listVisibleForHome(String bindingSource) {
+    public List<ExpressItem> listVisibleForHome(String bindingSource) {
         return homeRows(bindingSource).visible;
     }
 
     /** Display-only hidden placeholders keep participating in the same Home projection pass. */
-    public synchronized HomeRows homeRows(String bindingSource) {
+    public HomeRows homeRows(String bindingSource) {
+        String normalized = clean(bindingSource).toLowerCase(Locale.ROOT);
+        if (!sideReadReady) {
+            synchronized (this) {
+                database();
+            }
+        }
+        if (canUseSideRead()) {
+            HomeRows unlocked = readSidePool.readOnlySide(
+                    helper.openedDatabaseOrNull(), db -> computeHomeRows(db, normalized));
+            if (unlocked != null) return unlocked;
+        }
+        synchronized (this) {
+            return computeHomeRows(database(), normalized);
+        }
+    }
+
+    private HomeRows computeHomeRows(SQLiteDatabase db, String normalizedSource) {
         ArrayList<ExpressItem> visible = new ArrayList<>();
         ArrayList<ExpressItem> processing = new ArrayList<>();
-        for (VisibleRow view : visibleRowViews(
-                clean(bindingSource).toLowerCase(Locale.ROOT), true, true)) {
+        for (VisibleRow view : visibleRowViews(db, normalizedSource, true, true)) {
             processing.add(view.shown);
-            if (!hiddenCompletedOrderPlaceholder(database(), view.shown)) visible.add(view.shown);
+            if (!hiddenCompletedOrderPlaceholder(db, view.shown)) visible.add(view.shown);
         }
         return new HomeRows(visible, processing);
+    }
+
+    private boolean canUseSideRead() {
+        return sideReadReady
+                && !Thread.holdsLock(this)
+                && !Boolean.TRUE.equals(TEMPORARY_REVIEWS_ABSENT.get());
+    }
+
+    private static Map<String, String> detailSelectionsSnapshot() {
+        Map<String, String> selections = detailSelections;
+        return selections == null ? Collections.emptyMap() : new HashMap<>(selections);
+    }
+
+    int listVisibleComputationsForTest() {
+        return readSidePool.listVisibleComputationsForTest();
+    }
+
+    int listProjectionsWithoutMonitorForTest() {
+        return readSidePool.listProjectionsWithoutMonitorForTest();
+    }
+
+    int listProjectionFallbacksForTest() {
+        return readSidePool.listProjectionFallbacksForTest();
     }
 
     public static final class HomeRows {
@@ -238,9 +366,14 @@ public final class ExpressRepository {
      * short-order placeholders in the processing view described by {@link #listVisibleAsStored}.
      */
     private List<ExpressItem> visibleRows(String bindingSource, boolean alignHeadlines) {
+        return visibleRows(database(), bindingSource, alignHeadlines);
+    }
+
+    private List<ExpressItem> visibleRows(
+            SQLiteDatabase db, String bindingSource, boolean alignHeadlines) {
         ArrayList<ExpressItem> rows = new ArrayList<>();
-        for (VisibleRow view : visibleRowViews(bindingSource)) {
-            if (alignHeadlines && hiddenCompletedOrderPlaceholder(database(), view.shown)) continue;
+        for (VisibleRow view : visibleRowViews(db, bindingSource, true, false)) {
+            if (alignHeadlines && hiddenCompletedOrderPlaceholder(db, view.shown)) continue;
             rows.add(alignHeadlines ? view.shown : view.projected);
         }
         return rows;
@@ -272,13 +405,19 @@ public final class ExpressRepository {
     }
 
     private List<VisibleRow> visibleRowViews(String bindingSource, boolean align, boolean forHome) {
-        return ExpressTimeline.withParsedTracks(() -> readVisibleRowViews(bindingSource, align, forHome));
+        return visibleRowViews(database(), bindingSource, align, forHome);
     }
 
-    private List<VisibleRow> readVisibleRowViews(String bindingSource, boolean align, boolean forHome) {
+    private List<VisibleRow> visibleRowViews(
+            SQLiteDatabase db, String bindingSource, boolean align, boolean forHome) {
+        return ExpressTimeline.withParsedTracks(
+                () -> readVisibleRowViews(db, bindingSource, align, forHome));
+    }
+
+    private List<VisibleRow> readVisibleRowViews(
+            SQLiteDatabase db, String bindingSource, boolean align, boolean forHome) {
         LinkedHashMap<String, TimelineProjection> canonical = new LinkedHashMap<>();
         Map<Long, ExpressItem> raws = new HashMap<>();
-        SQLiteDatabase db = database();
         VisibleProjectionSidecars sidecars = visibleProjectionSidecars(db);
         Map<String, AutomaticOwnershipState> ownership = automaticOwnershipStates(db);
         try (Cursor cursor = db.query(
@@ -286,14 +425,14 @@ public final class ExpressRepository {
                 "canShow=1 AND isDeleted=0", null, null, null,
                 "logisticsGmtModified DESC, _id DESC")) {
             while (cursor.moveToNext()) {
-                ExpressItem raw = readRaw(cursor, sidecars.orderProjections, forHome);
+                ExpressItem raw = readRaw(db, cursor, sidecars.orderProjections, forHome);
                 raws.put(raw.rowId, raw);
                 String normalized = ExpressSourcePolicy.normalizeWaybill(raw.displayWaybill());
                 AutomaticOwnershipState owner = ownership.get(normalized);
                 TimelineProjection projection = owner != null && owner.displayFrozen
                         && raw.rowId == owner.ownerRowId
-                        ? projectFrozenTimelineAuthorities(raw, sidecars)
-                        : projectTimelineProjection(raw, sidecars);
+                        ? projectFrozenTimelineAuthorities(db, raw, sidecars)
+                        : projectTimelineProjection(db, raw, sidecars);
                 ExpressItem candidate = projection.item;
                 if (owner != null && owner.ownerRowId > 0L
                         && candidate.rowId != owner.ownerRowId) continue;
@@ -313,7 +452,7 @@ public final class ExpressRepository {
         for (TimelineProjection projection : canonical.values()) {
             ExpressItem item = projection.item;
             ExpressItem raw = raws.get(item.rowId);
-            // 用户 2026-10-02 弹窗「先取状态那一包的最新节点」: display only. Retention reads the time the list shows
+            // 用户 2026-10-02 刷回前列表头条临时取状态所在包的最新节点: display only. Retention reads the time the list shows
             // (用户 2026-09-16, the JD signed-headline exception included), so it reads the aligned headline too.
             ExpressItem shown = align ? alignHeadlineToStatus(db, raw, item, sidecars, projection.headline) : item;
             if (ExpressVisibilityPolicy.isExpired(shown, now) || hiddenNoItemOrder(db, item)) continue;
@@ -406,8 +545,9 @@ public final class ExpressRepository {
             }
         }
         if (newest == null && sf && coarse != null) {
-            StatusAlignmentProbe probe = statusAlignmentProbe(presented);
-            if (probe != null && alignmentAttemptFinished(presented.rowId, alignmentTimes(probe))) {
+            StatusAlignmentProbe probe = statusAlignmentProbeReadOnly(db, presented);
+            if (probe != null
+                    && alignmentAttemptFinishedReadOnly(db, presented.rowId, alignmentTimes(probe))) {
                 newest = coarse;
                 newestDisplay = coarse.detail;
             }
@@ -547,7 +687,7 @@ public final class ExpressRepository {
                     && givesStatus(raw, presented, presentation))) {
                 donors.add(cleanJdTimeline(query, raw));
             }
-            ExpressQueryResult detail = detailQuery(raw, sidecars.interface5Timelines::get);
+            ExpressQueryResult detail = detailQuery(db, raw, sidecars.interface5Timelines::get);
             if (detail != null && detail != query && ManualTimelineAuthorityPolicy.hasStructuredStatus(detail)
                     && givesStatus(raw, presented, detail)) {
                 donors.add(cleanJdTimeline(detail, raw));
@@ -632,9 +772,14 @@ public final class ExpressRepository {
 
     /** {@code onlyRowId}: the probe of that one visible row (0 for every row); the detail is read for it only. */
     private List<StatusAlignmentProbe> statusAlignmentProbesInternal(String bindingSource, long onlyRowId) {
+        return statusAlignmentProbesInternal(database(), bindingSource, onlyRowId);
+    }
+
+    private List<StatusAlignmentProbe> statusAlignmentProbesInternal(
+            SQLiteDatabase db, String bindingSource, long onlyRowId) {
         ArrayList<StatusAlignmentProbe> probes = new ArrayList<>();
-        SQLiteDatabase db = database();
-        for (VisibleRow view : visibleRowViews(clean(bindingSource).toLowerCase(Locale.ROOT), false)) {
+        for (VisibleRow view : visibleRowViews(
+                db, clean(bindingSource).toLowerCase(Locale.ROOT), false, false)) {
             ExpressItem row = view.projected;
             if (row == null || onlyRowId > 0L && row.rowId != onlyRowId) continue;
             if (row.semantic == StatusSemantic.UNKNOWN
@@ -643,9 +788,10 @@ public final class ExpressRepository {
             if (view.raw == null) continue;
             List<ExpressQueryResult> donors = statusDonors(db, view.raw, row, view.sidecars);
             if (donors.isEmpty()) continue;
-            ExpressItem current = findManualOwner(row.rowId);
+            ExpressItem current = findManualOwner(db, row.rowId);
             if (!sameOwnerIdentity(current, row)) continue;
-            ManualTimelineAuthorityPolicy.DetailDecision decision = storedDetailDecision(current, false);
+            ManualTimelineAuthorityPolicy.DetailDecision decision =
+                    storedDetailDecision(db, current, false);
             ExpressQueryResult shown = decision.candidate == null
                     ? sourcePackage(current) : decision.candidate.result;
             AlignmentNode headline = view.headline;
@@ -665,7 +811,7 @@ public final class ExpressRepository {
 
     /**
      * 用户 2026-10-02「头条 状态 详情页 都推进到了签收状态（之前京东定的那种临时签收例外）就冻结快递 后续不再进行任何刷新」，
-     * 弹窗「按时间对齐」: the status (S) is signed and its completion time is valid (positive, not in the future), the
+     * 按 5 分钟时间窗口对齐判定: the status (S) is signed and its completion time is valid (positive, not in the future), the
      * list headline (H) is present and not earlier than five minutes before that time, and so is the native detail
      * page's newest node (D) when the row has one. The three times and the five minutes are the status alignment's
      * own ({@link StatusAlignmentProbe}, {@link #STATUS_ALIGNMENT_MILLIS}); an absent D (0) is not compared, as there.
@@ -681,7 +827,7 @@ public final class ExpressRepository {
     }
 
     /**
-     * Whether the row of {@code probe} is frozen (弹窗「只停本机发起的请求」「四端都做」): this device makes no more
+     * Whether the row of {@code probe} is frozen (四端统一仅停止本机发起的逐票请求): this device makes no more
      * per-row request for it — no background per-parcel query or Picker, no detail entry or pull refresh, no
      * list/detail mismatch query, no status alignment refresh. The account list and what its feed brings go on, and
      * the row thaws by itself once its times no longer meet {@link #signedTripleReached}. Besides those times, none
@@ -692,7 +838,7 @@ public final class ExpressRepository {
      * <li>a JD row whose list headline, or whose detail page's newest node, is a review kept as its first signing
      * (AGENTS §9「临时头条」: the template {@link JingDongOrderCompletionPolicy#matches} the list's signed-headline
      * exception reads);</li>
-     * <li>its one union page after signing still due (弹窗「先用掉再冻结」): the detail refresh's own
+     * <li>its one union page after signing still due (签收后一次性补查放行执行完毕后再冻结): the detail refresh's own
      * {@code ExpressDetailActivity.signedJingDongHistoryGap} on the inputs that refresh gives it, so a union page
      * captured at or after the completion has spent it, and so has any answer the row's signed ledger recorded for
      * this completion time (优化 1, {@link #signedUnionPageUsed}).</li>
@@ -766,11 +912,15 @@ public final class ExpressRepository {
      * check compares); null when that list does not show it or its status is not structured.
      */
     public synchronized StatusAlignmentProbe statusAlignmentProbe(ExpressItem owner) {
+        return statusAlignmentProbeReadOnly(database(), owner);
+    }
+
+    private StatusAlignmentProbe statusAlignmentProbeReadOnly(SQLiteDatabase db, ExpressItem owner) {
         if (owner == null || owner.rowId <= 0L) return null;
         String bindingSource = ExpressSourcePolicy.bindingSourceForOwner(
                 owner.stateOwner.isEmpty() ? owner.source : owner.stateOwner);
         for (StatusAlignmentProbe probe : withoutTemporaryReviews(
-                () -> statusAlignmentProbesInternal(bindingSource, owner.rowId))) {
+                () -> statusAlignmentProbesInternal(db, bindingSource, owner.rowId))) {
             if (sameOwnerIdentity(probe.row, owner)) return probe;
         }
         return null;
@@ -800,6 +950,10 @@ public final class ExpressRepository {
     public synchronized String ledgerValue(long rowId, String entry) {
         SQLiteDatabase db = database();
         migrateLegacyStatusAlignment(db);
+        return ledgerValueReadOnly(db, rowId, entry);
+    }
+
+    private static String ledgerValueReadOnly(SQLiteDatabase db, long rowId, String entry) {
         try (Cursor cursor = db.query(ExpressDatabase.ROW_LEDGER_TABLE, new String[]{"value"},
                 "owner_row_id=? AND entry=?", new String[]{Long.toString(rowId), clean(entry)},
                 null, null, null)) {
@@ -839,13 +993,19 @@ public final class ExpressRepository {
     }
 
     private JSONObject alignmentRecord(long rowId) {
-        String value = ledgerValue(rowId, LEDGER_STATUS_ALIGNMENT);
-        try { return new JSONObject(value); }
-        catch (org.json.JSONException legacy) {
+        return parseAlignmentRecord(ledgerValue(rowId, LEDGER_STATUS_ALIGNMENT));
+    }
+
+    private static JSONObject parseAlignmentRecord(String value) {
+        try {
+            return new JSONObject(value);
+        } catch (org.json.JSONException legacy) {
             JSONObject migrated = new JSONObject();
             try {
                 migrated.put("times", value).put("attempts", value.isEmpty() ? 0 : 1);
-            } catch (org.json.JSONException impossible) { throw new IllegalStateException(impossible); }
+            } catch (org.json.JSONException impossible) {
+                throw new IllegalStateException(impossible);
+            }
             return migrated;
         }
     }
@@ -886,6 +1046,13 @@ public final class ExpressRepository {
 
     public synchronized boolean alignmentAttemptFinished(long rowId, String times) {
         JSONObject record = alignmentRecord(rowId);
+        return times.equals(record.optString("times")) && record.optBoolean("finished");
+    }
+
+    private static boolean alignmentAttemptFinishedReadOnly(
+            SQLiteDatabase db, long rowId, String times) {
+        JSONObject record = parseAlignmentRecord(
+                ledgerValueReadOnly(db, rowId, LEDGER_STATUS_ALIGNMENT));
         return times.equals(record.optString("times")) && record.optBoolean("finished");
     }
 
@@ -1544,7 +1711,7 @@ public final class ExpressRepository {
                 ExpressDatabase.EXPRESS_TABLE, null, "_id=?",
                 new String[]{Long.toString(rowId)}, null, null, null, "1")) {
             return cursor.moveToFirst()
-                    ? readRaw(cursor, OrderProjection.EMPTY, false, omitAuditRoutes) : null;
+                    ? readRaw(db, cursor, OrderProjection.EMPTY, false, omitAuditRoutes) : null;
         }
     }
 
@@ -1566,7 +1733,7 @@ public final class ExpressRepository {
                     db, text(cursor, "mailNo"),
                     ExpressSourcePolicy.bindingSourceForOwner(ownerSource))
                     : OrderProjection.EMPTY;
-            return readRaw(cursor, projection);
+            return readRaw(db, cursor, projection, false, false);
         }
     }
 
@@ -1584,10 +1751,12 @@ public final class ExpressRepository {
                 || hiddenCompletedOrderPlaceholder(database(), item) ? null : item;
     }
 
+    private static final Pattern JD_SHORT_ORDER_ID = Pattern.compile("3[0-9]{11}");
+
     /** Only presentation is hidden; this is not evidence that the order contains no physical item. */
     private boolean hiddenCompletedOrderPlaceholder(SQLiteDatabase db, ExpressItem item) {
         if (item == null || item.manuallyAdded || !item.isAccountOrder() || !item.isJingDongSource()
-                || !item.waybill.matches("3[0-9]{11}") || !item.projectedWaybill.isEmpty()
+                || !JD_SHORT_ORDER_ID.matcher(item.waybill).matches() || !item.projectedWaybill.isEmpty()
                 || item.semantic != StatusSemantic.COMPLETED) return false;
         WorkerStatusProjection status = WorkerStatusProjection.cached(item.tracksJson);
         if (status == null || !status.structured || !status.matches(item.semantic, item.statusEventTime)) return false;
@@ -1608,7 +1777,8 @@ public final class ExpressRepository {
         String binding = ExpressSourcePolicy.bindingSourceForOwner(
                 raw.stateOwner.isEmpty() ? raw.source : raw.stateOwner);
         String order = ExpressSourcePolicy.normalizeWaybill(raw.waybill);
-        if (!orderProjection(db, raw.waybill, binding).waybill.isEmpty() || pendingProjection(raw) != null) return true;
+        if (!orderProjection(db, raw.waybill, binding).waybill.isEmpty()
+                || pendingProjection(db, raw) != null) return true;
         // Ineligible observations and unselected owner caches still prove a saved association.
         // A carrier's prefix or number length never makes its real waybill an order placeholder.
         try (Cursor history = db.query(ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE,
@@ -2099,7 +2269,7 @@ public final class ExpressRepository {
     }
 
     /**
-     * 用户 2026-10-02 弹窗「同取件码强刷（推荐）」: the status alignment refresh's Picker claim. The signed
+     * 用户 2026-10-02 状态对齐强刷越过冷却与完整闸门口径同取件码强刷: the status alignment refresh's Picker claim. The signed
      * freeze, complete history and the background cadence / failure cooldown do not stop it (each is passed
      * once, for this one claim); the row's identity, a cancelled row and an attempt still holding its active
      * lease do. The attempt is recorded like any other claim.
@@ -2282,7 +2452,7 @@ public final class ExpressRepository {
     /**
      * The automatic rows the list round's Picker query belongs to, before its owner-history gate (the
      * feed's own status and timed history): SF rows, and interface 5 automatic rows with a real waybill.
-     * The status alignment refresh (用户 2026-10-02 弹窗「同取件码强刷」) passes that owner gate once.
+     * The status alignment refresh (用户 2026-10-02 状态对齐强刷越过冷却与完整闸门口径同取件码强刷) passes that owner gate once.
      */
     public static boolean automaticListQueryPartition(ExpressItem item) {
         if (item == null || item.manuallyAdded || clean(item.displayWaybill()).isEmpty()
@@ -3408,7 +3578,11 @@ public final class ExpressRepository {
     /** The detail selection over what is stored now; the one path behind both questions above. */
     private ManualTimelineAuthorityPolicy.DetailDecision storedDetailDecision(
             ExpressItem current, boolean logSelection) {
-        SQLiteDatabase db = database();
+        return storedDetailDecision(database(), current, logSelection);
+    }
+
+    private ManualTimelineAuthorityPolicy.DetailDecision storedDetailDecision(
+            SQLiteDatabase db, ExpressItem current, boolean logSelection) {
         ExpressQueryResult query = null;
         long querySuccessAt = 1L;
         if (isInterface5Automatic(current)) {
@@ -3884,7 +4058,7 @@ public final class ExpressRepository {
                     db.update(ExpressDatabase.EXPRESS_TABLE, values, "_id=?",
                             new String[]{Long.toString(current.rowId)});
                 }
-                // 其余裁决 32（用户 2026-09-26）：京粉页投影落地那一轮与其它投影一样按通知规则推送；只改详情的页面包照旧不推。
+                // 跨端对齐裁决 #32（用户 2026-09-26）：京粉页投影落地那一轮与其它投影一样按通知规则推送；只改详情的页面包照旧不推。
                 if (previousPresented != null) stageNotification(db, previousPresented, find(current.rowId));
                 if (cancellation == null) db.setTransactionSuccessful();
                 else if (!cancellation.commitIfActive(db::setTransactionSuccessful)) return false;
@@ -3905,13 +4079,13 @@ public final class ExpressRepository {
     }
 
     /**
-     * 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：一张还没投影的订单已经知道了真实运单号，只差承运商。
+     * 承运商先对上再推送（T23，用户 2026-09-26，跨端对齐裁决 #28）：一张还没投影的订单已经知道了真实运单号，只差承运商。
      * 这样的订单不再开京粉页，之后各轮只补识别，识别出来那一轮才投影。
      */
     public static final class PendingProjection {
         public final PendingProjectionSource source;
         public final String waybill;
-        /** The carrier name the page gave next to the waybill; "" for order text (其余裁决 7). */
+        /** The carrier name the page gave next to the waybill; "" for order text (跨端对齐裁决 #7). */
         public final String offeredName;
 
         PendingProjection(PendingProjectionSource source, String waybill, String offeredName) {
@@ -3923,6 +4097,10 @@ public final class ExpressRepository {
 
     /** The waybill this unprojected Interface-5 order already knows, or null (T23). */
     public synchronized PendingProjection pendingProjection(ExpressItem expected) {
+        return pendingProjection(database(), expected);
+    }
+
+    private PendingProjection pendingProjection(SQLiteDatabase db, ExpressItem expected) {
         // AGENTS §9「谁需要自己取运单号」（用户 2026-09-26）：只有接口 5 的京东件自己取运单号。
         if (expected == null || expected.manuallyAdded || !expected.isAccountOrder()
                 || !expected.isJingDongSource()
@@ -3935,14 +4113,14 @@ public final class ExpressRepository {
         if (text != null) {
             return new PendingProjection(PendingProjectionSource.FEED_TEXT, text.waybill, "");
         }
-        ExpressQueryResult query = ownedAccountQuery(database(), expected, expected.waybill);
+        ExpressQueryResult query = ownedAccountQuery(db, expected, expected.waybill);
         text = query == null ? null
                 : me.pipi.deliveries.feature.express.ExpressOrderTextIdentity.fromTracksJson(
                         query.tracksJson, expected.waybill);
         if (text != null) {
             return new PendingProjection(PendingProjectionSource.QUERY_TEXT, text.waybill, "");
         }
-        ManualTimelineAuthorityPolicy.Candidate held = heldPagePackage(database(), expected);
+        ManualTimelineAuthorityPolicy.Candidate held = heldPagePackage(db, expected);
         return held == null ? null : new PendingProjection(PendingProjectionSource.HELD_PAGE,
                 held.result.waybill, held.result.companyName);
     }
@@ -4024,7 +4202,7 @@ public final class ExpressRepository {
     /**
      * Projects an order onto the waybill its stored v5_query reply names, as that reply's own save
      * would have (both query keys together), once its carrier matched (T23); the landing round
-     * notifies like the reply's own projection does (其余裁决 32).
+     * notifies like the reply's own projection does (跨端对齐裁决 #32).
      */
     public boolean saveQueryTextProjection(ExpressItem expectedOwner, String displayWaybill,
             String carrier, ExpressQueryCancellation cancellation) {
@@ -4043,7 +4221,7 @@ public final class ExpressRepository {
                 if (attribution == null) return false;
                 saveTimeline(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE,
                         cleanJdQuery(query.withWaybill(displayWaybill)), attribution);
-                // 其余裁决 32: the landing round notifies as the query save now does.
+                // 跨端对齐裁决 #32: the landing round notifies as the query save now does.
                 stageNotification(db, previousPresented, find(expectedOwner.rowId));
                 if (cancellation == null) db.setTransactionSuccessful();
                 else if (!cancellation.commitIfActive(db::setTransactionSuccessful)) return false;
@@ -4287,6 +4465,7 @@ public final class ExpressRepository {
             }
         }
         if (rejected.isEmpty()) return owner;
+        if (db.isReadOnly()) throw new ExpressReadSidePool.WriteRequiredException();
         try (Cursor cursor = db.query(ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE, null,
                 "normalized_waybill=?", new String[]{ExpressSourcePolicy.normalizeWaybill(owner.waybill)},
                 null, null, null)) {
@@ -4631,7 +4810,7 @@ public final class ExpressRepository {
     }
 
     /**
-     * T23 (user 2026-09-26, 其余裁决 28): {@code textProjectionCarrier} is the carrier the caller already
+     * T23 (user 2026-09-26, 跨端对齐裁决 #28): {@code textProjectionCarrier} is the carrier the caller already
      * matched for the waybill this reply's order text names (a standard code, or an off-table name).
      * Null keeps the order unprojected: the reply is still saved, and later rounds retry recognition
      * from the stored text. The three-argument form keeps its former blank-carrier projection.
@@ -4696,7 +4875,7 @@ public final class ExpressRepository {
             anchorSignedRetention(db, projectTimelineAuthorities(findRaw(db, current.rowId)),
                     System.currentTimeMillis());
             rememberOrderWaybill(db, findRaw(db, current.rowId));
-            // 其余裁决 32（用户 2026-09-26）：v5_query 文案取号投影落地那一轮与其它投影一样按通知规则推送（已下单 → 已揽收等）；
+            // 跨端对齐裁决 #32（用户 2026-09-26）：v5_query 文案取号投影落地那一轮与其它投影一样按通知规则推送（已下单 → 已揽收等）；
             // 查询本身落库照旧不推。承运商门与挂靠规则照旧在 stageNotification / 重放里。
             if (previousPresented != null) stageNotification(db, previousPresented, find(current.rowId));
             db.setTransactionSuccessful();
@@ -4708,7 +4887,7 @@ public final class ExpressRepository {
     }
 
     /**
-     * 代码 5（用户 2026-10-03「照 Pipi / iOS 的做法改」）：whether saving this account record of {@code bindingSource} would
+     * 同源账号记录归属判定（用户 2026-10-03「照 Pipi / iOS 的做法改」）：whether saving this account record of {@code bindingSource} would
      * add a new row — it qualifies for ownership, it is inside the retention window (an expired first sighting is not
      * stored, so it is never recognised), and no row of its waybill exists yet, whatever its source (a manual add, an
      * order projected onto it, a reused number's old row). Reads only; an existing row keeps its recognition after the
@@ -7375,6 +7554,14 @@ public final class ExpressRepository {
 
     private ExpressItem readRaw(
             Cursor cursor, Map<String, OrderProjection> projections, boolean forHome) {
+        return readRaw(database(), cursor, projections, forHome);
+    }
+
+    private ExpressItem readRaw(
+            SQLiteDatabase db,
+            Cursor cursor,
+            Map<String, OrderProjection> projections,
+            boolean forHome) {
         String stateOwner = text(cursor, "stateOwner");
         String normalizedOwner = ExpressSourcePolicy.source(stateOwner.isEmpty()
                 ? text(cursor, "fromCp") : stateOwner);
@@ -7386,16 +7573,17 @@ public final class ExpressRepository {
                     text(cursor, "mailNo"),
                     ExpressSourcePolicy.bindingSourceForOwner(normalizedOwner));
             projection = projections == null
-                    ? orderProjection(text(cursor, "mailNo"),
+                    ? orderProjection(db, text(cursor, "mailNo"),
                     ExpressSourcePolicy.bindingSourceForOwner(normalizedOwner))
                     : projections.getOrDefault(projectionKey, OrderProjection.EMPTY);
         }
-        return readRaw(cursor, projection, forHome);
+        return readRaw(db, cursor, projection, forHome, false);
     }
 
-    private boolean isBoundSender(String senderPhone, String bindingSource) {
+    private static boolean isBoundSender(
+            SQLiteDatabase db, String senderPhone, String bindingSource) {
         String sender = normalizePhoneDigits(senderPhone);
-        return sender.length() == 11 && !bindingGeneration(sender, bindingSource).isEmpty();
+        return sender.length() == 11 && !bindingGeneration(db, sender, bindingSource).isEmpty();
     }
 
     private ExpressItem readRaw(Cursor cursor, OrderProjection projection) {
@@ -7407,6 +7595,15 @@ public final class ExpressRepository {
     }
 
     private ExpressItem readRaw(Cursor cursor, OrderProjection projection, boolean forHome,
+            boolean omitAuditRoutes) {
+        return readRaw(database(), cursor, projection, forHome, omitAuditRoutes);
+    }
+
+    private ExpressItem readRaw(
+            SQLiteDatabase db,
+            Cursor cursor,
+            OrderProjection projection,
+            boolean forHome,
             boolean omitAuditRoutes) {
         String storedStatus = text(cursor, "logsiticsStatus");
         String statusDescription = text(cursor, "logisticsStatusDesc");
@@ -7442,7 +7639,7 @@ public final class ExpressRepository {
         StatusSemantic semantic = ExpressSourcePolicy.accountOrderPresentationSemantic(
                 normalizedOwner, safeProjection.waybill, sourceSemantic, projectedStatus != null
                         && projectedStatus.matches(sourceSemantic, number(cursor, "statusEventTime")));
-        return repairForeignManualState(database(), cleanJdOwner(new ExpressItem(
+        return repairForeignManualState(db, cleanJdOwner(new ExpressItem(
                 number(cursor, "_id"),
                 text(cursor, "subPhone"),
                 text(cursor, "mailNo"),
@@ -7475,7 +7672,7 @@ public final class ExpressRepository {
                 .withAccountListMetadata(text(cursor, "senderPhone"), positiveMinimum(
                         number(cursor, "listOriginAtMs"), ExpressTimeline.accountListOriginAtMillis(sourceTracksJson)),
                         !"manual".equals(text(cursor, "data3")) && isBoundSender(
-                                text(cursor, "senderPhone"), ExpressSourcePolicy.bindingSourceForOwner(effectiveOwner))));
+                                db, text(cursor, "senderPhone"), ExpressSourcePolicy.bindingSourceForOwner(effectiveOwner))));
     }
 
     private ExpressItem projectManualTimeline(ExpressItem owner) {
@@ -7487,9 +7684,9 @@ public final class ExpressRepository {
         SQLiteDatabase db = database();
         ArrayList<ManualTimelineAuthorityPolicy.Candidate> candidates =
                 manualTimelineCandidates(db, owner);
-        return projectManualTimelineForOwner(owner, candidates,
+        return projectManualTimelineForOwner(db, owner, candidates,
                 accountTimeline(owner.waybill, "interface5"),
-                () -> detailQuery(owner, key -> timeline(
+                () -> detailQuery(db, owner, key -> timeline(
                         db, ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE, key, TimelineSlot.V5_QUERY)));
     }
 
@@ -7529,7 +7726,7 @@ public final class ExpressRepository {
             SQLiteDatabase db = database();
             ExpressTimeline.Track detail = jingDongDetailHeadlineAheadOfFeed(owner, owner,
                     () -> eligibleManualCandidates(owner, manualTimelineCandidates(db, owner)),
-                    () -> detailQuery(owner, key -> timeline(
+                    () -> detailQuery(db, owner, key -> timeline(
                             db, ExpressDatabase.ACCOUNT_V5_TIMELINE_TABLE, key, TimelineSlot.V5_QUERY)));
             return feedProjection(owner).withHeadline(detail);
         }
@@ -7540,17 +7737,17 @@ public final class ExpressRepository {
     }
 
     private TimelineProjection projectTimelineProjection(
-            ExpressItem owner, VisibleProjectionSidecars sidecars) {
+            SQLiteDatabase db, ExpressItem owner, VisibleProjectionSidecars sidecars) {
         if (owner == null) return feedProjection(null);
         ExpressQueryResult query = sidecars.interface5Timelines.get(
                 ExpressSourcePolicy.normalizeWaybill(owner.waybill));
-        TimelineProjection presented = projectManualTimelineForOwner(owner,
+        TimelineProjection presented = projectManualTimelineForOwner(db, owner,
                 sidecars.manualTimelines.get(manualTimelineKey(owner)), query,
-                () -> detailQuery(owner, sidecars.interface5Timelines::get));
+                () -> detailQuery(db, owner, sidecars.interface5Timelines::get));
         OwnerAttribution cachedOwner = sidecars.interface5Owners.get(
                 ExpressSourcePolicy.normalizeWaybill(owner.waybill));
-        boolean sameAccount = cachedOwner != null && cachedOwner.equals(queryOwnerAttribution(database(), owner));
-        TimelineProjection result = adoptAttachedCarrierStatus(database(), restoreAccountActivity(presented,
+        boolean sameAccount = cachedOwner != null && cachedOwner.equals(queryOwnerAttribution(db, owner));
+        TimelineProjection result = adoptAttachedCarrierStatus(db, restoreAccountActivity(presented,
                 sameAccount ? sidecars.interface5Presentations.get(
                 ExpressSourcePolicy.normalizeWaybill(owner.waybill)) : query, query, sameAccount));
         return result.withItem(result.item
@@ -7562,8 +7759,11 @@ public final class ExpressRepository {
      * {@code query} 是按行上 waybill（订单行就是订单号）存的那份，状态仲裁和空 feed 的展示照旧用它；
      * {@code detailQuery} 只给下面签收头条的例外，取法与详情页相同（见 {@link #detailQuery}）。
      */
-    private TimelineProjection projectManualTimelineForOwner(ExpressItem owner,
-            List<ManualTimelineAuthorityPolicy.Candidate> stored, ExpressQueryResult query,
+    private TimelineProjection projectManualTimelineForOwner(
+            SQLiteDatabase db,
+            ExpressItem owner,
+            List<ManualTimelineAuthorityPolicy.Candidate> stored,
+            ExpressQueryResult query,
             Supplier<ExpressQueryResult> detailQuery) {
         List<ManualTimelineAuthorityPolicy.Candidate> candidates = eligibleManualCandidates(owner, stored);
         String preferred = preferredDetailProvider(owner);
@@ -7578,7 +7778,7 @@ public final class ExpressRepository {
             statusPresentation = sfPresentation(owner, displayed, candidates);
         }
         ManualTimelineAuthorityPolicy.Candidate statusAuthority =
-                selectStatusAuthority(owner, candidates, query, statusPresentation);
+                selectStatusAuthority(db, owner, candidates, query, statusPresentation);
         TimelineProjection presented = projectManualTimelineProjection(owner,
                 displayed == null ? statusPresentation : displayed, statusAuthority, statusPresentation);
         if (displayed != null) return presented;
@@ -7592,13 +7792,15 @@ public final class ExpressRepository {
      * 那份没有带时间的节点再按订单号。按订单号存的那份运单号是订单号，拿去详情选包会被判 waybill_mismatch，
      * 所以签收头条的例外不能用它（2026-09-24）。{@code byNormalizedWaybill} 的键是规范化后的号。
      */
-    private ExpressQueryResult detailQuery(ExpressItem owner,
+    private ExpressQueryResult detailQuery(
+            SQLiteDatabase db,
+            ExpressItem owner,
             Function<String, ExpressQueryResult> byNormalizedWaybill) {
         if (!isInterface5Automatic(owner)) return null;
         for (String identity : new String[]{owner.displayWaybill(), owner.waybill}) {
             ExpressQueryResult query = byNormalizedWaybill.apply(
                     ExpressSourcePolicy.normalizeWaybill(identity));
-            query = query == null ? null : ownedAccountQuery(database(), owner, query.waybill);
+            query = query == null ? null : ownedAccountQuery(db, owner, query.waybill);
             if (Kuaidi100TimelinePolicy.hasTimedTracking(cleanJdTimeline(query, owner))) return query;
         }
         return null;
@@ -7659,10 +7861,21 @@ public final class ExpressRepository {
     }
 
     /** Account queries join status arbitration without becoming Home timeline candidates. */
-    private ManualTimelineAuthorityPolicy.Candidate selectStatusAuthority(ExpressItem owner,
-            List<ManualTimelineAuthorityPolicy.Candidate> manual, ExpressQueryResult query,
+    private ManualTimelineAuthorityPolicy.Candidate selectStatusAuthority(
+            ExpressItem owner,
+            List<ManualTimelineAuthorityPolicy.Candidate> manual,
+            ExpressQueryResult query,
             ManualTimelineAuthorityPolicy.Candidate statusPresentation) {
-        query = query == null ? null : ownedAccountQuery(database(), owner, query.waybill);
+        return selectStatusAuthority(database(), owner, manual, query, statusPresentation);
+    }
+
+    private ManualTimelineAuthorityPolicy.Candidate selectStatusAuthority(
+            SQLiteDatabase db,
+            ExpressItem owner,
+            List<ManualTimelineAuthorityPolicy.Candidate> manual,
+            ExpressQueryResult query,
+            ManualTimelineAuthorityPolicy.Candidate statusPresentation) {
+        query = query == null ? null : ownedAccountQuery(db, owner, query.waybill);
         ArrayList<ManualTimelineAuthorityPolicy.Candidate> candidates = new ArrayList<>();
         if (manual != null) candidates.addAll(manual);
         if (owner != null && !owner.manuallyAdded
@@ -7769,7 +7982,7 @@ public final class ExpressRepository {
         String detail = latest == null ? shown.latestDetail : latest.detail;
         String time = latest == null ? shown.latestTime : latest.time;
         // The headline follows the newest node (D6): an older carrier headline never replaces a
-        // newer one, while the status is still adopted (user 2026-09-26, 其余裁决 9; iOS
+        // newer one, while the status is still adopted (user 2026-09-26, 跨端对齐裁决 #9; iOS
         // withAttachedCarrierStatus takesHeadline). An unreadable time counts as the oldest.
         boolean headline = !clean(detail).isEmpty()
                 && Math.max(0L, ExpressSourcePolicy.parseEventTime(time))
@@ -7845,7 +8058,7 @@ public final class ExpressRepository {
     }
 
     private TimelineProjection projectFrozenTimelineAuthorities(
-            ExpressItem owner, VisibleProjectionSidecars sidecars) {
+            SQLiteDatabase db, ExpressItem owner, VisibleProjectionSidecars sidecars) {
         if (owner == null) return feedProjection(null);
         if (owner.semantic == StatusSemantic.COMPLETED
                 || owner.sourceSemantic == StatusSemantic.COMPLETED) {
@@ -7853,7 +8066,7 @@ public final class ExpressRepository {
             ExpressTimeline.Track detail = jingDongDetailHeadlineAheadOfFeed(owner, owner,
                     () -> eligibleManualCandidates(owner,
                             sidecars.manualTimelines.get(manualTimelineKey(owner))),
-                    () -> detailQuery(owner, sidecars.interface5Timelines::get));
+                    () -> detailQuery(db, owner, sidecars.interface5Timelines::get));
             return feedProjection(owner).withHeadline(detail);
         }
         ManualTimelineAuthorityPolicy.Candidate authority = completedCandidate(
@@ -8460,7 +8673,7 @@ public final class ExpressRepository {
         return saved;
     }
 
-    /** A display-only carrier name (其余裁决 29): Chinese, not the generic 快递, not in the table. */
+    /** A display-only carrier name (跨端对齐裁决 #29): Chinese, not the generic 快递, not in the table. */
     public static String offTableCarrierName(String companyName) {
         String name = clean(companyName);
         if (name.isEmpty() || "快递".equals(name) || CarrierRegistry.resolveProjected(name) != null) return "";
@@ -8512,7 +8725,7 @@ public final class ExpressRepository {
     }
 
     /**
-     * 其余裁决 32（用户 2026-09-26）：投影出的运单号识别进入终态、快递100 也没给名字。只填一个还没显示承运商的投影，
+     * 跨端对齐裁决 #32（用户 2026-09-26）：投影出的运单号识别进入终态、快递100 也没给名字。只填一个还没显示承运商的投影，
      * 记下终态，这一行放行并显示订单的原始承运商码；之后识别出内置表结果或表外名时照常替换。
      */
     public boolean saveOrderProjectionExhausted(
@@ -8522,7 +8735,7 @@ public final class ExpressRepository {
     }
 
     /**
-     * 其余裁决 29（用户 2026-09-26）：快递100 认得出、内置表没有的承运商，按它给的名字只作显示。只填一个还没显示承运商的
+     * 跨端对齐裁决 #29（用户 2026-09-26）：快递100 认得出、内置表没有的承运商，按它给的名字只作显示。只填一个还没显示承运商的
      * 投影；页面给过的名字与内置表结果都不被它替换。
      */
     public boolean saveOrderProjectionOffTableCarrier(
@@ -8607,8 +8820,8 @@ public final class ExpressRepository {
      */
     public boolean saveRecognizedCarrier(
             ExpressItem expected, CarrierNormalization normalization) {
-        // T23（用户 2026-09-26）：快递100 表外名（其余裁决 29）也是识别结果，只作显示；手动件同样补识别（入口 G）。
-        // 识别终态（其余裁决 32）记成一个本机结论，放行这一行、显示原始承运商码。
+        // T23（用户 2026-09-26）：快递100 表外名（跨端对齐裁决 #29）也是识别结果，只作显示；手动件同样补识别（入口 G）。
+        // 识别终态（跨端对齐裁决 #32）记成一个本机结论，放行这一行、显示原始承运商码。
         if (expected == null || normalization == null || !normalization.localOutcome()) {
             return false;
         }
@@ -8647,7 +8860,7 @@ public final class ExpressRepository {
 
     /**
      * A carrier this client already recognised for the row's waybill (built-in, or the off-table name
-     * of 其余裁决 29) is kept when a later same-waybill write brings no built-in answer — the same rule
+     * of 跨端对齐裁决 #29) is kept when a later same-waybill write brings no built-in answer — the same rule
      * the account write path follows ("recognized carrier identity belongs to the waybill"). Manual
      * rows now recognise their carrier too (T23 entry G), and a Meizu refresh would otherwise clear it
      * again each round.
@@ -9248,10 +9461,7 @@ public final class ExpressRepository {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(clean(normalized).toUpperCase(Locale.ROOT)
                             .getBytes(StandardCharsets.UTF_8));
-            StringBuilder output = new StringBuilder(digest.length * 2);
-            for (byte value : digest) output.append(String.format(
-                    Locale.US, "%02x", value & 0xff));
-            return output.toString();
+            return Hex.encodeLower(digest);
         } catch (Exception impossible) {
             throw new IllegalStateException("SHA-256 unavailable", impossible);
         }
@@ -9263,10 +9473,7 @@ public final class ExpressRepository {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(("unbound-phone\u0000" + digits)
                             .getBytes(StandardCharsets.UTF_8));
-            StringBuilder output = new StringBuilder(digest.length * 2);
-            for (byte value : digest) output.append(String.format(
-                    Locale.US, "%02x", value & 0xff));
-            return output.toString();
+            return Hex.encodeLower(digest);
         } catch (Exception impossible) {
             throw new IllegalStateException("SHA-256 unavailable", impossible);
         }

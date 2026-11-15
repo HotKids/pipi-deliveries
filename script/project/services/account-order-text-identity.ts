@@ -4,7 +4,7 @@
  * When present it is read directly and the H5 projection is skipped; JD-fulfilled orders
  * whose text never names a waybill keep going through the H5 projection.
  *
- * Only the waybill is read (user decision 2026-09-26, 其余裁决 7): the carrier named in the same
+ * Only the waybill is read (user decision 2026-09-26, 跨端对齐裁决 #7): the carrier named in the same
  * sentence is not carrier evidence. The carrier then comes from the built-in table, the free Kuaidi100
  * recognition and the existing paid fallback, like every other real waybill.
  */

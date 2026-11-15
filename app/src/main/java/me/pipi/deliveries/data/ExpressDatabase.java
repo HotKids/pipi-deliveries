@@ -5,9 +5,17 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.WeakHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /** SQLite schema for shipments, bound phones and local timelines. */
 public final class ExpressDatabase extends SQLiteOpenHelper {
@@ -30,7 +38,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     public static final String KUAIDI100_PENDING_TABLE = "k100_pending";
     public static final String ORDER_PROJECTION_TABLE = "order_projection";
     /**
-     * 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：京粉页给出了订单的运单号，那一轮承运商却没对上，订单行
+     * 承运商先对上再推送（T23，用户 2026-09-26，跨端对齐裁决 #28）：京粉页给出了订单的运单号，那一轮承运商却没对上，订单行
      * 保持原样；页面拿到的运单号与页面包暂存在这里，之后各轮只补识别、不再开页，对上时按原京粉页落库路径一次投影。
      */
     public static final String HELD_ORDER_PROJECTION_TABLE = "held_order_projection";
@@ -43,12 +51,51 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     public static final String UNBOUND_ASSOCIATION_TABLE = "unbound_association";
     public static final String AUTOMATIC_OWNERSHIP_TABLE = "automatic_ownership";
     public static final String AUTOMATIC_OBSERVATION_TABLE = "automatic_observation";
+    private static final Map<Context, ExpressDatabase> SHARED = new WeakHashMap<>();
+    private static final Map<SQLiteDatabase, Boolean> VERIFIED_CONNECTIONS = new WeakHashMap<>();
     private final Context context;
+    private final String expectedPath;
+    private final List<Runnable> closeListeners = new CopyOnWriteArrayList<>();
+    private volatile SQLiteDatabase lastOpenedDatabase;
+    private volatile String openedPath;
+    private volatile Object openedFileKey;
+    private volatile boolean closed;
+
+    public static ExpressDatabase shared(Context context) {
+        Context application = context.getApplicationContext();
+        Context key = application == null ? context : application;
+        synchronized (SHARED) {
+            ExpressDatabase cached = SHARED.get(key);
+            if (cached != null && !cached.backingFileReplaced(key)) {
+                return cached;
+            }
+            if (cached != null) {
+                SHARED.remove(key);
+                cached.close();
+            }
+            ExpressDatabase created = new ExpressDatabase(key);
+            SHARED.put(key, created);
+            return created;
+        }
+    }
 
     public ExpressDatabase(Context context) {
         super(context, DATABASE, null, VERSION);
         Context application = context.getApplicationContext();
         this.context = application == null ? context : application;
+        this.expectedPath = expectedDatabasePath(this.context);
+        setOpenParams(new SQLiteDatabase.OpenParams.Builder()
+                .setSynchronousMode("FULL").build());
+        setWriteAheadLoggingEnabled(true);
+    }
+
+    void addCloseListener(Runnable listener) {
+        if (listener != null) closeListeners.add(listener);
+    }
+
+    SQLiteDatabase openedDatabaseOrNull() {
+        SQLiteDatabase db = lastOpenedDatabase;
+        return db != null && db.isOpen() ? db : null;
     }
 
     @Override
@@ -110,6 +157,17 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     @Override
     public void onOpen(SQLiteDatabase db) {
         super.onOpen(db);
+        if (!db.isReadOnly()) {
+            lastOpenedDatabase = db;
+            String path = db.getPath();
+            openedPath = path;
+            openedFileKey = fileKey(path);
+        }
+        synchronized (VERIFIED_CONNECTIONS) {
+            if (Boolean.TRUE.equals(VERIFIED_CONNECTIONS.get(db))) {
+                return;
+            }
+        }
         createExpressTables(db);
         ensureCanonicalColumns(db);
         createNativeSidecars(db);
@@ -118,6 +176,70 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
                 new String[]{"v6_picker", "meizu_picker"});
         db.delete(OWNER_MANUAL_ROUTE_TABLE, "LOWER(provider) IN (?,?)",
                 new String[]{"v6_picker", "meizu_picker"});
+        synchronized (VERIFIED_CONNECTIONS) {
+            VERIFIED_CONNECTIONS.put(db, Boolean.TRUE);
+        }
+    }
+
+    @Override
+    public void close() {
+        closed = true;
+        for (Runnable listener : closeListeners) {
+            listener.run();
+        }
+        synchronized (SHARED) {
+            SHARED.values().removeIf(entry -> entry == this);
+        }
+        lastOpenedDatabase = null;
+        openedPath = null;
+        openedFileKey = null;
+        super.close();
+    }
+
+    boolean isClosed() {
+        return closed;
+    }
+
+    private boolean backingFileReplaced(Context caller) {
+        if (closed) {
+            return true;
+        }
+        String callerPath = expectedDatabasePath(caller);
+        if (expectedPath != null && callerPath != null && !expectedPath.equals(callerPath)) {
+            return true;
+        }
+        String path = openedPath;
+        if (path == null || path.isEmpty() || ":memory:".equals(path)) {
+            return false;
+        }
+        if (expectedPath != null && !path.equals(expectedPath)) {
+            return true;
+        }
+        return !Objects.equals(openedFileKey, fileKey(path));
+    }
+
+    private static String expectedDatabasePath(Context context) {
+        if (context == null) {
+            return null;
+        }
+        try {
+            File file = context.getDatabasePath(DATABASE);
+            return file == null ? null : file.getAbsolutePath();
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private static Object fileKey(String path) {
+        if (path == null || path.isEmpty() || ":memory:".equals(path)) {
+            return null;
+        }
+        try {
+            return Files.readAttributes(
+                    Path.of(path), BasicFileAttributes.class).fileKey();
+        } catch (Exception missing) {
+            return null;
+        }
     }
 
     private static void createExpressTables(SQLiteDatabase db) {

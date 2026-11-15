@@ -1,3 +1,11 @@
+/**
+ * Pipi Deliveries iOS App Group 持久化状态与原子提交边界（AGENTS §9 / §11）。
+ *
+ * - **职责边界**：管理 `AppState` 读写、旧槽位一次性迁移、同运单占号与拆分（`waybill-ownership.ts`）、
+ *   运单重用清理（`waybill-reuse.ts`）、14/21 天签收留存与 4 小时取消裁剪、通知事件队列及桌面小组件快照生成。
+ * - **并发契约**：跨宿主变更一律通过 `withSharedFileTransaction` 验证前序代次后原子发布，路由与行台账按哈希侧存。
+ * - **跨端对等文件**：Pipi `ExpressRepository.java`、Lite `ExpressRepository.java`、Bot `pipi-bot/business_records.py`。
+ */
 import { statusProjectionFields } from "./worker-status";
 import { sharedCommitSequence, sharedData, sharedStateText, publishSharedData, withSharedFileTransaction, SharedCommitConflict } from "./shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
@@ -1815,7 +1823,7 @@ function withCarrierHold(
 }
 
 /**
- * T23（用户 2026-09-26，其余裁决 28）：挂起的通知（排队时承运商未对上）每次存盘结算一次。每行只留最早的一条；行没了、
+ * T23（用户 2026-09-26，跨端对齐裁决 #28）：挂起的通知（排队时承运商未对上）每次存盘结算一次。每行只留最早的一条；行没了、
  * 隐藏、挂靠或是空壳订单就丢；承运商仍未对上就继续挂着；对上了——这次存盘已给这行排了新事件就丢掉挂起的，否则按
  * 这一行现在的样子重新生成标题、正文、图标与状态再放行（通知开关看放行时的状态）。
  */
@@ -1969,7 +1977,7 @@ function saveStateAndPrune(
         shipment,
         rule,
       );
-      // T23（用户 2026-09-26，其余裁决 28）：承运商还没对上的行不带空白承运商排队，事件挂起，承运商对上时再生成标题。
+      // T23（用户 2026-09-26，跨端对齐裁决 #28）：承运商还没对上的行不带空白承运商排队，事件挂起，承运商对上时再生成标题。
       const hold = event ? carrierAwaitingRecognition(shipment) : false;
       if (event && context && !shipmentNotificationEvent(
         (absorbedId && previousById.get(absorbedId)) || sameGeneration(previousById.get(shipment.identity.id)),

@@ -11,6 +11,7 @@ import {
   semanticFromText,
   usableTimedTracks,
 } from "./status";
+import { asPlainObject as object } from "./value-guards";
 
 const CAINIAO_H5_TIMEOUT_MS = 8_000;
 const CAINIAO_H5_EVALUATION_TIMEOUT_MS = 1_000;
@@ -56,12 +57,6 @@ export type CainiaoH5Diagnostics = Readonly<{
   exitReason: string;
   durationMs: number;
 }>;
-
-function object(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
 
 function text(value: unknown, maxLength = MAX_DETAIL_LENGTH): string {
   if (typeof value !== "string" && typeof value !== "number") return "";

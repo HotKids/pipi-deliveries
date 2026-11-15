@@ -1,12 +1,25 @@
 package me.pipi.deliveries.feature.express;
 
-import org.json.*;
-import java.util.*;
-import me.pipi.deliveries.model.*;
-import me.pipi.deliveries.data.*;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.json.JSONTokener;
+
+import java.util.List;
+import java.util.regex.Pattern;
+
+import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
+import me.pipi.deliveries.data.TimelineSlot;
+import me.pipi.deliveries.model.ExpressItem;
+import me.pipi.deliveries.model.ExpressQueryResult;
+import me.pipi.deliveries.model.ExpressTimeline;
+import me.pipi.deliveries.model.StatusSemantic;
 
 /** Cainiao 0.0.8 adapter, matching services/cainiao-h5.ts first-party fields. */
 final class ExpressCainiaoTimelineParser {
+    private static final Pattern MINUTE_TIMESTAMP =
+            Pattern.compile("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}");
+
     private ExpressCainiaoTimelineParser() {}
 
     static String readScript() {
@@ -30,7 +43,7 @@ final class ExpressCainiaoTimelineParser {
                 if (node == null) continue;
                 String time = node.optString("timeText").trim().replace('T', ' ')
                         .replace('/', '-').replace('.', '-');
-                if (time.matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}")) time += ":00";
+                if (MINUTE_TIMESTAMP.matcher(time).matches()) time += ":00";
                 String detail = node.optString("detail").trim();
                 if (!Kuaidi100TimelinePolicy.isValidTrack(time, detail)) continue;
                 nodes.put(new JSONObject().put("time", time).put("context", detail)

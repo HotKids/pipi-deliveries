@@ -1,4 +1,5 @@
 import { utf8Data } from "./scripting-data";
+import { isPlainObject, positiveFiniteTime as validTime } from "./value-guards";
 
 /**
  * 每行一份的持久化台账（用户 2026-10-03 逐条决定，docs/EXPRESS_OPTIMIZATION_REVIEW_20261003.md 第四节）：
@@ -14,7 +15,7 @@ import { utf8Data } from "./scripting-data";
  *   的历史算出 parcelAnchorAtMs 记在这里，之后一律发记下的这个，历史变多变少都不漂；真实删除清掉，运单号被新件接管时从头
  *   再记；还没有行的手动加件照旧不发。
  *
- * 实现口径（协调方定，不是用户原话）：按行 id 的哈希存，不存运单号、订单号；存在 App Group 共享存储里，App、小组件与
+ * 实现口径（跨宿主共享存储约定）：按行 id 的哈希存，不存运单号、订单号；存在 App Group 共享存储里，App、小组件与
  * App Intent 宿主读到的是同一份（签收三态冻结在后台宿主里也要读放行用没用掉）。Signed releases and classification keep
  * their existing best-effort storage behavior. Alignment must reserve its bounded attempt successfully before asking.
  */
@@ -85,17 +86,13 @@ const RELEASE_FIELD: Record<SignedRelease, "jingDongUnionGapAtMs"> = {
   jingDongUnionGap: "jingDongUnionGapAtMs",
 };
 
-function validTime(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
-}
-
 function parseEntry(value: unknown): RowLedgerEntry | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const raw = value as Record<string, unknown>;
+  if (!isPlainObject(value)) return null;
+  const raw = value;
   const alignment = typeof raw.alignment === "string" && raw.alignment ? raw.alignment : undefined;
   let signed: SignedGeneration | undefined;
-  if (raw.signed && typeof raw.signed === "object" && !Array.isArray(raw.signed)) {
-    const generation = raw.signed as Record<string, unknown>;
+  if (isPlainObject(raw.signed)) {
+    const generation = raw.signed;
     const completedAtMs = validTime(generation.completedAtMs);
     const gapAtMs = validTime(generation.jingDongUnionGapAtMs);
     if (completedAtMs) signed = { completedAtMs, ...(gapAtMs ? { jingDongUnionGapAtMs: gapAtMs } : {}) };
@@ -112,10 +109,10 @@ function parseEntry(value: unknown): RowLedgerEntry | null {
 }
 
 /** An entry of a row no saved state has carried is kept this long, waiting for its row to land (优化 5 续). */
-export const UNSAVED_ROW_ENTRY_TTL_MS = 24 * 60 * 60_000;
+const UNSAVED_ROW_ENTRY_TTL_MS = 24 * 60 * 60_000;
 
 /** Parses a stored ledger; anything unreadable is left out. */
-export function parseRowLedger(value: unknown): RowLedger {
+function parseRowLedger(value: unknown): RowLedger {
   let parsed: unknown = value;
   try {
     if (typeof value === "string") parsed = JSON.parse(value);
@@ -134,7 +131,7 @@ export function parseRowLedger(value: unknown): RowLedger {
 }
 
 /** The separate alignment record of earlier versions (row key → times key), as ledger entries. */
-export function migratedAlignmentRecords(value: unknown): RowLedger {
+function migratedAlignmentRecords(value: unknown): RowLedger {
   let parsed: unknown = value;
   try {
     if (typeof value === "string") parsed = JSON.parse(value);

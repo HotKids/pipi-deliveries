@@ -1,6 +1,5 @@
 package me.pipi.deliveries.notification;
 
-import me.pipi.deliveries.model.ExpressTimeline;
 import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -14,11 +13,12 @@ import android.graphics.drawable.Icon;
 import android.os.Build;
 
 import me.pipi.deliveries.R;
+import me.pipi.deliveries.feature.express.ExpressDetailActivity;
 import me.pipi.deliveries.feature.express.ExpressStatusColors;
 import me.pipi.deliveries.model.ExpressItem;
+import me.pipi.deliveries.model.ExpressTimeCodec;
+import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.StatusSemantic;
-
-import me.pipi.deliveries.feature.express.ExpressDetailActivity;
 
 /** Status notification renderer using only local vector and courier resources. */
 public final class ExpressNotifications {
@@ -154,9 +154,11 @@ public final class ExpressNotifications {
         if (previous == null || current == null) return false;
         if (isFrozenJingDong(previous)) return false;
         return shouldPostUpdate(
-                previous.semantic, notificationTitle(previous), previous.latestDetail,
+                previous.semantic, notificationTitle(previous),
+                ExpressTimeline.displayHeadline(previous),
                 eventTime(previous),
-                current.semantic, notificationTitle(current), current.latestDetail,
+                current.semantic, notificationTitle(current),
+                ExpressTimeline.displayHeadline(current),
                 eventTime(current));
     }
 
@@ -199,7 +201,7 @@ public final class ExpressNotifications {
 
     public static long eventTime(ExpressItem item) {
         if (item.statusEventTime > 0L) return item.statusEventTime;
-        return me.pipi.deliveries.model.ExpressTimeCodec.parse(item.latestTime);
+        return ExpressTimeCodec.parse(item.latestTime);
     }
 
     static String channelId(StatusSemantic semantic) {

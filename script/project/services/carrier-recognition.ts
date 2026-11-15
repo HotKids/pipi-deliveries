@@ -36,7 +36,7 @@ export const CARRIER_TERMINAL_TTL_MS = 24 * 60 * 60 * 1_000;
  * 列表请求等其它时间不算；调用方原有的截止时间照旧生效，取更早的那个。用光后剩下的运单不再发请求，留到下一轮
  * （照现有 T23 机制压着）；到点时在途的请求被取消，不写失败次数、不写终态。
  */
-export const CARRIER_RECOGNITION_BUDGET_MS = 30_000;
+const CARRIER_RECOGNITION_BUDGET_MS = 30_000;
 
 /**
  * What is left of one round's (or one operation's) carrier-recognition wait. Only time during which
@@ -108,7 +108,7 @@ export type CarrierRecognitionEntry = Readonly<{
   retryAfterMs: number;
   updatedAtMs: number;
   /**
-   * 其余裁决 32（用户 2026-09-26）：这张运单的识别第一次进入终态（连续 3 次失败，或付费级明确认不出）且快递100 没给名字的
+   * 跨端对齐裁决 #32（用户 2026-09-26）：这张运单的识别第一次进入终态（连续 3 次失败，或付费级明确认不出）且快递100 没给名字的
    * 时间。之后 24 小时终态到期、重新识别又失败时照旧带着，直到真的识别出来；行上的原始承运商码因此不会来回闪、通知不会再被压。
    */
   exhaustedAtMs?: number;
@@ -145,12 +145,12 @@ export type CarrierRecognitionResult = Readonly<{
   pendingSecondLevel: boolean;
   coolingDown: boolean;
   /**
-   * 表外承运商（用户 2026-09-26，其余裁决 29）：快递100 免费识别认得出、却换不成内置表标准码时，它给的中文名。
+   * 表外承运商（用户 2026-09-26，跨端对齐裁决 #29）：快递100 免费识别认得出、却换不成内置表标准码时，它给的中文名。
    * 只作显示：不进表、没有专属图标、不改原始元组。有内置表结果时不给。
    */
   displayName?: string;
   /**
-   * 其余裁决 32（用户 2026-09-26）：识别已进入终态（连续 3 次失败，或付费级明确认不出），快递100 也没给名字。这样的件不再
+   * 跨端对齐裁决 #32（用户 2026-09-26）：识别已进入终态（连续 3 次失败，或付费级明确认不出），快递100 也没给名字。这样的件不再
    * 无限期挂着：挂起的通知与停在订单阶段的投影照常放行，承运商位置显示原始承运商码。
    */
   exhausted?: boolean;
@@ -186,11 +186,11 @@ type ClassificationResponse = Readonly<{
 }>;
 
 /**
- * 用户 2026-10-03「答案按新件分开、总额仍按运单」（优化 5，接口约定协调方定）：请求带可选的 `parcelAnchorAtMs`——这一行自己
+ * 用户 2026-10-03「答案按新件分开、总额仍按运单」（优化 5，按新件锚点区分付费识别缓存协议）：请求带可选的 `parcelAnchorAtMs`——这一行自己
  * 记录的运单号重用锚点（services/waybill-reuse.ts：最早的有时间节点；没有节点取状态时间，再没有取最新时间）。须是大于 0、
  * 不在未来的时间，否则不传（Worker 照旧按运单记）。不认识这个字段的 Worker 忽略它，回答照常解析。
  */
-export function classificationParcelAnchor(value: unknown, now = Date.now()): number | undefined {
+function classificationParcelAnchor(value: unknown, now = Date.now()): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= now ? value : undefined;
 }
 
@@ -520,7 +520,7 @@ export function retainCarrierRecognitionEntries(
   const transient = ordered.filter(
     (entry) => entry.state !== "resolved" && entry.state !== "terminal",
   );
-  // 用户 2026-09-27 提交前核对答复五：带「已放弃」（exhaustedAtMs）的记录不参与挤掉。A released waybill (其余裁决 32) keeps
+  // 用户 2026-09-27 单请求超时免计失败与已放弃记录免淘汰规则：带「已放弃」（exhaustedAtMs）的记录不参与挤掉。A released waybill (跨端对齐裁决 #32) keeps
   // its mark through the cap; losing it would count its next failure as a first one and hold its notification again.
   const released = transient.filter((entry) => Number(entry.exhaustedAtMs) > 0);
   const capped = transient.filter((entry) => !(Number(entry.exhaustedAtMs) > 0))
@@ -547,7 +547,7 @@ export function terminalStillBinding(
   return now - writtenAt < CARRIER_TERMINAL_TTL_MS;
 }
 
-/** The Kuaidi100 name of an entry the table cannot place (其余裁决 29); "" when it has none. */
+/** The Kuaidi100 name of an entry the table cannot place (跨端对齐裁决 #29); "" when it has none. */
 function offTableName(entry: CarrierRecognitionEntry): string {
   if (entry.state === "resolved") return "";
   for (const candidate of entry.candidates || []) {
@@ -557,13 +557,13 @@ function offTableName(entry: CarrierRecognitionEntry): string {
   return "";
 }
 
-/** Whether the entry records an exhausted recognition (其余裁决 32): terminal, or retrying after one, without a name. */
+/** Whether the entry records an exhausted recognition (跨端对齐裁决 #32): terminal, or retrying after one, without a name. */
 function entryExhausted(entry: CarrierRecognitionEntry): boolean {
   if (entry.state === "resolved" || offTableName(entry)) return false;
   return entry.state === "terminal" || Number(entry.exhaustedAtMs) > 0;
 }
 
-/** The exhaustion time a new entry for the same waybill carries forward (其余裁决 32). */
+/** The exhaustion time a new entry for the same waybill carries forward (跨端对齐裁决 #32). */
 function exhaustedSince(entry: CarrierRecognitionEntry | undefined): number {
   if (!entry || !entryExhausted(entry)) return 0;
   return Number(entry.exhaustedAtMs) > 0 ? Number(entry.exhaustedAtMs) : entry.updatedAtMs;
@@ -600,7 +600,7 @@ function findEntry(
 }
 
 /**
- * T23（用户 2026-09-26，其余裁决 28）：这张运单的承运商在识别缓存里已经对上了没有——内置表结果，或快递100 认得出的
+ * T23（用户 2026-09-26，跨端对齐裁决 #28）：这张运单的承运商在识别缓存里已经对上了没有——内置表结果，或快递100 认得出的
  * 表外名。只读、不发请求；同步的展示路径（订单文案套号）靠它判断能不能把运单号亮出来。没对上返回 null。
  */
 export function cachedCarrierRecognition(
@@ -626,7 +626,7 @@ export function cachedCarrierRecognition(
 }
 
 /**
- * 其余裁决 32（用户 2026-09-26）：这张运单的识别已进入终态、快递100 也没给名字（只读、不发请求）。之后因终态到期重新
+ * 跨端对齐裁决 #32（用户 2026-09-26）：这张运单的识别已进入终态、快递100 也没给名字（只读、不发请求）。之后因终态到期重新
  * 识别又失败时仍算，直到真的识别出来。
  */
 export function carrierRecognitionExhausted(
@@ -663,7 +663,7 @@ function writeEntry(
   entryInput: CarrierRecognitionEntry,
   exhaustedBefore = 0,
 ): CarrierRecognitionResult {
-  // 其余裁决 32: an exhausted recognition stays exhausted through later failures, until a carrier is recognised (a
+  // 跨端对齐裁决 #32: an exhausted recognition stays exhausted through later failures, until a carrier is recognised (a
   // terminal entry is exhausted by its state; the time is carried to the entries that follow it).
   const { exhaustedAtMs: _previous, ...plain } = entryInput;
   const exhaustedAtMs = entryInput.state === "resolved" || offTableName(entryInput) ? 0 : exhaustedBefore;
@@ -858,7 +858,7 @@ async function reportCarrierRecognition(
       // k100_autoCom, stage classify. The internal retryStage names stay internal.
       stage: "classify",
       // An off-table carrier is logged with Kuaidi100's own code, so the ones that appear can be reviewed for the
-      // Worker table (其余裁决 29, 2026-09-26).
+      // Worker table (跨端对齐裁决 #29, 2026-09-26).
       carrierCode: outcome.normalization?.standardCode ||
         (outcome.displayName
           ? cachedCarrierRecognition(waybill, options.store || storageStore)?.kuaidi100Code || undefined
@@ -1001,7 +1001,7 @@ async function runCarrierRecognition(
       });
     }
     // A paid no-match is a 24-hour terminal verdict of its own; it does not carry a failure count. The free stage's
-    // candidates stay with it: a named one is the off-table carrier shown for display (其余裁决 29, 2026-09-26).
+    // candidates stay with it: a named one is the off-table carrier shown for display (跨端对齐裁决 #29, 2026-09-26).
     return writeEntry(store, {
       waybill,
       state: "terminal",

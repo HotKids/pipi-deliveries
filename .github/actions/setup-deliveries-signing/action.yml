@@ -1,0 +1,32 @@
+name: Set up Deliveries Java, Gradle and signing key
+description: Configure Temurin Java 21, Gradle, and temporary release signing material for Pipi Deliveries.
+
+inputs:
+  signing-keystore-base64:
+    description: Base64-encoded release keystore.
+    required: true
+  keystore-subdir:
+    description: Subdirectory inside RUNNER_TEMP for the decoded release.jks file.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+      with:
+        distribution: temurin
+        java-version: "21"
+    - uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+    - name: Restore release signing key
+      shell: bash
+      env:
+        SIGNING_KEYSTORE_BASE64: ${{ inputs.signing-keystore-base64 }}
+        KEYSTORE_SUBDIR: ${{ inputs.keystore-subdir }}
+      run: |
+        set -euo pipefail
+        test -n "$SIGNING_KEYSTORE_BASE64"
+        target_dir="$RUNNER_TEMP/$KEYSTORE_SUBDIR"
+        install -d -m 700 "$target_dir"
+        printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 --decode > "$target_dir/release.jks"
+        chmod 600 "$target_dir/release.jks"
+        echo "SIGNING_STORE_FILE=$target_dir/release.jks" >> "$GITHUB_ENV"

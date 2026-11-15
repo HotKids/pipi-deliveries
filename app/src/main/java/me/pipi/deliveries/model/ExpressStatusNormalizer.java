@@ -53,7 +53,7 @@ public final class ExpressStatusNormalizer {
     /**
      * Provider/service errors are never valid logistics events or user-facing timeline text: the
      * shared vocabulary's lines with {@code kept: false}. The update placeholder is not one of them
-     * in any of its four forms, 「，点击查看>>」 included (user 2026-09-26, parity doc 其余裁决 19): it
+     * in any of its four forms, 「，点击查看>>」 included (user 2026-09-26, 跨端对齐文档裁决 #19): it
      * is only kept off the display ({@link #isNonEventDetail}), so it never drops a row, voids a
      * package's status or blocks a borrowed status.
      */

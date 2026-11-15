@@ -58,7 +58,7 @@ export function scriptingSha256Valid(): boolean {
   return cachedSha256Valid;
 }
 
-export function scriptingHmacVariant(): ScriptingHmacVariant {
+function scriptingHmacVariant(): ScriptingHmacVariant {
   if (!cachedVariant) cachedVariant = detectHmacVariant();
   return cachedVariant;
 }

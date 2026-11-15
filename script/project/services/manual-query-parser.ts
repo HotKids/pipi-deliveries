@@ -10,8 +10,14 @@ import {
   usableTimedTracks,
 } from "./status";
 import { statusRuleSemantic } from "./status-labels";
+import {
+  asPlainObject as object,
+  cleanScalarText as text,
+  firstCleanScalarText as firstText,
+  type JsonObject,
+} from "./value-guards";
 
-export type JsonObject = Record<string, unknown>;
+export type { JsonObject };
 
 export type ParsedManualTimeline = {
   tracks: TrackNode[];
@@ -24,26 +30,6 @@ export type ParsedManualTimeline = {
   hasStructuredStatus: boolean;
   normalizedStatus?: NormalizedStatus;
 };
-
-function object(value: unknown): JsonObject {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonObject)
-    : {};
-}
-
-function text(value: unknown): string {
-  return typeof value === "string" || typeof value === "number"
-    ? String(value).trim()
-    : "";
-}
-
-function firstText(value: JsonObject, ...keys: string[]): string {
-  for (const key of keys) {
-    const candidate = text(value[key]);
-    if (candidate) return candidate;
-  }
-  return "";
-}
 
 const RETAINED_TRACK_RAW_FIELDS = [
   "normalizedStatus",

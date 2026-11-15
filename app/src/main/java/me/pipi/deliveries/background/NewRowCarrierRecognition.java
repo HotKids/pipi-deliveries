@@ -16,7 +16,7 @@ import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.network.ExpressApi;
 
 /**
- * 代码 5（用户 2026-10-03「照 Pipi / iOS 的做法改」；其余裁决 28「先识别承运商再落库、上列表、推送」）：within one sync round, the
+ * 同源账号记录归属判定（用户 2026-10-03「照 Pipi / iOS 的做法改」；跨端对齐裁决 #28「先识别承运商再落库、上列表、推送」）：within one sync round, the
  * fresh account records wait while the rest of the round's list is stored (every order summary first), then enter
  * recognition before the ordinary ownership/save decision. Qualified new rows are listed with their carrier from
  * the start; missing raw identity permits only caching. This is what Pipi's {@code recognizeBeforePublication} does
@@ -30,9 +30,9 @@ import me.pipi.deliveries.network.ExpressApi;
  * afterwards in the round's enrichment loop. Missing raw carrier evidence permits recognition/cache only; the
  * unchanged ownership gate still prevents that record from being stored or listed.</li>
  * <li>How: the same chain and the same round as every other recognition of the round — built-in table, free
- * Kuaidi100, the existing paid classify; the round's one 30-second budget (其余裁决 37) and the cut-off order of
+ * Kuaidi100, the existing paid classify; the round's one 30-second budget (跨端对齐裁决 #37) and the cut-off order of
  * {@link CarrierRecognitionDeferrals} (截断排后).</li>
- * <li>Not recognised this round (no answer, a failure, the budget spent or cut off; 其余裁决 42): a qualified row is stored
+ * <li>Not recognised this round (no answer, a failure, the budget spent or cut off; 跨端对齐裁决 #42): a qualified row is stored
  * as it came and listed as before, its notification held while its carrier is pending (a first sighting is not notified in
  * any case), and the next round's enrichment loop recognises it again, as Pipi lists such a new row and iOS stores
  * the parcel with its direct carrier presentation.</li>

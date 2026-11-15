@@ -130,6 +130,12 @@ final class ExpressSourcePolicy {
         }
         if (incomingOwnerRank > currentOwnerRank) return true;
         if (current == incoming) {
+            if (current == StatusSemantic.COMPLETED) {
+                long now = System.currentTimeMillis();
+                boolean currentValid = currentEventTime > 0L && currentEventTime <= now;
+                boolean incomingValid = incomingEventTime > 0L && incomingEventTime <= now;
+                if (currentValid != incomingValid) return incomingValid;
+            }
             if (incomingEventTime <= 0L) return currentEventTime <= 0L;
             return currentEventTime <= 0L || incomingEventTime >= currentEventTime;
         }

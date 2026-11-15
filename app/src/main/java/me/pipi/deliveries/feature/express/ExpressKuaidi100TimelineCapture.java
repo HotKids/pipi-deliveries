@@ -74,8 +74,7 @@ final class ExpressKuaidi100TimelineCapture {
     }
 
     /**
-     * A sub-resource the hidden Kuaidi100 capture page may load (用户 2026-10-02 弹窗「Lite 也做，iOS 查文档能做就做
-     * （推荐）」, the same list as Pipi Kuaidi100H5Client.isAllowedCaptureResource): data: and blob: URLs, and
+     * A sub-resource the hidden Kuaidi100 capture page may load (用户 2026-10-02 Pipi / Lite 统一子资源白名单规则, the same list as Pipi Kuaidi100H5Client.isAllowedCaptureResource): data: and blob: URLs, and
      * http/https on kuaidi100.com or its subdomains. Anything else is answered with an empty 204.
      */
     static boolean isAllowedCaptureResource(String value) {
@@ -159,7 +158,7 @@ final class ExpressKuaidi100TimelineCapture {
                 }
 
                 /**
-                 * 用户 2026-10-02 弹窗「Lite 也做，iOS 查文档能做就做（推荐）」（Pipi 用户定 2026-10-02「快递100 的抓取网页只放行
+                 * 用户 2026-10-02 Pipi / Lite 统一子资源白名单规则（Pipi 用户定 2026-10-02「快递100 的抓取网页只放行
                  * 快递100 自己的域名」）：the hidden K100 page loads nothing from outside Kuaidi100; a third-party file
                  * (its first synchronous script is Baidu analytics) answers empty at once instead of holding the
                  * document at "loading" behind a proxy that hangs that host. The J&T page is unchanged.

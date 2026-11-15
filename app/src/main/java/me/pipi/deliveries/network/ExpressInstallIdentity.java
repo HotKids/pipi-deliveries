@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import me.pipi.deliveries.security.KeystoreSecretBox;
+import me.pipi.deliveries.util.Hex;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -118,10 +119,6 @@ final class ExpressInstallIdentity {
     private static String randomHex(SecureRandom random, int byteCount) {
         byte[] bytes = new byte[byteCount];
         random.nextBytes(bytes);
-        StringBuilder output = new StringBuilder(byteCount * 2);
-        for (byte value : bytes) {
-            output.append(String.format(Locale.ROOT, "%02x", value & 0xff));
-        }
-        return output.toString();
+        return Hex.encodeLower(bytes);
     }
 }

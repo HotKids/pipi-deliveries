@@ -878,7 +878,7 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
 }
 
 /**
- * 启动 / 回前台刷新的触发名 2026-09-26 由 `foreground_sync` 改为 `foreground`（用户，其余裁决第 21 条）。
+ * 启动 / 回前台刷新的触发名 2026-09-26 由 `foreground_sync` 改为 `foreground`（用户，跨端对齐裁决第 21 条）。
  * 新写入由 sync.ts 直接写 `foreground`；存盘的旧日志不改写，只在读取时翻译（trigger 与记录阻塞方
  * 触发名的 blockingTrigger 同一口径）。
  */
@@ -1183,7 +1183,7 @@ const LEVEL_BY_PROVIDER: Record<string, string> = {
 };
 const INTERFACE_LEVELS = new Set(["v5_list", "v5_query"]);
 
-export function unifiedLevel(details: DiagnosticDetails): string {
+function unifiedLevel(details: DiagnosticDetails): string {
   if (details.level) return String(details.level);
   if (details.requestProvider) return String(details.requestProvider);
   const stage = String(details.stage || "").trim().toLowerCase();

@@ -1,3 +1,13 @@
+/**
+ * Pipi Deliveries iOS 快递同步总编排器（AGENTS §9 / §11）。
+ *
+ * - **职责边界**：协调接口 5 账号列表/按件详情同步、增强元数据补全、前台京东联盟页运单投影、
+ *   顺丰与手动件链（Online -> 主轮 -> 快递鸟）、承运商先识别后推送（T23）及状态对齐强刷。
+ * - **跨宿主并发契约**：App、小组件与 App Intent 共享 App Group 存储，状态落盘统一经
+ *   `shared-file-transaction.ts` 乐观代次事务与 `refresh-runtime-state.ts` 租约栅栏串行提交。
+ * - **跨端对等文件**：Pipi `ExpressPoller.java` / `ExpressRepository.java`、
+ *   Lite `ExpressSyncManager.java` / `ExpressRepository.java`、Bot `pipi-bot/bot.py`。
+ */
 import { sharedData, withSharedFileTransaction } from "./shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
@@ -733,7 +743,7 @@ function canQueryHomeAccount(shipment: Shipment, cainiaoFollowup: boolean, now =
  * The Home follow-up's own conditions. A newly reported completion still gets its final detail unless the row has
  * reached the signed freeze: status, headline and local detail all at the signing (用户 2026-10-02「头条 状态 详情页 都
  * 推进到了签收状态…就冻结快递 后续不再进行任何刷新」). An explicit sign-off stops it only once hard-frozen (用户 2026-10-02
- * 「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「iOS 右滑签收一起改」); both are canQueryHomeAccount's freeze check.
+ * 「我已取件这种硬冻结 也要等三态都是签收才冻结」，iOS 右滑签收统一适用同一硬冻结条件); both are canQueryHomeAccount's freeze check.
  */
 function homeAccountQueryEligible(shipment: Shipment, cainiaoFollowup: boolean): boolean {
   if (!isCainiaoAutomaticShipment(shipment)) return false;
@@ -1152,15 +1162,15 @@ function projectionWithoutCarrier(parcel: AccountParcelDto): boolean {
 }
 
 /**
- * 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：订单已经拿到真实运单号，承运商却没对上（识别链与页面都
- * 没给名字）。这样的投影不落地，订单行保持原样——直到识别进入终态（其余裁决 32、33），那时照常落地。
+ * 承运商先对上再推送（T23，用户 2026-09-26，跨端对齐裁决 #28）：订单已经拿到真实运单号，承运商却没对上（识别链与页面都
+ * 没给名字）。这样的投影不落地，订单行保持原样——直到识别进入终态（跨端对齐裁决 #32、33），那时照常落地。
  */
 function projectionAwaitingCarrier(parcel: AccountParcelDto): boolean {
   return projectionWithoutCarrier(parcel) && !carrierRecognitionExhausted(parcel.waybill);
 }
 
 /**
- * 其余裁决 32、33（用户 2026-09-26）：识别已进入终态（连续 3 次失败，或付费级明确认不出，且快递100 没给名字）的投影不再
+ * 跨端对齐裁决 #32、33（用户 2026-09-26）：识别已进入终态（连续 3 次失败，或付费级明确认不出，且快递100 没给名字）的投影不再
  * 停在订单阶段：照常落地，承运商位置填这张订单来源传回的承运商码原样（JDKD 这类，不是平台名）；没传回就空着
  * （「传回啥 cpcode 就填啥」）。
  */
@@ -1176,7 +1186,7 @@ function releaseExhaustedProjection(projected: AccountParcelDto, orderRawCode: s
   };
 }
 
-/** Whether a held or text waybill can be settled now: recognition may answer, or it is exhausted (其余裁决 32、33). */
+/** Whether a held or text waybill can be settled now: recognition may answer, or it is exhausted (跨端对齐裁决 #32、33). */
 function heldCarrierSettleable(waybill: string, now: number): boolean {
   return carrierRecognitionDue(waybill, now) || carrierRecognitionExhausted(waybill);
 }
@@ -1270,7 +1280,7 @@ function withRecognizedCarrier(
 
 /**
  * T23: asks the recognizer again for a row still without a matched carrier — also one released with its raw code after
- * an exhausted recognition (其余裁决 32), once the recognizer may answer again. Best effort.
+ * an exhausted recognition (跨端对齐裁决 #32), once the recognizer may answer again. Best effort.
  */
 async function recognizeAwaitingCarrier(
   shipment: Shipment,
@@ -2447,7 +2457,7 @@ async function projectAccountOrders(
       normalizeWaybill(resolvedParcel.waybill) !==
         normalizeWaybill(parcel.ownerId);
     let projectionRetained = false;
-    // 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：运单号拿到了、承运商没对上，这张订单保持原样、不推。
+    // 承运商先对上再推送（T23，用户 2026-09-26，跨端对齐裁决 #28）：运单号拿到了、承运商没对上，这张订单保持原样、不推。
     // 京粉页给的运单号与轨迹存下来（页面冷却照 §9 记，空壳计数按「页面给过运单号」清零），之后各轮只补识别；
     // 文案或已挂起的运单号没开页，订单的投影记录恢复成预约前的样子。
     if (extracted) resolvedParcel = releaseExhaustedProjection(resolvedParcel!, parcel.rawCourierCode);
@@ -3678,7 +3688,7 @@ async function runDetailEntryQuery(
   query: typeof refreshAccountParcel,
   flowId: string,
   /**
-   * 用户 2026-10-02 弹窗「同取件码强刷」：状态对齐强刷先问这一行自己的按件详情（v5_query），签收冻结与完整缓存
+   * 用户 2026-10-02 状态对齐强刷越过冷却与完整闸门口径同取件码强刷：状态对齐强刷先问这一行自己的按件详情（v5_query），签收冻结与完整缓存
    * 不挡这一次；资格（自动件、有账号记录、京东 / 菜鸟来源）照旧由调用方判。
    */
   statusAlignment = false,
@@ -3878,7 +3888,7 @@ async function runShipmentRefreshFlow(
   }
   if (trigger === "product_image") return { state: base, shipment: original, refreshed: identityApplied };
   // Old cached feed text can resolve identity without waiting for another provider response.
-  // T23 (user 2026-09-26, 其余裁决 28): its waybill — or a union-page waybill held for its carrier — is recognised
+  // T23 (user 2026-09-26, 跨端对齐裁决 #28): its waybill — or a union-page waybill held for its carrier — is recognised
   // first and projected only with a matched carrier; otherwise the order stays as it is and no page is opened here.
   if (unprojectedAccountOrder(original)) {
     const cachedReference = accountParcelWithProjectionReference(original, null, "");
@@ -3916,10 +3926,10 @@ async function runShipmentRefreshFlow(
   // 签收冻结（用户 2026-10-02「头条 状态 详情页 都推进到了签收状态（之前京东定的那种临时签收例外）就冻结快递 后续不再进行
   // 任何刷新」）：状态、头条、本地详情都到了签收的行，本机不再为它发任何逐票请求——打开详情、详情下拉、状态对齐强刷、手动链、
   // 京粉页、快递100、快递鸟都不跑，详情页照常显示缓存。右滑签收的行（用户 2026-10-02「我已取件这种硬冻结 也要等三态都是签收
-  // 才冻结」，弹窗「iOS 右滑签收一起改」）在来源三态到签收或点击满 72 小时后硬冻结，之前与普通行一样刷新。
+  // 才冻结」，iOS 右滑签收统一适用同一硬冻结条件）在来源三态到签收或点击满 72 小时后硬冻结，之前与普通行一样刷新。
   // 承运商识别不在冻结之列（协调方规格「身份不是刷新」）：普通行照旧先识别承运商。用户 2026-10-03「硬冻结也照常识别承运商」
   // （优化 4）：右滑签收硬冻结的行与三态冻结的行一样先识别承运商（只认身份，不刷轨迹、不发通知），再在下面停下。
-  // 还没投影出运单号的京东订单从不冻结（用户 2026-10-02 弹窗「不冻结，取到号再判」，signedTripleReached）。
+  // 还没投影出运单号的京东订单从不冻结（用户 2026-10-02 未投影出真实运单号前不冻结，取到运单号后再判定，signedTripleReached）。
   const signedFrozen = signedRefreshFrozen(original, Date.now());
   const skipSignedFrozen = (shipment: Shipment, state: AppState): ShipmentRefreshResult => {
     writeDiagnostic("detail.refresh.skipped", {
@@ -4471,7 +4481,7 @@ async function runShipmentRefreshFlow(
                       );
                     }
                   } else {
-                    // 其余裁决 32: an exhausted recognition no longer holds the order at its order stage.
+                    // 跨端对齐裁决 #32: an exhausted recognition no longer holds the order at its order stage.
                     parcel = releaseExhaustedProjection(parcel, unresolvedParcel.rawCourierCode);
                   }
                   writeDiagnostic(
@@ -4502,7 +4512,7 @@ async function runShipmentRefreshFlow(
                       Date.now(),
                     );
                   } else if (!reopenForTimeline && projectionAwaitingCarrier(parcel)) {
-                    // T23（用户 2026-09-26，其余裁决 28）：运单号拿到了、承运商没对上——订单保持原样、不推。页面给的运单号
+                    // T23（用户 2026-09-26，跨端对齐裁决 #28）：运单号拿到了、承运商没对上——订单保持原样、不推。页面给的运单号
                     // 与轨迹挂起（页面冷却照 §9 记，空壳计数按「页面给过运单号」清零）；文案没开页，投影记录恢复成预约前。
                     if (textProjection) {
                       projectionRestore = { retry: freshOwner.identity.orderProjectionRetry };
@@ -4878,8 +4888,8 @@ async function runShipmentRefreshFlow(
         ? lacksStatus(enrichmentBase)
         : ordinaryAutomaticSupplementRequested || requestedKuaidi100Timeline ||
           jingDongManualFallbackRequested || cainiaoManualFallbackRequested;
-      // A pull does not ask Online here (EXPRESS_THREE_CLIENT_PARITY ShunFeng row). 用户 2026-10-02 弹窗「四端都先问
-      // Picker（推荐）」：状态对齐强刷里顺丰来源件先问 Online（Picker，v6_query refresh）——顺丰的列表头条归 Picker；
+      // A pull does not ask Online here (EXPRESS_THREE_CLIENT_PARITY ShunFeng row). 用户 2026-10-02 四端对齐强刷顺丰件均先查
+      // Picker：状态对齐强刷里顺丰来源件先问 Online（Picker，v6_query refresh）——顺丰的列表头条归 Picker；
       // 其余行的强刷照旧不问。问过之后这一轮的其余各级照旧各跑一次。
       const alignmentAsksOnline = aligning && isShunFengSourceShipment(enrichmentBase);
       let pickerSupplementSucceeded = false;
@@ -5000,6 +5010,7 @@ async function runShipmentRefreshFlow(
       let h5Result: Shipment | null = null;
       let h5Error: unknown = null;
       let motoResult: Shipment | null = null;
+      let motoError: unknown = null;
       let kdniaoResult: Shipment | null = null;
       let kdniaoError: unknown = null;
       let primarySuccessCount = -1;
@@ -5101,6 +5112,7 @@ async function runShipmentRefreshFlow(
         });
         rethrowStageCancellation(signal, endH5StageOnCancellation);
         motoResult = contest.moto.shipment;
+        motoError = contest.moto.error;
         h5Result = contest.kuaidi100.shipment;
         h5Error = contest.kuaidi100.error;
         queryFailureObserved ||= Boolean(contest.moto.error || contest.kuaidi100.error || contest.kdniao.error);
@@ -5185,12 +5197,6 @@ async function runShipmentRefreshFlow(
           ...diagnosticErrorDetails(kdniaoError),
         }, "warning");
       }
-      if (refreshed.identity.manuallyAdded && explicitTimelineRefresh &&
-          !pickerSupplementSucceeded && !motoResult && !h5Result && !kdniaoResult &&
-          !shipmentDetailComplete(refreshed) &&
-          [h5Error, kdniaoError].some(needsManualPhoneTail)) {
-        expressToast = "manualPhoneTailRequired";
-      }
       if (primaryContestRequested) {
         const selected = selectShipmentDetailTimeline(refreshed);
         const selectedTrackCount = timedTracks(selected.tracks).length;
@@ -5251,6 +5257,7 @@ async function runShipmentRefreshFlow(
           assertRefreshSignal(signal);
           if (usableManualSupplement(outcome.shipment)) {
             querySucceeded = true;
+            kdniaoResult = outcome.shipment;
             refreshed = applyManualShipment(
               refreshed,
               outcome.shipment,
@@ -5260,6 +5267,7 @@ async function runShipmentRefreshFlow(
           }
         } catch (error) {
           rethrowRefreshCancellation(error, signal);
+          kdniaoError = error;
           queryFailureObserved = true;
           writeDiagnostic("detail.refresh.fallback_failed", {
             flowId,
@@ -5270,6 +5278,12 @@ async function runShipmentRefreshFlow(
             ...diagnosticErrorDetails(error),
           }, "warning");
         }
+      }
+      if (refreshed.identity.manuallyAdded && explicitTimelineRefresh &&
+          !pickerSupplementSucceeded && !motoResult && !h5Result && !kdniaoResult &&
+          !shipmentDetailComplete(refreshed) &&
+          [motoError, h5Error, kdniaoError].some(needsManualPhoneTail)) {
+        expressToast = "manualPhoneTailRequired";
       }
       // A carrier repair is not a refresh result: it must never mask a real projection error.
       if (!changed && accountError && !(missingHistoryRefresh && completedSourceQuery && !sourceAccessRejected &&
@@ -5461,7 +5475,7 @@ async function runShipmentRefreshFlow(
 
 /**
  * The status-alignment forced refreshes of this runtime, by row, while they hold the row's `detail:<id>` lease
- * (services/status-alignment.ts). 用户 2026-10-02 弹窗「下拉等那次强刷跑完再显示」: a pull on that row's detail page
+ * (services/status-alignment.ts). 用户 2026-10-02 详情下拉复用在途对齐强刷并等待完成后展示: a pull on that row's detail page
  * meeting one does not start a second refresh and does not return at once (which read as a failed pull when nothing
  * was cached); it waits for the forced refresh, within the pull's own deadline, and shows its outcome as its own.
  */

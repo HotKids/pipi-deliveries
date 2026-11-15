@@ -15,6 +15,7 @@ import java.util.function.LongSupplier;
 
 import me.pipi.deliveries.model.CarrierNormalization;
 import me.pipi.deliveries.network.CarrierRecognitionTimeoutException;
+import me.pipi.deliveries.util.Hex;
 
 import org.json.JSONObject;
 
@@ -28,7 +29,7 @@ import org.json.JSONObject;
  * failure and not a verdict: it only orders. It stays until the waybill is recognised or recognition gives up
  * on it (a terminal verdict); the next truncation records that round's reason instead. A request that timed out
  * on its own while the round waited (connect or read timeout, the shared request's budget) is marked cut off
- * too, with no failure counted: 用户 2026-09-27 提交前核对答复四（同步轮里单个请求自身超时「四端对齐 iOS」）.
+ * too, with no failure counted: 用户 2026-09-27 同步轮单请求超时与表外名落库规则（同步轮里单个请求自身超时「四端对齐 iOS」）.
  *
  * <p>Kept across a process restart in its own preferences file next to the recognition records
  * ({@code carrier_recognition_v1}), under the same key: the SHA-256 of the canonical waybill, never the
@@ -134,7 +135,7 @@ final class CarrierRecognitionDeferrals {
                 defer(waybill, truncated.cut);
                 throw truncated;
             } catch (CarrierRecognitionTimeoutException timedOut) {
-                // 用户 2026-09-27 提交前核对答复四：同步轮里请求自身超时，不计失败，只记截断标记（被取消的那一类）。
+                // 用户 2026-09-27 同步轮单请求超时与表外名落库规则：同步轮里请求自身超时，不计失败，只记截断标记（被取消的那一类）。
                 defer(waybill, true);
                 throw timedOut;
             }
@@ -160,9 +161,7 @@ final class CarrierRecognitionDeferrals {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(
                     canonical.getBytes(StandardCharsets.UTF_8));
-            StringBuilder value = new StringBuilder(digest.length * 2);
-            for (byte item : digest) value.append(String.format(Locale.ROOT, "%02x", item & 0xff));
-            return value.toString();
+            return Hex.encodeLower(digest);
         } catch (Exception impossible) {
             return "";
         }
