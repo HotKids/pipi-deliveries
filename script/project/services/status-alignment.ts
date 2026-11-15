@@ -55,7 +55,7 @@ export type StatusAlignmentCandidate = Readonly<{
  * Visible rows with an unfinished attempt allowance, in list order; one chain visits each row once.
  * Signed-frozen rows are not checked, and temporarily hidden rows keep their ledger.
  */
-export function dueStatusAlignments(
+function dueStatusAlignments(
   state: AppState,
   now: number,
   records: Readonly<Record<string, string>>,
@@ -237,7 +237,7 @@ export async function runStatusAlignmentPass(
 export type ScenePhase = "active" | "inactive" | "background";
 
 /** How often, while on screen, the persisted revision is read (the foreground order projection's interval). */
-export const STATUS_ALIGNMENT_WATCH_INTERVAL_MS = 3_000;
+const STATUS_ALIGNMENT_WATCH_INTERVAL_MS = 3_000;
 
 export type StatusAlignmentControllerDependencies = Readonly<{
   runPass: (options: Readonly<{

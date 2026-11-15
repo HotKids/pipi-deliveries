@@ -1,4 +1,15 @@
+/**
+ * Pipi Deliveries iOS 快递归属仲裁、选包优先级与冻结策略纯函数中心（AGENTS §9）。
+ *
+ * - **职责边界**：实现三级数据优先级（feed 增量 -> 京东/菜鸟 H5 -> 手动链；顺丰 Online 例外）、粘性选包、
+ *   结构化状态覆盖、京东已签收列表头条窄例外、头条与状态 5 分钟对齐探针及签收三态冻结判定。
+ * - **无副作用约束**：本模块仅对内存快照做确定性计算，不直接触发网络请求或文件 I/O。
+ * - **跨端对等文件**：Pipi `ExpressRepository.java` / `ExpressDetailTimelinePolicy.java`、
+ *   Lite `ExpressRepository.java` / `Kuaidi100TimelinePolicy.java`、Bot `pipi-bot/express.py`。
+ */
 import { nodeNormalizedStatus, timelineNormalizedStatus, statusPriority, statusProjectionFields } from "./worker-status";
+import { preservesTerminalStatus } from "./terminal-clock-policy";
+import { withAttachedOrderStage, withJingDongOwnerOrderStage } from "./order-stage-policy";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
   AutomaticOwnership,
@@ -52,7 +63,7 @@ import {
 
 export const MANUAL_REFRESH_MIN_INTERVAL_MS = 30_000;
 export const AUTOMATIC_TAKEOVER_COOLDOWN_MS = 2 * 60 * 60 * 1_000;
-export const AUTOMATIC_OWNER_MISS_LIMIT = 1;
+const AUTOMATIC_OWNER_MISS_LIMIT = 1;
 import { SCRIPT_BINDING_SOURCE } from "./script-source";
 import { alignmentAttemptFinished, signedReleaseUsed } from "./row-ledger";
 import { projectedCarrierPresentation } from "./carrier-presentation";
@@ -300,49 +311,6 @@ function supplementTimelineHistory(
   return withMergedHeadline({ ...selected, tracks });
 }
 
-function preservesTerminalStatus(
-  previous: TimelinePackage | null | undefined,
-  selected: TimelinePackage,
-  allowCrossProvider = false,
-  preserveCompletedClock = false,
-): TimelinePackage {
-  if (
-    !allowCrossProvider && previous?.structuredStatus !== true &&
-    previous?.provider.trim().toLowerCase() !==
-      selected.provider.trim().toLowerCase()
-  ) {
-    return selected;
-  }
-  const previousTerminal = previous?.semantic === "COMPLETED" ||
-    previous?.semantic === "CANCELLED";
-  const selectedTerminal = selected.semantic === "COMPLETED" ||
-    selected.semantic === "CANCELLED";
-  // JD list and query are independent packages; a later order completion must
-  // retain the shipment's already accepted signature rather than start its clock again.
-  if (preserveCompletedClock && previous?.semantic === "COMPLETED" &&
-      selected.semantic === "COMPLETED" && previous.structuredStatus === true &&
-      previous.statusEventAtMs! > 0 && previous.statusEventAtMs! <= Date.now()) {
-    return { ...selected, structuredStatus: true, statusEventAtMs: previous.statusEventAtMs,
-      ...statusProjectionFields(previous, selected) };
-  }
-  // Matching H5 prose does not replace the structured confirmation already owned by the parcel.
-  if (previousTerminal && selected.semantic === previous?.semantic &&
-      previous.structuredStatus === true && selected.structuredStatus !== true) {
-    return { ...selected, structuredStatus: true, statusEventAtMs: previous.statusEventAtMs,
-      ...statusProjectionFields(previous, selected) };
-  }
-  if (!previousTerminal || selectedTerminal) {
-    return selected;
-  }
-  return {
-    ...selected,
-    semantic: previous?.semantic === "CANCELLED" ? "CANCELLED" : "COMPLETED",
-    statusEventAtMs: previous?.statusEventAtMs ?? null,
-    structuredStatus: previous?.structuredStatus,
-    ...statusProjectionFields(previous || undefined, selected),
-  };
-}
-
 function hasSourceProvider(shipment: Shipment | undefined, expected: string): boolean {
   return String(shipment?.identity.sourceProvider || "")
     .trim()
@@ -405,7 +373,7 @@ export function clearCainiaoManualFallback(shipment: Shipment): Shipment {
   return { ...shipment, cainiaoH5FallbackActivatedAtMs: undefined };
 }
 
-export function cainiaoManualFallbackActivated(
+function cainiaoManualFallbackActivated(
   shipment: Shipment,
 ): boolean {
   const activatedAtMs = Number(shipment.cainiaoH5FallbackActivatedAtMs);
@@ -414,7 +382,7 @@ export function cainiaoManualFallbackActivated(
 }
 
 /** JingDong H5 remains independent of both account list and query history. */
-export function jingDongH5Package(shipment: Shipment): TimelinePackage | null {
+function jingDongH5Package(shipment: Shipment): TimelinePackage | null {
   return manualTimelines(shipment).find((timeline) =>
     normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.JD_H5
   ) || null;
@@ -984,7 +952,7 @@ function statusAlignmentReading(input: Shipment): AlignmentReading | null {
 }
 
 /**
- * 手动签收后仍照常刷新的最长时间（用户 2026-10-02 弹窗「点击后满 3 天也冻结」）：满 72 小时仍未三态签收，也按硬冻结处理。
+ * 手动签收后仍照常刷新的最长时间（用户 2026-10-02 手动签收满 72 小时硬冻结）：满 72 小时仍未三态签收，也按硬冻结处理。
  */
 export const FORCED_COMPLETION_REFRESH_WINDOW_MS = 72 * 60 * 60_000;
 
@@ -998,7 +966,7 @@ export const FORCED_COMPLETION_REFRESH_WINDOW_MS = 72 * 60 * 60_000;
  * - 京东签收缺口那一次京粉页（jingDongSignedHistoryGap，详情下拉在详情不完整时放行）还没用掉时不算：先跑那一次再冻结。
  *   用掉没有读每行的签收后台账（用户 2026-10-03「这轮就统一」，优化 1：这一代里京粉页有过回答就算用掉）。
  * 手动签收行读来源自己的结构化状态（withoutForcedCompletion），点击时间不算签收证据。取消件不参与。
- * 还没投影出真实运单号的京东订单行从不算到达（用户 2026-10-02 弹窗「不冻结，取到号再判」，与 Lite 现状一致）：取号与它
+ * 还没投影出真实运单号的京东订单行从不算到达（用户 2026-10-02 未投影出真实运单号前不冻结，取到运单号后再判定，与 Lite 现状一致）：取号与它
  * 既有的刷新照旧跑，投影出运单号以后才按上面的三态判。
  */
 export function signedTripleReached(input: Shipment, now = Date.now()): boolean {
@@ -1051,8 +1019,8 @@ export function signedRefreshFrozen(shipment: Shipment, now = Date.now()): boole
 /**
  * The row as its sources report it, without the right-swipe sign-off latch: the selection is redone with no
  * forcedCompletedAtMs, and a stored presentation that only carries the latch (COMPLETED at the click time) is
- * not kept as an already shown terminal status — the click is not signing evidence (用户 2026-10-02 弹窗「来源报的
- * 结构化签收」). Rows without the latch come back unchanged.
+ * not kept as an already shown terminal status — the click is not signing evidence (用户 2026-10-02 以来源上报的
+ * 结构化签收为准). Rows without the latch come back unchanged.
  */
 export function withoutForcedCompletion(shipment: Shipment): Shipment {
   const forcedAt = forcedCompletedAt(shipment);
@@ -1382,7 +1350,7 @@ function withAttachedCarrierStatus(
   const ownAt = Number(selected.statusEventAtMs) || 0;
   const donor: TimelinePackage = { ...selected, semantic: carrier.semantic, structuredStatus: true,
     statusEventAtMs: eventAt, normalizedStatus: carrier.normalizedStatus };
-  // Lite and iOS combined (user 2026-09-26, 其余裁决 9): a newer carrier event takes the status; with
+  // Lite and iOS combined (user 2026-09-26, 跨端对齐裁决 #9): a newer carrier event takes the status; with
   // the same status a higher source priority also takes it, a lower one never does; a signed or
   // cancelled row never falls back to a non-terminal status. Priority is the Worker's own
   // (normalizedStatus.priority), the one Lite reads through WorkerStatusProjection.priority.
@@ -1682,8 +1650,14 @@ export function selectShipmentDetailPresentation(
   attachedOrders: readonly Shipment[] = [],
 ): TimelinePackage {
   return withAttachedOrderStage(
-    withJingDongOwnerOrderStage(shipment, selectShipmentDetailTimeline(shipment)),
+    withJingDongOwnerOrderStage(
+      shipment,
+      selectShipmentDetailTimeline(shipment),
+      isJingDongSourceShipment(shipment),
+      sourceTimeline,
+    ),
     attachedOrders,
+    sourceTimeline,
   );
 }
 
@@ -1693,66 +1667,6 @@ export function jingDongOrderStagePrepended(
 ): boolean {
   const selected = selectShipmentDetailTimeline(shipment);
   return selectShipmentDetailPresentation(shipment, attachedOrders).tracks.length !== selected.tracks.length;
-}
-
-/**
- * 归属-2（用户 2026-09-25，允许差异已登记）：先占号的可见行的详情页，接上挂靠在它后面的投影订单自己 feed 里、早于
- * 所示包最早节点的订单阶段节点，沿用 09-17 D-8 的口径：新的在前、整段接在最后、不穿插。只在详情页展示，列表、行本身
- * 和缓存都不变；详情完整判据仍只看所选的包。订单的京粉页与按订单号的 v5_query 不接到运单行上。
- */
-function withAttachedOrderStage(
-  shown: TimelinePackage,
-  attachedOrders: readonly Shipment[],
-): TimelinePackage {
-  if (!attachedOrders.length) return shown;
-  const shownTimes = timedTracks(shown.tracks)
-    .filter((track) => !isNonEventDetail(track.detail))
-    .map((track) => track.timeMs as number);
-  if (!shownTimes.length) return shown;
-  const earliest = Math.min(...shownTimes);
-  const seen = new Set<string>();
-  const orderStage: TrackNode[] = [];
-  for (const order of attachedOrders) {
-    if (order.identity.manuallyAdded || !order.identity.accountOrder) continue;
-    for (const track of timedTracks(sourceTimeline(order)?.tracks || [])) {
-      if ((track.timeMs as number) >= earliest || !track.detail.trim() ||
-          isNonEventDetail(track.detail) || isAccountUpdateSummary(track.detail) ||
-          !isOwnerFeedTrack(track)) continue;
-      // Two attached orders can repeat one shared node.
-      const key = `${track.timeMs}\u0000${track.detail.trim().replace(/\s+/g, "")}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      orderStage.push(track);
-    }
-  }
-  if (!orderStage.length) return shown;
-  orderStage.sort((left, right) => (right.timeMs as number) - (left.timeMs as number));
-  return { ...shown, tracks: [...shown.tracks, ...orderStage] };
-}
-
-function withJingDongOwnerOrderStage(shipment: Shipment, selected: TimelinePackage): TimelinePackage {
-  if (shipment.identity.manuallyAdded || !isJingDongSourceShipment(shipment)) return selected;
-  const provider = selected.provider.trim().toLowerCase();
-  if (timelineCapability(provider) === "account" ||
-      normalizeTimelineSlot(provider) === TIMELINE_SLOT.JD_H5 ||
-      provider === "jingdong_h5") return selected;
-  const source = sourceTimeline(shipment);
-  if (!source || source.provider.trim().toLowerCase() === provider) return selected;
-  const fallbackTimes = timedTracks(selected.tracks).map(track => track.timeMs as number);
-  if (!fallbackTimes.length) return selected;
-  const earliest = Math.min(...fallbackTimes);
-  const orderStage = timedTracks(source.tracks)
-    .filter(track => isOwnerFeedTrack(track) && (track.timeMs as number) < earliest &&
-      !isAccountUpdateSummary(track.detail))
-    .sort((left, right) => (right.timeMs as number) - (left.timeMs as number));
-  if (!orderStage.length) return selected;
-  return { ...selected, tracks: [...selected.tracks, ...orderStage] };
-}
-
-/** Grafted JD H5 rows and provider-tagged rows are not the feed's own nodes (Pipi sameSourceOwnerTracks). */
-function isOwnerFeedTrack(track: TrackNode): boolean {
-  const tagged = String(track.raw?._pipiStatusSource || "").trim().toLowerCase();
-  return !tagged || timelineCapability(tagged) === "account";
 }
 
 /** 详情完整判据的容差：不同接口对同一事件的时间戳有偏差（实测 1m14s ~ 11m53s）。 */
@@ -2348,7 +2262,7 @@ export function sameCanonicalWaybill(
     left.identity.bindingSource === right.identity.bindingSource;
 }
 
-export function sameDisplayedWaybill(
+function sameDisplayedWaybill(
   left: Shipment,
   right: Shipment,
 ): boolean {
@@ -2483,7 +2397,7 @@ export function isHistoricalAccountDuplicate(
  * 从不合并；记录号就是行 id。例外只有一个：已投影订单按件详情回来的包以投影运单号为号，仍是这张订单自己的。
  * 不同来源对同一运单的观测照 §5.1 各自留存，不在此列。
  */
-export function isDifferentAccountRecord(current: Shipment, incoming: Shipment): boolean {
+function isDifferentAccountRecord(current: Shipment, incoming: Shipment): boolean {
   if (current.identity.manuallyAdded || incoming.identity.manuallyAdded) return false;
   if (current.identity.id === incoming.identity.id) return false;
   if (automaticSourceOf(current) !== automaticSourceOf(incoming)) return false;
@@ -2759,7 +2673,7 @@ function normalizedAutomaticBindingIdentity(value: unknown): string {
     : "";
 }
 
-export function automaticBindingIdentityForPhone(value: unknown): string {
+function automaticBindingIdentityForPhone(value: unknown): string {
   const digits = String(value || "").replace(/\D/g, "");
   return digits.length >= 4 && digits.length <= 32 ? `phone:${digits}` : "";
 }

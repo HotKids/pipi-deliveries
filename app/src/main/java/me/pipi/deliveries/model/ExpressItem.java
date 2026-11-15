@@ -492,13 +492,13 @@ public final class ExpressItem {
 
     public String displayCompany() {
         String shown = matchedCompany();
-        // 其余裁决 32、33：识别进入终态、快递100 也没给名字的件，承运商位置填来源传回的 cpCode 原样（不是「京东快递」），
+        // 跨端对齐裁决 #32、33：识别进入终态、快递100 也没给名字的件，承运商位置填来源传回的 cpCode 原样（不是「京东快递」），
         // 没传回就空着（用户：「传回啥 cpcode 就填啥」）。
         return unmatched(shown) && carrierRecognitionExhausted() ? courierCode : shown;
     }
 
     /**
-     * The carrier position as the list, widgets, detail header and notification title show it. 其余裁决 35
+     * The carrier position as the list, widgets, detail header and notification title show it. 跨端对齐裁决 #35
      * （用户 2026-09-27：「算了统一前面加 快递 两个字吧」）：承运商为空时统一写「快递」，例如「快递 4547 · 已揽收」；有承运商名
      * 或原始码时照旧显示它们。{@link #displayCompany()} itself stays the carrier name, empty when there is none.
      */
@@ -506,7 +506,7 @@ public final class ExpressItem {
         return carrierLabel(displayCompany());
     }
 
-    /** 其余裁决 35: an empty carrier position reads 快递. */
+    /** 跨端对齐裁决 #35: an empty carrier position reads 快递. */
     public static String carrierLabel(String company) {
         String value = company == null ? "" : company.trim();
         return value.isEmpty() ? "快递" : value;
@@ -516,7 +516,7 @@ public final class ExpressItem {
         if (isAccountOrder() && projectedWaybill.isEmpty()) return "京东购物";
         CarrierRegistry.Carrier carrier = resolvedCarrier();
         if (carrier != null) return carrier.companyName;
-        // 其余裁决 29：快递100 认得出、内置表没有的承运商，显示它给的名字（只作显示）。
+        // 跨端对齐裁决 #29：快递100 认得出、内置表没有的承运商，显示它给的名字（只作显示）。
         String offTable = carrierNormalization.offTableName();
         if (!offTable.isEmpty()) return offTable;
         if (!projectedWaybill.isEmpty()) {
@@ -533,12 +533,12 @@ public final class ExpressItem {
     }
 
     /**
-     * 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：这一行亮出了真实运单号，承运商却还没对上——显示的承运商
+     * 承运商先对上再推送（T23，用户 2026-09-26，跨端对齐裁决 #28）：这一行亮出了真实运单号，承运商却还没对上——显示的承运商
      * 为空，或只是原样搬过来的原始码（内置表认不出）。京东平台标签在非 JD 运单上不算承运商（R-20，已由
      * {@link #resolvedCarrier()} 拒掉）。内置表结果、快递100 表外名、上游或京粉页给的真名都算对上；未投影的订单显示
      * 「京东购物」，不在此列。与 iOS carrier-gate.ts carrierAwaitingRecognition 同口径。
      *
-     * <p>其余裁决 32、33：识别已进入终态、快递100 没给名字的，不再挂着，照常放行；承运商位置是来源传回的 cpCode 原样，没有就
+     * <p>跨端对齐裁决 #32、33：识别已进入终态、快递100 没给名字的，不再挂着，照常放行；承运商位置是来源传回的 cpCode 原样，没有就
      * 空着，不造占位文案。</p>
      */
     public boolean carrierPending() {
@@ -556,7 +556,7 @@ public final class ExpressItem {
     }
 
     /**
-     * 其余裁决 32：这一行的承运商识别已进入终态（投影订单记在它的投影上，其它行记在它自己的识别结果上）。
+     * 跨端对齐裁决 #32：这一行的承运商识别已进入终态（投影订单记在它的投影上，其它行记在它自己的识别结果上）。
      */
     public boolean carrierRecognitionExhausted() {
         if (isAccountOrder()) {

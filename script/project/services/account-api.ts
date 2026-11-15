@@ -6,10 +6,11 @@ import {
   isInterface5Identity,
 } from "./account-identity";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
+import { cleanString as clean, type JsonObject } from "./value-guards";
 
 export const ACCOUNT_REQUEST_TIMEOUT_MS = 30_000;
 
-export type JsonObject = Record<string, unknown>;
+export type { JsonObject };
 export type AccountPost = (
   route: string,
   payload: JsonObject,
@@ -63,10 +64,6 @@ export class AccountApiError extends Error {
   }
 }
 
-function clean(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function requireBindingSource(source: unknown): "interface5" {
   if (source !== "interface5") {
     throw new AccountApiError("当前快递服务不可用");
@@ -74,7 +71,7 @@ function requireBindingSource(source: unknown): "interface5" {
   return "interface5";
 }
 
-export function normalizePhone(value: unknown): string {
+function normalizePhone(value: unknown): string {
   const phone = clean(value).replace(/\D/g, "");
   if (!/^1[3-9]\d{9}$/.test(phone)) {
     throw new AccountApiError("请输入有效的手机号");

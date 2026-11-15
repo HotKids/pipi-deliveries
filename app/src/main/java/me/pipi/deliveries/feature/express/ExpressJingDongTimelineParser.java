@@ -68,7 +68,7 @@ final class ExpressJingDongTimelineParser {
      * （方案 B 会把它藏起来）。Lite 看的是探针在页面 fetch / XMLHttpRequest 上看到的 union 请求：fetch 的
      * Response.status 或被拒的 fetch，XMLHttpRequest load 时的 status 与 error、timeout 事件。
      *
-     * <p>用户 2026-09-26（其余裁决 4，Lite、iOS 同口径）：union 请求发出去了、到超时还没回（探针的 p：已发出、还没
+     * <p>用户 2026-09-26（跨端对齐裁决 #4，Lite、iOS 同口径）：union 请求发出去了、到超时还没回（探针的 p：已发出、还没
      * 收到应答也没失败的请求数，页面自己中止的请求同样一直没回），与请求出错一样既不算空壳也不清零；从没发出过
      * union 请求的页照旧算空壳。</p>
      */

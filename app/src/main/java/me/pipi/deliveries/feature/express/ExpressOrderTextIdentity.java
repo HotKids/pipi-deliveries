@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
  * waybill is read directly and no H5 projection WebView is opened; JD-fulfilled orders whose text
  * never names a waybill keep going through the H5 projection.
  *
- * <p>Only the waybill is taken from the text (user ruling 2026-09-26, 其余裁决 7, iOS and Lite
+ * <p>Only the waybill is taken from the text (user ruling 2026-09-26, 跨端对齐裁决 #7, iOS and Lite
  * alike): the carrier named next to it (「交付极兔速递」) is never read. The carrier comes from the
  * built-in table, then the free Kuaidi100 recognition, then the existing paid fallback, like any
  * other waybill without a raw carrier.</p>

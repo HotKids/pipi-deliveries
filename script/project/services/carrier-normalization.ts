@@ -1,4 +1,4 @@
-type JsonObject = Record<string, unknown>;
+import { asPlainObject as object, cleanString } from "./value-guards";
 
 export type CarrierNormalization = Readonly<{
   standardCode: string;
@@ -8,14 +8,8 @@ export type CarrierNormalization = Readonly<{
   tableVersion: string;
 }>;
 
-function object(value: unknown): JsonObject {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as JsonObject
-    : {};
-}
-
 function text(value: unknown, maximum: number): string {
-  const candidate = typeof value === "string" ? value.trim() : "";
+  const candidate = cleanString(value);
   return candidate.length <= maximum && !/[\u0000-\u001f\u007f]/.test(candidate)
     ? candidate
     : "";

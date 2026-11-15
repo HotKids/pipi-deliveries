@@ -32,7 +32,7 @@ function projectedOrder(shipment: Shipment): boolean {
  * A row's occupied-at time. A projected order that has not been stamped yet is an existing projection whose
  * migration has not run: it counts from the migration, after every row that already has a time.
  */
-export function waybillOccupiedAtMs(shipment: Shipment): number {
+function waybillOccupiedAtMs(shipment: Shipment): number {
   const stored = validTime(shipment.occupiedAtMs);
   if (stored) return stored;
   if (projectedOrder(shipment)) return Number.POSITIVE_INFINITY;
@@ -47,7 +47,7 @@ function occupiesBefore(left: Shipment, right: Shipment): boolean {
 }
 
 /** Displayed waybill → the row that occupied it first (T2, 归属-4/5). */
-export function firstWaybillOccupants(shipments: readonly Shipment[]): Map<string, Shipment> {
+function firstWaybillOccupants(shipments: readonly Shipment[]): Map<string, Shipment> {
   const first = new Map<string, Shipment>();
   for (const shipment of shipments) {
     const key = occupancyKey(shipment);

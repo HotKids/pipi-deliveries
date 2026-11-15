@@ -17,7 +17,7 @@ final class GatewayHttpErrors {
 
     /**
      * The same failure as before, with the transport's exception kept as its cause so a sync round can tell a request's
-     * own timeout from other failures (用户 2026-09-27 提交前核对答复四); message and type are unchanged.
+     * own timeout from other failures (用户 2026-09-27 同步轮单请求超时与表外名落库规则); message and type are unchanged.
      */
     static IllegalStateException networkFailure(Throwable cause) {
         return new IllegalStateException(NETWORK, cause);

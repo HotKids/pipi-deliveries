@@ -186,7 +186,7 @@ final class ExpressHomeOrderProjectionCapture {
                     return;
                 }
                 ExpressApi api = new ExpressApi(context.getApplicationContext());
-                // T23（用户 2026-09-26，其余裁决 28）：已经知道运单号、只差承运商的订单（已存 v5_query 的文案、暂存的
+                // T23（用户 2026-09-26，跨端对齐裁决 #28）：已经知道运单号、只差承运商的订单（已存 v5_query 的文案、暂存的
                 // 京粉页）不再查 v5、不再开页，只补识别；对上才投影。
                 ExpressRepository.PendingProjection known = repository.pendingProjection(source);
                 if (known != null) {
@@ -211,13 +211,21 @@ final class ExpressHomeOrderProjectionCapture {
                         // T23 entry E: the waybill the reply's text names projects only with its carrier; a
                         // recognition cut off by the budget still saves the reply, unprojected.
                         String textCarrier;
+                        boolean cutOffInterrupted = false;
                         try {
                             textCarrier = AccountCarrierRecognition.queryTextCarrier(
-                                    source, query, recognizer(api, source));
+                                    source, query, recognizer(api, source, stage));
                         } catch (InterruptedException cutOff) {
+                            cutOffInterrupted = Thread.interrupted() || !stage.isCancelled();
                             textCarrier = null;
                         }
-                        repository.saveInterface5Query(query, source, generation, textCarrier);
+                        try {
+                            repository.saveInterface5Query(query, source, generation, textCarrier);
+                        } finally {
+                            if (cutOffInterrupted) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }
                     }
                 } catch (Exception failure) {
                     log("v5_query", "failed", ExpressLog.errorDetails(failure,

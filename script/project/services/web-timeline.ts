@@ -16,6 +16,7 @@ import {
   usableTimedTracks,
   isProviderErrorDetail,
 } from "./status";
+import { asPlainObject as object } from "./value-guards";
 
 /** K100 and JT page capture share one 8-second budget on all clients (audit R6, user default #12). */
 export const WEB_TIMELINE_LOAD_TIMEOUT_MS = 8_000;
@@ -291,12 +292,6 @@ function phoneVerificationJavaScript(waybill: string, phoneTail: string): string
       return {started: vm.loading === true};
     })();
   `;
-}
-
-function object(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
 }
 
 function normalizeTime(value: unknown): string {

@@ -1,3 +1,11 @@
+/**
+ * Pipi Deliveries iOS 按运单手动查询与补查链执行器（AGENTS §9）。
+ *
+ * - **执行顺序**：先刷 Online（`v6_query`）同源缓存 -> 缺少起始节点时并发执行白名单主轮（Moto / K100 H5）->
+ *   仍无起始证据时执行付费快递鸟兜底；各手动源仅合并自身同源缓存，严禁跨源拼接节点。
+ * - **预算与冷却**：单级请求受 15 秒截止时间与各自冷却/风控门禁约束，首次查件支持 Picker 详情预览后再单事务正式入库。
+ * - **跨端对等文件**：Pipi `ExpressPoller.java`、Lite `ExpressManualChain.java`、Bot `pipi-bot/express.py`。
+ */
 import { TIMELINE_SLOT } from "./timeline-slot";
 import type {
   AccountBinding,
@@ -6,6 +14,11 @@ import type {
   Shipment,
 } from "../models";
 import { requireScriptSource } from "./script-source";
+import {
+  asPlainObject as jsonObject,
+  cleanString as text,
+  firstCleanString as firstText,
+} from "./value-guards";
 import { GatewayError, postGateway } from "./gateway";
 import {
   manualTimelineIsComplete,
@@ -80,16 +93,6 @@ function phoneTailFailure(error: unknown): error is ManualQueryError {
   return error instanceof ManualQueryError && error.needsPhoneTail;
 }
 
-function text(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function jsonObject(value: unknown): JsonObject {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as JsonObject
-    : {};
-}
-
 function decodedJsonObject(value: unknown): JsonObject {
   if (typeof value === "string") {
     try {
@@ -127,14 +130,6 @@ function collectMeizuWaybillIdentities(
   for (const value of Object.values(object)) {
     collectMeizuWaybillIdentities(value, identities, depth + 1);
   }
-}
-
-function firstText(value: JsonObject, ...keys: string[]): string {
-  for (const key of keys) {
-    const candidate = text(value[key]);
-    if (candidate) return candidate;
-  }
-  return "";
 }
 
 function canonicalCarrierIdentity(value: string): string {
@@ -232,7 +227,7 @@ export async function detectManualCarrier(
   const carrier = recognition.normalization
     ? resolveCarrierQuery(recognition.normalization.standardCode)
     : null;
-  // 表外承运商（用户 2026-09-26，其余裁决 29）：快递100 认得出、内置表里没有，只显示它给的名字，不参与派单。
+  // 表外承运商（用户 2026-09-26，跨端对齐裁决 #29）：快递100 认得出、内置表里没有，只显示它给的名字，不参与派单。
   const offTableName = String(recognition.displayName || "").trim();
   if (!carrier && offTableName) {
     return { courierCode: "", companyName: offTableName, requiresPhoneTail: false };
@@ -643,9 +638,23 @@ export async function queryMotoShipment(
       deadlineAtMs: input.deadlineAtMs,
       signal: input.signal,
     },
-  );
+  ).catch((error) => {
+    if (error instanceof GatewayError && error.gatewayCode === "phone_verification_required") {
+      throw new ManualQueryError("请输入手机尾号", true, "phone_tail");
+    }
+    throw error;
+  });
   const data = jsonObject(root.data);
   if (String(root.status ?? "").trim() !== "0" || !Object.keys(data).length) {
+    const reason = firstText(root, "reason", "message", "msg", "errorMessage");
+    const normalizedError = jsonObject(root.normalizedError);
+    if (
+      normalizedError.code === "phone_verification_required" ||
+      (/手机号|手机尾号|手机后四位|电话号码|电话尾号|尾号|后四位|phone|customername/i.test(reason) &&
+        /请输入|请填写|需填写|需要|必填|不能为空|未填|缺少|不匹配|不正确|错误|有误|验证失败|校验失败|校验不通过|required|missing|mismatch|does not match|incorrect|wrong|invalid|empty/i.test(reason))
+    ) {
+      throw new ManualQueryError("请输入手机尾号", true, "phone_tail");
+    }
     throw new ManualQueryError(
       "本地轨迹查询失败",
       false,

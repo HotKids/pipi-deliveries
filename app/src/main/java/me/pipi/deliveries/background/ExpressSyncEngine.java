@@ -113,10 +113,10 @@ final class ExpressSyncEngine {
         // 识别、账号行与手动件的补识别）共用这一份，只计等识别的时间；用光后剩下的运单这一轮照 T23 压着，下一轮再识别。
         AccountCarrierRecognition.Budget recognitionBudget = new AccountCarrierRecognition.Budget();
         // 用户 2026-09-27 第二轮清单：截断排后。上一轮被预算截断的运单这一轮排到后面（请求自身超时的同样算被取消的一类，
-        // 不计失败：用户 2026-09-27 提交前核对答复四），其余照列表顺序；每一行自己的步骤
+        // 不计失败：用户 2026-09-27 同步轮单请求超时与表外名落库规则），其余照列表顺序；每一行自己的步骤
         // 不变。整行一起排后、没发请求的在前、到点被取消的最后：截断排后细则，用户 2026-09-27 提交前核对答「这样做」。
         CarrierRecognitionDeferrals deferrals = CarrierRecognitionDeferrals.get(context);
-        // 代码 5（用户 2026-10-03「照 Pipi / iOS 的做法改」，其余裁决 28）：账号列表里会新建一行的记录先识别承运商再落库、上列表。
+        // 同源账号记录归属判定（用户 2026-10-03「照 Pipi / iOS 的做法改」，跨端对齐裁决 #28）：账号列表里会新建一行的记录先识别承运商再落库、上列表。
         NewRowCarrierRecognition newRows =
                 new NewRowCarrierRecognition(repository, localApi, recognitionBudget, deferrals);
         refreshPendingManualQueries(
@@ -197,7 +197,7 @@ final class ExpressSyncEngine {
         repository.publishAccountPhase();
         Runnable answerAccountPhase = answerOnce(onAccountPhase);
         java.util.ArrayList<ExpressRepository.ManualTimelinePollClaim> activeClaims = new java.util.ArrayList<>();
-        // 用户 2026-10-02「头条 状态 详情页 都推进到了签收状态…就冻结快递 后续不再进行任何刷新」，弹窗「只停本机发起的请求」：
+        // 用户 2026-10-02「头条 状态 详情页 都推进到了签收状态…就冻结快递 后续不再进行任何刷新」，仅停止本机发起的逐票请求：
         // read once the account list above has landed; the rows' per-parcel query and Picker below stop for these,
         // while their recognition and order projection (identity) go on. A failed read freezes nothing this round.
         Set<Long> signedFrozen;
@@ -246,7 +246,7 @@ final class ExpressSyncEngine {
                 // waybill ("…交付申通快递，运单号为770018906334362"). iOS reads it at parse time for
                 // every order; Lite used to read it only while the list screen was open, so a
                 // background sync left the order unprojected until the user looked at the list.
-                // 只取运单号（用户 2026-09-26，其余裁决 7）；T23（其余裁决 28）：先识别承运商，对上才投影，
+                // 只取运单号（用户 2026-09-26，跨端对齐裁决 #7）；T23（跨端对齐裁决 #28）：先识别承运商，对上才投影，
                 // 对不上这一票保持原样、不推送，下一轮再补识别。已存的 v5_query 文案与暂存的京粉页运单号同样在这里补。
                 ExpressRepository.PendingProjection pending = repository.pendingProjection(current);
                 if (pending != null) {

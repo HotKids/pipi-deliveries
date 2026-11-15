@@ -25,9 +25,9 @@ import me.pipi.deliveries.network.ExpressQueryCancellation;
  * codes. Results are display-only carrier normalization; raw fields never change. Account orders
  * store recognition against their projected waybill, never the original order tuple.
  *
- * <p>承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：一有运单号，同一轮先把识别跑完（内置表 → 快递100 免费
+ * <p>承运商先对上再推送（T23，用户 2026-09-26，跨端对齐裁决 #28）：一有运单号，同一轮先把识别跑完（内置表 → 快递100 免费
  * → 付费快递鸟）再落库、上列表、推送；订单这一轮对不上就不投影、保持原样，之后各轮继续补识别。手动件同样补识别。
- * 快递100 认得出、内置表没有的承运商按它给的名字只作显示（其余裁决 29）。</p>
+ * 快递100 认得出、内置表没有的承运商按它给的名字只作显示（跨端对齐裁决 #29）。</p>
  */
 public final class AccountCarrierRecognition {
     @FunctionalInterface
@@ -170,7 +170,7 @@ public final class AccountCarrierRecognition {
         if (item.isAccountOrder() && normalize(item.projectedWaybill).isEmpty()) return false;
         if (normalize(item.displayWaybill()).isEmpty() || item.resolvedCarrier() != null) return false;
         // T23 entry G: a manual row recognises its carrier too, but only while none is shown (an exhausted
-        // verdict, 其余裁决 32, still retries once the coordinator's terminal window lapses).
+        // verdict, 跨端对齐裁决 #32, still retries once the coordinator's terminal window lapses).
         return !item.manuallyAdded || item.carrierPending() || item.carrierRecognitionExhausted();
     }
 
@@ -189,7 +189,7 @@ public final class AccountCarrierRecognition {
         }
         if (recognized == null) return false;
         if (recognized.recognitionExhausted()) {
-            // 其余裁决 32、33：识别终态、快递100 没给名字——记下结论，这一行随即放行，显示来源传回的 cpCode（没有就空着）。
+            // 跨端对齐裁决 #32、33：识别终态、快递100 没给名字——记下结论，这一行随即放行，显示来源传回的 cpCode（没有就空着）。
             if (!item.carrierPending()) return false;
             return item.isAccountOrder()
                     ? repository.saveOrderProjectionExhausted(item, bindingSource(item),
@@ -197,7 +197,7 @@ public final class AccountCarrierRecognition {
                     : repository.saveRecognizedCarrier(item, recognized);
         }
         if (!recognized.recognized()) {
-            // 其余裁决 29: an off-table carrier is shown by the name Kuaidi100 gives, display only.
+            // 跨端对齐裁决 #29: an off-table carrier is shown by the name Kuaidi100 gives, display only.
             String offTable = recognized.offTableName();
             if (offTable.isEmpty()) return false;
             if (item.isAccountOrder()) {
@@ -219,7 +219,7 @@ public final class AccountCarrierRecognition {
     }
 
     /**
-     * 代码 5（用户 2026-10-03「照 Pipi / iOS 的做法改」，其余裁决 28）：an account record about to add a new row, read as
+     * 同源账号记录归属判定（用户 2026-10-03「照 Pipi / iOS 的做法改」，跨端对齐裁决 #28）：an account record about to add a new row, read as
      * the row it would become under {@code owner} (INTERFACE5 / INTERFACE6), so the same {@link #needsRecognition} and
      * R-20 rules decide it before anything is stored.
      */
@@ -232,10 +232,10 @@ public final class AccountCarrierRecognition {
     }
 
     /**
-     * 代码 5（用户 2026-10-03「照 Pipi / iOS 的做法改」，其余裁决 28、37、42）：the carrier a new account row is stored with,
+     * 同源账号记录归属判定（用户 2026-10-03「照 Pipi / iOS 的做法改」，跨端对齐裁决 #28、37、42）：the carrier a new account row is stored with,
      * recognised before the row is saved and listed (built-in table → free Kuaidi100 → paid classify, as
-     * {@link #recognize} does after the save): the recognised built-in carrier, Kuaidi100's off-table name (其余裁决 29) or
-     * the terminal verdict (其余裁决 32). Null when the record needs no recognition or none matched this round — no
+     * {@link #recognize} does after the save): the recognised built-in carrier, Kuaidi100's off-table name (跨端对齐裁决 #29) or
+     * the terminal verdict (跨端对齐裁决 #32). Null when the record needs no recognition or none matched this round — no
      * answer yet, a failure, a cooldown, the round's budget spent or cut off: the row is then stored as it came and
      * listed as before (raw code or nothing), its notification held while its carrier is pending, and a later round
      * recognises it again, as Pipi lists a new row whose recognition did not settle and iOS stores the parcel with
@@ -269,7 +269,7 @@ public final class AccountCarrierRecognition {
      * 京东 skipped on a non-JD waybill); a real name the page gave comes next, then Kuaidi100's
      * off-table name. The returned value is what the projection stores: the page's name, a standard
      * code, or a display-only name. When recognition reached its terminal verdict without a name
-     * (其余裁决 32, 33) the order is no longer held: the exhausted marker is returned and the row
+     * (跨端对齐裁决 #32, 33) the order is no longer held: the exhausted marker is returned and the row
      * shows the cpCode its source returned, as it is, or nothing when none was returned.
      */
     public static String projectionCarrier(ExpressItem order, String waybill, String offeredName,
@@ -309,7 +309,7 @@ public final class AccountCarrierRecognition {
     /**
      * T23: projects an unprojected Interface-5 order onto the waybill it already knows once its carrier
      * matched; returns whether it was projected. Every source notifies its landing round under the
-     * ordinary rules (其余裁决 32: the query reply and the union page too), behind the carrier gate.
+     * ordinary rules (跨端对齐裁决 #32: the query reply and the union page too), behind the carrier gate.
      */
     public static boolean projectPending(ExpressRepository repository, ExpressItem order,
             ExpressRepository.PendingProjection pending, Recognizer recognizer,
@@ -372,7 +372,7 @@ public final class AccountCarrierRecognition {
         try {
             carrier = projectionCarrier(owner, page.waybill, page.companyName, recognizer);
         } catch (InterruptedException cutOff) {
-            interrupted = true;
+            interrupted = Thread.interrupted() || true;
         }
         try {
             if (carrier != null && repository.saveAutomaticDetailTimeline(

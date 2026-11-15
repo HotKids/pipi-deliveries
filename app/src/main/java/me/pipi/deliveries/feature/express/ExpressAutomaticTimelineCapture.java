@@ -2,22 +2,41 @@ package me.pipi.deliveries.feature.express;
 
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.view.View;
 import android.view.ViewGroup;
-import android.webkit.*;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
-import java.util.*;
-import java.util.concurrent.*;
-import me.pipi.deliveries.data.*;
-import me.pipi.deliveries.model.*;
-import me.pipi.deliveries.network.ExpressQueryCancellation;
+
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+import me.pipi.deliveries.data.ExpressRepository;
+import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
+import me.pipi.deliveries.data.ManualRoutePolicy;
+import me.pipi.deliveries.data.TimelineSlot;
+import me.pipi.deliveries.model.CainiaoRoute;
+import me.pipi.deliveries.model.ExpressItem;
+import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.network.ExpressAccountSource;
+import me.pipi.deliveries.network.ExpressQueryCancellation;
 
 /** One finite page load for one automatic provider package; never combines page responses. */
 final class ExpressAutomaticTimelineCapture {
@@ -172,18 +191,18 @@ final class ExpressAutomaticTimelineCapture {
                         new HashSet<>(Arrays.asList("https://jd.com", "https://*.jd.com")));
             }
             view.setWebViewClient(new WebViewClient() {
-                @Override public void onPageStarted(WebView web, String url, android.graphics.Bitmap icon) {
-                    if (TimelineSlot.JD_H5.equals(provider) && trusted(url))
+                @Override public void onPageStarted(WebView web, String url, Bitmap icon) {
+                    if (TimelineSlot.JD_H5.equals(provider) && trusted(url)) {
                         web.evaluateJavascript(ExpressJingDongTimelineParser.probeScript(), null);
+                    }
                 }
                 @Override public boolean shouldOverrideUrlLoading(WebView web, WebResourceRequest request) {
                     return request == null || request.getUrl() == null || !trusted(request.getUrl().toString());
                 }
                 /**
-                 * 用户 2026-10-02 弹窗「Lite 也做，iOS 查文档能做就做（推荐）」：the hidden Kuaidi100 page (the detail
-                 * pull's primary stage) loads only Kuaidi100's own files, as the add chain's capture does
-                 * ({@link ExpressKuaidi100TimelineCapture#isAllowedCaptureResource}); the J&T, JD union and Cainiao
-                 * pages are unchanged.
+                 * 隐藏快递100抓取页子资源白名单（Owner 2026-10-02，Pipi / Lite 统一口径）：详情下拉主轮隐藏抓取页仅放行快递100自身文档、
+                 * 同源脚本与查询接口（{@link ExpressKuaidi100TimelineCapture#isAllowedCaptureResource}），拦截统计与无关资源；
+                 * 极兔、京粉与菜鸟页面保持原有加载策略。
                  */
                 @Override public WebResourceResponse shouldInterceptRequest(WebView web, WebResourceRequest request) {
                     if (!TimelineSlot.K100_H5.equals(provider) || request == null || request.getUrl() == null
@@ -317,7 +336,7 @@ final class ExpressAutomaticTimelineCapture {
     /**
      * 用户 2026-09-25 同意（方案 A，三端同一口径）：京粉页的结果带上抓没抓到物流。只有超时收尾、最后一次读到的状态是
      * 加载完、有视口、不是风控、union 请求没有出错，而且整次什么带物流的东西都没抓到，才是空壳；取消、加载失败、
-     * 风控、union 请求出错都不算。union 请求发出去了、到超时还没回，也不算（用户 2026-09-26，其余裁决 4）。
+     * 风控、union 请求出错都不算。union 请求发出去了、到超时还没回，也不算（用户 2026-09-26，跨端对齐裁决 #4）。
      */
     private Result withPageEvidence(Result result, String reason) {
         boolean logistics = logisticsSeen || best != null || result != null && result.timeline != null;

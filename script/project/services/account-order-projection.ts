@@ -1,6 +1,11 @@
 import type { AccountParcelDto } from "./account-parser";
 import type { TimelinePackage, TrackNode } from "../models";
 import {
+  asPlainObject,
+  cleanString as text,
+  firstCleanString,
+} from "./value-guards";
+import {
   acquireProjectionViewport,
   releaseProjectionViewport,
 } from "./projection-viewport";
@@ -69,7 +74,7 @@ export type AccountOrderProjectionDiagnostics = Readonly<{
   unionResponseStatuses: string;
   /**
    * Union requests still unanswered when the page state was last read, i.e. sent but neither
-   * answered nor aborted by the page before the timeout (user decision 2026-09-26, 其余裁决 4).
+   * answered nor aborted by the page before the timeout (user decision 2026-09-26, 跨端对齐裁决 #4).
    */
   unionPendingCount?: number;
   riskControlSeen?: boolean;
@@ -142,9 +147,7 @@ const TRUSTED_JD_RESOURCE_HOST_SUFFIXES = [
 ] as const;
 
 function object(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
+  return asPlainObject(value);
 }
 
 function decode(value: unknown, depth = 0): unknown {
@@ -167,16 +170,8 @@ function decode(value: unknown, depth = 0): unknown {
   }
 }
 
-function text(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function firstText(value: Record<string, unknown>, keys: readonly string[]): string {
-  for (const key of keys) {
-    const candidate = text(value[key]);
-    if (candidate) return candidate;
-  }
-  return "";
+  return firstCleanString(value, ...keys);
 }
 
 function validProjectedWaybill(value: unknown, ownerId: string): string {
@@ -1141,7 +1136,7 @@ export async function projectAccountOrder(
       /* diagnostics are best-effort */
     }
     // The order-stage raw carrier tuple (e.g. JDKD) is not evidence for the carrier waybill and
-    // must never survive the projection; the text names only the waybill (其余裁决 7, 2026-09-26), so
+    // must never survive the projection; the text names only the waybill (跨端对齐裁决 #7, 2026-09-26), so
     // the carrier is resolved afterwards like any real waybill.
     return {
       ...parcel,

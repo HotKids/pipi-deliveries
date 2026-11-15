@@ -136,7 +136,7 @@ function textWaybillWithCarrier(
   const normalization = carrier.normalization?.isBuiltIn ? carrier.normalization : null;
   const displayName = String(carrier.displayName || "").trim();
   if (!normalization && !displayName) {
-    // 其余裁决 32、33（用户 2026-09-26）：识别进入终态、快递100 也没给名字——订单不再停在订单阶段，照常投影，承运商位置
+    // 跨端对齐裁决 #32、33（用户 2026-09-26）：识别进入终态、快递100 也没给名字——订单不再停在订单阶段，照常投影，承运商位置
     // 填这张订单来源传回的承运商码原样（JDKD 这类，不是平台名），没传回就空着。只作显示，不当承运商码用。
     const rawCode = String(parcel.rawCourierCode || "").trim();
     return carrier.exhausted
@@ -162,11 +162,11 @@ function textWaybillWithCarrier(
 
 /**
  * Applies the carrier waybill that an unprojected order's own feed text names (independent
- * identity extraction, 2026-09-10). Only the waybill is read (user decision 2026-09-26, 其余裁决 7):
+ * identity extraction, 2026-09-10). Only the waybill is read (user decision 2026-09-26, 跨端对齐裁决 #7):
  * the order-stage raw tuple (JDKD / 京东商品快递) and the carrier the sentence names are both no
  * evidence for that waybill, so its carrier comes from recognition like any real waybill.
  *
- * 承运商先对上再推送（T23，用户 2026-09-26，其余裁决 28）：识别链（内置表 → 快递100 → 付费快递鸟）已经为这张运单
+ * 承运商先对上再推送（T23，用户 2026-09-26，跨端对齐裁决 #28）：识别链（内置表 → 快递100 → 付费快递鸟）已经为这张运单
  * 给出承运商（识别缓存里有）才把运单号亮出来；还没对上时订单保持原样（仍是「京东购物」那一行），文案每轮随 feed
  * 回来，之后各轮识别出来再投影。
  */
@@ -615,9 +615,9 @@ export function accountParcelWithExistingProjection(
   const projectedWaybill = normalizedProjectedWaybill(projectedIdentity);
   const previousImage = authorities.find(({ identity }) => identity.productImageURL)?.identity.productImageURL;
   if (parcel.enhancedMode && !parcel.productImageURL && previousImage) parcel = { ...parcel, productImageURL: previousImage };
-  // Feed text names only the waybill (其余裁决 7, 2026-09-26): it no longer supplies or repairs a carrier.
+  // Feed text names only the waybill (跨端对齐裁决 #7, 2026-09-26): it no longer supplies or repairs a carrier.
   // A projection that already names its carrier without a code (a Kuaidi100 off-table name, or the raw code shown after
-  // an exhausted recognition; 其余裁决 29、32) keeps it: the order's own platform code (JDKD) is no carrier code for it.
+  // an exhausted recognition; 跨端对齐裁决 #29、32) keeps it: the order's own platform code (JDKD) is no carrier code for it.
   return projectedWaybill
     ? {
         ...parcel,

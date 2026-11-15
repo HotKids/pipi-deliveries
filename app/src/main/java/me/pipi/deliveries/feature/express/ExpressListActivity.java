@@ -443,7 +443,7 @@ public final class ExpressListActivity extends AppCompatActivity {
                     try {
                         ExpressRepository repository = ExpressRepository.get(this);
                         ExpressApi api = new ExpressApi(getApplicationContext());
-                        // T23（用户 2026-09-26，其余裁决 28）：先识别文案给出的运单号的承运商，对上才投影并推送；
+                        // T23（用户 2026-09-26，跨端对齐裁决 #28）：先识别文案给出的运单号的承运商，对上才投影并推送；
                         // 对不上这一票保持原样、不推送，之后的轮次再补识别。
                         ExpressRepository.PendingProjection pending = repository.pendingProjection(expected);
                         if (pending != null) {

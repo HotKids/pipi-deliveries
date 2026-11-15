@@ -3,7 +3,7 @@ export const SCRIPTING_REQUEST_METHOD = "POST";
 export const SCRIPTING_LEGACY_EXPIRES_AT_SECONDS =
   Date.parse("2026-11-01T00:00:00+08:00") / 1000;
 
-export const SCRIPTING_TOKEN_PATTERN =
+const SCRIPTING_TOKEN_PATTERN =
   /^[A-Za-z0-9_-]{16}$/;
 
 export function normalizeScriptingToken(value: string): string {

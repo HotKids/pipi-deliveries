@@ -371,8 +371,8 @@ export type DurableRefreshLease = Readonly<{
  * stops renewing, so its lease lapses within about 30 seconds instead of blocking every other runtime
  * for its whole maximum operation duration.
  */
-export const DURABLE_REFRESH_LEASE_TTL_MS = 30_000;
-export const DURABLE_REFRESH_LEASE_RENEW_INTERVAL_MS = 10_000;
+const DURABLE_REFRESH_LEASE_TTL_MS = 30_000;
+const DURABLE_REFRESH_LEASE_RENEW_INTERVAL_MS = 10_000;
 
 export function acquireDurableRefreshLease(
   key: string,

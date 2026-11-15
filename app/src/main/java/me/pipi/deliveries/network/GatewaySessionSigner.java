@@ -5,6 +5,8 @@ import android.content.SharedPreferences;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 
+import me.pipi.deliveries.util.Hex;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -168,11 +170,7 @@ final class GatewaySessionSigner {
 
     static String sha256Hex(byte[] value) throws Exception {
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(value);
-        StringBuilder output = new StringBuilder(digest.length * 2);
-        for (byte item : digest) {
-            output.append(String.format(Locale.ROOT, "%02x", item & 0xff));
-        }
-        return output.toString();
+        return Hex.encodeLower(digest);
     }
 
     private SharedPreferences preferences() {

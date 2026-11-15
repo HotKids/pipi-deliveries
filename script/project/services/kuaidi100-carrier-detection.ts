@@ -4,6 +4,12 @@ import {
   OperationTimeoutError,
   remainingTimeoutMs,
 } from "./deadline";
+import {
+  asPlainObject as object,
+  cleanString as text,
+  firstCleanString as firstText,
+  type JsonObject,
+} from "./value-guards";
 
 const KUAIDI100_AUTO_URL =
   "https://www.kuaidi100.com/autonumber/autoComNum";
@@ -17,30 +23,10 @@ const KUAIDI100_PUBLIC_USER_AGENT =
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 
-type JsonObject = Record<string, unknown>;
-
 export type Kuaidi100CarrierCandidate = Readonly<{
   courierCode: string;
   companyName: string;
 }>;
-
-function object(value: unknown): JsonObject {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonObject)
-    : {};
-}
-
-function text(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function firstText(value: JsonObject, ...keys: string[]): string {
-  for (const key of keys) {
-    const candidate = text(value[key]);
-    if (candidate) return candidate;
-  }
-  return "";
-}
 
 /**
  * Kuaidi100's "no match" answer: `result:false` with returnCode 201, written as the string "201" or

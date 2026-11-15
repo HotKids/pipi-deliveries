@@ -22,7 +22,7 @@ export function alignmentTimesKey(times: Readonly<StatusAlignmentTimes>): string
 }
 
 /** Enum corrections invalidate completion without restoring the same group's consumed allowance. */
-export function alignmentCompletionApplies(record: AlignmentAttempt | null,
+function alignmentCompletionApplies(record: AlignmentAttempt | null,
   times: Readonly<StatusAlignmentTimes>): boolean {
   return Boolean(record?.complete && record.completionStatus && record.completionHeadline &&
     (!times.statusSemantic || times.statusSemantic === "UNKNOWN" || times.statusSemantic === record.completionStatus) &&

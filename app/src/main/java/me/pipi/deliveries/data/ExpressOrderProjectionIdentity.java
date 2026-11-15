@@ -6,6 +6,7 @@ import java.security.MessageDigest;
 import java.util.Locale;
 
 import me.pipi.deliveries.model.ExpressItem;
+import me.pipi.deliveries.util.Hex;
 
 /** Immutable owner identity used for one isolated order-page projection attempt. */
 public final class ExpressOrderProjectionIdentity {
@@ -90,11 +91,7 @@ public final class ExpressOrderProjectionIdentity {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(
                     clean(value).getBytes(StandardCharsets.UTF_8));
-            StringBuilder encoded = new StringBuilder(digest.length * 2);
-            for (byte valueByte : digest) {
-                encoded.append(String.format(Locale.ROOT, "%02x", valueByte & 0xff));
-            }
-            return encoded.toString();
+            return Hex.encodeLower(digest);
         } catch (Exception failure) {
             throw new IllegalStateException("Cannot fingerprint projection owner", failure);
         }

@@ -1,3 +1,4 @@
+import { removeBestEffort } from "./durable-files";
 import { writeDiagnostic } from "./logger";
 import { sha256Hex } from "./scripting-data";
 
@@ -72,9 +73,6 @@ function publishHint(frame: Frame): void {
   const hint = `${root()}/head-${frame.sequence}`;
   try { FileManager.createLinkSync(hint, path(frame.id)); }
   catch (error) { if (linkedId(hint) !== frame.id) throw error; }
-}
-function removeBestEffort(name: string): void {
-  try { FileManager.removeSync(name); } catch { /* A committed generation remains readable. */ }
 }
 function entries(): string[] {
   return FileManager.readDirectorySync(root(), false).map((name) => name.split("/").pop()!);

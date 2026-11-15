@@ -1,5 +1,6 @@
 import type { Color, ColorStringHex } from "scripting";
 import { nodeNormalizedStatus, responseNormalizedStatus, timelineNormalizedStatus, statusPriority, statusProjectionFields } from "./worker-status";
+import { isValidNonFutureStatusClock } from "./terminal-clock-policy";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import {
   accountOrderPageConfirmedEmpty,
@@ -23,16 +24,16 @@ import {
   statusRuleSemantic,
 } from "./status-labels";
 
-export const SIGNED_RETENTION_MS = EXPRESS_POLICY.retention.signedMs;
-export const CANCELLED_RETENTION_MS = EXPRESS_POLICY.retention.cancelledMs;
+const SIGNED_RETENTION_MS = EXPRESS_POLICY.retention.signedMs;
+const CANCELLED_RETENTION_MS = EXPRESS_POLICY.retention.cancelledMs;
 
-export const STATUS_LABELS: Readonly<Record<StatusSemantic, string>> =
+const STATUS_LABELS: Readonly<Record<StatusSemantic, string>> =
   EXPRESS_POLICY.status.labels;
 
-export const LIST_PRIORITY: readonly StatusSemantic[] =
+const LIST_PRIORITY: readonly StatusSemantic[] =
   EXPRESS_POLICY.status.listPriority;
 
-export const WIDGET_PRIORITY: readonly StatusSemantic[] =
+const WIDGET_PRIORITY: readonly StatusSemantic[] =
   EXPRESS_POLICY.status.widgetPriority;
 
 export function statusLabel(semantic: StatusSemantic): string {
@@ -523,7 +524,7 @@ export function accountOrderSemantic(
 }
 
 /** 京东联合页嫁接进来的节点带 `_pipiStatusSource: "jingdong_h5"`；feed 自己的节点不带。 */
-export function isJingDongH5Track(track: TrackNode): boolean {
+function isJingDongH5Track(track: TrackNode): boolean {
   return String(track.raw?._pipiStatusSource || "").trim().toLowerCase() === "jingdong_h5";
 }
 
@@ -567,7 +568,7 @@ export function splitJingDongH5Nodes(
  * The JD order-level completion / shopping-review sentence of order `orderId` (normalized): the
  * numbered 「您的订单<单号>已完成…期待您对本次购物进行评价」 or the 「您的订单[商品]已完成…京豆…」 review ad.
  */
-export function isJingDongOrderCompletionText(detail: string, orderId: string): boolean {
+function isJingDongOrderCompletionText(detail: string, orderId: string): boolean {
   const text = String(detail || "").replace(/\s+/g, "")
     .replace(/[，。！!]/g, (value) => value === "，" ? "," : value === "。" ? "." : "!");
   const numbered = text.match(/^您的订单(\d+)已完成,感谢您对京东的支持,欢迎再次光临\.期待您对本次购物进行评价\.?$/);
@@ -1020,13 +1021,30 @@ export function isNonEventDetail(value: string): boolean {
 }
 
 /**
- * The track a surface should show as the headline: simply the newest one. Mirrors Pipi's
- * TrackTimelinePolicy headline loop — no wording is filtered.
+ * The track a surface should show as the headline: the newest real observation, skipping explicit
+ * Worker `orderStageOnly` nodes once the same packet contains `SHIPMENT`-scoped observations
+ * (matching Pipi's `TrackTimelinePolicy` headline loop).
  */
 export function headlineTrack<Track>(
   tracks: readonly Track[],
 ): Track | null {
-  return tracks.length ? tracks[0] : null;
+  if (!tracks.length) return null;
+  const hasShipmentScope = tracks.some((candidate) => {
+    const raw = candidate && typeof candidate === "object" && "raw" in candidate
+      ? (candidate as unknown as TrackNode).raw
+      : undefined;
+    return nodeNormalizedStatus(raw)?.scope === "SHIPMENT";
+  });
+  if (hasShipmentScope) {
+    const shipmentCandidate = tracks.find((candidate) => {
+      const raw = candidate && typeof candidate === "object" && "raw" in candidate
+        ? (candidate as unknown as TrackNode).raw
+        : undefined;
+      return nodeNormalizedStatus(raw)?.orderStageOnly !== true;
+    });
+    if (shipmentCandidate) return shipmentCandidate;
+  }
+  return tracks[0];
 }
 
 export function usableTimedTracks(
@@ -1210,7 +1228,7 @@ function fillMissingTrackFields(target: TrackNode, source: TrackNode): TrackNode
 }
 
 /** 同包内同文案节点的合并窗口（用户定 2026-09-06，三端同 Pipi CROSS_SOURCE_DUPLICATE_WINDOW_SECONDS）。 */
-export const NEAR_DUPLICATE_WINDOW_MS = 5 * 60_000;
+const NEAR_DUPLICATE_WINDOW_MS = 5 * 60_000;
 
 /** 与 Pipi TrackTimelinePolicy.fingerprint 同法：NFKC、「您的快件/订单/包裹」归一、去尾标点、去空白。 */
 function trackFingerprint(detail: string): string {
@@ -1318,7 +1336,7 @@ function rejectsSameEventRegression(
  * move the status forward: a terminal state always applies, a further stage applies, and an
  * earlier stage (typically the feed's coarse ORDERED) never rewinds shipment logistics.
  */
-export function statusProgressionRank(semantic: string): number {
+function statusProgressionRank(semantic: string): number {
   switch (String(semantic || "").toUpperCase()) {
     case "UNKNOWN": return 0;
     case "ORDERED": return 1;
@@ -1331,7 +1349,7 @@ export function statusProgressionRank(semantic: string): number {
     default: return 3;
   }
 }
-export function isTerminalStatusSemantic(semantic: string): boolean {
+function isTerminalStatusSemantic(semantic: string): boolean {
   const value = String(semantic || "").toUpperCase();
   return value === "COMPLETED" || value === "CANCELLED";
 }
@@ -1397,9 +1415,12 @@ export function mergeTimelinePackage(
     return incoming;
   }
   if (timelineCapability(incoming.provider) === "account") {
+    const nowMs = Date.now();
     const currentAt = current.statusEventAtMs || 0;
     const incomingAt = incoming.statusEventAtMs || 0;
-    const frozen = isTerminalStatusSemantic(current.semantic) && currentAt > 0;
+    const currentValidClock = isValidNonFutureStatusClock(currentAt, nowMs);
+    const incomingValidClock = isValidNonFutureStatusClock(incomingAt, nowMs);
+    const frozen = isTerminalStatusSemantic(current.semantic) && currentValidClock;
     // List responses replace their own snapshot; account detail queries still accumulate history.
     const tracks = accumulateAccountTracks ? mergeTracks(current.tracks, incoming.tracks)
       : !frozen && timelineLatestEventAt(incoming) >= timelineLatestEventAt(current)
@@ -1407,10 +1428,15 @@ export function mergeTimelinePackage(
     const sameStatus = current.semantic === incoming.semantic;
     const higherPriority = sameStatus && statusPriority(incoming) > statusPriority(current);
     const lowerPriority = sameStatus && statusPriority(incoming) < statusPriority(current);
+    const repairsInvalidCompletionClock = current.semantic === "COMPLETED" &&
+      incoming.semantic === "COMPLETED" && !currentValidClock && incomingValidClock &&
+      (incoming.structuredStatus === true || current.structuredStatus !== true);
     const acceptsStatus = incoming.semantic !== "UNKNOWN" && !frozen && !lowerPriority &&
       (incoming.structuredStatus === true || current.structuredStatus !== true) &&
-      (higherPriority || current.semantic === "UNKNOWN" ||
+      (repairsInvalidCompletionClock || higherPriority || current.semantic === "UNKNOWN" ||
         (incomingAt > 0 && incomingAt >= currentAt &&
+          !(current.semantic === "COMPLETED" && incoming.semantic === "COMPLETED" &&
+            currentValidClock && !incomingValidClock) &&
           (incomingAt !== currentAt || !rejectsSameEventRegression(current.semantic, incoming.semantic))) ||
         (!currentAt && !incomingAt && timelineLatestEventAt(incoming) >= timelineLatestEventAt(current)));
     const confirmsStatus = current.semantic === incoming.semantic &&
@@ -1490,13 +1516,19 @@ export function mergeTimelinePackage(
     EXPRESS_POLICY.manualAuthority.completedOutranksNonTerminal &&
     currentCompleted
   ) {
+    const nowMs = Date.now();
+    const repairsInvalidCompletionClock = incomingCompleted &&
+      !isValidNonFutureStatusClock(current.statusEventAtMs, nowMs) &&
+      isValidNonFutureStatusClock(incoming.statusEventAtMs, nowMs) &&
+      (incoming.structuredStatus === true || current.structuredStatus !== true);
     // Terminal freeze preserves the signed state (the headline follows the newest node, user
-    // 2026-09-25, audit D6), but a legacy text-derived completion must still accept the same
-    // provider's structured confirmation and event time.
+    // 2026-09-25, audit D6), but a legacy text-derived completion or invalid future clock must
+    // still accept the same provider's valid structured confirmation and event time.
     return finalize({
       ...current,
-      ...(confirmsUnstructuredCompletion
-        ? { structuredStatus: true, statusEventAtMs: incoming.statusEventAtMs,
+      ...(confirmsUnstructuredCompletion || repairsInvalidCompletionClock
+        ? { structuredStatus: incoming.structuredStatus === true || current.structuredStatus === true,
+            statusEventAtMs: incoming.statusEventAtMs,
             ...statusProjectionFields(incoming, current) }
         : {}),
       tracks,

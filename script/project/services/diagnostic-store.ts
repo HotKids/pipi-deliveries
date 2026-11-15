@@ -1,3 +1,5 @@
+import { removeBestEffort } from "./durable-files";
+
 type StoredRow = { value: unknown; path: string; order: string };
 const DIRECTORY = "pipi-deliveries/diagnostics-v2";
 const EPOCH = /^e([0-9]{16})-[a-f0-9-]{36}\.clear$/;
@@ -21,10 +23,6 @@ function names(): string[] {
   const directory = root();
   if (!FileManager.existsSync(directory)) return [];
   return FileManager.readDirectorySync(directory, false).map(name => name.split("/").pop()!);
-}
-function removeBestEffort(path: string): void {
-  try { if (FileManager.existsSync(path) || FileManager.isLinkSync(path)) FileManager.removeSync(path); }
-  catch { /* Retention cleanup retries at the next diagnostic boundary. */ }
 }
 function verifiedWrite(path: string, text: string): void {
   FileManager.writeAsStringSync(path, text);

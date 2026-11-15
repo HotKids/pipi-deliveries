@@ -223,6 +223,32 @@ public final class AccountCarrierRecognitionTest {
         assertEquals("顺丰速运", repository.find(order.rowId).displayCompany());
     }
 
+    @Test public void interruptedPageRecognitionClearsInterruptWhileHoldingAndRestoresItAfterward() {
+        String orderId = "1234500000005";
+        repository.saveInterface5OrderSummary(new ExpressQueryResult(
+                orderId, "JDKD", "京东购物", StatusSemantic.TRANSIT, 0L,
+                minutesAgo(30), "已揽收", "[{\"time\":\"" + minutesAgo(30) + "\",\"context\":\"已揽收\"}]",
+                "", PHONE, "interface5", "", "", "JingDong"), PHONE);
+        ExpressItem order = repository.findByWaybill(orderId, "interface5");
+        ExpressRepository.ManualQueryOwnerClaim claim = repository.captureManualQueryOwner(order);
+        ExpressQueryResult page = new ExpressQueryResult(
+                "YT9876543210999", "JDKD", "京东物流", StatusSemantic.TRANSIT, 0L,
+                minutesAgo(20), "运输中", "[{\"time\":\"" + minutesAgo(20) + "\",\"context\":\"运输中\"}]",
+                "", PHONE, "jd_h5", "", "", "JingDong");
+        try {
+            boolean saved = AccountCarrierRecognition.savePageCapture(
+                    repository, order, claim, page, true, waybill -> {
+                        Thread.currentThread().interrupt();
+                        throw new InterruptedException("recognition budget expired");
+                    }, new me.pipi.deliveries.network.ExpressQueryCancellation(10_000L));
+            assertTrue(saved);
+            assertTrue(Thread.currentThread().isInterrupted());
+            assertNotNull(repository.pendingProjection(repository.find(order.rowId)));
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
     private static String minutesAgo(long minutes) {
         return TIME.format(Instant.ofEpochMilli(System.currentTimeMillis() - minutes * 60_000L));
     }

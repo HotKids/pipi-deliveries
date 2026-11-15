@@ -1,12 +1,12 @@
 package me.pipi.deliveries.feature.express;
 
 /**
- * Express toast copy shared by the three clients (AGENTS §11, 2026-09-03: 快递相关 toast 三端统一；
- * 2026-09-05 扩成整张表：每个场景一行，页面只能按常量取，不许写自由文案).
- *  * The same strings live in Pipi {@code express/ExpressToastCopy.java} and iOS
- * {@code services/express-toast-copy.ts}; change all three together and update the table in
- * docs/EXPRESS_THREE_CLIENT_PARITY_20260901.md.
- * 只有用户手势才弹：后台轮询、推送落库永远静默。
+ * 快递相关 toast 四端统一文案表（AGENTS §11，2026-09-03 / 2026-09-05）：每个场景固定一条常量，页面严禁手写自由文案。
+ *
+ * <p>对等同步文件：Pipi {@code express/ExpressToastCopy.java}、Dart 镜像 {@code lib/express/express_toast_copy.dart}、
+ * iOS {@code services/express-toast-copy.ts} 与 {@code pipi-bot} 提示文案，以及
+ * {@code docs/EXPRESS_THREE_CLIENT_PARITY_20260901.md} 第 10 节表格。
+ * 仅用户主动交互触发提示；后台轮询与推送落库保持静默。
  */
 final class ExpressToastCopy {
     /** 手动查件已提交，短 toast 一次。 */

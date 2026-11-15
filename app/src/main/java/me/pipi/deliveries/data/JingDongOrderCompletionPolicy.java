@@ -30,7 +30,9 @@ import me.pipi.deliveries.model.StatusSemantic;
  * timeline: a twin pushed again within five minutes is judged at the newer copy's time, which is the
  * time the timeline shows (same on all four clients).</p>
  */
-final class JingDongOrderCompletionPolicy {
+public final class JingDongOrderCompletionPolicy {
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+    private static final Pattern DIGITS = Pattern.compile("\\d+");
     private static final Pattern NUMBERED = Pattern.compile(
             "^您的订单(\\d+)已完成,感谢您对京东的支持,欢迎再次光临\\.期待您对本次购物进行评价\\.?$");
     private static final Pattern PRODUCT = Pattern.compile(
@@ -38,13 +40,13 @@ final class JingDongOrderCompletionPolicy {
 
     private JingDongOrderCompletionPolicy() {}
 
-    static boolean matches(String detail, String orderId) {
-        String text = detail == null ? "" : detail.replaceAll("\\s+", "")
+    public static boolean matches(String detail, String orderId) {
+        String text = detail == null ? "" : WHITESPACE.matcher(detail).replaceAll("")
                 .replace('，', ',').replace('。', '.').replace('！', '!');
         Matcher numbered = NUMBERED.matcher(text);
         if (numbered.matches()) {
             String knownOrder = orderId == null ? "" : orderId.trim();
-            return !knownOrder.matches("\\d+") || numbered.group(1).equals(knownOrder);
+            return !DIGITS.matcher(knownOrder).matches() || numbered.group(1).equals(knownOrder);
         }
         return PRODUCT.matcher(text).matches();
     }

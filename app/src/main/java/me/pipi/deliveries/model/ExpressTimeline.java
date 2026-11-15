@@ -1,5 +1,6 @@
 package me.pipi.deliveries.model;
 
+import me.pipi.deliveries.data.JingDongOrderCompletionPolicy;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import me.pipi.deliveries.data.TimelineSlot;
 import org.json.JSONArray;
@@ -10,11 +11,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
@@ -38,21 +41,32 @@ public final class ExpressTimeline {
         public final String displayDetail;
         public final long epochMillis;
         public final StatusSemantic semantic;
+        public final String projectedScope;
+        public final boolean orderStageOnly;
 
         Track(String time, String detail) {
             this(time, detail, StatusSemantic.UNKNOWN, parseTime(clean(time)));
         }
 
         private Track(String time, String detail, StatusSemantic semantic, long epochMillis) {
-            this(time, detail, semantic, epochMillis, detail);
+            this(time, detail, semantic, epochMillis, detail, "", false);
         }
 
-        private Track(String time, String detail, StatusSemantic semantic, long epochMillis, String displayDetail) {
+        private Track(
+                String time,
+                String detail,
+                StatusSemantic semantic,
+                long epochMillis,
+                String displayDetail,
+                String projectedScope,
+                boolean orderStageOnly) {
             this.time = clean(time);
             this.detail = clean(detail);
             this.displayDetail = clean(displayDetail);
             this.epochMillis = epochMillis;
             this.semantic = semantic;
+            this.projectedScope = projectedScope == null ? "" : projectedScope;
+            this.orderStageOnly = orderStageOnly;
         }
     }
 
@@ -121,8 +135,15 @@ public final class ExpressTimeline {
         // 原来是「相邻同文案不看时间」，会把几小时后重复的真实事件也吞掉。老缓存里的重复也在这里收掉。
         rawTracks.sort((left, right) -> Long.compare(right.epochMillis, left.epochMillis));
         for (RawTrack raw : collapseNearTimeDuplicates(rawTracks)) {
-            tracks.add(new Track(raw.time, raw.detail, nodeSemantic(raw, provider), raw.epochMillis,
-                    displayContext(raw.value, raw.detail)));
+            WorkerStatusProjection projected = WorkerStatusProjection.read(raw.value);
+            tracks.add(new Track(
+                    raw.time,
+                    raw.detail,
+                    nodeSemantic(raw, provider),
+                    raw.epochMillis,
+                    displayContext(raw.value, raw.detail),
+                    projected == null ? "" : projected.scope,
+                    projected != null && projected.orderStageOnly));
         }
         LinkedHashMap<String, Track> unique = new LinkedHashMap<>();
         for (Track track : tracks) {
@@ -143,7 +164,23 @@ public final class ExpressTimeline {
 
     /** Returns the newest real provider event, skipping errors and state-only placeholder nodes. */
     public static Track latestMeaningful(String tracksJson, StatusSemantic semantic) {
-        for (Track track : parse(tracksJson, "", "")) {
+        List<Track> parsed = parse(tracksJson, "", "");
+        boolean hasShipment = false;
+        for (Track track : parsed) {
+            if ("SHIPMENT".equals(track.projectedScope)) {
+                hasShipment = true;
+                break;
+            }
+        }
+        if (hasShipment) {
+            for (Track track : parsed) {
+                if (!track.orderStageOnly
+                        && !ExpressStatusNormalizer.isHeadlinePlaceholder(track.detail, semantic)) {
+                    return track;
+                }
+            }
+        }
+        for (Track track : parsed) {
             if (!ExpressStatusNormalizer.isHeadlinePlaceholder(track.detail, semantic)) {
                 return track;
             }
@@ -325,8 +362,8 @@ public final class ExpressTimeline {
     }
 
     /** Tags the account feeds write on their own rows (ExpressDiscoveryClient / ExpressSubscriptionClient). */
-    private static final java.util.Set<String> OWNER_FEED_TAGS = new java.util.HashSet<>(
-            java.util.Arrays.asList("interface5", "interface6", "meizu"));
+    private static final Set<String> OWNER_FEED_TAGS = new HashSet<>(
+            Arrays.asList("interface5", "interface6", "meizu"));
 
     /**
      * JD detail presentation (Pipi 1.4.0 ExpressDetailTimelinePolicy.prependOwnerOrderStage; user
@@ -365,12 +402,13 @@ public final class ExpressTimeline {
         }
         if (earliest == Long.MAX_VALUE) return fallbackTracksJson;
         ArrayList<RawTrack> orderStage = new ArrayList<>();
-        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        HashSet<String> seen = new HashSet<>();
         for (String ownerTracksJson : ownerTracksJsons) {
             for (RawTrack track : rawTracks(ownerTracksJson)) {
                 if (track.epochMillis <= 0L || track.epochMillis >= earliest
                         || track.detail.isEmpty()
-                        || ExpressStatusNormalizer.isProviderErrorDetail(track.detail)) continue;
+                        || ExpressStatusNormalizer.isProviderErrorDetail(track.detail)
+                        || isRedundantOrderCompletionRow(track)) continue;
                 String tagged = first(track.value, "_pipiStatusSource").toLowerCase(Locale.ROOT);
                 if (!tagged.isEmpty() && !OWNER_FEED_TAGS.contains(tagged)) continue;
                 // Two attached orders can repeat one shared node; one owner's feed is kept as is.
@@ -394,6 +432,23 @@ public final class ExpressTimeline {
             disableReadReuse();
             return fallbackTracksJson;
         }
+    }
+
+    private static boolean isRedundantOrderCompletionRow(RawTrack track) {
+        WorkerStatusProjection projected = WorkerStatusProjection.read(track.value);
+        if (projected != null && "ORDER".equals(projected.scope)
+                && projected.semantic == StatusSemantic.COMPLETED) {
+            return true;
+        }
+        String compact = WHITESPACE.matcher(clean(track.detail)).replaceAll("");
+        if (compact.isEmpty()) return false;
+        if (compact.contains("订单已完成") || "订单完成".equals(compact)) {
+            return true;
+        }
+        if ("评价赢京豆".equals(first(track.value, "logisticsStatusDesc", "logisticStatusDesc"))) {
+            return true;
+        }
+        return JingDongOrderCompletionPolicy.matches(track.detail, "");
     }
 
     // Merges mutate raw JSON, so only read-only callers may reuse these nodes.

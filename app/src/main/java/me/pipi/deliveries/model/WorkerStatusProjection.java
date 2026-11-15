@@ -13,6 +13,7 @@ public final class WorkerStatusProjection {
     public final int priority;
     public final long eventAtMs;
     public final boolean structured;
+    public final boolean orderStageOnly;
 
     private WorkerStatusProjection(JSONObject value) {
         scope = value.optString("scope");
@@ -22,6 +23,7 @@ public final class WorkerStatusProjection {
         priority = value.optInt("priority", 0);
         eventAtMs = value.optLong("eventAtMs", 0L);
         structured = value.optBoolean("structured", false);
+        orderStageOnly = "ORDER".equals(scope) && Boolean.TRUE.equals(value.opt("orderStageOnly"));
     }
 
     public static WorkerStatusProjection read(JSONObject packet) {
@@ -67,11 +69,15 @@ public final class WorkerStatusProjection {
 
     public JSONObject toJson() {
         try {
-            return new JSONObject().put("version", 1).put("scope", scope)
+            JSONObject json = new JSONObject().put("version", 1).put("scope", scope)
                     .put("semantic", semantic.name()).put("code", code).put("text", text)
                     .put("priority", priority).put("eventAtMs", eventAtMs)
                     .put("structured", structured);
-        } catch (Exception impossible) { throw new IllegalStateException(impossible); }
+            if (orderStageOnly) json.put("orderStageOnly", true);
+            return json;
+        } catch (Exception impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     /** The safe projection is a packet sidecar, never a synthetic timeline event. */

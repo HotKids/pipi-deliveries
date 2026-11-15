@@ -1,4 +1,5 @@
 import { responseNormalizedStatus } from "./worker-status";
+import { asPlainObject as object, cleanScalarText } from "./value-guards";
 import type { NormalizedStatus } from "../models";
 import { accountAppTargets, type AccountAppTarget, type AccountAppRoute } from "./account-app-links";
 import type { DiagnosticDetails } from "./logger";
@@ -94,16 +95,8 @@ export class AccountParseError extends Error {
   }
 }
 
-function object(value: unknown): JsonObject {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonObject)
-    : {};
-}
-
 function text(value: unknown): string {
-  if (typeof value === "string") return value.trim();
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return "";
+  return cleanScalarText(value, true);
 }
 
 function first(value: JsonObject, ...keys: string[]): string {
