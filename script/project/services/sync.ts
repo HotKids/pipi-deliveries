@@ -6000,17 +6000,6 @@ async function runFullRefresh(
         }
       }
       currentState = checkpoint(account.state, accountMutations, "account_list");
-      if (forceManualRefresh && !accountListOnly) {
-        for (const shipment of currentState.shipments) {
-          if (!isHomeAccountQuerySource(shipment) || !isCainiaoAutomaticShipment(shipment)) continue;
-          const ownerKey = `${shipment.identity.id}\u0000${automaticBindingIdentityOf(shipment)}`;
-          // A list can repeat only the status and its event time after an earlier detail query missed.
-          if (account.observedOwnerKeys.has(ownerKey) && !timelineDisplayDetail(shipment.timeline) &&
-              !timedTracks(shipment.timeline.tracks).length) {
-            cainiaoFollowupIds.add(shipment.identity.id);
-          }
-        }
-      }
       logJingDongListRecords(account.parcels, initial, account.state, currentState, flowId, startedAt);
       accountListUpdated = true;
       recordNetworkRefreshSuccess("account");
@@ -6035,6 +6024,18 @@ async function runFullRefresh(
         source,
         flowId,
       );
+    }
+    if (forceManualRefresh && !accountListOnly) {
+      const listUnavailable = account.succeeded === 0 && account.failed > 0;
+      for (const shipment of currentState.shipments) {
+        if (!isHomeAccountQuerySource(shipment) || !isCainiaoAutomaticShipment(shipment)) continue;
+        const ownerKey = `${shipment.identity.id}\u0000${automaticBindingIdentityOf(shipment)}`;
+        // A failed list request can still leave a valid, bound per-waybill query.
+        if ((listUnavailable || account.observedOwnerKeys.has(ownerKey)) && !timelineDisplayDetail(shipment.timeline) &&
+            !timedTracks(shipment.timeline.tracks).length) {
+          cainiaoFollowupIds.add(shipment.identity.id);
+        }
+      }
     }
 
     // E1 (owner 2026-11-10): the account phase is stored (checkpointed and published above). A list pull

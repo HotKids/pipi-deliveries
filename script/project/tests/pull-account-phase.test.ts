@@ -178,6 +178,29 @@ test("a pull whose account phase failed is answered with that failure", async ()
   assert.equal(refreshSummaryToast(summary), EXPRESS_TOAST_COPY.refreshFailed);
 });
 
+test("a failed account list still lets a pull restore a cached bound shipment's missing headline", async () => {
+  const picked = { ...record, stateNum: 103 };
+  seed(picked);
+  let queried = 0;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
+    if (path === "/api/express/accounts/sync") return { ok: false, status: 502, text: async () => "Synthetic upstream unavailable" };
+    assert.equal(path, "/api/express/timeline/source");
+    assert.equal(JSON.parse(String(init.body)).record.waybill, picked.mailNo);
+    queried++;
+    return json({ code: 0, data: { ...picked, details: [{ time: OLD, desc: "快件已揽收" }] } });
+  }) as typeof fetch;
+  const { summary, completion } = await refreshAllShipmentsForPull("interface5", { accountOrderProjection: false });
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.succeeded, 0);
+  assert.equal(refreshSummaryToast(summary), EXPRESS_TOAST_COPY.refreshFailed);
+  const finished = await completion;
+  assert.equal(queried, 1);
+  assert.equal(finished.succeeded, 1);
+  assert.equal(loadState(NOW).shipments[0].timeline.latestDetail, "快件已揽收");
+});
+
 test("an ordinary forced refresh still resolves with the whole refresh", async () => {
   seed();
   globalThis.fetch = (async (url: string) => {
