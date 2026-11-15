@@ -67,7 +67,29 @@ assert.equal(fresh.timeline.provider, "v5_query");
 assert.deepEqual(fresh.timeline.tracks, fresh.manualTimelines?.find(value => value.provider === "v5_query")?.tracks);
 assert.equal(shipmentSelectionEvidence(fresh).headlineProvider, "v5_query");
 
-// A pending/failed query keeps older real history; an empty result must not erase it.
+function assertRetainedBaseline(
+  row: Shipment,
+  expectedSemantic: Shipment["timeline"]["semantic"],
+  expectedStatusAt: string,
+  text: string,
+  at: string,
+) {
+  const fresh = stored(row);
+  assert.equal(fresh.timeline.latestDetail, text, "ShipmentRow keeps the aligned headline until matching tracks arrive");
+  assert.equal(fresh.timeline.latestTimeText, at, "the retained headline keeps its own event time");
+  assert.equal(fresh.timeline.semantic, expectedSemantic, "status stays aligned with the retained headline");
+  assert.equal(shipmentPresentationStatus(fresh).semantic, expectedSemantic);
+  assert.equal(fresh.timeline.statusEventAtMs, parseProviderTime(expectedStatusAt));
+  assert.equal(fresh.sourceTimeline?.semantic, "DELIVERY", "the raw source status remains durable for gap detection");
+  assert.equal(fresh.sourceTimeline?.latestDetail, GENERIC, "the source update remains durable");
+  assert.equal(fresh.sourceTimeline?.statusEventAtMs, parseProviderTime(FRESH));
+  assert.ok(fresh.sourceTimeline?.tracks.some(track => track.detail === GENERIC));
+  assert.ok(fresh.timeline.tracks.every(track => !track.detail.startsWith("快递状态已更新")));
+  assert.ok(selectShipmentDetailTimeline(fresh).tracks.every(track => !track.detail.startsWith("快递状态已更新")));
+  return fresh;
+}
+
+// A pending/failed/empty query retains the previous aligned status + headline pair until matching tracks arrive.
 let previous = applyAccountShipment(undefined, packet([{ time: OLD, desc: "Earlier list event" }], 104), NOW);
 previous = applyTargetedAccountShipment(previous, asAccountDetailObservation(previous, packet([
   { time: "2026-09-12 09:00:00", desc: "Earlier query event" },
@@ -75,18 +97,23 @@ previous = applyTargetedAccountShipment(previous, asAccountDetailObservation(pre
 ], 104)), NOW);
 row = applyAccountShipment(previous, packet([{ time: FRESH, desc: GENERIC }]), NOW);
 const queryBeforeEmpty = structuredClone(row.manualTimelines);
-assertPresentation(row, "Earlier query event", "2026-09-12 09:00:00");
+assertRetainedBaseline(row, "TRANSIT", "2026-09-12 09:00:00", "Earlier query event", "2026-09-12 09:00:00");
 row = applyTargetedAccountShipment(row, asAccountDetailObservation(row, packet([])), NOW);
-fresh = assertPresentation(row, "Earlier query event", "2026-09-12 09:00:00");
+fresh = assertRetainedBaseline(row, "TRANSIT", "2026-09-12 09:00:00", "Earlier query event", "2026-09-12 09:00:00");
 assert.deepEqual(fresh.manualTimelines, queryBeforeEmpty);
 assert.equal(shipmentDetailIncompleteReason(fresh), "time_mismatch", "the raw feed clock still bounds completeness");
 
-// Without query history, the newer list snapshot replaces earlier list nodes.
+// Without query history, an unaligned generic list update also retains the earlier aligned list pair until tracks arrive.
 row = applyAccountShipment(undefined, packet([{ time: OLD, desc: "Earlier list event" }], 104), NOW);
 row = applyAccountShipment(row, packet([{ time: FRESH, desc: GENERIC }]), NOW);
-fresh = assertPresentation(row, "", "");
-assert.equal(fresh.timeline.tracks.length, 0);
-assert.equal(shipmentDetailIncompleteReason(fresh), "no_tracks");
+fresh = assertRetainedBaseline(row, "TRANSIT", OLD, "Earlier list event", OLD);
+assert.equal(fresh.timeline.tracks.length, 1);
+assert.notEqual(shipmentDetailIncompleteReason(fresh), null);
+row = applyTargetedAccountShipment(row, asAccountDetailObservation(row, packet([
+  { time: FRESH, desc: "Actual delivery event" },
+  { time: OLD, desc: "已揽收" },
+], 105)), NOW);
+assertPresentation(row, "Actual delivery event", FRESH);
 
 // A source-only generic packet has status evidence, but no real detail or headline.
 row = applyAccountShipment(undefined, packet([{ time: FRESH, desc: GENERIC }]), NOW);

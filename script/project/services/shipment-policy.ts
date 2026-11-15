@@ -792,6 +792,169 @@ export function shipmentHeadlineMatchesStatus(shipment: Shipment): boolean {
     sameStateNode(reading.headline.track, presented.semantic, reading.times.statusAtMs));
 }
 
+export function isCainiaoV5AutomaticShipment(shipment: Shipment): boolean {
+  return !shipment.identity.manuallyAdded &&
+    shipment.identity.bindingSource === SCRIPT_BINDING_SOURCE &&
+    hasSourceProvider(shipment, "CaiNiao") &&
+    !unprojectedAccountOrder(shipment);
+}
+
+function cainiaoHeadlineSemantic(
+  shipment: Shipment,
+  timeline: TimelinePackage,
+  headlineAtMs: number,
+  headlineProvider?: string,
+): StatusSemantic {
+  const detailText = String(timeline.latestDetail || "").trim();
+  if (!detailText || !(headlineAtMs > 0)) return "UNKNOWN";
+  const isHeadline = (track: TrackNode) => track.detail === detailText &&
+    (track.timeMs === headlineAtMs || parseProviderTime(track.timeText) === headlineAtMs);
+  const packages = alignmentPackages(shipment);
+  const matches = packages.flatMap(candidate => timedTracks(candidate.tracks).filter(isHeadline)
+    .map(track => ({ provider: candidate.provider, track })));
+  const preferred = (headlineProvider && matches.find(item => item.provider === headlineProvider)?.track) ||
+    timedTracks(timeline.tracks).find(isHeadline) ||
+    matches[0]?.track ||
+    null;
+  return preferred ? latestTimelineTrackSemantic([preferred]) : "UNKNOWN";
+}
+
+function cainiaoHeadlineAtMs(shipment: Shipment, timeline: TimelinePackage): number {
+  const parsed = parseProviderTime(timeline.latestTimeText || "");
+  if (parsed && parsed > 0) return parsed;
+  const timeText = String(timeline.latestTimeText || "").trim();
+  if (!timeText) return 0;
+  const detailText = String(timeline.latestDetail || "").trim();
+  const candidates = [timeline, ...alignmentPackages(shipment)];
+  for (const candidate of candidates) {
+    const exact = timedTracks(candidate.tracks).find(
+      track => track.timeText === timeText && (!detailText || track.detail === detailText),
+    );
+    if (exact?.timeMs) return exact.timeMs;
+  }
+  for (const candidate of candidates) {
+    const byTime = timedTracks(candidate.tracks).find(track => track.timeText === timeText);
+    if (byTime?.timeMs) return byTime.timeMs;
+  }
+  return 0;
+}
+
+function cainiaoPackageSelfAligned(shipment: Shipment, baseline: TimelinePackage): boolean {
+  const waybill = displayWaybill(shipment);
+  if (!waybill || normalizeWaybill(baseline.waybill) !== waybill) return false;
+  if (baseline.provider === "demo" || baseline.provider === "pending") return false;
+  if (baseline.semantic === "UNKNOWN" || baseline.semantic === "CANCELLED") return false;
+  const tracks = timedTracks(baseline.tracks);
+  const detailText = String(baseline.latestDetail || "").trim();
+  if (!tracks.length || !detailText || isNonEventDetail(detailText) || isAccountUpdateSummary(detailText)) {
+    return false;
+  }
+  const headlineAtMs = cainiaoHeadlineAtMs(shipment, baseline);
+  if (!(headlineAtMs > 0)) return false;
+  const headlineSemantic = cainiaoHeadlineSemantic(shipment, baseline, headlineAtMs,
+    baseline.headlineDisplay?.provider || baseline.provider);
+  if (headlineSemantic !== "UNKNOWN" && headlineSemantic !== baseline.semantic) return false;
+  const statusAtMs = Number(baseline.statusEventAtMs) || 0;
+  if (statusAtMs > 0 && headlineAtMs < statusAtMs - STATUS_ALIGNMENT_MS) return false;
+  return tracks.some(track => {
+    const own = latestTimelineTrackSemantic([track]);
+    if (own !== "UNKNOWN" && own !== baseline.semantic) return false;
+    return statusAtMs <= 0 || track.timeMs! >= statusAtMs - STATUS_ALIGNMENT_MS;
+  });
+}
+
+function retainedAlignedCainiaoBaseline(shipment: Shipment): TimelinePackage | null {
+  if (!isCainiaoV5AutomaticShipment(shipment) || forcedCompletedAt(shipment)) return null;
+  const rawStored = withoutJingDongOrderCompletion(
+    shipment.timeline, shipment.identity, false, jingDongSignedAnchorAtMs(shipment), jingDongAnchorEvidence(shipment),
+  );
+  const baseline = displayedTimelinePresentation(shipment, rawStored);
+  return cainiaoPackageSelfAligned(shipment, baseline) ? baseline : null;
+}
+
+export function cainiaoTimelineMatchesStatus(
+  shipment: Shipment,
+  presented: TimelinePackage,
+  headlineProvider?: string,
+  retainedBaseline: TimelinePackage | null = retainedAlignedCainiaoBaseline(shipment),
+): boolean {
+  if (presented.structuredStatus !== true || presented.semantic === "UNKNOWN" || presented.semantic === "CANCELLED") {
+    return true;
+  }
+  const waybill = displayWaybill(shipment);
+  if (!waybill || normalizeWaybill(presented.waybill) !== waybill) return false;
+  const tracks = timedTracks(presented.tracks);
+  const detailText = String(presented.latestDetail || "").trim();
+  if (!tracks.length || !detailText || isNonEventDetail(detailText) || isAccountUpdateSummary(detailText)) {
+    return false;
+  }
+  const headlineAtMs = cainiaoHeadlineAtMs(shipment, presented);
+  if (!(headlineAtMs > 0)) return false;
+  const headlineSemantic = cainiaoHeadlineSemantic(shipment, presented, headlineAtMs, headlineProvider);
+  if (headlineSemantic !== "UNKNOWN" && headlineSemantic !== presented.semantic) return false;
+  const statusAtMs = Number(presented.statusEventAtMs) || 0;
+  if (statusAtMs > 0 && headlineAtMs < statusAtMs - STATUS_ALIGNMENT_MS) return false;
+  if (retainedBaseline && retainedBaseline.semantic !== presented.semantic) {
+    const retainedHeadlineAtMs = cainiaoHeadlineAtMs(shipment, retainedBaseline);
+    const retainedDetail = String(retainedBaseline.latestDetail || "").trim();
+    if (headlineSemantic !== presented.semantic &&
+        headlineAtMs <= retainedHeadlineAtMs &&
+        detailText === retainedDetail) {
+      return false;
+    }
+  }
+  return tracks.some(track => {
+    const own = latestTimelineTrackSemantic([track]);
+    if (own !== "UNKNOWN" && own !== presented.semantic) return false;
+    return statusAtMs <= 0 || track.timeMs! >= statusAtMs - STATUS_ALIGNMENT_MS;
+  });
+}
+
+export function cainiaoHasTrajectoryGap(input: Shipment, now = Date.now()): boolean {
+  const shipment = withoutTemporaryReviews(refreshGateView(input, now));
+  if (!isCainiaoV5AutomaticShipment(shipment) || shipment.timeline.provider === "demo") return false;
+  const raw = sourceTimeline(shipment);
+  if (raw?.semantic === "CANCELLED") return false;
+  const evidence: ShipmentSelectionEvidence = {
+    historyProvider: "none", headlineProvider: "none", statusProvider: "none", selectionReason: "source_policy",
+  };
+  const unaligned = selectUnalignedShipmentTimeline(shipment, evidence);
+  const candidate = withStatusPackageHeadline(shipment, unaligned, evidence.headlineProvider, evidence);
+  if (candidate.semantic === "CANCELLED") return false;
+  if (candidate.structuredStatus === true && candidate.semantic !== "UNKNOWN") {
+    return !cainiaoTimelineMatchesStatus(shipment, candidate, evidence.headlineProvider);
+  }
+  return !timedTracks(candidate.tracks).length && Boolean(shipment.accountRecord);
+}
+
+export function cainiaoCandidateAlignsWithLatestStatus(shipment: Shipment, now = Date.now()): boolean {
+  return !cainiaoHasTrajectoryGap(shipment, now);
+}
+
+export function cainiaoSupplementTimes(
+  input: Shipment,
+  now = Date.now(),
+): Readonly<{ timesKey: string; statusAtMs: number; headlineAtMs: number; detailAtMs: number; statusSemantic: StatusSemantic }> | null {
+  const shipment = withoutTemporaryReviews(refreshGateView(input, now));
+  if (!isCainiaoV5AutomaticShipment(shipment)) return null;
+  const evidence: ShipmentSelectionEvidence = {
+    historyProvider: "none", headlineProvider: "none", statusProvider: "none", selectionReason: "source_policy",
+  };
+  const unaligned = selectUnalignedShipmentTimeline(shipment, evidence);
+  const candidate = withStatusPackageHeadline(shipment, unaligned, evidence.headlineProvider, evidence);
+  const presented = selectShipmentTimeline(shipment);
+  const statusAtMs = Number(candidate.statusEventAtMs) || 0;
+  const headlineAtMs = cainiaoHeadlineAtMs(shipment, presented);
+  const detailAtMs = newestTrack(presented)?.timeMs || 0;
+  return {
+    timesKey: `${statusAtMs}|${headlineAtMs}|${detailAtMs}`,
+    statusAtMs,
+    headlineAtMs,
+    detailAtMs,
+    statusSemantic: candidate.semantic,
+  };
+}
+
 export function selectShipmentTimeline(
   shipment: Shipment, evidence?: ShipmentSelectionEvidence,
 ): TimelinePackage {
@@ -801,8 +964,20 @@ export function selectShipmentTimeline(
   const unaligned = selectUnalignedShipmentTimeline(shipment, selectedEvidence, selection);
   // 京东已签收头条例外（AGENTS §9，2026-09-24 / 09-27 / 09-28）选定的头条照旧：2026-10-02 的规则不改它（协调方规格
   // 「不变」一节）；它若仍落后于状态，只由状态对齐强刷去追。
-  const presented = selection.jingDongDetailHeadline ? unaligned
+  const candidate = selection.jingDongDetailHeadline ? unaligned
     : withStatusPackageHeadline(shipment, unaligned, selectedEvidence.headlineProvider, selectedEvidence);
+  const retained = isCainiaoV5AutomaticShipment(shipment) && !forcedCompletedAt(shipment)
+    ? retainedAlignedCainiaoBaseline(shipment) : null;
+  const retainsAlignedBaseline = Boolean(retained &&
+    !cainiaoTimelineMatchesStatus(shipment, candidate, selectedEvidence.headlineProvider, retained));
+  if (retainsAlignedBaseline && retained) {
+    const retainedHeadlineProvider = retained.headlineDisplay?.provider || retained.provider || "none";
+    selectedEvidence.historyProvider = retained.provider || "none";
+    selectedEvidence.headlineProvider = retained.latestDetail ? retainedHeadlineProvider : "none";
+    selectedEvidence.statusProvider = retained.semantic === "UNKNOWN" ? "none" : retained.provider;
+    selectedEvidence.selectionReason = "retained_aligned_baseline";
+  }
+  const presented = retainsAlignedBaseline && retained ? retained : candidate;
   const provider = selectedEvidence.headlineProvider;
   const donor = normalizeTimelineSlot(provider) === TIMELINE_SLOT.JT_H5
     ? alignmentPackages(shipment).filter(value => normalizeTimelineSlot(value.provider) === TIMELINE_SLOT.JT_H5)
@@ -1753,8 +1928,10 @@ export function shipmentDetailIncompleteReason(input: Shipment): DetailIncomplet
     if (selected.semantic !== "COMPLETED" && selected.semantic !== "CANCELLED") return "missing_source_time";
     return containsTimelinePickupTrack(selected.tracks) ? null : "missing_pickup";
   }
-  return detailTimelineIncompleteReason(selected, source, expected, terminalAt,
+  const incomplete = detailTimelineIncompleteReason(selected, source, expected, terminalAt,
     containsTimelinePickupTrack(selected.tracks), acceptedAt, sfManuals);
+  if (incomplete) return incomplete;
+  return isCainiaoV5AutomaticShipment(shipment) && cainiaoHasTrajectoryGap(shipment) ? "time_mismatch" : null;
 }
 
 function detailTimelineComplete(
@@ -2604,8 +2781,11 @@ function mergeAccountShipmentPackage(
   const candidate: Shipment = {
     ...incoming,
     identity,
-    timeline: current && isShunFengSourceShipment(current) && !(mergedSource.structuredStatus === true &&
-      mergedSource.semantic !== "UNKNOWN" && (mergedSource.statusEventAtMs || 0) >= (current.timeline.statusEventAtMs || 0))
+    timeline: current && (
+      (isShunFengSourceShipment(current) && !(mergedSource.structuredStatus === true &&
+        mergedSource.semantic !== "UNKNOWN" && (mergedSource.statusEventAtMs || 0) >= (current.timeline.statusEventAtMs || 0))) ||
+      (!reclassifiesAccountOrder && isCainiaoV5AutomaticShipment(current))
+    )
       ? current.timeline : mergedSource,
     sourceTimeline: mergedSource,
     manualTimelines: manuals,

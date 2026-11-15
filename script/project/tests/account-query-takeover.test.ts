@@ -47,10 +47,13 @@ const cases: [string, () => void][] = [
     for (const history of [false, true]) {
       const current = owner(history);
       const updated = applyAccountShipment(current, packet(105, "2026-09-11 07:39:00"), NOW);
-      surfaces(updated, "DELIVERY");
+      assert.equal(updated.sourceTimeline!.semantic, "DELIVERY");
       assert.deepEqual(updated.sourceTimeline!.tracks, []);
+      surfaces(updated, history ? "PICKED" : "DELIVERY");
       const stale = applyAccountShipment(updated, packet(103, "2026-09-10 08:00:00"), NOW + 1);
-      surfaces(stale, "DELIVERY");
+      assert.equal(stale.sourceTimeline!.semantic, "DELIVERY");
+      surfaces(stale, history ? "PICKED" : "DELIVERY");
+      if (history) surfaces(queried(updated), "DELIVERY");
     }
   }],
   ["query takes over every surface and the completeness clock", () => {
@@ -85,9 +88,12 @@ const cases: [string, () => void][] = [
     assert.equal(next.manualTimelines!.find(t => t.provider === "v5_query")!.tracks.length, 2);
   }],
   ["status-only query is retained and can advance status", () => {
-    const row = queried(owner(true), 105, "2026-09-11 07:39:00", false);
-    surfaces(row, "DELIVERY");
-    assert.ok(row.manualTimelines!.some(t => t.provider === "v5_query" && t.structuredStatus));
+    const withoutPriorTracks = queried(owner(false), 105, "2026-09-11 07:39:00", false);
+    surfaces(withoutPriorTracks, "DELIVERY");
+    assert.ok(withoutPriorTracks.manualTimelines!.some(t => t.provider === "v5_query" && t.structuredStatus));
+    const withPriorAlignedTracks = queried(owner(true), 105, "2026-09-11 07:39:00", false);
+    surfaces(withPriorAlignedTracks, "PICKED");
+    assert.ok(withPriorAlignedTracks.manualTimelines!.some(t => t.provider === "v5_query" && t.structuredStatus));
   }],
   ["H5 prose cannot replace a known account status", () => {
     const row = owner(true);

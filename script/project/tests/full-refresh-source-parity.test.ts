@@ -164,8 +164,7 @@ for (const [entry, options] of [
     seed(original);
     const records = [row("CNOLD001", "CaiNiao", 105, NEW), original[1], original[2], original[3], row("CNNEW003")];
     const first = await round(records, options);
-    assert.deepEqual(first.query,
-      entry === "Home" ? ["CNNEW003", "CNOLD001", "CNOLD002"] : ["CNNEW003", "CNOLD001"]);
+    assert.deepEqual(first.query, ["CNNEW003", "CNOLD001", "CNOLD002"]);
     assert.deepEqual(first.online, ["SFSYNTH001"]);
     assert.equal(first.summary.failed, 0);
     const accountStage = readDiagnostics().find(value => value.event === "refresh.stage.started" &&
@@ -196,7 +195,7 @@ for (const [entry, options] of [
   });
 }
 
-test("background query failure persists the list baseline and does not retry an identical signal", async () => {
+test("background query failure retains the aligned pair during cooldown and supplements on a later round", async () => {
   seed([row("CNFAIL001")]);
   await round([row("CNFAIL001", "CaiNiao", 104, "2026-09-12 09:00:00")],
     { backgroundHostSafe: true, budgetMs: 30_000 });
@@ -205,9 +204,19 @@ test("background query failure persists the list baseline and does not retry an 
   assert.deepEqual(failed.query, ["CNFAIL001"]);
   assert.equal(failed.summary.failed, 1);
   assert.equal(loadState(clock).shipments[0].sourceTimeline?.semantic, "DELIVERY");
+  assert.equal(loadState(clock).shipments[0].timeline.semantic, "TRANSIT",
+    "status stays aligned with the retained headline while the query gap remains");
   assert.equal(loadState(clock).shipments[0].timeline.latestTimeText, "2026-09-12 09:00:00",
     "a failed update preserves earlier real history with its own event time");
-  assert.deepEqual((await round(records, { backgroundHostSafe: true, budgetMs: 30_000 })).query, []);
+  assert.deepEqual((await round(records, { backgroundHostSafe: true, budgetMs: 30_000 })).query, [],
+    "cooldown prevents immediate repeat on the same tuple");
+  clock += 3 * 60_000;
+  const supplemented = await round(records, { backgroundHostSafe: true, budgetMs: 30_000 });
+  assert.deepEqual(supplemented.query, ["CNFAIL001"],
+    "unchanged list continues supplementing once cooldown expires");
+  assert.equal(loadState(clock).shipments[0].timeline.semantic, "DELIVERY");
+  assert.equal(loadState(clock).shipments[0].timeline.latestTimeText, NEW);
+  assert.equal(loadState(clock).shipments[0].timeline.latestDetail, "query 实际物流事件");
 });
 
 test("background preserves terminal gates while repairing an unmatched signed SF headline", async () => {

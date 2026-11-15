@@ -258,6 +258,7 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   kdniaoSucceeded?: boolean;
   result?: string;
   stage?: string;
+  stagePhase?: "query" | "parse" | "write";
   errorCategory?: string;
   /** 统一用词（2026-09-05）：这一行归属的接口，v1…v6；手动件省略。 */
   interface?: string;
@@ -480,6 +481,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "kdniaoSucceeded",
   "result",
   "stage",
+  "stagePhase",
   "errorCategory",
 ]);
 

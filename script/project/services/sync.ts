@@ -75,9 +75,13 @@ import {
   automaticSourceOf,
   beginManualRefreshAttempt,
   cainiaoAutomaticNeedsH5Supplement,
+  cainiaoCandidateAlignsWithLatestStatus,
+  cainiaoHasTrajectoryGap,
+  cainiaoSupplementTimes,
   clearCainiaoManualFallback,
   displayWaybill,
   FORCED_COMPLETION_REFRESH_WINDOW_MS,
+  isCainiaoV5AutomaticShipment,
   MANUAL_REFRESH_MIN_INTERVAL_MS,
   forcedCompletedAt,
   hasCachedKdniaoTimeline,
@@ -149,6 +153,8 @@ import {
   normalizeWaybill,
   normalizedProjectedWaybill,
   containsTimelinePickupTrack,
+  isAccountUpdateSummary,
+  isNonEventDetail,
   shipmentPresentationStatus,
   sortShipments,
   timelineCapability,
@@ -171,7 +177,13 @@ import {
   type RefreshProviderResult,
 } from "./refresh-runtime-state";
 import { requestWidgetReload } from "./widgets";
-import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey, type AlignmentAttempt } from "./row-ledger";
+import {
+  loadAlignmentRecords,
+  parseAlignmentAttempt,
+  rowLedgerKey,
+  saveAlignmentRecords,
+  type AlignmentAttempt,
+} from "./row-ledger";
 import {
   alignmentAttemptDue, alignmentOwnerCurrent, alignmentTimesKey, reserveAlignmentAttempt,
   finishAlignmentAttempt, newerAlignmentEvidence, publishAlignmentPresentation,
@@ -214,10 +226,12 @@ import { enhanceAccountParcels, enhancementOperation, requireEnhancementBinding,
   enhancementPhone, withCurrentAccountEnhancement } from "./enhanced-account";
 import { prepareManualPreview } from "./manual-preview";
 import {
+  classifyDiagnosticError,
   createDiagnosticFlowId,
   diagnosticErrorDetails,
   diagnosticState,
   diagnosticsEnabled,
+  flushDiagnostics,
   openStageCancellationEnd,
   writeDiagnostic,
   writeDiagnosticBatch,
@@ -339,7 +353,8 @@ function refreshProviderResultForError(error: unknown): RefreshProviderResult {
   if (failure === "invalid_query" || failure === "phone_tail" || failure === "phone_verification_required") {
     return "invalid_query";
   }
-  if (failure === "upstream_rejected" || failure === "upstream_business_error" || failure === "upstream") {
+  if (failure === "upstream_rejected" || failure === "upstream_business_error" || failure === "upstream" ||
+      failure === "rate_limited") {
     return "upstream_rejected";
   }
   if (failure === "timeout") return "timeout";
@@ -2617,7 +2632,7 @@ function recordAccountOrderProjectionCommits(
 }
 
 type ManualRefreshTask = { id: string; lastAttemptAtMs: number; accountDetail?: boolean;
-  cainiaoFollowup?: boolean; backgroundAlignment?: boolean };
+  cainiaoFollowup?: boolean; cainiaoListUpdated?: boolean; backgroundAlignment?: boolean };
 
 /** The signed background exception is Online-only; the foreground retains its complete source chain. */
 function backgroundSfAlignmentTimes(shipment: Shipment, now: number): StatusAlignmentTimes | null {
@@ -2638,11 +2653,12 @@ function manualRefreshTasks(
   /** A Home follow-up the signed freeze stopped (its list did update), for the round's skip line. */
   onSignedFrozen?: (shipment: Shipment) => void,
   backgroundStatusAlignment = false,
+  cainiaoListUpdatedIds: ReadonlySet<string> = cainiaoFollowupIds,
 ): ManualRefreshTask[] {
   const homeFollowup = (current: Shipment): boolean => {
     if (!homeAccountQueryEligible(current, cainiaoFollowupIds.has(current.identity.id))) return false;
     if (!signedRefreshFrozen(current, now)) return true;
-    onSignedFrozen?.(current);
+    if (cainiaoListUpdatedIds.has(current.identity.id)) onSignedFrozen?.(current);
     return false;
   };
   // Scheduled, background and Home-pull per-row work: a row at the signed freeze is never queued (用户 2026-10-02
@@ -2662,7 +2678,8 @@ function manualRefreshTasks(
   ).map(current => ({ id: current.identity.id, lastAttemptAtMs: Number(current.manualRefreshAttemptAtMs) || 0,
     accountDetail: accountSourceFollowup && isHomeAccountQuerySource(current),
     backgroundAlignment: backgroundStatusAlignment && Boolean(backgroundSfAlignmentTimes(current, now)),
-    cainiaoFollowup: cainiaoFollowupIds.has(current.identity.id) }));
+    cainiaoFollowup: cainiaoFollowupIds.has(current.identity.id),
+    cainiaoListUpdated: cainiaoListUpdatedIds.has(current.identity.id) }));
   return oldestBatchIndices(tasks.map(task => task.lastAttemptAtMs), tasks.length, state.revision)
     .map(position => tasks[position]);
 }
@@ -3611,52 +3628,266 @@ function requestAccountDetail(
       { recognizeCarrier: false, beforeQuery }), deadline, signal);
 }
 
+function cainiaoHasRealIncomingTracks(incoming: Shipment): boolean {
+  const candidate = incoming.sourceTimeline || incoming.timeline;
+  return timedTracks(candidate.tracks).some(track =>
+    Boolean(String(track.detail || "").trim()) &&
+    !isAccountUpdateSummary(track.detail) &&
+    !isNonEventDetail(track.detail),
+  );
+}
+
+function cainiaoForcedSupplementDue(
+  shipment: Shipment,
+  cainiaoListUpdated: boolean,
+  now: number,
+): Readonly<{ forced: boolean; timesKey: string; statusSemantic: StatusSemantic }> {
+  const supplement = cainiaoSupplementTimes(shipment, now);
+  if (!supplement) return { forced: false, timesKey: "", statusSemantic: "UNKNOWN" };
+  const { timesKey, statusAtMs, headlineAtMs, detailAtMs, statusSemantic } = supplement;
+  const hasPriorComparison = statusAtMs > 0 && (headlineAtMs > 0 || detailAtMs > 0);
+  if (!cainiaoListUpdated && !hasPriorComparison) {
+    return { forced: false, timesKey, statusSemantic };
+  }
+  let record: AlignmentAttempt | null = null;
+  try {
+    record = parseAlignmentAttempt(loadAlignmentRecords()[rowLedgerKey(shipment.identity.id)]);
+  } catch { /* best-effort read falls back to normal eligibility */ }
+  const alreadyForced = Boolean(
+    record &&
+    record.times === timesKey &&
+    record.attempts >= 1 &&
+    (!record.completionStatus || record.completionStatus === statusSemantic),
+  );
+  return { forced: !alreadyForced, timesKey, statusSemantic };
+}
+
+function recordCainiaoSupplementAttempt(
+  rowId: string,
+  timesKey: string,
+  statusSemantic: StatusSemantic,
+  now: number,
+  complete: boolean,
+): void {
+  if (!timesKey) return;
+  try {
+    const current = loadAlignmentRecords();
+    const key = rowLedgerKey(rowId);
+    const old = parseAlignmentAttempt(current[key]);
+    const sameGroup = Boolean(
+      old &&
+      old.times === timesKey &&
+      (!old.completionStatus || old.completionStatus === statusSemantic),
+    );
+    const next: AlignmentAttempt = {
+      times: timesKey,
+      attempts: sameGroup ? Math.max(1, old!.attempts) : 1,
+      lastAttemptAtMs: now,
+      complete,
+      finished: true,
+      completionStatus: statusSemantic,
+    };
+    current[key] = JSON.stringify(next);
+    saveAlignmentRecords(current);
+  } catch { /* best-effort ledger persistence cannot fail background supplement */ }
+}
+
 async function refreshHomeAccountShipment(
   state: AppState, source: BindingSource, flowId: string, checkpoint: RefreshCheckpoint,
   task: ManualRefreshTask, deadlineAtMs: number | undefined, signal: AbortSignal,
   query: typeof refreshAccountParcel,
   /** C1: called once this task passed its gates, right before it queries. */
   onQueryStarted: () => void = () => {},
+  forceManualRefresh = false,
 ): Promise<RefreshSummary> {
+  const now = Date.now();
   const original = state.shipments.find(item => item.identity.id === task.id);
   const summary = (next: AppState, attempted = 0, succeeded = 0, failed = 0) =>
     ({ state: next, attempted, succeeded, failed, promotedPendingShipmentIds: [] });
-  if (!original || !canQueryHomeAccount(original, Boolean(task.cainiaoFollowup)) ||
+  if (!original || !homeAccountQueryEligible(original, Boolean(task.cainiaoFollowup)) ||
       deadlineExpired(deadlineAtMs)) return summary(state);
+  if (signedRefreshFrozen(original, now)) {
+    writeDiagnostic("refresh.stage.skipped", { flowId, source, stage: "account_detail",
+      ...shipmentDiagnosticDetails(original, "v5_query"), result: "signed_frozen", skipReason: "signed_frozen" });
+    return summary(state);
+  }
+  const hasGap = Boolean(task.cainiaoListUpdated) || cainiaoHasTrajectoryGap(original, now) ||
+    (forceManualRefresh && !timelineDisplayDetail(original.timeline) && !timedTracks(original.timeline.tracks).length);
+  if (!hasGap) return summary(state);
+  const scheduleKey = `${source}:${original.identity.id}`;
+  const providerFingerprint = [displayWaybill(original), original.identity.courierCode,
+    original.identity.phoneTail].join(":");
+  const forcedInfo = cainiaoForcedSupplementDue(original, Boolean(task.cainiaoListUpdated), now);
+  const due = refreshProviderDue(scheduleKey, "account_detail", providerFingerprint, now);
+  const cooldown = refreshProviderCooldownDetails(scheduleKey, "account_detail", providerFingerprint, now);
+  const riskControlled = !due &&
+    (cooldown.cooldownReason === "upstream_rejected" || cooldown.cooldownReason === "invalid_query");
+  if (forcedInfo.forced) {
+    if (riskControlled) {
+      writeDiagnostic("refresh.stage.skipped", { flowId, source, stage: "account_detail",
+        ...shipmentDiagnosticDetails(original, "v5_query"), ...cooldown, result: "cooldown", skipReason: "cooldown" });
+      return summary(state);
+    }
+  } else {
+    if (!shouldRefreshShipmentRow(original, now)) return summary(state);
+    if (!due) {
+      writeDiagnostic("refresh.stage.skipped", { flowId, source, stage: "account_detail",
+        ...shipmentDiagnosticDetails(original, "v5_query"), ...cooldown, result: "cooldown", skipReason: "cooldown" });
+      return summary(state);
+    }
+  }
   onQueryStarted();
   const startedAt = Date.now();
-  writeDiagnostic("refresh.stage.started", { flowId, source, stage: "account_detail",
+  let phase: "query" | "parse" | "write" = "query";
+  let tupleRecorded = false;
+  const recordAttempt = (complete = false) => {
+    if (!forcedInfo.timesKey) return;
+    tupleRecorded = true;
+    recordCainiaoSupplementAttempt(original.identity.id, forcedInfo.timesKey,
+      forcedInfo.statusSemantic, Date.now(), complete);
+  };
+  writeDiagnostic("refresh.stage.started", { flowId, source, stage: "account_detail", stagePhase: "query",
     budgetMs: ACCOUNT_DETAIL_BUDGET_MS, ...shipmentDiagnosticDetails(original, "v5_query") });
-  const stageCancelled = openStageCancellationEnd(flowId, signal, () => writeDiagnostic("refresh.stage.failed", {
-    flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(original, "v5_query"),
-    durationMs: Date.now() - startedAt, errorCategory: "cancelled" }, "warning"));
+  flushDiagnostics();
+  const stageCancelled = openStageCancellationEnd(flowId, signal, () => {
+    writeDiagnostic("refresh.stage.failed", {
+      flowId, source, stage: "account_detail", stagePhase: phase, result: "cancelled",
+      ...shipmentDiagnosticDetails(original, "v5_query"),
+      durationMs: Date.now() - startedAt, errorCategory: "cancelled",
+    }, "warning");
+    flushDiagnostics();
+  });
   let parcel: AccountParcelDto | null;
   try {
-    parcel = await requestAccountDetail(original, state, query, deadlineAtMs, signal);
+    parcel = await requestAccountDetail(original, state, query, deadlineAtMs, signal, () => {
+      if (!tupleRecorded) recordAttempt(false);
+    });
     assertRefreshSignal(signal);
+    if (forcedInfo.forced && !tupleRecorded) recordAttempt(false);
+  } catch (error) {
+    rethrowStageCancellation(signal, stageCancelled.end);
+    stageCancelled.close();
+    if (forcedInfo.forced && !tupleRecorded) recordAttempt(false);
+    const providerResult = refreshProviderResultForError(error);
+    recordRefreshProviderResult({ key: scheduleKey, provider: "account_detail",
+      identityFingerprint: providerFingerprint, result: providerResult });
+    const errorDetails = diagnosticErrorDetails(error);
+    const result = errorDetails.errorCategory === "timeout" ? "timeout" : "query_failed";
+    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", stagePhase: "query",
+      result, ...shipmentDiagnosticDetails(original, "v5_query"),
+      durationMs: Date.now() - startedAt, ...errorDetails }, "warning");
+    flushDiagnostics();
+    return summary(loadState(), 1, 0, 1);
+  }
+
+  phase = "parse";
+  let incoming: Shipment | null = null;
+  try {
+    assertRefreshSignal(signal);
+    incoming = parcel ? parcelToShipment(parcel, bindingsForSource(state, source).map(b => b.phone), Date.now()) : null;
+  } catch (error) {
+    rethrowStageCancellation(signal, stageCancelled.end);
+    stageCancelled.close();
+    recordRefreshProviderResult({ key: scheduleKey, provider: "account_detail",
+      identityFingerprint: providerFingerprint, result: refreshProviderResultForError(error) });
+    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", stagePhase: "parse",
+      result: "parse_failed", ...shipmentDiagnosticDetails(original, "v5_query"),
+      durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error) }, "warning");
+    flushDiagnostics();
+    return summary(loadState(), 1, 0, 1);
+  }
+  if (!incoming || !parcel || !cainiaoHasRealIncomingTracks(incoming)) {
+    stageCancelled.close();
+    recordRefreshProviderResult({ key: scheduleKey, provider: "account_detail",
+      identityFingerprint: providerFingerprint, result: "no_result" });
+    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", stagePhase: "parse",
+      result: "empty", errorCategory: "no_result", ...shipmentDiagnosticDetails(original, "v5_query"),
+      durationMs: Date.now() - startedAt }, "warning");
+    flushDiagnostics();
+    return summary(loadState(), 1, 0, 1);
+  }
+
+  phase = "write";
+  try {
+    assertRefreshSignal(signal);
+  } catch (error) {
+    rethrowStageCancellation(signal, stageCancelled.end);
+    stageCancelled.close();
+    throw error;
+  }
+  const writeNow = Date.now();
+  const latest = loadState(writeNow);
+  const latestRow = latest.shipments.find(item => item.identity.id === original.identity.id);
+  if (!latestRow || !alignmentOwnerCurrent(state, original, latest)) {
+    stageCancelled.close();
+    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", stagePhase: "write",
+      result: "write_failed", errorCategory: latestRow ? "state_changed" : "removed",
+      ...shipmentDiagnosticDetails(latestRow || original, "v5_query", incoming.timeline),
+      durationMs: Date.now() - startedAt }, "warning");
+    flushDiagnostics();
+    return summary(latest, 1, 0, 1);
+  }
+  const routes: DeferredRouteMutations = new Map();
+  let merged: Shipment;
+  try {
+    merged = applyTargetedAccountShipment(latestRow, asAccountDetailObservation(latestRow, incoming), writeNow,
+      { existingCainiaoRouteAvailable: Boolean(storedCainiaoRoute(latestRow)) });
+    merged = deferIncomingRoute(merged, incoming, parcel.routeUrl, writeNow, routes);
+  } catch (error) {
+    rethrowStageCancellation(signal, stageCancelled.end);
+    stageCancelled.close();
+    recordRefreshProviderResult({ key: scheduleKey, provider: "account_detail",
+      identityFingerprint: providerFingerprint, result: "no_result" });
+    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", stagePhase: "parse",
+      result: "parse_failed", ...shipmentDiagnosticDetails(latestRow, "v5_query"),
+      durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error) }, "warning");
+    flushDiagnostics();
+    return summary(latest, 1, 0, 1);
+  }
+  if (isCainiaoV5AutomaticShipment(latestRow) && !cainiaoCandidateAlignsWithLatestStatus(merged, writeNow)) {
+    stageCancelled.close();
+    recordRefreshProviderResult({ key: scheduleKey, provider: "account_detail",
+      identityFingerprint: providerFingerprint, result: "no_result" });
+    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", stagePhase: "write",
+      result: "lagging", errorCategory: "stale_timeline",
+      ...shipmentDiagnosticDetails(latestRow, "v5_query", incoming.timeline),
+      durationMs: Date.now() - startedAt }, "warning");
+    flushDiagnostics();
+    return summary(latest, 1, 0, 1);
+  }
+  let next: AppState;
+  try {
+    next = checkpoint({ ...latest, shipments: sortShipments(replaceById(latest.shipments,
+      withDetailSelection(merged, writeNow))) }, routes, "account_detail", latest);
     stageCancelled.close();
   } catch (error) {
     rethrowStageCancellation(signal, stageCancelled.end);
     stageCancelled.close();
-    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(original, "v5_query"),
+    const category = classifyDiagnosticError(error);
+    if (category === "cancelled" || category === "timeout" || error instanceof OperationTimeoutError) {
+      writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", stagePhase: "write",
+        result: category === "timeout" ? "timeout" : "cancelled",
+        ...shipmentDiagnosticDetails(latestRow, "v5_query", incoming.timeline),
+        durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error) }, "warning");
+      flushDiagnostics();
+      throw error;
+    }
+    recordRefreshProviderResult({ key: scheduleKey, provider: "account_detail",
+      identityFingerprint: providerFingerprint, result: "failed" });
+    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", stagePhase: "write",
+      result: "write_failed", ...shipmentDiagnosticDetails(latestRow, "v5_query", incoming.timeline),
       durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error) }, "warning");
+    flushDiagnostics();
     return summary(loadState(), 1, 0, 1);
   }
-  const incoming = parcel ? parcelToShipment(parcel, bindingsForSource(state, source).map(b => b.phone), Date.now()) : null;
-  if (!incoming || !parcel) {
-    writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(original, "v5_query"),
-      result: "empty", durationMs: Date.now() - startedAt }, "warning");
-    return summary(loadState(), 1, 0, 1);
-  }
-  const routes: DeferredRouteMutations = new Map();
-  let merged = applyTargetedAccountShipment(original, asAccountDetailObservation(original, incoming), Date.now(),
-    { existingCainiaoRouteAvailable: Boolean(storedCainiaoRoute(original)) });
-  merged = deferIncomingRoute(merged, incoming, parcel.routeUrl, Date.now(), routes);
-  const next = checkpoint({ ...state, shipments: sortShipments(replaceById(state.shipments,
-    withDetailSelection(merged, Date.now()))) }, routes, "account_detail");
-  writeDiagnostic("refresh.stage.succeeded", { flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(
-    next.shipments.find(item => item.identity.id === original.identity.id) || merged, "v5_query", incoming.timeline),
+  const committedRow = next.shipments.find(item => item.identity.id === original.identity.id) || merged;
+  recordRefreshProviderResult({ key: scheduleKey, provider: "account_detail",
+    identityFingerprint: providerFingerprint, result: "success" });
+  if (!cainiaoHasTrajectoryGap(committedRow, Date.now())) recordAttempt(true);
+  writeDiagnostic("refresh.stage.succeeded", { flowId, source, stage: "account_detail", stagePhase: "write",
+    result: "aligned", ...shipmentDiagnosticDetails(committedRow, "v5_query", incoming.timeline),
     durationMs: Date.now() - startedAt });
+  flushDiagnostics();
   return summary(next, 1, 1);
 }
 
@@ -3724,18 +3955,39 @@ async function runDetailEntryQuery(
     assertRefreshSignal(lease.signal);
     if (!lease.isCurrent()) throw new OperationTimeoutError();
     const incoming = parcel ? parcelToShipment(parcel, bindingsForSource(base, source).map(b => b.phone), Date.now()) : null;
-    recordRefreshProviderResult({ key, provider: "account_detail", identityFingerprint: providerFingerprint,
-      result: incoming ? "success" : "no_result" });
-    if (!incoming || !parcel) {
+    if (!incoming || !parcel || (isCainiaoV5AutomaticShipment(original) && !cainiaoHasRealIncomingTracks(incoming))) {
+      recordRefreshProviderResult({ key, provider: "account_detail", identityFingerprint: providerFingerprint,
+        result: "no_result" });
+      writeDiagnostic("detail.refresh.stage_failed", {
+        flowId, source, stage: "account_detail", stagePhase: "parse", result: "empty", errorCategory: "no_result",
+        durationMs: Date.now() - startedAt, ...shipmentDiagnosticDetails(original, "v5_query"),
+      }, "warning");
       const state = loadState();
       const shipment = state.shipments.find(item => item.identity.id === original.identity.id);
       if (!shipment) throw new Error("该快递已从列表中移除");
       return { state, shipment, refreshed: false, querySucceeded: false, detailEntry: observation };
     }
-    let merged = applyTargetedAccountShipment(original, asAccountDetailObservation(original, incoming), Date.now(),
-      { existingCainiaoRouteAvailable: Boolean(storedCainiaoRoute(original)) });
-    merged = deferIncomingRoute(merged, incoming, parcel.routeUrl, Date.now(), routes);
-    const commit = commitTargetShipmentRefresh(base, withDetailSelection(merged, Date.now()), Date.now(), lease);
+    const writeNow = Date.now();
+    const latestState = loadState(writeNow);
+    const latestRow = latestState.shipments.find(item => item.identity.id === original.identity.id);
+    if (!latestRow) throw new Error("该快递已从列表中移除");
+    const targetBase = isCainiaoV5AutomaticShipment(latestRow) ? latestState : base;
+    const targetOriginal = isCainiaoV5AutomaticShipment(latestRow) ? latestRow : original;
+    let merged = applyTargetedAccountShipment(targetOriginal, asAccountDetailObservation(targetOriginal, incoming), writeNow,
+      { existingCainiaoRouteAvailable: Boolean(storedCainiaoRoute(targetOriginal)) });
+    if (isCainiaoV5AutomaticShipment(targetOriginal) && !cainiaoCandidateAlignsWithLatestStatus(merged, writeNow)) {
+      recordRefreshProviderResult({ key, provider: "account_detail", identityFingerprint: providerFingerprint,
+        result: "no_result" });
+      writeDiagnostic("detail.refresh.stage_failed", {
+        flowId, source, stage: "account_detail", stagePhase: "write", result: "lagging", errorCategory: "stale_timeline",
+        durationMs: Date.now() - startedAt, ...shipmentDiagnosticDetails(targetOriginal, "v5_query", incoming.timeline),
+      }, "warning");
+      return { state: latestState, shipment: latestRow, refreshed: false, querySucceeded: false, detailEntry: observation };
+    }
+    recordRefreshProviderResult({ key, provider: "account_detail", identityFingerprint: providerFingerprint,
+      result: "success" });
+    merged = deferIncomingRoute(merged, incoming, parcel.routeUrl, writeNow, routes);
+    const commit = commitTargetShipmentRefresh(targetBase, withDetailSelection(merged, writeNow), writeNow, lease);
     if (!commit.applied) {
       const current = commit.state.shipments.find(s => s.identity.id === original.identity.id);
       if (!current) throw new Error("该快递已从列表中移除");
@@ -5801,6 +6053,7 @@ async function refreshShipmentEnrichment(
    * 30-second floor, another owner) never reports 「列表已更新」.
    */
   onWorkStarted: () => void = () => {},
+  cainiaoListUpdatedIds: ReadonlySet<string> = cainiaoFollowupIds,
 ): Promise<RefreshSummary> {
   let currentState = state;
   let attempted = 0;
@@ -5815,7 +6068,7 @@ async function refreshShipmentEnrichment(
     manualRefreshTasks(currentState, source, now, skipRefreshIds, forceManualRefresh,
       accountSourceFollowup, cainiaoFollowupIds, (frozen) => writeDiagnostic("refresh.stage.skipped", {
         flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(frozen, "v5_query"),
-        result: "signed_frozen", skipReason: "signed_frozen" }), backgroundHostSafe),
+        result: "signed_frozen", skipReason: "signed_frozen" }), backgroundHostSafe, cainiaoListUpdatedIds),
     (task) => {
       const row = currentState.shipments.find((shipment) => shipment.identity.id === task.id);
       return row?.identity.manuallyAdded && !task.accountDetail ? [displayWaybill(row)] : [];
@@ -5831,14 +6084,16 @@ async function refreshShipmentEnrichment(
   let firstFailure: {error: unknown} | undefined;
   const run = async (job: Job): Promise<JobResult> => {
     let jobBase = currentState;
-    const commit: RefreshCheckpoint = (candidate, mutations, stage) => {
+    const commit: RefreshCheckpoint = (candidate, mutations, stage, base = jobBase) => {
       assertRefreshSignal(controller.signal);
       // Each task rebases from what it read, not another task's newer checkpoint.
       try {
-        currentState = checkpoint(candidate, mutations, stage, jobBase);
+        currentState = checkpoint(candidate, mutations, stage, base);
       } catch (error) {
-        firstFailure ??= {error};
-        controller.abort();
+        if (stage !== "account_detail") {
+          firstFailure ??= {error};
+          controller.abort();
+        }
         throw error;
       }
       jobBase = currentState;
@@ -5864,7 +6119,7 @@ async function refreshShipmentEnrichment(
         runtimeOverrides.queryManualForSource || queryManualForSource, onWorkStarted,
       ) : job.accountDetail ? await refreshHomeAccountShipment(
         currentState, source, flowId, commit, job, deadlineAtMs, controller.signal,
-        runtimeOverrides.refreshAccountParcel || refreshAccountParcel, onWorkStarted,
+        runtimeOverrides.refreshAccountParcel || refreshAccountParcel, onWorkStarted, forceManualRefresh,
       ) : await refreshOnlineShipment(
         currentState, source, flowId, commit, job, deadlineAtMs, forceManualRefresh,
         controller.signal, runtimeOverrides.queryManualForSource || queryManualForSource,
@@ -5955,6 +6210,7 @@ async function runFullRefresh(
   let failed = 0;
   let accountListUpdated = false;
   const cainiaoFollowupIds = new Set<string>();
+  const cainiaoListUpdatedIds = new Set<string>();
   let summary: RefreshSummary | undefined;
   const promotedPendingShipmentIds: string[] = [];
 
@@ -6010,6 +6266,7 @@ async function runFullRefresh(
       const previousById = new Map(initial.shipments.map(shipment => [shipment.identity.id, shipment]));
       for (const shipment of account.state.shipments) {
         if (cainiaoListHasUpdate(previousById.get(shipment.identity.id), shipment)) {
+          cainiaoListUpdatedIds.add(shipment.identity.id);
           cainiaoFollowupIds.add(shipment.identity.id);
         }
       }
@@ -6039,14 +6296,17 @@ async function runFullRefresh(
         flowId,
       );
     }
-    if (forceManualRefresh && !accountListOnly) {
+    if (!accountListOnly && (account.succeeded > 0 || forceManualRefresh)) {
       const listUnavailable = account.succeeded === 0 && account.failed > 0;
+      const gapNow = Date.now();
       for (const shipment of currentState.shipments) {
         if (!isHomeAccountQuerySource(shipment) || !isCainiaoAutomaticShipment(shipment)) continue;
         const ownerKey = `${shipment.identity.id}\u0000${automaticBindingIdentityOf(shipment)}`;
-        // A failed list request can still leave a valid, bound per-waybill query.
-        if ((listUnavailable || account.observedOwnerKeys.has(ownerKey)) && !timelineDisplayDetail(shipment.timeline) &&
-            !timedTracks(shipment.timeline.tracks).length) {
+        // Supplement whenever saved list status and real tracks still have an unaligned gap,
+        // even if the list status and event time did not change on this round.
+        if ((account.succeeded > 0 && account.observedOwnerKeys.has(ownerKey) && cainiaoHasTrajectoryGap(shipment, gapNow)) ||
+            (forceManualRefresh && (listUnavailable || account.observedOwnerKeys.has(ownerKey)) &&
+              !timelineDisplayDetail(shipment.timeline) && !timedTracks(shipment.timeline.tracks).length)) {
           cainiaoFollowupIds.add(shipment.identity.id);
         }
       }
@@ -6117,7 +6377,7 @@ async function runFullRefresh(
       currentState, source, flowId, checkpoint, enrichmentDeadlineAtMs,
       skipRefreshIds, forceManualRefresh, hostPolicy.accountOrderProjection, lease.signal,
       {}, accountSourceFollowup, cainiaoFollowupIds, recognitionBudget, backgroundHostSafe,
-      answerAccountPhase,
+      answerAccountPhase, cainiaoListUpdatedIds,
     );
     currentState = enrichment.state;
     attempted += enrichment.attempted;
