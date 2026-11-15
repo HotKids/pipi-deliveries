@@ -143,6 +143,7 @@ import {
   sortShipments,
   timelineCapability,
   timedTracks,
+  timelineDisplayDetail,
   timelineLatestEventAt,
   timelineLatestTrackAt,
   parseProviderTime,
@@ -724,8 +725,8 @@ function cainiaoListHasUpdate(previous: Shipment | undefined, current: Shipment)
     incoming.semantic !== "UNKNOWN" && incoming.semantic !== stored.semantic;
 }
 
-function canQueryHomeAccount(shipment: Shipment, cainiaoListUpdated: boolean, now = Date.now()): boolean {
-  return homeAccountQueryEligible(shipment, cainiaoListUpdated) && !signedRefreshFrozen(shipment, now);
+function canQueryHomeAccount(shipment: Shipment, cainiaoFollowup: boolean, now = Date.now()): boolean {
+  return homeAccountQueryEligible(shipment, cainiaoFollowup) && !signedRefreshFrozen(shipment, now);
 }
 
 /**
@@ -734,9 +735,9 @@ function canQueryHomeAccount(shipment: Shipment, cainiaoListUpdated: boolean, no
  * 推进到了签收状态…就冻结快递 后续不再进行任何刷新」). An explicit sign-off stops it only once hard-frozen (用户 2026-10-02
  * 「我已取件这种硬冻结 也要等三态都是签收才冻结」，弹窗「iOS 右滑签收一起改」); both are canQueryHomeAccount's freeze check.
  */
-function homeAccountQueryEligible(shipment: Shipment, cainiaoListUpdated: boolean): boolean {
+function homeAccountQueryEligible(shipment: Shipment, cainiaoFollowup: boolean): boolean {
   if (!isCainiaoAutomaticShipment(shipment)) return false;
-  return cainiaoListUpdated && isHomeAccountQuerySource(shipment) && Boolean(shipment.accountRecord) &&
+  return cainiaoFollowup && isHomeAccountQuerySource(shipment) && Boolean(shipment.accountRecord) &&
     shipment.timeline.provider !== "demo" &&
     selectShipmentTimeline(shipment).semantic !== "CANCELLED";
 }
@@ -1808,6 +1809,7 @@ async function synchronizeAccountList(
 ): Promise<{
   state: AppState;
   parcels: readonly AccountParcelDto[];
+  observedOwnerKeys: ReadonlySet<string>;
   attempted: number;
   succeeded: number;
   failed: number;
@@ -1818,6 +1820,7 @@ async function synchronizeAccountList(
     return {
       state,
       parcels: [],
+      observedOwnerKeys: new Set(),
       attempted: 0,
       succeeded: 0,
       failed: 0,
@@ -1903,6 +1906,7 @@ async function synchronizeAccountList(
     return {
       state,
       parcels: [],
+      observedOwnerKeys: new Set(),
       attempted,
       succeeded: 0,
       failed,
@@ -1980,6 +1984,7 @@ async function synchronizeAccountList(
   return {
     state: { ...state, shipments: sortShipments(shipments) },
     parcels,
+    observedOwnerKeys,
     attempted,
     succeeded,
     failed,
@@ -2602,7 +2607,7 @@ function recordAccountOrderProjectionCommits(
 }
 
 type ManualRefreshTask = { id: string; lastAttemptAtMs: number; accountDetail?: boolean;
-  cainiaoListUpdated?: boolean; backgroundAlignment?: boolean };
+  cainiaoFollowup?: boolean; backgroundAlignment?: boolean };
 
 /** The signed background exception is Online-only; the foreground retains its complete source chain. */
 function backgroundSfAlignmentTimes(shipment: Shipment, now: number): StatusAlignmentTimes | null {
@@ -2619,14 +2624,13 @@ function manualRefreshTasks(
   state: AppState, source: BindingSource, now: number,
   skipRefreshIds: ReadonlySet<string>, forceManualRefresh: boolean,
   accountSourceFollowup = false,
-  updatedCainiaoIds: ReadonlySet<string> = new Set(),
+  cainiaoFollowupIds: ReadonlySet<string> = new Set(),
   /** A Home follow-up the signed freeze stopped (its list did update), for the round's skip line. */
   onSignedFrozen?: (shipment: Shipment) => void,
   backgroundStatusAlignment = false,
 ): ManualRefreshTask[] {
   const homeFollowup = (current: Shipment): boolean => {
-    const updated = updatedCainiaoIds.has(current.identity.id);
-    if (!homeAccountQueryEligible(current, updated)) return false;
+    if (!homeAccountQueryEligible(current, cainiaoFollowupIds.has(current.identity.id))) return false;
     if (!signedRefreshFrozen(current, now)) return true;
     onSignedFrozen?.(current);
     return false;
@@ -2648,7 +2652,7 @@ function manualRefreshTasks(
   ).map(current => ({ id: current.identity.id, lastAttemptAtMs: Number(current.manualRefreshAttemptAtMs) || 0,
     accountDetail: accountSourceFollowup && isHomeAccountQuerySource(current),
     backgroundAlignment: backgroundStatusAlignment && Boolean(backgroundSfAlignmentTimes(current, now)),
-    cainiaoListUpdated: updatedCainiaoIds.has(current.identity.id) }));
+    cainiaoFollowup: cainiaoFollowupIds.has(current.identity.id) }));
   return oldestBatchIndices(tasks.map(task => task.lastAttemptAtMs), tasks.length, state.revision)
     .map(position => tasks[position]);
 }
@@ -3607,7 +3611,7 @@ async function refreshHomeAccountShipment(
   const original = state.shipments.find(item => item.identity.id === task.id);
   const summary = (next: AppState, attempted = 0, succeeded = 0, failed = 0) =>
     ({ state: next, attempted, succeeded, failed, promotedPendingShipmentIds: [] });
-  if (!original || !canQueryHomeAccount(original, Boolean(task.cainiaoListUpdated)) ||
+  if (!original || !canQueryHomeAccount(original, Boolean(task.cainiaoFollowup)) ||
       deadlineExpired(deadlineAtMs)) return summary(state);
   onQueryStarted();
   const startedAt = Date.now();
@@ -5773,7 +5777,7 @@ async function refreshShipmentEnrichment(
   signal?: AbortSignal,
   runtimeOverrides: Partial<EnrichmentRuntime> = {},
   accountSourceFollowup = false,
-  updatedCainiaoIds: ReadonlySet<string> = new Set(),
+  cainiaoFollowupIds: ReadonlySet<string> = new Set(),
   /** The sync round's recognition wait (用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒). */
   recognitionBudget: CarrierRecognitionBudget = new CarrierRecognitionBudget(),
   backgroundHostSafe = false,
@@ -5795,7 +5799,7 @@ async function refreshShipmentEnrichment(
   // 查询也随之排后）属截断排后细则里的「整行（整个任务）排后」，用户 2026-09-27 提交前核对答「这样做」。
   const queued = truncatedCarrierRecognitionLast(
     manualRefreshTasks(currentState, source, now, skipRefreshIds, forceManualRefresh,
-      accountSourceFollowup, updatedCainiaoIds, (frozen) => writeDiagnostic("refresh.stage.skipped", {
+      accountSourceFollowup, cainiaoFollowupIds, (frozen) => writeDiagnostic("refresh.stage.skipped", {
         flowId, source, stage: "account_detail", ...shipmentDiagnosticDetails(frozen, "v5_query"),
         result: "signed_frozen", skipReason: "signed_frozen" }), backgroundHostSafe),
     (task) => {
@@ -5936,7 +5940,7 @@ async function runFullRefresh(
   let succeeded = 0;
   let failed = 0;
   let accountListUpdated = false;
-  const updatedCainiaoIds = new Set<string>();
+  const cainiaoFollowupIds = new Set<string>();
   let summary: RefreshSummary | undefined;
   const promotedPendingShipmentIds: string[] = [];
 
@@ -5992,10 +5996,21 @@ async function runFullRefresh(
       const previousById = new Map(initial.shipments.map(shipment => [shipment.identity.id, shipment]));
       for (const shipment of account.state.shipments) {
         if (cainiaoListHasUpdate(previousById.get(shipment.identity.id), shipment)) {
-          updatedCainiaoIds.add(shipment.identity.id);
+          cainiaoFollowupIds.add(shipment.identity.id);
         }
       }
       currentState = checkpoint(account.state, accountMutations, "account_list");
+      if (forceManualRefresh && !accountListOnly) {
+        for (const shipment of currentState.shipments) {
+          if (!isHomeAccountQuerySource(shipment) || !isCainiaoAutomaticShipment(shipment)) continue;
+          const ownerKey = `${shipment.identity.id}\u0000${automaticBindingIdentityOf(shipment)}`;
+          // A list can repeat only the status and its event time after an earlier detail query missed.
+          if (account.observedOwnerKeys.has(ownerKey) && !timelineDisplayDetail(shipment.timeline) &&
+              !timedTracks(shipment.timeline.tracks).length) {
+            cainiaoFollowupIds.add(shipment.identity.id);
+          }
+        }
+      }
       logJingDongListRecords(account.parcels, initial, account.state, currentState, flowId, startedAt);
       accountListUpdated = true;
       recordNetworkRefreshSuccess("account");
@@ -6086,7 +6101,7 @@ async function runFullRefresh(
     } : await refreshShipmentEnrichment(
       currentState, source, flowId, checkpoint, enrichmentDeadlineAtMs,
       skipRefreshIds, forceManualRefresh, hostPolicy.accountOrderProjection, lease.signal,
-      {}, accountSourceFollowup, updatedCainiaoIds, recognitionBudget, backgroundHostSafe,
+      {}, accountSourceFollowup, cainiaoFollowupIds, recognitionBudget, backgroundHostSafe,
       answerAccountPhase,
     );
     currentState = enrichment.state;

@@ -159,12 +159,13 @@ for (const [entry, options] of [
   ["background", { backgroundHostSafe: true, accountOrderProjection: true, budgetMs: 30_000 }],
   ["widget/intent", { backgroundHostSafe: true, accountOrderProjection: true, budgetMs: 120_000 }],
 ] as const) {
-  test(`${entry}: changed/new Cainiao only, JD list-only, SF Online, unchanged list no query`, async () => {
+  test(`${entry}: Cainiao detail eligibility, JD list-only, SF Online`, async () => {
     const original = [row("CNOLD001"), row("CNOLD002"), row("JDSYNTH001", "JingDong"), row("SFSYNTH001", "ShunFeng")];
     seed(original);
     const records = [row("CNOLD001", "CaiNiao", 105, NEW), original[1], original[2], original[3], row("CNNEW003")];
     const first = await round(records, options);
-    assert.deepEqual(first.query, ["CNNEW003", "CNOLD001"]);
+    assert.deepEqual(first.query,
+      entry === "Home" ? ["CNNEW003", "CNOLD001", "CNOLD002"] : ["CNNEW003", "CNOLD001"]);
     assert.deepEqual(first.online, ["SFSYNTH001"]);
     assert.equal(first.summary.failed, 0);
     const accountStage = readDiagnostics().find(value => value.event === "refresh.stage.started" &&
