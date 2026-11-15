@@ -49,7 +49,9 @@ console.log("home empty-state presentation tests passed");
 
 const shipmentRowSource = await readFile(resolve(projectDir, "components/ShipmentRow.tsx"), "utf8");
 assert.doesNotMatch(shipmentRowSource, /暂无物流动态/,
-  "Home leaves a genuinely empty subtitle absent instead of inventing a dynamic");
-assert.match(shipmentRowSource, /\{latestDetail \? \(/);
+  "Home uses the current empty-tracking copy");
+assert.match(shipmentRowSource, /\{latestDetail\.trim\(\) \|\| "暂无物流信息"\}/,
+  "Home shows the real headline when present and an empty-tracking label otherwise");
+assert.doesNotMatch(shipmentRowSource, /\{latestDetail \? \(/);
 assert.match(homeSource, /useEffect\(\(\) => \{[\s\S]*?void refreshAllShipments\(\)/,
   "Home's initial refresh reaches the missing-history repair entry");

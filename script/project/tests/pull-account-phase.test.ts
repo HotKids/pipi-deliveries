@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createHmac } from "node:crypto";
 import { memory } from "./state-storage-mock";
-import { emptyState, saveState } from "../services/storage";
+import { emptyState, loadState, saveState } from "../services/storage";
 import { refreshAllShipments, refreshAllShipmentsForPull } from "../services/sync";
 import { parseAccountSyncResult } from "../services/account-parser";
 import { parcelToShipment } from "../services/account-sync";
@@ -38,10 +38,10 @@ const record = {
 // The list reports a change, so the refresh's enrichment queries this shipment's detail.
 const changed = { ...record, stateNum: 105, details: [{ time: NEW, desc: "快递状态已更新，点击查看>>" }] };
 
-function seed() {
+function seed(...records: typeof record[]) {
   memory.clear();
   setDiagnosticsEnabled(true);
-  const parsed = parseAccountSyncResult("interface5", { code: 0, data: { expressList: [record] } });
+  const parsed = parseAccountSyncResult("interface5", { code: 0, data: { expressList: records.length ? records : [record] } });
   const shipments = parsed.parcels.map(parcel => applyAccountShipment(undefined,
     parcelToShipment(parcel, [PHONE], NOW - 3600000)!, NOW - 3600000));
   saveState({ ...emptyState(), shipments,
@@ -105,12 +105,13 @@ test("the pull resolves after the account phase while per-shipment work is still
 });
 
 test("a pull with no per-shipment work left is answered once with the whole refresh (PF5)", async () => {
-  seed();
+  const ready = { ...record, details: [{ time: OLD, desc: "已到达转运中心" }] };
+  seed(ready);
   let other = 0;
   globalThis.fetch = (async (url: string) => {
     const path = new URL(url).pathname;
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
-    if (path === "/api/express/accounts/sync") return json({ code: 0, data: { expressList: [record] } });
+    if (path === "/api/express/accounts/sync") return json({ code: 0, data: { expressList: [ready] } });
     other++;
     return { ok: false, status: 503, text: async () => "unexpected per-shipment request" };
   }) as typeof fetch;
@@ -120,6 +121,41 @@ test("a pull with no per-shipment work left is answered once with the whole refr
   assert.notEqual(summary.continuing, true, "nothing continues in the background");
   assert.equal(summary, finished);
   assert.equal(refreshSummaryToast(summary), "刷新完成");
+});
+
+test("a pull restores a missing Cainiao headline even when the list status and event time stay the same", async () => {
+  const picked = { ...record, stateNum: 103 };
+  const absent = { ...picked, mailNo: "YT9990000000022" };
+  const headline = "快件已揽收";
+  seed(picked, absent);
+  const shipmentId = `interface5:account:${picked.mailNo}`;
+  const before = loadState(NOW).shipments.find(row => row.identity.id === shipmentId);
+  assert.ok(before);
+  assert.equal(before.timeline.semantic, "PICKED");
+  assert.ok(before.timeline.statusEventAtMs);
+  assert.equal(before.timeline.latestDetail, "");
+  assert.equal(before.timeline.latestTimeText, "");
+  let detailRequests = 0;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
+    if (path === "/api/express/accounts/sync") return json({ code: 0, data: { expressList: [picked] } });
+    assert.equal(path, "/api/express/timeline/source");
+    detailRequests++;
+    const request = JSON.parse(String(init.body));
+    assert.equal(request.interface, "v5");
+    assert.equal(request.mode, "detail");
+    assert.equal(request.record.waybill, picked.mailNo);
+    return json({ code: 0, data: { ...picked, details: [{ time: OLD, desc: headline }] } });
+  }) as typeof fetch;
+  const { completion } = await refreshAllShipmentsForPull("interface5", { accountOrderProjection: false });
+  await completion;
+  assert.equal(detailRequests, 1, "only the account item returned by this list refresh is queried");
+  const after = loadState(NOW).shipments.find(row => row.identity.id === shipmentId);
+  assert.equal(after?.timeline.semantic, "PICKED");
+  assert.equal(after?.timeline.latestDetail, headline);
+  assert.equal(after?.timeline.latestTimeText, OLD);
+  assert.equal(after?.timeline.statusEventAtMs, before.timeline.statusEventAtMs);
 });
 
 test("a pull whose account phase failed is answered with that failure", async () => {

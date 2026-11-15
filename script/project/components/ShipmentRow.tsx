@@ -116,11 +116,9 @@ export function ShipmentRow(props: {
           </Text>
           <Spacer />
         </HStack>
-        {latestDetail ? (
-          <Text font={14} foregroundStyle="secondaryLabel" lineLimit={2}>
-            {latestDetail}
-          </Text>
-        ) : null}
+        <Text font={14} foregroundStyle="secondaryLabel" lineLimit={2}>
+          {latestDetail.trim() || "暂无物流信息"}
+        </Text>
       </VStack>
     </HStack>
   );
