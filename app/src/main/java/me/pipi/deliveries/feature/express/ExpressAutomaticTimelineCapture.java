@@ -6,17 +6,12 @@ import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.DisplayMetrics;
-import android.view.View;
-import android.view.ViewGroup;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
-import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.FrameLayout;
 
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
@@ -81,6 +76,7 @@ final class ExpressAutomaticTimelineCapture {
     private final Callback callback;
     private final ExpressKuaidi100TimelineCapture.Diagnostics k100Diagnostics;
     private List<String> phones;
+    private String cachedCarrierPollScript;
     private WebView view;
     private boolean finished;
     private Result best;
@@ -145,6 +141,7 @@ final class ExpressAutomaticTimelineCapture {
                 });
         capture.phones = ExpressKuaidi100TimelineCapture.phoneCandidates(
                 owner == null ? "" : owner.phone, phones);
+        capture.cachedCarrierPollScript = null;
         host.runOnUiThread(capture::start);
         try {
             while (!done.await(250L, TimeUnit.MILLISECONDS)) cancellation.throwIfCancelled();
@@ -167,6 +164,18 @@ final class ExpressAutomaticTimelineCapture {
         return CainiaoRoute.isTrustedResolvedUrl(url);
     }
 
+    private String carrierPollScript() {
+        String script = cachedCarrierPollScript;
+        if (script == null) {
+            script = ExpressCarrierH5CaptureCore.pollScript(
+                    TimelineSlot.JT_H5.equals(provider),
+                    owner == null ? "" : owner.displayWaybill(),
+                    phones);
+            cachedCarrierPollScript = script;
+        }
+        return script;
+    }
+
     void start() {
         if (finished) return;
         if (hostClosed() || cancellation.isCancelled() || !trusted(route)
@@ -175,15 +184,17 @@ final class ExpressAutomaticTimelineCapture {
             finish(null, "not_started"); return;
         }
         try {
-            view = new WebView(host != null ? host : offWindowContext);
-            view.setAlpha(0.01f);
-            view.setClickable(false);
-            view.setFocusable(false);
-            view.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-            ExpressDetailActivity.configureWebView(view);
-            view.getSettings().setCacheMode(WebSettings.LOAD_NO_CACHE);
-            if (k100Diagnostics != null) view.getSettings().setUserAgentString(
-                    ExpressKuaidi100TimelineCapture.SAFARI_MOBILE_USER_AGENT);
+            String ownerWaybill = owner == null ? "" : owner.displayWaybill();
+            view = ExpressKuaidi100TimelineCapture.createConfiguredWebView(
+                    host != null ? host : offWindowContext,
+                    host,
+                    k100Diagnostics != null,
+                    TimelineSlot.K100_H5.equals(provider),
+                    ownerWaybill);
+            if (k100Diagnostics != null) {
+                cachedCarrierPollScript = ExpressCarrierH5CaptureCore.pollScript(
+                        TimelineSlot.JT_H5.equals(provider), ownerWaybill, phones);
+            }
             if (TimelineSlot.JD_H5.equals(provider)
                     && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                 WebViewCompat.addDocumentStartJavaScript(view,
@@ -199,11 +210,6 @@ final class ExpressAutomaticTimelineCapture {
                 @Override public boolean shouldOverrideUrlLoading(WebView web, WebResourceRequest request) {
                     return request == null || request.getUrl() == null || !trusted(request.getUrl().toString());
                 }
-                /**
-                 * 隐藏快递100抓取页子资源白名单（Owner 2026-10-02，Pipi / Lite 统一口径）：详情下拉主轮隐藏抓取页仅放行快递100自身文档、
-                 * 同源脚本与查询接口（{@link ExpressKuaidi100TimelineCapture#isAllowedCaptureResource}），拦截统计与无关资源；
-                 * 极兔、京粉与菜鸟页面保持原有加载策略。
-                 */
                 @Override public WebResourceResponse shouldInterceptRequest(WebView web, WebResourceRequest request) {
                     if (!TimelineSlot.K100_H5.equals(provider) || request == null || request.getUrl() == null
                             || request.isForMainFrame()
@@ -216,7 +222,7 @@ final class ExpressAutomaticTimelineCapture {
                     if (request == null || request.isForMainFrame()) {
                         if (k100Diagnostics != null)
                             k100Diagnostics.errorCode = error == null ? null : error.getErrorCode();
-                        finish(best, "main_frame_error");
+                        finish(best, "main_frame_error", false);
                     }
                 }
                 @Override public void onReceivedHttpError(WebView web, WebResourceRequest request, WebResourceResponse response) {
@@ -225,26 +231,21 @@ final class ExpressAutomaticTimelineCapture {
                             k100Diagnostics.httpStatus = response == null ? null : response.getStatusCode();
                         finish(new Result(best == null ? null : best.timeline, false,
                                 TimelineSlot.JD_H5.equals(provider) && response != null
-                                        && response.getStatusCode() == 403), "main_frame_http_error");
+                                        && response.getStatusCode() == 403), "main_frame_http_error", false);
                     }
                 }
                 @Override public boolean onRenderProcessGone(WebView web, RenderProcessGoneDetail detail) {
-                    finish(null, "renderer_exit");
+                    finish(null, "renderer_exit", true);
                     return true;
                 }
             });
-            if (host != null) {
-                ViewGroup root = host.findViewById(android.R.id.content);
-                if (root == null) { finish(null, "content_missing"); return; }
-                root.addView(view, 0, new FrameLayout.LayoutParams(-1, -1));
-            } else {
-                layOutOffWindow(view);
+            if (!ExpressKuaidi100TimelineCapture.mountAndLoad(offWindowContext, host, view, route)) {
+                finish(null, "content_missing");
+                return;
             }
-            view.onResume();
-            view.resumeTimers();
-            view.loadUrl(route);
             later(view, poll, 250L);
-            later(view, timeout, TimelineSlot.JD_H5.equals(provider) ? 20_000L : 8_000L);
+            later(view, timeout, TimelineSlot.JD_H5.equals(provider) ? 20_000L
+                    : ExpressCarrierH5CaptureCore.CAPTURE_TIMEOUT_MS);
         } catch (RuntimeException failed) {
             finish(null, "start_failed");
         }
@@ -252,16 +253,6 @@ final class ExpressAutomaticTimelineCapture {
 
     private boolean hostClosed() {
         return host != null && (host.isFinishing() || host.isDestroyed());
-    }
-
-    /** No window, so the page gets a real viewport by being measured and laid out at display size. */
-    private void layOutOffWindow(WebView target) {
-        DisplayMetrics metrics = offWindowContext.getResources().getDisplayMetrics();
-        int width = Math.max(1, metrics.widthPixels);
-        int height = Math.max(1, metrics.heightPixels);
-        target.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
-        target.layout(0, 0, width, height);
     }
 
     /** A view that never joins a window never runs View.postDelayed, so off-window uses the main looper. */
@@ -280,19 +271,39 @@ final class ExpressAutomaticTimelineCapture {
         String script = TimelineSlot.JD_H5.equals(provider)
                 ? ExpressJingDongTimelineParser.readScript()
                 : TimelineSlot.CN_H5.equals(provider) ? ExpressCainiaoTimelineParser.readScript()
-                : TimelineSlot.JT_H5.equals(provider) ? ExpressKuaidi100TimelineCapture.jtExtractionScript(
-                        owner.displayWaybill(), phones)
-                : ExpressKuaidi100TimelineCapture.extractionScript(
-                        owner == null ? "" : owner.displayWaybill(),
-                        phones);
+                : carrierPollScript();
         try {
             if (k100Diagnostics != null) k100Diagnostics.evaluations++;
             current.evaluateJavascript(script, payload -> {
                 if (finished || current != view || cancellation.isCancelled()) return;
-                if (k100Diagnostics != null) k100Diagnostics.accept(payload);
-                if (k100Diagnostics != null && (ExpressKuaidi100TimelineCapture.phoneRequired(payload)
-                        || phones.isEmpty() && Boolean.TRUE.equals(k100Diagnostics.checkCodeVisible))) {
-                    finish(new Result(null, false, false, true), "phone_required"); return;
+                if (k100Diagnostics != null) {
+                    ExpressCarrierH5CaptureCore.PollFrame frame =
+                            ExpressKuaidi100TimelineCapture.decodeFrame(payload, provider);
+                    k100Diagnostics.accept(frame);
+                    if (frame.isPhoneRequired()
+                            || TimelineSlot.K100_H5.equals(provider)
+                                    && phones.isEmpty()
+                                    && Boolean.TRUE.equals(k100Diagnostics.checkCodeVisible)) {
+                        finish(new Result(null, false, false, true), "phone_required");
+                        return;
+                    }
+                    if (!frame.normalizedTracksJson.isEmpty()) {
+                        ExpressQueryResult parsed = ExpressDetailActivity.kuaidi100CapturedResult(
+                                owner, frame.normalizedTracksJson);
+                        if (parsed != null) {
+                            Result candidate = new Result(
+                                    parsed, ExpressDetailActivity.timelineComplete(parsed), false);
+                            best = candidate;
+                            finish(candidate, "tracks");
+                            return;
+                        }
+                    }
+                    if (frame.isDeterministicTerminal()) {
+                        finish(best, frame.terminalReason());
+                        return;
+                    }
+                    later(current, poll, 250L);
+                    return;
                 }
                 Result candidate;
                 if (TimelineSlot.JD_H5.equals(provider)) {
@@ -305,14 +316,9 @@ final class ExpressAutomaticTimelineCapture {
                     ExpressJingDongTimelineParser.Packet packet = ExpressJingDongTimelineParser.parse(payload, owner);
                     candidate = packet == null ? null : new Result(packet.timeline, packet.complete, packet.throttled);
                 } else {
-                    ExpressQueryResult parsed = TimelineSlot.CN_H5.equals(provider)
-                            ? ExpressCainiaoTimelineParser.parse(payload, owner)
-                            : ExpressDetailActivity.kuaidi100CapturedResult(owner,
-                                    ExpressKuaidi100TimelineCapture.normalizedTracks(payload));
-                    candidate = parsed == null ? null : new Result(parsed,
-                            TimelineSlot.CN_H5.equals(provider)
-                                    ? Kuaidi100TimelinePolicy.timedTrackCount(parsed) >= 2
-                                    : ExpressDetailActivity.timelineComplete(parsed), false);
+                    ExpressQueryResult parsed = ExpressCainiaoTimelineParser.parse(payload, owner);
+                    candidate = parsed == null ? null : new Result(
+                            parsed, Kuaidi100TimelinePolicy.timedTrackCount(parsed) >= 2, false);
                 }
                 if (candidate != null) {
                     if (candidate.throttled || candidate.complete) { finish(candidate, "tracks"); return; }
@@ -333,11 +339,6 @@ final class ExpressAutomaticTimelineCapture {
 
     void cancel() { finish(null, "cancelled"); }
 
-    /**
-     * 用户 2026-09-25 同意（方案 A，三端同一口径）：京粉页的结果带上抓没抓到物流。只有超时收尾、最后一次读到的状态是
-     * 加载完、有视口、不是风控、union 请求没有出错，而且整次什么带物流的东西都没抓到，才是空壳；取消、加载失败、
-     * 风控、union 请求出错都不算。union 请求发出去了、到超时还没回，也不算（用户 2026-09-26，跨端对齐裁决 #4）。
-     */
     private Result withPageEvidence(Result result, String reason) {
         boolean logistics = logisticsSeen || best != null || result != null && result.timeline != null;
         boolean emptyPage = "timeout".equals(reason) && !logistics
@@ -350,6 +351,10 @@ final class ExpressAutomaticTimelineCapture {
     }
 
     private void finish(Result result, String reason) {
+        finish(result, reason, false);
+    }
+
+    private void finish(Result result, String reason, boolean rendererGone) {
         if (finished) return;
         finished = true;
         if (TimelineSlot.JD_H5.equals(provider)) result = withPageEvidence(result, reason);
@@ -357,16 +362,8 @@ final class ExpressAutomaticTimelineCapture {
         WebView closing = view;
         view = null;
         if (closing != null) {
-            closing.removeCallbacks(poll);
-            closing.removeCallbacks(timeout);
-            if (offWindowHandler != null) {
-                offWindowHandler.removeCallbacks(poll);
-                offWindowHandler.removeCallbacks(timeout);
-            }
-            try { closing.stopLoading(); } catch (RuntimeException ignored) { }
-            ViewGroup parent = (ViewGroup) closing.getParent();
-            if (parent != null) parent.removeView(closing);
-            try { closing.destroy(); } catch (RuntimeException ignored) { }
+            ExpressKuaidi100TimelineCapture.tearDownWebView(
+                    closing, offWindowHandler, Arrays.asList(poll, timeout), rendererGone);
         }
         callback.complete(result);
     }

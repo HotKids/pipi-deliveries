@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import assert from 'node:assert/strict';
 
-const java = readFileSync(new URL('../../main/java/me/pipi/deliveries/feature/express/ExpressKuaidi100TimelineCapture.java', import.meta.url), 'utf8');
-const method = java.slice(java.indexOf('static String jtExtractionScript('));
+const java = readFileSync(new URL('../../main/java/me/pipi/deliveries/feature/express/ExpressCarrierH5CaptureCore.java', import.meta.url), 'utf8');
+const method = java.slice(java.indexOf('private static String buildJtExtractionScript('));
 const expression = method.slice(method.indexOf('return "(function') + 7, method.indexOf(';\n    }'))
   .replaceAll('MAX_TRACKS', java.match(/MAX_TRACKS = (\d+)/)[1]);
 const number = 'JTTEST123456';

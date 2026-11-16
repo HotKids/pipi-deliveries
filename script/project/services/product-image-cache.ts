@@ -64,7 +64,7 @@ export function rememberProductImage(key: string, image: UIImage, isRetained?: (
   return image;
 }
 
-export function pruneProductImages(previous: readonly ShipmentIdentity[], retained: readonly ShipmentIdentity[], now = Date.now()): void {
+export function pruneProductImages(previous: readonly ShipmentIdentity[], retained: readonly ShipmentIdentity[], now = Date.now()): boolean {
   let failed = false;
   const names = new Set(cacheNames());
   try {
@@ -111,4 +111,5 @@ export function pruneProductImages(previous: readonly ShipmentIdentity[], retain
     try { writeDiagnostic("product.image.cache_cleanup_failed", { stage: "cache", result: "failed" }, "warning"); }
     catch { /* Image cleanup cannot fail a saved shipment transaction. */ }
   }
+  return !failed;
 }

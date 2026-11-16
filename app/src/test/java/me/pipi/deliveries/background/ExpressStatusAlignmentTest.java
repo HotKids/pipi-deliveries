@@ -90,8 +90,11 @@ public final class ExpressStatusAlignmentTest {
         assertTrue(ExpressStatusAlignment.outOfStep(s, s, s - FIVE - 1L));
         assertTrue(ExpressStatusAlignment.outOfStep(s, 0L, s + FIVE + 1L));
         assertFalse(ExpressStatusAlignment.outOfStep(s, 0L, 0L));
+        assertTrue(ExpressStatusAlignment.outOfStep(s, 0L, 0L, true));
+        assertFalse(ExpressStatusAlignment.outOfStep(0L, 0L, 0L, true));
         assertFalse(ExpressStatusAlignment.outOfStep(s, 0L, s - FIVE));
 
+        assertEquals("status_ahead", ExpressStatusAlignment.reason(s, 0L, 0L));
         assertEquals("status_ahead", ExpressStatusAlignment.reason(s, s - FIVE - 1L, 0L));
         assertEquals("headline_ahead", ExpressStatusAlignment.reason(s, s + FIVE + 1L, 0L));
         assertEquals("detail_behind", ExpressStatusAlignment.reason(s, s, s - FIVE - 1L));

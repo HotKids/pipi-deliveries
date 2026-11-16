@@ -1,9 +1,9 @@
 package me.pipi.deliveries.feature.express;
 
 import android.app.Activity;
+import android.content.Context;
+import android.os.Handler;
 import android.util.Log;
-import android.view.View;
-import android.view.ViewGroup;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -11,15 +11,10 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.FrameLayout;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
-import org.json.JSONTokener;
 
 import java.util.ArrayList;
-import java.util.List;
 import java.util.Collections;
+import java.util.List;
 
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import me.pipi.deliveries.data.ManualRoutePolicy;
@@ -33,13 +28,11 @@ import me.pipi.deliveries.network.ExpressLog;
 final class ExpressKuaidi100TimelineCapture {
     private static final String TAG = "ExpressK100Capture";
     /** 与 iOS / Pipi 那一级同值：8 秒。 */
-    static final long CAPTURE_TIMEOUT_MS = 8_000L;
+    static final long CAPTURE_TIMEOUT_MS = ExpressCarrierH5CaptureCore.CAPTURE_TIMEOUT_MS;
     private static final long POLL_INTERVAL_MS = 300L;
-    private static final int MAX_TRACKS = 100;
-    /** Fold7 2026-09-05 验证过的组合（Pipi）：Safari 移动端 UA + alpha 0.01 + resumeTimers。 */
+    static final int MAX_TRACKS = ExpressCarrierH5CaptureCore.MAX_TRACKS;
     static final String SAFARI_MOBILE_USER_AGENT =
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15"
-                    + " (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+            ExpressCarrierH5CaptureCore.SAFARI_MOBILE_USER_AGENT;
 
     interface Callback {
         /** {@code tracksJson} 为空串表示这一级没有结果（超时、页面出错、抓不到节点）。 */
@@ -56,12 +49,13 @@ final class ExpressKuaidi100TimelineCapture {
     private final Callback callback;
     private final ArrayList<Runnable> delayed = new ArrayList<>();
     private WebView webView;
+    private String cachedPollScript;
     private boolean finished;
     private final Diagnostics diagnostics = new Diagnostics();
     private String exitReason = "cancelled";
 
     ExpressKuaidi100TimelineCapture(Activity host, String route, String waybill,
-                                  String phone, Callback callback) {
+                                    String phone, Callback callback) {
         this.host = host;
         this.route = route == null ? "" : route.trim();
         this.waybill = waybill;
@@ -73,53 +67,88 @@ final class ExpressKuaidi100TimelineCapture {
         this.callback = callback;
     }
 
-    /**
-     * A sub-resource the hidden Kuaidi100 capture page may load (用户 2026-10-02 Pipi / Lite 统一子资源白名单规则, the same list as Pipi Kuaidi100H5Client.isAllowedCaptureResource): data: and blob: URLs, and
-     * http/https on kuaidi100.com or its subdomains. Anything else is answered with an empty 204.
-     */
     static boolean isAllowedCaptureResource(String value) {
-        String clean = value == null ? "" : value.trim();
-        if (clean.isEmpty()) return false;
-        try {
-            java.net.URI uri = new java.net.URI(clean);
-            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(java.util.Locale.ROOT);
-            if ("data".equals(scheme) || "blob".equals(scheme)) return true;
-            if (!"https".equals(scheme) && !"http".equals(scheme)) return false;
-            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(java.util.Locale.ROOT);
-            return "kuaidi100.com".equals(host) || host.endsWith(".kuaidi100.com");
-        } catch (Throwable ignored) {
-            return false;
-        }
+        return ExpressCarrierH5CaptureCore.isAllowedKuaidi100Resource(value);
     }
 
-    /** The empty answer for a blocked capture sub-resource. */
     static WebResourceResponse emptyCaptureResponse() {
-        return new WebResourceResponse("text/plain", "utf-8", 204, "No Content",
-                Collections.emptyMap(), new java.io.ByteArrayInputStream(new byte[0]));
+        return ExpressCarrierH5CaptureCore.emptyCaptureResponse();
+    }
+
+    /**
+     * Shared hidden WebView host setup used by both manual ({@link ExpressKuaidi100TimelineCapture})
+     * and automatic ({@link ExpressAutomaticTimelineCapture}) H5 timeline loaders.
+     */
+    static WebView createConfiguredWebView(
+            Context context, Activity host, boolean carrierUa, boolean installK100Probe, String waybill) {
+        WebView capture = ExpressHiddenWebView.create(context, host);
+        ExpressDetailActivity.configureWebView(capture);
+        WebSettings settings = capture.getSettings();
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        if (carrierUa) {
+            try {
+                settings.setUserAgentString(SAFARI_MOBILE_USER_AGENT);
+            } catch (Throwable ignored) {
+                // Keep default UA when WebSettings rejects custom UA in test stubs.
+            }
+        }
+        if (installK100Probe) {
+            ExpressCarrierH5CaptureCore.installKuaidi100DocumentStartProbe(capture, waybill);
+        }
+        return capture;
+    }
+
+    static boolean mountAndLoad(
+            Context offWindowContext, Activity host, WebView capture, String url) {
+        if (host != null) {
+            if (!ExpressHiddenWebView.attachToActivityContent(host, capture)) {
+                return false;
+            }
+        } else {
+            ExpressHiddenWebView.giveViewport(offWindowContext, capture, null);
+        }
+        ExpressHiddenWebView.resumeAndLoad(capture, url);
+        return true;
+    }
+
+    static void tearDownWebView(
+            WebView closing, Handler offWindowHandler, List<Runnable> callbacks, boolean rendererGone) {
+        if (closing == null) return;
+        if (callbacks != null) {
+            for (Runnable action : callbacks) {
+                closing.removeCallbacks(action);
+                if (offWindowHandler != null) offWindowHandler.removeCallbacks(action);
+            }
+        }
+        if (!rendererGone) {
+            try { closing.stopLoading(); } catch (Throwable ignored) { }
+            try { closing.setWebViewClient(new WebViewClient()); } catch (Throwable ignored) { }
+            try { closing.loadUrl("about:blank"); } catch (Throwable ignored) { }
+        }
+        try {
+            ExpressHiddenWebView.detach(closing);
+        } catch (Throwable ignored) { }
+        try { closing.destroy(); } catch (Throwable ignored) { }
     }
 
     void usePhoneCandidates(List<String> boundPhones) {
         phones = phoneCandidates(phone, boundPhones);
+        cachedPollScript = null;
     }
 
     boolean needsPhoneTail() { return phoneRequired; }
 
-    /** A supplied parcel suffix is authoritative; bound numbers are used only when absent. */
     static List<String> phoneCandidates(String supplied, List<String> boundPhones) {
-        ArrayList<String> tails = new ArrayList<>();
-        String explicit = phoneTail(supplied);
-        if (!explicit.isEmpty()) { tails.add(explicit); return tails; }
-        if (boundPhones != null) for (String candidate : boundPhones) {
-            String tail = phoneTail(candidate);
-            if (!tail.isEmpty() && !tails.contains(tail)) tails.add(tail);
-        }
-        return tails;
+        return ExpressCarrierH5CaptureCore.phoneCandidates(supplied, boundPhones);
     }
 
-    private static String phoneTail(String phone) {
-        String saved = phone == null ? "" : phone.trim();
-        String tail = saved.length() < 4 ? "" : saved.substring(saved.length() - 4);
-        return tail.matches("[0-9]{4}") ? tail : "";
+    private String pollScript() {
+        String script = cachedPollScript;
+        if (script == null) {
+            script = ExpressCarrierH5CaptureCore.pollScript(jtPage, waybill, phones);
+            cachedPollScript = script;
+        }
+        return script;
     }
 
     boolean start() {
@@ -133,22 +162,9 @@ final class ExpressKuaidi100TimelineCapture {
             return false;
         }
         try {
-            WebView capture = new WebView(host);
+            WebView capture = createConfiguredWebView(host, host, true, !jtPage, waybill);
             webView = capture;
-            // alpha=0 的 View 不会被绘制，Chromium 拿不到帧就停 rAF；留一点透明度让它真的被画出来。
-            capture.setAlpha(0.01f);
-            capture.setClickable(false);
-            capture.setFocusable(false);
-            capture.setImportantForAccessibility(
-                    View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-            ExpressDetailActivity.configureWebView(capture);
-            WebSettings settings = capture.getSettings();
-            settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
-            try {
-                settings.setUserAgentString(SAFARI_MOBILE_USER_AGENT);
-            } catch (Throwable ignored) {
-                // UA 设不上就用默认值。
-            }
+            cachedPollScript = ExpressCarrierH5CaptureCore.pollScript(jtPage, waybill, phones);
             capture.setWebViewClient(new WebViewClient() {
                 @Override public boolean shouldOverrideUrlLoading(
                         WebView view, WebResourceRequest request) {
@@ -157,12 +173,6 @@ final class ExpressKuaidi100TimelineCapture {
                             request.getUrl().toString(), waybill).isEmpty();
                 }
 
-                /**
-                 * 用户 2026-10-02 Pipi / Lite 统一子资源白名单规则（Pipi 用户定 2026-10-02「快递100 的抓取网页只放行
-                 * 快递100 自己的域名」）：the hidden K100 page loads nothing from outside Kuaidi100; a third-party file
-                 * (its first synchronous script is Baidu analytics) answers empty at once instead of holding the
-                 * document at "loading" behind a proxy that hangs that host. The J&T page is unchanged.
-                 */
                 @Override public WebResourceResponse shouldInterceptRequest(
                         WebView view, WebResourceRequest request) {
                     if (jtPage || request == null || request.getUrl() == null
@@ -199,18 +209,11 @@ final class ExpressKuaidi100TimelineCapture {
                     return true;
                 }
             });
-            ViewGroup content = host.findViewById(android.R.id.content);
-            if (content == null) {
+            if (!mountAndLoad(null, host, capture, route)) {
                 exitReason = "content_missing";
                 dispose(false);
                 return false;
             }
-            content.addView(capture, 0, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT));
-            capture.onResume();
-            capture.resumeTimers();
-            capture.loadUrl(route);
             post(this::poll, POLL_INTERVAL_MS);
             post(() -> complete("", "timeout"), CAPTURE_TIMEOUT_MS);
             return true;
@@ -231,16 +234,23 @@ final class ExpressKuaidi100TimelineCapture {
         if (finished || target == null) return;
         try {
             diagnostics.evaluations++;
-            target.evaluateJavascript(jtPage ? jtExtractionScript(waybill, phones)
-                    : extractionScript(waybill, phones), value -> {
+            String slot = jtPage ? TimelineSlot.JT_H5 : TimelineSlot.K100_H5;
+            target.evaluateJavascript(pollScript(), value -> {
                 if (finished || target != webView) return;
-                diagnostics.accept(value);
-                phoneRequired = phoneRequired(value) || !jtPage && phones.isEmpty()
+                ExpressCarrierH5CaptureCore.PollFrame frame = decodeFrame(value, slot);
+                diagnostics.accept(frame);
+                phoneRequired = frame.isPhoneRequired() || !jtPage && phones.isEmpty()
                         && Boolean.TRUE.equals(diagnostics.checkCodeVisible);
-                if (phoneRequired) { complete("", "phone_required"); return; }
-                String normalized = normalizedTracks(value, jtPage ? TimelineSlot.JT_H5 : TimelineSlot.K100_H5);
-                if (!normalized.isEmpty()) {
-                    complete(normalized, "tracks");
+                if (phoneRequired) {
+                    complete("", "phone_required");
+                    return;
+                }
+                if (!frame.normalizedTracksJson.isEmpty()) {
+                    complete(frame.normalizedTracksJson, "tracks");
+                    return;
+                }
+                if (frame.isDeterministicTerminal()) {
+                    complete("", frame.terminalReason());
                     return;
                 }
                 post(this::poll, POLL_INTERVAL_MS);
@@ -282,169 +292,41 @@ final class ExpressKuaidi100TimelineCapture {
         WebView closing = webView;
         webView = null;
         if (closing == null) return;
-        for (Runnable action : delayed) closing.removeCallbacks(action);
+        tearDownWebView(closing, null, delayed, rendererGone);
         delayed.clear();
-        if (!rendererGone) {
-            try { closing.stopLoading(); } catch (Throwable ignored) { }
-            try { closing.setWebViewClient(new WebViewClient()); } catch (Throwable ignored) { }
-            try { closing.loadUrl("about:blank"); } catch (Throwable ignored) { }
-        }
-        try {
-            ViewGroup parent = (ViewGroup) closing.getParent();
-            if (parent != null) parent.removeView(closing);
-        } catch (Throwable ignored) { }
-        try { closing.destroy(); } catch (Throwable ignored) { }
     }
 
     static String extractionScript(String waybill, String phone) {
-        return verificationScript(waybill, phone) + extractionScript();
+        return ExpressCarrierH5CaptureCore.kuaidi100ExtractionScript(waybill, phone);
     }
 
     static boolean phoneRequired(String payload) {
-        try {
-            JSONObject value = decodedPayload(payload);
-            return value != null && "phone_required".equals(value.optString("outcome"));
-        } catch (org.json.JSONException ignored) { return false; }
+        return decodeFrame(payload, TimelineSlot.K100_H5).isPhoneRequired();
     }
 
-    /** Reads only the verified parcel DOM; verification uses the official visible input event. */
     static String jtExtractionScript(String waybill, List<String> phones) {
-        String number = waybill == null ? "" : waybill.trim().toUpperCase(java.util.Locale.ROOT)
-                .replaceAll("[^A-Z0-9]", "");
-        String candidates = new JSONArray(phoneCandidates("", phones)).toString();
-        return "(function(){"
-                + "var expected=" + JSONObject.quote(number) + ",tails=" + candidates + ";"
-                + "var clean=function(v){return String(v==null?'':v).trim();};"
-                + "var result={tracks:[],outcome:'pending',diagnostics:{mainPresent:false,readyState:document.readyState,checkCodeVisible:false,phoneVerificationAttempted:false}};"
-                + "var finish=function(outcome){result.outcome=outcome;return JSON.stringify(result);};"
-                + "if(location.protocol!=='https:'||location.hostname!=='jtsd.jtexpress.com.cn'||location.pathname!=='/pipi')return finish('untrusted_route');"
-                + "var hash=location.hash||'',split=hash.indexOf('?');"
-                + "if(split<0||hash.slice(0,split)!=='#/pages/checkGoods/sendDetail')return finish('untrusted_route');"
-                + "var numbers=new URLSearchParams(hash.slice(split+1)).getAll('waybillNo');"
-                + "if(!expected||numbers.length!==1||numbers[0]!==expected)return finish('identity_mismatch');"
-                + "var state=window.__pipiJtH5||(window.__pipiJtH5={index:0,submitted:false});"
-                + "result.diagnostics.phoneVerificationAttempted=state.submitted||state.index>0;"
-                + "var popup=document.querySelector('.query-popup');"
-                + "var input=popup&&popup.querySelector('input.uni-input-input');"
-                + "var visible=!!(popup&&popup.getClientRects().length);"
-                + "result.diagnostics.checkCodeVisible=visible;"
-                + "if(visible&&input){"
-                + "var toast=document.querySelector('.uni-toast__content');var message=clean(toast&&toast.getClientRects().length?toast.textContent:'');"
-                + "var phoneWarning=/(手机|尾号|后四位|后4位)/.test(message)&&/(错误|不匹配|不正确|有误|验证失败)/.test(message);"
-                + "if(state.waitingWarning){if(phoneWarning)return finish('pending');state.waitingWarning=false;}"
-                + "if(state.submitted&&input.value===''){"
-                + "if(phoneWarning){state.index++;state.submitted=false;if(state.index>=tails.length)return finish('phone_required');state.waitingWarning=true;return finish('pending');}"
-                + "else if(message)return finish('provider_error');"
-                + "}"
-                + "if(!state.submitted){if(state.index>=tails.length)return finish('phone_required');"
-                + "var setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;"
-                + "setter.call(input,tails[state.index]);state.submitted=true;"
-                + "input.dispatchEvent(new Event('input',{bubbles:true}));result.diagnostics.phoneVerificationAttempted=true;}"
-                + "return finish('pending');}"
-                + "var header=document.querySelector('.scft-left .cgsllt-right');"
-                + "if(!header||clean(header.textContent)!==expected)return finish('identity_mismatch');"
-                + "var rows=document.querySelectorAll('.scd-route .scdr-list');result.diagnostics.mainPresent=rows.length>0;"
-                + "for(var i=0;i<rows.length&&i<" + MAX_TRACKS + ";i++){"
-                + "var row=rows[i],time=row.querySelector('.scdrlr-time'),right=row.querySelector('.scdrl-right');"
-                + "if(!time||!right)continue;var parts=[];"
-                + "for(var j=0;j<right.children.length;j++){var child=right.children[j];if(!child.classList.contains('scdrlr-time'))parts.push(child.textContent||'');}"
-                + "var status=row.querySelector('.scdrl-left'),detail=clean(parts.join('')),timeText=clean(time.textContent);"
-                + "if(detail&&status&&clean(status.textContent))detail=clean(status.textContent)+' '+detail;"
-                + "if(detail&&timeText){var track={time:timeText,context:detail,displayContext:clean(parts.join(''))};"
-                + "if(status)track.jtStatusLabel=clean(status.textContent);result.tracks.push(track);}}"
-                + "return finish(result.tracks.length?'tracks':'no_result');})();";
+        return ExpressCarrierH5CaptureCore.jtExtractionScript(waybill, phones);
     }
 
     static String extractionScript(String waybill, List<String> phones) {
-        return verificationScript(waybill, phones) + extractionScript();
+        return ExpressCarrierH5CaptureCore.kuaidi100ExtractionScript(waybill, phones);
     }
 
-    /** Submit only this parcel's saved suffix through the page's normal input and action. */
     static String verificationScript(String waybill, String phone) {
-        String tail = phoneTail(phone);
-        return tail.isEmpty() || waybill == null || waybill.trim().isEmpty() ? ""
-                : verificationScript(waybill, Collections.singletonList(tail));
+        return ExpressCarrierH5CaptureCore.kuaidi100VerificationScript(waybill, phone);
     }
 
-    /** A fresh post-request challenge proves rejection; a pending or failed network request does not. */
     static String verificationScript(String waybill, List<String> phones) {
-        String number = waybill == null ? "" : waybill.trim().toUpperCase(java.util.Locale.ROOT)
-                .replaceAll("[^A-Z0-9]", "");
-        String candidates = new JSONArray(phoneCandidates("", phones)).toString();
-        return "(function(){try{"
-                + "var expected=" + JSONObject.quote(number) + ",tails=" + candidates + ";"
-                + "if(location.protocol!=='https:'||location.hostname!=='m.kuaidi100.com'||location.pathname!=='/app/query/')return;"
-                + "var numbers=new URL(location.href).searchParams.getAll('nu');"
-                + "if(!expected||numbers.length!==1||numbers[0]!==expected)return;"
-                + "var main=document.querySelector('#main'),vue=main&&main.__vue__;"
-                + "if(!vue||typeof vue.num!=='string'||vue.num.toUpperCase().replace(/[^A-Z0-9]/g,'')!==expected)return;"
-                + "if(!vue.checkCode||typeof vue.doCheckCode!=='function')return;"
-                + "tails=tails.filter(function(v){return /^\\d{4}$/.test(v);});"
-                + "var state=window.__pipiK100PhoneState||(window.__pipiK100PhoneState={index:0,submitted:false,started:false,outcome:'pending'});"
-                + "if(state.outcome!=='pending')return;"
-                + "if(state.submitted){if(vue.loading===true){state.started=true;return;}if(!state.started)return;"
-                + "var error=vue.errors&&vue.errors.type;"
-                + "if(error==='network'){state.outcome='provider_error';return;}"
-                + "if(vue.loading===false&&vue.checkCode.show===true&&error===''){state.index++;state.submitted=false;state.started=false;}else return;}"
-                + "if(vue.checkCode.show!==true)return;"
-                + "if(state.index>=tails.length){state.outcome='phone_required';return;}"
-                + "state.submitted=true;window.__pipiK100PhoneSubmitted=true;"
-                + "vue.checkCode.value=tails[state.index];vue.doCheckCode();state.started=vue.loading===true;"
-                + "}catch(e){}})();";
+        return ExpressCarrierH5CaptureCore.kuaidi100VerificationScript(waybill, phones);
     }
 
-    /** Existing track extraction stays independent of the private verification input. */
     static String extractionScript() {
-        return "(function(){"
-                + "var clean=function(v){return String(v==null?'':v).trim().replace(/\\s+/g,' ');};"
-                // Vue 组件对象里 time/context 同名的常是过滤器函数；序列化出来就成了一条假节点。只收字符串/数字。
-                + "var text=function(v){return (typeof v==='string'||typeof v==='number')?clean(v):'';};"
-                + "var host=clean(location.hostname).toLowerCase();"
-                + "if(host!=='kuaidi100.com'&&!/\\.kuaidi100\\.com$/.test(host))return JSON.stringify({tracks:[]});"
-                + "var main=document.querySelector('#main'),privateCheck=main&&main.__vue__&&main.__vue__.checkCode;"
-                + "var timeKeys=['time','ftime','timeText','datetime','date'];"
-                + "var detailKeys=['context','desc','detail','remark','status','text'];"
-                + "var tracks=[];var seenTrack={};"
-                + "var append=function(item){if(!item||typeof item!=='object')return;"
-                + "var timeText='';var detail='';var i;"
-                + "for(i=0;i<timeKeys.length;i++){if(!timeText)timeText=text(item[timeKeys[i]]);}"
-                + "for(i=0;i<detailKeys.length;i++){if(!detail)detail=text(item[detailKeys[i]]);}"
-                + "if(!timeText||!detail||timeText===detail)return;"
-                + "var key=timeText+'\\u0000'+detail;if(seenTrack[key])return;seenTrack[key]=1;"
-                + "tracks.push({time:timeText,context:detail});};"
-                + "var queue=[window.__INITIAL_STATE__,window.__NUXT__,window.__NEXT_DATA__];"
-                + "var roots=document.querySelectorAll('body,#main,#app,.container');"
-                + "for(var r=0;r<roots.length;r++){if(roots[r]&&roots[r].__vue__)queue.push(roots[r].__vue__);}"
-                + "var seen=[];"
-                + "for(var index=0;index<queue.length&&index<800&&tracks.length<" + MAX_TRACKS + ";index++){"
-                + "var value=queue[index];"
-                + "if(!value||value===privateCheck||typeof value!=='object'||seen.indexOf(value)>=0)continue;seen.push(value);"
-                + "if(Object.prototype.toString.call(value)==='[object Array]'){"
-                + "for(var c=0;c<value.length;c++){append(value[c]);"
-                + "if(value[c]&&typeof value[c]==='object')queue.push(value[c]);}continue;}"
-                + "append(value);"
-                + "for(var k in value){if(k==='checkCode')continue;try{var child=value[k];"
-                + "if(child&&typeof child==='object')queue.push(child);}catch(e){}}}"
-                + "if(!tracks.length){"
-                + "var selectors=['.result-list li','.result-list .item','.result-list .row',"
-                + "'.trace-list li','.timeline li','.logistics li','[class*=trace] li'];"
-                + "for(var s=0;s<selectors.length;s++){"
-                + "var rows=document.querySelectorAll(selectors[s]);"
-                + "for(var w=0;w<rows.length;w++){"
-                + "var timeNode=rows[w].querySelector('time,.time,.date,[class*=time],[class*=date]');"
-                + "var detailNode=rows[w].querySelector('.context,.desc,.text,.status,[class*=context],[class*=desc]');"
-                + "var t=clean(timeNode&&timeNode.textContent);"
-                + "var d=clean(detailNode&&detailNode.textContent);"
-                + "if(t&&d)append({time:t,context:d});}"
-                + "if(tracks.length)break;}}"
-                + "var diagnostics={mainPresent:null,readyState:'unknown',checkCodeVisible:null,"
-                + "phoneVerificationAttempted:window.__pipiK100PhoneSubmitted===true};"
-                + "try{diagnostics.mainPresent=!!main;"
-                + "var ready=document.readyState;"
-                + "if(ready==='loading'||ready==='interactive'||ready==='complete')diagnostics.readyState=ready;"
-                + "var check=privateCheck;"
-                + "if(check&&typeof check.show==='boolean')diagnostics.checkCodeVisible=check.show;}catch(e){}"
-                + "return JSON.stringify({tracks:tracks.slice(0," + MAX_TRACKS + "),outcome:(window.__pipiK100PhoneState||{}).outcome||'pending',diagnostics:diagnostics});})();";
+        return ExpressCarrierH5CaptureCore.kuaidi100ExtractionScript();
+    }
+
+    static ExpressCarrierH5CaptureCore.PollFrame decodeFrame(String payload, String provider) {
+        return ExpressCarrierH5CaptureCore.decodePollFrame(
+                payload, provider, true, false, Kuaidi100TimelinePolicy::isValidTrack);
     }
 
     /** One scalar-only terminal record for either existing K100 loader. */
@@ -462,27 +344,19 @@ final class ExpressKuaidi100TimelineCapture {
         private boolean emitted;
 
         void accept(String payload) {
-            try {
-                JSONObject value = decodedPayload(payload);
-                if (value == null || !(value.opt("tracks") instanceof JSONArray)) {
-                    evaluationFailures++;
-                    return;
-                }
-                JSONObject metadata = value.optJSONObject("diagnostics");
-                Object main = metadata == null ? null : metadata.opt("mainPresent");
-                Object check = metadata == null ? null : metadata.opt("checkCodeVisible");
-                mainPresent = main instanceof Boolean ? (Boolean) main : null;
-                checkCodeVisible = check instanceof Boolean ? (Boolean) check : null;
-                if (metadata != null && Boolean.TRUE.equals(metadata.opt("phoneVerificationAttempted")))
-                    phoneVerificationAttempted = true;
-                String ready = metadata == null ? "" : metadata.optString("readyState", "");
-                readyState = "loading".equals(ready) || "interactive".equals(ready)
-                        || "complete".equals(ready) ? ready : "unknown";
-                String tracks = normalizedTracks(payload);
-                validTracks = tracks.isEmpty() ? 0 : new JSONArray(tracks).length();
-            } catch (org.json.JSONException malformed) {
+            accept(decodeFrame(payload, provider));
+        }
+
+        void accept(ExpressCarrierH5CaptureCore.PollFrame frame) {
+            if (frame == null || !frame.validFrame) {
                 evaluationFailures++;
+                return;
             }
+            mainPresent = frame.mainPresent;
+            checkCodeVisible = frame.checkCodeVisible;
+            if (frame.phoneVerificationAttempted) phoneVerificationAttempted = true;
+            readyState = frame.readyState;
+            validTracks = frame.validTrackCount;
         }
 
         void finish(String reason) {
@@ -500,44 +374,11 @@ final class ExpressKuaidi100TimelineCapture {
         }
     }
 
-    private static JSONObject decodedPayload(String payload) throws org.json.JSONException {
-        Object decoded = new JSONTokener(payload == null ? "" : payload).nextValue();
-        if (decoded instanceof String) decoded = new JSONTokener((String) decoded).nextValue();
-        return decoded instanceof JSONObject ? (JSONObject) decoded : null;
-    }
-
-    /** evaluateJavascript 回来的是 JSON 编码的字符串，里面才是 {tracks:[...]}；两层都解。 */
     static String normalizedTracks(String payload) {
         return normalizedTracks(payload, TimelineSlot.K100_H5);
     }
 
     static String normalizedTracks(String payload, String provider) {
-        try {
-            JSONObject decoded = decodedPayload(payload);
-            if (decoded == null) return "";
-            JSONArray raw = decoded.optJSONArray("tracks");
-            if (raw == null || raw.length() == 0) return "";
-            JSONArray normalized = new JSONArray();
-            for (int index = 0; index < raw.length(); index++) {
-                JSONObject row = raw.optJSONObject(index);
-                if (row == null) continue;
-                String time = row.optString("time", "").trim();
-                if (time.matches("[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}")) time += ":00";
-                String detail = row.optString("context", "").trim();
-                if (time.isEmpty() || detail.isEmpty()) continue;
-                if (!Kuaidi100TimelinePolicy.isValidTrack(time, detail)) continue;
-                JSONObject node = new JSONObject().put("time", time).put("context", detail);
-                if (TimelineSlot.JT_H5.equals(provider)) {
-                    node.put("_pipiStatusSource", provider);
-                    for (String key : new String[]{"displayContext", "jtStatusLabel"}) {
-                        if (row.opt(key) instanceof String) node.put(key, ((String) row.opt(key)).trim());
-                    }
-                }
-                normalized.put(node);
-            }
-            return normalized.length() == 0 ? "" : normalized.toString();
-        } catch (Throwable ignored) {
-            return "";
-        }
+        return decodeFrame(payload, provider).normalizedTracksJson;
     }
 }

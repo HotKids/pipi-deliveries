@@ -154,7 +154,8 @@ public class CainiaoListRefreshTest {
         ExpressItem visible = repository.listVisible("interface5").get(0);
         assertEquals("快件已到达转运中心", visible.latestDetail);
         assertEquals(OLD, visible.latestTime);
-        assertEquals(StatusSemantic.DELIVERY, visible.semantic);
+        assertEquals(StatusSemantic.TRANSIT, visible.semantic);
+        assertEquals(StatusSemantic.DELIVERY, source(FIRST).semantic);
         assertEquals(ExpressTimeline.parseTime(NEW), source(FIRST).statusEventTime);
         assertEquals("[]", source(FIRST).tracksJson);
         gateway.queried.clear();

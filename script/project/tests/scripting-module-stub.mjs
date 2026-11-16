@@ -23,6 +23,10 @@ export const Widget = {
   },
 };
 
+export function useMemo(factory) {
+  return factory();
+}
+
 export const Script = {
   get directory() {
     return globalThis.Script.directory;

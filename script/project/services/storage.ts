@@ -6,6 +6,7 @@
  * - **并发契约**：跨宿主变更一律通过 `withSharedFileTransaction` 验证前序代次后原子发布，路由与行台账按哈希侧存。
  * - **跨端对等文件**：Pipi `ExpressRepository.java`、Lite `ExpressRepository.java`、Bot `pipi-bot/business_records.py`。
  */
+import { Path } from "scripting";
 import { statusProjectionFields } from "./worker-status";
 import { sharedCommitSequence, sharedData, sharedStateText, publishSharedData, withSharedFileTransaction, SharedCommitConflict } from "./shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
@@ -80,6 +81,7 @@ import {
   SCRIPT_BINDING_SOURCE,
   requireScriptSource,
 } from "./script-source";
+import { accountOrderProjectionRouteHash } from "./account-sync-policy";
 import {
   migrateLegacyShipmentRoutes,
   pruneOrderProjectionReferences,
@@ -396,7 +398,120 @@ function applyEmptyTimelineRetirements(
   });
 }
 
+function hasRetiredMeizuProvider(provider: string | undefined): boolean {
+  const normalized = String(provider || "").trim().toLowerCase();
+  return normalized === "v6_picker" || normalized === "meizu_picker";
+}
+
+function isCanonicalMigratedState(
+  value: LegacyAppState | AppState,
+): boolean {
+  if (
+    !isCurrentState(value) ||
+    value.activeSource !== SCRIPT_BINDING_SOURCE ||
+    typeof value.feedSlotRebuiltAtMs !== "number" ||
+    !(value.feedSlotRebuiltAtMs > 0)
+  ) {
+    return false;
+  }
+  const seenPendingIds = new Set<string>();
+  for (const pending of value.pendingQueries) {
+    const waybill = normalizeWaybill(pending.waybill);
+    if (
+      !waybill ||
+      pending.source !== SCRIPT_BINDING_SOURCE ||
+      pending.id !== `${SCRIPT_BINDING_SOURCE}:${waybill}` ||
+      seenPendingIds.has(pending.id)
+    ) {
+      return false;
+    }
+    if (
+      pending.route &&
+      (
+        pending.route.source !== SCRIPT_BINDING_SOURCE ||
+        (pending.route.kind !== "cainiao" && pending.route.kind !== "web")
+      )
+    ) {
+      return false;
+    }
+    seenPendingIds.add(pending.id);
+  }
+  const seenManualWaybills = new Set<string>();
+  for (const shipment of value.shipments) {
+    const identity = shipment.identity;
+    if (!identity) return false;
+    const manuallyAdded = Boolean(identity.manuallyAdded);
+    const bindingSource = identity.bindingSource;
+    if (manuallyAdded) {
+      const canonicalWaybill = displayWaybill(shipment);
+      if (
+        !canonicalWaybill ||
+        bindingSource !== SCRIPT_BINDING_SOURCE ||
+        identity.id !== `${SCRIPT_BINDING_SOURCE}:manual:${canonicalWaybill}` ||
+        identity.sourceId !== canonicalWaybill ||
+        seenManualWaybills.has(canonicalWaybill)
+      ) {
+        return false;
+      }
+      seenManualWaybills.add(canonicalWaybill);
+    } else {
+      if (bindingSource !== SCRIPT_BINDING_SOURCE) {
+        return false;
+      }
+      const autoSource = automaticSourceOf(shipment);
+      const sourceProvider = String(identity.sourceProvider || "").trim().toLowerCase();
+      if ((autoSource === "interface1" || autoSource === "vivo") && sourceProvider === "jingdong") {
+        return false;
+      }
+      if (
+        !identity.accountOrder &&
+        !normalizedProjectedWaybill(identity) &&
+        isJingDongAccountOrder(
+          identity.sourceId,
+          String(identity.sourceProvider || ""),
+          shipment.statusPresentation?.scope || "",
+          identity.rawCourierCode || identity.courierCode,
+          identity.rawCompanyName || "",
+        )
+      ) {
+        return false;
+      }
+      if (!(Number(shipment.occupiedAtMs) > 0)) {
+        return false;
+      }
+    }
+    if (
+      identity.orderProjectionRetry ||
+      identity.jingDongH5Retry ||
+      (identity.accountOrder && normalizedProjectedWaybill(identity))
+    ) {
+      return false;
+    }
+    if (
+      hasRetiredMeizuProvider(shipment.timeline?.provider) ||
+      hasRetiredMeizuProvider(shipment.sourceTimeline?.provider) ||
+      hasRetiredMeizuProvider(shipment.detailSelection?.provider) ||
+      (shipment.manualTimelines || []).some((t) => hasRetiredMeizuProvider(t.provider)) ||
+      (shipment.automaticOwnership?.observations || []).some((o) =>
+        hasRetiredMeizuProvider(o?.sourceTimeline?.provider)
+      )
+    ) {
+      return false;
+    }
+    if (shipment.route) {
+      const allowedKind =
+        shipment.route.kind === "cainiao" ||
+        (manuallyAdded && shipment.route.kind === "web");
+      if (!allowedKind || shipment.route.source !== SCRIPT_BINDING_SOURCE) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 function migrate(value: LegacyAppState | AppState, now: number): AppState {
+  const canonical = isCanonicalMigratedState(value);
   const base = isCurrentState(value)
     ? value
     : {
@@ -412,8 +527,10 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     undefined, base.emptyTimelineRetirements, base.shipments || [],
   );
   // 归属-4：旧版本合并出来的行一次性拆开；只看还没有占号时间的行，下面一步给所有行记上占号时间后就不会再拆。
-  const split = splitMergedOrderRows(migrateShipmentSources(base.shipments || []), now);
-  logMergedOrderSplits(split);
+  const split: MergedOrderSplitPlan = canonical
+    ? { shipments: [...base.shipments], splits: [], skipped: [] }
+    : splitMergedOrderRows(migrateShipmentSources(base.shipments || []), now);
+  if (!canonical) logMergedOrderSplits(split);
   const retainedShipments = pruneExpiredManualPlaceholders(
     retainDurableShipments(
       applyEmptyTimelineRetirements(withWaybillOwnership(
@@ -435,7 +552,7 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     activeSource: SCRIPT_BINDING_SOURCE,
     bindings: uniqueBindings(base.bindings || []),
     pendingQueries: prunePending(
-      migratePendingSources(base.pendingQueries || []),
+      canonical ? base.pendingQueries : migratePendingSources(base.pendingQueries || []),
       now,
     ),
     shipments: sortShipments(retainedShipments),
@@ -793,6 +910,20 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
 function legacyRouteMigrations(
   value: LegacyAppState | AppState,
 ): LegacyShipmentRouteMigration[] {
+  if (isCurrentState(value) && isCanonicalMigratedState(value)) {
+    const migrations: LegacyShipmentRouteMigration[] = [];
+    for (const shipment of value.shipments) {
+      if (shipment.route) {
+        migrations.push({ fromId: shipment.identity.id, toId: shipment.identity.id });
+      }
+    }
+    for (const pending of value.pendingQueries) {
+      if (pending.route) {
+        migrations.push({ fromId: pending.id, toId: pending.id });
+      }
+    }
+    return migrations;
+  }
   const migrations: LegacyShipmentRouteMigration[] = [];
   const finalShipments = migrateShipmentSources(value.shipments || []);
   const finalById = new Map(
@@ -1193,6 +1324,12 @@ function normalizeShipmentAuthoritiesWithAnchor(
   return normalizeAutomaticOwnership(stampSettledAt(selected, now), now);
 }
 
+type StatePayloadHeader = {
+  version: 1 | 2;
+  revision: number;
+  updatedAtMs: number;
+};
+
 type StoredStateRead = {
   valid: DecodedStoredState | null;
   recoverableLegacy: DecodedStoredState | null;
@@ -1201,7 +1338,8 @@ type StoredStateRead = {
 };
 
 type DecodedStoredState = {
-  state: LegacyAppState | AppState;
+  state: LegacyAppState | AppState | null;
+  header: StatePayloadHeader;
   payload?: string;
   fingerprint?: string;
   serialized: string | null;
@@ -1210,9 +1348,291 @@ type DecodedStoredState = {
 };
 
 let pendingCommit: EncodedState | null = null;
+let routesPruneDirty = false;
+let productImagesPruneDirty = false;
+
+function sidecarOwnersShrank(
+  previous: LegacyAppState | AppState,
+  next: AppState,
+  reusedNumberRows?: ReadonlySet<string>,
+): boolean {
+  if (
+    next.shipments.length === 0 ||
+    Boolean(reusedNumberRows?.size) ||
+    Boolean(next.emptyTimelineRetirements?.length)
+  ) {
+    return true;
+  }
+  const prevShipments = previous.shipments || [];
+  if (prevShipments.length > next.shipments.length) return true;
+  const nextIds = new Set(next.shipments.map((s) => s.identity.id));
+  const nextRouteOwners = new Set([
+    ...next.shipments.filter((s) => Boolean(s.route)).map((s) => s.identity.id),
+    ...next.pendingQueries.filter((p) => Boolean(p.route)).map((p) => p.id),
+  ]);
+  const nextOrderOwners = new Set(
+    next.shipments
+      .filter((s) => s.identity.accountOrder && s.identity.bindingSource === SCRIPT_BINDING_SOURCE)
+      .map((s) => s.identity.id),
+  );
+  const nextBoundPhones = new Set(
+    next.bindings
+      .filter((b) => b.source === SCRIPT_BINDING_SOURCE)
+      .map((b) => b.phone),
+  );
+  const nextAppRouteKeys = new Set(
+    next.shipments.flatMap((s) => {
+      const r = s.accountRecord;
+      return s.identity.bindingSource === SCRIPT_BINDING_SOURCE &&
+          !s.identity.manuallyAdded && r && nextBoundPhones.has(r.phone)
+        ? [`${String(r.provider || "").toLowerCase()}\u0000${r.waybill}\u0000${r.companyCode}\u0000${r.phone}`]
+        : [];
+    }),
+  );
+  const nextImageKeys = new Set(
+    next.shipments.map(
+      ({ identity }) =>
+        `${identity.bindingSource ?? ""}\u0000${identity.id}\u0000${identity.sourceId}\u0000${identity.phone || ""}\u0000${identity.orderId || ""}`,
+    ),
+  );
+  if (isCurrentState(previous)) {
+    for (const b of previous.bindings) {
+      if (b.source === SCRIPT_BINDING_SOURCE && !nextBoundPhones.has(b.phone)) return true;
+    }
+    for (const p of previous.pendingQueries) {
+      if (p.route && !nextRouteOwners.has(p.id)) return true;
+    }
+  }
+  const prevBoundPhones = isCurrentState(previous)
+    ? new Set(previous.bindings.filter((b) => b.source === SCRIPT_BINDING_SOURCE).map((b) => b.phone))
+    : nextBoundPhones;
+  for (const s of prevShipments) {
+    if (!nextIds.has(s.identity.id)) return true;
+    if (s.route && !nextRouteOwners.has(s.identity.id)) return true;
+    if (
+      s.identity.accountOrder &&
+      s.identity.bindingSource === SCRIPT_BINDING_SOURCE &&
+      !nextOrderOwners.has(s.identity.id)
+    ) {
+      return true;
+    }
+    const r = s.accountRecord;
+    if (
+      s.identity.bindingSource === SCRIPT_BINDING_SOURCE &&
+      !s.identity.manuallyAdded &&
+      r &&
+      prevBoundPhones.has(r.phone) &&
+      !nextAppRouteKeys.has(
+        `${String(r.provider || "").toLowerCase()}\u0000${r.waybill}\u0000${r.companyCode}\u0000${r.phone}`,
+      )
+    ) {
+      return true;
+    }
+    const imageKey = `${s.identity.bindingSource ?? ""}\u0000${s.identity.id}\u0000${s.identity.sourceId}\u0000${s.identity.phone || ""}\u0000${s.identity.orderId || ""}`;
+    if (!nextImageKeys.has(imageKey)) return true;
+  }
+  return false;
+}
 
 function stateShape(value: unknown): value is LegacyAppState | AppState {
   return isLegacyState(value) || isCurrentState(value);
+}
+
+function peekTopLevelStateHeader(payload: string): StatePayloadHeader | null {
+  const len = payload.length;
+  let i = 0;
+  const skipWs = () => {
+    while (i < len) {
+      const c = payload.charCodeAt(i);
+      if (c === 32 || c === 9 || c === 10 || c === 13) i++;
+      else break;
+    }
+  };
+  const readString = (): string | null => {
+    if (i >= len || payload.charCodeAt(i) !== 34) return null;
+    i++;
+    const start = i;
+    let escaped = false;
+    while (i < len) {
+      const c = payload.charCodeAt(i);
+      if (c === 34) {
+        const end = i;
+        i++;
+        if (!escaped) return payload.slice(start, end);
+        try {
+          return JSON.parse(`"${payload.slice(start, end)}"`) as string;
+        } catch {
+          return null;
+        }
+      }
+      if (c === 92) {
+        escaped = true;
+        i += 2;
+        continue;
+      }
+      if (c < 32) return null;
+      i++;
+    }
+    return null;
+  };
+  const readNumber = (): number | null => {
+    const start = i;
+    if (i < len && payload.charCodeAt(i) === 45) i++;
+    while (i < len) {
+      const c = payload.charCodeAt(i);
+      if (
+        (c >= 48 && c <= 57) ||
+        c === 46 ||
+        c === 101 ||
+        c === 69 ||
+        c === 43 ||
+        c === 45
+      ) {
+        i++;
+      } else {
+        break;
+      }
+    }
+    if (i === start) return null;
+    const raw = payload.slice(start, i);
+    if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(raw)) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const skipValue = (): boolean => {
+    skipWs();
+    if (i >= len) return false;
+    const first = payload.charCodeAt(i);
+    if (first === 34) return readString() !== null;
+    if (first === 123 || first === 91) {
+      const stack: number[] = [first === 123 ? 125 : 93];
+      i++;
+      while (i < len && stack.length > 0) {
+        const c = payload.charCodeAt(i);
+        if (c === 34) {
+          if (readString() === null) return false;
+          continue;
+        }
+        if (c === 123) {
+          stack.push(125);
+          i++;
+        } else if (c === 91) {
+          stack.push(93);
+          i++;
+        } else if (c === 125 || c === 93) {
+          if (stack.pop() !== c) return false;
+          i++;
+        } else {
+          i++;
+        }
+      }
+      return stack.length === 0;
+    }
+    if (payload.startsWith("true", i)) {
+      i += 4;
+      return true;
+    }
+    if (payload.startsWith("false", i)) {
+      i += 5;
+      return true;
+    }
+    if (payload.startsWith("null", i)) {
+      i += 4;
+      return true;
+    }
+    return readNumber() !== null;
+  };
+
+  skipWs();
+  if (i >= len || payload.charCodeAt(i) !== 123) return null;
+  i++;
+  skipWs();
+  if (i < len && payload.charCodeAt(i) === 125) return null;
+
+  let version: number | null = null;
+  let revision: number | null = null;
+  let updatedAtMs: number | null = null;
+  let activeSource: string | null = null;
+  let hasBindingsArray = false;
+  let hasPendingArray = false;
+  let hasShipmentsArray = false;
+
+  while (i < len) {
+    skipWs();
+    const key = readString();
+    if (key === null) return null;
+    skipWs();
+    if (i >= len || payload.charCodeAt(i) !== 58) return null;
+    i++;
+    skipWs();
+    if (i >= len) return null;
+    if (key === "version") {
+      version = readNumber();
+      if (version !== 1 && version !== 2) return null;
+    } else if (key === "revision") {
+      revision = readNumber();
+      if (revision === null) return null;
+    } else if (key === "updatedAtMs") {
+      updatedAtMs = readNumber();
+      if (updatedAtMs === null) return null;
+    } else if (key === "activeSource") {
+      activeSource = readString();
+      if (activeSource === null) return null;
+    } else if (key === "bindings" || key === "pendingQueries" || key === "shipments") {
+      if (payload.charCodeAt(i) !== 91) return null;
+      if (!skipValue()) return null;
+      if (key === "bindings") hasBindingsArray = true;
+      else if (key === "pendingQueries") hasPendingArray = true;
+      else hasShipmentsArray = true;
+    } else {
+      if (!skipValue()) return null;
+    }
+    skipWs();
+    if (i >= len) return null;
+    const sep = payload.charCodeAt(i);
+    if (sep === 44) {
+      i++;
+      continue;
+    }
+    if (sep === 125) {
+      i++;
+      break;
+    }
+    return null;
+  }
+  skipWs();
+  if (i !== len || revision === null || updatedAtMs === null || !hasShipmentsArray) {
+    return null;
+  }
+  if (version === 2) {
+    if (
+      (activeSource !== "interface5" && activeSource !== "interface6") ||
+      !hasBindingsArray ||
+      !hasPendingArray
+    ) {
+      return null;
+    }
+    return { version: 2, revision, updatedAtMs };
+  }
+  if (version === 1) {
+    return { version: 1, revision, updatedAtMs };
+  }
+  return null;
+}
+
+function ensureDecodedState(
+  candidate: DecodedStoredState,
+): LegacyAppState | AppState | null {
+  if (candidate.state) return candidate.state;
+  if (typeof candidate.payload !== "string") return null;
+  try {
+    const parsed = JSON.parse(candidate.payload) as unknown;
+    if (!stateShape(parsed)) return null;
+    candidate.state = parsed;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 function decodeStoredRaw(raw: unknown): StoredStateRead {
@@ -1249,8 +1669,8 @@ function decodeStoredRaw(raw: unknown): StoredStateRead {
           failed: false,
         };
       }
-      const state = JSON.parse(envelope.payload) as unknown;
-      if (!stateShape(state)) {
+      const header = peekTopLevelStateHeader(envelope.payload);
+      if (!header) {
         return {
           valid: null,
           recoverableLegacy: null,
@@ -1260,7 +1680,8 @@ function decodeStoredRaw(raw: unknown): StoredStateRead {
       }
       return {
         valid: {
-          state,
+          state: null,
+          header,
           payload: envelope.payload,
           serialized: raw,
           legacySchema: null,
@@ -1296,6 +1717,11 @@ function decodeStoredRaw(raw: unknown): StoredStateRead {
     }
     const decoded: DecodedStoredState = {
       state: stored.state,
+      header: {
+        version: stored.state.version,
+        revision: stored.state.revision,
+        updatedAtMs: stored.state.updatedAtMs,
+      },
       fingerprint: checksum(stored.state),
       serialized: null,
       legacySchema: stored.schema,
@@ -1403,8 +1829,8 @@ function orderedStoredStates(
     .map((read) => read.valid)
     .filter((value): value is DecodedStoredState => value != null)
     .sort((left, right) =>
-      right.state.revision - left.state.revision ||
-      right.state.updatedAtMs - left.state.updatedAtMs
+      right.header.revision - left.header.revision ||
+      right.header.updatedAtMs - left.header.updatedAtMs
     );
 }
 
@@ -1429,8 +1855,17 @@ function decodeStateReadback(stored: EncodedState) {
   // The encoder already verified these bytes. Changed bytes still take the full
   // integrity path; this comparison is scoped to one write and never cached.
   return (raw: unknown): StoredStateRead => raw === stored.serialized ? {
-    valid: {state: stored.state, serialized: stored.serialized, legacySchema: null,
-      envelopeChecksum: stored.checksum},
+    valid: {
+      state: stored.state,
+      header: {
+        version: stored.state.version,
+        revision: stored.state.revision,
+        updatedAtMs: stored.state.updatedAtMs,
+      },
+      serialized: stored.serialized,
+      legacySchema: null,
+      envelopeChecksum: stored.checksum,
+    },
     recoverableLegacy: null, invalid: false, failed: false,
   } : decodeStoredRaw(raw);
 }
@@ -1442,18 +1877,210 @@ function writeDurableState(stored: EncodedState): void {
   catch { /* The immutable shared generation already owns this commit. */ }
 }
 
+const WIDGET_SNAPSHOT_SIDECAR_FILE = "widget-snapshot-v1.json";
+
+type WidgetSnapshotSidecar = {
+  version: 1;
+  stateRevision: number;
+  stateChecksum: string;
+  createdAtMs: number;
+  localDayKey: string;
+  nextVisibilityChangeAtMs: number;
+  emptyShellProjectionHashes?: Record<string, string>;
+  snapshot: WidgetSnapshot;
+};
+
+function widgetLocalDayKey(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function computeNextWidgetVisibilityChangeAtMs(
+  state: AppState,
+  now: number,
+): number {
+  let nextChangeAtMs = Number.MAX_SAFE_INTEGER;
+  for (const shipment of state.shipments) {
+    if (Number(shipment.emptyTimelineHiddenAtMs) > 0) continue;
+    if (shipment.timeline.semantic === "COMPLETED") {
+      const eventAt = signedRetentionAtMs(shipment, now);
+      if (eventAt > 0) {
+        const hideAt = eventAt + EXPRESS_POLICY.retention.signedMs;
+        if (hideAt > now && hideAt < nextChangeAtMs) nextChangeAtMs = hideAt;
+      }
+    } else if (shipment.timeline.semantic === "CANCELLED") {
+      const eventAt = signedRetentionAtMs(shipment, now);
+      if (eventAt > 0) {
+        const hideAt = eventAt + EXPRESS_POLICY.retention.cancelledMs;
+        if (hideAt > now && hideAt < nextChangeAtMs) nextChangeAtMs = hideAt;
+      }
+    }
+  }
+  return nextChangeAtMs;
+}
+
+function collectEmptyShellProjectionHashes(
+  state: AppState,
+): Record<string, string> | undefined {
+  let hashes: Record<string, string> | undefined;
+  for (const shipment of state.shipments) {
+    if (!shipment.identity.orderProjectionRetry?.emptyShellConfirmedAtMs) continue;
+    hashes ??= {};
+    try {
+      hashes[shipment.identity.id] = accountOrderProjectionRouteHash(
+        shipment.identity.id,
+      );
+    } catch {
+      hashes[shipment.identity.id] = "";
+    }
+  }
+  return hashes;
+}
+
+function widgetSnapshotSidecarPath(): string {
+  return Path.join(
+    FileManager.appGroupDocumentsDirectory,
+    "pipi-deliveries",
+    WIDGET_SNAPSHOT_SIDECAR_FILE,
+  );
+}
+
+function writeWidgetSnapshotSidecar(
+  state: AppState,
+  stateChecksum: string,
+  now: number,
+  precomputedSnapshot?: WidgetSnapshot,
+): void {
+  let tempPath = "";
+  try {
+    const sidecarPath = widgetSnapshotSidecarPath();
+    FileManager.createDirectorySync(
+      Path.join(FileManager.appGroupDocumentsDirectory, "pipi-deliveries"),
+      true,
+    );
+    const snapshot =
+      precomputedSnapshot ?? buildWidgetSnapshot(visibleShipments(state, now), now);
+    const emptyShellProjectionHashes = collectEmptyShellProjectionHashes(state);
+    const payload: WidgetSnapshotSidecar = {
+      version: 1,
+      stateRevision: state.revision,
+      stateChecksum,
+      createdAtMs: now,
+      localDayKey: widgetLocalDayKey(now),
+      nextVisibilityChangeAtMs: computeNextWidgetVisibilityChangeAtMs(
+        state,
+        now,
+      ),
+      ...(emptyShellProjectionHashes ? { emptyShellProjectionHashes } : {}),
+      snapshot,
+    };
+    const serialized = JSON.stringify(payload);
+    tempPath = `${sidecarPath}.tmp-${now}-${Math.random().toString(36).slice(2, 8)}`;
+    FileManager.writeAsStringSync(tempPath, serialized);
+    if (typeof FileManager.renameSync === "function") {
+      if (FileManager.existsSync(sidecarPath)) {
+        FileManager.removeSync(sidecarPath);
+      }
+      FileManager.renameSync(tempPath, sidecarPath);
+      tempPath = "";
+    } else {
+      FileManager.writeAsStringSync(sidecarPath, serialized);
+    }
+  } catch {
+    /* sidecar is an O(1) cache; loadWidgetSnapshot falls back to loadState */
+  } finally {
+    if (tempPath) {
+      try {
+        if (FileManager.existsSync(tempPath)) FileManager.removeSync(tempPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+function readValidWidgetSnapshotSidecar(now: number): WidgetSnapshot | null {
+  try {
+    if (pendingCommit || lastStateLoadFailure) return null;
+    const sidecarPath = widgetSnapshotSidecarPath();
+    if (!FileManager.existsSync(sidecarPath) || !FileManager.isFileSync(sidecarPath)) {
+      return null;
+    }
+    const sidecar = JSON.parse(
+      FileManager.readAsStringSync(sidecarPath),
+    ) as Partial<WidgetSnapshotSidecar>;
+    if (
+      sidecar.version !== 1 ||
+      typeof sidecar.stateRevision !== "number" ||
+      typeof sidecar.stateChecksum !== "string" ||
+      typeof sidecar.createdAtMs !== "number" ||
+      typeof sidecar.localDayKey !== "string" ||
+      typeof sidecar.nextVisibilityChangeAtMs !== "number" ||
+      !sidecar.snapshot ||
+      sidecar.localDayKey !== widgetLocalDayKey(now) ||
+      !(now >= sidecar.createdAtMs && now < sidecar.nextVisibilityChangeAtMs)
+    ) {
+      return null;
+    }
+    const shared = sharedStateText();
+    let winning: DecodedStoredState | null = null;
+    if (shared != null) {
+      const read = decodeStoredRaw(shared);
+      if (read.invalid || read.failed || !read.valid) return null;
+      winning = read.valid;
+    } else {
+      const primary = readStoredState(STATE_KEY, false);
+      const backup = readStoredState(STATE_BACKUP_KEY, true);
+      const durableA = readDurableState(STATE_DURABLE_SLOT_A);
+      const durableB = readDurableState(STATE_DURABLE_SLOT_B);
+      if (
+        primary.invalid || backup.invalid || durableA.invalid || durableB.invalid ||
+        primary.failed || backup.failed || durableA.failed || durableB.failed
+      ) {
+        return null;
+      }
+      winning = chooseStoredState(primary, backup, durableA, durableB);
+    }
+    if (
+      !winning ||
+      winning.header.revision !== sidecar.stateRevision ||
+      winning.envelopeChecksum !== sidecar.stateChecksum
+    ) {
+      return null;
+    }
+    if (sidecar.emptyShellProjectionHashes) {
+      for (const [id, expectedHash] of Object.entries(sidecar.emptyShellProjectionHashes)) {
+        if (accountOrderProjectionRouteHash(id) !== expectedHash) return null;
+      }
+    }
+    const snap = sidecar.snapshot;
+    return {
+      ...snap,
+      generatedAtMs: now,
+      headline: snap.headline ? { ...snap.headline } : null,
+      compactIcons: snap.compactIcons.map((item) => ({ ...item })),
+      rows: snap.rows.map((item) => ({ ...item })),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function legacyConsensus(
   primary: StoredStateRead,
   backup: StoredStateRead,
 ): DecodedStoredState | null {
   const left = primary.recoverableLegacy;
   const right = backup.recoverableLegacy;
-  if (!left || !right) return null;
+  if (!left || !right || !left.state || !right.state) return null;
   if (
     left.legacySchema !== right.legacySchema ||
     left.envelopeChecksum !== right.envelopeChecksum ||
-    left.state.revision !== right.state.revision ||
-    left.state.updatedAtMs !== right.state.updatedAtMs ||
+    left.header.revision !== right.header.revision ||
+    left.header.updatedAtMs !== right.header.updatedAtMs ||
     left.fingerprint !== right.fingerprint ||
     stableJson(left.state) !== stableJson(right.state)
   ) return null;
@@ -1464,10 +2091,10 @@ function pendingIsOlderThan(
   pending: EncodedState,
   durable: DecodedStoredState,
 ): boolean {
-  return durable.state.revision > pending.state.revision ||
+  return durable.header.revision > pending.state.revision ||
     (
-      durable.state.revision === pending.state.revision &&
-      durable.state.updatedAtMs > pending.state.updatedAtMs
+      durable.header.revision === pending.state.revision &&
+      durable.header.updatedAtMs > pending.state.updatedAtMs
     );
 }
 
@@ -1507,7 +2134,9 @@ export function loadState(now = Date.now()): AppState {
 
     const durableInvalid = durableA.invalid || durableB.invalid;
     const durableFailed = durableA.failed || durableB.failed;
+    let rejectedDiagnosticEmitted = false;
     if (!recoveredLegacy && (primary.invalid || backup.invalid || durableInvalid)) {
+      rejectedDiagnosticEmitted = true;
       writeDiagnostic(
         "storage.state.rejected",
         {
@@ -1520,6 +2149,7 @@ export function loadState(now = Date.now()): AppState {
         "warning",
       );
     } else if (!recoveredLegacy && (primary.failed || backup.failed || durableFailed)) {
+      rejectedDiagnosticEmitted = true;
       writeDiagnostic(
         "storage.state.rejected",
         {
@@ -1545,11 +2175,26 @@ export function loadState(now = Date.now()): AppState {
     // Try older generations before failing. An unreadable existing store must never
     // become a writable empty state: every writer and cleanup path loads here first.
     let restored: AppState | null = null;
+    let chosenState: LegacyAppState | AppState | null = null;
     let legacyBindingRecoveryDurable = true;
+    let migrationAttempted = 0;
     const attempts = recoveredLegacy ? [chosen] : candidates;
     for (const candidate of attempts) {
+      const parsedState = ensureDecodedState(candidate);
+      if (!parsedState) {
+        if (!rejectedDiagnosticEmitted) {
+          rejectedDiagnosticEmitted = true;
+          writeDiagnostic(
+            "storage.state.rejected",
+            { result: "invalid_payload", revision: candidate.header.revision },
+            "warning",
+          );
+        }
+        continue;
+      }
+      migrationAttempted++;
       try {
-        const migrated = migrate(candidate.state, now);
+        const migrated = migrate(parsedState, now);
         if (recoveredLegacy) {
           const recovery = restoreLegacyBindingBackup(migrated);
           restored = recovery.state;
@@ -1559,20 +2204,25 @@ export function loadState(now = Date.now()): AppState {
           mirrorBindingBackup(restored);
         }
         chosen = candidate;
+        chosenState = parsedState;
         break;
       } catch {
         writeDiagnostic(
           "storage.state.rejected",
-          { result: "migration_failed", revision: candidate.state.revision },
+          { result: "migration_failed", revision: candidate.header.revision },
           "warning",
         );
       }
     }
-    if (!restored) {
+    if (!restored || !chosenState) {
+      if (migrationAttempted === 0) {
+        lastStateLoadFailure = "read_failed";
+        throw new Error("本地快递数据读取失败，请稍后重试");
+      }
       lastStateLoadFailure = "migration_failed";
       writeDiagnostic(
         "storage.state.rejected",
-        { result: "migration_failed", attempted: attempts.length },
+        { result: "migration_failed", attempted: migrationAttempted },
         "error",
       );
       throw new Error("Local delivery data migration failed; original copies were preserved.");
@@ -1582,7 +2232,7 @@ export function loadState(now = Date.now()): AppState {
       writeDiagnostic(
         "storage.state.recovered",
         {
-          revision: chosen.state.revision,
+          revision: chosen.header.revision,
           result: legacyBindingRecoveryDurable
             ? "legacy_consensus"
             : "legacy_consensus_backup_pending",
@@ -1590,11 +2240,18 @@ export function loadState(now = Date.now()): AppState {
       );
     }
     try {
-      migrateLegacyShipmentRoutes(legacyRouteMigrations(chosen.state), now);
+      migrateLegacyShipmentRoutes(legacyRouteMigrations(chosenState), now);
     } catch {
       /* route migration is retried on the next load; local timelines remain available */
     }
-    pruneOrderProjectionReferencesForState(restored, now);
+    const shouldPruneOnLoad =
+      routesPruneDirty ||
+      productImagesPruneDirty ||
+      !isCurrentState(chosenState) ||
+      sidecarOwnersShrank(chosenState, restored);
+    if (shouldPruneOnLoad) {
+      routesPruneDirty = !pruneOrderProjectionReferencesForState(restored, now);
+    }
     if (recoveredLegacy && !legacyBindingRecoveryDurable) return restored;
     const encoded = encodeState(restored, chosen);
     const primaryMatches = matchesEncoded(primary, encoded);
@@ -1604,6 +2261,7 @@ export function loadState(now = Date.now()): AppState {
       try {
         writeDurableState(encoded);
         recordStateRevision(encoded.state.revision);
+        writeWidgetSnapshotSidecar(encoded.state, encoded.checksum, now);
       } catch (error) {
         if (error instanceof SharedCommitConflict) throw error;
         writeDiagnostic(
@@ -1633,10 +2291,21 @@ export function loadState(now = Date.now()): AppState {
     }
     if (recoveredLegacy) mirrorBindingBackup(encoded.state);
     if (encoded.state.emptyTimelineRetirements?.length) {
-      pruneShipmentRoutesForState(encoded.state, now);
+      if (!pruneShipmentRoutesForState(encoded.state, now)) {
+        routesPruneDirty = true;
+      }
     }
-    pruneProductImages(chosen.state.shipments.map(shipment => shipment.identity),
-      encoded.state.shipments.map(shipment => shipment.identity), now);
+    if (
+      productImagesPruneDirty ||
+      !isCurrentState(chosenState) ||
+      sidecarOwnersShrank(chosenState, encoded.state)
+    ) {
+      productImagesPruneDirty = !pruneProductImages(
+        chosenState.shipments.map((shipment) => shipment.identity),
+        encoded.state.shipments.map((shipment) => shipment.identity),
+        now,
+      );
+    }
     return encoded.state;
   });
   } catch (error) {
@@ -1674,8 +2343,27 @@ export function storedShipmentsForProcessing(state: AppState, now = Date.now()):
 }
 
 export function loadWidgetSnapshot(now = Date.now()): WidgetSnapshot {
+  const cached = readValidWidgetSnapshotSidecar(now);
+  if (cached) return cached;
   const state = loadState(now);
-  return buildWidgetSnapshot(visibleShipments(state, now), now);
+  const snapshot = buildWidgetSnapshot(visibleShipments(state, now), now);
+  try {
+    const shared = sharedStateText();
+    if (shared != null) {
+      const envelope = JSON.parse(shared) as Partial<StoredStateEnvelope>;
+      if (envelope.schema === 3 && typeof envelope.checksum === "string") {
+        writeWidgetSnapshotSidecar(
+          state,
+          envelope.checksum.toLowerCase(),
+          now,
+          snapshot,
+        );
+      }
+    }
+  } catch {
+    /* best-effort sidecar refresh */
+  }
+  return snapshot;
 }
 
 function hasDurableOrderProjectionAuthority(shipment: Shipment): boolean {
@@ -1794,13 +2482,18 @@ type StateSaveOptions = {
   deferredId?: string;
   enhancementUnsubscribe?: PendingEnhancementUnsubscribe;
   acknowledgedEnhancementUnsubscribeId?: string;
+  forceSidecarPrune?: boolean;
 };
 
 export function saveState(
   candidate: AppState,
   now = Date.now(),
   notificationCommit: StateSaveOptions = {},
+  previousInTransaction?: AppState,
 ): AppState {
+  if (previousInTransaction) {
+    return saveStateAndPrune(candidate, now, notificationCommit, previousInTransaction).state;
+  }
   let expectedStateRef: string | undefined;
   try { expectedStateRef = sharedData().stateRef; }
   catch { throw new Error("本地快递数据保存失败"); }
@@ -2021,6 +2714,7 @@ function saveStateAndPrune(
   try {
     writeDurableState(stored);
     recordStateRevision(stored.state.revision);
+    writeWidgetSnapshotSidecar(stored.state, stored.checksum, now);
   } catch (error) {
     if (error instanceof SharedCommitConflict) throw error;
     writeDiagnostic(
@@ -2045,17 +2739,29 @@ function saveStateAndPrune(
     pendingCommit = null;
   }
   const verifyFinishedAtMs = Date.now();
-  const routesPruned = pruneRoutesForState(stored.state, now);
-  pruneProductImages(previous.shipments.map(shipment => shipment.identity),
-    stored.state.shipments.map(shipment => shipment.identity), now);
-  // 用户 2026-10-03 优化 1、3、5 续：每行台账（签收后放行、状态对齐记录、第一次识别时的锚点）只随行真正删除或运单号被新件
-  // 接管而清掉。
-  pruneRowLedgerForState(
-    previous.shipments.map((shipment) => shipment.identity.id),
-    stored.state.shipments.map((shipment) => shipment.identity.id),
-    reusedNumberRows,
-    now,
-  );
+  const shouldPruneSidecars =
+    Boolean(notificationCommit.forceSidecarPrune) ||
+    routesPruneDirty ||
+    productImagesPruneDirty ||
+    sidecarOwnersShrank(previous, stored.state, reusedNumberRows);
+  let routesPruned = true;
+  if (shouldPruneSidecars) {
+    routesPruned = pruneRoutesForState(stored.state, now);
+    routesPruneDirty = !routesPruned;
+    productImagesPruneDirty = !pruneProductImages(
+      previous.shipments.map((shipment) => shipment.identity),
+      stored.state.shipments.map((shipment) => shipment.identity),
+      now,
+    );
+    // 用户 2026-10-03 优化 1、3、5 续：每行台账（签收后放行、状态对齐记录、第一次识别时的锚点）只随行真正删除或运单号被新件
+    // 接管而清掉。
+    pruneRowLedgerForState(
+      previous.shipments.map((shipment) => shipment.identity.id),
+      stored.state.shipments.map((shipment) => shipment.identity.id),
+      reusedNumberRows,
+      now,
+    );
+  }
   writeDiagnostic(
     "storage.state.saved",
     {
@@ -2354,7 +3060,7 @@ export function commitRefreshState(
         (fence.acceptsState != null && !fence.acceptsState(latest))
       )
     ) {
-      return { state: loadState(now), applied: false };
+      return { state: latest, applied: false };
     }
     const merged = { ...latest, shipments: [...shipmentsById.values()], pendingQueries: [...pendingById.values()] };
     if (
@@ -2363,7 +3069,7 @@ export function commitRefreshState(
       return { state: latest, applied: true };
     }
     return {
-      ...saveStateAndPrune(merged, now, { notifyChanges: true, context: notificationContext }),
+      ...saveStateAndPrune(merged, now, { notifyChanges: true, context: notificationContext }, latest),
       applied: true,
     };
   });
@@ -2395,7 +3101,7 @@ export function acknowledgeEnhancementUnsubscribe(id: string, now = Date.now()):
   return withSharedFileTransaction(() => {
     const state = loadState(now);
     if (!state.pendingEnhancementUnsubscribes?.some(item => item.id === id)) return state;
-    return saveState(state, now, { acknowledgedEnhancementUnsubscribeId: id });
+    return saveState(state, now, { acknowledgedEnhancementUnsubscribeId: id }, state);
   });
 }
 
@@ -2467,12 +3173,12 @@ export function enableBindingEnhancement(phoneNumber: string, expectedBoundAtMs:
 }
 
 function saveBindingTransition(
-  _previous: AppState,
+  previous: AppState,
   candidate: AppState,
   now: number,
   options: StateSaveOptions = {},
 ): AppState {
-  const saved = saveState(candidate, now, options);
+  const saved = saveState(candidate, now, options, previous);
   mirrorBindingBackup(saved);
   return saved;
 }
@@ -2541,7 +3247,7 @@ export function commitTargetShipmentRefresh(
     ) {
       return { state: latest, applied: true };
     }
-    return { state: saveState(merged, now, { notifyChanges: true }), applied: true };
+    return { state: saveState(merged, now, { notifyChanges: true }, latest), applied: true };
   });
 }
 
@@ -2608,7 +3314,7 @@ export function commitRoutePointers(
   if (refreshContentFingerprint(merged) === refreshContentFingerprint(latest)) {
     return latest;
   }
-  return saveState(merged, now);
+  return saveState(merged, now, {}, latest);
   });
 }
 
@@ -2701,7 +3407,7 @@ export function removeBinding(
       }),
     },
     now,
-    { enhancementUnsubscribe },
+    { enhancementUnsubscribe, forceSidecarPrune: true },
   );
   });
 }
@@ -2733,6 +3439,8 @@ export function upsertShipment(incoming: Shipment, now = Date.now()): AppState {
         ],
       },
       now,
+      {},
+      state,
     );
   });
 }
@@ -2760,9 +3468,14 @@ export function setShipmentNote(expected: Shipment, note: string, now = Date.now
         ),
       },
       now,
+      {},
+      state,
     );
   });
 }
+
+const DETAIL_SELECTION_STATE_CACHE_MAX = 256;
+const verifiedDetailSelectionStateRefs = new Map<string, string>();
 
 /**
  * Sticky detail selection is recorded when the detail page shows a package (audit D7, adopted
@@ -2772,16 +3485,38 @@ export function setShipmentNote(expected: Shipment, note: string, now = Date.now
  * at. Only the stored row's own selection changes; returns null when nothing had to be written.
  */
 export function recordShipmentDetailSelection(id: string, now = Date.now()): AppState | null {
+  const currentRef = sharedData().stateRef;
+  if (currentRef && verifiedDetailSelectionStateRefs.get(id) === currentRef) {
+    return null;
+  }
   return withSharedFileTransaction(() => {
+    const innerRef = sharedData().stateRef;
+    if (innerRef && verifiedDetailSelectionStateRefs.get(id) === innerRef) {
+      return null;
+    }
     const state = loadState(now);
     const current = state.shipments.find((item) => item.identity.id === id);
     if (!current) return null;
     const selected = withDetailSelection(current, now);
-    if (selected === current) return null;
-    return saveState({
+    const rememberRef = () => {
+      const nextRef = sharedData().stateRef;
+      if (!nextRef) return;
+      if (verifiedDetailSelectionStateRefs.size >= DETAIL_SELECTION_STATE_CACHE_MAX) {
+        const oldest = verifiedDetailSelectionStateRefs.keys().next().value;
+        if (oldest !== undefined) verifiedDetailSelectionStateRefs.delete(oldest);
+      }
+      verifiedDetailSelectionStateRefs.set(id, nextRef);
+    };
+    if (selected === current) {
+      rememberRef();
+      return null;
+    }
+    const saved = saveState({
       ...state,
       shipments: state.shipments.map((item) => item.identity.id === id ? selected : item),
-    }, now);
+    }, now, {}, state);
+    rememberRef();
+    return saved;
   });
 }
 
@@ -2811,7 +3546,8 @@ export function removeShipmentWithCleanup(
         ),
       },
       now,
-      {},
+      { forceSidecarPrune: true },
+      state,
     );
   });
 }
@@ -2838,6 +3574,8 @@ export function forceCompleteShipment(
         ),
       },
       now,
+      {},
+      state,
     );
   });
 }
@@ -2858,6 +3596,8 @@ export function upsertPendingQuery(
         ],
       },
       now,
+      {},
+      state,
     );
   });
 }
@@ -2871,6 +3611,8 @@ export function removePendingQuery(id: string, now = Date.now()): AppState {
         pendingQueries: state.pendingQueries.filter((item) => item.id !== id),
       },
       now,
+      {},
+      state,
     );
   });
 }

@@ -25,8 +25,15 @@ public final class WaybillReusePolicy {
 
     private WaybillReusePolicy() {}
 
+    /** Whether {@code newer} is a new parcel on the number {@code older} already finished with. */
+    public static boolean supersedesOlderTerminal(
+            ExpressQueryResult older, ExpressQueryResult newer) {
+        return supersedesOlderTerminal(older, newer, System.currentTimeMillis());
+    }
+
     /** Whether {@code newer} is a new parcel on the number {@code older} used; either order of two list records. */
-    public static boolean supersedes(ExpressQueryResult older, ExpressQueryResult newer, long now) {
+    public static boolean supersedesOlderTerminal(
+            ExpressQueryResult older, ExpressQueryResult newer, long now) {
         if (older == null || newer == null
                 || AutomaticOwnershipPolicy.isJingDongSource(older.sourceProvider)
                 || AutomaticOwnershipPolicy.isJingDongSource(newer.sourceProvider)) return false;

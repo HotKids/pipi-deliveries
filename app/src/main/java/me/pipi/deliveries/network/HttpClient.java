@@ -138,7 +138,7 @@ final class HttpClient {
         }
     }
 
-    static final class Response {
+    static final class Response implements Kuaidi100CarrierDetector.HttpResponse {
         final int status;
         final byte[] body;
 
@@ -147,11 +147,15 @@ final class HttpClient {
             this.body = body == null ? new byte[0] : body;
         }
 
-        boolean successful() {
+        @Override public int status() {
+            return status;
+        }
+
+        @Override public boolean successful() {
             return status >= 200 && status < 300;
         }
 
-        String utf8() {
+        @Override public String utf8() {
             return new String(body, StandardCharsets.UTF_8);
         }
     }

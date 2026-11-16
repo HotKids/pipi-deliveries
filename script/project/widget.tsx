@@ -1,5 +1,7 @@
 import { Script, Widget } from "scripting";
-import { loadWidgetSnapshot } from "./services/storage";
+import type { AppState } from "./models";
+import { loadWidgetSnapshot, visibleShipments } from "./services/storage";
+import { buildWidgetSnapshot } from "./services/status";
 import { lastNetworkRefreshSuccessAtMs } from "./services/refresh-runtime-state";
 import { FallbackWidget } from "./widget/FallbackWidget";
 import { MediumWidget } from "./widget/MediumWidget";
@@ -7,6 +9,7 @@ import { SmallWidget } from "./widget/SmallWidget";
 import { refreshAllShipments } from "./services/sync";
 import {
   bestEffortWidgetRefresh,
+  createWidgetStateHolder,
   safelyLoadWidgetSnapshot,
   shouldRunWidgetNetworkRefresh,
   WIDGET_REFRESH_BUDGET_MS,
@@ -22,7 +25,7 @@ import {
 import { createDiagnosticFlowId, flushDiagnostics, writeDiagnostic, writeRuntimeCapabilities } from "./services/logger";
 import { backgroundHostBootstrap, backgroundRefreshOptions } from "./services/background-refresh";
 
-function widgetContent() {
+function widgetContent(refreshedState?: AppState | null) {
   const kind = widgetPresentationKind(String(Widget.family || ""));
   if (kind === "unsupported") {
     return (
@@ -33,7 +36,12 @@ function widgetContent() {
     );
   }
   try {
-    const snapshotResult = safelyLoadWidgetSnapshot(loadWidgetSnapshot);
+    const snapshotResult = safelyLoadWidgetSnapshot(() => {
+      const now = Date.now();
+      return refreshedState
+        ? buildWidgetSnapshot(visibleShipments(refreshedState, now), now)
+        : loadWidgetSnapshot(now);
+    });
     if (!snapshotResult.ok) throw new Error("widget state unavailable");
     const snapshot = snapshotResult.value;
     const displaySize = Widget.displaySize;
@@ -119,11 +127,18 @@ async function run() {
   } catch {
     shouldRefresh = true;
   }
+  const refreshed = createWidgetStateHolder();
   if (shouldRefresh) {
     const refreshStartedAtMs = Date.now();
-    const outcome = await bestEffortWidgetRefresh(() =>
-      refreshAllShipments(undefined, backgroundRefreshOptions(WIDGET_REFRESH_BUDGET_MS))
-    );
+    const outcome = await bestEffortWidgetRefresh(async () => {
+      const summary = await refreshAllShipments(
+        undefined,
+        backgroundRefreshOptions(WIDGET_REFRESH_BUDGET_MS),
+      );
+      if (!summary.skipReason && summary.state) refreshed.state = summary.state;
+      return summary;
+    });
+    if (outcome !== "completed" && outcome !== "partial") refreshed.state = null;
     writeDiagnostic(
       outcome === "skipped" ? "widget.refresh.skipped"
         : outcome === "failed" || outcome === "timed_out" ? "widget.refresh.failed"
@@ -155,7 +170,7 @@ async function run() {
     durationMs: Date.now() - startedAtMs,
     reloadAfterMs: WIDGET_RELOAD_AFTER_MS,
   });
-  const content = widgetContent();
+  const content = widgetContent(refreshed.state);
   flushDiagnostics();
   Widget.present(content, { reloadPolicy: widgetReloadPolicy() });
 }

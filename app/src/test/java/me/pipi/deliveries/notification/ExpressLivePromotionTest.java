@@ -29,4 +29,22 @@ public class ExpressLivePromotionTest extends ExpressLiveNotificationsTest {
         ExpressLiveNotifications.cancel(context);
         assertNull(live());
     }
+
+    @Test public void userSwipeOnReceiverCancelsSamsungProbeWithoutRepostOrFallbackPenalty() throws Exception {
+        ReflectionHelpers.setStaticField(Build.class, "MANUFACTURER", "samsung");
+        SamsungNowBarCompat.resetCacheForTest();
+        context.getSharedPreferences("deliveries_systemui_compat", 0).edit().clear().commit();
+        for (int id = 1; id <= 3; id++) {
+            assertTrue(ExpressLiveNotifications.sync(context, List.of(item(id, StatusSemantic.DELIVERY))));
+            Notification posted = live();
+            assertNotNull(posted);
+            android.content.Intent deleted = deletion();
+            manager.cancel(ExpressLiveNotifications.LIVE_ID);
+            new NotificationDismissedReceiver().onReceive(context, deleted);
+            assertNull("User swipe must not repost generic live notification", live());
+            assertFalse("User swipe must not trip SamsungNowBarCompat fallback",
+                    SamsungNowBarCompat.useGenericFallback(context));
+            ExpressLiveNotifications.restoreOnForeground(context);
+        }
+    }
 }

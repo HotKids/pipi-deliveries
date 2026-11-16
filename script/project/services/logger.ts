@@ -5,7 +5,8 @@ import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD, SCRIPT_VERSION } from "./build
 import { OperationTimeoutError, type RequestTimeoutDetails, type WaitTimeoutDetails } from "./deadline";
 import {
   clearDiagnosticFiles, diagnosticBatchId, diagnosticEpoch, diagnosticFiles,
-  diagnosticLegacyImported, markDiagnosticLegacyImported, pruneDiagnosticFiles, publishDiagnosticBatch,
+  diagnosticLegacyImported, markDiagnosticLegacyImported, pruneDiagnosticBatchesByMetadata,
+  pruneDiagnosticFiles, publishDiagnosticBatch,
 } from "./diagnostic-store";
 
 export type DiagnosticLevel = "info" | "warning" | "error";
@@ -1400,7 +1401,7 @@ export function flushDiagnostics(): void {
       }
       pendingPublication = undefined;
     }
-    storedEntries(now, true);
+    pruneDiagnosticBatchesByMetadata(epoch, now, MAX_RECORDS, MAX_AGE_MS);
   } catch {
     /* diagnostics must never change app behavior */
   }

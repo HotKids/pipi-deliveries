@@ -94,7 +94,7 @@ assert.ok(
     "and the attached orders' earlier order stage (归属-2, user 2026-09-25)",
 );
 assert.ok(
-  detailPage.includes("orderStagePrepended: jingDongOrderStagePrepended(shipment, attachedOrders)"),
+  detailPage.includes("orderStagePrepended: jingDongOrderStagePrepended(shipment, attachedOrders"),
   "the detail selection log records whether the owner's order stage followed the packet, as Pipi does",
 );
 assert.ok(

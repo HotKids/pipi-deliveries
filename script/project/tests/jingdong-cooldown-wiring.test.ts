@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readSyncSource } from "./sync-source-helper";
 
 // AGENTS §9 (2026-09-04 复核后修正): every union-page load rests the order for ten minutes, an
 // hour after risk control, and no user action lifts either rest. These are source contracts
 // because the wiring lives inside `runShipmentRefreshById`, which has no seam to call directly.
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const sync = readFileSync(join(projectRoot, "services/sync.ts"), "utf8");
+const sync = readSyncSource();
 const storage = readFileSync(join(projectRoot, "services/storage.ts"), "utf8");
 const policy = readFileSync(
   join(projectRoot, "services/account-sync-policy.ts"),

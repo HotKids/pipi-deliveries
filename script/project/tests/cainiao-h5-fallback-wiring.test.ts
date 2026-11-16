@@ -180,10 +180,8 @@ assert.equal(
   "完整性与覆盖优先于层级：完整且节点更多的包胜出",
 );
 
-const sync = readFileSync(
-  new URL("../services/sync.ts", import.meta.url),
-  "utf8",
-);
+import { readSyncSource } from "./sync-source-helper";
+const sync = readSyncSource();
 assert.match(sync, /await runtime\.refreshCainiaoH5\(/);
 assert.match(sync, /containsTimelinePickupTrack\(capturedCainiaoH5\.tracks\)/);
 // 用户定 2026-09-04：菜鸟 H5 的终止判据是揽收（PICKED），不是「抓到任意一条带时间的节点」。

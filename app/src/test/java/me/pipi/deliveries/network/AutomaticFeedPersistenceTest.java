@@ -59,13 +59,18 @@ public class AutomaticFeedPersistenceTest {
     .put(new JSONObject().put("time","2026-09-09 18:00:00").put("desc","快件已到达转运中心")));
   repository.saveInterface5(ExpressDiscoveryClient.parseExpress(raw,"",PHONE),PHONE);
   ExpressItem stored=repository.findByWaybill(previous.waybill,"interface5");
-  assertEquals(StatusSemantic.DELIVERY,stored.semantic);
-  assertEquals(ExpressTimeline.parseTime("2026-09-12 10:00:00"),stored.statusEventTime);
-  assertEquals("快件已到达转运中心",stored.latestDetail);
+  assertEquals(StatusSemantic.TRANSIT,stored.semantic);
+  assertEquals(ExpressTimeline.parseTime("2026-09-09 18:00:00"),stored.statusEventTime);
+  assertEquals("运输中",stored.latestDetail);
   ExpressItem visible=repository.listVisible("interface5").get(0);
+  assertEquals(stored.semantic,visible.semantic);
   assertEquals(stored.statusEventTime,visible.statusEventTime);
   assertEquals(stored.latestDetail,visible.latestDetail);
-  assertTrue(repository.automaticSourceTimeline(visible).tracksJson.contains(stored.latestDetail));
+  assertTrue(repository.cainiaoHasTrajectoryGap(visible));
+  ExpressQueryResult sourceTimeline=repository.automaticSourceTimeline(visible);
+  assertEquals(StatusSemantic.DELIVERY,sourceTimeline.semantic);
+  assertEquals(ExpressTimeline.parseTime("2026-09-12 10:00:00"),sourceTimeline.statusEventTime);
+  assertTrue(sourceTimeline.tracksJson.contains("快件已到达转运中心"));
  }
 
  @Test public void emptyCainiaoFeedDisplaysItsOwnQueryActivityWithoutChangingFeed() throws Exception {

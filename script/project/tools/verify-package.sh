@@ -106,6 +106,16 @@ for required in \
   services/script-source.ts \
   services/scripting-data.ts \
   services/shipment-policy.ts \
+  services/sync.ts \
+  services/sync/account-list-sync.ts \
+  services/sync/cainiao-v5-supplement.ts \
+  services/sync/detail-refresh.ts \
+  services/sync/enrichment-scheduler.ts \
+  services/sync/h5-capture.ts \
+  services/sync/jd-order-projection.ts \
+  services/sync/manual-chain-runner.ts \
+  services/sync/route-publications.ts \
+  services/sync/shared.ts \
   services/time-presentation.ts \
   widget/SmallWidget.tsx \
   widget/MediumWidget.tsx \

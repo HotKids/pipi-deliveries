@@ -65,21 +65,93 @@ assert.ok(
   "上游明确拒绝／风控歇 60 分钟，与京东 H5 一致",
 );
 
-const timeoutOne = providerNextDueAt({
+// X-05 四端分层冷却对齐：公共／付费手动兜底通道（picker/moto/kdniao >= 10m、kuaidi100 >= 30m）任何失败/空结果/超时不低于该源基准冷却；
+// 自有账号按件补查（account_detail / v5_query）保留 1m 指数退避（1m -> 2m -> 4m -> 8m…）与 5m 基准/空结果冷却。
+for (const manualProvider of ["picker", "moto", "kdniao"] as const) {
+  for (const failureResult of ["no_result", "timeout", "network", "failed"] as const) {
+    const due = providerNextDueAt({
+      key: "shipment-a",
+      provider: manualProvider,
+      result: failureResult,
+      consecutiveFailures: 1,
+      now,
+    });
+    assert.ok(
+      due >= now + 600_000,
+      `${manualProvider} ${failureResult} must clamp to >= 10m base cooldown`,
+    );
+  }
+}
+for (const failureResult of ["no_result", "timeout", "network", "failed"] as const) {
+  const k100FailureDue = providerNextDueAt({
+    key: "shipment-a",
+    provider: "kuaidi100",
+    result: failureResult,
+    consecutiveFailures: 1,
+    now,
+  });
+  assert.ok(
+    k100FailureDue >= now + 1_800_000,
+    `kuaidi100 ${failureResult} must clamp to >= 30m upstream floor`,
+  );
+}
+const manualTimeoutOne = providerNextDueAt({
   key: "shipment-a",
   provider: "picker",
   result: "timeout",
   consecutiveFailures: 1,
   now,
 });
-const timeoutFour = providerNextDueAt({
+const manualTimeoutSix = providerNextDueAt({
   key: "shipment-a",
   provider: "picker",
   result: "timeout",
-  consecutiveFailures: 4,
+  consecutiveFailures: 6,
   now,
 });
-assert.ok(timeoutFour > timeoutOne);
+assert.ok(manualTimeoutSix > manualTimeoutOne, "higher failure counts still back off past the 10m floor");
+
+const accountDetailBaseDue = providerNextDueAt({
+  key: "shipment-a",
+  provider: "account_detail",
+  result: "no_result",
+  consecutiveFailures: 1,
+  now,
+});
+assert.ok(
+  accountDetailBaseDue >= now + 270_000 && accountDetailBaseDue <= now + 330_000,
+  "account_detail no_result retains 5m ±10% fast cooldown",
+);
+const accountDetailTimeoutSchedule = [1, 2, 3, 4].map((consecutiveFailures) =>
+  providerNextDueAt({
+    key: "shipment-a",
+    provider: "account_detail",
+    result: "timeout",
+    consecutiveFailures,
+    now,
+  }),
+);
+assert.ok(
+  accountDetailTimeoutSchedule[0]! >= now + 54_000 && accountDetailTimeoutSchedule[0]! <= now + 66_000,
+  "account_detail first timeout retains 1m ±10% fast retry",
+);
+assert.ok(
+  accountDetailTimeoutSchedule[1]! > accountDetailTimeoutSchedule[0]! &&
+  accountDetailTimeoutSchedule[2]! > accountDetailTimeoutSchedule[1]! &&
+  accountDetailTimeoutSchedule[3]! > accountDetailTimeoutSchedule[2]!,
+  "account_detail timeout retains 1m -> 2m -> 4m -> 8m exponential backoff",
+);
+const accountDetailRejectedDue = providerNextDueAt({
+  key: "shipment-a",
+  provider: "account_detail",
+  result: "upstream_rejected",
+  consecutiveFailures: 1,
+  now,
+});
+assert.ok(
+  accountDetailRejectedDue >= now + 3_240_000 && accountDetailRejectedDue <= now + 3_960_000,
+  "account_detail risk-control/upstream_rejected retains 60m ±10% cooldown",
+);
 
 recordRefreshProviderResult({
   key: "shipment-a",

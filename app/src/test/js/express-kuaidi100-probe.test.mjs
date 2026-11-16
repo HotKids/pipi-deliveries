@@ -2,11 +2,11 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import assert from 'node:assert/strict';
 
-const java = readFileSync(new URL('../../main/java/me/pipi/deliveries/feature/express/ExpressKuaidi100TimelineCapture.java', import.meta.url), 'utf8');
-const body = java.slice(java.indexOf('static String extractionScript() {'));
+const java = readFileSync(new URL('../../main/java/me/pipi/deliveries/feature/express/ExpressCarrierH5CaptureCore.java', import.meta.url), 'utf8');
+const body = java.slice(java.indexOf('private static String buildKuaidi100ExtractionScript(String number) {'));
 const expression = body.slice(body.indexOf('return ') + 7, body.indexOf(';\n    }'))
   .replaceAll('MAX_TRACKS', java.match(/MAX_TRACKS = (\d+)/)[1]);
-const probe = runInNewContext(expression);
+const probe = runInNewContext(expression, { number: '', JSONObject: { quote: JSON.stringify } });
 const latest = { time: '2026-09-09 18:51:23', context: 'Synthetic latest event' };
 const first = { time: '2026-09-08 09:00:00', context: 'Synthetic pickup event' };
 
@@ -53,7 +53,7 @@ assert.deepEqual(diagnosticSnapshot('withheld-state', { __vue__: { checkCode: { 
 console.log('K100 bounded page diagnostics and unknown-field semantics passed');
 
 function verificationProbe(number, tail) {
-  const marker = 'static String verificationScript(String waybill, List<String> phones) {';
+  const marker = 'private static String buildKuaidi100VerificationScript(String number, List<String> tails) {';
   if (!java.includes(marker)) return '';
   const method = java.slice(java.indexOf(marker));
   const expression = method.slice(method.indexOf('return "(function') + 7, method.indexOf(';\n    }'));
@@ -98,7 +98,7 @@ for (const invalid of [{ challenge: false }, { tail: '' }, { tail: '123' }, { ta
 console.log('K100 same-parcel phone challenge, one submission, and no readback passed');
 
 function challengeRound(tails) {
-  const marker = 'static String verificationScript(String waybill, List<String> phones) {';
+  const marker = 'private static String buildKuaidi100VerificationScript(String number, List<String> tails) {';
   const method = java.slice(java.indexOf(marker));
   const expression = method.slice(method.indexOf('return "(function') + 7, method.indexOf(';\n    }'));
   const script = runInNewContext(expression, { number: 'SFTEST1', candidates: JSON.stringify(tails),

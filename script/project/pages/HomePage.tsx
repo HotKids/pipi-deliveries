@@ -11,6 +11,7 @@ import {
   TextField,
   VStack,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "scripting";
@@ -82,13 +83,6 @@ export function HomePage(props: {
   onStateChange: (state: AppState) => void;
 }) {
   const dismiss = Navigation.useDismiss();
-  const [waybill, setWaybill] = useState("");
-  const [phoneTail, setPhoneTail] = useState("");
-  const [needsPhoneTail, setNeedsPhoneTail] = useState(false);
-  const [detectedCarrier, setDetectedCarrier] = useState<
-    ManualCarrierDetection | null
-  >(null);
-  const [querying, setQuerying] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
@@ -97,20 +91,8 @@ export function HomePage(props: {
   const [completing, setCompleting] = useState(false);
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
-  const [validationNotice, setValidationNotice] = useState("");
   const [accessKeyRejected, setAccessKeyRejected] = useState(gatewayAccessKeyRejected);
   const [accessKeyNoticeDismissed, setAccessKeyNoticeDismissed] = useState(false);
-  const waybillRef = useRef("");
-  const phoneTailRef = useRef("");
-  const queryingRef = useRef(false);
-  const carrierDetectionSequenceRef = useRef(0);
-  const carrierDetectionTimerRef = useRef<number | null>(null);
-  const carrierDetectionCoordinatorRef = useRef<
-    ManualCarrierDetectionCoordinator | null
-  >(null);
-  if (!carrierDetectionCoordinatorRef.current) {
-    carrierDetectionCoordinatorRef.current = new ManualCarrierDetectionCoordinator();
-  }
   const initialNavigationTarget = props.state.shipments.some(
     (shipment) => shipment.identity.id === props.initialShipmentId,
   )
@@ -122,15 +104,18 @@ export function HomePage(props: {
   const shipmentNavigationTargetRef = useRef<ShipmentNavigationTarget | null>(
     initialNavigationTarget,
   );
-  const shipments = visibleShipments(props.state);
+  const shipments = useMemo(() => visibleShipments(props.state), [props.state]);
   const selected = selectedNavigationShipment(
     props.state,
     shipmentNavigationTarget,
   );
+  const selectedAttachedOrders = useMemo(
+    () => (selected ? attachedProjectedOrders(props.state.shipments, selected) : undefined),
+    [props.state.shipments, selected],
+  );
   const manualPreview = shipmentNavigationTarget?.kind === "manualPreview"
     ? shipmentNavigationTarget.preview
     : null;
-  const phoneTailValidation = validationNotice.includes("手机尾号");
 
   function setShipmentNavigationTarget(
     target: ShipmentNavigationTarget | null,
@@ -181,156 +166,6 @@ export function HomePage(props: {
       persistedShipmentNavigationTarget(props.initialShipmentId),
     );
   }, [props.navigationRequestGeneration]);
-
-  useEffect(() => {
-    return () => {
-      carrierDetectionSequenceRef.current += 1;
-      if (carrierDetectionTimerRef.current != null) {
-        clearTimeout(carrierDetectionTimerRef.current);
-      }
-    };
-  }, []);
-
-  function scheduleCarrierDetection(value: string) {
-    const normalized = normalizeWaybill(value);
-    const sequence = carrierDetectionSequenceRef.current + 1;
-    carrierDetectionSequenceRef.current = sequence;
-    if (carrierDetectionTimerRef.current != null) {
-      clearTimeout(carrierDetectionTimerRef.current);
-      carrierDetectionTimerRef.current = null;
-    }
-    // A waybill already in the list answers for itself, with no request and no cache to consult.
-    const stored = storedCarrierDetection(normalized, props.state.shipments);
-    setDetectedCarrier(stored);
-    if (stored) return;
-    // Recognition is a network question, so it waits for a number that looks finished rather than
-    // firing on every prefix; a 16-digit waybill used to spend ten recognitions on its way in.
-    if (normalized.length < CARRIER_DETECTION_MIN_LENGTH) return;
-
-    carrierDetectionTimerRef.current = setTimeout(() => {
-      carrierDetectionTimerRef.current = null;
-      void carrierDetectionCoordinatorRef.current!.resolve(normalized)
-        .then((carrier) => {
-          if (
-            sequence === carrierDetectionSequenceRef.current &&
-            normalizeWaybill(waybillRef.current) === normalized
-          ) {
-            setDetectedCarrier(carrier);
-          }
-        })
-        .catch(() => {
-          if (sequence === carrierDetectionSequenceRef.current) {
-            setDetectedCarrier(null);
-          }
-        });
-    }, CARRIER_DETECTION_DEBOUNCE_MS);
-  }
-
-  function clearQueryInputs() {
-    carrierDetectionSequenceRef.current += 1;
-    if (carrierDetectionTimerRef.current != null) {
-      clearTimeout(carrierDetectionTimerRef.current);
-      carrierDetectionTimerRef.current = null;
-    }
-    waybillRef.current = "";
-    phoneTailRef.current = "";
-    setWaybill("");
-    setPhoneTail("");
-    setNeedsPhoneTail(false);
-    setDetectedCarrier(null);
-    Keyboard.hide();
-  }
-
-  async function query() {
-    if (queryingRef.current) return;
-    const submittedWaybill = waybillRef.current;
-    const submittedPhoneTail = phoneTailRef.current;
-    const submittedNormalized = normalizeWaybill(submittedWaybill);
-    if (submittedNormalized.length < 6) {
-      setValidationNotice("请输入有效的快递单号");
-      return;
-    }
-    // Checked before carrier detection and before any provider round: a waybill the list already
-    // tracks must not spend a recognition call, a provider query or a second row.
-    const alreadyListed = visibleShipments(props.state).find(
-      (shipment) => normalizeWaybill(displayWaybill(shipment)) === submittedNormalized,
-    );
-    if (alreadyListed) {
-      setValidationNotice("");
-      setNotice(EXPRESS_TOAST_COPY.alreadyInList);
-      // 用户定 2026-09-05：提示「已在列表」的同时打开那一票的详情（三端同）。
-      openShipment(alreadyListed);
-      return;
-    }
-    // 尾号输入框已经在页面上（承运商要尾号）却还没填满四位时，先内联提示，不要先弹「正在查询」——
-    // 用户 2026-09-08 报：顺丰的单号识别出来了、尾号还空着，点查询弹的是「正在查询，请稍候」。
-    if ((needsPhoneTail || detectedCarrier?.requiresPhoneTail)
-      && submittedPhoneTail.length !== 4) {
-      setNeedsPhoneTail(true);
-      // 一个字都没填就是「请输入手机尾号」（与 Lite 的尾号对话框标题同字，用户定 2026-09-08）；
-      // 填了但不满四位才提示位数。
-      setValidationNotice(
-        submittedPhoneTail ? "请输入 4 位手机尾号" : "请输入手机尾号",
-      );
-      return;
-    }
-    queryingRef.current = true;
-    setQuerying(true);
-    carrierDetectionSequenceRef.current += 1;
-    if (carrierDetectionTimerRef.current != null) {
-      clearTimeout(carrierDetectionTimerRef.current);
-      carrierDetectionTimerRef.current = null;
-    }
-    setDetectedCarrier(null);
-    // 统一 toast（AGENTS §11）：提交即短弹一次「正在查询」，不再常驻到查完。
-    setNotice(EXPRESS_TOAST_COPY.manualQuerying);
-    setValidationNotice("");
-    try {
-      let submittedCarrier: ManualCarrierDetection | null = null;
-      try {
-        submittedCarrier = await carrierDetectionCoordinatorRef.current!.resolve(
-          submittedWaybill,
-        );
-      } catch {
-        submittedCarrier = null;
-      }
-      if (submittedCarrier) setDetectedCarrier(submittedCarrier);
-      if (
-        (submittedCarrier?.requiresPhoneTail || needsPhoneTail) &&
-        submittedPhoneTail.length !== 4
-      ) {
-        setNeedsPhoneTail(true);
-        setValidationNotice(
-          submittedPhoneTail ? "请输入 4 位手机尾号" : "请输入手机尾号",
-        );
-        return;
-      }
-      const preview = await queryManualShipmentPreview({
-        waybill: submittedWaybill,
-        phoneTail: submittedPhoneTail,
-        presentation: submittedCarrier,
-      });
-      const committed = commitManualShipmentPreview(preview);
-      props.onStateChange(committed);
-      setShipmentNavigationTarget(
-        manualPreviewNavigationTarget(preview, committed),
-      );
-      clearQueryInputs();
-    } catch (error) {
-      // 校验类文案内联显示；其余一律走统一的失败 / 超时 toast，上游文案不外露。
-      const value = errorMessage(error, "");
-      if (isManualQueryValidationMessage(value)) {
-        setValidationNotice(value);
-      } else {
-        setNotice(manualQueryFailureToast(error));
-      }
-      if (value.includes("手机尾号")) setNeedsPhoneTail(true);
-      scheduleCarrierDetection(submittedWaybill);
-    } finally {
-      queryingRef.current = false;
-      setQuerying(false);
-    }
-  }
 
   /** E1: the rest of a pull's refresh lands after its account phase was shown. */
   function followPullCompletion(completion: Promise<RefreshSummary>) {
@@ -443,6 +278,363 @@ export function HomePage(props: {
     );
   }
 
+  const emptySearchArea = (
+    <HomeSearchBar
+      state={props.state}
+      shipments={shipments}
+      autoFocusSearch={props.autoFocusSearch}
+      emptyList={true}
+      onStateChange={props.onStateChange}
+      setNotice={setNotice}
+      openShipment={openShipment}
+      setShipmentNavigationTarget={setShipmentNavigationTarget}
+    />
+  );
+
+  return (
+    <NavigationStack>
+      <VStack
+        frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+        navigationTitle="我的快递"
+        navigationBarTitleDisplayMode="large"
+        toast={transientToast(notice, setNotice)}
+        toolbar={{
+          topBarLeading: (
+            <Button buttonStyle="plain" action={() => dismiss()}>
+              <Image
+                systemName="chevron.left"
+                font={17}
+                frame={{ width: 44, height: 44 }}
+              />
+            </Button>
+          ),
+          topBarTrailing: (
+            <Button
+              buttonStyle="plain"
+              action={() => setNotice("暂未开放")}
+            >
+              <Image
+                systemName="plus"
+                font={17}
+                frame={{ width: 44, height: 44 }}
+              />
+            </Button>
+          ),
+        }}
+        navigationDestination={{
+          isPresented: Boolean(selected),
+          onChanged: (presented) => {
+            if (presented) return;
+            const consumed = consumeShipmentNavigationTarget(
+              shipmentNavigationTargetRef.current,
+            );
+            setShipmentNavigationTarget(consumed.nextTarget);
+          },
+          content: selected ? (
+            <DetailPage
+              key={selected.identity.id}
+              shipment={selected}
+              persistedShipment={props.state.shipments.some(
+                (shipment) => shipment.identity.id === selected.identity.id,
+              )}
+              accountBinding={props.state.bindings.find((binding) =>
+                binding.source === selected.identity.bindingSource && binding.phone === selected.accountRecord?.phone)}
+              attachedOrders={selectedAttachedOrders}
+              manualPreview={manualPreview}
+              refreshOnAppear={manualPreview
+                ? manualPreviewNeedsDetailRefresh(selected)
+                  ? "manual_submit"
+                  : false
+                : unprojectedAccountOrder(selected)
+                  ? "detail_open"
+                  : needsDetailEntryQuery(selected) ? "detail_open" : false}
+              onStateChange={(next) => {
+                props.onStateChange(next);
+              }}
+            />
+          ) : <Text>快递详情</Text>,
+        }}
+      >
+        {accessKeyRejected && !accessKeyNoticeDismissed ? (
+          <VStack padding={{ horizontal: 20, vertical: 8 }}>
+            <HStack
+              spacing={0}
+              padding={{ leading: 16, trailing: 12, vertical: 12 }}
+              background="secondarySystemBackground"
+              clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
+            >
+              <Text
+                font={14}
+                foregroundStyle="secondaryLabel"
+                frame={{ maxWidth: "infinity", alignment: "leading" }}
+              >
+                Access Key 已失效，请通过 TG Bot 重新获取。
+              </Text>
+              <Button
+                role="close"
+                buttonStyle="plain"
+                action={() => setAccessKeyNoticeDismissed(true)}
+              >
+                <Image
+                  systemName="xmark"
+                  font={24}
+                  foregroundStyle="secondaryLabel"
+                  frame={{ width: 48, height: 48 }}
+                  contentShape="rect"
+                />
+              </Button>
+            </HStack>
+          </VStack>
+        ) : null}
+        {shipments.length ? (
+          <List listStyle="plain" refreshable={refresh}>
+            <HomeSearchBar
+              state={props.state}
+              shipments={shipments}
+              autoFocusSearch={props.autoFocusSearch}
+              emptyList={false}
+              onStateChange={props.onStateChange}
+              setNotice={setNotice}
+              openShipment={openShipment}
+              setShipmentNavigationTarget={setShipmentNavigationTarget}
+            />
+            <Section>
+              {shipments.map((shipment) => (
+                <ShipmentRow
+                  key={shipment.identity.id}
+                  shipment={shipment}
+                  onOpen={() => openShipment(shipment)}
+                  onDelete={() => void confirmDelete(shipment)}
+                  onComplete={() => void confirmComplete(shipment)}
+                  deleteDisabled={deleting}
+                  completeDisabled={completing}
+                />
+              ))}
+            </Section>
+            <VStack
+              spacing={8}
+              padding={{ bottom: 12 }}
+              frame={{ maxWidth: "infinity" }}
+              listRowSeparator="hidden"
+            >
+              <Text
+                font={12}
+                foregroundStyle="tertiaryLabel"
+                frame={{ maxWidth: "infinity", alignment: "center" }}
+              >
+                只显示 14 天内的快递
+              </Text>
+            </VStack>
+          </List>
+        ) : (
+          <VStack
+            spacing={0}
+            frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+          >
+            {emptySearchArea}
+            <List
+              listStyle="plain"
+              refreshable={refresh}
+              frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+              overlay={{
+                alignment: "center",
+                content: (
+                  <EmptyDeliveryStateGroup
+                    vehicleSize={81.6}
+                    spacing={6}
+                    labelFont={24}
+                  />
+                ),
+              }}
+            />
+          </VStack>
+        )}
+      </VStack>
+    </NavigationStack>
+  );
+}
+
+function HomeSearchBar(props: {
+  state: AppState;
+  shipments: readonly Shipment[];
+  autoFocusSearch: boolean;
+  emptyList: boolean;
+  onStateChange: (state: AppState) => void;
+  setNotice: (notice: string) => void;
+  openShipment: (shipment: Shipment) => void;
+  setShipmentNavigationTarget: (target: ShipmentNavigationTarget | null) => void;
+}) {
+  const { setNotice, openShipment, setShipmentNavigationTarget } = props;
+  const [waybill, setWaybill] = useState("");
+  const [phoneTail, setPhoneTail] = useState("");
+  const [needsPhoneTail, setNeedsPhoneTail] = useState(false);
+  const [detectedCarrier, setDetectedCarrier] = useState<
+    ManualCarrierDetection | null
+  >(null);
+  const [querying, setQuerying] = useState(false);
+  const [validationNotice, setValidationNotice] = useState("");
+  const waybillRef = useRef("");
+  const phoneTailRef = useRef("");
+  const queryingRef = useRef(false);
+  const carrierDetectionSequenceRef = useRef(0);
+  const carrierDetectionTimerRef = useRef<number | null>(null);
+  const carrierDetectionCoordinatorRef = useRef<
+    ManualCarrierDetectionCoordinator | null
+  >(null);
+  if (!carrierDetectionCoordinatorRef.current) {
+    carrierDetectionCoordinatorRef.current = new ManualCarrierDetectionCoordinator();
+  }
+  const phoneTailValidation = validationNotice.includes("手机尾号");
+
+  useEffect(() => {
+    return () => {
+      carrierDetectionSequenceRef.current += 1;
+      if (carrierDetectionTimerRef.current != null) {
+        clearTimeout(carrierDetectionTimerRef.current);
+      }
+    };
+  }, []);
+
+  function scheduleCarrierDetection(value: string) {
+    const normalized = normalizeWaybill(value);
+    const sequence = carrierDetectionSequenceRef.current + 1;
+    carrierDetectionSequenceRef.current = sequence;
+    if (carrierDetectionTimerRef.current != null) {
+      clearTimeout(carrierDetectionTimerRef.current);
+      carrierDetectionTimerRef.current = null;
+    }
+    // A waybill already in the list answers for itself, with no request and no cache to consult.
+    const stored = storedCarrierDetection(normalized, props.state.shipments);
+    setDetectedCarrier(stored);
+    if (stored) return;
+    // Recognition is a network question, so it waits for a number that looks finished rather than
+    // firing on every prefix; a 16-digit waybill used to spend ten recognitions on its way in.
+    if (normalized.length < CARRIER_DETECTION_MIN_LENGTH) return;
+
+    carrierDetectionTimerRef.current = setTimeout(() => {
+      carrierDetectionTimerRef.current = null;
+      void carrierDetectionCoordinatorRef.current!.resolve(normalized)
+        .then((carrier) => {
+          if (
+            sequence === carrierDetectionSequenceRef.current &&
+            normalizeWaybill(waybillRef.current) === normalized
+          ) {
+            setDetectedCarrier(carrier);
+          }
+        })
+        .catch(() => {
+          if (sequence === carrierDetectionSequenceRef.current) {
+            setDetectedCarrier(null);
+          }
+        });
+    }, CARRIER_DETECTION_DEBOUNCE_MS);
+  }
+
+  function clearQueryInputs() {
+    carrierDetectionSequenceRef.current += 1;
+    if (carrierDetectionTimerRef.current != null) {
+      clearTimeout(carrierDetectionTimerRef.current);
+      carrierDetectionTimerRef.current = null;
+    }
+    waybillRef.current = "";
+    phoneTailRef.current = "";
+    setWaybill("");
+    setPhoneTail("");
+    setNeedsPhoneTail(false);
+    setDetectedCarrier(null);
+    Keyboard.hide();
+  }
+
+  async function query() {
+    if (queryingRef.current) return;
+    const submittedWaybill = waybillRef.current;
+    const submittedPhoneTail = phoneTailRef.current;
+    const submittedNormalized = normalizeWaybill(submittedWaybill);
+    if (submittedNormalized.length < 6) {
+      setValidationNotice("请输入有效的快递单号");
+      return;
+    }
+    // Checked before carrier detection and before any provider round: a waybill the list already
+    // tracks must not spend a recognition call, a provider query or a second row.
+    const alreadyListed = props.shipments.find(
+      (shipment) => normalizeWaybill(displayWaybill(shipment)) === submittedNormalized,
+    );
+    if (alreadyListed) {
+      setValidationNotice("");
+      setNotice(EXPRESS_TOAST_COPY.alreadyInList);
+      // 用户定 2026-09-05：提示「已在列表」的同时打开那一票的详情（三端同）。
+      openShipment(alreadyListed);
+      return;
+    }
+    // 尾号输入框已经在页面上（承运商要尾号）却还没填满四位时，先内联提示，不要先弹「正在查询」——
+    // 用户 2026-09-08 报：顺丰的单号识别出来了、尾号还空着，点查询弹的是「正在查询，请稍候」。
+    if ((needsPhoneTail || detectedCarrier?.requiresPhoneTail)
+      && submittedPhoneTail.length !== 4) {
+      setNeedsPhoneTail(true);
+      // 一个字都没填就是「请输入手机尾号」（与 Lite 的尾号对话框标题同字，用户定 2026-09-08）；
+      // 填了但不满四位才提示位数。
+      setValidationNotice(
+        submittedPhoneTail ? "请输入 4 位手机尾号" : "请输入手机尾号",
+      );
+      return;
+    }
+    queryingRef.current = true;
+    setQuerying(true);
+    carrierDetectionSequenceRef.current += 1;
+    if (carrierDetectionTimerRef.current != null) {
+      clearTimeout(carrierDetectionTimerRef.current);
+      carrierDetectionTimerRef.current = null;
+    }
+    setDetectedCarrier(null);
+    // 统一 toast（AGENTS §11）：提交即短弹一次「正在查询」，不再常驻到查完。
+    setNotice(EXPRESS_TOAST_COPY.manualQuerying);
+    setValidationNotice("");
+    try {
+      let submittedCarrier: ManualCarrierDetection | null = null;
+      try {
+        submittedCarrier = await carrierDetectionCoordinatorRef.current!.resolve(
+          submittedWaybill,
+        );
+      } catch {
+        submittedCarrier = null;
+      }
+      if (submittedCarrier) setDetectedCarrier(submittedCarrier);
+      if (
+        (submittedCarrier?.requiresPhoneTail || needsPhoneTail) &&
+        submittedPhoneTail.length !== 4
+      ) {
+        setNeedsPhoneTail(true);
+        setValidationNotice(
+          submittedPhoneTail ? "请输入 4 位手机尾号" : "请输入手机尾号",
+        );
+        return;
+      }
+      const preview = await queryManualShipmentPreview({
+        waybill: submittedWaybill,
+        phoneTail: submittedPhoneTail,
+        presentation: submittedCarrier,
+      });
+      const committed = commitManualShipmentPreview(preview);
+      props.onStateChange(committed);
+      setShipmentNavigationTarget(
+        manualPreviewNavigationTarget(preview, committed),
+      );
+      clearQueryInputs();
+    } catch (error) {
+      // 校验类文案内联显示；其余一律走统一的失败 / 超时 toast，上游文案不外露。
+      const value = errorMessage(error, "");
+      if (isManualQueryValidationMessage(value)) {
+        setValidationNotice(value);
+      } else {
+        setNotice(manualQueryFailureToast(error));
+      }
+      if (value.includes("手机尾号")) setNeedsPhoneTail(true);
+      scheduleCarrierDetection(submittedWaybill);
+    } finally {
+      queryingRef.current = false;
+      setQuerying(false);
+    }
+  }
 
   const searchFields = (
     <VStack
@@ -564,184 +756,38 @@ export function HomePage(props: {
       ) : null}
     </VStack>
   );
-  const emptySearchArea = (
-    <VStack
-      spacing={6}
-      padding={{ horizontal: 20, vertical: 8 }}
-      frame={{ maxWidth: "infinity" }}
-      background="systemBackground"
-    >
-      {searchFields}
-      {validationNotice && !phoneTailValidation ? (
-        <Text
-          font={12}
-          foregroundStyle="systemRed"
-          frame={{ maxWidth: "infinity", alignment: "leading" }}
-        >
-          {validationNotice}
-        </Text>
-      ) : null}
-    </VStack>
-  );
+
+  if (props.emptyList) {
+    return (
+      <VStack
+        spacing={6}
+        padding={{ horizontal: 20, vertical: 8 }}
+        frame={{ maxWidth: "infinity" }}
+        background="systemBackground"
+      >
+        {searchFields}
+        {validationNotice && !phoneTailValidation ? (
+          <Text
+            font={12}
+            foregroundStyle="systemRed"
+            frame={{ maxWidth: "infinity", alignment: "leading" }}
+          >
+            {validationNotice}
+          </Text>
+        ) : null}
+      </VStack>
+    );
+  }
 
   return (
-    <NavigationStack>
-      <VStack
-        frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        navigationTitle="我的快递"
-        navigationBarTitleDisplayMode="large"
-        toast={transientToast(notice, setNotice)}
-        toolbar={{
-          topBarLeading: (
-            <Button buttonStyle="plain" action={() => dismiss()}>
-              <Image
-                systemName="chevron.left"
-                font={17}
-                frame={{ width: 44, height: 44 }}
-              />
-            </Button>
-          ),
-          topBarTrailing: (
-            <Button
-              buttonStyle="plain"
-              action={() => setNotice("暂未开放")}
-            >
-              <Image
-                systemName="plus"
-                font={17}
-                frame={{ width: 44, height: 44 }}
-              />
-            </Button>
-          ),
-        }}
-        navigationDestination={{
-          isPresented: Boolean(selected),
-          onChanged: (presented) => {
-            if (presented) return;
-            const consumed = consumeShipmentNavigationTarget(
-              shipmentNavigationTargetRef.current,
-            );
-            setShipmentNavigationTarget(consumed.nextTarget);
-          },
-          content: selected ? (
-            <DetailPage
-              key={selected.identity.id}
-              shipment={selected}
-              persistedShipment={props.state.shipments.some(
-                (shipment) => shipment.identity.id === selected.identity.id,
-              )}
-              accountBinding={props.state.bindings.find((binding) =>
-                binding.source === selected.identity.bindingSource && binding.phone === selected.accountRecord?.phone)}
-              attachedOrders={attachedProjectedOrders(props.state.shipments, selected)}
-              manualPreview={manualPreview}
-              refreshOnAppear={manualPreview
-                ? manualPreviewNeedsDetailRefresh(selected)
-                  ? "manual_submit"
-                  : false
-                : unprojectedAccountOrder(selected)
-                  ? "detail_open"
-                  : needsDetailEntryQuery(selected) ? "detail_open" : false}
-              onStateChange={(next) => {
-                props.onStateChange(next);
-              }}
-            />
-          ) : <Text>快递详情</Text>,
-        }}
-      >
-        {accessKeyRejected && !accessKeyNoticeDismissed ? (
-          <VStack padding={{ horizontal: 20, vertical: 8 }}>
-            <HStack
-              spacing={0}
-              padding={{ leading: 16, trailing: 12, vertical: 12 }}
-              background="secondarySystemBackground"
-              clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-            >
-              <Text
-                font={14}
-                foregroundStyle="secondaryLabel"
-                frame={{ maxWidth: "infinity", alignment: "leading" }}
-              >
-                Access Key 已失效，请通过 TG Bot 重新获取。
-              </Text>
-              <Button
-                role="close"
-                buttonStyle="plain"
-                action={() => setAccessKeyNoticeDismissed(true)}
-              >
-                <Image
-                  systemName="xmark"
-                  font={24}
-                  foregroundStyle="secondaryLabel"
-                  frame={{ width: 48, height: 48 }}
-                  contentShape="rect"
-                />
-              </Button>
-            </HStack>
-          </VStack>
-        ) : null}
-        {shipments.length ? (
-          <List listStyle="plain" refreshable={refresh}>
-            <Section
-              footer={validationNotice && !phoneTailValidation ? (
-                <Text font={12} foregroundStyle="systemRed">
-                  {validationNotice}
-                </Text>
-              ) : undefined}
-            >
-              {searchFields}
-            </Section>
-            <Section>
-              {shipments.map((shipment) => (
-                <ShipmentRow
-                  key={shipment.identity.id}
-                  shipment={shipment}
-                  onOpen={() => openShipment(shipment)}
-                  onDelete={() => void confirmDelete(shipment)}
-                  onComplete={() => void confirmComplete(shipment)}
-                  deleteDisabled={deleting}
-                  completeDisabled={completing}
-                />
-              ))}
-            </Section>
-            <VStack
-              spacing={8}
-              padding={{ bottom: 12 }}
-              frame={{ maxWidth: "infinity" }}
-              listRowSeparator="hidden"
-            >
-              <Text
-                font={12}
-                foregroundStyle="tertiaryLabel"
-                frame={{ maxWidth: "infinity", alignment: "center" }}
-              >
-                只显示 14 天内的快递
-              </Text>
-            </VStack>
-          </List>
-        ) : (
-          <VStack
-            spacing={0}
-            frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-          >
-            {emptySearchArea}
-            <List
-              listStyle="plain"
-              refreshable={refresh}
-              frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-              overlay={{
-                alignment: "center",
-                content: (
-                  <EmptyDeliveryStateGroup
-                    vehicleSize={81.6}
-                    spacing={6}
-                    labelFont={24}
-                  />
-                ),
-              }}
-            />
-          </VStack>
-        )}
-      </VStack>
-    </NavigationStack>
+    <Section
+      footer={validationNotice && !phoneTailValidation ? (
+        <Text font={12} foregroundStyle="systemRed">
+          {validationNotice}
+        </Text>
+      ) : undefined}
+    >
+      {searchFields}
+    </Section>
   );
 }

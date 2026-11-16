@@ -82,12 +82,47 @@ final class ExpressWidgetMeasurements {
         }
     }
 
+    static void centerWideRowGlyphs(Context context, RemoteViews views,
+            java.util.List<me.pipi.deliveries.model.ExpressItem> items, int visibleRows,
+            int[] rowIds, int[] logoFrameIds, int[] logoIds,
+            int[] companyIds, int[] statusIds, int[] detailIds,
+            float widthDp, int detailMaxLines) {
+        if (visibleRows <= 0 || widthDp <= 0f) return;
+        int count = Math.min(visibleRows, Math.min(items.size(), rowIds.length));
+        boolean needsMeasurement = false;
+        for (int index = 0; index < count; index++) {
+            boolean expandedDetail = detailMaxLines > 1
+                    && !items.get(index).latestDetail.isEmpty();
+            if (!expandedDetail) {
+                needsMeasurement = true;
+                break;
+            }
+        }
+        if (!needsMeasurement) return;
+
+        View shell = inflateAndLayoutShell(context, views, widthDp);
+        for (int index = 0; index < count; index++) {
+            boolean expandedDetail = detailMaxLines > 1
+                    && !items.get(index).latestDetail.isEmpty();
+            if (expandedDetail) continue;
+            applyCenteredRowPadding(views, shell, rowIds[index], logoFrameIds[index],
+                    logoIds[index], companyIds[index], statusIds[index], detailIds[index]);
+        }
+    }
+
     static void centerRowGlyphs(Context context, RemoteViews views, int rowId,
             int logoFrameId, int logoId, int companyId, int statusId, int detailId,
             float widthDp, int detailMaxLines) {
         views.setViewPadding(logoFrameId, 0, 0, 0, 0);
         if (detailMaxLines > 1 || widthDp <= 0f) return;
 
+        View shell = inflateAndLayoutShell(context, views, widthDp);
+        applyCenteredRowPadding(views, shell, rowId, logoFrameId, logoId,
+                companyId, statusId, detailId);
+    }
+
+    private static View inflateAndLayoutShell(
+            Context context, RemoteViews views, float widthDp) {
         View shell = views.apply(context, new FrameLayout(context));
         int width = Math.max(1, Math.round(TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP, widthDp,
@@ -95,7 +130,12 @@ final class ExpressWidgetMeasurements {
         shell.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
         shell.layout(0, 0, shell.getMeasuredWidth(), shell.getMeasuredHeight());
+        return shell;
+    }
 
+    private static void applyCenteredRowPadding(RemoteViews views, View shell,
+            int rowId, int logoFrameId, int logoId,
+            int companyId, int statusId, int detailId) {
         ViewGroup row = shell.findViewById(rowId);
         View frame = row.findViewById(logoFrameId);
         View logo = row.findViewById(logoId);

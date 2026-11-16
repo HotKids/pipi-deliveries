@@ -40,6 +40,27 @@ export function diagnosticBatchId(): string {
   return `b${Date.now().toString(36).padStart(11, "0")}-${runtimeId}-${String(sequence).padStart(8, "0")}`;
 }
 
+function entryTimestampRange(values: readonly unknown[]): {
+  minEntryAtMs?: number;
+  maxEntryAtMs?: number;
+} {
+  let minEntryAtMs = Number.POSITIVE_INFINITY;
+  let maxEntryAtMs = Number.NEGATIVE_INFINITY;
+  for (const item of values) {
+    if (!item || typeof item !== "object") continue;
+    const rawAt = (item as { at?: unknown }).at;
+    if (typeof rawAt !== "string") continue;
+    const parsed = Date.parse(rawAt);
+    if (!Number.isFinite(parsed)) continue;
+    if (parsed < minEntryAtMs) minEntryAtMs = parsed;
+    if (parsed > maxEntryAtMs) maxEntryAtMs = parsed;
+  }
+  return {
+    ...(Number.isFinite(minEntryAtMs) ? { minEntryAtMs } : {}),
+    ...(Number.isFinite(maxEntryAtMs) ? { maxEntryAtMs } : {}),
+  };
+}
+
 export function publishDiagnosticBatch(id: string, epoch: string, values: readonly unknown[]): void {
   if (!BATCH.test(`${id}.ready`) || epoch !== "legacy" && !EPOCH.test(epoch)) {
     throw new Error("Invalid diagnostic publication");
@@ -53,9 +74,20 @@ export function publishDiagnosticBatch(id: string, epoch: string, values: readon
   if (published()) return;
   try {
     if (!FileManager.existsSync(directory)) FileManager.createDirectorySync(directory, false);
-    verifiedWrite(`${directory}/meta.json`, JSON.stringify({ version: 2, epoch }));
+    const createdAtMs = Date.now();
+    const range = entryTimestampRange(values);
+    verifiedWrite(
+      `${directory}/meta.json`,
+      JSON.stringify({
+        version: 2,
+        epoch,
+        createdAtMs,
+        recordCount: values.length,
+        ...range,
+      }),
+    );
     for (let index = 0; index < values.length; index++) {
-      verifiedWrite(`${directory}/r${String(index).padStart(4, "0")}.json`, JSON.stringify(values[index]));
+      FileManager.writeAsStringSync(`${directory}/r${String(index).padStart(4, "0")}.json`, JSON.stringify(values[index]));
     }
     FileManager.createLinkSync(ready, directory);
   } catch (error) {
@@ -113,6 +145,118 @@ export function clearDiagnosticFiles(): void {
   finally { removeBestEffort(pending); }
 }
 
+function cleanupDiagnosticStagingAndEpochs(epoch: string, now: number, maxAgeMs: number): void {
+  for (const name of names()) {
+    if (EPOCH.test(name) && epoch !== "legacy" && name < epoch) removeBestEffort(`${root()}/${name}`);
+    const marker = /^(?:legacy-imported|e[0-9]{16}-[a-f0-9-]{36}\.clear)\.([a-z0-9]+)\.pending(?:-[a-f0-9-]{36})?$/.exec(name);
+    if (marker && now - parseInt(marker[1]!, 36) >= maxAgeMs) {
+      removeBestEffort(`${root()}/${name}`);
+    }
+    const staged = /^(b([0-9a-z]+)-[a-f0-9-]{36}-[0-9]{8})\.batch$/.exec(name);
+    if (staged && !FileManager.isLinkSync(`${root()}/${staged[1]}.ready`)) {
+      try {
+        const metadata = JSON.parse(FileManager.readAsStringSync(`${root()}/${name}/meta.json`));
+        const cleared = metadata.epoch === "legacy" && epoch !== "legacy"
+          || typeof metadata.epoch === "string" && EPOCH.test(metadata.epoch)
+          && epoch !== "legacy" && metadata.epoch < epoch;
+        if (cleared || now - parseInt(staged[2]!, 36) >= maxAgeMs) {
+          removeBestEffort(`${root()}/${name}`);
+        }
+      } catch { /* An active writer may not have published its metadata yet. */ }
+    }
+  }
+}
+
+/**
+ * Flush-path retention using ONLY `.batch/meta.json` (`createdAtMs` / `maxEntryAtMs` + `recordCount`),
+ * without reading or parsing any `rXXXX.json` record files.
+ */
+export function pruneDiagnosticBatchesByMetadata(
+  epoch: string,
+  now = Date.now(),
+  maxRecords = 200,
+  maxAgeMs = 7 * 24 * 60 * 60 * 1000,
+): void {
+  const activeBatches: Array<{
+    ready: string;
+    directory: string;
+    recordCount: number;
+    timestampMs: number;
+  }> = [];
+  for (const name of names().filter((entry) => BATCH.test(entry)).sort()) {
+    const ready = `${root()}/${name}`;
+    const directory = `${root()}/${name.replace(/\.ready$/, ".batch")}`;
+    try {
+      if (FileManager.destinationOfSymbolicLink(ready) !== directory) continue;
+      const metadata = JSON.parse(
+        FileManager.readAsStringSync(`${directory}/meta.json`),
+      ) as {
+        version?: unknown;
+        epoch?: unknown;
+        createdAtMs?: unknown;
+        maxEntryAtMs?: unknown;
+        recordCount?: unknown;
+      };
+      const olderEpoch =
+        (metadata.epoch === "legacy" && epoch !== "legacy") ||
+        (typeof metadata.epoch === "string" &&
+          EPOCH.test(metadata.epoch) &&
+          epoch !== "legacy" &&
+          metadata.epoch < epoch);
+      if (olderEpoch) {
+        removeBestEffort(ready);
+        removeBestEffort(directory);
+        continue;
+      }
+      if (metadata?.version !== 2 || metadata.epoch !== epoch) continue;
+      const recordCount =
+        typeof metadata.recordCount === "number" &&
+          Number.isInteger(metadata.recordCount) &&
+          metadata.recordCount >= 0
+          ? metadata.recordCount
+          : FileManager.readDirectorySync(directory, false).filter((row) =>
+              ROW.test(row.split("/").pop()!)
+            ).length;
+      const batchIdTime = parseInt(/^b([0-9a-z]+)-/.exec(name)?.[1] || "", 36);
+      const timestampMs =
+        typeof metadata.maxEntryAtMs === "number" && Number.isFinite(metadata.maxEntryAtMs)
+          ? metadata.maxEntryAtMs
+          : typeof metadata.createdAtMs === "number" && Number.isFinite(metadata.createdAtMs)
+            ? metadata.createdAtMs
+            : batchIdTime;
+      const expired =
+        recordCount === 0 ||
+        (Number.isFinite(timestampMs) &&
+          timestampMs <= now &&
+          now - timestampMs >= maxAgeMs);
+      if (expired) {
+        removeBestEffort(ready);
+        removeBestEffort(directory);
+        continue;
+      }
+      activeBatches.push({
+        ready,
+        directory,
+        recordCount,
+        timestampMs: Number.isFinite(timestampMs) ? timestampMs : now,
+      });
+    } catch {
+      /* Unpublished or concurrently retired batches are skipped safely. */
+    }
+  }
+  let retainedRecords = 0;
+  for (let index = activeBatches.length - 1; index >= 0; index--) {
+    const batch = activeBatches[index]!;
+    if (retainedRecords >= maxRecords && batch.timestampMs <= now) {
+      removeBestEffort(batch.ready);
+      removeBestEffort(batch.directory);
+      continue;
+    }
+    retainedRecords += batch.recordCount;
+  }
+  cleanupDiagnosticStagingAndEpochs(epoch, now, maxAgeMs);
+}
+
 /** Delete individual rows so a partially retained batch cannot keep extra log content. */
 export function pruneDiagnosticFiles(keep: ReadonlySet<string>, epoch: string, observed: readonly StoredRow[]): void {
   const seen = new Set(observed.map(row => row.path));
@@ -138,23 +282,5 @@ export function pruneDiagnosticFiles(keep: ReadonlySet<string>, epoch: string, o
       }
     } catch { /* A different cleaner can retire the same immutable batch concurrently. */ }
   }
-  for (const name of names()) {
-    if (EPOCH.test(name) && epoch !== "legacy" && name < epoch) removeBestEffort(`${root()}/${name}`);
-    const marker = /^(?:legacy-imported|e[0-9]{16}-[a-f0-9-]{36}\.clear)\.([a-z0-9]+)\.pending(?:-[a-f0-9-]{36})?$/.exec(name);
-    if (marker && Date.now() - parseInt(marker[1]!, 36) >= 7 * 24 * 60 * 60 * 1000) {
-      removeBestEffort(`${root()}/${name}`);
-    }
-    const staged = /^(b([0-9a-z]+)-[a-f0-9-]{36}-[0-9]{8})\.batch$/.exec(name);
-    if (staged && !FileManager.isLinkSync(`${root()}/${staged[1]}.ready`)) {
-      try {
-        const metadata = JSON.parse(FileManager.readAsStringSync(`${root()}/${name}/meta.json`));
-        const cleared = metadata.epoch === "legacy" && epoch !== "legacy"
-          || typeof metadata.epoch === "string" && EPOCH.test(metadata.epoch)
-          && epoch !== "legacy" && metadata.epoch < epoch;
-        if (cleared || Date.now() - parseInt(staged[2]!, 36) >= 7 * 24 * 60 * 60 * 1000) {
-          removeBestEffort(`${root()}/${name}`);
-        }
-      } catch { /* An active writer may not have published its metadata yet. */ }
-    }
-  }
+  cleanupDiagnosticStagingAndEpochs(epoch, Date.now(), 7 * 24 * 60 * 60 * 1000);
 }

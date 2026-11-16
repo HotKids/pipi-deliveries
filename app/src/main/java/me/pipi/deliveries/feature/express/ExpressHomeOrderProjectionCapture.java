@@ -174,7 +174,11 @@ final class ExpressHomeOrderProjectionCapture {
         attempt = ExpressOrderProjectionRetryStore.acquireAttempt(source);
         if (attempt == null) return false;
         cancellation = new ExpressQueryCancellation(CAPTURE_TIMEOUT_MS + 10_000L);
-        worker = Executors.newSingleThreadExecutor();
+        worker = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "deliveries-order-projection");
+            thread.setDaemon(true);
+            return thread;
+        });
         executeWorker(() -> {
             try {
                 ExpressRepository repository = ExpressRepository.get(context);

@@ -194,7 +194,7 @@ export type Shipment = {
   };
   forcedCompletedAtMs?: number;
   /** 详情页上一轮显示的包（粘性选包，用户定 2026-09-05 晚）：下一轮默认还显示它。 */
-  detailSelection?: { provider: string; selectedAtMs: number; reason?: "sf_refresh_failed" };
+  detailSelection?: { provider: string; selectedAtMs: number; waybill?: string; reason?: "sf_refresh_failed" };
   /**
    * 用户在详情页填的备注（用户定 2026-09-05 晚）：列表页、详情页、桌面卡片都以「状态词 · 备注」
    * 显示；只在详情页可以添加或修改。同步合并从不改它。
