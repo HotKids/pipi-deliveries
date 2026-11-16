@@ -98,13 +98,16 @@ final class ExpressSyncEngine {
         }
     }
 
+    static java.util.function.Supplier<ExpressDiscoveryClient> discoveryFactory =
+            ExpressDiscoveryClient::new;
+
     private static void syncAllUnbatched(
             Context context, ExpressRepository repository, int[] network, boolean userPull, String bindingSource,
             java.util.concurrent.atomic.AtomicReference<Throwable> sourceFailure, Runnable onAccountPhase) {
         ExpressApi localApi = new ExpressApi(context);
         boolean useInterface5 = "interface5".equals(bindingSource);
         ExpressDiscoveryClient discovery = useInterface5
-                ? new ExpressDiscoveryClient() : null;
+                ? discoveryFactory.get() : null;
         ExpressSubscriptionClient subscription = new ExpressSubscriptionClient();
         List<String> boundPhones = repository.phones(bindingSource);
         Map<String, String> bindingGenerations =
@@ -136,6 +139,7 @@ final class ExpressSyncEngine {
                             return newRows.recognize(records, "interface5");
                         }
                     });
+                    discovery.deferCainiaoSupplement();
                     try {
                         discovery.sync(context, boundPhones, userPull);
                     } finally {
@@ -208,6 +212,18 @@ final class ExpressSyncEngine {
             signedFrozen = new HashSet<>();
         }
         try (ExpressRefreshQueue requests = new ExpressRefreshQueue()) {
+        if (useInterface5 && discovery != null) {
+            try {
+                discovery.supplementCainiaoDetails(
+                        context, userPull, signedFrozen, answerAccountPhase, network);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } catch (Throwable failure) {
+                sourceFailure.compareAndSet(null, failure);
+                ExpressLog.write("refresh.stage.failed",
+                        ExpressLog.errorDetails(failure, "stage", "account_detail"));
+            }
+        }
         for (ExpressItem item : recognitionOrder(
                 repository, deferrals, repository.listVisibleAsStored(bindingSource))) {
             try {

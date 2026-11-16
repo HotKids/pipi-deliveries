@@ -24,6 +24,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import me.pipi.deliveries.util.PipiExecutors;
 
 /**
  * The single promoted-notification publication path for every live surface.
@@ -33,7 +34,7 @@ import java.util.concurrent.TimeUnit;
  * probe can never repost a notification after cancellation or a newer post.</p>
  */
 public final class PromotedNotificationPublisher {
-    private static final String TAG = "DeliveriesPromoted";
+    private static final String TAG = "PipiPromoted";
     private static final long PROBE_DELAY_MS = 1_200L;
     private static final long PROBE_CONFIRM_DELAY_MS = 6_000L;
     private static final long PROBE_DELIVERY_MARGIN_MS = 500L;
@@ -55,11 +56,7 @@ public final class PromotedNotificationPublisher {
     private static final Map<NotificationKey, ProbeState> PROBES = new HashMap<>();
     private static final ScheduledExecutorService PROBE_EXECUTOR =
             Executors.newSingleThreadScheduledExecutor(
-                    runnable -> {
-                        Thread thread = new Thread(runnable, "deliveries-systemui-probe");
-                        thread.setDaemon(true);
-                        return thread;
-                    });
+                    PipiExecutors.namedFactory("pipi-systemui-probe"));
 
     private PromotedNotificationPublisher() {}
 
@@ -77,6 +74,13 @@ public final class PromotedNotificationPublisher {
     /** Adds only public Android promoted-notification fields. */
     public static void configureGeneric(Notification.Builder builder, String capsule) {
         configurePromoted(builder, capsule);
+    }
+
+    /** Uses only the public icon preference for non-promoted notifications. */
+    public static void configurePreferredSmallIcon(Notification.Builder builder) {
+        Bundle extras = new Bundle();
+        extras.putBoolean(EXTRA_PREFER_SMALL_ICON, true);
+        builder.addExtras(extras);
     }
 
     private static void configurePromoted(Notification.Builder builder, String capsule) {
@@ -126,10 +130,13 @@ public final class PromotedNotificationPublisher {
                     GENERATIONS.clearIfCurrent(key, generation);
                     return;
                 }
-                ProbeState state = new ProbeState(generation);
+                String expectedFingerprint = NotificationDismissalStore.activeFingerprint(app, key);
+                String expectedToken = NotificationDismissalStore.activeToken(app, key);
+                ProbeState state = new ProbeState(generation, expectedFingerprint, expectedToken);
                 PROBES.put(key, state);
                 state.future = PROBE_EXECUTOR.schedule(
-                        () -> probe(app, manager, key, generation, generic, false),
+                        () -> probe(app, manager, key, generation, generic,
+                                expectedFingerprint, expectedToken, false),
                         PROBE_DELAY_MS,
                         TimeUnit.MILLISECONDS);
                 return;
@@ -151,6 +158,17 @@ public final class PromotedNotificationPublisher {
         }
     }
 
+    /** Posts an ordinary replacement while invalidating an older live probe for the same ID. */
+    @SuppressLint("MissingPermission")
+    public static void postStandard(NotificationManager manager, NotificationKey key,
+                                    Notification notification) {
+        if (manager == null || key == null || notification == null) return;
+        synchronized (LOCK) {
+            cancelProbeLocked(key);
+            key.notify(manager, notification);
+        }
+    }
+
     /** Explicit cancellation shares the final-notify lock and therefore cannot be resurrected. */
     public static void cancel(NotificationManager manager, NotificationKey key) {
         if (manager == null || key == null) return;
@@ -160,8 +178,17 @@ public final class PromotedNotificationPublisher {
         }
     }
 
+    /** Stops the compatibility probe before it can mistake a user swipe for SystemUI removal. */
+    static void onUserDismissed(NotificationKey key) {
+        if (key == null) return;
+        synchronized (LOCK) {
+            cancelProbeLocked(key);
+        }
+    }
+
     private static void probe(Context context, NotificationManager manager, NotificationKey key,
                               long generation, Notification genericAndroid,
+                              String expectedFingerprint, String expectedToken,
                               boolean confirmation) {
         // First generation check: do no SystemUI work for a cancelled/replaced post.
         if (!GENERATIONS.isCurrent(key, generation)) return;
@@ -200,7 +227,7 @@ public final class PromotedNotificationPublisher {
                     if (state == null || state.generation != generation) return;
                     state.future = PROBE_EXECUTOR.schedule(
                             () -> probe(context, manager, key, generation,
-                                    genericAndroid, true),
+                                    genericAndroid, expectedFingerprint, expectedToken, true),
                             PROBE_CONFIRM_DELAY_MS,
                             TimeUnit.MILLISECONDS);
                     Log.i(TAG, "Samsung enhancement passed initial delivery key=" + key);
@@ -208,6 +235,12 @@ public final class PromotedNotificationPublisher {
                 }
                 SamsungNowBarCompat.recordProbe(context, true);
                 Log.i(TAG, "Samsung enhancement survived delayed confirmation key=" + key);
+                finishProbeLocked(key, generation);
+                return;
+            }
+            if (NotificationDismissalStore.wasDismissedForProbe(
+                    context, key, expectedFingerprint, expectedToken)) {
+                Log.i(TAG, "Live update dismissed by user before probe fallback key=" + key);
                 finishProbeLocked(key, generation);
                 return;
             }
@@ -224,6 +257,12 @@ public final class PromotedNotificationPublisher {
         synchronized (LOCK) {
             if (!GENERATIONS.isCurrent(key, generation)) return;
             if (!canObserveDelivery(context, manager, genericAndroid)) {
+                finishProbeLocked(key, generation);
+                return;
+            }
+            if (NotificationDismissalStore.wasDismissedForProbe(
+                    context, key, expectedFingerprint, expectedToken)) {
+                Log.i(TAG, "Live update dismissed by user during fallback preparation key=" + key);
                 finishProbeLocked(key, generation);
                 return;
             }
@@ -322,10 +361,14 @@ public final class PromotedNotificationPublisher {
 
     private static final class ProbeState {
         final long generation;
+        final String expectedFingerprint;
+        final String expectedToken;
         ScheduledFuture<?> future;
 
-        ProbeState(long generation) {
+        ProbeState(long generation, String expectedFingerprint, String expectedToken) {
             this.generation = generation;
+            this.expectedFingerprint = expectedFingerprint;
+            this.expectedToken = expectedToken;
         }
     }
 }

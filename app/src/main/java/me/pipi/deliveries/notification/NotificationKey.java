@@ -6,14 +6,18 @@ import android.service.notification.StatusBarNotification;
 import java.util.Objects;
 
 /** Framework identity shared by live publication, dismissal and cancellation. */
-final class NotificationKey {
-    final int id;
+public final class NotificationKey {
+    public final int id;
     private final String label;
 
     private NotificationKey(String label, int id) { this.label = label; this.id = id; }
 
     static NotificationKey singleton(String namespace, int id) {
         return new NotificationKey(namespace + ":singleton", id);
+    }
+
+    static NotificationKey persisted(String label, int id) {
+        return new NotificationKey(label == null ? "" : label, id);
     }
 
     String persistenceKey() { return label; }

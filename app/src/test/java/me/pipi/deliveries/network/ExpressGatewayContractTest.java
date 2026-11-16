@@ -27,9 +27,11 @@ public final class ExpressGatewayContractTest {
         assertFalse(api.contains("/api/express/classify"));
         assertTrue(recognition.contains("/api/express/classify"));
         assertTrue(recognition.contains("put(\"firstStageCompleted\", true)"));
+        String classifierTransport = source(
+                "me/pipi/deliveries/network/Kuaidi100CarrierTransport.java");
         assertTrue(classifier.contains(
                 "https://www.kuaidi100.com/autonumber/autoComNum"));
-        assertTrue(classifier.contains("HttpClient.postForm"));
+        assertTrue((classifier + classifierTransport).contains("HttpClient.postForm"));
         assertFalse(api.contains("Kuaidi100QueryClient"));
         assertFalse(api.contains("/api/express/timeline/preferred"));
         assertTrue(api.contains("/api/express/timeline/public"));
@@ -107,8 +109,14 @@ public final class ExpressGatewayContractTest {
         String account = source("me/pipi/deliveries/network/ExpressDiscoveryClient.java");
         String sync = source("me/pipi/deliveries/background/ExpressSyncEngine.java");
         int summaryWrite = account.indexOf("repository.saveInterface5OrderSummary(");
-        int detailPhase = account.indexOf("for (JSONObject item : discovered)");
+        int detailPhase = account.indexOf("for (CainiaoSupplementTarget target : targets)");
         assertTrue(summaryWrite >= 0 && detailPhase > summaryWrite);
+        int deferCall = sync.indexOf("discovery.deferCainiaoSupplement()");
+        int syncCall = sync.indexOf("discovery.sync(context, boundPhones, userPull)");
+        int publishPhase = sync.indexOf("repository.publishAccountPhase();");
+        int supplementPhase = sync.indexOf("discovery.supplementCainiaoDetails(");
+        assertTrue(deferCall >= 0 && deferCall < syncCall && syncCall < publishPhase
+                && supplementPhase > publishPhase);
         assertTrue(account.contains("refreshKnown(Context context, ExpressItem item)"));
         assertTrue(sync.contains("discovery.refreshKnown(context, item)"));
     }

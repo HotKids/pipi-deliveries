@@ -238,10 +238,18 @@ function statusLuminance(color: number): number {
   }, 0);
 }
 
+const STATUS_TEXT_TINT_CACHE_MAX = 128;
+const statusTextTintCache = new Map<string, { light: ColorStringHex; dark: ColorStringHex }>();
+
 export function statusTextTint(
   semantic: StatusSemantic,
   options: { badgeOpacity?: number; brandAccent?: string; accentRGB?: number } = {},
 ): { light: ColorStringHex; dark: ColorStringHex } {
+  const cacheKey = `${semantic}|${options.badgeOpacity ?? ""}|${options.brandAccent ?? ""}|${options.accentRGB ?? ""}`;
+  const cached = statusTextTintCache.get(cacheKey);
+  if (cached) {
+    return { light: cached.light, dark: cached.dark };
+  }
   const accent = options.accentRGB ?? STATUS_RGB[statusTint(semantic)] ?? STATUS_RGB.secondaryLabel;
   const tone = (surface: number): ColorStringHex => {
     const brand = options.brandAccent ? Number.parseInt(options.brandAccent.slice(1), 16) : surface;
@@ -258,9 +266,15 @@ export function statusTextTint(
     }
     return `#${target.toString(16).padStart(6, "0")}`;
   };
-  return options.brandAccent
+  const resolved = options.brandAccent
     ? { light: tone(0xffffff), dark: tone(0x1c1c1e) }
     : { light: tone(0xf2f2f7), dark: tone(0x2c2c2e) };
+  if (statusTextTintCache.size >= STATUS_TEXT_TINT_CACHE_MAX) {
+    const oldestKey = statusTextTintCache.keys().next().value;
+    if (oldestKey !== undefined) statusTextTintCache.delete(oldestKey);
+  }
+  statusTextTintCache.set(cacheKey, resolved);
+  return { light: resolved.light, dark: resolved.dark };
 }
 
 export function normalizeWaybill(value: string): string {

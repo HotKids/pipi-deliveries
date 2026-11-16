@@ -2,9 +2,9 @@ package me.pipi.deliveries.notification;
 
 import android.app.Notification;
 import android.content.Context;
+import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
-import android.graphics.drawable.Icon;
 import android.util.Log;
 
 /**
@@ -17,7 +17,10 @@ import android.util.Log;
  */
 public final class SamsungNowBarCompat {
     private static final String TAG = "PipiNowBar";
-    private static final String COMPAT_PREF = "deliveries_systemui_compat";
+    private static final boolean DELIVERIES_HOST =
+            SamsungNowBarCompat.class.getPackageName().startsWith("me.pipi.deliveries.");
+    private static final String COMPAT_PREF =
+            DELIVERIES_HOST ? "deliveries_systemui_compat" : "pipi_systemui_compat";
     private static final String COMPAT_FINGERPRINT = "fingerprint";
     private static final String COMPAT_FAILURES = "failures";
     private static final String COMPAT_FALLBACK = "fallback";
@@ -26,6 +29,9 @@ public final class SamsungNowBarCompat {
     // Diagnostic kill switch only. Normal builds retain the Samsung SystemUI
     // protection and reset its learned result after every APK installation.
     static final boolean SYSTEM_UI_ERROR_FALLBACK_ENABLED = true;
+
+    private static volatile String cachedUpdatePackage;
+    private static volatile long cachedUpdateTime = -1L;
 
     private SamsungNowBarCompat() {}
 
@@ -111,14 +117,28 @@ public final class SamsungNowBarCompat {
     }
 
     private static long packageLastUpdateTime(Context context) {
+        if (context == null) return 0L;
+        String pkg = context.getPackageName();
+        long known = cachedUpdateTime;
+        if (known >= 0L && pkg != null && pkg.equals(cachedUpdatePackage)) {
+            return known;
+        }
         try {
-            return context.getPackageManager()
-                    .getPackageInfo(context.getPackageName(), 0)
+            long resolved = context.getPackageManager()
+                    .getPackageInfo(pkg, 0)
                     .lastUpdateTime;
+            cachedUpdatePackage = pkg;
+            cachedUpdateTime = resolved;
+            return resolved;
         } catch (Throwable error) {
             Log.w(TAG, "Unable to read APK update time for compatibility probe", error);
             return 0L;
         }
+    }
+
+    static void resetCacheForTest() {
+        cachedUpdatePackage = null;
+        cachedUpdateTime = -1L;
     }
 
     private static android.content.SharedPreferences compatPrefs(Context context) {

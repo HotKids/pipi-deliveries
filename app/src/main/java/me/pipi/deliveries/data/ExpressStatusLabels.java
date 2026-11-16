@@ -17,15 +17,15 @@ import me.pipi.deliveries.model.StatusSemantic;
 
 /**
  * The one status label table (audit L5, user defaults of 2026-09-25): list, detail, widgets and
- * notification titles read their status word from here ({@code ExpressItem#displayStatus}), so
- * DANGER reads 异常件 and UNKNOWN reads 暂无状态 on every surface. The Worker serves the table with
- * the carrier authority snapshot as {@code statusLabels} (kept in {@link CarrierRegistry} with that
- * snapshot); {@link #bundled()} is the same table for first-offline startup and for a Worker that
- * does not serve it yet. Same port as Pipi's ExpressStatusLabels. Shared fixture:
- * deliveries/script/project/tests/fixtures/express/status-labels.v1.json.
+ * notification titles read their status word from here, so DANGER reads 异常件 and UNKNOWN reads
+ * 暂无状态 on every surface. The Worker serves the table with the carrier authority snapshot as
+ * {@code statusLabels} (kept in {@link CarrierRegistry} with that snapshot); {@link #bundled()} is
+ * the same table for first-offline startup and for a Worker that does not serve it yet. Shared
+ * fixture: deliveries/script/project/tests/fixtures/express/status-labels.v1.json.
  *
- * <p>Display only. The persisted status columns keep {@link StatusSemantic#label} and storage
- * codes, because stored rows are read back through them.</p>
+ * <p>Display only. The persisted status columns keep fixed storage words and codes
+ * ({@code ExpressPresentation#label} / {@code StatusSemantic#label}), because stored rows are read
+ * back through them.</p>
  */
 public final class ExpressStatusLabels {
     static final int SCHEMA_VERSION = 1;
@@ -105,9 +105,9 @@ public final class ExpressStatusLabels {
     }
 
     /**
-     * The Worker's reference mapping for order rows without a projected waybill. Lite's row read
-     * already applies that display semantic (ExpressSourcePolicy.accountOrderPresentationSemantic),
-     * so display never re-applies it.
+     * The Worker's reference mapping for order rows without a projected waybill. Parsers and row
+     * readers already apply that display semantic before presentation, so display never re-applies
+     * it.
      */
     public String unprojectedOrderScope() {
         return unprojectedOrderScope;
@@ -149,28 +149,7 @@ public final class ExpressStatusLabels {
      * returns null so the caller's existing switch stays in force.
      */
     public StatusSemantic code(String group, String rawCode) {
-        if (statusRules == null || group == null || group.isEmpty()) return null;
-        String wanted = rawCode == null ? "" : rawCode.trim();
-        if (wanted.isEmpty()) return null;
-        String folded = wanted.toUpperCase(Locale.ROOT);
-        Object groupRaw = statusRules.opt(group);
-        if (!(groupRaw instanceof JSONObject)) return null;
-        JSONObject groupObject = (JSONObject) groupRaw;
-        Iterator<String> keys = groupObject.keys();
-        while (keys.hasNext()) {
-            String semanticName = keys.next();
-            StatusSemantic semantic = semantic(semanticName);
-            if (semantic == null || semantic == StatusSemantic.UNKNOWN) continue;
-            Object codes = groupObject.opt(semanticName);
-            if (!(codes instanceof JSONArray)) continue;
-            JSONArray array = (JSONArray) codes;
-            for (int index = 0; index < array.length(); index++) {
-                Object item = array.opt(index);
-                if (!(item instanceof String)) continue;
-                if (folded.equals(((String) item).trim().toUpperCase(Locale.ROOT))) return semantic;
-            }
-        }
-        return null;
+        return codeIn(statusRules, group, rawCode);
     }
 
     /**
@@ -275,6 +254,31 @@ public final class ExpressStatusLabels {
     private static boolean textEquals(Object expected, String actual) {
         if (!(expected instanceof String)) return false;
         return ((String) expected).trim().equals(actual == null ? "" : actual.trim());
+    }
+
+    private static StatusSemantic codeIn(JSONObject rules, String group, String rawCode) {
+        if (rules == null || group == null || group.isEmpty()) return null;
+        String wanted = rawCode == null ? "" : rawCode.trim();
+        if (wanted.isEmpty()) return null;
+        String folded = wanted.toUpperCase(Locale.ROOT);
+        Object groupRaw = rules.opt(group);
+        if (!(groupRaw instanceof JSONObject)) return null;
+        JSONObject groupObject = (JSONObject) groupRaw;
+        Iterator<String> keys = groupObject.keys();
+        while (keys.hasNext()) {
+            String semanticName = keys.next();
+            StatusSemantic semantic = semantic(semanticName);
+            if (semantic == null || semantic == StatusSemantic.UNKNOWN) continue;
+            Object codes = groupObject.opt(semanticName);
+            if (!(codes instanceof JSONArray)) continue;
+            JSONArray array = (JSONArray) codes;
+            for (int index = 0; index < array.length(); index++) {
+                Object item = array.opt(index);
+                if (!(item instanceof String)) continue;
+                if (folded.equals(((String) item).trim().toUpperCase(Locale.ROOT))) return semantic;
+            }
+        }
+        return null;
     }
 
     /**

@@ -32,9 +32,6 @@ import me.pipi.deliveries.network.ExpressAccountSource;
 
 /** Original compact widget plus Pipi's three-row wide widget. */
 public class ExpressWidgetProvider extends AppWidgetProvider {
-    private static final java.util.concurrent.ExecutorService worker =
-            java.util.concurrent.Executors.newSingleThreadExecutor();
-
     static final int MAX_WIDE_ITEMS = ExpressWidgetRowPolicy.WIDE_ROW_LIMIT;
     private static final int[] WIDE_ROW_IDS = {
             R.id.widget_express_row1,
@@ -216,8 +213,12 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             } else {
                 for (int index = 0; index < WIDE_ROW_IDS.length; index++) {
                     bindWideRow(context, views, displayed, index, id * 10 + index,
-                            rowLayout, typography, mediumLayout, hostWidthDp);
+                            rowLayout, typography, mediumLayout);
                 }
+                ExpressWidgetMeasurements.centerWideRowGlyphs(context, views, displayed,
+                        rowLayout.visibleRows, WIDE_ROW_IDS, WIDE_LOGO_FRAME_IDS,
+                        WIDE_LOGO_IDS, WIDE_COMPANY_IDS, WIDE_STATUS_IDS,
+                        WIDE_DETAIL_IDS, hostWidthDp, rowLayout.detailMaxLines);
             }
 
             views.setOnClickPendingIntent(R.id.widget_express_header,
@@ -235,7 +236,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             Context context, RemoteViews views, List<ExpressItem> items, int index,
             int requestCode, ExpressWidgetRowPolicy.RowLayout rowLayout,
             WidgetTypographyProfile typography,
-            ExpressWidgetLayout.Medium mediumLayout, float hostWidthDp) {
+            ExpressWidgetLayout.Medium mediumLayout) {
         if (index >= rowLayout.visibleRows) {
             hideWideRow(views, index);
             return;
@@ -269,10 +270,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         boolean expandedDetail = rowLayout.detailMaxLines > 1 && !item.latestDetail.isEmpty();
         views.setInt(WIDE_CONTENT_IDS[index], "setGravity",
                 expandedDetail ? Gravity.TOP : Gravity.CENTER_VERTICAL);
-        ExpressWidgetMeasurements.centerRowGlyphs(context, views, root,
-                WIDE_LOGO_FRAME_IDS[index], WIDE_LOGO_IDS[index],
-                WIDE_COMPANY_IDS[index], WIDE_STATUS_IDS[index], WIDE_DETAIL_IDS[index],
-                hostWidthDp, expandedDetail ? rowLayout.detailMaxLines : 1);
+        views.setViewPadding(WIDE_LOGO_FRAME_IDS[index], 0, 0, 0, 0);
         views.setOnClickPendingIntent(root, openDetail(context, item, requestCode));
     }
 
@@ -379,9 +377,11 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
 
     public static void refreshAll(Context context) {
         Context application = context.getApplicationContext();
-        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
-            worker.execute(() -> refreshAllBlocking(application));
-        else refreshAllBlocking(application);
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            ExpressScheduler.handoffWidgetRefresh(application, () -> {});
+        } else {
+            refreshAllBlocking(application);
+        }
     }
 
     private static void refreshAllBlocking(Context context) {

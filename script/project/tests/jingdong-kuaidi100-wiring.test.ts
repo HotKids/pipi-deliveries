@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readSyncSource } from "./sync-source-helper";
 
-const sync = readFileSync(
-  new URL("../services/sync.ts", import.meta.url),
-  "utf8",
-);
+const sync = readSyncSource();
 const manual = readFileSync(
   new URL("../services/manual-query.ts", import.meta.url),
   "utf8",

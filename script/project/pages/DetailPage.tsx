@@ -9,6 +9,7 @@ import {
   Text,
   VStack,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "scripting";
@@ -73,6 +74,7 @@ import {
 
 /** 手动加件的查询链还没跑完时，状态词与轨迹区都写这个（用户定 2026-09-08 方案 2）。 */
 const MANUAL_QUERY_IN_FLIGHT_TEXT = "查询中";
+const EMPTY_ATTACHED_ORDERS: readonly Shipment[] = [];
 
 export function DetailPage(props: {
   shipment: Shipment;
@@ -162,8 +164,13 @@ export function DetailPage(props: {
   const detailEntryRef = useRef<DetailEntryObservation | undefined>(undefined);
   const pullInFlightRef = useRef<Promise<void> | null>(null);
   const joinedJdPullRef = useRef(false);
-  const attachedOrders = props.attachedOrders || [];
-  const detailTimeline = selectShipmentDetailPresentation(shipment, attachedOrders);
+  const recordedSelectionKeyRef = useRef("");
+  const attachedOrders = props.attachedOrders ?? EMPTY_ATTACHED_ORDERS;
+  const detailPresentation = useMemo(
+    () => selectShipmentDetailPresentation(shipment, attachedOrders),
+    [shipment, attachedOrders],
+  );
+  const detailTimeline = detailPresentation;
   const displayTracks = detailTimeline.tracks.filter(
     (track) => Boolean(track.detail.trim()) && !isProviderErrorDetail(track.detail),
   );
@@ -219,7 +226,7 @@ export function DetailPage(props: {
       latestTrackAtMs: timelineLatestTrackAt(detailTimeline),
       feedEventAtMs: shipment.sourceTimeline ? timelineLatestEventAt(shipment.sourceTimeline) : 0,
       statusEventAtMs: detailTimeline.statusEventAtMs || 0,
-      orderStagePrepended: jingDongOrderStagePrepended(shipment, attachedOrders),
+      orderStagePrepended: jingDongOrderStagePrepended(shipment, attachedOrders, detailPresentation),
       detailEffectiveTrackCount: effectiveTrackCount,
       result: effectiveTrackCount === 0
         ? "no_result"
@@ -251,12 +258,26 @@ export function DetailPage(props: {
     }
     // The package on screen becomes the sticky selection (audit D7, adopted 2026-09-25). A manual query
     // preview is not a stored row and records nothing.
-    if (!props.manualPreview) {
-      try {
-        recordShipmentDetailSelection(shipment.identity.id);
-      } catch (error) {
-        writeDiagnostic("detail.selection.record_failed", diagnosticErrorDetails(error), "warning");
+    const selectionProvider = detailTimeline.provider.trim().toLowerCase();
+    const selectionWaybill = normalizeWaybill(detailTimeline.waybill || displayWaybill(shipment));
+    const selectionKey = `${shipment.identity.id}|${selectionProvider}|${selectionWaybill}`;
+    const selectionUnchanged =
+      !selectionProvider ||
+      recordedSelectionKeyRef.current === selectionKey ||
+      (shipment.detailSelection?.provider.trim().toLowerCase() === selectionProvider &&
+        (!shipment.detailSelection.waybill ||
+          normalizeWaybill(shipment.detailSelection.waybill) === selectionWaybill));
+    if (!selectionUnchanged) {
+      if (!props.manualPreview) {
+        try {
+          recordShipmentDetailSelection(shipment.identity.id);
+          recordedSelectionKeyRef.current = selectionKey;
+        } catch (error) {
+          writeDiagnostic("detail.selection.record_failed", diagnosticErrorDetails(error), "warning");
+        }
       }
+    } else {
+      recordedSelectionKeyRef.current = selectionKey;
     }
   }, [shipment.identity.id, selectionSignature]);
   // 承运商只有一份：identity。列表行、小组件、通知都读它，repairProjectedShipmentCarrier 也只维护

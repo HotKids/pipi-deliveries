@@ -42,4 +42,34 @@ import type { AppState } from "../models";
   assert.equal(JSON.stringify(entries).includes("secret-row-id"), false, "the row id is never logged");
 }
 
+// I-02: flushDiagnostics() prunes over-cap (>200) and expired batches via meta.json ONLY with zero rXXXX.json reads.
+{
+  memory.clear();
+  setDiagnosticsEnabled(true);
+  clearDiagnostics();
+  const originalRead = FileManager.readAsStringSync;
+  let recordReadsOnFlush = 0;
+  FileManager.readAsStringSync = ((path: string) => {
+    if (/\/r[0-9]{4}\.json$/.test(path)) recordReadsOnFlush++;
+    return originalRead(path);
+  }) as typeof FileManager.readAsStringSync;
+  try {
+    for (let batch = 0; batch < 12; batch++) {
+      for (let i = 0; i < 20; i++) {
+        performShipmentCompletion(`row-${batch}-${i}`, {
+          mutate: () => ({ shipments: [] } as unknown as AppState),
+          pruneRoutes: () => {},
+          reloadWidgets: () => {},
+        });
+      }
+      flushDiagnostics();
+    }
+    assert.equal(recordReadsOnFlush, 0, "flush path must perform zero reads of rXXXX.json record files");
+  } finally {
+    FileManager.readAsStringSync = originalRead;
+  }
+  const exported = readDiagnostics();
+  assert.equal(exported.length, 200, "readDiagnostics still exports bounded 200 newest entries");
+}
+
 console.log("diagnostic cleanup tests passed");

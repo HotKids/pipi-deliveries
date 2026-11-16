@@ -302,18 +302,18 @@ public final class WaybillReuseTest {
         ExpressQueryResult early = new ExpressQueryResult("YTREUSE000000010", "YTO", "圆通速递",
                 StatusSemantic.DELIVERY, signed + 3 * DAY, time(signed + 3 * DAY), "派送中",
                 twoTracks(signed + 3 * DAY, "派送中", signed - DAY, "揽收"), "", phone, "interface5", "", "", "CaiNiao");
-        assertFalse("its earliest node is the old parcel's history", WaybillReusePolicy.supersedes(old, early, now));
+        assertFalse("its earliest node is the old parcel's history", WaybillReusePolicy.supersedesOlderTerminal(old, early, now));
         ExpressQueryResult later = record("YTREUSE000000010", StatusSemantic.PICKED, signed + 25 * HOUR, "CaiNiao");
-        assertTrue(WaybillReusePolicy.supersedes(old, later, now));
-        assertFalse(WaybillReusePolicy.supersedes(later, old, now));
+        assertTrue(WaybillReusePolicy.supersedesOlderTerminal(old, later, now));
+        assertFalse(WaybillReusePolicy.supersedesOlderTerminal(later, old, now));
         ExpressQueryResult future = record("YTREUSE000000010", StatusSemantic.PICKED, now + DAY, "CaiNiao");
-        assertFalse("a time in the future is no time", WaybillReusePolicy.supersedes(old, future, now));
+        assertFalse("a time in the future is no time", WaybillReusePolicy.supersedesOlderTerminal(old, future, now));
         ExpressQueryResult laterNode = new ExpressQueryResult("YTREUSE000000010", "YTO", "圆通速递",
                 StatusSemantic.COMPLETED, signed, time(signed), "已签收",
                 twoTracks(signed + 10 * HOUR, "签收后的补充说明 synthetic", signed, "已签收"),
                 "", phone, "interface5", "", "", "CaiNiao");
         assertFalse("the terminal time is the latest of status, shown and node times",
-                WaybillReusePolicy.supersedes(laterNode, later, now));
+                WaybillReusePolicy.supersedesOlderTerminal(laterNode, later, now));
     }
 
     private ExpressItem signedOldParcel(String id, String source) {

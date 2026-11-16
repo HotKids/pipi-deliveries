@@ -22,6 +22,10 @@ public final class NotificationDismissedReceiver extends BroadcastReceiver {
         String fingerprint = intent.getStringExtra(NotificationDismissalStore.EXTRA_FINGERPRINT);
         String token = intent.getStringExtra(NotificationDismissalStore.EXTRA_TOKEN);
         if (label == null || label.isEmpty() || id != ExpressLiveNotifications.LIVE_ID) return;
+        NotificationKey immediateKey = NotificationKey.persisted(label, id);
+        if (NotificationDismissalStore.markDismissedInMemory(immediateKey, fingerprint, token)) {
+            PromotedNotificationPublisher.onUserDismissed(immediateKey);
+        }
         Context application = context.getApplicationContext();
         PendingResult pending = goAsync();
         WORKER.execute(() -> {

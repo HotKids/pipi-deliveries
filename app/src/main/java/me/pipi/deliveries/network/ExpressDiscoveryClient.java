@@ -43,6 +43,13 @@ public final class ExpressDiscoveryClient {
     private final JSONObject identity;
     private final Set<String> syncedWaybills = new HashSet<>();
     private final Map<String, Set<String>> syncedWaybillsByGeneration = new HashMap<>();
+    private final List<String> cainiaoSyncOrder = new ArrayList<>();
+    private final Map<String, JSONObject> cainiaoListSummaries = new HashMap<>();
+    private final Map<String, String> cainiaoListPhones = new HashMap<>();
+    private final Map<String, String> cainiaoListGenerations = new HashMap<>();
+    private final Set<String> cainiaoListUpdatedWaybills = new HashSet<>();
+    private boolean deferCainiaoSupplement;
+    private java.util.function.LongSupplier clock = System::currentTimeMillis;
 
     public ExpressDiscoveryClient() {
         this(null, null);
@@ -51,6 +58,19 @@ public final class ExpressDiscoveryClient {
     ExpressDiscoveryClient(ExpressGatewayTransport transport, JSONObject identity) {
         this.transport = transport;
         this.identity = identity;
+    }
+
+    /** Defers per-waybill Cainiao v5_query supplement until after account list publication (E1). */
+    public void deferCainiaoSupplement() {
+        this.deferCainiaoSupplement = true;
+    }
+
+    public void setClockForTest(java.util.function.LongSupplier clock) {
+        this.clock = clock == null ? System::currentTimeMillis : clock;
+    }
+
+    private long nowMillis() {
+        return clock.getAsLong();
     }
 
     private ExpressGatewayTransport transport(Context context) {
@@ -139,8 +159,14 @@ public final class ExpressDiscoveryClient {
                 repository.bindingGenerations("interface5");
         syncedWaybills.clear();
         syncedWaybillsByGeneration.clear();
+        cainiaoSyncOrder.clear();
+        cainiaoListSummaries.clear();
+        cainiaoListPhones.clear();
+        cainiaoListGenerations.clear();
+        cainiaoListUpdatedWaybills.clear();
+        long syncNow = nowMillis();
         SharedPreferences prefs = context.getSharedPreferences(PREFS, 0);
-        pruneDetailCache(prefs, System.currentTimeMillis());
+        pruneDetailCache(prefs, syncNow);
         JSONObject request = new JSONObject()
                 .put("interface", "v5")
                 .put("identity", identity(context))
@@ -177,7 +203,7 @@ public final class ExpressDiscoveryClient {
                 throw new IllegalStateException("同步响应包含无法识别的记录");
             }
         }
-        Map<String, Integer> listedRecords = listedRecordIndexes(list, System.currentTimeMillis());
+        Map<String, Integer> listedRecords = listedRecordIndexes(list, syncNow);
         NewRecordCarriers carriers = newRecordCarriers;
         ArrayList<HeldRecord> held = new ArrayList<>();
         ArrayList<JSONObject> discovered = new ArrayList<>();
@@ -243,59 +269,213 @@ public final class ExpressDiscoveryClient {
                         && importedWaybills.add(normalize(itemIdentity(record.item)))) imported++;
             }
         }
-        // Persist the list signal before querying. A failed Cainiao query does not turn an
-        // identical future list into another update; query completion is not the list baseline.
-        for (JSONObject item : discovered) {
-            String waybill = itemIdentity(item);
-            try {
-                boolean suppressed = repository.hasUnboundPhoneAssociation(
-                        waybill, "interface5");
-                String associatedPhone = matchedPhone(
-                        item, normalizedPhones, !suppressed);
-                String bindingGeneration = bindingGenerations.get(
-                        associatedPhone.replaceAll("\\D", ""));
-                if (ExpressRepository.shouldSuppressAutomaticImport(
-                        suppressed, associatedPhone) || bindingGeneration == null) continue;
-                ExpressItem queryOwner = repository.findByWaybill(waybill, "interface5");
-                if (isCainiaoListItem(item)
-                        && (queryOwner == null || !isInterface5Owned(queryOwner)
-                        || !queryOwner.isCainiaoSource()
-                        || queryOwner.semantic == StatusSemantic.CANCELLED
-                        || !bindingGeneration.equals(repository.bindingGeneration(
-                                queryOwner.phone, "interface5")))) continue;
-                JSONObject queried;
-                try (ExpressQueryCancellation budget =
-                        new ExpressQueryCancellation(ACCOUNT_DETAIL_BUDGET_MS)) {
-                    queried = queryDetails(context, item, associatedPhone, budget);
-                }
-                if (queried == null) continue;
-                if (!detailMatchesRequestedIdentity(queried, waybill)) continue;
-                JSONObject completeItem = overlay(item, queried);
-                boolean accountOrder = isAccountOrderRecord(item);
-                ExpressQueryResult detailed = accountOrder
-                        ? parseAccountOrder(completeItem)
-                        : storedExpress(completeItem, associatedPhone, false);
-                if (detailed == null
-                        || !normalize(waybill).equals(normalize(detailed.waybill))) continue;
-                if (isCainiaoListItem(item)
-                        && !Kuaidi100TimelinePolicy.hasRealTracking(detailed)) continue;
-                if (!repository.saveInterface5Query(detailed, queryOwner, bindingGeneration)) continue;
-                boolean realTimeline = Kuaidi100TimelinePolicy.hasRealTracking(detailed);
-                ExpressItem persisted = repository.findByWaybill(waybill, "interface5");
-                if (!ExpressStatusNormalizer.isProviderErrorDetail(detailed.latestDetail)
-                        && persisted != null
-                        && (!realTimeline
-                        || !persisted.usesInterface5AccountTimeline()
-                        || repository.hasAccountTimeline(persisted, waybill, "interface5"))) {
-                    rememberDetailRefresh(prefs, item);
-                }
-            } catch (Throwable failure) {
-                ExpressLog.line("v5", "v5_query", "", "failed", ExpressLog.errorDetails(failure));
-            }
-        }
         ExpressLog.line("v5", "v5_list", "", "succeeded",
                 "records", list.length(), "imported", imported);
+        if (!deferCainiaoSupplement) {
+            supplementCainiaoDetails(context, userPull, null, null, null);
+        }
         return imported;
+    }
+
+    private static final class CainiaoSupplementTarget {
+        final long rowId;
+        final String normalizedWaybill;
+        final String bindingGeneration;
+
+        CainiaoSupplementTarget(long rowId, String normalizedWaybill, String bindingGeneration) {
+            this.rowId = rowId;
+            this.normalizedWaybill = normalizedWaybill;
+            this.bindingGeneration = bindingGeneration;
+        }
+    }
+
+    /**
+     * Runs post-account Cainiao v5_query trajectory supplement across active rows that either had a list update in
+     * this round or still carry a persistent trajectory gap from an earlier failed/stale round.
+     */
+    public int supplementCainiaoDetails(Context context, boolean userPull, Set<Long> signedFrozen,
+            Runnable onFirstQuery, int[] network) throws InterruptedException {
+        ExpressRepository repository = ExpressRepository.get(context);
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, 0);
+        ArrayList<CainiaoSupplementTarget> targets = new ArrayList<>();
+        Set<Long> seenRowIds = new HashSet<>();
+        for (String normalizedWaybill : cainiaoSyncOrder) {
+            String expectedGeneration = cainiaoListGenerations.get(normalizedWaybill);
+            if (expectedGeneration == null || expectedGeneration.isEmpty()) continue;
+            ExpressItem owner = repository.findByWaybill(normalizedWaybill, "interface5");
+            if (owner == null || !ExpressRepository.isCainiaoV5Automatic(owner)
+                    || owner.semantic == StatusSemantic.CANCELLED
+                    || !expectedGeneration.equals(repository.bindingGeneration(owner.phone, "interface5"))) {
+                continue;
+            }
+            if (seenRowIds.add(owner.rowId)) {
+                targets.add(new CainiaoSupplementTarget(owner.rowId, normalizedWaybill, expectedGeneration));
+            }
+        }
+        boolean listUnavailable = syncedWaybillsByGeneration.isEmpty();
+        for (ExpressItem row : repository.listVisibleAsStored("interface5")) {
+            if (row == null || !ExpressRepository.isCainiaoV5Automatic(row)
+                    || row.semantic == StatusSemantic.CANCELLED || seenRowIds.contains(row.rowId)) {
+                continue;
+            }
+            String generation = repository.bindingGeneration(row.phone, "interface5");
+            if (generation.isEmpty()) continue;
+            String normalizedWaybill = normalize(row.waybill);
+            Set<String> observed = syncedWaybillsByGeneration.get(generation);
+            boolean observedThisRound = observed != null && observed.contains(normalizedWaybill);
+            boolean emptyManualPull = userPull && listUnavailable
+                    && row.latestDetail.trim().isEmpty()
+                    && ExpressTimeline.parse(row.tracksJson, "", "").isEmpty();
+            if (!observedThisRound && !emptyManualPull) continue;
+            if (seenRowIds.add(row.rowId)) {
+                targets.add(new CainiaoSupplementTarget(row.rowId, normalizedWaybill, generation));
+            }
+        }
+        if (targets.isEmpty()) return 0;
+
+        Set<Long> frozenIds = signedFrozen;
+        if (frozenIds == null) {
+            try {
+                frozenIds = repository.signedFrozenRows("interface5");
+            } catch (RuntimeException ignored) {
+                frozenIds = new HashSet<>();
+            }
+        }
+
+        int supplemented = 0;
+        // Persist the list signal before querying. A failed Cainiao query does not turn an
+        // identical future list into another update; query completion is not the list baseline.
+        for (CainiaoSupplementTarget target : targets) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+            ExpressItem queryOwner = repository.find(target.rowId);
+            if (queryOwner == null || !ExpressRepository.isCainiaoV5Automatic(queryOwner)
+                    || queryOwner.semantic == StatusSemantic.CANCELLED
+                    || !target.normalizedWaybill.equals(normalize(queryOwner.waybill))
+                    || !target.bindingGeneration.equals(
+                            repository.bindingGeneration(queryOwner.phone, "interface5"))) {
+                continue;
+            }
+            if (frozenIds.contains(queryOwner.rowId)) {
+                ExpressLog.line("v5", TimelineSlot.V5_QUERY,
+                        ExpressLog.source(queryOwner.sourceProvider, queryOwner.manuallyAdded),
+                        "skipped", "tail", tail(queryOwner.displayWaybill()),
+                        "reason", ExpressRepository.SIGNED_FROZEN);
+                continue;
+            }
+            long now = nowMillis();
+            boolean listUpdated = cainiaoListUpdatedWaybills.contains(target.normalizedWaybill);
+            ExpressRepository.CainiaoSupplementClaim claim =
+                    repository.claimCainiaoSupplement(queryOwner, listUpdated, now);
+            if (claim == null) continue;
+            if (onFirstQuery != null) onFirstQuery.run();
+            if (network != null) network[0]++;
+            JSONObject item;
+            try {
+                JSONObject cachedSummary = cainiaoListSummaries.get(target.normalizedWaybill);
+                item = cachedSummary != null ? cachedSummary : itemSummary(claim.owner);
+            } catch (Throwable failure) {
+                repository.recordCainiaoSupplementResult(
+                        claim, classifySupplementFailure(failure), nowMillis());
+                ExpressLog.line("v5", "v5_query", "", "failed", ExpressLog.errorDetails(failure));
+                continue;
+            }
+            String associatedPhone = cainiaoListPhones.getOrDefault(
+                    target.normalizedWaybill, claim.owner.phone);
+            String waybill = itemIdentity(item);
+            JSONObject queried;
+            try (ExpressQueryCancellation budget =
+                    new ExpressQueryCancellation(ACCOUNT_DETAIL_BUDGET_MS)) {
+                queried = queryDetails(context, item, associatedPhone, budget);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            } catch (Throwable failure) {
+                repository.recordCainiaoSupplementResult(
+                        claim, classifySupplementFailure(failure), nowMillis());
+                ExpressLog.line("v5", "v5_query", "", "failed", ExpressLog.errorDetails(failure));
+                continue;
+            }
+            long writeNow = nowMillis();
+            if (queried == null || !detailMatchesRequestedIdentity(queried, waybill)) {
+                repository.recordCainiaoSupplementResult(claim, "no_result", writeNow);
+                continue;
+            }
+            ExpressQueryResult detailed;
+            try {
+                JSONObject completeItem = overlay(item, queried);
+                detailed = isAccountOrderRecord(item)
+                        ? parseAccountOrder(completeItem)
+                        : storedExpress(completeItem, associatedPhone, false);
+            } catch (Throwable failure) {
+                repository.recordCainiaoSupplementResult(
+                        claim, classifySupplementFailure(failure), writeNow);
+                ExpressLog.line("v5", "v5_query", "", "failed", ExpressLog.errorDetails(failure));
+                continue;
+            }
+            if (detailed == null
+                    || !normalize(waybill).equals(normalize(detailed.waybill))
+                    || !Kuaidi100TimelinePolicy.hasRealTracking(detailed)) {
+                repository.recordCainiaoSupplementResult(claim, "no_result", writeNow);
+                continue;
+            }
+            ExpressItem liveOwner = repository.find(claim.owner.rowId);
+            if (liveOwner == null || !ExpressRepository.isCainiaoV5Automatic(liveOwner)
+                    || !claim.bindingGeneration.equals(
+                            repository.bindingGeneration(liveOwner.phone, "interface5"))) {
+                continue;
+            }
+            if (!repository.saveInterface5Query(detailed, claim.owner, claim.bindingGeneration)) {
+                repository.recordCainiaoSupplementResult(claim, "no_result", writeNow);
+                continue;
+            }
+            repository.recordCainiaoSupplementResult(claim, "success", writeNow);
+            supplemented++;
+            if (network != null) network[1]++;
+            boolean realTimeline = Kuaidi100TimelinePolicy.hasRealTracking(detailed);
+            ExpressItem persisted = repository.findByWaybill(waybill, "interface5");
+            if (!ExpressStatusNormalizer.isProviderErrorDetail(detailed.latestDetail)
+                    && persisted != null
+                    && (!realTimeline
+                    || !persisted.usesInterface5AccountTimeline()
+                    || repository.hasAccountTimeline(persisted, waybill, "interface5"))) {
+                rememberDetailRefresh(prefs, item);
+            }
+        }
+        return supplemented;
+    }
+
+    static String classifySupplementFailure(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            if (current instanceof GatewayHttpException) {
+                GatewayHttpException http = (GatewayHttpException) current;
+                String code = http.gatewayCode();
+                int status = http.status();
+                if ("rate_limited".equals(code) || "upstream_rejected".equals(code)
+                        || "upstream_business_error".equals(code) || "upstream".equals(code)
+                        || "risk_control".equals(code) || status == 429 || status == 403) {
+                    return "upstream_rejected";
+                }
+                if ("invalid_query".equals(code) || "phone_tail".equals(code)
+                        || "phone_verification_required".equals(code)
+                        || status == 400 || status == 422) {
+                    return "invalid_query";
+                }
+                if (status == 408 || status == 504) return "timeout";
+            }
+            if (current instanceof ExpressApi.QueryException
+                    || current instanceof IllegalArgumentException) {
+                return "invalid_query";
+            }
+            if (current instanceof java.net.SocketTimeoutException
+                    || current instanceof java.io.InterruptedIOException
+                    || current instanceof java.util.concurrent.TimeoutException) {
+                return "timeout";
+            }
+            if (current instanceof java.io.IOException) {
+                return "network";
+            }
+        }
+        return "failed";
     }
 
     private static boolean isCainiaoListItem(JSONObject item) {
@@ -438,7 +618,14 @@ public final class ExpressDiscoveryClient {
             ExpressItem current = repository.findByWaybill(waybill, "interface5");
             ExpressQueryResult currentSource = current == null ? null
                     : repository.automaticSourceTimeline(current);
+            if (!cainiaoListSummaries.containsKey(normalizedWaybill)) {
+                cainiaoSyncOrder.add(normalizedWaybill);
+            }
+            cainiaoListSummaries.put(normalizedWaybill, item);
+            cainiaoListPhones.put(normalizedWaybill, associatedPhone);
+            cainiaoListGenerations.put(normalizedWaybill, bindingGeneration);
             if (hasCainiaoListUpdate(previousSource, currentSource)) {
+                cainiaoListUpdatedWaybills.add(normalizedWaybill);
                 Integer pending = changedCainiao.get(normalizedWaybill);
                 if (pending == null) {
                     changedCainiao.put(normalizedWaybill, discovered.size());
@@ -1091,7 +1278,7 @@ public final class ExpressDiscoveryClient {
             if (!kept.containsKey(identity)) {
                 kept.put(identity, index);
                 keptRecords.put(identity, record);
-            } else if (me.pipi.deliveries.data.WaybillReusePolicy.supersedes(
+            } else if (me.pipi.deliveries.data.WaybillReusePolicy.supersedesOlderTerminal(
                     keptRecords.get(identity), record, now)) {
                 kept.put(identity, index);
                 keptRecords.put(identity, record);

@@ -80,6 +80,14 @@ function verifiedText(path: string, value: string): boolean {
   }
 }
 
+function verifiedCommittedFile(path: string): boolean {
+  try {
+    return FileManager.existsSync(path) && FileManager.isFileSync(path);
+  } catch {
+    return false;
+  }
+}
+
 export function writeDurableText(name: string, value: string): void {
   const root = durableRoot();
   FileManager.createDirectorySync(root, true);
@@ -113,7 +121,7 @@ export function writeDurableText(name: string, value: string): void {
       currentMoved = true;
     }
     FileManager.renameSync(pending, path);
-    if (!verifiedText(path, value)) {
+    if (!verifiedCommittedFile(path)) {
       throw new Error("Durable file verification failed");
     }
   } catch (error) {
@@ -147,7 +155,7 @@ export function writeDurableText(name: string, value: string): void {
         backupMoved = true;
       }
       FileManager.renameSync(backupPending, backup);
-      if (!verifiedText(backup, value)) {
+      if (!verifiedCommittedFile(backup)) {
         throw new Error("Durable backup verification failed");
       }
       removeBestEffort(backupRollback);

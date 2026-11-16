@@ -38,7 +38,7 @@ final class ExpressReadSidePool {
         private final long dataVersion;
         private final long invalidationVersion;
         private final Map<String, String> detailSelections;
-        private final Map<String, ?> emptyOrderMarks;
+        private final long emptyOrderMarksGeneration;
         private final Object carrierStatusTable;
         private final long capturedWallMs;
 
@@ -48,7 +48,7 @@ final class ExpressReadSidePool {
                 long dataVersion,
                 long invalidationVersion,
                 Map<String, String> detailSelections,
-                Map<String, ?> emptyOrderMarks,
+                long emptyOrderMarksGeneration,
                 Object carrierStatusTable,
                 long capturedWallMs) {
             this.writer = writer;
@@ -56,7 +56,7 @@ final class ExpressReadSidePool {
             this.dataVersion = dataVersion;
             this.invalidationVersion = invalidationVersion;
             this.detailSelections = detailSelections;
-            this.emptyOrderMarks = emptyOrderMarks;
+            this.emptyOrderMarksGeneration = emptyOrderMarksGeneration;
             this.carrierStatusTable = carrierStatusTable;
             this.capturedWallMs = capturedWallMs;
         }
@@ -69,8 +69,8 @@ final class ExpressReadSidePool {
                     && invalidationVersion == other.invalidationVersion
                     && carrierStatusTable == other.carrierStatusTable
                     && Math.abs(other.capturedWallMs - capturedWallMs) <= WALL_CLOCK_DRIFT_LIMIT_MS
-                    && Objects.equals(detailSelections, other.detailSelections)
-                    && Objects.equals(emptyOrderMarks, other.emptyOrderMarks);
+                    && emptyOrderMarksGeneration == other.emptyOrderMarksGeneration
+                    && Objects.equals(detailSelections, other.detailSelections);
         }
     }
 
@@ -175,17 +175,14 @@ final class ExpressReadSidePool {
             SQLiteDatabase stamp = sideConnection(writer, true);
             if (stamp == null) return null;
             long dataVersion = DatabaseUtils.longForQuery(stamp, "PRAGMA data_version", null);
-            Map<String, ?> emptyMarks = context == null
-                    ? Collections.emptyMap()
-                    : new HashMap<>(context.getSharedPreferences(
-                            JingDongEmptyOrderPages.PREFERENCES, 0).getAll());
+            long emptyMarksGeneration = JingDongEmptyOrderPages.generation(context);
             return new Stamp(
                     writer,
                     bindingSource,
                     dataVersion,
                     invalidationVersion,
                     detailSelections,
-                    emptyMarks,
+                    emptyMarksGeneration,
                     CarrierRegistry.statusLabels(),
                     System.currentTimeMillis());
         } catch (RuntimeException unavailable) {

@@ -3,6 +3,10 @@ package me.pipi.deliveries.data;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.util.Map;
+import java.util.WeakHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.StatusSemantic;
 
@@ -28,11 +32,32 @@ public final class JingDongEmptyOrderPages {
     /** 存的是最近一次还没确认的空壳时间；确认后换成这个值。 */
     private static final long CONFIRMED = -1L;
     private static final Object LOCK = new Object();
+    private static final AtomicLong GENERATION = new AtomicLong();
+    private static final Map<SharedPreferences, SharedPreferences.OnSharedPreferenceChangeListener> LISTENERS =
+            new WeakHashMap<>();
 
     private final SharedPreferences marks;
 
     public JingDongEmptyOrderPages(Context context) {
-        marks = context.getApplicationContext().getSharedPreferences(PREFERENCES, 0);
+        marks = preferences(context);
+    }
+
+    static long generation(Context context) {
+        if (context != null) preferences(context);
+        return GENERATION.get();
+    }
+
+    private static SharedPreferences preferences(Context context) {
+        SharedPreferences prefs = context.getApplicationContext().getSharedPreferences(PREFERENCES, 0);
+        synchronized (LOCK) {
+            if (!LISTENERS.containsKey(prefs)) {
+                SharedPreferences.OnSharedPreferenceChangeListener listener =
+                        (unused, changedKey) -> GENERATION.incrementAndGet();
+                prefs.registerOnSharedPreferenceChangeListener(listener);
+                LISTENERS.put(prefs, listener);
+            }
+        }
+        return prefs;
     }
 
     /** 已完成、还没有运单号（没有订单投影）的接口 5 京东账号订单：只有它能被记、记号也只对它起作用。 */
@@ -60,7 +85,10 @@ public final class JingDongEmptyOrderPages {
             long last = marks.getLong(key, 0L);
             if (last == CONFIRMED) return;
             long next = last > 0L && now - last >= CONFIRMATION_SPACING_MS ? CONFIRMED : now;
-            if (next != last) marks.edit().putLong(key, next).apply();
+            if (next != last) {
+                marks.edit().putLong(key, next).apply();
+                GENERATION.incrementAndGet();
+            }
         }
     }
 
@@ -69,7 +97,10 @@ public final class JingDongEmptyOrderPages {
         if (order == null || ExpressSourcePolicy.normalizeWaybill(order.waybill).isEmpty()) return;
         String key = key(order);
         synchronized (LOCK) {
-            if (marks.contains(key)) marks.edit().remove(key).apply();
+            if (marks.contains(key)) {
+                marks.edit().remove(key).apply();
+                GENERATION.incrementAndGet();
+            }
         }
     }
 

@@ -387,4 +387,102 @@ public class ExpressKuaidi100TimelineCaptureTest {
         assertFalse(script.contains("document.cookie"));
         assertEquals(8_000L, ExpressKuaidi100TimelineCapture.CAPTURE_TIMEOUT_MS);
     }
+
+    @Test
+    public void deterministicTerminalOutcomesImmediatelyStopPollingAndReleaseWebView() throws Exception {
+        for (String outcome : new String[]{"no_result", "provider_error", "identity_mismatch"}) {
+            ShadowLog.clear();
+            Activity host = Robolectric.buildActivity(Activity.class).setup().get();
+            String payload = JSONObject.quote(new JSONObject()
+                    .put("tracks", new JSONArray())
+                    .put("noResult", "no_result".equals(outcome))
+                    .put("failure", "provider_error".equals(outcome) ? "HTTP" : "")
+                    .put("outcome", outcome)
+                    .toString());
+
+            int[] manualCallbacks = new int[1];
+            ExpressKuaidi100TimelineCapture manual = new ExpressKuaidi100TimelineCapture(
+                    host,
+                    "https://m.kuaidi100.com/app/query/?nu=SFTEST4291",
+                    "SFTEST4291",
+                    "",
+                    (capture, tracksJson) -> {
+                        manualCallbacks[0]++;
+                        assertEquals("", tracksJson);
+                    });
+            assertTrue(manual.start());
+            java.lang.reflect.Field manualWebField =
+                    ExpressKuaidi100TimelineCapture.class.getDeclaredField("webView");
+            manualWebField.setAccessible(true);
+            WebView manualView = (WebView) manualWebField.get(manual);
+            assertTrue(manualView instanceof ExpressHiddenWebView.PassiveWebView);
+            java.lang.reflect.Method manualPoll =
+                    ExpressKuaidi100TimelineCapture.class.getDeclaredMethod("poll");
+            manualPoll.setAccessible(true);
+            manualPoll.invoke(manual);
+            Shadows.shadowOf(manualView).getLastEvaluatedJavascriptCallback().onReceiveValue(payload);
+            assertEquals(1, manualCallbacks[0]);
+            assertEquals(null, manualWebField.get(manual));
+            assertTrue(Shadows.shadowOf(manualView).wasDestroyCalled());
+
+            int[] autoCallbacks = new int[1];
+            ExpressItem owner = new ExpressItem(1L, "", "SFTEST4292", "SF", "SF",
+                    StatusSemantic.TRANSIT, "运输中", "Synthetic event", "2026-09-09 18:51:23",
+                    "[]", "", "INTERFACE5", "");
+            ExpressAutomaticTimelineCapture automatic = new ExpressAutomaticTimelineCapture(
+                    host,
+                    owner,
+                    "https://m.kuaidi100.com/app/query/?nu=SFTEST4292",
+                    TimelineSlot.K100_H5,
+                    new ExpressQueryCancellation(10_000L),
+                    result -> {
+                        autoCallbacks[0]++;
+                        assertEquals(null, result);
+                    });
+            automatic.start();
+            java.lang.reflect.Field autoWebField =
+                    ExpressAutomaticTimelineCapture.class.getDeclaredField("view");
+            autoWebField.setAccessible(true);
+            WebView autoView = (WebView) autoWebField.get(automatic);
+            assertTrue(autoView instanceof ExpressHiddenWebView.PassiveWebView);
+            java.lang.reflect.Method autoPoll =
+                    ExpressAutomaticTimelineCapture.class.getDeclaredMethod("poll");
+            autoPoll.setAccessible(true);
+            autoPoll.invoke(automatic);
+            Shadows.shadowOf(autoView).getLastEvaluatedJavascriptCallback().onReceiveValue(payload);
+            assertEquals(1, autoCallbacks[0]);
+            assertEquals(null, autoWebField.get(automatic));
+            assertTrue(Shadows.shadowOf(autoView).wasDestroyCalled());
+
+            List<String> logs = captureLogs();
+            assertEquals(2, logs.size());
+            assertTrue(logs.get(0).contains("skipReason=" + outcome + " evaluations=1"));
+            assertTrue(logs.get(1).contains("skipReason=" + outcome + " evaluations=1"));
+        }
+    }
+
+    @Test
+    public void passiveHiddenWebViewIgnoresTouchesAndPollScriptIsCached() {
+        Activity host = Robolectric.buildActivity(Activity.class).setup().get();
+        WebView view = ExpressHiddenWebView.create(host, host);
+        assertTrue(view instanceof ExpressHiddenWebView.PassiveWebView);
+        android.view.MotionEvent down = android.view.MotionEvent.obtain(
+                100L, 100L, android.view.MotionEvent.ACTION_DOWN, 10f, 10f, 0);
+        try {
+            assertFalse(view.dispatchTouchEvent(down));
+            assertFalse(view.onTouchEvent(down));
+        } finally {
+            down.recycle();
+        }
+        String firstK100 = ExpressCarrierH5CaptureCore.pollScript(
+                false, "SFTEST4299", java.util.Collections.singletonList("1234"));
+        String secondK100 = ExpressCarrierH5CaptureCore.pollScript(
+                false, " sf-test-4299 ", java.util.Collections.singletonList("13800001234"));
+        assertTrue(firstK100 == secondK100);
+        String firstJt = ExpressCarrierH5CaptureCore.pollScript(
+                true, "JTTEST4299", java.util.Collections.singletonList("5678"));
+        String secondJt = ExpressCarrierH5CaptureCore.pollScript(
+                true, "JTTEST4299", java.util.Collections.singletonList("5678"));
+        assertTrue(firstJt == secondJt);
+    }
 }

@@ -1,4 +1,8 @@
-import type { RefreshSummary } from "../models";
+import type { AppState, RefreshSummary } from "../models";
+
+export function createWidgetStateHolder(): { state: AppState | null } {
+  return { state: null };
+}
 
 export type WidgetPresentationKind = "small" | "medium" | "unsupported";
 

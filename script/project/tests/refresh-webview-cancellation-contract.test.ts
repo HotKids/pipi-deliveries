@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readSyncSource } from "./sync-source-helper";
 
-const source = readFileSync(
-  new URL("../services/sync.ts", import.meta.url),
-  "utf8",
-);
+const source = readSyncSource();
 
 const cancellationHelper = source.match(
   /function rethrowRefreshCancellation\([\s\S]*?\n}/,
@@ -21,7 +18,7 @@ assert.doesNotMatch(
 );
 
 const accountList = source.match(
-  /async function synchronizeAccountList\([\s\S]*?\n}\n\ntype ManualRefreshTask/,
+  /async function synchronizeAccountList\([\s\S]*?\n}\n\nexport async function bindPhone/,
 )?.[0] || "";
 assert.match(
   accountList,
@@ -35,7 +32,7 @@ assert.match(
 );
 
 const detail = source.match(
-  /async function runShipmentRefreshById\([\s\S]*?\n}\n\nfunction runTargetedShipmentRefresh/,
+  /async function runShipmentRefreshById\([\s\S]*?\n}\n\n(?:export )?function runTargetedShipmentRefresh/,
 )?.[0] || "";
 assert.doesNotMatch(
   detail,

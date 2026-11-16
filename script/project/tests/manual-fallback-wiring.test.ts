@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readSyncSource } from "./sync-source-helper";
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const syncSource = await readFile(resolve(projectDir, "services/sync.ts"), "utf8");
+const syncSource = readSyncSource();
 const manualSource = await readFile(
   resolve(projectDir, "services/manual-query.ts"),
   "utf8",

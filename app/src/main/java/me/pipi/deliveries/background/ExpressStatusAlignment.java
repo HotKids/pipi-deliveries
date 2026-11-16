@@ -84,6 +84,11 @@ public final class ExpressStatusAlignment {
 
     /** Any two of the three times, each present, more than five minutes apart (用户 2026-10-02「五分钟」). */
     static boolean outOfStep(long statusAt, long headlineAt, long detailAt) {
+        return outOfStep(statusAt, headlineAt, detailAt, false);
+    }
+
+    static boolean outOfStep(long statusAt, long headlineAt, long detailAt, boolean cainiaoWithoutTimeline) {
+        if (cainiaoWithoutTimeline && statusAt > 0L && headlineAt <= 0L && detailAt <= 0L) return true;
         long[] times = {statusAt, headlineAt, detailAt};
         for (int i = 0; i < times.length; i++) {
             for (int j = i + 1; j < times.length; j++) {
@@ -99,6 +104,7 @@ public final class ExpressStatusAlignment {
         long limit = ExpressRepository.STATUS_ALIGNMENT_MILLIS;
         if (headlineAt > 0L && statusAt - headlineAt > limit) return "status_ahead";
         if (headlineAt > 0L && headlineAt - statusAt > limit) return "headline_ahead";
+        if (statusAt > 0L && headlineAt <= 0L && detailAt <= 0L) return "status_ahead";
         return "detail_behind";
     }
 
@@ -172,7 +178,10 @@ public final class ExpressStatusAlignment {
             boolean semanticMismatch = probe.headlineSemantic != StatusSemantic.UNKNOWN
                     && probe.headlineSemantic != probe.row.semantic;
             boolean coarseSf = probe.headlineCoarse || probe.detailCoarse;
-            if (!outOfStep(probe.statusAt, probe.headlineAt, detailAt) && !semanticMismatch && !coarseSf) continue;
+            boolean cainiaoWithoutTimeline = probe.row != null && probe.row.isCainiaoSource()
+                    && runsAccountDetail(probe.row);
+            if (!outOfStep(probe.statusAt, probe.headlineAt, detailAt, cainiaoWithoutTimeline)
+                    && !semanticMismatch && !coarseSf) continue;
             if (stopped.getAsBoolean() || Thread.currentThread().isInterrupted()) break;
             // 优化 3: a signed-frozen row is not checked: nothing is recorded or logged for it.
             if (signedFrozen(repository, probe)) continue;

@@ -9,7 +9,8 @@ export async function resolve(specifier, context, nextResolve) {
     return await nextResolve(specifier, context);
   } catch (error) {
     if (
-      error?.code !== "ERR_MODULE_NOT_FOUND" ||
+      (error?.code !== "ERR_MODULE_NOT_FOUND" &&
+        error?.code !== "ERR_UNSUPPORTED_DIR_IMPORT") ||
       !specifier.startsWith(".") ||
       /\.[cm]?[jt]sx?$/.test(specifier)
     ) {

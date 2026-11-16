@@ -135,10 +135,8 @@ assert.ok(widgetAccountListDeadline > widgetRefreshStartedAt);
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const widgetSource = await readFile(resolve(projectDir, "widget.tsx"), "utf8");
 const indexSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
-const syncSource = await readFile(
-  resolve(projectDir, "services/sync.ts"),
-  "utf8",
-);
+const { readSyncSource } = await import("./sync-source-helper");
+const syncSource = readSyncSource();
 assert.match(
   widgetSource,
   /shouldRunWidgetNetworkRefresh\(\s*lastNetworkRefreshSuccessAtMs\(\),?\s*\)[\s\S]*?if \(shouldRefresh\)[\s\S]*?await bestEffortWidgetRefresh[\s\S]*?backgroundRefreshOptions\(WIDGET_REFRESH_BUDGET_MS\)[\s\S]*?Widget\.present\(content,/,
@@ -154,7 +152,7 @@ const runFullRefreshSource = syncSource.match(
   /async function runFullRefresh\([\s\S]*?\n}\n\nexport function refreshAllShipments/,
 )?.[0] || "";
 const synchronizeAccountListSource = syncSource.match(
-  /async function synchronizeAccountList\([\s\S]*?\n}\n\ntype ManualRefreshTask/,
+  /async function synchronizeAccountList\([\s\S]*?\n}\n\nexport async function bindPhone/,
 )?.[0] || "";
 const bindPhoneSource = syncSource.match(
   /export async function bindPhone\([\s\S]*?^}/m,
@@ -173,7 +171,7 @@ assert.match(
   "the pipeline must receive the host's enrichment deadline",
 );
 const enrichmentSource = syncSource.match(
-  /async function refreshShipmentEnrichment\([\s\S]*?\n}\n\nasync function runFullRefresh/,
+  /async function refreshShipmentEnrichment\([\s\S]*?\n}/,
 )?.[0] || "";
 assert.match(
   enrichmentSource,

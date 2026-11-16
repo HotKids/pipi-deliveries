@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
+import { courierIconName } from "../services/carrier-presentation";
 import {
   activeCarrierQueryRecords,
   installCarrierQueryRecords,
@@ -80,7 +81,10 @@ assert.deepEqual(
   records.find((record) => record.standardCode === "DANNIAO")?.aliases,
   ["ZMKM", "ZMKMKD"],
 );
-assert.equal(EXPRESS_POLICY.carrierIcons.aliases.ZMKM, "danniao");
+assert.equal(courierIconName("ZMKM", ""), "danniao");
+assert.equal(EXPRESS_POLICY.carrierIcons.accountOrder, "jdshopping");
+assert.equal("aliases" in EXPRESS_POLICY.carrierIcons, false);
+assert.equal("names" in EXPRESS_POLICY.carrierIcons, false);
 assert.deepEqual(
   records.find((record) => record.standardCode === "DBL")?.kuaidi100CodeAliases,
   ["debangwuliu"],

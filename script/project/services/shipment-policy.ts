@@ -1839,9 +1839,11 @@ export function selectShipmentDetailPresentation(
 export function jingDongOrderStagePrepended(
   shipment: Shipment,
   attachedOrders: readonly Shipment[] = [],
+  detailPresentation?: TimelinePackage,
 ): boolean {
   const selected = selectShipmentDetailTimeline(shipment);
-  return selectShipmentDetailPresentation(shipment, attachedOrders).tracks.length !== selected.tracks.length;
+  const presentation = detailPresentation ?? selectShipmentDetailPresentation(shipment, attachedOrders);
+  return presentation.tracks.length !== selected.tracks.length;
 }
 
 /** 详情完整判据的容差：不同接口对同一事件的时间戳有偏差（实测 1m14s ~ 11m53s）。 */
@@ -2256,12 +2258,25 @@ export function hasEligibleShunFengManualTimeline(shipment: Shipment): boolean {
 
 /** 记住详情页这次显示的包，下一轮默认还显示它（粘性选包，用户定 2026-09-05 晚）。 */
 export function withDetailSelection(shipment: Shipment, now: number): Shipment {
-  const provider = selectShipmentDetailTimeline(shipment).provider.trim();
+  const selected = selectShipmentDetailTimeline(shipment);
+  const provider = selected.provider.trim();
   if (!provider) return shipment;
-  if (shipment.detailSelection?.provider.trim().toLowerCase() === provider.toLowerCase()) {
+  const waybill = normalizeWaybill(selected.waybill || displayWaybill(shipment));
+  if (
+    shipment.detailSelection?.provider.trim().toLowerCase() === provider.toLowerCase() &&
+    (!shipment.detailSelection.waybill ||
+      normalizeWaybill(shipment.detailSelection.waybill) === waybill)
+  ) {
     return shipment;
   }
-  return { ...shipment, detailSelection: { provider, selectedAtMs: now } };
+  return {
+    ...shipment,
+    detailSelection: {
+      provider,
+      selectedAtMs: now,
+      ...(waybill ? { waybill } : {}),
+    },
+  };
 }
 
 function selectShipmentDetailTimelineInner(

@@ -87,7 +87,8 @@ assert.strictEqual(repairedJd.timeline.tracks, jdWithoutCarrier.timeline.tracks)
 // Wiring contract: the detail refresh recognises up front, never rewrites `base` (the commit
 // fence compares base's copy of the shipment with storage — a rewritten base is always
 // "state_changed"), and re-applies the repair right before the commit fingerprint check.
-const syncSource = readFileSync(new URL("../services/sync.ts", import.meta.url), "utf8");
+import { readSyncSource } from "./sync-source-helper";
+const syncSource = readSyncSource();
 const refreshById = syncSource.slice(
   syncSource.indexOf("async function runShipmentRefreshById"),
   syncSource.indexOf("export function refreshShipmentById"),

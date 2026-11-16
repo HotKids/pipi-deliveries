@@ -39,6 +39,13 @@ type RuntimeLease = Readonly<{
   trigger?: string;
 }>;
 
+export type RuntimeManualRefreshAttempt = Readonly<{
+  shipmentId: string;
+  attemptId: string;
+  lastAttemptAtMs: number;
+  activeUntilMs: number;
+}>;
+
 type RefreshRuntimeState = Readonly<{
   version: 1;
   revision: number;
@@ -46,11 +53,14 @@ type RefreshRuntimeState = Readonly<{
   lastBackgroundPollSuccessAtMs: number;
   providers: readonly ProviderSchedule[];
   leases: readonly RuntimeLease[];
+  manualAttempts?: readonly RuntimeManualRefreshAttempt[];
 }>;
 
 const RUNTIME_STATE_KEY = "pipi_deliveries_refresh_runtime_v1";
 const RUNTIME_METADATA_KEY = "pipi_deliveries_refresh_metadata_v1";
 const MAX_PROVIDER_SCHEDULES = 256;
+/** Module-memory cache once legacy Storage cooldown keys are confirmed absent for the active shared store. */
+let emptyLegacyRuntimeConfirmed = false;
 // 用户定 2026-09-04：手动链各级冷却与京东 H5 一致（10 分钟），只有快递100 H5 是 30 分钟——
 // 那是**快递100 上游自己的限制**，不是我们定的节流，必须遵守。
 const PROVIDER_SUCCESS_INTERVAL_MS: Readonly<Record<RefreshProvider, number>> = {
@@ -139,13 +149,47 @@ function readLegacyRuntimeState(now = Date.now(), key = RUNTIME_STATE_KEY): Refr
   }
 }
 
+function hasLegacyRuntimePayload(): boolean {
+  try {
+    return Storage.get<unknown>(RUNTIME_STATE_KEY) != null ||
+      Storage.get<unknown>(RUNTIME_METADATA_KEY) != null;
+  } catch {
+    return false;
+  }
+}
+
+function retainManualAttempts(
+  attempts: readonly RuntimeManualRefreshAttempt[] | undefined,
+  now: number,
+): RuntimeManualRefreshAttempt[] {
+  if (!Array.isArray(attempts) || !attempts.length) return [];
+  let ordinaryCount = 0;
+  return [...attempts]
+    .filter((item) =>
+      Boolean(item && typeof item.shipmentId === "string" && item.shipmentId &&
+        typeof item.attemptId === "string" && finiteTimestamp(item.lastAttemptAtMs) > 0)
+    )
+    .sort((left, right) => right.lastAttemptAtMs - left.lastAttemptAtMs)
+    .filter((item) => {
+      if (finiteTimestamp(item.activeUntilMs) > now) return true;
+      return ordinaryCount++ < MAX_PROVIDER_SCHEDULES;
+    });
+}
+
 function readRuntimeState(now = Date.now()): RefreshRuntimeState {
   const raw = sharedData().refresh as RefreshRuntimeState | undefined;
-  if (!raw) return readLegacyRuntimeState(now);
+  if (!raw) {
+    emptyLegacyRuntimeConfirmed = false;
+    return readLegacyRuntimeState(now);
+  }
   if (raw.version !== 1 || !Array.isArray(raw.leases) || !Array.isArray(raw.providers)) {
     throw new Error("Invalid shared refresh state");
   }
-  return { ...raw, leases: raw.leases.filter(item => item.expiresAtMs > now) };
+  return {
+    ...raw,
+    leases: raw.leases.filter(item => item.expiresAtMs > now),
+    ...(raw.manualAttempts ? { manualAttempts: retainManualAttempts(raw.manualAttempts, now) } : {}),
+  };
 }
 
 function writeRuntimeState(state: RefreshRuntimeState): void {
@@ -153,12 +197,34 @@ function writeRuntimeState(state: RefreshRuntimeState): void {
 }
 
 function writeRuntimeMetadata(state: RefreshRuntimeState): void {
-  writeRuntimeState({ ...state, leases: readRuntimeState().leases });
+  const latest = readRuntimeState();
+  writeRuntimeState({
+    ...state,
+    leases: latest.leases,
+    ...(latest.manualAttempts ? { manualAttempts: latest.manualAttempts } : {}),
+  });
 }
 
 function readRuntimeMetadata(now = Date.now()): RefreshRuntimeState {
-  const legacy = readLegacyRuntimeState(now);
-  const current = sharedData().refresh as RefreshRuntimeState | undefined ||
+  if (!sharedData().refresh) emptyLegacyRuntimeConfirmed = false;
+  if (emptyLegacyRuntimeConfirmed) {
+    const current = sharedData().refresh as RefreshRuntimeState;
+    return {
+      ...current,
+      providers: retainProviderSchedules(current.providers, now),
+    };
+  }
+  const hasLegacy = hasLegacyRuntimePayload();
+  const legacy = hasLegacy ? readLegacyRuntimeState(now) : emptyRuntimeState();
+  const shared = sharedData().refresh as RefreshRuntimeState | undefined;
+  if (shared && !hasLegacy) {
+    emptyLegacyRuntimeConfirmed = true;
+    return {
+      ...shared,
+      providers: retainProviderSchedules(shared.providers, now),
+    };
+  }
+  const current = shared ||
     readLegacyRuntimeState(now, RUNTIME_METADATA_KEY);
   const providers = new Map<string, ProviderSchedule>();
   // An already-running older widget may still finish into the combined record.
@@ -186,6 +252,13 @@ function stableJitter(key: string, intervalMs: number): number {
   return Math.round(intervalMs * ratio);
 }
 
+function isManualFallbackCooldownProvider(provider: RefreshProvider): boolean {
+  return provider === "picker" ||
+    provider === "moto" ||
+    provider === "kuaidi100" ||
+    provider === "kdniao";
+}
+
 export function providerNextDueAt(input: Readonly<{
   key: string;
   provider: RefreshProvider;
@@ -194,10 +267,12 @@ export function providerNextDueAt(input: Readonly<{
   now: number;
 }>): number {
   const failures = Math.max(0, Math.floor(input.consecutiveFailures));
+  const baseIntervalMs = PROVIDER_SUCCESS_INTERVAL_MS[input.provider];
+  const manualFallbackLane = isManualFallbackCooldownProvider(input.provider);
   let intervalMs: number;
   switch (input.result) {
     case "success":
-      intervalMs = PROVIDER_SUCCESS_INTERVAL_MS[input.provider];
+      intervalMs = baseIntervalMs;
       break;
     case "invalid_query":
       intervalMs = 24 * 60 * 60_000;
@@ -222,10 +297,19 @@ export function providerNextDueAt(input: Readonly<{
         2 * 60_000 * 2 ** Math.min(4, Math.max(0, failures - 1)),
       );
   }
-  return input.now + intervalMs + stableJitter(
+  // X-05 / Android ExpressManualCooldown parity: public/paid manual fallback lanes clamp any
+  // non-success cooldown interval and due timestamp to at least the provider's base cooldown
+  // (>= 10m default, >= 30m for kuaidi100), while account_detail keeps its fast 1m/5m recovery.
+  if (manualFallbackLane && input.result !== "success") {
+    intervalMs = Math.max(baseIntervalMs, intervalMs);
+  }
+  const dueAt = input.now + intervalMs + stableJitter(
     `${input.key}:${input.provider}`,
     intervalMs,
   );
+  return manualFallbackLane && input.result !== "success"
+    ? Math.max(input.now + baseIntervalMs, dueAt)
+    : dueAt;
 }
 
 export function refreshProviderDue(
@@ -555,6 +639,100 @@ export function durableRefreshLeaseDiagnostics(key: string, now = Date.now()) {
     } : {}),
     blockingLeaseRemainingMs: Math.max(0, lease.expiresAtMs - now),
   };
+}
+
+export function runtimeManualRefreshAttempt(
+  shipmentId: string,
+  now = Date.now(),
+): RuntimeManualRefreshAttempt | null {
+  try {
+    const attempt = readRuntimeState(now).manualAttempts?.find(
+      (item) => item.shipmentId === shipmentId,
+    );
+    return attempt ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function beginRuntimeManualRefreshAttempt(
+  shipmentId: string,
+  attemptId: string,
+  startedAtMs: number,
+  expiresAtMs: number,
+): boolean {
+  return withSharedFileTransaction(() => {
+    const current = readRuntimeState(startedAtMs);
+    const existing = current.manualAttempts?.find(
+      (item) => item.shipmentId === shipmentId,
+    );
+    if (
+      existing &&
+      existing.attemptId !== attemptId &&
+      finiteTimestamp(existing.activeUntilMs) > startedAtMs
+    ) {
+      return false;
+    }
+    const nextAttempt: RuntimeManualRefreshAttempt = {
+      shipmentId,
+      attemptId,
+      lastAttemptAtMs: Math.max(startedAtMs, finiteTimestamp(existing?.lastAttemptAtMs)),
+      activeUntilMs: Math.max(startedAtMs + 1, expiresAtMs),
+    };
+    const manualAttempts = retainManualAttempts(
+      [
+        ...(current.manualAttempts || []).filter(
+          (item) => item.shipmentId !== shipmentId,
+        ),
+        nextAttempt,
+      ],
+      startedAtMs,
+    );
+    writeRuntimeState({
+      ...current,
+      revision: current.revision + 1,
+      manualAttempts,
+    });
+    return true;
+  });
+}
+
+export function ownsRuntimeManualRefreshAttempt(
+  shipmentId: string,
+  attemptId: string,
+  now = Date.now(),
+): boolean {
+  const existing = runtimeManualRefreshAttempt(shipmentId, now);
+  return Boolean(
+    existing &&
+      existing.attemptId === attemptId &&
+      finiteTimestamp(existing.activeUntilMs) > now,
+  );
+}
+
+export function releaseRuntimeManualRefreshAttempt(
+  shipmentId: string,
+  attemptId: string,
+  now = Date.now(),
+): void {
+  withSharedFileTransaction(() => {
+    const current = readRuntimeState(now);
+    const existing = current.manualAttempts?.find(
+      (item) => item.shipmentId === shipmentId && item.attemptId === attemptId,
+    );
+    if (!existing) return;
+    const manualAttempts = retainManualAttempts(
+      (current.manualAttempts || []).filter(
+        (item) => item.shipmentId !== shipmentId || item.attemptId !== attemptId,
+      ),
+      now,
+    );
+    writeRuntimeState({
+      ...current,
+      revision: current.revision + 1,
+      manualAttempts,
+    });
+  });
 }
 
 export { activeRenewalCount as activeDurableLeaseRenewalsForTesting };
