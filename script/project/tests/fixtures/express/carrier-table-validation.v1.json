@@ -574,7 +574,7 @@
     "formalStartupBase": {
       "track": "formal",
       "artifactPath": "cloudflare/express-gateway/src/worker.js",
-      "artifactSha256": "9ebf9e03860d84b109e666bc293f314e0c372ca6811dc87be1bd78fe816fed7e"
+      "artifactSha256": "8eaa1cf5984186c9eed9d91fece3ed78a4e0c369536edeb1d1bf784e0c3cd7d1"
     }
   },
   "cases": [
