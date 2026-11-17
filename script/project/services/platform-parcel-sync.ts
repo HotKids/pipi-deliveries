@@ -139,10 +139,16 @@ async function syncPlatform(
     }
     return { added: 0, partial: false };
   } else if (platform === "jingdong") {
-    const data = await fetchJdParcels(session, visible);
-    persist({ parcels: data.parcels });
-    if (!notePlatformSync(platform, session.generation, Date.now(), { nickname: data.nickname })) {
-      throw new PlatformWireError("changed");
+    const data = await fetchJdParcels(session, visible, (parcels) => persist({ parcels }));
+    try {
+      if (data.parcels.length) persist({ parcels: data.parcels });
+      if (!notePlatformSync(platform, session.generation, Date.now(), { nickname: data.nickname })) {
+        throw new PlatformWireError("changed");
+      }
+    } catch (error) {
+      writeDiagnostic("platform.jingdong.sync.failed", { stage: "jd_sync_save",
+        result: error instanceof PlatformWireError ? error.reason : "failed" }, "warning");
+      throw error;
     }
     return { added: 0, partial: false };
   } else {
@@ -220,7 +226,7 @@ export async function refreshPlatformParcels(
     } else {
       const expired = result.reason instanceof PlatformWireError && result.reason.reason === "expired";
       summary.issues.push({ platform, reason: expired ? "expired" : "failed" });
-      if (mode !== "manual") writeDiagnostic("platform.sync.unavailable", {}, "warning");
+      if (mode !== "manual" && platform !== "jingdong") writeDiagnostic("platform.sync.unavailable", {}, "warning");
     }
   }
   summary.failed = summary.issues.length;

@@ -1,11 +1,12 @@
 import { fetch } from "scripting";
 import {
   clearPlatformLogin, cookieHeader, cookiesForURL, cookieValue, currentPlatformSession,
-  providerCookies, replacePlatformCookies, trustedPlatformPage, type IdentityPlatform, type PlatformCookie,
+  onPlatformAccountsChanged, providerCookies, replacePlatformCookies, trustedPlatformPage, type IdentityPlatform, type PlatformCookie,
   type PlatformSession, type WebPlatform,
 } from "./platform-accounts";
 import { utf8Data } from "./scripting-data";
 import { asPlainObject, cleanScalarText, isPlainObject, type JsonObject } from "./value-guards";
+import { waitForRefresh } from "./deadline";
 
 export const IDENTITY_WEB_URL = {
   cainiao: "https://pages-fast.m.taobao.com/wow/z/uniapp/1011717/last-mile-fe/end-collect-platform/identity-code",
@@ -34,6 +35,82 @@ export class PlatformWireError extends Error {
   constructor(readonly reason: "expired" | "verification" | "unavailable" | "changed") {
     super("Parcel provider " + reason);
     this.name = "PlatformWireError";
+  }
+}
+
+export const JD_ORDERS_PAGE = "https://my.m.jd.com/index.html?sceneval=2";
+const JD_HOME_PAGE = "https://home.m.jd.com/myJd/newhome.action";
+const JD_ORDER_LIST_URL = new URL("/order/orderlist_jdm.shtml", "https://trade.m.jd.com").href;
+const JD_ACCOUNT_PAGES = [JD_HOME_PAGE, JD_ORDERS_PAGE, JD_ORDER_LIST_URL];
+
+/** The sign-in view and the order reader use the same JD account evidence. */
+export function jdLoginProof(cookies: readonly PlatformCookie[], address?: string) {
+  let proof = "";
+  for (const url of address ? [address, ...JD_ACCOUNT_PAGES] : JD_ACCOUNT_PAGES) {
+    const matching = cookiesForURL(cookies, url);
+    const key = cookieValue(matching, "pt_key");
+    if (!key) continue;
+    proof ||= key;
+    const pin = cookieValue(matching, "pt_pin");
+    if (!pin || pin.length > 160) continue;
+    let id = pin;
+    try { id = decodeURIComponent(pin); } catch { /* Keep a literal account ID when it is not URL-encoded. */ }
+    return { id, proof: key };
+  }
+  return proof ? { id: "", proof } : null;
+}
+
+type JdBrowser = Readonly<{ generation: string; view: WebViewController; detached: Promise<void> }>;
+let jdBrowser: JdBrowser | undefined;
+
+function replaceJdBrowser(next?: JdBrowser): void {
+  const previous = jdBrowser;
+  jdBrowser = next;
+  if (previous && previous.view !== next?.view) {
+    void previous.detached.then(() => previous.view.dispose()).catch(() => undefined);
+  }
+}
+
+onPlatformAccountsChanged(() => {
+  if (jdBrowser && !currentPlatformSession("jingdong", jdBrowser.generation)) replaceJdBrowser();
+});
+
+export function retainJdLoginView(generation: string, view: WebViewController, detached: Promise<void>): void {
+  replaceJdBrowser({ generation, view, detached });
+}
+
+export async function verifiedJdCookies(view: WebViewController, session: PlatformSession, deadline: number) {
+  if (session.credentials.kind !== "web") throw new PlatformWireError("changed");
+  const cookies = providerCookies("jingdong", await waitForRefresh(view.getAllCookies(), deadline));
+  if (!currentPlatformSession("jingdong", session.generation)) throw new PlatformWireError("changed");
+  const observed = jdLoginProof(cookies);
+  const expected = jdLoginProof(session.credentials.cookies);
+  if (!observed || (expected?.id && observed.id && expected.id !== observed.id)) {
+    throw new PlatformWireError("unavailable");
+  }
+  return cookies;
+}
+
+export async function jdSyncView(session: PlatformSession, deadline: number): Promise<WebViewController> {
+  if (session.credentials.kind !== "web" || !currentPlatformSession("jingdong", session.generation)) {
+    throw new PlatformWireError("changed");
+  }
+  const retained = jdBrowser;
+  if (retained?.generation === session.generation) {
+    await waitForRefresh(retained.detached, deadline);
+    if (retained !== jdBrowser || !currentPlatformSession("jingdong", session.generation)) {
+      throw new PlatformWireError("changed");
+    }
+    return retained.view;
+  }
+  const view = await openProviderController("jingdong", session.credentials.cookies, "default", deadline);
+  try {
+    await verifiedJdCookies(view, session, deadline);
+    retainJdLoginView(session.generation, view, Promise.resolve());
+    return view;
+  } catch (error) {
+    view.dispose();
+    throw error;
   }
 }
 
@@ -215,6 +292,7 @@ export async function openProviderController(
   platform: WebPlatform,
   cookies: readonly PlatformCookie[] = [],
   mode: "default" | "login" = "default",
+  deadline?: number,
 ) {
   // Match Pipi Android's desktop user agent for the provider's QR sign-in.
   const controller = new WebViewController({ ephemeral: true });
@@ -227,7 +305,9 @@ export async function openProviderController(
     controller.shouldAllowRequest = async ({ url }) => trustedPlatformPage(platform, url);
     for (const { expiresAtMs, ...cookie } of cookies) {
       if (!expiresAtMs || expiresAtMs > Date.now()) {
-        await controller.setCookie({ ...cookie, expiresDate: expiresAtMs ? new Date(expiresAtMs) : undefined });
+        const install = controller.setCookie({ ...cookie, expiresDate: expiresAtMs ? new Date(expiresAtMs) : undefined });
+        if (deadline === undefined) await install;
+        else await waitForRefresh(install, deadline);
       }
     }
     return controller;

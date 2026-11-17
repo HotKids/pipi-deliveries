@@ -63,7 +63,6 @@ export function carrierAuthorityDiagnosticDetails(nowMs = Date.now()) {
   const hotline = resolveCarrierQuery("HTKY")?.hotline || "";
   const latestActivityAtMs = Math.max(loadedFetchedAtMs, loadedLastAttemptAtMs);
   return {
-    carrierCode: "HTKY",
     carrierTableVersion: activeCarrierTableVersion(),
     carrierFetchedAtMs: loadedFetchedAtMs,
     carrierLastAttemptAtMs: loadedLastAttemptAtMs,

@@ -15,20 +15,19 @@ import {
   diagnosticsEnabled,
   readDiagnostics,
   setDiagnosticsEnabled,
-  writeDiagnostic,
   writeRuntimeCapabilities,
   type DiagnosticDetails,
   type DiagnosticEntry,
 } from "../services/logger";
 import { copyText } from "../services/clipboard";
 import { transientToast } from "../services/ui-feedback";
-import { carrierAuthorityDiagnosticDetails } from "../services/carrier-authority";
 
 const EVENT_TITLES: Record<string, string> = {
   "app.state.applied": "页面状态已更新",
   "binding.flow.opened": "开始绑定手机号",
   "platform.pdd.import.unavailable": "拼多多快递导入未完成",
   "platform.sync.unavailable": "平台快递同步未完成",
+  "platform.jingdong.sync.failed": "京东同步失败",
   "binding.handler.entered": "已进入绑定流程",
   "binding.code.started": "正在发送验证码",
   "binding.code.succeeded": "验证码发送成功",
@@ -101,7 +100,6 @@ const EVENT_TITLES: Record<string, string> = {
   "account.enhanced.skipped": "增强同步跳过",
   "account.enhanced.unsubscribe_failed": "增强退订失败",
   "account.enhanced.unsubscribe_skipped": "增强退订跳过",
-  "carrier.authority.current": "当前承运商表",
   "carrier.authority.loaded": "承运商表已加载",
   "carrier.authority.refreshed": "承运商表已更新",
   "carrier.authority.skipped": "承运商表无需更新",
@@ -214,6 +212,15 @@ function stageText(value: string): string {
     cainiao_h5: "cn_h5 查询",
     cn_h5: "cn_h5 查询",
     jingdong_h5: "jd_h5 查询",
+    jd_sync_queue: "等待网页同步",
+    jd_sync_session: "确认京东会话",
+    jd_sync_viewport: "打开京东网页",
+    jd_sync_orders: "读取京东订单",
+    jd_sync_order_navigation: "等待京东订单列表",
+    jd_sync_order_entry: "查找京东订单入口",
+    jd_sync_order_cards: "解析京东订单卡片",
+    jd_sync_detail: "读取京东物流详情",
+    jd_sync_save: "保存京东同步结果",
     jd_h5: "jd_h5 查询",
     kdniao_fallback: "kdniao 查询",
     pending_kdniao: "kdniao 查询",
@@ -530,7 +537,7 @@ function detailsText(item: DiagnosticEntry): string {
     details.runtimeHost ? `运行宿主 ${details.runtimeHost === "widget" ? "小组件" : "主应用"}` : null,
     details.sqliteOpenAvailable != null ? `SQLite ${details.sqliteOpenAvailable ? "可用" : "不可用"}` : null,
     details.sharedFilesAvailable != null ? `共享文件${details.sharedFilesAvailable ? "可用" : "不可用"}` : null,
-    details.hotlineMatchesExpected != null ? `HTKY 客服电话${details.hotlineMatchesExpected ? "一致" : "未确认"}` : null,
+    details.hotlineMatchesExpected != null ? `客服电话校验${details.hotlineMatchesExpected ? "通过" : "未通过"}` : null,
     details.carrierRefreshRemainingMs != null ? `承运商表 ${Math.ceil(details.carrierRefreshRemainingMs / 60_000)} 分钟后更新` : null,
     details.waitTimeoutOrigin ? `等待结束原因 ${reasonText(details.waitTimeoutOrigin)}` : null,
     details.waitElapsedMs != null ? `等待 ${details.waitElapsedMs} ms` : null,
@@ -742,7 +749,6 @@ export function DiagnosticLogPage() {
       setRecording(next);
       if (next) {
         writeRuntimeCapabilities("app");
-        writeDiagnostic("carrier.authority.current", carrierAuthorityDiagnosticDetails());
         setItems(readDiagnostics());
       }
       setNotice(next ? "已开始记录" : "已停止记录");
