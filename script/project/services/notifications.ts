@@ -10,6 +10,7 @@ import { isAttachedShipment } from "./waybill-ownership";
 import { shipmentNotificationPresentation } from "./notification-events";
 import { isShunFengSourceShipment, selectShipmentTimeline, shipmentHeadlineMatchesStatus } from "./shipment-policy";
 import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey } from "./row-ledger";
+import { reconcileFengchaoReminders } from "./fengchao-reminders";
 
 async function scheduleEvent(event: Omit<ShipmentNotificationEvent, "id">, deadlineAtMs: number): Promise<void> {
   const request = {
@@ -167,6 +168,9 @@ export async function replayPendingShipmentNotifications(
       // Durable totals already include the separately logged storage subphases.
       scheduleDurationMs, writeDurationMs,
     });
+  }
+  if (current && !options.alignedShipmentId && canSchedule()) {
+    await reconcileFengchaoReminders(current, deadlineAtMs);
   }
   return current;
 }

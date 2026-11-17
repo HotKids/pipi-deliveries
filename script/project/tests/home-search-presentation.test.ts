@@ -44,7 +44,7 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /const committed = commitManualShipmentPreview\(preview\)[\s\S]*?props\.onStateChange\(committed\)[\s\S]*?manualPreviewNavigationTarget\(preview, committed\)/,
+  /const committed = commitManualShipmentPreview\(preview, Date\.now\(\), lookup\)[\s\S]*?props\.onStateChange\(committed\)[\s\S]*?manualPreviewNavigationTarget\(preview, committed\)/,
   "every accepted Home query must open the canonical shipment produced by its commit",
 );
 assert.match(

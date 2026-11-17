@@ -2,6 +2,9 @@ export const Path = {
   join(...parts) {
     return globalThis.Path.join(...parts);
   },
+  basename(path) {
+    return globalThis.Path.basename(path);
+  },
 };
 
 export function fetch(...args) {
@@ -14,6 +17,12 @@ export const AbortSignal = globalThis.AbortSignal;
 export const Notification = {
   schedule(...args) {
     return globalThis.Notification.schedule(...args);
+  },
+  getAllPendingsOfCurrentScript(...args) {
+    return globalThis.Notification.getAllPendingsOfCurrentScript(...args);
+  },
+  removePendings(...args) {
+    return globalThis.Notification.removePendings(...args);
   },
 };
 

@@ -5,6 +5,7 @@ import {
   List,
   Navigation,
   NavigationStack,
+  Picker,
   ProgressView,
   Section,
   Text,
@@ -15,7 +16,7 @@ import {
   useRef,
   useState,
 } from "scripting";
-import type { AppState, RefreshSummary, Shipment } from "../models";
+import type { AppState, RefreshSummary, Shipment, StatusSemantic } from "../models";
 import { ShipmentRow } from "../components/ShipmentRow";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
 import {
@@ -25,7 +26,8 @@ import {
   refreshAllShipmentsForPull,
   subscribeRefreshState,
 } from "../services/sync";
-import { stateLoadFailure, visibleShipments } from "../services/storage";
+import { saveRecognizedShipmentPickup, stateLoadFailure } from "../services/storage";
+import type { ParcelLookup } from "../services/parcel-code-ocr";
 import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { DetailPage } from "./DetailPage";
 import {
@@ -63,7 +65,7 @@ import {
 const CARRIER_DETECTION_MIN_LENGTH = 6;
 const CARRIER_DETECTION_DEBOUNCE_MS = 600;
 import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
-import { normalizeWaybill } from "../services/status";
+import { normalizeWaybill, shipmentPresentationStatus } from "../services/status";
 import {
   displayWaybill,
   needsDetailEntryQuery,
@@ -75,12 +77,39 @@ import {
   subscribeGatewayAccessKeyRejected,
 } from "../services/credentials";
 
+const shipmentFilters = {
+  all: "全部",
+  transit: "在途",
+  pickup: "待取",
+  danger: "异常",
+} as const;
+type ShipmentFilter = keyof typeof shipmentFilters;
+
+function shipmentFilter(semantic: StatusSemantic): Exclude<ShipmentFilter, "all"> | undefined {
+  switch (semantic) {
+    case "ORDERED":
+    case "SHIPPED":
+    case "PICKED":
+    case "TRANSIT":
+    case "DELIVERY":
+      return "transit";
+    case "WAITING_PICKUP": return "pickup";
+    case "DANGER": return "danger";
+    default: return undefined;
+  }
+}
+
 export function HomePage(props: {
   state: AppState;
+  shipments: readonly Shipment[];
   autoFocusSearch: boolean;
   initialShipmentId: string;
   navigationRequestGeneration: number;
+  shortcutLookup?: ParcelLookup;
+  onShortcutHandled: (generation: number) => void;
   onStateChange: (state: AppState) => void;
+  onListPull?: () => void;
+  platformNotice?: Readonly<{ text: string }>;
 }) {
   const dismiss = Navigation.useDismiss();
   const [refreshing, setRefreshing] = useState(false);
@@ -91,20 +120,26 @@ export function HomePage(props: {
   const [completing, setCompleting] = useState(false);
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
+  const [filter, setFilter] = useState<ShipmentFilter>("all");
+  const [searchPresented, setSearchPresented] = useState(props.autoFocusSearch && !props.initialShipmentId);
   const [accessKeyRejected, setAccessKeyRejected] = useState(gatewayAccessKeyRejected);
   const [accessKeyNoticeDismissed, setAccessKeyNoticeDismissed] = useState(false);
-  const initialNavigationTarget = props.state.shipments.some(
-    (shipment) => shipment.identity.id === props.initialShipmentId,
-  )
-    ? persistedShipmentNavigationTarget(props.initialShipmentId)
-    : null;
   const [shipmentNavigationTarget, setShipmentNavigationTargetState] = useState<
     ShipmentNavigationTarget | null
-  >(() => initialNavigationTarget);
-  const shipmentNavigationTargetRef = useRef<ShipmentNavigationTarget | null>(
-    initialNavigationTarget,
-  );
-  const shipments = useMemo(() => visibleShipments(props.state), [props.state]);
+  >(() => props.initialShipmentId && props.state.shipments.some(
+    (shipment) => shipment.identity.id === props.initialShipmentId,
+  ) ? persistedShipmentNavigationTarget(props.initialShipmentId) : null);
+  const shipmentNavigationTargetRef = useRef(shipmentNavigationTarget);
+  const shipments = props.shipments;
+  const groups = useMemo(() => {
+    const buckets = { all: shipments, transit: [] as Shipment[], pickup: [] as Shipment[], danger: [] as Shipment[] };
+    for (const shipment of shipments) {
+      const bucket = shipmentFilter(shipmentPresentationStatus(shipment).semantic);
+      if (bucket) buckets[bucket].push(shipment);
+    }
+    return buckets;
+  }, [shipments]);
+  const shownShipments = groups[filter];
   const selected = selectedNavigationShipment(
     props.state,
     shipmentNavigationTarget,
@@ -122,6 +157,7 @@ export function HomePage(props: {
   ) {
     shipmentNavigationTargetRef.current = target;
     setShipmentNavigationTargetState(target);
+    if (target) setSearchPresented(false);
   }
 
   function applyInteractiveRefreshSummary(summary: RefreshSummary) {
@@ -136,6 +172,10 @@ export function HomePage(props: {
   useEffect(() => {
     return subscribeGatewayAccessKeyRejected(setAccessKeyRejected);
   }, []);
+
+  useEffect(() => {
+    if (props.platformNotice) setNotice(props.platformNotice.text);
+  }, [props.platformNotice]);
 
   useEffect(() => {
     let active = true;
@@ -158,14 +198,15 @@ export function HomePage(props: {
   }, []);
 
   useEffect(() => {
-    if (!props.initialShipmentId) return;
-    if (!props.state.shipments.some(
+    if (props.initialShipmentId && props.state.shipments.some(
       (shipment) => shipment.identity.id === props.initialShipmentId,
-    )) return;
-    setShipmentNavigationTarget(
-      persistedShipmentNavigationTarget(props.initialShipmentId),
-    );
-  }, [props.navigationRequestGeneration]);
+    )) {
+      setShipmentNavigationTarget(persistedShipmentNavigationTarget(props.initialShipmentId));
+    } else if (props.autoFocusSearch) {
+      setShipmentNavigationTarget(null);
+      setSearchPresented(true);
+    }
+  }, [props.navigationRequestGeneration, props.autoFocusSearch]);
 
   /** E1: the rest of a pull's refresh lands after its account phase was shown. */
   function followPullCompletion(completion: Promise<RefreshSummary>) {
@@ -185,6 +226,7 @@ export function HomePage(props: {
         accountSourceFollowup: true,
       });
       applyInteractiveRefreshSummary(summary);
+      props.onListPull?.();
       setNotice(refreshSummaryToast(summary));
       if (summary.continuing) followPullCompletion(completion);
     } catch (error) {
@@ -278,26 +320,19 @@ export function HomePage(props: {
     );
   }
 
-  const emptySearchArea = (
-    <HomeSearchBar
-      state={props.state}
-      shipments={shipments}
-      autoFocusSearch={props.autoFocusSearch}
-      emptyList={true}
-      onStateChange={props.onStateChange}
-      setNotice={setNotice}
-      openShipment={openShipment}
-      setShipmentNavigationTarget={setShipmentNavigationTarget}
-    />
-  );
+  const shortcutSearchProps = {
+    shortcutLookup: props.shortcutLookup,
+    shortcutGeneration: props.navigationRequestGeneration,
+    onShortcutHandled: props.onShortcutHandled,
+  };
 
   return (
     <NavigationStack>
       <VStack
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        navigationTitle="我的快递"
+        navigationTitle="快递"
         navigationBarTitleDisplayMode="large"
-        toast={transientToast(notice, setNotice)}
+        toast={searchPresented ? undefined : transientToast(notice, setNotice)}
         toolbar={{
           topBarLeading: (
             <Button buttonStyle="plain" action={() => dismiss()}>
@@ -309,22 +344,15 @@ export function HomePage(props: {
             </Button>
           ),
           topBarTrailing: (
-            <Button
-              buttonStyle="plain"
-              action={() => setNotice("暂未开放")}
-            >
-              <Image
-                systemName="plus"
-                font={17}
-                frame={{ width: 44, height: 44 }}
-              />
-            </Button>
+            <Button title="查询快递" systemImage="magnifyingglass" labelStyle="iconOnly"
+              buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => setSearchPresented(true)} />
           ),
         }}
         navigationDestination={{
-          isPresented: Boolean(selected),
+          isPresented: Boolean(selected || searchPresented),
           onChanged: (presented) => {
             if (presented) return;
+            setSearchPresented(false);
             const consumed = consumeShipmentNavigationTarget(
               shipmentNavigationTargetRef.current,
             );
@@ -352,6 +380,20 @@ export function HomePage(props: {
                 props.onStateChange(next);
               }}
             />
+          ) : searchPresented ? (
+            <List navigationTitle="查询快递" navigationBarTitleDisplayMode="inline"
+              toast={transientToast(notice, setNotice)}>
+              <HomeSearchBar
+                state={props.state}
+                shipments={shipments}
+                autoFocusSearch={true}
+                {...shortcutSearchProps}
+                onStateChange={props.onStateChange}
+                setNotice={setNotice}
+                openShipment={openShipment}
+                setShipmentNavigationTarget={setShipmentNavigationTarget}
+              />
+            </List>
           ) : <Text>快递详情</Text>,
         }}
       >
@@ -386,20 +428,16 @@ export function HomePage(props: {
             </HStack>
           </VStack>
         ) : null}
+        <Picker title="快递状态" pickerStyle="segmented" value={filter}
+          onChanged={(value: string) => setFilter(value as ShipmentFilter)} padding={{ horizontal: 20, vertical: 6 }}>
+          {(Object.keys(shipmentFilters) as ShipmentFilter[]).map((key) => (
+            <Text key={key} tag={key}>{shipmentFilters[key]} {groups[key].length}</Text>
+          ))}
+        </Picker>
         {shipments.length ? (
           <List listStyle="plain" refreshable={refresh}>
-            <HomeSearchBar
-              state={props.state}
-              shipments={shipments}
-              autoFocusSearch={props.autoFocusSearch}
-              emptyList={false}
-              onStateChange={props.onStateChange}
-              setNotice={setNotice}
-              openShipment={openShipment}
-              setShipmentNavigationTarget={setShipmentNavigationTarget}
-            />
             <Section>
-              {shipments.map((shipment) => (
+              {shownShipments.map((shipment) => (
                 <ShipmentRow
                   key={shipment.identity.id}
                   shipment={shipment}
@@ -410,6 +448,9 @@ export function HomePage(props: {
                   completeDisabled={completing}
                 />
               ))}
+              {!shownShipments.length ? (
+                <Text foregroundStyle="secondaryLabel">暂无{shipmentFilters[filter]}快递</Text>
+              ) : null}
             </Section>
             <VStack
               spacing={8}
@@ -431,7 +472,6 @@ export function HomePage(props: {
             spacing={0}
             frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
           >
-            {emptySearchArea}
             <List
               listStyle="plain"
               refreshable={refresh}
@@ -458,14 +498,16 @@ function HomeSearchBar(props: {
   state: AppState;
   shipments: readonly Shipment[];
   autoFocusSearch: boolean;
-  emptyList: boolean;
+  shortcutLookup?: ParcelLookup;
+  shortcutGeneration: number;
+  onShortcutHandled: (generation: number) => void;
   onStateChange: (state: AppState) => void;
   setNotice: (notice: string) => void;
   openShipment: (shipment: Shipment) => void;
   setShipmentNavigationTarget: (target: ShipmentNavigationTarget | null) => void;
 }) {
   const { setNotice, openShipment, setShipmentNavigationTarget } = props;
-  const [waybill, setWaybill] = useState("");
+  const [waybill, setWaybill] = useState(props.shortcutLookup?.waybill ?? "");
   const [phoneTail, setPhoneTail] = useState("");
   const [needsPhoneTail, setNeedsPhoneTail] = useState(false);
   const [detectedCarrier, setDetectedCarrier] = useState<
@@ -473,7 +515,8 @@ function HomeSearchBar(props: {
   >(null);
   const [querying, setQuerying] = useState(false);
   const [validationNotice, setValidationNotice] = useState("");
-  const waybillRef = useRef("");
+  const waybillRef = useRef(props.shortcutLookup?.waybill ?? "");
+  const shortcutGenerationRef = useRef(props.shortcutGeneration);
   const phoneTailRef = useRef("");
   const queryingRef = useRef(false);
   const carrierDetectionSequenceRef = useRef(0);
@@ -489,11 +532,29 @@ function HomeSearchBar(props: {
   useEffect(() => {
     return () => {
       carrierDetectionSequenceRef.current += 1;
+      shortcutGenerationRef.current += 1;
       if (carrierDetectionTimerRef.current != null) {
         clearTimeout(carrierDetectionTimerRef.current);
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!props.shortcutLookup) return;
+    shortcutGenerationRef.current = props.shortcutGeneration;
+    carrierDetectionSequenceRef.current += 1;
+    if (carrierDetectionTimerRef.current != null) {
+      clearTimeout(carrierDetectionTimerRef.current);
+      carrierDetectionTimerRef.current = null;
+    }
+    waybillRef.current = props.shortcutLookup.waybill;
+    phoneTailRef.current = "";
+    setWaybill(props.shortcutLookup.waybill);
+    setPhoneTail("");
+    setNeedsPhoneTail(false);
+    setDetectedCarrier(null);
+    setValidationNotice("");
+  }, [props.shortcutGeneration, props.shortcutLookup]);
 
   function scheduleCarrierDetection(value: string) {
     const normalized = normalizeWaybill(value);
@@ -548,8 +609,11 @@ function HomeSearchBar(props: {
   async function query() {
     if (queryingRef.current) return;
     const submittedWaybill = waybillRef.current;
+    const shortcutGeneration = shortcutGenerationRef.current;
     const submittedPhoneTail = phoneTailRef.current;
     const submittedNormalized = normalizeWaybill(submittedWaybill);
+    const lookup = props.shortcutLookup && normalizeWaybill(props.shortcutLookup.waybill) === submittedNormalized
+      ? props.shortcutLookup : undefined;
     if (submittedNormalized.length < 6) {
       setValidationNotice("请输入有效的快递单号");
       return;
@@ -560,10 +624,22 @@ function HomeSearchBar(props: {
       (shipment) => normalizeWaybill(displayWaybill(shipment)) === submittedNormalized,
     );
     if (alreadyListed) {
+      if (lookup?.pickup) {
+        try {
+          props.onStateChange(saveRecognizedShipmentPickup(alreadyListed, lookup));
+        } catch {
+          setNotice("无法保存取件码，请重试。");
+          return;
+        }
+      }
       setValidationNotice("");
       setNotice(EXPRESS_TOAST_COPY.alreadyInList);
       // 用户定 2026-09-05：提示「已在列表」的同时打开那一票的详情（三端同）。
       openShipment(alreadyListed);
+      if (props.shortcutLookup) {
+        props.onShortcutHandled(shortcutGeneration);
+        clearQueryInputs();
+      }
       return;
     }
     // 尾号输入框已经在页面上（承运商要尾号）却还没填满四位时，先内联提示，不要先弹「正在查询」——
@@ -598,6 +674,7 @@ function HomeSearchBar(props: {
       } catch {
         submittedCarrier = null;
       }
+      if (shortcutGeneration !== shortcutGenerationRef.current) return;
       if (submittedCarrier) setDetectedCarrier(submittedCarrier);
       if (
         (submittedCarrier?.requiresPhoneTail || needsPhoneTail) &&
@@ -614,13 +691,18 @@ function HomeSearchBar(props: {
         phoneTail: submittedPhoneTail,
         presentation: submittedCarrier,
       });
-      const committed = commitManualShipmentPreview(preview);
+      const committed = commitManualShipmentPreview(preview, Date.now(), lookup);
       props.onStateChange(committed);
+      if (shortcutGeneration !== shortcutGenerationRef.current) return;
+      const resolvedLookup = !lookup?.pickup || committed.shipments.some((shipment) =>
+        displayWaybill(shipment) === submittedNormalized);
+      if (resolvedLookup) props.onShortcutHandled(shortcutGeneration);
       setShipmentNavigationTarget(
         manualPreviewNavigationTarget(preview, committed),
       );
-      clearQueryInputs();
+      if (resolvedLookup) clearQueryInputs();
     } catch (error) {
+      if (shortcutGeneration !== shortcutGenerationRef.current) return;
       // 校验类文案内联显示；其余一律走统一的失败 / 超时 toast，上游文案不外露。
       const value = errorMessage(error, "");
       if (isManualQueryValidationMessage(value)) {
@@ -658,6 +740,7 @@ function HomeSearchBar(props: {
           title="查询快递单号"
           value={waybill}
           onChanged={(value) => {
+            if (props.shortcutLookup) props.onShortcutHandled(shortcutGenerationRef.current);
             waybillRef.current = value;
             setWaybill(value);
             phoneTailRef.current = "";
@@ -698,6 +781,8 @@ function HomeSearchBar(props: {
           </Button>
         ) : querying ? (
           <ProgressView progressViewStyle="circular" />
+        ) : props.shortcutLookup ? (
+          <Button title="查询" buttonStyle="plain" action={() => { void query(); }} />
         ) : null}
       </HStack>
       {needsPhoneTail ? (
@@ -756,28 +841,6 @@ function HomeSearchBar(props: {
       ) : null}
     </VStack>
   );
-
-  if (props.emptyList) {
-    return (
-      <VStack
-        spacing={6}
-        padding={{ horizontal: 20, vertical: 8 }}
-        frame={{ maxWidth: "infinity" }}
-        background="systemBackground"
-      >
-        {searchFields}
-        {validationNotice && !phoneTailValidation ? (
-          <Text
-            font={12}
-            foregroundStyle="systemRed"
-            frame={{ maxWidth: "infinity", alignment: "leading" }}
-          >
-            {validationNotice}
-          </Text>
-        ) : null}
-      </VStack>
-    );
-  }
 
   return (
     <Section

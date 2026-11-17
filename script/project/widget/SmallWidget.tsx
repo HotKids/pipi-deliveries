@@ -125,7 +125,6 @@ export function SmallWidget(props: {
                   companyName={row.companyName}
                   accountOrder={row.accountOrder}
                   size={layout.iconSize}
-                  cornerRadius={Math.max(8, Math.round(layout.iconSize * 0.28))}
                 />
               </HStack>
               <Spacer />

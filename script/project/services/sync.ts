@@ -688,13 +688,15 @@ export function runProjectionAwareShipmentRefreshForTesting(
   return runTargetedShipmentRefreshWithProjectionWait(runtimeState, shipmentId, options, runtimeOverrides);
 }
 
-export function runH5CaptureForTesting<T>(
+export function runParcelWebRead<T>(
   capture: () => Promise<T>,
   deadlineAtMs?: number,
   signal?: AbortSignal,
 ): Promise<T> {
   return withH5Controller(runtimeState, capture, deadlineAtMs, signal);
 }
+
+export const runH5CaptureForTesting = runParcelWebRead;
 
 export function runShipmentEnrichmentForTesting(
   ...args: Parameters<typeof refreshShipmentEnrichment> extends [SyncRuntimeState, ...infer Rest] ? Rest : never

@@ -12,6 +12,8 @@ import {
   Text,
   WebView,
   useEffect,
+  useMemo,
+  useObservable,
   useRef,
   useState,
 } from "scripting";
@@ -22,7 +24,11 @@ import {
 import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { loadState } from "./services/storage";
+import { PickupPage } from "./pages/PickupPage";
+import { presentStationIdentity } from "./pages/StationIdentityPage";
+import { expireDueParcelHandoffs, loadState, peekStateRevision, visibleShipments } from "./services/storage";
+import { onPlatformAccountsChanged, platformSession } from "./services/platform-accounts";
+import { canOpenParcelCabinet, performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
 import {
   diagnosticErrorDetails,
   diagnosticState,
@@ -40,10 +46,27 @@ import { initializeCarrierAuthority } from "./services/carrier-authority";
 import { startForegroundOrderProjection } from "./services/foreground-order-projection";
 import { startForegroundRefresh } from "./services/foreground-return-refresh";
 import { startStatusAlignment } from "./services/status-alignment";
+import {
+  PARCEL_SHORTCUT_RECORD_PARAMETER,
+  discardShortcutDraft,
+  nextSmsShortcutLookup,
+  takeScreenShortcutLookup,
+} from "./services/parcel-shortcut";
+import { parcelActivitySceneChanged, parcelActivityTarget, reconcileParcelActivity } from "./services/parcel-live-activity";
+import { activePickupCards, independentPickupContent } from "./services/parcel-pickup";
+import { nextParcelHandoffDeadline } from "./services/parcel-handoff-expiry";
+import { reconcileFengchaoReminders } from "./services/fengchao-reminders";
+import { transientToast } from "./services/ui-feedback";
 
 type StartupState = {
   state: AppState | null;
 };
+
+function shortcutPickupRecordId(state: AppState | null, parameters: Readonly<Record<string, unknown>>): string {
+  const id = parameters[PARCEL_SHORTCUT_RECORD_PARAMETER];
+  const record = typeof id === "string" && state?.pickupCodeRecords?.find((item) => item.id === id);
+  return record && independentPickupContent(record) ? record.id : "";
+}
 
 function readStartupState(): StartupState {
   try {
@@ -63,14 +86,44 @@ function App() {
   const [projectionController, setProjectionController] = useState<WebViewController | null>(null);
   const projectionMountRef = useRef<Array<(mounted: boolean) => void>>([]);
   const [startup, setStartup] = useState(readStartupState);
-  const [navigationRequest, setNavigationRequest] = useState(() => ({
-    shipmentId: resumeShipmentId({
-      queryParameters: Script.queryParameters || {},
-      notificationInfo: Notification.current,
-    }),
-    generation: 0,
-  }));
+  const [platformRevision, setPlatformRevision] = useState(0);
+  const [platformNotice, setPlatformNotice] = useState<{ text: string } | undefined>(undefined);
+  const [pickupNotice, setPickupNotice] = useState("");
+  const [navigationRequest, setNavigationRequest] = useState(() => {
+    const parameters = Script.queryParameters || {};
+    const activity = startup.state ? parcelActivityTarget(startup.state, parameters.parcelActivity) : undefined;
+    const pickupRecordId = activity && "recordId" in activity ? activity.recordId :
+      shortcutPickupRecordId(startup.state, parameters);
+    return {
+      shipmentId: activity && "shipmentId" in activity ? activity.shipmentId : resumeShipmentId({
+        queryParameters: parameters,
+        notificationInfo: Notification.current,
+      }),
+      pickupRecordId,
+      shortcutLookup: takeScreenShortcutLookup(parameters) || (pickupRecordId ? undefined : nextSmsShortcutLookup()),
+      generation: 0,
+    };
+  });
+  const selection = useObservable<string>(
+    navigationRequest.pickupRecordId ? "pickup" : "deliveries",
+  );
   const state = startup.state;
+  const revision = useRef(state?.revision ?? -1);
+  revision.current = state?.revision ?? -1;
+  const latestParcelState = useRef(state);
+  latestParcelState.current = state;
+  const shipments = useMemo(() => state ? visibleShipments(state) : [], [state]);
+  const pickupCards = useMemo(() => activePickupCards(shipments, state?.pickupCodeRecords),
+    [shipments, state?.pickupCodeRecords]);
+  const identityActions = useMemo(() => (["cainiao", "pinduoduo"] as const)
+    .filter((platform) => platformSession(platform) || pickupCards.some((card) =>
+      card.kind !== "handoff" && (!card.platform || card.platform === platform)))
+    .map((platform) => ({ platform, open: () => presentStationIdentity(platform) })),
+  [platformRevision, pickupCards]);
+  const cabinetActions = useMemo(() => new Set(pickupCards.filter(canOpenParcelCabinet)),
+    [platformRevision, pickupCards]);
+  const handoffDeadline = useMemo(() => nextParcelHandoffDeadline(state?.pickupCodeRecords),
+    [state?.pickupCodeRecords]);
   const query = Script.queryParameters || {};
   const focusSearch = String(query.focus || "") === "search";
 
@@ -85,6 +138,19 @@ function App() {
     });
   }
 
+  function refreshPlatformList(mode: "observe" | "pull") {
+    void refreshPlatformParcels(applyState, mode).then((result) => {
+      if (result.added) setPlatformNotice({ text: `已新增 ${result.added} 件快递` });
+    }).catch(() => {
+      writeDiagnostic("platform.sync.unavailable", {}, "warning");
+    });
+  }
+
+  useEffect(() => onPlatformAccountsChanged(() => setPlatformRevision((value) => value + 1)), []);
+  useEffect(() => {
+    if (state) refreshPlatformList("observe");
+  }, [state?.revision]);
+
   useEffect(() => {
     // While the app is on screen it captures JD order waybills by itself (Lite parity, 2026-09-24).
     const orderProjection = startForegroundOrderProjection({ applyState });
@@ -97,9 +163,25 @@ function App() {
       writeDiagnostic("app.scene.changed", { result: phase });
       // Refresh flows open the union page only while the app is active (user 2026-09-25).
       setProjectionSceneActive(phase === "active");
+      parcelActivitySceneChanged(phase);
       orderProjection.scenePhaseChanged(phase);
       foregroundRefresh.scenePhaseChanged(phase);
       statusAlignment.scenePhaseChanged(phase);
+      if (phase === "active") {
+        refreshPlatformList("observe");
+        try {
+          if (peekStateRevision() > revision.current) applyState(loadState());
+          else if (latestParcelState.current) reconcileParcelActivity(latestParcelState.current);
+          const lookup = nextSmsShortcutLookup();
+          if (lookup) setNavigationRequest((current) => current.shortcutLookup ? current : {
+            ...current,
+            shortcutLookup: lookup,
+            generation: current.generation + 1,
+          });
+        } catch {
+          writeDiagnostic("app.shortcut.resume.failed", {}, "warning");
+        }
+      }
     };
     AppEvents.scenePhase.addListener(observe);
     return () => {
@@ -111,6 +193,56 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (state) {
+      reconcileParcelActivity(state);
+      void reconcileFengchaoReminders(state);
+    }
+  }, [state]);
+
+  useEffect(() => {
+    if (handoffDeadline === undefined) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let committed = false;
+    function cancel() {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    }
+    function schedule(deadline: number) {
+      cancel();
+      if (committed) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        const now = Date.now();
+        if (now < deadline) {
+          schedule(deadline);
+          return;
+        }
+        try {
+          const next = expireDueParcelHandoffs(now);
+          committed = true;
+          applyState(next);
+        } catch {
+          writeDiagnostic("activity.parcel.expiry.failed", {}, "warning");
+        }
+      }, Math.min(2_147_483_647, Math.max(0, deadline - Date.now())));
+    }
+    const observe = (phase: "active" | "inactive" | "background") => {
+      if (phase === "active") schedule(handoffDeadline);
+      else cancel();
+    };
+    AppEvents.scenePhase.addListener(observe);
+    schedule(handoffDeadline);
+    return () => {
+      cancel();
+      AppEvents.scenePhase.removeListener(observe);
+    };
+  }, [handoffDeadline, state?.revision]);
+
+  useEffect(() => {
+    if (!pickupCards.length && selection.value === "pickup") selection.setValue("deliveries");
+  }, [pickupCards.length]);
+
+  useEffect(() => {
     return Script.onResume((details) => {
       void reloadAndRefreshOnResume(details, {
         load: loadState,
@@ -119,11 +251,22 @@ function App() {
           setStartup({ state: null });
         },
         applyPersisted: (persisted, shipmentId) => {
+          const parameters = details.queryParameters || {};
+          const screenLookup = takeScreenShortcutLookup(parameters);
+          const activity = parcelActivityTarget(persisted, parameters.parcelActivity);
+          const activityShipmentId = activity && "shipmentId" in activity ? activity.shipmentId : "";
+          const pickupRecordId = activity && "recordId" in activity ? activity.recordId :
+            shortcutPickupRecordId(persisted, parameters);
+          const smsLookup = pickupRecordId ? undefined : nextSmsShortcutLookup();
           setStartup({ state: persisted });
           setNavigationRequest((current) => ({
-            shipmentId,
+            shipmentId: activityShipmentId || shipmentId,
+            pickupRecordId,
+            shortcutLookup: screenLookup || current.shortcutLookup || smsLookup,
             generation: current.generation + 1,
           }));
+          if (pickupRecordId) selection.setValue("pickup");
+          else if (screenLookup || activityShipmentId) selection.setValue("deliveries");
         },
         refresh: () => refreshAllShipments(),
         applyRefreshed: applyState,
@@ -180,6 +323,8 @@ function App() {
 
   return (
     <TabView
+      selection={selection}
+      toast={transientToast(pickupNotice, setPickupNotice)}
       background={
         projectionController
           ? {
@@ -198,17 +343,43 @@ function App() {
           : undefined
       }
     >
-      <Tab title="快递" systemImage="shippingbox.fill" value="deliveries">
+      {pickupCards.length ? (
+        <Tab key="pickup" title="取件" systemImage="shippingbox.fill" value="pickup">
+          <PickupPage
+            state={state}
+            shipments={shipments}
+            cards={pickupCards}
+            focusedRecordId={navigationRequest.pickupRecordId}
+            cabinetActions={cabinetActions}
+            identityActions={identityActions}
+            onStateChange={applyState}
+            showNotice={setPickupNotice}
+            onAction={(card, openCabinet) => performPickupAction(card, openCabinet, applyState)}
+          />
+        </Tab>
+      ) : null}
+      <Tab key="deliveries" title="快递" systemImage="truck.box.fill" value="deliveries">
         <HomePage
           state={state}
-          autoFocusSearch={focusSearch}
+          shipments={shipments}
+          autoFocusSearch={focusSearch || Boolean(navigationRequest.shortcutLookup)}
           initialShipmentId={navigationRequest.shipmentId}
           navigationRequestGeneration={navigationRequest.generation}
+          shortcutLookup={navigationRequest.shortcutLookup}
+          onShortcutHandled={(generation) => {
+            if (generation !== navigationRequest.generation) return;
+            const smsDraft = navigationRequest.shortcutLookup?.smsDraft;
+            if (smsDraft) discardShortcutDraft(smsDraft);
+            setNavigationRequest((current) =>
+              current.generation === generation ? { ...current, shortcutLookup: undefined } : current);
+          }}
           onStateChange={applyState}
+          onListPull={() => refreshPlatformList("pull")}
+          platformNotice={platformNotice}
         />
       </Tab>
-      <Tab title="设置" systemImage="gearshape.fill" value="settings">
-        <SettingsPage state={state} onStateChange={applyState} />
+      <Tab key="settings" title="设置" systemImage="gearshape.fill" value="settings">
+        <SettingsPage state={state} pickupCards={pickupCards} onStateChange={applyState} />
       </Tab>
     </TabView>
   );

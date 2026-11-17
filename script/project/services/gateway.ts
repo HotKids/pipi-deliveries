@@ -1,5 +1,5 @@
 import { fetch } from "scripting";
-import { GATEWAY_ORIGIN, SCRIPTING_GATEWAY_PROTOCOL_VERSION } from "./build-track";
+import { GATEWAY_ORIGIN, SCRIPT_BUILD_TRACK, SCRIPTING_GATEWAY_PROTOCOL_VERSION } from "./build-track";
 import {
   gatewayCredentialStatus,
   loadGatewayCredentials,
@@ -31,6 +31,7 @@ import { createDiagnosticFlowId, writeDiagnostic } from "./logger";
 import {
   loadScriptingActivation,
   recordScriptingActivationOutcome,
+  scriptingInstallationDigest,
 } from "./scripting-activation";
 
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -110,6 +111,7 @@ type SharedScriptingAuthHeaders = {
   "X-Scripting-Timestamp": string;
   "X-Scripting-Nonce": string;
   "X-Scripting-Signature": string;
+  "X-Scripting-Installation"?: string;
 };
 export type ScriptingAuthHeaders = SharedScriptingAuthHeaders & (
   { "X-Scripting-Key-Id": string } | { "X-Scripting-Token": string }
@@ -127,6 +129,7 @@ export function scriptingAuthHeaders(
   bodySha256: string,
   activationIdentity: string,
   protocol: "1" | "2" = SCRIPTING_GATEWAY_PROTOCOL_VERSION,
+  installationDigest?: string,
 ): ScriptingAuthHeaders {
   if (protocol === "1") {
     if (timestamp >= SCRIPTING_LEGACY_EXPIRES_AT_SECONDS) {
@@ -149,24 +152,20 @@ export function scriptingAuthHeaders(
   const material = scriptingKeyMaterial(token, sha256Hex, hmacSha256Hex);
   if (!material) throw new GatewayError(ACCESS_KEY_INVALID_MESSAGE);
   const activationHash = scriptingActivationHash(activationIdentity, sha256Hex);
+  const signature = hmacSha256Hex(material.macKey, scriptingCanonicalRequest(
+    timestamp, nonce, GATEWAY_ORIGIN, route, bodySha256, material.keyId, activationHash,
+  ));
   return {
     "X-Scripting-Version": SCRIPTING_PROTOCOL_VERSION,
     "X-Scripting-Key-Id": material.keyId,
     "X-Scripting-Activation": activationHash,
     "X-Scripting-Timestamp": String(timestamp),
     "X-Scripting-Nonce": nonce,
-    "X-Scripting-Signature": hmacSha256Hex(
-      material.macKey,
-      scriptingCanonicalRequest(
-        timestamp,
-        nonce,
-        GATEWAY_ORIGIN,
-        route,
-        bodySha256,
-        material.keyId,
-        activationHash,
-      ),
-    ),
+    "X-Scripting-Signature": signature,
+    ...(installationDigest ? {
+      "X-Scripting-Installation": installationDigest + "." + hmacSha256Hex(material.macKey,
+        ["pipi-scripting-installation-proof-v1", signature, installationDigest].join("\n")),
+    } : {}),
   };
 }
 
@@ -253,8 +252,12 @@ export async function postGateway<T extends Record<string, unknown>>(
   // The activation identity is saved before any request carries it; if it cannot be saved nothing
   // is sent, so a key can never bind to an identity that is lost right after.
   let activation: string;
+  let installation: string | undefined;
   try {
     activation = loadScriptingActivation();
+    if (SCRIPT_BUILD_TRACK === "formal" && SCRIPTING_GATEWAY_PROTOCOL_VERSION === "2") {
+      installation = scriptingInstallationDigest();
+    }
   } catch {
     throw new GatewayError(ACTIVATION_SAVE_FAILED_MESSAGE);
   }
@@ -270,6 +273,8 @@ export async function postGateway<T extends Record<string, unknown>>(
       route,
       sha256Hex(body),
       activation,
+      SCRIPTING_GATEWAY_PROTOCOL_VERSION,
+      installation,
     );
   } catch (error) {
     if (error instanceof GatewayError) throw error;

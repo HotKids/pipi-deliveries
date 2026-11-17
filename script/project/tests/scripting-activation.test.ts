@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { GATEWAY_ORIGIN, SCRIPTING_GATEWAY_PROTOCOL_VERSION } from "../services/build-track";
+import { GATEWAY_ORIGIN, SCRIPT_BUILD_TRACK, SCRIPTING_GATEWAY_PROTOCOL_VERSION } from "../services/build-track";
 import { installSharedFileMock } from "./shared-file-mock";
 
 const realClock = Date.now;
@@ -27,12 +27,14 @@ let secretWrites = 0;
 let afterActivationWrite: (() => void) | undefined;
 let queuedKeys: string[] = [];
 let generatedKeyCalls = 0;
+let installationUuid = "00000000-0000-4000-8000-000000000001";
 
 function keychainSlot(key: string, options: KeychainOptions): string {
   return `${options?.synchronizable === true ? "synced" : "local"}:${key}`;
 }
 
 Object.assign(globalThis, {
+  UUID: { string: () => installationUuid },
   Data: {
     fromIntArray: () => ({ value: "" }),
     fromRawString: (value: string) => ({ value }),
@@ -249,7 +251,14 @@ setDiagnosticsEnabled(true);
       "X-Scripting-Signature": "9a160c2c3c827241637ba4854f972d59f87f1011d030a461a6818dee9f2be670",
       "X-Scripting-Activation": activation,
     };
-    assert.deepEqual(fetchCalls[0].init.headers,SCRIPTING_GATEWAY_PROTOCOL_VERSION === "1" ? v1Headers : v2Headers);
+    const installation = createHash("sha256").update("pipi-scripting-installation-v1\n" + installationUuid).digest("hex");
+    const proof = createHmac("sha256", macKey)
+      .update(["pipi-scripting-installation-proof-v1", v2Headers["X-Scripting-Signature"], installation].join("\n"))
+      .digest("hex");
+    const selectedV2 = SCRIPT_BUILD_TRACK === "formal"
+      ? { ...v2Headers, "X-Scripting-Installation": installation + "." + proof }
+      : v2Headers;
+    assert.deepEqual(fetchCalls[0].init.headers,SCRIPTING_GATEWAY_PROTOCOL_VERSION === "1" ? v1Headers : selectedV2);
     // What the Worker stores for this header (CONTRACT §2), so the formats agree end to end.
     assert.equal(
       sentActivation(),
@@ -279,11 +288,30 @@ setDiagnosticsEnabled(true);
   }
   assert.deepEqual(fetchCalls.map((_, index) => sentActivation(index)),
     [activation, activation, activation].map(activationDigest));
+  if (SCRIPT_BUILD_TRACK === "formal" && SCRIPTING_GATEWAY_PROTOCOL_VERSION === "2") {
+    const proofs = fetchCalls.map(({ init }) => init.headers!["X-Scripting-Installation"].split("."));
+    assert.equal(new Set(proofs.map(([device]) => device)).size, 1);
+    assert.equal(new Set(proofs.map(([, proof]) => proof)).size, 3, "each proof binds to its exact signed request");
+  }
   assert.equal(generatedKeyCalls, 3, "one nonce per request and no new identity");
   assert.deepEqual(activationEvents().map((entry) => entry.details.result), ["synced_keychain"],
     "a settled identity reports its protected source only once per process");
   assert.equal(files.has(FILE), false);
   assert.equal(shared.has(SHARED_KEY), false);
+}
+
+if (SCRIPT_BUILD_TRACK === "formal" && SCRIPTING_GATEWAY_PROTOCOL_VERSION === "2") {
+  const { publishSharedData, withSharedFileTransaction } = await import("../services/shared-file-transaction");
+  const activation = "2".repeat(64);
+  device({ synced: activation });
+  await postGateway("/api/express/carriers", {});
+  const first = fetchCalls[0].init.headers!["X-Scripting-Installation"].split(".")[0];
+  withSharedFileTransaction(() => publishSharedData({ scriptingInstallation: undefined }));
+  resetScriptingActivationProcessState();
+  installationUuid = "00000000-0000-4000-8000-000000000002";
+  await postGateway("/api/express/carriers", {});
+  assert.equal(sentActivation(), activationDigest(activation), "both phones use the original iCloud activation");
+  assert.notEqual(fetchCalls[1].init.headers!["X-Scripting-Installation"].split(".")[0], first);
 }
 
 // ---- First use: a dedicated identity is saved only in synchronized Keychain before sending ----

@@ -11,8 +11,12 @@ import {
   Spacer,
   Text,
   VStack,
+  useEffect,
+  useRef,
   useState,
+  type Color,
 } from "scripting";
+import { ICON_TILE_SHAPE } from "../components/icon-tile";
 import type { AppState } from "../models";
 import { sendAccountCode } from "../services/account-sync";
 import { SCRIPT_VERSION } from "../services/build-track";
@@ -45,10 +49,17 @@ import { DiagnosticLogPage } from "./DiagnosticLogPage";
 import { PhoneManagerPage } from "./PhoneManagerPage";
 import { PrivacyPage } from "./PrivacyPage";
 import { NotificationSettingsPage } from "./NotificationSettingsPage";
+import { ParcelActivityPage, ParcelShortcutPage } from "./PickupSettingsPages";
+import type { ParcelActivityContent } from "../services/parcel-pickup";
 import { notificationEnabledCount } from "../services/notification-preferences";
+import { reconcileFengchaoReminders } from "../services/fengchao-reminders";
 import { transientToast } from "../services/ui-feedback";
+import { platformRefreshMessage, refreshPlatformParcels } from "../services/platform-parcel-sync";
 
 const PROJECT_URL = "https://github.com/HotKids/pipi-deliveries";
+const SETTINGS_ORANGE = "#F0A03C";
+const SETTINGS_BLUE = "#2F7BF6";
+const SETTINGS_GRAY = "#8E8E93";
 
 type AuthorizationState = "unauthorized" | "authorized" | "unavailable";
 
@@ -77,15 +88,13 @@ function authorizationLabel(state: AuthorizationState): string {
   return "未授权";
 }
 
-function SettingsRowIcon(props: { systemName: string }) {
+function SettingsRowIcon(props: { systemName: string; backgroundColor: Color }) {
   return (
-    <Image
-      systemName={props.systemName}
-      font={17}
-      symbolRenderingMode="monochrome"
-      foregroundStyle="accentColor"
-      frame={{ width: 22, height: 22 }}
-    />
+    <VStack frame={{ width: 30, height: 30 }}
+      background={{ style: props.backgroundColor, shape: ICON_TILE_SHAPE }}>
+      <Image systemName={props.systemName} font={16}
+        symbolRenderingMode="monochrome" foregroundStyle="white" />
+    </VStack>
   );
 }
 
@@ -102,11 +111,12 @@ function SettingsAccessoryIcon(props: { systemName: string }) {
 }
 
 function SettingsAppIcon() {
-  return <SettingsRowIcon systemName="cat" />;
+  return <SettingsRowIcon systemName="cat" backgroundColor="#B872AB" />;
 }
 
 export function SettingsPage(props: {
   state: AppState;
+  pickupCards: readonly ParcelActivityContent[];
   onStateChange: (state: AppState) => void;
 }) {
   const dismiss = Navigation.useDismiss();
@@ -116,11 +126,25 @@ export function SettingsPage(props: {
   const [notice, setNotice] = useState("");
   const [authorizationNotice, setAuthorizationNotice] = useState("");
   const [destination, setDestination] =
-    useState<"" | "phones" | "notifications" | "diagnostics" | "privacy">("");
+    useState<"" | "phones" | "notifications" | "diagnostics" | "privacy" | "shortcuts" | "activity">("");
   const [managerNotice, setManagerNotice] = useState("");
-  const [diagnosticCount, setDiagnosticCount] = useState(
-    () => readDiagnostics().length,
-  );
+  const [diagnosticCount, setDiagnosticCount] = useState(0);
+  const diagnosticCountTimer = useRef<number | undefined>(undefined);
+
+  function cancelDiagnosticCount() {
+    if (diagnosticCountTimer.current !== undefined) clearTimeout(diagnosticCountTimer.current);
+    diagnosticCountTimer.current = undefined;
+  }
+
+  function scheduleDiagnosticCount() {
+    if (diagnosticCountTimer.current !== undefined) return;
+    diagnosticCountTimer.current = setTimeout(() => {
+      diagnosticCountTimer.current = undefined;
+      setDiagnosticCount(readDiagnostics().length);
+    }, 0);
+  }
+
+  useEffect(() => cancelDiagnosticCount, []);
   const [enabledNotificationCount, setEnabledNotificationCount] = useState(
     () => notificationEnabledCount(true),
   );
@@ -278,15 +302,16 @@ export function SettingsPage(props: {
         }}
         onAppear={() => {
           refreshAuthorization();
-          setDiagnosticCount(readDiagnostics().length);
+          scheduleDiagnosticCount();
           setEnabledNotificationCount(notificationEnabledCount(true));
         }}
+        onDisappear={cancelDiagnosticCount}
         navigationDestination={{
           isPresented: Boolean(destination),
           onChanged: (presented) => {
             if (presented) return;
             setDestination("");
-            setDiagnosticCount(readDiagnostics().length);
+            scheduleDiagnosticCount();
             setEnabledNotificationCount(notificationEnabledCount(true));
           },
           content: destination === "phones" ? (
@@ -306,6 +331,9 @@ export function SettingsPage(props: {
                 return sendAccountCode(SCRIPT_BINDING_SOURCE, phone);
               }}
               onBind={bindCurrentPhone}
+              onPlatformRefresh={async (platform) => platformRefreshMessage(
+                await refreshPlatformParcels(props.onStateChange, "manual", platform),
+              )}
               onRemove={async (binding, localOnly) => {
                 setManagerNotice("");
                 props.onStateChange(await unbindPhone(binding.source, binding.phone, { localOnly, expectedBinding: binding }));
@@ -325,8 +353,15 @@ export function SettingsPage(props: {
             <PrivacyPage />
           ) : destination === "notifications" ? (
             <NotificationSettingsPage
-              onChanged={setEnabledNotificationCount}
+              onChanged={(count) => {
+                setEnabledNotificationCount(count);
+                void reconcileFengchaoReminders(props.state);
+              }}
             />
+          ) : destination === "shortcuts" ? (
+            <ParcelShortcutPage />
+          ) : destination === "activity" ? (
+            <ParcelActivityPage cards={props.pickupCards} revision={props.state.revision} />
           ) : destination === "diagnostics" ? (
             <DiagnosticLogPage />
           ) : (
@@ -342,7 +377,7 @@ export function SettingsPage(props: {
               frame={{ minHeight: 44, maxWidth: "infinity" }}
               contentShape="rect"
             >
-              <SettingsRowIcon systemName="phone" />
+              <SettingsRowIcon systemName="phone" backgroundColor={SETTINGS_ORANGE} />
               <Text>管理账号</Text>
               <Spacer />
               <Text foregroundStyle="secondaryLabel" monospacedDigit>
@@ -364,7 +399,7 @@ export function SettingsPage(props: {
               frame={{ minHeight: 44, maxWidth: "infinity" }}
               contentShape="rect"
             >
-              <SettingsRowIcon systemName="bell" />
+              <SettingsRowIcon systemName="bell" backgroundColor={SETTINGS_BLUE} />
               <Text>通知管理</Text>
               <Spacer />
               <Text foregroundStyle="secondaryLabel" monospacedDigit>
@@ -386,14 +421,14 @@ export function SettingsPage(props: {
                   {authorizationNotice}
                 </Text>
               ) : null}
-              <Text font={12} foregroundStyle="secondaryLabel">
-                Access Key 用于验证服务访问资格，仅保存在本机。
+              <Text font={12} fontWeight="semibold" foregroundStyle="label">
+                Access Key 用于同步你的快递信息，请妥善保存，不要分享。
               </Text>
             </VStack>
           }
         >
           <HStack spacing={12} frame={{ minHeight: 44 }}>
-            <SettingsRowIcon systemName="key" />
+            <SettingsRowIcon systemName="key" backgroundColor={SETTINGS_ORANGE} />
             <SecureField
               title="Access Key"
               value={token}
@@ -439,7 +474,7 @@ export function SettingsPage(props: {
               frame={{ minHeight: 44, maxWidth: "infinity" }}
               contentShape="rect"
             >
-              <SettingsRowIcon systemName="doc.text.magnifyingglass" />
+              <SettingsRowIcon systemName="doc.text.magnifyingglass" backgroundColor={SETTINGS_GRAY} />
               <Text>诊断日志</Text>
               <Spacer />
               {diagnosticCount ? (
@@ -460,8 +495,37 @@ export function SettingsPage(props: {
               frame={{ minHeight: 44, maxWidth: "infinity" }}
               contentShape="rect"
             >
-              <SettingsRowIcon systemName="hand.raised" />
+              <SettingsRowIcon systemName="hand.raised" backgroundColor="#34A853" />
               <Text>隐私政策</Text>
+              <Spacer />
+              <SettingsAccessoryIcon systemName="chevron.right" />
+            </HStack>
+          </Button>
+        </Section>
+
+        <Section header={<Text>更多</Text>}>
+          <Button buttonStyle="plain" action={() => setDestination("shortcuts")}>
+            <HStack
+              spacing={12}
+              padding={{ vertical: 5 }}
+              frame={{ minHeight: 44, maxWidth: "infinity" }}
+              contentShape="rect"
+            >
+              <SettingsRowIcon systemName="square.on.square" backgroundColor={SETTINGS_ORANGE} />
+              <Text>快捷指令</Text>
+              <Spacer />
+              <SettingsAccessoryIcon systemName="chevron.right" />
+            </HStack>
+          </Button>
+          <Button buttonStyle="plain" action={() => setDestination("activity")}>
+            <HStack
+              spacing={12}
+              padding={{ vertical: 5 }}
+              frame={{ minHeight: 44, maxWidth: "infinity" }}
+              contentShape="rect"
+            >
+              <SettingsRowIcon systemName="rectangle.inset.filled.badge.record" backgroundColor={SETTINGS_BLUE} />
+              <Text>实时活动</Text>
               <Spacer />
               <SettingsAccessoryIcon systemName="chevron.right" />
             </HStack>
@@ -486,7 +550,7 @@ export function SettingsPage(props: {
               frame={{ minHeight: 44, maxWidth: "infinity" }}
               contentShape="rect"
             >
-              <SettingsRowIcon systemName="link" />
+              <SettingsRowIcon systemName="link" backgroundColor={SETTINGS_GRAY} />
               <Text foregroundStyle="label">项目地址</Text>
               <Spacer />
               <Text foregroundStyle="secondaryLabel">GitHub</Text>

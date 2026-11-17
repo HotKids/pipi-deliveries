@@ -56,6 +56,7 @@ import {
 import { loadState, recordShipmentDetailSelection, setShipmentNote } from "../services/storage";
 import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
 import { requestWidgetReload } from "../services/widgets";
+import { displayedPlatformFields } from "../services/platform-parcel-merge";
 import { timelineTimeParts } from "../services/time-presentation";
 import { preferNewerShipment } from "../services/ui-state";
 import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
@@ -118,7 +119,7 @@ export function DetailPage(props: {
       externalAppAbortRef.current = null;
     };
   }, [shipment.identity.id, shipment.identity.sourceProvider, shipment.identity.sourceId]);
-  // 备注（用户定 2026-09-05 晚）：只在详情页添加，用系统弹窗输入；状态词后面以「 · 备注」显示。
+  // The pickup tab and this detail editor share the same shipment note.
   async function editNote() {
     let value: string | null;
     try {
@@ -299,6 +300,7 @@ export function DetailPage(props: {
       presentationStatus.semantic === "UNKNOWN"
     ? MANUAL_QUERY_IN_FLIGHT_TEXT
     : presentationStatus.text;
+  const platformFields = displayedPlatformFields(shipment);
 
   useEffect(() => {
     setShipment((current) => preferNewerShipment(current, props.shipment));
@@ -638,7 +640,6 @@ export function DetailPage(props: {
               unprojectedAccountOrder(shipment),
             )}
             size={72}
-            cornerRadius={17}
             imageURL={shipment.identity.productImageURL}
           />
           <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity" }}>
@@ -703,6 +704,16 @@ export function DetailPage(props: {
           <Spacer />
         </HStack>
       </Section>
+
+      {platformFields.title || platformFields.estimate ? (
+        <Section>
+          <VStack spacing={5} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}
+            padding={{ vertical: 6 }}>
+            {platformFields.estimate ? <Text font={14} fontWeight="medium">{platformFields.estimate}</Text> : null}
+            {platformFields.title ? <Text font={14} foregroundStyle="secondaryLabel">{platformFields.title}</Text> : null}
+          </VStack>
+        </Section>
+      ) : null}
 
       <Section
         header={

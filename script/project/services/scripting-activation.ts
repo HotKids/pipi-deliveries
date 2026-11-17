@@ -2,13 +2,13 @@ import { removeLegacyCredentialCopies } from "./legacy-credential-cleanup";
 import { loadGatewayCredentials } from "./credentials";
 import { sha256Hex } from "./scripting-data";
 import { writeDiagnostic } from "./logger";
+import { publishSharedData, sharedData, withSharedFileTransaction } from "./shared-file-transaction";
 
 /**
  * The dedicated 32-byte activation identity lives only in this script's synchronized
  * Keychain. It is separate from the interface-5 identity forwarded to Xiaomi.
- * A replaced script scope requires a newly issued Access Key; shared plaintext is
- * deleted without restoring it. Gateway v2 sends its existing domain-separated digest in the
- * same header and authenticates that digest in the request MAC.
+ * Gateway v2 keeps this identity in its base request MAC. The installation proof
+ * uses a separate device-local identity.
  */
 export const SCRIPTING_ACTIVATION_HEADER = "X-Scripting-Activation";
 
@@ -17,6 +17,7 @@ const ACTIVATION_REJECTION_KEY = "pipi_deliveries_scripting_activation_rejected_
 // Scripting requires the same synchronization option for every operation on an item.
 const SYNCED_KEYCHAIN = { synchronizable: true } as const;
 const ACTIVATION_PATTERN = /^[0-9a-f]{64}$/;
+const INSTALLATION_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 export type ScriptingActivationSource = "synced_keychain" | "generated";
 
 class ScriptingActivationUnavailableError extends Error {
@@ -37,8 +38,10 @@ function generateActivation(): string {
   return [0, 1].map(() => Crypto.generateSymmetricKey(128).toHexString().toLowerCase()).join("");
 }
 const reportedOutcomes = new Set<string>();
+let installationDigest: string | undefined;
 export function resetScriptingActivationProcessState(): void {
   reportedOutcomes.clear();
+  installationDigest = undefined;
 }
 function report(result: ScriptingActivationSource): void {
   if (reportedOutcomes.has(result)) return;
@@ -71,6 +74,21 @@ export function loadScriptingActivation(generate: () => string = generateActivat
     stage: "activation_identity", result: "save_failed",
   }, "error");
   throw new ScriptingActivationUnavailableError();
+}
+
+export function scriptingInstallationDigest(): string {
+  if (installationDigest) return installationDigest;
+  // The app and widget can start together. Both must use the same committed local digest.
+  installationDigest = withSharedFileTransaction(() => {
+    const current = sharedData().scriptingInstallation;
+    if (current && ACTIVATION_PATTERN.test(current)) return current;
+    const local = UUID.string().toLowerCase();
+    if (!INSTALLATION_PATTERN.test(local)) throw new ScriptingActivationUnavailableError();
+    const digest = sha256Hex("pipi-scripting-installation-v1\n" + local);
+    publishSharedData({ scriptingInstallation: digest });
+    return digest;
+  });
+  return installationDigest;
 }
 
 function keyFingerprint(token: string): string {

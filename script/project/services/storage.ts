@@ -16,11 +16,19 @@ import type {
   BindingSource,
   PendingManualQuery,
   PendingEnhancementUnsubscribe,
+  PickupCodeRecord,
+  ParcelHandoffRecord,
   Shipment,
   ShipmentNotificationEvent,
   TimelinePackage,
   WidgetSnapshot,
 } from "../models";
+import { nextParcelHandoffDeadline, parcelHandoffDeadline } from "./parcel-handoff-expiry";
+import { activePickupCards, applyRecognizedPickup, type ParcelActivityContent } from "./parcel-pickup";
+import { enrichPlatformParcel, keepPlatformFields, matchPlatformParcel, samePlatformTarget } from "./platform-parcel-merge";
+import type { PlatformParcel } from "./platform-parcel-data";
+import type { CabinetParcel } from "./fengchao-account";
+import type { ParcelLookup } from "./parcel-code-ocr";
 import {
   buildWidgetSnapshot,
   isConfirmedNoItemOrder,
@@ -57,6 +65,7 @@ import {
   isVerifiedKuaidi100Timeline,
   normalizeAutomaticOwnership,
   selectShipmentTimeline,
+  unprojectedAccountOrder,
   withDetailSelection,
 } from "./shipment-policy";
 import { projectedCarrierPresentation } from "./carrier-presentation";
@@ -556,6 +565,7 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
       now,
     ),
     shipments: sortShipments(retainedShipments),
+    ...(Array.isArray(base.pickupCodeRecords) ? { pickupCodeRecords: base.pickupCodeRecords } : {}),
     pendingNotifications: base.pendingNotifications || [],
     ...(base.pendingEnhancementUnsubscribes?.length ? {
       pendingEnhancementUnsubscribes: normalizeEnhancementUnsubscribes(base.pendingEnhancementUnsubscribes),
@@ -2505,6 +2515,208 @@ export function saveState(
   });
 }
 
+export function expireDueParcelHandoffs(now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const previous = loadState(now);
+    const saved = previous.pickupCodeRecords ?? [];
+    const deadline = nextParcelHandoffDeadline(saved);
+    if (deadline === undefined || deadline > now) return previous;
+    const records = saved.map((record) => {
+      const expiredAtMs = parcelHandoffDeadline(record);
+      return expiredAtMs !== undefined && expiredAtMs <= now ? { ...record, expiredAtMs } : record;
+    });
+    return saveStateAndPrune(previous, now, {}, previous, records).state;
+  });
+}
+
+export function saveRecognizedParcelCode(record: PickupCodeRecord, now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const previous = loadState(now);
+    const saved = previous.pickupCodeRecords ?? [];
+    if (saved.some((item) => item.id === record.id)) return previous;
+    const deadline = parcelHandoffDeadline(record);
+    const stored = deadline !== undefined && deadline <= now ? { ...record, expiredAtMs: deadline } : record;
+    return saveStateAndPrune(previous, now, {}, previous, [...saved, stored]).state;
+  });
+}
+
+export function completeIndependentParcelCode(id: string, now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const previous = loadState(now);
+    const saved = previous.pickupCodeRecords ?? [];
+    const target = saved.find((item) => item.id === id);
+    if (!target || target.completedAtMs || target.kind === "handoff" && target.expiredAtMs) return previous;
+    const deadline = parcelHandoffDeadline(target);
+    const completed = deadline !== undefined && deadline <= now
+      ? { ...target, expiredAtMs: deadline } : { ...target, completedAtMs: now };
+    const records = saved.map((item) => item.id === id ? completed : item);
+    return saveStateAndPrune(previous, now, {}, previous, records).state;
+  });
+}
+
+export function saveRecognizedShipmentPickup(expected: Shipment, lookup: ParcelLookup, now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    const current = state.shipments.find((item) => item.identity.id === expected.identity.id);
+    if (!current || shipmentLifecycleKey(current) !== shipmentLifecycleKey(expected)) {
+      throw new ShipmentLifecycleChangedError();
+    }
+    const updated = applyRecognizedPickup(current, lookup);
+    if (updated === current) return state;
+    return saveState({
+      ...state,
+      shipments: state.shipments.map((item) => item === current
+        ? { ...updated, updatedAtMs: Math.max(now, current.updatedAtMs + 1) } : item),
+    }, now, {}, state);
+  });
+}
+
+export function parcelCardKey(card: Pick<ParcelActivityContent, "target">): string {
+  const target = card.target;
+  return target && ("recordId" in target ? "record:" + target.recordId :
+    JSON.stringify([target.shipmentId, target.waybill, target.waybillGeneration])) || "";
+}
+
+export function completeCurrentParcelCard(expected: ParcelActivityContent, now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    const current = activePickupCards(visibleShipments(state), state.pickupCodeRecords).find(
+      (card) => parcelCardKey(card) === parcelCardKey(expected) && card.code === expected.code,
+    );
+    if (!current?.target) throw new ShipmentLifecycleChangedError();
+    return "recordId" in current.target
+      ? completeIndependentParcelCode(current.target.recordId, now)
+      : forceCompleteShipment(current.target.shipmentId, now);
+  });
+}
+
+export function setPickupCardNote(
+  expected: ParcelActivityContent, previousNote: string, note: string, now = Date.now(),
+): AppState {
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    const shipments = visibleShipments(state, now);
+    const records = state.pickupCodeRecords ?? [];
+    const target = activePickupCards(shipments, records).find((card) =>
+      parcelCardKey(card) === parcelCardKey(expected) && card.code === expected.code &&
+      card.capturedAtMs === expected.capturedAtMs)?.target;
+    if (!target) throw new ShipmentLifecycleChangedError();
+    if ("shipmentId" in target) {
+      const shipment = shipments.find((row) => row.identity.id === target.shipmentId);
+      if (!shipment || (shipment.note || "") !== previousNote) throw new ShipmentLifecycleChangedError();
+      return setShipmentNote(shipment, note, now);
+    }
+    const record = records.find((item) => item.id === target.recordId);
+    const expiry = record && parcelHandoffDeadline(record);
+    if (!record || (record.note || "") !== previousNote || (expiry !== undefined && expiry <= now)) {
+      throw new ShipmentLifecycleChangedError();
+    }
+    const trimmed = note.trim();
+    if (trimmed === previousNote) return state;
+    const next = records.map((item) => item === record ? { ...record, note: trimmed || undefined } : item);
+    return saveStateAndPrune(state, now, {}, state, next).state;
+  });
+}
+
+export function savePlatformParcelData(input: {
+  observed: AppState;
+  owner: string;
+  parcels: readonly PlatformParcel[];
+  handoffs?: readonly ParcelHandoffRecord[];
+  cabinets?: readonly CabinetParcel[];
+  current: () => boolean;
+}, now = Date.now()): { state: AppState; cabinetLinks: { recordKey: string; parcel: CabinetParcel }[] } {
+  return withSharedFileTransaction(() => {
+    if (!input.current()) throw new ShipmentLifecycleChangedError();
+    const state = loadState(now);
+    const before = visibleShipments(input.observed, now);
+    const visible = visibleShipments(state, now);
+    const updated = new Map<string, Shipment>();
+    const records = new Map((state.pickupCodeRecords || []).map((record) => [record.id, record]));
+    const cabinetCandidates: { id: string; separate: boolean; parcel: CabinetParcel }[] = [];
+    let pickupChanged = false;
+
+    function addStandalone(parcel: PlatformParcel, id: string) {
+      if (!parcel.code || (parcel.source !== "cainiao" && parcel.source !== "fengchao")) return;
+      const current = records.get(id);
+      if (current && (current.kind !== "pickup" || current.completedAtMs)) return;
+      const next: PickupCodeRecord = {
+        kind: "pickup", id, platform: parcel.source, code: parcel.code,
+        capturedAtMs: current?.capturedAtMs || now,
+        locationName: parcel.name || current?.locationName,
+        address: parcel.address || current?.address,
+        ...(current?.note ? { note: current.note } : {}),
+      };
+      if (JSON.stringify(next) !== JSON.stringify(current)) {
+        records.set(id, next);
+        pickupChanged = true;
+      }
+    }
+
+    const parsedCabinets = (input.cabinets || []).map((cabinet): [PlatformParcel, CabinetParcel] => ([
+      {
+        source: "fengchao", waybill: normalizeWaybill(cabinet.expressId), code: cabinet.code,
+        name: cabinet.cabinetName, address: cabinet.address,
+      }, cabinet,
+    ]));
+    const candidates: [PlatformParcel, CabinetParcel?][] = [
+      ...input.parcels.map((parcel): [PlatformParcel] => [parcel]), ...parsedCabinets,
+    ];
+    for (const [parcel, cabinet] of candidates) {
+      const target = matchPlatformParcel(visible, parcel, input.owner);
+      const expected = matchPlatformParcel(before, parcel, input.owner);
+      if (target) {
+        if (!samePlatformTarget(expected, target)) continue;
+        const latest = updated.get(target.identity.id) || target;
+        // Two provider parcels for one order cannot supply the missing waybill.
+        if (parcel.waybill && unprojectedAccountOrder(target) &&
+          candidates.some(([other]) => other !== parcel && other.waybill && other.waybill !== parcel.waybill &&
+            matchPlatformParcel(visible, other, input.owner)?.identity.id === target.identity.id)) continue;
+        const next = enrichPlatformParcel(latest, parcel, now);
+        if (next !== latest) updated.set(target.identity.id, { ...next, updatedAtMs: Math.max(now, latest.updatedAtMs + 1) });
+        if (cabinet) cabinetCandidates.push({ id: target.identity.id, separate: false, parcel: cabinet });
+        continue;
+      }
+      if (expected) continue;
+      if (parcel.source === "cainiao" && parcel.unnumbered) {
+        addStandalone(parcel, "cn-station:" + privateHash(JSON.stringify([input.owner, parcel.name || parcel.address, parcel.code])));
+      } else if (cabinet && ![...state.shipments, ...input.observed.shipments].some((shipment) =>
+        parcel.waybill && displayWaybill(shipment) === parcel.waybill)) {
+        const id = "fc-cabinet:" + privateHash(JSON.stringify([input.owner, cabinet.cabinetCode, cabinet.boxId, cabinet.expressId, cabinet.code]));
+        addStandalone(parcel, id);
+        cabinetCandidates.push({ id, separate: true, parcel: cabinet });
+      }
+    }
+
+    for (const record of input.handoffs || []) {
+      const saved = records.get(record.id);
+      if (saved && (saved.kind !== "handoff" || saved.completedAtMs || saved.expiredAtMs)) continue;
+      const next = {
+        ...record, capturedAtMs: saved?.capturedAtMs || record.capturedAtMs,
+        ...(saved?.note ? { note: saved.note } : {}),
+      };
+      const deadline = parcelHandoffDeadline(next);
+      const timed = deadline !== undefined && now >= deadline ? { ...next, expiredAtMs: deadline } : next;
+      if (JSON.stringify(timed) !== JSON.stringify(saved)) {
+        records.set(record.id, timed);
+        pickupChanged = true;
+      }
+    }
+
+    const next = updated.size || pickupChanged ? saveStateAndPrune({
+      ...state, shipments: state.shipments.map((shipment) => updated.get(shipment.identity.id) || shipment),
+    }, now, {}, state, [...records.values()]).state : state;
+    const cards = activePickupCards(visibleShipments(next, now), next.pickupCodeRecords);
+    const cabinetLinks = cabinetCandidates.flatMap(({ id, separate, parcel }) => {
+      const card = cards.find((item) => item.target && item.code === parcel.code &&
+        (separate ? "recordId" in item.target && item.target.recordId === id
+          : "shipmentId" in item.target && item.target.shipmentId === id));
+      return card ? [{ recordKey: parcelCardKey(card), parcel }] : [];
+    });
+    return { state: next, cabinetLinks };
+  });
+}
+
 function withCarrierHold(
   event: ShipmentNotificationEvent,
   hold: boolean,
@@ -2563,6 +2775,7 @@ function saveStateAndPrune(
   now: number,
   notificationCommit: StateSaveOptions,
   previousInTransaction?: AppState,
+  pickupCodeRecords?: readonly PickupCodeRecord[],
 ): { state: AppState; routesPruned: boolean } {
   const startedAtMs = Date.now();
   // ACK/defer read inside this transaction; its CAS retry re-reads before reusing the snapshot.
@@ -2591,10 +2804,16 @@ function saveStateAndPrune(
           const settledAtMs = newerWaybillReuseGeneration(persisted, shipment)
             ? undefined
             : persisted?.settledAtMs;
-          return normalizeShipmentAuthorities(
+          const normalized = normalizeShipmentAuthorities(
             settledAtMs ? { ...shipment, settledAtMs } : shipment,
             now,
           );
+          const pickup = persisted?.pickup;
+          // Refreshes may replace the timeline. The code belongs to the same waybill generation.
+          const withPickup = !normalized.pickup && pickup && pickup.waybill === displayWaybill(normalized) &&
+            pickup.waybillGeneration === (normalized.waybillReuseAtMs ?? 0)
+            ? { ...normalized, pickup } : normalized;
+          return keepPlatformFields(persisted, withPickup);
         }),
       now,
     ),
@@ -2618,6 +2837,7 @@ function saveStateAndPrune(
     if (!pending) throw new Error("本机解绑记录保存失败");
     if (!unsubscribes.some(item => item.id === pending.id)) unsubscribes.push(pending);
   }
+  const savedPickupCodes = pickupCodeRecords ?? previous.pickupCodeRecords;
   const next: AppState = {
     version: 2,
     revision: Math.max(previous.revision, candidate.revision) + 1,
@@ -2629,6 +2849,7 @@ function saveStateAndPrune(
       now,
     ),
     shipments: sortShipments(retainedShipments),
+    ...(savedPickupCodes ? { pickupCodeRecords: savedPickupCodes } : {}),
     // An unsent event of the old parcel goes with it when a new parcel takes the reused number (user 2026-10-02).
     pendingNotifications: (previous.pendingNotifications || []).filter((event) =>
       event.id !== notificationCommit.acknowledgedId && !reusedNumberRows.has(event.shipmentId)
@@ -3445,7 +3666,7 @@ export function upsertShipment(incoming: Shipment, now = Date.now()): AppState {
   });
 }
 
-/** 详情页写备注（用户定 2026-09-05 晚）：只改这一票的 note，别的都不动；空串即清除。 */
+/** The parcel lifecycle owns the note. An empty value clears it. */
 export function setShipmentNote(expected: Shipment, note: string, now = Date.now()): AppState {
   return withSharedFileTransaction(() => {
     const state = loadState(now);
