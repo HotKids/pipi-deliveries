@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, privateDecrypt, randomBytes, constants } from "node:crypto";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import type { Shipment } from "../models";
 import { memory, NOW } from "./state-storage-mock";
 import { code128Widths } from "../services/code128";
@@ -295,6 +296,58 @@ test("old PDD identity response after logout cannot create an active code or cle
     assert.equal(currentPlatformSession("pinduoduo", first.generation), null);
   } finally { globalThis.fetch = realFetch; }
 });
+
+for (const loadCompleted of [true, false]) {
+  test(`JD reads authenticated orders with native load completion=${loadCompleted}`, { timeout: 2_500 }, async () => {
+    memory.clear();
+    const cookie = { ...sessionCookie, name: "pt_key", value: "synthetic-jd-session", domain: ".jd.com" };
+    savePlatformLogin("jingdong", "", { kind: "web", cookies: [cookie] }, "synthetic-jd-account");
+    let enteredOrders = false;
+    const title = { textContent: "示例商品" };
+    const orderData = { getAttribute: () => JSON.stringify({ orderid: order }) };
+    const card = {
+      querySelector: (selector: string) => selector.includes("order_item") ? title : null,
+      querySelectorAll: (selector: string) => selector.includes("order_state") ? [state]
+        : selector.includes("data-eparam") ? [orderData] : [title],
+    };
+    const state = { parentElement: card, textContent: "待收货" };
+    const originalController = globalThis.WebViewController;
+    Object.assign(globalThis, { WebViewController: class {
+      async setCookie() { return true; }
+      async loadURL(url: string) {
+        assert.equal(url, "https://my.m.jd.com/index.html?sceneval=2");
+        return loadCompleted;
+      }
+      async evaluateJavaScript(script: string) {
+        const window = { top: {} };
+        window.top = window;
+        const document = {
+          // The account page can contain a security settings link alongside the order entry.
+          body: { innerText: enteredOrders ? "待收货" : "我的京东 全部订单 账号安全验证" },
+          querySelectorAll: () => enteredOrders ? [state] : [],
+          querySelector: (selector: string) => !enteredOrders && selector === ".my_order_entrance.type_orders"
+            ? { click: () => { enteredOrders = true; } } : null,
+        };
+        return runInNewContext(`(() => {${script}})()`, {
+          window, document, location: new URL(enteredOrders
+            ? "https://trade.m.jd.com/order/orderlist_jdm.shtml" : "https://my.m.jd.com/index.html?sceneval=2"),
+        });
+      }
+      dispose() {}
+    } });
+    registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
+    try {
+      const result = await refreshPlatformParcels(() => {}, "manual", "jingdong");
+      assert.equal(result.succeeded, 1);
+      assert.deepEqual(result.issues, []);
+      assert.equal(enteredOrders, true);
+      assert.ok(accountStatus("jingdong").syncedAtMs);
+    } finally {
+      globalThis.WebViewController = originalController;
+      registerProjectionViewportHost(null);
+    }
+  });
+}
 
 test("PDD waiting pickup sync survives an unavailable order-capture host", async (t) => {
   t.mock.method(Date, "now", () => NOW + 2);

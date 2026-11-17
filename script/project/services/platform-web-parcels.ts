@@ -13,26 +13,32 @@ import { asPlainObject, cleanScalarText } from "./value-guards";
 const JD_ORDERS = "https://my.m.jd.com/index.html?sceneval=2";
 const PDD_ORDERS = "https://mobile.yangkeduo.com/orders.html";
 
-// Keep this projection scoped to the same JD order-card evidence used by JdAccountActivity.
-const READ_JD_ORDERS = String.raw`
+const JD_ACCOUNT_PAGE_CHECK = String.raw`
   if (window !== window.top) return null;
-  if (location.hostname === 'plogin.m.jd.com') return { state: 'expired' };
+  if (location.protocol === 'https:' && !location.port &&
+    ['plogin.m.jd.com','passport.jd.com'].includes(location.hostname)) return { state: 'expired' };
+`;
+
+// Follow JdAccountActivity.READ_ORDERS: use the order cards or entry before classifying page text.
+const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
   if (!['https://my.m.jd.com','https://trade.m.jd.com','https://home.m.jd.com'].includes(location.origin)) return null;
   const text = el => (el?.textContent || '').trim();
   const nickname = text(document.querySelector('.my_header_name'));
   if (nickname && nickname !== '京东用户') window.__pipiDeliveriesJDName = nickname;
   const states = Array.from(document.querySelectorAll('[class*="order_state"]'));
-  const body = document.body?.innerText || '';
-  if (/快速验证|验证一下|滑动验证|人机验证|安全验证/.test(body)) return { state: 'verification' };
   if (!states.length) {
-    if (/暂时没有相关订单|暂无相关订单|没有找到相关订单/.test(body)) return { orders: [] };
     const entry = document.querySelector('.my_order_entrance.type_orders') ||
       Array.from(document.querySelectorAll('div,span,a,button')).filter(el =>
         text(el) === '全部订单' && el.children.length < 3 && el.getClientRects().length).pop();
     if (entry && !window.__pipiDeliveriesJDOpened) {
       window.__pipiDeliveriesJDOpened = true;
       entry.click();
+      return null;
     }
+    const body = document.body?.innerText || '';
+    if (/暂时没有相关订单|暂无相关订单|没有找到相关订单/.test(body)) return { orders: [] };
+    if (/快速验证|验证一下|滑动验证|人机验证|安全验证/.test(body)) return { state: 'verification' };
+    if (/大促异常火爆|稍后再试/.test(body)) return { state: 'unavailable' };
     return null;
   }
   const orders = [], seen = new Set();
@@ -56,8 +62,8 @@ const READ_JD_ORDERS = String.raw`
 `;
 
 function readJdParcel(order: string) {
-  return String.raw`
-    if (window !== window.top || location.origin !== 'https://trade.m.jd.com' ||
+  return JD_ACCOUNT_PAGE_CHECK + String.raw`
+    if (location.origin !== 'https://trade.m.jd.com' ||
       location.pathname !== '/order/deal_wuliu_jdm.shtml' ||
       new URLSearchParams(location.search).get('dealId') !== ` + JSON.stringify(order) + String.raw`) return null;
     const text = (document.body?.innerText || '').split('可能您还想要')[0];
@@ -163,17 +169,24 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
   url: string, script: string, deadline: number): Promise<unknown> {
   assertCurrent(platform, session);
   const pageDeadline = Math.min(deadline, Date.now() + 12_000);
-  if (!await waitForRefresh(web.loadURL(url), pageDeadline)) throw new PlatformWireError("unavailable");
+  const load = web.loadURL(url);
+  if (platform === "jingdong") {
+    // Like Pipi's JD probe, accept the matching document as soon as it renders.
+    void load.catch(() => undefined);
+  } else if (!await waitForRefresh(load, pageDeadline)) {
+    throw new PlatformWireError("unavailable");
+  }
   while (Date.now() < pageDeadline) {
     assertCurrent(platform, session);
     const value = await waitForRefresh(web.evaluateJavaScript<unknown>(script).catch(() => null), pageDeadline);
     if (value != null) {
+      assertCurrent(platform, session);
       const { state } = asPlainObject(value);
       if (state === "expired") {
         clearPlatformLogin(platform, session.generation, true);
         throw new PlatformWireError("expired");
       }
-      if (state === "verification") throw new PlatformWireError("verification");
+      if (state === "verification" || state === "unavailable") throw new PlatformWireError(state);
       return value;
     }
     await pauseWhileActive(250);

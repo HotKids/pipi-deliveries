@@ -1,4 +1,4 @@
-import { Button, Canvas, GeometryReader, HStack, Image, Text, ZStack, gradient, type AppIntent } from "scripting";
+import { Button, Canvas, GeometryReader, HStack, Image, Text, VStack, ZStack, gradient, type AppIntent } from "scripting";
 import type { ParcelActivityCompletion } from "../services/parcel-activity-action";
 import type { ParcelActivityContent } from "../services/parcel-pickup";
 
@@ -54,9 +54,8 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, complet
   const codeTop = capsuleTop + (card.capsuleHeight - card.codeHeight) / 2;
   const codeWidth = textWidth - (showCapsule ? capsuleWidth + card.codeGap : 0);
 
-  return (
+  const reader = (
     <GeometryReader
-      frame={preview ? { maxWidth: card.width, minHeight: card.height, maxHeight: card.height } : undefined}
       aspectRatio={preview ? undefined : { value: card.width / card.height, contentMode: "fit" }}
     >
       {({ size }) => {
@@ -121,4 +120,12 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, complet
       }}
     </GeometryReader>
   );
+  // The settings List needs a row height before the reader can measure the available width.
+  return preview ? (
+    <VStack spacing={0}
+      frame={{ maxWidth: card.width, minHeight: card.height, maxHeight: card.height }}
+      fixedSize={{ horizontal: false, vertical: true }}>
+      {reader}
+    </VStack>
+  ) : reader;
 }

@@ -196,9 +196,15 @@ assert.match(
   /^<VStack\b[^>]*>[\s\S]*?官方电话：[\s\S]*?<Divider\s*\/>[\s\S]*?编辑商品名[\s\S]*?<\/VStack>$/,
   "the separator between the carrier and product name must be inside the same list row",
 );
-assert.match(headerSection, /listRowInsets=\{showProductName \? \{ top: 12, bottom: 0, leading: 20, trailing: 20 \} : undefined\}/);
-assert.match(headerSection, /<Divider\s*\/>\s*<HStack[^>]*padding=\{\{ vertical: 12 \}\}/,
-  "the title and its edit action sit between equal top and bottom padding");
+assert.match(headerSection, /listRowInsets=\{showParcelInfo \? \{ top: 12, bottom: 0, leading: 20, trailing: 20 \} : undefined\}/);
+assert.match(headerSection, /<Divider\s*\/>\s*<VStack[^>]*padding=\{\{ vertical: 12 \}\}/,
+  "the parcel metadata sits between equal top and bottom padding");
+assert.match(headerSection, /官方电话：[\s\S]*?<Divider\s*\/>[\s\S]*?\{platformFields\.estimate\}[\s\S]*?\{platformFields\.title \|\| "添加商品名"\}/,
+  "the delivery estimate belongs in the carrier summary immediately above the product name");
+assert.equal((detailPage.match(/\{platformFields\.estimate\}/g) ?? []).length, 1,
+  "the delivery estimate has a single presentation");
+assert.match(detailPage, /\{pickup \? \(\s*<Section>[\s\S]*?取件码 \{pickup\.code\}/,
+  "pickup-only details remain available when the parcel has no estimate");
 assert.match(headerSection, /<DetailHeaderAction title="复制单号" systemImage="doc\.on\.doc"[\s\S]*?<DetailHeaderAction title="编辑商品名" systemImage="square\.and\.pencil"/,
   "the two header actions share an icon-only presentation");
 assert.match(detailPage, /function DetailHeaderAction[\s\S]*?<Button[\s\S]*?labelStyle="iconOnly"[\s\S]*?font=\{15\} foregroundStyle="secondaryLabel"/);
