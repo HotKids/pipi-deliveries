@@ -901,6 +901,7 @@ function readLegacyTriggers(details: DiagnosticDetails): DiagnosticDetails {
 
 function cleanStoredEntry(entry: DiagnosticEntry, translate = true): DiagnosticEntry {
   const details = sanitizeDetails(entry.details);
+  if (translate && entry.event.startsWith("carrier.authority.") && details.carrierCode === "HTKY") delete details.carrierCode;
   return { id: entry.id, at: entry.at, level: entry.level, event: entry.event,
     details: translate ? readLegacyTriggers(details) : details };
 }
@@ -1430,7 +1431,7 @@ export function readDiagnostics(): DiagnosticEntry[] {
       unique.set(entry.id, cleanStoredEntry(entry));
     }
   }
-  return [...unique.values()].slice(-MAX_RECORDS).reverse();
+  return [...unique.values()].filter(({ event }) => event !== "carrier.authority.current").slice(-MAX_RECORDS).reverse();
 }
 
 /**

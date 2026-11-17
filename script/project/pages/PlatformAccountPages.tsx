@@ -7,7 +7,9 @@ import {
   trustedPlatformPage, type ExpressPlatform, type WebPlatform,
 } from "../services/platform-accounts";
 import { requestFengchaoCode, signInFengchao, type FengchaoChallenge } from "../services/fengchao-account";
-import { checkCainiaoLogin, openProviderController, PlatformWireError } from "../services/platform-wire";
+import {
+  checkCainiaoLogin, jdLoginProof, openProviderController, PlatformWireError, retainJdLoginView,
+} from "../services/platform-wire";
 import { asPlainObject, cleanString } from "../services/value-guards";
 import { transientToast } from "../services/ui-feedback";
 import { waitForRefresh } from "../services/deadline";
@@ -63,11 +65,8 @@ async function verifiedLogin(platform: WebPlatform, controller: WebViewControlle
     return token && id ? { id, proof: token, cookies, nickname: cleanString(page.nickname).replace(/^游客$/, "") } : null;
   }
   if (!["home.m.jd.com", "my.m.jd.com", "trade.m.jd.com"].includes(url.hostname)) return null;
-  const accountCookies = [url.toString(), "https://home.m.jd.com/myJd/newhome.action", "https://my.m.jd.com/index.html"]
-    .map((address) => cookiesForURL(cookies, address)).find((entries) => cookieValue(entries, "pt_key"));
-  if (!accountCookies) return null;
-  return { id: decoded(cookieValue(accountCookies, "pt_pin")), proof: cookieValue(accountCookies, "pt_key"), cookies,
-    nickname: cleanString(page.nickname).replace(/^京东用户$/, "") };
+  const account = jdLoginProof(cookies, url.toString());
+  return account ? { ...account, cookies, nickname: cleanString(page.nickname).replace(/^京东用户$/, "") } : null;
 }
 
 function PlatformWebLogin({ platform, generation }: { platform: WebPlatform; generation: string }) {
@@ -77,6 +76,7 @@ function PlatformWebLogin({ platform, generation }: { platform: WebPlatform; gen
   const mounted = useRef(true);
   const checking = useRef(false);
   const seenProof = useRef("");
+  const detachJdView = useRef<(() => void) | null>(null);
 
   async function readLogin(web: WebViewController, retry = false) {
     if (!mounted.current || checking.current) return;
@@ -96,7 +96,14 @@ function PlatformWebLogin({ platform, generation }: { platform: WebPlatform; gen
       seenProof.current = candidate.proof;
       const cookies = platform === "cainiao" ? await checkCainiaoLogin(candidate.cookies) : candidate.cookies;
       if (!mounted.current) return;
-      dismiss(savePlatformLogin(platform, generation, { kind: "web", cookies }, candidate.id, candidate.nickname));
+      const saved = savePlatformLogin(platform, generation, { kind: "web", cookies }, candidate.id, candidate.nickname);
+      if (saved && platform === "jingdong") {
+        // The next reader must wait until this sheet releases the authenticated WebView.
+        const detached = new Promise<void>((resolve) => { detachJdView.current = resolve; });
+        retainJdLoginView(accountStatus(platform).generation, web, detached);
+        mounted.current = false;
+      }
+      dismiss(saved);
     } catch {
       if (mounted.current) setNotice("登录状态未能确认，请重试");
     } finally {
@@ -127,7 +134,8 @@ function PlatformWebLogin({ platform, generation }: { platform: WebPlatform; gen
       mounted.current = false;
       seenProof.current = "";
       if (timer !== undefined) clearTimeout(timer);
-      current?.dispose();
+      if (detachJdView.current) detachJdView.current();
+      else current?.dispose();
     };
   }, []);
 

@@ -1,17 +1,23 @@
 import type { Shipment } from "../models";
-import { pauseWhileActive, waitForRefresh } from "./deadline";
-import { currentPlatformSession, clearPlatformLogin, type PlatformSession, type WebPlatform } from "./platform-accounts";
+import { OperationTimeoutError, pauseWhileActive, waitForRefresh } from "./deadline";
+import {
+  currentPlatformSession, clearPlatformLogin, replacePlatformCookies, type PlatformSession, type WebPlatform,
+} from "./platform-accounts";
 import { deliveryForecast, objectList, productTitle, type PlatformParcel } from "./platform-parcel-data";
-import { openProviderController, PlatformWireError } from "./platform-wire";
+import { JD_ORDERS_PAGE, jdSyncView, openProviderController, PlatformWireError, verifiedJdCookies } from "./platform-wire";
 import { platformPickupCode } from "./fengchao-account";
 import { acquireProjectionViewport, projectionSceneActive, releaseProjectionViewport } from "./projection-viewport";
 import { displayWaybill } from "./shipment-policy";
 import { normalizeWaybill, shipmentPresentationStatus } from "./status";
 import { runParcelWebRead } from "./sync";
 import { asPlainObject, cleanScalarText } from "./value-guards";
+import { writeDiagnostic } from "./logger";
 
-const JD_ORDERS = "https://my.m.jd.com/index.html?sceneval=2";
 const PDD_ORDERS = "https://mobile.yangkeduo.com/orders.html";
+
+type JdSyncStage = "jd_sync_queue" | "jd_sync_session" | "jd_sync_viewport" | "jd_sync_orders"
+  | "jd_sync_order_navigation" | "jd_sync_order_entry" | "jd_sync_order_cards" | "jd_sync_detail" | "jd_sync_save";
+type ReportStage = (stage: JdSyncStage) => void;
 
 const JD_ACCOUNT_PAGE_CHECK = String.raw`
   if (window !== window.top) return null;
@@ -33,13 +39,15 @@ const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
     if (entry && !window.__pipiDeliveriesJDOpened) {
       window.__pipiDeliveriesJDOpened = true;
       entry.click();
-      return null;
+      return { state: 'pending', stage: 'jd_sync_order_navigation' };
     }
     const body = document.body?.innerText || '';
     if (/暂时没有相关订单|暂无相关订单|没有找到相关订单/.test(body)) return { orders: [] };
     if (/快速验证|验证一下|滑动验证|人机验证|安全验证/.test(body)) return { state: 'verification' };
     if (/大促异常火爆|稍后再试/.test(body)) return { state: 'unavailable' };
-    return null;
+    return { state: 'pending', stage: window.innerWidth === 0 || window.innerHeight === 0
+      ? 'jd_sync_viewport' : window.__pipiDeliveriesJDOpened
+        ? 'jd_sync_order_navigation' : document.readyState === 'complete' ? 'jd_sync_order_entry' : 'jd_sync_orders' };
   }
   const orders = [], seen = new Set();
   for (const state of states) {
@@ -58,7 +66,8 @@ const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
       forecast: text(card.querySelector('[class*="order_wuliubar"]')), state: text(state),
       skuId: String(sku.skuid || data.skuid || ''), shopId: String(data.shopId || sku.shopid || data.shopid || '') });
   }
-  return orders.length ? { orders, nickname: window.__pipiDeliveriesJDName || nickname } : null;
+  return orders.length ? { orders, nickname: window.__pipiDeliveriesJDName || nickname }
+    : { state: 'pending', stage: 'jd_sync_order_cards' };
 `;
 
 function readJdParcel(order: string) {
@@ -148,27 +157,50 @@ function assertCurrent(platform: WebPlatform, session: PlatformSession) {
 
 async function withProviderPage<T>(
   platform: WebPlatform, session: PlatformSession,
-  read: (controller: WebViewController, deadline: number) => Promise<T>,
+  read: (controller: WebViewController, deadline: number, reportStage: ReportStage) => Promise<T>,
 ): Promise<T> {
   const deadline = Date.now() + 30_000;
-  return runParcelWebRead(async () => {
-    assertCurrent(platform, session);
-    if (session.credentials.kind !== "web") throw new PlatformWireError("changed");
-    const web = await openProviderController(platform, session.credentials.cookies);
-    try {
-      if (!await waitForRefresh(acquireProjectionViewport(web), deadline)) throw new PlatformWireError("unavailable");
-      return await read(web, deadline);
-    } finally {
-      releaseProjectionViewport();
-      web.dispose();
+  let stage: JdSyncStage = "jd_sync_queue";
+  try {
+    return await runParcelWebRead(async () => {
+      assertCurrent(platform, session);
+      if (session.credentials.kind !== "web") throw new PlatformWireError("changed");
+      stage = "jd_sync_session";
+      const web = platform === "jingdong" ? await jdSyncView(session, deadline)
+        : await openProviderController(platform, session.credentials.cookies);
+      try {
+        stage = "jd_sync_viewport";
+        if (!await waitForRefresh(acquireProjectionViewport(web), deadline)) throw new PlatformWireError("unavailable");
+        return await read(web, deadline, (next) => { stage = next; });
+      } finally {
+        releaseProjectionViewport();
+        if (platform !== "jingdong") web.dispose();
+      }
+    }, deadline);
+  } catch (error) {
+    if (platform === "jingdong") {
+      writeDiagnostic("platform.jingdong.sync.failed", {
+        stage,
+        ...(error instanceof OperationTimeoutError ? error.waitDetails : undefined),
+        result: error instanceof OperationTimeoutError ? "timeout"
+          : error instanceof PlatformWireError ? error.reason : "failed",
+      }, "warning");
     }
-  }, deadline);
+    throw error;
+  }
 }
 
 async function pageResult(platform: WebPlatform, session: PlatformSession, web: WebViewController,
-  url: string, script: string, deadline: number): Promise<unknown> {
+  url: string, script: string, deadline: number, reportStage?: ReportStage): Promise<unknown> {
   assertCurrent(platform, session);
   const pageDeadline = Math.min(deadline, Date.now() + 12_000);
+  if (platform === "jingdong") {
+    // The same browser can still display the previous order page until navigation commits.
+    await waitForRefresh(web.evaluateJavaScript("window.__pipiDeliveriesPreviousJDPage = true; return true;"),
+      Math.min(pageDeadline, Date.now() + 1_000)).catch(() => undefined);
+    assertCurrent(platform, session);
+    script = "if (window.__pipiDeliveriesPreviousJDPage === true) return null;\n" + script;
+  }
   const load = web.loadURL(url);
   if (platform === "jingdong") {
     // Like Pipi's JD probe, accept the matching document as soon as it renders.
@@ -181,42 +213,58 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
     const value = await waitForRefresh(web.evaluateJavaScript<unknown>(script).catch(() => null), pageDeadline);
     if (value != null) {
       assertCurrent(platform, session);
-      const { state } = asPlainObject(value);
+      const { state, stage } = asPlainObject(value);
       if (state === "expired") {
         clearPlatformLogin(platform, session.generation, true);
         throw new PlatformWireError("expired");
       }
       if (state === "verification" || state === "unavailable") throw new PlatformWireError(state);
-      return value;
+      if (state !== "pending") return value;
+      if (stage === "jd_sync_viewport" || stage === "jd_sync_orders" || stage === "jd_sync_order_navigation" ||
+        stage === "jd_sync_order_entry" || stage === "jd_sync_order_cards") reportStage?.(stage);
     }
     await pauseWhileActive(250);
   }
+  if (platform === "jingdong") throw new OperationTimeoutError();
   throw new PlatformWireError("unavailable");
 }
 
-export async function fetchJdParcels(session: PlatformSession, shipments: readonly Shipment[]) {
+export async function fetchJdParcels(
+  session: PlatformSession, shipments: readonly Shipment[], saveOrderFields: (fields: PlatformParcel[]) => void,
+) {
   const jdOrders = new Map(shipments.filter((shipment) =>
     shipment.identity.accountOrder && shipment.identity.sourceProvider?.toLowerCase() === "jingdong")
     .map((shipment) => [shipment.identity.orderId || shipment.identity.sourceId, shipment]));
   const waiting = new Set(shipments.filter((shipment) => shipmentPresentationStatus(shipment).semantic === "WAITING_PICKUP")
     .map(displayWaybill).filter(Boolean));
-  return withProviderPage("jingdong", session, async (web, deadline) => {
+  return withProviderPage("jingdong", session, async (web, deadline, reportStage) => {
     const now = Date.now();
-    const result = asPlainObject(await pageResult("jingdong", session, web, JD_ORDERS, READ_JD_ORDERS, deadline));
-    const parcels: PlatformParcel[] = [];
-    for (const row of objectList(result.orders)) {
+    reportStage("jd_sync_orders");
+    const result = asPlainObject(await pageResult("jingdong", session, web, JD_ORDERS_PAGE, READ_JD_ORDERS, deadline, reportStage));
+    reportStage("jd_sync_session");
+    if (session.credentials.kind !== "web") throw new PlatformWireError("changed");
+    const cookies = await verifiedJdCookies(web, session, deadline);
+    replacePlatformCookies("jingdong", session.generation, session.credentials.cookies, cookies);
+    const orders = objectList(result.orders).flatMap((row) => {
       const order = cleanScalarText(row.orderId);
-      if (!/^\d{8,32}$/.test(order)) continue;
-      const associated = jdOrders.get(order);
-      const title = productTitle(row.title);
-      if (associated) parcels.push({
+      return /^\d{8,32}$/.test(order) ? [{ row, order, associated: jdOrders.get(order), title: productTitle(row.title) }] : [];
+    });
+    const orderFields = orders.flatMap(({ row, order, associated, title }) => associated ? [{
         source: "jingdong", waybill: "", orderIds: [order], title, estimate: deliveryForecast(row.forecast, now),
-      });
+    } as const] : []);
+    if (orderFields.length) {
+      // As in Pipi, a slower logistics page must not hold up verified order-card fields.
+      reportStage("jd_sync_save");
+      saveOrderFields(orderFields);
+    }
+    const parcels: PlatformParcel[] = [];
+    for (const { row, order, associated, title } of orders) {
       if (Date.now() >= deadline || (!(associated && !title) &&
         !(waiting.size && /待收货|待取件|配送中|派送中|运输中/.test(cleanScalarText(row.state))))) continue;
       const digits = (value: unknown) => /^\d{1,32}$/.test(cleanScalarText(value)) ? cleanScalarText(value) : "";
       const url = "https://trade.m.jd.com/order/deal_wuliu_jdm.shtml?from=orderdetail&dealState=7&dealId=" + order +
         "&orderType=22&skuid=" + digits(row.skuId) + "&shopid=" + digits(row.shopId) + "&source=m_inner_orderList.track_orderTrack";
+      reportStage("jd_sync_detail");
       const match = asPlainObject(await pageResult("jingdong", session, web, url, readJdParcel(order), deadline).catch((error) => {
         if (error instanceof PlatformWireError && error.reason !== "unavailable") throw error;
         return null;

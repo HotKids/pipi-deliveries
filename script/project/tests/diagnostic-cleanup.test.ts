@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
 import { memory } from "./state-storage-mock";
 import {
-  changedSinceLastLogged, clearDiagnostics, flushDiagnostics, readDiagnostics, REPEAT_RELOG_MS, setDiagnosticsEnabled,
+  changedSinceLastLogged, clearDiagnostics, diagnosticText, flushDiagnostics, readDiagnostics,
+  REPEAT_RELOG_MS, setDiagnosticsEnabled, writeDiagnostic,
 } from "../services/logger";
 import { performShipmentCompletion, performShipmentDeletion } from "../services/shipment-actions";
 import type { AppState } from "../models";
+
+{
+  memory.clear();
+  setDiagnosticsEnabled(true);
+  clearDiagnostics();
+  writeDiagnostic("carrier.authority.current", { carrierCode: "HTKY", hotlineMatchesExpected: true });
+  writeDiagnostic("carrier.authority.skipped", { carrierCode: "HTKY", hotlineMatchesExpected: false }, "warning");
+  const entries = readDiagnostics();
+  assert.deepEqual(entries.map(({ event }) => event), ["carrier.authority.skipped"],
+    "a previously stored internal probe is hidden while carrier table warnings remain visible");
+  assert.doesNotMatch(diagnosticText(entries), /HTKY/, "the internal carrier code is hidden in copied logs");
+}
 
 // 2026-11-12 诊断日志清理（与 Pipi 同一规则）：内容没变的行不再每轮重复写；变了马上写；没变的最多每 6 小时再写一次。
 {

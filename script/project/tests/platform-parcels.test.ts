@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, privateDecrypt, randomBytes, constants } from "node:crypto";
+import { createHash, generateKeyPairSync, privateDecrypt, randomBytes, randomUUID, constants } from "node:crypto";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import type { Shipment } from "../models";
@@ -10,12 +10,13 @@ import {
   accountStatus, clearPlatformLogin, currentPlatformSession, notePlatformSync, platformAccountSubtitle, platformSession, savePlatformLogin,
   trustedPlatformPage,
 } from "../services/platform-accounts";
-import { identityCodeFromResponse, fetchStationIdentity } from "../services/platform-wire";
+import { identityCodeFromResponse, fetchStationIdentity, retainJdLoginView } from "../services/platform-wire";
 import { cainiaoHandoffs, cainiaoRecipientParcels, displayDeliveryEstimate, pddPickupParcels } from "../services/platform-parcel-data";
 import { cabinetParcels, type CabinetParcel } from "../services/fengchao-account";
 import { displayedPlatformFields, enrichPlatformParcel, matchPlatformParcel } from "../services/platform-parcel-merge";
 import { activePickupCards, parcelActivityContent, shipmentForPickupTarget } from "../services/parcel-pickup";
 import { registerProjectionViewportHost } from "../services/projection-viewport";
+import { clearDiagnostics, readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 
 const {
   completeCurrentParcelCard, emptyState, loadState, savePlatformParcelData, saveRecognizedParcelCode, saveState,
@@ -303,6 +304,8 @@ for (const loadCompleted of [true, false]) {
     const cookie = { ...sessionCookie, name: "pt_key", value: "synthetic-jd-session", domain: ".jd.com" };
     savePlatformLogin("jingdong", "", { kind: "web", cookies: [cookie] }, "synthetic-jd-account");
     let enteredOrders = false;
+    let controllers = 0;
+    let disposed = 0;
     const title = { textContent: "示例商品" };
     const orderData = { getAttribute: () => JSON.stringify({ orderid: order }) };
     const card = {
@@ -313,9 +316,13 @@ for (const loadCompleted of [true, false]) {
     const state = { parentElement: card, textContent: "待收货" };
     const originalController = globalThis.WebViewController;
     Object.assign(globalThis, { WebViewController: class {
-      async setCookie() { return true; }
+      cookies: Cookie[] = [];
+      constructor() { controllers++; }
+      async setCookie(value: Cookie) { this.cookies.push(value); return true; }
+      async getAllCookies() { return this.cookies; }
       async loadURL(url: string) {
         assert.equal(url, "https://my.m.jd.com/index.html?sceneval=2");
+        enteredOrders = false;
         return loadCompleted;
       }
       async evaluateJavaScript(script: string) {
@@ -333,21 +340,80 @@ for (const loadCompleted of [true, false]) {
             ? "https://trade.m.jd.com/order/orderlist_jdm.shtml" : "https://my.m.jd.com/index.html?sceneval=2"),
         });
       }
-      dispose() {}
+      dispose() { disposed++; }
     } });
-    registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
+    let loginView: WebViewController | undefined;
+    let detachLogin: (() => void) | undefined;
+    if (loadCompleted) {
+      loginView = new WebViewController({ ephemeral: true });
+      await loginView.setCookie(cookie);
+      const detached = new Promise<void>((resolve) => { detachLogin = resolve; });
+      retainJdLoginView(accountStatus("jingdong").generation, loginView, detached);
+    }
+    let attached = false;
+    registerProjectionViewportHost({ mount: async (view) => {
+      if (loginView) assert.equal(view, loginView, "the first sync receives the authenticated login view");
+      attached = true;
+      return true;
+    }, unmount: () => {} });
     try {
-      const result = await refreshPlatformParcels(() => {}, "manual", "jingdong");
+      const pending = refreshPlatformParcels(() => {}, "manual", "jingdong");
+      if (detachLogin) {
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(attached, false, "the sync view is attached only after the login sheet detaches");
+        detachLogin();
+      }
+      const result = await pending;
       assert.equal(result.succeeded, 1);
       assert.deepEqual(result.issues, []);
       assert.equal(enteredOrders, true);
       assert.ok(accountStatus("jingdong").syncedAtMs);
+      const next = await refreshPlatformParcels(() => {}, "manual", "jingdong");
+      assert.equal(next.succeeded, 1);
+      assert.equal(controllers, 1, "the active account keeps the same isolated JD session across sync rounds");
+      assert.equal(disposed, 0);
+      clearPlatformLogin("jingdong", accountStatus("jingdong").generation);
+      await Promise.resolve();
+      assert.equal(disposed, 1, "sign-out releases the isolated browser");
     } finally {
+      detachLogin?.();
       globalThis.WebViewController = originalController;
       registerProjectionViewportHost(null);
     }
   });
 }
+
+test("a rejected JD cookie restore records the failed session stage during a manual sync", async (t) => {
+  t.mock.method(UUID, "string", randomUUID);
+  memory.clear();
+  setDiagnosticsEnabled(true);
+  clearDiagnostics();
+  const cookie = { ...sessionCookie, name: "pt_key", value: "synthetic-jd-restore", domain: ".jd.com" };
+  savePlatformLogin("jingdong", "", { kind: "web", cookies: [cookie] }, "synthetic-jd-account");
+  let openedPage = false;
+  let disposed = false;
+  const originalController = globalThis.WebViewController;
+  Object.assign(globalThis, { WebViewController: class {
+    async setCookie() { return false; }
+    async getAllCookies() { return []; }
+    async loadURL() { openedPage = true; return true; }
+    dispose() { disposed = true; }
+  } });
+  try {
+    const result = await refreshPlatformParcels(() => {}, "manual", "jingdong");
+    assert.deepEqual(result.issues, [{ platform: "jingdong", reason: "failed" }]);
+    assert.equal(openedPage, false);
+    assert.equal(disposed, true);
+    assert.equal(accountStatus("jingdong").state, "active");
+    const note = readDiagnostics().find(({ event }) => event === "platform.jingdong.sync.failed");
+    assert.equal(note?.details.stage, "jd_sync_session");
+    assert.equal(note?.details.result, "unavailable");
+    assert.doesNotMatch(JSON.stringify(note), /synthetic-jd-restore/);
+  } finally {
+    globalThis.WebViewController = originalController;
+    setDiagnosticsEnabled(false);
+  }
+});
 
 test("PDD waiting pickup sync survives an unavailable order-capture host", async (t) => {
   t.mock.method(Date, "now", () => NOW + 2);
