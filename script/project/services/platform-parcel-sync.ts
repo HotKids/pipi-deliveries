@@ -2,7 +2,7 @@ import { AbortController } from "scripting";
 import type { AppState } from "../models";
 import { detectManualCarrier } from "./manual-query";
 import {
-  currentPlatformSession, notePlatformSync, onPlatformAccountsChanged, platformSession, PLATFORM_SOURCES,
+  currentPlatformSession, notePlatformSync, onPlatformAccountsChanged, platformSession, PLATFORM_NAMES, PLATFORM_SOURCES,
   type ExpressPlatform, type PlatformSession,
 } from "./platform-accounts";
 import { CAINIAO_LIST_PARAMETERS, CAINIAO_RECIPIENT_LIST, CAINIAO_SENDER_LIST,
@@ -30,6 +30,9 @@ const inFlight = new Map<ExpressPlatform, { generation: string; task: Promise<Pl
 
 type RefreshMode = "observe" | "pull" | "manual";
 type ReadScope = { recipients: boolean; regular: boolean };
+export type PlatformSyncProgress = (platform: ExpressPlatform, running: boolean) => void;
+type PlatformRefreshIssue = { platform: ExpressPlatform; reason: "expired" | "partial" | "failed" };
+type PlatformRefreshResult = { succeeded: number; failed: number; added: number; issues: PlatformRefreshIssue[] };
 
 function scopeFor(platform: ExpressPlatform, session: PlatformSession, state: AppState, mode: RefreshMode): ReadScope {
   const now = Date.now();
@@ -174,8 +177,9 @@ async function syncPlatform(
 
 export async function refreshPlatformParcels(
   publish: (state: AppState) => void, mode: RefreshMode, only?: ExpressPlatform,
-): Promise<{ succeeded: number; failed: number; added: number }> {
-  const summary = { succeeded: 0, failed: 0, added: 0 };
+  onProgress?: PlatformSyncProgress,
+): Promise<PlatformRefreshResult> {
+  const summary: PlatformRefreshResult = { succeeded: 0, failed: 0, added: 0, issues: [] };
   if (!projectionSceneActive()) return summary;
   const sessions = (only ? [only] : PLATFORM_SOURCES).flatMap((platform) => {
     const session = platformSession(platform);
@@ -187,7 +191,8 @@ export async function refreshPlatformParcels(
     const previous = inFlight.get(platform);
     if (previous?.generation === session.generation) {
       if (mode === "observe") previous.recheck = true;
-      return [mode === "manual" ? previous.task : previous.task.then((outcome) => ({ ...outcome, added: 0 }))];
+      const task = mode === "manual" ? previous.task : previous.task.then((outcome) => ({ ...outcome, added: 0 }));
+      return [{ platform, task }];
     }
     const scope = scopeFor(platform, session, state, mode);
     if (!scope.recipients && !scope.regular) return [];
@@ -200,26 +205,40 @@ export async function refreshPlatformParcels(
       });
     });
     inFlight.set(platform, { generation: session.generation, task, recheck: false });
-    return [task];
+    return [{ platform, task }];
   });
-  for (const result of await Promise.allSettled(tasks)) {
+  const results = await Promise.allSettled(tasks.map(({ platform, task }) => {
+    onProgress?.(platform, true);
+    return task.finally(() => onProgress?.(platform, false));
+  }));
+  for (const [index, result] of results.entries()) {
+    const { platform } = tasks[index];
     if (result.status === "fulfilled") {
       summary.succeeded++;
       summary.added += result.value.added;
-      if (result.value.partial) summary.failed++;
+      if (result.value.partial) summary.issues.push({ platform, reason: "partial" });
     } else {
-      summary.failed++;
+      const expired = result.reason instanceof PlatformWireError && result.reason.reason === "expired";
+      summary.issues.push({ platform, reason: expired ? "expired" : "failed" });
       if (mode !== "manual") writeDiagnostic("platform.sync.unavailable", {}, "warning");
     }
   }
+  summary.failed = summary.issues.length;
   return summary;
 }
 
-export function platformRefreshMessage(result: Awaited<ReturnType<typeof refreshPlatformParcels>>): string {
-  const added = result.added ? "，已新增 " + result.added + " 件快递" : "";
-  if (result.failed && result.succeeded) return "部分数据源同步失败" + added;
-  if (result.failed) return "同步失败，请稍后重试";
-  return result.succeeded ? "同步完成" + added : "没有可同步的平台账号";
+export function platformRefreshMessage(result: PlatformRefreshResult): string {
+  if (result.issues.length) {
+    const details = result.issues.map(({ platform, reason }) => {
+      const name = PLATFORM_NAMES[platform];
+      if (reason === "expired") return `${name}登录已失效，请重新登录`;
+      return `${name}${reason === "partial" ? "同步未完成" : "同步失败"}，请稍后重试`;
+    });
+    const prefix = result.added ? `已新增 ${result.added} 件快递` : result.succeeded ? "部分同步完成" : "";
+    return prefix ? [prefix, ...details].join("，") : details.join("，");
+  }
+  if (!result.succeeded) return "没有可同步的平台账号";
+  return result.added ? `同步完成，新增 ${result.added} 件快递` : "同步完成";
 }
 
 function cabinetForCard(session: PlatformSession | null, card: ParcelActivityContent) {

@@ -4,6 +4,7 @@ import {
   HStack,
   Image,
   List,
+  ProgressView,
   Section,
   Spacer,
   Text,
@@ -27,10 +28,10 @@ import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon"
 import { PlatformIcon, presentPlatformLogin } from "./PlatformAccountPages";
 import { SamsungAssistantPage } from "./SamsungAssistantPage";
 import {
-  accountStatus, clearPlatformLogin, onPlatformAccountsChanged, PLATFORM_NAMES, PLATFORM_SOURCES,
+  accountStatus, clearPlatformLogin, onPlatformAccountsChanged, platformAccountSubtitle, PLATFORM_NAMES, PLATFORM_SOURCES,
   type AccountStatus, type ExpressPlatform,
 } from "../services/platform-accounts";
-import { compactTimelineTime, formatListTime } from "../services/time-presentation";
+import type { PlatformSyncProgress } from "../services/platform-parcel-sync";
 import { existingEnhancementIdentity, EnhancementIdentityMissing } from "../services/enhanced-account";
 import { EnhancementUnbindUnavailable } from "../services/enhancement-unsubscribe";
 
@@ -49,7 +50,7 @@ export type PhoneManagerPageProps = {
   onBind: (phone: string, code: string, flowId: string, enhanced: boolean) => MaybeAsync;
   onRemove: (binding: AccountBinding, localOnly?: boolean) => MaybeAsync;
   onRefresh: () => Promise<RefreshSummary>;
-  onPlatformRefresh: (platform?: ExpressPlatform) => Promise<string>;
+  onPlatformRefresh: (platform: ExpressPlatform | undefined, onProgress: PlatformSyncProgress) => Promise<string>;
 };
 
 export function PhoneManagerPage(props: PhoneManagerPageProps) {
@@ -59,6 +60,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   const [bindingDestination, setBindingDestination] = useState<"phone" | "samsung" | undefined>(undefined);
   const [bindingTarget, setBindingTarget] = useState<AccountBinding | undefined>(undefined);
   const [platformRevision, setPlatformRevision] = useState(0);
+  const [syncingPlatforms, setSyncingPlatforms] = useState<readonly ExpressPlatform[]>([]);
   const mountedRef = useRef(true);
   const actionInFlightRef = useRef(false);
   const bindingGenerationRef = useRef(0);
@@ -207,6 +209,18 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     }, EXPRESS_TOAST_COPY.unbindFailed);
   }
 
+  async function syncPlatforms(platform?: ExpressPlatform) {
+    try {
+      const result = await props.onPlatformRefresh(platform, (source, running) => {
+        if (!mountedRef.current) return;
+        setSyncingPlatforms(current => running ? [...current, source] : current.filter(item => item !== source));
+      });
+      if (mountedRef.current) setNotice(result);
+    } finally {
+      if (mountedRef.current) setSyncingPlatforms([]);
+    }
+  }
+
   async function managePlatform(platform: ExpressPlatform) {
     await runAction(async () => {
       const current = accountStatus(platform);
@@ -219,10 +233,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         if (confirmed && clearPlatformLogin(platform, current.generation) && mountedRef.current) setNotice("已退出登录");
         return;
       }
-      if (await presentPlatformLogin(platform)) {
-        const result = await props.onPlatformRefresh(platform);
-        if (mountedRef.current) setNotice(result);
-      }
+      if (await presentPlatformLogin(platform)) await syncPlatforms(platform);
     }, "账号操作失败，请重试。");
   }
 
@@ -343,10 +354,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
             <Spacer />
             <Button title="立即同步" systemImage="arrow.clockwise" labelStyle="iconOnly" disabled={busy ||
               !platformAccounts.some((item) => item.state === "active")}
-              action={() => void runAction(async () => {
-                const result = await props.onPlatformRefresh();
-                if (mountedRef.current) setNotice(result);
-              }, "同步失败，请稍后重试。")} />
+              action={() => void runAction(() => syncPlatforms(), "同步失败，请稍后重试。")} />
           </HStack>
         }
         footer={
@@ -355,22 +363,18 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
           </Text>
         }
       >
-        {platformAccounts.map(({ platform, state, label, syncedAtMs }) => {
-          const subtitle = state === "offline" ? "" : [label, state === "expired" ? "请重新登录" :
-            syncedAtMs ? compactTimelineTime(formatListTime(new Date(syncedAtMs).toISOString())) : "尚未同步"]
-            .filter(Boolean).join(" · ");
-          return (
-            <PlatformAccountRow
-              key={platform}
-              platform={platform}
-              title={PLATFORM_NAMES[platform]}
-              subtitle={subtitle}
-              state={state}
-              disabled={busy}
-              onTap={() => void managePlatform(platform)}
-            />
-          );
-        })}
+        {platformAccounts.map(account => (
+          <PlatformAccountRow
+            key={account.platform}
+            platform={account.platform}
+            title={PLATFORM_NAMES[account.platform]}
+            subtitle={platformAccountSubtitle(account)}
+            state={account.state}
+            syncing={syncingPlatforms.includes(account.platform)}
+            disabled={busy}
+            onTap={() => void managePlatform(account.platform)}
+          />
+        ))}
         <PlatformAccountRow
           platform="samsung"
           title="三星生活助手"
@@ -384,11 +388,12 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   );
 }
 
-function PlatformAccountRow({ platform, title, subtitle, state, disabled, onTap }: {
+function PlatformAccountRow({ platform, title, subtitle, state, syncing, disabled, onTap }: {
   platform: ExpressPlatform | "samsung";
   title: string;
   subtitle: string;
   state: AccountStatus["state"];
+  syncing?: boolean;
   disabled: boolean;
   onTap: () => void;
 }) {
@@ -400,15 +405,19 @@ function PlatformAccountRow({ platform, title, subtitle, state, disabled, onTap 
   return (
     <Button buttonStyle="plain" disabled={disabled} action={onTap}>
       <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">
-        <PlatformIcon platform={platform} size={ACCOUNT_ICON_SIZE} />
+        {syncing ? (
+          <ProgressView progressViewStyle="circular" frame={{ width: ACCOUNT_ICON_SIZE, height: ACCOUNT_ICON_SIZE }} />
+        ) : (
+          <PlatformIcon platform={platform} size={ACCOUNT_ICON_SIZE} />
+        )}
         <VStack alignment="leading" spacing={3}>
           <Text font={16} fontWeight="medium" foregroundStyle="label">{title}</Text>
           {subtitle || copy.subtitle ? (
-            <Text font={12} foregroundStyle="secondaryLabel" lineLimit={1}>{subtitle || copy.subtitle}</Text>
+            <Text font={12} foregroundStyle="secondaryLabel">{subtitle || copy.subtitle}</Text>
           ) : null}
         </VStack>
         <Spacer />
-        <Text font={13} foregroundStyle="secondaryLabel">{copy.status}</Text>
+        <Text font={13} foregroundStyle="secondaryLabel" fixedSize={{ horizontal: true, vertical: false }}>{copy.status}</Text>
       </HStack>
     </Button>
   );
