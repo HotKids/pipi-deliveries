@@ -12,12 +12,13 @@ function action(path: string, begin: string, end: string, scope: Record<string, 
   return Function(...Object.keys(scope), `${code}\nreturn ${name};`)(...Object.values(scope));
 }
 
-test("note storage failure is contained and reported without replacing displayed data", async () => {
+test("product name storage failure is contained and reported without replacing displayed data", async () => {
   let notice = "", published = false;
-  const edit = action("../pages/DetailPage.tsx", "async function editNote()", "const [loadingManualDetail", {
+  const edit = action("../pages/DetailPage.tsx", "async function editProductName()", "const [loadingManualDetail", {
     ShipmentLifecycleChangedError,
     Dialog: { prompt: async () => "Synthetic note" }, shipment: { identity: { id: "synthetic" } },
-    setShipmentNote: () => { throw new Error("Synthetic storage failure"); },
+    displayedPlatformFields: () => ({}),
+    setShipmentProductName: () => { throw new Error("Synthetic storage failure"); },
     writeDiagnostic: () => {}, diagnosticErrorDetails: () => ({}), setNotice: (value: string) => { notice = value; },
     setShipment: () => { published = true; }, props: {}, requestWidgetReload: () => {},
   });

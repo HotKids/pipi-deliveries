@@ -6,7 +6,7 @@ import type { Shipment } from "../models";
 import { shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { sharedData, withSharedFileTransaction } from "../services/shared-file-transaction";
 import { CourierIcon } from "./CourierIcon";
-import { ICON_TILE_SHAPE } from "./icon-tile";
+import { iconTileShape } from "./icon-tile";
 
 export function ProductThumbnail(props: {
   shipment: Shipment;
@@ -80,7 +80,7 @@ export function ProductThumbnail(props: {
     <VStack
       frame={{ width: props.size, height: props.size }}
       background="tertiarySystemFill"
-      clipShape={ICON_TILE_SHAPE}
+      clipShape={iconTileShape(props.size)}
     >
       <Image
         image={image}

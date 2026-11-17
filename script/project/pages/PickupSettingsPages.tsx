@@ -1,4 +1,4 @@
-import { AppEvents, Button, Link, List, Script, Section, Text, useEffect, useState } from "scripting";
+import { AppEvents, Button, HStack, Link, List, Script, Section, Spacer, Text, Toggle, useEffect, useState } from "scripting";
 import { ParcelLiveActivityCard } from "../components/ParcelLiveActivityCard";
 import {
   parcelActivityStatus,
@@ -84,34 +84,44 @@ export function ParcelActivityPage({ cards, revision }: {
 
   return (
     <List navigationTitle="实时活动" navigationBarTitleDisplayMode="inline" toast={transientToast(notice, setNotice)}>
-      <Section footer={activity.showAll ? <Text>{`已显示 ${activity.count} 张`}</Text> : undefined}>
-        <Button title={activity.showAll ? "关闭实时活动" : "显示全部快递码"} disabled={busy}
-          action={() => void change(activity.showAll ? stopParcelActivity : startAllParcelActivities)} />
+      <Section footer={activity.showAll && activity.count > 0 ? <Text>{`已显示 ${activity.count} 张`}</Text> : undefined}>
+        <Toggle title="显示全部快递码" value={activity.showAll} disabled={busy}
+          onChanged={(enabled) => void change(enabled ? startAllParcelActivities : stopParcelActivity)} />
       </Section>
-      <Section header={<Text>取件码预览</Text>}>
+      <Section header={
+        <HStack>
+          <Text>取件码预览</Text>
+          <Spacer />
+          <Button
+            title={!activity.showAll && active ? "结束实时活动" : "在锁屏预览取件码"}
+            systemImage={!activity.showAll && active ? "stop.circle" : "play.circle"}
+            labelStyle="iconOnly" disabled={busy || activity.showAll}
+            action={() => void change(active ? stopParcelActivity : () => startParcelActivity())}
+          />
+        </HStack>
+      }>
         <ParcelLiveActivityCard
           data={PARCEL_ACTIVITY_PREVIEW}
           imageRoot={`${Script.directory}/assets/parcel-activity`}
           logoPath={`${Script.directory}/assets/parcel-activity/cainiao.png`}
           preview
         />
-        <Button
-          title={!activity.showAll && active ? "结束实时活动" : "在锁屏预览取件码"}
-          disabled={busy || activity.showAll}
-          action={() => void change(active ? stopParcelActivity : () => startParcelActivity())}
-        />
       </Section>
-      <Section header={<Text>寄件码预览</Text>}>
+      <Section header={
+        <HStack>
+          <Text>寄件码预览</Text>
+          <Spacer />
+          <Button title="在锁屏预览寄件码" systemImage="play.circle" labelStyle="iconOnly"
+            disabled={busy || active}
+            action={() => void change(() => startParcelActivity(undefined, "handoff"))}
+          />
+        </HStack>
+      }>
         <ParcelLiveActivityCard
           data={HANDOFF_ACTIVITY_PREVIEW}
           imageRoot={`${Script.directory}/assets/parcel-activity`}
           logoPath={`${Script.directory}/assets/platform-accounts/cainiao.png`}
           preview
-        />
-        <Button
-          title="在锁屏预览寄件码"
-          disabled={busy || active}
-          action={() => void change(() => startParcelActivity(undefined, "handoff"))}
         />
       </Section>
       {parcels.length ? (

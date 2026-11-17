@@ -1,6 +1,6 @@
 import { Image, Script, VStack } from "scripting";
 import { courierIconName } from "../services/carrier-presentation";
-import { ICON_TILE_SHAPE } from "./icon-tile";
+import { iconTileShape } from "./icon-tile";
 
 export function CourierIcon(props: {
   courierCode: string;
@@ -16,8 +16,8 @@ export function CourierIcon(props: {
   return (
     <VStack
       frame={{ width: props.size, height: props.size }}
-      background="tertiarySystemFill"
-      clipShape={ICON_TILE_SHAPE}
+      background={icon ? undefined : "tertiarySystemFill"}
+      clipShape={iconTileShape(props.size)}
     >
       {icon ? (
         <Image

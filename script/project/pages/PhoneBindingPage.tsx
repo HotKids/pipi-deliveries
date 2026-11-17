@@ -264,7 +264,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
               </Text>
             ) : null}
             <Text font={12} foregroundStyle="secondaryLabel">
-              隐私声明：绑定的手机号仅用于查询快递，不作其他用途。
+              绑定的手机号仅用于查询和同步快递。
             </Text>
           </VStack>
         }
@@ -317,6 +317,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
               frame={{ minWidth: 112, minHeight: 44, alignment: "trailing" }}
             />
           </HStack>
+          {cabinet ? null : <Divider />}
           <HStack
             frame={{ maxWidth: "infinity", alignment: "center" }}
             padding={{ top: 18 }}

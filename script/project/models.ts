@@ -193,6 +193,8 @@ export type ParcelPickup = Readonly<{
 export type ParcelPlatformFields = Readonly<{
   waybill: string;
   waybillGeneration: number;
+  manualTitle?: string;
+  manualTitleEditedAtMs?: number;
   title?: { text: string; source: "cainiao" | "jingdong" | "pinduoduo" };
   estimate?: { text: string; source: "cainiao" | "jingdong" | "pinduoduo"; capturedAtMs: number };
 }>;

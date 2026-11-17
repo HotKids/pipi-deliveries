@@ -57,7 +57,10 @@ assert.equal(classify("DANGER"), "danger");
 for (const semantic of ["COMPLETED", "CANCELLED", "UNKNOWN"]) {
   assert.equal(classify(semantic), undefined, "the all segment still includes the display row");
 }
-assert.match(homeSource, /searchPresented \? \(\s*<List navigationTitle="查询快递"[\s\S]*?<HomeSearchBar/);
+assert.match(homeSource, /searchPresented \? \(\s*<ScrollView navigationTitle="查询快递"[\s\S]*?<HomeSearchBar/);
+assert.match(homeSource, /visibleFilters\.length > 1 \? \(\s*<Picker/);
+assert.match(homeSource, /key === "all" \|\| groups\[key\]\.length > 0/);
+assert.match(homeSource, /visibleFilters\.includes\(selectedFilter\) \? selectedFilter : "all"/);
 
 console.log("home empty-state presentation tests passed");
 

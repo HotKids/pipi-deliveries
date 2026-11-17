@@ -211,9 +211,19 @@ export async function fetchStationIdentity(platform: IdentityPlatform, session: 
   return identityCodeFromResponse(platform, result);
 }
 
-export async function openProviderController(platform: WebPlatform, cookies: readonly PlatformCookie[] = []) {
+export async function openProviderController(
+  platform: WebPlatform,
+  cookies: readonly PlatformCookie[] = [],
+  mode: "default" | "login" = "default",
+) {
+  // Match Pipi Android's desktop user agent for the provider's QR sign-in.
   const controller = new WebViewController({ ephemeral: true });
   try {
+    if (platform === "pinduoduo" && mode === "login") {
+      const desktopUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+      await controller.setCustomUserAgent(desktopUserAgent);
+    }
     controller.shouldAllowRequest = async ({ url }) => trustedPlatformPage(platform, url);
     for (const { expiresAtMs, ...cookie } of cookies) {
       if (!expiresAtMs || expiresAtMs > Date.now()) {
