@@ -1,3 +1,4 @@
+import type { AbortSignal } from "scripting";
 import { JING_DONG_ACCOUNT_NAME, type AccountParcelDto } from "./account-parser";
 import {
   cachedCarrierRecognition,

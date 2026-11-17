@@ -1,3 +1,4 @@
+import { AbortController, type AbortSignal } from "scripting";
 import { resolveCarrierQuery } from "./carrier-query";
 import { TIMELINE_SLOT } from "./timeline-slot";
 import { claimKuaidi100Capture } from "./refresh-runtime-state";

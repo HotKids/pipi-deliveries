@@ -1,3 +1,4 @@
+import { AbortController, type AbortSignal } from "scripting";
 import type { AccountParcelDto } from "./account-parser";
 import type { TimelinePackage, TrackNode } from "../models";
 import {

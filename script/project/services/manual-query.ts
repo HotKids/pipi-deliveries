@@ -6,6 +6,7 @@
  * - **预算与冷却**：单级请求受 15 秒截止时间与各自冷却/风控门禁约束，首次查件支持 Picker 详情预览后再单事务正式入库。
  * - **跨端对等文件**：Pipi `ExpressPoller.java`、Lite `ExpressManualChain.java`、Bot `pipi-bot/express.py`。
  */
+import type { AbortSignal } from "scripting";
 import { TIMELINE_SLOT } from "./timeline-slot";
 import type {
   AccountBinding,

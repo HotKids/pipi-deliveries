@@ -1,4 +1,5 @@
 /** Shared runtime state, types, and pure helpers for express sync orchestration. */
+import type { AbortSignal } from "scripting";
 import { normalizeTimelineSlot } from "../timeline-slot";
 import type { AppState, BindingSource, RefreshSummary, Shipment, TimelinePackage } from "../../models";
 import { refreshAccountParcel } from "../account-sync";

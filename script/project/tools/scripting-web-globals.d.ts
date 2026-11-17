@@ -1,12 +1,7 @@
-import type { AbortController as ScriptingAbortController, AbortSignal as ScriptingAbortSignal } from "scripting";
+export {};
 
-// Scripting injects these globals without declaring them in the synced SDK.
+// The URL globals are available in Scripting and absent from the synced SDK declarations.
 declare global {
-  type AbortController = ScriptingAbortController;
-  const AbortController: typeof ScriptingAbortController;
-  type AbortSignal = ScriptingAbortSignal;
-  const AbortSignal: typeof ScriptingAbortSignal;
-
   interface URL {
     readonly href: string;
     readonly protocol: string;

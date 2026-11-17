@@ -1,4 +1,5 @@
 /** Serialized H5 WebView controller and Cainiao / Kuaidi100 / JT H5 timeline capture helpers. */
+import type { AbortSignal } from "scripting";
 import { normalizeTimelineSlot } from "../timeline-slot";
 import type { Shipment } from "../../models";
 import { loadOrderProjectionReference, loadShipmentRoute } from "../routes";

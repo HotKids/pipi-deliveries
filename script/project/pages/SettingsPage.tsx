@@ -141,7 +141,7 @@ export function SettingsPage(props: {
         try {
           return accountStatus(platform).state === "active";
         } catch {
-          writeDiagnostic("settings.platform_count.unavailable", { platform }, "warning");
+          writeDiagnostic("settings.platform_count.unavailable", { sourceProvider: platform }, "warning");
           return false;
         }
       }).length);

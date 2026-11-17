@@ -1,4 +1,5 @@
 /** Concurrent background enrichment scheduler for account detail supplements, SF alignment, and Online tasks. */
+import { AbortController, type AbortSignal } from "scripting";
 import type { AppState, BindingSource, RefreshSummary } from "../../models";
 import { refreshAccountParcel } from "../account-sync";
 import { queryManualForSource } from "../manual-query";

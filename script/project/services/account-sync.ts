@@ -1,3 +1,4 @@
+import type { AbortSignal } from "scripting";
 import { statusProjectionFields } from "./worker-status";
 import type { AccountAppTarget } from "./account-app-links";
 import { loadAccountAppRoutes, saveAccountAppRoutes } from "./routes";
