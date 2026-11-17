@@ -14,6 +14,7 @@ import {
   VStack,
   useEffect,
   useMemo,
+  useObservable,
   useRef,
   useState,
 } from "scripting";
@@ -122,7 +123,8 @@ export function HomePage(props: {
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
   const [selectedFilter, setFilter] = useState<ShipmentFilter>("all");
-  const [searchPresented, setSearchPresented] = useState(props.autoFocusSearch && !props.initialShipmentId);
+  const searchPresented = useObservable(props.autoFocusSearch && !props.initialShipmentId);
+  const handledNavigationRef = useRef<number | undefined>(undefined);
   const [accessKeyRejected, setAccessKeyRejected] = useState(gatewayAccessKeyRejected);
   const [accessKeyNoticeDismissed, setAccessKeyNoticeDismissed] = useState(false);
   const [shipmentNavigationTarget, setShipmentNavigationTargetState] = useState<
@@ -161,7 +163,7 @@ export function HomePage(props: {
   ) {
     shipmentNavigationTargetRef.current = target;
     setShipmentNavigationTargetState(target);
-    if (target) setSearchPresented(false);
+    if (target) searchPresented.setValue(false);
   }
 
   function applyInteractiveRefreshSummary(summary: RefreshSummary) {
@@ -206,15 +208,18 @@ export function HomePage(props: {
   }, [selectedFilter, filter]);
 
   useEffect(() => {
+    const generation = props.navigationRequestGeneration;
+    if (handledNavigationRef.current === generation) return;
+    handledNavigationRef.current = generation;
     if (props.initialShipmentId && props.state.shipments.some(
       (shipment) => shipment.identity.id === props.initialShipmentId,
     )) {
       setShipmentNavigationTarget(persistedShipmentNavigationTarget(props.initialShipmentId));
     } else if (props.autoFocusSearch) {
       setShipmentNavigationTarget(null);
-      setSearchPresented(true);
+      searchPresented.setValue(true);
     }
-  }, [props.navigationRequestGeneration, props.autoFocusSearch]);
+  }, [props.navigationRequestGeneration]);
 
   /** E1: the rest of a pull's refresh lands after its account phase was shown. */
   function followPullCompletion(completion: Promise<RefreshSummary>) {
@@ -340,7 +345,7 @@ export function HomePage(props: {
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         navigationTitle="快递"
         navigationBarTitleDisplayMode="large"
-        toast={searchPresented ? undefined : transientToast(notice, setNotice)}
+        toast={searchPresented.value ? undefined : transientToast(notice, setNotice)}
         toolbar={{
           topBarLeading: (
             <Button buttonStyle="plain" action={() => dismiss()}>
@@ -353,12 +358,11 @@ export function HomePage(props: {
           ),
           topBarTrailing: (
             <Button title="查询快递" systemImage="magnifyingglass" labelStyle="iconOnly"
-              buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => setSearchPresented(true)} />
+              buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => searchPresented.setValue(true)} />
           ),
         }}
         sheet={{
           isPresented: searchPresented,
-          onChanged: setSearchPresented,
           content: (
             <NavigationStack
               background="systemGroupedBackground"
@@ -370,7 +374,7 @@ export function HomePage(props: {
                 toolbar={{
                   cancellationAction: (
                     <Button title="关闭" systemImage="xmark" labelStyle="iconOnly"
-                      action={() => setSearchPresented(false)} />
+                      action={() => searchPresented.setValue(false)} />
                   ),
                 }}
                 toast={transientToast(notice, setNotice)}

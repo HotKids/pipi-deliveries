@@ -58,12 +58,29 @@ for (const semantic of ["COMPLETED", "CANCELLED", "UNKNOWN"]) {
   assert.equal(classify(semantic), undefined, "the all segment still includes the display row");
 }
 const searchSheet = homeSource.match(/sheet=\{\{([\s\S]*?)\n        \}\}/)?.[1] ?? "";
-assert.match(searchSheet, /isPresented: searchPresented,\s*onChanged: setSearchPresented,/,
-  "search uses the native sheet and tracks gesture dismissal");
+assert.match(homeSource, /const searchPresented = useObservable\(/,
+  "search shares the native presentation binding");
+assert.match(searchSheet, /isPresented: searchPresented,/);
+assert.doesNotMatch(searchSheet, /onChanged:/,
+  "the presentation binding owns dismissal without a second state callback");
 assert.match(searchSheet, /<NavigationStack[\s\S]*?<ScrollView navigationTitle="查快递"[\s\S]*?<HomeSearchBar/,
   "the existing search form has its own sheet navigation");
-assert.match(searchSheet, /systemImage="xmark" labelStyle="iconOnly"[\s\S]*?setSearchPresented\(false\)/,
+assert.match(searchSheet, /systemImage="xmark" labelStyle="iconOnly"[\s\S]*?searchPresented\.setValue\(false\)/,
   "the search sheet must have an icon-only close button");
+const navigationEffect = homeSource.match(/useEffect\(\(\) => \{\n(    const generation = props\.navigationRequestGeneration;[\s\S]*?)\n  \}, \[props\.navigationRequestGeneration\]\);/)?.[1];
+assert.ok(navigationEffect, "the navigation request runs once per generation");
+const openFromRequest = new Function("props", "handledNavigationRef", "searchPresented",
+  "setShipmentNavigationTarget", navigationEffect);
+const handledNavigation = { current: undefined };
+const presentation = { value: false, setValue(value: boolean) { this.value = value; } };
+const route = { navigationRequestGeneration: 1, autoFocusSearch: true };
+openFromRequest(route, handledNavigation, presentation, () => {});
+assert.equal(presentation.value, true);
+presentation.setValue(false);
+openFromRequest(route, handledNavigation, presentation, () => {});
+assert.equal(presentation.value, false, "a dismissed search must not reopen for the same request");
+openFromRequest({ ...route, navigationRequestGeneration: 2 }, handledNavigation, presentation, () => {});
+assert.equal(presentation.value, true, "a new search request may open after dismissal");
 assert.match(searchSheet, /autoFocusSearch=\{props\.autoFocusSearch\}/,
   "only the existing focus and shortcut entry points should open the keyboard automatically");
 assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(selected\)/,

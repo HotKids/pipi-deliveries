@@ -193,6 +193,13 @@ assert.match(
   /^<VStack\b[^>]*>[\s\S]*?官方电话：[\s\S]*?<Divider\s*\/>[\s\S]*?编辑商品名[\s\S]*?<\/VStack>$/,
   "the separator between the carrier and product name must be inside the same list row",
 );
+assert.match(headerSection, /listRowInsets=\{showProductName \? \{ top: 12, bottom: 0, leading: 20, trailing: 20 \} : undefined\}/);
+assert.match(headerSection, /<Divider\s*\/>\s*<HStack spacing=\{12\} padding=\{\{ vertical: 12 \}\}/,
+  "the title and its edit action sit between equal top and bottom padding");
+const timelineRows = detailPage.match(/displayTracks\.map\([\s\S]*?\n          \}\)/)?.[0] ?? "";
+assert.match(timelineRows, /padding=\{\{ vertical: 5 \}\}[\s\S]*?systemName=\{index === 0 \? "circle\.fill" : "circle"\}/);
+assert.doesNotMatch(timelineRows, /overlay=|listRowSeparator="hidden"/,
+  "the earlier timeline uses native row separators and individual dots");
 assert.match(
   detailPage,
   /courierCode=\{shipment\.identity\.courierCode\}\s*companyName=\{shipment\.identity\.companyName\}\s*accountOrder=\{Boolean\(\s*unprojectedAccountOrder\(shipment\),?\s*\)\}/,

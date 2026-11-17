@@ -303,6 +303,7 @@ export function DetailPage(props: {
     ? MANUAL_QUERY_IN_FLIGHT_TEXT
     : presentationStatus.text;
   const platformFields = displayedPlatformFields(shipment);
+  const showProductName = Boolean(platformFields.title || props.persistedShipment);
   const pickup = parcelActivityContent(shipment);
 
   useEffect(() => {
@@ -632,7 +633,8 @@ export function DetailPage(props: {
       toast={transientToast(notice, setNotice)}
     >
       <Section>
-        <VStack alignment="leading" spacing={0} listRowSeparator="hidden">
+        <VStack alignment="leading" spacing={0} listRowSeparator="hidden"
+          listRowInsets={showProductName ? { top: 12, bottom: 0, leading: 20, trailing: 20 } : undefined}>
           <HStack spacing={14} padding={{ vertical: 12 }}>
             <ProductThumbnail
               shipment={shipment}
@@ -700,10 +702,10 @@ export function DetailPage(props: {
             </VStack>
             <Spacer />
           </HStack>
-          {platformFields.title || props.persistedShipment ? (
+          {showProductName ? (
             <>
               <Divider />
-              <HStack spacing={12} padding={{ vertical: 8 }}>
+              <HStack spacing={12} padding={{ vertical: 12 }}>
                 <Text font={15} foregroundStyle={platformFields.title ? "label" : "secondaryLabel"}
                   frame={{ maxWidth: "infinity", alignment: "leading" }}>
                   {platformFields.title || "添加商品名"}
@@ -761,30 +763,12 @@ export function DetailPage(props: {
         {displayTracks.length ? (
           displayTracks.map((track, index) => {
             const time = timelineTimeParts(track.timeText);
-            const first = index === 0;
-            const last = index === displayTracks.length - 1;
             return (
               <HStack
                 key={`${track.timeText}:${track.detail}:${index}`}
                 alignment="top"
                 spacing={11}
-                padding={{ vertical: 12 }}
-                listRowInsets={{ top: 0, bottom: 0, leading: 16, trailing: 16 }}
-                listRowSeparator="hidden"
-                overlay={{
-                  alignment: "topLeading",
-                  content: (
-                    <VStack spacing={0}
-                      frame={{ width: 12, maxHeight: "infinity", alignment: "top" }}
-                      padding={{ leading: 63 }} allowsHitTesting={false}>
-                      <Spacer frame={{ width: 1, height: 12 }} background={first ? undefined : "separator"} />
-                      <Image systemName={first ? "circle.fill" : "circle"}
-                        font={10} foregroundStyle={first ? statusTint(presentationStatus.semantic) : "secondaryLabel"}
-                        frame={{ width: 12, height: 12 }} />
-                      {!last ? <Spacer frame={{ width: 1, maxHeight: "infinity" }} background="separator" /> : null}
-                    </VStack>
-                  ),
-                }}
+                padding={{ vertical: 5 }}
               >
                 <VStack
                   alignment="trailing"
@@ -800,7 +784,16 @@ export function DetailPage(props: {
                     </Text>
                   ) : null}
                 </VStack>
-                <Spacer frame={{ width: 12 }} />
+                <Image
+                  systemName={index === 0 ? "circle.fill" : "circle"}
+                  font={10}
+                  foregroundStyle={
+                    index === 0
+                      ? statusTint(presentationStatus.semantic)
+                      : "tertiaryLabel"
+                  }
+                  frame={{ width: 12 }}
+                />
                 <Text
                   font={15}
                   foregroundStyle={index === 0 ? "label" : "secondaryLabel"}

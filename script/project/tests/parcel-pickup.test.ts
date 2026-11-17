@@ -378,6 +378,11 @@ assert.deepEqual(activeCodes(), []);
 const activityCardSource = readFileSync(new URL("../components/ParcelLiveActivityCard.tsx", import.meta.url), "utf8");
 assert.match(activityCardSource, /handoff \? "我已寄件" : "我已取件"/, "the pickup and handoff activities each show their completion capsule");
 assert.match(activityCardSource, /background=\{expanded \? undefined : gradient/, "the system island provides the expanded background");
+assert.match(activityCardSource, /frame=\{preview \? \{ maxWidth: card\.width, minHeight: card\.height, maxHeight: card\.height \} : undefined\}/,
+  "the list preview reserves the whole card height using the flexible frame");
+const activitySettingsSource = readFileSync(new URL("../pages/PickupSettingsPages.tsx", import.meta.url), "utf8");
+assert.equal((activitySettingsSource.match(/<ParcelLiveActivityCard\b/g) ?? []).length, 1,
+  "the setting contains one example card");
 
 const settingsSource = readFileSync(new URL("../pages/SettingsPage.tsx", import.meta.url), "utf8");
 const countFunctions = ["cancelDiagnosticCount", "scheduleDiagnosticCount"].map((name) => {

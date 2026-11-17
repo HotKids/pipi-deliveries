@@ -13,7 +13,6 @@ import {
   type Receipt,
 } from "./parcel-activity-action";
 import {
-  HANDOFF_ACTIVITY_PREVIEW,
   PARCEL_ACTIVITY_PREVIEW,
   activePickupCards,
   type ParcelActivityContent,
@@ -141,18 +140,14 @@ async function requireActivitiesEnabled(): Promise<void> {
   }
 }
 
-export function startParcelActivity(
-  target?: ParcelActivityTarget,
-  preview: "pickup" | "handoff" = "pickup",
-): Promise<void> {
+export function startParcelActivity(target?: ParcelActivityTarget): Promise<void> {
   return serialize(async () => {
     const registry = parcelActivityRegistry();
     if (registry.showAll || (await Promise.all(registry.receipts.map(isRunning))).some(Boolean)) {
       throw new Error("请先结束当前实时活动。");
     }
     await requireActivitiesEnabled();
-    const content = target ? parcelForTarget(committedState(), target)
-      : preview === "handoff" ? HANDOFF_ACTIVITY_PREVIEW : PARCEL_ACTIVITY_PREVIEW;
+    const content = target ? parcelForTarget(committedState(), target) : PARCEL_ACTIVITY_PREVIEW;
     if (!content || (target && content.expiresAtMs !== undefined && content.expiresAtMs <= Date.now())) {
       throw new Error("该快递码已不可用。");
     }
