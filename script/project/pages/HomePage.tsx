@@ -356,11 +356,43 @@ export function HomePage(props: {
               buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => setSearchPresented(true)} />
           ),
         }}
+        sheet={{
+          isPresented: searchPresented,
+          onChanged: setSearchPresented,
+          content: (
+            <NavigationStack
+              background="systemGroupedBackground"
+              toolbarBackgroundVisibility={{ visibility: "hidden", bars: ["navigationBar"] }}
+            >
+              <ScrollView navigationTitle="查快递" navigationBarTitleDisplayMode="inline" scrollIndicator="never"
+                frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+                background="systemGroupedBackground"
+                toolbar={{
+                  cancellationAction: (
+                    <Button title="关闭" systemImage="xmark" labelStyle="iconOnly"
+                      action={() => setSearchPresented(false)} />
+                  ),
+                }}
+                toast={transientToast(notice, setNotice)}
+              >
+                <HomeSearchBar
+                  state={props.state}
+                  shipments={shipments}
+                  autoFocusSearch={props.autoFocusSearch}
+                  {...shortcutSearchProps}
+                  onStateChange={props.onStateChange}
+                  setNotice={setNotice}
+                  openShipment={openShipment}
+                  setShipmentNavigationTarget={setShipmentNavigationTarget}
+                />
+              </ScrollView>
+            </NavigationStack>
+          ),
+        }}
         navigationDestination={{
-          isPresented: Boolean(selected || searchPresented),
+          isPresented: Boolean(selected),
           onChanged: (presented) => {
             if (presented) return;
-            setSearchPresented(false);
             const consumed = consumeShipmentNavigationTarget(
               shipmentNavigationTargetRef.current,
             );
@@ -388,21 +420,6 @@ export function HomePage(props: {
                 props.onStateChange(next);
               }}
             />
-          ) : searchPresented ? (
-            <ScrollView navigationTitle="查询快递" navigationBarTitleDisplayMode="inline"
-              background="systemGroupedBackground"
-              toast={transientToast(notice, setNotice)}>
-              <HomeSearchBar
-                state={props.state}
-                shipments={shipments}
-                autoFocusSearch={true}
-                {...shortcutSearchProps}
-                onStateChange={props.onStateChange}
-                setNotice={setNotice}
-                openShipment={openShipment}
-                setShipmentNavigationTarget={setShipmentNavigationTarget}
-              />
-            </ScrollView>
           ) : <Text>快递详情</Text>,
         }}
       >

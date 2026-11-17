@@ -19,8 +19,8 @@ assert.ok(detailPage.includes("EXPRESS_TOAST_COPY.dialUnavailable"));
 assert.equal(detailPage.includes("link: `tel:${hotline}`"), false);
 assert.equal(detailPage.includes("<Link url={`tel:${hotline}`}>"), false);
 
-const waybillRowStart = detailPage.indexOf(
-  '<HStack\n              alignment="center"\n              spacing={0}\n              frame={{ maxWidth: "infinity", alignment: "leading" }}',
+const waybillRowStart = detailPage.search(
+  /<HStack\s+alignment="center"\s+spacing=\{0\}\s+frame=\{\{ maxWidth: "infinity", alignment: "leading" \}\}/,
 );
 const waybillRowEnd = detailPage.indexOf("</HStack>", waybillRowStart);
 assert.ok(waybillRowStart >= 0 && waybillRowEnd > waybillRowStart);
@@ -186,6 +186,12 @@ assert.match(
   detailPage,
   /courierHotline\(\s*shipment\.identity\.courierCode,\s*shipment\.identity\.companyName,?\s*\)/,
   "the hotline must resolve from the maintained identity carrier",
+);
+const headerSection = detailPage.match(/<Section>\s*([\s\S]*?)\s*<\/Section>/)?.[1] ?? "";
+assert.match(
+  headerSection,
+  /^<VStack\b[^>]*>[\s\S]*?官方电话：[\s\S]*?<Divider\s*\/>[\s\S]*?编辑商品名[\s\S]*?<\/VStack>$/,
+  "the separator between the carrier and product name must be inside the same list row",
 );
 assert.match(
   detailPage,
