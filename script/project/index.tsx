@@ -1,6 +1,7 @@
 import {
   AppEvents,
   Button,
+  GeometryReader,
   List,
   Navigation,
   NavigationStack,
@@ -11,6 +12,7 @@ import {
   TabView,
   Text,
   WebView,
+  ZStack,
   useEffect,
   useMemo,
   useObservable,
@@ -18,8 +20,10 @@ import {
   useState,
 } from "scripting";
 import {
+  createProjectionViewportHost,
   registerProjectionViewportHost,
   setProjectionSceneActive,
+  type ProjectionViewportView,
 } from "./services/projection-viewport";
 import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
@@ -83,8 +87,7 @@ function readStartupState(): StartupState {
 
 function App() {
   // One app-owned viewport stays mounted across Home/detail navigation.
-  const [projectionController, setProjectionController] = useState<WebViewController | null>(null);
-  const projectionMountRef = useRef<Array<(mounted: boolean) => void>>([]);
+  const [projectionView, setProjectionView] = useState<ProjectionViewportView | null>(null);
   const [startup, setStartup] = useState(readStartupState);
   const [platformRevision, setPlatformRevision] = useState(0);
   const [platformNotice, setPlatformNotice] = useState<{ text: string } | undefined>(undefined);
@@ -275,33 +278,17 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const settle = (mounted: boolean) => {
-      const pending = projectionMountRef.current.splice(0);
-      pending.forEach((resolve) => resolve(mounted));
-    };
-    registerProjectionViewportHost({
-      mount: (controller) =>
-        new Promise<boolean>((resolve) => {
-          projectionMountRef.current.push(resolve);
-          setProjectionController(controller);
-        }),
-      unmount: () => {
-        settle(false);
-        setProjectionController(null);
-      },
+    let mounted = true;
+    const viewportHost = createProjectionViewportHost((view) => {
+      if (mounted) setProjectionView(view);
     });
+    registerProjectionViewportHost(viewportHost);
     return () => {
-      // Dismissal releases any projection still waiting for its viewport.
+      mounted = false;
       registerProjectionViewportHost(null);
-      settle(false);
+      viewportHost.unmount();
     };
   }, []);
-
-  useEffect(() => {
-    if (!projectionController) return;
-    // The slot is on screen now, so the borrower may start loading.
-    projectionMountRef.current.splice(0).forEach((resolve) => resolve(true));
-  }, [projectionController]);
 
   if (!state) {
     return (
@@ -326,18 +313,27 @@ function App() {
       selection={selection}
       toast={transientToast(pickupNotice, setPickupNotice)}
       background={
-        projectionController
+        projectionView
           ? {
               alignment: "topLeading",
-              // Fully transparent, non-interactive and behind every row: the page only lends
-              // its bounds to both Home and detail captures (AGENTS §9).
+              // Match Pipi's renderable capture surface while keeping it behind the app.
               content: (
-                <WebView
-                  controller={projectionController}
-                  frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-                  opacity={0}
-                  disabled={true}
-                />
+                <GeometryReader>
+                  {({ size }) => (
+                    <ZStack>
+                      {size.width > 0 && size.height > 0 ? (
+                        <WebView key={projectionView.id}
+                          controller={projectionView.controller}
+                          frame={{ width: size.width, height: size.height }}
+                          opacity={0.01}
+                          allowsHitTesting={false}
+                          disabled={true}
+                          onAppear={projectionView.appeared}
+                        />
+                      ) : null}
+                    </ZStack>
+                  )}
+                </GeometryReader>
               ),
             }
           : undefined

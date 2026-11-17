@@ -9,8 +9,8 @@
  * establish completeness under §9.
  *
  * Scripting can embed a controller in a `<WebView>` view, so the app root lends the
- * projection a real viewport: the same controller is rendered transparently behind the page
- * content, which mirrors Pipi's window-attached alpha-0 capture WebView. The page owns the
+ * projection a real viewport: the same controller is rendered behind the page
+ * content, which mirrors Pipi's window-attached 0.01-alpha capture WebView. The page owns the
  * slot across Home/detail navigation; the serialized H5 service borrows it for one load.
  *
  * Nothing here changes what counts as `complete`: the causal gate and the modal-coverage check
@@ -18,11 +18,40 @@
  * its first accepted package without waiting for expansion. Widget sync never opens WebViews.
  */
 
-/** The page-side slot. `mount` resolves once the controller is actually on screen. */
+/** The page-side slot. `mount` resolves when its sized WebView appears in the host. */
 export type ProjectionViewportHost = Readonly<{
   mount: (controller: WebViewController) => Promise<boolean>;
   unmount: () => void;
 }>;
+
+export type ProjectionViewportView = Readonly<{
+  id: number;
+  controller: WebViewController;
+  appeared: () => void;
+}>;
+
+export function createProjectionViewportHost(show: (view: ProjectionViewportView | null) => void): ProjectionViewportHost {
+  let id = 0;
+  let pending: ((mounted: boolean) => void) | undefined;
+  return {
+    mount(controller) {
+      pending?.(false);
+      return new Promise<boolean>((resolve) => {
+        const settle = (mounted: boolean) => {
+          if (pending !== settle) return;
+          pending = undefined;
+          resolve(mounted);
+        };
+        pending = settle;
+        show({ id: ++id, controller, appeared: () => settle(true) });
+      });
+    },
+    unmount() {
+      pending?.(false);
+      show(null);
+    },
+  };
+}
 
 let host: ProjectionViewportHost | null = null;
 // The app root mounts on screen and its first scene event may never come.

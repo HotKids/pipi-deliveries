@@ -4,9 +4,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   acquireProjectionViewport,
+  createProjectionViewportHost,
   projectionViewportHostAvailable,
   registerProjectionViewportHost,
   releaseProjectionViewport,
+  type ProjectionViewportView,
 } from "../services/projection-viewport";
 
 // AGENTS §9 / backlog D-15 裁决 A′ (2026-09-04): the JingDong union page mounts its floors by
@@ -56,6 +58,29 @@ assert.equal(projectionViewportHostAvailable(), false);
 assert.equal(await acquireProjectionViewport(controller), false);
 assert.equal(await acquireProjectionViewport(null), false);
 
+let presented: ProjectionViewportView | null = null;
+const nativeHost = createProjectionViewportHost((view) => { presented = view; });
+let firstReady = false;
+const firstMount = nativeHost.mount(controller).then((ready) => { firstReady = ready; return ready; });
+const firstView = presented!;
+await Promise.resolve();
+assert.equal(firstReady, false, "the state update alone does not confirm a rendered viewport");
+assert.equal(firstView.controller, controller);
+firstView.appeared();
+assert.equal(await firstMount, true);
+nativeHost.unmount();
+assert.equal(presented, null);
+
+let secondReady = false;
+const secondMount = nativeHost.mount(controller).then((ready) => { secondReady = ready; return ready; });
+const secondView = presented!;
+assert.notEqual(secondView.id, firstView.id, "reusing the same controller still creates a fresh host mount");
+firstView.appeared();
+await Promise.resolve();
+assert.equal(secondReady, false, "a stale native callback cannot complete a different mount");
+nativeHost.unmount();
+assert.equal(await secondMount, false, "closing the host releases an unanswered mount");
+
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const detailPage = readFileSync(join(projectRoot, "pages/DetailPage.tsx"), "utf8");
 const app = readFileSync(join(projectRoot, "index.tsx"), "utf8");
@@ -65,15 +90,18 @@ const projection = readFileSync(
 );
 
 // One app-owned slot survives Home/detail navigation. Popping detail cannot clear Home's host.
-assert.ok(app.includes("registerProjectionViewportHost({"));
+assert.ok(app.includes("registerProjectionViewportHost(viewportHost)"));
 assert.ok(app.includes("registerProjectionViewportHost(null)"));
 assert.equal(detailPage.includes("registerProjectionViewportHost"), false);
-// The slot is transparent, non-interactive and behind the rows — never a visible web page.
+// Match the positive capture alpha used by Pipi's ExpressHiddenWebView.
 assert.match(
   app,
-  /<TabView[\s\S]*?background=\{[\s\S]*?<WebView[\s\S]*?controller=\{projectionController\}[\s\S]*?opacity=\{0\}[\s\S]*?disabled=\{true\}/,
-  "the hosted projection WebView must be an invisible, non-interactive background",
+  /<TabView[\s\S]*?background=\{[\s\S]*?<WebView[\s\S]*?opacity=\{0\.01\}/,
+  "the background WebView must remain renderable at Pipi's capture alpha",
 );
+assert.match(app, /size\.width > 0 && size\.height > 0 \? \(\s*<WebView/);
+assert.match(app, /<WebView[\s\S]*?onAppear=\{projectionView\.appeared\}/);
+assert.match(app, /<WebView[\s\S]*?allowsHitTesting=\{false\}[\s\S]*?disabled=\{true\}/);
 assert.equal(app.includes("controller.present("), false);
 
 // The viewport is acquired before the load and released in the projection's finally.
