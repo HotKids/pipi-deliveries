@@ -188,6 +188,9 @@ assert.match(
   "the hotline must resolve from the maintained identity carrier",
 );
 const headerSection = detailPage.match(/<Section>\s*([\s\S]*?)\s*<\/Section>/)?.[1] ?? "";
+assert.match(detailPage, /readCloudParcelMetadata\(cloudWaybill, controller\.signal\)/);
+assert.match(detailPage, /useEffect\(\(\) => \{\s*void refreshCloudMetadata\(\);[\s\S]*?\}, \[cloudScope\]\);/);
+assert.match(detailPage, /refreshable=\{async \(\) => \{ await Promise\.all\(\[refresh\(true\), refreshCloudMetadata\(\)\]\); \}\}/);
 assert.match(
   headerSection,
   /^<VStack\b[^>]*>[\s\S]*?官方电话：[\s\S]*?<Divider\s*\/>[\s\S]*?编辑商品名[\s\S]*?<\/VStack>$/,

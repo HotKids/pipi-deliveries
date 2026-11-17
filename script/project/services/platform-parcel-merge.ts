@@ -2,7 +2,8 @@ import type { ParcelPlatformFields, Shipment } from "../models";
 import { projectedCarrierPresentation } from "./carrier-presentation";
 import { shipmentLifecycleKey } from "./shipment-lifecycle";
 import { displayWaybill, unprojectedAccountOrder } from "./shipment-policy";
-import { shipmentPresentationStatus } from "./status";
+import { normalizeWaybill, shipmentPresentationStatus } from "./status";
+import { matchesParcelMetadataLifecycle } from "./waybill-reuse";
 import { displayDeliveryEstimate, type PlatformParcel } from "./platform-parcel-data";
 
 export function eligiblePickup(shipment: Shipment): boolean {
@@ -69,15 +70,30 @@ export function keepPlatformFields(previous: Shipment | undefined, current: Ship
   };
 }
 
-export function displayedPlatformFields(shipment: Shipment, now = Date.now()) {
-  const saved = shipment.platformFields;
-  if (!saved || !sameFields(shipment, saved)) return {};
-  const estimate = saved.estimate;
+export type CloudParcelMetadata = Readonly<{
+  waybill: string;
+  anchorAt: number;
+  terminalAt?: number;
+  productName?: string;
+  deliveryEstimate?: string;
+  deliveryEstimateObservedAt?: number;
+}>;
+
+export function displayedPlatformFields(shipment: Shipment, now = Date.now(), cloud?: CloudParcelMetadata) {
+  const saved = shipment.platformFields && sameFields(shipment, shipment.platformFields) ? shipment.platformFields : undefined;
+  const matchingCloud = cloud && !unprojectedAccountOrder(shipment) &&
+    cloud.waybill === normalizeWaybill(displayWaybill(shipment)) &&
+    matchesParcelMetadataLifecycle(shipment, cloud.anchorAt, cloud.terminalAt ?? 0, now) ? cloud : undefined;
+  if (!saved && !matchingCloud) return {};
+  const estimate = saved?.estimate;
   const semantic = shipmentPresentationStatus(shipment).semantic;
+  const inTransit = ["PICKED", "TRANSIT", "DELIVERY"].includes(semantic);
+  const localEstimate = estimate && inTransit ? displayDeliveryEstimate(estimate.text, estimate.capturedAtMs, now) : "";
+  const cloudEstimate = inTransit && matchingCloud?.deliveryEstimate && !matchingCloud.terminalAt
+    ? displayDeliveryEstimate(matchingCloud.deliveryEstimate, matchingCloud.deliveryEstimateObservedAt ?? 0, now) : "";
   return {
-    title: saved.manualTitle || saved.title?.text,
-    estimate: estimate && ["PICKED", "TRANSIT", "DELIVERY"].includes(semantic)
-      ? displayDeliveryEstimate(estimate.text, estimate.capturedAtMs, now) : "",
+    title: saved?.manualTitle || saved?.title?.text || matchingCloud?.productName,
+    estimate: localEstimate || cloudEstimate,
   };
 }
 

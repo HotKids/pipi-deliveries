@@ -55,10 +55,13 @@ import {
   waybillSuffix,
   withShipmentNote,
 } from "../services/status";
-import { loadState, recordShipmentDetailSelection, setShipmentProductName } from "../services/storage";
-import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
+import { loadState, recordShipmentDetailSelection, setShipmentProductName, visibleShipments } from "../services/storage";
+import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { requestWidgetReload } from "../services/widgets";
-import { displayedPlatformFields } from "../services/platform-parcel-merge";
+import { displayedPlatformFields, type CloudParcelMetadata } from "../services/platform-parcel-merge";
+import { readCloudParcelMetadata } from "../services/cloud-parcel-metadata";
+import { gatewayCredentialGeneration } from "../services/credentials";
+import { SCRIPT_BUILD_TRACK } from "../services/build-track";
 import { parcelActivityContent } from "../services/parcel-pickup";
 import { timelineTimeParts } from "../services/time-presentation";
 import { preferNewerShipment } from "../services/ui-state";
@@ -110,6 +113,8 @@ export function DetailPage(props: {
 }) {
   const [shipment, setShipment] = useState(props.shipment);
   const [notice, setNotice] = useState("");
+  const [cloud, setCloud] = useState<{ scope: string; metadata: CloudParcelMetadata } | undefined>(undefined);
+  const cloudAbortRef = useRef<AbortController | null>(null);
   const [openingExternalApp, setOpeningExternalApp] = useState(false);
   const externalAppAbortRef = useRef<AbortController | null>(null);
   const accountBindingRef = useRef(props.accountBinding);
@@ -142,7 +147,7 @@ export function DetailPage(props: {
       value = await Dialog.prompt({
         title: "编辑商品名",
         message: "清空后恢复平台提供的商品名。",
-        defaultValue: displayedPlatformFields(shipment).title || "",
+        defaultValue: platformFields.title || "",
         placeholder: "请输入商品名",
         cancelLabel: "取消",
         confirmLabel: "保存",
@@ -316,9 +321,39 @@ export function DetailPage(props: {
       presentationStatus.semantic === "UNKNOWN"
     ? MANUAL_QUERY_IN_FLIGHT_TEXT
     : presentationStatus.text;
-  const platformFields = displayedPlatformFields(shipment);
+  const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment && !unprojectedAccountOrder(shipment)
+    ? normalizeWaybill(displayWaybill(shipment)) : "";
+  const cloudGeneration = /^[A-Z0-9]{6,64}$/.test(cloudWaybill) ? gatewayCredentialGeneration() : null;
+  const cloudLifecycle = shipmentLifecycleKey(shipment);
+  const cloudScope = cloudGeneration === null ? "" : JSON.stringify([cloudGeneration, cloudWaybill, cloudLifecycle]);
+  const platformFields = displayedPlatformFields(shipment, Date.now(), cloud?.scope === cloudScope ? cloud?.metadata : undefined);
   const showProductName = Boolean(platformFields.title || props.persistedShipment);
   const pickup = parcelActivityContent(shipment);
+
+  async function refreshCloudMetadata(): Promise<void> {
+    if (!cloudScope) return;
+    cloudAbortRef.current?.abort();
+    const controller = new AbortController();
+    cloudAbortRef.current = controller;
+    try {
+      const ownsWaybill = () => {
+        const matches = visibleShipments(loadState()).filter(item =>
+          !unprojectedAccountOrder(item) && normalizeWaybill(displayWaybill(item)) === cloudWaybill);
+        return matches.length === 1 && shipmentLifecycleKey(matches[0]) === cloudLifecycle;
+      };
+      const metadata = ownsWaybill() ? await readCloudParcelMetadata(cloudWaybill, controller.signal) : undefined;
+      if (controller.signal.aborted) return;
+      const current = metadata && gatewayCredentialGeneration() === cloudGeneration && ownsWaybill();
+      setCloud(current ? { scope: cloudScope, metadata } : undefined);
+    } catch {
+      if (!controller.signal.aborted) setCloud(undefined);
+    }
+  }
+
+  useEffect(() => {
+    void refreshCloudMetadata();
+    return () => cloudAbortRef.current?.abort();
+  }, [cloudScope]);
 
   useEffect(() => {
     setShipment((current) => preferNewerShipment(current, props.shipment));
@@ -643,7 +678,7 @@ export function DetailPage(props: {
           />
         ),
       } : undefined}
-      refreshable={() => refresh(true)}
+      refreshable={async () => { await Promise.all([refresh(true), refreshCloudMetadata()]); }}
       toast={transientToast(notice, setNotice)}
     >
       <Section>

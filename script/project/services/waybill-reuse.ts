@@ -81,6 +81,13 @@ export function shipmentReuseAnchorAtMs(shipment: Shipment, now = Date.now()): n
   return waybillReuseAnchorAtMs(shipment.sourceTimeline || reuseTimeline(shipment), now);
 }
 
+export function matchesParcelMetadataLifecycle(shipment: Shipment, anchorAt: number, terminalAt: number, now: number): boolean {
+  const localAnchor = shipmentReuseAnchorAtMs(shipment, now);
+  const localTerminal = waybillReuseTerminalAtMs(reuseTimeline(shipment), now);
+  return localAnchor > 0 && validTime(anchorAt, now) > 0 &&
+    !reusesWaybill(validTime(terminalAt, now), localAnchor) && !reusesWaybill(localTerminal, anchorAt);
+}
+
 /** Whether `incoming` is a new parcel on the number the stored row `current` shows. */
 export function shipmentReusesWaybill(current: Shipment, incoming: Shipment, now: number): boolean {
   if (excludedShipment(current) || excludedShipment(incoming)) return false;
