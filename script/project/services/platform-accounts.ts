@@ -49,6 +49,19 @@ export type PlatformAccount = PlatformSession | AccountBase & Readonly<{
 
 export type AccountStatus = AccountBase & Readonly<{ state: PlatformAccount["state"] }>;
 
+export function platformAccountSubtitle({ state, label, syncedAtMs }: AccountStatus): string {
+  if (state === "offline") return "";
+  let detail = state === "expired" ? "请重新登录" : "尚未同步";
+  if (state === "active" && syncedAtMs) {
+    const time = new Date(syncedAtMs);
+    if (Number.isFinite(time.getTime())) {
+      const two = (part: number) => String(part).padStart(2, "0");
+      detail = `${two(time.getMonth() + 1)}-${two(time.getDate())} ${two(time.getHours())}:${two(time.getMinutes())}`;
+    }
+  }
+  return label ? `${label} · ${detail}` : detail;
+}
+
 const INITIAL: PlatformAccount = { state: "offline", generation: "", label: "" };
 
 export const WEB_PLATFORMS = {

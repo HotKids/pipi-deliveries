@@ -6,7 +6,7 @@ import { memory, NOW } from "./state-storage-mock";
 import { code128Widths } from "../services/code128";
 import { encryptFengchaoChallenge } from "../services/fengchao-rsa";
 import {
-  accountStatus, clearPlatformLogin, currentPlatformSession, notePlatformSync, platformSession, savePlatformLogin,
+  accountStatus, clearPlatformLogin, currentPlatformSession, notePlatformSync, platformAccountSubtitle, platformSession, savePlatformLogin,
   trustedPlatformPage,
 } from "../services/platform-accounts";
 import { identityCodeFromResponse, fetchStationIdentity } from "../services/platform-wire";
@@ -20,7 +20,8 @@ const {
   completeCurrentParcelCard, emptyState, loadState, savePlatformParcelData, saveRecognizedParcelCode, saveState,
   setPickupCardNote, visibleShipments,
 } = await import("../services/storage");
-const { canOpenParcelCabinet, performPickupAction, refreshPlatformParcels } = await import("../services/platform-parcel-sync");
+const { canOpenParcelCabinet, performPickupAction, platformRefreshMessage, refreshPlatformParcels } =
+  await import("../services/platform-parcel-sync");
 
 const waybill = "YT000000008123";
 const order = "88000008123";
@@ -54,6 +55,23 @@ const sessionCookie = {
   name: "PDDAccessToken", value: "synthetic-pdd-session", domain: ".pinduoduo.com",
   path: "/", isSecure: true, isHTTPOnly: true, isSessionOnly: true,
 };
+
+test("the account subtitle keeps a nickname or masked label and the local sync date and time", () => {
+  memory.clear();
+  const syncedAt = new Date(2026, 10, 17, 9, 7).getTime();
+  const credentials = { kind: "web", cookies: [sessionCookie] } as const;
+  savePlatformLogin("pinduoduo", "", credentials, "synthetic-account-0123", "示例昵称");
+  const pdd = accountStatus("pinduoduo");
+  assert.equal(platformAccountSubtitle(pdd), "示例昵称 · 尚未同步");
+  notePlatformSync("pinduoduo", pdd.generation, syncedAt);
+  assert.equal(platformAccountSubtitle(accountStatus("pinduoduo")), "示例昵称 · 11-17 09:07");
+  clearPlatformLogin("pinduoduo", pdd.generation, true);
+  assert.equal(platformAccountSubtitle(accountStatus("pinduoduo")), "示例昵称 · 请重新登录");
+  savePlatformLogin("cainiao", "", credentials, "synthetic-account-4321");
+  const cainiao = accountStatus("cainiao");
+  notePlatformSync("cainiao", cainiao.generation, syncedAt);
+  assert.equal(platformAccountSubtitle(accountStatus("cainiao")), "账号 ****4321 · 11-17 09:07");
+});
 
 test("recipient field aliases, placeholder rejection and station address", () => {
   assert.equal(rediscovered.length, 1);
@@ -282,11 +300,15 @@ test("PDD waiting pickup sync survives an unavailable order-capture host", async
     }] } }));
   }) as typeof fetch;
   try {
-    const result = await refreshPlatformParcels(() => {}, "manual", "pinduoduo");
+    const progress: string[] = [];
+    const result = await refreshPlatformParcels(() => {}, "manual", "pinduoduo",
+      (source, running) => progress.push(`${source}:${running}`));
     assert.equal(stationRequests, 1);
     assert.equal(loadState().shipments[0].pickup?.code, "5112");
     assert.equal(result.succeeded, 1);
     assert.equal(result.failed, 1);
+    assert.deepEqual(progress, ["pinduoduo:true", "pinduoduo:false"]);
+    assert.equal(platformRefreshMessage(result), "部分同步完成，拼多多同步未完成，请稍后重试");
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.WebViewController = originalController;

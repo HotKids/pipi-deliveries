@@ -11,7 +11,7 @@ const detailPage = readFileSync(
 
 assert.ok(detailPage.includes("const result = await copyText(waybill);"));
 assert.equal(detailPage.includes("Required Permissions"), false);
-assert.ok(detailPage.includes('systemName="doc.on.doc"'));
+assert.ok(detailPage.includes('systemImage="doc.on.doc"'));
 // 官方电话走系统拨号；打不开按三端统一表提示（AGENTS §11 第 16 行）。
 assert.ok(detailPage.includes("await dialPhone(hotline)"));
 assert.ok(detailPage.includes("Safari.openURL(`tel:${phone}`)"));
@@ -194,8 +194,11 @@ assert.match(
   "the separator between the carrier and product name must be inside the same list row",
 );
 assert.match(headerSection, /listRowInsets=\{showProductName \? \{ top: 12, bottom: 0, leading: 20, trailing: 20 \} : undefined\}/);
-assert.match(headerSection, /<Divider\s*\/>\s*<HStack spacing=\{12\} padding=\{\{ vertical: 12 \}\}/,
+assert.match(headerSection, /<Divider\s*\/>\s*<HStack[^>]*padding=\{\{ vertical: 12 \}\}/,
   "the title and its edit action sit between equal top and bottom padding");
+assert.match(headerSection, /<DetailHeaderAction title="复制单号" systemImage="doc\.on\.doc"[\s\S]*?<DetailHeaderAction title="编辑商品名" systemImage="square\.and\.pencil"/,
+  "the two header actions share an icon-only presentation");
+assert.match(detailPage, /function DetailHeaderAction[\s\S]*?<Button[\s\S]*?labelStyle="iconOnly"[\s\S]*?font=\{15\} foregroundStyle="secondaryLabel"/);
 const timelineRows = detailPage.match(/displayTracks\.map\([\s\S]*?\n          \}\)/)?.[0] ?? "";
 assert.match(timelineRows, /padding=\{\{ vertical: 5 \}\}[\s\S]*?systemName=\{index === 0 \? "circle\.fill" : "circle"\}/);
 assert.doesNotMatch(timelineRows, /overlay=|listRowSeparator="hidden"/,

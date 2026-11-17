@@ -25,7 +25,7 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /<Picker[\s\S]*?pickerStyle="segmented"[\s\S]*?shipments\.length \? \([\s\S]*?\) : \(\s*<VStack\s+spacing=\{0\}[\s\S]*?<List[\s\S]*?frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}[\s\S]*?overlay=\{\{\s*alignment: "center",\s*content: \(\s*<EmptyDeliveryStateGroup\s+vehicleSize=\{81\.6\}\s+spacing=\{6\}\s+labelFont=\{24\}\s*\/>\s*\),\s*\}\}/,
+  /visibleFilters\.length > 1 \? \([\s\S]*?shipments\.length \? \([\s\S]*?\) : \(\s*<VStack\s+spacing=\{0\}[\s\S]*?<List[\s\S]*?frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}[\s\S]*?overlay=\{\{\s*alignment: "center",\s*content: \(\s*<EmptyDeliveryStateGroup\s+vehicleSize=\{81\.6\}\s+spacing=\{6\}\s+labelFont=\{24\}\s*\/>\s*\),\s*\}\}/,
   "the 1.2x home vehicle group must be centered in the flexible body below the segmented filter",
 );
 assert.doesNotMatch(
@@ -85,7 +85,12 @@ assert.match(searchSheet, /autoFocusSearch=\{props\.autoFocusSearch\}/,
   "only the existing focus and shortcut entry points should open the keyboard automatically");
 assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(selected\)/,
   "the main navigation destination presents shipment details");
-assert.match(homeSource, /visibleFilters\.length > 1 \? \(\s*<Picker/);
+const filterBar = homeSource.match(/visibleFilters\.length > 1 \? \(([\s\S]*?)\) : null\}/)?.[1] ?? "";
+assert.match(filterBar, /<Capsule\b[^>]*stroke=/);
+assert.match(filterBar, /<Button key=\{key\}[\s\S]*?setFilter\(key\)/);
+assert.match(filterBar, /style: selected \? "secondarySystemFill" : "clear", shape: "capsule"/);
+assert.match(filterBar, /<Text[^>]*background=\{\{ style: "systemFill", shape: "capsule" \}\}[^>]*>\s*\{groups\[key\]\.length\}/,
+  "each segment shows its count inside a separate capsule");
 assert.match(homeSource, /key === "all" \|\| groups\[key\]\.length > 0/);
 assert.match(homeSource, /visibleFilters\.includes\(selectedFilter\) \? selectedFilter : "all"/);
 

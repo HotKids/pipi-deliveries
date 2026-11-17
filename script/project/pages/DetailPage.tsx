@@ -80,6 +80,20 @@ import {
 const MANUAL_QUERY_IN_FLIGHT_TEXT = "查询中";
 const EMPTY_ATTACHED_ORDERS: readonly Shipment[] = [];
 
+function DetailHeaderAction({ title, systemImage, action, inline = false }: {
+  title: string;
+  systemImage: string;
+  action: () => void;
+  inline?: boolean;
+}) {
+  return (
+    <Button title={title} systemImage={systemImage} labelStyle="iconOnly" buttonStyle="plain"
+      font={15} foregroundStyle="secondaryLabel"
+      frame={inline ? { width: 24, height: 28 } : { width: 44, height: 44 }}
+      contentShape="rect" action={action} />
+  );
+}
+
 export function DetailPage(props: {
   shipment: Shipment;
   persistedShipment?: boolean;
@@ -679,13 +693,7 @@ export function DetailPage(props: {
                   >
                     {waybill}
                   </Text>
-                  <Button buttonStyle="plain" action={copyWaybill}>
-                    <Image
-                      systemName="doc.on.doc"
-                      font={13}
-                      foregroundStyle="secondaryLabel"
-                    />
-                  </Button>
+                  <DetailHeaderAction title="复制单号" systemImage="doc.on.doc" action={copyWaybill} inline />
                 </HStack>
               </HStack>
               {hotline ? (
@@ -705,14 +713,14 @@ export function DetailPage(props: {
           {showProductName ? (
             <>
               <Divider />
-              <HStack spacing={12} padding={{ vertical: 12 }}>
-                <Text font={15} foregroundStyle={platformFields.title ? "label" : "secondaryLabel"}
+              <HStack alignment="center" spacing={12} padding={{ vertical: 12 }}>
+                <Text font={14} lineSpacing={3} foregroundStyle="secondaryLabel"
+                  fixedSize={{ horizontal: false, vertical: true }}
                   frame={{ maxWidth: "infinity", alignment: "leading" }}>
                   {platformFields.title || "添加商品名"}
                 </Text>
                 {props.persistedShipment ? (
-                  <Button title="编辑商品名" systemImage="square.and.pencil" labelStyle="iconOnly"
-                    buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => void editProductName()} />
+                  <DetailHeaderAction title="编辑商品名" systemImage="square.and.pencil" action={() => void editProductName()} />
                 ) : null}
               </HStack>
             </>

@@ -1,11 +1,11 @@
 import {
   Button,
+  Capsule,
   HStack,
   Image,
   List,
   Navigation,
   NavigationStack,
-  Picker,
   ProgressView,
   ScrollView,
   Section,
@@ -459,12 +459,34 @@ export function HomePage(props: {
           </VStack>
         ) : null}
         {visibleFilters.length > 1 ? (
-          <Picker title="快递状态" pickerStyle="segmented" value={filter}
-            onChanged={(value: string) => setFilter(value as ShipmentFilter)} padding={{ horizontal: 20, vertical: 6 }}>
-            {visibleFilters.map((key) => (
-              <Text key={key} tag={key}>{shipmentFilters[key]} {groups[key].length}</Text>
-            ))}
-          </Picker>
+          <VStack padding={{ horizontal: 20, vertical: 6 }}>
+            <HStack spacing={0} padding={3} background={
+              <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }} />
+            }>
+              {visibleFilters.map((key) => {
+                const selected = filter === key;
+                return (
+                  <Button key={key} buttonStyle="plain" action={() => setFilter(key)}>
+                    <HStack
+                      spacing={5}
+                      frame={{ maxWidth: "infinity", minHeight: 44 }}
+                      background={{ style: selected ? "secondarySystemFill" : "clear", shape: "capsule" }}
+                      contentShape="capsule"
+                    >
+                      <Text font={15} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
+                        {shipmentFilters[key]}
+                      </Text>
+                      <Text font={12} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
+                        lineLimit={1} padding={{ horizontal: 5 }} frame={{ minWidth: 20, minHeight: 20 }}
+                        background={{ style: "systemFill", shape: "capsule" }}>
+                        {groups[key].length}
+                      </Text>
+                    </HStack>
+                  </Button>
+                );
+              })}
+            </HStack>
+          </VStack>
         ) : null}
         {shipments.length ? (
           <List listStyle="plain" refreshable={refresh}>

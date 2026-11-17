@@ -336,8 +336,8 @@ export function SettingsPage(props: {
                 return sendAccountCode(SCRIPT_BINDING_SOURCE, phone);
               }}
               onBind={bindCurrentPhone}
-              onPlatformRefresh={async (platform) => platformRefreshMessage(
-                await refreshPlatformParcels(props.onStateChange, "manual", platform),
+              onPlatformRefresh={async (platform, onProgress) => platformRefreshMessage(
+                await refreshPlatformParcels(props.onStateChange, "manual", platform, onProgress),
               )}
               onRemove={async (binding, localOnly) => {
                 setManagerNotice("");
