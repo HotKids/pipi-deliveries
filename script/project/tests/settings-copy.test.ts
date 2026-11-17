@@ -32,7 +32,7 @@ for (const expected of [
   '"未授权"',
   '"已授权"',
   '"不可用"',
-  "Access Key 用于验证服务访问资格，仅保存在本机。",
+  "Access Key 用于同步你的快递信息，请妥善保存，不要分享。",
 ]) {
   assert.ok(settings.includes(expected), `missing settings copy: ${expected}`);
 }
@@ -64,13 +64,17 @@ for (const symbol of [
   "key",
   "doc.text.magnifyingglass",
   "hand.raised",
+  "square.on.square",
+  "rectangle.inset.filled.badge.record",
   "link",
 ]) {
   assert.ok(
-    settings.includes(`<SettingsRowIcon systemName="${symbol}" />`),
+    settings.includes(`<SettingsRowIcon systemName="${symbol}" backgroundColor=`),
     `missing unified settings icon: ${symbol}`,
   );
 }
+assert.match(settings, /background=\{\{ style: props\.backgroundColor, shape: ICON_TILE_SHAPE \}\}/);
+assert.match(settings, /foregroundStyle="white"/);
 const appIconStart = settings.indexOf("function SettingsAppIcon() {");
 const appIconEnd = settings.indexOf(
   "export function SettingsPage",
@@ -78,7 +82,7 @@ const appIconEnd = settings.indexOf(
 );
 assert.ok(appIconStart >= 0 && appIconEnd > appIconStart);
 const appIcon = settings.slice(appIconStart, appIconEnd);
-assert.ok(appIcon.includes('<SettingsRowIcon systemName="cat" />'));
+assert.ok(appIcon.includes('<SettingsRowIcon systemName="cat" backgroundColor='));
 assert.equal(appIcon.includes("cat.fill"), false);
 assert.equal(appIcon.includes("script-icon.png"), false);
 assert.equal(manifest.icon, "cat.fill");
@@ -86,7 +90,7 @@ assert.equal(manifest.color, "rgba(184, 114, 171, 1)");
 assert.equal(Object.hasOwn(manifest, "iconImage"), false);
 assert.ok(settings.includes("<SettingsAppIcon />"));
 assert.equal(
-  settings.includes('<SettingsRowIcon systemName="shippingbox" />'),
+  settings.includes('<SettingsRowIcon systemName="shippingbox"'),
   false,
 );
 

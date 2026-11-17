@@ -70,15 +70,32 @@ for required in \
   widget.tsx \
   intent.tsx \
   app_intents.tsx \
+  live_activity.tsx \
+  assets/parcel-activity/box.png \
+  assets/parcel-activity/box-frames.png \
+  assets/parcel-activity/cainiao.png \
+  assets/parcel-activity/pinduoduo.png \
+  assets/parcel-activity/fengchao.png \
+  assets/platform-accounts/cainiao.png \
+  assets/platform-accounts/jingdong.png \
+  assets/platform-accounts/pinduoduo.png \
+  assets/platform-accounts/fengchao.png \
+  assets/platform-accounts/samsung.png \
+  assets/platform-accounts/taobao.png \
   components/EmptyDeliveryVehicle.tsx \
+  components/PickupTabCard.tsx \
   components/ShipmentRow.tsx \
   pages/HomePage.tsx \
+  pages/PickupPage.tsx \
   pages/DetailPage.tsx \
   pages/PhoneBindingPage.tsx \
   pages/DiagnosticLogPage.tsx \
   pages/PhoneManagerPage.tsx \
+  pages/PlatformAccountPages.tsx \
+  pages/SamsungAssistantPage.tsx \
   pages/PrivacyPage.tsx \
   pages/SettingsPage.tsx \
+  pages/StationIdentityPage.tsx \
   services/account-api.ts \
   services/account-carrier-normalization.ts \
   services/account-identity.ts \
@@ -91,9 +108,13 @@ for required in \
   services/cainiao-h5.ts \
   services/carrier-presentation.ts \
   services/carrier-query.ts \
+  services/code128.ts \
   services/credentials.ts \
   services/deadline.ts \
   services/durable-files.ts \
+  services/fengchao-account.ts \
+  services/fengchao-reminders.ts \
+  services/fengchao-rsa.ts \
   services/kuaidi100-h5.ts \
   services/kuaidi100-carrier-detection.ts \
   services/manual-preview.ts \
@@ -101,6 +122,12 @@ for required in \
   services/manual-query-parser.ts \
   services/manual-query.ts \
   services/logger.ts \
+  services/platform-accounts.ts \
+  services/platform-parcel-data.ts \
+  services/platform-parcel-merge.ts \
+  services/platform-parcel-sync.ts \
+  services/platform-web-parcels.ts \
+  services/platform-wire.ts \
   services/refresh-coordination.ts \
   services/routes.ts \
   services/script-source.ts \
@@ -197,7 +224,7 @@ if rg -n -i "$FORBIDDEN_MATERIAL" "$TEMP_DIR" >/dev/null; then
   exit 1
 fi
 
-NETWORK_URLS=$(rg -I -o --no-filename 'https?://[^[:space:]"<>)]+' "$TEMP_DIR" || true)
+NETWORK_URLS=$(rg -I -o --no-filename "https?://[^[:space:]\"'<>)]+" "$TEMP_DIR" || true)
 while IFS= read -r network_url; do
   test -n "$network_url" || continue
   case "$network_url" in
@@ -207,6 +234,26 @@ while IFS= read -r network_url; do
     'https://m.kuaidi100.com/app/query/?nu='|\
     'https://jtsd.jtexpress.com.cn/pipi#/pages/checkGoods/sendDetail?waybillNo='|\
     'https://h5.m.taobao.com/'|\
+    'https://h5api.m.taobao.com'|\
+    'https://h5api.m.taobao.com/h5/'|\
+    'https://login.m.taobao.com/login.htm'|\
+    'https://pages-fast.m.taobao.com/wow/z/uniapp/1011717/last-mile-fe/end-collect-platform/identity-code'|\
+    'https://home.m.jd.com'|\
+    'https://home.m.jd.com/myJd/newhome.action'|\
+    'https://plogin.m.jd.com/login/login?appid=0&returnurl=https%3A%2F%2Fhome.m.jd.com%2FmyJd%2Fnewhome.action'|\
+    'https://my.m.jd.com'|\
+    'https://my.m.jd.com/index.html'|\
+    'https://my.m.jd.com/index.html?sceneval=2'|\
+    'https://trade.m.jd.com'|\
+    'https://trade.m.jd.com/order/deal_wuliu_jdm.shtml?from=orderdetail&dealState=7&dealId='|\
+    'https://mobile.yangkeduo.com'|\
+    'https://mobile.yangkeduo.com/login.html'|\
+    'https://mobile.yangkeduo.com/orders.html'|\
+    'https://api.pinduoduo.com'|\
+    'https://m.pinduoduo.net'|\
+    'https://m.pinduoduo.net/mdkd/identificationCode'|\
+    'https://m.pinduoduo.net/mdkd/package?pr_page_from=scheme'|\
+    'https://consumer.fcbox.com'|\
     'https://www.kuaidi100.com/autonumber/autoComNum'|\
     'https://github.com/HotKids'|\
     'https://github.com/HotKids/'*|\

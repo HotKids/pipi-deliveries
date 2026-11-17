@@ -50,7 +50,6 @@ function Row(props: {
           companyName={props.row.companyName}
           accountOrder={props.row.accountOrder}
           size={props.iconSize}
-          cornerRadius={Math.max(8, Math.round(props.iconSize * 0.26))}
         />
         <VStack alignment="leading" spacing={1} frame={{ maxWidth: "infinity" }}>
           <HStack spacing={6} frame={{ maxWidth: "infinity" }}>

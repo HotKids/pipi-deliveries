@@ -177,6 +177,56 @@ export type AutomaticOwnership = {
   observations: readonly AutomaticSourceObservation[];
 };
 
+export type PickupPlatform = "cainiao" | "pinduoduo" | "fengchao";
+
+export type ParcelPickup = Readonly<{
+  platform?: PickupPlatform;
+  waybill: string;
+  waybillGeneration: number;
+  /** Original capture time, preserved if the same observation is synchronized. */
+  capturedAtMs: number;
+  code: string;
+  locationName?: string;
+  address?: string;
+}>;
+
+export type ParcelPlatformFields = Readonly<{
+  waybill: string;
+  waybillGeneration: number;
+  title?: { text: string; source: "cainiao" | "jingdong" | "pinduoduo" };
+  estimate?: { text: string; source: "cainiao" | "jingdong" | "pinduoduo"; capturedAtMs: number };
+}>;
+
+export type PddParcelImport = Readonly<{ ownerKey: string; orderId: string }>;
+
+export type ParcelHandoffRecord = Readonly<{
+  id: string;
+  kind: "handoff";
+  platform: Extract<PickupPlatform, "cainiao" | "pinduoduo">;
+  code: string;
+  capturedAtMs: number;
+  windowStartAtMs?: number;
+  windowEndAtMs?: number;
+  windowText?: string;
+  completedAtMs?: number;
+  expiredAtMs?: number;
+  note?: string;
+}>;
+
+export type StandaloneParcelPickup = Readonly<{
+  id: string;
+  kind: "pickup";
+  platform: PickupPlatform;
+  code: string;
+  capturedAtMs: number;
+  locationName?: string;
+  address?: string;
+  completedAtMs?: number;
+  note?: string;
+}>;
+
+export type PickupCodeRecord = StandaloneParcelPickup | ParcelHandoffRecord;
+
 export type Shipment = {
   identity: ShipmentIdentity;
   timeline: TimelinePackage;
@@ -184,6 +234,9 @@ export type Shipment = {
   manualTimelines?: readonly TimelinePackage[];
   automaticOwnership?: AutomaticOwnership;
   statusPresentation?: StatusPresentation;
+  pickup?: ParcelPickup;
+  platformFields?: ParcelPlatformFields;
+  pddImport?: PddParcelImport;
   /** Set only after this shipment's trusted Cainiao H5 returned no usable timeline. */
   cainiaoH5FallbackActivatedAtMs?: number;
   manualRefreshAttemptAtMs?: number;
@@ -197,7 +250,7 @@ export type Shipment = {
   detailSelection?: { provider: string; selectedAtMs: number; waybill?: string; reason?: "sf_refresh_failed" };
   /**
    * 用户在详情页填的备注（用户定 2026-09-05 晚）：列表页、详情页、桌面卡片都以「状态词 · 备注」
-   * 显示；只在详情页可以添加或修改。同步合并从不改它。
+   * 显示；详情与取件 Tab 的已关联卡片通过同一字段保存。同步合并从不改它。
    */
   note?: string;
   route?: ShipmentRoute | null;
@@ -288,6 +341,7 @@ export type AppState = {
   bindings: readonly AccountBinding[];
   pendingQueries: readonly PendingManualQuery[];
   shipments: readonly Shipment[];
+  pickupCodeRecords?: readonly PickupCodeRecord[];
   pendingNotifications?: readonly ShipmentNotificationEvent[];
   pendingEnhancementUnsubscribes?: readonly PendingEnhancementUnsubscribe[];
   /** feed 槽一次性重建已标记的时间（见 TimelinePackage.feedRebuildPending）。 */

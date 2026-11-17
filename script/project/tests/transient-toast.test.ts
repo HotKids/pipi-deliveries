@@ -229,8 +229,8 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /topBarTrailing:\s*\([\s\S]*?<Button[\s\S]*?buttonStyle="plain"[\s\S]*?action=\{\(\) => setNotice\("暂未开放"\)\}[\s\S]*?<Image\s+systemName="plus"\s+font=\{17\}\s+frame=\{\{ width: 44, height: 44 \}\}/,
-  "the Home add placeholder must use a plus symbol matching the back control and only show its fixed toast",
+  /topBarTrailing:\s*\(\s*<Button title="查询快递" systemImage="magnifyingglass" labelStyle="iconOnly"\s*buttonStyle="plain" frame=\{\{ width: 44, height: 44 \}\} action=\{\(\) => setSearchPresented\(true\)\}/,
+  "the Home search button opens the search page and keeps the 44pt toolbar target",
 );
 
 assert.ok(phoneBindingSource.includes('setNotice(EXPRESS_TOAST_COPY.codeSent)'));

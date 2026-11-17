@@ -1,4 +1,4 @@
-import { asPlainObject as object, cleanString } from "./value-guards";
+import { asPlainObject as object, cleanString, type JsonObject } from "./value-guards";
 
 export type CarrierNormalization = Readonly<{
   standardCode: string;

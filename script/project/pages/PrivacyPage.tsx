@@ -10,6 +10,9 @@ export function PrivacyPage() {
         <Text font={14} foregroundStyle="secondaryLabel">
           为完成手机号验证、快递同步与物流查询，必要的手机号、验证码、运单号、手机尾号、随机安装身份及网络信息会经 Cloudflare Worker 临时中转至相关服务。部分订单会在本机加载第三方页面以提取运单号。Worker 按当前设计不持久化保存业务数据；Access Key、快递列表与物流缓存保存在本机，第三方服务仍可能依据其政策处理必要的网络日志或 Cookie。
         </Text>
+        <Text font={14} foregroundStyle="secondaryLabel">
+          通过「更多数据源」登录后，本机会与对应平台直接通信，用于同步快递、获取身份码或在你确认后开柜。平台登录凭据保存在本机钥匙串。
+        </Text>
       </Section>
 
       <Section header={<Text>免责声明</Text>}>

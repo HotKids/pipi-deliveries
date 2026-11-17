@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripTypeScriptTypes } from "node:module";
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const homeSource = await readFile(
@@ -24,8 +25,8 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /shipments\.length \? \([\s\S]*?\) : \(\s*<VStack\s+spacing=\{0\}[\s\S]*?\{emptySearchArea\}[\s\S]*?<List[\s\S]*?frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}[\s\S]*?overlay=\{\{\s*alignment: "center",\s*content: \(\s*<EmptyDeliveryStateGroup\s+vehicleSize=\{81\.6\}\s+spacing=\{6\}\s+labelFont=\{24\}\s*\/>\s*\),\s*\}\}/,
-  "the 1.2x home vehicle group must be centered in the flexible body below the search area",
+  /<Picker[\s\S]*?pickerStyle="segmented"[\s\S]*?shipments\.length \? \([\s\S]*?\) : \(\s*<VStack\s+spacing=\{0\}[\s\S]*?<List[\s\S]*?frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}[\s\S]*?overlay=\{\{\s*alignment: "center",\s*content: \(\s*<EmptyDeliveryStateGroup\s+vehicleSize=\{81\.6\}\s+spacing=\{6\}\s+labelFont=\{24\}\s*\/>\s*\),\s*\}\}/,
+  "the 1.2x home vehicle group must be centered in the flexible body below the segmented filter",
 );
 assert.doesNotMatch(
   homeSource,
@@ -41,9 +42,22 @@ assert.doesNotMatch(
 );
 assert.match(
   homeSource,
-  /shipments\.map\([\s\S]*?<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 14 天内的快递\s*<\/Text>/,
+  /shownShipments\.map\([\s\S]*?<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 14 天内的快递\s*<\/Text>/,
   "the populated list still ends with the history note",
 );
+
+const classifierSource = homeSource.match(/^function shipmentFilter\([\s\S]*?^\}/m)?.[0];
+assert.ok(classifierSource);
+const classify = new Function(stripTypeScriptTypes(classifierSource) + "\nreturn shipmentFilter;")();
+for (const semantic of ["ORDERED", "SHIPPED", "PICKED", "TRANSIT", "DELIVERY"]) {
+  assert.equal(classify(semantic), "transit");
+}
+assert.equal(classify("WAITING_PICKUP"), "pickup");
+assert.equal(classify("DANGER"), "danger");
+for (const semantic of ["COMPLETED", "CANCELLED", "UNKNOWN"]) {
+  assert.equal(classify(semantic), undefined, "the all segment still includes the display row");
+}
+assert.match(homeSource, /searchPresented \? \(\s*<List navigationTitle="查询快递"[\s\S]*?<HomeSearchBar/);
 
 console.log("home empty-state presentation tests passed");
 

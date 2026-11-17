@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
+import { installSharedFileMock } from "./shared-file-mock";
 
 const realClock = Date.now;
 const clockOffset = Date.parse("2026-10-16T12:00:00+08:00") - realClock();
@@ -96,6 +97,7 @@ Object.assign(globalThis, {
       return true;
     },
   },
+  UUID: { string: () => "00000000-0000-4000-8000-000000000001" },
   Storage: {
     get<T>(key: string): T | null {
       return (shared.get(key) as T | undefined) ?? null;
@@ -113,6 +115,7 @@ Object.assign(globalThis, {
     return fetchHandler(init);
   },
 });
+installSharedFileMock(shared);
 
 const {
   GatewayError,

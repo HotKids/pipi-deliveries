@@ -1,24 +1,23 @@
 import { Image, Script, VStack } from "scripting";
 import { courierIconName } from "../services/carrier-presentation";
+import { ICON_TILE_SHAPE } from "./icon-tile";
 
 export function CourierIcon(props: {
   courierCode: string;
   companyName: string;
   accountOrder?: boolean;
   size: number;
-  cornerRadius?: number;
 }) {
   const icon = courierIconName(
     props.courierCode,
     props.companyName,
     props.accountOrder,
   );
-  const radius = props.cornerRadius ?? Math.max(8, Math.round(props.size * 0.24));
   return (
     <VStack
       frame={{ width: props.size, height: props.size }}
       background="tertiarySystemFill"
-      clipShape={{ type: "rect", cornerRadius: radius, style: "continuous" }}
+      clipShape={ICON_TILE_SHAPE}
     >
       {icon ? (
         <Image

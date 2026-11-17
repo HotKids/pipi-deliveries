@@ -9,6 +9,7 @@ import {
   Text,
   VStack,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "scripting";
@@ -22,6 +23,13 @@ import {
   transientToast,
 } from "../services/ui-feedback";
 import { PhoneBindingPage } from "./PhoneBindingPage";
+import { PlatformIcon, presentPlatformLogin } from "./PlatformAccountPages";
+import { SamsungAssistantPage } from "./SamsungAssistantPage";
+import {
+  accountStatus, clearPlatformLogin, onPlatformAccountsChanged, PLATFORM_NAMES, PLATFORM_SOURCES,
+  type AccountStatus, type ExpressPlatform,
+} from "../services/platform-accounts";
+import { compactTimelineTime, formatListTime } from "../services/time-presentation";
 import { existingEnhancementIdentity, EnhancementIdentityMissing } from "../services/enhanced-account";
 import { EnhancementUnbindUnavailable } from "../services/enhancement-unsubscribe";
 
@@ -38,14 +46,16 @@ export type PhoneManagerPageProps = {
   onBind: (phone: string, code: string, flowId: string, enhanced: boolean) => MaybeAsync;
   onRemove: (binding: AccountBinding, localOnly?: boolean) => MaybeAsync;
   onRefresh: () => Promise<RefreshSummary>;
+  onPlatformRefresh: (platform?: ExpressPlatform) => Promise<string>;
 };
 
 export function PhoneManagerPage(props: PhoneManagerPageProps) {
   const [localBusy, setLocalBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [enhancementNotice, setEnhancementNotice] = useState("");
-  const [bindingPresented, setBindingPresented] = useState(false);
+  const [bindingDestination, setBindingDestination] = useState<"phone" | "samsung" | undefined>(undefined);
   const [bindingTarget, setBindingTarget] = useState<AccountBinding | undefined>(undefined);
+  const [platformRevision, setPlatformRevision] = useState(0);
   const mountedRef = useRef(true);
   const actionInFlightRef = useRef(false);
   const bindingGenerationRef = useRef(0);
@@ -54,7 +64,8 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     (binding) => binding.source === SCRIPT_BINDING_SOURCE,
   );
   const busy = props.busy || localBusy;
-  const hasEnhancement = visibleBindings.some(binding => binding.enhancedMode);
+  const samsungCount = visibleBindings.filter(binding => binding.enhancedMode).length;
+  const hasEnhancement = samsungCount > 0;
   const unsubscribeNotice = !props.pendingEnhancementUnsubscribeCount ? ""
     : props.unresolvedEnhancementUnsubscribeCount
       ? "部分退订记录无法确认原订阅身份，无法自动重试；已保留待处理记录，远端退订尚未确认。"
@@ -70,8 +81,10 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   }, [props.stateRevision, hasEnhancement]);
 
   useEffect(() => {
+    const unsubscribe = onPlatformAccountsChanged(() => setPlatformRevision((value) => value + 1));
     return () => {
       mountedRef.current = false;
+      unsubscribe();
     };
   }, []);
 
@@ -127,9 +140,15 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     changeBindingPresentation(true);
   }
 
-  function changeBindingPresentation(presented: boolean) {
+  function changeBindingPresentation(presented: boolean, destination: "phone" | "samsung" = "phone") {
     bindingGenerationRef.current += 1;
-    setBindingPresented(presented);
+    setBindingDestination(presented ? destination : undefined);
+  }
+
+  function openSamsung() {
+    if (busy) return;
+    setBindingTarget(undefined);
+    changeBindingPresentation(true, "samsung");
   }
 
   async function bind(phone: string, code: string, flowId: string, enhanced: boolean) {
@@ -137,7 +156,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     await props.onBind(phone, code, flowId, enhanced);
     if (!mountedRef.current || generation !== bindingGenerationRef.current) return;
     changeBindingPresentation(false);
-    setNotice(EXPRESS_TOAST_COPY.phoneBound);
+    setNotice(enhanced ? "验证成功" : EXPRESS_TOAST_COPY.phoneBound);
   }
 
   async function remove(binding: AccountBinding) {
@@ -155,7 +174,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         if (!binding.enhancedIdentityFingerprint) {
           const choice = await Dialog.actionSheet({
             title: "解绑手机号",
-            message: "此绑定需重新验证增强模式后才能远端解绑。仅解除本机绑定无法确认远端退订，也无法自动重试。",
+            message: "此绑定需重新验证三星生活助手后才能远端解绑。仅解除本机绑定无法确认远端退订，也无法自动重试。",
             actions: [
               { label: "重新验证" },
               { label: "仅解除本机绑定", destructive: true },
@@ -185,6 +204,32 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     }, EXPRESS_TOAST_COPY.unbindFailed);
   }
 
+  async function managePlatform(platform: ExpressPlatform) {
+    await runAction(async () => {
+      const current = accountStatus(platform);
+      const name = PLATFORM_NAMES[platform];
+      if (current.state === "active") {
+        const confirmed = await Dialog.confirm({
+          title: `退出${name}账号`, message: `退出后，将停止同步该账号的快递信息。`,
+          cancelLabel: "取消", confirmLabel: "退出",
+        });
+        if (confirmed && clearPlatformLogin(platform, current.generation) && mountedRef.current) setNotice("已退出登录");
+        return;
+      }
+      if (await presentPlatformLogin(platform)) {
+        const result = await props.onPlatformRefresh(platform);
+        if (mountedRef.current) setNotice(result);
+      }
+    }, "账号操作失败，请重试。");
+  }
+
+  const platformAccounts = useMemo(() => PLATFORM_SOURCES.map((platform) => ({
+    platform, ...accountStatus(platform),
+  })), [platformRevision]);
+  const samsungState: AccountStatus["state"] = !hasEnhancement ? "offline" : enhancementNotice ? "expired" : "active";
+  const samsungSubtitle = unsubscribeNotice ? "退订待确认" :
+    samsungState === "active" ? `已验证 ${samsungCount} 个手机号` : "";
+
   return (
     <List
       navigationTitle="管理账号"
@@ -192,14 +237,23 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
       refreshable={refresh}
       toast={transientToast(notice, setNotice)}
       navigationDestination={{
-        isPresented: bindingPresented,
-        onChanged: changeBindingPresentation,
-        content: (
+        isPresented: Boolean(bindingDestination),
+        onChanged: (presented) => { if (!presented) changeBindingPresentation(false); },
+        content: bindingDestination === "samsung" ? (
+          <SamsungAssistantPage
+            key={`samsung:${bindingGenerationRef.current}`}
+            bindings={visibleBindings}
+            identityNotice={enhancementNotice}
+            unsubscribeNotice={unsubscribeNotice}
+            onSendCode={props.onSendCode}
+            onBind={props.onBind}
+          />
+        ) : (
           <PhoneBindingPage
             bindings={props.bindings}
             key={`binding:${bindingGenerationRef.current}`}
             initialPhone={bindingTarget?.phone}
-            initialEnhanced={bindingTarget?.enhancedMode}
+            purpose={bindingTarget ? "samsung" : undefined}
             onSendCode={props.onSendCode}
             onBind={bind}
           />
@@ -224,21 +278,13 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
       <Section
         header={
           <Text>
-            {`已绑定 ${visibleBindings.length}/${EXPRESS_POLICY.sources.maxBindingsPerSource}`}
+            {`手机号同步 · 已绑定 ${visibleBindings.length}/${EXPRESS_POLICY.sources.maxBindingsPerSource}`}
           </Text>
         }
         footer={
-          <VStack alignment="leading" spacing={6}>
-            <Text font={12} foregroundStyle="secondaryLabel">
-              最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号；绑定后，将自动同步关联的快递信息。增强模式不占用绑定数量。
-            </Text>
-            {enhancementNotice ? <Text font={12} foregroundStyle="systemRed">{enhancementNotice}</Text> : null}
-            {unsubscribeNotice ? (
-              <Text font={12} foregroundStyle="secondaryLabel">
-                {unsubscribeNotice}
-              </Text>
-            ) : null}
-          </VStack>
+          <Text font={12} foregroundStyle="secondaryLabel">
+            最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号；绑定后，将自动同步关联的快递信息。
+          </Text>
         }
       >
         {visibleBindings.length ? (
@@ -261,7 +307,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
             >
               <Image
                 systemName="phone.fill"
-                foregroundStyle={binding.enhancedMode ? "#0478FB" : "#FF6900"}
+                foregroundStyle="#FF6900"
               />
               <Text font={17} monospacedDigit>
                 {binding.phone}
@@ -290,6 +336,72 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
           </VStack>
         )}
       </Section>
+      <Section header={<Text>更多数据源</Text>} footer={
+        <VStack spacing={12} alignment="leading">
+          <Text font={12} foregroundStyle="secondaryLabel">
+            拼多多可单独同步快递条目。其他平台可为已绑定手机号的快递补充商品图片、商品名、运单号和取件码等信息。
+          </Text>
+          <Button title="立即同步" buttonStyle="bordered" disabled={busy ||
+            !platformAccounts.some((item) => item.state === "active")}
+            action={() => void runAction(async () => {
+              const result = await props.onPlatformRefresh();
+              if (mountedRef.current) setNotice(result);
+            }, "同步失败，请稍后重试。")} />
+        </VStack>
+      }>
+        {platformAccounts.map(({ platform, state, label, syncedAtMs }) => {
+          const subtitle = state === "offline" ? "" : [label, state === "expired" ? "请重新登录" :
+            syncedAtMs ? compactTimelineTime(formatListTime(new Date(syncedAtMs).toISOString())) : "尚未同步"]
+            .filter(Boolean).join(" · ");
+          return (
+            <PlatformAccountRow
+              key={platform}
+              platform={platform}
+              title={PLATFORM_NAMES[platform]}
+              subtitle={subtitle}
+              state={state}
+              disabled={busy}
+              onTap={() => void managePlatform(platform)}
+            />
+          );
+        })}
+        <PlatformAccountRow
+          platform="samsung"
+          title="三星生活助手"
+          subtitle={samsungSubtitle}
+          state={samsungState}
+          disabled={busy}
+          onTap={openSamsung}
+        />
+      </Section>
     </List>
+  );
+}
+
+function PlatformAccountRow({ platform, title, subtitle, state, disabled, onTap }: {
+  platform: ExpressPlatform | "samsung";
+  title: string;
+  subtitle: string;
+  state: AccountStatus["state"];
+  disabled: boolean;
+  onTap: () => void;
+}) {
+  const copy = {
+    active: { status: "已登录", subtitle: "尚未同步" },
+    expired: { status: "已失效", subtitle: "请重新登录" },
+    offline: { status: "未登录", subtitle: "尚未登录" },
+  }[state];
+  return (
+    <Button buttonStyle="plain" disabled={disabled} action={onTap}>
+      <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">
+        <PlatformIcon platform={platform} tile />
+        <VStack alignment="leading" spacing={3}>
+          <Text font={16} fontWeight="medium" foregroundStyle="label">{title}</Text>
+          <Text font={12} foregroundStyle="secondaryLabel" lineLimit={1}>{subtitle || copy.subtitle}</Text>
+        </VStack>
+        <Spacer />
+        <Text font={13} foregroundStyle="secondaryLabel">{copy.status}</Text>
+      </HStack>
+    </Button>
   );
 }

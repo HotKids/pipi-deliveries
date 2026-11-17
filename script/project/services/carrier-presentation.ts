@@ -6,6 +6,24 @@ import {
   type CarrierQueryRecord,
 } from "./carrier-query";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
+import type { ShipmentIdentity } from "../models";
+
+const SHIPMENT_SOURCE_ART: Readonly<Record<string, string>> = {
+  cainiao: "sources/cainiao",
+  jingdong: "couriers/jdshopping",
+  pdd: "platform-accounts/pinduoduo",
+  shunfeng: "sources/sfexpress",
+  kuaidi100: "sources/kuaidi100",
+};
+
+export function listedShipmentSourceArt(
+  identity: Pick<ShipmentIdentity, "sourceProvider" | "manuallyAdded">,
+  importedFromPdd: boolean,
+): string | undefined {
+  const source = importedFromPdd ? "pdd" :
+    identity.manuallyAdded ? "kuaidi100" : identity.sourceProvider?.trim().toLowerCase() || "";
+  return Object.hasOwn(SHIPMENT_SOURCE_ART, source) ? SHIPMENT_SOURCE_ART[source] : undefined;
+}
 
 function normalizeName(value: string): string {
   return String(value || "").replace(/\s+/g, "").trim();

@@ -7,11 +7,13 @@ import { runInNewContext } from "node:vm";
 import "./state-storage-mock";
 import { shouldRequestDetailProductImage } from "../services/sync";
 import { shipmentLifecycleKey } from "../services/shipment-lifecycle";
+import { accountStatus, onPlatformAccountsChanged, PLATFORM_SOURCES } from "../services/platform-accounts";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path: string) => readFileSync(join(projectRoot, path), "utf8");
 const bindingSource = read("pages/PhoneBindingPage.tsx");
 const managerSource = read("pages/PhoneManagerPage.tsx");
+const samsungSource = read("pages/SamsungAssistantPage.tsx");
 const detailSource = read("pages/DetailPage.tsx");
 const thumbnailSource = read("components/ProductThumbnail.tsx");
 const settingsSource = read("pages/SettingsPage.tsx");
@@ -32,6 +34,9 @@ function mountHandlers(source: string, name: string, props: any, exports: string
     setTimeout: () => 1,
     clearTimeout: () => {},
     SCRIPT_BINDING_SOURCE: "interface5",
+    accountStatus,
+    onPlatformAccountsChanged,
+    PLATFORM_SOURCES,
     EXPRESS_POLICY: { sources: { maxBindingsPerSource: 5 } },
     EXPRESS_TOAST_COPY: { codeSent: "sent", codeSendFailed: "send failed", bindFailed: "bind failed" },
     createDiagnosticFlowId: () => "synthetic-flow",
@@ -48,6 +53,10 @@ function mountHandlers(source: string, name: string, props: any, exports: string
     useRef(initial: any) {
       const at = index++;
       return hookValues[at] ??= { current: initial };
+    },
+    useMemo(factory: () => unknown) {
+      index++;
+      return factory();
     },
     useEffect(effect: () => (() => void) | undefined, deps: any[]) {
       const at = index++;
@@ -83,39 +92,51 @@ const bindings = Array.from({ length: 5 }, (_, index) => ({
 }));
 const sent: any[][] = [];
 const bound: any[][] = [];
-const binding = mountHandlers(handlers, "PhoneBindingPage", {
+const formProps = {
   bindings,
   onSendCode: async (...args: any[]) => { sent.push(args); },
   onBind: async (...args: any[]) => { bound.push(args); },
-}, "phone, code, enhanced, verificationPhone, canBind, validationNotice, remainingSeconds, changePhone, changeCode, changeEnhanced, sendCode, bindPhone, setNowMs");
+};
+const formState = "phone, code, enhanced, verificationPhone, canBind, validationNotice, remainingSeconds, changePhone, changeCode, sendCode, bindPhone, setNowMs, submitTitle";
+const binding = mountHandlers(handlers, "PhoneBindingPage", formProps, formState);
+assert.equal(binding.render().submitTitle, "绑定");
 binding.render().changePhone("13900000000");
 assert.equal(binding.render().canBind, false);
 await binding.render().sendCode();
 assert.equal(sent.length, 0, "a sixth basic phone cannot send a binding code");
-binding.render().changeEnhanced(true);
-assert.equal(binding.render().validationNotice, "请先完成该手机号的基础绑定，再开启增强模式");
-await binding.render().sendCode();
+
+const unboundSamsung = mountHandlers(handlers, "PhoneBindingPage", {
+  ...formProps, purpose: "samsung", initialPhone: "13900000000",
+}, formState);
+assert.equal(unboundSamsung.render().validationNotice, "请先在手机号同步中绑定该手机号");
+await unboundSamsung.render().sendCode();
 assert.equal(sent.length, 0, "enhancement requires this exact phone's basic binding");
-binding.render().changePhone(basePhone);
-await binding.render().sendCode();
+unboundSamsung.unmount();
+
+const samsung = mountHandlers(handlers, "PhoneBindingPage", { ...formProps, purpose: "samsung", initialPhone: basePhone }, formState);
+assert.equal(samsung.render().submitTitle, "验证");
+samsung.render().changePhone(bindings[1].phone);
+assert.equal(samsung.render().phone, basePhone, "the form keeps the selected base phone");
+await samsung.render().sendCode();
 assert.equal(sent[0][0], basePhone);
 assert.equal(sent[0][2], true, "five basic bindings must still allow enhancement");
-binding.render().changeCode("123456789");
-assert.equal(binding.render().code, "12345678");
-assert.equal(binding.render().canBind, true);
-await binding.render().bindPhone();
+samsung.render().changeCode("123456789");
+assert.equal(samsung.render().code, "12345678");
+assert.equal(samsung.render().canBind, true);
+await samsung.render().bindPhone();
 assert.equal(bound[0][1], "12345678");
 assert.equal(bound[0][3], true);
-binding.render().changeEnhanced(false);
+assert.ok(samsung.render().remainingSeconds > 0, "a Samsung request keeps the resend cooldown");
+await samsung.render().sendCode();
+assert.equal(sent.length, 1, "Samsung verification cannot resend during the cooldown");
+samsung.unmount();
+
+binding.render().changePhone(basePhone);
 assert.equal(binding.render().code, "");
 assert.equal(binding.render().verificationPhone, "");
-assert.ok(binding.render().remainingSeconds > 0, "changing mode preserves the SMS cooldown");
-await binding.render().sendCode();
-assert.equal(sent.length, 1, "mode switching cannot resend during the cooldown");
 binding.render().changeCode("12345678");
 assert.equal(binding.render().code, "123456");
 assert.equal(binding.render().canBind, false, "an enhanced code cannot authorize basic binding");
-binding.render().setNowMs(Date.now() + 61_000);
 await binding.render().sendCode();
 assert.equal(sent[1][2], false);
 binding.render().changeCode("1234");
@@ -137,36 +158,56 @@ await pendingSend;
 assert.equal(late.render().verificationPhone, "", "a dismissed page cannot accept a late SMS result");
 
 const managerBindings: Array<{ finish: () => void }> = [];
-let managerHandlers = managerSource.slice(
+const managerHandlers = managerSource.slice(
   managerSource.indexOf("export function PhoneManagerPage("),
   managerSource.indexOf("  return (\n    <List"),
 );
-const inlineBind = managerSource.match(/onBind=\{(async \([\s\S]*?\n            \})\}/)?.[1];
-if (inlineBind) {
-  managerHandlers += `const bind = ${inlineBind};\nconst changeBindingPresentation = setBindingPresented;\n`;
-}
 const manager = mountHandlers(managerHandlers, "PhoneManagerPage", {
   bindings,
   stateRevision: 1,
   busy: false,
   onBind: () => new Promise<void>((finish) => { managerBindings.push({ finish }); }),
-}, "add, changeBindingPresentation, bind, bindingPresented, notice", {
+}, "add, openSamsung, changeBindingPresentation, bind, bindingDestination, notice, samsungState", {
   EXPRESS_TOAST_COPY: { phoneBound: "bound" },
 });
+assert.equal(manager.render().samsungState, "offline");
 manager.render().add();
-const previousBind = manager.render().bind(basePhone, "12345678", "previous-flow", true);
+assert.equal(manager.render().bindingDestination, "phone");
+const previousBind = manager.render().bind(basePhone, "123456", "previous-flow", false);
 manager.render().changeBindingPresentation(false);
-manager.render().add();
+manager.render().openSamsung();
 managerBindings[0].finish();
 await previousBind;
-assert.equal(manager.render().bindingPresented, true, "a previous enhancement cannot close a newly opened form");
-assert.equal(manager.render().notice, "", "a previous enhancement cannot show success on the new form");
-const currentBind = manager.render().bind(basePhone, "12345678", "current-flow", true);
+assert.equal(manager.render().bindingDestination, "samsung", "a previous binding cannot close the Samsung page");
+assert.equal(manager.render().notice, "", "a previous binding cannot show success on the new page");
+manager.render().changeBindingPresentation(false);
+manager.render().add();
+const currentBind = manager.render().bind(basePhone, "123456", "current-flow", false);
 managerBindings[1].finish();
 await currentBind;
-assert.equal(manager.render().bindingPresented, false, "the current form closes after successful binding");
+assert.equal(manager.render().bindingDestination, undefined, "the current form closes after successful binding");
 assert.equal(manager.render().notice, "bound");
 manager.unmount();
+
+const samsungPageHandlers = samsungSource.slice(samsungSource.indexOf("export function SamsungAssistantPage("),
+  samsungSource.indexOf("  return (\n    <List"));
+let finishVerification!: () => void;
+const samsungPage = mountHandlers(samsungPageHandlers, "SamsungAssistantPage", {
+  onBind: () => new Promise<void>((finish) => { finishVerification = finish; }),
+}, "selectPhone, verifyPhone, selectedPhone, notice");
+samsungPage.render().selectPhone(basePhone);
+const oldVerification = samsungPage.render().verifyPhone(basePhone, "12345678", "old-flow", true);
+samsungPage.render().selectPhone(bindings[1].phone);
+finishVerification();
+await oldVerification;
+assert.equal(samsungPage.render().selectedPhone, bindings[1].phone);
+assert.equal(samsungPage.render().notice, "");
+const currentVerification = samsungPage.render().verifyPhone(bindings[1].phone, "12345678", "current-flow", true);
+finishVerification();
+await currentVerification;
+assert.equal(samsungPage.render().selectedPhone, "");
+assert.equal(samsungPage.render().notice, "验证成功");
+samsungPage.unmount();
 
 for (const [pending, unresolved, expected] of [
   [0, 0, ""],
@@ -294,15 +335,16 @@ imageRequests[3].finish({ syntheticImage: 3 });
 await Promise.resolve();
 assert.equal(thumbnail.render().image, null, "a dismissed detail ignores a late product image");
 
-assert.ok(bindingSource.indexOf('prompt="请输入验证码"') < bindingSource.indexOf('title="增强模式"'));
+assert.match(bindingSource, /prompt="请输入验证码"/);
 assert.match(managerSource, /<PhoneBindingPage\s+bindings=\{props\.bindings\}/);
-assert.match(managerSource, /foregroundStyle=\{binding\.enhancedMode \? "#0478FB" : "#FF6900"\}/);
-assert.ok(managerSource.includes("增强模式不占用绑定数量。"));
+assert.match(managerSource, /systemName="phone.fill"\s+foregroundStyle="#FF6900"/);
+assert.doesNotMatch(bindingSource, /<Toggle|initialEnhanced/);
+assert.match(managerSource, /更多数据源[\s\S]*platform="samsung"[\s\S]*title="三星生活助手"/);
 assert.doesNotMatch(managerSource, /disabled=\{\s*busy \|\|\s*visibleBindings\.length/);
-assert.match(detailSource, /<ProductThumbnail[\s\S]*?size=\{72\}[\s\S]*?cornerRadius=\{17\}[\s\S]*?imageURL=\{shipment\.identity\.productImageURL\}/);
+assert.match(detailSource, /<ProductThumbnail[\s\S]*?size=\{72\}[\s\S]*?imageURL=\{shipment\.identity\.productImageURL\}/);
 assert.match(detailSource, /requestProductImage: false/);
 assert.match(detailSource, /trigger: "product_image", requestProductImage: true, signal: controller\.signal/);
-assert.match(thumbnailSource, /cornerRadius: props\.size \* 0\.25/);
+assert.match(thumbnailSource, /clipShape=\{ICON_TILE_SHAPE\}/);
 assert.doesNotMatch(thumbnailSource, /imageUrl=|UIImage\.fromURL/);
 
 class SyntheticUnbindUnavailable extends Error {}
@@ -320,7 +362,7 @@ for (const acceptLocalRemoval of [false, true]) {
       removeCalls.push(Boolean(localOnly));
       if (!localOnly) throw new SyntheticUnbindUnavailable("synthetic upstream unavailable");
     },
-  }, "remove, notice, enhancementNotice", {
+  }, "remove, notice, enhancementNotice, samsungState", {
     EXPRESS_TOAST_COPY: { phoneUnbound: "unbound", unbindFailed: "failed" },
     EnhancementUnbindUnavailable: SyntheticUnbindUnavailable,
     EnhancementIdentityMissing: SyntheticIdentityMissing,
@@ -338,6 +380,7 @@ for (const acceptLocalRemoval of [false, true]) {
   removal.render();
   assert.equal(removal.render().enhancementNotice, "synthetic identity requires verification",
     "an enhanced binding without its original identity visibly requires re-verification");
+  assert.equal(removal.render().samsungState, "expired");
   await removal.render().remove(enhancedBinding);
   assert.deepEqual(removeCalls, acceptLocalRemoval ? [false, true] : [false],
     "local removal requires the second explicit confirmation after remote failure");
@@ -354,7 +397,7 @@ for (const choice of [null, 0, 1] as const) {
       removeCalls.push(Boolean(localOnly));
       if (!localOnly) throw new SyntheticUnbindUnavailable("original subscription identity is unknown");
     },
-  }, "remove, add, bindingPresented, bindingTarget: typeof bindingTarget === 'undefined' ? undefined : bindingTarget, notice", {
+  }, "remove, add, bindingDestination, bindingTarget, notice", {
     EXPRESS_TOAST_COPY: { phoneUnbound: "unbound", unbindFailed: "failed" },
     EnhancementUnbindUnavailable: SyntheticUnbindUnavailable,
     existingEnhancementIdentity: () => ({ syntheticIdentity: true }),
@@ -377,7 +420,7 @@ for (const choice of [null, 0, 1] as const) {
   await legacy.render().remove(legacyBinding);
   assert.equal(recoveryChoices, 1, "legacy removal must offer re-verification before local-only confirmation");
   assert.deepEqual(removeCalls, choice === 1 ? [false, true] : [false]);
-  assert.equal(legacy.render().bindingPresented, choice === 0);
+  assert.equal(legacy.render().bindingDestination, choice === 0 ? "phone" : undefined);
   assert.equal(legacy.render().bindingTarget?.phone, choice === 0 ? basePhone : undefined);
   assert.equal(legacy.render().notice, choice === 1 ? "unbound" : "");
   if (choice === 0) {
@@ -389,7 +432,7 @@ for (const choice of [null, 0, 1] as const) {
 
 const prefilledRequests: any[][] = [];
 const prefilled = mountHandlers(handlers, "PhoneBindingPage", {
-  bindings, initialPhone: basePhone, initialEnhanced: true,
+  bindings, initialPhone: basePhone, purpose: "samsung",
   onSendCode: async (...args: any[]) => { prefilledRequests.push(args); },
   onBind: async () => {},
 }, "phone, enhanced, sendCode");
@@ -400,16 +443,17 @@ assert.equal(prefilledRequests[0][0], basePhone);
 assert.equal(prefilledRequests[0][2], true, "the prefilled form must use the existing enhancement verification path");
 prefilled.unmount();
 assert.match(managerSource, /initialPhone=\{bindingTarget\?\.phone\}/);
-assert.match(managerSource, /initialEnhanced=\{bindingTarget\?\.enhancedMode\}/);
+assert.match(managerSource, /purpose=\{bindingTarget \? "samsung" : undefined\}/);
 
 const identityAvailable = mountHandlers(managerHandlers, "PhoneManagerPage", {
   bindings: [enhancedBinding], stateRevision: 1, busy: false,
-}, "enhancementNotice", {
+}, "enhancementNotice, samsungState", {
   EnhancementIdentityMissing: SyntheticIdentityMissing,
   existingEnhancementIdentity: () => ({ syntheticIdentity: true }),
 });
 identityAvailable.render();
 assert.equal(identityAvailable.render().enhancementNotice, "", "a valid original identity does not show a recovery warning");
+assert.equal(identityAvailable.render().samsungState, "active");
 assert.match(managerSource, /远端退订尚未确认，已保留待处理记录/);
 
 console.log("enhanced mode UI handler tests passed");

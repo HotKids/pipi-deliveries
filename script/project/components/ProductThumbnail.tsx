@@ -6,6 +6,7 @@ import type { Shipment } from "../models";
 import { shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { sharedData, withSharedFileTransaction } from "../services/shared-file-transaction";
 import { CourierIcon } from "./CourierIcon";
+import { ICON_TILE_SHAPE } from "./icon-tile";
 
 export function ProductThumbnail(props: {
   shipment: Shipment;
@@ -15,7 +16,6 @@ export function ProductThumbnail(props: {
   companyName: string;
   accountOrder?: boolean;
   size: number;
-  cornerRadius?: number;
 }) {
   const imageURL = props.imageURL || "";
   const cacheKey = props.cacheKey;
@@ -72,7 +72,6 @@ export function ProductThumbnail(props: {
         companyName={props.companyName}
         accountOrder={props.accountOrder}
         size={props.size}
-        cornerRadius={props.cornerRadius}
       />
     );
   }
@@ -81,7 +80,7 @@ export function ProductThumbnail(props: {
     <VStack
       frame={{ width: props.size, height: props.size }}
       background="tertiarySystemFill"
-      clipShape={{ type: "rect", cornerRadius: props.size * 0.25, style: "continuous" }}
+      clipShape={ICON_TILE_SHAPE}
     >
       <Image
         image={image}

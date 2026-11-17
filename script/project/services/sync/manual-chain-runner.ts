@@ -15,6 +15,8 @@ import { alignmentAttemptDue, alignmentOwnerCurrent, alignmentTimesKey, reserveA
 import { assertWithinDeadline, deadlineAfter, deadlineExpired } from "../deadline";
 import { accountChildDeadline, oldestBatchIndices } from "../account-sync-policy";
 import { prepareManualPreview } from "../manual-preview";
+import { applyRecognizedPickup } from "../parcel-pickup";
+import type { ParcelLookup } from "../parcel-code-ocr";
 import { createDiagnosticFlowId, diagnosticErrorDetails, openStageCancellationEnd, writeDiagnostic } from "../logger";
 import { requireScriptSource } from "../script-source";
 import { CarrierRecognitionBudget } from "../carrier-recognition";
@@ -503,6 +505,7 @@ export async function queryManualShipmentPreview(input: {
 export function commitManualShipmentPreview(
   preview: ManualShipmentPreview,
   now = Date.now(),
+  lookup?: ParcelLookup,
 ): AppState {
   // Only the owner reducer is retryable. Route publication and widget reload run once,
   // after its business state and provider packages have been accepted together.
@@ -592,7 +595,8 @@ export function commitManualShipmentPreview(
 
     if (!preview.shipment) return state;
     const requested = preview.shipment;
-    const merged = applyManualShipment(current, requested, now);
+    const manual = applyManualShipment(current, requested, now);
+    const merged = lookup ? applyRecognizedPickup(manual, lookup) : manual;
     const existingRoute = current?.route && Boolean(
       loadShipmentRoute(
         current.identity.id,
