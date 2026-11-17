@@ -104,6 +104,23 @@ test("ETA keeps the first observation and disappears after the expected day or p
   assert.equal(displayedPlatformFields({ ...repeated, timeline: shipment().timeline }, NOW).estimate, "");
 });
 
+test("cloud metadata fills same-parcel gaps with its original observation and preserves manual titles", () => {
+  const moving = shipment({ timeline: { ...shipment().timeline, semantic: "TRANSIT" } });
+  const metadata = { waybill, productName: "示例云商品", anchorAt: NOW - 3_600_000,
+    deliveryEstimate: "预计明天送达", deliveryEstimateObservedAt: NOW - 86_400_000 };
+  assert.deepEqual(displayedPlatformFields(moving, NOW, metadata), {
+    title: "示例云商品", estimate: "预计9月8日送达",
+  });
+  const manual = { ...moving, platformFields: {
+    waybill, waybillGeneration: 0, manualTitle: "示例手动名称",
+  } };
+  assert.equal(displayedPlatformFields(manual, NOW, metadata).title, "示例手动名称");
+  assert.equal(displayedPlatformFields(moving, NOW, { ...metadata, waybill: "MISMATCH123" }).title ?? "", "");
+  assert.equal(displayedPlatformFields(moving, NOW, { ...metadata, anchorAt: NOW - 4 * 86_400_000,
+    terminalAt: NOW - 3 * 86_400_000 }).title ?? "", "");
+  assert.equal(displayedPlatformFields(shipment(), NOW, metadata).estimate, "");
+});
+
 test("only same-order uniquely verified waybill reaches a waiting Cainiao order", () => {
   const base = shipment();
   const orderOwner = shipment({

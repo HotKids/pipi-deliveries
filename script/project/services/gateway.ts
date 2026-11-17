@@ -39,6 +39,8 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const SAFE_GATEWAY_ERROR_CODES = new Set([
   "attestation_rejected",
   "body_too_large",
+  "cloud_metadata_not_granted",
+  "cloud_sync_disabled",
   "delegation_unavailable",
   "detail_route_not_reconstructable",
   "expired_request",

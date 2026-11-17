@@ -401,3 +401,7 @@ export function gatewayCredentialStatus(): GatewayCredentialStatus {
   observeCredential(resolution);
   return resolution.status;
 }
+
+export function gatewayCredentialGeneration(): number | null {
+  return gatewayCredentialStatus() === "configured" ? observationGeneration : null;
+}
