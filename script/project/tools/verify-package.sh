@@ -84,6 +84,7 @@ for required in \
   assets/platform-accounts/taobao.png \
   components/EmptyDeliveryVehicle.tsx \
   components/PickupTabCard.tsx \
+  components/SettingsRowIcon.tsx \
   components/ShipmentRow.tsx \
   pages/HomePage.tsx \
   pages/PickupPage.tsx \

@@ -1,3 +1,4 @@
+import type { AbortSignal } from "scripting";
 import { RefreshInvalidatedError } from "./refresh-coordination";
 import type { AppState, BindingSource } from "../models";
 import { SCRIPT_BINDING_SOURCE } from "./script-source";

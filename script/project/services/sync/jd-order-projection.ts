@@ -1,4 +1,5 @@
 /** JingDong union-page order projection, per-order cooldowns, held-carrier release, and Home stored-row pass. */
+import type { AbortSignal } from "scripting";
 import type { AccountBinding, AppState, BindingSource, Shipment, StatusSemantic, TimelinePackage } from "../../models";
 import { accountParcelStructuredSemantic, accountParcelWithExistingProjection, normalizeAccountParcelCarrierBestEffort, parcelToShipment, storedAccountListStructuredSemantic } from "../account-sync";
 import type { AccountParcelDto } from "../account-parser";

@@ -1,4 +1,5 @@
 /** Account list synchronization, parcel owner merging, and phone binding operations. */
+import type { AbortSignal } from "scripting";
 import type { AccountBinding, AppState, BindingSource, Shipment } from "../../models";
 import { accountParcelWithExistingProjection, fetchAccountParcels, parcelToShipment, applyEnhancementMetadata, withListStructuredSemantic, verifyAccountBinding } from "../account-sync";
 import type { AccountParcelDto } from "../account-parser";

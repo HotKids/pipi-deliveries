@@ -8,6 +8,7 @@
  * - **跨端对等文件**：Pipi `ExpressPoller.java` / `ExpressRepository.java`、
  *   Lite `ExpressSyncManager.java` / `ExpressRepository.java`、Bot `pipi-bot/bot.py`。
  */
+import type { AbortSignal } from "scripting";
 import type { AppState, BindingSource, RefreshSummary } from "../models";
 import { replayPendingShipmentNotifications } from "./notifications";
 import { replayEnhancementUnsubscribes } from "./enhancement-unsubscribe";

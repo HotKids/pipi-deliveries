@@ -1,5 +1,5 @@
 import { TIMELINE_SLOT } from "./timeline-slot";
-import { fetch } from "scripting";
+import { fetch, type AbortSignal } from "scripting";
 import type { TimelinePackage } from "../models";
 import {
   assertWithinDeadline,

@@ -1,4 +1,4 @@
-import { fetch } from "scripting";
+import { fetch, type AbortSignal } from "scripting";
 import { GATEWAY_ORIGIN, SCRIPT_BUILD_TRACK, SCRIPTING_GATEWAY_PROTOCOL_VERSION } from "./build-track";
 import {
   gatewayCredentialStatus,

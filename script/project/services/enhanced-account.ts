@@ -1,3 +1,4 @@
+import type { AbortSignal } from "scripting";
 import { normalizedProductImageMetadataURL } from "./product-image-url";
 import type { AccountBinding } from "../models";
 import type { AccountParcelDto } from "./account-parser";

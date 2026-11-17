@@ -1,4 +1,5 @@
 /** Targeted per-shipment detail refresh flow, JD H5 reopen, Cainiao H5 fallback, and manual contest runner. */
+import type { AbortSignal } from "scripting";
 import { sharedData, withSharedFileTransaction } from "../shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "../timeline-slot";
 import type { AppState, Shipment } from "../../models";

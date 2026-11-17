@@ -1,4 +1,5 @@
 /** Manual & Online/Moto/KDNiao refresh tasks, SF background alignment, and manual preview submission/continuation. */
+import type { AbortSignal } from "scripting";
 import { withSharedFileTransaction } from "../shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "../timeline-slot";
 import type { AppState, BindingSource, PendingManualQuery, RefreshSummary, Shipment } from "../../models";

@@ -1,3 +1,4 @@
+import type { AbortSignal } from "scripting";
 import type { Kuaidi100CarrierCandidate } from "./kuaidi100-carrier-detection";
 import { detectKuaidi100CarrierCandidates } from "./kuaidi100-carrier-detection";
 import {

@@ -1,3 +1,4 @@
+import { AbortController, type AbortSignal } from "scripting";
 import type { Shipment } from "../models";
 import {
   compareManualTimelineAuthority,

@@ -1,4 +1,4 @@
-import { fetch } from "scripting";
+import { fetch, type AbortSignal } from "scripting";
 import {
   linkedTimeoutSignal,
   OperationTimeoutError,

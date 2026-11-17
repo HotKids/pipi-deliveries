@@ -1,3 +1,4 @@
+import type { AbortSignal } from "scripting";
 import { TIMELINE_SLOT } from "./timeline-slot";
 import type { TimelinePackage, TrackNode } from "../models";
 import {

@@ -1,4 +1,5 @@
 /** Cainiao v5 background trajectory supplement, shared account-detail requests, and detail-entry queries. */
+import type { AbortSignal } from "scripting";
 import type { AccountBinding, AppState, BindingSource, RefreshSummary, Shipment, StatusSemantic } from "../../models";
 import { parcelToShipment, prepareAccountParcelCarrier, refreshAccountParcel } from "../account-sync";
 import type { AccountParcelDto } from "../account-parser";
