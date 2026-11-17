@@ -14,9 +14,8 @@ import {
   useEffect,
   useRef,
   useState,
-  type Color,
 } from "scripting";
-import { ICON_TILE_SHAPE } from "../components/icon-tile";
+import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon";
 import type { AppState } from "../models";
 import { sendAccountCode } from "../services/account-sync";
 import { SCRIPT_VERSION } from "../services/build-track";
@@ -55,9 +54,9 @@ import { notificationEnabledCount } from "../services/notification-preferences";
 import { reconcileFengchaoReminders } from "../services/fengchao-reminders";
 import { transientToast } from "../services/ui-feedback";
 import { platformRefreshMessage, refreshPlatformParcels } from "../services/platform-parcel-sync";
+import { accountStatus, onPlatformAccountsChanged, PLATFORM_SOURCES } from "../services/platform-accounts";
 
 const PROJECT_URL = "https://github.com/HotKids/pipi-deliveries";
-const SETTINGS_ORANGE = "#F0A03C";
 const SETTINGS_BLUE = "#2F7BF6";
 const SETTINGS_GRAY = "#8E8E93";
 
@@ -86,16 +85,6 @@ function authorizationLabel(state: AuthorizationState): string {
   if (state === "authorized") return "已授权";
   if (state === "unavailable") return "不可用";
   return "未授权";
-}
-
-function SettingsRowIcon(props: { systemName: string; backgroundColor: Color }) {
-  return (
-    <VStack frame={{ width: 30, height: 30 }}
-      background={{ style: props.backgroundColor, shape: ICON_TILE_SHAPE }}>
-      <Image systemName={props.systemName} font={16}
-        symbolRenderingMode="monochrome" foregroundStyle="white" />
-    </VStack>
-  );
 }
 
 function SettingsAccessoryIcon(props: { systemName: string }) {
@@ -128,6 +117,7 @@ export function SettingsPage(props: {
   const [destination, setDestination] =
     useState<"" | "phones" | "notifications" | "diagnostics" | "privacy" | "shortcuts" | "activity">("");
   const [managerNotice, setManagerNotice] = useState("");
+  const [platformCount, setPlatformCount] = useState(0);
   const [diagnosticCount, setDiagnosticCount] = useState(0);
   const diagnosticCountTimer = useRef<number | undefined>(undefined);
 
@@ -145,6 +135,20 @@ export function SettingsPage(props: {
   }
 
   useEffect(() => cancelDiagnosticCount, []);
+  useEffect(() => {
+    const refreshPlatformCount = () => {
+      setPlatformCount(PLATFORM_SOURCES.filter((platform) => {
+        try {
+          return accountStatus(platform).state === "active";
+        } catch {
+          writeDiagnostic("settings.platform_count.unavailable", { platform }, "warning");
+          return false;
+        }
+      }).length);
+    };
+    refreshPlatformCount();
+    return onPlatformAccountsChanged(refreshPlatformCount);
+  }, []);
   const [enabledNotificationCount, setEnabledNotificationCount] = useState(
     () => notificationEnabledCount(true),
   );
@@ -282,6 +286,7 @@ export function SettingsPage(props: {
   const boundPhoneCount = props.state.bindings.filter(
     (binding) => binding.source === SCRIPT_BINDING_SOURCE,
   ).length;
+  const boundAccountCount = boundPhoneCount + platformCount;
 
   return (
     <NavigationStack>
@@ -381,7 +386,7 @@ export function SettingsPage(props: {
               <Text>管理账号</Text>
               <Spacer />
               <Text foregroundStyle="secondaryLabel" monospacedDigit>
-                {boundPhoneCount ? `已绑定 ${boundPhoneCount}` : "未绑定"}
+                {boundAccountCount ? `已绑定 ${boundAccountCount}` : "未绑定"}
               </Text>
               <SettingsAccessoryIcon systemName="chevron.right" />
             </HStack>
@@ -412,55 +417,33 @@ export function SettingsPage(props: {
           </Button>
         </Section>
 
-        <Section
-          header={<Text>授权</Text>}
-          footer={
-            <VStack alignment="leading" spacing={4}>
-              {authorizationNotice ? (
-                <Text font={12} foregroundStyle="systemRed">
-                  {authorizationNotice}
-                </Text>
-              ) : null}
-              <Text font={12} fontWeight="semibold" foregroundStyle="label">
-                Access Key 用于同步你的快递信息，请妥善保存，不要分享。
-              </Text>
-            </VStack>
-          }
-        >
-          <HStack spacing={12} frame={{ minHeight: 44 }}>
-            <SettingsRowIcon systemName="key" backgroundColor={SETTINGS_ORANGE} />
-            <SecureField
-              title="Access Key"
-              value={token}
-              onChanged={(value) => {
-                setToken(value);
-                setNotice("");
-                setAuthorizationNotice("");
-              }}
-              prompt={authorizationPrompt(authorization)}
-              frame={{ maxWidth: "infinity" }}
-            />
-            {token.trim() ? (
-              <Button
-                title={configured ? "更新" : "保存"}
-                action={saveToken}
-                buttonStyle="plain"
-              />
-            ) : configured ? (
-              <Button
-                action={manageConfiguredToken}
-                buttonStyle="plain"
-              >
-                <Text foregroundStyle="secondaryLabel" monospacedDigit>
-                  {authorizationLabel(authorization)}
-                </Text>
-              </Button>
-            ) : (
-              <Text foregroundStyle="secondaryLabel" monospacedDigit>
-                {authorizationLabel(authorization)}
-              </Text>
-            )}
-          </HStack>
+        <Section header={<Text>更多</Text>}>
+          <Button buttonStyle="plain" action={() => setDestination("shortcuts")}>
+            <HStack
+              spacing={12}
+              padding={{ vertical: 5 }}
+              frame={{ minHeight: 44, maxWidth: "infinity" }}
+              contentShape="rect"
+            >
+              <SettingsRowIcon systemName="square.on.square" backgroundColor={SETTINGS_ORANGE} />
+              <Text>快捷指令</Text>
+              <Spacer />
+              <SettingsAccessoryIcon systemName="chevron.right" />
+            </HStack>
+          </Button>
+          <Button buttonStyle="plain" action={() => setDestination("activity")}>
+            <HStack
+              spacing={12}
+              padding={{ vertical: 5 }}
+              frame={{ minHeight: 44, maxWidth: "infinity" }}
+              contentShape="rect"
+            >
+              <SettingsRowIcon systemName="rectangle.inset.filled.badge.record" backgroundColor={SETTINGS_BLUE} />
+              <Text>实时活动</Text>
+              <Spacer />
+              <SettingsAccessoryIcon systemName="chevron.right" />
+            </HStack>
+          </Button>
         </Section>
 
         <Section header={<Text>支持</Text>}>
@@ -503,33 +486,55 @@ export function SettingsPage(props: {
           </Button>
         </Section>
 
-        <Section header={<Text>更多</Text>}>
-          <Button buttonStyle="plain" action={() => setDestination("shortcuts")}>
-            <HStack
-              spacing={12}
-              padding={{ vertical: 5 }}
-              frame={{ minHeight: 44, maxWidth: "infinity" }}
-              contentShape="rect"
-            >
-              <SettingsRowIcon systemName="square.on.square" backgroundColor={SETTINGS_ORANGE} />
-              <Text>快捷指令</Text>
-              <Spacer />
-              <SettingsAccessoryIcon systemName="chevron.right" />
-            </HStack>
-          </Button>
-          <Button buttonStyle="plain" action={() => setDestination("activity")}>
-            <HStack
-              spacing={12}
-              padding={{ vertical: 5 }}
-              frame={{ minHeight: 44, maxWidth: "infinity" }}
-              contentShape="rect"
-            >
-              <SettingsRowIcon systemName="rectangle.inset.filled.badge.record" backgroundColor={SETTINGS_BLUE} />
-              <Text>实时活动</Text>
-              <Spacer />
-              <SettingsAccessoryIcon systemName="chevron.right" />
-            </HStack>
-          </Button>
+        <Section
+          header={<Text>授权</Text>}
+          footer={
+            <VStack alignment="leading" spacing={4}>
+              {authorizationNotice ? (
+                <Text font={12} foregroundStyle="systemRed">
+                  {authorizationNotice}
+                </Text>
+              ) : null}
+              <Text font={12} fontWeight="semibold" foregroundStyle="label">
+                Access Key 用于激活脚本并同步你的快递信息。请妥善保存，不要分享。
+              </Text>
+            </VStack>
+          }
+        >
+          <HStack spacing={12} frame={{ minHeight: 44 }}>
+            <SettingsRowIcon systemName="key" backgroundColor={SETTINGS_ORANGE} />
+            <SecureField
+              title="Access Key"
+              value={token}
+              onChanged={(value) => {
+                setToken(value);
+                setNotice("");
+                setAuthorizationNotice("");
+              }}
+              prompt={authorizationPrompt(authorization)}
+              frame={{ maxWidth: "infinity" }}
+            />
+            {token.trim() ? (
+              <Button
+                title={configured ? "更新" : "保存"}
+                action={saveToken}
+                buttonStyle="plain"
+              />
+            ) : configured ? (
+              <Button
+                action={manageConfiguredToken}
+                buttonStyle="plain"
+              >
+                <Text foregroundStyle="secondaryLabel" monospacedDigit>
+                  {authorizationLabel(authorization)}
+                </Text>
+              </Button>
+            ) : (
+              <Text foregroundStyle="secondaryLabel" monospacedDigit>
+                {authorizationLabel(authorization)}
+              </Text>
+            )}
+          </HStack>
         </Section>
 
         <Section header={<Text>关于</Text>}>

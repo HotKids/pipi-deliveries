@@ -22,6 +22,11 @@ assert.match(
 );
 assert.match(
   source,
+  /textContentType="oneTimeCode"[\s\S]*?<\/HStack>\s*\{cabinet \? null : <Divider \/>\}\s*<HStack/,
+  "the regular verification row must retain its divider above the submit capsule",
+);
+assert.match(
+  source,
   /<HStack[\s\S]*?frame=\{\{ maxWidth: "infinity", alignment: "center" \}\}[\s\S]*?<Button[\s\S]*?action=\{bindPhone\}[\s\S]*?disabled=\{!canBind\}[\s\S]*?buttonStyle="borderedProminent"[\s\S]*?buttonBorderShape="capsule"[\s\S]*?<Text[\s\S]*?frame=\{\{ minWidth: 220, minHeight: 44 \}\}[\s\S]*?>[\s\S]*?\{submitTitle\}[\s\S]*?<\/Text>[\s\S]*?<\/Button>[\s\S]*?<\/HStack>/,
   "the primary capsule must use a stable wide label inside a full-width centered row, including while disabled",
 );
@@ -32,7 +37,7 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
-  /隐私声明：绑定的手机号仅用于查询快递，不作其他用途。/,
+  /绑定的手机号仅用于查询和同步快递。/,
 );
 assert.doesNotMatch(source, /手机号仅用于验证并查询关联快递/);
 

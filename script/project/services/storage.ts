@@ -3695,6 +3695,32 @@ export function setShipmentNote(expected: Shipment, note: string, now = Date.now
   });
 }
 
+export function setShipmentProductName(expected: Shipment, name: string, now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    const current = state.shipments.find((item) => item.identity.id === expected.identity.id);
+    if (!current || shipmentLifecycleKey(current) !== shipmentLifecycleKey(expected)) {
+      throw new ShipmentLifecycleChangedError();
+    }
+    const waybill = unprojectedAccountOrder(current) ? "" : displayWaybill(current);
+    const waybillGeneration = current.waybillReuseAtMs ?? 0;
+    const previous = current.platformFields;
+    const fields = previous?.waybill === waybill && previous.waybillGeneration === waybillGeneration
+      ? previous : undefined;
+    const title = name.trim().slice(0, 512);
+    if (title === (fields?.manualTitle || "")) return state;
+    const platformFields = {
+      ...fields, waybill, waybillGeneration, manualTitle: title || undefined,
+      manualTitleEditedAtMs: Math.max(now, (fields?.manualTitleEditedAtMs ?? 0) + 1),
+    };
+    const updated = { ...current, platformFields, updatedAtMs: Math.max(now, current.updatedAtMs + 1) };
+    return saveState({
+      ...state,
+      shipments: state.shipments.map((item) => item === current ? updated : item),
+    }, now, {}, state);
+  });
+}
+
 const DETAIL_SELECTION_STATE_CACHE_MAX = 256;
 const verifiedDetailSelectionStateRefs = new Map<string, string>();
 

@@ -1,7 +1,7 @@
 import {
   Button, HStack, Image, Navigation, NavigationStack, Script, Text, VStack, WebView, useEffect, useRef, useState,
 } from "scripting";
-import { ICON_TILE_SHAPE } from "../components/icon-tile";
+import { iconTileShape } from "../components/icon-tile";
 import {
   accountStatus, cookieValue, cookiesForURL, PLATFORM_NAMES, providerCookies, savePlatformLogin, WEB_PLATFORMS,
   trustedPlatformPage, type ExpressPlatform, type WebPlatform,
@@ -13,22 +13,21 @@ import { transientToast } from "../services/ui-feedback";
 import { waitForRefresh } from "../services/deadline";
 import { PhoneBindingPage } from "./PhoneBindingPage";
 
-export function PlatformIcon({ platform, size = 36, tile = false }: {
+export function PlatformIcon({ platform, size = 36 }: {
   platform: ExpressPlatform | "samsung";
   size?: number;
-  tile?: boolean;
 }) {
-  const fillSamsungCorners = tile && platform === "samsung";
+  const shape = iconTileShape(size);
+  const fillSamsungCorners = platform === "samsung";
   const logo = (
     <Image filePath={`${Script.directory}/assets/platform-accounts/${platform}.png`}
       resizable antialiased interpolation="high" frame={{ width: size, height: size }}
-      background={tile && !fillSamsungCorners ? { style: "tertiarySystemFill", shape: ICON_TILE_SHAPE } : undefined}
-      clipShape={tile && !fillSamsungCorners ? ICON_TILE_SHAPE : "circle"} />
+      clipShape={fillSamsungCorners ? "circle" : shape} />
   );
   // The original Samsung bitmap has white corners outside its magenta field.
   return fillSamsungCorners ? (
     <VStack frame={{ width: size, height: size }}
-      background={{ style: "#D10151", shape: ICON_TILE_SHAPE }}>
+      background={{ style: "#D10151", shape }}>
       {logo}
     </VStack>
   ) : logo;
@@ -113,7 +112,7 @@ function PlatformWebLogin({ platform, generation }: { platform: WebPlatform; gen
       await readLogin(current);
       if (mounted.current) timer = setTimeout(() => void poll(), 1_250);
     }
-    void openProviderController(platform).then((web) => {
+    void openProviderController(platform, [], "login").then((web) => {
       if (!mounted.current) { web.dispose(); return; }
       current = web;
       setController(web);
@@ -137,9 +136,14 @@ function PlatformWebLogin({ platform, generation }: { platform: WebPlatform; gen
       <VStack spacing={0} navigationBarTitleDisplayMode="inline"
         toast={transientToast(notice, setNotice)}
         toolbar={{
-          topBarLeading: <Button title="取消" action={() => dismiss(false)} />,
+          topBarLeading: (
+            <Button title="取消" systemImage="xmark" labelStyle="iconOnly" action={() => dismiss(false)} />
+          ),
           principal: <HStack spacing={8}><PlatformIcon platform={platform} size={24} /><Text font={17}>{PLATFORM_NAMES[platform]}</Text></HStack>,
-          topBarTrailing: <Button title="完成" action={() => controller && void readLogin(controller, true)} disabled={!controller} />,
+          topBarTrailing: (
+            <Button title="完成" systemImage="checkmark" labelStyle="iconOnly"
+              action={() => controller && void readLogin(controller, true)} disabled={!controller} />
+          ),
         }}>
         {controller ? <WebView controller={controller} /> : null}
       </VStack>

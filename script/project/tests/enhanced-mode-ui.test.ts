@@ -337,14 +337,14 @@ assert.equal(thumbnail.render().image, null, "a dismissed detail ignores a late 
 
 assert.match(bindingSource, /prompt="请输入验证码"/);
 assert.match(managerSource, /<PhoneBindingPage\s+bindings=\{props\.bindings\}/);
-assert.match(managerSource, /systemName="phone.fill"\s+foregroundStyle="#FF6900"/);
+assert.match(managerSource, /<SettingsRowIcon systemName="phone.fill" backgroundColor=\{SETTINGS_ORANGE\} size=\{36\}/);
 assert.doesNotMatch(bindingSource, /<Toggle|initialEnhanced/);
 assert.match(managerSource, /更多数据源[\s\S]*platform="samsung"[\s\S]*title="三星生活助手"/);
 assert.doesNotMatch(managerSource, /disabled=\{\s*busy \|\|\s*visibleBindings\.length/);
 assert.match(detailSource, /<ProductThumbnail[\s\S]*?size=\{72\}[\s\S]*?imageURL=\{shipment\.identity\.productImageURL\}/);
 assert.match(detailSource, /requestProductImage: false/);
 assert.match(detailSource, /trigger: "product_image", requestProductImage: true, signal: controller\.signal/);
-assert.match(thumbnailSource, /clipShape=\{ICON_TILE_SHAPE\}/);
+assert.match(thumbnailSource, /clipShape=\{iconTileShape\(props\.size\)\}/);
 assert.doesNotMatch(thumbnailSource, /imageUrl=|UIImage\.fromURL/);
 
 class SyntheticUnbindUnavailable extends Error {}

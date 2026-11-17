@@ -23,6 +23,7 @@ import {
   transientToast,
 } from "../services/ui-feedback";
 import { PhoneBindingPage } from "./PhoneBindingPage";
+import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon";
 import { PlatformIcon, presentPlatformLogin } from "./PlatformAccountPages";
 import { SamsungAssistantPage } from "./SamsungAssistantPage";
 import {
@@ -283,7 +284,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         }
         footer={
           <Text font={12} foregroundStyle="secondaryLabel">
-            最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号；绑定后，将自动同步关联的快递信息。
+            绑定后自动同步该号码的快递，最多绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号。
           </Text>
         }
       >
@@ -305,10 +306,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
                 ],
               }}
             >
-              <Image
-                systemName="phone.fill"
-                foregroundStyle="#FF6900"
-              />
+              <SettingsRowIcon systemName="phone.fill" backgroundColor={SETTINGS_ORANGE} size={36} />
               <Text font={17} monospacedDigit>
                 {binding.phone}
               </Text>
@@ -331,24 +329,30 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
             />
             <Text font={15} fontWeight="medium">尚未绑定手机号</Text>
             <Text font={12} foregroundStyle="secondaryLabel">
-              轻点右上角的“+”添加
+              点按右上角的添加按钮
             </Text>
           </VStack>
         )}
       </Section>
-      <Section header={<Text>更多数据源</Text>} footer={
-        <VStack spacing={12} alignment="leading">
+      <Section
+        header={
+          <HStack>
+            <Text>更多数据源</Text>
+            <Spacer />
+            <Button title="立即同步" systemImage="arrow.clockwise" labelStyle="iconOnly" disabled={busy ||
+              !platformAccounts.some((item) => item.state === "active")}
+              action={() => void runAction(async () => {
+                const result = await props.onPlatformRefresh();
+                if (mountedRef.current) setNotice(result);
+              }, "同步失败，请稍后重试。")} />
+          </HStack>
+        }
+        footer={
           <Text font={12} foregroundStyle="secondaryLabel">
-            拼多多可单独同步快递条目。其他平台可为已绑定手机号的快递补充商品图片、商品名、运单号和取件码等信息。
+            拼多多可独立同步快递。其他平台可补充已绑定手机号的运单号、取件码、商品名和图片。
           </Text>
-          <Button title="立即同步" buttonStyle="bordered" disabled={busy ||
-            !platformAccounts.some((item) => item.state === "active")}
-            action={() => void runAction(async () => {
-              const result = await props.onPlatformRefresh();
-              if (mountedRef.current) setNotice(result);
-            }, "同步失败，请稍后重试。")} />
-        </VStack>
-      }>
+        }
+      >
         {platformAccounts.map(({ platform, state, label, syncedAtMs }) => {
           const subtitle = state === "offline" ? "" : [label, state === "expired" ? "请重新登录" :
             syncedAtMs ? compactTimelineTime(formatListTime(new Date(syncedAtMs).toISOString())) : "尚未同步"]
@@ -389,15 +393,17 @@ function PlatformAccountRow({ platform, title, subtitle, state, disabled, onTap 
   const copy = {
     active: { status: "已登录", subtitle: "尚未同步" },
     expired: { status: "已失效", subtitle: "请重新登录" },
-    offline: { status: "未登录", subtitle: "尚未登录" },
+    offline: { status: "未登录", subtitle: "" },
   }[state];
   return (
     <Button buttonStyle="plain" disabled={disabled} action={onTap}>
       <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">
-        <PlatformIcon platform={platform} tile />
+        <PlatformIcon platform={platform} />
         <VStack alignment="leading" spacing={3}>
           <Text font={16} fontWeight="medium" foregroundStyle="label">{title}</Text>
-          <Text font={12} foregroundStyle="secondaryLabel" lineLimit={1}>{subtitle || copy.subtitle}</Text>
+          {subtitle || copy.subtitle ? (
+            <Text font={12} foregroundStyle="secondaryLabel" lineLimit={1}>{subtitle || copy.subtitle}</Text>
+          ) : null}
         </VStack>
         <Spacer />
         <Text font={13} foregroundStyle="secondaryLabel">{copy.status}</Text>

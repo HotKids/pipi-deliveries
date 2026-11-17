@@ -55,7 +55,10 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, complet
   const codeWidth = textWidth - (showCapsule ? capsuleWidth + card.codeGap : 0);
 
   return (
-    <GeometryReader aspectRatio={{ value: card.width / card.height, contentMode: "fit" }}>
+    <GeometryReader
+      frame={preview ? { height: card.height, maxWidth: card.width } : undefined}
+      aspectRatio={preview ? undefined : { value: card.width / card.height, contentMode: "fit" }}
+    >
       {({ size }) => {
         const scale = Math.max(size.width, 1) / card.width;
         const at = (x: number, y: number, width: number, height: number, centered = false) => ({

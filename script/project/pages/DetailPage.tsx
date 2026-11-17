@@ -1,5 +1,6 @@
 import {
   Button,
+  Divider,
   HStack,
   Image,
   List,
@@ -53,10 +54,11 @@ import {
   waybillSuffix,
   withShipmentNote,
 } from "../services/status";
-import { loadState, recordShipmentDetailSelection, setShipmentNote } from "../services/storage";
+import { loadState, recordShipmentDetailSelection, setShipmentProductName } from "../services/storage";
 import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
 import { requestWidgetReload } from "../services/widgets";
 import { displayedPlatformFields } from "../services/platform-parcel-merge";
+import { parcelActivityContent } from "../services/parcel-pickup";
 import { timelineTimeParts } from "../services/time-presentation";
 import { preferNewerShipment } from "../services/ui-state";
 import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
@@ -119,40 +121,39 @@ export function DetailPage(props: {
       externalAppAbortRef.current = null;
     };
   }, [shipment.identity.id, shipment.identity.sourceProvider, shipment.identity.sourceId]);
-  // The pickup tab and this detail editor share the same shipment note.
-  async function editNote() {
+  async function editProductName() {
     let value: string | null;
     try {
       value = await Dialog.prompt({
-        title: "编辑备注",
-        message: "清空后保存可删除备注",
-        defaultValue: shipment.note || "",
-        placeholder: "请输入备注",
+        title: "编辑商品名",
+        message: "清空后恢复平台提供的商品名。",
+        defaultValue: displayedPlatformFields(shipment).title || "",
+        placeholder: "请输入商品名",
         cancelLabel: "取消",
         confirmLabel: "保存",
       });
     } catch (error) {
-      writeDiagnostic("detail.note.prompt_failed", {
+      writeDiagnostic("detail.product_name.prompt_failed", {
         ...diagnosticErrorDetails(error),
       }, "warning");
       return;
     }
     if (value == null) return;
     try {
-      const state = setShipmentNote(shipment, value);
+      const state = setShipmentProductName(shipment, value);
       const updated = state.shipments.find(
         (item) => item.identity.id === shipment.identity.id,
       );
       if (updated) {
         setShipment(updated);
         props.onStateChange?.(state, updated);
-        setNotice(updated.note ? EXPRESS_TOAST_COPY.userNoteSaved : EXPRESS_TOAST_COPY.userNoteDeleted);
+        setNotice("商品名已更新");
       }
       requestWidgetReload();
     } catch (error) {
-      writeDiagnostic("detail.note.save_failed", diagnosticErrorDetails(error), "warning");
+      writeDiagnostic("detail.product_name.save_failed", diagnosticErrorDetails(error), "warning");
       setNotice(error instanceof ShipmentLifecycleChangedError
-        ? EXPRESS_TOAST_COPY.userNoteChanged : "保存失败，请稍后重试");
+        ? "快递已更新，请重新打开后编辑" : "保存失败，请稍后重试");
     }
   }
   const [loadingManualDetail, setLoadingManualDetail] = useState(
@@ -301,6 +302,7 @@ export function DetailPage(props: {
     ? MANUAL_QUERY_IN_FLIGHT_TEXT
     : presentationStatus.text;
   const platformFields = displayedPlatformFields(shipment);
+  const pickup = parcelActivityContent(shipment);
 
   useEffect(() => {
     setShipment((current) => preferNewerShipment(current, props.shipment));
@@ -655,13 +657,6 @@ export function DetailPage(props: {
               {shipment.identity.sender === true ? (
                 <SenderBadge semantic={presentationStatus.semantic} />
               ) : null}
-              <Button buttonStyle="plain" action={() => void editNote()}>
-                <Image
-                  systemName={shipment.note ? "note.text" : "square.and.pencil"}
-                  font={13}
-                  foregroundStyle="secondaryLabel"
-                />
-              </Button>
             </HStack>
             <HStack
               alignment="center"
@@ -703,14 +698,34 @@ export function DetailPage(props: {
           </VStack>
           <Spacer />
         </HStack>
+        {platformFields.title || props.persistedShipment ? (
+          <>
+            <Divider />
+            <HStack spacing={12} listRowSeparator="hidden">
+              <Text font={15} foregroundStyle={platformFields.title ? "label" : "secondaryLabel"}
+                frame={{ maxWidth: "infinity", alignment: "leading" }}>
+                {platformFields.title || "添加商品名"}
+              </Text>
+              {props.persistedShipment ? (
+                <Button title="编辑商品名" systemImage="square.and.pencil" labelStyle="iconOnly"
+                  buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => void editProductName()} />
+              ) : null}
+            </HStack>
+          </>
+        ) : null}
       </Section>
 
-      {platformFields.title || platformFields.estimate ? (
+      {platformFields.estimate || pickup ? (
         <Section>
           <VStack spacing={5} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}
             padding={{ vertical: 6 }}>
-            {platformFields.estimate ? <Text font={14} fontWeight="medium">{platformFields.estimate}</Text> : null}
-            {platformFields.title ? <Text font={14} foregroundStyle="secondaryLabel">{platformFields.title}</Text> : null}
+            {platformFields.estimate ? <Text font={14} fontWeight="medium" foregroundStyle="systemBlue">{platformFields.estimate}</Text> : null}
+            {pickup ? (
+              <VStack spacing={3} alignment="leading">
+                <Text font={15} fontWeight="semibold">取件码 {pickup.code}</Text>
+                {pickup.location ? <Text font={13} foregroundStyle="secondaryLabel">{pickup.location}</Text> : null}
+              </VStack>
+            ) : null}
           </VStack>
         </Section>
       ) : null}
@@ -736,19 +751,37 @@ export function DetailPage(props: {
           >
             {loadingManualDetail
               ? "完整轨迹加载中"
-              : "轨迹不完整时，可尝试下拉刷新。"}
+              : "下拉刷新物流轨迹。"}
           </Text>
         )}
       >
         {displayTracks.length ? (
           displayTracks.map((track, index) => {
             const time = timelineTimeParts(track.timeText);
+            const first = index === 0;
+            const last = index === displayTracks.length - 1;
             return (
               <HStack
                 key={`${track.timeText}:${track.detail}:${index}`}
                 alignment="top"
                 spacing={11}
-                padding={{ vertical: 5 }}
+                padding={{ vertical: 12 }}
+                listRowInsets={{ top: 0, bottom: 0, leading: 16, trailing: 16 }}
+                listRowSeparator="hidden"
+                overlay={{
+                  alignment: "topLeading",
+                  content: (
+                    <VStack spacing={0}
+                      frame={{ width: 12, maxHeight: "infinity", alignment: "top" }}
+                      padding={{ leading: 63 }} allowsHitTesting={false}>
+                      <Spacer frame={{ width: 1, height: 12 }} background={first ? undefined : "separator"} />
+                      <Image systemName={first ? "circle.fill" : "circle"}
+                        font={10} foregroundStyle={first ? statusTint(presentationStatus.semantic) : "secondaryLabel"}
+                        frame={{ width: 12, height: 12 }} />
+                      {!last ? <Spacer frame={{ width: 1, maxHeight: "infinity" }} background="separator" /> : null}
+                    </VStack>
+                  ),
+                }}
               >
                 <VStack
                   alignment="trailing"
@@ -764,16 +797,7 @@ export function DetailPage(props: {
                     </Text>
                   ) : null}
                 </VStack>
-                <Image
-                  systemName={index === 0 ? "circle.fill" : "circle"}
-                  font={10}
-                  foregroundStyle={
-                    index === 0
-                      ? statusTint(presentationStatus.semantic)
-                      : "tertiaryLabel"
-                  }
-                  frame={{ width: 12 }}
-                />
+                <Spacer frame={{ width: 12 }} />
                 <Text
                   font={15}
                   foregroundStyle={index === 0 ? "label" : "secondaryLabel"}

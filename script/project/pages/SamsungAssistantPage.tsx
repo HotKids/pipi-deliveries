@@ -1,5 +1,6 @@
 import { Button, HStack, Image, List, Section, Spacer, Text, VStack, useEffect, useRef, useState } from "scripting";
 import { PhoneBindingPage, type PhoneBindingPageProps } from "./PhoneBindingPage";
+import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon";
 import { transientToast } from "../services/ui-feedback";
 
 type SamsungAssistantPageProps = Pick<PhoneBindingPageProps, "bindings" | "onSendCode" | "onBind"> & {
@@ -48,14 +49,15 @@ export function SamsungAssistantPage(props: SamsungAssistantPageProps) {
     >
       <Section header={<Text>已绑定手机号</Text>} footer={
         <VStack alignment="leading" spacing={6}>
-          {props.bindings.length ? <Text>选择手机号进行验证，验证后可补充同一京东订单的运单号和商品图片。</Text> : null}
+          {props.bindings.length ? <Text>选择手机号验证后，可补充京东订单的运单号和商品图片。</Text> : null}
           {props.identityNotice ? <Text foregroundStyle="systemRed">{props.identityNotice}</Text> : null}
           {props.unsubscribeNotice ? <Text>{props.unsubscribeNotice}</Text> : null}
         </VStack>
       }>
         {props.bindings.length ? props.bindings.map((binding) => (
           <Button key={binding.phone} buttonStyle="plain" action={() => selectPhone(binding.phone)}>
-            <HStack spacing={8} padding={{ vertical: 6 }} contentShape="rect">
+            <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">
+              <SettingsRowIcon systemName="phone.fill" backgroundColor={SETTINGS_ORANGE} size={36} />
               <Text font={17} monospacedDigit>{binding.phone}</Text>
               <Spacer />
               <Text font={13} foregroundStyle="secondaryLabel">

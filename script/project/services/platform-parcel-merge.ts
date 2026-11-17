@@ -50,11 +50,21 @@ export function keepPlatformFields(previous: Shipment | undefined, current: Ship
   if (!previous || (!previous.platformFields && !previous.pddImport) ||
       shipmentLifecycleKey(previous) !== shipmentLifecycleKey(current)) return current;
   const fields = previous.platformFields;
+  const retained = fields && (sameFields(current, fields) ||
+    !fields.waybill && !!current.identity.projectedWaybill && previous.identity.accountOrder)
+    ? { ...fields, waybill: current.identity.projectedWaybill ? displayWaybill(current) : fields.waybill } : undefined;
+  let platformFields = current.platformFields ?? retained;
+  if (platformFields && retained && sameFields(current, platformFields) &&
+      (retained.manualTitleEditedAtMs ?? 0) > (platformFields.manualTitleEditedAtMs ?? 0)) {
+    platformFields = {
+      ...platformFields,
+      manualTitle: retained.manualTitle,
+      manualTitleEditedAtMs: retained.manualTitleEditedAtMs,
+    };
+  }
   return {
     ...current,
-    platformFields: current.platformFields || (fields && (sameFields(current, fields) ||
-      !fields.waybill && !!current.identity.projectedWaybill && previous.identity.accountOrder)
-      ? { ...fields, waybill: current.identity.projectedWaybill ? displayWaybill(current) : fields.waybill } : undefined),
+    platformFields,
     pddImport: current.pddImport || previous.pddImport,
   };
 }
@@ -65,7 +75,7 @@ export function displayedPlatformFields(shipment: Shipment, now = Date.now()) {
   const estimate = saved.estimate;
   const semantic = shipmentPresentationStatus(shipment).semantic;
   return {
-    title: saved.title?.text,
+    title: saved.manualTitle || saved.title?.text,
     estimate: estimate && ["PICKED", "TRANSIT", "DELIVERY"].includes(semantic)
       ? displayDeliveryEstimate(estimate.text, estimate.capturedAtMs, now) : "",
   };
@@ -100,7 +110,7 @@ export function enrichPlatformParcel(shipment: Shipment, parcel: PlatformParcel,
         text: parcel.estimate, source: parcel.source,
         capturedAtMs: fields?.estimate?.text === parcel.estimate ? fields.estimate.capturedAtMs : now,
       } : fields?.estimate;
-    const platformFields = { waybill, waybillGeneration, title, estimate };
+    const platformFields = { ...fields, waybill, waybillGeneration, title, estimate };
     if (JSON.stringify(platformFields) !== JSON.stringify(fields) || waybill !== fields?.waybill) {
       next = { ...next, platformFields };
     }

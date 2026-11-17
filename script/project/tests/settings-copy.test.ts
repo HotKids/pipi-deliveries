@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const settings = readFileSync(join(projectRoot, "pages/SettingsPage.tsx"), "utf8");
+const settingsRowIcon = readFileSync(join(projectRoot, "components/SettingsRowIcon.tsx"), "utf8");
 const manifest = JSON.parse(
   readFileSync(join(projectRoot, "script.json"), "utf8"),
 ) as Record<string, unknown>;
@@ -32,7 +33,7 @@ for (const expected of [
   '"未授权"',
   '"已授权"',
   '"不可用"',
-  "Access Key 用于同步你的快递信息，请妥善保存，不要分享。",
+  "Access Key 用于激活脚本并同步你的快递信息。请妥善保存，不要分享。",
 ]) {
   assert.ok(settings.includes(expected), `missing settings copy: ${expected}`);
 }
@@ -73,8 +74,8 @@ for (const symbol of [
     `missing unified settings icon: ${symbol}`,
   );
 }
-assert.match(settings, /background=\{\{ style: props\.backgroundColor, shape: ICON_TILE_SHAPE \}\}/);
-assert.match(settings, /foregroundStyle="white"/);
+assert.match(settingsRowIcon, /background=\{\{ style: backgroundColor, shape: iconTileShape\(size\) \}\}/);
+assert.match(settingsRowIcon, /foregroundStyle="white"/);
 const appIconStart = settings.indexOf("function SettingsAppIcon() {");
 const appIconEnd = settings.indexOf(
   "export function SettingsPage",
@@ -95,9 +96,12 @@ assert.equal(
 );
 
 const supportStart = settings.indexOf('<Section header={<Text>支持</Text>}>');
+const moreStart = settings.indexOf('<Section header={<Text>更多</Text>}>');
+const authorizationStart = settings.indexOf('header={<Text>授权</Text>}');
 const aboutStart = settings.indexOf('<Section header={<Text>关于</Text>}>');
-assert.ok(supportStart >= 0 && aboutStart > supportStart);
-const supportSection = settings.slice(supportStart, aboutStart);
+assert.ok(moreStart >= 0 && moreStart < supportStart &&
+  supportStart < authorizationStart && authorizationStart < aboutStart);
+const supportSection = settings.slice(supportStart, authorizationStart);
 for (const diagnosticContract of [
   'action={() => setDestination("diagnostics")}',
   "{diagnosticCount ? (",
@@ -141,7 +145,7 @@ for (const oldSymbol of [
 assert.ok(manager.includes('navigationTitle="管理账号"'));
 assert.ok(
   manager.includes(
-    "最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号；绑定后，将自动同步关联的快递信息。",
+    "绑定后自动同步该号码的快递，最多绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号。",
   ),
 );
 

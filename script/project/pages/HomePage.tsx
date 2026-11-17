@@ -7,6 +7,7 @@ import {
   NavigationStack,
   Picker,
   ProgressView,
+  ScrollView,
   Section,
   Text,
   TextField,
@@ -120,7 +121,7 @@ export function HomePage(props: {
   const [completing, setCompleting] = useState(false);
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
-  const [filter, setFilter] = useState<ShipmentFilter>("all");
+  const [selectedFilter, setFilter] = useState<ShipmentFilter>("all");
   const [searchPresented, setSearchPresented] = useState(props.autoFocusSearch && !props.initialShipmentId);
   const [accessKeyRejected, setAccessKeyRejected] = useState(gatewayAccessKeyRejected);
   const [accessKeyNoticeDismissed, setAccessKeyNoticeDismissed] = useState(false);
@@ -139,6 +140,9 @@ export function HomePage(props: {
     }
     return buckets;
   }, [shipments]);
+  const visibleFilters = (Object.keys(shipmentFilters) as ShipmentFilter[])
+    .filter((key) => key === "all" || groups[key].length > 0);
+  const filter = visibleFilters.includes(selectedFilter) ? selectedFilter : "all";
   const shownShipments = groups[filter];
   const selected = selectedNavigationShipment(
     props.state,
@@ -196,6 +200,10 @@ export function HomePage(props: {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    if (selectedFilter !== filter) setFilter(filter);
+  }, [selectedFilter, filter]);
 
   useEffect(() => {
     if (props.initialShipmentId && props.state.shipments.some(
@@ -381,7 +389,8 @@ export function HomePage(props: {
               }}
             />
           ) : searchPresented ? (
-            <List navigationTitle="查询快递" navigationBarTitleDisplayMode="inline"
+            <ScrollView navigationTitle="查询快递" navigationBarTitleDisplayMode="inline"
+              background="systemGroupedBackground"
               toast={transientToast(notice, setNotice)}>
               <HomeSearchBar
                 state={props.state}
@@ -393,7 +402,7 @@ export function HomePage(props: {
                 openShipment={openShipment}
                 setShipmentNavigationTarget={setShipmentNavigationTarget}
               />
-            </List>
+            </ScrollView>
           ) : <Text>快递详情</Text>,
         }}
       >
@@ -428,12 +437,14 @@ export function HomePage(props: {
             </HStack>
           </VStack>
         ) : null}
-        <Picker title="快递状态" pickerStyle="segmented" value={filter}
-          onChanged={(value: string) => setFilter(value as ShipmentFilter)} padding={{ horizontal: 20, vertical: 6 }}>
-          {(Object.keys(shipmentFilters) as ShipmentFilter[]).map((key) => (
-            <Text key={key} tag={key}>{shipmentFilters[key]} {groups[key].length}</Text>
-          ))}
-        </Picker>
+        {visibleFilters.length > 1 ? (
+          <Picker title="快递状态" pickerStyle="segmented" value={filter}
+            onChanged={(value: string) => setFilter(value as ShipmentFilter)} padding={{ horizontal: 20, vertical: 6 }}>
+            {visibleFilters.map((key) => (
+              <Text key={key} tag={key}>{shipmentFilters[key]} {groups[key].length}</Text>
+            ))}
+          </Picker>
+        ) : null}
         {shipments.length ? (
           <List listStyle="plain" refreshable={refresh}>
             <Section>
@@ -448,9 +459,6 @@ export function HomePage(props: {
                   completeDisabled={completing}
                 />
               ))}
-              {!shownShipments.length ? (
-                <Text foregroundStyle="secondaryLabel">暂无{shipmentFilters[filter]}快递</Text>
-              ) : null}
             </Section>
             <VStack
               spacing={8}
@@ -718,23 +726,22 @@ function HomeSearchBar(props: {
     }
   }
 
-  const searchFields = (
+  return (
     <VStack
       spacing={8}
-      padding={{ vertical: 2 }}
-      listRowSeparator="hidden"
+      alignment="leading"
+      padding={{ horizontal: 16, top: 6, bottom: 40 }}
     >
       <HStack
-        spacing={10}
-        padding={{ horizontal: 14 }}
-        frame={{ minHeight: 52, maxWidth: "infinity" }}
-        background="tertiarySystemFill"
-        clipShape={{ type: "rect", cornerRadius: 26, style: "continuous" }}
+        spacing={8}
+        padding={{ horizontal: 16, vertical: 13 }}
+        frame={{ maxWidth: "infinity" }}
+        background={{ style: "tertiarySystemFill", shape: "capsule" }}
       >
         <Image
           systemName="magnifyingglass"
           font={18}
-          foregroundStyle="secondaryLabel"
+          foregroundStyle="label"
         />
         <TextField
           title="查询快递单号"
@@ -749,7 +756,7 @@ function HomeSearchBar(props: {
             setValidationNotice("");
             scheduleCarrierDetection(value);
           }}
-          prompt="查询快递单号"
+          prompt="搜索运单号"
           autofocus={props.autoFocusSearch}
           textContentType="shipmentTrackingNumber"
           submitLabel="search"
@@ -839,18 +846,9 @@ function HomeSearchBar(props: {
           />
         </HStack>
       ) : null}
+      {validationNotice && !phoneTailValidation ? (
+        <Text font={12} foregroundStyle="systemRed">{validationNotice}</Text>
+      ) : null}
     </VStack>
-  );
-
-  return (
-    <Section
-      footer={validationNotice && !phoneTailValidation ? (
-        <Text font={12} foregroundStyle="systemRed">
-          {validationNotice}
-        </Text>
-      ) : undefined}
-    >
-      {searchFields}
-    </Section>
   );
 }
