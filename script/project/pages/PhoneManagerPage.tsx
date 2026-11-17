@@ -279,7 +279,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
       <Section
         header={
           <Text>
-            {`手机号同步 · 已绑定 ${visibleBindings.length}/${EXPRESS_POLICY.sources.maxBindingsPerSource}`}
+            {`手机号同步（${visibleBindings.length}/${EXPRESS_POLICY.sources.maxBindingsPerSource}）`}
           </Text>
         }
         footer={
