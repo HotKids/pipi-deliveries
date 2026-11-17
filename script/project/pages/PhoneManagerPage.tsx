@@ -34,6 +34,8 @@ import { compactTimelineTime, formatListTime } from "../services/time-presentati
 import { existingEnhancementIdentity, EnhancementIdentityMissing } from "../services/enhanced-account";
 import { EnhancementUnbindUnavailable } from "../services/enhancement-unsubscribe";
 
+const ACCOUNT_ICON_SIZE = 32;
+
 type MaybeAsync = void | Promise<void>;
 
 export type PhoneManagerPageProps = {
@@ -306,7 +308,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
                 ],
               }}
             >
-              <SettingsRowIcon systemName="phone.fill" backgroundColor={SETTINGS_ORANGE} size={36} />
+              <SettingsRowIcon systemName="phone.fill" backgroundColor={SETTINGS_ORANGE} size={ACCOUNT_ICON_SIZE} />
               <Text font={17} monospacedDigit>
                 {binding.phone}
               </Text>
@@ -398,7 +400,7 @@ function PlatformAccountRow({ platform, title, subtitle, state, disabled, onTap 
   return (
     <Button buttonStyle="plain" disabled={disabled} action={onTap}>
       <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">
-        <PlatformIcon platform={platform} />
+        <PlatformIcon platform={platform} size={ACCOUNT_ICON_SIZE} />
         <VStack alignment="leading" spacing={3}>
           <Text font={16} fontWeight="medium" foregroundStyle="label">{title}</Text>
           {subtitle || copy.subtitle ? (
