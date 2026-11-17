@@ -57,7 +57,17 @@ assert.equal(classify("DANGER"), "danger");
 for (const semantic of ["COMPLETED", "CANCELLED", "UNKNOWN"]) {
   assert.equal(classify(semantic), undefined, "the all segment still includes the display row");
 }
-assert.match(homeSource, /searchPresented \? \(\s*<ScrollView navigationTitle="查询快递"[\s\S]*?<HomeSearchBar/);
+const searchSheet = homeSource.match(/sheet=\{\{([\s\S]*?)\n        \}\}/)?.[1] ?? "";
+assert.match(searchSheet, /isPresented: searchPresented,\s*onChanged: setSearchPresented,/,
+  "search uses the native sheet and tracks gesture dismissal");
+assert.match(searchSheet, /<NavigationStack[\s\S]*?<ScrollView navigationTitle="查快递"[\s\S]*?<HomeSearchBar/,
+  "the existing search form has its own sheet navigation");
+assert.match(searchSheet, /systemImage="xmark" labelStyle="iconOnly"[\s\S]*?setSearchPresented\(false\)/,
+  "the search sheet must have an icon-only close button");
+assert.match(searchSheet, /autoFocusSearch=\{props\.autoFocusSearch\}/,
+  "only the existing focus and shortcut entry points should open the keyboard automatically");
+assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(selected\)/,
+  "the main navigation destination presents shipment details");
 assert.match(homeSource, /visibleFilters\.length > 1 \? \(\s*<Picker/);
 assert.match(homeSource, /key === "all" \|\| groups\[key\]\.length > 0/);
 assert.match(homeSource, /visibleFilters\.includes\(selectedFilter\) \? selectedFilter : "all"/);

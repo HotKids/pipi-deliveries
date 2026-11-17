@@ -632,88 +632,90 @@ export function DetailPage(props: {
       toast={transientToast(notice, setNotice)}
     >
       <Section>
-        <HStack spacing={14} padding={{ vertical: 12 }}>
-          <ProductThumbnail
-            shipment={shipment}
-            cacheKey={shipment.identity.enhancedMode || shipment.identity.productImageURL
-              ? productImageCacheKey(shipment.identity) : ""}
-            courierCode={shipment.identity.courierCode}
-            companyName={shipment.identity.companyName}
-            accountOrder={Boolean(
-              unprojectedAccountOrder(shipment),
-            )}
-            size={72}
-            imageURL={shipment.identity.productImageURL}
-          />
-          <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity" }}>
-            <HStack alignment="center" spacing={6}>
-              <Text
-                font={17}
-                fontWeight="bold"
-                foregroundStyle={statusTextTint(presentationStatus.semantic)}
-                lineLimit={1}
-              >
-                {withShipmentNote(statusText, shipment)}
-              </Text>
-              {shipment.identity.sender === true ? (
-                <SenderBadge semantic={presentationStatus.semantic} />
-              ) : null}
-            </HStack>
-            <HStack
-              alignment="center"
-              spacing={0}
-              frame={{ maxWidth: "infinity", alignment: "leading" }}
-            >
-              <Text font={15}>{carrierDisplayName(shipment.identity.companyName)}：</Text>
-              <HStack alignment="center" spacing={5}>
+        <VStack alignment="leading" spacing={0} listRowSeparator="hidden">
+          <HStack spacing={14} padding={{ vertical: 12 }}>
+            <ProductThumbnail
+              shipment={shipment}
+              cacheKey={shipment.identity.enhancedMode || shipment.identity.productImageURL
+                ? productImageCacheKey(shipment.identity) : ""}
+              courierCode={shipment.identity.courierCode}
+              companyName={shipment.identity.companyName}
+              accountOrder={Boolean(
+                unprojectedAccountOrder(shipment),
+              )}
+              size={72}
+              imageURL={shipment.identity.productImageURL}
+            />
+            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity" }}>
+              <HStack alignment="center" spacing={6}>
                 <Text
-                  font={15}
-                  monospacedDigit
+                  font={17}
+                  fontWeight="bold"
+                  foregroundStyle={statusTextTint(presentationStatus.semantic)}
                   lineLimit={1}
-                  minScaleFactor={0.65}
-                  allowsTightening={true}
-                  layoutPriority={1}
                 >
-                  {waybill}
+                  {withShipmentNote(statusText, shipment)}
                 </Text>
-                <Button buttonStyle="plain" action={copyWaybill}>
-                  <Image
-                    systemName="doc.on.doc"
-                    font={13}
-                    foregroundStyle="secondaryLabel"
-                  />
-                </Button>
+                {shipment.identity.sender === true ? (
+                  <SenderBadge semantic={presentationStatus.semantic} />
+                ) : null}
               </HStack>
-            </HStack>
-            {hotline ? (
-              <HStack spacing={0}>
-                <Text font={15}>官方电话：</Text>
-                <Button buttonStyle="plain" action={dial}>
-                  <Text font={15} foregroundStyle="systemBlue" monospacedDigit>
-                    {hotline}
+              <HStack
+                alignment="center"
+                spacing={0}
+                frame={{ maxWidth: "infinity", alignment: "leading" }}
+              >
+                <Text font={15}>{carrierDisplayName(shipment.identity.companyName)}：</Text>
+                <HStack alignment="center" spacing={5}>
+                  <Text
+                    font={15}
+                    monospacedDigit
+                    lineLimit={1}
+                    minScaleFactor={0.65}
+                    allowsTightening={true}
+                    layoutPriority={1}
+                  >
+                    {waybill}
                   </Text>
-                </Button>
-                <Spacer />
+                  <Button buttonStyle="plain" action={copyWaybill}>
+                    <Image
+                      systemName="doc.on.doc"
+                      font={13}
+                      foregroundStyle="secondaryLabel"
+                    />
+                  </Button>
+                </HStack>
               </HStack>
-            ) : null}
-          </VStack>
-          <Spacer />
-        </HStack>
-        {platformFields.title || props.persistedShipment ? (
-          <>
-            <Divider />
-            <HStack spacing={12} listRowSeparator="hidden">
-              <Text font={15} foregroundStyle={platformFields.title ? "label" : "secondaryLabel"}
-                frame={{ maxWidth: "infinity", alignment: "leading" }}>
-                {platformFields.title || "添加商品名"}
-              </Text>
-              {props.persistedShipment ? (
-                <Button title="编辑商品名" systemImage="square.and.pencil" labelStyle="iconOnly"
-                  buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => void editProductName()} />
+              {hotline ? (
+                <HStack spacing={0}>
+                  <Text font={15}>官方电话：</Text>
+                  <Button buttonStyle="plain" action={dial}>
+                    <Text font={15} foregroundStyle="systemBlue" monospacedDigit>
+                      {hotline}
+                    </Text>
+                  </Button>
+                  <Spacer />
+                </HStack>
               ) : null}
-            </HStack>
-          </>
-        ) : null}
+            </VStack>
+            <Spacer />
+          </HStack>
+          {platformFields.title || props.persistedShipment ? (
+            <>
+              <Divider />
+              <HStack spacing={12} padding={{ vertical: 8 }}>
+                <Text font={15} foregroundStyle={platformFields.title ? "label" : "secondaryLabel"}
+                  frame={{ maxWidth: "infinity", alignment: "leading" }}>
+                  {platformFields.title || "添加商品名"}
+                </Text>
+                {props.persistedShipment ? (
+                  <Button title="编辑商品名" systemImage="square.and.pencil" labelStyle="iconOnly"
+                    buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => void editProductName()} />
+                ) : null}
+              </HStack>
+            </>
+          ) : null}
+        </VStack>
       </Section>
 
       {platformFields.estimate || pickup ? (
