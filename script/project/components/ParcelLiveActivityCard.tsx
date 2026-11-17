@@ -56,7 +56,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, complet
 
   return (
     <GeometryReader
-      frame={preview ? { height: card.height, maxWidth: card.width } : undefined}
+      frame={preview ? { maxWidth: card.width, minHeight: card.height, maxHeight: card.height } : undefined}
       aspectRatio={preview ? undefined : { value: card.width / card.height, contentMode: "fit" }}
     >
       {({ size }) => {

@@ -79,16 +79,6 @@ export function handoffActivityContent(handoff: ParcelHandoffRecord): ParcelActi
   };
 }
 
-export const HANDOFF_ACTIVITY_PREVIEW = handoffActivityContent({
-  id: "",
-  kind: "handoff",
-  platform: "cainiao",
-  code: "1234",
-  capturedAtMs: Date.UTC(2026, 10, 16, 6),
-  windowStartAtMs: Date.UTC(2026, 10, 16, 7),
-  windowEndAtMs: Date.UTC(2026, 10, 16, 9),
-})!;
-
 export function independentPickupContent(record: PickupCodeRecord): ParcelActivityContent | null {
   if (!record || !cleanString(record.id) || record.completedAtMs ||
     !Object.prototype.hasOwnProperty.call(PLATFORM_ACCOUNT_NAMES, record.platform)) return null;

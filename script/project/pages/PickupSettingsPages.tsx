@@ -7,7 +7,6 @@ import {
   stopParcelActivity,
 } from "../services/parcel-live-activity";
 import {
-  HANDOFF_ACTIVITY_PREVIEW,
   PARCEL_ACTIVITY_PREVIEW,
   type ParcelActivityContent,
 } from "../services/parcel-pickup";
@@ -104,23 +103,6 @@ export function ParcelActivityPage({ cards, revision }: {
           data={PARCEL_ACTIVITY_PREVIEW}
           imageRoot={`${Script.directory}/assets/parcel-activity`}
           logoPath={`${Script.directory}/assets/parcel-activity/cainiao.png`}
-          preview
-        />
-      </Section>
-      <Section header={
-        <HStack>
-          <Text>寄件码预览</Text>
-          <Spacer />
-          <Button title="在锁屏预览寄件码" systemImage="play.circle" labelStyle="iconOnly"
-            disabled={busy || active}
-            action={() => void change(() => startParcelActivity(undefined, "handoff"))}
-          />
-        </HStack>
-      }>
-        <ParcelLiveActivityCard
-          data={HANDOFF_ACTIVITY_PREVIEW}
-          imageRoot={`${Script.directory}/assets/parcel-activity`}
-          logoPath={`${Script.directory}/assets/platform-accounts/cainiao.png`}
           preview
         />
       </Section>
