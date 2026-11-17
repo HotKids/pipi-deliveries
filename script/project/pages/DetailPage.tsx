@@ -328,6 +328,7 @@ export function DetailPage(props: {
   const cloudScope = cloudGeneration === null ? "" : JSON.stringify([cloudGeneration, cloudWaybill, cloudLifecycle]);
   const platformFields = displayedPlatformFields(shipment, Date.now(), cloud?.scope === cloudScope ? cloud?.metadata : undefined);
   const showProductName = Boolean(platformFields.title || props.persistedShipment);
+  const showParcelInfo = Boolean(platformFields.estimate || showProductName);
   const pickup = parcelActivityContent(shipment);
 
   async function refreshCloudMetadata(): Promise<void> {
@@ -683,7 +684,7 @@ export function DetailPage(props: {
     >
       <Section>
         <VStack alignment="leading" spacing={0} listRowSeparator="hidden"
-          listRowInsets={showProductName ? { top: 12, bottom: 0, leading: 20, trailing: 20 } : undefined}>
+          listRowInsets={showParcelInfo ? { top: 12, bottom: 0, leading: 20, trailing: 20 } : undefined}>
           <HStack spacing={14} padding={{ vertical: 12 }}>
             <ProductThumbnail
               shipment={shipment}
@@ -745,35 +746,37 @@ export function DetailPage(props: {
             </VStack>
             <Spacer />
           </HStack>
-          {showProductName ? (
+          {showParcelInfo ? (
             <>
               <Divider />
-              <HStack alignment="center" spacing={12} padding={{ vertical: 12 }}>
-                <Text font={14} lineSpacing={3} foregroundStyle="secondaryLabel"
-                  fixedSize={{ horizontal: false, vertical: true }}
-                  frame={{ maxWidth: "infinity", alignment: "leading" }}>
-                  {platformFields.title || "添加商品名"}
-                </Text>
-                {props.persistedShipment ? (
-                  <DetailHeaderAction title="编辑商品名" systemImage="square.and.pencil" action={() => void editProductName()} />
+              <VStack alignment="leading" spacing={4} padding={{ vertical: 12 }}>
+                {platformFields.estimate ? (
+                  <Text font={14} fontWeight="medium" foregroundStyle="systemBlue">{platformFields.estimate}</Text>
                 ) : null}
-              </HStack>
+                {showProductName ? (
+                  <HStack alignment="center" spacing={12}>
+                    <Text font={14} lineSpacing={3} foregroundStyle="secondaryLabel"
+                      fixedSize={{ horizontal: false, vertical: true }}
+                      frame={{ maxWidth: "infinity", alignment: "leading" }}>
+                      {platformFields.title || "添加商品名"}
+                    </Text>
+                    {props.persistedShipment ? (
+                      <DetailHeaderAction title="编辑商品名" systemImage="square.and.pencil" action={() => void editProductName()} />
+                    ) : null}
+                  </HStack>
+                ) : null}
+              </VStack>
             </>
           ) : null}
         </VStack>
       </Section>
 
-      {platformFields.estimate || pickup ? (
+      {pickup ? (
         <Section>
-          <VStack spacing={5} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}
+          <VStack spacing={3} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}
             padding={{ vertical: 6 }}>
-            {platformFields.estimate ? <Text font={14} fontWeight="medium" foregroundStyle="systemBlue">{platformFields.estimate}</Text> : null}
-            {pickup ? (
-              <VStack spacing={3} alignment="leading">
-                <Text font={15} fontWeight="semibold">取件码 {pickup.code}</Text>
-                {pickup.location ? <Text font={13} foregroundStyle="secondaryLabel">{pickup.location}</Text> : null}
-              </VStack>
-            ) : null}
+            <Text font={15} fontWeight="semibold">取件码 {pickup.code}</Text>
+            {pickup.location ? <Text font={13} foregroundStyle="secondaryLabel">{pickup.location}</Text> : null}
           </VStack>
         </Section>
       ) : null}

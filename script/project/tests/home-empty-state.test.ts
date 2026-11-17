@@ -87,6 +87,10 @@ assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(sel
   "the main navigation destination presents shipment details");
 const filterBar = homeSource.match(/visibleFilters\.length > 1 \? \(([\s\S]*?)\) : null\}/)?.[1] ?? "";
 assert.match(filterBar, /<Capsule\b[^>]*stroke=/);
+assert.match(filterBar, /<Capsule\b[^>]*frame=\{\{ height: 32 \}\}/,
+  "the visible filter track is 32 points tall");
+assert.match(filterBar, /<VStack\b[^>]*minHeight: 44[^>]*contentShape="rect"/,
+  "the compact track retains a 44-point button hit target");
 assert.match(filterBar, /<Button key=\{key\}[\s\S]*?setFilter\(key\)/);
 assert.match(filterBar, /style: selected \? "secondarySystemFill" : "clear", shape: "capsule"/);
 assert.match(filterBar, /<Text[^>]*background=\{\{ style: "systemFill", shape: "capsule" \}\}[^>]*>\s*\{groups\[key\]\.length\}/,

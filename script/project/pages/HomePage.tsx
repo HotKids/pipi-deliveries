@@ -12,6 +12,7 @@ import {
   Text,
   TextField,
   VStack,
+  ZStack,
   useEffect,
   useMemo,
   useObservable,
@@ -459,34 +460,35 @@ export function HomePage(props: {
           </VStack>
         ) : null}
         {visibleFilters.length > 1 ? (
-          <VStack padding={{ horizontal: 20, vertical: 6 }}>
-            <HStack spacing={0} padding={3} background={
-              <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }} />
-            }>
+          <ZStack padding={{ horizontal: 20, vertical: 2 }}>
+            <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
+              frame={{ height: 32 }} />
+            <HStack spacing={0} padding={{ horizontal: 3 }}>
               {visibleFilters.map((key) => {
                 const selected = filter === key;
                 return (
                   <Button key={key} buttonStyle="plain" action={() => setFilter(key)}>
-                    <HStack
-                      spacing={5}
-                      frame={{ maxWidth: "infinity", minHeight: 44 }}
-                      background={{ style: selected ? "secondarySystemFill" : "clear", shape: "capsule" }}
-                      contentShape="capsule"
-                    >
-                      <Text font={15} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
-                        {shipmentFilters[key]}
-                      </Text>
-                      <Text font={12} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
-                        lineLimit={1} padding={{ horizontal: 5 }} frame={{ minWidth: 20, minHeight: 20 }}
-                        background={{ style: "systemFill", shape: "capsule" }}>
-                        {groups[key].length}
-                      </Text>
-                    </HStack>
+                    <VStack frame={{ maxWidth: "infinity", minHeight: 44 }} contentShape="rect">
+                      <HStack
+                        spacing={4}
+                        frame={{ maxWidth: "infinity", minHeight: 26 }}
+                        background={{ style: selected ? "secondarySystemFill" : "clear", shape: "capsule" }}
+                      >
+                        <Text font={14} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
+                          {shipmentFilters[key]}
+                        </Text>
+                        <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
+                          lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
+                          background={{ style: "systemFill", shape: "capsule" }}>
+                          {groups[key].length}
+                        </Text>
+                      </HStack>
+                    </VStack>
                   </Button>
                 );
               })}
             </HStack>
-          </VStack>
+          </ZStack>
         ) : null}
         {shipments.length ? (
           <List listStyle="plain" refreshable={refresh}>
