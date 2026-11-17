@@ -16,18 +16,23 @@ import { writeDiagnostic } from "./logger";
 const PDD_ORDERS = "https://mobile.yangkeduo.com/orders.html";
 
 type JdSyncStage = "jd_sync_queue" | "jd_sync_session" | "jd_sync_viewport" | "jd_sync_orders"
+  | "jd_sync_document" | "jd_sync_load_failed" | "jd_sync_script" | "jd_sync_unexpected_page"
   | "jd_sync_order_navigation" | "jd_sync_order_entry" | "jd_sync_order_cards" | "jd_sync_detail" | "jd_sync_save";
 type ReportStage = (stage: JdSyncStage) => void;
 
 const JD_ACCOUNT_PAGE_CHECK = String.raw`
-  if (window !== window.top) return null;
+  if (window !== window.top || location.protocol === 'about:') {
+    return { state: 'pending', stage: 'jd_sync_document' };
+  }
   if (location.protocol === 'https:' && !location.port &&
     ['plogin.m.jd.com','passport.jd.com'].includes(location.hostname)) return { state: 'expired' };
 `;
 
 // Follow JdAccountActivity.READ_ORDERS: use the order cards or entry before classifying page text.
 const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
-  if (!['https://my.m.jd.com','https://trade.m.jd.com','https://home.m.jd.com'].includes(location.origin)) return null;
+  if (!['https://my.m.jd.com','https://trade.m.jd.com','https://home.m.jd.com'].includes(location.origin)) {
+    return { state: 'pending', stage: 'jd_sync_unexpected_page' };
+  }
   const text = el => (el?.textContent || '').trim();
   const nickname = text(document.querySelector('.my_header_name'));
   if (nickname && nickname !== '京东用户') window.__pipiDeliveriesJDName = nickname;
@@ -194,23 +199,36 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
   url: string, script: string, deadline: number, reportStage?: ReportStage): Promise<unknown> {
   assertCurrent(platform, session);
   const pageDeadline = Math.min(deadline, Date.now() + 12_000);
+  let loadRejected = false;
+  let committedDocument = false;
   if (platform === "jingdong") {
     // The same browser can still display the previous order page until navigation commits.
     await waitForRefresh(web.evaluateJavaScript("window.__pipiDeliveriesPreviousJDPage = true; return true;"),
       Math.min(pageDeadline, Date.now() + 1_000)).catch(() => undefined);
     assertCurrent(platform, session);
-    script = "if (window.__pipiDeliveriesPreviousJDPage === true) return null;\n" + script;
+    script = "if (window.__pipiDeliveriesPreviousJDPage === true) return {state:'pending',stage:'jd_sync_document'};\n" + script;
+    reportStage?.("jd_sync_document");
   }
   const load = web.loadURL(url);
   if (platform === "jingdong") {
     // Like Pipi's JD probe, accept the matching document as soon as it renders.
-    void load.catch(() => undefined);
+    void load.then((loaded) => { loadRejected = !loaded; }, () => { loadRejected = true; });
   } else if (!await waitForRefresh(load, pageDeadline)) {
     throw new PlatformWireError("unavailable");
   }
   while (Date.now() < pageDeadline) {
     assertCurrent(platform, session);
-    const value = await waitForRefresh(web.evaluateJavaScript<unknown>(script).catch(() => null), pageDeadline);
+    let value: unknown;
+    try {
+      value = await waitForRefresh(web.evaluateJavaScript<unknown>(script), pageDeadline);
+    } catch (error) {
+      assertCurrent(platform, session);
+      if (platform === "jingdong") {
+        reportStage?.(loadRejected && !committedDocument ? "jd_sync_load_failed" : "jd_sync_script");
+      }
+      if (error instanceof OperationTimeoutError) throw error;
+      value = null;
+    }
     if (value != null) {
       assertCurrent(platform, session);
       const { state, stage } = asPlainObject(value);
@@ -220,12 +238,20 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
       }
       if (state === "verification" || state === "unavailable") throw new PlatformWireError(state);
       if (state !== "pending") return value;
-      if (stage === "jd_sync_viewport" || stage === "jd_sync_orders" || stage === "jd_sync_order_navigation" ||
-        stage === "jd_sync_order_entry" || stage === "jd_sync_order_cards") reportStage?.(stage);
+      if (stage === "jd_sync_document") {
+        reportStage?.(loadRejected ? "jd_sync_load_failed" : stage);
+      } else if (stage === "jd_sync_viewport" || stage === "jd_sync_orders" || stage === "jd_sync_order_navigation" ||
+        stage === "jd_sync_order_entry" || stage === "jd_sync_order_cards" || stage === "jd_sync_unexpected_page") {
+        committedDocument = true;
+        reportStage?.(stage);
+      }
     }
     await pauseWhileActive(250);
   }
-  if (platform === "jingdong") throw new OperationTimeoutError();
+  if (platform === "jingdong") {
+    if (loadRejected && !committedDocument) reportStage?.("jd_sync_load_failed");
+    throw new OperationTimeoutError();
+  }
   throw new PlatformWireError("unavailable");
 }
 

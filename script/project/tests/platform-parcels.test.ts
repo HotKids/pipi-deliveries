@@ -415,6 +415,42 @@ test("a rejected JD cookie restore records the failed session stage during a man
   }
 });
 
+test("a rejected native JD load is distinguishable from an unreadable order list", async (t) => {
+  t.mock.method(UUID, "string", randomUUID);
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  memory.clear();
+  setDiagnosticsEnabled(true);
+  clearDiagnostics();
+  const cookie = { ...sessionCookie, name: "pt_key", value: "synthetic-jd-navigation", domain: ".jd.com" };
+  savePlatformLogin("jingdong", "", { kind: "web", cookies: [cookie] }, "synthetic-jd-account");
+  const originalController = globalThis.WebViewController;
+  Object.assign(globalThis, { WebViewController: class {
+    async setCookie() { return true; }
+    async getAllCookies() { return [cookie]; }
+    async loadURL() { return false; }
+    async evaluateJavaScript(script: string) {
+      if (script.startsWith("window.__pipiDeliveriesPreviousJDPage = true")) return true;
+      await Promise.resolve();
+      now += 12_001;
+      return null;
+    }
+    dispose() {}
+  } });
+  registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
+  try {
+    const result = await refreshPlatformParcels(() => {}, "manual", "jingdong");
+    assert.equal(result.failed, 1);
+    const note = readDiagnostics().find(({ event }) => event === "platform.jingdong.sync.failed");
+    assert.equal(note?.details.stage, "jd_sync_load_failed");
+  } finally {
+    clearPlatformLogin("jingdong", accountStatus("jingdong").generation);
+    registerProjectionViewportHost(null);
+    globalThis.WebViewController = originalController;
+    setDiagnosticsEnabled(false);
+  }
+});
+
 test("PDD waiting pickup sync survives an unavailable order-capture host", async (t) => {
   t.mock.method(Date, "now", () => NOW + 2);
   memory.clear();
