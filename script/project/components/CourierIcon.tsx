@@ -1,8 +1,7 @@
-import { Image, Script, VStack } from "scripting";
+import { Image, VStack } from "scripting";
 import { courierIconName } from "../services/carrier-presentation";
+import { bundledImage } from "./bundled-image";
 import { iconTileShape } from "./icon-tile";
-
-const images = new Map<string, UIImage>();
 
 export function CourierIcon(props: {
   courierCode: string;
@@ -15,11 +14,7 @@ export function CourierIcon(props: {
     props.companyName,
     props.accountOrder,
   );
-  let artwork = icon ? images.get(icon) : undefined;
-  if (icon && !artwork) {
-    artwork = UIImage.fromFile(`${Script.directory}/assets/couriers/${icon}.png`) ?? undefined;
-    if (artwork) images.set(icon, artwork);
-  }
+  const artwork = icon ? bundledImage(`couriers/${icon}.png`) : undefined;
   return (
     <VStack
       frame={{ width: props.size, height: props.size }}

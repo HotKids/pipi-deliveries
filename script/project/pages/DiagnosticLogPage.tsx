@@ -28,6 +28,7 @@ const EVENT_TITLES: Record<string, string> = {
   "platform.pdd.import.unavailable": "拼多多快递导入未完成",
   "platform.sync.unavailable": "平台快递同步未完成",
   "platform.jingdong.sync.failed": "京东同步失败",
+  "platform.identity.failed": "驿站身份码获取失败",
   "platform.jingdong.session.save_failed": "京东会话未能保存",
   "binding.handler.entered": "已进入绑定流程",
   "binding.code.started": "正在发送验证码",

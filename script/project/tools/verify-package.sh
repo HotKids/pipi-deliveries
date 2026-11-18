@@ -72,7 +72,6 @@ for required in \
   app_intents.tsx \
   live_activity.tsx \
   assets/parcel-activity/box.png \
-  assets/parcel-activity/hand-package.png \
   assets/parcel-activity/box-frames.png \
   assets/parcel-activity/cainiao.png \
   assets/parcel-activity/pinduoduo.png \

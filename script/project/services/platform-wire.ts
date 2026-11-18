@@ -7,6 +7,7 @@ import {
 import { utf8Data } from "./scripting-data";
 import { asPlainObject, cleanScalarText, isPlainObject, type JsonObject } from "./value-guards";
 import { waitForRefresh } from "./deadline";
+import { writeDiagnostic } from "./logger";
 
 export const IDENTITY_WEB_URL = {
   cainiao: "https://pages-fast.m.taobao.com/wow/z/uniapp/1011717/last-mile-fe/end-collect-platform/identity-code",
@@ -346,10 +347,21 @@ export function identityCodeFromResponse(
 }
 
 export async function fetchStationIdentity(platform: IdentityPlatform, session: PlatformSession): Promise<StationIdentityCode> {
-  const result = platform === "cainiao"
-    ? await readCainiao(session, TAOBAO_IDENTITY_API, {})
-    : await readPdd(session, "/api/express_trackbox/generate_identification_code", { entry_source: "APP" }, true);
-  return identityCodeFromResponse(platform, result);
+  let stage = "station_identity_request";
+  try {
+    const result = platform === "cainiao"
+      ? await readCainiao(session, TAOBAO_IDENTITY_API, {})
+      : await readPdd(session, "/api/express_trackbox/generate_identification_code", { entry_source: "APP" }, true);
+    stage = "station_identity_response";
+    return identityCodeFromResponse(platform, result);
+  } catch (error) {
+    writeDiagnostic("platform.identity.failed", {
+      sourceProvider: platform,
+      stage,
+      result: error instanceof PlatformWireError ? error.reason : "failed",
+    }, "warning");
+    throw error;
+  }
 }
 
 export async function openProviderController(

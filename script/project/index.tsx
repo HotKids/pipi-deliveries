@@ -376,7 +376,7 @@ function App() {
           />
         </Tab>
       ) : null}
-      <Tab key="deliveries" title="快递" systemImage="truck.box" value="deliveries">
+      <Tab key="deliveries" title="快递" systemImage="archivebox.fill" value="deliveries">
         <HomePage
           state={state}
           shipments={shipments}

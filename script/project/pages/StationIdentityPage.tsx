@@ -1,7 +1,8 @@
 import {
-  AppEvents, Button, Canvas, GeometryReader, HStack, Image, Navigation, NavigationStack, Script,
+  AppEvents, Button, Canvas, GeometryReader, HStack, Image, Navigation, NavigationStack,
   ScrollView, Text, VStack, ZStack, useEffect, useMemo, useObservable, useRef, useState,
 } from "scripting";
+import { bundledImage } from "../components/bundled-image";
 import { code128Widths } from "../services/code128";
 import { currentPlatformSession, onPlatformAccountsChanged, platformSession,
   type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
@@ -26,10 +27,10 @@ const QR_SHAPE = { type: "rect", cornerRadius: 14 } as const;
 
 export function StationIdentityMark({ platform }: { platform: IdentityPlatform }) {
   const asset = platform === "cainiao" ? "taobao" : platform;
-  return <Image
-    filePath={`${Script.directory}/assets/platform-accounts/${asset}.png`}
+  const artwork = bundledImage(`platform-accounts/${asset}.png`);
+  return artwork ? <Image image={artwork}
     resizable scaleToFit interpolation="high" frame={{ width: 28, height: 28 }} clipShape="circle"
-  />;
+  /> : <Image systemName="person.text.rectangle" frame={{ width: 28, height: 28 }} />;
 }
 
 async function openWebIdentity(platform: IdentityPlatform, session: PlatformSession | null) {

@@ -430,6 +430,7 @@ for (const loadCompleted of [true, false]) {
     const cookie = { ...sessionCookie, name: "pt_key", value: "synthetic-jd-session", domain: ".jd.com" };
     savePlatformLogin("jingdong", "", { kind: "web", cookies: [cookie] }, "synthetic-jd-account");
     let enteredOrders = false;
+    let profileLoads = 0;
     let controllers = 0;
     let disposed = 0;
     const title = { textContent: "示例商品" };
@@ -447,6 +448,11 @@ for (const loadCompleted of [true, false]) {
       async setCookie(value: Cookie) { this.cookies.push(value); return true; }
       async getAllCookies() { return this.cookies; }
       async loadURL(url: string) {
+        if (url === "https://my.m.jd.com/index.html?sceneval=2") {
+          enteredOrders = false;
+          profileLoads++;
+          return loadCompleted;
+        }
         assert.equal(url, "https://trade.m.jd.com/order/orderlist_jdm.shtml");
         assert.equal(trustedPlatformPage("jingdong", "https://mtrade.jd.hk/order/orderlist_jdm.shtml"), false);
         enteredOrders = true;
@@ -459,8 +465,8 @@ for (const loadCompleted of [true, false]) {
           // The account page can contain a security settings link alongside the order entry.
           body: { innerText: enteredOrders ? "待收货" : "我的京东 全部订单 账号安全验证" },
           querySelectorAll: () => enteredOrders ? [state] : [],
-          querySelector: (selector: string) => !enteredOrders && selector === ".my_order_entrance.type_orders"
-            ? { click: () => { enteredOrders = true; } } : null,
+          querySelector: (selector: string) => !enteredOrders && selector === ".my_header_name"
+            ? { textContent: "京东示例昵称" } : null,
         };
         return runInNewContext(`(() => {${script}})()`, {
           window, document, location: new URL(enteredOrders
@@ -494,9 +500,12 @@ for (const loadCompleted of [true, false]) {
       assert.equal(result.succeeded, 1);
       assert.deepEqual(result.issues, []);
       assert.equal(enteredOrders, true);
+      assert.equal(accountStatus("jingdong").label, "京东示例昵称",
+        "the nickname is read from the account page before the mainland order page");
       assert.ok(accountStatus("jingdong").syncedAtMs);
       const next = await refreshPlatformParcels(() => {}, "manual", "jingdong");
       assert.equal(next.succeeded, 1);
+      assert.equal(profileLoads, 1, "an established nickname does not require another profile load");
       assert.equal(controllers, 1, "the active account keeps the same isolated JD session across sync rounds");
       assert.equal(disposed, 0);
       clearPlatformLogin("jingdong", accountStatus("jingdong").generation);
@@ -513,7 +522,7 @@ for (const loadCompleted of [true, false]) {
 test("JD reads a logistics summary with a past waybill also present in the page text", { timeout: 2_500 }, async () => {
   memory.clear();
   const cookie = { ...sessionCookie, name: "pt_key", value: "synthetic-jd-detail", domain: ".jd.com" };
-  savePlatformLogin("jingdong", "", { kind: "web", cookies: [cookie] }, "synthetic-jd-account");
+  savePlatformLogin("jingdong", "", { kind: "web", cookies: [cookie] }, "synthetic-jd-account", "示例昵称");
   const session = platformSession("jingdong")!;
   const parcel = shipment();
   parcel.identity = { ...parcel.identity, manuallyAdded: false, accountOrder: true,

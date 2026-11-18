@@ -5,7 +5,6 @@ import {
   Image,
   List,
   Section,
-  Script,
   Spacer,
   Text,
   VStack,
@@ -19,6 +18,7 @@ import { accountKuaidi100URL, kuaidi100MiniProgramURL, shunfengKuaidi100Fallback
 import { trackPhoneText } from "../services/track-phone-links";
 import type { AccountBinding, AppState, Shipment } from "../models";
 import { ProductThumbnail } from "../components/ProductThumbnail";
+import { bundledImage } from "../components/bundled-image";
 import { productImageCacheKey } from "../services/product-image-cache";
 import { SenderBadge } from "../components/SenderBadge";
 import { carrierDisplayName, courierHotline } from "../services/carrier-presentation";
@@ -44,6 +44,7 @@ import {
   isProviderErrorDetail,
   latestTimelineTrackSemantic,
   normalizeWaybill,
+  shipmentDetailPhoneTail,
   shipmentDetailPresentationStatus,
   statusTint,
   statusTextTint,
@@ -61,7 +62,7 @@ import { readCloudParcelMetadata } from "../services/cloud-parcel-metadata";
 import { gatewayCredentialGeneration } from "../services/credentials";
 import { SCRIPT_BUILD_TRACK } from "../services/build-track";
 import { parcelActivityContent } from "../services/parcel-pickup";
-import { shipmentDetailReceiptLine, timelineTimeParts } from "../services/time-presentation";
+import { timelineTimeParts } from "../services/time-presentation";
 import { preferNewerShipment } from "../services/ui-state";
 import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
 import { needsManualPhoneTail } from "../services/jt-h5";
@@ -108,11 +109,12 @@ export function DetailPage(props: {
     ? kuaidi100MiniProgramURL(displayWaybill(shipment))
     : "";
   const externalAppName = manualExternalAppURL || accountExternalAppURL ? "快递100" : accountExternalAppName(shipment);
-  const timelineSourceIcon = shipment.identity.manuallyAdded
+  const timelineSourceIconPath = shipment.identity.manuallyAdded
     ? "sources/kuaidi100"
     : ({ cainiao: "sources/cainiao", jingdong: "couriers/jdshopping", shunfeng: "sources/sfexpress" } as Record<string, string>)[
         String(shipment.identity.sourceProvider || "").toLowerCase()
       ];
+  const timelineSourceIcon = timelineSourceIconPath ? bundledImage(`${timelineSourceIconPath}.png`) : undefined;
   const timelineSourceName = shipment.identity.manuallyAdded
     ? "快递100"
     : ({ cainiao: "菜鸟", jingdong: "京东", shunfeng: "顺丰" } as Record<string, string>)[
@@ -337,7 +339,7 @@ export function DetailPage(props: {
       presentationStatus.semantic === "UNKNOWN"
     ? MANUAL_QUERY_IN_FLIGHT_TEXT
     : presentationStatus.text;
-  const receiptLine = shipmentDetailReceiptLine(shipment, detailTimeline);
+  const phoneTail = shipmentDetailPhoneTail(shipment);
   const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment && !unprojectedAccountOrder(shipment)
     ? normalizeWaybill(displayWaybill(shipment)) : "";
   const cloudGeneration = /^[A-Z0-9]{6,64}$/.test(cloudWaybill) ? gatewayCredentialGeneration() : null;
@@ -732,11 +734,11 @@ export function DetailPage(props: {
                 <SenderBadge semantic={presentationStatus.semantic} />
               ) : null}
             </HStack>
-            {receiptLine ? (
-              <Text font="footnote" foregroundStyle="secondaryLabel" monospacedDigit
-                lineLimit={1} minScaleFactor={0.72} allowsTightening={true}>
-                {receiptLine}
-              </Text>
+            {phoneTail ? (
+              <HStack spacing={0}>
+                <Text font="subheadline">手机尾号：</Text>
+                <Text font="subheadline" monospacedDigit>{phoneTail}</Text>
+              </HStack>
             ) : null}
             <HStack
               alignment="center"
@@ -802,7 +804,7 @@ export function DetailPage(props: {
         header={
           <HStack spacing={6}>
             {timelineSourceIcon ? (
-              <Image filePath={`${Script.directory}/assets/${timelineSourceIcon}.png`}
+              <Image image={timelineSourceIcon}
                 resizable scaleToFit frame={{ width: 16, height: 16 }} />
             ) : null}
             <HStack spacing={0}>

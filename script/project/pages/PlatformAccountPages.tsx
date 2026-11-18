@@ -1,6 +1,7 @@
 import {
-  Button, HStack, Image, Navigation, NavigationStack, Script, Text, VStack, WebView, useEffect, useRef, useState,
+  Button, HStack, Image, Navigation, NavigationStack, Text, VStack, WebView, useEffect, useRef, useState,
 } from "scripting";
+import { bundledImage } from "../components/bundled-image";
 import { iconTileShape } from "../components/icon-tile";
 import {
   accountStatus, cookieValue, cookiesForURL, PLATFORM_NAMES, providerCookies, savePlatformLogin, WEB_PLATFORMS,
@@ -19,11 +20,12 @@ export function PlatformIcon({ platform, size = 36 }: {
   platform: ExpressPlatform | "samsung";
   size?: number;
 }) {
-  return (
-    <Image filePath={`${Script.directory}/assets/platform-accounts/${platform}.png`}
+  const artwork = bundledImage(`platform-accounts/${platform}.png`);
+  return artwork ? (
+    <Image image={artwork}
       resizable antialiased interpolation="high" frame={{ width: size, height: size }}
       clipShape={iconTileShape(size)} />
-  );
+  ) : <Image systemName="shippingbox.fill" frame={{ width: size, height: size }} />;
 }
 
 function decoded(text: string): string {

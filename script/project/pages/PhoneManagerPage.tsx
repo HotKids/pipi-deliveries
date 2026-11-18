@@ -14,6 +14,7 @@ import {
   useRef,
   useState,
 } from "scripting";
+import { SectionIconButton } from "../components/SectionIconButton";
 import type { AccountBinding, RefreshSummary } from "../models";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
 import { writeDiagnostic } from "../services/logger";
@@ -353,7 +354,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
           <HStack>
             <Text>更多数据源</Text>
             <Spacer />
-            <Button title="立即同步" systemImage="arrow.clockwise" labelStyle="iconOnly" disabled={busy ||
+            <SectionIconButton title="立即同步" symbol="arrow.clockwise" disabled={busy ||
               !platformAccounts.some((item) => item.state === "active")}
               action={() => void runAction(() => syncPlatforms(), "同步失败，请稍后重试。")} />
           </HStack>

@@ -10,7 +10,7 @@ export const EMPTY_CONTENT: ParcelActivityContent = { title: "快递实时活动
 
 export type Receipt = Readonly<{ id: string; linkId?: string; target?: ParcelActivityTarget }>;
 export type ParcelActivityRegistry = Readonly<{ showAll: boolean; receipts: Receipt[]; dismissed: string[] }>;
-export type ParcelActivityState = Omit<ParcelActivityContent, "target" | "expiresAtMs" | "capturedAtMs"> & { linkId?: string };
+export type ParcelActivityState = Omit<ParcelActivityContent, "target" | "expiresAtMs" | "capturedAtMs" | "businessDateKey"> & { linkId?: string };
 export type ParcelActivityCompletion = { linkId: string; kind: "pickup" | "handoff" };
 
 export function parcelActivityRegistry(): ParcelActivityRegistry {

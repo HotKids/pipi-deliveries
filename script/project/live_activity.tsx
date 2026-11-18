@@ -13,6 +13,7 @@ import { ParcelLiveActivityCard, parcelActivityImage } from "./components/Parcel
 import { iconTileShape } from "./components/icon-tile";
 import { PARCEL_ACTIVITY_NAME, type ParcelActivityState } from "./services/parcel-activity-action";
 import { parcelPickupShortCode } from "./services/parcel-pickup";
+import { parcelCardArtwork, parcelCardPalette } from "./services/parcel-card-appearance";
 
 export const PARCEL_ACTIVITY_ART = "pipi-deliveries/parcel-activity-art-v1";
 
@@ -25,9 +26,12 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
     }) : undefined;
     const compactCode = parcelPickupShortCode(data.code);
     const handoff = data.kind === "handoff";
-    const brandPath = data.platform ? `${imageRoot}/brand-${data.platform}.png` : undefined;
-    const logoPath = handoff ? brandPath : data.platform ? `${imageRoot}/${data.platform}.png` : undefined;
-    const brand = parcelActivityImage(brandPath);
+    const { accent, mark, sticker } = parcelCardArtwork(data);
+    const logoPath = sticker ? `${imageRoot}/${sticker.name}` : undefined;
+    const brand = mark ? parcelActivityImage(`${imageRoot}/${mark.name}`) : null;
+    const palette = parcelCardPalette(accent);
+    // Lock Screen activities align with the standard 14 pt notification margin.
+    const width = Device.isiPhone ? Math.min(Device.screen.width, Device.screen.height) - 2 * 14 : undefined;
     const badgeSize = 20;
     const glyph = (
       <ZStack frame={{ width: badgeSize, height: badgeSize }} clipShape={iconTileShape(badgeSize)}
@@ -45,10 +49,10 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
     };
     return (
       <LiveActivityUI
-        content={<ParcelLiveActivityCard {...cardProps} />}
+        content={<ParcelLiveActivityCard {...cardProps} width={width} lockScreen />}
         compactLeading={<HStack widgetURL={url}>{glyph}</HStack>}
         compactTrailing={(
-          <Text font={13} monospacedDigit lineLimit={1} minScaleFactor={0.7}>
+          <Text font={13} foregroundStyle={palette.code} monospacedDigit lineLimit={1} minScaleFactor={0.7}>
             {compactCode && Array.from(compactCode).length <= 8 ? compactCode : handoff ? "待寄件" : "待取件"}
           </Text>
         )}

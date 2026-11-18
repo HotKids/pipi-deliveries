@@ -230,7 +230,7 @@ export function blendStatusColor(color: number, target: number, amount: number):
   return result;
 }
 
-function statusLuminance(color: number): number {
+export function rgbLuminance(color: number): number {
   return [16, 8, 0].reduce((sum, shift, index) => {
     const channel = ((color >> shift) & 255) / 255;
     const linear = channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
@@ -256,7 +256,7 @@ export function statusTextTint(
     const backgrounds = [surface, blendStatusColor(surface, brand, 0x55 / 255)]
       .map((background) => blendStatusColor(background, accent, options.badgeOpacity ?? 0));
     const contrast = (color: number) => Math.min(...backgrounds.map((background) => {
-      const a = statusLuminance(color), b = statusLuminance(background);
+      const a = rgbLuminance(color), b = rgbLuminance(background);
       return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
     }));
     const target = contrast(0) >= contrast(0xffffff) ? 0 : 0xffffff;
@@ -1820,22 +1820,10 @@ export function terminalEvidenceAtMs(shipment: Shipment, now = Date.now()): numb
   return validLifecycleTime(timeline.statusEventAtMs, now);
 }
 
-export function shipmentDetailSigningAtMs(shipment: Shipment, detail: TimelinePackage, now: number): number {
-  if (shipmentDetailPresentationStatus(shipment, detail).semantic !== "COMPLETED" ||
-      (shipment.identity.accountOrder && !normalizedProjectedWaybill(shipment.identity))) return 0;
-
-  const trackTime = validLifecycleTime(earliestSignedAtMs(detail.tracks, 0), now)
-    || validLifecycleTime(earliestSignedAtMs(shipment.timeline.tracks, 0), now);
-  if (trackTime) return trackTime;
-
-  for (const timeline of [shipment.timeline, detail]) {
-    if (timeline.semantic === "COMPLETED" && timeline.structuredStatus === true &&
-        timelineNormalizedStatus(timeline)?.scope !== "ORDER") {
-      const eventAt = validLifecycleTime(timeline.statusEventAtMs, now);
-      if (eventAt) return eventAt;
-    }
-  }
-  return validLifecycleTime(shipment.forcedCompletedAtMs, now);
+export function shipmentDetailPhoneTail(shipment: Shipment): string {
+  return [shipment.identity.phoneTail, shipment.identity.phone, shipment.accountRecord?.phone]
+    .map(value => (value || "").replace(/\D/g, "").slice(-4))
+    .find(tail => tail.length === 4) ?? "";
 }
 
 function signedAt(shipment: Shipment, now: number): number {

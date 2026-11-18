@@ -1,5 +1,4 @@
-import type { Shipment, TimelinePackage } from "../models";
-import { parseListEventTime, shipmentDetailSigningAtMs } from "./status";
+import { parseListEventTime } from "./status";
 
 const CHINA_OFFSET_MS = 8 * 60 * 60 * 1000;
 
@@ -15,17 +14,6 @@ export function formatListTime(value: string): string {
   return epoch != null
     ? new Date(epoch + CHINA_OFFSET_MS).toISOString().slice(0, 16).replace("T", " ")
     : raw;
-}
-
-export function shipmentDetailReceiptLine(shipment: Shipment, detail: TimelinePackage, now = Date.now()): string {
-  const phoneTail = [shipment.identity.phoneTail, shipment.identity.phone, shipment.accountRecord?.phone]
-    .map(value => (value || "").replace(/\D/g, "").slice(-4)).find(tail => tail.length === 4);
-  const signedAt = shipmentDetailSigningAtMs(shipment, detail, now);
-  const signingTime = signedAt
-    ? new Date(signedAt + CHINA_OFFSET_MS).toISOString().slice(5, 16).replace("-", "/").replace("T", " ")
-    : "";
-  return [phoneTail && `手机尾号：${phoneTail}`, signingTime && `${signingTime} 签收`]
-    .filter(Boolean).join("｜");
 }
 
 function matchProviderTime(value: string): RegExpMatchArray | null {

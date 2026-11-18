@@ -267,6 +267,18 @@ export function saveCainiaoNickname(generation: string, nickname: string): boole
   return true;
 }
 
+export function needsJdNickname(label: string): boolean {
+  return !label || label === "京东用户" || label === "已登录账号" || /\*{4}/.test(label);
+}
+
+export function saveJdNickname(generation: string, nickname: string): void {
+  const current = currentPlatformSession("jingdong", generation);
+  const name = cleanString(nickname);
+  if (current && needsJdNickname(current.label) && !needsJdNickname(name) && name.length <= 80) {
+    saveAccount("jingdong", { ...current, label: name });
+  }
+}
+
 export function replacePlatformCookies(
   platform: WebPlatform, generation: string, previous: readonly PlatformCookie[], cookies: readonly PlatformCookie[],
 ): boolean {
@@ -281,16 +293,15 @@ export function replacePlatformCookies(
 
 export function notePlatformSync(
   platform: ExpressPlatform, generation: string, atMs: number,
-  fields: { nickname?: string; discovery?: boolean; cabinetLinks?: CabinetCredentials["cabinetLinks"] } = {},
+  fields: { discovery?: boolean; cabinetLinks?: CabinetCredentials["cabinetLinks"] } = {},
 ): boolean {
   const current = currentPlatformSession(platform, generation);
   if (!current) return false;
-  if (!current.syncedAtMs || current.syncedAtMs < atMs || fields.discovery || fields.cabinetLinks || fields.nickname) {
+  if (!current.syncedAtMs || current.syncedAtMs < atMs || fields.discovery || fields.cabinetLinks) {
     const credentials = current.credentials.kind === "cabinet" && fields.cabinetLinks
       ? { ...current.credentials, cabinetLinks: fields.cabinetLinks } : current.credentials;
     saveAccount(platform, {
       ...current, credentials, syncedAtMs: Math.max(current.syncedAtMs || 0, atMs),
-      label: cleanString(fields.nickname) || current.label,
       ...(fields.discovery ? { lastDiscoveryAtMs: atMs } : {}),
     });
   }
