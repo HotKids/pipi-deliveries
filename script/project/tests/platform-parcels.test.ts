@@ -15,7 +15,7 @@ import { identityCodeFromResponse, fetchStationIdentity, openProviderController,
 import { cainiaoHandoffs, cainiaoRecipientParcels, displayDeliveryEstimate, pddParcelAppURL, pddParcelDetailPath,
   pddPickupParcels } from "../services/platform-parcel-data";
 import { cabinetParcels, type CabinetParcel } from "../services/fengchao-account";
-import { cloudPddParcelAppURL, displayedPlatformFields, enrichPlatformParcel, matchPlatformParcel } from "../services/platform-parcel-merge";
+import { cloudPddParcelAppURL, displayedPlatformFields, enrichPlatformParcel, hasPddParcelSource, keepPlatformFields, matchPlatformParcel } from "../services/platform-parcel-merge";
 import { parseCloudParcelDetails } from "../services/cloud-parcel-metadata";
 import { activePickupCards, parcelActivityContent, shipmentForPickupTarget } from "../services/parcel-pickup";
 import { registerProjectionViewportHost } from "../services/projection-viewport";
@@ -24,11 +24,12 @@ import { fetchJdParcels } from "../services/platform-web-parcels";
 import { refreshParcelDetailFields } from "../services/parcel-detail-fields";
 
 const {
-  completeCurrentParcelCard, emptyState, loadState, savePlatformParcelData, saveRecognizedParcelCode, saveState,
+  completeCurrentParcelCard, emptyState, loadState, saveCloudPddParcels, savePlatformParcelData, saveRecognizedParcelCode, saveState,
   setPickupCardNote, visibleShipments,
 } = await import("../services/storage");
 const { pickupCabinetActions, performPickupAction, platformRefreshMessage, refreshPlatformParcels } =
   await import("../services/platform-parcel-sync");
+const { manualRefreshTasks } = await import("../services/sync/manual-chain-runner");
 
 const waybill = "YT000000008123";
 const order = "88000008123";
@@ -66,6 +67,48 @@ function shipment(overrides: Partial<Shipment> = {}): Shipment {
     updatedAtMs: NOW - 10_000, ...overrides,
   };
 }
+
+test("cloud PDD adopts a matching manual waybill and queues a new one without local PDD login", () => {
+  memory.clear();
+  const manual = shipment({ note: "Keep this note" });
+  const before = saveState({ ...emptyState(), shipments: [manual] }, NOW);
+  const current = before.shipments[0];
+  const cloud = { waybill, anchorAt: NOW - 20_000, terminalAt: 0, carrierCode: "YTO", phone4: "1234" };
+  const newBill = "YT000000008124";
+  const records = [cloud, { ...cloud, waybill: newBill }];
+  assert.equal(saveCloudPddParcels(records, before, () => false, NOW).revision, before.revision);
+  const imported = saveCloudPddParcels(records, before, () => true, NOW);
+  const adopted = imported.shipments.find(row => row.identity.id === current.identity.id)!;
+  assert.deepEqual(adopted.identity, current.identity);
+  assert.deepEqual(adopted.timeline, current.timeline);
+  assert.equal(adopted.note, current.note);
+  assert.equal(hasPddParcelSource(adopted), true);
+  const added = imported.shipments.find(row => row.identity.sourceId === newBill)!;
+  assert.equal(imported.shipments.length, 2);
+  assert.equal(added.identity.manuallyAdded, true);
+  assert.equal(added.identity.phoneTail, "1234");
+  assert.equal(added.timeline.semantic, "UNKNOWN");
+  assert.deepEqual(added.timeline.tracks, []);
+  assert.equal(hasPddParcelSource(added), true);
+  assert.ok(manualRefreshTasks(imported, imported.activeSource, NOW, new Set(), false)
+    .some(task => task.id === added.identity.id));
+  assert.deepEqual(visibleShipments(imported, NOW).map(row => row.identity.id), [current.identity.id]);
+  assert.equal(saveCloudPddParcels(records, imported, () => true, NOW).revision, imported.revision);
+  assert.equal(hasPddParcelSource(keepPlatformFields(adopted, current)), true);
+  assert.equal(hasPddParcelSource({ ...adopted, waybillReuseAtMs: NOW }), false);
+});
+
+test("cloud PDD leaves other owners and ambiguous or reused waybills alone", () => {
+  memory.clear();
+  const current = shipment();
+  const before = saveState({ ...emptyState(), shipments: [current] }, NOW);
+  const cloud = { waybill, anchorAt: NOW - 20_000, terminalAt: 0, carrierCode: "YTO", phone4: "" };
+  assert.equal(saveCloudPddParcels([cloud, cloud], before, () => true, NOW).revision, before.revision);
+  const earlier = NOW - 3 * 86_400_000;
+  assert.equal(saveCloudPddParcels([{ ...cloud, anchorAt: earlier, terminalAt: earlier + 1 }], before, () => true, NOW).revision, before.revision);
+  const deleted = saveState({ ...before, shipments: [] }, NOW);
+  assert.equal(saveCloudPddParcels([cloud], before, () => true, NOW).revision, deleted.revision);
+});
 
 test("a cloud PDD link can open a matched parcel with complete local display fields and no PDD session", () => {
   const pddLink = { waybill, anchorAt: NOW - 10_000, terminalAt: 0, shippingId: "73000919", observedAt: NOW - 2_000 };

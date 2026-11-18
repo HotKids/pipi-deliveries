@@ -15,6 +15,40 @@ export type PreparedManualPreview = {
   hasTimedResult: boolean;
 };
 
+export function pendingManualPreviewShipment(pending: PendingManualQuery): Shipment {
+  return {
+    identity: {
+      id: `${pending.source}:manual:${pending.waybill}`,
+      bindingSource: pending.source,
+      sourceOwner: "manual",
+      sourceId: pending.waybill,
+      phoneTail: pending.phoneTail,
+      courierCode: pending.courierCode,
+      rawCourierCode: pending.rawCourierCode,
+      companyName: pending.companyName,
+      manuallyAdded: true,
+      createdAtMs: pending.createdAtMs,
+    },
+    timeline: {
+      provider: "pending",
+      complete: false,
+      structuredStatus: false,
+      waybill: pending.waybill,
+      courierCode: pending.courierCode,
+      companyName: pending.companyName,
+      semantic: "UNKNOWN",
+      statusEventAtMs: null,
+      latestTimeText: "",
+      latestDetail: "",
+      tracks: [],
+      successAtMs: pending.lastAttemptAtMs,
+    },
+    sourceTimeline: null,
+    manualTimelines: [],
+    updatedAtMs: pending.lastAttemptAtMs,
+  };
+}
+
 /** Loading ends when a current provider's accumulated origin aligns with the latest parcel evidence. */
 export function manualPreviewNeedsDetailRefresh(
   shipment: Shipment | null,

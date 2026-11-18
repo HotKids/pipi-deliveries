@@ -57,7 +57,7 @@ import {
 import { loadState, loadStateSnapshot, recordShipmentDetailSelection, setShipmentNote, setShipmentProductName, visibleShipments, type LoadedStateSnapshot } from "../services/storage";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { requestWidgetReload } from "../services/widgets";
-import { cloudPddParcelAppURL, displayedPlatformFields, samePlatformTarget } from "../services/platform-parcel-merge";
+import { cloudPddParcelAppURL, displayedPlatformFields, hasPddParcelSource, samePlatformTarget } from "../services/platform-parcel-merge";
 import { pddParcelAppURL } from "../services/platform-parcel-data";
 import { readCloudParcelMetadata, type CloudParcelDetails } from "../services/cloud-parcel-metadata";
 import { needsParcelDetailFields, refreshParcelDetailFields } from "../services/parcel-detail-fields";
@@ -354,6 +354,7 @@ export function DetailPage(props: {
   const cloudScope = cloudGeneration === null ? "" : JSON.stringify([cloudGeneration, cloudWaybill, cloudLifecycle]);
   const cloudDetails = cloud?.scope === cloudScope ? cloud.details : undefined;
   const pddExternalAppURL = localPddAppURL || cloudPddParcelAppURL(shipment, cloudDetails?.pddLink);
+  const pddOrigin = samePlatformTarget(props.shipment, shipment) && hasPddParcelSource(props.shipment);
   const platformFields = displayedPlatformFields(shipment, Date.now(), cloudDetails?.metadata);
   const note = shipment.note?.trim();
   const showParcelInfo = Boolean(platformFields.estimate || platformFields.title || note);
@@ -821,9 +822,11 @@ export function DetailPage(props: {
         </HStack>
       </Section>
 
-      {pddExternalAppURL ? (
+      {pddExternalAppURL || pddOrigin ? (
         <Section>
-          <Button title="在拼多多 App 中打开" systemImage="arrow.up.forward.app" action={openPddParcelApp} />
+          {pddExternalAppURL ? (
+            <Button title="在拼多多 App 中打开" systemImage="arrow.up.forward.app" action={openPddParcelApp} />
+          ) : <Text foregroundStyle="secondaryLabel">来源为拼多多</Text>}
         </Section>
       ) : null}
 

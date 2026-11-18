@@ -439,16 +439,6 @@ export function HomePage(props: {
     <NavigationStack>
       <VStack navigationBarVisibility="hidden" spacing={0}
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        overlay={{
-          alignment: "bottomTrailing",
-          content: (
-            <VStack>
-              <VStack padding={TAB_FAB_PADDING}>
-                <TabFloatingActionButton title="查询" symbol="magnifyingglass" action={() => searchPresented.setValue(true)} />
-              </VStack>
-            </VStack>
-          ),
-        }}
         toast={searchPresented.value ? undefined : transientToast(notice, setNotice)}
         sheet={{
           isPresented: searchPresented,
@@ -518,6 +508,11 @@ export function HomePage(props: {
       >
         <RootTabList key="shipments" title="快递" onClose={() => dismiss()}
           refresh={refresh} bottomInset={TAB_FAB_SCROLL_INSET}
+          titleAction={(
+            <VStack padding={TAB_FAB_PADDING}>
+              <TabFloatingActionButton title="查询" symbol="magnifyingglass" action={() => searchPresented.setValue(true)} />
+            </VStack>
+          )}
           emptyState={!shipments.length ? (
             <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} allowsHitTesting={false}>
               <EmptyDeliveryStateGroup vehicleSize={81.6} spacing={6} labelFont={24} deferArtwork />

@@ -15,7 +15,7 @@ import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey, type Alignme
 import { alignmentAttemptDue, alignmentOwnerCurrent, alignmentTimesKey, reserveAlignmentAttempt, finishAlignmentAttempt, newerAlignmentEvidence, publishAlignmentPresentation } from "../status-alignment-state";
 import { assertWithinDeadline, deadlineAfter, deadlineExpired } from "../deadline";
 import { accountChildDeadline, oldestBatchIndices } from "../account-sync-policy";
-import { prepareManualPreview } from "../manual-preview";
+import { pendingManualPreviewShipment, prepareManualPreview } from "../manual-preview";
 import { applyRecognizedPickup } from "../parcel-pickup";
 import type { ParcelLookup } from "../parcel-code-ocr";
 import { createDiagnosticFlowId, diagnosticErrorDetails, openStageCancellationEnd, writeDiagnostic } from "../logger";
@@ -374,43 +374,6 @@ export type ManualShipmentPreview = {
     pending: PendingManualQuery | null;
   };
 };
-
-function pendingManualPreviewShipment(
-  pending: PendingManualQuery,
-): Shipment {
-  const timeline: Shipment["timeline"] = {
-    provider: "pending",
-    complete: false,
-    structuredStatus: false,
-    waybill: pending.waybill,
-    courierCode: pending.courierCode,
-    companyName: pending.companyName,
-    semantic: "UNKNOWN",
-    statusEventAtMs: null,
-    latestTimeText: "",
-    latestDetail: "",
-    tracks: [],
-    successAtMs: pending.lastAttemptAtMs,
-  };
-  return {
-    identity: {
-      id: `${pending.source}:manual:${pending.waybill}`,
-      bindingSource: pending.source,
-      sourceOwner: "manual",
-      sourceId: pending.waybill,
-      phoneTail: pending.phoneTail,
-      courierCode: pending.courierCode,
-      rawCourierCode: pending.rawCourierCode,
-      companyName: pending.companyName,
-      manuallyAdded: true,
-      createdAtMs: pending.createdAtMs,
-    },
-    timeline,
-    sourceTimeline: null,
-    manualTimelines: [],
-    updatedAtMs: pending.lastAttemptAtMs,
-  };
-}
 
 export async function queryManualShipmentPreview(input: {
   waybill: string;

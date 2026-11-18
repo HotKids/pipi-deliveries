@@ -200,6 +200,7 @@ export type ParcelPlatformFields = Readonly<{
 }>;
 
 export type PddParcelImport = Readonly<{ ownerKey: string; orderId: string; shippingId?: string }>;
+export type PddCloudOrigin = Readonly<{ waybill: string; waybillGeneration: number }>;
 
 export type ParcelHandoffRecord = Readonly<{
   id: string;
@@ -239,6 +240,7 @@ export type Shipment = {
   pickup?: ParcelPickup;
   platformFields?: ParcelPlatformFields;
   pddImport?: PddParcelImport;
+  pddCloudOrigin?: PddCloudOrigin;
   /** Set only after this shipment's trusted Cainiao H5 returned no usable timeline. */
   cainiaoH5FallbackActivatedAtMs?: number;
   manualRefreshAttemptAtMs?: number;
