@@ -497,7 +497,14 @@ assert.match(settingsSource, /<RootPageHeader title="设置" action=\{\(\) => di
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
 assert.match(rootHeader, /<Text font="largeTitle" fontWeight="bold"[\s\S]*?<Button title="关闭" systemImage="xmark"/);
 assert.match(rootHeader, /labelStyle="iconOnly"[\s\S]*?width: 44, height: 44/);
-assert.match(pickupSource, /<TabFloatingActionButton\s+title="身份码" symbol="person.text.rectangle"/);
+assert.match(pickupSource, /<\/List>\s*<IdentityCodeButton onOpen=\{setIdentity\}/,
+  "the identity popover is anchored beside the scrolling list");
+assert.match(pickupSource, /<HStack spacing=\{0\} popover=\{\{\s*isPresented: showPicker,\s*onChanged: setShowPicker,/,
+  "the containing row owns the reference popover binding");
+assert.match(pickupSource, /<TabFloatingActionButton title="身份码" symbol="person\.text\.rectangle"/);
+const floatingButtonSource = readFileSync(new URL("../components/TabFloatingActionButton.tsx", import.meta.url), "utf8");
+assert.match(floatingButtonSource, /<Label title=\{title\} systemImage=\{symbol\} labelStyle="iconOnly"/,
+  "both floating actions use a symbol-only label");
 assert.match(pickupSource, /onLocationTap=\{canSwitch \? \(\) => setShowAddress\(!showAddress\)/);
 
 console.log("parcel OCR, tab entry, and Activity lifecycle tests passed");

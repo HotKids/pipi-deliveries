@@ -15,7 +15,7 @@ import { attachedProjectedOrders } from "./waybill-ownership";
 const CAINIAO_PARCEL_DETAIL = "mtop.cainiao.logisticsdetail.packages.pid.orderCode.mailNo.get";
 const DETAIL_FIELDS_INTERVAL_MS = 3_600_000;
 
-function needsFields(shipment: Shipment) {
+export function needsParcelDetailFields(shipment: Shipment): boolean {
   const fields = displayedPlatformFields(shipment);
   return !fields.title || (!fields.estimate && deliveryEstimateApplies(shipment));
 }
@@ -31,7 +31,8 @@ function jdOrderFor(owner: Shipment, shipments: readonly Shipment[]): string {
 
 export async function refreshParcelDetailFields(expected: Shipment, active: () => boolean) {
   const waybill = unprojectedAccountOrder(expected) ? "" : normalizeWaybill(displayWaybill(expected));
-  if (!projectionSceneActive() || !active() || !/^[A-Z0-9]{6,64}$/.test(waybill)) return undefined;
+  if (!projectionSceneActive() || !active() || !/^[A-Z0-9]{6,64}$/.test(waybill) ||
+    !needsParcelDetailFields(expected)) return undefined;
   let observed = loadState();
   function ownerIn(state: typeof observed) {
     const matches = visibleShipments(state).filter((row) => !unprojectedAccountOrder(row) &&
@@ -41,7 +42,7 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
       expected.forcedCompletedAtMs === row.forcedCompletedAtMs ? row : undefined;
   }
   const owner = ownerIn(observed);
-  if (!owner || !needsFields(owner)) return undefined;
+  if (!owner || !needsParcelDetailFields(owner)) return undefined;
   const nativeSource = owner.identity.sourceProvider?.trim().toLowerCase();
   const pdd = owner.pddImport;
   const cainiao = !pdd && (nativeSource === "cainiao" || nativeSource === "taobao") ? platformSession("cainiao") : null;
@@ -59,7 +60,7 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
       if (!active() || !current() || !reservation?.isCurrent()) return false;
       const state = loadState();
       const row = ownerIn(state);
-      if (!row || !needsFields(row)) return false;
+      if (!row || !needsParcelDetailFields(row)) return false;
       return platform === "jingdong" ? jdOrderFor(row, state.shipments) === jdOrder :
         platform === "pinduoduo" ? JSON.stringify(row.pddImport) === JSON.stringify(pdd) :
           !row.pddImport && row.identity.sourceProvider?.trim().toLowerCase() === nativeSource;

@@ -361,17 +361,18 @@ const enhancedBinding = { ...bindings[0], enhancedMode: true, enhancedAtMs: 2,
 for (const acceptLocalRemoval of [false, true]) {
   const confirmations = [true, acceptLocalRemoval];
   const removeCalls: boolean[] = [];
+  let identityReads = 0;
   const removal = mountHandlers(managerHandlers, "PhoneManagerPage", {
     bindings: [enhancedBinding], stateRevision: 1, busy: false,
     onRemove: async (_binding: unknown, localOnly?: boolean) => {
       removeCalls.push(Boolean(localOnly));
       if (!localOnly) throw new SyntheticUnbindUnavailable("synthetic upstream unavailable");
     },
-  }, "remove, notice, enhancementNotice, samsungState", {
+  }, "remove, notice, enhancementNotice, samsungState, setVisible", {
     EXPRESS_TOAST_COPY: { phoneUnbound: "unbound", unbindFailed: "failed" },
     EnhancementUnbindUnavailable: SyntheticUnbindUnavailable,
     EnhancementIdentityMissing: SyntheticIdentityMissing,
-    existingEnhancementIdentity: () => null,
+    existingEnhancementIdentity: () => { identityReads++; return null; },
     Dialog: { confirm: async (options: any) => {
       assert.ok(confirmations.length);
       if (confirmations.length === 1) {
@@ -382,6 +383,9 @@ for (const acceptLocalRemoval of [false, true]) {
       return confirmations.shift();
     } },
   });
+  const hidden = removal.render();
+  assert.equal(identityReads, 0, "hidden account management does not read the enhancement identity");
+  hidden.setVisible(true);
   removal.render();
   assert.equal(removal.render().enhancementNotice, "synthetic identity requires verification",
     "an enhanced binding without its original identity visibly requires re-verification");

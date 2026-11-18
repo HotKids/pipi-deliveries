@@ -60,6 +60,15 @@ export function parcelActivityStatus(): Promise<{ showAll: boolean; count: numbe
   });
 }
 
+export function parcelActivityPreviewing(): Promise<boolean> {
+  return serialize(async () => {
+    for (const receipt of parcelActivityRegistry().receipts) {
+      if (!receipt.target && await isRunning(receipt)) return true;
+    }
+    return false;
+  });
+}
+
 function committedState(): AppState {
   const state = loadState();
   if (stateLoadFailure()) throw new Error("本地数据暂不可用，请稍后重试。");

@@ -24,13 +24,11 @@ import type { AppState, RefreshSummary, Shipment, StatusSemantic } from "../mode
 import { ShipmentRow } from "../components/ShipmentRow";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
 import { RootPageHeader } from "../components/RootPageHeader";
-import { TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
+import { TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import {
   commitManualShipmentPreview,
   queryManualShipmentPreview,
-  refreshAllShipments,
   refreshAllShipmentsForPull,
-  subscribeRefreshState,
 } from "../services/sync";
 import { saveRecognizedShipmentPickup, stateLoadFailure } from "../services/storage";
 import type { ParcelLookup } from "../services/parcel-code-ocr";
@@ -188,22 +186,11 @@ export function HomePage(props: {
   }, [props.platformNotice]);
 
   useEffect(() => {
-    let active = true;
     mountedRef.current = true;
-    const unsubscribe = subscribeRefreshState(props.onStateChange);
     // 所有副本都迁移失败时不是空库，而是读取失败（2026-09-06 静态审查②）：进页先说一声。
     if (stateLoadFailure()) setNotice(EXPRESS_TOAST_COPY.stateLoadFailed);
-    void refreshAllShipments()
-      .then((summary) => {
-        if (active) props.onStateChange(summary.state);
-      })
-      .catch(() => {
-        /* cached data remains available when the launch refresh fails */
-      });
     return () => {
-      active = false;
       mountedRef.current = false;
-      unsubscribe();
     };
   }, []);
 
@@ -236,7 +223,7 @@ export function HomePage(props: {
     setNotice("");
     try {
       // E1 (owner 2026-11-10): the spinner ends once the account phase is stored; the per-shipment work
-      // goes on in the same refresh and reaches this page through subscribeRefreshState.
+      // goes on in the same refresh and is published by the app's refresh subscription.
       const { summary, completion } = await refreshAllShipmentsForPull(undefined, {
         accountSourceFollowup: true,
       });
@@ -360,7 +347,11 @@ export function HomePage(props: {
         }}
         overlay={{
           alignment: "bottomTrailing",
-          content: <TabFloatingActionButton title="查询" symbol="magnifyingglass" action={() => searchPresented.setValue(true)} />,
+          content: (
+            <VStack padding={TAB_FAB_PADDING}>
+              <TabFloatingActionButton title="查询" symbol="magnifyingglass" action={() => searchPresented.setValue(true)} />
+            </VStack>
+          ),
         }}
         toast={searchPresented.value ? undefined : transientToast(notice, setNotice)}
         sheet={{

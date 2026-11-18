@@ -27,8 +27,7 @@ import {
 } from "./services/projection-viewport";
 import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
-import { SettingsPage, useSettingsOverview } from "./pages/SettingsPage";
-import { preparePickupBoxAnimation } from "./components/PickupTabCard";
+import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
 import { expireDueParcelHandoffs, loadState, peekStateRevision, visibleShipments } from "./services/storage";
 import { onPlatformAccountsChanged } from "./services/platform-accounts";
@@ -41,7 +40,7 @@ import {
   writeRuntimeCapabilities,
 } from "./services/logger";
 import { preferNewerState } from "./services/ui-state";
-import { refreshAllShipments } from "./services/sync";
+import { refreshAllShipments, subscribeRefreshState } from "./services/sync";
 import {
   reloadAndRefreshOnResume,
   resumeShipmentId,
@@ -57,7 +56,7 @@ import {
   takeScreenShortcutLookup,
 } from "./services/parcel-shortcut";
 import {
-  onParcelActivityPreviewChanged, parcelActivitySceneChanged, parcelActivityStatus, parcelActivityTarget,
+  onParcelActivityPreviewChanged, parcelActivityPreviewing, parcelActivitySceneChanged, parcelActivityTarget,
   reconcileParcelActivity,
 } from "./services/parcel-live-activity";
 import { activePickupCards, independentPickupContent } from "./services/parcel-pickup";
@@ -92,7 +91,6 @@ function App() {
   // One app-owned viewport stays mounted across Home/detail navigation.
   const [projectionView, setProjectionView] = useState<ProjectionViewportView | null>(null);
   const [startup, setStartup] = useState(readStartupState);
-  const settingsOverview = useSettingsOverview();
   const [platformRevision, setPlatformRevision] = useState(0);
   const [platformNotice, setPlatformNotice] = useState<{ text: string } | undefined>(undefined);
   const [pickupNotice, setPickupNotice] = useState("");
@@ -115,6 +113,7 @@ function App() {
     navigationRequest.pickupRecordId ? "pickup" : "deliveries",
   );
   const state = startup.state;
+  const hasState = state !== null;
   const revision = useRef(state?.revision ?? -1);
   revision.current = state?.revision ?? -1;
   const latestParcelState = useRef(state);
@@ -124,9 +123,7 @@ function App() {
     [shipments, state?.pickupCodeRecords]);
   const [pickupPreview, setPickupPreview] = useState(false);
   const hasPickupTab = pickupCards.length > 0 || pickupPreview;
-  useEffect(() => {
-    if (hasPickupTab) void preparePickupBoxAnimation();
-  }, [hasPickupTab]);
+  const platformObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const cabinetActions = useMemo(() => new Set(pickupCards.filter(canOpenParcelCabinet)),
     [platformRevision, pickupCards]);
   const handoffDeadline = useMemo(() => nextParcelHandoffDeadline(state?.pickupCodeRecords),
@@ -153,11 +150,19 @@ function App() {
     });
   }
 
+  function observePlatformList() {
+    if (platformObservation.current !== undefined) return;
+    platformObservation.current = setTimeout(() => {
+      platformObservation.current = undefined;
+      refreshPlatformList("observe");
+    }, 0);
+  }
+
   useEffect(() => onPlatformAccountsChanged(() => setPlatformRevision((value) => value + 1)), []);
   useEffect(() => {
     let mounted = true;
     const reload = () => {
-      void parcelActivityStatus().then(({ previewing }) => {
+      void parcelActivityPreviewing().then((previewing) => {
         if (mounted) setPickupPreview(previewing);
       }).catch(() => {
         writeDiagnostic("activity.parcel.preview.read.failed", { result: "failed" }, "warning");
@@ -171,7 +176,23 @@ function App() {
     };
   }, []);
   useEffect(() => {
-    if (state) refreshPlatformList("observe");
+    if (!hasState) return;
+    let mounted = true;
+    const unsubscribe = subscribeRefreshState(applyState);
+    const timer = setTimeout(() => {
+      void refreshAllShipments().then((summary) => {
+        if (mounted) applyState(summary.state);
+      }).catch(() => { /* The refresh records its failure and leaves the cached list available. */ });
+    }, 0);
+    return () => {
+      mounted = false;
+      clearTimeout(timer);
+      unsubscribe();
+    };
+  }, [hasState]);
+
+  useEffect(() => {
+    if (state) observePlatformList();
   }, [state?.revision]);
 
   useEffect(() => {
@@ -191,7 +212,7 @@ function App() {
       foregroundRefresh.scenePhaseChanged(phase);
       statusAlignment.scenePhaseChanged(phase);
       if (phase === "active") {
-        refreshPlatformList("observe");
+        observePlatformList();
         try {
           if (peekStateRevision() > revision.current) applyState(loadState());
           else if (latestParcelState.current) reconcileParcelActivity(latestParcelState.current);
@@ -209,6 +230,7 @@ function App() {
     AppEvents.scenePhase.addListener(observe);
     return () => {
       AppEvents.scenePhase.removeListener(observe);
+      if (platformObservation.current !== undefined) clearTimeout(platformObservation.current);
       orderProjection.stop();
       foregroundRefresh.stop();
       statusAlignment.stop();
@@ -395,7 +417,7 @@ function App() {
         />
       </Tab>
       <Tab key="settings" title="设置" systemImage="gearshape.fill" value="settings">
-        <SettingsPage state={state} pickupCards={pickupCards} overview={settingsOverview} onStateChange={applyState} />
+        <SettingsPage state={state} pickupCards={pickupCards} onStateChange={applyState} />
       </Tab>
     </TabView>
   );

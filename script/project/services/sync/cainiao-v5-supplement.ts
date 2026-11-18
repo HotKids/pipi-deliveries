@@ -59,10 +59,13 @@ export function productImageOwnerFingerprint(shipment: Shipment, state: AppState
   ]));
 }
 
-export function shouldRequestDetailProductImage(shipment: Shipment, bindings: readonly AccountBinding[]): boolean {
+export function shouldRequestDetailProductImage(
+  shipment: Shipment, bindings: readonly AccountBinding[] | (() => readonly AccountBinding[]),
+): boolean {
   if (shipment.identity.productImageURL) return false;
   const reference = accountParcelWithProjectionReference(shipment, null, "", true);
-  return Boolean(reference && enhancementPhone(reference, bindings));
+  if (!reference || reference.source !== SCRIPT_BINDING_SOURCE || reference.sourceProvider.toLowerCase() !== "jingdong") return false;
+  return Boolean(enhancementPhone(reference, typeof bindings === "function" ? bindings() : bindings));
 }
 
 const defaultAccountDetailRuntimeState = createSyncRuntimeState();

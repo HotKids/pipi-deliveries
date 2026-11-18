@@ -21,7 +21,7 @@ const STICKER_DURATION_MS = STICKER_ROTATION_MS.reduce((sum, duration) => sum + 
 let boxAtlas: UIImage | null | undefined;
 let boxAtlasRequest: Promise<UIImage | null> | undefined;
 
-export function preparePickupBoxAnimation(): Promise<UIImage | null> {
+function preparePickupBoxAnimation(): Promise<UIImage | null> {
   return boxAtlasRequest ??= FileManager.readAsData(`${Script.directory}/assets/parcel-activity/box-frames.png`)
     .then((data) => UIImage.fromData(data)).catch(() => null).then((image) => {
       boxAtlas = image;
@@ -101,27 +101,28 @@ function PickupTabArtwork({ logoAsset, logoSize }: { logoAsset?: string; logoSiz
   const [appearance, setAppearance] = useState(0);
   const [atlas, setAtlas] = useState(boxAtlas);
   const hasAppeared = useRef(false);
-  useEffect(() => {
-    if (atlas !== undefined) return;
-    let active = true;
-    void preparePickupBoxAnimation().then((image) => { if (active) setAtlas(image); });
-    return () => { active = false; };
-  }, []);
+  const visible = useRef(false);
+  useEffect(() => () => { visible.current = false; }, []);
   const logo = useMemo(() => logoAsset ? bundledImage(logoAsset) ?? null : null, [logoAsset]);
-  const fallbackBox = atlas === null ? bundledImage("parcel-activity/box.png") : undefined;
+  const fallbackBox = atlas ? undefined : bundledImage("parcel-activity/box.png");
   return (
     <ZStack alignment="topLeading" frame={{ width: ART_WIDTH, height: ART_HEIGHT }}
       onAppear={() => {
+        visible.current = true;
+        if (atlas === undefined) void preparePickupBoxAnimation().then((image) => {
+          if (visible.current) setAtlas(image);
+        });
         if (hasAppeared.current) setAppearance((visit) => visit + 1);
         hasAppeared.current = true;
-      }}>
-      {atlas ? <AnimatedBox key={appearance} atlas={atlas} logo={logo} logoSize={logoSize} /> : atlas === null ? (
+      }}
+      onDisappear={() => { visible.current = false; }}>
+      {atlas ? <AnimatedBox key={appearance} atlas={atlas} logo={logo} logoSize={logoSize} /> : (
         <ZStack alignment="topLeading">
           {fallbackBox ? <Image image={fallbackBox} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} /> : null}
           {logo ? <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
             offset={{ x: 50 - logoSize / 2, y: 64 - logoSize / 2 }} /> : null}
         </ZStack>
-      ) : null}
+      )}
     </ZStack>
   );
 }

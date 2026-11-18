@@ -1,5 +1,5 @@
 import { AbortController } from "scripting";
-import type { AppState } from "../models";
+import type { AppState, Shipment } from "../models";
 import { detectManualCarrier } from "./manual-query";
 import {
   currentPlatformSession, notePlatformSync, onPlatformAccountsChanged, platformSession, saveCainiaoNickname, PLATFORM_NAMES, PLATFORM_SOURCES,
@@ -35,20 +35,21 @@ export type PlatformSyncProgress = (platform: ExpressPlatform, running: boolean)
 type PlatformRefreshIssue = { platform: ExpressPlatform; reason: "expired" | "partial" | "failed" };
 type PlatformRefreshResult = { succeeded: number; failed: number; added: number; issues: PlatformRefreshIssue[] };
 
-function scopeFor(platform: ExpressPlatform, session: PlatformSession, state: AppState, mode: RefreshMode): ReadScope {
+function scopeFor(platform: ExpressPlatform, session: PlatformSession, visible: readonly Shipment[], mode: RefreshMode): ReadScope {
   const now = Date.now();
-  const visible = visibleShipments(state, now);
   const last = observedRows.get(platform);
   const keys = new Set<string>();
+  let waiting = false;
   for (const shipment of visible) {
-    if (eligiblePickup(shipment)) keys.add("pickup:" + shipmentLifecycleKey(shipment));
-    else if (shipment.identity.sourceProvider?.toLowerCase() === platform ||
+    if (eligiblePickup(shipment)) {
+      waiting = true;
+      keys.add("pickup:" + shipmentLifecycleKey(shipment));
+    } else if (shipment.identity.sourceProvider?.toLowerCase() === platform ||
       platform === "pinduoduo" && shipment.pddImport?.ownerKey === session.ownerKey) {
       keys.add("source:" + shipmentLifecycleKey(shipment));
     }
   }
   const newKeys = [...keys].filter((key) => last?.generation !== session.generation || !last.keys.has(key));
-  const waiting = visible.some(eligiblePickup);
   const recipients = mode === "manual" || waiting && (mode === "pull" || newKeys.some((key) => key.startsWith("pickup:")));
   const hour = new Date(now + 8 * 3_600_000).getUTCHours();
   const attempt = regularAttempts.get(platform);
@@ -216,7 +217,7 @@ export async function refreshPlatformParcels(
     return session ? [{ platform, session }] : [];
   });
   if (!sessions.length) return summary;
-  const state = loadState();
+  let visible: readonly Shipment[] | undefined;
   const tasks = sessions.flatMap(({ platform, session }) => {
     if (platform === "cainiao" && mode === "manual" && session.cainiaoLabelKind !== "nickname" &&
       !cainiaoProfileInFlight.has(session.generation)) {
@@ -234,7 +235,7 @@ export async function refreshPlatformParcels(
       const task = mode === "manual" ? previous.task : previous.task.then((outcome) => ({ ...outcome, added: 0 }));
       return [{ platform, task }];
     }
-    const scope = scopeFor(platform, session, state, mode);
+    const scope = scopeFor(platform, session, visible ??= visibleShipments(loadState()), mode);
     if (!scope.recipients && !scope.regular) return [];
     const task = syncPlatform(platform, session, scope, publish).finally(() => {
       const slot = inFlight.get(platform);

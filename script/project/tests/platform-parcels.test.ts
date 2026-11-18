@@ -388,6 +388,10 @@ test("opening a retained detail reads only its CaiNiao parcel and leaves the acc
     assert.deepEqual(update.shipment.timeline, row.timeline);
     assert.equal(accountStatus("cainiao").syncedAtMs, priorSync);
     assert.equal(fetched.mock.callCount(), 1);
+    const storageReads = t.mock.method(Storage, "get");
+    assert.equal(await refreshParcelDetailFields(update.shipment, () => true), undefined);
+    assert.equal(storageReads.mock.callCount(), 0, "complete fields skip the durable state read");
+    assert.equal(fetched.mock.callCount(), 1);
   } finally {
     Object.assign(globalThis, { Crypto: previousCrypto });
   }

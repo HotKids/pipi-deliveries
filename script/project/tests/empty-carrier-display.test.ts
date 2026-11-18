@@ -56,7 +56,7 @@ function row(companyName: string, semantic: "TRANSIT" | "DELIVERY", at: number, 
   assert.match(shipmentRow, /\{carrierDisplayName\(item\.identity\.companyName\)\}/);
   assert.match(shipmentRow, /companyName=\{item\.identity\.companyName\}/, "the icon keeps the stored name");
   const detailPage = source("../pages/DetailPage.tsx");
-  assert.match(detailPage, /<Text font=\{15\}>\{carrierDisplayName\(shipment\.identity\.companyName\)\}：<\/Text>/);
+  assert.match(detailPage, /<Text font="subheadline">\{carrierDisplayName\(shipment\.identity\.companyName\)\}：<\/Text>/);
   const small = source("../widget/SmallWidget.tsx");
   assert.match(small, /`\$\{carrierDisplayName\(row\.companyName\)\} \$\{row\.waybillSuffix\}`/);
   assert.match(small, /:\s*carrierDisplayName\(row\.companyName\)\}/);

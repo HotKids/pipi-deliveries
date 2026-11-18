@@ -112,7 +112,7 @@ for (const diagnosticContract of [
     `missing diagnostic navigation contract: ${diagnosticContract}`,
   );
 }
-assert.ok(settings.includes('<DiagnosticLogPage />'));
+assert.match(settings, /destination === "diagnostics" \? \(\s*<DiagnosticLogPage\b/);
 
 const projectLinkStart = settings.indexOf("<Link url={PROJECT_URL}>");
 const projectLinkEnd = settings.indexOf("</Link>", projectLinkStart);

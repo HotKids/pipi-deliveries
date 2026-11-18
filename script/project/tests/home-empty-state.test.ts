@@ -53,8 +53,13 @@ finishPull();
 await next;
 assert.match(homeSource, /navigationBarVisibility="hidden"[\s\S]*?<RootPageHeader title="快递" action=\{\(\) => dismiss\(\)\}/,
   "the Home title and exit are in the tab header above the list");
-assert.match(homeSource, /overlay=\{\{\s*alignment: "bottomTrailing",\s*content: <TabFloatingActionButton title="查询"/);
+assert.match(homeSource, /overlay=\{\{\s*alignment: "bottomTrailing",\s*content: \(\s*<VStack padding=\{TAB_FAB_PADDING\}>\s*<TabFloatingActionButton title="查询"/);
 assert.match(homeSource, /contentMargins=\{\{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" \}\}/);
+const appSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
+assert.match(appSource, /subscribeRefreshState\(applyState\)[\s\S]*?refreshAllShipments\(\)[\s\S]*?\}, \[hasState\]\);/,
+  "the app owns the launch refresh and still reaches the missing-history repair entry");
+assert.doesNotMatch(homeSource, /\brefreshAllShipments\(\)/,
+  "reopening the list never starts another launch refresh");
 assert.match(homeSource, /<Section listSectionSeparator=\{\{ visibility: "hidden", edges: "top" \}\}>/,
   "the first row has no section separator under any filter");
 assert.doesNotMatch(homeSource, /placement="title"|systemName="chevron\.left"/,
@@ -148,5 +153,3 @@ for (const placeholder of ["", "暂无物流信息", "暂无物流动态", "快�
     tracks: [{ ...realTrack, detail: placeholder, timeMs: 2_000 }, realTrack] }), realTrack.detail);
 }
 assert.equal(listHeadlineDetail({ ...timeline, latestDetail: "预计明日送达", tracks: [realTrack] }), "预计明日送达");
-assert.match(homeSource, /useEffect\(\(\) => \{[\s\S]*?void refreshAllShipments\(\)/,
-  "Home's initial refresh reaches the missing-history repair entry");

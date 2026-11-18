@@ -24,10 +24,15 @@ import { transientToast } from "../services/ui-feedback";
 
 const EVENT_TITLES: Record<string, string> = {
   "app.state.applied": "页面状态已更新",
+  "activity.parcel.preview.read.failed": "实时活动预览状态读取失败",
   "binding.flow.opened": "开始绑定手机号",
   "platform.pdd.import.unavailable": "拼多多快递导入未完成",
   "platform.sync.unavailable": "平台快递同步未完成",
+  "platform.cainiao.profile": "菜鸟昵称读取结果",
+  "platform.cainiao.sync.completed": "菜鸟同步阶段完成",
+  "platform.cainiao.sync.failed": "菜鸟同步阶段失败",
   "platform.jingdong.sync.failed": "京东同步失败",
+  "platform.parcel_detail.unavailable": "快递详情资料补查未完成",
   "platform.identity.failed": "驿站身份码获取失败",
   "platform.jingdong.session.save_failed": "京东会话未能保存",
   "binding.handler.entered": "已进入绑定流程",
@@ -42,6 +47,7 @@ const EVENT_TITLES: Record<string, string> = {
   "binding.refresh.succeeded": "绑定后同步完成",
   "binding.refresh.failed": "绑定后同步失败",
   "manager.rendered": "手机号页面已刷新",
+  "manager.platform_status.unavailable": "平台账号状态读取失败",
   "storage.state.saved": "本地状态已保存",
   "storage.state.recovered": "本地状态已恢复",
   "storage.state.rejected": "本地状态校验失败",

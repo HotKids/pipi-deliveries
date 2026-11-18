@@ -13,6 +13,7 @@ import {
   Text,
   VStack,
   useEffect,
+  useRef,
   useState,
 } from "scripting";
 import { RootPageHeader } from "../components/RootPageHeader";
@@ -103,15 +104,27 @@ function SettingsAppIcon() {
   return <SettingsRowIcon systemName="cat" backgroundColor="#B872AB" />;
 }
 
-export function useSettingsOverview() {
+const OVERVIEW_SECTIONS = ["authorization", "platforms", "notifications"] as const;
+type OverviewSection = typeof OVERVIEW_SECTIONS[number];
+
+function useSettingsOverview() {
   const [authorization, setAuthorization] =
-    useState<AuthorizationState>("unauthorized");
+    useState<AuthorizationState | undefined>();
   const [authorizationNotice, setAuthorizationNotice] = useState("");
   const [platformCount, setPlatformCount] = useState(0);
   const [enabledNotificationCount, setEnabledNotificationCount] = useState<number | undefined>();
-  useEffect(() => {
-    const refreshPlatformCount = () => {
-      setPlatformCount(PLATFORM_SOURCES.filter((platform) => {
+  const visible = useRef(false);
+  const pending = useRef(new Set<OverviewSection>(OVERVIEW_SECTIONS));
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  function scheduleOverview(sections: readonly OverviewSection[] = []) {
+    for (const section of sections) pending.current.add(section);
+    if (!visible.current || timer.current !== undefined || !pending.current.size) return;
+    timer.current = setTimeout(() => {
+      timer.current = undefined;
+      if (!visible.current) return;
+      if (pending.current.delete("authorization")) refreshAuthorization();
+      if (pending.current.delete("platforms")) setPlatformCount(PLATFORM_SOURCES.filter((platform) => {
         try {
           return accountStatus(platform).state === "active";
         } catch {
@@ -119,21 +132,29 @@ export function useSettingsOverview() {
           return false;
         }
       }).length);
-    };
-    const refresh = () => {
-      refreshAuthorization();
-      refreshPlatformCount();
-      setEnabledNotificationCount(notificationEnabledCount(true));
-    };
-    const initial = setTimeout(refresh, 0);
+      if (pending.current.delete("notifications")) setEnabledNotificationCount(notificationEnabledCount(true));
+    }, 0);
+  }
+
+  function setOverviewVisible(shown: boolean) {
+    visible.current = shown;
+    if (shown) {
+      scheduleOverview();
+    } else if (timer.current !== undefined) {
+      clearTimeout(timer.current);
+      timer.current = undefined;
+    }
+  }
+
+  useEffect(() => {
     const onScene = (phase: "active" | "inactive" | "background") => {
-      if (phase === "active") refresh();
+      if (phase === "active") scheduleOverview(OVERVIEW_SECTIONS);
     };
     AppEvents.scenePhase.addListener(onScene);
-    const unsubscribe = onPlatformAccountsChanged(refreshPlatformCount);
-    const stopActivationObservation = onScriptingActivationRejectionChanged(refreshAuthorization);
+    const unsubscribe = onPlatformAccountsChanged(() => scheduleOverview(["platforms"]));
+    const stopActivationObservation = onScriptingActivationRejectionChanged(() => scheduleOverview(["authorization"]));
     return () => {
-      clearTimeout(initial);
+      setOverviewVisible(false);
       AppEvents.scenePhase.removeListener(onScene);
       unsubscribe();
       stopActivationObservation();
@@ -163,13 +184,12 @@ export function useSettingsOverview() {
   }
 
   return { authorization, authorizationNotice, setAuthorizationNotice, platformCount,
-    enabledNotificationCount, setEnabledNotificationCount, refreshAuthorization };
+    enabledNotificationCount, setEnabledNotificationCount, refreshAuthorization, setOverviewVisible };
 }
 
 export function SettingsPage(props: {
   state: AppState;
   pickupCards: readonly ParcelActivityContent[];
-  overview: ReturnType<typeof useSettingsOverview>;
   onStateChange: (state: AppState) => void;
 }) {
   const dismiss = Navigation.useDismiss();
@@ -180,7 +200,7 @@ export function SettingsPage(props: {
   const [managerNotice, setManagerNotice] = useState("");
   const [diagnosticCount, setDiagnosticCount] = useState(0);
   const { authorization, authorizationNotice, setAuthorizationNotice, platformCount, enabledNotificationCount,
-    setEnabledNotificationCount, refreshAuthorization } = props.overview;
+    setEnabledNotificationCount, refreshAuthorization, setOverviewVisible } = useSettingsOverview();
   const configured = authorization === "authorized";
 
   function saveToken() {
@@ -299,6 +319,8 @@ export function SettingsPage(props: {
       <List
         navigationTitle="设置"
         navigationBarVisibility="hidden"
+        onAppear={() => setOverviewVisible(true)}
+        onDisappear={() => setOverviewVisible(false)}
         safeAreaInset={{
           top: {
             spacing: 0,
@@ -504,7 +526,7 @@ export function SettingsPage(props: {
                 setNotice("");
                 setAuthorizationNotice("");
               }}
-              prompt={authorizationPrompt(authorization)}
+              prompt={authorization ? authorizationPrompt(authorization) : "Access Key"}
               frame={{ maxWidth: "infinity" }}
             />
             {token.trim() ? (
@@ -522,11 +544,11 @@ export function SettingsPage(props: {
                   {authorizationLabel(authorization)}
                 </Text>
               </Button>
-            ) : (
+            ) : authorization ? (
               <Text foregroundStyle="secondaryLabel" monospacedDigit>
                 {authorizationLabel(authorization)}
               </Text>
-            )}
+            ) : null}
           </HStack>
         </Section>
 
