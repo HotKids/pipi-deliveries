@@ -52,7 +52,7 @@ import { startStatusAlignment } from "./services/status-alignment";
 import {
   PARCEL_SHORTCUT_RECORD_PARAMETER,
   discardShortcutDraft,
-  nextSmsShortcutLookup,
+  nextShortcutLookup,
   takeScreenShortcutLookup,
 } from "./services/parcel-shortcut";
 import {
@@ -113,7 +113,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
         notificationInfo: Notification.current,
       }),
       pickupRecordId,
-      shortcutLookup: takeScreenShortcutLookup(parameters) || (pickupRecordId ? undefined : nextSmsShortcutLookup()),
+      shortcutLookup: takeScreenShortcutLookup(parameters) || (pickupRecordId ? undefined : nextShortcutLookup()),
       generation: 0,
     };
   });
@@ -227,7 +227,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
           } else if (latestPickupView.current.state) {
             reconcileParcelActivity(latestPickupView.current.state, latestPickupView.current.pickupCards);
           }
-          const lookup = nextSmsShortcutLookup();
+          const lookup = nextShortcutLookup();
           if (lookup) setNavigationRequest((current) => current.shortcutLookup ? current : {
             ...current,
             shortcutLookup: lookup,
@@ -319,13 +319,13 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
           const activityShipmentId = activity && "shipmentId" in activity ? activity.shipmentId : "";
           const pickupRecordId = activity && "recordId" in activity ? activity.recordId :
             shortcutPickupRecordId(resumed, parameters);
-          const smsLookup = pickupRecordId ? undefined : nextSmsShortcutLookup();
+          const pendingLookup = pickupRecordId ? undefined : nextShortcutLookup();
           setStartup(current => current.state && preferNewerState(resumed, current.state) === current.state
             ? current : { state: resumed });
           setNavigationRequest((current) => ({
             shipmentId: activityShipmentId || shipmentId,
             pickupRecordId,
-            shortcutLookup: screenLookup || current.shortcutLookup || smsLookup,
+            shortcutLookup: screenLookup || current.shortcutLookup || pendingLookup,
             generation: current.generation + 1,
           }));
           if (pickupRecordId) selection.setValue("pickup");
@@ -426,8 +426,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
           shortcutLookup={navigationRequest.shortcutLookup}
           onShortcutHandled={(generation) => {
             if (generation !== navigationRequest.generation) return;
-            const smsDraft = navigationRequest.shortcutLookup?.smsDraft;
-            if (smsDraft) discardShortcutDraft(smsDraft);
+            const draftToken = navigationRequest.shortcutLookup?.draftToken;
+            if (draftToken) discardShortcutDraft(draftToken);
             setNavigationRequest((current) =>
               current.generation === generation ? { ...current, shortcutLookup: undefined } : current);
           }}

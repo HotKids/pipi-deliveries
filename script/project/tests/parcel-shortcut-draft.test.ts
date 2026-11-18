@@ -3,7 +3,7 @@ import { posix as Path } from "node:path";
 import {
   PARCEL_SHORTCUT_PARAMETER,
   discardShortcutDraft,
-  nextSmsShortcutLookup,
+  nextShortcutLookup,
   stageShortcutLookup,
   takeScreenShortcutLookup,
 } from "../services/parcel-shortcut";
@@ -53,7 +53,12 @@ Object.assign(globalThis, {
 const lookup = {
   waybill: number, capturedAtMs: Date.now(), pickup: { code: "1-2-3456", locationName: "示例驿站" },
 };
-const parameters = { [PARCEL_SHORTCUT_PARAMETER]: stageShortcutLookup(lookup, "screen") };
+const directory = "/synthetic/pipi-deliveries/shortcut-inbox";
+function legacyDraft(token: string, modificationDate = Date.now()) {
+  files.set(Path.join(directory, token), { value: JSON.stringify(lookup), modificationDate });
+  return token;
+}
+const parameters = { [PARCEL_SHORTCUT_PARAMETER]: legacyDraft("bbbbbbbb-bbbb-4bbb-8bbb-000000000001.txt") };
 let otherHost: unknown = "not read";
 onRead = () => {
   onRead = undefined;
@@ -64,27 +69,26 @@ assert.equal(otherHost, undefined, "a second script host cannot claim a draft wh
 assert.equal(takeScreenShortcutLookup(parameters), undefined);
 assert.equal(files.size, 0);
 
-const expired = { [PARCEL_SHORTCUT_PARAMETER]: stageShortcutLookup(lookup, "screen") };
-const expiredEntry = [...files.values()][0];
-expiredEntry.modificationDate -= 301_000;
+const expired = { [PARCEL_SHORTCUT_PARAMETER]: legacyDraft("bbbbbbbb-bbbb-4bbb-8bbb-000000000002.txt", Date.now() - 301_000) };
 assert.equal(takeScreenShortcutLookup(expired), undefined);
 assert.equal(files.size, 0);
-assert.throws(() => stageShortcutLookup({ ...lookup, waybill: "not a number" }, "sms"));
+assert.throws(() => stageShortcutLookup({ ...lookup, waybill: "not a number" }));
 assert.equal(takeScreenShortcutLookup({ [PARCEL_SHORTCUT_PARAMETER]: "../out-of-inbox.txt" }), undefined);
 
 const later = { ...lookup, waybill: "TEST91234567", capturedAtMs: lookup.capturedAtMs + 1 };
-const laterToken = stageShortcutLookup(later, "sms");
-const smsToken = stageShortcutLookup(lookup, "sms");
+const laterToken = stageShortcutLookup(later);
+const smsToken = legacyDraft("sms-bbbbbbbb-bbbb-4bbb-8bbb-000000000003.txt");
 files.forEach((entry) => { entry.modificationDate -= 301_000; });
-const screen = stageShortcutLookup(lookup, "screen");
+legacyDraft("bbbbbbbb-bbbb-4bbb-8bbb-000000000004.txt.writing", Date.now() - 301_000);
 assert.equal(takeScreenShortcutLookup({ [PARCEL_SHORTCUT_PARAMETER]: smsToken }), undefined);
-assert.deepEqual(nextSmsShortcutLookup(), { ...lookup, smsDraft: smsToken });
-assert.deepEqual(nextSmsShortcutLookup(), { ...lookup, smsDraft: smsToken });
+assert.equal(takeScreenShortcutLookup({ [PARCEL_SHORTCUT_PARAMETER]: laterToken }), undefined);
+assert.deepEqual(nextShortcutLookup(), { ...lookup, draftToken: smsToken });
+assert.deepEqual(nextShortcutLookup(), { ...lookup, draftToken: smsToken });
+assert.equal(files.size, 2, "old unfinished foreground files expire while confirmed drafts remain");
 discardShortcutDraft(smsToken);
-assert.deepEqual(nextSmsShortcutLookup(), { ...later, smsDraft: laterToken });
+assert.deepEqual(nextShortcutLookup(), { ...later, draftToken: laterToken });
 discardShortcutDraft(laterToken);
-assert.equal(nextSmsShortcutLookup(), undefined);
-discardShortcutDraft(screen);
+assert.equal(nextShortcutLookup(), undefined);
 assert.equal(files.size, 0);
 
-console.log("Screen Shortcut claim and SMS draft acknowledgement tests passed");
+console.log("Background Shortcut draft and legacy foreground claim tests passed");

@@ -4,9 +4,9 @@
   "color": "rgba(184, 114, 171, 1)",
   "entry": "index.tsx",
   "permissions": null,
-  "runInApp": true,
+  "runInApp": false,
   "contributors": [],
-  "version": "0.9.14",
+  "version": "0.9.15",
   "intentInputTypes": [],
   "localizedNames": {
     "zh": "派派助手",
