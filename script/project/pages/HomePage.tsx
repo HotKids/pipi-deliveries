@@ -2,10 +2,10 @@ import {
   Button,
   Capsule,
   ForEach,
+  GeometryReader,
   HStack,
   Image,
   List,
-  NamespaceReader,
   Navigation,
   NavigationStack,
   ProgressView,
@@ -91,6 +91,7 @@ const shipmentFilters = {
   danger: "异常",
 } as const;
 type ShipmentFilter = keyof typeof shipmentFilters;
+const FILTER_SEGMENT_INSET = 3;
 
 function shipmentFilter(semantic: StatusSemantic): Exclude<ShipmentFilter, "all"> | undefined {
   switch (semantic) {
@@ -462,43 +463,43 @@ export function HomePage(props: {
           </VStack>
         ) : null}
         {visibleFilters.length > 1 ? (
-          <NamespaceReader>
-            {(namespace) => (
-              <ZStack padding={{ horizontal: 20, vertical: 2 }}
-                animation={{ animation: Animation.snappy({ duration: 0.32 }), value: filter }}>
-                <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
-                  frame={{ height: 32 }} />
-                <Capsule fill="secondarySystemFill" frame={{ height: 26 }}
-                  matchedGeometryEffect={{ id: filter, namespace, isSource: false }}
-                  allowsHitTesting={false} />
-                <HStack spacing={0} padding={{ horizontal: 3 }}>
-                  {visibleFilters.map((key) => {
-                    const selected = filter === key;
-                    return (
-                      <Button key={key} buttonStyle="plain" action={() => setFilter(key)}>
-                        <VStack frame={{ maxWidth: "infinity", minHeight: 44 }} contentShape="rect">
-                          <HStack
-                            spacing={4}
-                            frame={{ maxWidth: "infinity", minHeight: 26 }}
-                            matchedGeometryEffect={{ id: key, namespace }}
-                          >
-                            <Text font={14} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
-                              {shipmentFilters[key]}
-                            </Text>
-                            <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
-                              lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
-                              background={{ style: "systemFill", shape: "capsule" }}>
-                              {groups[key].length}
-                            </Text>
-                          </HStack>
-                        </VStack>
-                      </Button>
-                    );
-                  })}
-                </HStack>
-              </ZStack>
-            )}
-          </NamespaceReader>
+          <ZStack padding={{ horizontal: 20, vertical: 2 }}>
+            <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
+              frame={{ height: 32 }} />
+            <GeometryReader frame={{ height: 32 }} allowsHitTesting={false}>
+              {({ size }) => {
+                const segmentWidth = Math.max(0, size.width - FILTER_SEGMENT_INSET * 2) / visibleFilters.length;
+                const x = FILTER_SEGMENT_INSET + (visibleFilters.indexOf(filter) + 0.5) * segmentWidth;
+                return (
+                  <Capsule fill="secondarySystemFill" key="filter-selection"
+                    frame={{ width: segmentWidth, height: 26 }}
+                    position={{ x, y: size.height / 2 }}
+                    animation={{ animation: Animation.snappy({ duration: 0.32 }), value: filter }} />
+                );
+              }}
+            </GeometryReader>
+            <HStack spacing={0} padding={{ horizontal: FILTER_SEGMENT_INSET }}>
+              {visibleFilters.map((key) => {
+                const selected = filter === key;
+                return (
+                  <Button key={key} buttonStyle="plain" action={() => setFilter(key)}>
+                    <VStack frame={{ maxWidth: "infinity", minHeight: 44 }} contentShape="rect">
+                      <HStack spacing={4} frame={{ maxWidth: "infinity", minHeight: 26 }}>
+                        <Text font={14} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
+                          {shipmentFilters[key]}
+                        </Text>
+                        <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
+                          lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
+                          background={{ style: "systemFill", shape: "capsule" }}>
+                          {groups[key].length}
+                        </Text>
+                      </HStack>
+                    </VStack>
+                  </Button>
+                );
+              })}
+            </HStack>
+          </ZStack>
         ) : null}
         <List key="shipments" listStyle="plain" refreshable={refresh}
           frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
