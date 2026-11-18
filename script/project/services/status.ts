@@ -1061,14 +1061,16 @@ export function headlineTrack<Track>(
   return tracks[0];
 }
 
-export function listHeadline(timeline: TimelinePackage): { detail: string; timeText: string } | null {
+export function listHeadline(timeline: TimelinePackage, tracksOnly = false): { detail: string; timeText: string } | null {
   const usable = (detail: string) => typeof detail === "string" && Boolean(detail.trim()) &&
     !isNonEventDetail(detail) && !isAccountUpdateSummary(detail);
-  if (usable(timeline.latestDetail)) {
+  if (!tracksOnly && usable(timeline.latestDetail)) {
     const display = timelineDisplayDetail(timeline);
     return { detail: (usable(display) ? display : timeline.latestDetail).trim(), timeText: timeline.latestTimeText };
   }
-  const track = headlineTrack(timedTracks(timeline.tracks).filter(({ detail }) => !isAccountUpdateSummary(detail)));
+  const tracks = timedTracks(timeline.tracks).filter(({ detail }) => !isAccountUpdateSummary(detail));
+  if (tracksOnly) tracks.sort((left, right) => right.timeMs! - left.timeMs!);
+  const track = headlineTrack(tracks);
   if (!track) return null;
   const display = trackDisplayDetail(timeline.provider, track);
   return { detail: (usable(display) ? display : track.detail).trim(), timeText: track.timeText };

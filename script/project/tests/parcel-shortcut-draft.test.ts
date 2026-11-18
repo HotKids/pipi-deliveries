@@ -4,6 +4,8 @@ import {
   PARCEL_SHORTCUT_PARAMETER,
   discardShortcutDraft,
   nextShortcutLookup,
+  preferShortcutLookup,
+  readScreenShortcutLookup,
   stageShortcutLookup,
   takeScreenShortcutLookup,
 } from "../services/parcel-shortcut";
@@ -53,6 +55,7 @@ Object.assign(globalThis, {
 const lookup = {
   waybill: number, capturedAtMs: Date.now(), pickup: { code: "1-2-3456", locationName: "示例驿站" },
 };
+const later = { ...lookup, waybill: "TEST91234567", capturedAtMs: lookup.capturedAtMs + 1 };
 const directory = "/synthetic/pipi-deliveries/shortcut-inbox";
 function legacyDraft(token: string, modificationDate = Date.now()) {
   files.set(Path.join(directory, token), { value: JSON.stringify(lookup), modificationDate });
@@ -69,13 +72,28 @@ assert.equal(otherHost, undefined, "a second script host cannot claim a draft wh
 assert.equal(takeScreenShortcutLookup(parameters), undefined);
 assert.equal(files.size, 0);
 
+const screenToken = stageShortcutLookup(lookup, "screen");
+const recovery = { ...lookup, draftToken: screenToken, openOnTap: true };
+assert.deepEqual(nextShortcutLookup(), recovery);
+assert.deepEqual(readScreenShortcutLookup(screenToken), lookup);
+assert.equal(readScreenShortcutLookup("screen-../out-of-inbox.txt"), undefined);
+const smsAfterScreen = stageShortcutLookup(later);
+const awaitingConfirmation = { ...later, draftToken: smsAfterScreen };
+assert.equal(readScreenShortcutLookup(smsAfterScreen), undefined);
+assert.deepEqual(nextShortcutLookup(), awaitingConfirmation);
+assert.equal(preferShortcutLookup(recovery, awaitingConfirmation), awaitingConfirmation);
+assert.equal(preferShortcutLookup(awaitingConfirmation, recovery), awaitingConfirmation);
+assert.equal(preferShortcutLookup(recovery, undefined), undefined);
+discardShortcutDraft(smsAfterScreen);
+discardShortcutDraft(screenToken);
+assert.equal(readScreenShortcutLookup(screenToken), undefined);
+
 const expired = { [PARCEL_SHORTCUT_PARAMETER]: legacyDraft("bbbbbbbb-bbbb-4bbb-8bbb-000000000002.txt", Date.now() - 301_000) };
 assert.equal(takeScreenShortcutLookup(expired), undefined);
 assert.equal(files.size, 0);
 assert.throws(() => stageShortcutLookup({ ...lookup, waybill: "not a number" }));
 assert.equal(takeScreenShortcutLookup({ [PARCEL_SHORTCUT_PARAMETER]: "../out-of-inbox.txt" }), undefined);
 
-const later = { ...lookup, waybill: "TEST91234567", capturedAtMs: lookup.capturedAtMs + 1 };
 const laterToken = stageShortcutLookup(later);
 const smsToken = legacyDraft("sms-bbbbbbbb-bbbb-4bbb-8bbb-000000000003.txt");
 files.forEach((entry) => { entry.modificationDate -= 301_000; });
