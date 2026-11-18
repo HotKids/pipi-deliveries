@@ -557,8 +557,8 @@ const tabCardSource = readFileSync(new URL("../components/PickupTabCard.tsx", im
 assert.match(tabCardSource, /listRowInsets=\{0\}[\s\S]*?<ParcelLiveActivityCard\b/);
 assert.match(tabCardSource, /background=\{\s*<GeometryReader\b/, "only the in-app row reads layout geometry");
 assert.match(activitySettingsSource, /<Text>锁屏预览<\/Text>[\s\S]*?"stop\.circle" : "play\.circle"[\s\S]*?disabled=\{busy\}/);
-assert.match(activitySettingsSource, /<Text>截屏识别<\/Text>[\s\S]*?<Text>短信识别<\/Text>/);
-assert.match(activitySettingsSource, /「在 App 中运行意图」[\s\S]*?「运行意图脚本」/);
+assert.match(activitySettingsSource, /<Text>截屏识别<\/Text>[\s\S]*?「运行意图脚本」[\s\S]*?<Text>短信识别<\/Text>[\s\S]*?「运行意图脚本」/);
+assert.doesNotMatch(activitySettingsSource, /「在 App 中运行意图」/);
 assert.match(activitySettingsSource, /取件码和寄件码在「\$\{PICKUP_TAB_TITLE\}」中查看/);
 assert.match(activitySettingsSource, /<Toggle title="实时活动"/);
 

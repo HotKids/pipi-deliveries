@@ -3,12 +3,7 @@ import { refreshIntentMessage } from "./services/refresh-result";
 import { refreshAllShipments } from "./services/sync";
 import { backgroundHostBootstrap, backgroundRefreshOptions } from "./services/background-refresh";
 import { flushDiagnostics } from "./services/logger";
-import {
-  PARCEL_SHORTCUT_PARAMETER,
-  PARCEL_SHORTCUT_RECORD_PARAMETER,
-  discardShortcutDraft,
-  stageShortcutLookup,
-} from "./services/parcel-shortcut";
+import { discardShortcutDraft, stageShortcutLookup } from "./services/parcel-shortcut";
 import { recognizeParcelCodes } from "./services/parcel-code-ocr";
 import { parcelImageRows, parcelTextRows, type ParcelRow } from "./services/parcel-waybill-ocr";
 import { saveRecognizedParcelCode } from "./services/storage";
@@ -57,33 +52,22 @@ async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shor
     Script.exit(Intent.text("未识别到明确的运单号、取件码或寄件码。"));
     return;
   }
-  const sms = parameter.type === "text";
-  const token = lookup ? stageShortcutLookup(lookup, sms ? "sms" : "screen") : "";
-  const recordId = independent ? UUID.string() : "";
+  const token = lookup ? stageShortcutLookup(lookup) : "";
   try {
-    if (independent) saveRecognizedParcelCode({ ...independent, id: recordId });
+    if (independent) saveRecognizedParcelCode({ ...independent, id: UUID.string() });
   } catch (error) {
     if (token) discardShortcutDraft(token);
     throw error;
   }
-  if (sms) {
-    Script.exit(Intent.text("已识别快递信息，打开派派助手查看。"));
-    return;
-  }
-
-  const parameters: Record<string, string> = token ? { [PARCEL_SHORTCUT_PARAMETER]: token } :
-    { [PARCEL_SHORTCUT_RECORD_PARAMETER]: recordId };
-  let opened = false;
-  try {
-    opened = await Safari.openURL(Script.createRunSingleURLScheme(Script.name, parameters));
-  } finally {
-    if (!opened && token) discardShortcutDraft(token);
-  }
-  Script.exit(opened ? undefined : Intent.text("无法打开派派助手，请重新运行指令。"));
+  Script.exit(Intent.text("已识别快递信息，打开派派助手查看。"));
 }
 
 async function run() {
-  const parameter = Intent.shortcutParameter;
+  const imagePaths = Intent.imagePathsParameter;
+  const paths = imagePaths?.length ? imagePaths : Intent.fileURLsParameter;
+  const parameter = Intent.shortcutParameter ?? (paths?.length === 1
+    ? { type: "fileURL" as const, value: paths[0] }
+    : undefined);
   if (parameter) {
     try {
       await recognizeShortcutParcel(parameter);
@@ -92,8 +76,7 @@ async function run() {
     }
     return;
   }
-  if (Intent.textsParameter?.length || Intent.imagesParameter?.length ||
-      Intent.urlsParameter?.length || Intent.fileURLsParameter?.length) {
+  if (paths?.length || Intent.textsParameter?.length || Intent.urlsParameter?.length) {
     Script.exit(Intent.text("请运行截屏识别指令或短信自动化。"));
     return;
   }

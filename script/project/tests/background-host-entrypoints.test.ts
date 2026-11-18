@@ -14,6 +14,7 @@ function executable(name: string): string {
 const source = executable("intent.tsx");
 const manifest = JSON.parse(readFileSync(new URL("../script.json", import.meta.url), "utf8"));
 assert.deepEqual(manifest.intentInputTypes, [], "parcel recognition must stay out of the system Share Sheet");
+assert.equal(manifest.runInApp, false, "the Shortcut can finish without opening the main app");
 const events: string[] = [];
 let exited: unknown;
 await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
@@ -106,33 +107,34 @@ for (const failingStage of ["cache", "refresh"] as const) {
 const track = "TEST81234567";
 const text = (value: string) => ({ shortcutParameter: { type: "text", value } });
 const file = (value: string) => ({ shortcutParameter: { type: "fileURL", value } });
-for (const [intent, expected, destination, openFailure, fileRead, record] of [
-  [text("快递单号：" + track + " 取件码 A1-2345"), track, "sms"],
-  [text("菜鸟驿站\n取件码 A1-2345"), "", "", undefined, undefined, "pickup"],
-  [text("菜鸟\n待上门取件\n寄件码 ABC123"), "", "", undefined, undefined, "handoff"],
-  [file("file:///synthetic/Photo%201.png"), track, "screen", undefined, "/synthetic/Photo 1.png"],
-  [file("/synthetic/Photo 1.png"), track, "screen", undefined, "/synthetic/Photo 1.png"],
-  [file("/synthetic/standalone.png"), "", "record", undefined, "/synthetic/standalone.png", "pickup"],
-  [file("file://remote.invalid/screenshot.png"), "", ""],
-  [file("https://remote.invalid/screenshot.png"), "", ""],
-  [{ shortcutParameter: { type: "json", value: { parcel: "快递单号：" + track } } }, "", ""],
-  [text(""), "", ""],
-  [{ textsParameter: ["快递单号：" + track] }, "", ""],
-  [{ imagesParameter: [{ synthetic: true }] }, "", ""],
-  [text("运单号 TEST81234567\n运单号 TEST91234567"), "", ""],
-  [file("/synthetic/Photo 1.png"), track, "screen", "rejected", "/synthetic/Photo 1.png"],
-  [file("/synthetic/Photo 1.png"), track, "screen", "error", "/synthetic/Photo 1.png"],
-  [file("file:///synthetic/unreadable.png"), "", "", undefined, "/synthetic/unreadable.png"],
+for (const [intent, expected, fileRead, record, failedSave] of [
+  [text("快递单号：" + track + " 取件码 A1-2345"), track],
+  [text("菜鸟驿站\n取件码 A1-2345"), "", undefined, "pickup"],
+  [text("菜鸟\n待上门取件\n寄件码 ABC123"), "", undefined, "handoff"],
+  [file("file:///synthetic/Photo%201.png"), track, "/synthetic/Photo 1.png"],
+  [file("/synthetic/Photo 1.png"), track, "/synthetic/Photo 1.png"],
+  [{ imagePathsParameter: ["/synthetic/Photo 1.png"] }, track, "/synthetic/Photo 1.png"],
+  [{ fileURLsParameter: ["file:///synthetic/Photo%201.png"] }, track, "/synthetic/Photo 1.png"],
+  [{ imagePathsParameter: ["/synthetic/standalone.png"] }, "", "/synthetic/standalone.png", "pickup"],
+  [{ imagePathsParameter: ["/synthetic/one.png", "/synthetic/two.png"] }, ""],
+  [file("file://remote.invalid/screenshot.png"), ""],
+  [file("https://remote.invalid/screenshot.png"), ""],
+  [{ shortcutParameter: { type: "json", value: { parcel: "快递单号：" + track } } }, ""],
+  [text(""), ""],
+  [{ textsParameter: ["快递单号：" + track] }, ""],
+  [text("运单号 TEST81234567\n运单号 TEST91234567"), ""],
+  [file("file:///synthetic/unreadable.png"), "", "/synthetic/unreadable.png"],
+  [text("菜鸟\n待上门取件\n寄件码 ABC123\n快递单号：" + track), track, undefined, "handoff", true],
 ] as const) {
   let staged: ParcelLookup | undefined;
-  let stagedOrigin = "";
   const saved: string[] = [];
-  let opened = false;
   const discarded: string[] = [];
   const decodedFiles: string[] = [];
+  let foregroundCalls = 0;
   let result: unknown;
   await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
-    Intent: { ...intent, text: (value: string) => value },
+    Intent: { ...intent, text: (value: string) => value,
+      get imagesParameter() { assert.fail("recognition only decodes the selected local path"); } },
     URL,
     UIImage: {
       fromFile: (path: string) => {
@@ -141,23 +143,10 @@ for (const [intent, expected, destination, openFailure, fileRead, record] of [
       },
     },
     Script: {
-      name: "Synthetic project",
-      createRunSingleURLScheme: (_name: string, parameters: Record<string, string>) => {
-        assert.deepEqual({ ...parameters }, destination === "record"
-          ? { parcelCodeRecord: "synthetic-record" } : { parcelDraft: "draft-token" });
-        return "synthetic:open-draft";
-      },
+      createRunSingleURLScheme: () => { foregroundCalls++; return "synthetic:open-draft"; },
       exit: (value: unknown) => { result = value; },
     },
-    Safari: {
-      openURL: async (url: string) => {
-        assert.equal(url, "synthetic:open-draft");
-        if (openFailure === "rejected") return false;
-        if (openFailure === "error") throw new Error("synthetic open failure");
-        opened = true;
-        return true;
-      },
-    },
+    Safari: { openURL: async () => { foregroundCalls++; return true; } },
     Vision: {
       recognizeText: async ({ path }: { path: string }) => ({
         candidates: (path.endsWith("standalone.png") ? [
@@ -168,34 +157,30 @@ for (const [intent, expected, destination, openFailure, fileRead, record] of [
       }),
     },
     UUID: { string: () => "synthetic-record" },
-    PARCEL_SHORTCUT_PARAMETER: "parcelDraft",
-    PARCEL_SHORTCUT_RECORD_PARAMETER: "parcelCodeRecord",
     parcelImageRows,
     parcelTextRows,
     recognizeParcelCodes,
-    stageShortcutLookup: (lookup: ParcelLookup, origin: string) => {
+    stageShortcutLookup: (lookup: ParcelLookup) => {
       staged = lookup;
-      stagedOrigin = origin;
       return "draft-token";
     },
     saveRecognizedParcelCode: (value: { kind: string; id: string }) => {
       assert.equal(value.id, "synthetic-record");
+      if (failedSave) throw new Error("synthetic write failure");
       saved.push(value.kind);
     },
     discardShortcutDraft: (token: string) => discarded.push(token),
     backgroundHostBootstrap: () => assert.fail("Recognition must not invoke the refresh action"),
   });
   assert.equal(staged?.waybill ?? "", expected);
-  assert.equal(stagedOrigin, expected ? destination : "");
-  if (expected) assert.equal(staged?.pickup?.code, "A1-2345");
-  assert.deepEqual(saved, record ? [record] : []);
-  assert.equal(opened, Boolean((destination === "screen" || destination === "record") && !openFailure));
+  if (expected && !record) assert.equal(staged?.pickup?.code, "A1-2345");
+  assert.deepEqual(saved, record && !failedSave ? [record] : []);
+  assert.equal(foregroundCalls, 0, "recognition never opens the main app");
   assert.deepEqual(decodedFiles, fileRead ? [fileRead] : []);
-  assert.deepEqual(discarded, openFailure ? ["draft-token"] : []);
-  if (openFailure === "rejected") assert.match(String(result), /无法打开派派助手/);
-  if (openFailure === "error") assert.match(String(result), /处理快递识别结果失败/);
-  if (destination === "sms" || record && !opened) assert.match(String(result), /已识别快递信息/);
-  if (!expected && !record) assert.match(String(result), /未识别|无法读取|请传入|请运行/);
+  assert.deepEqual(discarded, failedSave ? ["draft-token"] : []);
+  if (failedSave) assert.match(String(result), /处理快递识别结果失败/);
+  else if (expected || record) assert.match(String(result), /已识别快递信息/);
+  else assert.match(String(result), /未识别|无法读取|请传入|请运行/);
 }
 
 console.log("background host entrypoint tests passed");

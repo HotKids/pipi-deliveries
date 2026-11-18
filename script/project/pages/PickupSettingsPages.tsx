@@ -19,9 +19,10 @@ export function ParcelShortcutPage() {
         <Link url="shortcuts://create-shortcut">
           <Text>新建截屏快捷指令</Text>
         </Link>
-        <Text font="subheadline" lineSpacing={3}>1. 添加「截屏」，再添加 Scripting 的「在 App 中运行意图」。</Text>
+        <Text font="subheadline" lineSpacing={3}>1. 添加「截屏」，再添加 Scripting 的「运行意图脚本」。</Text>
         <Text font="subheadline" lineSpacing={3}>2. 选择「派派助手」，在参数栏选择上一步生成的截屏。</Text>
         <Text font="subheadline" lineSpacing={3}>3. 打开要识别的物流页面，运行这条快捷指令。也可以在系统设置中用「轻点背面」或「操作按钮」触发。</Text>
+        <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">截屏在后台识别并保存。要在当前界面看到提示，可以接上「显示通知」，使用运行结果作为通知内容。</Text>
       </Section>
       <Section header={<Text>短信识别</Text>}>
         <Text font="subheadline" lineSpacing={3}>1. 在「快捷指令」中创建「信息」自动化，按发件人或短信内容设置触发条件。</Text>

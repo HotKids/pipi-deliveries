@@ -5,10 +5,14 @@ import { isParcelWaybill } from "./parcel-waybill-ocr";
 export const PARCEL_SHORTCUT_PARAMETER = "parcelDraft";
 export const PARCEL_SHORTCUT_RECORD_PARAMETER = "parcelCodeRecord";
 
-export type ParcelShortcutLookup = ParcelLookup & { smsDraft?: string };
+export type ParcelShortcutLookup = ParcelLookup & { draftToken?: string };
 
 const SCREEN_DRAFT_MAX_AGE_MS = 5 * 60 * 1000;
-const DRAFT_FILE = /^(?:sms-)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.txt$/i;
+const DRAFT_FILE = /^(?:(?:draft|sms)-)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.txt$/i;
+
+function isPendingDraft(token: string): boolean {
+  return token.startsWith("draft-") || token.startsWith("sms-");
+}
 
 function inbox(): string {
   return Path.join(FileManager.appGroupDocumentsDirectory, "pipi-deliveries", "shortcut-inbox");
@@ -33,24 +37,11 @@ function parseLookup(value: string): ParcelLookup | undefined {
   return { waybill: lookup.waybill, capturedAtMs: lookup.capturedAtMs, ...(code ? { pickup: { code, locationName } } : {}) };
 }
 
-export function stageShortcutLookup(lookup: ParcelLookup, origin: "screen" | "sms"): string {
+export function stageShortcutLookup(lookup: ParcelLookup): string {
   if (!isParcelWaybill(lookup.waybill)) throw new Error("Invalid parcel shortcut draft");
   const directory = inbox();
   FileManager.createDirectorySync(directory, true);
-  if (origin === "screen") {
-    for (const path of FileManager.readDirectorySync(directory)) {
-      const name = Path.basename(path);
-      if (name.startsWith("sms-") || !DRAFT_FILE.test(name.replace(/\.(?:claimed|writing)$/, ""))) continue;
-      const draft = Path.join(directory, name);
-      try {
-        if (Date.now() - FileManager.statSync(draft).modificationDate > SCREEN_DRAFT_MAX_AGE_MS) removeDraft(draft);
-      } catch {
-        // Another host may have consumed the draft during the scan.
-      }
-    }
-  }
-
-  const token = (origin === "sms" ? "sms-" : "") + UUID.string() + ".txt";
+  const token = "draft-" + UUID.string() + ".txt";
   const path = Path.join(directory, token);
   const writing = path + ".writing";
   try {
@@ -68,7 +59,7 @@ export function discardShortcutDraft(token: string): void {
 
 export function takeScreenShortcutLookup(parameters: Readonly<Record<string, unknown>>): ParcelShortcutLookup | undefined {
   const token = parameters[PARCEL_SHORTCUT_PARAMETER];
-  if (typeof token !== "string" || token.startsWith("sms-") || !DRAFT_FILE.test(token)) return undefined;
+  if (typeof token !== "string" || isPendingDraft(token) || !DRAFT_FILE.test(token)) return undefined;
   const path = Path.join(inbox(), token);
   const claimed = path + ".claimed";
   try {
@@ -89,7 +80,7 @@ export function takeScreenShortcutLookup(parameters: Readonly<Record<string, unk
   }
 }
 
-export function nextSmsShortcutLookup(): ParcelShortcutLookup | undefined {
+export function nextShortcutLookup(): ParcelShortcutLookup | undefined {
   const directory = inbox();
   let paths: string[];
   try {
@@ -101,12 +92,23 @@ export function nextSmsShortcutLookup(): ParcelShortcutLookup | undefined {
   let next: ParcelShortcutLookup | undefined;
   for (const path of paths) {
     const token = Path.basename(path);
-    if (!token.startsWith("sms-") || !DRAFT_FILE.test(token)) continue;
+    const file = Path.join(directory, token);
+    if (!isPendingDraft(token)) {
+      if (!DRAFT_FILE.test(token.replace(/\.(?:claimed|writing)$/, ""))) continue;
+      try {
+        // Only older foreground Shortcut versions wrote expiring, unprefixed tokens.
+        if (Date.now() - FileManager.statSync(file).modificationDate > SCREEN_DRAFT_MAX_AGE_MS) removeDraft(file);
+      } catch {
+        // A foreground launch may have claimed it while listing the directory.
+      }
+      continue;
+    }
+    if (!DRAFT_FILE.test(token)) continue;
     try {
-      const lookup = parseLookup(FileManager.readAsStringSync(Path.join(directory, token)));
-      if (lookup && (!next || lookup.capturedAtMs < next.capturedAtMs)) next = { ...lookup, smsDraft: token };
+      const lookup = parseLookup(FileManager.readAsStringSync(file));
+      if (lookup && (!next || lookup.capturedAtMs < next.capturedAtMs)) next = { ...lookup, draftToken: token };
     } catch {
-      // Another host can acknowledge an SMS draft while this one is enumerating.
+      // Another host can acknowledge a draft while this one is enumerating.
     }
   }
   return next;
