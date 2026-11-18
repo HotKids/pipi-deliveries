@@ -31,8 +31,7 @@ const CAINIAO_COUNT = "mtop.cainiao.lpc.packageservice.user.package.count.query"
 const TAOBAO_PROFILE = "mtop.taobao.reborn.mclaren.h5";
 const TAOBAO_PROFILE_PAGE = "https://main.m.taobao.com/mytaobao/index.html";
 const TAOBAO_IDENTITY_API = "mtop.cainiao.pickup.identity.getIdentityMessage";
-const CAINIAO_OUTBOUND_AGREEMENT = "mtop.cainiao.cnts.lightapp.agreement.query";
-const CAINIAO_OUTBOUND_CODE = "mtop.cainiao.nbpickup.identity.code.mini.app";
+const CAINIAO_OUTBOUND_CODE = "mtop.cainiao.nbpickup.identitycode.get";
 const TAOBAO_H5_PAGE = "https://h5.m.taobao.com/";
 const CAINIAO_SENDER_LIST = "mtop.cainiao.tdtradeplatform.order.queryUncompletedOrder";
 const CAINIAO_SENDER_DETAIL = "mtop.cainiao.tdtradeplatform.order.queryOrderDetail";
@@ -56,7 +55,7 @@ const MOBILE_WEB_USER_AGENT = "Mozilla/5.0 (Linux; Android 15; Mobile) AppleWebK
 const pddVerifyUntil = new Map<string, number>();
 
 export class PlatformWireError extends Error {
-  constructor(readonly reason: "expired" | "verification" | "unavailable" | "changed" | "agreement") {
+  constructor(readonly reason: "expired" | "verification" | "unavailable" | "changed") {
     super("Parcel provider " + reason);
     this.name = "PlatformWireError";
   }
@@ -180,7 +179,7 @@ function mergeMtopCookies(cookies: readonly PlatformCookie[], incoming: readonly
 }
 
 async function mtopOnce(api: string, data: string, cookies: readonly PlatformCookie[], signal?: AbortSignal) {
-  const version = api === CAINIAO_OUTBOUND_AGREEMENT ? "1.1" : "1.0";
+  const version = "1.0";
   const endpoint = MTOP + "/h5/" + api.toLowerCase() + "/" + version + "/";
   const attached = cookiesForURL(cookies, endpoint);
   const token = cookieValue(attached, "_m_h5_tk").split("_")[0];
@@ -191,8 +190,7 @@ async function mtopOnce(api: string, data: string, cookies: readonly PlatformCoo
     type: "originaljson", dataType: "json", data,
   }).map(([key, value]) => key + "=" + encodeURIComponent(value)).join("&");
   const referer = api === TAOBAO_PROFILE ? TAOBAO_PROFILE_PAGE :
-    isCainiaoSenderApi(api) ? CAINIAO_SENDER_PAGE :
-    isCainiaoOutboundApi(api) ? CAINIAO_OUTBOUND_PAGE : TAOBAO_H5_PAGE;
+    isCainiaoSenderApi(api) ? CAINIAO_SENDER_PAGE : TAOBAO_H5_PAGE;
   const response = await providerRequest(endpoint + "?" + query, {
     Cookie: cookieHeader(attached), Referer: referer,
     Accept: "application/json",
@@ -215,7 +213,8 @@ async function mtop(api: string, body: JsonObject, cookies: readonly PlatformCoo
   if (signal?.aborted) throw new PlatformWireError("changed");
   if (!/TOKEN_EMPTY|TOKEN_EXPIRED|TOKEN_EXOIRED|ILLEGAL_ACCESS/.test(first.ret)) return first;
   let fresh = first.cookies;
-  if (api === TAOBAO_IDENTITY_API && JSON.stringify(fresh) === JSON.stringify(cookies)) {
+  if ((api === TAOBAO_IDENTITY_API || api === CAINIAO_OUTBOUND_CODE) &&
+      JSON.stringify(fresh) === JSON.stringify(cookies)) {
     if (!current?.()) throw new PlatformWireError("changed");
     const deadline = Date.now() + 15_000;
     const web = await openProviderController("cainiao", cookies, "default", deadline, signal);
@@ -252,10 +251,6 @@ function isCainiaoSenderApi(api: string): boolean {
   return api === CAINIAO_SENDER_LIST || api === CAINIAO_SENDER_DETAIL;
 }
 
-function isCainiaoOutboundApi(api: string): boolean {
-  return api === CAINIAO_OUTBOUND_AGREEMENT || api === CAINIAO_OUTBOUND_CODE;
-}
-
 export async function readCainiao(session: PlatformSession, api: string, params: JsonObject, signal?: AbortSignal): Promise<JsonObject> {
   if (signal?.aborted) throw new PlatformWireError("changed");
   const generation = session.generation;
@@ -266,7 +261,7 @@ export async function readCainiao(session: PlatformSession, api: string, params:
   const result = await mtop(api, params, before, current, signal);
   if (signal?.aborted || !currentPlatformSession("cainiao", generation)) throw new PlatformWireError("changed");
   if (/SESSION_EXPIRED|USER_NOT_LOGIN|NOT_LOGIN|NEED_LOGIN/.test(result.ret)) {
-    if (isCainiaoOutboundApi(api)) throw new PlatformWireError("unavailable");
+    if (api === CAINIAO_OUTBOUND_CODE) throw new PlatformWireError("unavailable");
     if (isCainiaoSenderApi(api)) {
       await readCainiao(session, CAINIAO_COUNT, { appName: "GUOGUO" }, signal);
       throw new PlatformWireError("unavailable");
@@ -427,12 +422,8 @@ export async function fetchStationIdentity(platform: IdentityPlatform, session: 
   let stage = "station_identity_request";
   try {
     if (platform === "cainiao" && cainiaoOutbound) {
-      const agreement = await readCainiao(session, CAINIAO_OUTBOUND_AGREEMENT, {
-        appSource: "GUOGUO", codes: JSON.stringify(["IdentityID_Light"]),
-      }, signal);
-      if (!Array.isArray(agreement.model) || !agreement.model.length) throw new PlatformWireError("agreement");
       const result = await readCainiao(session, CAINIAO_OUTBOUND_CODE, {
-        appName: "TAOBAO", positionName: "TAOBAO_GUOGUO",
+        appName: "GUOGUO", verifyVersion: "V2",
       }, signal);
       stage = "station_identity_response";
       const { identityCode, expireTime } = asPlainObject(result.model);

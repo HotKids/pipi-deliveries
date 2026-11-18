@@ -45,6 +45,22 @@ test("an unchanged canonical load reuses its private parsed clone after byte equ
   assert.equal(JSON.stringify(loaded), payload);
 });
 
+test("checksum-verified snapshots are parsed without a script-side character scan", () => {
+  const expected = seed();
+  const payload = JSON.parse(String(memory.get(PRIMARY))).payload;
+  const charCodeAt = String.prototype.charCodeAt;
+  let inspectedCharacters = 0;
+  String.prototype.charCodeAt = function (index: number) {
+    if (String(this) === payload) inspectedCharacters++;
+    return charCodeAt.call(this, index);
+  };
+  let loaded;
+  try { loaded = loadState(NOW); }
+  finally { String.prototype.charCodeAt = charCodeAt; }
+  assert.deepEqual(loaded, expected);
+  assert.equal(inspectedCharacters, 0);
+});
+
 test("returned nested values cannot alias another load or persistent canonical bytes", () => {
   const expected = seed();
   const first = loadState(NOW);

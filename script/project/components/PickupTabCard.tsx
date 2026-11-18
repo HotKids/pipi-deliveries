@@ -7,8 +7,7 @@ import { parcelCardArtwork } from "../services/parcel-card-appearance";
 import { useBundledImage } from "./bundled-image";
 import { ParcelLiveActivityCard, type ParcelLiveActivityCardProps, PIPI_CARD } from "./ParcelLiveActivityCard";
 
-const ART_WIDTH = 100;
-const ART_HEIGHT = 117;
+const { artWidth: ART_WIDTH, artHeight: ART_HEIGHT, logoX: STICKER_X, logoY: STICKER_Y } = PIPI_CARD;
 const ATLAS_COLUMNS = 7;
 const ATLAS_SCALE = 3;
 const FRAME_COUNT = 43;
@@ -66,8 +65,8 @@ function AnimatedBox({ atlas, logo, logoSize }: { atlas: UIImage; logo: UIImage 
   const finishAt = logo ? STICKER_DELAY_MS + STICKER_DURATION_MS : FRAME_COUNT * FRAME_DURATION_MS;
   const width = ART_WIDTH * ATLAS_SCALE;
   const height = ART_HEIGHT * ATLAS_SCALE;
-  const stickerX = 50 - logoSize / 2;
-  const stickerY = 64 - logoSize / 2;
+  const stickerX = STICKER_X - logoSize / 2;
+  const stickerY = STICKER_Y - logoSize / 2;
   return (
     <TimelineCanvas frame={{ width: ART_WIDTH, height: ART_HEIGHT }} opaque={false}
       paused={settled}
@@ -120,7 +119,7 @@ function PickupTabArtwork({ logoAsset, logoSize }: { logoAsset?: string; logoSiz
         <ZStack alignment="topLeading">
           {fallbackBox ? <Image image={fallbackBox} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} /> : null}
           {logo ? <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
-            offset={{ x: 50 - logoSize / 2, y: 64 - logoSize / 2 }} /> : null}
+            offset={{ x: STICKER_X - logoSize / 2, y: STICKER_Y - logoSize / 2 }} /> : null}
         </ZStack>
       )}
     </ZStack>
@@ -145,14 +144,12 @@ function ParcelCardListRow(props: ParcelLiveActivityCardProps) {
   );
 }
 
-export function ParcelActivityPreviewCard({ animate = false, lockScreenPreview = false }: {
-  animate?: boolean; lockScreenPreview?: boolean;
-}) {
+export function ParcelActivityPreviewCard({ animate = false }: { animate?: boolean }) {
   const { sticker } = parcelCardArtwork(PARCEL_ACTIVITY_PREVIEW);
   const logoPath = sticker ? `${Script.directory}/assets/${sticker.path}` : undefined;
   return (
     <ParcelCardListRow data={PARCEL_ACTIVITY_PREVIEW} imageRoot={`${Script.directory}/assets/parcel-activity`}
-      logoPath={logoPath} preview lockScreenPreview={lockScreenPreview}
+      logoPath={logoPath} preview
       artwork={animate ? <PickupTabArtwork logoAsset={sticker?.path} logoSize={26} /> : undefined} />
   );
 }

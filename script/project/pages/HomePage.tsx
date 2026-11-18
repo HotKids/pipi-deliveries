@@ -5,10 +5,8 @@ import {
   GeometryReader,
   HStack,
   Image,
-  List,
   Navigation,
   NavigationStack,
-  NamespaceReader,
   ProgressView,
   Rectangle,
   ScrollView,
@@ -28,7 +26,7 @@ import {
 import type { AppState, RefreshSummary, Shipment, StatusSemantic } from "../models";
 import { ShipmentRow } from "../components/ShipmentRow";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
-import { ROOT_PAGE_MARGIN, RootPageCloseButton, RootPageTitle } from "../components/RootPageHeader";
+import { ROOT_PAGE_MARGIN, RootTabList } from "../components/RootPageHeader";
 import { TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, tabCapsuleSurface, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import {
   commitManualShipmentPreview,
@@ -96,7 +94,7 @@ type ShipmentFilter = keyof typeof shipmentFilters;
 
 const FILTER_SEGMENT_INSET = 3;
 const FILTER_ROW_HEIGHT = 44;
-const FILTER_SLIDE_SECONDS = 0.32;
+const FILTER_SLIDE_SECONDS = 0.24;
 
 function ShipmentFilterBar({ visibleFilters, filter, groups, onSelect }: {
   visibleFilters: readonly ShipmentFilter[];
@@ -104,23 +102,6 @@ function ShipmentFilterBar({ visibleFilters, filter, groups, onSelect }: {
   groups: Record<ShipmentFilter, readonly unknown[]>;
   onSelect: (filter: ShipmentFilter) => void;
 }) {
-  const [filterSliding, setFilterSliding] = useState(false);
-  const filterSlideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (filterSlideTimer.current !== null) clearTimeout(filterSlideTimer.current);
-  }, []);
-
-  function switchFilter(key: ShipmentFilter) {
-    if (filter === key) return;
-    if (filterSlideTimer.current !== null) clearTimeout(filterSlideTimer.current);
-    setFilterSliding(true);
-    onSelect(key);
-    filterSlideTimer.current = setTimeout(() => {
-      filterSlideTimer.current = null;
-      setFilterSliding(false);
-    }, FILTER_SLIDE_SECONDS * 1_000);
-  }
-
   return (
     <VStack listRowInsets={{ top: 2, bottom: 2, leading: ROOT_PAGE_MARGIN, trailing: ROOT_PAGE_MARGIN }}
       listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden">
@@ -129,44 +110,34 @@ function ShipmentFilterBar({ visibleFilters, filter, groups, onSelect }: {
           const segmentWidth = Math.max(0, size.width - 2 * FILTER_SEGMENT_INSET) / visibleFilters.length;
           const selectedOffset = FILTER_SEGMENT_INSET + visibleFilters.indexOf(filter) * segmentWidth;
           return (
-            <NamespaceReader>
-              {namespace => (
-                <ZStack alignment="leading" frame={{ width: size.width, height: FILTER_ROW_HEIGHT }}>
-                  <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
-                    frame={{ height: 32 }} allowsHitTesting={false} />
-                  {segmentWidth > 0 ? (
-                    <Capsule fill="secondarySystemFill" frame={{ width: segmentWidth, height: 26 }}
-                      offset={{ x: selectedOffset, y: 0 }} allowsHitTesting={false} />
-                  ) : null}
-                  <VStack opacity={filterSliding ? 1 : 0} allowsHitTesting={false}>
-                    <Capsule fill="clear" {...tabCapsuleSurface()}
-                      frame={{ width: 34, height: 26 }}
-                      matchedGeometryEffect={{ id: filter, namespace, properties: "position", isSource: false }}
-                      animation={{ animation: Animation.snappy({ duration: FILTER_SLIDE_SECONDS }), value: filter }} />
-                  </VStack>
-                  <HStack spacing={0} padding={{ horizontal: FILTER_SEGMENT_INSET }}>
-                    {visibleFilters.map((key) => (
-                      <Button key={key} buttonStyle="plain" action={() => switchFilter(key)}
-                        {...{ accessibilityAddTraits: key === filter ? "isSelected" as const : undefined }}>
-                        <HStack spacing={4} frame={{ width: segmentWidth, height: FILTER_ROW_HEIGHT }} contentShape="rect">
-                          <Text font={14} fontWeight={key === filter ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}
-                            matchedGeometryEffect={{ id: key, namespace, properties: "position" }}>
-                            {shipmentFilters[key]}
-                          </Text>
-                          <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
-                            lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
-                            background={{ style: "systemFill", shape: "capsule" }}
-                            contentTransition="numericText"
-                            animation={{ animation: Animation.snappy({ duration: 0.32 }), value: groups[key].length }}>
-                            {groups[key].length}
-                          </Text>
-                        </HStack>
-                      </Button>
-                    ))}
-                  </HStack>
-                </ZStack>
-              )}
-            </NamespaceReader>
+            <ZStack alignment="leading" frame={{ width: size.width, height: FILTER_ROW_HEIGHT }}>
+              <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
+                frame={{ height: 32 }} allowsHitTesting={false} />
+              {segmentWidth > 0 ? (
+                <Capsule fill="secondarySystemFill" frame={{ width: segmentWidth, height: 26 }}
+                  offset={{ x: selectedOffset, y: 0 }} allowsHitTesting={false}
+                  animation={{ animation: Animation.smooth({ duration: FILTER_SLIDE_SECONDS }), value: filter }} />
+              ) : null}
+              <HStack spacing={0} padding={{ horizontal: FILTER_SEGMENT_INSET }}>
+                {visibleFilters.map((key) => (
+                  <Button key={key} buttonStyle="plain" action={() => onSelect(key)}
+                    {...{ accessibilityAddTraits: key === filter ? "isSelected" as const : undefined }}>
+                    <HStack spacing={4} frame={{ width: segmentWidth, height: FILTER_ROW_HEIGHT }} contentShape="rect">
+                      <Text font={14} fontWeight={key === filter ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
+                        {shipmentFilters[key]}
+                      </Text>
+                      <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
+                        lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
+                        background={{ style: "systemFill", shape: "capsule" }}
+                        contentTransition="numericText"
+                        animation={{ animation: Animation.snappy({ duration: 0.32 }), value: groups[key].length }}>
+                        {groups[key].length}
+                      </Text>
+                    </HStack>
+                  </Button>
+                ))}
+              </HStack>
+            </ZStack>
           );
         }}
       </GeometryReader>
@@ -209,7 +180,6 @@ export function HomePage(props: {
   const [completing, setCompleting] = useState(false);
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
-  const filterSelection = useObservable<ShipmentFilter>("all");
   const searchPresented = useObservable(props.autoFocusSearch && !props.initialShipmentId);
   const handledNavigationRef = useRef<number | undefined>(undefined);
   const [accessKeyRejected, setAccessKeyRejected] = useState(gatewayAccessKeyRejected);
@@ -234,11 +204,22 @@ export function HomePage(props: {
   }, [shipments, deleting, completing]);
   const visibleFilters = (Object.keys(shipmentFilters) as ShipmentFilter[])
     .filter((key) => key === "all" || groups[key].length > 0);
-  const selectedFilter = filterSelection.value;
-  const filter = visibleFilters.includes(selectedFilter) ? selectedFilter : "all";
-  const listItems = groups[filter];
-  const observableItems = useObservable(() => listItems);
-  useEffect(() => { observableItems.setValue(listItems); }, [listItems]);
+  const selection = useRef({ filter: "all" as ShipmentFilter, items: groups.all });
+  const filter = visibleFilters.includes(selection.current.filter) ? selection.current.filter : "all";
+  const observableItems = useObservable(() => selection.current.items);
+
+  function showFilter(next: ShipmentFilter) {
+    if (!visibleFilters.includes(next)) return;
+    const items = groups[next];
+    if (selection.current.items === items) return;
+    selection.current = { filter: next, items };
+    observableItems.setValue(items);
+  }
+
+  useEffect(() => {
+    const selected = selection.current.filter;
+    showFilter(visibleFilters.includes(selected) ? selected : "all");
+  }, [groups]);
   const rowActions = useRef({ openShipment, confirmDelete, confirmComplete });
   rowActions.current = { openShipment, confirmDelete, confirmComplete };
   const selected = selectedNavigationShipment(
@@ -286,15 +267,6 @@ export function HomePage(props: {
       mountedRef.current = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (selectedFilter !== filter) filterSelection.setValue(filter);
-  }, [filterSelection, selectedFilter, filter]);
-
-  function selectFilter(key: string) {
-    const next = visibleFilters.find((candidate) => candidate === key);
-    if (next && next !== filter) filterSelection.setValue(next);
-  }
 
   useEffect(() => {
     const generation = props.navigationRequestGeneration;
@@ -544,62 +516,55 @@ export function HomePage(props: {
           ) : <Text>快递详情</Text>,
         }}
       >
-        <ZStack alignment="topTrailing">
-          <List key="shipments" listStyle="plain" refreshable={refresh}
-            frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-            contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
-            overlay={!shipments.length ? {
-              alignment: "center",
-              content: (
-                <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} allowsHitTesting={false}>
-                  <EmptyDeliveryStateGroup vehicleSize={81.6} spacing={6} labelFont={24} deferArtwork />
-                </VStack>
-              ),
-            } : undefined}
-          >
-            <RootPageTitle title="快递" />
-            {visibleFilters.length > 1 ? (
-              <ShipmentFilterBar visibleFilters={visibleFilters} filter={filter} groups={groups} onSelect={selectFilter} />
-            ) : null}
-            {accessKeyNotice ? (
-              <VStack listRowInsets={{ top: 0, bottom: 0, leading: 0, trailing: 0 }} listRowSeparator="hidden">
-                {accessKeyNotice}
-              </VStack>
-            ) : null}
-            {shipments.length ? (
-              <Section listSectionSeparator={{ visibility: "hidden", edges: "top" }}>
-                <ForEach data={observableItems} builder={({ id, shipment, deleting, completing }) => (
-                  <ShipmentRow
-                    key={id}
-                    shipment={shipment}
-                    onOpen={() => rowActions.current.openShipment(shipment)}
-                    onDelete={() => void rowActions.current.confirmDelete(shipment)}
-                    onComplete={() => void rowActions.current.confirmComplete(shipment)}
-                    deleteDisabled={deleting}
-                    completeDisabled={completing}
-                  />
-                )} />
-              </Section>
-            ) : null}
-            {shipments.length ? (
-              <VStack
-                spacing={8}
-                padding={{ bottom: 12 }}
-                frame={{ maxWidth: "infinity" }}
-                listRowSeparator="hidden"
+        <RootTabList key="shipments" title="快递" onClose={() => dismiss()}
+          refresh={refresh} bottomInset={TAB_FAB_SCROLL_INSET}
+          emptyState={!shipments.length ? (
+            <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} allowsHitTesting={false}>
+              <EmptyDeliveryStateGroup vehicleSize={81.6} spacing={6} labelFont={24} deferArtwork />
+            </VStack>
+          ) : undefined}
+          topAccessory={visibleFilters.length > 1 ? (
+            <ShipmentFilterBar visibleFilters={visibleFilters} filter={filter} groups={groups} onSelect={showFilter} />
+          ) : null}>
+          {accessKeyNotice ? (
+            <VStack listRowInsets={0} listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden">
+              {accessKeyNotice}
+            </VStack>
+          ) : null}
+          {shipments.length ? (
+            <Section listSectionMargins={{ edges: "vertical", length: 0 }}
+              listSectionSeparator={{ visibility: "hidden", edges: "top" }}>
+              <ForEach data={observableItems} builder={({ id, shipment, deleting, completing }) => (
+                <ShipmentRow
+                  key={id}
+                  shipment={shipment}
+                  onOpen={() => rowActions.current.openShipment(shipment)}
+                  onDelete={() => void rowActions.current.confirmDelete(shipment)}
+                  onComplete={() => void rowActions.current.confirmComplete(shipment)}
+                  deleteDisabled={deleting}
+                  completeDisabled={completing}
+                />
+              )} />
+            </Section>
+          ) : null}
+          {shipments.length ? (
+            <VStack
+              spacing={8}
+              padding={{ bottom: 12 }}
+              frame={{ maxWidth: "infinity" }}
+              listRowBackground={<Rectangle fill="clear" />}
+              listRowSeparator="hidden"
+            >
+              <Text
+                font={12}
+                foregroundStyle="tertiaryLabel"
+                frame={{ maxWidth: "infinity", alignment: "center" }}
               >
-                <Text
-                  font={12}
-                  foregroundStyle="tertiaryLabel"
-                  frame={{ maxWidth: "infinity", alignment: "center" }}
-                >
-                  只显示 14 天内的快递
-                </Text>
-              </VStack>
-            ) : null}
-          </List>
-          <RootPageCloseButton action={() => dismiss()} />
-        </ZStack>
+                只显示 14 天内的快递
+              </Text>
+            </VStack>
+          ) : null}
+        </RootTabList>
       </VStack>
     </NavigationStack>
   );

@@ -477,36 +477,73 @@ assert.match(activityCardSource, /systemName="shippingbox\.fill" font=\{card\.ca
   "the completion control uses the native package symbol");
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
 assert.match(activityEntrySource, /<LiveActivityUIExpandedCenter>\s*<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} expanded \/>/,
-  "the tested center region uses the regular iPhone card scale");
-assert.match(activityEntrySource, /dynamicIslandContentMargins: \{\s*expanded: \{ top: 0, leading: PIPI_CARD\.edge, trailing: PIPI_CARD\.edge, bottom: PIPI_CARD\.edge \},\s*\}/,
-  "the native TestFlight margin keeps the expanded capsule equally distant from the right and bottom edges");
+  "the registered island uses the common Pipi card");
+const islandAppearanceSource = activityEntrySource.match(/const expandedActionInset = [\s\S]*?^\};/m)?.[0];
+assert.ok(islandAppearanceSource);
+const islandAppearance = new Function("PIPI_CARD", islandAppearanceSource + "\nreturn expandedIslandAppearance;")({
+  edge: 12, capsuleHeight: 35,
+});
+assert.deepEqual(islandAppearance.dynamicIslandContentMargins.expanded, { top: 0, leading: 12, trailing: 18, bottom: 18 },
+  "the right and bottom edges share one clearance around the expanded capsule");
+const activityScaleSource = activityCardSource.match(/  const widthScale = [\s\S]*?  const verticalScale = [\s\S]*?;/)?.[0];
+assert.ok(activityScaleSource);
+const activityScale = new Function("width", "card", "expanded", "lockScreen", "MAX_ACTIVITY_HEIGHT",
+  activityScaleSource + "\nreturn { scale, verticalScale };");
+const referenceCard = { width: 328, height: 132 };
+for (const width of [320, 365, 380, 402]) {
+  const islandScale = activityScale(width, referenceCard, true, false, 160);
+  const lockScreenScale = activityScale(width, referenceCard, false, true, 160);
+  assert.equal(islandScale.scale, lockScreenScale.scale, "both surfaces use the same horizontal scale");
+  assert.equal(islandScale.verticalScale, Math.min(lockScreenScale.scale, 1),
+    "the expanded row heights respect the constrained space below the camera");
+  assert.equal(lockScreenScale.verticalScale, lockScreenScale.scale);
+}
 assert.match(activityEntrySource, /<LiveActivityUI\s*\{\.\.\.expandedIslandAppearance\}/);
 assert.match(activityCardSource, /const artColumnWidth = expanded \? artWidth - card\.edge \* scale : artWidth;/,
   "the expanded host supplies the card's outside inset while the artwork keeps its regular size");
 assert.match(activityCardSource, /minWidth: expanded \? artColumnWidth : Math\.min\(artWidth, MIN_COMPACT_ART_WIDTH\)/,
   "the expanded native host cannot squeeze the box into the Watch column");
-assert.match(activityCardSource, /<VStack spacing=\{dividerToCapsule \* scale\} fixedSize=\{\{ horizontal: false, vertical: true \}\} layoutPriority=\{1\}>\s*\{divider\}\s*\{bottomRow\}\s*<\/VStack>/,
+const artworkOffsetSource = activityCardSource.match(/  const artOffset = [^\n]+/)?.[0];
+assert.ok(artworkOffsetSource);
+const artworkOffset = new Function("card", "top", "scale",
+  artworkOffsetSource + "\nreturn artOffset;");
+const cardArtTop = Number(activityCardSource.match(/\bartTop: ([\d.]+),/)?.[1]);
+assert.equal(cardArtTop, 9 - (132 - 117) / 2, "use the established Home artwork position in each host");
+for (const scale of [1, 1.12]) {
+  const card = { artTop: cardArtTop };
+  const titleTop = 16.3;
+  const regularTop = artworkOffset(card, 0, scale);
+  const islandTop = artworkOffset(card, titleTop, scale);
+  assert.ok(Math.abs(regularTop - titleTop * scale - islandTop) < 0.01);
+}
+assert.match(activityCardSource, /background=\{\{ alignment: "topLeading", content: boxArtwork \}\}/);
+assert.match(activityCardSource, /<ZStack frame=\{\{ width: artWidth, \.\.\.slot\(bottom - top\), alignment: "topLeading" \}\}>\{boxArtwork\}/,
+  "the in-app artwork also uses a top-leading origin");
+assert.match(activityCardSource, /<VStack spacing=\{dividerToCapsule \* verticalScale\} fixedSize=\{\{ horizontal: false, vertical: true \}\} layoutPriority=\{1\}>\s*\{divider\}\s*\{bottomRow\}\s*<\/VStack>/,
   "the expanded divider and action share a fixed spacing container");
 assert.match(activityCardSource, /slot\(dividerTop - titleTop, expandedHeaderMinimum\)[^\n]*>\s*\{expandedLine\(title, card\.titleHeight, card\.titleLineHeight\)\}\s*<Rectangle fill="clear" frame=\{slot\(gap, gap\)\} \/>\s*\{expandedLine\(location, card\.locationHeight, card\.locationLineHeight\)\}\s*<Rectangle fill="clear" frame=\{slot\(locationToDivider, locationToDivider\)\} \/>/,
   "the expanded text line frames release their spare height before the Pipi gaps shrink");
-assert.match(activityCardSource, /fixedSize=\{\{ horizontal: false, vertical: true \}\}\s+frame=\{\{ minHeight: lineHeight \* scale, alignment: "topLeading" \}\}/,
+assert.match(activityCardSource, /fixedSize=\{\{ horizontal: false, vertical: true \}\}\s+frame=\{\{ minHeight: lineHeight \* verticalScale, alignment: "topLeading" \}\}/,
   "the expanded Pipi line heights distribute leading without shrinking text");
 assert.match(activityCardSource, /const MIN_COMPACT_ART_WIDTH = PIPI_CARD\.artWidth \/ 2;/);
-assert.match(activityCardSource, /const balancedType = lockScreen \|\| lockScreenPreview;/);
-assert.match(activityCardSource, /const codeFont = balancedType \? 26\.5 : card\.codeFont;/);
-assert.match(activityCardSource, /font=\{codeFont \* scale\} fontWeight="semibold" fontWidth=\{balancedType \? "standard" : "condensed"\}/,
-  "the selected Lock Screen font keeps standard digits and the expanded island keeps condensed digits");
+assert.match(activityCardSource, /titleFont: 16,[\s\S]*?locationFont: 12,[\s\S]*?codeFont: 26\.5,/);
+assert.match(activityCardSource, /font=\{card\.titleFont \* scale\} fontWeight="semibold"/);
+assert.match(activityCardSource, /font=\{card\.locationFont \* scale\} fontWeight="medium"/);
+assert.match(activityCardSource, /font=\{card\.codeFont \* scale\} fontWeight="semibold" fontWidth="standard"[\s\S]*?kerning=\{0\}/,
+  "the Pickup tab, Lock Screen and island all use the shared standard-width digits");
+assert.doesNotMatch(activityCardSource, /balancedType|lockScreenPreview/);
 assert.match(activityCardSource, /const SMART_STACK_ART_COLUMN_WIDTH = 56;/);
 assert.match(activityCardSource, /const SMART_STACK_ART_WIDTH = 64;/);
 assert.match(activityCardSource, /const SMART_STACK_ART_GAP = 4\.6;/);
+assert.match(activityCardSource, /const SMART_STACK_ROW_GAP = 6;/);
+assert.match(activityCardSource, /const SMART_STACK_TRAILING_INSET = 10;/);
 assert.match(activityCardSource, /const SMART_STACK_CODE_FONT = 29;/);
 const watchCardSource = activityCardSource.slice(activityCardSource.indexOf("const smartStack = ("));
+assert.match(watchCardSource, /padding=\{\{ trailing: SMART_STACK_TRAILING_INSET \}\}/);
 assert.match(watchCardSource, /<ZStack frame=\{watchArtFrame\} scaleEffect=\{SMART_STACK_ART_WIDTH \/ SMART_STACK_ART_COLUMN_WIDTH\}>/,
   "the Smart Stack centers the enlarged box without the iPhone artwork offset");
-assert.ok(/\{data\.title\}<\/Text>\s*<HStack spacing=\{0\} frame=\{\{ minHeight: gap, maxHeight: gap, maxWidth: "infinity" \}\}[\s\S]*?\{dividerDots\(watchContentWidth, 1\)\}[\s\S]*?<Text font=\{SMART_STACK_CODE_FONT\}/.test(watchCardSource),
-  "the Smart Stack uses the Pipi body gap around the dotted divider");
-assert.ok(/<VStack alignment="leading" spacing=\{0\}[\s\S]*?offset=\{\{ x: 0, y: \(gap - card\.iconGap\) \/ 2 \}\}/.test(watchCardSource),
-  "the Smart Stack moves the text block down by half of the added gap");
+assert.ok(/\{data\.title\}<\/Text>\s*<HStack spacing=\{0\} frame=\{\{ minHeight: SMART_STACK_ROW_GAP, maxHeight: SMART_STACK_ROW_GAP, maxWidth: "infinity" \}\}[\s\S]*?\{dividerDots\(watchContentWidth, 1\)\}[\s\S]*?<Text font=\{SMART_STACK_CODE_FONT\}/.test(watchCardSource),
+  "the Smart Stack uses its compact row gap around the dotted divider");
 assert.match(watchCardSource, /offset=\{\{ x: 0, y: SMART_STACK_DIVIDER_INK_OFFSET \}\}/,
   "the Smart Stack positions the divider between visible letters and digits");
 assert.match(activityCardSource, /const flexibleHeight = lockScreen \|\| expanded;/,
@@ -514,7 +551,7 @@ assert.match(activityCardSource, /const flexibleHeight = lockScreen \|\| expande
 const activitySettingsSource = readFileSync(new URL("../pages/PickupSettingsPages.tsx", import.meta.url), "utf8");
 assert.equal((activitySettingsSource.match(/<ParcelActivityPreviewCard\b/g) ?? []).length, 1,
   "the setting contains one example card");
-assert.match(activitySettingsSource, /<ParcelActivityPreviewCard lockScreenPreview \/>/,
+assert.match(activitySettingsSource, /<ParcelActivityPreviewCard \/>/,
   "the settings preview uses the selected Lock Screen typography");
 const tabCardSource = readFileSync(new URL("../components/PickupTabCard.tsx", import.meta.url), "utf8");
 assert.match(tabCardSource, /listRowInsets=\{0\}[\s\S]*?<ParcelLiveActivityCard\b/);
@@ -542,13 +579,27 @@ assert.match(appSource, /pickupCards\.length > 0 \|\| pickupPreview/);
 assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title="取件"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="archivebox\.fill"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
 assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate/);
-assert.match(pickupSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<ZStack alignment="topTrailing">\s*<List\b[^]*?<RootPageTitle title="取件" \/>[^]*?<\/List>\s*<RootPageCloseButton action=\{\(\) => dismiss\(\)\} \/>/);
-assert.match(settingsSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<ZStack alignment="topTrailing">\s*<List\b[^]*?<RootPageTitle title="设置" \/>[^]*?<\/List>\s*<RootPageCloseButton action=\{\(\) => dismiss\(\)\} \/>/);
+const homeSource = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
+for (const [title, source] of [["快递", homeSource], ["取件", pickupSource], ["设置", settingsSource]]) {
+  assert.match(source, new RegExp(`<NavigationStack>\\s*<VStack navigationBarVisibility="hidden"[^]*?<RootTabList\\b[^>]*title="${title}"`),
+    `${title} delegates the initial position and scroll layout to the same root`);
+  assert.doesNotMatch(source, /<List\b|<RootPageTitle\b|<RootPageCloseButton\b|listStyle=/);
+}
+assert.match(pickupSource, /<RootTabList title="取件" onClose=\{\(\) => dismiss\(\)\} bottomInset=\{TAB_FAB_SCROLL_INSET\}>/);
+assert.match(settingsSource, /<RootTabList title="设置" onClose=\{\(\) => dismiss\(\)\}>/);
 assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:|rootPageScroll|headerCollapsed/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|取件)"/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
+assert.match(rootHeader, /const header = \(\s*<Section key="root-heading" listSectionMargins=\{0\} listSectionSeparator="hidden">\s*<RootPageTitle title=\{title\} \/>\s*\{topAccessory\}\s*<\/Section>/);
+assert.match(rootHeader, /<List listStyle="insetGroup"[^]*?refreshable=\{refresh\}[^]*?edges: "top", insets: 0, placement: "scrollContent"[^]*?edges: "vertical", insets: \{ top: 0, bottom: bottomInset[^]*?>\s*\{\[header, \.\.\.\[children\]\.flat\(\)\]\}\s*<\/List>\s*<RootPageCloseButton action=\{onClose\} \/>/,
+  "one grouped list scrolls every title and any filter from the same initial top inset under a fixed close control");
+assert.doesNotMatch(rootHeader, /\bchildren=\{/,
+  "Scripting's JSX factory receives the list rows as positional children");
 assert.match(rootHeader, /function RootPageTitle[^]*?<Text font="largeTitle" fontWeight="bold"[^]*?\{title\}\s*<\/Text>/);
-assert.match(rootHeader, /function RootPageCloseButton[^]*?<VStack padding=\{\{ top: 4, trailing: ROOT_PAGE_MARGIN \}\}>\s*<Button title="关闭" systemImage="xmark"/);
+assert.match(rootHeader, /const HEADER_TOP_INSET = 4;/);
+assert.match(rootHeader, /function RootPageTitle[^]*?minHeight: CLOSE_SIZE, alignment: "leading"[^]*?listRowInsets=\{\{ top: HEADER_TOP_INSET,/,
+  "the large title shares the close control's initial vertical center");
+assert.match(rootHeader, /function RootPageCloseButton[^]*?<VStack padding=\{\{ top: HEADER_TOP_INSET, trailing: ROOT_PAGE_MARGIN \}\}>\s*<Button title="关闭" systemImage="xmark"/);
 assert.equal(rootHeader.match(/\{title\}\s*<\/Text>/g)?.length, 1);
 assert.doesNotMatch(rootHeader, /navigationTitle|ToolbarItem|Animation|collapsed/);
 assert.match(rootHeader, /const CLOSE_SIZE = 44;[^]*?labelStyle="iconOnly"[^]*?width: CLOSE_SIZE, height: CLOSE_SIZE/);

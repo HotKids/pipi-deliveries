@@ -205,7 +205,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
   const [full, setFull] = useState<ScanFormat | null>(null);
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
-  const [failure, setFailure] = useState<"verification" | "agreement" | "unavailable" | null>(null);
+  const [failure, setFailure] = useState<"verification" | "unavailable" | null>(null);
   const active = useRef(true);
   const mounted = useRef(true);
   const openingRecovery = useRef(false);
@@ -285,7 +285,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
     } catch (error) {
       if (mounted.current && active.current && request === generation.current) {
         const reason = error instanceof PlatformWireError ? error.reason : "unavailable";
-        setFailure(reason === "verification" || reason === "agreement" ? reason : "unavailable");
+        setFailure(reason === "verification" ? reason : "unavailable");
       }
     } finally {
       requestInFlight.current = undefined;
@@ -320,7 +320,6 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
 
   const valid = Boolean(value) && remaining > 0;
   const status = busy ? "正在获取身份码…" : failure === "verification" ? "请完成安全验证"
-    : failure === "agreement" ? "请在菜鸟完成出库码授权后重试"
     : failure === "unavailable" ? "未获取到身份码，请点右上角重试" : "身份码已过期";
   const markAsset = platform === "cainiao" && !cainiaoOutbound ? "taobao" : platform;
   const switchLabel = { accessibilityLabel: `切换到${IDENTITY_CODE_TITLES[cainiaoOutbound ? "cainiao" : "cainiao-outbound"]}` };

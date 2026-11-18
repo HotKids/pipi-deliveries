@@ -1,4 +1,4 @@
-import { Button, HStack, Spacer, Text, VStack } from "scripting";
+import { Button, HStack, Rectangle, Spacer, Text, VStack } from "scripting";
 import type { Shipment } from "../models";
 import {
   listHeadline,
@@ -43,6 +43,8 @@ export function ShipmentRow(props: {
     <HStack
       spacing={12}
       padding={{ vertical: 10 }}
+      listRowInsets={0}
+      listRowBackground={<Rectangle fill="clear" />}
       contentShape="rect"
       onTapGesture={props.onOpen}
       trailingSwipeActions={{

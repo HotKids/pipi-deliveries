@@ -1,7 +1,7 @@
-import { Button, HStack, List, Navigation, NavigationStack, Section, Text, VStack, ZStack, useEffect, useMemo, useRef, useState } from "scripting";
+import { Button, HStack, Navigation, NavigationStack, Section, Text, VStack, useEffect, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
-import { RootPageCloseButton, RootPageTitle } from "../components/RootPageHeader";
+import { RootTabList } from "../components/RootPageHeader";
 import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import { pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
@@ -217,21 +217,14 @@ export function PickupPage({
           ) : <Text>物流详情</Text>,
         }}
       >
-        <ZStack alignment="topTrailing">
-          <List
-            frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-            contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
-          >
-            <RootPageTitle title="取件" />
-            {sections.map(({ key, label, items, preview }) => (
-              <Section key={key} header={<Text>{label}</Text>}>
-                {items.map(cardRow)}
-                {preview ? <ParcelActivityPreviewCard animate /> : null}
-              </Section>
-            ))}
-          </List>
-          <RootPageCloseButton action={() => dismiss()} />
-        </ZStack>
+        <RootTabList title="取件" onClose={() => dismiss()} bottomInset={TAB_FAB_SCROLL_INSET}>
+          {sections.map(({ key, label, items, preview }) => (
+            <Section key={key} header={<Text>{label}</Text>}>
+              {items.map(cardRow)}
+              {preview ? <ParcelActivityPreviewCard animate /> : null}
+            </Section>
+          ))}
+        </RootTabList>
       </VStack>
     </NavigationStack>
   );

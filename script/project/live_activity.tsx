@@ -17,9 +17,16 @@ import { parcelCardArtwork, parcelCardPalette } from "./services/parcel-card-app
 
 export const PARCEL_ACTIVITY_ART = "pipi-deliveries/parcel-activity-art-v1";
 
+// The rounded island needs half a capsule of clearance at its lower corner.
+const expandedActionInset = Math.ceil(PIPI_CARD.capsuleHeight / 2);
 const expandedIslandAppearance = {
   dynamicIslandContentMargins: {
-    expanded: { top: 0, leading: PIPI_CARD.edge, trailing: PIPI_CARD.edge, bottom: PIPI_CARD.edge },
+    expanded: {
+      top: 0,
+      leading: PIPI_CARD.edge,
+      trailing: expandedActionInset,
+      bottom: expandedActionInset,
+    },
   },
 };
 
