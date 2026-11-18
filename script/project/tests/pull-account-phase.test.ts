@@ -6,7 +6,8 @@ import { emptyState, loadState, saveState } from "../services/storage";
 import { refreshAllShipments, refreshAllShipmentsForPull } from "../services/sync";
 import { parseAccountSyncResult } from "../services/account-parser";
 import { parcelToShipment } from "../services/account-sync";
-import { applyAccountShipment } from "../services/shipment-policy";
+import { applyAccountShipment, cainiaoHasTrajectoryGap } from "../services/shipment-policy";
+import { listHeadline } from "../services/status";
 import { saveGatewayToken } from "../services/credentials";
 import { setDiagnosticsEnabled } from "../services/logger";
 import { refreshSummaryToast } from "../services/ui-feedback";
@@ -200,6 +201,87 @@ test("a failed account list still lets a pull restore a cached bound shipment's 
   assert.equal(finished.succeeded, 1);
   assert.equal(loadState(NOW).shipments[0].timeline.latestDetail, "快件已揽收");
 });
+
+test("a scheduled refresh repairs missing bound Cainiao headlines after a recoverable list failure", async () => {
+  const picked = { ...record, stateNum: 103 };
+  const cached = { ...picked, mailNo: "YT9990000000022",
+    details: [{ time: OLD, desc: "原有真实揽收轨迹" }] };
+  seed(picked, cached);
+  const requests: string[] = [];
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
+    if (path === "/api/express/accounts/sync") return { ok: false, status: 502, text: async () => "Synthetic upstream unavailable" };
+    assert.equal(path, "/api/express/timeline/source");
+    requests.push(JSON.parse(String(init.body)).record.waybill);
+    return json({ code: 0, data: { ...picked, details: [{ time: OLD, desc: "快件已揽收" }] } });
+  }) as typeof fetch;
+
+  const result = await refreshAllShipments("interface5", { backgroundHostSafe: true });
+  assert.deepEqual(requests, [picked.mailNo], "only the bound parcel missing an observation needs a query");
+  assert.equal(result.failed, 1, "the account-list failure remains visible to the caller");
+  const reloaded = loadState(NOW).shipments.find(row => row.identity.sourceId === picked.mailNo);
+  assert.equal(reloaded?.timeline.latestDetail, "快件已揽收");
+  assert.equal(reloaded?.timeline.latestTimeText, OLD);
+});
+
+test("a real same-state pickup observation fills a new row even when the feed summary clock is later", async () => {
+  const summary = { ...record, stateNum: 103,
+    details: [{ time: NEW, desc: "快递状态已更新，点击查看>>" }] };
+  seed(summary);
+  let queried = 0;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
+    if (path === "/api/express/accounts/sync") return json({ code: 0, data: { expressList: [summary] } });
+    assert.equal(path, "/api/express/timeline/source");
+    assert.equal(JSON.parse(String(init.body)).record.waybill, summary.mailNo);
+    queried++;
+    return json({ code: 0, data: { ...summary, details: [{ time: OLD, desc: "快件已揽收", statusCode: 103 }] } });
+  }) as typeof fetch;
+
+  const { completion } = await refreshAllShipmentsForPull("interface5", { accountOrderProjection: false });
+  const result = await completion;
+  assert.equal(queried, 1);
+  assert.equal(result.failed, 1, "recovering an observed headline does not certify clock alignment");
+  const reloaded = loadState(NOW).shipments[0];
+  assert.equal(reloaded.timeline.latestDetail, "快件已揽收");
+  assert.equal(reloaded.timeline.latestTimeText, OLD, "show the pickup time from the same node");
+  assert.equal(reloaded.timeline.semantic, "PICKED");
+  assert.equal(reloaded.sourceTimeline?.latestTimeText, NEW, "the original feed summary clock stays separate");
+  assert.equal(cainiaoHasTrajectoryGap(reloaded, NOW), true);
+});
+
+for (const [nodeStatus, recovers] of [[103, true], [104, false], [undefined, false]] as const) {
+  test(`a detail without a packet status recovers the first headline only from a matching dated node (${nodeStatus})`, async () => {
+    const feed = { ...record, stateNum: 103,
+      details: [{ time: NEW, desc: "快递状态已更新，点击查看>>" }] };
+    seed(feed);
+    const before = loadState(NOW).shipments[0];
+    assert.equal(listHeadline(before.timeline), null);
+    assert.equal(before.timeline.semantic, "PICKED");
+    const event = { time: OLD, desc: "快件已由网点揽收", statusCode: nodeStatus };
+    let queried = 0;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
+      if (path === "/api/express/accounts/sync") return json({ code: 0, data: { expressList: [feed] } });
+      assert.equal(path, "/api/express/timeline/source");
+      assert.equal(JSON.parse(String(init.body)).record.waybill, feed.mailNo);
+      queried++;
+      return json({ code: 0, data: { ...feed, stateNum: undefined, details: [event] } });
+    }) as typeof fetch;
+
+    const { completion } = await refreshAllShipmentsForPull("interface5", { accountOrderProjection: false });
+    await completion;
+    assert.equal(queried, 1);
+    const after = loadState(NOW).shipments[0];
+    assert.equal(after.timeline.semantic, "PICKED");
+    assert.equal(after.timeline.statusEventAtMs, before.timeline.statusEventAtMs);
+    assert.equal(after.sourceTimeline?.latestTimeText, NEW);
+    assert.deepEqual(listHeadline(after.timeline), recovers ? { detail: event.desc, timeText: OLD } : null);
+  });
+}
 
 test("an ordinary forced refresh still resolves with the whole refresh", async () => {
   seed();

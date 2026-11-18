@@ -2,7 +2,7 @@ import { LiveActivity, Path, Script, type ScenePhase } from "scripting";
 import { PARCEL_ACTIVITY_ART, PipiParcelActivity } from "../live_activity";
 import type { AppState } from "../models";
 import { writeDiagnostic } from "./logger";
-import { parcelCardArtwork } from "./parcel-card-appearance";
+import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork } from "./parcel-card-appearance";
 import {
   EMPTY_CONTENT,
   PARCEL_ACTIVITY_NAME,
@@ -86,7 +86,12 @@ function prepareArtwork(content: ParcelActivityContent): void {
   const root = Path.join(FileManager.appGroupDocumentsDirectory, PARCEL_ACTIVITY_ART);
   FileManager.createDirectorySync(root, true);
   const { mark, sticker } = parcelCardArtwork(content);
-  const sources = [{ path: "parcel-activity/box.png", name: "box.png" }, mark, sticker];
+  const sources = [
+    { path: "parcel-activity/box.png", name: "box.png" },
+    { path: `parcel-activity/${PARCEL_LOCK_SCREEN_BOX}`, name: PARCEL_LOCK_SCREEN_BOX },
+    mark,
+    sticker,
+  ];
   for (const file of sources) {
     if (!file) continue;
     const destination = Path.join(root, file.name);

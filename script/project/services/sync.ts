@@ -15,7 +15,7 @@ import { replayEnhancementUnsubscribes } from "./enhancement-unsubscribe";
 import { saveAccountAppRoutes } from "./routes";
 import { automaticBindingIdentityOf, cainiaoHasTrajectoryGap, isHomeAccountQuerySource } from "./shipment-policy";
 import { loadState } from "./storage";
-import { timedTracks, timelineDisplayDetail } from "./status";
+import { listHeadline } from "./status";
 import { acquireRenewingDurableRefreshLease, durableRefreshLeaseDiagnostics, recordNetworkRefreshSuccess } from "./refresh-runtime-state";
 import { requestWidgetReload } from "./widgets";
 import { refreshCarrierAuthorityIfNeeded } from "./carrier-authority";
@@ -210,7 +210,7 @@ async function runFullRefresh(
         flowId,
       );
     }
-    if (!accountListOnly && (account.succeeded > 0 || forceManualRefresh)) {
+    if (!accountListOnly) {
       const listUnavailable = account.succeeded === 0 && account.failed > 0;
       const gapNow = Date.now();
       for (const shipment of currentState.shipments) {
@@ -219,8 +219,8 @@ async function runFullRefresh(
         // Supplement whenever saved list status and real tracks still have an unaligned gap,
         // even if the list status and event time did not change on this round.
         if ((account.succeeded > 0 && account.observedOwnerKeys.has(ownerKey) && cainiaoHasTrajectoryGap(shipment, gapNow)) ||
-            (forceManualRefresh && (listUnavailable || account.observedOwnerKeys.has(ownerKey)) &&
-              !timelineDisplayDetail(shipment.timeline) && !timedTracks(shipment.timeline.tracks).length)) {
+            ((listUnavailable || (forceManualRefresh && account.observedOwnerKeys.has(ownerKey))) &&
+              !listHeadline(shipment.timeline))) {
           cainiaoFollowupIds.add(shipment.identity.id);
         }
       }

@@ -1,6 +1,6 @@
 import { Button, Circle, HStack, Image, Rectangle, Spacer, Text, VStack, ZStack, gradient, type AppIntent, type VirtualNode } from "scripting";
 import type { ParcelActivityCompletion } from "../services/parcel-activity-action";
-import { parcelCardArtwork, parcelCardPalette } from "../services/parcel-card-appearance";
+import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette } from "../services/parcel-card-appearance";
 import { parcelPickupShortCode, parcelPickupSubtitle, type ParcelActivityContent } from "../services/parcel-pickup";
 
 // Pipi Home's shared and express-specific card specifications.
@@ -17,8 +17,10 @@ export const PIPI_CARD = {
   edge: 12,
   titleHeight: 21,
   titleFont: 15,
+  titleLineHeight: 19,
   locationHeight: 17,
   locationFont: 11,
+  locationLineHeight: 15,
   locationIcon: 13,
   dividerHeight: 3,
   dotDiameter: 2.7,
@@ -34,6 +36,14 @@ export const PIPI_CARD = {
 } as const;
 
 const MAX_ACTIVITY_HEIGHT = 160;
+const MIN_COMPACT_ART_WIDTH = PIPI_CARD.artWidth / 2;
+const SMART_STACK_MAX_WIDTH = 198;
+const SMART_STACK_ART_COLUMN_WIDTH = 56;
+const SMART_STACK_ART_WIDTH = 64;
+const SMART_STACK_ART_GAP = 4.6;
+const SMART_STACK_CODE_FONT = 29;
+// The larger SF digits leave more leading above their visible glyphs than the title leaves below.
+const SMART_STACK_DIVIDER_INK_OFFSET = 2;
 
 export function parcelActivityImage(path?: string): UIImage | null {
   if (!path) return null;
@@ -66,6 +76,10 @@ export type ParcelLiveActivityCardProps = {
 export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, completion, preview, expanded, lockScreen, lockScreenPreview, artwork,
   actionLabel, actionPending, locationText, showingAddress, onComplete, onCopy, onDetail, onEditNote, onLocationTap }: ParcelLiveActivityCardProps) {
   const card = PIPI_CARD;
+  const balancedType = lockScreen || lockScreenPreview;
+  const titleFont = balancedType ? 16 : card.titleFont;
+  const locationFont = balancedType ? 12 : card.locationFont;
+  const codeFont = balancedType ? 26.5 : card.codeFont;
   const capsuleTop = card.height - card.edge - card.capsuleHeight;
   const dotRadius = card.dotDiameter / 2;
   const dividerTop = capsuleTop - card.edge - card.dividerHeight / 2 - dotRadius;
@@ -74,22 +88,31 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     Math.max(0, (dotsTop - card.edge - card.titleHeight - card.locationHeight) / 2));
   const locationTop = dotsTop - gap - card.locationHeight;
   const titleTop = locationTop - gap - card.titleHeight;
+  const locationToDivider = dividerTop - locationTop - card.locationHeight;
+  const dividerToCapsule = capsuleTop - dividerTop - card.dividerHeight;
   // The island supplies the outer margins around the full-size Pipi rows.
   const top = expanded ? titleTop : 0;
   const bottom = expanded ? capsuleTop + card.capsuleHeight : card.height;
   const widthScale = (width ?? card.width) / card.width;
-  const scale = lockScreen || lockScreenPreview || expanded
+  const scale = lockScreen || expanded
     ? Math.min(widthScale, MAX_ACTIVITY_HEIGHT / card.height) : widthScale;
   const height = (bottom - top) * scale;
   const artWidth = card.artWidth * scale;
+  const artColumnWidth = expanded ? artWidth - card.edge * scale : artWidth;
   const artHeight = card.artHeight * scale;
+  const artOffset = (card.artTop - top) * scale - (height - artHeight) / 2;
   const flexibleHeight = lockScreen || expanded;
-  const fitsHost = flexibleHeight && width !== undefined;
+  const fitsHost = expanded || (lockScreen && width !== undefined);
+  const sharesSmartStack = lockScreen && fitsHost;
+  const artworkFrame = lockScreen && fitsHost
+    ? { maxWidth: artWidth, maxHeight: artHeight }
+    : { width: artWidth, height: artHeight };
   const slot = (size: number, minimum = 0) => ({
     minHeight: (flexibleHeight ? minimum : size) * scale,
     idealHeight: size * scale,
     maxHeight: size * scale,
   });
+  const actionRowHeight = slot(card.capsuleHeight, expanded ? card.capsuleHeight : card.capsuleIcon + 2 * card.iconGap);
   const hostInset = fitsHost ? card.iconGap : 0;
   const hostVerticalInset = lockScreen ? card.textLeft - card.artWidth : 0;
   const contentWidth = (card.width - card.textLeft) * scale;
@@ -99,13 +122,18 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const cardBackground = gradient("linear", {
     colors: [...palette.gradient], startPoint: "leading", endPoint: "trailing",
   });
-  const glass = (lockScreen || lockScreenPreview) && Number.parseInt(Device.systemVersion, 10) >= 26;
   const titleColor = "rgba(255,255,255,0.9)";
   const locationColor = "rgba(255,255,255,0.85)";
   const dotColor = "rgba(255,255,255,0.18)";
   const handoff = data.kind === "handoff";
-  const logoSize = (handoff ? 20 : 26) * scale;
-  const box = artwork ? null : parcelActivityImage(`${imageRoot}/box.png`);
+  const stickerWidth = handoff ? 20 : 26;
+  const logoSize = stickerWidth * scale;
+  const boxPath = `${imageRoot}/box.png`;
+  const watchBoxPath = `${imageRoot}/${PARCEL_LOCK_SCREEN_BOX}`;
+  const hasWatchBox = !artwork && lockScreen && FileManager.isFileSync(watchBoxPath);
+  const lockScreenBoxPath = !artwork && lockScreen && FileManager.isFileSync(boxPath)
+    ? boxPath : hasWatchBox ? watchBoxPath : undefined;
+  const box = artwork || lockScreenBoxPath ? null : parcelActivityImage(boxPath);
   const logo = artwork ? null : parcelActivityImage(logoPath);
   const showCapsule = Boolean(data.code && (completion || preview || onComplete));
   const completionLabel = actionLabel || (handoff ? "我已寄件" : "我已取件");
@@ -114,20 +142,29 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     ? Math.max(0, contentWidth - (card.edge + card.codeGap + capsuleWidth) * scale)
     : "infinity";
   const subtitle = parcelPickupSubtitle(data, locationText, showingAddress);
-  const dotCount = Math.floor((card.width - card.textLeft - card.edge + card.dotGap) /
-    (card.dotDiameter + card.dotGap));
+  const pickupCode = parcelPickupShortCode(data.code);
+  const dividerDots = (width: number, scale: number) => {
+    const count = Math.floor((width + card.dotGap) / (card.dotDiameter + card.dotGap));
+    const diameter = card.dotDiameter * scale;
+    return Array.from({ length: count }, (_, index) => (
+      <HStack key={index} spacing={0} frame={index > 0 ? { maxWidth: "infinity", alignment: "trailing" } : undefined}>
+        <Circle fill={dotColor} frame={{ width: diameter, height: diameter }} />
+      </HStack>
+    ));
+  };
   const capsuleLabelScale = 0.8;
   const capsuleMinWidth = lockScreen
     ? (2 * hostInset + card.capsuleIcon + card.iconGap + completionLabel.length * card.capsuleFont * capsuleLabelScale) * scale
     : undefined;
-  const space = (size: number) => <Spacer minLength={0} frame={slot(size)} layoutPriority={-1} />;
+  const space = (size: number, minimum = 0, priority = -1) =>
+    <Spacer minLength={0} frame={slot(size, minimum)} layoutPriority={priority} />;
   const capsulePadding = lockScreen ? (
     <Spacer minLength={hostInset * scale} layoutPriority={-1}
       frame={{ minWidth: hostInset * scale, idealWidth: card.capsuleInset * scale, maxWidth: card.capsuleInset * scale }} />
   ) : null;
   const capsule = (
     <HStack spacing={lockScreen ? 0 : card.iconGap * scale} padding={{ horizontal: lockScreen ? 0 : card.capsuleInset * scale }}
-      frame={{ ...slot(card.capsuleHeight, card.capsuleIcon + 2 * card.iconGap), minWidth: capsuleMinWidth }}
+      frame={{ ...actionRowHeight, minWidth: capsuleMinWidth }}
       fixedSize={{ horizontal: !lockScreen, vertical: false }} layoutPriority={1}
       background={{ style: palette.capsule, shape: "capsule" }} contentShape="capsule">
       {capsulePadding}
@@ -140,98 +177,217 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     </HStack>
   );
   const titleRow = (
-    <Text font={card.titleFont * scale} fontWeight="bold" foregroundStyle={titleColor} lineLimit={1}
+    <Text font={titleFont * scale} fontWeight={balancedType ? "semibold" : "bold"} foregroundStyle={titleColor} lineLimit={1}
       minScaleFactor={fitsHost ? 0.7 : undefined}
-      frame={{ ...slot(card.titleHeight, card.titleFont * 0.7), alignment: "leading" }}
-      clipped={fitsHost}>{data.title}</Text>
+      frame={expanded ? undefined : { ...slot(card.titleHeight, titleFont * 0.7), alignment: "leading" }}
+      layoutPriority={lockScreen ? 1 : undefined} clipped={!expanded && fitsHost}>{data.title}</Text>
   );
   const subtitleRow = (
-    <HStack spacing={card.iconGap * scale} frame={{ ...slot(card.locationHeight, card.locationIcon), alignment: "leading" }}>
+    <HStack spacing={card.iconGap * scale}
+      frame={expanded ? undefined : { ...slot(card.locationHeight, card.locationIcon), alignment: "leading" }}>
       {subtitle.text ? <>
         <Image systemName={subtitle.symbol} resizable scaleToFit foregroundStyle={locationColor}
           frame={{ width: card.locationIcon * scale, height: card.locationIcon * scale }} />
-        <Text font={card.locationFont * scale} fontWeight="regular"
+        <Text font={locationFont * scale} fontWeight={balancedType ? "medium" : "regular"}
           minScaleFactor={fitsHost ? 0.75 : undefined}
           foregroundStyle={locationColor} lineLimit={1}>{subtitle.text}</Text>
       </> : null}
     </HStack>
   );
   const code = (
-    <Text font={card.codeFont * scale} fontWeight="semibold" fontWidth="condensed"
+    <Text font={codeFont * scale} fontWeight="semibold" fontWidth={balancedType ? "standard" : "condensed"}
       foregroundStyle={palette.code}
-      kerning={0.4 * scale} lineLimit={1} allowsTightening={fitsHost}
-      minScaleFactor={lockScreen ? 11 / (card.codeFont * scale) : 12 / card.codeFont}
+      kerning={balancedType ? 0 : 0.4 * scale} lineLimit={1} allowsTightening={fitsHost}
+      minScaleFactor={lockScreen ? 11 / (codeFont * scale) : 12 / codeFont}
       frame={{ ...slot(card.codeHeight, lockScreen ? card.capsuleIcon : card.codeHeight),
         minWidth: 0, maxWidth: codeWidth, alignment: "leading" }}
       layoutPriority={lockScreen ? 2 : 1}>
-      {parcelPickupShortCode(data.code)}
+      {pickupCode}
     </Text>
   );
+  const boxSticker = !logo ? null : lockScreen && fitsHost ? (
+    <HStack padding={{ horizontal: MIN_COMPACT_ART_WIDTH * (1 - stickerWidth / card.artWidth) / 2 }}
+      offset={{ x: 0, y: (card.logoY - card.artTop - card.artHeight / 2) * scale }}>
+      <Image image={logo} resizable scaleToFit frame={{ maxWidth: logoSize, maxHeight: logoSize }} />
+    </HStack>
+  ) : (
+    <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
+      position={{ x: card.logoX * scale, y: (card.logoY - card.artTop) * scale }} />
+  );
   const boxArtwork = (
-    <ZStack frame={{ width: artWidth, height: artHeight }}
-      offset={{ x: 0, y: (card.artTop - top) * scale - (height - artHeight) / 2 }}>
-      {artwork ? <ZStack scaleEffect={scale}>{artwork}</ZStack> : box ? (
-        <Image image={box} resizable scaleToFit frame={{ width: artWidth, height: artHeight }} />
+    <ZStack frame={artworkFrame}
+      offset={{ x: expanded ? -card.edge * scale : 0, y: artOffset }}>
+      {artwork ? <ZStack scaleEffect={scale}>{artwork}</ZStack> : lockScreenBoxPath ? (
+        <Image filePath={lockScreenBoxPath} resizable scaleToFit frame={artworkFrame} />
+      ) : box ? (
+        <Image image={box} resizable scaleToFit frame={artworkFrame} />
       ) : (
-        <Image systemName="shippingbox.fill" font={42 * scale} foregroundStyle={titleColor} />
+        <Image systemName="shippingbox.fill" font={42 * scale} foregroundStyle={titleColor}
+          resizable={fitsHost} scaleToFit={fitsHost}
+          frame={fitsHost ? { maxWidth: 42 * scale, maxHeight: 42 * scale } : undefined} />
       )}
-      {logo ? (
-        <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
-          position={{ x: card.logoX * scale, y: (card.logoY - card.artTop) * scale }} />
-      ) : null}
+      {boxSticker}
     </ZStack>
   );
 
+  const capsuleControl = (label: VirtualNode) => {
+    const priority = lockScreen ? undefined : 1;
+    if (completion) return <Button intent={completion} buttonStyle="plain" layoutPriority={priority}>{label}</Button>;
+    if (onComplete) {
+      return <Button action={onComplete} buttonStyle="plain" disabled={actionPending} layoutPriority={priority}>{label}</Button>;
+    }
+    return label;
+  };
+  const actionAccessibility = { accessibilityLabel: completionLabel };
+  const lockScreenAction = lockScreen && showCapsule ? (
+    <HStack spacing={0} padding={{ trailing: card.edge * scale, bottom: card.edge * scale }}>
+      {/* Only space beyond the regular card's code column belongs to the action. */}
+      <Spacer minLength={0} frame={{ maxWidth: (card.width - card.edge - capsuleWidth) * scale }} layoutPriority={1} />
+      {capsuleControl(
+        <Rectangle {...actionAccessibility} fill="clear" frame={{ ...slot(card.capsuleHeight, card.capsuleHeight),
+          minWidth: 0, maxWidth: capsuleWidth * scale }}
+          background={{ alignment: "trailing", content: capsule }} clipped contentShape="capsule" />,
+      )}
+    </HStack>
+  ) : undefined;
+  const titleInset = titleTop - top - hostVerticalInset;
+  const bottomInset = bottom - capsuleTop - card.capsuleHeight - hostVerticalInset;
+  const title = onEditNote ? <Button buttonStyle="plain" action={onEditNote}>{titleRow}</Button> : titleRow;
+  const location = onLocationTap ? <Button buttonStyle="plain" action={onLocationTap}>{subtitleRow}</Button> : subtitleRow;
+  // Use the Pipi line heights for leading while the outer boxes yield space to the gaps.
+  const expandedLine = (content: VirtualNode, height: number, minimum: number, lineHeight = minimum) => (
+    <Rectangle fill="clear" frame={{ ...slot(height, minimum), maxWidth: "infinity" }} layoutPriority={-2}
+      overlay={{ alignment: "leading", content: (
+        <VStack spacing={0} alignment="leading" fixedSize={{ horizontal: false, vertical: true }}
+          frame={{ minHeight: lineHeight * scale, alignment: "topLeading" }}>
+          {content}
+        </VStack>
+      ) }} />
+  );
+  const divider = (
+    <HStack spacing={0} frame={{ ...slot(card.dividerHeight, expanded ? card.dividerHeight : 0), maxWidth: "infinity" }}
+      layoutPriority={lockScreen && fitsHost ? -1 : 0} clipped={fitsHost}>
+      {dividerDots(card.width - card.textLeft - card.edge, scale)}
+    </HStack>
+  );
+  const supportingRows = (
+    <>
+      {space(gap)}
+      {location}
+      {space(locationToDivider)}
+      {divider}
+      {space(dividerToCapsule)}
+    </>
+  );
+  const bottomRow = (
+    <HStack spacing={fitsHost ? 0 : card.codeGap * scale}
+      frame={{ ...actionRowHeight, maxWidth: "infinity", alignment: "leading" }}
+      layoutPriority={fitsHost ? 1 : 0}>
+      {onCopy ? <Button buttonStyle="plain" action={onCopy}>{code}</Button> : code}
+      {fitsHost && !lockScreen ? <Spacer minLength={showCapsule ? card.codeGap * scale : 0} /> : null}
+      {showCapsule && !lockScreen ? capsuleControl(capsule) : null}
+    </HStack>
+  );
+
   // Scripting snapshots Live Activities before the host proposes a layout size.
-  return (
+  const regular = (
     <HStack alignment="top" spacing={(card.textLeft - card.artWidth) * scale}
       frame={{ ...slot(bottom - top), minWidth: 0, maxWidth: "infinity", alignment: "topLeading" }}
-      background={expanded ? undefined : glass ? (
-        <ZStack>
-          <Rectangle fill={cardBackground} />
-          <Rectangle fill="clear" glassEffect={{ glass: UIGlass.clear(), shape: cardShape }} />
-        </ZStack>
-      ) : cardBackground}
-      activityBackgroundTint={lockScreen ? "clear" : undefined}
+      background={expanded ? undefined : cardBackground}
+      activityBackgroundTint={lockScreen && !sharesSmartStack ? "clear" : undefined}
       clipShape={expanded || lockScreen ? undefined : cardShape}
-      widgetURL={url} onTapGesture={onDetail} contentShape="rect">
+      overlay={lockScreenAction ? { alignment: "bottomTrailing", content: lockScreenAction } : undefined}
+      widgetURL={sharesSmartStack ? undefined : url} onTapGesture={onDetail} contentShape="rect">
       {fitsHost ? (
-        // Smart Stack can reclaim the artwork column from the mirrored Lock Screen view.
-        <Rectangle fill="clear" frame={{ ...slot(bottom - top), minWidth: expanded ? artWidth : 0,
-          idealWidth: artWidth, maxWidth: artWidth }}
-          background={{ alignment: "leading", content: boxArtwork }} clipped layoutPriority={-1} />
+        // The expanded host supplies the card inset, so only the transparent artwork edge overlaps it.
+        <Rectangle fill="clear" frame={{ ...slot(bottom - top),
+          minWidth: expanded ? artColumnWidth : Math.min(artWidth, MIN_COMPACT_ART_WIDTH),
+          idealWidth: artColumnWidth, maxWidth: artColumnWidth }}
+          background={{ alignment: "leading", content: boxArtwork }} clipped layoutPriority={expanded ? 1 : -1} />
       ) : (
         <ZStack frame={{ width: artWidth, ...slot(bottom - top) }}>{boxArtwork}</ZStack>
       )}
-      <VStack alignment="leading" spacing={0} padding={{ vertical: hostVerticalInset * scale, trailing: card.edge * scale }}
-        frame={{ ...slot(bottom - top), minWidth: 0, maxWidth: fitsHost ? contentWidth : "infinity", alignment: "topLeading" }}
-        layoutPriority={fitsHost ? 1 : 0}>
-        {space(titleTop - top - hostVerticalInset)}
-        {onEditNote ? <Button buttonStyle="plain" action={onEditNote}>{titleRow}</Button> : titleRow}
-        {space(gap)}
-        {onLocationTap ? <Button buttonStyle="plain" action={onLocationTap}>{subtitleRow}</Button> : subtitleRow}
-        {space(dividerTop - locationTop - card.locationHeight)}
-        <HStack spacing={0} frame={{ ...slot(card.dividerHeight), maxWidth: "infinity" }}
-          layoutPriority={fitsHost ? -1 : 0} clipped={fitsHost}>
-          {Array.from({ length: dotCount }, (_, index) => (
-            <HStack key={index} spacing={0} frame={index > 0 ? { maxWidth: "infinity", alignment: "trailing" } : undefined}>
-              <Circle fill={dotColor} frame={{ width: card.dotDiameter * scale, height: card.dotDiameter * scale }} />
-            </HStack>
-          ))}
-        </HStack>
-        {space(capsuleTop - dividerTop - card.dividerHeight)}
-        <HStack spacing={fitsHost ? 0 : card.codeGap * scale}
-          frame={{ ...slot(card.capsuleHeight, card.capsuleIcon + 2 * card.iconGap), maxWidth: "infinity" }}
-          layoutPriority={fitsHost ? 1 : 0}>
-          {onCopy ? <Button buttonStyle="plain" action={onCopy}>{code}</Button> : code}
-          {fitsHost ? <Spacer minLength={showCapsule ? (lockScreen ? card.iconGap : card.codeGap) * scale : 0} /> : null}
-          {showCapsule ? (
-            completion ? <Button intent={completion} buttonStyle="plain" layoutPriority={1}>{capsule}</Button> :
-              onComplete ? <Button action={onComplete} buttonStyle="plain" disabled={actionPending} layoutPriority={1}>{capsule}</Button> : capsule
-          ) : null}
-        </HStack>
-        {fitsHost ? space(bottom - capsuleTop - card.capsuleHeight - hostVerticalInset) : null}
+      <VStack alignment="leading" spacing={0} padding={{ vertical: hostVerticalInset * scale,
+        trailing: expanded ? 0 : card.edge * scale }}
+        frame={{ ...slot(bottom - top), minWidth: 0,
+          maxWidth: fitsHost && !expanded ? contentWidth : "infinity", alignment: "topLeading" }}
+        layoutPriority={lockScreen && fitsHost ? 1 : 0}>
+        {lockScreen ? <>
+          {space(titleInset, 0, 0)}
+          {title}
+          <Rectangle fill="clear" frame={{ ...slot(capsuleTop - titleTop - card.titleHeight), maxWidth: "infinity" }}
+            background={{ alignment: "topLeading", content: <VStack spacing={0} alignment="leading">{supportingRows}</VStack> }}
+            clipped layoutPriority={-1} />
+          {bottomRow}
+          {space(bottomInset, 0, 0)}
+        </> : expanded ? <>
+          <VStack spacing={0} alignment="leading"
+            frame={{ ...slot(dividerTop - titleTop), maxWidth: "infinity", alignment: "topLeading" }}>
+            {expandedLine(title, card.titleHeight, card.titleLineHeight)}
+            <Rectangle fill="clear" frame={slot(gap)} layoutPriority={-1} />
+            {expandedLine(location, card.locationHeight, card.locationIcon, card.locationLineHeight)}
+            <Rectangle fill="clear" frame={slot(locationToDivider)} layoutPriority={-1} />
+          </VStack>
+          <VStack spacing={dividerToCapsule * scale} fixedSize={{ horizontal: false, vertical: true }} layoutPriority={1}>
+            {divider}
+            {bottomRow}
+          </VStack>
+        </> : <>
+          {space(titleInset)}
+          {title}
+          {supportingRows}
+          {bottomRow}
+        </>}
       </VStack>
     </HStack>
+  );
+
+  if (!sharesSmartStack) return regular;
+
+  const watchScale = SMART_STACK_ART_COLUMN_WIDTH / card.artWidth;
+  const watchArtFrame = { width: SMART_STACK_ART_COLUMN_WIDTH, height: card.artHeight * watchScale };
+  const watchStickerWidth = stickerWidth * watchScale;
+  const watchBoxFile = hasWatchBox ? watchBoxPath : lockScreenBoxPath;
+  const watchContentWidth = SMART_STACK_MAX_WIDTH - SMART_STACK_ART_COLUMN_WIDTH - SMART_STACK_ART_GAP - card.edge;
+  const smartStack = (
+    <HStack spacing={SMART_STACK_ART_GAP} padding={{ trailing: card.edge }}
+      frame={{ minWidth: 0, maxWidth: "infinity", maxHeight: "infinity" }}
+      background={cardBackground} allowsHitTesting={false}>
+      <ZStack frame={watchArtFrame} scaleEffect={SMART_STACK_ART_WIDTH / SMART_STACK_ART_COLUMN_WIDTH}>
+        {watchBoxFile ? <Image filePath={watchBoxFile} resizable scaleToFit frame={watchArtFrame} />
+          : box ? <Image image={box} resizable scaleToFit frame={watchArtFrame} />
+          : <Image systemName="shippingbox.fill" font={30} foregroundStyle={titleColor} />}
+        {logo ? <Image image={logo} resizable scaleToFit frame={{ width: watchStickerWidth, height: watchStickerWidth }}
+          position={{ x: card.logoX * watchScale, y: (card.logoY - card.artTop) * watchScale }} /> : null}
+      </ZStack>
+      <VStack alignment="leading" spacing={0}
+        frame={{ minWidth: 0, maxWidth: "infinity", alignment: "leading" }}
+        offset={{ x: 0, y: (gap - card.iconGap) / 2 }}>
+        <Text font={16} fontWeight="bold" foregroundStyle={titleColor} lineLimit={1} minScaleFactor={0.7}>{data.title}</Text>
+        <HStack spacing={0} frame={{ minHeight: gap, maxHeight: gap, maxWidth: "infinity" }}
+          offset={{ x: 0, y: SMART_STACK_DIVIDER_INK_OFFSET }}>
+          {dividerDots(watchContentWidth, 1)}
+        </HStack>
+        <Text font={SMART_STACK_CODE_FONT} fontWeight="semibold" fontWidth="condensed" foregroundStyle={palette.code}
+          kerning={0.4} lineLimit={1} allowsTightening minScaleFactor={11 / SMART_STACK_CODE_FONT}>{pickupCode}</Text>
+      </VStack>
+    </HStack>
+  );
+
+  // The native host proposes the mirrored width after Scripting snapshots the tree.
+  // Reserve the Smart Stack width first. On the Lock Screen the remaining width
+  // expands the mask across the entire card, above the smaller presentation.
+  const regularMask = (
+    <HStack spacing={0}>
+      <Rectangle fill="clear" frame={{ minWidth: 0, maxWidth: SMART_STACK_MAX_WIDTH }} layoutPriority={1} />
+      <ZStack scaleEffect={{ x: 4, y: 1, anchor: "trailing" }}>
+        <Rectangle fill="white" frame={{ minWidth: 0, maxWidth: "infinity" }} />
+      </ZStack>
+    </HStack>
+  );
+  return (
+    <ZStack background={{ alignment: "center", content: smartStack }} activityBackgroundTint="clear" widgetURL={url}>
+      <ZStack mask={regularMask}>{regular}</ZStack>
+    </ZStack>
   );
 }

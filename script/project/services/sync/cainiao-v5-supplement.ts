@@ -4,9 +4,10 @@ import type { AccountBinding, AppState, BindingSource, RefreshSummary, Shipment,
 import { parcelToShipment, prepareAccountParcelCarrier, refreshAccountParcel } from "../account-sync";
 import type { AccountParcelDto } from "../account-parser";
 import { replayPendingShipmentNotifications } from "../notifications";
-import { applyTargetedAccountShipment, asAccountDetailObservation, cainiaoCandidateAlignsWithLatestStatus, cainiaoHasTrajectoryGap, cainiaoSupplementTimes, displayWaybill, isCainiaoV5AutomaticShipment, isShunFengSourceShipment, detailEntryQueryReason, selectShipmentTimeline, shipmentDetailIncompleteReason, shouldRefreshShipmentRow, signedRefreshFrozen, supportsOrdinaryAutomaticDetailSupplement, unprojectedAccountOrder, withDetailSelection } from "../shipment-policy";
+import { applyTargetedAccountShipment, asAccountDetailObservation, cainiaoCandidateAlignsWithLatestStatus, cainiaoHasTrajectoryGap, cainiaoSupplementTimes, cainiaoTimelineMatchesStatus, displayWaybill, isCainiaoV5AutomaticShipment, isShunFengSourceShipment, detailEntryQueryReason, selectShipmentTimeline, shipmentDetailIncompleteReason, shouldRefreshShipmentRow, signedRefreshFrozen, supportsOrdinaryAutomaticDetailSupplement, unprojectedAccountOrder, withDetailSelection } from "../shipment-policy";
 import { bindingsForSource, commitTargetShipmentRefresh, loadState, privateHash, refreshValueFingerprint as shipmentEffectiveFingerprint } from "../storage";
-import { isAccountUpdateSummary, isNonEventDetail, sortShipments, timedTracks, timelineDisplayDetail } from "../status";
+import { isAccountUpdateSummary, isNonEventDetail, latestTimelineTrackSemantic, listHeadline, sortShipments, timedTracks } from "../status";
+import { TIMELINE_SLOT } from "../timeline-slot";
 import { recordRefreshProviderResult, refreshProviderDue, refreshProviderCooldownDetails } from "../refresh-runtime-state";
 import { requestWidgetReload } from "../widgets";
 import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey, saveAlignmentRecords, type AlignmentAttempt } from "../row-ledger";
@@ -148,6 +149,22 @@ export function recordCainiaoSupplementAttempt(
   } catch { /* best-effort ledger persistence cannot fail background supplement */ }
 }
 
+function fillsFirstCainiaoHeadline(previous: Shipment, candidate: Shipment, answer: Shipment): boolean {
+  const prior = previous.timeline;
+  const selected = candidate.timeline;
+  const incoming = answer.sourceTimeline || answer.timeline;
+  if (listHeadline(prior) || !prior.structuredStatus ||
+      ["UNKNOWN", "CANCELLED", "COMPLETED"].includes(prior.semantic) ||
+      selected.semantic !== prior.semantic || selected.statusEventAtMs !== prior.statusEventAtMs ||
+      selected.headlineDisplay?.provider !== TIMELINE_SLOT.V5_QUERY) return false;
+  // A summary clock can be later than the first real event for the same state.
+  const observations = timedTracks(incoming.tracks).filter(track =>
+    track.detail === selected.latestDetail && track.timeText === selected.latestTimeText);
+  const observedSemantic = incoming.structuredStatus ? incoming.semantic : latestTimelineTrackSemantic(observations);
+  return observations.length > 0 && observedSemantic === prior.semantic &&
+    cainiaoTimelineMatchesStatus(candidate, { ...selected, statusEventAtMs: null }, TIMELINE_SLOT.V5_QUERY, null);
+}
+
 export async function refreshHomeAccountShipment(
   runtimeState: SyncRuntimeState,
   state: AppState, source: BindingSource, flowId: string, checkpoint: RefreshCheckpoint,
@@ -155,7 +172,6 @@ export async function refreshHomeAccountShipment(
   query: typeof refreshAccountParcel,
   /** C1: called once this task passed its gates, right before it queries. */
   onQueryStarted: () => void = () => {},
-  forceManualRefresh = false,
 ): Promise<RefreshSummary> {
   const now = Date.now();
   const original = state.shipments.find(item => item.identity.id === task.id);
@@ -169,7 +185,7 @@ export async function refreshHomeAccountShipment(
     return summary(state);
   }
   const hasGap = Boolean(task.cainiaoListUpdated) || cainiaoHasTrajectoryGap(original, now) ||
-    (forceManualRefresh && !timelineDisplayDetail(original.timeline) && !timedTracks(original.timeline.tracks).length);
+    !listHeadline(original.timeline);
   if (!hasGap) return summary(state);
   const scheduleKey = `${source}:${original.identity.id}`;
   const providerFingerprint = [displayWaybill(original), original.identity.courierCode,
@@ -301,16 +317,20 @@ export async function refreshHomeAccountShipment(
     flushDiagnostics();
     return summary(latest, 1, 0, 1);
   }
-  if (isCainiaoV5AutomaticShipment(latestRow) && !cainiaoCandidateAlignsWithLatestStatus(merged, writeNow)) {
-    stageCancelled.close();
+  const lagging = isCainiaoV5AutomaticShipment(latestRow) && !cainiaoCandidateAlignsWithLatestStatus(merged, writeNow);
+  const reportLagging = (state: AppState, headlineRecovered: boolean) => {
     recordRefreshProviderResult({ key: scheduleKey, provider: "account_detail",
       identityFingerprint: providerFingerprint, result: "no_result" });
     writeDiagnostic("refresh.stage.failed", { flowId, source, stage: "account_detail", stagePhase: "write",
-      result: "lagging", errorCategory: "stale_timeline",
+      result: headlineRecovered ? "lagging_headline_recovered" : "lagging", errorCategory: "stale_timeline",
       ...shipmentDiagnosticDetails(latestRow, "v5_query", incoming.timeline),
       durationMs: Date.now() - startedAt }, "warning");
     flushDiagnostics();
-    return summary(latest, 1, 0, 1);
+    return summary(state, 1, 0, 1);
+  };
+  if (lagging && !fillsFirstCainiaoHeadline(latestRow, merged, incoming)) {
+    stageCancelled.close();
+    return reportLagging(latest, false);
   }
   let next: AppState;
   try {
@@ -338,6 +358,12 @@ export async function refreshHomeAccountShipment(
     return summary(loadState(), 1, 0, 1);
   }
   const committedRow = next.shipments.find(item => item.identity.id === original.identity.id) || merged;
+  if (lagging) {
+    const partial = cainiaoSupplementTimes(committedRow);
+    if (partial) recordCainiaoSupplementAttempt(committedRow.identity.id, partial.timesKey,
+      partial.statusSemantic, Date.now(), false);
+    return reportLagging(next, Boolean(listHeadline(committedRow.timeline)));
+  }
   recordRefreshProviderResult({ key: scheduleKey, provider: "account_detail",
     identityFingerprint: providerFingerprint, result: "success" });
   if (!cainiaoHasTrajectoryGap(committedRow, Date.now())) recordAttempt(true);

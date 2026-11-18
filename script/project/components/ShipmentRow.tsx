@@ -1,7 +1,7 @@
 import { Button, HStack, Spacer, Text, VStack } from "scripting";
 import type { Shipment } from "../models";
 import {
-  listHeadlineDetail,
+  listHeadline,
   shipmentPresentationStatus,
   statusTextTint,
   waybillSuffix,
@@ -36,8 +36,8 @@ export function ShipmentRow(props: {
 }) {
   const item = props.shipment;
   const presentationStatus = shipmentPresentationStatus(item);
-  const eventTime = formatListTime(item.timeline.latestTimeText);
-  const latestDetail = listHeadlineDetail(item.timeline);
+  const headline = listHeadline(item.timeline);
+  const eventTime = headline ? formatListTime(headline.timeText) : "";
 
   return (
     <HStack
@@ -111,9 +111,9 @@ export function ShipmentRow(props: {
           </Text>
           <Spacer />
         </HStack>
-        {latestDetail ? (
+        {headline ? (
           <Text font="subheadline" lineSpacing={2} foregroundStyle="secondaryLabel" lineLimit={2}>
-            {latestDetail}
+            {headline.detail}
           </Text>
         ) : null}
       </VStack>
