@@ -544,8 +544,9 @@ const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta
 assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate/);
 assert.match(pickupSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootPageHeader title="取件"/);
 assert.match(settingsSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootPageHeader title="设置"/);
-assert.match(pickupSource, /<List \{\.\.\.rootPageScroll\(setHeaderCollapsed\)\}/);
-assert.match(settingsSource, /<List \{\.\.\.rootPageScroll\(setHeaderCollapsed\)\}/);
+assert.match(pickupSource, /<RootPageHeader title="取件"[^]*?\/>\s*<List \{\.\.\.rootPageScroll\(setHeaderCollapsed\)\}/);
+assert.match(settingsSource, /<RootPageHeader title="设置"[^]*?\/>\s*<List \{\.\.\.rootPageScroll\(setHeaderCollapsed\)\}/);
+assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|取件)"/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
 assert.match(rootHeader, /<HStack[^>]*>\s*<ZStack[\s\S]*?\{title\}<\/Text>\s*<\/ZStack>\s*<Spacer \/>\s*<Button title="关闭" systemImage="xmark"/,
