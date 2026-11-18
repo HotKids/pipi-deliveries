@@ -88,7 +88,7 @@ export function ShipmentRow(props: {
         <HStack spacing={8}>
           <HStack alignment="center" spacing={6}>
             <Text
-              font={17}
+              font="body"
               fontWeight="semibold"
               foregroundStyle={statusTextTint(presentationStatus.semantic)}
               lineLimit={1}
@@ -101,21 +101,21 @@ export function ShipmentRow(props: {
           </HStack>
           <Spacer />
           {eventTime ? (
-            <Text font={12} foregroundStyle="secondaryLabel" monospacedDigit>
+            <Text font="caption" foregroundStyle="secondaryLabel" monospacedDigit>
               {eventTime}
             </Text>
           ) : null}
         </HStack>
         <HStack spacing={7}>
-          <Text font={14} fontWeight="medium" lineLimit={1}>
+          <Text font="subheadline" fontWeight="medium" lineLimit={1}>
             {carrierDisplayName(item.identity.companyName)}
           </Text>
-          <Text font={14} foregroundStyle="secondaryLabel" monospacedDigit>
+          <Text font="subheadline" foregroundStyle="secondaryLabel" monospacedDigit>
             {waybillSuffix(displayWaybill(item))}
           </Text>
           <Spacer />
         </HStack>
-        <Text font={14} foregroundStyle="secondaryLabel" lineLimit={2}>
+        <Text font="subheadline" lineSpacing={2} foregroundStyle="secondaryLabel" lineLimit={2}>
           {latestDetail.trim() || "暂无物流信息"}
         </Text>
       </VStack>

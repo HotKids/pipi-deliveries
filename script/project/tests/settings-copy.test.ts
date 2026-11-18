@@ -33,7 +33,7 @@ for (const expected of [
   '"未授权"',
   '"已授权"',
   '"不可用"',
-  "Access Key 用于激活脚本并同步你的快递信息。请妥善保存，不要分享。",
+  "Access Key 用于激活脚本使用权限，并授权同步快递信息。请妥善保管，勿与他人分享。",
 ]) {
   assert.ok(settings.includes(expected), `missing settings copy: ${expected}`);
 }

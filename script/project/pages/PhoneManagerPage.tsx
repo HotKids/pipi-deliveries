@@ -297,7 +297,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
           </Text>
         }
         footer={
-          <Text font={12} foregroundStyle="secondaryLabel">
+          <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">
             绑定手机号后，自动同步关联的快递信息。最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号。
           </Text>
         }
@@ -321,11 +321,11 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
               }}
             >
               <SettingsRowIcon systemName="phone.fill" backgroundColor={XIAOMI_BRAND_ORANGE} size={ACCOUNT_ICON_SIZE} />
-              <Text font={17} monospacedDigit>
+              <Text font="body" monospacedDigit>
                 {binding.phone}
               </Text>
               <Spacer />
-              <Text font={13} foregroundStyle="secondaryLabel">
+              <Text font="footnote" foregroundStyle="secondaryLabel">
                 已绑定
               </Text>
             </HStack>
@@ -341,8 +341,8 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
               font={32}
               foregroundStyle="tertiaryLabel"
             />
-            <Text font={15} fontWeight="medium">尚未绑定手机号</Text>
-            <Text font={12} foregroundStyle="secondaryLabel">
+            <Text font="subheadline" fontWeight="medium">尚未绑定手机号</Text>
+            <Text font="footnote" foregroundStyle="secondaryLabel">
               点按右上角的添加按钮
             </Text>
           </VStack>
@@ -359,7 +359,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
           </HStack>
         }
         footer={
-          <Text font={12} foregroundStyle="secondaryLabel">
+          <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">
             登录后可获取已绑定手机号关联的快递信息，包括运单号、取件码、商品名称、商品图片和预计送达时间等。菜鸟和拼多多支持查看驿站身份码。拼多多支持同步在途快递，丰巢支持一键开柜。
           </Text>
         }
@@ -412,13 +412,13 @@ function PlatformAccountRow({ platform, title, subtitle, state, syncing, disable
           <PlatformIcon platform={platform} size={ACCOUNT_ICON_SIZE} />
         )}
         <VStack alignment="leading" spacing={3}>
-          <Text font={16} fontWeight="medium" foregroundStyle="label">{title}</Text>
+          <Text font="body" fontWeight="medium" foregroundStyle="label">{title}</Text>
           {subtitle || copy.subtitle ? (
-            <Text font={12} foregroundStyle="secondaryLabel">{subtitle || copy.subtitle}</Text>
+            <Text font="footnote" lineSpacing={2} foregroundStyle="secondaryLabel">{subtitle || copy.subtitle}</Text>
           ) : null}
         </VStack>
         <Spacer />
-        <Text font={13} foregroundStyle="secondaryLabel" fixedSize={{ horizontal: true, vertical: false }}>{copy.status}</Text>
+        <Text font="footnote" foregroundStyle="secondaryLabel" fixedSize={{ horizontal: true, vertical: false }}>{copy.status}</Text>
       </HStack>
     </Button>
   );

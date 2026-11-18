@@ -257,13 +257,13 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
       <Section
         header={<Text>验证手机号</Text>}
         footer={
-          <VStack alignment="leading" spacing={5}>
+          <VStack alignment="leading" spacing={4}>
             {validationNotice || bindError ? (
-              <Text font={12} foregroundStyle="systemRed">
+              <Text font="footnote" lineSpacing={3} foregroundStyle="systemRed">
                 {validationNotice || bindError}
               </Text>
             ) : null}
-            <Text font={12} foregroundStyle="secondaryLabel">
+            <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">
               绑定的手机号仅用于查询和同步快递。
             </Text>
           </VStack>

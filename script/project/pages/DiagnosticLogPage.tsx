@@ -813,7 +813,7 @@ export function DiagnosticLogPage() {
     >
       <Section
         footer={
-          <Text font={12} foregroundStyle="secondaryLabel">
+          <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">
             仅采集必要的诊断信息，相关数据仅限本地存储与使用。
           </Text>
         }
@@ -829,7 +829,7 @@ export function DiagnosticLogPage() {
               font={30}
               foregroundStyle="tertiaryLabel"
             />
-            <Text font={15} fontWeight="medium">暂无诊断日志</Text>
+            <Text font="subheadline" fontWeight="medium">暂无诊断日志</Text>
           </VStack>
         ) : (
           items.map((item) => (
@@ -852,20 +852,20 @@ export function DiagnosticLogPage() {
               />
               <VStack
                 alignment="leading"
-                spacing={4}
+                spacing={3}
                 frame={{ maxWidth: "infinity", alignment: "leading" }}
               >
                 <HStack spacing={8} frame={{ maxWidth: "infinity" }}>
-                  <Text font={14} fontWeight="semibold">
+                  <Text font="subheadline" fontWeight="semibold">
                     {eventTitle(item)}
                   </Text>
                   <Spacer />
-                  <Text font={11} foregroundStyle="tertiaryLabel" monospacedDigit>
+                  <Text font="caption" foregroundStyle="secondaryLabel" monospacedDigit>
                     {timeText(item.at)}
                   </Text>
                 </HStack>
                 {detailsText(item) ? (
-                  <Text font={12} foregroundStyle="secondaryLabel">
+                  <Text font="footnote" lineSpacing={2} foregroundStyle="secondaryLabel">
                     {detailsText(item)}
                   </Text>
                 ) : null}

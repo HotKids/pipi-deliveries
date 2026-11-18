@@ -50,19 +50,19 @@ export function SamsungAssistantPage(props: SamsungAssistantPageProps) {
       }}
     >
       <Section header={<Text>已绑定手机号</Text>} footer={
-        <VStack alignment="leading" spacing={6}>
-          {props.bindings.length ? <Text>选择手机号验证后，可补充京东订单的运单号和商品图片。</Text> : null}
-          {props.identityNotice ? <Text foregroundStyle="systemRed">{props.identityNotice}</Text> : null}
-          {props.unsubscribeNotice ? <Text>{props.unsubscribeNotice}</Text> : null}
+        <VStack alignment="leading" spacing={4}>
+          {props.bindings.length ? <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">选择手机号验证后，可补充京东订单的运单号和商品图片。</Text> : null}
+          {props.identityNotice ? <Text font="footnote" lineSpacing={3} foregroundStyle="systemRed">{props.identityNotice}</Text> : null}
+          {props.unsubscribeNotice ? <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">{props.unsubscribeNotice}</Text> : null}
         </VStack>
       }>
         {props.bindings.length ? props.bindings.map((binding) => (
           <Button key={binding.phone} buttonStyle="plain" action={() => selectPhone(binding.phone)}>
             <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">
               <SettingsRowIcon systemName="phone.fill" backgroundColor={SAMSUNG_BRAND_BLUE} size={36} />
-              <Text font={17} monospacedDigit>{binding.phone}</Text>
+              <Text font="body" monospacedDigit>{binding.phone}</Text>
               <Spacer />
-              <Text font={13} foregroundStyle="secondaryLabel">
+              <Text font="footnote" foregroundStyle="secondaryLabel">
                 {binding.enhancedMode ? props.identityNotice ? "需重新验证" : "已验证" : "待验证"}
               </Text>
               <Image systemName="chevron.right" font={12} foregroundStyle="tertiaryLabel" />

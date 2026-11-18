@@ -491,12 +491,12 @@ export function SettingsPage(props: {
           footer={
             <VStack alignment="leading" spacing={4}>
               {authorizationNotice ? (
-                <Text font={12} foregroundStyle="systemRed">
+                <Text font="footnote" lineSpacing={3} foregroundStyle="systemRed">
                   {authorizationNotice}
                 </Text>
               ) : null}
-              <Text font={12} fontWeight="semibold" foregroundStyle="label">
-                Access Key 用于激活脚本并同步你的快递信息。请妥善保存，不要分享。
+              <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">
+                Access Key 用于激活脚本使用权限，并授权同步快递信息。请妥善保管，勿与他人分享。
               </Text>
             </VStack>
           }

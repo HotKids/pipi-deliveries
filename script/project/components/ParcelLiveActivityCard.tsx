@@ -93,7 +93,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, complet
               {...at(card.textLeft, titleTop, textWidth, card.titleHeight)}>{data.title}</Text>
             {data.location ? (
               <HStack spacing={card.iconGap * scale} {...at(card.textLeft, locationTop, textWidth, card.locationHeight)}>
-                <Image systemName={handoff ? "clock" : "storefront"} font={13 * scale}
+                <Image systemName={handoff ? "calendar" : "storefront"} font={13 * scale}
                   foregroundStyle="rgba(255,255,255,0.85)" />
                 <Text font={11 * scale} foregroundStyle="rgba(255,255,255,0.85)" lineLimit={1}>{data.location}</Text>
               </HStack>

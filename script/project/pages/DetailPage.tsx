@@ -721,7 +721,7 @@ export function DetailPage(props: {
               onTapGesture={props.persistedShipment ? () => void editNote() : undefined}
               contextMenu={productNameMenu}>
               <Text
-                font={17}
+                font="body"
                 fontWeight="bold"
                 foregroundStyle={statusTextTint(presentationStatus.semantic)}
                 lineLimit={1}
@@ -733,7 +733,7 @@ export function DetailPage(props: {
               ) : null}
             </HStack>
             {receiptLine ? (
-              <Text font={12} foregroundStyle="secondaryLabel" monospacedDigit
+              <Text font="footnote" foregroundStyle="secondaryLabel" monospacedDigit
                 lineLimit={1} minScaleFactor={0.72} allowsTightening={true}>
                 {receiptLine}
               </Text>
@@ -743,8 +743,8 @@ export function DetailPage(props: {
               spacing={0}
               frame={{ maxWidth: "infinity", alignment: "leading" }}
             >
-              <Text font={15}>{carrierDisplayName(shipment.identity.companyName)}：</Text>
-              <Text font={15} monospacedDigit lineLimit={1} minScaleFactor={0.65}
+              <Text font="subheadline">{carrierDisplayName(shipment.identity.companyName)}：</Text>
+              <Text font="subheadline" monospacedDigit lineLimit={1} minScaleFactor={0.65}
                 allowsTightening={true} layoutPriority={1} contentShape="rect"
                 onTapGesture={copyWaybill}>
                 {waybill}
@@ -752,9 +752,9 @@ export function DetailPage(props: {
             </HStack>
             {hotline ? (
               <HStack spacing={0}>
-                <Text font={15}>官方电话：</Text>
+                <Text font="subheadline">官方电话：</Text>
                 <Button buttonStyle="plain" action={dial}>
-                  <Text font={15} foregroundStyle="systemBlue" monospacedDigit>
+                  <Text font="subheadline" foregroundStyle="systemBlue" monospacedDigit>
                     {hotline}
                   </Text>
                 </Button>
@@ -773,15 +773,15 @@ export function DetailPage(props: {
             onTapGesture={props.persistedShipment ? () => void editNote() : undefined}
             contextMenu={productNameMenu}>
             {platformFields.estimate ? (
-              <Text font={14} fontWeight="medium" foregroundStyle="systemBlue">{platformFields.estimate}</Text>
+              <Text font="subheadline" lineSpacing={3} fontWeight="medium" foregroundStyle="systemBlue">{platformFields.estimate}</Text>
             ) : null}
             {platformFields.title ? (
-              <Text font={14} lineSpacing={3} fixedSize={{ horizontal: false, vertical: true }}>
+              <Text font="subheadline" lineSpacing={3} fixedSize={{ horizontal: false, vertical: true }}>
                 {platformFields.title}
               </Text>
             ) : null}
             {note ? (
-              <Text font={14} lineSpacing={3} foregroundStyle="secondaryLabel"
+              <Text font="subheadline" lineSpacing={3} foregroundStyle="secondaryLabel"
                 fixedSize={{ horizontal: false, vertical: true }}>{note}</Text>
             ) : null}
           </VStack>
@@ -858,7 +858,8 @@ export function DetailPage(props: {
                   frame={{ width: 12 }}
                 />
                 <Text
-                  font={15}
+                  font="subheadline"
+                  lineSpacing={3}
                   foregroundStyle={index === 0 ? "label" : "secondaryLabel"}
                   frame={{ maxWidth: "infinity", alignment: "leading" }}
                   styledText={trackPhoneText(trackDisplayDetail(detailTimeline.provider, track), (phone) => { void dialPhone(phone); })}
@@ -877,7 +878,7 @@ export function DetailPage(props: {
               font={28}
               foregroundStyle="tertiaryLabel"
             />
-            <Text font={14} foregroundStyle="secondaryLabel">
+            <Text font="subheadline" foregroundStyle="secondaryLabel">
               {loadingManualDetail ? MANUAL_QUERY_IN_FLIGHT_TEXT : "暂无物流信息"}
             </Text>
           </VStack>

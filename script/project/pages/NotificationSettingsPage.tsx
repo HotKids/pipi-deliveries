@@ -40,8 +40,8 @@ function NotificationGroup(props: NotificationGroupProps) {
         toggleStyle="switch"
       >
         <VStack alignment="leading" spacing={3}>
-          <Text font={17} fontWeight="semibold">{props.title}</Text>
-          <Text font={13} foregroundStyle="secondaryLabel">
+          <Text font="body" fontWeight="semibold">{props.title}</Text>
+          <Text font="footnote" lineSpacing={2} foregroundStyle="secondaryLabel">
             {props.subtitle}
           </Text>
         </VStack>
@@ -119,7 +119,7 @@ export function NotificationSettingsPage(props: {
       </Section>
       <Section
         footer={
-          <Text font={12} foregroundStyle="secondaryLabel">
+          <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">
             仅在快递更新至已开启的状态时发送通知。
           </Text>
         }
