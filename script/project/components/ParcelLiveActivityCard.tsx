@@ -83,15 +83,15 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const height = (bottom - top) * scale;
   const artWidth = card.artWidth * scale;
   const artHeight = card.artHeight * scale;
-  const fitsHost = (lockScreen || expanded) && width !== undefined;
-  const flexibleHeight = lockScreen && width !== undefined;
+  const flexibleHeight = lockScreen || expanded;
+  const fitsHost = flexibleHeight && width !== undefined;
   const slot = (size: number, minimum = 0) => ({
     minHeight: (flexibleHeight ? minimum : size) * scale,
     idealHeight: size * scale,
     maxHeight: size * scale,
   });
   const hostInset = fitsHost ? card.iconGap : 0;
-  const hostVerticalInset = flexibleHeight ? card.textLeft - card.artWidth : 0;
+  const hostVerticalInset = lockScreen ? card.textLeft - card.artWidth : 0;
   const contentWidth = (card.width - card.textLeft) * scale;
   const { accent } = parcelCardArtwork(data);
   const palette = parcelCardPalette(accent);
@@ -99,6 +99,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const cardBackground = gradient("linear", {
     colors: [...palette.gradient], startPoint: "leading", endPoint: "trailing",
   });
+  const glass = (lockScreen || lockScreenPreview) && Number.parseInt(Device.systemVersion, 10) >= 26;
   const titleColor = "rgba(255,255,255,0.9)";
   const locationColor = "rgba(255,255,255,0.85)";
   const dotColor = "rgba(255,255,255,0.18)";
@@ -115,22 +116,26 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const subtitle = parcelPickupSubtitle(data, locationText, showingAddress);
   const dotCount = Math.floor((card.width - card.textLeft - card.edge + card.dotGap) /
     (card.dotDiameter + card.dotGap));
-  const actionPriority = fitsHost ? 0 : 1;
+  const capsuleLabelScale = 0.8;
+  const capsuleMinWidth = lockScreen
+    ? (2 * hostInset + card.capsuleIcon + card.iconGap + completionLabel.length * card.capsuleFont * capsuleLabelScale) * scale
+    : undefined;
   const space = (size: number) => <Spacer minLength={0} frame={slot(size)} layoutPriority={-1} />;
-  const capsulePadding = fitsHost ? (
+  const capsulePadding = lockScreen ? (
     <Spacer minLength={hostInset * scale} layoutPriority={-1}
       frame={{ minWidth: hostInset * scale, idealWidth: card.capsuleInset * scale, maxWidth: card.capsuleInset * scale }} />
   ) : null;
   const capsule = (
-    <HStack spacing={fitsHost ? 0 : card.iconGap * scale} padding={{ horizontal: fitsHost ? 0 : card.capsuleInset * scale }}
-      frame={slot(card.capsuleHeight)} fixedSize={{ horizontal: !fitsHost, vertical: false }} layoutPriority={actionPriority}
+    <HStack spacing={lockScreen ? 0 : card.iconGap * scale} padding={{ horizontal: lockScreen ? 0 : card.capsuleInset * scale }}
+      frame={{ ...slot(card.capsuleHeight, card.capsuleIcon + 2 * card.iconGap), minWidth: capsuleMinWidth }}
+      fixedSize={{ horizontal: !lockScreen, vertical: false }} layoutPriority={1}
       background={{ style: palette.capsule, shape: "capsule" }} contentShape="capsule">
       {capsulePadding}
       <Image systemName="shippingbox.fill" font={card.capsuleIcon * scale}
         foregroundStyle="white" frame={{ width: card.capsuleIcon * scale, height: card.capsuleIcon * scale }} />
-      {fitsHost ? <Spacer minLength={0} frame={{ width: card.iconGap * scale }} /> : null}
+      {lockScreen ? <Spacer minLength={0} frame={{ width: card.iconGap * scale }} /> : null}
       <Text font={card.capsuleFont * scale} fontWeight="semibold" foregroundStyle="white" lineLimit={1}
-        minScaleFactor={fitsHost ? 0.8 : undefined}>{completionLabel}</Text>
+        minScaleFactor={lockScreen ? capsuleLabelScale : undefined} layoutPriority={1}>{completionLabel}</Text>
       {capsulePadding}
     </HStack>
   );
@@ -154,9 +159,11 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const code = (
     <Text font={card.codeFont * scale} fontWeight="semibold" fontWidth="condensed"
       foregroundStyle={palette.code}
-      kerning={0.4 * scale} lineLimit={1} allowsTightening={fitsHost} minScaleFactor={(fitsHost ? 9 : 12) / card.codeFont}
-      frame={{ ...slot(card.codeHeight), minWidth: fitsHost ? undefined : 0, maxWidth: codeWidth, alignment: "leading" }}
-      layoutPriority={1}>
+      kerning={0.4 * scale} lineLimit={1} allowsTightening={fitsHost}
+      minScaleFactor={lockScreen ? 11 / (card.codeFont * scale) : 12 / card.codeFont}
+      frame={{ ...slot(card.codeHeight, lockScreen ? card.capsuleIcon : card.codeHeight),
+        minWidth: 0, maxWidth: codeWidth, alignment: "leading" }}
+      layoutPriority={lockScreen ? 2 : 1}>
       {parcelPickupShortCode(data.code)}
     </Text>
   );
@@ -179,13 +186,19 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   return (
     <HStack alignment="top" spacing={(card.textLeft - card.artWidth) * scale}
       frame={{ ...slot(bottom - top), minWidth: 0, maxWidth: "infinity", alignment: "topLeading" }}
-      background={expanded ? undefined : cardBackground}
+      background={expanded ? undefined : glass ? (
+        <ZStack>
+          <Rectangle fill={cardBackground} />
+          <Rectangle fill="clear" glassEffect={{ glass: UIGlass.clear(), shape: cardShape }} />
+        </ZStack>
+      ) : cardBackground}
       activityBackgroundTint={lockScreen ? "clear" : undefined}
       clipShape={expanded || lockScreen ? undefined : cardShape}
       widgetURL={url} onTapGesture={onDetail} contentShape="rect">
       {fitsHost ? (
-        // The artwork's fixed canvas must not impose a minimum on a narrow host.
-        <Rectangle fill="clear" frame={{ ...slot(bottom - top), minWidth: 0, idealWidth: artWidth, maxWidth: artWidth }}
+        // Smart Stack can reclaim the artwork column from the mirrored Lock Screen view.
+        <Rectangle fill="clear" frame={{ ...slot(bottom - top), minWidth: expanded ? artWidth : 0,
+          idealWidth: artWidth, maxWidth: artWidth }}
           background={{ alignment: "leading", content: boxArtwork }} clipped layoutPriority={-1} />
       ) : (
         <ZStack frame={{ width: artWidth, ...slot(bottom - top) }}>{boxArtwork}</ZStack>
@@ -208,12 +221,13 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
         </HStack>
         {space(capsuleTop - dividerTop - card.dividerHeight)}
         <HStack spacing={fitsHost ? 0 : card.codeGap * scale}
-          frame={{ ...slot(card.capsuleHeight, card.capsuleIcon), maxWidth: "infinity" }} layoutPriority={fitsHost ? 1 : 0}>
+          frame={{ ...slot(card.capsuleHeight, card.capsuleIcon + 2 * card.iconGap), maxWidth: "infinity" }}
+          layoutPriority={fitsHost ? 1 : 0}>
           {onCopy ? <Button buttonStyle="plain" action={onCopy}>{code}</Button> : code}
-          {fitsHost ? <Spacer minLength={showCapsule ? card.codeGap * scale : 0} /> : null}
+          {fitsHost ? <Spacer minLength={showCapsule ? (lockScreen ? card.iconGap : card.codeGap) * scale : 0} /> : null}
           {showCapsule ? (
-            completion ? <Button intent={completion} buttonStyle="plain" layoutPriority={actionPriority}>{capsule}</Button> :
-              onComplete ? <Button action={onComplete} buttonStyle="plain" disabled={actionPending} layoutPriority={actionPriority}>{capsule}</Button> : capsule
+            completion ? <Button intent={completion} buttonStyle="plain" layoutPriority={1}>{capsule}</Button> :
+              onComplete ? <Button action={onComplete} buttonStyle="plain" disabled={actionPending} layoutPriority={1}>{capsule}</Button> : capsule
           ) : null}
         </HStack>
         {fitsHost ? space(bottom - capsuleTop - card.capsuleHeight - hostVerticalInset) : null}
