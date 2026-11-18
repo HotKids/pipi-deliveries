@@ -130,12 +130,12 @@ function ParcelCardListRow(props: ParcelLiveActivityCardProps) {
   );
 }
 
-export function ParcelActivityPreviewCard({ animate = false }: { animate?: boolean }) {
+export function ParcelActivityPreviewCard({ animate = false, lockScreenPreview }: { animate?: boolean; lockScreenPreview?: boolean }) {
   const { sticker } = parcelCardArtwork(PARCEL_ACTIVITY_PREVIEW);
   const logoPath = sticker ? `${Script.directory}/assets/${sticker.path}` : undefined;
   return (
     <ParcelCardListRow data={PARCEL_ACTIVITY_PREVIEW} imageRoot={`${Script.directory}/assets/parcel-activity`}
-      logoPath={logoPath} preview
+      logoPath={logoPath} preview lockScreenPreview={lockScreenPreview}
       artwork={animate ? <PickupTabArtwork logoAsset={sticker?.path} logoSize={26} /> : undefined} />
   );
 }

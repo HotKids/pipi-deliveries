@@ -11,6 +11,8 @@ import {
   Section,
   Text,
   TextField,
+  Toolbar,
+  ToolbarItem,
   VStack,
   ZStack,
   useEffect,
@@ -347,21 +349,28 @@ export function HomePage(props: {
         navigationTitle="快递"
         navigationBarTitleDisplayMode="large"
         toast={searchPresented.value ? undefined : transientToast(notice, setNotice)}
-        toolbar={{
-          topBarLeading: (
-            <Button buttonStyle="plain" action={() => dismiss()}>
-              <Image
-                systemName="chevron.left"
-                font={17}
-                frame={{ width: 44, height: 44 }}
-              />
-            </Button>
-          ),
-          topBarTrailing: (
-            <Button title="查询快递" systemImage="magnifyingglass" labelStyle="iconOnly"
-              buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => searchPresented.setValue(true)} />
-          ),
-        }}
+        toolbar={
+          <Toolbar>
+            <ToolbarItem placement="topBarLeading">
+              <Button buttonStyle="plain" action={() => dismiss()}>
+                <Image
+                  systemName="chevron.left"
+                  font={17}
+                  frame={{ width: 44, height: 44 }}
+                />
+              </Button>
+            </ToolbarItem>
+            {Number.parseInt(Device.systemVersion, 10) >= 26 ? (
+              <ToolbarItem placement="title">
+                <Text font="title3" fontWeight="semibold">快递</Text>
+              </ToolbarItem>
+            ) : null}
+            <ToolbarItem placement="topBarTrailing">
+              <Button title="查询快递" systemImage="magnifyingglass" labelStyle="iconOnly"
+                buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => searchPresented.setValue(true)} />
+            </ToolbarItem>
+          </Toolbar>
+        }
         sheet={{
           isPresented: searchPresented,
           content: (
