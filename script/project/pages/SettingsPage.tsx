@@ -12,7 +12,6 @@ import {
   Text,
   VStack,
   useEffect,
-  useRef,
   useState,
 } from "scripting";
 import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon";
@@ -40,7 +39,6 @@ import {
 import {
   diagnosticErrorDetails,
   diagnosticState,
-  readDiagnostics,
   writeDiagnostic,
 } from "../services/logger";
 import { SCRIPT_BINDING_SOURCE } from "../services/script-source";
@@ -119,22 +117,6 @@ export function SettingsPage(props: {
   const [managerNotice, setManagerNotice] = useState("");
   const [platformCount, setPlatformCount] = useState(0);
   const [diagnosticCount, setDiagnosticCount] = useState(0);
-  const diagnosticCountTimer = useRef<number | undefined>(undefined);
-
-  function cancelDiagnosticCount() {
-    if (diagnosticCountTimer.current !== undefined) clearTimeout(diagnosticCountTimer.current);
-    diagnosticCountTimer.current = undefined;
-  }
-
-  function scheduleDiagnosticCount() {
-    if (diagnosticCountTimer.current !== undefined) return;
-    diagnosticCountTimer.current = setTimeout(() => {
-      diagnosticCountTimer.current = undefined;
-      setDiagnosticCount(readDiagnostics().length);
-    }, 0);
-  }
-
-  useEffect(() => cancelDiagnosticCount, []);
   useEffect(() => {
     const refreshPlatformCount = () => {
       setPlatformCount(PLATFORM_SOURCES.filter((platform) => {
@@ -307,16 +289,13 @@ export function SettingsPage(props: {
         }}
         onAppear={() => {
           refreshAuthorization();
-          scheduleDiagnosticCount();
           setEnabledNotificationCount(notificationEnabledCount(true));
         }}
-        onDisappear={cancelDiagnosticCount}
         navigationDestination={{
           isPresented: Boolean(destination),
           onChanged: (presented) => {
             if (presented) return;
             setDestination("");
-            scheduleDiagnosticCount();
             setEnabledNotificationCount(notificationEnabledCount(true));
           },
           content: destination === "phones" ? (
@@ -368,7 +347,7 @@ export function SettingsPage(props: {
           ) : destination === "activity" ? (
             <ParcelActivityPage cards={props.pickupCards} revision={props.state.revision} />
           ) : destination === "diagnostics" ? (
-            <DiagnosticLogPage />
+            <DiagnosticLogPage onCountChange={setDiagnosticCount} />
           ) : (
             <Text>设置</Text>
           ),

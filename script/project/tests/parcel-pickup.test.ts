@@ -463,28 +463,16 @@ assert.match(activitySettingsSource, /「在 App 中运行意图」[\s\S]*?「�
 assert.match(activitySettingsSource, /<Toggle title="实时活动"/);
 
 const settingsSource = readFileSync(new URL("../pages/SettingsPage.tsx", import.meta.url), "utf8");
-const countFunctions = ["cancelDiagnosticCount", "scheduleDiagnosticCount"].map((name) => {
-  const source = settingsSource.match(new RegExp("  function " + name + "\\(\\) \\{[\\s\\S]*?\\n  \\}"))?.[0];
-  assert.ok(source);
-  return source;
-}).join("\n");
-let diagnosticReads = 0;
-let scheduled: (() => void) | undefined;
-const count = runInNewContext(countFunctions + "\n({ scheduleDiagnosticCount, cancelDiagnosticCount });", {
-  diagnosticCountTimer: { current: undefined },
-  setTimeout: (run: () => void) => { scheduled = run; return 1; },
-  clearTimeout: () => { scheduled = undefined; },
-  readDiagnostics: () => { diagnosticReads++; return []; },
-  setDiagnosticCount: () => {},
-});
-count.scheduleDiagnosticCount();
-count.scheduleDiagnosticCount();
-assert.equal(diagnosticReads, 0, "tab presentation does not read the diagnostic journal synchronously");
-scheduled?.();
-assert.equal(diagnosticReads, 1, "duplicate appearance callbacks share one diagnostic read");
-count.scheduleDiagnosticCount();
-count.cancelDiagnosticCount();
-assert.equal(scheduled, undefined);
+assert.doesNotMatch(settingsSource, /\breadDiagnostics\b/,
+  "entering settings and returning from its pages never reads the log journal");
+assert.match(settingsSource, /destination === "diagnostics" \? \(\s*<DiagnosticLogPage onCountChange=\{setDiagnosticCount\}/);
+const logPageSource = readFileSync(new URL("../pages/DiagnosticLogPage.tsx", import.meta.url), "utf8");
+assert.doesNotMatch(logPageSource, /useState\(\(\) => readDiagnostics\(\)\)/,
+  "constructing the diagnostics destination never reads the log before it is shown");
+assert.match(logPageSource, /onAppear=\{\(\) => \{\s*showItems\(readDiagnostics\(\)\);/);
+assert.match(logPageSource, /onCountChange\(next\.length\)/);
+assert.match(logPageSource, /clearDiagnostics\(\);\s*showItems\(\[\]\)/,
+  "clearing the log updates the cached badge");
 
 const appSource = readFileSync(new URL("../index.tsx", import.meta.url), "utf8");
 assert.match(appSource, /useObservable<string>\(\s*navigationRequest\.pickupRecordId \? "pickup" : "deliveries"/);

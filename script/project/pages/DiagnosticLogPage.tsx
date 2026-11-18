@@ -718,16 +718,21 @@ function levelColor(
       : "accentColor";
 }
 
-export function DiagnosticLogPage() {
-  const [items, setItems] = useState(() => readDiagnostics());
+export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: number) => void }) {
+  const [items, setItems] = useState<DiagnosticEntry[]>([]);
   const [notice, setNotice] = useState("");
   const [recording, setRecording] = useState(() => diagnosticsEnabled());
+
+  function showItems(next: DiagnosticEntry[]) {
+    setItems(next);
+    onCountChange(next.length);
+  }
 
   async function actions() {
     // 复制 and 清空 act on stored entries, so they are offered only when there are some. That makes
     // the sheet's indices depend on the log's state, hence the key list instead of fixed offsets.
     const latest = readDiagnostics();
-    setItems(latest);
+    showItems(latest);
     // Two entries when the log is empty, three when it is not. This is also a live probe: the host
     // picks the presentation from the action count (one renders as a centred alert, three as a
     // bottom sheet) and two is untested, so beta23 exists to find out which side it lands on.
@@ -756,12 +761,12 @@ export function DiagnosticLogPage() {
       setRecording(next);
       if (next) {
         writeRuntimeCapabilities("app");
-        setItems(readDiagnostics());
+        showItems(readDiagnostics());
       }
       setNotice(next ? "已开始记录" : "已停止记录");
     } else if (action === "copy") {
       const latestItems = readDiagnostics();
-      setItems(latestItems);
+      showItems(latestItems);
       if (!latestItems.length) {
         setNotice("暂无可复制的日志");
         return;
@@ -782,10 +787,10 @@ export function DiagnosticLogPage() {
       if (!confirmed) return;
       try {
         clearDiagnostics();
-        setItems([]);
+        showItems([]);
         setNotice("日志已清空");
       } catch {
-        setItems(readDiagnostics());
+        showItems(readDiagnostics());
         setNotice("日志清空失败，请稍后重试");
       }
     }
@@ -796,7 +801,7 @@ export function DiagnosticLogPage() {
       navigationTitle="诊断日志"
       navigationBarTitleDisplayMode="inline"
       onAppear={() => {
-        setItems(readDiagnostics());
+        showItems(readDiagnostics());
         setRecording(diagnosticsEnabled());
       }}
       toast={transientToast(notice, setNotice)}
