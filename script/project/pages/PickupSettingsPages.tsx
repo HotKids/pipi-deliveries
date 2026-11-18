@@ -9,7 +9,7 @@ import {
   stopParcelActivity,
   stopParcelActivityPreview,
 } from "../services/parcel-live-activity";
-import type { ParcelActivityContent } from "../services/parcel-pickup";
+import { PICKUP_TAB_TITLE, type ParcelActivityContent } from "../services/parcel-pickup";
 import { transientToast } from "../services/ui-feedback";
 
 export function ParcelShortcutPage() {
@@ -27,7 +27,9 @@ export function ParcelShortcutPage() {
         <Text font="subheadline" lineSpacing={3}>1. 在「快捷指令」中创建「信息」自动化，按发件人或短信内容设置触发条件。</Text>
         <Text font="subheadline" lineSpacing={3}>2. 添加 Scripting 的「运行意图脚本」，选择「派派助手」。在参数栏选择「快捷指令输入」，再选它的「内容」作为短信正文。</Text>
         <Text font="subheadline" lineSpacing={3}>3. 如果要跳过空短信，在运行脚本前检查正文。正文为空时，停止这条快捷指令。</Text>
-        <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">识别到运单号后，打开派派助手确认查询。取件码和寄件码在「取件」中查看。</Text>
+        <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">
+          {`识别到运单号后，打开派派助手确认查询。取件码和寄件码在「${PICKUP_TAB_TITLE}」中查看。`}
+        </Text>
       </Section>
     </List>
   );

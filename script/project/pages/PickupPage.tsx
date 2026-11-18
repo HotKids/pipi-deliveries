@@ -3,7 +3,7 @@ import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
 import { RootTabList } from "../components/RootPageHeader";
 import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
-import { pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
+import { PICKUP_TAB_TITLE, pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import { onPlatformAccountsChanged, type IdentityPlatform } from "../services/platform-accounts";
@@ -217,7 +217,7 @@ export function PickupPage({
           ) : <Text>物流详情</Text>,
         }}
       >
-        <RootTabList title="取件" onClose={() => dismiss()} bottomInset={TAB_FAB_SCROLL_INSET}>
+        <RootTabList title={PICKUP_TAB_TITLE} onClose={() => dismiss()} bottomInset={TAB_FAB_SCROLL_INSET}>
           {sections.map(({ key, label, items, preview }) => (
             <Section key={key} header={<Text>{label}</Text>}>
               {items.map(cardRow)}

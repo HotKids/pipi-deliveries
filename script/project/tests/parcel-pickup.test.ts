@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import type { ParcelHandoffRecord, PickupCodeRecord, Shipment } from "../models";
-import { activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, type ParcelActivityContent } from "../services/parcel-pickup";
+import { PICKUP_TAB_TITLE, activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, type ParcelActivityContent } from "../services/parcel-pickup";
 import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette } from "../services/parcel-card-appearance";
 import { recognizeParcelCodes } from "../services/parcel-code-ocr";
 import { parcelTextRows, recognizeParcelWaybill } from "../services/parcel-waybill-ocr";
@@ -559,6 +559,7 @@ assert.match(tabCardSource, /background=\{\s*<GeometryReader\b/, "only the in-ap
 assert.match(activitySettingsSource, /<Text>锁屏预览<\/Text>[\s\S]*?"stop\.circle" : "play\.circle"[\s\S]*?disabled=\{busy\}/);
 assert.match(activitySettingsSource, /<Text>截屏识别<\/Text>[\s\S]*?<Text>短信识别<\/Text>/);
 assert.match(activitySettingsSource, /「在 App 中运行意图」[\s\S]*?「运行意图脚本」/);
+assert.match(activitySettingsSource, /取件码和寄件码在「\$\{PICKUP_TAB_TITLE\}」中查看/);
 assert.match(activitySettingsSource, /<Toggle title="实时活动"/);
 
 const settingsSource = readFileSync(new URL("../pages/SettingsPage.tsx", import.meta.url), "utf8");
@@ -576,19 +577,21 @@ assert.match(logPageSource, /clearDiagnostics\(\);\s*showItems\(\[\]\)/,
 const appSource = readFileSync(new URL("../index.tsx", import.meta.url), "utf8");
 assert.match(appSource, /useObservable<string>\(\s*navigationRequest\.pickupRecordId \? "pickup" : "deliveries"/);
 assert.match(appSource, /pickupCards\.length > 0 \|\| pickupPreview/);
-assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title="取件"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="archivebox\.fill"/);
+assert.equal(PICKUP_TAB_TITLE, "待取");
+assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title=\{PICKUP_TAB_TITLE\} systemImage="archivebox\.fill" value="pickup"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="shippingbox\.fill" value="deliveries"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
 assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate/);
 const homeSource = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
-for (const [title, source] of [["快递", homeSource], ["取件", pickupSource], ["设置", settingsSource]]) {
-  assert.match(source, new RegExp(`<NavigationStack>\\s*<VStack navigationBarVisibility="hidden"[^]*?<RootTabList\\b[^>]*title="${title}"`),
-    `${title} delegates the initial position and scroll layout to the same root`);
+for (const source of [homeSource, pickupSource, settingsSource]) {
+  assert.match(source, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootTabList\b/,
+    "each tab delegates its initial position and scroll layout to the same root");
   assert.doesNotMatch(source, /<List\b|<RootPageTitle\b|<RootPageCloseButton\b|listStyle=/);
 }
-assert.match(pickupSource, /<RootTabList title="取件" onClose=\{\(\) => dismiss\(\)\} bottomInset=\{TAB_FAB_SCROLL_INSET\}>/);
+assert.match(homeSource, /<RootTabList\b[^>]*\btitle="快递"/);
+assert.match(pickupSource, /<RootTabList title=\{PICKUP_TAB_TITLE\} onClose=\{\(\) => dismiss\(\)\} bottomInset=\{TAB_FAB_SCROLL_INSET\}>/);
 assert.match(settingsSource, /<RootTabList title="设置" onClose=\{\(\) => dismiss\(\)\}>/);
 assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:|rootPageScroll|headerCollapsed/);
-assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|取件)"/);
+assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|待取|取件)"|navigationTitle=\{PICKUP_TAB_TITLE\}/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
 assert.match(rootHeader, /const header = \(\s*<Section key="root-heading" listSectionMargins=\{0\} listSectionSeparator="hidden">\s*<RootPageTitle title=\{title\} \/>\s*\{topAccessory\}\s*<\/Section>/);
 assert.match(rootHeader, /<List listStyle="insetGroup"[^]*?refreshable=\{refresh\}[^]*?edges: "top", insets: 0, placement: "scrollContent"[^]*?edges: "vertical", insets: \{ top: 0, bottom: bottomInset[^]*?>\s*\{\[header, \.\.\.\[children\]\.flat\(\)\]\}\s*<\/List>\s*<RootPageCloseButton action=\{onClose\} \/>/,

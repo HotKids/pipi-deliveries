@@ -59,7 +59,7 @@ import {
   onParcelActivityPreviewChanged, parcelActivityPreviewing, parcelActivitySceneChanged, parcelActivityTarget,
   reconcileParcelActivity,
 } from "./services/parcel-live-activity";
-import { activePickupCards, independentPickupContent } from "./services/parcel-pickup";
+import { PICKUP_TAB_TITLE, activePickupCards, independentPickupContent } from "./services/parcel-pickup";
 import { nextParcelHandoffDeadline } from "./services/parcel-handoff-expiry";
 import { reconcileFengchaoReminders } from "./services/fengchao-reminders";
 import { transientToast } from "./services/ui-feedback";
@@ -397,7 +397,7 @@ function App({ initialStartup }: { initialStartup: StartupState }) {
       }
     >
       {hasPickupTab ? (
-        <Tab key="pickup" title="取件" systemImage="shippingbox.fill" value="pickup">
+        <Tab key="pickup" title={PICKUP_TAB_TITLE} systemImage="archivebox.fill" value="pickup">
           <PickupPage
             state={state}
             shipments={shipments}
@@ -410,7 +410,7 @@ function App({ initialStartup }: { initialStartup: StartupState }) {
           />
         </Tab>
       ) : null}
-      <Tab key="deliveries" title="快递" systemImage="archivebox.fill" value="deliveries">
+      <Tab key="deliveries" title="快递" systemImage="shippingbox.fill" value="deliveries">
         <HomePage
           state={state}
           shipments={shipments}
