@@ -15,7 +15,7 @@ import { presentPlatformLogin } from "./PlatformAccountPages";
 
 const IDENTITY_CODE_TITLES: Record<IdentityPlatform, string> = {
   cainiao: "淘宝身份码",
-  pinduoduo: "多多驿站身份码",
+  pinduoduo: "拼多多身份码",
 };
 
 type ScanFormat = "barcode" | "qr";

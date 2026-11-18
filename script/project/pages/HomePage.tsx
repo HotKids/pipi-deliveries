@@ -128,7 +128,8 @@ export function HomePage(props: {
   const [completing, setCompleting] = useState(false);
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
-  const [selectedFilter, setFilter] = useState<ShipmentFilter>("all");
+  const filterSelection = useObservable<ShipmentFilter>("all");
+  const [filterTrackWidth, setFilterTrackWidth] = useState(0);
   const searchPresented = useObservable(props.autoFocusSearch && !props.initialShipmentId);
   const handledNavigationRef = useRef<number | undefined>(undefined);
   const [accessKeyRejected, setAccessKeyRejected] = useState(gatewayAccessKeyRejected);
@@ -153,7 +154,11 @@ export function HomePage(props: {
   }, [shipments, deleting, completing]);
   const visibleFilters = (Object.keys(shipmentFilters) as ShipmentFilter[])
     .filter((key) => key === "all" || groups[key].length > 0);
+  const selectedFilter = filterSelection.value;
   const filter = visibleFilters.includes(selectedFilter) ? selectedFilter : "all";
+  const filterSegmentWidth = Math.max(0, filterTrackWidth - FILTER_SEGMENT_INSET * 2) / visibleFilters.length;
+  const filterIndicatorOffset = (visibleFilters.indexOf(filter) - (visibleFilters.length - 1) / 2)
+    * filterSegmentWidth;
   const listItems = groups[filter];
   const observableItems = useObservable(() => listItems);
   useEffect(() => { observableItems.setValue(listItems); }, [listItems]);
@@ -206,8 +211,13 @@ export function HomePage(props: {
   }, []);
 
   useEffect(() => {
-    if (selectedFilter !== filter) setFilter(filter);
-  }, [selectedFilter, filter]);
+    if (selectedFilter !== filter) filterSelection.setValue(filter);
+  }, [filterSelection, selectedFilter, filter]);
+
+  function selectFilter(key: ShipmentFilter) {
+    if (key === filter) return;
+    void withAnimation(Animation.snappy({ duration: 0.32 }), () => filterSelection.setValue(key));
+  }
 
   useEffect(() => {
     const generation = props.navigationRequestGeneration;
@@ -465,24 +475,27 @@ export function HomePage(props: {
         {visibleFilters.length > 1 ? (
           <ZStack padding={{ horizontal: 20, vertical: 2 }}>
             <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
-              frame={{ height: 32 }} />
-            <GeometryReader frame={{ height: 32 }} allowsHitTesting={false}>
-              {({ size }) => {
-                const segmentWidth = Math.max(0, size.width - FILTER_SEGMENT_INSET * 2) / visibleFilters.length;
-                const x = FILTER_SEGMENT_INSET + (visibleFilters.indexOf(filter) + 0.5) * segmentWidth;
-                return (
-                  <Capsule fill="secondarySystemFill" key="filter-selection"
-                    frame={{ width: segmentWidth, height: 26 }}
-                    position={{ x, y: size.height / 2 }}
-                    animation={{ animation: Animation.snappy({ duration: 0.32 }), value: filter }} />
-                );
-              }}
-            </GeometryReader>
+              frame={{ height: 32 }}
+              allowsHitTesting={false}
+              background={
+                <GeometryReader>
+                  {({ size }) => (
+                    <Capsule fill="clear" key={size.width}
+                      onAppear={() => { if (size.width > 0) setFilterTrackWidth(size.width); }} />
+                  )}
+                </GeometryReader>
+              }
+              overlay={
+                <Capsule fill="secondarySystemFill" key="filter-selection"
+                  frame={{ width: filterSegmentWidth, height: 26 }}
+                  offset={{ x: filterIndicatorOffset, y: 0 }} />
+              }
+            />
             <HStack spacing={0} padding={{ horizontal: FILTER_SEGMENT_INSET }}>
               {visibleFilters.map((key) => {
                 const selected = filter === key;
                 return (
-                  <Button key={key} buttonStyle="plain" action={() => setFilter(key)}>
+                  <Button key={key} buttonStyle="plain" action={() => selectFilter(key)}>
                     <VStack frame={{ maxWidth: "infinity", minHeight: 44 }} contentShape="rect">
                       <HStack spacing={4} frame={{ maxWidth: "infinity", minHeight: 26 }}>
                         <Text font={14} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
