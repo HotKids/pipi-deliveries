@@ -8,7 +8,7 @@ import { copyText } from "../services/clipboard";
 import { code128Widths } from "../services/code128";
 import { currentPlatformSession, onPlatformAccountsChanged, platformSession,
   type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
-import { fetchStationIdentity, identityWebCookies, IDENTITY_WEB_URL, openProviderController, PDD_IDENTITY_APP_URL, PlatformWireError,
+import { fetchStationIdentity, identityWebCookies, IDENTITY_APP_URL, IDENTITY_WEB_URL, openProviderController, PlatformWireError,
   type StationIdentityCode } from "../services/platform-wire";
 import { transientToast } from "../services/ui-feedback";
 
@@ -185,15 +185,31 @@ function StationIdentityContent({ platform, expectedGeneration }: {
   const [full, setFull] = useState<ScanFormat | null>(null);
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
-  const [reason, setReason] = useState("");
+  const [failure, setFailure] = useState<"verification" | "unavailable" | null>(null);
   const active = useRef(true);
   const mounted = useRef(true);
+  const openingRecovery = useRef(false);
   const requestInFlight = useRef<AbortController | undefined>(undefined);
   const countdownTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const generation = useRef(0);
   const requestedRenewal = useRef(0);
   const widthList = useMemo(() => value ? code128Widths(value) : [], [value]);
   const currentSession = () => currentPlatformSession(platform, expectedGeneration);
+  const providerName = platform === "cainiao" ? "淘宝" : "拼多多";
+
+  async function openRecovery(destination: "app" | "verification") {
+    const session = currentSession();
+    if (!session || openingRecovery.current) return;
+    openingRecovery.current = true;
+    try {
+      if (destination === "app" && await Safari.openURL(IDENTITY_APP_URL[platform]).catch(() => false)) return;
+      if (mounted.current && currentSession()) await openWebIdentity(platform, session);
+    } catch {
+      if (mounted.current) setNotice("暂时无法打开身份码，请重试");
+    } finally {
+      openingRecovery.current = false;
+    }
+  }
 
   function cancelCountdown() {
     if (countdownTimer.current !== undefined) clearTimeout(countdownTimer.current);
@@ -236,7 +252,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
     const controller = new AbortController();
     requestInFlight.current = controller;
     setBusy(true);
-    setReason("");
+    setFailure(null);
     if (manual) setNotice("正在获取身份码…");
     try {
       const code = await fetchStationIdentity(platform, session, controller.signal);
@@ -247,7 +263,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
     } catch (error) {
       if (mounted.current && active.current && request === generation.current) {
         const verification = error instanceof PlatformWireError && error.reason === "verification";
-        setReason(verification ? "请在网页完成安全验证" : "未获取到身份码，请点右上角重试");
+        setFailure(verification ? "verification" : "unavailable");
       }
     } finally {
       requestInFlight.current = undefined;
@@ -281,6 +297,8 @@ function StationIdentityContent({ platform, expectedGeneration }: {
   }, []);
 
   const valid = Boolean(value) && remaining > 0;
+  const status = busy ? "正在获取身份码…" : failure === "verification" ? "请完成安全验证"
+    : failure === "unavailable" ? "未获取到身份码，请点右上角重试" : "身份码已过期";
   return (
     <Form navigationTitle={IDENTITY_CODE_TITLES[platform]} listSectionSpacing={8}
       navigationBarTitleDisplayMode="inline"
@@ -321,7 +339,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
               </Text>
             </VStack>
           ) : <Text foregroundStyle="secondaryLabel" padding={{ vertical: 24 }}>
-            {busy ? "正在获取身份码…" : reason || "身份码已过期"}
+            {status}
           </Text>}
         </VStack>
       </Section>
@@ -349,18 +367,18 @@ function StationIdentityContent({ platform, expectedGeneration }: {
         </Section>
       ) : !busy ? (
         <Section>
-          {platform === "pinduoduo" ? (
-            <Button title="在拼多多 App 中打开" action={async () => {
-              if (!currentSession()) return;
-              if (!await Safari.openURL(PDD_IDENTITY_APP_URL).catch(() => false)) {
-                setNotice("打开拼多多失败，请重试。");
-              }
-            }} />
+          <Button buttonStyle="plain" action={() => void openRecovery("app")}>
+            <Text foregroundStyle="accentColor" frame={{ maxWidth: "infinity", alignment: "center" }} contentShape="rect">
+              在{providerName}内打开
+            </Text>
+          </Button>
+          {failure === "verification" ? (
+            <Button buttonStyle="plain" action={() => void openRecovery("verification")}>
+              <Text foregroundStyle="accentColor" frame={{ maxWidth: "infinity", alignment: "center" }} contentShape="rect">
+                完成安全验证
+              </Text>
+            </Button>
           ) : null}
-          <Button title="在网页打开" action={() => {
-            const session = currentSession();
-            if (session) void openWebIdentity(platform, session).catch(() => setNotice("网页打开失败，请重试。"));
-          }} />
         </Section>
       ) : null}
     </Form>

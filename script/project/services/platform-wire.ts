@@ -13,12 +13,14 @@ export const IDENTITY_WEB_URL = {
   cainiao: "https://pages-fast.m.taobao.com/wow/z/uniapp/1011717/last-mile-fe/end-collect-platform/identity-code",
   pinduoduo: "https://m.pinduoduo.net/mdkd/identificationCode",
 } as const;
-export const PDD_IDENTITY_APP_URL = "pinduoduo://com.xunmeng.pinduoduo/mdkd/package?tab=ID_CODE&entry_source=11";
-const TAOBAO_IDENTITY_APP_URL = "taobao://m.taobao.com/tbopen/index.html?h5Url=" + encodeURIComponent(IDENTITY_WEB_URL.cainiao);
+export const IDENTITY_APP_URL = {
+  cainiao: "taobao://m.taobao.com/tbopen/index.html?h5Url=" + encodeURIComponent(IDENTITY_WEB_URL.cainiao),
+  pinduoduo: "pinduoduo://com.xunmeng.pinduoduo/mdkd/package?tab=ID_CODE&entry_source=11",
+} as const;
 
 export function stationIdentityDestination(platform: IdentityPlatform): { kind: "local" } | { kind: "app"; url: string } {
   if (accountStatus(platform).state === "active") return { kind: "local" };
-  return { kind: "app", url: platform === "cainiao" ? TAOBAO_IDENTITY_APP_URL : PDD_IDENTITY_APP_URL };
+  return { kind: "app", url: IDENTITY_APP_URL[platform] };
 }
 
 export const CAINIAO_RECIPIENT_LIST = "mtop.cainiao.lpc.packageservice.queryPdsPackageDataList";
