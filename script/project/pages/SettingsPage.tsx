@@ -329,11 +329,8 @@ export function SettingsPage(props: {
 
   return (
     <NavigationStack>
-      <VStack navigationBarVisibility="hidden"
+      <VStack navigationBarVisibility="hidden" spacing={0}
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        safeAreaInset={{ top: { spacing: 0,
-          content: <RootPageHeader title="设置" close={() => dismiss()} collapsed={headerCollapsed} />,
-        } }}
         onAppear={() => setOverviewVisible(true)}
         onDisappear={() => setOverviewVisible(false)}
         toast={transientToast(notice, setNotice)}
@@ -398,6 +395,7 @@ export function SettingsPage(props: {
           ),
         }}
       >
+        <RootPageHeader title="设置" close={() => dismiss()} collapsed={headerCollapsed} />
         <List {...rootPageScroll(setHeaderCollapsed)} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
           <Section header={<Text>同步</Text>}>
             <Button buttonStyle="plain" action={openPhoneManager}>

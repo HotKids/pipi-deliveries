@@ -188,11 +188,8 @@ export function PickupPage({
 
   return (
     <NavigationStack>
-      <VStack navigationBarVisibility="hidden"
+      <VStack navigationBarVisibility="hidden" spacing={0}
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        safeAreaInset={{ top: { spacing: 0,
-          content: <RootPageHeader title="取件" close={() => dismiss()} collapsed={headerCollapsed} />,
-        } }}
         onAppear={() => setVisible(true)}
         onDisappear={() => setVisible(false)}
         overlay={{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen={openIdentity} /> }}
@@ -221,6 +218,7 @@ export function PickupPage({
           ) : <Text>物流详情</Text>,
         }}
       >
+        <RootPageHeader title="取件" close={() => dismiss()} collapsed={headerCollapsed} />
         <List {...rootPageScroll(setHeaderCollapsed)}
           frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
           contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}

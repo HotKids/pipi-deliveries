@@ -421,11 +421,8 @@ export function HomePage(props: {
 
   return (
     <NavigationStack>
-      <VStack navigationBarVisibility="hidden"
+      <VStack navigationBarVisibility="hidden" spacing={0}
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        safeAreaInset={{ top: { spacing: 0,
-          content: <RootPageHeader title="快递" close={() => dismiss()} collapsed={headerCollapsed} background="systemBackground" />,
-        } }}
         overlay={{
           alignment: "bottomTrailing",
           content: (
@@ -503,6 +500,7 @@ export function HomePage(props: {
           ) : <Text>快递详情</Text>,
         }}
       >
+        <RootPageHeader title="快递" close={() => dismiss()} collapsed={headerCollapsed} background="systemBackground" />
         <List key="shipments" listStyle="plain" refreshable={refresh}
           frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
           {...rootPageScroll(setHeaderCollapsed)}

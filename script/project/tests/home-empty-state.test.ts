@@ -52,11 +52,13 @@ assert.equal(beginCount, 2, "a new gesture still starts another pull");
 finishPull();
 await next;
 assert.match(homeSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootPageHeader title="快递"/);
+assert.match(homeSource, /<RootPageHeader title="快递"[^]*?\/>\s*<List key="shipments"/,
+  "the root header is visible above the list regardless of safe-area inset support");
 assert.match(homeSource, /<List key="shipments" listStyle="plain" refreshable=\{refresh\}[^]*?rootPageScroll\(setHeaderCollapsed\)/);
 assert.match(homeSource, /overlay=\{\{\s*alignment: "topLeading",[\s\S]*?\{compactFilters\}/);
 assert.match(homeSource, /\{showListAccessories \? \(/,
   "the accessories keep their list row when the title collapses");
-assert.doesNotMatch(homeSource, /safeAreaInset=\{headerCollapsed|!headerCollapsed && showListAccessories/,
+assert.doesNotMatch(homeSource, /safeAreaInset=|!headerCollapsed && showListAccessories/,
   "scrolling cannot replace the list viewport inset or insert a row");
 assert.match(homeSource, /\{!headerCollapsed \? <VStack padding=\{TAB_FAB_PADDING\}>\s*<TabFloatingActionButton title="查询"/);
 const nativeHeader = await readFile(resolve(projectDir, "components/RootPageHeader.tsx"), "utf8");
