@@ -3,6 +3,7 @@ import {
   ScrollView, Text, VStack, ZStack, useEffect, useMemo, useObservable, useRef, useState,
 } from "scripting";
 import { bundledImage } from "../components/bundled-image";
+import { iconTileShape } from "../components/icon-tile";
 import { code128Widths } from "../services/code128";
 import { currentPlatformSession, onPlatformAccountsChanged,
   type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
@@ -10,10 +11,6 @@ import { fetchStationIdentity, identityWebCookies, IDENTITY_WEB_URL, openProvide
   type StationIdentityCode } from "../services/platform-wire";
 import { transientToast } from "../services/ui-feedback";
 
-export const IDENTITY_STATION_NAMES: Record<IdentityPlatform, string> = {
-  cainiao: "菜鸟驿站",
-  pinduoduo: "多多驿站",
-};
 const IDENTITY_CODE_TITLES: Record<IdentityPlatform, string> = {
   cainiao: "淘宝身份码",
   pinduoduo: "多多驿站身份码",
@@ -25,12 +22,13 @@ const EMPTY_SCAN: ScanState = { display: null, remaining: 0 };
 const BARCODE_SHAPE = { type: "rect", cornerRadius: 10 } as const;
 const QR_SHAPE = { type: "rect", cornerRadius: 14 } as const;
 
-export function StationIdentityMark({ platform }: { platform: IdentityPlatform }) {
-  const asset = platform === "cainiao" ? "taobao" : platform;
+export function StationIdentityMark({ asset }: { asset: IdentityPlatform | "taobao" }) {
+  const size = 28;
+  const frame = { width: size, height: size };
   const artwork = bundledImage(`platform-accounts/${asset}.png`);
   return artwork ? <Image image={artwork}
-    resizable scaleToFit interpolation="high" frame={{ width: 28, height: 28 }} clipShape="circle"
-  /> : <Image systemName="person.text.rectangle" frame={{ width: 28, height: 28 }} />;
+    resizable scaleToFit interpolation="high" frame={frame} clipShape={iconTileShape(size)}
+  /> : <Image systemName="person.text.rectangle" frame={frame} />;
 }
 
 export async function openWebIdentity(platform: IdentityPlatform, session: PlatformSession | null) {
@@ -254,7 +252,7 @@ export function StationIdentityPage({ platform, session, onClose }: {
           topBarLeading: <Button title="关闭" systemImage="xmark" labelStyle="iconOnly" action={onClose} />,
           principal: (
             <HStack spacing={8}>
-              <StationIdentityMark platform={platform} />
+              <StationIdentityMark asset={platform === "cainiao" ? "taobao" : platform} />
               <Text font={17} fontWeight="semibold" lineLimit={1}>{IDENTITY_CODE_TITLES[platform]}</Text>
             </HStack>
           ),

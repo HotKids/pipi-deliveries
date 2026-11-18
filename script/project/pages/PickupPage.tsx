@@ -12,44 +12,47 @@ import { setPickupCardNote } from "../services/storage";
 import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { requestWidgetReload } from "../services/widgets";
 import { DetailPage } from "./DetailPage";
-import { IDENTITY_STATION_NAMES, openWebIdentity, StationIdentityMark, StationIdentityPage } from "./StationIdentityPage";
+import { openWebIdentity, StationIdentityMark, StationIdentityPage } from "./StationIdentityPage";
 
+const IDENTITY_CHOICES = [
+  { platform: "cainiao", title: "菜鸟驿站" },
+  { platform: "pinduoduo", title: "多多驿站" },
+] as const;
 const IDENTITY_DIAMETER = 56;
 const IDENTITY_INSET = 20;
 const IDENTITY_BACKGROUND = { light: "#9EF0FC", dark: "#004F57" } as const;
 const IDENTITY_FOREGROUND = { light: "#004F57", dark: "#9EF0FC" } as const;
 
-function IdentityCodeButton({ actions, onOpen }: {
-  actions: readonly IdentityPlatform[];
+function IdentityCodeButton({ onOpen }: {
   onOpen: (platform: IdentityPlatform) => void;
 }) {
   const [showPicker, setShowPicker] = useState(false);
   return (
     <Button
       buttonStyle="plain"
-      action={() => actions.length === 1 ? onOpen(actions[0]) : setShowPicker(true)}
-      popover={actions.length > 1 ? {
+      action={() => setShowPicker(true)}
+      popover={{
         isPresented: showPicker,
         onChanged: setShowPicker,
         arrowEdge: "bottom",
         presentationCompactAdaptation: "popover",
         content: (
           <VStack alignment="leading" spacing={0} padding={6} frame={{ minWidth: 196 }}>
-            {actions.map((platform) => (
+            {IDENTITY_CHOICES.map(({ platform, title }) => (
               <Button key={platform} buttonStyle="plain" action={() => {
                 setShowPicker(false);
                 onOpen(platform);
               }}>
                 <HStack spacing={12} padding={{ horizontal: 8, vertical: 9 }}
                   frame={{ maxWidth: "infinity", alignment: "leading" }} contentShape="rect">
-                  <StationIdentityMark platform={platform} />
-                  <Text font={17} foregroundStyle="label">{IDENTITY_STATION_NAMES[platform]}</Text>
+                  <StationIdentityMark asset={platform} />
+                  <Text font={17} foregroundStyle="label">{title}</Text>
                 </HStack>
               </Button>
             ))}
           </VStack>
         ),
-      } : undefined}
+      }}
     >
       <VStack
         spacing={1}
@@ -133,7 +136,7 @@ function PickupCardRow({ card, note, opensCabinet, onDetail, onSaveNote, onActio
 }
 
 export function PickupPage({
-  state, shipments, cards, previewing, focusedRecordId, onAction, cabinetActions, identityActions = [], onStateChange, showNotice,
+  state, shipments, cards, previewing, focusedRecordId, onAction, cabinetActions, onStateChange, showNotice,
 }: {
   state: AppState;
   shipments: readonly Shipment[];
@@ -142,7 +145,6 @@ export function PickupPage({
   focusedRecordId: string;
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
   cabinetActions: ReadonlySet<ParcelActivityContent>;
-  identityActions?: readonly IdentityPlatform[];
   onStateChange: (state: AppState) => void;
   showNotice: (message: string) => void;
 }) {
@@ -215,17 +217,15 @@ export function PickupPage({
             />
           ) : <Text>物流详情</Text>,
         }}
-        contentMargins={identityActions.length
-          ? { edges: "bottom", insets: IDENTITY_DIAMETER + IDENTITY_INSET, placement: "scrollContent" }
-          : undefined}
-        overlay={identityActions.length ? {
+        contentMargins={{ edges: "bottom", insets: IDENTITY_DIAMETER + IDENTITY_INSET, placement: "scrollContent" }}
+        overlay={{
           alignment: "bottomTrailing",
           content: (
             <VStack padding={{ trailing: IDENTITY_INSET, bottom: IDENTITY_INSET }}>
-              <IdentityCodeButton actions={identityActions} onOpen={openIdentity} />
+              <IdentityCodeButton onOpen={openIdentity} />
             </VStack>
           ),
-        } : undefined}
+        }}
       >
         {sections.map(({ key, label, items, preview }) => (
           <Section key={key} header={<Text>{label}</Text>}>

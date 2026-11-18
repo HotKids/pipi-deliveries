@@ -30,7 +30,7 @@ import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
 import { expireDueParcelHandoffs, loadState, peekStateRevision, visibleShipments } from "./services/storage";
-import { onPlatformAccountsChanged, platformSession } from "./services/platform-accounts";
+import { onPlatformAccountsChanged } from "./services/platform-accounts";
 import { canOpenParcelCabinet, performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
 import {
   diagnosticErrorDetails,
@@ -122,10 +122,6 @@ function App() {
     [shipments, state?.pickupCodeRecords]);
   const [pickupPreview, setPickupPreview] = useState(false);
   const hasPickupTab = pickupCards.length > 0 || pickupPreview;
-  const identityActions = useMemo(() => (["cainiao", "pinduoduo"] as const)
-    .filter((platform) => platformSession(platform) || pickupCards.some((card) =>
-      card.kind !== "handoff" && (!card.platform || card.platform === platform))),
-  [platformRevision, pickupCards]);
   const cabinetActions = useMemo(() => new Set(pickupCards.filter(canOpenParcelCabinet)),
     [platformRevision, pickupCards]);
   const handoffDeadline = useMemo(() => nextParcelHandoffDeadline(state?.pickupCodeRecords),
@@ -367,7 +363,6 @@ function App() {
             previewing={pickupPreview}
             focusedRecordId={navigationRequest.pickupRecordId}
             cabinetActions={cabinetActions}
-            identityActions={identityActions}
             onStateChange={applyState}
             showNotice={setPickupNotice}
             onAction={(card, openCabinet) => performPickupAction(card, openCabinet, applyState)}
