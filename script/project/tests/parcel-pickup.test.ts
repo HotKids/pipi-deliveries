@@ -478,13 +478,16 @@ assert.match(activityCardSource, /systemName="shippingbox\.fill" font=\{card\.ca
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
 assert.match(activityEntrySource, /<LiveActivityUIExpandedCenter>\s*<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} expanded \/>/,
   "the tested center region uses the regular iPhone card scale");
+assert.match(activityEntrySource, /dynamicIslandContentMargins: \{\s*expanded: \{ top: 0, leading: PIPI_CARD\.edge, trailing: PIPI_CARD\.edge, bottom: PIPI_CARD\.edge \},\s*\}/,
+  "the native TestFlight margin keeps the expanded capsule equally distant from the right and bottom edges");
+assert.match(activityEntrySource, /<LiveActivityUI\s*\{\.\.\.expandedIslandAppearance\}/);
 assert.match(activityCardSource, /const artColumnWidth = expanded \? artWidth - card\.edge \* scale : artWidth;/,
   "the expanded host supplies the card's outside inset while the artwork keeps its regular size");
 assert.match(activityCardSource, /minWidth: expanded \? artColumnWidth : Math\.min\(artWidth, MIN_COMPACT_ART_WIDTH\)/,
   "the expanded native host cannot squeeze the box into the Watch column");
 assert.match(activityCardSource, /<VStack spacing=\{dividerToCapsule \* scale\} fixedSize=\{\{ horizontal: false, vertical: true \}\} layoutPriority=\{1\}>\s*\{divider\}\s*\{bottomRow\}\s*<\/VStack>/,
   "the expanded divider and action share a fixed spacing container");
-assert.match(activityCardSource, /slot\(dividerTop - titleTop\)[^\n]*>\s*\{expandedLine\(title, card\.titleHeight, card\.titleLineHeight\)\}\s*<Rectangle fill="clear" frame=\{slot\(gap\)\} layoutPriority=\{-1\} \/>\s*\{expandedLine\(location, card\.locationHeight, card\.locationIcon, card\.locationLineHeight\)\}/,
+assert.match(activityCardSource, /slot\(dividerTop - titleTop, expandedHeaderMinimum\)[^\n]*>\s*\{expandedLine\(title, card\.titleHeight, card\.titleLineHeight\)\}\s*<Rectangle fill="clear" frame=\{slot\(gap, gap\)\} \/>\s*\{expandedLine\(location, card\.locationHeight, card\.locationLineHeight\)\}\s*<Rectangle fill="clear" frame=\{slot\(locationToDivider, locationToDivider\)\} \/>/,
   "the expanded text line frames release their spare height before the Pipi gaps shrink");
 assert.match(activityCardSource, /fixedSize=\{\{ horizontal: false, vertical: true \}\}\s+frame=\{\{ minHeight: lineHeight \* scale, alignment: "topLeading" \}\}/,
   "the expanded Pipi line heights distribute leading without shrinking text");
@@ -539,13 +542,22 @@ assert.match(appSource, /pickupCards\.length > 0 \|\| pickupPreview/);
 assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title="取件"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="archivebox\.fill"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
 assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate/);
-assert.match(pickupSource, /<RootPageHeader title="取件" action=\{\(\) => dismiss\(\)\}/);
-assert.match(settingsSource, /<RootPageHeader title="设置" action=\{\(\) => dismiss\(\)\}/);
+assert.match(pickupSource, /<NavigationStack>\s*<List[^>]*rootPageNavigation\("取件", \(\) => dismiss\(\), headerCollapsed\)/);
+assert.match(settingsSource, /<NavigationStack>\s*<List[^>]*rootPageNavigation\("设置", \(\) => dismiss\(\), headerCollapsed\)/);
+assert.match(pickupSource, /<ScrollingRootTitle title="取件" onCollapsed=\{setHeaderCollapsed\}/);
+assert.match(settingsSource, /<ScrollingRootTitle title="设置" onCollapsed=\{setHeaderCollapsed\}/);
+assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=|navigationBarVisibility="hidden"/,
+  "the native navigation bar replaces the fixed title inset");
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-assert.match(rootHeader, /<Text font="largeTitle" fontWeight="bold"[\s\S]*?<Button title="关闭" systemImage="xmark"/);
-assert.match(rootHeader, /labelStyle="iconOnly"[\s\S]*?width: 44, height: 44/);
-assert.match(pickupSource, /<\/List>\s*<IdentityCodeButton onOpen=\{openIdentity\}/,
-  "the identity popover is anchored beside the scrolling list");
+assert.match(rootHeader, /onScrollVisibilityChange: \{ threshold: 0\.5, onChanged: \(visible: boolean\) => onCollapsed\(!visible\) \}/);
+assert.match(rootHeader, /navigationBarTitleDisplayMode: "inline"/);
+assert.match(rootHeader, /scrollEdgeEffectHidden: "top"[\s\S]*?toolbarBackground: \{ style: background/);
+assert.match(rootHeader, /\{collapsed \? <ToolbarItem placement="title"[^>]*>\s*<Text font=\{21\}[^>]*\{\.\.\.tabCapsuleSurface\(\)\}/,
+  "the common scroll state drives the compact title with the shared capsule material");
+assert.match(rootHeader, /<ToolbarItem placement="topBarTrailing"[^>]*>\s*<Button title="关闭" systemImage="xmark"/);
+assert.match(rootHeader, /labelStyle="iconOnly"[\s\S]*?width: NAVIGATION_CONTROL_HEIGHT, height: NAVIGATION_CONTROL_HEIGHT/);
+assert.match(pickupSource, /overlay=\{\{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen=\{openIdentity\}/,
+  "the identity popover stays anchored to the bottom of the scrolling viewport");
 assert.match(pickupSource, /onBindingUnavailable=\{\(\) => void openIdentity\(identity\)\}/,
   "an identity page whose binding expires uses the same app handoff as the picker");
 assert.match(pickupSource, /<HStack spacing=\{0\} popover=\{\{\s*isPresented: showPicker,\s*onChanged: setShowPicker,/,
@@ -570,7 +582,7 @@ assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{qrSize\}[\s\
 assert.match(stationIdentitySource, /preferredColorScheme="light"\s+contentShape="rect" onTapGesture=\{onClose\}/);
 assert.doesNotMatch(stationIdentitySource, /title="关闭" systemImage="xmark"/);
 assert.match(stationIdentitySource, /header=\{detailTitle\("取件人"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}[\s\S]*?header=\{detailTitle\("身份码编号"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}/);
-assert.match(stationIdentitySource, /style: "tertiarySystemFill", shape: "capsule"/);
+assert.match(stationIdentitySource, /\{\.\.\.tabCapsuleSurface\(true\)\}>复制<\/Text>/);
 assert.doesNotMatch(stationIdentitySource, /presentPlatformLogin|授权拼多多|登录淘宝/,
   "the identity page does not present an account setup form");
 assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{184\} \/>/,

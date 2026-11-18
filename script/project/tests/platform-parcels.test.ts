@@ -15,7 +15,8 @@ import { identityCodeFromResponse, fetchStationIdentity, openProviderController,
 import { cainiaoHandoffs, cainiaoRecipientParcels, displayDeliveryEstimate, pddParcelAppURL, pddParcelDetailPath,
   pddPickupParcels } from "../services/platform-parcel-data";
 import { cabinetParcels, type CabinetParcel } from "../services/fengchao-account";
-import { displayedPlatformFields, enrichPlatformParcel, matchPlatformParcel } from "../services/platform-parcel-merge";
+import { cloudPddParcelAppURL, displayedPlatformFields, enrichPlatformParcel, matchPlatformParcel } from "../services/platform-parcel-merge";
+import { parseCloudParcelDetails } from "../services/cloud-parcel-metadata";
 import { activePickupCards, parcelActivityContent, shipmentForPickupTarget } from "../services/parcel-pickup";
 import { registerProjectionViewportHost } from "../services/projection-viewport";
 import { clearDiagnostics, readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
@@ -65,6 +66,23 @@ function shipment(overrides: Partial<Shipment> = {}): Shipment {
     updatedAtMs: NOW - 10_000, ...overrides,
   };
 }
+
+test("a cloud PDD link can open a matched parcel with complete local display fields and no PDD session", () => {
+  const pddLink = { waybill, anchorAt: NOW - 10_000, terminalAt: 0, shippingId: "73000919", observedAt: NOW - 2_000 };
+  const parsed = parseCloudParcelDetails({ ok: true, metadata: null, pddLink }, waybill, NOW);
+  assert.equal(parsed?.metadata, undefined);
+  assert.equal(cloudPddParcelAppURL(shipment(), parsed?.pddLink, NOW),
+    "https://m.pinduoduo.net" + pddParcelDetailPath("73000919", waybill));
+  const reused = { ...pddLink, anchorAt: NOW - 3 * 86_400_000, terminalAt: NOW - 2 * 86_400_000 };
+  assert.equal(cloudPddParcelAppURL(shipment(), reused, NOW), "");
+  assert.equal(cloudPddParcelAppURL(shipment(), { ...pddLink, waybill: "SYNTHETIC456" }, NOW), "");
+  for (const shippingId of ["", 73000919, "73000919&next=2"]) {
+    const metadata = { waybill, anchorAt: NOW - 10_000, productName: "Synthetic item" };
+    const validTitle = parseCloudParcelDetails({ ok: true, metadata, pddLink: { ...pddLink, shippingId } }, waybill, NOW);
+    assert.equal(validTitle?.pddLink, undefined);
+    assert.equal(validTitle?.metadata?.productName, "Synthetic item");
+  }
+});
 
 let generation = 0;
 Object.assign(globalThis, { UUID: { string: () => "generation-" + ++generation } });
@@ -365,6 +383,45 @@ test("old PDD identity response after logout cannot create an active code or cle
     assert.notEqual(platformSession("pinduoduo")?.generation, first.generation);
     assert.equal(currentPlatformSession("pinduoduo", first.generation), null);
   } finally { globalThis.fetch = realFetch; }
+});
+
+test("Cainiao outbound mode uses its own grant and code without changing the Taobao binding", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  memory.clear();
+  const cookie = { ...sessionCookie, name: "cookie2", domain: ".taobao.com", value: "synthetic-taobao-session" };
+  savePlatformLogin("cainiao", "", { kind: "web", cookies: [cookie] }, "synthetic-account");
+  const session = platformSession("cainiao")!;
+  const previousCrypto = globalThis.Crypto;
+  const calls: string[] = [];
+  let granted = false;
+  const code = "CS00000000000000002A";
+  t.mock.method(globalThis, "fetch", async (input: string) => {
+    const url = new URL(input);
+    const api = url.searchParams.get("api")!;
+    calls.push(api);
+    const data = JSON.parse(url.searchParams.get("data")!);
+    if (api === "mtop.cainiao.cnts.lightapp.agreement.query") {
+      assert.equal(url.searchParams.get("v"), "1.1");
+      assert.deepEqual(data, { appSource: "GUOGUO", codes: '["IdentityID_Light"]' });
+      return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { model: granted ? [{}] : [] } }));
+    }
+    assert.equal(api, "mtop.cainiao.nbpickup.identity.code.mini.app");
+    assert.deepEqual(data, { appName: "TAOBAO", positionName: "TAOBAO_GUOGUO" });
+    return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { model: { identityCode: code, expireTime: 240 } } }));
+  });
+  try {
+    Object.assign(globalThis, { Crypto: { ...previousCrypto,
+      md5: (data: string) => ({ toHexString: () => createHash("md5").update(data).digest("hex") }),
+    } });
+    await assert.rejects(fetchStationIdentity("cainiao", session, undefined, true), /agreement/);
+    assert.deepEqual(calls, ["mtop.cainiao.cnts.lightapp.agreement.query"]);
+    granted = true;
+    assert.deepEqual(await fetchStationIdentity("cainiao", session, undefined, true),
+      { value: code, expiresAtMs: NOW + 240_000 });
+    assert.equal(platformSession("cainiao")?.generation, session.generation);
+  } finally {
+    Object.assign(globalThis, { Crypto: previousCrypto });
+  }
 });
 
 test("the station identity entry switches to the provider app only when the binding is unavailable", async (t) => {

@@ -9,13 +9,19 @@ import {
   ZStack,
 } from "scripting";
 import { CompleteParcelActivityIntent } from "./app_intents";
-import { ParcelLiveActivityCard, parcelActivityImage } from "./components/ParcelLiveActivityCard";
+import { PIPI_CARD, ParcelLiveActivityCard, parcelActivityImage } from "./components/ParcelLiveActivityCard";
 import { iconTileShape } from "./components/icon-tile";
 import { PARCEL_ACTIVITY_NAME, type ParcelActivityState } from "./services/parcel-activity-action";
 import { parcelPickupShortCode } from "./services/parcel-pickup";
 import { parcelCardArtwork, parcelCardPalette } from "./services/parcel-card-appearance";
 
 export const PARCEL_ACTIVITY_ART = "pipi-deliveries/parcel-activity-art-v1";
+
+const expandedIslandAppearance = {
+  dynamicIslandContentMargins: {
+    expanded: { top: 0, leading: PIPI_CARD.edge, trailing: PIPI_CARD.edge, bottom: PIPI_CARD.edge },
+  },
+};
 
 export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
   PARCEL_ACTIVITY_NAME,
@@ -49,6 +55,7 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
     };
     return (
       <LiveActivityUI
+        {...expandedIslandAppearance}
         content={<ParcelLiveActivityCard {...cardProps} width={width} lockScreen />}
         compactLeading={<HStack widgetURL={url}>{glyph}</HStack>}
         compactTrailing={(

@@ -27,7 +27,7 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /visibleFilters\.length > 1 \? \([\s\S]*?<List[\s\S]*?refreshable=\{refresh\}[\s\S]*?frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}[\s\S]*?overlay=\{!shipments\.length \? \{\s*alignment: "center",\s*content: \(\s*<EmptyDeliveryStateGroup\s+vehicleSize=\{81\.6\}\s+spacing=\{6\}\s+labelFont=\{24\}\s+deferArtwork\s*\/>\s*\),\s*\} : undefined\}/,
+  /visibleFilters\.length > 1 \? \([\s\S]*?<List[\s\S]*?refreshable=\{refresh\}[\s\S]*?overlay=\{\{[\s\S]*?\{!shipments\.length \? \(\s*<VStack frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\} allowsHitTesting=\{false\}>\s*<EmptyDeliveryStateGroup vehicleSize=\{81\.6\} spacing=\{6\} labelFont=\{24\} deferArtwork \/>/,
   "the 1.2x home vehicle group must be centered in the flexible body below the segmented filter",
 );
 assert.equal((homeSource.match(/refreshable=\{refresh\}/g) ?? []).length, 1,
@@ -51,9 +51,18 @@ const next = refresh();
 assert.equal(beginCount, 2, "a new gesture still starts another pull");
 finishPull();
 await next;
-assert.match(homeSource, /navigationBarVisibility="hidden"[\s\S]*?<RootPageHeader title="快递" action=\{\(\) => dismiss\(\)\}/,
-  "the Home title and exit are in the tab header above the list");
-assert.match(homeSource, /overlay=\{\{\s*alignment: "bottomTrailing",\s*content: \(\s*<VStack padding=\{TAB_FAB_PADDING\}>\s*<TabFloatingActionButton title="查询"/);
+assert.match(homeSource, /<NavigationStack>\s*<List key="shipments"[^>]*rootPageNavigation\("快递", \(\) => dismiss\(\), headerCollapsed, "systemBackground"\)/,
+  "the Home navigation bar follows the same List that owns scrolling and refresh");
+assert.match(homeSource, /<ScrollingRootTitle title="快递" onCollapsed=\{setHeaderCollapsed\}/,
+  "the actual scrolling title drives the compact toolbar");
+assert.match(homeSource, /safeAreaInset=\{headerCollapsed && showListAccessories \? \{ top: \{ spacing: 0, content: listAccessories \} \} : undefined\}/,
+  "collapsed accessories appear immediately under the compact navigation title");
+assert.match(homeSource, /\{!headerCollapsed \? <VStack padding=\{TAB_FAB_PADDING\}>\s*<TabFloatingActionButton title="查询"/);
+const nativeHeader = await readFile(resolve(projectDir, "components/RootPageHeader.tsx"), "utf8");
+assert.match(nativeHeader, /width: ROOT_TITLE_CAPSULE_WIDTH, height: NAVIGATION_CONTROL_HEIGHT/);
+assert.match(nativeHeader, /width: NAVIGATION_CONTROL_HEIGHT, height: NAVIGATION_CONTROL_HEIGHT/);
+assert.match(nativeHeader, /visibility: collapsed \? "hidden"/,
+  "the compact glass title can sample the content behind it");
 assert.match(homeSource, /contentMargins=\{\{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" \}\}/);
 const appSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
 assert.match(appSource, /subscribeRefreshState\(applyState\)[\s\S]*?refreshAllShipments\(\)[\s\S]*?\}, \[hasState\]\);/,
@@ -62,7 +71,7 @@ assert.doesNotMatch(homeSource, /\brefreshAllShipments\(\)/,
   "reopening the list never starts another launch refresh");
 assert.match(homeSource, /<Section listSectionSeparator=\{\{ visibility: "hidden", edges: "top" \}\}>/,
   "the first row has no section separator under any filter");
-assert.doesNotMatch(homeSource, /placement="title"|systemName="chevron\.left"/,
+assert.doesNotMatch(homeSource, /<RootPageHeader|systemName="chevron\.left"/,
   "the Home root has no second title or back button");
 assert.doesNotMatch(
   homeSource,
@@ -121,39 +130,30 @@ assert.match(searchSheet, /autoFocusSearch=\{props\.autoFocusSearch\}/,
   "only the existing focus and shortcut entry points should open the keyboard automatically");
 assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(selected\)/,
   "the main navigation destination presents shipment details");
-const filterBar = homeSource.match(/visibleFilters\.length > 1 \? \(([\s\S]*?)\) : null\}/)?.[1] ?? "";
-assert.match(filterBar, /<Capsule\b[^>]*stroke=/);
-assert.match(filterBar, /<Capsule\b[^>]*frame=\{\{ height: 32 \}\}/,
-  "the visible filter track is 32 points tall");
-assert.match(filterBar, /<VStack\b[^>]*minHeight: 44[^>]*contentShape="rect"/,
-  "the compact track retains a 44-point button hit target");
-assert.match(filterBar, /<Button key=\{key\}[\s\S]*?selectFilter\(key\)/);
-assert.match(filterBar,
-  /<Capsule fill="thinMaterial"[^>]*frame=\{\{ height: 32 \}\}[^>]*allowsHitTesting=\{false\}/,
-  "the fixed track does not intercept taps");
-assert.doesNotMatch(homeSource, /filterTrackWidth|setFilterTrackWidth/,
-  "selection never depends on a sampled track width that can stay at its placeholder size");
-assert.match(filterBar, /<NamespaceReader>\s*\{\(namespace\) =>/);
-assert.match(filterBar, /background=\{selected \? \(\s*<Capsule fill="secondarySystemFill"[^>]*frame=\{\{ height: 26 \}\}[^>]*matchedGeometryEffect=\{\{ id: "filter-selection", namespace \}\}/,
-  "the indicator fills the selected segment and moves using the same native geometry ID");
-assert.equal((filterBar.match(/fill="secondarySystemFill"/g) ?? []).length, 1);
-assert.match(filterBar, /<HStack spacing=\{0\} padding=\{\{ horizontal: FILTER_SEGMENT_INSET \}\}/,
-  "the button row and the selection share the same end inset");
+const compactFilters = homeSource.match(/\{visibleFilters\.length > 1 && headerCollapsed \? \(([\s\S]*?)\) : visibleFilters/)?.[1] ?? "";
+assert.match(compactFilters, /<VStack spacing=\{4\}[\s\S]*?visibleFilters\.map[\s\S]*?frame=\{\{ width: ROOT_TITLE_CAPSULE_WIDTH, minHeight: 36 \}\}/,
+  "each compact filter is stacked at the same width as the title");
+assert.match(compactFilters, /\{\.\.\.tabCapsuleSurface\(true\)\}/);
+const filterBar = homeSource.match(/: visibleFilters\.length > 1 \? \(([\s\S]*?)\) : null\}/)?.[1] ?? "";
+assert.match(filterBar, /<Picker title="筛选" value=\{filter\} onChanged=\{selectFilter\} pickerStyle="segmented"/,
+  "the platform segmented control owns the selection animation");
+assert.match(filterBar, /<Text key=\{key\} tag=\{key\} font=\{14\} monospacedDigit\s+contentTransition="numericText"\s+animation=\{\{ animation: Animation\.snappy\(\{ duration: 0\.32 \}\), value: groups\[key\]\.length \}\}>\s*\{\x60\$\{shipmentFilters\[key\]\} \$\{groups\[key\]\.length\}\x60\}/,
+  "stable option tags retain the filter when its numeric label changes");
+assert.doesNotMatch(filterBar, /GeometryReader|matchedGeometryEffect|<Capsule|<Button/,
+  "no custom selection indicator competes with the native one");
 const selectFilter = homeSource.match(/^  function selectFilter\([\s\S]*?^  \}/m)?.[0];
 assert.ok(selectFilter);
 const filterUpdates: string[] = [];
-const select = new Function("filter", "filterSelection", "Animation", "withAnimation",
+const select = new Function("filter", "filterSelection", "visibleFilters",
   stripTypeScriptTypes(selectFilter) + "\nreturn selectFilter;")(
     "all", { setValue: (key: string) => filterUpdates.push(key) },
-    { snappy: () => "spring" },
-    (animation: string, update: () => void) => { filterUpdates.push(animation); update(); },
+    ["all", "transit"],
   );
 select("all");
+select("pickup");
 select("transit");
-assert.deepEqual(filterUpdates, ["spring", "transit"],
-  "tapping another filter updates its observable inside a native animation transaction");
-assert.match(filterBar, /<Text[^>]*background=\{\{ style: "systemFill", shape: "capsule" \}\}[^>]*>\s*\{groups\[key\]\.length\}/,
-  "each segment shows its count inside a separate capsule");
+assert.deepEqual(filterUpdates, ["transit"],
+  "the picker updates the selection only when choosing a different visible segment");
 assert.match(homeSource, /key === "all" \|\| groups\[key\]\.length > 0/);
 assert.match(homeSource, /visibleFilters\.includes\(selectedFilter\) \? selectedFilter : "all"/);
 

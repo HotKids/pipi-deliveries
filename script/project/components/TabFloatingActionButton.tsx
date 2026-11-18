@@ -5,6 +5,14 @@ const INSET = 20;
 export const TAB_FAB_PADDING = { trailing: INSET, bottom: INSET };
 export const TAB_FAB_SCROLL_INSET = TAB_FAB_DIAMETER + INSET;
 
+export function tabCapsuleSurface(interactive = false) {
+  if (Number.parseInt(Device.systemVersion, 10) >= 26) {
+    return { glassEffect: { glass: UIGlass.regular().interactive(interactive),
+      shape: { type: "capsule", style: "continuous" } } } as const;
+  }
+  return { background: { style: "thinMaterial", shape: "capsule" } } as const;
+}
+
 export function TabFloatingActionButton({ title, symbol, action }: {
   title: string;
   symbol: string;

@@ -114,7 +114,7 @@ assert.equal(
   false,
   "the detail track provider must not own status coloring",
 );
-assert.ok(detailPage.includes("下拉刷新物流轨迹。"));
+assert.ok(detailPage.includes("轨迹不完整时，可尝试下拉刷新。"));
 assert.match(
   detailPage,
   /useState\([\s\S]*?props\.refreshOnAppear === "manual_submit"[\s\S]*?loadingManualDetail[\s\S]*?完整轨迹加载中/,

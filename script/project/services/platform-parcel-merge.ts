@@ -4,7 +4,7 @@ import { shipmentLifecycleKey } from "./shipment-lifecycle";
 import { displayWaybill, unprojectedAccountOrder } from "./shipment-policy";
 import { normalizeWaybill, shipmentPresentationStatus } from "./status";
 import { matchesParcelMetadataLifecycle } from "./waybill-reuse";
-import { displayDeliveryEstimate, type PlatformParcel } from "./platform-parcel-data";
+import { displayDeliveryEstimate, pddParcelUniversalURL, type PlatformParcel } from "./platform-parcel-data";
 
 export function eligiblePickup(shipment: Shipment): boolean {
   return !shipment.forcedCompletedAtMs && !shipment.identity.sender &&
@@ -82,6 +82,17 @@ export type CloudParcelMetadata = Readonly<{
   deliveryEstimate?: string;
   deliveryEstimateObservedAt?: number;
 }>;
+
+export type CloudParcelPddLink = Pick<CloudParcelMetadata, "waybill" | "anchorAt" | "terminalAt"> & Readonly<{
+  shippingId: string;
+}>;
+
+export function cloudPddParcelAppURL(shipment: Shipment, link: CloudParcelPddLink | undefined, now = Date.now()): string {
+  if (!link || unprojectedAccountOrder(shipment)) return "";
+  const waybill = normalizeWaybill(displayWaybill(shipment));
+  if (link.waybill !== waybill || !matchesParcelMetadataLifecycle(shipment, link.anchorAt, link.terminalAt ?? 0, now)) return "";
+  return pddParcelUniversalURL(link.shippingId, waybill);
+}
 
 export function displayedPlatformFields(shipment: Shipment, now = Date.now(), cloud?: CloudParcelMetadata) {
   const saved = shipment.platformFields && sameFields(shipment, shipment.platformFields) ? shipment.platformFields : undefined;

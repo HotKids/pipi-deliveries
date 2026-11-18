@@ -17,6 +17,9 @@ export const IDENTITY_APP_URL = {
   cainiao: "taobao://m.taobao.com/tbopen/index.html?h5Url=" + encodeURIComponent(IDENTITY_WEB_URL.cainiao),
   pinduoduo: "pinduoduo://com.xunmeng.pinduoduo/mdkd/package?tab=ID_CODE&entry_source=11",
 } as const;
+const CAINIAO_OUTBOUND_PAGE = "https://page.cainiao.com/cn-app-web/identity-code/index.html";
+export const CAINIAO_OUTBOUND_WEB_URL = CAINIAO_OUTBOUND_PAGE + "#/?bizEntry=TAOBAO_GUOGUO";
+export const CAINIAO_OUTBOUND_APP_URL = "guoguo://go/station_code";
 
 export function stationIdentityDestination(platform: IdentityPlatform): { kind: "local" } | { kind: "app"; url: string } {
   if (accountStatus(platform).state === "active") return { kind: "local" };
@@ -28,6 +31,8 @@ const CAINIAO_COUNT = "mtop.cainiao.lpc.packageservice.user.package.count.query"
 const TAOBAO_PROFILE = "mtop.taobao.reborn.mclaren.h5";
 const TAOBAO_PROFILE_PAGE = "https://main.m.taobao.com/mytaobao/index.html";
 const TAOBAO_IDENTITY_API = "mtop.cainiao.pickup.identity.getIdentityMessage";
+const CAINIAO_OUTBOUND_AGREEMENT = "mtop.cainiao.cnts.lightapp.agreement.query";
+const CAINIAO_OUTBOUND_CODE = "mtop.cainiao.nbpickup.identity.code.mini.app";
 const TAOBAO_H5_PAGE = "https://h5.m.taobao.com/";
 const CAINIAO_SENDER_LIST = "mtop.cainiao.tdtradeplatform.order.queryUncompletedOrder";
 const CAINIAO_SENDER_DETAIL = "mtop.cainiao.tdtradeplatform.order.queryOrderDetail";
@@ -51,7 +56,7 @@ const MOBILE_WEB_USER_AGENT = "Mozilla/5.0 (Linux; Android 15; Mobile) AppleWebK
 const pddVerifyUntil = new Map<string, number>();
 
 export class PlatformWireError extends Error {
-  constructor(readonly reason: "expired" | "verification" | "unavailable" | "changed") {
+  constructor(readonly reason: "expired" | "verification" | "unavailable" | "changed" | "agreement") {
     super("Parcel provider " + reason);
     this.name = "PlatformWireError";
   }
@@ -175,17 +180,19 @@ function mergeMtopCookies(cookies: readonly PlatformCookie[], incoming: readonly
 }
 
 async function mtopOnce(api: string, data: string, cookies: readonly PlatformCookie[], signal?: AbortSignal) {
-  const endpoint = MTOP + "/h5/" + api.toLowerCase() + "/1.0/";
+  const version = api === CAINIAO_OUTBOUND_AGREEMENT ? "1.1" : "1.0";
+  const endpoint = MTOP + "/h5/" + api.toLowerCase() + "/" + version + "/";
   const attached = cookiesForURL(cookies, endpoint);
   const token = cookieValue(attached, "_m_h5_tk").split("_")[0];
   const now = String(Date.now());
   const sign = Crypto.md5(utf8Data([token, now, MTOP_APP_KEY, data].join("&"))).toHexString().toLowerCase();
   const query = Object.entries({
-    jsv: "2.7.4", appKey: MTOP_APP_KEY, t: now, sign, api, v: "1.0",
+    jsv: "2.7.4", appKey: MTOP_APP_KEY, t: now, sign, api, v: version,
     type: "originaljson", dataType: "json", data,
   }).map(([key, value]) => key + "=" + encodeURIComponent(value)).join("&");
   const referer = api === TAOBAO_PROFILE ? TAOBAO_PROFILE_PAGE :
-    isCainiaoSenderApi(api) ? CAINIAO_SENDER_PAGE : TAOBAO_H5_PAGE;
+    isCainiaoSenderApi(api) ? CAINIAO_SENDER_PAGE :
+    isCainiaoOutboundApi(api) ? CAINIAO_OUTBOUND_PAGE : TAOBAO_H5_PAGE;
   const response = await providerRequest(endpoint + "?" + query, {
     Cookie: cookieHeader(attached), Referer: referer,
     Accept: "application/json",
@@ -245,6 +252,10 @@ function isCainiaoSenderApi(api: string): boolean {
   return api === CAINIAO_SENDER_LIST || api === CAINIAO_SENDER_DETAIL;
 }
 
+function isCainiaoOutboundApi(api: string): boolean {
+  return api === CAINIAO_OUTBOUND_AGREEMENT || api === CAINIAO_OUTBOUND_CODE;
+}
+
 export async function readCainiao(session: PlatformSession, api: string, params: JsonObject, signal?: AbortSignal): Promise<JsonObject> {
   if (signal?.aborted) throw new PlatformWireError("changed");
   const generation = session.generation;
@@ -255,6 +266,7 @@ export async function readCainiao(session: PlatformSession, api: string, params:
   const result = await mtop(api, params, before, current, signal);
   if (signal?.aborted || !currentPlatformSession("cainiao", generation)) throw new PlatformWireError("changed");
   if (/SESSION_EXPIRED|USER_NOT_LOGIN|NOT_LOGIN|NEED_LOGIN/.test(result.ret)) {
+    if (isCainiaoOutboundApi(api)) throw new PlatformWireError("unavailable");
     if (isCainiaoSenderApi(api)) {
       await readCainiao(session, CAINIAO_COUNT, { appName: "GUOGUO" }, signal);
       throw new PlatformWireError("unavailable");
@@ -411,9 +423,25 @@ export function identityCodeFromResponse(
 }
 
 export async function fetchStationIdentity(platform: IdentityPlatform, session: PlatformSession,
-  signal?: AbortSignal): Promise<StationIdentityCode> {
+  signal?: AbortSignal, cainiaoOutbound = false): Promise<StationIdentityCode> {
   let stage = "station_identity_request";
   try {
+    if (platform === "cainiao" && cainiaoOutbound) {
+      const agreement = await readCainiao(session, CAINIAO_OUTBOUND_AGREEMENT, {
+        appSource: "GUOGUO", codes: JSON.stringify(["IdentityID_Light"]),
+      }, signal);
+      if (!Array.isArray(agreement.model) || !agreement.model.length) throw new PlatformWireError("agreement");
+      const result = await readCainiao(session, CAINIAO_OUTBOUND_CODE, {
+        appName: "TAOBAO", positionName: "TAOBAO_GUOGUO",
+      }, signal);
+      stage = "station_identity_response";
+      const { identityCode, expireTime } = asPlainObject(result.model);
+      const lifetime = Number(cleanScalarText(expireTime)) * 1_000;
+      const now = Date.now();
+      if (!validStationCode(identityCode) || !Number.isSafeInteger(lifetime) || lifetime <= 0 ||
+          !Number.isSafeInteger(now + lifetime)) throw new PlatformWireError("unavailable");
+      return { value: identityCode, expiresAtMs: now + lifetime };
+    }
     const result = platform === "cainiao"
       ? await readCainiao(session, TAOBAO_IDENTITY_API, {}, signal)
       : await readPdd(session, "/api/express_trackbox/generate_identification_code", { entry_source: "APP" }, true, signal);
