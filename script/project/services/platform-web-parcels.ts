@@ -81,15 +81,28 @@ const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
 
 function readJdParcel(order: string) {
   return JD_ACCOUNT_PAGE_CHECK + String.raw`
-    if (location.origin !== 'https://trade.m.jd.com' ||
-      location.pathname !== '/order/deal_wuliu_jdm.shtml' ||
-      new URLSearchParams(location.search).get('dealId') !== ` + JSON.stringify(order) + String.raw`) return null;
+    if (location.origin !== 'https://trade.m.jd.com' || location.pathname !== '/order/deal_wuliu_jdm.shtml') return null;
+    const orderIds = new URLSearchParams(location.search).getAll('dealId');
+    if (orderIds.length !== 1 || orderIds[0] !== ` + JSON.stringify(order) + String.raw`) return null;
     const text = (document.body?.innerText || '').split('可能您还想要')[0];
-    const numbers = new Set(Array.from(text.matchAll(/(?:运单号|快递单号|物流单号)\s*[:：]?\s*([A-Za-z0-9-]{8,})/g), item => item[1]));
-    const title = text.match(/我要催单\s*([\s\S]{4,160}?)\s*(?:\d+\s*件|国内承运人|承运人|运单号|$)/);
+    const summary = document.querySelector('[class*="Summary-module__m___"]');
+    const copies = summary?.querySelectorAll('[class*="Summary-module__copy___"][data-copy-cont]') || [];
+    const waybills = new Set(Array.from(copies, node => (node.getAttribute('data-copy-cont') || '').trim())
+      .filter(value => /^[A-Za-z0-9-]{8,}$/.test(value)));
+    const structured = waybills.size > 0;
+    if (!structured) {
+      for (const item of text.matchAll(/(?:运单号|快递单号|物流单号)\s*[:：]?\s*([A-Za-z0-9-]{8,})/g)) {
+        waybills.add(item[1]);
+      }
+    }
+    const titles = new Set(Array.from(
+      summary?.querySelectorAll('[class*="Summary-module__single___"] [class*="Summary-module__text___"]') || [],
+      node => (node.textContent || '').trim()).filter(Boolean));
+    const title = structured ? (titles.size === 1 ? [...titles][0] : '')
+      : (text.match(/我要催单\s*([\s\S]{4,160}?)\s*(?:\d+\s*件|国内承运人|承运人|运单号|$)/)?.[1] || '').trim();
     const codes = new Set(Array.from(text.matchAll(/(?:取件码|提货码|取货码|凭码|自提码)[:：\s]*([A-Za-z0-9-]{3,12})(?![A-Za-z0-9-])/g), item => item[1]));
-    return numbers.size === 1 && (title || codes.size === 1) ?
-      { waybill: [...numbers][0], title: title ? title[1].trim() : '', code: codes.size === 1 ? [...codes][0] : '' } : null;
+    return waybills.size === 1 && (structured || title || codes.size === 1) ?
+      { waybill: [...waybills][0], title, code: codes.size === 1 ? [...codes][0] : '' } : null;
   `;
 }
 

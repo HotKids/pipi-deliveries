@@ -1,4 +1,4 @@
-import { Button, HStack, Image, Script, Spacer, Text, VStack } from "scripting";
+import { Button, HStack, Spacer, Text, VStack } from "scripting";
 import type { Shipment } from "../models";
 import {
   shipmentPresentationStatus,
@@ -15,7 +15,7 @@ import {
 } from "../services/shipment-policy";
 import { formatListTime } from "../services/time-presentation";
 import { CourierIcon } from "./CourierIcon";
-import { carrierDisplayName, listedShipmentSourceArt } from "../services/carrier-presentation";
+import { carrierDisplayName } from "../services/carrier-presentation";
 import { SenderBadge } from "./SenderBadge";
 
 /**
@@ -37,7 +37,6 @@ export function ShipmentRow(props: {
   completeDisabled?: boolean;
 }) {
   const item = props.shipment;
-  const sourceArt = listedShipmentSourceArt(item.identity, Boolean(item.pddImport));
   const presentationStatus = shipmentPresentationStatus(item);
   const eventTime = formatListTime(item.timeline.latestTimeText);
   const firstTrack = timedTracks(item.timeline.tracks)[0];
@@ -114,10 +113,6 @@ export function ShipmentRow(props: {
           <Text font={14} foregroundStyle="secondaryLabel" monospacedDigit>
             {waybillSuffix(displayWaybill(item))}
           </Text>
-          {sourceArt ? (
-            <Image filePath={`${Script.directory}/assets/${sourceArt}.png`}
-              resizable scaleToFit frame={{ width: 14, height: 14 }} />
-          ) : null}
           <Spacer />
         </HStack>
         <Text font={14} foregroundStyle="secondaryLabel" lineLimit={2}>

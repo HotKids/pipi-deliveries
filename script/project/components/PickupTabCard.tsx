@@ -185,7 +185,12 @@ export function PickupTabCard(props: {
               frame={{ maxWidth: "infinity", alignment: "trailing" }}>
               <HStack spacing={5} padding={{ horizontal: 9 }} frame={{ minHeight: 35 }}
                 fixedSize={{ horizontal: true, vertical: false }} background={{ style: "rgba(255,255,255,0.15)", shape: "capsule" }}>
-                <Image systemName="shippingbox.fill" font={13} foregroundStyle="white" />
+                {handoff || props.actionLabel ? (
+                  <Image systemName="shippingbox.fill" font={13} foregroundStyle="white" />
+                ) : (
+                  <Image filePath={`${Script.directory}/assets/parcel-activity/hand-package.png`}
+                    renderingMode="original" resizable scaleToFit frame={{ width: 19, height: 19 }} />
+                )}
                 <Text font={13} foregroundStyle="white">{props.actionLabel || (handoff ? "我已寄件" : "我已取件")}</Text>
               </HStack>
             </Button>

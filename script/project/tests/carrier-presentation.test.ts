@@ -3,18 +3,8 @@ import {
   builtInCarrierPresentation,
   courierHotline,
   courierIconName,
-  listedShipmentSourceArt,
   projectedCarrierPresentation,
 } from "../services/carrier-presentation";
-
-for (const [sourceProvider, asset] of [
-  ["CaiNiao", "sources/cainiao"], ["JingDong", "couriers/jdshopping"], ["ShunFeng", "sources/sfexpress"],
-  ["kuaidi100", "sources/kuaidi100"], ["pdd", "platform-accounts/pinduoduo"], ["kdniao", undefined],
-] as const) {
-  assert.equal(listedShipmentSourceArt({ sourceProvider }, false), asset);
-}
-assert.equal(listedShipmentSourceArt({ manuallyAdded: true }, false), "sources/kuaidi100");
-assert.equal(listedShipmentSourceArt({ manuallyAdded: true }, true), "platform-accounts/pinduoduo");
 
 assert.equal(courierIconName("SF", ""), "sf");
 assert.equal(courierIconName("shunfeng", ""), "sf");

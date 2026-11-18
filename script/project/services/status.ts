@@ -1820,6 +1820,24 @@ export function terminalEvidenceAtMs(shipment: Shipment, now = Date.now()): numb
   return validLifecycleTime(timeline.statusEventAtMs, now);
 }
 
+export function shipmentDetailSigningAtMs(shipment: Shipment, detail: TimelinePackage, now: number): number {
+  if (shipmentDetailPresentationStatus(shipment, detail).semantic !== "COMPLETED" ||
+      (shipment.identity.accountOrder && !normalizedProjectedWaybill(shipment.identity))) return 0;
+
+  const trackTime = validLifecycleTime(earliestSignedAtMs(detail.tracks, 0), now)
+    || validLifecycleTime(earliestSignedAtMs(shipment.timeline.tracks, 0), now);
+  if (trackTime) return trackTime;
+
+  for (const timeline of [shipment.timeline, detail]) {
+    if (timeline.semantic === "COMPLETED" && timeline.structuredStatus === true &&
+        timelineNormalizedStatus(timeline)?.scope !== "ORDER") {
+      const eventAt = validLifecycleTime(timeline.statusEventAtMs, now);
+      if (eventAt) return eventAt;
+    }
+  }
+  return validLifecycleTime(shipment.forcedCompletedAtMs, now);
+}
+
 function signedAt(shipment: Shipment, now: number): number {
   return validLifecycleTime(shipment.settledAtMs, now) || terminalEvidenceAtMs(shipment, now);
 }

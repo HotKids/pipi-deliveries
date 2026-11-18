@@ -10,13 +10,15 @@ import {
   accountStatus, clearPlatformLogin, currentPlatformSession, notePlatformSync, platformAccountSubtitle, platformSession, savePlatformLogin,
   trustedPlatformPage,
 } from "../services/platform-accounts";
-import { identityCodeFromResponse, fetchStationIdentity, openProviderController, retainJdLoginView } from "../services/platform-wire";
+import { identityCodeFromResponse, fetchStationIdentity, openProviderController, readCainiaoSenderAppointments,
+  retainJdLoginView } from "../services/platform-wire";
 import { cainiaoHandoffs, cainiaoRecipientParcels, displayDeliveryEstimate, pddPickupParcels } from "../services/platform-parcel-data";
 import { cabinetParcels, type CabinetParcel } from "../services/fengchao-account";
 import { displayedPlatformFields, enrichPlatformParcel, matchPlatformParcel } from "../services/platform-parcel-merge";
 import { activePickupCards, parcelActivityContent, shipmentForPickupTarget } from "../services/parcel-pickup";
 import { registerProjectionViewportHost } from "../services/projection-viewport";
 import { clearDiagnostics, readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
+import { fetchJdParcels } from "../services/platform-web-parcels";
 
 const {
   completeCurrentParcelCard, emptyState, loadState, savePlatformParcelData, saveRecognizedParcelCode, saveState,
@@ -58,21 +60,24 @@ const sessionCookie = {
   path: "/", isSecure: true, isHTTPOnly: true, isSessionOnly: true,
 };
 
-test("the account subtitle keeps a nickname or masked label and the local sync date and time", () => {
+test("the account subtitle keeps the nickname or masked label and only dates earlier syncs", (t) => {
   memory.clear();
-  const syncedAt = new Date(2026, 10, 17, 9, 7).getTime();
+  t.mock.method(Date, "now", () => new Date(2026, 10, 18, 0, 8).getTime());
+  const syncedAt = new Date(2026, 10, 18, 0, 7).getTime();
   const credentials = { kind: "web", cookies: [sessionCookie] } as const;
   savePlatformLogin("pinduoduo", "", credentials, "synthetic-account-0123", "示例昵称");
   const pdd = accountStatus("pinduoduo");
   assert.equal(platformAccountSubtitle(pdd), "示例昵称 · 尚未同步");
   notePlatformSync("pinduoduo", pdd.generation, syncedAt);
-  assert.equal(platformAccountSubtitle(accountStatus("pinduoduo")), "示例昵称 · 11-17 09:07");
+  assert.equal(platformAccountSubtitle(accountStatus("pinduoduo")), "示例昵称 · 00:07");
   clearPlatformLogin("pinduoduo", pdd.generation, true);
   assert.equal(platformAccountSubtitle(accountStatus("pinduoduo")), "示例昵称 · 请重新登录");
   savePlatformLogin("cainiao", "", credentials, "synthetic-account-4321");
   const cainiao = accountStatus("cainiao");
-  notePlatformSync("cainiao", cainiao.generation, syncedAt);
-  assert.equal(platformAccountSubtitle(accountStatus("cainiao")), "账号 ****4321 · 11-17 09:07");
+  notePlatformSync("cainiao", cainiao.generation, new Date(2026, 10, 17, 23, 59).getTime());
+  assert.equal(platformAccountSubtitle(accountStatus("cainiao")), "syn****321 · 11-17 23:59");
+  assert.equal(platformAccountSubtitle({ ...cainiao, label: "账号 ****4321" }), "****4321 · 尚未同步");
+  assert.equal(platformAccountSubtitle(accountStatus("fengchao")), "尚未登录");
 });
 
 test("recipient field aliases, placeholder rejection and station address", () => {
@@ -316,9 +321,9 @@ test("Cainiao publishes the recipient sync time before a distinct sender failure
     if (api?.endsWith("queryPdsPackageDataList")) {
       return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { packages: [] } }));
     }
-    assert.ok(api?.endsWith("querySendPackageDataList"));
+    assert.ok(api?.endsWith("queryUncompletedOrder"));
     assert.ok(accountStatus("cainiao").syncedAtMs);
-    assert.match(platformAccountSubtitle(accountStatus("cainiao")), /^示例昵称 · \d\d-\d\d \d\d:\d\d$/);
+    assert.match(platformAccountSubtitle(accountStatus("cainiao")), /^示例昵称 · \d\d:\d\d$/);
     return new Response(JSON.stringify({ ret: ["FAIL_SYS_REQUEST_REJECTED"] }));
   }) as typeof fetch;
   try {
@@ -331,6 +336,49 @@ test("Cainiao publishes the recipient sync time before a distinct sender failure
     Object.assign(globalThis, { Crypto: originalCrypto });
     clearPlatformLogin("cainiao", accountStatus("cainiao").generation);
     setDiagnosticsEnabled(false);
+  }
+});
+
+test("Cainiao sender history reads only the matching waiting order detail", async (t) => {
+  memory.clear();
+  const cookie = { ...sessionCookie, name: "cookie2", value: "synthetic-sender-session", domain: ".taobao.com" };
+  savePlatformLogin("cainiao", "", { kind: "web", cookies: [cookie] }, "synthetic-sender-owner");
+  const session = platformSession("cainiao")!;
+  const originalCrypto = globalThis.Crypto;
+  Object.assign(globalThis, { Crypto: { ...originalCrypto,
+    md5: (value: string) => ({ toHexString: () => createHash("md5").update(value).digest("hex") }),
+  } });
+  const ids: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string) => {
+    const url = new URL(input);
+    const api = url.searchParams.get("api");
+    const request = JSON.parse(url.searchParams.get("data")!);
+    const wrap = (data: object) => new Response(JSON.stringify({ ret: ["SUCCESS"], data: { data } }));
+    if (api?.endsWith("queryUncompletedOrder")) {
+      assert.equal(request.pageNo, 0);
+      assert.equal(request.pageSize, 199);
+      return wrap({ orderBriefList: [
+        { orderId: "SYNTH-A", orderStatus: 30, carryoutStatus: 20 },
+        { orderId: "SYNTH-B", orderStatus: 100, carryoutStatus: 20 },
+      ] });
+    }
+    assert.ok(api?.endsWith("queryOrderDetail"));
+    ids.push(request.tdOrderId);
+    return wrap({ pickupCode: "5629", orderInfo: {
+      orderId: request.tdOrderId, orderStatus: 30, carryOutStatus: 20,
+      appointmentStart: NOW + 3_600_000, appointmentEnd: NOW + 7_200_000,
+    } });
+  });
+  try {
+    const result = await readCainiaoSenderAppointments(session);
+    const handoffs = cainiaoHandoffs(result, session.ownerKey, NOW);
+    assert.deepEqual(ids, ["SYNTH-A"]);
+    assert.equal(result.incomplete, false);
+    assert.equal(handoffs.length, 1);
+    assert.equal(handoffs[0].code, "5629");
+    assert.equal(handoffs[0].windowEndAtMs, NOW + 7_200_000);
+  } finally {
+    Object.assign(globalThis, { Crypto: originalCrypto });
   }
 });
 
@@ -419,6 +467,53 @@ for (const loadCompleted of [true, false]) {
     }
   });
 }
+
+test("JD reads a logistics summary with a past waybill also present in the page text", { timeout: 2_500 }, async () => {
+  memory.clear();
+  const cookie = { ...sessionCookie, name: "pt_key", value: "synthetic-jd-detail", domain: ".jd.com" };
+  savePlatformLogin("jingdong", "", { kind: "web", cookies: [cookie] }, "synthetic-jd-account");
+  const session = platformSession("jingdong")!;
+  const parcel = shipment();
+  parcel.identity = { ...parcel.identity, manuallyAdded: false, accountOrder: true,
+    sourceProvider: "jingdong", orderId: order, projectedWaybill: waybill };
+  const original = globalThis.WebViewController;
+  let page = new URL("about:blank");
+  const card = {
+    querySelector: (selector: string) => selector.includes("order_item") ? {} : null,
+    querySelectorAll: (selector: string) => selector.includes("order_state") ? [state]
+      : selector.includes("data-eparam") ? [{ getAttribute: () => JSON.stringify({ orderid: order }) }] : [],
+  };
+  const state = { parentElement: card, textContent: "待收货" };
+  const summary = { querySelectorAll: (selector: string) => selector.includes("data-copy-cont")
+    ? [{ getAttribute: () => waybill }] : [{ textContent: "示例详情商品" }] };
+  Object.assign(globalThis, { WebViewController: class {
+    cookies: Cookie[] = [];
+    async setCookie(value: Cookie) { this.cookies.push(value); return true; }
+    async getAllCookies() { return this.cookies; }
+    async loadURL(url: string) { page = new URL(url); return true; }
+    async evaluateJavaScript(script: string) {
+      const window = { top: {} };
+      window.top = window;
+      const onDetail = page.pathname.endsWith("/deal_wuliu_jdm.shtml");
+      const document = {
+        body: { innerText: onDetail ? `运单号：${waybill}\n曾用运单号：YT000099999999` : "待收货" },
+        querySelector: (selector: string) => onDetail && selector.includes("Summary-module") ? summary : null,
+        querySelectorAll: () => onDetail ? [] : [state],
+      };
+      return runInNewContext(`(() => {${script}})()`, { window, document, location: page, URLSearchParams });
+    }
+    dispose() {}
+  } });
+  registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
+  try {
+    const result = await fetchJdParcels(session, [parcel], () => {});
+    assert.deepEqual(result.parcels, [{ source: "jingdong", waybill, title: "示例详情商品", code: "" }]);
+  } finally {
+    clearPlatformLogin("jingdong", session.generation);
+    globalThis.WebViewController = original;
+    registerProjectionViewportHost(null);
+  }
+});
 
 test("a rejected JD cookie restore records the failed session stage during a manual sync", async (t) => {
   t.mock.method(UUID, "string", randomUUID);

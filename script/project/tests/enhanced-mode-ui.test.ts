@@ -338,7 +338,10 @@ assert.equal(thumbnail.render().image, null, "a dismissed detail ignores a late 
 assert.match(bindingSource, /prompt="请输入验证码"/);
 assert.match(managerSource, /<PhoneBindingPage\s+bindings=\{props\.bindings\}/);
 assert.match(managerSource, /const ACCOUNT_ICON_SIZE = 32;/, "account rows use 32 pt icon tiles");
-assert.match(managerSource, /<SettingsRowIcon systemName="phone.fill" backgroundColor=\{SETTINGS_ORANGE\} size=\{ACCOUNT_ICON_SIZE\}/);
+assert.match(managerSource, /const XIAOMI_BRAND_ORANGE = "#FF6900";/);
+assert.match(managerSource, /<SettingsRowIcon systemName="phone.fill" backgroundColor=\{XIAOMI_BRAND_ORANGE\} size=\{ACCOUNT_ICON_SIZE\}/);
+assert.match(samsungSource, /const SAMSUNG_BRAND_BLUE = "#1428A0";/);
+assert.match(samsungSource, /<SettingsRowIcon systemName="phone.fill" backgroundColor=\{SAMSUNG_BRAND_BLUE\}/);
 assert.match(managerSource, /<PlatformIcon platform=\{platform\} size=\{ACCOUNT_ICON_SIZE\}/);
 assert.doesNotMatch(bindingSource, /<Toggle|initialEnhanced/);
 assert.match(managerSource, /更多数据源[\s\S]*platform="samsung"[\s\S]*title="三星生活助手"/);

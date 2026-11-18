@@ -5,8 +5,8 @@ import {
   currentPlatformSession, notePlatformSync, onPlatformAccountsChanged, platformSession, PLATFORM_NAMES, PLATFORM_SOURCES,
   type ExpressPlatform, type PlatformSession,
 } from "./platform-accounts";
-import { CAINIAO_LIST_PARAMETERS, CAINIAO_RECIPIENT_LIST, CAINIAO_SENDER_LIST,
-  PlatformWireError, readCainiao, readPdd } from "./platform-wire";
+import { CAINIAO_LIST_PARAMETERS, CAINIAO_RECIPIENT_LIST,
+  PlatformWireError, readCainiao, readCainiaoSenderAppointments, readPdd } from "./platform-wire";
 import { cainiaoHandoffs, cainiaoRecipientParcels, pddPickupParcels, type PlatformParcel } from "./platform-parcel-data";
 import { fetchFengchaoCabinets, requestCabinetOpening, supportsCabinetOpening } from "./fengchao-account";
 import { fetchJdParcels, fetchPddOrders } from "./platform-web-parcels";
@@ -130,11 +130,16 @@ async function syncPlatform(
       const started = Date.now();
       let commitStarted: number | undefined;
       try {
-        const api = recipient ? CAINIAO_RECIPIENT_LIST : CAINIAO_SENDER_LIST;
-        const data = await readCainiao(session, api, CAINIAO_LIST_PARAMETERS);
-        commitStarted = Date.now();
-        persist(recipient ? { parcels: cainiaoRecipientParcels(data, now) }
-          : { parcels: [], handoffs: cainiaoHandoffs(data, session.ownerKey, now) });
+        if (recipient) {
+          const data = await readCainiao(session, CAINIAO_RECIPIENT_LIST, CAINIAO_LIST_PARAMETERS);
+          commitStarted = Date.now();
+          persist({ parcels: cainiaoRecipientParcels(data, now) });
+        } else {
+          const data = await readCainiaoSenderAppointments(session);
+          commitStarted = Date.now();
+          persist({ parcels: [], handoffs: cainiaoHandoffs(data, session.ownerKey, now) });
+          if (data.incomplete) throw new PlatformWireError("unavailable");
+        }
         if (!notePlatformSync(platform, session.generation, Date.now())) throw new PlatformWireError("changed");
         writeDiagnostic("platform.cainiao.sync.completed", { stage, durationMs: Date.now() - started,
           result: "succeeded" }, "info");

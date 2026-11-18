@@ -16,6 +16,12 @@ const homeSource = await read("pages/HomePage.tsx");
 const detailSource = await read("pages/DetailPage.tsx");
 const phoneSource = await read("pages/PhoneManagerPage.tsx");
 
+assert.match(rowSource, /<CourierIcon\b/);
+assert.doesNotMatch(rowSource, /<Image\b|listedShipmentSourceArt/,
+  "the Home rows only show a carrier icon");
+assert.match(detailSource, /\{statusText\}[\s\S]*?<\/HStack>\s*\{receiptLine \? \([\s\S]*?\{receiptLine\}[\s\S]*?<\/Text>[\s\S]*?\) : null\}[\s\S]*?\{waybill\}/,
+  "the receipt is between the status and the waybill");
+
 // The row carries the swipe action and hands the request to the page — same as the phone row.
 assert.match(
   rowSource,
@@ -41,7 +47,7 @@ assert.match(
 // Rows must sit inside a Section: loose rows mixed with a Section and a VStack break row identity.
 assert.match(
   homeSource,
-  /<Section>\s*\{shownShipments\.map\(\(shipment\) => \(/,
+  /<Section\b[^>]*>\s*\{shownShipments\.map\(\(shipment\) => \(/,
   "shipment rows must be wrapped in their own Section",
 );
 
