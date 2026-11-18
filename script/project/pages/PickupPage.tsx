@@ -1,21 +1,18 @@
 import { Button, HStack, Image, List, Navigation, NavigationStack, Section, Text, VStack, useMemo, useRef, useState } from "scripting";
-import type { AppState, PickupPlatform, Shipment } from "../models";
+import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
+import { RootPageHeader } from "../components/RootPageHeader";
 import { pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
+import { platformSession, type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
 import { needsDetailEntryQuery } from "../services/shipment-policy";
 import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
 import { setPickupCardNote } from "../services/storage";
 import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { requestWidgetReload } from "../services/widgets";
 import { DetailPage } from "./DetailPage";
-import { IDENTITY_STATION_NAMES, StationIdentityMark } from "./StationIdentityPage";
-
-type IdentityCodeAction = Readonly<{
-  platform: Extract<PickupPlatform, "cainiao" | "pinduoduo">;
-  open: () => void | Promise<void>;
-}>;
+import { IDENTITY_STATION_NAMES, openWebIdentity, StationIdentityMark, StationIdentityPage } from "./StationIdentityPage";
 
 const IDENTITY_DIAMETER = 56;
 const IDENTITY_INSET = 20;
@@ -23,8 +20,8 @@ const IDENTITY_BACKGROUND = { light: "#9EF0FC", dark: "#004F57" } as const;
 const IDENTITY_FOREGROUND = { light: "#004F57", dark: "#9EF0FC" } as const;
 
 function IdentityCodeButton({ actions, onOpen }: {
-  actions: readonly IdentityCodeAction[];
-  onOpen: (action: IdentityCodeAction) => void;
+  actions: readonly IdentityPlatform[];
+  onOpen: (platform: IdentityPlatform) => void;
 }) {
   const [showPicker, setShowPicker] = useState(false);
   return (
@@ -38,10 +35,10 @@ function IdentityCodeButton({ actions, onOpen }: {
         presentationCompactAdaptation: "popover",
         content: (
           <VStack alignment="leading" spacing={0} padding={6} frame={{ minWidth: 196 }}>
-            {actions.map(({ platform, open }) => (
+            {actions.map((platform) => (
               <Button key={platform} buttonStyle="plain" action={() => {
                 setShowPicker(false);
-                onOpen({ platform, open });
+                onOpen(platform);
               }}>
                 <HStack spacing={12} padding={{ horizontal: 8, vertical: 9 }}
                   frame={{ maxWidth: "infinity", alignment: "leading" }} contentShape="rect">
@@ -145,17 +142,27 @@ export function PickupPage({
   focusedRecordId: string;
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
   cabinetActions: ReadonlySet<ParcelActivityContent>;
-  identityActions?: readonly IdentityCodeAction[];
+  identityActions?: readonly IdentityPlatform[];
   onStateChange: (state: AppState) => void;
   showNotice: (message: string) => void;
 }) {
   const dismiss = Navigation.useDismiss();
   const [detailTarget, setDetailTarget] = useState<ParcelActivityTarget | undefined>(undefined);
+  const [identity, setIdentity] = useState<{ platform: IdentityPlatform; session: PlatformSession } | null>(null);
   const selected = shipmentForPickupTarget(shipments, detailTarget);
   const attachedOrders = useMemo(() => selected ? attachedProjectedOrders(state.shipments, selected) : undefined,
     [state.shipments, selected]);
   const records = state.pickupCodeRecords;
   const sections = pickupDateSections(cards, previewing, focusedRecordId);
+
+  function openIdentity(platform: IdentityPlatform) {
+    const session = platformSession(platform);
+    if (session) {
+      setIdentity({ platform, session });
+    } else {
+      void openWebIdentity(platform, null).catch(() => showNotice("身份码暂时不可用，请重试。"));
+    }
+  }
 
   function cardRow(card: ParcelActivityContent) {
     const target = card.target;
@@ -177,13 +184,20 @@ export function PickupPage({
     <NavigationStack>
       <List
         navigationTitle="取件"
-        navigationBarTitleDisplayMode="large"
-        toolbar={{
-          topBarLeading: (
-            <Button buttonStyle="plain" action={() => dismiss()}>
-              <Image systemName="chevron.left" font={17} frame={{ width: 44, height: 44 }} />
-            </Button>
-          ),
+        navigationBarVisibility="hidden"
+        safeAreaInset={{
+          top: {
+            spacing: 0,
+            content: <RootPageHeader title="取件" action={() => dismiss()} />,
+          },
+        }}
+        sheet={{
+          isPresented: identity !== null,
+          onChanged: (shown) => { if (!shown) setIdentity(null); },
+          content: identity ? (
+            <StationIdentityPage key={identity.platform + ":" + identity.session.generation}
+              platform={identity.platform} session={identity.session} onClose={() => setIdentity(null)} />
+          ) : <VStack />,
         }}
         navigationDestination={{
           isPresented: Boolean(selected),
@@ -208,9 +222,7 @@ export function PickupPage({
           alignment: "bottomTrailing",
           content: (
             <VStack padding={{ trailing: IDENTITY_INSET, bottom: IDENTITY_INSET }}>
-              <IdentityCodeButton actions={identityActions} onOpen={(action) => {
-                void Promise.resolve().then(action.open).catch(() => showNotice("身份码暂时不可用，请重试。"));
-              }} />
+              <IdentityCodeButton actions={identityActions} onOpen={openIdentity} />
             </VStack>
           ),
         } : undefined}

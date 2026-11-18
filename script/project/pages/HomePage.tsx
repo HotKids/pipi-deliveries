@@ -4,17 +4,15 @@ import {
   HStack,
   Image,
   List,
-  Navigation,
   NavigationStack,
   ProgressView,
   ScrollView,
   Section,
   Text,
   TextField,
-  Toolbar,
-  ToolbarItem,
   VStack,
   ZStack,
+  useCallback,
   useEffect,
   useMemo,
   useObservable,
@@ -24,6 +22,7 @@ import {
 import type { AppState, RefreshSummary, Shipment, StatusSemantic } from "../models";
 import { ShipmentRow } from "../components/ShipmentRow";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
+import { RootPageHeader } from "../components/RootPageHeader";
 import {
   commitManualShipmentPreview,
   queryManualShipmentPreview,
@@ -116,8 +115,7 @@ export function HomePage(props: {
   onListPull?: () => void;
   platformNotice?: Readonly<{ text: string }>;
 }) {
-  const dismiss = Navigation.useDismiss();
-  const [refreshing, setRefreshing] = useState(false);
+  const pullInFlight = useRef<Promise<void> | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
   /** E1: a pull's background completion applies its result only while this page is mounted. */
@@ -231,9 +229,7 @@ export function HomePage(props: {
       .catch(() => { /* the account part is already shown; a later failure keeps the cached list */ });
   }
 
-  async function refresh() {
-    if (refreshing) return;
-    setRefreshing(true);
+  async function runListPull() {
     setNotice("");
     try {
       // E1 (owner 2026-11-10): the spinner ends once the account phase is stored; the per-shipment work
@@ -249,10 +245,15 @@ export function HomePage(props: {
       // One gesture, one outcome: refreshAllShipments resolves with failures on the line above
       // and rejects here, so both branches have to say 刷新失败 rather than 查询失败.
       setNotice(EXPRESS_TOAST_COPY.refreshFailed);
-    } finally {
-      setRefreshing(false);
     }
   }
+
+  const currentPull = useRef(runListPull);
+  currentPull.current = runListPull;
+  const refresh = useCallback(() => {
+    pullInFlight.current ??= currentPull.current().finally(() => { pullInFlight.current = null; });
+    return pullInFlight.current;
+  }, []);
 
   // The same shape PhoneManagerPage.remove uses, down to the in-flight guard and the catch:
   // `Dialog` is a host global (nothing in this project imports it), rows must sit inside a
@@ -347,30 +348,14 @@ export function HomePage(props: {
       <VStack
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         navigationTitle="快递"
-        navigationBarTitleDisplayMode="large"
+        navigationBarVisibility="hidden"
+        safeAreaInset={{
+          top: {
+            spacing: 0,
+            content: <RootPageHeader title="快递" searches action={() => searchPresented.setValue(true)} />,
+          },
+        }}
         toast={searchPresented.value ? undefined : transientToast(notice, setNotice)}
-        toolbar={
-          <Toolbar>
-            <ToolbarItem placement="topBarLeading">
-              <Button buttonStyle="plain" action={() => dismiss()}>
-                <Image
-                  systemName="chevron.left"
-                  font={17}
-                  frame={{ width: 44, height: 44 }}
-                />
-              </Button>
-            </ToolbarItem>
-            {Number.parseInt(Device.systemVersion, 10) >= 26 ? (
-              <ToolbarItem placement="title">
-                <Text font="title3" fontWeight="semibold">快递</Text>
-              </ToolbarItem>
-            ) : null}
-            <ToolbarItem placement="topBarTrailing">
-              <Button title="查询快递" systemImage="magnifyingglass" labelStyle="iconOnly"
-                buttonStyle="plain" frame={{ width: 44, height: 44 }} action={() => searchPresented.setValue(true)} />
-            </ToolbarItem>
-          </Toolbar>
-        }
         sheet={{
           isPresented: searchPresented,
           content: (
@@ -499,8 +484,20 @@ export function HomePage(props: {
             </HStack>
           </ZStack>
         ) : null}
-        {shipments.length ? (
-          <List listStyle="plain" refreshable={refresh}>
+        <List key="shipments" listStyle="plain" refreshable={refresh}
+          frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+          overlay={!shipments.length ? {
+            alignment: "center",
+            content: (
+              <EmptyDeliveryStateGroup
+                vehicleSize={81.6}
+                spacing={6}
+                labelFont={24}
+              />
+            ),
+          } : undefined}
+        >
+          {shipments.length ? (
             <Section listSectionSeparator={visibleFilters.length === 1
               ? { visibility: "hidden", edges: "top" } : undefined}>
               {shownShipments.map((shipment) => (
@@ -515,6 +512,8 @@ export function HomePage(props: {
                 />
               ))}
             </Section>
+          ) : null}
+          {shipments.length ? (
             <VStack
               spacing={8}
               padding={{ bottom: 12 }}
@@ -529,29 +528,8 @@ export function HomePage(props: {
                 只显示 14 天内的快递
               </Text>
             </VStack>
-          </List>
-        ) : (
-          <VStack
-            spacing={0}
-            frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-          >
-            <List
-              listStyle="plain"
-              refreshable={refresh}
-              frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-              overlay={{
-                alignment: "center",
-                content: (
-                  <EmptyDeliveryStateGroup
-                    vehicleSize={81.6}
-                    spacing={6}
-                    labelFont={24}
-                  />
-                ),
-              }}
-            />
-          </VStack>
-        )}
+          ) : null}
+        </List>
       </VStack>
     </NavigationStack>
   );

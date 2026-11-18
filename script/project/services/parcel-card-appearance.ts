@@ -47,16 +47,14 @@ function contrast(first: number, second: number): number {
 
 // Pipi's ExpressPickupCardPresentation.Palette uses the logo on the button and
 // code, with a 0x1F overlay and separate contrast adjustments against each surface.
-export function parcelCardPalette(accent?: string, lightGlass = false) {
-  if (!accent) return { gradient: [asColor(LEFT), asColor(RIGHT)], code: lightGlass ? "#111111" : "white",
+export function parcelCardPalette(accent?: string) {
+  if (!accent) return { gradient: [asColor(LEFT), asColor(RIGHT)], code: "white",
     capsule: "rgba(255,255,255,0.16)" } as const;
   const brand = Number.parseInt(accent.slice(1), 16);
   const right = blendStatusColor(RIGHT, brand, OVERLAY);
-  const codeSurface = lightGlass ? blendStatusColor(WHITE, right, OVERLAY) : right;
-  const contrastTarget = lightGlass ? 0 : WHITE;
   let code = brand;
-  for (let step = 1; step <= 20 && contrast(code, codeSurface) < 3; step++) {
-    code = blendStatusColor(brand, contrastTarget, step * 0.05);
+  for (let step = 1; step <= 20 && contrast(code, right) < 3; step++) {
+    code = blendStatusColor(brand, WHITE, step * 0.05);
   }
   let capsule = brand;
   const brightness = Math.max(brand >> 16, brand >> 8 & 255, brand & 255);

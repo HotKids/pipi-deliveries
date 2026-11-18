@@ -229,8 +229,8 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /<ToolbarItem placement="topBarTrailing">\s*<Button title="查询快递" systemImage="magnifyingglass" labelStyle="iconOnly"\s*buttonStyle="plain" frame=\{\{ width: 44, height: 44 \}\} action=\{\(\) => searchPresented\.setValue\(true\)\}/,
-  "the Home search button opens the search page and keeps the 44pt toolbar target",
+  /<RootPageHeader title="快递" searches action=\{\(\) => searchPresented\.setValue\(true\)\}/,
+  "the Home header search button opens the search page",
 );
 
 assert.ok(phoneBindingSource.includes('setNotice(EXPRESS_TOAST_COPY.codeSent)'));
