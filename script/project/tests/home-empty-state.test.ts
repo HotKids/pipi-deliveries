@@ -59,6 +59,9 @@ assert.match(homeSource, /safeAreaInset=\{headerCollapsed && showListAccessories
   "collapsed accessories appear immediately under the compact navigation title");
 assert.match(homeSource, /\{!headerCollapsed \? <VStack padding=\{TAB_FAB_PADDING\}>\s*<TabFloatingActionButton title="查询"/);
 const nativeHeader = await readFile(resolve(projectDir, "components/RootPageHeader.tsx"), "utf8");
+assert.match(nativeHeader, /ROOT_TITLE_CAPSULE_WIDTH = 68;/);
+assert.match(nativeHeader, /<Text font="headline" foregroundStyle="label"[\s\S]*?tabCapsuleSurface\(\)/,
+  "collapsed titles use the native headline size in a compact glass capsule");
 assert.match(nativeHeader, /width: ROOT_TITLE_CAPSULE_WIDTH, height: NAVIGATION_CONTROL_HEIGHT/);
 assert.match(nativeHeader, /width: NAVIGATION_CONTROL_HEIGHT, height: NAVIGATION_CONTROL_HEIGHT/);
 assert.match(nativeHeader, /visibility: collapsed \? "hidden"/,

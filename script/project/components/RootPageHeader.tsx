@@ -2,7 +2,7 @@ import { Button, Rectangle, Text, Toolbar, ToolbarItem } from "scripting";
 import { tabCapsuleSurface } from "./TabFloatingActionButton";
 
 const NAVIGATION_CONTROL_HEIGHT = 44;
-export const ROOT_TITLE_CAPSULE_WIDTH = 88;
+export const ROOT_TITLE_CAPSULE_WIDTH = 68;
 
 export function ScrollingRootTitle({ title, onCollapsed }: {
   title: string;
@@ -38,8 +38,8 @@ export function rootPageNavigation(
     toolbar: (
       <Toolbar>
         {collapsed ? <ToolbarItem placement="title" sharedBackgroundVisibility="hidden">
-          <Text font={21} fontWeight="bold" foregroundStyle="label" lineLimit={1} minScaleFactor={0.8}
-            padding={{ horizontal: 14 }} frame={{ width: ROOT_TITLE_CAPSULE_WIDTH, height: NAVIGATION_CONTROL_HEIGHT }}
+          <Text font="headline" foregroundStyle="label" lineLimit={1} minScaleFactor={0.8}
+            padding={{ horizontal: 12 }} frame={{ width: ROOT_TITLE_CAPSULE_WIDTH, height: NAVIGATION_CONTROL_HEIGHT }}
             {...tabCapsuleSurface()}>{title}</Text>
         </ToolbarItem> : null}
         <ToolbarItem placement="topBarTrailing" sharedBackgroundVisibility="hidden">
