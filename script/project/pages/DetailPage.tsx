@@ -1,7 +1,6 @@
 import {
   AbortController,
   Button,
-  Divider,
   HStack,
   Image,
   List,
@@ -53,9 +52,8 @@ import {
   timelineLatestEventAt,
   timelineLatestTrackAt,
   waybillSuffix,
-  withShipmentNote,
 } from "../services/status";
-import { loadState, recordShipmentDetailSelection, setShipmentProductName, visibleShipments } from "../services/storage";
+import { loadState, recordShipmentDetailSelection, setShipmentNote, setShipmentProductName, visibleShipments } from "../services/storage";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { requestWidgetReload } from "../services/widgets";
 import { displayedPlatformFields, type CloudParcelMetadata } from "../services/platform-parcel-merge";
@@ -82,20 +80,6 @@ import {
 /** 手动加件的查询链还没跑完时，状态词与轨迹区都写这个（用户定 2026-09-08 方案 2）。 */
 const MANUAL_QUERY_IN_FLIGHT_TEXT = "查询中";
 const EMPTY_ATTACHED_ORDERS: readonly Shipment[] = [];
-
-function DetailHeaderAction({ title, systemImage, action, inline = false }: {
-  title: string;
-  systemImage: string;
-  action: () => void;
-  inline?: boolean;
-}) {
-  return (
-    <Button title={title} systemImage={systemImage} labelStyle="iconOnly" buttonStyle="plain"
-      font={15} foregroundStyle="secondaryLabel"
-      frame={inline ? { width: 24, height: 28 } : { width: 44, height: 44 }}
-      contentShape="rect" action={action} />
-  );
-}
 
 export function DetailPage(props: {
   shipment: Shipment;
@@ -141,6 +125,38 @@ export function DetailPage(props: {
       externalAppAbortRef.current = null;
     };
   }, [shipment.identity.id, shipment.identity.sourceProvider, shipment.identity.sourceId]);
+  async function editNote() {
+    if (!props.persistedShipment) return;
+    let value: string | null;
+    try {
+      value = await Dialog.prompt({
+        title: "编辑备注",
+        message: "清空后保存可删除备注",
+        defaultValue: shipment.note || "",
+        placeholder: "请输入备注",
+        cancelLabel: "取消",
+        confirmLabel: "保存",
+      });
+    } catch (error) {
+      writeDiagnostic("detail.note.prompt_failed", diagnosticErrorDetails(error), "warning");
+      return;
+    }
+    if (value == null) return;
+    try {
+      const state = setShipmentNote(shipment, value);
+      const updated = state.shipments.find((item) => item.identity.id === shipment.identity.id);
+      if (updated) {
+        setShipment(updated);
+        props.onStateChange?.(state, updated);
+      }
+      requestWidgetReload();
+    } catch (error) {
+      writeDiagnostic("detail.note.save_failed", diagnosticErrorDetails(error), "warning");
+      setNotice(error instanceof ShipmentLifecycleChangedError
+        ? "快递已更新，请重新打开后编辑" : "保存失败，请稍后重试");
+    }
+  }
+
   async function editProductName() {
     let value: string | null;
     try {
@@ -327,8 +343,11 @@ export function DetailPage(props: {
   const cloudLifecycle = shipmentLifecycleKey(shipment);
   const cloudScope = cloudGeneration === null ? "" : JSON.stringify([cloudGeneration, cloudWaybill, cloudLifecycle]);
   const platformFields = displayedPlatformFields(shipment, Date.now(), cloud?.scope === cloudScope ? cloud?.metadata : undefined);
-  const showProductName = Boolean(platformFields.title || props.persistedShipment);
-  const showParcelInfo = Boolean(platformFields.estimate || showProductName);
+  const note = shipment.note?.trim();
+  const showParcelInfo = Boolean(platformFields.estimate || platformFields.title || note);
+  const productNameMenu = props.persistedShipment ? {
+    menuItems: <Button title="编辑商品名" action={() => void editProductName()} />,
+  } : undefined;
   const pickup = parcelActivityContent(shipment);
 
   async function refreshCloudMetadata(): Promise<void> {
@@ -683,93 +702,86 @@ export function DetailPage(props: {
       toast={transientToast(notice, setNotice)}
     >
       <Section>
-        <VStack alignment="leading" spacing={0} listRowSeparator="hidden"
-          listRowInsets={showParcelInfo ? { top: 12, bottom: 0, leading: 20, trailing: 20 } : undefined}>
-          <HStack spacing={14} padding={{ vertical: 12 }}>
-            <ProductThumbnail
-              shipment={shipment}
-              cacheKey={shipment.identity.enhancedMode || shipment.identity.productImageURL
-                ? productImageCacheKey(shipment.identity) : ""}
-              courierCode={shipment.identity.courierCode}
-              companyName={shipment.identity.companyName}
-              accountOrder={Boolean(
-                unprojectedAccountOrder(shipment),
-              )}
-              size={72}
-              imageURL={shipment.identity.productImageURL}
-            />
-            <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity" }}>
-              <HStack alignment="center" spacing={6}>
-                <Text
-                  font={17}
-                  fontWeight="bold"
-                  foregroundStyle={statusTextTint(presentationStatus.semantic)}
-                  lineLimit={1}
-                >
-                  {withShipmentNote(statusText, shipment)}
-                </Text>
-                {shipment.identity.sender === true ? (
-                  <SenderBadge semantic={presentationStatus.semantic} />
-                ) : null}
-              </HStack>
-              <HStack
-                alignment="center"
-                spacing={0}
-                frame={{ maxWidth: "infinity", alignment: "leading" }}
+        <HStack spacing={14} padding={{ vertical: 12 }} listRowSeparator="hidden">
+          <ProductThumbnail
+            shipment={shipment}
+            cacheKey={shipment.identity.enhancedMode || shipment.identity.productImageURL
+              ? productImageCacheKey(shipment.identity) : ""}
+            courierCode={shipment.identity.courierCode}
+            companyName={shipment.identity.companyName}
+            accountOrder={Boolean(
+              unprojectedAccountOrder(shipment),
+            )}
+            size={72}
+            imageURL={shipment.identity.productImageURL}
+          />
+          <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity" }}>
+            <HStack alignment="center" spacing={6} contentShape="rect"
+              onTapGesture={props.persistedShipment ? () => void editNote() : undefined}
+              accessibilityHint={props.persistedShipment ? "编辑备注" : undefined}
+              contextMenu={productNameMenu}>
+              <Text
+                font={17}
+                fontWeight="bold"
+                foregroundStyle={statusTextTint(presentationStatus.semantic)}
+                lineLimit={1}
               >
-                <Text font={15}>{carrierDisplayName(shipment.identity.companyName)}：</Text>
-                <HStack alignment="center" spacing={5}>
-                  <Text
-                    font={15}
-                    monospacedDigit
-                    lineLimit={1}
-                    minScaleFactor={0.65}
-                    allowsTightening={true}
-                    layoutPriority={1}
-                  >
-                    {waybill}
-                  </Text>
-                  <DetailHeaderAction title="复制单号" systemImage="doc.on.doc" action={copyWaybill} inline />
-                </HStack>
-              </HStack>
-              {hotline ? (
-                <HStack spacing={0}>
-                  <Text font={15}>官方电话：</Text>
-                  <Button buttonStyle="plain" action={dial}>
-                    <Text font={15} foregroundStyle="systemBlue" monospacedDigit>
-                      {hotline}
-                    </Text>
-                  </Button>
-                  <Spacer />
-                </HStack>
+                {statusText}
+              </Text>
+              {shipment.identity.sender === true ? (
+                <SenderBadge semantic={presentationStatus.semantic} />
               ) : null}
-            </VStack>
-            <Spacer />
-          </HStack>
-          {showParcelInfo ? (
-            <>
-              <Divider />
-              <VStack alignment="leading" spacing={4} padding={{ vertical: 12 }}>
-                {platformFields.estimate ? (
-                  <Text font={14} fontWeight="medium" foregroundStyle="systemBlue">{platformFields.estimate}</Text>
-                ) : null}
-                {showProductName ? (
-                  <HStack alignment="center" spacing={12}>
-                    <Text font={14} lineSpacing={3} foregroundStyle="secondaryLabel"
-                      fixedSize={{ horizontal: false, vertical: true }}
-                      frame={{ maxWidth: "infinity", alignment: "leading" }}>
-                      {platformFields.title || "添加商品名"}
-                    </Text>
-                    {props.persistedShipment ? (
-                      <DetailHeaderAction title="编辑商品名" systemImage="square.and.pencil" action={() => void editProductName()} />
-                    ) : null}
-                  </HStack>
-                ) : null}
-              </VStack>
-            </>
-          ) : null}
-        </VStack>
+            </HStack>
+            <HStack
+              alignment="center"
+              spacing={0}
+              frame={{ maxWidth: "infinity", alignment: "leading" }}
+            >
+              <Text font={15}>{carrierDisplayName(shipment.identity.companyName)}：</Text>
+              <Text font={15} monospacedDigit lineLimit={1} minScaleFactor={0.65}
+                allowsTightening={true} layoutPriority={1} contentShape="rect"
+                onTapGesture={copyWaybill} accessibilityHint="复制单号">
+                {waybill}
+              </Text>
+            </HStack>
+            {hotline ? (
+              <HStack spacing={0}>
+                <Text font={15}>官方电话：</Text>
+                <Button buttonStyle="plain" action={dial}>
+                  <Text font={15} foregroundStyle="systemBlue" monospacedDigit>
+                    {hotline}
+                  </Text>
+                </Button>
+                <Spacer />
+              </HStack>
+            ) : null}
+          </VStack>
+          <Spacer />
+        </HStack>
       </Section>
+
+      {showParcelInfo ? (
+        <Section>
+          <VStack alignment="leading" spacing={4} padding={{ vertical: 8 }}
+            frame={{ maxWidth: "infinity", alignment: "leading" }} contentShape="rect"
+            onTapGesture={props.persistedShipment ? () => void editNote() : undefined}
+            accessibilityHint={props.persistedShipment ? "编辑备注" : undefined}
+            contextMenu={productNameMenu}>
+            {platformFields.estimate ? (
+              <Text font={14} fontWeight="medium" foregroundStyle="systemBlue">{platformFields.estimate}</Text>
+            ) : null}
+            {platformFields.title ? (
+              <Text font={14} lineSpacing={3} fixedSize={{ horizontal: false, vertical: true }}>
+                {platformFields.title}
+              </Text>
+            ) : null}
+            {note ? (
+              <Text font={14} lineSpacing={3} foregroundStyle="secondaryLabel"
+                fixedSize={{ horizontal: false, vertical: true }}>{note}</Text>
+            ) : null}
+          </VStack>
+        </Section>
+      ) : null}
 
       {pickup ? (
         <Section>

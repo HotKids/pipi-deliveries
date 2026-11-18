@@ -72,7 +72,7 @@ export const WEB_PLATFORMS = {
   },
   jingdong: {
     login: "https://plogin.m.jd.com/login/login?appid=0&returnurl=https%3A%2F%2Fhome.m.jd.com%2FmyJd%2Fnewhome.action",
-    families: ["jd.com", "jd.hk", "360buyimg.com"],
+    families: ["jd.com", "360buyimg.com"],
     sessionFamilies: ["jd.com"],
   },
   pinduoduo: {
