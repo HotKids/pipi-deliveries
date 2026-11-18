@@ -16,7 +16,7 @@ import {
   useRef,
   useState,
 } from "scripting";
-import { RootPageHeader } from "../components/RootPageHeader";
+import { rootPageNavigation, ScrollingRootTitle } from "../components/RootPageHeader";
 import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon";
 import type { AppState } from "../models";
 import { sendAccountCode } from "../services/account-sync";
@@ -206,6 +206,7 @@ export function SettingsPage(props: {
 }) {
   const dismiss = Navigation.useDismiss();
   const [token, setToken] = useState("");
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
   const [notice, setNotice] = useState("");
   const [destination, setDestination] =
     useState<"" | "phones" | "notifications" | "diagnostics" | "privacy" | "shortcuts" | "activity">("");
@@ -329,16 +330,9 @@ export function SettingsPage(props: {
   return (
     <NavigationStack>
       <List
-        navigationTitle="设置"
-        navigationBarVisibility="hidden"
+        {...rootPageNavigation("设置", () => dismiss(), headerCollapsed)}
         onAppear={() => setOverviewVisible(true)}
         onDisappear={() => setOverviewVisible(false)}
-        safeAreaInset={{
-          top: {
-            spacing: 0,
-            content: <RootPageHeader title="设置" action={() => dismiss()} />,
-          },
-        }}
         toast={transientToast(notice, setNotice)}
         navigationDestination={{
           isPresented: Boolean(destination),
@@ -401,6 +395,7 @@ export function SettingsPage(props: {
           ),
         }}
       >
+        <ScrollingRootTitle title="设置" onCollapsed={setHeaderCollapsed} />
         <Section header={<Text>同步</Text>}>
           <Button buttonStyle="plain" action={openPhoneManager}>
             <HStack

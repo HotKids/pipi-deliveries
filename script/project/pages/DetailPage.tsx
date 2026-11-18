@@ -57,9 +57,9 @@ import {
 import { loadState, loadStateSnapshot, recordShipmentDetailSelection, setShipmentNote, setShipmentProductName, visibleShipments, type LoadedStateSnapshot } from "../services/storage";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { requestWidgetReload } from "../services/widgets";
-import { displayedPlatformFields, samePlatformTarget, type CloudParcelMetadata } from "../services/platform-parcel-merge";
+import { cloudPddParcelAppURL, displayedPlatformFields, samePlatformTarget } from "../services/platform-parcel-merge";
 import { pddParcelAppURL } from "../services/platform-parcel-data";
-import { readCloudParcelMetadata } from "../services/cloud-parcel-metadata";
+import { readCloudParcelMetadata, type CloudParcelDetails } from "../services/cloud-parcel-metadata";
 import { needsParcelDetailFields, refreshParcelDetailFields } from "../services/parcel-detail-fields";
 import { gatewayCredentialGeneration } from "../services/credentials";
 import { SCRIPT_BUILD_TRACK } from "../services/build-track";
@@ -100,7 +100,7 @@ export function DetailPage(props: {
 }) {
   const [shipment, setShipment] = useState(props.shipment);
   const [notice, setNotice] = useState("");
-  const [cloud, setCloud] = useState<{ scope: string; metadata: CloudParcelMetadata } | undefined>(undefined);
+  const [cloud, setCloud] = useState<{ scope: string; details: CloudParcelDetails } | undefined>(undefined);
   const cloudAbortRef = useRef<AbortController | null>(null);
   const ownerSnapshot = useRef<LoadedStateSnapshot | undefined>(undefined);
   const [openingExternalApp, setOpeningExternalApp] = useState(false);
@@ -331,7 +331,7 @@ export function DetailPage(props: {
     shipment.identity.companyName,
   );
   const waybill = displayWaybill(shipment);
-  const pddExternalAppURL = props.persistedShipment && !unprojectedAccountOrder(shipment)
+  const localPddAppURL = props.persistedShipment && !unprojectedAccountOrder(shipment)
     ? pddParcelAppURL(shipment.pddImport, normalizeWaybill(waybill)) : "";
   // 用户定 2026-09-08 方案 2：手动加件先建行再跳详情页，picker 之后的级别是在页面打开之后才跑的
   // （实测尾号 2410 空窗 3.2 s、尾号 1107 空窗 8 s）。链条没跑完的这段不能写「暂无状态 · 暂无物流
@@ -346,12 +346,15 @@ export function DetailPage(props: {
     : presentationStatus.text;
   const phoneTail = shipmentDetailPhoneTail(shipment);
   const needsExtraFields = needsParcelDetailFields(shipment);
-  const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment && needsExtraFields && !unprojectedAccountOrder(shipment)
+  const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment &&
+      (needsExtraFields || !localPddAppURL) && !unprojectedAccountOrder(shipment)
     ? normalizeWaybill(displayWaybill(shipment)) : "";
   const cloudGeneration = /^[A-Z0-9]{6,64}$/.test(cloudWaybill) ? gatewayCredentialGeneration() : null;
   const cloudLifecycle = shipmentLifecycleKey(shipment);
   const cloudScope = cloudGeneration === null ? "" : JSON.stringify([cloudGeneration, cloudWaybill, cloudLifecycle]);
-  const platformFields = displayedPlatformFields(shipment, Date.now(), cloud?.scope === cloudScope ? cloud?.metadata : undefined);
+  const cloudDetails = cloud?.scope === cloudScope ? cloud.details : undefined;
+  const pddExternalAppURL = localPddAppURL || cloudPddParcelAppURL(shipment, cloudDetails?.pddLink);
+  const platformFields = displayedPlatformFields(shipment, Date.now(), cloudDetails?.metadata);
   const note = shipment.note?.trim();
   const showParcelInfo = Boolean(platformFields.estimate || platformFields.title || note);
   const productNameMenu = props.persistedShipment ? {
@@ -365,21 +368,22 @@ export function DetailPage(props: {
     return snapshot.state;
   }
 
+  function ownsCloudWaybill(): boolean {
+    const matches = visibleShipments(readOwnerState()).filter(item =>
+      !unprojectedAccountOrder(item) && normalizeWaybill(displayWaybill(item)) === cloudWaybill);
+    return matches.length === 1 && shipmentLifecycleKey(matches[0]) === cloudLifecycle;
+  }
+
   async function refreshCloudMetadata(): Promise<void> {
     if (!cloudScope) return;
     cloudAbortRef.current?.abort();
     const controller = new AbortController();
     cloudAbortRef.current = controller;
     try {
-      const ownsWaybill = () => {
-        const matches = visibleShipments(readOwnerState()).filter(item =>
-          !unprojectedAccountOrder(item) && normalizeWaybill(displayWaybill(item)) === cloudWaybill);
-        return matches.length === 1 && shipmentLifecycleKey(matches[0]) === cloudLifecycle;
-      };
-      const metadata = ownsWaybill() ? await readCloudParcelMetadata(cloudWaybill, controller.signal) : undefined;
+      const details = ownsCloudWaybill() ? await readCloudParcelMetadata(cloudWaybill, controller.signal) : undefined;
       if (controller.signal.aborted) return;
-      const current = metadata && gatewayCredentialGeneration() === cloudGeneration && ownsWaybill();
-      setCloud(current ? { scope: cloudScope, metadata } : undefined);
+      const current = details && gatewayCredentialGeneration() === cloudGeneration && ownsCloudWaybill();
+      setCloud(current ? { scope: cloudScope, details } : undefined);
     } catch {
       if (!controller.signal.aborted) setCloud(undefined);
     }
@@ -618,8 +622,15 @@ export function DetailPage(props: {
       const current = loadState().shipments.find((row) => row.identity.id === shipment.identity.id);
       if (!current || !samePlatformTarget(shipment, current) ||
           current.pddImport?.ownerKey !== shipment.pddImport?.ownerKey ||
-          current.pddImport?.orderId !== shipment.pddImport?.orderId ||
-          pddParcelAppURL(current.pddImport, normalizeWaybill(displayWaybill(current))) !== pddExternalAppURL) {
+          current.pddImport?.orderId !== shipment.pddImport?.orderId) {
+        setNotice("快递信息已更新，请重新打开详情");
+        return;
+      }
+      const localURL = pddParcelAppURL(current.pddImport, normalizeWaybill(displayWaybill(current)));
+      const savedLink = cloudDetails?.pddLink;
+      const currentURL = localURL || (savedLink && gatewayCredentialGeneration() === cloudGeneration && ownsCloudWaybill()
+        ? cloudPddParcelAppURL(current, savedLink) : "");
+      if (currentURL !== pddExternalAppURL) {
         setNotice("快递信息已更新，请重新打开详情");
         return;
       }
@@ -869,7 +880,7 @@ export function DetailPage(props: {
           >
             {loadingManualDetail
               ? "完整轨迹加载中"
-              : "下拉刷新物流轨迹。"}
+              : "轨迹不完整时，可尝试下拉刷新。"}
           </Text>
         )}
       >

@@ -1,13 +1,12 @@
 import {
   Button,
-  Capsule,
   ForEach,
   HStack,
   Image,
   List,
-  NamespaceReader,
   Navigation,
   NavigationStack,
+  Picker,
   ProgressView,
   ScrollView,
   Section,
@@ -26,8 +25,8 @@ import {
 import type { AppState, RefreshSummary, Shipment, StatusSemantic } from "../models";
 import { ShipmentRow } from "../components/ShipmentRow";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
-import { RootPageHeader } from "../components/RootPageHeader";
-import { TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
+import { ROOT_TITLE_CAPSULE_WIDTH, rootPageNavigation, ScrollingRootTitle } from "../components/RootPageHeader";
+import { TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, tabCapsuleSurface, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import {
   commitManualShipmentPreview,
   queryManualShipmentPreview,
@@ -91,7 +90,6 @@ const shipmentFilters = {
   danger: "异常",
 } as const;
 type ShipmentFilter = keyof typeof shipmentFilters;
-const FILTER_SEGMENT_INSET = 3;
 
 function shipmentFilter(semantic: StatusSemantic): Exclude<ShipmentFilter, "all"> | undefined {
   switch (semantic) {
@@ -128,6 +126,7 @@ export function HomePage(props: {
   const [completing, setCompleting] = useState(false);
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
   const filterSelection = useObservable<ShipmentFilter>("all");
   const searchPresented = useObservable(props.autoFocusSearch && !props.initialShipmentId);
   const handledNavigationRef = useRef<number | undefined>(undefined);
@@ -210,9 +209,9 @@ export function HomePage(props: {
     if (selectedFilter !== filter) filterSelection.setValue(filter);
   }, [filterSelection, selectedFilter, filter]);
 
-  function selectFilter(key: ShipmentFilter) {
-    if (key === filter) return;
-    void withAnimation(Animation.snappy({ duration: 0.32 }), () => filterSelection.setValue(key));
+  function selectFilter(key: string) {
+    const next = visibleFilters.find((candidate) => candidate === key);
+    if (next && next !== filter) filterSelection.setValue(next);
   }
 
   useEffect(() => {
@@ -349,25 +348,94 @@ export function HomePage(props: {
     shortcutGeneration: props.navigationRequestGeneration,
     onShortcutHandled: props.onShortcutHandled,
   };
+  const showAccessKeyNotice = accessKeyRejected && !accessKeyNoticeDismissed;
+  const showListAccessories = showAccessKeyNotice || visibleFilters.length > 1;
+  const listAccessories = (
+    <VStack background={headerCollapsed ? undefined : "systemBackground"}>
+      {showAccessKeyNotice ? (
+        <VStack padding={{ horizontal: 20, vertical: 8 }}>
+          <HStack
+            spacing={0}
+            padding={{ leading: 16, trailing: 12, vertical: 12 }}
+            background="secondarySystemBackground"
+            clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
+          >
+            <Text
+              font={14}
+              foregroundStyle="secondaryLabel"
+              frame={{ maxWidth: "infinity", alignment: "leading" }}
+            >
+              Access Key 已失效，请通过 TG Bot 重新获取。
+            </Text>
+            <Button
+              role="close"
+              buttonStyle="plain"
+              action={() => setAccessKeyNoticeDismissed(true)}
+            >
+              <Image
+                systemName="xmark"
+                font={24}
+                foregroundStyle="secondaryLabel"
+                frame={{ width: 48, height: 48 }}
+                contentShape="rect"
+              />
+            </Button>
+          </HStack>
+        </VStack>
+      ) : null}
+      {visibleFilters.length > 1 && headerCollapsed ? (
+        <VStack spacing={4} frame={{ maxWidth: "infinity" }} padding={{ bottom: 8 }}>
+          {visibleFilters.map((key) => (
+            <Button key={key} buttonStyle="plain" action={() => {
+              void withAnimation(Animation.snappy({ duration: 0.32 }), () => selectFilter(key));
+            }}>
+              <Text font={14} fontWeight={filter === key ? "semibold" : "medium"} monospacedDigit
+                lineLimit={1} minScaleFactor={0.7} padding={{ horizontal: 8 }}
+                frame={{ width: ROOT_TITLE_CAPSULE_WIDTH, minHeight: 36 }}
+                foregroundStyle={filter === key ? "accentColor" : "label"}
+                {...tabCapsuleSurface(true)}
+                contentShape="capsule">
+                {`${shipmentFilters[key]} ${groups[key].length}`}
+              </Text>
+            </Button>
+          ))}
+        </VStack>
+      ) : visibleFilters.length > 1 ? (
+        <VStack frame={{ maxWidth: "infinity" }} padding={{ horizontal: 20, top: 10 }}>
+          <Picker title="筛选" value={filter} onChanged={selectFilter} pickerStyle="segmented">
+            {visibleFilters.map((key) => (
+              <Text key={key} tag={key} font={14} monospacedDigit
+                contentTransition="numericText"
+                animation={{ animation: Animation.snappy({ duration: 0.32 }), value: groups[key].length }}>
+                {`${shipmentFilters[key]} ${groups[key].length}`}
+              </Text>
+            ))}
+          </Picker>
+        </VStack>
+      ) : null}
+    </VStack>
+  );
 
   return (
     <NavigationStack>
-      <VStack
+      <List key="shipments" listStyle="plain" refreshable={refresh}
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        navigationTitle="快递"
-        navigationBarVisibility="hidden"
-        safeAreaInset={{
-          top: {
-            spacing: 0,
-            content: <RootPageHeader title="快递" action={() => dismiss()} background="systemBackground" />,
-          },
-        }}
+        {...rootPageNavigation("快递", () => dismiss(), headerCollapsed, "systemBackground")}
+        safeAreaInset={headerCollapsed && showListAccessories ? { top: { spacing: 0, content: listAccessories } } : undefined}
+        contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
         overlay={{
           alignment: "bottomTrailing",
           content: (
-            <VStack padding={TAB_FAB_PADDING}>
-              <TabFloatingActionButton title="查询" symbol="magnifyingglass" action={() => searchPresented.setValue(true)} />
-            </VStack>
+            <ZStack alignment="bottomTrailing">
+              {!shipments.length ? (
+                <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} allowsHitTesting={false}>
+                  <EmptyDeliveryStateGroup vehicleSize={81.6} spacing={6} labelFont={24} deferArtwork />
+                </VStack>
+              ) : null}
+              {!headerCollapsed ? <VStack padding={TAB_FAB_PADDING}>
+                <TabFloatingActionButton title="查询" symbol="magnifyingglass" action={() => searchPresented.setValue(true)} />
+              </VStack> : null}
+            </ZStack>
           ),
         }}
         toast={searchPresented.value ? undefined : transientToast(notice, setNotice)}
@@ -437,121 +505,44 @@ export function HomePage(props: {
           ) : <Text>快递详情</Text>,
         }}
       >
-        {accessKeyRejected && !accessKeyNoticeDismissed ? (
-          <VStack padding={{ horizontal: 20, vertical: 8 }}>
-            <HStack
-              spacing={0}
-              padding={{ leading: 16, trailing: 12, vertical: 12 }}
-              background="secondarySystemBackground"
-              clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-            >
-              <Text
-                font={14}
-                foregroundStyle="secondaryLabel"
-                frame={{ maxWidth: "infinity", alignment: "leading" }}
-              >
-                Access Key 已失效，请通过 TG Bot 重新获取。
-              </Text>
-              <Button
-                role="close"
-                buttonStyle="plain"
-                action={() => setAccessKeyNoticeDismissed(true)}
-              >
-                <Image
-                  systemName="xmark"
-                  font={24}
-                  foregroundStyle="secondaryLabel"
-                  frame={{ width: 48, height: 48 }}
-                  contentShape="rect"
-                />
-              </Button>
-            </HStack>
+        <ScrollingRootTitle title="快递" onCollapsed={setHeaderCollapsed} />
+        {!headerCollapsed && showListAccessories ? (
+          <VStack listRowInsets={{ top: 0, bottom: 0, leading: 0, trailing: 0 }} listRowSeparator="hidden">
+            {listAccessories}
           </VStack>
         ) : null}
-        {visibleFilters.length > 1 ? (
-          <NamespaceReader>
-            {(namespace) => (
-              <ZStack padding={{ horizontal: 20, vertical: 2 }}>
-                <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
-                  frame={{ height: 32 }} allowsHitTesting={false} />
-                <HStack spacing={0} padding={{ horizontal: FILTER_SEGMENT_INSET }}>
-                  {visibleFilters.map((key) => {
-                    const selected = filter === key;
-                    return (
-                      <Button key={key} buttonStyle="plain" action={() => selectFilter(key)}>
-                        <VStack frame={{ maxWidth: "infinity", minHeight: 44 }} contentShape="rect"
-                          background={selected ? (
-                            <Capsule fill="secondarySystemFill" frame={{ height: 26 }}
-                              matchedGeometryEffect={{ id: "filter-selection", namespace }}
-                              transition={Transition.identity()} allowsHitTesting={false} />
-                          ) : undefined}>
-                          <HStack spacing={4} frame={{ maxWidth: "infinity", minHeight: 26 }}>
-                            <Text font={14} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
-                              {shipmentFilters[key]}
-                            </Text>
-                            <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
-                              lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
-                              background={{ style: "systemFill", shape: "capsule" }}>
-                              {groups[key].length}
-                            </Text>
-                          </HStack>
-                        </VStack>
-                      </Button>
-                    );
-                  })}
-                </HStack>
-              </ZStack>
-            )}
-          </NamespaceReader>
-        ) : null}
-        <List key="shipments" listStyle="plain" refreshable={refresh}
-          frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-          contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
-          overlay={!shipments.length ? {
-            alignment: "center",
-            content: (
-              <EmptyDeliveryStateGroup
-                vehicleSize={81.6}
-                spacing={6}
-                labelFont={24}
-                deferArtwork
+        {shipments.length ? (
+          <Section listSectionSeparator={{ visibility: "hidden", edges: "top" }}>
+            <ForEach data={observableItems} builder={({ id, shipment, deleting, completing }) => (
+              <ShipmentRow
+                key={id}
+                shipment={shipment}
+                onOpen={() => rowActions.current.openShipment(shipment)}
+                onDelete={() => void rowActions.current.confirmDelete(shipment)}
+                onComplete={() => void rowActions.current.confirmComplete(shipment)}
+                deleteDisabled={deleting}
+                completeDisabled={completing}
               />
-            ),
-          } : undefined}
-        >
-          {shipments.length ? (
-            <Section listSectionSeparator={{ visibility: "hidden", edges: "top" }}>
-              <ForEach data={observableItems} builder={({ id, shipment, deleting, completing }) => (
-                <ShipmentRow
-                  key={id}
-                  shipment={shipment}
-                  onOpen={() => rowActions.current.openShipment(shipment)}
-                  onDelete={() => void rowActions.current.confirmDelete(shipment)}
-                  onComplete={() => void rowActions.current.confirmComplete(shipment)}
-                  deleteDisabled={deleting}
-                  completeDisabled={completing}
-                />
-              )} />
-            </Section>
-          ) : null}
-          {shipments.length ? (
-            <VStack
-              spacing={8}
-              padding={{ bottom: 12 }}
-              frame={{ maxWidth: "infinity" }}
-              listRowSeparator="hidden"
+            )} />
+          </Section>
+        ) : null}
+        {shipments.length ? (
+          <VStack
+            spacing={8}
+            padding={{ bottom: 12 }}
+            frame={{ maxWidth: "infinity" }}
+            listRowSeparator="hidden"
+          >
+            <Text
+              font={12}
+              foregroundStyle="tertiaryLabel"
+              frame={{ maxWidth: "infinity", alignment: "center" }}
             >
-              <Text
-                font={12}
-                foregroundStyle="tertiaryLabel"
-                frame={{ maxWidth: "infinity", alignment: "center" }}
-              >
-                只显示 14 天内的快递
-              </Text>
-            </VStack>
-          ) : null}
-        </List>
-      </VStack>
+              只显示 14 天内的快递
+            </Text>
+          </VStack>
+        ) : null}
+      </List>
     </NavigationStack>
   );
 }
@@ -800,7 +791,7 @@ function HomeSearchBar(props: {
         spacing={8}
         padding={{ horizontal: 16, vertical: 13 }}
         frame={{ maxWidth: "infinity" }}
-        background={{ style: "tertiarySystemFill", shape: "capsule" }}
+        {...tabCapsuleSurface()}
       >
         <Image
           systemName="magnifyingglass"

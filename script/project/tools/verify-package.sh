@@ -240,6 +240,7 @@ while IFS= read -r network_url; do
     'https://h5api.m.taobao.com'|\
     'https://h5api.m.taobao.com/h5/'|\
     'https://page.cainiao.com/mcn/fulfill_new/index.html?from=tbcn'|\
+    'https://page.cainiao.com/cn-app-web/identity-code/index.html'|\
     'https://login.m.taobao.com/login.htm'|\
     'https://pages-fast.m.taobao.com/wow/z/uniapp/1011717/last-mile-fe/end-collect-platform/identity-code'|\
     'https://home.m.jd.com'|\

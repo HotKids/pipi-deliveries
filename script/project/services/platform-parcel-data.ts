@@ -28,7 +28,11 @@ export function pddParcelDetailPath(shippingId: string, waybill: string): string
 
 export function pddParcelAppURL(parcel: PddParcelImport | undefined, waybill: string): string {
   if (!parcel?.ownerKey || !parcel.orderId || !parcel.shippingId) return "";
-  const path = pddParcelDetailPath(parcel.shippingId, waybill);
+  return pddParcelUniversalURL(parcel.shippingId, waybill);
+}
+
+export function pddParcelUniversalURL(shippingId: string, waybill: string): string {
+  const path = pddParcelDetailPath(shippingId, waybill);
   // Pinduoduo's iOS associated domain serves this same shipment-detail route.
   return path ? "https://m.pinduoduo.net" + path : "";
 }

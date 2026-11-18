@@ -254,6 +254,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const bottomInset = bottom - capsuleTop - card.capsuleHeight - hostVerticalInset;
   const title = onEditNote ? <Button buttonStyle="plain" action={onEditNote}>{titleRow}</Button> : titleRow;
   const location = onLocationTap ? <Button buttonStyle="plain" action={onLocationTap}>{subtitleRow}</Button> : subtitleRow;
+  const expandedHeaderMinimum = card.titleLineHeight + gap + card.locationLineHeight + locationToDivider;
   // Use the Pipi line heights for leading while the outer boxes yield space to the gaps.
   const expandedLine = (content: VirtualNode, height: number, minimum: number, lineHeight = minimum) => (
     <Rectangle fill="clear" frame={{ ...slot(height, minimum), maxWidth: "infinity" }} layoutPriority={-2}
@@ -322,11 +323,11 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
           {space(bottomInset, 0, 0)}
         </> : expanded ? <>
           <VStack spacing={0} alignment="leading"
-            frame={{ ...slot(dividerTop - titleTop), maxWidth: "infinity", alignment: "topLeading" }}>
+            frame={{ ...slot(dividerTop - titleTop, expandedHeaderMinimum), maxWidth: "infinity", alignment: "topLeading" }}>
             {expandedLine(title, card.titleHeight, card.titleLineHeight)}
-            <Rectangle fill="clear" frame={slot(gap)} layoutPriority={-1} />
-            {expandedLine(location, card.locationHeight, card.locationIcon, card.locationLineHeight)}
-            <Rectangle fill="clear" frame={slot(locationToDivider)} layoutPriority={-1} />
+            <Rectangle fill="clear" frame={slot(gap, gap)} />
+            {expandedLine(location, card.locationHeight, card.locationLineHeight)}
+            <Rectangle fill="clear" frame={slot(locationToDivider, locationToDivider)} />
           </VStack>
           <VStack spacing={dividerToCapsule * scale} fixedSize={{ horizontal: false, vertical: true }} layoutPriority={1}>
             {divider}

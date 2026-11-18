@@ -4,26 +4,31 @@ import {
 } from "scripting";
 import { useBundledImage } from "../components/bundled-image";
 import { iconTileShape } from "../components/icon-tile";
+import { tabCapsuleSurface } from "../components/TabFloatingActionButton";
 import { copyText } from "../services/clipboard";
 import { code128Widths } from "../services/code128";
 import { currentPlatformSession, onPlatformAccountsChanged, platformSession,
   type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
-import { fetchStationIdentity, identityWebCookies, IDENTITY_APP_URL, IDENTITY_WEB_URL, openProviderController, PlatformWireError,
-  type StationIdentityCode } from "../services/platform-wire";
+import { CAINIAO_OUTBOUND_APP_URL, CAINIAO_OUTBOUND_WEB_URL, fetchStationIdentity, identityWebCookies,
+  IDENTITY_APP_URL, IDENTITY_WEB_URL, openProviderController, PlatformWireError, type StationIdentityCode } from "../services/platform-wire";
 import { transientToast } from "../services/ui-feedback";
 
-const IDENTITY_CODE_TITLES: Record<IdentityPlatform, string> = {
+type IdentityVariant = IdentityPlatform | "cainiao-outbound";
+const IDENTITY_CODE_TITLES: Record<IdentityVariant, string> = {
   cainiao: "淘宝身份码",
+  "cainiao-outbound": "菜鸟出库码",
   pinduoduo: "拼多多身份码",
 };
+const CAINIAO_OUTBOUND_PREFERENCE = "stationIdentityCainiaoOutbound";
 
 type ScanFormat = "barcode" | "qr";
 type ScanState = [value: string, expiresAtMs: number, remaining: number, mobile: string];
 const EMPTY_SCAN: ScanState = ["", 0, 0, ""];
-const identityCache = new Map<IdentityPlatform, { generation: string; code: StationIdentityCode }>();
+const identityCache = new Map<IdentityVariant, { generation: string; code: StationIdentityCode }>();
 const BARCODE_SHAPE = { type: "rect", cornerRadius: 10, style: "continuous" } as const;
 const QR_SHAPE = { type: "rect", cornerRadius: 14, style: "continuous" } as const;
 const DETAIL_ROW_INSETS = { top: 12, bottom: 12, leading: 16, trailing: 16 };
+const SCAN_ROW_INSETS = { ...DETAIL_ROW_INSETS, leading: 8, trailing: 8 };
 const DETAIL_MARK_SIZE = 36;
 
 const detailTitle = (title: string) => <Text font={13} foregroundStyle="secondaryLabel">{title}</Text>;
@@ -36,7 +41,7 @@ export function StationIdentityMark({ asset, size = 28 }: { asset: IdentityPlatf
   /> : <Image systemName="person.text.rectangle" frame={frame} />;
 }
 
-async function openWebIdentity(platform: IdentityPlatform, session: PlatformSession) {
+async function openWebIdentity(platform: IdentityPlatform, session: PlatformSession, variant: IdentityVariant) {
   const cookies = identityWebCookies(platform, session);
   const controller = await openProviderController(platform, cookies);
   try {
@@ -45,8 +50,9 @@ async function openWebIdentity(platform: IdentityPlatform, session: PlatformSess
       if (!currentPlatformSession(platform, session.generation)) controller.dismiss();
     });
     try {
-      const shown = controller.present({ fullscreen: true, navigationTitle: IDENTITY_CODE_TITLES[platform] });
-      void controller.loadURL(IDENTITY_WEB_URL[platform]).catch(() => controller.dismiss());
+      const shown = controller.present({ fullscreen: true, navigationTitle: IDENTITY_CODE_TITLES[variant] });
+      const address = variant === "cainiao-outbound" ? CAINIAO_OUTBOUND_WEB_URL : IDENTITY_WEB_URL[platform];
+      void controller.loadURL(address).catch(() => controller.dismiss());
       await shown;
     } finally {
       stopListening();
@@ -63,7 +69,7 @@ function Barcode({ widthList, width, height }: {
 }) {
   const modules = widthList.reduce((sum, width) => sum + width, 20);
   return (
-    <Canvas frame={{ width, height, maxWidth: width === undefined ? Math.min(Device.screen.width - 64, 330) : undefined }}
+    <Canvas frame={{ width, height, maxWidth: width === undefined ? "infinity" : undefined }}
       clipShape={BARCODE_SHAPE}
       draw={(ctx, size) => {
         ctx.fillStyle = "white";
@@ -155,11 +161,17 @@ export function StationIdentityPage({ platform, onBindingUnavailable }: {
   onBindingUnavailable: () => void;
 }) {
   const [generation, setGeneration] = useState(() => platformSession(platform)?.generation);
+  const [outbound, setOutbound] = useState(() =>
+    platform === "cainiao" && Storage.get<boolean>(CAINIAO_OUTBOUND_PREFERENCE) === true);
   const handedOff = useRef(false);
+  const variant = outbound && platform === "cainiao" ? "cainiao-outbound" : platform;
   useEffect(() => {
     function updateBinding() {
       const next = platformSession(platform)?.generation;
       if (identityCache.get(platform)?.generation !== next) identityCache.delete(platform);
+      if (platform === "cainiao" && identityCache.get("cainiao-outbound")?.generation !== next) {
+        identityCache.delete("cainiao-outbound");
+      }
       setGeneration(next);
       if (!next && !handedOff.current) {
         handedOff.current = true;
@@ -173,20 +185,26 @@ export function StationIdentityPage({ platform, onBindingUnavailable }: {
     return unsubscribe;
   }, [platform]);
   return generation
-    ? <StationIdentityContent key={generation} platform={platform} expectedGeneration={generation} />
+    ? <StationIdentityContent key={`${generation}:${variant}`} platform={platform} variant={variant}
+        expectedGeneration={generation} onSwitchCainiao={() => {
+          Storage.set(CAINIAO_OUTBOUND_PREFERENCE, !outbound);
+          setOutbound(!outbound);
+        }} />
     : <VStack />;
 }
 
-function StationIdentityContent({ platform, expectedGeneration }: {
+function StationIdentityContent({ platform, variant, expectedGeneration, onSwitchCainiao }: {
   platform: IdentityPlatform;
+  variant: IdentityVariant;
   expectedGeneration: string;
+  onSwitchCainiao: () => void;
 }) {
   const scan = useObservable<ScanState>(EMPTY_SCAN);
   const [value, expiresAtMs, remaining, mobile] = scan.value;
   const [full, setFull] = useState<ScanFormat | null>(null);
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
-  const [failure, setFailure] = useState<"verification" | "unavailable" | null>(null);
+  const [failure, setFailure] = useState<"verification" | "agreement" | "unavailable" | null>(null);
   const active = useRef(true);
   const mounted = useRef(true);
   const openingRecovery = useRef(false);
@@ -196,15 +214,17 @@ function StationIdentityContent({ platform, expectedGeneration }: {
   const requestedRenewal = useRef(0);
   const widthList = useMemo(() => value ? code128Widths(value) : [], [value]);
   const currentSession = () => currentPlatformSession(platform, expectedGeneration);
-  const providerName = platform === "cainiao" ? "淘宝" : "拼多多";
+  const cainiaoOutbound = variant === "cainiao-outbound";
+  const providerName = cainiaoOutbound ? "菜鸟" : platform === "cainiao" ? "淘宝" : "拼多多";
 
   async function openRecovery(destination: "app" | "verification") {
     const session = currentSession();
     if (!session || openingRecovery.current) return;
     openingRecovery.current = true;
     try {
-      if (destination === "app" && await Safari.openURL(IDENTITY_APP_URL[platform]).catch(() => false)) return;
-      if (mounted.current && currentSession()) await openWebIdentity(platform, session);
+      const app = cainiaoOutbound ? CAINIAO_OUTBOUND_APP_URL : IDENTITY_APP_URL[platform];
+      if (destination === "app" && await Safari.openURL(app).catch(() => false)) return;
+      if (mounted.current && currentSession()) await openWebIdentity(platform, session, variant);
     } catch {
       if (mounted.current) setNotice("暂时无法打开身份码，请重试");
     } finally {
@@ -256,15 +276,15 @@ function StationIdentityContent({ platform, expectedGeneration }: {
     setFailure(null);
     if (manual) setNotice("正在获取身份码…");
     try {
-      const code = await fetchStationIdentity(platform, session, controller.signal);
+      const code = await fetchStationIdentity(platform, session, controller.signal, cainiaoOutbound);
       if (controller.signal.aborted || !currentSession()) return;
       if (code.expiresAtMs <= Date.now()) throw new PlatformWireError("unavailable");
-      identityCache.set(platform, { generation: session.generation, code });
+      identityCache.set(variant, { generation: session.generation, code });
       showCode(code, request);
     } catch (error) {
       if (mounted.current && active.current && request === generation.current) {
-        const verification = error instanceof PlatformWireError && error.reason === "verification";
-        setFailure(verification ? "verification" : "unavailable");
+        const reason = error instanceof PlatformWireError ? error.reason : "unavailable";
+        setFailure(reason === "verification" || reason === "agreement" ? reason : "unavailable");
       }
     } finally {
       requestInFlight.current = undefined;
@@ -286,7 +306,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
       }
     };
     AppEvents.scenePhase.addListener(onScene);
-    const cached = identityCache.get(platform);
+    const cached = identityCache.get(variant);
     if (cached?.generation === expectedGeneration && currentSession()) showCode(cached.code, generation.current);
     void refresh();
     return () => {
@@ -299,9 +319,12 @@ function StationIdentityContent({ platform, expectedGeneration }: {
 
   const valid = Boolean(value) && remaining > 0;
   const status = busy ? "正在获取身份码…" : failure === "verification" ? "请完成安全验证"
+    : failure === "agreement" ? "请在菜鸟完成出库码授权后重试"
     : failure === "unavailable" ? "未获取到身份码，请点右上角重试" : "身份码已过期";
+  const markAsset = platform === "cainiao" && !cainiaoOutbound ? "taobao" : platform;
+  const switchLabel = { accessibilityLabel: `切换到${IDENTITY_CODE_TITLES[cainiaoOutbound ? "cainiao" : "cainiao-outbound"]}` };
   return (
-    <Form navigationTitle={IDENTITY_CODE_TITLES[platform]} listSectionSpacing={8}
+    <Form navigationTitle={IDENTITY_CODE_TITLES[variant]} listSectionSpacing={8}
       navigationBarTitleDisplayMode="inline"
       toast={transientToast(notice, setNotice)}
       toolbar={{
@@ -312,7 +335,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
       }}
     >
       <Section>
-        <VStack spacing={12} listRowInsets={DETAIL_ROW_INSETS} frame={{ maxWidth: "infinity" }}
+        <VStack spacing={12} listRowInsets={SCAN_ROW_INSETS} frame={{ maxWidth: "infinity" }}
           fullScreenCover={{
             isPresented: full !== null,
             onChanged: (shown) => { if (!shown) setFull(null); },
@@ -323,7 +346,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
           {valid ? (
             <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
               <Button buttonStyle="plain" action={() => { setFull("barcode"); void refresh(); }}>
-                <VStack padding={{ vertical: 8, horizontal: 12 }}
+                <VStack padding={{ vertical: 8, horizontal: 4 }} frame={{ maxWidth: "infinity" }}
                   background={{ style: "white", shape: BARCODE_SHAPE }} contentShape="rect">
                   <Barcode widthList={widthList} height={78} />
                 </VStack>
@@ -353,27 +376,36 @@ function StationIdentityContent({ platform, expectedGeneration }: {
           </HStack>
         </Section>
       ) : null}
-      {valid ? (
+      {valid || platform === "cainiao" ? (
         <Section header={detailTitle("身份码编号")}>
-          <HStack spacing={12} frame={{ maxWidth: "infinity" }} listRowInsets={DETAIL_ROW_INSETS}>
-            <StationIdentityMark asset={platform === "cainiao" ? "taobao" : platform} size={DETAIL_MARK_SIZE} />
+          <HStack spacing={0} frame={{ maxWidth: "infinity" }} listRowInsets={DETAIL_ROW_INSETS}>
+            {platform === "cainiao" ? (
+              <Button buttonStyle="plain" action={onSwitchCainiao} {...switchLabel}>
+                <HStack frame={{ width: 48, minHeight: 44, alignment: "leading" }} contentShape="rect">
+                  <StationIdentityMark asset={markAsset} size={DETAIL_MARK_SIZE} />
+                </HStack>
+              </Button>
+            ) : <HStack frame={{ width: 48, alignment: "leading" }}>
+              <StationIdentityMark asset={markAsset} size={DETAIL_MARK_SIZE} />
+            </HStack>}
             <Text font={24} fontWeight="bold" lineLimit={1} minScaleFactor={0.55}
               frame={{ maxWidth: "infinity", alignment: "leading" }}>
               {value.replace(/(\d{4})(\d{4})(\d{4})/, "$1 $2 $3")}
             </Text>
-            <Button buttonStyle="plain" action={() => {
+            {valid ? <Button buttonStyle="plain" padding={{ leading: 12 }} action={() => {
               if (!currentSession() || expiresAtMs <= Date.now()) return;
               void copyText(value);
             }}>
               <ZStack frame={{ minWidth: 44, minHeight: 44 }} contentShape="rect">
                 <Text font={14} fontWeight="semibold" foregroundStyle="accentColor"
                   frame={{ minHeight: DETAIL_MARK_SIZE }} padding={{ horizontal: 12 }}
-                  background={{ style: "tertiarySystemFill", shape: "capsule" }}>复制</Text>
+                  {...tabCapsuleSurface(true)}>复制</Text>
               </ZStack>
-            </Button>
+            </Button> : null}
           </HStack>
         </Section>
-      ) : !busy ? (
+      ) : null}
+      {!valid && !busy ? (
         <Section>
           <Button buttonStyle="plain" action={() => void openRecovery("app")}>
             <Text foregroundStyle="accentColor" frame={{ maxWidth: "infinity", alignment: "center" }} contentShape="rect">

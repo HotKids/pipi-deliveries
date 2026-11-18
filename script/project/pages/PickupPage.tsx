@@ -1,7 +1,7 @@
-import { Button, HStack, List, Navigation, NavigationStack, Section, Text, VStack, ZStack, useEffect, useMemo, useRef, useState } from "scripting";
+import { Button, HStack, List, Navigation, NavigationStack, Section, Text, VStack, useEffect, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
-import { RootPageHeader } from "../components/RootPageHeader";
+import { rootPageNavigation, ScrollingRootTitle } from "../components/RootPageHeader";
 import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import { pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
@@ -142,6 +142,7 @@ export function PickupPage({
   const dismiss = Navigation.useDismiss();
   const [detailTarget, setDetailTarget] = useState<ParcelActivityTarget | undefined>(undefined);
   const [identity, setIdentity] = useState<IdentityPlatform | null>(null);
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
   const [visible, setVisible] = useState(false);
   const [cabinetRevision, setCabinetRevision] = useState(0);
   useEffect(() => visible ? onPlatformAccountsChanged(platform => {
@@ -187,10 +188,13 @@ export function PickupPage({
 
   return (
     <NavigationStack>
-      <ZStack alignment="bottomTrailing"
+      <List
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        navigationTitle="取件"
-        navigationBarVisibility="hidden"
+        {...rootPageNavigation("取件", () => dismiss(), headerCollapsed)}
+        onAppear={() => setVisible(true)}
+        onDisappear={() => setVisible(false)}
+        contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
+        overlay={{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen={openIdentity} /> }}
         navigationDestination={{
           isPresented: Boolean(identity || selected),
           onChanged: (presented) => {
@@ -216,26 +220,14 @@ export function PickupPage({
           ) : <Text>物流详情</Text>,
         }}
       >
-        <List
-          onAppear={() => setVisible(true)}
-          onDisappear={() => setVisible(false)}
-          safeAreaInset={{
-            top: {
-              spacing: 0,
-              content: <RootPageHeader title="取件" action={() => dismiss()} />,
-            },
-          }}
-          contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
-        >
-          {sections.map(({ key, label, items, preview }) => (
-            <Section key={key} header={<Text>{label}</Text>}>
-              {items.map(cardRow)}
-              {preview ? <ParcelActivityPreviewCard animate /> : null}
-            </Section>
-          ))}
-        </List>
-        <IdentityCodeButton onOpen={openIdentity} />
-      </ZStack>
+        <ScrollingRootTitle title="取件" onCollapsed={setHeaderCollapsed} />
+        {sections.map(({ key, label, items, preview }) => (
+          <Section key={key} header={<Text>{label}</Text>}>
+            {items.map(cardRow)}
+            {preview ? <ParcelActivityPreviewCard animate /> : null}
+          </Section>
+        ))}
+      </List>
     </NavigationStack>
   );
 }
