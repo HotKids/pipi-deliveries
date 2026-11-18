@@ -4,6 +4,7 @@ import {
   HStack,
   Image,
   List,
+  Navigation,
   NavigationStack,
   ProgressView,
   ScrollView,
@@ -23,6 +24,7 @@ import type { AppState, RefreshSummary, Shipment, StatusSemantic } from "../mode
 import { ShipmentRow } from "../components/ShipmentRow";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
 import { RootPageHeader } from "../components/RootPageHeader";
+import { TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import {
   commitManualShipmentPreview,
   queryManualShipmentPreview,
@@ -115,6 +117,7 @@ export function HomePage(props: {
   onListPull?: () => void;
   platformNotice?: Readonly<{ text: string }>;
 }) {
+  const dismiss = Navigation.useDismiss();
   const pullInFlight = useRef<Promise<void> | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
@@ -352,8 +355,12 @@ export function HomePage(props: {
         safeAreaInset={{
           top: {
             spacing: 0,
-            content: <RootPageHeader title="快递" searches action={() => searchPresented.setValue(true)} />,
+            content: <RootPageHeader title="快递" action={() => dismiss()} background="systemBackground" />,
           },
+        }}
+        overlay={{
+          alignment: "bottomTrailing",
+          content: <TabFloatingActionButton title="查询" symbol="magnifyingglass" action={() => searchPresented.setValue(true)} />,
         }}
         toast={searchPresented.value ? undefined : transientToast(notice, setNotice)}
         sheet={{
@@ -486,6 +493,7 @@ export function HomePage(props: {
         ) : null}
         <List key="shipments" listStyle="plain" refreshable={refresh}
           frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+          contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
           overlay={!shipments.length ? {
             alignment: "center",
             content: (
@@ -498,8 +506,7 @@ export function HomePage(props: {
           } : undefined}
         >
           {shipments.length ? (
-            <Section listSectionSeparator={visibleFilters.length === 1
-              ? { visibility: "hidden", edges: "top" } : undefined}>
+            <Section listSectionSeparator={{ visibility: "hidden", edges: "top" }}>
               {shownShipments.map((shipment) => (
                 <ShipmentRow
                   key={shipment.identity.id}

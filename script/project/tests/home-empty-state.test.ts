@@ -51,8 +51,12 @@ const next = refresh();
 assert.equal(beginCount, 2, "a new gesture still starts another pull");
 finishPull();
 await next;
-assert.match(homeSource, /navigationBarVisibility="hidden"[\s\S]*?<RootPageHeader title="快递" searches/,
-  "the Home title sits in the tab header above the list");
+assert.match(homeSource, /navigationBarVisibility="hidden"[\s\S]*?<RootPageHeader title="快递" action=\{\(\) => dismiss\(\)\}/,
+  "the Home title and exit are in the tab header above the list");
+assert.match(homeSource, /overlay=\{\{\s*alignment: "bottomTrailing",\s*content: <TabFloatingActionButton title="查询"/);
+assert.match(homeSource, /contentMargins=\{\{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" \}\}/);
+assert.match(homeSource, /<Section listSectionSeparator=\{\{ visibility: "hidden", edges: "top" \}\}>/,
+  "the first row has no section separator under any filter");
 assert.doesNotMatch(homeSource, /placement="title"|systemName="chevron\.left"/,
   "the Home root has no second title or back button");
 assert.doesNotMatch(

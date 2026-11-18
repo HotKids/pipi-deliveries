@@ -199,7 +199,7 @@ export type ParcelPlatformFields = Readonly<{
   estimate?: { text: string; source: "cainiao" | "jingdong" | "pinduoduo"; capturedAtMs: number };
 }>;
 
-export type PddParcelImport = Readonly<{ ownerKey: string; orderId: string }>;
+export type PddParcelImport = Readonly<{ ownerKey: string; orderId: string; shippingId?: string }>;
 
 export type ParcelHandoffRecord = Readonly<{
   id: string;

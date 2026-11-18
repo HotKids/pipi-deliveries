@@ -1,4 +1,5 @@
 import {
+  AppEvents,
   Button,
   HStack,
   Image,
@@ -29,7 +30,7 @@ import {
   ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE,
   ACCESS_KEY_INVALID_MESSAGE,
 } from "../services/gateway";
-import { savedKeyActivatedElsewhere } from "../services/scripting-activation";
+import { onScriptingActivationRejectionChanged, savedKeyActivatedElsewhere } from "../services/scripting-activation";
 import { loadState } from "../services/storage";
 import { enhancementOperation, requireEnhancementBinding } from "../services/enhanced-account";
 import {
@@ -102,22 +103,12 @@ function SettingsAppIcon() {
   return <SettingsRowIcon systemName="cat" backgroundColor="#B872AB" />;
 }
 
-export function SettingsPage(props: {
-  state: AppState;
-  pickupCards: readonly ParcelActivityContent[];
-  onStateChange: (state: AppState) => void;
-}) {
-  const dismiss = Navigation.useDismiss();
-  const [token, setToken] = useState("");
+export function useSettingsOverview() {
   const [authorization, setAuthorization] =
     useState<AuthorizationState>("unauthorized");
-  const [notice, setNotice] = useState("");
   const [authorizationNotice, setAuthorizationNotice] = useState("");
-  const [destination, setDestination] =
-    useState<"" | "phones" | "notifications" | "diagnostics" | "privacy" | "shortcuts" | "activity">("");
-  const [managerNotice, setManagerNotice] = useState("");
   const [platformCount, setPlatformCount] = useState(0);
-  const [diagnosticCount, setDiagnosticCount] = useState(0);
+  const [enabledNotificationCount, setEnabledNotificationCount] = useState<number | undefined>();
   useEffect(() => {
     const refreshPlatformCount = () => {
       setPlatformCount(PLATFORM_SOURCES.filter((platform) => {
@@ -129,14 +120,25 @@ export function SettingsPage(props: {
         }
       }).length);
     };
-    refreshPlatformCount();
-    return onPlatformAccountsChanged(refreshPlatformCount);
+    const refresh = () => {
+      refreshAuthorization();
+      refreshPlatformCount();
+      setEnabledNotificationCount(notificationEnabledCount(true));
+    };
+    const initial = setTimeout(refresh, 0);
+    const onScene = (phase: "active" | "inactive" | "background") => {
+      if (phase === "active") refresh();
+    };
+    AppEvents.scenePhase.addListener(onScene);
+    const unsubscribe = onPlatformAccountsChanged(refreshPlatformCount);
+    const stopActivationObservation = onScriptingActivationRejectionChanged(refreshAuthorization);
+    return () => {
+      clearTimeout(initial);
+      AppEvents.scenePhase.removeListener(onScene);
+      unsubscribe();
+      stopActivationObservation();
+    };
   }, []);
-  const [enabledNotificationCount, setEnabledNotificationCount] = useState(
-    () => notificationEnabledCount(true),
-  );
-
-  const configured = authorization === "authorized";
 
   function refreshAuthorization(): AuthorizationState {
     try {
@@ -159,6 +161,27 @@ export function SettingsPage(props: {
       return "unavailable";
     }
   }
+
+  return { authorization, authorizationNotice, setAuthorizationNotice, platformCount,
+    enabledNotificationCount, setEnabledNotificationCount, refreshAuthorization };
+}
+
+export function SettingsPage(props: {
+  state: AppState;
+  pickupCards: readonly ParcelActivityContent[];
+  overview: ReturnType<typeof useSettingsOverview>;
+  onStateChange: (state: AppState) => void;
+}) {
+  const dismiss = Navigation.useDismiss();
+  const [token, setToken] = useState("");
+  const [notice, setNotice] = useState("");
+  const [destination, setDestination] =
+    useState<"" | "phones" | "notifications" | "diagnostics" | "privacy" | "shortcuts" | "activity">("");
+  const [managerNotice, setManagerNotice] = useState("");
+  const [diagnosticCount, setDiagnosticCount] = useState(0);
+  const { authorization, authorizationNotice, setAuthorizationNotice, platformCount, enabledNotificationCount,
+    setEnabledNotificationCount, refreshAuthorization } = props.overview;
+  const configured = authorization === "authorized";
 
   function saveToken() {
     try {
@@ -283,16 +306,11 @@ export function SettingsPage(props: {
           },
         }}
         toast={transientToast(notice, setNotice)}
-        onAppear={() => {
-          refreshAuthorization();
-          setEnabledNotificationCount(notificationEnabledCount(true));
-        }}
         navigationDestination={{
           isPresented: Boolean(destination),
           onChanged: (presented) => {
             if (presented) return;
             setDestination("");
-            setEnabledNotificationCount(notificationEnabledCount(true));
           },
           content: destination === "phones" ? (
             <PhoneManagerPage
@@ -383,7 +401,7 @@ export function SettingsPage(props: {
               <Text>通知管理</Text>
               <Spacer />
               <Text foregroundStyle="secondaryLabel" monospacedDigit>
-                {enabledNotificationCount
+                {enabledNotificationCount === undefined ? "" : enabledNotificationCount
                   ? `已开启 ${enabledNotificationCount}`
                   : "已关闭"}
               </Text>

@@ -3,7 +3,7 @@ import { PhoneBindingPage, type PhoneBindingPageProps } from "./PhoneBindingPage
 import { SettingsRowIcon } from "../components/SettingsRowIcon";
 import { transientToast } from "../services/ui-feedback";
 
-const SAMSUNG_BRAND_BLUE = "#1428A0";
+const SAMSUNG_PHONE_TILE_BLUE = "#1576BB";
 
 type SamsungAssistantPageProps = Pick<PhoneBindingPageProps, "bindings" | "onSendCode" | "onBind"> & {
   identityNotice: string;
@@ -59,7 +59,7 @@ export function SamsungAssistantPage(props: SamsungAssistantPageProps) {
         {props.bindings.length ? props.bindings.map((binding) => (
           <Button key={binding.phone} buttonStyle="plain" action={() => selectPhone(binding.phone)}>
             <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">
-              <SettingsRowIcon systemName="phone.fill" backgroundColor={SAMSUNG_BRAND_BLUE} size={36} />
+              <SettingsRowIcon systemName="phone.fill" backgroundColor={SAMSUNG_PHONE_TILE_BLUE} size={36} />
               <Text font="body" monospacedDigit>{binding.phone}</Text>
               <Spacer />
               <Text font="footnote" foregroundStyle="secondaryLabel">

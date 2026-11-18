@@ -83,17 +83,16 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const height = (bottom - top) * scale;
   const artWidth = card.artWidth * scale;
   const artHeight = card.artHeight * scale;
-  const fitsHost = lockScreen && width !== undefined;
-  const flexibleHeight = fitsHost || expanded;
+  const fitsHost = (lockScreen || expanded) && width !== undefined;
+  const flexibleHeight = lockScreen && width !== undefined;
   const slot = (size: number, minimum = 0) => ({
     minHeight: (flexibleHeight ? minimum : size) * scale,
     idealHeight: size * scale,
     maxHeight: size * scale,
   });
   const hostInset = fitsHost ? card.iconGap : 0;
-  const hostVerticalInset = fitsHost ? card.textLeft - card.artWidth : 0;
+  const hostVerticalInset = flexibleHeight ? card.textLeft - card.artWidth : 0;
   const contentWidth = (card.width - card.textLeft) * scale;
-  const glass = (lockScreen || lockScreenPreview) && Number.parseInt(Device.systemVersion, 10) >= 26;
   const { accent } = parcelCardArtwork(data);
   const palette = parcelCardPalette(accent);
   const cardShape = { type: "rect", cornerRadius: card.corner * scale } as const;
@@ -110,7 +109,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const showCapsule = Boolean(data.code && (completion || preview || onComplete));
   const completionLabel = actionLabel || (handoff ? "我已寄件" : "我已取件");
   const capsuleWidth = card.capsuleInset * 2 + card.capsuleIcon + card.iconGap + completionLabel.length * card.capsuleFont;
-  const codeWidth = fitsHost && showCapsule
+  const codeWidth = showCapsule
     ? Math.max(0, contentWidth - (card.edge + card.codeGap + capsuleWidth) * scale)
     : "infinity";
   const subtitle = parcelPickupSubtitle(data, locationText, showingAddress);
@@ -153,11 +152,11 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     </HStack>
   );
   const code = (
-    <Text font={card.codeFont * scale} fontWeight="semibold"
+    <Text font={card.codeFont * scale} fontWeight="semibold" fontWidth="condensed"
       foregroundStyle={palette.code}
       kerning={0.4 * scale} lineLimit={1} allowsTightening={fitsHost} minScaleFactor={(fitsHost ? 9 : 12) / card.codeFont}
       frame={{ ...slot(card.codeHeight), minWidth: fitsHost ? undefined : 0, maxWidth: codeWidth, alignment: "leading" }}
-      layoutPriority={fitsHost ? 1 : 0}>
+      layoutPriority={1}>
       {parcelPickupShortCode(data.code)}
     </Text>
   );
@@ -180,13 +179,8 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   return (
     <HStack alignment="top" spacing={(card.textLeft - card.artWidth) * scale}
       frame={{ ...slot(bottom - top), minWidth: 0, maxWidth: "infinity", alignment: "topLeading" }}
-      background={expanded ? undefined : glass ? (
-        <ZStack>
-          <Rectangle fill={cardBackground} />
-          <Rectangle fill="clear" glassEffect={{ glass: UIGlass.clear(), shape: cardShape }} />
-        </ZStack>
-      ) : cardBackground}
-      activityBackgroundTint={lockScreen ? palette.gradient[0] : undefined}
+      background={expanded ? undefined : cardBackground}
+      activityBackgroundTint={lockScreen ? "clear" : undefined}
       clipShape={expanded || lockScreen ? undefined : cardShape}
       widgetURL={url} onTapGesture={onDetail} contentShape="rect">
       {fitsHost ? (

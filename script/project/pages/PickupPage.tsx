@@ -1,35 +1,32 @@
-import { Button, HStack, Image, List, Navigation, NavigationStack, Section, Text, VStack, useMemo, useRef, useState } from "scripting";
+import { Button, HStack, List, Navigation, NavigationStack, Section, Text, VStack, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
 import { RootPageHeader } from "../components/RootPageHeader";
+import { TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import { pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
-import { platformSession, type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
+import type { IdentityPlatform } from "../services/platform-accounts";
 import { needsDetailEntryQuery } from "../services/shipment-policy";
 import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
 import { setPickupCardNote } from "../services/storage";
 import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { requestWidgetReload } from "../services/widgets";
 import { DetailPage } from "./DetailPage";
-import { openWebIdentity, StationIdentityMark, StationIdentityPage } from "./StationIdentityPage";
+import { StationIdentityMark, StationIdentityPage } from "./StationIdentityPage";
 
 const IDENTITY_CHOICES = [
   { platform: "cainiao", title: "菜鸟驿站" },
   { platform: "pinduoduo", title: "多多驿站" },
 ] as const;
-const IDENTITY_DIAMETER = 56;
-const IDENTITY_INSET = 20;
-const IDENTITY_BACKGROUND = { light: "#9EF0FC", dark: "#004F57" } as const;
-const IDENTITY_FOREGROUND = { light: "#004F57", dark: "#9EF0FC" } as const;
 
 function IdentityCodeButton({ onOpen }: {
   onOpen: (platform: IdentityPlatform) => void;
 }) {
   const [showPicker, setShowPicker] = useState(false);
   return (
-    <Button
-      buttonStyle="plain"
+    <TabFloatingActionButton
+      title="身份码" symbol="person.text.rectangle"
       action={() => setShowPicker(true)}
       popover={{
         isPresented: showPicker,
@@ -53,18 +50,7 @@ function IdentityCodeButton({ onOpen }: {
           </VStack>
         ),
       }}
-    >
-      <VStack
-        spacing={1}
-        frame={{ width: IDENTITY_DIAMETER, height: IDENTITY_DIAMETER }}
-        background={{ style: IDENTITY_BACKGROUND, shape: "circle" }}
-        shadow={{ color: "rgba(0,0,0,0.15)", radius: 12, x: 0, y: 4 }}
-        contentShape="circle"
-      >
-        <Image systemName="person.text.rectangle" font={24} fontWeight="semibold" foregroundStyle={IDENTITY_FOREGROUND} />
-        <Text font={9} fontWeight="medium" foregroundStyle={IDENTITY_FOREGROUND}>身份码</Text>
-      </VStack>
-    </Button>
+    />
   );
 }
 
@@ -150,21 +136,12 @@ export function PickupPage({
 }) {
   const dismiss = Navigation.useDismiss();
   const [detailTarget, setDetailTarget] = useState<ParcelActivityTarget | undefined>(undefined);
-  const [identity, setIdentity] = useState<{ platform: IdentityPlatform; session: PlatformSession } | null>(null);
+  const [identity, setIdentity] = useState<IdentityPlatform | null>(null);
   const selected = shipmentForPickupTarget(shipments, detailTarget);
   const attachedOrders = useMemo(() => selected ? attachedProjectedOrders(state.shipments, selected) : undefined,
     [state.shipments, selected]);
   const records = state.pickupCodeRecords;
   const sections = pickupDateSections(cards, previewing, focusedRecordId);
-
-  function openIdentity(platform: IdentityPlatform) {
-    const session = platformSession(platform);
-    if (session) {
-      setIdentity({ platform, session });
-    } else {
-      void openWebIdentity(platform, null).catch(() => showNotice("身份码暂时不可用，请重试。"));
-    }
-  }
 
   function cardRow(card: ParcelActivityContent) {
     const target = card.target;
@@ -193,18 +170,15 @@ export function PickupPage({
             content: <RootPageHeader title="取件" action={() => dismiss()} />,
           },
         }}
-        sheet={{
-          isPresented: identity !== null,
-          onChanged: (shown) => { if (!shown) setIdentity(null); },
-          content: identity ? (
-            <StationIdentityPage key={identity.platform + ":" + identity.session.generation}
-              platform={identity.platform} session={identity.session} onClose={() => setIdentity(null)} />
-          ) : <VStack />,
-        }}
         navigationDestination={{
-          isPresented: Boolean(selected),
-          onChanged: (presented) => { if (!presented) setDetailTarget(undefined); },
-          content: selected ? (
+          isPresented: Boolean(identity || selected),
+          onChanged: (presented) => {
+            if (!presented) {
+              setIdentity(null);
+              setDetailTarget(undefined);
+            }
+          },
+          content: identity ? <StationIdentityPage key={identity} platform={identity} /> : selected ? (
             <DetailPage
               key={selected.identity.id}
               shipment={selected}
@@ -217,14 +191,10 @@ export function PickupPage({
             />
           ) : <Text>物流详情</Text>,
         }}
-        contentMargins={{ edges: "bottom", insets: IDENTITY_DIAMETER + IDENTITY_INSET, placement: "scrollContent" }}
+        contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
         overlay={{
           alignment: "bottomTrailing",
-          content: (
-            <VStack padding={{ trailing: IDENTITY_INSET, bottom: IDENTITY_INSET }}>
-              <IdentityCodeButton onOpen={openIdentity} />
-            </VStack>
-          ),
+          content: <IdentityCodeButton onOpen={setIdentity} />,
         }}
       >
         {sections.map(({ key, label, items, preview }) => (

@@ -9,6 +9,7 @@ export type PlatformParcel = Readonly<{
   source: ExpressPlatform;
   waybill: string;
   orderIds?: readonly string[];
+  shippingId?: string;
   title?: string;
   estimate?: string;
   code?: string;
@@ -70,6 +71,11 @@ export function deliveryForecast(raw: unknown, now: number): string {
   return displayDeliveryEstimate(value, now, now);
 }
 
+export function uniqueDeliveryForecast(values: readonly unknown[], now: number): string {
+  const estimates = new Set(values.map((value) => deliveryForecast(value, now)).filter(Boolean));
+  return estimates.size === 1 ? [...estimates][0] : "";
+}
+
 export function productTitle(value: unknown): string {
   const title = typeof value === "string" ? value.trim() : "";
   return title.length <= 512 && !/[\u0000-\u0008\u000E-\u001F]/.test(title) ? title : "";
@@ -88,6 +94,26 @@ function firstTime(row: JsonObject, fields: readonly string[]): number | undefin
     if (value) return value;
   }
   return undefined;
+}
+
+function cainiaoParcelFields(parcel: JsonObject, now: number) {
+  let dynamic = asPlainObject(parcel.packageDyn);
+  if (typeof parcel.packageDyn === "string") {
+    try { dynamic = asPlainObject(JSON.parse(parcel.packageDyn)); } catch { /* Unknown provider field. */ }
+  }
+  return {
+    title: [...new Set(objectList(parcel.packageItem).map((item) => productTitle(item.itemTitle)).filter(Boolean))].join("\n"),
+    estimate: CN_RECIPIENT_TERMINAL.test(firstCleanScalarText(parcel, "status", "statusDesc", "packageStatus")) ? "" :
+      uniqueDeliveryForecast([...Object.values(parcel), ...Object.values(dynamic)], now),
+  };
+}
+
+export function cainiaoParcelDetails(data: JsonObject, waybill: string, now: number): PlatformParcel | undefined {
+  const result = data.result;
+  const matches = (Array.isArray(result) ? objectList(result) : [isPlainObject(result) ? result : data])
+    .filter((row) => waybill === normalizeWaybill(firstCleanScalarText(row, "mailNo", "mail_no")));
+  if (matches.length !== 1) return undefined;
+  return { source: "cainiao", waybill, ...cainiaoParcelFields(matches[0], now) };
 }
 
 export function cainiaoRecipientParcels(data: JsonObject, now: number): PlatformParcel[] {
@@ -110,17 +136,10 @@ export function cainiaoRecipientParcels(data: JsonObject, now: number): Platform
     const code = candidates.map((value) => platformPickupCode(value, rawWaybill, ...orderIds)).find(Boolean);
     const name = firstCleanScalarText(station, "pointName", "point_name", "stationName", "station_name", "name");
     const address = firstCleanScalarText(station, "address", "stationAddress", "station_address", "pointAddress", "addr");
-    const title = [...new Set(items.map((item) => productTitle(item.itemTitle)).filter(Boolean))].join("\n");
-    let dynamic = asPlainObject(pkg.packageDyn);
-    if (typeof pkg.packageDyn === "string") {
-      try { dynamic = asPlainObject(JSON.parse(pkg.packageDyn)); } catch { /* Unknown provider field. */ }
-    }
-    const estimates = new Set([...Object.values(pkg), ...Object.values(dynamic)]
-      .map((raw) => deliveryForecast(raw, now)).filter(Boolean));
     if (!waybill && (rawWaybill || !code || !(name || address))) continue;
     output.push({
       source: "cainiao", waybill, orderIds,
-      title, estimate: estimates.size === 1 ? [...estimates][0] : "",
+      ...cainiaoParcelFields(pkg, now),
       code, name, address, unnumbered: !rawWaybill,
       carrierCode: firstCleanScalarText(pkg, "cpCode", "cp_code"),
       carrierName: firstCleanScalarText(pkg, "cpName", "cp_name", "companyName"),

@@ -19,6 +19,7 @@ import { activePickupCards, parcelActivityContent, shipmentForPickupTarget } fro
 import { registerProjectionViewportHost } from "../services/projection-viewport";
 import { clearDiagnostics, readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { fetchJdParcels } from "../services/platform-web-parcels";
+import { refreshParcelDetailFields } from "../services/parcel-detail-fields";
 
 const {
   completeCurrentParcelCard, emptyState, loadState, savePlatformParcelData, saveRecognizedParcelCode, saveState,
@@ -270,16 +271,20 @@ test("a handoff note survives provider refresh and cannot edit a completed card"
   assert.throws(() => setPickupCardNote(card, "退换货", "迟到备注", NOW + 101));
 });
 
-test("Taobao station identity follows the H5 response and refresh cadence", () => {
+test("Taobao station identity reads the reference script's nested payload and expiry", () => {
   const value = "CS00000000000000001A";
   assert.deepEqual(identityCodeFromResponse("cainiao", { identityCode: value }, NOW),
-    { value, expiresAtMs: NOW + 180_000 });
+    { value, expiresAtMs: NOW + 300_000 });
   for (const field of ["result", "data"]) {
     assert.deepEqual(identityCodeFromResponse("cainiao", { [field]: { identityCode: value } }, NOW),
-      { value, expiresAtMs: NOW + 180_000 });
+      { value, expiresAtMs: NOW + 300_000 });
   }
-  assert.throws(() => identityCodeFromResponse("cainiao",
-    { model: { identityCode: value, expireTime: 30 } }, NOW));
+  assert.deepEqual(identityCodeFromResponse("cainiao",
+    { data: { model: [{ identityCode: value, expireTime: 30 }] } }, NOW),
+    { value, expiresAtMs: NOW + 30_000 });
+  assert.deepEqual(identityCodeFromResponse("cainiao",
+    { result: { model: { code: value, expireTime: 1_200_000 } } }, NOW),
+    { value, expiresAtMs: NOW + 1_200_000 });
   assert.throws(() => identityCodeFromResponse("cainiao",
     { result: { unrelatedCode: value } }, NOW));
 });
@@ -287,6 +292,9 @@ test("Taobao station identity follows the H5 response and refresh cadence", () =
 test("PDD identity uses the provider lifetime and standard Code 128 symbols", () => {
   assert.deepEqual(identityCodeFromResponse("pinduoduo", { result: { identification_code: "PD123456", expire_mills: 30_000 } }, NOW),
     { value: "PD123456", expiresAtMs: NOW + 30_000 });
+  assert.deepEqual(identityCodeFromResponse("pinduoduo", {
+    result: { identification_code: "PD123456", mobile_info_desc: "已绑定常用手机号：138****0000" },
+  }, NOW), { value: "PD123456", expiresAtMs: NOW + 300_000, mobile: "138****0000" });
   assert.throws(() => identityCodeFromResponse("pinduoduo",
     { result: { identification_code: "012345", expire_mills: true } }, NOW));
   assert.throws(() => identityCodeFromResponse("pinduoduo", { result: { identification_code: "跨", expire_mills: 10 } }, NOW));
@@ -309,14 +317,14 @@ test("the Cainiao action requests the Taobao identity with the current account o
     assert.equal(url.searchParams.get("api"), "mtop.cainiao.pickup.identity.getIdentityMessage");
     assert.deepEqual(JSON.parse(url.searchParams.get("data")!), {});
     assert.equal((init.headers as Record<string, string>).Cookie, "cookie2=synthetic-taobao-session");
-    return new Response(JSON.stringify({ ret: ["SUCCESS::ok"], data: { identityCode: value } }));
+    return new Response(JSON.stringify({ ret: ["SUCCESS::ok"], data: { data: { model: { identityCode: value, expireTime: 90 } } } }));
   };
   const fetchMock = t.mock.method(globalThis, "fetch", async (input: string, init: RequestInit) => read(input, init));
   try {
     Object.assign(globalThis, { Crypto: { ...previousCrypto,
       md5: (data: string) => ({ toHexString: () => createHash("md5").update(data).digest("hex") }),
     } });
-    assert.deepEqual(await fetchStationIdentity("cainiao", session), { value, expiresAtMs: NOW + 180_000 });
+    assert.deepEqual(await fetchStationIdentity("cainiao", session), { value, expiresAtMs: NOW + 90_000 });
     fetchMock.mock.mockImplementationOnce(async (input: string, init: RequestInit) => {
       const response = read(input, init);
       clearPlatformLogin("cainiao", session.generation);
@@ -345,6 +353,76 @@ test("old PDD identity response after logout cannot create an active code or cle
     assert.notEqual(platformSession("pinduoduo")?.generation, first.generation);
     assert.equal(currentPlatformSession("pinduoduo", first.generation), null);
   } finally { globalThis.fetch = realFetch; }
+});
+
+test("opening a retained detail reads only its CaiNiao parcel and leaves the account clock alone", async (t) => {
+  memory.clear();
+  t.mock.method(Date, "now", () => NOW);
+  const base = shipment();
+  const selected = { ...base, identity: { ...base.identity, sourceProvider: "cainiao" },
+    timeline: { ...base.timeline, semantic: "TRANSIT" as const } };
+  saveState({ ...emptyState(), shipments: [selected] }, NOW);
+  const cookie = { ...sessionCookie, name: "cookie2", domain: ".taobao.com", value: "synthetic-taobao-session" };
+  const previousCrypto = globalThis.Crypto;
+  Object.assign(globalThis, { Crypto: { ...previousCrypto,
+    md5: (data: string) => ({ toHexString: () => createHash("md5").update(data).digest("hex") }),
+  } });
+  const fetched = t.mock.method(globalThis, "fetch", async (input: string) => {
+    const url = new URL(input);
+    assert.equal(url.searchParams.get("api"), "mtop.cainiao.logisticsdetail.packages.pid.orderCode.mailNo.get");
+    assert.deepEqual(JSON.parse(url.searchParams.get("data")!), { mailNo: waybill });
+    return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { result: [
+      { mailNo: "TESTOTHER008", packageItem: [{ itemTitle: "Other parcel" }] },
+      { mailNo: waybill, packageItem: [{ itemTitle: "Selected parcel" }], packageDyn: { arriveTime: "预计明天送达" } },
+    ] } }));
+  });
+  try {
+    const row = visibleShipments(loadState())[0];
+    assert.equal(await refreshParcelDetailFields(row, () => true), undefined);
+    assert.equal(fetched.mock.callCount(), 0);
+    savePlatformLogin("cainiao", "", { kind: "web", cookies: [cookie] }, "synthetic-cainiao-account");
+    const priorSync = accountStatus("cainiao").syncedAtMs;
+    const update = await refreshParcelDetailFields(row, () => true);
+    assert.ok(update);
+    assert.deepEqual(displayedPlatformFields(update.shipment, NOW), { title: "Selected parcel", estimate: "预计明天送达" });
+    assert.deepEqual(update.shipment.timeline, row.timeline);
+    assert.equal(accountStatus("cainiao").syncedAtMs, priorSync);
+    assert.equal(fetched.mock.callCount(), 1);
+  } finally {
+    Object.assign(globalThis, { Crypto: previousCrypto });
+  }
+});
+
+test("an empty parcel detail response reserves its waybill and a delayed response cannot write after leaving", async (t) => {
+  memory.clear();
+  let clock = NOW;
+  t.mock.method(Date, "now", () => clock);
+  const base = shipment();
+  saveState({ ...emptyState(), shipments: [{ ...base, identity: { ...base.identity, sourceProvider: "cainiao" } }] }, NOW);
+  const cookie = { ...sessionCookie, name: "cookie2", domain: ".taobao.com", value: "synthetic-taobao-session" };
+  savePlatformLogin("cainiao", "", { kind: "web", cookies: [cookie] }, "synthetic-cainiao-account");
+  const previousCrypto = globalThis.Crypto;
+  Object.assign(globalThis, { Crypto: { ...previousCrypto,
+    md5: (data: string) => ({ toHexString: () => createHash("md5").update(data).digest("hex") }),
+  } });
+  const fetched = t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ ret: ["SUCCESS"], data: { result: [] } })));
+  try {
+    const row = visibleShipments(loadState())[0];
+    assert.equal(await refreshParcelDetailFields(row, () => true), undefined);
+    assert.equal(await refreshParcelDetailFields(row, () => true), undefined);
+    assert.equal(fetched.mock.callCount(), 1);
+    clock += 3_600_000;
+    let visible = true;
+    fetched.mock.mockImplementationOnce(async () => {
+      visible = false;
+      return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { result: { mailNo: waybill, packageItem: [{ itemTitle: "Late" }] } } }));
+    });
+    assert.equal(await refreshParcelDetailFields(row, () => visible), undefined);
+    assert.equal(fetched.mock.callCount(), 2);
+    assert.equal(visibleShipments(loadState())[0].platformFields, undefined);
+  } finally {
+    Object.assign(globalThis, { Crypto: previousCrypto });
+  }
 });
 
 test("Cainiao publishes the recipient sync time before a distinct sender failure", async (t) => {

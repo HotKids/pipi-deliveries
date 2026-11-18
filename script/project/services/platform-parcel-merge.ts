@@ -11,6 +11,10 @@ export function eligiblePickup(shipment: Shipment): boolean {
     shipmentPresentationStatus(shipment).semantic === "WAITING_PICKUP";
 }
 
+export function deliveryEstimateApplies(shipment: Shipment): boolean {
+  return ["PICKED", "TRANSIT", "DELIVERY"].includes(shipmentPresentationStatus(shipment).semantic);
+}
+
 function orderMatches(shipment: Shipment, parcel: PlatformParcel, owner: string): boolean {
   const ids = parcel.orderIds || [];
   if (parcel.source === "pinduoduo") {
@@ -86,8 +90,7 @@ export function displayedPlatformFields(shipment: Shipment, now = Date.now(), cl
     matchesParcelMetadataLifecycle(shipment, cloud.anchorAt, cloud.terminalAt ?? 0, now) ? cloud : undefined;
   if (!saved && !matchingCloud) return {};
   const estimate = saved?.estimate;
-  const semantic = shipmentPresentationStatus(shipment).semantic;
-  const inTransit = ["PICKED", "TRANSIT", "DELIVERY"].includes(semantic);
+  const inTransit = deliveryEstimateApplies(shipment);
   const localEstimate = estimate && inTransit ? displayDeliveryEstimate(estimate.text, estimate.capturedAtMs, now) : "";
   const cloudEstimate = inTransit && matchingCloud?.deliveryEstimate && !matchingCloud.terminalAt
     ? displayDeliveryEstimate(matchingCloud.deliveryEstimate, matchingCloud.deliveryEstimateObservedAt ?? 0, now) : "";

@@ -1,15 +1,17 @@
 import {
-  AppEvents, Button, Canvas, GeometryReader, HStack, Image, NavigationStack,
-  ScrollView, Text, VStack, ZStack, useEffect, useMemo, useObservable, useRef, useState,
+  AppEvents, Button, Canvas, Form, GeometryReader, HStack, Image, Section,
+  Text, VStack, ZStack, useEffect, useMemo, useObservable, useRef, useState,
 } from "scripting";
 import { bundledImage } from "../components/bundled-image";
 import { iconTileShape } from "../components/icon-tile";
+import { copyText } from "../services/clipboard";
 import { code128Widths } from "../services/code128";
-import { currentPlatformSession, onPlatformAccountsChanged,
+import { currentPlatformSession, onPlatformAccountsChanged, platformSession,
   type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
 import { fetchStationIdentity, identityWebCookies, IDENTITY_WEB_URL, openProviderController, PlatformWireError,
   type StationIdentityCode } from "../services/platform-wire";
 import { transientToast } from "../services/ui-feedback";
+import { presentPlatformLogin } from "./PlatformAccountPages";
 
 const IDENTITY_CODE_TITLES: Record<IdentityPlatform, string> = {
   cainiao: "淘宝身份码",
@@ -19,6 +21,7 @@ const IDENTITY_CODE_TITLES: Record<IdentityPlatform, string> = {
 type ScanFormat = "barcode" | "qr";
 type ScanState = Readonly<{ display: { code: StationIdentityCode; qr: UIImage | null } | null; remaining: number }>;
 const EMPTY_SCAN: ScanState = { display: null, remaining: 0 };
+const identityCache = new Map<IdentityPlatform, { generation: string; code: StationIdentityCode }>();
 const BARCODE_SHAPE = { type: "rect", cornerRadius: 10 } as const;
 const QR_SHAPE = { type: "rect", cornerRadius: 14 } as const;
 
@@ -31,7 +34,7 @@ export function StationIdentityMark({ asset }: { asset: IdentityPlatform | "taob
   /> : <Image systemName="person.text.rectangle" frame={frame} />;
 }
 
-export async function openWebIdentity(platform: IdentityPlatform, session: PlatformSession | null) {
+async function openWebIdentity(platform: IdentityPlatform, session: PlatformSession | null) {
   const cookies = identityWebCookies(platform, session);
   const controller = await openProviderController(platform, cookies);
   try {
@@ -148,15 +151,25 @@ function FullScreenIdentity({ format, scan, onClose }: {
   );
 }
 
-export function StationIdentityPage({ platform, session, onClose }: {
+export function StationIdentityPage({ platform }: { platform: IdentityPlatform }) {
+  const [generation, setGeneration] = useState(() => platformSession(platform)?.generation);
+  useEffect(() => onPlatformAccountsChanged(() => {
+    const next = platformSession(platform)?.generation;
+    if (identityCache.get(platform)?.generation !== next) identityCache.delete(platform);
+    setGeneration(next);
+  }), [platform]);
+  return <StationIdentityContent key={generation ?? "signed-out"} platform={platform} expectedGeneration={generation} />;
+}
+
+function StationIdentityContent({ platform, expectedGeneration }: {
   platform: IdentityPlatform;
-  session: PlatformSession;
-  onClose: () => void;
+  expectedGeneration?: string;
 }) {
   const scan = useObservable<ScanState>(EMPTY_SCAN);
   const { display, remaining } = scan.value;
   const [full, setFull] = useState<ScanFormat | null>(null);
-  const [busy, setBusy] = useState(true);
+  const [busy, setBusy] = useState(Boolean(expectedGeneration));
+  const [loggingIn, setLoggingIn] = useState(false);
   const [notice, setNotice] = useState("");
   const [reason, setReason] = useState("");
   const active = useRef(true);
@@ -165,15 +178,27 @@ export function StationIdentityPage({ platform, session, onClose }: {
   const generation = useRef(0);
   const requestedRenewal = useRef(0);
   const widthList = useMemo(() => display ? code128Widths(display.code.value) : [], [display]);
+  const currentSession = () => expectedGeneration ? currentPlatformSession(platform, expectedGeneration) : null;
 
   function clear() {
     generation.current++;
     scan.setValue(EMPTY_SCAN);
   }
 
+  async function showCode(code: StationIdentityCode, request: number) {
+    const current = () => mounted.current && active.current && request === generation.current && !!currentSession();
+    const remaining = Math.ceil((code.expiresAtMs - Date.now()) / 1_000);
+    if (!current() || remaining <= 0) return;
+    scan.setValue({ display: { code, qr: null }, remaining });
+    const qr = await QRCode.generate(code.value).catch(() => null);
+    const shown = scan.value;
+    if (qr && current() && shown.display?.code === code) scan.setValue({ ...shown, display: { code, qr } });
+  }
+
   async function refresh(manual = false) {
-    if (busyRef.current || !active.current || !mounted.current ||
-      !currentPlatformSession(platform, session.generation)) return;
+    if (busyRef.current || !active.current || !mounted.current) return;
+    const session = currentSession();
+    if (!session) return;
     const request = generation.current;
     busyRef.current = true;
     setBusy(true);
@@ -181,16 +206,14 @@ export function StationIdentityPage({ platform, session, onClose }: {
     if (manual) setNotice("正在获取身份码…");
     try {
       const code = await fetchStationIdentity(platform, session);
-      const qrImage = await QRCode.generate(code.value).catch(() => null);
-      if (!mounted.current || !active.current || request !== generation.current ||
-        !currentPlatformSession(platform, session.generation)) return;
-      const received = Date.now();
-      if (code.expiresAtMs <= received) throw new PlatformWireError("unavailable");
-      scan.setValue({ display: { code, qr: qrImage }, remaining: Math.ceil((code.expiresAtMs - received) / 1_000) });
+      if (!currentSession()) return;
+      if (code.expiresAtMs <= Date.now()) throw new PlatformWireError("unavailable");
+      identityCache.set(platform, { generation: session.generation, code });
+      void showCode(code, request);
     } catch (error) {
       if (mounted.current && active.current && request === generation.current) {
         const verification = error instanceof PlatformWireError && error.reason === "verification";
-        setReason(verification ? "请在网页完成安全验证" : "身份码暂时不可用");
+        setReason(verification ? "请在网页完成安全验证" : "未获取到身份码，请点右上角重试");
       }
     } finally {
       busyRef.current = false;
@@ -201,7 +224,20 @@ export function StationIdentityPage({ platform, session, onClose }: {
     }
   }
 
+  async function login() {
+    if (loggingIn) return;
+    setLoggingIn(true);
+    try {
+      await presentPlatformLogin(platform);
+    } catch {
+      if (mounted.current) setNotice("登录未完成，请重试");
+    } finally {
+      if (mounted.current) setLoggingIn(false);
+    }
+  }
+
   useEffect(() => {
+    if (!expectedGeneration) return;
     const onScene = (phase: "active" | "inactive" | "background") => {
       if (phase === "active" && !active.current) {
         active.current = true;
@@ -211,11 +247,6 @@ export function StationIdentityPage({ platform, session, onClose }: {
         clear();
       }
     };
-    const accountChanged = onPlatformAccountsChanged(() => {
-      if (currentPlatformSession(platform, session.generation)) return;
-      clear();
-      setReason("登录已失效，请重新登录");
-    });
     AppEvents.scenePhase.addListener(onScene);
     let timer: number | undefined;
     function tick() {
@@ -233,71 +264,101 @@ export function StationIdentityPage({ platform, session, onClose }: {
       }
     }
     tick();
+    const cached = identityCache.get(platform);
+    if (cached?.generation === expectedGeneration) void showCode(cached.code, generation.current);
     void refresh();
     return () => {
       mounted.current = false;
       if (timer !== undefined) clearTimeout(timer);
-      accountChanged();
       AppEvents.scenePhase.removeListener(onScene);
     };
   }, []);
 
+  const code = remaining > 0 ? display?.code : undefined;
   return (
-    <NavigationStack presentationDetents={["medium", "large"]} presentationDragIndicator="visible">
-      <ScrollView frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        background="systemGroupedBackground"
-        navigationBarTitleDisplayMode="inline"
-        toast={transientToast(notice, setNotice)}
-        toolbar={{
-          topBarLeading: <Button title="关闭" systemImage="xmark" labelStyle="iconOnly" action={onClose} />,
-          principal: (
-            <HStack spacing={8}>
-              <StationIdentityMark asset={platform === "cainiao" ? "taobao" : platform} />
-              <Text font={17} fontWeight="semibold" lineLimit={1}>{IDENTITY_CODE_TITLES[platform]}</Text>
-            </HStack>
-          ),
-          topBarTrailing: <Button title="刷新身份码" systemImage="arrow.clockwise" labelStyle="iconOnly"
-            action={() => void refresh(true)} disabled={busy || !currentPlatformSession(platform, session.generation)} />,
-        }}
-      >
-        <VStack spacing={12} padding={{ vertical: 8, horizontal: 20 }} frame={{ maxWidth: "infinity" }}
-          fullScreenCover={{
-            isPresented: full !== null,
-            onChanged: (shown) => { if (!shown) setFull(null); },
-            content: full ? (
-              <FullScreenIdentity format={full} scan={scan} onClose={() => setFull(null)} />
-            ) : <VStack />,
-          }}>
-          {display && remaining > 0 ? (
-            <VStack spacing={12} padding={{ vertical: 8, horizontal: 12 }} frame={{ maxWidth: 378 }}
-              background={{ style: "secondarySystemGroupedBackground", shape: QR_SHAPE }}>
-              <Button buttonStyle="plain" action={() => setFull("barcode")}>
-                <VStack padding={{ vertical: 8, horizontal: 12 }}
-                  background={{ style: "white", shape: BARCODE_SHAPE }} contentShape="rect">
-                  <Barcode widthList={widthList} height={78} />
-                </VStack>
-              </Button>
-              {display.qr ? (
-                <Button buttonStyle="plain" action={() => setFull("qr")}>
-                  <Image image={display.qr} resizable scaleToFit interpolation="none"
-                    frame={{ width: 184, height: 184 }} padding={8}
-                    background={{ style: "white", shape: QR_SHAPE }} contentShape="rect" />
+    <Form navigationTitle={IDENTITY_CODE_TITLES[platform]} listSectionSpacing={8}
+      navigationBarTitleDisplayMode="inline"
+      toast={transientToast(notice, setNotice)}
+      toolbar={{
+        topBarTrailing: expectedGeneration ? (
+          <Button title="刷新身份码" systemImage="arrow.triangle.2.circlepath" labelStyle="iconOnly"
+            action={() => void refresh(true)} disabled={busy} />
+        ) : undefined,
+      }}
+    >
+      {!expectedGeneration ? (
+        <Section footer={<Text>{platform === "cainiao" ? "登录淘宝后自动获取身份码。" : "授权拼多多后自动获取取件身份码。"}</Text>}>
+          <Button title={platform === "cainiao" ? "登录淘宝" : "授权拼多多"} disabled={loggingIn}
+            action={() => void login()} />
+        </Section>
+      ) : null}
+      {expectedGeneration ? (
+        <Section>
+          <VStack spacing={12} padding={{ vertical: 8 }} frame={{ maxWidth: "infinity" }}
+            fullScreenCover={{
+              isPresented: full !== null,
+              onChanged: (shown) => { if (!shown) setFull(null); },
+              content: full ? (
+                <FullScreenIdentity format={full} scan={scan} onClose={() => setFull(null)} />
+              ) : <VStack />,
+            }}>
+            {display && code ? (
+              <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
+                <Button buttonStyle="plain" action={() => setFull("barcode")}>
+                  <VStack padding={{ vertical: 8, horizontal: 12 }}
+                    background={{ style: "white", shape: BARCODE_SHAPE }} contentShape="rect">
+                    <Barcode widthList={widthList} height={78} />
+                  </VStack>
                 </Button>
-              ) : null}
-              <Text font={13} foregroundStyle="secondaryLabel">
-                {display.qr ? "点条形码或二维码可全屏出示" : "点条形码可全屏出示"}
-              </Text>
-              <Text font={12} monospacedDigit foregroundStyle="secondaryLabel">{countdown(remaining)}</Text>
-            </VStack>
-          ) : <Text foregroundStyle="secondaryLabel" padding={{ vertical: 24 }}>
-            {busy ? "正在获取身份码…" : reason || "身份码已过期"}
-          </Text>}
-          <Button title="在网页打开" buttonStyle="plain" action={() => {
-            void openWebIdentity(platform, currentPlatformSession(platform, session.generation))
-              .catch(() => setNotice("网页打开失败，请重试。"));
+                {display.qr ? (
+                  <Button buttonStyle="plain" action={() => setFull("qr")}>
+                    <Image image={display.qr} resizable scaleToFit interpolation="none"
+                      frame={{ width: 184, height: 184 }} padding={8}
+                      background={{ style: "white", shape: QR_SHAPE }} contentShape="rect" />
+                  </Button>
+                ) : null}
+                <Text font={13} foregroundStyle="secondaryLabel">
+                  {display.qr ? "点条形码或二维码可全屏出示" : "点条形码可全屏出示"}
+                </Text>
+                <Text font={12} monospacedDigit foregroundStyle="secondaryLabel">
+                  {busy ? "正在刷新…" : countdown(remaining)}
+                </Text>
+              </VStack>
+            ) : <Text foregroundStyle="secondaryLabel" padding={{ vertical: 24 }}>
+              {busy ? "正在获取身份码…" : reason || "身份码已过期"}
+            </Text>}
+          </VStack>
+        </Section>
+      ) : null}
+      {code?.mobile ? (
+        <Section header={<Text>取件人</Text>}>
+          <HStack>
+            <Text>绑定手机号</Text>
+            <Text foregroundStyle="secondaryLabel" frame={{ maxWidth: "infinity", alignment: "trailing" }}>{code.mobile}</Text>
+          </HStack>
+        </Section>
+      ) : null}
+      {code ? (
+        <Section header={<Text>身份码编号</Text>}>
+          <HStack spacing={12}>
+            <StationIdentityMark asset={platform === "cainiao" ? "taobao" : platform} />
+            <Text font={17} fontWeight="bold" lineLimit={1} minScaleFactor={0.55}
+              frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              {code.value.replace(/(\d{4})(\d{4})(\d{4})/, "$1 $2 $3")}
+            </Text>
+            <Button title="复制" buttonStyle="bordered" action={() => {
+              if (!currentSession() || code.expiresAtMs <= Date.now()) return;
+              void copyText(code.value);
+            }} />
+          </HStack>
+        </Section>
+      ) : (
+        <Section>
+          <Button title="在网页打开" action={() => {
+            void openWebIdentity(platform, currentSession()).catch(() => setNotice("网页打开失败，请重试。"));
           }} />
-        </VStack>
-      </ScrollView>
-    </NavigationStack>
+        </Section>
+      )}
+    </Form>
   );
 }
