@@ -1,5 +1,6 @@
 import { Button, HStack, Image, List, NavigationStack, Section, Text, VStack, useMemo, useRef, useState } from "scripting";
 import type { AppState, PickupPlatform, Shipment } from "../models";
+import { ParcelActivityPreviewCard } from "../components/ParcelLiveActivityCard";
 import { PickupTabCard } from "../components/PickupTabCard";
 import { shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
@@ -128,6 +129,7 @@ function PickupCardRow({ card, note, opensCabinet, onDetail, onSaveNote, onActio
       actionLabel={opensCabinet ? "一键开柜" : undefined}
       actionPending={actionPending}
       locationText={canSwitch && showAddress ? card.address : card.location}
+      showingAddress={canSwitch && showAddress}
       onLocationTap={canSwitch ? () => setShowAddress(!showAddress) : undefined}
       onComplete={card.target ? () => void complete() : undefined}
     />
@@ -135,11 +137,12 @@ function PickupCardRow({ card, note, opensCabinet, onDetail, onSaveNote, onActio
 }
 
 export function PickupPage({
-  state, shipments, cards, focusedRecordId, onAction, cabinetActions, identityActions = [], onStateChange, showNotice,
+  state, shipments, cards, previewing, focusedRecordId, onAction, cabinetActions, identityActions = [], onStateChange, showNotice,
 }: {
   state: AppState;
   shipments: readonly Shipment[];
   cards: readonly ParcelActivityContent[];
+  previewing: boolean;
   focusedRecordId: string;
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
   cabinetActions: ReadonlySet<ParcelActivityContent>;
@@ -157,7 +160,12 @@ export function PickupPage({
   const ordered = focused ? [focused, ...cards.filter((card) => card !== focused)] : cards;
   const pickups = ordered.filter((card) => card.kind !== "handoff");
   const handoffs = ordered.filter((card) => card.kind === "handoff");
-  const pickupSection = pickups.length ? <Section header={<Text>取件码</Text>}>{pickups.map(cardRow)}</Section> : null;
+  const pickupSection = pickups.length || previewing ? (
+    <Section header={<Text>取件码</Text>}>
+      {pickups.map(cardRow)}
+      {previewing ? <ParcelActivityPreviewCard /> : null}
+    </Section>
+  ) : null;
   const handoffSection = handoffs.length ? <Section header={<Text>寄件码</Text>}>{handoffs.map(cardRow)}</Section> : null;
   const sections = focused?.kind === "handoff" ? [handoffSection, pickupSection] : [pickupSection, handoffSection];
 

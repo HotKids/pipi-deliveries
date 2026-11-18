@@ -2,11 +2,11 @@ import { AbortController } from "scripting";
 import type { AppState } from "../models";
 import { detectManualCarrier } from "./manual-query";
 import {
-  currentPlatformSession, notePlatformSync, onPlatformAccountsChanged, platformSession, PLATFORM_NAMES, PLATFORM_SOURCES,
+  currentPlatformSession, notePlatformSync, onPlatformAccountsChanged, platformSession, saveCainiaoNickname, PLATFORM_NAMES, PLATFORM_SOURCES,
   type ExpressPlatform, type PlatformSession,
 } from "./platform-accounts";
 import { CAINIAO_LIST_PARAMETERS, CAINIAO_RECIPIENT_LIST,
-  PlatformWireError, readCainiao, readCainiaoSenderAppointments, readPdd } from "./platform-wire";
+  PlatformWireError, readCainiao, readCainiaoProfileNickname, readCainiaoSenderAppointments, readPdd } from "./platform-wire";
 import { cainiaoHandoffs, cainiaoRecipientParcels, pddPickupParcels, type PlatformParcel } from "./platform-parcel-data";
 import { fetchFengchaoCabinets, requestCabinetOpening, supportsCabinetOpening } from "./fengchao-account";
 import { fetchJdParcels, fetchPddOrders } from "./platform-web-parcels";
@@ -27,6 +27,7 @@ const observedRows = new Map<ExpressPlatform, { generation: string; keys: Set<st
 const regularAttempts = new Map<ExpressPlatform, { generation: string; atMs: number }>();
 type PlatformSyncResult = { added: number; partial: boolean };
 const inFlight = new Map<ExpressPlatform, { generation: string; task: Promise<PlatformSyncResult>; recheck: boolean }>();
+const cainiaoProfileInFlight = new Set<string>();
 
 type RefreshMode = "observe" | "pull" | "manual";
 type ReadScope = { recipients: boolean; regular: boolean };
@@ -216,6 +217,16 @@ export async function refreshPlatformParcels(
   if (!sessions.length) return summary;
   const state = loadState();
   const tasks = sessions.flatMap(({ platform, session }) => {
+    if (platform === "cainiao" && mode === "manual" && session.cainiaoLabelKind !== "nickname" &&
+      !cainiaoProfileInFlight.has(session.generation)) {
+      cainiaoProfileInFlight.add(session.generation);
+      void readCainiaoProfileNickname(session).then((nickname) => {
+        if (nickname) saveCainiaoNickname(session.generation, nickname);
+        writeDiagnostic("platform.cainiao.profile", { result: nickname ? "found" : "unavailable" }, "info");
+      }).catch(() => {
+        writeDiagnostic("platform.cainiao.profile", { result: "unavailable" }, "info");
+      }).finally(() => cainiaoProfileInFlight.delete(session.generation));
+    }
     const previous = inFlight.get(platform);
     if (previous?.generation === session.generation) {
       if (mode === "observe") previous.recheck = true;

@@ -15,6 +15,8 @@ export const IDENTITY_WEB_URL = {
 
 export const CAINIAO_RECIPIENT_LIST = "mtop.cainiao.lpc.packageservice.queryPdsPackageDataList";
 const CAINIAO_COUNT = "mtop.cainiao.lpc.packageservice.user.package.count.query";
+const TAOBAO_PROFILE = "mtop.taobao.reborn.mclaren.h5";
+const TAOBAO_PROFILE_PAGE = "https://main.m.taobao.com/mytaobao/index.html";
 const CAINIAO_SENDER_LIST = "mtop.cainiao.tdtradeplatform.order.queryUncompletedOrder";
 const CAINIAO_SENDER_DETAIL = "mtop.cainiao.tdtradeplatform.order.queryOrderDetail";
 const CAINIAO_SENDER_PAGE = "https://page.cainiao.com/mcn/fulfill_new/index.html?from=tbcn";
@@ -119,13 +121,13 @@ export async function jdSyncView(session: PlatformSession, deadline: number): Pr
   }
 }
 
-export async function providerRequest(url: string, headers: Record<string, string>, body?: JsonObject | "") {
+export async function providerRequest(url: string, headers: Record<string, string>, body?: JsonObject | "", timeout = 10) {
   try {
     return await fetch(url, {
       method: body === undefined ? "GET" : "POST",
       headers: body === undefined ? headers : { "Content-Type": "application/json;charset=UTF-8", ...headers },
       body: body === undefined || body === "" ? body : JSON.stringify(body),
-      timeout: 10,
+      timeout,
       handleRedirect: async () => null,
     });
   } catch {
@@ -168,11 +170,13 @@ async function mtopOnce(api: string, data: string, cookies: readonly PlatformCoo
     jsv: "2.7.4", appKey: MTOP_APP_KEY, t: now, sign, api, v: "1.0",
     type: "originaljson", dataType: "json", data,
   }).map(([key, value]) => key + "=" + encodeURIComponent(value)).join("&");
+  const referer = api === TAOBAO_PROFILE ? TAOBAO_PROFILE_PAGE :
+    isCainiaoSenderApi(api) ? CAINIAO_SENDER_PAGE : "https://h5.m.taobao.com/";
   const response = await providerRequest(endpoint + "?" + query, {
-    Cookie: cookieHeader(attached), Referer: isCainiaoSenderApi(api) ? CAINIAO_SENDER_PAGE : "https://h5.m.taobao.com/",
+    Cookie: cookieHeader(attached), Referer: referer,
     Accept: "application/json",
     "User-Agent": MOBILE_WEB_USER_AGENT,
-  });
+  }, undefined, api === TAOBAO_PROFILE ? 3 : 10);
   const payload = jsonObject(await response.text());
   const ret = Array.isArray(payload?.ret) ? String(payload.ret[0] ?? "").toUpperCase() : "";
   return {
@@ -195,6 +199,16 @@ export async function checkCainiaoLogin(cookies: readonly PlatformCookie[]): Pro
   const result = await mtop(CAINIAO_COUNT, { appName: "GUOGUO" }, cookies);
   if (!result.ok) throw new PlatformWireError("unavailable");
   return result.cookies;
+}
+
+export async function readCainiaoProfileNickname(session: PlatformSession): Promise<string> {
+  if (session.credentials.kind !== "web") return "";
+  const profile = await mtop(TAOBAO_PROFILE, {}, session.credentials.cookies);
+  if (!profile.ok) return "";
+  const header = asPlainObject(asPlainObject(profile.data).h5HeaderValve);
+  const nickname = cleanScalarText(asPlainObject(header.userInfo).nickName);
+  const loginName = cleanScalarText(asPlainObject(header.accountTip).userName);
+  return nickname === loginName || nickname === "我的淘宝昵称" ? "" : nickname;
 }
 
 function isCainiaoSenderApi(api: string): boolean {

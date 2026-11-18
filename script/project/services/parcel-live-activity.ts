@@ -23,6 +23,16 @@ import { loadState, parcelCardKey, stateLoadFailure, visibleShipments } from "./
 let pending: Promise<unknown> = Promise.resolve();
 let foreground = true;
 const displayed = new Map<string, string>();
+const previewListeners = new Set<() => void>();
+
+export function onParcelActivityPreviewChanged(listener: () => void): () => void {
+  previewListeners.add(listener);
+  return () => { previewListeners.delete(listener); };
+}
+
+function notifyPreviewChanged(): void {
+  for (const listener of previewListeners) listener();
+}
 
 export function parcelActivitySceneChanged(phase: ScenePhase): void {
   foreground = phase === "active";
@@ -65,17 +75,11 @@ export function parcelActivityTarget(state: AppState, linkId: unknown): ParcelAc
 function prepareArtwork(content: ParcelActivityContent): void {
   const root = Path.join(FileManager.appGroupDocumentsDirectory, PARCEL_ACTIVITY_ART);
   FileManager.createDirectorySync(root, true);
-  const sources = ["box.png", "hand-package.png"].map(filename => ({
-    folder: "parcel-activity", filename, destination: filename,
-  }));
+  const sources = [{ folder: "parcel-activity", filename: "box.png", destination: "box.png" }];
   if (content.platform) {
-    const handoff = content.kind === "handoff";
     const filename = `${content.platform}.png`;
-    sources.push({
-      folder: handoff ? "platform-accounts" : "parcel-activity",
-      filename,
-      destination: handoff ? `handoff-${filename}` : filename,
-    });
+    sources.push({ folder: "platform-accounts", filename, destination: `brand-${filename}` });
+    if (content.kind !== "handoff") sources.push({ folder: "parcel-activity", filename, destination: filename });
   }
   for (const file of sources) {
     const destination = Path.join(root, file.destination);
@@ -107,6 +111,7 @@ async function createActivity(content: ParcelActivityContent, relevanceScore?: n
     throw error;
   }
   displayed.set(id, JSON.stringify({ card, options }));
+  if (!content.target) notifyPreviewChanged();
   return true;
 }
 
@@ -118,6 +123,7 @@ function forgetReceipt(receipt: Receipt, dismissedKey?: string): void {
     dismissed: dismissedKey ? [...new Set([...registry.dismissed, dismissedKey])] : registry.dismissed,
   });
   displayed.delete(receipt.id);
+  if (!receipt.target) notifyPreviewChanged();
 }
 
 async function closeActivity(receipt: Receipt): Promise<void> {
@@ -166,7 +172,10 @@ export function startParcelActivity(target: ParcelActivityTarget): Promise<void>
 export function startParcelActivityPreview(): Promise<void> {
   return serialize(async () => {
     const preview = parcelActivityRegistry().receipts.find(receipt => !receipt.target);
-    if (preview && await isRunning(preview)) return;
+    if (preview && await isRunning(preview)) {
+      await updateActivity(preview, PARCEL_ACTIVITY_PREVIEW);
+      return;
+    }
     await requireActivitiesEnabled();
     if (preview) forgetReceipt(preview);
     if (!await createActivity(PARCEL_ACTIVITY_PREVIEW)) {
@@ -228,6 +237,8 @@ async function synchronizeActivities(state: AppState): Promise<void> {
       await closeActivity(receipt);
     } else if (next) {
       await updateActivity(receipt, next.content, registry.showAll ? next.rank : undefined);
+    } else if (!receipt.target) {
+      await updateActivity(receipt, PARCEL_ACTIVITY_PREVIEW);
     }
   }
   if (!registry.showAll) return;

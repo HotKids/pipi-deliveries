@@ -1,5 +1,5 @@
-import { AppEvents, Button, HStack, Link, List, Rectangle, Script, Section, Spacer, Text, Toggle, VStack, useEffect, useState } from "scripting";
-import { ParcelLiveActivityCard } from "../components/ParcelLiveActivityCard";
+import { AppEvents, Button, HStack, Link, List, Section, Spacer, Text, Toggle, useEffect, useState } from "scripting";
+import { ParcelActivityPreviewCard } from "../components/ParcelLiveActivityCard";
 import {
   parcelActivityStatus,
   startAllParcelActivities,
@@ -8,10 +8,7 @@ import {
   stopParcelActivity,
   stopParcelActivityPreview,
 } from "../services/parcel-live-activity";
-import {
-  PARCEL_ACTIVITY_PREVIEW,
-  type ParcelActivityContent,
-} from "../services/parcel-pickup";
+import type { ParcelActivityContent } from "../services/parcel-pickup";
 import { transientToast } from "../services/ui-feedback";
 
 export function ParcelShortcutPage() {
@@ -98,20 +95,13 @@ export function ParcelActivityPage({ cards, revision }: {
           <Spacer />
           <Button
             title={activity.previewing ? "结束预览" : "开始预览"}
-            buttonStyle="plain" foregroundStyle="systemBlue" disabled={busy}
+            systemImage={activity.previewing ? "stop.circle" : "play.circle"}
+            labelStyle="iconOnly" buttonStyle="plain" foregroundStyle="systemBlue" disabled={busy}
             action={() => void change(activity.previewing ? stopParcelActivityPreview : startParcelActivityPreview)}
           />
         </HStack>
       }>
-        <VStack spacing={0} frame={{ maxWidth: "infinity" }}
-          listRowInsets={0} listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden">
-          <ParcelLiveActivityCard
-            data={PARCEL_ACTIVITY_PREVIEW}
-            imageRoot={`${Script.directory}/assets/parcel-activity`}
-            logoPath={`${Script.directory}/assets/parcel-activity/cainiao.png`}
-            preview
-          />
-        </VStack>
+        <ParcelActivityPreviewCard />
       </Section>
       {parcels.length ? (
         <Section header={<Text>快递码</Text>}>
