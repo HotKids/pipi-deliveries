@@ -7,10 +7,10 @@ import { memory, NOW } from "./state-storage-mock";
 import { code128Widths } from "../services/code128";
 import { encryptFengchaoChallenge } from "../services/fengchao-rsa";
 import {
-  accountStatus, clearPlatformLogin, currentPlatformSession, notePlatformSync, platformAccountSubtitle, platformSession, savePlatformLogin,
+  accountStatus, clearPlatformLogin, currentPlatformSession, notePlatformSync, platformAccountSubtitle, platformSession, saveCainiaoNickname, savePlatformLogin,
   trustedPlatformPage,
 } from "../services/platform-accounts";
-import { identityCodeFromResponse, fetchStationIdentity, openProviderController, readCainiaoSenderAppointments,
+import { identityCodeFromResponse, fetchStationIdentity, openProviderController, readCainiaoProfileNickname, readCainiaoSenderAppointments,
   retainJdLoginView } from "../services/platform-wire";
 import { cainiaoHandoffs, cainiaoRecipientParcels, displayDeliveryEstimate, pddPickupParcels } from "../services/platform-parcel-data";
 import { cabinetParcels, type CabinetParcel } from "../services/fengchao-account";
@@ -60,6 +60,46 @@ const sessionCookie = {
   path: "/", isSecure: true, isHTTPOnly: true, isSessionOnly: true,
 };
 
+test("Cainiao labels admit a profile nickname, masked phone or numeric ID", async (t) => {
+  memory.clear();
+  const cookie = (name: string, value: string) => ({ ...sessionCookie, domain: ".taobao.com", name, value });
+  const credentials = { kind: "web", cookies: [cookie("lgc", "private-login-name"), cookie("unb", "2200998877")] } as const;
+  savePlatformLogin("cainiao", "", credentials, "private-login-name");
+  assert.equal(accountStatus("cainiao").label, "****8877");
+  const first = platformSession("cainiao")!;
+  clearPlatformLogin("cainiao", first.generation);
+  savePlatformLogin("cainiao", accountStatus("cainiao").generation,
+    { ...credentials, cookies: [...credentials.cookies, cookie("_nk_", "13900139000")] }, "private-login-name");
+  assert.equal(accountStatus("cainiao").label, "139****9000");
+  assert.equal(saveCainiaoNickname(first.generation, "Stale profile"), false);
+
+  const oldCrypto = globalThis.Crypto;
+  Object.assign(globalThis, { Crypto: { ...oldCrypto,
+    md5: (data: string) => ({ toHexString: () => createHash("md5").update(data).digest("hex") }),
+  } });
+  const request = t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    assert.match(String(url), /mtop\.taobao\.reborn\.mclaren\.h5/);
+    assert.equal((init.headers as Record<string, string>).Referer, "https://main.m.taobao.com/mytaobao/index.html");
+    return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { h5HeaderValve: {
+      userInfo: { nickName: "示例昵称" }, accountTip: { userName: "private-login-name" },
+    } } }));
+  });
+  try {
+    const active = platformSession("cainiao")!;
+    const nickname = await readCainiaoProfileNickname(active);
+    assert.equal(nickname, "示例昵称");
+    assert.equal(saveCainiaoNickname(active.generation, nickname), true);
+    assert.equal(accountStatus("cainiao").label, "示例昵称");
+    assert.equal(accountStatus("cainiao").syncedAtMs, undefined);
+    request.mock.mockImplementationOnce(async () => new Response(JSON.stringify({ ret: ["SUCCESS"], data: { h5HeaderValve: {
+      userInfo: { nickName: "private-login-name" }, accountTip: { userName: "private-login-name" },
+    } } })));
+    assert.equal(await readCainiaoProfileNickname(active), "");
+  } finally {
+    Object.assign(globalThis, { Crypto: oldCrypto });
+  }
+});
+
 test("the account subtitle keeps the nickname or masked label and only dates earlier syncs", (t) => {
   memory.clear();
   t.mock.method(Date, "now", () => new Date(2026, 10, 18, 0, 8).getTime());
@@ -72,10 +112,12 @@ test("the account subtitle keeps the nickname or masked label and only dates ear
   assert.equal(platformAccountSubtitle(accountStatus("pinduoduo")), "示例昵称 · 00:07");
   clearPlatformLogin("pinduoduo", pdd.generation, true);
   assert.equal(platformAccountSubtitle(accountStatus("pinduoduo")), "示例昵称 · 请重新登录");
-  savePlatformLogin("cainiao", "", credentials, "synthetic-account-4321");
+  savePlatformLogin("cainiao", "", { kind: "web", cookies: [
+    { ...sessionCookie, domain: ".taobao.com", name: "unb", value: "2200994321" },
+  ] }, "2200994321");
   const cainiao = accountStatus("cainiao");
   notePlatformSync("cainiao", cainiao.generation, new Date(2026, 10, 17, 23, 59).getTime());
-  assert.equal(platformAccountSubtitle(accountStatus("cainiao")), "syn****321 · 11-17 23:59");
+  assert.equal(platformAccountSubtitle(accountStatus("cainiao")), "****4321 · 11-17 23:59");
   assert.equal(platformAccountSubtitle({ ...cainiao, label: "账号 ****4321" }), "****4321 · 尚未同步");
   assert.equal(platformAccountSubtitle(accountStatus("fengchao")), "尚未登录");
 });

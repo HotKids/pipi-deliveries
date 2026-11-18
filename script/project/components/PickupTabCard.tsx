@@ -1,8 +1,9 @@
 import {
-  Button, Divider, gradient, HStack, Image, Script, Text, TimelineCanvas, VStack, ZStack,
+  Image, Script, TimelineCanvas, ZStack,
   useEffect, useMemo, useRef, useState,
 } from "scripting";
 import type { ParcelActivityContent } from "../services/parcel-pickup";
+import { ParcelLiveActivityCard } from "./ParcelLiveActivityCard";
 
 const ART_WIDTH = 100;
 const ART_HEIGHT = 117;
@@ -118,6 +119,7 @@ export function PickupTabCard(props: {
   actionPending: boolean;
   actionLabel?: string;
   locationText?: string;
+  showingAddress?: boolean;
   onLocationTap?: () => void;
 }) {
   const { data } = props;
@@ -126,77 +128,13 @@ export function PickupTabCard(props: {
   const logoPath = !data.platform ? undefined : handoff
     ? `${Script.directory}/assets/platform-accounts/${data.platform}.png`
     : `${Script.directory}/assets/parcel-activity/${data.platform}.png`;
-  const hasLocation = Boolean(props.locationText || data.location);
-  const location = props.locationText || data.location || (handoff ? "" : "请及时取件");
-  const locationRow = location ? (
-    <HStack spacing={4}>
-      <Image systemName={handoff ? "calendar" : hasLocation ? "storefront" : "note.text"}
-        font={13} foregroundStyle="#B8B3BB" />
-      <Text font={13} foregroundStyle="#B8B3BB" lineLimit={1}>
-        {location}
-      </Text>
-    </HStack>
-  ) : null;
-  const title = (
-    <Text font={17} fontWeight="semibold" foregroundStyle={handoff ? "#3275D6" : "white"} lineLimit={1}>
-      {props.title}
-    </Text>
-  );
-  const shownCode = data.code.length >= 7 ? data.code.replace(/[^0-9A-Za-z]/g, "") || data.code : data.code;
-  const code = (
-    <Text
-      font={28}
-      fontWeight="semibold"
-      foregroundStyle="white"
-      monospacedDigit
-      lineLimit={1}
-      minScaleFactor={19 / 28}
-    >
-      {shownCode}
-    </Text>
+  const imageRoot = `${Script.directory}/assets/parcel-activity`;
+  const actionIcon = handoff || props.actionLabel ? undefined : (
+    <Image filePath={`${imageRoot}/hand-package.png`} renderingMode="original" resizable scaleToFit
+      frame={{ width: 19, height: 19 }} />
   );
   return (
-    <HStack
-      alignment="center"
-      spacing={2}
-      padding={{ top: 9, bottom: 6, trailing: 12 }}
-      frame={{ maxWidth: "infinity", alignment: "leading" }}
-      background={gradient("linear", {
-        colors: ["#22262D", "#38232D"], startPoint: "leading", endPoint: "trailing",
-      })}
-      contentShape="rect"
-      onTapGesture={props.onDetail}
-    >
-      <PickupTabArtwork logoPath={logoPath} logoSize={logoSize} />
-      <VStack alignment="leading" spacing={6} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-        {props.onEditNote ? (
-          <Button buttonStyle="plain" action={props.onEditNote}>{title}</Button>
-        ) : title}
-        {props.onLocationTap && locationRow ? (
-          <Button buttonStyle="plain" action={props.onLocationTap}>
-            {locationRow}
-          </Button>
-        ) : locationRow}
-        <Divider opacity={0.24} />
-        <HStack spacing={8} frame={{ maxWidth: "infinity", alignment: "leading" }}>
-          {props.onCopy ? <Button buttonStyle="plain" action={props.onCopy}>{code}</Button> : code}
-          {props.onComplete ? (
-            <Button buttonStyle="plain" action={props.onComplete} disabled={props.actionPending}
-              frame={{ maxWidth: "infinity", alignment: "trailing" }}>
-              <HStack spacing={5} padding={{ horizontal: 9 }} frame={{ minHeight: 35 }}
-                fixedSize={{ horizontal: true, vertical: false }} background={{ style: "rgba(255,255,255,0.15)", shape: "capsule" }}>
-                {handoff || props.actionLabel ? (
-                  <Image systemName="shippingbox.fill" font={13} foregroundStyle="white" />
-                ) : (
-                  <Image filePath={`${Script.directory}/assets/parcel-activity/hand-package.png`}
-                    renderingMode="original" resizable scaleToFit frame={{ width: 19, height: 19 }} />
-                )}
-                <Text font={13} foregroundStyle="white">{props.actionLabel || (handoff ? "我已寄件" : "我已取件")}</Text>
-              </HStack>
-            </Button>
-          ) : null}
-        </HStack>
-      </VStack>
-    </HStack>
+    <ParcelLiveActivityCard {...props} data={{ ...data, title: props.title }} imageRoot={imageRoot}
+      artwork={<PickupTabArtwork logoPath={logoPath} logoSize={logoSize} />} actionIcon={actionIcon} />
   );
 }

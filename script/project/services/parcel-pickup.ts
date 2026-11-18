@@ -1,6 +1,7 @@
 import type { ParcelHandoffRecord, PickupCodeRecord, PickupPlatform, Shipment } from "../models";
+import { carrierDisplayName } from "./carrier-presentation";
 import { displayWaybill, unprojectedAccountOrder } from "./shipment-policy";
-import { normalizeWaybill, shipmentPresentationStatus } from "./status";
+import { normalizeWaybill, shipmentPresentationStatus, waybillSuffix } from "./status";
 import { cleanString } from "./value-guards";
 import { formatListTime } from "./time-presentation";
 import { parcelHandoffDeadline } from "./parcel-handoff-expiry";
@@ -40,10 +41,21 @@ export function shipmentForPickupTarget(
 
 export const PARCEL_ACTIVITY_PREVIEW: ParcelActivityContent = {
   platform: "cainiao",
-  title: "取件码示例",
-  location: "菜鸟驿站",
+  title: "派派的猫罐头",
+  location: "旺旺菜鸟驿站",
   code: "1-2-3456",
 };
+
+export function parcelPickupShortCode(code: string): string {
+  const value = code.trim();
+  return Array.from(value).length <= 8 ? value : value.replace(/[^\p{L}\p{N}]/gu, "") || value;
+}
+
+export function parcelPickupSubtitle(card: ParcelActivityContent, location = card.location, showingAddress = false) {
+  if (card.kind === "handoff") return { text: location, symbol: "calendar" };
+  if (!location) return { text: "请及时取件", symbol: "note.text" };
+  return { text: location, symbol: showingAddress || location === card.address ? "mappin.and.ellipse" : "storefront" };
+}
 
 function appointmentPart(value: number | undefined): string {
   if (!value || value <= 0) return "";
@@ -73,7 +85,7 @@ export function handoffActivityContent(handoff: ParcelHandoffRecord): ParcelActi
     platform: handoff.platform,
     capturedAtMs: handoff.capturedAtMs,
     expiresAtMs: parcelHandoffDeadline(handoff),
-    title: "寄件码",
+    title: cleanString(handoff.note) || "寄件码",
     location: appointment ? appointment + " 上门" : "",
     code,
   };
@@ -90,8 +102,8 @@ export function independentPickupContent(record: PickupCodeRecord): ParcelActivi
     target: { recordId: record.id },
     platform: record.platform,
     capturedAtMs: record.capturedAtMs,
-    title: record.platform === "cainiao" ? "菜鸟驿站" :
-      record.platform === "pinduoduo" ? "多多驿站" : "丰巢快递柜",
+    title: cleanString(record.note) || (record.platform === "cainiao" ? "菜鸟驿站" :
+      record.platform === "pinduoduo" ? "多多驿站" : "丰巢快递柜"),
     location: cleanString(record.locationName) || cleanString(record.address),
     ...(record.address ? { address: cleanString(record.address) } : {}),
     code,
@@ -123,11 +135,12 @@ export function parcelActivityContent(shipment: Shipment): ParcelActivityContent
   if (!waybill || waybill !== displayWaybill(shipment) || pickup.waybillGeneration !== waybillGeneration) {
     return null;
   }
+  const carrier = carrierDisplayName(shipment.identity.companyName);
   return {
     target: { shipmentId: shipment.identity.id, waybill, waybillGeneration },
     platform: pickup.platform,
     capturedAtMs: pickup.capturedAtMs,
-    title: shipment.identity.companyName || (pickup.platform ? PLATFORM_ACCOUNT_NAMES[pickup.platform] : "取件码"),
+    title: cleanString(shipment.note) || `${carrier} ${waybillSuffix(waybill)}`,
     location: cleanString(pickup.locationName) || cleanString(pickup.address),
     ...(pickup.address ? { address: cleanString(pickup.address) } : {}),
     code,

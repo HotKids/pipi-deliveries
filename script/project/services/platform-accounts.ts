@@ -22,6 +22,7 @@ type AccountBase = Readonly<{
   generation: string;
   label: string;
   syncedAtMs?: number;
+  cainiaoLabelKind?: "nickname" | "identifier";
 }>;
 
 type WebCredentials = Readonly<{ kind: "web"; cookies: readonly PlatformCookie[] }>;
@@ -159,6 +160,19 @@ function maskedAccountLabel(platform: ExpressPlatform, identifier: string): stri
   return characters.length > 1 ? characters[0] + "****" + characters.at(-1) : "****";
 }
 
+function cainiaoAccountLabel(cookies: readonly PlatformCookie[]): string {
+  const scoped = cookiesForURL(cookies, "https://h5api.m.taobao.com/h5/");
+  for (const key of ["_nk_", "lgc", "tracknick"]) {
+    const value = cookieValue(scoped, key);
+    let decoded: string;
+    try { decoded = decodeURIComponent(value); } catch { continue; }
+    const mobile = decoded.trim().replace(/^(?:\+86|86)(?=1[3-9]\d{9}$)/, "");
+    if (/^1[3-9]\d(?:\d{4}|\*{4})\d{4}$/.test(mobile)) return mobile.slice(0, 3) + "****" + mobile.slice(-4);
+  }
+  const userId = cookieValue(scoped, "unb");
+  return /^\d{4,}$/.test(userId) ? "****" + userId.slice(-Math.min(4, userId.length - 2)) : "";
+}
+
 export function readPlatformAccount(platform: ExpressPlatform): PlatformAccount {
   const raw = Keychain.get(accountKey(platform));
   if (!raw) return INITIAL;
@@ -174,7 +188,13 @@ export function readPlatformAccount(platform: ExpressPlatform): PlatformAccount 
       : credentials?.kind === "web" && Array.isArray(credentials.cookies) && credentials.cookies.length > 0;
     if (!valid) throw new Error("Invalid saved platform account");
   }
-  return value as PlatformAccount;
+  const account = value as PlatformAccount;
+  if (platform !== "cainiao" || account.cainiaoLabelKind === "nickname" || account.cainiaoLabelKind === "identifier") {
+    return account;
+  }
+  const label = account.state === "active" && account.credentials.kind === "web"
+    ? cainiaoAccountLabel(account.credentials.cookies) : "";
+  return { ...account, label, cainiaoLabelKind: "identifier" };
 }
 
 const listeners = new Set<() => void>();
@@ -215,11 +235,14 @@ export function savePlatformLogin(
   nickname = "",
 ): boolean {
   if (readPlatformAccount(platform).generation !== expected) return false;
+  const confirmedName = cleanString(nickname);
+  const cainiao = platform === "cainiao" && credentials.kind === "web";
   saveAccount(platform, {
     state: "active",
     generation: UUID.string(),
     ownerKey: sha256Hex(platform + ":" + identifier),
-    label: cleanString(nickname) || maskedAccountLabel(platform, identifier),
+    label: confirmedName || (cainiao ? cainiaoAccountLabel(credentials.cookies) : maskedAccountLabel(platform, identifier)),
+    ...(cainiao ? { cainiaoLabelKind: confirmedName ? "nickname" : "identifier" } : {}),
     credentials,
   });
   return true;
@@ -232,7 +255,15 @@ export function clearPlatformLogin(platform: ExpressPlatform, expected: string, 
     state: expired ? "expired" : "offline",
     generation: UUID.string(),
     label: expired ? current.label : "",
+    ...(expired && current.cainiaoLabelKind ? { cainiaoLabelKind: current.cainiaoLabelKind } : {}),
   });
+  return true;
+}
+
+export function saveCainiaoNickname(generation: string, nickname: string): boolean {
+  const current = currentPlatformSession("cainiao", generation);
+  if (!current || !nickname.trim()) return false;
+  saveAccount("cainiao", { ...current, label: nickname.trim(), cainiaoLabelKind: "nickname" });
   return true;
 }
 

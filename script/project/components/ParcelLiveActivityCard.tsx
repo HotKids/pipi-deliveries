@@ -1,6 +1,6 @@
-import { Button, Canvas, GeometryReader, HStack, Image, Text, VStack, ZStack, gradient, type AppIntent } from "scripting";
+import { Button, Circle, HStack, Image, Rectangle, Script, Spacer, Text, VStack, ZStack, gradient, type AppIntent, type VirtualNode } from "scripting";
 import type { ParcelActivityCompletion } from "../services/parcel-activity-action";
-import type { ParcelActivityContent } from "../services/parcel-pickup";
+import { PARCEL_ACTIVITY_PREVIEW, parcelPickupShortCode, parcelPickupSubtitle, type ParcelActivityContent } from "../services/parcel-pickup";
 
 // Pipi Home's express card uses pickup_card_spec.json and express_pickup_card.dart.
 const PIPI_CARD = {
@@ -17,9 +17,8 @@ const PIPI_CARD = {
   titleHeight: 21,
   locationHeight: 17,
   dividerHeight: 3,
-  dotRadius: 1.35,
+  dotDiameter: 2.7,
   dotGap: 3.8,
-  codeHeight: 32,
   capsuleHeight: 35,
   capsuleInset: 11,
   capsuleIcon: 19,
@@ -27,7 +26,24 @@ const PIPI_CARD = {
   codeGap: 8,
 } as const;
 
-export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, completion, preview, expanded }: {
+export function parcelActivityImage(path?: string): UIImage | null {
+  if (!path) return null;
+  try { return UIImage.fromFile(path); } catch { return null; }
+}
+
+export function ParcelActivityPreviewCard() {
+  const imageRoot = `${Script.directory}/assets/parcel-activity`;
+  return (
+    <VStack spacing={0} frame={{ maxWidth: "infinity" }}
+      listRowInsets={0} listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden">
+      <ParcelLiveActivityCard data={PARCEL_ACTIVITY_PREVIEW} imageRoot={imageRoot}
+        logoPath={`${imageRoot}/cainiao.png`} preview />
+    </VStack>
+  );
+}
+
+export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, completion, preview, expanded, artwork,
+  actionIcon, actionLabel, actionPending, locationText, showingAddress, onComplete, onCopy, onDetail, onEditNote, onLocationTap }: {
   data: ParcelActivityContent;
   imageRoot: string;
   logoPath?: string;
@@ -35,92 +51,107 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, complet
   completion?: AppIntent<ParcelActivityCompletion>;
   preview?: boolean;
   expanded?: boolean;
+  artwork?: VirtualNode;
+  actionIcon?: VirtualNode;
+  actionLabel?: string;
+  actionPending?: boolean;
+  locationText?: string;
+  showingAddress?: boolean;
+  onComplete?: () => void;
+  onCopy?: () => void;
+  onDetail?: () => void;
+  onEditNote?: () => void;
+  onLocationTap?: () => void;
 }) {
   const card = PIPI_CARD;
   const handoff = data.kind === "handoff";
   const logoSize = handoff ? 20 : 26;
-  const showCapsule = Boolean(data.code && (completion || preview));
-  const completionLabel = handoff ? "我已寄件" : "我已取件";
-  const capsuleFont = 12;
-  const capsuleWidth = 2 * card.capsuleInset + card.capsuleIcon + card.iconGap + 4 * capsuleFont;
-  const textWidth = card.width - card.textLeft - card.edge;
-  const dividerTop = card.height - card.capsuleHeight - 2 * card.edge - card.dividerHeight / 2 - card.dotRadius;
-  const dotsTop = dividerTop + card.dividerHeight / 2 - card.dotRadius;
-  const bodyGap = Math.min(Math.ceil(card.edge * 2 / 3),
+  const box = artwork ? null : parcelActivityImage(`${imageRoot}/box.png`);
+  const logo = artwork ? null : parcelActivityImage(logoPath);
+  const showCapsule = Boolean(data.code && (completion || preview || onComplete));
+  const completionLabel = actionLabel || (handoff ? "我已寄件" : "我已取件");
+  const dotRadius = card.dotDiameter / 2;
+  const dividerTop = card.height - card.capsuleHeight - 2 * card.edge - card.dividerHeight / 2 - dotRadius;
+  const dotsTop = dividerTop + card.dividerHeight / 2 - dotRadius;
+  const gap = Math.min(Math.ceil(card.edge * 2 / 3),
     Math.max(0, (dotsTop - card.edge - card.titleHeight - card.locationHeight) / 2));
-  const locationTop = dotsTop - bodyGap - card.locationHeight;
-  const titleTop = locationTop - bodyGap - card.titleHeight;
-  const capsuleTop = card.height - card.edge - card.capsuleHeight;
-  const codeTop = capsuleTop + (card.capsuleHeight - card.codeHeight) / 2;
-  const codeWidth = textWidth - (showCapsule ? capsuleWidth + card.codeGap : 0);
+  const locationTop = dotsTop - gap - card.locationHeight;
+  const titleTop = locationTop - gap - card.titleHeight;
+  const subtitle = parcelPickupSubtitle(data, locationText, showingAddress);
+  const dotCount = Math.floor((card.width - card.textLeft - card.edge + card.dotGap) /
+    (card.dotDiameter + card.dotGap));
+  const capsule = (
+    <HStack spacing={card.iconGap} padding={{ horizontal: card.capsuleInset }}
+      frame={{ height: card.capsuleHeight }} fixedSize={{ horizontal: true, vertical: false }}
+      background={{ style: "rgba(255,255,255,0.16)", shape: "capsule" }} contentShape="capsule">
+      {actionIcon ?? <Image systemName="shippingbox.fill" font={card.capsuleIcon} foregroundStyle="white" />}
+      <Text font={12} fontWeight="semibold" foregroundStyle="white" lineLimit={1}>{completionLabel}</Text>
+    </HStack>
+  );
+  const titleRow = (
+    <Text font={15} fontWeight="bold" foregroundStyle="rgba(255,255,255,0.9)" lineLimit={1}
+      frame={{ height: card.titleHeight, alignment: "leading" }}>{data.title}</Text>
+  );
+  const subtitleRow = (
+    <HStack spacing={card.iconGap} frame={{ height: card.locationHeight, alignment: "leading" }}>
+      {subtitle.text ? <>
+        <Image systemName={subtitle.symbol} font={13} foregroundStyle="rgba(255,255,255,0.85)" />
+        <Text font={11} foregroundStyle="rgba(255,255,255,0.85)" lineLimit={1}>{subtitle.text}</Text>
+      </> : null}
+    </HStack>
+  );
+  const code = (
+    <Text font={28} fontWeight="semibold" foregroundStyle="white" monospacedDigit lineLimit={1}
+      minScaleFactor={12 / 28} frame={{ minWidth: 0, maxWidth: "infinity", alignment: "leading" }}>
+      {parcelPickupShortCode(data.code)}
+    </Text>
+  );
 
+  // Scripting snapshots Live Activities before the host proposes a layout size.
   return (
-    <GeometryReader aspectRatio={{ value: card.width / card.height, contentMode: "fit" }}>
-      {({ size }) => {
-        const scale = Math.max(size.width, 1) / card.width;
-        const at = (x: number, y: number, width: number, height: number, centered = false) => ({
-          frame: { width: width * scale, height: height * scale, alignment: centered ? "center" as const : "leading" as const },
-          position: { x: (x + width / 2) * scale, y: (y + height / 2) * scale },
-        });
-        const capsule = (
-          <HStack spacing={card.iconGap * scale}
-            frame={{ width: capsuleWidth * scale, height: card.capsuleHeight * scale }}
-            background={{ style: "rgba(255,255,255,0.16)", shape: "capsule" }}
-            contentShape="capsule">
-            {handoff ? (
-              <Image systemName="shippingbox.fill" font={card.capsuleIcon * scale} foregroundStyle="white" />
-            ) : (
-              <Image filePath={`${imageRoot}/hand-package.png`} renderingMode="original" resizable scaleToFit
-                frame={{ width: card.capsuleIcon * scale, height: card.capsuleIcon * scale }} />
-            )}
-            <Text font={capsuleFont * scale} fontWeight="semibold" foregroundStyle="white" lineLimit={1}>{completionLabel}</Text>
-          </HStack>
-        );
-        return (
-          <ZStack alignment="topLeading"
-            frame={{ width: card.width * scale, height: card.height * scale }}
-            background={expanded ? undefined : gradient("linear", {
-              colors: ["#22262D", "#38232D"], startPoint: "leading", endPoint: "trailing",
-            })}
-            activityBackgroundTint={expanded ? undefined : "clear"}
-            clipShape={expanded ? undefined : { type: "rect", cornerRadius: card.corner * scale }}
-            widgetURL={url}>
-            <Image filePath={`${imageRoot}/box.png`} resizable scaleToFit
-              {...at(0, card.artTop, card.artWidth, card.artHeight, true)} />
-            {logoPath ? <Image filePath={logoPath} resizable scaleToFit
-              {...at(card.logoX - logoSize / 2, card.logoY - logoSize / 2, logoSize, logoSize, true)} /> : null}
-            <Text font={15 * scale} fontWeight="bold" foregroundStyle="rgba(255,255,255,0.9)" lineLimit={1}
-              {...at(card.textLeft, titleTop, textWidth, card.titleHeight)}>{data.title}</Text>
-            {data.location ? (
-              <HStack spacing={card.iconGap * scale} {...at(card.textLeft, locationTop, textWidth, card.locationHeight)}>
-                <Image systemName={handoff ? "calendar" : "storefront"} font={13 * scale}
-                  foregroundStyle="rgba(255,255,255,0.85)" />
-                <Text font={11 * scale} foregroundStyle="rgba(255,255,255,0.85)" lineLimit={1}>{data.location}</Text>
-              </HStack>
-            ) : null}
-            <Canvas opaque={false} {...at(card.textLeft, dividerTop, textWidth, card.dividerHeight)}
-              draw={(ctx, bounds) => {
-                const radius = card.dotRadius * scale;
-                const span = bounds.width - 2 * radius;
-                const intervals = Math.floor(span / ((2 * card.dotRadius + card.dotGap) * scale));
-                ctx.fillStyle = "rgba(255,255,255,0.18)";
-                for (let index = 0; index <= intervals; index++) {
-                  const x = radius + (intervals ? span * index / intervals : 0);
-                  ctx.beginPath();
-                  ctx.arc(x, bounds.height / 2, radius, 0, Math.PI * 2);
-                  ctx.fill();
-                }
-              }} />
-            <Text font={28 * scale} fontWeight="semibold" foregroundStyle="white" monospacedDigit
-              lineLimit={1} minScaleFactor={12 / 28} {...at(card.textLeft, codeTop, codeWidth, card.codeHeight)}>{data.code}</Text>
-            {showCapsule ? (
-              <ZStack {...at(card.width - card.edge - capsuleWidth, capsuleTop, capsuleWidth, card.capsuleHeight, true)}>
-                {completion ? <Button intent={completion} buttonStyle="plain">{capsule}</Button> : capsule}
-              </ZStack>
-            ) : null}
-          </ZStack>
-        );
-      }}
-    </GeometryReader>
+    <HStack alignment="center" spacing={card.textLeft - card.artWidth}
+      frame={{ height: card.height, maxWidth: "infinity" }}
+      background={expanded ? undefined : gradient("linear", {
+        colors: ["#22262D", "#38232D"], startPoint: "leading", endPoint: "trailing",
+      })}
+      activityBackgroundTint={expanded ? undefined : "clear"}
+      clipShape={expanded ? undefined : { type: "rect", cornerRadius: card.corner }}
+      widgetURL={url} onTapGesture={onDetail} contentShape="rect">
+      <ZStack frame={{ width: card.artWidth, height: card.artHeight }}
+        offset={{ x: 0, y: card.artTop - (card.height - card.artHeight) / 2 }}>
+        {artwork ?? (box ? (
+          <Image image={box} resizable scaleToFit frame={{ width: card.artWidth, height: card.artHeight }} />
+        ) : (
+          <Image systemName="shippingbox.fill" font={42} foregroundStyle="white" />
+        ))}
+        {logo ? (
+          <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
+            position={{ x: card.logoX, y: card.logoY - card.artTop }} />
+        ) : null}
+      </ZStack>
+      <VStack alignment="leading" spacing={0} padding={{ top: titleTop, bottom: card.edge, trailing: card.edge }}
+        frame={{ minWidth: 0, maxWidth: "infinity", height: card.height, alignment: "leading" }}>
+        {onEditNote ? <Button buttonStyle="plain" action={onEditNote}>{titleRow}</Button> : titleRow}
+        <VStack alignment="leading" spacing={0} padding={{ top: gap }}>
+          {onLocationTap ? <Button buttonStyle="plain" action={onLocationTap}>{subtitleRow}</Button> : subtitleRow}
+        </VStack>
+        <HStack spacing={0} frame={{ maxWidth: "infinity", height: card.dividerHeight }}
+          padding={{ top: dividerTop - locationTop - card.locationHeight }}>
+          {Array.from({ length: dotCount }, (_, index) => (
+            <HStack key={index} spacing={0} frame={index > 0 ? { maxWidth: "infinity", alignment: "trailing" } : undefined}>
+              <Circle fill="rgba(255,255,255,0.18)" frame={{ width: card.dotDiameter, height: card.dotDiameter }} />
+            </HStack>
+          ))}
+        </HStack>
+        <Spacer minLength={0} />
+        <HStack spacing={card.codeGap} frame={{ maxWidth: "infinity", height: card.capsuleHeight }}>
+          {onCopy ? <Button buttonStyle="plain" action={onCopy}>{code}</Button> : code}
+          {showCapsule ? (
+            completion ? <Button intent={completion} buttonStyle="plain">{capsule}</Button> :
+              onComplete ? <Button action={onComplete} buttonStyle="plain" disabled={actionPending}>{capsule}</Button> : capsule
+          ) : null}
+        </HStack>
+      </VStack>
+    </HStack>
   );
 }

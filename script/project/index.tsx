@@ -56,7 +56,10 @@ import {
   nextSmsShortcutLookup,
   takeScreenShortcutLookup,
 } from "./services/parcel-shortcut";
-import { parcelActivitySceneChanged, parcelActivityTarget, reconcileParcelActivity } from "./services/parcel-live-activity";
+import {
+  onParcelActivityPreviewChanged, parcelActivitySceneChanged, parcelActivityStatus, parcelActivityTarget,
+  reconcileParcelActivity,
+} from "./services/parcel-live-activity";
 import { activePickupCards, independentPickupContent } from "./services/parcel-pickup";
 import { nextParcelHandoffDeadline } from "./services/parcel-handoff-expiry";
 import { reconcileFengchaoReminders } from "./services/fengchao-reminders";
@@ -118,6 +121,8 @@ function App() {
   const shipments = useMemo(() => state ? visibleShipments(state) : [], [state]);
   const pickupCards = useMemo(() => activePickupCards(shipments, state?.pickupCodeRecords),
     [shipments, state?.pickupCodeRecords]);
+  const [pickupPreview, setPickupPreview] = useState(false);
+  const hasPickupTab = pickupCards.length > 0 || pickupPreview;
   const identityActions = useMemo(() => (["cainiao", "pinduoduo"] as const)
     .filter((platform) => platformSession(platform) || pickupCards.some((card) =>
       card.kind !== "handoff" && (!card.platform || card.platform === platform)))
@@ -150,6 +155,22 @@ function App() {
   }
 
   useEffect(() => onPlatformAccountsChanged(() => setPlatformRevision((value) => value + 1)), []);
+  useEffect(() => {
+    let mounted = true;
+    const reload = () => {
+      void parcelActivityStatus().then(({ previewing }) => {
+        if (mounted) setPickupPreview(previewing);
+      }).catch(() => {
+        writeDiagnostic("activity.parcel.preview.read.failed", { result: "failed" }, "warning");
+      });
+    };
+    const unsubscribe = onParcelActivityPreviewChanged(reload);
+    reload();
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
   useEffect(() => {
     if (state) refreshPlatformList("observe");
   }, [state?.revision]);
@@ -242,8 +263,8 @@ function App() {
   }, [handoffDeadline, state?.revision]);
 
   useEffect(() => {
-    if (!pickupCards.length && selection.value === "pickup") selection.setValue("deliveries");
-  }, [pickupCards.length]);
+    if (!hasPickupTab && selection.value === "pickup") selection.setValue("deliveries");
+  }, [hasPickupTab]);
 
   useEffect(() => {
     return Script.onResume((details) => {
@@ -339,12 +360,13 @@ function App() {
           : undefined
       }
     >
-      {pickupCards.length ? (
+      {hasPickupTab ? (
         <Tab key="pickup" title="取件" systemImage="shippingbox.fill" value="pickup">
           <PickupPage
             state={state}
             shipments={shipments}
             cards={pickupCards}
+            previewing={pickupPreview}
             focusedRecordId={navigationRequest.pickupRecordId}
             cabinetActions={cabinetActions}
             identityActions={identityActions}

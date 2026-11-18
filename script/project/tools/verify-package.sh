@@ -236,6 +236,7 @@ while IFS= read -r network_url; do
     'https://m.kuaidi100.com/app/query/?nu='|\
     'https://jtsd.jtexpress.com.cn/pipi#/pages/checkGoods/sendDetail?waybillNo='|\
     'https://h5.m.taobao.com/'|\
+    'https://main.m.taobao.com/mytaobao/index.html'|\
     'https://h5api.m.taobao.com'|\
     'https://h5api.m.taobao.com/h5/'|\
     'https://page.cainiao.com/mcn/fulfill_new/index.html?from=tbcn'|\
