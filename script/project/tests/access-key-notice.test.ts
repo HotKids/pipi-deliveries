@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 const home = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
 const banner = home.slice(home.indexOf("{accessKeyRejected && !accessKeyNoticeDismissed"),
-  home.indexOf("{shipments.length ? ("));
+  home.indexOf("{visibleFilters.length > 1 ? ("));
 assert.ok(banner.includes("Access Key 已失效，请通过 TG Bot 重新获取。"));
 assert.match(home, /useState\(gatewayAccessKeyRejected\)/);
 assert.match(home, /return subscribeGatewayAccessKeyRejected\(setAccessKeyRejected\)/);

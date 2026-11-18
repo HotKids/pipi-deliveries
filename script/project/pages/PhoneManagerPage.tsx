@@ -10,7 +10,6 @@ import {
   Text,
   VStack,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "scripting";
@@ -61,7 +60,8 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   const [enhancementNotice, setEnhancementNotice] = useState("");
   const [bindingDestination, setBindingDestination] = useState<"phone" | "samsung" | undefined>(undefined);
   const [bindingTarget, setBindingTarget] = useState<AccountBinding | undefined>(undefined);
-  const [platformRevision, setPlatformRevision] = useState(0);
+  const [visible, setVisible] = useState(false);
+  const [platformAccounts, setPlatformAccounts] = useState<Partial<Record<ExpressPlatform, AccountStatus>>>({});
   const [syncingPlatforms, setSyncingPlatforms] = useState<readonly ExpressPlatform[]>([]);
   const mountedRef = useRef(true);
   const actionInFlightRef = useRef(false);
@@ -79,29 +79,49 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
       : "远端退订尚未确认，已保留待处理记录；将在原身份可用时重试。";
 
   useEffect(() => {
+    if (!visible) return;
     if (!hasEnhancement) { setEnhancementNotice(""); return; }
     try {
       setEnhancementNotice(existingEnhancementIdentity() ? "" : new EnhancementIdentityMissing().message);
     } catch (error) {
       setEnhancementNotice(errorMessage(error, "增强模式身份读取失败，请稍后重试"));
     }
-  }, [props.stateRevision, hasEnhancement]);
+  }, [visible, props.stateRevision, hasEnhancement]);
 
   useEffect(() => {
-    const unsubscribe = onPlatformAccountsChanged(() => setPlatformRevision((value) => value + 1));
+    if (!visible) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    function scheduleAccounts() {
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        const accounts: Partial<Record<ExpressPlatform, AccountStatus>> = {};
+        for (const platform of PLATFORM_SOURCES) {
+          try { accounts[platform] = accountStatus(platform); } catch {
+            writeDiagnostic("manager.platform_status.unavailable", { sourceProvider: platform }, "warning");
+          }
+        }
+        setPlatformAccounts(accounts);
+      }, 0);
+    }
+    scheduleAccounts();
+    const unsubscribe = onPlatformAccountsChanged(scheduleAccounts);
     return () => {
-      mountedRef.current = false;
+      if (timer !== undefined) clearTimeout(timer);
       unsubscribe();
     };
-  }, []);
+  }, [visible]);
+
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   useEffect(() => {
+    if (!visible) return;
     writeDiagnostic("manager.rendered", {
       activeSource: SCRIPT_BINDING_SOURCE,
       revision: props.stateRevision,
       v5Bindings: visibleBindings.length,
     });
-  }, [props.stateRevision, visibleBindings.length]);
+  }, [visible, props.stateRevision, visibleBindings.length]);
 
   useEffect(() => {
     if (props.notice) setNotice(props.notice);
@@ -239,9 +259,6 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     }, "账号操作失败，请重试。");
   }
 
-  const platformAccounts = useMemo(() => PLATFORM_SOURCES.map((platform) => ({
-    platform, ...accountStatus(platform),
-  })), [platformRevision]);
   const samsungState: AccountStatus["state"] = !hasEnhancement ? "offline" : enhancementNotice ? "expired" : "active";
   const samsungSubtitle = unsubscribeNotice ? "退订待确认" :
     samsungState === "active" ? `已验证 ${samsungCount} 个手机号` : "";
@@ -250,6 +267,8 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
     <List
       navigationTitle="管理账号"
       navigationBarTitleDisplayMode="inline"
+      onAppear={() => setVisible(true)}
+      onDisappear={() => setVisible(false)}
       refreshable={refresh}
       toast={transientToast(notice, setNotice)}
       navigationDestination={{
@@ -355,7 +374,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
             <Text>更多数据源</Text>
             <Spacer />
             <SectionIconButton title="立即同步" symbol="arrow.clockwise" disabled={busy ||
-              !platformAccounts.some((item) => item.state === "active")}
+              !Object.values(platformAccounts).some((item) => item.state === "active")}
               action={() => void runAction(() => syncPlatforms(), "同步失败，请稍后重试。")} />
           </HStack>
         }
@@ -365,18 +384,21 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
           </Text>
         }
       >
-        {platformAccounts.map(account => (
-          <PlatformAccountRow
-            key={account.platform}
-            platform={account.platform}
-            title={PLATFORM_NAMES[account.platform]}
-            subtitle={platformAccountSubtitle(account)}
-            state={account.state}
-            syncing={syncingPlatforms.includes(account.platform)}
-            disabled={busy}
-            onTap={() => void managePlatform(account.platform)}
-          />
-        ))}
+        {PLATFORM_SOURCES.map((platform) => {
+          const account = platformAccounts[platform];
+          return (
+            <PlatformAccountRow
+              key={platform}
+              platform={platform}
+              title={PLATFORM_NAMES[platform]}
+              subtitle={account ? platformAccountSubtitle(account) : ""}
+              state={account?.state}
+              syncing={syncingPlatforms.includes(platform)}
+              disabled={busy}
+              onTap={() => void managePlatform(platform)}
+            />
+          );
+        })}
         <PlatformAccountRow
           platform="samsung"
           title="三星生活助手"
@@ -394,16 +416,16 @@ function PlatformAccountRow({ platform, title, subtitle, state, syncing, disable
   platform: ExpressPlatform | "samsung";
   title: string;
   subtitle: string;
-  state: AccountStatus["state"];
+  state?: AccountStatus["state"];
   syncing?: boolean;
   disabled: boolean;
   onTap: () => void;
 }) {
-  const copy = {
+  const copy = state ? {
     active: { status: "已登录", subtitle: "尚未同步" },
     expired: { status: "已失效", subtitle: "请重新登录" },
     offline: { status: "未登录", subtitle: "" },
-  }[state];
+  }[state] : { status: "", subtitle: "" };
   return (
     <Button buttonStyle="plain" disabled={disabled} action={onTap}>
       <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">

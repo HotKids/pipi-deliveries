@@ -1,8 +1,8 @@
-import { Button, HStack, List, Navigation, NavigationStack, Section, Text, VStack, useMemo, useRef, useState } from "scripting";
+import { Button, HStack, List, Navigation, NavigationStack, Section, Text, VStack, ZStack, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
 import { RootPageHeader } from "../components/RootPageHeader";
-import { TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
+import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import { pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
@@ -25,23 +25,22 @@ function IdentityCodeButton({ onOpen }: {
 }) {
   const [showPicker, setShowPicker] = useState(false);
   return (
-    <TabFloatingActionButton
-      title="身份码" symbol="person.text.rectangle"
-      action={() => setShowPicker(true)}
-      popover={{
+    <VStack padding={TAB_FAB_PADDING}>
+      <HStack spacing={0} popover={{
         isPresented: showPicker,
         onChanged: setShowPicker,
         arrowEdge: "bottom",
         presentationCompactAdaptation: "popover",
         content: (
-          <VStack alignment="leading" spacing={0} padding={6} frame={{ minWidth: 196 }}>
+          <VStack alignment="leading" spacing={0} padding={6} frame={{ width: 196 }}>
             {IDENTITY_CHOICES.map(({ platform, title }) => (
-              <Button key={platform} buttonStyle="plain" action={() => {
-                setShowPicker(false);
-                onOpen(platform);
-              }}>
+              <Button key={platform} buttonStyle="plain" frame={{ maxWidth: "infinity", alignment: "leading" }}
+                contentShape="rect" action={() => {
+                  setShowPicker(false);
+                  onOpen(platform);
+                }}>
                 <HStack spacing={12} padding={{ horizontal: 8, vertical: 9 }}
-                  frame={{ maxWidth: "infinity", alignment: "leading" }} contentShape="rect">
+                  frame={{ maxWidth: "infinity", alignment: "leading" }}>
                   <StationIdentityMark asset={platform} />
                   <Text font={17} foregroundStyle="label">{title}</Text>
                 </HStack>
@@ -49,8 +48,12 @@ function IdentityCodeButton({ onOpen }: {
             ))}
           </VStack>
         ),
-      }}
-    />
+      }}>
+        <VStack frame={{ width: 44, height: TAB_FAB_DIAMETER }} />
+        <TabFloatingActionButton title="身份码" symbol="person.text.rectangle"
+          action={() => setShowPicker(!showPicker)} />
+      </HStack>
+    </VStack>
   );
 }
 
@@ -161,15 +164,10 @@ export function PickupPage({
 
   return (
     <NavigationStack>
-      <List
+      <ZStack alignment="bottomTrailing"
+        frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         navigationTitle="取件"
         navigationBarVisibility="hidden"
-        safeAreaInset={{
-          top: {
-            spacing: 0,
-            content: <RootPageHeader title="取件" action={() => dismiss()} />,
-          },
-        }}
         navigationDestination={{
           isPresented: Boolean(identity || selected),
           onChanged: (presented) => {
@@ -191,19 +189,25 @@ export function PickupPage({
             />
           ) : <Text>物流详情</Text>,
         }}
-        contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
-        overlay={{
-          alignment: "bottomTrailing",
-          content: <IdentityCodeButton onOpen={setIdentity} />,
-        }}
       >
-        {sections.map(({ key, label, items, preview }) => (
-          <Section key={key} header={<Text>{label}</Text>}>
-            {items.map(cardRow)}
-            {preview ? <ParcelActivityPreviewCard animate /> : null}
-          </Section>
-        ))}
-      </List>
+        <List
+          safeAreaInset={{
+            top: {
+              spacing: 0,
+              content: <RootPageHeader title="取件" action={() => dismiss()} />,
+            },
+          }}
+          contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
+        >
+          {sections.map(({ key, label, items, preview }) => (
+            <Section key={key} header={<Text>{label}</Text>}>
+              {items.map(cardRow)}
+              {preview ? <ParcelActivityPreviewCard animate /> : null}
+            </Section>
+          ))}
+        </List>
+        <IdentityCodeButton onOpen={setIdentity} />
+      </ZStack>
     </NavigationStack>
   );
 }

@@ -59,7 +59,7 @@ import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services
 import { requestWidgetReload } from "../services/widgets";
 import { displayedPlatformFields, type CloudParcelMetadata } from "../services/platform-parcel-merge";
 import { readCloudParcelMetadata } from "../services/cloud-parcel-metadata";
-import { refreshParcelDetailFields } from "../services/parcel-detail-fields";
+import { needsParcelDetailFields, refreshParcelDetailFields } from "../services/parcel-detail-fields";
 import { gatewayCredentialGeneration } from "../services/credentials";
 import { SCRIPT_BUILD_TRACK } from "../services/build-track";
 import { parcelActivityContent } from "../services/parcel-pickup";
@@ -341,7 +341,8 @@ export function DetailPage(props: {
     ? MANUAL_QUERY_IN_FLIGHT_TEXT
     : presentationStatus.text;
   const phoneTail = shipmentDetailPhoneTail(shipment);
-  const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment && !unprojectedAccountOrder(shipment)
+  const needsExtraFields = needsParcelDetailFields(shipment);
+  const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment && needsExtraFields && !unprojectedAccountOrder(shipment)
     ? normalizeWaybill(displayWaybill(shipment)) : "";
   const cloudGeneration = /^[A-Z0-9]{6,64}$/.test(cloudWaybill) ? gatewayCredentialGeneration() : null;
   const cloudLifecycle = shipmentLifecycleKey(shipment);
@@ -380,7 +381,7 @@ export function DetailPage(props: {
   }, [cloudScope]);
 
   useEffect(() => {
-    if (!props.persistedShipment) return;
+    if (!props.persistedShipment || !needsExtraFields) return;
     let active = true;
     const timer = setTimeout(() => {
       void refreshParcelDetailFields(shipment, () => active).then((result) => {
@@ -390,7 +391,7 @@ export function DetailPage(props: {
       }).catch(() => {});
     }, 0);
     return () => { active = false; clearTimeout(timer); };
-  }, [props.persistedShipment, waybill, cloudLifecycle]);
+  }, [props.persistedShipment, waybill, cloudLifecycle, needsExtraFields]);
 
   useEffect(() => {
     setShipment((current) => preferNewerShipment(current, props.shipment));
@@ -559,7 +560,7 @@ export function DetailPage(props: {
     const controller = new AbortController();
     const task = Promise.resolve().then(async () => {
       if (controller.signal.aborted || generation !== refreshGenerationRef.current ||
-          !shouldRequestDetailProductImage(current, loadState().bindings)) return;
+          !shouldRequestDetailProductImage(current, () => loadState().bindings)) return;
       refreshAbortRef.current = controller;
       const result = await refreshShipmentById(current.identity.id, {
         trigger: "product_image", requestProductImage: true, signal: controller.signal,

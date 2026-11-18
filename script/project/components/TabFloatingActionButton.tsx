@@ -1,29 +1,24 @@
-import { Button, Image, Text, VStack, type PopoverPresentation } from "scripting";
+import { Label, VStack } from "scripting";
 
-const DIAMETER = 56;
+export const TAB_FAB_DIAMETER = 58;
 const INSET = 20;
-const BACKGROUND = { light: "#9EF0FC", dark: "#004F57" } as const;
-const FOREGROUND = { light: "#004F57", dark: "#9EF0FC" } as const;
-export const TAB_FAB_SCROLL_INSET = DIAMETER + INSET;
+export const TAB_FAB_PADDING = { trailing: INSET, bottom: INSET };
+export const TAB_FAB_SCROLL_INSET = TAB_FAB_DIAMETER + INSET;
 
-export function TabFloatingActionButton({ title, symbol, action, popover }: {
+export function TabFloatingActionButton({ title, symbol, action }: {
   title: string;
   symbol: string;
   action: () => void;
-  popover?: PopoverPresentation;
 }) {
+  const glass = Number.parseInt(Device.systemVersion, 10) >= 26;
   return (
-    <VStack padding={{ trailing: INSET, bottom: INSET }}>
-      <Button buttonStyle="plain" action={action} popover={popover}>
-        <VStack spacing={1}
-          frame={{ width: DIAMETER, height: DIAMETER }}
-          background={{ style: BACKGROUND, shape: "circle" }}
-          shadow={{ color: "rgba(0,0,0,0.15)", radius: 12, x: 0, y: 4 }}
-          contentShape="circle">
-          <Image systemName={symbol} font={24} fontWeight="semibold" foregroundStyle={FOREGROUND} />
-          <Text font={9} fontWeight="medium" foregroundStyle={FOREGROUND}>{title}</Text>
-        </VStack>
-      </Button>
+    <VStack frame={{ width: TAB_FAB_DIAMETER, height: TAB_FAB_DIAMETER }}
+      background={{ style: { light: "rgba(255,255,255,0.55)", dark: "rgba(0,0,0,0.34)" }, shape: "circle" }}
+      glassEffect={glass ? { glass: UIGlass.clear().interactive(true), shape: { type: "capsule", style: "continuous" } } : undefined}
+      shadow={{ color: "rgba(0,0,0,0.15)", radius: 12, x: 0, y: 4 }}
+      onTapGesture={action} contentShape="rect">
+      <Label title={title} systemImage={symbol} labelStyle="iconOnly" font={22} fontWeight="semibold"
+        foregroundStyle={{ light: "#1C1C1E", dark: "#FFFFFF" }} />
     </VStack>
   );
 }

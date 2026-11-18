@@ -79,13 +79,14 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /async function refresh\(\)[\s\S]*?applyInteractiveRefreshSummary\(summary\)/,
+  /async function runListPull\(\)[\s\S]*?applyInteractiveRefreshSummary\(summary\)/,
   "only the explicit pull-to-refresh handler may consume a pending promotion",
 );
-const launchRefresh = homeSource.match(
-  /useEffect\(\(\) => \{[\s\S]*?refreshAllShipments\(\)[\s\S]*?\}, \[\]\);/,
+const appSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
+const launchRefresh = appSource.match(
+  /useEffect\(\(\) => \{\s*if \(!hasState\) return;[\s\S]*?refreshAllShipments\(\)[\s\S]*?\}, \[hasState\]\);/,
 )?.[0] || "";
-assert.match(launchRefresh, /props\.onStateChange\(summary\.state\)/);
+assert.match(launchRefresh, /applyState\(summary\.state\)/);
 assert.doesNotMatch(
   launchRefresh,
   /promotedPendingShipmentNavigationTarget|applyInteractiveRefreshSummary/,
