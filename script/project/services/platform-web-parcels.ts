@@ -11,27 +11,30 @@ import { displayWaybill } from "./shipment-policy";
 import { normalizeWaybill, shipmentPresentationStatus } from "./status";
 import { runParcelWebRead } from "./sync";
 import { asPlainObject, cleanScalarText } from "./value-guards";
-import { writeDiagnostic } from "./logger";
+import { jdDiagnosticPage, writeDiagnostic, type DiagnosticDetails } from "./logger";
 
 const PDD_ORDERS = "https://mobile.yangkeduo.com/orders.html";
 
 type JdSyncStage = "jd_sync_queue" | "jd_sync_session" | "jd_sync_viewport" | "jd_sync_orders"
   | "jd_sync_document" | "jd_sync_load_failed" | "jd_sync_script" | "jd_sync_unexpected_page"
   | "jd_sync_order_navigation" | "jd_sync_order_entry" | "jd_sync_order_cards" | "jd_sync_detail" | "jd_sync_save";
-type ReportStage = (stage: JdSyncStage) => void;
+type JdPageDetails = Pick<DiagnosticDetails, "jdPage" | "jdNativeLoad">;
+type ReportStage = (stage: JdSyncStage, page?: JdPageDetails) => void;
 
 const JD_ACCOUNT_PAGE_CHECK = String.raw`
   if (window !== window.top || location.protocol === 'about:') {
     return { state: 'pending', stage: 'jd_sync_document' };
   }
   if (location.protocol === 'https:' && !location.port &&
-    ['plogin.m.jd.com','passport.jd.com'].includes(location.hostname)) return { state: 'expired' };
+    ['plogin.m.jd.com','passport.jd.com'].includes(location.hostname)) {
+    return { state: 'expired', scheme: location.protocol, hostname: location.hostname };
+  }
 `;
 
 // Follow JdAccountActivity.READ_ORDERS: use the order cards or entry before classifying page text.
 const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
   if (!['https://my.m.jd.com','https://trade.m.jd.com','https://home.m.jd.com'].includes(location.origin)) {
-    return { state: 'pending', stage: 'jd_sync_unexpected_page' };
+    return { state: 'pending', stage: 'jd_sync_unexpected_page', scheme: location.protocol, hostname: location.hostname };
   }
   const text = el => (el?.textContent || '').trim();
   const nickname = text(document.querySelector('.my_header_name'));
@@ -160,12 +163,20 @@ function assertCurrent(platform: WebPlatform, session: PlatformSession) {
   if (!projectionSceneActive() || !currentPlatformSession(platform, session.generation)) throw new PlatformWireError("changed");
 }
 
+async function saveJdCookies(web: WebViewController, generation: string, deadline: number): Promise<void> {
+  const current = currentPlatformSession("jingdong", generation);
+  if (current?.credentials.kind !== "web") throw new PlatformWireError("changed");
+  const cookies = await verifiedJdCookies(web, current, deadline);
+  replacePlatformCookies("jingdong", generation, current.credentials.cookies, cookies);
+}
+
 async function withProviderPage<T>(
   platform: WebPlatform, session: PlatformSession,
   read: (controller: WebViewController, deadline: number, reportStage: ReportStage) => Promise<T>,
 ): Promise<T> {
   const deadline = Date.now() + 30_000;
   let stage: JdSyncStage = "jd_sync_queue";
+  let pageDetails: JdPageDetails | undefined;
   try {
     return await runParcelWebRead(async () => {
       assertCurrent(platform, session);
@@ -176,7 +187,26 @@ async function withProviderPage<T>(
       try {
         stage = "jd_sync_viewport";
         if (!await waitForRefresh(acquireProjectionViewport(web), deadline)) throw new PlatformWireError("unavailable");
-        return await read(web, deadline, (next) => { stage = next; });
+        const capture = read(web, deadline, (next, page) => {
+          stage = next;
+          pageDetails = page;
+        });
+        if (platform !== "jingdong") return await capture;
+        return await capture.finally(async () => {
+          // A failed order read can still renew cookies in the native browser.
+          // Commit them before the isolated controller is lost at script exit.
+          const saveDeadline = Math.min(deadline, Date.now() + 1_000);
+          if (!projectionSceneActive() || Date.now() >= saveDeadline) return;
+          try {
+            await saveJdCookies(web, session.generation, saveDeadline);
+          } catch (error) {
+            if (error instanceof PlatformWireError && error.reason === "changed") return;
+            writeDiagnostic("platform.jingdong.session.save_failed", {
+              stage: "jd_sync_session",
+              result: error instanceof OperationTimeoutError ? "timeout" : "unavailable",
+            }, "warning");
+          }
+        });
       } finally {
         releaseProjectionViewport();
         if (platform !== "jingdong") web.dispose();
@@ -186,6 +216,7 @@ async function withProviderPage<T>(
     if (platform === "jingdong") {
       writeDiagnostic("platform.jingdong.sync.failed", {
         stage,
+        ...pageDetails,
         ...(error instanceof OperationTimeoutError ? error.waitDetails : undefined),
         result: error instanceof OperationTimeoutError ? "timeout"
           : error instanceof PlatformWireError ? error.reason : "failed",
@@ -199,7 +230,8 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
   url: string, script: string, deadline: number, reportStage?: ReportStage): Promise<unknown> {
   assertCurrent(platform, session);
   const pageDeadline = Math.min(deadline, Date.now() + 12_000);
-  let loadRejected = false;
+  let jdNativeLoad: NonNullable<DiagnosticDetails["jdNativeLoad"]> = "pending";
+  const loadRejected = () => jdNativeLoad === "returned_false" || jdNativeLoad === "rejected";
   let committedDocument = false;
   if (platform === "jingdong") {
     // The same browser can still display the previous order page until navigation commits.
@@ -212,7 +244,8 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
   const load = web.loadURL(url);
   if (platform === "jingdong") {
     // Like Pipi's JD probe, accept the matching document as soon as it renders.
-    void load.then((loaded) => { loadRejected = !loaded; }, () => { loadRejected = true; });
+    void load.then((loaded) => { jdNativeLoad = loaded ? "returned_true" : "returned_false"; },
+      () => { jdNativeLoad = "rejected"; });
   } else if (!await waitForRefresh(load, pageDeadline)) {
     throw new PlatformWireError("unavailable");
   }
@@ -224,32 +257,36 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
     } catch (error) {
       assertCurrent(platform, session);
       if (platform === "jingdong") {
-        reportStage?.(loadRejected && !committedDocument ? "jd_sync_load_failed" : "jd_sync_script");
+        reportStage?.(loadRejected() && !committedDocument ? "jd_sync_load_failed" : "jd_sync_script", { jdNativeLoad });
       }
       if (error instanceof OperationTimeoutError) throw error;
       value = null;
     }
     if (value != null) {
       assertCurrent(platform, session);
-      const { state, stage } = asPlainObject(value);
+      const { state, stage, scheme, hostname } = asPlainObject(value);
       if (state === "expired") {
+        if (platform === "jingdong") reportStage?.("jd_sync_session", { jdNativeLoad, jdPage: jdDiagnosticPage(scheme, hostname) });
         clearPlatformLogin(platform, session.generation, true);
         throw new PlatformWireError("expired");
       }
       if (state === "verification" || state === "unavailable") throw new PlatformWireError(state);
       if (state !== "pending") return value;
       if (stage === "jd_sync_document") {
-        reportStage?.(loadRejected ? "jd_sync_load_failed" : stage);
+        reportStage?.(loadRejected() ? "jd_sync_load_failed" : stage, { jdNativeLoad });
       } else if (stage === "jd_sync_viewport" || stage === "jd_sync_orders" || stage === "jd_sync_order_navigation" ||
         stage === "jd_sync_order_entry" || stage === "jd_sync_order_cards" || stage === "jd_sync_unexpected_page") {
         committedDocument = true;
-        reportStage?.(stage);
+        reportStage?.(stage, {
+          jdNativeLoad,
+          ...(stage === "jd_sync_unexpected_page" ? { jdPage: jdDiagnosticPage(scheme, hostname) } : undefined),
+        });
       }
     }
     await pauseWhileActive(250);
   }
   if (platform === "jingdong") {
-    if (loadRejected && !committedDocument) reportStage?.("jd_sync_load_failed");
+    if (loadRejected() && !committedDocument) reportStage?.("jd_sync_load_failed", { jdNativeLoad });
     throw new OperationTimeoutError();
   }
   throw new PlatformWireError("unavailable");
@@ -268,9 +305,7 @@ export async function fetchJdParcels(
     reportStage("jd_sync_orders");
     const result = asPlainObject(await pageResult("jingdong", session, web, JD_ORDERS_PAGE, READ_JD_ORDERS, deadline, reportStage));
     reportStage("jd_sync_session");
-    if (session.credentials.kind !== "web") throw new PlatformWireError("changed");
-    const cookies = await verifiedJdCookies(web, session, deadline);
-    replacePlatformCookies("jingdong", session.generation, session.credentials.cookies, cookies);
+    await saveJdCookies(web, session.generation, deadline);
     const orders = objectList(result.orders).flatMap((row) => {
       const order = cleanScalarText(row.orderId);
       return /^\d{8,32}$/.test(order) ? [{ row, order, associated: jdOrders.get(order), title: productTitle(row.title) }] : [];

@@ -10,7 +10,7 @@ import {
   accountStatus, clearPlatformLogin, currentPlatformSession, notePlatformSync, platformAccountSubtitle, platformSession, savePlatformLogin,
   trustedPlatformPage,
 } from "../services/platform-accounts";
-import { identityCodeFromResponse, fetchStationIdentity, retainJdLoginView } from "../services/platform-wire";
+import { identityCodeFromResponse, fetchStationIdentity, openProviderController, retainJdLoginView } from "../services/platform-wire";
 import { cainiaoHandoffs, cainiaoRecipientParcels, displayDeliveryEstimate, pddPickupParcels } from "../services/platform-parcel-data";
 import { cabinetParcels, type CabinetParcel } from "../services/fengchao-account";
 import { displayedPlatformFields, enrichPlatformParcel, matchPlatformParcel } from "../services/platform-parcel-merge";
@@ -443,6 +443,75 @@ test("a rejected native JD load is distinguishable from an unreadable order list
     assert.equal(result.failed, 1);
     const note = readDiagnostics().find(({ event }) => event === "platform.jingdong.sync.failed");
     assert.equal(note?.details.stage, "jd_sync_load_failed");
+  } finally {
+    clearPlatformLogin("jingdong", accountStatus("jingdong").generation);
+    registerProjectionViewportHost(null);
+    globalThis.WebViewController = originalController;
+    setDiagnosticsEnabled(false);
+  }
+});
+
+test("an unexpected JD document reports its origin and native load outcome without URL contents", async (t) => {
+  t.mock.method(UUID, "string", randomUUID);
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  memory.clear();
+  setDiagnosticsEnabled(true);
+  clearDiagnostics();
+  const cookie = { ...sessionCookie, name: "pt_key", value: "synthetic-jd-navigation", domain: ".jd.com" };
+  const renewed = { ...cookie, value: "synthetic-jd-renewed-during-navigation" };
+  savePlatformLogin("jingdong", "", { kind: "web", cookies: [cookie] }, "synthetic-jd-account");
+  const originalController = globalThis.WebViewController;
+  const window: { top?: object } = {};
+  window.top = window;
+  let location = new URL("https://gias.jd.com/synthetic-path?token=synthetic-query#synthetic-fragment");
+  Object.assign(globalThis, { WebViewController: class {
+    private cookies: Cookie[] = [];
+    async setCookie(value: Cookie) { this.cookies.push(value); return true; }
+    async getAllCookies() { return this.cookies; }
+    async loadURL() { this.cookies = [renewed]; return false; }
+    async evaluateJavaScript(script: string) {
+      if (script.startsWith("window.__pipiDeliveriesPreviousJDPage = true")) return true;
+      setImmediate(() => { now += 12_001; });
+      return runInNewContext(`(() => { ${script} })()`, { window, location });
+    }
+    dispose() {}
+  } });
+  registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
+  try {
+    for (const [address, expectedPage] of [
+      [location.href, "https:gias.jd.com"],
+      ["https://synthetic-host.example/synthetic-path", "https:other"],
+      ["applewebdata://synthetic-page/synthetic-path", "applewebdata:other"],
+    ]) {
+      clearDiagnostics();
+      location = new URL(address);
+      const result = await refreshPlatformParcels(() => {}, "manual", "jingdong");
+      assert.equal(result.failed, 1);
+      const note = readDiagnostics().find(({ event }) => event === "platform.jingdong.sync.failed");
+      assert.equal(note?.details.stage, "jd_sync_unexpected_page");
+      assert.equal(note?.details.jdPage, expectedPage);
+      assert.equal(note?.details.jdNativeLoad, "returned_false");
+      assert.doesNotMatch(JSON.stringify(note), /synthetic-/);
+      assert.equal(accountStatus("jingdong").state, "active");
+    }
+    const saved = platformSession("jingdong")?.credentials;
+    assert.equal(saved?.kind, "web");
+    if (saved?.kind !== "web") throw new Error("Missing saved JD account");
+    const reopened = await openProviderController("jingdong", saved.cookies);
+    try {
+      assert.equal((await reopened.getAllCookies()).find(({ name }) => name === "pt_key")?.value, renewed.value);
+    } finally {
+      reopened.dispose();
+    }
+    location = new URL("https://plogin.m.jd.com/login/login?token=synthetic-query");
+    clearDiagnostics();
+    const expired = await refreshPlatformParcels(() => {}, "manual", "jingdong");
+    assert.deepEqual(expired.issues, [{ platform: "jingdong", reason: "expired" }]);
+    assert.equal(platformSession("jingdong"), null);
+    const note = readDiagnostics().find(({ event }) => event === "platform.jingdong.sync.failed");
+    assert.equal(note?.details.jdPage, "https:plogin.m.jd.com");
+    assert.doesNotMatch(JSON.stringify(note), /synthetic-/);
   } finally {
     clearPlatformLogin("jingdong", accountStatus("jingdong").generation);
     registerProjectionViewportHost(null);

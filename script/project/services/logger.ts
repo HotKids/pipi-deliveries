@@ -258,6 +258,8 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   jtH5Succeeded?: boolean;
   kdniaoAttempted?: boolean;
   kdniaoSucceeded?: boolean;
+  jdPage?: string;
+  jdNativeLoad?: "pending" | "returned_true" | "returned_false" | "rejected";
   result?: string;
   stage?: string;
   stagePhase?: "query" | "parse" | "write";
@@ -481,6 +483,7 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "jtH5Succeeded",
   "kdniaoAttempted",
   "kdniaoSucceeded",
+  "jdPage", "jdNativeLoad",
   "result",
   "stage",
   "stagePhase",
@@ -744,11 +747,32 @@ function unifiedWire(key: keyof DiagnosticDetails, value: string): string {
   return value;
 }
 
+export function jdDiagnosticPage(scheme: unknown, hostname: unknown): string {
+  if (typeof scheme !== "string" || !/^(?:https?|file|data|blob|applewebdata|webkit-error):$/.test(scheme)) return "other:other";
+  // Keep only the provider's DNS name. WebKit error pages and foreign hosts can contain private identifiers.
+  const host = /^https?:$/.test(scheme) && typeof hostname === "string" && hostname.length <= 55 &&
+    /^(?:[a-z0-9-]+\.)*(?:jd\.com|jd\.hk|360buyimg\.com)$/.test(hostname) ? hostname : "other";
+  return scheme + host;
+}
+
 function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
   const result: DiagnosticDetails = {};
   for (const [rawKey, rawValue] of Object.entries(value)) {
     const key = rawKey as keyof DiagnosticDetails;
     if (!DETAIL_KEYS.has(key) || rawValue == null) continue;
+    if (key === "jdPage") {
+      if (typeof rawValue === "string") {
+        const separator = rawValue.indexOf(":");
+        if (separator > 0) result.jdPage = jdDiagnosticPage(rawValue.slice(0, separator + 1), rawValue.slice(separator + 1));
+      }
+      continue;
+    }
+    if (key === "jdNativeLoad") {
+      if (rawValue === "pending" || rawValue === "returned_true" || rawValue === "returned_false" || rawValue === "rejected") {
+        result.jdNativeLoad = rawValue;
+      }
+      continue;
+    }
     if (key === "listStateNumber") {
       if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 101 && rawValue <= 111) result[key] = rawValue;
       continue;
