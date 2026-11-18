@@ -563,7 +563,14 @@ assert.doesNotMatch(stationIdentitySource, /在网页打开|在拼多多 App 中
 assert.match(stationIdentitySource, /后自动刷新` : "正在自动刷新…"/);
 assert.match(stationIdentitySource, />点击条形码或二维码可放大刷新<\/Text>/);
 assert.match(stationIdentitySource, />点击可缩小<\/Text>/);
-assert.match(stationIdentitySource, /rotationEffect=\{portrait \? 90 : 0\}[\s\S]*?<Barcode[\s\S]*?\{number\}\{shrink\}/);
+assert.match(stationIdentitySource, /rotationEffect=\{portrait \? 90 : 0\}[\s\S]*?<Barcode[\s\S]*?\{number\}\{shrink\}\{time\}/,
+  "the countdown stays with the rotated barcode and its labels");
+assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{qrSize\}[\s\S]*?\{number\}\{shrink\}\s*\{time\}/,
+  "the enlarged QR has the same live countdown");
+assert.match(stationIdentitySource, /preferredColorScheme="light"\s+contentShape="rect" onTapGesture=\{onClose\}/);
+assert.doesNotMatch(stationIdentitySource, /title="关闭" systemImage="xmark"/);
+assert.match(stationIdentitySource, /header=\{detailTitle\("取件人"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}[\s\S]*?header=\{detailTitle\("身份码编号"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}/);
+assert.match(stationIdentitySource, /style: "tertiarySystemFill", shape: "capsule"/);
 assert.doesNotMatch(stationIdentitySource, /presentPlatformLogin|授权拼多多|登录淘宝/,
   "the identity page does not present an account setup form");
 assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{184\} \/>/,

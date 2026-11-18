@@ -1,5 +1,5 @@
 import {
-  AbortController, AppEvents, Button, Canvas, Form, GeometryReader, HStack, Image, QRImage, Section,
+  AbortController, AppEvents, Button, Canvas, Form, GeometryReader, HStack, Image, QRImage, Rectangle, Section,
   Text, VStack, ZStack, useEffect, useMemo, useObservable, useRef, useState,
 } from "scripting";
 import { useBundledImage } from "../components/bundled-image";
@@ -21,8 +21,12 @@ type ScanFormat = "barcode" | "qr";
 type ScanState = [value: string, expiresAtMs: number, remaining: number, mobile: string];
 const EMPTY_SCAN: ScanState = ["", 0, 0, ""];
 const identityCache = new Map<IdentityPlatform, { generation: string; code: StationIdentityCode }>();
-const BARCODE_SHAPE = { type: "rect", cornerRadius: 10 } as const;
-const QR_SHAPE = { type: "rect", cornerRadius: 14 } as const;
+const BARCODE_SHAPE = { type: "rect", cornerRadius: 10, style: "continuous" } as const;
+const QR_SHAPE = { type: "rect", cornerRadius: 14, style: "continuous" } as const;
+const DETAIL_ROW_INSETS = { top: 12, bottom: 12, leading: 16, trailing: 16 };
+const DETAIL_MARK_SIZE = 36;
+
+const detailTitle = (title: string) => <Text font={13} foregroundStyle="secondaryLabel">{title}</Text>;
 
 export function StationIdentityMark({ asset, size = 28 }: { asset: IdentityPlatform | "taobao"; size?: number }) {
   const frame = { width: size, height: size };
@@ -101,9 +105,12 @@ function FullScreenIdentity({ format, scan, onClose }: {
   const number = <Text font={14} fontWeight="medium" foregroundStyle="#1C1C1E" lineLimit={1}
     minScaleFactor={0.55}>{value}</Text>;
   const shrink = <Text font={12} foregroundStyle="#636366">点击可缩小</Text>;
+  const time = <Text font={12} monospacedDigit foregroundStyle="#636366">{countdown(remaining)}</Text>;
   return (
-    <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} background="white" ignoresSafeArea
-      contentShape="rect" onTapGesture={onClose}>
+    <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} preferredColorScheme="light"
+      contentShape="rect" onTapGesture={onClose}
+      accessibilityActions={[{ name: "缩小身份码", action: onClose }]}>
+      <Rectangle fill="white" ignoresSafeArea accessibilityHidden />
       {value && remaining > 0 ? format === "barcode" ? (
         <GeometryReader>
           {({ size }) => {
@@ -115,14 +122,14 @@ function FullScreenIdentity({ format, scan, onClose }: {
                 position={{ x: size.width / 2, y: size.height / 2 }}>
                 {mobile ? <Text font={16} fontWeight="semibold" foregroundStyle="#1C1C1E">{mobile}</Text> : null}
                 <Barcode widthList={widths} width={length} height={thickness} />
-                <VStack spacing={4}>{number}{shrink}</VStack>
+                <VStack spacing={4}>{number}{shrink}{time}</VStack>
               </VStack>
             );
           }}
         </GeometryReader>
       ) : (
         <VStack spacing={18} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-          padding={{ top: 104, bottom: 40, horizontal: 24 }}>
+          padding={24}>
           <GeometryReader>
             {({ size }) => {
               const qrSize = Math.min(320, size.width, size.height);
@@ -135,16 +142,10 @@ function FullScreenIdentity({ format, scan, onClose }: {
           </GeometryReader>
           <VStack spacing={8}>
             {number}{shrink}
-            <Text font={12} monospacedDigit foregroundStyle="#636366">{countdown(remaining)}</Text>
+            {time}
           </VStack>
         </VStack>
       ) : <Text font={15} foregroundStyle="#636366">身份码已过期</Text>}
-      <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity", alignment: "topTrailing" }}
-        padding={{ top: 56, trailing: 20 }}>
-        <Button title="关闭" systemImage="xmark" labelStyle="iconOnly" buttonStyle="plain" action={onClose}
-          foregroundStyle="#1C1C1E" frame={{ width: 44, height: 44 }}
-          background={{ style: "#F1F1F3", shape: "circle" }} />
-      </VStack>
     </ZStack>
   );
 }
@@ -311,7 +312,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
       }}
     >
       <Section>
-        <VStack spacing={12} padding={{ vertical: 8 }} frame={{ maxWidth: "infinity" }}
+        <VStack spacing={12} listRowInsets={DETAIL_ROW_INSETS} frame={{ maxWidth: "infinity" }}
           fullScreenCover={{
             isPresented: full !== null,
             onChanged: (shown) => { if (!shown) setFull(null); },
@@ -344,25 +345,32 @@ function StationIdentityContent({ platform, expectedGeneration }: {
         </VStack>
       </Section>
       {valid && mobile ? (
-        <Section header={<Text>取件人</Text>}>
-          <HStack>
-            <Text>绑定手机号</Text>
-            <Text foregroundStyle="secondaryLabel" frame={{ maxWidth: "infinity", alignment: "trailing" }}>{mobile}</Text>
+        <Section header={detailTitle("取件人")}>
+          <HStack frame={{ minHeight: 28 }} listRowInsets={DETAIL_ROW_INSETS}>
+            <Text font={16}>绑定手机号</Text>
+            <Text font={16} foregroundStyle="secondaryLabel"
+              frame={{ maxWidth: "infinity", alignment: "trailing" }}>{mobile}</Text>
           </HStack>
         </Section>
       ) : null}
       {valid ? (
-        <Section header={<Text font={13} foregroundStyle="secondaryLabel">身份码编号</Text>}>
-          <HStack spacing={12} padding={{ vertical: 6 }} frame={{ maxWidth: "infinity" }}>
-            <StationIdentityMark asset={platform === "cainiao" ? "taobao" : platform} size={34} />
+        <Section header={detailTitle("身份码编号")}>
+          <HStack spacing={12} frame={{ maxWidth: "infinity" }} listRowInsets={DETAIL_ROW_INSETS}>
+            <StationIdentityMark asset={platform === "cainiao" ? "taobao" : platform} size={DETAIL_MARK_SIZE} />
             <Text font={24} fontWeight="bold" lineLimit={1} minScaleFactor={0.55}
               frame={{ maxWidth: "infinity", alignment: "leading" }}>
               {value.replace(/(\d{4})(\d{4})(\d{4})/, "$1 $2 $3")}
             </Text>
-            <Button title="复制" buttonStyle="bordered" action={() => {
+            <Button buttonStyle="plain" action={() => {
               if (!currentSession() || expiresAtMs <= Date.now()) return;
               void copyText(value);
-            }} />
+            }}>
+              <ZStack frame={{ minWidth: 44, minHeight: 44 }} contentShape="rect">
+                <Text font={14} fontWeight="semibold" foregroundStyle="accentColor"
+                  frame={{ minHeight: DETAIL_MARK_SIZE }} padding={{ horizontal: 12 }}
+                  background={{ style: "tertiarySystemFill", shape: "capsule" }}>复制</Text>
+              </ZStack>
+            </Button>
           </HStack>
         </Section>
       ) : !busy ? (
