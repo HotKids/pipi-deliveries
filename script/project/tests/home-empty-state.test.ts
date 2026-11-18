@@ -128,13 +128,31 @@ assert.match(filterBar, /<Capsule\b[^>]*frame=\{\{ height: 32 \}\}/,
 assert.match(filterBar, /<VStack\b[^>]*minHeight: 44[^>]*contentShape="rect"/,
   "the compact track retains a 44-point button hit target");
 assert.match(filterBar, /<Button key=\{key\}[\s\S]*?setFilter\(key\)/);
-assert.match(filterBar, /<NamespaceReader>\s*\{\(namespace\) => \(\s*<ZStack[^>]*animation=\{\{ animation: .*?, value: filter \}\}/,
-  "filter changes animate only the filter bar");
-assert.match(filterBar, /<Capsule fill="secondarySystemFill"[^>]*matchedGeometryEffect=\{\{ id: filter, namespace, isSource: false \}\}[^>]*allowsHitTesting=\{false\}/,
-  "the single moving selection follows the active segment and stays behind the buttons");
+assert.match(filterBar, /<GeometryReader[^>]*frame=\{\{ height: 32 \}\}[^>]*allowsHitTesting=\{false\}/,
+  "the selection uses the track geometry outside the button hit-testing path");
+assert.match(filterBar, /<Capsule fill="secondarySystemFill"[^>]*key="filter-selection"[^>]*position=\{\{ x, y: size\.height \/ 2 \}\}[^>]*animation=\{\{ animation: Animation\.snappy\(.*?\), value: filter \}\}/,
+  "filter changes animate one stable capsule's position, outside the list");
 assert.equal((filterBar.match(/fill="secondarySystemFill"/g) ?? []).length, 1);
-assert.match(filterBar, /<HStack\s+spacing=\{4\}[^>]*matchedGeometryEffect=\{\{ id: key, namespace \}\}/,
-  "the indicator follows each button's actual label frame");
+assert.match(filterBar, /<HStack spacing=\{0\} padding=\{\{ horizontal: FILTER_SEGMENT_INSET \}\}/,
+  "the button row and the selection share the same end inset");
+const filterGeometry = filterBar.match(/\(\{ size \}\) => \{\s*([\s\S]*?)\s*return \(/)?.[1];
+const segmentInset = homeSource.match(/const FILTER_SEGMENT_INSET = (\d+);/)?.[1];
+assert.ok(filterGeometry && segmentInset);
+const selectionFrame = new Function("size", "visibleFilters", "filter",
+  `const FILTER_SEGMENT_INSET = ${segmentInset};\n${filterGeometry}\nreturn { segmentWidth, x };`);
+for (const [width, filters] of [
+  [320, ["all", "transit"]],
+  [548, ["all", "transit", "pickup", "danger"]],
+] as const) {
+  const inset = Number(segmentInset);
+  const expectedWidth = (width - inset * 2) / filters.length;
+  filters.forEach((filter, index) => {
+    assert.deepEqual(selectionFrame({ width }, filters, filter), {
+      segmentWidth: expectedWidth,
+      x: inset + expectedWidth * (index + 0.5),
+    });
+  });
+}
 assert.match(filterBar, /<Text[^>]*background=\{\{ style: "systemFill", shape: "capsule" \}\}[^>]*>\s*\{groups\[key\]\.length\}/,
   "each segment shows its count inside a separate capsule");
 assert.match(homeSource, /key === "all" \|\| groups\[key\]\.length > 0/);
