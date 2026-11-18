@@ -15,7 +15,6 @@ const emptyGroupSource = await readFile(
   resolve(projectDir, "components/EmptyDeliveryVehicle.tsx"),
   "utf8",
 );
-
 assert.match(
   emptyGroupSource,
   /export function EmptyDeliveryStateGroup[\s\S]*?<VStack\s+alignment="center"\s+spacing=\{props\.spacing\}>[\s\S]*?<EmptyDeliveryVehicle size=\{props\.vehicleSize\} deferArtwork=\{props\.deferArtwork\} \/>[\s\S]*?<Text[\s\S]*?font=\{props\.labelFont\}[\s\S]*?fontWeight="medium"[\s\S]*?>\s*暂无快递\s*<\/Text>[\s\S]*?<\/VStack>/,
@@ -27,8 +26,8 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /visibleFilters\.length > 1 \? \([\s\S]*?<List[\s\S]*?refreshable=\{refresh\}[\s\S]*?overlay=\{\{[\s\S]*?\{!shipments\.length \? \(\s*<VStack frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\} allowsHitTesting=\{false\}>\s*<EmptyDeliveryStateGroup vehicleSize=\{81\.6\} spacing=\{6\} labelFont=\{24\} deferArtwork \/>/,
-  "the 1.2x home vehicle group must be centered in the flexible body below the segmented filter",
+  /<List key="shipments"[^]*?refreshable=\{refresh\}[^]*?overlay=\{!shipments\.length \? \{\s*alignment: "center",\s*content: \(\s*<VStack frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\} allowsHitTesting=\{false\}>\s*<EmptyDeliveryStateGroup vehicleSize=\{81\.6\} spacing=\{6\} labelFont=\{24\} deferArtwork \/>/,
+  "the 1.2x home vehicle group is centered in the refreshable body",
 );
 assert.equal((homeSource.match(/refreshable=\{refresh\}/g) ?? []).length, 1,
   "data arriving during a pull must not replace the refreshable list");
@@ -52,16 +51,16 @@ assert.equal(beginCount, 2, "a new gesture still starts another pull");
 finishPull();
 await next;
 assert.match(homeSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootPageHeader title="快递"/);
-assert.match(homeSource, /<RootPageHeader title="快递"[^]*?\/>\s*<List key="shipments"/,
-  "the root header is visible above the list regardless of safe-area inset support");
+assert.match(homeSource, /<RootPageHeader title="快递"[^]*?\/>\s*\{filterControls\}\s*<List key="shipments"/,
+  "the header and filters occupy their own space above the list");
 assert.match(homeSource, /<List key="shipments" listStyle="plain" refreshable=\{refresh\}[^]*?rootPageScroll\(setHeaderCollapsed\)/);
-assert.match(homeSource, /overlay=\{\{\s*alignment: "topLeading",[\s\S]*?\{compactFilters\}/);
-assert.match(homeSource, /\{showListAccessories \? \(/,
-  "the accessories keep their list row when the title collapses");
-assert.doesNotMatch(homeSource, /safeAreaInset=|!headerCollapsed && showListAccessories/,
-  "scrolling cannot replace the list viewport inset or insert a row");
+assert.match(homeSource, /\{accessKeyNotice \? \(\s*<VStack[^]*?\{accessKeyNotice\}/,
+  "the access-key notice retains its list row in both header states");
+assert.doesNotMatch(homeSource, /safeAreaInset=|alignment: "topLeading",|!headerCollapsed && accessKeyNotice/,
+  "the filters do not cover rows or take over the list's insets");
 assert.match(homeSource, /\{!headerCollapsed \? <VStack padding=\{TAB_FAB_PADDING\}>\s*<TabFloatingActionButton title="查询"/);
 const nativeHeader = await readFile(resolve(projectDir, "components/RootPageHeader.tsx"), "utf8");
+assert.doesNotMatch(nativeHeader, /^import \{[^}]*\bAnimation\b[^}]*\} from "scripting";/m);
 assert.match(nativeHeader, /ROOT_TITLE_CAPSULE_WIDTH = 68;/);
 assert.match(nativeHeader, /animation: Animation\.smooth\(\{ duration: 0\.22 \}\), value: collapsed/);
 assert.match(nativeHeader, /opacity=\{collapsed \? 1 : 0\}[\s\S]*?tabCapsuleSurface\(\)/,
@@ -130,8 +129,10 @@ assert.match(homeSource, /const searchPresented = useObservable\(/,
 assert.match(searchSheet, /isPresented: searchPresented,/);
 assert.doesNotMatch(searchSheet, /onChanged:/,
   "the presentation binding owns dismissal without a second state callback");
-assert.match(searchSheet, /<NavigationStack[\s\S]*?<ScrollView navigationTitle="查快递"[\s\S]*?<HomeSearchBar/,
-  "the existing search form has its own sheet navigation");
+assert.match(searchSheet, /<NavigationStack[\s\S]*?<ScrollView navigationTitle="查询快递"[\s\S]*?<HomeSearchBar/,
+  "the existing search form has its own sheet navigation and title");
+assert.match(homeSource, /<TextField\s+title="查询快递单号"[^]*?prompt="请输入运单号"/,
+  "the waybill field displays the requested prompt");
 assert.match(searchSheet, /systemImage="xmark" labelStyle="iconOnly"[\s\S]*?searchPresented\.setValue\(false\)/,
   "the search sheet must have an icon-only close button");
 const navigationEffect = homeSource.match(/useEffect\(\(\) => \{\n(    const generation = props\.navigationRequestGeneration;[\s\S]*?)\n  \}, \[props\.navigationRequestGeneration\]\);/)?.[1];
@@ -152,18 +153,19 @@ assert.match(searchSheet, /autoFocusSearch=\{props\.autoFocusSearch\}/,
   "only the existing focus and shortcut entry points should open the keyboard automatically");
 assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(selected\)/,
   "the main navigation destination presents shipment details");
-const compactFilters = homeSource.match(/const compactFilters = \(([\s\S]*?)\n  \);/)?.[1] ?? "";
-assert.match(compactFilters, /<VStack spacing=\{4\}[\s\S]*?visibleFilters\.map[\s\S]*?frame=\{\{ width: ROOT_TITLE_CAPSULE_WIDTH, minHeight: 36 \}\}/,
+const filterLabel = homeSource.match(/^function ShipmentFilterLabel\([^]*?(?=^function shipmentFilter\()/m)?.[0] ?? "";
+assert.match(filterLabel, /<Text font=\{11\} fontWeight="semibold" monospacedDigit[^]*?frame=\{\{ minWidth: 16, minHeight: 16 \}\}\s*background=\{\{ style: "systemFill", shape: "capsule" \}\}\s*contentTransition="numericText"[^]*?>\s*\{count\}/,
+  "both filter presentations use the original independent number badge");
+assert.equal(homeSource.match(/<ShipmentFilterLabel\b/g)?.length, 2);
+const filterControls = homeSource.match(/const filterControls = ([\s\S]*?)\n  \);/)?.[1] ?? "";
+const [compactFilters, filterBar] = filterControls.split("  ) : (\n    <NamespaceReader>");
+assert.match(compactFilters, /<VStack alignment="leading" spacing=\{4\}[\s\S]*?visibleFilters\.map[\s\S]*?frame=\{\{ width: ROOT_TITLE_CAPSULE_WIDTH, minHeight: 36 \}\}/,
   "each compact filter is stacked at the same width as the title");
 assert.match(compactFilters, /\{\.\.\.tabCapsuleSurface\(true\)\}/);
 assert.match(compactFilters, /padding=\{\{ leading: ROOT_HEADER_HORIZONTAL_INSET,/);
-const filterBar = homeSource.match(/\{visibleFilters\.length > 1 \? \(([\s\S]*?)\) : null\}/)?.[1] ?? "";
-assert.match(filterBar, /<Picker title="筛选" value=\{filter\} onChanged=\{selectFilter\} pickerStyle="segmented"/,
-  "the platform segmented control owns the selection animation");
-assert.match(filterBar, /<Text key=\{key\} tag=\{key\} font=\{14\} monospacedDigit\s+contentTransition="numericText"\s+animation=\{\{ animation: Animation\.snappy\(\{ duration: 0\.32 \}\), value: groups\[key\]\.length \}\}>\s*\{\x60\$\{shipmentFilters\[key\]\} \$\{groups\[key\]\.length\}\x60\}/,
-  "stable option tags retain the filter when its numeric label changes");
-assert.doesNotMatch(filterBar, /GeometryReader|matchedGeometryEffect|<Capsule|<Button/,
-  "no custom selection indicator competes with the native one");
+assert.match(filterBar, /<Button key=\{key\}[^]*?<VStack frame=\{\{ maxWidth: "infinity", minHeight: 44 \}\} contentShape="rect">\s*<VStack padding=\{\{ horizontal: 8 \}\} frame=\{\{ minHeight: 26 \}\}\s*background=\{selected \? \([^]*?matchedGeometryEffect=\{\{ id: "filter-selection", namespace, properties: "position" \}\}[^]*?<ShipmentFilterLabel/,
+  "the moving glass fits the label while the whole segment stays tappable");
+assert.doesNotMatch(homeSource, /^import \{[^}]*\bTransition\b[^}]*\} from "scripting";/m);
 const selectFilter = homeSource.match(/^  function selectFilter\([\s\S]*?^  \}/m)?.[0];
 assert.ok(selectFilter);
 const filterUpdates: string[] = [];

@@ -1,12 +1,13 @@
 import {
   Button,
+  Capsule,
   ForEach,
   HStack,
   Image,
   List,
   Navigation,
   NavigationStack,
-  Picker,
+  NamespaceReader,
   ProgressView,
   ScrollView,
   Section,
@@ -90,6 +91,27 @@ const shipmentFilters = {
   danger: "异常",
 } as const;
 type ShipmentFilter = keyof typeof shipmentFilters;
+
+function ShipmentFilterLabel({ filter, count, selected }: {
+  filter: ShipmentFilter;
+  count: number;
+  selected: boolean;
+}) {
+  return (
+    <HStack spacing={4}>
+      <Text font={14} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
+        {shipmentFilters[filter]}
+      </Text>
+      <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
+        lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
+        background={{ style: "systemFill", shape: "capsule" }}
+        contentTransition="numericText"
+        animation={{ animation: Animation.snappy({ duration: 0.32 }), value: count }}>
+        {count}
+      </Text>
+    </HStack>
+  );
+}
 
 function shipmentFilter(semantic: StatusSemantic): Exclude<ShipmentFilter, "all"> | undefined {
   switch (semantic) {
@@ -349,74 +371,82 @@ export function HomePage(props: {
     onShortcutHandled: props.onShortcutHandled,
   };
   const showAccessKeyNotice = accessKeyRejected && !accessKeyNoticeDismissed;
-  const showListAccessories = showAccessKeyNotice || visibleFilters.length > 1;
-  const listAccessories = (
-    <VStack background="systemBackground">
-      {showAccessKeyNotice ? (
-        <VStack padding={{ horizontal: 20, vertical: 8 }}>
-          <HStack
-            spacing={0}
-            padding={{ leading: 16, trailing: 12, vertical: 12 }}
-            background="secondarySystemBackground"
-            clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
-          >
-            <Text
-              font={14}
-              foregroundStyle="secondaryLabel"
-              frame={{ maxWidth: "infinity", alignment: "leading" }}
-            >
-              Access Key 已失效，请通过 TG Bot 重新获取。
-            </Text>
-            <Button
-              role="close"
-              buttonStyle="plain"
-              action={() => setAccessKeyNoticeDismissed(true)}
-            >
-              <Image
-                systemName="xmark"
-                font={24}
-                foregroundStyle="secondaryLabel"
-                frame={{ width: 48, height: 48 }}
-                contentShape="rect"
-              />
-            </Button>
-          </HStack>
-        </VStack>
-      ) : null}
-      {visibleFilters.length > 1 ? (
-        <VStack frame={{ maxWidth: "infinity" }} padding={{ horizontal: 20, top: 10 }}
-          opacity={headerCollapsed ? 0 : 1} allowsHitTesting={!headerCollapsed}
-          {...{ accessibilityHidden: headerCollapsed }}>
-          <Picker title="筛选" value={filter} onChanged={selectFilter} pickerStyle="segmented">
-            {visibleFilters.map((key) => (
-              <Text key={key} tag={key} font={14} monospacedDigit
-                contentTransition="numericText"
-                animation={{ animation: Animation.snappy({ duration: 0.32 }), value: groups[key].length }}>
-                {`${shipmentFilters[key]} ${groups[key].length}`}
-              </Text>
-            ))}
-          </Picker>
-        </VStack>
-      ) : null}
-    </VStack>
-  );
-  const compactFilters = (
-    <VStack spacing={4} padding={{ leading: ROOT_HEADER_HORIZONTAL_INSET, bottom: 8 }} allowsHitTesting={headerCollapsed}>
-      {headerCollapsed && visibleFilters.length > 1 ? visibleFilters.map((key) => (
-        <Button key={key} buttonStyle="plain" action={() => {
-          void withAnimation(Animation.snappy({ duration: 0.32 }), () => selectFilter(key));
-        }}>
-          <Text font={14} fontWeight={filter === key ? "semibold" : "medium"} monospacedDigit
-            lineLimit={1} minScaleFactor={0.7} padding={{ horizontal: 8 }}
-            frame={{ width: ROOT_TITLE_CAPSULE_WIDTH, minHeight: 36 }}
-            foregroundStyle={filter === key ? "accentColor" : "label"}
-            {...tabCapsuleSurface(true)}
-            contentShape="capsule">
-            {`${shipmentFilters[key]} ${groups[key].length}`}
-          </Text>
+  const accessKeyNotice = showAccessKeyNotice ? (
+    <VStack padding={{ horizontal: 20, vertical: 8 }}>
+      <HStack
+        spacing={0}
+        padding={{ leading: 16, trailing: 12, vertical: 12 }}
+        background="secondarySystemBackground"
+        clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
+      >
+        <Text
+          font={14}
+          foregroundStyle="secondaryLabel"
+          frame={{ maxWidth: "infinity", alignment: "leading" }}
+        >
+          Access Key 已失效，请通过 TG Bot 重新获取。
+        </Text>
+        <Button
+          role="close"
+          buttonStyle="plain"
+          action={() => setAccessKeyNoticeDismissed(true)}
+        >
+          <Image
+            systemName="xmark"
+            font={24}
+            foregroundStyle="secondaryLabel"
+            frame={{ width: 48, height: 48 }}
+            contentShape="rect"
+          />
         </Button>
-      )) : null}
+      </HStack>
     </VStack>
+  ) : null;
+  const animateFilterSelection = (key: ShipmentFilter) =>
+    void withAnimation(Animation.snappy({ duration: 0.32 }), () => selectFilter(key));
+  const filterControls = visibleFilters.length < 2 ? null : headerCollapsed ? (
+    <VStack alignment="leading" spacing={4} padding={{ leading: ROOT_HEADER_HORIZONTAL_INSET, bottom: 8 }}
+      frame={{ maxWidth: "infinity", alignment: "leading" }}>
+      {visibleFilters.map(key => (
+        <Button key={key} buttonStyle="plain" action={() => animateFilterSelection(key)}
+          {...{ accessibilityAddTraits: filter === key ? "isSelected" as const : undefined }}>
+          <VStack frame={{ width: ROOT_TITLE_CAPSULE_WIDTH, minHeight: 36 }}
+            foregroundStyle={filter === key ? "accentColor" : "label"} {...tabCapsuleSurface(true)}
+            contentShape="capsule">
+            <ShipmentFilterLabel filter={key} count={groups[key].length} selected={filter === key} />
+          </VStack>
+        </Button>
+      ))}
+    </VStack>
+  ) : (
+    <NamespaceReader>
+      {namespace => (
+        <ZStack padding={{ horizontal: ROOT_HEADER_HORIZONTAL_INSET, vertical: 2 }}>
+          <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
+            frame={{ height: 32 }} allowsHitTesting={false} />
+          <HStack spacing={0} padding={{ horizontal: 3 }}>
+            {visibleFilters.map(key => {
+              const selected = filter === key;
+              return (
+                <Button key={key} buttonStyle="plain" action={() => animateFilterSelection(key)}
+                  {...{ accessibilityAddTraits: selected ? "isSelected" as const : undefined }}>
+                  <VStack frame={{ maxWidth: "infinity", minHeight: 44 }} contentShape="rect">
+                    <VStack padding={{ horizontal: 8 }} frame={{ minHeight: 26 }}
+                      background={selected ? (
+                        <Capsule fill="clear" {...tabCapsuleSurface()}
+                          matchedGeometryEffect={{ id: "filter-selection", namespace, properties: "position" }}
+                          transition={Transition.identity()} allowsHitTesting={false} />
+                      ) : undefined}>
+                      <ShipmentFilterLabel filter={key} count={groups[key].length} selected={selected} />
+                    </VStack>
+                  </VStack>
+                </Button>
+              );
+            })}
+          </HStack>
+        </ZStack>
+      )}
+    </NamespaceReader>
   );
 
   return (
@@ -441,7 +471,7 @@ export function HomePage(props: {
               background="systemGroupedBackground"
               toolbarBackgroundVisibility={{ visibility: "hidden", bars: ["navigationBar"] }}
             >
-              <ScrollView navigationTitle="查快递" navigationBarTitleDisplayMode="inline" scrollIndicator="never"
+              <ScrollView navigationTitle="查询快递" navigationBarTitleDisplayMode="inline" scrollIndicator="never"
                 frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
                 background="systemGroupedBackground"
                 toolbar={{
@@ -501,27 +531,23 @@ export function HomePage(props: {
         }}
       >
         <RootPageHeader title="快递" close={() => dismiss()} collapsed={headerCollapsed} background="systemBackground" />
+        {filterControls}
         <List key="shipments" listStyle="plain" refreshable={refresh}
           frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
           {...rootPageScroll(setHeaderCollapsed)}
           contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
-          overlay={{
-            alignment: "topLeading",
+          overlay={!shipments.length ? {
+            alignment: "center",
             content: (
-              <ZStack alignment="topLeading">
-                {!shipments.length ? (
-                  <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} allowsHitTesting={false}>
-                    <EmptyDeliveryStateGroup vehicleSize={81.6} spacing={6} labelFont={24} deferArtwork />
-                  </VStack>
-                ) : null}
-                {compactFilters}
-              </ZStack>
+              <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} allowsHitTesting={false}>
+                <EmptyDeliveryStateGroup vehicleSize={81.6} spacing={6} labelFont={24} deferArtwork />
+              </VStack>
             ),
-          }}
+          } : undefined}
         >
-          {showListAccessories ? (
+          {accessKeyNotice ? (
             <VStack listRowInsets={{ top: 0, bottom: 0, leading: 0, trailing: 0 }} listRowSeparator="hidden">
-              {listAccessories}
+              {accessKeyNotice}
             </VStack>
           ) : null}
           {shipments.length ? (
@@ -825,7 +851,7 @@ function HomeSearchBar(props: {
             setValidationNotice("");
             scheduleCarrierDetection(value);
           }}
-          prompt="搜索运单号"
+          prompt="请输入运单号"
           autofocus={props.autoFocusSearch}
           textContentType="shipmentTrackingNumber"
           submitLabel="search"
