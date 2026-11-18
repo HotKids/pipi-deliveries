@@ -4,7 +4,7 @@ import {
   currentPlatformSession, clearPlatformLogin, needsJdNickname, replacePlatformCookies, saveJdNickname,
   type PlatformSession, type WebPlatform,
 } from "./platform-accounts";
-import { deliveryForecast, objectList, productTitle, type PlatformParcel } from "./platform-parcel-data";
+import { deliveryForecast, objectList, productTitle, uniqueDeliveryForecast, type PlatformParcel } from "./platform-parcel-data";
 import {
   JD_ORDERS_PAGE, JD_ORDER_LIST_URL, jdLoginProof, jdSyncView, openProviderController, PlatformWireError, verifiedJdCookies,
 } from "./platform-wire";
@@ -109,9 +109,18 @@ function readJdParcel(order: string) {
     const title = structured ? (titles.size === 1 ? [...titles][0] : '')
       : (text.match(/我要催单\s*([\s\S]{4,160}?)\s*(?:\d+\s*件|国内承运人|承运人|运单号|$)/)?.[1] || '').trim();
     const codes = new Set(Array.from(text.matchAll(/(?:取件码|提货码|取货码|凭码|自提码)[:：\s]*([A-Za-z0-9-]{3,12})(?![A-Za-z0-9-])/g), item => item[1]));
-    return waybills.size === 1 && (structured || title || codes.size === 1) ?
-      { waybill: [...waybills][0], title, code: codes.size === 1 ? [...codes][0] : '' } : null;
+    const header = text.split(/\b\d{4}(?:[-/]\d{1,2}[-/]\d{1,2}|年\d{1,2}月\d{1,2}日)/, 1)[0];
+    const estimates = new Set(header.match(/预计[^\r\n。；;]{1,70}?送达/g) || []);
+    const forecast = estimates.size === 1 ? [...estimates][0] : '';
+    return waybills.size === 1 && (structured || title || forecast || codes.size === 1) ?
+      { waybill: [...waybills][0], title, forecast, code: codes.size === 1 ? [...codes][0] : '' } : null;
   `;
+}
+
+function jdParcelURL(order: string, skuId?: unknown, shopId?: unknown): string {
+  const digits = (value: unknown) => /^\d{1,32}$/.test(cleanScalarText(value)) ? cleanScalarText(value) : "";
+  return "https://trade.m.jd.com/order/deal_wuliu_jdm.shtml?from=orderdetail&dealState=7&dealId=" + order +
+    "&orderType=22&skuid=" + digits(skuId) + "&shopid=" + digits(shopId) + "&source=m_inner_orderList.track_orderTrack";
 }
 
 const PDD_WAYBILL_FIELDS = ["tracking_number", "trackingNumber", "tracking_no", "mailNo", "mail_no",
@@ -134,6 +143,20 @@ const CAPTURE_PDD_ORDERS = `(() => {
     return '';
   };
   let bytes = 0;
+  function shippingId(row, waybill) {
+    if (typeof row.jump_url === 'string') {
+      const jump = new URL(row.jump_url, location.href);
+      if (jump.origin === location.origin && !jump.username && !jump.password &&
+        jump.pathname === '/psnl_goods_help.html' && jump.searchParams.getAll('shipping_id').length === 1 &&
+        jump.searchParams.getAll('tracking_number').length === 1 &&
+        (jump.searchParams.get('tracking_number') || '').toUpperCase().replace(/[^A-Z0-9]/g, '') ===
+          waybill.toUpperCase().replace(/[^A-Z0-9]/g, '')) {
+        const id = jump.searchParams.get('shipping_id');
+        if (/^[1-9][0-9]{0,19}$/.test(id)) return id;
+      }
+    }
+    return field(row, ['shipping_id']);
+  }
   function scan(value, order, depth) {
     if (!value || typeof value !== 'object' || depth > 32) return;
     if (!Array.isArray(value)) {
@@ -141,7 +164,9 @@ const CAPTURE_PDD_ORDERS = `(() => {
       const waybill = field(value, waybillKeys);
       if (waybill.length >= 5 && waybill.length <= 64) {
         const title = field(value.order_goods?.[0], ['goods_name','goods_title']).slice(0, 512);
-        output.push({ waybill, orderId: order, title, forecast: typeof value.timeForecast === 'string' ? value.timeForecast.slice(0, 100) : '' });
+        let id = '';
+        try { id = shippingId(value, waybill); } catch (_) {}
+        output.push({ waybill, orderId: order, shippingId: id, title, forecast: typeof value.timeForecast === 'string' ? value.timeForecast.slice(0, 100) : '' });
       }
     }
     Object.values(value).forEach(child => scan(child, order, depth + 1));
@@ -183,6 +208,17 @@ const CAPTURE_PDD_ORDERS = `(() => {
 
 function assertCurrent(platform: WebPlatform, session: PlatformSession) {
   if (!projectionSceneActive() || !currentPlatformSession(platform, session.generation)) throw new PlatformWireError("changed");
+}
+
+export function fetchJdParcelDetails(session: PlatformSession, order: string, waybill: string,
+  eligible: () => boolean): Promise<PlatformParcel | undefined> {
+  if (!/^\d{8,32}$/.test(order)) return Promise.resolve(undefined);
+  return withProviderPage("jingdong", session, async (web, deadline) => {
+    if (!eligible()) return undefined;
+    const row = asPlainObject(await pageResult("jingdong", session, web, jdParcelURL(order), readJdParcel(order), deadline));
+    if (normalizeWaybill(cleanScalarText(row.waybill)) !== waybill) return undefined;
+    return { source: "jingdong", waybill, title: productTitle(row.title), estimate: deliveryForecast(row.forecast, Date.now()) };
+  });
 }
 
 async function saveJdCookies(web: WebViewController, generation: string, deadline: number): Promise<void> {
@@ -249,7 +285,8 @@ async function withProviderPage<T>(
 }
 
 async function pageResult(platform: WebPlatform, session: PlatformSession, web: WebViewController,
-  url: string, script: string, deadline: number, reportStage?: ReportStage): Promise<unknown> {
+  url: string, script: string, deadline: number, reportStage?: ReportStage,
+  keepPartial?: (value: unknown) => boolean): Promise<unknown> {
   assertCurrent(platform, session);
   const pageDeadline = Math.min(deadline, Date.now() + 12_000);
   let jdNativeLoad: NonNullable<DiagnosticDetails["jdNativeLoad"]> = "pending";
@@ -271,6 +308,7 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
   } else if (!await waitForRefresh(load, pageDeadline)) {
     throw new PlatformWireError("unavailable");
   }
+  let partial: unknown;
   while (Date.now() < pageDeadline) {
     assertCurrent(platform, session);
     let value: unknown;
@@ -281,7 +319,10 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
       if (platform === "jingdong") {
         reportStage?.(loadRejected() && !committedDocument ? "jd_sync_load_failed" : "jd_sync_script", { jdNativeLoad });
       }
-      if (error instanceof OperationTimeoutError) throw error;
+      if (error instanceof OperationTimeoutError) {
+        if (partial !== undefined) return partial;
+        throw error;
+      }
       value = null;
     }
     if (value != null) {
@@ -294,6 +335,7 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
       }
       if (state === "verification" || state === "unavailable") throw new PlatformWireError(state);
       if (state !== "pending") return value;
+      if (keepPartial?.(value)) partial = value;
       if (stage === "jd_sync_document") {
         reportStage?.(loadRejected() ? "jd_sync_load_failed" : stage, { jdNativeLoad });
       } else if (stage === "jd_sync_viewport" || stage === "jd_sync_orders" || stage === "jd_sync_order_navigation" ||
@@ -306,6 +348,10 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
       }
     }
     await pauseWhileActive(250);
+  }
+  if (partial !== undefined) {
+    assertCurrent(platform, session);
+    return partial;
   }
   if (platform === "jingdong") {
     if (loadRejected() && !committedDocument) reportStage?.("jd_sync_load_failed", { jdNativeLoad });
@@ -364,9 +410,7 @@ export async function fetchJdParcels(
     for (const { row, order, associated, title } of orders) {
       if (Date.now() >= deadline || (!(associated && !title) &&
         !(waiting.size && /待收货|待取件|配送中|派送中|运输中/.test(cleanScalarText(row.state))))) continue;
-      const digits = (value: unknown) => /^\d{1,32}$/.test(cleanScalarText(value)) ? cleanScalarText(value) : "";
-      const url = "https://trade.m.jd.com/order/deal_wuliu_jdm.shtml?from=orderdetail&dealState=7&dealId=" + order +
-        "&orderType=22&skuid=" + digits(row.skuId) + "&shopid=" + digits(row.shopId) + "&source=m_inner_orderList.track_orderTrack";
+      const url = jdParcelURL(order, row.skuId, row.shopId);
       reportStage("jd_sync_detail");
       const match = asPlainObject(await pageResult("jingdong", session, web, url, readJdParcel(order), deadline).catch((error) => {
         if (error instanceof PlatformWireError && error.reason !== "unavailable") throw error;
@@ -385,13 +429,87 @@ export async function fetchJdParcels(
   });
 }
 
+async function addPddCapture(web: WebViewController, source: string, deadline: number) {
+  const supported = web as WebViewController & {
+    addUserScript?: (options: { source: string; injectionTime: "documentStart"; forMainFrameOnly: boolean }) => Promise<string>;
+  };
+  if (!supported.addUserScript) throw new PlatformWireError("unavailable");
+  await waitForRefresh(supported.addUserScript({ source, injectionTime: "documentStart", forMainFrameOnly: true }), deadline);
+}
+
+export function fetchPddParcelDetails(session: PlatformSession, shippingId: string, waybill: string,
+  needsTitle: boolean, needsEstimate: boolean, eligible: () => boolean): Promise<PlatformParcel | undefined> {
+  if (!/^[1-9][0-9]{0,19}$/.test(shippingId) || !/^[A-Z0-9]{6,64}$/.test(waybill)) return Promise.resolve(undefined);
+  const url = "https://mobile.yangkeduo.com/psnl_goods_help.html?_t_module_name=assistant_waybill" +
+    "&shipping_id=" + shippingId + "&tracking_number=" + waybill;
+  const route = String.raw`
+    if (window !== window.top || location.origin !== 'https://mobile.yangkeduo.com') return;
+    const query = new URLSearchParams(location.search);
+    const waybill = ${JSON.stringify(waybill)}, shippingId = ${JSON.stringify(shippingId)};
+    if (location.pathname !== '/psnl_goods_help.html' || query.get('_t_module_name') !== 'assistant_waybill' ||
+      query.getAll('tracking_number').length !== 1 || query.get('tracking_number') !== waybill ||
+      query.getAll('shipping_id').length !== 1 || query.get('shipping_id') !== shippingId) return;
+  `;
+  return withProviderPage("pinduoduo", session, async (web, deadline) => {
+    if (!eligible()) return undefined;
+    if (needsEstimate) await addPddCapture(web, `(() => { ${route}` + String.raw`
+      function keep(address, body) {
+        const request = new URL(address, location.href);
+        if (request.origin !== location.origin || request.pathname !== '/proxy/api/api/express/shipping/track' ||
+          request.searchParams.getAll('shipping_id').length !== 1 || request.searchParams.get('shipping_id') !== shippingId ||
+          request.searchParams.getAll('tracking_number').length !== 1 ||
+          (request.searchParams.get('tracking_number') || '').toUpperCase().replace(/[^A-Z0-9]/g, '') !== waybill ||
+          typeof body !== 'string' || body.length > 2097152) return;
+        const shipping = JSON.parse(body).shipping;
+        if (String(shipping?.shipping_id) !== shippingId ||
+          String(shipping?.tracking_number).toUpperCase().replace(/[^A-Z0-9]/g, '') !== waybill) return;
+        const forecast = shipping.time_forecast ?? shipping.timeForecast;
+        const fields = forecast && typeof forecast === 'object' ? Object.values(forecast).slice(0, 24) : [forecast];
+        window.__pipiDeliveriesParcelForecast = fields.filter(value => typeof value === 'string').map(value => value.slice(0, 256));
+      }
+      const fetchPage = window.fetch;
+      window.fetch = function (...args) {
+        return fetchPage.apply(this, args).then(response => {
+          if (response.ok && response.url.includes('/express/shipping/track'))
+            response.clone().text().then(text => keep(response.url, text)).catch(() => {});
+          return response;
+        });
+      };
+      const send = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.send = function (...args) {
+        this.addEventListener('load', () => {
+          if (this.status < 200 || this.status >= 300 || !this.responseURL.includes('/express/shipping/track')) return;
+          try { keep(this.responseURL, this.responseType === 'json' ? JSON.stringify(this.response) : this.responseText); } catch (_) {}
+        }, { once: true });
+        return send.apply(this, args);
+      };
+    })();`, deadline);
+    if (!eligible()) return undefined;
+    const row = asPlainObject(await pageResult("pinduoduo", session, web, url, String.raw`
+      if (location.origin === 'https://mobile.yangkeduo.com' && /login\.html|passport/.test(location.pathname)) return { state: 'expired' };
+    ` + route + String.raw`
+      if (/安全验证|滑动验证/.test(document.body?.innerText || '')) return { state: 'verification' };
+      const titles = new Set(Array.from(document.querySelectorAll('.assistant-waybill .move-order-goods .goods-name'),
+        node => (node.textContent || '').trim()).filter(Boolean));
+      const title = titles.size === 1 ? [...titles][0] : '';
+      const forecasts = window.__pipiDeliveriesParcelForecast;
+      if (!title && !forecasts) return null;
+      const state = (${needsTitle} && !title) || (${needsEstimate} && !forecasts?.length) ? 'pending' : 'complete';
+      return { state, waybill, shippingId, title, forecasts };
+    `, Math.min(deadline, Date.now() + 8_000), undefined, (value) => {
+      const row = asPlainObject(value);
+      return row.waybill === waybill && row.shippingId === shippingId &&
+        (Boolean(productTitle(row.title)) || Array.isArray(row.forecasts) && row.forecasts.length > 0);
+    }));
+    if (row.waybill !== waybill || row.shippingId !== shippingId) return undefined;
+    const estimate = uniqueDeliveryForecast(Array.isArray(row.forecasts) ? row.forecasts : [], Date.now());
+    return { source: "pinduoduo", waybill, title: productTitle(row.title), estimate };
+  });
+}
+
 export async function fetchPddOrders(session: PlatformSession): Promise<PlatformParcel[]> {
   return withProviderPage("pinduoduo", session, async (web, deadline) => {
-    const supportsScripts = web as WebViewController & {
-      addUserScript?: (options: { source: string; injectionTime: "documentStart"; forMainFrameOnly: boolean }) => Promise<string>;
-    };
-    if (!supportsScripts.addUserScript) throw new PlatformWireError("unavailable");
-    await waitForRefresh(supportsScripts.addUserScript({ source: CAPTURE_PDD_ORDERS, injectionTime: "documentStart", forMainFrameOnly: true }), deadline);
+    await addPddCapture(web, CAPTURE_PDD_ORDERS, deadline);
     const response = await pageResult("pinduoduo", session, web, PDD_ORDERS, String.raw`
       if (window !== window.top || location.origin !== 'https://mobile.yangkeduo.com') return null;
       if (/login\.html|passport/.test(location.pathname)) return { state: 'expired' };
@@ -403,11 +521,14 @@ export async function fetchPddOrders(session: PlatformSession): Promise<Platform
     for (const item of objectList(response)) {
       const waybill = normalizeWaybill(cleanScalarText(item.waybill));
       const id = cleanScalarText(item.orderId);
+      const shippingId = cleanScalarText(item.shippingId);
       if (!waybill || waybill.length < 6 || waybill === normalizeWaybill(id)) continue;
       const previous = orders.get(waybill);
       if (previous?.orderIds?.length && id && !previous.orderIds.includes(id)) conflicts.add(waybill);
+      if (previous?.shippingId && shippingId && previous.shippingId !== shippingId) conflicts.add(waybill);
       orders.set(waybill, {
         source: "pinduoduo", waybill, orderIds: id ? [id] : previous?.orderIds,
+        shippingId: /^[1-9][0-9]{0,19}$/.test(shippingId) ? shippingId : previous?.shippingId,
         title: productTitle(item.title) || previous?.title,
         estimate: deliveryForecast(item.forecast, Date.now()) || previous?.estimate,
       });

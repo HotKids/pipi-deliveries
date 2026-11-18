@@ -25,7 +25,7 @@ import type {
 } from "../models";
 import { nextParcelHandoffDeadline, parcelHandoffDeadline } from "./parcel-handoff-expiry";
 import { activePickupCards, applyRecognizedPickup, type ParcelActivityContent } from "./parcel-pickup";
-import { enrichPlatformParcel, keepPlatformFields, matchPlatformParcel, samePlatformTarget } from "./platform-parcel-merge";
+import { deliveryEstimateApplies, displayedPlatformFields, enrichPlatformParcel, keepPlatformFields, matchPlatformParcel, samePlatformTarget } from "./platform-parcel-merge";
 import type { PlatformParcel } from "./platform-parcel-data";
 import type { CabinetParcel } from "./fengchao-account";
 import type { ParcelLookup } from "./parcel-code-ocr";
@@ -2624,6 +2624,7 @@ export function savePlatformParcelData(input: {
   parcels: readonly PlatformParcel[];
   handoffs?: readonly ParcelHandoffRecord[];
   cabinets?: readonly CabinetParcel[];
+  detailTarget?: Shipment;
   current: () => boolean;
 }, now = Date.now()): { state: AppState; cabinetLinks: { recordKey: string; parcel: CabinetParcel }[] } {
   return withSharedFileTransaction(() => {
@@ -2672,7 +2673,26 @@ export function savePlatformParcelData(input: {
         if (parcel.waybill && unprojectedAccountOrder(target) &&
           candidates.some(([other]) => other !== parcel && other.waybill && other.waybill !== parcel.waybill &&
             matchPlatformParcel(visible, other, input.owner)?.identity.id === target.identity.id)) continue;
-        const next = enrichPlatformParcel(latest, parcel, now);
+        const saved = latest.pddImport;
+        let next = latest;
+        if (input.detailTarget) {
+          if (!samePlatformTarget(input.detailTarget, latest) ||
+            input.detailTarget.forcedCompletedAtMs !== latest.forcedCompletedAtMs ||
+            JSON.stringify(input.detailTarget.pddImport) !== JSON.stringify(latest.pddImport)) continue;
+          const fields = displayedPlatformFields(latest, now);
+          next = enrichPlatformParcel(latest, {
+            source: parcel.source, waybill: parcel.waybill,
+            title: fields.title ? undefined : parcel.title,
+            estimate: !fields.estimate && deliveryEstimateApplies(latest) ? parcel.estimate : undefined,
+          }, now);
+        } else {
+          next = enrichPlatformParcel(latest, parcel, now);
+          if (parcel.source === "pinduoduo" && saved?.ownerKey === input.owner && !saved.shippingId && parcel.shippingId &&
+            parcel.waybill === displayWaybill(latest) && parcel.orderIds?.length === 1 &&
+            (!saved.orderId || saved.orderId === parcel.orderIds[0])) {
+            next = { ...next, pddImport: { ...saved, orderId: parcel.orderIds[0], shippingId: parcel.shippingId } };
+          }
+        }
         if (next !== latest) updated.set(target.identity.id, { ...next, updatedAtMs: Math.max(now, latest.updatedAtMs + 1) });
         if (cabinet) cabinetCandidates.push({ id: target.identity.id, separate: false, parcel: cabinet });
         continue;

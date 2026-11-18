@@ -27,7 +27,8 @@ import {
 } from "./services/projection-viewport";
 import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
-import { SettingsPage } from "./pages/SettingsPage";
+import { SettingsPage, useSettingsOverview } from "./pages/SettingsPage";
+import { preparePickupBoxAnimation } from "./components/PickupTabCard";
 import { PickupPage } from "./pages/PickupPage";
 import { expireDueParcelHandoffs, loadState, peekStateRevision, visibleShipments } from "./services/storage";
 import { onPlatformAccountsChanged } from "./services/platform-accounts";
@@ -91,6 +92,7 @@ function App() {
   // One app-owned viewport stays mounted across Home/detail navigation.
   const [projectionView, setProjectionView] = useState<ProjectionViewportView | null>(null);
   const [startup, setStartup] = useState(readStartupState);
+  const settingsOverview = useSettingsOverview();
   const [platformRevision, setPlatformRevision] = useState(0);
   const [platformNotice, setPlatformNotice] = useState<{ text: string } | undefined>(undefined);
   const [pickupNotice, setPickupNotice] = useState("");
@@ -122,6 +124,9 @@ function App() {
     [shipments, state?.pickupCodeRecords]);
   const [pickupPreview, setPickupPreview] = useState(false);
   const hasPickupTab = pickupCards.length > 0 || pickupPreview;
+  useEffect(() => {
+    if (hasPickupTab) void preparePickupBoxAnimation();
+  }, [hasPickupTab]);
   const cabinetActions = useMemo(() => new Set(pickupCards.filter(canOpenParcelCabinet)),
     [platformRevision, pickupCards]);
   const handoffDeadline = useMemo(() => nextParcelHandoffDeadline(state?.pickupCodeRecords),
@@ -390,7 +395,7 @@ function App() {
         />
       </Tab>
       <Tab key="settings" title="设置" systemImage="gearshape.fill" value="settings">
-        <SettingsPage state={state} pickupCards={pickupCards} onStateChange={applyState} />
+        <SettingsPage state={state} pickupCards={pickupCards} overview={settingsOverview} onStateChange={applyState} />
       </Tab>
     </TabView>
   );

@@ -252,6 +252,7 @@ while IFS= read -r network_url; do
     'https://mobile.yangkeduo.com'|\
     'https://mobile.yangkeduo.com/login.html'|\
     'https://mobile.yangkeduo.com/orders.html'|\
+    'https://mobile.yangkeduo.com/psnl_goods_help.html?_t_module_name=assistant_waybill'|\
     'https://api.pinduoduo.com'|\
     'https://m.pinduoduo.net'|\
     'https://m.pinduoduo.net/mdkd/identificationCode'|\

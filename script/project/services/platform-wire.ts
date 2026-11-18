@@ -18,6 +18,8 @@ export const CAINIAO_RECIPIENT_LIST = "mtop.cainiao.lpc.packageservice.queryPdsP
 const CAINIAO_COUNT = "mtop.cainiao.lpc.packageservice.user.package.count.query";
 const TAOBAO_PROFILE = "mtop.taobao.reborn.mclaren.h5";
 const TAOBAO_PROFILE_PAGE = "https://main.m.taobao.com/mytaobao/index.html";
+const TAOBAO_IDENTITY_API = "mtop.cainiao.pickup.identity.getIdentityMessage";
+const TAOBAO_H5_PAGE = "https://h5.m.taobao.com/";
 const CAINIAO_SENDER_LIST = "mtop.cainiao.tdtradeplatform.order.queryUncompletedOrder";
 const CAINIAO_SENDER_DETAIL = "mtop.cainiao.tdtradeplatform.order.queryOrderDetail";
 const CAINIAO_SENDER_PAGE = "https://page.cainiao.com/mcn/fulfill_new/index.html?from=tbcn";
@@ -172,7 +174,7 @@ async function mtopOnce(api: string, data: string, cookies: readonly PlatformCoo
     type: "originaljson", dataType: "json", data,
   }).map(([key, value]) => key + "=" + encodeURIComponent(value)).join("&");
   const referer = api === TAOBAO_PROFILE ? TAOBAO_PROFILE_PAGE :
-    isCainiaoSenderApi(api) ? CAINIAO_SENDER_PAGE : "https://h5.m.taobao.com/";
+    isCainiaoSenderApi(api) ? CAINIAO_SENDER_PAGE : TAOBAO_H5_PAGE;
   const response = await providerRequest(endpoint + "?" + query, {
     Cookie: cookieHeader(attached), Referer: referer,
     Accept: "application/json",
@@ -188,12 +190,26 @@ async function mtopOnce(api: string, data: string, cookies: readonly PlatformCoo
   };
 }
 
-async function mtop(api: string, body: JsonObject, cookies: readonly PlatformCookie[]) {
+async function mtop(api: string, body: JsonObject, cookies: readonly PlatformCookie[], current?: () => boolean) {
   const data = JSON.stringify(body);
   const first = await mtopOnce(api, data, cookies);
-  const retry = /TOKEN_EMPTY|TOKEN_EXPIRED|TOKEN_EXOIRED|ILLEGAL_ACCESS/.test(first.ret) &&
-    JSON.stringify(first.cookies) !== JSON.stringify(cookies);
-  return retry ? mtopOnce(api, data, first.cookies) : first;
+  if (!/TOKEN_EMPTY|TOKEN_EXPIRED|TOKEN_EXOIRED|ILLEGAL_ACCESS/.test(first.ret)) return first;
+  let fresh = first.cookies;
+  if (api === TAOBAO_IDENTITY_API && JSON.stringify(fresh) === JSON.stringify(cookies)) {
+    if (!current?.()) throw new PlatformWireError("changed");
+    const deadline = Date.now() + 15_000;
+    const web = await openProviderController("cainiao", cookies, "default", deadline);
+    try {
+      await waitForRefresh(web.loadURL(TAOBAO_H5_PAGE), deadline);
+      await waitForRefresh(web.waitForLoad(), deadline);
+      const incoming = await waitForRefresh(web.getAllCookies(), deadline);
+      fresh = mergeMtopCookies(cookies, providerCookies("cainiao", incoming));
+    } finally {
+      web.dispose();
+    }
+  }
+  if (current && !current()) throw new PlatformWireError("changed");
+  return JSON.stringify(fresh) === JSON.stringify(cookies) ? first : mtopOnce(api, data, fresh);
 }
 
 export async function checkCainiaoLogin(cookies: readonly PlatformCookie[]): Promise<PlatformCookie[]> {
@@ -221,7 +237,8 @@ export async function readCainiao(session: PlatformSession, api: string, params:
   const active = currentPlatformSession("cainiao", generation);
   if (active?.credentials.kind !== "web") throw new PlatformWireError("changed");
   const before = active.credentials.cookies;
-  const result = await mtop(api, params, before);
+  const current = () => currentPlatformSession("cainiao", generation) != null;
+  const result = await mtop(api, params, before, current);
   if (!currentPlatformSession("cainiao", generation)) throw new PlatformWireError("changed");
   if (/SESSION_EXPIRED|USER_NOT_LOGIN|NOT_LOGIN|NEED_LOGIN/.test(result.ret)) {
     if (isCainiaoSenderApi(api)) {
@@ -327,23 +344,54 @@ export function identityWebCookies(platform: IdentityPlatform, session: Platform
   return [...cookies, ...aliases];
 }
 
-export type StationIdentityCode = Readonly<{ value: string; expiresAtMs: number }>;
+export type StationIdentityCode = Readonly<{ value: string; expiresAtMs: number; mobile?: string }>;
 
-const TAOBAO_IDENTITY_API = "mtop.cainiao.pickup.identity.getIdentityMessage";
-// The Taobao H5 page renews the code every three minutes.
-const TAOBAO_IDENTITY_REFRESH_MS = 180_000;
+const STATION_IDENTITY_DEFAULT_MS = 300_000;
+
+function validStationCode(value: unknown): value is string {
+  return typeof value === "string" && /^[ -~]{1,80}$/.test(value) && !!value.trim();
+}
+
+function taobaoIdentity(response: JsonObject): { value: string; lifetime: number } | undefined {
+  const identityCodes = new Map<string, number>();
+  const nestedCodes = new Map<string, number>();
+  function read(node: unknown, inheritedLifetime: number, depth: number) {
+    if (depth > 6 || node === null || typeof node !== "object") return;
+    const fields = asPlainObject(node);
+    const seconds = Object.entries(fields).find(([key, value]) => /expire/i.test(key) &&
+      typeof value === "number" && Number.isFinite(value) && value > 0)?.[1];
+    const lifetime = typeof seconds === "number"
+      ? Math.round(seconds > 1e6 ? seconds : seconds * 1000) : inheritedLifetime;
+    const explicit = fields.identityCode ?? fields.identity_code;
+    const value = validStationCode(explicit) ? explicit : fields.code;
+    if (validStationCode(value) && (value === explicit || /^[A-Z]{2}[0-9A-Z]{8,26}$/.test(value))) {
+      const codes = value === explicit ? identityCodes : nestedCodes;
+      codes.set(value, Math.min(codes.get(value) ?? lifetime, lifetime));
+    }
+    (Array.isArray(node) ? node : Object.values(fields)).forEach((child) => read(child, lifetime, depth + 1));
+  }
+  read(response.data ?? response.result ?? response, STATION_IDENTITY_DEFAULT_MS, 0);
+  const codes = identityCodes.size ? identityCodes : nestedCodes;
+  if (codes.size !== 1) return undefined;
+  const [[value, lifetime]] = codes;
+  return { value, lifetime };
+}
 
 export function identityCodeFromResponse(
   platform: IdentityPlatform, response: JsonObject, now = Date.now(),
 ): StationIdentityCode {
-  const taobao = platform === "cainiao";
-  const fields = asPlainObject(taobao ? response.result ?? response.data ?? response : response.result);
-  const value = taobao ? fields.identityCode : fields.identification_code;
-  const lifetime = taobao ? TAOBAO_IDENTITY_REFRESH_MS : Number(cleanScalarText(fields.expire_mills));
-  if (typeof value !== "string" || !/^[ -~]{1,80}$/.test(value) || !value.trim() ||
-    !Number.isSafeInteger(lifetime) || lifetime <= 0 ||
+  const fields = asPlainObject(response.result);
+  const taobao = platform === "cainiao" ? taobaoIdentity(response) : undefined;
+  const value = platform === "cainiao" ? taobao?.value : fields.identification_code;
+  const lifetime = platform === "cainiao" ? taobao?.lifetime ?? 0 : fields.expire_mills == null
+    ? STATION_IDENTITY_DEFAULT_MS : Number(cleanScalarText(fields.expire_mills));
+  if (!validStationCode(value) || !Number.isSafeInteger(lifetime) || lifetime <= 0 ||
     !Number.isSafeInteger(now + lifetime)) throw new PlatformWireError("unavailable");
-  return { value, expiresAtMs: now + lifetime };
+  const info = asPlainObject(fields.mobile_info);
+  const mobile = platform === "pinduoduo"
+    ? cleanScalarText(info.mobile_desc ?? info.mobile ?? info.mobile_info_desc ?? fields.mobile_info_desc)
+      .match(/\b1\d{2}\*{4}\d{4}\b/)?.[0] : undefined;
+  return { value, expiresAtMs: now + lifetime, ...(mobile ? { mobile } : {}) };
 }
 
 export async function fetchStationIdentity(platform: IdentityPlatform, session: PlatformSession): Promise<StationIdentityCode> {

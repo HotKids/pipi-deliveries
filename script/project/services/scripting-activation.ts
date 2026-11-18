@@ -14,6 +14,7 @@ export const SCRIPTING_ACTIVATION_HEADER = "X-Scripting-Activation";
 
 const ACTIVATION_KEYCHAIN_KEY = "pipi_deliveries_scripting_activation_v1";
 const ACTIVATION_REJECTION_KEY = "pipi_deliveries_scripting_activation_rejected_v1";
+const activationRejectionListeners = new Set<() => void>();
 // Scripting requires the same synchronization option for every operation on an item.
 const SYNCED_KEYCHAIN = { synchronizable: true } as const;
 const ACTIVATION_PATTERN = /^[0-9a-f]{64}$/;
@@ -107,6 +108,17 @@ function readRejectedFingerprint(): string {
   }
 }
 
+export function onScriptingActivationRejectionChanged(listener: () => void): () => void {
+  activationRejectionListeners.add(listener);
+  return () => { activationRejectionListeners.delete(listener); };
+}
+
+function publishActivationRejectionChange(): void {
+  for (const listener of activationRejectionListeners) {
+    try { listener(); } catch { /* UI observers cannot change the gateway result. */ }
+  }
+}
+
 /**
  * Records the Worker's answer about the activation of the key a request carried (user decision
  * 2026-09-27: the settings page shows only "activated on another device"). 403
@@ -123,11 +135,12 @@ export function recordScriptingActivationOutcome(
     const fingerprint = keyFingerprint(token);
     if (status === 403 && gatewayCode === "key_activated_elsewhere") {
       if (readRejectedFingerprint() !== fingerprint) {
-        Storage.set(
+        const written = Storage.set(
           ACTIVATION_REJECTION_KEY,
           JSON.stringify({ schema: 1, key: fingerprint }),
           { shared: true },
         );
+        if (written !== false) publishActivationRejectionChange();
       }
       return;
     }
@@ -135,6 +148,7 @@ export function recordScriptingActivationOutcome(
       (status === 401 && gatewayCode === "unauthorized");
     if (cleared && readRejectedFingerprint() === fingerprint) {
       Storage.remove(ACTIVATION_REJECTION_KEY, { shared: true });
+      publishActivationRejectionChange();
     }
   } catch {
     /* the notice is advisory; the request result is unchanged */

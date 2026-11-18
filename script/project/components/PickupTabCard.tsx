@@ -19,6 +19,15 @@ const STICKER_ROTATION_MS = [183, 200, 150, 67];
 const STICKER_ROTATION_DEGREES = [4, -4, 3, -1, 0];
 const STICKER_DURATION_MS = STICKER_ROTATION_MS.reduce((sum, duration) => sum + duration, 0);
 let boxAtlas: UIImage | null | undefined;
+let boxAtlasRequest: Promise<UIImage | null> | undefined;
+
+export function preparePickupBoxAnimation(): Promise<UIImage | null> {
+  return boxAtlasRequest ??= FileManager.readAsData(`${Script.directory}/assets/parcel-activity/box-frames.png`)
+    .then((data) => UIImage.fromData(data)).catch(() => null).then((image) => {
+      boxAtlas = image;
+      return image;
+    });
+}
 
 function stickerEase(progress: number): number {
   if (progress >= 1) return 1;
@@ -90,24 +99,29 @@ function AnimatedBox({ atlas, logo, logoSize }: { atlas: UIImage; logo: UIImage 
 
 function PickupTabArtwork({ logoAsset, logoSize }: { logoAsset?: string; logoSize: number }) {
   const [appearance, setAppearance] = useState(0);
+  const [atlas, setAtlas] = useState(boxAtlas);
   const hasAppeared = useRef(false);
-  const root = `${Script.directory}/assets/parcel-activity`;
-  if (boxAtlas === undefined) boxAtlas = UIImage.fromFile(root + "/box-frames.png");
+  useEffect(() => {
+    if (atlas !== undefined) return;
+    let active = true;
+    void preparePickupBoxAnimation().then((image) => { if (active) setAtlas(image); });
+    return () => { active = false; };
+  }, []);
   const logo = useMemo(() => logoAsset ? bundledImage(logoAsset) ?? null : null, [logoAsset]);
-  const box = bundledImage("parcel-activity/box.png");
+  const fallbackBox = atlas === null ? bundledImage("parcel-activity/box.png") : undefined;
   return (
     <ZStack alignment="topLeading" frame={{ width: ART_WIDTH, height: ART_HEIGHT }}
       onAppear={() => {
         if (hasAppeared.current) setAppearance((visit) => visit + 1);
         hasAppeared.current = true;
       }}>
-      {boxAtlas ? <AnimatedBox key={appearance} atlas={boxAtlas} logo={logo} logoSize={logoSize} /> : (
+      {atlas ? <AnimatedBox key={appearance} atlas={atlas} logo={logo} logoSize={logoSize} /> : atlas === null ? (
         <ZStack alignment="topLeading">
-          {box ? <Image image={box} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} /> : null}
+          {fallbackBox ? <Image image={fallbackBox} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} /> : null}
           {logo ? <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
             offset={{ x: 50 - logoSize / 2, y: 64 - logoSize / 2 }} /> : null}
         </ZStack>
-      )}
+      ) : null}
     </ZStack>
   );
 }

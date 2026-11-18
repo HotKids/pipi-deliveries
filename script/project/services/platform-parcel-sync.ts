@@ -80,7 +80,8 @@ async function importPddParcels(session: PlatformSession, observations: readonly
       if (!preview?.shipment || (!preview.hasTimedResult && preview.roundComplete !== false) || !current()) continue;
       const tagged = {
         ...preview,
-        shipment: { ...preview.shipment, pddImport: { ownerKey: session.ownerKey, orderId: item.orderIds?.[0] || "" } },
+        shipment: { ...preview.shipment, pddImport: { ownerKey: session.ownerKey, orderId: item.orderIds?.[0] || "",
+          ...(item.shippingId && item.orderIds?.length === 1 ? { shippingId: item.shippingId } : {}) } },
       };
       try {
         const committed = commitManualShipmentPreview(tagged);

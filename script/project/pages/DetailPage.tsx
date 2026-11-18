@@ -59,6 +59,7 @@ import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services
 import { requestWidgetReload } from "../services/widgets";
 import { displayedPlatformFields, type CloudParcelMetadata } from "../services/platform-parcel-merge";
 import { readCloudParcelMetadata } from "../services/cloud-parcel-metadata";
+import { refreshParcelDetailFields } from "../services/parcel-detail-fields";
 import { gatewayCredentialGeneration } from "../services/credentials";
 import { SCRIPT_BUILD_TRACK } from "../services/build-track";
 import { parcelActivityContent } from "../services/parcel-pickup";
@@ -377,6 +378,19 @@ export function DetailPage(props: {
     void refreshCloudMetadata();
     return () => cloudAbortRef.current?.abort();
   }, [cloudScope]);
+
+  useEffect(() => {
+    if (!props.persistedShipment) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      void refreshParcelDetailFields(shipment, () => active).then((result) => {
+        if (!result) return;
+        if (active) setShipment((current) => preferNewerShipment(current, result.shipment));
+        props.onStateChange?.(result.state, result.shipment);
+      }).catch(() => {});
+    }, 0);
+    return () => { active = false; clearTimeout(timer); };
+  }, [props.persistedShipment, waybill, cloudLifecycle]);
 
   useEffect(() => {
     setShipment((current) => preferNewerShipment(current, props.shipment));

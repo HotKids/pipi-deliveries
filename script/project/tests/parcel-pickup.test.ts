@@ -447,16 +447,21 @@ await host.stopParcelActivity();
 
 const activityCardSource = readFileSync(new URL("../components/ParcelLiveActivityCard.tsx", import.meta.url), "utf8");
 assert.match(activityCardSource, /handoff \? "我已寄件" : "我已取件"/, "the pickup and handoff activities each show their completion capsule");
-assert.match(activityCardSource, /background=\{expanded \? undefined : glass/, "the system island provides the expanded background");
-assert.match(activityCardSource, /<ZStack>\s*<Rectangle fill=\{cardBackground\} \/>\s*<Rectangle fill="clear" glassEffect=/,
-  "the native glass samples the opaque brand gradient");
-assert.match(activityCardSource, /activityBackgroundTint=\{lockScreen \? palette\.gradient\[0\] : undefined\}/);
+assert.match(activityCardSource, /background=\{expanded \? undefined : cardBackground\}/,
+  "the Lock Screen, settings and pickup cards paint the same gradient, and the island uses system black");
+assert.doesNotMatch(activityCardSource, /\bglassEffect\b/);
+assert.match(activityCardSource, /activityBackgroundTint=\{lockScreen \? "clear" : undefined\}/);
 assert.doesNotMatch(activityCardSource, /<(?:GeometryReader|Canvas)\b/, "the lock screen snapshots a complete view tree");
 assert.match(activityCardSource, /frame=\{\{ \.\.\.slot\(bottom - top\), minWidth: 0, maxWidth: "infinity"/);
 assert.match(activityCardSource, /systemName="shippingbox\.fill" font=\{card\.capsuleIcon \* scale\}/,
   "the completion control uses the native package symbol");
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
-assert.match(activityEntrySource, /<LiveActivityUIExpandedCenter>\s*<ParcelLiveActivityCard\b[^>]*\bexpanded\b/);
+assert.match(activityEntrySource, /<LiveActivityUIExpandedBottom>\s*<ParcelLiveActivityCard\b[^>]*\bexpanded\b/,
+  "the full Pipi card uses the reference script's full-width expanded region");
+assert.match(activityCardSource, /font=\{card\.codeFont \* scale\} fontWeight="semibold" fontWidth="condensed"/,
+  "the native font fits the Pipi code column at its original point size");
+assert.match(activityCardSource, /const flexibleHeight = lockScreen && width !== undefined;/,
+  "expanded uses the Pipi line heights and spacing without host compression");
 const activitySettingsSource = readFileSync(new URL("../pages/PickupSettingsPages.tsx", import.meta.url), "utf8");
 assert.equal((activitySettingsSource.match(/<ParcelActivityPreviewCard\b/g) ?? []).length, 1,
   "the setting contains one example card");
@@ -490,8 +495,9 @@ assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate/);
 assert.match(pickupSource, /<RootPageHeader title="取件" action=\{\(\) => dismiss\(\)\}/);
 assert.match(settingsSource, /<RootPageHeader title="设置" action=\{\(\) => dismiss\(\)\}/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-assert.match(rootHeader, /<Text font="largeTitle" fontWeight="bold"[\s\S]*?systemImage=\{searches \? "magnifyingglass" : "xmark"\}/);
+assert.match(rootHeader, /<Text font="largeTitle" fontWeight="bold"[\s\S]*?<Button title="关闭" systemImage="xmark"/);
 assert.match(rootHeader, /labelStyle="iconOnly"[\s\S]*?width: 44, height: 44/);
+assert.match(pickupSource, /<TabFloatingActionButton\s+title="身份码" symbol="person.text.rectangle"/);
 assert.match(pickupSource, /onLocationTap=\{canSwitch \? \(\) => setShowAddress\(!showAddress\)/);
 
 console.log("parcel OCR, tab entry, and Activity lifecycle tests passed");
