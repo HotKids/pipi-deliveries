@@ -1,3 +1,4 @@
+import type { ColorStringHex } from "scripting";
 import {
   normalizeCarrierCode,
   resolveCarrierCpCode,
@@ -6,6 +7,30 @@ import {
   type CarrierQueryRecord,
 } from "./carrier-query";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
+
+// The same dominant-colour filter as Pipi's ExpressWidgetPalette, applied to the bundled courier artwork.
+const ACCENT_BY_ICON: Readonly<Partial<Record<string, ColorStringHex>>> = {
+  danniao: "#3B2000",
+  dbl: "#00519E",
+  ems: "#F39400",
+  emsgj: "#FF2600",
+  jd: "#D32B2C",
+  jdshopping: "#FA0352",
+  jtsd: "#E33C24",
+  kysy: "#762E97",
+  sf: "#E3373F",
+  sto: "#F57A00",
+  uc: "#72388A",
+  yd: "#F7CD23",
+  yto: "#581A7E",
+  yzpy: "#008E4F",
+  zjs: "#009D51",
+  zto: "#0480BB",
+};
+
+export function carrierArtworkAccent(icon: string): ColorStringHex | undefined {
+  return Object.hasOwn(ACCENT_BY_ICON, icon) ? ACCENT_BY_ICON[icon] : undefined;
+}
 
 function normalizeName(value: string): string {
   return String(value || "").replace(/\s+/g, "").trim();

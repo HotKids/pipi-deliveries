@@ -3,9 +3,9 @@ import type { Shipment, TimelinePackage } from "../models";
 import {
   compactTimelineTime,
   formatListTime,
-  shipmentDetailReceiptLine,
   timelineTimeParts,
 } from "../services/time-presentation";
+import { shipmentDetailPhoneTail } from "../services/status";
 
 assert.deepEqual(timelineTimeParts("2026-08-27 03:17:48"), {
   date: "08-27",
@@ -42,12 +42,8 @@ const shipment: Shipment = { timeline, updatedAtMs: now, identity: {
   id: "receipt-test", bindingSource: "interface5", sourceOwner: "interface5:parcel", sourceId: timeline.waybill,
   phoneTail: "0329", courierCode: "ZTO", companyName: "中通快递", manuallyAdded: false, createdAtMs: signing - 60000,
 } };
-assert.equal(shipmentDetailReceiptLine(shipment, timeline, now), "手机尾号：0329｜11/17 13:05 签收");
-const transit: TimelinePackage = { ...timeline, semantic: "TRANSIT" };
-assert.equal(shipmentDetailReceiptLine({ ...shipment, timeline: transit }, transit, now), "手机尾号：0329");
-const noClock = { ...timeline, statusEventAtMs: null };
-assert.equal(shipmentDetailReceiptLine({ ...shipment, timeline: noClock, settledAtMs: now }, noClock, now),
-  "手机尾号：0329", "a local retention timestamp cannot become a carrier's signing time");
+assert.equal(shipmentDetailPhoneTail(shipment), "0329");
+assert.equal(shipmentDetailPhoneTail({ ...shipment, timeline: { ...timeline, semantic: "TRANSIT" } }), "0329");
 const noTail = { ...shipment, identity: { ...shipment.identity, phoneTail: "" } };
-assert.equal(shipmentDetailReceiptLine(noTail, timeline, now), "11/17 13:05 签收");
-assert.equal(shipmentDetailReceiptLine({ ...noTail, timeline: transit }, transit, now), "");
+assert.equal(shipmentDetailPhoneTail(noTail), "");
+assert.equal(shipmentDetailPhoneTail({ ...noTail, identity: { ...noTail.identity, phone: "13000000042" } }), "0042");

@@ -1,5 +1,5 @@
 import type { ColorStringHex, ColorStringRGBA } from "scripting";
-import { courierIconName } from "../services/carrier-presentation";
+import { carrierArtworkAccent, courierIconName } from "../services/carrier-presentation";
 import type { StatusSemantic } from "../models";
 import { blendStatusColor, statusTextTint, statusTint } from "../services/status";
 
@@ -27,29 +27,6 @@ export const EMPTY_WIDGET_TEXT_COLOR = {
   light: "rgba(0, 0, 0, 0.3)",
   dark: "rgba(255, 255, 255, 0.3)",
 } as const;
-
-const FALLBACK_ACCENT = EMPTY_WIDGET_ACCENT;
-
-// These values are generated from the bundled courier artwork with the same
-// dominant-color filter used by the Android widget.
-const ACCENT_BY_ICON: Readonly<Partial<Record<string, ColorStringHex>>> = {
-  danniao: "#3B2000",
-  dbl: "#00519E",
-  ems: "#F39400",
-  emsgj: "#FF2600",
-  jd: "#D32B2C",
-  jdshopping: "#FA0352",
-  jtsd: "#E33C24",
-  kysy: "#762E97",
-  sf: "#E3373F",
-  sto: "#F57A00",
-  uc: "#72388A",
-  yd: "#F7CD23",
-  yto: "#581A7E",
-  yzpy: "#008E4F",
-  zjs: "#009D51",
-  zto: "#0480BB",
-};
 
 type RGB = readonly [number, number, number];
 
@@ -101,7 +78,7 @@ export function carrierWidgetAccent(
   accountOrder = false,
 ): ColorStringHex {
   const icon = courierIconName(courierCode, companyName, accountOrder);
-  return ACCENT_BY_ICON[icon] || FALLBACK_ACCENT;
+  return carrierArtworkAccent(icon) ?? EMPTY_WIDGET_ACCENT;
 }
 
 export function mediumWidgetBackground(

@@ -1,10 +1,13 @@
 import type { Shipment } from "../models";
 import { OperationTimeoutError, pauseWhileActive, waitForRefresh } from "./deadline";
 import {
-  currentPlatformSession, clearPlatformLogin, replacePlatformCookies, type PlatformSession, type WebPlatform,
+  currentPlatformSession, clearPlatformLogin, needsJdNickname, replacePlatformCookies, saveJdNickname,
+  type PlatformSession, type WebPlatform,
 } from "./platform-accounts";
 import { deliveryForecast, objectList, productTitle, type PlatformParcel } from "./platform-parcel-data";
-import { JD_ORDER_LIST_URL, jdSyncView, openProviderController, PlatformWireError, verifiedJdCookies } from "./platform-wire";
+import {
+  JD_ORDERS_PAGE, JD_ORDER_LIST_URL, jdLoginProof, jdSyncView, openProviderController, PlatformWireError, verifiedJdCookies,
+} from "./platform-wire";
 import { platformPickupCode } from "./fengchao-account";
 import { acquireProjectionViewport, projectionSceneActive, releaseProjectionViewport } from "./projection-viewport";
 import { displayWaybill } from "./shipment-policy";
@@ -32,13 +35,18 @@ const JD_ACCOUNT_PAGE_CHECK = String.raw`
 `;
 
 // Follow JdAccountActivity.READ_ORDERS: use the order cards or entry before classifying page text.
+const READ_JD_PROFILE = String.raw`
+  if (window !== window.top || location.protocol === 'about:') return null;
+  if (!['https://my.m.jd.com','https://home.m.jd.com'].includes(location.origin)) return { nickname: '' };
+  const nickname = (document.querySelector('.my_header_name')?.textContent || '').trim();
+  return nickname && nickname !== '京东用户' ? { nickname } : null;
+`;
+
 const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
   if (!['https://my.m.jd.com','https://trade.m.jd.com','https://home.m.jd.com'].includes(location.origin)) {
     return { state: 'pending', stage: 'jd_sync_unexpected_page', scheme: location.protocol, hostname: location.hostname };
   }
   const text = el => (el?.textContent || '').trim();
-  const nickname = text(document.querySelector('.my_header_name'));
-  if (nickname && nickname !== '京东用户') window.__pipiDeliveriesJDName = nickname;
   const states = Array.from(document.querySelectorAll('[class*="order_state"]'));
   if (!states.length) {
     const entry = document.querySelector('.my_order_entrance.type_orders') ||
@@ -75,7 +83,7 @@ const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
       forecast: text(card.querySelector('[class*="order_wuliubar"]')), state: text(state),
       skuId: String(sku.skuid || data.skuid || ''), shopId: String(data.shopId || sku.shopid || data.shopid || '') });
   }
-  return orders.length ? { orders, nickname: window.__pipiDeliveriesJDName || nickname }
+  return orders.length ? { orders }
     : { state: 'pending', stage: 'jd_sync_order_cards' };
 `;
 
@@ -316,6 +324,26 @@ export async function fetchJdParcels(
     .map(displayWaybill).filter(Boolean));
   return withProviderPage("jingdong", session, async (web, deadline, reportStage) => {
     const now = Date.now();
+    const active = currentPlatformSession("jingdong", session.generation);
+    if (active?.credentials.kind === "web" && needsJdNickname(active.label)) {
+      // Pipi reads the nickname on the account page. Give it its own brief window
+      // so an unavailable profile never sends the order read to a regional host.
+      const profileDeadline = Math.min(deadline, now + 3_000);
+      const profile = asPlainObject(await pageResult("jingdong", session, web,
+        JD_ORDERS_PAGE, READ_JD_PROFILE, profileDeadline).catch((error) => {
+        if (error instanceof OperationTimeoutError) return null;
+        throw error;
+      }));
+      const nickname = cleanScalarText(profile.nickname);
+      if (nickname && nickname !== jdLoginProof(active.credentials.cookies)?.id) {
+        const verified = await verifiedJdCookies(web, active, profileDeadline).catch((error) => {
+          if (error instanceof OperationTimeoutError ||
+            (error instanceof PlatformWireError && error.reason === "unavailable")) return null;
+          throw error;
+        });
+        if (verified && nickname !== jdLoginProof(verified)?.id) saveJdNickname(active.generation, nickname);
+      }
+    }
     reportStage("jd_sync_orders");
     const result = asPlainObject(await pageResult("jingdong", session, web, JD_ORDER_LIST_URL, READ_JD_ORDERS, deadline, reportStage));
     reportStage("jd_sync_session");
@@ -353,7 +381,7 @@ export async function fetchJdParcels(
         if (code) waiting.delete(waybill);
       }
     }
-    return { parcels, nickname: cleanScalarText(result.nickname) };
+    return { parcels };
   });
 }
 

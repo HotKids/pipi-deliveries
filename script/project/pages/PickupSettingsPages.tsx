@@ -1,5 +1,6 @@
 import { AppEvents, Button, HStack, Link, List, Section, Spacer, Text, Toggle, useEffect, useState } from "scripting";
-import { ParcelActivityPreviewCard } from "../components/ParcelLiveActivityCard";
+import { ParcelActivityPreviewCard } from "../components/PickupTabCard";
+import { SectionIconButton } from "../components/SectionIconButton";
 import {
   parcelActivityStatus,
   startAllParcelActivities,
@@ -16,17 +17,17 @@ export function ParcelShortcutPage() {
     <List navigationTitle="快捷指令" navigationBarTitleDisplayMode="inline">
       <Section header={<Text>截屏识别</Text>}>
         <Link url="shortcuts://create-shortcut">
-          <Text>新建截屏指令</Text>
+          <Text>新建截屏快捷指令</Text>
         </Link>
         <Text font="subheadline" lineSpacing={3}>1. 添加「截屏」，再添加 Scripting 的「在 App 中运行意图」。</Text>
-        <Text font="subheadline" lineSpacing={3}>2. 选择「派派助手」，将上一步的截屏图像设为参数。</Text>
-        <Text font="subheadline" lineSpacing={3}>3. 在物流页面运行这条指令。也可在系统设置中将它分配给「轻点背面」或「操作按钮」。</Text>
+        <Text font="subheadline" lineSpacing={3}>2. 选择「派派助手」，在参数栏选择上一步生成的截屏。</Text>
+        <Text font="subheadline" lineSpacing={3}>3. 打开要识别的物流页面，运行这条快捷指令。也可以在系统设置中用「轻点背面」或「操作按钮」触发。</Text>
       </Section>
       <Section header={<Text>短信识别</Text>}>
         <Text font="subheadline" lineSpacing={3}>1. 在「快捷指令」中创建「信息」自动化，按发件人或短信内容设置触发条件。</Text>
-        <Text font="subheadline" lineSpacing={3}>2. 取出「快捷指令输入」的「内容」。如果没有短信正文，结束自动化。</Text>
-        <Text font="subheadline" lineSpacing={3}>3. 添加 Scripting 的「运行意图脚本」，选择「派派助手」，将短信正文设为参数。</Text>
-        <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">打开派派助手确认运单查询。独立取件码和寄件码可在「取件」查看。</Text>
+        <Text font="subheadline" lineSpacing={3}>2. 添加 Scripting 的「运行意图脚本」，选择「派派助手」。在参数栏选择「快捷指令输入」，再选它的「内容」作为短信正文。</Text>
+        <Text font="subheadline" lineSpacing={3}>3. 如果要跳过空短信，在运行脚本前检查正文。正文为空时，停止这条快捷指令。</Text>
+        <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">识别到运单号后，打开派派助手确认查询。取件码和寄件码在「取件」中查看。</Text>
       </Section>
     </List>
   );
@@ -93,10 +94,10 @@ export function ParcelActivityPage({ cards, revision }: {
         <HStack>
           <Text>锁屏预览</Text>
           <Spacer />
-          <Button
+          <SectionIconButton
             title={activity.previewing ? "结束预览" : "开始预览"}
-            systemImage={activity.previewing ? "stop.circle" : "play.circle"}
-            labelStyle="iconOnly" buttonStyle="plain" foregroundStyle="systemBlue" disabled={busy}
+            symbol={activity.previewing ? "stop.circle" : "play.circle"}
+            disabled={busy}
             action={() => void change(activity.previewing ? stopParcelActivityPreview : startParcelActivityPreview)}
           />
         </HStack>

@@ -1,5 +1,5 @@
 import type { ParcelHandoffRecord, PickupCodeRecord, PickupPlatform, Shipment } from "../models";
-import { carrierDisplayName } from "./carrier-presentation";
+import { carrierDisplayName, courierIconName } from "./carrier-presentation";
 import { displayWaybill, unprojectedAccountOrder } from "./shipment-policy";
 import { normalizeWaybill, shipmentPresentationStatus, waybillSuffix } from "./status";
 import { cleanString } from "./value-guards";
@@ -22,7 +22,9 @@ export type ParcelActivityTarget = Readonly<{
 export type ParcelActivityContent = Readonly<{
   target?: ParcelActivityTarget;
   platform?: PickupPlatform;
+  carrierIcon?: string;
   kind?: "handoff";
+  businessDateKey?: string;
   capturedAtMs?: number;
   expiresAtMs?: number;
   title: string;
@@ -39,12 +41,43 @@ export function shipmentForPickupTarget(
     displayWaybill(shipment) === target.waybill && (shipment.waybillReuseAtMs ?? 0) === target.waybillGeneration);
 }
 
-export const PARCEL_ACTIVITY_PREVIEW: ParcelActivityContent = {
-  platform: "cainiao",
+export const PARCEL_ACTIVITY_PREVIEW = {
+  platform: "pinduoduo",
   title: "派派的猫罐头",
-  location: "旺旺菜鸟驿站",
+  location: "旺旺多多驿站",
   code: "1-2-3456",
-};
+} as const satisfies ParcelActivityContent;
+
+export function pickupDateSections(
+  cards: readonly ParcelActivityContent[], previewing: boolean, focusedRecordId: string, now = new Date(),
+) {
+  const today = [String(now.getFullYear()).padStart(4, "0"),
+    String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-");
+  const sections = new Map<string, ParcelActivityContent[]>();
+  let focusedDay = "";
+  if (previewing) sections.set(today, []);
+  for (const card of cards) {
+    // Pipi Home dates receiving cards today and handoffs by the appointment's business day.
+    const day = card.businessDateKey || today;
+    const group = sections.get(day) ?? [];
+    if (card.target && "recordId" in card.target && card.target.recordId === focusedRecordId) {
+      focusedDay = day;
+      group.unshift(card);
+    } else {
+      group.push(card);
+    }
+    sections.set(day, group);
+  }
+  return [...sections].sort(([a], [b]) => a === focusedDay ? -1 : b === focusedDay ? 1 : a.localeCompare(b))
+    .map(([key, items]) => {
+      const day = new Date(key + "T00:00:00Z");
+      const weekday = "日一二三四五六"[day.getUTCDay()];
+      return {
+        key, items, preview: previewing && key === today,
+        label: `${day.getUTCFullYear()}年${day.getUTCMonth() + 1}月${day.getUTCDate()}日 周${weekday}`,
+      };
+    });
+}
 
 export function parcelPickupShortCode(code: string): string {
   const value = code.trim();
@@ -54,7 +87,7 @@ export function parcelPickupShortCode(code: string): string {
 export function parcelPickupSubtitle(card: ParcelActivityContent, location = card.location, showingAddress = false) {
   if (card.kind === "handoff") return { text: location, symbol: "calendar" };
   if (!location) return { text: "请及时取件", symbol: "note.text" };
-  return { text: location, symbol: showingAddress || location === card.address ? "mappin.and.ellipse" : "storefront" };
+  return { text: location, symbol: showingAddress || location === card.address ? "mappin.and.ellipse" : "house" };
 }
 
 function appointmentPart(value: number | undefined): string {
@@ -81,6 +114,7 @@ export function handoffActivityContent(handoff: ParcelHandoffRecord): ParcelActi
     : cleanString(handoff.windowText);
   return {
     kind: "handoff",
+    ...(start ? { businessDateKey: start.slice(0, 10) } : {}),
     target: handoff.id ? { recordId: handoff.id } : undefined,
     platform: handoff.platform,
     capturedAtMs: handoff.capturedAtMs,
@@ -136,9 +170,11 @@ export function parcelActivityContent(shipment: Shipment): ParcelActivityContent
     return null;
   }
   const carrier = carrierDisplayName(shipment.identity.companyName);
+  const carrierIcon = courierIconName(shipment.identity.courierCode, shipment.identity.companyName);
   return {
     target: { shipmentId: shipment.identity.id, waybill, waybillGeneration },
     platform: pickup.platform,
+    ...(carrierIcon !== "default" ? { carrierIcon } : {}),
     capturedAtMs: pickup.capturedAtMs,
     title: cleanString(shipment.note) || `${carrier} ${waybillSuffix(waybill)}`,
     location: cleanString(pickup.locationName) || cleanString(pickup.address),

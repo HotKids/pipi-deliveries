@@ -19,8 +19,8 @@ const phoneSource = await read("pages/PhoneManagerPage.tsx");
 assert.match(rowSource, /<CourierIcon\b/);
 assert.doesNotMatch(rowSource, /<Image\b|listedShipmentSourceArt/,
   "the Home rows only show a carrier icon");
-assert.match(detailSource, /\{statusText\}[\s\S]*?<\/HStack>\s*\{receiptLine \? \([\s\S]*?\{receiptLine\}[\s\S]*?<\/Text>[\s\S]*?\) : null\}[\s\S]*?\{waybill\}/,
-  "the receipt is between the status and the waybill");
+assert.match(detailSource, /\{statusText\}[\s\S]*?<\/HStack>\s*\{phoneTail \? \(\s*<HStack spacing=\{0\}>\s*<Text font="subheadline">手机尾号：<\/Text>\s*<Text font="subheadline" monospacedDigit>\{phoneTail\}<\/Text>\s*<\/HStack>\s*\) : null\}[\s\S]*?\{waybill\}/,
+  "the phone suffix is between the status and waybill and uses the same type style");
 
 // The row carries the swipe action and hands the request to the page — same as the phone row.
 assert.match(

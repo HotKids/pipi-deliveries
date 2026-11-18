@@ -165,7 +165,7 @@ async function syncPlatform(
     const data = await fetchJdParcels(session, visible, (parcels) => persist({ parcels }));
     try {
       if (data.parcels.length) persist({ parcels: data.parcels });
-      if (!notePlatformSync(platform, session.generation, Date.now(), { nickname: data.nickname })) {
+      if (!notePlatformSync(platform, session.generation, Date.now())) {
         throw new PlatformWireError("changed");
       }
     } catch (error) {

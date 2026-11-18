@@ -1,9 +1,11 @@
 import {
-  Image, Script, TimelineCanvas, ZStack,
+  GeometryReader, Image, Rectangle, Script, TimelineCanvas, VStack, ZStack,
   useEffect, useMemo, useRef, useState,
 } from "scripting";
-import type { ParcelActivityContent } from "../services/parcel-pickup";
-import { ParcelLiveActivityCard } from "./ParcelLiveActivityCard";
+import { PARCEL_ACTIVITY_PREVIEW, type ParcelActivityContent } from "../services/parcel-pickup";
+import { parcelCardArtwork } from "../services/parcel-card-appearance";
+import { bundledImage } from "./bundled-image";
+import { ParcelLiveActivityCard, type ParcelLiveActivityCardProps, PIPI_CARD } from "./ParcelLiveActivityCard";
 
 const ART_WIDTH = 100;
 const ART_HEIGHT = 117;
@@ -86,12 +88,13 @@ function AnimatedBox({ atlas, logo, logoSize }: { atlas: UIImage; logo: UIImage 
   );
 }
 
-function PickupTabArtwork({ logoPath, logoSize }: { logoPath?: string; logoSize: number }) {
+function PickupTabArtwork({ logoAsset, logoSize }: { logoAsset?: string; logoSize: number }) {
   const [appearance, setAppearance] = useState(0);
   const hasAppeared = useRef(false);
   const root = `${Script.directory}/assets/parcel-activity`;
   if (boxAtlas === undefined) boxAtlas = UIImage.fromFile(root + "/box-frames.png");
-  const logo = useMemo(() => logoPath ? UIImage.fromFile(logoPath) : null, [logoPath]);
+  const logo = useMemo(() => logoAsset ? bundledImage(logoAsset) ?? null : null, [logoAsset]);
+  const box = bundledImage("parcel-activity/box.png");
   return (
     <ZStack alignment="topLeading" frame={{ width: ART_WIDTH, height: ART_HEIGHT }}
       onAppear={() => {
@@ -100,12 +103,40 @@ function PickupTabArtwork({ logoPath, logoSize }: { logoPath?: string; logoSize:
       }}>
       {boxAtlas ? <AnimatedBox key={appearance} atlas={boxAtlas} logo={logo} logoSize={logoSize} /> : (
         <ZStack alignment="topLeading">
-          <Image filePath={root + "/box.png"} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} />
+          {box ? <Image image={box} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} /> : null}
           {logo ? <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
             offset={{ x: 50 - logoSize / 2, y: 64 - logoSize / 2 }} /> : null}
         </ZStack>
       )}
     </ZStack>
+  );
+}
+
+function ParcelCardListRow(props: ParcelLiveActivityCardProps) {
+  const [width, setWidth] = useState<number>(PIPI_CARD.width);
+  return (
+    <VStack spacing={0} frame={{ maxWidth: "infinity" }} listRowInsets={0}
+      listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden"
+      background={
+        <GeometryReader>
+          {({ size }) => (
+            <Rectangle fill="clear" key={Math.round(size.width)} allowsHitTesting={false}
+              onAppear={() => { if (size.width > 0) setWidth(size.width); }} />
+          )}
+        </GeometryReader>
+      }>
+      <ParcelLiveActivityCard {...props} width={width} />
+    </VStack>
+  );
+}
+
+export function ParcelActivityPreviewCard({ animate = false }: { animate?: boolean }) {
+  const { sticker } = parcelCardArtwork(PARCEL_ACTIVITY_PREVIEW);
+  const logoPath = sticker ? `${Script.directory}/assets/${sticker.path}` : undefined;
+  return (
+    <ParcelCardListRow data={PARCEL_ACTIVITY_PREVIEW} imageRoot={`${Script.directory}/assets/parcel-activity`}
+      logoPath={logoPath} preview
+      artwork={animate ? <PickupTabArtwork logoAsset={sticker?.path} logoSize={26} /> : undefined} />
   );
 }
 
@@ -125,16 +156,10 @@ export function PickupTabCard(props: {
   const { data } = props;
   const handoff = data.kind === "handoff";
   const logoSize = handoff ? 20 : 26;
-  const logoPath = !data.platform ? undefined : handoff
-    ? `${Script.directory}/assets/platform-accounts/${data.platform}.png`
-    : `${Script.directory}/assets/parcel-activity/${data.platform}.png`;
   const imageRoot = `${Script.directory}/assets/parcel-activity`;
-  const actionIcon = handoff || props.actionLabel ? undefined : (
-    <Image filePath={`${imageRoot}/hand-package.png`} renderingMode="original" resizable scaleToFit
-      frame={{ width: 19, height: 19 }} />
-  );
+  const { sticker } = parcelCardArtwork(data);
   return (
-    <ParcelLiveActivityCard {...props} data={{ ...data, title: props.title }} imageRoot={imageRoot}
-      artwork={<PickupTabArtwork logoPath={logoPath} logoSize={logoSize} />} actionIcon={actionIcon} />
+    <ParcelCardListRow {...props} data={{ ...data, title: props.title }} imageRoot={imageRoot}
+      artwork={<PickupTabArtwork logoAsset={sticker?.path} logoSize={logoSize} />} />
   );
 }

@@ -1,16 +1,18 @@
-import { Image, Script, Text, VStack } from "scripting";
+import { Image, Text, VStack } from "scripting";
+import { bundledImage } from "./bundled-image";
 import { EMPTY_WIDGET_TEXT_COLOR } from "../widget/palette";
 
 export function EmptyDeliveryVehicle(props: { size: number }) {
-  return (
+  const artwork = bundledImage("widget/empty-delivery-vehicle.png");
+  return artwork ? (
     <Image
-      filePath={`${Script.directory}/assets/widget/empty-delivery-vehicle.png`}
+      image={artwork}
       renderingMode="original"
       resizable={true}
       scaleToFit={true}
       frame={{ width: props.size, height: props.size }}
     />
-  );
+  ) : <Image systemName="shippingbox" frame={{ width: props.size, height: props.size }} />;
 }
 
 export function EmptyDeliveryStateGroup(props: {

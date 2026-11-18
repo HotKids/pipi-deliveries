@@ -1,8 +1,7 @@
-import { Button, HStack, Image, List, NavigationStack, Section, Text, VStack, useMemo, useRef, useState } from "scripting";
+import { Button, HStack, Image, List, Navigation, NavigationStack, Section, Text, VStack, useMemo, useRef, useState } from "scripting";
 import type { AppState, PickupPlatform, Shipment } from "../models";
-import { ParcelActivityPreviewCard } from "../components/ParcelLiveActivityCard";
-import { PickupTabCard } from "../components/PickupTabCard";
-import { shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
+import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
+import { pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import { needsDetailEntryQuery } from "../services/shipment-policy";
@@ -150,24 +149,13 @@ export function PickupPage({
   onStateChange: (state: AppState) => void;
   showNotice: (message: string) => void;
 }) {
+  const dismiss = Navigation.useDismiss();
   const [detailTarget, setDetailTarget] = useState<ParcelActivityTarget | undefined>(undefined);
   const selected = shipmentForPickupTarget(shipments, detailTarget);
   const attachedOrders = useMemo(() => selected ? attachedProjectedOrders(state.shipments, selected) : undefined,
     [state.shipments, selected]);
   const records = state.pickupCodeRecords;
-  const focused = cards.find((card) =>
-    card.target && "recordId" in card.target && card.target.recordId === focusedRecordId);
-  const ordered = focused ? [focused, ...cards.filter((card) => card !== focused)] : cards;
-  const pickups = ordered.filter((card) => card.kind !== "handoff");
-  const handoffs = ordered.filter((card) => card.kind === "handoff");
-  const pickupSection = pickups.length || previewing ? (
-    <Section header={<Text>取件码</Text>}>
-      {pickups.map(cardRow)}
-      {previewing ? <ParcelActivityPreviewCard /> : null}
-    </Section>
-  ) : null;
-  const handoffSection = handoffs.length ? <Section header={<Text>寄件码</Text>}>{handoffs.map(cardRow)}</Section> : null;
-  const sections = focused?.kind === "handoff" ? [handoffSection, pickupSection] : [pickupSection, handoffSection];
+  const sections = pickupDateSections(cards, previewing, focusedRecordId);
 
   function cardRow(card: ParcelActivityContent) {
     const target = card.target;
@@ -190,6 +178,13 @@ export function PickupPage({
       <List
         navigationTitle="取件"
         navigationBarTitleDisplayMode="large"
+        toolbar={{
+          topBarLeading: (
+            <Button buttonStyle="plain" action={() => dismiss()}>
+              <Image systemName="chevron.left" font={17} frame={{ width: 44, height: 44 }} />
+            </Button>
+          ),
+        }}
         navigationDestination={{
           isPresented: Boolean(selected),
           onChanged: (presented) => { if (!presented) setDetailTarget(undefined); },
@@ -220,7 +215,12 @@ export function PickupPage({
           ),
         } : undefined}
       >
-        {sections}
+        {sections.map(({ key, label, items, preview }) => (
+          <Section key={key} header={<Text>{label}</Text>}>
+            {items.map(cardRow)}
+            {preview ? <ParcelActivityPreviewCard animate /> : null}
+          </Section>
+        ))}
       </List>
     </NavigationStack>
   );

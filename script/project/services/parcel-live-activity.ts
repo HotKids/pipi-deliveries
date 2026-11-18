@@ -2,6 +2,7 @@ import { LiveActivity, Path, Script, type ScenePhase } from "scripting";
 import { PARCEL_ACTIVITY_ART, PipiParcelActivity } from "../live_activity";
 import type { AppState } from "../models";
 import { writeDiagnostic } from "./logger";
+import { parcelCardArtwork } from "./parcel-card-appearance";
 import {
   EMPTY_CONTENT,
   PARCEL_ACTIVITY_NAME,
@@ -75,21 +76,18 @@ export function parcelActivityTarget(state: AppState, linkId: unknown): ParcelAc
 function prepareArtwork(content: ParcelActivityContent): void {
   const root = Path.join(FileManager.appGroupDocumentsDirectory, PARCEL_ACTIVITY_ART);
   FileManager.createDirectorySync(root, true);
-  const sources = [{ folder: "parcel-activity", filename: "box.png", destination: "box.png" }];
-  if (content.platform) {
-    const filename = `${content.platform}.png`;
-    sources.push({ folder: "platform-accounts", filename, destination: `brand-${filename}` });
-    if (content.kind !== "handoff") sources.push({ folder: "parcel-activity", filename, destination: filename });
-  }
+  const { mark, sticker } = parcelCardArtwork(content);
+  const sources = [{ path: "parcel-activity/box.png", name: "box.png" }, mark, sticker];
   for (const file of sources) {
-    const destination = Path.join(root, file.destination);
+    if (!file) continue;
+    const destination = Path.join(root, file.name);
     if (FileManager.existsSync(destination) && FileManager.isFileSync(destination)) continue;
-    FileManager.copyFileSync(Path.join(Script.directory, "assets", file.folder, file.filename), destination);
+    FileManager.copyFileSync(Path.join(Script.directory, "assets", file.path), destination);
   }
 }
 
 function activityData(content: ParcelActivityContent, linkId?: string, relevanceScore?: number) {
-  const { target: _target, expiresAtMs, capturedAtMs: _capturedAtMs, ...card } = content;
+  const { target: _target, expiresAtMs, capturedAtMs: _capturedAtMs, businessDateKey: _businessDateKey, ...card } = content;
   return { card: { ...card, linkId }, options: { staleDate: content.target ? expiresAtMs : undefined, relevanceScore } };
 }
 
