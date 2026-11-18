@@ -556,6 +556,8 @@ assert.match(floatingButtonSource, /<Label title=\{title\} systemImage=\{symbol\
   "both floating actions use a symbol-only label");
 assert.match(pickupSource, /onLocationTap=\{canSwitch \? \(\) => setShowAddress\(!showAddress\)/);
 const stationIdentitySource = readFileSync(new URL("../pages/StationIdentityPage.tsx", import.meta.url), "utf8");
+assert.match(stationIdentitySource, /后自动刷新` : "正在自动刷新…"/);
+assert.match(stationIdentitySource, />点击放大<\/Text>/);
 assert.doesNotMatch(stationIdentitySource, /presentPlatformLogin|授权拼多多|登录淘宝/,
   "the identity page does not present an account setup form");
 assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{184\} \/>/,

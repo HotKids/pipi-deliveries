@@ -86,7 +86,7 @@ function Barcode({ widthList, width, height, vertical = false }: {
 
 function countdown(seconds: number): string {
   const minutes = String(Math.floor(seconds / 60)).padStart(2, "0");
-  return seconds > 1 ? `${minutes}:${String(seconds % 60).padStart(2, "0")} 后自动换码` : "正在自动换码…";
+  return seconds > 1 ? `${minutes}:${String(seconds % 60).padStart(2, "0")} 后自动刷新` : "正在自动刷新…";
 }
 
 function FullScreenIdentity({ format, scan, onClose }: {
@@ -311,7 +311,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
                   <QRImage data={value} size={184} />
                 </VStack>
               </Button>
-              <Text font={13} foregroundStyle="secondaryLabel">点条码或二维码可全屏出示</Text>
+              <Text font={13} foregroundStyle="secondaryLabel">点击放大</Text>
               <Text font={12} foregroundStyle={remaining > 60 ? "tertiaryLabel" : "systemRed"}>
                 {busy ? "正在刷新…" : countdown(remaining)}
               </Text>
