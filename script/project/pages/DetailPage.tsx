@@ -61,7 +61,7 @@ import { readCloudParcelMetadata } from "../services/cloud-parcel-metadata";
 import { gatewayCredentialGeneration } from "../services/credentials";
 import { SCRIPT_BUILD_TRACK } from "../services/build-track";
 import { parcelActivityContent } from "../services/parcel-pickup";
-import { timelineTimeParts } from "../services/time-presentation";
+import { shipmentDetailReceiptLine, timelineTimeParts } from "../services/time-presentation";
 import { preferNewerShipment } from "../services/ui-state";
 import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
 import { needsManualPhoneTail } from "../services/jt-h5";
@@ -337,6 +337,7 @@ export function DetailPage(props: {
       presentationStatus.semantic === "UNKNOWN"
     ? MANUAL_QUERY_IN_FLIGHT_TEXT
     : presentationStatus.text;
+  const receiptLine = shipmentDetailReceiptLine(shipment, detailTimeline);
   const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment && !unprojectedAccountOrder(shipment)
     ? normalizeWaybill(displayWaybill(shipment)) : "";
   const cloudGeneration = /^[A-Z0-9]{6,64}$/.test(cloudWaybill) ? gatewayCredentialGeneration() : null;
@@ -718,7 +719,6 @@ export function DetailPage(props: {
           <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity" }}>
             <HStack alignment="center" spacing={6} contentShape="rect"
               onTapGesture={props.persistedShipment ? () => void editNote() : undefined}
-              accessibilityHint={props.persistedShipment ? "编辑备注" : undefined}
               contextMenu={productNameMenu}>
               <Text
                 font={17}
@@ -732,6 +732,12 @@ export function DetailPage(props: {
                 <SenderBadge semantic={presentationStatus.semantic} />
               ) : null}
             </HStack>
+            {receiptLine ? (
+              <Text font={12} foregroundStyle="secondaryLabel" monospacedDigit
+                lineLimit={1} minScaleFactor={0.72} allowsTightening={true}>
+                {receiptLine}
+              </Text>
+            ) : null}
             <HStack
               alignment="center"
               spacing={0}
@@ -740,7 +746,7 @@ export function DetailPage(props: {
               <Text font={15}>{carrierDisplayName(shipment.identity.companyName)}：</Text>
               <Text font={15} monospacedDigit lineLimit={1} minScaleFactor={0.65}
                 allowsTightening={true} layoutPriority={1} contentShape="rect"
-                onTapGesture={copyWaybill} accessibilityHint="复制单号">
+                onTapGesture={copyWaybill}>
                 {waybill}
               </Text>
             </HStack>
@@ -765,7 +771,6 @@ export function DetailPage(props: {
           <VStack alignment="leading" spacing={4} padding={{ vertical: 8 }}
             frame={{ maxWidth: "infinity", alignment: "leading" }} contentShape="rect"
             onTapGesture={props.persistedShipment ? () => void editNote() : undefined}
-            accessibilityHint={props.persistedShipment ? "编辑备注" : undefined}
             contextMenu={productNameMenu}>
             {platformFields.estimate ? (
               <Text font={14} fontWeight="medium" foregroundStyle="systemBlue">{platformFields.estimate}</Text>

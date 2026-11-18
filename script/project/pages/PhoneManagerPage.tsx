@@ -24,7 +24,7 @@ import {
   transientToast,
 } from "../services/ui-feedback";
 import { PhoneBindingPage } from "./PhoneBindingPage";
-import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon";
+import { SettingsRowIcon } from "../components/SettingsRowIcon";
 import { PlatformIcon, presentPlatformLogin } from "./PlatformAccountPages";
 import { SamsungAssistantPage } from "./SamsungAssistantPage";
 import {
@@ -36,6 +36,7 @@ import { existingEnhancementIdentity, EnhancementIdentityMissing } from "../serv
 import { EnhancementUnbindUnavailable } from "../services/enhancement-unsubscribe";
 
 const ACCOUNT_ICON_SIZE = 32;
+const XIAOMI_BRAND_ORANGE = "#FF6900";
 
 type MaybeAsync = void | Promise<void>;
 
@@ -297,7 +298,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         }
         footer={
           <Text font={12} foregroundStyle="secondaryLabel">
-            绑定后自动同步该号码的快递，最多绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号。
+            绑定手机号后，自动同步关联的快递信息。最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号。
           </Text>
         }
       >
@@ -319,7 +320,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
                 ],
               }}
             >
-              <SettingsRowIcon systemName="phone.fill" backgroundColor={SETTINGS_ORANGE} size={ACCOUNT_ICON_SIZE} />
+              <SettingsRowIcon systemName="phone.fill" backgroundColor={XIAOMI_BRAND_ORANGE} size={ACCOUNT_ICON_SIZE} />
               <Text font={17} monospacedDigit>
                 {binding.phone}
               </Text>
@@ -359,7 +360,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         }
         footer={
           <Text font={12} foregroundStyle="secondaryLabel">
-            拼多多可独立同步快递。其他平台可补充已绑定手机号的运单号、取件码、商品名和图片。
+            登录后可获取已绑定手机号关联的快递信息，包括运单号、取件码、商品名称、商品图片和预计送达时间等。菜鸟和拼多多支持查看驿站身份码。拼多多支持同步在途快递，丰巢支持一键开柜。
           </Text>
         }
       >

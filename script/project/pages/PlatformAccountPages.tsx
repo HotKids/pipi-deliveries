@@ -19,20 +19,11 @@ export function PlatformIcon({ platform, size = 36 }: {
   platform: ExpressPlatform | "samsung";
   size?: number;
 }) {
-  const shape = iconTileShape(size);
-  const fillSamsungCorners = platform === "samsung";
-  const logo = (
+  return (
     <Image filePath={`${Script.directory}/assets/platform-accounts/${platform}.png`}
       resizable antialiased interpolation="high" frame={{ width: size, height: size }}
-      clipShape={fillSamsungCorners ? "circle" : shape} />
+      clipShape={iconTileShape(size)} />
   );
-  // The original Samsung bitmap has white corners outside its magenta field.
-  return fillSamsungCorners ? (
-    <VStack frame={{ width: size, height: size }}
-      background={{ style: "#D10151", shape }}>
-      {logo}
-    </VStack>
-  ) : logo;
 }
 
 function decoded(text: string): string {

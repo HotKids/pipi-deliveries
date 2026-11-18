@@ -145,9 +145,12 @@ for (const oldSymbol of [
 assert.ok(manager.includes('navigationTitle="管理账号"'));
 assert.ok(
   manager.includes(
-    "绑定后自动同步该号码的快递，最多绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号。",
+    "绑定手机号后，自动同步关联的快递信息。最多可绑定 {EXPRESS_POLICY.sources.maxBindingsPerSource} 个手机号。",
   ),
 );
+assert.ok(manager.includes(
+  "登录后可获取已绑定手机号关联的快递信息，包括运单号、取件码、商品名称、商品图片和预计送达时间等。菜鸟和拼多多支持查看驿站身份码。拼多多支持同步在途快递，丰巢支持一键开柜。",
+));
 
 assert.ok(privacy.includes('navigationTitle="隐私政策"'));
 const privacyHeadings = ["隐私声明", "免责声明", "传播限制", "诊断日志"];

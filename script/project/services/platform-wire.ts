@@ -14,7 +14,12 @@ export const IDENTITY_WEB_URL = {
 } as const;
 
 export const CAINIAO_RECIPIENT_LIST = "mtop.cainiao.lpc.packageservice.queryPdsPackageDataList";
-export const CAINIAO_SENDER_LIST = "mtop.cainiao.lpc.packageservice.querySendPackageDataList";
+const CAINIAO_COUNT = "mtop.cainiao.lpc.packageservice.user.package.count.query";
+const CAINIAO_SENDER_LIST = "mtop.cainiao.tdtradeplatform.order.queryUncompletedOrder";
+const CAINIAO_SENDER_DETAIL = "mtop.cainiao.tdtradeplatform.order.queryOrderDetail";
+const CAINIAO_SENDER_PAGE = "https://page.cainiao.com/mcn/fulfill_new/index.html?from=tbcn";
+// Public channel identifier shipped by the sender-history page.
+const CAINIAO_SENDER_CHANNEL = "881ce457-c0ce-45df-bb2d-6078a781c613";
 export const CAINIAO_LIST_PARAMETERS = {
   pageSize: 50,
   currentPage: 1,
@@ -164,7 +169,8 @@ async function mtopOnce(api: string, data: string, cookies: readonly PlatformCoo
     type: "originaljson", dataType: "json", data,
   }).map(([key, value]) => key + "=" + encodeURIComponent(value)).join("&");
   const response = await providerRequest(endpoint + "?" + query, {
-    Cookie: cookieHeader(attached), Referer: "https://h5.m.taobao.com/", Accept: "application/json",
+    Cookie: cookieHeader(attached), Referer: isCainiaoSenderApi(api) ? CAINIAO_SENDER_PAGE : "https://h5.m.taobao.com/",
+    Accept: "application/json",
     "User-Agent": MOBILE_WEB_USER_AGENT,
   });
   const payload = jsonObject(await response.text());
@@ -186,9 +192,13 @@ async function mtop(api: string, body: JsonObject, cookies: readonly PlatformCoo
 }
 
 export async function checkCainiaoLogin(cookies: readonly PlatformCookie[]): Promise<PlatformCookie[]> {
-  const result = await mtop("mtop.cainiao.lpc.packageservice.user.package.count.query", { appName: "GUOGUO" }, cookies);
+  const result = await mtop(CAINIAO_COUNT, { appName: "GUOGUO" }, cookies);
   if (!result.ok) throw new PlatformWireError("unavailable");
   return result.cookies;
+}
+
+function isCainiaoSenderApi(api: string): boolean {
+  return api === CAINIAO_SENDER_LIST || api === CAINIAO_SENDER_DETAIL;
 }
 
 export async function readCainiao(session: PlatformSession, api: string, params: JsonObject): Promise<JsonObject> {
@@ -199,12 +209,52 @@ export async function readCainiao(session: PlatformSession, api: string, params:
   const result = await mtop(api, params, before);
   if (!currentPlatformSession("cainiao", generation)) throw new PlatformWireError("changed");
   if (/SESSION_EXPIRED|USER_NOT_LOGIN|NOT_LOGIN|NEED_LOGIN/.test(result.ret)) {
+    if (isCainiaoSenderApi(api)) {
+      await readCainiao(session, CAINIAO_COUNT, { appName: "GUOGUO" });
+      throw new PlatformWireError("unavailable");
+    }
     clearPlatformLogin("cainiao", generation, true);
     throw new PlatformWireError("expired");
   }
   replacePlatformCookies("cainiao", generation, before, result.cookies);
   if (!result.ok || !isPlainObject(result.data)) throw new PlatformWireError("unavailable");
   return result.data;
+}
+
+export async function readCainiaoSenderAppointments(session: PlatformSession) {
+  const accessCode = CAINIAO_SENDER_CHANNEL;
+  const list = await readCainiao(session, CAINIAO_SENDER_LIST, { accessCode, pageSize: 199, pageNo: 0 });
+  const orders = asPlainObject(list.data ?? list).orderBriefList;
+  if (!Array.isArray(orders)) throw new PlatformWireError("unavailable");
+  const waitingId = (order: JsonObject, field: string) => {
+    const id = cleanScalarText(order.orderId);
+    const state = cleanScalarText(order.orderStatus);
+    return /^[A-Za-z0-9_-]{1,64}$/.test(id) && /^\d{1,3}$/.test(state) && state !== "100" &&
+      cleanScalarText(order[field]) === "20" ? id : "";
+  };
+  const ids = new Set(orders.map((order) => waitingId(asPlainObject(order), "carryoutStatus")).filter(Boolean));
+  const packages: JsonObject[] = [];
+  let incomplete = false;
+  for (const tdOrderId of ids) {
+    try {
+      const response = await readCainiao(session, CAINIAO_SENDER_DETAIL, { accessCode, tdOrderId });
+      const item = asPlainObject(response.data ?? response);
+      const order = asPlainObject(item.orderInfo);
+      if (cleanScalarText(order.orderId) !== tdOrderId) throw new PlatformWireError("unavailable");
+      if (waitingId(order, "carryOutStatus") !== tdOrderId) continue;
+      packages.push({
+        appointmentId: tdOrderId, status: "WAIT_GOT",
+        mailNo: order.packageMailNo, pickupCode: item.pickupCode,
+        appointStartTime: order.appointmentStart ?? order.appointStartTime,
+        appointEndTime: order.appointmentEnd ?? order.appointEndTime,
+        appointTimeStr: order.appointTimeStr ?? order.appointTimeDesc,
+      });
+    } catch (error) {
+      if (!(error instanceof PlatformWireError) || error.reason !== "unavailable") throw error;
+      incomplete = true;
+    }
+  }
+  return { packages, incomplete };
 }
 
 function pddCredentialsFor(cookies: readonly PlatformCookie[], target: string) {

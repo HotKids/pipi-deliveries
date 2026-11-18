@@ -50,16 +50,23 @@ export type PlatformAccount = PlatformSession | AccountBase & Readonly<{
 export type AccountStatus = AccountBase & Readonly<{ state: PlatformAccount["state"] }>;
 
 export function platformAccountSubtitle({ state, label, syncedAtMs }: AccountStatus): string {
-  if (state === "offline") return "";
+  if (state === "offline") return "尚未登录";
+  // Older logins stored the generic prefix with the already-masked account.
+  const savedLabel = cleanString(label);
+  const name = savedLabel === "已登录账号" ? "" : savedLabel.replace(/^账号 (?=\*{4}.{4}$)/u, "");
   let detail = state === "expired" ? "请重新登录" : "尚未同步";
   if (state === "active" && syncedAtMs) {
     const time = new Date(syncedAtMs);
     if (Number.isFinite(time.getTime())) {
+      const today = new Date(Date.now());
       const two = (part: number) => String(part).padStart(2, "0");
-      detail = `${two(time.getMonth() + 1)}-${two(time.getDate())} ${two(time.getHours())}:${two(time.getMinutes())}`;
+      const clock = `${two(time.getHours())}:${two(time.getMinutes())}`;
+      detail = time.toDateString() === today.toDateString()
+        ? clock : `${two(time.getMonth() + 1)}-${two(time.getDate())} ${clock}`;
+      return `${name || "账号已脱敏"} · ${detail}`;
     }
   }
-  return label ? `${label} · ${detail}` : detail;
+  return name ? `${name} · ${detail}` : detail;
 }
 
 const INITIAL: PlatformAccount = { state: "offline", generation: "", label: "" };
@@ -138,10 +145,18 @@ function accountKey(platform: ExpressPlatform): string {
   return "pipi.deliveries.platform.v1." + platform;
 }
 
-function maskedAccountLabel(identifier: string): string {
+function maskedAccountLabel(platform: ExpressPlatform, identifier: string): string {
   const value = cleanString(identifier);
-  if (/^1[3-9]\d{9}$/.test(value)) return value.slice(0, 3) + "****" + value.slice(-4);
-  return value.length > 4 ? "账号 ****" + value.slice(-4) : "已登录账号";
+  if (!value) return "";
+  if (platform === "fengchao" && /^1[3-9]\d{9}$/.test(value)) return value.slice(0, 3) + "****" + value.slice(-4);
+  const characters = Array.from(value);
+  if (platform === "jingdong") {
+    return characters.length > 2 ? characters[0] + "****" + characters.at(-1) : "****";
+  }
+  if (characters.length > 6) {
+    return characters.slice(0, 3).join("") + "****" + characters.slice(-3).join("");
+  }
+  return characters.length > 1 ? characters[0] + "****" + characters.at(-1) : "****";
 }
 
 export function readPlatformAccount(platform: ExpressPlatform): PlatformAccount {
@@ -204,7 +219,7 @@ export function savePlatformLogin(
     state: "active",
     generation: UUID.string(),
     ownerKey: sha256Hex(platform + ":" + identifier),
-    label: cleanString(nickname) || maskedAccountLabel(identifier),
+    label: cleanString(nickname) || maskedAccountLabel(platform, identifier),
     credentials,
   });
   return true;

@@ -54,10 +54,8 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, complet
   const codeTop = capsuleTop + (card.capsuleHeight - card.codeHeight) / 2;
   const codeWidth = textWidth - (showCapsule ? capsuleWidth + card.codeGap : 0);
 
-  const reader = (
-    <GeometryReader
-      aspectRatio={preview ? undefined : { value: card.width / card.height, contentMode: "fit" }}
-    >
+  return (
+    <GeometryReader aspectRatio={{ value: card.width / card.height, contentMode: "fit" }}>
       {({ size }) => {
         const scale = Math.max(size.width, 1) / card.width;
         const at = (x: number, y: number, width: number, height: number, centered = false) => ({
@@ -69,7 +67,12 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, complet
             frame={{ width: capsuleWidth * scale, height: card.capsuleHeight * scale }}
             background={{ style: "rgba(255,255,255,0.16)", shape: "capsule" }}
             contentShape="capsule">
-            <Image systemName="shippingbox.fill" font={card.capsuleIcon * scale} foregroundStyle="white" />
+            {handoff ? (
+              <Image systemName="shippingbox.fill" font={card.capsuleIcon * scale} foregroundStyle="white" />
+            ) : (
+              <Image filePath={`${imageRoot}/hand-package.png`} renderingMode="original" resizable scaleToFit
+                frame={{ width: card.capsuleIcon * scale, height: card.capsuleIcon * scale }} />
+            )}
             <Text font={capsuleFont * scale} fontWeight="semibold" foregroundStyle="white" lineLimit={1}>{completionLabel}</Text>
           </HStack>
         );
@@ -120,12 +123,4 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, url, complet
       }}
     </GeometryReader>
   );
-  // The settings List needs a row height before the reader can measure the available width.
-  return preview ? (
-    <VStack spacing={0}
-      frame={{ maxWidth: card.width, minHeight: card.height, maxHeight: card.height }}
-      fixedSize={{ horizontal: false, vertical: true }}>
-      {reader}
-    </VStack>
-  ) : reader;
 }

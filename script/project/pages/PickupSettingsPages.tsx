@@ -1,10 +1,12 @@
-import { AppEvents, Button, HStack, Link, List, Script, Section, Spacer, Text, Toggle, useEffect, useState } from "scripting";
+import { AppEvents, Button, HStack, Link, List, Rectangle, Script, Section, Spacer, Text, Toggle, VStack, useEffect, useState } from "scripting";
 import { ParcelLiveActivityCard } from "../components/ParcelLiveActivityCard";
 import {
   parcelActivityStatus,
   startAllParcelActivities,
   startParcelActivity,
+  startParcelActivityPreview,
   stopParcelActivity,
+  stopParcelActivityPreview,
 } from "../services/parcel-live-activity";
 import {
   PARCEL_ACTIVITY_PREVIEW,
@@ -19,12 +21,14 @@ export function ParcelShortcutPage() {
         <Link url="shortcuts://create-shortcut">
           <Text>新建截屏识别指令</Text>
         </Link>
-        <Text>先添加“截屏”，再添加 Scripting 的“在 App 中运行脚本”。选择派派助手，把截屏结果设为参数。</Text>
-        <Text>将指令设为“轻点背面”或操作按钮，在物流页直接运行。</Text>
+        <Text>1. 添加「截屏」。</Text>
+        <Text>2. 在 Scripting 的动作列表中选「在 App 中运行意图」。选择「派派助手」，参数选上一步的截屏图像。</Text>
+        <Text>3. 将这条指令设为「轻点背面」或「操作按钮」，打开物流页面后运行。</Text>
       </Section>
       <Section header={<Text>识别短信</Text>}>
-        <Text>在系统快捷指令中创建“信息”自动化，按发件人或内容筛选。添加 Scripting 的“运行脚本”，把“快捷指令输入”的“内容”传给派派助手。正文为空时结束指令。</Text>
-        <Text>打开派派助手查看识别结果。运单号可确认查询，独立取件码和寄件码在“取件”查看。</Text>
+        <Text>1. 在「快捷指令」的「自动化」中创建「信息」自动化，按发件人或内容筛选。</Text>
+        <Text>2. 添加 Scripting 的「运行意图脚本」，选择「派派助手」。参数选「快捷指令输入」的「内容」，正文为空时结束。</Text>
+        <Text>3. 打开派派助手确认运单查询，取件码和寄件码在「取件」查看。</Text>
       </Section>
     </List>
   );
@@ -34,10 +38,10 @@ export function ParcelActivityPage({ cards, revision }: {
   cards: readonly ParcelActivityContent[];
   revision: number;
 }) {
-  const [activity, setActivity] = useState({ showAll: false, count: 0 });
+  const [activity, setActivity] = useState({ showAll: false, count: 0, previewing: false });
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
-  const active = activity.showAll || activity.count > 0;
+  const active = activity.showAll || activity.count > 0 || activity.previewing;
   const parcels = cards.flatMap((content) => content.target ? [{ content, target: content.target }] : [])
     .sort((left, right) => (right.content.capturedAtMs ?? 0) - (left.content.capturedAtMs ?? 0));
 
@@ -84,7 +88,7 @@ export function ParcelActivityPage({ cards, revision }: {
   return (
     <List navigationTitle="实时活动" navigationBarTitleDisplayMode="inline" toast={transientToast(notice, setNotice)}>
       <Section footer={activity.showAll && activity.count > 0 ? <Text>{`已显示 ${activity.count} 张`}</Text> : undefined}>
-        <Toggle title="显示全部快递码" value={activity.showAll} disabled={busy}
+        <Toggle title="实时活动" value={activity.showAll} disabled={busy}
           onChanged={(enabled) => void change(enabled ? startAllParcelActivities : stopParcelActivity)} />
       </Section>
       <Section header={
@@ -92,19 +96,21 @@ export function ParcelActivityPage({ cards, revision }: {
           <Text>取件码预览</Text>
           <Spacer />
           <Button
-            title={!activity.showAll && active ? "结束实时活动" : "在锁屏预览取件码"}
-            systemImage={!activity.showAll && active ? "stop.circle" : "play.circle"}
-            labelStyle="iconOnly" disabled={busy || activity.showAll}
-            action={() => void change(active ? stopParcelActivity : () => startParcelActivity())}
+            title={activity.previewing ? "结束预览" : "锁屏预览"}
+            buttonStyle="plain" foregroundStyle="systemBlue" disabled={busy}
+            action={() => void change(activity.previewing ? stopParcelActivityPreview : startParcelActivityPreview)}
           />
         </HStack>
       }>
-        <ParcelLiveActivityCard
-          data={PARCEL_ACTIVITY_PREVIEW}
-          imageRoot={`${Script.directory}/assets/parcel-activity`}
-          logoPath={`${Script.directory}/assets/parcel-activity/cainiao.png`}
-          preview
-        />
+        <VStack spacing={0} frame={{ maxWidth: "infinity" }}
+          listRowInsets={0} listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden">
+          <ParcelLiveActivityCard
+            data={PARCEL_ACTIVITY_PREVIEW}
+            imageRoot={`${Script.directory}/assets/parcel-activity`}
+            logoPath={`${Script.directory}/assets/parcel-activity/cainiao.png`}
+            preview
+          />
+        </VStack>
       </Section>
       {parcels.length ? (
         <Section header={<Text>快递码</Text>}>

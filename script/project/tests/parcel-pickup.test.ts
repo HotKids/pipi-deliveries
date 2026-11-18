@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import type { ParcelHandoffRecord, PickupCodeRecord, Shipment } from "../models";
-import { activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, parcelActivityContent, type ParcelActivityContent } from "../services/parcel-pickup";
+import { activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, type ParcelActivityContent } from "../services/parcel-pickup";
 import { recognizeParcelCodes } from "../services/parcel-code-ocr";
 import { parcelTextRows, recognizeParcelWaybill } from "../services/parcel-waybill-ocr";
 
@@ -193,7 +193,7 @@ function makeActivity() {
   };
   return activity;
 }
-const host = runInNewContext(service + "\n({ startParcelActivity, startAllParcelActivities, stopParcelActivity, reconcileParcelActivity, parcelActivityStatus, parcelActivityTarget, completeParcelActivity });", {
+const host = runInNewContext(service + "\n({ startParcelActivity, startAllParcelActivities, stopParcelActivity, startParcelActivityPreview, stopParcelActivityPreview, reconcileParcelActivity, parcelActivityStatus, parcelActivityTarget, completeParcelActivity });", {
   Path: { join: (...parts: string[]) => parts.join("/") },
   Script: { directory: "/synthetic" },
   UUID: { string: () => { linkId = "synthetic-link-" + ++nextLink; return linkId; } },
@@ -216,6 +216,7 @@ const host = runInNewContext(service + "\n({ startParcelActivity, startAllParcel
   },
   PipiParcelActivity: makeActivity,
   PARCEL_ACTIVITY_ART: "art",
+  PARCEL_ACTIVITY_PREVIEW,
   parcelActivityContent,
   independentPickupContent,
   activePickupCards,
@@ -375,15 +376,39 @@ await host.stopParcelActivity();
 assert.equal((await host.parcelActivityStatus()).showAll, false);
 assert.deepEqual(activeCodes(), []);
 
+records = [firstPickup];
+await host.startAllParcelActivities();
+await host.startParcelActivityPreview();
+await host.startParcelActivityPreview();
+assert.deepEqual(activeCodes(), [firstPickup.code, PARCEL_ACTIVITY_PREVIEW.code]);
+assert.equal((await host.parcelActivityStatus()).count, 1);
+assert.equal((await host.parcelActivityStatus()).previewing, true);
+await host.stopParcelActivityPreview();
+assert.deepEqual(activeCodes(), [firstPickup.code], "closing the example keeps the real card active");
+assert.equal((await host.parcelActivityStatus()).showAll, true);
+await host.startParcelActivityPreview();
+records = [firstPickup, fourthPickup];
+host.reconcileParcelActivity(snapshot());
+assert.equal((await host.parcelActivityStatus()).previewing, false);
+assert.deepEqual(activeCodes(), [fourthPickup.code, firstPickup.code], "real cards take priority over the example at capacity");
+await assert.rejects(host.startParcelActivityPreview(), /锁屏预览暂时无法启动/);
+assert.deepEqual(activeCodes(), [fourthPickup.code, firstPickup.code]);
+await host.stopParcelActivity();
+
 const activityCardSource = readFileSync(new URL("../components/ParcelLiveActivityCard.tsx", import.meta.url), "utf8");
 assert.match(activityCardSource, /handoff \? "我已寄件" : "我已取件"/, "the pickup and handoff activities each show their completion capsule");
 assert.match(activityCardSource, /background=\{expanded \? undefined : gradient/, "the system island provides the expanded background");
 assert.match(activityCardSource,
-  /return preview \? \(\s*<VStack[^>]*minHeight: card\.height[^>]*maxHeight: card\.height[^>]*fixedSize=\{\{ horizontal: false, vertical: true \}\}[^>]*>\s*\{reader\}/,
-  "the settings row offers the full card height before its GeometryReader is evaluated");
+  /<GeometryReader aspectRatio=\{\{ value: card\.width \/ card\.height, contentMode: "fit" \}\}/,
+  "the settings row derives the full card height from the available width");
+assert.match(activityCardSource, /hand-package\.png/, "the lock screen and example share the pickup glyph");
 const activitySettingsSource = readFileSync(new URL("../pages/PickupSettingsPages.tsx", import.meta.url), "utf8");
 assert.equal((activitySettingsSource.match(/<ParcelLiveActivityCard\b/g) ?? []).length, 1,
   "the setting contains one example card");
+assert.match(activitySettingsSource, /listRowInsets=\{0\}[\s\S]*?<ParcelLiveActivityCard\b/);
+assert.match(activitySettingsSource, /"结束预览" : "锁屏预览"[\s\S]*?disabled=\{busy\}/);
+assert.match(activitySettingsSource, /「在 App 中运行意图」[\s\S]*?「运行意图脚本」/);
+assert.match(activitySettingsSource, /<Toggle title="实时活动"/);
 
 const settingsSource = readFileSync(new URL("../pages/SettingsPage.tsx", import.meta.url), "utf8");
 const countFunctions = ["cancelDiagnosticCount", "scheduleDiagnosticCount"].map((name) => {

@@ -39,11 +39,13 @@ async function isRunning(receipt: Receipt): Promise<boolean> {
   return state === "active" || state === "stale";
 }
 
-export function parcelActivityStatus(): Promise<{ showAll: boolean; count: number }> {
+export function parcelActivityStatus(): Promise<{ showAll: boolean; count: number; previewing: boolean }> {
   return serialize(async () => {
     const { showAll, receipts } = parcelActivityRegistry();
-    const running = await Promise.all(receipts.map(isRunning));
-    return { showAll, count: running.filter(Boolean).length };
+    const running = (await Promise.all(receipts.map(async (receipt) => await isRunning(receipt) ? receipt : null)))
+      .filter(receipt => receipt !== null);
+    return { showAll, count: running.filter(receipt => receipt.target).length,
+      previewing: running.some(receipt => !receipt.target) };
   });
 }
 
@@ -63,7 +65,9 @@ export function parcelActivityTarget(state: AppState, linkId: unknown): ParcelAc
 function prepareArtwork(content: ParcelActivityContent): void {
   const root = Path.join(FileManager.appGroupDocumentsDirectory, PARCEL_ACTIVITY_ART);
   FileManager.createDirectorySync(root, true);
-  const sources = [{ folder: "parcel-activity", filename: "box.png", destination: "box.png" }];
+  const sources = ["box.png", "hand-package.png"].map(filename => ({
+    folder: "parcel-activity", filename, destination: filename,
+  }));
   if (content.platform) {
     const handoff = content.kind === "handoff";
     const filename = `${content.platform}.png`;
@@ -140,15 +144,15 @@ async function requireActivitiesEnabled(): Promise<void> {
   }
 }
 
-export function startParcelActivity(target?: ParcelActivityTarget): Promise<void> {
+export function startParcelActivity(target: ParcelActivityTarget): Promise<void> {
   return serialize(async () => {
     const registry = parcelActivityRegistry();
     if (registry.showAll || (await Promise.all(registry.receipts.map(isRunning))).some(Boolean)) {
       throw new Error("请先结束当前实时活动。");
     }
     await requireActivitiesEnabled();
-    const content = target ? parcelForTarget(committedState(), target) : PARCEL_ACTIVITY_PREVIEW;
-    if (!content || (target && content.expiresAtMs !== undefined && content.expiresAtMs <= Date.now())) {
+    const content = parcelForTarget(committedState(), target);
+    if (!content || (content.expiresAtMs !== undefined && content.expiresAtMs <= Date.now())) {
       throw new Error("该快递码已不可用。");
     }
     if (registry.receipts.length) {
@@ -156,6 +160,25 @@ export function startParcelActivity(target?: ParcelActivityTarget): Promise<void
       saveParcelActivityRegistry({ ...registry, receipts: [] });
     }
     if (!await createActivity(content)) throw new Error("实时活动启动失败，请稍后重试。");
+  });
+}
+
+export function startParcelActivityPreview(): Promise<void> {
+  return serialize(async () => {
+    const preview = parcelActivityRegistry().receipts.find(receipt => !receipt.target);
+    if (preview && await isRunning(preview)) return;
+    await requireActivitiesEnabled();
+    if (preview) forgetReceipt(preview);
+    if (!await createActivity(PARCEL_ACTIVITY_PREVIEW)) {
+      throw new Error("锁屏预览暂时无法启动，请稍后重试。");
+    }
+  });
+}
+
+export function stopParcelActivityPreview(): Promise<void> {
+  return serialize(async () => {
+    const preview = parcelActivityRegistry().receipts.find(receipt => !receipt.target);
+    if (preview) await closeActivity(preview);
   });
 }
 
@@ -201,7 +224,7 @@ async function synchronizeActivities(state: AppState): Promise<void> {
     const next = byKey.get(key);
     if (!await isRunning(receipt)) {
       forgetReceipt(receipt, registry.showAll && next ? key : undefined);
-    } else if (key && !next || !key && registry.showAll) {
+    } else if (key && !next) {
       await closeActivity(receipt);
     } else if (next) {
       await updateActivity(receipt, next.content, registry.showAll ? next.rank : undefined);
@@ -218,7 +241,13 @@ async function synchronizeActivities(state: AppState): Promise<void> {
     if (!foreground) return;
     if (dismissed.includes(card.key) || (card.content.expiresAtMs ?? Infinity) <= Date.now() ||
       parcelActivityRegistry().receipts.some((item) => parcelCardKey(item) === card.key)) continue;
-    if (await createActivity(card.content, card.rank) || await replaceOldest(card, ranked)) continue;
+    if (await createActivity(card.content, card.rank)) continue;
+    const preview = parcelActivityRegistry().receipts.find(receipt => !receipt.target);
+    if (preview) {
+      await closeActivity(preview);
+      if (await createActivity(card.content, card.rank)) continue;
+    }
+    if (await replaceOldest(card, ranked)) continue;
     throw new Error("部分实时活动暂时无法显示，请在取件页查看。");
   }
 }
