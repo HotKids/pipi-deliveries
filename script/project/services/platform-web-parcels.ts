@@ -1,3 +1,4 @@
+import type { AbortSignal } from "scripting";
 import type { Shipment } from "../models";
 import { OperationTimeoutError, pauseWhileActive, waitForRefresh } from "./deadline";
 import {
@@ -206,19 +207,20 @@ const CAPTURE_PDD_ORDERS = `(() => {
   };
 })();`;
 
-function assertCurrent(platform: WebPlatform, session: PlatformSession) {
-  if (!projectionSceneActive() || !currentPlatformSession(platform, session.generation)) throw new PlatformWireError("changed");
+function assertCurrent(platform: WebPlatform, session: PlatformSession, signal?: AbortSignal) {
+  if (signal?.aborted || !projectionSceneActive() || !currentPlatformSession(platform, session.generation)) throw new PlatformWireError("changed");
 }
 
 export function fetchJdParcelDetails(session: PlatformSession, order: string, waybill: string,
-  eligible: () => boolean): Promise<PlatformParcel | undefined> {
+  eligible: () => boolean, signal?: AbortSignal): Promise<PlatformParcel | undefined> {
   if (!/^\d{8,32}$/.test(order)) return Promise.resolve(undefined);
   return withProviderPage("jingdong", session, async (web, deadline) => {
     if (!eligible()) return undefined;
-    const row = asPlainObject(await pageResult("jingdong", session, web, jdParcelURL(order), readJdParcel(order), deadline));
+    const row = asPlainObject(await pageResult("jingdong", session, web, jdParcelURL(order), readJdParcel(order), deadline,
+      undefined, undefined, signal));
     if (normalizeWaybill(cleanScalarText(row.waybill)) !== waybill) return undefined;
     return { source: "jingdong", waybill, title: productTitle(row.title), estimate: deliveryForecast(row.forecast, Date.now()) };
-  });
+  }, signal);
 }
 
 async function saveJdCookies(web: WebViewController, generation: string, deadline: number): Promise<void> {
@@ -231,20 +233,21 @@ async function saveJdCookies(web: WebViewController, generation: string, deadlin
 async function withProviderPage<T>(
   platform: WebPlatform, session: PlatformSession,
   read: (controller: WebViewController, deadline: number, reportStage: ReportStage) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   const deadline = Date.now() + 30_000;
   let stage: JdSyncStage = "jd_sync_queue";
   let pageDetails: JdPageDetails | undefined;
   try {
     return await runParcelWebRead(async () => {
-      assertCurrent(platform, session);
+      assertCurrent(platform, session, signal);
       if (session.credentials.kind !== "web") throw new PlatformWireError("changed");
       stage = "jd_sync_session";
-      const web = platform === "jingdong" ? await jdSyncView(session, deadline)
-        : await openProviderController(platform, session.credentials.cookies);
+      const web = platform === "jingdong" ? await jdSyncView(session, deadline, signal)
+        : await openProviderController(platform, session.credentials.cookies, "default", signal ? deadline : undefined, signal);
       try {
         stage = "jd_sync_viewport";
-        if (!await waitForRefresh(acquireProjectionViewport(web), deadline)) throw new PlatformWireError("unavailable");
+        if (!await waitForRefresh(acquireProjectionViewport(web), deadline, signal)) throw new PlatformWireError("unavailable");
         const capture = read(web, deadline, (next, page) => {
           stage = next;
           pageDetails = page;
@@ -269,9 +272,9 @@ async function withProviderPage<T>(
         releaseProjectionViewport();
         if (platform !== "jingdong") web.dispose();
       }
-    }, deadline);
+    }, deadline, signal);
   } catch (error) {
-    if (platform === "jingdong") {
+    if (platform === "jingdong" && !signal?.aborted) {
       writeDiagnostic("platform.jingdong.sync.failed", {
         stage,
         ...pageDetails,
@@ -286,8 +289,8 @@ async function withProviderPage<T>(
 
 async function pageResult(platform: WebPlatform, session: PlatformSession, web: WebViewController,
   url: string, script: string, deadline: number, reportStage?: ReportStage,
-  keepPartial?: (value: unknown) => boolean): Promise<unknown> {
-  assertCurrent(platform, session);
+  keepPartial?: (value: unknown) => boolean, signal?: AbortSignal): Promise<unknown> {
+  assertCurrent(platform, session, signal);
   const pageDeadline = Math.min(deadline, Date.now() + 12_000);
   let jdNativeLoad: NonNullable<DiagnosticDetails["jdNativeLoad"]> = "pending";
   const loadRejected = () => jdNativeLoad === "returned_false" || jdNativeLoad === "rejected";
@@ -295,8 +298,8 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
   if (platform === "jingdong") {
     // The same browser can still display the previous order page until navigation commits.
     await waitForRefresh(web.evaluateJavaScript("window.__pipiDeliveriesPreviousJDPage = true; return true;"),
-      Math.min(pageDeadline, Date.now() + 1_000)).catch(() => undefined);
-    assertCurrent(platform, session);
+      Math.min(pageDeadline, Date.now() + 1_000), signal).catch(() => undefined);
+    assertCurrent(platform, session, signal);
     script = "if (window.__pipiDeliveriesPreviousJDPage === true) return {state:'pending',stage:'jd_sync_document'};\n" + script;
     reportStage?.("jd_sync_document");
   }
@@ -305,17 +308,17 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
     // Like Pipi's JD probe, accept the matching document as soon as it renders.
     void load.then((loaded) => { jdNativeLoad = loaded ? "returned_true" : "returned_false"; },
       () => { jdNativeLoad = "rejected"; });
-  } else if (!await waitForRefresh(load, pageDeadline)) {
+  } else if (!await waitForRefresh(load, pageDeadline, signal)) {
     throw new PlatformWireError("unavailable");
   }
   let partial: unknown;
   while (Date.now() < pageDeadline) {
-    assertCurrent(platform, session);
+    assertCurrent(platform, session, signal);
     let value: unknown;
     try {
-      value = await waitForRefresh(web.evaluateJavaScript<unknown>(script), pageDeadline);
+      value = await waitForRefresh(web.evaluateJavaScript<unknown>(script), pageDeadline, signal);
     } catch (error) {
-      assertCurrent(platform, session);
+      assertCurrent(platform, session, signal);
       if (platform === "jingdong") {
         reportStage?.(loadRejected() && !committedDocument ? "jd_sync_load_failed" : "jd_sync_script", { jdNativeLoad });
       }
@@ -326,7 +329,7 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
       value = null;
     }
     if (value != null) {
-      assertCurrent(platform, session);
+      assertCurrent(platform, session, signal);
       const { state, stage, scheme, hostname } = asPlainObject(value);
       if (state === "expired") {
         if (platform === "jingdong") reportStage?.("jd_sync_session", { jdNativeLoad, jdPage: jdDiagnosticPage(scheme, hostname) });
@@ -347,7 +350,7 @@ async function pageResult(platform: WebPlatform, session: PlatformSession, web: 
         });
       }
     }
-    await pauseWhileActive(250);
+    await pauseWhileActive(250, signal);
   }
   if (partial !== undefined) {
     assertCurrent(platform, session);
@@ -429,16 +432,16 @@ export async function fetchJdParcels(
   });
 }
 
-async function addPddCapture(web: WebViewController, source: string, deadline: number) {
+async function addPddCapture(web: WebViewController, source: string, deadline: number, signal?: AbortSignal) {
   const supported = web as WebViewController & {
     addUserScript?: (options: { source: string; injectionTime: "documentStart"; forMainFrameOnly: boolean }) => Promise<string>;
   };
   if (!supported.addUserScript) throw new PlatformWireError("unavailable");
-  await waitForRefresh(supported.addUserScript({ source, injectionTime: "documentStart", forMainFrameOnly: true }), deadline);
+  await waitForRefresh(supported.addUserScript({ source, injectionTime: "documentStart", forMainFrameOnly: true }), deadline, signal);
 }
 
 export function fetchPddParcelDetails(session: PlatformSession, shippingId: string, waybill: string,
-  needsTitle: boolean, needsEstimate: boolean, eligible: () => boolean): Promise<PlatformParcel | undefined> {
+  needsTitle: boolean, needsEstimate: boolean, eligible: () => boolean, signal?: AbortSignal): Promise<PlatformParcel | undefined> {
   if (!/^[1-9][0-9]{0,19}$/.test(shippingId) || !/^[A-Z0-9]{6,64}$/.test(waybill)) return Promise.resolve(undefined);
   const url = "https://mobile.yangkeduo.com/psnl_goods_help.html?_t_module_name=assistant_waybill" +
     "&shipping_id=" + shippingId + "&tracking_number=" + waybill;
@@ -483,7 +486,7 @@ export function fetchPddParcelDetails(session: PlatformSession, shippingId: stri
         }, { once: true });
         return send.apply(this, args);
       };
-    })();`, deadline);
+    })();`, deadline, signal);
     if (!eligible()) return undefined;
     const row = asPlainObject(await pageResult("pinduoduo", session, web, url, String.raw`
       if (location.origin === 'https://mobile.yangkeduo.com' && /login\.html|passport/.test(location.pathname)) return { state: 'expired' };
@@ -500,11 +503,11 @@ export function fetchPddParcelDetails(session: PlatformSession, shippingId: stri
       const row = asPlainObject(value);
       return row.waybill === waybill && row.shippingId === shippingId &&
         (Boolean(productTitle(row.title)) || Array.isArray(row.forecasts) && row.forecasts.length > 0);
-    }));
+    }, signal));
     if (row.waybill !== waybill || row.shippingId !== shippingId) return undefined;
     const estimate = uniqueDeliveryForecast(Array.isArray(row.forecasts) ? row.forecasts : [], Date.now());
     return { source: "pinduoduo", waybill, title: productTitle(row.title), estimate };
-  });
+  }, signal);
 }
 
 export async function fetchPddOrders(session: PlatformSession): Promise<PlatformParcel[]> {

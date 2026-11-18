@@ -190,7 +190,7 @@ assert.doesNotMatch(
 );
 assert.match(
   syncSource,
-  /!options\.backgroundHostSafe[\s\S]*?statePresentationFingerprint\(summary\.state\) !==[\s\S]*?statePresentationFingerprint\(before\)[\s\S]*?requestWidgetReload\(\)/,
+  /!options\.backgroundHostSafe[\s\S]*?statePresentationFingerprint\(summary\.state\) !==[\s\S]*?statePresentationFingerprint\(before\.state\)[\s\S]*?requestWidgetReload\(\)/,
   "a foreground full refresh reloads widgets only after visible shipment state changes",
 );
 assert.doesNotMatch(

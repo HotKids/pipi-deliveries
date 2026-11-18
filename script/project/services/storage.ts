@@ -8,7 +8,7 @@
  */
 import { Path } from "scripting";
 import { statusProjectionFields } from "./worker-status";
-import { sharedCommitSequence, sharedData, sharedStateText, publishSharedData, withSharedFileTransaction, SharedCommitConflict } from "./shared-file-transaction";
+import { sharedCommitSequence, sharedData, sharedStateText, publishSharedData, withSharedFileTransaction, SharedCommitConflict, prefetchSharedStateFiles, type PrefetchedStateFiles } from "./shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import type {
   AccountBinding,
@@ -630,17 +630,19 @@ function markFeedSlotRebuild(shipment: Shipment): Shipment {
   return marked;
 }
 
-function mirrorBindingBackup(state: AppState): void {
+function mirrorBindingBackup(state: AppState): boolean {
   const backup = loadBindingBackup();
   if (
     backup &&
     stableJson(uniqueBindings(backup.bindings)) ===
       stableJson(uniqueBindings(state.bindings))
-  ) return;
+  ) return true;
   try {
     saveBindingBackup(state.activeSource, state.bindings);
+    return true;
   } catch {
     /* the durable state remains authoritative; a later load retries the mirror */
+    return false;
   }
 }
 
@@ -2109,10 +2111,34 @@ function pendingIsOlderThan(
 }
 
 export function loadState(now = Date.now()): AppState {
+  return loadStateSnapshot(now).state;
+}
+
+let appStateRead: Promise<AppState> | undefined;
+
+export function loadAppState(): Promise<AppState> {
+  return appStateRead ??= prefetchSharedStateFiles().catch(() => undefined)
+    .then(files => readStateSnapshot(Date.now(), undefined, files).state)
+    .finally(() => { appStateRead = undefined; });
+}
+
+/** A verified snapshot can be reused within an operation while the authoritative bytes still match. */
+export type LoadedStateSnapshot = Readonly<{ state: AppState; verified?: { serialized: string; readAtMs: number } }>;
+
+export function loadStateSnapshot(now = Date.now(), prior?: LoadedStateSnapshot): LoadedStateSnapshot {
+  return readStateSnapshot(now, prior);
+}
+
+function readStateSnapshot(now: number, prior?: LoadedStateSnapshot,
+  prefetched?: PrefetchedStateFiles): LoadedStateSnapshot {
   try {
   return withSharedFileTransaction(() => {
+    const shared = sharedStateText(false, prefetched);
+    if (prior?.verified && prior.verified.serialized === shared && now >= prior.verified.readAtMs &&
+        !pendingCommit && !lastStateLoadFailure && !routesPruneDirty &&
+        !productImagesPruneDirty && !stateRetentionExpired(prior.state, now)) return prior;
     // Read every physical copy, but validate identical bytes only once in this call.
-    // Never retain this map across calls: revisions are advisory and other hosts write here.
+    // Other hosts can advance the authoritative bytes independently of our revision.
     const decoded = new Map<string, StoredStateRead>();
     const decode = (raw: unknown): StoredStateRead => {
       if (typeof raw !== "string") return decodeStoredRaw(raw);
@@ -2126,10 +2152,9 @@ export function loadState(now = Date.now()): AppState {
     const backup = readStoredState(STATE_BACKUP_KEY, true, decode);
     const durableA = readDurableState(STATE_DURABLE_SLOT_A, decode);
     const durableB = readDurableState(STATE_DURABLE_SLOT_B, decode);
-    const shared = sharedStateText();
     const candidates = shared == null
       ? orderedStoredStates(primary, backup, durableA, durableB)
-      : orderedStoredStates(decode(shared), decode(sharedStateText(true)));
+      : orderedStoredStates(decode(shared), decode(sharedStateText(true, prefetched)));
     let chosen: DecodedStoredState | null = candidates[0] ?? null;
 
     if (pendingCommit && chosen && pendingIsOlderThan(pendingCommit, chosen)) {
@@ -2179,7 +2204,7 @@ export function loadState(now = Date.now()): AppState {
         throw new Error("本地快递数据读取失败，请稍后重试");
       }
       lastStateLoadFailure = null;
-      return restoreInitialBindingBackup(emptyState());
+      return { state: restoreInitialBindingBackup(emptyState()) };
     }
 
     // Try older generations before failing. An unreadable existing store must never
@@ -2187,6 +2212,7 @@ export function loadState(now = Date.now()): AppState {
     let restored: AppState | null = null;
     let chosenState: LegacyAppState | AppState | null = null;
     let legacyBindingRecoveryDurable = true;
+    let healthyBindingBackup = false;
     let migrationAttempted = 0;
     const attempts = recoveredLegacy ? [chosen] : candidates;
     for (const candidate of attempts) {
@@ -2211,7 +2237,7 @@ export function loadState(now = Date.now()): AppState {
           legacyBindingRecoveryDurable = recovery.durable;
         } else {
           restored = migrated;
-          mirrorBindingBackup(restored);
+          healthyBindingBackup = mirrorBindingBackup(restored);
         }
         chosen = candidate;
         chosenState = parsedState;
@@ -2249,8 +2275,9 @@ export function loadState(now = Date.now()): AppState {
         },
       );
     }
+    const routeMigrations = legacyRouteMigrations(chosenState);
     try {
-      migrateLegacyShipmentRoutes(legacyRouteMigrations(chosenState), now);
+      migrateLegacyShipmentRoutes(routeMigrations, now);
     } catch {
       /* route migration is retried on the next load; local timelines remain available */
     }
@@ -2262,7 +2289,7 @@ export function loadState(now = Date.now()): AppState {
     if (shouldPruneOnLoad) {
       routesPruneDirty = !pruneOrderProjectionReferencesForState(restored, now);
     }
-    if (recoveredLegacy && !legacyBindingRecoveryDurable) return restored;
+    if (recoveredLegacy && !legacyBindingRecoveryDurable) return { state: restored };
     const encoded = encodeState(restored, chosen);
     const primaryMatches = matchesEncoded(primary, encoded);
     const backupMatches = matchesEncoded(backup, encoded);
@@ -2279,11 +2306,14 @@ export function loadState(now = Date.now()): AppState {
           { ...diagnosticState(encoded.state), result: "durable_heal_failed" },
           "error",
         );
-        return encoded.state;
+        return { state: encoded.state };
       }
     }
-    if (!matchesEncoded(readDurableState(durableSlotForRevision(encoded.state.revision), decode), encoded)) {
-      try { writeDurableText(durableSlotForRevision(encoded.state.revision), encoded.serialized); }
+    const slot = durableSlotForRevision(encoded.state.revision);
+    const readSlot = slot === STATE_DURABLE_SLOT_A ? durableA : durableB;
+    const slotMatches = matchesEncoded(readSlot, encoded);
+    if (!slotMatches && !matchesEncoded(readDurableState(slot, decode), encoded)) {
+      try { writeDurableText(slot, encoded.serialized); }
       catch { /* A failed legacy mirror repair cannot replace the shared authority. */ }
     }
     if (!primaryMatches || !backupMatches) {
@@ -2316,7 +2346,10 @@ export function loadState(now = Date.now()): AppState {
         now,
       );
     }
-    return encoded.state;
+    const verified = durableMatches && primaryMatches && backupMatches && slotMatches && healthyBindingBackup &&
+      !rejectedDiagnosticEmitted && !pendingCommit && !shouldPruneOnLoad && !routeMigrations.length &&
+      !encoded.state.emptyTimelineRetirements?.length;
+    return { state: encoded.state, ...(verified ? { verified: { serialized: encoded.serialized, readAtMs: now } } : {}) };
   });
   } catch (error) {
     if (!(error instanceof SharedCommitConflict) && !lastStateLoadFailure) lastStateLoadFailure = "read_failed";

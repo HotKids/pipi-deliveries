@@ -55,7 +55,7 @@ import { notificationEnabledCount } from "../services/notification-preferences";
 import { reconcileFengchaoReminders } from "../services/fengchao-reminders";
 import { transientToast } from "../services/ui-feedback";
 import { platformRefreshMessage, refreshPlatformParcels } from "../services/platform-parcel-sync";
-import { accountStatus, onPlatformAccountsChanged, PLATFORM_SOURCES } from "../services/platform-accounts";
+import { accountStatus, onPlatformAccountsChanged, PLATFORM_SOURCES, type ExpressPlatform } from "../services/platform-accounts";
 
 const PROJECT_URL = "https://github.com/HotKids/pipi-deliveries";
 const SETTINGS_BLUE = "#2F7BF6";
@@ -115,6 +115,8 @@ function useSettingsOverview() {
   const [enabledNotificationCount, setEnabledNotificationCount] = useState<number | undefined>();
   const visible = useRef(false);
   const pending = useRef(new Set<OverviewSection>(OVERVIEW_SECTIONS));
+  const pendingPlatforms = useRef(new Set<ExpressPlatform>(PLATFORM_SOURCES));
+  const activePlatforms = useRef(new Set<ExpressPlatform>());
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   function scheduleOverview(sections: readonly OverviewSection[] = []) {
@@ -124,14 +126,18 @@ function useSettingsOverview() {
       timer.current = undefined;
       if (!visible.current) return;
       if (pending.current.delete("authorization")) refreshAuthorization();
-      if (pending.current.delete("platforms")) setPlatformCount(PLATFORM_SOURCES.filter((platform) => {
-        try {
-          return accountStatus(platform).state === "active";
-        } catch {
-          writeDiagnostic("settings.platform_count.unavailable", { sourceProvider: platform }, "warning");
-          return false;
+      if (pending.current.delete("platforms")) {
+        for (const platform of pendingPlatforms.current) {
+          activePlatforms.current.delete(platform);
+          try {
+            if (accountStatus(platform).state === "active") activePlatforms.current.add(platform);
+          } catch {
+            writeDiagnostic("settings.platform_count.unavailable", { sourceProvider: platform }, "warning");
+          }
         }
-      }).length);
+        pendingPlatforms.current.clear();
+        setPlatformCount(activePlatforms.current.size);
+      }
       if (pending.current.delete("notifications")) setEnabledNotificationCount(notificationEnabledCount(true));
     }, 0);
   }
@@ -148,10 +154,16 @@ function useSettingsOverview() {
 
   useEffect(() => {
     const onScene = (phase: "active" | "inactive" | "background") => {
-      if (phase === "active") scheduleOverview(OVERVIEW_SECTIONS);
+      if (phase === "active") {
+        for (const platform of PLATFORM_SOURCES) pendingPlatforms.current.add(platform);
+        scheduleOverview(OVERVIEW_SECTIONS);
+      }
     };
     AppEvents.scenePhase.addListener(onScene);
-    const unsubscribe = onPlatformAccountsChanged(() => scheduleOverview(["platforms"]));
+    const unsubscribe = onPlatformAccountsChanged(platform => {
+      pendingPlatforms.current.add(platform);
+      scheduleOverview(["platforms"]);
+    });
     const stopActivationObservation = onScriptingActivationRejectionChanged(() => scheduleOverview(["authorization"]));
     return () => {
       setOverviewVisible(false);

@@ -135,10 +135,25 @@ function retire(frame: Frame): void {
 
 export function sharedCommitSequence(): number { return (active || latest()).sequence; }
 export function sharedData(): Readonly<SharedData> { return (active || latest()).data; }
-export function sharedStateText(previous = false): string | null {
+export type PrefetchedStateFiles = ReadonlyMap<string, string>;
+
+export async function prefetchSharedStateFiles(): Promise<PrefetchedStateFiles> {
+  const { stateRef, previousStateRef } = sharedData();
+  const files = new Map<string, string>();
+  await Promise.all([stateRef, previousStateRef].map(async id => {
+    if (!id) return;
+    try { files.set(id, await FileManager.readAsString(`${path(id)}/state.json`)); }
+    catch { /* The normal read owns retry and error reporting. */ }
+  }));
+  return files;
+}
+
+export function sharedStateText(previous = false, prefetched?: PrefetchedStateFiles): string | null {
   const data = sharedData();
   const id = previous ? data.previousStateRef : data.stateRef;
   if (!id) return null;
+  const bytes = prefetched?.get(id);
+  if (bytes !== undefined) return bytes;
   try { return FileManager.readAsStringSync(`${path(id)}/state.json`); }
   catch (error) {
     if (active && latest().id !== active.id) throw new SharedCommitConflict();

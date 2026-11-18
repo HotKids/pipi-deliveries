@@ -1,4 +1,4 @@
-import { Button, HStack, List, Navigation, NavigationStack, Section, Text, VStack, ZStack, useMemo, useRef, useState } from "scripting";
+import { Button, HStack, List, Navigation, NavigationStack, Section, Text, VStack, ZStack, useEffect, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
 import { RootPageHeader } from "../components/RootPageHeader";
@@ -14,6 +14,8 @@ import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { requestWidgetReload } from "../services/widgets";
 import { DetailPage } from "./DetailPage";
 import { StationIdentityMark, StationIdentityPage } from "./StationIdentityPage";
+import { onPlatformAccountsChanged } from "../services/platform-accounts";
+import { pickupCabinetActions } from "../services/platform-parcel-sync";
 
 const IDENTITY_CHOICES = [
   { platform: "cainiao", title: "菜鸟驿站" },
@@ -57,10 +59,11 @@ function IdentityCodeButton({ onOpen }: {
   );
 }
 
-function PickupCardRow({ card, note, opensCabinet, onDetail, onSaveNote, onAction, showNotice }: {
+function PickupCardRow({ card, note, opensCabinet, actionBlocked, onDetail, onSaveNote, onAction, showNotice }: {
   card: ParcelActivityContent;
   note: string;
   opensCabinet: boolean;
+  actionBlocked: boolean;
   onDetail?: () => void;
   onSaveNote: (note: string) => void;
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
@@ -92,7 +95,7 @@ function PickupCardRow({ card, note, opensCabinet, onDetail, onSaveNote, onActio
   }
 
   async function complete() {
-    if (acting.current) return;
+    if (acting.current || actionBlocked) return;
     acting.current = true;
     setActionPending(true);
     try {
@@ -115,7 +118,7 @@ function PickupCardRow({ card, note, opensCabinet, onDetail, onSaveNote, onActio
       onDetail={onDetail}
       onEditNote={card.target ? () => void editNote() : undefined}
       actionLabel={opensCabinet ? "一键开柜" : undefined}
-      actionPending={actionPending}
+      actionPending={actionPending || actionBlocked}
       locationText={canSwitch && showAddress ? card.address : card.location}
       showingAddress={canSwitch && showAddress}
       onLocationTap={canSwitch ? () => setShowAddress(!showAddress) : undefined}
@@ -125,7 +128,7 @@ function PickupCardRow({ card, note, opensCabinet, onDetail, onSaveNote, onActio
 }
 
 export function PickupPage({
-  state, shipments, cards, previewing, focusedRecordId, onAction, cabinetActions, onStateChange, showNotice,
+  state, shipments, cards, previewing, focusedRecordId, onAction, onStateChange, showNotice,
 }: {
   state: AppState;
   shipments: readonly Shipment[];
@@ -133,13 +136,19 @@ export function PickupPage({
   previewing: boolean;
   focusedRecordId: string;
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
-  cabinetActions: ReadonlySet<ParcelActivityContent>;
   onStateChange: (state: AppState) => void;
   showNotice: (message: string) => void;
 }) {
   const dismiss = Navigation.useDismiss();
   const [detailTarget, setDetailTarget] = useState<ParcelActivityTarget | undefined>(undefined);
   const [identity, setIdentity] = useState<IdentityPlatform | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [cabinetRevision, setCabinetRevision] = useState(0);
+  useEffect(() => visible ? onPlatformAccountsChanged(platform => {
+    if (platform === "fengchao") setCabinetRevision(value => value + 1);
+  }) : undefined, [visible]);
+  const cabinetActions = useMemo(() => visible ? pickupCabinetActions(cards) : undefined,
+    [cards, visible, cabinetRevision]);
   const selected = shipmentForPickupTarget(shipments, detailTarget);
   const attachedOrders = useMemo(() => selected ? attachedProjectedOrders(state.shipments, selected) : undefined,
     [state.shipments, selected]);
@@ -153,7 +162,8 @@ export function PickupPage({
     const note = (target && "recordId" in target
       ? records?.find((record) => record.id === target.recordId)?.note : shipment?.note) || "";
     return (
-      <PickupCardRow key={key} card={card} note={note} opensCabinet={cabinetActions.has(card)} onAction={onAction}
+      <PickupCardRow key={key} card={card} note={note} opensCabinet={Boolean(cabinetActions?.has(card))}
+        actionBlocked={card.platform === "fengchao" && !cabinetActions} onAction={onAction}
         showNotice={showNotice} onDetail={shipment ? () => setDetailTarget(target) : undefined}
         onSaveNote={(value) => {
           onStateChange(setPickupCardNote(card, note, value));
@@ -191,6 +201,8 @@ export function PickupPage({
         }}
       >
         <List
+          onAppear={() => setVisible(true)}
+          onDisappear={() => setVisible(false)}
           safeAreaInset={{
             top: {
               spacing: 0,

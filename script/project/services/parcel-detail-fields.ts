@@ -1,3 +1,4 @@
+import type { AbortSignal } from "scripting";
 import type { Shipment } from "../models";
 import { currentPlatformSession, platformSession, type ExpressPlatform, type PlatformSession } from "./platform-accounts";
 import { writeDiagnostic } from "./logger";
@@ -29,11 +30,12 @@ function jdOrderFor(owner: Shipment, shipments: readonly Shipment[]): string {
   return orders.length === 1 ? orders[0] : "";
 }
 
-export async function refreshParcelDetailFields(expected: Shipment, active: () => boolean) {
+export async function refreshParcelDetailFields(expected: Shipment, active: () => boolean,
+  readState = loadState, signal?: AbortSignal) {
   const waybill = unprojectedAccountOrder(expected) ? "" : normalizeWaybill(displayWaybill(expected));
   if (!projectionSceneActive() || !active() || !/^[A-Z0-9]{6,64}$/.test(waybill) ||
     !needsParcelDetailFields(expected)) return undefined;
-  let observed = loadState();
+  let observed = readState();
   function ownerIn(state: typeof observed) {
     const matches = visibleShipments(state).filter((row) => !unprojectedAccountOrder(row) &&
       normalizeWaybill(displayWaybill(row)) === waybill);
@@ -58,7 +60,7 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
     const current = () => projectionSceneActive() && !!currentPlatformSession(platform, session.generation);
     const eligible = () => {
       if (!active() || !current() || !reservation?.isCurrent()) return false;
-      const state = loadState();
+      const state = readState();
       const row = ownerIn(state);
       if (!row || !needsParcelDetailFields(row)) return false;
       return platform === "jingdong" ? jdOrderFor(row, state.shipments) === jdOrder :
@@ -78,14 +80,14 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
     }
   }
   if (cainiao) await read("cainiao", cainiao, async () =>
-    cainiaoParcelDetails(await readCainiao(cainiao, CAINIAO_PARCEL_DETAIL, { mailNo: waybill }), waybill, Date.now()));
+    cainiaoParcelDetails(await readCainiao(cainiao, CAINIAO_PARCEL_DETAIL, { mailNo: waybill }, signal), waybill, Date.now()));
   if (pddSession && pddSession.ownerKey === pdd?.ownerKey && pdd.shippingId) {
     const shippingId = pdd.shippingId;
     const fields = displayedPlatformFields(owner);
     const estimate = !fields.estimate && deliveryEstimateApplies(owner);
-    await read("pinduoduo", pddSession, (eligible) => fetchPddParcelDetails(pddSession, shippingId, waybill, !fields.title, estimate, eligible));
+    await read("pinduoduo", pddSession, (eligible) => fetchPddParcelDetails(pddSession, shippingId, waybill, !fields.title, estimate, eligible, signal));
   }
-  if (jd) await read("jingdong", jd, (eligible) => fetchJdParcelDetails(jd, jdOrder, waybill, eligible));
+  if (jd) await read("jingdong", jd, (eligible) => fetchJdParcelDetails(jd, jdOrder, waybill, eligible, signal));
   const shipment = changed ? ownerIn(observed) : undefined;
   return shipment ? { state: observed, shipment } : undefined;
 }

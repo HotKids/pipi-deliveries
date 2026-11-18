@@ -1,7 +1,7 @@
 import {
   Button, HStack, Image, Navigation, NavigationStack, Text, VStack, WebView, useEffect, useRef, useState,
 } from "scripting";
-import { bundledImage } from "../components/bundled-image";
+import { useBundledImage } from "../components/bundled-image";
 import { iconTileShape } from "../components/icon-tile";
 import {
   accountStatus, cookieValue, cookiesForURL, PLATFORM_NAMES, providerCookies, savePlatformLogin, WEB_PLATFORMS,
@@ -20,7 +20,7 @@ export function PlatformIcon({ platform, size = 36 }: {
   platform: ExpressPlatform | "samsung";
   size?: number;
 }) {
-  const artwork = bundledImage(`platform-accounts/${platform}.png`);
+  const artwork = useBundledImage(`platform-accounts/${platform}.png`);
   return artwork ? (
     <Image image={artwork}
       resizable antialiased interpolation="high" frame={{ width: size, height: size }}

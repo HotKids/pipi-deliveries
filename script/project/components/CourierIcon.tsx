@@ -1,6 +1,6 @@
 import { Image, VStack } from "scripting";
 import { courierIconName } from "../services/carrier-presentation";
-import { bundledImage } from "./bundled-image";
+import { bundledImage, useBundledImage } from "./bundled-image";
 import { iconTileShape } from "./icon-tile";
 
 export function CourierIcon(props: {
@@ -8,30 +8,41 @@ export function CourierIcon(props: {
   companyName: string;
   accountOrder?: boolean;
   size: number;
+  deferArtwork?: boolean;
 }) {
   const icon = courierIconName(
     props.courierCode,
     props.companyName,
     props.accountOrder,
   );
-  const artwork = icon ? bundledImage(`couriers/${icon}.png`) : undefined;
+  const path = icon ? `couriers/${icon}.png` : undefined;
+  return props.deferArtwork
+    ? <DeferredCourierIcon path={path} size={props.size} />
+    : <CourierIconTile artwork={path ? bundledImage(path) : undefined} size={props.size} />;
+}
+
+function DeferredCourierIcon({ path, size }: { path?: string; size: number }) {
+  return <CourierIconTile artwork={useBundledImage(path)} size={size} />;
+}
+
+function CourierIconTile({ artwork, size }: { artwork?: UIImage; size: number }) {
   return (
     <VStack
-      frame={{ width: props.size, height: props.size }}
+      frame={{ width: size, height: size }}
       background={artwork ? undefined : "tertiarySystemFill"}
-      clipShape={iconTileShape(props.size)}
+      clipShape={iconTileShape(size)}
     >
       {artwork ? (
         <Image
           image={artwork}
           resizable
           scaleToFit
-          frame={{ width: props.size, height: props.size }}
+          frame={{ width: size, height: size }}
         />
       ) : (
         <Image
           systemName="shippingbox.fill"
-          font={Math.round(props.size * 0.5)}
+          font={Math.round(size * 0.5)}
           foregroundStyle="accentColor"
         />
       )}

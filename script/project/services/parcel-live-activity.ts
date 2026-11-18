@@ -22,6 +22,7 @@ import {
 import { loadState, parcelCardKey, stateLoadFailure, visibleShipments } from "./storage";
 
 let pending: Promise<unknown> = Promise.resolve();
+let queuedReconciliation: { state: AppState } | undefined;
 let foreground = true;
 const displayed = new Map<string, string>();
 const previewListeners = new Set<() => void>();
@@ -40,6 +41,7 @@ export function parcelActivitySceneChanged(phase: ScenePhase): void {
 }
 
 function serialize<T>(operation: () => Promise<T>): Promise<T> {
+  queuedReconciliation = undefined;
   const next = pending.then(operation);
   pending = next.catch(() => undefined);
   return next;
@@ -229,10 +231,10 @@ async function replaceOldest(candidate: RankedCard, cards: readonly RankedCard[]
   return false;
 }
 
-async function synchronizeActivities(state: AppState): Promise<void> {
+async function synchronizeActivities(state: AppState, cards?: readonly ParcelActivityContent[]): Promise<void> {
   const registry = parcelActivityRegistry();
   if (stateLoadFailure() || !registry.showAll && !registry.receipts.length) return;
-  const byTime = activePickupCards(visibleShipments(state), state.pickupCodeRecords)
+  const byTime = (cards ?? activePickupCards(visibleShipments(state), state.pickupCodeRecords))
     .filter((card) => card.target)
     .sort((left, right) => (right.capturedAtMs ?? 0) - (left.capturedAtMs ?? 0) ||
       parcelCardKey(left).localeCompare(parcelCardKey(right)));
@@ -300,8 +302,14 @@ export function stopParcelActivity(): Promise<void> {
   });
 }
 
-export function reconcileParcelActivity(state: AppState): void {
-  void serialize(() => synchronizeActivities(state)).catch(() => {
+export function reconcileParcelActivity(state: AppState, cards?: readonly ParcelActivityContent[]): void {
+  if (queuedReconciliation?.state === state) return;
+  const request = { state };
+  void serialize(() => {
+    if (queuedReconciliation === request) queuedReconciliation = undefined;
+    return synchronizeActivities(state, cards);
+  }).catch(() => {
     writeDiagnostic("activity.parcel.reconcile.failed", { result: "failed" }, "warning");
   });
+  queuedReconciliation = request;
 }

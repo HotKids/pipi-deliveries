@@ -1,6 +1,7 @@
 import {
   Button,
   Capsule,
+  ForEach,
   HStack,
   Image,
   List,
@@ -14,6 +15,7 @@ import {
   TextField,
   VStack,
   ZStack,
+  AbortController,
   useCallback,
   useEffect,
   useMemo,
@@ -138,17 +140,24 @@ export function HomePage(props: {
   const shipmentNavigationTargetRef = useRef(shipmentNavigationTarget);
   const shipments = props.shipments;
   const groups = useMemo(() => {
-    const buckets = { all: shipments, transit: [] as Shipment[], pickup: [] as Shipment[], danger: [] as Shipment[] };
+    type Item = { id: string; shipment: Shipment; deleting: boolean; completing: boolean };
+    const buckets: Record<ShipmentFilter, Item[]> = { all: [], transit: [], pickup: [], danger: [] };
     for (const shipment of shipments) {
+      const item = { id: shipment.identity.id, shipment, deleting, completing };
+      buckets.all.push(item);
       const bucket = shipmentFilter(shipmentPresentationStatus(shipment).semantic);
-      if (bucket) buckets[bucket].push(shipment);
+      if (bucket) buckets[bucket].push(item);
     }
     return buckets;
-  }, [shipments]);
+  }, [shipments, deleting, completing]);
   const visibleFilters = (Object.keys(shipmentFilters) as ShipmentFilter[])
     .filter((key) => key === "all" || groups[key].length > 0);
   const filter = visibleFilters.includes(selectedFilter) ? selectedFilter : "all";
-  const shownShipments = groups[filter];
+  const listItems = groups[filter];
+  const observableItems = useObservable(() => listItems);
+  useEffect(() => { observableItems.setValue(listItems); }, [listItems]);
+  const rowActions = useRef({ openShipment, confirmDelete, confirmComplete });
+  rowActions.current = { openShipment, confirmDelete, confirmComplete };
   const selected = selectedNavigationShipment(
     props.state,
     shipmentNavigationTarget,
@@ -501,23 +510,24 @@ export function HomePage(props: {
                 vehicleSize={81.6}
                 spacing={6}
                 labelFont={24}
+                deferArtwork
               />
             ),
           } : undefined}
         >
           {shipments.length ? (
             <Section listSectionSeparator={{ visibility: "hidden", edges: "top" }}>
-              {shownShipments.map((shipment) => (
+              <ForEach data={observableItems} builder={({ id, shipment, deleting, completing }) => (
                 <ShipmentRow
-                  key={shipment.identity.id}
+                  key={id}
                   shipment={shipment}
-                  onOpen={() => openShipment(shipment)}
-                  onDelete={() => void confirmDelete(shipment)}
-                  onComplete={() => void confirmComplete(shipment)}
+                  onOpen={() => rowActions.current.openShipment(shipment)}
+                  onDelete={() => void rowActions.current.confirmDelete(shipment)}
+                  onComplete={() => void rowActions.current.confirmComplete(shipment)}
                   deleteDisabled={deleting}
                   completeDisabled={completing}
                 />
-              ))}
+              )} />
             </Section>
           ) : null}
           {shipments.length ? (
@@ -569,32 +579,47 @@ function HomeSearchBar(props: {
   const queryingRef = useRef(false);
   const carrierDetectionSequenceRef = useRef(0);
   const carrierDetectionTimerRef = useRef<number | null>(null);
+  const carrierRequest = useRef<{ waybill: string; controller: AbortController } | null>(null);
   const carrierDetectionCoordinatorRef = useRef<
     ManualCarrierDetectionCoordinator | null
   >(null);
   if (!carrierDetectionCoordinatorRef.current) {
     carrierDetectionCoordinatorRef.current = new ManualCarrierDetectionCoordinator();
   }
+  const storedWaybills = useMemo(() => {
+    const index = new Map<string, Shipment[]>();
+    for (const shipment of props.state.shipments) {
+      const waybill = normalizeWaybill(displayWaybill(shipment));
+      if (!waybill) continue;
+      const candidates = index.get(waybill);
+      if (candidates) candidates.push(shipment);
+      else index.set(waybill, [shipment]);
+    }
+    return index;
+  }, [props.state.shipments]);
   const phoneTailValidation = validationNotice.includes("手机尾号");
+
+  function cancelCarrierDetection(keepWaybill?: string) {
+    carrierDetectionSequenceRef.current += 1;
+    if (carrierDetectionTimerRef.current !== null) clearTimeout(carrierDetectionTimerRef.current);
+    carrierDetectionTimerRef.current = null;
+    if (carrierRequest.current && carrierRequest.current.waybill !== keepWaybill) {
+      carrierRequest.current.controller.abort();
+      carrierRequest.current = null;
+    }
+  }
 
   useEffect(() => {
     return () => {
-      carrierDetectionSequenceRef.current += 1;
       shortcutGenerationRef.current += 1;
-      if (carrierDetectionTimerRef.current != null) {
-        clearTimeout(carrierDetectionTimerRef.current);
-      }
+      cancelCarrierDetection();
     };
   }, []);
 
   useEffect(() => {
     if (!props.shortcutLookup) return;
     shortcutGenerationRef.current = props.shortcutGeneration;
-    carrierDetectionSequenceRef.current += 1;
-    if (carrierDetectionTimerRef.current != null) {
-      clearTimeout(carrierDetectionTimerRef.current);
-      carrierDetectionTimerRef.current = null;
-    }
+    cancelCarrierDetection();
     waybillRef.current = props.shortcutLookup.waybill;
     phoneTailRef.current = "";
     setWaybill(props.shortcutLookup.waybill);
@@ -606,14 +631,10 @@ function HomeSearchBar(props: {
 
   function scheduleCarrierDetection(value: string) {
     const normalized = normalizeWaybill(value);
-    const sequence = carrierDetectionSequenceRef.current + 1;
-    carrierDetectionSequenceRef.current = sequence;
-    if (carrierDetectionTimerRef.current != null) {
-      clearTimeout(carrierDetectionTimerRef.current);
-      carrierDetectionTimerRef.current = null;
-    }
+    cancelCarrierDetection(normalized);
+    const sequence = carrierDetectionSequenceRef.current;
     // A waybill already in the list answers for itself, with no request and no cache to consult.
-    const stored = storedCarrierDetection(normalized, props.state.shipments);
+    const stored = storedCarrierDetection(normalized, storedWaybills.get(normalized) ?? []);
     setDetectedCarrier(stored);
     if (stored) return;
     // Recognition is a network question, so it waits for a number that looks finished rather than
@@ -622,7 +643,9 @@ function HomeSearchBar(props: {
 
     carrierDetectionTimerRef.current = setTimeout(() => {
       carrierDetectionTimerRef.current = null;
-      void carrierDetectionCoordinatorRef.current!.resolve(normalized)
+      const controller = carrierRequest.current?.controller ?? new AbortController();
+      carrierRequest.current = { waybill: normalized, controller };
+      void carrierDetectionCoordinatorRef.current!.resolve(normalized, { signal: controller.signal })
         .then((carrier) => {
           if (
             sequence === carrierDetectionSequenceRef.current &&
@@ -635,16 +658,15 @@ function HomeSearchBar(props: {
           if (sequence === carrierDetectionSequenceRef.current) {
             setDetectedCarrier(null);
           }
+        })
+        .finally(() => {
+          if (carrierRequest.current?.controller === controller) carrierRequest.current = null;
         });
     }, CARRIER_DETECTION_DEBOUNCE_MS);
   }
 
   function clearQueryInputs() {
-    carrierDetectionSequenceRef.current += 1;
-    if (carrierDetectionTimerRef.current != null) {
-      clearTimeout(carrierDetectionTimerRef.current);
-      carrierDetectionTimerRef.current = null;
-    }
+    cancelCarrierDetection();
     waybillRef.current = "";
     phoneTailRef.current = "";
     setWaybill("");
@@ -704,11 +726,9 @@ function HomeSearchBar(props: {
     }
     queryingRef.current = true;
     setQuerying(true);
-    carrierDetectionSequenceRef.current += 1;
-    if (carrierDetectionTimerRef.current != null) {
-      clearTimeout(carrierDetectionTimerRef.current);
-      carrierDetectionTimerRef.current = null;
-    }
+    // An explicit query takes ownership of the already-running detection for its waybill.
+    cancelCarrierDetection(submittedNormalized);
+    carrierRequest.current = null;
     setDetectedCarrier(null);
     // 统一 toast（AGENTS §11）：提交即短弹一次「正在查询」，不再常驻到查完。
     setNotice(EXPRESS_TOAST_COPY.manualQuerying);

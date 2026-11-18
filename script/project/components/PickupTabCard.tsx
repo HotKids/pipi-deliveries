@@ -1,10 +1,10 @@
 import {
   GeometryReader, Image, Rectangle, Script, TimelineCanvas, VStack, ZStack,
-  useEffect, useMemo, useRef, useState,
+  useEffect, useRef, useState,
 } from "scripting";
 import { PARCEL_ACTIVITY_PREVIEW, type ParcelActivityContent } from "../services/parcel-pickup";
 import { parcelCardArtwork } from "../services/parcel-card-appearance";
-import { bundledImage } from "./bundled-image";
+import { useBundledImage } from "./bundled-image";
 import { ParcelLiveActivityCard, type ParcelLiveActivityCardProps, PIPI_CARD } from "./ParcelLiveActivityCard";
 
 const ART_WIDTH = 100;
@@ -103,8 +103,8 @@ function PickupTabArtwork({ logoAsset, logoSize }: { logoAsset?: string; logoSiz
   const hasAppeared = useRef(false);
   const visible = useRef(false);
   useEffect(() => () => { visible.current = false; }, []);
-  const logo = useMemo(() => logoAsset ? bundledImage(logoAsset) ?? null : null, [logoAsset]);
-  const fallbackBox = atlas ? undefined : bundledImage("parcel-activity/box.png");
+  const logo = useBundledImage(logoAsset) ?? null;
+  const fallbackBox = useBundledImage(atlas ? undefined : "parcel-activity/box.png");
   return (
     <ZStack alignment="topLeading" frame={{ width: ART_WIDTH, height: ART_HEIGHT }}
       onAppear={() => {

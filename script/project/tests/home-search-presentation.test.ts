@@ -29,7 +29,7 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /function scheduleCarrierDetection\(value: string\)[\s\S]*?carrierDetectionCoordinatorRef\.current!\.resolve\(normalized\)[\s\S]*?setDetectedCarrier/,
+  /function scheduleCarrierDetection\(value: string\)[\s\S]*?carrierDetectionCoordinatorRef\.current!\.resolve\(normalized, \{ signal: controller\.signal \}\)[\s\S]*?setDetectedCarrier/,
   "typing must start the same durable recognition operation used by submission",
 );
 assert.match(
@@ -42,6 +42,8 @@ assert.match(
   /submittedCarrier = await carrierDetectionCoordinatorRef\.current!\.resolve\([\s\S]*?queryManualShipmentPreview\(\{[\s\S]*?presentation: submittedCarrier/,
   "submission must await or reuse recognition and pass it only as presentation",
 );
+assert.match(homeSource, /storedCarrierDetection\(normalized, storedWaybills\.get\(normalized\) \?\? \[\]\)/,
+  "typing only examines the indexed waybill's candidates");
 assert.match(
   homeSource,
   /const committed = commitManualShipmentPreview\(preview, Date\.now\(\), lookup\)[\s\S]*?props\.onStateChange\(committed\)[\s\S]*?manualPreviewNavigationTarget\(preview, committed\)/,
@@ -207,6 +209,19 @@ assert.equal(
   "submit after typing recognition settles must reuse the resolved carrier",
 );
 assert.deepEqual(resolvedSubmission, await debouncedDetection);
+
+const abandoned = new AbortController();
+let resolveAbandoned!: (value: Awaited<typeof resolvedSubmission>) => void;
+const abandonedDetection = new Promise<Awaited<typeof resolvedSubmission>>(resolve => { resolveAbandoned = resolve; });
+const freshResult = { courierCode: "ZTO", companyName: "中通快递", requiresPhoneTail: false };
+const cancellable = new ManualCarrierDetectionCoordinator(async (_waybill, options) =>
+  options?.signal === abandoned.signal ? abandonedDetection : freshResult);
+const superseded = cancellable.resolve("TEST123456", { signal: abandoned.signal });
+abandoned.abort();
+assert.deepEqual(await cancellable.resolve("TEST123456"), freshResult, "cancelled suggestions must not stall a retry");
+resolveAbandoned(resolvedSubmission);
+await superseded;
+assert.deepEqual(await cancellable.resolve("TEST123456"), freshResult, "late cancelled responses cannot poison the result cache");
 
 const blankPending: PendingManualQuery = {
   id: "interface5:SF123456",

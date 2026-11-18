@@ -18,7 +18,7 @@ const emptyGroupSource = await readFile(
 
 assert.match(
   emptyGroupSource,
-  /export function EmptyDeliveryStateGroup[\s\S]*?<VStack\s+alignment="center"\s+spacing=\{props\.spacing\}>[\s\S]*?<EmptyDeliveryVehicle size=\{props\.vehicleSize\} \/>[\s\S]*?<Text[\s\S]*?font=\{props\.labelFont\}[\s\S]*?fontWeight="medium"[\s\S]*?>\s*暂无快递\s*<\/Text>[\s\S]*?<\/VStack>/,
+  /export function EmptyDeliveryStateGroup[\s\S]*?<VStack\s+alignment="center"\s+spacing=\{props\.spacing\}>[\s\S]*?<EmptyDeliveryVehicle size=\{props\.vehicleSize\} deferArtwork=\{props\.deferArtwork\} \/>[\s\S]*?<Text[\s\S]*?font=\{props\.labelFont\}[\s\S]*?fontWeight="medium"[\s\S]*?>\s*暂无快递\s*<\/Text>[\s\S]*?<\/VStack>/,
   "vehicle and label must be one intrinsic empty-state group",
 );
 assert.match(
@@ -27,7 +27,7 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /visibleFilters\.length > 1 \? \([\s\S]*?<List[\s\S]*?refreshable=\{refresh\}[\s\S]*?frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}[\s\S]*?overlay=\{!shipments\.length \? \{\s*alignment: "center",\s*content: \(\s*<EmptyDeliveryStateGroup\s+vehicleSize=\{81\.6\}\s+spacing=\{6\}\s+labelFont=\{24\}\s*\/>\s*\),\s*\} : undefined\}/,
+  /visibleFilters\.length > 1 \? \([\s\S]*?<List[\s\S]*?refreshable=\{refresh\}[\s\S]*?frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}[\s\S]*?overlay=\{!shipments\.length \? \{\s*alignment: "center",\s*content: \(\s*<EmptyDeliveryStateGroup\s+vehicleSize=\{81\.6\}\s+spacing=\{6\}\s+labelFont=\{24\}\s+deferArtwork\s*\/>\s*\),\s*\} : undefined\}/,
   "the 1.2x home vehicle group must be centered in the flexible body below the segmented filter",
 );
 assert.equal((homeSource.match(/refreshable=\{refresh\}/g) ?? []).length, 1,
@@ -78,7 +78,7 @@ assert.doesNotMatch(
 );
 assert.match(
   homeSource,
-  /shownShipments\.map\([\s\S]*?<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 14 天内的快递\s*<\/Text>/,
+  /<ForEach[\s\S]*?<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 14 天内的快递\s*<\/Text>/,
   "the populated list still ends with the history note",
 );
 

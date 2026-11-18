@@ -57,18 +57,19 @@ function readReceipts(): Record<string, Receipt> | null {
   return null;
 }
 
-export function reconcileFengchaoReminders(state: AppState, deadline?: number): Promise<void> {
-  pendingRun = pendingRun.then(() => reconcileCurrent(state, deadline)).catch(() => {
+export function reconcileFengchaoReminders(state: AppState, deadline?: number,
+  shipments?: readonly Shipment[]): Promise<void> {
+  pendingRun = pendingRun.then(() => reconcileCurrent(state, deadline, shipments)).catch(() => {
     writeDiagnostic("notification.fengchao.reminder.failed", {}, "warning");
   });
   return pendingRun;
 }
 
-async function reconcileCurrent(state: AppState, deadline?: number): Promise<void> {
+async function reconcileCurrent(state: AppState, deadline?: number, shipments?: readonly Shipment[]): Promise<void> {
   const now = Date.now();
   if (deadlineExpired(deadline, now) || peekStateRevision() !== state.revision) return;
   const plans = new Map<string, Due>();
-  for (const parcel of visibleShipments(state)) {
+  for (const parcel of shipments ?? visibleShipments(state, now)) {
     const plan = fengchaoReminder(parcel, now);
     if (plan) plans.set(plan.key, plan);
   }

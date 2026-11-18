@@ -18,7 +18,7 @@ import { accountKuaidi100URL, kuaidi100MiniProgramURL, shunfengKuaidi100Fallback
 import { trackPhoneText } from "../services/track-phone-links";
 import type { AccountBinding, AppState, Shipment } from "../models";
 import { ProductThumbnail } from "../components/ProductThumbnail";
-import { bundledImage } from "../components/bundled-image";
+import { useBundledImage } from "../components/bundled-image";
 import { productImageCacheKey } from "../services/product-image-cache";
 import { SenderBadge } from "../components/SenderBadge";
 import { carrierDisplayName, courierHotline } from "../services/carrier-presentation";
@@ -54,7 +54,7 @@ import {
   timelineLatestTrackAt,
   waybillSuffix,
 } from "../services/status";
-import { loadState, recordShipmentDetailSelection, setShipmentNote, setShipmentProductName, visibleShipments } from "../services/storage";
+import { loadState, loadStateSnapshot, recordShipmentDetailSelection, setShipmentNote, setShipmentProductName, visibleShipments, type LoadedStateSnapshot } from "../services/storage";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { requestWidgetReload } from "../services/widgets";
 import { displayedPlatformFields, type CloudParcelMetadata } from "../services/platform-parcel-merge";
@@ -101,6 +101,7 @@ export function DetailPage(props: {
   const [notice, setNotice] = useState("");
   const [cloud, setCloud] = useState<{ scope: string; metadata: CloudParcelMetadata } | undefined>(undefined);
   const cloudAbortRef = useRef<AbortController | null>(null);
+  const ownerSnapshot = useRef<LoadedStateSnapshot | undefined>(undefined);
   const [openingExternalApp, setOpeningExternalApp] = useState(false);
   const externalAppAbortRef = useRef<AbortController | null>(null);
   const accountBindingRef = useRef(props.accountBinding);
@@ -115,7 +116,7 @@ export function DetailPage(props: {
     : ({ cainiao: "sources/cainiao", jingdong: "couriers/jdshopping", shunfeng: "sources/sfexpress" } as Record<string, string>)[
         String(shipment.identity.sourceProvider || "").toLowerCase()
       ];
-  const timelineSourceIcon = timelineSourceIconPath ? bundledImage(`${timelineSourceIconPath}.png`) : undefined;
+  const timelineSourceIcon = useBundledImage(timelineSourceIconPath ? `${timelineSourceIconPath}.png` : undefined);
   const timelineSourceName = shipment.identity.manuallyAdded
     ? "快递100"
     : ({ cainiao: "菜鸟", jingdong: "京东", shunfeng: "顺丰" } as Record<string, string>)[
@@ -355,6 +356,12 @@ export function DetailPage(props: {
   } : undefined;
   const pickup = parcelActivityContent(shipment);
 
+  function readOwnerState(): AppState {
+    const snapshot = loadStateSnapshot(Date.now(), ownerSnapshot.current);
+    ownerSnapshot.current = snapshot;
+    return snapshot.state;
+  }
+
   async function refreshCloudMetadata(): Promise<void> {
     if (!cloudScope) return;
     cloudAbortRef.current?.abort();
@@ -362,7 +369,7 @@ export function DetailPage(props: {
     cloudAbortRef.current = controller;
     try {
       const ownsWaybill = () => {
-        const matches = visibleShipments(loadState()).filter(item =>
+        const matches = visibleShipments(readOwnerState()).filter(item =>
           !unprojectedAccountOrder(item) && normalizeWaybill(displayWaybill(item)) === cloudWaybill);
         return matches.length === 1 && shipmentLifecycleKey(matches[0]) === cloudLifecycle;
       };
@@ -382,15 +389,15 @@ export function DetailPage(props: {
 
   useEffect(() => {
     if (!props.persistedShipment || !needsExtraFields) return;
-    let active = true;
+    const controller = new AbortController();
     const timer = setTimeout(() => {
-      void refreshParcelDetailFields(shipment, () => active).then((result) => {
+      void refreshParcelDetailFields(shipment, () => !controller.signal.aborted, readOwnerState, controller.signal).then((result) => {
         if (!result) return;
-        if (active) setShipment((current) => preferNewerShipment(current, result.shipment));
+        if (!controller.signal.aborted) setShipment((current) => preferNewerShipment(current, result.shipment));
         props.onStateChange?.(result.state, result.shipment);
       }).catch(() => {});
     }, 0);
-    return () => { active = false; clearTimeout(timer); };
+    return () => { controller.abort(); clearTimeout(timer); };
   }, [props.persistedShipment, waybill, cloudLifecycle, needsExtraFields]);
 
   useEffect(() => {
@@ -442,16 +449,15 @@ export function DetailPage(props: {
     const generation = refreshGenerationRef.current + 1;
     joinedJdPullRef.current = false;
     refreshGenerationRef.current = generation;
-    const previousImage = productImageRequestRef.current;
     refreshAbortRef.current?.abort();
+    productImageRequestRef.current = null;
     const controller = new AbortController();
     refreshAbortRef.current = controller;
     let imageShipment: Shipment | undefined;
     const task = (async () => {
       setNotice("");
       try {
-        // Cancelling the page's optional image request releases its lease before the necessary trajectory request.
-        if (previousImage) await previousImage;
+        // Aborting the optional request releases its lease synchronously.
         if (controller.signal.aborted || generation !== refreshGenerationRef.current) return;
         const result = props.refreshOnAppear === "manual_submit" &&
             props.manualPreview?.roundComplete === false &&
@@ -560,7 +566,7 @@ export function DetailPage(props: {
     const controller = new AbortController();
     const task = Promise.resolve().then(async () => {
       if (controller.signal.aborted || generation !== refreshGenerationRef.current ||
-          !shouldRequestDetailProductImage(current, () => loadState().bindings)) return;
+          !shouldRequestDetailProductImage(current, () => readOwnerState().bindings)) return;
       refreshAbortRef.current = controller;
       const result = await refreshShipmentById(current.identity.id, {
         trigger: "product_image", requestProductImage: true, signal: controller.signal,
