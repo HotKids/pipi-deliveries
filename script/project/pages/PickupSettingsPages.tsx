@@ -17,18 +17,19 @@ import { transientToast } from "../services/ui-feedback";
 export function ParcelShortcutPage() {
   return (
     <List navigationTitle="快捷指令" navigationBarTitleDisplayMode="inline">
-      <Section header={<Text>识别当前屏幕</Text>}>
+      <Section header={<Text>截屏识别</Text>}>
         <Link url="shortcuts://create-shortcut">
-          <Text>新建截屏识别指令</Text>
+          <Text>新建截屏指令</Text>
         </Link>
-        <Text>1. 添加「截屏」。</Text>
-        <Text>2. 在 Scripting 的动作列表中选「在 App 中运行意图」。选择「派派助手」，参数选上一步的截屏图像。</Text>
-        <Text>3. 将这条指令设为「轻点背面」或「操作按钮」，打开物流页面后运行。</Text>
+        <Text font="subheadline" lineSpacing={3}>1. 添加「截屏」，再添加 Scripting 的「在 App 中运行意图」。</Text>
+        <Text font="subheadline" lineSpacing={3}>2. 选择「派派助手」，将上一步的截屏图像设为参数。</Text>
+        <Text font="subheadline" lineSpacing={3}>3. 在物流页面运行这条指令。也可在系统设置中将它分配给「轻点背面」或「操作按钮」。</Text>
       </Section>
-      <Section header={<Text>识别短信</Text>}>
-        <Text>1. 在「快捷指令」的「自动化」中创建「信息」自动化，按发件人或内容筛选。</Text>
-        <Text>2. 添加 Scripting 的「运行意图脚本」，选择「派派助手」。参数选「快捷指令输入」的「内容」，正文为空时结束。</Text>
-        <Text>3. 打开派派助手确认运单查询，取件码和寄件码在「取件」查看。</Text>
+      <Section header={<Text>短信识别</Text>}>
+        <Text font="subheadline" lineSpacing={3}>1. 在「快捷指令」中创建「信息」自动化，按发件人或短信内容设置触发条件。</Text>
+        <Text font="subheadline" lineSpacing={3}>2. 取出「快捷指令输入」的「内容」。如果没有短信正文，结束自动化。</Text>
+        <Text font="subheadline" lineSpacing={3}>3. 添加 Scripting 的「运行意图脚本」，选择「派派助手」，将短信正文设为参数。</Text>
+        <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">打开派派助手确认运单查询。独立取件码和寄件码可在「取件」查看。</Text>
       </Section>
     </List>
   );
@@ -93,10 +94,10 @@ export function ParcelActivityPage({ cards, revision }: {
       </Section>
       <Section header={
         <HStack>
-          <Text>取件码预览</Text>
+          <Text>锁屏预览</Text>
           <Spacer />
           <Button
-            title={activity.previewing ? "结束预览" : "锁屏预览"}
+            title={activity.previewing ? "结束预览" : "开始预览"}
             buttonStyle="plain" foregroundStyle="systemBlue" disabled={busy}
             action={() => void change(activity.previewing ? stopParcelActivityPreview : startParcelActivityPreview)}
           />

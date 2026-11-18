@@ -130,7 +130,7 @@ export function PickupTabCard(props: {
   const location = props.locationText || data.location || (handoff ? "" : "请及时取件");
   const locationRow = location ? (
     <HStack spacing={4}>
-      <Image systemName={handoff ? "clock" : hasLocation ? "storefront" : "note.text"}
+      <Image systemName={handoff ? "calendar" : hasLocation ? "storefront" : "note.text"}
         font={13} foregroundStyle="#B8B3BB" />
       <Text font={13} foregroundStyle="#B8B3BB" lineLimit={1}>
         {location}

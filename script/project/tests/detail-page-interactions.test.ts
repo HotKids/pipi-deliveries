@@ -11,7 +11,7 @@ const detailPage = readFileSync(
 
 assert.ok(detailPage.includes("const result = await copyText(waybill);"));
 assert.equal(detailPage.includes("Required Permissions"), false);
-assert.ok(detailPage.includes('systemImage="doc.on.doc"'));
+assert.doesNotMatch(detailPage, /systemImage="(?:doc\.on\.doc|square\.and\.pencil)"/);
 // 官方电话走系统拨号；打不开按三端统一表提示（AGENTS §11 第 16 行）。
 assert.ok(detailPage.includes("await dialPhone(hotline)"));
 assert.ok(detailPage.includes("Safari.openURL(`tel:${phone}`)"));
@@ -39,22 +39,21 @@ const waybillText = waybillRow.slice(
 assert.equal(
   waybillText.includes('maxWidth: "infinity"'),
   false,
-  "the waybill text must keep its intrinsic width so copy follows immediately",
+  "the waybill text keeps its intrinsic width",
 );
 // 其余裁决 35（用户 2026-09-27）：承运商为空时详情页头写「快递」（old shape: `{shipment.identity.companyName}：`).
 assert.ok(
   waybillRow.includes(
-    '<Text font={15}>{carrierDisplayName(shipment.identity.companyName)}：</Text>',
+    '<Text font="subheadline">{carrierDisplayName(shipment.identity.companyName)}：</Text>',
   ),
 );
-assert.ok(waybillRow.includes('<HStack alignment="center" spacing={5}>'));
 assert.ok(waybillRow.includes("{waybill}"));
 assert.equal(
   waybillRow.includes("{carrierDisplayName(shipment.identity.companyName)}：{waybill}"),
   false,
   "the carrier label and waybill must use separate zero-spacing text nodes",
 );
-assert.ok(waybillRow.includes("action={copyWaybill}"));
+assert.ok(waybillText.includes("onTapGesture={copyWaybill}"));
 assert.ok(waybillRow.includes("lineLimit={1}"));
 assert.ok(waybillRow.includes("minScaleFactor={0.65}"));
 assert.ok(waybillRow.includes("allowsTightening={true}"));
@@ -191,23 +190,20 @@ const headerSection = detailPage.match(/<Section>\s*([\s\S]*?)\s*<\/Section>/)?.
 assert.match(detailPage, /readCloudParcelMetadata\(cloudWaybill, controller\.signal\)/);
 assert.match(detailPage, /useEffect\(\(\) => \{\s*void refreshCloudMetadata\(\);[\s\S]*?\}, \[cloudScope\]\);/);
 assert.match(detailPage, /refreshable=\{async \(\) => \{ await Promise\.all\(\[refresh\(true\), refreshCloudMetadata\(\)\]\); \}\}/);
-assert.match(
-  headerSection,
-  /^<VStack\b[^>]*>[\s\S]*?官方电话：[\s\S]*?<Divider\s*\/>[\s\S]*?编辑商品名[\s\S]*?<\/VStack>$/,
-  "the separator between the carrier and product name must be inside the same list row",
-);
-assert.match(headerSection, /listRowInsets=\{showParcelInfo \? \{ top: 12, bottom: 0, leading: 20, trailing: 20 \} : undefined\}/);
-assert.match(headerSection, /<Divider\s*\/>\s*<VStack[^>]*padding=\{\{ vertical: 12 \}\}/,
-  "the parcel metadata sits between equal top and bottom padding");
-assert.match(headerSection, /官方电话：[\s\S]*?<Divider\s*\/>[\s\S]*?\{platformFields\.estimate\}[\s\S]*?\{platformFields\.title \|\| "添加商品名"\}/,
-  "the delivery estimate belongs in the carrier summary immediately above the product name");
+assert.match(headerSection, /官方电话：/);
+assert.doesNotMatch(headerSection, /<Divider|platformFields/);
+assert.match(detailPage, /const showParcelInfo = Boolean\(platformFields\.estimate \|\| platformFields\.title \|\| note\)/);
+const parcelInfo = detailPage.match(/\{showParcelInfo \? \(\s*<Section>\s*([\s\S]*?)<\/Section>/)?.[1] ?? "";
+assert.match(parcelInfo, /^<VStack\b[^>]*vertical: 8/);
+assert.match(parcelInfo, /\{platformFields\.estimate\}[\s\S]*?\{platformFields\.title\}[\s\S]*?\{note\}/);
 assert.equal((detailPage.match(/\{platformFields\.estimate\}/g) ?? []).length, 1,
   "the delivery estimate has a single presentation");
 assert.match(detailPage, /\{pickup \? \(\s*<Section>[\s\S]*?取件码 \{pickup\.code\}/,
   "pickup-only details remain available when the parcel has no estimate");
-assert.match(headerSection, /<DetailHeaderAction title="复制单号" systemImage="doc\.on\.doc"[\s\S]*?<DetailHeaderAction title="编辑商品名" systemImage="square\.and\.pencil"/,
-  "the two header actions share an icon-only presentation");
-assert.match(detailPage, /function DetailHeaderAction[\s\S]*?<Button[\s\S]*?labelStyle="iconOnly"[\s\S]*?font=\{15\} foregroundStyle="secondaryLabel"/);
+for (const noteTarget of [headerSection, parcelInfo]) {
+  assert.match(noteTarget, /onTapGesture=\{props\.persistedShipment \? \(\) => void editNote\(\) : undefined\}/);
+  assert.match(noteTarget, /contextMenu=\{productNameMenu\}/);
+}
 const timelineRows = detailPage.match(/displayTracks\.map\([\s\S]*?\n          \}\)/)?.[0] ?? "";
 assert.match(timelineRows, /padding=\{\{ vertical: 5 \}\}[\s\S]*?systemName=\{index === 0 \? "circle\.fill" : "circle"\}/);
 assert.doesNotMatch(timelineRows, /overlay=|listRowSeparator="hidden"/,
