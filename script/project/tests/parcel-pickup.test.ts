@@ -556,6 +556,10 @@ assert.match(floatingButtonSource, /<Label title=\{title\} systemImage=\{symbol\
   "both floating actions use a symbol-only label");
 assert.match(pickupSource, /onLocationTap=\{canSwitch \? \(\) => setShowAddress\(!showAddress\)/);
 const stationIdentitySource = readFileSync(new URL("../pages/StationIdentityPage.tsx", import.meta.url), "utf8");
+assert.match(stationIdentitySource,
+  /<Text foregroundStyle="accentColor" frame=\{\{ maxWidth: "infinity", alignment: "center" \}\} contentShape="rect">\s*在\{providerName\}内打开/,
+  "the provider app action centers its label across the form row");
+assert.doesNotMatch(stationIdentitySource, /在网页打开|在拼多多 App 中打开/);
 assert.match(stationIdentitySource, /后自动刷新` : "正在自动刷新…"/);
 assert.match(stationIdentitySource, />点击条形码或二维码可放大刷新<\/Text>/);
 assert.match(stationIdentitySource, />点击可缩小<\/Text>/);
