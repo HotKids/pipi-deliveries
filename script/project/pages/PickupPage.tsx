@@ -1,7 +1,7 @@
 import { Button, HStack, List, Navigation, NavigationStack, Section, Text, VStack, useEffect, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
-import { rootPageNavigation, ScrollingRootTitle } from "../components/RootPageHeader";
+import { RootPageHeader, rootPageScroll } from "../components/RootPageHeader";
 import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import { pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
@@ -188,12 +188,13 @@ export function PickupPage({
 
   return (
     <NavigationStack>
-      <List
+      <VStack navigationBarVisibility="hidden"
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        {...rootPageNavigation("取件", () => dismiss(), headerCollapsed)}
+        safeAreaInset={{ top: { spacing: 0,
+          content: <RootPageHeader title="取件" close={() => dismiss()} collapsed={headerCollapsed} />,
+        } }}
         onAppear={() => setVisible(true)}
         onDisappear={() => setVisible(false)}
-        contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
         overlay={{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen={openIdentity} /> }}
         navigationDestination={{
           isPresented: Boolean(identity || selected),
@@ -220,14 +221,18 @@ export function PickupPage({
           ) : <Text>物流详情</Text>,
         }}
       >
-        <ScrollingRootTitle title="取件" onCollapsed={setHeaderCollapsed} />
-        {sections.map(({ key, label, items, preview }) => (
-          <Section key={key} header={<Text>{label}</Text>}>
-            {items.map(cardRow)}
-            {preview ? <ParcelActivityPreviewCard animate /> : null}
-          </Section>
-        ))}
-      </List>
+        <List {...rootPageScroll(setHeaderCollapsed)}
+          frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+          contentMargins={{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" }}
+        >
+          {sections.map(({ key, label, items, preview }) => (
+            <Section key={key} header={<Text>{label}</Text>}>
+              {items.map(cardRow)}
+              {preview ? <ParcelActivityPreviewCard animate /> : null}
+            </Section>
+          ))}
+        </List>
+      </VStack>
     </NavigationStack>
   );
 }
