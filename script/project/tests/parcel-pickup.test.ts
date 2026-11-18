@@ -542,19 +542,15 @@ assert.match(appSource, /pickupCards\.length > 0 \|\| pickupPreview/);
 assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title="取件"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="archivebox\.fill"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
 assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate/);
-assert.match(pickupSource, /<NavigationStack>\s*<List[^>]*rootPageNavigation\("取件", \(\) => dismiss\(\), headerCollapsed\)/);
-assert.match(settingsSource, /<NavigationStack>\s*<List[^>]*rootPageNavigation\("设置", \(\) => dismiss\(\), headerCollapsed\)/);
-assert.match(pickupSource, /<ScrollingRootTitle title="取件" onCollapsed=\{setHeaderCollapsed\}/);
-assert.match(settingsSource, /<ScrollingRootTitle title="设置" onCollapsed=\{setHeaderCollapsed\}/);
-assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=|navigationBarVisibility="hidden"/,
-  "the native navigation bar replaces the fixed title inset");
+assert.match(pickupSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootPageHeader title="取件"/);
+assert.match(settingsSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootPageHeader title="设置"/);
+assert.match(pickupSource, /<List \{\.\.\.rootPageScroll\(setHeaderCollapsed\)\}/);
+assert.match(settingsSource, /<List \{\.\.\.rootPageScroll\(setHeaderCollapsed\)\}/);
+assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|取件)"/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-assert.match(rootHeader, /onScrollVisibilityChange: \{ threshold: 0\.5, onChanged: \(visible: boolean\) => onCollapsed\(!visible\) \}/);
-assert.match(rootHeader, /navigationBarTitleDisplayMode: "inline"/);
-assert.match(rootHeader, /scrollEdgeEffectHidden: "top"[\s\S]*?toolbarBackground: \{ style: background/);
-assert.match(rootHeader, /\{collapsed \? <ToolbarItem placement="title"[^>]*>\s*<Text[^>]*\{\.\.\.tabCapsuleSurface\(\)\}/,
-  "the common scroll state drives the compact title with the shared capsule material");
-assert.match(rootHeader, /<ToolbarItem placement="topBarTrailing"[^>]*>\s*<Button title="关闭" systemImage="xmark"/);
+assert.match(rootHeader, /<HStack[^>]*>\s*\{collapsed \? <Text[^>]*\{\.\.\.tabCapsuleSurface\(\)\}[^>]*>\{title\}<\/Text> :\s*<Text font="largeTitle"[^>]*>\{title\}<\/Text>\}\s*<Spacer \/>\s*<Button title="关闭" systemImage="xmark"/,
+  "both title sizes occupy the same leading slot with the close button trailing");
+assert.doesNotMatch(rootHeader, /navigationTitle|ToolbarItem/);
 assert.match(rootHeader, /labelStyle="iconOnly"[\s\S]*?width: NAVIGATION_CONTROL_HEIGHT, height: NAVIGATION_CONTROL_HEIGHT/);
 assert.match(pickupSource, /overlay=\{\{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen=\{openIdentity\}/,
   "the identity popover stays anchored to the bottom of the scrolling viewport");

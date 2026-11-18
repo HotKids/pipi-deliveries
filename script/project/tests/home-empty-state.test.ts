@@ -51,12 +51,13 @@ const next = refresh();
 assert.equal(beginCount, 2, "a new gesture still starts another pull");
 finishPull();
 await next;
-assert.match(homeSource, /<NavigationStack>\s*<List key="shipments"[^>]*rootPageNavigation\("快递", \(\) => dismiss\(\), headerCollapsed, "systemBackground"\)/,
-  "the Home navigation bar follows the same List that owns scrolling and refresh");
-assert.match(homeSource, /<ScrollingRootTitle title="快递" onCollapsed=\{setHeaderCollapsed\}/,
-  "the actual scrolling title drives the compact toolbar");
-assert.match(homeSource, /safeAreaInset=\{headerCollapsed && showListAccessories \? \{ top: \{ spacing: 0, content: listAccessories \} \} : undefined\}/,
-  "collapsed accessories appear immediately under the compact navigation title");
+assert.match(homeSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootPageHeader title="快递"/);
+assert.match(homeSource, /<List key="shipments" listStyle="plain" refreshable=\{refresh\}[^]*?rootPageScroll\(setHeaderCollapsed\)/);
+assert.match(homeSource, /overlay=\{\{\s*alignment: "topLeading",[\s\S]*?\{compactFilters\}/);
+assert.match(homeSource, /\{showListAccessories \? \(/,
+  "the accessories keep their list row when the title collapses");
+assert.doesNotMatch(homeSource, /safeAreaInset=\{headerCollapsed|!headerCollapsed && showListAccessories/,
+  "scrolling cannot replace the list viewport inset or insert a row");
 assert.match(homeSource, /\{!headerCollapsed \? <VStack padding=\{TAB_FAB_PADDING\}>\s*<TabFloatingActionButton title="查询"/);
 const nativeHeader = await readFile(resolve(projectDir, "components/RootPageHeader.tsx"), "utf8");
 assert.match(nativeHeader, /ROOT_TITLE_CAPSULE_WIDTH = 68;/);
@@ -64,8 +65,22 @@ assert.match(nativeHeader, /<Text font="headline" foregroundStyle="label"[\s\S]*
   "collapsed titles use the native headline size in a compact glass capsule");
 assert.match(nativeHeader, /width: ROOT_TITLE_CAPSULE_WIDTH, height: NAVIGATION_CONTROL_HEIGHT/);
 assert.match(nativeHeader, /width: NAVIGATION_CONTROL_HEIGHT, height: NAVIGATION_CONTROL_HEIGHT/);
-assert.match(nativeHeader, /visibility: collapsed \? "hidden"/,
-  "the compact glass title can sample the content behind it");
+assert.match(nativeHeader, /<HStack frame=\{\{ maxWidth: "infinity", height: NAVIGATION_CONTROL_HEIGHT \}\}/);
+const scrollBinding = nativeHeader.match(/^export function rootPageScroll\([\s\S]*?^\}/m)?.[0];
+assert.ok(scrollBinding);
+const rootPageScroll = new Function("COLLAPSE_DISTANCE",
+  stripTypeScriptTypes(scrollBinding.replace(/^export /, "")) + "\nreturn rootPageScroll;")(22);
+const collapsedStates: boolean[] = [];
+const { onChanged } = rootPageScroll((collapsed: boolean) => collapsedStates.push(collapsed)).onScrollGeometryChange;
+const scrollGeometry = (distance: number, inset: number) => ({
+  contentOffset: { y: distance - inset },
+  contentInsets: { top: inset },
+});
+const samples = [scrollGeometry(0, 68), scrollGeometry(-10, 68), scrollGeometry(8, 68),
+  scrollGeometry(28, 68), scrollGeometry(45, 68), scrollGeometry(45, 80),
+  scrollGeometry(8, 80), scrollGeometry(0, 80)];
+for (let idx = 1; idx < samples.length; idx++) onChanged(samples[idx - 1], samples[idx]);
+assert.deepEqual(collapsedStates, [true, false], "only crossing the normalized scroll threshold updates the header");
 assert.match(homeSource, /contentMargins=\{\{ edges: "bottom", insets: TAB_FAB_SCROLL_INSET, placement: "scrollContent" \}\}/);
 const appSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
 assert.match(appSource, /subscribeRefreshState\(applyState\)[\s\S]*?refreshAllShipments\(\)[\s\S]*?\}, \[hasState\]\);/,
@@ -74,8 +89,8 @@ assert.doesNotMatch(homeSource, /\brefreshAllShipments\(\)/,
   "reopening the list never starts another launch refresh");
 assert.match(homeSource, /<Section listSectionSeparator=\{\{ visibility: "hidden", edges: "top" \}\}>/,
   "the first row has no section separator under any filter");
-assert.doesNotMatch(homeSource, /<RootPageHeader|systemName="chevron\.left"/,
-  "the Home root has no second title or back button");
+assert.equal(homeSource.match(/<RootPageHeader\b/g)?.length, 1);
+assert.doesNotMatch(homeSource, /navigationTitle="快递"|systemName="chevron\.left"/);
 assert.doesNotMatch(
   homeSource,
   /minHeight: 420|padding=\{\{ bottom: 72 \}\}/,
@@ -133,11 +148,12 @@ assert.match(searchSheet, /autoFocusSearch=\{props\.autoFocusSearch\}/,
   "only the existing focus and shortcut entry points should open the keyboard automatically");
 assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(selected\)/,
   "the main navigation destination presents shipment details");
-const compactFilters = homeSource.match(/\{visibleFilters\.length > 1 && headerCollapsed \? \(([\s\S]*?)\) : visibleFilters/)?.[1] ?? "";
+const compactFilters = homeSource.match(/const compactFilters = \(([\s\S]*?)\n  \);/)?.[1] ?? "";
 assert.match(compactFilters, /<VStack spacing=\{4\}[\s\S]*?visibleFilters\.map[\s\S]*?frame=\{\{ width: ROOT_TITLE_CAPSULE_WIDTH, minHeight: 36 \}\}/,
   "each compact filter is stacked at the same width as the title");
 assert.match(compactFilters, /\{\.\.\.tabCapsuleSurface\(true\)\}/);
-const filterBar = homeSource.match(/: visibleFilters\.length > 1 \? \(([\s\S]*?)\) : null\}/)?.[1] ?? "";
+assert.match(compactFilters, /padding=\{\{ leading: ROOT_HEADER_HORIZONTAL_INSET,/);
+const filterBar = homeSource.match(/\{visibleFilters\.length > 1 \? \(([\s\S]*?)\) : null\}/)?.[1] ?? "";
 assert.match(filterBar, /<Picker title="筛选" value=\{filter\} onChanged=\{selectFilter\} pickerStyle="segmented"/,
   "the platform segmented control owns the selection animation");
 assert.match(filterBar, /<Text key=\{key\} tag=\{key\} font=\{14\} monospacedDigit\s+contentTransition="numericText"\s+animation=\{\{ animation: Animation\.snappy\(\{ duration: 0\.32 \}\), value: groups\[key\]\.length \}\}>\s*\{\x60\$\{shipmentFilters\[key\]\} \$\{groups\[key\]\.length\}\x60\}/,

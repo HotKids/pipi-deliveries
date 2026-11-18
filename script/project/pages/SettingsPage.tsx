@@ -16,7 +16,7 @@ import {
   useRef,
   useState,
 } from "scripting";
-import { rootPageNavigation, ScrollingRootTitle } from "../components/RootPageHeader";
+import { RootPageHeader, rootPageScroll } from "../components/RootPageHeader";
 import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon";
 import type { AppState } from "../models";
 import { sendAccountCode } from "../services/account-sync";
@@ -329,8 +329,11 @@ export function SettingsPage(props: {
 
   return (
     <NavigationStack>
-      <List
-        {...rootPageNavigation("设置", () => dismiss(), headerCollapsed)}
+      <VStack navigationBarVisibility="hidden"
+        frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+        safeAreaInset={{ top: { spacing: 0,
+          content: <RootPageHeader title="设置" close={() => dismiss()} collapsed={headerCollapsed} />,
+        } }}
         onAppear={() => setOverviewVisible(true)}
         onDisappear={() => setOverviewVisible(false)}
         toast={transientToast(notice, setNotice)}
@@ -395,197 +398,198 @@ export function SettingsPage(props: {
           ),
         }}
       >
-        <ScrollingRootTitle title="设置" onCollapsed={setHeaderCollapsed} />
-        <Section header={<Text>同步</Text>}>
-          <Button buttonStyle="plain" action={openPhoneManager}>
-            <HStack
-              spacing={12}
-              padding={{ vertical: 5 }}
-              frame={{ minHeight: 44, maxWidth: "infinity" }}
-              contentShape="rect"
-            >
-              <SettingsRowIcon systemName="phone" backgroundColor={SETTINGS_ORANGE} />
-              <Text>管理账号</Text>
-              <Spacer />
-              <Text foregroundStyle="secondaryLabel" monospacedDigit>
-                {boundAccountCount ? `已绑定 ${boundAccountCount}` : "未绑定"}
-              </Text>
-              <SettingsAccessoryIcon systemName="chevron.right" />
-            </HStack>
-          </Button>
-        </Section>
-
-        <Section header={<Text>通知</Text>}>
-          <Button
-            buttonStyle="plain"
-            action={() => setDestination("notifications")}
-          >
-            <HStack
-              spacing={12}
-              padding={{ vertical: 5 }}
-              frame={{ minHeight: 44, maxWidth: "infinity" }}
-              contentShape="rect"
-            >
-              <SettingsRowIcon systemName="bell" backgroundColor={SETTINGS_BLUE} />
-              <Text>通知管理</Text>
-              <Spacer />
-              <Text foregroundStyle="secondaryLabel" monospacedDigit>
-                {enabledNotificationCount === undefined ? "" : enabledNotificationCount
-                  ? `已开启 ${enabledNotificationCount}`
-                  : "已关闭"}
-              </Text>
-              <SettingsAccessoryIcon systemName="chevron.right" />
-            </HStack>
-          </Button>
-        </Section>
-
-        <Section header={<Text>更多</Text>}>
-          <Button buttonStyle="plain" action={() => setDestination("shortcuts")}>
-            <HStack
-              spacing={12}
-              padding={{ vertical: 5 }}
-              frame={{ minHeight: 44, maxWidth: "infinity" }}
-              contentShape="rect"
-            >
-              <SettingsRowIcon systemName="square.on.square" backgroundColor={SETTINGS_ORANGE} />
-              <Text>快捷指令</Text>
-              <Spacer />
-              <SettingsAccessoryIcon systemName="chevron.right" />
-            </HStack>
-          </Button>
-          <Button buttonStyle="plain" action={() => setDestination("activity")}>
-            <HStack
-              spacing={12}
-              padding={{ vertical: 5 }}
-              frame={{ minHeight: 44, maxWidth: "infinity" }}
-              contentShape="rect"
-            >
-              <SettingsRowIcon systemName="rectangle.inset.filled.badge.record" backgroundColor={SETTINGS_BLUE} />
-              <Text>实时活动</Text>
-              <Spacer />
-              <SettingsAccessoryIcon systemName="chevron.right" />
-            </HStack>
-          </Button>
-        </Section>
-
-        <Section header={<Text>支持</Text>}>
-          <Button
-            buttonStyle="plain"
-            action={() => setDestination("diagnostics")}
-          >
-            <HStack
-              spacing={12}
-              padding={{ vertical: 5 }}
-              frame={{ minHeight: 44, maxWidth: "infinity" }}
-              contentShape="rect"
-            >
-              <SettingsRowIcon systemName="doc.text.magnifyingglass" backgroundColor={SETTINGS_GRAY} />
-              <Text>诊断日志</Text>
-              <Spacer />
-              {diagnosticCount ? (
-                <Text foregroundStyle="secondaryLabel" monospacedDigit>
-                  {diagnosticCount}
-                </Text>
-              ) : null}
-              <SettingsAccessoryIcon systemName="chevron.right" />
-            </HStack>
-          </Button>
-          <Button
-            buttonStyle="plain"
-            action={() => setDestination("privacy")}
-          >
-            <HStack
-              spacing={12}
-              padding={{ vertical: 5 }}
-              frame={{ minHeight: 44, maxWidth: "infinity" }}
-              contentShape="rect"
-            >
-              <SettingsRowIcon systemName="hand.raised" backgroundColor="#34A853" />
-              <Text>隐私政策</Text>
-              <Spacer />
-              <SettingsAccessoryIcon systemName="chevron.right" />
-            </HStack>
-          </Button>
-        </Section>
-
-        <Section
-          header={<Text>授权</Text>}
-          footer={
-            <VStack alignment="leading" spacing={4}>
-              {authorizationNotice ? (
-                <Text font="footnote" lineSpacing={3} foregroundStyle="systemRed">
-                  {authorizationNotice}
-                </Text>
-              ) : null}
-              <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">
-                Access Key 用于激活脚本使用权限，并授权同步快递信息。请妥善保管，勿与他人分享。
-              </Text>
-            </VStack>
-          }
-        >
-          <HStack spacing={12} frame={{ minHeight: 44 }}>
-            <SettingsRowIcon systemName="key" backgroundColor={SETTINGS_ORANGE} />
-            <SecureField
-              title="Access Key"
-              value={token}
-              onChanged={(value) => {
-                setToken(value);
-                setNotice("");
-                setAuthorizationNotice("");
-              }}
-              prompt={authorization ? authorizationPrompt(authorization) : "Access Key"}
-              frame={{ maxWidth: "infinity" }}
-            />
-            {token.trim() ? (
-              <Button
-                title={configured ? "更新" : "保存"}
-                action={saveToken}
-                buttonStyle="plain"
-              />
-            ) : configured ? (
-              <Button
-                action={manageConfiguredToken}
-                buttonStyle="plain"
+        <List {...rootPageScroll(setHeaderCollapsed)} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
+          <Section header={<Text>同步</Text>}>
+            <Button buttonStyle="plain" action={openPhoneManager}>
+              <HStack
+                spacing={12}
+                padding={{ vertical: 5 }}
+                frame={{ minHeight: 44, maxWidth: "infinity" }}
+                contentShape="rect"
               >
+                <SettingsRowIcon systemName="phone" backgroundColor={SETTINGS_ORANGE} />
+                <Text>管理账号</Text>
+                <Spacer />
+                <Text foregroundStyle="secondaryLabel" monospacedDigit>
+                  {boundAccountCount ? `已绑定 ${boundAccountCount}` : "未绑定"}
+                </Text>
+                <SettingsAccessoryIcon systemName="chevron.right" />
+              </HStack>
+            </Button>
+          </Section>
+
+          <Section header={<Text>通知</Text>}>
+            <Button
+              buttonStyle="plain"
+              action={() => setDestination("notifications")}
+            >
+              <HStack
+                spacing={12}
+                padding={{ vertical: 5 }}
+                frame={{ minHeight: 44, maxWidth: "infinity" }}
+                contentShape="rect"
+              >
+                <SettingsRowIcon systemName="bell" backgroundColor={SETTINGS_BLUE} />
+                <Text>通知管理</Text>
+                <Spacer />
+                <Text foregroundStyle="secondaryLabel" monospacedDigit>
+                  {enabledNotificationCount === undefined ? "" : enabledNotificationCount
+                    ? `已开启 ${enabledNotificationCount}`
+                    : "已关闭"}
+                </Text>
+                <SettingsAccessoryIcon systemName="chevron.right" />
+              </HStack>
+            </Button>
+          </Section>
+
+          <Section header={<Text>更多</Text>}>
+            <Button buttonStyle="plain" action={() => setDestination("shortcuts")}>
+              <HStack
+                spacing={12}
+                padding={{ vertical: 5 }}
+                frame={{ minHeight: 44, maxWidth: "infinity" }}
+                contentShape="rect"
+              >
+                <SettingsRowIcon systemName="square.on.square" backgroundColor={SETTINGS_ORANGE} />
+                <Text>快捷指令</Text>
+                <Spacer />
+                <SettingsAccessoryIcon systemName="chevron.right" />
+              </HStack>
+            </Button>
+            <Button buttonStyle="plain" action={() => setDestination("activity")}>
+              <HStack
+                spacing={12}
+                padding={{ vertical: 5 }}
+                frame={{ minHeight: 44, maxWidth: "infinity" }}
+                contentShape="rect"
+              >
+                <SettingsRowIcon systemName="rectangle.inset.filled.badge.record" backgroundColor={SETTINGS_BLUE} />
+                <Text>实时活动</Text>
+                <Spacer />
+                <SettingsAccessoryIcon systemName="chevron.right" />
+              </HStack>
+            </Button>
+          </Section>
+
+          <Section header={<Text>支持</Text>}>
+            <Button
+              buttonStyle="plain"
+              action={() => setDestination("diagnostics")}
+            >
+              <HStack
+                spacing={12}
+                padding={{ vertical: 5 }}
+                frame={{ minHeight: 44, maxWidth: "infinity" }}
+                contentShape="rect"
+              >
+                <SettingsRowIcon systemName="doc.text.magnifyingglass" backgroundColor={SETTINGS_GRAY} />
+                <Text>诊断日志</Text>
+                <Spacer />
+                {diagnosticCount ? (
+                  <Text foregroundStyle="secondaryLabel" monospacedDigit>
+                    {diagnosticCount}
+                  </Text>
+                ) : null}
+                <SettingsAccessoryIcon systemName="chevron.right" />
+              </HStack>
+            </Button>
+            <Button
+              buttonStyle="plain"
+              action={() => setDestination("privacy")}
+            >
+              <HStack
+                spacing={12}
+                padding={{ vertical: 5 }}
+                frame={{ minHeight: 44, maxWidth: "infinity" }}
+                contentShape="rect"
+              >
+                <SettingsRowIcon systemName="hand.raised" backgroundColor="#34A853" />
+                <Text>隐私政策</Text>
+                <Spacer />
+                <SettingsAccessoryIcon systemName="chevron.right" />
+              </HStack>
+            </Button>
+          </Section>
+
+          <Section
+            header={<Text>授权</Text>}
+            footer={
+              <VStack alignment="leading" spacing={4}>
+                {authorizationNotice ? (
+                  <Text font="footnote" lineSpacing={3} foregroundStyle="systemRed">
+                    {authorizationNotice}
+                  </Text>
+                ) : null}
+                <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">
+                  Access Key 用于激活脚本使用权限，并授权同步快递信息。请妥善保管，勿与他人分享。
+                </Text>
+              </VStack>
+            }
+          >
+            <HStack spacing={12} frame={{ minHeight: 44 }}>
+              <SettingsRowIcon systemName="key" backgroundColor={SETTINGS_ORANGE} />
+              <SecureField
+                title="Access Key"
+                value={token}
+                onChanged={(value) => {
+                  setToken(value);
+                  setNotice("");
+                  setAuthorizationNotice("");
+                }}
+                prompt={authorization ? authorizationPrompt(authorization) : "Access Key"}
+                frame={{ maxWidth: "infinity" }}
+              />
+              {token.trim() ? (
+                <Button
+                  title={configured ? "更新" : "保存"}
+                  action={saveToken}
+                  buttonStyle="plain"
+                />
+              ) : configured ? (
+                <Button
+                  action={manageConfiguredToken}
+                  buttonStyle="plain"
+                >
+                  <Text foregroundStyle="secondaryLabel" monospacedDigit>
+                    {authorizationLabel(authorization)}
+                  </Text>
+                </Button>
+              ) : authorization ? (
                 <Text foregroundStyle="secondaryLabel" monospacedDigit>
                   {authorizationLabel(authorization)}
                 </Text>
-              </Button>
-            ) : authorization ? (
-              <Text foregroundStyle="secondaryLabel" monospacedDigit>
-                {authorizationLabel(authorization)}
-              </Text>
-            ) : null}
-          </HStack>
-        </Section>
+              ) : null}
+            </HStack>
+          </Section>
 
-        <Section header={<Text>关于</Text>}>
-          <HStack
-            spacing={12}
-            padding={{ vertical: 5 }}
-            frame={{ minHeight: 44, maxWidth: "infinity" }}
-          >
-            <SettingsAppIcon />
-            <Text>派派助手</Text>
-            <Spacer />
-            <Text foregroundStyle="secondaryLabel">{SCRIPT_VERSION}</Text>
-          </HStack>
-          <Link url={PROJECT_URL}>
+          <Section header={<Text>关于</Text>}>
             <HStack
               spacing={12}
               padding={{ vertical: 5 }}
               frame={{ minHeight: 44, maxWidth: "infinity" }}
-              contentShape="rect"
             >
-              <SettingsRowIcon systemName="link" backgroundColor={SETTINGS_GRAY} />
-              <Text foregroundStyle="label">项目地址</Text>
+              <SettingsAppIcon />
+              <Text>派派助手</Text>
               <Spacer />
-              <Text foregroundStyle="secondaryLabel">GitHub</Text>
-              <SettingsAccessoryIcon systemName="arrow.up.right" />
+              <Text foregroundStyle="secondaryLabel">{SCRIPT_VERSION}</Text>
             </HStack>
-          </Link>
-        </Section>
-      </List>
+            <Link url={PROJECT_URL}>
+              <HStack
+                spacing={12}
+                padding={{ vertical: 5 }}
+                frame={{ minHeight: 44, maxWidth: "infinity" }}
+                contentShape="rect"
+              >
+                <SettingsRowIcon systemName="link" backgroundColor={SETTINGS_GRAY} />
+                <Text foregroundStyle="label">项目地址</Text>
+                <Spacer />
+                <Text foregroundStyle="secondaryLabel">GitHub</Text>
+                <SettingsAccessoryIcon systemName="arrow.up.right" />
+              </HStack>
+            </Link>
+          </Section>
+        </List>
+      </VStack>
     </NavigationStack>
   );
 }
