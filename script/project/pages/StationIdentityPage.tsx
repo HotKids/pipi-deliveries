@@ -377,7 +377,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
           </HStack>
         </Section>
       ) : null}
-      {valid || platform === "cainiao" ? (
+      {valid || (platform === "cainiao" && !busy && failure !== null) ? (
         <Section header={detailTitle("身份码编号")}>
           <HStack spacing={0} frame={{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT }} listRowInsets={DETAIL_ROW_INSETS}>
             {platform === "cainiao" ? (
@@ -391,7 +391,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
             </HStack>}
             <Text font={valid ? 24 : 16} fontWeight={valid ? "bold" : undefined}
               foregroundStyle={valid ? "label" : "secondaryLabel"} lineLimit={1} minScaleFactor={0.55}
-              frame={{ maxWidth: "infinity", alignment: "leading" }}>
+              frame={{ maxWidth: "infinity", alignment: valid ? "leading" : "trailing" }}>
               {valid ? value.replace(/(\d{4})(\d{4})(\d{4})/, "$1 $2 $3") : "暂无编号"}
             </Text>
             {valid ? <Button buttonStyle="plain" padding={{ leading: 12 }} action={() => {
