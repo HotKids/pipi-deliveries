@@ -1,6 +1,6 @@
 import { fetch, type AbortSignal } from "scripting";
 import {
-  clearPlatformLogin, cookieHeader, cookiesForURL, cookieValue, currentPlatformSession,
+  accountStatus, clearPlatformLogin, cookieHeader, cookiesForURL, cookieValue, currentPlatformSession,
   onPlatformAccountsChanged, providerCookies, replacePlatformCookies, trustedPlatformPage, type IdentityPlatform, type PlatformCookie,
   type PlatformSession, type WebPlatform,
 } from "./platform-accounts";
@@ -13,7 +13,13 @@ export const IDENTITY_WEB_URL = {
   cainiao: "https://pages-fast.m.taobao.com/wow/z/uniapp/1011717/last-mile-fe/end-collect-platform/identity-code",
   pinduoduo: "https://m.pinduoduo.net/mdkd/identificationCode",
 } as const;
-export const PDD_IDENTITY_APP_URL = "https://m.pinduoduo.net/mdkd/package?tab=ID_CODE";
+export const PDD_IDENTITY_APP_URL = "pinduoduo://com.xunmeng.pinduoduo/mdkd/package?tab=ID_CODE&entry_source=11";
+const TAOBAO_IDENTITY_APP_URL = "taobao://m.taobao.com/tbopen/index.html?h5Url=" + encodeURIComponent(IDENTITY_WEB_URL.cainiao);
+
+export function stationIdentityDestination(platform: IdentityPlatform): { kind: "local" } | { kind: "app"; url: string } {
+  if (accountStatus(platform).state === "active") return { kind: "local" };
+  return { kind: "app", url: platform === "cainiao" ? TAOBAO_IDENTITY_APP_URL : PDD_IDENTITY_APP_URL };
+}
 
 export const CAINIAO_RECIPIENT_LIST = "mtop.cainiao.lpc.packageservice.queryPdsPackageDataList";
 const CAINIAO_COUNT = "mtop.cainiao.lpc.packageservice.user.package.count.query";

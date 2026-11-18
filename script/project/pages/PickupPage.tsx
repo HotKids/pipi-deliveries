@@ -6,7 +6,8 @@ import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingAct
 import { pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
-import type { IdentityPlatform } from "../services/platform-accounts";
+import { onPlatformAccountsChanged, type IdentityPlatform } from "../services/platform-accounts";
+import { stationIdentityDestination } from "../services/platform-wire";
 import { needsDetailEntryQuery } from "../services/shipment-policy";
 import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
 import { setPickupCardNote } from "../services/storage";
@@ -14,7 +15,6 @@ import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { requestWidgetReload } from "../services/widgets";
 import { DetailPage } from "./DetailPage";
 import { StationIdentityMark, StationIdentityPage } from "./StationIdentityPage";
-import { onPlatformAccountsChanged } from "../services/platform-accounts";
 import { pickupCabinetActions } from "../services/platform-parcel-sync";
 
 const IDENTITY_CHOICES = [
@@ -155,6 +155,19 @@ export function PickupPage({
   const records = state.pickupCodeRecords;
   const sections = pickupDateSections(cards, previewing, focusedRecordId);
 
+  async function openIdentity(platform: IdentityPlatform) {
+    const destination = stationIdentityDestination(platform);
+    if (destination.kind === "local") {
+      setIdentity(platform);
+      return;
+    }
+    setIdentity(null);
+    if (!await Safari.openURL(destination.url).catch(() => false)) {
+      const app = platform === "cainiao" ? "淘宝" : "拼多多";
+      showNotice(`无法打开${app}，请确认已安装。`);
+    }
+  }
+
   function cardRow(card: ParcelActivityContent) {
     const target = card.target;
     const key = target && ("shipmentId" in target ? "shipment:" + target.shipmentId + ":" + target.waybillGeneration : "pickup:" + target.recordId);
@@ -186,7 +199,10 @@ export function PickupPage({
               setDetailTarget(undefined);
             }
           },
-          content: identity ? <StationIdentityPage key={identity} platform={identity} /> : selected ? (
+          content: identity ? (
+            <StationIdentityPage key={identity} platform={identity}
+              onBindingUnavailable={() => void openIdentity(identity)} />
+          ) : selected ? (
             <DetailPage
               key={selected.identity.id}
               shipment={selected}
@@ -218,7 +234,7 @@ export function PickupPage({
             </Section>
           ))}
         </List>
-        <IdentityCodeButton onOpen={setIdentity} />
+        <IdentityCodeButton onOpen={openIdentity} />
       </ZStack>
     </NavigationStack>
   );

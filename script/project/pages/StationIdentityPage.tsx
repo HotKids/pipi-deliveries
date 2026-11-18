@@ -11,7 +11,6 @@ import { currentPlatformSession, onPlatformAccountsChanged, platformSession,
 import { fetchStationIdentity, identityWebCookies, IDENTITY_WEB_URL, openProviderController, PDD_IDENTITY_APP_URL, PlatformWireError,
   type StationIdentityCode } from "../services/platform-wire";
 import { transientToast } from "../services/ui-feedback";
-import { presentPlatformLogin } from "./PlatformAccountPages";
 
 const IDENTITY_CODE_TITLES: Record<IdentityPlatform, string> = {
   cainiao: "淘宝身份码",
@@ -33,13 +32,13 @@ export function StationIdentityMark({ asset, size = 28 }: { asset: IdentityPlatf
   /> : <Image systemName="person.text.rectangle" frame={frame} />;
 }
 
-async function openWebIdentity(platform: IdentityPlatform, session: PlatformSession | null) {
+async function openWebIdentity(platform: IdentityPlatform, session: PlatformSession) {
   const cookies = identityWebCookies(platform, session);
   const controller = await openProviderController(platform, cookies);
   try {
-    if (session && !currentPlatformSession(platform, session.generation)) throw new PlatformWireError("changed");
+    if (!currentPlatformSession(platform, session.generation)) throw new PlatformWireError("changed");
     const stopListening = onPlatformAccountsChanged(() => {
-      if (session && !currentPlatformSession(platform, session.generation)) controller.dismiss();
+      if (!currentPlatformSession(platform, session.generation)) controller.dismiss();
     });
     try {
       const shown = controller.present({ fullscreen: true, navigationTitle: IDENTITY_CODE_TITLES[platform] });
@@ -146,26 +145,41 @@ function FullScreenIdentity({ format, scan, onClose }: {
   );
 }
 
-export function StationIdentityPage({ platform }: { platform: IdentityPlatform }) {
+export function StationIdentityPage({ platform, onBindingUnavailable }: {
+  platform: IdentityPlatform;
+  onBindingUnavailable: () => void;
+}) {
   const [generation, setGeneration] = useState(() => platformSession(platform)?.generation);
-  useEffect(() => onPlatformAccountsChanged((changed) => {
-    if (changed !== platform) return;
-    const next = platformSession(platform)?.generation;
-    if (identityCache.get(platform)?.generation !== next) identityCache.delete(platform);
-    setGeneration(next);
-  }), [platform]);
-  return <StationIdentityContent key={generation ?? "signed-out"} platform={platform} expectedGeneration={generation} />;
+  const handedOff = useRef(false);
+  useEffect(() => {
+    function updateBinding() {
+      const next = platformSession(platform)?.generation;
+      if (identityCache.get(platform)?.generation !== next) identityCache.delete(platform);
+      setGeneration(next);
+      if (!next && !handedOff.current) {
+        handedOff.current = true;
+        onBindingUnavailable();
+      }
+    }
+    const unsubscribe = onPlatformAccountsChanged((changed) => {
+      if (changed === platform) updateBinding();
+    });
+    updateBinding();
+    return unsubscribe;
+  }, [platform]);
+  return generation
+    ? <StationIdentityContent key={generation} platform={platform} expectedGeneration={generation} />
+    : <VStack />;
 }
 
 function StationIdentityContent({ platform, expectedGeneration }: {
   platform: IdentityPlatform;
-  expectedGeneration?: string;
+  expectedGeneration: string;
 }) {
   const scan = useObservable<ScanState>(EMPTY_SCAN);
   const [value, expiresAtMs, remaining, mobile] = scan.value;
   const [full, setFull] = useState<ScanFormat | null>(null);
-  const [busy, setBusy] = useState(Boolean(expectedGeneration));
-  const [loggingIn, setLoggingIn] = useState(false);
+  const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
   const [reason, setReason] = useState("");
   const active = useRef(true);
@@ -175,7 +189,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
   const generation = useRef(0);
   const requestedRenewal = useRef(0);
   const widthList = useMemo(() => value ? code128Widths(value) : [], [value]);
-  const currentSession = () => expectedGeneration ? currentPlatformSession(platform, expectedGeneration) : null;
+  const currentSession = () => currentPlatformSession(platform, expectedGeneration);
 
   function cancelCountdown() {
     if (countdownTimer.current !== undefined) clearTimeout(countdownTimer.current);
@@ -240,20 +254,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
     }
   }
 
-  async function login() {
-    if (loggingIn) return;
-    setLoggingIn(true);
-    try {
-      await presentPlatformLogin(platform);
-    } catch {
-      if (mounted.current) setNotice("登录未完成，请重试");
-    } finally {
-      if (mounted.current) setLoggingIn(false);
-    }
-  }
-
   useEffect(() => {
-    if (!expectedGeneration) return;
     const onScene = (phase: "active" | "inactive" | "background") => {
       if (phase === "active" && !active.current) {
         active.current = true;
@@ -281,53 +282,45 @@ function StationIdentityContent({ platform, expectedGeneration }: {
       navigationBarTitleDisplayMode="inline"
       toast={transientToast(notice, setNotice)}
       toolbar={{
-        topBarTrailing: expectedGeneration ? (
+        topBarTrailing: (
           <Button title="刷新身份码" systemImage="arrow.triangle.2.circlepath" labelStyle="iconOnly"
             action={() => void refresh(true)} disabled={busy} />
-        ) : undefined,
+        ),
       }}
     >
-      {!expectedGeneration ? (
-        <Section footer={<Text>{platform === "cainiao" ? "登录淘宝后自动获取身份码。" : "授权拼多多后自动获取取件身份码。"}</Text>}>
-          <Button title={platform === "cainiao" ? "登录淘宝" : "授权拼多多"} disabled={loggingIn}
-            action={() => void login()} />
-        </Section>
-      ) : null}
-      {expectedGeneration ? (
-        <Section>
-          <VStack spacing={12} padding={{ vertical: 8 }} frame={{ maxWidth: "infinity" }}
-            fullScreenCover={{
-              isPresented: full !== null,
-              onChanged: (shown) => { if (!shown) setFull(null); },
-              content: full ? (
-                <FullScreenIdentity format={full} scan={scan} onClose={() => setFull(null)} />
-              ) : <VStack />,
-            }}>
-            {valid ? (
-              <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
-                <Button buttonStyle="plain" action={() => setFull("barcode")}>
-                  <VStack padding={{ vertical: 8, horizontal: 12 }}
-                    background={{ style: "white", shape: BARCODE_SHAPE }} contentShape="rect">
-                    <Barcode widthList={widthList} height={78} />
-                  </VStack>
-                </Button>
-                <Button buttonStyle="plain" action={() => setFull("qr")}>
-                  <VStack padding={10} frame={{ width: 200, height: 200 }}
-                    background={{ style: "white", shape: QR_SHAPE }} contentShape="rect">
-                    <QRImage data={value} size={184} />
-                  </VStack>
-                </Button>
-                <Text font={13} foregroundStyle="secondaryLabel">点条码或二维码可全屏出示</Text>
-                <Text font={12} foregroundStyle={remaining > 60 ? "tertiaryLabel" : "systemRed"}>
-                  {busy ? "正在刷新…" : countdown(remaining)}
-                </Text>
-              </VStack>
-            ) : <Text foregroundStyle="secondaryLabel" padding={{ vertical: 24 }}>
-              {busy ? "正在获取身份码…" : reason || "身份码已过期"}
-            </Text>}
-          </VStack>
-        </Section>
-      ) : null}
+      <Section>
+        <VStack spacing={12} padding={{ vertical: 8 }} frame={{ maxWidth: "infinity" }}
+          fullScreenCover={{
+            isPresented: full !== null,
+            onChanged: (shown) => { if (!shown) setFull(null); },
+            content: full ? (
+              <FullScreenIdentity format={full} scan={scan} onClose={() => setFull(null)} />
+            ) : <VStack />,
+          }}>
+          {valid ? (
+            <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
+              <Button buttonStyle="plain" action={() => setFull("barcode")}>
+                <VStack padding={{ vertical: 8, horizontal: 12 }}
+                  background={{ style: "white", shape: BARCODE_SHAPE }} contentShape="rect">
+                  <Barcode widthList={widthList} height={78} />
+                </VStack>
+              </Button>
+              <Button buttonStyle="plain" action={() => setFull("qr")}>
+                <VStack padding={10} frame={{ width: 200, height: 200 }}
+                  background={{ style: "white", shape: QR_SHAPE }} contentShape="rect">
+                  <QRImage data={value} size={184} />
+                </VStack>
+              </Button>
+              <Text font={13} foregroundStyle="secondaryLabel">点条码或二维码可全屏出示</Text>
+              <Text font={12} foregroundStyle={remaining > 60 ? "tertiaryLabel" : "systemRed"}>
+                {busy ? "正在刷新…" : countdown(remaining)}
+              </Text>
+            </VStack>
+          ) : <Text foregroundStyle="secondaryLabel" padding={{ vertical: 24 }}>
+            {busy ? "正在获取身份码…" : reason || "身份码已过期"}
+          </Text>}
+        </VStack>
+      </Section>
       {valid && mobile ? (
         <Section header={<Text>取件人</Text>}>
           <HStack>
@@ -350,20 +343,22 @@ function StationIdentityContent({ platform, expectedGeneration }: {
             }} />
           </HStack>
         </Section>
-      ) : (
+      ) : !busy ? (
         <Section>
           {platform === "pinduoduo" ? (
             <Button title="在拼多多 App 中打开" action={async () => {
+              if (!currentSession()) return;
               if (!await Safari.openURL(PDD_IDENTITY_APP_URL).catch(() => false)) {
                 setNotice("打开拼多多失败，请重试。");
               }
             }} />
           ) : null}
           <Button title="在网页打开" action={() => {
-            void openWebIdentity(platform, currentSession()).catch(() => setNotice("网页打开失败，请重试。"));
+            const session = currentSession();
+            if (session) void openWebIdentity(platform, session).catch(() => setNotice("网页打开失败，请重试。"));
           }} />
         </Section>
-      )}
+      ) : null}
     </Form>
   );
 }
