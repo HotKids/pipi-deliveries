@@ -12,7 +12,8 @@ import {
 } from "../services/platform-accounts";
 import { identityCodeFromResponse, fetchStationIdentity, openProviderController, readCainiaoProfileNickname, readCainiaoSenderAppointments,
   retainJdLoginView } from "../services/platform-wire";
-import { cainiaoHandoffs, cainiaoRecipientParcels, displayDeliveryEstimate, pddPickupParcels } from "../services/platform-parcel-data";
+import { cainiaoHandoffs, cainiaoRecipientParcels, displayDeliveryEstimate, pddParcelAppURL, pddParcelDetailPath,
+  pddPickupParcels } from "../services/platform-parcel-data";
 import { cabinetParcels, type CabinetParcel } from "../services/fengchao-account";
 import { displayedPlatformFields, enrichPlatformParcel, matchPlatformParcel } from "../services/platform-parcel-merge";
 import { activePickupCards, parcelActivityContent, shipmentForPickupTarget } from "../services/parcel-pickup";
@@ -31,6 +32,17 @@ const { pickupCabinetActions, performPickupAction, platformRefreshMessage, refre
 const waybill = "YT000000008123";
 const order = "88000008123";
 const key = "synthetic-cainiao-account";
+test("PDD app detail uses the same exact parcel route as the provider web view", () => {
+  const parcel = { ownerKey: "synthetic-pdd-owner", orderId: order, shippingId: "73000919" };
+  const path = "/psnl_goods_help.html?_t_module_name=assistant_waybill&shipping_id=73000919&tracking_number=" + waybill;
+  assert.equal(pddParcelDetailPath(parcel.shippingId, waybill), path);
+  assert.equal(pddParcelAppURL(parcel, waybill), "https://m.pinduoduo.net" + path);
+  assert.equal(pddParcelAppURL(undefined, waybill), "");
+  assert.equal(pddParcelAppURL({ ...parcel, ownerKey: "" }, waybill), "");
+  assert.equal(pddParcelAppURL({ ...parcel, orderId: "" }, waybill), "");
+  assert.equal(pddParcelAppURL({ ...parcel, shippingId: "1&bad=1" }, waybill), "");
+  assert.equal(pddParcelAppURL(parcel, waybill + "#other"), "");
+});
 const pickupInput = { source: "cainiao", waybill, code: "1-5-0012", name: "测试菜鸟驿站", address: "测试路 1 号" } as const;
 const rediscovered = cainiaoRecipientParcels({ packages: [{
   status: "WAIT_PICKUP", mailNo: waybill, tbOrderId: order,

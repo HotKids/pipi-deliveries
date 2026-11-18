@@ -1,4 +1,4 @@
-import type { ParcelHandoffRecord } from "../models";
+import type { ParcelHandoffRecord, PddParcelImport } from "../models";
 import { platformPickupCode } from "./fengchao-account";
 import { trustedPlatformPage, type ExpressPlatform } from "./platform-accounts";
 import { sha256Hex } from "./scripting-data";
@@ -19,6 +19,19 @@ export type PlatformParcel = Readonly<{
   carrierName?: string;
   unnumbered?: boolean;
 }>;
+
+export function pddParcelDetailPath(shippingId: string, waybill: string): string {
+  if (!/^[1-9][0-9]{0,19}$/.test(shippingId) || !/^[A-Z0-9]{6,64}$/.test(waybill)) return "";
+  return "/psnl_goods_help.html?_t_module_name=assistant_waybill" +
+    "&shipping_id=" + shippingId + "&tracking_number=" + waybill;
+}
+
+export function pddParcelAppURL(parcel: PddParcelImport | undefined, waybill: string): string {
+  if (!parcel?.ownerKey || !parcel.orderId || !parcel.shippingId) return "";
+  const path = pddParcelDetailPath(parcel.shippingId, waybill);
+  // Pinduoduo's iOS associated domain serves this same shipment-detail route.
+  return path ? "https://m.pinduoduo.net" + path : "";
+}
 
 export function objectList(value: unknown): JsonObject[] {
   return Array.isArray(value) ? value.filter(isPlainObject) : [];
