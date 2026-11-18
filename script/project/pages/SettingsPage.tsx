@@ -14,6 +14,7 @@ import {
   useEffect,
   useState,
 } from "scripting";
+import { RootPageHeader } from "../components/RootPageHeader";
 import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon";
 import type { AppState } from "../models";
 import { sendAccountCode } from "../services/account-sync";
@@ -274,19 +275,14 @@ export function SettingsPage(props: {
     <NavigationStack>
       <List
         navigationTitle="设置"
-        navigationBarTitleDisplayMode="large"
-        toast={transientToast(notice, setNotice)}
-        toolbar={{
-          topBarLeading: (
-            <Button buttonStyle="plain" action={() => dismiss()}>
-              <Image
-                systemName="chevron.left"
-                font={17}
-                frame={{ width: 44, height: 44 }}
-              />
-            </Button>
-          ),
+        navigationBarVisibility="hidden"
+        safeAreaInset={{
+          top: {
+            spacing: 0,
+            content: <RootPageHeader title="设置" action={() => dismiss()} />,
+          },
         }}
+        toast={transientToast(notice, setNotice)}
         onAppear={() => {
           refreshAuthorization();
           setEnabledNotificationCount(notificationEnabledCount(true));

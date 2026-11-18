@@ -1,10 +1,10 @@
 import {
-  AppEvents, Button, Canvas, GeometryReader, HStack, Image, Navigation, NavigationStack,
+  AppEvents, Button, Canvas, GeometryReader, HStack, Image, NavigationStack,
   ScrollView, Text, VStack, ZStack, useEffect, useMemo, useObservable, useRef, useState,
 } from "scripting";
 import { bundledImage } from "../components/bundled-image";
 import { code128Widths } from "../services/code128";
-import { currentPlatformSession, onPlatformAccountsChanged, platformSession,
+import { currentPlatformSession, onPlatformAccountsChanged,
   type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
 import { fetchStationIdentity, identityWebCookies, IDENTITY_WEB_URL, openProviderController, PlatformWireError,
   type StationIdentityCode } from "../services/platform-wire";
@@ -33,7 +33,7 @@ export function StationIdentityMark({ platform }: { platform: IdentityPlatform }
   /> : <Image systemName="person.text.rectangle" frame={{ width: 28, height: 28 }} />;
 }
 
-async function openWebIdentity(platform: IdentityPlatform, session: PlatformSession | null) {
+export async function openWebIdentity(platform: IdentityPlatform, session: PlatformSession | null) {
   const cookies = identityWebCookies(platform, session);
   const controller = await openProviderController(platform, cookies);
   try {
@@ -61,7 +61,7 @@ function Barcode({ widthList, width, height, vertical = false }: {
 }) {
   const modules = widthList.reduce((sum, width) => sum + width, 20);
   return (
-    <Canvas frame={{ width, height, maxWidth: width === undefined ? "infinity" : undefined }}
+    <Canvas frame={{ width, height, maxWidth: width === undefined ? 330 : undefined }}
       clipShape={BARCODE_SHAPE}
       draw={(ctx, size) => {
         ctx.fillStyle = "white";
@@ -107,33 +107,39 @@ function FullScreenIdentity({ format, scan, onClose }: {
   return (
     <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
       <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} background="white" ignoresSafeArea />
-      <GeometryReader>
-        {({ size }) => {
-          const availableHeight = Math.max(0, size.height - 104 - 40 - 36);
-          const landscape = size.width > size.height;
-          const longer = Math.min(Math.max(size.width, size.height) - 330, 640,
-            landscape ? size.width - 48 : availableHeight);
-          const shorter = Math.min(size.width - 50, 340, landscape ? availableHeight : size.width);
-          const qrSize = Math.min(320, size.width - 48, availableHeight);
-          return (
-            <VStack spacing={18} padding={{ top: 104, bottom: 40, horizontal: 24 }}
-              frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
-              {display && remaining > 0 ? (
-                <VStack spacing={18} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
-                  {format === "barcode" && longer > 0 && shorter > 24
+      {code && remaining > 0 ? (
+        <VStack spacing={18} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+          padding={{ top: 72, bottom: 32, horizontal: 24 }}>
+          <GeometryReader>
+            {({ size }) => {
+              const { width, height } = Device.screen;
+              const landscape = width > height;
+              const longer = Math.min(Math.max(width, height) - 330, 640, landscape ? size.width : size.height);
+              const shorter = Math.min(Math.min(width, height) - 50, 340, landscape ? size.height : size.width);
+              const qrSize = Math.min(320, size.width, size.height);
+              return (
+                <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
+                  {format === "barcode" && longer > 24 && shorter > 24
                     ? <Barcode widthList={widths} vertical={!landscape}
                       width={landscape ? longer : shorter} height={landscape ? shorter : longer} />
                     : format === "qr" && image && qrSize > 0
                       ? <Image image={image} resizable scaleToFit interpolation="none"
                         frame={{ width: qrSize, height: qrSize }} />
                       : null}
-                  <Text font={13} monospacedDigit foregroundStyle="#636366">{countdown(remaining)}</Text>
                 </VStack>
-              ) : <Text font={15} foregroundStyle="#636366">身份码已过期</Text>}
-            </VStack>
-          );
-        }}
-      </GeometryReader>
+              );
+            }}
+          </GeometryReader>
+          <VStack spacing={6}>
+            <Text font={14} fontWeight="medium" foregroundStyle="#1C1C1E" lineLimit={1}
+              minScaleFactor={0.55} monospacedDigit>{code}</Text>
+            <Text font={12} foregroundStyle="#636366">
+              {format === "barcode" ? "请将条码对准扫码口" : "请将二维码对准扫描区"}
+            </Text>
+            <Text font={12} monospacedDigit foregroundStyle="#636366">{countdown(remaining)}</Text>
+          </VStack>
+        </VStack>
+      ) : <Text font={15} foregroundStyle="#636366">身份码已过期</Text>}
       <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity", alignment: "topTrailing" }}
         padding={{ top: 16, trailing: 20 }}>
         <Button title="关闭" systemImage="xmark" labelStyle="iconOnly" buttonStyle="plain" action={onClose}
@@ -144,8 +150,11 @@ function FullScreenIdentity({ format, scan, onClose }: {
   );
 }
 
-function StationIdentityPage({ platform, session }: { platform: IdentityPlatform; session: PlatformSession }) {
-  const dismiss = Navigation.useDismiss();
+export function StationIdentityPage({ platform, session, onClose }: {
+  platform: IdentityPlatform;
+  session: PlatformSession;
+  onClose: () => void;
+}) {
   const scan = useObservable<ScanState>(EMPTY_SCAN);
   const { display, remaining } = scan.value;
   const [full, setFull] = useState<ScanFormat | null>(null);
@@ -236,20 +245,13 @@ function StationIdentityPage({ platform, session }: { platform: IdentityPlatform
   }, []);
 
   return (
-    <NavigationStack>
+    <NavigationStack presentationDetents={["medium", "large"]} presentationDragIndicator="visible">
       <ScrollView frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         background="systemGroupedBackground"
-        presentationDetents={["medium", "large"]}
-        presentationDragIndicator="visible"
         navigationBarTitleDisplayMode="inline"
-        fullScreenCover={{
-          isPresented: full !== null,
-          onChanged: (shown) => { if (!shown) setFull(null); },
-          content: <FullScreenIdentity format={full ?? "barcode"} scan={scan} onClose={() => setFull(null)} />,
-        }}
         toast={transientToast(notice, setNotice)}
         toolbar={{
-          topBarLeading: <Button title="关闭" systemImage="xmark" labelStyle="iconOnly" action={() => dismiss()} />,
+          topBarLeading: <Button title="关闭" systemImage="xmark" labelStyle="iconOnly" action={onClose} />,
           principal: (
             <HStack spacing={8}>
               <StationIdentityMark platform={platform} />
@@ -260,27 +262,34 @@ function StationIdentityPage({ platform, session }: { platform: IdentityPlatform
             action={() => void refresh(true)} disabled={busy || !currentPlatformSession(platform, session.generation)} />,
         }}
       >
-        <VStack spacing={12} padding={{ vertical: 8, horizontal: 20 }} frame={{ maxWidth: "infinity" }}>
+        <VStack spacing={12} padding={{ vertical: 8, horizontal: 20 }} frame={{ maxWidth: "infinity" }}
+          fullScreenCover={{
+            isPresented: full !== null,
+            onChanged: (shown) => { if (!shown) setFull(null); },
+            content: full ? (
+              <FullScreenIdentity format={full} scan={scan} onClose={() => setFull(null)} />
+            ) : <VStack />,
+          }}>
           {display && remaining > 0 ? (
             <VStack spacing={12} padding={{ vertical: 8, horizontal: 12 }} frame={{ maxWidth: 378 }}
               background={{ style: "secondarySystemGroupedBackground", shape: QR_SHAPE }}>
               <Button buttonStyle="plain" action={() => setFull("barcode")}>
-                <VStack spacing={4}>
-                  <Barcode widthList={widthList} height={94} />
-                  <Text font={12} foregroundStyle="secondaryLabel">条形码</Text>
+                <VStack padding={{ vertical: 8, horizontal: 12 }}
+                  background={{ style: "white", shape: BARCODE_SHAPE }} contentShape="rect">
+                  <Barcode widthList={widthList} height={78} />
                 </VStack>
               </Button>
               {display.qr ? (
                 <Button buttonStyle="plain" action={() => setFull("qr")}>
-                  <VStack spacing={4}>
-                    <Image image={display.qr} resizable scaleToFit interpolation="none"
-                      frame={{ width: 184, height: 184 }} padding={8}
-                      background={{ style: "white", shape: QR_SHAPE }} />
-                    <Text font={12} foregroundStyle="secondaryLabel">二维码</Text>
-                  </VStack>
+                  <Image image={display.qr} resizable scaleToFit interpolation="none"
+                    frame={{ width: 184, height: 184 }} padding={8}
+                    background={{ style: "white", shape: QR_SHAPE }} contentShape="rect" />
                 </Button>
               ) : null}
-              <Text font={13} monospacedDigit foregroundStyle="secondaryLabel">{countdown(remaining)}</Text>
+              <Text font={13} foregroundStyle="secondaryLabel">
+                {display.qr ? "点条形码或二维码可全屏出示" : "点条形码可全屏出示"}
+              </Text>
+              <Text font={12} monospacedDigit foregroundStyle="secondaryLabel">{countdown(remaining)}</Text>
             </VStack>
           ) : <Text foregroundStyle="secondaryLabel" padding={{ vertical: 24 }}>
             {busy ? "正在获取身份码…" : reason || "身份码已过期"}
@@ -293,10 +302,4 @@ function StationIdentityPage({ platform, session }: { platform: IdentityPlatform
       </ScrollView>
     </NavigationStack>
   );
-}
-
-export async function presentStationIdentity(platform: IdentityPlatform): Promise<void> {
-  const session = platformSession(platform);
-  if (!session) return openWebIdentity(platform, null);
-  await Navigation.present({ element: <StationIdentityPage platform={platform} session={session} />, modalPresentationStyle: "pageSheet" });
 }

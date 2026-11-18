@@ -1,10 +1,8 @@
 import { Button, HStack, Spacer, Text, VStack } from "scripting";
 import type { Shipment } from "../models";
 import {
+  listHeadlineDetail,
   shipmentPresentationStatus,
-  timelineDisplayDetail,
-  trackDisplayDetail,
-  timedTracks,
   statusTextTint,
   waybillSuffix,
   withShipmentNote,
@@ -39,9 +37,7 @@ export function ShipmentRow(props: {
   const item = props.shipment;
   const presentationStatus = shipmentPresentationStatus(item);
   const eventTime = formatListTime(item.timeline.latestTimeText);
-  const firstTrack = timedTracks(item.timeline.tracks)[0];
-  const latestDetail = timelineDisplayDetail(item.timeline) ||
-    (firstTrack ? trackDisplayDetail(item.timeline.provider, firstTrack) : "");
+  const latestDetail = listHeadlineDetail(item.timeline);
 
   return (
     <HStack
@@ -115,9 +111,11 @@ export function ShipmentRow(props: {
           </Text>
           <Spacer />
         </HStack>
-        <Text font="subheadline" lineSpacing={2} foregroundStyle="secondaryLabel" lineLimit={2}>
-          {latestDetail.trim() || "暂无物流信息"}
-        </Text>
+        {latestDetail ? (
+          <Text font="subheadline" lineSpacing={2} foregroundStyle="secondaryLabel" lineLimit={2}>
+            {latestDetail}
+          </Text>
+        ) : null}
       </VStack>
     </HStack>
   );

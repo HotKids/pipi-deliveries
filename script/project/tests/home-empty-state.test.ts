@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripTypeScriptTypes } from "node:module";
+import { listHeadlineDetail } from "../services/status";
+import type { TimelinePackage, TrackNode } from "../models";
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const homeSource = await readFile(
@@ -25,9 +27,34 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /visibleFilters\.length > 1 \? \([\s\S]*?shipments\.length \? \([\s\S]*?\) : \(\s*<VStack\s+spacing=\{0\}[\s\S]*?<List[\s\S]*?frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}[\s\S]*?overlay=\{\{\s*alignment: "center",\s*content: \(\s*<EmptyDeliveryStateGroup\s+vehicleSize=\{81\.6\}\s+spacing=\{6\}\s+labelFont=\{24\}\s*\/>\s*\),\s*\}\}/,
+  /visibleFilters\.length > 1 \? \([\s\S]*?<List[\s\S]*?refreshable=\{refresh\}[\s\S]*?frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}[\s\S]*?overlay=\{!shipments\.length \? \{\s*alignment: "center",\s*content: \(\s*<EmptyDeliveryStateGroup\s+vehicleSize=\{81\.6\}\s+spacing=\{6\}\s+labelFont=\{24\}\s*\/>\s*\),\s*\} : undefined\}/,
   "the 1.2x home vehicle group must be centered in the flexible body below the segmented filter",
 );
+assert.equal((homeSource.match(/refreshable=\{refresh\}/g) ?? []).length, 1,
+  "data arriving during a pull must not replace the refreshable list");
+const makePull = homeSource.match(/const refresh = useCallback\(\(\) => \{[\s\S]*?\n  \}, \[\]\);/)?.[0];
+assert.ok(makePull);
+const refreshForTest = new Function("useCallback", "currentPull", "pullInFlight", makePull + "\nreturn refresh;");
+let beginCount = 0;
+let finishPull!: () => void;
+const currentPull = { current: () => {
+  beginCount++;
+  return new Promise<void>((resolve) => { finishPull = resolve; });
+} };
+const refresh = refreshForTest((callback: () => Promise<void>) => callback, currentPull, { current: null });
+const pending = refresh();
+assert.equal(refresh(), pending);
+assert.equal(beginCount, 1, "a duplicate native callback waits for the same account phase");
+finishPull();
+await pending;
+const next = refresh();
+assert.equal(beginCount, 2, "a new gesture still starts another pull");
+finishPull();
+await next;
+assert.match(homeSource, /navigationBarVisibility="hidden"[\s\S]*?<RootPageHeader title="快递" searches/,
+  "the Home title sits in the tab header above the list");
+assert.doesNotMatch(homeSource, /placement="title"|systemName="chevron\.left"/,
+  "the Home root has no second title or back button");
 assert.doesNotMatch(
   homeSource,
   /minHeight: 420|padding=\{\{ bottom: 72 \}\}/,
@@ -101,10 +128,21 @@ assert.match(homeSource, /visibleFilters\.includes\(selectedFilter\) \? selected
 console.log("home empty-state presentation tests passed");
 
 const shipmentRowSource = await readFile(resolve(projectDir, "components/ShipmentRow.tsx"), "utf8");
-assert.doesNotMatch(shipmentRowSource, /暂无物流动态/,
-  "Home uses the current empty-tracking copy");
-assert.match(shipmentRowSource, /\{latestDetail\.trim\(\) \|\| "暂无物流信息"\}/,
-  "Home shows the real headline when present and an empty-tracking label otherwise");
-assert.doesNotMatch(shipmentRowSource, /\{latestDetail \? \(/);
+assert.doesNotMatch(shipmentRowSource, /暂无物流(?:信息|动态)/);
+assert.match(shipmentRowSource, /const latestDetail = listHeadlineDetail\(item\.timeline\)/);
+assert.match(shipmentRowSource, /\{latestDetail \? \(\s*<Text[\s\S]*?\{latestDetail\}\s*<\/Text>\s*\) : null\}/);
+
+const realTrack: TrackNode = { timeMs: 1_000, timeText: "10:00", detail: "快件已揽收", statusCode: "", raw: {} };
+const timeline = {
+  provider: "cainiao", waybill: "synthetic", courierCode: "zto", companyName: "中通快递",
+  semantic: "UNKNOWN", statusEventAtMs: null, latestTimeText: "10:01", latestDetail: "",
+  tracks: [], successAtMs: 2_000,
+} satisfies TimelinePackage;
+for (const placeholder of ["", "暂无物流信息", "暂无物流动态", "快递状态已更新，点击查看>>"]) {
+  assert.equal(listHeadlineDetail({ ...timeline, latestDetail: placeholder }), "");
+  assert.equal(listHeadlineDetail({ ...timeline, latestDetail: placeholder,
+    tracks: [{ ...realTrack, detail: placeholder, timeMs: 2_000 }, realTrack] }), realTrack.detail);
+}
+assert.equal(listHeadlineDetail({ ...timeline, latestDetail: "预计明日送达", tracks: [realTrack] }), "预计明日送达");
 assert.match(homeSource, /useEffect\(\(\) => \{[\s\S]*?void refreshAllShipments\(\)/,
   "Home's initial refresh reaches the missing-history repair entry");

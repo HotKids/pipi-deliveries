@@ -59,7 +59,7 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
         minimal={<HStack widgetURL={url}>{glyph}</HStack>}
       >
         <LiveActivityUIExpandedCenter>
-          <ParcelLiveActivityCard {...cardProps} expanded />
+          <ParcelLiveActivityCard {...cardProps} width={width} expanded />
         </LiveActivityUIExpandedCenter>
       </LiveActivityUI>
     );

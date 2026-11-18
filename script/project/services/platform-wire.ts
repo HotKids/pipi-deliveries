@@ -337,7 +337,7 @@ export function identityCodeFromResponse(
   platform: IdentityPlatform, response: JsonObject, now = Date.now(),
 ): StationIdentityCode {
   const taobao = platform === "cainiao";
-  const fields = asPlainObject(taobao ? response.result ?? response.data : response.result);
+  const fields = asPlainObject(taobao ? response.result ?? response.data ?? response : response.result);
   const value = taobao ? fields.identityCode : fields.identification_code;
   const lifetime = taobao ? TAOBAO_IDENTITY_REFRESH_MS : Number(cleanScalarText(fields.expire_mills));
   if (typeof value !== "string" || !/^[ -~]{1,80}$/.test(value) || !value.trim() ||

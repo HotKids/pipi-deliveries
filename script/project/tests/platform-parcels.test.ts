@@ -272,6 +272,8 @@ test("a handoff note survives provider refresh and cannot edit a completed card"
 
 test("Taobao station identity follows the H5 response and refresh cadence", () => {
   const value = "CS00000000000000001A";
+  assert.deepEqual(identityCodeFromResponse("cainiao", { identityCode: value }, NOW),
+    { value, expiresAtMs: NOW + 180_000 });
   for (const field of ["result", "data"]) {
     assert.deepEqual(identityCodeFromResponse("cainiao", { [field]: { identityCode: value } }, NOW),
       { value, expiresAtMs: NOW + 180_000 });
@@ -307,7 +309,7 @@ test("the Cainiao action requests the Taobao identity with the current account o
     assert.equal(url.searchParams.get("api"), "mtop.cainiao.pickup.identity.getIdentityMessage");
     assert.deepEqual(JSON.parse(url.searchParams.get("data")!), {});
     assert.equal((init.headers as Record<string, string>).Cookie, "cookie2=synthetic-taobao-session");
-    return new Response(JSON.stringify({ ret: ["SUCCESS::ok"], data: { result: { identityCode: value } } }));
+    return new Response(JSON.stringify({ ret: ["SUCCESS::ok"], data: { identityCode: value } }));
   };
   const fetchMock = t.mock.method(globalThis, "fetch", async (input: string, init: RequestInit) => read(input, init));
   try {

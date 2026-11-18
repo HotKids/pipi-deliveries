@@ -29,7 +29,6 @@ import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
-import { presentStationIdentity } from "./pages/StationIdentityPage";
 import { expireDueParcelHandoffs, loadState, peekStateRevision, visibleShipments } from "./services/storage";
 import { onPlatformAccountsChanged, platformSession } from "./services/platform-accounts";
 import { canOpenParcelCabinet, performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
@@ -125,8 +124,7 @@ function App() {
   const hasPickupTab = pickupCards.length > 0 || pickupPreview;
   const identityActions = useMemo(() => (["cainiao", "pinduoduo"] as const)
     .filter((platform) => platformSession(platform) || pickupCards.some((card) =>
-      card.kind !== "handoff" && (!card.platform || card.platform === platform)))
-    .map((platform) => ({ platform, open: () => presentStationIdentity(platform) })),
+      card.kind !== "handoff" && (!card.platform || card.platform === platform))),
   [platformRevision, pickupCards]);
   const cabinetActions = useMemo(() => new Set(pickupCards.filter(canOpenParcelCabinet)),
     [platformRevision, pickupCards]);
