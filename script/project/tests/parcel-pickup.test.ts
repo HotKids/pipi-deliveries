@@ -548,8 +548,9 @@ assert.match(pickupSource, /<List \{\.\.\.rootPageScroll\(setHeaderCollapsed\)\}
 assert.match(settingsSource, /<List \{\.\.\.rootPageScroll\(setHeaderCollapsed\)\}/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|取件)"/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-assert.match(rootHeader, /<HStack[^>]*>\s*\{collapsed \? <Text[^>]*\{\.\.\.tabCapsuleSurface\(\)\}[^>]*>\{title\}<\/Text> :\s*<Text font="largeTitle"[^>]*>\{title\}<\/Text>\}\s*<Spacer \/>\s*<Button title="关闭" systemImage="xmark"/,
-  "both title sizes occupy the same leading slot with the close button trailing");
+assert.match(rootHeader, /<HStack[^>]*>\s*<ZStack[\s\S]*?\{title\}<\/Text>\s*<\/ZStack>\s*<Spacer \/>\s*<Button title="关闭" systemImage="xmark"/,
+  "the animated title occupies the leading slot with the close button trailing");
+assert.equal(rootHeader.match(/\{title\}<\/Text>/g)?.length, 1);
 assert.doesNotMatch(rootHeader, /navigationTitle|ToolbarItem/);
 assert.match(rootHeader, /labelStyle="iconOnly"[\s\S]*?width: NAVIGATION_CONTROL_HEIGHT, height: NAVIGATION_CONTROL_HEIGHT/);
 assert.match(pickupSource, /overlay=\{\{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen=\{openIdentity\}/,

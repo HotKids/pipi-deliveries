@@ -1,4 +1,4 @@
-import { Button, HStack, Spacer, Text, VStack } from "scripting";
+import { Animation, Button, HStack, Rectangle, Spacer, Text, VStack, ZStack } from "scripting";
 import { tabCapsuleSurface } from "./TabFloatingActionButton";
 
 const NAVIGATION_CONTROL_HEIGHT = 44;
@@ -35,10 +35,17 @@ export function RootPageHeader({ title, close, collapsed, background = "systemGr
   return (
     <VStack spacing={0} padding={{ top: 8, bottom: 16, horizontal: ROOT_HEADER_HORIZONTAL_INSET }} background={background}>
       <HStack frame={{ maxWidth: "infinity", height: NAVIGATION_CONTROL_HEIGHT }}>
-        {collapsed ? <Text font="headline" foregroundStyle="label" lineLimit={1} minScaleFactor={0.8}
-          padding={{ horizontal: 12 }} frame={{ width: ROOT_TITLE_CAPSULE_WIDTH, height: NAVIGATION_CONTROL_HEIGHT }}
-          {...tabCapsuleSurface()}>{title}</Text> :
-          <Text font="largeTitle" fontWeight="bold" foregroundStyle="label">{title}</Text>}
+        <ZStack frame={{ width: ROOT_TITLE_CAPSULE_WIDTH, height: NAVIGATION_CONTROL_HEIGHT }}
+          animation={{ animation: Animation.smooth({ duration: 0.22 }), value: collapsed }}>
+          <VStack opacity={collapsed ? 1 : 0} allowsHitTesting={false}>
+            <Rectangle fill="clear"
+              frame={{ width: ROOT_TITLE_CAPSULE_WIDTH, height: NAVIGATION_CONTROL_HEIGHT }}
+              {...tabCapsuleSurface()} />
+          </VStack>
+          <Text font="largeTitle" fontWeight={collapsed ? "semibold" : "bold"} foregroundStyle="label"
+            lineLimit={1} minScaleFactor={0.7} frame={{ width: ROOT_TITLE_CAPSULE_WIDTH, alignment: "leading" }}
+            scaleEffect={collapsed ? 0.5 : 1}>{title}</Text>
+        </ZStack>
         <Spacer />
         <Button title="关闭" systemImage="xmark" labelStyle="iconOnly" buttonStyle="plain" action={close}
           font={17} fontWeight="semibold" foregroundStyle="label"
