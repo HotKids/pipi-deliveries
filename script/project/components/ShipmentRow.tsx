@@ -73,7 +73,6 @@ export function ShipmentRow(props: {
       }
     >
       <CourierIcon
-        deferArtwork
         courierCode={item.identity.courierCode}
         companyName={item.identity.companyName}
         accountOrder={Boolean(
