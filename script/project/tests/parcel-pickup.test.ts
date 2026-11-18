@@ -640,8 +640,11 @@ assert.match(stationIdentitySource, /preferredColorScheme="light"\s+contentShape
 assert.doesNotMatch(stationIdentitySource, /title="关闭" systemImage="xmark"/);
 assert.match(stationIdentitySource, /header=\{detailTitle\("取件人"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}[\s\S]*?header=\{detailTitle\("身份码编号"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}/);
 assert.match(stationIdentitySource,
-  /valid \|\| platform === "cainiao"[^]*?action=\{onSwitchCainiao\}[^]*?\{valid \? value\.replace\([^\n]*? : "暂无编号"\}[^]*?\{valid \? <Button[^]*?copyText\(value\)/,
-  "a missing Cainiao code retains the variant switch and shows the placeholder without a copy action");
+  /valid \|\| \(platform === "cainiao" && !busy && failure !== null\)\s*\? \([^]*?action=\{onSwitchCainiao\}[^]*?\{valid \? value\.replace\([^\n]*? : "暂无编号"\}[^]*?\{valid \? <Button[^]*?copyText\(value\)/,
+  "the number row and variant switch require a valid code or a completed Cainiao failure");
+assert.match(stationIdentitySource,
+  /foregroundStyle=\{valid \? "label" : "secondaryLabel"\}[^]*?frame=\{\{ maxWidth: "infinity", alignment: valid \? "leading" : "trailing" \}\}[^]*? : "暂无编号"\}/,
+  "the unavailable number uses the form's trailing secondary value alignment");
 assert.match(stationIdentitySource, /listRowInsets=\{valid \? SCAN_ROW_INSETS : DETAIL_ROW_INSETS\}/);
 assert.match(stationIdentitySource, /<Text font=\{16\} foregroundStyle="secondaryLabel" multilineTextAlignment="center"\s*frame=\{\{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT \}\}>\s*\{status\}/,
   "an unavailable scan uses the shared detail-row height and insets");
