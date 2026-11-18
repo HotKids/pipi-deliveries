@@ -1,5 +1,5 @@
 import {
-  AppEvents, Button, Canvas, Form, GeometryReader, HStack, Image, Section,
+  AppEvents, Button, Canvas, Form, GeometryReader, HStack, Image, QRImage, Section,
   Text, VStack, ZStack, useEffect, useMemo, useObservable, useRef, useState,
 } from "scripting";
 import { bundledImage } from "../components/bundled-image";
@@ -19,14 +19,13 @@ const IDENTITY_CODE_TITLES: Record<IdentityPlatform, string> = {
 };
 
 type ScanFormat = "barcode" | "qr";
-type ScanState = Readonly<{ display: { code: StationIdentityCode; qr: UIImage | null } | null; remaining: number }>;
-const EMPTY_SCAN: ScanState = { display: null, remaining: 0 };
+type ScanState = [value: string, expiresAtMs: number, remaining: number, mobile: string];
+const EMPTY_SCAN: ScanState = ["", 0, 0, ""];
 const identityCache = new Map<IdentityPlatform, { generation: string; code: StationIdentityCode }>();
 const BARCODE_SHAPE = { type: "rect", cornerRadius: 10 } as const;
 const QR_SHAPE = { type: "rect", cornerRadius: 14 } as const;
 
-export function StationIdentityMark({ asset }: { asset: IdentityPlatform | "taobao" }) {
-  const size = 28;
+export function StationIdentityMark({ asset, size = 28 }: { asset: IdentityPlatform | "taobao"; size?: number }) {
   const frame = { width: size, height: size };
   const artwork = bundledImage(`platform-accounts/${asset}.png`);
   return artwork ? <Image image={artwork}
@@ -62,13 +61,13 @@ function Barcode({ widthList, width, height, vertical = false }: {
 }) {
   const modules = widthList.reduce((sum, width) => sum + width, 20);
   return (
-    <Canvas frame={{ width, height, maxWidth: width === undefined ? 330 : undefined }}
+    <Canvas frame={{ width, height, maxWidth: width === undefined ? Math.min(Device.screen.width - 64, 330) : undefined }}
       clipShape={BARCODE_SHAPE}
       draw={(ctx, size) => {
         ctx.fillStyle = "white";
         ctx.fillRect(0, 0, size.width, size.height);
         const unit = (vertical ? size.height : size.width) / modules;
-        const thickness = (vertical ? size.width : size.height) - 24;
+        const thickness = vertical ? size.width : size.height;
         const scale = Device.screen.scale;
         ctx.fillStyle = "black";
         let offset = 10;
@@ -77,8 +76,8 @@ function Barcode({ widthList, width, height, vertical = false }: {
           if (index % 2 === 0) {
             const start = Math.round(offset * unit * scale) / scale;
             const end = Math.round((offset + width) * unit * scale) / scale;
-            if (vertical) ctx.fillRect(12, start, thickness, end - start);
-            else ctx.fillRect(start, 12, end - start, thickness);
+            if (vertical) ctx.fillRect(0, start, thickness, end - start);
+            else ctx.fillRect(start, 0, end - start, thickness);
           }
           offset += width;
         }
@@ -88,7 +87,7 @@ function Barcode({ widthList, width, height, vertical = false }: {
 
 function countdown(seconds: number): string {
   const minutes = String(Math.floor(seconds / 60)).padStart(2, "0");
-  return `${minutes}:${String(seconds % 60).padStart(2, "0")} 后自动刷新`;
+  return seconds > 1 ? `${minutes}:${String(seconds % 60).padStart(2, "0")} 后自动换码` : "正在自动换码…";
 }
 
 function FullScreenIdentity({ format, scan, onClose }: {
@@ -96,21 +95,18 @@ function FullScreenIdentity({ format, scan, onClose }: {
   scan: Observable<ScanState>;
   onClose: () => void;
 }) {
-  const [{ display, remaining }, setScan] = useState(() => scan.value);
+  const [[value, , remaining], setScan] = useState(() => scan.value);
   useEffect(() => {
     scan.subscribe(setScan);
     setScan(scan.value);
     return () => scan.unsubscribe(setScan);
   }, [scan]);
-  const code = display?.code.value;
-  const widths = useMemo(() => code ? code128Widths(code) : [], [code]);
-  const image = display?.qr;
+  const widths = useMemo(() => value ? code128Widths(value) : [], [value]);
   return (
-    <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
-      <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} background="white" ignoresSafeArea />
-      {code && remaining > 0 ? (
+    <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} background="white" ignoresSafeArea>
+      {value && remaining > 0 ? (
         <VStack spacing={18} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-          padding={{ top: 72, bottom: 32, horizontal: 24 }}>
+          padding={{ top: 104, bottom: 40, horizontal: 24 }}>
           <GeometryReader>
             {({ size }) => {
               const { width, height } = Device.screen;
@@ -123,26 +119,25 @@ function FullScreenIdentity({ format, scan, onClose }: {
                   {format === "barcode" && longer > 24 && shorter > 24
                     ? <Barcode widthList={widths} vertical={!landscape}
                       width={landscape ? longer : shorter} height={landscape ? shorter : longer} />
-                    : format === "qr" && image && qrSize > 0
-                      ? <Image image={image} resizable scaleToFit interpolation="none"
-                        frame={{ width: qrSize, height: qrSize }} />
+                    : format === "qr" && qrSize > 0
+                      ? <QRImage data={value} size={qrSize} />
                       : null}
                 </VStack>
               );
             }}
           </GeometryReader>
-          <VStack spacing={6}>
+          <VStack spacing={8}>
             <Text font={14} fontWeight="medium" foregroundStyle="#1C1C1E" lineLimit={1}
-              minScaleFactor={0.55} monospacedDigit>{code}</Text>
+              minScaleFactor={0.55}>{value}</Text>
             <Text font={12} foregroundStyle="#636366">
-              {format === "barcode" ? "请将条码对准扫码口" : "请将二维码对准扫描区"}
+              {format === "barcode" ? "条码已横向铺满，直接对准扫码口" : "二维码已放大，请对准扫描区"}
             </Text>
             <Text font={12} monospacedDigit foregroundStyle="#636366">{countdown(remaining)}</Text>
           </VStack>
         </VStack>
       ) : <Text font={15} foregroundStyle="#636366">身份码已过期</Text>}
       <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity", alignment: "topTrailing" }}
-        padding={{ top: 16, trailing: 20 }}>
+        padding={{ top: 56, trailing: 20 }}>
         <Button title="关闭" systemImage="xmark" labelStyle="iconOnly" buttonStyle="plain" action={onClose}
           foregroundStyle="#1C1C1E" frame={{ width: 44, height: 44 }}
           background={{ style: "#F1F1F3", shape: "circle" }} />
@@ -166,7 +161,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
   expectedGeneration?: string;
 }) {
   const scan = useObservable<ScanState>(EMPTY_SCAN);
-  const { display, remaining } = scan.value;
+  const [value, expiresAtMs, remaining, mobile] = scan.value;
   const [full, setFull] = useState<ScanFormat | null>(null);
   const [busy, setBusy] = useState(Boolean(expectedGeneration));
   const [loggingIn, setLoggingIn] = useState(false);
@@ -177,7 +172,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
   const busyRef = useRef(false);
   const generation = useRef(0);
   const requestedRenewal = useRef(0);
-  const widthList = useMemo(() => display ? code128Widths(display.code.value) : [], [display]);
+  const widthList = useMemo(() => value ? code128Widths(value) : [], [value]);
   const currentSession = () => expectedGeneration ? currentPlatformSession(platform, expectedGeneration) : null;
 
   function clear() {
@@ -185,14 +180,10 @@ function StationIdentityContent({ platform, expectedGeneration }: {
     scan.setValue(EMPTY_SCAN);
   }
 
-  async function showCode(code: StationIdentityCode, request: number) {
-    const current = () => mounted.current && active.current && request === generation.current && !!currentSession();
+  function showCode(code: StationIdentityCode, request: number) {
+    if (!mounted.current || !active.current || request !== generation.current || !currentSession()) return;
     const remaining = Math.ceil((code.expiresAtMs - Date.now()) / 1_000);
-    if (!current() || remaining <= 0) return;
-    scan.setValue({ display: { code, qr: null }, remaining });
-    const qr = await QRCode.generate(code.value).catch(() => null);
-    const shown = scan.value;
-    if (qr && current() && shown.display?.code === code) scan.setValue({ ...shown, display: { code, qr } });
+    if (remaining > 0) scan.setValue([code.value, code.expiresAtMs, remaining, code.mobile ?? ""]);
   }
 
   async function refresh(manual = false) {
@@ -209,7 +200,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
       if (!currentSession()) return;
       if (code.expiresAtMs <= Date.now()) throw new PlatformWireError("unavailable");
       identityCache.set(platform, { generation: session.generation, code });
-      void showCode(code, request);
+      showCode(code, request);
     } catch (error) {
       if (mounted.current && active.current && request === generation.current) {
         const verification = error instanceof PlatformWireError && error.reason === "verification";
@@ -219,7 +210,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
       busyRef.current = false;
       if (mounted.current) {
         setBusy(false);
-        if (active.current && request !== generation.current && !scan.value.display) void refresh();
+        if (active.current && request !== generation.current && !scan.value[0]) void refresh();
       }
     }
   }
@@ -252,20 +243,19 @@ function StationIdentityContent({ platform, expectedGeneration }: {
     function tick() {
       if (!mounted.current) return;
       timer = setTimeout(tick, 500);
-      const current = scan.value;
-      if (!active.current || !current.display) return;
-      const { code } = current.display;
+      const [value, expiresAtMs, remaining, mobile] = scan.value;
+      if (!active.current || !value) return;
       const time = Date.now();
-      const left = Math.max(0, Math.ceil((code.expiresAtMs - time) / 1_000));
-      if (left !== current.remaining) scan.setValue(left ? { display: current.display, remaining: left } : EMPTY_SCAN);
-      if (code.expiresAtMs - time <= 1000 && requestedRenewal.current !== code.expiresAtMs) {
-        requestedRenewal.current = code.expiresAtMs;
+      const left = Math.max(0, Math.ceil((expiresAtMs - time) / 1_000));
+      if (left !== remaining) scan.setValue(left ? [value, expiresAtMs, left, mobile] : EMPTY_SCAN);
+      if (expiresAtMs - time <= 1000 && requestedRenewal.current !== expiresAtMs) {
+        requestedRenewal.current = expiresAtMs;
         void refresh();
       }
     }
     tick();
     const cached = identityCache.get(platform);
-    if (cached?.generation === expectedGeneration) void showCode(cached.code, generation.current);
+    if (cached?.generation === expectedGeneration) showCode(cached.code, generation.current);
     void refresh();
     return () => {
       mounted.current = false;
@@ -274,7 +264,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
     };
   }, []);
 
-  const code = remaining > 0 ? display?.code : undefined;
+  const valid = Boolean(value) && remaining > 0;
   return (
     <Form navigationTitle={IDENTITY_CODE_TITLES[platform]} listSectionSpacing={8}
       navigationBarTitleDisplayMode="inline"
@@ -302,7 +292,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
                 <FullScreenIdentity format={full} scan={scan} onClose={() => setFull(null)} />
               ) : <VStack />,
             }}>
-            {display && code ? (
+            {valid ? (
               <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
                 <Button buttonStyle="plain" action={() => setFull("barcode")}>
                   <VStack padding={{ vertical: 8, horizontal: 12 }}
@@ -310,17 +300,14 @@ function StationIdentityContent({ platform, expectedGeneration }: {
                     <Barcode widthList={widthList} height={78} />
                   </VStack>
                 </Button>
-                {display.qr ? (
-                  <Button buttonStyle="plain" action={() => setFull("qr")}>
-                    <Image image={display.qr} resizable scaleToFit interpolation="none"
-                      frame={{ width: 184, height: 184 }} padding={8}
-                      background={{ style: "white", shape: QR_SHAPE }} contentShape="rect" />
-                  </Button>
-                ) : null}
-                <Text font={13} foregroundStyle="secondaryLabel">
-                  {display.qr ? "点条形码或二维码可全屏出示" : "点条形码可全屏出示"}
-                </Text>
-                <Text font={12} monospacedDigit foregroundStyle="secondaryLabel">
+                <Button buttonStyle="plain" action={() => setFull("qr")}>
+                  <VStack padding={10} frame={{ width: 200, height: 200 }}
+                    background={{ style: "white", shape: QR_SHAPE }} contentShape="rect">
+                    <QRImage data={value} size={184} />
+                  </VStack>
+                </Button>
+                <Text font={13} foregroundStyle="secondaryLabel">点条码或二维码可全屏出示</Text>
+                <Text font={12} foregroundStyle={remaining > 60 ? "tertiaryLabel" : "systemRed"}>
                   {busy ? "正在刷新…" : countdown(remaining)}
                 </Text>
               </VStack>
@@ -330,25 +317,25 @@ function StationIdentityContent({ platform, expectedGeneration }: {
           </VStack>
         </Section>
       ) : null}
-      {code?.mobile ? (
+      {valid && mobile ? (
         <Section header={<Text>取件人</Text>}>
           <HStack>
             <Text>绑定手机号</Text>
-            <Text foregroundStyle="secondaryLabel" frame={{ maxWidth: "infinity", alignment: "trailing" }}>{code.mobile}</Text>
+            <Text foregroundStyle="secondaryLabel" frame={{ maxWidth: "infinity", alignment: "trailing" }}>{mobile}</Text>
           </HStack>
         </Section>
       ) : null}
-      {code ? (
-        <Section header={<Text>身份码编号</Text>}>
-          <HStack spacing={12}>
-            <StationIdentityMark asset={platform === "cainiao" ? "taobao" : platform} />
-            <Text font={17} fontWeight="bold" lineLimit={1} minScaleFactor={0.55}
+      {valid ? (
+        <Section header={<Text font={13} foregroundStyle="secondaryLabel">身份码编号</Text>}>
+          <HStack spacing={12} padding={{ vertical: 6 }} frame={{ maxWidth: "infinity" }}>
+            <StationIdentityMark asset={platform === "cainiao" ? "taobao" : platform} size={34} />
+            <Text font={24} fontWeight="bold" lineLimit={1} minScaleFactor={0.55}
               frame={{ maxWidth: "infinity", alignment: "leading" }}>
-              {code.value.replace(/(\d{4})(\d{4})(\d{4})/, "$1 $2 $3")}
+              {value.replace(/(\d{4})(\d{4})(\d{4})/, "$1 $2 $3")}
             </Text>
             <Button title="复制" buttonStyle="bordered" action={() => {
-              if (!currentSession() || code.expiresAtMs <= Date.now()) return;
-              void copyText(code.value);
+              if (!currentSession() || expiresAtMs <= Date.now()) return;
+              void copyText(value);
             }} />
           </HStack>
         </Section>

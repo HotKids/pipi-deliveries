@@ -447,21 +447,20 @@ await host.stopParcelActivity();
 
 const activityCardSource = readFileSync(new URL("../components/ParcelLiveActivityCard.tsx", import.meta.url), "utf8");
 assert.match(activityCardSource, /handoff \? "我已寄件" : "我已取件"/, "the pickup and handoff activities each show their completion capsule");
-assert.match(activityCardSource, /background=\{expanded \? undefined : cardBackground\}/,
-  "the Lock Screen, settings and pickup cards paint the same gradient, and the island uses system black");
-assert.doesNotMatch(activityCardSource, /\bglassEffect\b/);
+assert.match(activityCardSource, /background=\{expanded \? undefined : glass \? \([\s\S]*?<Rectangle fill=\{cardBackground\} \/>[\s\S]*?glassEffect=\{\{ glass: UIGlass\.clear\(\), shape: cardShape \}\}[\s\S]*?\) : cardBackground\}/,
+  "the Lock Screen overlays Liquid Glass on the pickup gradient, while the island uses system black");
 assert.match(activityCardSource, /activityBackgroundTint=\{lockScreen \? "clear" : undefined\}/);
 assert.doesNotMatch(activityCardSource, /<(?:GeometryReader|Canvas)\b/, "the lock screen snapshots a complete view tree");
 assert.match(activityCardSource, /frame=\{\{ \.\.\.slot\(bottom - top\), minWidth: 0, maxWidth: "infinity"/);
 assert.match(activityCardSource, /systemName="shippingbox\.fill" font=\{card\.capsuleIcon \* scale\}/,
   "the completion control uses the native package symbol");
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
-assert.match(activityEntrySource, /<LiveActivityUIExpandedBottom>\s*<ParcelLiveActivityCard\b[^>]*\bexpanded\b/,
+assert.match(activityEntrySource, /<LiveActivityUIExpandedBottom>\s*<VStack padding=\{\{ bottom: 10, horizontal: 4 \}\}[^>]*>\s*<ParcelLiveActivityCard\b[^>]*\bexpanded\b/,
   "the full Pipi card uses the reference script's full-width expanded region");
 assert.match(activityCardSource, /font=\{card\.codeFont \* scale\} fontWeight="semibold" fontWidth="condensed"/,
   "the native font fits the Pipi code column at its original point size");
-assert.match(activityCardSource, /const flexibleHeight = lockScreen && width !== undefined;/,
-  "expanded uses the Pipi line heights and spacing without host compression");
+assert.match(activityCardSource, /const flexibleHeight = lockScreen \|\| expanded;/,
+  "the system presentations can yield empty space at their native height limits");
 const activitySettingsSource = readFileSync(new URL("../pages/PickupSettingsPages.tsx", import.meta.url), "utf8");
 assert.equal((activitySettingsSource.match(/<ParcelActivityPreviewCard\b/g) ?? []).length, 1,
   "the setting contains one example card");
@@ -506,5 +505,10 @@ const floatingButtonSource = readFileSync(new URL("../components/TabFloatingActi
 assert.match(floatingButtonSource, /<Label title=\{title\} systemImage=\{symbol\} labelStyle="iconOnly"/,
   "both floating actions use a symbol-only label");
 assert.match(pickupSource, /onLocationTap=\{canSwitch \? \(\) => setShowAddress\(!showAddress\)/);
+const stationIdentitySource = readFileSync(new URL("../pages/StationIdentityPage.tsx", import.meta.url), "utf8");
+assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{184\} \/>/,
+  "the card pairs a QR code with the barcode for every valid identity");
+assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{qrSize\} \/>/,
+  "the full-screen QR uses the same current identity payload");
 
 console.log("parcel OCR, tab entry, and Activity lifecycle tests passed");

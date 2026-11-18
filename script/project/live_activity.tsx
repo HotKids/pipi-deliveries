@@ -6,6 +6,7 @@ import {
   LiveActivityUIExpandedBottom,
   Script,
   Text,
+  VStack,
   ZStack,
 } from "scripting";
 import { CompleteParcelActivityIntent } from "./app_intents";
@@ -60,7 +61,9 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
         minimal={<HStack widgetURL={url}>{glyph}</HStack>}
       >
         <LiveActivityUIExpandedBottom>
-          <ParcelLiveActivityCard {...cardProps} width={width} expanded />
+          <VStack padding={{ bottom: 10, horizontal: 4 }} frame={{ maxWidth: "infinity" }}>
+            <ParcelLiveActivityCard {...cardProps} width={width} expanded />
+          </VStack>
         </LiveActivityUIExpandedBottom>
       </LiveActivityUI>
     );
