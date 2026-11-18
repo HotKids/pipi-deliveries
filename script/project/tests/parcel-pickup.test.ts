@@ -645,6 +645,9 @@ assert.match(stationIdentitySource,
 assert.match(stationIdentitySource,
   /foregroundStyle=\{valid \? "label" : "secondaryLabel"\}[^]*?frame=\{\{ maxWidth: "infinity", alignment: valid \? "leading" : "trailing" \}\}[^]*? : "暂无编号"\}/,
   "the unavailable number uses the form's trailing secondary value alignment");
+assert.match(stationIdentitySource,
+  /<Section header=\{detailTitle\("身份码编号"\)\}\s+footer=\{platform === "cainiao" \? \(\s*<Text font="footnote" foregroundStyle="secondaryLabel">点击图标切换淘宝身份码与菜鸟出库码<\/Text>\s*\) : undefined\}>/,
+  "the switch hint is a form footer below the Cainiao number card");
 assert.match(stationIdentitySource, /listRowInsets=\{valid \? SCAN_ROW_INSETS : DETAIL_ROW_INSETS\}/);
 assert.match(stationIdentitySource, /<Text font=\{16\} foregroundStyle="secondaryLabel" multilineTextAlignment="center"\s*frame=\{\{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT \}\}>\s*\{status\}/,
   "an unavailable scan uses the shared detail-row height and insets");
