@@ -7,6 +7,8 @@ import { formatListTime } from "./time-presentation";
 import { parcelHandoffDeadline } from "./parcel-handoff-expiry";
 import type { ParcelLookup } from "./parcel-code-ocr";
 
+export const PICKUP_TAB_TITLE = "待取";
+
 export const PLATFORM_ACCOUNT_NAMES = {
   cainiao: "菜鸟",
   pinduoduo: "拼多多",
