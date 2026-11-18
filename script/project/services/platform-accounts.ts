@@ -197,9 +197,9 @@ export function readPlatformAccount(platform: ExpressPlatform): PlatformAccount 
   return { ...account, label, cainiaoLabelKind: "identifier" };
 }
 
-const listeners = new Set<() => void>();
+const listeners = new Set<(platform: ExpressPlatform) => void>();
 
-export function onPlatformAccountsChanged(listener: () => void): () => void {
+export function onPlatformAccountsChanged(listener: (platform: ExpressPlatform) => void): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
@@ -209,7 +209,7 @@ function saveAccount(platform: ExpressPlatform, account: PlatformAccount): void 
     accessibility: "first_unlock_this_device",
     synchronizable: false,
   })) throw new Error("Unable to save platform account");
-  for (const listener of listeners) listener();
+  for (const listener of listeners) listener(platform);
 }
 
 export function accountStatus(platform: ExpressPlatform): AccountStatus {

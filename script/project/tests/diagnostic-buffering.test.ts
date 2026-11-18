@@ -88,4 +88,50 @@ missingFiles.writeDiagnostic("refresh.started", { flowId: "fresh-known-epoch" })
 missingFiles.flushDiagnostics();
 assert.deepEqual(missingFiles.readDiagnostics().map(entry => entry.details.flowId), ["fresh-known-epoch"],
   "an unknown old buffer cannot be assigned to an already-cleared epoch by the next new line");
+
+logger.clearDiagnostics();
+logger.startAppDiagnosticWrites();
+let syncRows = 0;
+let asyncRows = 0;
+let beforeRowWrite: (() => Promise<void>) | undefined;
+Object.assign(FileManager, {
+  exists: async (...args: Parameters<typeof FileManager.existsSync>) => FileManager.existsSync(...args),
+  readDirectory: async (...args: Parameters<typeof FileManager.readDirectorySync>) => FileManager.readDirectorySync(...args),
+  readAsString: async (...args: Parameters<typeof FileManager.readAsStringSync>) => FileManager.readAsStringSync(...args),
+  createDirectory: async (...args: Parameters<typeof FileManager.createDirectorySync>) => FileManager.createDirectorySync(...args),
+  remove: async (...args: Parameters<typeof FileManager.removeSync>) => FileManager.removeSync(...args),
+  writeAsStringSync(path: string, value: string) {
+    if (/\/r\d+\.json$/.test(path)) syncRows++;
+    nativeWrite(path, value);
+  },
+  async writeAsString(path: string, value: string) {
+    if (/\/r\d+\.json$/.test(path)) {
+      asyncRows++;
+      await beforeRowWrite?.();
+    }
+    nativeWrite(path, value);
+  },
+});
+logger.writeDiagnosticBatch("refresh.stage.started", Array.from({ length: 20 }, () => ({ flowId: "app-write" })));
+logger.writeDiagnostic("refresh.succeeded", { flowId: "app-write" });
+assert.equal(syncRows + asyncRows, 0, "app diagnostics must return before beginning native row writes");
+await logger.drainAppDiagnostics();
+assert.equal(syncRows, 0, "the app host must use the asynchronous row writer");
+assert.equal(asyncRows, 21);
+assert.equal(rawEntries().at(-1)?.event, "refresh.succeeded");
+
+let continueWrites!: () => void;
+let writeStarted!: () => void;
+const writing = new Promise<void>(resolve => { writeStarted = resolve; });
+const pendingRow = new Promise<void>(resolve => { continueWrites = resolve; });
+beforeRowWrite = () => { writeStarted(); return pendingRow; };
+logger.writeDiagnosticBatch("refresh.started", [{ flowId: "app-clear-race" }]);
+await writing;
+logger.clearDiagnostics();
+logger.writeDiagnosticBatch("refresh.started", [{ flowId: "app-after-clear" }]);
+beforeRowWrite = undefined;
+continueWrites();
+await logger.drainAppDiagnostics();
+assert.deepEqual(logger.readDiagnostics().map(entry => entry.details.flowId), ["app-after-clear"],
+  "a native write in flight at clear must not publish old rows or drop new rows");
 console.log("diagnostic buffering tests passed");

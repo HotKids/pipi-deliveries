@@ -252,7 +252,7 @@ export async function detectManualCarrier(
 export class ManualCarrierDetectionCoordinator {
   private readonly inFlight = new Map<
     string,
-    Promise<ManualCarrierDetection | null>
+    { task: Promise<ManualCarrierDetection | null>; signal?: AbortSignal }
   >();
   private lastResolved: Readonly<{
     waybill: string;
@@ -266,21 +266,21 @@ export class ManualCarrierDetectionCoordinator {
     options: Readonly<{ deadlineAtMs?: number; signal?: AbortSignal }> = {},
   ): Promise<ManualCarrierDetection | null> {
     const waybill = normalizeWaybill(waybillInput);
-    if (waybill.length < 6) return Promise.resolve(null);
+    if (waybill.length < 6 || options.signal?.aborted) return Promise.resolve(null);
     if (this.lastResolved?.waybill === waybill) {
       return Promise.resolve(this.lastResolved.value);
     }
     const existing = this.inFlight.get(waybill);
-    if (existing) return existing;
+    if (existing && !existing.signal?.aborted) return existing.task;
     const task = this.detect(waybill, options)
       .then((value) => {
-        if (value) this.lastResolved = { waybill, value };
+        if (value && !options.signal?.aborted) this.lastResolved = { waybill, value };
         return value;
       })
       .finally(() => {
-        if (this.inFlight.get(waybill) === task) this.inFlight.delete(waybill);
+        if (this.inFlight.get(waybill)?.task === task) this.inFlight.delete(waybill);
       });
-    this.inFlight.set(waybill, task);
+    this.inFlight.set(waybill, { task, signal: options.signal });
     return task;
   }
 }

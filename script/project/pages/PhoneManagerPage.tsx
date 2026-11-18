@@ -91,17 +91,21 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   useEffect(() => {
     if (!visible) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    function scheduleAccounts() {
+    const pending = new Set<ExpressPlatform>(PLATFORM_SOURCES);
+    function scheduleAccounts(changed?: ExpressPlatform) {
+      if (changed) pending.add(changed);
       if (timer !== undefined) return;
       timer = setTimeout(() => {
         timer = undefined;
         const accounts: Partial<Record<ExpressPlatform, AccountStatus>> = {};
-        for (const platform of PLATFORM_SOURCES) {
+        for (const platform of pending) {
           try { accounts[platform] = accountStatus(platform); } catch {
+            accounts[platform] = undefined;
             writeDiagnostic("manager.platform_status.unavailable", { sourceProvider: platform }, "warning");
           }
         }
-        setPlatformAccounts(accounts);
+        pending.clear();
+        setPlatformAccounts(previous => ({ ...previous, ...accounts }));
       }, 0);
     }
     scheduleAccounts();

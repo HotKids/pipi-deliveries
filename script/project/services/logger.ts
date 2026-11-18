@@ -6,8 +6,9 @@ import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD, SCRIPT_VERSION } from "./build
 import { OperationTimeoutError, type RequestTimeoutDetails, type WaitTimeoutDetails } from "./deadline";
 import {
   clearDiagnosticFiles, diagnosticBatchId, diagnosticEpoch, diagnosticFiles,
-  diagnosticLegacyImported, markDiagnosticLegacyImported, pruneDiagnosticBatchesByMetadata,
-  pruneDiagnosticFiles, publishDiagnosticBatch,
+  diagnosticLegacyImported, markDiagnosticLegacyImported, pruneDiagnosticBatchesAsync,
+  pruneDiagnosticBatchesByMetadata, pruneDiagnosticFiles, publishDiagnosticBatch,
+  publishDiagnosticBatchAsync, readDiagnosticEpoch,
 } from "./diagnostic-store";
 
 export type DiagnosticLevel = "info" | "warning" | "error";
@@ -298,7 +299,11 @@ const bufferedEntries: DiagnosticEntry[] = [];
 const FLUSH_RECORDS = 20;
 let flushScheduled = false;
 let bufferedEpoch: string | undefined;
-let pendingPublication: { id: string; epoch: string; entries: DiagnosticEntry[] } | undefined;
+type DiagnosticPublication = { id: string; epoch: string; entries: DiagnosticEntry[]; bufferedIds: Set<string> };
+let pendingPublication: DiagnosticPublication | undefined;
+let appDiagnosticWrites = false;
+let appFlushRequested = false;
+let appFlush: Promise<void> | undefined;
 
 const JD_PROBE_COUNT_KEYS = new Set<keyof DiagnosticDetails>([
   "unionFetchResponseCount", "unionXhrResponseCount", "unionXhrJsonResponseCount",
@@ -963,16 +968,26 @@ function storedEntries(now = Date.now(), sanitize = false): DiagnosticEntry[] {
   return kept.map(row => sanitize ? cleanStoredEntry(row.value) : row.value);
 }
 
-function migrateLegacyDiagnostics(now: number): void {
-  if (diagnosticEpoch() !== "legacy" || diagnosticLegacyImported()) return;
+function legacyDiagnosticEntries(now: number): DiagnosticEntry[] | undefined {
+  if (diagnosticLegacyImported()) return;
   let value: unknown;
   try { value = Storage.get(DIAGNOSTIC_KEY, { shared: true }); } catch { return; }
-  const entries = Array.isArray(value) ? value.filter(entry => validEntry(entry, now)).slice(-MAX_RECORDS)
+  return Array.isArray(value) ? value.filter(entry => validEntry(entry, now)).slice(-MAX_RECORDS)
     .map(entry => cleanStoredEntry(entry, false)) : [];
-  if (entries.length) publishDiagnosticBatch(diagnosticBatchId(), "legacy", entries);
+}
+
+function retireLegacyDiagnostics(): void {
   markDiagnosticLegacyImported();
   try { Storage.remove(DIAGNOSTIC_KEY, { shared: true }); }
   catch { /* Published immutable records remain authoritative if legacy cleanup fails. */ }
+}
+
+function migrateLegacyDiagnostics(now: number): void {
+  if (diagnosticEpoch() !== "legacy") return;
+  const entries = legacyDiagnosticEntries(now);
+  if (!entries) return;
+  if (entries.length) publishDiagnosticBatch(diagnosticBatchId(), "legacy", entries);
+  retireLegacyDiagnostics();
 }
 
 export function createDiagnosticFlowId(prefix: string): string {
@@ -1393,39 +1408,104 @@ function bufferDiagnosticBatch(
   return true;
 }
 
-/** Each runtime publishes an independent batch; no shared array is read/modified/overwritten. */
-export function flushDiagnostics(): void {
-  if (!bufferedEntries.length) return;
-  if (!diagnosticsEnabled()) {
+function reconcileBufferedEpoch(epoch: string): boolean {
+  if (bufferedEpoch !== undefined && bufferedEpoch !== epoch) {
     bufferedEntries.length = 0;
     pendingPublication = undefined;
+    bufferedEpoch = epoch;
+    return false;
+  }
+  // An unobserved clear cannot authorize publishing older records into its new epoch.
+  if (bufferedEpoch === undefined && epoch !== "legacy") return false;
+  bufferedEpoch = epoch;
+  return true;
+}
+
+function nextDiagnosticPublication(epoch: string, now: number): DiagnosticPublication {
+  return pendingPublication ??= {
+    id: diagnosticBatchId(), epoch,
+    entries: bufferedEntries.filter(entry => validEntry(entry, now)),
+    bufferedIds: new Set(bufferedEntries.map(entry => entry.id)),
+  };
+}
+
+function acknowledgeDiagnosticPublication(batch: DiagnosticPublication): void {
+  if (pendingPublication !== batch) return;
+  for (let index = bufferedEntries.length - 1; index >= 0; index--) {
+    if (batch.bufferedIds.has(bufferedEntries[index]!.id)) bufferedEntries.splice(index, 1);
+  }
+  pendingPublication = undefined;
+}
+
+function hasDiagnosticWork(): boolean {
+  if (!bufferedEntries.length) return false;
+  if (diagnosticsEnabled()) return true;
+  bufferedEntries.length = 0;
+  pendingPublication = undefined;
+  return false;
+}
+
+async function flushAppDiagnosticBatch(): Promise<void> {
+  if (!hasDiagnosticWork()) return;
+  try {
+    const observedEpoch = bufferedEpoch;
+    const epoch = await readDiagnosticEpoch();
+    if (!hasDiagnosticWork() || bufferedEpoch !== observedEpoch || !reconcileBufferedEpoch(epoch)) return;
+    const now = Date.now();
+    if (epoch === "legacy") {
+      const legacy = legacyDiagnosticEntries(now);
+      const current = () => bufferedEpoch === epoch && hasDiagnosticWork();
+      if (legacy && (!legacy.length || await publishDiagnosticBatchAsync(diagnosticBatchId(), epoch, legacy, current))
+        && current()) retireLegacyDiagnostics();
+    }
+    for (let pass = 0; pass < 2 && bufferedEntries.length && bufferedEpoch === epoch; pass++) {
+      const batch = nextDiagnosticPublication(epoch, Date.now());
+      if (batch.entries.length && !await publishDiagnosticBatchAsync(batch.id, batch.epoch, batch.entries,
+        () => pendingPublication === batch && diagnosticsEnabled())) return;
+      acknowledgeDiagnosticPublication(batch);
+    }
+    await pruneDiagnosticBatchesAsync(epoch, now, MAX_RECORDS, MAX_AGE_MS);
+  } catch { /* Retry the same batch at the next flush boundary. */ }
+}
+
+export function startAppDiagnosticWrites(): void {
+  appDiagnosticWrites = true;
+}
+
+function requestAppDiagnosticFlush(): void {
+  appFlushRequested = true;
+  if (appFlush) return;
+  appFlush = Promise.resolve().then(async () => {
+    do {
+      appFlushRequested = false;
+      await flushAppDiagnosticBatch();
+    } while (appFlushRequested);
+    appFlush = undefined;
+  });
+}
+
+export async function drainAppDiagnostics(): Promise<void> {
+  flushDiagnostics();
+  await appFlush;
+}
+
+/** Each runtime publishes its own batch. Short-lived widget and intent hosts flush before exiting. */
+export function flushDiagnostics(): void {
+  if (!bufferedEntries.length) return;
+  if (appDiagnosticWrites) {
+    requestAppDiagnosticFlush();
     return;
   }
+  if (!hasDiagnosticWork()) return;
   const now = Date.now();
   try {
     const epoch = diagnosticEpoch();
-    if (bufferedEpoch !== undefined && bufferedEpoch !== epoch) {
-      bufferedEntries.length = 0;
-      pendingPublication = undefined;
-      bufferedEpoch = epoch;
-      return;
-    }
-    // An unobserved clear cannot authorize publishing older records into its new epoch.
-    if (bufferedEpoch === undefined && epoch !== "legacy") return;
-    bufferedEpoch = epoch;
+    if (!reconcileBufferedEpoch(epoch)) return;
     migrateLegacyDiagnostics(now);
     for (let pass = 0; pass < 2 && bufferedEntries.length; pass++) {
-      if (!pendingPublication) pendingPublication = {
-        id: diagnosticBatchId(), epoch, entries: bufferedEntries.filter(entry => validEntry(entry, now)),
-      };
-      if (pendingPublication.entries.length) {
-        publishDiagnosticBatch(pendingPublication.id, pendingPublication.epoch, pendingPublication.entries);
-      }
-      const published = new Set(pendingPublication.entries.map(entry => entry.id));
-      for (let index = bufferedEntries.length - 1; index >= 0; index--) {
-        if (published.has(bufferedEntries[index]!.id) || !validEntry(bufferedEntries[index], now)) bufferedEntries.splice(index, 1);
-      }
-      pendingPublication = undefined;
+      const batch = nextDiagnosticPublication(epoch, now);
+      if (batch.entries.length) publishDiagnosticBatch(batch.id, batch.epoch, batch.entries);
+      acknowledgeDiagnosticPublication(batch);
     }
     pruneDiagnosticBatchesByMetadata(epoch, now, MAX_RECORDS, MAX_AGE_MS);
   } catch {
@@ -1433,7 +1513,7 @@ export function flushDiagnostics(): void {
   }
 }
 
-/** Append one synchronous batch, including this runtime's preceding buffered records. */
+/** Schedule a batch including this runtime's preceding buffered records. */
 export function writeDiagnosticBatch(
   event: string,
   details: readonly DiagnosticDetails[],

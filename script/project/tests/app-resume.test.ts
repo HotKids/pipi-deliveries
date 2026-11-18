@@ -119,6 +119,20 @@ await reloadAndRefreshOnResume({}, {
 });
 assert.deepEqual(loadFailureEvents, ["failed"]);
 
+const asynchronousEvents: string[] = [];
+let returnPersisted!: (state: AppState) => void;
+const asyncResume = reloadAndRefreshOnResume({ queryParameters: { shipment: "shipment-2" } }, {
+  load: () => new Promise(resolve => { returnPersisted = resolve; }),
+  onLoadFailed: () => assert.fail("expected the async read to succeed"),
+  applyPersisted: (value, shipmentId) => asynchronousEvents.push(`apply:${value.revision}:${shipmentId}`),
+  refresh: async () => { asynchronousEvents.push("refresh"); return { attempted: 0, succeeded: 0, failed: 0, state: refreshed }; },
+  applyRefreshed: value => asynchronousEvents.push(`refreshed:${value.revision}`),
+});
+assert.deepEqual(asynchronousEvents, [], "resume waits for the verified state before navigating or refreshing");
+returnPersisted(persisted);
+await asyncResume;
+assert.deepEqual(asynchronousEvents, ["apply:2:shipment-2", "refresh", "refreshed:3"]);
+
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const indexSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
 const homeSource = await readFile(resolve(projectDir, "pages/HomePage.tsx"), "utf8");
@@ -130,7 +144,7 @@ assert.match(
 );
 assert.match(
   indexSource,
-  /applyPersisted:[\s\S]*?setStartup\(\{ state: persisted \}\)[\s\S]*?setNavigationRequest/,
+  /applyPersisted:[\s\S]*?setStartup\(current =>[\s\S]*?\{ state: resumed \}\)[\s\S]*?setNavigationRequest/,
 );
 assert.match(indexSource, /onLoadFailed:[\s\S]*?"app.resume.failed"[\s\S]*?setStartup\(\{ state: null \}\)/);
 assert.match(indexSource, /refresh: \(\) => refreshAllShipments\(\)/);

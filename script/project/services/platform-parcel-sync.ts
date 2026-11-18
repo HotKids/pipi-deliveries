@@ -104,11 +104,10 @@ async function importPddParcels(session: PlatformSession, observations: readonly
 
 async function syncPlatform(
   platform: ExpressPlatform, session: PlatformSession, scope: ReadScope, publish: (state: AppState) => void,
+  before: AppState, visible: readonly Shipment[],
 ): Promise<PlatformSyncResult> {
   const current = () => projectionSceneActive() && currentPlatformSession(platform, session.generation) != null;
-  const before = loadState();
   const now = Date.now();
-  const visible = visibleShipments(before);
   const persist = (value: Omit<Parameters<typeof savePlatformParcelData>[0], "observed" | "owner" | "current">,
     observed = before) => {
     const saved = savePlatformParcelData({ ...value, observed, owner: session.ownerKey, current }, Date.now());
@@ -217,7 +216,11 @@ export async function refreshPlatformParcels(
     return session ? [{ platform, session }] : [];
   });
   if (!sessions.length) return summary;
-  let visible: readonly Shipment[] | undefined;
+  let snapshot: { state: AppState; visible: Shipment[] } | undefined;
+  const readSnapshot = () => {
+    const state = loadState();
+    return { state, visible: visibleShipments(state) };
+  };
   const tasks = sessions.flatMap(({ platform, session }) => {
     if (platform === "cainiao" && mode === "manual" && session.cainiaoLabelKind !== "nickname" &&
       !cainiaoProfileInFlight.has(session.generation)) {
@@ -235,9 +238,10 @@ export async function refreshPlatformParcels(
       const task = mode === "manual" ? previous.task : previous.task.then((outcome) => ({ ...outcome, added: 0 }));
       return [{ platform, task }];
     }
-    const scope = scopeFor(platform, session, visible ??= visibleShipments(loadState()), mode);
+    const { state, visible } = snapshot ??= readSnapshot();
+    const scope = scopeFor(platform, session, visible, mode);
     if (!scope.recipients && !scope.regular) return [];
-    const task = syncPlatform(platform, session, scope, publish).finally(() => {
+    const task = syncPlatform(platform, session, scope, publish, state, visible).finally(() => {
       const slot = inFlight.get(platform);
       if (slot?.task !== task) return;
       inFlight.delete(platform);
@@ -289,8 +293,11 @@ function cabinetForCard(session: PlatformSession | null, card: ParcelActivityCon
   return candidates.length === 1 ? candidates[0].parcel : null;
 }
 
-export function canOpenParcelCabinet(card: ParcelActivityContent): boolean {
-  return card.platform === "fengchao" && !!cabinetForCard(platformSession("fengchao"), card);
+export function pickupCabinetActions(cards: readonly ParcelActivityContent[]): ReadonlySet<ParcelActivityContent> {
+  const candidates = cards.filter(card => card.platform === "fengchao");
+  if (!candidates.length) return new Set();
+  const session = platformSession("fengchao");
+  return new Set(candidates.filter(card => cabinetForCard(session, card)));
 }
 
 const opening = new Set<string>();

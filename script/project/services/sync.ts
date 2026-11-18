@@ -14,7 +14,7 @@ import { replayPendingShipmentNotifications } from "./notifications";
 import { replayEnhancementUnsubscribes } from "./enhancement-unsubscribe";
 import { saveAccountAppRoutes } from "./routes";
 import { automaticBindingIdentityOf, cainiaoHasTrajectoryGap, isHomeAccountQuerySource } from "./shipment-policy";
-import { loadState } from "./storage";
+import { loadState, loadStateSnapshot, type LoadedStateSnapshot } from "./storage";
 import { listHeadline } from "./status";
 import { acquireRenewingDurableRefreshLease, durableRefreshLeaseDiagnostics, recordNetworkRefreshSuccess } from "./refresh-runtime-state";
 import { requestWidgetReload } from "./widgets";
@@ -92,6 +92,7 @@ async function runFullRefresh(
   accountListOnly: boolean,
   accountSourceFollowup: boolean,
   lease: FullRefreshLease,
+  before: LoadedStateSnapshot,
   onAccountPhase?: (summary: RefreshSummary) => void,
 ): Promise<RefreshSummary> {
   requireScriptSource(source);
@@ -107,7 +108,7 @@ async function runFullRefresh(
     backgroundHostSafe,
   });
   const startedAt = Date.now();
-  const initial = loadState(startedAt);
+  const initial = loadStateSnapshot(startedAt, before).state;
   writeDiagnostic("refresh.preparation.completed", {
     flowId, source, stage: "preparation", durationMs: Date.now() - preparationStartedAt,
     pendingNotifications: initial.pendingNotifications?.length || 0,
@@ -495,17 +496,17 @@ async function startFullRefresh(
   const blockerDeadlineAtMs = deadlineAtMs == null
     ? coordinationDeadlineAtMs
     : Math.min(deadlineAtMs, coordinationDeadlineAtMs);
-  let before: AppState;
+  let before: LoadedStateSnapshot;
   try {
-    before = loadState(startedAt);
+    before = loadStateSnapshot(startedAt);
     writeDiagnostic("refresh.started", {
       flowId,
       source,
       trigger,
       scriptVersion: SCRIPT_VERSION,
       clientBuild: SCRIPT_CLIENT_BUILD,
-      baseActiveSource: before.activeSource,
-      baseRevision: before.revision,
+      baseActiveSource: before.state.activeSource,
+      baseRevision: before.state.revision,
       executionBoundary: deadlineAtMs == null ? "per_stage" : "host_budget",
       ...(budgetMs == null ? {} : { budgetMs }),
     });
@@ -529,6 +530,7 @@ async function startFullRefresh(
         Boolean(options.accountListOnly),
         accountSourceFollowup,
         lease,
+        before,
         options.onAccountPhase,
       );
     },
@@ -573,7 +575,7 @@ async function startFullRefresh(
       if (
         !options.backgroundHostSafe &&
         statePresentationFingerprint(summary.state) !==
-          statePresentationFingerprint(before)
+          statePresentationFingerprint(before.state)
       ) {
         requestWidgetReload();
       }
@@ -585,8 +587,8 @@ async function startFullRefresh(
         {
           flowId,
           source,
-          baseActiveSource: before.activeSource,
-          baseRevision: before.revision,
+          baseActiveSource: before.state.activeSource,
+          baseRevision: before.state.revision,
           durationMs: Date.now() - startedAt,
           executionBoundary: deadlineAtMs == null ? "per_stage" : "host_budget",
           ...(budgetMs == null ? {} : { budgetMs }),

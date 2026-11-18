@@ -47,7 +47,7 @@ assert.match(
 // Rows must sit inside a Section: loose rows mixed with a Section and a VStack break row identity.
 assert.match(
   homeSource,
-  /<Section\b[^>]*>\s*\{shownShipments\.map\(\(shipment\) => \(/,
+  /<Section\b[^>]*>\s*<ForEach data=\{observableItems\} builder=\{\(\{ id, shipment, deleting, completing \}\) => \(\s*<ShipmentRow\s*key=\{id\}/,
   "shipment rows must be wrapped in their own Section",
 );
 

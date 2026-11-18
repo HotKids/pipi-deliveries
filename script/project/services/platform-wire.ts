@@ -1,4 +1,4 @@
-import { fetch } from "scripting";
+import { fetch, type AbortSignal } from "scripting";
 import {
   clearPlatformLogin, cookieHeader, cookiesForURL, cookieValue, currentPlatformSession,
   onPlatformAccountsChanged, providerCookies, replacePlatformCookies, trustedPlatformPage, type IdentityPlatform, type PlatformCookie,
@@ -89,9 +89,9 @@ export function retainJdLoginView(generation: string, view: WebViewController, d
   replaceJdBrowser({ generation, view, detached });
 }
 
-export async function verifiedJdCookies(view: WebViewController, session: PlatformSession, deadline: number) {
+export async function verifiedJdCookies(view: WebViewController, session: PlatformSession, deadline: number, signal?: AbortSignal) {
   if (session.credentials.kind !== "web") throw new PlatformWireError("changed");
-  const cookies = providerCookies("jingdong", await waitForRefresh(view.getAllCookies(), deadline));
+  const cookies = providerCookies("jingdong", await waitForRefresh(view.getAllCookies(), deadline, signal));
   if (!currentPlatformSession("jingdong", session.generation)) throw new PlatformWireError("changed");
   const observed = jdLoginProof(cookies);
   const expected = jdLoginProof(session.credentials.cookies);
@@ -101,21 +101,21 @@ export async function verifiedJdCookies(view: WebViewController, session: Platfo
   return cookies;
 }
 
-export async function jdSyncView(session: PlatformSession, deadline: number): Promise<WebViewController> {
+export async function jdSyncView(session: PlatformSession, deadline: number, signal?: AbortSignal): Promise<WebViewController> {
   if (session.credentials.kind !== "web" || !currentPlatformSession("jingdong", session.generation)) {
     throw new PlatformWireError("changed");
   }
   const retained = jdBrowser;
   if (retained?.generation === session.generation) {
-    await waitForRefresh(retained.detached, deadline);
+    await waitForRefresh(retained.detached, deadline, signal);
     if (retained !== jdBrowser || !currentPlatformSession("jingdong", session.generation)) {
       throw new PlatformWireError("changed");
     }
     return retained.view;
   }
-  const view = await openProviderController("jingdong", session.credentials.cookies, "default", deadline);
+  const view = await openProviderController("jingdong", session.credentials.cookies, "default", deadline, signal);
   try {
-    await verifiedJdCookies(view, session, deadline);
+    await verifiedJdCookies(view, session, deadline, signal);
     retainJdLoginView(session.generation, view, Promise.resolve());
     return view;
   } catch (error) {
@@ -124,13 +124,15 @@ export async function jdSyncView(session: PlatformSession, deadline: number): Pr
   }
 }
 
-export async function providerRequest(url: string, headers: Record<string, string>, body?: JsonObject | "", timeout = 10) {
+export async function providerRequest(url: string, headers: Record<string, string>, body?: JsonObject | "", timeout = 10,
+  signal?: AbortSignal) {
   try {
     return await fetch(url, {
       method: body === undefined ? "GET" : "POST",
       headers: body === undefined ? headers : { "Content-Type": "application/json;charset=UTF-8", ...headers },
       body: body === undefined || body === "" ? body : JSON.stringify(body),
       timeout,
+      signal,
       handleRedirect: async () => null,
     });
   } catch {
@@ -163,7 +165,7 @@ function mergeMtopCookies(cookies: readonly PlatformCookie[], incoming: readonly
   return Array.from(result.values());
 }
 
-async function mtopOnce(api: string, data: string, cookies: readonly PlatformCookie[]) {
+async function mtopOnce(api: string, data: string, cookies: readonly PlatformCookie[], signal?: AbortSignal) {
   const endpoint = MTOP + "/h5/" + api.toLowerCase() + "/1.0/";
   const attached = cookiesForURL(cookies, endpoint);
   const token = cookieValue(attached, "_m_h5_tk").split("_")[0];
@@ -179,7 +181,7 @@ async function mtopOnce(api: string, data: string, cookies: readonly PlatformCoo
     Cookie: cookieHeader(attached), Referer: referer,
     Accept: "application/json",
     "User-Agent": MOBILE_WEB_USER_AGENT,
-  }, undefined, api === TAOBAO_PROFILE ? 3 : 10);
+  }, undefined, api === TAOBAO_PROFILE ? 3 : 10, signal);
   const payload = jsonObject(await response.text());
   const ret = Array.isArray(payload?.ret) ? String(payload.ret[0] ?? "").toUpperCase() : "";
   return {
@@ -190,26 +192,28 @@ async function mtopOnce(api: string, data: string, cookies: readonly PlatformCoo
   };
 }
 
-async function mtop(api: string, body: JsonObject, cookies: readonly PlatformCookie[], current?: () => boolean) {
+async function mtop(api: string, body: JsonObject, cookies: readonly PlatformCookie[], current?: () => boolean,
+  signal?: AbortSignal) {
   const data = JSON.stringify(body);
-  const first = await mtopOnce(api, data, cookies);
+  const first = await mtopOnce(api, data, cookies, signal);
+  if (signal?.aborted) throw new PlatformWireError("changed");
   if (!/TOKEN_EMPTY|TOKEN_EXPIRED|TOKEN_EXOIRED|ILLEGAL_ACCESS/.test(first.ret)) return first;
   let fresh = first.cookies;
   if (api === TAOBAO_IDENTITY_API && JSON.stringify(fresh) === JSON.stringify(cookies)) {
     if (!current?.()) throw new PlatformWireError("changed");
     const deadline = Date.now() + 15_000;
-    const web = await openProviderController("cainiao", cookies, "default", deadline);
+    const web = await openProviderController("cainiao", cookies, "default", deadline, signal);
     try {
-      await waitForRefresh(web.loadURL(TAOBAO_H5_PAGE), deadline);
-      await waitForRefresh(web.waitForLoad(), deadline);
-      const incoming = await waitForRefresh(web.getAllCookies(), deadline);
+      await waitForRefresh(web.loadURL(TAOBAO_H5_PAGE), deadline, signal);
+      await waitForRefresh(web.waitForLoad(), deadline, signal);
+      const incoming = await waitForRefresh(web.getAllCookies(), deadline, signal);
       fresh = mergeMtopCookies(cookies, providerCookies("cainiao", incoming));
     } finally {
       web.dispose();
     }
   }
   if (current && !current()) throw new PlatformWireError("changed");
-  return JSON.stringify(fresh) === JSON.stringify(cookies) ? first : mtopOnce(api, data, fresh);
+  return JSON.stringify(fresh) === JSON.stringify(cookies) ? first : mtopOnce(api, data, fresh, signal);
 }
 
 export async function checkCainiaoLogin(cookies: readonly PlatformCookie[]): Promise<PlatformCookie[]> {
@@ -232,17 +236,18 @@ function isCainiaoSenderApi(api: string): boolean {
   return api === CAINIAO_SENDER_LIST || api === CAINIAO_SENDER_DETAIL;
 }
 
-export async function readCainiao(session: PlatformSession, api: string, params: JsonObject): Promise<JsonObject> {
+export async function readCainiao(session: PlatformSession, api: string, params: JsonObject, signal?: AbortSignal): Promise<JsonObject> {
+  if (signal?.aborted) throw new PlatformWireError("changed");
   const generation = session.generation;
   const active = currentPlatformSession("cainiao", generation);
   if (active?.credentials.kind !== "web") throw new PlatformWireError("changed");
   const before = active.credentials.cookies;
   const current = () => currentPlatformSession("cainiao", generation) != null;
-  const result = await mtop(api, params, before, current);
-  if (!currentPlatformSession("cainiao", generation)) throw new PlatformWireError("changed");
+  const result = await mtop(api, params, before, current, signal);
+  if (signal?.aborted || !currentPlatformSession("cainiao", generation)) throw new PlatformWireError("changed");
   if (/SESSION_EXPIRED|USER_NOT_LOGIN|NOT_LOGIN|NEED_LOGIN/.test(result.ret)) {
     if (isCainiaoSenderApi(api)) {
-      await readCainiao(session, CAINIAO_COUNT, { appName: "GUOGUO" });
+      await readCainiao(session, CAINIAO_COUNT, { appName: "GUOGUO" }, signal);
       throw new PlatformWireError("unavailable");
     }
     clearPlatformLogin("cainiao", generation, true);
@@ -297,7 +302,9 @@ function pddCredentialsFor(cookies: readonly PlatformCookie[], target: string) {
   return [...native, ...extras];
 }
 
-export async function readPdd(session: PlatformSession, path: string, body: JsonObject, identity = false): Promise<JsonObject> {
+export async function readPdd(session: PlatformSession, path: string, body: JsonObject, identity = false,
+  signal?: AbortSignal): Promise<JsonObject> {
+  if (signal?.aborted) throw new PlatformWireError("changed");
   const active = currentPlatformSession("pinduoduo", session.generation);
   if (active?.credentials.kind !== "web") throw new PlatformWireError("changed");
   const until = pddVerifyUntil.get(session.generation) ?? 0;
@@ -310,11 +317,11 @@ export async function readPdd(session: PlatformSession, path: string, body: Json
     Cookie: cookieHeader(attached), Referer: PDD_STATION_PAGE + (identity ? "&tab=ID_CODE" : ""),
     "User-Agent": MOBILE_WEB_USER_AGENT,
     ...(token ? { AccessToken: token } : {}),
-  }, body);
+  }, body, 10, signal);
   const raw = await response.text();
   const result = jsonObject(raw);
   const code = cleanScalarText(result?.error_code);
-  if (!currentPlatformSession("pinduoduo", session.generation)) throw new PlatformWireError("changed");
+  if (signal?.aborted || !currentPlatformSession("pinduoduo", session.generation)) throw new PlatformWireError("changed");
   if ([401, 424].includes(response.status) || code === "40001" ||
     (!result && /<h5response/i.test(raw) && /登录|login|扫码|安全验证|verify/i.test(raw))) {
     clearPlatformLogin("pinduoduo", session.generation, true);
@@ -394,16 +401,17 @@ export function identityCodeFromResponse(
   return { value, expiresAtMs: now + lifetime, ...(mobile ? { mobile } : {}) };
 }
 
-export async function fetchStationIdentity(platform: IdentityPlatform, session: PlatformSession): Promise<StationIdentityCode> {
+export async function fetchStationIdentity(platform: IdentityPlatform, session: PlatformSession,
+  signal?: AbortSignal): Promise<StationIdentityCode> {
   let stage = "station_identity_request";
   try {
     const result = platform === "cainiao"
-      ? await readCainiao(session, TAOBAO_IDENTITY_API, {})
-      : await readPdd(session, "/api/express_trackbox/generate_identification_code", { entry_source: "APP" }, true);
+      ? await readCainiao(session, TAOBAO_IDENTITY_API, {}, signal)
+      : await readPdd(session, "/api/express_trackbox/generate_identification_code", { entry_source: "APP" }, true, signal);
     stage = "station_identity_response";
     return identityCodeFromResponse(platform, result);
   } catch (error) {
-    writeDiagnostic("platform.identity.failed", {
+    if (!signal?.aborted) writeDiagnostic("platform.identity.failed", {
       sourceProvider: platform,
       stage,
       result: error instanceof PlatformWireError ? error.reason : "failed",
@@ -417,7 +425,9 @@ export async function openProviderController(
   cookies: readonly PlatformCookie[] = [],
   mode: "default" | "login" = "default",
   deadline?: number,
+  signal?: AbortSignal,
 ) {
+  if (signal?.aborted) throw new PlatformWireError("changed");
   // Match Pipi Android's desktop user agent for the provider's QR sign-in.
   const controller = new WebViewController({ ephemeral: true });
   try {
@@ -431,7 +441,7 @@ export async function openProviderController(
       if (!expiresAtMs || expiresAtMs > Date.now()) {
         const install = controller.setCookie({ ...cookie, expiresDate: expiresAtMs ? new Date(expiresAtMs) : undefined });
         if (deadline === undefined) await install;
-        else await waitForRefresh(install, deadline);
+        else await waitForRefresh(install, deadline, signal);
       }
     }
     return controller;

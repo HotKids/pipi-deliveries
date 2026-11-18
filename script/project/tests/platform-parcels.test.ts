@@ -25,7 +25,7 @@ const {
   completeCurrentParcelCard, emptyState, loadState, savePlatformParcelData, saveRecognizedParcelCode, saveState,
   setPickupCardNote, visibleShipments,
 } = await import("../services/storage");
-const { canOpenParcelCabinet, performPickupAction, platformRefreshMessage, refreshPlatformParcels } =
+const { pickupCabinetActions, performPickupAction, platformRefreshMessage, refreshPlatformParcels } =
   await import("../services/platform-parcel-sync");
 
 const waybill = "YT000000008123";
@@ -884,7 +884,9 @@ test("cabinet opening requires a live association after confirmation and submits
   assert.equal(committed.state.shipments[0].pickup?.code, "9246");
   notePlatformSync("fengchao", session.generation, NOW + 1, { cabinetLinks: committed.cabinetLinks });
   const [card] = activePickupCards(visibleShipments(committed.state), committed.state.pickupCodeRecords);
-  assert.ok(canOpenParcelCabinet(card));
+  const readAccount = t.mock.method(Keychain, "get", Keychain.get);
+  assert.deepEqual([...pickupCabinetActions([card, { ...card, code: "123456" }])], [card]);
+  assert.equal(readAccount.mock.callCount(), 1, "pickup rendering reads one session for multiple cabinet cards");
   let calls = 0;
   let allow!: (selected: boolean) => void;
   Object.assign(globalThis, { Dialog: { confirm: () => new Promise((resolve) => { allow = resolve; }) } });
@@ -910,7 +912,7 @@ test("cabinet opening requires a live association after confirmation and submits
     allow(true);
     assert.match(await stale, /状态已变更/);
     assert.equal(calls, 1);
-    assert.equal(canOpenParcelCabinet(card), false);
+    assert.equal(pickupCabinetActions([card]).size, 0);
   } finally { globalThis.fetch = realFetch; }
 });
 

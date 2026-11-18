@@ -1,8 +1,8 @@
 import {
-  AppEvents, Button, Canvas, Form, GeometryReader, HStack, Image, QRImage, Section,
+  AbortController, AppEvents, Button, Canvas, Form, GeometryReader, HStack, Image, QRImage, Section,
   Text, VStack, ZStack, useEffect, useMemo, useObservable, useRef, useState,
 } from "scripting";
-import { bundledImage } from "../components/bundled-image";
+import { useBundledImage } from "../components/bundled-image";
 import { iconTileShape } from "../components/icon-tile";
 import { copyText } from "../services/clipboard";
 import { code128Widths } from "../services/code128";
@@ -27,7 +27,7 @@ const QR_SHAPE = { type: "rect", cornerRadius: 14 } as const;
 
 export function StationIdentityMark({ asset, size = 28 }: { asset: IdentityPlatform | "taobao"; size?: number }) {
   const frame = { width: size, height: size };
-  const artwork = bundledImage(`platform-accounts/${asset}.png`);
+  const artwork = useBundledImage(`platform-accounts/${asset}.png`);
   return artwork ? <Image image={artwork}
     resizable scaleToFit interpolation="high" frame={frame} clipShape={iconTileShape(size)}
   /> : <Image systemName="person.text.rectangle" frame={frame} />;
@@ -148,7 +148,8 @@ function FullScreenIdentity({ format, scan, onClose }: {
 
 export function StationIdentityPage({ platform }: { platform: IdentityPlatform }) {
   const [generation, setGeneration] = useState(() => platformSession(platform)?.generation);
-  useEffect(() => onPlatformAccountsChanged(() => {
+  useEffect(() => onPlatformAccountsChanged((changed) => {
+    if (changed !== platform) return;
     const next = platformSession(platform)?.generation;
     if (identityCache.get(platform)?.generation !== next) identityCache.delete(platform);
     setGeneration(next);
@@ -169,35 +170,59 @@ function StationIdentityContent({ platform, expectedGeneration }: {
   const [reason, setReason] = useState("");
   const active = useRef(true);
   const mounted = useRef(true);
-  const busyRef = useRef(false);
+  const requestInFlight = useRef<AbortController | undefined>(undefined);
+  const countdownTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const generation = useRef(0);
   const requestedRenewal = useRef(0);
   const widthList = useMemo(() => value ? code128Widths(value) : [], [value]);
   const currentSession = () => expectedGeneration ? currentPlatformSession(platform, expectedGeneration) : null;
 
+  function cancelCountdown() {
+    if (countdownTimer.current !== undefined) clearTimeout(countdownTimer.current);
+    countdownTimer.current = undefined;
+  }
+
   function clear() {
     generation.current++;
+    cancelCountdown();
     scan.setValue(EMPTY_SCAN);
   }
 
+  function tick() {
+    countdownTimer.current = undefined;
+    const [value, expiresAtMs, remaining, mobile] = scan.value;
+    if (!mounted.current || !active.current || !value) return;
+    const time = Date.now();
+    const left = Math.max(0, Math.ceil((expiresAtMs - time) / 1_000));
+    if (left !== remaining) scan.setValue(left ? [value, expiresAtMs, left, mobile] : EMPTY_SCAN);
+    if (left) countdownTimer.current = setTimeout(tick, 500);
+    if (expiresAtMs - time <= 1_000 && requestedRenewal.current !== expiresAtMs) {
+      requestedRenewal.current = expiresAtMs;
+      void refresh();
+    }
+  }
+
   function showCode(code: StationIdentityCode, request: number) {
-    if (!mounted.current || !active.current || request !== generation.current || !currentSession()) return;
+    if (!mounted.current || !active.current || request !== generation.current) return;
     const remaining = Math.ceil((code.expiresAtMs - Date.now()) / 1_000);
-    if (remaining > 0) scan.setValue([code.value, code.expiresAtMs, remaining, code.mobile ?? ""]);
+    if (remaining <= 0) return;
+    scan.setValue([code.value, code.expiresAtMs, remaining, code.mobile ?? ""]);
+    if (countdownTimer.current === undefined) countdownTimer.current = setTimeout(tick, 500);
   }
 
   async function refresh(manual = false) {
-    if (busyRef.current || !active.current || !mounted.current) return;
+    if (requestInFlight.current || !active.current || !mounted.current) return;
     const session = currentSession();
     if (!session) return;
     const request = generation.current;
-    busyRef.current = true;
+    const controller = new AbortController();
+    requestInFlight.current = controller;
     setBusy(true);
     setReason("");
     if (manual) setNotice("正在获取身份码…");
     try {
-      const code = await fetchStationIdentity(platform, session);
-      if (!currentSession()) return;
+      const code = await fetchStationIdentity(platform, session, controller.signal);
+      if (controller.signal.aborted || !currentSession()) return;
       if (code.expiresAtMs <= Date.now()) throw new PlatformWireError("unavailable");
       identityCache.set(platform, { generation: session.generation, code });
       showCode(code, request);
@@ -207,7 +232,7 @@ function StationIdentityContent({ platform, expectedGeneration }: {
         setReason(verification ? "请在网页完成安全验证" : "未获取到身份码，请点右上角重试");
       }
     } finally {
-      busyRef.current = false;
+      requestInFlight.current = undefined;
       if (mounted.current) {
         setBusy(false);
         if (active.current && request !== generation.current && !scan.value[0]) void refresh();
@@ -239,27 +264,13 @@ function StationIdentityContent({ platform, expectedGeneration }: {
       }
     };
     AppEvents.scenePhase.addListener(onScene);
-    let timer: number | undefined;
-    function tick() {
-      if (!mounted.current) return;
-      timer = setTimeout(tick, 500);
-      const [value, expiresAtMs, remaining, mobile] = scan.value;
-      if (!active.current || !value) return;
-      const time = Date.now();
-      const left = Math.max(0, Math.ceil((expiresAtMs - time) / 1_000));
-      if (left !== remaining) scan.setValue(left ? [value, expiresAtMs, left, mobile] : EMPTY_SCAN);
-      if (expiresAtMs - time <= 1000 && requestedRenewal.current !== expiresAtMs) {
-        requestedRenewal.current = expiresAtMs;
-        void refresh();
-      }
-    }
-    tick();
     const cached = identityCache.get(platform);
-    if (cached?.generation === expectedGeneration) showCode(cached.code, generation.current);
+    if (cached?.generation === expectedGeneration && currentSession()) showCode(cached.code, generation.current);
     void refresh();
     return () => {
       mounted.current = false;
-      if (timer !== undefined) clearTimeout(timer);
+      cancelCountdown();
+      requestInFlight.current?.abort();
       AppEvents.scenePhase.removeListener(onScene);
     };
   }, []);

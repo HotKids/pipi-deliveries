@@ -29,13 +29,13 @@ import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
-import { expireDueParcelHandoffs, loadState, peekStateRevision, visibleShipments } from "./services/storage";
-import { onPlatformAccountsChanged } from "./services/platform-accounts";
-import { canOpenParcelCabinet, performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
+import { expireDueParcelHandoffs, loadAppState, peekStateRevision, visibleShipments } from "./services/storage";
+import { performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
 import {
   diagnosticErrorDetails,
   diagnosticState,
-  flushDiagnostics,
+  drainAppDiagnostics,
+  startAppDiagnosticWrites,
   writeDiagnostic,
   writeRuntimeCapabilities,
 } from "./services/logger";
@@ -74,9 +74,9 @@ function shortcutPickupRecordId(state: AppState | null, parameters: Readonly<Rec
   return record && independentPickupContent(record) ? record.id : "";
 }
 
-function readStartupState(): StartupState {
+async function readStartupState(): Promise<StartupState> {
   try {
-    return { state: loadState() };
+    return { state: await loadAppState() };
   } catch (error) {
     writeDiagnostic(
       "app.startup.failed",
@@ -87,11 +87,10 @@ function readStartupState(): StartupState {
   }
 }
 
-function App() {
+function App({ initialStartup }: { initialStartup: StartupState }) {
   // One app-owned viewport stays mounted across Home/detail navigation.
   const [projectionView, setProjectionView] = useState<ProjectionViewportView | null>(null);
-  const [startup, setStartup] = useState(readStartupState);
-  const [platformRevision, setPlatformRevision] = useState(0);
+  const [startup, setStartup] = useState(initialStartup);
   const [platformNotice, setPlatformNotice] = useState<{ text: string } | undefined>(undefined);
   const [pickupNotice, setPickupNotice] = useState("");
   const [navigationRequest, setNavigationRequest] = useState(() => {
@@ -116,16 +115,15 @@ function App() {
   const hasState = state !== null;
   const revision = useRef(state?.revision ?? -1);
   revision.current = state?.revision ?? -1;
-  const latestParcelState = useRef(state);
-  latestParcelState.current = state;
+  const resumeGeneration = useRef(0);
   const shipments = useMemo(() => state ? visibleShipments(state) : [], [state]);
   const pickupCards = useMemo(() => activePickupCards(shipments, state?.pickupCodeRecords),
     [shipments, state?.pickupCodeRecords]);
+  const latestPickupView = useRef({ state, pickupCards });
+  latestPickupView.current = { state, pickupCards };
   const [pickupPreview, setPickupPreview] = useState(false);
   const hasPickupTab = pickupCards.length > 0 || pickupPreview;
   const platformObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const cabinetActions = useMemo(() => new Set(pickupCards.filter(canOpenParcelCabinet)),
-    [platformRevision, pickupCards]);
   const handoffDeadline = useMemo(() => nextParcelHandoffDeadline(state?.pickupCodeRecords),
     [state?.pickupCodeRecords]);
   const query = Script.queryParameters || {};
@@ -158,7 +156,6 @@ function App() {
     }, 0);
   }
 
-  useEffect(() => onPlatformAccountsChanged(() => setPlatformRevision((value) => value + 1)), []);
   useEffect(() => {
     let mounted = true;
     const reload = () => {
@@ -196,6 +193,7 @@ function App() {
   }, [state?.revision]);
 
   useEffect(() => {
+    let mounted = true;
     // While the app is on screen it captures JD order waybills by itself (Lite parity, 2026-09-24).
     const orderProjection = startForegroundOrderProjection({ applyState });
     // Returning to the foreground refreshes the list, debounced 2 minutes (user 2026-10-02「改成 2 分钟（三端一起）」;
@@ -214,8 +212,15 @@ function App() {
       if (phase === "active") {
         observePlatformList();
         try {
-          if (peekStateRevision() > revision.current) applyState(loadState());
-          else if (latestParcelState.current) reconcileParcelActivity(latestParcelState.current);
+          if (peekStateRevision() > revision.current) {
+            void loadAppState().then(next => {
+              if (mounted) applyState(next);
+            }).catch(() => {
+              if (mounted) writeDiagnostic("app.shortcut.resume.failed", {}, "warning");
+            });
+          } else if (latestPickupView.current.state) {
+            reconcileParcelActivity(latestPickupView.current.state, latestPickupView.current.pickupCards);
+          }
           const lookup = nextSmsShortcutLookup();
           if (lookup) setNavigationRequest((current) => current.shortcutLookup ? current : {
             ...current,
@@ -229,6 +234,7 @@ function App() {
     };
     AppEvents.scenePhase.addListener(observe);
     return () => {
+      mounted = false;
       AppEvents.scenePhase.removeListener(observe);
       if (platformObservation.current !== undefined) clearTimeout(platformObservation.current);
       orderProjection.stop();
@@ -239,8 +245,8 @@ function App() {
 
   useEffect(() => {
     if (state) {
-      reconcileParcelActivity(state);
-      void reconcileFengchaoReminders(state);
+      reconcileParcelActivity(state, pickupCards);
+      void reconcileFengchaoReminders(state, undefined, shipments);
     }
   }, [state]);
 
@@ -288,22 +294,28 @@ function App() {
   }, [hasPickupTab]);
 
   useEffect(() => {
-    return Script.onResume((details) => {
+    const unsubscribe = Script.onResume((details) => {
+      const request = ++resumeGeneration.current;
       void reloadAndRefreshOnResume(details, {
-        load: loadState,
+        load: loadAppState,
         onLoadFailed: (error) => {
+          if (request !== resumeGeneration.current) return;
           writeDiagnostic("app.resume.failed", diagnosticErrorDetails(error), "error");
           setStartup({ state: null });
         },
         applyPersisted: (persisted, shipmentId) => {
+          if (request !== resumeGeneration.current) return;
           const parameters = details.queryParameters || {};
+          const presented = latestPickupView.current.state;
+          const resumed = presented ? preferNewerState(persisted, presented) : persisted;
           const screenLookup = takeScreenShortcutLookup(parameters);
-          const activity = parcelActivityTarget(persisted, parameters.parcelActivity);
+          const activity = parcelActivityTarget(resumed, parameters.parcelActivity);
           const activityShipmentId = activity && "shipmentId" in activity ? activity.shipmentId : "";
           const pickupRecordId = activity && "recordId" in activity ? activity.recordId :
-            shortcutPickupRecordId(persisted, parameters);
+            shortcutPickupRecordId(resumed, parameters);
           const smsLookup = pickupRecordId ? undefined : nextSmsShortcutLookup();
-          setStartup({ state: persisted });
+          setStartup(current => current.state && preferNewerState(resumed, current.state) === current.state
+            ? current : { state: resumed });
           setNavigationRequest((current) => ({
             shipmentId: activityShipmentId || shipmentId,
             pickupRecordId,
@@ -314,9 +326,12 @@ function App() {
           else if (screenLookup || activityShipmentId) selection.setValue("deliveries");
         },
         refresh: () => refreshAllShipments(),
-        applyRefreshed: applyState,
+        applyRefreshed: (next) => {
+          if (request === resumeGeneration.current) applyState(next);
+        },
       });
     });
+    return () => { resumeGeneration.current++; unsubscribe(); };
   }, []);
 
   useEffect(() => {
@@ -343,7 +358,7 @@ function App() {
             <Text>
               脚本没有覆盖现有数据。请稍后重试读取本地快递信息。
             </Text>
-            <Button title="重试" action={() => setStartup(readStartupState())} />
+            <Button title="重试" action={() => void readStartupState().then(setStartup)} />
           </Section>
         </List>
       </NavigationStack>
@@ -389,7 +404,6 @@ function App() {
             cards={pickupCards}
             previewing={pickupPreview}
             focusedRecordId={navigationRequest.pickupRecordId}
-            cabinetActions={cabinetActions}
             onStateChange={applyState}
             showNotice={setPickupNotice}
             onAction={(card, openCabinet) => performPickupAction(card, openCabinet, applyState)}
@@ -427,11 +441,12 @@ async function run() {
   // Without this the whole session ends on any throw with nothing recorded: `void run()` turns a
   // rejection into an unhandled one, the presented view is torn down, and the user sees the script
   // quit back to the app with an empty diagnostic log.
+  startAppDiagnosticWrites();
   try {
     initializeCarrierAuthority();
     writeRuntimeCapabilities("app");
     await Navigation.present({
-      element: <App />,
+      element: <App initialStartup={await readStartupState()} />,
       modalPresentationStyle: "fullScreen",
     });
   } catch (error) {
@@ -441,7 +456,7 @@ async function run() {
       "error",
     );
   } finally {
-    flushDiagnostics();
+    await drainAppDiagnostics();
     Script.exit();
   }
 }
