@@ -5,7 +5,8 @@ import {
   currentPlatformSession, clearPlatformLogin, needsJdNickname, replacePlatformCookies, saveJdNickname,
   type PlatformSession, type WebPlatform,
 } from "./platform-accounts";
-import { deliveryForecast, objectList, productTitle, uniqueDeliveryForecast, type PlatformParcel } from "./platform-parcel-data";
+import { deliveryForecast, objectList, pddParcelDetailPath, productTitle, uniqueDeliveryForecast,
+  type PlatformParcel } from "./platform-parcel-data";
 import {
   JD_ORDERS_PAGE, JD_ORDER_LIST_URL, jdLoginProof, jdSyncView, openProviderController, PlatformWireError, verifiedJdCookies,
 } from "./platform-wire";
@@ -442,9 +443,9 @@ async function addPddCapture(web: WebViewController, source: string, deadline: n
 
 export function fetchPddParcelDetails(session: PlatformSession, shippingId: string, waybill: string,
   needsTitle: boolean, needsEstimate: boolean, eligible: () => boolean, signal?: AbortSignal): Promise<PlatformParcel | undefined> {
-  if (!/^[1-9][0-9]{0,19}$/.test(shippingId) || !/^[A-Z0-9]{6,64}$/.test(waybill)) return Promise.resolve(undefined);
-  const url = "https://mobile.yangkeduo.com/psnl_goods_help.html?_t_module_name=assistant_waybill" +
-    "&shipping_id=" + shippingId + "&tracking_number=" + waybill;
+  const detailPath = pddParcelDetailPath(shippingId, waybill);
+  if (!detailPath) return Promise.resolve(undefined);
+  const url = "https://mobile.yangkeduo.com" + detailPath;
   const route = String.raw`
     if (window !== window.top || location.origin !== 'https://mobile.yangkeduo.com') return;
     const query = new URLSearchParams(location.search);

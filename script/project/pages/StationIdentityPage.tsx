@@ -8,7 +8,7 @@ import { copyText } from "../services/clipboard";
 import { code128Widths } from "../services/code128";
 import { currentPlatformSession, onPlatformAccountsChanged, platformSession,
   type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
-import { fetchStationIdentity, identityWebCookies, IDENTITY_WEB_URL, openProviderController, PlatformWireError,
+import { fetchStationIdentity, identityWebCookies, IDENTITY_WEB_URL, openProviderController, PDD_IDENTITY_APP_URL, PlatformWireError,
   type StationIdentityCode } from "../services/platform-wire";
 import { transientToast } from "../services/ui-feedback";
 import { presentPlatformLogin } from "./PlatformAccountPages";
@@ -352,6 +352,13 @@ function StationIdentityContent({ platform, expectedGeneration }: {
         </Section>
       ) : (
         <Section>
+          {platform === "pinduoduo" ? (
+            <Button title="在拼多多 App 中打开" action={async () => {
+              if (!await Safari.openURL(PDD_IDENTITY_APP_URL).catch(() => false)) {
+                setNotice("打开拼多多失败，请重试。");
+              }
+            }} />
+          ) : null}
           <Button title="在网页打开" action={() => {
             void openWebIdentity(platform, currentSession()).catch(() => setNotice("网页打开失败，请重试。"));
           }} />

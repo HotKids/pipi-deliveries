@@ -57,7 +57,8 @@ import {
 import { loadState, loadStateSnapshot, recordShipmentDetailSelection, setShipmentNote, setShipmentProductName, visibleShipments, type LoadedStateSnapshot } from "../services/storage";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { requestWidgetReload } from "../services/widgets";
-import { displayedPlatformFields, type CloudParcelMetadata } from "../services/platform-parcel-merge";
+import { displayedPlatformFields, samePlatformTarget, type CloudParcelMetadata } from "../services/platform-parcel-merge";
+import { pddParcelAppURL } from "../services/platform-parcel-data";
 import { readCloudParcelMetadata } from "../services/cloud-parcel-metadata";
 import { needsParcelDetailFields, refreshParcelDetailFields } from "../services/parcel-detail-fields";
 import { gatewayCredentialGeneration } from "../services/credentials";
@@ -330,6 +331,8 @@ export function DetailPage(props: {
     shipment.identity.companyName,
   );
   const waybill = displayWaybill(shipment);
+  const pddExternalAppURL = props.persistedShipment && !unprojectedAccountOrder(shipment)
+    ? pddParcelAppURL(shipment.pddImport, normalizeWaybill(waybill)) : "";
   // 用户定 2026-09-08 方案 2：手动加件先建行再跳详情页，picker 之后的级别是在页面打开之后才跑的
   // （实测尾号 2410 空窗 3.2 s、尾号 1107 空窗 8 s）。链条没跑完的这段不能写「暂无状态 · 暂无物流
   // 轨迹」——那读起来像查不到；写「查询中」。跑完还是没有轨迹时，照旧回到「暂无」。
@@ -610,6 +613,24 @@ export function DetailPage(props: {
     await dialPhone(hotline);
   }
 
+  async function openPddParcelApp() {
+    try {
+      const current = loadState().shipments.find((row) => row.identity.id === shipment.identity.id);
+      if (!current || !samePlatformTarget(shipment, current) ||
+          current.pddImport?.ownerKey !== shipment.pddImport?.ownerKey ||
+          current.pddImport?.orderId !== shipment.pddImport?.orderId ||
+          pddParcelAppURL(current.pddImport, normalizeWaybill(displayWaybill(current))) !== pddExternalAppURL) {
+        setNotice("快递信息已更新，请重新打开详情");
+        return;
+      }
+      if (!pddExternalAppURL || !await Safari.openURL(pddExternalAppURL)) {
+        setNotice("打开拼多多失败，请重试。");
+      }
+    } catch {
+      setNotice("打开拼多多失败，请重试。");
+    }
+  }
+
   async function openExternalApp() {
     if (externalAppAbortRef.current || !externalAppName) return;
     const controller = new AbortController();
@@ -788,6 +809,12 @@ export function DetailPage(props: {
           <Spacer />
         </HStack>
       </Section>
+
+      {pddExternalAppURL ? (
+        <Section>
+          <Button title="在拼多多 App 中打开" systemImage="arrow.up.forward.app" action={openPddParcelApp} />
+        </Section>
+      ) : null}
 
       {showParcelInfo ? (
         <Section>

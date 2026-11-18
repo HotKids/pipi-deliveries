@@ -13,6 +13,7 @@ export const IDENTITY_WEB_URL = {
   cainiao: "https://pages-fast.m.taobao.com/wow/z/uniapp/1011717/last-mile-fe/end-collect-platform/identity-code",
   pinduoduo: "https://m.pinduoduo.net/mdkd/identificationCode",
 } as const;
+export const PDD_IDENTITY_APP_URL = "https://m.pinduoduo.net/mdkd/package?tab=ID_CODE";
 
 export const CAINIAO_RECIPIENT_LIST = "mtop.cainiao.lpc.packageservice.queryPdsPackageDataList";
 const CAINIAO_COUNT = "mtop.cainiao.lpc.packageservice.user.package.count.query";
