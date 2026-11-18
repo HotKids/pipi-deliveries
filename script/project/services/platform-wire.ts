@@ -21,9 +21,12 @@ const CAINIAO_OUTBOUND_PAGE = "https://page.cainiao.com/cn-app-web/identity-code
 export const CAINIAO_OUTBOUND_WEB_URL = CAINIAO_OUTBOUND_PAGE + "#/?bizEntry=TAOBAO_GUOGUO";
 export const CAINIAO_OUTBOUND_APP_URL = "guoguo://go/station_code";
 
-export function stationIdentityDestination(platform: IdentityPlatform): { kind: "local" } | { kind: "app"; url: string } {
-  if (accountStatus(platform).state === "active") return { kind: "local" };
-  return { kind: "app", url: IDENTITY_APP_URL[platform] };
+export async function stationIdentityDestination(
+  platform: IdentityPlatform, openApp: (url: string) => Promise<boolean>,
+): Promise<"local" | "app" | "login"> {
+  if (accountStatus(platform).state === "active") return "local";
+  if (await openApp(IDENTITY_APP_URL[platform]).catch(() => false)) return "app";
+  return accountStatus(platform).state === "active" ? "local" : "login";
 }
 
 export const CAINIAO_RECIPIENT_LIST = "mtop.cainiao.lpc.packageservice.queryPdsPackageDataList";

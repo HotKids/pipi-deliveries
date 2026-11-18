@@ -14,7 +14,7 @@ import { CAINIAO_OUTBOUND_APP_URL, CAINIAO_OUTBOUND_WEB_URL, fetchStationIdentit
 import { transientToast } from "../services/ui-feedback";
 
 type IdentityVariant = IdentityPlatform | "cainiao-outbound";
-const IDENTITY_CODE_TITLES: Record<IdentityVariant, string> = {
+export const IDENTITY_CODE_TITLES: Record<IdentityVariant, string> = {
   cainiao: "淘宝身份码",
   "cainiao-outbound": "菜鸟出库码",
   pinduoduo: "拼多多身份码",

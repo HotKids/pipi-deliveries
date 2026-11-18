@@ -476,7 +476,7 @@ test("the same Taobao session reads both Taobao and Cainiao outbound codes", asy
   }
 });
 
-test("the station identity entry switches to the provider app only when the binding is unavailable", async (t) => {
+test("the station identity entry prefers local codes, then the provider app, then inline login", async (t) => {
   const providers = [
     { platform: "cainiao", scheme: "taobao:", page: "/tbopen/index.html",
       expired: { ret: ["FAIL_SYS_SESSION_EXPIRED"] },
@@ -492,9 +492,10 @@ test("the station identity entry switches to the provider app only when the bind
   try {
     for (const { platform, scheme, page, expired, cookie } of providers) {
       memory.clear();
-      const unbound = stationIdentityDestination(platform);
-      assert.equal(unbound.kind, "app");
-      const appURL = new URL(unbound.url);
+      const openApp = t.mock.fn(async (_url: string) => true);
+      assert.equal(await stationIdentityDestination(platform, async () => false), "login");
+      assert.equal(await stationIdentityDestination(platform, openApp), "app");
+      const appURL = new URL(openApp.mock.calls[0].arguments[0]);
       assert.equal(appURL.protocol, scheme);
       assert.equal(appURL.pathname, page);
       if (platform === "cainiao") {
@@ -503,16 +504,21 @@ test("the station identity entry switches to the provider app only when the bind
         assert.equal(appURL.searchParams.get("tab"), "ID_CODE");
       }
 
-      savePlatformLogin(platform, "", { kind: "web", cookies: [cookie] }, "synthetic-account");
+      assert.equal(await stationIdentityDestination(platform, async () => {
+        savePlatformLogin(platform, "", { kind: "web", cookies: [cookie] }, "synthetic-account");
+        return false;
+      }), "local");
       const session = platformSession(platform)!;
-      assert.deepEqual(stationIdentityDestination(platform), { kind: "local" });
+      assert.equal(await stationIdentityDestination(platform, openApp), "local");
       await assert.rejects(fetchStationIdentity(platform, session), /unavailable/);
-      assert.deepEqual(stationIdentityDestination(platform), { kind: "local" });
+      assert.equal(await stationIdentityDestination(platform, openApp), "local");
+      assert.equal(openApp.mock.callCount(), 1);
 
       fetchMock.mock.mockImplementationOnce(async () => new Response(JSON.stringify(expired)));
       await assert.rejects(fetchStationIdentity(platform, session), /expired/);
       assert.equal(accountStatus(platform).state, "expired");
-      assert.deepEqual(stationIdentityDestination(platform), unbound);
+      assert.equal(await stationIdentityDestination(platform, openApp), "app");
+      assert.equal(await stationIdentityDestination(platform, async () => { throw new Error("unavailable"); }), "login");
     }
   } finally {
     Object.assign(globalThis, { Crypto: previousCrypto });
