@@ -145,7 +145,9 @@ function ParcelCardListRow(props: ParcelLiveActivityCardProps) {
   );
 }
 
-export function ParcelActivityPreviewCard({ animate = false, lockScreenPreview }: { animate?: boolean; lockScreenPreview?: boolean }) {
+export function ParcelActivityPreviewCard({ animate = false, lockScreenPreview = false }: {
+  animate?: boolean; lockScreenPreview?: boolean;
+}) {
   const { sticker } = parcelCardArtwork(PARCEL_ACTIVITY_PREVIEW);
   const logoPath = sticker ? `${Script.directory}/assets/${sticker.path}` : undefined;
   return (

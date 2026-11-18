@@ -32,7 +32,7 @@ function IdentityCodeButton({ onOpen }: {
         arrowEdge: "bottom",
         presentationCompactAdaptation: "popover",
         content: (
-          <VStack alignment="leading" spacing={0} padding={6} frame={{ width: 196 }}>
+          <VStack alignment="leading" spacing={0} padding={6} fixedSize={{ horizontal: true, vertical: false }}>
             {IDENTITY_CHOICES.map(({ platform, title }) => (
               <Button key={platform} buttonStyle="plain" frame={{ maxWidth: "infinity", alignment: "leading" }}
                 contentShape="rect" action={() => {

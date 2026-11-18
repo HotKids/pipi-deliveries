@@ -4,7 +4,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import type { ParcelHandoffRecord, PickupCodeRecord, Shipment } from "../models";
 import { activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, type ParcelActivityContent } from "../services/parcel-pickup";
-import { parcelCardArtwork, parcelCardPalette } from "../services/parcel-card-appearance";
+import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette } from "../services/parcel-card-appearance";
 import { recognizeParcelCodes } from "../services/parcel-code-ocr";
 import { parcelTextRows, recognizeParcelWaybill } from "../services/parcel-waybill-ocr";
 
@@ -184,6 +184,7 @@ const service = ["parcel-activity-action", "parcel-live-activity"].map((name) =>
     .replace(/^import[\s\S]*?;\n/gm, "").replace(/^export /gm, ""),
 ).join("\n");
 const events: string[] = [];
+let lockScreenBoxCopied = false;
 let current: Shipment = { ...parcel, pickup };
 let records: PickupCodeRecord[] = [];
 const snapshot = () => ({ shipments: [current], pickupCodeRecords: records });
@@ -212,6 +213,7 @@ function makeActivity() {
     rank: 0,
     code: "",
     start: async ({ code }: { code: string }, options?: { staleDate?: number; relevanceScore?: number }) => {
+      assert.equal(lockScreenBoxCopied, true, "the shared artwork must exist before the host snapshots the card");
       if (activeCodes().length >= capacity || refused.has(code)) return false;
       events.push("start " + code);
       staleDate = options?.staleDate;
@@ -245,8 +247,13 @@ const host = runInNewContext(service + "\n({ startParcelActivity, startAllParcel
   FileManager: {
     appGroupDocumentsDirectory: "/synthetic-shared",
     createDirectorySync: () => {},
-    existsSync: () => true,
+    existsSync: (path: string) => !path.endsWith(PARCEL_LOCK_SCREEN_BOX) || lockScreenBoxCopied,
     isFileSync: () => true,
+    copyFileSync: (source: string, destination: string) => {
+      assert.equal(source, `/synthetic/assets/parcel-activity/${PARCEL_LOCK_SCREEN_BOX}`);
+      assert.equal(destination, `/synthetic-shared/art/${PARCEL_LOCK_SCREEN_BOX}`);
+      lockScreenBoxCopied = true;
+    },
   },
   Storage: {
     get: () => session,
@@ -260,6 +267,7 @@ const host = runInNewContext(service + "\n({ startParcelActivity, startAllParcel
   },
   PipiParcelActivity: makeActivity,
   PARCEL_ACTIVITY_ART: "art",
+  PARCEL_LOCK_SCREEN_BOX,
   PARCEL_ACTIVITY_PREVIEW,
   parcelCardArtwork,
   parcelActivityContent,
@@ -446,25 +454,65 @@ assert.deepEqual(activeCodes(), [fourthPickup.code, firstPickup.code]);
 await host.stopParcelActivity();
 
 const activityCardSource = readFileSync(new URL("../components/ParcelLiveActivityCard.tsx", import.meta.url), "utf8");
+const fullBox = readFileSync(new URL("../assets/parcel-activity/box.png", import.meta.url));
+const watchBox = readFileSync(new URL(`../assets/parcel-activity/${PARCEL_LOCK_SCREEN_BOX}`, import.meta.url));
+assert.deepEqual([fullBox.readUInt32BE(16), fullBox.readUInt32BE(20)], [300, 351]);
+assert.deepEqual([watchBox.readUInt32BE(16), watchBox.readUInt32BE(20)], [100, 117]);
+assert.match(activityCardSource, /const lockScreenBoxPath = [^\n]+FileManager\.isFileSync\(boxPath\)\s*\? boxPath/,
+  "the lock screen prefers the full-resolution box");
+assert.match(activityCardSource, /<Image filePath=\{lockScreenBoxPath\}/);
+assert.match(activityCardSource, /const watchBoxFile = hasWatchBox \? watchBoxPath : lockScreenBoxPath;/,
+  "the watch keeps the compact App Group asset when available");
 assert.match(activityCardSource, /handoff \? "我已寄件" : "我已取件"/, "the pickup and handoff activities each show their completion capsule");
-assert.match(activityCardSource, /background=\{expanded \? undefined : glass \? \([\s\S]*?<Rectangle fill=\{cardBackground\} \/>[\s\S]*?glassEffect=\{\{ glass: UIGlass\.clear\(\), shape: cardShape \}\}[\s\S]*?\) : cardBackground\}/,
-  "the Lock Screen overlays Liquid Glass on the pickup gradient, while the island uses system black");
-assert.match(activityCardSource, /activityBackgroundTint=\{lockScreen \? "clear" : undefined\}/);
-assert.doesNotMatch(activityCardSource, /<(?:GeometryReader|Canvas)\b/, "the lock screen snapshots a complete view tree");
+assert.match(activityCardSource, /background=\{expanded \? undefined : cardBackground\}/,
+  "the Lock Screen uses the pickup gradient and the island uses system black");
+assert.match(activityCardSource, /background=\{cardBackground\} allowsHitTesting=\{false\}/,
+  "the Smart Stack presents the same gradient");
+assert.doesNotMatch(activityCardSource, /glassEffect|UIGlass/, "both activity surfaces use the plain gradient");
+assert.match(activityCardSource, /activityBackgroundTint="clear" widgetURL=\{url\}/);
+assert.doesNotMatch(activityCardSource, /<(?:EnvironmentValuesReader|GeometryReader|Canvas)\b/,
+  "the lock screen snapshots a complete view tree");
 assert.match(activityCardSource, /frame=\{\{ \.\.\.slot\(bottom - top\), minWidth: 0, maxWidth: "infinity"/);
 assert.match(activityCardSource, /systemName="shippingbox\.fill" font=\{card\.capsuleIcon \* scale\}/,
   "the completion control uses the native package symbol");
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
-assert.match(activityEntrySource, /<LiveActivityUIExpandedBottom>\s*<VStack padding=\{\{ bottom: 10, horizontal: 4 \}\}[^>]*>\s*<ParcelLiveActivityCard\b[^>]*\bexpanded\b/,
-  "the full Pipi card uses the reference script's full-width expanded region");
-assert.match(activityCardSource, /font=\{card\.codeFont \* scale\} fontWeight="semibold" fontWidth="condensed"/,
-  "the native font fits the Pipi code column at its original point size");
+assert.match(activityEntrySource, /<LiveActivityUIExpandedCenter>\s*<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} expanded \/>/,
+  "the tested center region uses the regular iPhone card scale");
+assert.match(activityCardSource, /const artColumnWidth = expanded \? artWidth - card\.edge \* scale : artWidth;/,
+  "the expanded host supplies the card's outside inset while the artwork keeps its regular size");
+assert.match(activityCardSource, /minWidth: expanded \? artColumnWidth : Math\.min\(artWidth, MIN_COMPACT_ART_WIDTH\)/,
+  "the expanded native host cannot squeeze the box into the Watch column");
+assert.match(activityCardSource, /<VStack spacing=\{dividerToCapsule \* scale\} fixedSize=\{\{ horizontal: false, vertical: true \}\} layoutPriority=\{1\}>\s*\{divider\}\s*\{bottomRow\}\s*<\/VStack>/,
+  "the expanded divider and action share a fixed spacing container");
+assert.match(activityCardSource, /slot\(dividerTop - titleTop\)[^\n]*>\s*\{expandedLine\(title, card\.titleHeight, card\.titleLineHeight\)\}\s*<Rectangle fill="clear" frame=\{slot\(gap\)\} layoutPriority=\{-1\} \/>\s*\{expandedLine\(location, card\.locationHeight, card\.locationIcon, card\.locationLineHeight\)\}/,
+  "the expanded text line frames release their spare height before the Pipi gaps shrink");
+assert.match(activityCardSource, /fixedSize=\{\{ horizontal: false, vertical: true \}\}\s+frame=\{\{ minHeight: lineHeight \* scale, alignment: "topLeading" \}\}/,
+  "the expanded Pipi line heights distribute leading without shrinking text");
+assert.match(activityCardSource, /const MIN_COMPACT_ART_WIDTH = PIPI_CARD\.artWidth \/ 2;/);
+assert.match(activityCardSource, /const balancedType = lockScreen \|\| lockScreenPreview;/);
+assert.match(activityCardSource, /const codeFont = balancedType \? 26\.5 : card\.codeFont;/);
+assert.match(activityCardSource, /font=\{codeFont \* scale\} fontWeight="semibold" fontWidth=\{balancedType \? "standard" : "condensed"\}/,
+  "the selected Lock Screen font keeps standard digits and the expanded island keeps condensed digits");
+assert.match(activityCardSource, /const SMART_STACK_ART_COLUMN_WIDTH = 56;/);
+assert.match(activityCardSource, /const SMART_STACK_ART_WIDTH = 64;/);
+assert.match(activityCardSource, /const SMART_STACK_ART_GAP = 4\.6;/);
+assert.match(activityCardSource, /const SMART_STACK_CODE_FONT = 29;/);
+const watchCardSource = activityCardSource.slice(activityCardSource.indexOf("const smartStack = ("));
+assert.match(watchCardSource, /<ZStack frame=\{watchArtFrame\} scaleEffect=\{SMART_STACK_ART_WIDTH \/ SMART_STACK_ART_COLUMN_WIDTH\}>/,
+  "the Smart Stack centers the enlarged box without the iPhone artwork offset");
+assert.ok(/\{data\.title\}<\/Text>\s*<HStack spacing=\{0\} frame=\{\{ minHeight: gap, maxHeight: gap, maxWidth: "infinity" \}\}[\s\S]*?\{dividerDots\(watchContentWidth, 1\)\}[\s\S]*?<Text font=\{SMART_STACK_CODE_FONT\}/.test(watchCardSource),
+  "the Smart Stack uses the Pipi body gap around the dotted divider");
+assert.ok(/<VStack alignment="leading" spacing=\{0\}[\s\S]*?offset=\{\{ x: 0, y: \(gap - card\.iconGap\) \/ 2 \}\}/.test(watchCardSource),
+  "the Smart Stack moves the text block down by half of the added gap");
+assert.match(watchCardSource, /offset=\{\{ x: 0, y: SMART_STACK_DIVIDER_INK_OFFSET \}\}/,
+  "the Smart Stack positions the divider between visible letters and digits");
 assert.match(activityCardSource, /const flexibleHeight = lockScreen \|\| expanded;/,
   "the system presentations can yield empty space at their native height limits");
 const activitySettingsSource = readFileSync(new URL("../pages/PickupSettingsPages.tsx", import.meta.url), "utf8");
 assert.equal((activitySettingsSource.match(/<ParcelActivityPreviewCard\b/g) ?? []).length, 1,
   "the setting contains one example card");
-assert.match(activitySettingsSource, /<ParcelActivityPreviewCard lockScreenPreview \/>/);
+assert.match(activitySettingsSource, /<ParcelActivityPreviewCard lockScreenPreview \/>/,
+  "the settings preview uses the selected Lock Screen typography");
 const tabCardSource = readFileSync(new URL("../components/PickupTabCard.tsx", import.meta.url), "utf8");
 assert.match(tabCardSource, /listRowInsets=\{0\}[\s\S]*?<ParcelLiveActivityCard\b/);
 assert.match(tabCardSource, /background=\{\s*<GeometryReader\b/, "only the in-app row reads layout geometry");

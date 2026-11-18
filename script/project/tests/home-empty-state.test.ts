@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripTypeScriptTypes } from "node:module";
-import { listHeadlineDetail } from "../services/status";
+import { listHeadline } from "../services/status";
 import type { TimelinePackage, TrackNode } from "../models";
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -128,7 +128,13 @@ assert.match(filterBar, /<Capsule\b[^>]*frame=\{\{ height: 32 \}\}/,
 assert.match(filterBar, /<VStack\b[^>]*minHeight: 44[^>]*contentShape="rect"/,
   "the compact track retains a 44-point button hit target");
 assert.match(filterBar, /<Button key=\{key\}[\s\S]*?setFilter\(key\)/);
-assert.match(filterBar, /style: selected \? "secondarySystemFill" : "clear", shape: "capsule"/);
+assert.match(filterBar, /<NamespaceReader>\s*\{\(namespace\) => \(\s*<ZStack[^>]*animation=\{\{ animation: .*?, value: filter \}\}/,
+  "filter changes animate only the filter bar");
+assert.match(filterBar, /<Capsule fill="secondarySystemFill"[^>]*matchedGeometryEffect=\{\{ id: filter, namespace, isSource: false \}\}[^>]*allowsHitTesting=\{false\}/,
+  "the single moving selection follows the active segment and stays behind the buttons");
+assert.equal((filterBar.match(/fill="secondarySystemFill"/g) ?? []).length, 1);
+assert.match(filterBar, /<HStack\s+spacing=\{4\}[^>]*matchedGeometryEffect=\{\{ id: key, namespace \}\}/,
+  "the indicator follows each button's actual label frame");
 assert.match(filterBar, /<Text[^>]*background=\{\{ style: "systemFill", shape: "capsule" \}\}[^>]*>\s*\{groups\[key\]\.length\}/,
   "each segment shows its count inside a separate capsule");
 assert.match(homeSource, /key === "all" \|\| groups\[key\]\.length > 0/);
@@ -138,8 +144,9 @@ console.log("home empty-state presentation tests passed");
 
 const shipmentRowSource = await readFile(resolve(projectDir, "components/ShipmentRow.tsx"), "utf8");
 assert.doesNotMatch(shipmentRowSource, /暂无物流(?:信息|动态)/);
-assert.match(shipmentRowSource, /const latestDetail = listHeadlineDetail\(item\.timeline\)/);
-assert.match(shipmentRowSource, /\{latestDetail \? \(\s*<Text[\s\S]*?\{latestDetail\}\s*<\/Text>\s*\) : null\}/);
+assert.match(shipmentRowSource, /const headline = listHeadline\(item\.timeline\)/);
+assert.match(shipmentRowSource, /formatListTime\(headline\.timeText\)/);
+assert.match(shipmentRowSource, /\{headline \? \(\s*<Text[\s\S]*?\{headline\.detail\}\s*<\/Text>\s*\) : null\}/);
 
 const realTrack: TrackNode = { timeMs: 1_000, timeText: "10:00", detail: "快件已揽收", statusCode: "", raw: {} };
 const timeline = {
@@ -148,8 +155,10 @@ const timeline = {
   tracks: [], successAtMs: 2_000,
 } satisfies TimelinePackage;
 for (const placeholder of ["", "暂无物流信息", "暂无物流动态", "快递状态已更新，点击查看>>"]) {
-  assert.equal(listHeadlineDetail({ ...timeline, latestDetail: placeholder }), "");
-  assert.equal(listHeadlineDetail({ ...timeline, latestDetail: placeholder,
-    tracks: [{ ...realTrack, detail: placeholder, timeMs: 2_000 }, realTrack] }), realTrack.detail);
+  assert.equal(listHeadline({ ...timeline, latestDetail: placeholder }), null);
+  assert.deepEqual(listHeadline({ ...timeline, latestDetail: placeholder,
+    tracks: [{ ...realTrack, detail: placeholder, timeMs: 2_000 }, realTrack] }),
+  { detail: realTrack.detail, timeText: realTrack.timeText });
 }
-assert.equal(listHeadlineDetail({ ...timeline, latestDetail: "预计明日送达", tracks: [realTrack] }), "预计明日送达");
+assert.deepEqual(listHeadline({ ...timeline, latestDetail: "预计明日送达", tracks: [realTrack] }),
+  { detail: "预计明日送达", timeText: timeline.latestTimeText });

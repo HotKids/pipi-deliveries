@@ -3,6 +3,8 @@ import { carrierArtworkAccent } from "./carrier-presentation";
 import type { ParcelActivityContent } from "./parcel-pickup";
 import { blendStatusColor, rgbLuminance } from "./status";
 
+export const PARCEL_LOCK_SCREEN_BOX = "box-lock-screen.png";
+
 const STATION_ACCENT = { cainiao: "#0167FE", pinduoduo: "#EA0D15", fengchao: "#FED043" } as const;
 const HANDOFF_ACCENT = { cainiao: "#016DFE", pinduoduo: "#F22308" } as const;
 const COURIER_STICKERS = new Set([

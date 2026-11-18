@@ -142,7 +142,7 @@ export async function refreshShipmentEnrichment(
         runtimeOverrides.queryManualForSource || queryManualForSource, onWorkStarted,
       ) : job.accountDetail ? await refreshHomeAccountShipment(
         runtimeState, currentState, source, flowId, commit, job, deadlineAtMs, controller.signal,
-        runtimeOverrides.refreshAccountParcel || refreshAccountParcel, onWorkStarted, forceManualRefresh,
+        runtimeOverrides.refreshAccountParcel || refreshAccountParcel, onWorkStarted,
       ) : await refreshOnlineShipment(
         currentState, source, flowId, commit, job, deadlineAtMs, forceManualRefresh,
         controller.signal, runtimeOverrides.queryManualForSource || queryManualForSource,

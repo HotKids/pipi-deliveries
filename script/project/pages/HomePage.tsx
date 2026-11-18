@@ -4,6 +4,7 @@ import {
   HStack,
   Image,
   List,
+  NamespaceReader,
   Navigation,
   NavigationStack,
   ProgressView,
@@ -452,35 +453,43 @@ export function HomePage(props: {
           </VStack>
         ) : null}
         {visibleFilters.length > 1 ? (
-          <ZStack padding={{ horizontal: 20, vertical: 2 }}>
-            <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
-              frame={{ height: 32 }} />
-            <HStack spacing={0} padding={{ horizontal: 3 }}>
-              {visibleFilters.map((key) => {
-                const selected = filter === key;
-                return (
-                  <Button key={key} buttonStyle="plain" action={() => setFilter(key)}>
-                    <VStack frame={{ maxWidth: "infinity", minHeight: 44 }} contentShape="rect">
-                      <HStack
-                        spacing={4}
-                        frame={{ maxWidth: "infinity", minHeight: 26 }}
-                        background={{ style: selected ? "secondarySystemFill" : "clear", shape: "capsule" }}
-                      >
-                        <Text font={14} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
-                          {shipmentFilters[key]}
-                        </Text>
-                        <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
-                          lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
-                          background={{ style: "systemFill", shape: "capsule" }}>
-                          {groups[key].length}
-                        </Text>
-                      </HStack>
-                    </VStack>
-                  </Button>
-                );
-              })}
-            </HStack>
-          </ZStack>
+          <NamespaceReader>
+            {(namespace) => (
+              <ZStack padding={{ horizontal: 20, vertical: 2 }}
+                animation={{ animation: Animation.snappy({ duration: 0.32 }), value: filter }}>
+                <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
+                  frame={{ height: 32 }} />
+                <Capsule fill="secondarySystemFill" frame={{ height: 26 }}
+                  matchedGeometryEffect={{ id: filter, namespace, isSource: false }}
+                  allowsHitTesting={false} />
+                <HStack spacing={0} padding={{ horizontal: 3 }}>
+                  {visibleFilters.map((key) => {
+                    const selected = filter === key;
+                    return (
+                      <Button key={key} buttonStyle="plain" action={() => setFilter(key)}>
+                        <VStack frame={{ maxWidth: "infinity", minHeight: 44 }} contentShape="rect">
+                          <HStack
+                            spacing={4}
+                            frame={{ maxWidth: "infinity", minHeight: 26 }}
+                            matchedGeometryEffect={{ id: key, namespace }}
+                          >
+                            <Text font={14} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
+                              {shipmentFilters[key]}
+                            </Text>
+                            <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
+                              lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
+                              background={{ style: "systemFill", shape: "capsule" }}>
+                              {groups[key].length}
+                            </Text>
+                          </HStack>
+                        </VStack>
+                      </Button>
+                    );
+                  })}
+                </HStack>
+              </ZStack>
+            )}
+          </NamespaceReader>
         ) : null}
         <List key="shipments" listStyle="plain" refreshable={refresh}
           frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
