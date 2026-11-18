@@ -14,7 +14,7 @@ import { replayPendingShipmentNotifications } from "./notifications";
 import { replayEnhancementUnsubscribes } from "./enhancement-unsubscribe";
 import { saveAccountAppRoutes } from "./routes";
 import { automaticBindingIdentityOf, cainiaoHasTrajectoryGap, isHomeAccountQuerySource } from "./shipment-policy";
-import { loadState, loadStateSnapshot, type LoadedStateSnapshot } from "./storage";
+import { loadState, loadStateSnapshot, saveCloudPddParcels, type LoadedStateSnapshot } from "./storage";
 import { listHeadline } from "./status";
 import { acquireRenewingDurableRefreshLease, durableRefreshLeaseDiagnostics, recordNetworkRefreshSuccess } from "./refresh-runtime-state";
 import { requestWidgetReload } from "./widgets";
@@ -22,7 +22,9 @@ import { refreshCarrierAuthorityIfNeeded } from "./carrier-authority";
 import { assertWithinDeadline, deadlineAfter, deadlineExpired } from "./deadline";
 import { createDiagnosticFlowId, diagnosticErrorDetails, diagnosticState, writeDiagnostic } from "./logger";
 import { SCRIPT_BINDING_SOURCE, requireScriptSource } from "./script-source";
-import { SCRIPT_CLIENT_BUILD, SCRIPT_VERSION } from "./build-track";
+import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD, SCRIPT_VERSION } from "./build-track";
+import { gatewayCredentialGeneration } from "./credentials";
+import { readCloudPddParcels } from "./pdd-cloud-records";
 import { CarrierRecognitionBudget } from "./carrier-recognition";
 import type { FullRefreshLease } from "./refresh-coordination";
 import { FULL_REFRESH_FINALIZATION_RESERVE_MS, fullRefreshHostPolicy } from "./refresh-mode";
@@ -283,6 +285,26 @@ async function runFullRefresh(
         recordAccountOrderProjectionCommits(
           projection.projectedOwnerIds, account.parcels, currentState, flowId, source,
         );
+      }
+    }
+
+    if (SCRIPT_BUILD_TRACK === "formal" && !accountListOnly && !backgroundHostSafe &&
+        projectionSceneActive() && !deadlineExpired(enrichmentDeadlineAtMs)) {
+      const generation = gatewayCredentialGeneration();
+      if (generation !== null) {
+        try {
+          const deadline = Math.min(enrichmentDeadlineAtMs ?? Infinity, deadlineAfter(8_000));
+          const parcels = await readCloudPddParcels(lease.signal, deadline);
+          const isCurrent = () => lease.isCurrent() && projectionSceneActive() && gatewayCredentialGeneration() === generation;
+          if (parcels.length && isCurrent()) {
+            const saved = saveCloudPddParcels(parcels, currentState, isCurrent);
+            if (saved.revision > currentState.revision) runtimeState.publishRefreshState(saved);
+            currentState = saved;
+          }
+        } catch {
+          lease.assertCurrent();
+          writeDiagnostic("refresh.pdd_cloud.unavailable", { flowId, source, result: "unavailable" });
+        }
       }
     }
 

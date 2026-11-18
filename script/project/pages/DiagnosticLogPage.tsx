@@ -157,6 +157,7 @@ const EVENT_TITLES: Record<string, string> = {
   "refresh.preparation.started": "准备阶段开始",
   "refresh.preparation.completed": "准备阶段完成",
   "refresh.account.completed": "账号阶段完成",
+  "refresh.pdd_cloud.unavailable": "拼多多云同步暂不可用",
   "refresh.enrichment.started": "逐票补充开始",
   "refresh.enrichment.completed": "逐票补充完成",
   "refresh.finalization.started": "收尾阶段开始",

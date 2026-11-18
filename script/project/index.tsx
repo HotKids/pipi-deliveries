@@ -87,7 +87,16 @@ async function readStartupState(): Promise<StartupState> {
   }
 }
 
-function App({ initialStartup }: { initialStartup: StartupState }) {
+async function readPickupPreview(): Promise<boolean | undefined> {
+  try {
+    return await parcelActivityPreviewing();
+  } catch {
+    writeDiagnostic("activity.parcel.preview.read.failed", { result: "failed" }, "warning");
+    return undefined;
+  }
+}
+
+function App({ initialStartup, initialPickupPreview }: { initialStartup: StartupState; initialPickupPreview: boolean }) {
   // One app-owned viewport stays mounted across Home/detail navigation.
   const [projectionView, setProjectionView] = useState<ProjectionViewportView | null>(null);
   const [startup, setStartup] = useState(initialStartup);
@@ -121,7 +130,7 @@ function App({ initialStartup }: { initialStartup: StartupState }) {
     [shipments, state?.pickupCodeRecords]);
   const latestPickupView = useRef({ state, pickupCards });
   latestPickupView.current = { state, pickupCards };
-  const [pickupPreview, setPickupPreview] = useState(false);
+  const [pickupPreview, setPickupPreview] = useState(initialPickupPreview);
   const hasPickupTab = pickupCards.length > 0 || pickupPreview;
   const platformObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const handoffDeadline = useMemo(() => nextParcelHandoffDeadline(state?.pickupCodeRecords),
@@ -159,14 +168,11 @@ function App({ initialStartup }: { initialStartup: StartupState }) {
   useEffect(() => {
     let mounted = true;
     const reload = () => {
-      void parcelActivityPreviewing().then((previewing) => {
-        if (mounted) setPickupPreview(previewing);
-      }).catch(() => {
-        writeDiagnostic("activity.parcel.preview.read.failed", { result: "failed" }, "warning");
+      void readPickupPreview().then((previewing) => {
+        if (mounted && previewing !== undefined) setPickupPreview(previewing);
       });
     };
     const unsubscribe = onParcelActivityPreviewChanged(reload);
-    reload();
     return () => {
       mounted = false;
       unsubscribe();
@@ -445,8 +451,9 @@ async function run() {
   try {
     initializeCarrierAuthority();
     writeRuntimeCapabilities("app");
+    const [initialStartup, initialPickupPreview] = await Promise.all([readStartupState(), readPickupPreview()]);
     await Navigation.present({
-      element: <App initialStartup={await readStartupState()} />,
+      element: <App initialStartup={initialStartup} initialPickupPreview={initialPickupPreview ?? false} />,
       modalPresentationStyle: "fullScreen",
     });
   } catch (error) {

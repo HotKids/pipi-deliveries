@@ -124,6 +124,7 @@ for required in \
   services/manual-query-parser.ts \
   services/manual-query.ts \
   services/logger.ts \
+  services/pdd-cloud-records.ts \
   services/platform-accounts.ts \
   services/platform-parcel-data.ts \
   services/platform-parcel-merge.ts \

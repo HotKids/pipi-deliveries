@@ -575,6 +575,10 @@ assert.match(logPageSource, /clearDiagnostics\(\);\s*showItems\(\[\]\)/,
   "clearing the log updates the cached badge");
 
 const appSource = readFileSync(new URL("../index.tsx", import.meta.url), "utf8");
+assert.match(appSource, /const \[initialStartup, initialPickupPreview\] = await Promise\.all\(\[readStartupState\(\), readPickupPreview\(\)\]\);\s*await Navigation\.present\(\{\s*element: <App initialStartup=\{initialStartup\} initialPickupPreview=\{initialPickupPreview \?\? false\}/,
+  "the first native tab bar waits for the local preview decision alongside the saved shipment state");
+assert.match(appSource, /\[pickupPreview, setPickupPreview\] = useState\(initialPickupPreview\)/,
+  "a previously active preview shows its pickup tab on the first render");
 assert.match(appSource, /useObservable<string>\(\s*navigationRequest\.pickupRecordId \? "pickup" : "deliveries"/);
 assert.match(appSource, /pickupCards\.length > 0 \|\| pickupPreview/);
 assert.equal(PICKUP_TAB_TITLE, "待取");
@@ -593,7 +597,10 @@ assert.match(settingsSource, /<RootTabList title="设置" onClose=\{\(\) => dism
 assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:|rootPageScroll|headerCollapsed/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|待取|取件)"|navigationTitle=\{PICKUP_TAB_TITLE\}/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-assert.match(rootHeader, /const header = \(\s*<Section key="root-heading" listSectionMargins=\{0\} listSectionSeparator="hidden">\s*<RootPageTitle title=\{title\} \/>\s*\{topAccessory\}\s*<\/Section>/);
+assert.match(rootHeader, /const header = \(\s*<Section key="root-heading" listSectionMargins=\{0\} listSectionSeparator="hidden">\s*<RootPageTitle title=\{title\} onVisibilityChange=\{trackVisibility \? setTitleVisible : undefined\} \/>\s*\{topAccessory\}\s*<\/Section>/);
+assert.match(rootHeader, /onScrollVisibilityChange=\{onVisibilityChange \? \{ onChanged: onVisibilityChange \} : undefined\}/);
+assert.match(rootHeader, /<VStack>\{titleVisible \? titleAction : null\}<\/VStack>/,
+  "scrolling the title away hides the optional query action without changing the list insets");
 assert.match(rootHeader, /<List listStyle="insetGroup"[^]*?refreshable=\{refresh\}[^]*?edges: "top", insets: 0, placement: "scrollContent"[^]*?edges: "vertical", insets: \{ top: 0, bottom: bottomInset[^]*?>\s*\{\[header, \.\.\.\[children\]\.flat\(\)\]\}\s*<\/List>\s*<RootPageCloseButton action=\{onClose\} \/>/,
   "one grouped list scrolls every title and any filter from the same initial top inset under a fixed close control");
 assert.doesNotMatch(rootHeader, /\bchildren=\{/,

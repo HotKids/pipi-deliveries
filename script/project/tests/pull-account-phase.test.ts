@@ -60,6 +60,7 @@ test("the pull resolves after the account phase while per-shipment work is still
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const path = new URL(url).pathname;
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
+    if (path === "/api/cloud-records/pdd-shipments") return json({ ok: true, parcels: [], nextAfter: null });
     if (path === "/api/express/accounts/sync") {
       lists++;
       return json({ code: 0, data: { expressList: [changed] } });
@@ -112,6 +113,7 @@ test("a pull with no per-shipment work left is answered once with the whole refr
   globalThis.fetch = (async (url: string) => {
     const path = new URL(url).pathname;
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
+    if (path === "/api/cloud-records/pdd-shipments") return json({ ok: true, parcels: [], nextAfter: null });
     if (path === "/api/express/accounts/sync") return json({ code: 0, data: { expressList: [ready] } });
     other++;
     return { ok: false, status: 503, text: async () => "unexpected per-shipment request" };
@@ -140,6 +142,7 @@ test("a pull restores a missing Cainiao headline even when the list status and e
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const path = new URL(url).pathname;
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
+    if (path === "/api/cloud-records/pdd-shipments") return json({ ok: true, parcels: [], nextAfter: null });
     if (path === "/api/express/accounts/sync") return json({ code: 0, data: { expressList: [picked] } });
     assert.equal(path, "/api/express/timeline/source");
     detailRequests++;

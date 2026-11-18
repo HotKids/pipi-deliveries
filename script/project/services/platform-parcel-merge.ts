@@ -1,5 +1,6 @@
-import type { ParcelPlatformFields, Shipment } from "../models";
+import type { AppState, ParcelPlatformFields, PddCloudOrigin, Shipment } from "../models";
 import { projectedCarrierPresentation } from "./carrier-presentation";
+import { pendingManualPreviewShipment } from "./manual-preview";
 import { shipmentLifecycleKey } from "./shipment-lifecycle";
 import { displayWaybill, unprojectedAccountOrder } from "./shipment-policy";
 import { normalizeWaybill, shipmentPresentationStatus } from "./status";
@@ -52,7 +53,7 @@ function sameFields(shipment: Shipment, fields: ParcelPlatformFields): boolean {
 }
 
 export function keepPlatformFields(previous: Shipment | undefined, current: Shipment): Shipment {
-  if (!previous || (!previous.platformFields && !previous.pddImport) ||
+  if (!previous || (!previous.platformFields && !previous.pddImport && !previous.pddCloudOrigin) ||
       shipmentLifecycleKey(previous) !== shipmentLifecycleKey(current)) return current;
   const fields = previous.platformFields;
   const retained = fields && (sameFields(current, fields) ||
@@ -71,7 +72,65 @@ export function keepPlatformFields(previous: Shipment | undefined, current: Ship
     ...current,
     platformFields,
     pddImport: current.pddImport || previous.pddImport,
+    pddCloudOrigin: currentPddCloudOrigin(current, current.pddCloudOrigin ?? previous.pddCloudOrigin),
   };
+}
+
+function currentPddCloudOrigin(shipment: Shipment, origin: PddCloudOrigin | undefined): PddCloudOrigin | undefined {
+  return origin && origin.waybill === normalizeWaybill(displayWaybill(shipment)) &&
+    origin.waybillGeneration === (shipment.waybillReuseAtMs ?? 0) ? origin : undefined;
+}
+
+export function hasPddParcelSource(shipment: Shipment): boolean {
+  return Boolean(shipment.pddImport || currentPddCloudOrigin(shipment, shipment.pddCloudOrigin));
+}
+
+export type CloudPddParcel = Readonly<{
+  waybill: string;
+  anchorAt: number;
+  terminalAt: number;
+  carrierCode: string;
+  phone4: string;
+}>;
+
+export function applyCloudPddParcels(state: AppState, parcels: readonly CloudPddParcel[], now: number): AppState {
+  const incoming = new Map<string, CloudPddParcel | null>();
+  for (const parcel of parcels) incoming.set(parcel.waybill, incoming.has(parcel.waybill) ? null : parcel);
+  const local = new Map<string, Shipment[]>();
+  for (const shipment of state.shipments) {
+    if (unprojectedAccountOrder(shipment)) continue;
+    const waybill = normalizeWaybill(displayWaybill(shipment));
+    if (!incoming.get(waybill)) continue;
+    const sameNumber = local.get(waybill) || [];
+    sameNumber.push(shipment);
+    local.set(waybill, sameNumber);
+  }
+  const pending = new Set(state.pendingQueries.map(query => normalizeWaybill(query.waybill)));
+  const changes = new Map<string, Shipment>();
+  for (const [waybill, parcel] of incoming) {
+    if (!parcel) continue;
+    const existing = local.get(waybill) || [];
+    if (existing.length > 1) continue;
+    const current = existing[0];
+    if (current) {
+      const { identity } = current;
+      const genericSource = identity.manuallyAdded || identity.sourceProvider?.toLowerCase() === "kuaidi100";
+      if (!genericSource || identity.sender || identity.accountOrder || hasPddParcelSource(current) ||
+        !matchesParcelMetadataLifecycle(current, parcel.anchorAt, parcel.terminalAt, now)) continue;
+      changes.set(identity.id, { ...current, pddCloudOrigin: { waybill, waybillGeneration: current.waybillReuseAtMs ?? 0 } });
+      continue;
+    }
+    if (pending.has(waybill)) continue;
+    const carrier = projectedCarrierPresentation(waybill, parcel.carrierCode, "");
+    const shipment = pendingManualPreviewShipment({ id: `${state.activeSource}:${waybill}`, source: state.activeSource,
+      waybill, phoneTail: parcel.phone4, ...carrier, rawCourierCode: parcel.carrierCode,
+      createdAtMs: now, lastAttemptAtMs: now, attempts: 0 });
+    changes.set(shipment.identity.id, { ...shipment, pddCloudOrigin: { waybill, waybillGeneration: 0 } });
+  }
+  if (!changes.size) return state;
+  const shipments = new Map(state.shipments.map(shipment => [shipment.identity.id, shipment]));
+  for (const [id, shipment] of changes) shipments.set(id, shipment);
+  return { ...state, shipments: [...shipments.values()] };
 }
 
 export type CloudParcelMetadata = Readonly<{

@@ -25,7 +25,7 @@ import type {
 } from "../models";
 import { nextParcelHandoffDeadline, parcelHandoffDeadline } from "./parcel-handoff-expiry";
 import { activePickupCards, applyRecognizedPickup, type ParcelActivityContent } from "./parcel-pickup";
-import { deliveryEstimateApplies, displayedPlatformFields, enrichPlatformParcel, keepPlatformFields, matchPlatformParcel, samePlatformTarget } from "./platform-parcel-merge";
+import { applyCloudPddParcels, deliveryEstimateApplies, displayedPlatformFields, enrichPlatformParcel, keepPlatformFields, matchPlatformParcel, samePlatformTarget, type CloudPddParcel } from "./platform-parcel-merge";
 import type { PlatformParcel } from "./platform-parcel-data";
 import type { CabinetParcel } from "./fengchao-account";
 import type { ParcelLookup } from "./parcel-code-ocr";
@@ -2344,6 +2344,19 @@ export function saveState(
       throw new Error("Delivery state changed; reload before saving");
     }
     return saveStateAndPrune(candidate, now, notificationCommit).state;
+  });
+}
+
+export function saveCloudPddParcels(parcels: readonly CloudPddParcel[], observed: AppState,
+  isCurrent: () => boolean, now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    if (!isCurrent()) return state;
+    const currentIds = new Set(state.shipments.map(row => row.identity.id));
+    const removed = new Set(observed.shipments.filter(row => !currentIds.has(row.identity.id))
+      .map(row => normalizeWaybill(displayWaybill(row))));
+    const candidate = applyCloudPddParcels(state, parcels.filter(parcel => !removed.has(parcel.waybill)), now);
+    return candidate === state ? state : saveState(candidate, now, {}, state);
   });
 }
 
