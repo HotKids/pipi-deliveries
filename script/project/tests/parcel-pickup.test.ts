@@ -542,18 +542,16 @@ assert.match(appSource, /pickupCards\.length > 0 \|\| pickupPreview/);
 assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title="取件"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="archivebox\.fill"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
 assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate/);
-assert.match(pickupSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootPageHeader title="取件"/);
-assert.match(settingsSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootPageHeader title="设置"/);
-assert.match(pickupSource, /<RootPageHeader title="取件"[^]*?\/>\s*<List \{\.\.\.rootPageScroll\(setHeaderCollapsed\)\}/);
-assert.match(settingsSource, /<RootPageHeader title="设置"[^]*?\/>\s*<List \{\.\.\.rootPageScroll\(setHeaderCollapsed\)\}/);
-assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:/);
+assert.match(pickupSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<ZStack alignment="topTrailing">\s*<List\b[^]*?<RootPageTitle title="取件" \/>[^]*?<\/List>\s*<RootPageCloseButton action=\{\(\) => dismiss\(\)\} \/>/);
+assert.match(settingsSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<ZStack alignment="topTrailing">\s*<List\b[^]*?<RootPageTitle title="设置" \/>[^]*?<\/List>\s*<RootPageCloseButton action=\{\(\) => dismiss\(\)\} \/>/);
+assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:|rootPageScroll|headerCollapsed/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|取件)"/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-assert.match(rootHeader, /<HStack[^>]*>\s*<ZStack[\s\S]*?\{title\}<\/Text>\s*<\/ZStack>\s*<Spacer \/>\s*<Button title="关闭" systemImage="xmark"/,
-  "the animated title occupies the leading slot with the close button trailing");
-assert.equal(rootHeader.match(/\{title\}<\/Text>/g)?.length, 1);
-assert.doesNotMatch(rootHeader, /navigationTitle|ToolbarItem/);
-assert.match(rootHeader, /labelStyle="iconOnly"[\s\S]*?width: NAVIGATION_CONTROL_HEIGHT, height: NAVIGATION_CONTROL_HEIGHT/);
+assert.match(rootHeader, /function RootPageTitle[^]*?<Text font="largeTitle" fontWeight="bold"[^]*?\{title\}\s*<\/Text>/);
+assert.match(rootHeader, /function RootPageCloseButton[^]*?<VStack padding=\{\{ top: 4, trailing: ROOT_PAGE_MARGIN \}\}>\s*<Button title="关闭" systemImage="xmark"/);
+assert.equal(rootHeader.match(/\{title\}\s*<\/Text>/g)?.length, 1);
+assert.doesNotMatch(rootHeader, /navigationTitle|ToolbarItem|Animation|collapsed/);
+assert.match(rootHeader, /const CLOSE_SIZE = 44;[^]*?labelStyle="iconOnly"[^]*?width: CLOSE_SIZE, height: CLOSE_SIZE/);
 assert.match(pickupSource, /overlay=\{\{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen=\{openIdentity\}/,
   "the identity popover stays anchored to the bottom of the scrolling viewport");
 assert.match(pickupSource, /onBindingUnavailable=\{\(\) => void openIdentity\(identity\)\}/,
