@@ -378,7 +378,10 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
         </Section>
       ) : null}
       {valid || (platform === "cainiao" && !busy && failure !== null) ? (
-        <Section header={detailTitle("身份码编号")}>
+        <Section header={detailTitle("身份码编号")}
+          footer={platform === "cainiao" ? (
+            <Text font="footnote" foregroundStyle="secondaryLabel">点击图标切换淘宝身份码与菜鸟出库码</Text>
+          ) : undefined}>
           <HStack spacing={0} frame={{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT }} listRowInsets={DETAIL_ROW_INSETS}>
             {platform === "cainiao" ? (
               <Button buttonStyle="plain" action={onSwitchCainiao} {...switchLabel}>
