@@ -102,7 +102,7 @@ export function ParcelActivityPage({ cards, revision }: {
           />
         </HStack>
       }>
-        <ParcelActivityPreviewCard lockScreenPreview />
+        <ParcelActivityPreviewCard />
       </Section>
       {parcels.length ? (
         <Section header={<Text>快递码</Text>}>

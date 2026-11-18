@@ -1350,7 +1350,7 @@ type StoredStateRead = {
 };
 
 type DecodedStoredState = {
-  state: LegacyAppState | AppState | null;
+  state: LegacyAppState | AppState;
   header: StatePayloadHeader;
   payload?: string;
   fingerprint?: string;
@@ -1450,203 +1450,6 @@ function stateShape(value: unknown): value is LegacyAppState | AppState {
   return isLegacyState(value) || isCurrentState(value);
 }
 
-function peekTopLevelStateHeader(payload: string): StatePayloadHeader | null {
-  const len = payload.length;
-  let i = 0;
-  const skipWs = () => {
-    while (i < len) {
-      const c = payload.charCodeAt(i);
-      if (c === 32 || c === 9 || c === 10 || c === 13) i++;
-      else break;
-    }
-  };
-  const readString = (): string | null => {
-    if (i >= len || payload.charCodeAt(i) !== 34) return null;
-    i++;
-    const start = i;
-    let escaped = false;
-    while (i < len) {
-      const c = payload.charCodeAt(i);
-      if (c === 34) {
-        const end = i;
-        i++;
-        if (!escaped) return payload.slice(start, end);
-        try {
-          return JSON.parse(`"${payload.slice(start, end)}"`) as string;
-        } catch {
-          return null;
-        }
-      }
-      if (c === 92) {
-        escaped = true;
-        i += 2;
-        continue;
-      }
-      if (c < 32) return null;
-      i++;
-    }
-    return null;
-  };
-  const readNumber = (): number | null => {
-    const start = i;
-    if (i < len && payload.charCodeAt(i) === 45) i++;
-    while (i < len) {
-      const c = payload.charCodeAt(i);
-      if (
-        (c >= 48 && c <= 57) ||
-        c === 46 ||
-        c === 101 ||
-        c === 69 ||
-        c === 43 ||
-        c === 45
-      ) {
-        i++;
-      } else {
-        break;
-      }
-    }
-    if (i === start) return null;
-    const raw = payload.slice(start, i);
-    if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(raw)) return null;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : null;
-  };
-  const skipValue = (): boolean => {
-    skipWs();
-    if (i >= len) return false;
-    const first = payload.charCodeAt(i);
-    if (first === 34) return readString() !== null;
-    if (first === 123 || first === 91) {
-      const stack: number[] = [first === 123 ? 125 : 93];
-      i++;
-      while (i < len && stack.length > 0) {
-        const c = payload.charCodeAt(i);
-        if (c === 34) {
-          if (readString() === null) return false;
-          continue;
-        }
-        if (c === 123) {
-          stack.push(125);
-          i++;
-        } else if (c === 91) {
-          stack.push(93);
-          i++;
-        } else if (c === 125 || c === 93) {
-          if (stack.pop() !== c) return false;
-          i++;
-        } else {
-          i++;
-        }
-      }
-      return stack.length === 0;
-    }
-    if (payload.startsWith("true", i)) {
-      i += 4;
-      return true;
-    }
-    if (payload.startsWith("false", i)) {
-      i += 5;
-      return true;
-    }
-    if (payload.startsWith("null", i)) {
-      i += 4;
-      return true;
-    }
-    return readNumber() !== null;
-  };
-
-  skipWs();
-  if (i >= len || payload.charCodeAt(i) !== 123) return null;
-  i++;
-  skipWs();
-  if (i < len && payload.charCodeAt(i) === 125) return null;
-
-  let version: number | null = null;
-  let revision: number | null = null;
-  let updatedAtMs: number | null = null;
-  let activeSource: string | null = null;
-  let hasBindingsArray = false;
-  let hasPendingArray = false;
-  let hasShipmentsArray = false;
-
-  while (i < len) {
-    skipWs();
-    const key = readString();
-    if (key === null) return null;
-    skipWs();
-    if (i >= len || payload.charCodeAt(i) !== 58) return null;
-    i++;
-    skipWs();
-    if (i >= len) return null;
-    if (key === "version") {
-      version = readNumber();
-      if (version !== 1 && version !== 2) return null;
-    } else if (key === "revision") {
-      revision = readNumber();
-      if (revision === null) return null;
-    } else if (key === "updatedAtMs") {
-      updatedAtMs = readNumber();
-      if (updatedAtMs === null) return null;
-    } else if (key === "activeSource") {
-      activeSource = readString();
-      if (activeSource === null) return null;
-    } else if (key === "bindings" || key === "pendingQueries" || key === "shipments") {
-      if (payload.charCodeAt(i) !== 91) return null;
-      if (!skipValue()) return null;
-      if (key === "bindings") hasBindingsArray = true;
-      else if (key === "pendingQueries") hasPendingArray = true;
-      else hasShipmentsArray = true;
-    } else {
-      if (!skipValue()) return null;
-    }
-    skipWs();
-    if (i >= len) return null;
-    const sep = payload.charCodeAt(i);
-    if (sep === 44) {
-      i++;
-      continue;
-    }
-    if (sep === 125) {
-      i++;
-      break;
-    }
-    return null;
-  }
-  skipWs();
-  if (i !== len || revision === null || updatedAtMs === null || !hasShipmentsArray) {
-    return null;
-  }
-  if (version === 2) {
-    if (
-      (activeSource !== "interface5" && activeSource !== "interface6") ||
-      !hasBindingsArray ||
-      !hasPendingArray
-    ) {
-      return null;
-    }
-    return { version: 2, revision, updatedAtMs };
-  }
-  if (version === 1) {
-    return { version: 1, revision, updatedAtMs };
-  }
-  return null;
-}
-
-function ensureDecodedState(
-  candidate: DecodedStoredState,
-): LegacyAppState | AppState | null {
-  if (candidate.state) return candidate.state;
-  if (typeof candidate.payload !== "string") return null;
-  try {
-    const parsed = JSON.parse(candidate.payload) as unknown;
-    if (!stateShape(parsed)) return null;
-    candidate.state = parsed;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 function decodeStoredRaw(raw: unknown): StoredStateRead {
   try {
     if (raw == null) {
@@ -1681,8 +1484,15 @@ function decodeStoredRaw(raw: unknown): StoredStateRead {
           failed: false,
         };
       }
-      const header = peekTopLevelStateHeader(envelope.payload);
-      if (!header) {
+      const state: unknown = JSON.parse(envelope.payload);
+      if (
+        !stateShape(state) || !Number.isFinite(state.revision) || !Number.isFinite(state.updatedAtMs) ||
+        (state.version === 1 && (
+          ("activeSource" in state && typeof state.activeSource !== "string") ||
+          ("bindings" in state && !Array.isArray(state.bindings)) ||
+          ("pendingQueries" in state && !Array.isArray(state.pendingQueries))
+        ))
+      ) {
         return {
           valid: null,
           recoverableLegacy: null,
@@ -1692,8 +1502,8 @@ function decodeStoredRaw(raw: unknown): StoredStateRead {
       }
       return {
         valid: {
-          state: null,
-          header,
+          state,
+          header: { version: state.version, revision: state.revision, updatedAtMs: state.updatedAtMs },
           payload: envelope.payload,
           serialized: raw,
           legacySchema: null,
@@ -2087,7 +1897,7 @@ function legacyConsensus(
 ): DecodedStoredState | null {
   const left = primary.recoverableLegacy;
   const right = backup.recoverableLegacy;
-  if (!left || !right || !left.state || !right.state) return null;
+  if (!left || !right) return null;
   if (
     left.legacySchema !== right.legacySchema ||
     left.envelopeChecksum !== right.envelopeChecksum ||
@@ -2152,9 +1962,10 @@ function readStateSnapshot(now: number, prior?: LoadedStateSnapshot,
     const backup = readStoredState(STATE_BACKUP_KEY, true, decode);
     const durableA = readDurableState(STATE_DURABLE_SLOT_A, decode);
     const durableB = readDurableState(STATE_DURABLE_SLOT_B, decode);
-    const candidates = shared == null
-      ? orderedStoredStates(primary, backup, durableA, durableB)
-      : orderedStoredStates(decode(shared), decode(sharedStateText(true, prefetched)));
+    const sharedRead = shared == null ? null : decode(shared);
+    const candidates = sharedRead
+      ? orderedStoredStates(sharedRead, decode(sharedStateText(true, prefetched)))
+      : orderedStoredStates(primary, backup, durableA, durableB);
     let chosen: DecodedStoredState | null = candidates[0] ?? null;
 
     if (pendingCommit && chosen && pendingIsOlderThan(pendingCommit, chosen)) {
@@ -2196,6 +2007,9 @@ function readStateSnapshot(now: number, prior?: LoadedStateSnapshot,
         },
         primary.failed && backup.failed && durableFailed ? "error" : "warning",
       );
+    } else if (sharedRead?.invalid) {
+      rejectedDiagnosticEmitted = true;
+      writeDiagnostic("storage.state.rejected", { result: "invalid_payload" }, "warning");
     }
     if (!chosen) {
       if (shared != null || primary.invalid || backup.invalid || durableInvalid ||
@@ -2216,18 +2030,7 @@ function readStateSnapshot(now: number, prior?: LoadedStateSnapshot,
     let migrationAttempted = 0;
     const attempts = recoveredLegacy ? [chosen] : candidates;
     for (const candidate of attempts) {
-      const parsedState = ensureDecodedState(candidate);
-      if (!parsedState) {
-        if (!rejectedDiagnosticEmitted) {
-          rejectedDiagnosticEmitted = true;
-          writeDiagnostic(
-            "storage.state.rejected",
-            { result: "invalid_payload", revision: candidate.header.revision },
-            "warning",
-          );
-        }
-        continue;
-      }
+      const parsedState = candidate.state;
       migrationAttempted++;
       try {
         const migrated = migrate(parsedState, now);
@@ -2251,10 +2054,6 @@ function readStateSnapshot(now: number, prior?: LoadedStateSnapshot,
       }
     }
     if (!restored || !chosenState) {
-      if (migrationAttempted === 0) {
-        lastStateLoadFailure = "read_failed";
-        throw new Error("本地快递数据读取失败，请稍后重试");
-      }
       lastStateLoadFailure = "migration_failed";
       writeDiagnostic(
         "storage.state.rejected",

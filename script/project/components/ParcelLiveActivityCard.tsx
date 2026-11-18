@@ -10,16 +10,16 @@ export const PIPI_CARD = {
   corner: 24,
   artWidth: 100,
   artHeight: 117,
-  artTop: 9,
+  artTop: 1.5,
   logoX: 50,
-  logoY: 73,
+  logoY: 64,
   textLeft: 102,
   edge: 12,
   titleHeight: 21,
-  titleFont: 15,
+  titleFont: 16,
   titleLineHeight: 19,
   locationHeight: 17,
-  locationFont: 11,
+  locationFont: 12,
   locationLineHeight: 15,
   locationIcon: 13,
   dividerHeight: 3,
@@ -31,7 +31,7 @@ export const PIPI_CARD = {
   capsuleIcon: 19,
   iconGap: 4,
   codeGap: 8,
-  codeFont: 28,
+  codeFont: 26.5,
   codeHeight: 32,
 } as const;
 
@@ -41,6 +41,8 @@ const SMART_STACK_MAX_WIDTH = 198;
 const SMART_STACK_ART_COLUMN_WIDTH = 56;
 const SMART_STACK_ART_WIDTH = 64;
 const SMART_STACK_ART_GAP = 4.6;
+const SMART_STACK_ROW_GAP = 6;
+const SMART_STACK_TRAILING_INSET = 10;
 const SMART_STACK_CODE_FONT = 29;
 // The larger SF digits leave more leading above their visible glyphs than the title leaves below.
 const SMART_STACK_DIVIDER_INK_OFFSET = 2;
@@ -60,7 +62,6 @@ export type ParcelLiveActivityCardProps = {
   preview?: boolean;
   expanded?: boolean;
   lockScreen?: boolean;
-  lockScreenPreview?: boolean;
   artwork?: VirtualNode;
   actionLabel?: string;
   actionPending?: boolean;
@@ -73,13 +74,9 @@ export type ParcelLiveActivityCardProps = {
   onLocationTap?: () => void;
 };
 
-export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, completion, preview, expanded, lockScreen, lockScreenPreview, artwork,
+export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, completion, preview, expanded, lockScreen, artwork,
   actionLabel, actionPending, locationText, showingAddress, onComplete, onCopy, onDetail, onEditNote, onLocationTap }: ParcelLiveActivityCardProps) {
   const card = PIPI_CARD;
-  const balancedType = lockScreen || lockScreenPreview;
-  const titleFont = balancedType ? 16 : card.titleFont;
-  const locationFont = balancedType ? 12 : card.locationFont;
-  const codeFont = balancedType ? 26.5 : card.codeFont;
   const capsuleTop = card.height - card.edge - card.capsuleHeight;
   const dotRadius = card.dotDiameter / 2;
   const dividerTop = capsuleTop - card.edge - card.dividerHeight / 2 - dotRadius;
@@ -96,21 +93,22 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const widthScale = (width ?? card.width) / card.width;
   const scale = lockScreen || expanded
     ? Math.min(widthScale, MAX_ACTIVITY_HEIGHT / card.height) : widthScale;
-  const height = (bottom - top) * scale;
+  // The island has less height under its camera area than the lock screen.
+  const verticalScale = expanded ? Math.min(scale, 1) : scale;
   const artWidth = card.artWidth * scale;
   const artColumnWidth = expanded ? artWidth - card.edge * scale : artWidth;
   const artHeight = card.artHeight * scale;
-  const artOffset = (card.artTop - top) * scale - (height - artHeight) / 2;
   const flexibleHeight = lockScreen || expanded;
   const fitsHost = expanded || (lockScreen && width !== undefined);
+  const artOffset = (card.artTop - top) * scale;
   const sharesSmartStack = lockScreen && fitsHost;
   const artworkFrame = lockScreen && fitsHost
     ? { maxWidth: artWidth, maxHeight: artHeight }
     : { width: artWidth, height: artHeight };
   const slot = (size: number, minimum = 0) => ({
-    minHeight: (flexibleHeight ? minimum : size) * scale,
-    idealHeight: size * scale,
-    maxHeight: size * scale,
+    minHeight: (flexibleHeight ? minimum : size) * verticalScale,
+    idealHeight: size * verticalScale,
+    maxHeight: size * verticalScale,
   });
   const actionRowHeight = slot(card.capsuleHeight, expanded ? card.capsuleHeight : card.capsuleIcon + 2 * card.iconGap);
   const hostInset = fitsHost ? card.iconGap : 0;
@@ -177,9 +175,9 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     </HStack>
   );
   const titleRow = (
-    <Text font={titleFont * scale} fontWeight={balancedType ? "semibold" : "bold"} foregroundStyle={titleColor} lineLimit={1}
+    <Text font={card.titleFont * scale} fontWeight="semibold" foregroundStyle={titleColor} lineLimit={1}
       minScaleFactor={fitsHost ? 0.7 : undefined}
-      frame={expanded ? undefined : { ...slot(card.titleHeight, titleFont * 0.7), alignment: "leading" }}
+      frame={expanded ? undefined : { ...slot(card.titleHeight, card.titleFont * 0.7), alignment: "leading" }}
       layoutPriority={lockScreen ? 1 : undefined} clipped={!expanded && fitsHost}>{data.title}</Text>
   );
   const subtitleRow = (
@@ -188,17 +186,17 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
       {subtitle.text ? <>
         <Image systemName={subtitle.symbol} resizable scaleToFit foregroundStyle={locationColor}
           frame={{ width: card.locationIcon * scale, height: card.locationIcon * scale }} />
-        <Text font={locationFont * scale} fontWeight={balancedType ? "medium" : "regular"}
+        <Text font={card.locationFont * scale} fontWeight="medium"
           minScaleFactor={fitsHost ? 0.75 : undefined}
           foregroundStyle={locationColor} lineLimit={1}>{subtitle.text}</Text>
       </> : null}
     </HStack>
   );
   const code = (
-    <Text font={codeFont * scale} fontWeight="semibold" fontWidth={balancedType ? "standard" : "condensed"}
+    <Text font={card.codeFont * scale} fontWeight="semibold" fontWidth="standard"
       foregroundStyle={palette.code}
-      kerning={balancedType ? 0 : 0.4 * scale} lineLimit={1} allowsTightening={fitsHost}
-      minScaleFactor={lockScreen ? 11 / (codeFont * scale) : 12 / codeFont}
+      kerning={0} lineLimit={1} allowsTightening={fitsHost}
+      minScaleFactor={lockScreen ? 11 / (card.codeFont * scale) : 12 / card.codeFont}
       frame={{ ...slot(card.codeHeight, lockScreen ? card.capsuleIcon : card.codeHeight),
         minWidth: 0, maxWidth: codeWidth, alignment: "leading" }}
       layoutPriority={lockScreen ? 2 : 1}>
@@ -207,12 +205,12 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   );
   const boxSticker = !logo ? null : lockScreen && fitsHost ? (
     <HStack padding={{ horizontal: MIN_COMPACT_ART_WIDTH * (1 - stickerWidth / card.artWidth) / 2 }}
-      offset={{ x: 0, y: (card.logoY - card.artTop - card.artHeight / 2) * scale }}>
+      offset={{ x: 0, y: (card.logoY - card.artHeight / 2) * scale }}>
       <Image image={logo} resizable scaleToFit frame={{ maxWidth: logoSize, maxHeight: logoSize }} />
     </HStack>
   ) : (
     <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
-      position={{ x: card.logoX * scale, y: (card.logoY - card.artTop) * scale }} />
+      position={{ x: card.logoX * scale, y: card.logoY * scale }} />
   );
   const boxArtwork = (
     <ZStack frame={artworkFrame}
@@ -260,7 +258,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     <Rectangle fill="clear" frame={{ ...slot(height, minimum), maxWidth: "infinity" }} layoutPriority={-2}
       overlay={{ alignment: "leading", content: (
         <VStack spacing={0} alignment="leading" fixedSize={{ horizontal: false, vertical: true }}
-          frame={{ minHeight: lineHeight * scale, alignment: "topLeading" }}>
+          frame={{ minHeight: lineHeight * verticalScale, alignment: "topLeading" }}>
           {content}
         </VStack>
       ) }} />
@@ -268,7 +266,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const divider = (
     <HStack spacing={0} frame={{ ...slot(card.dividerHeight, expanded ? card.dividerHeight : 0), maxWidth: "infinity" }}
       layoutPriority={lockScreen && fitsHost ? -1 : 0} clipped={fitsHost}>
-      {dividerDots(card.width - card.textLeft - card.edge, scale)}
+      {dividerDots(card.width - card.textLeft - card.edge, verticalScale)}
     </HStack>
   );
   const supportingRows = (
@@ -304,9 +302,10 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
         <Rectangle fill="clear" frame={{ ...slot(bottom - top),
           minWidth: expanded ? artColumnWidth : Math.min(artWidth, MIN_COMPACT_ART_WIDTH),
           idealWidth: artColumnWidth, maxWidth: artColumnWidth }}
-          background={{ alignment: "leading", content: boxArtwork }} clipped layoutPriority={expanded ? 1 : -1} />
+          background={{ alignment: "topLeading", content: boxArtwork }}
+          clipped layoutPriority={expanded ? 1 : -1} />
       ) : (
-        <ZStack frame={{ width: artWidth, ...slot(bottom - top) }}>{boxArtwork}</ZStack>
+        <ZStack frame={{ width: artWidth, ...slot(bottom - top), alignment: "topLeading" }}>{boxArtwork}</ZStack>
       )}
       <VStack alignment="leading" spacing={0} padding={{ vertical: hostVerticalInset * scale,
         trailing: expanded ? 0 : card.edge * scale }}
@@ -329,7 +328,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
             {expandedLine(location, card.locationHeight, card.locationLineHeight)}
             <Rectangle fill="clear" frame={slot(locationToDivider, locationToDivider)} />
           </VStack>
-          <VStack spacing={dividerToCapsule * scale} fixedSize={{ horizontal: false, vertical: true }} layoutPriority={1}>
+          <VStack spacing={dividerToCapsule * verticalScale} fixedSize={{ horizontal: false, vertical: true }} layoutPriority={1}>
             {divider}
             {bottomRow}
           </VStack>
@@ -349,9 +348,10 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const watchArtFrame = { width: SMART_STACK_ART_COLUMN_WIDTH, height: card.artHeight * watchScale };
   const watchStickerWidth = stickerWidth * watchScale;
   const watchBoxFile = hasWatchBox ? watchBoxPath : lockScreenBoxPath;
-  const watchContentWidth = SMART_STACK_MAX_WIDTH - SMART_STACK_ART_COLUMN_WIDTH - SMART_STACK_ART_GAP - card.edge;
+  const watchContentWidth = SMART_STACK_MAX_WIDTH - SMART_STACK_ART_COLUMN_WIDTH - SMART_STACK_ART_GAP -
+    SMART_STACK_TRAILING_INSET;
   const smartStack = (
-    <HStack spacing={SMART_STACK_ART_GAP} padding={{ trailing: card.edge }}
+    <HStack spacing={SMART_STACK_ART_GAP} padding={{ trailing: SMART_STACK_TRAILING_INSET }}
       frame={{ minWidth: 0, maxWidth: "infinity", maxHeight: "infinity" }}
       background={cardBackground} allowsHitTesting={false}>
       <ZStack frame={watchArtFrame} scaleEffect={SMART_STACK_ART_WIDTH / SMART_STACK_ART_COLUMN_WIDTH}>
@@ -359,13 +359,13 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
           : box ? <Image image={box} resizable scaleToFit frame={watchArtFrame} />
           : <Image systemName="shippingbox.fill" font={30} foregroundStyle={titleColor} />}
         {logo ? <Image image={logo} resizable scaleToFit frame={{ width: watchStickerWidth, height: watchStickerWidth }}
-          position={{ x: card.logoX * watchScale, y: (card.logoY - card.artTop) * watchScale }} /> : null}
+          position={{ x: card.logoX * watchScale, y: card.logoY * watchScale }} /> : null}
       </ZStack>
       <VStack alignment="leading" spacing={0}
         frame={{ minWidth: 0, maxWidth: "infinity", alignment: "leading" }}
-        offset={{ x: 0, y: (gap - card.iconGap) / 2 }}>
+        offset={{ x: 0, y: (SMART_STACK_ROW_GAP - card.iconGap) / 2 }}>
         <Text font={16} fontWeight="bold" foregroundStyle={titleColor} lineLimit={1} minScaleFactor={0.7}>{data.title}</Text>
-        <HStack spacing={0} frame={{ minHeight: gap, maxHeight: gap, maxWidth: "infinity" }}
+        <HStack spacing={0} frame={{ minHeight: SMART_STACK_ROW_GAP, maxHeight: SMART_STACK_ROW_GAP, maxWidth: "infinity" }}
           offset={{ x: 0, y: SMART_STACK_DIVIDER_INK_OFFSET }}>
           {dividerDots(watchContentWidth, 1)}
         </HStack>

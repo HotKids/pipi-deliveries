@@ -385,7 +385,7 @@ test("old PDD identity response after logout cannot create an active code or cle
   } finally { globalThis.fetch = realFetch; }
 });
 
-test("Cainiao outbound mode uses its own grant and code without changing the Taobao binding", async (t) => {
+test("the same Taobao session reads both Taobao and Cainiao outbound codes", async (t) => {
   t.mock.method(Date, "now", () => NOW);
   memory.clear();
   const cookie = { ...sessionCookie, name: "cookie2", domain: ".taobao.com", value: "synthetic-taobao-session" };
@@ -393,32 +393,41 @@ test("Cainiao outbound mode uses its own grant and code without changing the Tao
   const session = platformSession("cainiao")!;
   const previousCrypto = globalThis.Crypto;
   const calls: string[] = [];
-  let granted = false;
   const code = "CS00000000000000002A";
-  t.mock.method(globalThis, "fetch", async (input: string) => {
+  const taobaoCode = "XNSTA123456789";
+  let outboundAvailable = true;
+  t.mock.method(globalThis, "fetch", async (input: string, init?: RequestInit) => {
     const url = new URL(input);
     const api = url.searchParams.get("api")!;
     calls.push(api);
     const data = JSON.parse(url.searchParams.get("data")!);
-    if (api === "mtop.cainiao.cnts.lightapp.agreement.query") {
-      assert.equal(url.searchParams.get("v"), "1.1");
-      assert.deepEqual(data, { appSource: "GUOGUO", codes: '["IdentityID_Light"]' });
-      return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { model: granted ? [{}] : [] } }));
+    assert.equal(url.hostname, "h5api.m.taobao.com");
+    assert.equal(new Headers(init?.headers).get("cookie"), "cookie2=synthetic-taobao-session");
+    if (api === "mtop.cainiao.pickup.identity.getIdentityMessage") {
+      assert.deepEqual(data, {});
+      return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { result: { identityCode: taobaoCode } } }));
     }
-    assert.equal(api, "mtop.cainiao.nbpickup.identity.code.mini.app");
-    assert.deepEqual(data, { appName: "TAOBAO", positionName: "TAOBAO_GUOGUO" });
+    assert.equal(api, "mtop.cainiao.nbpickup.identitycode.get");
+    assert.equal(url.searchParams.get("v"), "1.0");
+    assert.equal(new Headers(init?.headers).get("referer"), "https://h5.m.taobao.com/");
+    assert.deepEqual(data, { appName: "GUOGUO", verifyVersion: "V2" });
+    if (!outboundAvailable) {
+      return new Response(JSON.stringify({ ret: ["FAIL_SYS_SESSION_EXPIRED"] }));
+    }
     return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { model: { identityCode: code, expireTime: 240 } } }));
   });
   try {
     Object.assign(globalThis, { Crypto: { ...previousCrypto,
       md5: (data: string) => ({ toHexString: () => createHash("md5").update(data).digest("hex") }),
     } });
-    await assert.rejects(fetchStationIdentity("cainiao", session, undefined, true), /agreement/);
-    assert.deepEqual(calls, ["mtop.cainiao.cnts.lightapp.agreement.query"]);
-    granted = true;
+    assert.equal((await fetchStationIdentity("cainiao", session)).value, taobaoCode);
     assert.deepEqual(await fetchStationIdentity("cainiao", session, undefined, true),
       { value: code, expiresAtMs: NOW + 240_000 });
+    assert.deepEqual(calls, ["mtop.cainiao.pickup.identity.getIdentityMessage", "mtop.cainiao.nbpickup.identitycode.get"]);
+    outboundAvailable = false;
+    await assert.rejects(fetchStationIdentity("cainiao", session, undefined, true), /unavailable/);
     assert.equal(platformSession("cainiao")?.generation, session.generation);
+    assert.equal((await fetchStationIdentity("cainiao", session)).value, taobaoCode);
   } finally {
     Object.assign(globalThis, { Crypto: previousCrypto });
   }
