@@ -12,7 +12,9 @@ import { isShunFengSourceShipment, selectShipmentTimeline, shipmentHeadlineMatch
 import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey } from "./row-ledger";
 import { reconcileFengchaoReminders } from "./fengchao-reminders";
 
-async function scheduleEvent(event: Omit<ShipmentNotificationEvent, "id">, deadlineAtMs: number): Promise<void> {
+export async function scheduleShipmentNotification(
+  event: Omit<ShipmentNotificationEvent, "id">, deadlineAtMs: number,
+): Promise<boolean> {
   const request = {
     title: event.title,
     body: event.body,
@@ -29,7 +31,7 @@ async function scheduleEvent(event: Omit<ShipmentNotificationEvent, "id">, deadl
   };
   const timeoutMs = remainingTimeoutMs(deadlineAtMs, 10_000);
   const scheduleDeadline = Math.min(deadlineAtMs, Date.now() + timeoutMs);
-  await waitForRefresh(Notification.schedule(request), scheduleDeadline);
+  return waitForRefresh(Notification.schedule(request), scheduleDeadline);
 }
 
 function deliverableEvents(state: AppState): readonly ShipmentNotificationEvent[] {
@@ -120,7 +122,7 @@ export async function replayPendingShipmentNotifications(
             const presentation = signedSF
               ? shipmentNotificationPresentation({ ...shipment, timeline: selectShipmentTimeline(shipment) })
               : event;
-            await scheduleEvent(presentation, deadlineAtMs);
+            await scheduleShipmentNotification(presentation, deadlineAtMs);
           } finally {
             scheduleDurationMs += Date.now() - scheduleStartedAt;
           }

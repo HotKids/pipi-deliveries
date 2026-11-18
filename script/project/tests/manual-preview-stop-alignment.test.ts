@@ -13,9 +13,10 @@ const timeText = (at: number) => new Date(at + 8 * HOUR).toISOString().slice(0, 
 const actualNow = Date.now;
 Date.now = () => NOW;
 try {
-  for (const origin of ["stale", "pickup", "ordered"] as const) {
+  for (const origin of ["stale", "pickup", "ordered", "background"] as const) {
     memory.clear();
-    const stale = origin === "stale";
+    const background = origin === "background";
+    const stale = origin === "stale" || background;
     const semantic = stale ? "TRANSIT" : origin === "pickup" ? "PICKED" : "ORDERED";
     const preview = await queryManualShipmentPreview({ waybill: WAYBILL,
       presentation: { courierCode: "SF", companyName: "Test carrier", requiresPhoneTail: false },
@@ -48,18 +49,29 @@ try {
       { timeMs: NOW - 10 * HOUR, timeText: timeText(NOW - 10 * HOUR),
         detail: "已揽收", statusCode: "", raw: {} }] };
     const calls: string[] = [];
-    const completed = await continueManualShipmentPreview(preview, { dependencies: {
-      now: () => NOW,
-      queryMoto: async () => { calls.push("moto"); return null; },
-      queryKuaidi100: async () => { calls.push("h5"); return { ...seed,
-        timeline: h5, manualTimelines: [h5], sourceTimeline: null }; },
-      queryKdniao: async () => { calls.push("kdniao"); return null; },
-    } });
-    assert.deepEqual(calls, ["moto", "h5"],
-      "the existing primary round continues and its aligned accumulated history stops KDNiao");
+    const completed = await continueManualShipmentPreview(preview, {
+      backgroundHostSafe: background,
+      ...(background ? { lookup: { waybill: WAYBILL, capturedAtMs: NOW, pickup: { code: "1-2-3456" } } } : {}),
+      dependencies: {
+        now: () => NOW,
+        queryMoto: async () => {
+          calls.push("moto");
+          if (!background) return null;
+          const timeline = { ...h5, provider: "moto" };
+          return { ...seed, timeline, manualTimelines: [timeline], sourceTimeline: null };
+        },
+        queryKuaidi100: async () => { calls.push("h5"); return { ...seed,
+          timeline: h5, manualTimelines: [h5], sourceTimeline: null }; },
+        queryKdniao: async () => { calls.push("kdniao"); return null; },
+      },
+    });
+    assert.deepEqual(calls, background ? ["moto"] : ["moto", "h5"],
+      "the same primary round stops KDNiao after a start node, and the background host skips WebView");
     assert.equal(completed.state.pendingQueries.length, 0);
     assert.equal(loadState(NOW).shipments.length, 1,
       "the owner is published only after the existing continuation completes");
+    if (background) assert.equal(loadState(NOW).shipments[0].pickup?.code, "1-2-3456",
+      "a screenshot pickup code must commit with the owner from the background continuation");
   }
 } finally { Date.now = actualNow; }
 console.log("Initial manual preview alignment tests passed");

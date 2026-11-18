@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import { posix as Path } from "node:path";
 import { runInNewContext } from "node:vm";
-import { recognizeParcelCodes, type ParcelLookup } from "../services/parcel-code-ocr";
-import { parcelImageRows, parcelTextRows } from "../services/parcel-waybill-ocr";
+import { normalizeRecognizedPickupCode, recognizeParcelCodes, type ParcelLookup } from "../services/parcel-code-ocr";
+import { isParcelWaybill, parcelImageRows, parcelTextRows } from "../services/parcel-waybill-ocr";
+import { listHeadline, normalizeWaybill } from "../services/status";
+import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import type { ParcelActivityCompletion } from "../services/parcel-activity-action";
 
 function executable(name: string): string {
@@ -126,7 +129,9 @@ for (const [intent, expected, fileRead, record, failedSave] of [
   [file("file:///synthetic/unreadable.png"), "", "/synthetic/unreadable.png"],
   [text("菜鸟\n待上门取件\n寄件码 ABC123\n快递单号：" + track), track, undefined, "handoff", true],
 ] as const) {
+  const screenSubmission = Boolean(expected && fileRead);
   let staged: ParcelLookup | undefined;
+  let queried: ParcelLookup | undefined;
   const saved: string[] = [];
   const discarded: string[] = [];
   const decodedFiles: string[] = [];
@@ -169,18 +174,149 @@ for (const [intent, expected, fileRead, record, failedSave] of [
       if (failedSave) throw new Error("synthetic write failure");
       saved.push(value.kind);
     },
+    submitScreenShortcut: async (lookup: ParcelLookup) => { queried = lookup; return "已添加 测试快递"; },
+    notifyScreenShortcutStatus: async (message: string) => message,
+    writeDiagnostic() {},
+    flushDiagnostics() {},
     discardShortcutDraft: (token: string) => discarded.push(token),
     backgroundHostBootstrap: () => assert.fail("Recognition must not invoke the refresh action"),
   });
-  assert.equal(staged?.waybill ?? "", expected);
-  if (expected && !record) assert.equal(staged?.pickup?.code, "A1-2345");
+  assert.equal(staged?.waybill ?? "", screenSubmission ? "" : expected);
+  assert.equal(queried?.waybill ?? "", screenSubmission ? expected : "");
+  if (expected && !record) assert.equal((queried ?? staged)?.pickup?.code, "A1-2345");
   assert.deepEqual(saved, record && !failedSave ? [record] : []);
   assert.equal(foregroundCalls, 0, "recognition never opens the main app");
   assert.deepEqual(decodedFiles, fileRead ? [fileRead] : []);
   assert.deepEqual(discarded, failedSave ? ["draft-token"] : []);
   if (failedSave) assert.match(String(result), /处理快递识别结果失败/);
+  else if (screenSubmission) assert.match(String(result), /已添加 测试快递/);
   else if (expected || record) assert.match(String(result), /已识别快递信息/);
   else assert.match(String(result), /未识别|无法读取|请传入|请运行/);
 }
+
+const shortcutService = executable("services/parcel-shortcut.ts");
+const screenshotLookup: ParcelLookup = { waybill: track, capturedAtMs: Date.now(), pickup: { code: "A1-2345" } };
+const nativeTitle = "中通快递 4567 · 运输中";
+const latestBody = "快件到达示例分拨中心";
+const savedShipment = { identity: { id: "synthetic-shipment", waybill: track }, timeline: {
+  provider: "v6_query", tracks: [
+    { timeMs: 1000, detail: "快件已揽收" },
+    { timeMs: 3000, detail: "快递状态已更新" },
+    { timeMs: 2000, detail: latestBody },
+  ],
+} };
+
+function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty" | "noBanner") {
+  const calls: string[] = [];
+  const banners: Record<string, unknown>[] = [];
+  const files = new Map<string, string>();
+  let shipments = mode === "known" ? [savedShipment] : [];
+  const currentState = () => ({ shipments, pendingQueries: [], activeSource: "v5" });
+  const host = runInNewContext(`${shortcutService}\n({ submitScreenShortcut, submitScreenShortcutPhoneTail });`, {
+    Path, isParcelWaybill, normalizeRecognizedPickupCode, listHeadline, normalizeWaybill,
+    EXPRESS_TOAST_COPY, MANUAL_QUERY_BUDGET_MS: 30_000,
+    backgroundHostBootstrap() {},
+    deadlineAfter: (budgetMs: number) => NOW_FOR_SHORTCUT + budgetMs,
+    loadState: currentState,
+    visibleShipments: (state: ReturnType<typeof currentState>) => state.shipments,
+    displayWaybill: (shipment: typeof savedShipment) => shipment.identity.waybill,
+    selectShipmentTimeline: (shipment: typeof savedShipment) => shipment.timeline,
+    saveRecognizedShipmentPickup: (_shipment: unknown, lookup: ParcelLookup) => {
+      assert.equal(lookup.pickup?.code, screenshotLookup.pickup?.code);
+      calls.push("attach existing");
+      return currentState();
+    },
+    detectManualCarrier: async () => { calls.push("carrier"); return { requiresPhoneTail: mode === "phone" }; },
+    queryManualShipmentPreview: async (input: { waybill: string; phoneTail?: string; deadlineAtMs: number }) => {
+      assert.equal(input.waybill, track);
+      assert.equal(input.deadlineAtMs, NOW_FOR_SHORTCUT + 30_000);
+      calls.push("picker");
+      if (mode === "phone" && input.phoneTail !== "0007") throw { needsPhoneTail: true };
+      return { shipment: savedShipment, roundComplete: mode !== "partial" && mode !== "empty",
+        pending: {}, commitBase: { shipment: null } };
+    },
+    commitManualShipmentPreview: (preview: { roundComplete: boolean }, _now: number, lookup: ParcelLookup) => {
+      assert.equal(lookup.pickup?.code, screenshotLookup.pickup?.code);
+      calls.push("commit");
+      if (preview.roundComplete) shipments = [savedShipment];
+      return currentState();
+    },
+    continueManualShipmentPreview: async (_preview: unknown, options: { backgroundHostSafe: boolean; deadlineAtMs: number; lookup: ParcelLookup }) => {
+      assert.equal(options.backgroundHostSafe, true);
+      assert.equal(options.deadlineAtMs, NOW_FOR_SHORTCUT + 30_000);
+      assert.equal(options.lookup.pickup?.code, screenshotLookup.pickup?.code);
+      calls.push("continue");
+      if (mode !== "empty") shipments = [savedShipment];
+      return { state: currentState() };
+    },
+    shipmentNotificationPresentation: () => ({ title: nativeTitle, body: "old headline", shipmentId: "synthetic-shipment", iconName: "zto" }),
+    scheduleShipmentNotification: async (event: Record<string, unknown>) => {
+      assert.equal(shipments.length, 1, "the notification follows the durable shipment commit");
+      calls.push("tracking notification");
+      banners.push(event);
+      return mode !== "noBanner";
+    },
+    Notification: { schedule: async (request: Record<string, unknown>) => { banners.push(request); return true; } },
+    waitForRefresh: (work: Promise<unknown>) => work,
+    needsManualPhoneTail: (error: { needsPhoneTail?: boolean }) => error.needsPhoneTail === true,
+    manualQueryFailureToast: () => EXPRESS_TOAST_COPY.manualQueryFailed,
+    UUID: { string: () => "aaaaaaaa-aaaa-4aaa-8aaa-000000000001" },
+    FileManager: {
+      appGroupDocumentsDirectory: "/synthetic",
+      createDirectorySync() {},
+      writeAsStringSync: (path: string, value: string) => { files.set(path, value); },
+      renameSync: (from: string, to: string) => { files.set(to, files.get(from)!); files.delete(from); },
+      readAsStringSync: (path: string) => files.get(path),
+      removeSync: (path: string) => files.delete(path),
+    },
+    writeDiagnostic: (name: string) => { if (name === "shortcut.notification.failed") calls.push("notification unavailable"); },
+    flushDiagnostics() {},
+  }) as {
+    submitScreenShortcut: (lookup: ParcelLookup) => Promise<string>;
+    submitScreenShortcutPhoneTail: (token: string, tail: string) => Promise<{ done: boolean; message: string }>;
+  };
+  return { ...host, calls, banners, files };
+}
+
+const NOW_FOR_SHORTCUT = 1_790_000_000_000;
+for (const mode of ["new", "known", "partial", "noBanner"] as const) {
+  const host = screenshotRuntime(mode);
+  const title = mode === "known" ? nativeTitle : `已添加 ${nativeTitle}`;
+  assert.equal(await host.submitScreenShortcut(screenshotLookup), `${title}\n${latestBody}`);
+  assert.deepEqual(host.calls, mode === "known" ? ["attach existing", "tracking notification"] : [
+    "carrier", "picker", "commit", ...(mode === "partial" ? ["continue"] : []), "tracking notification",
+    ...(mode === "noBanner" ? ["notification unavailable"] : []),
+  ]);
+  assert.equal(host.banners.length, 1);
+  assert.equal(host.banners[0].title, title);
+  assert.equal(host.banners[0].body, latestBody);
+  assert.equal(host.banners[0].iconName, "zto");
+  assert.equal(host.files.size, 0, "a successful query must not create a foreground search draft");
+}
+
+const needsTail = screenshotRuntime("phone");
+assert.equal(await needsTail.submitScreenShortcut(screenshotLookup), "请长按通知，输入手机号后 4 位。");
+assert.equal(needsTail.banners[0].customUI, true);
+assert.equal(needsTail.banners[0].tapAction, "none");
+assert.equal(needsTail.banners[0].actions, undefined);
+const { screenShortcutDraft } = needsTail.banners[0].userInfo as { screenShortcutDraft: string };
+assert.match(screenShortcutDraft, /^screen-/);
+assert.deepEqual(Object.keys(needsTail.banners[0].userInfo as object), ["screenShortcutDraft"]);
+assert.equal((await needsTail.submitScreenShortcutPhoneTail(screenShortcutDraft, "007")).done, false);
+assert.deepEqual(needsTail.calls, ["carrier", "picker"]);
+assert.equal((await needsTail.submitScreenShortcutPhoneTail(screenShortcutDraft, "0008")).done, false);
+assert.equal(needsTail.files.size, 1, "a rejected tail leaves its exact draft available for retry");
+assert.equal((await needsTail.submitScreenShortcutPhoneTail(screenShortcutDraft, "0007")).done, true);
+assert.equal(needsTail.files.size, 0);
+assert.equal(needsTail.banners[1].body, latestBody);
+assert.equal((await needsTail.submitScreenShortcutPhoneTail(screenShortcutDraft, "0007")).done, true);
+assert.equal(needsTail.banners.length, 2, "a consumed prompt cannot repeat the query or notification");
+
+const noTracks = screenshotRuntime("empty");
+assert.equal(await noTracks.submitScreenShortcut(screenshotLookup), EXPRESS_TOAST_COPY.manualQueryNoTrack);
+assert.equal(noTracks.files.size, 1);
+assert.equal(noTracks.banners[0].tapAction, "none");
+assert.equal(noTracks.banners[0].customUI, undefined);
+assert.ok(!noTracks.calls.includes("tracking notification"));
 
 console.log("background host entrypoint tests passed");

@@ -53,6 +53,7 @@ import {
   PARCEL_SHORTCUT_RECORD_PARAMETER,
   discardShortcutDraft,
   nextShortcutLookup,
+  preferShortcutLookup,
   takeScreenShortcutLookup,
 } from "./services/parcel-shortcut";
 import {
@@ -228,10 +229,13 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
             reconcileParcelActivity(latestPickupView.current.state, latestPickupView.current.pickupCards);
           }
           const lookup = nextShortcutLookup();
-          if (lookup) setNavigationRequest((current) => current.shortcutLookup ? current : {
-            ...current,
-            shortcutLookup: lookup,
-            generation: current.generation + 1,
+          setNavigationRequest((current) => {
+            const next = preferShortcutLookup(current.shortcutLookup, lookup);
+            return next === current.shortcutLookup ? current : {
+              ...current,
+              shortcutLookup: next,
+              generation: current.generation + 1,
+            };
           });
         } catch {
           writeDiagnostic("app.shortcut.resume.failed", {}, "warning");
@@ -325,7 +329,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
           setNavigationRequest((current) => ({
             shipmentId: activityShipmentId || shipmentId,
             pickupRecordId,
-            shortcutLookup: screenLookup || current.shortcutLookup || pendingLookup,
+            shortcutLookup: screenLookup || preferShortcutLookup(current.shortcutLookup, pendingLookup),
             generation: current.generation + 1,
           }));
           if (pickupRecordId) selection.setValue("pickup");
@@ -420,7 +424,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
         <HomePage
           state={state}
           shipments={shipments}
-          autoFocusSearch={focusSearch || Boolean(navigationRequest.shortcutLookup)}
+          autoFocusSearch={focusSearch || Boolean(navigationRequest.shortcutLookup && !navigationRequest.shortcutLookup.openOnTap)}
           initialShipmentId={navigationRequest.shipmentId}
           navigationRequestGeneration={navigationRequest.generation}
           shortcutLookup={navigationRequest.shortcutLookup}

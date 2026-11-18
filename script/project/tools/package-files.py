@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import zipfile
 
-IOS_FILES = {"script.json", "models.ts", "index.tsx", "widget.tsx", "intent.tsx", "app_intents.tsx", "live_activity.tsx"}
+IOS_FILES = {"script.json", "models.ts", "index.tsx", "widget.tsx", "intent.tsx", "app_intents.tsx", "live_activity.tsx", "notification.tsx"}
 IOS_DIRECTORIES = {"components", "pages", "services", "contracts", "assets", "widget"}
 
 

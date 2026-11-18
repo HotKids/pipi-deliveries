@@ -379,8 +379,10 @@ export async function queryManualShipmentPreview(input: {
   waybill: string;
   phoneTail?: string;
   presentation?: ManualCarrierDetection | null;
+  deadlineAtMs?: number;
 }, dependencies?: ManualSourceDependencies): Promise<ManualShipmentPreview> {
-  const deadlineAtMs = deadlineAfter(MANUAL_QUERY_BUDGET_MS);
+  const deadlineAtMs = Math.min(deadlineAfter(MANUAL_QUERY_BUDGET_MS), input.deadlineAtMs ?? Infinity);
+  assertWithinDeadline(deadlineAtMs);
   const state = loadState();
   const canonicalInput = normalizeWaybill(input.waybill);
   const existingPending = state.pendingQueries.find(
@@ -684,6 +686,9 @@ export async function continueManualShipmentPreview(
   preview: ManualShipmentPreview,
   options: Readonly<{
     signal?: AbortSignal;
+    backgroundHostSafe?: boolean;
+    deadlineAtMs?: number;
+    lookup?: ParcelLookup;
     dependencies?: ManualPreviewContinuationDependencies;
     onPreview?: (shipment: Shipment) => void;
   }> = {},
@@ -697,8 +702,9 @@ export async function continueManualShipmentPreview(
   const dependencies = options.dependencies || {};
   const now = dependencies.now || Date.now;
   const startedAtMs = now();
-  const deadlineAtMs = deadlineAfter(MANUAL_QUERY_BUDGET_MS, startedAtMs);
+  const deadlineAtMs = Math.min(deadlineAfter(MANUAL_QUERY_BUDGET_MS, startedAtMs), options.deadlineAtMs ?? Infinity);
   assertRefreshSignal(options.signal);
+  assertWithinDeadline(deadlineAtMs, startedAtMs);
   const base = loadState(startedAtMs);
   const pending = base.pendingQueries.find(
     (candidate) => candidate.id === previewPending.id,
@@ -752,7 +758,7 @@ export async function continueManualShipmentPreview(
     });
     return outcome.shipment;
   });
-  const queryKuaidi100 = dependencies.queryKuaidi100 || ((shipment) =>
+  const queryKuaidi100 = options.backgroundHostSafe ? async () => null : dependencies.queryKuaidi100 || ((shipment) =>
     refreshWebTimeline(
       shipment,
       deadlineAtMs,
@@ -853,8 +859,9 @@ export async function continueManualShipmentPreview(
   }
 
   const routeMutations: DeferredRouteMutations = new Map();
+  const withPickup = options.lookup ? applyRecognizedPickup(accumulated, options.lookup) : accumulated;
   let shipment = deferPendingRoute(
-    { ...accumulated, updatedAtMs: settledAtMs },
+    { ...withPickup, updatedAtMs: settledAtMs },
     pending,
     settledAtMs,
     routeMutations,
