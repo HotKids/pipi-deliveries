@@ -298,8 +298,44 @@ test("old PDD identity response after logout cannot create an active code or cle
   } finally { globalThis.fetch = realFetch; }
 });
 
+test("Cainiao publishes the recipient sync time before a distinct sender failure", async (t) => {
+  memory.clear();
+  t.mock.method(UUID, "string", randomUUID);
+  saveState(emptyState());
+  setDiagnosticsEnabled(true);
+  clearDiagnostics();
+  const cookie = { ...sessionCookie, name: "cookie2", value: "synthetic-cainiao-refresh", domain: ".taobao.com" };
+  savePlatformLogin("cainiao", "", { kind: "web", cookies: [cookie] }, "synthetic-cainiao-owner", "示例昵称");
+  const originalFetch = globalThis.fetch;
+  const originalCrypto = globalThis.Crypto;
+  Object.assign(globalThis, { Crypto: { ...originalCrypto,
+    md5: (data: string) => ({ toHexString: () => createHash("md5").update(data).digest("hex") }),
+  } });
+  globalThis.fetch = (async (url) => {
+    const api = new URL(String(url)).searchParams.get("api");
+    if (api?.endsWith("queryPdsPackageDataList")) {
+      return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { packages: [] } }));
+    }
+    assert.ok(api?.endsWith("querySendPackageDataList"));
+    assert.ok(accountStatus("cainiao").syncedAtMs);
+    assert.match(platformAccountSubtitle(accountStatus("cainiao")), /^示例昵称 · \d\d-\d\d \d\d:\d\d$/);
+    return new Response(JSON.stringify({ ret: ["FAIL_SYS_REQUEST_REJECTED"] }));
+  }) as typeof fetch;
+  try {
+    const result = await refreshPlatformParcels(() => {}, "manual", "cainiao");
+    assert.deepEqual(result.issues, [{ platform: "cainiao", reason: "partial" }], JSON.stringify(readDiagnostics()));
+    assert.ok(readDiagnostics().some((row) => row.event === "platform.cainiao.sync.failed" &&
+      row.details.stage === "cainiao_sender_request"));
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.assign(globalThis, { Crypto: originalCrypto });
+    clearPlatformLogin("cainiao", accountStatus("cainiao").generation);
+    setDiagnosticsEnabled(false);
+  }
+});
+
 for (const loadCompleted of [true, false]) {
-  test(`JD reads authenticated orders with native load completion=${loadCompleted}`, { timeout: 2_500 }, async () => {
+  test(`JD reads authenticated mainland orders with native load completion=${loadCompleted}`, { timeout: 2_500 }, async () => {
     memory.clear();
     const cookie = { ...sessionCookie, name: "pt_key", value: "synthetic-jd-session", domain: ".jd.com" };
     savePlatformLogin("jingdong", "", { kind: "web", cookies: [cookie] }, "synthetic-jd-account");
@@ -321,8 +357,9 @@ for (const loadCompleted of [true, false]) {
       async setCookie(value: Cookie) { this.cookies.push(value); return true; }
       async getAllCookies() { return this.cookies; }
       async loadURL(url: string) {
-        assert.equal(url, "https://my.m.jd.com/index.html?sceneval=2");
-        enteredOrders = false;
+        assert.equal(url, "https://trade.m.jd.com/order/orderlist_jdm.shtml");
+        assert.equal(trustedPlatformPage("jingdong", "https://mtrade.jd.hk/order/orderlist_jdm.shtml"), false);
+        enteredOrders = true;
         return loadCompleted;
       }
       async evaluateJavaScript(script: string) {

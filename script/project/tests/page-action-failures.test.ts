@@ -17,7 +17,7 @@ test("product name storage failure is contained and reported without replacing d
   const edit = action("../pages/DetailPage.tsx", "async function editProductName()", "const [loadingManualDetail", {
     ShipmentLifecycleChangedError,
     Dialog: { prompt: async () => "Synthetic note" }, shipment: { identity: { id: "synthetic" } },
-    displayedPlatformFields: () => ({}),
+    platformFields: {},
     setShipmentProductName: () => { throw new Error("Synthetic storage failure"); },
     writeDiagnostic: () => {}, diagnosticErrorDetails: () => ({}), setNotice: (value: string) => { notice = value; },
     setShipment: () => { published = true; }, props: {}, requestWidgetReload: () => {},

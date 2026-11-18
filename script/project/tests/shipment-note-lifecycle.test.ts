@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { memory, NOW } from "./state-storage-mock";
 import type { Shipment } from "../models";
-import { emptyState, isStoredShipmentRetained, loadState, removeShipment, saveState, setShipmentProductName, upsertShipment } from "../services/storage";
+import { emptyState, isStoredShipmentRetained, loadState, removeShipment, saveState, setShipmentNote, setShipmentProductName, upsertShipment } from "../services/storage";
 import { displayedPlatformFields, enrichPlatformParcel } from "../services/platform-parcel-merge";
 import { absorbAutomaticShipment, applyAccountShipment, applyManualShipment, applyTargetedAccountShipment } from "../services/shipment-policy";
 import { cachedProductImage, productImageCacheKey, pruneProductImages, rememberProductImage } from "../services/product-image-cache";
@@ -22,6 +22,7 @@ function row(): Shipment {
 }
 const page = readFileSync(new URL("../pages/DetailPage.tsx", import.meta.url), "utf8");
 const action = stripTypeScriptTypes(page.slice(page.indexOf("async function editProductName()"), page.indexOf("const [loadingManualDetail")));
+const noteAction = stripTypeScriptTypes(page.slice(page.indexOf("async function editNote()"), page.indexOf("async function editProductName()")));
 const thumbnail = readFileSync(new URL("../components/ProductThumbnail.tsx", import.meta.url), "utf8");
 const ownerSource = stripTypeScriptTypes(thumbnail.slice(thumbnail.indexOf("  const lifecycle ="), thumbnail.indexOf("  const [loaded,")));
 try {
@@ -51,7 +52,7 @@ try {
     let submit!: (value: string) => void;
     let published = false, notice = "";
     const edit = Function("scope", `with(scope) { ${action}; return editProductName; }`)({
-      displayedPlatformFields, ShipmentLifecycleChangedError, shipment: original,
+      platformFields: displayedPlatformFields(original), ShipmentLifecycleChangedError, shipment: original,
       Dialog: { prompt: () => new Promise<string>(resolve => { submit = resolve; }) }, setShipmentProductName,
       setShipment: () => { published = true; }, props: {}, requestWidgetReload() {},
       setNotice: (value: string) => { notice = value; }, writeDiagnostic() {}, diagnosticErrorDetails: () => ({}),
@@ -114,7 +115,7 @@ try {
     upsertShipment(observation, NOW + 1);
     const notices: string[] = [];
     const edit = Function("scope", `with(scope) { ${action}; return editProductName; }`)({
-      displayedPlatformFields, ShipmentLifecycleChangedError, shipment: original,
+      platformFields: displayedPlatformFields(original), ShipmentLifecycleChangedError, shipment: original,
       Dialog: { prompt: async () => draft }, setShipmentProductName,
       setShipment() {}, props: {}, requestWidgetReload() {},
       setNotice: (value: string) => notices.push(value), writeDiagnostic() {}, diagnosticErrorDetails: () => ({}),
@@ -130,6 +131,14 @@ try {
   const initial = saveState({ ...emptyState(), shipments: [original] }, NOW);
   const saved = setShipmentProductName(initial.shipments[0], "Manual title", NOW + 1);
   assert.equal(displayedPlatformFields(saveState(initial, NOW + 2).shipments[0]).title, "Manual title");
+  const editNote = Function("scope", `with(scope) { ${noteAction}; return editNote; }`)({
+    ShipmentLifecycleChangedError, shipment: saved.shipments[0], props: { persistedShipment: true },
+    Dialog: { prompt: async () => "Parcel note" }, setShipmentNote, setShipment() {},
+    requestWidgetReload() {}, setNotice() {}, writeDiagnostic() {}, diagnosticErrorDetails: () => ({}),
+  });
+  await editNote();
+  assert.equal(loadState().shipments[0].note, "Parcel note");
+  assert.equal(displayedPlatformFields(loadState().shipments[0]).title, "Manual title");
   setShipmentProductName(saved.shipments[0], "", NOW + 3);
   assert.equal(displayedPlatformFields(saveState(saved, NOW + 4).shipments[0]).title, "Provider title");
 } finally { Date.now = clock; }

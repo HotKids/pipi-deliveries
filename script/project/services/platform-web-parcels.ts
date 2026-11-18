@@ -4,7 +4,7 @@ import {
   currentPlatformSession, clearPlatformLogin, replacePlatformCookies, type PlatformSession, type WebPlatform,
 } from "./platform-accounts";
 import { deliveryForecast, objectList, productTitle, type PlatformParcel } from "./platform-parcel-data";
-import { JD_ORDERS_PAGE, jdSyncView, openProviderController, PlatformWireError, verifiedJdCookies } from "./platform-wire";
+import { JD_ORDER_LIST_URL, jdSyncView, openProviderController, PlatformWireError, verifiedJdCookies } from "./platform-wire";
 import { platformPickupCode } from "./fengchao-account";
 import { acquireProjectionViewport, projectionSceneActive, releaseProjectionViewport } from "./projection-viewport";
 import { displayWaybill } from "./shipment-policy";
@@ -46,7 +46,8 @@ const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
         text(el) === '全部订单' && el.children.length < 3 && el.getClientRects().length).pop();
     if (entry && !window.__pipiDeliveriesJDOpened) {
       window.__pipiDeliveriesJDOpened = true;
-      entry.click();
+      // The account-page action can choose a regional order host from the exit IP.
+      location.assign(${JSON.stringify(JD_ORDER_LIST_URL)});
       return { state: 'pending', stage: 'jd_sync_order_navigation' };
     }
     const body = document.body?.innerText || '';
@@ -303,7 +304,7 @@ export async function fetchJdParcels(
   return withProviderPage("jingdong", session, async (web, deadline, reportStage) => {
     const now = Date.now();
     reportStage("jd_sync_orders");
-    const result = asPlainObject(await pageResult("jingdong", session, web, JD_ORDERS_PAGE, READ_JD_ORDERS, deadline, reportStage));
+    const result = asPlainObject(await pageResult("jingdong", session, web, JD_ORDER_LIST_URL, READ_JD_ORDERS, deadline, reportStage));
     reportStage("jd_sync_session");
     await saveJdCookies(web, session.generation, deadline);
     const orders = objectList(result.orders).flatMap((row) => {

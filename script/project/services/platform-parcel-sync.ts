@@ -125,13 +125,30 @@ async function syncPlatform(
     }
   }
   if (platform === "cainiao") {
-    if (scope.recipients) await read(async () => {
-      persist({ parcels: cainiaoRecipientParcels(await readCainiao(session, CAINIAO_RECIPIENT_LIST, CAINIAO_LIST_PARAMETERS), now) });
+    const readStage = (recipient: boolean) => read(async () => {
+      const stage = recipient ? "cainiao_recipient" : "cainiao_sender";
+      const started = Date.now();
+      let commitStarted: number | undefined;
+      try {
+        const api = recipient ? CAINIAO_RECIPIENT_LIST : CAINIAO_SENDER_LIST;
+        const data = await readCainiao(session, api, CAINIAO_LIST_PARAMETERS);
+        commitStarted = Date.now();
+        persist(recipient ? { parcels: cainiaoRecipientParcels(data, now) }
+          : { parcels: [], handoffs: cainiaoHandoffs(data, session.ownerKey, now) });
+        if (!notePlatformSync(platform, session.generation, Date.now())) throw new PlatformWireError("changed");
+        writeDiagnostic("platform.cainiao.sync.completed", { stage, durationMs: Date.now() - started,
+          result: "succeeded" }, "info");
+      } catch (error) {
+        writeDiagnostic("platform.cainiao.sync.failed", {
+          stage: stage + (commitStarted === undefined ? "_request" : "_commit"),
+          durationMs: Date.now() - started,
+          result: error instanceof PlatformWireError ? error.reason : "failed",
+        }, "warning");
+        throw error;
+      }
     });
-    if (scope.regular) await read(async () => {
-      persist({ parcels: [], handoffs: cainiaoHandoffs(await readCainiao(session, CAINIAO_SENDER_LIST, CAINIAO_LIST_PARAMETERS),
-        session.ownerKey, now) });
-    });
+    if (scope.recipients) await readStage(true);
+    if (scope.regular) await readStage(false);
   } else if (platform === "fengchao") {
     const saved = persist({ parcels: [], cabinets: await fetchFengchaoCabinets(session) });
     if (!notePlatformSync(platform, session.generation, Date.now(), { cabinetLinks: saved.cabinetLinks })) {
@@ -177,7 +194,7 @@ async function syncPlatform(
     if (!succeeded) throw new PlatformWireError("unavailable");
     return { added, partial: failed };
   }
-  if (!succeeded || !notePlatformSync(platform, session.generation, Date.now())) throw new PlatformWireError("unavailable");
+  if (!succeeded) throw new PlatformWireError("unavailable");
   return { added: 0, partial: failed };
 }
 

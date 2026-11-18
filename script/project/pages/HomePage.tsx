@@ -492,7 +492,8 @@ export function HomePage(props: {
         ) : null}
         {shipments.length ? (
           <List listStyle="plain" refreshable={refresh}>
-            <Section>
+            <Section listSectionSeparator={visibleFilters.length === 1
+              ? { visibility: "hidden", edges: "top" } : undefined}>
               {shownShipments.map((shipment) => (
                 <ShipmentRow
                   key={shipment.identity.id}
