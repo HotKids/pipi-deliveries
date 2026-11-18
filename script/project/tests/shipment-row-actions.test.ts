@@ -17,6 +17,10 @@ const detailSource = await read("pages/DetailPage.tsx");
 const phoneSource = await read("pages/PhoneManagerPage.tsx");
 
 assert.match(rowSource, /<CourierIcon\b/);
+assert.doesNotMatch(rowSource, /deferArtwork/, "the carrier logo is available on the row's first render");
+const courierIconSource = await read("components/CourierIcon.tsx");
+assert.match(courierIconSource, /artwork=\{bundledImage\(`couriers\/\$\{icon\}\.png`\)\}/);
+assert.doesNotMatch(courierIconSource, /useBundledImage|DeferredCourierIcon/);
 assert.doesNotMatch(rowSource, /<Image\b|listedShipmentSourceArt/,
   "the Home rows only show a carrier icon");
 assert.match(detailSource, /\{statusText\}[\s\S]*?<\/HStack>\s*\{phoneTail \? \(\s*<HStack spacing=\{0\}>\s*<Text font="subheadline">手机尾号：<\/Text>\s*<Text font="subheadline" monospacedDigit>\{phoneTail\}<\/Text>\s*<\/HStack>\s*\) : null\}[\s\S]*?\{waybill\}/,

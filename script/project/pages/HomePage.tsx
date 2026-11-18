@@ -2,10 +2,10 @@ import {
   Button,
   Capsule,
   ForEach,
-  GeometryReader,
   HStack,
   Image,
   List,
+  NamespaceReader,
   Navigation,
   NavigationStack,
   ProgressView,
@@ -129,7 +129,6 @@ export function HomePage(props: {
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
   const filterSelection = useObservable<ShipmentFilter>("all");
-  const [filterTrackWidth, setFilterTrackWidth] = useState(0);
   const searchPresented = useObservable(props.autoFocusSearch && !props.initialShipmentId);
   const handledNavigationRef = useRef<number | undefined>(undefined);
   const [accessKeyRejected, setAccessKeyRejected] = useState(gatewayAccessKeyRejected);
@@ -156,9 +155,6 @@ export function HomePage(props: {
     .filter((key) => key === "all" || groups[key].length > 0);
   const selectedFilter = filterSelection.value;
   const filter = visibleFilters.includes(selectedFilter) ? selectedFilter : "all";
-  const filterSegmentWidth = Math.max(0, filterTrackWidth - FILTER_SEGMENT_INSET * 2) / visibleFilters.length;
-  const filterIndicatorOffset = (visibleFilters.indexOf(filter) - (visibleFilters.length - 1) / 2)
-    * filterSegmentWidth;
   const listItems = groups[filter];
   const observableItems = useObservable(() => listItems);
   useEffect(() => { observableItems.setValue(listItems); }, [listItems]);
@@ -473,46 +469,40 @@ export function HomePage(props: {
           </VStack>
         ) : null}
         {visibleFilters.length > 1 ? (
-          <ZStack padding={{ horizontal: 20, vertical: 2 }}>
-            <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
-              frame={{ height: 32 }}
-              allowsHitTesting={false}
-              background={
-                <GeometryReader>
-                  {({ size }) => (
-                    <Capsule fill="clear" key={size.width}
-                      onAppear={() => { if (size.width > 0) setFilterTrackWidth(size.width); }} />
-                  )}
-                </GeometryReader>
-              }
-              overlay={
-                <Capsule fill="secondarySystemFill" key="filter-selection"
-                  frame={{ width: filterSegmentWidth, height: 26 }}
-                  offset={{ x: filterIndicatorOffset, y: 0 }} />
-              }
-            />
-            <HStack spacing={0} padding={{ horizontal: FILTER_SEGMENT_INSET }}>
-              {visibleFilters.map((key) => {
-                const selected = filter === key;
-                return (
-                  <Button key={key} buttonStyle="plain" action={() => selectFilter(key)}>
-                    <VStack frame={{ maxWidth: "infinity", minHeight: 44 }} contentShape="rect">
-                      <HStack spacing={4} frame={{ maxWidth: "infinity", minHeight: 26 }}>
-                        <Text font={14} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
-                          {shipmentFilters[key]}
-                        </Text>
-                        <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
-                          lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
-                          background={{ style: "systemFill", shape: "capsule" }}>
-                          {groups[key].length}
-                        </Text>
-                      </HStack>
-                    </VStack>
-                  </Button>
-                );
-              })}
-            </HStack>
-          </ZStack>
+          <NamespaceReader>
+            {(namespace) => (
+              <ZStack padding={{ horizontal: 20, vertical: 2 }}>
+                <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
+                  frame={{ height: 32 }} allowsHitTesting={false} />
+                <HStack spacing={0} padding={{ horizontal: FILTER_SEGMENT_INSET }}>
+                  {visibleFilters.map((key) => {
+                    const selected = filter === key;
+                    return (
+                      <Button key={key} buttonStyle="plain" action={() => selectFilter(key)}>
+                        <VStack frame={{ maxWidth: "infinity", minHeight: 44 }} contentShape="rect"
+                          background={selected ? (
+                            <Capsule fill="secondarySystemFill" frame={{ height: 26 }}
+                              matchedGeometryEffect={{ id: "filter-selection", namespace }}
+                              transition={Transition.identity()} allowsHitTesting={false} />
+                          ) : undefined}>
+                          <HStack spacing={4} frame={{ maxWidth: "infinity", minHeight: 26 }}>
+                            <Text font={14} fontWeight={selected ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
+                              {shipmentFilters[key]}
+                            </Text>
+                            <Text font={11} fontWeight="semibold" monospacedDigit foregroundStyle="secondaryLabel"
+                              lineLimit={1} padding={{ horizontal: 4 }} frame={{ minWidth: 16, minHeight: 16 }}
+                              background={{ style: "systemFill", shape: "capsule" }}>
+                              {groups[key].length}
+                            </Text>
+                          </HStack>
+                        </VStack>
+                      </Button>
+                    );
+                  })}
+                </HStack>
+              </ZStack>
+            )}
+          </NamespaceReader>
         ) : null}
         <List key="shipments" listStyle="plain" refreshable={refresh}
           frame={{ maxWidth: "infinity", maxHeight: "infinity" }}

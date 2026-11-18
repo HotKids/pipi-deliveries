@@ -1,6 +1,6 @@
 import { Image, VStack } from "scripting";
 import { courierIconName } from "../services/carrier-presentation";
-import { bundledImage, useBundledImage } from "./bundled-image";
+import { bundledImage } from "./bundled-image";
 import { iconTileShape } from "./icon-tile";
 
 export function CourierIcon(props: {
@@ -8,21 +8,13 @@ export function CourierIcon(props: {
   companyName: string;
   accountOrder?: boolean;
   size: number;
-  deferArtwork?: boolean;
 }) {
   const icon = courierIconName(
     props.courierCode,
     props.companyName,
     props.accountOrder,
   );
-  const path = icon ? `couriers/${icon}.png` : undefined;
-  return props.deferArtwork
-    ? <DeferredCourierIcon path={path} size={props.size} />
-    : <CourierIconTile artwork={path ? bundledImage(path) : undefined} size={props.size} />;
-}
-
-function DeferredCourierIcon({ path, size }: { path?: string; size: number }) {
-  return <CourierIconTile artwork={useBundledImage(path)} size={size} />;
+  return <CourierIconTile artwork={bundledImage(`couriers/${icon}.png`)} size={props.size} />;
 }
 
 function CourierIconTile({ artwork, size }: { artwork?: UIImage; size: number }) {
