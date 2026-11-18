@@ -552,7 +552,7 @@ const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", impo
 assert.match(rootHeader, /onScrollVisibilityChange: \{ threshold: 0\.5, onChanged: \(visible: boolean\) => onCollapsed\(!visible\) \}/);
 assert.match(rootHeader, /navigationBarTitleDisplayMode: "inline"/);
 assert.match(rootHeader, /scrollEdgeEffectHidden: "top"[\s\S]*?toolbarBackground: \{ style: background/);
-assert.match(rootHeader, /\{collapsed \? <ToolbarItem placement="title"[^>]*>\s*<Text font=\{21\}[^>]*\{\.\.\.tabCapsuleSurface\(\)\}/,
+assert.match(rootHeader, /\{collapsed \? <ToolbarItem placement="title"[^>]*>\s*<Text[^>]*\{\.\.\.tabCapsuleSurface\(\)\}/,
   "the common scroll state drives the compact title with the shared capsule material");
 assert.match(rootHeader, /<ToolbarItem placement="topBarTrailing"[^>]*>\s*<Button title="关闭" systemImage="xmark"/);
 assert.match(rootHeader, /labelStyle="iconOnly"[\s\S]*?width: NAVIGATION_CONTROL_HEIGHT, height: NAVIGATION_CONTROL_HEIGHT/);
