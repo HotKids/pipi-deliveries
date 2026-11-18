@@ -62,7 +62,11 @@ async function verifiedLogin(platform: WebPlatform, controller: WebViewControlle
   return account ? { ...account, cookies, nickname: cleanString(page.nickname).replace(/^京东用户$/, "") } : null;
 }
 
-function PlatformWebLogin({ platform, generation }: { platform: WebPlatform; generation: string }) {
+export function PlatformWebLogin({ platform, generation, embedded }: {
+  platform: WebPlatform;
+  generation: string;
+  embedded?: { title: string; onFinished: (saved: boolean) => void };
+}) {
   const dismiss = Navigation.useDismiss();
   const [controller, setController] = useState<WebViewController | null>(null);
   const [notice, setNotice] = useState("");
@@ -71,12 +75,17 @@ function PlatformWebLogin({ platform, generation }: { platform: WebPlatform; gen
   const seenProof = useRef("");
   const detachJdView = useRef<(() => void) | null>(null);
 
+  function finish(saved: boolean) {
+    mounted.current = false;
+    (embedded?.onFinished ?? dismiss)(saved);
+  }
+
   async function readLogin(web: WebViewController, retry = false) {
     if (!mounted.current || checking.current) return;
     checking.current = true;
     try {
       if (accountStatus(platform).generation !== generation) {
-        dismiss(false);
+        finish(false);
         return;
       }
       const candidate = await waitForRefresh(
@@ -94,9 +103,8 @@ function PlatformWebLogin({ platform, generation }: { platform: WebPlatform; gen
         // The next reader must wait until this sheet releases the authenticated WebView.
         const detached = new Promise<void>((resolve) => { detachJdView.current = resolve; });
         retainJdLoginView(accountStatus(platform).generation, web, detached);
-        mounted.current = false;
       }
-      dismiss(saved);
+      finish(saved);
     } catch {
       if (mounted.current) setNotice("登录状态未能确认，请重试");
     } finally {
@@ -132,24 +140,23 @@ function PlatformWebLogin({ platform, generation }: { platform: WebPlatform; gen
     };
   }, []);
 
-  return (
-    <NavigationStack>
-      <VStack spacing={0} navigationBarTitleDisplayMode="inline"
-        toast={transientToast(notice, setNotice)}
-        toolbar={{
-          topBarLeading: (
-            <Button title="取消" systemImage="xmark" labelStyle="iconOnly" action={() => dismiss(false)} />
-          ),
-          principal: <HStack spacing={8}><PlatformIcon platform={platform} size={24} /><Text font={17}>{PLATFORM_NAMES[platform]}</Text></HStack>,
-          topBarTrailing: (
-            <Button title="完成" systemImage="checkmark" labelStyle="iconOnly"
-              action={() => controller && void readLogin(controller, true)} disabled={!controller} />
-          ),
-        }}>
-        {controller ? <WebView controller={controller} /> : null}
-      </VStack>
-    </NavigationStack>
+  const content = (
+    <VStack spacing={0} navigationBarTitleDisplayMode="inline" navigationBarBackButtonHidden={Boolean(embedded)}
+      toast={transientToast(notice, setNotice)}
+      toolbar={{
+        topBarLeading: (
+          <Button title="取消" systemImage="xmark" labelStyle="iconOnly" action={() => finish(false)} />
+        ),
+        principal: <HStack spacing={8}><PlatformIcon platform={platform} size={24} /><Text font={17}>{embedded?.title ?? PLATFORM_NAMES[platform]}</Text></HStack>,
+        topBarTrailing: (
+          <Button title="完成" systemImage="checkmark" labelStyle="iconOnly"
+            action={() => controller && void readLogin(controller, true)} disabled={!controller} />
+        ),
+      }}>
+      {controller ? <WebView controller={controller} /> : null}
+    </VStack>
   );
+  return embedded ? content : <NavigationStack>{content}</NavigationStack>;
 }
 
 function FengchaoBinding({ generation }: { generation: string }) {

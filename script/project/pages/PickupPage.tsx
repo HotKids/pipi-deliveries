@@ -6,7 +6,7 @@ import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingAct
 import { PICKUP_TAB_TITLE, pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
-import { onPlatformAccountsChanged, type IdentityPlatform } from "../services/platform-accounts";
+import { accountStatus, onPlatformAccountsChanged, type IdentityPlatform } from "../services/platform-accounts";
 import { stationIdentityDestination } from "../services/platform-wire";
 import { needsDetailEntryQuery } from "../services/shipment-policy";
 import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
@@ -14,13 +14,18 @@ import { setPickupCardNote } from "../services/storage";
 import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { requestWidgetReload } from "../services/widgets";
 import { DetailPage } from "./DetailPage";
-import { StationIdentityMark, StationIdentityPage } from "./StationIdentityPage";
+import { PlatformWebLogin } from "./PlatformAccountPages";
+import { IDENTITY_CODE_TITLES, StationIdentityMark, StationIdentityPage } from "./StationIdentityPage";
 import { pickupCabinetActions } from "../services/platform-parcel-sync";
 
 const IDENTITY_CHOICES = [
   { platform: "cainiao", title: "菜鸟驿站" },
   { platform: "pinduoduo", title: "多多驿站" },
 ] as const;
+
+type PickupIdentityDestination =
+  | { platform: IdentityPlatform; route: "local" }
+  | { platform: IdentityPlatform; route: "login"; generation: string };
 
 function IdentityCodeButton({ onOpen }: {
   onOpen: (platform: IdentityPlatform) => void;
@@ -141,12 +146,14 @@ export function PickupPage({
 }) {
   const dismiss = Navigation.useDismiss();
   const [detailTarget, setDetailTarget] = useState<ParcelActivityTarget | undefined>(undefined);
-  const [identity, setIdentity] = useState<IdentityPlatform | null>(null);
+  const [identity, setIdentity] = useState<PickupIdentityDestination | null>(null);
+  const identityRequest = useRef(0);
   const [visible, setVisible] = useState(false);
   const [cabinetRevision, setCabinetRevision] = useState(0);
   useEffect(() => visible ? onPlatformAccountsChanged(platform => {
     if (platform === "fengchao") setCabinetRevision(value => value + 1);
   }) : undefined, [visible]);
+  useEffect(() => () => { identityRequest.current++; }, []);
   const cabinetActions = useMemo(() => visible ? pickupCabinetActions(cards) : undefined,
     [cards, visible, cabinetRevision]);
   const selected = shipmentForPickupTarget(shipments, detailTarget);
@@ -156,16 +163,11 @@ export function PickupPage({
   const sections = pickupDateSections(cards, previewing, focusedRecordId);
 
   async function openIdentity(platform: IdentityPlatform) {
-    const destination = stationIdentityDestination(platform);
-    if (destination.kind === "local") {
-      setIdentity(platform);
-      return;
-    }
-    setIdentity(null);
-    if (!await Safari.openURL(destination.url).catch(() => false)) {
-      const app = platform === "cainiao" ? "淘宝" : "拼多多";
-      showNotice(`无法打开${app}，请确认已安装。`);
-    }
+    const request = ++identityRequest.current;
+    const route = await stationIdentityDestination(platform, (url) => Safari.openURL(url));
+    if (request !== identityRequest.current) return;
+    setIdentity(route === "login" ? { platform, route, generation: accountStatus(platform).generation }
+      : route === "local" ? { platform, route } : null);
   }
 
   function cardRow(card: ParcelActivityContent) {
@@ -177,7 +179,10 @@ export function PickupPage({
     return (
       <PickupCardRow key={key} card={card} note={note} opensCabinet={Boolean(cabinetActions?.has(card))}
         actionBlocked={card.platform === "fengchao" && !cabinetActions} onAction={onAction}
-        showNotice={showNotice} onDetail={shipment ? () => setDetailTarget(target) : undefined}
+        showNotice={showNotice} onDetail={shipment ? () => {
+          identityRequest.current++;
+          setDetailTarget(target);
+        } : undefined}
         onSaveNote={(value) => {
           onStateChange(setPickupCardNote(card, note, value));
           if (shipment) requestWidgetReload();
@@ -196,14 +201,22 @@ export function PickupPage({
           isPresented: Boolean(identity || selected),
           onChanged: (presented) => {
             if (!presented) {
+              identityRequest.current++;
               setIdentity(null);
               setDetailTarget(undefined);
             }
           },
-          content: identity ? (
-            <StationIdentityPage key={identity} platform={identity}
-              onBindingUnavailable={() => void openIdentity(identity)} />
-          ) : selected ? (
+          content: identity
+            ? identity.route === "login"
+              ? <PlatformWebLogin key={identity.platform} platform={identity.platform}
+                  generation={identity.generation}
+                  embedded={{
+                    title: IDENTITY_CODE_TITLES[identity.platform],
+                    onFinished: (saved) => setIdentity(saved ? { platform: identity.platform, route: "local" } : null),
+                  }} />
+              : <StationIdentityPage key={identity.platform} platform={identity.platform}
+                  onBindingUnavailable={() => void openIdentity(identity.platform)} />
+            : selected ? (
             <DetailPage
               key={selected.identity.id}
               shipment={selected}

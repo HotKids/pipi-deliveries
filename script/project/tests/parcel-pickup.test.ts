@@ -615,7 +615,7 @@ assert.doesNotMatch(rootHeader, /navigationTitle|ToolbarItem|Animation|collapsed
 assert.match(rootHeader, /const CLOSE_SIZE = 44;[^]*?labelStyle="iconOnly"[^]*?width: CLOSE_SIZE, height: CLOSE_SIZE/);
 assert.match(pickupSource, /overlay=\{\{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen=\{openIdentity\}/,
   "the identity popover stays anchored to the bottom of the scrolling viewport");
-assert.match(pickupSource, /onBindingUnavailable=\{\(\) => void openIdentity\(identity\)\}/,
+assert.match(pickupSource, /onBindingUnavailable=\{\(\) => void openIdentity\(identity\.platform\)\}/,
   "an identity page whose binding expires uses the same app handoff as the picker");
 assert.match(pickupSource, /<HStack spacing=\{0\} popover=\{\{\s*isPresented: showPicker,\s*onChanged: setShowPicker,/,
   "the containing row owns the reference popover binding");
