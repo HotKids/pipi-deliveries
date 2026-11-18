@@ -43,7 +43,7 @@ export function ShipmentRow(props: {
     <HStack
       spacing={12}
       padding={{ vertical: 10 }}
-      listRowInsets={0}
+      listRowInsets={{ top: 8, leading: 0, bottom: 8, trailing: 0 }}
       listRowBackground={<Rectangle fill="clear" />}
       contentShape="rect"
       onTapGesture={props.onOpen}

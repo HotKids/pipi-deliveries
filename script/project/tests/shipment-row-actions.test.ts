@@ -17,6 +17,8 @@ const detailSource = await read("pages/DetailPage.tsx");
 const phoneSource = await read("pages/PhoneManagerPage.tsx");
 
 assert.match(rowSource, /<CourierIcon\b/);
+assert.match(rowSource, /listRowInsets=\{\{ top: 8, leading: 0, bottom: 8, trailing: 0 \}\}/,
+  "shipment rows retain vertical room inside the shared inset-grouped list");
 assert.doesNotMatch(rowSource, /deferArtwork/, "the carrier logo is available on the row's first render");
 const courierIconSource = await read("components/CourierIcon.tsx");
 assert.match(courierIconSource, /artwork=\{bundledImage\(`couriers\/\$\{icon\}\.png`\)\}/);
