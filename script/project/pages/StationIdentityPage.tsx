@@ -52,11 +52,10 @@ async function openWebIdentity(platform: IdentityPlatform, session: PlatformSess
   }
 }
 
-function Barcode({ widthList, width, height, vertical = false }: {
+function Barcode({ widthList, width, height }: {
   widthList: readonly number[];
   width?: number;
   height: number;
-  vertical?: boolean;
 }) {
   const modules = widthList.reduce((sum, width) => sum + width, 20);
   return (
@@ -65,8 +64,7 @@ function Barcode({ widthList, width, height, vertical = false }: {
       draw={(ctx, size) => {
         ctx.fillStyle = "white";
         ctx.fillRect(0, 0, size.width, size.height);
-        const unit = (vertical ? size.height : size.width) / modules;
-        const thickness = vertical ? size.width : size.height;
+        const unit = size.width / modules;
         const scale = Device.screen.scale;
         ctx.fillStyle = "black";
         let offset = 10;
@@ -75,8 +73,7 @@ function Barcode({ widthList, width, height, vertical = false }: {
           if (index % 2 === 0) {
             const start = Math.round(offset * unit * scale) / scale;
             const end = Math.round((offset + width) * unit * scale) / scale;
-            if (vertical) ctx.fillRect(0, start, thickness, end - start);
-            else ctx.fillRect(start, 0, end - start, thickness);
+            ctx.fillRect(start, 0, end - start, size.height);
           }
           offset += width;
         }
@@ -94,43 +91,50 @@ function FullScreenIdentity({ format, scan, onClose }: {
   scan: Observable<ScanState>;
   onClose: () => void;
 }) {
-  const [[value, , remaining], setScan] = useState(() => scan.value);
+  const [[value, , remaining, mobile], setScan] = useState(() => scan.value);
   useEffect(() => {
     scan.subscribe(setScan);
     setScan(scan.value);
     return () => scan.unsubscribe(setScan);
   }, [scan]);
   const widths = useMemo(() => value ? code128Widths(value) : [], [value]);
+  const number = <Text font={14} fontWeight="medium" foregroundStyle="#1C1C1E" lineLimit={1}
+    minScaleFactor={0.55}>{value}</Text>;
+  const shrink = <Text font={12} foregroundStyle="#636366">点击可缩小</Text>;
   return (
-    <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} background="white" ignoresSafeArea>
-      {value && remaining > 0 ? (
+    <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} background="white" ignoresSafeArea
+      contentShape="rect" onTapGesture={onClose}>
+      {value && remaining > 0 ? format === "barcode" ? (
+        <GeometryReader>
+          {({ size }) => {
+            const portrait = size.height > size.width;
+            const length = Math.min(640, Math.max(size.width, size.height) * 0.79);
+            const thickness = Math.min(156, Math.min(size.width, size.height) * 0.42);
+            return (
+              <VStack spacing={12} frame={{ width: length }} rotationEffect={portrait ? 90 : 0}
+                position={{ x: size.width / 2, y: size.height / 2 }}>
+                {mobile ? <Text font={16} fontWeight="semibold" foregroundStyle="#1C1C1E">{mobile}</Text> : null}
+                <Barcode widthList={widths} width={length} height={thickness} />
+                <VStack spacing={4}>{number}{shrink}</VStack>
+              </VStack>
+            );
+          }}
+        </GeometryReader>
+      ) : (
         <VStack spacing={18} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
           padding={{ top: 104, bottom: 40, horizontal: 24 }}>
           <GeometryReader>
             {({ size }) => {
-              const { width, height } = Device.screen;
-              const landscape = width > height;
-              const longer = Math.min(Math.max(width, height) - 330, 640, landscape ? size.width : size.height);
-              const shorter = Math.min(Math.min(width, height) - 50, 340, landscape ? size.height : size.width);
               const qrSize = Math.min(320, size.width, size.height);
               return (
                 <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
-                  {format === "barcode" && longer > 24 && shorter > 24
-                    ? <Barcode widthList={widths} vertical={!landscape}
-                      width={landscape ? longer : shorter} height={landscape ? shorter : longer} />
-                    : format === "qr" && qrSize > 0
-                      ? <QRImage data={value} size={qrSize} />
-                      : null}
+                  {qrSize > 0 ? <QRImage data={value} size={qrSize} /> : null}
                 </VStack>
               );
             }}
           </GeometryReader>
           <VStack spacing={8}>
-            <Text font={14} fontWeight="medium" foregroundStyle="#1C1C1E" lineLimit={1}
-              minScaleFactor={0.55}>{value}</Text>
-            <Text font={12} foregroundStyle="#636366">
-              {format === "barcode" ? "条码已横向铺满，直接对准扫码口" : "二维码已放大，请对准扫描区"}
-            </Text>
+            {number}{shrink}
             <Text font={12} monospacedDigit foregroundStyle="#636366">{countdown(remaining)}</Text>
           </VStack>
         </VStack>
@@ -299,19 +303,19 @@ function StationIdentityContent({ platform, expectedGeneration }: {
           }}>
           {valid ? (
             <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
-              <Button buttonStyle="plain" action={() => setFull("barcode")}>
+              <Button buttonStyle="plain" action={() => { setFull("barcode"); void refresh(); }}>
                 <VStack padding={{ vertical: 8, horizontal: 12 }}
                   background={{ style: "white", shape: BARCODE_SHAPE }} contentShape="rect">
                   <Barcode widthList={widthList} height={78} />
                 </VStack>
               </Button>
-              <Button buttonStyle="plain" action={() => setFull("qr")}>
+              <Button buttonStyle="plain" action={() => { setFull("qr"); void refresh(); }}>
                 <VStack padding={10} frame={{ width: 200, height: 200 }}
                   background={{ style: "white", shape: QR_SHAPE }} contentShape="rect">
                   <QRImage data={value} size={184} />
                 </VStack>
               </Button>
-              <Text font={13} foregroundStyle="secondaryLabel">点击放大</Text>
+              <Text font={13} foregroundStyle="secondaryLabel">点击条形码或二维码可放大刷新</Text>
               <Text font={12} foregroundStyle={remaining > 60 ? "tertiaryLabel" : "systemRed"}>
                 {busy ? "正在刷新…" : countdown(remaining)}
               </Text>
