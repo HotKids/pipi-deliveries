@@ -3,7 +3,7 @@ import {
   Image,
   LiveActivity,
   LiveActivityUI,
-  LiveActivityUIExpandedBottom,
+  LiveActivityUIExpandedCenter,
   Script,
   Text,
   ZStack,
@@ -52,15 +52,15 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
         content={<ParcelLiveActivityCard {...cardProps} width={width} lockScreen />}
         compactLeading={<HStack widgetURL={url}>{glyph}</HStack>}
         compactTrailing={(
-          <Text font={13} foregroundStyle={palette.code} monospacedDigit lineLimit={1} minScaleFactor={0.7}>
+          <Text font={13} fontWeight="semibold" foregroundStyle={palette.code} lineLimit={1} minScaleFactor={0.7} widgetURL={url}>
             {compactCode && Array.from(compactCode).length <= 8 ? compactCode : handoff ? "待寄件" : "待取件"}
           </Text>
         )}
         minimal={<HStack widgetURL={url}>{glyph}</HStack>}
       >
-        <LiveActivityUIExpandedBottom>
+        <LiveActivityUIExpandedCenter>
           <ParcelLiveActivityCard {...cardProps} expanded />
-        </LiveActivityUIExpandedBottom>
+        </LiveActivityUIExpandedCenter>
       </LiveActivityUI>
     );
   },

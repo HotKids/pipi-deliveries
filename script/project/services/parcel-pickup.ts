@@ -85,9 +85,9 @@ export function parcelPickupShortCode(code: string): string {
 }
 
 export function parcelPickupSubtitle(card: ParcelActivityContent, location = card.location, showingAddress = false) {
-  if (card.kind === "handoff") return { text: location, symbol: "calendar" };
-  if (!location) return { text: "请及时取件", symbol: "note.text" };
-  return { text: location, symbol: showingAddress || location === card.address ? "mappin.and.ellipse" : "house" };
+  if (card.kind === "handoff") return { text: location, symbol: "calendar.circle.fill" };
+  if (!location) return { text: "请及时取件", symbol: "doc.text.fill" };
+  return { text: location, symbol: showingAddress || location === card.address ? "mappin.circle.fill" : "house.fill" };
 }
 
 function appointmentPart(value: number | undefined): string {

@@ -155,7 +155,7 @@ for (const file of ["HomePage.tsx", "PhoneBindingPage.tsx", "PhoneManagerPage.ts
 for (const file of transientPages) {
   const source = await readFile(resolve(projectDir, "pages", file), "utf8");
   const slots = source.match(
-    /(?:topBarLeading|topBarTrailing):\s*\(\s*<Button[\s\S]{0,600}?<\/Button>/g,
+    /(?:(?:topBarLeading|topBarTrailing):\s*\(|<ToolbarItem placement="(?:topBarLeading|topBarTrailing)">)\s*<Button[\s\S]{0,600}?<\/Button>/g,
   ) ?? [];
   for (const slot of slots) {
     if (!slot.includes("<Image")) continue;
@@ -229,7 +229,7 @@ assert.match(
 );
 assert.match(
   homeSource,
-  /topBarTrailing:\s*\(\s*<Button title="查询快递" systemImage="magnifyingglass" labelStyle="iconOnly"\s*buttonStyle="plain" frame=\{\{ width: 44, height: 44 \}\} action=\{\(\) => searchPresented\.setValue\(true\)\}/,
+  /<ToolbarItem placement="topBarTrailing">\s*<Button title="查询快递" systemImage="magnifyingglass" labelStyle="iconOnly"\s*buttonStyle="plain" frame=\{\{ width: 44, height: 44 \}\} action=\{\(\) => searchPresented\.setValue\(true\)\}/,
   "the Home search button opens the search page and keeps the 44pt toolbar target",
 );
 

@@ -18,9 +18,9 @@ assert.equal(parcelCardArtwork({ ...PARCEL_ACTIVITY_PREVIEW, kind: "handoff" }).
 assert.equal(parcelPickupShortCode("1-2-3456"), "1-2-3456");
 assert.equal(parcelPickupShortCode("B-12-34567"), "B1234567");
 const previewAddress = { ...PARCEL_ACTIVITY_PREVIEW, address: "示例路 8 号" };
-assert.deepEqual(parcelPickupSubtitle(previewAddress), { text: "旺旺多多驿站", symbol: "house" });
-assert.deepEqual(parcelPickupSubtitle(previewAddress, previewAddress.address, true), { text: "示例路 8 号", symbol: "mappin.and.ellipse" });
-assert.deepEqual(parcelPickupSubtitle({ ...PARCEL_ACTIVITY_PREVIEW, location: "" }), { text: "请及时取件", symbol: "note.text" });
+assert.deepEqual(parcelPickupSubtitle(previewAddress), { text: "旺旺多多驿站", symbol: "house.fill" });
+assert.deepEqual(parcelPickupSubtitle(previewAddress, previewAddress.address, true), { text: "示例路 8 号", symbol: "mappin.circle.fill" });
+assert.deepEqual(parcelPickupSubtitle({ ...PARCEL_ACTIVITY_PREVIEW, location: "" }), { text: "请及时取件", symbol: "doc.text.fill" });
 assert.deepEqual(parcelCardPalette(), {
   gradient: ["#22262d", "#38232d"], code: "white", capsule: "rgba(255,255,255,0.16)",
 });
@@ -31,6 +31,8 @@ assert.notEqual(parcelCardPalette("#3259a8").code, "#3259a8");
 assert.equal(parcelCardPalette("#3259a8").capsule, "#3259a8");
 assert.notEqual(parcelCardPalette("#ffd100").capsule, "#ffd100");
 assert.equal(parcelCardPalette("#ffd100").code, "#ffd100");
+assert.notEqual(parcelCardPalette("#ffd100", true).code, "#ffd100", "bright stickers remain legible on light glass");
+assert.equal(parcelCardPalette(undefined, true).code, "#111111");
 
 const exampleDay = new Date(2026, 10, 18, 14);
 const datedHandoff = handoffActivityContent({
@@ -39,6 +41,7 @@ const datedHandoff = handoffActivityContent({
   windowStartAtMs: Date.parse("2026-11-18T16:30:00Z"),
 });
 assert.equal(datedHandoff?.businessDateKey, "2026-11-19");
+assert.equal(parcelPickupSubtitle(datedHandoff!).symbol, "calendar.circle.fill");
 assert.deepEqual(pickupDateSections([PARCEL_ACTIVITY_PREVIEW, datedHandoff!], true, "", exampleDay)
   .map(({ label, preview, items }) => [label, preview, items.length]),
 [
@@ -446,14 +449,17 @@ await host.stopParcelActivity();
 
 const activityCardSource = readFileSync(new URL("../components/ParcelLiveActivityCard.tsx", import.meta.url), "utf8");
 assert.match(activityCardSource, /handoff \? "我已寄件" : "我已取件"/, "the pickup and handoff activities each show their completion capsule");
-assert.match(activityCardSource, /background=\{expanded \? undefined : gradient/, "the system island provides the expanded background");
+assert.match(activityCardSource, /background=\{expanded \? undefined : glass/, "the system island provides the expanded background");
 assert.doesNotMatch(activityCardSource, /<(?:GeometryReader|Canvas)\b/, "the lock screen snapshots a complete view tree");
-assert.match(activityCardSource, /frame=\{\{ minHeight: height, maxHeight: height, maxWidth: "infinity" \}\}/);
+assert.match(activityCardSource, /frame=\{\{ \.\.\.slot\(bottom - top\), minWidth: 0, maxWidth: "infinity"/);
 assert.match(activityCardSource, /systemName="shippingbox\.fill" font=\{card\.capsuleIcon \* scale\}/,
   "the completion control uses the native package symbol");
+const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
+assert.match(activityEntrySource, /<LiveActivityUIExpandedCenter>\s*<ParcelLiveActivityCard\b[^>]*\bexpanded\b/);
 const activitySettingsSource = readFileSync(new URL("../pages/PickupSettingsPages.tsx", import.meta.url), "utf8");
 assert.equal((activitySettingsSource.match(/<ParcelActivityPreviewCard\b/g) ?? []).length, 1,
   "the setting contains one example card");
+assert.match(activitySettingsSource, /<ParcelActivityPreviewCard lockScreenPreview \/>/);
 const tabCardSource = readFileSync(new URL("../components/PickupTabCard.tsx", import.meta.url), "utf8");
 assert.match(tabCardSource, /listRowInsets=\{0\}[\s\S]*?<ParcelLiveActivityCard\b/);
 assert.match(tabCardSource, /background=\{\s*<GeometryReader\b/, "only the in-app row reads layout geometry");
