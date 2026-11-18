@@ -1,4 +1,4 @@
-import { Animation, Button, HStack, Rectangle, Spacer, Text, VStack, ZStack } from "scripting";
+import { Button, HStack, Rectangle, Spacer, Text, VStack, ZStack } from "scripting";
 import { tabCapsuleSurface } from "./TabFloatingActionButton";
 
 const NAVIGATION_CONTROL_HEIGHT = 44;

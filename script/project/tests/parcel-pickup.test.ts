@@ -567,7 +567,7 @@ assert.match(floatingButtonSource, /<Label title=\{title\} systemImage=\{symbol\
 assert.match(pickupSource, /onLocationTap=\{canSwitch \? \(\) => setShowAddress\(!showAddress\)/);
 const stationIdentitySource = readFileSync(new URL("../pages/StationIdentityPage.tsx", import.meta.url), "utf8");
 assert.match(stationIdentitySource,
-  /<Text foregroundStyle="accentColor" frame=\{\{ maxWidth: "infinity", alignment: "center" \}\} contentShape="rect">\s*在\{providerName\}内打开/,
+  /<Button buttonStyle="plain" listRowInsets=\{DETAIL_ROW_INSETS\} action=\{\(\) => void openRecovery\("app"\)\}>\s*<Text font=\{16\} foregroundStyle="accentColor"\s*frame=\{\{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT \}\} contentShape="rect">\s*在\{providerName\}内打开/,
   "the provider app action centers its label across the form row");
 assert.doesNotMatch(stationIdentitySource, /在网页打开|在拼多多 App 中打开/);
 assert.match(stationIdentitySource, /后自动刷新` : "正在自动刷新…"/);
@@ -580,6 +580,12 @@ assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{qrSize\}[\s\
 assert.match(stationIdentitySource, /preferredColorScheme="light"\s+contentShape="rect" onTapGesture=\{onClose\}/);
 assert.doesNotMatch(stationIdentitySource, /title="关闭" systemImage="xmark"/);
 assert.match(stationIdentitySource, /header=\{detailTitle\("取件人"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}[\s\S]*?header=\{detailTitle\("身份码编号"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}/);
+assert.match(stationIdentitySource,
+  /valid \|\| platform === "cainiao"[^]*?action=\{onSwitchCainiao\}[^]*?\{valid \? value\.replace\([^\n]*? : "暂无编号"\}[^]*?\{valid \? <Button[^]*?copyText\(value\)/,
+  "a missing Cainiao code retains the variant switch and shows the placeholder without a copy action");
+assert.match(stationIdentitySource, /listRowInsets=\{valid \? SCAN_ROW_INSETS : DETAIL_ROW_INSETS\}/);
+assert.match(stationIdentitySource, /<Text font=\{16\} foregroundStyle="secondaryLabel" multilineTextAlignment="center"\s*frame=\{\{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT \}\}>\s*\{status\}/,
+  "an unavailable scan uses the shared detail-row height and insets");
 assert.match(stationIdentitySource, /\{\.\.\.tabCapsuleSurface\(true\)\}>复制<\/Text>/);
 assert.doesNotMatch(stationIdentitySource, /presentPlatformLogin|授权拼多多|登录淘宝/,
   "the identity page does not present an account setup form");

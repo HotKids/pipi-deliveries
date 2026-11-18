@@ -29,6 +29,7 @@ const BARCODE_SHAPE = { type: "rect", cornerRadius: 10, style: "continuous" } as
 const QR_SHAPE = { type: "rect", cornerRadius: 14, style: "continuous" } as const;
 const DETAIL_ROW_INSETS = { top: 12, bottom: 12, leading: 16, trailing: 16 };
 const SCAN_ROW_INSETS = { ...DETAIL_ROW_INSETS, leading: 8, trailing: 8 };
+const DETAIL_ROW_HEIGHT = 44;
 const DETAIL_MARK_SIZE = 36;
 
 const detailTitle = (title: string) => <Text font={13} foregroundStyle="secondaryLabel">{title}</Text>;
@@ -335,7 +336,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
       }}
     >
       <Section>
-        <VStack spacing={12} listRowInsets={SCAN_ROW_INSETS} frame={{ maxWidth: "infinity" }}
+        <VStack spacing={12} listRowInsets={valid ? SCAN_ROW_INSETS : DETAIL_ROW_INSETS} frame={{ maxWidth: "infinity" }}
           fullScreenCover={{
             isPresented: full !== null,
             onChanged: (shown) => { if (!shown) setFull(null); },
@@ -362,14 +363,15 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
                 {busy ? "正在刷新…" : countdown(remaining)}
               </Text>
             </VStack>
-          ) : <Text foregroundStyle="secondaryLabel" padding={{ vertical: 24 }}>
+          ) : <Text font={16} foregroundStyle="secondaryLabel" multilineTextAlignment="center"
+            frame={{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT }}>
             {status}
           </Text>}
         </VStack>
       </Section>
       {valid && mobile ? (
         <Section header={detailTitle("取件人")}>
-          <HStack frame={{ minHeight: 28 }} listRowInsets={DETAIL_ROW_INSETS}>
+          <HStack frame={{ minHeight: DETAIL_ROW_HEIGHT }} listRowInsets={DETAIL_ROW_INSETS}>
             <Text font={16}>绑定手机号</Text>
             <Text font={16} foregroundStyle="secondaryLabel"
               frame={{ maxWidth: "infinity", alignment: "trailing" }}>{mobile}</Text>
@@ -378,25 +380,26 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
       ) : null}
       {valid || platform === "cainiao" ? (
         <Section header={detailTitle("身份码编号")}>
-          <HStack spacing={0} frame={{ maxWidth: "infinity" }} listRowInsets={DETAIL_ROW_INSETS}>
+          <HStack spacing={0} frame={{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT }} listRowInsets={DETAIL_ROW_INSETS}>
             {platform === "cainiao" ? (
               <Button buttonStyle="plain" action={onSwitchCainiao} {...switchLabel}>
-                <HStack frame={{ width: 48, minHeight: 44, alignment: "leading" }} contentShape="rect">
+                <HStack frame={{ width: 48, minHeight: DETAIL_ROW_HEIGHT, alignment: "leading" }} contentShape="rect">
                   <StationIdentityMark asset={markAsset} size={DETAIL_MARK_SIZE} />
                 </HStack>
               </Button>
             ) : <HStack frame={{ width: 48, alignment: "leading" }}>
               <StationIdentityMark asset={markAsset} size={DETAIL_MARK_SIZE} />
             </HStack>}
-            <Text font={24} fontWeight="bold" lineLimit={1} minScaleFactor={0.55}
+            <Text font={valid ? 24 : 16} fontWeight={valid ? "bold" : undefined}
+              foregroundStyle={valid ? "label" : "secondaryLabel"} lineLimit={1} minScaleFactor={0.55}
               frame={{ maxWidth: "infinity", alignment: "leading" }}>
-              {value.replace(/(\d{4})(\d{4})(\d{4})/, "$1 $2 $3")}
+              {valid ? value.replace(/(\d{4})(\d{4})(\d{4})/, "$1 $2 $3") : "暂无编号"}
             </Text>
             {valid ? <Button buttonStyle="plain" padding={{ leading: 12 }} action={() => {
               if (!currentSession() || expiresAtMs <= Date.now()) return;
               void copyText(value);
             }}>
-              <ZStack frame={{ minWidth: 44, minHeight: 44 }} contentShape="rect">
+              <ZStack frame={{ minWidth: DETAIL_ROW_HEIGHT, minHeight: DETAIL_ROW_HEIGHT }} contentShape="rect">
                 <Text font={14} fontWeight="semibold" foregroundStyle="accentColor"
                   frame={{ minHeight: DETAIL_MARK_SIZE }} padding={{ horizontal: 12 }}
                   {...tabCapsuleSurface(true)}>复制</Text>
@@ -407,14 +410,16 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
       ) : null}
       {!valid && !busy ? (
         <Section>
-          <Button buttonStyle="plain" action={() => void openRecovery("app")}>
-            <Text foregroundStyle="accentColor" frame={{ maxWidth: "infinity", alignment: "center" }} contentShape="rect">
+          <Button buttonStyle="plain" listRowInsets={DETAIL_ROW_INSETS} action={() => void openRecovery("app")}>
+            <Text font={16} foregroundStyle="accentColor"
+              frame={{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT }} contentShape="rect">
               在{providerName}内打开
             </Text>
           </Button>
           {failure === "verification" ? (
-            <Button buttonStyle="plain" action={() => void openRecovery("verification")}>
-              <Text foregroundStyle="accentColor" frame={{ maxWidth: "infinity", alignment: "center" }} contentShape="rect">
+            <Button buttonStyle="plain" listRowInsets={DETAIL_ROW_INSETS} action={() => void openRecovery("verification")}>
+              <Text font={16} foregroundStyle="accentColor"
+                frame={{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT }} contentShape="rect">
                 完成安全验证
               </Text>
             </Button>
