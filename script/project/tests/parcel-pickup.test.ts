@@ -544,8 +544,10 @@ assert.match(settingsSource, /<RootPageHeader title="设置" action=\{\(\) => di
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
 assert.match(rootHeader, /<Text font="largeTitle" fontWeight="bold"[\s\S]*?<Button title="关闭" systemImage="xmark"/);
 assert.match(rootHeader, /labelStyle="iconOnly"[\s\S]*?width: 44, height: 44/);
-assert.match(pickupSource, /<\/List>\s*<IdentityCodeButton onOpen=\{setIdentity\}/,
+assert.match(pickupSource, /<\/List>\s*<IdentityCodeButton onOpen=\{openIdentity\}/,
   "the identity popover is anchored beside the scrolling list");
+assert.match(pickupSource, /onBindingUnavailable=\{\(\) => void openIdentity\(identity\)\}/,
+  "an identity page whose binding expires uses the same app handoff as the picker");
 assert.match(pickupSource, /<HStack spacing=\{0\} popover=\{\{\s*isPresented: showPicker,\s*onChanged: setShowPicker,/,
   "the containing row owns the reference popover binding");
 assert.match(pickupSource, /<TabFloatingActionButton title="身份码" symbol="person\.text\.rectangle"/);
@@ -554,6 +556,8 @@ assert.match(floatingButtonSource, /<Label title=\{title\} systemImage=\{symbol\
   "both floating actions use a symbol-only label");
 assert.match(pickupSource, /onLocationTap=\{canSwitch \? \(\) => setShowAddress\(!showAddress\)/);
 const stationIdentitySource = readFileSync(new URL("../pages/StationIdentityPage.tsx", import.meta.url), "utf8");
+assert.doesNotMatch(stationIdentitySource, /presentPlatformLogin|授权拼多多|登录淘宝/,
+  "the identity page does not present an account setup form");
 assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{184\} \/>/,
   "the card pairs a QR code with the barcode for every valid identity");
 assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{qrSize\} \/>/,

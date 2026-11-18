@@ -257,7 +257,6 @@ while IFS= read -r network_url; do
     'https://api.pinduoduo.com'|\
     'https://m.pinduoduo.net'|\
     'https://m.pinduoduo.net/mdkd/identificationCode'|\
-    'https://m.pinduoduo.net/mdkd/package?tab=ID_CODE'|\
     'https://m.pinduoduo.net/mdkd/package?pr_page_from=scheme'|\
     'https://consumer.fcbox.com'|\
     'https://www.kuaidi100.com/autonumber/autoComNum'|\

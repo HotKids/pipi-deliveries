@@ -11,7 +11,7 @@ import {
   trustedPlatformPage,
 } from "../services/platform-accounts";
 import { identityCodeFromResponse, fetchStationIdentity, openProviderController, readCainiaoProfileNickname, readCainiaoSenderAppointments,
-  retainJdLoginView } from "../services/platform-wire";
+  retainJdLoginView, stationIdentityDestination } from "../services/platform-wire";
 import { cainiaoHandoffs, cainiaoRecipientParcels, displayDeliveryEstimate, pddParcelAppURL, pddParcelDetailPath,
   pddPickupParcels } from "../services/platform-parcel-data";
 import { cabinetParcels, type CabinetParcel } from "../services/fengchao-account";
@@ -365,6 +365,49 @@ test("old PDD identity response after logout cannot create an active code or cle
     assert.notEqual(platformSession("pinduoduo")?.generation, first.generation);
     assert.equal(currentPlatformSession("pinduoduo", first.generation), null);
   } finally { globalThis.fetch = realFetch; }
+});
+
+test("the station identity entry switches to the provider app only when the binding is unavailable", async (t) => {
+  const providers = [
+    { platform: "cainiao", scheme: "taobao:", page: "/tbopen/index.html",
+      expired: { ret: ["FAIL_SYS_SESSION_EXPIRED"] },
+      cookie: { ...sessionCookie, name: "cookie2", domain: ".taobao.com", value: "synthetic-taobao-session" } },
+    { platform: "pinduoduo", scheme: "pinduoduo:", page: "/mdkd/package",
+      expired: { error_code: 40001 }, cookie: sessionCookie },
+  ] as const;
+  const previousCrypto = globalThis.Crypto;
+  Object.assign(globalThis, { Crypto: { ...previousCrypto,
+    md5: (data: string) => ({ toHexString: () => createHash("md5").update(data).digest("hex") }),
+  } });
+  const fetchMock = t.mock.method(globalThis, "fetch", async () => new Response("{}", { status: 503 }));
+  try {
+    for (const { platform, scheme, page, expired, cookie } of providers) {
+      memory.clear();
+      const unbound = stationIdentityDestination(platform);
+      assert.equal(unbound.kind, "app");
+      const appURL = new URL(unbound.url);
+      assert.equal(appURL.protocol, scheme);
+      assert.equal(appURL.pathname, page);
+      if (platform === "cainiao") {
+        assert.match(appURL.searchParams.get("h5Url") ?? "", /\/end-collect-platform\/identity-code$/);
+      } else {
+        assert.equal(appURL.searchParams.get("tab"), "ID_CODE");
+      }
+
+      savePlatformLogin(platform, "", { kind: "web", cookies: [cookie] }, "synthetic-account");
+      const session = platformSession(platform)!;
+      assert.deepEqual(stationIdentityDestination(platform), { kind: "local" });
+      await assert.rejects(fetchStationIdentity(platform, session), /unavailable/);
+      assert.deepEqual(stationIdentityDestination(platform), { kind: "local" });
+
+      fetchMock.mock.mockImplementationOnce(async () => new Response(JSON.stringify(expired)));
+      await assert.rejects(fetchStationIdentity(platform, session), /expired/);
+      assert.equal(accountStatus(platform).state, "expired");
+      assert.deepEqual(stationIdentityDestination(platform), unbound);
+    }
+  } finally {
+    Object.assign(globalThis, { Crypto: previousCrypto });
+  }
 });
 
 test("opening a retained detail reads only its CaiNiao parcel and leaves the account clock alone", async (t) => {
