@@ -1,0 +1,4181 @@
+{
+  "schemaVersion": 3,
+  "source": {
+    "baseline": "本地OCR方案.zip/pickup/pickup_page_rules.json",
+    "canonicalSha256": "72e6c1d862d0caef48a2e16db69f185ee89bcf3e46a97167e77d2f5e7331a477",
+    "overlay": "pipi取餐码修正 A-O/L/M",
+    "precedence": "restored brand identity > A-O/L/M corrections > canonical field extraction",
+    "brandIdentityBaseline": "14356be14a90c13803143b017dd1265f7688eff8",
+    "policy": "Field extraction uses the archived canonical package and A-O/L/M corrections. Brand identity and explicit code rules are restored from brandIdentityBaseline. Removed brands and future parcel modules stay excluded."
+  },
+  "behavior": {
+    "cardLifetimeMinutes": 120,
+    "completionStatusRegex": "(已完成|订单已完成|已取餐|已取单)",
+    "cancellationStatusRegex": "(已退款|退款中|退款进度|已取消|订单关闭|订单已取消)"
+  },
+  "brands": [
+    {
+      "id": "amoshouzuo",
+      "name": "阿嬷手作",
+      "category": "tea",
+      "keywords": [
+        "阿嬤手作",
+        "阿嬷手作"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "阿嬷手作点单"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/amoshouzuo.png",
+        "sticker": "assets/pickupcode/stickers/amoshouzuo.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#BEA386",
+        "codeColor": "#BEA386",
+        "cardBg": "#1FBEA386",
+        "notificationColor": "#BEA386",
+        "notificationFallbackColor": "#848487",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "阿嬷手作点单",
+          "isWebView": true,
+          "originId": "gh_8d8aed60a2fa",
+          "launchPath": "pages/order/list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/index/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/order/list/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "pages/multi/list",
+            "pages/multi/list-instore",
+            "subpackages/confirm/confirm"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "bawangchaji",
+      "name": "霸王茶姬",
+      "category": "tea",
+      "keywords": [
+        "霸王茶姬",
+        "CHAGEE"
+      ],
+      "hostPackages": [
+        "com.tencent.mm",
+        "com.eg.android.AlipayGphone"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "霸王茶姬",
+        "霸王茶姬+"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/bawangchaji.png",
+        "sticker": "assets/pickupcode/stickers/bawangchaji.png",
+        "baseBg": "assets/pickupcode/base_bg_tea_style_common_hot.webp",
+        "aod": "assets/pickupcode/aod_static_tea_common_hot.webp"
+      },
+      "paletteOverride": {
+        "buttonBg": "#FF0000",
+        "codeColor": "#FF0000",
+        "cardBg": "#1FFF0000",
+        "notificationColor": "#FF0000",
+        "notificationFallbackColor": "#D93E36"
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#FF0000",
+        "codeColor": "#FF0000",
+        "cardBg": "#1FFF0000",
+        "notificationColor": "#FF0000",
+        "notificationFallbackColor": "#D93E36",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "霸王茶姬",
+          "isWebView": true,
+          "originId": "gh_e9d25e745aae",
+          "launchPath": "pages/order/list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/list/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "pages/multi/list-search",
+            "pages/multi/list-instore",
+            "pages/takefood/index",
+            "pages/multi/list",
+            "subpackages/confirm/confirm"
+          ],
+          "showMealName": true
+        },
+        {
+          "packageName": "com.eg.android.AlipayGphone",
+          "label": "霸王茶姬+",
+          "isWebView": true,
+          "originId": "2021002162629140",
+          "launchPath": "pages/order/list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/list/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "subpackages/confirm/confirm",
+            "pages/multi/list-instore"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "chabaidao",
+      "name": "茶百道",
+      "category": "tea",
+      "keywords": [
+        "熊猫币",
+        "熊猫值",
+        "茶百道",
+        "ChaPanda"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "茶百道饮品点单"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/chabaidao.png",
+        "sticker": "assets/pickupcode/stickers/chabaidao.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#3259A8",
+        "codeColor": "#487EF0",
+        "cardBg": "#1F0A4ACF",
+        "notificationColor": "#3259A8",
+        "notificationFallbackColor": "#387AFF",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "茶百道饮品点单",
+          "isWebView": true,
+          "originId": "gh_d22cf66fc005",
+          "launchPath": "pages/order/index",
+          "filterPaths": [
+            {
+              "path": "packages/order/orderDetail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "packages/basic/store/index",
+            "packages/order/confirmOrder/index",
+            "pages/menu/index"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "coco",
+      "name": "CoCo",
+      "category": "tea",
+      "keywords": [
+        "CoCo",
+        "都可",
+        "COCO",
+        "coco"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "CoCo点单+"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/coco.png",
+        "sticker": "assets/pickupcode/stickers/coco.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#EE7D1F",
+        "codeColor": "#EE7D1F",
+        "cardBg": "#1FEE7D1F",
+        "notificationColor": "#EE7D1F",
+        "notificationFallbackColor": "#E65B17",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "CoCo点单+",
+          "isWebView": true,
+          "originId": "gh_276bfaaaa096",
+          "launchPath": "app/main/newOrders/index",
+          "filterPaths": [
+            {
+              "path": "app/shop/pages/orderDetail/index",
+              "useCloud": true
+            },
+            {
+              "path": "app/main/newOrders/index",
+              "useCloud": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "guming",
+      "name": "古茗",
+      "category": "tea",
+      "keywords": [
+        "葫芦",
+        "古茗",
+        "GOODME",
+        "Goodme"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "古茗茶饮点单"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/guming.png",
+        "sticker": "assets/pickupcode/stickers/guming.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#000000",
+        "codeColor": "#FFFFFF",
+        "cardBg": null,
+        "notificationColor": "#000000",
+        "notificationFallbackColor": "#2D2D30",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "古茗茶饮点单",
+          "isWebView": true,
+          "originId": "gh_c9b69950bccf",
+          "launchPath": "pages/order/index",
+          "filterPaths": [
+            {
+              "path": "pages/orderDetail/goodme/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/index/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/order/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "pages/home/home",
+            "pages/settle/goodme/index",
+            "pages/shopList/index",
+            "pages/collaborate-purchase/home/index"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "hunguozhi",
+      "name": "混果汁",
+      "category": "tea",
+      "keywords": [
+        "混果汁"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "混果汁"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/hunguozhi.png",
+        "sticker": "assets/pickupcode/stickers/hunguozhi.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteOverride": {
+        "buttonBg": "#C1E801",
+        "codeColor": "#C1E801",
+        "notificationColor": "#C1E801",
+        "notificationFallbackColor": "#11A85F"
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#C1E801",
+        "codeColor": "#C1E801",
+        "cardBg": null,
+        "notificationColor": "#C1E801",
+        "notificationFallbackColor": "#11A85F",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "混果汁",
+          "isWebView": true,
+          "originId": "gh_dcc9f454261f",
+          "launchPath": "pages/order/list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/list/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/multi/list-instore",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "subpackages/confirm/confirm"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "hushangayi",
+      "name": "沪上阿姨",
+      "category": "tea",
+      "keywords": [
+        "沪上阿姨",
+        "沪上",
+        "Auntea Jenny",
+        "AUNTEAJENNY"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "沪上阿姨点单"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/hushangayi.png",
+        "sticker": "assets/pickupcode/stickers/hushangayi.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#F27106",
+        "codeColor": "#F27106",
+        "cardBg": "#1FF27106",
+        "notificationColor": "#F27106",
+        "notificationFallbackColor": "#E65B17",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "沪上阿姨点单",
+          "isWebView": true,
+          "originId": "gh_6613a6cac7ea",
+          "launchPath": "pages/order/list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/list/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "subpackages/confirm/confirm"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "kendeji",
+      "name": "肯德基",
+      "category": "catering",
+      "keywords": [
+        "肯德基",
+        "KFC",
+        "香骨鸡",
+        "吮指",
+        "kfc"
+      ],
+      "hostPackages": [
+        "com.tencent.mm",
+        "com.eg.android.AlipayGphone",
+        "com.yek.android.kfc.activitys"
+      ],
+      "classPatterns": [
+        "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React2Activity",
+        "com.yum.android.superkfc.ui.v5.HomeV5Activity",
+        "com.yum.android.superkfc.ui.portal.activity.MainActivity",
+        "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React1Activity",
+        "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React3Activity",
+        "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React4Activity",
+        "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React5Activity",
+        "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React6Activity",
+        "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React7Activity",
+        "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React8Activity",
+        "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React9Activity",
+        "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React10Activity"
+      ],
+      "miniLabels": [
+        "肯德基自助点餐",
+        "肯德基+"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/kendeji.png",
+        "sticker": "assets/pickupcode/stickers/kendeji.png",
+        "artworkSticker": "",
+        "baseBg": "assets/pickupcode/base_bg_takeout_style_kendeji.webp",
+        "aod": "assets/pickupcode/aod_static_takeout_kendeji.webp"
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#E40031",
+        "codeColor": "#FC325E",
+        "cardBg": "#1FE40031",
+        "notificationColor": "#E40031",
+        "notificationFallbackColor": "#D93E36",
+        "notificationIcon": "fastfood"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "肯德基自助点餐",
+          "isWebView": true,
+          "originId": "gh_50338e5b8c9d",
+          "launchPath": "order/kfcOrderList/index",
+          "nativePackage": "com.yek.android.kfc.activitys",
+          "filterPaths": [
+            {
+              "path": "portals/pages/preOrder/index/index",
+              "useCloud": false
+            },
+            {
+              "path": "order/kfcOrderDetails/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "order/kfcOrderList/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "order/kfcOrderDetails/pages/friend-take/index",
+            "pin/pin/pages/pin/index"
+          ],
+          "showMealName": true
+        },
+        {
+          "packageName": "com.tencent.mm",
+          "label": "肯德基+",
+          "isWebView": true,
+          "originId": "gh_f01f85672b87",
+          "launchPath": "home/pages/kfcNewOrderList/index",
+          "nativePackage": "com.yek.android.kfc.activitys",
+          "filterPaths": [
+            {
+              "path": "index/kfcUcenterHomepage/index/index",
+              "useCloud": false
+            },
+            {
+              "path": "home/pages/kfcNewOrderList/index",
+              "useCloud": false
+            },
+            {
+              "path": "home/pages/kfcPersonelCenter/index/index",
+              "useCloud": false
+            },
+            {
+              "path": "order/kfcOrderDetails/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "order/kfcOrderList/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "order/kfcOrderDetails/pages/friend-take/index",
+            "taro/pages/receipt/order/list/index",
+            "pin/pin/pages/pin/index"
+          ],
+          "showMealName": true
+        },
+        {
+          "packageName": "com.eg.android.AlipayGphone",
+          "label": "肯德基+",
+          "isWebView": true,
+          "originId": "2021002103626854",
+          "launchPath": "home/pages/kfcNewOrderList/index",
+          "nativePackage": "com.yek.android.kfc.activitys",
+          "filterPaths": [
+            {
+              "path": "home/kfcUcenterHomepage/index/index",
+              "useCloud": false
+            },
+            {
+              "path": "home/pages/kfcNewOrderList/index",
+              "useCloud": false
+            },
+            {
+              "path": "home/pages/kfcPersonelCenter/index/index",
+              "useCloud": false
+            },
+            {
+              "path": "order/kfcOrderDetails/detail/index",
+              "useCloud": true
+            }
+          ],
+          "blackPaths": [
+            "taro/pages/receipt/order/list/index"
+          ],
+          "showMealName": true
+        },
+        {
+          "packageName": "com.yek.android.kfc.activitys",
+          "label": null,
+          "isWebView": false,
+          "originId": null,
+          "launchPath": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React2Activity",
+          "blackPaths": [
+            "com.yumc.android.kfc.kfcreactcontainer.reactload.ReactLoadActivity"
+          ],
+          "monitorActivities": [
+            {
+              "ac": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React2Activity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.yum.android.superkfc.ui.v5.HomeV5Activity",
+              "ignoreVis": false
+            },
+            {
+              "ac": "com.yum.android.superkfc.ui.portal.activity.MainActivity",
+              "ignoreVis": false
+            },
+            {
+              "ac": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React1Activity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React3Activity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React4Activity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React5Activity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React6Activity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React7Activity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React8Activity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React9Activity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.yumc.android.kfc.kfcreactcontainer.brandcontainer.React10Activity",
+              "ignoreVis": true
+            }
+          ]
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "kuddocoffee",
+      "name": "KUDDO",
+      "category": "coffee",
+      "keywords": [
+        "Kuddo",
+        "KUDDO"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "KUDDO COFFEE"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/kuddocoffee.png",
+        "sticker": "assets/pickupcode/stickers/kuddocoffee.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#7B7C5C",
+        "codeColor": "#A2A376",
+        "cardBg": "#1F7B7C5C",
+        "notificationColor": "#7B7C5C",
+        "notificationFallbackColor": "#848487",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "KUDDO COFFEE",
+          "isWebView": true,
+          "originId": "gh_15e57f60db9d",
+          "launchPath": "pages/vip-order-list/vip-order-list",
+          "filterPaths": [
+            {
+              "path": "pages/pay-success/pay-success",
+              "useCloud": false
+            },
+            {
+              "path": "pages/vip-home/vip-home",
+              "useCloud": false
+            },
+            {
+              "path": "pages/vip-order-list/vip-order-list",
+              "useCloud": false
+            },
+            {
+              "path": "member/vip-order-detail/vip-order-detail",
+              "useCloud": true
+            },
+            {
+              "path": "backup/vip-order-list/vip-order-list",
+              "useCloud": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "kudi",
+      "name": "库迪",
+      "category": "coffee",
+      "keywords": [
+        "库迪",
+        "COTTI",
+        "Cotti",
+        "库迪咖啡"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "Cotti Coffee 库迪咖啡"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/kudi.png",
+        "sticker": "assets/pickupcode/stickers/kudi.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#A32439",
+        "codeColor": "#CC2B5D",
+        "cardBg": "#1FA32439",
+        "notificationColor": "#A32439",
+        "notificationFallbackColor": "#D93E36",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "Cotti Coffee 库迪咖啡",
+          "isWebView": true,
+          "originId": "gh_e0f5951e0d87",
+          "launchPath": "pages/order/index",
+          "filterPaths": [
+            {
+              "path": "packages/order/order-detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "packages/order/survey-list-page/index",
+            "pages/purchase/index"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "maidanglao",
+      "name": "麦当劳",
+      "category": "catering",
+      "keywords": [
+        "麦当劳",
+        "金拱门",
+        "麦辣",
+        "麦香",
+        "MCDONALDS",
+        "McDonald's"
+      ],
+      "hostPackages": [
+        "com.tencent.mm",
+        "com.eg.android.AlipayGphone",
+        "com.mcdonalds.gma.cn"
+      ],
+      "classPatterns": [
+        "com.mcd.order.activity.OrderDetailActivity",
+        "com.mcd.order.activity.OrderListActivity",
+        "com.mcdonalds.gma.cn.activity.MainActivity"
+      ],
+      "miniLabels": [
+        "麦当劳"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/maidanglao.png",
+        "sticker": "assets/pickupcode/stickers/maidanglao.png",
+        "artworkSticker": "",
+        "baseBg": "assets/pickupcode/base_bg_takeout_style_maidanglao.webp",
+        "aod": "assets/pickupcode/aod_static_takeout_maidanglao.webp"
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#FFBC0D",
+        "codeColor": "#FFBC0D",
+        "cardBg": "#1FE99610",
+        "notificationColor": "#FFBC0D",
+        "notificationFallbackColor": "#E65B17",
+        "notificationIcon": "fastfood"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "麦当劳",
+          "isWebView": true,
+          "originId": "gh_f1f7cebb53a3",
+          "launchPath": "pages/orderList/list",
+          "nativePackage": "com.mcdonalds.gma.cn",
+          "filterPaths": [
+            {
+              "path": "order/pages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/orderList/list",
+              "useCloud": false
+            },
+            {
+              "path": "pages/home/index",
+              "useCloud": false
+            }
+          ],
+          "showMealName": true
+        },
+        {
+          "packageName": "com.eg.android.AlipayGphone",
+          "label": "麦当劳",
+          "isWebView": true,
+          "originId": "2017090708602953",
+          "launchPath": "pages/orderList/list",
+          "nativePackage": "com.mcdonalds.gma.cn",
+          "filterPaths": [
+            {
+              "path": "pages/home/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/orderList/list",
+              "useCloud": false
+            },
+            {
+              "path": "order/pages/detail/index",
+              "useCloud": true
+            }
+          ],
+          "showMealName": true
+        },
+        {
+          "packageName": "com.mcdonalds.gma.cn",
+          "label": null,
+          "isWebView": false,
+          "originId": null,
+          "launchPath": "com.mcd.order.activity.OrderListActivity",
+          "monitorActivities": [
+            {
+              "ac": "com.mcd.order.activity.OrderDetailActivity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.mcd.order.activity.OrderListActivity",
+              "ignoreVis": false
+            },
+            {
+              "ac": "com.mcdonalds.gma.cn.activity.MainActivity",
+              "ignoreVis": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "manner",
+      "name": "Manner",
+      "category": "coffee",
+      "keywords": [
+        "Manner",
+        "MANNER"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "MannerCoffee"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/manner.png",
+        "sticker": "assets/pickupcode/stickers/manner.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#000000",
+        "codeColor": "#FFFFFF",
+        "cardBg": null,
+        "notificationColor": "#000000",
+        "notificationFallbackColor": "#2D2D30",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "MannerCoffee",
+          "isWebView": true,
+          "originId": "gh_7de105040ade",
+          "launchPath": "pages/order-list/order-list",
+          "filterPaths": [
+            {
+              "path": "pages/order/order",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order-list/order-list",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "pages/pay/pay"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "mixuebingcheng",
+      "name": "蜜雪冰城",
+      "category": "tea",
+      "keywords": [
+        "雪王",
+        "蜜雪",
+        "MIXUE",
+        "蜜雪冰城"
+      ],
+      "hostPackages": [
+        "com.tencent.mm",
+        "com.mxbc.mxsa"
+      ],
+      "classPatterns": [
+        "com.mxbc.mxsa.modules.order.status.wait.OrderWaitTakeAwayActivity",
+        "com.mxbc.mxsa.modules.order.status.finish.OrderFinishActivity",
+        "com.mxbc.mxsa.modules.main.MainActivity"
+      ],
+      "miniLabels": [
+        "蜜雪冰城"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/mixuebingcheng.png",
+        "sticker": "assets/pickupcode/stickers/mixuebingcheng.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#DA3C48",
+        "codeColor": "#DA3C48",
+        "cardBg": "#1FDA3C48",
+        "notificationColor": "#DA3C48",
+        "notificationFallbackColor": "#D93E36",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "蜜雪冰城",
+          "isWebView": true,
+          "originId": "gh_c5110cb8e4ba",
+          "launchPath": "pages/order/index",
+          "nativePackage": "com.mxbc.mxsa",
+          "filterPaths": [
+            {
+              "path": "pages/order_detail/take/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order_detail/finish/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/index/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/mine/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/order/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "pages/menu/index",
+            "pages/activity/joint-order/index"
+          ],
+          "showMealName": true
+        },
+        {
+          "packageName": "com.mxbc.mxsa",
+          "label": null,
+          "isWebView": false,
+          "originId": null,
+          "launchPath": "com.mxbc.mxsa.modules.main.MainActivity",
+          "blackPaths": [
+            "com.mxbc.mxsa.modules.webview.WebViewActivity"
+          ],
+          "monitorActivities": [
+            {
+              "ac": "com.mxbc.mxsa.modules.order.status.wait.OrderWaitTakeAwayActivity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.mxbc.mxsa.modules.order.status.finish.OrderFinishActivity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.mxbc.mxsa.modules.main.MainActivity",
+              "ignoreVis": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "molinaibai",
+      "name": "茉莉奶白",
+      "category": "tea",
+      "keywords": [
+        "茉莉奶白",
+        "MOLLY TEA",
+        "MOLLYTEA"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "茉莉奶白"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/molinaibai.png",
+        "sticker": "assets/pickupcode/stickers/molinaibai.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#000000",
+        "codeColor": "#FFFFFF",
+        "cardBg": null,
+        "notificationColor": "#000000",
+        "notificationFallbackColor": "#2D2D30",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "茉莉奶白",
+          "isWebView": true,
+          "originId": "gh_9b7f71ecdd28",
+          "launchPath": "pages/order/list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/list/index",
+              "useCloud": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "mstand",
+      "name": "M Stand",
+      "category": "coffee",
+      "keywords": [
+        "M Stand",
+        "MSTAND",
+        "M STAND"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "M Stand"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/mstand.png",
+        "sticker": "assets/pickupcode/stickers/mstand.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#000000",
+        "codeColor": "#FFFFFF",
+        "cardBg": null,
+        "notificationColor": "#000000",
+        "notificationFallbackColor": "#2D2D30",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "M Stand",
+          "isWebView": true,
+          "originId": "gh_9b900ade05f7",
+          "launchPath": "mine/pages/orderCenter/index",
+          "filterPaths": [
+            {
+              "path": "order/pages/preFoodsCurOrder/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/mine/mine",
+              "useCloud": false
+            },
+            {
+              "path": "mine/pages/orderCenter/index",
+              "useCloud": false
+            },
+            {
+              "path": "order/pages/foodsCurOrder/index",
+              "useCloud": true
+            }
+          ],
+          "blackPaths": [
+            "order/pages/foodsHistoryOrder/index"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "naixue",
+      "name": "奈雪",
+      "category": "tea",
+      "keywords": [
+        "奈雪",
+        "NAYUKI",
+        "小奈",
+        "霸气",
+        "茉莉初雪",
+        "罗汉果汁糖"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "奈雪点单"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/naixue.png",
+        "sticker": "assets/pickupcode/stickers/naixue.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#9DC71C",
+        "codeColor": "#9DC71C",
+        "cardBg": "#1F9DC71C",
+        "notificationColor": "#9DC71C",
+        "notificationFallbackColor": "#11A85F",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "奈雪点单",
+          "isWebView": true,
+          "originId": "gh_b3436b600b3f",
+          "launchPath": "pages/order/orderList/orderList",
+          "filterPaths": [
+            {
+              "path": "pages/order/orderList/orderList",
+              "useCloud": false
+            },
+            {
+              "path": "pages/index/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/takeMeals/index",
+              "useCloud": true
+            }
+          ],
+          "blackPaths": [
+            "pkgOrder/pages/orderSubmit/orderSubmit"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "nuowa",
+      "name": "挪瓦咖啡",
+      "category": "coffee",
+      "keywords": [
+        "挪瓦",
+        "NOWWA",
+        "Nowwa"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "NOWWA挪瓦咖啡"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/nuowa.png",
+        "sticker": "assets/pickupcode/stickers/nuowa.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#F18522",
+        "codeColor": "#F18522",
+        "cardBg": "#1FF18522",
+        "notificationColor": "#F18522",
+        "notificationFallbackColor": "#E65B17",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "NOWWA挪瓦咖啡",
+          "isWebView": true,
+          "originId": "gh_ba2b35e8973e",
+          "launchPath": "pages/order/list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/list/index",
+              "useCloud": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "peetscoffee",
+      "name": "Peets",
+      "category": "coffee",
+      "keywords": [
+        "Peet",
+        "皮爷",
+        "PEETS",
+        "Peet's Coffee",
+        "Peets"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "Peets皮爷咖啡"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/peetscoffee.png",
+        "sticker": "assets/pickupcode/stickers/peetscoffee.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#CDAA72",
+        "codeColor": "#CDAA72",
+        "cardBg": "#1FCDAA72",
+        "notificationColor": "#CDAA72",
+        "notificationFallbackColor": "#848487",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "Peets皮爷咖啡",
+          "isWebView": true,
+          "originId": "gh_5109abadda6e",
+          "launchPath": "pages/order/index/index",
+          "filterPaths": [
+            {
+              "path": "pages/order/index/index",
+              "useCloud": false
+            },
+            {
+              "path": "mainFlow/pages/order/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/home/index",
+              "useCloud": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "qiudashu",
+      "name": "丘大叔",
+      "category": "tea",
+      "keywords": [
+        "丘大叔",
+        "UNCLE"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "丘大叔柠檬茶"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/qiudashu.png",
+        "sticker": "assets/pickupcode/stickers/qiudashu.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#4C653D",
+        "codeColor": "#77D93D",
+        "cardBg": "#1F4C653D",
+        "notificationColor": "#4C653D",
+        "notificationFallbackColor": "#848487",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "丘大叔柠檬茶",
+          "isWebView": true,
+          "originId": "gh_3aef3c66a821",
+          "launchPath": "pages/order/list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/list/index",
+              "useCloud": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "quchashan",
+      "name": "去茶山",
+      "category": "tea",
+      "keywords": [
+        "去茶山",
+        "冰旋",
+        "气泡嗨"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "去茶山"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/quchashan.png",
+        "sticker": "assets/pickupcode/stickers/quchashan.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#E3BA38",
+        "codeColor": "#F4CB4B",
+        "cardBg": "#1FF4CB4B",
+        "notificationColor": "#E3BA38",
+        "notificationFallbackColor": "#E65B17",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "去茶山",
+          "isWebView": true,
+          "originId": "gh_f8ef8703aff3",
+          "launchPath": "pages/order/list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/list/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/index/index",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "subpackages/confirm/confirm"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "ruixing",
+      "name": "瑞幸咖啡",
+      "category": "coffee",
+      "keywords": [
+        "瑞幸",
+        "luckin",
+        "LUCKIN",
+        "瑞幸咖啡"
+      ],
+      "hostPackages": [
+        "com.tencent.mm",
+        "com.lucky.luckyclient"
+      ],
+      "classPatterns": [
+        "com.lucky.luckyclient.order.takecode.TakeCodeActivity",
+        "com.lucky.luckyclient.order.detail.OrderDetailActivity",
+        "com.lucky.luckyclient.order.mineorder.MineOrderActivity",
+        "com.luckin.lkb.engine.EngineActivity"
+      ],
+      "miniLabels": [
+        "luckincoffee瑞幸咖啡"
+      ],
+      "qrPattern": "^a.{7}AA.=$",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/ruixing.png",
+        "sticker": "assets/pickupcode/stickers/ruixing.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#0022AA",
+        "codeColor": "#5F7FFF",
+        "cardBg": "#1F0022AA",
+        "notificationColor": "#0022AA",
+        "notificationFallbackColor": "#387AFF",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "luckincoffee瑞幸咖啡",
+          "isWebView": true,
+          "originId": "gh_fa66ea1664f1",
+          "launchPath": "pages/order/list/list",
+          "nativePackage": "com.lucky.luckyclient",
+          "filterPaths": [
+            {
+              "path": "pages/order/detail/detail",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/list/list",
+              "useCloud": false
+            }
+          ],
+          "showMealName": true,
+          "needWaitingStatus": true,
+          "extractWxRootPortal": true
+        },
+        {
+          "packageName": "com.lucky.luckyclient",
+          "label": null,
+          "isWebView": false,
+          "originId": null,
+          "launchPath": "com.lucky.luckincoffee.MainActivity",
+          "blackPaths": [
+            "com.luckin.commclient.share.ShareConfirmDialogActivity",
+            "com.lucky.luckincoffee.comm.social.wx.share.ShareConfirmDialogActivity"
+          ],
+          "monitorActivities": [
+            {
+              "ac": "com.lucky.luckyclient.order.takecode.TakeCodeActivity",
+              "ignoreVis": false
+            },
+            {
+              "ac": "com.lucky.luckyclient.order.detail.OrderDetailActivity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.lucky.luckyclient.order.mineorder.MineOrderActivity",
+              "ignoreVis": false
+            },
+            {
+              "ac": "com.luckin.lkb.engine.EngineActivity",
+              "ignoreVis": true
+            }
+          ],
+          "showMealName": true,
+          "needWaitingStatus": true
+        }
+      ],
+      "requireQrCode": true,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "tustin",
+      "name": "塔斯汀",
+      "category": "catering",
+      "keywords": [
+        "塔斯汀",
+        "TASTIEN"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "塔斯汀+"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/tustin.png",
+        "sticker": "assets/pickupcode/stickers/tustin.png",
+        "artworkSticker": "",
+        "baseBg": "assets/pickupcode/base_bg_takeout_style_tustin.webp",
+        "aod": "assets/pickupcode/aod_static_takeout_tustin.webp"
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#E40031",
+        "codeColor": "#FC325E",
+        "cardBg": "#1FE40031",
+        "notificationColor": "#E40031",
+        "notificationFallbackColor": "#D93E36",
+        "notificationIcon": "fastfood"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "塔斯汀+",
+          "isWebView": true,
+          "originId": "gh_0dd6520e7b96",
+          "launchPath": "subpackages/order/pages/order-list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/order/pages/order/index",
+              "useCloud": true
+            },
+            {
+              "path": "subpackages/order/pages/order-list/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/index/index",
+              "useCloud": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "xicha",
+      "name": "喜茶",
+      "category": "tea",
+      "keywords": [
+        "喜茶GO",
+        "喜茶",
+        "HEYTEA",
+        "heytea"
+      ],
+      "hostPackages": [
+        "com.tencent.mm",
+        "com.heyteago"
+      ],
+      "classPatterns": [
+        "com.tencent.luggage.wxa.SaaA.app.SaaAContainerActivity0",
+        "com.tencent.luggage.wxa.standalone_open_runtime.container.WxaContainerActivity0"
+      ],
+      "miniLabels": [
+        "喜茶GO"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/xicha.png",
+        "sticker": "assets/pickupcode/stickers/xicha.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#000000",
+        "codeColor": "#FFFFFF",
+        "cardBg": null,
+        "notificationColor": "#000000",
+        "notificationFallbackColor": "#2D2D30",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "喜茶GO",
+          "isWebView": true,
+          "originId": "gh_afe6acb517f0",
+          "launchPath": "pages/code/code",
+          "nativePackage": "com.heyteago",
+          "filterPaths": [
+            {
+              "path": "pages/code/order_detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/home/home",
+              "useCloud": false
+            },
+            {
+              "path": "pages/my/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/code/code",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "subPlugins/__plugin__/wxae5e29812005203f/pages/chat/chat"
+          ],
+          "showMealName": true
+        },
+        {
+          "packageName": "com.heyteago",
+          "label": null,
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null,
+          "filterPaths": [
+            {
+              "path": "pages/code/order_detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/home/home",
+              "useCloud": false
+            },
+            {
+              "path": "pages/my/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/code/code",
+              "useCloud": false
+            }
+          ],
+          "monitorActivities": [
+            {
+              "ac": "com.tencent.luggage.wxa.SaaA.app.SaaAContainerActivity0",
+              "ignoreVis": false
+            },
+            {
+              "ac": "com.tencent.luggage.wxa.standalone_open_runtime.container.WxaContainerActivity0",
+              "ignoreVis": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "xingbake",
+      "name": "Starbucks",
+      "category": "coffee",
+      "keywords": [
+        "啡快口令",
+        "星巴克",
+        "STARBUCKS",
+        "Starbucks"
+      ],
+      "hostPackages": [
+        "com.tencent.mm",
+        "com.starbucks.cn"
+      ],
+      "classPatterns": [
+        "com.starbucks.cn.home.revamp.RevampMainActivity",
+        "com.starbucks.cn.mop.payment.activity.PickupPaymentDoneActivity",
+        "com.starbucks.cn.mop.receipt.activity.PickupReceiptActivity",
+        "com.starbucks.cn.modmop.orderdetail.OrderDetailActivity"
+      ],
+      "miniLabels": [
+        "星巴克"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/xingbake.png",
+        "sticker": "assets/pickupcode/stickers/xingbake.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#00643C",
+        "codeColor": "#00B26B",
+        "cardBg": "#1F00643C",
+        "notificationColor": "#00643C",
+        "notificationFallbackColor": "#11A85F",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "星巴克",
+          "isWebView": true,
+          "originId": "gh_4cf4a631a0c9",
+          "launchPath": "customized/pages/main/index",
+          "filterPaths": [
+            {
+              "path": "shares/mop/pages/orderDetail",
+              "useCloud": true
+            },
+            {
+              "path": "shares/order/pages/orderDetail/index",
+              "useCloud": true
+            },
+            {
+              "path": "customized/pages/main/index",
+              "useCloud": false
+            },
+            {
+              "path": "shares/mop/pages/visitorPayShare",
+              "useCloud": false
+            },
+            {
+              "path": "shares/mop/pages/mopPayShare",
+              "useCloud": false
+            }
+          ],
+          "blackPaths": [
+            "shares/mop/pages/friendTake",
+            "shares/electronicTicket/pages/index"
+          ],
+          "showMealName": true
+        },
+        {
+          "packageName": "com.starbucks.cn",
+          "label": null,
+          "isWebView": false,
+          "originId": null,
+          "launchPath": "com.starbucks.cn.home.revamp.RevampMainActivity",
+          "blackPaths": [
+            "com.starbucks.cn.mop.confirm.activity.PickupConfirmOrderActivity",
+            "com.starbucks.cn.services.jsbridge.JsBridgeWebViewActivity"
+          ],
+          "monitorActivities": [
+            {
+              "ac": "com.starbucks.cn.home.revamp.RevampMainActivity",
+              "ignoreVis": false
+            },
+            {
+              "ac": "com.starbucks.cn.mop.payment.activity.PickupPaymentDoneActivity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.starbucks.cn.mop.receipt.activity.PickupReceiptActivity",
+              "ignoreVis": true
+            },
+            {
+              "ac": "com.starbucks.cn.modmop.orderdetail.OrderDetailActivity",
+              "ignoreVis": true
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "xingyunka",
+      "name": "幸运咖",
+      "category": "coffee",
+      "keywords": [
+        "幸运咖"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "幸运咖LuckyCup"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/xingyunka.png",
+        "sticker": "assets/pickupcode/stickers/xingyunka.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#DA3C48",
+        "codeColor": "#DA3C48",
+        "cardBg": "#1FDA3C48",
+        "notificationColor": "#DA3C48",
+        "notificationFallbackColor": "#D93E36",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "幸运咖LuckyCup",
+          "isWebView": true,
+          "originId": "gh_b1b969c92f2a",
+          "launchPath": "pages/order/index",
+          "filterPaths": [
+            {
+              "path": "pages/order_detail/take/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/index",
+              "useCloud": false
+            },
+            {
+              "path": "pages/order_detail/finish/index",
+              "useCloud": true
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "yeyebupaocha",
+      "name": "爷爷不泡茶",
+      "category": "tea",
+      "keywords": [
+        "爷爷不泡茶"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "爷爷不泡茶"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "",
+        "sticker": "",
+        "baseBg": "",
+        "aod": ""
+      },
+      "palette": null,
+      "paletteRef": "unknownBrandDefaults",
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "爷爷不泡茶",
+          "isWebView": true,
+          "originId": "gh_9e2dbe88a92b",
+          "launchPath": "pages/order/list/index",
+          "filterPaths": [
+            {
+              "path": "subpackages/detail/index",
+              "useCloud": true
+            },
+            {
+              "path": "pages/order/list/index",
+              "useCloud": false
+            }
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "yidiandian",
+      "name": "1点点",
+      "category": "tea",
+      "keywords": [
+        "一点点",
+        "1点点",
+        "alittle"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "1点点alittleTea+"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/yidiandian.png",
+        "sticker": "assets/pickupcode/stickers/yidiandian.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#0F9072",
+        "codeColor": "#0F9072",
+        "cardBg": "#1F0F9072",
+        "notificationColor": "#0F9072",
+        "notificationFallbackColor": "#11A85F",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "1点点alittleTea+",
+          "isWebView": true,
+          "originId": "gh_9558bbe0a605",
+          "launchPath": "pages/order/order_list",
+          "filterPaths": [
+            {
+              "path": "pages/order/fetch",
+              "useCloud": false
+            },
+            {
+              "path": "pages/order/forthwith_order_details",
+              "useCloud": true
+            }
+          ],
+          "blackPaths": [
+            "storeMap/pages/map",
+            "pages/commodity/goods",
+            "pages/order/place_order",
+            "pages/order/takeout_order_details",
+            "activity/pages/commandCoupon/page"
+          ],
+          "showMealName": true
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "chahuanong",
+      "name": "茶话弄",
+      "category": "tea",
+      "keywords": [
+        "茶话弄"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "茶话弄CHA HUA NONG",
+        "茶话弄"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/chahuanong.png",
+        "sticker": "assets/pickupcode/stickers/chahuanong.png",
+        "baseBg": "assets/pickupcode/base_bg_tea_style_common_hot.webp",
+        "aod": "assets/pickupcode/aod_static_tea_common_hot.webp"
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#E95D07",
+        "codeColor": "#E95D07",
+        "cardBg": "#1FE95D07",
+        "notificationColor": "#E95D07",
+        "notificationFallbackColor": "#E65B17",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "茶话弄CHA HUA NONG",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        },
+        {
+          "packageName": "com.tencent.mm",
+          "label": "茶话弄",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "chayanyuese",
+      "name": "茶颜悦色",
+      "category": "tea",
+      "keywords": [
+        "茶颜悦色",
+        "颜悦色",
+        "游园会",
+        "声声乌龙",
+        "幽兰拿铁"
+      ],
+      "redemption": {
+        "pageStatus": "待扫码核销",
+        "usernamePattern": "^.+小主$"
+      },
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "茶颜悦色"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/chayanyuese.png",
+        "sticker": "assets/pickupcode/stickers/chayanyuese.png",
+        "baseBg": "assets/pickupcode/base_bg_tea_style_common_hot.webp",
+        "aod": "assets/pickupcode/aod_static_tea_common_hot.webp"
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#AB1C31",
+        "codeColor": "#AB1C31",
+        "cardBg": "#1FAB1C31",
+        "notificationColor": "#AB1C31",
+        "notificationFallbackColor": "#D93E36",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "茶颜悦色",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "gaga",
+      "name": "gaga",
+      "category": "tea",
+      "keywords": [
+        "gaga",
+        "慢榨",
+        "羽衣甘蓝",
+        "gaga鲜语",
+        "GAGA"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "gaga",
+        "gaga鲜语"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/gaga.png",
+        "sticker": "assets/pickupcode/stickers/gaga.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#000000",
+        "codeColor": "#FFFFFF",
+        "cardBg": null,
+        "notificationColor": "#000000",
+        "notificationFallbackColor": "#2D2D30",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "gaga",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        },
+        {
+          "packageName": "com.tencent.mm",
+          "label": "gaga鲜语",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "gridcoffee",
+      "name": "GRID",
+      "category": "coffee",
+      "keywords": [
+        "GRID",
+        "咸鸳鸯",
+        "GRID Coffee"
+      ],
+      "productKeywords": [
+        "咸鸳鸯"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "Grid Coffee",
+        "GRID Coffee",
+        "GRID"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/gridcoffee.png",
+        "sticker": "assets/pickupcode/stickers/gridcoffee.png",
+        "stickerScale": 0.62,
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteOverride": {
+        "notificationColor": "#6C763A",
+        "notificationFallbackColor": "#11A85F"
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#6C763B",
+        "codeColor": "#6C763B",
+        "cardBg": "#1F6C763B",
+        "notificationColor": "#6C763A",
+        "notificationFallbackColor": "#11A85F",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "Grid Coffee",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        },
+        {
+          "packageName": "com.tencent.mm",
+          "label": "GRID Coffee",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        },
+        {
+          "packageName": "com.tencent.mm",
+          "label": "GRID",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "jpgcoffee",
+      "name": "JPG",
+      "category": "coffee",
+      "keywords": [
+        "JPG",
+        "JPG Coffee"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "JPG Coffee"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/jpgcoffee.png",
+        "sticker": "assets/pickupcode/stickers/jpgcoffee.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#6E261D",
+        "codeColor": "#6E261D",
+        "cardBg": "#1F6E261D",
+        "notificationColor": "#6E261D",
+        "notificationFallbackColor": "#2D2D30",
+        "notificationIcon": "local_cafe"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "JPG Coffee",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "linli",
+      "name": "林里 LINLEE",
+      "category": "tea",
+      "keywords": [
+        "林里",
+        "林里手作"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "LINLEE林里柠檬茶+",
+        "林里柠檬茶",
+        "林里"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/linli.png",
+        "sticker": "assets/pickupcode/stickers/linli.png",
+        "stickerScale": 1.2,
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#35CF33",
+        "codeColor": "#35CF33",
+        "cardBg": "#1F35CF33",
+        "notificationColor": "#35CF33",
+        "notificationFallbackColor": "#11A85F",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "LINLEE林里柠檬茶+",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        },
+        {
+          "packageName": "com.tencent.mm",
+          "label": "林里柠檬茶",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        },
+        {
+          "packageName": "com.tencent.mm",
+          "label": "林里",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "yee3",
+      "name": "Yee3 三号椰",
+      "category": "tea",
+      "keywords": [
+        "三号椰",
+        "Yee3"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "三号椰",
+        "Yee3",
+        "Yee3三号椰"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/yee3.png",
+        "sticker": "assets/pickupcode/stickers/yee3.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "paletteRef": "v2-color-spec",
+      "palette": {
+        "buttonBg": "#000000",
+        "codeColor": "#FFFFFF",
+        "cardBg": null,
+        "notificationColor": "#000000",
+        "notificationFallbackColor": "#2D2D30",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "hosts": [
+        {
+          "packageName": "com.tencent.mm",
+          "label": "三号椰",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        },
+        {
+          "packageName": "com.tencent.mm",
+          "label": "Yee3",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        },
+        {
+          "packageName": "com.tencent.mm",
+          "label": "Yee3三号椰",
+          "isWebView": true,
+          "originId": null,
+          "launchPath": null
+        }
+      ],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "bluebottle",
+      "name": "Blue Bottle",
+      "category": "coffee",
+      "keywords": [
+        "Blue Bottle",
+        "Blue Bottle Coffee",
+        "蓝瓶咖啡"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "Blue Bottle Coffee 蓝瓶咖啡"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/bluebottle.png",
+        "sticker": "assets/pickupcode/stickers/bluebottle.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "palette": {
+        "buttonBg": "#00B4EF",
+        "codeColor": "#00B4EF",
+        "cardBg": null,
+        "notificationColor": "#00B4EF",
+        "notificationFallbackColor": "#387AFF",
+        "notificationIcon": "local_cafe"
+      },
+      "paletteRef": "unknownBrandDefaults",
+      "hosts": [],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "danmachafang",
+      "name": "淡马茶坊",
+      "category": "tea",
+      "keywords": [
+        "淡马茶坊",
+        "DANMA CHA",
+        "DANMACHA"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "淡马茶坊 TEAMAKER",
+        "淡马茶坊TEAMAKER"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/danmachafang.png",
+        "sticker": "assets/pickupcode/stickers/danmachafang.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "palette": {
+        "buttonBg": "#5A7F49",
+        "codeColor": "#5A7F49",
+        "cardBg": "#1F5A7F49",
+        "notificationColor": "#5A7F49",
+        "notificationFallbackColor": "#11A85F",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "paletteRef": "unknownBrandDefaults",
+      "hosts": [],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "taikechayuan",
+      "name": "泰柯茶园",
+      "category": "tea",
+      "keywords": [
+        "泰柯茶园",
+        "Tamkoko",
+        "TAMKOKO",
+        "TanKoKo",
+        "TANKOKO"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "Tamkoko泰柯茶园",
+        "Tamkoko 泰柯茶园"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/taikechayuan.png",
+        "sticker": "assets/pickupcode/stickers/taikechayuan.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "palette": {
+        "buttonBg": "#41200D",
+        "codeColor": "#41200D",
+        "cardBg": "#1F41200D",
+        "notificationColor": "#41200D",
+        "notificationFallbackColor": "#2D2D30",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "paletteRef": "unknownBrandDefaults",
+      "hosts": [],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    },
+    {
+      "id": "baozhugong",
+      "name": "煲珠公",
+      "category": "tea",
+      "keywords": [
+        "煲珠公",
+        "哦煲",
+        "哦堡"
+      ],
+      "hostPackages": [
+        "com.tencent.mm"
+      ],
+      "classPatterns": [],
+      "miniLabels": [
+        "煲珠公点单"
+      ],
+      "qrPattern": "",
+      "assets": {
+        "appLogo": "assets/pickupcode/applogo/baozhugong.png",
+        "sticker": "assets/pickupcode/stickers/baozhugong.png",
+        "baseBg": "",
+        "aod": ""
+      },
+      "palette": {
+        "buttonBg": "#3B3ADF",
+        "codeColor": "#3B3ADF",
+        "cardBg": "#1F3B3ADF",
+        "notificationColor": "#3B3ADF",
+        "notificationFallbackColor": "#387AFF",
+        "notificationIcon": "emoji_food_beverage"
+      },
+      "paletteRef": "unknownBrandDefaults",
+      "hosts": [],
+      "requireQrCode": false,
+      "scoringOverrides": {}
+    }
+  ],
+  "appRules": [
+    {
+      "_verified": false,
+      "appName": "瑞幸咖啡",
+      "brandId": "ruixing",
+      "packageName": "com.lucky.luckyclient",
+      "clzName": ".*(OrderDetail|PickUp|TakeCode).*",
+      "pageTitle": "(取餐码|待取餐|订单详情)",
+      "sceneCharacter": "(取餐码|请到吧台取餐|制作中|已做好|门店自提)",
+      "infoRegex": [
+        {
+          "_version": "取餐页",
+          "pageTitle": "(取餐码|待取餐)",
+          "validPickup": "(取餐码|制作中|已做好|请到吧台取餐)",
+          "inValidStatus": "^(已完成|已取餐|已退款)$",
+          "pickupCode": [
+            {
+              "regex": "取餐码[：:\\s]*([A-Za-z0-9]{3,8})",
+              "groupIndex": 1
+            }
+          ],
+          "merchantName": [
+            {
+              "regex": "^(.{2,}(?:店|门店))$",
+              "groupIndex": 1
+            }
+          ],
+          "productName": [
+            {
+              "regex": "^(.{2,20})\\s*[×xX]\\s*\\d+$",
+              "groupIndex": 1
+            }
+          ]
+        }
+      ],
+      "qrPattern": "^a.{7}AA.=$",
+      "_note": "瑞幸页面常不写品牌名，只有 QR + 「取餐码」；品牌判定必须靠 package/QR（cup_picker.match_brand 已实现优先级）"
+    },
+    {
+      "_verified": true,
+      "appName": "星巴克（啡快）",
+      "brandId": "xingbake",
+      "packageName": "com.starbucks.cn",
+      "clzName": ".*(Order|MOP|Pickup).*",
+      "pageTitle": "(啡快|取单号|订单详情)",
+      "sceneCharacter": "(啡快|口令|晒口令|制作中|预计取餐时间|好友代取|门店自取|已做好)",
+      "infoRegex": [
+        {
+          "_version": "啡快取单页（实拍校准）",
+          "pageTitle": "(啡快|口令|取单号)",
+          "validPickup": "(啡快|口令|制作中|预计取餐时间|好友代取|已做好|正在制作|取单号)",
+          "inValidStatus": "^(已完成|已取单|已取餐|已退款|订单已取消)$",
+          "pickupCode": [
+            {
+              "regex": "^[“\"](.{2,20})[”\"]$",
+              "groupIndex": 1,
+              "_hint": "啡快口令带引号独占一行『\"2.心间有彩虹\"』"
+            },
+            {
+              "regex": "(?:啡快\\s*口令|口令|取单号)[：:\\s]*([^\\s“”\"]{2,20})",
+              "groupIndex": 1
+            }
+          ],
+          "merchantName": [
+            {
+              "regex": "^(星巴克[（(].{2,20}?店[）)])",
+              "groupIndex": 1
+            }
+          ]
+        }
+      ],
+      "_calibratedBy": "实拍：微信小程序『星巴克』啡快订单页（制作中，预计取餐时间 11:24）"
+    },
+    {
+      "_verified": false,
+      "appName": "蜜雪冰城",
+      "brandId": "mixuebingcheng",
+      "packageName": "com.mxbc.mxsa",
+      "clzName": ".*(OrderDetail|Pickup).*",
+      "pageTitle": "(取餐码|取餐号|订单详情)",
+      "sceneCharacter": "(取餐码|取餐号|雪王|待取餐)",
+      "infoRegex": [
+        {
+          "_version": "取餐页",
+          "pageTitle": "(取餐码|取餐号)",
+          "validPickup": "(取餐码|取餐号|待取餐|制作中)",
+          "inValidStatus": "^(已完成|已取餐|已退款)$",
+          "pickupCode": [
+            {
+              "regex": "取餐[码号][：:\\s]*([A-Za-z0-9]{2,8})",
+              "groupIndex": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "_verified": true,
+      "appName": "喜茶GO",
+      "brandId": "xicha",
+      "packageName": "com.heyteago",
+      "clzName": ".*(OrderDetail|Pickup).*",
+      "pageTitle": "(取餐码|订单详情)",
+      "sceneCharacter": "(取餐码|喜茶|制作中|待取餐)",
+      "infoRegex": [
+        {
+          "_version": "取餐页",
+          "pageTitle": "(取餐码)",
+          "validPickup": "(取餐码|制作中|待取餐)",
+          "inValidStatus": "^(已完成|已取餐|已退款)$",
+          "pickupCode": [
+            {
+              "regex": "取餐码[：:\\s]*([A-Za-z0-9]{3,6})",
+              "groupIndex": 1
+            },
+            {
+              "regex": "^(\\d{4})$",
+              "groupIndex": 1,
+              "_hint": "实拍卡『8205』四位纯数字"
+            }
+          ],
+          "merchantName": [
+            {
+              "regex": "^(.{2,}店)$",
+              "groupIndex": 1
+            }
+          ]
+        }
+      ],
+      "_note": "实拍卡实证：喜茶是 mono 品牌（黑底白码），见 pickup_brands.json monoBg"
+    },
+    {
+      "_verified": true,
+      "appName": "M Stand",
+      "brandId": "mstand",
+      "packageName": null,
+      "clzName": null,
+      "pageTitle": "(取餐码|订单详情)",
+      "sceneCharacter": "(M Stand|MSTAND|取餐码|制作中|已下单|待取餐)",
+      "infoRegex": [
+        {
+          "_version": "订单详情（实拍 P8246）—— **页面上一个「取餐码」字样都没有**",
+          "pageTitle": "(订单详情)",
+          "validPickup": "(制作中|已下单|待取餐|请留意取餐通知)",
+          "inValidStatus": "(已取餐|已退款|订单已完成)",
+          "_inValidStatusWhy": "**这里不能把「已完成」单列**：M Stand 的进度条行『已下单  制作中  已完成』会把三个状态词一次列全，把「已完成」当负样本会把制作中的单整单丢掉（实拍 P8246 踩到）。跨行的整单完成态用『订单已完成』判；进度条行本身由 field_defaults.stepRow + 引擎 _is_step_row() 跳过。",
+          "pickupCode": [
+            {
+              "regex": "^(P\\d{3,6})$",
+              "groupIndex": 1,
+              "_hint": "实拍 P8246 / P8204 / P8199 —— 码独占一行，紧跟在状态词下面，页面无标签"
+            },
+            {
+              "regex": "^([A-Z]\\d{4})$",
+              "groupIndex": 1,
+              "_hint": "实拍卡『P8214』字母+四位（旧样本，保留）"
+            }
+          ],
+          "merchantName": [
+            {
+              "regex": "^(.{2,}店)$",
+              "groupIndex": 1
+            }
+          ],
+          "productName": [
+            {
+              "regex": "^([^¥￥\\d].{2,24})$",
+              "groupIndex": 1,
+              "_hint": "商品名独占一行（美式咖啡），下一行是规格行『标杯（冷）354ml、…』"
+            }
+          ]
+        },
+        {
+          "_version": "取餐页（带「取餐码」标签那版，旧样本）",
+          "pageTitle": "(取餐码)",
+          "validPickup": "(取餐码|制作中|待取餐)",
+          "inValidStatus": "^(已取餐|已退款)$",
+          "pickupCode": [
+            {
+              "regex": "取餐码[：:\\s]*([A-Za-z]?\\d{3,5})",
+              "groupIndex": 1
+            },
+            {
+              "regex": "^([A-Z]\\d{4})$",
+              "groupIndex": 1
+            }
+          ]
+        }
+      ],
+      "qrPattern": null,
+      "_note": "小程序为主（微信），小程序昵称就叫『M Stand』。**这家最难认**：实拍 P8246 那页从头到尾没有『取餐码』三个字，标题是『订单详情』，码就光秃秃独占一行跟在状态词『制作中』下面 —— 所以① sceneCharacter 不能只押『取餐码』；② 品牌名页面上也不写，靠 brand_from_code 的 P 前缀推定（brandInferredFrom=codePrefix）；③ 进度条行『已下单  制作中  已完成』的坑见上面 _inValidStatusWhy。商品名『美式咖啡』下一行是规格行『标杯（冷）354ml、…』，温度从规格行取（冷）→ 通用咖啡冷杯。"
+    },
+    {
+      "_verified": false,
+      "appName": "麦当劳",
+      "brandId": "maidanglao",
+      "packageName": "com.mcdonalds.gma.cn",
+      "clzName": ".*(OrderDetail|Pickup).*",
+      "pageTitle": "(取餐码|订单详情|待取餐)",
+      "sceneCharacter": "(取餐码|麦当劳|金拱门|到店取餐)",
+      "infoRegex": [
+        {
+          "_version": "取餐页",
+          "pageTitle": "(取餐码|待取餐)",
+          "validPickup": "(取餐码|制作中|待取餐|请到柜台取餐)",
+          "inValidStatus": "^(已完成|已取餐|已退款)$",
+          "pickupCode": [
+            {
+              "regex": "取餐码[：:\\s]*([A-Za-z0-9]{3,6})",
+              "groupIndex": 1
+            }
+          ],
+          "productName": [
+            {
+              "regex": "^(.{2,20})\\s*[×xX]\\s*\\d+$",
+              "groupIndex": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "_verified": false,
+      "appName": "肯德基",
+      "brandId": "kendeji",
+      "packageName": "com.yek.android.kfc.activitys",
+      "clzName": ".*(OrderDetail|Pickup).*",
+      "pageTitle": "(取餐码|订单详情|待取餐)",
+      "sceneCharacter": "(取餐码|肯德基|KFC|到店取餐)",
+      "infoRegex": [
+        {
+          "_version": "取餐页",
+          "pageTitle": "(取餐码|待取餐)",
+          "validPickup": "(取餐码|制作中|待取餐)",
+          "inValidStatus": "^(已完成|已取餐|已退款)$",
+          "pickupCode": [
+            {
+              "regex": "取餐码[：:\\s]*([A-Za-z0-9]{3,6})",
+              "groupIndex": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "_verified": false,
+      "appName": "美团（到店取餐 / 外卖自提）",
+      "brandId": null,
+      "packageName": "com.sankuai.meituan",
+      "clzName": ".*(OrderDetail|Pickup|Takeout).*",
+      "pageTitle": "(取餐码|订单详情|待取餐)",
+      "sceneCharacter": "(取餐码|到店自提|凭码取餐)",
+      "infoRegex": [
+        {
+          "_version": "自提页",
+          "pageTitle": "(取餐码|待取餐)",
+          "validPickup": "(取餐码|到店自提|凭码取餐)",
+          "inValidStatus": "^(已完成|已取餐|已退款|订单关闭)$",
+          "pickupCode": [
+            {
+              "regex": "取餐码[：:\\s]*([A-Za-z0-9]{3,8})",
+              "groupIndex": 1
+            }
+          ],
+          "merchantName": [
+            {
+              "regex": "^(.{2,}(?:店|门店))$",
+              "groupIndex": 1
+            }
+          ]
+        }
+      ],
+      "_note": "美团是聚合平台：品牌要从 merchantName 反查 brandId（keyword 长词优先），不是从包名"
+    },
+    {
+      "_verified": false,
+      "appName": "饿了么",
+      "brandId": null,
+      "packageName": "me.ele",
+      "clzName": ".*(OrderDetail|Pickup).*",
+      "pageTitle": "(取餐码|订单详情)",
+      "sceneCharacter": "(取餐码|到店自提|凭码取餐)",
+      "infoRegex": [
+        {
+          "_version": "自提页",
+          "pageTitle": "(取餐码)",
+          "validPickup": "(取餐码|到店自提)",
+          "inValidStatus": "^(已完成|已取餐|已退款)$",
+          "pickupCode": [
+            {
+              "regex": "取餐码[：:\\s]*([A-Za-z0-9]{3,8})",
+              "groupIndex": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "_verified": true,
+      "appName": "Manner",
+      "brandId": "manner",
+      "packageName": null,
+      "clzName": null,
+      "pageTitle": "订单详情",
+      "sceneCharacter": "(取餐码|订单待取餐|派单中|制作中|待取餐)",
+      "infoRegex": [
+        {
+          "_version": "订单详情（实拍 M647）",
+          "validPickup": "(取餐码|订单待取餐|派单中|制作中|待取餐)",
+          "inValidStatus": "(已完成|订单已完成|已取餐|已退款)",
+          "pickupCode": [
+            {
+              "regex": "^(M\\d{3,6})$",
+              "groupIndex": 1
+            },
+            {
+              "regex": "取餐号码[：:\\s]*([A-Za-z]?\\d{3,6})",
+              "groupIndex": 1
+            }
+          ],
+          "merchantName": [
+            {
+              "regex": "^(.{2,}店)$",
+              "groupIndex": 1
+            }
+          ],
+          "productName": [
+            {
+              "regex": "^([^¥￥\\d].{2,24})$",
+              "groupIndex": 1,
+              "_hint": "商品名独占一行（SOE美式-肯尼亚蜂蜜莓果风味），规格行在其下一行"
+            }
+          ]
+        }
+      ],
+      "qrPattern": null,
+      "_note": "小程序为主（微信）。实拍：取餐码标签独占行 → M647 → 订单待取餐；页面底部还会重复『取餐号码： M647』；订单编号 23 位，靠 blacklistNear+len_gt_10 排除。"
+    },
+    {
+      "_verified": true,
+      "appName": "GRID Coffee",
+      "brandId": "gridcoffee",
+      "packageName": null,
+      "clzName": null,
+      "pageTitle": "订单详情",
+      "sceneCharacter": "(取餐号|取餐码|制作中|待取餐|订单已完成)",
+      "infoRegex": [
+        {
+          "_version": "订单详情（实拍 GC0116）",
+          "validPickup": "(取餐号|取餐码|制作中|待取餐)",
+          "inValidStatus": "(订单已完成|已完成|已取餐|已退款)",
+          "pickupCode": [
+            {
+              "regex": "^(GC\\d{2,6})$",
+              "groupIndex": 1
+            }
+          ],
+          "merchantName": [
+            {
+              "regex": "^(.{2,}店)$",
+              "groupIndex": 1
+            }
+          ],
+          "productName": [
+            {
+              "regex": "^([^¥￥\\d].{2,24})$",
+              "groupIndex": 1
+            }
+          ]
+        }
+      ],
+      "qrPattern": null,
+      "_note": "标签是『取餐号』（不是取餐码/取餐号码）。实拍那单是「订单已完成」——同页右侧同行，故 inValidStatus 必须行内匹配，不能 ^…$。"
+    }
+  ],
+  "miniProgramRules": {
+    "hosts": [
+      {
+        "packageName": "com.tencent.mm",
+        "clzName": "com.tencent.mm.plugin.appbrand.ui.AppBrandUI.*",
+        "labelSource": "taskDescription.label"
+      },
+      {
+        "packageName": "com.eg.android.AlipayGphone",
+        "clzName": ".*(MiniService|Nebula|H5Activity).*",
+        "labelSource": "taskDescription.label"
+      }
+    ],
+    "labelSource": "taskDescription.label",
+    "labelToBrand": {
+      "瑞幸咖啡": "ruixing",
+      "luckin coffee": "ruixing",
+      "星巴克中国": "xingbake",
+      "星巴克": "xingbake",
+      "蜜雪冰城": "mixuebingcheng",
+      "喜茶GO": "xicha",
+      "喜茶": "xicha",
+      "库迪咖啡": "kudi",
+      "霸王茶姬": "bawangchaji",
+      "茶百道": "chabaidao",
+      "蓝瓶咖啡": "bluebottle",
+      "Blue Bottle": "bluebottle",
+      "gaga": "gaga",
+      "茶话弄": "chahuanong",
+      "古茗": "guming",
+      "沪上阿姨": "hushangayi",
+      "奈雪的茶": "naixue",
+      "CoCo都可": "coco",
+      "Manner": "manner",
+      "M Stand": "mstand",
+      "麦当劳": "maidanglao",
+      "肯德基": "kendeji",
+      "塔斯汀": "tustin",
+      "幸运咖": "xingyunka",
+      "挪瓦咖啡": "nuowa",
+      "丘大叔": "qiudashu",
+      "去茶山": "quchashan",
+      "混果汁": "hunguozhi",
+      "阿嬤手作": "amoshouzuo",
+      "奈雪": "naixue"
+    }
+  },
+  "fieldDefaults": {
+    "_note": "各 app 未覆盖时用这套通用抽取；长词优先、先剥再判（同 cup_picker 的 ingredient_strip 教训）",
+    "pickupCode": [
+      {
+        "regex": "(?:取餐号码|取餐码|取餐号|取单号|取单码|取茶码|取件码|取货码|提货码|凭证码|验证码|取件号码|取餐口令)[：:\\s]*([A-Za-z0-9\\-]{2,12})",
+        "groupIndex": 1,
+        "_hint": "行内 label:value —— 新增 取单号(霸王茶姬/书亦)、取茶码(熊猫茶)；取餐号码(Manner 底部)"
+      },
+      {
+        "regex": "^([A-Za-z]{1,2}\\d{2,6})$",
+        "groupIndex": 1,
+        "_hint": "字母+数字独占一行：M647 / P8204 / GC0116（实拍）"
+      },
+      {
+        "regex": "^(\\d{4,6})$",
+        "groupIndex": 1,
+        "_hint": "纯数字独占一行：8205 / 30001 / 30163（实拍）"
+      },
+      {
+        "regex": "^([A-Z]?\\d{3,6})$",
+        "groupIndex": 1,
+        "_hint": "码单独占一行的大字版式；必须配合 bbox 字号打分，否则会抓到金额/序号"
+      },
+      {
+        "regex": "^(\\d{1,3}(?:-\\d{1,4}){1,3})$",
+        "groupIndex": 1,
+        "_hint": "驿站/快递柜取件码『7-2-3011』带横杠，独立成行"
+      }
+    ],
+    "merchantName": [
+      {
+        "regex": "^(.{2,20}?[（(].{2,20}?店[）)])",
+        "groupIndex": 1,
+        "_hint": "『品牌（XX店）』后面还跟业务后缀时只取到括号闭合处（实拍星巴克）"
+      },
+      {
+        "regex": "^(.{2,}(?:店|门店|驿站|快递柜|Store))$",
+        "groupIndex": 1
+      }
+    ],
+    "productName": [
+      {
+        "regex": "^(.{2,20})\\s*[×xX]\\s*\\d+$",
+        "groupIndex": 1,
+        "_hint": "『商品名 ×1』同行版式"
+      }
+    ],
+    "orderNo": [
+      {
+        "regex": "(?:订单号|订单编号)[：:\\s]*([A-Za-z0-9]{8,32})",
+        "groupIndex": 1,
+        "_hint": "抽出来是为了**排除**，别当取餐码"
+      }
+    ],
+    "waitTime": [
+      {
+        "regex": "(?:预计取餐时间|预计取餐|预计出餐)\\s*(\\d{1,2}:\\d{2})",
+        "groupIndex": 1,
+        "_hint": "时刻型（实拍星巴克）"
+      },
+      {
+        "regex": "(?:预计|大约|约)\\s*(\\d{1,3})\\s*分钟",
+        "groupIndex": 1,
+        "_hint": "时长型"
+      }
+    ],
+    "validPickup": "(取餐码|取餐号|取单码|待取餐|请取餐|已做好|制作中|排队中|取件码|待取件|凭码取件|待取货)",
+    "inValidStatus": "(已完成|订单已完成|已取餐|已取件|已取货|已退款|退款中|退款进度|已取消|订单关闭|订单已取消)",
+    "conditionalLabels": {
+      "_what": "★**既可能是标签、也可能是负词**的词——靠它带的**值的形态**分流，不靠词本身。",
+      "words": [
+        "订单号"
+      ],
+      "asLabelWhen": "^[A-Za-z]{0,2}\\d{2,6}$",
+      "_why": "同一个「订单号」，三张真机页三种结局：①麦当劳柜台流程 `订单号 35383`（大字号，5 位）——**它就是取餐码**，页面上没有「取餐码」三个字；②M Stand `订单号：P8199`——也是真码；③奈雪 `订单号：1401833826202812416`（19 位，**还是大字号**）——是订单流水号噪声。⇒ 大字号区分不了（②③都可能大），**只有值的长度/形态能区分**。",
+      "_scope": "只放「订单号」。**「订单编号」不进来**——它在实拍里恒为 20+ 位长串（喜茶/去茶山/Manner/霸王茶姬…8 张样本无一例外），永远是噪声。",
+      "_effect": "命中 asLabelWhen → 当标签用（+label_prefix_hit，并记进 label 字段），且**该词不再触发 near_blacklist 扣分**；不命中 → 仍按负词扣 −50。",
+      "_note": "★**同一品牌、不同端，标签词就不一样**（用户定）：麦当劳 **App 叫「取餐码」**（实拍 35184）、**小程序叫「订单号」**（实拍 35383）。所以标签词**不能按品牌写死**——同一家店换个端就变了；只能按**值的形态**判。",
+      "_generalize": "推论：其它品牌大概率也有 App / 小程序 两套文案。再收样本时**同品牌两个端都要拍**，别只拍一个端就以为覆盖了该品牌。"
+    },
+    "blacklistNear": [
+      "订单号",
+      "订单编号",
+      "手机号",
+      "尾号",
+      "预留电话",
+      "电话",
+      "实付",
+      "合计",
+      "金额",
+      "总价",
+      "总额",
+      "优惠",
+      "积分",
+      "余额",
+      "会员号",
+      "星星",
+      "累积",
+      "节省",
+      "券",
+      "月卡",
+      "星礼卡",
+      "小计",
+      "有效期",
+      "折",
+      "距离",
+      "km",
+      "雪王币",
+      "成长值",
+      "甜蜜值",
+      "熊猫值",
+      "熊猫币",
+      "茶叶",
+      "评价",
+      "评分"
+    ],
+    "codeLabelOnly": {
+      "_hint": "标签独占一行→**下一行或上一行**是码。①标签在码上方：取餐码/取餐号/取茶码 \\n 5573（蜜雪/蓝瓶/gaga/熊猫）。②标签在码下方：Q1019 \\n 取单号（霸王茶姬/茶百道）。③**无标签**：M Stand/喜茶 码上方是状态词（制作中/已完成/已下单），故状态词也当准标签。Manner M647 上方「取餐码」、下方「订单待取餐」。",
+      "regex": "^(取餐码|取餐号|取餐号码|取单号|取单码|取茶码|取件码|取货码|提货码|凭证码|啡快\\s*口令|口令|取餐口令|已下单|制作中|派单中|订单待取餐|已完成|订单已完成|待取餐|待取茶|待取件)$",
+      "labelWords": [
+        "取餐码",
+        "取餐号",
+        "取餐号码",
+        "取单号",
+        "取单码",
+        "取茶码",
+        "取件码",
+        "取货码",
+        "提货码",
+        "凭证码",
+        "口令",
+        "啡快 口令",
+        "取餐口令"
+      ],
+      "skipNext": "(口令|晒|→|>|＞|复制|微信状态|\\.{3}|^$)",
+      "lookahead": 2,
+      "_alsoLookBack": "标签在码下方时向上回看 1 行（Q1019/取单号、T057/取单号）"
+    },
+    "codeStrip": [
+      "“",
+      "”",
+      "\"",
+      "'",
+      "‘",
+      "’",
+      "：",
+      ":",
+      " "
+    ],
+    "specLine": {
+      "_hint": "规格行：『大杯热/原萃浓缩/全脂牛奶/…』——①温度在这里 ②它的上一行（跳过券行）就是商品名；M Stand 用「标杯（冷）354ml」——「标杯」不是「标准杯」，两个都得收",
+      "regex": "(大冰杯|中冰杯|小冰杯|冰杯|热杯)|(大杯|中杯|超大杯|小杯|标准杯|标杯)[^,，、]{0,6}(热|冰|温)|(少冰|去冰|多冰|正常冰|常温|热饮)|\\d{2,4}\\s*(ml|oz|ML|OZ)|(^|/)[^/]{1,8}/[^/]{1,8}/[^/]{1,8}",
+      "skipPrev": "(券|折|满减|赠|-\\s*[¥￥]|优惠|餐具费|餐盒费|包装袋|积分|余额|小计|本金)"
+    },
+    "productStrip": [
+      "¥",
+      "￥",
+      "x1",
+      "×1"
+    ],
+    "productTailRe": "\\s*[¥￥]\\s*[\\d.]+\\s*(券后价)?\\s*$|\\s*[×xX]\\s*\\d+\\s*$",
+    "_inValidNote": "改为行内匹配（原 ^…$）——实拍 GRID『GC0116  订单已完成』同行、M Stand『已完成』独占行",
+    "stepRow": {
+      "_hint": "**进度条那一行**会把所有状态词一次列全（M Stand「已下单 制作中 已完成」/Manner「派单中 制作中 待取餐」/麦当劳「确认中 配餐中 待取餐」）。这行里的「已完成」不是当前状态，inValidStatus 判定必须跳过它 —— 否则在制作中的单会被当成已完成直接丢掉（实拍 M Stand P8246 踩到）。",
+      "words": [
+        "已下单",
+        "派单中",
+        "确认中",
+        "制作中",
+        "配餐中",
+        "待取餐",
+        "待取茶",
+        "已完成",
+        "待取件",
+        "已取餐",
+        "取餐中",
+        "备餐中",
+        "门店已接单",
+        "制茶中",
+        "确认取茶"
+      ],
+      "minHits": 2
+    },
+    "storeName": {
+      "_what": "门店名。两型：①`品牌（XX店）` → **只取括号内**（星巴克「星巴克（深圳沙井海岸城店）提供会议/茶歇…」→ 深圳沙井海岸城店；蜜雪「蜜雪冰城（鑫源城店）-No.91…」→ 鑫源城店）②其余 → **整行原样**（以 店/餐厅/铺/门店 结尾）。",
+      "parenRegex": "^.{1,20}?[（(](.{2,20}?店)[）)]",
+      "suffixRegex": "^(.{3,30}(?:店|餐厅|铺|门店))$",
+      "_fallback": "两条都不中时（实拍去茶山「深圳怀德万象汇」无 店 字尾）→ 取**首个商品行的上一行**（长度 4~25、不含 ¥/券/积分/冒号/标签词）。",
+      "negLines": [
+        "取餐门店",
+        "收藏当前门店",
+        "联系门店",
+        "门店已接单",
+        "下单门店"
+      ],
+      "_negWhy": "「取餐门店」是区块标题（蓝瓶）；「下单门店 XXX」是 label:value 复述行——真门店名在更前面，按阅读序取首个命中即可避开。",
+      "_addressLineIsNoise": "★门店地址**不再作为输出字段**（用户定：只要 品牌/取餐码/商品名/门店名 四项）。但地址行仍是页面上的**干扰项**：它常紧跟门店名、且可能以「铺/号」结尾。靠两点隔离——①按阅读序取**首个**命中（真门店名恒在地址行之前）②suffixRegex 限长 .{3,30}（长地址串天然落选）。",
+      "stripBadges": [
+        "自取",
+        "外送",
+        "堂食",
+        "自提",
+        "到店自提",
+        "配送",
+        "〇",
+        "○",
+        "◯"
+      ],
+      "_badgeWhy": "★实拍 B502：门店名前挂蓝色「自取」胶囊徽章，OCR 成同一行『自取 深圳万丰海岸城店』——不剥就把徽章带进门店名。",
+      "_noParenKeepAsIs": "★**无括号的保留原样**（用户定）——如麦当劳「麦当劳深圳万丰海岸城餐厅」**不剥**品牌前缀。只有括号形才取括号内；拼接形照原样出。（我曾加过 stripBrandPrefix 剥前缀，已按用户指示撤销。）"
+    },
+    "productName_v2": {
+      "_what": "商品名（**第一件**）。候选=带 ¥ 或数量标记的行；剥掉价格/数量/券后价/热量/规格后的净名。",
+      "candidateHas": "[¥￥]|[xX×]\\s*\\d+|\\d+\\s*份",
+      "stripPatterns": [
+        "[¥￥]\\s*[\\d.]+",
+        "券后价",
+        "会员价",
+        "使用\\s*\\d+\\s*★",
+        "\\d+\\s*★",
+        "热量[≈约~]?\\s*[\\d.]+\\s*kcal\\s*/?\\s*杯?",
+        "[xX×]\\s*\\d+\\s*(?:杯|份|件)?",
+        "\\d+\\s*份",
+        "-\\s*$"
+      ],
+      "specCutWords": [
+        "大杯",
+        "中杯",
+        "小杯",
+        "标杯",
+        "超大杯",
+        "热量",
+        "少冰",
+        "去冰",
+        "多冰",
+        "正常冰",
+        "少甜",
+        "少糖",
+        "标准甜",
+        "常温",
+        "热饮",
+        "圆瓶",
+        "中冰杯",
+        "大冰杯"
+      ],
+      "_nameAboveLayout": "★**价格/数量独占一行**的版式（麦当劳柜台流程实拍 35383）：商品名单独一行「人气超值四件套随心选」，下面才是「1份 ¥55」。此时候选行剥完价格数量后**是空的**，要向上找名字行，并**跳过套餐内单品**（`^\\d+\\s*[xX×]` 开头的「1 x 板烧鸡腿堡 / 1 x 可乐中杯」）——取的是**套餐名**，它才是「第一件商品」。向上找不到可用名字就继续找下一条候选，不返回垃圾。",
+      "_specCutRule": "★规格词**必须前面有空格**才切——否则「超大杯冷萃（盛夏甜瓜风味）」会被自己开头的『大杯』腰斩（实拍 P8199 踩点）。",
+      "couponExclude": [
+        "券包",
+        "兑换券",
+        "畅饮卡",
+        "买一送一",
+        "买\\d+赠\\d+",
+        "^优惠券"
+      ],
+      "negWithMinus": [
+        "券",
+        "折",
+        "优惠",
+        "赠"
+      ],
+      "_multiItemRule": "★**多件商品时取第一件 + 「等」**（用户定 2026-07-31）：`人气超值四件套随心选 等`。**套餐算一件**——套餐内单品（`^\\d+\\s*[xX×]` 开头的「1 x 板烧鸡腿堡 / 1 x 可乐中杯」）不计数。同名多份（混果汁买一送一，同一杯列两行）也只算一件。",
+      "_notAnItem": "计数时必须排除三类**非商品行**（否则 1 件被数成 2 件、误加「等」）：①**规格行**——以规格词开头（煲珠公 `中杯 +`）或含两个以上斜杠（奈雪 `茉莉初雪/100%甜味来自水果/中杯500ml/少少冰沙`）；②**券行**——含「券」但不含「券后价」（奈雪 `买茶送包券（V2生日礼）`；GRID `咸鸳鸯 PRO ¥32.4券后价` 是真商品要留）；③**会员卡/统计行**——含「有效期至」（星巴克 `钻星会员体验版月卡 有效期至：2025.11.30 已累计节省¥383.4`）。",
+      "_priceLineBelongsTo": "★向上找名字时，若先撞到**另一条已有名字的价格行**，说明当前这条价格/数量行是**它的续行**（煲珠公 `老红糖珍珠奶茶 ¥13` / `中杯 +` / `x 1`），不是新商品——直接放弃，别把上面的规格行当成第二件。",
+      "_negRule": "★负价 `-¥` **不能单独当排除条件**——星巴克「冷萃冰咖啡 使用12★ -¥34 …」是真商品行；只有 `-¥` **且**同时含 券/折/优惠/赠 才是券行（如『32元买一送一券(储值) -¥26』）。反之『咸鸳鸯 PRO ¥32.4券后价』含『券』却是商品行，故 `券后价` 只剥不排除。",
+      "negLines": [
+        "餐具费",
+        "餐盒费",
+        "包装袋",
+        "纸袋",
+        "小计",
+        "合计",
+        "总价",
+        "总额",
+        "实付",
+        "积分",
+        "余额",
+        "本金",
+        "支付",
+        "商品总",
+        "奖励",
+        "已优惠",
+        "共",
+        "有效期至",
+        "客服",
+        "制作"
+      ]
+    },
+    "_inValidStatus_deprecated": "原 `inValidStatus`（负样本终态门）**已停用于卡片门控**——见 cardLifecycle。字段保留仅供参考/别处复用，选码与建卡都不再读它。"
+  },
+  "orderMetadata": {
+    "schemaVersion": 1,
+    "source": "Owner-approved meal metadata extension, 2026-11-02; docs/MEAL_ORDER_METADATA_20261102.md",
+    "itemCountMaximum": 2147483647,
+    "amountMaximumLength": 32,
+    "amountValuePattern": "[0-9]+(?:\\.[0-9]{1,2})?",
+    "waitTimeClockPattern": "(?:[01]?[0-9]|2[0-3]):[0-5][0-9]",
+    "waitTimePatterns": [
+      "(?:预计取餐时间|预计取餐)\\s*[：:]?\\s*((?:[01]?[0-9]|2[0-3]):[0-5][0-9])(?![0-9])"
+    ],
+    "itemCountPatterns": [
+      "共\\s*([0-9]+)\\s*件(?:商品)?"
+    ],
+    "totalAmountPatterns": [
+      "(?:实付款|实付)\\s*[：:]?\\s*[¥￥]?\\s*([0-9]+(?:\\.[0-9]{1,2})?)(?![0-9.A-Za-z]|[,，][0-9])(?:\\s*元)?",
+      "(?:合计|总计)\\s*[：:]?\\s*[¥￥]?\\s*([0-9]+(?:\\.[0-9]{1,2})?)(?![0-9.A-Za-z]|[,，][0-9])(?:\\s*元)?"
+    ],
+    "onlinePrompt": "Copy optional waitTime, itemCount, and totalAmount only from explicitly visible evidence for this same order. waitTime is the stated estimated pickup time; never use order/payment/system clocks, never calculate a clock from a duration. Preserve legacy literal waitTime values. itemCount is an explicit total number of ordered items, not a pickup code, queue position, points, or a product specification. totalAmount is the explicitly labelled RMB paid total (prefer 实付/实付款, then 合计/总计), never a unit price, original price, coupon, delivery fee, or a computed sum. Keep its visible decimal places; zero is a valid price. Missing or contradictory values are null. Never combine separate orders. Return waitTime and totalAmount as JSON strings and itemCount as a JSON integer.",
+    "nonOrderTotalLinePatterns": [
+      "^\\s*(?:单价|配送费|运费|原价|优惠(?:券|金额)?|积分)"
+    ]
+  },
+  "postV2Overrides": {
+    "fieldDefaults": {
+      "_note": "餐饮取餐码专用通用抽取；未来凭证规则不得进入 PICKUP_MEAL。",
+      "pickupCode": [
+        {
+          "regex": "(?:取餐号码|取餐码|取餐号|取单码|凭证码|验证码|取单号)[：:\\s]*([A-Za-z0-9\\-]{2,12})",
+          "groupIndex": 1
+        },
+        {
+          "regex": "^([A-Za-z]{1,2}\\d{2,6})$",
+          "groupIndex": 1
+        },
+        {
+          "regex": "^(\\d{4,6})$",
+          "groupIndex": 1
+        },
+        {
+          "regex": "^([A-Z]?\\d{3,6})$",
+          "groupIndex": 1
+        },
+        {
+          "regex": "^([A-Za-z]{1,2}\\d{2,6})(?=[\\u4e00-\\u9fff]{2,6}$)",
+          "groupIndex": 1
+        }
+      ],
+      "merchantName": [
+        {
+          "regex": "^(.{2,20}?[（(].{2,20}?店[）)])",
+          "groupIndex": 1
+        },
+        {
+          "regex": "^(.{2,}(?:店|门店|Store))$",
+          "groupIndex": 1
+        }
+      ],
+      "productName": [
+        {
+          "regex": "^(.{2,20})\\s*[×xX]\\s*\\d+$",
+          "groupIndex": 1
+        }
+      ],
+      "orderNo": [
+        {
+          "regex": "(?:订单号|订单编号)[：:\\s]*([A-Za-z0-9]{8,32})",
+          "groupIndex": 1
+        }
+      ],
+      "waitTime": [
+        {
+          "regex": "(?:预计取餐时间|预计取餐|预计出餐)\\s*(\\d{1,2}:\\d{2})",
+          "groupIndex": 1
+        },
+        {
+          "regex": "(?:预计|大约|约)\\s*(\\d{1,3})\\s*分钟",
+          "groupIndex": 1
+        }
+      ],
+      "validPickup": "(取餐码|取餐号|取单码|待取餐|请取餐|已做好|制作中|排队中|取单号)",
+      "blacklistNear": [
+        "订单号",
+        "订单编号",
+        "手机号",
+        "尾号",
+        "实付",
+        "合计",
+        "金额",
+        "优惠",
+        "积分",
+        "余额",
+        "会员号",
+        "星星",
+        "累积",
+        "节省",
+        "券",
+        "月卡",
+        "星礼卡",
+        "小计",
+        "有效期",
+        "折"
+      ],
+      "conditionalLabels": {
+        "words": [
+          "订单号"
+        ],
+        "asLabelWhen": "^[A-Za-z]{0,2}\\d{2,6}$"
+      },
+      "codeLabelOnly": {
+        "regex": "^[<＜‹〈《]?\\s*(取餐码|取餐号|取餐号码|取单码|凭证码|啡快\\s*口令|口令|取餐口令|已下单|制作中|派单中|订单待取餐|已完成|订单已完成|待取餐|取单号)\\s*$",
+        "skipNext": "(口令|晒|→|>|＞|复制|\\.{3}|^$|微信状态|^\\+)",
+        "freeformRegex": "^(啡快\\s*口令|口令|取餐口令)$",
+        "lookahead": 2
+      },
+      "codeStrip": [
+        "“",
+        "”",
+        "\"",
+        "'",
+        "‘",
+        "’",
+        "：",
+        ":",
+        " "
+      ],
+      "specLine": {
+        "regex": "(大冰杯|中冰杯|小冰杯|冰杯|热杯)|(大杯|中杯|超大杯|小杯|标准杯|标杯)[^,，、]{0,6}(热|冰|温)|(少冰|去冰|多冰|正常冰|常温|热饮)|\\d{2,4}\\s*(ml|oz|ML|OZ)|(?!(?:\\d{4}/\\d{1,2}/\\d{1,2})(?:\\s|$))(^|/)[^/]{1,8}/[^/]{1,8}/[^/]{1,8}|(?:大杯|中杯|超大杯|小杯|标准杯|标杯).{0,40}(?:甜度|外带杯|纸杯|PE杯)|(?:^|[,，、/])(?:少甜|冰沙)(?:[（(,，、/]|$)|^\\d+\\s*[×xX]\\s*\\S",
+        "skipPrev": "(券|折|满减|赠|-\\s*[¥￥]|优惠|餐具费|餐盒费|包装袋|积分|余额|小计|本金|会员价|^\\s*(?:[¥￥]|Y\\s*)\\d+(?:\\.\\d{1,2})?\\s*$|^[xX×]\\s*\\d+(?:\\s*(?:份|杯|件|个|套|盒))?\\s*$)"
+      },
+      "productStrip": [
+        "¥",
+        "￥",
+        "x1",
+        "×1"
+      ],
+      "productTailRe": "\\s*[¥￥]\\s*[\\d.]+\\s*(券后价)?\\s*$|\\s*[×xX]\\s*\\d+\\s*$|\\s*会员价\\s*$|\\s(?:超大杯|大杯|中杯|小杯|标杯|标准杯|冰杯|热杯|少冰|去冰|多冰|正常冰|常温|热饮|冰沙|少甜|标准甜|少糖|微糖|无糖|半糖|全糖|标准糖|不另外加糖|标准量|正常浓度|\\d+\\s*(?:ml|ML|oz|OZ))\\S*(?:[/、,，]\\S*){2,}\\s*$|\\s*使用\\s*\\d+(?:\\.\\d+)?\\s*★[\\s\\-–—－]*$",
+      "stepRow": {
+        "words": [
+          "已下单",
+          "派单中",
+          "确认中",
+          "制作中",
+          "配餐中",
+          "待取餐",
+          "已完成",
+          "已取餐",
+          "取餐中",
+          "备餐中",
+          "门店已接单",
+          "制茶中",
+          "确认取茶"
+        ],
+        "minHits": 2
+      }
+    },
+    "localHeuristics": {
+      "code": {
+        "labelPrefixRegex": "^(?:(?:取餐码|取餐号|取单号|取单码|取餐口令|啡快口令|取杯码|凭证码))\\s*[:：#]?\\s*",
+        "edgePunctuationRegex": "^[#：:·.\\s“”\\\"'‘’【】\\[\\]()（）]+|[#：:·.\\s“”\\\"'‘’【】\\[\\]()（）]+$",
+        "dateOrTimeRegex": "^\\d{1,4}[-/:]\\d{1,2}(?:[-/:]\\d{1,2})?$",
+        "allowedRegex": "^[A-Za-z0-9\\u4e00-\\u9fff][A-Za-z0-9\\u4e00-\\u9fff·._-]*$",
+        "noiseRegex": "^申请开票$",
+        "mergedChineseSlashRegex": "^(\\d{1,2})[./·]+(?=[\\u3400-\\u9fff])",
+        "minLength": 2,
+        "maxLength": 20
+      },
+      "merchant": {
+        "edgePrefixRegex": "^(?:\\s*[@＠©ⓒ®·●○◯〇◎◉⊙日口囗回田□■▣]|\\s*(?:自取|外带|堂食|自提|到店自提|到店自取|外送|配送)(?=\\s))+\\s*",
+        "ocrLetterPrefixRegex": "^[A-Za-z0-9](?=[\\u3400-\\u9fff]{2,}(?:市|区|县|镇|乡|街道|路|街|商场|广场|天地|城|中心)[\\u3400-\\u9fff]{0,20}(?:门店|餐厅|餐馆|档口|取餐点|店)[）)>›》〉]*$)",
+        "edgeSuffixRegex": "\\s*(?:[>›»》〉→©ⓒ®☎📞🧭●○◎◉⊙□■▣]+|[（(]\\s*(?:\\.{2,}|…+)?|\\.{3,}|…+)\\s*$",
+        "embeddedStoreRegex": "[（(]([^（）()]{2,28}(?:(?:门店|餐厅|餐馆|档口|取餐点|店)|\\S{2,12}(?:汇|城|天地|中心)))[）)]",
+        "storeSuffixRegex": "(?:(?:门店|餐厅|餐馆|档口|取餐点|店|铺)|\\S{2,12}(?:汇|城|天地|中心))[）)>›》〉]*$",
+        "noiseRegex": "^取餐门店$|选择门店|切换门店|查看门店|门店地址|门店自取|收藏|导航",
+        "minLength": 2,
+        "maxLength": 32
+      },
+      "product": {
+        "quantitySuffixRegex": "\\s*[×xX]\\s*\\d+\\s*$|\\s*\\d+\\s*(?:份分?|杯|件|个|套|盒)\\s*$",
+        "quantityOnlyRegex": "^(?:[xX×]\\s*\\d+|\\d+\\s*(?:份分?|杯|件|个|套|盒))$",
+        "itemQuantityRegex": "^(?:[xX×]\\s*\\d+|\\d+\\s*(?:份分?|杯|件|个|套|盒)|\\d+\\s*[xX×]\\s*.+)$",
+        "noiseRegex": "^(?:慢榨)$|取餐|取单|订单|门店|合计|实付|优惠|支付|完成|手机号|桌号|排队|优惠券|折券|折扣|套餐\\d*折|会员|月卡|券后价|到手价|原价|现价|晒口令|好友代取|识别二维码|累计节省|省.*市|市.*区|区.*(?:街道|镇|乡)|(?:街道|镇|乡).*(?:路|街|道)|(?:路|街|道).*\\d+号|(?:负?\\d+|[BFL]\\d+)(?:楼|层)|候车厅|^\\d+\\s*[×xX]\\s*|^\\d{1,2}:\\d{2}(?::\\d{2})?$|下单时间|支付时间|预计取餐|送达时间|小计|总价|总额|总计|商品明细|已选商品|^共\\s*\\d+\\s*份|^余额|^本金|餐具费|餐盒费|^\\d+\\s*(?:份分?|杯|件|个|套|盒)$|积分|成长值|甜蜜值|雪王币|茶多分|经验值|★|奖励|免单|抽.*周边|买一送一|畅饮|兑换|券包|加速卡|^(?:\\[|［)\\s*\\d+\\s*次卡\\s*(?:\\]|］)|权益|尊享|黑金卡|领\\d|新人券|小助手|福利官|进群|入群|加好友|加店长|加经理|加茶茶|麦有礼|Lucky|送.{0,3}券|日内有效|到店专用|^复制$|收藏|开发票|申请开票|评价一下|问题反馈|再来一单|^备注|用餐方式|就餐方式|就餐信息|预留电话|微信状态|客服|专属福利|制作|配餐|下单成功|已下单|待取餐|正在|派单|提供会议|感谢光顾|期待您|仅供参考|耐心等待|-No\\.|合计|^共\\s*\\d+\\s*件|^(?:纸袋|打包袋|包装袋|环保袋|保温袋|吸管|餐具|杯套)$|打包费|包装费|配送费|^[包具盒]?(?:纸袋|打包袋|包装袋|环保袋|保温袋|吸管|杯套|餐具费|餐盒费|餐位费)$|^(?=.*(?:超大杯|大杯|中杯|小杯|标杯|标准杯|冰杯|热杯|少冰|去冰|多冰|正常冰|常温|热饮|冰沙|少甜|标准甜|少糖|微糖|无糖|半糖|全糖|标准糖|不另外加糖|标准量|正常浓度|\\d+\\s*(?:ml|ML|oz|OZ)))(?:[^/]*/){2,}[^/]*$|^(?=.*(?:超大杯|大杯|中杯|小杯|标杯|标准杯|冰杯|热杯|少冰|去冰|多冰|正常冰|常温|热饮|冰沙|少甜|标准甜|少糖|微糖|无糖|半糖|全糖|标准糖|不另外加糖|标准量|正常浓度|\\d+\\s*(?:ml|ML|oz|OZ)))(?:[^、,，]*[、,，]){2,}[^、,，]*$|^(?=.*(?:超大杯|大杯|中杯|小杯|标杯|标准杯|冰杯|热杯|少冰|去冰|多冰|正常冰|常温|热饮|冰沙|少甜|标准甜|少糖|微糖|无糖|半糖|全糖|标准糖|不另外加糖|标准量|正常浓度|\\d+\\s*(?:ml|ML|oz|OZ)))(?:[^+]*\\+){2,}[^+]*$",
+        "storePromotionRegex": ".*[（(][^（）()]{2,28}(?:(?:门店|餐厅|餐馆|档口|取餐点|店)|\\S{2,12}(?:汇|城|天地|中心))[）)].*",
+        "addressRegex": ".*(?:省.*市|市.*区|区.*(?:街道|镇|乡)|(?:街道|镇|乡).*(?:路|街|道)|(?:路|街|道).*\\d+号|[A-Za-z0-9-]{1,16}号?(?:铺位|商铺)|(?:近\\s*)?\\d+号门|(?:负?\\d+|[BFL]\\d+)(?:楼|层)).*",
+        "multiOptionRegex": ".*(?:/[^/]+){2,}.*",
+        "foodKeywordRegex": "汉堡|炸鸡|鸡排|鸡腿|鸡翅|薯条|披萨|三明治|饭|面|粉|粥|饺|馄饨|包子|烧麦|套餐|卷|寿司|沙拉|蛋糕|面包|甜品|小吃|烧烤|烤串|牛肉|猪肉|鸡肉|鱼",
+        "artPrefixRegex": "^(?:手工裹粉|[紅红]米[价價])\\s*(?=\\S{2,})",
+        "priceRegex": ".*[¥￥].*|^Y\\d+(?:\\.\\d{1,2})?[O0]?$|^(?:[¥￥]\\d+(?:\\.\\d{1,2})?|\\d+\\.\\d{1,2}[元¥￥]?|\\d+[元¥￥])$|.*\\d+(?:\\.\\d{1,2})?元(?:起|/.*)?$",
+        "priceColumnStartRegex": "\\s+(?:[¥￥]|Y\\s*\\d)|[¥￥]",
+        "storeNameRegex": "(?:(?:店|门店)|\\S{2,12}(?:汇|城|天地|中心))$",
+        "minLength": 2,
+        "maxLength": 30
+      }
+    }
+  },
+  "scoring": {
+    "_note": "候选码打分，防把订单号/手机号/金额当取餐码。参考实现（识屏）靠 accessibility label-path 直接读节点，我们做本地 OCR 没有 label-path，改用「标签词 + 字号 bbox + 排除法」打分（movie 那条链同款减法选词）。",
+    "weights": {
+      "label_prefix_hit": 40,
+      "bbox_big_header": 25,
+      "horizontally_centered": 10,
+      "len_3_to_6": 15,
+      "has_letter_and_digit": 8,
+      "code_shape_match": 5,
+      "near_blacklist_word": -50,
+      "len_gt_10": -30,
+      "looks_like_phone": -60,
+      "looks_like_amount": -60
+    },
+    "_weights_note": "bbox_big_header(25) 取代原 bbox_height_rank_top1：结构化 OCR 给每行字号，码行是页面最大字号那一行→big=true。纯文本回退（无 bbox）时该项为 0，靠 label_prefix_hit(40)+排除法兜住埋底版式（0058/1061）。",
+    "regex_reject": [
+      "^1[3-9]\\d{9}$",
+      "^\\d{3}\\*{2,4}\\d{3,4}$",
+      "^1\\d{2}\\*+\\d{3,4}$",
+      "^￥\\d+(\\.\\d{1,2})?$",
+      "^\\d+\\.\\d{1,2}$",
+      "^\\d{4}[./-]\\d{1,2}[./-]\\d{1,2}",
+      "^\\d{1,2}:\\d{2}(:\\d{2})?$",
+      "^[A-Za-z]?\\d{14,}$"
+    ],
+    "_regex_reject_note": "掩码手机号 138****0000、¥金额、带小数金额、日期 2026/05/13、时刻 13:55、≥14 位长订单编号（H126.../202511...）。★关键：金额只认『带¥』或『带小数』——纯整数不排除（取餐码 8223/30001/1061 都是纯整数，误排会全军覆没）。纯整数当不当码靠 blacklistNear+big+标签打分区分。",
+    "codeValueShape": "^[A-Za-z]{0,2}\\d{2,6}$",
+    "codePhraseLabel": "(口令|啡快\\s*口令|取餐口令)",
+    "_phrase_note": "星巴克啡快用「口令」= 中文短语（可能带引号），不是数字码。口令标签命中时值形放开成短语。★**序号前缀必须保留**（用户定）——`2.心间有彩虹`、`81.奔赴新程` 里的序号**是口令的一部分**，不是装饰，剥掉就不是那句口令了。（此前我误剥，已撤。）",
+    "_geometryNowWired": "text-only 回退已在 fixtures/run_fixtures.py 落地并 14/14 通过；结构化 OCR 到位后把 big/centered 从 bbox 喂进来即自动加权（见 localOcrSelection.contract）。",
+    "_phraseLookBack2": "★往回看**两行**找口令标签：小程序版在「啡快 口令」与口令之间插了个「+ 微信状态」按钮，只看紧邻上一行会把按钮当成口令（实测抽成 `+ 微信状态`）。放宽后按钮与真口令都成候选，靠 **bbox_big_header +25** 分出胜负——真口令恒是页面主视觉大字。⚠️ 代价：若某页口令**不是大字**，这条放宽会让相邻装饰行有机会顶上；现有样本无此情形。",
+    "_phraseUnquoted": "★口令有**两种形态**：①带引号 `“2.心间有彩虹”` ②**无引号** `81.奔赴新程`（实拍两张各一）。带引号取引号内、无引号取「口令标签行的下一行整行」；**两种都原样保留序号前缀**。需排除 codeLabelOnly.skipNext（口令/晒/→/复制）避免把「晒口令 →」这类装饰行当值。",
+    "codeStatusSuffix": {
+      "_what": "★**码与状态词同行**：实拍 B502 顶部大字是『B502制作中』（码+状态挤一行）。",
+      "_how": "测 codeValueShape 前，先剥掉行尾的状态词（orderStatusWords.progress + terminal），剥完再判形。",
+      "_why": "否则整行不匹配任何值形 ⇒ 这张页面一个候选码都产不出。"
+    },
+    "labelPrefixRegex": "(取餐码|取餐号码|取餐号|取单号|取单码|取茶码|凭证码|口令)"
+  },
+  "brandFromCode": {
+    "_why": "咖啡类页面经常不写品牌名（M Stand 页面连「取餐码」字样都没有），但这几家的取餐码前缀是稳定的——用户实拍归纳。**只在其它认品牌手段全落空时才用**。",
+    "_when": [
+      "brand 仍为 null（label / 关键词 / QR / 腰封模板 全落空）",
+      "且品类推定为 coffee（有咖啡词或来自咖啡类宿主）"
+    ],
+    "_confidence": "低于 label/关键词匹配 —— 命中后结果标 brandInferredFrom=codePrefix，配色/杯型可以用，但别拿它去写回订单归属之类的强判断",
+    "_note": "仅在品牌名、小程序名、二维码等品牌证据均未命中时启用。GC/P/M 是咖啡类前缀；S 在咖啡页中由“取餐门店”分流 Blue Bottle 与 JPG；Q 仅在页面含“茶”时兜底去茶山；T 仍要求取单号与椰子商品三信号。",
+    "_conflict_S_resolved": "★ S 前缀冲突（JPG vs 蓝瓶 S7160）**已由用户判据解决**：**页面有「取餐门店」四字 → 蓝瓶 Blue Bottle**（其订单页用『取餐门店』做门店区块标题，实拍 S7160 命中；截图完整时左上角还有蓝瓶 logo）；**无「取餐门店」→ JPG**（商品图杯套上一般有 JPG 字标）。不再需要「二次证据否则 null」的降级。",
+    "_precedence": "① 商标词（brandTrademarkWords，一票定案） > ② 页面品牌关键词（过 brandFalsePositiveGuards 护栏后） > ③ 码前缀+页面词门（本表） > ④ 商品图 logo（productImageLogoCue，端上图像能力）。",
+    "rules": [
+      {
+        "prefix": "B",
+        "brandId": "baozhugong",
+        "brandName": "煲珠公",
+        "regex": "^B\\d{2,6}$",
+        "requiredProductRegex": "老红糖",
+        "_source": "最新版修正包：老红糖商品名与 B 前缀取餐码合取，缺一不可"
+      },
+      {
+        "prefix": "GC",
+        "brandId": "gridcoffee",
+        "brandName": "GRID Coffee",
+        "regex": "^GC\\d{2,6}$",
+        "_sample": "GC0116（实拍）",
+        "_extraCue": "商品图杯身或杯套通常有 GRID logo，页面上方通常使用 GRID 品牌主题色；可读 GRID 文字是强证据，主题色只能作为后续视觉辅助证据",
+        "requiredCategory": "coffee"
+      },
+      {
+        "prefix": "P",
+        "brandId": "mstand",
+        "brandName": "M Stand",
+        "regex": "^P\\d{3,6}$",
+        "_sample": "P8204 / P8199 / P8246（实拍）",
+        "_extraCue": "商品图杯套及页面上方“制作中”区域通常有 M Stand logo；可读的 M Stand 文字直接作为品牌强证据，纯图形模板待视觉模板链接入",
+        "requiredCategory": "coffee"
+      },
+      {
+        "prefix": "M",
+        "brandId": "manner",
+        "brandName": "Manner",
+        "regex": "^M\\d{3,6}$",
+        "_sample": "M647（实拍，SOE 美式）",
+        "requiredCategory": "coffee"
+      },
+      {
+        "prefix": "E",
+        "brandId": "peetscoffee",
+        "brandName": "Peets",
+        "regex": "^E.+$",
+        "requiredCategory": "coffee",
+        "_source": "User-authorized 2026-10-09: E-prefixed selected pickup codes identify Peets only when coffee evidence exists and no brand is already known; 瑰夏 is coffee evidence. User quote: 没有明显品牌名咖啡店取餐码为 E 开头应该是皮爷 还有瑰夏是咖啡. Photograph text is a real fixture; test geometry remains synthetic."
+      },
+      {
+        "prefix": "S",
+        "brandId": "bluebottle",
+        "brandName": "Blue Bottle",
+        "regex": "^S\\d{2,6}$",
+        "_source": "用户确认：未知咖啡品牌、S 开头且页面包含“取餐门店”时判定为 Blue Bottle",
+        "_extraCue": "页面左上角通常有 Blue Bottle logo；其中的 Blue Bottle / 蓝瓶咖啡文字可直接作为品牌强证据，纯图形模板匹配留待视觉模板链接入",
+        "requiredCategory": "coffee",
+        "requiredTextRegex": "取餐门店"
+      },
+      {
+        "prefix": "S",
+        "brandId": "jpgcoffee",
+        "brandName": "JPG Coffee",
+        "regex": "^S\\d{2,6}$",
+        "_sample": "用户实测：未知咖啡品牌、S 开头且页面不含“取餐门店”时判定为 JPG",
+        "_extraCue": "产品图上带 JPG logo（腰封暗红棕字标）—— 端上可加一步腰封模板匹配做二次确认",
+        "requiredCategory": "coffee"
+      },
+      {
+        "prefix": "Q",
+        "brandId": "quchashan",
+        "brandName": "去茶山",
+        "regex": "^Q[A-Z0-9]{1,19}$",
+        "requiredTextRegex": "茶",
+        "_extraCue": "商品图通常带去茶山 logo；可读“去茶山”文字直接作为品牌强证据，纯图形模板待视觉模板链接入",
+        "_source": "用户确认：未知奶茶品牌、Q 开头且页面包含“茶”时判定为去茶山"
+      },
+      {
+        "prefix": "T",
+        "brandId": "yee3",
+        "brandName": "三号椰",
+        "regex": "^T[A-Z0-9]{1,19}$",
+        "requiredProductRegex": "椰子",
+        "requiredTextRegex": "取单号",
+        "_source": "用户后续确认规则：T 前缀 + 椰子商品 + 取单号"
+      }
+    ],
+    "_logoCue": {
+      "jpgcoffee": "商品图杯套上的 JPG 暗红棕字标可作为后续视觉模板强证据。",
+      "bluebottle": "页面左上角通常有 Blue Bottle logo；可读的 Blue Bottle / 蓝瓶咖啡文字已作为品牌强证据，纯图形模板待视觉模板链接入。",
+      "mstand": "商品图杯套及页面上方“制作中”区域通常有 M Stand logo；可读文字已作为品牌强证据，纯图形模板待视觉模板链接入。",
+      "gridcoffee": "商品图杯身或杯套通常有 GRID logo，页面上方通常使用 GRID 品牌主题色；可读文字是强证据，主题色只可作辅助证据。",
+      "quchashan": "商品图通常带去茶山 logo；可读“去茶山”文字已作为品牌强证据，纯图形模板待视觉模板链接入。"
+    },
+    "_prefixNotBrand": "★**跨品牌前缀黑名单——绝不可据此推品牌**：`T` 实拍两家都用（霸王茶姬 T0804 / 混果汁 T057），两张都靠页面关键词才判对。同理未验证的单字母前缀一律不入表。只有 GC/P/M（+带门的 S/Q）经实拍确认稳定。"
+  },
+  "localOcrSelection": {
+    "_what": "本地 OCR 选词方案的算法契约（fixtures/run_fixtures.py 是它的参考实现，14 张真机样本 14/14）。",
+    "_algo": [
+      "① 逐行归一化（codeStrip 去引号/冒号/空格）。",
+      "② 生成候选：a) 行内 label:value；b) 标签独占行→上下各 1~2 行取值形（codeLabelOnly）；c) 独立成行且匹配 codeValueShape 的值（带 big 标记）；d) 口令短语（引号内，剥序号前缀）。",
+      "③ 硬排除：命中 scoring.regex_reject 直接丢（手机号/掩码手机/金额/日期/时刻/长编号）。",
+      "④ 打分：见 scoring.weights；同一 value 多处出现取最高分（Manner M647 顶部大字 vs 底部 label:value；M Stand P8199 大字 vs 订单号行）。",
+      "⑤ 取最高分为取餐码；标签词从命中的 label 反查（无则 null）。",
+      "⑥ 状态判定与码选择解耦：先用 stepRow 把进度条整行剔掉，再用 validPickup/inValidStatus 判终态（否则 M Stand 进度条『已完成』会把制作中单误判终态）。"
+    ],
+    "contract": {
+      "input_line": "{ text: string, big: bool(字号=全页最大), centered: bool(水平居中) }",
+      "_big_source": "结构化 OCR 的字号 bbox；纯文本回退时全 false，靠标签+排除法。",
+      "output": "{ code: string|null, label: string|null, terminal: bool }"
+    },
+    "_calibration": "12 家品牌 / 3 类版式 / 14 张真机订单页：喜茶·霸王茶姬·蜜雪·茶百道式·蓝瓶·茶话弄·星巴克·GRID·M Stand·gaga·熊猫茶·Manner。见 fixtures/real_samples_14.py。",
+    "_outputFields": "四个输出字段：**brand / pickupCode / productName / storeName**。**没有 terminal 门**——卡片存活由 `cardLifecycle`（识别时间 + TTL）决定，不看页面状态词。label 是选码副产物，留作调试。"
+  },
+  "brandTrademarkWords": {
+    "_what": "**注册商标级产品名**——出现即一票定案品牌，优先级高于页面关键词与码前缀（用户定：『这两个去茶山注册了商标』）。",
+    "_why": "品牌名常不出现在页面上（M Stand/Manner/蓝瓶实拍都没有品牌文字），但**产品名是品牌独有的**——商标词比什么都硬。",
+    "_usage": "在商品名/产品行里匹配；命中即 brand 定案、confidence=trademark，不再看前缀/关键词。",
+    "words": {
+      "冰旋": "quchashan",
+      "气泡嗨": "quchashan"
+    },
+    "_verified": "Q1019 实拍产品名『冰旋·贵阳味绿豆冰浆』命中 冰旋 → 去茶山（此前误标霸王茶姬，靠本条纠正）。"
+  },
+  "productImageLogoCue": {
+    "_what": "用户定：**大部分商品图上都有品牌 logo** —— 商品缩略图/杯套是认品牌的通用二次证据通道。",
+    "_examples": [
+      "JPG：杯套暗红棕 JPG 字标",
+      "蓝瓶：左上角蓝色瓶子 logo",
+      "GRID：顶部背景=品牌主题色（橄榄绿）"
+    ],
+    "_status": "端上图像能力（模板匹配/主色）才能用；**纯文本 OCR 夹具验不了**，故不进 run_fixtures 断言，只作端上实现指引。",
+    "_headerColorCue": "GRID Coffee 订单页**顶部背景是品牌主题色橄榄绿**（实拍 GC0116）——有取色能力时可作 GC 前缀的二次确认。"
+  },
+  "brandFalsePositiveGuards": {
+    "_what": "参考实现识屏配置 sys_aifluid_config_list.xml 的 blackLabels，共 49 条——**不是 UI 噪声词，而是品牌名误命中护栏**：认品牌做关键词匹配时，这些串不能被当成对应品牌（如「四喜茶」≠「喜茶」、「M Stand场牌街区」≠门店名、「用星说 星巴克」≠星巴克取餐页）。",
+    "_source": "scripts/pickup/ 的转换脚本从参考实现 sys_aifluid_config_list.xml 转出；configVersion 20260225。",
+    "_usage": "品牌关键词匹配前先过一遍：若整串命中 guard 就不据此判品牌（长词优先仍适用）。",
+    "labels": [
+      "商城",
+      "四喜茶",
+      "加盟",
+      "合伙",
+      "合作",
+      "宅急送",
+      "助手",
+      "店",
+      "茶室",
+      "茶楼",
+      "茶局",
+      "茶社",
+      "茶境",
+      "烘焙坊",
+      "空间",
+      "中心",
+      "门",
+      "古茗茶饮永安",
+      "天驿古茗",
+      "茶餐厅",
+      "桃喜茶",
+      "米喜茶",
+      "歡喜茶檔",
+      "用星说 星巴克",
+      "星巴克咖啡服务",
+      "星巴克香港及澳門",
+      "星粉互动星巴克",
+      "奈雪生活",
+      "奈雪茶院",
+      "挪瓦24h健身",
+      "沪上阿姨百货",
+      "沪上阿姨福利Go",
+      "选址",
+      "招聘",
+      "访客",
+      "CoCo高玩电竞",
+      "CoCooo",
+      "曹市益禾堂外卖点单",
+      "效期管理",
+      "广州华莱士食品配送有限公司",
+      "加入我们",
+      "库迪扎依的牧场",
+      "小库迪科技",
+      "M Stand场牌街区",
+      "WeLucky幸运咖啡",
+      "来去茶山上",
+      "邓氏阿嬷手作点单",
+      "梓茶 X 混果汁",
+      "混果汁小助理"
+    ]
+  },
+  "orderStatusWords": {
+    "_what": "参考实现 orderStatus.processStatus（各家取餐进度词表）+ 我方真机补充，用于 stepRow 剔进度条 + 终态判定。",
+    "_source": "参考实现 orderStatus（麦当劳/喜茶）+ 14 张真机（M Stand/Manner/gaga/熊猫/蓝瓶）。",
+    "progress": [
+      "确认中",
+      "配餐中",
+      "待取餐",
+      "已下单",
+      "派单中",
+      "制作中",
+      "备餐中",
+      "取餐中",
+      "门店已接单",
+      "制茶中",
+      "制作",
+      "待取茶",
+      "待取件",
+      "确认取餐",
+      "确认取茶",
+      "订单待取餐"
+    ],
+    "_progressNote": "★『确认取餐/确认取茶』是『已做好·请确认取走』的**终点进度步**（也是取餐卡最该显示的时刻），不是终态；Manner 页面的『确认取餐』还是个动作按钮。都归 progress，别归 terminal。",
+    "terminal": [
+      "已完成",
+      "订单已完成",
+      "已取餐",
+      "已取件",
+      "已取货",
+      "取餐成功",
+      "已签收",
+      "已退款",
+      "退款中",
+      "已取消",
+      "订单已取消",
+      "订单关闭"
+    ],
+    "_stepRowSkip": "进度条行会把 progress 里多个词并排列出（M Stand『已下单 制作中 已完成』），判终态前必须整行剔掉（field_defaults.stepRow.minHits）。",
+    "_notAGate": "★**终态词不再用于卡片门控**（用户定：生命周期只看识别时间，见 cardLifecycle）。本词表现在只剩两个用途：①`stepRow` 识别进度条整行，避免它产出候选码 ②剥掉码行尾部的状态词（实拍 `B502制作中`、GRID `GC0116 订单已完成` 同行）。"
+  },
+  "brandLoyaltyCueWords": {
+    "_what": "**品牌自家的积分/权益货币词**——页面不写品牌名时的强判据。用户定：0172「**首先看熊猫币**」→ 茶百道（ChaPanda，熊猫即其品牌形象）。",
+    "_why": "这是「混果汁单杯兑换券」那条经验的推广：**自家权益体系的专有名词只可能出现在自家 app**，比通用关键词更硬，仅次于注册商标词。",
+    "_priority": "① 商标词 > **② 本级（积分货币词）** > ③ 页面品牌关键词 > ④ 码前缀+页面词门 > ⑤ 商品图 logo",
+    "words": {
+      "熊猫币": "chabaidao",
+      "熊猫值": "chabaidao",
+      "雪王币": "mixuebingcheng",
+      "甜蜜值": "mixuebingcheng",
+      "茶多分": "bawangchaji"
+    },
+    "_secondaryOnly": "「取茶码」目前只见茶百道在用，但**不单独定案**——标签词跨品牌风险高（前车之鉴：`T` 前缀被霸王茶姬/混果汁两家共用），只作佐证。"
+  },
+  "brandProductCueWords": {
+    "_what": "**品牌产品名 / 系列名 / 专有配料词 / 专属文案·吉祥物口癖**——页面不写品牌名时的兜底判据（用户定）。",
+    "_confidence": "「一般」级：不同于 brandTrademarkWords 的「一定」级（冰旋/气泡嗨=注册商标）。故**排在页面品牌关键词之后**——页面上真出现别家品牌名时以品牌名为准，避免营销文案里的『霸气』这类通用词误判。",
+    "words": {
+      "小奈": "naixue",
+      "霸气": "naixue",
+      "茉莉初雪": "naixue",
+      "罗汉果汁糖": "naixue",
+      "哦煲": "baozhugong",
+      "哦堡": "baozhugong"
+    },
+    "_verified": "1061 实拍规格行『茉莉初雪/100%甜味来自水果/中杯500ml/少少冰沙』命中 → 奈雪；18 张里仅此一张命中这 4 词，无误伤。",
+    "_where": "**要扫商品行+规格行**（茉莉初雪出现在规格行不是商品名行）——所以本级按整页文本匹配，不限于商品名字段。",
+    "_priorityNote": "① 商标词 > ② 积分货币词 > ③ 页面品牌关键词 > ④ 本级(产品/系列词) > ⑤ 码前缀+页面词门 > ⑥ 商品图字/logo",
+    "_baozhugongNote": "用户定的煲珠公三条**文本兜底**（图像通道识别不出时用）：①门店名前有「自取」且码 **B** 打头（→ brand_from_code 的 B 条）②商品名含「老红糖珍珠」（本表）③取餐码下方文案「耐心等待哦煲」（本表）。★正字是「哦**煲**」（与品牌名同字，用户确认）；**「哦堡」纯粹是 OCR 兜底**——煲/堡 同声旁、字形近，识别器易混，故两形都收（非品牌真有两种写法）。"
+  },
+  "brandImageCueWords": {
+    "_what": "**商品图/杯身上的品牌字**——第⑥级（端上图像通道）。页面文本完全不写品牌时的最后手段。",
+    "words": {
+      "煲珠公": "baozhugong",
+      "堡珠公": "baozhugong"
+    },
+    "_verified": "B502 实拍：整页文本无任何品牌线索，品牌只印在商品图杯身（用户定「一般商品图上会有这三个字」）。",
+    "_scopeWarning": "★**只扫商品图/门店 logo 区域，绝不整屏扫**——B502 那张的**灵动岛里是星巴克 logo**（另一个 app 的实时活动），整屏做图像品牌识别会把本单误判成星巴克。文本层无此风险（灵动岛无文字）。",
+    "_impl": "端上两条路：①对商品缩略图跑 OCR 取字 ②对已知品牌 logo 做模板匹配。夹具用 sample.image_cues 模拟其产出。",
+    "_ocrVariant": "★同一条 OCR 兜底逻辑：商品图上的「煲珠公」也可能被识别成「**堡**珠公」（煲/堡 同声旁、字形近），故两形都收。正字为「煲珠公」。"
+  },
+  "cardLifecycle": {
+    "_what": "★**取餐卡生命周期只由「识别时间」决定，不看页面上的状态词**（用户定）。",
+    "_why": "页面状态是**截图那一刻的订单状态**，不是卡片该不该存在的依据——用户可能只是回头翻看一张旧订单页，也可能页面还没刷新。把「已完成/已取餐」当门控会：①翻旧单时误建卡 ②更糟的是**把在途单误杀**（M Stand 进度条行「已下单 制作中 已完成」实拍踩过）。改为纯时间驱动后，这类误判从根上消失。",
+    "basedOn": "recognizedAt（识别成功的那一刻，端上打时间戳）",
+    "ttlSeconds": 7200,
+    "_ttlSource": "取自参考实现 globals 的 `seeding_max_time`=7200s（2 小时）——它本身就是时间驱动的卡片存活上限，非我方拍脑袋。",
+    "_referenceParams": {
+      "seeding_max_time": "7200s 卡片存活上限 ← 我们采用为 ttlSeconds",
+      "seeding_max_time_unfinish": "1800s 未完成态上限",
+      "seeding_min_time": "300s / seeding_middle_time: 1200s 分档",
+      "seeding_update_frequency_time": "300s 刷新频率",
+      "seeding_max_time_finish": "0s ——参考实现「完成即撤卡」，**我们不采用**（那正是靠状态词判定的做法）"
+    },
+    "_note": "TTL 具体取值可调；关键是**判定依据是时间不是页面文案**。"
+  },
+  "unknownBrandDefaults": {
+    "_why": "设计模板那 47 条 scan 就是白名单——认不出品牌根本不出卡，所以**设计模板里没有「未识别默认图」这个概念**（applogo 33 张里没有一张是默认；另有一张是参考实现自家助手的图标，配置表并未引用）。我们是磁贴手动触发、可能落在任意页面上，所以必须自己定一套。",
+    "_appLogo": "不自绘默认 logo —— 用 PackageManager 取**宿主 app 自己的图标**（微信/支付宝/美团…）。这既是最合理的兜底，也不引入任何参考素材的像素。",
+    "_sticker": "不给杯贴。设计模板那 28 张杯贴全是品牌标，没有通用款；认不出品牌时杯子就是素杯。",
+    "_cup": "用设计模板的**通用杯图**（brand 为空的那 5 张 base_bg_*_common_* + 5 张对应 aod_static）。按推定品类 + 温度选。",
+    "cupByCategory": {
+      "tea": {
+        "hot": "base_bg_tea_style_common_hot.webp",
+        "cold": "base_bg_tea_style_common_cold.webp"
+      },
+      "coffee": {
+        "hot": "base_bg_coffee_style_common_hot.webp",
+        "cold": "base_bg_coffee_style_common_cold.webp"
+      },
+      "catering": {
+        "hot": "base_bg_takeout_style_common.webp",
+        "cold": "base_bg_takeout_style_common.webp"
+      }
+    },
+    "aodByCategory": {
+      "tea": {
+        "hot": "aod_static_tea_common_hot.webp",
+        "cold": "aod_static_tea_common_cold.webp"
+      },
+      "coffee": {
+        "hot": "aod_static_coffee_common_hot.webp",
+        "cold": "aod_static_coffee_common_cold.webp"
+      },
+      "catering": {
+        "hot": "aod_static_takeout_common.webp",
+        "cold": "aod_static_takeout_common.webp"
+      }
+    },
+    "_categoryGuess": "品类从宿主品类推定；宿主也认不出时看正文关键词（咖啡词 → coffee、茶饮词 → tea），全落空 → catering（外卖袋，最中性）。",
+    "categoryKeywords": {
+      "coffee": [
+        "咖啡",
+        "美式",
+        "拿铁",
+        "澳白",
+        "espresso",
+        "latte",
+        "flat white",
+        "冷萃",
+        "浓缩",
+        "摩卡",
+        "卡布",
+        "dirty",
+        "SOE",
+        "瑰夏"
+      ],
+      "tea": [
+        "奶茶",
+        "茶饮",
+        "果茶",
+        "轻乳茶",
+        "鲜奶茶",
+        "乌龙",
+        "茉莉",
+        "四季春",
+        "珍珠",
+        "椰乳",
+        "杨枝甘露",
+        "柠茶",
+        "制茶"
+      ]
+    },
+    "notifIconByCategory": {
+      "coffee": "local_cafe",
+      "tea": "emoji_food_beverage",
+      "catering": "fastfood"
+    },
+    "_notifIcon": "就是我们那 3 个品类白剪影（assets/notif/），本来就与品牌无关 —— 认不出品牌照样能给对图标。",
+    "colors": {
+      "_why": "认不出品牌就没有品牌色。按设计模板里单色品牌（喜茶/M Stand/Manner/古茗）的口径走：黑按钮 + 白码字 + 不给卡底色。",
+      "buttonBg": "#000000",
+      "codeColor": "#FFFFFF",
+      "cardBg": null,
+      "mono": true,
+      "default": true,
+      "notificationColor": "#000000",
+      "notificationFallbackColor": "#2D2D30"
+    },
+    "genericId": "pickup",
+    "genericName": "取餐码"
+  },
+  "hotColdKeywords": {
+    "_algorithm": "① 先把 ingredient_strip 里的配料/品类词从文本中剥掉（它们含冰/冻字但不表温度）② 再在剩余文本里找 cold/hot 标记 ③ 都没有 → 默认 hot",
+    "ingredient_strip": [
+      "冻梨",
+      "凍梨",
+      "冰博克",
+      "冰淇淋",
+      "冰激凌",
+      "冰粉",
+      "冰糖",
+      "冰皮",
+      "冰花",
+      "冰岛红",
+      "冻柠",
+      "凍檸",
+      "雪顶",
+      "绵绵冰"
+    ],
+    "cold": [
+      "中冰杯",
+      "大冰杯",
+      "冰杯",
+      "冰",
+      "冷",
+      "凍",
+      "冻",
+      "少冰",
+      "多冰",
+      "去冰",
+      "常温",
+      "iced",
+      "Iced",
+      "ICE",
+      "ice",
+      "冰镇",
+      "冷萃",
+      "冷泡",
+      "杯冰",
+      "杯少冰",
+      "杯去冰",
+      "冰饮"
+    ],
+    "hot": [
+      "热",
+      "熱",
+      "温",
+      "hot",
+      "Hot",
+      "HOT",
+      "暖",
+      "常热",
+      "杯热",
+      "热饮",
+      "加热"
+    ],
+    "_default": "hot（原厂 common_hot 即默认杯型；冷热只影响 common_cold/common_hot 两张图，判错代价小，故宁可默认热）",
+    "_note": "⚠️⚠️ 两次踩坑记录：①「美式」是咖啡品类不是温度 ②「冻梨」是配料名(东北冻梨)，那个「冻」不表温度。→ 教训：**只认独立温度修饰词，先剥配料词**。实拍「大冻梨美式」显示冷杯，但从商品名本身推不出冷——真实冷信号应来自订单页的规格行（如「少冰/加冰」）或独立温度字段，OCR 到才算。 ｜实拍补：温度常在**规格行**（『大杯热/原萃浓缩/…』），故加『杯热/杯冰』等带杯型的组合词，优先级高于裸『热/冰』。"
+  },
+  "styleConfig": {
+    "tea": {
+      "category": "tea",
+      "commonStyleHot": "base_bg_tea_style_common_hot.webp",
+      "commonStyleCold": "base_bg_tea_style_common_cold.webp",
+      "aodStaticCommonHot": "aod_static_tea_common_hot.webp",
+      "aodStaticCommonCold": "aod_static_tea_common_cold.webp",
+      "styles": [
+        {
+          "keywords": [
+            "杨枝甘露",
+            "芒果",
+            "鲜橙",
+            "胡萝卜",
+            "芒芒"
+          ],
+          "category": "tea",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_tea_orange.webp",
+          "image": "base_bg_tea_style_orange.webp"
+        },
+        {
+          "keywords": [
+            "草莓",
+            "红豆",
+            "西瓜",
+            "杨梅",
+            "莓莓",
+            "蔓越莓"
+          ],
+          "category": "tea",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_tea_red.webp",
+          "image": "base_bg_tea_style_red.webp"
+        },
+        {
+          "keywords": [
+            "青提",
+            "抹茶",
+            "猕猴桃",
+            "牛油果",
+            "青柠",
+            "青芒",
+            "甘蓝",
+            "薄荷",
+            "黄瓜",
+            "青苹果",
+            "玉菇",
+            "羽衣"
+          ],
+          "category": "tea",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_tea_green.webp",
+          "image": "base_bg_tea_style_green.webp"
+        },
+        {
+          "keywords": [
+            "柠檬",
+            "百香果",
+            "百香",
+            "凤梨",
+            "菠萝"
+          ],
+          "category": "tea",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_tea_yellow.webp",
+          "image": "base_bg_tea_style_yellow.webp"
+        },
+        {
+          "keywords": [
+            "奶茶"
+          ],
+          "category": "tea",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_tea_milk.webp",
+          "image": "base_bg_tea_style_milk.webp"
+        },
+        {
+          "keywords": [
+            "蜜桃",
+            "桃桃",
+            "鲜桃",
+            "芭乐"
+          ],
+          "category": "tea",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_tea_peach.webp",
+          "image": "base_bg_tea_style_peach.webp"
+        },
+        {
+          "keywords": [
+            "葡萄",
+            "蓝莓",
+            "黑加仑",
+            "紫薯",
+            "火龙果"
+          ],
+          "category": "tea",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_tea_grap.webp",
+          "image": "base_bg_tea_style_grap.webp"
+        },
+        {
+          "keywords": [
+            "乌龙",
+            "红袍"
+          ],
+          "category": "tea",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_tea_oolong.webp",
+          "image": "base_bg_tea_style_oolong.webp"
+        }
+      ]
+    },
+    "coffee": {
+      "category": "coffee",
+      "commonStyleHot": "base_bg_coffee_style_common_hot.webp",
+      "commonStyleCold": "base_bg_coffee_style_common_cold.webp",
+      "aodStaticCommonHot": "aod_static_coffee_common_hot.webp",
+      "aodStaticCommonCold": "aod_static_coffee_common_cold.webp",
+      "styles": [
+        {
+          "keywords": [
+            "dirty"
+          ],
+          "category": "coffee",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": true,
+          "aodStaticImage": "aod_static_coffee_latte.webp",
+          "image": "base_bg_coffee_style_latte.webp",
+          "_source": "用户确认：Dirty 固定复用拿铁冷杯素材"
+        },
+        {
+          "keywords": [
+            "美式"
+          ],
+          "category": "coffee",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_coffee_common_cold.webp",
+          "image": "base_bg_coffee_style_common_cold.webp"
+        },
+        {
+          "keywords": [
+            "拿铁",
+            "摩卡",
+            "生椰"
+          ],
+          "category": "coffee",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_coffee_latte.webp",
+          "image": "base_bg_coffee_style_latte.webp"
+        },
+        {
+          "keywords": [
+            "馥芮白",
+            "焦糖",
+            "卡布奇诺"
+          ],
+          "category": "coffee",
+          "drinkTemperature": "cold",
+          "brand": null,
+          "special": false,
+          "aodStaticImage": "aod_static_coffee_milk.webp",
+          "image": "base_bg_coffee_style_milk.webp"
+        },
+        {
+          "keywords": [
+            "星冰乐"
+          ],
+          "category": "coffee",
+          "drinkTemperature": "cold",
+          "brand": "星巴克",
+          "special": true,
+          "aodStaticImage": "aod_static_coffee_xingbake_xingbingle.webp",
+          "image": "base_bg_coffee_style_xingbake_xingbingle.webp"
+        },
+        {
+          "keywords": [],
+          "category": "coffee",
+          "drinkTemperature": "normal",
+          "brand": "星巴克",
+          "special": true,
+          "aodStaticImage": "aod_static_coffee_xingbake_hot.webp",
+          "image": "base_bg_coffee_style_xingbake_hot.webp"
+        },
+        {
+          "keywords": [],
+          "category": "coffee",
+          "drinkTemperature": "hot",
+          "brand": "星巴克",
+          "special": true,
+          "aodStaticImage": "aod_static_coffee_xingbake_hot.webp",
+          "image": "base_bg_coffee_style_xingbake_hot.webp"
+        },
+        {
+          "keywords": [],
+          "category": "coffee",
+          "drinkTemperature": "unknown",
+          "brand": "星巴克",
+          "special": true,
+          "aodStaticImage": "aod_static_coffee_xingbake_hot.webp",
+          "image": "base_bg_coffee_style_xingbake_hot.webp"
+        }
+      ]
+    }
+  }
+}
