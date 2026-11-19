@@ -14,7 +14,7 @@ function executable(name: string): string {
     .replace(/^import[\s\S]*?;\n/gm, "").replace(/^export /gm, "");
 }
 
-const source = executable("intent.tsx");
+const source = [executable("services/shortcut-capture.ts"), executable("intent.tsx")].join("\n");
 const manifest = JSON.parse(readFileSync(new URL("../script.json", import.meta.url), "utf8"));
 assert.deepEqual(manifest.intentInputTypes, [], "parcel recognition must stay out of the system Share Sheet");
 assert.equal(manifest.runInApp, false, "the Shortcut can finish without opening the main app");
@@ -243,13 +243,21 @@ for (const phase of ["local", "online-express", "online-empty", "online-error", 
   if (phase === "cancelled") assert.match(final, /识别已取消/);
 }
 
-for (const phase of ["local-meal", "online-meal", "luckin-draft", "local-meal-no-activity"] as const) {
+for (const phase of ["local-meal", "online-meal", "luckin-draft", "luckin-auto", "luckin-auto-with-image-array",
+  "luckin-auto-no-banner", "local-meal-no-activity"] as const) {
   const calls: string[] = [];
+  const notices: string[] = [];
   const scope = "synthetic-scope";
   const observation = { payload: { code: "0123", brandId: "ruixing" } };
+  const rescan = "pipi.luckin.rescan";
+  const imagePath = "/synthetic/meal.png";
+  const automatic = phase.startsWith("luckin-auto");
+  const orderDraft = automatic || phase === "luckin-draft";
+  const intent = phase === "luckin-auto-with-image-array" ? { ...text(rescan), imagePathsParameter: [imagePath] } :
+    automatic || phase === "local-meal" ? { ...file(imagePath), textsParameter: [rescan] } : file(imagePath);
   let final = "";
   await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
-    Intent: { ...file("/synthetic/meal.png"), text: (value: string) => value },
+    Intent: { ...intent, text: (value: string) => value },
     Script: { exit: (value: string) => { final = value; } },
     UIImage: { fromFile: () => ({ width: 800, height: 1100, scale: 1 }) },
     Vision: { recognizeText: async () => ({ candidates: [{ content: "取餐码" }] }) },
@@ -260,7 +268,7 @@ for (const phase of ["local-meal", "online-meal", "luckin-draft", "local-meal-no
     ensureMealRules: async () => ({}),
     onlineMealRequiresQR: () => false,
     mealFromModel: () => observation,
-    recognizeMealImage: async () => phase === "luckin-draft" ? { meals: [], draft: observation } : { meals: [observation] },
+    recognizeMealImage: async () => orderDraft ? { meals: [], draft: observation } : { meals: [observation] },
     putMealObservations: (account: string, entries: unknown[]) => {
       assert.equal(account, scope);
       assert.equal(entries[0], observation);
@@ -274,15 +282,30 @@ for (const phase of ["local-meal", "online-meal", "luckin-draft", "local-meal-no
       calls.push("activity");
       return phase !== "local-meal-no-activity";
     },
-    notifyScreenShortcutStatus: (message: string) => { calls.push("notification"); return message; },
+    notifyScreenShortcutStatus: (message: string) => {
+      notices.push(message);
+      calls.push("notification");
+      return message;
+    },
+    scheduleScreenShortcutStatus: async (message: string) => {
+      notices.push(message);
+      calls.push("notification");
+      return phase !== "luckin-auto-no-banner";
+    },
     synchronizeMeals: async () => { calls.push("sync"); },
     waitForRefresh: (work: unknown) => work,
     recognizeParcelCodes: () => ({}),
     parcelImageRows: () => [],
     writeDiagnostic() {}, flushDiagnostics() {},
   });
-  assert.match(final, phase === "luckin-draft" ? /再运行一次截屏识别/ : /已添加 1 张取餐码/);
-  assert.deepEqual(calls, phase === "luckin-draft" ? ["draft", "notification"] :
+  if (automatic) {
+    if (phase === "luckin-auto-no-banner") assert.match(final, /再运行一次截屏识别/);
+    else assert.equal(final, rescan, "the host can wait and capture a new image only after the draft and prompt");
+    assert.deepEqual(notices, ["已识别瑞幸订单，请在 3 秒内打开“取餐码”"]);
+  } else {
+    assert.match(final, orderDraft ? /再运行一次截屏识别/ : /已添加 1 张取餐码/);
+  }
+  assert.deepEqual(calls, orderDraft ? ["draft", "notification"] :
     ["save", "activity", ...(phase === "local-meal-no-activity" ? ["notification"] : []), "sync"]);
 }
 

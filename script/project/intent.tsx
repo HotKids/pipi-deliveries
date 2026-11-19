@@ -3,7 +3,7 @@ import { refreshIntentMessage } from "./services/refresh-result";
 import { refreshAllShipments } from "./services/sync";
 import { backgroundHostBootstrap, backgroundRefreshOptions } from "./services/background-refresh";
 import { flushDiagnostics, writeDiagnostic } from "./services/logger";
-import { discardShortcutDraft, notifyScreenShortcutStatus, PICKUP_SHORTCUT_SAVED, stageShortcutLookup, submitScreenShortcut } from "./services/parcel-shortcut";
+import { discardShortcutDraft, notifyScreenShortcutStatus, PICKUP_SHORTCUT_SAVED, scheduleScreenShortcutStatus, stageShortcutLookup, submitScreenShortcut } from "./services/parcel-shortcut";
 import { normalizeRecognizedPickupCode, recognizeParcelCodes, type ParcelLookup } from "./services/parcel-code-ocr";
 import { showShortcutPickupActivities } from "./services/parcel-live-activity";
 import type { ParcelActivityTarget } from "./services/parcel-pickup";
@@ -18,6 +18,7 @@ import { normalizeWaybill } from "./services/status";
 import { ONLINE_BUDGET_MS, requestOnlineRecognition } from "./services/recognition/client";
 import { recognitionOperation } from "./services/recognition/settings";
 import { waitForRefresh } from "./services/deadline";
+import { LUCKIN_RESCAN } from "./services/shortcut-capture";
 
 function shortcutImagePath(value: string): string | undefined {
   let path = value;
@@ -109,7 +110,7 @@ async function recognizeShortcutImage(image: UIImage, capturedAtMs: number): Pro
   return { parcel, meals: { ids: putMealObservations(scope, meal.meals, true), scope } };
 }
 
-async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shortcutParameter>): Promise<string> {
+async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shortcutParameter>, automaticRescan: boolean): Promise<string> {
   const capturedAtMs = Date.now();
   let rows: ParcelRow[] = [];
   let imageParcel: ReturnType<typeof recognizeParcelCodes> | undefined;
@@ -123,7 +124,12 @@ async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shor
     }
     const { parcel, meals, draft, cancelled } = await recognizeShortcutImage(image, capturedAtMs);
     if (cancelled) return "识别已取消，请重新运行。";
-    if (draft) return notifyScreenShortcutStatus("已识别瑞幸订单，请打开取餐码再运行一次截屏识别。");
+    if (draft) {
+      const manual = "已识别瑞幸订单，请打开取餐码再运行一次截屏识别。";
+      if (!automaticRescan) return notifyScreenShortcutStatus(manual);
+      const scheduled = await scheduleScreenShortcutStatus("已识别瑞幸订单，请在 3 秒内打开“取餐码”");
+      return scheduled ? LUCKIN_RESCAN : manual;
+    }
     if (meals?.ids.length) {
       const message = await notifyShortcutPickup(meals.ids.map(mealId => ({ mealId, mealScope: meals.scope })),
         `已添加 ${meals.ids.length} 张取餐码，可在「待取」查看。`);
@@ -158,9 +164,13 @@ async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shor
 async function run() {
   const imagePaths = Intent.imagePathsParameter;
   const paths = imagePaths?.length ? imagePaths : Intent.fileURLsParameter;
-  const parameter = Intent.shortcutParameter ?? (paths?.length === 1
+  const input = Intent.shortcutParameter;
+  const automaticRescan = Intent.textsParameter?.includes(LUCKIN_RESCAN) === true ||
+    (input?.type === "text" && input.value === LUCKIN_RESCAN);
+  const screenshot = paths?.length === 1
     ? { type: "fileURL" as const, value: paths[0] }
-    : undefined);
+    : undefined;
+  const parameter = automaticRescan && input?.type !== "fileURL" && screenshot ? screenshot : input ?? screenshot;
   if (parameter) {
     const screen = parameter.type === "fileURL";
     const startedAt = Date.now();
@@ -169,7 +179,7 @@ async function run() {
     }
     let message: string;
     try {
-      message = await recognizeShortcutParcel(parameter);
+      message = await recognizeShortcutParcel(parameter, automaticRescan);
     } catch {
       message = screen ? "处理截屏识别结果失败，请重试。" : "处理快递识别结果失败，请重试。";
       if (screen) message = await notifyScreenShortcutStatus(message);
