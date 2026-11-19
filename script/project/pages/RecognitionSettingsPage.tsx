@@ -1,5 +1,5 @@
 import { AbortController, Button, HStack, Image, List, Picker, ProgressView, Script, Section,
-  SecureField, Text, TextField, useColorScheme, useEffect, useRef, useState } from "scripting";
+  SecureField, Spacer, Text, TextField, useColorScheme, useEffect, useRef, useState } from "scripting";
 import { CONNECTION_TEST_BUDGET_MS, requestOnlineRecognition } from "../services/recognition/client";
 import { normalizedRecognitionURL, prepareRecognitionConfig, providerDefaults, recognitionSettings,
   RecognitionSettingError, saveRecognitionSettings, type Format, type Mode, type Protocol, type Provider,
@@ -8,14 +8,13 @@ import { transientToast } from "../services/ui-feedback";
 
 const PROVIDERS: Provider[] = ["gemini", "openai", "compatible"];
 
-function ProviderOption({ provider, name }: { provider: Provider; name: string }) {
+function ProviderLogo({ provider }: { provider: Provider }) {
   const dark = useColorScheme() === "dark";
   const image = provider === "gemini" ? "gemini.png" : dark ? "openai_white.png" : "openai_black.png";
-  return <HStack spacing={8}>
+  return (
     <Image filePath={`${Script.directory}/assets/recognition/${image}`} renderingMode="original"
-      resizable scaleToFit frame={{ width: 20, height: 20 }} />
-    <Text lineLimit={1}>{provider === "gemini" ? "Gemini" : provider === "openai" ? "OpenAI" : name || "OpenAI-compatible"}</Text>
-  </HStack>;
+      resizable scaleToFit frame={{ width: 20, height: 20 }} accessibilityHidden />
+  );
 }
 
 function validationMessage(error: unknown): string {
@@ -93,7 +92,13 @@ export function RecognitionSettingsPage() {
   }
 
   return (
-    <List navigationTitle="智能识别" navigationBarTitleDisplayMode="inline" toast={transientToast(notice, setNotice)}>
+    <List navigationTitle="智能识别" navigationBarTitleDisplayMode="inline" toast={transientToast(notice, setNotice)}
+      toolbar={{
+        topBarTrailing: (
+          <Button title="保存" systemImage="checkmark" labelStyle="iconOnly"
+            action={save} disabled={draft.mode === "online" && !hasInputs} />
+        ),
+      }}>
       <Section footer={draft.mode === "online" ? <Text>将截图发送至所选模型识别。在线识别不可用或无有效结果时，自动使用本地识别。</Text> : undefined}>
         <Picker title="识别模式" value={draft.mode} onChanged={(value: string) => edit({ mode: value as Mode })} pickerStyle="menu">
           <Text tag="online">在线识别</Text>
@@ -103,16 +108,23 @@ export function RecognitionSettingsPage() {
       </Section>
       {draft.mode === "online" ? (
         <Section footer={<Text>连接测试使用内置测试图片，测试结果仅显示在此页。</Text>}>
-          <Picker title="Provider" value={draft.provider} pickerStyle="menu" onChanged={(value: string) => {
-            const provider = value as Provider;
-            if (provider === draft.provider) return;
-            setKey("");
-            edit(providerDefaults(provider));
-          }}>
-            {PROVIDERS.map(provider => <HStack key={provider} tag={provider}>
-              <ProviderOption provider={provider} name={draft.providerName.trim()} />
-            </HStack>)}
-          </Picker>
+          <HStack spacing={8}>
+            <Text accessibilityHidden>Provider</Text>
+            <Spacer minLength={8} />
+            <ProviderLogo provider={draft.provider} />
+            <Picker title="Provider" labelsHidden value={draft.provider} pickerStyle="menu" onChanged={(value: string) => {
+              const provider = value as Provider;
+              if (provider === draft.provider) return;
+              edit(providerDefaults(provider));
+            }}>
+              {PROVIDERS.map(provider => (
+                <Text key={provider} tag={provider} lineLimit={1}>
+                  {provider === "gemini" ? "Gemini" : provider === "openai" ? "OpenAI" :
+                    draft.providerName.trim() || "OpenAI-compatible"}
+                </Text>
+              ))}
+            </Picker>
+          </HStack>
           {draft.provider === "compatible" ? [
             <TextField key="name" title="Provider Name" prompt="Optional" value={draft.providerName}
               onChanged={providerName => edit({ providerName })} />,
@@ -142,9 +154,6 @@ export function RecognitionSettingsPage() {
           ) : null}
         </Section>
       ) : null}
-      <Section>
-        <Button title="保存" disabled={draft.mode === "online" && !hasInputs} action={save} />
-      </Section>
     </List>
   );
 }
