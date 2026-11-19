@@ -5,7 +5,7 @@ import { pauseWhileActive } from "./deadline";
 import { activeMealCards } from "./meal/cards";
 import { writeDiagnostic } from "./logger";
 import { acquireDurableRefreshLease } from "./refresh-runtime-state";
-import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork } from "./parcel-card-appearance";
+import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, type ParcelLockScreenStyle } from "./parcel-card-appearance";
 import {
   EMPTY_CONTENT,
   PARCEL_ACTIVITY_NAME,
@@ -79,12 +79,12 @@ async function isRunning(receipt: Receipt): Promise<boolean> {
   return state === "active" || state === "stale";
 }
 
-export function parcelActivityStatus(): Promise<{ showAll: boolean; count: number; previewing: boolean }> {
+export function parcelActivityStatus(): Promise<{ showAll: boolean; count: number; previewing: boolean; lockScreenStyle: ParcelLockScreenStyle }> {
   return serialize(async () => {
-    const { showAll, receipts } = parcelActivityRegistry();
+    const { showAll, receipts, lockScreenStyle } = parcelActivityRegistry();
     const running = (await Promise.all(receipts.map(async (receipt) => await isRunning(receipt) ? receipt : null)))
       .filter(receipt => receipt !== null);
-    return { showAll, count: running.filter(receipt => receipt.target).length,
+    return { showAll, lockScreenStyle, count: running.filter(receipt => receipt.target).length,
       previewing: running.some(receipt => !receipt.target) };
   });
 }
@@ -133,14 +133,15 @@ function prepareArtwork(content: ParcelActivityContent): void {
   }
 }
 
-function activityData(content: ParcelActivityContent, linkId?: string, relevanceScore?: number) {
+function activityData(content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle, linkId?: string, relevanceScore?: number) {
   const { target: _target, expiresAtMs, capturedAtMs: _capturedAtMs, businessDateKey: _businessDateKey, ...card } = content;
-  return { card: { ...card, linkId }, options: { staleDate: content.target ? expiresAtMs : undefined, relevanceScore } };
+  return { card: { ...card, linkId, lockScreenStyle }, options: { staleDate: content.target ? expiresAtMs : undefined, relevanceScore } };
 }
 
-async function createActivity(content: ParcelActivityContent, isCurrent: ActivityOwnership, relevanceScore?: number): Promise<boolean> {
+async function createActivity(content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle, isCurrent: ActivityOwnership,
+  relevanceScore?: number): Promise<boolean> {
   const linkId = content.target ? UUID.string() : undefined;
-  const { card, options } = activityData(content, linkId, relevanceScore);
+  const { card, options } = activityData(content, lockScreenStyle, linkId, relevanceScore);
   prepareArtwork(content);
   requireActivityOwnership(isCurrent);
   const activity = PipiParcelActivity();
@@ -180,8 +181,9 @@ async function closeActivity(receipt: Receipt, isCurrent: ActivityOwnership): Pr
   forgetReceipt(receipt, isCurrent);
 }
 
-async function updateActivity(receipt: Receipt, content: ParcelActivityContent, isCurrent: ActivityOwnership, relevanceScore?: number): Promise<boolean> {
-  const { card, options } = activityData(content, receipt.linkId, relevanceScore);
+async function updateActivity(receipt: Receipt, content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle,
+  isCurrent: ActivityOwnership, relevanceScore?: number): Promise<boolean> {
+  const { card, options } = activityData(content, lockScreenStyle, receipt.linkId, relevanceScore);
   const serialized = JSON.stringify({ card, options });
   if (displayed.get(receipt.id) === serialized) return true;
   const activity = await LiveActivity.from<ParcelActivityState>(receipt.id, PARCEL_ACTIVITY_NAME);
@@ -217,20 +219,21 @@ export function startParcelActivity(target: ParcelActivityTarget): Promise<void>
       for (const receipt of registry.receipts) displayed.delete(receipt.id);
       saveParcelActivityRegistry({ ...registry, receipts: [] });
     }
-    if (!await createActivity(content, isCurrent)) throw new Error("实时活动启动失败，请稍后重试。");
+    if (!await createActivity(content, registry.lockScreenStyle, isCurrent)) throw new Error("实时活动启动失败，请稍后重试。");
   });
 }
 
 export function startParcelActivityPreview(): Promise<void> {
   return serializeMutation(async isCurrent => {
-    const preview = parcelActivityRegistry().receipts.find(receipt => !receipt.target);
+    const { receipts, lockScreenStyle } = parcelActivityRegistry();
+    const preview = receipts.find(receipt => !receipt.target);
     if (preview && await isRunning(preview)) {
-      await updateActivity(preview, PARCEL_ACTIVITY_PREVIEW, isCurrent);
+      await updateActivity(preview, PARCEL_ACTIVITY_PREVIEW, lockScreenStyle, isCurrent);
       return;
     }
     await requireActivitiesEnabled();
     if (preview) forgetReceipt(preview, isCurrent);
-    if (!await createActivity(PARCEL_ACTIVITY_PREVIEW, isCurrent)) {
+    if (!await createActivity(PARCEL_ACTIVITY_PREVIEW, lockScreenStyle, isCurrent)) {
       throw new Error("锁屏预览暂时无法启动，请稍后重试。");
     }
   });
@@ -247,7 +250,7 @@ type RankedCard = { key: string; content: ParcelActivityContent; rank: number };
 
 async function replaceOldest(candidate: RankedCard, cards: readonly RankedCard[], isCurrent: ActivityOwnership): Promise<boolean> {
   if (!foreground || !await LiveActivity.areActivitiesEnabled()) return false;
-  const receipts = parcelActivityRegistry().receipts;
+  const { receipts, lockScreenStyle } = parcelActivityRegistry();
   for (let i = cards.length - 1; i >= 0; i--) {
     const oldest = cards[i];
     if (oldest.rank >= candidate.rank) return false;
@@ -257,11 +260,11 @@ async function replaceOldest(candidate: RankedCard, cards: readonly RankedCard[]
     await closeActivity(receipt, isCurrent);
     let replaced = false;
     try {
-      replaced = foreground && await createActivity(candidate.content, isCurrent, candidate.rank);
+      replaced = foreground && await createActivity(candidate.content, lockScreenStyle, isCurrent, candidate.rank);
       return replaced;
     } finally {
       if (!replaced && isCurrent() && foreground && (oldest.content.expiresAtMs ?? Infinity) > Date.now() &&
-        !await createActivity(oldest.content, isCurrent, oldest.rank)) {
+        !await createActivity(oldest.content, lockScreenStyle, isCurrent, oldest.rank)) {
         writeDiagnostic("activity.parcel.restore.failed", { result: "rejected" }, "warning");
       }
     }
@@ -270,10 +273,15 @@ async function replaceOldest(candidate: RankedCard, cards: readonly RankedCard[]
 }
 
 async function synchronizeActivities(
-  state: AppState, isCurrent: ActivityOwnership, cards?: readonly ParcelActivityContent[],
-  shortcutKeys?: ReadonlySet<string>,
+  state: AppState, isCurrent: ActivityOwnership,
+  { cards, shortcutKeys, updateOnly }: {
+    cards?: readonly ParcelActivityContent[];
+    shortcutKeys?: ReadonlySet<string>;
+    updateOnly?: boolean;
+  } = {},
 ): Promise<Set<string>> {
   const registry = parcelActivityRegistry();
+  const { lockScreenStyle } = registry;
   const shown = new Set<string>();
   if (stateLoadFailure() || cards && peekStateRevision() > state.revision ||
       !registry.showAll && (shortcutKeys || !registry.receipts.length)) return shown;
@@ -305,18 +313,19 @@ async function synchronizeActivities(
       continue;
     }
     if (!await isRunning(receipt)) {
-      forgetReceipt(receipt, isCurrent, registry.showAll && next ? key : undefined);
+      if (!updateOnly) forgetReceipt(receipt, isCurrent, registry.showAll && next ? key : undefined);
     } else if (key && !next) {
+      if (updateOnly) continue;
       // A page snapshot can predate a meal committed by the Shortcut's separate runtime.
       if (cards && receipt.target && parcelForTarget(latest ??= committedState(), receipt.target)) continue;
       await closeActivity(receipt, isCurrent);
     } else if (next) {
-      if (await updateActivity(receipt, next.content, isCurrent, registry.showAll ? next.rank : undefined)) shown.add(key);
+      if (await updateActivity(receipt, next.content, lockScreenStyle, isCurrent, registry.showAll ? next.rank : undefined)) shown.add(key);
     } else if (!receipt.target) {
-      await updateActivity(receipt, PARCEL_ACTIVITY_PREVIEW, isCurrent);
+      await updateActivity(receipt, PARCEL_ACTIVITY_PREVIEW, lockScreenStyle, isCurrent);
     }
   }
-  if (!registry.showAll) return shown;
+  if (updateOnly || !registry.showAll) return shown;
   const current = parcelActivityRegistry();
   const dismissed = shortcutKeys ? current.dismissed : current.dismissed.filter((key) => byKey.has(key));
   if (dismissed.length !== current.dismissed.length) {
@@ -330,7 +339,7 @@ async function synchronizeActivities(
     } else if (!foreground) return shown;
     if (dismissed.includes(card.key) || (card.content.expiresAtMs ?? Infinity) <= Date.now() ||
       parcelActivityRegistry().receipts.some((item) => parcelCardKey(item) === card.key)) continue;
-    if (await createActivity(card.content, isCurrent, card.rank)) {
+    if (await createActivity(card.content, lockScreenStyle, isCurrent, card.rank)) {
       shown.add(card.key);
       continue;
     }
@@ -338,7 +347,7 @@ async function synchronizeActivities(
     const preview = parcelActivityRegistry().receipts.find(receipt => !receipt.target);
     if (preview) {
       await closeActivity(preview, isCurrent);
-      if (await createActivity(card.content, isCurrent, card.rank)) continue;
+      if (await createActivity(card.content, lockScreenStyle, isCurrent, card.rank)) continue;
     }
     if (await replaceOldest(card, ranked, isCurrent)) continue;
     throw new Error("部分实时活动暂时无法显示，请在取件页查看。");
@@ -351,7 +360,7 @@ export async function showShortcutPickupActivities(targets: readonly ParcelActiv
   try {
     if (!parcelActivityRegistry().showAll) return false;
     const keys = new Set(targets.map(target => parcelCardKey({ target })));
-    const shown = await serializeMutation(isCurrent => synchronizeActivities(committedState(), isCurrent, undefined, keys));
+    const shown = await serializeMutation(isCurrent => synchronizeActivities(committedState(), isCurrent, { shortcutKeys: keys }));
     if (shown.size === keys.size) return true;
   } catch { /* The recognized records were already committed. */ }
   try { writeDiagnostic("shortcut.activity.unavailable", {}, "warning"); } catch { /* Diagnostics are optional. */ }
@@ -365,6 +374,19 @@ export function startAllParcelActivities(): Promise<void> {
     requireActivityOwnership(isCurrent);
     saveParcelActivityRegistry({ ...parcelActivityRegistry(), showAll: true, dismissed: [] });
     await synchronizeActivities(state, isCurrent);
+  });
+}
+
+export function setParcelLockScreenStyle(lockScreenStyle: ParcelLockScreenStyle): Promise<void> {
+  return serializeMutation(async isCurrent => {
+    const registry = parcelActivityRegistry();
+    if (registry.lockScreenStyle === lockScreenStyle) return;
+    requireActivityOwnership(isCurrent);
+    saveParcelActivityRegistry({ ...registry, lockScreenStyle });
+    if (registry.receipts.length) {
+      // Repainting an existing activity cannot take a slot from the preview or another record.
+      await synchronizeActivities(committedState(), isCurrent, { updateOnly: true });
+    }
   });
 }
 
@@ -392,7 +414,7 @@ export function reconcileParcelActivity(state: AppState, cards?: readonly Parcel
     if (queuedReconciliation === request) queuedReconciliation = undefined;
     const registry = parcelActivityRegistry();
     if (registry.showAll || registry.receipts.length) {
-      await withActivityOwnership(isCurrent => synchronizeActivities(state, isCurrent, cards));
+      await withActivityOwnership(isCurrent => synchronizeActivities(state, isCurrent, { cards }));
     }
   }).catch(() => {
     writeDiagnostic("activity.parcel.reconcile.failed", { result: "failed" }, "warning");

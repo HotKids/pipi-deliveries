@@ -5,6 +5,7 @@ import { mealCard } from "./meal/cards";
 import { completeMeal, readMeals } from "./meal/records";
 import { mealCredentialScope } from "./meal/rules";
 import { synchronizeMeals } from "./meal/cloud";
+import type { ParcelLockScreenStyle } from "./parcel-card-appearance";
 import { withSharedFileTransaction } from "./shared-file-transaction";
 import { completeCurrentParcelCard, loadState, stateLoadFailure, visibleShipments } from "./storage";
 
@@ -13,14 +14,25 @@ const REGISTRY_KEY = "pipi-deliveries.parcel-activity.v1";
 export const EMPTY_CONTENT: ParcelActivityContent = { title: "快递实时活动", location: "", code: "" };
 
 export type Receipt = Readonly<{ id: string; linkId?: string; target?: ParcelActivityTarget }>;
-export type ParcelActivityRegistry = Readonly<{ showAll: boolean; receipts: Receipt[]; dismissed: string[] }>;
-export type ParcelActivityState = Omit<ParcelActivityContent, "target" | "expiresAtMs" | "capturedAtMs" | "businessDateKey"> & { linkId?: string };
+export type ParcelActivityRegistry = Readonly<{
+  showAll: boolean;
+  receipts: Receipt[];
+  dismissed: string[];
+  lockScreenStyle: ParcelLockScreenStyle;
+}>;
+export type ParcelActivityState = Omit<ParcelActivityContent, "target" | "expiresAtMs" | "capturedAtMs" | "businessDateKey"> & {
+  linkId?: string;
+  lockScreenStyle?: ParcelLockScreenStyle;
+};
 export type ParcelActivityCompletion = { linkId: string; kind: "pickup" | "handoff" | "meal" };
 
 export function parcelActivityRegistry(): ParcelActivityRegistry {
   const saved = Storage.get<ParcelActivityRegistry | Receipt>(REGISTRY_KEY);
-  if (saved && "receipts" in saved) return saved;
-  return { showAll: false, receipts: saved ? [saved] : [], dismissed: [] };
+  if (saved && "receipts" in saved) {
+    const { lockScreenStyle } = saved;
+    return { ...saved, lockScreenStyle: lockScreenStyle === "black" || lockScreenStyle === "white" ? lockScreenStyle : "dynamic" };
+  }
+  return { showAll: false, receipts: saved ? [saved] : [], dismissed: [], lockScreenStyle: "dynamic" };
 }
 
 export function saveParcelActivityRegistry(registry: ParcelActivityRegistry): void {

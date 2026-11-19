@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import type { ParcelHandoffRecord, PickupCodeRecord, Shipment } from "../models";
 import { MEAL_ARTWORK_TOKENS, PICKUP_STICKER_ENTRANCE } from "../components/pickup-card-tokens.generated";
 import { PICKUP_TAB_TITLE, activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, nextPickupArtwork, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, parcelCardKey, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, withPickupArtwork, type ParcelActivityContent } from "../services/parcel-pickup";
-import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette, pickupCardPalette } from "../services/parcel-card-appearance";
+import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette, pickupCardAppearance, pickupCardPalette, type ParcelLockScreenStyle } from "../services/parcel-card-appearance";
 import { resolvePickupVisualStyle } from "../services/meal/pickup-artwork";
 import { recognizeParcelCodes } from "../services/parcel-code-ocr";
 import { parcelTextRows, recognizeParcelWaybill } from "../services/parcel-waybill-ocr";
@@ -53,6 +53,27 @@ const jpgStyle = resolvePickupVisualStyle(mealRules, {
 const jpgPalette = pickupCardPalette({ ...brandedMeal, mealStyle: jpgStyle });
 assert.equal(jpgPalette.code, "#6E261D", "JPG uses Pipi's configured pickup code color");
 assert.equal(jpgPalette.capsule, jpgStyle.buttonColor);
+const previewPalette = pickupCardPalette(PARCEL_ACTIVITY_PREVIEW);
+const dynamicAppearance = pickupCardAppearance(previewPalette);
+assert.equal(dynamicAppearance.background, undefined);
+assert.equal(pickupCardAppearance(jpgPalette).code, jpgPalette.code, "dynamic preserves the Pipi meal palette");
+const blackAppearance = pickupCardAppearance(previewPalette, "black");
+const whiteAppearance = pickupCardAppearance(previewPalette, "white");
+assert.equal(blackAppearance.background, "#000000");
+assert.equal(blackAppearance.titleColor, dynamicAppearance.titleColor);
+assert.equal(whiteAppearance.background, "#ffffff");
+assert.equal(whiteAppearance.titleColor, "#111111");
+assert.equal(whiteAppearance.locationColor, "#57575b");
+assert.equal(whiteAppearance.dotColor, "rgba(17,17,17,0.18)");
+assert.equal(blackAppearance.code, previewPalette.code);
+assert.equal(whiteAppearance.code, previewPalette.code);
+assert.equal(whiteAppearance.capsule, previewPalette.capsule);
+assert.equal(pickupCardAppearance(jpgPalette, "black").code, "#ffffff", "dark meal digits stay readable on pure black");
+const neutralPalette = pickupCardPalette({ ...PARCEL_ACTIVITY_PREVIEW, platform: undefined });
+const neutralOnWhite = pickupCardAppearance(neutralPalette, "white");
+assert.equal(neutralOnWhite.code, "#111111");
+assert.equal(neutralOnWhite.capsuleForeground, "#111111");
+assert.equal(neutralOnWhite.capsule, "rgba(0,0,0,0.10)");
 
 const exampleDay = new Date(2026, 10, 18, 14);
 const datedHandoff = handoffActivityContent({
@@ -264,7 +285,9 @@ function makeActivity() {
     state: "dismissed",
     rank: 0,
     code: "",
-    start: async ({ code, mealBrandId }: ParcelActivityContent, options?: { staleDate?: number; relevanceScore?: number }) => {
+    lockScreenStyle: undefined as ParcelLockScreenStyle | undefined,
+    start: async ({ code, mealBrandId, lockScreenStyle }: ParcelActivityContent & { lockScreenStyle?: ParcelLockScreenStyle },
+      options?: { staleDate?: number; relevanceScore?: number }) => {
       if (onStart) await onStart();
       assert.equal(lockScreenBoxCopied, true, "the shared artwork must exist before the host snapshots the card");
       if (mealBrandId === "jpgcoffee") assert.ok(mealBrandCopied, "the branded badge must exist before the snapshot");
@@ -273,14 +296,17 @@ function makeActivity() {
       staleDate = options?.staleDate;
       activity.state = "active";
       activity.code = code;
+      activity.lockScreenStyle = lockScreenStyle;
       activity.rank = options?.relevanceScore ?? 0;
       activityId = activity.activityId;
       native.set(activityId, activity);
       return true;
     },
-    update: async ({ code }: { code: string }, options?: { relevanceScore?: number }) => {
+    update: async ({ code, lockScreenStyle }: { code: string; lockScreenStyle?: ParcelLockScreenStyle },
+      options?: { relevanceScore?: number }) => {
       events.push("update " + code);
       activity.code = code;
+      activity.lockScreenStyle = lockScreenStyle;
       activity.rank = options?.relevanceScore ?? 0;
       return true;
     },
@@ -370,12 +396,13 @@ const activityGlobals = {
   pauseWhileActive: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
   writeDiagnostic: () => {},
 };
-const createHost = () => runInNewContext(service + "\n({ startParcelActivity, startAllParcelActivities, stopParcelActivity, startParcelActivityPreview, stopParcelActivityPreview, onParcelActivityPreviewChanged, reconcileParcelActivity, parcelActivitySceneChanged, parcelActivityStatus, parcelActivityTarget, completeParcelActivity, showShortcutPickupActivities });", { ...activityGlobals });
+const createHost = () => runInNewContext(service + "\n({ startParcelActivity, startAllParcelActivities, stopParcelActivity, startParcelActivityPreview, stopParcelActivityPreview, onParcelActivityPreviewChanged, reconcileParcelActivity, parcelActivitySceneChanged, parcelActivityStatus, parcelActivityTarget, completeParcelActivity, showShortcutPickupActivities, setParcelLockScreenStyle });", { ...activityGlobals });
 const host = createHost();
 const hasActivity = async () => (await host.parcelActivityStatus()).count > 0;
 const target = parcelActivityContent(current)!.target;
 await host.startParcelActivity(target);
 session = (session as { receipts: unknown[] }).receipts[0];
+assert.equal((await host.parcelActivityStatus()).lockScreenStyle, "dynamic", "legacy receipts default to dynamic");
 assert.equal(host.parcelActivityTarget(snapshot(), linkId)?.shipmentId, parcel.identity.id);
 host.reconcileParcelActivity(snapshot());
 await hasActivity();
@@ -511,17 +538,34 @@ records = [firstPickup];
 let previewTransitions = 0;
 const unsubscribePreview = host.onParcelActivityPreviewChanged(() => { previewTransitions++; });
 await host.startAllParcelActivities();
+Reflect.deleteProperty(session as object, "lockScreenStyle");
+assert.equal((await host.parcelActivityStatus()).lockScreenStyle, "dynamic", "old registries retain their dynamic style");
 await host.startParcelActivityPreview();
 await host.startParcelActivityPreview();
 assert.deepEqual(activeCodes(), [firstPickup.code, PARCEL_ACTIVITY_PREVIEW.code]);
 assert.equal((await host.parcelActivityStatus()).count, 1);
 assert.equal((await host.parcelActivityStatus()).previewing, true);
 assert.equal(previewTransitions, 1, "the pickup tab is notified only after the saved preview starts");
+const sameActivities = () => [...native.values()].filter(item => item.state === "active")
+  .map(({ activityId, code, rank }) => ({ activityId, code, rank }));
+const previousActivities = sameActivities();
+const styleEventIndex = events.length;
+await host.setParcelLockScreenStyle("white");
+assert.deepEqual(sameActivities(), previousActivities, "changing appearance preserves activity identity and relevance");
+assert.deepEqual(events.slice(styleEventIndex), ["update " + firstPickup.code, "update " + PARCEL_ACTIVITY_PREVIEW.code]);
+assert.equal(previewTransitions, 1, "recoloring is not a new preview");
+assert.ok([...native.values()].filter(item => item.state === "active").every(item => item.lockScreenStyle === "white"));
+const savedStyleHost = createHost();
+assert.equal((await savedStyleHost.parcelActivityStatus()).lockScreenStyle, "white", "a new runtime reads the saved style");
 await host.stopParcelActivityPreview();
 assert.deepEqual(activeCodes(), [firstPickup.code], "closing the example keeps the real card active");
 assert.equal((await host.parcelActivityStatus()).showAll, true);
 await host.startParcelActivityPreview();
 records = [firstPickup, fourthPickup];
+const activeBeforeRecolor = activeCodes();
+await host.setParcelLockScreenStyle("black");
+assert.deepEqual(activeCodes(), activeBeforeRecolor, "appearance changes cannot start a pending card or evict the preview");
+assert.equal((await host.parcelActivityStatus()).lockScreenStyle, "black");
 host.reconcileParcelActivity(snapshot());
 assert.equal((await host.parcelActivityStatus()).previewing, false);
 assert.equal(previewTransitions, 4, "replacement by a real card also hides the preview from the tab");
@@ -555,6 +599,8 @@ releaseStart.resolve();
 assert.deepEqual(await Promise.all([initial, repeated]), [true, true]);
 onStart = undefined;
 assert.deepEqual(activeCodes(), ["M1234", firstPickup.code], "the background Shortcut only starts its committed records");
+assert.ok([...native.values()].filter(item => item.state === "active").every(item => item.lockScreenStyle === "black"),
+  "new meal and parcel activities from a background Shortcut use the saved style");
 assert.equal(events.filter(event => event === "start M1234").length, 1, "two runtimes share one activity per record");
 assert.equal(await shortcut.showShortcutPickupActivities([{ recordId: fourthPickup.id }]), false);
 assert.deepEqual(activeCodes(), ["M1234", firstPickup.code], "a declined background start leaves existing cards visible");
@@ -593,8 +639,8 @@ assert.match(activityCardSource, /<Image \{\.\.\.stickerImage\} resizable scaleT
 assert.match(activityCardSource, /const watchBoxFile = hasWatchBox \? watchBoxPath : lockScreenBoxPath;/,
   "the watch keeps the compact App Group asset when available");
 assert.match(activityCardSource, /handoff \? "我已寄件" : "我已取件"/, "the pickup and handoff activities each show their completion capsule");
-assert.match(activityCardSource, /background=\{expanded \? undefined : cardBackground\}/,
-  "the Lock Screen uses the pickup gradient and the island uses system black");
+assert.match(activityCardSource, /background=\{expanded \? undefined : appearance\.background \?\? cardBackground\}/,
+  "the Lock Screen defaults to the pickup gradient and the island uses system black");
 assert.match(activityCardSource, /background=\{cardBackground\} allowsHitTesting=\{false\}/,
   "the Smart Stack presents the same gradient");
 assert.doesNotMatch(activityCardSource, /glassEffect|UIGlass/, "both activity surfaces use the plain gradient");
@@ -606,6 +652,7 @@ assert.match(activityCardSource, /systemName=\{isMeal \? "fork\.knife" : "shippi
   "the meal capsule uses the original utensil symbol on the shared icon slot");
 assert.match(activityCardSource, /isMeal \? "我已取餐"/);
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
+assert.match(activityEntrySource, /content=\{<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} lockScreen lockScreenStyle=\{data\.lockScreenStyle\} \/>\}/);
 assert.match(activityEntrySource, /<LiveActivityUIExpandedCenter>\s*<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} expanded \/>/,
   "the registered island uses the common Pipi card");
 const islandAppearanceSource = activityEntrySource.match(/const expandedActionInset = [\s\S]*?^\};/m)?.[0];
@@ -697,8 +744,9 @@ assert.match(activityCardSource, /const flexibleHeight = lockScreen \|\| expande
 const activitySettingsSource = readFileSync(new URL("../pages/PickupSettingsPages.tsx", import.meta.url), "utf8");
 assert.equal((activitySettingsSource.match(/<ParcelActivityPreviewCard\b/g) ?? []).length, 1,
   "the setting contains one example card");
-assert.match(activitySettingsSource, /<ParcelActivityPreviewCard \/>/,
-  "the settings preview uses the selected Lock Screen typography");
+assert.match(activitySettingsSource, /<Picker title="锁屏样式" value=\{activity\.lockScreenStyle\} pickerStyle="menu"[^]*?<Text tag="dynamic">动态<\/Text>[^]*?<Text tag="black">纯黑<\/Text>[^]*?<Text tag="white">纯白<\/Text>/);
+assert.match(activitySettingsSource, /<ParcelActivityPreviewCard lockScreenStyle=\{activity\.lockScreenStyle\} \/>/);
+assert.doesNotMatch(watchCardSource, /\bappearance\b/, "the Watch Smart Stack keeps its existing palette");
 const tabCardSource = readFileSync(new URL("../components/PickupTabCard.tsx", import.meta.url), "utf8");
 assert.match(tabCardSource, /listRowInsets=\{0\}[\s\S]*?<ParcelLiveActivityCard\b/);
 assert.match(tabCardSource, /background=\{\s*<GeometryReader\b/, "only the in-app row reads layout geometry");
@@ -710,7 +758,7 @@ assert.doesNotMatch(activitySettingsSource, /「在 App 中运行意图」/);
 assert.match(activitySettingsSource, /取件码和寄件码在「\$\{PICKUP_TAB_TITLE\}」中查看/);
 assert.match(activitySettingsSource, /<Toggle title="实时活动"/);
 assert.doesNotMatch(activitySettingsSource, /待取码|快递码|已显示|\bstartParcelActivity\b/,
-  "the Live Activity settings only offer the global switch and preview");
+  "the settings cannot start real cards individually");
 
 const settingsSource = readFileSync(new URL("../pages/SettingsPage.tsx", import.meta.url), "utf8");
 assert.doesNotMatch(settingsSource, /\breadDiagnostics\b/,

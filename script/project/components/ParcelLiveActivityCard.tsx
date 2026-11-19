@@ -1,6 +1,9 @@
 import { Button, Circle, HStack, Image, Rectangle, Script, Spacer, Text, VStack, ZStack, gradient, type AppIntent, type VirtualNode } from "scripting";
 import type { ParcelActivityCompletion } from "../services/parcel-activity-action";
-import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, pickupCardPalette } from "../services/parcel-card-appearance";
+import {
+  PARCEL_LOCK_SCREEN_BOX, PICKUP_CARD_FOREGROUND, parcelCardArtwork, pickupCardAppearance, pickupCardPalette,
+  type ParcelLockScreenStyle,
+} from "../services/parcel-card-appearance";
 import { parcelPickupShortCode, parcelPickupSubtitle, type ParcelActivityContent } from "../services/parcel-pickup";
 import { MEAL_ARTWORK_TOKENS } from "./pickup-card-tokens.generated";
 
@@ -63,6 +66,7 @@ export type ParcelLiveActivityCardProps = {
   preview?: boolean;
   expanded?: boolean;
   lockScreen?: boolean;
+  lockScreenStyle?: ParcelLockScreenStyle;
   artwork?: VirtualNode;
   actionLabel?: string;
   actionPending?: boolean;
@@ -76,7 +80,7 @@ export type ParcelLiveActivityCardProps = {
   onArtworkTap?: () => void;
 };
 
-export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, completion, preview, expanded, lockScreen, artwork,
+export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, completion, preview, expanded, lockScreen, lockScreenStyle, artwork,
   actionLabel, actionPending, locationText, showingAddress, onComplete, onCopy, onDetail, onEditNote,
   onLocationTap, onArtworkTap }: ParcelLiveActivityCardProps) {
   const isMeal = data.kind === "meal";
@@ -124,6 +128,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const contentWidth = (card.width - card.textLeft) * scale;
   const assets = parcelCardArtwork(data);
   const palette = pickupCardPalette(data);
+  const appearance = pickupCardAppearance(palette, lockScreenStyle);
   const mealPath = (file?: { path: string; name: string }) => file &&
     (lockScreen || expanded ? `${imageRoot}/${file.name}` : `${Script.directory}/assets/${file.path}`);
   const mealImagePath = isMeal ? mealPath(assets.meal) : undefined;
@@ -132,9 +137,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const cardBackground = gradient("linear", {
     colors: [...palette.gradient], startPoint: "leading", endPoint: "trailing",
   });
-  const titleColor = "rgba(255,255,255,0.9)";
-  const locationColor = "rgba(255,255,255,0.85)";
-  const dotColor = "rgba(255,255,255,0.18)";
+  const { titleColor, locationColor, dotColor } = appearance;
   const handoff = data.kind === "handoff";
   const stickerWidth = isMeal ? MEAL_ARTWORK_TOKENS.stickerSize * (data.mealStyle?.stickerScale ?? 1)
     : handoff ? 20 : 26;
@@ -160,12 +163,12 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     : "infinity";
   const subtitle = parcelPickupSubtitle(data, locationText, showingAddress);
   const pickupCode = isMeal ? data.code : parcelPickupShortCode(data.code);
-  const dividerDots = (width: number, scale: number) => {
+  const dividerDots = (width: number, scale: number, color: typeof dotColor = PICKUP_CARD_FOREGROUND.dotColor) => {
     const count = Math.floor((width + card.dotGap) / (card.dotDiameter + card.dotGap));
     const diameter = card.dotDiameter * scale;
     return Array.from({ length: count }, (_, index) => (
       <HStack key={index} spacing={0} frame={index > 0 ? { maxWidth: "infinity", alignment: "trailing" } : undefined}>
-        <Circle fill={dotColor} frame={{ width: diameter, height: diameter }} />
+        <Circle fill={color} frame={{ width: diameter, height: diameter }} />
       </HStack>
     ));
   };
@@ -183,12 +186,12 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     <HStack spacing={lockScreen ? 0 : card.iconGap * scale} padding={{ horizontal: lockScreen ? 0 : card.capsuleInset * scale }}
       frame={{ ...actionRowHeight, minWidth: capsuleMinWidth }}
       fixedSize={{ horizontal: !lockScreen, vertical: false }} layoutPriority={1}
-      background={{ style: palette.capsule, shape: "capsule" }} contentShape="capsule">
+      background={{ style: appearance.capsule, shape: "capsule" }} contentShape="capsule">
       {capsulePadding}
       <Image systemName={isMeal ? "fork.knife" : "shippingbox.fill"} font={card.capsuleIcon * scale}
-        foregroundStyle={palette.capsuleForeground} frame={{ width: card.capsuleIcon * scale, height: card.capsuleIcon * scale }} />
+        foregroundStyle={appearance.capsuleForeground} frame={{ width: card.capsuleIcon * scale, height: card.capsuleIcon * scale }} />
       {lockScreen ? <Spacer minLength={0} frame={{ width: card.iconGap * scale }} /> : null}
-      <Text font={card.capsuleFont * scale} fontWeight="semibold" foregroundStyle={palette.capsuleForeground} lineLimit={1}
+      <Text font={card.capsuleFont * scale} fontWeight="semibold" foregroundStyle={appearance.capsuleForeground} lineLimit={1}
         minScaleFactor={lockScreen ? capsuleLabelScale : undefined} layoutPriority={1}>{completionLabel}</Text>
       {capsulePadding}
     </HStack>
@@ -213,7 +216,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   );
   const code = (
     <Text font={card.codeFont * scale} fontWeight="semibold" fontWidth="standard"
-      foregroundStyle={palette.code}
+      foregroundStyle={appearance.code}
       kerning={0} lineLimit={1} allowsTightening={fitsHost}
       minScaleFactor={lockScreen ? 11 / (card.codeFont * scale) : 12 / card.codeFont}
       frame={{ ...slot(card.codeHeight, lockScreen ? card.capsuleIcon : card.codeHeight),
@@ -287,7 +290,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const divider = (
     <HStack spacing={0} frame={{ ...slot(card.dividerHeight, expanded ? card.dividerHeight : 0), maxWidth: "infinity" }}
       layoutPriority={lockScreen && fitsHost ? -1 : 0} clipped={fitsHost}>
-      {dividerDots(card.width - card.textLeft - card.edge, verticalScale)}
+      {dividerDots(card.width - card.textLeft - card.edge, verticalScale, dotColor)}
     </HStack>
   );
   const supportingRows = (
@@ -313,7 +316,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const regular = (
     <HStack alignment="top" spacing={(card.textLeft - card.artWidth) * scale}
       frame={{ ...slot(bottom - top), minWidth: 0, maxWidth: "infinity", alignment: "topLeading" }}
-      background={expanded ? undefined : cardBackground}
+      background={expanded ? undefined : appearance.background ?? cardBackground}
       activityBackgroundTint={lockScreen && !sharesSmartStack ? "clear" : undefined}
       clipShape={expanded || lockScreen ? undefined : cardShape}
       overlay={lockScreenAction ? { alignment: "bottomTrailing", content: lockScreenAction } : undefined}
@@ -378,14 +381,14 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
       background={cardBackground} allowsHitTesting={false}>
       <ZStack frame={watchArtFrame} scaleEffect={SMART_STACK_ART_WIDTH / SMART_STACK_ART_COLUMN_WIDTH}>
         {watchArtworkImage ? <Image {...watchArtworkImage} resizable scaleToFit frame={watchArtFrame} />
-          : <Image systemName={artworkSymbol} font={isMeal ? 42 * watchScale : 30} foregroundStyle={titleColor} />}
+          : <Image systemName={artworkSymbol} font={isMeal ? 42 * watchScale : 30} foregroundStyle={PICKUP_CARD_FOREGROUND.titleColor} />}
         {stickerImage ? <Image {...stickerImage} resizable scaleToFit frame={{ width: watchStickerWidth, height: watchStickerWidth }}
           position={{ x: logoX * watchScale, y: logoY * watchScale }} /> : null}
       </ZStack>
       <VStack alignment="leading" spacing={0}
         frame={{ minWidth: 0, maxWidth: "infinity", alignment: "leading" }}
         offset={{ x: 0, y: (SMART_STACK_ROW_GAP - card.iconGap) / 2 }}>
-        <Text font={16} fontWeight="bold" foregroundStyle={titleColor} lineLimit={1} minScaleFactor={0.7}>{data.title}</Text>
+        <Text font={16} fontWeight="bold" foregroundStyle={PICKUP_CARD_FOREGROUND.titleColor} lineLimit={1} minScaleFactor={0.7}>{data.title}</Text>
         <HStack spacing={0} frame={{ minHeight: SMART_STACK_ROW_GAP, maxHeight: SMART_STACK_ROW_GAP, maxWidth: "infinity" }}
           offset={{ x: 0, y: SMART_STACK_DIVIDER_INK_OFFSET }}>
           {dividerDots(watchContentWidth, 1)}

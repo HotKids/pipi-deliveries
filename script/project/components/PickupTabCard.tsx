@@ -3,7 +3,7 @@ import {
   useEffect, useRef, useState,
 } from "scripting";
 import { PARCEL_ACTIVITY_PREVIEW, type ParcelActivityContent } from "../services/parcel-pickup";
-import { parcelCardArtwork } from "../services/parcel-card-appearance";
+import { parcelCardArtwork, type ParcelLockScreenStyle } from "../services/parcel-card-appearance";
 import { MEAL_ARTWORK_FRAME_ENDS } from "../services/meal/artwork-motion.generated";
 import { useBundledImage } from "./bundled-image";
 import { ParcelLiveActivityCard, type ParcelLiveActivityCardProps, PIPI_CARD } from "./ParcelLiveActivityCard";
@@ -181,12 +181,14 @@ function ParcelCardListRow({ spaceAfter, ...cardProps }: ParcelLiveActivityCardP
   );
 }
 
-export function ParcelActivityPreviewCard({ animate = false }: { animate?: boolean }) {
+export function ParcelActivityPreviewCard({ animate = false, lockScreenStyle }: {
+  animate?: boolean; lockScreenStyle?: ParcelLockScreenStyle;
+}) {
   const { sticker } = parcelCardArtwork(PARCEL_ACTIVITY_PREVIEW);
   const logoPath = sticker ? `${Script.directory}/assets/${sticker.path}` : undefined;
   return (
     <ParcelCardListRow data={PARCEL_ACTIVITY_PREVIEW} imageRoot={`${Script.directory}/assets/parcel-activity`}
-      logoPath={logoPath} preview
+      logoPath={logoPath} preview lockScreenStyle={lockScreenStyle}
       artwork={animate ? <PickupTabArtwork baseAsset={BOX_IMAGE}
         logoAsset={sticker?.path} logoSize={26} logoX={PIPI_CARD.logoX} logoY={PIPI_CARD.logoY} playback={BOX_PLAYBACK} />
         : undefined} />
