@@ -25,7 +25,7 @@ export function mealCard(scope: string, id: string, state: MealSnapshot, now: nu
     capturedAtMs: payload.createdAt, expiresAtMs: payload.expiresAt,
     title: payload.productName?.trim() || payload.brandName?.trim() || "取餐码",
     location: payload.merchantName?.trim() || "",
-    code, mealStyle, hasMealQR: hasQR,
+    code, mealStyle, mealBrandId: payload.brandId, hasMealQR: hasQR,
   };
 }
 

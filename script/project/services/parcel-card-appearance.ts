@@ -21,7 +21,7 @@ export function parcelCardArtwork(card: ParcelActivityContent) {
   if (card.kind === "meal") return {
     meal: mealAsset(card.mealStyle?.artworkAsset),
     mealSticker: mealAsset(card.mealStyle?.stickerAsset),
-    mark: mealAsset(card.mealStyle?.stickerAsset),
+    mark: mealAsset(card.mealBrandId ? `brand-${card.mealBrandId}.png` : undefined),
   };
   const platform = card.platform;
   const icon = card.carrierIcon === "jdshopping" ? "jd" : card.carrierIcon;

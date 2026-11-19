@@ -127,7 +127,9 @@ function prepareArtwork(content: ParcelActivityContent): void {
     if (!file) continue;
     const destination = Path.join(root, file.name);
     if (FileManager.existsSync(destination) && FileManager.isFileSync(destination)) continue;
-    FileManager.copyFileSync(Path.join(Script.directory, "assets", file.path), destination);
+    const source = Path.join(Script.directory, "assets", file.path);
+    if (content.kind === "meal" && file === mark && !FileManager.isFileSync(source)) continue;
+    FileManager.copyFileSync(source, destination);
   }
 }
 

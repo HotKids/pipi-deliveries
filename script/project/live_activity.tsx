@@ -48,7 +48,7 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
     const width = Device.isiPhone ? Math.min(Device.screen.width, Device.screen.height) - 2 * 14 : undefined;
     const badgeSize = 20;
     const glyph = (
-      <ZStack frame={{ width: badgeSize, height: badgeSize }} clipShape={iconTileShape(badgeSize)}
+      <ZStack frame={{ width: badgeSize, height: badgeSize }} clipShape={meal ? "circle" : iconTileShape(badgeSize)}
         background={brand ? undefined : "rgba(255,255,255,0.16)"}>
         {brand ? <Image image={brand} renderingMode="original" resizable scaleToFill /> : (
           <Image systemName={meal ? "fork.knife" : handoff ? "tray.and.arrow.up.fill" : "shippingbox.fill"} font={12} foregroundStyle="white" />
