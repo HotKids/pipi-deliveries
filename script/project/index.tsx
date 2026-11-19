@@ -29,6 +29,7 @@ import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
+import type { PickupEmptyArtwork } from "./components/EmptyDeliveryVehicle";
 import { expireDueParcelHandoffs, loadAppState, peekStateRevision, toggleParcelArtwork, visibleShipments } from "./services/storage";
 import { performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
 import {
@@ -65,7 +66,7 @@ import {
   reconcileParcelActivity,
 } from "./services/parcel-live-activity";
 import { nativePickupTabCloseId } from "./services/parcel-activity-action";
-import { PICKUP_TAB_TITLE, activePickupCards, independentPickupContent } from "./services/parcel-pickup";
+import { PICKUP_TAB_TITLE, activePickupCards, independentPickupContent, type ParcelActivityContent } from "./services/parcel-pickup";
 import { nextParcelHandoffDeadline } from "./services/parcel-handoff-expiry";
 import { reconcileFengchaoReminders } from "./services/fengchao-reminders";
 import { transientToast } from "./services/ui-feedback";
@@ -112,10 +113,27 @@ function readMealCards() {
   }
 }
 
-function usePickupTabVisibility(hasCards: boolean, activityEndId?: string): boolean {
+function usePickupTabState(cards: readonly ParcelActivityContent[], previewing: boolean, activityEndId?: string) {
+  const hasCards = cards.length > 0 || previewing;
   const [keepVisible, setKeepVisible] = useState(hasCards);
   const hadCards = useRef(false);
   const previousActivity = useRef<string | undefined>(undefined);
+  const lastCard = useRef<PickupEmptyArtwork | "preview" | undefined>(undefined);
+  const emptyArtwork = useRef<PickupEmptyArtwork>("meal");
+  const nextPreviewArtwork = useRef<PickupEmptyArtwork>("meal");
+  const latestCard = cards.at(-1);
+  if (latestCard) {
+    lastCard.current = latestCard.kind === "meal" ? "meal" : "parcel";
+  } else if (previewing) {
+    lastCard.current = "preview";
+  } else if (lastCard.current === "preview") {
+    emptyArtwork.current = nextPreviewArtwork.current;
+    nextPreviewArtwork.current = nextPreviewArtwork.current === "meal" ? "parcel" : "meal";
+  } else if (lastCard.current) {
+    emptyArtwork.current = lastCard.current;
+  }
+  if (!hasCards) lastCard.current = undefined;
+
   useEffect(() => {
     if (hasCards) {
       if (!hadCards.current) previousActivity.current = nativePickupTabCloseId();
@@ -133,7 +151,7 @@ function usePickupTabVisibility(hasCards: boolean, activityEndId?: string): bool
     const timer = setTimeout(() => setKeepVisible(false), 60_000);
     return () => clearTimeout(timer);
   }, [hasCards, keepVisible, activityEndId]);
-  return hasCards || keepVisible;
+  return { visible: hasCards || keepVisible, emptyArtwork: emptyArtwork.current };
 }
 
 function App({ initialStartup, initialPickupPreview }: { initialStartup: StartupState; initialPickupPreview: boolean }) {
@@ -174,7 +192,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   latestPickupView.current = { state, pickupCards };
   const [pickupPreview, setPickupPreview] = useState(initialPickupPreview);
   const [activityEndId, setActivityEndId] = useState<string | undefined>(undefined);
-  const hasPickupTab = usePickupTabVisibility(pickupCards.length > 0 || pickupPreview, activityEndId);
+  const { visible: hasPickupTab, emptyArtwork } = usePickupTabState(pickupCards, pickupPreview, activityEndId);
   const launchWorkStarted = useRef(false);
   const platformObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const mealObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -541,6 +559,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
             shipments={shipments}
             cards={pickupCards}
             previewing={pickupPreview}
+            emptyArtwork={emptyArtwork}
             focusedRecordId={navigationRequest.pickupRecordId}
             onStateChange={applyState}
             showNotice={setPickupNotice}

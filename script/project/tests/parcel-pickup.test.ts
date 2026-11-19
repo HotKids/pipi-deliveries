@@ -897,10 +897,11 @@ assert.match(appSource, /onParcelActivityChanged\(change => \{[\s\S]*?\}\);\s*if
 assert.match(appSource, /\[pickupPreview, setPickupPreview\] = useState\(initialPickupPreview\)/,
   "a previously active preview shows its pickup tab on the first render");
 assert.match(appSource, /useObservable<string>\(\s*navigationRequest\.pickupRecordId \? "pickup" : "deliveries"/);
-assert.match(appSource, /const hasPickupTab = usePickupTabVisibility\(pickupCards\.length > 0 \|\| pickupPreview, activityEndId\);/);
+assert.match(appSource, /const \{ visible: hasPickupTab, emptyArtwork \} = usePickupTabState\(pickupCards, pickupPreview, activityEndId\);/);
+assert.match(appSource, /<PickupPage[^>]*emptyArtwork=\{emptyArtwork\}/);
 assert.match(appSource, /if \(!hasPickupTab && selection\.value === "pickup"\) selection\.setValue\("deliveries"\)/);
 
-const visibilitySource = stripTypeScriptTypes(appSource.slice(appSource.indexOf("function usePickupTabVisibility("), appSource.indexOf("function App(")));
+const tabStateSource = stripTypeScriptTypes(appSource.slice(appSource.indexOf("function usePickupTabState("), appSource.indexOf("function App(")));
 let tabRetained: boolean | undefined;
 let previousDeps: unknown[] = [];
 let refIndex = 0;
@@ -909,7 +910,7 @@ let nativeCloseId = "older-system-completion";
 let scheduledEffect: (() => (() => void) | undefined) | undefined;
 let cleanupVisibility: (() => void) | undefined;
 let pendingHide: (() => void) | undefined;
-const usePickupTabVisibility = runInNewContext(visibilitySource + "\nusePickupTabVisibility", {
+const usePickupTabState = runInNewContext(tabStateSource + "\nusePickupTabState", {
   useState: (initial: boolean) => [tabRetained ??= initial, (visible: boolean) => { tabRetained = visible; }],
   useRef: (initial: unknown) => visibilityRefs[refIndex++] ?? (visibilityRefs[refIndex - 1] = { current: initial }),
   useEffect: (effect: typeof scheduledEffect, deps: unknown[]) => {
@@ -926,15 +927,19 @@ const usePickupTabVisibility = runInNewContext(visibilitySource + "\nusePickupTa
   clearTimeout: (hide: () => void) => { if (pendingHide === hide) pendingHide = undefined; },
   nativePickupTabCloseId: () => nativeCloseId,
 });
-function renderPickupVisibility(hasCards: boolean, activityEndId?: string): boolean {
+function renderPickupTab(cards: readonly ParcelActivityContent[], previewing = false, activityEndId?: string) {
   refIndex = 0;
-  const visible = usePickupTabVisibility(hasCards, activityEndId);
+  const tab: { visible: boolean; emptyArtwork: "meal" | "parcel" } = usePickupTabState(cards, previewing, activityEndId);
   if (scheduledEffect) {
     cleanupVisibility?.();
     cleanupVisibility = scheduledEffect();
     scheduledEffect = undefined;
   }
-  return visible;
+  return tab;
+}
+const parcelCards = [PARCEL_ACTIVITY_PREVIEW];
+function renderPickupVisibility(hasCards: boolean, activityEndId?: string): boolean {
+  return renderPickupTab(hasCards ? parcelCards : [], false, activityEndId).visible;
 }
 assert.equal(renderPickupVisibility(false), false, "loading with no cards has no grace period");
 assert.equal(renderPickupVisibility(true), true);
@@ -960,6 +965,23 @@ assert.equal(renderPickupVisibility(true, nativeCloseId), true);
 assert.equal(renderPickupVisibility(false, nativeCloseId), true, "a later in-app completion gets a fresh minute");
 assert.ok(pendingHide);
 
+renderPickupTab([brandedMeal, ...parcelCards]);
+renderPickupTab([brandedMeal]);
+assert.equal(renderPickupTab([]).emptyArtwork, "meal", "a final meal chooses its artwork on the first empty frame");
+renderPickupTab([brandedMeal, ...parcelCards]);
+renderPickupTab(parcelCards);
+assert.equal(renderPickupTab([]).emptyArtwork, "parcel", "a final parcel chooses its artwork on the first empty frame");
+renderPickupTab([], true);
+assert.equal(renderPickupTab([]).emptyArtwork, "meal", "the first preview-only round uses the drink");
+assert.equal(renderPickupTab([]).emptyArtwork, "meal", "empty renders do not advance the preview round");
+renderPickupTab(parcelCards, true);
+renderPickupTab(parcelCards);
+assert.equal(renderPickupTab([]).emptyArtwork, "parcel", "closing a preview while real cards remain keeps their artwork");
+renderPickupTab([], true);
+assert.equal(renderPickupTab([]).emptyArtwork, "parcel", "the next preview-only round uses the box");
+renderPickupTab([], true);
+assert.equal(renderPickupTab([]).emptyArtwork, "meal", "the preview alternates back to the drink");
+
 assert.equal(PICKUP_TAB_TITLE, "待取");
 assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title=\{PICKUP_TAB_TITLE\} systemImage="archivebox\.fill" value="pickup"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="shippingbox\.fill" value="deliveries"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
@@ -975,7 +997,7 @@ for (const source of [homeSource, pickupSource, settingsSource]) {
   assert.doesNotMatch(source, /<List\b|<RootPageTitle\b|<RootPageCloseButton\b|listStyle=/);
 }
 assert.match(homeSource, /<RootTabList\b[^>]*\btitle="快递"/);
-assert.match(pickupSource, /<RootTabList title=\{PICKUP_TAB_TITLE\} onClose=\{\(\) => dismiss\(\)\} bottomInset=\{TAB_FAB_SCROLL_INSET\}\s+emptyState=\{!sections\.length \? <EmptyTabState pickup \/> : undefined\}>/);
+assert.match(pickupSource, /<RootTabList title=\{PICKUP_TAB_TITLE\} onClose=\{\(\) => dismiss\(\)\} bottomInset=\{TAB_FAB_SCROLL_INSET\}\s+emptyState=\{!sections\.length \? <EmptyTabState pickup=\{emptyArtwork\} \/> : undefined\}>/);
 assert.match(settingsSource, /<RootTabList title="设置" onClose=\{\(\) => dismiss\(\)\}>/);
 assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:|rootPageScroll|headerCollapsed/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|待取|取件)"|navigationTitle=\{PICKUP_TAB_TITLE\}/);
