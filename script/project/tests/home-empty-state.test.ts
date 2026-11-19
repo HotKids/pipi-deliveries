@@ -128,14 +128,15 @@ assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(sel
 const filterBar = homeSource.match(/<GeometryReader frame=\{\{ height: FILTER_ROW_HEIGHT \}\}>([^]*?)<\/GeometryReader>/)?.[1] ?? "";
 assert.match(filterBar, /<Text font=\{11\} fontWeight="semibold" monospacedDigit[^]*?frame=\{\{ minWidth: 16, minHeight: 16 \}\}\s*background=\{\{ style: "systemFill", shape: "capsule" \}\}[^]*?>\s*\{groups\[key\]\.length\}/,
   "the horizontal filter uses the original independent count badge");
-assert.match(filterBar, /<Capsule fill="secondarySystemFill" frame=\{\{ width: segmentWidth, height: 26 \}\}\s*offset=\{\{ x: selectedOffset, y: 0 \}\} allowsHitTesting=\{false\}\s*animation=\{\{ animation: Animation\.smooth\(\{ duration: FILTER_SLIDE_SECONDS \}\), value: filter \}\} \/>/,
-  "one existing selection fill slides across the slots");
+assert.match(filterBar, /<Capsule fill="secondarySystemFill" frame=\{\{ width: segmentWidth, height: 26 \}\}\s*offset=\{\{ x: selectedOffset, y: 0 \}\} allowsHitTesting=\{false\} \/>/,
+  "one selection fill shares the segment layout's animation");
+assert.match(filterBar, /<ZStack alignment="leading"[^\n]*\n\s*animation=\{\{ animation: Animation\.smooth\(\{ duration: FILTER_SLIDE_SECONDS \}\), value: layoutKey \}\}>/);
 assert.equal(filterBar.match(/<Capsule fill="secondarySystemFill"/g)?.length, 1);
 assert.doesNotMatch(filterBar, /glassEffect|tabCapsuleSurface|matchedGeometryEffect|NamespaceReader/);
-const geometry = filterBar.match(/const segmentWidth = [^\n]+\n\s*const selectedOffset = [^\n]+/)?.[0];
+const geometry = filterBar.match(/const segmentWidth = [^\n]+\n\s*const selectedOffset = [^\n]+\n\s*const layoutKey = [^\n]+/)?.[0];
 assert.ok(geometry);
 const slot = new Function("size", "visibleFilters", "filter", "FILTER_SEGMENT_INSET",
-  geometry + "\nreturn { segmentWidth, selectedOffset }; ");
+  geometry + "\nreturn { segmentWidth, selectedOffset, layoutKey }; ");
 for (const width of [280, 362, 540]) {
   for (const filters of [["all", "transit"], ["all", "transit", "pickup", "danger"]]) {
     const first = slot({ width }, filters, filters[0], 3);
@@ -143,7 +144,13 @@ for (const width of [280, 362, 540]) {
     assert.equal(first.selectedOffset, 3);
     assert.equal(last.segmentWidth, first.segmentWidth, "the sliding selection fill retains the slot width");
     assert.equal(last.selectedOffset + last.segmentWidth, width - 3);
+    assert.notEqual(last.layoutKey, first.layoutKey);
   }
+  const before = slot({ width }, ["all", "transit", "pickup"], "transit", 3);
+  const after = slot({ width }, ["all", "transit"], "transit", 3);
+  assert.notEqual(after.selectedOffset, before.selectedOffset);
+  assert.notEqual(after.segmentWidth, before.segmentWidth);
+  assert.notEqual(after.layoutKey, before.layoutKey, "removing a segment also animates a retained selection");
 }
 const showFilter = homeSource.match(/^  function showFilter\([\s\S]*?^  \}/m)?.[0];
 assert.ok(showFilter);

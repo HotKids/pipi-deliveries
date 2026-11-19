@@ -597,10 +597,10 @@ assert.match(settingsSource, /<RootTabList title="设置" onClose=\{\(\) => dism
 assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:|rootPageScroll|headerCollapsed/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|待取|取件)"|navigationTitle=\{PICKUP_TAB_TITLE\}/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-assert.match(rootHeader, /const header = \(\s*<Section key="root-heading" listSectionMargins=\{0\} listSectionSeparator="hidden">\s*<RootPageTitle title=\{title\} onVisibilityChange=\{trackVisibility \? setTitleVisible : undefined\} \/>\s*\{topAccessory\}\s*<\/Section>/);
+assert.match(rootHeader, /const header = \(\s*<Section key="root-heading" listSectionMargins=\{0\} listSectionSeparator="hidden"\s*animation=\{topAccessory === undefined \? undefined : \{ animation: Animation\.easeOut\(0\.18\), value: topAccessory !== null \}\}>\s*<RootPageTitle title=\{title\} onVisibilityChange=\{trackVisibility \? setTitleVisible : undefined\} \/>\s*\{topAccessory\}\s*<\/Section>/);
 assert.match(rootHeader, /onScrollVisibilityChange=\{onVisibilityChange \? \{ onChanged: onVisibilityChange \} : undefined\}/);
-assert.match(rootHeader, /<VStack>\{titleVisible \? titleAction : null\}<\/VStack>/,
-  "scrolling the title away hides the optional query action without changing the list insets");
+assert.match(rootHeader, /<VStack opacity=\{titleVisible \? 1 : 0\} allowsHitTesting=\{titleVisible\} accessibilityHidden=\{!titleVisible\}\s*animation=\{\{ animation: Animation\.easeOut\(0\.18\), value: titleVisible \}\}>\s*\{titleAction\}\s*<\/VStack>/,
+  "the query action fades while hit testing and accessibility follow title visibility immediately");
 assert.match(rootHeader, /<List listStyle="insetGroup"[^]*?refreshable=\{refresh\}[^]*?edges: "top", insets: 0, placement: "scrollContent"[^]*?edges: "vertical", insets: \{ top: 0, bottom: bottomInset[^]*?>\s*\{\[header, \.\.\.\[children\]\.flat\(\)\]\}\s*<\/List>\s*<RootPageCloseButton action=\{onClose\} \/>/,
   "one grouped list scrolls every title and any filter from the same initial top inset under a fixed close control");
 assert.doesNotMatch(rootHeader, /\bchildren=\{/,
@@ -611,7 +611,7 @@ assert.match(rootHeader, /function RootPageTitle[^]*?minHeight: CLOSE_SIZE, alig
   "the large title shares the close control's initial vertical center");
 assert.match(rootHeader, /function RootPageCloseButton[^]*?<VStack padding=\{\{ top: HEADER_TOP_INSET, trailing: ROOT_PAGE_MARGIN \}\}>\s*<Button title="关闭" systemImage="xmark"/);
 assert.equal(rootHeader.match(/\{title\}\s*<\/Text>/g)?.length, 1);
-assert.doesNotMatch(rootHeader, /navigationTitle|ToolbarItem|Animation|collapsed/);
+assert.doesNotMatch(rootHeader, /navigationTitle|ToolbarItem|collapsed|import\s*\{[^}]*\bAnimation\b/);
 assert.match(rootHeader, /const CLOSE_SIZE = 44;[^]*?labelStyle="iconOnly"[^]*?width: CLOSE_SIZE, height: CLOSE_SIZE/);
 assert.match(pickupSource, /overlay=\{\{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen=\{openIdentity\}/,
   "the identity popover stays anchored to the bottom of the scrolling viewport");
@@ -640,14 +640,19 @@ assert.match(stationIdentitySource, /preferredColorScheme="light"\s+contentShape
 assert.doesNotMatch(stationIdentitySource, /title="关闭" systemImage="xmark"/);
 assert.match(stationIdentitySource, /header=\{detailTitle\("取件人"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}[\s\S]*?header=\{detailTitle\("身份码编号"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}/);
 assert.match(stationIdentitySource,
-  /valid \|\| \(platform === "cainiao" && !busy && failure !== null\)\s*\? \([^]*?action=\{onSwitchCainiao\}[^]*?\{valid \? value\.replace\([^\n]*? : "暂无编号"\}[^]*?\{valid \? <Button[^]*?copyText\(value\)/,
+  /const showNumber = valid \|\| \(platform === "cainiao" && !busy && failure !== null\);[^]*?\{showNumber \? \([^]*?action=\{onSwitchCainiao\}[^]*?\{valid \? value\.replace\([^\n]*? : "暂无编号"\}[^]*?\{valid \? <Button[^]*?copyText\(value\)/,
   "the number row and variant switch require a valid code or a completed Cainiao failure");
 assert.match(stationIdentitySource,
   /foregroundStyle=\{valid \? "label" : "secondaryLabel"\}[^]*?frame=\{\{ maxWidth: "infinity", alignment: valid \? "leading" : "trailing" \}\}[^]*? : "暂无编号"\}/,
   "the unavailable number uses the form's trailing secondary value alignment");
 assert.match(stationIdentitySource,
-  /<Section header=\{detailTitle\("身份码编号"\)\}\s+footer=\{platform === "cainiao" \? \(\s*<Text font="footnote" foregroundStyle="secondaryLabel">点击图标切换淘宝身份码与菜鸟出库码<\/Text>\s*\) : undefined\}>/,
+  /<Section key="identity-number" transition=\{revealResult\} header=\{detailTitle\("身份码编号"\)\}\s+footer=\{platform === "cainiao" \? \(\s*<Text font="footnote" foregroundStyle="secondaryLabel">点击图标切换淘宝身份码与菜鸟出库码<\/Text>\s*\) : undefined\}>/,
   "the switch hint is a form footer below the Cainiao number card");
+assert.match(stationIdentitySource, /<StationIdentityContent key=\{`\$\{generation\}:\$\{variant\}`\}/,
+  "switching providers or bindings discards the previous scan immediately");
+assert.match(stationIdentitySource, /const revealResult = Transition\.asymmetric\(Transition\.opacity\(\), Transition\.identity\(\)\)/);
+assert.match(stationIdentitySource, /<Form navigationTitle=\{IDENTITY_CODE_TITLES\[variant\]\}[^]*?animation=\{\{ animation: Animation\.easeOut\(0\.18\), value: `\$\{valid\}:\$\{showNumber\}:\$\{showRecovery\}` \}\}/,
+  "only result visibility drives the form transition, so countdown ticks cannot restart it");
 assert.match(stationIdentitySource, /listRowInsets=\{valid \? SCAN_ROW_INSETS : DETAIL_ROW_INSETS\}/);
 assert.match(stationIdentitySource, /<Text font=\{16\} foregroundStyle="secondaryLabel" multilineTextAlignment="center"\s*frame=\{\{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT \}\}>\s*\{status\}/,
   "an unavailable scan uses the shared detail-row height and insets");

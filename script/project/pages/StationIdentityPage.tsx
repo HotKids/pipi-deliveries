@@ -319,6 +319,10 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
   }, []);
 
   const valid = Boolean(value) && remaining > 0;
+  const showNumber = valid || (platform === "cainiao" && !busy && failure !== null);
+  const showRecovery = !valid && !busy;
+  // Never fade out an expired barcode or its number during an identity change.
+  const revealResult = Transition.asymmetric(Transition.opacity(), Transition.identity());
   const status = busy ? "正在获取身份码…" : failure === "verification" ? "请完成安全验证"
     : failure === "unavailable" ? "未获取到身份码，请点右上角重试" : "身份码已过期";
   const markAsset = platform === "cainiao" && !cainiaoOutbound ? "taobao" : platform;
@@ -326,6 +330,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
   return (
     <Form navigationTitle={IDENTITY_CODE_TITLES[variant]} listSectionSpacing={8}
       navigationBarTitleDisplayMode="inline"
+      animation={{ animation: Animation.easeOut(0.18), value: `${valid}:${showNumber}:${showRecovery}` }}
       toast={transientToast(notice, setNotice)}
       toolbar={{
         topBarTrailing: (
@@ -334,7 +339,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
         ),
       }}
     >
-      <Section>
+      <Section key="identity-scan">
         <VStack spacing={12} listRowInsets={valid ? SCAN_ROW_INSETS : DETAIL_ROW_INSETS} frame={{ maxWidth: "infinity" }}
           fullScreenCover={{
             isPresented: full !== null,
@@ -344,7 +349,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
             ) : <VStack />,
           }}>
           {valid ? (
-            <VStack spacing={12} frame={{ maxWidth: "infinity" }}>
+            <VStack spacing={12} frame={{ maxWidth: "infinity" }} transition={revealResult}>
               <Button buttonStyle="plain" action={() => { setFull("barcode"); void refresh(); }}>
                 <VStack padding={{ vertical: 8, horizontal: 4 }} frame={{ maxWidth: "infinity" }}
                   background={{ style: "white", shape: BARCODE_SHAPE }} contentShape="rect">
@@ -369,7 +374,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
         </VStack>
       </Section>
       {valid && mobile ? (
-        <Section header={detailTitle("取件人")}>
+        <Section key="identity-recipient" transition={revealResult} header={detailTitle("取件人")}>
           <HStack frame={{ minHeight: DETAIL_ROW_HEIGHT }} listRowInsets={DETAIL_ROW_INSETS}>
             <Text font={16}>绑定手机号</Text>
             <Text font={16} foregroundStyle="secondaryLabel"
@@ -377,8 +382,8 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
           </HStack>
         </Section>
       ) : null}
-      {valid || (platform === "cainiao" && !busy && failure !== null) ? (
-        <Section header={detailTitle("身份码编号")}
+      {showNumber ? (
+        <Section key="identity-number" transition={revealResult} header={detailTitle("身份码编号")}
           footer={platform === "cainiao" ? (
             <Text font="footnote" foregroundStyle="secondaryLabel">点击图标切换淘宝身份码与菜鸟出库码</Text>
           ) : undefined}>
@@ -410,8 +415,8 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
           </HStack>
         </Section>
       ) : null}
-      {!valid && !busy ? (
-        <Section>
+      {showRecovery ? (
+        <Section key="identity-recovery" transition={revealResult}>
           <Button buttonStyle="plain" listRowInsets={DETAIL_ROW_INSETS} action={() => void openRecovery("app")}>
             <Text font={16} foregroundStyle="accentColor"
               frame={{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT }} contentShape="rect">
