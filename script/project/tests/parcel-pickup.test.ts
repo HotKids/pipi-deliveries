@@ -679,7 +679,7 @@ assert.match(activitySettingsSource, /<Text>截屏识别<\/Text>[\s\S]*?「运�
 assert.doesNotMatch(activitySettingsSource, /「在 App 中运行意图」/);
 assert.match(activitySettingsSource, /取件码和寄件码在「\$\{PICKUP_TAB_TITLE\}」中查看/);
 assert.match(activitySettingsSource, /<Toggle title="实时活动"/);
-assert.doesNotMatch(activitySettingsSource, /待取码|快递码|\bstartParcelActivity\b/,
+assert.doesNotMatch(activitySettingsSource, /待取码|快递码|已显示|\bstartParcelActivity\b/,
   "the Live Activity settings only offer the global switch and preview");
 
 const settingsSource = readFileSync(new URL("../pages/SettingsPage.tsx", import.meta.url), "utf8");
