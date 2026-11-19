@@ -1,21 +1,18 @@
-import { Image, Text, VStack, ZStack, type VirtualNode } from "scripting";
-import { bundledImage, useBundledImage } from "./bundled-image";
+import { Image, Script, Text, VStack, ZStack, type VirtualNode } from "scripting";
+import { bundledImage } from "./bundled-image";
 import { EMPTY_WIDGET_TEXT_COLOR } from "../widget/palette";
 
 const vehicleArtwork = "widget/empty-delivery-vehicle.png";
-const grapeArtwork = "widget/empty-pickup-grape.png";
+const pickupArtwork = {
+  meal: "widget/empty-pickup-grape.png",
+  parcel: "widget/empty-pickup-sf-box.png",
+};
 const heyteaLogo = "meal-pickup/xicha.png";
 
-export function EmptyDeliveryVehicle({ size, deferArtwork }: { size: number; deferArtwork?: boolean }) {
-  return deferArtwork ? <DeferredVehicle size={size} /> :
-    <Vehicle artwork={bundledImage(vehicleArtwork)} size={size} />;
-}
+export type PickupEmptyArtwork = keyof typeof pickupArtwork;
 
-function DeferredVehicle({ size }: { size: number }) {
-  return <Vehicle artwork={useBundledImage(vehicleArtwork)} size={size} />;
-}
-
-function Vehicle({ artwork, size }: { artwork?: UIImage; size: number }) {
+function EmptyDeliveryVehicle({ size }: { size: number }) {
+  const artwork = bundledImage(vehicleArtwork);
   return artwork ? (
     <Image
       image={artwork}
@@ -27,28 +24,24 @@ function Vehicle({ artwork, size }: { artwork?: UIImage; size: number }) {
   ) : <Image systemName="shippingbox" frame={{ width: size, height: size }} />;
 }
 
-function EmptyPickupIllustration({ size }: { size: number }) {
-  const cup = useBundledImage(grapeArtwork);
-  const logo = useBundledImage(heyteaLogo);
-  return (
-    <ZStack frame={{ width: size, height: size }}>
-      {cup ? (
-        <Image image={cup} renderingMode="original" resizable scaleToFit frame={{ width: size, height: size }} />
-      ) : <Image systemName="cup.and.saucer" frame={{ width: size, height: size }} />}
-      {cup && logo ? (
-        <Image image={logo} renderingMode="original" resizable scaleToFit colorConvert
-          frame={{ width: 23, height: 23 }} offset={{ x: -size * 0.01, y: size * 0.10 }} />
-      ) : null}
-    </ZStack>
+export function EmptyTabState({ pickup }: { pickup?: PickupEmptyArtwork }) {
+  const size = pickup ? 96 : 81.6;
+  const frame = { width: size, height: size };
+  const assetDirectory = `${Script.directory}/assets`;
+  const imagePath = pickup ? pickupArtwork[pickup] : vehicleArtwork;
+  const illustration = (
+    <Image filePath={`${assetDirectory}/${imagePath}`} renderingMode="original" resizable scaleToFit frame={frame} />
   );
-}
-
-export function EmptyTabState({ pickup = false }: { pickup?: boolean }) {
-  const size = 81.6;
-  const artwork = pickup ? <EmptyPickupIllustration size={size} /> : <EmptyDeliveryVehicle size={size} deferArtwork />;
+  const artwork = pickup === "meal" ? (
+    <ZStack frame={frame}>
+      {illustration}
+      <Image filePath={`${assetDirectory}/${heyteaLogo}`} renderingMode="original" resizable scaleToFit colorConvert
+        frame={{ width: 27, height: 27 }} offset={{ x: -size * 0.01, y: size * 0.10 }} />
+    </ZStack>
+  ) : illustration;
   return (
     <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} allowsHitTesting={false}>
-      <EmptyStateGroup artwork={artwork} label={pickup ? "饮咗茶未" : "暂无快递"} spacing={8} labelFont="body" />
+      <EmptyStateGroup artwork={artwork} label={pickup === "meal" ? "饮咗茶未" : "暂无快递"} spacing={8} labelFont="body" />
     </VStack>
   );
 }
@@ -57,9 +50,8 @@ export function EmptyDeliveryStateGroup(props: {
   vehicleSize: number;
   spacing: number;
   labelFont: number;
-  deferArtwork?: boolean;
 }) {
-  return <EmptyStateGroup artwork={<EmptyDeliveryVehicle size={props.vehicleSize} deferArtwork={props.deferArtwork} />}
+  return <EmptyStateGroup artwork={<EmptyDeliveryVehicle size={props.vehicleSize} />}
     label="暂无快递" spacing={props.spacing} labelFont={props.labelFont} widget />;
 }
 

@@ -15,6 +15,18 @@ const emptyGroupSource = await readFile(
   resolve(projectDir, "components/EmptyDeliveryVehicle.tsx"),
   "utf8",
 );
+const emptyTabSource = emptyGroupSource.match(/^export function EmptyTabState\([\s\S]*?^\}/m)?.[0];
+assert.ok(emptyTabSource);
+assert.match(
+  emptyTabSource,
+  /const imagePath = pickup \? pickupArtwork\[pickup\] : vehicleArtwork;[\s\S]*?<Image filePath=\{/,
+  "each empty state provides its bundled art on the first render",
+);
+assert.match(
+  emptyTabSource,
+  /<ZStack frame=\{frame\}>\s*\{illustration\}\s*<Image filePath=\{[^}]*\}[^>]*?colorConvert/,
+  "the cup and original white brand mark are rendered together",
+);
 assert.match(
   emptyGroupSource,
   /<VStack alignment="center" spacing=\{spacing\}>\s*\{artwork\}\s*<Text\s+font=\{labelFont\}\s*fontWeight=\{widget \? "medium" : "regular"\}\s*foregroundStyle=\{widget \? EMPTY_WIDGET_TEXT_COLOR : "secondaryLabel"\}/,
@@ -22,18 +34,20 @@ assert.match(
 );
 assert.match(
   emptyGroupSource,
-  /const size = 81\.6;[\s\S]*?<VStack frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\} allowsHitTesting=\{false\}>\s*<EmptyStateGroup artwork=\{artwork\} label=\{pickup \? "饮咗茶未" : "暂无快递"\} spacing=\{8\} labelFont="body" \/>/,
-  "both tab placeholders use the same scale, Dynamic Type font and centering",
+  /const size = pickup \? 96 : 81\.6;[\s\S]*?<VStack frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\} allowsHitTesting=\{false\}>\s*<EmptyStateGroup artwork=\{artwork\} label=\{pickup === "meal" \? "饮咗茶未" : "暂无快递"\} spacing=\{8\} labelFont="body" \/>/,
+  "the pickup illustrations share a larger frame, typography and centering",
 );
 assert.match(
   homeSource,
   /<RootTabList key="shipments" title="快递"[^]*?refresh=\{refresh\}[^]*?emptyState=\{!shipments\.length \? <EmptyTabState \/> : undefined\}/,
   "the shared empty state sits inside the refreshable body",
 );
-const grapeArtwork = await readFile(resolve(projectDir, "assets/widget/empty-pickup-grape.png"));
-assert.deepEqual([...grapeArtwork.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-assert.equal(grapeArtwork[25], 6, "the grape drink illustration preserves transparent edges");
-assert.match(emptyGroupSource, /const heyteaLogo = "meal-pickup\/xicha\.png";[\s\S]*?useBundledImage\(heyteaLogo\)[\s\S]*?<Image image=\{logo\}[^>]*?colorConvert/);
+for (const filename of ["empty-pickup-grape.png", "empty-pickup-sf-box.png"]) {
+  const image = await readFile(resolve(projectDir, "assets/widget", filename));
+  assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(image[25], 6, `${filename} preserves transparent edges`);
+}
+assert.match(emptyGroupSource, /const heyteaLogo = "meal-pickup\/xicha\.png";/);
 assert.equal((homeSource.match(/<RootTabList\b/g) ?? []).length, 1,
   "data arriving during a pull must not replace the refreshable list");
 const makePull = homeSource.match(/const refresh = useCallback\(\(\) => \{[\s\S]*?\n  \}, \[\]\);/)?.[0];

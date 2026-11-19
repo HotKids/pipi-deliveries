@@ -1,7 +1,7 @@
 import { Button, HStack, Navigation, NavigationStack, QRImage, Section, Text, VStack, useEffect, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
-import { EmptyTabState } from "../components/EmptyDeliveryVehicle";
+import { EmptyTabState, type PickupEmptyArtwork } from "../components/EmptyDeliveryVehicle";
 import { RootTabList } from "../components/RootPageHeader";
 import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import { stopParcelActivityPreview } from "../services/parcel-live-activity";
@@ -151,12 +151,13 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
 }
 
 export function PickupPage({
-  state, shipments, cards, previewing, focusedRecordId, onAction, onStateChange, showNotice, onArtworkChange,
+  state, shipments, cards, previewing, emptyArtwork, focusedRecordId, onAction, onStateChange, showNotice, onArtworkChange,
 }: {
   state: AppState;
   shipments: readonly Shipment[];
   cards: readonly ParcelActivityContent[];
   previewing: boolean;
+  emptyArtwork: PickupEmptyArtwork;
   focusedRecordId: string;
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
   onStateChange: (state: AppState) => void;
@@ -282,7 +283,7 @@ export function PickupPage({
         }}
       >
         <RootTabList title={PICKUP_TAB_TITLE} onClose={() => dismiss()} bottomInset={TAB_FAB_SCROLL_INSET}
-          emptyState={!sections.length ? <EmptyTabState pickup /> : undefined}>
+          emptyState={!sections.length ? <EmptyTabState pickup={emptyArtwork} /> : undefined}>
           {sections.map(({ key, label, items, preview }, sectionIndex) => (
             <Section key={key} header={<Text>{label}</Text>}>
               {items.map((card, index) => cardRow(card, visible && sectionIndex === 0 && index === 0,
