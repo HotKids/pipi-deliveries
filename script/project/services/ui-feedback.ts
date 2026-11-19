@@ -1,5 +1,8 @@
 import { EXPRESS_TOAST_COPY } from "./express-toast-copy";
 import { OperationTimeoutError } from "./deadline";
+import { ShipmentLifecycleChangedError } from "./shipment-lifecycle";
+
+export const SAVE_FAILED_TOAST = "保存失败，请稍后重试";
 
 // Every page that reports a failed operation needs the same two-step choice: show what the
 // source actually said, and fall back to that page's own copy when the throw carries no usable
@@ -13,17 +16,26 @@ export function errorMessage(error: unknown, fallback: string): string {
 
 export function transientToast(
   message: string,
-  setMessage: (message: string) => void,
+  setMessage: (message: string | ((current: string) => string)) => void,
 ) {
   return {
     isPresented: Boolean(message),
     onChanged: (isPresented: boolean) => {
-      if (!isPresented) setMessage("");
+      if (!isPresented) setMessage((current) => current === message ? "" : current);
     },
     message,
     duration: 2,
     position: "bottom" as const,
   };
+}
+
+export function noteSavedToast(note: string): string {
+  return note.trim() ? EXPRESS_TOAST_COPY.userNoteSaved : EXPRESS_TOAST_COPY.userNoteDeleted;
+}
+
+export function noteSaveFailedToast(error: unknown): string {
+  return error instanceof ShipmentLifecycleChangedError
+    ? EXPRESS_TOAST_COPY.userNoteChanged : EXPRESS_TOAST_COPY.userNoteUnavailable;
 }
 
 /** 列表下拉的四种结果（三端同一张表，AGENTS §11）。 */

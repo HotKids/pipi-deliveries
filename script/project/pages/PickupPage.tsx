@@ -7,11 +7,11 @@ import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingAct
 import { stopParcelActivityPreview } from "../services/parcel-live-activity";
 import { PICKUP_TAB_TITLE, pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
-import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
+import { EXPRESS_TOAST_COPY, MEAL_TOAST_COPY } from "../services/express-toast-copy";
 import { accountStatus, onPlatformAccountsChanged, type IdentityPlatform } from "../services/platform-accounts";
 import { stationIdentityDestination } from "../services/platform-wire";
 import { needsDetailEntryQuery } from "../services/shipment-policy";
-import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
+import { noteSavedToast, noteSaveFailedToast, type transientToast } from "../services/ui-feedback";
 import { mealRedemption } from "../services/meal/cards";
 import { currentMeal, readMeals } from "../services/meal/records";
 import { mealCredentialScope } from "../services/meal/rules";
@@ -79,7 +79,7 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
   actionBlocked: boolean;
   onDetail?: () => void;
   onSaveNote?: (note: string) => void;
-  onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
+  onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<void>;
   showNotice: (message: string) => void;
   onMealCode?: () => void;
   onArtworkChange: (card: ParcelActivityContent) => boolean;
@@ -102,10 +102,9 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
       });
       if (value == null) return;
       onSaveNote(value);
-      showNotice(value.trim() ? EXPRESS_TOAST_COPY.userNoteSaved : EXPRESS_TOAST_COPY.userNoteDeleted);
+      showNotice(noteSavedToast(value));
     } catch (error) {
-      showNotice(error instanceof ShipmentLifecycleChangedError
-        ? EXPRESS_TOAST_COPY.userNoteChanged : EXPRESS_TOAST_COPY.userNoteUnavailable);
+      showNotice(noteSaveFailedToast(error));
     } finally {
       editing.current = false;
     }
@@ -116,13 +115,21 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
     acting.current = true;
     setActionPending(true);
     try {
-      const notice = await onAction(card, opensCabinet);
-      if (notice) showNotice(notice);
-    } catch {
-      showNotice(card.kind === "meal" ? "取餐状态更新失败，请重试" : EXPRESS_TOAST_COPY.signFailed);
+      await onAction(card, opensCabinet);
     } finally {
       acting.current = false;
       setActionPending(false);
+    }
+  }
+
+  async function copyCode() {
+    if (!card.code.trim()) return;
+    const result = await copyText(card.code);
+    if (card.kind === "meal") {
+      showNotice(result === "copied" ? MEAL_TOAST_COPY.codeCopied : MEAL_TOAST_COPY.copyFailed);
+    } else {
+      const success = card.kind === "handoff" ? EXPRESS_TOAST_COPY.handoffCodeCopied : EXPRESS_TOAST_COPY.pickupCodeCopied;
+      showNotice(result === "copied" ? success : EXPRESS_TOAST_COPY.copyFailed);
     }
   }
 
@@ -132,9 +139,7 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
       animate={animate && !artworkChanged}
       spaceAfter={spaceAfter}
       title={note || card.title}
-      onCopy={onMealCode ?? (() => void copyText(card.code).then((result) => showNotice(result === "copied"
-        ? (card.kind === "meal" ? "取餐码已复制" : card.kind === "handoff" ? "寄件码已复制" : "取件码已复制")
-        : EXPRESS_TOAST_COPY.copyFailed)))}
+      onCopy={onMealCode ?? (() => void copyCode())}
       onDetail={onDetail}
       onEditNote={card.target && onSaveNote ? () => void editNote() : undefined}
       actionLabel={opensCabinet ? "一键开柜" : undefined}
@@ -151,7 +156,7 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
 }
 
 export function PickupPage({
-  state, shipments, cards, previewing, emptyArtwork, focusedRecordId, onAction, onStateChange, showNotice, onArtworkChange,
+  state, shipments, cards, previewing, emptyArtwork, focusedRecordId, onAction, onStateChange, showNotice, toast, onArtworkChange,
 }: {
   state: AppState;
   shipments: readonly Shipment[];
@@ -159,9 +164,10 @@ export function PickupPage({
   previewing: boolean;
   emptyArtwork: PickupEmptyArtwork;
   focusedRecordId: string;
-  onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
+  onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<void>;
   onStateChange: (state: AppState) => void;
   showNotice: (message: string) => void;
+  toast: ReturnType<typeof transientToast>;
   onArtworkChange: (card: ParcelActivityContent) => boolean;
 }) {
   const dismiss = Navigation.useDismiss();
@@ -232,7 +238,7 @@ export function PickupPage({
 
   return (
     <NavigationStack>
-      <VStack navigationBarVisibility="hidden" spacing={0}
+      <VStack navigationBarVisibility="hidden" spacing={0} toast={toast}
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         onAppear={() => setVisible(true)}
         onDisappear={() => setVisible(false)}

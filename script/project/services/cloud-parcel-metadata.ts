@@ -1,6 +1,7 @@
 import type { AbortSignal } from "scripting";
 import type { Shipment } from "../models";
 import { GatewayError, postGateway } from "./gateway";
+import { beginDiagnosticOperation } from "./logger";
 import { productTitle } from "./platform-parcel-data";
 import type { CloudParcelMetadata, CloudParcelPddLink } from "./platform-parcel-merge";
 import { publishSharedData, sharedData, withSharedFileTransaction } from "./shared-file-transaction";
@@ -82,7 +83,16 @@ export function parseCloudParcelDetails(result: JsonObject, waybill: string, now
 }
 
 export async function readCloudParcelMetadata(waybill: string, signal: AbortSignal): Promise<CloudParcelDetails | undefined> {
-  const result = await postGateway("/api/cloud-records/parcel-metadata", { schemaVersion: 1, waybill }, { signal });
-  if (result.ok !== true || !Object.hasOwn(result, "metadata")) throw new GatewayError("服务响应异常");
-  return parseCloudParcelDetails(result, waybill, Date.now());
+  const finish = beginDiagnosticOperation("cloud.parcel.metadata", { stage: "query" });
+  try {
+    const result = await postGateway("/api/cloud-records/parcel-metadata", { schemaVersion: 1, waybill }, { signal });
+    if (result.ok !== true || !Object.hasOwn(result, "metadata")) throw new GatewayError("服务响应异常");
+    const details = parseCloudParcelDetails(result, waybill, Date.now());
+    finish(details ? "succeeded" : "no_result");
+    return details;
+  } catch (error) {
+    if (signal.aborted) finish("cancelled");
+    else finish("failed", {}, "warning");
+    throw error;
+  }
 }

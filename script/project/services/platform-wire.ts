@@ -7,7 +7,7 @@ import {
 import { utf8Data } from "./scripting-data";
 import { asPlainObject, cleanScalarText, isPlainObject, type JsonObject } from "./value-guards";
 import { waitForRefresh } from "./deadline";
-import { writeDiagnostic } from "./logger";
+import { beginDiagnosticOperation } from "./logger";
 
 export const IDENTITY_WEB_URL = {
   cainiao: "https://pages-fast.m.taobao.com/wow/z/uniapp/1011717/last-mile-fe/end-collect-platform/identity-code",
@@ -24,9 +24,18 @@ export const CAINIAO_OUTBOUND_APP_URL = "guoguo://go/station_code";
 export async function stationIdentityDestination(
   platform: IdentityPlatform, openApp: (url: string) => Promise<boolean>,
 ): Promise<"local" | "app" | "login"> {
-  if (accountStatus(platform).state === "active") return "local";
-  if (await openApp(IDENTITY_APP_URL[platform]).catch(() => false)) return "app";
-  return accountStatus(platform).state === "active" ? "local" : "login";
+  const finish = beginDiagnosticOperation("platform.identity", { sourceProvider: platform, stage: "station_identity_entry" });
+  let route: "local" | "app" | "login" = "login";
+  try {
+    if (accountStatus(platform).state === "active") route = "local";
+    else if (await openApp(IDENTITY_APP_URL[platform]).catch(() => false)) route = "app";
+    else if (accountStatus(platform).state === "active") route = "local";
+  } catch (error) {
+    finish("failed", {}, "warning");
+    throw error;
+  }
+  finish(route);
+  return route;
 }
 
 export const CAINIAO_RECIPIENT_LIST = "mtop.cainiao.lpc.packageservice.queryPdsPackageDataList";
@@ -423,6 +432,9 @@ export function identityCodeFromResponse(
 export async function fetchStationIdentity(platform: IdentityPlatform, session: PlatformSession,
   signal?: AbortSignal, cainiaoOutbound = false): Promise<StationIdentityCode> {
   let stage = "station_identity_request";
+  const trigger = cainiaoOutbound ? "station_identity_outbound"
+    : platform === "cainiao" ? "station_identity_taobao" : "station_identity_pdd";
+  const finish = beginDiagnosticOperation("platform.identity", { sourceProvider: platform, trigger, stage });
   try {
     if (platform === "cainiao" && cainiaoOutbound) {
       const result = await readCainiao(session, CAINIAO_OUTBOUND_CODE, {
@@ -434,19 +446,19 @@ export async function fetchStationIdentity(platform: IdentityPlatform, session: 
       const now = Date.now();
       if (!validStationCode(identityCode) || !Number.isSafeInteger(lifetime) || lifetime <= 0 ||
           !Number.isSafeInteger(now + lifetime)) throw new PlatformWireError("unavailable");
+      finish("succeeded", { stage });
       return { value: identityCode, expiresAtMs: now + lifetime };
     }
     const result = platform === "cainiao"
       ? await readCainiao(session, TAOBAO_IDENTITY_API, {}, signal)
       : await readPdd(session, "/api/express_trackbox/generate_identification_code", { entry_source: "APP" }, true, signal);
     stage = "station_identity_response";
-    return identityCodeFromResponse(platform, result);
+    const decoded = identityCodeFromResponse(platform, result);
+    finish("succeeded", { stage });
+    return decoded;
   } catch (error) {
-    if (!signal?.aborted) writeDiagnostic("platform.identity.failed", {
-      sourceProvider: platform,
-      stage,
-      result: error instanceof PlatformWireError ? error.reason : "failed",
-    }, "warning");
+    if (signal?.aborted) finish("cancelled", { stage });
+    else finish(error instanceof PlatformWireError ? error.reason : "failed", { stage }, "warning");
     throw error;
   }
 }

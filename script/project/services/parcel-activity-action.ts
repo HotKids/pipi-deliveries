@@ -8,7 +8,7 @@ import { synchronizeMeals } from "./meal/cloud";
 import type { ParcelLockScreenStyle } from "./parcel-card-appearance";
 import { publishSharedData, sharedData, withSharedFileTransaction } from "./shared-file-transaction";
 import { completeCurrentParcelCard, loadState, stateLoadFailure, visibleShipments } from "./storage";
-import { writeDiagnostic } from "./logger";
+import { beginDiagnosticOperation, writeDiagnostic } from "./logger";
 
 export const PARCEL_ACTIVITY_NAME = "PipiDeliveriesParcelPickup";
 const REGISTRY_KEY = "pipi-deliveries.parcel-activity.v1";
@@ -94,13 +94,24 @@ function reportPickupTabHintFailure(): void {
 export async function completeParcelActivity(params: ParcelActivityCompletion): Promise<void> {
   if (typeof params?.linkId !== "string" || !params.linkId ||
     (params.kind !== "pickup" && params.kind !== "handoff" && params.kind !== "meal" && params.kind !== "preview")) return;
+  const finish = beginDiagnosticOperation("activity.parcel.operation", { stage: "action", trigger: params.kind });
+  try {
+    const outcome = await applyParcelActivityAction(params);
+    finish(outcome);
+  } catch (error) {
+    finish("failed", {}, "warning");
+    throw error;
+  }
+}
+
+async function applyParcelActivityAction(params: ParcelActivityCompletion) {
   const { linkId, kind } = params;
   const receipt = parcelActivityRegistry().receipts.find((item) => item.linkId === linkId);
-  if (!receipt) return;
+  if (!receipt) return "stale";
   const activityState = await LiveActivity.getActivityState(receipt.id);
-  if (activityState !== "active" && activityState !== "stale") return;
+  if (activityState !== "active" && activityState !== "stale") return "not_active";
   const target = receipt.target;
-  if (kind === "preview" ? target : !target) return;
+  if (kind === "preview" ? target : !target) return "rejected";
   const inactivePreviews = new Set<string>();
   for (const preview of parcelActivityRegistry().receipts) {
     if (preview.target || preview.id === receipt.id) continue;
@@ -124,9 +135,10 @@ export async function completeParcelActivity(params: ParcelActivityCompletion): 
       } catch { reportPickupTabHintFailure(); }
       throw error;
     }
-    return;
+    return "preview_ended";
   }
-  if (!target) return;
+  if (!target) return "rejected";
+  let savedRecord = false;
   const committed = withSharedFileTransaction(() => {
     if (!parcelActivityRegistry().receipts.some((item) => item.id === receipt.id && item.linkId === linkId)) return false;
     const state = loadState();
@@ -137,6 +149,7 @@ export async function completeParcelActivity(params: ParcelActivityCompletion): 
       const after = "mealId" in target
         ? completeMeal(target.mealScope, target.mealId) ? state : undefined
         : completeCurrentParcelCard(card);
+      savedRecord = after !== undefined;
       try {
         if (after) rememberNativePickupTabClose(receipt.id, after, inactivePreviews);
       } catch { reportPickupTabHintFailure(); }
@@ -148,4 +161,5 @@ export async function completeParcelActivity(params: ParcelActivityCompletion): 
     await endActivity(receipt.id);
     if (kind === "meal") await synchronizeMeals(5_000);
   }
+  return savedRecord ? "committed" : committed ? "dismissed" : "rejected";
 }

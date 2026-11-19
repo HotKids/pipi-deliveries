@@ -3,7 +3,7 @@ import { PARCEL_ACTIVITY_ART, PipiParcelActivity } from "../live_activity";
 import type { AppState } from "../models";
 import { pauseWhileActive } from "./deadline";
 import { activeMealCards } from "./meal/cards";
-import { writeDiagnostic } from "./logger";
+import { beginDiagnosticOperation, writeDiagnostic } from "./logger";
 import { acquireDurableRefreshLease } from "./refresh-runtime-state";
 import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, type ParcelLockScreenStyle } from "./parcel-card-appearance";
 import {
@@ -162,6 +162,21 @@ function activityData(content: ParcelActivityContent, lockScreenStyle: ParcelLoc
 
 async function createActivity(content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle, isCurrent: ActivityOwnership,
   relevanceScore?: number): Promise<boolean> {
+  const finish = beginDiagnosticOperation("activity.parcel.operation", {
+    stage: "start", trigger: content.target ? content.kind ?? "pickup" : "preview", valueKind: lockScreenStyle,
+  });
+  try {
+    const created = await registerActivity(content, lockScreenStyle, isCurrent, relevanceScore);
+    finish(created ? "succeeded" : "rejected", {}, created ? "info" : "warning");
+    return created;
+  } catch (error) {
+    finish(isCurrent() ? "failed" : "cancelled", {}, isCurrent() ? "warning" : "info");
+    throw error;
+  }
+}
+
+async function registerActivity(content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle,
+  isCurrent: ActivityOwnership, relevanceScore?: number): Promise<boolean> {
   const linkId = UUID.string();
   const { card, options } = activityData(content, lockScreenStyle, linkId, relevanceScore);
   prepareArtwork(content);
@@ -199,9 +214,18 @@ function forgetReceipt(receipt: Receipt, isCurrent: ActivityOwnership, dismissed
 }
 
 async function closeActivity(receipt: Receipt, isCurrent: ActivityOwnership): Promise<void> {
-  requireActivityOwnership(isCurrent);
-  await endActivity(receipt.id);
-  forgetReceipt(receipt, isCurrent);
+  const finish = beginDiagnosticOperation("activity.parcel.operation", {
+    stage: "end", trigger: receipt.target ? "pickup_card" : "preview",
+  });
+  try {
+    requireActivityOwnership(isCurrent);
+    await endActivity(receipt.id);
+    forgetReceipt(receipt, isCurrent);
+    finish("succeeded");
+  } catch (error) {
+    finish(isCurrent() ? "failed" : "cancelled", {}, isCurrent() ? "warning" : "info");
+    throw error;
+  }
 }
 
 async function updateActivity(receipt: Receipt, content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle,
@@ -215,15 +239,26 @@ async function updateActivity(receipt: Receipt, content: ParcelActivityContent, 
   const { card, options } = activityData(content, lockScreenStyle, receipt.linkId, relevanceScore);
   const serialized = JSON.stringify({ card, options });
   if (displayed.get(receipt.id) === serialized) return true;
-  const activity = await LiveActivity.from<ParcelActivityState>(receipt.id, PARCEL_ACTIVITY_NAME);
-  prepareArtwork(content);
-  requireActivityOwnership(isCurrent);
-  if (await activity?.update(card, options)) {
-    displayed.set(receipt.id, serialized);
-    return isCurrent();
+  const finish = beginDiagnosticOperation("activity.parcel.operation", {
+    stage: "update", trigger: content.target ? content.kind ?? "pickup" : "preview", valueKind: lockScreenStyle,
+  });
+  try {
+    const activity = await LiveActivity.from<ParcelActivityState>(receipt.id, PARCEL_ACTIVITY_NAME);
+    prepareArtwork(content);
+    requireActivityOwnership(isCurrent);
+    if (await activity?.update(card, options)) {
+      displayed.set(receipt.id, serialized);
+      const current = isCurrent();
+      finish(current ? "succeeded" : "cancelled");
+      return current;
+    }
+    if (await isRunning(receipt)) throw new Error("实时活动更新失败，请稍后重试。");
+    finish("not_active");
+    return false;
+  } catch (error) {
+    finish(isCurrent() ? "failed" : "cancelled", {}, isCurrent() ? "warning" : "info");
+    throw error;
   }
-  if (await isRunning(receipt)) throw new Error("实时活动更新失败，请稍后重试。");
-  return false;
 }
 
 async function requireActivitiesEnabled(): Promise<void> {
@@ -413,11 +448,22 @@ export function setParcelLockScreenStyle(lockScreenStyle: ParcelLockScreenStyle)
   return serializeMutation(async isCurrent => {
     const registry = parcelActivityRegistry();
     if (registry.lockScreenStyle === lockScreenStyle) return;
-    requireActivityOwnership(isCurrent);
-    saveParcelActivityRegistry({ ...registry, lockScreenStyle });
-    if (registry.receipts.length) {
-      // Repainting an existing activity cannot take a slot from the preview or another record.
-      await synchronizeActivities(committedState(), isCurrent, { updateOnly: true });
+    const finish = beginDiagnosticOperation("activity.parcel.operation", {
+      stage: "style", valueKind: lockScreenStyle, records: registry.receipts.length,
+    });
+    let persisted = false;
+    try {
+      requireActivityOwnership(isCurrent);
+      saveParcelActivityRegistry({ ...registry, lockScreenStyle });
+      persisted = true;
+      if (registry.receipts.length) {
+        // Repainting an existing activity cannot take a slot from the preview or another record.
+        await synchronizeActivities(committedState(), isCurrent, { updateOnly: true });
+      }
+      finish("succeeded", { persisted });
+    } catch (error) {
+      finish(isCurrent() ? "failed" : "cancelled", { persisted }, isCurrent() ? "warning" : "info");
+      throw error;
     }
   });
 }

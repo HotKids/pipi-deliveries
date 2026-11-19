@@ -20,7 +20,7 @@ import {
   type DiagnosticEntry,
 } from "../services/logger";
 import { copyText } from "../services/clipboard";
-import { transientToast } from "../services/ui-feedback";
+import { SAVE_FAILED_TOAST, transientToast } from "../services/ui-feedback";
 
 const EVENT_TITLES: Record<string, string> = {
   "app.state.applied": "页面状态已更新",
@@ -34,6 +34,18 @@ const EVENT_TITLES: Record<string, string> = {
   "platform.jingdong.sync.failed": "京东同步失败",
   "platform.parcel_detail.unavailable": "快递详情资料补查未完成",
   "platform.identity.failed": "驿站身份码获取失败",
+  "platform.identity.started": "开始处理驿站身份码",
+  "platform.identity.completed": "驿站身份码处理结束",
+  "platform.parcel_sync.started": "开始同步平台包裹",
+  "platform.parcel_sync.completed": "平台包裹同步结束",
+  "platform.cabinet.started": "开始请求丰巢开柜",
+  "platform.cabinet.completed": "丰巢开柜请求结束",
+  "cloud.pdd.started": "开始同步拼多多云记录",
+  "cloud.pdd.completed": "拼多多云记录同步结束",
+  "cloud.parcel.metadata.started": "开始读取云端商品信息",
+  "cloud.parcel.metadata.completed": "云端商品信息读取结束",
+  "meal.sync.started": "开始同步取餐码",
+  "meal.sync.completed": "取餐码同步结束",
   "platform.jingdong.session.save_failed": "京东会话未能保存",
   "binding.handler.entered": "已进入绑定流程",
   "binding.code.started": "正在发送验证码",
@@ -98,6 +110,13 @@ const EVENT_TITLES: Record<string, string> = {
   "app.activity.resume.failed": "实时活动完成后读取待取列表失败",
   "app.scene.changed": "前后台状态变化",
   "activity.parcel.reconcile.failed": "取件实时活动更新失败",
+  "activity.parcel.operation.started": "开始处理包裹实时活动",
+  "activity.parcel.operation.completed": "包裹实时活动处理结束",
+  "pickup.action.started": "开始处理待取操作",
+  "pickup.action.completed": "待取操作结束",
+  "pickup.tab.changed": "待取标签页显示状态已变更",
+  "pickup.meal.reload.failed": "取餐卡片刷新失败",
+  "pickup.parcel.complete.failed": "快递取件操作失败",
   "activity.parcel.end.observe.failed": "实时活动结束状态同步失败",
   "activity.parcel.tab_close_hint.failed": "待取页面收起状态记录失败",
   "activity.parcel.restore.failed": "快递实时活动恢复失败",
@@ -179,8 +198,10 @@ const EVENT_TITLES: Record<string, string> = {
   "meal.cards.unavailable": "取餐码读取失败",
   "meal.sync.deferred": "取餐码稍后同步",
   "recognition.online.fallback": "在线识别回到本地",
-  "shortcut.screen.started": "开始识别截屏",
-  "shortcut.screen.completed": "截屏识别流程结束",
+  "shortcut.screen.started": "开始快捷指令识别",
+  "shortcut.screen.completed": "快捷指令识别结束",
+  "shortcut.query.started": "开始快捷指令查件",
+  "shortcut.query.completed": "快捷指令查件结束",
   "shortcut.phone_tail.started": "开始处理手机尾号",
   "shortcut.phone_tail.completed": "手机尾号处理流程结束",
   "shortcut.notification.failed": "快捷指令通知发送失败",
@@ -769,14 +790,14 @@ export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: nu
     } as const;
     const index = await Dialog.actionSheet({
       title: "诊断日志",
-      message: "日志仅记录运单号尾 4 位，不包含手机号、验证码、Access Key、完整运单号、H5 地址或网络响应正文。",
+      message: "仅采集必要的诊断信息，相关数据仅限本地存储与使用。",
       actions: keys.map((key) => labels[key]),
     });
     const action = index == null || index < 0 ? null : keys[index] ?? null;
     if (action === "toggle") {
       const next = !recording;
       if (!setDiagnosticsEnabled(next)) {
-        setNotice("设置失败，请稍后重试");
+        setNotice(SAVE_FAILED_TOAST);
         return;
       }
       setRecording(next);
@@ -796,7 +817,7 @@ export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: nu
       setNotice(
         result === "copied"
           ? "日志已复制"
-          : "复制失败，请稍后重试",
+          : "日志复制失败，请稍后重试",
       );
     } else if (action === "clear") {
       const confirmed = await Dialog.confirm({

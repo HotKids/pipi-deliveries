@@ -4,7 +4,7 @@ import { backgroundHostBootstrap } from "./background-refresh";
 import { deadlineAfter, waitForRefresh } from "./deadline";
 import { EXPRESS_TOAST_COPY } from "./express-toast-copy";
 import { needsManualPhoneTail } from "./jt-h5";
-import { flushDiagnostics, writeDiagnostic } from "./logger";
+import { beginDiagnosticOperation, flushDiagnostics, writeDiagnostic } from "./logger";
 import { detectManualCarrier } from "./manual-query";
 import { shipmentNotificationPresentation } from "./notification-events";
 import { scheduleShipmentNotification } from "./notifications";
@@ -228,17 +228,30 @@ async function notifyScreenShipment(
 }
 
 export async function submitScreenShortcut(lookup: ParcelLookup, presentPickup: PresentPickup): Promise<string> {
+  const finish = beginDiagnosticOperation("shortcut.query", { stage: "manual_query" });
   let needsPhoneTail = false;
+  let queryFailed = false;
   let message: string = EXPRESS_TOAST_COPY.manualQueryNoTrack;
   try {
     const result = await queryScreenShortcut(lookup);
-    if (result.shipment) return notifyScreenShipment(result, lookup.pickup ? { code: lookup.pickup.code, present: presentPickup } : undefined);
+    if (result.shipment) {
+      finish("committed", { records: 1 });
+      return notifyScreenShipment(result, lookup.pickup ? { code: lookup.pickup.code, present: presentPickup } : undefined);
+    }
     needsPhoneTail = result.needsPhoneTail;
   } catch (error) {
     needsPhoneTail = needsManualPhoneTail(error);
+    queryFailed = !needsPhoneTail;
     message = manualQueryFailureToast(error);
   }
-  const token = stageShortcutLookup(lookup, "screen");
+  let token: string;
+  try { token = stageShortcutLookup(lookup, "screen"); }
+  catch (error) {
+    finish("failed", { stage: "commit" }, "warning");
+    throw error;
+  }
+  finish(needsPhoneTail ? "awaiting_phone_tail" : queryFailed ? "failed" : "no_result", {},
+    queryFailed ? "warning" : "info");
   return needsPhoneTail ? notifyScreenShortcutStatus("请长按通知，输入手机号后 4 位。", token) :
     notifyScreenShortcutStatus(message);
 }

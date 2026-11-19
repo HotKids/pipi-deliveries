@@ -13,13 +13,13 @@ import { fetchJdParcels, fetchPddOrders } from "./platform-web-parcels";
 import { eligiblePickup } from "./platform-parcel-merge";
 import { projectionSceneActive } from "./projection-viewport";
 import { displayWaybill } from "./shipment-policy";
-import { shipmentLifecycleKey } from "./shipment-lifecycle";
+import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "./shipment-lifecycle";
 import {
   completeCurrentParcelCard, loadState, parcelCardKey, readAppStateSnapshot, savePlatformParcelData, visibleShipments,
 } from "./storage";
 import { commitManualShipmentPreview, continueManualShipmentPreview, queryManualShipmentPreview } from "./sync";
 import { activePickupCards, type ParcelActivityContent } from "./parcel-pickup";
-import { writeDiagnostic } from "./logger";
+import { beginDiagnosticOperation, writeDiagnostic } from "./logger";
 import { EXPRESS_TOAST_COPY } from "./express-toast-copy";
 
 const DISCOVERY_INTERVAL = 4 * 3_600_000;
@@ -246,7 +246,18 @@ export async function refreshPlatformParcels(
     const { state, visible } = snapshot ??= readSnapshot();
     const scope = scopeFor(platform, session, visible, mode);
     if (!scope.recipients && !scope.regular) return [];
-    const task = syncPlatform(platform, session, scope, publish, state, visible).finally(() => {
+    const finish = beginDiagnosticOperation("platform.parcel_sync", {
+      sourceProvider: platform, trigger: mode, stage: "platform_parcel_sync",
+    });
+    const task = syncPlatform(platform, session, scope, publish, state, visible).then(result => {
+      finish(result.partial ? "partial" : "succeeded", { succeeded: result.added },
+        result.partial ? "warning" : "info");
+      return result;
+    }, error => {
+      if (error instanceof PlatformWireError && error.reason === "changed") finish("cancelled");
+      else finish(error instanceof PlatformWireError ? error.reason : "failed", {}, "warning");
+      throw error;
+    }).finally(() => {
       const slot = inFlight.get(platform);
       if (slot?.task !== task) return;
       inFlight.delete(platform);
@@ -270,7 +281,6 @@ export async function refreshPlatformParcels(
     } else {
       const expired = result.reason instanceof PlatformWireError && result.reason.reason === "expired";
       summary.issues.push({ platform, reason: expired ? "expired" : "failed" });
-      if (mode !== "manual" && platform !== "jingdong") writeDiagnostic("platform.sync.unavailable", {}, "warning");
     }
   }
   summary.failed = summary.issues.length;
@@ -309,38 +319,66 @@ const opening = new Set<string>();
 
 export async function performPickupAction(card: ParcelActivityContent, openCabinet: boolean, publish: (state: AppState) => void) {
   if (!openCabinet) {
-    const next = completeCurrentParcelCard(card);
-    publish(next);
-    const target = card.target;
-    if (!target || !("recordId" in target)) return EXPRESS_TOAST_COPY.signed;
-    if (card.kind !== "handoff") return "已取件";
-    const saved = next.pickupCodeRecords?.find((record) => record.id === target.recordId);
-    return saved?.completedAtMs ? "已寄件" : "寄件码已失效";
+    const finish = beginDiagnosticOperation("pickup.action", { stage: "commit", trigger: card.kind ?? "pickup" });
+    try {
+      const next = completeCurrentParcelCard(card);
+      const target = card.target;
+      const independent = target && "recordId" in target;
+      const expired = independent && card.kind === "handoff" &&
+        !next.pickupCodeRecords?.find((record) => record.id === target.recordId)?.completedAtMs;
+      finish(expired ? "expired" : "committed");
+      publish(next);
+      if (!independent) return EXPRESS_TOAST_COPY.signed;
+      if (card.kind !== "handoff") return "已取件";
+      return expired ? EXPRESS_TOAST_COPY.handoffExpired : EXPRESS_TOAST_COPY.handoffCompleted;
+    } catch (error) {
+      if (error instanceof ShipmentLifecycleChangedError) finish("stale");
+      else finish("failed", {}, "warning");
+      throw error;
+    }
   }
+  const finish = beginDiagnosticOperation("platform.cabinet", { sourceProvider: "fengchao", stage: "cabinet_open" });
   const key = parcelCardKey(card);
-  if (opening.has(key)) return "正在请求开柜，请稍候";
+  if (opening.has(key)) {
+    finish("busy");
+    return "正在请求开柜，请稍候";
+  }
   const session = platformSession("fengchao");
   const cabinet = cabinetForCard(session, card);
-  if (!session || !cabinet || !key) return "柜件状态已变更，请刷新后重试";
+  if (!session || !cabinet || !key) {
+    finish("unavailable");
+    return "柜件状态已变更，请刷新后重试";
+  }
   opening.add(key);
+  let requested = false;
   try {
     const label = [cabinet.cabinetName, cabinet.location].filter(Boolean).join(" · ");
     const confirmed = await Dialog.confirm({
       title: "确认开柜", message: "到达" + (label || "丰巢快递柜") + "后再开柜。",
       cancelLabel: "取消", confirmLabel: "开柜",
     });
-    if (!confirmed) return "";
+    if (!confirmed) {
+      finish("cancelled");
+      return "";
+    }
     const active = currentPlatformSession("fengchao", session.generation);
     const state = loadState();
     const current = activePickupCards(visibleShipments(state), state.pickupCodeRecords)
       .find((item) => parcelCardKey(item) === key && item.code === card.code);
     if (!current || !active || JSON.stringify(cabinetForCard(active, current)) !== JSON.stringify(cabinet)) {
+      finish("changed");
       return "柜件状态已变更，请刷新后重试";
     }
+    requested = true;
     await requestCabinetOpening(active, cabinet);
+    finish("accepted");
     return "开柜请求已受理，请及时取件";
   } catch (error) {
-    if (error instanceof PlatformWireError && error.reason === "expired") return "丰巢登录已失效，请重新登录";
+    if (error instanceof PlatformWireError && error.reason === "expired") {
+      finish("expired", {}, "warning");
+      return "丰巢登录已失效，请重新登录";
+    }
+    finish(requested ? "unconfirmed" : "failed", {}, "warning");
     return "开柜结果未确认，请使用取件码取件";
   } finally {
     opening.delete(key);

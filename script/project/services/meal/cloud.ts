@@ -1,6 +1,6 @@
 import { asPlainObject, isPlainObject } from "../value-guards";
 import { postGateway } from "../gateway";
-import { writeDiagnostic } from "../logger";
+import { beginDiagnosticOperation } from "../logger";
 import { MEAL_UUID, pruneMeals, readMeals, updateMeals, type MealBatch, type MealEnvelope,
   type MealPayload, type MealSession, type MealSnapshot } from "./records";
 import { mealCredentialScope } from "./rules";
@@ -196,7 +196,7 @@ export function recoverMealConflict(state: MealSnapshot, batch: MealBatch, confl
 
 let inFlight: { scope: string; promise: Promise<void> } | undefined;
 
-async function sync(scope: string, budgetMs: number): Promise<void> {
+async function sync(scope: string, budgetMs: number): Promise<"succeeded" | "budget_exhausted"> {
   const deadlineAtMs = Date.now() + budgetMs;
   async function request(operation: "session" | "pull" | "mutate", body: Record<string, unknown>,
     onConflict?: (response: Readonly<Record<string, unknown>>) => void) {
@@ -250,16 +250,20 @@ async function sync(scope: string, budgetMs: number): Promise<void> {
       continue;
     }
     state = updateMeals(scope, current => prepareMealBatch(pruneMeals(current, Date.now()), Date.now(), UUID.string().toLowerCase()));
-    if (!state.batch) return;
+    if (!state.batch) return "succeeded";
   }
+  return "budget_exhausted";
 }
 
 export function synchronizeMeals(budgetMs = BUDGET_MS): Promise<void> {
   const scope = mealCredentialScope();
   if (!scope) return Promise.resolve();
   if (inFlight?.scope === scope) return inFlight.promise;
-  const promise = sync(scope, budgetMs).catch(() => {
-    writeDiagnostic("meal.sync.deferred", { result: "retained" }, "info");
+  const finish = beginDiagnosticOperation("meal.sync", { stage: "cloud_record_sync" });
+  const promise = sync(scope, budgetMs).then(result => {
+    finish(result);
+  }, () => {
+    finish("retained", {}, "warning");
   }).finally(() => {
     if (inFlight?.promise === promise) inFlight = undefined;
   });

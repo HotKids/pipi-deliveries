@@ -1283,6 +1283,27 @@ export function writeDiagnostic(
   }
 }
 
+type OperationEvent =
+  | "platform.identity" | "platform.parcel_sync" | "platform.cabinet"
+  | "cloud.pdd" | "cloud.parcel.metadata" | "meal.sync"
+  | "shortcut.screen" | "shortcut.query" | "activity.parcel.operation" | "pickup.action";
+
+export function beginDiagnosticOperation(event: OperationEvent, details: DiagnosticDetails = {}) {
+  const startedAt = Date.now();
+  const flowId = createDiagnosticFlowId(event);
+  try { writeDiagnostic(event + ".started", { ...details, flowId }); } catch { /* Diagnostics are optional. */ }
+  let finished = false;
+  return (result: string, extra: DiagnosticDetails = {}, level: DiagnosticLevel = "info") => {
+    if (finished) return;
+    finished = true;
+    try {
+      writeDiagnostic(event + ".completed", {
+        ...details, ...extra, flowId, result, durationMs: Math.max(0, Date.now() - startedAt),
+      }, level);
+    } catch { /* Diagnostics are optional. */ }
+  };
+}
+
 type PendingStageEnd = { signal?: AbortSignal; ended: boolean; write: () => void };
 const pendingStageEnds = new Map<string, Set<PendingStageEnd>>();
 

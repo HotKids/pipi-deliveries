@@ -87,6 +87,20 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   unbindFailed: "解绑失败，请稍后重试",
   /** 存储类：本地状态每个副本都无法迁移时的提示，不当成空列表（2026-09-06）。 */
   stateLoadFailed: "本地快递数据读取失败，请稍后重试",
+
+  // The pickup-card actions exist on iOS and Pipi.
+  pickupCodeCopied: "取件码已复制",
+  handoffCodeCopied: "寄件码已复制",
+  handoffCompleted: "已寄件",
+  handoffExpired: "寄件码已失效",
+  pickupRecordActionFailed: "操作失败，请稍后重试",
+});
+
+export const MEAL_TOAST_COPY = Object.freeze({
+  completed: "已标记取餐",
+  completeFailed: "取餐操作失败，请稍后重试",
+  codeCopied: "取餐码已复制",
+  copyFailed: "取餐码复制失败，请稍后重试",
 });
 
 /** A refresh reports a unified toast by key; pages render it through the table, never free text. */

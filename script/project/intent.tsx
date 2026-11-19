@@ -2,7 +2,7 @@ import { Intent, Script } from "scripting";
 import { refreshIntentMessage } from "./services/refresh-result";
 import { refreshAllShipments } from "./services/sync";
 import { backgroundHostBootstrap, backgroundRefreshOptions } from "./services/background-refresh";
-import { flushDiagnostics, writeDiagnostic } from "./services/logger";
+import { beginDiagnosticOperation, flushDiagnostics, writeDiagnostic } from "./services/logger";
 import { discardShortcutDraft, notifyScreenShortcutStatus, PICKUP_SHORTCUT_SAVED, scheduleScreenShortcutStatus, stageShortcutLookup, submitScreenShortcut } from "./services/parcel-shortcut";
 import { normalizeRecognizedPickupCode, recognizeParcelCodes, type ParcelLookup } from "./services/parcel-code-ocr";
 import { showShortcutPickupActivities } from "./services/parcel-live-activity";
@@ -110,7 +110,8 @@ async function recognizeShortcutImage(image: UIImage, capturedAtMs: number): Pro
   return { parcel, meals: { ids: putMealObservations(scope, meal.meals, true), scope } };
 }
 
-async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shortcutParameter>, automaticRescan: boolean): Promise<string> {
+async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shortcutParameter>, automaticRescan: boolean,
+  report: (outcome: string, records?: number) => void): Promise<string> {
   const capturedAtMs = Date.now();
   let rows: ParcelRow[] = [];
   let imageParcel: ReturnType<typeof recognizeParcelCodes> | undefined;
@@ -120,17 +121,26 @@ async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shor
     const path = shortcutImagePath(parameter.value);
     const image = path ? UIImage.fromFile(path) : null;
     if (!image) {
+      report("input_unavailable");
       return notifyScreenShortcutStatus("无法读取当前屏幕的截屏，请重新运行指令。");
     }
     const { parcel, meals, draft, cancelled } = await recognizeShortcutImage(image, capturedAtMs);
-    if (cancelled) return "识别已取消，请重新运行。";
+    if (cancelled) {
+      report("cancelled");
+      return "识别已取消，请重新运行。";
+    }
     if (draft) {
       const manual = "已识别瑞幸订单，请打开取餐码再运行一次截屏识别。";
-      if (!automaticRescan) return notifyScreenShortcutStatus(manual);
+      if (!automaticRescan) {
+        report("manual_rescan_required");
+        return notifyScreenShortcutStatus(manual);
+      }
       const scheduled = await scheduleScreenShortcutStatus("已识别瑞幸订单，请在 3 秒内打开“取餐码”");
+      report(scheduled ? "automatic_rescan_requested" : "manual_rescan_required");
       return scheduled ? LUCKIN_RESCAN : manual;
     }
     if (meals?.ids.length) {
+      report("meal_saved", meals.ids.length);
       const message = await notifyShortcutPickup(meals.ids.map(mealId => ({ mealId, mealScope: meals.scope })),
         `已添加 ${meals.ids.length} 张取餐码，可在「待取」查看。`);
       await synchronizeMeals(5_000);
@@ -138,11 +148,13 @@ async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shor
     }
     imageParcel = parcel;
   } else {
+    report("invalid_input");
     return "请传入当前屏幕的截屏或短信正文。";
   }
 
   const { lookup, independent } = imageParcel ?? recognizeParcelCodes(rows, capturedAtMs);
   if (!lookup && !independent) {
+    report("no_result");
     const message = "未识别到明确的运单号、取件码或寄件码。";
     return parameter.type === "fileURL" ? notifyScreenShortcutStatus("未识别到明确的取餐码、运单号、取件码或寄件码。") : message;
   }
@@ -154,6 +166,8 @@ async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shor
     if (token) discardShortcutDraft(token);
     throw error;
   }
+  report(record ? record.kind === "handoff" ? "handoff_saved" : "pickup_saved"
+    : lookup && parameter.type === "text" ? "lookup_staged" : "waybill_recognized", record ? 1 : 0);
   if (parameter.type === "fileURL") {
     if (lookup) return submitScreenShortcut(lookup, showShortcutPickupActivities);
     if (record?.kind === "pickup") return notifyShortcutPickup([{ recordId: record.id }], PICKUP_SHORTCUT_SAVED);
@@ -173,21 +187,24 @@ async function run() {
   const parameter = automaticRescan && input?.type !== "fileURL" && screenshot ? screenshot : input ?? screenshot;
   if (parameter) {
     const screen = parameter.type === "fileURL";
-    const startedAt = Date.now();
-    if (screen) {
-      try { writeDiagnostic("shortcut.screen.started"); } catch { /* Diagnostics are optional. */ }
-    }
+    const finish = beginDiagnosticOperation("shortcut.screen", {
+      stage: screen ? "screenshot" : "text", trigger: automaticRescan ? "luckin_rescan" : "shortcut",
+    });
+    let outcome = "failed";
+    let records = 0;
     let message: string;
     try {
-      message = await recognizeShortcutParcel(parameter, automaticRescan);
+      message = await recognizeShortcutParcel(parameter, automaticRescan, (result, count = 0) => {
+        outcome = result;
+        records = count;
+      });
     } catch {
+      outcome = "failed";
       message = screen ? "处理截屏识别结果失败，请重试。" : "处理快递识别结果失败，请重试。";
       if (screen) message = await notifyScreenShortcutStatus(message);
     } finally {
-      if (screen) try {
-        writeDiagnostic("shortcut.screen.completed", { durationMs: Date.now() - startedAt });
-        flushDiagnostics();
-      } catch { /* Diagnostics are optional. */ }
+      finish(outcome, { records }, outcome === "failed" ? "warning" : "info");
+      flushDiagnostics();
     }
     Script.exit(Intent.text(message));
     return;

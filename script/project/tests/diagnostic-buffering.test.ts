@@ -134,4 +134,16 @@ continueWrites();
 await logger.drainAppDiagnostics();
 assert.deepEqual(logger.readDiagnostics().map(entry => entry.details.flowId), ["app-after-clear"],
   "a native write in flight at clear must not publish old rows or drop new rows");
+logger.clearDiagnostics();
+const finish = logger.beginDiagnosticOperation("platform.cabinet", { sourceProvider: "fengchao", stage: "cabinet_open" });
+finish("cancelled");
+finish("accepted");
+await logger.drainAppDiagnostics();
+const operation = logger.readDiagnostics().reverse();
+assert.deepEqual(operation.map(entry => entry.event), ["platform.cabinet.started", "platform.cabinet.completed"]);
+assert.ok(operation[0].details.flowId);
+assert.equal(operation[0].details.flowId, operation[1].details.flowId);
+assert.equal(operation[1].details.sourceProvider, "fengchao");
+assert.equal(operation[1].details.result, "cancelled");
+assert.ok(Number(operation[1].details.durationMs) >= 0);
 console.log("diagnostic buffering tests passed");

@@ -33,6 +33,7 @@ import type { PickupEmptyArtwork } from "./components/EmptyDeliveryVehicle";
 import { expireDueParcelHandoffs, loadAppState, peekStateRevision, toggleParcelArtwork, visibleShipments } from "./services/storage";
 import { performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
 import {
+  beginDiagnosticOperation,
   diagnosticErrorDetails,
   diagnosticState,
   drainAppDiagnostics,
@@ -70,6 +71,8 @@ import { PICKUP_TAB_TITLE, activePickupCards, independentPickupContent, type Par
 import { nextParcelHandoffDeadline } from "./services/parcel-handoff-expiry";
 import { reconcileFengchaoReminders } from "./services/fengchao-reminders";
 import { transientToast } from "./services/ui-feedback";
+import { EXPRESS_TOAST_COPY, MEAL_TOAST_COPY } from "./services/express-toast-copy";
+import { ShipmentLifecycleChangedError } from "./services/shipment-lifecycle";
 
 type StartupState = {
   state: AppState | null;
@@ -138,7 +141,10 @@ function usePickupTabState(cards: readonly ParcelActivityContent[], previewing: 
     if (hasCards) {
       if (!hadCards.current) previousActivity.current = nativePickupTabCloseId();
       hadCards.current = true;
-      if (!keepVisible) setKeepVisible(true);
+      if (!keepVisible) {
+        setKeepVisible(true);
+        writeDiagnostic("pickup.tab.changed", { result: "shown", records: cards.length });
+      }
       return;
     }
     hadCards.current = false;
@@ -146,9 +152,13 @@ function usePickupTabState(cards: readonly ParcelActivityContent[], previewing: 
     const nativeClose = nativePickupTabCloseId();
     if (nativeClose && nativeClose !== previousActivity.current) {
       setKeepVisible(false);
+      writeDiagnostic("pickup.tab.changed", { result: "closed_from_activity" });
       return;
     }
-    const timer = setTimeout(() => setKeepVisible(false), 60_000);
+    const timer = setTimeout(() => {
+      setKeepVisible(false);
+      writeDiagnostic("pickup.tab.changed", { result: "closed_after_grace" });
+    }, 60_000);
     return () => clearTimeout(timer);
   }, [hasCards, keepVisible, activityEndId]);
   return { visible: hasCards || keepVisible, emptyArtwork: emptyArtwork.current };
@@ -235,15 +245,39 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
     });
   }
 
-  async function finishPickup(card: typeof pickupCards[number], openCabinet: boolean): Promise<string> {
+  async function finishPickup(card: typeof pickupCards[number], openCabinet: boolean): Promise<void> {
     const target = card.target;
-    if (!target || !("mealId" in target)) return performPickupAction(card, openCabinet, applyState);
-    if (mealCredentialScope() !== target.mealScope || !completeMeal(target.mealScope, target.mealId)) {
-      reloadMeals();
-      return "这张取餐码已不可用。";
+    if (target && "mealId" in target) {
+      const finish = beginDiagnosticOperation("pickup.action", { stage: "commit", trigger: "meal" });
+      let completed = false;
+      try {
+        completed = mealCredentialScope() === target.mealScope && completeMeal(target.mealScope, target.mealId);
+        finish(completed ? "committed" : "stale");
+      } catch (error) {
+        finish("failed", diagnosticErrorDetails(error), "warning");
+      }
+      setPickupNotice(completed ? MEAL_TOAST_COPY.completed : MEAL_TOAST_COPY.completeFailed);
+      try {
+        if (completed) refreshMeals();
+        else reloadMeals();
+      } catch (error) {
+        writeDiagnostic("pickup.meal.reload.failed", diagnosticErrorDetails(error), "warning");
+      }
+      return;
     }
-    refreshMeals();
-    return "已完成取餐";
+    try {
+      const notice = await performPickupAction(card, openCabinet, applyState);
+      if (notice) setPickupNotice(notice);
+    } catch (error) {
+      if (error instanceof ShipmentLifecycleChangedError) {
+        setPickupNotice(card.kind === "handoff" ? "未找到该寄件码"
+          : target && "recordId" in target ? "未找到该取件码" : "该快递已失效");
+      } else {
+        writeDiagnostic("pickup.parcel.complete.failed", diagnosticErrorDetails(error), "warning");
+        setPickupNotice(target && "recordId" in target
+          ? EXPRESS_TOAST_COPY.pickupRecordActionFailed : EXPRESS_TOAST_COPY.signFailed);
+      }
+    }
   }
 
   function observePlatformList() {
@@ -524,7 +558,6 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   return (
     <TabView
       selection={selection}
-      toast={transientToast(pickupNotice, setPickupNotice)}
       background={
         projectionView
           ? {
@@ -563,6 +596,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
             focusedRecordId={navigationRequest.pickupRecordId}
             onStateChange={applyState}
             showNotice={setPickupNotice}
+            toast={transientToast(pickupNotice, setPickupNotice)}
             onAction={finishPickup}
             onArtworkChange={changePickupArtwork}
           />
