@@ -49,6 +49,7 @@ test("one native trigger is reconciled and removed when the parcel is picked up"
   const originalNotify = globalThis.Notification;
   const pending = new Map<string, { identifier: string; content: any }>();
   const triggers: { timeInterval: number }[] = [];
+  let notificationReads = 0;
   const originalTrigger = (globalThis as any).TimeIntervalNotificationTrigger;
   Object.assign(globalThis, {
     TimeIntervalNotificationTrigger: class {
@@ -60,13 +61,20 @@ test("one native trigger is reconciled and removed when the parcel is picked up"
         pending.set(id, { identifier: id, content: options });
         return true;
       },
-      async getAllPendingsOfCurrentScript() { return [...pending.values()]; },
+      async getAllPendingsOfCurrentScript() {
+        notificationReads++;
+        return [...pending.values()];
+      },
       async removePendings(ids: string[]) { ids.forEach(id => pending.delete(id)); },
     },
   });
   try {
     const state = saveState({ ...emptyState(), shipments: [shipment] }, now);
-    await reconcileFengchaoReminders(state);
+    await Promise.all([
+      reconcileFengchaoReminders(state, { shipments: state.shipments }),
+      reconcileFengchaoReminders(state, { deadline: now + 10_000 }),
+    ]);
+    assert.equal(notificationReads, 1, "overlapping app and notification requests for one revision share one native pass");
     await reconcileFengchaoReminders(state);
     assert.deepEqual(triggers.map(item => item.timeInterval), [15 * 3600]);
     assert.equal(pending.size, 1);

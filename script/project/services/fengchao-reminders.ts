@@ -17,7 +17,8 @@ const TITLE = "丰巢取件超时提醒";
 const BODY = "预计 1 小时内超出免费保管期，请及时取件。";
 type Due = { key: string; shipmentId: string; remindAt: number; freeUntil: number };
 type Receipt = { scheduledAt: number; freeUntil: number };
-let pendingRun: Promise<void> = Promise.resolve();
+let pendingRun = Promise.resolve(false);
+let pendingRevision: number | undefined;
 
 export function fengchaoReminder(shipment: Shipment, now: number): Due | null {
   const card = parcelActivityContent(shipment);
@@ -57,36 +58,45 @@ function readReceipts(): Record<string, Receipt> | null {
   return null;
 }
 
-export function reconcileFengchaoReminders(state: AppState, deadline?: number,
-  shipments?: readonly Shipment[]): Promise<void> {
-  pendingRun = pendingRun.then(() => reconcileCurrent(state, deadline, shipments)).catch(() => {
+export function reconcileFengchaoReminders(state: AppState, { deadline, shipments, preferencesChanged }: {
+  deadline?: number;
+  shipments?: readonly Shipment[];
+  preferencesChanged?: boolean;
+} = {}): Promise<void> {
+  const canJoin = !preferencesChanged && pendingRevision === state.revision;
+  pendingRevision = state.revision;
+  const run = pendingRun.then(completed => canJoin && completed || reconcileCurrent(state, deadline, shipments)).catch(() => {
     writeDiagnostic("notification.fengchao.reminder.failed", {}, "warning");
+    return false;
   });
-  return pendingRun;
+  pendingRun = run;
+  return run.then(() => {
+    if (pendingRun === run) pendingRevision = undefined;
+  });
 }
 
-async function reconcileCurrent(state: AppState, deadline?: number, shipments?: readonly Shipment[]): Promise<void> {
+async function reconcileCurrent(state: AppState, deadline?: number, shipments?: readonly Shipment[]): Promise<boolean> {
   const now = Date.now();
-  if (deadlineExpired(deadline, now) || peekStateRevision() !== state.revision) return;
+  if (deadlineExpired(deadline, now) || peekStateRevision() !== state.revision) return false;
   const plans = new Map<string, Due>();
   for (const parcel of shipments ?? visibleShipments(state, now)) {
     const plan = fengchaoReminder(parcel, now);
     if (plan) plans.set(plan.key, plan);
   }
-  if (!plans.size && !readReceipts()) return;
+  if (!plans.size && !readReceipts()) return true;
   if (plans.size && !loadNotificationStatuses(true).includes("WAITING_PICKUP")) plans.clear();
   const budget = remainingTimeoutMs(deadline, 8_000);
   const lease = acquireDurableRefreshLease("fengchao-pickup-reminders", 10_000);
-  if (!lease) return;
+  if (!lease) return false;
   const end = now + budget;
   const current = () => lease.isCurrent() && peekStateRevision() === state.revision && Date.now() < end;
   try {
     const previous = readReceipts();
-    if (!plans.size && !previous) return;
+    if (!plans.size && !previous) return true;
     const receipts = previous || {};
     if (!previous) writeDurableText(LEDGER, "{}");
     const pending = await waitForRefresh(Notification.getAllPendingsOfCurrentScript(), end);
-    if (!current()) return;
+    if (!current()) return false;
     const retained = new Set<string>();
     const remove: string[] = [];
     for (const item of pending) {
@@ -105,7 +115,7 @@ async function reconcileCurrent(state: AppState, deadline?: number, shipments?: 
       if (receipt.freeUntil <= now || !plans.has(key) && receipt.scheduledAt > now) delete receipts[key];
     }
     for (const [key, plan] of plans) {
-      if (!current()) return;
+      if (!current()) return false;
       const time = Date.now();
       const scheduledAt = Math.max(time + 1_000, plan.remindAt);
       if (retained.has(key) || receipts[key]?.scheduledAt <= time || scheduledAt >= plan.freeUntil) continue;
@@ -122,6 +132,7 @@ async function reconcileCurrent(state: AppState, deadline?: number, shipments?: 
       }
     }
     writeDurableText(LEDGER, JSON.stringify(receipts));
+    return current();
   } finally {
     lease.release();
   }

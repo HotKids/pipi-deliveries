@@ -2,6 +2,7 @@ import { AppEvents, HStack, Link, List, Picker, Section, Spacer, Text, Toggle, u
 import { ParcelActivityPreviewCard } from "../components/PickupTabCard";
 import { SectionIconButton } from "../components/SectionIconButton";
 import {
+  onParcelActivityPreviewChanged,
   parcelActivityStatus,
   setParcelLockScreenStyle,
   startAllParcelActivities,
@@ -39,7 +40,7 @@ export function ParcelShortcutPage() {
   );
 }
 
-export function ParcelActivityPage({ revision }: { revision: number }) {
+export function ParcelActivityPage() {
   const [activity, setActivity] = useState({
     showAll: false, previewing: false, lockScreenStyle: "dynamic" as ParcelLockScreenStyle,
   });
@@ -49,7 +50,7 @@ export function ParcelActivityPage({ revision }: { revision: number }) {
   useEffect(() => {
     let mounted = true;
     function reload() {
-      void parcelActivityStatus().then(status => {
+      void parcelActivityStatus(false).then(status => {
         if (mounted) setActivity(status);
       }).catch(() => {
         if (mounted) setNotice("无法读取实时活动状态。");
@@ -58,15 +59,17 @@ export function ParcelActivityPage({ revision }: { revision: number }) {
       });
     }
     reload();
+    const unsubscribe = onParcelActivityPreviewChanged(reload);
     const observe = (phase: "active" | "inactive" | "background") => {
       if (phase === "active") reload();
     };
     AppEvents.scenePhase.addListener(observe);
     return () => {
       mounted = false;
+      unsubscribe();
       AppEvents.scenePhase.removeListener(observe);
     };
-  }, [revision]);
+  }, []);
 
   async function change(action: () => Promise<void>, lockScreenStyle?: ParcelLockScreenStyle) {
     if (busy) return;
@@ -78,7 +81,7 @@ export function ParcelActivityPage({ revision }: { revision: number }) {
       setNotice(error instanceof Error && error.message ? error.message : "实时活动操作失败。");
     } finally {
       try {
-        setActivity(await parcelActivityStatus());
+        setActivity(await parcelActivityStatus(false));
       } catch {
         setNotice("无法读取实时活动状态。");
       } finally {

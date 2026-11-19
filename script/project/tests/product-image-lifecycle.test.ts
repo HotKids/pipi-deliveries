@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 
-const { emptyState, isStoredShipmentRetained, loadState, saveState, removeShipment, visibleShipments } = await import("../services/storage");
+const { emptyState, isStoredShipmentRetained, loadState, readAppStateSnapshot, saveState, removeShipment, visibleShipments } = await import("../services/storage");
 const { cachedProductImage, productImageCacheKey, productImageCachePath,
   rememberProductImage } = await import("../services/product-image-cache");
 const DAY = 86_400_000;
@@ -161,7 +161,7 @@ try {
   const key = productImageCacheKey(stored.identity);
   const isRetained = Function("scope", `with(scope) { ${ownerSource}; return isRetained; }`)({
     props: { shipment: stored }, cacheKey: key, shipmentLifecycleKey, productImageCacheKey,
-    isStoredShipmentRetained, loadState, sharedData, withSharedFileTransaction,
+    isStoredShipmentRetained, readAppStateSnapshot, sharedData, withSharedFileTransaction,
   });
   const original = { syntheticOriginal: true } as unknown as UIImage;
   rememberProductImage(key, original, isRetained);

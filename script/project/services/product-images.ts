@@ -76,9 +76,9 @@ export function initialProductImage(key: string, isRetained?: () => boolean): UI
       if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
           width <= 0 || height <= 0 || width * height > MAX_IMAGE_PIXELS) continue;
       const image = source.preparingThumbnail({ width: THUMBNAIL_EDGE, height: THUMBNAIL_EDGE });
-      if (image && productImageCacheFiles(key).includes(path)) return rememberProductImage(key, image,
-        () => (!isRetained || isRetained()) && FileManager.existsSync(path) &&
-          !FileManager.existsSync(path.replace(/\.img$/, ".deleted")));
+      const isCurrent = () => (!isRetained || isRetained()) && FileManager.existsSync(path) &&
+        !FileManager.existsSync(path.replace(/\.img$/, ".deleted"));
+      if (image && isCurrent()) return rememberProductImage(key, image, isCurrent);
     } catch { /* Missing or damaged cache files keep the normal asynchronous recovery path. */ }
   }
   return null;

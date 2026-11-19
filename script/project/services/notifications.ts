@@ -1,10 +1,10 @@
 import { Notification, Script } from "scripting";
 import type { AppState, ShipmentNotificationEvent } from "../models";
 import { loadNotificationStatuses, notificationEnabled } from "./notification-preferences";
-import { acknowledgeShipmentNotification, deferShipmentNotification, loadState } from "./storage";
+import { acknowledgeShipmentNotification, deferShipmentNotification, loadStateSnapshot, type LoadedStateSnapshot } from "./storage";
 import { acquireDurableRefreshLease, durableRefreshLeaseRemainingMs } from "./refresh-runtime-state";
 import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
-import { deadlineExpired, remainingTimeoutMs, waitForRefresh } from "./deadline";
+import { deadlineExpired, pauseWhileActive, remainingTimeoutMs, waitForRefresh } from "./deadline";
 import { isHiddenCompletedOrderPlaceholder, isConfirmedNoItemOrder, isHiddenSignedShipment, isHiddenCancelledShipment, shipmentPresentationStatus } from "./status";
 import { isAttachedShipment } from "./waybill-ownership";
 import { shipmentNotificationPresentation } from "./notification-events";
@@ -63,10 +63,11 @@ export async function replayPendingShipmentNotifications(
   let result = "completed";
   const readStartedAt = Date.now();
   let readDurationMs: number | undefined;
-  const commitEvent = (eventId: string, deferred = false) => {
+  const commitEvent = (eventId: string, observed: LoadedStateSnapshot, deferred = false) => {
     const commitStartedAt = Date.now();
     try {
-      return deferred ? deferShipmentNotification(eventId) : acknowledgeShipmentNotification(eventId);
+      return deferred ? deferShipmentNotification(eventId, commitStartedAt, observed)
+        : acknowledgeShipmentNotification(eventId, commitStartedAt, observed);
     } finally {
       // Include the owning mutation's reads and cleanup, separately from host scheduling.
       writeDurationMs += Date.now() - commitStartedAt;
@@ -74,7 +75,8 @@ export async function replayPendingShipmentNotifications(
   };
   try {
     loadNotificationStatuses(true);
-    current = loadState();
+    let snapshot = loadStateSnapshot();
+    current = snapshot.state;
     // T23 (user 2026-09-26): an event queued while its row's carrier was unmatched waits for the carrier; storage
     // releases it with a rebuilt title, so it is neither scheduled nor acknowledged here.
     const events = deliverableEvents(current).filter(event => !options.alignedShipmentId ||
@@ -86,10 +88,13 @@ export async function replayPendingShipmentNotifications(
         ...details, pendingNotifications: events.length, readDurationMs,
       });
     }
-    for (const event of events) {
+    for (const [index, event] of events.entries()) {
+      // Finish each durable ACK before letting a queued UI event run.
+      if (index > 0) await pauseWhileActive(0);
       if (deadlineExpired(deadlineAtMs)) { result = "budget_exhausted"; return current; }
       if (!canSchedule() || !lease.isCurrent()) { result = "ownership_lost"; return current; }
-      const latest = current = loadState();
+      snapshot = loadStateSnapshot(Date.now(), snapshot);
+      const latest = current = snapshot.state;
       if (!latest.pendingNotifications?.some((item) => item.id === event.id)) continue;
       if (deadlineExpired(deadlineAtMs)) { result = "budget_exhausted"; return current; }
       const shipment = latest.shipments.find((shipment) => shipment.identity.id === event.shipmentId);
@@ -139,7 +144,7 @@ export async function replayPendingShipmentNotifications(
         }
         // Persist rotation before another host wait: a bounded drain may expire
         // before reaching healthy events, which must lead the next attempt.
-        current = commitEvent(event.id, true);
+        current = commitEvent(event.id, snapshot, true);
         if (deadlineExpired(deadlineAtMs)) { result = "budget_exhausted"; return current; }
         continue;
       }
@@ -149,7 +154,7 @@ export async function replayPendingShipmentNotifications(
       }
       // The host has no documented caller-selected request ID. A crash after scheduling
       // and before this durable acknowledgement can repeat the notification.
-      current = commitEvent(event.id);
+      current = commitEvent(event.id, snapshot);
       succeeded++;
     }
   } catch (error) {
@@ -172,7 +177,7 @@ export async function replayPendingShipmentNotifications(
     });
   }
   if (current && !options.alignedShipmentId && canSchedule()) {
-    await reconcileFengchaoReminders(current, deadlineAtMs);
+    await reconcileFengchaoReminders(current, { deadline: deadlineAtMs });
   }
   return current;
 }

@@ -6,7 +6,7 @@ import type { AccountParcelDto } from "../account-parser";
 import { replayPendingShipmentNotifications } from "../notifications";
 import { loadOrderProjectionReference, saveOrderProjectionReferences } from "../routes";
 import { applyTargetedAccountShipment, jingDongOrderPastPickup, selectShipmentDetailTimeline, unprojectedAccountOrder } from "../shipment-policy";
-import { bindingsForSource, commitTargetShipmentRefresh, loadState, peekStateRevision, storedShipmentsForProcessing } from "../storage";
+import { bindingsForSource, commitTargetShipmentRefresh, loadState, peekStateRevision, readAppStateSnapshot, storedShipmentsForProcessing } from "../storage";
 import { normalizeWaybill, normalizedProjectedWaybill, shipmentPresentationStatus, sortShipments, timedTracks } from "../status";
 import { acquireRenewingDurableRefreshLease, durableRefreshLeaseMaxRemainingMs, durableRefreshLeaseRemainingMs, type DurableRefreshLease } from "../refresh-runtime-state";
 import { requestWidgetReload } from "../widgets";
@@ -1346,7 +1346,7 @@ export async function projectStoredAccountOrders(
     const holderRemainingMs = durableRefreshLeaseRemainingMs(leaseKey);
     if (holderRemainingMs <= 0) {
       const now = Date.now();
-      const before = loadState(now);
+      const before = readAppStateSnapshot(now).state;
       const includeCompleted = options.onScreen?.() === true;
       const due = storedAccountOrderProjectionCandidates(
         runtimeState, before, source, now, excludeOwnerIds, includeCompleted);

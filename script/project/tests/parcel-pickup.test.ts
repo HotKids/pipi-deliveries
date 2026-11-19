@@ -275,6 +275,7 @@ let meals: ParcelActivityContent[] = [];
 const refused = new Set<string>();
 const completions: string[] = [];
 const native = new Map<string, ReturnType<typeof makeActivity>>();
+let batchStatusReads = 0;
 const activeCodes = () => [...native.values()]
   .filter((item) => item.state === "active")
   .sort((left, right) => right.rank - left.rank)
@@ -348,6 +349,10 @@ const activityGlobals = {
   },
   LiveActivity: {
     areActivitiesEnabled: async () => activitiesEnabled,
+    getAllActivities: async () => {
+      batchStatusReads++;
+      return [...native.values()].map(({ activityId, state }) => ({ id: activityId, state }));
+    },
     getActivityState: async (id: string) => native.get(id)?.state ?? null,
     from: async (id: string) => native.get(id) ?? null,
   },
@@ -550,7 +555,9 @@ const sameActivities = () => [...native.values()].filter(item => item.state === 
   .map(({ activityId, code, rank }) => ({ activityId, code, rank }));
 const previousActivities = sameActivities();
 const styleEventIndex = events.length;
+const batchReadsBeforeStyle = batchStatusReads;
 await host.setParcelLockScreenStyle("white");
+assert.equal(batchStatusReads, batchReadsBeforeStyle + 1, "all running cards share one native status read");
 assert.deepEqual(sameActivities(), previousActivities, "changing appearance preserves activity identity and relevance");
 assert.deepEqual(events.slice(styleEventIndex), ["update " + firstPickup.code, "update " + PARCEL_ACTIVITY_PREVIEW.code]);
 assert.equal(previewTransitions, 1, "recoloring is not a new preview");
@@ -783,8 +790,11 @@ const sameDayCards: ParcelActivityContent[] = runInNewContext(pickupProjection[1
 });
 assert.deepEqual(pickupDateSections(sameDayCards, false, "", exampleDay)[0].items.map(card => card.code),
   [brandedMeal.code, PARCEL_ACTIVITY_PREVIEW.code], "Pipi Home orders meals before parcels within a day");
-assert.match(appSource, /const \[initialStartup, initialPickupPreview\] = await Promise\.all\(\[readStartupState\(\), readPickupPreview\(\)\]\);\s*await Navigation\.present\(\{\s*element: <App initialStartup=\{initialStartup\} initialPickupPreview=\{initialPickupPreview \?\? false\}/,
-  "the first native tab bar waits for the local preview decision alongside the saved shipment state");
+const runSource = appSource.slice(appSource.indexOf("async function run()"), appSource.lastIndexOf("void run();"));
+assert.match(runSource, /const initialStartup = await readStartupState\(\);[\s\S]*?initialPickupPreview = hasRegisteredParcelPreview\(\);[\s\S]*?await Navigation\.present/);
+assert.doesNotMatch(runSource, /readPickupPreview\(/, "a slow native status read cannot delay presentation");
+assert.match(appSource, /onParcelActivityPreviewChanged\(reload\);\s*if \(initialPickupPreview\) reload\(\);/,
+  "a former preview is confirmed after mount");
 assert.match(appSource, /\[pickupPreview, setPickupPreview\] = useState\(initialPickupPreview\)/,
   "a previously active preview shows its pickup tab on the first render");
 assert.match(appSource, /useObservable<string>\(\s*navigationRequest\.pickupRecordId \? "pickup" : "deliveries"/);

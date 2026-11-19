@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import "./state-storage-mock";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
 import { SCRIPT_BINDING_SOURCE } from "../services/script-source";
-import { loadAppState, loadStateSnapshot, upsertPendingQuery, upsertShipment } from "../services/storage";
+import { loadAppState, loadStateSnapshot, readAppStateSnapshot, upsertPendingQuery, upsertShipment } from "../services/storage";
 
 const now = Date.now();
 const eventAtMs = now - 60_000;
@@ -63,10 +63,32 @@ assert.equal(current.state.pendingQueries.length, 2);
 
 const previousAsync = asyncStateReads;
 const previousSync = syncStateReads;
-assert.equal((await loadAppState()).pendingQueries.length, 2);
+const appState = await loadAppState();
+assert.equal(appState.pendingQueries.length, 2);
 assert.ok(asyncStateReads > previousAsync);
 assert.equal(syncStateReads, previousSync, "an unchanged app bootstrap reads state blobs only with async native I/O");
 
-const expired = loadStateSnapshot(first.createdAtMs + EXPRESS_POLICY.pendingQueries.ttlMs, current);
-assert.deepEqual(expired.state.pendingQueries.map(({ id }) => id), [second.id], "an expiring row invalidates an exact-byte snapshot");
+const originalGet = Storage.get;
+let mirrorReads = 0;
+let verifiedLatest = current;
+Storage.get = (key, ...options) => {
+  if (key === "pipi_deliveries_state_v1") mirrorReads++;
+  return originalGet(key, ...options);
+};
+try {
+  assert.equal(readAppStateSnapshot().state, appState, "foreground observers reuse the snapshot already shown");
+  assert.equal(readAppStateSnapshot().state, appState, "another foreground refresh skips state decoding");
+  assert.equal(mirrorReads, 0, "verified identical state avoids re-reading the mirrors");
+  const third = pending("TEST567890", now + 100);
+  upsertPendingQuery(third, now + 100);
+  verifiedLatest = readAppStateSnapshot(now + 100);
+  assert.notEqual(verifiedLatest.state, appState);
+  assert.equal(verifiedLatest.state.pendingQueries.length, 3, "a later durable write replaces the foreground snapshot");
+} finally {
+  Storage.get = originalGet;
+}
+
+const expired = loadStateSnapshot(first.createdAtMs + EXPRESS_POLICY.pendingQueries.ttlMs, verifiedLatest);
+assert.deepEqual(expired.state.pendingQueries.map(({ waybill }) => waybill).sort(), [second.waybill, "TEST567890"].sort(),
+  "an expiring row invalidates a previously verified snapshot");
 console.log("app state read tests passed");

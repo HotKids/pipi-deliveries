@@ -12,6 +12,7 @@ import { MEAL_ARTWORK_TOKENS, PICKUP_STICKER_ENTRANCE } from "./pickup-card-toke
 const { artWidth: ART_WIDTH, artHeight: ART_HEIGHT } = PIPI_CARD;
 const ATLAS_COLUMNS = 7;
 const FRAME_DURATION_MS = 33;
+const PLAYBACK_START_DELAY_MS = 200;
 const CARD_ROW_SPACING = 16;
 const BOX_IMAGE = "parcel-activity/box.png";
 
@@ -134,23 +135,39 @@ function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playba
 }) {
   const [appearance, setAppearance] = useState(0);
   const [atlas, setAtlas] = useState(playback && recentAtlas?.path === playback.path ? recentAtlas.image : undefined);
+  const [playbackReady, setPlaybackReady] = useState(false);
   const hasAppeared = useRef(false);
   const visible = useRef(false);
-  useEffect(() => () => { visible.current = false; }, []);
+  const startTimer = useRef<number | undefined>(undefined);
+  const cancelPlaybackStart = () => {
+    visible.current = false;
+    if (startTimer.current !== undefined) clearTimeout(startTimer.current);
+    startTimer.current = undefined;
+  };
+  useEffect(() => cancelPlaybackStart, []);
   const logo = useBundledImage(logoAsset) ?? null;
-  const still = useBundledImage(atlas ? undefined : baseAsset);
+  const still = useBundledImage(playbackReady && atlas ? undefined : baseAsset);
   return (
     <ZStack alignment="topLeading" frame={{ width: ART_WIDTH, height: ART_HEIGHT }}
       onAppear={playback ? () => {
         visible.current = true;
-        if (atlas === undefined) void loadArtworkAtlas(playback.path).then((image) => {
-          if (visible.current) setAtlas(image);
-        });
-        if (hasAppeared.current) setAppearance((visit) => visit + 1);
-        hasAppeared.current = true;
+        if (startTimer.current !== undefined) return;
+        startTimer.current = setTimeout(() => {
+          startTimer.current = undefined;
+          if (!visible.current) return;
+          if (atlas === undefined) void loadArtworkAtlas(playback.path).then((image) => {
+            if (visible.current) setAtlas(image);
+          });
+          if (hasAppeared.current) setAppearance((visit) => visit + 1);
+          hasAppeared.current = true;
+          setPlaybackReady(true);
+        }, PLAYBACK_START_DELAY_MS);
       } : undefined}
-      onDisappear={() => { visible.current = false; }}>
-      {atlas && playback ? <AnimatedPickupArtwork key={appearance} atlas={atlas}
+      onDisappear={() => {
+        cancelPlaybackStart();
+        if (playback) setPlaybackReady(false);
+      }}>
+      {playbackReady && atlas && playback ? <AnimatedPickupArtwork key={appearance} atlas={atlas}
         playback={playback} logo={logo} logoSize={logoSize} logoX={logoX} logoY={logoY} /> : (
         <ZStack alignment="topLeading">
           {still ? <Image image={still} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} /> : null}

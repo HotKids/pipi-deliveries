@@ -994,6 +994,55 @@ test("PDD waiting pickup sync survives an unavailable order-capture host", async
   }
 });
 
+test("PDD checks a batch of known orders without decoding the full store per waybill", async (t) => {
+  t.mock.method(Date, "now", () => NOW + 2_000);
+  memory.clear();
+  const orders = Array.from({ length: 30 }, (_, index) => ({
+    waybill: `YT900000000${String(index).padStart(3, "0")}`, orderId: String(8_800_000 + index),
+  }));
+  const shipments = orders.map(({ waybill }, index) => {
+    const row = shipment();
+    return shipment({
+      identity: { ...row.identity, id: `synthetic-order-${index}`, sourceId: waybill },
+      timeline: { ...row.timeline, waybill, semantic: "TRANSIT", latestDetail: "运输中",
+        tracks: row.timeline.tracks.map(track => ({ ...track, detail: "运输中" })) },
+    });
+  });
+  const seeded = saveState({ ...emptyState(), shipments }, NOW);
+  assert.equal(savePlatformLogin("pinduoduo", "", { kind: "web", cookies: [sessionCookie] }, "synthetic-account"), true);
+  const parse = JSON.parse;
+  const baseline = parse(String(memory.get("pipi_deliveries_state_v1"))).payload;
+  let decodes = 0, networkCalls = 0;
+  const originalController = globalThis.WebViewController, originalFetch = globalThis.fetch;
+  Object.assign(globalThis, { WebViewController: class {
+    async setCookie() { return true; }
+    async addUserScript() { return "synthetic-script"; }
+    async loadURL() { return true; }
+    async evaluateJavaScript() { return orders; }
+    dispose() {}
+  } });
+  registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
+  globalThis.fetch = (async () => { networkCalls++; throw new Error("Unexpected request for known orders"); }) as typeof fetch;
+  JSON.parse = (value, reviver) => {
+    if (value === baseline) decodes++;
+    return parse(value, reviver);
+  };
+  try {
+    const result = await refreshPlatformParcels(() => {}, "observe", "pinduoduo");
+    assert.equal(result.failed, 0);
+    assert.equal(result.succeeded, 1);
+    assert.equal(result.added, 0);
+    assert.equal(networkCalls, 0);
+    assert.ok(decodes <= 4, `a batch used ${decodes} full decodes for ${orders.length} existing waybills`);
+    assert.equal(loadState().shipments.length, seeded.shipments.length);
+  } finally {
+    JSON.parse = parse;
+    globalThis.fetch = originalFetch;
+    globalThis.WebViewController = originalController;
+    registerProjectionViewportHost(null);
+  }
+});
+
 test("PDD reads station data for a parcel that becomes eligible during order capture", async (t) => {
   t.mock.method(Date, "now", () => NOW + 2_000);
   memory.clear();

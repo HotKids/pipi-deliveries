@@ -15,7 +15,7 @@ import { projectionSceneActive } from "./projection-viewport";
 import { displayWaybill } from "./shipment-policy";
 import { shipmentLifecycleKey } from "./shipment-lifecycle";
 import {
-  completeCurrentParcelCard, loadState, parcelCardKey, savePlatformParcelData, visibleShipments,
+  completeCurrentParcelCard, loadState, parcelCardKey, readAppStateSnapshot, savePlatformParcelData, visibleShipments,
 } from "./storage";
 import { commitManualShipmentPreview, continueManualShipmentPreview, queryManualShipmentPreview } from "./sync";
 import { activePickupCards, type ParcelActivityContent } from "./parcel-pickup";
@@ -69,12 +69,17 @@ async function importPddParcels(session: PlatformSession, observations: readonly
   const abort = new AbortController();
   const unsubscribe = onPlatformAccountsChanged(() => { if (!current()) abort.abort(); });
   let added = 0;
+  let knownWaybills: Set<string> | undefined;
   try {
     for (const item of observations) {
-      if (!current()) throw new PlatformWireError("changed");
-      const state = loadState();
-      if (state.shipments.some((shipment) => displayWaybill(shipment) === item.waybill) ||
-        state.pendingQueries.some((pending) => pending.waybill === item.waybill)) continue;
+      if (!knownWaybills) {
+        if (!current()) throw new PlatformWireError("changed");
+        const { state } = readAppStateSnapshot();
+        knownWaybills = new Set([...state.shipments.map(displayWaybill), ...state.pendingQueries.map(pending => pending.waybill)]);
+      }
+      if (knownWaybills.has(item.waybill)) continue;
+      // A network wait can let another host add, remove or replace a waybill.
+      knownWaybills = undefined;
       const presentation = await detectManualCarrier(item.waybill, { signal: abort.signal }).catch(() => null);
       if (!presentation || presentation.requiresPhoneTail || !current()) continue;
       const preview = await queryManualShipmentPreview({ waybill: item.waybill, presentation }).catch(() => null);
@@ -180,12 +185,12 @@ async function syncPlatform(
     if (scope.regular) await read(async () => {
       const orders = await fetchPddOrders(session);
       added = await importPddParcels(session, orders, publish);
-      persist({ parcels: orders }, loadState());
+      persist({ parcels: orders }, readAppStateSnapshot().state);
       if (!notePlatformSync(platform, session.generation, Date.now(), { discovery: true })) {
         throw new PlatformWireError("changed");
       }
     });
-    const observed = scope.regular ? loadState() : before;
+    const observed = scope.regular ? readAppStateSnapshot().state : before;
     const waiting = visibleShipments(observed).filter(eligiblePickup);
     if (waiting.length) await read(async () => {
       const round = observedRows.get(platform);
@@ -218,7 +223,7 @@ export async function refreshPlatformParcels(
   if (!sessions.length) return summary;
   let snapshot: { state: AppState; visible: Shipment[] } | undefined;
   const readSnapshot = () => {
-    const state = loadState();
+    const { state } = readAppStateSnapshot();
     return { state, visible: visibleShipments(state) };
   };
   const tasks = sessions.flatMap(({ platform, session }) => {

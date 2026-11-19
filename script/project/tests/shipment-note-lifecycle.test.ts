@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { memory, NOW } from "./state-storage-mock";
 import type { Shipment } from "../models";
-import { emptyState, isStoredShipmentRetained, loadState, removeShipment, saveState, setShipmentNote, setShipmentProductName, upsertShipment } from "../services/storage";
+import { emptyState, isStoredShipmentRetained, loadState, readAppStateSnapshot, removeShipment, saveState, setShipmentNote, setShipmentProductName, upsertShipment } from "../services/storage";
 import { displayedPlatformFields, enrichPlatformParcel } from "../services/platform-parcel-merge";
 import { absorbAutomaticShipment, applyAccountShipment, applyManualShipment, applyTargetedAccountShipment } from "../services/shipment-policy";
 import { cachedProductImage, productImageCacheKey, pruneProductImages, rememberProductImage } from "../services/product-image-cache";
@@ -44,7 +44,7 @@ try {
     const key = productImageCacheKey(original.identity);
     const isRetained = Function("scope", `with(scope) { ${ownerSource}; return isRetained; }`)({
       props: { shipment: original }, cacheKey: key, shipmentLifecycleKey, productImageCacheKey,
-      isStoredShipmentRetained, loadState, sharedData, withSharedFileTransaction,
+      isStoredShipmentRetained, readAppStateSnapshot, sharedData, withSharedFileTransaction,
     });
     const image = { syntheticImage: true } as unknown as UIImage;
     rememberProductImage(key, image, isRetained);

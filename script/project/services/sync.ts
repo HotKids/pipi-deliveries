@@ -14,7 +14,7 @@ import { replayPendingShipmentNotifications } from "./notifications";
 import { replayEnhancementUnsubscribes } from "./enhancement-unsubscribe";
 import { saveAccountAppRoutes } from "./routes";
 import { automaticBindingIdentityOf, cainiaoHasTrajectoryGap, isHomeAccountQuerySource } from "./shipment-policy";
-import { loadState, loadStateSnapshot, saveCloudPddParcels, type LoadedStateSnapshot } from "./storage";
+import { loadState, loadStateSnapshot, readAppStateSnapshot, saveCloudPddParcels, type LoadedStateSnapshot } from "./storage";
 import { listHeadline } from "./status";
 import { acquireRenewingDurableRefreshLease, durableRefreshLeaseDiagnostics, recordNetworkRefreshSuccess } from "./refresh-runtime-state";
 import { requestWidgetReload } from "./widgets";
@@ -28,7 +28,7 @@ import { readCloudPddParcels } from "./pdd-cloud-records";
 import { CarrierRecognitionBudget } from "./carrier-recognition";
 import type { FullRefreshLease } from "./refresh-coordination";
 import { FULL_REFRESH_FINALIZATION_RESERVE_MS, fullRefreshHostPolicy } from "./refresh-mode";
-import { projectionSceneActive } from "./projection-viewport";
+import { projectionSceneActive, projectionViewportHostAvailable } from "./projection-viewport";
 import {
   cainiaoListHasUpdate,
   createSyncRuntimeState,
@@ -520,7 +520,8 @@ async function startFullRefresh(
     : Math.min(deadlineAtMs, coordinationDeadlineAtMs);
   let before: LoadedStateSnapshot;
   try {
-    before = loadStateSnapshot(startedAt);
+    before = projectionViewportHostAvailable() && !options.backgroundHostSafe
+      ? readAppStateSnapshot(startedAt) : loadStateSnapshot(startedAt);
     writeDiagnostic("refresh.started", {
       flowId,
       source,
