@@ -36,15 +36,15 @@ export function ParcelShortcutPage() {
 }
 
 export function ParcelActivityPage({ revision }: { revision: number }) {
-  const [activity, setActivity] = useState({ showAll: false, count: 0, previewing: false });
+  const [activity, setActivity] = useState({ showAll: false, previewing: false });
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
     let mounted = true;
     function reload() {
-      void parcelActivityStatus().then((value) => {
-        if (mounted) setActivity(value);
+      void parcelActivityStatus().then(({ showAll, previewing }) => {
+        if (mounted) setActivity({ showAll, previewing });
       }).catch(() => {
         if (mounted) setNotice("无法读取实时活动状态。");
       }).finally(() => {
@@ -71,7 +71,8 @@ export function ParcelActivityPage({ revision }: { revision: number }) {
       setNotice(error instanceof Error && error.message ? error.message : "实时活动操作失败。");
     } finally {
       try {
-        setActivity(await parcelActivityStatus());
+        const { showAll, previewing } = await parcelActivityStatus();
+        setActivity({ showAll, previewing });
       } catch {
         setNotice("无法读取实时活动状态。");
       } finally {
@@ -82,7 +83,7 @@ export function ParcelActivityPage({ revision }: { revision: number }) {
 
   return (
     <List navigationTitle="实时活动" navigationBarTitleDisplayMode="inline" toast={transientToast(notice, setNotice)}>
-      <Section footer={activity.showAll && activity.count > 0 ? <Text>{`已显示 ${activity.count} 张`}</Text> : undefined}>
+      <Section>
         <Toggle title="实时活动" value={activity.showAll} disabled={busy}
           onChanged={(enabled) => void change(enabled ? startAllParcelActivities : stopParcelActivity)} />
       </Section>
