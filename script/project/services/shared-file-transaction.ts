@@ -1,8 +1,15 @@
 import { removeBestEffort } from "./durable-files";
+import type { CloudParcelTitleCache } from "./cloud-parcel-metadata";
 import { writeDiagnostic } from "./logger";
 import { sha256Hex } from "./scripting-data";
 
-type SharedData = { refresh?: unknown; stateRef?: string; previousStateRef?: string; scriptingInstallation?: string };
+type SharedData = {
+  refresh?: unknown;
+  stateRef?: string;
+  previousStateRef?: string;
+  scriptingInstallation?: string;
+  cloudParcelTitles?: CloudParcelTitleCache;
+};
 type Frame = { id: string; sequence: number; data: SharedData };
 const DIRECTORY = "pipi-deliveries/transactions-v1";
 const ID = /^g(\d+)-[a-z0-9]+$/;

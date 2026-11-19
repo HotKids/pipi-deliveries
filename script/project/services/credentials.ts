@@ -405,3 +405,12 @@ export function gatewayCredentialStatus(): GatewayCredentialStatus {
 export function gatewayCredentialGeneration(): number | null {
   return gatewayCredentialStatus() === "configured" ? observationGeneration : null;
 }
+
+export function gatewayCredentialForLocalCache() {
+  if (gatewayCredentialStatus() !== "configured") return null;
+  return {
+    generation: observationGeneration,
+    scope: sha256Hex(`local-cloud-cache\n${observedCredential}`),
+    rejected: accessKeyRejected,
+  };
+}
