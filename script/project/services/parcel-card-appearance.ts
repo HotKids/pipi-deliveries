@@ -11,7 +11,18 @@ const COURIER_STICKERS = new Set([
   "danniao", "dbl", "ems", "jd", "jtsd", "kysy", "sf", "sto", "uc", "yd", "yto", "yzpy", "zjs", "zto",
 ]);
 
+function mealAsset(asset?: string) {
+  if (!asset || !/^[\w.-]+\.(?:png|webp)$/iu.test(asset)) return undefined;
+  const filename = asset.replace(/\.webp$/iu, ".png");
+  return { path: `meal-pickup/${filename}`, name: filename };
+}
+
 export function parcelCardArtwork(card: ParcelActivityContent) {
+  if (card.kind === "meal") return {
+    meal: mealAsset(card.mealStyle?.artworkAsset),
+    mealSticker: mealAsset(card.mealStyle?.stickerAsset),
+    mark: mealAsset(card.mealStyle?.stickerAsset),
+  };
   const platform = card.platform;
   const icon = card.carrierIcon === "jdshopping" ? "jd" : card.carrierIcon;
   if (icon && card.kind !== "handoff" && COURIER_STICKERS.has(icon)) {
@@ -49,6 +60,16 @@ function contrast(first: number, second: number): number {
 
 // Pipi's ExpressPickupCardPresentation.Palette uses the logo on the button and
 // code, with a 0x1F overlay and separate contrast adjustments against each surface.
+export function pickupCardPalette(card: ParcelActivityContent) {
+  const meal = card.kind === "meal" ? card.mealStyle : undefined;
+  return meal ? {
+    gradient: [meal.gradientStartColor as ColorStringHex, meal.gradientEndColor as ColorStringHex] as const,
+    code: meal.codeColor as ColorStringHex,
+    capsule: meal.buttonColor as ColorStringHex,
+    capsuleForeground: meal.buttonForegroundColor as ColorStringHex,
+  } : { ...parcelCardPalette(parcelCardArtwork(card).accent), capsuleForeground: "white" as const };
+}
+
 export function parcelCardPalette(accent?: string) {
   if (!accent) return { gradient: [asColor(LEFT), asColor(RIGHT)], code: "white",
     capsule: "rgba(255,255,255,0.16)" } as const;

@@ -1,6 +1,6 @@
-import { Button, Circle, HStack, Image, Rectangle, Spacer, Text, VStack, ZStack, gradient, type AppIntent, type VirtualNode } from "scripting";
+import { Button, Circle, HStack, Image, Rectangle, Script, Spacer, Text, VStack, ZStack, gradient, type AppIntent, type VirtualNode } from "scripting";
 import type { ParcelActivityCompletion } from "../services/parcel-activity-action";
-import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette } from "../services/parcel-card-appearance";
+import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, pickupCardPalette } from "../services/parcel-card-appearance";
 import { parcelPickupShortCode, parcelPickupSubtitle, type ParcelActivityContent } from "../services/parcel-pickup";
 
 // Pipi Home's shared and express-specific card specifications.
@@ -114,8 +114,13 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const hostInset = fitsHost ? card.iconGap : 0;
   const hostVerticalInset = lockScreen ? card.textLeft - card.artWidth : 0;
   const contentWidth = (card.width - card.textLeft) * scale;
-  const { accent } = parcelCardArtwork(data);
-  const palette = parcelCardPalette(accent);
+  const assets = parcelCardArtwork(data);
+  const palette = pickupCardPalette(data);
+  const isMeal = data.kind === "meal";
+  const mealPath = (file?: { path: string; name: string }) => file &&
+    (lockScreen || expanded ? `${imageRoot}/${file.name}` : `${Script.directory}/assets/${file.path}`);
+  const mealImagePath = isMeal ? mealPath(assets.meal) : undefined;
+  const mealStickerPath = isMeal ? mealPath(assets.mealSticker) : undefined;
   const cardShape = { type: "rect", cornerRadius: card.corner * scale } as const;
   const cardBackground = gradient("linear", {
     colors: [...palette.gradient], startPoint: "leading", endPoint: "trailing",
@@ -128,19 +133,19 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const logoSize = stickerWidth * scale;
   const boxPath = `${imageRoot}/box.png`;
   const watchBoxPath = `${imageRoot}/${PARCEL_LOCK_SCREEN_BOX}`;
-  const hasWatchBox = !artwork && lockScreen && FileManager.isFileSync(watchBoxPath);
-  const lockScreenBoxPath = !artwork && lockScreen && FileManager.isFileSync(boxPath)
+  const hasWatchBox = !isMeal && !artwork && lockScreen && FileManager.isFileSync(watchBoxPath);
+  const lockScreenBoxPath = !isMeal && !artwork && lockScreen && FileManager.isFileSync(boxPath)
     ? boxPath : hasWatchBox ? watchBoxPath : undefined;
-  const box = artwork || lockScreenBoxPath ? null : parcelActivityImage(boxPath);
+  const box = isMeal || artwork || lockScreenBoxPath ? null : parcelActivityImage(boxPath);
   const logo = artwork ? null : parcelActivityImage(logoPath);
   const showCapsule = Boolean(data.code && (completion || preview || onComplete));
-  const completionLabel = actionLabel || (handoff ? "我已寄件" : "我已取件");
+  const completionLabel = actionLabel || (isMeal ? "我已取餐" : handoff ? "我已寄件" : "我已取件");
   const capsuleWidth = card.capsuleInset * 2 + card.capsuleIcon + card.iconGap + completionLabel.length * card.capsuleFont;
   const codeWidth = showCapsule
     ? Math.max(0, contentWidth - (card.edge + card.codeGap + capsuleWidth) * scale)
     : "infinity";
   const subtitle = parcelPickupSubtitle(data, locationText, showingAddress);
-  const pickupCode = parcelPickupShortCode(data.code);
+  const pickupCode = isMeal ? data.code : parcelPickupShortCode(data.code);
   const dividerDots = (width: number, scale: number) => {
     const count = Math.floor((width + card.dotGap) / (card.dotDiameter + card.dotGap));
     const diameter = card.dotDiameter * scale;
@@ -166,10 +171,10 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
       fixedSize={{ horizontal: !lockScreen, vertical: false }} layoutPriority={1}
       background={{ style: palette.capsule, shape: "capsule" }} contentShape="capsule">
       {capsulePadding}
-      <Image systemName="shippingbox.fill" font={card.capsuleIcon * scale}
-        foregroundStyle="white" frame={{ width: card.capsuleIcon * scale, height: card.capsuleIcon * scale }} />
+      <Image systemName={isMeal ? "fork.knife" : "shippingbox.fill"} font={card.capsuleIcon * scale}
+        foregroundStyle={palette.capsuleForeground} frame={{ width: card.capsuleIcon * scale, height: card.capsuleIcon * scale }} />
       {lockScreen ? <Spacer minLength={0} frame={{ width: card.iconGap * scale }} /> : null}
-      <Text font={card.capsuleFont * scale} fontWeight="semibold" foregroundStyle="white" lineLimit={1}
+      <Text font={card.capsuleFont * scale} fontWeight="semibold" foregroundStyle={palette.capsuleForeground} lineLimit={1}
         minScaleFactor={lockScreen ? capsuleLabelScale : undefined} layoutPriority={1}>{completionLabel}</Text>
       {capsulePadding}
     </HStack>
@@ -212,10 +217,23 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
       position={{ x: card.logoX * scale, y: card.logoY * scale }} />
   );
+  function mealArtwork(frame: typeof artworkFrame, artScale: number) {
+    const sticker = stickerWidth * artScale * (data.mealStyle?.stickerScale ?? 1);
+    return (
+      <ZStack frame={frame}>
+        {mealImagePath && FileManager.isFileSync(mealImagePath) ?
+          <Image filePath={mealImagePath} resizable scaleToFit frame={frame} /> :
+          <Image systemName="fork.knife" font={42 * artScale} foregroundStyle={titleColor} />}
+        {mealStickerPath && FileManager.isFileSync(mealStickerPath) ?
+          <Image filePath={mealStickerPath} resizable scaleToFit frame={{ width: sticker, height: sticker }}
+            offset={{ x: (card.logoX - card.artWidth / 2) * artScale, y: (card.logoY - card.artHeight / 2) * artScale }} /> : null}
+      </ZStack>
+    );
+  }
   const boxArtwork = (
     <ZStack frame={artworkFrame}
       offset={{ x: expanded ? -card.edge * scale : 0, y: artOffset }}>
-      {artwork ? <ZStack scaleEffect={scale}>{artwork}</ZStack> : lockScreenBoxPath ? (
+      {isMeal ? mealArtwork(artworkFrame, scale) : artwork ? <ZStack scaleEffect={scale}>{artwork}</ZStack> : lockScreenBoxPath ? (
         <Image filePath={lockScreenBoxPath} resizable scaleToFit frame={artworkFrame} />
       ) : box ? (
         <Image image={box} resizable scaleToFit frame={artworkFrame} />
@@ -355,7 +373,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
       frame={{ minWidth: 0, maxWidth: "infinity", maxHeight: "infinity" }}
       background={cardBackground} allowsHitTesting={false}>
       <ZStack frame={watchArtFrame} scaleEffect={SMART_STACK_ART_WIDTH / SMART_STACK_ART_COLUMN_WIDTH}>
-        {watchBoxFile ? <Image filePath={watchBoxFile} resizable scaleToFit frame={watchArtFrame} />
+        {isMeal ? mealArtwork(watchArtFrame, watchScale) : watchBoxFile ? <Image filePath={watchBoxFile} resizable scaleToFit frame={watchArtFrame} />
           : box ? <Image image={box} resizable scaleToFit frame={watchArtFrame} />
           : <Image systemName="shippingbox.fill" font={30} foregroundStyle={titleColor} />}
         {logo ? <Image image={logo} resizable scaleToFit frame={{ width: watchStickerWidth, height: watchStickerWidth }}

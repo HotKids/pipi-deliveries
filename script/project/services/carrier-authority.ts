@@ -17,6 +17,8 @@ import {
   type StatusLabelTable,
 } from "./status-labels";
 
+import { compileMealRules, mealCredentialScope, parseMealRuleOffer, type MealRuleOffer, type MealRules } from "./meal/rules";
+
 const CARRIER_AUTHORITY_ROUTE = "/api/express/carriers";
 const CARRIER_AUTHORITY_FILE = "carrier-authority-v2.json";
 const CARRIER_AUTHORITY_ATTEMPT_FILE = "carrier-authority-attempt-v1.json";
@@ -37,27 +39,51 @@ export type CarrierAuthorityPayload = Readonly<{
   statusLabels?: StatusLabelTable;
 }>;
 
+type ScopedMealOffer = MealRuleOffer & { scope: string };
 type StoredCarrierAuthority = Readonly<{
   storageSchema: 1;
   fetchedAtMs: number;
   payload: CarrierAuthorityPayload;
+  meal?: ScopedMealOffer;
 }>;
 
 type StoredCarrierAuthorityAttempt = Readonly<{
   storageSchema: 1;
   lastAttemptAtMs: number;
+  mealScope?: string;
 }>;
 
 type CarrierAuthorityDependencies = Readonly<{
   post?: (
     route: string,
-    body: Record<string, never>,
+    body: { includeMealRules?: true },
     options: Readonly<{ timeoutMs: number }>,
   ) => Promise<unknown>;
 }>;
 
 let loadedFetchedAtMs = 0;
 let loadedLastAttemptAtMs = 0;
+let loadedAttemptScope = "";
+let loadedMealOffer: ScopedMealOffer | undefined;
+let inFlight: Promise<boolean> | undefined;
+
+export function cachedMealRules(): MealRules | null {
+  const scope = mealCredentialScope();
+  return scope && loadedMealOffer?.scope === scope ? compileMealRules(loadedMealOffer) : null;
+}
+
+export async function ensureMealRules(): Promise<MealRules | null> {
+  const scope = mealCredentialScope();
+  if (!scope) return null;
+  if (!loadedMealOffer) loadCarrierAuthorityCache();
+  const cached = cachedMealRules();
+  if (cached) return cached;
+  await refreshCarrierAuthorityIfNeeded();
+  if (scope !== mealCredentialScope()) return null;
+  // A changed key may have joined the preceding key's request while it was settling.
+  if (loadedMealOffer?.scope !== scope && loadedAttemptScope !== scope) await refreshCarrierAuthorityIfNeeded();
+  return scope === mealCredentialScope() ? cachedMealRules() : null;
+}
 
 export function carrierAuthorityDiagnosticDetails(nowMs = Date.now()) {
   const hotline = resolveCarrierQuery("HTKY")?.hotline || "";
@@ -171,10 +197,14 @@ function storedCandidate(value: string, nowMs: number): StoredCarrierAuthority |
     if (stored.storageSchema !== STORAGE_SCHEMA ||
       !Number.isSafeInteger(fetchedAtMs) || fetchedAtMs <= 0 ||
       fetchedAtMs > nowMs + MAX_CLOCK_SKEW_MS || !payload) return null;
+    const meal = parseMealRuleOffer(stored.meal);
+    const scope = (stored.meal as { scope?: unknown } | undefined)?.scope;
     return Object.freeze({
       storageSchema: STORAGE_SCHEMA,
       fetchedAtMs,
       payload,
+      ...(meal && typeof scope === "string" && /^[0-9a-f]{64}$/.test(scope)
+        ? { meal: { ...meal, scope } } : {}),
     });
   } catch {
     return null;
@@ -196,6 +226,7 @@ function attemptCandidate(
     return Object.freeze({
       storageSchema: STORAGE_SCHEMA,
       lastAttemptAtMs,
+      mealScope: typeof stored.mealScope === "string" ? stored.mealScope : undefined,
     });
   } catch {
     return null;
@@ -209,6 +240,7 @@ function loadCarrierAuthorityAttempt(nowMs: number): void {
     .filter((value): value is StoredCarrierAuthorityAttempt => value != null)
     .sort((left, right) => right.lastAttemptAtMs - left.lastAttemptAtMs)[0];
   loadedLastAttemptAtMs = selected?.lastAttemptAtMs || 0;
+  loadedAttemptScope = selected?.mealScope || "";
 }
 
 /** Loads the newest fully validated primary/backup snapshot without networking. */
@@ -229,6 +261,7 @@ export function loadCarrierAuthorityCache(nowMs = Date.now()): boolean {
     });
     return false;
   }
+  loadedMealOffer = selected.meal;
   installStatusLabelTable(selected.payload.statusLabels);
   loadedFetchedAtMs = selected.fetchedAtMs;
   const details = carrierAuthorityDiagnosticDetails(nowMs);
@@ -239,15 +272,26 @@ export function loadCarrierAuthorityCache(nowMs = Date.now()): boolean {
 }
 
 /** Refreshes at most once per day; any failure leaves the installed table intact. */
-export async function refreshCarrierAuthorityIfNeeded(
+export function refreshCarrierAuthorityIfNeeded(
   nowMs = Date.now(),
   dependencies: CarrierAuthorityDependencies = {},
 ): Promise<boolean> {
+  if (inFlight) return inFlight;
+  const operation = refreshAuthority(nowMs, dependencies).finally(() => {
+    if (inFlight === operation) inFlight = undefined;
+  });
+  inFlight = operation;
+  return operation;
+}
+
+async function refreshAuthority(nowMs: number, dependencies: CarrierAuthorityDependencies): Promise<boolean> {
+  const scope = mealCredentialScope();
   const latestActivityAtMs = Math.max(
     loadedFetchedAtMs,
     loadedLastAttemptAtMs,
   );
-  if (latestActivityAtMs > 0 &&
+  const scopeNeedsRules = scope && loadedMealOffer?.scope !== scope && loadedAttemptScope !== scope;
+  if (!scopeNeedsRules && latestActivityAtMs > 0 &&
     nowMs - latestActivityAtMs < REFRESH_INTERVAL_MS) {
     const details = carrierAuthorityDiagnosticDetails(nowMs);
     if (!details.hotlineMatchesExpected) {
@@ -260,6 +304,7 @@ export async function refreshCarrierAuthorityIfNeeded(
     const attempt: StoredCarrierAuthorityAttempt = {
       storageSchema: STORAGE_SCHEMA,
       lastAttemptAtMs: nowMs,
+      ...(scope ? { mealScope: scope } : {}),
     };
     // The throttle survives process death only if it is durable before the
     // request can leave this process. A failed request never replaces last-good.
@@ -268,10 +313,11 @@ export async function refreshCarrierAuthorityIfNeeded(
       JSON.stringify(attempt),
     );
     loadedLastAttemptAtMs = nowMs;
+    loadedAttemptScope = scope;
     const post = dependencies.post || postGateway;
     const response = await post(
       CARRIER_AUTHORITY_ROUTE,
-      {},
+      scope ? { includeMealRules: true } : {},
       { timeoutMs: REQUEST_TIMEOUT_MS },
     );
     const payload = parseCarrierAuthorityPayload(response);
@@ -282,10 +328,14 @@ export async function refreshCarrierAuthorityIfNeeded(
       }, "warning");
       return false;
     }
+    const offered = scope && mealCredentialScope() === scope
+      ? parseMealRuleOffer((response as { mealRules?: unknown }).mealRules) : null;
+    const meal = offered && compileMealRules(offered) ? { ...offered, scope } : loadedMealOffer;
     const stored: StoredCarrierAuthority = {
       storageSchema: STORAGE_SCHEMA,
       fetchedAtMs: nowMs,
       payload,
+      ...(meal ? { meal } : {}),
     };
     writeDurableText(CARRIER_AUTHORITY_FILE, JSON.stringify({
       ...stored,
@@ -305,6 +355,7 @@ export async function refreshCarrierAuthorityIfNeeded(
       }, "warning");
       return false;
     }
+    loadedMealOffer = meal;
     installStatusLabelTable(payload.statusLabels);
     loadedFetchedAtMs = nowMs;
     writeDiagnostic("carrier.authority.refreshed", {
@@ -329,4 +380,7 @@ export function initializeCarrierAuthority(): void {
 export function resetCarrierAuthorityRuntimeForTesting(): void {
   loadedFetchedAtMs = 0;
   loadedLastAttemptAtMs = 0;
+  loadedAttemptScope = "";
+  loadedMealOffer = undefined;
+  inFlight = undefined;
 }

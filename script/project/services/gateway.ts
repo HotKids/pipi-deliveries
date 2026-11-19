@@ -237,6 +237,7 @@ export async function postGateway<T extends Record<string, unknown>>(
     signal?: AbortSignal;
     onQueryAttempted?: (authorized: boolean) => void;
     beforeQuery?: () => void;
+    onConflict?: (response: Readonly<Record<string, unknown>>) => void;
   } = {},
 ): Promise<T> {
   const credentialStatus = gatewayCredentialStatus();
@@ -439,6 +440,7 @@ export async function postGateway<T extends Record<string, unknown>>(
     );
   }
   if (!response.ok) {
+    if (response.status === 409 && root) options.onConflict?.(root);
     throw new GatewayError(
       failureMessage(response.status, responseCode),
       response.status,

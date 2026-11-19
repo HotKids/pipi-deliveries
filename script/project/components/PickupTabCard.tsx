@@ -174,6 +174,6 @@ export function PickupTabCard(props: {
   const { sticker } = parcelCardArtwork(data);
   return (
     <ParcelCardListRow {...props} data={{ ...data, title: props.title }} imageRoot={imageRoot}
-      artwork={<PickupTabArtwork logoAsset={sticker?.path} logoSize={logoSize} />} />
+      artwork={data.kind === "meal" ? undefined : <PickupTabArtwork logoAsset={sticker?.path} logoSize={logoSize} />} />
   );
 }

@@ -63,6 +63,7 @@ def main():
         track = declaration(track_source, "SCRIPT_BUILD_TRACK")
         origin = declaration(track_source, "GATEWAY_ORIGIN")
         protocol = client_protocol(track_source, source("services/scripting-auth.ts"))
+        needs_meals = "services/meal/cloud.ts" in archive.namelist()
     worker = args.worker_artifact
     if worker is None:
         for parent in Path(__file__).resolve().parents:
@@ -74,7 +75,16 @@ def main():
         raise ValueError("Delivery requires the verified target Worker artifact; pass --worker-artifact (source-only candidates may still be packaged)")
     if worker.stat().st_size > 8 * 1024 * 1024:
         raise ValueError("Worker artifact exceeds the inspection limit")
-    verify(track, origin, protocol, worker.read_text())
+    worker_source = worker.read_text()
+    verify(track, origin, protocol, worker_source)
+    if needs_meals and any(marker not in worker_source for marker in (
+        "includeMealRules", "IOS_MEAL_RULES",
+        "/api/cloud-records/scripting-meals/session",
+        "/api/cloud-records/scripting-meals/pull",
+        "/api/cloud-records/scripting-meals/mutate",
+    )):
+        raise ValueError("Delivery requires the Worker with signed meal rules and meal sync")
+
     print(f"Offline delivery protocol pair verified: {track}, v{protocol}; live readiness must also be verified")
 
 

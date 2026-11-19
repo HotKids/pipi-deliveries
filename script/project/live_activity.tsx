@@ -13,7 +13,7 @@ import { PIPI_CARD, ParcelLiveActivityCard, parcelActivityImage } from "./compon
 import { iconTileShape } from "./components/icon-tile";
 import { PARCEL_ACTIVITY_NAME, type ParcelActivityState } from "./services/parcel-activity-action";
 import { parcelPickupShortCode } from "./services/parcel-pickup";
-import { parcelCardArtwork, parcelCardPalette } from "./services/parcel-card-appearance";
+import { parcelCardArtwork, pickupCardPalette } from "./services/parcel-card-appearance";
 
 export const PARCEL_ACTIVITY_ART = "pipi-deliveries/parcel-activity-art-v1";
 
@@ -39,10 +39,11 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
     }) : undefined;
     const compactCode = parcelPickupShortCode(data.code);
     const handoff = data.kind === "handoff";
-    const { accent, mark, sticker } = parcelCardArtwork(data);
+    const meal = data.kind === "meal";
+    const { mark, sticker } = parcelCardArtwork(data);
     const logoPath = sticker ? `${imageRoot}/${sticker.name}` : undefined;
     const brand = mark ? parcelActivityImage(`${imageRoot}/${mark.name}`) : null;
-    const palette = parcelCardPalette(accent);
+    const palette = pickupCardPalette(data);
     // Lock Screen activities align with the standard 14 pt notification margin.
     const width = Device.isiPhone ? Math.min(Device.screen.width, Device.screen.height) - 2 * 14 : undefined;
     const badgeSize = 20;
@@ -50,14 +51,14 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
       <ZStack frame={{ width: badgeSize, height: badgeSize }} clipShape={iconTileShape(badgeSize)}
         background={brand ? undefined : "rgba(255,255,255,0.16)"}>
         {brand ? <Image image={brand} renderingMode="original" resizable scaleToFill /> : (
-          <Image systemName={handoff ? "tray.and.arrow.up.fill" : "shippingbox.fill"} font={12} foregroundStyle="white" />
+          <Image systemName={meal ? "fork.knife" : handoff ? "tray.and.arrow.up.fill" : "shippingbox.fill"} font={12} foregroundStyle="white" />
         )}
       </ZStack>
     );
     const cardProps = {
       data, imageRoot, logoPath, url, preview: !data.linkId,
       completion: data.linkId
-        ? CompleteParcelActivityIntent({ linkId: data.linkId, kind: handoff ? "handoff" : "pickup" })
+        ? CompleteParcelActivityIntent({ linkId: data.linkId, kind: data.kind ?? "pickup" })
         : undefined,
     };
     return (
@@ -68,7 +69,7 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
         compactTrailing={(
           <Text font={13} fontWeight="semibold" fontWidth="condensed" foregroundStyle={palette.code}
             lineLimit={1} minScaleFactor={0.75} widgetURL={url}>
-            {compactCode && Array.from(compactCode).length <= 8 ? compactCode : handoff ? "待寄件" : "待取件"}
+            {compactCode && Array.from(compactCode).length <= 8 ? compactCode : meal ? "待取餐" : handoff ? "待寄件" : "待取件"}
           </Text>
         )}
         minimal={<HStack widgetURL={url}>{glyph}</HStack>}

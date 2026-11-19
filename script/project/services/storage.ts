@@ -2418,7 +2418,8 @@ export function saveRecognizedShipmentPickup(expected: Shipment, lookup: ParcelL
 
 export function parcelCardKey(card: Pick<ParcelActivityContent, "target">): string {
   const target = card.target;
-  return target && ("recordId" in target ? "record:" + target.recordId :
+  return target && ("mealId" in target ? `meal:${target.mealScope}:${target.mealId}` :
+    "recordId" in target ? "record:" + target.recordId :
     JSON.stringify([target.shipmentId, target.waybill, target.waybillGeneration])) || "";
 }
 
@@ -2428,7 +2429,7 @@ export function completeCurrentParcelCard(expected: ParcelActivityContent, now =
     const current = activePickupCards(visibleShipments(state), state.pickupCodeRecords).find(
       (card) => parcelCardKey(card) === parcelCardKey(expected) && card.code === expected.code,
     );
-    if (!current?.target) throw new ShipmentLifecycleChangedError();
+    if (!current?.target || "mealId" in current.target) throw new ShipmentLifecycleChangedError();
     return "recordId" in current.target
       ? completeIndependentParcelCode(current.target.recordId, now)
       : forceCompleteShipment(current.target.shipmentId, now);
@@ -2445,7 +2446,7 @@ export function setPickupCardNote(
     const target = activePickupCards(shipments, records).find((card) =>
       parcelCardKey(card) === parcelCardKey(expected) && card.code === expected.code &&
       card.capturedAtMs === expected.capturedAtMs)?.target;
-    if (!target) throw new ShipmentLifecycleChangedError();
+    if (!target || "mealId" in target) throw new ShipmentLifecycleChangedError();
     if ("shipmentId" in target) {
       const shipment = shipments.find((row) => row.identity.id === target.shipmentId);
       if (!shipment || (shipment.note || "") !== previousNote) throw new ShipmentLifecycleChangedError();

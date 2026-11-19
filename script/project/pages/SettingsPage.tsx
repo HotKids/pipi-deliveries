@@ -1,3 +1,4 @@
+import { RecognitionSettingsPage } from "./RecognitionSettingsPage";
 import {
   AppEvents,
   Button,
@@ -199,6 +200,7 @@ function useSettingsOverview() {
 }
 
 export function SettingsPage(props: {
+  onAccessKeyChanged?: () => void;
   state: AppState;
   pickupCards: readonly ParcelActivityContent[];
   onStateChange: (state: AppState) => void;
@@ -207,7 +209,7 @@ export function SettingsPage(props: {
   const [token, setToken] = useState("");
   const [notice, setNotice] = useState("");
   const [destination, setDestination] =
-    useState<"" | "phones" | "notifications" | "diagnostics" | "privacy" | "shortcuts" | "activity">("");
+    useState<"" | "phones" | "notifications" | "diagnostics" | "privacy" | "shortcuts" | "activity" | "recognition">("");
   const [managerNotice, setManagerNotice] = useState("");
   const [diagnosticCount, setDiagnosticCount] = useState(0);
   const { authorization, authorizationNotice, setAuthorizationNotice, platformCount, enabledNotificationCount,
@@ -217,6 +219,7 @@ export function SettingsPage(props: {
   function saveToken() {
     try {
       saveGatewayToken(token);
+      props.onAccessKeyChanged?.();
       setToken("");
       refreshAuthorization();
       setNotice("Access Key 已保存");
@@ -244,6 +247,7 @@ export function SettingsPage(props: {
       });
       if (!confirmed) return;
       removeGatewayToken();
+      props.onAccessKeyChanged?.();
       setToken("");
       const nextAuthorization = refreshAuthorization();
       setNotice(
@@ -386,6 +390,8 @@ export function SettingsPage(props: {
             <ParcelShortcutPage />
           ) : destination === "activity" ? (
             <ParcelActivityPage cards={props.pickupCards} revision={props.state.revision} />
+          ) : destination === "recognition" ? (
+            <RecognitionSettingsPage />
           ) : destination === "diagnostics" ? (
             <DiagnosticLogPage onCountChange={setDiagnosticCount} />
           ) : (
@@ -438,6 +444,14 @@ export function SettingsPage(props: {
           </Section>
 
           <Section header={<Text>更多</Text>}>
+            <Button buttonStyle="plain" action={() => setDestination("recognition")}>
+              <HStack spacing={12} padding={{ vertical: 5 }} frame={{ minHeight: 44, maxWidth: "infinity" }} contentShape="rect">
+                <SettingsRowIcon systemName="sparkles" backgroundColor={SETTINGS_BLUE} />
+                <Text>智能识别</Text>
+                <Spacer />
+                <SettingsAccessoryIcon systemName="chevron.right" />
+              </HStack>
+            </Button>
             <Button buttonStyle="plain" action={() => setDestination("shortcuts")}>
               <HStack
                 spacing={12}

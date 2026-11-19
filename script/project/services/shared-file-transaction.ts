@@ -9,6 +9,7 @@ type SharedData = {
   previousStateRef?: string;
   scriptingInstallation?: string;
   cloudParcelTitles?: CloudParcelTitleCache;
+  mealStateRef?: string;
 };
 type Frame = { id: string; sequence: number; data: SharedData };
 const DIRECTORY = "pipi-deliveries/transactions-v1";
@@ -58,15 +59,20 @@ function readFrame(id: string): Frame {
   }
   return frame;
 }
-function prepare(sequence: number, data: SharedData, blob?: string): Frame {
+type SharedBlob = { text: string; kind: "state" | "meal" };
+
+function prepare(sequence: number, data: SharedData, blob?: SharedBlob): Frame {
   const id = `g${sequence}-${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
   FileManager.createDirectorySync(path(id), false);
   const frame: Frame = { id, sequence, data: { ...data } };
   try {
     if (blob != null) {
-      writeVerified(`${path(id)}/state.json`, blob);
-      frame.data.previousStateRef = data.stateRef;
-      frame.data.stateRef = id;
+      writeVerified(`${path(id)}/${blob.kind}.json`, blob.text);
+      if (blob.kind === "meal") frame.data.mealStateRef = id;
+      else {
+        frame.data.previousStateRef = data.stateRef;
+        frame.data.stateRef = id;
+      }
     }
     const payload = JSON.stringify(frame);
     writeVerified(`${path(id)}/record.json`, JSON.stringify({ payload, checksum: sha256Hex(payload) }));
@@ -125,7 +131,7 @@ function latest(): Frame {
 function retire(frame: Frame): void {
   // Retire complete parent directories, never just their next links: stale publishers must
   // fail in a missing parent rather than recreate a previously occupied publication slot.
-  const keep = new Set([frame.id, frame.data.stateRef, frame.data.previousStateRef]);
+  const keep = new Set([frame.id, frame.data.stateRef, frame.data.previousStateRef, frame.data.mealStateRef]);
   const names = entries();
   for (const name of names) {
     const generation = ID.exec(name);
@@ -168,11 +174,29 @@ export function sharedStateText(previous = false, prefetched?: PrefetchedStateFi
   }
 }
 
+export function sharedMealStateText(): string | null {
+  const { mealStateRef } = sharedData();
+  if (!mealStateRef) return null;
+  try { return FileManager.readAsStringSync(`${path(mealStateRef)}/meal.json`); }
+  catch (error) {
+    if (active && latest().id !== active.id) throw new SharedCommitConflict();
+    throw error;
+  }
+}
+
+export function publishSharedMealState(text: string): void {
+  publish({}, { kind: "meal", text });
+}
+
 export function publishSharedData(patch: Partial<SharedData>, stateText?: string): void {
+  publish(patch, stateText == null ? undefined : { kind: "state", text: stateText });
+}
+
+function publish(patch: Partial<SharedData>, blob?: SharedBlob): void {
   if (!active) throw new Error("Shared publication requires a transaction");
   const base = active;
   let next: Frame;
-  try { next = prepare(base.sequence + 1, { ...base.data, ...patch }, stateText); }
+  try { next = prepare(base.sequence + 1, { ...base.data, ...patch }, blob); }
   catch (error) {
     if (latest().id !== base.id) throw new SharedCommitConflict();
     throw error;
