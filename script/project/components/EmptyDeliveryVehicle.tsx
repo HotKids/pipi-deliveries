@@ -4,8 +4,8 @@ import { EMPTY_WIDGET_TEXT_COLOR } from "../widget/palette";
 
 const vehicleArtwork = "widget/empty-delivery-vehicle.png";
 const pickupArtwork = {
-  meal: "widget/empty-pickup-grape.png",
-  parcel: "widget/empty-pickup-sf-box.png",
+  meal: { imagePath: "widget/empty-pickup-grape.png", label: "饮咗茶未" },
+  parcel: { imagePath: "widget/empty-pickup-sf-box.png", label: "暂无包裹" },
 };
 const heyteaLogo = "meal-pickup/xicha.png";
 
@@ -28,7 +28,10 @@ export function EmptyTabState({ pickup }: { pickup?: PickupEmptyArtwork }) {
   const size = pickup ? 96 : 81.6;
   const frame = { width: size, height: size };
   const assetDirectory = `${Script.directory}/assets`;
-  const imagePath = pickup ? pickupArtwork[pickup] : vehicleArtwork;
+  const { imagePath, label } = pickup ? pickupArtwork[pickup] : {
+    imagePath: vehicleArtwork,
+    label: "暂无快递",
+  };
   const illustration = (
     <Image filePath={`${assetDirectory}/${imagePath}`} renderingMode="original" resizable scaleToFit frame={frame} />
   );
@@ -41,7 +44,7 @@ export function EmptyTabState({ pickup }: { pickup?: PickupEmptyArtwork }) {
   ) : illustration;
   return (
     <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} allowsHitTesting={false}>
-      <EmptyStateGroup artwork={artwork} label={pickup === "meal" ? "饮咗茶未" : "暂无快递"} spacing={8} labelFont="body" />
+      <EmptyStateGroup artwork={artwork} label={label} spacing={8} labelFont="body" />
     </VStack>
   );
 }
