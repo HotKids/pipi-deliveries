@@ -314,7 +314,7 @@ Object.assign(globalThis, { Keychain: {
   set: (name: string, value: string) => { grantStore.set(name, value); return true; },
   remove: (name: string) => grantStore.delete(name),
 } });
-const pack = readFileSync(new URL("../../../meal-pickup-rules.json", import.meta.url), "utf8");
+const pack = readFileSync(new URL("../../../pickup-rules.json", import.meta.url), "utf8");
 const response = { ...correctedTable, mealRules: { pack, sha256: sha256Hex(pack) } };
 files.clear();
 resetCarrierAuthorityRuntimeForTesting();

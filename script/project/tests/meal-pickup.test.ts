@@ -9,7 +9,7 @@ import { completeMeal, currentMeal, putMealObservations, readMeals, stageLuckinD
   type MealEnvelope, type MealSession } from "../services/meal/records";
 import { applyMealPage, applyMealReceipt, mealPullRequest, prepareMealBatch, recoverMealConflict } from "../services/meal/cloud";
 
-const raw = JSON.parse(readFileSync(new URL("../../../meal-pickup-rules.json", import.meta.url), "utf8"));
+const raw = JSON.parse(readFileSync(new URL("../../../pickup-rules.json", import.meta.url), "utf8"));
 const rules = { raw, parsed: createPickupRuntime(raw) };
 const now = Date.UTC(2026, 10, 19, 0);
 const width = 1179, height = 1050;
