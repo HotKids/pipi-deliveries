@@ -116,8 +116,10 @@ const {
   removeBinding,
   removePendingQuery,
   removeShipment,
+  saveRecognizedParcelCode,
   saveState,
   setShipmentNote,
+  toggleParcelArtwork,
   upsertPendingQuery,
   upsertShipment,
   visibleShipments,
@@ -3957,4 +3959,25 @@ console.log("Enhanced binding persistence and stale-result fences passed");
   assert.equal(stale.state.shipments.some(value => value.identity.id === row.identity.id), false,
     "a list response from another subscription identity cannot create a row despite equal binding timestamps");
   assert.equal(stale.state.bindings[0].enhancedIdentityFingerprint, "b".repeat(64));
+}
+
+// Card artwork uses the same durable generation as the record, without altering its source.
+{
+  memory.clear();
+  const { activePickupCards, parcelCardKey } = await import("../services/parcel-pickup");
+  const initial = saveRecognizedParcelCode({
+    id: "artwork-handoff", kind: "handoff", platform: "cainiao", code: "F832",
+    capturedAtMs: NOW, windowText: "15:00–17:00",
+  }, NOW);
+  const original = activePickupCards([], initial.pickupCodeRecords)[0];
+  const changed = toggleParcelArtwork(original, NOW + 1);
+  assert.equal(changed.pickupArtworkChoices?.[parcelCardKey(original)], "jingdong");
+  assert.deepEqual(changed.pickupCodeRecords, initial.pickupCodeRecords);
+  assert.throws(() => toggleParcelArtwork(original, NOW + 2));
+  saveState({ ...initial, updatedAtMs: NOW + 3 }, NOW + 3);
+  const restored = loadState(NOW + 4);
+  const visible = activePickupCards([], restored.pickupCodeRecords, restored.pickupArtworkChoices)[0];
+  assert.equal(visible.artworkChoice, "jingdong");
+  assert.equal(visible.platform, "cainiao");
+  assert.equal(toggleParcelArtwork(visible, NOW + 5).pickupArtworkChoices?.[parcelCardKey(visible)], "douyin");
 }

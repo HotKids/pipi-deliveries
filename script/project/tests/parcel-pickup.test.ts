@@ -4,7 +4,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import type { ParcelHandoffRecord, PickupCodeRecord, Shipment } from "../models";
 import { MEAL_CARD_TOKENS, PICKUP_STICKER_ENTRANCE } from "../components/pickup-card-tokens.generated";
-import { PICKUP_TAB_TITLE, activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, type ParcelActivityContent } from "../services/parcel-pickup";
+import { PICKUP_TAB_TITLE, activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, nextPickupArtwork, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, parcelCardKey, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, withPickupArtwork, type ParcelActivityContent } from "../services/parcel-pickup";
 import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette } from "../services/parcel-card-appearance";
 import { recognizeParcelCodes } from "../services/parcel-code-ocr";
 import { parcelTextRows, recognizeParcelWaybill } from "../services/parcel-waybill-ocr";
@@ -168,6 +168,23 @@ assert.equal(parcelActivityContent({ ...parcel, pickup: { ...pickup, capturedAtM
 assert.equal(parcelActivityContent({ ...parcel, pickup, forcedCompletedAtMs: 3 }), null);
 assert.equal(parcelActivityContent({ ...parcel, pickup, timeline: { ...parcel.timeline, semantic: "COMPLETED" } }), null);
 
+const unrecognized = { ...parcel, pickup: { ...pickup, platform: undefined },
+  identity: { ...parcel.identity, courierCode: "", companyName: "" } };
+const station = parcelActivityContent(unrecognized)!;
+assert.equal(nextPickupArtwork(station), "cainiao");
+const stationKey = parcelCardKey(station);
+assert.equal(nextPickupArtwork(withPickupArtwork(station, { [stationKey]: "cainiao" })), "pinduoduo");
+assert.equal(nextPickupArtwork(withPickupArtwork(station, { [stationKey]: "pinduoduo" })), "fengchao");
+const cabinetArt = activePickupCards([unrecognized], [], { [stationKey]: "fengchao" })[0];
+assert.equal(nextPickupArtwork(cabinetArt), "cainiao");
+assert.equal(parcelCardArtwork(cabinetArt).sticker?.path, "parcel-activity/fengchao.png");
+assert.equal(cabinetArt.platform, undefined, "station artwork does not claim a cabinet session");
+const recognized = activePickupCards([{ ...parcel, pickup }], [], { [stationKey]: "fengchao" })[0];
+assert.equal(nextPickupArtwork(recognized), undefined, "a resolved carrier supersedes the local fallback");
+assert.equal(parcelCardArtwork(recognized).sticker?.path, "parcel-activity/sf.png");
+assert.equal(nextPickupArtwork(parcelActivityContent({
+  ...parcel, pickup, identity: { ...parcel.identity, companyName: "" },
+})!), undefined, "a known carrier code suffices even while its name is missing");
 
 const appointmentStart = Date.UTC(2026, 10, 16, 7);
 const appointmentEnd = appointmentStart + 2 * 60 * 60 * 1000;
@@ -184,6 +201,14 @@ const deadline = appointmentEnd + 3_600_000;
 assert.equal(handoffActivityContent(handoff)?.expiresAtMs, deadline);
 assert.equal(handoffActivityContent({ ...handoff, expiredAtMs: deadline }), null);
 const timeOnly = handoffActivityContent({ ...handoff, windowEndAtMs: undefined, windowText: "15:00–17:00" });
+assert.equal(nextPickupArtwork(timeOnly!), "jingdong");
+const handoffKey = parcelCardKey(timeOnly!);
+assert.equal(nextPickupArtwork(withPickupArtwork(timeOnly!, { [handoffKey]: "jingdong" })), "douyin");
+const douyin = withPickupArtwork(timeOnly!, { [handoffKey]: "douyin" });
+assert.equal(nextPickupArtwork(douyin), "pinduoduo");
+assert.equal(nextPickupArtwork(withPickupArtwork(timeOnly!, { [handoffKey]: "pinduoduo" })), "cainiao");
+assert.equal(douyin.platform, "cainiao", "handoff artwork retains the recognized source");
+assert.equal(parcelCardArtwork(douyin).mark?.path, "platform-accounts/douyin.png");
 assert.equal(timeOnly?.location, "15:00–17:00 上门");
 assert.equal(timeOnly?.expiresAtMs, undefined);
 assert.deepEqual(activePickupCards([parcel]), []);
@@ -299,6 +324,7 @@ const activityGlobals = {
   parcelCardArtwork,
   parcelActivityContent,
   independentPickupContent,
+  withPickupArtwork,
   activePickupCards,
   activeMealCards: () => meals,
   mealCredentialScope: () => "synthetic-scope",
@@ -601,7 +627,7 @@ for (const artTop of [cardArtTop, MEAL_CARD_TOKENS.artTop]) {
   }
 }
 assert.match(activityCardSource, /background=\{\{ alignment: "topLeading", content: boxArtwork \}\}/);
-assert.match(activityCardSource, /<ZStack frame=\{\{ width: artWidth, \.\.\.slot\(bottom - top\), alignment: "topLeading" \}\}>\{boxArtwork\}/,
+assert.match(activityCardSource, /<ZStack frame=\{\{ width: artWidth, \.\.\.slot\(bottom - top\), alignment: "topLeading" \}\}>\{appArtwork\}/,
   "the in-app artwork also uses a top-leading origin");
 assert.match(activityCardSource, /<VStack spacing=\{dividerToCapsule \* verticalScale\} fixedSize=\{\{ horizontal: false, vertical: true \}\} layoutPriority=\{1\}>\s*\{divider\}\s*\{bottomRow\}\s*<\/VStack>/,
   "the expanded divider and action share a fixed spacing container");
@@ -668,9 +694,9 @@ assert.match(appSource, /pickupCards\.length > 0 \|\| pickupPreview/);
 assert.equal(PICKUP_TAB_TITLE, "待取");
 assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title=\{PICKUP_TAB_TITLE\} systemImage="archivebox\.fill" value="pickup"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="shippingbox\.fill" value="deliveries"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
-assert.match(pickupSource, /cardRow\(card, sectionIndex === 0 && index === 0,\s*index < items.length - 1 \|\| preview\)/,
+assert.match(pickupSource, /cardRow\(card, visible && sectionIndex === 0 && index === 0,\s*index < items.length - 1 \|\| preview\)/,
   "only the first visible row receives playback and spacing appears between cards in the same section");
-assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate=\{sectionIndex === 0 && items.length === 0\} \/>/,
+assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate=\{visible && sectionIndex === 0 && items.length === 0\} \/>/,
   "a standalone preview retains its animation and a trailing preview uses the final frame");
 const homeSource = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
 for (const source of [homeSource, pickupSource, settingsSource]) {

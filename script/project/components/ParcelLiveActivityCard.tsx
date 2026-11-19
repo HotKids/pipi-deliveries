@@ -74,10 +74,12 @@ export type ParcelLiveActivityCardProps = {
   onDetail?: () => void;
   onEditNote?: () => void;
   onLocationTap?: () => void;
+  onArtworkTap?: () => void;
 };
 
 export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, completion, preview, expanded, lockScreen, artwork,
-  actionLabel, actionPending, locationText, showingAddress, onComplete, onCopy, onDetail, onEditNote, onLocationTap }: ParcelLiveActivityCardProps) {
+  actionLabel, actionPending, locationText, showingAddress, onComplete, onCopy, onDetail, onEditNote,
+  onLocationTap, onArtworkTap }: ParcelLiveActivityCardProps) {
   const isMeal = data.kind === "meal";
   const card = isMeal ? MEAL_CARD : PIPI_CARD;
   const capsuleTop = card.height - card.edge - card.capsuleHeight;
@@ -249,6 +251,10 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
       {boxSticker}
     </ZStack>
   );
+  const artworkLabel = isMeal ? "切换冷热杯" : handoff ? "切换寄件渠道" : "切换取件站点";
+  const appArtwork = onArtworkTap
+    ? <Button buttonStyle="plain" accessibilityLabel={artworkLabel} action={onArtworkTap}>{boxArtwork}</Button>
+    : boxArtwork;
 
   const capsuleControl = (label: VirtualNode) => {
     const priority = lockScreen ? undefined : 1;
@@ -327,7 +333,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
           background={{ alignment: "topLeading", content: boxArtwork }}
           clipped layoutPriority={expanded ? 1 : -1} />
       ) : (
-        <ZStack frame={{ width: artWidth, ...slot(bottom - top), alignment: "topLeading" }}>{boxArtwork}</ZStack>
+        <ZStack frame={{ width: artWidth, ...slot(bottom - top), alignment: "topLeading" }}>{appArtwork}</ZStack>
       )}
       <VStack alignment="leading" spacing={0} padding={{ vertical: hostVerticalInset * scale,
         trailing: expanded ? 0 : card.edge * scale }}

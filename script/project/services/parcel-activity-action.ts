@@ -1,6 +1,6 @@
 import { LiveActivity } from "scripting";
 import type { AppState } from "../models";
-import { independentPickupContent, parcelActivityContent, type ParcelActivityContent, type ParcelActivityTarget } from "./parcel-pickup";
+import { independentPickupContent, parcelActivityContent, withPickupArtwork, type ParcelActivityContent, type ParcelActivityTarget } from "./parcel-pickup";
 import { mealCard } from "./meal/cards";
 import { completeMeal, readMeals } from "./meal/records";
 import { mealCredentialScope } from "./meal/rules";
@@ -36,13 +36,14 @@ export function parcelForTarget(state: AppState, target: ParcelActivityTarget): 
   }
   if ("recordId" in target) {
     const record = state.pickupCodeRecords?.find((item) => item?.id === target.recordId);
-    return record ? independentPickupContent(record) : null;
+    const card = record && independentPickupContent(record);
+    return card ? withPickupArtwork(card, state.pickupArtworkChoices) : null;
   }
   const shipment = visibleShipments(state).find((row) => row.identity.id === target.shipmentId);
   const content = shipment ? parcelActivityContent(shipment) : null;
   if (!content?.target || !("waybill" in content.target)) return null;
   return content.target.waybill === target.waybill &&
-    content.target.waybillGeneration === target.waybillGeneration ? content : null;
+    content.target.waybillGeneration === target.waybillGeneration ? withPickupArtwork(content, state.pickupArtworkChoices) : null;
 }
 
 export async function endActivity(id: string): Promise<void> {

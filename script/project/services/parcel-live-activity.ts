@@ -278,7 +278,7 @@ async function synchronizeActivities(
   if (stateLoadFailure() || cards && peekStateRevision() > state.revision ||
       !registry.showAll && (shortcutKeys || !registry.receipts.length)) return shown;
   if (shortcutKeys && !await LiveActivity.areActivitiesEnabled()) return shown;
-  const byTime = (cards ?? [...activePickupCards(visibleShipments(state), state.pickupCodeRecords), ...activeMealCards()])
+  const byTime = (cards ?? [...activePickupCards(visibleShipments(state), state.pickupCodeRecords, state.pickupArtworkChoices), ...activeMealCards()])
     .filter((card) => card.target)
     .sort((left, right) => (right.capturedAtMs ?? 0) - (left.capturedAtMs ?? 0) ||
       parcelCardKey(left).localeCompare(parcelCardKey(right)));

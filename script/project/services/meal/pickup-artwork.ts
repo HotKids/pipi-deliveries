@@ -10,6 +10,7 @@ export type PickupVisualStyle = {
   readonly gradientStartColor: string
   readonly gradientEndColor: string
   readonly category: string
+  readonly temperaturePair?: { hot: string; cold: string }
 }
 
 export type PickupVisualInput = {
@@ -48,14 +49,13 @@ export function resolvePickupVisualStyle(
   const category = brand
     ? clean(brand.category)
     : categoryFromText(runtime, styleText)
-  const artwork = resolveArtwork(
-    runtime,
-    unknown,
-    brand,
-    category,
-    styleText,
-    temperatureText,
-  )
+  const temperature = resolveTemperature(runtime, temperatureText)
+  const artwork = resolveArtwork(runtime, unknown, brand, category, styleText, temperature)
+  const temperaturePair = temperature === "unknown"
+    ? validatedTemperaturePair(artwork,
+      resolveArtwork(runtime, unknown, brand, category, styleText, "hot"),
+      resolveArtwork(runtime, unknown, brand, category, styleText, "cold"))
+    : undefined
 
   const unknownColors = optionalObject(unknown.colors)
   const unknownButton = androidColor(unknownColors.buttonBg, 0xff000000)
@@ -76,7 +76,7 @@ export function resolvePickupVisualStyle(
   const rawSticker = Object.prototype.hasOwnProperty.call(assets, "artworkSticker")
     ? clean(assets.artworkSticker)
     : clean(assets.sticker)
-  const artworkAsset = assetBasename(artwork.aodAsset)
+  const artworkAsset = temperaturePair?.cold ?? assetBasename(artwork.aodAsset)
   const stickerAsset = shouldOverlayPickupBrand(brandId, artworkAsset)
     ? assetBasename(rawSticker)
     : ""
@@ -93,7 +93,27 @@ export function resolvePickupVisualStyle(
     gradientStartColor: rgbHex(alphaBlend(card, CARD_GRADIENT_START)),
     gradientEndColor: rgbHex(alphaBlend(card, CARD_GRADIENT_END)),
     category,
+    ...(temperaturePair ? { temperaturePair } : {}),
   }
+}
+
+function validatedTemperaturePair(current: ResolvedArtwork, hot: ResolvedArtwork, cold: ResolvedArtwork) {
+  const shapes = [hot, cold].map(({ backgroundAsset, aodAsset }) => ({
+    background: assetBasename(backgroundAsset), still: assetBasename(aodAsset),
+  }))
+  const [warm, iced] = shapes
+  if (!warm.background || !iced.background || !warm.still || !iced.still ||
+      warm.background === iced.background || warm.still === iced.still) return undefined
+  if (!shapes.some(variant => variant.background === assetBasename(current.backgroundAsset) &&
+      variant.still === assetBasename(current.aodAsset))) return undefined
+  return { hot: warm.still, cold: iced.still }
+}
+
+export function alternateMealArtwork(style: PickupVisualStyle | undefined): string | undefined {
+  const pair = style?.temperaturePair
+  if (!pair?.hot || !pair.cold || pair.hot === pair.cold) return undefined
+  if (style?.artworkAsset === pair.hot) return pair.cold
+  return style?.artworkAsset === pair.cold ? pair.hot : undefined
 }
 
 export function shouldOverlayPickupBrand(brandId: string, artAsset: string): boolean {
@@ -108,8 +128,8 @@ function resolveArtwork(
   unknown: JsonObject,
   brand: JsonObject | undefined,
   category: string,
-  styleEvidence: string,
-  temperatureEvidence: string,
+  styleText: string,
+  temperature: ReturnType<typeof resolveTemperature>,
 ): ResolvedArtwork {
   const assets = brand ? optionalObject(brand.assets) : {}
   const fixedBackground = clean(assets.baseBg)
@@ -120,9 +140,6 @@ function resolveArtwork(
     }
   }
 
-  const styleText = clean(styleEvidence) || clean(temperatureEvidence)
-  const temperatureText = clean(temperatureEvidence) || styleText
-  const temperature = resolveTemperature(runtime, temperatureText)
   const styleConfig = optionalObject(runtime.styleConfig)
   const categoryStyle = optionalObjectOrNull(styleConfig[category])
   if (categoryStyle) {

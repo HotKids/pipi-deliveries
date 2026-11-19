@@ -1,16 +1,33 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import { installSharedFileMock } from "./shared-file-mock";
 import { createPickupRuntime } from "../services/meal/pickup-runtime";
 import { parsePickupCredentials } from "../services/meal/pickup-parser";
 import { chineseParentheses, mealFromModel, onlineMealRequiresQR, recognizeMealText } from "../services/meal/recognize";
 import { decodeMealQRs } from "../services/meal/qr";
+import { alternateMealArtwork, resolvePickupVisualStyle } from "../services/meal/pickup-artwork";
 import { completeMeal, currentMeal, putMealObservations, readMeals, stageLuckinDraft, updateMeals,
   type MealEnvelope, type MealSession } from "../services/meal/records";
 import { applyMealPage, applyMealReceipt, mealPullRequest, prepareMealBatch, recoverMealConflict } from "../services/meal/cloud";
 
 const raw = JSON.parse(readFileSync(new URL("../../../pickup-rules.json", import.meta.url), "utf8"));
 const rules = { raw, parsed: createPickupRuntime(raw) };
+const jpgCoffee = (evidenceText: string) => resolvePickupVisualStyle(raw, {
+  brandId: "jpgcoffee", productName: "美式", evidenceText,
+});
+const defaultCoffee = jpgCoffee("");
+assert.equal(defaultCoffee.artworkAsset, "aod_static_coffee_common_cold.webp");
+const hotCoffee = alternateMealArtwork(defaultCoffee)!;
+assert.equal(hotCoffee, "aod_static_coffee_common_hot.webp");
+assert.equal(alternateMealArtwork({ ...defaultCoffee, artworkAsset: hotCoffee }), defaultCoffee.artworkAsset);
+assert.equal(jpgCoffee("热").artworkAsset, hotCoffee);
+assert.equal(alternateMealArtwork(jpgCoffee("热")), undefined);
+assert.equal(alternateMealArtwork(jpgCoffee("去冰")), undefined);
+assert.equal(alternateMealArtwork(resolvePickupVisualStyle(raw, {
+  brandId: "chayanyuese", productName: "幽兰拿铁", evidenceText: "",
+})), undefined, "fixed brand artwork has no temperature switch");
 const now = Date.UTC(2026, 10, 19, 0);
 const width = 1179, height = 1050;
 function candidates(rows: readonly [string, number, number?, number?][]) {
@@ -148,6 +165,30 @@ assert.deepEqual(new Set(pixels([qr0, qr1])), new Set(["00-SYNTH-A", " 00-SYNTH-
 
 const memory = new Map<string, unknown>();
 installSharedFileMock(memory);
+const localArtworkScope = "c".repeat(64);
+const artworkObservation = {
+  payload: { brandId: "jpgcoffee", productName: "美式", code: "S123",
+    createdAt: now, expiresAt: now + 60_000 },
+  artwork: defaultCoffee,
+};
+const [artworkId] = putMealObservations(localArtworkScope, [artworkObservation], true);
+const cardsFile = readFileSync(new URL("../services/meal/cards.ts", import.meta.url), "utf8");
+const cardsService = stripTypeScriptTypes(cardsFile, {mode: "transform"})
+  .replace(/^import[\s\S]*?;\n/gm, "").replace(/^export /gm, "");
+const cards = runInNewContext(cardsService + "\n;({ mealCard, toggleMealCup });", {
+  currentMeal, readMeals, updateMeals, alternateMealArtwork, resolvePickupVisualStyle,
+  mealCredentialScope: () => localArtworkScope, cachedMealRules: () => rules,
+}) as typeof import("../services/meal/cards");
+const firstCup = cards.mealCard(localArtworkScope, artworkId, readMeals(localArtworkScope), now)!;
+assert.equal(firstCup.mealStyle?.artworkAsset, defaultCoffee.artworkAsset);
+assert.equal(firstCup.artworkSwitchable, true);
+assert.equal(cards.toggleMealCup(firstCup, now), true);
+assert.equal(readMeals(localArtworkScope).style[artworkId].artworkAsset, hotCoffee);
+assert.equal(cards.toggleMealCup(firstCup, now), false, "a stale tap cannot overwrite the newly selected cup");
+const selectedCup = cards.mealCard(localArtworkScope, artworkId, readMeals(localArtworkScope), now)!;
+assert.equal(cards.toggleMealCup(selectedCup, now), true);
+assert.equal(readMeals(localArtworkScope).style[artworkId].artworkAsset, defaultCoffee.artworkAsset);
+assert.deepEqual(readMeals(localArtworkScope).edits[artworkId].payload, artworkObservation.payload);
 const scope = "a".repeat(64);
 stageLuckinDraft(scope, order.draft!);
 assert.deepEqual(readMeals(scope).edits, {}, "a first-page draft is never uploaded");

@@ -10,13 +10,13 @@ import { displayWaybill, unprojectedAccountOrder } from "./shipment-policy";
 
 type CarrierEvidence = "matched" | "blank" | "platform_label" | "raw_code";
 
-function carrierEvidence(shipment: Shipment): CarrierEvidence {
+function carrierEvidence(shipment: Shipment, requireVisibleName = true): CarrierEvidence {
   if (unprojectedAccountOrder(shipment)) return "matched";
   const waybill = displayWaybill(shipment);
   if (!waybill) return "matched";
   const identity = shipment.identity;
   const name = String(identity.companyName || "").trim();
-  if (!name) return "blank";
+  if (!name && requireVisibleName) return "blank";
   const code = normalizeCarrierCode(identity.courierCode || "");
   const nameRecord = resolveCarrierName(name);
   const codeRecord = code ? resolveCarrierQuery(code) || resolveCarrierCpCode(code) : null;
@@ -25,6 +25,7 @@ function carrierEvidence(shipment: Shipment): CarrierEvidence {
   if (jingDongBusiness && !/^JD/i.test(waybill) &&
       (nameRecord || codeRecord)?.standardCode === "JD") return "platform_label";
   if (nameRecord || codeRecord) return "matched";
+  if (!name) return "blank";
   // The raw codes this row carries: its own, and the source record's (for an account order that is the order's own code,
   // which stays with the row after projection while a recognised feed-text waybill clears `rawCourierCode`).
   const shownAsCode = normalizeCarrierCode(name);
@@ -45,6 +46,10 @@ function carrierEvidence(shipment: Shipment): CarrierEvidence {
  */
 export function carrierUnmatched(shipment: Shipment): boolean {
   return carrierEvidence(shipment) !== "matched";
+}
+
+export function parcelArtworkCarrierUnmatched(shipment: Shipment): boolean {
+  return carrierEvidence(shipment, false) !== "matched";
 }
 
 /**

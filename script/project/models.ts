@@ -178,6 +178,8 @@ export type AutomaticOwnership = {
 };
 
 export type PickupPlatform = "cainiao" | "pinduoduo" | "fengchao";
+export type PickupArtworkChoice = PickupPlatform | "jingdong" | "douyin";
+export type PickupArtworkChoices = Readonly<Record<string, PickupArtworkChoice | undefined>>;
 
 export type ParcelPickup = Readonly<{
   platform?: PickupPlatform;
@@ -346,6 +348,7 @@ export type AppState = {
   pendingQueries: readonly PendingManualQuery[];
   shipments: readonly Shipment[];
   pickupCodeRecords?: readonly PickupCodeRecord[];
+  pickupArtworkChoices?: PickupArtworkChoices;
   pendingNotifications?: readonly ShipmentNotificationEvent[];
   pendingEnhancementUnsubscribes?: readonly PendingEnhancementUnsubscribe[];
   /** feed 槽一次性重建已标记的时间（见 TimelinePackage.feedRebuildPending）。 */
