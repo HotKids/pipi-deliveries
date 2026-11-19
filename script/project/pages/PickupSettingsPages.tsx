@@ -10,6 +10,7 @@ import {
   stopParcelActivityPreview,
 } from "../services/parcel-live-activity";
 import { PICKUP_TAB_TITLE, type ParcelActivityContent } from "../services/parcel-pickup";
+import { parcelCardKey } from "../services/storage";
 import { transientToast } from "../services/ui-feedback";
 
 export function ParcelShortcutPage() {
@@ -21,8 +22,8 @@ export function ParcelShortcutPage() {
         </Link>
         <Text font="subheadline" lineSpacing={3}>1. 添加「截屏」，再添加 Scripting 的「运行意图脚本」。</Text>
         <Text font="subheadline" lineSpacing={3}>2. 选择「派派助手」，在参数栏选择上一步生成的截屏。</Text>
-        <Text font="subheadline" lineSpacing={3}>3. 打开要识别的物流页面，运行这条快捷指令。也可以在系统设置中用「轻点背面」或「操作按钮」触发。</Text>
-        <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">识别到运单号后，后台查询并通知最新轨迹。需要验证手机尾号时，长按通知输入后 4 位。</Text>
+        <Text font="subheadline" lineSpacing={3}>3. 打开要识别的物流或取餐页面，运行这条快捷指令。也可以在系统设置中用「轻点背面」或「操作按钮」触发。</Text>
+        <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">识别到运单号后，后台查询并通知最新轨迹。需验证时，在通知中输入手机尾号。取餐码会加入「待取」。</Text>
       </Section>
       <Section header={<Text>短信识别</Text>}>
         <Text font="subheadline" lineSpacing={3}>1. 在「快捷指令」中创建「信息」自动化，按发件人或短信内容设置触发条件。</Text>
@@ -108,10 +109,10 @@ export function ParcelActivityPage({ cards, revision }: {
         <ParcelActivityPreviewCard />
       </Section>
       {parcels.length ? (
-        <Section header={<Text>快递码</Text>}>
+        <Section header={<Text>{parcels.some(({ content }) => content.kind === "meal") ? "待取码" : "快递码"}</Text>}>
           {parcels.map(({ content, target }) => (
             <Button
-              key={"shipmentId" in target ? target.shipmentId : target.recordId}
+              key={parcelCardKey(content)}
               disabled={busy || active}
               title={[content.title, content.location, content.code].filter(Boolean).join(" · ")}
               action={() => void change(() => startParcelActivity(target))}

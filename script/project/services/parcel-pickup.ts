@@ -5,6 +5,7 @@ import { normalizeWaybill, shipmentPresentationStatus, waybillSuffix } from "./s
 import { cleanString } from "./value-guards";
 import { formatListTime } from "./time-presentation";
 import { parcelHandoffDeadline } from "./parcel-handoff-expiry";
+import type { PickupVisualStyle } from "./meal/pickup-artwork";
 import type { ParcelLookup } from "./parcel-code-ocr";
 
 export const PICKUP_TAB_TITLE = "待取";
@@ -19,13 +20,15 @@ export type ParcelActivityTarget = Readonly<{
   shipmentId: string;
   waybill: string;
   waybillGeneration: number;
-}> | Readonly<{ recordId: string }>;
+}> | Readonly<{ recordId: string }> | Readonly<{ mealId: string; mealScope: string }>;
 
 export type ParcelActivityContent = Readonly<{
   target?: ParcelActivityTarget;
   platform?: PickupPlatform;
   carrierIcon?: string;
-  kind?: "handoff";
+  kind?: "handoff" | "meal";
+  mealStyle?: PickupVisualStyle;
+  hasMealQR?: boolean;
   businessDateKey?: string;
   capturedAtMs?: number;
   expiresAtMs?: number;
@@ -62,7 +65,9 @@ export function pickupDateSections(
     // Pipi Home dates receiving cards today and handoffs by the appointment's business day.
     const day = card.businessDateKey || today;
     const group = sections.get(day) ?? [];
-    if (card.target && "recordId" in card.target && card.target.recordId === focusedRecordId) {
+    const target = card.target;
+    const recordId = target && ("recordId" in target ? target.recordId : "mealId" in target ? target.mealId : "");
+    if (recordId && recordId === focusedRecordId) {
       focusedDay = day;
       group.unshift(card);
     } else {
@@ -88,6 +93,7 @@ export function parcelPickupShortCode(code: string): string {
 
 export function parcelPickupSubtitle(card: ParcelActivityContent, location = card.location, showingAddress = false) {
   if (card.kind === "handoff") return { text: location, symbol: "calendar.circle.fill" };
+  if (card.kind === "meal") return { text: location || "请及时取餐", symbol: "storefront.fill" };
   if (!location) return { text: "请及时取件", symbol: "doc.text.fill" };
   return { text: location, symbol: showingAddress || location === card.address ? "mappin.circle.fill" : "house.fill" };
 }

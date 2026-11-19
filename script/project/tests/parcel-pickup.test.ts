@@ -187,7 +187,7 @@ const events: string[] = [];
 let lockScreenBoxCopied = false;
 let current: Shipment = { ...parcel, pickup };
 let records: PickupCodeRecord[] = [];
-const snapshot = () => ({ shipments: [current], pickupCodeRecords: records });
+const snapshot = () => ({ revision: 0, shipments: [current], pickupCodeRecords: records });
 let stateReads = 0;
 let loadFailed = false;
 let session: unknown = null;
@@ -199,6 +199,10 @@ let now = appointmentStart;
 let staleDate: number | undefined;
 let failEnd = false;
 let capacity = Infinity;
+let activitiesEnabled = true;
+let owner: symbol | undefined;
+let onStart: (() => Promise<void>) | undefined;
+let meals: ParcelActivityContent[] = [];
 const refused = new Set<string>();
 const completions: string[] = [];
 const native = new Map<string, ReturnType<typeof makeActivity>>();
@@ -213,6 +217,7 @@ function makeActivity() {
     rank: 0,
     code: "",
     start: async ({ code }: { code: string }, options?: { staleDate?: number; relevanceScore?: number }) => {
+      if (onStart) await onStart();
       assert.equal(lockScreenBoxCopied, true, "the shared artwork must exist before the host snapshots the card");
       if (activeCodes().length >= capacity || refused.has(code)) return false;
       events.push("start " + code);
@@ -239,7 +244,7 @@ function makeActivity() {
   };
   return activity;
 }
-const host = runInNewContext(service + "\n({ startParcelActivity, startAllParcelActivities, stopParcelActivity, startParcelActivityPreview, stopParcelActivityPreview, onParcelActivityPreviewChanged, reconcileParcelActivity, parcelActivityStatus, parcelActivityTarget, completeParcelActivity });", {
+const activityGlobals = {
   Path: { join: (...parts: string[]) => parts.join("/") },
   Script: { directory: "/synthetic" },
   UUID: { string: () => { linkId = "synthetic-link-" + ++nextLink; return linkId; } },
@@ -261,7 +266,7 @@ const host = runInNewContext(service + "\n({ startParcelActivity, startAllParcel
     remove: () => { session = null; },
   },
   LiveActivity: {
-    areActivitiesEnabled: async () => true,
+    areActivitiesEnabled: async () => activitiesEnabled,
     getActivityState: async (id: string) => native.get(id)?.state ?? null,
     from: async (id: string) => native.get(id) ?? null,
   },
@@ -273,10 +278,17 @@ const host = runInNewContext(service + "\n({ startParcelActivity, startAllParcel
   parcelActivityContent,
   independentPickupContent,
   activePickupCards,
+  activeMealCards: () => meals,
+  mealCredentialScope: () => "synthetic-scope",
+  readMeals: () => null,
+  mealCard: (scope: string, id: string) => meals.find(card => card.target && "mealId" in card.target &&
+    card.target.mealId === id && card.target.mealScope === scope) ?? null,
   parcelCardKey: ({ target }: Pick<ParcelActivityContent, "target">) => target
-    ? "recordId" in target ? "record:" + target.recordId : JSON.stringify([target.shipmentId, target.waybill, target.waybillGeneration])
+    ? "recordId" in target ? "record:" + target.recordId : "mealId" in target ? `${target.mealScope}:${target.mealId}` :
+      JSON.stringify([target.shipmentId, target.waybill, target.waybillGeneration])
     : "",
   loadState: () => { stateReads++; return snapshot(); },
+  peekStateRevision: () => 0,
   stateLoadFailure: () => loadFailed,
   visibleShipments: (state: { shipments: Shipment[] }) => state.shipments,
   withSharedFileTransaction: (run: () => unknown) => run(),
@@ -285,15 +297,25 @@ const host = runInNewContext(service + "\n({ startParcelActivity, startAllParcel
     if ("recordId" in target) {
       completions.push(target.recordId);
       records = records.map((item) => item.id === target.recordId ? { ...item, completedAtMs: now } : item);
-    } else {
+    } else if ("shipmentId" in target) {
       assert.equal(target.waybill, current.pickup?.waybill);
       assert.equal(target.waybillGeneration, current.waybillReuseAtMs ?? 0);
       completions.push(target.shipmentId);
       current = { ...current, forcedCompletedAtMs: now };
     }
   },
+  acquireDurableRefreshLease: (key: string) => {
+    assert.equal(key, "parcel-activities");
+    if (owner) return null;
+    const token = Symbol(key);
+    owner = token;
+    return { isCurrent: () => owner === token, release: () => { if (owner === token) owner = undefined; } };
+  },
+  pauseWhileActive: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
   writeDiagnostic: () => {},
-});
+};
+const createHost = () => runInNewContext(service + "\n({ startParcelActivity, startAllParcelActivities, stopParcelActivity, startParcelActivityPreview, stopParcelActivityPreview, onParcelActivityPreviewChanged, reconcileParcelActivity, parcelActivitySceneChanged, parcelActivityStatus, parcelActivityTarget, completeParcelActivity, showShortcutPickupActivities });", { ...activityGlobals });
+const host = createHost();
 const hasActivity = async () => (await host.parcelActivityStatus()).count > 0;
 const target = parcelActivityContent(current)!.target;
 await host.startParcelActivity(target);
@@ -453,6 +475,39 @@ await assert.rejects(host.startParcelActivityPreview(), /锁屏预览暂时无�
 assert.deepEqual(activeCodes(), [fourthPickup.code, firstPickup.code]);
 await host.stopParcelActivity();
 
+records = [];
+await host.startAllParcelActivities();
+const shortcut = createHost();
+shortcut.parcelActivitySceneChanged("background");
+const mealTarget = { mealScope: "synthetic-scope", mealId: "synthetic-meal" };
+const firstTarget = { recordId: firstPickup.id };
+records = [firstPickup, fourthPickup];
+meals = [{ kind: "meal", target: mealTarget, title: "测试取餐", location: "", code: "M1234", capturedAtMs: now + 3 }];
+activitiesEnabled = false;
+assert.equal(await shortcut.showShortcutPickupActivities([firstTarget]), false);
+assert.deepEqual(activeCodes(), []);
+activitiesEnabled = true;
+
+const started = Promise.withResolvers<void>();
+const releaseStart = Promise.withResolvers<void>();
+onStart = () => { started.resolve(); return releaseStart.promise; };
+const initial = shortcut.showShortcutPickupActivities([mealTarget, firstTarget]);
+await started.promise;
+const repeated = host.showShortcutPickupActivities([mealTarget, firstTarget]);
+releaseStart.resolve();
+assert.deepEqual(await Promise.all([initial, repeated]), [true, true]);
+onStart = undefined;
+assert.deepEqual(activeCodes(), ["M1234", firstPickup.code], "the background Shortcut only starts its committed records");
+assert.equal(events.filter(event => event === "start M1234").length, 1, "two runtimes share one activity per record");
+assert.equal(await shortcut.showShortcutPickupActivities([{ recordId: fourthPickup.id }]), false);
+assert.deepEqual(activeCodes(), ["M1234", firstPickup.code], "a declined background start leaves existing cards visible");
+host.parcelActivitySceneChanged("background");
+host.reconcileParcelActivity(snapshot(), [independentPickupContent(firstPickup)!]);
+await host.parcelActivityStatus();
+assert.ok(activeCodes().includes("M1234"), "an older page snapshot cannot remove the new committed meal");
+await host.stopParcelActivity();
+assert.equal(await shortcut.showShortcutPickupActivities([firstTarget]), false, "respect the saved Live Activity switch");
+
 const activityCardSource = readFileSync(new URL("../components/ParcelLiveActivityCard.tsx", import.meta.url), "utf8");
 const fullBox = readFileSync(new URL("../assets/parcel-activity/box.png", import.meta.url));
 const watchBox = readFileSync(new URL(`../assets/parcel-activity/${PARCEL_LOCK_SCREEN_BOX}`, import.meta.url));
@@ -473,8 +528,9 @@ assert.match(activityCardSource, /activityBackgroundTint="clear" widgetURL=\{url
 assert.doesNotMatch(activityCardSource, /<(?:EnvironmentValuesReader|GeometryReader|Canvas)\b/,
   "the lock screen snapshots a complete view tree");
 assert.match(activityCardSource, /frame=\{\{ \.\.\.slot\(bottom - top\), minWidth: 0, maxWidth: "infinity"/);
-assert.match(activityCardSource, /systemName="shippingbox\.fill" font=\{card\.capsuleIcon \* scale\}/,
-  "the completion control uses the native package symbol");
+assert.match(activityCardSource, /systemName=\{isMeal \? "fork\.knife" : "shippingbox\.fill"\} font=\{card\.capsuleIcon \* scale\}/,
+  "meals use the utensil symbol and parcels keep the native package symbol at the same size");
+assert.match(activityCardSource, /isMeal \? "我已取餐"/);
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
 assert.match(activityEntrySource, /<LiveActivityUIExpandedCenter>\s*<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} expanded \/>/,
   "the registered island uses the common Pipi card");

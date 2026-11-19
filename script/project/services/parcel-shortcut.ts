@@ -9,6 +9,7 @@ import { detectManualCarrier } from "./manual-query";
 import { shipmentNotificationPresentation } from "./notification-events";
 import { scheduleShipmentNotification } from "./notifications";
 import { normalizeRecognizedPickupCode, type ParcelLookup } from "./parcel-code-ocr";
+import { parcelActivityContent, type ParcelActivityTarget } from "./parcel-pickup";
 import { isParcelWaybill } from "./parcel-waybill-ocr";
 import { displayWaybill, selectShipmentTimeline } from "./shipment-policy";
 import { listHeadline, normalizeWaybill } from "./status";
@@ -19,11 +20,13 @@ import { manualQueryFailureToast } from "./ui-feedback";
 
 export const PARCEL_SHORTCUT_PARAMETER = "parcelDraft";
 export const PARCEL_SHORTCUT_RECORD_PARAMETER = "parcelCodeRecord";
+export const PICKUP_SHORTCUT_SAVED = "已添加取件码，可在「待取」查看。";
 
 export type ParcelShortcutLookup = ParcelLookup & { draftToken?: string; openOnTap?: boolean };
 
 type ScreenShortcutShipment = { shipment: Shipment; added: boolean };
 type ScreenShortcutQueryResult = ScreenShortcutShipment | { shipment: null; needsPhoneTail: boolean };
+type PresentPickup = (targets: readonly ParcelActivityTarget[]) => Promise<boolean>;
 
 const SCREEN_DRAFT_MAX_AGE_MS = 5 * 60 * 1000;
 const SHORTCUT_NOTIFICATION_BUDGET_MS = 10_000;
@@ -200,22 +203,31 @@ export async function notifyScreenShortcutStatus(message: string, phoneTailDraft
   return message;
 }
 
-async function notifyScreenShipment({ shipment, added }: ScreenShortcutShipment): Promise<string> {
+async function notifyScreenShipment(
+  { shipment, added }: ScreenShortcutShipment,
+  pickup?: { code: string; present: PresentPickup },
+): Promise<string> {
+  const card = pickup && parcelActivityContent(shipment);
+  const target = card?.code === pickup?.code ? card?.target : undefined;
+  const activityShown = Boolean(target && pickup && await pickup.present([target]));
   const latest = listHeadline(selectShipmentTimeline(shipment), true);
-  if (!latest) return notifyScreenShortcutStatus(EXPRESS_TOAST_COPY.manualQueryNoTrack);
+  if (!latest) return activityShown ? PICKUP_SHORTCUT_SAVED :
+    notifyScreenShortcutStatus(target ? PICKUP_SHORTCUT_SAVED : EXPRESS_TOAST_COPY.manualQueryNoTrack);
   const event = shipmentNotificationPresentation(shipment);
   const title = added ? `已添加 ${event.title}` : event.title;
   const body = latest.detail;
-  await sendScreenNotification(deadlineAtMs => scheduleShipmentNotification({ ...event, title, body }, deadlineAtMs));
+  if (!activityShown) {
+    await sendScreenNotification(deadlineAtMs => scheduleShipmentNotification({ ...event, title, body }, deadlineAtMs));
+  }
   return `${title}\n${body}`;
 }
 
-export async function submitScreenShortcut(lookup: ParcelLookup): Promise<string> {
+export async function submitScreenShortcut(lookup: ParcelLookup, presentPickup: PresentPickup): Promise<string> {
   let needsPhoneTail = false;
   let message: string = EXPRESS_TOAST_COPY.manualQueryNoTrack;
   try {
     const result = await queryScreenShortcut(lookup);
-    if (result.shipment) return notifyScreenShipment(result);
+    if (result.shipment) return notifyScreenShipment(result, lookup.pickup ? { code: lookup.pickup.code, present: presentPickup } : undefined);
     needsPhoneTail = result.needsPhoneTail;
   } catch (error) {
     needsPhoneTail = needsManualPhoneTail(error);

@@ -133,6 +133,7 @@ for (const [intent, expected, fileRead, record, failedSave] of [
   let staged: ParcelLookup | undefined;
   let queried: ParcelLookup | undefined;
   const saved: string[] = [];
+  const activityRecords: string[] = [];
   const discarded: string[] = [];
   const decodedFiles: string[] = [];
   let foregroundCalls = 0;
@@ -162,6 +163,9 @@ for (const [intent, expected, fileRead, record, failedSave] of [
       }),
     },
     UUID: { string: () => "synthetic-record" },
+    recognitionOperation: () => ({ mode: "local", isCurrent: () => true }),
+    mealCredentialScope: () => "",
+    waitForRefresh: (work: unknown) => work,
     parcelImageRows,
     parcelTextRows,
     recognizeParcelCodes,
@@ -175,6 +179,12 @@ for (const [intent, expected, fileRead, record, failedSave] of [
       saved.push(value.kind);
     },
     submitScreenShortcut: async (lookup: ParcelLookup) => { queried = lookup; return "已添加 测试快递"; },
+    showShortcutPickupActivities: async (targets: { recordId: string }[]) => {
+      assert.deepEqual(saved, ["pickup"], "the record must already be saved");
+      activityRecords.push(...targets.map(target => target.recordId));
+      return true;
+    },
+    PICKUP_SHORTCUT_SAVED: "已添加取件码，可在「待取」查看。",
     notifyScreenShortcutStatus: async (message: string) => message,
     writeDiagnostic() {},
     flushDiagnostics() {},
@@ -185,13 +195,95 @@ for (const [intent, expected, fileRead, record, failedSave] of [
   assert.equal(queried?.waybill ?? "", screenSubmission ? expected : "");
   if (expected && !record) assert.equal((queried ?? staged)?.pickup?.code, "A1-2345");
   assert.deepEqual(saved, record && !failedSave ? [record] : []);
+  assert.deepEqual(activityRecords, record === "pickup" && fileRead ? ["synthetic-record"] : []);
   assert.equal(foregroundCalls, 0, "recognition never opens the main app");
   assert.deepEqual(decodedFiles, fileRead ? [fileRead] : []);
   assert.deepEqual(discarded, failedSave ? ["draft-token"] : []);
   if (failedSave) assert.match(String(result), /处理快递识别结果失败/);
   else if (screenSubmission) assert.match(String(result), /已添加 测试快递/);
+  else if (activityRecords.length) assert.match(String(result), /取件码/);
   else if (expected || record) assert.match(String(result), /已识别快递信息/);
   else assert.match(String(result), /未识别|无法读取|请传入|请运行/);
+}
+
+// Exercise the same production shortcut with the selected provider conclusive, unavailable or unable to match.
+for (const phase of ["local", "online-express", "online-empty", "online-error", "cancelled"] as const) {
+  const calls: string[] = [];
+  let final = "";
+  await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
+    Intent: { ...file("/synthetic/image.png"), text: (value: string) => value },
+    Script: { exit: (value: string) => { final = value; } },
+    UIImage: { fromFile: () => ({ width: 800, height: 1100, scale: 1 }) },
+    Vision: { recognizeText: async () => { calls.push("local"); return { candidates: [] }; } },
+    recognitionOperation: () => ({ mode: phase === "local" ? "local" : "online", config: {},
+      isCurrent: () => phase !== "cancelled" || calls.length === 0 }),
+    ONLINE_BUDGET_MS: 25000,
+    mealCredentialScope: () => "",
+    requestOnlineRecognition: async () => {
+      calls.push("provider");
+      if (phase === "online-error") throw new Error("synthetic offline");
+      return phase === "online-express" || phase === "cancelled"
+        ? { family: "express", fields: { waybill: track, pickupCode: "A1-2345" } } : null;
+    },
+    waitForRefresh: (work: unknown) => work,
+    recognizeParcelCodes: () => ({}),
+    parcelImageRows, parcelTextRows, normalizeWaybill, isParcelWaybill, normalizeRecognizedPickupCode,
+    submitScreenShortcut: (lookup: ParcelLookup) => {
+      assert.equal(lookup.waybill, track);
+      calls.push("query");
+      return "已添加";
+    },
+    showShortcutPickupActivities: async () => true,
+    notifyScreenShortcutStatus: (message: string) => message,
+    writeDiagnostic() {}, flushDiagnostics() {},
+  });
+  assert.deepEqual(calls, phase === "local" ? ["local"] :
+    phase === "online-express" ? ["provider", "query"] :
+    phase === "cancelled" ? ["provider"] : ["provider", "local"]);
+  if (phase === "cancelled") assert.match(final, /识别已取消/);
+}
+
+for (const phase of ["local-meal", "online-meal", "luckin-draft", "local-meal-no-activity"] as const) {
+  const calls: string[] = [];
+  const scope = "synthetic-scope";
+  const observation = { payload: { code: "0123", brandId: "ruixing" } };
+  let final = "";
+  await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
+    Intent: { ...file("/synthetic/meal.png"), text: (value: string) => value },
+    Script: { exit: (value: string) => { final = value; } },
+    UIImage: { fromFile: () => ({ width: 800, height: 1100, scale: 1 }) },
+    Vision: { recognizeText: async () => ({ candidates: [{ content: "取餐码" }] }) },
+    recognitionOperation: () => ({ mode: phase === "online-meal" ? "online" : "local", config: {}, isCurrent: () => true }),
+    ONLINE_BUDGET_MS: 25_000,
+    mealCredentialScope: () => scope,
+    requestOnlineRecognition: async () => ({ family: "pickup", fields: {} }),
+    ensureMealRules: async () => ({}),
+    onlineMealRequiresQR: () => false,
+    mealFromModel: () => observation,
+    recognizeMealImage: async () => phase === "luckin-draft" ? { meals: [], draft: observation } : { meals: [observation] },
+    putMealObservations: (account: string, entries: unknown[]) => {
+      assert.equal(account, scope);
+      assert.equal(entries[0], observation);
+      calls.push("save");
+      return ["meal-id"];
+    },
+    stageLuckinDraft: () => calls.push("draft"),
+    showShortcutPickupActivities: async (targets: { mealId: string; mealScope: string }[]) => {
+      assert.equal(targets[0].mealId, "meal-id");
+      assert.equal(targets[0].mealScope, scope);
+      calls.push("activity");
+      return phase !== "local-meal-no-activity";
+    },
+    notifyScreenShortcutStatus: (message: string) => { calls.push("notification"); return message; },
+    synchronizeMeals: async () => { calls.push("sync"); },
+    waitForRefresh: (work: unknown) => work,
+    recognizeParcelCodes: () => ({}),
+    parcelImageRows: () => [],
+    writeDiagnostic() {}, flushDiagnostics() {},
+  });
+  assert.match(final, phase === "luckin-draft" ? /再运行一次截屏识别/ : /已添加 1 张取餐码/);
+  assert.deepEqual(calls, phase === "luckin-draft" ? ["draft", "notification"] :
+    ["save", "activity", ...(phase === "local-meal-no-activity" ? ["notification"] : []), "sync"]);
 }
 
 const shortcutService = executable("services/parcel-shortcut.ts");
@@ -206,11 +298,12 @@ const savedShipment = { identity: { id: "synthetic-shipment", waybill: track }, 
   ],
 } };
 
-function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty" | "noBanner") {
+function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty" | "noBanner", activity?: boolean) {
   const calls: string[] = [];
   const banners: Record<string, unknown>[] = [];
   const files = new Map<string, string>();
   let shipments = mode === "known" ? [savedShipment] : [];
+  let expectedLookup = screenshotLookup;
   const currentState = () => ({ shipments, pendingQueries: [], activeSource: "v5" });
   const host = runInNewContext(`${shortcutService}\n({ submitScreenShortcut, submitScreenShortcutPhoneTail });`, {
     Path, isParcelWaybill, normalizeRecognizedPickupCode, listHeadline, normalizeWaybill,
@@ -221,8 +314,11 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
     visibleShipments: (state: ReturnType<typeof currentState>) => state.shipments,
     displayWaybill: (shipment: typeof savedShipment) => shipment.identity.waybill,
     selectShipmentTimeline: (shipment: typeof savedShipment) => shipment.timeline,
+    parcelActivityContent: (shipment: typeof savedShipment) => activity === undefined ? null : {
+      target: { shipmentId: shipment.identity.id, waybill: track, waybillGeneration: 0 }, code: screenshotLookup.pickup!.code,
+    },
     saveRecognizedShipmentPickup: (_shipment: unknown, lookup: ParcelLookup) => {
-      assert.equal(lookup.pickup?.code, screenshotLookup.pickup?.code);
+      assert.equal(lookup.pickup?.code, expectedLookup.pickup?.code);
       calls.push("attach existing");
       return currentState();
     },
@@ -236,7 +332,7 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
         pending: {}, commitBase: { shipment: null } };
     },
     commitManualShipmentPreview: (preview: { roundComplete: boolean }, _now: number, lookup: ParcelLookup) => {
-      assert.equal(lookup.pickup?.code, screenshotLookup.pickup?.code);
+      assert.equal(lookup.pickup?.code, expectedLookup.pickup?.code);
       calls.push("commit");
       if (preview.roundComplete) shipments = [savedShipment];
       return currentState();
@@ -244,7 +340,7 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
     continueManualShipmentPreview: async (_preview: unknown, options: { backgroundHostSafe: boolean; deadlineAtMs: number; lookup: ParcelLookup }) => {
       assert.equal(options.backgroundHostSafe, true);
       assert.equal(options.deadlineAtMs, NOW_FOR_SHORTCUT + 30_000);
-      assert.equal(options.lookup.pickup?.code, screenshotLookup.pickup?.code);
+      assert.equal(options.lookup.pickup?.code, expectedLookup.pickup?.code);
       calls.push("continue");
       if (mode !== "empty") shipments = [savedShipment];
       return { state: currentState() };
@@ -272,10 +368,20 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
     writeDiagnostic: (name: string) => { if (name === "shortcut.notification.failed") calls.push("notification unavailable"); },
     flushDiagnostics() {},
   }) as {
-    submitScreenShortcut: (lookup: ParcelLookup) => Promise<string>;
+    submitScreenShortcut: (lookup: ParcelLookup, present: (targets: { shipmentId: string }[]) => Promise<boolean>) => Promise<string>;
     submitScreenShortcutPhoneTail: (token: string, tail: string) => Promise<{ done: boolean; message: string }>;
   };
-  return { ...host, calls, banners, files };
+  return { ...host, calls, banners, files,
+    submitScreenShortcut: (lookup: ParcelLookup) => {
+      expectedLookup = lookup;
+      return host.submitScreenShortcut(lookup, async targets => {
+        assert.equal(shipments.length, 1, "the activity follows the durable shipment commit");
+        assert.equal(targets[0].shipmentId, savedShipment.identity.id);
+        calls.push("activity");
+        return activity === true;
+      });
+    },
+  };
 }
 
 const NOW_FOR_SHORTCUT = 1_790_000_000_000;
@@ -293,6 +399,17 @@ for (const mode of ["new", "known", "partial", "noBanner"] as const) {
   assert.equal(host.banners[0].iconName, "zto");
   assert.equal(host.files.size, 0, "a successful query must not create a foreground search draft");
 }
+
+for (const accepted of [true, false]) {
+  const host = screenshotRuntime("new", accepted);
+  assert.equal(await host.submitScreenShortcut(screenshotLookup), `已添加 ${nativeTitle}\n${latestBody}`);
+  assert.deepEqual(host.calls.slice(3), accepted ? ["activity"] : ["activity", "tracking notification"]);
+  assert.equal(host.banners.length, accepted ? 0 : 1);
+}
+const trackingOnly = screenshotRuntime("new", true);
+await trackingOnly.submitScreenShortcut({ ...screenshotLookup, pickup: undefined });
+assert.ok(!trackingOnly.calls.includes("activity"));
+assert.equal(trackingOnly.banners[0].body, latestBody);
 
 const needsTail = screenshotRuntime("phone");
 assert.equal(await needsTail.submitScreenShortcut(screenshotLookup), "请长按通知，输入手机号后 4 位。");

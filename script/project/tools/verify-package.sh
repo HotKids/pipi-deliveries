@@ -232,6 +232,11 @@ while IFS= read -r network_url; do
   test -n "$network_url" || continue
   case "$network_url" in
     "$GATEWAY_ORIGIN"|\
+    'https://api.openai.com/v1'|\
+    'https://generativelanguage.googleapis.com/v1beta'|\
+    'http://www.apache.org/licenses/'|\
+    'http://www.apache.org/licenses/LICENSE-2.0'|\
+    'http://en.wikipedia.org/wiki/Bresenham'|\
     'https://m.kuaidi100.com'|\
     'https://m.kuaidi100.com/query'|\
     'https://m.kuaidi100.com/app/query/?nu='|\

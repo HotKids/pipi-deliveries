@@ -1,7 +1,10 @@
 import { LiveActivity, Path, Script, type ScenePhase } from "scripting";
 import { PARCEL_ACTIVITY_ART, PipiParcelActivity } from "../live_activity";
 import type { AppState } from "../models";
+import { pauseWhileActive } from "./deadline";
+import { activeMealCards } from "./meal/cards";
 import { writeDiagnostic } from "./logger";
+import { acquireDurableRefreshLease } from "./refresh-runtime-state";
 import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork } from "./parcel-card-appearance";
 import {
   EMPTY_CONTENT,
@@ -19,10 +22,10 @@ import {
   type ParcelActivityContent,
   type ParcelActivityTarget,
 } from "./parcel-pickup";
-import { loadState, parcelCardKey, stateLoadFailure, visibleShipments } from "./storage";
+import { loadState, parcelCardKey, peekStateRevision, stateLoadFailure, visibleShipments } from "./storage";
 
 let pending: Promise<unknown> = Promise.resolve();
-let queuedReconciliation: { state: AppState } | undefined;
+let queuedReconciliation: { state: AppState; cards?: readonly ParcelActivityContent[] } | undefined;
 let foreground = true;
 const displayed = new Map<string, string>();
 const previewListeners = new Set<() => void>();
@@ -45,6 +48,30 @@ function serialize<T>(operation: () => Promise<T>): Promise<T> {
   const next = pending.then(operation);
   pending = next.catch(() => undefined);
   return next;
+}
+
+type ActivityOwnership = () => boolean;
+
+async function withActivityOwnership<T>(operation: (isCurrent: ActivityOwnership) => Promise<T>): Promise<T> {
+  // A Shortcut and the main page can run in separate JS contexts against the same receipts.
+  const deadline = Date.now() + 1_500;
+  do {
+    const lease = acquireDurableRefreshLease("parcel-activities", 30_000);
+    if (lease) {
+      try { return await operation(lease.isCurrent); }
+      finally { lease.release(); }
+    }
+    await pauseWhileActive(100);
+  } while (Date.now() < deadline);
+  throw new Error("实时活动正在更新，请稍后重试。");
+}
+
+function serializeMutation<T>(operation: (isCurrent: ActivityOwnership) => Promise<T>): Promise<T> {
+  return serialize(() => withActivityOwnership(operation));
+}
+
+function requireActivityOwnership(isCurrent: ActivityOwnership): void {
+  if (!isCurrent()) throw new Error("实时活动状态已更新，请稍后重试。");
 }
 
 async function isRunning(receipt: Receipt): Promise<boolean> {
@@ -87,12 +114,14 @@ export function parcelActivityTarget(state: AppState, linkId: unknown): ParcelAc
 function prepareArtwork(content: ParcelActivityContent): void {
   const root = Path.join(FileManager.appGroupDocumentsDirectory, PARCEL_ACTIVITY_ART);
   FileManager.createDirectorySync(root, true);
-  const { mark, sticker } = parcelCardArtwork(content);
+  const { mark, sticker, meal, mealSticker } = parcelCardArtwork(content);
   const sources = [
     { path: "parcel-activity/box.png", name: "box.png" },
     { path: `parcel-activity/${PARCEL_LOCK_SCREEN_BOX}`, name: PARCEL_LOCK_SCREEN_BOX },
     mark,
     sticker,
+    meal,
+    mealSticker,
   ];
   for (const file of sources) {
     if (!file) continue;
@@ -107,14 +136,16 @@ function activityData(content: ParcelActivityContent, linkId?: string, relevance
   return { card: { ...card, linkId }, options: { staleDate: content.target ? expiresAtMs : undefined, relevanceScore } };
 }
 
-async function createActivity(content: ParcelActivityContent, relevanceScore?: number): Promise<boolean> {
+async function createActivity(content: ParcelActivityContent, isCurrent: ActivityOwnership, relevanceScore?: number): Promise<boolean> {
   const linkId = content.target ? UUID.string() : undefined;
   const { card, options } = activityData(content, linkId, relevanceScore);
   prepareArtwork(content);
+  requireActivityOwnership(isCurrent);
   const activity = PipiParcelActivity();
   if (!await activity.start(card, options)) return false;
   const id = activity.activityId;
   try {
+    requireActivityOwnership(isCurrent);
     if (!id) throw new Error("无法保存实时活动，请稍后重试。");
     const registry = parcelActivityRegistry();
     saveParcelActivityRegistry({
@@ -129,7 +160,8 @@ async function createActivity(content: ParcelActivityContent, relevanceScore?: n
   return true;
 }
 
-function forgetReceipt(receipt: Receipt, dismissedKey?: string): void {
+function forgetReceipt(receipt: Receipt, isCurrent: ActivityOwnership, dismissedKey?: string): void {
+  requireActivityOwnership(isCurrent);
   const registry = parcelActivityRegistry();
   saveParcelActivityRegistry({
     ...registry,
@@ -140,22 +172,25 @@ function forgetReceipt(receipt: Receipt, dismissedKey?: string): void {
   if (!receipt.target) notifyPreviewChanged();
 }
 
-async function closeActivity(receipt: Receipt): Promise<void> {
+async function closeActivity(receipt: Receipt, isCurrent: ActivityOwnership): Promise<void> {
+  requireActivityOwnership(isCurrent);
   await endActivity(receipt.id);
-  forgetReceipt(receipt);
+  forgetReceipt(receipt, isCurrent);
 }
 
-async function updateActivity(receipt: Receipt, content: ParcelActivityContent, relevanceScore?: number): Promise<void> {
+async function updateActivity(receipt: Receipt, content: ParcelActivityContent, isCurrent: ActivityOwnership, relevanceScore?: number): Promise<boolean> {
   const { card, options } = activityData(content, receipt.linkId, relevanceScore);
   const serialized = JSON.stringify({ card, options });
-  if (displayed.get(receipt.id) === serialized) return;
+  if (displayed.get(receipt.id) === serialized) return true;
   const activity = await LiveActivity.from<ParcelActivityState>(receipt.id, PARCEL_ACTIVITY_NAME);
   prepareArtwork(content);
+  requireActivityOwnership(isCurrent);
   if (await activity?.update(card, options)) {
     displayed.set(receipt.id, serialized);
-    return;
+    return isCurrent();
   }
   if (await isRunning(receipt)) throw new Error("实时活动更新失败，请稍后重试。");
+  return false;
 }
 
 async function requireActivitiesEnabled(): Promise<void> {
@@ -165,7 +200,7 @@ async function requireActivitiesEnabled(): Promise<void> {
 }
 
 export function startParcelActivity(target: ParcelActivityTarget): Promise<void> {
-  return serialize(async () => {
+  return serializeMutation(async isCurrent => {
     const registry = parcelActivityRegistry();
     if (registry.showAll || (await Promise.all(registry.receipts.map(isRunning))).some(Boolean)) {
       throw new Error("请先结束当前实时活动。");
@@ -176,38 +211,39 @@ export function startParcelActivity(target: ParcelActivityTarget): Promise<void>
       throw new Error("该快递码已不可用。");
     }
     if (registry.receipts.length) {
+      requireActivityOwnership(isCurrent);
       for (const receipt of registry.receipts) displayed.delete(receipt.id);
       saveParcelActivityRegistry({ ...registry, receipts: [] });
     }
-    if (!await createActivity(content)) throw new Error("实时活动启动失败，请稍后重试。");
+    if (!await createActivity(content, isCurrent)) throw new Error("实时活动启动失败，请稍后重试。");
   });
 }
 
 export function startParcelActivityPreview(): Promise<void> {
-  return serialize(async () => {
+  return serializeMutation(async isCurrent => {
     const preview = parcelActivityRegistry().receipts.find(receipt => !receipt.target);
     if (preview && await isRunning(preview)) {
-      await updateActivity(preview, PARCEL_ACTIVITY_PREVIEW);
+      await updateActivity(preview, PARCEL_ACTIVITY_PREVIEW, isCurrent);
       return;
     }
     await requireActivitiesEnabled();
-    if (preview) forgetReceipt(preview);
-    if (!await createActivity(PARCEL_ACTIVITY_PREVIEW)) {
+    if (preview) forgetReceipt(preview, isCurrent);
+    if (!await createActivity(PARCEL_ACTIVITY_PREVIEW, isCurrent)) {
       throw new Error("锁屏预览暂时无法启动，请稍后重试。");
     }
   });
 }
 
 export function stopParcelActivityPreview(): Promise<void> {
-  return serialize(async () => {
+  return serializeMutation(async isCurrent => {
     const preview = parcelActivityRegistry().receipts.find(receipt => !receipt.target);
-    if (preview) await closeActivity(preview);
+    if (preview) await closeActivity(preview, isCurrent);
   });
 }
 
 type RankedCard = { key: string; content: ParcelActivityContent; rank: number };
 
-async function replaceOldest(candidate: RankedCard, cards: readonly RankedCard[]): Promise<boolean> {
+async function replaceOldest(candidate: RankedCard, cards: readonly RankedCard[], isCurrent: ActivityOwnership): Promise<boolean> {
   if (!foreground || !await LiveActivity.areActivitiesEnabled()) return false;
   const receipts = parcelActivityRegistry().receipts;
   for (let i = cards.length - 1; i >= 0; i--) {
@@ -216,14 +252,14 @@ async function replaceOldest(candidate: RankedCard, cards: readonly RankedCard[]
     const receipt = receipts.find((item) => parcelCardKey(item) === oldest.key);
     if (!receipt || !await isRunning(receipt)) continue;
     if (!foreground) return false;
-    await closeActivity(receipt);
+    await closeActivity(receipt, isCurrent);
     let replaced = false;
     try {
-      replaced = foreground && await createActivity(candidate.content, candidate.rank);
+      replaced = foreground && await createActivity(candidate.content, isCurrent, candidate.rank);
       return replaced;
     } finally {
-      if (!replaced && foreground && (oldest.content.expiresAtMs ?? Infinity) > Date.now() &&
-        !await createActivity(oldest.content, oldest.rank)) {
+      if (!replaced && isCurrent() && foreground && (oldest.content.expiresAtMs ?? Infinity) > Date.now() &&
+        !await createActivity(oldest.content, isCurrent, oldest.rank)) {
         writeDiagnostic("activity.parcel.restore.failed", { result: "rejected" }, "warning");
       }
     }
@@ -231,10 +267,16 @@ async function replaceOldest(candidate: RankedCard, cards: readonly RankedCard[]
   return false;
 }
 
-async function synchronizeActivities(state: AppState, cards?: readonly ParcelActivityContent[]): Promise<void> {
+async function synchronizeActivities(
+  state: AppState, isCurrent: ActivityOwnership, cards?: readonly ParcelActivityContent[],
+  shortcutKeys?: ReadonlySet<string>,
+): Promise<Set<string>> {
   const registry = parcelActivityRegistry();
-  if (stateLoadFailure() || !registry.showAll && !registry.receipts.length) return;
-  const byTime = (cards ?? activePickupCards(visibleShipments(state), state.pickupCodeRecords))
+  const shown = new Set<string>();
+  if (stateLoadFailure() || cards && peekStateRevision() > state.revision ||
+      !registry.showAll && (shortcutKeys || !registry.receipts.length)) return shown;
+  if (shortcutKeys && !await LiveActivity.areActivitiesEnabled()) return shown;
+  const byTime = (cards ?? [...activePickupCards(visibleShipments(state), state.pickupCodeRecords), ...activeMealCards()])
     .filter((card) => card.target)
     .sort((left, right) => (right.capturedAtMs ?? 0) - (left.capturedAtMs ?? 0) ||
       parcelCardKey(left).localeCompare(parcelCardKey(right)));
@@ -242,58 +284,84 @@ async function synchronizeActivities(state: AppState, cards?: readonly ParcelAct
     key: parcelCardKey(content), content, rank: byTime.length - index,
   }));
   const byKey = new Map(ranked.map((card) => [card.key, card]));
+  let latest: AppState | undefined;
   for (const receipt of registry.receipts) {
     const key = parcelCardKey(receipt);
+    if (shortcutKeys && !shortcutKeys.has(key)) continue;
     const next = byKey.get(key);
     if (!await isRunning(receipt)) {
-      forgetReceipt(receipt, registry.showAll && next ? key : undefined);
+      forgetReceipt(receipt, isCurrent, registry.showAll && next ? key : undefined);
     } else if (key && !next) {
-      await closeActivity(receipt);
+      // A page snapshot can predate a meal committed by the Shortcut's separate runtime.
+      if (cards && receipt.target && parcelForTarget(latest ??= committedState(), receipt.target)) continue;
+      await closeActivity(receipt, isCurrent);
     } else if (next) {
-      await updateActivity(receipt, next.content, registry.showAll ? next.rank : undefined);
+      if (await updateActivity(receipt, next.content, isCurrent, registry.showAll ? next.rank : undefined)) shown.add(key);
     } else if (!receipt.target) {
-      await updateActivity(receipt, PARCEL_ACTIVITY_PREVIEW);
+      await updateActivity(receipt, PARCEL_ACTIVITY_PREVIEW, isCurrent);
     }
   }
-  if (!registry.showAll) return;
+  if (!registry.showAll) return shown;
   const current = parcelActivityRegistry();
-  const dismissed = current.dismissed.filter((key) => byKey.has(key));
+  const dismissed = shortcutKeys ? current.dismissed : current.dismissed.filter((key) => byKey.has(key));
   if (dismissed.length !== current.dismissed.length) {
+    requireActivityOwnership(isCurrent);
     saveParcelActivityRegistry({ ...current, dismissed });
   }
-  if (!foreground || !await LiveActivity.areActivitiesEnabled()) return;
+  if (!shortcutKeys && (!foreground || !await LiveActivity.areActivitiesEnabled())) return shown;
   for (const card of ranked) {
-    if (!foreground) return;
+    if (shortcutKeys) {
+      if (!shortcutKeys.has(card.key) || card.content.kind === "handoff") continue;
+    } else if (!foreground) return shown;
     if (dismissed.includes(card.key) || (card.content.expiresAtMs ?? Infinity) <= Date.now() ||
       parcelActivityRegistry().receipts.some((item) => parcelCardKey(item) === card.key)) continue;
-    if (await createActivity(card.content, card.rank)) continue;
+    if (await createActivity(card.content, isCurrent, card.rank)) {
+      shown.add(card.key);
+      continue;
+    }
+    if (shortcutKeys) continue;
     const preview = parcelActivityRegistry().receipts.find(receipt => !receipt.target);
     if (preview) {
-      await closeActivity(preview);
-      if (await createActivity(card.content, card.rank)) continue;
+      await closeActivity(preview, isCurrent);
+      if (await createActivity(card.content, isCurrent, card.rank)) continue;
     }
-    if (await replaceOldest(card, ranked)) continue;
+    if (await replaceOldest(card, ranked, isCurrent)) continue;
     throw new Error("部分实时活动暂时无法显示，请在取件页查看。");
   }
+  return shown;
+}
+
+export async function showShortcutPickupActivities(targets: readonly ParcelActivityTarget[]): Promise<boolean> {
+  if (!targets.length) return false;
+  try {
+    if (!parcelActivityRegistry().showAll) return false;
+    const keys = new Set(targets.map(target => parcelCardKey({ target })));
+    const shown = await serializeMutation(isCurrent => synchronizeActivities(committedState(), isCurrent, undefined, keys));
+    if (shown.size === keys.size) return true;
+  } catch { /* The recognized records were already committed. */ }
+  try { writeDiagnostic("shortcut.activity.unavailable", {}, "warning"); } catch { /* Diagnostics are optional. */ }
+  return false;
 }
 
 export function startAllParcelActivities(): Promise<void> {
-  return serialize(async () => {
+  return serializeMutation(async isCurrent => {
     await requireActivitiesEnabled();
     const state = committedState();
+    requireActivityOwnership(isCurrent);
     saveParcelActivityRegistry({ ...parcelActivityRegistry(), showAll: true, dismissed: [] });
-    await synchronizeActivities(state);
+    await synchronizeActivities(state, isCurrent);
   });
 }
 
 export function stopParcelActivity(): Promise<void> {
-  return serialize(async () => {
+  return serializeMutation(async isCurrent => {
     const registry = parcelActivityRegistry();
+    requireActivityOwnership(isCurrent);
     saveParcelActivityRegistry({ ...registry, showAll: false, dismissed: [] });
     let failure: unknown;
     for (const receipt of registry.receipts) {
       try {
-        await closeActivity(receipt);
+        await closeActivity(receipt, isCurrent);
       } catch (error) {
         failure ??= error;
       }
@@ -303,11 +371,14 @@ export function stopParcelActivity(): Promise<void> {
 }
 
 export function reconcileParcelActivity(state: AppState, cards?: readonly ParcelActivityContent[]): void {
-  if (queuedReconciliation?.state === state) return;
-  const request = { state };
-  void serialize(() => {
+  if (queuedReconciliation?.state === state && queuedReconciliation.cards === cards) return;
+  const request = { state, cards };
+  void serialize(async () => {
     if (queuedReconciliation === request) queuedReconciliation = undefined;
-    return synchronizeActivities(state, cards);
+    const registry = parcelActivityRegistry();
+    if (registry.showAll || registry.receipts.length) {
+      await withActivityOwnership(isCurrent => synchronizeActivities(state, isCurrent, cards));
+    }
   }).catch(() => {
     writeDiagnostic("activity.parcel.reconcile.failed", { result: "failed" }, "warning");
   });

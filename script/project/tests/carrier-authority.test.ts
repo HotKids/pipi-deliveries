@@ -304,3 +304,54 @@ assert.equal(loadCarrierAuthorityCache(10_001_000), true);
 assert.equal(readDiagnostics()[0].details.hotlinePresent, true);
 assert.equal(readDiagnostics()[0].details.hotlineMatchesExpected, false);
 assert.equal(readDiagnostics()[0].level, "warning", "a nonempty but incorrect hotline remains visible");
+
+const { cachedMealRules } = await import("../services/carrier-authority");
+const { saveGatewayToken, removeGatewayToken } = await import("../services/credentials");
+const { sha256Hex } = await import("../services/scripting-data");
+const grantStore = new Map<string, string>();
+Object.assign(globalThis, { Keychain: {
+  get: (name: string) => grantStore.get(name),
+  set: (name: string, value: string) => { grantStore.set(name, value); return true; },
+  remove: (name: string) => grantStore.delete(name),
+} });
+const pack = readFileSync(new URL("../../../meal-pickup-rules.json", import.meta.url), "utf8");
+const response = { ...correctedTable, mealRules: { pack, sha256: sha256Hex(pack) } };
+files.clear();
+resetCarrierAuthorityRuntimeForTesting();
+let count = 0;
+const time = Date.now();
+assert.equal(await refreshCarrierAuthorityIfNeeded(time, { post: async (_path, body) => {
+  assert.deepEqual(body, {});
+  count++;
+  return response;
+} }), true);
+assert.equal(cachedMealRules(), null);
+assert.equal(JSON.parse(files.get(primary)!).meal, undefined, "an unsigned/unconfigured scope cannot persist rules");
+
+saveGatewayToken("AAAAAAAAAAAAAAAA");
+let release: ((value: unknown) => void) | undefined;
+const pending = refreshCarrierAuthorityIfNeeded(time + 1, { post: async (route, body) => {
+  assert.equal(route, "/api/express/carriers");
+  assert.deepEqual(body, { includeMealRules: true });
+  count++;
+  return new Promise(resolve => { release = resolve; });
+} });
+assert.equal(pending, refreshCarrierAuthorityIfNeeded(time + 1), "requests for the same authority snapshot coalesce");
+assert.equal(cachedMealRules(), null, "a saved key alone is not activation");
+release!(response);
+assert.equal(await pending, true);
+assert.equal(count, 2);
+assert.equal(cachedMealRules()?.parsed.ttlSeconds, 7200);
+resetCarrierAuthorityRuntimeForTesting();
+assert.equal(loadCarrierAuthorityCache(time + 2), true);
+assert.ok(cachedMealRules(), "the next process can use its verified cached rules offline");
+assert.equal(await refreshCarrierAuthorityIfNeeded(time + 10, { post: async () => assert.fail("expected carrier cooldown") }), false);
+saveGatewayToken("BBBBBBBBBBBBBBBB");
+assert.equal(cachedMealRules(), null, "a changed key cannot use another activation's rule cache");
+let delayed: ((value: unknown) => void) | undefined;
+const late = refreshCarrierAuthorityIfNeeded(time + 11, { post: async () => new Promise(resolve => { delayed = resolve; }) });
+removeGatewayToken();
+delayed!(response);
+await late;
+assert.equal(cachedMealRules(), null, "a late successful answer cannot publish rules after credential removal");
+console.log("Combined carrier and activated meal rule pull tests passed");

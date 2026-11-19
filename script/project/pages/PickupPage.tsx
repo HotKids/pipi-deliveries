@@ -1,4 +1,4 @@
-import { Button, HStack, Navigation, NavigationStack, Section, Text, VStack, useEffect, useMemo, useRef, useState } from "scripting";
+import { Button, HStack, Navigation, NavigationStack, QRImage, Section, Text, VStack, useEffect, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
 import { RootTabList } from "../components/RootPageHeader";
@@ -10,7 +10,10 @@ import { accountStatus, onPlatformAccountsChanged, type IdentityPlatform } from 
 import { stationIdentityDestination } from "../services/platform-wire";
 import { needsDetailEntryQuery } from "../services/shipment-policy";
 import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
-import { setPickupCardNote } from "../services/storage";
+import { mealRedemption } from "../services/meal/cards";
+import { currentMeal, readMeals } from "../services/meal/records";
+import { mealCredentialScope } from "../services/meal/rules";
+import { parcelCardKey, setPickupCardNote } from "../services/storage";
 import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { requestWidgetReload } from "../services/widgets";
 import { DetailPage } from "./DetailPage";
@@ -64,15 +67,16 @@ function IdentityCodeButton({ onOpen }: {
   );
 }
 
-function PickupCardRow({ card, note, opensCabinet, actionBlocked, onDetail, onSaveNote, onAction, showNotice }: {
+function PickupCardRow({ card, note, opensCabinet, actionBlocked, onDetail, onSaveNote, onAction, showNotice, onMealCode }: {
   card: ParcelActivityContent;
   note: string;
   opensCabinet: boolean;
   actionBlocked: boolean;
   onDetail?: () => void;
-  onSaveNote: (note: string) => void;
+  onSaveNote?: (note: string) => void;
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
   showNotice: (message: string) => void;
+  onMealCode?: () => void;
 }) {
   const [showAddress, setShowAddress] = useState(false);
   const [actionPending, setActionPending] = useState(false);
@@ -81,7 +85,7 @@ function PickupCardRow({ card, note, opensCabinet, actionBlocked, onDetail, onSa
   const canSwitch = Boolean(card.kind !== "handoff" && card.address && card.location && card.location !== card.address);
 
   async function editNote() {
-    if (editing.current) return;
+    if (editing.current || !onSaveNote) return;
     editing.current = true;
     try {
       const value = await Dialog.prompt({
@@ -107,7 +111,7 @@ function PickupCardRow({ card, note, opensCabinet, actionBlocked, onDetail, onSa
       const notice = await onAction(card, opensCabinet);
       if (notice) showNotice(notice);
     } catch {
-      showNotice(EXPRESS_TOAST_COPY.signFailed);
+      showNotice(card.kind === "meal" ? "取餐状态更新失败，请重试" : EXPRESS_TOAST_COPY.signFailed);
     } finally {
       acting.current = false;
       setActionPending(false);
@@ -118,10 +122,11 @@ function PickupCardRow({ card, note, opensCabinet, actionBlocked, onDetail, onSa
     <PickupTabCard
       data={card}
       title={note || card.title}
-      onCopy={() => void copyText(card.code).then((result) => showNotice(result === "copied"
-        ? (card.kind === "handoff" ? "寄件码已复制" : "取件码已复制") : EXPRESS_TOAST_COPY.copyFailed))}
+      onCopy={onMealCode ?? (() => void copyText(card.code).then((result) => showNotice(result === "copied"
+        ? (card.kind === "meal" ? "取餐码已复制" : card.kind === "handoff" ? "寄件码已复制" : "取件码已复制")
+        : EXPRESS_TOAST_COPY.copyFailed)))}
       onDetail={onDetail}
-      onEditNote={card.target ? () => void editNote() : undefined}
+      onEditNote={card.target && onSaveNote ? () => void editNote() : undefined}
       actionLabel={opensCabinet ? "一键开柜" : undefined}
       actionPending={actionPending || actionBlocked}
       locationText={canSwitch && showAddress ? card.address : card.location}
@@ -145,6 +150,7 @@ export function PickupPage({
   showNotice: (message: string) => void;
 }) {
   const dismiss = Navigation.useDismiss();
+  const [mealQr, setMealQr] = useState<{ id: string; scope: string } | null>(null);
   const [detailTarget, setDetailTarget] = useState<ParcelActivityTarget | undefined>(undefined);
   const [identity, setIdentity] = useState<PickupIdentityDestination | null>(null);
   const identityRequest = useRef(0);
@@ -161,6 +167,10 @@ export function PickupPage({
     [state.shipments, selected]);
   const records = state.pickupCodeRecords;
   const sections = pickupDateSections(cards, previewing, focusedRecordId);
+  const shownQr = mealQr && cards.some(card => card.target && "mealId" in card.target &&
+    card.target.mealId === mealQr.id && card.target.mealScope === mealQr.scope) && mealCredentialScope() === mealQr.scope
+    ? currentMeal(readMeals(mealQr.scope), mealQr.id) : undefined;
+  const qrPayload = shownQr ? mealRedemption(shownQr) : "";
 
   async function openIdentity(platform: IdentityPlatform) {
     const request = ++identityRequest.current;
@@ -172,7 +182,10 @@ export function PickupPage({
 
   function cardRow(card: ParcelActivityContent) {
     const target = card.target;
-    const key = target && ("shipmentId" in target ? "shipment:" + target.shipmentId + ":" + target.waybillGeneration : "pickup:" + target.recordId);
+    const key = parcelCardKey(card);
+    if (target && "mealId" in target) return <PickupCardRow key={key} card={card} note=""
+      opensCabinet={false} actionBlocked={false} onAction={onAction} showNotice={showNotice}
+      onMealCode={card.hasMealQR ? () => setMealQr({ id: target.mealId, scope: target.mealScope }) : undefined} />;
     const shipment = shipmentForPickupTarget(shipments, target);
     const note = (target && "recordId" in target
       ? records?.find((record) => record.id === target.recordId)?.note : shipment?.note) || "";
@@ -197,6 +210,17 @@ export function PickupPage({
         onAppear={() => setVisible(true)}
         onDisappear={() => setVisible(false)}
         overlay={{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen={openIdentity} /> }}
+        sheet={{
+          isPresented: Boolean(qrPayload),
+          onChanged: shown => { if (!shown) setMealQr(null); },
+          content: qrPayload ? <VStack spacing={20} padding={24} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
+            <Text font="headline">取餐二维码</Text>
+            <VStack padding={16} background={{ style: "white", shape: { type: "rect", cornerRadius: 16 } }}>
+              <QRImage data={qrPayload} size={200} />
+            </VStack>
+            <Button title="关闭" action={() => setMealQr(null)} />
+          </VStack> : <VStack />,
+        }}
         navigationDestination={{
           isPresented: Boolean(identity || selected),
           onChanged: (presented) => {
