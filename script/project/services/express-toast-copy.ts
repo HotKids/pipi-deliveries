@@ -35,6 +35,7 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   detailRefreshed: "轨迹加载成功",
   /** 详情下拉：跑完了但没有更新，已有可用轨迹。 */
   detailUpToDate: "当前轨迹已是最新",
+  productTitleSummarized: "商品名已提炼",
   /** 详情下拉：跑完了仍没有可用轨迹。 */
   detailNoTrack: "暂未查询到或未揽收",
   /** 详情下拉抛错且页面上没有任何轨迹可看；有缓存可看时静默。 */
@@ -98,7 +99,7 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
 
 export const MEAL_TOAST_COPY = Object.freeze({
   completed: "已标记取餐",
-  completeFailed: "取餐操作失败，请稍后重试",
+  completeFailed: "标记失败，请稍后重试",
   codeCopied: "取餐码已复制",
   copyFailed: "取餐码复制失败，请稍后重试",
 });

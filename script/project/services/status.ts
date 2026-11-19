@@ -16,6 +16,7 @@ import type {
   WidgetSnapshot,
 } from "../models";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
+import { PARCEL_STATUS_TONES } from "./status-tones.generated";
 import {
   activeStatusLabelTable,
   jtLabelSemantic,
@@ -214,12 +215,11 @@ export function statusTint(semantic: StatusSemantic): Color {
   }
 }
 
-// Text gets a separate tone; statusTint remains the owner of accent and fill semantics.
-const STATUS_RGB: Readonly<Record<string, number>> = {
-  systemOrange: 0xff9500, systemGreen: 0x34c759, systemTeal: 0x30b0c7,
-  systemBlue: 0x007aff, systemYellow: 0xffcc00, systemRed: 0xff3b30,
-  secondaryLabel: 0x757575,
-};
+export function statusTextAccent(semantic: StatusSemantic, label = "", dark = false): number {
+  const palette: Readonly<Record<string, readonly [number, number]>> = PARCEL_STATUS_TONES;
+  const key = Object.hasOwn(palette, label) ? label : statusLabel(semantic);
+  return (palette[key] ?? PARCEL_STATUS_TONES.暂无状态)[dark ? 1 : 0];
+}
 
 export function blendStatusColor(color: number, target: number, amount: number): number {
   let result = 0;
@@ -243,18 +243,19 @@ const statusTextTintCache = new Map<string, { light: ColorStringHex; dark: Color
 
 export function statusTextTint(
   semantic: StatusSemantic,
-  options: { badgeOpacity?: number; brandAccent?: string; accentRGB?: number } = {},
+  options: { badgeOpacity?: number; brandAccent?: string; fillRGB?: number; label?: string } = {},
 ): { light: ColorStringHex; dark: ColorStringHex } {
-  const cacheKey = `${semantic}|${options.badgeOpacity ?? ""}|${options.brandAccent ?? ""}|${options.accentRGB ?? ""}`;
+  const cacheKey = `${semantic}|${options.label ?? ""}|${options.badgeOpacity ?? ""}|${options.brandAccent ?? ""}|${options.fillRGB ?? ""}`;
   const cached = statusTextTintCache.get(cacheKey);
   if (cached) {
     return { light: cached.light, dark: cached.dark };
   }
-  const accent = options.accentRGB ?? STATUS_RGB[statusTint(semantic)] ?? STATUS_RGB.secondaryLabel;
-  const tone = (surface: number): ColorStringHex => {
+  const fill = options.fillRGB ?? statusTextAccent(semantic, options.label);
+  const tone = (surface: number, dark: boolean): ColorStringHex => {
+    const accent = statusTextAccent(semantic, options.label, dark);
     const brand = options.brandAccent ? Number.parseInt(options.brandAccent.slice(1), 16) : surface;
     const backgrounds = [surface, blendStatusColor(surface, brand, 0x55 / 255)]
-      .map((background) => blendStatusColor(background, accent, options.badgeOpacity ?? 0));
+      .map((background) => blendStatusColor(background, fill, options.badgeOpacity ?? 0));
     const contrast = (color: number) => Math.min(...backgrounds.map((background) => {
       const a = rgbLuminance(color), b = rgbLuminance(background);
       return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
@@ -267,8 +268,8 @@ export function statusTextTint(
     return `#${target.toString(16).padStart(6, "0")}`;
   };
   const resolved = options.brandAccent
-    ? { light: tone(0xffffff), dark: tone(0x1c1c1e) }
-    : { light: tone(0xf2f2f7), dark: tone(0x2c2c2e) };
+    ? { light: tone(0xffffff, false), dark: tone(0x1c1c1e, true) }
+    : { light: tone(0xf2f2f7, false), dark: tone(0x2c2c2e, true) };
   if (statusTextTintCache.size >= STATUS_TEXT_TINT_CACHE_MAX) {
     const oldestKey = statusTextTintCache.keys().next().value;
     if (oldestKey !== undefined) statusTextTintCache.delete(oldestKey);
@@ -1808,12 +1809,14 @@ export function sortShipments(shipments: readonly Shipment[]): Shipment[] {
   return shipments.map((shipment) => ({
     shipment,
     rank: listRank(shipmentPresentationStatus(shipment).semantic),
-    completionKind: Number(isOrderCompletedFallback(shipment)),
-    // The row displays the headline time even when structured status is older.
-    eventAt: parseProviderTime(shipment.timeline.latestTimeText) ?? shipment.timeline.statusEventAtMs ?? 0,
+    // Watch scan text can be a foreign wall clock. The projection already has its UTC epoch.
+    eventAt: shipment.identity.sourceProvider === "lastscanned"
+      ? (shipment.timeline.statusEventAtMs ?? 0)
+      : (parseListEventTime(listHeadline(shipment.timeline)?.timeText ?? "") ?? 0),
   })).sort((left, right) =>
-    left.rank - right.rank || left.completionKind - right.completionKind ||
+    left.rank - right.rank ||
     right.eventAt - left.eventAt ||
+    right.shipment.updatedAtMs - left.shipment.updatedAtMs ||
     right.shipment.identity.id.localeCompare(left.shipment.identity.id)
   ).map(({ shipment }) => shipment);
 }

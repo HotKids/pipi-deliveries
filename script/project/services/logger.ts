@@ -1288,10 +1288,12 @@ type OperationEvent =
   | "cloud.pdd" | "cloud.parcel.metadata" | "meal.sync"
   | "shortcut.screen" | "shortcut.query" | "activity.parcel.operation" | "pickup.action";
 
-export function beginDiagnosticOperation(event: OperationEvent, details: DiagnosticDetails = {}) {
+export function beginDiagnosticOperation(event: OperationEvent, details: DiagnosticDetails = {}, recordStart = true) {
   const startedAt = Date.now();
   const flowId = createDiagnosticFlowId(event);
-  try { writeDiagnostic(event + ".started", { ...details, flowId }); } catch { /* Diagnostics are optional. */ }
+  if (recordStart) {
+    try { writeDiagnostic(event + ".started", { ...details, flowId }); } catch { /* Diagnostics are optional. */ }
+  }
   let finished = false;
   return (result: string, extra: DiagnosticDetails = {}, level: DiagnosticLevel = "info") => {
     if (finished) return;

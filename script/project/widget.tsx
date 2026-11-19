@@ -1,6 +1,6 @@
 import { Script, Widget } from "scripting";
 import type { AppState } from "./models";
-import { loadWidgetSnapshot, visibleShipments } from "./services/storage";
+import { loadWidgetSnapshot, refreshStoredWatchShipments, visibleShipments } from "./services/storage";
 import { buildWidgetSnapshot } from "./services/status";
 import { lastNetworkRefreshSuccessAtMs } from "./services/refresh-runtime-state";
 import { FallbackWidget } from "./widget/FallbackWidget";
@@ -13,6 +13,7 @@ import {
   safelyLoadWidgetSnapshot,
   shouldRunWidgetNetworkRefresh,
   WIDGET_REFRESH_BUDGET_MS,
+  WIDGET_REFRESH_WAIT_MS,
   WIDGET_RELOAD_AFTER_MS,
   widgetReloadPolicy,
   widgetPresentationKind,
@@ -118,7 +119,16 @@ async function run() {
     Widget.present(content, { reloadPolicy: widgetReloadPolicy() });
     return;
   }
-  backgroundHostBootstrap();
+  let bootstrapReady = false;
+  try {
+    backgroundHostBootstrap();
+    bootstrapReady = true;
+  } catch {
+    writeDiagnostic("widget.refresh.failed", {
+      flowId, stage: "widget_timeline", result: "bootstrap_failed",
+      durationMs: Date.now() - startedAtMs, budgetMs: WIDGET_REFRESH_BUDGET_MS,
+    }, "warning");
+  }
   let shouldRefresh = true;
   try {
     shouldRefresh = shouldRunWidgetNetworkRefresh(
@@ -128,16 +138,19 @@ async function run() {
     shouldRefresh = true;
   }
   const refreshed = createWidgetStateHolder();
-  if (shouldRefresh) {
+  const waitMs = WIDGET_REFRESH_WAIT_MS - (Date.now() - startedAtMs);
+  if (bootstrapReady && shouldRefresh && waitMs > 1_000) {
     const refreshStartedAtMs = Date.now();
     const outcome = await bestEffortWidgetRefresh(async () => {
-      const summary = await refreshAllShipments(
-        undefined,
-        backgroundRefreshOptions(WIDGET_REFRESH_BUDGET_MS),
-      );
+      const budget = Math.min(WIDGET_REFRESH_BUDGET_MS, waitMs - 1_000);
+      const [summary, watch] = await Promise.all([
+        refreshAllShipments(undefined, backgroundRefreshOptions(budget)),
+        refreshStoredWatchShipments(budget),
+      ]);
       if (!summary.skipReason && summary.state) refreshed.state = summary.state;
+      if (watch && watch.revision > (refreshed.state?.revision ?? -1)) refreshed.state = watch;
       return summary;
-    });
+    }, waitMs);
     if (outcome !== "completed" && outcome !== "partial") refreshed.state = null;
     writeDiagnostic(
       outcome === "skipped" ? "widget.refresh.skipped"
@@ -153,16 +166,18 @@ async function run() {
       },
       outcome === "completed" || outcome === "skipped" ? "info" : "warning",
     );
-  } else {
+  } else if (bootstrapReady) {
+    const reason = shouldRefresh ? "budget_exhausted" : "recent_state";
     writeDiagnostic("widget.refresh.skipped", {
       flowId,
       stage: "widget_timeline",
-      result: "recent_state",
-      skipReason: "recent_state",
+      result: reason,
+      skipReason: reason,
     });
   }
   // The host destroys this context as soon as the timeline is presented, so the run must be
   // reported before that call, not after it.
+  const content = widgetContent(refreshed.state);
   writeDiagnostic("widget.run.presenting", {
     flowId,
     stage: "widget_present",
@@ -170,7 +185,6 @@ async function run() {
     durationMs: Date.now() - startedAtMs,
     reloadAfterMs: WIDGET_RELOAD_AFTER_MS,
   });
-  const content = widgetContent(refreshed.state);
   flushDiagnostics();
   Widget.present(content, { reloadPolicy: widgetReloadPolicy() });
 }

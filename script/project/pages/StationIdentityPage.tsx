@@ -1,8 +1,10 @@
 import {
-  AbortController, AppEvents, Button, Canvas, Form, GeometryReader, HStack, Image, QRImage, Rectangle, Section,
+  AbortController, AppEvents, Button, Canvas, Form, GeometryReader, HStack, Image, ProgressView, QRImage, Section,
   Text, VStack, ZStack, useEffect, useMemo, useObservable, useRef, useState,
 } from "scripting";
-import { useBundledImage } from "../components/bundled-image";
+import { ExpandedQRCode, ScanCodeNumber, ScanCodeShrinkHint, ScanCodeSurface } from "../components/ExpandedScanCode";
+import { PICKUP_CARD_SPACING } from "../services/parcel-card-appearance";
+import { bundledImage } from "../components/bundled-image";
 import { iconTileShape } from "../components/icon-tile";
 import { tabCapsuleSurface } from "../components/TabFloatingActionButton";
 import { copyText } from "../services/clipboard";
@@ -37,7 +39,7 @@ const detailTitle = (title: string) => <Text font={13} foregroundStyle="secondar
 
 export function StationIdentityMark({ asset, size = 28 }: { asset: IdentityPlatform | "taobao"; size?: number }) {
   const frame = { width: size, height: size };
-  const artwork = useBundledImage(`platform-accounts/${asset}.png`);
+  const artwork = bundledImage(`platform-accounts/${asset}.png`);
   return artwork ? <Image image={artwork}
     resizable scaleToFit interpolation="high" frame={frame} clipShape={iconTileShape(size)}
   /> : <Image systemName="person.text.rectangle" frame={frame} />;
@@ -115,15 +117,9 @@ function FullScreenIdentity({ format, scan, onClose }: {
     return () => scan.unsubscribe(setScan);
   }, [scan]);
   const widths = useMemo(() => value ? code128Widths(value) : [], [value]);
-  const number = <Text font={14} fontWeight="medium" foregroundStyle="#1C1C1E" lineLimit={1}
-    minScaleFactor={0.55}>{value}</Text>;
-  const shrink = <Text font={12} foregroundStyle="#636366">点击可缩小</Text>;
   const time = <Text font={12} monospacedDigit foregroundStyle="#636366">{countdown(remaining)}</Text>;
   return (
-    <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} preferredColorScheme="light"
-      contentShape="rect" onTapGesture={onClose}
-      accessibilityActions={[{ name: "缩小身份码", action: onClose }]}>
-      <Rectangle fill="white" ignoresSafeArea accessibilityHidden />
+    <ScanCodeSurface closeLabel="缩小身份码" onClose={onClose}>
       {value && remaining > 0 ? format === "barcode" ? (
         <GeometryReader>
           {({ size }) => {
@@ -135,31 +131,15 @@ function FullScreenIdentity({ format, scan, onClose }: {
                 position={{ x: size.width / 2, y: size.height / 2 }}>
                 {mobile ? <Text font={16} fontWeight="semibold" foregroundStyle="#1C1C1E">{mobile}</Text> : null}
                 <Barcode widthList={widths} width={length} height={thickness} />
-                <VStack spacing={4}>{number}{shrink}{time}</VStack>
+                <VStack spacing={4}><ScanCodeNumber value={value} /><ScanCodeShrinkHint />{time}</VStack>
               </VStack>
             );
           }}
         </GeometryReader>
       ) : (
-        <VStack spacing={18} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-          padding={24}>
-          <GeometryReader>
-            {({ size }) => {
-              const qrSize = Math.min(320, size.width, size.height);
-              return (
-                <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
-                  {qrSize > 0 ? <QRImage data={value} size={qrSize} /> : null}
-                </VStack>
-              );
-            }}
-          </GeometryReader>
-          <VStack spacing={8}>
-            {number}{shrink}
-            {time}
-          </VStack>
-        </VStack>
+        <ExpandedQRCode data={value} number={value} footer={time} />
       ) : <Text font={15} foregroundStyle="#636366">身份码已过期</Text>}
-    </ZStack>
+    </ScanCodeSurface>
   );
 }
 
@@ -209,7 +189,8 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
   const scan = useObservable<ScanState>(EMPTY_SCAN);
   const [value, expiresAtMs, remaining, mobile] = scan.value;
   const [full, setFull] = useState<ScanFormat | null>(null);
-  const [busy, setBusy] = useState(true);
+  const [loading, setLoading] = useState<"automatic" | "manual" | null>("automatic");
+  const busy = loading !== null;
   const [notice, setNotice] = useState("");
   const [failure, setFailure] = useState<"verification" | "unavailable" | null>(null);
   const active = useRef(true);
@@ -232,11 +213,11 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
       const app = cainiaoOutbound ? CAINIAO_OUTBOUND_APP_URL : IDENTITY_APP_URL[platform];
       if (destination === "app" && await Safari.openURL(app).catch(() => false)) return;
       if (mounted.current && currentSession()) {
-        setNotice("正在打开…");
+        setNotice("正在打开身份码");
         await openWebIdentity(platform, session, variant);
       }
     } catch {
-      if (mounted.current && currentSession()) setNotice("暂时无法打开网页身份码");
+      if (mounted.current && currentSession()) setNotice("无法打开网页身份码，请稍后重试");
     } finally {
       openingRecovery.current = false;
     }
@@ -290,7 +271,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
     const request = generation.current;
     const controller = new AbortController();
     requestInFlight.current = controller;
-    setBusy(true);
+    setLoading(manual ? "manual" : "automatic");
     setFailure(null);
     if (manual) setNotice("正在获取身份码…");
     try {
@@ -307,7 +288,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
     } finally {
       requestInFlight.current = undefined;
       if (mounted.current) {
-        setBusy(false);
+        setLoading(null);
         if (active.current && request !== generation.current && !scan.value[0]) void refresh();
       }
     }
@@ -342,10 +323,13 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
   const revealResult = Transition.asymmetric(Transition.opacity(), Transition.identity());
   const status = busy ? "正在获取身份码…" : failure === "verification" ? "请完成安全验证"
     : failure === "unavailable" ? "未获取到身份码，请点右上角重试" : "身份码已过期";
+  const manualProgress = loading === "manual"
+    ? <ProgressView progressViewStyle="circular" accessibilityLabel="正在获取身份码" /> : null;
   const markAsset = platform === "cainiao" && !cainiaoOutbound ? "taobao" : platform;
-  const switchLabel = { accessibilityLabel: `切换到${IDENTITY_CODE_TITLES[cainiaoOutbound ? "cainiao" : "cainiao-outbound"]}` };
+  const switchTarget = IDENTITY_CODE_TITLES[cainiaoOutbound ? "cainiao" : "cainiao-outbound"];
+  const switchLabel = { accessibilityLabel: `切换到${switchTarget}` };
   return (
-    <Form navigationTitle={IDENTITY_CODE_TITLES[variant]} listSectionSpacing={8}
+    <Form navigationTitle={IDENTITY_CODE_TITLES[variant]} listSectionSpacing={PICKUP_CARD_SPACING}
       navigationBarTitleDisplayMode="inline"
       animation={{ animation: Animation.easeOut(0.18), value: `${valid}:${showNumber}:${showRecovery}` }}
       toast={transientToast(notice, setNotice)}
@@ -380,10 +364,12 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
                 </VStack>
               </Button>
               <Text font={13} foregroundStyle="secondaryLabel">点击条形码或二维码可放大刷新</Text>
-              <Text font={12} foregroundStyle={remaining > 60 ? "tertiaryLabel" : "systemRed"}>
+              {manualProgress ?? <Text font={12} foregroundStyle={remaining > 60 ? "tertiaryLabel" : "systemRed"}>
                 {busy ? "正在刷新…" : countdown(remaining)}
-              </Text>
+              </Text>}
             </VStack>
+          ) : manualProgress ? (
+            <VStack frame={{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT }}>{manualProgress}</VStack>
           ) : <Text font={16} foregroundStyle="secondaryLabel" multilineTextAlignment="center"
             frame={{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT }}>
             {status}
@@ -400,10 +386,8 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
         </Section>
       ) : null}
       {showNumber ? (
-        <Section key="identity-number" transition={revealResult} header={detailTitle("身份码编号")}
-          footer={platform === "cainiao" ? (
-            <Text font="footnote" foregroundStyle="secondaryLabel">点击图标切换淘宝身份码与菜鸟出库码</Text>
-          ) : undefined}>
+        <Section key="identity-number" transition={revealResult}
+          header={detailTitle(platform === "cainiao" ? `身份码编号（点击图标切换至${switchTarget}）` : "身份码编号")}>
           <HStack spacing={0} frame={{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT }} listRowInsets={DETAIL_ROW_INSETS}>
             {platform === "cainiao" ? (
               <Button buttonStyle="plain" action={onSwitchCainiao} {...switchLabel}>

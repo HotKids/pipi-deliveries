@@ -12,20 +12,18 @@ import {
 } from "../services/parcel-live-activity";
 import type { ParcelLockScreenStyle } from "../services/parcel-card-appearance";
 import { PICKUP_TAB_TITLE } from "../services/parcel-pickup";
-import { LUCKIN_RESCAN } from "../services/shortcut-capture";
+import { SCREEN_SHORTCUT_INSTALL_URL } from "../services/shortcut-capture";
 import { transientToast } from "../services/ui-feedback";
 
 export function ParcelShortcutPage() {
   return (
     <List navigationTitle="快捷指令" navigationBarTitleDisplayMode="inline">
       <Section header={<Text>截屏识别</Text>}>
-        <Link url="shortcuts://create-shortcut">
-          <Text>新建截屏快捷指令</Text>
+        <Link url={SCREEN_SHORTCUT_INSTALL_URL}>
+          <Text>添加 Pipi 快捷指令</Text>
         </Link>
-        <Text font="subheadline" lineSpacing={3}>1. 添加「截屏」，再添加 Scripting 的「运行意图脚本」。</Text>
-        <Text font="subheadline" lineSpacing={3}>{`2. 选择「派派助手」，传入刚截的图，在「文本」填入 ${LUCKIN_RESCAN}。`}</Text>
-        <Text font="subheadline" lineSpacing={3}>{`3. 添加「如果」。运行结果等于 ${LUCKIN_RESCAN} 时，等待 3 秒，再截屏并后台运行「派派助手」。传入第二张截屏，文本留空。`}</Text>
-        <Text font="subheadline" lineSpacing={3}>4. 在物流页或取餐订单页触发指令。可用「轻点背面」或「操作按钮」。收到瑞幸提示后，3 秒内打开取餐码。</Text>
+        <Text font="subheadline" lineSpacing={3}>在物流页或取餐订单页运行 Pipi。可用控制中心、操作按钮或轻点背面触发。</Text>
+        <Text font="subheadline" lineSpacing={3}>收到瑞幸提示后，3 秒内打开取餐码，指令会自动二次识别。</Text>
         <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">识别到运单号后，后台查询并通知最新轨迹。需验证时，在通知中输入手机尾号。取餐码会加入「待取」。</Text>
       </Section>
       <Section header={<Text>短信识别</Text>}>
@@ -53,7 +51,7 @@ export function ParcelActivityPage() {
       void parcelActivityStatus(false).then(status => {
         if (mounted) setActivity(status);
       }).catch(() => {
-        if (mounted) setNotice("无法读取实时活动状态。");
+        if (mounted) setNotice("实时活动状态读取失败");
       }).finally(() => {
         if (mounted) setBusy(false);
       });
@@ -78,12 +76,12 @@ export function ParcelActivityPage() {
     try {
       await action();
     } catch (error) {
-      setNotice(error instanceof Error && error.message ? error.message : "实时活动操作失败。");
+      setNotice(error instanceof Error && error.message ? error.message : "实时活动操作失败，请稍后重试");
     } finally {
       try {
         setActivity(await parcelActivityStatus(false));
       } catch {
-        setNotice("无法读取实时活动状态。");
+        setNotice("实时活动状态读取失败");
       } finally {
         setBusy(false);
       }

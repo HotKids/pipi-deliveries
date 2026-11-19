@@ -10,6 +10,7 @@ import { Path } from "scripting";
 import { statusProjectionFields } from "./worker-status";
 import { sharedCommitSequence, sharedData, sharedStateText, publishSharedData, withSharedFileTransaction, SharedCommitConflict, prefetchSharedStateFiles, type PrefetchedStateFiles } from "./shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
+import { activeWatchScope, internationalShipment, legacyWatchSnapshot, refreshInternationalShipments, type WatchSnapshot } from "./international-records";
 import type {
   AccountBinding,
   AppState,
@@ -26,7 +27,7 @@ import type {
 import { nextParcelHandoffDeadline, parcelHandoffDeadline } from "./parcel-handoff-expiry";
 import { activePickupCards, applyRecognizedPickup, nextPickupArtwork, parcelCardKey, type ParcelActivityContent } from "./parcel-pickup";
 import type { PickupArtworkChoice } from "../models";
-import { applyCloudPddParcels, deliveryEstimateApplies, displayedPlatformFields, enrichPlatformParcel, keepPlatformFields, matchPlatformParcel, samePlatformTarget, type CloudPddParcel } from "./platform-parcel-merge";
+import { adoptCloudPddParcelSource, applyCloudPddParcels, cloudPddParcelAppURL, deliveryEstimateApplies, displayedPlatformFields, enrichPlatformParcel, keepPlatformFields, matchPlatformParcel, samePlatformTarget, type CloudParcelPddLink, type CloudPddParcel } from "./platform-parcel-merge";
 import type { PlatformParcel } from "./platform-parcel-data";
 import type { CabinetParcel } from "./fengchao-account";
 import type { ParcelLookup } from "./parcel-code-ocr";
@@ -114,7 +115,7 @@ import { preserveSettledShipment } from "./shipment-policy";
 import { newerWaybillReuseGeneration } from "./waybill-reuse";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "./shipment-lifecycle";
 import { pruneRowLedgerForState } from "./row-ledger";
-import { pruneProductImages } from "./product-image-cache";
+import { cainiaoImageCacheKey, productImageCacheFiles, pruneProductImages } from "./product-image-cache";
 
 const STATE_KEY = "pipi_deliveries_state_v1";
 /** 只放一个数字：状态最近一次落盘的 revision，供投影等待轮询，不用每次全量 loadState（2026-09-06）。 */
@@ -566,6 +567,7 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
       now,
     ),
     shipments: sortShipments(retainedShipments),
+    ...(base.watchSource ? { watchSource: base.watchSource } : {}),
     ...(Array.isArray(base.pickupCodeRecords) ? { pickupCodeRecords: base.pickupCodeRecords } : {}),
     ...(base.pickupArtworkChoices && typeof base.pickupArtworkChoices === "object" && !Array.isArray(base.pickupArtworkChoices)
       ? { pickupArtworkChoices: base.pickupArtworkChoices } : {}),
@@ -1712,6 +1714,7 @@ type WidgetSnapshotSidecar = {
   localDayKey: string;
   nextVisibilityChangeAtMs: number;
   emptyShellProjectionHashes?: Record<string, string>;
+  watchScope: string | null;
   snapshot: WidgetSnapshot;
 };
 
@@ -1800,6 +1803,7 @@ function writeWidgetSnapshotSidecar(
         now,
       ),
       ...(emptyShellProjectionHashes ? { emptyShellProjectionHashes } : {}),
+      watchScope: state.watchSource?.scope ?? null,
       snapshot,
     };
     const serialized = JSON.stringify(payload);
@@ -1844,6 +1848,7 @@ function readValidWidgetSnapshotSidecar(now: number): WidgetSnapshot | null {
       typeof sidecar.createdAtMs !== "number" ||
       typeof sidecar.localDayKey !== "string" ||
       typeof sidecar.nextVisibilityChangeAtMs !== "number" ||
+      (sidecar.watchScope !== null && sidecar.watchScope !== activeWatchScope()) ||
       !sidecar.snapshot ||
       sidecar.localDayKey !== widgetLocalDayKey(now) ||
       !(now >= sidecar.createdAtMs && now < sidecar.nextVisibilityChangeAtMs)
@@ -1940,7 +1945,7 @@ export function loadAppState(): Promise<AppState> {
   return appStateRead ??= prefetchSharedStateFiles().catch(() => undefined)
     .then(files => {
       appSnapshot = readStateSnapshot(Date.now(), appSnapshot, files);
-      return appSnapshot.state;
+      return importLegacyWatchState(appSnapshot.state);
     })
     .finally(() => { appStateRead = undefined; });
 }
@@ -2153,8 +2158,8 @@ function readStateSnapshot(now: number, prior?: LoadedStateSnapshot,
       sidecarOwnersShrank(chosenState, encoded.state)
     ) {
       productImagesPruneDirty = !pruneProductImages(
-        chosenState.shipments.map((shipment) => shipment.identity),
-        encoded.state.shipments.map((shipment) => shipment.identity),
+        chosenState.shipments,
+        encoded.state.shipments,
         now,
       );
     }
@@ -2180,9 +2185,11 @@ export function visibleShipments(
 export function storedShipmentsForProcessing(state: AppState, now = Date.now()): Shipment[] {
   // 归属方案 T3（用户 2026-09-25）：同一运单号上挂靠在先占号那一行后面的行不进列表、小组件与搜索；行和它的数据都留着。
   const attached = attachedShipmentIds(state.shipments);
+  const canReadWatches = Boolean(state.watchSource && state.watchSource.scope === activeWatchScope());
   return pruneShipments(
     state.shipments.filter(
       (shipment) =>
+        (!internationalShipment(shipment) || canReadWatches) &&
         (
           shipment.identity.bindingSource == null ||
           shipment.identity.bindingSource === SCRIPT_BINDING_SOURCE
@@ -2200,7 +2207,7 @@ export function storedShipmentsForProcessing(state: AppState, now = Date.now()):
 export function loadWidgetSnapshot(now = Date.now()): WidgetSnapshot {
   const cached = readValidWidgetSnapshotSidecar(now);
   if (cached) return cached;
-  const state = loadState(now);
+  const state = importLegacyWatchState(loadState(now));
   const snapshot = buildWidgetSnapshot(visibleShipments(state, now), now);
   try {
     const shared = sharedStateText();
@@ -2361,16 +2368,79 @@ export function saveState(
   });
 }
 
+function ownsShipment(state: AppState, shipment: Shipment): boolean {
+  return !internationalShipment(shipment) ||
+    Boolean(state.watchSource && state.watchSource.scope === activeWatchScope());
+}
+
+export function commitWatchSnapshot({ shipments, ...source }: WatchSnapshot): AppState {
+  return withSharedFileTransaction(() => {
+    const now = Date.now();
+    const state = loadState(now);
+    if (stateLoadFailure() || source.scope !== activeWatchScope()) return state;
+    const previousSource = state.watchSource?.scope === source.scope ? state.watchSource : undefined;
+    if (previousSource && previousSource.observedAtMs > source.observedAtMs) return state;
+    const existing = state.shipments.filter(internationalShipment);
+    const byId = new Map((previousSource ? existing : []).map(row => [row.identity.id, row]));
+    const watches = shipments.map(row => {
+      const old = byId.get(row.identity.id);
+      if (!old) return row;
+      return {
+        ...row,
+        identity: { ...row.identity, createdAtMs: old.identity.createdAtMs },
+        note: old.note,
+        forcedCompletedAtMs: old.forcedCompletedAtMs,
+        detailSelection: old.detailSelection,
+        updatedAtMs: Math.max(row.updatedAtMs, old.updatedAtMs + 1),
+      };
+    }).filter(row => isStoredShipmentRetained(row, now));
+    if (previousSource?.snapshot === source.snapshot &&
+        watches.length === existing.length && watches.every(row => byId.has(row.identity.id))) return state;
+    return saveState({ ...state, watchSource: source,
+      shipments: [...state.shipments.filter(row => !internationalShipment(row)), ...watches],
+    }, now, {}, state);
+  });
+}
+
+function importLegacyWatchState(state: AppState): AppState {
+  if (state.watchSource) return state;
+  const legacy = legacyWatchSnapshot();
+  return legacy ? commitWatchSnapshot(legacy) : state;
+}
+
+export async function refreshStoredWatchShipments(budgetMs?: number): Promise<AppState | undefined> {
+  const snapshot = await refreshInternationalShipments(budgetMs);
+  return snapshot ? commitWatchSnapshot(snapshot) : undefined;
+}
+
 export function saveCloudPddParcels(parcels: readonly CloudPddParcel[], observed: AppState,
-  isCurrent: () => boolean, now = Date.now()): AppState {
+  isCurrent: () => boolean, now = Date.now()): { state: AppState; changed: boolean } {
   return withSharedFileTransaction(() => {
     const state = loadState(now);
-    if (!isCurrent()) return state;
+    if (!isCurrent()) return { state, changed: false };
     const currentIds = new Set(state.shipments.map(row => row.identity.id));
     const removed = new Set(observed.shipments.filter(row => !currentIds.has(row.identity.id))
       .map(row => normalizeWaybill(displayWaybill(row))));
     const candidate = applyCloudPddParcels(state, parcels.filter(parcel => !removed.has(parcel.waybill)), now);
-    return candidate === state ? state : saveState(candidate, now, {}, state);
+    if (candidate === state) return { state, changed: false };
+    const saved = saveState(candidate, now, {}, state);
+    return { state: saved, changed: saved.revision > state.revision };
+  });
+}
+
+export function saveCloudPddParcelSource(expected: Shipment, link: CloudParcelPddLink,
+  isCurrent: () => boolean, now = Date.now()): AppState | undefined {
+  return withSharedFileTransaction(() => {
+    if (!isCurrent()) return;
+    const state = loadState(now);
+    const matches = state.shipments.filter(row => !unprojectedAccountOrder(row) &&
+      normalizeWaybill(displayWaybill(row)) === link.waybill);
+    if (matches.length !== 1) return;
+    const [current] = matches;
+    if (!samePlatformTarget(expected, current) || !cloudPddParcelAppURL(current, link, now)) return;
+    const adopted = adoptCloudPddParcelSource(current, link, now);
+    if (adopted === current) return;
+    return saveState({ ...state, shipments: state.shipments.map(row => row === current ? adopted : row) }, now, {}, state);
   });
 }
 
@@ -2488,15 +2558,39 @@ export function setPickupCardNote(
   });
 }
 
+export function setParcelHandoffWindow(
+  expected: ParcelHandoffRecord, window: readonly [number, number] | undefined, now = Date.now(),
+): AppState {
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    const records = state.pickupCodeRecords ?? [];
+    const current = records.find((record) => record.id === expected.id);
+    const deadline = parcelHandoffDeadline(current);
+    if (current?.kind !== "handoff" || current.completedAtMs || current.expiredAtMs ||
+        deadline !== undefined && deadline <= now || current.code !== expected.code ||
+        current.capturedAtMs !== expected.capturedAtMs || current.windowStartAtMs !== expected.windowStartAtMs ||
+        current.windowEndAtMs !== expected.windowEndAtMs || (current.windowText || "") !== (expected.windowText || "")) {
+      throw new ShipmentLifecycleChangedError();
+    }
+    if (window && (!window.every(time => Number.isSafeInteger(time) && time > 0) || window[1] < window[0] ||
+        window[1] + 3_600_000 <= now)) throw new RangeError("Invalid active handoff window");
+    const next = { ...current, windowStartAtMs: window?.[0], windowEndAtMs: window?.[1], windowText: undefined };
+    if (JSON.stringify(next) === JSON.stringify(current)) return state;
+    return saveStateAndPrune(state, now, {}, state, records.map(record => record === current ? next : record)).state;
+  });
+}
+
 export function savePlatformParcelData(input: {
   observed: AppState;
   owner: string;
   parcels: readonly PlatformParcel[];
   handoffs?: readonly ParcelHandoffRecord[];
+  sentHandoffIds?: readonly string[];
   cabinets?: readonly CabinetParcel[];
   detailTarget?: Shipment;
+  cainiaoGeneration?: string;
   current: () => boolean;
-}, now = Date.now()): { state: AppState; cabinetLinks: { recordKey: string; parcel: CabinetParcel }[] } {
+}, now = Date.now()): { state: AppState; changed: boolean; cabinetLinks: { recordKey: string; parcel: CabinetParcel }[] } {
   return withSharedFileTransaction(() => {
     if (!input.current()) throw new ShipmentLifecycleChangedError();
     const state = loadState(now);
@@ -2506,6 +2600,8 @@ export function savePlatformParcelData(input: {
     const records = new Map((state.pickupCodeRecords || []).map((record) => [record.id, record]));
     const cabinetCandidates: { id: string; separate: boolean; parcel: CabinetParcel }[] = [];
     let pickupChanged = false;
+    const stationKey = (parcel: PlatformParcel) =>
+      "cn-station:" + privateHash(JSON.stringify([input.owner, parcel.name || parcel.address || "", parcel.code]));
 
     function addStandalone(parcel: PlatformParcel, id: string) {
       if (!parcel.code || (parcel.source !== "cainiao" && parcel.source !== "fengchao")) return;
@@ -2518,7 +2614,7 @@ export function savePlatformParcelData(input: {
         address: parcel.address || current?.address,
         ...(current?.note ? { note: current.note } : {}),
       };
-      if (JSON.stringify(next) !== JSON.stringify(current)) {
+      if (stableJson(next) !== stableJson(current ?? null)) {
         records.set(id, next);
         pickupChanged = true;
       }
@@ -2533,7 +2629,36 @@ export function savePlatformParcelData(input: {
     const candidates: [PlatformParcel, CabinetParcel?][] = [
       ...input.parcels.map((parcel): [PlatformParcel] => [parcel]), ...parsedCabinets,
     ];
+    const takenStations = new Set<string>();
+    for (const parcel of input.parcels) {
+      if (parcel.source !== "cainiao" || !parcel.taken || input.detailTarget) continue;
+      const completedAtMs = parcel.takenAtMs || now;
+      if (parcel.unnumbered && parcel.code) {
+        const id = stationKey(parcel);
+        const record = records.get(id);
+        if (record?.kind === "pickup" && record.platform === "cainiao" &&
+            record.code === parcel.code && record.capturedAtMs <= completedAtMs) {
+          takenStations.add(id);
+          if (!record.completedAtMs) {
+            records.set(id, { ...record, completedAtMs });
+            pickupChanged = true;
+          }
+        }
+      } else if (parcel.waybill) {
+        const target = matchPlatformParcel(visible, parcel, input.owner);
+        const observed = matchPlatformParcel(before, parcel, input.owner);
+        const pickup = target?.pickup;
+        if (target && pickup && !pickup.completedAtMs && samePlatformTarget(observed, target) &&
+            pickup.waybill === parcel.waybill && pickup.waybillGeneration === (target.waybillReuseAtMs ?? 0) &&
+            pickup.capturedAtMs <= completedAtMs && (!parcel.code || parcel.code === pickup.code)) {
+          updated.set(target.identity.id, {
+            ...target, pickup: { ...pickup, completedAtMs }, updatedAtMs: Math.max(now, target.updatedAtMs + 1),
+          });
+        }
+      }
+    }
     for (const [parcel, cabinet] of candidates) {
+      if (parcel.taken) continue;
       const target = matchPlatformParcel(visible, parcel, input.owner);
       const expected = matchPlatformParcel(before, parcel, input.owner);
       if (target) {
@@ -2544,6 +2669,13 @@ export function savePlatformParcelData(input: {
           candidates.some(([other]) => other !== parcel && other.waybill && other.waybill !== parcel.waybill &&
             matchPlatformParcel(visible, other, input.owner)?.identity.id === target.identity.id)) continue;
         const saved = latest.pddImport;
+        const savedImage = latest.platformFields?.cainiaoImage;
+        const productImageURL = parcel.source === "cainiao" && parcel.productImageURL && savedImage &&
+          savedImage.generation === input.cainiaoGeneration && savedImage.url !== parcel.productImageURL &&
+          latest.platformFields?.waybill === parcel.waybill &&
+          latest.platformFields?.waybillGeneration === (latest.waybillReuseAtMs ?? 0) &&
+          productImageCacheFiles(cainiaoImageCacheKey(latest)).length
+            ? savedImage.url : parcel.productImageURL;
         let next = latest;
         if (input.detailTarget) {
           if (!samePlatformTarget(input.detailTarget, latest) ||
@@ -2553,10 +2685,12 @@ export function savePlatformParcelData(input: {
           next = enrichPlatformParcel(latest, {
             source: parcel.source, waybill: parcel.waybill,
             title: fields.title ? undefined : parcel.title,
-            estimate: !fields.estimate && deliveryEstimateApplies(latest) ? parcel.estimate : undefined,
-          }, now);
+            estimate: deliveryEstimateApplies(latest) ? parcel.estimate : undefined,
+            productImageURL,
+            shippingId: parcel.shippingId,
+          }, now, input.cainiaoGeneration);
         } else {
-          next = enrichPlatformParcel(latest, parcel, now);
+          next = enrichPlatformParcel(latest, { ...parcel, productImageURL }, now);
           if (parcel.source === "pinduoduo" && saved?.ownerKey === input.owner && !saved.shippingId && parcel.shippingId &&
             parcel.waybill === displayWaybill(latest) && parcel.orderIds?.length === 1 &&
             (!saved.orderId || saved.orderId === parcel.orderIds[0])) {
@@ -2569,7 +2703,8 @@ export function savePlatformParcelData(input: {
       }
       if (expected) continue;
       if (parcel.source === "cainiao" && parcel.unnumbered) {
-        addStandalone(parcel, "cn-station:" + privateHash(JSON.stringify([input.owner, parcel.name || parcel.address, parcel.code])));
+        const id = stationKey(parcel);
+        if (!takenStations.has(id)) addStandalone(parcel, id);
       } else if (cabinet && ![...state.shipments, ...input.observed.shipments].some((shipment) =>
         parcel.waybill && displayWaybill(shipment) === parcel.waybill)) {
         const id = "fc-cabinet:" + privateHash(JSON.stringify([input.owner, cabinet.cabinetCode, cabinet.boxId, cabinet.expressId, cabinet.code]));
@@ -2578,16 +2713,30 @@ export function savePlatformParcelData(input: {
       }
     }
 
+    const sentHandoffIds = new Set(input.sentHandoffIds);
+    for (const id of sentHandoffIds) {
+      const saved = records.get(id);
+      if (saved?.kind !== "handoff" || saved.platform !== "cainiao" || saved.completedAtMs || saved.expiredAtMs) continue;
+      records.set(id, { ...saved, completedAtMs: now });
+      pickupChanged = true;
+    }
     for (const record of input.handoffs || []) {
+      if (sentHandoffIds.has(record.id)) continue;
       const saved = records.get(record.id);
       if (saved && (saved.kind !== "handoff" || saved.completedAtMs || saved.expiredAtMs)) continue;
+      const keepsExistingWindow = saved && !record.windowEndAtMs && !record.windowText &&
+        (!record.windowStartAtMs || record.windowStartAtMs === saved.windowStartAtMs);
+      const preservedWindow = keepsExistingWindow
+        ? { windowStartAtMs: saved.windowStartAtMs, windowEndAtMs: saved.windowEndAtMs, windowText: saved.windowText }
+        : undefined;
       const next = {
-        ...record, capturedAtMs: saved?.capturedAtMs || record.capturedAtMs,
+        ...record, ...preservedWindow, capturedAtMs: saved?.capturedAtMs || record.capturedAtMs,
+        providerTitle: record.providerTitle || saved?.providerTitle,
         ...(saved?.note ? { note: saved.note } : {}),
       };
       const deadline = parcelHandoffDeadline(next);
       const timed = deadline !== undefined && now >= deadline ? { ...next, expiredAtMs: deadline } : next;
-      if (JSON.stringify(timed) !== JSON.stringify(saved)) {
+      if (stableJson(timed) !== stableJson(saved ?? null)) {
         records.set(record.id, timed);
         pickupChanged = true;
       }
@@ -2603,7 +2752,7 @@ export function savePlatformParcelData(input: {
           : "shipmentId" in item.target && item.target.shipmentId === id));
       return card ? [{ recordKey: parcelCardKey(card), parcel }] : [];
     });
-    return { state: next, cabinetLinks };
+    return { state: next, changed: next.revision > state.revision, cabinetLinks };
   });
 }
 
@@ -2755,6 +2904,9 @@ function saveStateAndPrune(
       now,
     ),
     shipments: sortShipments(retainedShipments),
+    ...((candidate.watchSource ?? previous.watchSource) ? {
+      watchSource: candidate.watchSource ?? previous.watchSource,
+    } : {}),
     ...(savedPickupCodes ? { pickupCodeRecords: savedPickupCodes } : {}),
     ...(pickupArtworkChoices && Object.keys(pickupArtworkChoices).length ? { pickupArtworkChoices } : {}),
     // An unsent event of the old parcel goes with it when a new parcel takes the reused number (user 2026-10-02).
@@ -2872,15 +3024,19 @@ function saveStateAndPrune(
     routesPruneDirty ||
     productImagesPruneDirty ||
     sidecarOwnersShrank(previous, stored.state, reusedNumberRows);
+  const replacedCainiaoImage = previous.shipments.some((row) => {
+    const image = row.platformFields?.cainiaoImage;
+    if (!image) return false;
+    const next = stored.state.shipments.find((shipment) => shipment.identity.id === row.identity.id);
+    return !next || cainiaoImageCacheKey(row) !== cainiaoImageCacheKey(next);
+  });
+  if (shouldPruneSidecars || replacedCainiaoImage) {
+    productImagesPruneDirty = !pruneProductImages(previous.shipments, stored.state.shipments, now);
+  }
   let routesPruned = true;
   if (shouldPruneSidecars) {
     routesPruned = pruneRoutesForState(stored.state, now);
     routesPruneDirty = !routesPruned;
-    productImagesPruneDirty = !pruneProductImages(
-      previous.shipments.map((shipment) => shipment.identity),
-      stored.state.shipments.map((shipment) => shipment.identity),
-      now,
-    );
     // 用户 2026-10-03 优化 1、3、5 续：每行台账（签收后放行、状态对齐记录、第一次识别时的锚点）只随行真正删除或运单号被新件
     // 接管而清掉。
     pruneRowLedgerForState(
@@ -3581,7 +3737,7 @@ export function setShipmentNote(expected: Shipment, note: string, now = Date.now
     const state = loadState(now);
     const trimmed = String(note || "").trim();
     const current = state.shipments.find((item) => item.identity.id === expected.identity.id);
-    if (!current || shipmentLifecycleKey(current) !== shipmentLifecycleKey(expected)) {
+    if (!current || !ownsShipment(state, current) || shipmentLifecycleKey(current) !== shipmentLifecycleKey(expected)) {
       throw new ShipmentLifecycleChangedError();
     }
     if ((current.note || "") === trimmed) return state;
@@ -3608,7 +3764,7 @@ export function setShipmentProductName(expected: Shipment, name: string, now = D
   return withSharedFileTransaction(() => {
     const state = loadState(now);
     const current = state.shipments.find((item) => item.identity.id === expected.identity.id);
-    if (!current || shipmentLifecycleKey(current) !== shipmentLifecycleKey(expected)) {
+    if (!current || !ownsShipment(state, current) || shipmentLifecycleKey(current) !== shipmentLifecycleKey(expected)) {
       throw new ShipmentLifecycleChangedError();
     }
     const waybill = unprojectedAccountOrder(current) ? "" : displayWaybill(current);
@@ -3687,10 +3843,14 @@ export function removeShipmentWithCleanup(
   return withSharedFileTransaction(() => {
     const state = loadState(now);
     const shipment = state.shipments.find((item) => item.identity.id === id);
+    if (shipment && !ownsShipment(state, shipment)) throw new ShipmentLifecycleChangedError();
     const canonical = shipment ? displayWaybill(shipment) : "";
     return saveStateAndPrune(
       {
         ...state,
+        ...(shipment && internationalShipment(shipment) && state.watchSource ? {
+          watchSource: { ...state.watchSource, observedAtMs: Math.max(state.watchSource.observedAtMs, now) },
+        } : {}),
         pendingQueries: shipment
           ? state.pendingQueries.filter(
               (pending) =>
@@ -3715,6 +3875,7 @@ export function forceCompleteShipment(
   return withSharedFileTransaction(() => {
     const state = loadState(now);
     const current = state.shipments.find((item) => item.identity.id === id);
+    if (current && !ownsShipment(state, current)) throw new ShipmentLifecycleChangedError();
     if (!current || current.timeline.semantic === "COMPLETED") return state;
     return saveState(
       {

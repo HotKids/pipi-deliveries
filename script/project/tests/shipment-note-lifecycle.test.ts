@@ -25,7 +25,7 @@ const page = readFileSync(new URL("../pages/DetailPage.tsx", import.meta.url), "
 const action = stripTypeScriptTypes(page.slice(page.indexOf("async function editProductName()"), page.indexOf("const [loadingManualDetail")));
 const noteAction = stripTypeScriptTypes(page.slice(page.indexOf("async function editNote()"), page.indexOf("async function editProductName()")));
 const thumbnail = readFileSync(new URL("../components/ProductThumbnail.tsx", import.meta.url), "utf8");
-const ownerSource = stripTypeScriptTypes(thumbnail.slice(thumbnail.indexOf("  const lifecycle ="), thumbnail.indexOf("  const [loaded,")));
+const ownerSource = stripTypeScriptTypes(thumbnail.slice(thumbnail.indexOf("  const cainiao ="), thumbnail.indexOf("  const [loaded,")));
 try {
   for (const change of ["reimport", "reuse", "delete", "refresh", "projection", "manual-refresh", "first-owner", "absorption"] as const) {
     memory.clear();
@@ -44,7 +44,7 @@ try {
     const original = saveState({ ...emptyState(), shipments: [initial] }, NOW).shipments[0];
     const key = productImageCacheKey(original.identity);
     const isRetained = Function("scope", `with(scope) { ${ownerSource}; return isRetained; }`)({
-      props: { shipment: original }, cacheKey: key, shipmentLifecycleKey, productImageCacheKey,
+      props: { shipment: original, cacheKey: key }, shipmentLifecycleKey, productImageCacheKey,
       isStoredShipmentRetained, readAppStateSnapshot, sharedData, withSharedFileTransaction,
     });
     const image = { syntheticImage: true } as unknown as UIImage;

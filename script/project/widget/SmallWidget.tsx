@@ -19,9 +19,11 @@ import {
 import { WidgetLineArt } from "./WidgetLineArt";
 import {
   EMPTY_WIDGET_ACCENT,
+  carrierWidgetAccent,
   emptyWidgetBackground,
   mediumWidgetBackground,
 } from "./palette";
+import { statusTextTint } from "../services/status";
 
 export function SmallWidget(props: {
   snapshot: WidgetSnapshot;
@@ -90,6 +92,10 @@ export function SmallWidget(props: {
                   <Text
                     font={layout.statusFont}
                     fontWeight="semibold"
+                    foregroundStyle={statusTextTint(row.semantic, {
+                      label: row.statusLabel,
+                      brandAccent: carrierWidgetAccent(row.courierCode, row.companyName, row.accountOrder),
+                    })}
                     lineLimit={1}
                     minScaleFactor={0.9}
                     allowsTightening={true}

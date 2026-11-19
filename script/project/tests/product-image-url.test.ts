@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { allowedProductImageURL, normalizedProductImageMetadataURL } from "../services/product-image-url";
+import { allowedProductImageURL, cainiaoProductImageURL, normalizedProductImageMetadataURL } from "../services/product-image-url";
 
 for (const value of ["https://jd.com/a", "https://img.jd.com/a", "https://360buyimg.com/a", "https://img10.360buyimg.com/a",
   "https://JD.com:443/a", " https://img.jd.com/a "]) {
@@ -23,4 +23,7 @@ for (const value of ["https://jd.com?email=@", "https://jd.com#@", "https://@jd.
 const padded = "\nhttps://img.jd.com/a\n";
 assert.equal(normalizedProductImageMetadataURL(padded), null, "metadata still rejects raw controls");
 assert.equal(allowedProductImageURL(padded.trim()), "https://img.jd.com/a", "the downloader retains its existing input trimming");
+assert.equal(cainiaoProductImageURL("//img.alicdn.com/synthetic.jpg"), "https://img.alicdn.com/synthetic.jpg");
+assert.equal(cainiaoProductImageURL("https://img.alicdn.com/synthetic.jpg?signature=placeholder"), "");
+assert.equal(normalizedProductImageMetadataURL("https://img.alicdn.com/synthetic.jpg"), null);
 console.log("product image URL: shared origins, metadata normalization and distinct fetch-hop boundaries passed");

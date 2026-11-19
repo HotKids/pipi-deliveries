@@ -125,11 +125,18 @@ function committedState(): AppState {
   return state;
 }
 
-export function parcelActivityTarget(state: AppState, linkId: unknown): ParcelActivityTarget | undefined {
+export type MealQRCodeTarget = { id: string; scope: string };
+
+export function parcelActivityTarget(state: AppState, linkId: unknown): (ParcelActivityTarget & { mealQRCode?: MealQRCodeTarget }) | undefined {
   if (typeof linkId !== "string" || !linkId || stateLoadFailure()) return undefined;
   const receipt = parcelActivityRegistry().receipts.find((item) => item.linkId === linkId);
   if (!receipt?.target) return undefined;
-  return parcelForTarget(state, receipt.target) ? receipt.target : undefined;
+  const { target } = receipt;
+  const card = parcelForTarget(state, target);
+  if (!card) return undefined;
+  return "mealId" in target && card.hasMealQR
+    ? { ...target, mealQRCode: { id: target.mealId, scope: target.mealScope } }
+    : target;
 }
 
 function prepareArtwork(content: ParcelActivityContent): void {
@@ -241,7 +248,7 @@ async function updateActivity(receipt: Receipt, content: ParcelActivityContent, 
   if (displayed.get(receipt.id) === serialized) return true;
   const finish = beginDiagnosticOperation("activity.parcel.operation", {
     stage: "update", trigger: content.target ? content.kind ?? "pickup" : "preview", valueKind: lockScreenStyle,
-  });
+  }, false);
   try {
     const activity = await LiveActivity.from<ParcelActivityState>(receipt.id, PARCEL_ACTIVITY_NAME);
     prepareArtwork(content);
@@ -253,7 +260,6 @@ async function updateActivity(receipt: Receipt, content: ParcelActivityContent, 
       return current;
     }
     if (await isRunning(receipt)) throw new Error("实时活动更新失败，请稍后重试。");
-    finish("not_active");
     return false;
   } catch (error) {
     finish(isCurrent() ? "failed" : "cancelled", {}, isCurrent() ? "warning" : "info");

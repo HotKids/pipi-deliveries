@@ -1,7 +1,10 @@
 import { Path } from "scripting";
-import type { ShipmentIdentity } from "../models";
+import type { Shipment, ShipmentIdentity } from "../models";
 import { utf8Data } from "./scripting-data";
 import { writeDiagnostic } from "./logger";
+import { gatewayCredentialForLocalCache } from "./credentials";
+import { pddParcelProductImage } from "./platform-parcel-merge";
+import { shipmentLifecycleKey } from "./shipment-lifecycle";
 
 const images = new Map<string, { image: UIImage; isRetained?: () => boolean }>();
 const MEMORY_LIMIT = 32;
@@ -20,15 +23,42 @@ function cacheNames(): string[] {
   } catch { return []; }
 }
 
-export function productImageCacheKey(identity: ShipmentIdentity): string {
+export function productImageCacheKey(identity: ShipmentIdentity, scope: readonly unknown[] = []): string {
   // Keep the persistent address stable across account refresh and order projection; memory validates its original lifecycle.
   try {
     return Crypto.sha256(utf8Data(JSON.stringify([
-      identity.bindingSource, identity.id, identity.sourceId, identity.phone || "", identity.orderId || "",
+      identity.bindingSource, identity.id, identity.sourceId, identity.phone || "", identity.orderId || "", ...scope,
     ]))).toHexString().toLowerCase();
   } catch {
     return "";
   }
+}
+
+export function cainiaoImageCacheKey(shipment: Shipment): string {
+  const fields = shipment.platformFields;
+  const image = fields?.cainiaoImage;
+  if (!fields || !image) return "";
+  return productImageCacheKey(shipment.identity, ["cainiao", fields.waybill, fields.waybillGeneration, image.generation, image.url]);
+}
+
+export function cloudProductImageCacheKey(shipment: Shipment, scope: string): string {
+  return scope ? productImageCacheKey(shipment.identity, ["cloud", shipmentLifecycleKey(shipment), scope]) : "";
+}
+
+export function pddImageCacheKey(shipment: Shipment): string {
+  if (!shipment.platformFields?.pddImage) return "";
+  const url = pddParcelProductImage(shipment);
+  return url ? productImageCacheKey(shipment.identity, ["pdd", shipmentLifecycleKey(shipment),
+    shipment.platformFields?.pddImage?.association, url]) : "";
+}
+
+function imageCacheKeys(subject: Shipment | ShipmentIdentity, scope: string): string[] {
+  if (!("identity" in subject)) return [productImageCacheKey(subject)];
+  const cainiao = cainiaoImageCacheKey(subject);
+  const cloud = cloudProductImageCacheKey(subject, scope);
+  const pdd = pddImageCacheKey(subject);
+  return [productImageCacheKey(subject.identity), ...(cainiao ? [cainiao] : []),
+    ...(pdd ? [pdd] : []), ...(cloud ? [cloud] : [])];
 }
 
 export function productImageCachePath(key: string): string {
@@ -64,14 +94,18 @@ export function rememberProductImage(key: string, image: UIImage, isRetained?: (
   return image;
 }
 
-export function pruneProductImages(previous: readonly ShipmentIdentity[], retained: readonly ShipmentIdentity[], now = Date.now()): boolean {
+export function pruneProductImages(previous: readonly (Shipment | ShipmentIdentity)[],
+  retained: readonly (Shipment | ShipmentIdentity)[], now = Date.now()): boolean {
   let failed = false;
   const names = new Set(cacheNames());
   try {
-    const keep = new Set(retained.map(productImageCacheKey));
+    let scope = "";
+    try { scope = gatewayCredentialForLocalCache()?.scope ?? ""; }
+    catch { /* Losing authorization must not stop cleanup of existing local products. */ }
+    const keep = new Set(retained.flatMap(subject => imageCacheKeys(subject, scope)));
     if (keep.has("")) throw new Error("Product image identity unavailable");
     for (const key of images.keys()) if (!keep.has(key)) images.delete(key);
-    for (const key of new Set(previous.map(productImageCacheKey))) {
+    for (const key of new Set(previous.flatMap(subject => imageCacheKeys(subject, scope)))) {
       if (!key || keep.has(key)) continue;
       images.delete(key);
       for (const name of names) {

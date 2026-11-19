@@ -1,4 +1,4 @@
-import { Button, Circle, HStack, Image, Rectangle, Script, Spacer, Text, VStack, ZStack, gradient, type AppIntent, type VirtualNode } from "scripting";
+import { Button, Circle, HStack, Image, Link, Rectangle, Script, Spacer, Text, VStack, ZStack, gradient, type AppIntent, type VirtualNode } from "scripting";
 import type { ParcelActivityCompletion } from "../services/parcel-activity-action";
 import {
   PARCEL_LOCK_SCREEN_BOX, PICKUP_CARD_FOREGROUND, parcelCardArtwork, pickupCardAppearance, pickupCardPalette,
@@ -33,6 +33,7 @@ export const PIPI_CARD = {
   capsuleFont: 12,
   capsuleInset: 11,
   capsuleIcon: 19,
+  mealCapsuleIcon: 16,
   iconGap: 4,
   codeGap: 8,
   codeFont: 26.5,
@@ -78,11 +79,12 @@ export type ParcelLiveActivityCardProps = {
   onEditNote?: () => void;
   onLocationTap?: () => void;
   onArtworkTap?: () => void;
+  artworkActionLabel?: string;
 };
 
 export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, completion, preview, expanded, lockScreen, lockScreenStyle, artwork,
   actionLabel, actionPending, locationText, showingAddress, onComplete, onCopy, onDetail, onEditNote,
-  onLocationTap, onArtworkTap }: ParcelLiveActivityCardProps) {
+  onLocationTap, onArtworkTap, artworkActionLabel }: ParcelLiveActivityCardProps) {
   const isMeal = data.kind === "meal";
   const card = PIPI_CARD;
   const { logoX, logoY } = isMeal ? MEAL_ARTWORK_TOKENS : card;
@@ -188,7 +190,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
       fixedSize={{ horizontal: !lockScreen, vertical: false }} layoutPriority={1}
       background={{ style: appearance.capsule, shape: "capsule" }} contentShape="capsule">
       {capsulePadding}
-      <Image systemName={isMeal ? "fork.knife" : "shippingbox.fill"} font={card.capsuleIcon * scale}
+      <Image systemName={isMeal ? "fork.knife" : "shippingbox.fill"} font={(isMeal ? card.mealCapsuleIcon : card.capsuleIcon) * scale}
         foregroundStyle={appearance.capsuleForeground} frame={{ width: card.capsuleIcon * scale, height: card.capsuleIcon * scale }} />
       {lockScreen ? <Spacer minLength={0} frame={{ width: card.iconGap * scale }} /> : null}
       <Text font={card.capsuleFont * scale} fontWeight="semibold" foregroundStyle={appearance.capsuleForeground} lineLimit={1}
@@ -247,7 +249,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
       {artworkSticker}
     </ZStack>
   );
-  const artworkLabel = isMeal ? "切换冷热杯" : handoff ? "切换寄件渠道" : "切换取件站点";
+  const artworkLabel = artworkActionLabel ?? (isMeal ? "切换冷热杯" : handoff ? "切换寄件渠道" : "切换取件站点");
   const appArtwork = onArtworkTap
     ? <Button buttonStyle="plain" accessibilityLabel={artworkLabel} action={onArtworkTap}>{boxArtwork}</Button>
     : boxArtwork;
@@ -302,11 +304,14 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
       {space(dividerToCapsule)}
     </>
   );
+  const expandedScanUrl = expanded && data.hasMealQR ? url : undefined;
+  const linkToScanCode = (content: VirtualNode) => expandedScanUrl
+    ? <Link url={expandedScanUrl}>{content}</Link> : content;
   const bottomRow = (
     <HStack spacing={fitsHost ? 0 : card.codeGap * scale}
       frame={{ ...actionRowHeight, maxWidth: "infinity", alignment: "leading" }}
       layoutPriority={fitsHost ? 1 : 0}>
-      {onCopy ? <Button buttonStyle="plain" action={onCopy}>{code}</Button> : code}
+      {onCopy ? <Button buttonStyle="plain" action={onCopy}>{code}</Button> : linkToScanCode(code)}
       {fitsHost && !lockScreen ? <Spacer minLength={showCapsule ? card.codeGap * scale : 0} /> : null}
       {showCapsule && !lockScreen ? capsuleControl(capsule) : null}
     </HStack>
@@ -321,7 +326,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
       clipShape={expanded || lockScreen ? undefined : cardShape}
       overlay={lockScreenAction ? { alignment: "bottomTrailing", content: lockScreenAction } : undefined}
       widgetURL={sharesSmartStack ? undefined : url} onTapGesture={onDetail} contentShape="rect">
-      {fitsHost ? (
+      {fitsHost ? linkToScanCode(
         // The expanded host supplies the card inset, so only the transparent artwork edge overlaps it.
         <Rectangle fill="clear" frame={{ ...slot(bottom - top),
           minWidth: expanded ? artColumnWidth : Math.min(artWidth, MIN_COMPACT_ART_WIDTH),
@@ -345,13 +350,15 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
           {bottomRow}
           {space(bottomInset, 0, 0)}
         </> : expanded ? <>
-          <VStack spacing={0} alignment="leading"
-            frame={{ ...slot(dividerTop - titleTop, expandedHeaderMinimum), maxWidth: "infinity", alignment: "topLeading" }}>
-            {expandedLine(title, card.titleHeight, card.titleLineHeight)}
-            <Rectangle fill="clear" frame={slot(gap, gap)} />
-            {expandedLine(location, card.locationHeight, card.locationLineHeight)}
-            <Rectangle fill="clear" frame={slot(locationToDivider, locationToDivider)} />
-          </VStack>
+          {linkToScanCode(
+            <VStack spacing={0} alignment="leading"
+              frame={{ ...slot(dividerTop - titleTop, expandedHeaderMinimum), maxWidth: "infinity", alignment: "topLeading" }}>
+              {expandedLine(title, card.titleHeight, card.titleLineHeight)}
+              <Rectangle fill="clear" frame={slot(gap, gap)} />
+              {expandedLine(location, card.locationHeight, card.locationLineHeight)}
+              <Rectangle fill="clear" frame={slot(locationToDivider, locationToDivider)} />
+            </VStack>,
+          )}
           <VStack spacing={dividerToCapsule * verticalScale} fixedSize={{ horizontal: false, vertical: true }} layoutPriority={1}>
             {divider}
             {bottomRow}

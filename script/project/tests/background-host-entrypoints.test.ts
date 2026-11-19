@@ -7,6 +7,9 @@ import { normalizeRecognizedPickupCode, recognizeParcelCodes, type ParcelLookup 
 import { isParcelWaybill, parcelImageRows, parcelTextRows } from "../services/parcel-waybill-ocr";
 import { listHeadline, normalizeWaybill } from "../services/status";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
+import { independentPickupContent, PLATFORM_ACCOUNT_NAMES } from "../services/parcel-pickup";
+import { parcelCardArtwork } from "../services/parcel-card-appearance";
+import { SCREEN_SHORTCUT_INSTALL_URL, SCREEN_SHORTCUT_VERSION } from "../services/shortcut-capture";
 import type { ParcelActivityCompletion } from "../services/parcel-activity-action";
 
 function executable(name: string): string {
@@ -15,12 +18,18 @@ function executable(name: string): string {
 }
 
 const source = [executable("services/shortcut-capture.ts"), executable("intent.tsx")].join("\n");
+function runShortcut(bindings: Record<string, unknown>) {
+  return runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
+    beginDiagnosticOperation: () => () => {},
+    ...bindings,
+  });
+}
 const manifest = JSON.parse(readFileSync(new URL("../script.json", import.meta.url), "utf8"));
 assert.deepEqual(manifest.intentInputTypes, [], "parcel recognition must stay out of the system Share Sheet");
 assert.equal(manifest.runInApp, false, "the Shortcut can finish without opening the main app");
 const events: string[] = [];
 let exited: unknown;
-await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
+await runShortcut({
   backgroundHostBootstrap: () => events.push("cache"),
   backgroundRefreshOptions: () => ({ budgetMs: 120_000, accountOrderProjection: true, backgroundHostSafe: true }),
   refreshAllShipments: async (_source: unknown, options: unknown) => {
@@ -38,6 +47,18 @@ await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
 assert.equal(exited, "completed");
 assert.equal(events[0], "cache", "Shortcuts must bootstrap the last-good carrier cache before refreshing");
 assert.ok(events.indexOf("flush") < events.indexOf("exit"), "Shortcuts flush before the host exits");
+
+assert.match(SCREEN_SHORTCUT_INSTALL_URL, /^https:\/\/www\.icloud\.com\/shortcuts\/[a-f0-9]{32}$/);
+await runShortcut({
+  Intent: {
+    shortcutParameter: { type: "fileURL", value: "/synthetic/update-check.png" },
+    textsParameter: [`pipi.luckin.rescan@${SCREEN_SHORTCUT_VERSION - 1}`],
+    text: (value: string) => value,
+  },
+  Script: { exit: (value: unknown) => { exited = value; } },
+  UIImage: { fromFile: () => assert.fail("a stale recipe must open its update before recognizing") },
+});
+assert.equal(exited, SCREEN_SHORTCUT_INSTALL_URL);
 
 const app = executable("app_intents.tsx");
 const AppIntentProtocol = { AppIntent: 0, LiveActivityIntent: 3 };
@@ -94,7 +115,7 @@ assert.deepEqual(successCalls, ["synthetic-shipment-link", "pickup", "flush"]);
 for (const failingStage of ["cache", "refresh"] as const) {
   const calls: string[] = [];
   let result: unknown;
-  await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
+  await runShortcut({
     backgroundHostBootstrap: () => { calls.push("cache"); if (failingStage === "cache") throw new Error("synthetic upstream error"); },
     backgroundRefreshOptions: () => ({ budgetMs: 120_000, accountOrderProjection: true, backgroundHostSafe: true }),
     refreshAllShipments: async () => { calls.push("refresh"); throw new Error("synthetic upstream error"); },
@@ -138,7 +159,7 @@ for (const [intent, expected, fileRead, record, failedSave] of [
   const decodedFiles: string[] = [];
   let foregroundCalls = 0;
   let result: unknown;
-  await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
+  await runShortcut({
     Intent: { ...intent, text: (value: string) => value,
       get imagesParameter() { assert.fail("recognition only decodes the selected local path"); } },
     URL,
@@ -184,7 +205,15 @@ for (const [intent, expected, fileRead, record, failedSave] of [
       activityRecords.push(...targets.map(target => target.recordId));
       return true;
     },
-    PICKUP_SHORTCUT_SAVED: "已添加取件码，可在「待取」查看。",
+    independentPickupContent, parcelCardArtwork, PLATFORM_ACCOUNT_NAMES,
+    PARCEL_SHORTCUT_RECORD_PARAMETER: "parcelCodeRecord",
+    notifyScreenPickupSaved: async (notice: { name: string; code: string; iconPath: string; parameters: Record<string, string> }) => {
+      assert.deepEqual(saved, ["pickup"], "the notification requires a durable pickup record");
+      assert.equal(notice.name, "丰巢");
+      assert.equal(notice.iconPath, "platform-accounts/fengchao.png");
+      assert.equal(notice.parameters.parcelCodeRecord, "synthetic-record");
+      return `已添加 ${notice.name} · ${notice.code}`;
+    },
     notifyScreenShortcutStatus: async (message: string) => message,
     writeDiagnostic() {},
     flushDiagnostics() {},
@@ -201,7 +230,7 @@ for (const [intent, expected, fileRead, record, failedSave] of [
   assert.deepEqual(discarded, failedSave ? ["draft-token"] : []);
   if (failedSave) assert.match(String(result), /处理快递识别结果失败/);
   else if (screenSubmission) assert.match(String(result), /已添加 测试快递/);
-  else if (activityRecords.length) assert.match(String(result), /取件码/);
+  else if (activityRecords.length) assert.equal(result, "已添加 丰巢 · 1-23-456");
   else if (expected || record) assert.match(String(result), /已识别快递信息/);
   else assert.match(String(result), /未识别|无法读取|请传入|请运行/);
 }
@@ -210,7 +239,7 @@ for (const [intent, expected, fileRead, record, failedSave] of [
 for (const phase of ["local", "online-express", "online-empty", "online-error", "cancelled"] as const) {
   const calls: string[] = [];
   let final = "";
-  await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
+  await runShortcut({
     Intent: { ...file("/synthetic/image.png"), text: (value: string) => value },
     Script: { exit: (value: string) => { final = value; } },
     UIImage: { fromFile: () => ({ width: 800, height: 1100, scale: 1 }) },
@@ -243,20 +272,22 @@ for (const phase of ["local", "online-express", "online-empty", "online-error", 
   if (phase === "cancelled") assert.match(final, /识别已取消/);
 }
 
-for (const phase of ["local-meal", "online-meal", "luckin-draft", "luckin-auto", "luckin-auto-with-image-array",
-  "luckin-auto-no-banner", "local-meal-no-activity"] as const) {
+for (const phase of ["local-meal", "online-meal", "luckin-draft", "luckin-auto", "luckin-auto-versioned", "luckin-auto-with-image-array",
+  "luckin-auto-no-banner", "local-meal-no-activity", "chayan-redemption"] as const) {
   const calls: string[] = [];
   const notices: string[] = [];
   const scope = "synthetic-scope";
-  const observation = { payload: { code: "0123", brandId: "ruixing" } };
+  const brandId = phase === "chayan-redemption" ? "chayanyuese" : "ruixing";
+  const observation = { payload: { code: phase === "chayan-redemption" ? "" : "0123", brandId } };
   const rescan = "pipi.luckin.rescan";
   const imagePath = "/synthetic/meal.png";
   const automatic = phase.startsWith("luckin-auto");
   const orderDraft = automatic || phase === "luckin-draft";
+  const captureToken = phase === "luckin-auto-versioned" ? `${rescan}@${SCREEN_SHORTCUT_VERSION}` : rescan;
   const intent = phase === "luckin-auto-with-image-array" ? { ...text(rescan), imagePathsParameter: [imagePath] } :
-    automatic || phase === "local-meal" ? { ...file(imagePath), textsParameter: [rescan] } : file(imagePath);
+    automatic || phase === "local-meal" ? { ...file(imagePath), textsParameter: [captureToken] } : file(imagePath);
   let final = "";
-  await runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
+  await runShortcut({
     Intent: { ...intent, text: (value: string) => value },
     Script: { exit: (value: string) => { final = value; } },
     UIImage: { fromFile: () => ({ width: 800, height: 1100, scale: 1 }) },
@@ -274,6 +305,21 @@ for (const phase of ["local-meal", "online-meal", "luckin-draft", "luckin-auto",
       assert.equal(entries[0], observation);
       calls.push("save");
       return ["meal-id"];
+    },
+    readMeals: () => ({}),
+    currentMeal: (_store: unknown, id: string) => {
+      assert.equal(id, "meal-id");
+      assert.deepEqual(calls, ["save"]);
+      return { ...observation.payload, productName: "已合并的商品名", merchantName: "已合并的门店" };
+    },
+    MEAL_SHORTCUT_RECORD_PARAMETER: "mealPickupRecord",
+    parcelCardArtwork,
+    notifyScreenPickupSaved: async (notice: { code: string; details: string[]; iconPath: string; parameters: Record<string, string> }) => {
+      assert.equal(notice.code, observation.payload.code);
+      assert.equal(notice.iconPath, `meal-pickup/brand-${brandId}.png`);
+      assert.equal(notice.parameters.mealPickupRecord, "meal-id");
+      assert.deepEqual([...notice.details], ["已合并的商品名", "已合并的门店"]);
+      calls.push("notification");
     },
     stageLuckinDraft: () => calls.push("draft"),
     showShortcutPickupActivities: async (targets: { mealId: string; mealScope: string }[]) => {
@@ -301,12 +347,12 @@ for (const phase of ["local-meal", "online-meal", "luckin-draft", "luckin-auto",
   if (automatic) {
     if (phase === "luckin-auto-no-banner") assert.match(final, /再运行一次截屏识别/);
     else assert.equal(final, rescan, "the host can wait and capture a new image only after the draft and prompt");
-    assert.deepEqual(notices, ["已识别瑞幸订单，请在 3 秒内打开“取餐码”"]);
+    assert.deepEqual(notices, ["请在 3 秒内打开取餐码，等待自动二次识别"]);
   } else {
     assert.match(final, orderDraft ? /再运行一次截屏识别/ : /已添加 1 张取餐码/);
   }
   assert.deepEqual(calls, orderDraft ? ["draft", "notification"] :
-    ["save", "activity", ...(phase === "local-meal-no-activity" ? ["notification"] : []), "sync"]);
+    ["save", "notification", "activity", "sync"]);
 }
 
 const shortcutService = executable("services/parcel-shortcut.ts");
@@ -328,7 +374,8 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
   let shipments = mode === "known" ? [savedShipment] : [];
   let expectedLookup = screenshotLookup;
   const currentState = () => ({ shipments, pendingQueries: [], activeSource: "v5" });
-  const host = runInNewContext(`${shortcutService}\n({ submitScreenShortcut, submitScreenShortcutPhoneTail });`, {
+  const host = runInNewContext(`${shortcutService}\n({ notifyScreenPickupSaved, scheduleScreenShortcutStatus, submitScreenShortcut, submitScreenShortcutPhoneTail });`, {
+    beginDiagnosticOperation: () => () => {},
     Path, isParcelWaybill, normalizeRecognizedPickupCode, listHeadline, normalizeWaybill,
     EXPRESS_TOAST_COPY, MANUAL_QUERY_BUDGET_MS: 30_000,
     backgroundHostBootstrap() {},
@@ -338,8 +385,10 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
     displayWaybill: (shipment: typeof savedShipment) => shipment.identity.waybill,
     selectShipmentTimeline: (shipment: typeof savedShipment) => shipment.timeline,
     parcelActivityContent: (shipment: typeof savedShipment) => activity === undefined ? null : {
-      target: { shipmentId: shipment.identity.id, waybill: track, waybillGeneration: 0 }, code: screenshotLookup.pickup!.code,
+      target: { shipmentId: shipment.identity.id, waybill: track, waybillGeneration: 0 },
+      code: screenshotLookup.pickup!.code, location: "示例驿站",
     },
+    carrierDisplayName: () => "中通快递",
     saveRecognizedShipmentPickup: (_shipment: unknown, lookup: ParcelLookup) => {
       assert.equal(lookup.pickup?.code, expectedLookup.pickup?.code);
       calls.push("attach existing");
@@ -376,7 +425,10 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
       return mode !== "noBanner";
     },
     Notification: { schedule: async (request: Record<string, unknown>) => { banners.push(request); return true; } },
-    waitForRefresh: (work: Promise<unknown>) => work,
+    Data: { fromFile: (path: string) => path },
+    Script: { name: "Pipi", directory: "/synthetic", createRunSingleURLScheme: (_script: string, args: Record<string, string>) =>
+      "synthetic:" + new URLSearchParams(args).toString() },
+    waitForRefresh: () => { throw new Error("The background intent cannot create a timer after recognition"); },
     needsManualPhoneTail: (error: { needsPhoneTail?: boolean }) => error.needsPhoneTail === true,
     manualQueryFailureToast: () => EXPRESS_TOAST_COPY.manualQueryFailed,
     UUID: { string: () => "aaaaaaaa-aaaa-4aaa-8aaa-000000000001" },
@@ -391,6 +443,8 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
     writeDiagnostic: (name: string) => { if (name === "shortcut.notification.failed") calls.push("notification unavailable"); },
     flushDiagnostics() {},
   }) as {
+    notifyScreenPickupSaved: typeof import("../services/parcel-shortcut").notifyScreenPickupSaved;
+    scheduleScreenShortcutStatus: (message: string) => Promise<boolean>;
     submitScreenShortcut: (lookup: ParcelLookup, present: (targets: { shipmentId: string }[]) => Promise<boolean>) => Promise<string>;
     submitScreenShortcutPhoneTail: (token: string, tail: string) => Promise<{ done: boolean; message: string }>;
   };
@@ -408,6 +462,23 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
 }
 
 const NOW_FOR_SHORTCUT = 1_790_000_000_000;
+const nativeStatus = screenshotRuntime("new");
+assert.equal(await nativeStatus.scheduleScreenShortcutStatus("截屏识别测试"), true);
+assert.equal(nativeStatus.banners[0].body, "截屏识别测试");
+assert.deepEqual(nativeStatus.calls, []);
+
+for (const [brand, code, expectedTitle] of [["瑞幸咖啡", "949", "已添加 瑞幸咖啡 · 949"],
+  ["茶颜悦色", undefined, "已添加 茶颜悦色"]] as const) {
+  const host = screenshotRuntime("new");
+  await host.notifyScreenPickupSaved({ name: brand, code, details: ["饮品", "示例门店"],
+    iconPath: "meal-pickup/brand-demo.png", parameters: { mealPickupRecord: "meal-id" } });
+  assert.equal(host.banners.length, 1);
+  assert.equal(host.banners[0].title, expectedTitle);
+  assert.equal(host.banners[0].body, "饮品\n示例门店");
+  assert.equal(host.banners[0].iconImageData, "/synthetic/assets/meal-pickup/brand-demo.png");
+  assert.equal((host.banners[0].tapAction as { url: string }).url, "synthetic:mealPickupRecord=meal-id");
+}
+
 for (const mode of ["new", "known", "partial", "noBanner"] as const) {
   const host = screenshotRuntime(mode);
   const title = mode === "known" ? nativeTitle : `已添加 ${nativeTitle}`;
@@ -425,9 +496,10 @@ for (const mode of ["new", "known", "partial", "noBanner"] as const) {
 
 for (const accepted of [true, false]) {
   const host = screenshotRuntime("new", accepted);
-  assert.equal(await host.submitScreenShortcut(screenshotLookup), `已添加 ${nativeTitle}\n${latestBody}`);
-  assert.deepEqual(host.calls.slice(3), accepted ? ["activity"] : ["activity", "tracking notification"]);
-  assert.equal(host.banners.length, accepted ? 0 : 1);
+  assert.equal(await host.submitScreenShortcut(screenshotLookup), `已添加 中通快递 · A1-2345\n示例驿站\n${latestBody}`);
+  assert.deepEqual(host.calls.slice(3), ["activity"]);
+  assert.equal(host.banners.length, 1);
+  assert.equal(host.banners[0].iconImageData, "/synthetic/assets/couriers/zto.png");
 }
 const trackingOnly = screenshotRuntime("new", true);
 await trackingOnly.submitScreenShortcut({ ...screenshotLookup, pickup: undefined });

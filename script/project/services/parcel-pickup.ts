@@ -147,7 +147,7 @@ export function handoffActivityContent(handoff: ParcelHandoffRecord): ParcelActi
   const validEnd = end && startAt <= endAt;
   const appointment = start && validEnd
     ? start.slice(5) + "–" + (start.slice(0, 10) === end.slice(0, 10) ? end.slice(11) : end.slice(5))
-    : cleanString(handoff.windowText);
+    : cleanString(handoff.windowText) || start.slice(5);
   const expiresAtMs = parcelHandoffDeadline(handoff);
   return {
     kind: "handoff",
@@ -156,8 +156,9 @@ export function handoffActivityContent(handoff: ParcelHandoffRecord): ParcelActi
     platform: handoff.platform,
     capturedAtMs: handoff.capturedAtMs,
     expiresAtMs,
-    ...(expiresAtMs === undefined || expiresAtMs > Date.now() ? { artworkSwitchable: true as const } : {}),
-    title: cleanString(handoff.note) || "寄件码",
+    ...(handoff.platform !== "cainiao" && (expiresAtMs === undefined || expiresAtMs > Date.now())
+      ? { artworkSwitchable: true as const } : {}),
+    title: cleanString(handoff.note) || cleanString(handoff.providerTitle) || "寄件码",
     location: appointment ? appointment + " 上门" : "",
     code,
   };
@@ -200,7 +201,7 @@ export function parcelActivityContent(shipment: Shipment): ParcelActivityContent
   if (!pickup || (pickup.platform && !Object.prototype.hasOwnProperty.call(PLATFORM_ACCOUNT_NAMES, pickup.platform)) ||
     !code || /[\u0000-\u001f\u007f]/.test(code) ||
     !Number.isSafeInteger(pickup.capturedAtMs) || pickup.capturedAtMs <= 0 ||
-    unprojectedAccountOrder(shipment) || shipment.forcedCompletedAtMs ||
+    unprojectedAccountOrder(shipment) || shipment.forcedCompletedAtMs || pickup.completedAtMs ||
     shipmentPresentationStatus(shipment).semantic !== "WAITING_PICKUP") {
     return null;
   }
@@ -215,7 +216,7 @@ export function parcelActivityContent(shipment: Shipment): ParcelActivityContent
   return {
     target: { shipmentId: shipment.identity.id, waybill, waybillGeneration },
     platform: pickup.platform,
-    ...(unknownCarrier ? { artworkSwitchable: true as const } : {}),
+    ...(unknownCarrier && !pickup.platform ? { artworkSwitchable: true as const } : {}),
     ...(carrierIcon !== "default" ? { carrierIcon } : {}),
     capturedAtMs: pickup.capturedAtMs,
     title: cleanString(shipment.note) || `${carrier} ${waybillSuffix(waybill)}`,
@@ -234,7 +235,7 @@ export function applyRecognizedPickup(shipment: Shipment, lookup: ParcelLookup):
       status === "COMPLETED" || status === "CANCELLED") return shipment;
   const previous = shipment.pickup?.waybillGeneration === generation && shipment.pickup.waybill === waybill
     ? shipment.pickup : undefined;
-  if (previous && previous.capturedAtMs >= lookup.capturedAtMs) return shipment;
+  if (previous && (previous.completedAtMs || previous.capturedAtMs >= lookup.capturedAtMs)) return shipment;
   const sameCode = previous?.code === lookup.pickup.code;
   return {
     ...shipment,

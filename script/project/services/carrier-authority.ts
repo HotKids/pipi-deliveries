@@ -1,4 +1,5 @@
 import { postGateway } from "./gateway";
+import { gatewayCredentialGeneration } from "./credentials";
 import {
   readDurableTextResult,
   writeDurableText,
@@ -65,7 +66,7 @@ let loadedFetchedAtMs = 0;
 let loadedLastAttemptAtMs = 0;
 let loadedAttemptScope = "";
 let loadedMealOffer: ScopedMealOffer | undefined;
-let inFlight: Promise<boolean> | undefined;
+let inFlight: { generation: number | null; operation: Promise<boolean> } | undefined;
 
 export function cachedMealRules(): MealRules | null {
   const scope = mealCredentialScope();
@@ -276,29 +277,53 @@ export function refreshCarrierAuthorityIfNeeded(
   nowMs = Date.now(),
   dependencies: CarrierAuthorityDependencies = {},
 ): Promise<boolean> {
-  if (inFlight) return inFlight;
-  const operation = refreshAuthority(nowMs, dependencies).finally(() => {
-    if (inFlight === operation) inFlight = undefined;
-  });
-  inFlight = operation;
-  return operation;
+  return requestCarrierAuthority(nowMs, dependencies);
 }
 
-async function refreshAuthority(nowMs: number, dependencies: CarrierAuthorityDependencies): Promise<boolean> {
+export async function checkSavedAccessKey(): Promise<void> {
+  const generation = gatewayCredentialGeneration();
+  if (generation !== null) await requestCarrierAuthority(Date.now(), {}, generation);
+}
+
+function requestCarrierAuthority(
+  nowMs: number, dependencies: CarrierAuthorityDependencies, verifyGeneration?: number,
+): Promise<boolean> {
+  if (inFlight) {
+    const { generation, operation } = inFlight;
+    if (verifyGeneration === undefined || verifyGeneration === generation) return operation;
+    return operation.then(() => gatewayCredentialGeneration() === verifyGeneration
+      ? requestCarrierAuthority(Date.now(), dependencies, verifyGeneration) : false);
+  }
   const scope = mealCredentialScope();
+  const post = dependencies.post || postGateway;
   const latestActivityAtMs = Math.max(
     loadedFetchedAtMs,
     loadedLastAttemptAtMs,
   );
   const scopeNeedsRules = scope && loadedMealOffer?.scope !== scope && loadedAttemptScope !== scope;
-  if (!scopeNeedsRules && latestActivityAtMs > 0 &&
-    nowMs - latestActivityAtMs < REFRESH_INTERVAL_MS) {
+  const onCooldown = !scopeNeedsRules && latestActivityAtMs > 0 && nowMs - latestActivityAtMs < REFRESH_INTERVAL_MS;
+  if (onCooldown && verifyGeneration === undefined) {
     const details = carrierAuthorityDiagnosticDetails(nowMs);
     if (!details.hotlineMatchesExpected) {
       writeDiagnostic("carrier.authority.skipped", { ...details, result: "cooldown" }, "warning");
     }
-    return false;
+    return Promise.resolve(false);
   }
+  const generation = verifyGeneration ?? gatewayCredentialGeneration();
+  // Auth can be checked during the catalog cooldown without querying a shipment or touching the cache.
+  const request = onCooldown
+    ? post(CARRIER_AUTHORITY_ROUTE, {}, { timeoutMs: REQUEST_TIMEOUT_MS }).then(() => false, () => false)
+    : refreshAuthority(nowMs, scope, post);
+  const operation = request.finally(() => {
+    if (inFlight?.operation === operation) inFlight = undefined;
+  });
+  inFlight = { generation, operation };
+  return operation;
+}
+
+async function refreshAuthority(
+  nowMs: number, scope: string, post: NonNullable<CarrierAuthorityDependencies["post"]>,
+): Promise<boolean> {
   const startedAtMs = Date.now();
   try {
     const attempt: StoredCarrierAuthorityAttempt = {
@@ -314,7 +339,6 @@ async function refreshAuthority(nowMs: number, dependencies: CarrierAuthorityDep
     );
     loadedLastAttemptAtMs = nowMs;
     loadedAttemptScope = scope;
-    const post = dependencies.post || postGateway;
     const response = await post(
       CARRIER_AUTHORITY_ROUTE,
       scope ? { includeMealRules: true } : {},

@@ -3,7 +3,8 @@ import type { StyledText } from "scripting";
 const PHONE = /(?<![A-Za-z0-9])(?:\+86[- ]?)?(?:1[3-9][0-9][- ]?[0-9]{4}[- ]?[0-9]{4}|0[0-9]{2,3}[- ]?[0-9]{7,8}|(?:400|800)[- ]?[0-9]{3}[- ]?[0-9]{4}|95[0-9]{3,4})(?![A-Za-z0-9])/g;
 
 /** Preserve every source character; only the matched phone span becomes interactive. */
-export function trackPhoneText(detail: string, dial: (phone: string) => void): StyledText {
+export function trackPhoneText(detail: string, dial?: (phone: string) => void): StyledText {
+  if (!dial) return { content: [detail] };
   const content: (string | StyledText)[] = [];
   let offset = 0;
   for (const match of detail.matchAll(PHONE)) {

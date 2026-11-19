@@ -32,6 +32,8 @@ for (const expected of [
   '"Access Key 已失效"',
   '"未授权"',
   '"已授权"',
+  '"已失效"',
+  '"待验证"',
   '"不可用"',
   "Access Key 用于激活脚本使用权限，并授权同步快递信息。请妥善保管，勿与他人分享。",
 ]) {
@@ -165,9 +167,7 @@ for (const heading of privacyHeadings) {
   previousHeadingIndex = headingIndex;
 }
 
-// Access Key activation (user decision 2026-09-27): the settings page's only activation prompt is
-// "activated on another device", driven by the Worker's 403 key_activated_elsewhere for the saved
-// key; there is no save-time check. The copy itself lives in services/gateway.ts.
+// The saved key's legacy activation warning and the current gateway rejection are separate results.
 const gateway = readFileSync(join(projectRoot, "services/gateway.ts"), "utf8");
 assert.ok(gateway.includes('ACCESS_KEY_INVALID_MESSAGE = "Access Key 无效或已失效"'));
 assert.ok(gateway.includes('ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE = "Access Key 已使用"'));
@@ -175,14 +175,19 @@ const refreshStart = settings.indexOf("function refreshAuthorization()");
 const refreshEnd = settings.indexOf("function saveToken()", refreshStart);
 assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
 const refreshSource = settings.slice(refreshStart, refreshEnd);
+assert.match(refreshSource, /gatewayAccessKeyState\(\)/,
+  "Settings must consult the gateway's answer for the saved key");
+assert.match(settings, /subscribeGatewayAccessKeyVerification\(\(\) => scheduleOverview\(\["authorization"\]\)\)/);
+assert.match(settings, /checkAuthorization\.current = false;\s*void checkSavedAccessKey\(\)\.catch/);
+assert.match(settings, /if \(verification === "accepted"\) return "authorized";\s*if \(verification === "rejected"\) return "rejected";\s*return "saved";/);
 assert.ok(
-  /next === "authorized" && savedKeyActivatedElsewhere\(\)\s*\?\s*ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE/
+  /\(next === "saved" \|\| next === "authorized"\) && savedKeyActivatedElsewhere\(\)\s*\?\s*ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE/
     .test(refreshSource),
   "the saved key's activated-elsewhere answer must reach the authorization notice",
 );
 const saveStart = settings.indexOf("function saveToken()");
 const saveEnd = settings.indexOf("async function removeToken()", saveStart);
 const saveSource = settings.slice(saveStart, saveEnd);
-assert.equal(saveSource.includes("postGateway"), false, "no save-time validation request");
+assert.doesNotMatch(saveSource, /postGateway|checkSavedAccessKey/, "saving remains a local operation");
 
 console.log("settings and privacy copy contract tests passed");

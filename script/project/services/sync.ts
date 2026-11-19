@@ -14,7 +14,7 @@ import { replayPendingShipmentNotifications } from "./notifications";
 import { replayEnhancementUnsubscribes } from "./enhancement-unsubscribe";
 import { saveAccountAppRoutes } from "./routes";
 import { automaticBindingIdentityOf, cainiaoHasTrajectoryGap, isHomeAccountQuerySource } from "./shipment-policy";
-import { loadState, loadStateSnapshot, readAppStateSnapshot, saveCloudPddParcels, type LoadedStateSnapshot } from "./storage";
+import { loadState, loadStateSnapshot, readAppStateSnapshot, refreshStoredWatchShipments, saveCloudPddParcels, visibleShipments, type LoadedStateSnapshot } from "./storage";
 import { listHeadline } from "./status";
 import { acquireRenewingDurableRefreshLease, durableRefreshLeaseDiagnostics, recordNetworkRefreshSuccess } from "./refresh-runtime-state";
 import { requestWidgetReload } from "./widgets";
@@ -292,27 +292,25 @@ async function runFullRefresh(
         projectionSceneActive() && !deadlineExpired(enrichmentDeadlineAtMs)) {
       const generation = gatewayCredentialGeneration();
       if (generation !== null) {
+        const finish = beginDiagnosticOperation("cloud.pdd", { sourceProvider: "pinduoduo", source }, false);
+        let stage = "cloud_pdd_pull";
+        let persisted = false;
         try {
           const deadline = Math.min(enrichmentDeadlineAtMs ?? Infinity, deadlineAfter(8_000));
           const parcels = await readCloudPddParcels(lease.signal, deadline);
           const isCurrent = () => lease.isCurrent() && projectionSceneActive() && gatewayCredentialGeneration() === generation;
           if (parcels.length && isCurrent()) {
-            const finish = beginDiagnosticOperation("cloud.pdd", { sourceProvider: "pinduoduo", stage: "commit",
-              records: parcels.length });
-            try {
-              const saved = saveCloudPddParcels(parcels, currentState, isCurrent);
-              const changed = saved.revision > currentState.revision;
-              if (changed) runtimeState.publishRefreshState(saved);
-              currentState = saved;
-              finish(changed ? "committed" : "no_changes");
-            } catch (error) {
-              finish(lease.signal.aborted ? "cancelled" : "failed", {}, lease.signal.aborted ? "info" : "warning");
-              throw error;
-            }
+            stage = "cloud_pdd_commit";
+            const { state: saved, changed } = saveCloudPddParcels(parcels, currentState, isCurrent);
+            persisted = changed;
+            stage = "cloud_pdd_publish";
+            if (saved.revision > currentState.revision) runtimeState.publishRefreshState(saved);
+            currentState = saved;
+            if (persisted) finish("committed", { stage: "cloud_pdd_commit", records: parcels.length });
           }
         } catch {
           lease.assertCurrent();
-          writeDiagnostic("refresh.pdd_cloud.unavailable", { flowId, source, result: "unavailable" });
+          finish("unavailable", { stage, persisted }, "warning");
         }
       }
     }
@@ -682,6 +680,19 @@ export function refreshShipmentById(
   shipmentId: string,
   options?: ShipmentRefreshOptions,
 ): Promise<ShipmentRefreshResult> {
+  if (shipmentId.startsWith("watch:")) {
+    return (async () => {
+      const before = loadState();
+      const previous = visibleShipments(before).find(row => row.identity.id === shipmentId);
+      if (!previous) throw new Error("该快递已从列表中移除");
+      const fresh = await refreshStoredWatchShipments();
+      const state = fresh ?? before;
+      const shipment = visibleShipments(state).find(row => row.identity.id === shipmentId);
+      if (!shipment) throw new Error("该快递已从列表中移除");
+      return { state, shipment, refreshed: shipment.updatedAtMs > previous.updatedAtMs,
+        querySucceeded: fresh !== undefined };
+    })();
+  }
   return refreshShipmentByIdWithRuntime(runtimeState, shipmentId, options);
 }
 

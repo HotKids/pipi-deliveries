@@ -1,21 +1,24 @@
-import { Button, HStack, Navigation, NavigationStack, QRImage, Section, Text, VStack, useEffect, useMemo, useRef, useState } from "scripting";
+import { Button, HStack, Navigation, NavigationStack, Section, Text, VStack, useEffect, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
 import { EmptyTabState, type PickupEmptyArtwork } from "../components/EmptyDeliveryVehicle";
+import { ExpandedQRCode, ScanCodeSurface } from "../components/ExpandedScanCode";
 import { RootTabList } from "../components/RootPageHeader";
 import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
-import { stopParcelActivityPreview } from "../services/parcel-live-activity";
+import { stopParcelActivityPreview, type MealQRCodeTarget } from "../services/parcel-live-activity";
+import { PICKUP_DATE_GROUP_SPACING, parcelCardArtwork } from "../services/parcel-card-appearance";
 import { PICKUP_TAB_TITLE, pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
 import { EXPRESS_TOAST_COPY, MEAL_TOAST_COPY } from "../services/express-toast-copy";
 import { accountStatus, onPlatformAccountsChanged, type IdentityPlatform } from "../services/platform-accounts";
 import { stationIdentityDestination } from "../services/platform-wire";
+import { parseHandoffWindow } from "../services/platform-parcel-data";
 import { needsDetailEntryQuery } from "../services/shipment-policy";
 import { noteSavedToast, noteSaveFailedToast, type transientToast } from "../services/ui-feedback";
 import { mealRedemption } from "../services/meal/cards";
 import { currentMeal, readMeals } from "../services/meal/records";
 import { mealCredentialScope } from "../services/meal/rules";
-import { parcelCardKey, setPickupCardNote } from "../services/storage";
+import { parcelCardKey, setParcelHandoffWindow, setPickupCardNote } from "../services/storage";
 import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { requestWidgetReload } from "../services/widgets";
 import { DetailPage } from "./DetailPage";
@@ -69,16 +72,18 @@ function IdentityCodeButton({ onOpen }: {
   );
 }
 
-function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBlocked, onDetail, onSaveNote, onAction,
+function PickupCardRow({ card, animate, spaceAfter, width, note, opensCabinet, actionBlocked, onDetail, onSaveNote, onSaveWindow, onAction,
   showNotice, onMealCode, onArtworkChange }: {
   card: ParcelActivityContent;
   animate: boolean;
   spaceAfter: boolean;
+  width?: number;
   note: string;
   opensCabinet: boolean;
   actionBlocked: boolean;
   onDetail?: () => void;
   onSaveNote?: (note: string) => void;
+  onSaveWindow?: (window: [number, number] | undefined) => void;
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<void>;
   showNotice: (message: string) => void;
   onMealCode?: () => void;
@@ -105,6 +110,31 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
       showNotice(noteSavedToast(value));
     } catch (error) {
       showNotice(noteSaveFailedToast(error));
+    } finally {
+      editing.current = false;
+    }
+  }
+
+  async function editWindow() {
+    if (editing.current || !onSaveWindow) return;
+    editing.current = true;
+    try {
+      const value = await Dialog.prompt({
+        title: "编辑上门时间", message: "清空可移除上门时间", defaultValue: card.location.replace(/ 上门$/, ""),
+        placeholder: "如 11-19 15:00–17:00", cancelLabel: "取消", confirmLabel: "保存",
+      });
+      if (value == null) return;
+      const text = value.trim();
+      const now = Date.now();
+      const window = text ? parseHandoffWindow(text, now, true) : undefined;
+      if (text && (!window || window[1] + 3_600_000 <= now)) {
+        showNotice("请输入有效的上门时间");
+        return;
+      }
+      onSaveWindow(window);
+      showNotice("已保存");
+    } catch {
+      showNotice("卡片已更新，请重试");
     } finally {
       editing.current = false;
     }
@@ -138,15 +168,16 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
       data={card}
       animate={animate && !artworkChanged}
       spaceAfter={spaceAfter}
+      width={width}
       title={note || card.title}
       onCopy={onMealCode ?? (() => void copyCode())}
       onDetail={onDetail}
       onEditNote={card.target && onSaveNote ? () => void editNote() : undefined}
       actionLabel={opensCabinet ? "一键开柜" : undefined}
       actionPending={actionPending || actionBlocked}
-      locationText={canSwitch && showAddress ? card.address : card.location}
+      locationText={canSwitch && showAddress ? card.address : card.location || (onSaveWindow ? "设置上门时间" : "")}
       showingAddress={canSwitch && showAddress}
-      onLocationTap={canSwitch ? () => setShowAddress(!showAddress) : undefined}
+      onLocationTap={canSwitch ? () => setShowAddress(!showAddress) : onSaveWindow ? () => void editWindow() : undefined}
       onArtworkTap={card.artworkSwitchable ? () => {
         if (onArtworkChange(card)) setArtworkChanged(true);
       } : undefined}
@@ -156,7 +187,8 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
 }
 
 export function PickupPage({
-  state, shipments, cards, previewing, emptyArtwork, focusedRecordId, onAction, onStateChange, showNotice, toast, onArtworkChange,
+  state, shipments, cards, previewing, emptyArtwork, focusedRecordId, activityMealQRCode, onActivityMealQRCodeHandled,
+  onAction, onStateChange, showNotice, toast, onArtworkChange,
 }: {
   state: AppState;
   shipments: readonly Shipment[];
@@ -164,6 +196,8 @@ export function PickupPage({
   previewing: boolean;
   emptyArtwork: PickupEmptyArtwork;
   focusedRecordId: string;
+  activityMealQRCode?: MealQRCodeTarget;
+  onActivityMealQRCodeHandled: (target: MealQRCodeTarget) => void;
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<void>;
   onStateChange: (state: AppState) => void;
   showNotice: (message: string) => void;
@@ -171,13 +205,21 @@ export function PickupPage({
   onArtworkChange: (card: ParcelActivityContent) => boolean;
 }) {
   const dismiss = Navigation.useDismiss();
-  const [mealQr, setMealQr] = useState<{ id: string; scope: string } | null>(null);
+  const [mealQr, setMealQr] = useState<MealQRCodeTarget | null>(activityMealQRCode ?? null);
   const [detailTarget, setDetailTarget] = useState<ParcelActivityTarget | undefined>(undefined);
   const [identity, setIdentity] = useState<PickupIdentityDestination | null>(null);
   const identityRequest = useRef(0);
   const [visible, setVisible] = useState(false);
   const [cabinetRevision, setCabinetRevision] = useState(0);
   const [closingPreview, setClosingPreview] = useState(false);
+  useEffect(() => {
+    if (!activityMealQRCode) return;
+    identityRequest.current++;
+    setIdentity(null);
+    setDetailTarget(undefined);
+    setMealQr(activityMealQRCode);
+    onActivityMealQRCodeHandled(activityMealQRCode);
+  }, [activityMealQRCode, onActivityMealQRCodeHandled]);
   useEffect(() => visible ? onPlatformAccountsChanged(platform => {
     if (platform === "fengchao") setCabinetRevision(value => value + 1);
   }) : undefined, [visible]);
@@ -189,10 +231,12 @@ export function PickupPage({
     [state.shipments, selected]);
   const records = state.pickupCodeRecords;
   const sections = pickupDateSections(cards, previewing, focusedRecordId);
-  const shownQr = mealQr && cards.some(card => card.target && "mealId" in card.target &&
-    card.target.mealId === mealQr.id && card.target.mealScope === mealQr.scope) && mealCredentialScope() === mealQr.scope
+  const mealQrCard = mealQr && cards.find(card => card.target && "mealId" in card.target &&
+    card.target.mealId === mealQr.id && card.target.mealScope === mealQr.scope);
+  const shownQr = mealQr && mealQrCard && mealCredentialScope() === mealQr.scope
     ? currentMeal(readMeals(mealQr.scope), mealQr.id) : undefined;
   const redemption = shownQr ? mealRedemption(shownQr) : undefined;
+  const closeMealCode = () => setMealQr(null);
 
   async function closePreview() {
     if (closingPreview) return;
@@ -210,16 +254,17 @@ export function PickupPage({
       : route === "local" ? { platform, route } : null);
   }
 
-  function cardRow(card: ParcelActivityContent, animate: boolean, spaceAfter: boolean) {
+  function cardRow(card: ParcelActivityContent, animate: boolean, spaceAfter: boolean, sheetWidth?: number) {
     const target = card.target;
     const key = parcelCardKey(card);
-    if (target && "mealId" in target) return <PickupCardRow key={key} card={card} animate={animate} spaceAfter={spaceAfter} note=""
+    if (target && "mealId" in target) return <PickupCardRow key={key} card={card} animate={animate} spaceAfter={spaceAfter} width={sheetWidth} note=""
       opensCabinet={false} actionBlocked={false} onAction={onAction} showNotice={showNotice}
       onArtworkChange={onArtworkChange}
-      onMealCode={card.hasMealQR ? () => setMealQr({ id: target.mealId, scope: target.mealScope }) : undefined} />;
+      onMealCode={card.hasMealQR ? sheetWidth !== undefined ? closeMealCode
+        : () => setMealQr({ id: target.mealId, scope: target.mealScope }) : undefined} />;
     const shipment = shipmentForPickupTarget(shipments, target);
-    const note = (target && "recordId" in target
-      ? records?.find((record) => record.id === target.recordId)?.note : shipment?.note) || "";
+    const record = target && "recordId" in target ? records?.find((record) => record.id === target.recordId) : undefined;
+    const note = (record?.note ?? shipment?.note) || "";
     return (
       <PickupCardRow key={key} card={card} animate={animate} spaceAfter={spaceAfter}
         note={note} opensCabinet={Boolean(cabinetActions?.has(card))}
@@ -229,6 +274,7 @@ export function PickupPage({
           identityRequest.current++;
           setDetailTarget(target);
         } : undefined}
+        onSaveWindow={record?.kind === "handoff" ? window => onStateChange(setParcelHandoffWindow(record, window)) : undefined}
         onSaveNote={(value) => {
           onStateChange(setPickupCardNote(card, note, value));
           if (shipment) requestWidgetReload();
@@ -244,16 +290,14 @@ export function PickupPage({
         onDisappear={() => setVisible(false)}
         overlay={{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen={openIdentity} /> }}
         sheet={{
-          isPresented: Boolean(redemption),
-          onChanged: shown => { if (!shown) setMealQr(null); },
-          content: redemption ? <VStack spacing={20} padding={24} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
-            <Text font="headline">{redemption.title}</Text>
-            <VStack padding={16} background={{ style: "white", shape: { type: "rect", cornerRadius: 16 } }}>
-              <QRImage data={redemption.payload} size={200} />
-            </VStack>
-            {redemption.number ? <Text font="title3" fontWeight="semibold" monospacedDigit>{redemption.number}</Text> : null}
-            <Button title="关闭" action={() => setMealQr(null)} />
-          </VStack> : <VStack />,
+          isPresented: Boolean(redemption && mealQrCard),
+          onChanged: shown => { if (!shown) closeMealCode(); },
+          content: redemption && mealQrCard ? <ScanCodeSurface followsSystemAppearance>
+            <ExpandedQRCode data={redemption.payload} title={shownQr?.brandName?.trim() || redemption.title}
+              titleLogo={parcelCardArtwork(mealQrCard).mark?.path}
+              hint={redemption.prompt} header={width => cardRow(mealQrCard, true, false, width)}
+              close={{ label: `关闭${redemption.title}`, action: closeMealCode }} />
+          </ScanCodeSurface> : <VStack />,
         }}
         navigationDestination={{
           isPresented: Boolean(identity || selected),
@@ -278,6 +322,7 @@ export function PickupPage({
             <DetailPage
               key={selected.identity.id}
               shipment={selected}
+              visibleShipments={shipments}
               persistedShipment
               accountBinding={state.bindings.find((binding) =>
                 binding.source === selected.identity.bindingSource && binding.phone === selected.accountRecord?.phone)}
@@ -291,7 +336,7 @@ export function PickupPage({
         <RootTabList title={PICKUP_TAB_TITLE} onClose={() => dismiss()} bottomInset={TAB_FAB_SCROLL_INSET}
           emptyState={!sections.length ? <EmptyTabState pickup={emptyArtwork} /> : undefined}>
           {sections.map(({ key, label, items, preview }, sectionIndex) => (
-            <Section key={key} header={<Text>{label}</Text>}>
+            <Section key={key} header={<Text>{label}</Text>} listSectionSpacing={PICKUP_DATE_GROUP_SPACING}>
               {items.map((card, index) => cardRow(card, visible && sectionIndex === 0 && index === 0,
                 index < items.length - 1 || preview))}
               {preview ? <ParcelActivityPreviewCard animate={visible && sectionIndex === 0 && items.length === 0}

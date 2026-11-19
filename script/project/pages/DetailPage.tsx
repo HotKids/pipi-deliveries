@@ -1,6 +1,7 @@
 import {
   AbortController,
   Button,
+  ForEach,
   HStack,
   Image,
   List,
@@ -10,15 +11,19 @@ import {
   VStack,
   useEffect,
   useMemo,
+  useObservable,
   useRef,
   useState,
+  type AbortSignal,
+  type ScrollPhase,
 } from "scripting";
 import { accountExternalAppName, fetchAccountExternalAppRoutes } from "../services/account-sync";
 import { accountKuaidi100URL, kuaidi100MiniProgramURL, shunfengKuaidi100FallbackURL } from "../services/kuaidi100-app-link";
 import { trackPhoneText } from "../services/track-phone-links";
+import { internationalShipment } from "../services/international-records";
 import type { AccountBinding, AppState, Shipment } from "../models";
 import { ProductThumbnail } from "../components/ProductThumbnail";
-import { useBundledImage } from "../components/bundled-image";
+import { bundledImage } from "../components/bundled-image";
 import { productImageCacheKey } from "../services/product-image-cache";
 import { SenderBadge } from "../components/SenderBadge";
 import { carrierDisplayName, courierHotline } from "../services/carrier-presentation";
@@ -54,12 +59,14 @@ import {
   timelineLatestTrackAt,
   waybillSuffix,
 } from "../services/status";
-import { loadState, loadStateSnapshot, recordShipmentDetailSelection, setShipmentNote, setShipmentProductName, visibleShipments, type LoadedStateSnapshot } from "../services/storage";
+import { loadState, readAppStateSnapshot, recordShipmentDetailSelection, saveCloudPddParcelSource, setShipmentNote, setShipmentProductName, visibleShipments } from "../services/storage";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { requestWidgetReload } from "../services/widgets";
 import { cloudPddParcelAppURL, displayedPlatformFields, hasPddParcelSource, samePlatformTarget } from "../services/platform-parcel-merge";
 import { pddParcelAppURL } from "../services/platform-parcel-data";
-import { cloudParcelTitle, readCachedCloudParcelTitle, readCloudParcelMetadata, recordCloudParcelTitle,
+import { platformSession } from "../services/platform-accounts";
+import { presentPddParcelH5 } from "../services/platform-web-parcels";
+import { cloudParcelMetadataForCache, readCachedCloudParcelMetadata, readCloudParcelMetadata, recordCloudParcelMetadata,
   type CloudParcelDetails } from "../services/cloud-parcel-metadata";
 import { needsParcelDetailFields, refreshParcelDetailFields } from "../services/parcel-detail-fields";
 import { gatewayCredentialForLocalCache, gatewayCredentialGeneration } from "../services/credentials";
@@ -87,9 +94,18 @@ import {
 /** 手动加件的查询链还没跑完时，状态词与轨迹区都写这个（用户定 2026-09-08 方案 2）。 */
 const MANUAL_QUERY_IN_FLIGHT_TEXT = "查询中";
 const EMPTY_ATTACHED_ORDERS: readonly Shipment[] = [];
+const DETAIL_SOURCES: Readonly<Record<string, readonly [string, string] | undefined>> = {
+  kuaidi100: ["快递100", "sources/kuaidi100.png"],
+  pinduoduo: ["拼多多", "platform-accounts/pinduoduo.png"],
+  cainiao: ["菜鸟", "sources/cainiao.png"],
+  jingdong: ["京东", "couriers/jdshopping.png"],
+  shunfeng: ["顺丰", "sources/sfexpress.png"],
+};
+type DetailCloudState = { scope: string; details?: CloudParcelDetails };
 
 export function DetailPage(props: {
   shipment: Shipment;
+  visibleShipments: readonly Shipment[];
   persistedShipment?: boolean;
   accountBinding?: AccountBinding;
   manualPreview?: ManualShipmentPreview | null;
@@ -104,29 +120,34 @@ export function DetailPage(props: {
 }) {
   const [shipment, setShipment] = useState(props.shipment);
   const [notice, setNotice] = useState("");
-  const [cloud, setCloud] = useState<{ scope: string; details?: CloudParcelDetails } | undefined>(undefined);
+  const [cloud, setCloud] = useState<DetailCloudState | undefined>(undefined);
+  const pendingWhileScrolling = useRef<{ moving: boolean; shipment?: Shipment; cloud?: DetailCloudState }>({ moving: false });
+  function showShipment(updated: Shipment) {
+    const pending = pendingWhileScrolling.current;
+    if (pending.moving) {
+      pending.shipment = pending.shipment ? preferNewerShipment(pending.shipment, updated) : updated;
+    } else {
+      setShipment(current => preferNewerShipment(current, updated));
+    }
+  }
+  function showCloud(updated: DetailCloudState) {
+    if (pendingWhileScrolling.current.moving) pendingWhileScrolling.current.cloud = updated;
+    else setCloud(updated);
+  }
+  function onScrollPhaseChange(_: ScrollPhase, phase: ScrollPhase) {
+    if (phase !== "idle") {
+      pendingWhileScrolling.current.moving = true;
+      return;
+    }
+    const { shipment: nextShipment, cloud: nextCloud } = pendingWhileScrolling.current;
+    pendingWhileScrolling.current = { moving: false };
+    if (nextShipment) showShipment(nextShipment);
+    if (nextCloud) showCloud(nextCloud);
+  }
   const cloudAbortRef = useRef<AbortController | null>(null);
-  const ownerSnapshot = useRef<LoadedStateSnapshot | undefined>(undefined);
   const [openingExternalApp, setOpeningExternalApp] = useState(false);
   const externalAppAbortRef = useRef<AbortController | null>(null);
   const accountBindingRef = useRef(props.accountBinding);
-  const accountExternalAppURL = props.persistedShipment
-    ? accountKuaidi100URL(shipment, shipment, accountBindingRef.current, props.accountBinding) : "";
-  const manualExternalAppURL = props.persistedShipment && shipment.identity.manuallyAdded
-    ? kuaidi100MiniProgramURL(displayWaybill(shipment))
-    : "";
-  const externalAppName = manualExternalAppURL || accountExternalAppURL ? "快递100" : accountExternalAppName(shipment);
-  const timelineSourceIconPath = shipment.identity.manuallyAdded
-    ? "sources/kuaidi100"
-    : ({ cainiao: "sources/cainiao", jingdong: "couriers/jdshopping", shunfeng: "sources/sfexpress" } as Record<string, string>)[
-        String(shipment.identity.sourceProvider || "").toLowerCase()
-      ];
-  const timelineSourceIcon = useBundledImage(timelineSourceIconPath ? `${timelineSourceIconPath}.png` : undefined);
-  const timelineSourceName = shipment.identity.manuallyAdded
-    ? "快递100"
-    : ({ cainiao: "菜鸟", jingdong: "京东", shunfeng: "顺丰" } as Record<string, string>)[
-        String(shipment.identity.sourceProvider || "").toLowerCase()
-      ];
   useEffect(() => {
     setOpeningExternalApp(false);
     return () => {
@@ -206,11 +227,11 @@ export function DetailPage(props: {
     props.refreshOnAppear === "manual_submit",
   );
   const refreshGenerationRef = useRef(0);
-  const refreshInFlightRef = useRef<Promise<void> | null>(null);
+  const refreshInFlightRef = useRef<Promise<Shipment | undefined> | null>(null);
   const refreshAbortRef = useRef<AbortController | null>(null);
   const productImageRequestRef = useRef<Promise<void> | null>(null);
   const detailEntryRef = useRef<DetailEntryObservation | undefined>(undefined);
-  const pullInFlightRef = useRef<Promise<void> | null>(null);
+  const pullInFlightRef = useRef<Promise<Shipment | undefined> | null>(null);
   const joinedJdPullRef = useRef(false);
   const recordedSelectionKeyRef = useRef("");
   const attachedOrders = props.attachedOrders ?? EMPTY_ATTACHED_ORDERS;
@@ -219,17 +240,24 @@ export function DetailPage(props: {
     [shipment, attachedOrders],
   );
   const detailTimeline = detailPresentation;
-  const displayTracks = detailTimeline.tracks.filter(
+  const displayTracks = useMemo(() => detailTimeline.tracks.filter(
     (track) => Boolean(track.detail.trim()) && !isProviderErrorDetail(track.detail),
-  );
+  ), [detailTimeline]);
+  const trackRows = useMemo(() => displayTracks.map((track, index) => ({
+    id: `${track.timeText}:${track.detail}:${index}`,
+    track,
+    time: timelineTimeParts(track.timeText),
+  })), [displayTracks]);
+  const observableTracks = useObservable(() => trackRows);
+  useEffect(() => { observableTracks.setValue(trackRows); }, [trackRows]);
   // 计数与渲染是两件事：渲染保留来源返回的每一行（AGENTS §9），可比较的「有效轨迹数」只数带时间的
   // 节点。sync.ts 的同名字段本来就用 timedTracks，Pipi 的 ExpressRepository.loadLocalDetail 也用
   // ExpressDetailTimelinePolicy.timedTrackCount(detailTracks)；页面自己再数一遍会让同一个包裹在
   // 诊断日志里出现两个「详情轨迹 N」。
-  const effectiveTrackCount = timedTracks(detailTimeline.tracks).length;
-  const incompleteReason = shipmentDetailIncompleteReason(shipment);
+  const effectiveTrackCount = useMemo(() => timedTracks(detailTimeline.tracks).length, [detailTimeline]);
+  const incompleteReason = useMemo(() => shipmentDetailIncompleteReason(shipment), [shipment]);
   const detailComplete = incompleteReason === null;
-  const latestTrackSemantic = latestTimelineTrackSemantic(detailTimeline.tracks);
+  const latestTrackSemantic = useMemo(() => latestTimelineTrackSemantic(detailTimeline.tracks), [detailTimeline.tracks]);
   // The read-side display decision, recorded once per change rather than per render. Pipi emits
   // the same two events from ExpressRepository.loadLocalDetail; without them no log line says
   // which package the sheet is actually showing, or what it was weighed against.
@@ -331,7 +359,8 @@ export function DetailPage(props: {
   // 承运商只有一份：identity。列表行、小组件、通知都读它，repairProjectedShipmentCarrier 也只维护
   // 它（D-6）。详情页曾在 kuaidi100_h5 包裹上改读包裹自带的承运商，那份是抓取当时写死的，修复过的
   // identity 不会回头改它，于是同一单在列表里是真承运商、在详情页仍是泄漏的京东快递。
-  const hotline = courierHotline(
+  const syncedInternational = internationalShipment(shipment);
+  const hotline = syncedInternational ? "" : courierHotline(
     shipment.identity.courierCode,
     shipment.identity.companyName,
   );
@@ -351,7 +380,7 @@ export function DetailPage(props: {
     : presentationStatus.text;
   const phoneTail = shipmentDetailPhoneTail(shipment);
   const needsExtraFields = needsParcelDetailFields(shipment);
-  const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment &&
+  const cloudWaybill = !syncedInternational && SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment &&
       (needsExtraFields || !localPddAppURL) && !unprojectedAccountOrder(shipment)
     ? normalizeWaybill(displayWaybill(shipment)) : "";
   const cloudCredential = /^[A-Z0-9]{6,64}$/.test(cloudWaybill) ? gatewayCredentialForLocalCache() : null;
@@ -359,18 +388,29 @@ export function DetailPage(props: {
   const cloudLifecycle = shipmentLifecycleKey(shipment);
   const cloudParcel = JSON.stringify([cloudWaybill, cloudLifecycle]);
   const cloudScope = cloudCredential ? JSON.stringify([cloudGeneration, cloudParcel]) : "";
-  const initialCloudTitle = useMemo(() => {
+  const initialCloudMetadata = useMemo(() => {
     if (!cloudCredential || cloudCredential.rejected) return;
     try {
-      const title = readCachedCloudParcelTitle(cloudCredential.scope, cloudParcel);
-      if (title && ownsCloudWaybill()) return title;
+      const metadata = readCachedCloudParcelMetadata(cloudCredential.scope, cloudParcel);
+      if (metadata && ownsCloudWaybill(props.visibleShipments)) return metadata;
     } catch { /* Shipment state or the optional cache may be temporarily unavailable. */ }
-  }, [cloudScope, cloudCredential?.rejected]);
-  const restoredCloud = initialCloudTitle ? { metadata: initialCloudTitle } : undefined;
+  }, [cloudScope, cloudCredential?.rejected, props.visibleShipments]);
+  const restoredCloud = initialCloudMetadata ? { metadata: initialCloudMetadata } : undefined;
   const cloudDetails: CloudParcelDetails | undefined = cloudCredential?.rejected
     ? undefined : (cloud?.scope === cloudScope ? cloud.details : restoredCloud);
   const pddExternalAppURL = localPddAppURL || cloudPddParcelAppURL(shipment, cloudDetails?.pddLink);
-  const pddOrigin = samePlatformTarget(props.shipment, shipment) && hasPddParcelSource(props.shipment);
+  const pddOrigin = hasPddParcelSource(shipment) ||
+    (samePlatformTarget(props.shipment, shipment) && hasPddParcelSource(props.shipment));
+  const accountExternalAppURL = props.persistedShipment
+    ? accountKuaidi100URL(shipment, shipment, accountBindingRef.current, props.accountBinding) : "";
+  const manualExternalAppURL = props.persistedShipment && shipment.identity.manuallyAdded
+    ? kuaidi100MiniProgramURL(displayWaybill(shipment)) : "";
+  const externalAppName = syncedInternational ? "" : pddExternalAppURL || pddOrigin ? "拼多多" :
+    manualExternalAppURL || accountExternalAppURL ? "快递100" : accountExternalAppName(shipment);
+  const source = pddOrigin ? "pinduoduo" : shipment.identity.manuallyAdded ? "kuaidi100" :
+    String(shipment.identity.sourceProvider || "").toLowerCase();
+  const detailSource = syncedInternational ? undefined : DETAIL_SOURCES[source];
+  const detailSourceIcon = detailSource && bundledImage(detailSource[1]);
   const platformFields = displayedPlatformFields(shipment, Date.now(), cloudDetails?.metadata);
   const note = shipment.note?.trim();
   const showParcelInfo = Boolean(platformFields.estimate || platformFields.title || note);
@@ -380,15 +420,18 @@ export function DetailPage(props: {
   const pickup = parcelActivityContent(shipment);
 
   function readOwnerState(): AppState {
-    const snapshot = loadStateSnapshot(Date.now(), ownerSnapshot.current);
-    ownerSnapshot.current = snapshot;
-    return snapshot.state;
+    return readAppStateSnapshot().state;
   }
 
-  function ownsCloudWaybill(): boolean {
-    const matches = visibleShipments(readOwnerState()).filter(item =>
+  function ownsCloudWaybill(rows: readonly Shipment[] = visibleShipments(readOwnerState())): boolean {
+    const matches = rows.filter(item =>
       !unprojectedAccountOrder(item) && normalizeWaybill(displayWaybill(item)) === cloudWaybill);
     return matches.length === 1 && shipmentLifecycleKey(matches[0]) === cloudLifecycle;
+  }
+
+  function clearCloudMetadata() {
+    pendingWhileScrolling.current.cloud = undefined;
+    setCloud({ scope: cloudScope });
   }
 
   async function refreshCloudMetadata(): Promise<void> {
@@ -399,47 +442,41 @@ export function DetailPage(props: {
     const requestedAt = Date.now();
     const currentCredential = () => !controller.signal.aborted && gatewayCredentialGeneration() === cloudGeneration;
     try {
-      if (!ownsCloudWaybill()) { setCloud({ scope: cloudScope }); return; }
+      if (!ownsCloudWaybill()) { clearCloudMetadata(); return; }
       const details = await readCloudParcelMetadata(cloudWaybill, controller.signal);
       if (!currentCredential()) return;
-      if (!ownsCloudWaybill()) { setCloud({ scope: cloudScope }); return; }
-      setCloud({ scope: cloudScope, details });
-      recordCloudParcelTitle(cloudCredential.scope, cloudParcel, requestedAt, cloudParcelTitle(shipment, details?.metadata),
+      if (!ownsCloudWaybill()) { clearCloudMetadata(); return; }
+      showCloud({ scope: cloudScope, details });
+      if (details?.pddLink && !pddOrigin) {
+        try {
+          const next = saveCloudPddParcelSource(shipment, details.pddLink, currentCredential);
+          const adopted = next?.shipments.find(row => row.identity.id === shipment.identity.id);
+          if (next && adopted) {
+            showShipment(adopted);
+            props.onStateChange?.(next, adopted);
+          }
+        } catch (error) {
+          writeDiagnostic("detail.pdd_source.save_failed", diagnosticErrorDetails(error), "warning");
+        }
+      }
+      recordCloudParcelMetadata(cloudCredential.scope, cloudParcel, requestedAt, cloudParcelMetadataForCache(shipment, details?.metadata),
         () => currentCredential() && ownsCloudWaybill());
     } catch (error) {
       if (!currentCredential()) return;
       if (error instanceof GatewayError && (error.status === 401 || error.status === 403)) {
-        recordCloudParcelTitle(cloudCredential.scope, cloudParcel, requestedAt, "denied", currentCredential);
-        setCloud({ scope: cloudScope });
+        recordCloudParcelMetadata(cloudCredential.scope, cloudParcel, requestedAt, "denied", currentCredential);
+        clearCloudMetadata();
         return;
       }
-      let title: ReturnType<typeof cloudParcelTitle>;
-      try { if (ownsCloudWaybill()) title = cloudParcelTitle(shipment, cloudDetails?.metadata); }
+      let metadata: CloudParcelDetails["metadata"];
+      try { if (ownsCloudWaybill()) metadata = cloudParcelMetadataForCache(shipment, cloudDetails?.metadata); }
       catch { /* An unreadable owner cannot display cloud metadata. */ }
-      setCloud({ scope: cloudScope, details: title ? { metadata: title } : undefined });
+      showCloud({ scope: cloudScope, details: metadata ? { metadata } : undefined });
     }
   }
 
   useEffect(() => {
-    void refreshCloudMetadata();
-    return () => cloudAbortRef.current?.abort();
-  }, [cloudScope]);
-
-  useEffect(() => {
-    if (!props.persistedShipment || !needsExtraFields) return;
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      void refreshParcelDetailFields(shipment, () => !controller.signal.aborted, readOwnerState, controller.signal).then((result) => {
-        if (!result) return;
-        if (!controller.signal.aborted) setShipment((current) => preferNewerShipment(current, result.shipment));
-        props.onStateChange?.(result.state, result.shipment);
-      }).catch(() => {});
-    }, 0);
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [props.persistedShipment, waybill, cloudLifecycle, needsExtraFields]);
-
-  useEffect(() => {
-    setShipment((current) => preferNewerShipment(current, props.shipment));
+    showShipment(props.shipment);
   }, [props.shipment.identity.id, props.shipment.updatedAtMs]);
 
   useEffect(() => {
@@ -450,11 +487,10 @@ export function DetailPage(props: {
         setLoadingManualDetail(true);
       }
       void refresh(false);
-    } else {
-      void refreshProductImage(props.shipment, refreshGenerationRef.current);
     }
     return () => {
       refreshGenerationRef.current += 1;
+      pendingWhileScrolling.current = { moving: false };
       refreshAbortRef.current?.abort();
       refreshAbortRef.current = null;
       refreshInFlightRef.current = null;
@@ -465,7 +501,16 @@ export function DetailPage(props: {
     };
   }, [props.shipment.identity.id]);
 
-  function refresh(forceManualRefresh = false): Promise<void> {
+  const imageScope = JSON.stringify([cloudLifecycle, waybill, cloudScope]);
+  const [imageDownloadScope, setImageDownloadScope] = useState("");
+  useEffect(() => {
+    if (syncedInternational) return;
+    const controller = new AbortController();
+    void finishDetailOpening(controller.signal);
+    return () => { controller.abort(); cloudAbortRef.current?.abort(); };
+  }, [imageScope, props.persistedShipment]);
+
+  function refresh(forceManualRefresh = false): Promise<Shipment | undefined> {
     if (forceManualRefresh && pullInFlightRef.current) return pullInFlightRef.current;
     if (refreshInFlightRef.current) {
       if (!forceManualRefresh) return refreshInFlightRef.current;
@@ -491,7 +536,6 @@ export function DetailPage(props: {
     productImageRequestRef.current = null;
     const controller = new AbortController();
     refreshAbortRef.current = controller;
-    let imageShipment: Shipment | undefined;
     const task = (async () => {
       setNotice("");
       try {
@@ -504,7 +548,7 @@ export function DetailPage(props: {
               signal: controller.signal,
               onPreview: (preview) => {
                 if (controller.signal.aborted || generation !== refreshGenerationRef.current) return;
-                setShipment((current) => preferNewerShipment(current, preview));
+                showShipment(preview);
                 setLoadingManualDetail(manualPreviewNeedsDetailRefresh(preview));
               },
             })
@@ -526,9 +570,8 @@ export function DetailPage(props: {
           });
         if (generation !== refreshGenerationRef.current) return;
         if (result.detailEntry) detailEntryRef.current = result.detailEntry;
-        setShipment((current) => preferNewerShipment(current, result.shipment));
+        showShipment(result.shipment);
         props.onStateChange?.(result.state, result.shipment);
-        imageShipment = result.shipment;
         const hasUsableDetail = selectShipmentDetailTimeline(
           result.shipment,
         ).tracks.some(
@@ -556,6 +599,7 @@ export function DetailPage(props: {
             setNotice(EXPRESS_TOAST_COPY.detailRefreshFailed);
           }
         }
+        return result.shipment;
       } catch (error) {
         if (generation === refreshGenerationRef.current) {
           const errorDetails = diagnosticErrorDetails(error);
@@ -584,7 +628,7 @@ export function DetailPage(props: {
     })();
     refreshInFlightRef.current = task;
     if (forceManualRefresh) pullInFlightRef.current = task;
-    void task.then(() => {
+    void task.then(imageShipment => {
       if (refreshInFlightRef.current === task) {
         refreshInFlightRef.current = null;
       }
@@ -592,7 +636,8 @@ export function DetailPage(props: {
         refreshAbortRef.current = null;
       }
       if (pullInFlightRef.current === task) pullInFlightRef.current = null;
-      if (generation === refreshGenerationRef.current && !pullInFlightRef.current && imageShipment) {
+      if (forceManualRefresh && imageDownloadScope === imageScope &&
+          generation === refreshGenerationRef.current && !pullInFlightRef.current && imageShipment) {
         void refreshProductImage(imageShipment, generation);
       }
     });
@@ -610,7 +655,7 @@ export function DetailPage(props: {
         trigger: "product_image", requestProductImage: true, signal: controller.signal,
       });
       if (controller.signal.aborted || generation !== refreshGenerationRef.current) return;
-      setShipment((previous) => preferNewerShipment(previous, result.shipment));
+      showShipment(result.shipment);
       props.onStateChange?.(result.state, result.shipment);
     }).catch(error => {
       if (!controller.signal.aborted && generation === refreshGenerationRef.current) {
@@ -622,6 +667,26 @@ export function DetailPage(props: {
     });
     productImageRequestRef.current = task;
     return task;
+  }
+
+  async function finishDetailOpening(signal: AbortSignal) {
+    const refreshed = await refreshInFlightRef.current;
+    if (signal.aborted) return;
+    if (refreshed && shipmentLifecycleKey(refreshed) !== cloudLifecycle) return;
+    const target = refreshed ?? shipment;
+    const fields = props.persistedShipment && needsParcelDetailFields(target, true)
+      ? refreshParcelDetailFields(target, () => !signal.aborted, readOwnerState, signal).catch(() => undefined)
+      : undefined;
+    const [result] = await Promise.all([fields, refreshCloudMetadata()]);
+    if (signal.aborted) return;
+    if (result) {
+      showShipment(result.shipment);
+      props.onStateChange?.(result.state, result.shipment);
+    }
+    const pulled = await (pullInFlightRef.current ?? refreshInFlightRef.current);
+    if (signal.aborted) return;
+    setImageDownloadScope(imageScope);
+    await refreshProductImage(pulled ?? result?.shipment ?? target, refreshGenerationRef.current);
   }
 
   async function copyWaybill() {
@@ -649,41 +714,48 @@ export function DetailPage(props: {
     await dialPhone(hotline);
   }
 
-  async function openPddParcelApp() {
-    try {
-      const current = loadState().shipments.find((row) => row.identity.id === shipment.identity.id);
-      if (!current || !samePlatformTarget(shipment, current) ||
-          current.pddImport?.ownerKey !== shipment.pddImport?.ownerKey ||
-          current.pddImport?.orderId !== shipment.pddImport?.orderId) {
-        setNotice("快递信息已更新，请重新打开详情");
-        return;
-      }
-      const localURL = pddParcelAppURL(current.pddImport, normalizeWaybill(displayWaybill(current)));
-      const savedLink = cloudDetails?.pddLink;
-      const currentURL = localURL || (savedLink && gatewayCredentialGeneration() === cloudGeneration && ownsCloudWaybill()
-        ? cloudPddParcelAppURL(current, savedLink) : "");
-      if (currentURL !== pddExternalAppURL) {
-        setNotice("快递信息已更新，请重新打开详情");
-        return;
-      }
-      if (!pddExternalAppURL || !await Safari.openURL(pddExternalAppURL)) {
-        setNotice("打开拼多多失败，请重试。");
-      }
-    } catch {
-      setNotice("打开拼多多失败，请重试。");
-    }
-  }
-
   async function openExternalApp() {
     if (externalAppAbortRef.current || !externalAppName) return;
     const controller = new AbortController();
     externalAppAbortRef.current = controller;
     setOpeningExternalApp(true);
+    function currentPddParcel() {
+      if (controller.signal.aborted) return;
+      const current = loadState().shipments.find((row) => row.identity.id === shipment.identity.id);
+      if (!current || !samePlatformTarget(shipment, current) ||
+          current.pddImport?.ownerKey !== shipment.pddImport?.ownerKey ||
+          current.pddImport?.orderId !== shipment.pddImport?.orderId) return;
+      const localURL = pddParcelAppURL(current.pddImport, normalizeWaybill(displayWaybill(current)));
+      const currentURL = localURL || (gatewayCredentialGeneration() === cloudGeneration && ownsCloudWaybill()
+        ? cloudPddParcelAppURL(current, cloudDetails?.pddLink) : "");
+      return currentURL === pddExternalAppURL ? current : undefined;
+    }
     try {
       const sfBinding = externalAppName === "顺丰" ? loadState().bindings.find((binding) =>
         binding.source === shipment.identity.bindingSource && binding.phone === shipment.accountRecord?.phone) : undefined;
       let directURL = "";
-      if (externalAppName === "快递100") {
+      let directKind = "kuaidi100";
+      if (externalAppName === "拼多多") {
+        const current = currentPddParcel();
+        if (!current || (!pddExternalAppURL && !hasPddParcelSource(current))) {
+          setNotice("快递信息已更新，请重新打开详情");
+          return;
+        }
+        if (!pddExternalAppURL) {
+          if (platformSession("pinduoduo")) {
+            setNotice("暂无拼多多订单链接");
+            return;
+          }
+          directURL = kuaidi100MiniProgramURL(displayWaybill(current));
+          if (!directURL) {
+            setNotice("暂无可用的运单号");
+            return;
+          }
+        } else {
+          directKind = "pinduoduo";
+          directURL = pddExternalAppURL;
+        }
+      } else if (externalAppName === "快递100") {
         const currentState = loadState();
         const current = currentState.shipments.find((item) => item.identity.id === shipment.identity.id);
         directURL = shipment.identity.manuallyAdded
@@ -697,9 +769,9 @@ export function DetailPage(props: {
           return;
         }
       }
-      const targets = directURL
-        ? [{ kind: "kuaidi100", url: directURL }]
-        : await fetchAccountExternalAppRoutes(shipment, controller.signal);
+      const targets = [...(directURL
+        ? [{ kind: directKind, url: directURL }]
+        : await fetchAccountExternalAppRoutes(shipment, controller.signal))];
       if (controller.signal.aborted) return;
       if (!targets.length) {
         setNotice(`来源暂未提供可用的${externalAppName}应用链接`);
@@ -722,6 +794,26 @@ export function DetailPage(props: {
           sourceProvider: shipment.identity.sourceProvider,
         }, opened ? "info" : "warning");
         if (opened || controller.signal.aborted) return;
+        if (target.kind === "pinduoduo") {
+          if (result !== "no_handler") {
+            setNotice("打开拼多多失败，请稍后重试");
+            return;
+          }
+          const session = platformSession("pinduoduo");
+          if (session && await presentPddParcelH5(target.url, session, () => !!currentPddParcel(), controller.signal)) return;
+          if (controller.signal.aborted) return;
+          const current = currentPddParcel();
+          if (!current) {
+            setNotice("快递信息已更新，请重新打开详情");
+            return;
+          }
+          if (platformSession("pinduoduo")) {
+            setNotice("无法打开拼多多订单，请稍后重试");
+            return;
+          }
+          const fallbackURL = kuaidi100MiniProgramURL(displayWaybill(current));
+          if (fallbackURL) targets.push({ kind: "kuaidi100", url: fallbackURL });
+        }
         if (target.kind === "sf" && result === "open_failed") {
           setNotice("打开顺丰失败，请稍后重试");
           return;
@@ -754,13 +846,13 @@ export function DetailPage(props: {
           sourceProvider: current.identity.sourceProvider,
         }, opened ? "info" : "warning");
         if (!opened && !controller.signal.aborted)
-          setNotice("暂时无法打开快递100小程序，请稍后重试");
+          setNotice("无法打开快递100小程序，请稍后重试");
         return;
       }
       setNotice(externalAppName === "菜鸟"
-        ? "未能打开菜鸟、淘宝或支付宝，请确认已安装其中任一应用"
-        : externalAppName === "快递100"
-        ? "暂时无法打开快递100小程序，请稍后重试"
+        ? "打开失败，请确认已安装菜鸟、淘宝或支付宝"
+        : targets.some((target) => target.kind === "kuaidi100")
+        ? "无法打开快递100小程序，请稍后重试"
         : `无法打开${externalAppName}，请确认已安装该应用`);
     } catch {
       if (!controller.signal.aborted) setNotice(`打开${externalAppName}失败，请稍后重试`);
@@ -787,6 +879,7 @@ export function DetailPage(props: {
         ),
       } : undefined}
       refreshable={async () => { await Promise.all([refresh(true), refreshCloudMetadata()]); }}
+      onScrollPhaseChange={Number.parseInt(Device.systemVersion, 10) >= 18 ? onScrollPhaseChange : undefined}
       toast={transientToast(notice, setNotice)}
     >
       <Section>
@@ -801,7 +894,10 @@ export function DetailPage(props: {
               unprojectedAccountOrder(shipment),
             )}
             size={72}
+            allowDownload={imageDownloadScope === imageScope}
             imageURL={shipment.identity.productImageURL}
+            cloudImage={cloudCredential && platformFields.productImageURL
+              ? { url: platformFields.productImageURL, scope: cloudCredential.scope } : undefined}
           />
           <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity" }}>
             <HStack alignment="center" spacing={6} contentShape="rect"
@@ -810,13 +906,13 @@ export function DetailPage(props: {
               <Text
                 font="body"
                 fontWeight="bold"
-                foregroundStyle={statusTextTint(presentationStatus.semantic)}
+                foregroundStyle={statusTextTint(presentationStatus.semantic, { label: presentationStatus.text })}
                 lineLimit={1}
               >
                 {statusText}
               </Text>
               {shipment.identity.sender === true ? (
-                <SenderBadge semantic={presentationStatus.semantic} />
+                <SenderBadge semantic={presentationStatus.semantic} label={presentationStatus.text} />
               ) : null}
             </HStack>
             {phoneTail ? (
@@ -853,14 +949,6 @@ export function DetailPage(props: {
         </HStack>
       </Section>
 
-      {pddExternalAppURL || pddOrigin ? (
-        <Section>
-          {pddExternalAppURL ? (
-            <Button title="在拼多多 App 中打开" systemImage="arrow.up.forward.app" action={openPddParcelApp} />
-          ) : <Text foregroundStyle="secondaryLabel">来源为拼多多</Text>}
-        </Section>
-      ) : null}
-
       {showParcelInfo ? (
         <Section>
           <VStack alignment="leading" spacing={4} padding={{ vertical: 8 }}
@@ -896,13 +984,13 @@ export function DetailPage(props: {
       <Section
         header={
           <HStack spacing={6}>
-            {timelineSourceIcon ? (
-              <Image image={timelineSourceIcon}
+            {detailSourceIcon ? (
+              <Image image={detailSourceIcon}
                 resizable scaleToFit frame={{ width: 16, height: 16 }} />
             ) : null}
             <HStack spacing={0}>
-              <Text>{timelineSourceName ? "物流信息来自" : "物流信息"}</Text>
-              {timelineSourceName ? <Text fontWeight="bold">{timelineSourceName}</Text> : null}
+              <Text>{detailSource ? "物流信息来自" : "物流信息"}</Text>
+              {detailSource ? <Text fontWeight="bold">{detailSource[0]}</Text> : null}
             </HStack>
           </HStack>
         }
@@ -919,11 +1007,8 @@ export function DetailPage(props: {
         )}
       >
         {displayTracks.length ? (
-          displayTracks.map((track, index) => {
-            const time = timelineTimeParts(track.timeText);
-            return (
+          <ForEach data={observableTracks} builder={({ track, time }, index) => (
               <HStack
-                key={`${track.timeText}:${track.detail}:${index}`}
                 alignment="top"
                 spacing={11}
                 padding={{ vertical: 5 }}
@@ -957,11 +1042,11 @@ export function DetailPage(props: {
                   lineSpacing={3}
                   foregroundStyle={index === 0 ? "label" : "secondaryLabel"}
                   frame={{ maxWidth: "infinity", alignment: "leading" }}
-                  styledText={trackPhoneText(trackDisplayDetail(detailTimeline.provider, track), (phone) => { void dialPhone(phone); })}
+                  styledText={trackPhoneText(trackDisplayDetail(detailTimeline.provider, track),
+                    syncedInternational ? undefined : (phone) => { void dialPhone(phone); })}
                 />
               </HStack>
-            );
-          })
+          )} />
         ) : (
           <VStack
             spacing={8}

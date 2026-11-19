@@ -88,13 +88,13 @@ export function ShipmentRow(props: {
             <Text
               font="body"
               fontWeight="semibold"
-              foregroundStyle={statusTextTint(presentationStatus.semantic)}
+              foregroundStyle={statusTextTint(presentationStatus.semantic, { label: presentationStatus.text })}
               lineLimit={1}
             >
               {withShipmentNote(presentationStatus.text, item)}
             </Text>
             {item.identity.sender === true ? (
-              <SenderBadge semantic={presentationStatus.semantic} />
+              <SenderBadge semantic={presentationStatus.semantic} label={presentationStatus.text} />
             ) : null}
           </HStack>
           <Spacer />

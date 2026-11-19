@@ -262,7 +262,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         return;
       }
       if (await presentPlatformLogin(platform)) await syncPlatforms(platform);
-    }, "账号操作失败，请重试。");
+    }, "账号操作失败，请稍后重试");
   }
 
   const samsungState: AccountStatus["state"] = !hasEnhancement ? "offline" : enhancementNotice ? "expired" : "active";
@@ -381,7 +381,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
             <Spacer />
             <SectionIconButton title="立即同步" symbol="arrow.clockwise" disabled={busy ||
               !Object.values(platformAccounts).some((item) => item.state === "active")}
-              action={() => void runAction(() => syncPlatforms(), "同步失败，请稍后重试。")} />
+              action={() => void runAction(() => syncPlatforms(), "同步失败，请稍后重试")} />
           </HStack>
         }
         footer={

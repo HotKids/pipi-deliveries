@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import type { AppState } from "../models";
 import {
   reloadAndRefreshOnResume,
@@ -136,6 +138,28 @@ assert.deepEqual(asynchronousEvents, ["apply:2:shipment-2", "refresh", "refreshe
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const indexSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
 const homeSource = await readFile(resolve(projectDir, "pages/HomePage.tsx"), "utf8");
+const routeSource = indexSource.slice(indexSource.indexOf("function pickupNavigation("),
+  indexSource.indexOf("async function readStartupState("));
+const pickupNavigation = runInNewContext(`${stripTypeScriptTypes(routeSource)}\npickupNavigation;`, {
+  MEAL_SHORTCUT_RECORD_PARAMETER: "mealPickupRecord",
+  parcelActivityTarget: (_state: AppState, linkId: string) => linkId === "active-meal"
+    ? { mealId: "qr", mealScope: "signed-in", mealQRCode: { id: "qr", scope: "signed-in" } }
+    : linkId === "active-shipment" ? { shipmentId: "shipment-1" } : undefined,
+  shortcutPickupRecordId: () => "",
+});
+const meals = [
+  { target: { mealId: "qr", mealScope: "signed-in" }, hasMealQR: true },
+  { target: { mealId: "number", mealScope: "signed-in" } },
+];
+for (const parameters of [{ parcelActivity: "active-meal" }, { mealPickupRecord: "qr" }]) {
+  const route = pickupNavigation(persisted, parameters, meals);
+  assert.equal(route.pickupRecordId, "qr");
+  assert.equal(route.activityMealQRCode?.id, "qr");
+  assert.equal(route.activityMealQRCode?.scope, "signed-in");
+}
+assert.equal(pickupNavigation(persisted, { mealPickupRecord: "number" }, meals).activityMealQRCode, undefined);
+assert.equal(pickupNavigation(persisted, { mealPickupRecord: "expired" }, meals).pickupRecordId, "");
+assert.equal(pickupNavigation(persisted, { parcelActivity: "active-shipment" }, meals).activityShipmentId, "shipment-1");
 assert.match(indexSource, /Script\.onResume\([\s\S]*?reloadAndRefreshOnResume/);
 assert.match(
   indexSource,

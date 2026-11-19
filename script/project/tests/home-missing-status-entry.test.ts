@@ -7,8 +7,9 @@ import { needsDetailEntryQuery, selectShipmentTimeline, selectShipmentDetailTime
 const home = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
 const expression = home.match(/refreshOnAppear=\{([\s\S]*?)\}\s+onStateChange=/)?.[1];
 assert.ok(expression, "Home must declare the detail entry refresh trigger");
-function trigger(homeStatus: string, detailStatus = homeStatus, preview = false, order = false) {
+function trigger(homeStatus: string, detailStatus = homeStatus, preview = false, order = false, watch = false) {
   return runInNewContext(expression!, {
+    watch,
     needsDetailEntryQuery: () => homeStatus === "UNKNOWN",
     selected: {}, manualPreview: preview ? {} : null,
     manualPreviewNeedsDetailRefresh: () => true,
@@ -50,6 +51,7 @@ assert.equal(trigger("UNKNOWN", "UNKNOWN", false, true), "detail_open");
 assert.equal(trigger("COMPLETED", "COMPLETED", false, true), "detail_open",
   "an unresolved identity opens automatically even when history is complete");
 assert.equal(trigger("UNKNOWN", "UNKNOWN", true), "manual_submit");
+assert.equal(trigger("UNKNOWN", "UNKNOWN", false, false, true), false, "Watch shipments never start a local query");
 console.log("Home missing-status entry partitions passed");
 
 // Exercise the real policy at the Home entry boundary, rather than the status-only stub above.
@@ -61,7 +63,7 @@ for (const carrier of ["JD", "SF", "ZTO"]) {
     timeline: active, sourceTimeline: { ...active, provider: "v5_list" },
     accountRecord: { waybill, companyCode: carrier, provider: "JingDong", phone: "" } };
   assert.equal(runInNewContext(expression!, {
-    needsDetailEntryQuery, selected: row, manualPreview: null,
+    needsDetailEntryQuery, selected: row, manualPreview: null, watch: false,
     unprojectedAccountOrder: () => false,
   }), "detail_open", "a JD-source row with complete active history starts one entry query");
 }

@@ -3,6 +3,7 @@ import { platformPickupCode } from "./fengchao-account";
 import { trustedPlatformPage, type ExpressPlatform } from "./platform-accounts";
 import { sha256Hex } from "./scripting-data";
 import { normalizeWaybill, parseListEventTime } from "./status";
+import { cainiaoProductImageURL } from "./product-image-url";
 import { asPlainObject, cleanScalarText, firstCleanScalarText, isPlainObject, type JsonObject } from "./value-guards";
 
 export type PlatformParcel = Readonly<{
@@ -18,6 +19,9 @@ export type PlatformParcel = Readonly<{
   carrierCode?: string;
   carrierName?: string;
   unnumbered?: boolean;
+  taken?: boolean;
+  takenAtMs?: number;
+  productImageURL?: string;
 }>;
 
 export function pddParcelDetailPath(shippingId: string, waybill: string): string {
@@ -28,13 +32,12 @@ export function pddParcelDetailPath(shippingId: string, waybill: string): string
 
 export function pddParcelAppURL(parcel: PddParcelImport | undefined, waybill: string): string {
   if (!parcel?.ownerKey || !parcel.orderId || !parcel.shippingId) return "";
-  return pddParcelUniversalURL(parcel.shippingId, waybill);
+  return pddParcelNativeAppURL(parcel.shippingId, waybill);
 }
 
-export function pddParcelUniversalURL(shippingId: string, waybill: string): string {
+export function pddParcelNativeAppURL(shippingId: string, waybill: string): string {
   const path = pddParcelDetailPath(shippingId, waybill);
-  // Pinduoduo's iOS associated domain serves this same shipment-detail route.
-  return path ? "https://m.pinduoduo.net" + path : "";
+  return path ? "pinduoduo://com.xunmeng.pinduoduo" + path : "";
 }
 
 export function objectList(value: unknown): JsonObject[] {
@@ -51,6 +54,7 @@ function rows(value: JsonObject): JsonObject[] {
 const ORDER_KEYS = ["tbOrderId", "tb_order_id", "tradeId", "trade_id", "orderId", "order_id",
   "bizOrderId", "biz_order_id", "orderCode", "order_code"];
 const CN_RECIPIENT_TERMINAL = /^(?:SIGN|SIGNED|CANCEL|CANCELLED|CANCELED|REJECT|RETURN|LOST|CLOSED|CLOSE|已签收|已取件|已取出|已取消|已退回|已关闭)$/i;
+const CN_RECIPIENT_TAKEN = /^(?:SIGN|SIGNED|已签收|已取件|已取出)$/i;
 const CHINA_OFFSET = 8 * 3_600_000;
 const DAY = 86_400_000;
 
@@ -130,13 +134,20 @@ export function cainiaoParcelDetails(data: JsonObject, waybill: string, now: num
   const matches = (Array.isArray(result) ? objectList(result) : [isPlainObject(result) ? result : data])
     .filter((row) => waybill === normalizeWaybill(firstCleanScalarText(row, "mailNo", "mail_no")));
   if (matches.length !== 1) return undefined;
-  return { source: "cainiao", waybill, ...cainiaoParcelFields(matches[0], now) };
+  const goods = matches[0].goodsList;
+  const items = Array.isArray(goods) ? objectList(goods) : [asPlainObject(goods)];
+  const productImageURL = items.map((item) =>
+    cainiaoProductImageURL(item.itemPic) || cainiaoProductImageURL(item.allPicUrl)).find(Boolean);
+  return { source: "cainiao", waybill, ...cainiaoParcelFields(matches[0], now),
+    ...(productImageURL ? { productImageURL } : {}) };
 }
 
 export function cainiaoRecipientParcels(data: JsonObject, now: number): PlatformParcel[] {
   const output: PlatformParcel[] = [];
   for (const pkg of rows(data)) {
-    if (CN_RECIPIENT_TERMINAL.test(firstCleanScalarText(pkg, "status", "statusDesc", "packageStatus"))) continue;
+    const statuses = ["status", "statusDesc", "packageStatus"].map((field) => cleanScalarText(pkg[field]));
+    if (statuses.some(status => CN_RECIPIENT_TERMINAL.test(status) && !CN_RECIPIENT_TAKEN.test(status))) continue;
+    const taken = statuses.some((status) => CN_RECIPIENT_TAKEN.test(status));
     const updateTime = firstTime(pkg, ["updateTime", "modifyTime", "lastTime", "statusTime", "gmtModified", "createTime"]);
     if (updateTime && updateTime < now - 14 * DAY) continue;
     const rawWaybill = firstCleanScalarText(pkg, "mailNo", "mail_no");
@@ -153,7 +164,13 @@ export function cainiaoRecipientParcels(data: JsonObject, now: number): Platform
     const code = candidates.map((value) => platformPickupCode(value, rawWaybill, ...orderIds)).find(Boolean);
     const name = firstCleanScalarText(station, "pointName", "point_name", "stationName", "station_name", "name");
     const address = firstCleanScalarText(station, "address", "stationAddress", "station_address", "pointAddress", "addr");
-    if (!waybill && (rawWaybill || !code || !(name || address))) continue;
+    if (!waybill && (rawWaybill || !code)) continue;
+    if (taken) {
+      const takenAtMs = firstTime(pkg, ["statusTime", "statusUpdateTime", "status_update_time"]);
+      if (takenAtMs && (takenAtMs > now || takenAtMs < now - 14 * DAY)) continue;
+      output.push({ source: "cainiao", waybill, code, name, address, unnumbered: !rawWaybill, taken, takenAtMs });
+      continue;
+    }
     output.push({
       source: "cainiao", waybill, orderIds,
       ...cainiaoParcelFields(pkg, now),
@@ -175,9 +192,9 @@ function senderWaiting(status: string): boolean {
   return SENDER_ACTIVE.test(status) || /待取件|待揽收|待上门/.test(status);
 }
 
-function providerWindow(text: string, now: number): [number, number] | undefined {
+export function parseHandoffWindow(text: string, now: number, exact = false): [number, number] | undefined {
   const range = /(?:(\d{4})[-/])?(\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})\s*[-–~至]\s*(?:(\d{1,2})[-/](\d{1,2})\s+)?(\d{1,2}):(\d{2})/.exec(text);
-  if (!range) return undefined;
+  if (!range || exact && range[0] !== text) return undefined;
   const year = range[1] || String(new Date(chinaDay(now)).getUTCFullYear());
   const build = (month: string, date: string, hour: string, minute: string) =>
     parseListEventTime([year, month.padStart(2, "0"), date.padStart(2, "0")].join("-") + " " + hour.padStart(2, "0") + ":" + minute);
@@ -186,7 +203,12 @@ function providerWindow(text: string, now: number): [number, number] | undefined
   return start && end && end >= start ? [start, end] : undefined;
 }
 
-export function cainiaoHandoffs(data: JsonObject, owner: string, now: number): ParcelHandoffRecord[] {
+export function cainiaoHandoffId(owner: string, orderId: string): string {
+  return "cn-handoff:" + sha256Hex(owner + ":" + orderId);
+}
+
+export function cainiaoHandoffs(data: JsonObject, owner: string, now: number,
+  existing: readonly ParcelHandoffRecord[] = []): ParcelHandoffRecord[] {
   const output: ParcelHandoffRecord[] = [];
   for (const pkg of rows(data)) {
     const appointment = ["appointment", "appointInfo", "packageAppointment", "sendInfo"]
@@ -199,22 +221,25 @@ export function cainiaoHandoffs(data: JsonObject, owner: string, now: number): P
     const ids = ["appointmentId", "appointId", "sendOrderCode", "logisticsOrderCode", "orderCode"];
     const id = firstCleanScalarText(appointment, ...ids) || firstCleanScalarText(pkg, ...ids, "lpOrderId", "packageId", "id");
     const names = ["gotCode", "got_code", "sendCode", "send_code", "pickupCode", "pickUpCode"];
-    const code = platformPickupCode(firstCleanScalarText(appointment, ...names, "doorCode", "takeCode", "verifyCode") ||
-      firstCleanScalarText(feature, ...names) || firstCleanScalarText(pkg, ...names, "doorCode", "takeCode"),
-      id, firstCleanScalarText(pkg, "mailNo", "mail_no"));
+    const raw = firstCleanScalarText(appointment, ...names, "doorCode", "takeCode", "verifyCode") ||
+      firstCleanScalarText(feature, ...names) || firstCleanScalarText(pkg, ...names, "doorCode", "takeCode");
+    const key = cainiaoHandoffId(owner, id);
+    const code = platformPickupCode(raw, id, firstCleanScalarText(pkg, "mailNo", "mail_no")) ||
+      (!raw ? existing.find((record) => record.id === key && !record.completedAtMs && !record.expiredAtMs)?.code : "");
     if (!id || !code) continue;
     const text = (firstCleanScalarText(appointment, ...WINDOW_KEYS) || firstCleanScalarText(feature, ...WINDOW_KEYS.slice(0, 2)) ||
       firstCleanScalarText(pkg, ...WINDOW_KEYS)).replace(/(?:预约上门|上门取件|预计上门|上门)[:：\s]*$/, "")
       .replace(/^(?:预约时间|上门时间|取件时间)[:：\s]*/, "").trim();
     let start = firstTime(appointment, [...START_KEYS, "startTime"]) || firstTime(pkg, START_KEYS);
     let end = firstTime(appointment, [...END_KEYS, "endTime"]) || firstTime(pkg, END_KEYS);
-    const window = providerWindow(text, now);
+    const window = parseHandoffWindow(text, now);
     start ||= window?.[0];
     end ||= window?.[1];
     if (start && end && end < start) end = undefined;
-    if (start || end || text) output.push({
-      id: "cn-handoff:" + sha256Hex(owner + ":" + id),
+    output.push({
+      id: key,
       platform: "cainiao", kind: "handoff", code, capturedAtMs: now,
+      providerTitle: firstCleanScalarText(pkg, "providerTitle") || undefined,
       windowStartAtMs: start, windowEndAtMs: end, windowText: start && end ? "" : text,
     });
   }

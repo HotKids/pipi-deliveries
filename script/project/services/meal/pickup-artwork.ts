@@ -1,4 +1,5 @@
 type JsonObject = Record<string, unknown>
+export type MealTemperature = "hot" | "cold"
 
 export type PickupVisualStyle = {
   readonly artworkAsset: string
@@ -10,6 +11,7 @@ export type PickupVisualStyle = {
   readonly gradientStartColor: string
   readonly gradientEndColor: string
   readonly category: string
+  readonly drinkTemperature?: MealTemperature
   readonly temperaturePair?: { hot: string; cold: string }
 }
 
@@ -17,6 +19,7 @@ export type PickupVisualInput = {
   readonly brandId: string
   readonly productName: string
   readonly evidenceText: string
+  readonly drinkTemperature?: MealTemperature
 }
 
 type ResolvedArtwork = {
@@ -49,7 +52,7 @@ export function resolvePickupVisualStyle(
   const category = brand
     ? clean(brand.category)
     : categoryFromText(runtime, styleText)
-  const temperature = resolveTemperature(runtime, temperatureText)
+  const temperature = input.drinkTemperature ?? resolveTemperature(runtime, temperatureText)
   const artwork = resolveArtwork(runtime, unknown, brand, category, styleText, temperature)
   const temperaturePair = temperature === "unknown"
     ? validatedTemperaturePair(artwork,
@@ -93,6 +96,7 @@ export function resolvePickupVisualStyle(
     gradientStartColor: rgbHex(alphaBlend(card, CARD_GRADIENT_START)),
     gradientEndColor: rgbHex(alphaBlend(card, CARD_GRADIENT_END)),
     category,
+    ...(temperature !== "unknown" ? { drinkTemperature: temperature } : {}),
     ...(temperaturePair ? { temperaturePair } : {}),
   }
 }
@@ -110,6 +114,7 @@ function validatedTemperaturePair(current: ResolvedArtwork, hot: ResolvedArtwork
 }
 
 export function alternateMealArtwork(style: PickupVisualStyle | undefined): string | undefined {
+  if (style?.drinkTemperature) return undefined
   const pair = style?.temperaturePair
   if (!pair?.hot || !pair.cold || pair.hot === pair.cold) return undefined
   if (style?.artworkAsset === pair.hot) return pair.cold

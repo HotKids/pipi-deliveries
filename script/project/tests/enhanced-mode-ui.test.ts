@@ -264,6 +264,10 @@ assert.equal(settingsCalls[4][0], "interface5");
 const appearStart = detailSource.indexOf("    if (props.refreshOnAppear) {");
 const appearEnd = detailSource.indexOf("    return () => {", appearStart);
 assert.ok(appearStart >= 0 && appearEnd > appearStart);
+const entryFieldsStart = detailSource.indexOf("  async function finishDetailOpening(");
+const entryFieldsEnd = detailSource.indexOf("  async function copyWaybill()", entryFieldsStart);
+assert.ok(entryFieldsStart >= 0 && entryFieldsEnd > entryFieldsStart);
+const entryFields = stripTypeScriptTypes(detailSource.slice(entryFieldsStart, entryFieldsEnd));
 for (const [identity, refreshOnAppear, expectedCalls] of [
   [{ accountOrder: true, sourceProvider: "jingdong" }, false, 0],
   [{ accountOrder: true, sourceProvider: "jingdong", enhancedMode: true }, false, 1],
@@ -273,10 +277,17 @@ for (const [identity, refreshOnAppear, expectedCalls] of [
   [{ accountOrder: true, sourceProvider: "jingdong" }, "detail_open", 1],
 ] as const) {
   let refreshes = 0;
-  runInNewContext(detailSource.slice(appearStart, appearEnd), {
-    props: { shipment: { identity: { bindingSource: "interface5", sourceId: "synthetic-order",
-      phone: "13800001234", ...identity }, timeline: { tracks: [] } }, refreshOnAppear },
+  const shipment = { identity: { bindingSource: "interface5", sourceId: "synthetic-order",
+    phone: "13800001234", ...identity }, timeline: { tracks: [] } };
+  await runInNewContext(`${detailSource.slice(appearStart, appearEnd)}\n${entryFields}\nfinishDetailOpening(signal)`, {
+    props: { shipment, refreshOnAppear, persistedShipment: false }, shipment,
+    signal: new AbortController().signal,
     refreshGenerationRef: { current: 1 },
+    refreshInFlightRef: { current: null },
+    pullInFlightRef: { current: null },
+    refreshCloudMetadata: async () => {},
+    imageScope: "synthetic-order",
+    setImageDownloadScope: () => {},
     refreshProductImage: (current: any) => {
       if (shouldRequestDetailProductImage(current, [{ source: "interface5", phone: "13800001234",
         boundAtMs: 1, enhancedMode: "enhancedMode" in identity && identity.enhancedMode === true }])) refreshes++;

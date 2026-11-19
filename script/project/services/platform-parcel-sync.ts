@@ -1,5 +1,5 @@
 import { AbortController } from "scripting";
-import type { AppState, Shipment } from "../models";
+import type { AppState, ParcelHandoffRecord, Shipment } from "../models";
 import { detectManualCarrier } from "./manual-query";
 import {
   currentPlatformSession, notePlatformSync, onPlatformAccountsChanged, platformSession, saveCainiaoNickname, PLATFORM_NAMES, PLATFORM_SOURCES,
@@ -7,7 +7,7 @@ import {
 } from "./platform-accounts";
 import { CAINIAO_LIST_PARAMETERS, CAINIAO_RECIPIENT_LIST,
   PlatformWireError, readCainiao, readCainiaoProfileNickname, readCainiaoSenderAppointments, readPdd } from "./platform-wire";
-import { cainiaoHandoffs, cainiaoRecipientParcels, pddPickupParcels, type PlatformParcel } from "./platform-parcel-data";
+import { cainiaoHandoffId, cainiaoHandoffs, cainiaoRecipientParcels, pddPickupParcels, type PlatformParcel } from "./platform-parcel-data";
 import { fetchFengchaoCabinets, requestCabinetOpening, supportsCabinetOpening } from "./fengchao-account";
 import { fetchJdParcels, fetchPddOrders } from "./platform-web-parcels";
 import { eligiblePickup } from "./platform-parcel-merge";
@@ -25,7 +25,7 @@ import { EXPRESS_TOAST_COPY } from "./express-toast-copy";
 const DISCOVERY_INTERVAL = 4 * 3_600_000;
 const observedRows = new Map<ExpressPlatform, { generation: string; keys: Set<string> }>();
 const regularAttempts = new Map<ExpressPlatform, { generation: string; atMs: number }>();
-type PlatformSyncResult = { added: number; partial: boolean };
+type PlatformSyncResult = { added: number; partial: boolean; changed: boolean };
 const inFlight = new Map<ExpressPlatform, { generation: string; task: Promise<PlatformSyncResult>; recheck: boolean }>();
 const cainiaoProfileInFlight = new Set<string>();
 
@@ -35,7 +35,8 @@ export type PlatformSyncProgress = (platform: ExpressPlatform, running: boolean)
 type PlatformRefreshIssue = { platform: ExpressPlatform; reason: "expired" | "partial" | "failed" };
 type PlatformRefreshResult = { succeeded: number; failed: number; added: number; issues: PlatformRefreshIssue[] };
 
-function scopeFor(platform: ExpressPlatform, session: PlatformSession, visible: readonly Shipment[], mode: RefreshMode): ReadScope {
+function scopeFor(platform: ExpressPlatform, session: PlatformSession, visible: readonly Shipment[], mode: RefreshMode,
+  records: AppState["pickupCodeRecords"]): ReadScope {
   const now = Date.now();
   const last = observedRows.get(platform);
   const keys = new Set<string>();
@@ -50,12 +51,15 @@ function scopeFor(platform: ExpressPlatform, session: PlatformSession, visible: 
     }
   }
   const newKeys = [...keys].filter((key) => last?.generation !== session.generation || !last.keys.has(key));
-  const recipients = mode === "manual" || waiting && (mode === "pull" || newKeys.some((key) => key.startsWith("pickup:")));
   const hour = new Date(now + 8 * 3_600_000).getUTCHours();
   const attempt = regularAttempts.get(platform);
   const lastAt = platform === "pinduoduo" ? session.lastDiscoveryAtMs : session.syncedAtMs;
   const lastTry = attempt?.generation === session.generation ? attempt.atMs : 0;
   const due = now - (lastAt || 0) >= DISCOVERY_INTERVAL && now - lastTry >= DISCOVERY_INTERVAL;
+  const standalone = platform === "cainiao" && records?.some((row) => row.kind === "pickup" && row.platform === "cainiao" &&
+    row.id.startsWith("cn-station:") && !row.completedAtMs);
+  const recipients = mode === "manual" || waiting && (mode === "pull" || newKeys.some((key) => key.startsWith("pickup:"))) ||
+    Boolean(standalone && (mode === "pull" || due));
   const regular = mode === "manual" || due && (platform !== "pinduoduo" || hour >= 7 && hour < 23) ||
     platform === "jingdong" && newKeys.some((key) => key.startsWith("source:"));
   observedRows.set(platform, { generation: session.generation, keys });
@@ -113,9 +117,11 @@ async function syncPlatform(
 ): Promise<PlatformSyncResult> {
   const current = () => projectionSceneActive() && currentPlatformSession(platform, session.generation) != null;
   const now = Date.now();
+  let changed = false;
   const persist = (value: Omit<Parameters<typeof savePlatformParcelData>[0], "observed" | "owner" | "current">,
     observed = before) => {
     const saved = savePlatformParcelData({ ...value, observed, owner: session.ownerKey, current }, Date.now());
+    changed ||= saved.changed;
     publish(saved.state);
     return saved;
   };
@@ -142,9 +148,18 @@ async function syncPlatform(
           commitStarted = Date.now();
           persist({ parcels: cainiaoRecipientParcels(data, now) });
         } else {
-          const data = await readCainiaoSenderAppointments(session);
+          const known = (loadState().pickupCodeRecords || []).filter((row): row is ParcelHandoffRecord => row.kind === "handoff" &&
+            row.platform === "cainiao" && row.id.startsWith("cn-handoff:") && !row.completedAtMs && !row.expiredAtMs);
+          const data = await readCainiaoSenderAppointments(session, (ids) => {
+            if (!known.length) return false;
+            const observed = new Set(ids.map(id => cainiaoHandoffId(session.ownerKey, id)));
+            return known.some(row => !observed.has(row.id));
+          });
           commitStarted = Date.now();
-          persist({ parcels: [], handoffs: cainiaoHandoffs(data, session.ownerKey, now) });
+          persist({
+            parcels: [], handoffs: cainiaoHandoffs(data, session.ownerKey, now, known),
+            sentHandoffIds: data.sentOrders.map((id) => cainiaoHandoffId(session.ownerKey, id)),
+          });
           if (data.incomplete) throw new PlatformWireError("unavailable");
         }
         if (!notePlatformSync(platform, session.generation, Date.now())) throw new PlatformWireError("changed");
@@ -166,7 +181,7 @@ async function syncPlatform(
     if (!notePlatformSync(platform, session.generation, Date.now(), { cabinetLinks: saved.cabinetLinks })) {
       throw new PlatformWireError("changed");
     }
-    return { added: 0, partial: false };
+    return { added: 0, partial: false, changed };
   } else if (platform === "jingdong") {
     const data = await fetchJdParcels(session, visible, (parcels) => persist({ parcels }));
     try {
@@ -179,7 +194,7 @@ async function syncPlatform(
         result: error instanceof PlatformWireError ? error.reason : "failed" }, "warning");
       throw error;
     }
-    return { added: 0, partial: false };
+    return { added: 0, partial: false, changed };
   } else {
     let added = 0;
     if (scope.regular) await read(async () => {
@@ -204,10 +219,10 @@ async function syncPlatform(
       notePlatformSync(platform, session.generation, Date.now());
     });
     if (!succeeded) throw new PlatformWireError("unavailable");
-    return { added, partial: failed };
+    return { added, partial: failed, changed };
   }
   if (!succeeded) throw new PlatformWireError("unavailable");
-  return { added: 0, partial: failed };
+  return { added: 0, partial: failed, changed };
 }
 
 export async function refreshPlatformParcels(
@@ -244,18 +259,24 @@ export async function refreshPlatformParcels(
       return [{ platform, task }];
     }
     const { state, visible } = snapshot ??= readSnapshot();
-    const scope = scopeFor(platform, session, visible, mode);
+    const scope = scopeFor(platform, session, visible, mode, state.pickupCodeRecords);
     if (!scope.recipients && !scope.regular) return [];
+    const userInitiated = mode !== "observe";
     const finish = beginDiagnosticOperation("platform.parcel_sync", {
       sourceProvider: platform, trigger: mode, stage: "platform_parcel_sync",
-    });
+    }, userInitiated);
     const task = syncPlatform(platform, session, scope, publish, state, visible).then(result => {
-      finish(result.partial ? "partial" : "succeeded", { succeeded: result.added },
-        result.partial ? "warning" : "info");
+      if (userInitiated || platform !== "cainiao" && (result.partial || result.changed || result.added > 0)) {
+        finish(result.partial ? "partial" : "succeeded", { succeeded: result.added },
+          result.partial ? "warning" : "info");
+      }
       return result;
     }, error => {
-      if (error instanceof PlatformWireError && error.reason === "changed") finish("cancelled");
-      else finish(error instanceof PlatformWireError ? error.reason : "failed", {}, "warning");
+      if (error instanceof PlatformWireError && error.reason === "changed") {
+        if (userInitiated) finish("cancelled");
+      } else if (userInitiated || platform !== "cainiao") {
+        finish(error instanceof PlatformWireError ? error.reason : "failed", {}, "warning");
+      }
       throw error;
     }).finally(() => {
       const slot = inFlight.get(platform);
@@ -289,16 +310,17 @@ export async function refreshPlatformParcels(
 
 export function platformRefreshMessage(result: PlatformRefreshResult): string {
   if (result.issues.length) {
-    const details = result.issues.map(({ platform, reason }) => {
-      const name = PLATFORM_NAMES[platform];
-      if (reason === "expired") return `${name}登录已失效，请重新登录`;
-      return `${name}${reason === "partial" ? "同步未完成" : "同步失败"}，请稍后重试`;
-    });
+    const affected = (reason: PlatformRefreshResult["issues"][number]["reason"]) => result.issues
+      .filter(issue => issue.reason === reason).map(issue => PLATFORM_NAMES[issue.platform]).join("、");
+    const expired = affected("expired");
+    const partial = affected("partial");
+    const failed = affected("failed");
     const prefix = result.added ? `已新增 ${result.added} 件快递` : result.succeeded ? "部分同步完成" : "";
-    return prefix ? [prefix, ...details].join("，") : details.join("，");
+    return [prefix, expired && `${expired}需重新登录`, partial && `${partial}同步未完成，请稍后重试`,
+      failed && `${failed}同步失败，请稍后重试`].filter(Boolean).join(" · ");
   }
   if (!result.succeeded) return "没有可同步的平台账号";
-  return result.added ? `同步完成，新增 ${result.added} 件快递` : "同步完成";
+  return result.added ? `已新增 ${result.added} 件快递` : "同步完成";
 }
 
 function cabinetForCard(session: PlatformSession | null, card: ParcelActivityContent) {
@@ -372,14 +394,14 @@ export async function performPickupAction(card: ParcelActivityContent, openCabin
     requested = true;
     await requestCabinetOpening(active, cabinet);
     finish("accepted");
-    return "开柜请求已受理，请及时取件";
+    return "开柜请求已受理";
   } catch (error) {
     if (error instanceof PlatformWireError && error.reason === "expired") {
       finish("expired", {}, "warning");
       return "丰巢登录已失效，请重新登录";
     }
     finish(requested ? "unconfirmed" : "failed", {}, "warning");
-    return "开柜结果未确认，请使用取件码取件";
+    return "开柜结果未确认，请在柜机输入取件码";
   } finally {
     opening.delete(key);
   }

@@ -55,18 +55,20 @@ export type GatewayCredentialObservation = {
   sequence: number;
 };
 
+export type GatewayAccessKeyVerification = "unchecked" | "accepted" | "rejected";
+
 let observedCredential = "";
 let observationGeneration = 0;
 let requestSequence = 0;
 let settledSequence = 0;
-let accessKeyRejected = false;
-const rejectionListeners = new Set<(rejected: boolean) => void>();
+let accessKeyVerification: GatewayAccessKeyVerification = "unchecked";
+const verificationListeners = new Set<(verification: GatewayAccessKeyVerification) => void>();
 
-function setAccessKeyRejected(rejected: boolean): void {
-  if (accessKeyRejected === rejected) return;
-  accessKeyRejected = rejected;
-  for (const listener of rejectionListeners) {
-    try { listener(rejected); } catch { /* UI observers cannot fail gateway work. */ }
+function setAccessKeyVerification(verification: GatewayAccessKeyVerification): void {
+  if (accessKeyVerification === verification) return;
+  accessKeyVerification = verification;
+  for (const listener of verificationListeners) {
+    try { listener(verification); } catch { /* UI observers cannot fail gateway work. */ }
   }
 }
 
@@ -77,19 +79,34 @@ function observeCredential(resolution: CredentialResolution): void {
   observedCredential = identity;
   observationGeneration += 1;
   settledSequence = 0;
-  setAccessKeyRejected(false);
+  setAccessKeyVerification("unchecked");
+}
+
+export function gatewayAccessKeyState() {
+  return { status: gatewayCredentialStatus(), verification: accessKeyVerification };
+}
+
+export function subscribeGatewayAccessKeyVerification(
+  listener: (verification: GatewayAccessKeyVerification) => void,
+): () => void {
+  verificationListeners.add(listener);
+  return () => { verificationListeners.delete(listener); };
 }
 
 export function gatewayAccessKeyRejected(): boolean {
-  observeCredential(resolveCredentials());
-  return accessKeyRejected;
+  return gatewayAccessKeyState().verification === "rejected";
 }
 
 export function subscribeGatewayAccessKeyRejected(listener: (rejected: boolean) => void): () => void {
-  const rejected = gatewayAccessKeyRejected();
-  rejectionListeners.add(listener);
-  listener(rejected);
-  return () => { rejectionListeners.delete(listener); };
+  let previous = gatewayAccessKeyRejected();
+  const unsubscribe = subscribeGatewayAccessKeyVerification(verification => {
+    const rejected = verification === "rejected";
+    if (previous === rejected) return;
+    previous = rejected;
+    listener(rejected);
+  });
+  listener(previous);
+  return unsubscribe;
 }
 
 export function beginGatewayCredentialObservation(): GatewayCredentialObservation {
@@ -108,8 +125,8 @@ export function recordGatewayCredentialOutcome(
   if (!Number.isInteger(status) || status < 100 || status > 599) return;
   // A newer completed response fences older replies without inventing a new diagnosis.
   settledSequence = observation.sequence;
-  if (status === 401 && code === "unauthorized") setAccessKeyRejected(true);
-  else if (status >= 200 && status < 300 && bodyAccepted) setAccessKeyRejected(false);
+  if (status === 401 && code === "unauthorized") setAccessKeyVerification("rejected");
+  else if (status >= 200 && status < 300 && bodyAccepted) setAccessKeyVerification("accepted");
 }
 
 function tokenChecksumV2(token: string, generation: number): string {
@@ -411,6 +428,6 @@ export function gatewayCredentialForLocalCache() {
   return {
     generation: observationGeneration,
     scope: sha256Hex(`local-cloud-cache\n${observedCredential}`),
-    rejected: accessKeyRejected,
+    rejected: accessKeyVerification === "rejected",
   };
 }

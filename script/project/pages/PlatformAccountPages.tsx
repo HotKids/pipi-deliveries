@@ -1,7 +1,7 @@
 import {
   Button, HStack, Image, Navigation, NavigationStack, Text, VStack, WebView, useEffect, useRef, useState,
 } from "scripting";
-import { useBundledImage } from "../components/bundled-image";
+import { bundledImage } from "../components/bundled-image";
 import { iconTileShape } from "../components/icon-tile";
 import {
   accountStatus, cookieValue, cookiesForURL, PLATFORM_NAMES, providerCookies, savePlatformLogin, WEB_PLATFORMS,
@@ -20,7 +20,7 @@ export function PlatformIcon({ platform, size = 36 }: {
   platform: ExpressPlatform | "samsung";
   size?: number;
 }) {
-  const artwork = useBundledImage(`platform-accounts/${platform}.png`);
+  const artwork = bundledImage(`platform-accounts/${platform}.png`);
   return artwork ? (
     <Image image={artwork}
       resizable antialiased interpolation="high" frame={{ width: size, height: size }}
@@ -93,7 +93,7 @@ export function PlatformWebLogin({ platform, generation, embedded }: {
         verifiedLogin(platform, web, retry ? "" : seenProof.current), Date.now() + 5_000,
       ).catch(() => null);
       if (!candidate || !mounted.current) {
-        if (retry && mounted.current) setNotice("请先在网页完成登录");
+        if (retry && mounted.current) setNotice("请先完成网页登录");
         return;
       }
       seenProof.current = candidate.proof;
@@ -107,7 +107,7 @@ export function PlatformWebLogin({ platform, generation, embedded }: {
       }
       finish(saved);
     } catch {
-      if (mounted.current) setNotice("暂时无法读取登录状态，请稍后重试");
+      if (mounted.current) setNotice("登录状态读取失败，请稍后重试");
     } finally {
       checking.current = false;
     }

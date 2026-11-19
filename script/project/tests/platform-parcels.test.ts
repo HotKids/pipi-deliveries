@@ -12,20 +12,21 @@ import {
 } from "../services/platform-accounts";
 import { identityCodeFromResponse, fetchStationIdentity, openProviderController, readCainiaoProfileNickname, readCainiaoSenderAppointments,
   retainJdLoginView, stationIdentityDestination } from "../services/platform-wire";
-import { cainiaoHandoffs, cainiaoRecipientParcels, displayDeliveryEstimate, pddParcelAppURL, pddParcelDetailPath,
-  pddPickupParcels } from "../services/platform-parcel-data";
+import { cainiaoHandoffId, cainiaoHandoffs, cainiaoParcelDetails, cainiaoRecipientParcels, displayDeliveryEstimate, parseHandoffWindow,
+  pddParcelAppURL, pddParcelDetailPath, pddPickupParcels } from "../services/platform-parcel-data";
 import { cabinetParcels, type CabinetParcel } from "../services/fengchao-account";
-import { cloudPddParcelAppURL, displayedPlatformFields, enrichPlatformParcel, hasPddParcelSource, keepPlatformFields, matchPlatformParcel } from "../services/platform-parcel-merge";
+import { cloudPddParcelAppURL, displayedPlatformFields, enrichPlatformParcel, hasPddParcelSource, keepPlatformFields, matchPlatformParcel, pddParcelProductImage } from "../services/platform-parcel-merge";
 import { parseCloudParcelDetails } from "../services/cloud-parcel-metadata";
-import { activePickupCards, parcelActivityContent, shipmentForPickupTarget } from "../services/parcel-pickup";
+import { cainiaoImageCacheKey, productImageCachePath } from "../services/product-image-cache";
+import { activePickupCards, nextPickupArtwork, parcelActivityContent, shipmentForPickupTarget, withPickupArtwork } from "../services/parcel-pickup";
 import { registerProjectionViewportHost } from "../services/projection-viewport";
 import { clearDiagnostics, readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { fetchJdParcels } from "../services/platform-web-parcels";
 import { refreshParcelDetailFields } from "../services/parcel-detail-fields";
 
 const {
-  completeCurrentParcelCard, emptyState, loadState, saveCloudPddParcels, savePlatformParcelData, saveRecognizedParcelCode, saveState,
-  setPickupCardNote, visibleShipments,
+  completeCurrentParcelCard, emptyState, expireDueParcelHandoffs, loadState, saveCloudPddParcels, savePlatformParcelData,
+  saveCloudPddParcelSource, saveRecognizedParcelCode, saveState, setParcelHandoffWindow, setPickupCardNote, visibleShipments,
 } = await import("../services/storage");
 const { pickupCabinetActions, performPickupAction, platformRefreshMessage, refreshPlatformParcels } =
   await import("../services/platform-parcel-sync");
@@ -34,11 +35,11 @@ const { manualRefreshTasks } = await import("../services/sync/manual-chain-runne
 const waybill = "YT000000008123";
 const order = "88000008123";
 const key = "synthetic-cainiao-account";
-test("PDD app detail uses the same exact parcel route as the provider web view", () => {
+test("PDD app detail opens the exact parcel using the native scheme", () => {
   const parcel = { ownerKey: "synthetic-pdd-owner", orderId: order, shippingId: "73000919" };
   const path = "/psnl_goods_help.html?_t_module_name=assistant_waybill&shipping_id=73000919&tracking_number=" + waybill;
   assert.equal(pddParcelDetailPath(parcel.shippingId, waybill), path);
-  assert.equal(pddParcelAppURL(parcel, waybill), "https://m.pinduoduo.net" + path);
+  assert.equal(pddParcelAppURL(parcel, waybill), "pinduoduo://com.xunmeng.pinduoduo" + path);
   assert.equal(pddParcelAppURL(undefined, waybill), "");
   assert.equal(pddParcelAppURL({ ...parcel, ownerKey: "" }, waybill), "");
   assert.equal(pddParcelAppURL({ ...parcel, orderId: "" }, waybill), "");
@@ -76,8 +77,9 @@ test("cloud PDD adopts a matching manual waybill and queues a new one without lo
   const cloud = { waybill, anchorAt: NOW - 20_000, terminalAt: 0, carrierCode: "YTO", phone4: "1234" };
   const newBill = "YT000000008124";
   const records = [cloud, { ...cloud, waybill: newBill }];
-  assert.equal(saveCloudPddParcels(records, before, () => false, NOW).revision, before.revision);
-  const imported = saveCloudPddParcels(records, before, () => true, NOW);
+  assert.deepEqual(saveCloudPddParcels(records, before, () => false, NOW), { state: before, changed: false });
+  const { state: imported, changed } = saveCloudPddParcels(records, before, () => true, NOW);
+  assert.equal(changed, true);
   const adopted = imported.shipments.find(row => row.identity.id === current.identity.id)!;
   assert.deepEqual(adopted.identity, current.identity);
   assert.deepEqual(adopted.timeline, current.timeline);
@@ -93,7 +95,9 @@ test("cloud PDD adopts a matching manual waybill and queues a new one without lo
   assert.ok(manualRefreshTasks(imported, imported.activeSource, NOW, new Set(), false)
     .some(task => task.id === added.identity.id));
   assert.deepEqual(visibleShipments(imported, NOW).map(row => row.identity.id), [current.identity.id]);
-  assert.equal(saveCloudPddParcels(records, imported, () => true, NOW).revision, imported.revision);
+  const replayed = saveCloudPddParcels(records, imported, () => true, NOW);
+  assert.equal(replayed.state.revision, imported.revision);
+  assert.equal(replayed.changed, false);
   assert.equal(hasPddParcelSource(keepPlatformFields(adopted, current)), true);
   assert.equal(hasPddParcelSource({ ...adopted, waybillReuseAtMs: NOW }), false);
 });
@@ -103,11 +107,13 @@ test("cloud PDD leaves other owners and ambiguous or reused waybills alone", () 
   const current = shipment();
   const before = saveState({ ...emptyState(), shipments: [current] }, NOW);
   const cloud = { waybill, anchorAt: NOW - 20_000, terminalAt: 0, carrierCode: "YTO", phone4: "" };
-  assert.equal(saveCloudPddParcels([cloud, cloud], before, () => true, NOW).revision, before.revision);
+  assert.equal(saveCloudPddParcels([cloud, cloud], before, () => true, NOW).state.revision, before.revision);
   const earlier = NOW - 3 * 86_400_000;
-  assert.equal(saveCloudPddParcels([{ ...cloud, anchorAt: earlier, terminalAt: earlier + 1 }], before, () => true, NOW).revision, before.revision);
+  assert.equal(saveCloudPddParcels([{ ...cloud, anchorAt: earlier, terminalAt: earlier + 1 }], before, () => true, NOW).state.revision, before.revision);
   const deleted = saveState({ ...before, shipments: [] }, NOW);
-  assert.equal(saveCloudPddParcels([cloud], before, () => true, NOW).revision, deleted.revision);
+  const afterDeletion = saveCloudPddParcels([cloud], before, () => true, NOW);
+  assert.equal(afterDeletion.state.revision, deleted.revision);
+  assert.equal(afterDeletion.changed, false);
 });
 
 test("a cloud PDD link can open a matched parcel with complete local display fields and no PDD session", () => {
@@ -115,7 +121,7 @@ test("a cloud PDD link can open a matched parcel with complete local display fie
   const parsed = parseCloudParcelDetails({ ok: true, metadata: null, pddLink }, waybill, NOW);
   assert.equal(parsed?.metadata, undefined);
   assert.equal(cloudPddParcelAppURL(shipment(), parsed?.pddLink, NOW),
-    "https://m.pinduoduo.net" + pddParcelDetailPath("73000919", waybill));
+    "pinduoduo://com.xunmeng.pinduoduo" + pddParcelDetailPath("73000919", waybill));
   const reused = { ...pddLink, anchorAt: NOW - 3 * 86_400_000, terminalAt: NOW - 2 * 86_400_000 };
   assert.equal(cloudPddParcelAppURL(shipment(), reused, NOW), "");
   assert.equal(cloudPddParcelAppURL(shipment(), { ...pddLink, waybill: "SYNTHETIC456" }, NOW), "");
@@ -125,6 +131,52 @@ test("a cloud PDD link can open a matched parcel with complete local display fie
     assert.equal(validTitle?.pddLink, undefined);
     assert.equal(validTitle?.metadata?.productName, "Synthetic item");
   }
+});
+
+test("PDD product images stay with their exact local association or matching cloud parcel", () => {
+  const pddImport = { ownerKey: "synthetic-pdd-owner", orderId: order, shippingId: "73000919" };
+  const parcel = shipment({ pddImport });
+  const image = "https://img.pddpic.com/mms-material-img/synthetic.png";
+  const result = { source: "pinduoduo" as const, waybill, shippingId: pddImport.shippingId, productImageURL: image };
+  assert.equal(pddParcelProductImage(enrichPlatformParcel(parcel, { ...result, shippingId: "73000920" }, NOW)), "");
+  const matched = enrichPlatformParcel(parcel, result, NOW);
+  assert.equal(pddParcelProductImage(matched), image);
+  assert.equal(pddParcelProductImage(enrichPlatformParcel(matched, {
+    ...result, productImageURL: "https://img.pddpic.com/another.png",
+  }, NOW)), image);
+  assert.equal(pddParcelProductImage({ ...matched, pddImport: { ...pddImport, ownerKey: "other-account" } }), "");
+  assert.equal(pddParcelProductImage({ ...matched, waybillReuseAtMs: NOW }), "");
+
+  const metadata = { waybill, anchorAt: NOW - 20_000, terminalAt: 0, productImageUrl: image };
+  const cloud = parseCloudParcelDetails({ ok: true, metadata }, waybill, NOW)?.metadata;
+  assert.equal(displayedPlatformFields(shipment(), NOW, cloud).productImageURL, image);
+  assert.equal(displayedPlatformFields(shipment(), NOW, { ...cloud!, waybill: "YTOTHER00000" }).productImageURL, undefined);
+  for (const invalid of ["https://funimg.pddpic.com/carrier.png", image + "?token=synthetic"]) {
+    assert.equal(parseCloudParcelDetails({ ok: true, metadata: { ...metadata, productImageUrl: invalid } }, waybill, NOW), undefined);
+  }
+});
+
+test("a signed PDD link adopts the existing signed manual shipment without replacing its data", () => {
+  memory.clear();
+  const base = shipment();
+  const signed = shipment({ note: "Keep this note", timeline: { ...base.timeline, semantic: "COMPLETED",
+    structuredStatus: true } });
+  const before = saveState({ ...emptyState(), shipments: [signed] }, NOW);
+  const current = before.shipments[0];
+  const link = { waybill, anchorAt: NOW - 20_000, terminalAt: NOW - 10_000, shippingId: "73000919" };
+  assert.equal(saveCloudPddParcelSource(current, link, () => false, NOW), undefined);
+  assert.equal(saveCloudPddParcelSource(current, { ...link, shippingId: "" }, () => true, NOW), undefined);
+  const saved = saveCloudPddParcelSource(current, link, () => true, NOW)!;
+  assert.equal(saved.shipments.length, 1);
+  assert.ok(hasPddParcelSource(saved.shipments[0]));
+  assert.deepEqual(saved.shipments[0].identity, current.identity);
+  assert.deepEqual(saved.shipments[0].timeline, current.timeline);
+  assert.equal(saved.shipments[0].note, current.note);
+  assert.equal(saveCloudPddParcelSource(current, link, () => true, NOW), undefined);
+  assert.equal(loadState(NOW).revision, saved.revision);
+  saveState({ ...saved, shipments: [] }, NOW);
+  assert.equal(saveCloudPddParcelSource(current, link, () => true, NOW), undefined);
+  assert.deepEqual(loadState(NOW).shipments, []);
 });
 
 let generation = 0;
@@ -204,7 +256,7 @@ test("recipient field aliases, placeholder rejection and station address", () =>
   });
   assert.equal(cainiaoRecipientParcels({ packages: [{
     status: "SIGNED", mailNo: waybill, packageStation: { authCode: "12345" },
-  }] }, NOW).length, 0);
+  }] }, NOW)[0]?.taken, true);
   const pdd = pddPickupParcels({ result: { station_name: "页面标题", only_wx_scan: true, combine_list: [{
     company_name: "包裹所属多多驿站", address: "测试路 12 号", combine_track_list: [{ tracking_number: waybill }],
   }] } });
@@ -280,19 +332,101 @@ test("genuinely unnumbered Cainiao pickup is separate and never revived after co
   const original = saveState({ ...emptyState(), shipments: [shipment()] }, NOW);
   const rows = cainiaoRecipientParcels({ packages: [
     { packageStation: { authCode: "A1234", pointName: "示例驿站" } },
+    { packageStation: { authCode: "C1234" } },
     { mailNo: "YT000000008985", packageStation: { authCode: "B1234", pointName: "示例驿站" } },
   ] }, NOW);
   const input = { observed: original, owner: key, current: () => true, parcels: rows };
-  const result = savePlatformParcelData(input, NOW + 1000).state;
+  const { state: result, changed } = savePlatformParcelData(input, NOW + 1000);
+  assert.equal(changed, true);
   assert.equal(result.shipments.length, 1);
-  assert.equal(result.pickupCodeRecords?.length, 1);
-  const [card] = activePickupCards(visibleShipments(result), result.pickupCodeRecords);
+  assert.equal(result.pickupCodeRecords?.length, 2);
+  const cards = activePickupCards(visibleShipments(result), result.pickupCodeRecords);
+  const card = cards.find(item => item.code === "A1234")!;
   assert.equal(card.title, "菜鸟驿站");
-  assert.equal(card.code, "A1234");
+  assert.equal(cards.find(item => item.code === "C1234")?.title, "菜鸟驿站");
   completeCurrentParcelCard(card, NOW + 2000);
-  const repeated = savePlatformParcelData(input, NOW + 3000).state;
-  assert.equal(repeated.pickupCodeRecords?.[0].completedAtMs, NOW + 2000);
-  assert.equal(activePickupCards(visibleShipments(repeated), repeated.pickupCodeRecords).length, 0);
+  const { state: repeated, changed: replayChanged } = savePlatformParcelData(input, NOW + 3000);
+  assert.equal(replayChanged, false);
+  assert.equal(repeated.pickupCodeRecords?.find(item => item.code === "A1234")?.completedAtMs, NOW + 2000);
+  assert.deepEqual(activePickupCards(visibleShipments(repeated), repeated.pickupCodeRecords).map(item => item.code), ["C1234"]);
+});
+
+test("Cainiao details take the first valid product image from the exact parcel", () => {
+  const image = "https://img.alicdn.com/synthetic-product.jpg";
+  const detail = { mailNo: waybill, partnerLogoUrl: "https://img.alicdn.com/synthetic-partner.jpg",
+    goodsList: [{ itemPic: "//img.alicdn.com/synthetic-product.jpg" }] };
+  const result = cainiaoParcelDetails({ result: [{ ...detail, mailNo: "YT000000007000" }, detail] }, waybill, NOW);
+  assert.equal(result?.productImageURL, image);
+  assert.equal(cainiaoParcelDetails({ result: [detail, detail] }, waybill, NOW), undefined);
+  assert.equal(cainiaoParcelDetails({ result: { ...detail, goodsList: [
+    { itemPic: "https://img.alicdn.com/first.jpg" }, { itemPic: "https://img.alicdn.com/second.jpg" },
+  ] } }, waybill, NOW)?.productImageURL, "https://img.alicdn.com/first.jpg");
+  assert.equal(cainiaoParcelDetails({ result: { ...detail, goodsList: [
+    { itemPic: "https://example.invalid/image.jpg" }, { allPicUrl: "https://img.alicdn.com/second.jpg" },
+  ] } }, waybill, NOW)?.productImageURL, "https://img.alicdn.com/second.jpg");
+  assert.equal(cainiaoParcelDetails({ result: { ...detail, goodsList: [
+    { itemPic: "https://img.alicdn.com/synthetic-product.jpg?access=placeholder" },
+  ] } }, waybill, NOW)?.productImageURL, undefined);
+  const saved = enrichPlatformParcel(shipment(), result!, NOW, "synthetic-session");
+  assert.deepEqual(saved.platformFields?.cainiaoImage, { url: image, generation: "synthetic-session" });
+});
+
+test("verified sender artwork ignores a saved fallback brand", () => {
+  const id = cainiaoHandoffId(key, "SYNTHETIC");
+  const common = { kind: "handoff", platform: "cainiao", code: "4221", capturedAtMs: NOW } as const;
+  const verified = activePickupCards([], [{ id, ...common }])[0];
+  assert.equal(nextPickupArtwork(verified), undefined);
+  assert.equal(withPickupArtwork(verified, { ["record:" + id]: "douyin" }).artworkChoice, undefined);
+  assert.equal(nextPickupArtwork(activePickupCards([], [{ id: "local-capture", ...common }])[0]), undefined);
+  assert.notEqual(nextPickupArtwork(activePickupCards([], [{ id: "local-capture", ...common, platform: "pinduoduo" }])[0]), undefined);
+});
+
+test("recipient sync closes only explicitly taken cards without changing tracking", () => {
+  memory.clear();
+  const original = saveState({ ...emptyState(), shipments: [shipment()] }, NOW);
+  const station = { authCode: "A1234", pointName: "示例驿站" };
+  const active = cainiaoRecipientParcels({ packages: [
+    { mailNo: waybill, packageStation: { authCode: "B1234" } },
+    { packageStation: station },
+    { packageStation: { authCode: "C1234" } },
+  ] }, NOW);
+  const sync = (observed, parcels, at) => savePlatformParcelData({ observed, owner: key, current: () => true, parcels }, at);
+  const first = sync(original, active, NOW).state;
+  assert.equal(activePickupCards(visibleShipments(first, NOW), first.pickupCodeRecords).length, 3);
+  assert.equal(sync(first, [], NOW + 1).changed, false);
+  const receipts = cainiaoRecipientParcels({ packages: [
+    { status: "SIGNED", mailNo: waybill },
+    { status: "已取件", packageStation: station },
+    { status: "已取消", packageStation: { authCode: "C1234" } },
+  ] }, NOW + 2);
+  const completed = sync(first, receipts, NOW + 2).state;
+  assert.equal(completed.shipments[0].timeline.semantic, "WAITING_PICKUP");
+  assert.deepEqual(activePickupCards(visibleShipments(completed, NOW), completed.pickupCodeRecords).map(card => card.code), ["C1234"]);
+  assert.equal(sync(completed, active, NOW + 3).changed, false);
+});
+
+test("a manual appointment edit and a time-only reschedule keep one card and its expiry", () => {
+  memory.clear();
+  const record = {
+    id: cainiaoHandoffId(key, "APPOINTMENT"), platform: "cainiao", kind: "handoff",
+    code: "5629", capturedAtMs: NOW,
+  } as const;
+  const first = saveRecognizedParcelCode(record, NOW);
+  const manualWindow = parseHandoffWindow("09-08 16:00–17:00", NOW, true)!;
+  assert.equal(parseHandoffWindow("bad 09-08 16:00–17:00", NOW, true), undefined);
+  const manually = setParcelHandoffWindow(first.pickupCodeRecords![0] as typeof record, manualWindow, NOW + 1);
+  assert.equal(manually.pickupCodeRecords![0].windowEndAtMs, manualWindow[1]);
+  const provider = (packages, existing) => cainiaoHandoffs({ packages }, key, NOW + 2, existing.pickupCodeRecords);
+  const sync = (observed, handoffs) => savePlatformParcelData({ observed, owner: key, current: () => true, parcels: [], handoffs }, NOW + 3);
+  const waiting = { appointmentId: "APPOINTMENT", status: "WAIT_GOT" };
+  assert.equal(sync(manually, provider([waiting], manually)).changed, false);
+  const rescheduled = sync(manually, provider([{ ...waiting, appointTimeStr: "09-08 18:00–19:00" }], manually)).state;
+  const nextEnd = Date.UTC(2026, 8, 8, 11);
+  assert.equal(rescheduled.pickupCodeRecords?.length, 1);
+  assert.deepEqual([rescheduled.pickupCodeRecords![0].id, rescheduled.pickupCodeRecords![0].windowEndAtMs], [record.id, nextEnd]);
+  assert.throws(() => setParcelHandoffWindow(manually.pickupCodeRecords![0] as typeof record, manualWindow, NOW + 4));
+  assert.equal(activePickupCards([], expireDueParcelHandoffs(nextEnd + 3_600_000 - 1).pickupCodeRecords).length, 1);
+  assert.equal(activePickupCards([], expireDueParcelHandoffs(nextEnd + 3_600_000).pickupCodeRecords).length, 0);
 });
 
 test("active doorstep appointments carry absolute windows and terminal statuses are excluded", () => {
@@ -300,12 +434,14 @@ test("active doorstep appointments carry absolute windows and terminal statuses 
   const result = cainiaoHandoffs({ sendPackages: [
     { status: "WAIT_GOT", appointment: { ...input, appointStatus: "APPOINTED" } },
     { status: "已揽收", appointment: { ...input, appointStatus: "APPOINTED" } },
-    { status: "WAIT_GOT", appointment: { ...input, appointTimeStr: "" } },
+    { status: "WAIT_GOT", appointment: { appointmentId: "courier-no-window", sendCode: "8002" } },
   ] }, key, NOW);
-  assert.equal(result.length, 1);
+  assert.equal(result.length, 2);
   assert.equal(result[0].code, "8001");
   assert.equal(result[0].windowStartAtMs, Date.UTC(2026, 8, 8, 8));
   assert.equal(result[0].windowEndAtMs, Date.UTC(2026, 8, 8, 10));
+  assert.equal(result[1].code, "8002");
+  assert.equal(result[1].windowEndAtMs, undefined);
 });
 
 test("pickup detail and note writes follow the matching waybill generation", () => {
@@ -527,7 +663,8 @@ test("the station identity entry prefers local codes, then the provider app, the
 
 test("opening a retained detail reads only its CaiNiao parcel and leaves the account clock alone", async (t) => {
   memory.clear();
-  t.mock.method(Date, "now", () => NOW);
+  let elapsed = 0;
+  t.mock.method(Date, "now", () => NOW + elapsed);
   const base = shipment();
   const selected = { ...base, identity: { ...base.identity, sourceProvider: "cainiao" },
     timeline: { ...base.timeline, semantic: "TRANSIT" as const } };
@@ -543,7 +680,9 @@ test("opening a retained detail reads only its CaiNiao parcel and leaves the acc
     assert.deepEqual(JSON.parse(url.searchParams.get("data")!), { mailNo: waybill });
     return new Response(JSON.stringify({ ret: ["SUCCESS"], data: { result: [
       { mailNo: "TESTOTHER008", packageItem: [{ itemTitle: "Other parcel" }] },
-      { mailNo: waybill, packageItem: [{ itemTitle: "Selected parcel" }], packageDyn: { arriveTime: "预计明天送达" } },
+      { mailNo: waybill, packageItem: [{ itemTitle: "Selected parcel" }],
+        packageDyn: { arriveTime: elapsed ? "预计后天送达" : "预计明天送达" },
+        goodsList: [{ itemPic: elapsed ? "https://img.alicdn.com/rotated-product.jpg" : "https://img.alicdn.com/synthetic-product.jpg" }] },
     ] } }));
   });
   try {
@@ -555,15 +694,83 @@ test("opening a retained detail reads only its CaiNiao parcel and leaves the acc
     const update = await refreshParcelDetailFields(row, () => true);
     assert.ok(update);
     assert.deepEqual(displayedPlatformFields(update.shipment, NOW), { title: "Selected parcel", estimate: "预计明天送达" });
+    assert.equal(update.shipment.platformFields?.cainiaoImage?.url, "https://img.alicdn.com/synthetic-product.jpg");
     assert.deepEqual(update.shipment.timeline, row.timeline);
     assert.equal(accountStatus("cainiao").syncedAtMs, priorSync);
     assert.equal(fetched.mock.callCount(), 1);
-    const storageReads = t.mock.method(Storage, "get");
     assert.equal(await refreshParcelDetailFields(update.shipment, () => true), undefined);
-    assert.equal(storageReads.mock.callCount(), 0, "complete fields skip the durable state read");
-    assert.equal(fetched.mock.callCount(), 1);
+    assert.equal(fetched.mock.callCount(), 1, "filling the image does not change the hourly reservation");
+    const imageFile = productImageCachePath(cainiaoImageCacheKey(update.shipment));
+    const directoryRead = FileManager.readDirectorySync;
+    FileManager.readDirectorySync = (path, recursive) => path.endsWith("/product-images") ? [imageFile] : directoryRead?.(path, recursive) ?? [];
+    t.after(() => { FileManager.readDirectorySync = directoryRead; });
+    elapsed = 3_600_000;
+    const second = await refreshParcelDetailFields(update.shipment, () => true);
+    assert.ok(second);
+    assert.equal(displayedPlatformFields(second.shipment, NOW + elapsed).estimate, "预计后天送达");
+    assert.equal(second.shipment.platformFields?.cainiaoImage?.url, update.shipment.platformFields?.cainiaoImage?.url);
+    assert.equal(fetched.mock.callCount(), 2);
+    assert.equal(accountStatus("cainiao").syncedAtMs, priorSync);
   } finally {
     Object.assign(globalThis, { Crypto: previousCrypto });
+  }
+});
+
+test("an image-only PDD detail refresh captures the matching product thumbnail", async (t) => {
+  memory.clear();
+  let elapsed = 0;
+  t.mock.method(Date, "now", () => NOW + elapsed);
+  savePlatformLogin("pinduoduo", "", { kind: "web", cookies: [sessionCookie] }, "synthetic-pdd-account");
+  const session = platformSession("pinduoduo")!;
+  const shippingId = "73000919";
+  const base = shipment();
+  const row = { ...base, pddImport: { ownerKey: session.ownerKey, orderId: order, shippingId },
+    platformFields: { waybill, waybillGeneration: 0, title: { source: "pinduoduo" as const, text: "Cached item" } },
+    timeline: { ...base.timeline, semantic: "COMPLETED" as const, structuredStatus: true } };
+  saveState({ ...emptyState(), shipments: [row] }, NOW);
+  const product = "https://img.pddpic.com/mms-material-img/synthetic-item.jpeg";
+  const carrier = "https://img.pddpic.com/synthetic-carrier.jpeg";
+  const original = globalThis.WebViewController;
+  let loads = 0;
+  Object.assign(globalThis, { WebViewController: class {
+    injected = "";
+    sandbox: Record<string, unknown> = {};
+    async setCookie() { return true; }
+    async addUserScript(options: { source: string }) { this.injected = options.source; return "synthetic-script"; }
+    async loadURL(url: string) {
+      loads++;
+      const location = new URL(url);
+      const packet = { shipping_id: shippingId, tracking_number: waybill, express_image_url: carrier };
+      this.sandbox = { URL, URLSearchParams, location, document: { body: {}, querySelectorAll: () => [] },
+        XMLHttpRequest: class { send() {} },
+        fetch: async (address: string) => ({ ok: true, url: address, clone: () => ({
+          text: async () => JSON.stringify({ shipping: { ...packet, thumb_url: product } }),
+        }) }) };
+      this.sandbox.window = this.sandbox;
+      this.sandbox.top = this.sandbox;
+      runInNewContext(this.injected, this.sandbox);
+      const request = location.origin + "/proxy/api/api/express/shipping/track?shipping_id=" + shippingId +
+        "&tracking_number=" + waybill;
+      await (this.sandbox.fetch as (url: string) => Promise<unknown>)(request);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      return true;
+    }
+    async evaluateJavaScript(script: string) {
+      elapsed += 2_000;
+      return runInNewContext("(function(){" + script + "})()", this.sandbox);
+    }
+    dispose() {}
+  } });
+  registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
+  try {
+    const result = await refreshParcelDetailFields(visibleShipments(loadState())[0], () => true);
+    assert.ok(result);
+    assert.equal(pddParcelProductImage(result.shipment), product);
+    assert.equal((await refreshParcelDetailFields(result.shipment, () => true)), undefined);
+    assert.equal(loads, 1);
+  } finally {
+    globalThis.WebViewController = original;
+    registerProjectionViewportHost(null);
   }
 });
 
@@ -635,7 +842,7 @@ test("Cainiao publishes the recipient sync time before a distinct sender failure
   }
 });
 
-test("Cainiao sender history reads only the matching waiting order detail", async (t) => {
+test("Cainiao sender history reads waiting order codes without requiring an echoed ID or window", async (t) => {
   memory.clear();
   const cookie = { ...sessionCookie, name: "cookie2", value: "synthetic-sender-session", domain: ".taobao.com" };
   savePlatformLogin("cainiao", "", { kind: "web", cookies: [cookie] }, "synthetic-sender-owner");
@@ -656,25 +863,82 @@ test("Cainiao sender history reads only the matching waiting order detail", asyn
       return wrap({ orderBriefList: [
         { orderId: "SYNTH-A", orderStatus: 30, carryoutStatus: 20 },
         { orderId: "SYNTH-B", orderStatus: 100, carryoutStatus: 20 },
+        { orderId: "SYNTH-C", orderStatus: 30, carryoutStatus: 20 },
+        { orderId: "SYNTH-D", orderStatus: 30, carryoutStatus: 20,
+          item: { detail: { title: "示例平台 退货 ｜ 不要显示的补充信息" } } },
+        { orderId: "SYNTH-E", orderStatus: 30, carryoutStatus: 20,
+          title: "寄给 测试用户 的快递" },
       ] });
     }
     assert.ok(api?.endsWith("queryOrderDetail"));
     ids.push(request.tdOrderId);
-    return wrap({ pickupCode: "5629", orderInfo: {
-      orderId: request.tdOrderId, orderStatus: 30, carryOutStatus: 20,
+    if (request.tdOrderId === "SYNTH-C") return wrap({
+      pickupCode: "3571", orderInfo: { orderId: "DETAIL-C" }, detail: { title: "寄给【测试用户】的包裹" },
+    });
+    if (request.tdOrderId === "SYNTH-D" || request.tdOrderId === "SYNTH-E") return wrap({
+      pickupCode: request.tdOrderId === "SYNTH-D" ? "6048" : "4316",
+      detail: { ttRefundMsg: "淘宝退货 | 详情补充信息" },
+    });
+    return wrap({ pickupCode: "5629", orderInfo: { orderId: request.tdOrderId, orderStatus: 30, carryOutStatus: 20 },
+      detail: { ttRefundMsg: "我退的示例商品", orderSource: 2, channelId: 10004,
       appointmentStart: NOW + 3_600_000, appointmentEnd: NOW + 7_200_000,
     } });
   });
   try {
     const result = await readCainiaoSenderAppointments(session);
     const handoffs = cainiaoHandoffs(result, session.ownerKey, NOW);
-    assert.deepEqual(ids, ["SYNTH-A"]);
+    assert.deepEqual(ids, ["SYNTH-A", "SYNTH-C", "SYNTH-D", "SYNTH-E"]);
     assert.equal(result.incomplete, false);
-    assert.equal(handoffs.length, 1);
+    assert.equal(handoffs.length, 4);
     assert.equal(handoffs[0].code, "5629");
     assert.equal(handoffs[0].windowEndAtMs, NOW + 7_200_000);
+    assert.equal(handoffs[0].providerTitle, "淘宝退货");
+    assert.equal(handoffs[1].code, "3571");
+    assert.equal(handoffs[1].windowEndAtMs, undefined);
+    assert.equal(handoffs[1].providerTitle, "寄给【测试用户】的包裹");
+    assert.equal(handoffs[2].providerTitle, "示例平台 退货");
+    assert.equal(handoffs[3].providerTitle, "寄给 测试用户 的快递");
   } finally {
     Object.assign(globalThis, { Crypto: originalCrypto });
+  }
+});
+
+test("Cainiao completed history closes the saved appointment and an empty history preserves it", async (t) => {
+  memory.clear();
+  t.mock.method(Date, "now", () => NOW + 1000);
+  const cookie = { ...sessionCookie, name: "cookie2", value: "synthetic-sent-history", domain: ".taobao.com" };
+  savePlatformLogin("cainiao", "", { kind: "web", cookies: [cookie] }, "synthetic-sent-owner", "示例用户");
+  const session = platformSession("cainiao")!;
+  const id = cainiaoHandoffId(session.ownerKey, "SYNTH-ACTIVE");
+  saveRecognizedParcelCode({ id, kind: "handoff", platform: "cainiao", code: "4721",
+    capturedAtMs: NOW, windowEndAtMs: NOW + 86_400_000 }, NOW);
+  const originalCrypto = globalThis.Crypto;
+  Object.assign(globalThis, { Crypto: { ...originalCrypto,
+    md5: (value: string) => ({ toHexString: () => createHash("md5").update(value).digest("hex") }),
+  } });
+  let completed = false;
+  t.mock.method(globalThis, "fetch", async (input: string) => {
+    const api = new URL(input).searchParams.get("api");
+    const wrap = (data: object) => new Response(JSON.stringify({ ret: ["SUCCESS"], data: { data } }));
+    if (api?.endsWith("queryPdsPackageDataList")) return wrap({ packages: [] });
+    if (api?.endsWith("queryUncompletedOrder")) return wrap({ orderBriefList: [] });
+    assert.ok(api?.endsWith("queryCompletedOrder"));
+    return wrap({ orderBriefList: [
+      { orderId: "OTHER-APPOINTMENT", orderStatus: 100 },
+      { orderId: "SYNTH-ACTIVE", orderStatus: completed ? 100 : -1 },
+    ] });
+  });
+  try {
+    await refreshPlatformParcels(() => {}, "manual", "cainiao");
+    assert.equal(activePickupCards([], loadState().pickupCodeRecords).length, 1);
+    completed = true;
+    await refreshPlatformParcels(() => {}, "manual", "cainiao");
+    const records = loadState().pickupCodeRecords!;
+    assert.deepEqual(records.map(record => [record.id, record.completedAtMs]), [[id, NOW + 1000]]);
+    assert.equal(activePickupCards([], records).length, 0);
+  } finally {
+    Object.assign(globalThis, { Crypto: originalCrypto });
+    clearPlatformLogin("cainiao", session.generation);
   }
 });
 
@@ -986,7 +1250,7 @@ test("PDD waiting pickup sync survives an unavailable order-capture host", async
     assert.equal(result.succeeded, 1);
     assert.equal(result.failed, 1);
     assert.deepEqual(progress, ["pinduoduo:true", "pinduoduo:false"]);
-    assert.equal(platformRefreshMessage(result), "部分同步完成，拼多多同步未完成，请稍后重试");
+    assert.equal(platformRefreshMessage(result), "部分同步完成 · 拼多多同步未完成，请稍后重试");
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.WebViewController = originalController;

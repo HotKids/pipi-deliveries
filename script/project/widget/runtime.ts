@@ -6,8 +6,9 @@ export function createWidgetStateHolder(): { state: AppState | null } {
 
 export type WidgetPresentationKind = "small" | "medium" | "unsupported";
 
-export const WIDGET_REFRESH_BUDGET_MS = 120_000;
-export const WIDGET_REFRESH_WAIT_MS = 122_000;
+// Reserve time for loading the local snapshot and presenting it within the widget host's run.
+export const WIDGET_REFRESH_BUDGET_MS = 7_000;
+export const WIDGET_REFRESH_WAIT_MS = 8_000;
 export const WIDGET_RELOAD_AFTER_MS = 15 * 60 * 1_000;
 export const WIDGET_RECENT_STATE_MS = 60_000;
 

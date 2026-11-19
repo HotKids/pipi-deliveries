@@ -5,7 +5,9 @@ import { shipmentLifecycleKey } from "./shipment-lifecycle";
 import { displayWaybill, unprojectedAccountOrder } from "./shipment-policy";
 import { normalizeWaybill, shipmentPresentationStatus } from "./status";
 import { matchesParcelMetadataLifecycle } from "./waybill-reuse";
-import { displayDeliveryEstimate, pddParcelUniversalURL, type PlatformParcel } from "./platform-parcel-data";
+import { displayDeliveryEstimate, pddParcelNativeAppURL, type PlatformParcel } from "./platform-parcel-data";
+import { pddProductImageURL } from "./product-image-url";
+import { internationalShipment } from "./international-records";
 
 export function eligiblePickup(shipment: Shipment): boolean {
   return !shipment.forcedCompletedAtMs && !shipment.identity.sender &&
@@ -33,7 +35,7 @@ export function matchPlatformParcel(
   visible: readonly Shipment[], parcel: PlatformParcel, owner: string,
 ): Shipment | undefined {
   const waybillMatches = parcel.waybill ? visible.filter((shipment) =>
-    !unprojectedAccountOrder(shipment) && displayWaybill(shipment) === parcel.waybill) : [];
+    !internationalShipment(shipment) && !unprojectedAccountOrder(shipment) && displayWaybill(shipment) === parcel.waybill) : [];
   if (waybillMatches.length) return waybillMatches.length === 1 ? waybillMatches[0] : undefined;
   const associated = visible.filter((shipment) => orderMatches(shipment, parcel, owner));
   if (associated.length !== 1) return undefined;
@@ -50,6 +52,18 @@ export function samePlatformTarget(before: Shipment | undefined, after: Shipment
 function sameFields(shipment: Shipment, fields: ParcelPlatformFields): boolean {
   const bill = unprojectedAccountOrder(shipment) ? "" : displayWaybill(shipment);
   return fields.waybillGeneration === (shipment.waybillReuseAtMs ?? 0) && fields.waybill === bill;
+}
+
+function pddProductAssociation(shipment: Shipment): string {
+  const parcel = shipment.pddImport;
+  return parcel?.orderId && parcel.shippingId ? JSON.stringify([parcel.ownerKey, parcel.orderId, parcel.shippingId]) : "";
+}
+
+export function pddParcelProductImage(shipment: Shipment): string {
+  const fields = shipment.platformFields;
+  const association = pddProductAssociation(shipment);
+  return fields && sameFields(shipment, fields) && association && fields.pddImage?.association === association
+    ? pddProductImageURL(fields.pddImage.url) : "";
 }
 
 export function keepPlatformFields(previous: Shipment | undefined, current: Shipment): Shipment {
@@ -93,6 +107,21 @@ export type CloudPddParcel = Readonly<{
   phone4: string;
 }>;
 
+type CloudPddParcelIdentity = Pick<CloudParcelMetadata, "waybill" | "anchorAt" | "terminalAt">;
+
+function matchesCloudPddParcel(shipment: Shipment, parcel: CloudPddParcelIdentity, now: number): boolean {
+  return !unprojectedAccountOrder(shipment) && parcel.waybill === normalizeWaybill(displayWaybill(shipment)) &&
+    matchesParcelMetadataLifecycle(shipment, parcel.anchorAt, parcel.terminalAt ?? 0, now);
+}
+
+export function adoptCloudPddParcelSource(shipment: Shipment, parcel: CloudPddParcelIdentity, now: number): Shipment {
+  const { identity } = shipment;
+  const genericSource = identity.manuallyAdded || identity.sourceProvider?.toLowerCase() === "kuaidi100";
+  if (!genericSource || identity.sender || identity.accountOrder || hasPddParcelSource(shipment) ||
+      !matchesCloudPddParcel(shipment, parcel, now)) return shipment;
+  return { ...shipment, pddCloudOrigin: { waybill: parcel.waybill, waybillGeneration: shipment.waybillReuseAtMs ?? 0 } };
+}
+
 export function applyCloudPddParcels(state: AppState, parcels: readonly CloudPddParcel[], now: number): AppState {
   const incoming = new Map<string, CloudPddParcel | null>();
   for (const parcel of parcels) incoming.set(parcel.waybill, incoming.has(parcel.waybill) ? null : parcel);
@@ -113,11 +142,8 @@ export function applyCloudPddParcels(state: AppState, parcels: readonly CloudPdd
     if (existing.length > 1) continue;
     const current = existing[0];
     if (current) {
-      const { identity } = current;
-      const genericSource = identity.manuallyAdded || identity.sourceProvider?.toLowerCase() === "kuaidi100";
-      if (!genericSource || identity.sender || identity.accountOrder || hasPddParcelSource(current) ||
-        !matchesParcelMetadataLifecycle(current, parcel.anchorAt, parcel.terminalAt, now)) continue;
-      changes.set(identity.id, { ...current, pddCloudOrigin: { waybill, waybillGeneration: current.waybillReuseAtMs ?? 0 } });
+      const adopted = adoptCloudPddParcelSource(current, parcel, now);
+      if (adopted !== current) changes.set(current.identity.id, adopted);
       continue;
     }
     if (pending.has(waybill)) continue;
@@ -138,22 +164,23 @@ export type CloudParcelMetadata = Readonly<{
   anchorAt: number;
   terminalAt?: number;
   productName?: string;
+  productImageURL?: string;
   deliveryEstimate?: string;
   deliveryEstimateObservedAt?: number;
 }>;
 
-export type CloudParcelPddLink = Pick<CloudParcelMetadata, "waybill" | "anchorAt" | "terminalAt"> & Readonly<{
+export type CloudParcelPddLink = CloudPddParcelIdentity & Readonly<{
   shippingId: string;
 }>;
 
 export function cloudPddParcelAppURL(shipment: Shipment, link: CloudParcelPddLink | undefined, now = Date.now()): string {
-  if (!link || unprojectedAccountOrder(shipment)) return "";
-  const waybill = normalizeWaybill(displayWaybill(shipment));
-  if (link.waybill !== waybill || !matchesParcelMetadataLifecycle(shipment, link.anchorAt, link.terminalAt ?? 0, now)) return "";
-  return pddParcelUniversalURL(link.shippingId, waybill);
+  if (!link || !matchesCloudPddParcel(shipment, link, now)) return "";
+  return pddParcelNativeAppURL(link.shippingId, link.waybill);
 }
 
-export function displayedPlatformFields(shipment: Shipment, now = Date.now(), cloud?: CloudParcelMetadata) {
+export function displayedPlatformFields(shipment: Shipment, now = Date.now(), cloud?: CloudParcelMetadata): {
+  title?: string; estimate?: string; productImageURL?: string;
+} {
   const saved = shipment.platformFields && sameFields(shipment, shipment.platformFields) ? shipment.platformFields : undefined;
   const matchingCloud = cloud && !unprojectedAccountOrder(shipment) &&
     cloud.waybill === normalizeWaybill(displayWaybill(shipment)) &&
@@ -167,10 +194,11 @@ export function displayedPlatformFields(shipment: Shipment, now = Date.now(), cl
   return {
     title: saved?.manualTitle || saved?.title?.text || matchingCloud?.productName,
     estimate: localEstimate || cloudEstimate,
+    ...(matchingCloud?.productImageURL ? { productImageURL: matchingCloud.productImageURL } : {}),
   };
 }
 
-export function enrichPlatformParcel(shipment: Shipment, parcel: PlatformParcel, now: number): Shipment {
+export function enrichPlatformParcel(shipment: Shipment, parcel: PlatformParcel, now: number, cainiaoGeneration?: string): Shipment {
   let next = shipment;
   if (unprojectedAccountOrder(next) && parcel.source === "cainiao" &&
     eligiblePickup(next) && parcel.waybill) {
@@ -188,7 +216,13 @@ export function enrichPlatformParcel(shipment: Shipment, parcel: PlatformParcel,
   }
   const waybill = unprojectedAccountOrder(next) ? "" : displayWaybill(next);
   const waybillGeneration = next.waybillReuseAtMs ?? 0;
-  if (parcel.source !== "fengchao" && (parcel.title || parcel.estimate)) {
+  const cainiaoImage = parcel.source === "cainiao" && parcel.productImageURL && cainiaoGeneration
+    ? { url: parcel.productImageURL, generation: cainiaoGeneration } : undefined;
+  const pddURL = parcel.source === "pinduoduo" ? pddProductImageURL(parcel.productImageURL) : "";
+  const association = pddURL ? pddProductAssociation(next) : "";
+  const pddImage = association && parcel.waybill === waybill && parcel.shippingId === next.pddImport?.shippingId &&
+    !pddParcelProductImage(next) ? { url: pddURL, association } : undefined;
+  if (parcel.source !== "fengchao" && (parcel.title || parcel.estimate || cainiaoImage || pddImage)) {
     const fields = next.platformFields && (sameFields(next, next.platformFields) || next !== shipment)
       ? next.platformFields : undefined;
     const prefer = (source: string) => source === parcel.source || parcel.source === "cainiao";
@@ -199,7 +233,9 @@ export function enrichPlatformParcel(shipment: Shipment, parcel: PlatformParcel,
         text: parcel.estimate, source: parcel.source,
         capturedAtMs: fields?.estimate?.text === parcel.estimate ? fields.estimate.capturedAtMs : now,
       } : fields?.estimate;
-    const platformFields = { ...fields, waybill, waybillGeneration, title, estimate };
+    const image = cainiaoImage || fields?.cainiaoImage;
+    const platformFields = { ...fields, waybill, waybillGeneration, title, estimate,
+      ...(image ? { cainiaoImage: image } : {}), ...(pddImage ? { pddImage } : {}) };
     if (JSON.stringify(platformFields) !== JSON.stringify(fields) || waybill !== fields?.waybill) {
       next = { ...next, platformFields };
     }
@@ -207,6 +243,7 @@ export function enrichPlatformParcel(shipment: Shipment, parcel: PlatformParcel,
   if (!waybill || !eligiblePickup(next)) return next;
   const previous = next.pickup?.waybill === waybill && next.pickup.waybillGeneration === waybillGeneration
     ? next.pickup : undefined;
+  if (previous?.completedAtMs) return next;
   const platform = parcel.source === "jingdong" ? undefined : parcel.source;
   const conflictingCode = previous?.code && parcel.code && previous.code !== parcel.code &&
     (!previous.platform || previous.platform !== platform);

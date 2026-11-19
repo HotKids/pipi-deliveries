@@ -24,7 +24,8 @@ function sessionFrom(value: Record<string, unknown>): MealSession {
     throw new Error("Invalid meal sync session");
   }
   return { ownerId: value.ownerId, endpointId: value.endpointId, generation: value.generation,
-    epoch: value.epoch, nextSequence: value.nextSequence };
+    epoch: value.epoch, nextSequence: value.nextSequence,
+    ...(value.mealTemperatureSupported === true ? { mealTemperatureSupported: true as const } : {}) };
 }
 
 function validPayload(payload: Record<string, unknown>): payload is MealPayload {
@@ -32,6 +33,7 @@ function validPayload(payload: Record<string, unknown>): payload is MealPayload 
     (typeof payload.code === "string" && Boolean(payload.code.trim()) ||
       typeof payload.qrPayload === "string" && Boolean(payload.qrPayload.trim())) &&
     integer(payload.createdAt, 1) && integer(payload.expiresAt, payload.createdAt) &&
+    (payload.drinkTemperature === undefined || payload.drinkTemperature === "hot" || payload.drinkTemperature === "cold") &&
     (payload.completedAt === undefined || integer(payload.completedAt));
 }
 
@@ -55,12 +57,15 @@ function sameEndpoint(a: MealSession, b: MealSession): boolean {
 }
 
 export function mealPullRequest(state: MealSnapshot) {
+  const includeMealTemperature = state.snapshot ? state.snapshot.includeMealTemperature : state.session!.mealTemperatureSupported;
+  const refreshTemperature = includeMealTemperature && !state.mealTemperatureProjected && !state.snapshot;
   return {
     schemaVersion: 1, generation: state.session!.generation,
-    epoch: state.snapshot?.epoch ?? (state.cursor !== null ? state.session!.epoch : ""),
-    cursor: state.snapshot?.cursor ?? state.cursor ?? 0,
+    epoch: state.snapshot?.epoch ?? (!refreshTemperature && state.cursor !== null ? state.session!.epoch : ""),
+    cursor: state.snapshot?.cursor ?? (refreshTemperature ? 0 : state.cursor ?? 0),
     ...(state.snapshot ? { pageToken: state.snapshot.token } : {}),
     includeEditTime: true, includeMealOrderMetadata: true,
+    ...(includeMealTemperature ? { includeMealTemperature } : {}),
   };
 }
 
@@ -72,6 +77,7 @@ export function applyMealPage(current: MealSnapshot, expected: MealSnapshot, res
   if (!sameEndpoint(session, previous) || !integer(response.cursor) || !Array.isArray(response.records) ||
       response.records.length > 100 || typeof response.hasMore !== "boolean") throw new Error("Invalid meal sync page");
   const snapshot = response.mode === "snapshot" && response.reset === true;
+  const includeMealTemperature = mealPullRequest(expected).includeMealTemperature;
   if (!snapshot && (response.mode !== "delta" || response.reset !== false || previous.epoch !== session.epoch ||
       expected.snapshot || response.cursor < (expected.cursor ?? 0) || response.hasMore && response.cursor === expected.cursor)) {
     throw new Error("Invalid meal sync cursor");
@@ -90,11 +96,13 @@ export function applyMealPage(current: MealSnapshot, expected: MealSnapshot, res
     if (typeof response.pageToken !== "string" || !response.pageToken || response.pageToken.length > 2048) {
       throw new Error("Missing meal snapshot continuation");
     }
-    return { ...current, snapshot: { epoch: session.epoch, cursor: response.cursor, token: response.pageToken, records: remote } };
+    return { ...current, snapshot: { epoch: session.epoch, cursor: response.cursor, token: response.pageToken, records: remote,
+      ...(includeMealTemperature ? { includeMealTemperature } : {}) } };
   }
   if (response.pageToken != null) throw new Error("Unexpected meal continuation");
   return reconcileMealEdits({ ...current, session: { ...session, nextSequence: Math.max(current.session.nextSequence, session.nextSequence) },
-    remote, snapshot: undefined, cursor: response.cursor }, current, snapshot);
+    remote, snapshot: undefined, cursor: response.cursor,
+    ...(snapshot && includeMealTemperature ? { mealTemperatureProjected: true as const } : {}) }, current, snapshot);
 }
 
 function reconcileMealEdits(state: MealSnapshot, previous: MealSnapshot, completeSnapshot = false): MealSnapshot {
@@ -106,12 +114,13 @@ function reconcileMealEdits(state: MealSnapshot, previous: MealSnapshot, complet
     if (cloud ? cloud.editedAt >= edit.editedAt || cloud.deleted && cloud.reason === "retention" :
       completeSnapshot && edit.requiresExisting) delete edits[id];
   }
-  const style = Object.fromEntries(Object.entries(state.style).filter(([id]) => {
+  const style = Object.fromEntries(Object.entries(state.style).filter(([id, artwork]) => {
     const cloud = state.remote[id];
     const before = previous.remote[id];
     const current = edits[id]?.payload ?? (cloud?.deleted === false ? cloud.payload : undefined);
     const prior = previous.edits[id]?.payload ?? (before?.deleted === false ? before.payload : undefined);
-    return current && (!prior || (prior.brandId === current.brandId && prior.productName === current.productName));
+    return current && (!current.drinkTemperature || current.drinkTemperature === artwork.drinkTemperature) &&
+      (!prior || (prior.brandId === current.brandId && (prior.productName ?? "") === (current.productName ?? "")));
   }));
   return { ...state, edits, style };
 }
@@ -123,14 +132,17 @@ export function prepareMealBatch(state: MealSnapshot, now: number, requestId: st
   const [id, edit] = selected;
   const cloud = state.remote[id];
   const historic = edit.payload.expiresAt <= now || Boolean(edit.payload.completedAt);
+  const includeMealTemperature = state.session.mealTemperatureSupported;
+  const { drinkTemperature, ...legacyPayload } = edit.payload;
   const batch: MealBatch = {
     schemaVersion: 1, generation: state.session.generation, epoch: state.session.epoch,
     sequence: state.session.nextSequence, requestId, includeMealOrderMetadata: true,
+    ...(includeMealTemperature ? { includeMealTemperature } : {}),
     mutations: [{
       mutationId: edit.mutationId, recordId: id, baseRevision: cloud?.revision ?? 0,
       type: "meal_pickup", operation: cloud?.deleted ? "restore" : "put",
       lifecycle: historic ? "history" : "active", historyAt: historic ? edit.payload.createdAt : 0,
-      editedAt: edit.editedAt, payload: edit.payload,
+      editedAt: edit.editedAt, payload: includeMealTemperature && drinkTemperature ? edit.payload : legacyPayload,
     }],
   };
   return { ...state, batch };
@@ -196,7 +208,7 @@ export function recoverMealConflict(state: MealSnapshot, batch: MealBatch, confl
 
 let inFlight: { scope: string; promise: Promise<void> } | undefined;
 
-async function sync(scope: string, budgetMs: number): Promise<"succeeded" | "budget_exhausted"> {
+async function sync(scope: string, budgetMs: number): Promise<"succeeded" | "no_changes" | "budget_exhausted"> {
   const deadlineAtMs = Date.now() + budgetMs;
   async function request(operation: "session" | "pull" | "mutate", body: Record<string, unknown>,
     onConflict?: (response: Readonly<Record<string, unknown>>) => void) {
@@ -209,6 +221,7 @@ async function sync(scope: string, budgetMs: number): Promise<"succeeded" | "bud
   }
   updateMeals(scope, current => pruneMeals(current, Date.now()));
   let pulled = false;
+  let processedRecords = false;
   for (let step = 0; step < MAX_STEPS && Date.now() < deadlineAtMs; step++) {
     let state = readMeals(scope);
     if (!state.session) {
@@ -223,11 +236,13 @@ async function sync(scope: string, budgetMs: number): Promise<"succeeded" | "bud
       try {
         const response = await request("mutate", batch, value => { conflict = value; });
         updateMeals(scope, current => applyMealReceipt(current, batch, response));
+        processedRecords = true;
         pulled = false;
       } catch (error) {
         if (!conflict || mealCredentialScope() !== scope) throw error;
         const recovered = updateMeals(scope, current => recoverMealConflict(current, batch, conflict!));
         if (recovered.batch?.requestId === batch.requestId) throw error;
+        processedRecords = true;
         pulled = Boolean(recovered.session);
       }
       continue;
@@ -246,11 +261,14 @@ async function sync(scope: string, budgetMs: number): Promise<"succeeded" | "bud
         continue;
       }
       updateMeals(scope, current => applyMealPage(current, state, response));
-      pulled = response.hasMore === false && !(response.mode === "snapshot");
+      processedRecords ||= response.mode === "snapshot" || (Array.isArray(response.records) && response.records.length > 0);
+      const current = readMeals(scope);
+      pulled = response.hasMore === false && response.mode !== "snapshot" &&
+        (!current.session?.mealTemperatureSupported || !!current.mealTemperatureProjected);
       continue;
     }
     state = updateMeals(scope, current => prepareMealBatch(pruneMeals(current, Date.now()), Date.now(), UUID.string().toLowerCase()));
-    if (!state.batch) return "succeeded";
+    if (!state.batch) return processedRecords ? "succeeded" : "no_changes";
   }
   return "budget_exhausted";
 }
@@ -259,9 +277,9 @@ export function synchronizeMeals(budgetMs = BUDGET_MS): Promise<void> {
   const scope = mealCredentialScope();
   if (!scope) return Promise.resolve();
   if (inFlight?.scope === scope) return inFlight.promise;
-  const finish = beginDiagnosticOperation("meal.sync", { stage: "cloud_record_sync" });
+  const finish = beginDiagnosticOperation("meal.sync", { stage: "cloud_record_sync" }, false);
   const promise = sync(scope, budgetMs).then(result => {
-    finish(result);
+    if (result !== "no_changes") finish(result);
   }, () => {
     finish("retained", {}, "warning");
   }).finally(() => {

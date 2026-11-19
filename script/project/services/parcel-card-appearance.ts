@@ -4,6 +4,8 @@ import type { ParcelActivityContent } from "./parcel-pickup";
 import { blendStatusColor, rgbLuminance } from "./status";
 
 export const PARCEL_LOCK_SCREEN_BOX = "box-lock-screen.png";
+export const PICKUP_CARD_SPACING = 16;
+export const PICKUP_DATE_GROUP_SPACING = 32;
 
 export type ParcelLockScreenStyle = "dynamic" | "black" | "white";
 
@@ -25,7 +27,8 @@ function mealAsset(asset?: string) {
   return { path: `meal-pickup/${filename}`, name: filename };
 }
 
-export function parcelCardArtwork(card: ParcelActivityContent) {
+export function parcelCardArtwork(card: Pick<ParcelActivityContent,
+  "kind" | "mealStyle" | "mealBrandId" | "artworkChoice" | "platform" | "carrierIcon">) {
   if (card.kind === "meal") return {
     meal: mealAsset(card.mealStyle?.artworkAsset),
     mealSticker: mealAsset(card.mealStyle?.stickerAsset),

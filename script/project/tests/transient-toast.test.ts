@@ -37,7 +37,7 @@ assert.equal(transientToast("", () => {}).isPresented, false);
 assert.equal(noteSavedToast("note"), "备注已保存");
 assert.equal(noteSavedToast("  "), "备注已删除");
 assert.equal(noteSaveFailedToast(new ShipmentLifecycleChangedError()), "快递信息已变更，请重新打开备注");
-assert.equal(noteSaveFailedToast(new Error()), "暂时无法编辑，请稍后重试");
+assert.equal(noteSaveFailedToast(new Error()), "保存失败，请稍后重试");
 // 统一 toast 表（AGENTS §11，2026-09-05）：手动查件的提示是短 toast 一次，不再常驻到查完。
 assert.equal(EXPRESS_TOAST_COPY.manualQuerying, "正在查询，请稍候");
 assert.equal(refreshSummaryToast({ attempted: 0, succeeded: 0, failed: 0,

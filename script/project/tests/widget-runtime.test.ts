@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import { backgroundRefreshOptions } from "../services/background-refresh";
 import {
   bestEffortWidgetRefresh,
   safelyLoadWidgetSnapshot,
   shouldRunWidgetNetworkRefresh,
   WIDGET_REFRESH_BUDGET_MS,
+  WIDGET_REFRESH_WAIT_MS,
   WIDGET_RECENT_STATE_MS,
   WIDGET_RELOAD_AFTER_MS,
   widgetReloadPolicy,
@@ -48,7 +50,9 @@ assert.deepEqual(
   { ok: false },
 );
 
-assert.equal(WIDGET_REFRESH_BUDGET_MS, 120_000);
+assert.equal(WIDGET_REFRESH_BUDGET_MS, 7_000);
+assert.equal(WIDGET_REFRESH_WAIT_MS, 8_000);
+assert.equal(backgroundRefreshOptions().budgetMs, 120_000);
 assert.equal(WIDGET_RECENT_STATE_MS, 60_000);
 assert.equal(WIDGET_RELOAD_AFTER_MS, 15 * 60 * 1_000);
 assert.equal(widgetReloadPolicy(1_000).policy, "after");
@@ -128,18 +132,35 @@ const widgetAccountListDeadline = accountChildDeadline(
 );
 assert.equal(
   widgetAccountListDeadline - widgetRefreshStartedAt,
-  ACCOUNT_LIST_BUDGET_MS,
+  Math.min(ACCOUNT_LIST_BUDGET_MS, WIDGET_REFRESH_BUDGET_MS - FULL_REFRESH_FINALIZATION_RESERVE_MS),
 );
 assert.ok(widgetAccountListDeadline > widgetRefreshStartedAt);
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const widgetSource = await readFile(resolve(projectDir, "widget.tsx"), "utf8");
+const widgetRun = widgetSource.slice(widgetSource.indexOf("async function run()"), widgetSource.lastIndexOf("void run();"));
+const presented: unknown[] = [];
+const fallbackView = { cached: true };
+await runInNewContext(widgetRun + "\nrun()", {
+  Widget: { family: "systemSmall", present: (view: unknown) => presented.push(view) },
+  createDiagnosticFlowId: () => "synthetic-widget",
+  writeRuntimeCapabilities() {}, writeDiagnostic() {}, flushDiagnostics() {},
+  widgetRunGapMs() {}, readWidgetRunAtMs() {}, recordWidgetRunAtMs() {},
+  lastNetworkRefreshSuccessAtMs: () => 0,
+  backgroundHostBootstrap() { throw new Error("unavailable carrier cache"); },
+  refreshAllShipments() { assert.fail("refresh must not start when its bootstrap fails"); },
+  widgetContent: () => fallbackView,
+  widgetPresentationKind, createWidgetStateHolder: () => ({ state: null }),
+  WIDGET_REFRESH_BUDGET_MS, WIDGET_REFRESH_WAIT_MS, WIDGET_RELOAD_AFTER_MS,
+  shouldRunWidgetNetworkRefresh, bestEffortWidgetRefresh, widgetReloadPolicy,
+});
+assert.deepEqual(presented, [fallbackView], "bootstrap failure must still present one cached view");
 const indexSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
 const { readSyncSource } = await import("./sync-source-helper");
 const syncSource = readSyncSource();
 assert.match(
   widgetSource,
-  /shouldRunWidgetNetworkRefresh\(\s*lastNetworkRefreshSuccessAtMs\(\),?\s*\)[\s\S]*?if \(shouldRefresh\)[\s\S]*?await bestEffortWidgetRefresh[\s\S]*?backgroundRefreshOptions\(WIDGET_REFRESH_BUDGET_MS\)[\s\S]*?Widget\.present\(content,/,
+  /shouldRunWidgetNetworkRefresh\(\s*lastNetworkRefreshSuccessAtMs\(\),?\s*\)[\s\S]*?if \(bootstrapReady && shouldRefresh && waitMs > 1_000\)[\s\S]*?await bestEffortWidgetRefresh[\s\S]*?const budget = Math\.min\(WIDGET_REFRESH_BUDGET_MS, waitMs - 1_000\)[\s\S]*?backgroundRefreshOptions\(budget\)[\s\S]*?refreshStoredWatchShipments\(budget\)[\s\S]*?Widget\.present\(content,/,
   "widget freshness must be based on successful network work rather than unrelated local state writes",
 );
 assert.deepEqual(backgroundRefreshOptions(WIDGET_REFRESH_BUDGET_MS), {

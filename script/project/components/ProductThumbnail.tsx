@@ -1,6 +1,9 @@
 import { AbortController, Image, VStack, useEffect, useState } from "scripting";
 import { initialProductImage, loadProductImage } from "../services/product-images";
-import { cachedProductImage, productImageCacheKey } from "../services/product-image-cache";
+import { cachedProductImage, cainiaoImageCacheKey, cloudProductImageCacheKey, pddImageCacheKey, productImageCacheKey } from "../services/product-image-cache";
+import { pddParcelProductImage } from "../services/platform-parcel-merge";
+import { currentPlatformSession } from "../services/platform-accounts";
+import { gatewayCredentialForLocalCache } from "../services/credentials";
 import { isStoredShipmentRetained, readAppStateSnapshot } from "../services/storage";
 import type { Shipment } from "../models";
 import { shipmentLifecycleKey } from "../services/shipment-lifecycle";
@@ -11,25 +14,43 @@ import { iconTileShape } from "./icon-tile";
 export function ProductThumbnail(props: {
   shipment: Shipment;
   imageURL?: string;
+  cloudImage?: { url: string; scope: string };
   cacheKey: string;
   courierCode: string;
   companyName: string;
   accountOrder?: boolean;
+  allowDownload?: boolean;
   size: number;
 }) {
-  const imageURL = props.imageURL || "";
-  const cacheKey = props.cacheKey;
+  const cainiao = !props.cacheKey ? props.shipment.platformFields?.cainiaoImage : undefined;
+  const cainiaoCurrent = () => {
+    try { return !!cainiao && !!currentPlatformSession("cainiao", cainiao.generation); }
+    catch { return false; }
+  };
+  const useCainiao = cainiaoCurrent();
+  const pdd = !props.cacheKey && !useCainiao && props.shipment.platformFields?.pddImage
+    ? pddParcelProductImage(props.shipment) : "";
+  const cloud = !props.cacheKey && !useCainiao && !pdd ? props.cloudImage : undefined;
+  const cloudCurrent = () => {
+    const credential = gatewayCredentialForLocalCache();
+    return !!cloud && credential?.scope === cloud.scope && !credential.rejected;
+  };
+  const imageURL = props.imageURL || (useCainiao ? cainiao?.url : pdd || cloud?.url) || "";
+  const keyFor = useCainiao ? cainiaoImageCacheKey : pdd ? pddImageCacheKey
+    : cloud ? (shipment: Shipment) => cloudProductImageCacheKey(shipment, cloud.scope)
+      : (shipment: Shipment) => productImageCacheKey(shipment.identity);
+  const cacheKey = useCainiao || pdd || cloud ? keyFor(props.shipment) : props.cacheKey;
   const lifecycle = shipmentLifecycleKey(props.shipment);
   let checkedStateRef: string | undefined;
   let retained = false;
   let checkedShipment = props.shipment;
   const isRetained = () => {
-    if (!cacheKey) return false;
+    if (!cacheKey || useCainiao && !cainiaoCurrent() || cloud && !cloudCurrent()) return false;
     const stateRef = sharedData().stateRef;
     if (stateRef && stateRef === checkedStateRef && (!retained || isStoredShipmentRetained(checkedShipment))) return retained;
     return withSharedFileTransaction(() => {
-      const current = readAppStateSnapshot().state.shipments.find(shipment => shipmentLifecycleKey(shipment) === lifecycle &&
-        productImageCacheKey(shipment.identity) === cacheKey);
+      const current = readAppStateSnapshot().state.shipments.find(shipment =>
+        shipmentLifecycleKey(shipment) === lifecycle && keyFor(shipment) === cacheKey);
       retained = current != null;
       if (current) checkedShipment = current;
       checkedStateRef = sharedData().stateRef;
@@ -56,13 +77,13 @@ export function ProductThumbnail(props: {
       setLoaded(null);
       return;
     }
-    if (!imageURL && !cacheKey) return;
+    if (props.allowDownload === false || !imageURL && !cacheKey) return;
     const controller = new AbortController();
     void loadProductImage(imageURL, controller.signal, cacheKey ? { key: cacheKey, isRetained } : undefined).then((image) => {
       if (!controller.signal.aborted && image) setLoaded({ key: cacheKey, lifecycle, isRetained, image });
     }).catch(() => { /* Keep an already successful image during an optional refresh failure. */ });
     return () => controller.abort();
-  }, [cacheKey, imageURL, lifecycle]);
+  }, [cacheKey, imageURL, lifecycle, props.allowDownload]);
 
   let image: Awaited<ReturnType<typeof loadProductImage>> = null;
   try {

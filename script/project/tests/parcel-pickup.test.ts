@@ -229,14 +229,16 @@ assert.equal(handoffActivityContent({ ...handoff, windowStartAtMs: overnightStar
 const deadline = appointmentEnd + 3_600_000;
 assert.equal(handoffActivityContent(handoff)?.expiresAtMs, deadline);
 assert.equal(handoffActivityContent({ ...handoff, expiredAtMs: deadline }), null);
-const timeOnly = handoffActivityContent({ ...handoff, windowEndAtMs: undefined, windowText: "15:00–17:00" });
-assert.equal(nextPickupArtwork(timeOnly!), "jingdong");
+assert.equal(nextPickupArtwork(handoffActivityContent(handoff)!), undefined, "explicit Cainiao source locks the artwork");
+const timeOnly = handoffActivityContent({ ...handoff, platform: "pinduoduo", windowEndAtMs: undefined, windowText: "15:00–17:00" });
+assert.equal(nextPickupArtwork(timeOnly!), "cainiao");
 const handoffKey = parcelCardKey(timeOnly!);
+assert.equal(nextPickupArtwork(withPickupArtwork(timeOnly!, { [handoffKey]: "cainiao" })), "jingdong");
 assert.equal(nextPickupArtwork(withPickupArtwork(timeOnly!, { [handoffKey]: "jingdong" })), "douyin");
 const douyin = withPickupArtwork(timeOnly!, { [handoffKey]: "douyin" });
 assert.equal(nextPickupArtwork(douyin), "pinduoduo");
 assert.equal(nextPickupArtwork(withPickupArtwork(timeOnly!, { [handoffKey]: "pinduoduo" })), "cainiao");
-assert.equal(douyin.platform, "cainiao", "handoff artwork retains the recognized source");
+assert.equal(douyin.platform, "pinduoduo", "handoff artwork retains the recognized source");
 assert.equal(parcelCardArtwork(douyin).mark?.path, "platform-accounts/douyin.png");
 assert.equal(timeOnly?.location, "15:00–17:00 上门");
 assert.equal(timeOnly?.expiresAtMs, undefined);
@@ -279,6 +281,7 @@ let sharedMeta: {
 } = {};
 const refused = new Set<string>();
 const completions: string[] = [];
+const shortcutAlerts: { code: string; title: string; body: string }[] = [];
 const native = new Map<string, ReturnType<typeof makeActivity>>();
 const activityUpdateListeners = new Set<(detail: { id: string; state: string }) => void>();
 let batchStatusReads = 0;
@@ -316,7 +319,11 @@ function makeActivity() {
     update: async ({ code, lockScreenStyle, previewLinkId }: {
       code: string; lockScreenStyle?: ParcelLockScreenStyle; previewLinkId?: string;
     },
-      options?: { relevanceScore?: number }) => {
+      options?: { relevanceScore?: number; alert?: { title: string; body: string } }) => {
+      if (options?.alert) {
+        assert.ok(receipts().some(receipt => receipt.id === activity.activityId));
+        shortcutAlerts.push({ code, ...options.alert });
+      }
       events.push("update " + code);
       activity.code = code;
       activity.previewLinkId = previewLinkId;
@@ -689,7 +696,7 @@ const mealTarget = { mealScope: "synthetic-scope", mealId: "synthetic-meal" };
 const firstTarget = { recordId: firstPickup.id };
 records = [firstPickup, fourthPickup];
 const mealDeadline = now + 60_000;
-meals = [{ ...brandedMeal, target: mealTarget, code: "M1234", capturedAtMs: now + 3, expiresAtMs: mealDeadline }];
+meals = [{ ...brandedMeal, target: mealTarget, code: "M1234", hasMealQR: true, capturedAtMs: now + 3, expiresAtMs: mealDeadline }];
 activitiesEnabled = false;
 assert.equal(await shortcut.showShortcutPickupActivities([firstTarget]), false);
 assert.deepEqual(activeCodes(), []);
@@ -697,6 +704,7 @@ activitiesEnabled = true;
 
 const started = Promise.withResolvers<void>();
 const releaseStart = Promise.withResolvers<void>();
+shortcutAlerts.length = 0;
 onStart = () => { started.resolve(); return releaseStart.promise; };
 const initial = shortcut.showShortcutPickupActivities([mealTarget, firstTarget]);
 await started.promise;
@@ -708,6 +716,13 @@ assert.deepEqual(activeCodes(), ["M1234", firstPickup.code], "the background Sho
 assert.ok([...native.values()].filter(item => item.state === "active").every(item => item.lockScreenStyle === "black"),
   "new meal and parcel activities from a background Shortcut use the saved style");
 assert.equal(events.filter(event => event === "start M1234").length, 1, "two runtimes share one activity per record");
+assert.deepEqual(shortcutAlerts, [], "the Shortcut sends one ordinary notification and starts the ongoing activities quietly");
+const mealLink = receipts().find(receipt => receipt.target && "mealId" in receipt.target)!.linkId;
+const parcelLink = receipts().find(receipt => receipt.target && "recordId" in receipt.target)!.linkId;
+const qrTarget = host.parcelActivityTarget(snapshot(), mealLink)?.mealQRCode;
+assert.equal(qrTarget?.id, mealTarget.mealId, "the Activity link opens the current matching meal QR directly");
+assert.equal(qrTarget?.scope, mealTarget.mealScope);
+assert.equal(host.parcelActivityTarget(snapshot(), parcelLink)?.mealQRCode, undefined);
 assert.equal(await shortcut.showShortcutPickupActivities([{ recordId: fourthPickup.id }]), false);
 assert.deepEqual(activeCodes(), ["M1234", firstPickup.code], "a declined background start leaves existing cards visible");
 host.parcelActivitySceneChanged("background");
@@ -751,11 +766,13 @@ assert.match(activityCardSource, /background=\{cardBackground\} allowsHitTesting
   "the Smart Stack presents the same gradient");
 assert.doesNotMatch(activityCardSource, /glassEffect|UIGlass/, "both activity surfaces use the plain gradient");
 assert.match(activityCardSource, /activityBackgroundTint="clear" widgetURL=\{url\}/);
+assert.match(activityCardSource, /const expandedScanUrl = expanded && data\.hasMealQR \? url : undefined;[\s\S]*?<Link url=\{expandedScanUrl\}>\{content\}<\/Link>/,
+  "the expanded island uses a native link for the current scan code");
 assert.doesNotMatch(activityCardSource, /<(?:EnvironmentValuesReader|GeometryReader|Canvas)\b/,
   "the lock screen snapshots a complete view tree");
 assert.match(activityCardSource, /frame=\{\{ \.\.\.slot\(bottom - top\), minWidth: 0, maxWidth: "infinity"/);
-assert.match(activityCardSource, /systemName=\{isMeal \? "fork\.knife" : "shippingbox\.fill"\} font=\{card\.capsuleIcon \* scale\}/,
-  "the meal capsule uses the original utensil symbol on the shared icon slot");
+assert.match(activityCardSource, /systemName=\{isMeal \? "fork\.knife" : "shippingbox\.fill"\} font=\{\(isMeal \? card\.mealCapsuleIcon : card\.capsuleIcon\) \* scale\}\s+foregroundStyle=\{appearance\.capsuleForeground\} frame=\{\{ width: card\.capsuleIcon \* scale, height: card\.capsuleIcon \* scale \}\}/,
+  "the smaller utensil glyph remains centered in the shared capsule icon slot");
 assert.match(activityCardSource, /isMeal \? "我已取餐"/);
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
 assert.match(activityEntrySource, /content=\{<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} lockScreen lockScreenStyle=\{data\.lockScreenStyle\} \/>\}/);
@@ -856,11 +873,13 @@ assert.match(activitySettingsSource, /<ParcelActivityPreviewCard lockScreenStyle
 assert.doesNotMatch(watchCardSource, /\bappearance\b/, "the Watch Smart Stack keeps its existing palette");
 const tabCardSource = readFileSync(new URL("../components/PickupTabCard.tsx", import.meta.url), "utf8");
 assert.match(tabCardSource, /listRowInsets=\{0\}[\s\S]*?<ParcelLiveActivityCard\b/);
-assert.match(tabCardSource, /background=\{\s*<GeometryReader\b/, "only the in-app row reads layout geometry");
-assert.match(tabCardSource, /artwork=\{baseAsset \? <PickupTabArtwork\b/,
-  "static and animated meals and parcels share the same app artwork loader");
+assert.match(tabCardSource, /background=\{containerWidth === undefined \? \(\s*<GeometryReader\b[\s\S]*?<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{containerWidth \?\? width\}/,
+  "only rows without a measured parent width read their own layout geometry");
+assert.match(tabCardSource, /artwork=\{art \? <PickupTabArtwork\b/,
+  "meals, parcels and previews share the same app artwork loader");
 assert.match(activitySettingsSource, /<Text>锁屏预览<\/Text>[\s\S]*?"stop\.circle" : "play\.circle"[\s\S]*?disabled=\{busy\}/);
-assert.match(activitySettingsSource, /<Text>截屏识别<\/Text>[\s\S]*?「运行意图脚本」[\s\S]*?<Text>短信识别<\/Text>[\s\S]*?「运行意图脚本」/);
+assert.match(activitySettingsSource, /<Text>截屏识别<\/Text>[\s\S]*?<Link url=\{SCREEN_SHORTCUT_INSTALL_URL\}>\s*<Text>添加 Pipi 快捷指令<\/Text>/);
+assert.match(activitySettingsSource, /<Text>短信识别<\/Text>[\s\S]*?「运行意图脚本」/);
 assert.doesNotMatch(activitySettingsSource, /「在 App 中运行意图」/);
 assert.match(activitySettingsSource, /取件码和寄件码在「\$\{PICKUP_TAB_TITLE\}」中查看/);
 assert.match(activitySettingsSource, /<Toggle title="实时活动"/);
@@ -1038,14 +1057,22 @@ assert.match(stationIdentitySource,
 assert.doesNotMatch(stationIdentitySource, /在网页打开|在拼多多 App 中打开/);
 assert.match(stationIdentitySource, /后自动刷新` : "正在自动刷新…"/);
 assert.match(stationIdentitySource, />点击条形码或二维码可放大刷新<\/Text>/);
-assert.match(stationIdentitySource, />点击可缩小<\/Text>/);
-assert.match(stationIdentitySource, /rotationEffect=\{portrait \? 90 : 0\}[\s\S]*?<Barcode[\s\S]*?\{number\}\{shrink\}\{time\}/,
+const expandedScanSource = readFileSync(new URL("../components/ExpandedScanCode.tsx", import.meta.url), "utf8");
+assert.match(expandedScanSource, /text = "点击可缩小"/);
+assert.match(stationIdentitySource, /rotationEffect=\{portrait \? 90 : 0\}[\s\S]*?<Barcode[\s\S]*?<ScanCodeNumber value=\{value\} \/><ScanCodeShrinkHint \/>\{time\}/,
   "the countdown stays with the rotated barcode and its labels");
-assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{qrSize\}[\s\S]*?\{number\}\{shrink\}\s*\{time\}/,
+assert.match(stationIdentitySource, /<ExpandedQRCode data=\{value\} number=\{value\} footer=\{time\} \/>/,
   "the enlarged QR has the same live countdown");
-assert.match(stationIdentitySource, /preferredColorScheme="light"\s+contentShape="rect" onTapGesture=\{onClose\}/);
+assert.match(expandedScanSource, /<ScanCodeCaption number=\{number\} footer=\{footer\} hint=\{hint\} \/>/);
+assert.match(expandedScanSource, /preferredColorScheme=\{followsSystemAppearance \? undefined : "light"\}\s+contentShape="rect" onTapGesture=\{onClose\}/);
+assert.match(expandedScanSource, /width > 0 \? header\?\.\(width\)[\s\S]*?<GeometryReader>\{\(\{ size \}\) => content\(size\.width - 2 \* horizontalInset\)\}/,
+  "the sheet provides the card with the available width inside its horizontal insets");
+const mealQrSheet = pickupSource.match(/<ScanCodeSurface followsSystemAppearance>[\s\S]*?<\/ScanCodeSurface>/)?.[0] ?? "";
+assert.match(mealQrSheet, /title=\{shownQr\?\.brandName\?\.trim\(\) \|\| redemption\.title\}\s+titleLogo=\{parcelCardArtwork\(mealQrCard\)\.mark\?\.path\}/);
+assert.match(mealQrSheet, /hint=\{redemption\.prompt\} header=\{width => cardRow\(mealQrCard, true, false, width\)\}\s+close=\{\{ label: `关闭\$\{redemption\.title\}`, action: closeMealCode/);
+assert.doesNotMatch(mealQrSheet, /\bnumber=|点击关闭/, "the card alone shows the number");
 assert.doesNotMatch(stationIdentitySource, /title="关闭" systemImage="xmark"/);
-assert.match(stationIdentitySource, /header=\{detailTitle\("取件人"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}[\s\S]*?header=\{detailTitle\("身份码编号"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}/);
+assert.match(stationIdentitySource, /header=\{detailTitle\("取件人"\)\}[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}[\s\S]*?key="identity-number"[\s\S]*?listRowInsets=\{DETAIL_ROW_INSETS\}/);
 assert.match(stationIdentitySource,
   /const showNumber = valid \|\| \(platform === "cainiao" && !busy && failure !== null\);[^]*?\{showNumber \? \([^]*?action=\{onSwitchCainiao\}[^]*?\{valid \? value\.replace\([^\n]*? : "暂无编号"\}[^]*?\{valid \? <Button[^]*?action=\{\(\) => void copyIdentity\(\)\}/,
   "the number row and variant switch require a valid code or a completed Cainiao failure");
@@ -1056,8 +1083,11 @@ assert.match(stationIdentitySource,
   /foregroundStyle=\{valid \? "label" : "secondaryLabel"\}[^]*?frame=\{\{ maxWidth: "infinity", alignment: valid \? "leading" : "trailing" \}\}[^]*? : "暂无编号"\}/,
   "the unavailable number uses the form's trailing secondary value alignment");
 assert.match(stationIdentitySource,
-  /<Section key="identity-number" transition=\{revealResult\} header=\{detailTitle\("身份码编号"\)\}\s+footer=\{platform === "cainiao" \? \(\s*<Text font="footnote" foregroundStyle="secondaryLabel">点击图标切换淘宝身份码与菜鸟出库码<\/Text>\s*\) : undefined\}>/,
-  "the switch hint is a form footer below the Cainiao number card");
+  /const switchTarget = IDENTITY_CODE_TITLES\[cainiaoOutbound \? "cainiao" : "cainiao-outbound"\];/,
+  "the switch target is the other identity variant");
+assert.match(stationIdentitySource,
+  /<Section key="identity-number" transition=\{revealResult\}\s+header=\{detailTitle\(platform === "cainiao" \? `身份码编号（点击图标切换至\$\{switchTarget\}）` : "身份码编号"\)\}>/,
+  "the Cainiao number heading specifies the switch target");
 assert.match(stationIdentitySource, /<StationIdentityContent key=\{`\$\{generation\}:\$\{variant\}`\}/,
   "switching providers or bindings discards the previous scan immediately");
 assert.match(stationIdentitySource, /const revealResult = Transition\.asymmetric\(Transition\.opacity\(\), Transition\.identity\(\)\)/);
@@ -1071,7 +1101,7 @@ assert.doesNotMatch(stationIdentitySource, /presentPlatformLogin|授权拼多多
   "the identity page does not present an account setup form");
 assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{184\} \/>/,
   "the card pairs a QR code with the barcode for every valid identity");
-assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{qrSize\} \/>/,
-  "the full-screen QR uses the same current identity payload");
+assert.match(expandedScanSource, /<QRImage data=\{data\} size=\{qrSize\} \/>/,
+  "the shared full-screen QR encodes the payload passed by the identity or meal page");
 
 console.log("parcel OCR, tab entry, and Activity lifecycle tests passed");

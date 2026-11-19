@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { displayWaybill } from "../services/shipment-policy";
 import { normalizeWaybill, waybillSuffix } from "../services/status";
 import { accountKuaidi100URL, kuaidi100MiniProgramURL, shunfengKuaidi100FallbackURL } from "../services/kuaidi100-app-link";
+import { pddParcelAppURL } from "../services/platform-parcel-data";
+import { cloudPddParcelAppURL, hasPddParcelSource, samePlatformTarget, type CloudParcelPddLink } from "../services/platform-parcel-merge";
 import type { AccountBinding, Shipment } from "../models";
 
 const page = readFileSync(new URL("../pages/DetailPage.tsx", import.meta.url), "utf8");
@@ -10,19 +12,24 @@ const start = page.indexOf("  async function openExternalApp() {");
 const end = page.indexOf("\n  return (", start);
 assert.ok(start >= 0 && end > start);
 assert.match(page.slice(end), /topBarTrailing:[\s\S]*?action=\{openExternalApp\}/);
+assert.doesNotMatch(page.slice(end), /在拼多多 App 中打开/);
 // Run the actual page action with a synthetic native opener and request boundary.
 const action = new Function(
   "externalAppAbortRef", "externalAppName", "setOpeningExternalApp",
   "fetchAccountExternalAppRoutes", "shipment", "setNotice", "Safari", "writeDiagnostic",
   "displayWaybill", "waybillSuffix", "props", "loadState", "kuaidi100MiniProgramURL", "normalizeWaybill",
   "shunfengKuaidi100FallbackURL", "accountExternalAppName", "accountKuaidi100URL", "accountBindingRef",
+  "pddExternalAppURL", "samePlatformTarget", "pddParcelAppURL", "gatewayCredentialGeneration", "cloudGeneration",
+  "ownsCloudWaybill", "cloudPddParcelAppURL", "cloudDetails",
+  "platformSession", "presentPddParcelH5", "hasPddParcelSource",
   `return (${page.slice(start, end).trim()});`,
 );
 
 function scenario(openResult: boolean | Error | (boolean | Error)[] = true, requestFailure = false, appName = "菜鸟",
   options: { shipment?: Shipment; persisted?: boolean; current?: Shipment[]; loadFailure?: boolean;
     states?: { shipments: Shipment[]; bindings: AccountBinding[] }[]; currentAppName?: string;
-    cancelAfterOpen?: boolean; binding?: AccountBinding } = {}) {
+    cancelAfterOpen?: boolean; binding?: AccountBinding; pddURL?: string; pddLink?: CloudParcelPddLink;
+    credentialChanged?: boolean; ownsCloudWaybill?: boolean; pddLogin?: "active" | "expired" | "unavailable" } = {}) {
   let resolveTargets!: (targets: { kind: string; url: string }[]) => void;
   const route = new Promise<{ kind: string; url: string }[]>((resolve) => { resolveTargets = resolve; });
   const resolveRoute = (value: string) => resolveTargets(value ? [{ kind: "cainiao", url: value }] : []);
@@ -31,6 +38,8 @@ function scenario(openResult: boolean | Error | (boolean | Error)[] = true, requ
   const busy: boolean[] = [];
   const notices: string[] = [];
   const opened: string[] = [];
+  const h5: string[] = [];
+  let pddLogin = options.pddLogin;
   let requests = 0;
   let stateReads = 0;
   const run = action(ref, appName, (value: boolean) => busy.push(value), async () => {
@@ -54,8 +63,16 @@ function scenario(openResult: boolean | Error | (boolean | Error)[] = true, requ
     stateReads++;
     return state || { shipments: options.current || [], bindings: options.binding ? [options.binding] : [] };
   }, kuaidi100MiniProgramURL, normalizeWaybill, shunfengKuaidi100FallbackURL,
-  () => options.currentAppName ?? "顺丰", accountKuaidi100URL, { current: options.binding }) as () => Promise<void>;
-  return { run, resolveRoute, resolveTargets, diagnostics, ref, busy, notices, opened, requestCount: () => requests };
+  () => options.currentAppName ?? "顺丰", accountKuaidi100URL, { current: options.binding }, options.pddURL ?? "",
+  samePlatformTarget, pddParcelAppURL, () => options.credentialChanged ? "updated" : "original", "original",
+  () => options.ownsCloudWaybill !== false, cloudPddParcelAppURL, { pddLink: options.pddLink },
+  () => pddLogin ? { generation: "synthetic" } : null, async (value: string) => {
+    h5.push(value);
+    if (pddLogin === "unavailable") throw new Error("synthetic page unavailable");
+    if (pddLogin === "expired") { pddLogin = undefined; return false; }
+    return true;
+  }, hasPddParcelSource) as () => Promise<void>;
+  return { run, resolveRoute, resolveTargets, diagnostics, ref, busy, notices, opened, h5, requestCount: () => requests };
 }
 
 const uri = "cainiao://startapp/logistic?fixture=synthetic";
@@ -91,7 +108,7 @@ const unavailable = scenario(false);
 const unavailableTask = unavailable.run();
 unavailable.resolveRoute(uri);
 await unavailableTask;
-assert.deepEqual(unavailable.notices, ["未能打开菜鸟、淘宝或支付宝，请确认已安装其中任一应用"]);
+assert.deepEqual(unavailable.notices, ["打开失败，请确认已安装菜鸟、淘宝或支付宝"]);
 
 for (const failed of [scenario(true, true)]) {
   const task = failed.run();
@@ -149,9 +166,38 @@ for (const result of [true, false, new Error("synthetic native failure")]) {
   assert.deepEqual(test.opened, [manualUrl], "one direct launch must not query account credentials or duplicate taps");
   assert.equal(test.requestCount(), 0);
   assert.deepEqual(test.busy, [true, false]);
-  assert.deepEqual(test.notices, result === true ? [] : ["暂时无法打开快递100小程序，请稍后重试"]);
+  assert.deepEqual(test.notices, result === true ? [] : ["无法打开快递100小程序，请稍后重试"]);
   assert.ok(!JSON.stringify(test.diagnostics).includes("://"));
   assert.ok(!JSON.stringify(test.diagnostics).includes("JD000000000162"));
+}
+
+const pdd = { ...manual, pddImport: { ownerKey: "synthetic-pdd-owner", orderId: "synthetic-order", shippingId: "73162" } };
+const pddURL = pddParcelAppURL(pdd.pddImport, displayWaybill(pdd));
+for (const [pddLogin, results, expected, opensWeb] of [
+  [undefined, [true], [pddURL], false],
+  [undefined, [false, true], [pddURL, manualUrl], false],
+  ["active", [false], [pddURL], true],
+  ["expired", [false, true], [pddURL, manualUrl], true],
+  ["unavailable", [false], [pddURL], true],
+] as const) {
+  const attempt = scenario([...results], false, "拼多多", { shipment: pdd, current: [pdd], persisted: true, pddURL, pddLogin });
+  await attempt.run();
+  assert.match(pddURL, /^pinduoduo:\/\//);
+  assert.deepEqual(attempt.opened, expected);
+  assert.deepEqual(attempt.h5, opensWeb ? [pddURL] : []);
+  assert.equal(attempt.requestCount(), 0);
+  assert.deepEqual(attempt.notices, pddLogin === "unavailable" ? ["打开拼多多失败，请稍后重试"] : []);
+  assert.ok(!JSON.stringify(attempt.diagnostics).includes(pdd.pddImport.shippingId));
+}
+const now = Date.now();
+const cloudPdd = { ...manual, timeline: { ...manual.timeline, statusEventAtMs: now - 1000, tracks: [] } };
+const pddLink = { waybill: displayWaybill(cloudPdd), shippingId: pdd.pddImport.shippingId, anchorAt: now - 2000 };
+for (const credentialChanged of [false, true]) {
+  const attempt = scenario(true, false, "拼多多", { shipment: cloudPdd, current: [cloudPdd], persisted: true,
+    pddURL, pddLink, credentialChanged });
+  await attempt.run();
+  assert.deepEqual(attempt.opened, credentialChanged ? [] : [pddURL]);
+  assert.equal(attempt.requestCount(), 0);
 }
 
 const visibilityStart = page.indexOf("  const manualExternalAppURL =");
@@ -164,6 +210,15 @@ assert.equal(visibleManualURL({ persistedShipment: true }, manual, kuaidi100Mini
 assert.equal(visibleManualURL({ persistedShipment: true }, {
   ...manual, timeline: { ...manual.timeline, waybill: "" },
 }, kuaidi100MiniProgramURL, displayWaybill), "");
+
+const navigationStart = page.indexOf("  const externalAppName =");
+const navigationEnd = page.indexOf("\n  const detailSourceIcon =", navigationStart);
+assert.ok(navigationStart >= 0 && navigationEnd > navigationStart);
+const presentation = new Function("shipment", "syncedInternational", "pddExternalAppURL", "pddOrigin",
+  "manualExternalAppURL", "accountExternalAppURL", "accountExternalAppName", "DETAIL_SOURCES",
+  `${page.slice(navigationStart, navigationEnd)}\nreturn { externalAppName, detailSource };`);
+assert.deepEqual(presentation(manual, true, "pinduoduo://fixture", true, manualUrl, "",
+  () => "菜鸟", { pinduoduo: ["拼多多", "fixture.png"] }), { externalAppName: "", detailSource: undefined });
 
 const projectedManual = { ...manual, identity: { ...manual.identity,
   sourceId: "SYNTHETIC_OWNER", projectedWaybill: "JD000000000164" } };
@@ -208,8 +263,8 @@ const sfMiniProgram = kuaidi100MiniProgramURL(displayWaybill(sfShipment));
 for (const [results, expected, notice] of [
   [[true], [sfNative], []],
   [[false, true], [sfNative, sfMiniProgram], []],
-  [[false, false], [sfNative, sfMiniProgram], ["暂时无法打开快递100小程序，请稍后重试"]],
-  [[false, new Error("synthetic WeChat open error")], [sfNative, sfMiniProgram], ["暂时无法打开快递100小程序，请稍后重试"]],
+  [[false, false], [sfNative, sfMiniProgram], ["无法打开快递100小程序，请稍后重试"]],
+  [[false, new Error("synthetic WeChat open error")], [sfNative, sfMiniProgram], ["无法打开快递100小程序，请稍后重试"]],
   [[new Error("synthetic SF open error")], [sfNative], ["打开顺丰失败，请稍后重试"]],
 ] as const) {
   const attempt = scenario([...results], false, "顺丰", { shipment: sfShipment, states: [sfState] });
@@ -292,7 +347,7 @@ for (const result of [false, new Error("synthetic WeChat failure")]) {
   await unavailable.run();
   assert.equal(unavailable.opened.length, 1);
   assert.equal(unavailable.requestCount(), 0);
-  assert.deepEqual(unavailable.notices, ["暂时无法打开快递100小程序，请稍后重试"]);
+  assert.deepEqual(unavailable.notices, ["无法打开快递100小程序，请稍后重试"]);
   assert.deepEqual(unavailable.busy, [true, false]);
 }
 for (const options of [

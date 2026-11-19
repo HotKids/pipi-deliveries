@@ -101,11 +101,14 @@ for (const provider of ["manual", "ShunFeng", "JingDong", "CaiNiao"]) {
       });
   });
 }
-test("equal event times keep row order across different completion times", () => {
+test("list refresh time breaks a tie only when the headline clocks match", () => {
   const a = row("manual", "123456789012");
   const b = row("manual", "223456789012");
   const ids = (rows: Shipment[]) => sortShipments(rows).map(s => s.identity.id);
-  assert.deepEqual(ids([{ ...a, updatedAtMs: NOW + 10 }, b]), ids([a, { ...b, updatedAtMs: NOW + 20 }]));
+  assert.deepEqual(ids([{ ...a, updatedAtMs: NOW + 10 }, b]), [a.identity.id, b.identity.id]);
+  assert.deepEqual(ids([a, { ...b, updatedAtMs: NOW + 20 }]), [b.identity.id, a.identity.id]);
+  const newer = { ...a, timeline: { ...a.timeline, latestTimeText: new Date(NOW + 60_000).toISOString() } };
+  assert.deepEqual(ids([newer, { ...b, updatedAtMs: NOW + 120_000 }]), [a.identity.id, b.identity.id]);
 });
 
 function captured(current: Shipment, provider: string, pickup = false): Shipment {

@@ -1,19 +1,12 @@
 import type { ColorStringHex, ColorStringRGBA } from "scripting";
 import { carrierArtworkAccent, courierIconName } from "../services/carrier-presentation";
 import type { StatusSemantic } from "../models";
-import { blendStatusColor, statusTextTint, statusTint } from "../services/status";
+import { blendStatusColor, statusTextAccent, statusTextTint } from "../services/status";
 
-// Wide widget badges follow Lite's ExpressStatusColors; other surfaces retain system colors.
-const WIDGET_STATUS_RGB: Readonly<Record<string, number>> = {
-  systemOrange: 0xe65b17, systemGreen: 0x1a8a4a, systemTeal: 0x0f9d8a,
-  systemBlue: 0x3275d6, systemYellow: 0xfbc02d, systemRed: 0xd43d3d,
-  secondaryLabel: 0x757575,
-};
-
-export function widgetStatusStyle(semantic: StatusSemantic, brandAccent: string) {
-  const accent = WIDGET_STATUS_RGB[statusTint(semantic)] ?? WIDGET_STATUS_RGB.secondaryLabel;
+export function widgetStatusStyle(semantic: StatusSemantic, brandAccent: string, label = "") {
+  const accent = statusTextAccent(semantic, label);
   const opacity = 0x1a / 255;
-  const foreground = statusTextTint(semantic, { brandAccent, badgeOpacity: opacity, accentRGB: accent });
+  const foreground = statusTextTint(semantic, { brandAccent, badgeOpacity: opacity, label });
   const light = blendStatusColor(accent, Number.parseInt(foreground.light.slice(1), 16), 0.5);
   return {
     background: `rgba(${accent >> 16 & 255}, ${accent >> 8 & 255}, ${accent & 255}, ${opacity})` as ColorStringRGBA,
