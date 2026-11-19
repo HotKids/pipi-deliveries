@@ -59,9 +59,11 @@ import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services
 import { requestWidgetReload } from "../services/widgets";
 import { cloudPddParcelAppURL, displayedPlatformFields, hasPddParcelSource, samePlatformTarget } from "../services/platform-parcel-merge";
 import { pddParcelAppURL } from "../services/platform-parcel-data";
-import { readCloudParcelMetadata, type CloudParcelDetails } from "../services/cloud-parcel-metadata";
+import { cloudParcelTitle, readCachedCloudParcelTitle, readCloudParcelMetadata, recordCloudParcelTitle,
+  type CloudParcelDetails } from "../services/cloud-parcel-metadata";
 import { needsParcelDetailFields, refreshParcelDetailFields } from "../services/parcel-detail-fields";
-import { gatewayCredentialGeneration } from "../services/credentials";
+import { gatewayCredentialForLocalCache, gatewayCredentialGeneration } from "../services/credentials";
+import { GatewayError } from "../services/gateway";
 import { SCRIPT_BUILD_TRACK } from "../services/build-track";
 import { parcelActivityContent } from "../services/parcel-pickup";
 import { timelineTimeParts } from "../services/time-presentation";
@@ -100,7 +102,7 @@ export function DetailPage(props: {
 }) {
   const [shipment, setShipment] = useState(props.shipment);
   const [notice, setNotice] = useState("");
-  const [cloud, setCloud] = useState<{ scope: string; details: CloudParcelDetails } | undefined>(undefined);
+  const [cloud, setCloud] = useState<{ scope: string; details?: CloudParcelDetails } | undefined>(undefined);
   const cloudAbortRef = useRef<AbortController | null>(null);
   const ownerSnapshot = useRef<LoadedStateSnapshot | undefined>(undefined);
   const [openingExternalApp, setOpeningExternalApp] = useState(false);
@@ -349,10 +351,21 @@ export function DetailPage(props: {
   const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment &&
       (needsExtraFields || !localPddAppURL) && !unprojectedAccountOrder(shipment)
     ? normalizeWaybill(displayWaybill(shipment)) : "";
-  const cloudGeneration = /^[A-Z0-9]{6,64}$/.test(cloudWaybill) ? gatewayCredentialGeneration() : null;
+  const cloudCredential = /^[A-Z0-9]{6,64}$/.test(cloudWaybill) ? gatewayCredentialForLocalCache() : null;
+  const cloudGeneration = cloudCredential?.generation ?? null;
   const cloudLifecycle = shipmentLifecycleKey(shipment);
-  const cloudScope = cloudGeneration === null ? "" : JSON.stringify([cloudGeneration, cloudWaybill, cloudLifecycle]);
-  const cloudDetails = cloud?.scope === cloudScope ? cloud.details : undefined;
+  const cloudParcel = JSON.stringify([cloudWaybill, cloudLifecycle]);
+  const cloudScope = cloudCredential ? JSON.stringify([cloudGeneration, cloudParcel]) : "";
+  const initialCloudTitle = useMemo(() => {
+    if (!cloudCredential || cloudCredential.rejected) return;
+    try {
+      const title = readCachedCloudParcelTitle(cloudCredential.scope, cloudParcel);
+      if (title && ownsCloudWaybill()) return title;
+    } catch { /* Shipment state or the optional cache may be temporarily unavailable. */ }
+  }, [cloudScope, cloudCredential?.rejected]);
+  const restoredCloud = initialCloudTitle ? { metadata: initialCloudTitle } : undefined;
+  const cloudDetails: CloudParcelDetails | undefined = cloudCredential?.rejected
+    ? undefined : (cloud?.scope === cloudScope ? cloud.details : restoredCloud);
   const pddExternalAppURL = localPddAppURL || cloudPddParcelAppURL(shipment, cloudDetails?.pddLink);
   const pddOrigin = samePlatformTarget(props.shipment, shipment) && hasPddParcelSource(props.shipment);
   const platformFields = displayedPlatformFields(shipment, Date.now(), cloudDetails?.metadata);
@@ -376,17 +389,31 @@ export function DetailPage(props: {
   }
 
   async function refreshCloudMetadata(): Promise<void> {
-    if (!cloudScope) return;
+    if (!cloudCredential) return;
     cloudAbortRef.current?.abort();
     const controller = new AbortController();
     cloudAbortRef.current = controller;
+    const requestedAt = Date.now();
+    const currentCredential = () => !controller.signal.aborted && gatewayCredentialGeneration() === cloudGeneration;
     try {
-      const details = ownsCloudWaybill() ? await readCloudParcelMetadata(cloudWaybill, controller.signal) : undefined;
-      if (controller.signal.aborted) return;
-      const current = details && gatewayCredentialGeneration() === cloudGeneration && ownsCloudWaybill();
-      setCloud(current ? { scope: cloudScope, details } : undefined);
-    } catch {
-      if (!controller.signal.aborted) setCloud(undefined);
+      if (!ownsCloudWaybill()) { setCloud({ scope: cloudScope }); return; }
+      const details = await readCloudParcelMetadata(cloudWaybill, controller.signal);
+      if (!currentCredential()) return;
+      if (!ownsCloudWaybill()) { setCloud({ scope: cloudScope }); return; }
+      setCloud({ scope: cloudScope, details });
+      recordCloudParcelTitle(cloudCredential.scope, cloudParcel, requestedAt, cloudParcelTitle(shipment, details?.metadata),
+        () => currentCredential() && ownsCloudWaybill());
+    } catch (error) {
+      if (!currentCredential()) return;
+      if (error instanceof GatewayError && (error.status === 401 || error.status === 403)) {
+        recordCloudParcelTitle(cloudCredential.scope, cloudParcel, requestedAt, "denied", currentCredential);
+        setCloud({ scope: cloudScope });
+        return;
+      }
+      let title: ReturnType<typeof cloudParcelTitle>;
+      try { if (ownsCloudWaybill()) title = cloudParcelTitle(shipment, cloudDetails?.metadata); }
+      catch { /* An unreadable owner cannot display cloud metadata. */ }
+      setCloud({ scope: cloudScope, details: title ? { metadata: title } : undefined });
     }
   }
 
