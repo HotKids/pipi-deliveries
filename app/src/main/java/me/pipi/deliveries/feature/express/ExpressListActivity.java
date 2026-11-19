@@ -60,7 +60,6 @@ import me.pipi.deliveries.data.CarrierRegistry;
 import me.pipi.deliveries.data.ExpressRepository;
 import me.pipi.deliveries.data.Kuaidi100TimelinePolicy;
 import me.pipi.deliveries.model.ExpressItem;
-import me.pipi.deliveries.model.StatusSemantic;
 import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.network.ExpressApi;
 import me.pipi.deliveries.network.ExpressAccountSource;
@@ -1072,10 +1071,11 @@ public final class ExpressListActivity extends AppCompatActivity {
             ExpressItem item = getItem(position);
             holder.icon.setImageResource(item.displayIconResource());
             holder.title.setText(item.displayStatus());
-            holder.title.setTextColor(ExpressStatusColors.textOn(statusColor(item),
+            int accent = ExpressStatusColors.accent(holder.title.getContext(), item);
+            holder.title.setTextColor(ExpressStatusColors.textOn(accent,
                     com.google.android.material.color.MaterialColors.getColor(holder.title,
                             com.google.android.material.R.attr.colorSurface)));
-            ExpressSenderBadge.apply(holder.sender, item.sender, statusColor(item));
+            ExpressSenderBadge.apply(holder.sender, item.sender, accent);
             holder.time.setText(me.pipi.deliveries.model.ExpressTimeCodec.formatListTime(item.latestTime));
             holder.time.setVisibility(item.latestTime.isEmpty() ? View.GONE : View.VISIBLE);
             holder.waybill.setText(getString(
@@ -1090,26 +1090,6 @@ public final class ExpressListActivity extends AppCompatActivity {
             convertView.setOnLongClickListener(null);
             convertView.setLongClickable(false);
             return convertView;
-        }
-    }
-
-    /**
-     * 三端同一张状态色表（用户定 2026-09-05）：与详情页 statusColor、Pipi、iOS statusTint 同表。未知状态与已取消
-     * 同为灰 #757575（审计 R7，用户 2026-09-25 采纳；原来跟随主题色）。
-     */
-    static int statusColor(ExpressItem item) {
-        switch (item.semantic == null ? StatusSemantic.UNKNOWN : item.semantic) {
-            case DANGER: return ExpressStatusColors.DANGER;
-            case WAITING_PICKUP: return ExpressStatusColors.WAITING_PICKUP;
-            case DELIVERY: return ExpressStatusColors.DELIVERY;
-            case COMPLETED: return ExpressStatusColors.COMPLETED;
-            case PICKED:
-            case TRANSIT: return ExpressStatusColors.TRANSIT;
-            case ORDERED:
-            case SHIPPED: return ExpressStatusColors.ORDERED;
-            case CANCELLED:
-            default:
-                return ExpressStatusColors.NEUTRAL;
         }
     }
 

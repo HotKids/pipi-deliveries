@@ -24,7 +24,7 @@ import {
   terminalEvidenceAtMs,
   sortShipments,
   statusLabel,
-  statusTint,
+  statusTextAccent,
   widgetStatusLabel,
   withNote,
   withShipmentNote,
@@ -117,10 +117,12 @@ assert.equal(semanticFromAccountState(106, ""), "WAITING_PICKUP");
 assert.equal(semanticFromAccountState("107", ""), "COMPLETED");
 assert.equal(widgetStatusLabel("DANGER"), "异常件");
 assert.equal(widgetStatusLabel("UNKNOWN"), "暂无状态");
-assert.equal(statusTint("COMPLETED"), "systemTeal");
-assert.equal(statusTint("DELIVERY"), "systemGreen");
-assert.equal(statusTint("ORDERED"), "systemYellow");
-assert.equal(statusTint("CANCELLED"), "secondaryLabel");
+assert.equal(statusTextAccent("COMPLETED"), 0x005d2d);
+assert.equal(statusTextAccent("COMPLETED", "已完成", true), 0x50b771);
+assert.equal(statusTextAccent("DELIVERY"), 0x7a491d);
+assert.equal(statusTextAccent("DELIVERY", "待派送", true), 0xfaac20);
+assert.equal(statusTextAccent("ORDERED"), 0x0f61c1);
+assert.equal(statusTextAccent("CANCELLED"), 0x63696a);
 assert.equal(
   containsTimelineStartTrack([
     track("2026-08-26 11:58:00", "快递已下单", ""),

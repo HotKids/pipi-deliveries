@@ -51,7 +51,6 @@ import {
   normalizeWaybill,
   shipmentDetailPhoneTail,
   shipmentDetailPresentationStatus,
-  statusTint,
   statusTextTint,
   timedTracks,
   trackDisplayDetail,
@@ -374,6 +373,7 @@ export function DetailPage(props: {
     shipment,
     detailTimeline,
   );
+  const statusColor = statusTextTint(presentationStatus.semantic, { label: presentationStatus.text });
   const statusText = loadingManualDetail &&
       presentationStatus.semantic === "UNKNOWN"
     ? MANUAL_QUERY_IN_FLIGHT_TEXT
@@ -906,7 +906,7 @@ export function DetailPage(props: {
               <Text
                 font="body"
                 fontWeight="bold"
-                foregroundStyle={statusTextTint(presentationStatus.semantic, { label: presentationStatus.text })}
+                foregroundStyle={statusColor}
                 lineLimit={1}
               >
                 {statusText}
@@ -1032,7 +1032,7 @@ export function DetailPage(props: {
                   font={10}
                   foregroundStyle={
                     index === 0
-                      ? statusTint(presentationStatus.semantic)
+                      ? statusColor
                       : "tertiaryLabel"
                   }
                   frame={{ width: 12 }}

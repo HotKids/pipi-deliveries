@@ -256,9 +256,8 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 ExpressWidgetPresentation.rowIdentity(item));
         views.setTextViewText(WIDE_STATUS_IDS[index],
                 ExpressWidgetPresentation.statusText(item));
-        StatusStyle statusStyle = StatusStyle.forSemantic(item.semantic);
         views.setInt(WIDE_STATUS_IDS[index],
-                "setBackgroundResource", statusStyle.background);
+                "setBackgroundResource", ExpressStatusColors.widgetBadgeBackground(item));
         applyStatusTextColor(context, views, WIDE_STATUS_IDS[index], item,
                 ExpressWidgetPalette.accent(context, items.get(0)), true);
         views.setTextViewTextSize(WIDE_DETAIL_IDS[index], TypedValue.COMPLEX_UNIT_SP,
@@ -401,10 +400,6 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 ExpressAccountSource.bindingSource(context));
     }
 
-    /**
-     * 小组件状态胶囊（4×2）与状态词（2×2）的颜色只来自三端同一张表 ExpressStatusColors；
-     * 胶囊底色是同一个色的 10% 透明。派送中（绿）与已签收（青）从此不再同色。
-     */
     private static void applyStatusTextColor(Context context, RemoteViews views, int id,
             ExpressItem item, int accent, boolean badge) {
         if (Build.VERSION.SDK_INT >= 31) {
@@ -425,16 +420,15 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         int surface = context.getColor(R.color.widget_surface);
         int tinted = androidx.core.graphics.ColorUtils.compositeColors(
                 (accent & 0x00ffffff) | 0x55000000, surface);
-        int status = StatusStyle.forSemantic(item.semantic).foreground;
+        int status = ExpressStatusColors.accent(context, item);
         if (badge) {
-            int fill = (status & 0x00ffffff) | 0x1a000000;
+            int fill = ExpressStatusColors.widgetBadgeFill(item);
             surface = androidx.core.graphics.ColorUtils.compositeColors(fill, surface);
             tinted = androidx.core.graphics.ColorUtils.compositeColors(fill, tinted);
         }
         int text = ExpressStatusColors.textOn(status, surface, tinted);
         // Daytime badges use the approved midpoint; night keeps the full contrast tone.
-        if (badge && (context.getResources().getConfiguration().uiMode
-                & Configuration.UI_MODE_NIGHT_MASK) != Configuration.UI_MODE_NIGHT_YES) {
+        if (badge && !ExpressStatusColors.isNight(context)) {
             return Color.rgb((Color.red(status) + Color.red(text) + 1) / 2,
                     (Color.green(status) + Color.green(text) + 1) / 2,
                     (Color.blue(status) + Color.blue(text) + 1) / 2);
@@ -442,44 +436,4 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         return text;
     }
 
-    static final class StatusStyle {
-        final int background;
-        final int foreground;
-
-        StatusStyle(int background, int foreground) {
-            this.background = background;
-            this.foreground = foreground;
-        }
-
-        static StatusStyle forSemantic(
-                me.pipi.deliveries.model.StatusSemantic semantic) {
-            switch (semantic) {
-                case DANGER:
-                    return new StatusStyle(R.drawable.widget_express_status_danger_bg,
-                            ExpressStatusColors.DANGER);
-                case WAITING_PICKUP:
-                    return new StatusStyle(R.drawable.widget_express_status_waiting_bg,
-                            ExpressStatusColors.WAITING_PICKUP);
-                case DELIVERY:
-                    return new StatusStyle(R.drawable.widget_express_status_delivery_bg,
-                            ExpressStatusColors.DELIVERY);
-                case COMPLETED:
-                    return new StatusStyle(R.drawable.widget_express_status_completed_bg,
-                            ExpressStatusColors.COMPLETED);
-                case PICKED:
-                case TRANSIT:
-                    return new StatusStyle(R.drawable.widget_express_status_transit_bg,
-                            ExpressStatusColors.TRANSIT);
-                case ORDERED:
-                case SHIPPED:
-                    return new StatusStyle(R.drawable.widget_express_status_ordered_bg,
-                            ExpressStatusColors.ORDERED);
-                case CANCELLED:
-                case UNKNOWN:
-                default:
-                    return new StatusStyle(R.drawable.widget_express_status_neutral_bg,
-                            ExpressStatusColors.NEUTRAL);
-            }
-        }
-    }
 }

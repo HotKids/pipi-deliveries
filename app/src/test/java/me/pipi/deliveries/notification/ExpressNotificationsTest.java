@@ -124,13 +124,19 @@ public final class ExpressNotificationsTest {
                 "您的快件已送达，签收人：家门口", 1788234629000L));
     }
 
-    /** Audit R7 (user 2026-09-25): a signed notification carries the shared teal accent too. */
-    @org.junit.Test
-    public void aSignedNotificationUsesTheSharedTealAccent() {
-        org.junit.Assert.assertEquals(0xFF0F9D8A,
-                ExpressNotifications.statusColor(me.pipi.deliveries.model.StatusSemantic.COMPLETED));
-        org.junit.Assert.assertEquals(0xFF757575,
-                ExpressNotifications.statusColor(me.pipi.deliveries.model.StatusSemantic.UNKNOWN));
+    @Test
+    @Config(qualifiers = "notnight")
+    public void postedNotificationsUseTheSharedCompletedAndUnknownAccents() {
+        Application context = RuntimeEnvironment.getApplication();
+        Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS);
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        ExpressItem signed = parcel(StatusSemantic.COMPLETED, "manual", "", "", "已签收", 1L);
+        ExpressItem unknown = parcel(StatusSemantic.UNKNOWN, "manual", "", "", "暂无状态", 1L);
+        for (ExpressItem item : new ExpressItem[]{signed, unknown}) {
+            assertTrue(ExpressNotifications.post(context, item, StatusSemantic.COMPLETED));
+            Notification posted = Shadows.shadowOf(manager).getNotification((int) item.rowId);
+            assertEquals(item == signed ? 0xFF005D2D : 0xFF545B5C, posted.color);
+        }
     }
 
     /** G17: an empty headline still posts, with iOS's 「物流状态已更新」 body. */

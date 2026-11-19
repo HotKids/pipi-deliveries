@@ -214,7 +214,7 @@ public final class ExpressCompatibilityContractTest {
         assertFalse(provider.contains("item.companyName"));
         assertEquals(2, occurrences(
                 provider, "ExpressWidgetPresentation.rowIdentity(item)"));
-        assertTrue(provider.contains("StatusStyle.forSemantic(item.semantic).foreground"));
+        assertTrue(provider.contains("ExpressStatusColors.accent(context, item)"));
         assertTrue(provider.contains("R.id.widget_compact_detail"));
         assertTrue(provider.contains("R.id.widget_compact_all_text"));
         assertTrue(provider.contains("WidgetHostMetrics.currentHeightDp(context, options)"));

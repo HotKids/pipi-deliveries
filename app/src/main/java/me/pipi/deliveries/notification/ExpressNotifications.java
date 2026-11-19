@@ -125,7 +125,7 @@ public final class ExpressNotifications {
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
                 .setCategory(Notification.CATEGORY_STATUS);
-        int accent = statusColor(item.semantic);
+        int accent = ExpressStatusColors.accent(context, item);
         if (accent != 0) builder.setColor(accent);
         int logo = item.displayIconResource();
         if (logo != R.drawable.ic_card_express_cp_default) {
@@ -237,21 +237,6 @@ public final class ExpressNotifications {
         String meta = suffix.isEmpty()
                 ? item.displayStatus() : suffix + " · " + item.displayStatus();
         return item.displayCarrierLabel() + " " + meta;
-    }
-
-    /** The shared status colour table; a signed notification is teal too (audit R7, user 2026-09-25). */
-    static int statusColor(StatusSemantic semantic) {
-        switch (semantic == null ? StatusSemantic.UNKNOWN : semantic) {
-            case DANGER: return ExpressStatusColors.DANGER;
-            case ORDERED:
-            case SHIPPED: return ExpressStatusColors.ORDERED;
-            case PICKED:
-            case TRANSIT: return ExpressStatusColors.TRANSIT;
-            case DELIVERY: return ExpressStatusColors.DELIVERY;
-            case WAITING_PICKUP: return ExpressStatusColors.WAITING_PICKUP;
-            case COMPLETED: return ExpressStatusColors.COMPLETED;
-            default: return ExpressStatusColors.NEUTRAL;
-        }
     }
 
     static CharSequence breakableText(String value) {

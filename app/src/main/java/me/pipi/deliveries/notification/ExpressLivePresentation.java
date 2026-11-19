@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import me.pipi.deliveries.R;
 import me.pipi.deliveries.data.CarrierRegistry;
+import me.pipi.deliveries.feature.express.ExpressStatusColors;
 import me.pipi.deliveries.model.ExpressItem;
 import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.StatusSemantic;
@@ -15,14 +16,14 @@ final class ExpressLivePresentation {
     final String title, capsule, summary, detail;
     final int smallIcon, accent, labelLength;
 
-    private ExpressLivePresentation(ExpressItem primary, String label, int count) {
+    private ExpressLivePresentation(ExpressItem primary, String label, int count, boolean dark) {
         this.primary = primary;
         labelLength = label.length();
         title = label + " " + count + " 件";
         capsule = label + " " + count;
         boolean waiting = primary.semantic == StatusSemantic.WAITING_PICKUP;
         smallIcon = waiting ? R.drawable.ic_live_package : R.drawable.ic_live_delivery;
-        accent = ExpressNotifications.statusColor(primary.semantic);
+        accent = ExpressStatusColors.accent(primary.semantic, label, dark);
         String company = primary.displayCarrierLabel();
         String waybill = primary.displayWaybill();
         String suffix = waybill.length() <= 4 ? waybill : waybill.substring(waybill.length() - 4);
@@ -32,7 +33,8 @@ final class ExpressLivePresentation {
         detail = waiting && !headline.isEmpty() ? "🚚  " + headline : headline;
     }
 
-    static ExpressLivePresentation from(List<ExpressItem> visible, boolean delivery, boolean pickup) {
+    static ExpressLivePresentation from(List<ExpressItem> visible, boolean delivery, boolean pickup,
+            boolean dark) {
         List<ExpressItem> candidates = new ArrayList<>();
         if (visible != null) for (ExpressItem item : visible) {
             if (item == null || item.carrierPending()) continue;
@@ -53,7 +55,7 @@ final class ExpressLivePresentation {
             sameLabel &= label.equals(item.displayStatus());
         }
         if (!sameLabel) label = CarrierRegistry.statusLabels().label(primary.semantic);
-        return new ExpressLivePresentation(primary, label, count);
+        return new ExpressLivePresentation(primary, label, count, dark);
     }
 
     String fingerprint() {
