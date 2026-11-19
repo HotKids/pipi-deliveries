@@ -4,28 +4,53 @@ import {
 } from "scripting";
 import { PARCEL_ACTIVITY_PREVIEW, type ParcelActivityContent } from "../services/parcel-pickup";
 import { parcelCardArtwork } from "../services/parcel-card-appearance";
+import { MEAL_ARTWORK_FRAME_ENDS } from "../services/meal/artwork-motion.generated";
 import { useBundledImage } from "./bundled-image";
 import { ParcelLiveActivityCard, type ParcelLiveActivityCardProps, PIPI_CARD } from "./ParcelLiveActivityCard";
+import { MEAL_CARD_TOKENS, PICKUP_STICKER_ENTRANCE } from "./pickup-card-tokens.generated";
 
-const { artWidth: ART_WIDTH, artHeight: ART_HEIGHT, logoX: STICKER_X, logoY: STICKER_Y } = PIPI_CARD;
+const { artWidth: ART_WIDTH, artHeight: ART_HEIGHT } = PIPI_CARD;
 const ATLAS_COLUMNS = 7;
-const ATLAS_SCALE = 3;
-const FRAME_COUNT = 43;
 const FRAME_DURATION_MS = 33;
-const STICKER_DELAY_MS = 1250;
-const STICKER_ALPHA_MS = 500;
-const STICKER_ROTATION_MS = [183, 200, 150, 67];
-const STICKER_ROTATION_DEGREES = [4, -4, 3, -1, 0];
-const STICKER_DURATION_MS = STICKER_ROTATION_MS.reduce((sum, duration) => sum + duration, 0);
-let boxAtlas: UIImage | null | undefined;
-let boxAtlasRequest: Promise<UIImage | null> | undefined;
+const CARD_ROW_SPACING = 16;
+const BOX_IMAGE = "parcel-activity/box.png";
 
-function preparePickupBoxAnimation(): Promise<UIImage | null> {
-  return boxAtlasRequest ??= FileManager.readAsData(`${Script.directory}/assets/parcel-activity/box-frames.png`)
-    .then((data) => UIImage.fromData(data)).catch(() => null).then((image) => {
-      boxAtlas = image;
-      return image;
-    });
+type ArtworkPlayback = {
+  path: string;
+  pixelScale: number;
+  frameEnds: readonly number[];
+  stickerDelay: number;
+};
+
+const BOX_PLAYBACK: ArtworkPlayback = {
+  path: "parcel-activity/box-frames.png",
+  pixelScale: 3,
+  frameEnds: Array.from({ length: 43 }, (_, index) => (index + 1) * FRAME_DURATION_MS),
+  stickerDelay: PICKUP_STICKER_ENTRANCE.parcelDelay,
+};
+
+function mealArtworkPlayback(art: { path: string; name: string }): ArtworkPlayback | undefined {
+  const frameEnds = MEAL_ARTWORK_FRAME_ENDS[art.name];
+  return frameEnds ? {
+    path: art.path.replace(/\.png$/, "-frames.png"), pixelScale: 2,
+    frameEnds, stickerDelay: PICKUP_STICKER_ENTRANCE.mealDelay,
+  } : undefined;
+}
+
+let recentAtlas: { path: string; image?: UIImage | null; request: Promise<UIImage | null> } | undefined;
+
+function loadArtworkAtlas(path: string): Promise<UIImage | null> {
+  if (recentAtlas?.path === path) return recentAtlas.request;
+  const entry: NonNullable<typeof recentAtlas> = {
+    path,
+    request: FileManager.readAsData(`${Script.directory}/assets/${path}`)
+      .then((data) => UIImage.fromData(data)).catch(() => null).then((image) => {
+        entry.image = image;
+        return image;
+      }),
+  };
+  recentAtlas = entry;
+  return entry.request;
 }
 
 function stickerEase(progress: number): number {
@@ -35,7 +60,7 @@ function stickerEase(progress: number): number {
   let high = 1;
   for (let iteration = 0; iteration < 10; iteration++) {
     const t = (low + high) / 2;
-    const x = 3 * (1 - t) * t * (0.33 * (1 - t) + 0.67 * t) + t ** 3;
+    const x = 3 * (1 - t) * t * (PICKUP_STICKER_ENTRANCE.curveX1 * (1 - t) + PICKUP_STICKER_ENTRANCE.curveX2 * t) + t ** 3;
     if (x < progress) low = t;
     else high = t;
   }
@@ -43,10 +68,11 @@ function stickerEase(progress: number): number {
 }
 
 function stickerRotation(elapsed: number): number {
-  for (const [index, duration] of STICKER_ROTATION_MS.entries()) {
+  const { rotationIntervals, rotationDegrees } = PICKUP_STICKER_ENTRANCE;
+  for (const [index, duration] of rotationIntervals.entries()) {
     if (elapsed < duration) {
-      const from = STICKER_ROTATION_DEGREES[index];
-      const to = STICKER_ROTATION_DEGREES[index + 1];
+      const from = rotationDegrees[index];
+      const to = rotationDegrees[index + 1];
       return (from + (to - from) * stickerEase(elapsed / duration)) * Math.PI / 180;
     }
     elapsed -= duration;
@@ -54,7 +80,11 @@ function stickerRotation(elapsed: number): number {
   return 0;
 }
 
-function AnimatedBox({ atlas, logo, logoSize }: { atlas: UIImage; logo: UIImage | null; logoSize: number }) {
+type StickerPlacement = { logoSize: number; logoX: number; logoY: number };
+
+function AnimatedPickupArtwork({ atlas, playback, logo, logoSize, logoX, logoY }: StickerPlacement & {
+  atlas: UIImage; playback: ArtworkPlayback; logo: UIImage | null;
+}) {
   const [settled, setSettled] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   const stopTimer = () => {
@@ -62,33 +92,36 @@ function AnimatedBox({ atlas, logo, logoSize }: { atlas: UIImage; logo: UIImage 
     timer.current = undefined;
   };
   useEffect(() => stopTimer, []);
-  const finishAt = logo ? STICKER_DELAY_MS + STICKER_DURATION_MS : FRAME_COUNT * FRAME_DURATION_MS;
-  const width = ART_WIDTH * ATLAS_SCALE;
-  const height = ART_HEIGHT * ATLAS_SCALE;
-  const stickerX = STICKER_X - logoSize / 2;
-  const stickerY = STICKER_Y - logoSize / 2;
+  const { frameEnds, pixelScale, stickerDelay } = playback;
+  const lastFrame = frameEnds.length - 1;
+  const finishAt = Math.max(frameEnds[lastFrame], logo ? stickerDelay + PICKUP_STICKER_ENTRANCE.duration : 0);
+  const width = ART_WIDTH * pixelScale;
+  const height = ART_HEIGHT * pixelScale;
+  const stickerX = logoX - logoSize / 2;
+  const stickerY = logoY - logoSize / 2;
+  const { pivotX, pivotY, alphaDuration } = PICKUP_STICKER_ENTRANCE;
   return (
     <TimelineCanvas frame={{ width: ART_WIDTH, height: ART_HEIGHT }} opaque={false}
       paused={settled}
       schedule={{ minimumInterval: FRAME_DURATION_MS / 1000 }}
       onAppear={() => {
         stopTimer();
-        // Keep the last box frame on the same canvas while the sticker settles.
+        // Keep the terminal frame on the same canvas while the sticker settles.
         timer.current = setTimeout(() => setSettled(true), finishAt + FRAME_DURATION_MS);
       }}
       onDisappear={stopTimer}
       draw={(ctx, _, seconds) => {
         const elapsed = Math.max(0, seconds * 1000);
-        const frame = Math.min(FRAME_COUNT - 1, Math.floor(elapsed / FRAME_DURATION_MS));
+        const frame = elapsed >= frameEnds[lastFrame] ? lastFrame : frameEnds.findIndex(end => elapsed < end);
         ctx.drawImage({ image: atlas }, frame % ATLAS_COLUMNS * width, Math.floor(frame / ATLAS_COLUMNS) * height,
           width, height, 0, 0, ART_WIDTH, ART_HEIGHT);
-        if (logo && elapsed >= STICKER_DELAY_MS) {
-          const entrance = elapsed - STICKER_DELAY_MS;
+        if (logo && elapsed >= stickerDelay) {
+          const entrance = elapsed - stickerDelay;
           ctx.save();
-          ctx.globalAlpha = stickerEase(entrance / STICKER_ALPHA_MS);
-          ctx.translate(stickerX + 12, stickerY + 47);
+          ctx.globalAlpha = stickerEase(entrance / alphaDuration);
+          ctx.translate(stickerX + pivotX, stickerY + pivotY);
           ctx.rotate(stickerRotation(entrance));
-          ctx.drawImage({ image: logo }, -12, -47, logoSize, logoSize);
+          ctx.drawImage({ image: logo }, -pivotX, -pivotY, logoSize, logoSize);
           ctx.restore();
         }
       }}
@@ -96,40 +129,44 @@ function AnimatedBox({ atlas, logo, logoSize }: { atlas: UIImage; logo: UIImage 
   );
 }
 
-function PickupTabArtwork({ logoAsset, logoSize }: { logoAsset?: string; logoSize: number }) {
+function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playback }: StickerPlacement & {
+  baseAsset: string; logoAsset?: string; playback?: ArtworkPlayback;
+}) {
   const [appearance, setAppearance] = useState(0);
-  const [atlas, setAtlas] = useState(boxAtlas);
+  const [atlas, setAtlas] = useState(playback && recentAtlas?.path === playback.path ? recentAtlas.image : undefined);
   const hasAppeared = useRef(false);
   const visible = useRef(false);
   useEffect(() => () => { visible.current = false; }, []);
   const logo = useBundledImage(logoAsset) ?? null;
-  const fallbackBox = useBundledImage(atlas ? undefined : "parcel-activity/box.png");
+  const still = useBundledImage(atlas ? undefined : baseAsset);
   return (
     <ZStack alignment="topLeading" frame={{ width: ART_WIDTH, height: ART_HEIGHT }}
-      onAppear={() => {
+      onAppear={playback ? () => {
         visible.current = true;
-        if (atlas === undefined) void preparePickupBoxAnimation().then((image) => {
+        if (atlas === undefined) void loadArtworkAtlas(playback.path).then((image) => {
           if (visible.current) setAtlas(image);
         });
         if (hasAppeared.current) setAppearance((visit) => visit + 1);
         hasAppeared.current = true;
-      }}
+      } : undefined}
       onDisappear={() => { visible.current = false; }}>
-      {atlas ? <AnimatedBox key={appearance} atlas={atlas} logo={logo} logoSize={logoSize} /> : (
+      {atlas && playback ? <AnimatedPickupArtwork key={appearance} atlas={atlas}
+        playback={playback} logo={logo} logoSize={logoSize} logoX={logoX} logoY={logoY} /> : (
         <ZStack alignment="topLeading">
-          {fallbackBox ? <Image image={fallbackBox} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} /> : null}
+          {still ? <Image image={still} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} /> : null}
           {logo ? <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
-            offset={{ x: STICKER_X - logoSize / 2, y: STICKER_Y - logoSize / 2 }} /> : null}
+            offset={{ x: logoX - logoSize / 2, y: logoY - logoSize / 2 }} /> : null}
         </ZStack>
       )}
     </ZStack>
   );
 }
 
-function ParcelCardListRow(props: ParcelLiveActivityCardProps) {
+function ParcelCardListRow({ spaceAfter, ...cardProps }: ParcelLiveActivityCardProps & { spaceAfter?: boolean }) {
   const [width, setWidth] = useState<number>(PIPI_CARD.width);
   return (
     <VStack spacing={0} frame={{ maxWidth: "infinity" }} listRowInsets={0}
+      padding={spaceAfter ? { bottom: CARD_ROW_SPACING } : undefined}
       listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden"
       background={
         <GeometryReader>
@@ -139,7 +176,7 @@ function ParcelCardListRow(props: ParcelLiveActivityCardProps) {
           )}
         </GeometryReader>
       }>
-      <ParcelLiveActivityCard {...props} width={width} />
+      <ParcelLiveActivityCard {...cardProps} width={width} />
     </VStack>
   );
 }
@@ -150,12 +187,16 @@ export function ParcelActivityPreviewCard({ animate = false }: { animate?: boole
   return (
     <ParcelCardListRow data={PARCEL_ACTIVITY_PREVIEW} imageRoot={`${Script.directory}/assets/parcel-activity`}
       logoPath={logoPath} preview
-      artwork={animate ? <PickupTabArtwork logoAsset={sticker?.path} logoSize={26} /> : undefined} />
+      artwork={animate ? <PickupTabArtwork baseAsset={BOX_IMAGE}
+        logoAsset={sticker?.path} logoSize={26} logoX={PIPI_CARD.logoX} logoY={PIPI_CARD.logoY} playback={BOX_PLAYBACK} />
+        : undefined} />
   );
 }
 
 export function PickupTabCard(props: {
   data: ParcelActivityContent;
+  animate: boolean;
+  spaceAfter: boolean;
   title: string;
   onCopy?: () => void;
   onComplete?: () => void;
@@ -167,13 +208,19 @@ export function PickupTabCard(props: {
   showingAddress?: boolean;
   onLocationTap?: () => void;
 }) {
-  const { data } = props;
-  const handoff = data.kind === "handoff";
-  const logoSize = handoff ? 20 : 26;
+  const { data, animate, spaceAfter, ...cardProps } = props;
+  const isMeal = data.kind === "meal";
+  const { logoX, logoY } = isMeal ? MEAL_CARD_TOKENS : PIPI_CARD;
+  const logoSize = isMeal ? MEAL_CARD_TOKENS.stickerSize * (data.mealStyle?.stickerScale ?? 1)
+    : data.kind === "handoff" ? 20 : 26;
   const imageRoot = `${Script.directory}/assets/parcel-activity`;
-  const { sticker } = parcelCardArtwork(data);
+  const { meal, mealSticker, sticker } = parcelCardArtwork(data);
+  const baseAsset = isMeal ? meal?.path : BOX_IMAGE;
+  const playback = animate ? isMeal ? meal && mealArtworkPlayback(meal) : BOX_PLAYBACK : undefined;
   return (
-    <ParcelCardListRow {...props} data={{ ...data, title: props.title }} imageRoot={imageRoot}
-      artwork={data.kind === "meal" ? undefined : <PickupTabArtwork logoAsset={sticker?.path} logoSize={logoSize} />} />
+    <ParcelCardListRow {...cardProps} data={{ ...data, title: props.title }} imageRoot={imageRoot} spaceAfter={spaceAfter}
+      artwork={baseAsset && (!isMeal || playback) ? <PickupTabArtwork key={playback?.path ?? baseAsset} baseAsset={baseAsset}
+        logoAsset={isMeal ? mealSticker?.path : sticker?.path} logoSize={logoSize}
+        logoX={logoX} logoY={logoY} playback={playback} /> : undefined} />
   );
 }

@@ -28,6 +28,7 @@ export type ParcelActivityContent = Readonly<{
   carrierIcon?: string;
   kind?: "handoff" | "meal";
   mealStyle?: PickupVisualStyle;
+  mealBrandId?: string;
   hasMealQR?: boolean;
   businessDateKey?: string;
   capturedAtMs?: number;
@@ -93,8 +94,7 @@ export function parcelPickupShortCode(code: string): string {
 
 export function parcelPickupSubtitle(card: ParcelActivityContent, location = card.location, showingAddress = false) {
   if (card.kind === "handoff") return { text: location, symbol: "calendar.circle.fill" };
-  if (card.kind === "meal") return { text: location || "请及时取餐", symbol: "storefront.fill" };
-  if (!location) return { text: "请及时取件", symbol: "doc.text.fill" };
+  if (!location) return { text: card.kind === "meal" ? "请及时取餐" : "请及时取件", symbol: "doc.text.fill" };
   return { text: location, symbol: showingAddress || location === card.address ? "mappin.circle.fill" : "house.fill" };
 }
 

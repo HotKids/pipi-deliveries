@@ -3,10 +3,12 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import type { ParcelHandoffRecord, PickupCodeRecord, Shipment } from "../models";
+import { MEAL_CARD_TOKENS, PICKUP_STICKER_ENTRANCE } from "../components/pickup-card-tokens.generated";
 import { PICKUP_TAB_TITLE, activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, type ParcelActivityContent } from "../services/parcel-pickup";
 import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette } from "../services/parcel-card-appearance";
 import { recognizeParcelCodes } from "../services/parcel-code-ocr";
 import { parcelTextRows, recognizeParcelWaybill } from "../services/parcel-waybill-ocr";
+import { MEAL_ARTWORK_FRAME_ENDS } from "../services/meal/artwork-motion.generated";
 
 assert.equal(PARCEL_ACTIVITY_PREVIEW.title, "派派的猫罐头");
 assert.equal(PARCEL_ACTIVITY_PREVIEW.location, "旺旺多多驿站");
@@ -15,6 +17,18 @@ assert.equal(parcelCardArtwork({ ...PARCEL_ACTIVITY_PREVIEW, carrierIcon: "zto" 
   "parcel-activity/zto.png");
 assert.equal(parcelCardArtwork({ ...PARCEL_ACTIVITY_PREVIEW, kind: "handoff" }).sticker?.path,
   "platform-accounts/pinduoduo.png");
+const brandedMeal = { kind: "meal", title: "冷萃", location: "万丰海岸城店", code: "S5756",
+  mealBrandId: "jpgcoffee" } as const satisfies ParcelActivityContent;
+assert.deepEqual(parcelPickupSubtitle(brandedMeal), {
+  text: "万丰海岸城店", symbol: parcelPickupSubtitle(PARCEL_ACTIVITY_PREVIEW).symbol,
+});
+assert.deepEqual(parcelCardArtwork(brandedMeal).mark, {
+  path: "meal-pickup/brand-jpgcoffee.png", name: "brand-jpgcoffee.png",
+});
+assert.equal(MEAL_ARTWORK_FRAME_ENDS["aod_static_coffee_common_cold.png"]?.length, 53);
+assert.equal(MEAL_ARTWORK_FRAME_ENDS["aod_static_coffee_common_cold.png"]?.at(-1), 1749);
+assert.equal(PICKUP_STICKER_ENTRANCE.mealDelay, 367);
+assert.equal(PICKUP_STICKER_ENTRANCE.parcelDelay, 1250);
 assert.equal(parcelPickupShortCode("1-2-3456"), "1-2-3456");
 assert.equal(parcelPickupShortCode("B-12-34567"), "B1234567");
 const previewAddress = { ...PARCEL_ACTIVITY_PREVIEW, address: "示例路 8 号" };
@@ -185,6 +199,7 @@ const service = ["parcel-activity-action", "parcel-live-activity"].map((name) =>
 ).join("\n");
 const events: string[] = [];
 let lockScreenBoxCopied = false;
+let mealBrandCopied = false;
 let current: Shipment = { ...parcel, pickup };
 let records: PickupCodeRecord[] = [];
 const snapshot = () => ({ revision: 0, shipments: [current], pickupCodeRecords: records });
@@ -216,9 +231,10 @@ function makeActivity() {
     state: "dismissed",
     rank: 0,
     code: "",
-    start: async ({ code }: { code: string }, options?: { staleDate?: number; relevanceScore?: number }) => {
+    start: async ({ code, mealBrandId }: ParcelActivityContent, options?: { staleDate?: number; relevanceScore?: number }) => {
       if (onStart) await onStart();
       assert.equal(lockScreenBoxCopied, true, "the shared artwork must exist before the host snapshots the card");
+      if (mealBrandId === "jpgcoffee") assert.ok(mealBrandCopied, "the branded badge must exist before the snapshot");
       if (activeCodes().length >= capacity || refused.has(code)) return false;
       events.push("start " + code);
       staleDate = options?.staleDate;
@@ -252,9 +268,15 @@ const activityGlobals = {
   FileManager: {
     appGroupDocumentsDirectory: "/synthetic-shared",
     createDirectorySync: () => {},
-    existsSync: (path: string) => !path.endsWith(PARCEL_LOCK_SCREEN_BOX) || lockScreenBoxCopied,
+    existsSync: (path: string) => path.endsWith(PARCEL_LOCK_SCREEN_BOX) ? lockScreenBoxCopied
+      : path.endsWith("/brand-jpgcoffee.png") ? mealBrandCopied : true,
     isFileSync: () => true,
     copyFileSync: (source: string, destination: string) => {
+      if (destination === "/synthetic-shared/art/brand-jpgcoffee.png") {
+        assert.equal(source, "/synthetic/assets/meal-pickup/brand-jpgcoffee.png");
+        mealBrandCopied = true;
+        return;
+      }
       assert.equal(source, `/synthetic/assets/parcel-activity/${PARCEL_LOCK_SCREEN_BOX}`);
       assert.equal(destination, `/synthetic-shared/art/${PARCEL_LOCK_SCREEN_BOX}`);
       lockScreenBoxCopied = true;
@@ -482,7 +504,7 @@ shortcut.parcelActivitySceneChanged("background");
 const mealTarget = { mealScope: "synthetic-scope", mealId: "synthetic-meal" };
 const firstTarget = { recordId: firstPickup.id };
 records = [firstPickup, fourthPickup];
-meals = [{ kind: "meal", target: mealTarget, title: "测试取餐", location: "", code: "M1234", capturedAtMs: now + 3 }];
+meals = [{ ...brandedMeal, target: mealTarget, code: "M1234", capturedAtMs: now + 3 }];
 activitiesEnabled = false;
 assert.equal(await shortcut.showShortcutPickupActivities([firstTarget]), false);
 assert.deepEqual(activeCodes(), []);
@@ -528,8 +550,8 @@ assert.match(activityCardSource, /activityBackgroundTint="clear" widgetURL=\{url
 assert.doesNotMatch(activityCardSource, /<(?:EnvironmentValuesReader|GeometryReader|Canvas)\b/,
   "the lock screen snapshots a complete view tree");
 assert.match(activityCardSource, /frame=\{\{ \.\.\.slot\(bottom - top\), minWidth: 0, maxWidth: "infinity"/);
-assert.match(activityCardSource, /systemName=\{isMeal \? "fork\.knife" : "shippingbox\.fill"\} font=\{card\.capsuleIcon \* scale\}/,
-  "meals use the utensil symbol and parcels keep the native package symbol at the same size");
+assert.match(activityCardSource, /systemName=\{isMeal \? "takeoutbag\.and\.cup\.and\.straw\.fill" : "shippingbox\.fill"\} font=\{card\.capsuleIcon \* scale\}/,
+  "meal and parcel capsules share the same icon slot");
 assert.match(activityCardSource, /isMeal \? "我已取餐"/);
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
 assert.match(activityEntrySource, /<LiveActivityUIExpandedCenter>\s*<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} expanded \/>/,
@@ -565,12 +587,18 @@ const artworkOffset = new Function("card", "top", "scale",
   artworkOffsetSource + "\nreturn artOffset;");
 const cardArtTop = Number(activityCardSource.match(/\bartTop: ([\d.]+),/)?.[1]);
 assert.equal(cardArtTop, 9 - (132 - 117) / 2, "use the established Home artwork position in each host");
-for (const scale of [1, 1.12]) {
-  const card = { artTop: cardArtTop };
-  const titleTop = 16.3;
-  const regularTop = artworkOffset(card, 0, scale);
-  const islandTop = artworkOffset(card, titleTop, scale);
-  assert.ok(Math.abs(regularTop - titleTop * scale - islandTop) < 0.01);
+assert.equal(MEAL_CARD_TOKENS.artTop, 9);
+assert.equal(MEAL_CARD_TOKENS.artTop + MEAL_CARD_TOKENS.logoY, 72);
+assert.match(activityCardSource, /const MEAL_CARD = \{ \.\.\.PIPI_CARD, \.\.\.MEAL_CARD_TOKENS \}/);
+for (const artTop of [cardArtTop, MEAL_CARD_TOKENS.artTop]) {
+  for (const scale of [1, 1.12]) {
+    const card = { artTop };
+    const titleTop = 16.3;
+    const regularTop = artworkOffset(card, 0, scale);
+    const islandTop = artworkOffset(card, titleTop, scale);
+    assert.equal(regularTop, artTop * scale);
+    assert.ok(Math.abs(regularTop - titleTop * scale - islandTop) < 0.01);
+  }
 }
 assert.match(activityCardSource, /background=\{\{ alignment: "topLeading", content: boxArtwork \}\}/);
 assert.match(activityCardSource, /<ZStack frame=\{\{ width: artWidth, \.\.\.slot\(bottom - top\), alignment: "topLeading" \}\}>\{boxArtwork\}/,
@@ -583,9 +611,9 @@ assert.match(activityCardSource, /fixedSize=\{\{ horizontal: false, vertical: tr
   "the expanded Pipi line heights distribute leading without shrinking text");
 assert.match(activityCardSource, /const MIN_COMPACT_ART_WIDTH = PIPI_CARD\.artWidth \/ 2;/);
 assert.match(activityCardSource, /titleFont: 16,[\s\S]*?locationFont: 12,[\s\S]*?codeFont: 26\.5,/);
-assert.match(activityCardSource, /font=\{card\.titleFont \* scale\} fontWeight="semibold"/);
-assert.match(activityCardSource, /font=\{card\.locationFont \* scale\} fontWeight="medium"/);
-assert.match(activityCardSource, /font=\{card\.codeFont \* scale\} fontWeight="semibold" fontWidth="standard"[\s\S]*?kerning=\{0\}/,
+assert.match(activityCardSource, /font=\{card\.titleFont \* scale\} fontWeight=\{isMeal \? "bold" : "semibold"\}/);
+assert.match(activityCardSource, /font=\{card\.locationFont \* scale\} fontWeight=\{isMeal \? "regular" : "medium"\}/);
+assert.match(activityCardSource, /font=\{codeFont \* scale\} fontWeight=\{isMeal \? "bold" : "semibold"\} fontWidth="standard"[\s\S]*?kerning=\{isMeal \? 0\.4 \* scale : 0\}/,
   "the Pickup tab, Lock Screen and island all use the shared standard-width digits");
 assert.doesNotMatch(activityCardSource, /balancedType|lockScreenPreview/);
 assert.match(activityCardSource, /const SMART_STACK_ART_COLUMN_WIDTH = 56;/);
@@ -640,7 +668,10 @@ assert.match(appSource, /pickupCards\.length > 0 \|\| pickupPreview/);
 assert.equal(PICKUP_TAB_TITLE, "待取");
 assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title=\{PICKUP_TAB_TITLE\} systemImage="archivebox\.fill" value="pickup"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="shippingbox\.fill" value="deliveries"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
-assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate/);
+assert.match(pickupSource, /cardRow\(card, sectionIndex === 0 && index === 0,\s*index < items.length - 1 \|\| preview\)/,
+  "only the first visible row receives playback and spacing appears between cards in the same section");
+assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate=\{sectionIndex === 0 && items.length === 0\} \/>/,
+  "a standalone preview retains its animation and a trailing preview uses the final frame");
 const homeSource = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
 for (const source of [homeSource, pickupSource, settingsSource]) {
   assert.match(source, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootTabList\b/,

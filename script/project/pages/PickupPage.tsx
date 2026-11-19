@@ -67,8 +67,10 @@ function IdentityCodeButton({ onOpen }: {
   );
 }
 
-function PickupCardRow({ card, note, opensCabinet, actionBlocked, onDetail, onSaveNote, onAction, showNotice, onMealCode }: {
+function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBlocked, onDetail, onSaveNote, onAction, showNotice, onMealCode }: {
   card: ParcelActivityContent;
+  animate: boolean;
+  spaceAfter: boolean;
   note: string;
   opensCabinet: boolean;
   actionBlocked: boolean;
@@ -121,6 +123,8 @@ function PickupCardRow({ card, note, opensCabinet, actionBlocked, onDetail, onSa
   return (
     <PickupTabCard
       data={card}
+      animate={animate}
+      spaceAfter={spaceAfter}
       title={note || card.title}
       onCopy={onMealCode ?? (() => void copyText(card.code).then((result) => showNotice(result === "copied"
         ? (card.kind === "meal" ? "取餐码已复制" : card.kind === "handoff" ? "寄件码已复制" : "取件码已复制")
@@ -180,17 +184,18 @@ export function PickupPage({
       : route === "local" ? { platform, route } : null);
   }
 
-  function cardRow(card: ParcelActivityContent) {
+  function cardRow(card: ParcelActivityContent, animate: boolean, spaceAfter: boolean) {
     const target = card.target;
     const key = parcelCardKey(card);
-    if (target && "mealId" in target) return <PickupCardRow key={key} card={card} note=""
+    if (target && "mealId" in target) return <PickupCardRow key={key} card={card} animate={animate} spaceAfter={spaceAfter} note=""
       opensCabinet={false} actionBlocked={false} onAction={onAction} showNotice={showNotice}
       onMealCode={card.hasMealQR ? () => setMealQr({ id: target.mealId, scope: target.mealScope }) : undefined} />;
     const shipment = shipmentForPickupTarget(shipments, target);
     const note = (target && "recordId" in target
       ? records?.find((record) => record.id === target.recordId)?.note : shipment?.note) || "";
     return (
-      <PickupCardRow key={key} card={card} note={note} opensCabinet={Boolean(cabinetActions?.has(card))}
+      <PickupCardRow key={key} card={card} animate={animate} spaceAfter={spaceAfter}
+        note={note} opensCabinet={Boolean(cabinetActions?.has(card))}
         actionBlocked={card.platform === "fengchao" && !cabinetActions} onAction={onAction}
         showNotice={showNotice} onDetail={shipment ? () => {
           identityRequest.current++;
@@ -255,10 +260,11 @@ export function PickupPage({
         }}
       >
         <RootTabList title={PICKUP_TAB_TITLE} onClose={() => dismiss()} bottomInset={TAB_FAB_SCROLL_INSET}>
-          {sections.map(({ key, label, items, preview }) => (
+          {sections.map(({ key, label, items, preview }, sectionIndex) => (
             <Section key={key} header={<Text>{label}</Text>}>
-              {items.map(cardRow)}
-              {preview ? <ParcelActivityPreviewCard animate /> : null}
+              {items.map((card, index) => cardRow(card, sectionIndex === 0 && index === 0,
+                index < items.length - 1 || preview))}
+              {preview ? <ParcelActivityPreviewCard animate={sectionIndex === 0 && items.length === 0} /> : null}
             </Section>
           ))}
         </RootTabList>
