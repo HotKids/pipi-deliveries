@@ -44,7 +44,6 @@ export function parcelActivitySceneChanged(phase: ScenePhase): void {
 }
 
 function serialize<T>(operation: () => Promise<T>): Promise<T> {
-  queuedReconciliation = undefined;
   const next = pending.then(operation);
   pending = next.catch(() => undefined);
   return next;
@@ -79,14 +78,19 @@ async function isRunning(receipt: Receipt): Promise<boolean> {
   return state === "active" || state === "stale";
 }
 
-export function parcelActivityStatus(): Promise<{ showAll: boolean; count: number; previewing: boolean; lockScreenStyle: ParcelLockScreenStyle }> {
+export function parcelActivityStatus(includeRealCards = true): Promise<{ showAll: boolean; count: number; previewing: boolean; lockScreenStyle: ParcelLockScreenStyle }> {
   return serialize(async () => {
     const { showAll, receipts, lockScreenStyle } = parcelActivityRegistry();
-    const running = (await Promise.all(receipts.map(async (receipt) => await isRunning(receipt) ? receipt : null)))
+    const relevant = includeRealCards ? receipts : receipts.filter(receipt => !receipt.target);
+    const running = (await Promise.all(relevant.map(async (receipt) => await isRunning(receipt) ? receipt : null)))
       .filter(receipt => receipt !== null);
     return { showAll, lockScreenStyle, count: running.filter(receipt => receipt.target).length,
       previewing: running.some(receipt => !receipt.target) };
   });
+}
+
+export function hasRegisteredParcelPreview(): boolean {
+  return parcelActivityRegistry().receipts.some(receipt => !receipt.target);
 }
 
 export function parcelActivityPreviewing(): Promise<boolean> {
@@ -295,16 +299,19 @@ async function synchronizeActivities(
     key: parcelCardKey(content), content, rank: byTime.length - index,
   }));
   const byKey = new Map(ranked.map((card) => [card.key, card]));
+  const activityStates = new Map((registry.receipts.length ? await LiveActivity.getAllActivities() : [])
+    .map(({ id, state }) => [id, state]));
   let latest: AppState | undefined;
   for (const receipt of registry.receipts) {
     const key = parcelCardKey(receipt);
     const next = byKey.get(key);
+    const activityState = activityStates.get(receipt.id);
     if (shortcutKeys && !shortcutKeys.has(key)) {
       const target = receipt.target;
       if (!next && target && "mealId" in target) {
         // A Shortcuts run is another chance to retire a meal after ActivityKit marks it stale.
         try {
-          if (await LiveActivity.getActivityState(receipt.id) === "stale" &&
+          if (activityState === "stale" &&
               !parcelForTarget(latest ??= committedState(), target)) await closeActivity(receipt, isCurrent);
         } catch {
           writeDiagnostic("activity.parcel.expiry.failed", {}, "warning");
@@ -312,7 +319,7 @@ async function synchronizeActivities(
       }
       continue;
     }
-    if (!await isRunning(receipt)) {
+    if (activityState !== "active" && activityState !== "stale") {
       if (!updateOnly) forgetReceipt(receipt, isCurrent, registry.showAll && next ? key : undefined);
     } else if (key && !next) {
       if (updateOnly) continue;
@@ -410,8 +417,10 @@ export function stopParcelActivity(): Promise<void> {
 export function reconcileParcelActivity(state: AppState, cards?: readonly ParcelActivityContent[]): void {
   if (queuedReconciliation?.state === state && queuedReconciliation.cards === cards) return;
   const request = { state, cards };
+  queuedReconciliation = request;
   void serialize(async () => {
-    if (queuedReconciliation === request) queuedReconciliation = undefined;
+    if (queuedReconciliation !== request) return;
+    queuedReconciliation = undefined;
     const registry = parcelActivityRegistry();
     if (registry.showAll || registry.receipts.length) {
       await withActivityOwnership(isCurrent => synchronizeActivities(state, isCurrent, { cards }));
@@ -419,5 +428,4 @@ export function reconcileParcelActivity(state: AppState, cards?: readonly Parcel
   }).catch(() => {
     writeDiagnostic("activity.parcel.reconcile.failed", { result: "failed" }, "warning");
   });
-  queuedReconciliation = request;
 }

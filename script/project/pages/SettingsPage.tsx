@@ -124,9 +124,12 @@ function useSettingsOverview() {
     timer.current = setTimeout(() => {
       timer.current = undefined;
       if (!visible.current) return;
-      if (pending.current.delete("authorization")) refreshAuthorization();
-      if (pending.current.delete("platforms")) {
-        for (const platform of pendingPlatforms.current) {
+      if (pending.current.delete("authorization")) {
+        refreshAuthorization();
+      } else if (pending.current.has("platforms")) {
+        const platform = pendingPlatforms.current.values().next().value;
+        if (platform) {
+          pendingPlatforms.current.delete(platform);
           activePlatforms.current.delete(platform);
           try {
             if (accountStatus(platform).state === "active") activePlatforms.current.add(platform);
@@ -134,10 +137,14 @@ function useSettingsOverview() {
             writeDiagnostic("settings.platform_count.unavailable", { sourceProvider: platform }, "warning");
           }
         }
-        pendingPlatforms.current.clear();
-        setPlatformCount(activePlatforms.current.size);
+        if (!pendingPlatforms.current.size) {
+          pending.current.delete("platforms");
+          setPlatformCount(activePlatforms.current.size);
+        }
+      } else if (pending.current.delete("notifications")) {
+        setEnabledNotificationCount(notificationEnabledCount(true));
       }
-      if (pending.current.delete("notifications")) setEnabledNotificationCount(notificationEnabledCount(true));
+      scheduleOverview();
     }, 0);
   }
 
@@ -381,13 +388,13 @@ export function SettingsPage(props: {
             <NotificationSettingsPage
               onChanged={(count) => {
                 setEnabledNotificationCount(count);
-                void reconcileFengchaoReminders(props.state);
+                void reconcileFengchaoReminders(props.state, { preferencesChanged: true });
               }}
             />
           ) : destination === "shortcuts" ? (
             <ParcelShortcutPage />
           ) : destination === "activity" ? (
-            <ParcelActivityPage revision={props.state.revision} />
+            <ParcelActivityPage />
           ) : destination === "recognition" ? (
             <RecognitionSettingsPage />
           ) : destination === "diagnostics" ? (

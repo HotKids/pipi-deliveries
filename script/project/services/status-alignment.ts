@@ -22,7 +22,7 @@ import {
   type StatusAlignmentTimes,
 } from "./shipment-policy";
 import { normalizeWaybill, shipmentPresentationStatus } from "./status";
-import { loadState, peekStateRevision, storedShipmentsForProcessing } from "./storage";
+import { peekStateRevision, readAppStateSnapshot, storedShipmentsForProcessing } from "./storage";
 import { replayPendingShipmentNotifications } from "./notifications";
 import {
   listRefreshInProgress,
@@ -119,7 +119,7 @@ export type StatusAlignmentPassDependencies = Readonly<{
 const defaultPassDependencies: StatusAlignmentPassDependencies = {
   appHost: projectionViewportHostAvailable,
   busy: listRefreshInProgress,
-  load: loadState,
+  load: (now) => readAppStateSnapshot(now).state,
   records: ledgerRecordStore,
   refresh: (shipmentId, beforeQuery) => refreshShipmentById(shipmentId, {
     trigger: "status_alignment",

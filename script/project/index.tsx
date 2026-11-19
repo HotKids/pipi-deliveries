@@ -49,7 +49,7 @@ import { activeMealCards, toggleMealCup } from "./services/meal/cards";
 import { completeMeal } from "./services/meal/records";
 import { mealCredentialScope } from "./services/meal/rules";
 import { synchronizeMeals } from "./services/meal/cloud";
-import { ensureMealRules, initializeCarrierAuthority } from "./services/carrier-authority";
+import { ensureMealRules, loadCarrierAuthorityCache, refreshCarrierAuthorityIfNeeded } from "./services/carrier-authority";
 import { startForegroundOrderProjection } from "./services/foreground-order-projection";
 import { startForegroundRefresh } from "./services/foreground-return-refresh";
 import { startStatusAlignment } from "./services/status-alignment";
@@ -61,7 +61,7 @@ import {
   takeScreenShortcutLookup,
 } from "./services/parcel-shortcut";
 import {
-  onParcelActivityPreviewChanged, parcelActivityPreviewing, parcelActivitySceneChanged, parcelActivityTarget,
+  hasRegisteredParcelPreview, onParcelActivityPreviewChanged, parcelActivityPreviewing, parcelActivitySceneChanged, parcelActivityTarget,
   reconcileParcelActivity,
 } from "./services/parcel-live-activity";
 import { PICKUP_TAB_TITLE, activePickupCards, independentPickupContent } from "./services/parcel-pickup";
@@ -72,6 +72,8 @@ import { transientToast } from "./services/ui-feedback";
 type StartupState = {
   state: AppState | null;
 };
+
+const LAUNCH_INTERACTION_GRACE_MS = 250;
 
 function shortcutPickupRecordId(state: AppState | null, parameters: Readonly<Record<string, unknown>>): string {
   const id = parameters[PARCEL_SHORTCUT_RECORD_PARAMETER];
@@ -147,7 +149,9 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   latestPickupView.current = { state, pickupCards };
   const [pickupPreview, setPickupPreview] = useState(initialPickupPreview);
   const hasPickupTab = pickupCards.length > 0 || pickupPreview;
+  const launchWorkStarted = useRef(false);
   const platformObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const mealObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const handoffDeadline = useMemo(() => nextParcelHandoffDeadline(state?.pickupCodeRecords),
     [state?.pickupCodeRecords]);
   const query = Script.queryParameters || {};
@@ -174,7 +178,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
 
   function reloadMeals() {
     const cards = readMealCards();
-    setMealCards(previous => previous.length || cards.length ? cards : previous);
+    setMealCards(previous => previous.length === cards.length && JSON.stringify(previous) === JSON.stringify(cards)
+      ? previous : cards);
   }
 
   function refreshMeals() {
@@ -205,6 +210,14 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
     }, 0);
   }
 
+  function observeMeals() {
+    if (mealObservation.current !== undefined) return;
+    mealObservation.current = setTimeout(() => {
+      mealObservation.current = undefined;
+      refreshMeals();
+    }, 0);
+  }
+
   function changePickupArtwork(card: typeof pickupCards[number]): boolean {
     try {
       if (card.kind === "meal") {
@@ -231,30 +244,35 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
       });
     };
     const unsubscribe = onParcelActivityPreviewChanged(reload);
+    if (initialPickupPreview) reload();
     return () => {
       mounted = false;
       unsubscribe();
     };
   }, []);
   useEffect(() => {
-    if (!hasState) return;
     let mounted = true;
-    const unsubscribe = subscribeRefreshState(applyState);
+    const unsubscribe = hasState ? subscribeRefreshState(applyState) : undefined;
     const timer = setTimeout(() => {
-      refreshMeals();
-      void refreshAllShipments().then((summary) => {
-        if (mounted) applyState(summary.state);
-      }).catch(() => { /* The refresh records its failure and leaves the cached list available. */ });
-    }, 0);
+      if (hasState) {
+        launchWorkStarted.current = true;
+        void refreshAllShipments().then((summary) => {
+          if (mounted) applyState(summary.state);
+        }).catch(() => { /* The refresh records its failure and leaves the cached list available. */ });
+        observePlatformList();
+        observeMeals();
+      }
+      void refreshCarrierAuthorityIfNeeded();
+    }, LAUNCH_INTERACTION_GRACE_MS);
     return () => {
       mounted = false;
       clearTimeout(timer);
-      unsubscribe();
+      unsubscribe?.();
     };
   }, [hasState]);
 
   useEffect(() => {
-    if (state) observePlatformList();
+    if (state && launchWorkStarted.current) observePlatformList();
   }, [state?.revision]);
 
   useEffect(() => {
@@ -275,8 +293,10 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
       foregroundRefresh.scenePhaseChanged(phase);
       statusAlignment.scenePhaseChanged(phase);
       if (phase === "active") {
-        observePlatformList();
-        refreshMeals();
+        if (launchWorkStarted.current) {
+          observePlatformList();
+          observeMeals();
+        }
         try {
           if (peekStateRevision() > revision.current) {
             void loadAppState().then(next => {
@@ -306,6 +326,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
       mounted = false;
       AppEvents.scenePhase.removeListener(observe);
       if (platformObservation.current !== undefined) clearTimeout(platformObservation.current);
+      if (mealObservation.current !== undefined) clearTimeout(mealObservation.current);
       orderProjection.stop();
       foregroundRefresh.stop();
       statusAlignment.stop();
@@ -314,7 +335,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
 
   useEffect(() => {
     if (state) {
-      void reconcileFengchaoReminders(state, undefined, shipments);
+      void reconcileFengchaoReminders(state, { shipments });
     }
   }, [state]);
 
@@ -525,11 +546,14 @@ async function run() {
   // quit back to the app with an empty diagnostic log.
   startAppDiagnosticWrites();
   try {
-    initializeCarrierAuthority();
+    loadCarrierAuthorityCache();
     writeRuntimeCapabilities("app");
-    const [initialStartup, initialPickupPreview] = await Promise.all([readStartupState(), readPickupPreview()]);
+    const initialStartup = await readStartupState();
+    let initialPickupPreview = false;
+    try { initialPickupPreview = hasRegisteredParcelPreview(); }
+    catch { writeDiagnostic("activity.parcel.preview.read.failed", { result: "failed" }, "warning"); }
     await Navigation.present({
-      element: <App initialStartup={initialStartup} initialPickupPreview={initialPickupPreview ?? false} />,
+      element: <App initialStartup={initialStartup} initialPickupPreview={initialPickupPreview} />,
       modalPresentationStyle: "fullScreen",
     });
   } catch (error) {

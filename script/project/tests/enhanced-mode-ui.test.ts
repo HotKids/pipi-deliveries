@@ -303,7 +303,7 @@ const thumbnail = mountHandlers(thumbnailSource.slice(
   shipmentLifecycleKey, isStoredShipmentRetained: () => true,
   sharedData: () => ({ stateRef: imageProps.cacheKey }),
   withSharedFileTransaction: (fn: () => unknown) => fn(),
-  loadState: () => ({ shipments: [imageProps.shipment] }),
+  readAppStateSnapshot: () => ({ state: { shipments: [imageProps.shipment] } }),
   loadProductImage: (url: string, signal: AbortSignal) => new Promise((finish) => {
     imageRequests.push({ url, signal, finish });
   }),

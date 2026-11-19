@@ -47,7 +47,7 @@ function mount(files = new Map<string, FakeData>(), options: {
     useState(initial: any) {
       const at = hook++;
       if (!(at in values)) values[at] = typeof initial === "function" ? initial() : initial;
-      return [values[at], (value: any) => { values[at] = value; }];
+      return [values[at], (value: any) => { values[at] = typeof value === "function" ? value(values[at]) : value; }];
     },
     useEffect(effect: () => void) { effects.push(effect); },
     async fetch() { networkCalls++; throw new Error("synthetic transport unavailable"); },
@@ -119,7 +119,7 @@ function mount(files = new Map<string, FakeData>(), options: {
     .replace(carrierReturn, 'return { type: "CourierIcon", props };')
     .replace(imageReturn, 'return { type: "Image", props: { image } };'), "ProductThumbnail", {
       ...cache, ...images, ...evaluate(read("services/shipment-lifecycle.ts"), "shipmentLifecycleKey"),
-      loadState: () => { stateLoads++; return { shipments: expired ? [] : shipments }; },
+      readAppStateSnapshot: () => { stateLoads++; return { state: { shipments: expired ? [] : shipments } }; },
       isStoredShipmentRetained: () => !expired, sharedData: () => {
         if (stateReadsUntilFailure != null && --stateReadsUntilFailure === 0) {
           stateReadsUntilFailure = undefined;

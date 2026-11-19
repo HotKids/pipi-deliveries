@@ -372,11 +372,6 @@ async function refreshAuthority(nowMs: number, dependencies: CarrierAuthorityDep
   }
 }
 
-export function initializeCarrierAuthority(): void {
-  loadCarrierAuthorityCache();
-  void refreshCarrierAuthorityIfNeeded();
-}
-
 export function resetCarrierAuthorityRuntimeForTesting(): void {
   loadedFetchedAtMs = 0;
   loadedLastAttemptAtMs = 0;

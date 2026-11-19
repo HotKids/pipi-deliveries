@@ -86,9 +86,9 @@ assert.match(
 );
 const appSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
 const launchRefresh = appSource.match(
-  /useEffect\(\(\) => \{\s*if \(!hasState\) return;[\s\S]*?refreshAllShipments\(\)[\s\S]*?\}, \[hasState\]\);/,
+  /useEffect\(\(\) => \{[^}]*?subscribeRefreshState\(applyState\)[\s\S]*?\}, \[hasState\]\);/,
 )?.[0] || "";
-assert.match(launchRefresh, /applyState\(summary\.state\)/);
+assert.match(launchRefresh, /refreshAllShipments\(\)\.then\(\(summary\) => \{\s*if \(mounted\) applyState\(summary\.state\)/);
 assert.doesNotMatch(
   launchRefresh,
   /promotedPendingShipmentNavigationTarget|applyInteractiveRefreshSummary/,

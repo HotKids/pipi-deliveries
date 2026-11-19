@@ -1,7 +1,7 @@
 import { AbortController, Image, VStack, useEffect, useState } from "scripting";
 import { initialProductImage, loadProductImage } from "../services/product-images";
 import { cachedProductImage, productImageCacheKey } from "../services/product-image-cache";
-import { isStoredShipmentRetained, loadState } from "../services/storage";
+import { isStoredShipmentRetained, readAppStateSnapshot } from "../services/storage";
 import type { Shipment } from "../models";
 import { shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { sharedData, withSharedFileTransaction } from "../services/shared-file-transaction";
@@ -28,7 +28,7 @@ export function ProductThumbnail(props: {
     const stateRef = sharedData().stateRef;
     if (stateRef && stateRef === checkedStateRef && (!retained || isStoredShipmentRetained(checkedShipment))) return retained;
     return withSharedFileTransaction(() => {
-      const current = loadState().shipments.find(shipment => shipmentLifecycleKey(shipment) === lifecycle &&
+      const current = readAppStateSnapshot().state.shipments.find(shipment => shipmentLifecycleKey(shipment) === lifecycle &&
         productImageCacheKey(shipment.identity) === cacheKey);
       retained = current != null;
       if (current) checkedShipment = current;
@@ -46,7 +46,11 @@ export function ProductThumbnail(props: {
   useEffect(() => {
     try {
       const remembered = cachedProductImage(cacheKey);
-      if (remembered && isRetained()) { setLoaded({ key: cacheKey, lifecycle, isRetained, image: remembered }); return; }
+      if (remembered && isRetained()) {
+        setLoaded(current => current?.key === cacheKey && current.lifecycle === lifecycle && current.image === remembered
+          ? current : { key: cacheKey, lifecycle, isRetained, image: remembered });
+        return;
+      }
     } catch {
       // A failed authoritative read must not publish a bitmap or start an optional download.
       setLoaded(null);

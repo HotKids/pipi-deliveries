@@ -1928,10 +1928,20 @@ export function loadState(now = Date.now()): AppState {
 }
 
 let appStateRead: Promise<AppState> | undefined;
+let appSnapshot: LoadedStateSnapshot | undefined;
+
+// Foreground consumers share a read-only view. The authoritative bytes and
+// retention fences still decide when another runtime's write requires decoding.
+export function readAppStateSnapshot(now = Date.now()): LoadedStateSnapshot {
+  return appSnapshot = readStateSnapshot(now, appSnapshot);
+}
 
 export function loadAppState(): Promise<AppState> {
   return appStateRead ??= prefetchSharedStateFiles().catch(() => undefined)
-    .then(files => readStateSnapshot(Date.now(), undefined, files).state)
+    .then(files => {
+      appSnapshot = readStateSnapshot(Date.now(), appSnapshot, files);
+      return appSnapshot.state;
+    })
     .finally(() => { appStateRead = undefined; });
 }
 
@@ -3196,9 +3206,10 @@ export function commitRefreshState(
 export function acknowledgeShipmentNotification(
   eventId: string,
   now = Date.now(),
+  prior?: LoadedStateSnapshot,
 ): AppState {
   return withSharedFileTransaction(() => {
-    const state = loadState(now);
+    const state = loadStateSnapshot(now, prior).state;
     if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
     return saveStateAndPrune(state, now, { acknowledgedId: eventId }, state).state;
   });
@@ -3207,9 +3218,10 @@ export function acknowledgeShipmentNotification(
 export function deferShipmentNotification(
   eventId: string,
   now = Date.now(),
+  prior?: LoadedStateSnapshot,
 ): AppState {
   return withSharedFileTransaction(() => {
-    const state = loadState(now);
+    const state = loadStateSnapshot(now, prior).state;
     if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
     return saveStateAndPrune(state, now, { deferredId: eventId }, state).state;
   });
