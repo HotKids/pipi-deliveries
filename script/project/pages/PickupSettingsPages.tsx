@@ -1,16 +1,14 @@
-import { AppEvents, Button, HStack, Link, List, Section, Spacer, Text, Toggle, useEffect, useState } from "scripting";
+import { AppEvents, HStack, Link, List, Section, Spacer, Text, Toggle, useEffect, useState } from "scripting";
 import { ParcelActivityPreviewCard } from "../components/PickupTabCard";
 import { SectionIconButton } from "../components/SectionIconButton";
 import {
   parcelActivityStatus,
   startAllParcelActivities,
-  startParcelActivity,
   startParcelActivityPreview,
   stopParcelActivity,
   stopParcelActivityPreview,
 } from "../services/parcel-live-activity";
-import { PICKUP_TAB_TITLE, type ParcelActivityContent } from "../services/parcel-pickup";
-import { parcelCardKey } from "../services/storage";
+import { PICKUP_TAB_TITLE } from "../services/parcel-pickup";
 import { transientToast } from "../services/ui-feedback";
 
 export function ParcelShortcutPage() {
@@ -37,16 +35,10 @@ export function ParcelShortcutPage() {
   );
 }
 
-export function ParcelActivityPage({ cards, revision }: {
-  cards: readonly ParcelActivityContent[];
-  revision: number;
-}) {
+export function ParcelActivityPage({ revision }: { revision: number }) {
   const [activity, setActivity] = useState({ showAll: false, count: 0, previewing: false });
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
-  const active = activity.showAll || activity.count > 0 || activity.previewing;
-  const parcels = cards.flatMap((content) => content.target ? [{ content, target: content.target }] : [])
-    .sort((left, right) => (right.content.capturedAtMs ?? 0) - (left.content.capturedAtMs ?? 0));
 
   useEffect(() => {
     let mounted = true;
@@ -108,18 +100,6 @@ export function ParcelActivityPage({ cards, revision }: {
       }>
         <ParcelActivityPreviewCard />
       </Section>
-      {parcels.length ? (
-        <Section header={<Text>{parcels.some(({ content }) => content.kind === "meal") ? "待取码" : "快递码"}</Text>}>
-          {parcels.map(({ content, target }) => (
-            <Button
-              key={parcelCardKey(content)}
-              disabled={busy || active}
-              title={[content.title, content.location, content.code].filter(Boolean).join(" · ")}
-              action={() => void change(() => startParcelActivity(target))}
-            />
-          ))}
-        </Section>
-      ) : null}
     </List>
   );
 }

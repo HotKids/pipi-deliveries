@@ -513,7 +513,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
         />
       </Tab>
       <Tab key="settings" title="设置" systemImage="gearshape.fill" value="settings">
-        <SettingsPage state={state} pickupCards={pickupCards} onStateChange={applyState} onAccessKeyChanged={refreshMeals} />
+        <SettingsPage state={state} onStateChange={applyState} onAccessKeyChanged={refreshMeals} />
       </Tab>
     </TabView>
   );

@@ -50,7 +50,6 @@ import { PhoneManagerPage } from "./PhoneManagerPage";
 import { PrivacyPage } from "./PrivacyPage";
 import { NotificationSettingsPage } from "./NotificationSettingsPage";
 import { ParcelActivityPage, ParcelShortcutPage } from "./PickupSettingsPages";
-import type { ParcelActivityContent } from "../services/parcel-pickup";
 import { notificationEnabledCount } from "../services/notification-preferences";
 import { reconcileFengchaoReminders } from "../services/fengchao-reminders";
 import { transientToast } from "../services/ui-feedback";
@@ -202,7 +201,6 @@ function useSettingsOverview() {
 export function SettingsPage(props: {
   onAccessKeyChanged?: () => void;
   state: AppState;
-  pickupCards: readonly ParcelActivityContent[];
   onStateChange: (state: AppState) => void;
 }) {
   const dismiss = Navigation.useDismiss();
@@ -389,7 +387,7 @@ export function SettingsPage(props: {
           ) : destination === "shortcuts" ? (
             <ParcelShortcutPage />
           ) : destination === "activity" ? (
-            <ParcelActivityPage cards={props.pickupCards} revision={props.state.revision} />
+            <ParcelActivityPage revision={props.state.revision} />
           ) : destination === "recognition" ? (
             <RecognitionSettingsPage />
           ) : destination === "diagnostics" ? (
