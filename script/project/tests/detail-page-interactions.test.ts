@@ -106,11 +106,13 @@ assert.equal(
   "the selected detail timeline must not replace the source timeline for status presentation",
 );
 assert.ok(
-  detailPage.includes("statusTint(presentationStatus.semantic)"),
+  detailPage.includes("const statusColor = statusTextTint(presentationStatus.semantic, { label: presentationStatus.text })")
+    && detailPage.includes("foregroundStyle={statusColor}")
+    && /index === 0\s*\? statusColor\s*: "tertiaryLabel"/.test(detailPage),
   "the current-track indicator must use the same presentation status as the detail header",
 );
 assert.equal(
-  detailPage.includes("statusTint(detailTimeline.semantic)"),
+  detailPage.includes("statusTextTint(detailTimeline.semantic)"),
   false,
   "the detail track provider must not own status coloring",
 );

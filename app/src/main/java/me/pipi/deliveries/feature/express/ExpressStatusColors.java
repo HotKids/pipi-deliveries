@@ -1,20 +1,42 @@
 package me.pipi.deliveries.feature.express;
 
+import android.content.Context;
+import android.content.res.Configuration;
 import androidx.core.graphics.ColorUtils;
+import me.pipi.deliveries.data.CarrierRegistry;
+import me.pipi.deliveries.model.ExpressItem;
+import me.pipi.deliveries.model.StatusSemantic;
 
-/**
- * 快递状态强调色，三端同一张表（用户定 2026-09-05：派送中与已签收不能同色）。
- * Pipi 同值在 ExpressNotificationVisuals，iOS 用系统色名 statusTint（红/橙/绿/青/蓝/黄/灰）。
- * 小组件的状态胶囊 / 状态词也只用这张表（2026-09-05 晚：用户指出列表已是青色而小组件仍是绿）。
- */
+/** Parcel status accent and contrast shared by Lite's presentation surfaces. */
 public final class ExpressStatusColors {
-    public static final int DANGER = 0xFFD43D3D;
-    public static final int WAITING_PICKUP = 0xFFE65B17;
-    public static final int DELIVERY = 0xFF1A8A4A;
-    public static final int COMPLETED = 0xFF0F9D8A;
-    public static final int TRANSIT = 0xFF3275D6;
-    public static final int ORDERED = 0xFFFBC02D;
-    public static final int NEUTRAL = 0xFF757575;
+    public static int accent(Context context, ExpressItem item) {
+        return accent(item.semantic, item.displayStatus(), isNight(context));
+    }
+
+    public static int accent(StatusSemantic semantic, String label, boolean dark) {
+        int selected = ExpressStatusTones.accent(label, dark);
+        if (selected == 0) {
+            selected = ExpressStatusTones.accent(CarrierRegistry.statusLabels().label(semantic), dark);
+        }
+        return selected != 0 ? selected : ExpressStatusTones.accent("暂无状态", dark);
+    }
+
+    public static boolean isNight(Context context) {
+        return (context.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    public static int widgetBadgeBackground(ExpressItem item) {
+        String label = item.displayStatus();
+        if (ExpressStatusTones.accent(label, false) == 0) {
+            label = CarrierRegistry.statusLabels().label(item.semantic);
+        }
+        return ExpressStatusTones.widgetBadge(label);
+    }
+
+    public static int widgetBadgeFill(ExpressItem item) {
+        return (accent(item.semantic, item.displayStatus(), false) & 0x00ffffff) | 0x1a000000;
+    }
 
     public static int textOn(int accent, int... backgrounds) {
         int target = minimumContrast(0xff000000, backgrounds) >= minimumContrast(0xffffffff, backgrounds)

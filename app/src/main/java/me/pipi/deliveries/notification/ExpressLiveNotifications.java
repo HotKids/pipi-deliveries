@@ -13,8 +13,8 @@ import android.os.Build;
 import java.util.List;
 import me.pipi.deliveries.R;
 import me.pipi.deliveries.feature.express.ExpressDetailActivity;
+import me.pipi.deliveries.feature.express.ExpressStatusColors;
 import me.pipi.deliveries.model.ExpressItem;
-import me.pipi.deliveries.model.StatusSemantic;
 
 /** One derived live notification; shipment records remain owned by the repository. */
 public final class ExpressLiveNotifications {
@@ -86,7 +86,7 @@ public final class ExpressLiveNotifications {
         if (manager == null) return false;
         ExpressNotifications.clearReplacedDeliveryNotifications(context);
         ExpressLivePresentation spec = ExpressLivePresentation.from(visible,
-                deliveryEnabled(context), pickupEnabled(context));
+                deliveryEnabled(context), pickupEnabled(context), ExpressStatusColors.isNight(context));
         if (spec == null) {
             cancel(context);
             return true;
@@ -120,11 +120,9 @@ public final class ExpressLiveNotifications {
                         | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
         PendingIntent pending = PendingIntent.getActivity(context, LIVE_ID, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        int semantic = spec.primary.semantic == StatusSemantic.WAITING_PICKUP
-                ? Notification.SEMANTIC_STYLE_CAUTION : Notification.SEMANTIC_STYLE_SAFE;
         return new Notification.Builder(context, CHANNEL)
                 .setSmallIcon(spec.smallIcon).setColor(spec.accent).setColorized(false)
-                .setContentTitle(SemanticText.annotate(spec.title, semantic, 0,
+                .setContentTitle(SemanticText.annotate(spec.title, Notification.SEMANTIC_STYLE_CAUTION, 0,
                         spec.labelLength))
                 .setContentText(ExpressNotifications.breakableText(
                         Build.VERSION.SDK_INT >= 37 ? spec.summary : spec.detail))

@@ -114,12 +114,12 @@ public class ExpressLiveNotificationsTest {
         ExpressItem first = item(1, StatusSemantic.DELIVERY);
         ExpressItem clockOnly = new ExpressItem(1, "", "TEST0001", "SF", "顺丰速运", StatusSemantic.DELIVERY,
                 "派送中", "Synthetic parcel", "", "[]", "", "INTERFACE5", "", 0, 100, "INTERFACE5", "");
-        assertEquals(ExpressLivePresentation.from(List.of(first), true, true).fingerprint(),
-                ExpressLivePresentation.from(List.of(clockOnly), true, true).fingerprint());
+        assertEquals(ExpressLivePresentation.from(List.of(first), true, true, false).fingerprint(),
+                ExpressLivePresentation.from(List.of(clockOnly), true, true, false).fingerprint());
         ExpressItem sameTextOtherRow = new ExpressItem(2, "", "TEST0001", "SF", "顺丰速运", StatusSemantic.DELIVERY,
                 "派送中", "Synthetic parcel", "", "[]", "", "INTERFACE5", "");
-        assertNotEquals(ExpressLivePresentation.from(List.of(first), true, true).fingerprint(),
-                ExpressLivePresentation.from(List.of(sameTextOtherRow), true, true).fingerprint());
+        assertNotEquals(ExpressLivePresentation.from(List.of(first), true, true, false).fingerprint(),
+                ExpressLivePresentation.from(List.of(sameTextOtherRow), true, true, false).fingerprint());
     }
 
     @Test public void upgradeRemovesOnlyTheReplacedDeliveryChannelEvenWithNoEligibleRows() {

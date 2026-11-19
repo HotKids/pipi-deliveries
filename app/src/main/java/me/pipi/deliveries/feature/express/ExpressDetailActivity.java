@@ -1833,11 +1833,12 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             String courierCode, String company, String waybill,
             String status, StatusSemantic semantic) {
         statusView.setText(status);
-        statusView.setTextColor(ExpressStatusColors.textOn(statusColor(semantic),
+        int accent = ExpressStatusColors.accent(semantic, status, ExpressStatusColors.isNight(statusView.getContext()));
+        statusView.setTextColor(ExpressStatusColors.textOn(accent,
                 com.google.android.material.color.MaterialColors.getColor(statusView,
                         com.google.android.material.R.attr.colorSurface)));
         ExpressSenderBadge.apply(findViewById(R.id.detail_sender),
-                item != null && item.sender, statusColor(semantic));
+                item != null && item.sender, accent);
         // 跨端对齐裁决 #35：承运商为空时统一写「快递」；热线仍按原来的承运商名查。
         waybillView.setText(getString(R.string.express_company_waybill,
                 ExpressItem.carrierLabel(company), waybill));
@@ -2005,21 +2006,6 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         view.setTextSize(size);
         view.setTextColor(color);
         return view;
-    }
-
-    /** 三端同一张状态色表（用户定 2026-09-05）：与列表页、Pipi、iOS statusTint 同表。 */
-    private int statusColor(StatusSemantic semantic) {
-        switch (semantic == null ? StatusSemantic.UNKNOWN : semantic) {
-            case DANGER: return ExpressStatusColors.DANGER;
-            case WAITING_PICKUP: return ExpressStatusColors.WAITING_PICKUP;
-            case DELIVERY: return ExpressStatusColors.DELIVERY;
-            case COMPLETED: return ExpressStatusColors.COMPLETED;
-            case PICKED:
-            case TRANSIT: return ExpressStatusColors.TRANSIT;
-            case ORDERED:
-            case SHIPPED: return ExpressStatusColors.ORDERED;
-            default: return ExpressStatusColors.NEUTRAL;
-        }
     }
 
     private static final class TimelineDot extends View {

@@ -7,27 +7,23 @@ import me.pipi.deliveries.model.StatusSemantic;
 
 import org.junit.Test;
 
-/**
- * Audit R7 (user 2026-09-25): the list uses the shared status colour table
- * (docs/EXPRESS_THREE_CLIENT_PARITY_20260901.md, 2026-09-05 night), UNKNOWN in the same grey
- * #757575 as CANCELLED instead of the theme colour.
- */
 public final class ListStatusColourTest {
     @Test public void everyStateTakesItsColourFromTheSharedTable() {
-        assertEquals(0xFFD43D3D, colour(StatusSemantic.DANGER));
-        assertEquals(0xFFE65B17, colour(StatusSemantic.WAITING_PICKUP));
-        assertEquals(0xFF1A8A4A, colour(StatusSemantic.DELIVERY));
-        assertEquals(0xFF0F9D8A, colour(StatusSemantic.COMPLETED));
-        assertEquals(0xFF3275D6, colour(StatusSemantic.PICKED));
-        assertEquals(0xFF3275D6, colour(StatusSemantic.TRANSIT));
-        assertEquals(0xFFFBC02D, colour(StatusSemantic.ORDERED));
-        assertEquals(0xFFFBC02D, colour(StatusSemantic.SHIPPED));
-        assertEquals(0xFF757575, colour(StatusSemantic.CANCELLED));
-        assertEquals(0xFF757575, colour(StatusSemantic.UNKNOWN));
+        assertEquals(0xFFBA1A1A, colour(StatusSemantic.DANGER));
+        assertEquals(0xFF693B10, colour(StatusSemantic.WAITING_PICKUP));
+        assertEquals(0xFF7A491D, colour(StatusSemantic.DELIVERY));
+        assertEquals(0xFF005D2D, colour(StatusSemantic.COMPLETED));
+        assertEquals(0xFF004EA1, colour(StatusSemantic.PICKED));
+        assertEquals(0xFF004590, colour(StatusSemantic.TRANSIT));
+        assertEquals(0xFF0F61C1, colour(StatusSemantic.ORDERED));
+        assertEquals(0xFF0057B3, colour(StatusSemantic.SHIPPED));
+        assertEquals(0xFF63696A, colour(StatusSemantic.CANCELLED));
+        assertEquals(0xFF545B5C, colour(StatusSemantic.UNKNOWN));
     }
 
     private static int colour(StatusSemantic semantic) {
-        return ExpressListActivity.statusColor(new ExpressItem(1L, "", "YT7000000000001", "YTO",
-                "圆通速递", semantic, semantic.label, "", "", "[]", "", "INTERFACE5", ""));
+        ExpressItem item = new ExpressItem(1L, "", "YT7000000000001", "YTO",
+                "圆通速递", semantic, semantic.label, "", "", "[]", "", "INTERFACE5", "");
+        return ExpressStatusColors.accent(item.semantic, item.displayStatus(), false);
     }
 }

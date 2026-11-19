@@ -1,4 +1,4 @@
-import type { Color, ColorStringHex } from "scripting";
+import type { ColorStringHex } from "scripting";
 import { nodeNormalizedStatus, responseNormalizedStatus, timelineNormalizedStatus, statusPriority, statusProjectionFields } from "./worker-status";
 import { isValidNonFutureStatusClock } from "./terminal-clock-policy";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
@@ -188,31 +188,6 @@ export function withShipmentNote(statusText: string, shipment: Shipment): string
 export function widgetStatusLabel(semantic: StatusSemantic): string {
   if (semantic === "DANGER") return "异常件";
   return statusLabel(semantic);
-}
-
-// 三端同一张状态色表（用户定 2026-09-05：派送中与已签收不能同色）：异常红、待取件橙、
-// 派送中绿、已签收青、揽件/运输蓝、下单/发货黄、已取消与未知灰。Pipi ExpressNotificationVisuals、
-// Lite ExpressListActivity/ExpressDetailActivity.statusColor 同表。
-export function statusTint(semantic: StatusSemantic): Color {
-  switch (semantic) {
-    case "WAITING_PICKUP":
-      return "systemOrange";
-    case "DELIVERY":
-      return "systemGreen";
-    case "COMPLETED":
-      return "systemTeal";
-    case "TRANSIT":
-    case "PICKED":
-      return "systemBlue";
-    case "SHIPPED":
-    case "ORDERED":
-      return "systemYellow";
-    case "DANGER":
-      return "systemRed";
-    case "CANCELLED":
-    default:
-      return "secondaryLabel";
-  }
 }
 
 export function statusTextAccent(semantic: StatusSemantic, label = "", dark = false): number {

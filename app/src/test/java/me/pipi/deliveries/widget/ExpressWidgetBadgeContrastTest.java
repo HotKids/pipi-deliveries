@@ -51,25 +51,24 @@ public class ExpressWidgetBadgeContrastTest {
             int surface = context.getColor(R.color.widget_surface);
             for (StatusSemantic semantic : StatusSemantic.values()) {
                 ExpressItem item = item(semantic);
-                ExpressWidgetProvider.StatusStyle style =
-                        ExpressWidgetProvider.StatusStyle.forSemantic(semantic);
-                GradientDrawable badge = (GradientDrawable) context.getDrawable(style.background);
+                int foreground = ExpressStatusColors.accent(context, item);
+                GradientDrawable badge = (GradientDrawable) context.getDrawable(
+                        ExpressStatusColors.widgetBadgeBackground(item));
                 int fill = badge.getColor().getDefaultColor();
-                assertEquals("Keep the semantic badge fill", (style.foreground & 0x00ffffff)
-                        | 0x1a000000, fill);
+                assertEquals("Keep the daylight badge fill", ExpressStatusColors.widgetBadgeFill(item), fill);
                 assertEquals("Keep the existing sender-badge radius", 3f,
                         badge.getCornerRadius(), 0f);
                 for (int brand : CARRIER_ACCENTS) {
                     int text = ExpressWidgetProvider.statusTextColor(context, item, brand, true);
                     int tinted = ColorUtils.compositeColors(
                             ColorUtils.setAlphaComponent(brand, 0x55), surface);
-                    int contrasted = ExpressStatusColors.textOn(style.foreground,
+                    int contrasted = ExpressStatusColors.textOn(foreground,
                             ColorUtils.compositeColors(fill, surface),
                             ColorUtils.compositeColors(fill, tinted));
                     int expected = night ? contrasted : Color.rgb(
-                            Math.round((Color.red(style.foreground) + Color.red(contrasted)) / 2f),
-                            Math.round((Color.green(style.foreground) + Color.green(contrasted)) / 2f),
-                            Math.round((Color.blue(style.foreground) + Color.blue(contrasted)) / 2f));
+                            Math.round((Color.red(foreground) + Color.red(contrasted)) / 2f),
+                            Math.round((Color.green(foreground) + Color.green(contrasted)) / 2f),
+                            Math.round((Color.blue(foreground) + Color.blue(contrasted)) / 2f));
                     assertEquals("Use the approved 50% daylight tone; retain night contrast", expected, text);
                     for (int opacity = 0; opacity <= 0x55; opacity++) {
                         int gradient = ColorUtils.compositeColors(
@@ -78,10 +77,10 @@ public class ExpressWidgetBadgeContrastTest {
                         assertTrue(semantic + " night=" + night + " brand="
                                         + Integer.toHexString(brand) + " opacity=" + opacity,
                                 ColorUtils.calculateContrast(text, painted) >= (night ? 4.5
-                                        : ColorUtils.calculateContrast(style.foreground, painted)));
+                                        : ColorUtils.calculateContrast(foreground, painted)));
                     }
                     assertEquals("The 2x2 non-badge path is unchanged",
-                            ExpressStatusColors.textOn(style.foreground, surface, tinted),
+                            ExpressStatusColors.textOn(foreground, surface, tinted),
                             ExpressWidgetProvider.statusTextColor(context, item, brand, false));
                 }
             }
@@ -96,7 +95,7 @@ public class ExpressWidgetBadgeContrastTest {
             int brand = 0xff0480bb;
             RemoteViews views = new RemoteViews(generated.getPackageName(), R.layout.express_widget_4x2);
             views.setInt(R.id.widget_express_status1, "setBackgroundResource",
-                    R.drawable.widget_express_status_ordered_bg);
+                    ExpressStatusColors.widgetBadgeBackground(item));
             Method bind = ExpressWidgetProvider.class.getDeclaredMethod("applyStatusTextColor",
                     Context.class, RemoteViews.class, int.class, ExpressItem.class, int.class, boolean.class);
             bind.setAccessible(true);
@@ -111,7 +110,7 @@ public class ExpressWidgetBadgeContrastTest {
             assertEquals(expected, text.getCurrentTextColor());
             views.reapply(host, root);
             assertEquals(expected, text.getCurrentTextColor());
-            assertEquals(0x1afbc02d,
+            assertEquals(0x1a0f61c1,
                     ((GradientDrawable) text.getBackground()).getColor().getDefaultColor());
         }
     }
