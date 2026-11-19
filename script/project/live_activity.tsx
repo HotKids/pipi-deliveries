@@ -64,7 +64,7 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
     return (
       <LiveActivityUI
         {...expandedIslandAppearance}
-        content={<ParcelLiveActivityCard {...cardProps} width={width} lockScreen />}
+        content={<ParcelLiveActivityCard {...cardProps} width={width} lockScreen lockScreenStyle={data.lockScreenStyle} />}
         compactLeading={<HStack widgetURL={url}>{glyph}</HStack>}
         compactTrailing={(
           <Text font={13} fontWeight="semibold" fontWidth="condensed" foregroundStyle={palette.code}

@@ -1,13 +1,15 @@
-import { AppEvents, HStack, Link, List, Section, Spacer, Text, Toggle, useEffect, useState } from "scripting";
+import { AppEvents, HStack, Link, List, Picker, Section, Spacer, Text, Toggle, useEffect, useState } from "scripting";
 import { ParcelActivityPreviewCard } from "../components/PickupTabCard";
 import { SectionIconButton } from "../components/SectionIconButton";
 import {
   parcelActivityStatus,
+  setParcelLockScreenStyle,
   startAllParcelActivities,
   startParcelActivityPreview,
   stopParcelActivity,
   stopParcelActivityPreview,
 } from "../services/parcel-live-activity";
+import type { ParcelLockScreenStyle } from "../services/parcel-card-appearance";
 import { PICKUP_TAB_TITLE } from "../services/parcel-pickup";
 import { LUCKIN_RESCAN } from "../services/shortcut-capture";
 import { transientToast } from "../services/ui-feedback";
@@ -38,15 +40,17 @@ export function ParcelShortcutPage() {
 }
 
 export function ParcelActivityPage({ revision }: { revision: number }) {
-  const [activity, setActivity] = useState({ showAll: false, previewing: false });
+  const [activity, setActivity] = useState({
+    showAll: false, previewing: false, lockScreenStyle: "dynamic" as ParcelLockScreenStyle,
+  });
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
     let mounted = true;
     function reload() {
-      void parcelActivityStatus().then(({ showAll, previewing }) => {
-        if (mounted) setActivity({ showAll, previewing });
+      void parcelActivityStatus().then(status => {
+        if (mounted) setActivity(status);
       }).catch(() => {
         if (mounted) setNotice("无法读取实时活动状态。");
       }).finally(() => {
@@ -64,17 +68,17 @@ export function ParcelActivityPage({ revision }: { revision: number }) {
     };
   }, [revision]);
 
-  async function change(action: () => Promise<void>) {
+  async function change(action: () => Promise<void>, lockScreenStyle?: ParcelLockScreenStyle) {
     if (busy) return;
     setBusy(true);
+    if (lockScreenStyle) setActivity(current => ({ ...current, lockScreenStyle }));
     try {
       await action();
     } catch (error) {
       setNotice(error instanceof Error && error.message ? error.message : "实时活动操作失败。");
     } finally {
       try {
-        const { showAll, previewing } = await parcelActivityStatus();
-        setActivity({ showAll, previewing });
+        setActivity(await parcelActivityStatus());
       } catch {
         setNotice("无法读取实时活动状态。");
       } finally {
@@ -89,6 +93,17 @@ export function ParcelActivityPage({ revision }: { revision: number }) {
         <Toggle title="实时活动" value={activity.showAll} disabled={busy}
           onChanged={(enabled) => void change(enabled ? startAllParcelActivities : stopParcelActivity)} />
       </Section>
+      <Section>
+        <Picker title="锁屏样式" value={activity.lockScreenStyle} pickerStyle="menu" disabled={busy}
+          onChanged={(value: string) => {
+            const style = value as ParcelLockScreenStyle;
+            void change(() => setParcelLockScreenStyle(style), style);
+          }}>
+          <Text tag="dynamic">动态</Text>
+          <Text tag="black">纯黑</Text>
+          <Text tag="white">纯白</Text>
+        </Picker>
+      </Section>
       <Section header={
         <HStack>
           <Text>锁屏预览</Text>
@@ -101,7 +116,7 @@ export function ParcelActivityPage({ revision }: { revision: number }) {
           />
         </HStack>
       }>
-        <ParcelActivityPreviewCard />
+        <ParcelActivityPreviewCard lockScreenStyle={activity.lockScreenStyle} />
       </Section>
     </List>
   );

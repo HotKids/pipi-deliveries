@@ -5,6 +5,14 @@ import { blendStatusColor, rgbLuminance } from "./status";
 
 export const PARCEL_LOCK_SCREEN_BOX = "box-lock-screen.png";
 
+export type ParcelLockScreenStyle = "dynamic" | "black" | "white";
+
+export const PICKUP_CARD_FOREGROUND = {
+  titleColor: "rgba(255,255,255,0.9)",
+  locationColor: "rgba(255,255,255,0.85)",
+  dotColor: "rgba(255,255,255,0.18)",
+} as const;
+
 const STATION_ACCENT = { cainiao: "#0167FE", pinduoduo: "#EA0D15", fengchao: "#FED043" } as const;
 const HANDOFF_ACCENT = { cainiao: "#016DFE", pinduoduo: "#F22308", jingdong: "#FA0352", douyin: "#FE2C55" } as const;
 const COURIER_STICKERS = new Set([
@@ -48,6 +56,7 @@ const WHITE = 0xffffff;
 const LEFT = 0x22262d;
 const RIGHT = 0x38232d;
 const OVERLAY = 0x1f / 0xff;
+const NEUTRAL_CAPSULE = "rgba(255,255,255,0.16)";
 
 function asColor(value: number): ColorStringHex {
   return `#${value.toString(16).padStart(6, "0")}`;
@@ -71,9 +80,28 @@ export function pickupCardPalette(card: ParcelActivityContent) {
   } : { ...parcelCardPalette(parcelCardArtwork(card).accent), capsuleForeground: "white" as const };
 }
 
+export function pickupCardAppearance(palette: ReturnType<typeof pickupCardPalette>, style?: ParcelLockScreenStyle) {
+  if (style !== "black" && style !== "white") {
+    return { ...palette, ...PICKUP_CARD_FOREGROUND, background: undefined };
+  }
+  const light = style === "white";
+  const background = light ? WHITE : 0;
+  const ink = light ? "#111111" : "#ffffff";
+  const brandCode = palette.code === "white" ? WHITE : Number.parseInt(palette.code.slice(1), 16);
+  return {
+    ...palette,
+    ...(light ? { titleColor: ink, locationColor: "#57575b", dotColor: "rgba(17,17,17,0.18)" } as const
+      : PICKUP_CARD_FOREGROUND),
+    background: asColor(background),
+    code: contrast(brandCode, background) >= 3 ? palette.code : ink,
+    ...(light && palette.capsule === NEUTRAL_CAPSULE
+      ? { capsule: "rgba(0,0,0,0.10)", capsuleForeground: ink } as const : {}),
+  };
+}
+
 export function parcelCardPalette(accent?: string) {
   if (!accent) return { gradient: [asColor(LEFT), asColor(RIGHT)], code: "white",
-    capsule: "rgba(255,255,255,0.16)" } as const;
+    capsule: NEUTRAL_CAPSULE } as const;
   const brand = Number.parseInt(accent.slice(1), 16);
   const right = blendStatusColor(RIGHT, brand, OVERLAY);
   let code = brand;
