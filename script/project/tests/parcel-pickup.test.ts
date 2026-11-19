@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import type { ParcelHandoffRecord, PickupCodeRecord, Shipment } from "../models";
-import { MEAL_CARD_TOKENS, PICKUP_STICKER_ENTRANCE } from "../components/pickup-card-tokens.generated";
+import { MEAL_ARTWORK_TOKENS, PICKUP_STICKER_ENTRANCE } from "../components/pickup-card-tokens.generated";
 import { PICKUP_TAB_TITLE, activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, nextPickupArtwork, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, parcelCardKey, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, withPickupArtwork, type ParcelActivityContent } from "../services/parcel-pickup";
-import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette } from "../services/parcel-card-appearance";
+import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette, pickupCardPalette } from "../services/parcel-card-appearance";
+import { resolvePickupVisualStyle } from "../services/meal/pickup-artwork";
+import { rgbLuminance } from "../services/status";
 import { recognizeParcelCodes } from "../services/parcel-code-ocr";
 import { parcelTextRows, recognizeParcelWaybill } from "../services/parcel-waybill-ocr";
 import { MEAL_ARTWORK_FRAME_ENDS } from "../services/meal/artwork-motion.generated";
@@ -45,6 +47,16 @@ assert.notEqual(parcelCardPalette("#3259a8").code, "#3259a8");
 assert.equal(parcelCardPalette("#3259a8").capsule, "#3259a8");
 assert.notEqual(parcelCardPalette("#ffd100").capsule, "#ffd100");
 assert.equal(parcelCardPalette("#ffd100").code, "#ffd100");
+const mealRules = JSON.parse(readFileSync(new URL("../../../pickup-rules.json", import.meta.url), "utf8"));
+const jpgStyle = resolvePickupVisualStyle(mealRules, {
+  brandId: brandedMeal.mealBrandId, productName: brandedMeal.title, evidenceText: "",
+});
+const jpgPalette = pickupCardPalette({ ...brandedMeal, mealStyle: jpgStyle });
+const luminanceOf = (hex: string) => rgbLuminance(Number.parseInt(hex.slice(1), 16)) + 0.05;
+assert.ok(luminanceOf(jpgPalette.code) / luminanceOf(jpgPalette.gradient[1]) >= 3,
+  "JPG's code must meet the same contrast floor as a parcel code");
+assert.ok(luminanceOf(jpgPalette.code) / luminanceOf("#000000") >= 3, "the code also stays readable on the island");
+assert.equal(jpgPalette.capsule, jpgStyle.buttonColor);
 
 const exampleDay = new Date(2026, 10, 18, 14);
 const datedHandoff = handoffActivityContent({
@@ -326,11 +338,11 @@ const activityGlobals = {
   independentPickupContent,
   withPickupArtwork,
   activePickupCards,
-  activeMealCards: () => meals,
+  activeMealCards: () => meals.filter(card => (card.expiresAtMs ?? Infinity) > now),
   mealCredentialScope: () => "synthetic-scope",
   readMeals: () => null,
   mealCard: (scope: string, id: string) => meals.find(card => card.target && "mealId" in card.target &&
-    card.target.mealId === id && card.target.mealScope === scope) ?? null,
+    card.target.mealId === id && card.target.mealScope === scope && (card.expiresAtMs ?? Infinity) > now) ?? null,
   parcelCardKey: ({ target }: Pick<ParcelActivityContent, "target">) => target
     ? "recordId" in target ? "record:" + target.recordId : "mealId" in target ? `${target.mealScope}:${target.mealId}` :
       JSON.stringify([target.shipmentId, target.waybill, target.waybillGeneration])
@@ -530,7 +542,8 @@ shortcut.parcelActivitySceneChanged("background");
 const mealTarget = { mealScope: "synthetic-scope", mealId: "synthetic-meal" };
 const firstTarget = { recordId: firstPickup.id };
 records = [firstPickup, fourthPickup];
-meals = [{ ...brandedMeal, target: mealTarget, code: "M1234", capturedAtMs: now + 3 }];
+const mealDeadline = now + 60_000;
+meals = [{ ...brandedMeal, target: mealTarget, code: "M1234", capturedAtMs: now + 3, expiresAtMs: mealDeadline }];
 activitiesEnabled = false;
 assert.equal(await shortcut.showShortcutPickupActivities([firstTarget]), false);
 assert.deepEqual(activeCodes(), []);
@@ -553,6 +566,20 @@ host.parcelActivitySceneChanged("background");
 host.reconcileParcelActivity(snapshot(), [independentPickupContent(firstPickup)!]);
 await host.parcelActivityStatus();
 assert.ok(activeCodes().includes("M1234"), "an older page snapshot cannot remove the new committed meal");
+const mealActivity = [...native.values()].find(activity => activity.state === "active" && activity.code === "M1234")!;
+capacity = 3;
+await host.startParcelActivityPreview();
+now = mealDeadline;
+mealActivity.state = "stale";
+failEnd = true;
+assert.equal(await shortcut.showShortcutPickupActivities([firstTarget]), true,
+  "a failed expiry cleanup preserves the requested Shortcut result");
+assert.equal(mealActivity.state, "stale", "a failed end leaves the receipt available for retry");
+failEnd = false;
+assert.equal(await shortcut.showShortcutPickupActivities([firstTarget]), true);
+assert.equal(mealActivity.state, "ended", "the background Shortcut retires the due meal at its next run");
+assert.deepEqual(activeCodes(), [firstPickup.code, PARCEL_ACTIVITY_PREVIEW.code],
+  "expiry leaves the valid parcel and the example visible");
 await host.stopParcelActivity();
 assert.equal(await shortcut.showShortcutPickupActivities([firstTarget]), false, "respect the saved Live Activity switch");
 
@@ -612,27 +639,28 @@ assert.match(activityCardSource, /minWidth: expanded \? artColumnWidth : Math\.m
   "the expanded native host cannot squeeze the box into the Watch column");
 const artworkLayoutSource = activityCardSource.match(/  const widthScale = [\s\S]*?  const artworkFrame = [\s\S]*?;/)?.[0];
 assert.ok(artworkLayoutSource);
-const artworkLayout = new Function("width", "card", "expanded", "lockScreen", "top", "MAX_ACTIVITY_HEIGHT", "PIPI_CARD",
+const artworkLayout = new Function("width", "card", "expanded", "lockScreen", "top", "MAX_ACTIVITY_HEIGHT",
+  "isMeal", "MEAL_ARTWORK_TOKENS",
   artworkLayoutSource + "\nreturn { artworkFrame, artOffset, verticalScale };");
 const cardArtTop = Number(activityCardSource.match(/\bartTop: ([\d.]+),/)?.[1]);
 assert.equal(cardArtTop, 9 - (132 - 117) / 2, "use the established Home artwork position in each host");
-assert.equal(MEAL_CARD_TOKENS.artTop, 9);
-assert.equal(MEAL_CARD_TOKENS.artTop + MEAL_CARD_TOKENS.logoY, 72);
-assert.match(activityCardSource, /const MEAL_CARD = \{ \.\.\.PIPI_CARD, \.\.\.MEAL_CARD_TOKENS \}/);
+assert.equal(MEAL_ARTWORK_TOKENS.artTop, 9);
+assert.equal(MEAL_ARTWORK_TOKENS.artTop + MEAL_ARTWORK_TOKENS.logoY, 72);
+assert.match(activityCardSource, /const card = PIPI_CARD;/, "both kinds share the tuned parcel geometry and typography");
 for (const width of [320, 328, 365, 374, 402]) {
   const box = { ...referenceCard, artWidth: 100, artHeight: 117, artTop: cardArtTop, edge: 12 };
-  const meal = { ...box, artTop: MEAL_CARD_TOKENS.artTop };
   const titleTop = 16.3;
-  const lock = artworkLayout(width, box, false, true, 0, 160, box);
-  const island = artworkLayout(width, box, true, false, titleTop, 160, box);
+  const lock = artworkLayout(width, box, false, true, 0, 160, false, MEAL_ARTWORK_TOKENS);
+  const island = artworkLayout(width, box, true, false, titleTop, 160, false, MEAL_ARTWORK_TOKENS);
   const scale = lock.verticalScale;
   assert.equal(lock.artOffset, box.artTop * scale);
   assert.ok(Math.abs(lock.artOffset - titleTop * scale - island.artOffset) < 0.01);
   assert.deepEqual(lock.artworkFrame, { maxWidth: box.artWidth * scale, maxHeight: box.artHeight * scale });
   assert.deepEqual(island.artworkFrame, { width: box.artWidth * scale, height: box.artHeight * scale });
-  assert.deepEqual(artworkLayout(width, meal, false, true, 0, 160, box), lock);
-  assert.deepEqual(artworkLayout(width, meal, true, false, titleTop, 160, box), island);
-  assert.equal(artworkLayout(width, meal, false, false, 0, 160, box).artOffset, meal.artTop * (width / meal.width));
+  assert.deepEqual(artworkLayout(width, box, false, true, 0, 160, true, MEAL_ARTWORK_TOKENS), lock);
+  assert.deepEqual(artworkLayout(width, box, true, false, titleTop, 160, true, MEAL_ARTWORK_TOKENS), island);
+  assert.equal(artworkLayout(width, box, false, false, 0, 160, true, MEAL_ARTWORK_TOKENS).artOffset,
+    MEAL_ARTWORK_TOKENS.artTop * (width / box.width));
 }
 assert.match(activityCardSource, /background=\{\{ alignment: "topLeading", content: boxArtwork \}\}/);
 assert.match(activityCardSource, /<ZStack frame=\{\{ width: artWidth, \.\.\.slot\(bottom - top\), alignment: "topLeading" \}\}>\{appArtwork\}/,
@@ -645,9 +673,9 @@ assert.match(activityCardSource, /fixedSize=\{\{ horizontal: false, vertical: tr
   "the expanded Pipi line heights distribute leading without shrinking text");
 assert.match(activityCardSource, /const MIN_COMPACT_ART_WIDTH = PIPI_CARD\.artWidth \/ 2;/);
 assert.match(activityCardSource, /titleFont: 16,[\s\S]*?locationFont: 12,[\s\S]*?codeFont: 26\.5,/);
-assert.match(activityCardSource, /font=\{card\.titleFont \* scale\} fontWeight=\{isMeal \? "bold" : "semibold"\}/);
-assert.match(activityCardSource, /font=\{card\.locationFont \* scale\} fontWeight=\{isMeal \? "regular" : "medium"\}/);
-assert.match(activityCardSource, /font=\{codeFont \* scale\} fontWeight=\{isMeal \? "bold" : "semibold"\} fontWidth="standard"[\s\S]*?kerning=\{isMeal \? 0\.4 \* scale : 0\}/,
+assert.match(activityCardSource, /font=\{card\.titleFont \* scale\} fontWeight="semibold"/);
+assert.match(activityCardSource, /font=\{card\.locationFont \* scale\} fontWeight="medium"/);
+assert.match(activityCardSource, /font=\{card\.codeFont \* scale\} fontWeight="semibold" fontWidth="standard"[\s\S]*?kerning=\{0\}/,
   "the Pickup tab, Lock Screen and island all use the shared standard-width digits");
 assert.doesNotMatch(activityCardSource, /balancedType|lockScreenPreview/);
 assert.match(activityCardSource, /const SMART_STACK_ART_COLUMN_WIDTH = 56;/);
@@ -674,6 +702,8 @@ assert.match(activitySettingsSource, /<ParcelActivityPreviewCard \/>/,
 const tabCardSource = readFileSync(new URL("../components/PickupTabCard.tsx", import.meta.url), "utf8");
 assert.match(tabCardSource, /listRowInsets=\{0\}[\s\S]*?<ParcelLiveActivityCard\b/);
 assert.match(tabCardSource, /background=\{\s*<GeometryReader\b/, "only the in-app row reads layout geometry");
+assert.match(tabCardSource, /artwork=\{baseAsset \? <PickupTabArtwork\b/,
+  "static and animated meals and parcels share the same app artwork loader");
 assert.match(activitySettingsSource, /<Text>锁屏预览<\/Text>[\s\S]*?"stop\.circle" : "play\.circle"[\s\S]*?disabled=\{busy\}/);
 assert.match(activitySettingsSource, /<Text>截屏识别<\/Text>[\s\S]*?「运行意图脚本」[\s\S]*?<Text>短信识别<\/Text>[\s\S]*?「运行意图脚本」/);
 assert.doesNotMatch(activitySettingsSource, /「在 App 中运行意图」/);
@@ -695,6 +725,16 @@ assert.match(logPageSource, /clearDiagnostics\(\);\s*showItems\(\[\]\)/,
   "clearing the log updates the cached badge");
 
 const appSource = readFileSync(new URL("../index.tsx", import.meta.url), "utf8");
+const pickupProjection = appSource.match(/const pickupCards = useMemo\(\(\) => (\[[^\n]+\]),/);
+assert.ok(pickupProjection);
+const sameDayCards: ParcelActivityContent[] = runInNewContext(pickupProjection[1], {
+  mealCards: [brandedMeal],
+  shipments: [],
+  state: undefined,
+  activePickupCards: () => [PARCEL_ACTIVITY_PREVIEW],
+});
+assert.deepEqual(pickupDateSections(sameDayCards, false, "", exampleDay)[0].items.map(card => card.code),
+  [brandedMeal.code, PARCEL_ACTIVITY_PREVIEW.code], "Pipi Home orders meals before parcels within a day");
 assert.match(appSource, /const \[initialStartup, initialPickupPreview\] = await Promise\.all\(\[readStartupState\(\), readPickupPreview\(\)\]\);\s*await Navigation\.present\(\{\s*element: <App initialStartup=\{initialStartup\} initialPickupPreview=\{initialPickupPreview \?\? false\}/,
   "the first native tab bar waits for the local preview decision alongside the saved shipment state");
 assert.match(appSource, /\[pickupPreview, setPickupPreview\] = useState\(initialPickupPreview\)/,

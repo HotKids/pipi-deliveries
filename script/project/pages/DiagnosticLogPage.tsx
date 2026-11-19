@@ -171,6 +171,7 @@ const EVENT_TITLES: Record<string, string> = {
   "shipment.complete.failed": "标记签收失败",
   "shipment.delete.succeeded": "快递已删除",
   "shipment.delete.failed": "快递删除失败",
+  "pickup.artwork.change.failed": "切换卡片图标失败",
   "meal.cards.refresh.failed": "取餐码刷新失败",
   "meal.cards.unavailable": "取餐码读取失败",
   "meal.sync.deferred": "取餐码稍后同步",

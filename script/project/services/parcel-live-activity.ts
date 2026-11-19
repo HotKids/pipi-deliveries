@@ -278,8 +278,9 @@ async function synchronizeActivities(
   if (stateLoadFailure() || cards && peekStateRevision() > state.revision ||
       !registry.showAll && (shortcutKeys || !registry.receipts.length)) return shown;
   if (shortcutKeys && !await LiveActivity.areActivitiesEnabled()) return shown;
+  const now = Date.now();
   const byTime = (cards ?? [...activePickupCards(visibleShipments(state), state.pickupCodeRecords, state.pickupArtworkChoices), ...activeMealCards()])
-    .filter((card) => card.target)
+    .filter((card) => card.target && (card.kind !== "meal" || (card.expiresAtMs ?? Infinity) > now))
     .sort((left, right) => (right.capturedAtMs ?? 0) - (left.capturedAtMs ?? 0) ||
       parcelCardKey(left).localeCompare(parcelCardKey(right)));
   const ranked = byTime.map((content, index) => ({
@@ -289,8 +290,20 @@ async function synchronizeActivities(
   let latest: AppState | undefined;
   for (const receipt of registry.receipts) {
     const key = parcelCardKey(receipt);
-    if (shortcutKeys && !shortcutKeys.has(key)) continue;
     const next = byKey.get(key);
+    if (shortcutKeys && !shortcutKeys.has(key)) {
+      const target = receipt.target;
+      if (!next && target && "mealId" in target) {
+        // A Shortcuts run is another chance to retire a meal after ActivityKit marks it stale.
+        try {
+          if (await LiveActivity.getActivityState(receipt.id) === "stale" &&
+              !parcelForTarget(latest ??= committedState(), target)) await closeActivity(receipt, isCurrent);
+        } catch {
+          writeDiagnostic("activity.parcel.expiry.failed", {}, "warning");
+        }
+      }
+      continue;
+    }
     if (!await isRunning(receipt)) {
       forgetReceipt(receipt, isCurrent, registry.showAll && next ? key : undefined);
     } else if (key && !next) {

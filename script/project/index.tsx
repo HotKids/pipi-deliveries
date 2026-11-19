@@ -141,7 +141,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   revision.current = state?.revision ?? -1;
   const resumeGeneration = useRef(0);
   const shipments = useMemo(() => state ? visibleShipments(state) : [], [state]);
-  const pickupCards = useMemo(() => [...activePickupCards(shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices), ...mealCards],
+  const pickupCards = useMemo(() => [...mealCards, ...activePickupCards(shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices)],
     [shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices, mealCards]);
   const latestPickupView = useRef({ state, pickupCards });
   latestPickupView.current = { state, pickupCards };

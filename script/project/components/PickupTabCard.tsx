@@ -7,7 +7,7 @@ import { parcelCardArtwork } from "../services/parcel-card-appearance";
 import { MEAL_ARTWORK_FRAME_ENDS } from "../services/meal/artwork-motion.generated";
 import { useBundledImage } from "./bundled-image";
 import { ParcelLiveActivityCard, type ParcelLiveActivityCardProps, PIPI_CARD } from "./ParcelLiveActivityCard";
-import { MEAL_CARD_TOKENS, PICKUP_STICKER_ENTRANCE } from "./pickup-card-tokens.generated";
+import { MEAL_ARTWORK_TOKENS, PICKUP_STICKER_ENTRANCE } from "./pickup-card-tokens.generated";
 
 const { artWidth: ART_WIDTH, artHeight: ART_HEIGHT } = PIPI_CARD;
 const ATLAS_COLUMNS = 7;
@@ -211,8 +211,8 @@ export function PickupTabCard(props: {
 }) {
   const { data, animate, spaceAfter, ...cardProps } = props;
   const isMeal = data.kind === "meal";
-  const { logoX, logoY } = isMeal ? MEAL_CARD_TOKENS : PIPI_CARD;
-  const logoSize = isMeal ? MEAL_CARD_TOKENS.stickerSize * (data.mealStyle?.stickerScale ?? 1)
+  const { logoX, logoY } = isMeal ? MEAL_ARTWORK_TOKENS : PIPI_CARD;
+  const logoSize = isMeal ? MEAL_ARTWORK_TOKENS.stickerSize * (data.mealStyle?.stickerScale ?? 1)
     : data.kind === "handoff" ? 20 : 26;
   const imageRoot = `${Script.directory}/assets/parcel-activity`;
   const { meal, mealSticker, sticker } = parcelCardArtwork(data);
@@ -220,7 +220,7 @@ export function PickupTabCard(props: {
   const playback = animate ? isMeal ? meal && mealArtworkPlayback(meal) : BOX_PLAYBACK : undefined;
   return (
     <ParcelCardListRow {...cardProps} data={{ ...data, title: props.title }} imageRoot={imageRoot} spaceAfter={spaceAfter}
-      artwork={baseAsset && (!isMeal || playback) ? <PickupTabArtwork key={playback?.path ?? baseAsset} baseAsset={baseAsset}
+      artwork={baseAsset ? <PickupTabArtwork key={playback?.path ?? baseAsset} baseAsset={baseAsset}
         logoAsset={isMeal ? mealSticker?.path : sticker?.path} logoSize={logoSize}
         logoX={logoX} logoY={logoY} playback={playback} /> : undefined} />
   );
