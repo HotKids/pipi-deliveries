@@ -1,12 +1,20 @@
 import { cachedMealRules } from "../carrier-authority";
 import type { ParcelActivityContent } from "../parcel-pickup";
-import { currentMeal, readMeals, type MealPayload, type MealSnapshot } from "./records";
-import { resolvePickupVisualStyle } from "./pickup-artwork";
+import { currentMeal, readMeals, updateMeals, type MealPayload, type MealSnapshot } from "./records";
+import { alternateMealArtwork, resolvePickupVisualStyle } from "./pickup-artwork";
 import { mealCredentialScope } from "./rules";
 
 export function mealRedemption(payload: MealPayload): string {
   return (payload.brandId === "chayanyuese" || payload.brandId === "ruixing") && payload.qrPayload?.trim()
     ? payload.qrPayload : "";
+}
+
+function mealStyleFor(payload: MealPayload, stored: MealSnapshot["style"][string] | undefined) {
+  if (stored) return stored;
+  const rules = cachedMealRules();
+  return rules ? resolvePickupVisualStyle(rules.raw, {
+    brandId: payload.brandId, productName: payload.productName ?? "", evidenceText: "",
+  }) : undefined;
 }
 
 export function mealCard(scope: string, id: string, state: MealSnapshot, now: number): ParcelActivityContent | null {
@@ -16,17 +24,31 @@ export function mealCard(scope: string, id: string, state: MealSnapshot, now: nu
   const hasQR = Boolean(mealRedemption(payload));
   const code = hasQR ? "待取餐" : payload.code?.trim();
   if (!code) return null;
-  const rules = cachedMealRules();
-  const mealStyle = state.style[id] ?? (rules ? resolvePickupVisualStyle(rules.raw, {
-    brandId: payload.brandId, productName: payload.productName ?? "", evidenceText: "",
-  }) : undefined);
+  const mealStyle = mealStyleFor(payload, state.style[id]);
   return {
     target: { mealId: id, mealScope: scope }, kind: "meal",
     capturedAtMs: payload.createdAt, expiresAtMs: payload.expiresAt,
     title: payload.productName?.trim() || payload.brandName?.trim() || "取餐码",
     location: payload.merchantName?.trim() || "",
     code, mealStyle, mealBrandId: payload.brandId, hasMealQR: hasQR,
+    ...(alternateMealArtwork(mealStyle) ? { artworkSwitchable: true } : {}),
   };
+}
+
+export function toggleMealCup(card: ParcelActivityContent, now = Date.now()): boolean {
+  const target = card.target;
+  if (!target || !("mealId" in target) || target.mealScope !== mealCredentialScope()) return false;
+  let changed = false;
+  updateMeals(target.mealScope, state => {
+    const payload = currentMeal(state, target.mealId, now);
+    const style = payload && mealStyleFor(payload, state.style[target.mealId]);
+    const artworkAsset = alternateMealArtwork(style);
+    changed = Boolean(style && artworkAsset && style.artworkAsset === card.mealStyle?.artworkAsset);
+    return changed && style && artworkAsset
+      ? { ...state, style: { ...state.style, [target.mealId]: { ...style, artworkAsset } } }
+      : state;
+  });
+  return changed;
 }
 
 export function activeMealCards(now = Date.now()): ParcelActivityContent[] {

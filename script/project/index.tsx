@@ -29,7 +29,7 @@ import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
-import { expireDueParcelHandoffs, loadAppState, peekStateRevision, visibleShipments } from "./services/storage";
+import { expireDueParcelHandoffs, loadAppState, peekStateRevision, toggleParcelArtwork, visibleShipments } from "./services/storage";
 import { performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
 import {
   diagnosticErrorDetails,
@@ -45,7 +45,7 @@ import {
   reloadAndRefreshOnResume,
   resumeShipmentId,
 } from "./services/app-resume";
-import { activeMealCards } from "./services/meal/cards";
+import { activeMealCards, toggleMealCup } from "./services/meal/cards";
 import { completeMeal } from "./services/meal/records";
 import { mealCredentialScope } from "./services/meal/rules";
 import { synchronizeMeals } from "./services/meal/cloud";
@@ -141,8 +141,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   revision.current = state?.revision ?? -1;
   const resumeGeneration = useRef(0);
   const shipments = useMemo(() => state ? visibleShipments(state) : [], [state]);
-  const pickupCards = useMemo(() => [...activePickupCards(shipments, state?.pickupCodeRecords), ...mealCards],
-    [shipments, state?.pickupCodeRecords, mealCards]);
+  const pickupCards = useMemo(() => [...activePickupCards(shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices), ...mealCards],
+    [shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices, mealCards]);
   const latestPickupView = useRef({ state, pickupCards });
   latestPickupView.current = { state, pickupCards };
   const [pickupPreview, setPickupPreview] = useState(initialPickupPreview);
@@ -203,6 +203,24 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
       platformObservation.current = undefined;
       refreshPlatformList("observe");
     }, 0);
+  }
+
+  function changePickupArtwork(card: typeof pickupCards[number]): boolean {
+    try {
+      if (card.kind === "meal") {
+        const changed = toggleMealCup(card);
+        reloadMeals();
+        if (changed) return true;
+      } else {
+        applyState(toggleParcelArtwork(card));
+        return true;
+      }
+    } catch (error) {
+      writeDiagnostic("pickup.artwork.change.failed", diagnosticErrorDetails(error), "warning");
+    }
+    setPickupNotice(card.kind === "meal" ? "冷热切换失败，请稍后重试" :
+      card.kind === "handoff" ? "寄件渠道切换失败，请稍后重试" : "取件站点切换失败，请稍后重试");
+    return false;
   }
 
   useEffect(() => {
@@ -470,6 +488,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
             onStateChange={applyState}
             showNotice={setPickupNotice}
             onAction={finishPickup}
+            onArtworkChange={changePickupArtwork}
           />
         </Tab>
       ) : null}

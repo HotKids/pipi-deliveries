@@ -67,7 +67,8 @@ function IdentityCodeButton({ onOpen }: {
   );
 }
 
-function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBlocked, onDetail, onSaveNote, onAction, showNotice, onMealCode }: {
+function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBlocked, onDetail, onSaveNote, onAction,
+  showNotice, onMealCode, onArtworkChange }: {
   card: ParcelActivityContent;
   animate: boolean;
   spaceAfter: boolean;
@@ -79,12 +80,15 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
   showNotice: (message: string) => void;
   onMealCode?: () => void;
+  onArtworkChange: (card: ParcelActivityContent) => boolean;
 }) {
   const [showAddress, setShowAddress] = useState(false);
   const [actionPending, setActionPending] = useState(false);
+  const [artworkChanged, setArtworkChanged] = useState(false);
   const acting = useRef(false);
   const editing = useRef(false);
   const canSwitch = Boolean(card.kind !== "handoff" && card.address && card.location && card.location !== card.address);
+  useEffect(() => { if (!animate) setArtworkChanged(false); }, [animate]);
 
   async function editNote() {
     if (editing.current || !onSaveNote) return;
@@ -123,7 +127,7 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
   return (
     <PickupTabCard
       data={card}
-      animate={animate}
+      animate={animate && !artworkChanged}
       spaceAfter={spaceAfter}
       title={note || card.title}
       onCopy={onMealCode ?? (() => void copyText(card.code).then((result) => showNotice(result === "copied"
@@ -136,13 +140,16 @@ function PickupCardRow({ card, animate, spaceAfter, note, opensCabinet, actionBl
       locationText={canSwitch && showAddress ? card.address : card.location}
       showingAddress={canSwitch && showAddress}
       onLocationTap={canSwitch ? () => setShowAddress(!showAddress) : undefined}
+      onArtworkTap={card.artworkSwitchable ? () => {
+        if (onArtworkChange(card)) setArtworkChanged(true);
+      } : undefined}
       onComplete={card.target ? () => void complete() : undefined}
     />
   );
 }
 
 export function PickupPage({
-  state, shipments, cards, previewing, focusedRecordId, onAction, onStateChange, showNotice,
+  state, shipments, cards, previewing, focusedRecordId, onAction, onStateChange, showNotice, onArtworkChange,
 }: {
   state: AppState;
   shipments: readonly Shipment[];
@@ -152,6 +159,7 @@ export function PickupPage({
   onAction: (card: ParcelActivityContent, openCabinet: boolean) => Promise<string>;
   onStateChange: (state: AppState) => void;
   showNotice: (message: string) => void;
+  onArtworkChange: (card: ParcelActivityContent) => boolean;
 }) {
   const dismiss = Navigation.useDismiss();
   const [mealQr, setMealQr] = useState<{ id: string; scope: string } | null>(null);
@@ -189,6 +197,7 @@ export function PickupPage({
     const key = parcelCardKey(card);
     if (target && "mealId" in target) return <PickupCardRow key={key} card={card} animate={animate} spaceAfter={spaceAfter} note=""
       opensCabinet={false} actionBlocked={false} onAction={onAction} showNotice={showNotice}
+      onArtworkChange={onArtworkChange}
       onMealCode={card.hasMealQR ? () => setMealQr({ id: target.mealId, scope: target.mealScope }) : undefined} />;
     const shipment = shipmentForPickupTarget(shipments, target);
     const note = (target && "recordId" in target
@@ -197,6 +206,7 @@ export function PickupPage({
       <PickupCardRow key={key} card={card} animate={animate} spaceAfter={spaceAfter}
         note={note} opensCabinet={Boolean(cabinetActions?.has(card))}
         actionBlocked={card.platform === "fengchao" && !cabinetActions} onAction={onAction}
+        onArtworkChange={onArtworkChange}
         showNotice={showNotice} onDetail={shipment ? () => {
           identityRequest.current++;
           setDetailTarget(target);
@@ -262,9 +272,9 @@ export function PickupPage({
         <RootTabList title={PICKUP_TAB_TITLE} onClose={() => dismiss()} bottomInset={TAB_FAB_SCROLL_INSET}>
           {sections.map(({ key, label, items, preview }, sectionIndex) => (
             <Section key={key} header={<Text>{label}</Text>}>
-              {items.map((card, index) => cardRow(card, sectionIndex === 0 && index === 0,
+              {items.map((card, index) => cardRow(card, visible && sectionIndex === 0 && index === 0,
                 index < items.length - 1 || preview))}
-              {preview ? <ParcelActivityPreviewCard animate={sectionIndex === 0 && items.length === 0} /> : null}
+              {preview ? <ParcelActivityPreviewCard animate={visible && sectionIndex === 0 && items.length === 0} /> : null}
             </Section>
           ))}
         </RootTabList>

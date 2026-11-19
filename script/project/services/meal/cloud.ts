@@ -94,10 +94,10 @@ export function applyMealPage(current: MealSnapshot, expected: MealSnapshot, res
   }
   if (response.pageToken != null) throw new Error("Unexpected meal continuation");
   return reconcileMealEdits({ ...current, session: { ...session, nextSequence: Math.max(current.session.nextSequence, session.nextSequence) },
-    remote, snapshot: undefined, cursor: response.cursor }, snapshot);
+    remote, snapshot: undefined, cursor: response.cursor }, current, snapshot);
 }
 
-function reconcileMealEdits(state: MealSnapshot, completeSnapshot = false): MealSnapshot {
+function reconcileMealEdits(state: MealSnapshot, previous: MealSnapshot, completeSnapshot = false): MealSnapshot {
   const edits = { ...state.edits };
   const currentBatch = state.batch?.mutations[0].mutationId;
   for (const [id, edit] of Object.entries(edits)) {
@@ -106,7 +106,13 @@ function reconcileMealEdits(state: MealSnapshot, completeSnapshot = false): Meal
     if (cloud ? cloud.editedAt >= edit.editedAt || cloud.deleted && cloud.reason === "retention" :
       completeSnapshot && edit.requiresExisting) delete edits[id];
   }
-  const style = Object.fromEntries(Object.entries(state.style).filter(([id]) => edits[id] || state.remote[id]?.deleted === false));
+  const style = Object.fromEntries(Object.entries(state.style).filter(([id]) => {
+    const cloud = state.remote[id];
+    const before = previous.remote[id];
+    const current = edits[id]?.payload ?? (cloud?.deleted === false ? cloud.payload : undefined);
+    const prior = previous.edits[id]?.payload ?? (before?.deleted === false ? before.payload : undefined);
+    return current && (!prior || (prior.brandId === current.brandId && prior.productName === current.productName));
+  }));
   return { ...state, edits, style };
 }
 
@@ -177,7 +183,7 @@ export function recoverMealConflict(state: MealSnapshot, batch: MealBatch, confl
       if (cloud.recordId !== id) return state;
       if (!remote[id] || cloud.revision >= remote[id].revision) remote[id] = cloud;
     }
-    return reconcileMealEdits({ ...state, remote, edits, batch: undefined });
+    return reconcileMealEdits({ ...state, remote, edits, batch: undefined }, state);
   }
   if (!["reset_required", "endpoint_generation_conflict", "mutation_receipt_expired",
     "mutation_replay_conflict", "mutation_sequence_conflict"].includes(String(conflict.error))) return state;

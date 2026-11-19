@@ -6,7 +6,7 @@ import { blendStatusColor, rgbLuminance } from "./status";
 export const PARCEL_LOCK_SCREEN_BOX = "box-lock-screen.png";
 
 const STATION_ACCENT = { cainiao: "#0167FE", pinduoduo: "#EA0D15", fengchao: "#FED043" } as const;
-const HANDOFF_ACCENT = { cainiao: "#016DFE", pinduoduo: "#F22308" } as const;
+const HANDOFF_ACCENT = { cainiao: "#016DFE", pinduoduo: "#F22308", jingdong: "#FA0352", douyin: "#FE2C55" } as const;
 const COURIER_STICKERS = new Set([
   "danniao", "dbl", "ems", "jd", "jtsd", "kysy", "sf", "sto", "uc", "yd", "yto", "yzpy", "zjs", "zto",
 ]);
@@ -23,7 +23,7 @@ export function parcelCardArtwork(card: ParcelActivityContent) {
     mealSticker: mealAsset(card.mealStyle?.stickerAsset),
     mark: mealAsset(card.mealBrandId ? `brand-${card.mealBrandId}.png` : undefined),
   };
-  const platform = card.platform;
+  const platform = card.artworkChoice ?? card.platform;
   const icon = card.carrierIcon === "jdshopping" ? "jd" : card.carrierIcon;
   if (icon && card.kind !== "handoff" && COURIER_STICKERS.has(icon)) {
     return {
@@ -37,6 +37,7 @@ export function parcelCardArtwork(card: ParcelActivityContent) {
   if (card.kind === "handoff" && platform !== "fengchao") {
     return { mark, sticker: mark, accent: HANDOFF_ACCENT[platform] };
   }
+  if (platform === "jingdong" || platform === "douyin") return {};
   return {
     mark, sticker: { path: `parcel-activity/${platform}.png`, name: `${platform}.png` },
     accent: STATION_ACCENT[platform],

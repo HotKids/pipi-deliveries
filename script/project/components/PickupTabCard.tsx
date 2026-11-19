@@ -207,6 +207,7 @@ export function PickupTabCard(props: {
   locationText?: string;
   showingAddress?: boolean;
   onLocationTap?: () => void;
+  onArtworkTap?: () => void;
 }) {
   const { data, animate, spaceAfter, ...cardProps } = props;
   const isMeal = data.kind === "meal";

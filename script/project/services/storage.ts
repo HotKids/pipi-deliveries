@@ -24,7 +24,8 @@ import type {
   WidgetSnapshot,
 } from "../models";
 import { nextParcelHandoffDeadline, parcelHandoffDeadline } from "./parcel-handoff-expiry";
-import { activePickupCards, applyRecognizedPickup, type ParcelActivityContent } from "./parcel-pickup";
+import { activePickupCards, applyRecognizedPickup, nextPickupArtwork, parcelCardKey, type ParcelActivityContent } from "./parcel-pickup";
+import type { PickupArtworkChoice } from "../models";
 import { applyCloudPddParcels, deliveryEstimateApplies, displayedPlatformFields, enrichPlatformParcel, keepPlatformFields, matchPlatformParcel, samePlatformTarget, type CloudPddParcel } from "./platform-parcel-merge";
 import type { PlatformParcel } from "./platform-parcel-data";
 import type { CabinetParcel } from "./fengchao-account";
@@ -566,6 +567,8 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     ),
     shipments: sortShipments(retainedShipments),
     ...(Array.isArray(base.pickupCodeRecords) ? { pickupCodeRecords: base.pickupCodeRecords } : {}),
+    ...(base.pickupArtworkChoices && typeof base.pickupArtworkChoices === "object" && !Array.isArray(base.pickupArtworkChoices)
+      ? { pickupArtworkChoices: base.pickupArtworkChoices } : {}),
     pendingNotifications: base.pendingNotifications || [],
     ...(base.pendingEnhancementUnsubscribes?.length ? {
       pendingEnhancementUnsubscribes: normalizeEnhancementUnsubscribes(base.pendingEnhancementUnsubscribes),
@@ -2325,6 +2328,7 @@ type StateSaveOptions = {
   enhancementUnsubscribe?: PendingEnhancementUnsubscribe;
   acknowledgedEnhancementUnsubscribeId?: string;
   forceSidecarPrune?: boolean;
+  pickupArtworkChoice?: { key: string; value: PickupArtworkChoice };
 };
 
 export function saveState(
@@ -2416,11 +2420,21 @@ export function saveRecognizedShipmentPickup(expected: Shipment, lookup: ParcelL
   });
 }
 
-export function parcelCardKey(card: Pick<ParcelActivityContent, "target">): string {
-  const target = card.target;
-  return target && ("mealId" in target ? `meal:${target.mealScope}:${target.mealId}` :
-    "recordId" in target ? "record:" + target.recordId :
-    JSON.stringify([target.shipmentId, target.waybill, target.waybillGeneration])) || "";
+export { parcelCardKey };
+
+export function toggleParcelArtwork(expected: ParcelActivityContent, now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const state = loadState(now);
+    const key = parcelCardKey(expected);
+    const current = activePickupCards(visibleShipments(state, now), state.pickupCodeRecords, state.pickupArtworkChoices)
+      .find(card => parcelCardKey(card) === key && card.code === expected.code &&
+        card.capturedAtMs === expected.capturedAtMs && card.artworkChoice === expected.artworkChoice);
+    const value = current && nextPickupArtwork(current);
+    if (!value || (current?.expiresAtMs !== undefined && current.expiresAtMs <= now)) {
+      throw new ShipmentLifecycleChangedError();
+    }
+    return saveStateAndPrune(state, now, { pickupArtworkChoice: { key, value } }, state).state;
+  });
 }
 
 export function completeCurrentParcelCard(expected: ParcelActivityContent, now = Date.now()): AppState {
@@ -2704,6 +2718,22 @@ function saveStateAndPrune(
     if (!unsubscribes.some(item => item.id === pending.id)) unsubscribes.push(pending);
   }
   const savedPickupCodes = pickupCodeRecords ?? previous.pickupCodeRecords;
+  const artworkUpdate = notificationCommit.pickupArtworkChoice;
+  let pickupArtworkChoices = previous.pickupArtworkChoices;
+  if (pickupArtworkChoices || artworkUpdate) {
+    const owned = new Set(savedPickupCodes?.map(record => parcelCardKey({ target: { recordId: record.id } })));
+    for (const shipment of retainedShipments) {
+      if (!shipment.pickup) continue;
+      owned.add(parcelCardKey({ target: {
+        shipmentId: shipment.identity.id,
+        waybill: normalizeWaybill(shipment.pickup.waybill),
+        waybillGeneration: shipment.pickup.waybillGeneration,
+      } }));
+    }
+    pickupArtworkChoices = Object.fromEntries(Object.entries({
+      ...pickupArtworkChoices, ...(artworkUpdate ? { [artworkUpdate.key]: artworkUpdate.value } : {}),
+    }).filter(([key]) => owned.has(key)));
+  }
   const next: AppState = {
     version: 2,
     revision: Math.max(previous.revision, candidate.revision) + 1,
@@ -2716,6 +2746,7 @@ function saveStateAndPrune(
     ),
     shipments: sortShipments(retainedShipments),
     ...(savedPickupCodes ? { pickupCodeRecords: savedPickupCodes } : {}),
+    ...(pickupArtworkChoices && Object.keys(pickupArtworkChoices).length ? { pickupArtworkChoices } : {}),
     // An unsent event of the old parcel goes with it when a new parcel takes the reused number (user 2026-10-02).
     pendingNotifications: (previous.pendingNotifications || []).filter((event) =>
       event.id !== notificationCommit.acknowledgedId && !reusedNumberRows.has(event.shipmentId)

@@ -1,5 +1,6 @@
-import type { ParcelHandoffRecord, PickupCodeRecord, PickupPlatform, Shipment } from "../models";
+import type { ParcelHandoffRecord, PickupArtworkChoice, PickupArtworkChoices, PickupCodeRecord, PickupPlatform, Shipment } from "../models";
 import { carrierDisplayName, courierIconName } from "./carrier-presentation";
+import { parcelArtworkCarrierUnmatched } from "./carrier-gate";
 import { displayWaybill, unprojectedAccountOrder } from "./shipment-policy";
 import { normalizeWaybill, shipmentPresentationStatus, waybillSuffix } from "./status";
 import { cleanString } from "./value-guards";
@@ -26,6 +27,8 @@ export type ParcelActivityContent = Readonly<{
   target?: ParcelActivityTarget;
   platform?: PickupPlatform;
   carrierIcon?: string;
+  artworkChoice?: PickupArtworkChoice;
+  artworkSwitchable?: true;
   kind?: "handoff" | "meal";
   mealStyle?: PickupVisualStyle;
   mealBrandId?: string;
@@ -38,6 +41,31 @@ export type ParcelActivityContent = Readonly<{
   address?: string;
   code: string;
 }>;
+
+export function parcelCardKey({ target }: Pick<ParcelActivityContent, "target">): string {
+  return target ? "mealId" in target ? `meal:${target.mealScope}:${target.mealId}` :
+    "recordId" in target ? "record:" + target.recordId :
+      JSON.stringify([target.shipmentId, target.waybill, target.waybillGeneration]) : "";
+}
+
+const STATION_ARTWORK: readonly PickupArtworkChoice[] = ["cainiao", "pinduoduo", "fengchao"];
+const HANDOFF_ARTWORK: readonly PickupArtworkChoice[] = ["cainiao", "jingdong", "douyin", "pinduoduo"];
+
+function artworkOrder(card: ParcelActivityContent) {
+  return card.kind === "handoff" ? HANDOFF_ARTWORK : STATION_ARTWORK;
+}
+
+export function withPickupArtwork(card: ParcelActivityContent, choices?: PickupArtworkChoices): ParcelActivityContent {
+  const choice = card.artworkSwitchable ? choices?.[parcelCardKey(card)] : undefined;
+  return choice && artworkOrder(card).includes(choice) ? { ...card, artworkChoice: choice } : card;
+}
+
+export function nextPickupArtwork(card: ParcelActivityContent): PickupArtworkChoice | undefined {
+  if (!card.artworkSwitchable || card.kind === "meal") return undefined;
+  const order = artworkOrder(card);
+  const displayed = card.artworkChoice ?? card.platform;
+  return order[((displayed ? order.indexOf(displayed) : -1) + 1) % order.length];
+}
 
 export function shipmentForPickupTarget(
   shipments: readonly Shipment[], target: ParcelActivityTarget | undefined,
@@ -120,13 +148,15 @@ export function handoffActivityContent(handoff: ParcelHandoffRecord): ParcelActi
   const appointment = start && validEnd
     ? start.slice(5) + "–" + (start.slice(0, 10) === end.slice(0, 10) ? end.slice(11) : end.slice(5))
     : cleanString(handoff.windowText);
+  const expiresAtMs = parcelHandoffDeadline(handoff);
   return {
     kind: "handoff",
     ...(start ? { businessDateKey: start.slice(0, 10) } : {}),
     target: handoff.id ? { recordId: handoff.id } : undefined,
     platform: handoff.platform,
     capturedAtMs: handoff.capturedAtMs,
-    expiresAtMs: parcelHandoffDeadline(handoff),
+    expiresAtMs,
+    ...(expiresAtMs === undefined || expiresAtMs > Date.now() ? { artworkSwitchable: true as const } : {}),
     title: cleanString(handoff.note) || "寄件码",
     location: appointment ? appointment + " 上门" : "",
     code,
@@ -155,11 +185,13 @@ export function independentPickupContent(record: PickupCodeRecord): ParcelActivi
 export function activePickupCards(
   shipments: readonly Shipment[],
   independent: readonly PickupCodeRecord[] = [],
+  choices?: PickupArtworkChoices,
 ): ParcelActivityContent[] {
-  return [
+  const cards = [
     ...shipments.map(parcelActivityContent),
     ...independent.map(independentPickupContent),
   ].filter((card): card is ParcelActivityContent => card != null);
+  return choices ? cards.map(card => withPickupArtwork(card, choices)) : cards;
 }
 
 export function parcelActivityContent(shipment: Shipment): ParcelActivityContent | null {
@@ -178,10 +210,12 @@ export function parcelActivityContent(shipment: Shipment): ParcelActivityContent
     return null;
   }
   const carrier = carrierDisplayName(shipment.identity.companyName);
-  const carrierIcon = courierIconName(shipment.identity.courierCode, shipment.identity.companyName);
+  const unknownCarrier = parcelArtworkCarrierUnmatched(shipment);
+  const carrierIcon = unknownCarrier ? "default" : courierIconName(shipment.identity.courierCode, shipment.identity.companyName);
   return {
     target: { shipmentId: shipment.identity.id, waybill, waybillGeneration },
     platform: pickup.platform,
+    ...(unknownCarrier ? { artworkSwitchable: true as const } : {}),
     ...(carrierIcon !== "default" ? { carrierIcon } : {}),
     capturedAtMs: pickup.capturedAtMs,
     title: cleanString(shipment.note) || `${carrier} ${waybillSuffix(waybill)}`,
