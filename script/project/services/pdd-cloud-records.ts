@@ -1,5 +1,6 @@
 import type { AbortSignal } from "scripting";
 import { postGateway } from "./gateway";
+import { beginDiagnosticOperation } from "./logger";
 import type { CloudPddParcel } from "./platform-parcel-merge";
 import { asPlainObject, cleanString, positiveFiniteTime } from "./value-guards";
 
@@ -7,6 +8,19 @@ const WAYBILL = /^[A-Z0-9]{6,64}$/;
 const RECORD_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
 export async function readCloudPddParcels(signal: AbortSignal, deadlineAtMs: number): Promise<CloudPddParcel[]> {
+  const finish = beginDiagnosticOperation("cloud.pdd", { sourceProvider: "pinduoduo", stage: "pull" });
+  try {
+    const parcels = await readCloudPddPages(signal, deadlineAtMs);
+    finish("succeeded", { records: parcels.length });
+    return parcels;
+  } catch (error) {
+    if (signal.aborted) finish("cancelled");
+    else finish("failed", {}, "warning");
+    throw error;
+  }
+}
+
+async function readCloudPddPages(signal: AbortSignal, deadlineAtMs: number): Promise<CloudPddParcel[]> {
   const parcels: CloudPddParcel[] = [];
   let after: string | null = null;
   do {

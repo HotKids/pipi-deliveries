@@ -242,6 +242,8 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         setSyncingPlatforms(current => running ? [...current, source] : current.filter(item => item !== source));
       });
       if (mountedRef.current) setNotice(result);
+    } catch {
+      if (mountedRef.current) setNotice(EXPRESS_TOAST_COPY.refreshFailed);
     } finally {
       if (mountedRef.current) setSyncingPlatforms([]);
     }

@@ -9,6 +9,7 @@ import { absorbAutomaticShipment, applyAccountShipment, applyManualShipment, app
 import { cachedProductImage, productImageCacheKey, pruneProductImages, rememberProductImage } from "../services/product-image-cache";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { sharedData, withSharedFileTransaction } from "../services/shared-file-transaction";
+import { noteSavedToast, noteSaveFailedToast } from "../services/ui-feedback";
 
 const clock = Date.now;
 Date.now = () => NOW + 100;
@@ -131,13 +132,16 @@ try {
   const initial = saveState({ ...emptyState(), shipments: [original] }, NOW);
   const saved = setShipmentProductName(initial.shipments[0], "Manual title", NOW + 1);
   assert.equal(displayedPlatformFields(saveState(initial, NOW + 2).shipments[0]).title, "Manual title");
+  const notices: string[] = [];
   const editNote = Function("scope", `with(scope) { ${noteAction}; return editNote; }`)({
-    ShipmentLifecycleChangedError, shipment: saved.shipments[0], props: { persistedShipment: true },
+    noteSavedToast, noteSaveFailedToast, shipment: saved.shipments[0], props: { persistedShipment: true },
     Dialog: { prompt: async () => "Parcel note" }, setShipmentNote, setShipment() {},
-    requestWidgetReload() {}, setNotice() {}, writeDiagnostic() {}, diagnosticErrorDetails: () => ({}),
+    requestWidgetReload() {}, setNotice(value: string) { notices.push(value); },
+    writeDiagnostic() {}, diagnosticErrorDetails: () => ({}),
   });
   await editNote();
   assert.equal(loadState().shipments[0].note, "Parcel note");
+  assert.deepEqual(notices, ["备注已保存"]);
   assert.equal(displayedPlatformFields(loadState().shipments[0]).title, "Manual title");
   setShipmentProductName(saved.shipments[0], "", NOW + 3);
   assert.equal(displayedPlatformFields(saveState(saved, NOW + 4).shipments[0]).title, "Provider title");

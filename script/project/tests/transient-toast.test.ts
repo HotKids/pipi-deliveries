@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -8,25 +9,35 @@ import {
   isManualQueryValidationMessage,
   manualDetailRefreshToast,
   manualQueryFailureToast,
+  noteSavedToast,
+  noteSaveFailedToast,
   refreshSummaryToast,
   transientToast,
 } from "../services/ui-feedback";
-import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
+import { EXPRESS_TOAST_COPY, MEAL_TOAST_COPY } from "../services/express-toast-copy";
 import { OperationTimeoutError } from "../services/deadline";
+import { ShipmentLifecycleChangedError } from "../services/shipment-lifecycle";
 
-let dismissedMessage = "unchanged";
+let dismissedMessage = "运单号已复制";
 const visibleToast = transientToast("运单号已复制", (message) => {
-  dismissedMessage = message;
+  dismissedMessage = typeof message === "function" ? message(dismissedMessage) : message;
 });
 assert.equal(visibleToast.isPresented, true);
 assert.equal(visibleToast.message, "运单号已复制");
 assert.equal(visibleToast.duration, 2);
 assert.equal(visibleToast.position, "bottom");
 visibleToast.onChanged(true);
-assert.equal(dismissedMessage, "unchanged");
+assert.equal(dismissedMessage, "运单号已复制");
 visibleToast.onChanged(false);
 assert.equal(dismissedMessage, "");
+dismissedMessage = "已标记为签收";
+visibleToast.onChanged(false);
+assert.equal(dismissedMessage, "已标记为签收", "dismissing older feedback must preserve a newer result");
 assert.equal(transientToast("", () => {}).isPresented, false);
+assert.equal(noteSavedToast("note"), "备注已保存");
+assert.equal(noteSavedToast("  "), "备注已删除");
+assert.equal(noteSaveFailedToast(new ShipmentLifecycleChangedError()), "快递信息已变更，请重新打开备注");
+assert.equal(noteSaveFailedToast(new Error()), "暂时无法编辑，请稍后重试");
 // 统一 toast 表（AGENTS §11，2026-09-05）：手动查件的提示是短 toast 一次，不再常驻到查完。
 assert.equal(EXPRESS_TOAST_COPY.manualQuerying, "正在查询，请稍候");
 assert.equal(refreshSummaryToast({ attempted: 0, succeeded: 0, failed: 0,
@@ -239,13 +250,44 @@ const notificationSource = await readFile(
   resolve(projectDir, "pages/NotificationSettingsPage.tsx"),
   "utf8",
 );
-assert.ok(notificationSource.includes('setNotice("保存失败，请稍后重试")'));
+assert.ok(notificationSource.includes("setNotice(SAVE_FAILED_TOAST)"));
 
 const diagnosticsSource = await readFile(
   resolve(projectDir, "pages/DiagnosticLogPage.tsx"),
   "utf8",
 );
 assert.ok(diagnosticsSource.includes('setNotice("暂无可复制的日志")'));
-assert.ok(diagnosticsSource.includes('"复制失败，请稍后重试"'));
+assert.ok(diagnosticsSource.includes('"日志复制失败，请稍后重试"'));
+
+const app = await readFile(resolve(projectDir, "index.tsx"), "utf8");
+const completion = stripTypeScriptTypes(app.slice(
+  app.indexOf("async function finishPickup("), app.indexOf("function observePlatformList("),
+));
+const pickup = await readFile(resolve(projectDir, "pages/PickupPage.tsx"), "utf8");
+assert.match(app, /<PickupPage[\s\S]*?toast=\{transientToast\(pickupNotice, setPickupNotice\)\}/);
+assert.match(pickup, /<VStack navigationBarVisibility="hidden" spacing=\{0\} toast=\{toast\}/);
+const pickupNotices: string[] = [];
+let rowVisible = true;
+const finishPickup = Function("scope", `with(scope) { ${completion}; return finishPickup; }`)({
+  EXPRESS_TOAST_COPY, MEAL_TOAST_COPY, ShipmentLifecycleChangedError,
+  beginDiagnosticOperation() { return () => {}; },
+  setPickupNotice(message: string) { pickupNotices.push(message); },
+  async performPickupAction(_card: unknown, openCabinet: boolean, publish: () => void) {
+    if (openCabinet) return "";
+    publish();
+    return EXPRESS_TOAST_COPY.signed;
+  },
+  applyState() { rowVisible = false; },
+  mealCredentialScope: () => "account",
+  completeMeal: () => true,
+  refreshMeals() { rowVisible = false; },
+});
+await finishPickup({ target: { shipmentId: "parcel" } }, false);
+assert.equal(rowVisible, false);
+assert.deepEqual(pickupNotices, ["已标记为签收"]);
+await finishPickup({ target: { recordId: "cabinet" } }, true);
+assert.deepEqual(pickupNotices, ["已标记为签收"], "cancelling cabinet opening is silent");
+await finishPickup({ target: { mealScope: "account", mealId: "meal" } }, false);
+assert.deepEqual(pickupNotices, ["已标记为签收", "已标记取餐"]);
 
 console.log("transient toast presentation tests passed");

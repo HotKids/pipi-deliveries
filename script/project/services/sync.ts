@@ -20,7 +20,7 @@ import { acquireRenewingDurableRefreshLease, durableRefreshLeaseDiagnostics, rec
 import { requestWidgetReload } from "./widgets";
 import { refreshCarrierAuthorityIfNeeded } from "./carrier-authority";
 import { assertWithinDeadline, deadlineAfter, deadlineExpired } from "./deadline";
-import { createDiagnosticFlowId, diagnosticErrorDetails, diagnosticState, writeDiagnostic } from "./logger";
+import { beginDiagnosticOperation, createDiagnosticFlowId, diagnosticErrorDetails, diagnosticState, writeDiagnostic } from "./logger";
 import { SCRIPT_BINDING_SOURCE, requireScriptSource } from "./script-source";
 import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD, SCRIPT_VERSION } from "./build-track";
 import { gatewayCredentialGeneration } from "./credentials";
@@ -297,9 +297,18 @@ async function runFullRefresh(
           const parcels = await readCloudPddParcels(lease.signal, deadline);
           const isCurrent = () => lease.isCurrent() && projectionSceneActive() && gatewayCredentialGeneration() === generation;
           if (parcels.length && isCurrent()) {
-            const saved = saveCloudPddParcels(parcels, currentState, isCurrent);
-            if (saved.revision > currentState.revision) runtimeState.publishRefreshState(saved);
-            currentState = saved;
+            const finish = beginDiagnosticOperation("cloud.pdd", { sourceProvider: "pinduoduo", stage: "commit",
+              records: parcels.length });
+            try {
+              const saved = saveCloudPddParcels(parcels, currentState, isCurrent);
+              const changed = saved.revision > currentState.revision;
+              if (changed) runtimeState.publishRefreshState(saved);
+              currentState = saved;
+              finish(changed ? "committed" : "no_changes");
+            } catch (error) {
+              finish(lease.signal.aborted ? "cancelled" : "failed", {}, lease.signal.aborted ? "info" : "warning");
+              throw error;
+            }
           }
         } catch {
           lease.assertCurrent();

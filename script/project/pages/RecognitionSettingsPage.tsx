@@ -4,7 +4,7 @@ import { CONNECTION_TEST_BUDGET_MS, requestOnlineRecognition } from "../services
 import { normalizedRecognitionURL, prepareRecognitionConfig, providerDefaults, recognitionSettings,
   RecognitionSettingError, saveRecognitionSettings, type Format, type Mode, type Protocol, type Provider,
   type RecognitionDraft } from "../services/recognition/settings";
-import { transientToast } from "../services/ui-feedback";
+import { SAVE_FAILED_TOAST, transientToast } from "../services/ui-feedback";
 
 const PROVIDERS: Provider[] = ["gemini", "openai", "compatible"];
 
@@ -17,14 +17,13 @@ function ProviderLogo({ provider }: { provider: Provider }) {
   );
 }
 
-function validationMessage(error: unknown): string {
-  if (!(error instanceof RecognitionSettingError)) return "无法保存识别设置，请重试";
+function validationMessage(error: RecognitionSettingError): string {
   switch (error.field) {
     case "baseUrl": return "请输入有效的 HTTPS Base URL";
     case "apiKey": return "请输入有效的 API Key";
     case "model": return "请输入有效的模型名称";
     case "providerName": return "请输入有效的 Provider Name";
-    default: return "无法保存识别设置，请重试";
+    default: return "请检查在线识别配置";
   }
 }
 
@@ -35,6 +34,7 @@ export function RecognitionSettingsPage() {
   const [reuse, setReuse] = useState(true);
   const [test, setTest] = useState<"checking" | "passed" | "failed" | "">("");
   const [notice, setNotice] = useState("");
+  const [validation, setValidation] = useState("");
   const request = useRef<AbortController | null>(null);
   useEffect(() => () => request.current?.abort(), []);
 
@@ -51,6 +51,7 @@ export function RecognitionSettingsPage() {
 
   function edit(patch: Partial<RecognitionDraft>) {
     cancelTest();
+    setValidation("");
     if (patch.provider && patch.provider !== draft.provider ||
       patch.baseUrl !== undefined && patch.baseUrl !== draft.baseUrl) {
       setKey("");
@@ -79,6 +80,7 @@ export function RecognitionSettingsPage() {
 
   function save() {
     cancelTest();
+    setValidation("");
     try {
       if (draft.mode === "online") normalizedRecognitionURL(draft.provider, draft.baseUrl);
       saveRecognitionSettings(draft, key);
@@ -88,7 +90,10 @@ export function RecognitionSettingsPage() {
       setKey("");
       setReuse(true);
       setNotice("识别设置已保存");
-    } catch (error) { setNotice(validationMessage(error)); }
+    } catch (error) {
+      if (error instanceof RecognitionSettingError) setValidation(validationMessage(error));
+      else setNotice(SAVE_FAILED_TOAST);
+    }
   }
 
   return (
@@ -142,9 +147,14 @@ export function RecognitionSettingsPage() {
             </Picker>,
           ] : null}
           <SecureField title="API Key" prompt={canReuseKey ? "•".repeat(Math.min(saved.keyLength, 20)) : "请输入 API Key"}
-            value={key} autocorrectionDisabled textInputAutocapitalization="never" onChanged={value => { cancelTest(); setKey(value); }} />
+            value={key} autocorrectionDisabled textInputAutocapitalization="never" onChanged={value => {
+              cancelTest();
+              setValidation("");
+              setKey(value);
+            }} />
           <TextField title="Model" prompt="请输入支持图像识别的 Model ID" value={draft.model}
             autocorrectionDisabled textInputAutocapitalization="never" onChanged={model => edit({ model })} />
+          {validation ? <Text foregroundStyle="systemRed">{validation}</Text> : null}
           <Button title={test === "checking" ? "重新测试连接" : "测试连接"} disabled={!hasInputs}
             action={() => void testConnection()} />
           {test === "checking" ? <ProgressView title="正在测试连接" /> : test ? (

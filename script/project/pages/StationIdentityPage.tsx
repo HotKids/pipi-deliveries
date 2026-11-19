@@ -6,6 +6,7 @@ import { useBundledImage } from "../components/bundled-image";
 import { iconTileShape } from "../components/icon-tile";
 import { tabCapsuleSurface } from "../components/TabFloatingActionButton";
 import { copyText } from "../services/clipboard";
+import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import { code128Widths } from "../services/code128";
 import { currentPlatformSession, onPlatformAccountsChanged, platformSession,
   type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
@@ -53,8 +54,13 @@ async function openWebIdentity(platform: IdentityPlatform, session: PlatformSess
     try {
       const shown = controller.present({ fullscreen: true, navigationTitle: IDENTITY_CODE_TITLES[variant] });
       const address = variant === "cainiao-outbound" ? CAINIAO_OUTBOUND_WEB_URL : IDENTITY_WEB_URL[platform];
-      void controller.loadURL(address).catch(() => controller.dismiss());
+      let failed = false;
+      void controller.loadURL(address).catch(() => {
+        failed = true;
+        controller.dismiss();
+      });
       await shown;
+      if (failed) throw new PlatformWireError("unavailable");
     } finally {
       stopListening();
     }
@@ -225,11 +231,22 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
     try {
       const app = cainiaoOutbound ? CAINIAO_OUTBOUND_APP_URL : IDENTITY_APP_URL[platform];
       if (destination === "app" && await Safari.openURL(app).catch(() => false)) return;
-      if (mounted.current && currentSession()) await openWebIdentity(platform, session, variant);
+      if (mounted.current && currentSession()) {
+        setNotice("正在打开…");
+        await openWebIdentity(platform, session, variant);
+      }
     } catch {
-      if (mounted.current) setNotice("暂时无法打开身份码，请重试");
+      if (mounted.current && currentSession()) setNotice("暂时无法打开网页身份码");
     } finally {
       openingRecovery.current = false;
+    }
+  }
+
+  async function copyIdentity() {
+    if (!value || !currentSession() || expiresAtMs <= Date.now()) return;
+    const result = await copyText(value);
+    if (mounted.current && currentSession()) {
+      setNotice(result === "copied" ? "身份码已复制" : EXPRESS_TOAST_COPY.copyFailed);
     }
   }
 
@@ -402,10 +419,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
               frame={{ maxWidth: "infinity", alignment: valid ? "leading" : "trailing" }}>
               {valid ? value.replace(/(\d{4})(\d{4})(\d{4})/, "$1 $2 $3") : "暂无编号"}
             </Text>
-            {valid ? <Button buttonStyle="plain" padding={{ leading: 12 }} action={() => {
-              if (!currentSession() || expiresAtMs <= Date.now()) return;
-              void copyText(value);
-            }}>
+            {valid ? <Button buttonStyle="plain" padding={{ leading: 12 }} action={() => void copyIdentity()}>
               <ZStack frame={{ minWidth: DETAIL_ROW_HEIGHT, minHeight: DETAIL_ROW_HEIGHT }} contentShape="rect">
                 <Text font={14} fontWeight="semibold" foregroundStyle="accentColor"
                   frame={{ minHeight: DETAIL_MARK_SIZE }} padding={{ horizontal: 12 }}

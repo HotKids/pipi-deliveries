@@ -74,6 +74,7 @@ export function PlatformWebLogin({ platform, generation, embedded }: {
   const checking = useRef(false);
   const seenProof = useRef("");
   const detachJdView = useRef<(() => void) | null>(null);
+  const openFailed = `无法打开${PLATFORM_NAMES[platform]}登录，请稍后重试`;
 
   function finish(saved: boolean) {
     mounted.current = false;
@@ -106,7 +107,7 @@ export function PlatformWebLogin({ platform, generation, embedded }: {
       }
       finish(saved);
     } catch {
-      if (mounted.current) setNotice("登录状态未能确认，请重试");
+      if (mounted.current) setNotice("暂时无法读取登录状态，请稍后重试");
     } finally {
       checking.current = false;
     }
@@ -125,11 +126,11 @@ export function PlatformWebLogin({ platform, generation, embedded }: {
       current = web;
       setController(web);
       void web.loadURL(WEB_PLATFORMS[platform].login).catch(() => {
-        if (mounted.current) setNotice("登录页面加载失败，请重试");
+        if (mounted.current) setNotice(openFailed);
       });
       timer = setTimeout(() => void poll(), 1_250);
     }).catch(() => {
-      if (mounted.current) setNotice("无法打开登录页面");
+      if (mounted.current) setNotice(openFailed);
     });
     return () => {
       mounted.current = false;

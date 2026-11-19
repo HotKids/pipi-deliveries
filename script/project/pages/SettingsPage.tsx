@@ -52,7 +52,7 @@ import { NotificationSettingsPage } from "./NotificationSettingsPage";
 import { ParcelActivityPage, ParcelShortcutPage } from "./PickupSettingsPages";
 import { notificationEnabledCount } from "../services/notification-preferences";
 import { reconcileFengchaoReminders } from "../services/fengchao-reminders";
-import { transientToast } from "../services/ui-feedback";
+import { SAVE_FAILED_TOAST, transientToast } from "../services/ui-feedback";
 import { platformRefreshMessage, refreshPlatformParcels } from "../services/platform-parcel-sync";
 import { accountStatus, onPlatformAccountsChanged, PLATFORM_SOURCES, type ExpressPlatform } from "../services/platform-accounts";
 
@@ -236,7 +236,7 @@ export function SettingsPage(props: {
       if (value === ACCESS_KEY_INVALID_MESSAGE) {
         setAuthorizationNotice(value);
       } else {
-        setNotice("保存失败，请稍后重试");
+        setNotice(SAVE_FAILED_TOAST);
       }
     }
   }

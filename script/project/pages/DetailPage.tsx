@@ -74,6 +74,8 @@ import { copyText } from "../services/clipboard";
 import {
   detailPullToast,
   manualDetailRefreshToast,
+  noteSavedToast,
+  noteSaveFailedToast,
   transientToast,
 } from "../services/ui-feedback";
 import { EXPRESS_TOAST_COPY, jdRiskControlRetryText } from "../services/express-toast-copy";
@@ -146,6 +148,7 @@ export function DetailPage(props: {
       });
     } catch (error) {
       writeDiagnostic("detail.note.prompt_failed", diagnosticErrorDetails(error), "warning");
+      setNotice(EXPRESS_TOAST_COPY.userNoteUnavailable);
       return;
     }
     if (value == null) return;
@@ -153,14 +156,14 @@ export function DetailPage(props: {
       const state = setShipmentNote(shipment, value);
       const updated = state.shipments.find((item) => item.identity.id === shipment.identity.id);
       if (updated) {
+        setNotice(noteSavedToast(value));
         setShipment(updated);
         props.onStateChange?.(state, updated);
       }
       requestWidgetReload();
     } catch (error) {
       writeDiagnostic("detail.note.save_failed", diagnosticErrorDetails(error), "warning");
-      setNotice(error instanceof ShipmentLifecycleChangedError
-        ? "快递已更新，请重新打开后编辑" : "保存失败，请稍后重试");
+      setNotice(noteSaveFailedToast(error));
     }
   }
 
@@ -622,6 +625,7 @@ export function DetailPage(props: {
   }
 
   async function copyWaybill() {
+    if (!waybill.trim()) return;
     const result = await copyText(waybill);
     setNotice(
       result === "copied"

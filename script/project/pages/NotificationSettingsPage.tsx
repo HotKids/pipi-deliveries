@@ -16,7 +16,7 @@ import {
   saveNotificationStatuses,
   setNotificationGroupEnabled,
 } from "../services/notification-preferences";
-import { transientToast } from "../services/ui-feedback";
+import { SAVE_FAILED_TOAST, transientToast } from "../services/ui-feedback";
 import { statusLabel } from "../services/status";
 
 type NotificationGroupProps = {
@@ -82,7 +82,7 @@ export function NotificationSettingsPage(props: {
       setNotice("通知设置已保存");
       props.onChanged?.(saved.length);
     } catch {
-      setNotice("保存失败，请稍后重试");
+      setNotice(SAVE_FAILED_TOAST);
     }
   }
 
