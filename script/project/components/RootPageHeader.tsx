@@ -42,14 +42,19 @@ export function RootTabList({ title, onClose, topAccessory, titleAction, refresh
   const [titleVisible, setTitleVisible] = useState(true);
   const trackVisibility = titleAction && Number.parseInt(Device.systemVersion, 10) >= 18;
   const header = (
-    <Section key="root-heading" listSectionMargins={0} listSectionSeparator="hidden">
+    <Section key="root-heading" listSectionMargins={0} listSectionSeparator="hidden"
+      animation={topAccessory === undefined ? undefined : { animation: Animation.easeOut(0.18), value: topAccessory !== null }}>
       <RootPageTitle title={title} onVisibilityChange={trackVisibility ? setTitleVisible : undefined} />
       {topAccessory}
     </Section>
   );
   return (
     <ZStack alignment="topTrailing" overlay={titleAction ? {
-      alignment: "bottomTrailing", content: <VStack>{titleVisible ? titleAction : null}</VStack>,
+      alignment: "bottomTrailing",
+      content: <VStack opacity={titleVisible ? 1 : 0} allowsHitTesting={titleVisible} accessibilityHidden={!titleVisible}
+        animation={{ animation: Animation.easeOut(0.18), value: titleVisible }}>
+        {titleAction}
+      </VStack>,
     } : undefined}>
       <List listStyle="insetGroup" frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         refreshable={refresh}

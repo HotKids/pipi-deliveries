@@ -103,24 +103,26 @@ function ShipmentFilterBar({ visibleFilters, filter, groups, onSelect }: {
   onSelect: (filter: ShipmentFilter) => void;
 }) {
   return (
-    <VStack listRowInsets={{ top: 2, bottom: 2, leading: ROOT_PAGE_MARGIN, trailing: ROOT_PAGE_MARGIN }}
+    <VStack transition={Transition.opacity()}
+      listRowInsets={{ top: 2, bottom: 2, leading: ROOT_PAGE_MARGIN, trailing: ROOT_PAGE_MARGIN }}
       listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden">
       <GeometryReader frame={{ height: FILTER_ROW_HEIGHT }}>
         {({ size }) => {
           const segmentWidth = Math.max(0, size.width - 2 * FILTER_SEGMENT_INSET) / visibleFilters.length;
           const selectedOffset = FILTER_SEGMENT_INSET + visibleFilters.indexOf(filter) * segmentWidth;
+          const layoutKey = `${filter}:${visibleFilters.join(",")}`;
           return (
-            <ZStack alignment="leading" frame={{ width: size.width, height: FILTER_ROW_HEIGHT }}>
+            <ZStack alignment="leading" frame={{ width: size.width, height: FILTER_ROW_HEIGHT }}
+              animation={{ animation: Animation.smooth({ duration: FILTER_SLIDE_SECONDS }), value: layoutKey }}>
               <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
                 frame={{ height: 32 }} allowsHitTesting={false} />
               {segmentWidth > 0 ? (
                 <Capsule fill="secondarySystemFill" frame={{ width: segmentWidth, height: 26 }}
-                  offset={{ x: selectedOffset, y: 0 }} allowsHitTesting={false}
-                  animation={{ animation: Animation.smooth({ duration: FILTER_SLIDE_SECONDS }), value: filter }} />
+                  offset={{ x: selectedOffset, y: 0 }} allowsHitTesting={false} />
               ) : null}
               <HStack spacing={0} padding={{ horizontal: FILTER_SEGMENT_INSET }}>
                 {visibleFilters.map((key) => (
-                  <Button key={key} buttonStyle="plain" action={() => onSelect(key)}
+                  <Button key={key} buttonStyle="plain" action={() => onSelect(key)} transition={Transition.opacity()}
                     {...{ accessibilityAddTraits: key === filter ? "isSelected" as const : undefined }}>
                     <HStack spacing={4} frame={{ width: segmentWidth, height: FILTER_ROW_HEIGHT }} contentShape="rect">
                       <Text font={14} fontWeight={key === filter ? "semibold" : "medium"} lineLimit={1} minScaleFactor={0.8}>
