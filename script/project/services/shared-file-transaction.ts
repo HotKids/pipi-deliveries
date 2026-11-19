@@ -10,6 +10,7 @@ type SharedData = {
   scriptingInstallation?: string;
   cloudParcelTitles?: CloudParcelTitleCache;
   mealStateRef?: string;
+  nativePickupTabClose?: { activityId: string; stateRef?: string; mealStateRef?: string };
 };
 type Frame = { id: string; sequence: number; data: SharedData };
 const DIRECTORY = "pipi-deliveries/transactions-v1";

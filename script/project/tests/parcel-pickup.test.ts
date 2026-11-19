@@ -272,9 +272,15 @@ let activitiesEnabled = true;
 let owner: symbol | undefined;
 let onStart: (() => Promise<void>) | undefined;
 let meals: ParcelActivityContent[] = [];
+let pickupGeneration = 0;
+let sharedMeta: {
+  stateRef?: string; mealStateRef?: string;
+  nativePickupTabClose?: { activityId: string; stateRef?: string; mealStateRef?: string };
+} = {};
 const refused = new Set<string>();
 const completions: string[] = [];
 const native = new Map<string, ReturnType<typeof makeActivity>>();
+const activityUpdateListeners = new Set<(detail: { id: string; state: string }) => void>();
 let batchStatusReads = 0;
 const activeCodes = () => [...native.values()]
   .filter((item) => item.state === "active")
@@ -286,8 +292,11 @@ function makeActivity() {
     state: "dismissed",
     rank: 0,
     code: "",
+    previewLinkId: undefined as string | undefined,
     lockScreenStyle: undefined as ParcelLockScreenStyle | undefined,
-    start: async ({ code, mealBrandId, lockScreenStyle }: ParcelActivityContent & { lockScreenStyle?: ParcelLockScreenStyle },
+    start: async ({ code, mealBrandId, lockScreenStyle, previewLinkId }: ParcelActivityContent & {
+      lockScreenStyle?: ParcelLockScreenStyle; previewLinkId?: string;
+    },
       options?: { staleDate?: number; relevanceScore?: number }) => {
       if (onStart) await onStart();
       assert.equal(lockScreenBoxCopied, true, "the shared artwork must exist before the host snapshots the card");
@@ -297,16 +306,20 @@ function makeActivity() {
       staleDate = options?.staleDate;
       activity.state = "active";
       activity.code = code;
+      activity.previewLinkId = previewLinkId;
       activity.lockScreenStyle = lockScreenStyle;
       activity.rank = options?.relevanceScore ?? 0;
       activityId = activity.activityId;
       native.set(activityId, activity);
       return true;
     },
-    update: async ({ code, lockScreenStyle }: { code: string; lockScreenStyle?: ParcelLockScreenStyle },
+    update: async ({ code, lockScreenStyle, previewLinkId }: {
+      code: string; lockScreenStyle?: ParcelLockScreenStyle; previewLinkId?: string;
+    },
       options?: { relevanceScore?: number }) => {
       events.push("update " + code);
       activity.code = code;
+      activity.previewLinkId = previewLinkId;
       activity.lockScreenStyle = lockScreenStyle;
       activity.rank = options?.relevanceScore ?? 0;
       return true;
@@ -315,6 +328,7 @@ function makeActivity() {
       if (failEnd) return false;
       events.push("end");
       activity.state = "ended";
+      for (const listener of activityUpdateListeners) listener({ id: activity.activityId, state: "ended" });
       return true;
     },
   };
@@ -349,6 +363,12 @@ const activityGlobals = {
   },
   LiveActivity: {
     areActivitiesEnabled: async () => activitiesEnabled,
+    addActivityUpdateListener: (listener: (detail: { id: string; state: string }) => void) => {
+      activityUpdateListeners.add(listener);
+    },
+    removeActivityUpdateListener: (listener: (detail: { id: string; state: string }) => void) => {
+      activityUpdateListeners.delete(listener);
+    },
     getAllActivities: async () => {
       batchStatusReads++;
       return [...native.values()].map(({ activityId, state }) => ({ id: activityId, state }));
@@ -379,6 +399,8 @@ const activityGlobals = {
   stateLoadFailure: () => loadFailed,
   visibleShipments: (state: { shipments: Shipment[] }) => state.shipments,
   withSharedFileTransaction: (run: () => unknown) => run(),
+  sharedData: () => sharedMeta,
+  publishSharedData: (patch: typeof sharedMeta) => { sharedMeta = { ...sharedMeta, ...patch }; },
   completeCurrentParcelCard: ({ target }: ParcelActivityContent) => {
     assert.ok(target);
     if ("recordId" in target) {
@@ -390,7 +412,19 @@ const activityGlobals = {
       completions.push(target.shipmentId);
       current = { ...current, forcedCompletedAtMs: now };
     }
+    sharedMeta = { ...sharedMeta, stateRef: "synthetic-state-" + ++pickupGeneration };
+    return snapshot();
   },
+  completeMeal: (scope: string, id: string) => {
+    const previous = meals;
+    meals = previous.filter(card => !(card.target && "mealId" in card.target &&
+      card.target.mealId === id && card.target.mealScope === scope));
+    if (meals.length === previous.length) return false;
+    completions.push(id);
+    sharedMeta = { ...sharedMeta, mealStateRef: "synthetic-meal-" + ++pickupGeneration };
+    return true;
+  },
+  synchronizeMeals: async () => {},
   acquireDurableRefreshLease: (key: string) => {
     assert.equal(key, "parcel-activities");
     if (owner) return null;
@@ -401,7 +435,7 @@ const activityGlobals = {
   pauseWhileActive: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
   writeDiagnostic: () => {},
 };
-const createHost = () => runInNewContext(service + "\n({ startParcelActivity, startAllParcelActivities, stopParcelActivity, startParcelActivityPreview, stopParcelActivityPreview, onParcelActivityPreviewChanged, reconcileParcelActivity, parcelActivitySceneChanged, parcelActivityStatus, parcelActivityTarget, completeParcelActivity, showShortcutPickupActivities, setParcelLockScreenStyle });", { ...activityGlobals });
+const createHost = () => runInNewContext(service + "\n({ startParcelActivity, startAllParcelActivities, stopParcelActivity, startParcelActivityPreview, stopParcelActivityPreview, onParcelActivityChanged, nativePickupTabCloseId, reconcileParcelActivity, parcelActivitySceneChanged, parcelActivityStatus, parcelActivityTarget, completeParcelActivity, showShortcutPickupActivities, setParcelLockScreenStyle });", { ...activityGlobals });
 const host = createHost();
 const hasActivity = async () => (await host.parcelActivityStatus()).count > 0;
 const target = parcelActivityContent(current)!.target;
@@ -541,7 +575,11 @@ assert.deepEqual(activeCodes(), []);
 
 records = [firstPickup];
 let previewTransitions = 0;
-const unsubscribePreview = host.onParcelActivityPreviewChanged(() => { previewTransitions++; });
+const nativeTabClosures: string[] = [];
+const unsubscribePreview = host.onParcelActivityChanged((change: { kind: "preview" } | { kind: "pickup-tab-empty"; activityId: string }) => {
+  if (change.kind === "preview") previewTransitions++;
+  else nativeTabClosures.push(change.activityId);
+});
 await host.startAllParcelActivities();
 Reflect.deleteProperty(session as object, "lockScreenStyle");
 assert.equal((await host.parcelActivityStatus()).lockScreenStyle, "dynamic", "old registries retain their dynamic style");
@@ -564,9 +602,38 @@ assert.equal(previewTransitions, 1, "recoloring is not a new preview");
 assert.ok([...native.values()].filter(item => item.state === "active").every(item => item.lockScreenStyle === "white"));
 const savedStyleHost = createHost();
 assert.equal((await savedStyleHost.parcelActivityStatus()).lockScreenStyle, "white", "a new runtime reads the saved style");
-await host.stopParcelActivityPreview();
+const receipts = () => (session as { receipts: { id: string; linkId?: string; target?: unknown }[] }).receipts;
+const originalPreview = receipts().find(receipt => !receipt.target)!;
+const realReceipt = receipts().find(receipt => receipt.target)!;
+assert.ok(originalPreview.linkId, "the example capsule addresses a specific preview instance");
+assert.equal(native.get(originalPreview.id)?.previewLinkId, originalPreview.linkId);
+delete originalPreview.linkId;
+native.get(originalPreview.id)!.previewLinkId = undefined;
+host.reconcileParcelActivity(snapshot());
+await host.parcelActivityStatus();
+const previewReceipt = receipts().find(receipt => !receipt.target)!;
+assert.equal(previewReceipt.id, originalPreview.id, "an existing preview keeps its native instance");
+assert.ok(previewReceipt.linkId);
+assert.equal(native.get(previewReceipt.id)?.previewLinkId, previewReceipt.linkId, "an existing preview becomes interactive");
+const beforePreviewClose = completions.length;
+await savedStyleHost.completeParcelActivity({ kind: "preview", linkId: realReceipt.linkId });
+await savedStyleHost.completeParcelActivity({ kind: "pickup", linkId: previewReceipt.linkId });
+failEnd = true;
+await assert.rejects(savedStyleHost.completeParcelActivity({ kind: "preview", linkId: previewReceipt.linkId }), /实时活动结束失败/);
+failEnd = false;
+assert.deepEqual(activeCodes(), [firstPickup.code, PARCEL_ACTIVITY_PREVIEW.code]);
+await savedStyleHost.completeParcelActivity({ kind: "preview", linkId: previewReceipt.linkId });
+assert.equal((await host.parcelActivityStatus()).previewing, false);
+assert.equal(previewTransitions, 2, "the native end also clears the app's preview");
 assert.deepEqual(activeCodes(), [firstPickup.code], "closing the example keeps the real card active");
+assert.deepEqual(nativeTabClosures, [], "ending a preview with a remaining card cannot hide the tab");
+assert.equal(completions.length, beforePreviewClose, "closing the example cannot complete a real record");
 assert.equal((await host.parcelActivityStatus()).showAll, true);
+await host.startParcelActivityPreview();
+await savedStyleHost.completeParcelActivity({ kind: "preview", linkId: previewReceipt.linkId });
+assert.equal((await host.parcelActivityStatus()).previewing, true, "an obsolete capsule cannot end a replacement preview");
+await host.stopParcelActivityPreview();
+assert.deepEqual(activeCodes(), [firstPickup.code], "ending the preview in-app still keeps real cards active");
 await host.startParcelActivityPreview();
 records = [firstPickup, fourthPickup];
 const activeBeforeRecolor = activeCodes();
@@ -575,11 +642,42 @@ assert.deepEqual(activeCodes(), activeBeforeRecolor, "appearance changes cannot 
 assert.equal((await host.parcelActivityStatus()).lockScreenStyle, "black");
 host.reconcileParcelActivity(snapshot());
 assert.equal((await host.parcelActivityStatus()).previewing, false);
-assert.equal(previewTransitions, 4, "replacement by a real card also hides the preview from the tab");
-unsubscribePreview();
+assert.equal(previewTransitions, 6, "replacement by a real card also hides the preview from the tab");
 assert.deepEqual(activeCodes(), [fourthPickup.code, firstPickup.code], "real cards take priority over the example at capacity");
 await assert.rejects(host.startParcelActivityPreview(), /锁屏预览暂时无法启动/);
 assert.deepEqual(activeCodes(), [fourthPickup.code, firstPickup.code]);
+const realReceipts = receipts();
+await savedStyleHost.completeParcelActivity({ kind: "pickup", linkId: realReceipts.find(receipt => native.get(receipt.id)?.code === firstPickup.code)!.linkId });
+await host.parcelActivityStatus();
+assert.deepEqual(nativeTabClosures, [], "completing one of two real cards leaves the tab displayed");
+await host.startParcelActivityPreview();
+const abandonedPreview = receipts().find(receipt => !receipt.target)!;
+native.get(abandonedPreview.id)!.state = "ended";
+const lastReal = realReceipts.find(receipt => native.get(receipt.id)?.code === fourthPickup.code)!;
+await savedStyleHost.completeParcelActivity({ kind: "pickup", linkId: lastReal.linkId });
+await host.parcelActivityStatus();
+assert.deepEqual(nativeTabClosures, [lastReal.id]);
+assert.equal(host.nativePickupTabCloseId(), lastReal.id, "the foreground reads the same cross-runtime close hint");
+await host.startParcelActivityPreview();
+const lastPreview = receipts().find(receipt => !receipt.target)!;
+failEnd = true;
+await assert.rejects(savedStyleHost.completeParcelActivity({ kind: "preview", linkId: lastPreview.linkId }), /实时活动结束失败/);
+failEnd = false;
+assert.notEqual(host.nativePickupTabCloseId(), lastPreview.id, "a refused preview dismissal cannot be reported as finished");
+await savedStyleHost.completeParcelActivity({ kind: "preview", linkId: lastPreview.linkId });
+assert.equal((await host.parcelActivityStatus()).previewing, false);
+assert.deepEqual(nativeTabClosures, [lastReal.id, lastPreview.id]);
+sharedMeta = { ...sharedMeta, mealStateRef: "different-meal-generation" };
+assert.equal(host.nativePickupTabCloseId(), undefined, "a later card generation invalidates an old close hint");
+meals = [{ ...brandedMeal, target: { mealId: "last-meal", mealScope: "synthetic-scope" } }];
+assert.equal(await host.showShortcutPickupActivities([meals[0].target]), true);
+const lastMeal = receipts().find(receipt => native.get(receipt.id)?.code === brandedMeal.code)!;
+await savedStyleHost.completeParcelActivity({ kind: "meal", linkId: lastMeal.linkId });
+await host.parcelActivityStatus();
+assert.equal(completions.at(-1), "last-meal", "the meal App Intent uses the normal record completion");
+assert.deepEqual(nativeTabClosures, [lastReal.id, lastPreview.id, lastMeal.id]);
+unsubscribePreview();
+assert.equal(activityUpdateListeners.size, 0, "native observation ends with the last subscriber");
 await host.stopParcelActivity();
 
 records = [];
@@ -752,7 +850,8 @@ const activitySettingsSource = readFileSync(new URL("../pages/PickupSettingsPage
 assert.equal((activitySettingsSource.match(/<ParcelActivityPreviewCard\b/g) ?? []).length, 1,
   "the setting contains one example card");
 assert.match(activitySettingsSource, /<Picker title="锁屏样式" value=\{activity\.lockScreenStyle\} pickerStyle="menu"[^]*?<Text tag="dynamic">动态<\/Text>[^]*?<Text tag="black">纯黑<\/Text>[^]*?<Text tag="white">纯白<\/Text>/);
-assert.match(activitySettingsSource, /<ParcelActivityPreviewCard lockScreenStyle=\{activity\.lockScreenStyle\} \/>/);
+assert.match(activitySettingsSource, /const closePreview = \(\) => void change\(stopParcelActivityPreview\);/);
+assert.match(activitySettingsSource, /<ParcelActivityPreviewCard lockScreenStyle=\{activity\.lockScreenStyle\}\s+onComplete=\{activity\.previewing \? closePreview : undefined\} actionPending=\{busy\} \/>/);
 assert.doesNotMatch(watchCardSource, /\bappearance\b/, "the Watch Smart Stack keeps its existing palette");
 const tabCardSource = readFileSync(new URL("../components/PickupTabCard.tsx", import.meta.url), "utf8");
 assert.match(tabCardSource, /listRowInsets=\{0\}[\s\S]*?<ParcelLiveActivityCard\b/);
@@ -793,18 +892,81 @@ assert.deepEqual(pickupDateSections(sameDayCards, false, "", exampleDay)[0].item
 const runSource = appSource.slice(appSource.indexOf("async function run()"), appSource.lastIndexOf("void run();"));
 assert.match(runSource, /const initialStartup = await readStartupState\(\);[\s\S]*?initialPickupPreview = hasRegisteredParcelPreview\(\);[\s\S]*?await Navigation\.present/);
 assert.doesNotMatch(runSource, /readPickupPreview\(/, "a slow native status read cannot delay presentation");
-assert.match(appSource, /onParcelActivityPreviewChanged\(reload\);\s*if \(initialPickupPreview\) reload\(\);/,
+assert.match(appSource, /onParcelActivityChanged\(change => \{[\s\S]*?\}\);\s*if \(initialPickupPreview\) reload\(\);/,
   "a former preview is confirmed after mount");
 assert.match(appSource, /\[pickupPreview, setPickupPreview\] = useState\(initialPickupPreview\)/,
   "a previously active preview shows its pickup tab on the first render");
 assert.match(appSource, /useObservable<string>\(\s*navigationRequest\.pickupRecordId \? "pickup" : "deliveries"/);
-assert.match(appSource, /pickupCards\.length > 0 \|\| pickupPreview/);
+assert.match(appSource, /const hasPickupTab = usePickupTabVisibility\(pickupCards\.length > 0 \|\| pickupPreview, activityEndId\);/);
+assert.match(appSource, /if \(!hasPickupTab && selection\.value === "pickup"\) selection\.setValue\("deliveries"\)/);
+
+const visibilitySource = stripTypeScriptTypes(appSource.slice(appSource.indexOf("function usePickupTabVisibility("), appSource.indexOf("function App(")));
+let tabRetained: boolean | undefined;
+let previousDeps: unknown[] = [];
+let refIndex = 0;
+const visibilityRefs: { current: unknown }[] = [];
+let nativeCloseId = "older-system-completion";
+let scheduledEffect: (() => (() => void) | undefined) | undefined;
+let cleanupVisibility: (() => void) | undefined;
+let pendingHide: (() => void) | undefined;
+const usePickupTabVisibility = runInNewContext(visibilitySource + "\nusePickupTabVisibility", {
+  useState: (initial: boolean) => [tabRetained ??= initial, (visible: boolean) => { tabRetained = visible; }],
+  useRef: (initial: unknown) => visibilityRefs[refIndex++] ?? (visibilityRefs[refIndex - 1] = { current: initial }),
+  useEffect: (effect: typeof scheduledEffect, deps: unknown[]) => {
+    if (deps.every((item, index) => item === previousDeps[index])) return;
+    previousDeps = deps;
+    scheduledEffect = effect;
+  },
+  setTimeout: (hide: () => void, delay: number) => {
+    assert.equal(delay, 60_000);
+    assert.equal(pendingHide, undefined, "only one timer can be pending");
+    pendingHide = hide;
+    return hide;
+  },
+  clearTimeout: (hide: () => void) => { if (pendingHide === hide) pendingHide = undefined; },
+  nativePickupTabCloseId: () => nativeCloseId,
+});
+function renderPickupVisibility(hasCards: boolean, activityEndId?: string): boolean {
+  refIndex = 0;
+  const visible = usePickupTabVisibility(hasCards, activityEndId);
+  if (scheduledEffect) {
+    cleanupVisibility?.();
+    cleanupVisibility = scheduledEffect();
+    scheduledEffect = undefined;
+  }
+  return visible;
+}
+assert.equal(renderPickupVisibility(false), false, "loading with no cards has no grace period");
+assert.equal(renderPickupVisibility(true), true);
+assert.equal(renderPickupVisibility(false), true, "removing the last card keeps the tab visible");
+const firstHide = pendingHide;
+assert.ok(firstHide);
+assert.equal(renderPickupVisibility(false), true);
+assert.equal(pendingHide, firstHide, "unrelated renders do not restart the minute");
+assert.equal(renderPickupVisibility(true), true);
+assert.equal(pendingHide, undefined, "a returning card cancels the timer");
+assert.equal(renderPickupVisibility(false), true);
+assert.notEqual(pendingHide, firstHide);
+assert.ok(pendingHide);
+pendingHide();
+assert.equal(renderPickupVisibility(false), false, "a full minute with no cards hides the tab");
+assert.equal(renderPickupVisibility(true), true);
+nativeCloseId = "new-system-completion";
+assert.equal(renderPickupVisibility(true, nativeCloseId), true, "a native signal cannot hide a card that's still on screen");
+renderPickupVisibility(false, nativeCloseId);
+assert.equal(renderPickupVisibility(false, nativeCloseId), false, "clearing the last card in the system hides the tab immediately");
+assert.equal(pendingHide, undefined);
+assert.equal(renderPickupVisibility(true, nativeCloseId), true);
+assert.equal(renderPickupVisibility(false, nativeCloseId), true, "a later in-app completion gets a fresh minute");
+assert.ok(pendingHide);
+
 assert.equal(PICKUP_TAB_TITLE, "待取");
 assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title=\{PICKUP_TAB_TITLE\} systemImage="archivebox\.fill" value="pickup"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="shippingbox\.fill" value="deliveries"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
 assert.match(pickupSource, /cardRow\(card, visible && sectionIndex === 0 && index === 0,\s*index < items.length - 1 \|\| preview\)/,
   "only the first visible row receives playback and spacing appears between cards in the same section");
-assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate=\{visible && sectionIndex === 0 && items.length === 0\} \/>/,
+assert.match(pickupSource, /await stopParcelActivityPreview\(\)/);
+assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate=\{visible && sectionIndex === 0 && items.length === 0\}\s+onComplete=\{\(\) => void closePreview\(\)\} actionPending=\{closingPreview\} \/>/,
   "a standalone preview retains its animation and a trailing preview uses the final frame");
 const homeSource = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
 for (const source of [homeSource, pickupSource, settingsSource]) {
@@ -813,7 +975,7 @@ for (const source of [homeSource, pickupSource, settingsSource]) {
   assert.doesNotMatch(source, /<List\b|<RootPageTitle\b|<RootPageCloseButton\b|listStyle=/);
 }
 assert.match(homeSource, /<RootTabList\b[^>]*\btitle="快递"/);
-assert.match(pickupSource, /<RootTabList title=\{PICKUP_TAB_TITLE\} onClose=\{\(\) => dismiss\(\)\} bottomInset=\{TAB_FAB_SCROLL_INSET\}>/);
+assert.match(pickupSource, /<RootTabList title=\{PICKUP_TAB_TITLE\} onClose=\{\(\) => dismiss\(\)\} bottomInset=\{TAB_FAB_SCROLL_INSET\}\s+emptyState=\{!sections\.length \? <EmptyTabState pickup \/> : undefined\}>/);
 assert.match(settingsSource, /<RootTabList title="设置" onClose=\{\(\) => dismiss\(\)\}>/);
 assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:|rootPageScroll|headerCollapsed/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|待取|取件)"|navigationTitle=\{PICKUP_TAB_TITLE\}/);

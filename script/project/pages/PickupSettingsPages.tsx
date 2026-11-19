@@ -2,7 +2,7 @@ import { AppEvents, HStack, Link, List, Picker, Section, Spacer, Text, Toggle, u
 import { ParcelActivityPreviewCard } from "../components/PickupTabCard";
 import { SectionIconButton } from "../components/SectionIconButton";
 import {
-  onParcelActivityPreviewChanged,
+  onParcelActivityChanged,
   parcelActivityStatus,
   setParcelLockScreenStyle,
   startAllParcelActivities,
@@ -59,7 +59,7 @@ export function ParcelActivityPage() {
       });
     }
     reload();
-    const unsubscribe = onParcelActivityPreviewChanged(reload);
+    const unsubscribe = onParcelActivityChanged(change => { if (change.kind === "preview") reload(); });
     const observe = (phase: "active" | "inactive" | "background") => {
       if (phase === "active") reload();
     };
@@ -90,6 +90,7 @@ export function ParcelActivityPage() {
     }
   }
 
+  const closePreview = () => void change(stopParcelActivityPreview);
   return (
     <List navigationTitle="实时活动" navigationBarTitleDisplayMode="inline" toast={transientToast(notice, setNotice)}>
       <Section>
@@ -115,11 +116,12 @@ export function ParcelActivityPage() {
             title={activity.previewing ? "结束预览" : "开始预览"}
             symbol={activity.previewing ? "stop.circle" : "play.circle"}
             disabled={busy}
-            action={() => void change(activity.previewing ? stopParcelActivityPreview : startParcelActivityPreview)}
+            action={activity.previewing ? closePreview : () => void change(startParcelActivityPreview)}
           />
         </HStack>
       }>
-        <ParcelActivityPreviewCard lockScreenStyle={activity.lockScreenStyle} />
+        <ParcelActivityPreviewCard lockScreenStyle={activity.lockScreenStyle}
+          onComplete={activity.previewing ? closePreview : undefined} actionPending={busy} />
       </Section>
     </List>
   );

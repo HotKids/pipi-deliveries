@@ -1,4 +1,4 @@
-import { LiveActivity, Path, Script, type ScenePhase } from "scripting";
+import { LiveActivity, Path, Script, type LiveActivityDetail, type ScenePhase } from "scripting";
 import { PARCEL_ACTIVITY_ART, PipiParcelActivity } from "../live_activity";
 import type { AppState } from "../models";
 import { pauseWhileActive } from "./deadline";
@@ -10,6 +10,7 @@ import {
   EMPTY_CONTENT,
   PARCEL_ACTIVITY_NAME,
   endActivity,
+  nativePickupTabCloseId,
   parcelActivityRegistry,
   parcelForTarget,
   saveParcelActivityRegistry,
@@ -28,15 +29,31 @@ let pending: Promise<unknown> = Promise.resolve();
 let queuedReconciliation: { state: AppState; cards?: readonly ParcelActivityContent[] } | undefined;
 let foreground = true;
 const displayed = new Map<string, string>();
-const previewListeners = new Set<() => void>();
+type ParcelActivityChange = { kind: "preview" } | { kind: "pickup-tab-empty"; activityId: string };
+const activityListeners = new Set<(change: ParcelActivityChange) => void>();
 
-export function onParcelActivityPreviewChanged(listener: () => void): () => void {
-  previewListeners.add(listener);
-  return () => { previewListeners.delete(listener); };
+export function onParcelActivityChanged(listener: (change: ParcelActivityChange) => void): () => void {
+  if (!activityListeners.size) LiveActivity.addActivityUpdateListener?.(observeEndedActivity);
+  activityListeners.add(listener);
+  return () => {
+    if (activityListeners.delete(listener) && !activityListeners.size) {
+      LiveActivity.removeActivityUpdateListener?.(observeEndedActivity);
+    }
+  };
 }
 
-function notifyPreviewChanged(): void {
-  for (const listener of previewListeners) listener();
+function notifyActivityChanged(change: ParcelActivityChange): void {
+  for (const listener of activityListeners) listener(change);
+}
+
+function observeEndedActivity({ id, state }: LiveActivityDetail): void {
+  if (state !== "ended" && state !== "dismissed") return;
+  void serialize(async () => {
+    const receipt = parcelActivityRegistry().receipts.find(item => item.id === id);
+    if (!receipt) return;
+    if (nativePickupTabCloseId() === id) notifyActivityChanged({ kind: "pickup-tab-empty", activityId: id });
+    if (!receipt.target) await withActivityOwnership(async isCurrent => forgetReceipt(receipt, isCurrent));
+  }).catch(() => writeDiagnostic("activity.parcel.end.observe.failed", {}, "warning"));
 }
 
 export function parcelActivitySceneChanged(phase: ScenePhase): void {
@@ -138,13 +155,14 @@ function prepareArtwork(content: ParcelActivityContent): void {
 }
 
 function activityData(content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle, linkId?: string, relevanceScore?: number) {
-  const { target: _target, expiresAtMs, capturedAtMs: _capturedAtMs, businessDateKey: _businessDateKey, ...card } = content;
-  return { card: { ...card, linkId, lockScreenStyle }, options: { staleDate: content.target ? expiresAtMs : undefined, relevanceScore } };
+  const { target, expiresAtMs, capturedAtMs: _capturedAtMs, businessDateKey: _businessDateKey, ...card } = content;
+  const link = target ? { linkId } : { previewLinkId: linkId };
+  return { card: { ...card, ...link, lockScreenStyle }, options: { staleDate: target ? expiresAtMs : undefined, relevanceScore } };
 }
 
 async function createActivity(content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle, isCurrent: ActivityOwnership,
   relevanceScore?: number): Promise<boolean> {
-  const linkId = content.target ? UUID.string() : undefined;
+  const linkId = UUID.string();
   const { card, options } = activityData(content, lockScreenStyle, linkId, relevanceScore);
   prepareArtwork(content);
   requireActivityOwnership(isCurrent);
@@ -163,20 +181,21 @@ async function createActivity(content: ParcelActivityContent, lockScreenStyle: P
     throw error;
   }
   displayed.set(id, JSON.stringify({ card, options }));
-  if (!content.target) notifyPreviewChanged();
+  if (!content.target) notifyActivityChanged({ kind: "preview" });
   return true;
 }
 
 function forgetReceipt(receipt: Receipt, isCurrent: ActivityOwnership, dismissedKey?: string): void {
   requireActivityOwnership(isCurrent);
   const registry = parcelActivityRegistry();
+  if (!registry.receipts.some(item => item.id === receipt.id)) return;
   saveParcelActivityRegistry({
     ...registry,
     receipts: registry.receipts.filter((item) => item.id !== receipt.id),
     dismissed: dismissedKey ? [...new Set([...registry.dismissed, dismissedKey])] : registry.dismissed,
   });
   displayed.delete(receipt.id);
-  if (!receipt.target) notifyPreviewChanged();
+  if (!receipt.target) notifyActivityChanged({ kind: "preview" });
 }
 
 async function closeActivity(receipt: Receipt, isCurrent: ActivityOwnership): Promise<void> {
@@ -187,6 +206,12 @@ async function closeActivity(receipt: Receipt, isCurrent: ActivityOwnership): Pr
 
 async function updateActivity(receipt: Receipt, content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle,
   isCurrent: ActivityOwnership, relevanceScore?: number): Promise<boolean> {
+  if (!receipt.target && !receipt.linkId) {
+    requireActivityOwnership(isCurrent);
+    const registry = parcelActivityRegistry();
+    receipt = { ...receipt, linkId: UUID.string() };
+    saveParcelActivityRegistry({ ...registry, receipts: registry.receipts.map(item => item.id === receipt.id ? receipt : item) });
+  }
   const { card, options } = activityData(content, lockScreenStyle, receipt.linkId, relevanceScore);
   const serialized = JSON.stringify({ card, options });
   if (displayed.get(receipt.id) === serialized) return true;

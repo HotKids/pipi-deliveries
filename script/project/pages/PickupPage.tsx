@@ -1,8 +1,10 @@
 import { Button, HStack, Navigation, NavigationStack, QRImage, Section, Text, VStack, useEffect, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
+import { EmptyTabState } from "../components/EmptyDeliveryVehicle";
 import { RootTabList } from "../components/RootPageHeader";
 import { TAB_FAB_DIAMETER, TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
+import { stopParcelActivityPreview } from "../services/parcel-live-activity";
 import { PICKUP_TAB_TITLE, pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
 import { copyText } from "../services/clipboard";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
@@ -168,6 +170,7 @@ export function PickupPage({
   const identityRequest = useRef(0);
   const [visible, setVisible] = useState(false);
   const [cabinetRevision, setCabinetRevision] = useState(0);
+  const [closingPreview, setClosingPreview] = useState(false);
   useEffect(() => visible ? onPlatformAccountsChanged(platform => {
     if (platform === "fengchao") setCabinetRevision(value => value + 1);
   }) : undefined, [visible]);
@@ -183,6 +186,14 @@ export function PickupPage({
     card.target.mealId === mealQr.id && card.target.mealScope === mealQr.scope) && mealCredentialScope() === mealQr.scope
     ? currentMeal(readMeals(mealQr.scope), mealQr.id) : undefined;
   const redemption = shownQr ? mealRedemption(shownQr) : undefined;
+
+  async function closePreview() {
+    if (closingPreview) return;
+    setClosingPreview(true);
+    try { await stopParcelActivityPreview(); }
+    catch { showNotice("结束预览失败，请重试"); }
+    finally { setClosingPreview(false); }
+  }
 
   async function openIdentity(platform: IdentityPlatform) {
     const request = ++identityRequest.current;
@@ -270,12 +281,14 @@ export function PickupPage({
           ) : <Text>物流详情</Text>,
         }}
       >
-        <RootTabList title={PICKUP_TAB_TITLE} onClose={() => dismiss()} bottomInset={TAB_FAB_SCROLL_INSET}>
+        <RootTabList title={PICKUP_TAB_TITLE} onClose={() => dismiss()} bottomInset={TAB_FAB_SCROLL_INSET}
+          emptyState={!sections.length ? <EmptyTabState pickup /> : undefined}>
           {sections.map(({ key, label, items, preview }, sectionIndex) => (
             <Section key={key} header={<Text>{label}</Text>}>
               {items.map((card, index) => cardRow(card, visible && sectionIndex === 0 && index === 0,
                 index < items.length - 1 || preview))}
-              {preview ? <ParcelActivityPreviewCard animate={visible && sectionIndex === 0 && items.length === 0} /> : null}
+              {preview ? <ParcelActivityPreviewCard animate={visible && sectionIndex === 0 && items.length === 0}
+                onComplete={() => void closePreview()} actionPending={closingPreview} /> : null}
             </Section>
           ))}
         </RootTabList>

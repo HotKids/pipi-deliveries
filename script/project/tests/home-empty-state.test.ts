@@ -17,18 +17,23 @@ const emptyGroupSource = await readFile(
 );
 assert.match(
   emptyGroupSource,
-  /export function EmptyDeliveryStateGroup[\s\S]*?<VStack\s+alignment="center"\s+spacing=\{props\.spacing\}>[\s\S]*?<EmptyDeliveryVehicle size=\{props\.vehicleSize\} deferArtwork=\{props\.deferArtwork\} \/>[\s\S]*?<Text[\s\S]*?font=\{props\.labelFont\}[\s\S]*?fontWeight="medium"[\s\S]*?>\s*暂无快递\s*<\/Text>[\s\S]*?<\/VStack>/,
-  "vehicle and label must be one intrinsic empty-state group",
+  /<VStack alignment="center" spacing=\{spacing\}>\s*\{artwork\}\s*<Text\s+font=\{labelFont\}\s*fontWeight=\{widget \? "medium" : "regular"\}\s*foregroundStyle=\{widget \? EMPTY_WIDGET_TEXT_COLOR : "secondaryLabel"\}/,
+  "the illustration and readable label share one intrinsic group",
+);
+assert.match(
+  emptyGroupSource,
+  /const size = 81\.6;[\s\S]*?<VStack frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\} allowsHitTesting=\{false\}>\s*<EmptyStateGroup artwork=\{artwork\} label=\{pickup \? "饮咗茶未" : "暂无快递"\} spacing=\{8\} labelFont="body" \/>/,
+  "both tab placeholders use the same scale, Dynamic Type font and centering",
 );
 assert.match(
   homeSource,
-  /import \{ EmptyDeliveryStateGroup \} from "\.\.\/components\/EmptyDeliveryVehicle";/,
+  /<RootTabList key="shipments" title="快递"[^]*?refresh=\{refresh\}[^]*?emptyState=\{!shipments\.length \? <EmptyTabState \/> : undefined\}/,
+  "the shared empty state sits inside the refreshable body",
 );
-assert.match(
-  homeSource,
-  /<RootTabList key="shipments" title="快递"[^]*?refresh=\{refresh\}[^]*?emptyState=\{!shipments\.length \? \(\s*<VStack frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\} allowsHitTesting=\{false\}>\s*<EmptyDeliveryStateGroup vehicleSize=\{81\.6\} spacing=\{6\} labelFont=\{24\} deferArtwork \/>/,
-  "the 1.2x home vehicle group is centered in the refreshable body",
-);
+const grapeArtwork = await readFile(resolve(projectDir, "assets/widget/empty-pickup-grape.png"));
+assert.deepEqual([...grapeArtwork.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+assert.equal(grapeArtwork[25], 6, "the grape drink illustration preserves transparent edges");
+assert.match(emptyGroupSource, /const heyteaLogo = "meal-pickup\/xicha\.png";[\s\S]*?useBundledImage\(heyteaLogo\)[\s\S]*?<Image image=\{logo\}[^>]*?colorConvert/);
 assert.equal((homeSource.match(/<RootTabList\b/g) ?? []).length, 1,
   "data arriving during a pull must not replace the refreshable list");
 const makePull = homeSource.match(/const refresh = useCallback\(\(\) => \{[\s\S]*?\n  \}, \[\]\);/)?.[0];

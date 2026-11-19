@@ -1,13 +1,14 @@
 import { LiveActivity } from "scripting";
 import type { AppState } from "../models";
-import { independentPickupContent, parcelActivityContent, withPickupArtwork, type ParcelActivityContent, type ParcelActivityTarget } from "./parcel-pickup";
-import { mealCard } from "./meal/cards";
+import { activePickupCards, independentPickupContent, parcelActivityContent, withPickupArtwork, type ParcelActivityContent, type ParcelActivityTarget } from "./parcel-pickup";
+import { activeMealCards, mealCard } from "./meal/cards";
 import { completeMeal, readMeals } from "./meal/records";
 import { mealCredentialScope } from "./meal/rules";
 import { synchronizeMeals } from "./meal/cloud";
 import type { ParcelLockScreenStyle } from "./parcel-card-appearance";
-import { withSharedFileTransaction } from "./shared-file-transaction";
+import { publishSharedData, sharedData, withSharedFileTransaction } from "./shared-file-transaction";
 import { completeCurrentParcelCard, loadState, stateLoadFailure, visibleShipments } from "./storage";
+import { writeDiagnostic } from "./logger";
 
 export const PARCEL_ACTIVITY_NAME = "PipiDeliveriesParcelPickup";
 const REGISTRY_KEY = "pipi-deliveries.parcel-activity.v1";
@@ -22,9 +23,10 @@ export type ParcelActivityRegistry = Readonly<{
 }>;
 export type ParcelActivityState = Omit<ParcelActivityContent, "target" | "expiresAtMs" | "capturedAtMs" | "businessDateKey"> & {
   linkId?: string;
+  previewLinkId?: string;
   lockScreenStyle?: ParcelLockScreenStyle;
 };
-export type ParcelActivityCompletion = { linkId: string; kind: "pickup" | "handoff" | "meal" };
+export type ParcelActivityCompletion = { linkId: string; kind: "pickup" | "handoff" | "meal" | "preview" };
 
 export function parcelActivityRegistry(): ParcelActivityRegistry {
   const saved = Storage.get<ParcelActivityRegistry | Receipt>(REGISTRY_KEY);
@@ -67,15 +69,64 @@ export async function endActivity(id: string): Promise<void> {
   }
 }
 
+export function nativePickupTabCloseId(): string | undefined {
+  try {
+    const { nativePickupTabClose, stateRef, mealStateRef } = sharedData();
+    if (nativePickupTabClose && nativePickupTabClose.stateRef === stateRef &&
+        nativePickupTabClose.mealStateRef === mealStateRef) return nativePickupTabClose.activityId;
+  } catch { /* A missing hint leaves the app's ordinary grace period in place. */ }
+  return undefined;
+}
+
+function rememberNativePickupTabClose(id: string, state: AppState, inactivePreviews: ReadonlySet<string>): void {
+  if (stateLoadFailure() || activePickupCards(visibleShipments(state), state.pickupCodeRecords).length ||
+      activeMealCards().length || parcelActivityRegistry().receipts.some(
+        receipt => !receipt.target && receipt.id !== id && !inactivePreviews.has(receipt.id),
+      )) return;
+  const { stateRef, mealStateRef } = sharedData();
+  publishSharedData({ nativePickupTabClose: { activityId: id, stateRef, mealStateRef } });
+}
+
+function reportPickupTabHintFailure(): void {
+  writeDiagnostic("activity.parcel.tab_close_hint.failed", {}, "warning");
+}
+
 export async function completeParcelActivity(params: ParcelActivityCompletion): Promise<void> {
   if (typeof params?.linkId !== "string" || !params.linkId ||
-    (params.kind !== "pickup" && params.kind !== "handoff" && params.kind !== "meal")) return;
+    (params.kind !== "pickup" && params.kind !== "handoff" && params.kind !== "meal" && params.kind !== "preview")) return;
   const { linkId, kind } = params;
   const receipt = parcelActivityRegistry().receipts.find((item) => item.linkId === linkId);
-  if (!receipt?.target) return;
-  const target = receipt.target;
+  if (!receipt) return;
   const activityState = await LiveActivity.getActivityState(receipt.id);
   if (activityState !== "active" && activityState !== "stale") return;
+  const target = receipt.target;
+  if (kind === "preview" ? target : !target) return;
+  const inactivePreviews = new Set<string>();
+  for (const preview of parcelActivityRegistry().receipts) {
+    if (preview.target || preview.id === receipt.id) continue;
+    // A preview can end while the app is suspended, leaving its receipt behind.
+    const status = await LiveActivity.getActivityState(preview.id).catch(() => "active" as const);
+    if (status !== "active" && status !== "stale") inactivePreviews.add(preview.id);
+  }
+  if (kind === "preview") {
+    try {
+      withSharedFileTransaction(() => rememberNativePickupTabClose(receipt.id, loadState(), inactivePreviews));
+    } catch { reportPickupTabHintFailure(); }
+    try {
+      await endActivity(receipt.id);
+    } catch (error) {
+      try {
+        withSharedFileTransaction(() => {
+          if (sharedData().nativePickupTabClose?.activityId === receipt.id) {
+            publishSharedData({ nativePickupTabClose: undefined });
+          }
+        });
+      } catch { reportPickupTabHintFailure(); }
+      throw error;
+    }
+    return;
+  }
+  if (!target) return;
   const committed = withSharedFileTransaction(() => {
     if (!parcelActivityRegistry().receipts.some((item) => item.id === receipt.id && item.linkId === linkId)) return false;
     const state = loadState();
@@ -83,8 +134,12 @@ export async function completeParcelActivity(params: ParcelActivityCompletion): 
     const card = parcelForTarget(state, target);
     if (card) {
       if ((card.kind ?? "pickup") !== kind) return false;
-      if ("mealId" in target) completeMeal(target.mealScope, target.mealId);
-      else completeCurrentParcelCard(card);
+      const after = "mealId" in target
+        ? completeMeal(target.mealScope, target.mealId) ? state : undefined
+        : completeCurrentParcelCard(card);
+      try {
+        if (after) rememberNativePickupTabClose(receipt.id, after, inactivePreviews);
+      } catch { reportPickupTabHintFailure(); }
     }
     return true;
   });
