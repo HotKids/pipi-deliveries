@@ -105,8 +105,10 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const artHeight = card.artHeight * scale;
   const flexibleHeight = lockScreen || expanded;
   const fitsHost = expanded || (lockScreen && width !== undefined);
+  const centerLockScreenMeal = lockScreen && isMeal;
+  const artworkAlignment = centerLockScreenMeal ? "leading" : "topLeading";
   const artTop = isMeal && !lockScreen && !expanded ? MEAL_ARTWORK_TOKENS.artTop : card.artTop;
-  const artOffset = (artTop - top) * scale;
+  const artOffset = centerLockScreenMeal ? 0 : (artTop - top) * scale;
   const sharesSmartStack = lockScreen && fitsHost;
   const artworkFrame = lockScreen && fitsHost
     ? { maxWidth: artWidth, maxHeight: artHeight }
@@ -321,10 +323,10 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
         <Rectangle fill="clear" frame={{ ...slot(bottom - top),
           minWidth: expanded ? artColumnWidth : Math.min(artWidth, MIN_COMPACT_ART_WIDTH),
           idealWidth: artColumnWidth, maxWidth: artColumnWidth }}
-          background={{ alignment: "topLeading", content: boxArtwork }}
+          background={{ alignment: artworkAlignment, content: boxArtwork }}
           clipped layoutPriority={expanded ? 1 : -1} />
       ) : (
-        <ZStack frame={{ width: artWidth, ...slot(bottom - top), alignment: "topLeading" }}>{appArtwork}</ZStack>
+        <ZStack frame={{ width: artWidth, ...slot(bottom - top), alignment: artworkAlignment }}>{appArtwork}</ZStack>
       )}
       <VStack alignment="leading" spacing={0} padding={{ vertical: hostVerticalInset * scale,
         trailing: expanded ? 0 : card.edge * scale }}

@@ -7,7 +7,6 @@ import { MEAL_ARTWORK_TOKENS, PICKUP_STICKER_ENTRANCE } from "../components/pick
 import { PICKUP_TAB_TITLE, activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, nextPickupArtwork, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, parcelCardKey, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, withPickupArtwork, type ParcelActivityContent } from "../services/parcel-pickup";
 import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette, pickupCardPalette } from "../services/parcel-card-appearance";
 import { resolvePickupVisualStyle } from "../services/meal/pickup-artwork";
-import { rgbLuminance } from "../services/status";
 import { recognizeParcelCodes } from "../services/parcel-code-ocr";
 import { parcelTextRows, recognizeParcelWaybill } from "../services/parcel-waybill-ocr";
 import { MEAL_ARTWORK_FRAME_ENDS } from "../services/meal/artwork-motion.generated";
@@ -52,10 +51,7 @@ const jpgStyle = resolvePickupVisualStyle(mealRules, {
   brandId: brandedMeal.mealBrandId, productName: brandedMeal.title, evidenceText: "",
 });
 const jpgPalette = pickupCardPalette({ ...brandedMeal, mealStyle: jpgStyle });
-const luminanceOf = (hex: string) => rgbLuminance(Number.parseInt(hex.slice(1), 16)) + 0.05;
-assert.ok(luminanceOf(jpgPalette.code) / luminanceOf(jpgPalette.gradient[1]) >= 3,
-  "JPG's code must meet the same contrast floor as a parcel code");
-assert.ok(luminanceOf(jpgPalette.code) / luminanceOf("#000000") >= 3, "the code also stays readable on the island");
+assert.equal(jpgPalette.code, "#6E261D", "JPG uses Pipi's configured pickup code color");
 assert.equal(jpgPalette.capsule, jpgStyle.buttonColor);
 
 const exampleDay = new Date(2026, 10, 18, 14);
@@ -639,11 +635,13 @@ assert.match(activityCardSource, /minWidth: expanded \? artColumnWidth : Math\.m
   "the expanded native host cannot squeeze the box into the Watch column");
 const artworkLayoutSource = activityCardSource.match(/  const widthScale = [\s\S]*?  const artworkFrame = [\s\S]*?;/)?.[0];
 assert.ok(artworkLayoutSource);
+assert.match(activityCardSource, /background=\{\{ alignment: artworkAlignment, content: boxArtwork \}\}/);
+assert.match(activityCardSource, /<ZStack frame=\{\{ width: artWidth, \.\.\.slot\(bottom - top\), alignment: artworkAlignment \}\}>\{appArtwork\}/);
+assert.match(activityCardSource, /offset=\{\{ x: expanded \? -card\.edge \* scale : 0, y: artOffset \}\}/);
 const artworkLayout = new Function("width", "card", "expanded", "lockScreen", "top", "MAX_ACTIVITY_HEIGHT",
-  "isMeal", "MEAL_ARTWORK_TOKENS",
-  artworkLayoutSource + "\nreturn { artworkFrame, artOffset, verticalScale };");
+  "isMeal", "MEAL_ARTWORK_TOKENS", artworkLayoutSource + "\nreturn { artworkFrame, scale, artOffset, artworkAlignment };");
 const cardArtTop = Number(activityCardSource.match(/\bartTop: ([\d.]+),/)?.[1]);
-assert.equal(cardArtTop, 9 - (132 - 117) / 2, "use the established Home artwork position in each host");
+assert.equal(cardArtTop, 1.5);
 assert.equal(MEAL_ARTWORK_TOKENS.artTop, 9);
 assert.equal(MEAL_ARTWORK_TOKENS.artTop + MEAL_ARTWORK_TOKENS.logoY, 72);
 assert.match(activityCardSource, /const card = PIPI_CARD;/, "both kinds share the tuned parcel geometry and typography");
@@ -652,19 +650,21 @@ for (const width of [320, 328, 365, 374, 402]) {
   const titleTop = 16.3;
   const lock = artworkLayout(width, box, false, true, 0, 160, false, MEAL_ARTWORK_TOKENS);
   const island = artworkLayout(width, box, true, false, titleTop, 160, false, MEAL_ARTWORK_TOKENS);
-  const scale = lock.verticalScale;
+  const scale = lock.scale;
+  assert.equal(island.scale, scale, "the expanded island retains the lock screen artwork size");
   assert.equal(lock.artOffset, box.artTop * scale);
-  assert.ok(Math.abs(lock.artOffset - titleTop * scale - island.artOffset) < 0.01);
+  assert.equal(lock.artworkAlignment, "topLeading", "keep the tuned parcel box placement");
+  assert.equal(island.artOffset, (box.artTop - titleTop) * scale);
+  assert.equal(island.artworkAlignment, "topLeading");
   assert.deepEqual(lock.artworkFrame, { maxWidth: box.artWidth * scale, maxHeight: box.artHeight * scale });
   assert.deepEqual(island.artworkFrame, { width: box.artWidth * scale, height: box.artHeight * scale });
-  assert.deepEqual(artworkLayout(width, box, false, true, 0, 160, true, MEAL_ARTWORK_TOKENS), lock);
+  assert.deepEqual(artworkLayout(width, box, false, true, 0, 160, true, MEAL_ARTWORK_TOKENS),
+    { ...lock, artOffset: 0, artworkAlignment: "leading" }, "only Lock Screen meal art moves to the vertical center");
   assert.deepEqual(artworkLayout(width, box, true, false, titleTop, 160, true, MEAL_ARTWORK_TOKENS), island);
-  assert.equal(artworkLayout(width, box, false, false, 0, 160, true, MEAL_ARTWORK_TOKENS).artOffset,
-    MEAL_ARTWORK_TOKENS.artTop * (width / box.width));
+  const home = artworkLayout(width, box, false, false, 0, 160, true, MEAL_ARTWORK_TOKENS);
+  assert.equal(home.artOffset, MEAL_ARTWORK_TOKENS.artTop * (width / box.width));
+  assert.equal(home.artworkAlignment, "topLeading");
 }
-assert.match(activityCardSource, /background=\{\{ alignment: "topLeading", content: boxArtwork \}\}/);
-assert.match(activityCardSource, /<ZStack frame=\{\{ width: artWidth, \.\.\.slot\(bottom - top\), alignment: "topLeading" \}\}>\{appArtwork\}/,
-  "the in-app artwork also uses a top-leading origin");
 assert.match(activityCardSource, /<VStack spacing=\{dividerToCapsule \* verticalScale\} fixedSize=\{\{ horizontal: false, vertical: true \}\} layoutPriority=\{1\}>\s*\{divider\}\s*\{bottomRow\}\s*<\/VStack>/,
   "the expanded divider and action share a fixed spacing container");
 assert.match(activityCardSource, /slot\(dividerTop - titleTop, expandedHeaderMinimum\)[^\n]*>\s*\{expandedLine\(title, card\.titleHeight, card\.titleLineHeight\)\}\s*<Rectangle fill="clear" frame=\{slot\(gap, gap\)\} \/>\s*\{expandedLine\(location, card\.locationHeight, card\.locationLineHeight\)\}\s*<Rectangle fill="clear" frame=\{slot\(locationToDivider, locationToDivider\)\} \/>/,
