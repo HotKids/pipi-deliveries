@@ -25,7 +25,7 @@ import {
 } from "scripting";
 import type { AppState, RefreshSummary, Shipment, StatusSemantic } from "../models";
 import { ShipmentRow } from "../components/ShipmentRow";
-import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
+import { EmptyTabState } from "../components/EmptyDeliveryVehicle";
 import { ROOT_PAGE_MARGIN, RootTabList } from "../components/RootPageHeader";
 import { TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, tabCapsuleSurface, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import {
@@ -515,11 +515,7 @@ export function HomePage(props: {
               <TabFloatingActionButton title="查询" symbol="magnifyingglass" action={() => searchPresented.setValue(true)} />
             </VStack>
           )}
-          emptyState={!shipments.length ? (
-            <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} allowsHitTesting={false}>
-              <EmptyDeliveryStateGroup vehicleSize={81.6} spacing={6} labelFont={24} deferArtwork />
-            </VStack>
-          ) : undefined}
+          emptyState={!shipments.length ? <EmptyTabState /> : undefined}
           topAccessory={visibleFilters.length > 1 ? (
             <ShipmentFilterBar visibleFilters={visibleFilters} filter={filter} groups={groups} onSelect={showFilter} />
           ) : null}>

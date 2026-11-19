@@ -55,11 +55,14 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
         )}
       </ZStack>
     );
+    const completion = data.linkId
+      ? CompleteParcelActivityIntent({ linkId: data.linkId, kind: data.kind ?? "pickup" })
+      : data.previewLinkId
+        ? CompleteParcelActivityIntent({ linkId: data.previewLinkId, kind: "preview" })
+        : undefined;
     const cardProps = {
       data, imageRoot, logoPath, url, preview: !data.linkId,
-      completion: data.linkId
-        ? CompleteParcelActivityIntent({ linkId: data.linkId, kind: data.kind ?? "pickup" })
-        : undefined,
+      completion,
     };
     return (
       <LiveActivityUI

@@ -61,9 +61,10 @@ import {
   takeScreenShortcutLookup,
 } from "./services/parcel-shortcut";
 import {
-  hasRegisteredParcelPreview, onParcelActivityPreviewChanged, parcelActivityPreviewing, parcelActivitySceneChanged, parcelActivityTarget,
+  hasRegisteredParcelPreview, onParcelActivityChanged, parcelActivityPreviewing, parcelActivitySceneChanged, parcelActivityTarget,
   reconcileParcelActivity,
 } from "./services/parcel-live-activity";
+import { nativePickupTabCloseId } from "./services/parcel-activity-action";
 import { PICKUP_TAB_TITLE, activePickupCards, independentPickupContent } from "./services/parcel-pickup";
 import { nextParcelHandoffDeadline } from "./services/parcel-handoff-expiry";
 import { reconcileFengchaoReminders } from "./services/fengchao-reminders";
@@ -111,6 +112,30 @@ function readMealCards() {
   }
 }
 
+function usePickupTabVisibility(hasCards: boolean, activityEndId?: string): boolean {
+  const [keepVisible, setKeepVisible] = useState(hasCards);
+  const hadCards = useRef(false);
+  const previousActivity = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (hasCards) {
+      if (!hadCards.current) previousActivity.current = nativePickupTabCloseId();
+      hadCards.current = true;
+      if (!keepVisible) setKeepVisible(true);
+      return;
+    }
+    hadCards.current = false;
+    if (!keepVisible) return;
+    const nativeClose = nativePickupTabCloseId();
+    if (nativeClose && nativeClose !== previousActivity.current) {
+      setKeepVisible(false);
+      return;
+    }
+    const timer = setTimeout(() => setKeepVisible(false), 60_000);
+    return () => clearTimeout(timer);
+  }, [hasCards, keepVisible, activityEndId]);
+  return hasCards || keepVisible;
+}
+
 function App({ initialStartup, initialPickupPreview }: { initialStartup: StartupState; initialPickupPreview: boolean }) {
   // One app-owned viewport stays mounted across Home/detail navigation.
   const [projectionView, setProjectionView] = useState<ProjectionViewportView | null>(null);
@@ -148,7 +173,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   const latestPickupView = useRef({ state, pickupCards });
   latestPickupView.current = { state, pickupCards };
   const [pickupPreview, setPickupPreview] = useState(initialPickupPreview);
-  const hasPickupTab = pickupCards.length > 0 || pickupPreview;
+  const [activityEndId, setActivityEndId] = useState<string | undefined>(undefined);
+  const hasPickupTab = usePickupTabVisibility(pickupCards.length > 0 || pickupPreview, activityEndId);
   const launchWorkStarted = useRef(false);
   const platformObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const mealObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -243,7 +269,17 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
         if (mounted && previewing !== undefined) setPickupPreview(previewing);
       });
     };
-    const unsubscribe = onParcelActivityPreviewChanged(reload);
+    const unsubscribe = onParcelActivityChanged(change => {
+      if (change.kind === "preview") {
+        reload();
+        return;
+      }
+      setActivityEndId(change.activityId);
+      reloadMeals();
+      void loadAppState().then(next => {
+        if (mounted) applyState(next);
+      }).catch(() => writeDiagnostic("app.activity.resume.failed", {}, "warning"));
+    });
     if (initialPickupPreview) reload();
     return () => {
       mounted = false;

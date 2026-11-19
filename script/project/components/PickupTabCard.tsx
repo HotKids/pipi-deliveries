@@ -198,14 +198,16 @@ function ParcelCardListRow({ spaceAfter, ...cardProps }: ParcelLiveActivityCardP
   );
 }
 
-export function ParcelActivityPreviewCard({ animate = false, lockScreenStyle }: {
+export function ParcelActivityPreviewCard({ animate = false, lockScreenStyle, onComplete, actionPending }: {
   animate?: boolean; lockScreenStyle?: ParcelLockScreenStyle;
+  onComplete?: () => void; actionPending?: boolean;
 }) {
   const { sticker } = parcelCardArtwork(PARCEL_ACTIVITY_PREVIEW);
   const logoPath = sticker ? `${Script.directory}/assets/${sticker.path}` : undefined;
   return (
     <ParcelCardListRow data={PARCEL_ACTIVITY_PREVIEW} imageRoot={`${Script.directory}/assets/parcel-activity`}
       logoPath={logoPath} preview lockScreenStyle={lockScreenStyle}
+      onComplete={onComplete} actionPending={actionPending}
       artwork={animate ? <PickupTabArtwork baseAsset={BOX_IMAGE}
         logoAsset={sticker?.path} logoSize={26} logoX={PIPI_CARD.logoX} logoY={PIPI_CARD.logoY} playback={BOX_PLAYBACK} />
         : undefined} />
