@@ -563,7 +563,10 @@ assert.deepEqual([fullBox.readUInt32BE(16), fullBox.readUInt32BE(20)], [300, 351
 assert.deepEqual([watchBox.readUInt32BE(16), watchBox.readUInt32BE(20)], [100, 117]);
 assert.match(activityCardSource, /const lockScreenBoxPath = [^\n]+FileManager\.isFileSync\(boxPath\)\s*\? boxPath/,
   "the lock screen prefers the full-resolution box");
-assert.match(activityCardSource, /<Image filePath=\{lockScreenBoxPath\}/);
+assert.match(activityCardSource, /const artworkFile = [\s\S]*?\? mealImagePath : lockScreenBoxPath;/);
+assert.match(activityCardSource, /<Image \{\.\.\.artworkImage\} resizable scaleToFit frame=\{artworkFrame\}/,
+  "both artwork sources are drawn directly into the parcel canvas");
+assert.match(activityCardSource, /<Image \{\.\.\.stickerImage\} resizable scaleToFit frame=\{\{ maxWidth: logoSize, maxHeight: logoSize \}\}/);
 assert.match(activityCardSource, /const watchBoxFile = hasWatchBox \? watchBoxPath : lockScreenBoxPath;/,
   "the watch keeps the compact App Group asset when available");
 assert.match(activityCardSource, /handoff \? "我已寄件" : "我已取件"/, "the pickup and handoff activities each show their completion capsule");
@@ -576,8 +579,8 @@ assert.match(activityCardSource, /activityBackgroundTint="clear" widgetURL=\{url
 assert.doesNotMatch(activityCardSource, /<(?:EnvironmentValuesReader|GeometryReader|Canvas)\b/,
   "the lock screen snapshots a complete view tree");
 assert.match(activityCardSource, /frame=\{\{ \.\.\.slot\(bottom - top\), minWidth: 0, maxWidth: "infinity"/);
-assert.match(activityCardSource, /systemName=\{isMeal \? "takeoutbag\.and\.cup\.and\.straw\.fill" : "shippingbox\.fill"\} font=\{card\.capsuleIcon \* scale\}/,
-  "meal and parcel capsules share the same icon slot");
+assert.match(activityCardSource, /systemName=\{isMeal \? "fork\.knife" : "shippingbox\.fill"\} font=\{card\.capsuleIcon \* scale\}/,
+  "the meal capsule uses the original utensil symbol on the shared icon slot");
 assert.match(activityCardSource, /isMeal \? "我已取餐"/);
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
 assert.match(activityEntrySource, /<LiveActivityUIExpandedCenter>\s*<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} expanded \/>/,
@@ -607,24 +610,29 @@ assert.match(activityCardSource, /const artColumnWidth = expanded \? artWidth - 
   "the expanded host supplies the card's outside inset while the artwork keeps its regular size");
 assert.match(activityCardSource, /minWidth: expanded \? artColumnWidth : Math\.min\(artWidth, MIN_COMPACT_ART_WIDTH\)/,
   "the expanded native host cannot squeeze the box into the Watch column");
-const artworkOffsetSource = activityCardSource.match(/  const artOffset = [^\n]+/)?.[0];
-assert.ok(artworkOffsetSource);
-const artworkOffset = new Function("card", "top", "scale",
-  artworkOffsetSource + "\nreturn artOffset;");
+const artworkLayoutSource = activityCardSource.match(/  const widthScale = [\s\S]*?  const artworkFrame = [\s\S]*?;/)?.[0];
+assert.ok(artworkLayoutSource);
+const artworkLayout = new Function("width", "card", "expanded", "lockScreen", "top", "MAX_ACTIVITY_HEIGHT", "PIPI_CARD",
+  artworkLayoutSource + "\nreturn { artworkFrame, artOffset, verticalScale };");
 const cardArtTop = Number(activityCardSource.match(/\bartTop: ([\d.]+),/)?.[1]);
 assert.equal(cardArtTop, 9 - (132 - 117) / 2, "use the established Home artwork position in each host");
 assert.equal(MEAL_CARD_TOKENS.artTop, 9);
 assert.equal(MEAL_CARD_TOKENS.artTop + MEAL_CARD_TOKENS.logoY, 72);
 assert.match(activityCardSource, /const MEAL_CARD = \{ \.\.\.PIPI_CARD, \.\.\.MEAL_CARD_TOKENS \}/);
-for (const artTop of [cardArtTop, MEAL_CARD_TOKENS.artTop]) {
-  for (const scale of [1, 1.12]) {
-    const card = { artTop };
-    const titleTop = 16.3;
-    const regularTop = artworkOffset(card, 0, scale);
-    const islandTop = artworkOffset(card, titleTop, scale);
-    assert.equal(regularTop, artTop * scale);
-    assert.ok(Math.abs(regularTop - titleTop * scale - islandTop) < 0.01);
-  }
+for (const width of [320, 328, 365, 374, 402]) {
+  const box = { ...referenceCard, artWidth: 100, artHeight: 117, artTop: cardArtTop, edge: 12 };
+  const meal = { ...box, artTop: MEAL_CARD_TOKENS.artTop };
+  const titleTop = 16.3;
+  const lock = artworkLayout(width, box, false, true, 0, 160, box);
+  const island = artworkLayout(width, box, true, false, titleTop, 160, box);
+  const scale = lock.verticalScale;
+  assert.equal(lock.artOffset, box.artTop * scale);
+  assert.ok(Math.abs(lock.artOffset - titleTop * scale - island.artOffset) < 0.01);
+  assert.deepEqual(lock.artworkFrame, { maxWidth: box.artWidth * scale, maxHeight: box.artHeight * scale });
+  assert.deepEqual(island.artworkFrame, { width: box.artWidth * scale, height: box.artHeight * scale });
+  assert.deepEqual(artworkLayout(width, meal, false, true, 0, 160, box), lock);
+  assert.deepEqual(artworkLayout(width, meal, true, false, titleTop, 160, box), island);
+  assert.equal(artworkLayout(width, meal, false, false, 0, 160, box).artOffset, meal.artTop * (width / meal.width));
 }
 assert.match(activityCardSource, /background=\{\{ alignment: "topLeading", content: boxArtwork \}\}/);
 assert.match(activityCardSource, /<ZStack frame=\{\{ width: artWidth, \.\.\.slot\(bottom - top\), alignment: "topLeading" \}\}>\{appArtwork\}/,
