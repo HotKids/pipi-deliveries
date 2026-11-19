@@ -175,7 +175,7 @@ const [artworkId] = putMealObservations(localArtworkScope, [artworkObservation],
 const cardsFile = readFileSync(new URL("../services/meal/cards.ts", import.meta.url), "utf8");
 const cardsService = stripTypeScriptTypes(cardsFile, {mode: "transform"})
   .replace(/^import[\s\S]*?;\n/gm, "").replace(/^export /gm, "");
-const cards = runInNewContext(cardsService + "\n;({ mealCard, toggleMealCup });", {
+const cards = runInNewContext(cardsService + "\n;({ mealCard, mealRedemption, toggleMealCup });", {
   currentMeal, readMeals, updateMeals, alternateMealArtwork, resolvePickupVisualStyle,
   mealCredentialScope: () => localArtworkScope, cachedMealRules: () => rules,
 }) as typeof import("../services/meal/cards");
@@ -196,6 +196,17 @@ const [picked] = putMealObservations(scope, [match!], true);
 assert.equal(readMeals(scope).luckinDraft, undefined);
 assert.equal(currentMeal(readMeals(scope), picked, now)?.productName, "耶加雪菲·美式");
 assert.equal(currentMeal(readMeals(scope), picked, now)?.qrPayload, "a1234567AA0=");
+assert.equal(cards.mealCard(scope, picked, readMeals(scope), now)?.code, "待取餐");
+assert.equal(cards.mealRedemption(match!.payload)?.title, "取餐码");
+assert.equal(cards.mealRedemption(match!.payload)?.number, "949");
+assert.equal(cards.mealRedemption({ ...match!.payload, code: "0949" })?.number, "0949");
+const [redeem] = putMealObservations(scope, [tea([" SYNTHETIC QR "])!], true);
+const redemptionCard = cards.mealCard(scope, redeem, readMeals(scope), now);
+assert.equal(redemptionCard?.code, "待核销");
+assert.equal(redemptionCard?.hasMealQR, true);
+assert.equal(cards.mealRedemption(decoded!)?.title, "核销码");
+assert.equal(cards.mealRedemption(decoded!)?.payload, " SYNTHETIC QR ");
+assert.ok(!cards.mealRedemption(decoded!)?.number);
 assert.equal(currentMeal(readMeals("b".repeat(64)), picked, now), undefined);
 stageLuckinDraft(scope, order.draft!);
 const [separate] = putMealObservations(scope, [second(now + 120001, ["a1234567AA0="]).meals[0]], true);

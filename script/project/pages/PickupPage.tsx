@@ -182,7 +182,7 @@ export function PickupPage({
   const shownQr = mealQr && cards.some(card => card.target && "mealId" in card.target &&
     card.target.mealId === mealQr.id && card.target.mealScope === mealQr.scope) && mealCredentialScope() === mealQr.scope
     ? currentMeal(readMeals(mealQr.scope), mealQr.id) : undefined;
-  const qrPayload = shownQr ? mealRedemption(shownQr) : "";
+  const redemption = shownQr ? mealRedemption(shownQr) : undefined;
 
   async function openIdentity(platform: IdentityPlatform) {
     const request = ++identityRequest.current;
@@ -226,13 +226,14 @@ export function PickupPage({
         onDisappear={() => setVisible(false)}
         overlay={{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen={openIdentity} /> }}
         sheet={{
-          isPresented: Boolean(qrPayload),
+          isPresented: Boolean(redemption),
           onChanged: shown => { if (!shown) setMealQr(null); },
-          content: qrPayload ? <VStack spacing={20} padding={24} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
-            <Text font="headline">取餐二维码</Text>
+          content: redemption ? <VStack spacing={20} padding={24} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
+            <Text font="headline">{redemption.title}</Text>
             <VStack padding={16} background={{ style: "white", shape: { type: "rect", cornerRadius: 16 } }}>
-              <QRImage data={qrPayload} size={200} />
+              <QRImage data={redemption.payload} size={200} />
             </VStack>
+            {redemption.number ? <Text font="title3" fontWeight="semibold" monospacedDigit>{redemption.number}</Text> : null}
             <Button title="关闭" action={() => setMealQr(null)} />
           </VStack> : <VStack />,
         }}

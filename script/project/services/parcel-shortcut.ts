@@ -184,22 +184,27 @@ export async function queryScreenShortcut(lookup: ParcelLookup, phoneTail?: stri
   return shipment ? { shipment, added: preview.commitBase?.shipment === null } : { shipment: null, needsPhoneTail };
 }
 
-async function sendScreenNotification(send: (deadlineAtMs: number) => Promise<boolean>): Promise<void> {
+async function sendScreenNotification(send: (deadlineAtMs: number) => Promise<boolean>): Promise<boolean> {
   try {
-    if (await send(deadlineAfter(SHORTCUT_NOTIFICATION_BUDGET_MS))) return;
+    if (await send(deadlineAfter(SHORTCUT_NOTIFICATION_BUDGET_MS))) return true;
   } catch {
-    // The lookup is already saved and its result is still returned to the caller.
+    // The result is still available to the caller if the notification cannot be queued.
   }
   try { writeDiagnostic("shortcut.notification.failed", {}, "warning"); } catch { /* Diagnostics are optional. */ }
+  return false;
 }
 
-export async function notifyScreenShortcutStatus(message: string, phoneTailDraft?: string): Promise<string> {
-  await sendScreenNotification(deadlineAtMs => waitForRefresh(Notification.schedule({
+export function scheduleScreenShortcutStatus(message: string, phoneTailDraft?: string): Promise<boolean> {
+  return sendScreenNotification(deadlineAtMs => waitForRefresh(Notification.schedule({
     title: "截屏识别",
     body: message,
     tapAction: "none",
     ...(phoneTailDraft ? { customUI: true, userInfo: { screenShortcutDraft: phoneTailDraft } } : {}),
   }), deadlineAtMs));
+}
+
+export async function notifyScreenShortcutStatus(message: string, phoneTailDraft?: string): Promise<string> {
+  await scheduleScreenShortcutStatus(message, phoneTailDraft);
   return message;
 }
 

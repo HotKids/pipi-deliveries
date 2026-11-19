@@ -4,9 +4,11 @@ import { currentMeal, readMeals, updateMeals, type MealPayload, type MealSnapsho
 import { alternateMealArtwork, resolvePickupVisualStyle } from "./pickup-artwork";
 import { mealCredentialScope } from "./rules";
 
-export function mealRedemption(payload: MealPayload): string {
-  return (payload.brandId === "chayanyuese" || payload.brandId === "ruixing") && payload.qrPayload?.trim()
-    ? payload.qrPayload : "";
+export function mealRedemption({ brandId, code, qrPayload }: MealPayload) {
+  if (!qrPayload?.trim()) return undefined;
+  const original = { payload: qrPayload, number: code?.trim() };
+  if (brandId === "chayanyuese") return { ...original, label: "待核销", title: "核销码" };
+  if (brandId === "ruixing") return { ...original, label: "待取餐", title: "取餐码" };
 }
 
 function mealStyleFor(payload: MealPayload, stored: MealSnapshot["style"][string] | undefined) {
@@ -21,8 +23,8 @@ export function mealCard(scope: string, id: string, state: MealSnapshot, now: nu
   if (!scope) return null;
   const payload = currentMeal(state, id, now);
   if (!payload) return null;
-  const hasQR = Boolean(mealRedemption(payload));
-  const code = hasQR ? "待取餐" : payload.code?.trim();
+  const redemption = mealRedemption(payload);
+  const code = redemption?.label ?? payload.code?.trim();
   if (!code) return null;
   const mealStyle = mealStyleFor(payload, state.style[id]);
   return {
@@ -30,7 +32,7 @@ export function mealCard(scope: string, id: string, state: MealSnapshot, now: nu
     capturedAtMs: payload.createdAt, expiresAtMs: payload.expiresAt,
     title: payload.productName?.trim() || payload.brandName?.trim() || "取餐码",
     location: payload.merchantName?.trim() || "",
-    code, mealStyle, mealBrandId: payload.brandId, hasMealQR: hasQR,
+    code, mealStyle, mealBrandId: payload.brandId, hasMealQR: Boolean(redemption),
     ...(alternateMealArtwork(mealStyle) ? { artworkSwitchable: true } : {}),
   };
 }
