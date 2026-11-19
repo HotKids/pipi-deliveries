@@ -2,9 +2,9 @@ import { Button, Circle, HStack, Image, Rectangle, Script, Spacer, Text, VStack,
 import type { ParcelActivityCompletion } from "../services/parcel-activity-action";
 import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, pickupCardPalette } from "../services/parcel-card-appearance";
 import { parcelPickupShortCode, parcelPickupSubtitle, type ParcelActivityContent } from "../services/parcel-pickup";
-import { MEAL_CARD_TOKENS } from "./pickup-card-tokens.generated";
+import { MEAL_ARTWORK_TOKENS } from "./pickup-card-tokens.generated";
 
-// Pipi Home's shared and express-specific card specifications.
+// Shared geometry and typography for the Pipi pickup card.
 export const PIPI_CARD = {
   width: 328,
   height: 132,
@@ -36,7 +36,6 @@ export const PIPI_CARD = {
   codeHeight: 32,
 } as const;
 
-const MEAL_CARD = { ...PIPI_CARD, ...MEAL_CARD_TOKENS };
 const MAX_ACTIVITY_HEIGHT = 160;
 const MIN_COMPACT_ART_WIDTH = PIPI_CARD.artWidth / 2;
 const SMART_STACK_MAX_WIDTH = 198;
@@ -81,7 +80,8 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   actionLabel, actionPending, locationText, showingAddress, onComplete, onCopy, onDetail, onEditNote,
   onLocationTap, onArtworkTap }: ParcelLiveActivityCardProps) {
   const isMeal = data.kind === "meal";
-  const card = isMeal ? MEAL_CARD : PIPI_CARD;
+  const card = PIPI_CARD;
+  const { logoX, logoY } = isMeal ? MEAL_ARTWORK_TOKENS : card;
   const capsuleTop = card.height - card.edge - card.capsuleHeight;
   const dotRadius = card.dotDiameter / 2;
   const dividerTop = capsuleTop - card.edge - card.dividerHeight / 2 - dotRadius;
@@ -105,7 +105,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const artHeight = card.artHeight * scale;
   const flexibleHeight = lockScreen || expanded;
   const fitsHost = expanded || (lockScreen && width !== undefined);
-  const artTop = lockScreen || expanded ? PIPI_CARD.artTop : card.artTop;
+  const artTop = isMeal && !lockScreen && !expanded ? MEAL_ARTWORK_TOKENS.artTop : card.artTop;
   const artOffset = (artTop - top) * scale;
   const sharesSmartStack = lockScreen && fitsHost;
   const artworkFrame = lockScreen && fitsHost
@@ -134,7 +134,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   const locationColor = "rgba(255,255,255,0.85)";
   const dotColor = "rgba(255,255,255,0.18)";
   const handoff = data.kind === "handoff";
-  const stickerWidth = isMeal ? MEAL_CARD_TOKENS.stickerSize * (data.mealStyle?.stickerScale ?? 1)
+  const stickerWidth = isMeal ? MEAL_ARTWORK_TOKENS.stickerSize * (data.mealStyle?.stickerScale ?? 1)
     : handoff ? 20 : 26;
   const logoSize = stickerWidth * scale;
   const boxPath = `${imageRoot}/box.png`;
@@ -158,7 +158,6 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     : "infinity";
   const subtitle = parcelPickupSubtitle(data, locationText, showingAddress);
   const pickupCode = isMeal ? data.code : parcelPickupShortCode(data.code);
-  const codeFont = isMeal && /[\u3400-\u9fff]/u.test(pickupCode) ? MEAL_CARD_TOKENS.codeCjkFont : card.codeFont;
   const dividerDots = (width: number, scale: number) => {
     const count = Math.floor((width + card.dotGap) / (card.dotDiameter + card.dotGap));
     const diameter = card.dotDiameter * scale;
@@ -193,7 +192,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     </HStack>
   );
   const titleRow = (
-    <Text font={card.titleFont * scale} fontWeight={isMeal ? "bold" : "semibold"} foregroundStyle={titleColor} lineLimit={1}
+    <Text font={card.titleFont * scale} fontWeight="semibold" foregroundStyle={titleColor} lineLimit={1}
       minScaleFactor={fitsHost ? 0.7 : undefined}
       frame={expanded ? undefined : { ...slot(card.titleHeight, card.titleFont * 0.7), alignment: "leading" }}
       layoutPriority={lockScreen ? 1 : undefined} clipped={!expanded && fitsHost}>{data.title}</Text>
@@ -204,17 +203,17 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
       {subtitle.text ? <>
         <Image systemName={subtitle.symbol} resizable scaleToFit foregroundStyle={locationColor}
           frame={{ width: card.locationIcon * scale, height: card.locationIcon * scale }} />
-        <Text font={card.locationFont * scale} fontWeight={isMeal ? "regular" : "medium"}
+        <Text font={card.locationFont * scale} fontWeight="medium"
           minScaleFactor={fitsHost ? 0.75 : undefined}
           foregroundStyle={locationColor} lineLimit={1}>{subtitle.text}</Text>
       </> : null}
     </HStack>
   );
   const code = (
-    <Text font={codeFont * scale} fontWeight={isMeal ? "bold" : "semibold"} fontWidth="standard"
+    <Text font={card.codeFont * scale} fontWeight="semibold" fontWidth="standard"
       foregroundStyle={palette.code}
-      kerning={isMeal ? 0.4 * scale : 0} lineLimit={1} allowsTightening={fitsHost}
-      minScaleFactor={lockScreen ? 11 / (codeFont * scale) : 12 / codeFont}
+      kerning={0} lineLimit={1} allowsTightening={fitsHost}
+      minScaleFactor={lockScreen ? 11 / (card.codeFont * scale) : 12 / card.codeFont}
       frame={{ ...slot(card.codeHeight, lockScreen ? card.capsuleIcon : card.codeHeight),
         minWidth: 0, maxWidth: codeWidth, alignment: "leading" }}
       layoutPriority={lockScreen ? 2 : 1}>
@@ -223,12 +222,12 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   );
   const artworkSticker = !stickerImage ? null : lockScreen && fitsHost ? (
     <HStack padding={{ horizontal: MIN_COMPACT_ART_WIDTH * (1 - stickerWidth / card.artWidth) / 2 }}
-      offset={{ x: 0, y: (card.logoY - card.artHeight / 2) * scale }}>
+      offset={{ x: 0, y: (logoY - card.artHeight / 2) * scale }}>
       <Image {...stickerImage} resizable scaleToFit frame={{ maxWidth: logoSize, maxHeight: logoSize }} />
     </HStack>
   ) : (
     <Image {...stickerImage} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
-      position={{ x: card.logoX * scale, y: card.logoY * scale }} />
+      position={{ x: logoX * scale, y: logoY * scale }} />
   );
   const boxArtwork = (
     <ZStack frame={artworkFrame}
@@ -379,7 +378,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
         {watchArtworkImage ? <Image {...watchArtworkImage} resizable scaleToFit frame={watchArtFrame} />
           : <Image systemName={artworkSymbol} font={isMeal ? 42 * watchScale : 30} foregroundStyle={titleColor} />}
         {stickerImage ? <Image {...stickerImage} resizable scaleToFit frame={{ width: watchStickerWidth, height: watchStickerWidth }}
-          position={{ x: card.logoX * watchScale, y: card.logoY * watchScale }} /> : null}
+          position={{ x: logoX * watchScale, y: logoY * watchScale }} /> : null}
       </ZStack>
       <VStack alignment="leading" spacing={0}
         frame={{ minWidth: 0, maxWidth: "infinity", alignment: "leading" }}

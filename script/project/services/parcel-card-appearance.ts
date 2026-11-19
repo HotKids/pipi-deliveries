@@ -59,16 +59,28 @@ function contrast(first: number, second: number): number {
   return Math.max(a, b) / Math.min(a, b);
 }
 
+function readableCodeColor(brand: number, background: number): number {
+  let code = brand;
+  for (let step = 1; step <= 20 && contrast(code, background) < 3; step++) {
+    code = blendStatusColor(brand, WHITE, step * 0.05);
+  }
+  return code;
+}
+
 // Pipi's ExpressPickupCardPresentation.Palette uses the logo on the button and
 // code, with a 0x1F overlay and separate contrast adjustments against each surface.
 export function pickupCardPalette(card: ParcelActivityContent) {
   const meal = card.kind === "meal" ? card.mealStyle : undefined;
-  return meal ? {
+  if (!meal) return { ...parcelCardPalette(parcelCardArtwork(card).accent), capsuleForeground: "white" as const };
+  const code = Number.parseInt(meal.codeColor.slice(1), 16);
+  const background = Number.parseInt(meal.gradientEndColor.slice(1), 16);
+  return {
     gradient: [meal.gradientStartColor as ColorStringHex, meal.gradientEndColor as ColorStringHex] as const,
-    code: meal.codeColor as ColorStringHex,
+    code: Number.isFinite(code) && Number.isFinite(background)
+      ? asColor(readableCodeColor(code, background)) : meal.codeColor as ColorStringHex,
     capsule: meal.buttonColor as ColorStringHex,
     capsuleForeground: meal.buttonForegroundColor as ColorStringHex,
-  } : { ...parcelCardPalette(parcelCardArtwork(card).accent), capsuleForeground: "white" as const };
+  };
 }
 
 export function parcelCardPalette(accent?: string) {
@@ -76,10 +88,7 @@ export function parcelCardPalette(accent?: string) {
     capsule: "rgba(255,255,255,0.16)" } as const;
   const brand = Number.parseInt(accent.slice(1), 16);
   const right = blendStatusColor(RIGHT, brand, OVERLAY);
-  let code = brand;
-  for (let step = 1; step <= 20 && contrast(code, right) < 3; step++) {
-    code = blendStatusColor(brand, WHITE, step * 0.05);
-  }
+  const code = readableCodeColor(brand, right);
   let capsule = brand;
   const brightness = Math.max(brand >> 16, brand >> 8 & 255, brand & 255);
   if (Math.round(brightness / 255 * 100) > 95) {
