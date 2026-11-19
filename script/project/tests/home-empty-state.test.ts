@@ -15,11 +15,16 @@ const emptyGroupSource = await readFile(
   resolve(projectDir, "components/EmptyDeliveryVehicle.tsx"),
   "utf8",
 );
+assert.match(
+  emptyGroupSource,
+  /meal: \{ imagePath: "widget\/empty-pickup-grape\.png", label: "饮咗茶未" \},\s*parcel: \{ imagePath: "widget\/empty-pickup-sf-box\.png", label: "暂无包裹" \},/,
+  "each Pickup illustration carries its own caption",
+);
 const emptyTabSource = emptyGroupSource.match(/^export function EmptyTabState\([\s\S]*?^\}/m)?.[0];
 assert.ok(emptyTabSource);
 assert.match(
   emptyTabSource,
-  /const imagePath = pickup \? pickupArtwork\[pickup\] : vehicleArtwork;[\s\S]*?<Image filePath=\{/,
+  /const \{ imagePath, label \} = pickup \? pickupArtwork\[pickup\] : \{\s*imagePath: vehicleArtwork,\s*label: "暂无快递",\s*\};[\s\S]*?<Image filePath=\{/,
   "each empty state provides its bundled art on the first render",
 );
 assert.match(
@@ -34,7 +39,7 @@ assert.match(
 );
 assert.match(
   emptyGroupSource,
-  /const size = pickup \? 96 : 81\.6;[\s\S]*?<VStack frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\} allowsHitTesting=\{false\}>\s*<EmptyStateGroup artwork=\{artwork\} label=\{pickup === "meal" \? "饮咗茶未" : "暂无快递"\} spacing=\{8\} labelFont="body" \/>/,
+  /const size = pickup \? 96 : 81\.6;[\s\S]*?<VStack frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\} allowsHitTesting=\{false\}>\s*<EmptyStateGroup artwork=\{artwork\} label=\{label\} spacing=\{8\} labelFont="body" \/>/,
   "the pickup illustrations share a larger frame, typography and centering",
 );
 assert.match(
