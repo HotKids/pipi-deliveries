@@ -1,5 +1,5 @@
 import { removeBestEffort } from "./durable-files";
-import type { CloudParcelTitleCache } from "./cloud-parcel-metadata";
+import type { CloudParcelMetadataCache } from "./cloud-parcel-metadata";
 import { writeDiagnostic } from "./logger";
 import { sha256Hex } from "./scripting-data";
 
@@ -8,7 +8,7 @@ type SharedData = {
   stateRef?: string;
   previousStateRef?: string;
   scriptingInstallation?: string;
-  cloudParcelTitles?: CloudParcelTitleCache;
+  cloudParcelTitles?: CloudParcelMetadataCache; // Existing persisted key also carries verified estimates.
   mealStateRef?: string;
   nativePickupTabClose?: { activityId: string; stateRef?: string; mealStateRef?: string };
 };

@@ -11,6 +11,7 @@ import {
   JD_ORDERS_PAGE, JD_ORDER_LIST_URL, jdLoginProof, jdSyncView, openProviderController, PlatformWireError, verifiedJdCookies,
 } from "./platform-wire";
 import { platformPickupCode } from "./fengchao-account";
+import { pddProductImageURL } from "./product-image-url";
 import { acquireProjectionViewport, projectionSceneActive, releaseProjectionViewport } from "./projection-viewport";
 import { displayWaybill } from "./shipment-policy";
 import { normalizeWaybill, shipmentPresentationStatus } from "./status";
@@ -441,8 +442,70 @@ async function addPddCapture(web: WebViewController, source: string, deadline: n
   await waitForRefresh(supported.addUserScript({ source, injectionTime: "documentStart", forMainFrameOnly: true }), deadline, signal);
 }
 
+export async function presentPddParcelH5(appURL: string, session: PlatformSession,
+  isCurrent: () => boolean, signal: AbortSignal): Promise<boolean> {
+  const route = new URL(appURL);
+  const waybill = route.searchParams.get("tracking_number") ?? "";
+  const shippingId = route.searchParams.get("shipping_id") ?? "";
+  const path = pddParcelDetailPath(shippingId, waybill);
+  if (!path || session.credentials.kind !== "web" || !isCurrent()) throw new PlatformWireError("changed");
+  const deadline = Date.now() + 10_000;
+  const origin = "https://mobile.yangkeduo.com";
+  const web = await openProviderController("pinduoduo", session.credentials.cookies, "default", deadline, signal);
+  try {
+    const allowsRequest = web.shouldAllowRequest;
+    web.shouldAllowRequest = async (request) => !signal.aborted &&
+      !!currentPlatformSession("pinduoduo", session.generation) && !!await allowsRequest?.(request);
+    // Match the recommendations and expansion controls in Pipi's PddAccountActivity.
+    await addPddCapture(web, `(() => {
+      if (window !== window.top || location.origin !== '${origin}' ||
+          location.pathname !== '/psnl_goods_help.html' ||
+          new URLSearchParams(location.search).get('_t_module_name') !== 'assistant_waybill') return;
+      const install = () => {
+        const style = document.createElement('style');
+        style.textContent = '.assistant-waybill .subject-comp-wrap, ' +
+          '.assistant-waybill .express-show:has(> .icon-unfold) { display: none !important; }';
+        document.head.appendChild(style);
+        const expand = () => {
+          const buttons = Array.from(document.querySelectorAll(
+            '.express-traces-container .express-show > .label-show.icon-folded')).filter(element =>
+              (element.innerText || '').trim() === '展开' && element.getClientRects().length &&
+              getComputedStyle(element).visibility === 'visible' && !element.closest('a[href]'));
+          if (buttons.length !== 1) return;
+          observer.disconnect();
+          buttons[0].click();
+        };
+        const observer = new MutationObserver(expand);
+        observer.observe(document.body, { childList: true, subtree: true });
+        setTimeout(() => observer.disconnect(), 10000);
+        expand();
+      };
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true });
+      else install();
+    })()`, deadline, signal);
+    const loaded = await waitForRefresh(web.loadURL(origin + path), deadline, signal);
+    if (!isCurrent()) throw new PlatformWireError("changed");
+    assertCurrent("pinduoduo", session, signal);
+    const shown = new URL(web.url ?? "about:blank");
+    if (shown.origin === origin && shown.pathname === "/login.html") {
+      clearPlatformLogin("pinduoduo", session.generation, true);
+      return false;
+    }
+    if (!loaded || shown.origin !== origin || shown.pathname !== route.pathname ||
+        shown.searchParams.get("_t_module_name") !== "assistant_waybill" ||
+        shown.searchParams.get("tracking_number") !== waybill || shown.searchParams.get("shipping_id") !== shippingId) {
+      throw new PlatformWireError("unavailable");
+    }
+    await web.present({ fullscreen: true, navigationTitle: "物流详情" });
+    return true;
+  } finally {
+    web.dispose();
+  }
+}
+
 export function fetchPddParcelDetails(session: PlatformSession, shippingId: string, waybill: string,
-  needsTitle: boolean, needsEstimate: boolean, eligible: () => boolean, signal?: AbortSignal): Promise<PlatformParcel | undefined> {
+  needsTitle: boolean, needsEstimate: boolean, needsImage: boolean,
+  eligible: () => boolean, signal?: AbortSignal): Promise<PlatformParcel | undefined> {
   const detailPath = pddParcelDetailPath(shippingId, waybill);
   if (!detailPath) return Promise.resolve(undefined);
   const url = "https://mobile.yangkeduo.com" + detailPath;
@@ -456,7 +519,7 @@ export function fetchPddParcelDetails(session: PlatformSession, shippingId: stri
   `;
   return withProviderPage("pinduoduo", session, async (web, deadline) => {
     if (!eligible()) return undefined;
-    if (needsEstimate) await addPddCapture(web, `(() => { ${route}` + String.raw`
+    if (needsEstimate || needsImage) await addPddCapture(web, `(() => { ${route}` + String.raw`
       function keep(address, body) {
         const request = new URL(address, location.href);
         if (request.origin !== location.origin || request.pathname !== '/proxy/api/api/express/shipping/track' ||
@@ -467,6 +530,9 @@ export function fetchPddParcelDetails(session: PlatformSession, shippingId: stri
         const shipping = JSON.parse(body).shipping;
         if (String(shipping?.shipping_id) !== shippingId ||
           String(shipping?.tracking_number).toUpperCase().replace(/[^A-Z0-9]/g, '') !== waybill) return;
+        const thumb = shipping.thumb_url ?? shipping.thumbUrl;
+        if (${needsImage} && typeof thumb === 'string' && thumb.trim() && thumb.length <= 2048)
+          window.__pipiDeliveriesPddProductImage = thumb;
         const forecast = shipping.time_forecast ?? shipping.timeForecast;
         const fields = forecast && typeof forecast === 'object' ? Object.values(forecast).slice(0, 24) : [forecast];
         window.__pipiDeliveriesParcelForecast = fields.filter(value => typeof value === 'string').map(value => value.slice(0, 256));
@@ -497,17 +563,19 @@ export function fetchPddParcelDetails(session: PlatformSession, shippingId: stri
         node => (node.textContent || '').trim()).filter(Boolean));
       const title = titles.size === 1 ? [...titles][0] : '';
       const forecasts = window.__pipiDeliveriesParcelForecast;
-      if (!title && !forecasts) return null;
-      const state = (${needsTitle} && !title) || (${needsEstimate} && !forecasts?.length) ? 'pending' : 'complete';
-      return { state, waybill, shippingId, title, forecasts };
+      const image = window.__pipiDeliveriesPddProductImage;
+      if (!title && !forecasts && !image) return null;
+      const pending = (${needsTitle} && !title) || (${needsEstimate} && !forecasts?.length) || (${needsImage} && !image);
+      return { state: pending ? 'pending' : 'complete', waybill, shippingId, title, forecasts, image };
     `, Math.min(deadline, Date.now() + 8_000), undefined, (value) => {
       const row = asPlainObject(value);
       return row.waybill === waybill && row.shippingId === shippingId &&
-        (Boolean(productTitle(row.title)) || Array.isArray(row.forecasts) && row.forecasts.length > 0);
+        (Boolean(productTitle(row.title) || pddProductImageURL(row.image)) || Array.isArray(row.forecasts) && row.forecasts.length > 0);
     }, signal));
     if (row.waybill !== waybill || row.shippingId !== shippingId) return undefined;
     const estimate = uniqueDeliveryForecast(Array.isArray(row.forecasts) ? row.forecasts : [], Date.now());
-    return { source: "pinduoduo", waybill, title: productTitle(row.title), estimate };
+    return { source: "pinduoduo", waybill, shippingId, title: productTitle(row.title), estimate,
+      productImageURL: pddProductImageURL(row.image) };
   }, signal);
 }
 

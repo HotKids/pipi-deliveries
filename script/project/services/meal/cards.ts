@@ -6,16 +6,15 @@ import { mealCredentialScope } from "./rules";
 
 export function mealRedemption({ brandId, code, qrPayload }: MealPayload) {
   if (!qrPayload?.trim()) return undefined;
-  const original = { payload: qrPayload, number: code?.trim() };
-  if (brandId === "chayanyuese") return { ...original, label: "待核销", title: "核销码" };
-  if (brandId === "ruixing") return { ...original, label: "待取餐", title: "取餐码" };
+  if (brandId === "chayanyuese") return { payload: qrPayload, label: "待核销", title: "核销码", prompt: "请扫码核销" };
+  if (brandId === "ruixing") return { payload: qrPayload, label: code?.trim() || "待取餐", title: "取餐码", prompt: "请扫码取餐" };
 }
 
 function mealStyleFor(payload: MealPayload, stored: MealSnapshot["style"][string] | undefined) {
-  if (stored) return stored;
+  if (stored && (!payload.drinkTemperature || stored.drinkTemperature === payload.drinkTemperature)) return stored;
   const rules = cachedMealRules();
   return rules ? resolvePickupVisualStyle(rules.raw, {
-    brandId: payload.brandId, productName: payload.productName ?? "", evidenceText: "",
+    brandId: payload.brandId, productName: payload.productName ?? "", evidenceText: "", drinkTemperature: payload.drinkTemperature,
   }) : undefined;
 }
 

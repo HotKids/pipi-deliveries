@@ -129,8 +129,10 @@ const { diagnosticErrorDetails, writeDiagnostic, readDiagnostics, setDiagnostics
 const {
   gatewayCredentialStatus,
   loadGatewayCredentials,
+  removeGatewayToken,
   saveGatewayToken,
   gatewayAccessKeyRejected,
+  gatewayAccessKeyState,
 } = await import("../services/credentials");
 
 assert.equal(
@@ -723,3 +725,53 @@ try {
 } finally {
   Date.now = realClock;
 }
+
+const { checkSavedAccessKey, refreshCarrierAuthorityIfNeeded } = await import("../services/carrier-authority");
+saveGatewayToken(token);
+assert.equal(gatewayAccessKeyState().verification, "unchecked", "saving a key is only a local operation");
+fetchHandler = async () => gatewayResponse(200);
+await checkSavedAccessKey();
+assert.equal(gatewayAccessKeyState().verification, "accepted");
+
+const callsBeforeReopen = fetchCalls;
+let replyToProbe: ((response: ReturnType<typeof gatewayResponse>) => void) | undefined;
+fetchHandler = () => new Promise(resolve => { replyToProbe = resolve; });
+const openedSettings = checkSavedAccessKey();
+const resumedSettings = checkSavedAccessKey();
+const carrierRefresh = refreshCarrierAuthorityIfNeeded();
+assert.equal(fetchCalls, callsBeforeReopen + 1, "visible settings and regular refresh share one signed carrier request");
+assert.ok(replyToProbe);
+replyToProbe(gatewayResponse(401));
+await Promise.all([openedSettings, resumedSettings, carrierRefresh]);
+assert.equal(gatewayAccessKeyState().verification, "rejected", "opening settings observes replacement despite the catalog cooldown");
+assert.equal(gatewayCredentialStatus(), "configured", "the local key remains replaceable in Settings");
+
+fetchHandler = async () => gatewayResponse(503);
+await checkSavedAccessKey();
+assert.equal(gatewayAccessKeyState().verification, "rejected", "network or provider failures cannot clear confirmed revocation");
+saveGatewayToken(replacementToken);
+await checkSavedAccessKey();
+assert.equal(gatewayAccessKeyState().verification, "unchecked", "failed verification cannot authorize a replacement key");
+fetchHandler = async () => gatewayResponse(200);
+await checkSavedAccessKey();
+assert.equal(gatewayAccessKeyState().verification, "accepted");
+
+saveGatewayToken(token);
+let replyForOldKey: ((response: ReturnType<typeof gatewayResponse>) => void) | undefined;
+fetchHandler = () => new Promise(resolve => { replyForOldKey = resolve; });
+const checkWithOldKey = checkSavedAccessKey();
+saveGatewayToken(newestToken);
+const checkWithNewKey = checkSavedAccessKey();
+const callsBeforeOldReply = fetchCalls;
+fetchHandler = async () => gatewayResponse(200);
+assert.ok(replyForOldKey);
+replyForOldKey(gatewayResponse(401));
+await Promise.all([checkWithOldKey, checkWithNewKey]);
+assert.equal(fetchCalls, callsBeforeOldReply + 1, "a newly saved key gets its own check after the old one settles");
+assert.equal(gatewayAccessKeyState().verification, "accepted", "an old key's rejection cannot reach the replacement key");
+
+removeGatewayToken();
+const callsWithoutKey = fetchCalls;
+await checkSavedAccessKey();
+assert.equal(fetchCalls, callsWithoutKey, "Settings does not contact the gateway without a saved key");
+console.log("Settings Access Key checks detect replacement without shipment queries or duplicate requests");

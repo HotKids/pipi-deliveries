@@ -38,6 +38,11 @@ function onlineMetadata(fields: Record<string, unknown>): Pick<MealPayload, "wai
     ...(typeof fields.itemCount === "number" ? { itemCount: fields.itemCount } : {}) };
 }
 
+function mealObservation(payload: MealPayload, rawRules: MealRules["raw"], product: string, evidenceText: string): MealObservation {
+  const artwork = resolvePickupVisualStyle(rawRules, { brandId: payload.brandId, productName: product, evidenceText });
+  return { payload: artwork.drinkTemperature ? { ...payload, drinkTemperature: artwork.drinkTemperature } : payload, artwork };
+}
+
 export function onlineMealRequiresQR(fields: Record<string, unknown>, rules: MealRules): boolean {
   return Boolean(redemptionIdentity(rules.parsed, ["brand", "merchantName", "productName"].map(key => modelText(fields, key)).join("\n")));
 }
@@ -55,9 +60,7 @@ export function mealFromModel(fields: Record<string, unknown>, capturedAt: numbe
     productName: productTitle(product), createdAt: capturedAt, expiresAt: capturedAt + rules.parsed.ttlSeconds * 1000,
     ...onlineMetadata(fields),
   };
-  return { payload, artwork: resolvePickupVisualStyle(rules.raw, {
-    brandId: payload.brandId, productName: product, evidenceText: spec ? product + "\n" + spec : "",
-  }) };
+  return mealObservation(payload, rules.raw, product, spec ? product + "\n" + spec : "");
 }
 
 type Candidate = { content: string; boundingBox: VisionBoundingBox };
@@ -93,9 +96,7 @@ export function recognizeMealText(
         : result.waitTime ? { waitTime: result.waitTime } : {}),
       ...(verifiedOnlineQR ? onlineMetadata(verifiedOnlineQR) : {}),
     };
-    return { payload, artwork: resolvePickupVisualStyle(rules.raw, {
-      brandId: payload.brandId, productName: payload.productName ?? "", evidenceText,
-    }) };
+    return mealObservation(payload, rules.raw, payload.productName ?? "", evidenceText);
   }
   if (parsed.length) return { meals: parsed.map(value => observation(value, parsed.length === 1)) };
   const draft = !model ? parseLuckinDraft(input, rules.parsed) : undefined;

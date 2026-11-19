@@ -21,12 +21,14 @@ import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon"
 import type { AppState } from "../models";
 import { sendAccountCode } from "../services/account-sync";
 import { SCRIPT_VERSION } from "../services/build-track";
+import { checkSavedAccessKey } from "../services/carrier-authority";
 import {
-  gatewayCredentialStatus,
+  gatewayAccessKeyState,
   removeGatewayToken,
   saveGatewayToken,
+  subscribeGatewayAccessKeyVerification,
 } from "../services/credentials";
-import type { GatewayCredentialStatus } from "../services/credentials";
+import type { GatewayAccessKeyVerification, GatewayCredentialStatus } from "../services/credentials";
 import {
   ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE,
   ACCESS_KEY_INVALID_MESSAGE,
@@ -60,12 +62,17 @@ const PROJECT_URL = "https://github.com/HotKids/pipi-deliveries";
 const SETTINGS_BLUE = "#2F7BF6";
 const SETTINGS_GRAY = "#8E8E93";
 
-type AuthorizationState = "unauthorized" | "authorized" | "unavailable";
+type AuthorizationState = "unauthorized" | "saved" | "authorized" | "rejected" | "unavailable";
 
 function authorizationState(
   credentialStatus: GatewayCredentialStatus,
+  verification: GatewayAccessKeyVerification,
 ): AuthorizationState {
-  if (credentialStatus === "configured") return "authorized";
+  if (credentialStatus === "configured") {
+    if (verification === "accepted") return "authorized";
+    if (verification === "rejected") return "rejected";
+    return "saved";
+  }
   if (
     credentialStatus === "unavailable" ||
     credentialStatus === "conflict"
@@ -76,13 +83,15 @@ function authorizationState(
 }
 
 function authorizationPrompt(state: AuthorizationState): string {
-  if (state === "authorized") return "Access Key 已保存";
-  if (state === "unavailable") return "Access Key 已失效";
+  if (state === "authorized" || state === "saved") return "Access Key 已保存";
+  if (state === "rejected") return "Access Key 已失效";
   return "请输入 Access Key";
 }
 
 function authorizationLabel(state: AuthorizationState): string {
   if (state === "authorized") return "已授权";
+  if (state === "saved") return "待验证";
+  if (state === "rejected") return "已失效";
   if (state === "unavailable") return "不可用";
   return "未授权";
 }
@@ -113,6 +122,7 @@ function useSettingsOverview() {
   const [platformCount, setPlatformCount] = useState(0);
   const [enabledNotificationCount, setEnabledNotificationCount] = useState<number | undefined>();
   const visible = useRef(false);
+  const checkAuthorization = useRef(false);
   const pending = useRef(new Set<OverviewSection>(OVERVIEW_SECTIONS));
   const pendingPlatforms = useRef(new Set<ExpressPlatform>(PLATFORM_SOURCES));
   const activePlatforms = useRef(new Set<ExpressPlatform>());
@@ -126,6 +136,12 @@ function useSettingsOverview() {
       if (!visible.current) return;
       if (pending.current.delete("authorization")) {
         refreshAuthorization();
+        if (checkAuthorization.current) {
+          checkAuthorization.current = false;
+          void checkSavedAccessKey().catch(error => {
+            writeDiagnostic("settings.authorization.check_failed", diagnosticErrorDetails(error), "warning");
+          });
+        }
       } else if (pending.current.has("platforms")) {
         const platform = pendingPlatforms.current.values().next().value;
         if (platform) {
@@ -151,7 +167,8 @@ function useSettingsOverview() {
   function setOverviewVisible(shown: boolean) {
     visible.current = shown;
     if (shown) {
-      scheduleOverview();
+      checkAuthorization.current = true;
+      scheduleOverview(["authorization"]);
     } else if (timer.current !== undefined) {
       clearTimeout(timer.current);
       timer.current = undefined;
@@ -161,6 +178,7 @@ function useSettingsOverview() {
   useEffect(() => {
     const onScene = (phase: "active" | "inactive" | "background") => {
       if (phase === "active") {
+        checkAuthorization.current = true;
         for (const platform of PLATFORM_SOURCES) pendingPlatforms.current.add(platform);
         scheduleOverview(OVERVIEW_SECTIONS);
       }
@@ -171,25 +189,25 @@ function useSettingsOverview() {
       scheduleOverview(["platforms"]);
     });
     const stopActivationObservation = onScriptingActivationRejectionChanged(() => scheduleOverview(["authorization"]));
+    const stopKeyVerification = subscribeGatewayAccessKeyVerification(() => scheduleOverview(["authorization"]));
     return () => {
       setOverviewVisible(false);
       AppEvents.scenePhase.removeListener(onScene);
       unsubscribe();
       stopActivationObservation();
+      stopKeyVerification();
     };
   }, []);
 
   function refreshAuthorization(): AuthorizationState {
     try {
-      const credentialStatus = gatewayCredentialStatus();
-      const next = authorizationState(credentialStatus);
+      const { status: credentialStatus, verification } = gatewayAccessKeyState();
+      const next = authorizationState(credentialStatus, verification);
       setAuthorization(next);
       setAuthorizationNotice(
         credentialStatus === "conflict"
           ? "检测到本地授权记录不一致，请重新保存 Access Key"
-          // User decision 2026-09-27: the only activation prompt on this page; the Worker's
-          // 403 key_activated_elsewhere for the saved key sets it, no save-time check.
-          : next === "authorized" && savedKeyActivatedElsewhere()
+          : (next === "saved" || next === "authorized") && savedKeyActivatedElsewhere()
             ? ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE
             : "",
       );
@@ -219,7 +237,7 @@ export function SettingsPage(props: {
   const [diagnosticCount, setDiagnosticCount] = useState(0);
   const { authorization, authorizationNotice, setAuthorizationNotice, platformCount, enabledNotificationCount,
     setEnabledNotificationCount, refreshAuthorization, setOverviewVisible } = useSettingsOverview();
-  const configured = authorization === "authorized";
+  const configured = authorization === "authorized" || authorization === "saved" || authorization === "rejected";
 
   function saveToken() {
     try {
@@ -270,7 +288,7 @@ export function SettingsPage(props: {
     try {
       const index = await Dialog.actionSheet({
         title: "授权管理",
-        message: "Access Key 已保存。粘贴新的 Access Key 可更新授权。",
+        message: `${authorizationPrompt(authorization ?? "saved")}。粘贴新的 Access Key 可更新授权。`,
         actions: [{ label: "移除 Access Key", destructive: true }],
       });
       if (index === 0) await removeToken();

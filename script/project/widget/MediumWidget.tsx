@@ -32,7 +32,7 @@ function Row(props: {
   frameAlignment: "center" | "bottom";
   detailLineLimit: number | null;
 }) {
-  const statusStyle = widgetStatusStyle(props.row.semantic, props.brandAccent);
+  const statusStyle = widgetStatusStyle(props.row.semantic, props.brandAccent, props.row.statusLabel);
   return (
     <Link url={props.openURL}>
       <HStack

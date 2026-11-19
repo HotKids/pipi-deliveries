@@ -3,9 +3,9 @@ import {
   useEffect, useRef, useState,
 } from "scripting";
 import { PARCEL_ACTIVITY_PREVIEW, type ParcelActivityContent } from "../services/parcel-pickup";
-import { parcelCardArtwork, type ParcelLockScreenStyle } from "../services/parcel-card-appearance";
+import { parcelCardArtwork, PICKUP_CARD_SPACING, type ParcelLockScreenStyle } from "../services/parcel-card-appearance";
 import { MEAL_ARTWORK_FRAME_ENDS } from "../services/meal/artwork-motion.generated";
-import { useBundledImage } from "./bundled-image";
+import { bundledImage } from "./bundled-image";
 import { ParcelLiveActivityCard, type ParcelLiveActivityCardProps, PIPI_CARD } from "./ParcelLiveActivityCard";
 import { MEAL_ARTWORK_TOKENS, PICKUP_STICKER_ENTRANCE } from "./pickup-card-tokens.generated";
 
@@ -13,7 +13,6 @@ const { artWidth: ART_WIDTH, artHeight: ART_HEIGHT } = PIPI_CARD;
 const ATLAS_COLUMNS = 7;
 const FRAME_DURATION_MS = 33;
 const PLAYBACK_START_DELAY_MS = 200;
-const CARD_ROW_SPACING = 16;
 const BOX_IMAGE = "parcel-activity/box.png";
 
 type ArtworkPlayback = {
@@ -82,6 +81,7 @@ function stickerRotation(elapsed: number): number {
 }
 
 type StickerPlacement = { logoSize: number; logoX: number; logoY: number };
+type PickupArtwork = StickerPlacement & { baseAsset: string; logoAsset?: string; playback?: ArtworkPlayback };
 
 function AnimatedPickupArtwork({ atlas, playback, logo, logoSize, logoX, logoY }: StickerPlacement & {
   atlas: UIImage; playback: ArtworkPlayback; logo: UIImage | null;
@@ -130,8 +130,8 @@ function AnimatedPickupArtwork({ atlas, playback, logo, logoSize, logoX, logoY }
   );
 }
 
-function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playback }: StickerPlacement & {
-  baseAsset: string; logoAsset?: string; playback?: ArtworkPlayback;
+function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playback, autoPlay, playOnMount, replayRequest }: PickupArtwork & {
+  autoPlay: boolean; playOnMount: boolean; replayRequest: number;
 }) {
   const [appearance, setAppearance] = useState(0);
   const [atlas, setAtlas] = useState(playback && recentAtlas?.path === playback.path ? recentAtlas.image : undefined);
@@ -144,34 +144,48 @@ function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playba
     if (startTimer.current !== undefined) clearTimeout(startTimer.current);
     startTimer.current = undefined;
   };
-  useEffect(() => cancelPlaybackStart, []);
-  const logo = useBundledImage(logoAsset) ?? null;
-  const still = useBundledImage(playbackReady && atlas ? undefined : baseAsset);
+  function startPlayback(immediate = false) {
+    if (!playback) return;
+    if (startTimer.current !== undefined) {
+      if (!immediate) return;
+      cancelPlaybackStart();
+    }
+    visible.current = true;
+    const begin = () => {
+      startTimer.current = undefined;
+      if (!visible.current) return;
+      if (atlas === undefined) void loadArtworkAtlas(playback.path).then((image) => {
+        if (visible.current) setAtlas(image);
+      });
+      if (hasAppeared.current) setAppearance((visit) => visit + 1);
+      hasAppeared.current = true;
+      setPlaybackReady(true);
+    };
+    if (immediate) begin();
+    else startTimer.current = setTimeout(begin, PLAYBACK_START_DELAY_MS);
+  }
+  useEffect(() => {
+    // A scan sheet opened by a link can mount without forwarding the artwork's onAppear.
+    if (playOnMount && autoPlay) startPlayback();
+    return cancelPlaybackStart;
+  }, []);
+  useEffect(() => {
+    if (replayRequest > 0) startPlayback(true);
+  }, [replayRequest]);
+  const logo = bundledImage(logoAsset) ?? null;
+  const still = bundledImage(playbackReady && atlas ? undefined : baseAsset);
   return (
     <ZStack alignment="topLeading" frame={{ width: ART_WIDTH, height: ART_HEIGHT }}
-      onAppear={playback ? () => {
-        visible.current = true;
-        if (startTimer.current !== undefined) return;
-        startTimer.current = setTimeout(() => {
-          startTimer.current = undefined;
-          if (!visible.current) return;
-          if (atlas === undefined) void loadArtworkAtlas(playback.path).then((image) => {
-            if (visible.current) setAtlas(image);
-          });
-          if (hasAppeared.current) setAppearance((visit) => visit + 1);
-          hasAppeared.current = true;
-          setPlaybackReady(true);
-        }, PLAYBACK_START_DELAY_MS);
-      } : undefined}
-      onDisappear={() => {
+      onAppear={!playOnMount && autoPlay && playback ? () => startPlayback() : undefined}
+      onDisappear={!playOnMount ? () => {
         cancelPlaybackStart();
         if (playback) setPlaybackReady(false);
-      }}>
+      } : undefined}>
       {playbackReady && atlas && playback ? <AnimatedPickupArtwork key={appearance} atlas={atlas}
         playback={playback} logo={logo} logoSize={logoSize} logoX={logoX} logoY={logoY} /> : (
         <ZStack alignment="topLeading">
           {still ? <Image image={still} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} /> : null}
-          {logo ? <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
+          {logo && (!autoPlay || !playback || atlas === null) ? <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
             offset={{ x: logoX - logoSize / 2, y: logoY - logoSize / 2 }} /> : null}
         </ZStack>
       )}
@@ -179,21 +193,31 @@ function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playba
   );
 }
 
-function ParcelCardListRow({ spaceAfter, ...cardProps }: ParcelLiveActivityCardProps & { spaceAfter?: boolean }) {
+function ParcelCardListRow({ spaceAfter, width: containerWidth, art, animate, ...cardProps }: Omit<ParcelLiveActivityCardProps, "artwork"> & {
+  spaceAfter?: boolean; art?: PickupArtwork; animate: boolean;
+}) {
   const [width, setWidth] = useState<number>(PIPI_CARD.width);
+  const [replayRequest, setReplayRequest] = useState(0);
+  const replay = !cardProps.onArtworkTap && art?.playback
+    ? () => setReplayRequest(value => value + 1) : undefined;
   return (
     <VStack spacing={0} frame={{ maxWidth: "infinity" }} listRowInsets={0}
-      padding={spaceAfter ? { bottom: CARD_ROW_SPACING } : undefined}
+      padding={spaceAfter ? { bottom: PICKUP_CARD_SPACING } : undefined}
       listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden"
-      background={
+      background={containerWidth === undefined ? (
         <GeometryReader>
           {({ size }) => (
             <Rectangle fill="clear" key={Math.round(size.width)} allowsHitTesting={false}
               onAppear={() => { if (size.width > 0) setWidth(size.width); }} />
           )}
         </GeometryReader>
-      }>
-      <ParcelLiveActivityCard {...cardProps} width={width} />
+      ) : undefined}>
+      <ParcelLiveActivityCard {...cardProps} width={containerWidth ?? width}
+        onArtworkTap={cardProps.onArtworkTap ?? replay}
+        artworkActionLabel={replay ? "重播商品动画" : undefined}
+        artwork={art ? <PickupTabArtwork key={animate ? art.playback?.path ?? art.baseAsset : art.baseAsset}
+          {...art} autoPlay={animate} replayRequest={replay ? replayRequest : 0}
+          playOnMount={containerWidth !== undefined} /> : undefined} />
     </VStack>
   );
 }
@@ -203,14 +227,12 @@ export function ParcelActivityPreviewCard({ animate = false, lockScreenStyle, on
   onComplete?: () => void; actionPending?: boolean;
 }) {
   const { sticker } = parcelCardArtwork(PARCEL_ACTIVITY_PREVIEW);
-  const logoPath = sticker ? `${Script.directory}/assets/${sticker.path}` : undefined;
   return (
     <ParcelCardListRow data={PARCEL_ACTIVITY_PREVIEW} imageRoot={`${Script.directory}/assets/parcel-activity`}
-      logoPath={logoPath} preview lockScreenStyle={lockScreenStyle}
+      preview lockScreenStyle={lockScreenStyle} animate={animate}
       onComplete={onComplete} actionPending={actionPending}
-      artwork={animate ? <PickupTabArtwork baseAsset={BOX_IMAGE}
-        logoAsset={sticker?.path} logoSize={26} logoX={PIPI_CARD.logoX} logoY={PIPI_CARD.logoY} playback={BOX_PLAYBACK} />
-        : undefined} />
+      art={{ baseAsset: BOX_IMAGE, logoAsset: sticker?.path, logoSize: 26,
+        logoX: PIPI_CARD.logoX, logoY: PIPI_CARD.logoY, playback: BOX_PLAYBACK }} />
   );
 }
 
@@ -218,6 +240,7 @@ export function PickupTabCard(props: {
   data: ParcelActivityContent;
   animate: boolean;
   spaceAfter: boolean;
+  width?: number;
   title: string;
   onCopy?: () => void;
   onComplete?: () => void;
@@ -238,11 +261,11 @@ export function PickupTabCard(props: {
   const imageRoot = `${Script.directory}/assets/parcel-activity`;
   const { meal, mealSticker, sticker } = parcelCardArtwork(data);
   const baseAsset = isMeal ? meal?.path : BOX_IMAGE;
-  const playback = animate ? isMeal ? meal && mealArtworkPlayback(meal) : BOX_PLAYBACK : undefined;
+  const playback = isMeal ? meal && mealArtworkPlayback(meal) : BOX_PLAYBACK;
   return (
-    <ParcelCardListRow {...cardProps} data={{ ...data, title: props.title }} imageRoot={imageRoot} spaceAfter={spaceAfter}
-      artwork={baseAsset ? <PickupTabArtwork key={playback?.path ?? baseAsset} baseAsset={baseAsset}
-        logoAsset={isMeal ? mealSticker?.path : sticker?.path} logoSize={logoSize}
-        logoX={logoX} logoY={logoY} playback={playback} /> : undefined} />
+    <ParcelCardListRow {...cardProps} data={{ ...data, title: props.title }} imageRoot={imageRoot}
+      spaceAfter={spaceAfter} animate={animate}
+      art={baseAsset ? { baseAsset, logoAsset: isMeal ? mealSticker?.path : sticker?.path,
+        logoSize, logoX, logoY, playback } : undefined} />
   );
 }

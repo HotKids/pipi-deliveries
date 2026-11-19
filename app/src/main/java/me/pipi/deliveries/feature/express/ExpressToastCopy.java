@@ -50,6 +50,7 @@ final class ExpressToastCopy {
 
     /** 详情下拉：跑完了但没有更新，已有可用轨迹。 */
     static final String DETAIL_UP_TO_DATE = "当前轨迹已是最新";
+    static final String PRODUCT_TITLE_SUMMARIZED = "商品名已提炼";
 
     /** 详情下拉：跑完了仍没有可用轨迹。 */
     static final String DETAIL_NO_TRACK = "暂未查询到或未揽收";

@@ -190,6 +190,7 @@ export type ParcelPickup = Readonly<{
   code: string;
   locationName?: string;
   address?: string;
+  completedAtMs?: number;
 }>;
 
 export type ParcelPlatformFields = Readonly<{
@@ -198,7 +199,9 @@ export type ParcelPlatformFields = Readonly<{
   manualTitle?: string;
   manualTitleEditedAtMs?: number;
   title?: { text: string; source: "cainiao" | "jingdong" | "pinduoduo" };
-  estimate?: { text: string; source: "cainiao" | "jingdong" | "pinduoduo"; capturedAtMs: number };
+  cainiaoImage?: { url: string; generation: string };
+  pddImage?: { url: string; association: string };
+  estimate?: { text: string; source: "cainiao" | "jingdong" | "pinduoduo" | "lastscanned"; capturedAtMs: number };
 }>;
 
 export type PddParcelImport = Readonly<{ ownerKey: string; orderId: string; shippingId?: string }>;
@@ -213,6 +216,7 @@ export type ParcelHandoffRecord = Readonly<{
   windowStartAtMs?: number;
   windowEndAtMs?: number;
   windowText?: string;
+  providerTitle?: string;
   completedAtMs?: number;
   expiredAtMs?: number;
   note?: string;
@@ -347,6 +351,7 @@ export type AppState = {
   bindings: readonly AccountBinding[];
   pendingQueries: readonly PendingManualQuery[];
   shipments: readonly Shipment[];
+  watchSource?: { scope: string; snapshot: string; observedAtMs: number };
   pickupCodeRecords?: readonly PickupCodeRecord[];
   pickupArtworkChoices?: PickupArtworkChoices;
   pendingNotifications?: readonly ShipmentNotificationEvent[];

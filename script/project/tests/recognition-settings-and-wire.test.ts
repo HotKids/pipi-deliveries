@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { normalizedRecognitionURL, prepareRecognitionConfig, providerDefaults, recognitionOperation,
   recognitionSettings, saveRecognitionSettings, type RecognitionDraft } from "../services/recognition/settings";
 import { parseRecognitionResult, providerRecognitionText, recognitionRequest, recognitionSchema } from "../services/recognition/wire";
@@ -66,4 +67,39 @@ assert.throws(() => providerRecognitionText("chat_completions", JSON.stringify({
 })));
 assert.equal(providerRecognitionText("gemini", JSON.stringify({ candidates: [{ finishReason: "STOP",
   content: { parts: [{ thought: true, text: "ignored" }, { text: extraction }] } }] })), extraction);
+
+const page = readFileSync(new URL("../pages/RecognitionSettingsPage.tsx", import.meta.url), "utf8");
+const start = page.indexOf("  async function testConnection() {");
+const end = page.indexOf("\n  function save()", start);
+const copyStart = page.indexOf("const CONNECTION_TESTING =");
+const copyEnd = page.indexOf("\nfunction ProviderLogo", copyStart);
+assert.ok(start >= 0 && end > start && copyStart >= 0 && copyEnd > copyStart);
+const makeConnectionTest = new Function(
+  "cancelTest", "setValidation", "request", "prepareRecognitionConfig", "draft", "key", "setTesting", "setNotice",
+  "UIImage", "Script", "requestOnlineRecognition", "CONNECTION_TEST_BUDGET_MS", "RecognitionSettingError",
+  `${page.slice(copyStart, copyEnd)}\nreturn (${page.slice(start, end).trim()});`,
+);
+for (const outcome of ["success", "failure", "cancel"]) {
+  const notices: string[] = [];
+  const busy: boolean[] = [];
+  const request = { current: null as AbortController | null };
+  let complete!: (value: unknown) => void;
+  const response = new Promise(resolve => { complete = resolve; });
+  const run = makeConnectionTest(
+    () => {}, () => {}, request, prepareRecognitionConfig, online, "", (value: boolean) => busy.push(value),
+    (message: string) => notices.push(message), { fromFile: () => ({}) }, { directory: "/fixture" },
+    () => response, 5_000, Error,
+  ) as () => Promise<void>;
+  const pending = run();
+  assert.deepEqual(notices, ["正在测试连接"]);
+  if (outcome === "cancel") {
+    request.current?.abort();
+    request.current = null;
+  }
+  complete(outcome === "failure" ? null : { family: "pickup", fields: pickup });
+  await pending;
+  assert.deepEqual(notices, outcome === "cancel" ? ["正在测试连接"] : ["正在测试连接",
+    outcome === "success" ? "连接测试成功" : "连接测试失败，请检查在线识别配置"]);
+  assert.deepEqual(busy, outcome === "cancel" ? [true] : [true, false]);
+}
 console.log("Online recognition settings and provider wire tests passed");

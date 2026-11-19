@@ -46,6 +46,7 @@ const TAOBAO_IDENTITY_API = "mtop.cainiao.pickup.identity.getIdentityMessage";
 const CAINIAO_OUTBOUND_CODE = "mtop.cainiao.nbpickup.identitycode.get";
 const TAOBAO_H5_PAGE = "https://h5.m.taobao.com/";
 const CAINIAO_SENDER_LIST = "mtop.cainiao.tdtradeplatform.order.queryUncompletedOrder";
+const CAINIAO_SENT_LIST = "mtop.cainiao.tdtradeplatform.order.queryCompletedOrder";
 const CAINIAO_SENDER_DETAIL = "mtop.cainiao.tdtradeplatform.order.queryOrderDetail";
 const CAINIAO_SENDER_PAGE = "https://page.cainiao.com/mcn/fulfill_new/index.html?from=tbcn";
 // Public channel identifier shipped by the sender-history page.
@@ -260,7 +261,7 @@ export async function readCainiaoProfileNickname(session: PlatformSession): Prom
 }
 
 function isCainiaoSenderApi(api: string): boolean {
-  return api === CAINIAO_SENDER_LIST || api === CAINIAO_SENDER_DETAIL;
+  return api === CAINIAO_SENDER_LIST || api === CAINIAO_SENT_LIST || api === CAINIAO_SENDER_DETAIL;
 }
 
 export async function readCainiao(session: PlatformSession, api: string, params: JsonObject, signal?: AbortSignal): Promise<JsonObject> {
@@ -286,40 +287,104 @@ export async function readCainiao(session: PlatformSession, api: string, params:
   return result.data;
 }
 
-export async function readCainiaoSenderAppointments(session: PlatformSession) {
+function senderOrderId(order: JsonObject): string {
+  const id = cleanScalarText(order.orderId);
+  return /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : "";
+}
+
+function senderOrderSent(order: JsonObject): boolean {
+  return cleanScalarText(order.orderStatus) === "100" ||
+    ["status", "statusDesc", "orderStatusDesc"].some((key) =>
+      /^(?:已寄件|已寄出|已揽收)$/.test(cleanScalarText(order[key])));
+}
+
+function senderSummaryPrefix(value: unknown): string {
+  return cleanScalarText(value).split(/[|｜]/, 1)[0].trim();
+}
+
+function senderProviderTitle(rows: readonly JsonObject[], inferTaobao: boolean): string {
+  for (const row of rows) {
+    const refund = cleanScalarText(row.ttRefundMsg);
+    const title = [refund, row.title].map(senderSummaryPrefix)
+      .find((prefix) => /^[\p{L}\p{N}][\p{L}\p{N}\p{Zs}·.-]{0,27}退货$/u.test(prefix));
+    if (title) return title;
+    if (inferTaobao && refund && !/^(?:null|false|0|\{\}|\[\])$/i.test(refund) &&
+        cleanScalarText(row.orderSource) === "2") {
+      return "淘宝退货";
+    }
+  }
+  return rows.flatMap((row) => Object.values(row)).map(senderSummaryPrefix)
+    .find((title) => /^寄给[^|｜\u0000-\u001f]{1,28}的(?:快递|包裹)$/u.test(title)) || "";
+}
+
+export async function readCainiaoSenderAppointments(session: PlatformSession,
+  shouldReadCompleted: (observedIds: readonly string[]) => boolean = () => false) {
   const accessCode = CAINIAO_SENDER_CHANNEL;
-  const list = await readCainiao(session, CAINIAO_SENDER_LIST, { accessCode, pageSize: 199, pageNo: 0 });
+  const listParams = { accessCode, pageSize: 199, pageNo: 0 };
+  const list = await readCainiao(session, CAINIAO_SENDER_LIST, listParams);
   const orders = asPlainObject(list.data ?? list).orderBriefList;
   if (!Array.isArray(orders)) throw new PlatformWireError("unavailable");
-  const waitingId = (order: JsonObject, field: string) => {
-    const id = cleanScalarText(order.orderId);
-    const state = cleanScalarText(order.orderStatus);
-    return /^[A-Za-z0-9_-]{1,64}$/.test(id) && /^\d{1,3}$/.test(state) && state !== "100" &&
-      cleanScalarText(order[field]) === "20" ? id : "";
-  };
-  const ids = new Set(orders.map((order) => waitingId(asPlainObject(order), "carryoutStatus")).filter(Boolean));
   const packages: JsonObject[] = [];
+  const waiting = new Map<string, JsonObject>();
+  const sentOrders = new Set<string>();
+  for (const row of orders) {
+    const order = asPlainObject(row);
+    const id = senderOrderId(order);
+    if (!id) continue;
+    if (senderOrderSent(order)) sentOrders.add(id);
+    else if (/^\d{1,3}$/.test(cleanScalarText(order.orderStatus)) &&
+        cleanScalarText(order.carryoutStatus) === "20" && !waiting.has(id)) waiting.set(id, order);
+  }
   let incomplete = false;
-  for (const tdOrderId of ids) {
+  for (const [tdOrderId, brief] of waiting) {
+    if (sentOrders.has(tdOrderId)) continue;
     try {
       const response = await readCainiao(session, CAINIAO_SENDER_DETAIL, { accessCode, tdOrderId });
       const item = asPlainObject(response.data ?? response);
       const order = asPlainObject(item.orderInfo);
-      if (cleanScalarText(order.orderId) !== tdOrderId) throw new PlatformWireError("unavailable");
-      if (waitingId(order, "carryOutStatus") !== tdOrderId) continue;
+      const detail = asPlainObject(item.detail);
+      const listedItem = asPlainObject(brief.item);
+      const listedDetail = asPlainObject(listedItem.detail);
+      if (senderOrderSent(order) || senderOrderSent(item) || senderOrderSent(detail)) {
+        sentOrders.add(tdOrderId);
+        continue;
+      }
+      // The authenticated detail request is scoped to the waiting ID from the list.
       packages.push({
         appointmentId: tdOrderId, status: "WAIT_GOT",
         mailNo: order.packageMailNo, pickupCode: item.pickupCode,
-        appointStartTime: order.appointmentStart ?? order.appointStartTime,
-        appointEndTime: order.appointmentEnd ?? order.appointEndTime,
-        appointTimeStr: order.appointTimeStr ?? order.appointTimeDesc,
+        providerTitle: senderProviderTitle([listedDetail, listedItem, brief], false) ||
+          senderProviderTitle([detail, listedDetail, item, order, brief, listedItem], true),
+        appointStartTime: cleanScalarText(detail.appointmentStart) || cleanScalarText(order.appointmentStart) ||
+          cleanScalarText(order.appointStartTime) || cleanScalarText(order.expectedGotStartTime) ||
+          cleanScalarText(order.expectGotDate) || cleanScalarText(item.appointmentStart) || listedDetail.appointmentStart,
+        appointEndTime: cleanScalarText(detail.appointmentEnd) || cleanScalarText(order.appointmentEnd) ||
+          cleanScalarText(order.appointEndTime) || cleanScalarText(order.expectedGotEndTime) ||
+          cleanScalarText(item.appointmentEnd) || listedDetail.appointmentEnd,
+        appointTimeStr: cleanScalarText(order.appointTimeStr) || cleanScalarText(order.appointTimeDesc) || item.appointTimeStr,
       });
     } catch (error) {
       if (!(error instanceof PlatformWireError) || error.reason !== "unavailable") throw error;
       incomplete = true;
     }
   }
-  return { packages, incomplete };
+  if (shouldReadCompleted([...waiting.keys(), ...sentOrders])) {
+    try {
+      // A completed appointment may disappear from the unfinished list.
+      const result = await readCainiao(session, CAINIAO_SENT_LIST, listParams);
+      const completed = asPlainObject(result.data ?? result).orderBriefList;
+      if (!Array.isArray(completed)) incomplete = true;
+      else for (const row of completed) {
+        const order = asPlainObject(row);
+        const id = senderOrderId(order);
+        if (id && senderOrderSent(order)) sentOrders.add(id);
+      }
+    } catch (error) {
+      if (!(error instanceof PlatformWireError) || error.reason !== "unavailable") throw error;
+      incomplete = true;
+    }
+  }
+  return { packages, sentOrders: [...sentOrders], incomplete };
 }
 
 function pddCredentialsFor(cookies: readonly PlatformCookie[], target: string) {
@@ -434,7 +499,7 @@ export async function fetchStationIdentity(platform: IdentityPlatform, session: 
   let stage = "station_identity_request";
   const trigger = cainiaoOutbound ? "station_identity_outbound"
     : platform === "cainiao" ? "station_identity_taobao" : "station_identity_pdd";
-  const finish = beginDiagnosticOperation("platform.identity", { sourceProvider: platform, trigger, stage });
+  const finish = beginDiagnosticOperation("platform.identity", { sourceProvider: platform, trigger, stage }, false);
   try {
     if (platform === "cainiao" && cainiaoOutbound) {
       const result = await readCainiao(session, CAINIAO_OUTBOUND_CODE, {

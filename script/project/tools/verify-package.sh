@@ -231,6 +231,20 @@ NETWORK_URLS=$(rg -I -o --no-filename "https?://[^[:space:]\"'<>)]+" "$TEMP_DIR"
 while IFS= read -r network_url; do
   test -n "$network_url" || continue
   case "$network_url" in
+    'https://www.icloud.com/shortcuts/'*)
+      if ! printf '%s\n' "$network_url" | rg -q '^https://www\.icloud\.com/shortcuts/[a-f0-9]{32}$' ||
+        rg -l -F "$network_url" "$TEMP_DIR" | rg -v '/services/shortcut-capture\.ts$' >/dev/null; then
+        printf 'iCloud shortcut URL is reserved for the bundled Pipi recipe\n' >&2
+        exit 1
+      fi
+      ;;
+    'https://example.com/v1')
+      if rg -l -F "$network_url" "$TEMP_DIR" |
+        rg -v '/pages/RecognitionSettingsPage\.tsx$' >/dev/null; then
+        printf 'Example Base URL is reserved for the settings placeholder\n' >&2
+        exit 1
+      fi
+      ;;
     "$GATEWAY_ORIGIN"|\
     'https://api.openai.com/v1'|\
     'https://generativelanguage.googleapis.com/v1beta'|\
@@ -258,6 +272,7 @@ while IFS= read -r network_url; do
     'https://trade.m.jd.com'|\
     'https://trade.m.jd.com/order/deal_wuliu_jdm.shtml?from=orderdetail&dealState=7&dealId='|\
     'https://mobile.yangkeduo.com'|\
+    'https://img.pddpic.com'|\
     'https://mobile.yangkeduo.com/login.html'|\
     'https://mobile.yangkeduo.com/orders.html'|\
     'https://mobile.yangkeduo.com/psnl_goods_help.html?_t_module_name=assistant_waybill'|\

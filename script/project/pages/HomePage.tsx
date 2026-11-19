@@ -79,6 +79,7 @@ import {
   unprojectedAccountOrder,
 } from "../services/shipment-policy";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
+import { internationalShipment } from "../services/international-records";
 import {
   gatewayAccessKeyRejected,
   subscribeGatewayAccessKeyRejected,
@@ -188,7 +189,7 @@ export function HomePage(props: {
   const [accessKeyNoticeDismissed, setAccessKeyNoticeDismissed] = useState(false);
   const [shipmentNavigationTarget, setShipmentNavigationTargetState] = useState<
     ShipmentNavigationTarget | null
-  >(() => props.initialShipmentId && props.state.shipments.some(
+  >(() => props.initialShipmentId && props.shipments.some(
     (shipment) => shipment.identity.id === props.initialShipmentId,
   ) ? persistedShipmentNavigationTarget(props.initialShipmentId) : null);
   const shipmentNavigationTargetRef = useRef(shipmentNavigationTarget);
@@ -224,10 +225,12 @@ export function HomePage(props: {
   }, [groups]);
   const rowActions = useRef({ openShipment, confirmDelete, confirmComplete });
   rowActions.current = { openShipment, confirmDelete, confirmComplete };
-  const selected = selectedNavigationShipment(
+  const candidate = selectedNavigationShipment(
     props.state,
     shipmentNavigationTarget,
   );
+  const selected = internationalShipment(candidate) &&
+    !shipments.some(row => row.identity.id === candidate?.identity.id) ? null : candidate;
   const selectedAttachedOrders = useMemo(
     () => (selected ? attachedProjectedOrders(props.state.shipments, selected) : undefined),
     [props.state.shipments, selected],
@@ -274,7 +277,7 @@ export function HomePage(props: {
     const generation = props.navigationRequestGeneration;
     if (handledNavigationRef.current === generation) return;
     handledNavigationRef.current = generation;
-    if (props.initialShipmentId && props.state.shipments.some(
+    if (props.initialShipmentId && props.shipments.some(
       (shipment) => shipment.identity.id === props.initialShipmentId,
     )) {
       setShipmentNavigationTarget(persistedShipmentNavigationTarget(props.initialShipmentId));
@@ -406,10 +409,11 @@ export function HomePage(props: {
   };
   const showAccessKeyNotice = accessKeyRejected && !accessKeyNoticeDismissed;
   const accessKeyNotice = showAccessKeyNotice ? (
-    <VStack padding={{ horizontal: 20, vertical: 8 }}>
+    <VStack listRowInsets={{ top: 0, bottom: 0, leading: ROOT_PAGE_MARGIN, trailing: ROOT_PAGE_MARGIN }}
+      listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden">
       <HStack
         spacing={0}
-        padding={{ leading: 16, trailing: 12, vertical: 12 }}
+        padding={{ leading: 16, trailing: 8, vertical: 8 }}
         background="secondarySystemBackground"
         clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
       >
@@ -427,9 +431,9 @@ export function HomePage(props: {
         >
           <Image
             systemName="xmark"
-            font={24}
+            font={16}
             foregroundStyle="secondaryLabel"
-            frame={{ width: 48, height: 48 }}
+            frame={{ width: 44, height: 44 }}
             contentShape="rect"
           />
         </Button>
@@ -487,6 +491,7 @@ export function HomePage(props: {
             <DetailPage
               key={selected.identity.id}
               shipment={selected}
+              visibleShipments={shipments}
               persistedShipment={props.state.shipments.some(
                 (shipment) => shipment.identity.id === selected.identity.id,
               )}
@@ -494,7 +499,7 @@ export function HomePage(props: {
                 binding.source === selected.identity.bindingSource && binding.phone === selected.accountRecord?.phone)}
               attachedOrders={selectedAttachedOrders}
               manualPreview={manualPreview}
-              refreshOnAppear={manualPreview
+              refreshOnAppear={internationalShipment(selected) ? "detail_open" : manualPreview
                 ? manualPreviewNeedsDetailRefresh(selected)
                   ? "manual_submit"
                   : false
@@ -520,9 +525,9 @@ export function HomePage(props: {
             <ShipmentFilterBar visibleFilters={visibleFilters} filter={filter} groups={groups} onSelect={showFilter} />
           ) : null}>
           {accessKeyNotice ? (
-            <VStack listRowInsets={0} listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden">
+            <Section listSectionMargins={0} listSectionSpacing={16} listSectionSeparator="hidden">
               {accessKeyNotice}
-            </VStack>
+            </Section>
           ) : null}
           {shipments.length ? (
             <Section listSectionMargins={{ edges: "vertical", length: 0 }}
@@ -709,7 +714,7 @@ function HomeSearchBar(props: {
         try {
           props.onStateChange(saveRecognizedShipmentPickup(alreadyListed, lookup));
         } catch {
-          setNotice("无法保存取件码，请重试。");
+          setNotice("取件码保存失败，请稍后重试");
           return;
         }
       }

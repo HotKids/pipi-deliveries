@@ -188,10 +188,10 @@ assert.match(
 );
 const headerSection = detailPage.match(/<Section>\s*([\s\S]*?)\s*<\/Section>/)?.[1] ?? "";
 assert.match(detailPage, /readCloudParcelMetadata\(cloudWaybill, controller\.signal\)/);
-assert.match(detailPage, /useEffect\(\(\) => \{\s*void refreshCloudMetadata\(\);[\s\S]*?\}, \[cloudScope\]\);/);
-assert.match(detailPage, /refreshable=\{async \(\) => \{ await Promise\.all\(\[refresh\(true\), refreshCloudMetadata\(\)\]\); \}\}/);
+assert.match(detailPage, /useEffect\(\(\) => \{\s*if \(props\.readOnly\) return;[\s\S]*?void finishDetailOpening\(controller\.signal\)/);
+assert.match(detailPage, /refreshable=\{props\.readOnly \? undefined : async \(\) => \{ await Promise\.all\(\[refresh\(true\), refreshCloudMetadata\(\)\]\); \}\}/);
 assert.match(headerSection, /官方电话：/);
-assert.doesNotMatch(headerSection, /<Divider|platformFields/);
+assert.doesNotMatch(headerSection, /<Divider|platformFields\.(estimate|title)/);
 assert.match(detailPage, /const showParcelInfo = Boolean\(platformFields\.estimate \|\| platformFields\.title \|\| note\)/);
 const parcelInfo = detailPage.match(/\{showParcelInfo \? \(\s*<Section>\s*([\s\S]*?)<\/Section>/)?.[1] ?? "";
 assert.match(parcelInfo, /^<VStack\b[^>]*vertical: 8/);
@@ -204,7 +204,7 @@ for (const noteTarget of [headerSection, parcelInfo]) {
   assert.match(noteTarget, /onTapGesture=\{props\.persistedShipment \? \(\) => void editNote\(\) : undefined\}/);
   assert.match(noteTarget, /contextMenu=\{productNameMenu\}/);
 }
-const timelineRows = detailPage.match(/displayTracks\.map\([\s\S]*?\n          \}\)/)?.[0] ?? "";
+const timelineRows = detailPage.match(/<ForEach data=\{observableTracks\}[\s\S]*?\n          \)\} \/>/)?.[0] ?? "";
 assert.match(timelineRows, /padding=\{\{ vertical: 5 \}\}[\s\S]*?systemName=\{index === 0 \? "circle\.fill" : "circle"\}/);
 assert.doesNotMatch(timelineRows, /overlay=|listRowSeparator="hidden"/,
   "the earlier timeline uses native row separators and individual dots");
@@ -219,7 +219,7 @@ assert.match(
 // list keeps every row the source returned (AGENTS §9), so the two must not be the same expression.
 assert.match(
   detailPage,
-  /const effectiveTrackCount = timedTracks\(detailTimeline\.tracks\)\.length;/,
+  /const effectiveTrackCount = useMemo\(\(\) => timedTracks\(detailTimeline\.tracks\)\.length, \[detailTimeline\]\);/,
   "the logged detail track count must come from timedTracks, like sync.ts and Pipi",
 );
 assert.match(

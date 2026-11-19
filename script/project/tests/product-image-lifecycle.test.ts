@@ -160,7 +160,8 @@ try {
   const stored = saveState({ ...emptyState(), shipments: [row("two-runtime-owner")] }, NOW).shipments[0];
   const key = productImageCacheKey(stored.identity);
   const isRetained = Function("scope", `with(scope) { ${ownerSource}; return isRetained; }`)({
-    props: { shipment: stored }, cacheKey: key, shipmentLifecycleKey, productImageCacheKey,
+    props: { shipment: stored }, cacheKey: key, useCainiao: false, cloud: undefined, shipmentLifecycleKey,
+    keyFor: (shipment: typeof stored) => productImageCacheKey(shipment.identity),
     isStoredShipmentRetained, readAppStateSnapshot, sharedData, withSharedFileTransaction,
   });
   const original = { syntheticOriginal: true } as unknown as UIImage;

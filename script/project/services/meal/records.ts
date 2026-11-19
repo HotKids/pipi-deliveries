@@ -1,5 +1,5 @@
 import { publishSharedMealState, sharedData, sharedMealStateText, withSharedFileTransaction } from "../shared-file-transaction";
-import type { PickupVisualStyle } from "./pickup-artwork";
+import type { MealTemperature, PickupVisualStyle } from "./pickup-artwork";
 
 export const MEAL_UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const HISTORY_MS = 90 * 24 * 60 * 60 * 1000;
@@ -15,6 +15,7 @@ export type MealPayload = {
   waitTime?: string;
   itemCount?: number;
   totalAmount?: string;
+  drinkTemperature?: MealTemperature;
   qrPayload?: string;
   createdAt: number;
   expiresAt: number;
@@ -51,14 +52,17 @@ export type MealBatch = {
   sequence: number;
   requestId: string;
   includeMealOrderMetadata: true;
+  includeMealTemperature?: true;
   mutations: [MealMutation];
 };
-export type MealSession = { ownerId: string; endpointId: string; generation: number; epoch: string; nextSequence: number };
+export type MealSession = { ownerId: string; endpointId: string; generation: number; epoch: string; nextSequence: number;
+  mealTemperatureSupported?: true };
 export type MealSnapshot = {
   session?: MealSession;
   cursor: number | null;
   // The snapshot is committed as a unit. Its cursor is the start of the following delta.
-  snapshot?: { epoch: string; cursor: number; token: string; records: Record<string, MealEnvelope> };
+  snapshot?: { epoch: string; cursor: number; token: string; records: Record<string, MealEnvelope>; includeMealTemperature?: true };
+  mealTemperatureProjected?: true;
   remote: Record<string, MealEnvelope>;
   edits: Record<string, MealEdit>;
   style: Record<string, PickupVisualStyle>;
@@ -120,6 +124,7 @@ export function mergeLuckinDraft(entry: MealObservation, draft: MealObservation 
     productName: first.productName || credential.productName, status: first.status || credential.status,
     waitTime: first.waitTime || credential.waitTime, itemCount: first.itemCount || credential.itemCount,
     totalAmount: first.totalAmount || credential.totalAmount,
+    drinkTemperature: first.drinkTemperature ?? draft.artwork.drinkTemperature,
   }, artwork: draft.artwork };
 }
 

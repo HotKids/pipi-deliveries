@@ -1,7 +1,8 @@
-import { Notification, Path } from "scripting";
+import { Notification, Path, Script } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { backgroundHostBootstrap } from "./background-refresh";
-import { deadlineAfter, waitForRefresh } from "./deadline";
+import { carrierDisplayName } from "./carrier-presentation";
+import { deadlineAfter } from "./deadline";
 import { EXPRESS_TOAST_COPY } from "./express-toast-copy";
 import { needsManualPhoneTail } from "./jt-h5";
 import { beginDiagnosticOperation, flushDiagnostics, writeDiagnostic } from "./logger";
@@ -20,7 +21,7 @@ import { manualQueryFailureToast } from "./ui-feedback";
 
 export const PARCEL_SHORTCUT_PARAMETER = "parcelDraft";
 export const PARCEL_SHORTCUT_RECORD_PARAMETER = "parcelCodeRecord";
-export const PICKUP_SHORTCUT_SAVED = "已添加取件码，可在「待取」查看。";
+export const MEAL_SHORTCUT_RECORD_PARAMETER = "mealPickupRecord";
 
 export type ParcelShortcutLookup = ParcelLookup & { draftToken?: string; openOnTap?: boolean };
 
@@ -195,17 +196,33 @@ async function sendScreenNotification(send: (deadlineAtMs: number) => Promise<bo
 }
 
 export function scheduleScreenShortcutStatus(message: string, phoneTailDraft?: string): Promise<boolean> {
-  return sendScreenNotification(deadlineAtMs => waitForRefresh(Notification.schedule({
+  // After recognition resumes in the background intent, only the native notification request can run without a script timer.
+  return sendScreenNotification(() => Notification.schedule({
     title: "截屏识别",
     body: message,
     tapAction: "none",
     ...(phoneTailDraft ? { customUI: true, userInfo: { screenShortcutDraft: phoneTailDraft } } : {}),
-  }), deadlineAtMs));
+  }));
 }
 
 export async function notifyScreenShortcutStatus(message: string, phoneTailDraft?: string): Promise<string> {
   await scheduleScreenShortcutStatus(message, phoneTailDraft);
   return message;
+}
+
+export async function notifyScreenPickupSaved({ name, code, details, iconPath, parameters }: {
+  name?: string; code?: string; details: readonly (string | undefined)[]; iconPath?: string;
+  parameters: Record<string, string>;
+}): Promise<string> {
+  const title = [["已添加", name?.trim()].filter(Boolean).join(" "), code?.trim()].filter(Boolean).join(" · ");
+  const body = details.map(value => value?.trim()).filter(Boolean).join("\n");
+  await sendScreenNotification(() => Notification.schedule({
+    title,
+    body,
+    iconImageData: iconPath ? Data.fromFile(Path.join(Script.directory, "assets", iconPath)) : null,
+    tapAction: { type: "openURL", url: Script.createRunSingleURLScheme(Script.name, parameters) },
+  }));
+  return [title, body].filter(Boolean).join("\n");
 }
 
 async function notifyScreenShipment(
@@ -214,16 +231,23 @@ async function notifyScreenShipment(
 ): Promise<string> {
   const card = pickup && parcelActivityContent(shipment);
   const target = card?.code === pickup?.code ? card?.target : undefined;
-  const activityShown = Boolean(target && pickup && await pickup.present([target]));
   const latest = listHeadline(selectShipmentTimeline(shipment), true);
-  if (!latest) return activityShown ? PICKUP_SHORTCUT_SAVED :
-    notifyScreenShortcutStatus(target ? PICKUP_SHORTCUT_SAVED : EXPRESS_TOAST_COPY.manualQueryNoTrack);
+  if (target && card && pickup) {
+    const { iconName } = shipmentNotificationPresentation(shipment);
+    const message = await notifyScreenPickupSaved({
+      name: carrierDisplayName(shipment.identity.companyName), code: card.code,
+      details: [shipment.note, card.location, latest?.detail],
+      iconPath: iconName ? `couriers/${iconName}.png` : undefined,
+      parameters: { shipment: shipment.identity.id },
+    });
+    await pickup.present([target]);
+    return message;
+  }
+  if (!latest) return notifyScreenShortcutStatus(EXPRESS_TOAST_COPY.manualQueryNoTrack);
   const event = shipmentNotificationPresentation(shipment);
   const title = added ? `已添加 ${event.title}` : event.title;
   const body = latest.detail;
-  if (!activityShown) {
-    await sendScreenNotification(deadlineAtMs => scheduleShipmentNotification({ ...event, title, body }, deadlineAtMs));
-  }
+  await sendScreenNotification(deadlineAtMs => scheduleShipmentNotification({ ...event, title, body }, deadlineAtMs));
   return `${title}\n${body}`;
 }
 

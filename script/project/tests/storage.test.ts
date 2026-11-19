@@ -3965,19 +3965,30 @@ console.log("Enhanced binding persistence and stale-result fences passed");
 {
   memory.clear();
   const { activePickupCards, parcelCardKey } = await import("../services/parcel-pickup");
+  const locked = saveRecognizedParcelCode({
+    id: "locked-handoff", kind: "handoff", platform: "cainiao", code: "F831",
+    capturedAtMs: NOW, windowText: "15:00–17:00",
+  }, NOW);
+  const cainiao = activePickupCards([], locked.pickupCodeRecords)[0];
+  assert.throws(() => toggleParcelArtwork(cainiao, NOW + 1),
+    "a direct artwork update cannot change the confirmed Cainiao source");
+  assert.deepEqual(loadState(NOW + 1).pickupCodeRecords, locked.pickupCodeRecords);
+  assert.deepEqual(loadState(NOW + 1).pickupArtworkChoices, locked.pickupArtworkChoices);
+
+  memory.clear();
   const initial = saveRecognizedParcelCode({
-    id: "artwork-handoff", kind: "handoff", platform: "cainiao", code: "F832",
+    id: "artwork-handoff", kind: "handoff", platform: "pinduoduo", code: "F832",
     capturedAtMs: NOW, windowText: "15:00–17:00",
   }, NOW);
   const original = activePickupCards([], initial.pickupCodeRecords)[0];
   const changed = toggleParcelArtwork(original, NOW + 1);
-  assert.equal(changed.pickupArtworkChoices?.[parcelCardKey(original)], "jingdong");
+  assert.equal(changed.pickupArtworkChoices?.[parcelCardKey(original)], "cainiao");
   assert.deepEqual(changed.pickupCodeRecords, initial.pickupCodeRecords);
   assert.throws(() => toggleParcelArtwork(original, NOW + 2));
   saveState({ ...initial, updatedAtMs: NOW + 3 }, NOW + 3);
   const restored = loadState(NOW + 4);
   const visible = activePickupCards([], restored.pickupCodeRecords, restored.pickupArtworkChoices)[0];
-  assert.equal(visible.artworkChoice, "jingdong");
-  assert.equal(visible.platform, "cainiao");
-  assert.equal(toggleParcelArtwork(visible, NOW + 5).pickupArtworkChoices?.[parcelCardKey(visible)], "douyin");
+  assert.equal(visible.artworkChoice, "cainiao");
+  assert.equal(visible.platform, "pinduoduo");
+  assert.equal(toggleParcelArtwork(visible, NOW + 5).pickupArtworkChoices?.[parcelCardKey(visible)], "jingdong");
 }

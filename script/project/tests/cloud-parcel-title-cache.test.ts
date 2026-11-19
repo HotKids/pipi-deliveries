@@ -3,10 +3,12 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import "./state-storage-mock";
 import type { Shipment } from "../models";
-import { cloudParcelTitle, readCachedCloudParcelTitle, recordCloudParcelTitle, type CloudParcelDetails }
+import { cloudParcelMetadataForCache, readCachedCloudParcelMetadata, recordCloudParcelMetadata, type CloudParcelDetails }
   from "../services/cloud-parcel-metadata";
 import { gatewayCredentialForLocalCache, gatewayCredentialGeneration, saveGatewayToken } from "../services/credentials";
 import { GatewayError } from "../services/gateway";
+import { internationalShipment } from "../services/international-records";
+import { displayedPlatformFields } from "../services/platform-parcel-merge";
 import { displayWaybill, unprojectedAccountOrder } from "../services/shipment-policy";
 import { shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { normalizeWaybill } from "../services/status";
@@ -24,12 +26,14 @@ const render = new Function("context", stripTypeScriptTypes(`
   const { shipment, readOwnerState, visibleShipments, readCloudParcelMetadata, useState, useMemo, Date,
     normalizeWaybill, displayWaybill, unprojectedAccountOrder, shipmentLifecycleKey,
     gatewayCredentialForLocalCache, gatewayCredentialGeneration, GatewayError,
-    readCachedCloudParcelTitle, recordCloudParcelTitle, cloudParcelTitle } = context;
-  const SCRIPT_BUILD_TRACK = "formal", props = { persistedShipment: true };
+    readCachedCloudParcelMetadata, recordCloudParcelMetadata, cloudParcelMetadataForCache, internationalShipment } = context;
+  const SCRIPT_BUILD_TRACK = "formal", props = { persistedShipment: true, visibleShipments: visibleShipments() };
+  const useRef = current => ({ current });
   const needsExtraFields = true, localPddAppURL = "", cloudAbortRef = context.cloudAbortRef;
   ${section("  const [cloud, setCloud]", "  const cloudAbortRef")}
+  ${section("  const syncedInternational =", "  const hotline")}
   ${section("  const cloudWaybill =", "  const pddExternalAppURL")}
-  ${section("  function ownsCloudWaybill()", "\n  useEffect(() => {\n    void refreshCloudMetadata()")}
+  ${section("  function ownsCloudWaybill(", "\n  useEffect(() => {\n    showShipment(props.shipment)")}
 `) + "\nreturn { cloudDetails, refreshCloudMetadata, cloudParcel };"),
   now = Date.now(), waybill = "YT000000008123";
 
@@ -40,8 +44,9 @@ const shipment: Shipment = {
     statusEventAtMs: now - 10_000, latestTimeText: "", latestDetail: "", tracks: [], successAtMs: now - 10_000 },
   updatedAtMs: now - 10_000,
 };
-const original = { waybill, anchorAt: now - 60_000, productName: "Original title", deliveryEstimate: "预计明天送达" };
-const updated = { ...original, productName: "Updated title" };
+const original = { waybill, anchorAt: now - 60_000, productName: "Original title", deliveryEstimate: "预计明天送达",
+  deliveryEstimateObservedAt: now - 10_000, productImageURL: "https://img.alicdn.com/imgextra/i1/test-product.jpg" };
+const updated = { ...original, productName: "Updated title", deliveryEstimate: "预计后天送达" };
 let clock = now;
 let visible = [shipment];
 let requests = 0;
@@ -56,7 +61,7 @@ function mount(row = shipment) {
     useMemo: (read: () => unknown) => read(), cloudAbortRef, Date: { now: () => ++clock },
     normalizeWaybill, displayWaybill, unprojectedAccountOrder, shipmentLifecycleKey,
     gatewayCredentialForLocalCache, gatewayCredentialGeneration, GatewayError,
-    readCachedCloudParcelTitle, recordCloudParcelTitle, cloudParcelTitle });
+    readCachedCloudParcelMetadata, recordCloudParcelMetadata, cloudParcelMetadataForCache, internationalShipment });
 }
 
 saveGatewayToken("SyntheticKey_001");
@@ -68,20 +73,29 @@ assert.equal(first().cloudDetails.metadata.productName, original.productName);
 const second = mount();
 assert.equal(second().cloudDetails?.metadata.productName, original.productName,
   "reopening starts with the previous title before any query");
+assert.equal(second().cloudDetails?.metadata.productImageURL, original.productImageURL,
+  "reopening starts with the already verified same-parcel image URL");
 assert.equal(requests, 1);
-assert.equal(second().cloudDetails.metadata.deliveryEstimate, undefined, "the local cache contains only a title");
+assert.equal(displayedPlatformFields(shipment, now, second().cloudDetails?.metadata).estimate, original.deliveryEstimate,
+  "reopening shows the same parcel's last valid estimate before any query");
 let finish!: (value: CloudParcelDetails) => void;
 reply = () => new Promise(resolve => { finish = resolve; });
 const refreshing = second().refreshCloudMetadata();
 assert.equal(second().cloudDetails.metadata.productName, original.productName);
+assert.equal(second().cloudDetails.metadata.deliveryEstimate, original.deliveryEstimate);
 finish({ metadata: updated });
 await refreshing;
 assert.equal(second().cloudDetails.metadata.productName, updated.productName);
 assert.equal(mount()().cloudDetails.metadata.productName, updated.productName);
+assert.equal(displayedPlatformFields(shipment, now, mount()().cloudDetails.metadata).estimate, updated.deliveryEstimate);
 
 reply = async () => { throw new GatewayError("offline"); };
 await second().refreshCloudMetadata();
 assert.equal(second().cloudDetails.metadata.productName, updated.productName);
+assert.equal(second().cloudDetails.metadata.productImageURL, original.productImageURL);
+assert.equal(second().cloudDetails.metadata.deliveryEstimate, updated.deliveryEstimate);
+assert.equal(displayedPlatformFields(shipment, now + 4 * 86_400_000, mount()().cloudDetails.metadata).estimate, "",
+  "cached forecasts still expire based on their original observation clock");
 const reused = { ...shipment, waybillReuseAtMs: now };
 visible = [reused];
 assert.equal(mount(reused)().cloudDetails, undefined, "a reused waybill has another cache identity");
@@ -102,7 +116,7 @@ reply = async () => { throw new GatewayError("denied", 403, "cloud_sync_disabled
 await second().refreshCloudMetadata();
 assert.equal(mount()().cloudDetails, undefined, "cloud access denial clears titles for the credential");
 const oldScope = gatewayCredentialForLocalCache()!.scope;
-recordCloudParcelTitle(oldScope, second().cloudParcel, olderRequest, cloudParcelTitle(shipment, updated), () => true);
+recordCloudParcelMetadata(oldScope, second().cloudParcel, olderRequest, cloudParcelMetadataForCache(shipment, updated), () => true);
 assert.equal(mount()().cloudDetails, undefined, "a reply started before denial cannot restore the cache");
 
 reply = async () => ({ metadata: updated });

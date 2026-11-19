@@ -76,7 +76,7 @@ finishPull();
 await next;
 assert.match(homeSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootTabList key="shipments" title="快递" onClose=\{\(\) => dismiss\(\)\}[^]*?topAccessory=\{visibleFilters\.length > 1 \? \(\s*<ShipmentFilterBar/,
   "the filter scrolls with the title in the common list");
-assert.match(homeSource, /\{accessKeyNotice \? \(\s*<VStack[^]*?\{accessKeyNotice\}/,
+assert.match(homeSource, /\{accessKeyNotice \? \(\s*<Section[^>]*>\s*\{accessKeyNotice\}\s*<\/Section>/,
   "the access-key notice retains its list row");
 assert.doesNotMatch(homeSource, /safeAreaInset=|alignment: "topLeading",|headerCollapsed|rootPageScroll/,
   "the native list owns the scroll without a collapse observer");

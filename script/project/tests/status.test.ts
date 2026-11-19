@@ -866,6 +866,23 @@ assert.deepEqual(
   assert.equal(rows[0].identity.id, "august-31", "sorting does not mutate stored input");
 }
 
+{
+  const domesticAt = Date.parse("2026-11-19T10:40:36Z");
+  const watchAt = Date.parse("2026-11-19T12:34:00Z");
+  const domestic = shipment("sto-9916", "TRANSIT", domesticAt);
+  const international = shipment("fedex-6132", "TRANSIT", watchAt);
+  domestic.timeline.latestTimeText = "2026-11-19 18:40:36";
+  international.identity.sourceProvider = "lastscanned";
+  international.timeline.latestTimeText = "2026-11-19 07:34:00";
+  const missingHeadlineClock = shipment("missing-clock", "TRANSIT", watchAt + 60_000);
+  missingHeadlineClock.timeline.latestTimeText = "";
+  missingHeadlineClock.timeline.tracks = [];
+
+  assert.deepEqual(sortShipments([domestic, missingHeadlineClock, international])
+    .map((row) => row.identity.id), ["fedex-6132", "sto-9916", "missing-clock"],
+    "rank by the Watch scan epoch and the visible domestic headline, with untimed rows last");
+}
+
 assert.equal(pruneShipments([
   shipment("fourteen-day-boundary", "COMPLETED", NOW - 14 * 86400000 + 1),
 ], NOW).length, 1);

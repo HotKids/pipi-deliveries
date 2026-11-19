@@ -30,7 +30,8 @@ import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
 import type { PickupEmptyArtwork } from "./components/EmptyDeliveryVehicle";
-import { expireDueParcelHandoffs, loadAppState, peekStateRevision, toggleParcelArtwork, visibleShipments } from "./services/storage";
+import { expireDueParcelHandoffs, loadAppState, peekStateRevision, refreshStoredWatchShipments, toggleParcelArtwork, visibleShipments } from "./services/storage";
+import { requestWidgetReload } from "./services/widgets";
 import { performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
 import {
   beginDiagnosticOperation,
@@ -56,6 +57,7 @@ import { startForegroundOrderProjection } from "./services/foreground-order-proj
 import { startForegroundRefresh } from "./services/foreground-return-refresh";
 import { startStatusAlignment } from "./services/status-alignment";
 import {
+  MEAL_SHORTCUT_RECORD_PARAMETER,
   PARCEL_SHORTCUT_RECORD_PARAMETER,
   discardShortcutDraft,
   nextShortcutLookup,
@@ -84,6 +86,24 @@ function shortcutPickupRecordId(state: AppState | null, parameters: Readonly<Rec
   const id = parameters[PARCEL_SHORTCUT_RECORD_PARAMETER];
   const record = typeof id === "string" && state?.pickupCodeRecords?.find((item) => item.id === id);
   return record && independentPickupContent(record) ? record.id : "";
+}
+
+function pickupNavigation(state: AppState | null, parameters: Readonly<Record<string, unknown>>,
+  meals: readonly ParcelActivityContent[]) {
+  const activity = state ? parcelActivityTarget(state, parameters.parcelActivity) : undefined;
+  const mealId = parameters[MEAL_SHORTCUT_RECORD_PARAMETER];
+  const card = typeof mealId === "string" ? meals.find(({ target }) => target &&
+    "mealId" in target && target.mealId === mealId) : undefined;
+  const meal = card?.target;
+  const noticeMeal = meal && "mealId" in meal ? meal : undefined;
+  return {
+    activityShipmentId: activity && "shipmentId" in activity ? activity.shipmentId : "",
+    pickupRecordId: activity && "mealId" in activity ? activity.mealId :
+      activity && "recordId" in activity ? activity.recordId :
+      noticeMeal?.mealId || shortcutPickupRecordId(state, parameters),
+    activityMealQRCode: activity?.mealQRCode ?? (card?.hasMealQR && noticeMeal
+      ? { id: noticeMeal.mealId, scope: noticeMeal.mealScope } : undefined),
+  };
 }
 
 async function readStartupState(): Promise<StartupState> {
@@ -171,18 +191,17 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   const [platformNotice, setPlatformNotice] = useState<{ text: string } | undefined>(undefined);
   const [pickupNotice, setPickupNotice] = useState("");
   const [mealCards, setMealCards] = useState(readMealCards);
+  const [watchAccessRevision, setWatchAccessRevision] = useState(0);
   const [navigationRequest, setNavigationRequest] = useState(() => {
     const parameters = Script.queryParameters || {};
-    const activity = startup.state ? parcelActivityTarget(startup.state, parameters.parcelActivity) : undefined;
-    const pickupRecordId = activity && "mealId" in activity ? activity.mealId :
-      activity && "recordId" in activity ? activity.recordId :
-      shortcutPickupRecordId(startup.state, parameters);
+    const { activityShipmentId, pickupRecordId, activityMealQRCode } = pickupNavigation(startup.state, parameters, mealCards);
     return {
-      shipmentId: activity && "shipmentId" in activity ? activity.shipmentId : resumeShipmentId({
+      shipmentId: activityShipmentId || resumeShipmentId({
         queryParameters: parameters,
         notificationInfo: Notification.current,
       }),
       pickupRecordId,
+      activityMealQRCode,
       shortcutLookup: takeScreenShortcutLookup(parameters) || (pickupRecordId ? undefined : nextShortcutLookup()),
       generation: 0,
     };
@@ -195,7 +214,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   const revision = useRef(state?.revision ?? -1);
   revision.current = state?.revision ?? -1;
   const resumeGeneration = useRef(0);
-  const shipments = useMemo(() => state ? visibleShipments(state) : [], [state]);
+  const shipments = useMemo(() => state ? visibleShipments(state) : [], [state, watchAccessRevision]);
   const pickupCards = useMemo(() => [...mealCards, ...activePickupCards(shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices)],
     [shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices, mealCards]);
   const latestPickupView = useRef({ state, pickupCards });
@@ -204,6 +223,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   const [activityEndId, setActivityEndId] = useState<string | undefined>(undefined);
   const { visible: hasPickupTab, emptyArtwork } = usePickupTabState(pickupCards, pickupPreview, activityEndId);
   const launchWorkStarted = useRef(false);
+  const internationalRequest = useRef({ generation: 0, startedAt: 0 });
   const platformObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const mealObservation = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const handoffDeadline = useMemo(() => nextParcelHandoffDeadline(state?.pickupCodeRecords),
@@ -223,10 +243,25 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   }
 
   function refreshPlatformList(mode: "observe" | "pull") {
-    void refreshPlatformParcels(applyState, mode).then((result) => {
+    return refreshPlatformParcels(applyState, mode).then((result) => {
       if (result.added) setPlatformNotice({ text: `已新增 ${result.added} 件快递` });
     }).catch(() => {
       writeDiagnostic("platform.sync.unavailable", {}, "warning");
+    });
+  }
+
+  function refreshInternational(force = false) {
+    const current = internationalRequest.current;
+    const now = Date.now();
+    if (!force && now - current.startedAt < 120_000) return;
+    current.startedAt = now;
+    const generation = ++current.generation;
+    void refreshStoredWatchShipments().then(next => {
+      if (current.generation !== generation || !next || next.revision <= revision.current) return;
+      applyState(next);
+      requestWidgetReload();
+    }).catch((error) => {
+      writeDiagnostic("cloud.international.refresh.failed", diagnosticErrorDetails(error), "warning");
     });
   }
 
@@ -234,15 +269,17 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
     const cards = readMealCards();
     setMealCards(previous => previous.length === cards.length && JSON.stringify(previous) === JSON.stringify(cards)
       ? previous : cards);
+    return cards;
   }
 
-  function refreshMeals() {
-    reloadMeals();
-    void ensureMealRules().then(rules => {
-      if (rules) return synchronizeMeals();
-    }).then(reloadMeals).catch(() => {
+  async function refreshMeals() {
+    try {
+      reloadMeals();
+      if (await ensureMealRules()) await synchronizeMeals();
+      reloadMeals();
+    } catch {
       writeDiagnostic("meal.cards.refresh.failed", {}, "warning");
-    });
+    }
   }
 
   async function finishPickup(card: typeof pickupCards[number], openCabinet: boolean): Promise<void> {
@@ -341,17 +378,31 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   useEffect(() => {
     let mounted = true;
     const unsubscribe = hasState ? subscribeRefreshState(applyState) : undefined;
-    const timer = setTimeout(() => {
+    const start = async () => {
       if (hasState) {
-        launchWorkStarted.current = true;
-        void refreshAllShipments().then((summary) => {
+        try {
+          const summary = await refreshAllShipments();
           if (mounted) applyState(summary.state);
-        }).catch(() => { /* The refresh records its failure and leaves the cached list available. */ });
-        observePlatformList();
-        observeMeals();
+        } catch { /* Refresh records its own failure. */ }
       }
-      void refreshCarrierAuthorityIfNeeded();
-    }, LAUNCH_INTERACTION_GRACE_MS);
+      if (!mounted) return;
+      try {
+        await refreshCarrierAuthorityIfNeeded();
+      } catch (error) {
+        writeDiagnostic("app.startup.carriers.failed", diagnosticErrorDetails(error), "warning");
+      }
+      if (!mounted || !hasState) return;
+      // Both tabs have already rendered their cached cards. Keep independent network work
+      // behind the first parcel refresh and reuse the carrier snapshot for meal rules.
+      await refreshMeals();
+      if (!mounted) return;
+      await refreshPlatformList("observe");
+      if (mounted) {
+        launchWorkStarted.current = true;
+        refreshInternational();
+      }
+    };
+    const timer = setTimeout(() => void start(), LAUNCH_INTERACTION_GRACE_MS);
     return () => {
       mounted = false;
       clearTimeout(timer);
@@ -384,6 +435,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
         if (launchWorkStarted.current) {
           observePlatformList();
           observeMeals();
+          refreshInternational();
         }
         try {
           if (peekStateRevision() > revision.current) {
@@ -412,6 +464,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
     AppEvents.scenePhase.addListener(observe);
     return () => {
       mounted = false;
+      internationalRequest.current.generation++;
       AppEvents.scenePhase.removeListener(observe);
       if (platformObservation.current !== undefined) clearTimeout(platformObservation.current);
       if (mealObservation.current !== undefined) clearTimeout(mealObservation.current);
@@ -494,21 +547,19 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
         },
         applyPersisted: (persisted, shipmentId) => {
           if (request !== resumeGeneration.current) return;
-          reloadMeals();
+          const meals = reloadMeals();
           const parameters = details.queryParameters || {};
           const presented = latestPickupView.current.state;
           const resumed = presented ? preferNewerState(persisted, presented) : persisted;
           const screenLookup = takeScreenShortcutLookup(parameters);
-          const activity = parcelActivityTarget(resumed, parameters.parcelActivity);
-          const activityShipmentId = activity && "shipmentId" in activity ? activity.shipmentId : "";
-          const pickupRecordId = activity && "mealId" in activity ? activity.mealId :
-            activity && "recordId" in activity ? activity.recordId : shortcutPickupRecordId(resumed, parameters);
+          const { activityShipmentId, pickupRecordId, activityMealQRCode } = pickupNavigation(resumed, parameters, meals);
           const pendingLookup = pickupRecordId ? undefined : nextShortcutLookup();
           setStartup(current => current.state && preferNewerState(resumed, current.state) === current.state
             ? current : { state: resumed });
           setNavigationRequest((current) => ({
             shipmentId: activityShipmentId || shipmentId,
             pickupRecordId,
+            activityMealQRCode,
             shortcutLookup: screenLookup || preferShortcutLookup(current.shortcutLookup, pendingLookup),
             generation: current.generation + 1,
           }));
@@ -594,6 +645,9 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
             previewing={pickupPreview}
             emptyArtwork={emptyArtwork}
             focusedRecordId={navigationRequest.pickupRecordId}
+            activityMealQRCode={navigationRequest.activityMealQRCode}
+            onActivityMealQRCodeHandled={target => setNavigationRequest(current => current.activityMealQRCode === target
+              ? { ...current, activityMealQRCode: undefined } : current)}
             onStateChange={applyState}
             showNotice={setPickupNotice}
             toast={transientToast(pickupNotice, setPickupNotice)}
@@ -618,12 +672,16 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
               current.generation === generation ? { ...current, shortcutLookup: undefined } : current);
           }}
           onStateChange={applyState}
-          onListPull={() => { refreshPlatformList("pull"); refreshMeals(); }}
+          onListPull={() => { refreshPlatformList("pull"); refreshMeals(); refreshInternational(true); }}
           platformNotice={platformNotice}
         />
       </Tab>
       <Tab key="settings" title="设置" systemImage="gearshape.fill" value="settings">
-        <SettingsPage state={state} onStateChange={applyState} onAccessKeyChanged={refreshMeals} />
+        <SettingsPage state={state} onStateChange={applyState} onAccessKeyChanged={() => {
+          setWatchAccessRevision(value => value + 1);
+          refreshMeals();
+          refreshInternational(true);
+        }} />
       </Tab>
     </TabView>
   );

@@ -35,7 +35,7 @@ export function noteSavedToast(note: string): string {
 
 export function noteSaveFailedToast(error: unknown): string {
   return error instanceof ShipmentLifecycleChangedError
-    ? EXPRESS_TOAST_COPY.userNoteChanged : EXPRESS_TOAST_COPY.userNoteUnavailable;
+    ? EXPRESS_TOAST_COPY.userNoteChanged : SAVE_FAILED_TOAST;
 }
 
 /** 列表下拉的四种结果（三端同一张表，AGENTS §11）。 */

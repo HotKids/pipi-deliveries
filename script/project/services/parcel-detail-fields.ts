@@ -3,7 +3,7 @@ import type { Shipment } from "../models";
 import { currentPlatformSession, platformSession, type ExpressPlatform, type PlatformSession } from "./platform-accounts";
 import { writeDiagnostic } from "./logger";
 import { cainiaoParcelDetails, type PlatformParcel } from "./platform-parcel-data";
-import { deliveryEstimateApplies, displayedPlatformFields, samePlatformTarget } from "./platform-parcel-merge";
+import { deliveryEstimateApplies, displayedPlatformFields, pddParcelProductImage, samePlatformTarget } from "./platform-parcel-merge";
 import { fetchJdParcelDetails, fetchPddParcelDetails } from "./platform-web-parcels";
 import { readCainiao } from "./platform-wire";
 import { projectionSceneActive } from "./projection-viewport";
@@ -16,9 +16,23 @@ import { attachedProjectedOrders } from "./waybill-ownership";
 const CAINIAO_PARCEL_DETAIL = "mtop.cainiao.logisticsdetail.packages.pid.orderCode.mailNo.get";
 const DETAIL_FIELDS_INTERVAL_MS = 3_600_000;
 
-export function needsParcelDetailFields(shipment: Shipment): boolean {
+function isCainiaoParcel(shipment: Shipment): boolean {
+  return !shipment.pddImport && /^(?:cainiao|taobao)$/i.test(shipment.identity.sourceProvider?.trim() || "");
+}
+
+export function needsParcelDetailFields(shipment: Shipment, refreshEstimate = false): boolean {
   const fields = displayedPlatformFields(shipment);
-  return !fields.title || (!fields.estimate && deliveryEstimateApplies(shipment));
+  if (!fields.title || ((refreshEstimate || !fields.estimate) && deliveryEstimateApplies(shipment))) return true;
+  if (shipment.pddImport?.orderId && shipment.pddImport.shippingId) {
+    return !shipment.identity.productImageURL && !pddParcelProductImage(shipment);
+  }
+  if (!isCainiaoParcel(shipment) || shipment.identity.productImageURL || shipment.identity.enhancedMode) return false;
+  try {
+    const active = platformSession("cainiao")?.generation;
+    return Boolean(active && shipment.platformFields?.cainiaoImage?.generation !== active);
+  } catch {
+    return false;
+  }
 }
 
 function jdOrderFor(owner: Shipment, shipments: readonly Shipment[]): string {
@@ -34,7 +48,7 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
   readState = loadState, signal?: AbortSignal) {
   const waybill = unprojectedAccountOrder(expected) ? "" : normalizeWaybill(displayWaybill(expected));
   if (!projectionSceneActive() || !active() || !/^[A-Z0-9]{6,64}$/.test(waybill) ||
-    !needsParcelDetailFields(expected)) return undefined;
+    !needsParcelDetailFields(expected, true)) return undefined;
   let observed = readState();
   function ownerIn(state: typeof observed) {
     const matches = visibleShipments(state).filter((row) => !unprojectedAccountOrder(row) &&
@@ -44,7 +58,7 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
       expected.forcedCompletedAtMs === row.forcedCompletedAtMs ? row : undefined;
   }
   const owner = ownerIn(observed);
-  if (!owner || !needsParcelDetailFields(owner)) return undefined;
+  if (!owner || !needsParcelDetailFields(owner, true)) return undefined;
   const nativeSource = owner.identity.sourceProvider?.trim().toLowerCase();
   const pdd = owner.pddImport;
   const cainiao = !pdd && (nativeSource === "cainiao" || nativeSource === "taobao") ? platformSession("cainiao") : null;
@@ -52,8 +66,9 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
   const jdOrder = jdOrderFor(owner, observed.shipments);
   const jd = jdOrder ? platformSession("jingdong") : null;
   if (!cainiao && !(pddSession && pddSession.ownerKey === pdd?.ownerKey) && !jd) return undefined;
-  // Empty and failed reads consume the same per-waybill interval as a successful read.
-  const reservation = acquireDurableRefreshLease("parcel-detail-fields:" + privateHash(waybill), DETAIL_FIELDS_INTERVAL_MS);
+  // Cainiao keeps the existing image-selector lease across successful captures.
+  const lease = cainiao ? "parcel-detail-fields:cainiao-goods-v2:" : "parcel-detail-fields:";
+  const reservation = acquireDurableRefreshLease(lease + privateHash(waybill), DETAIL_FIELDS_INTERVAL_MS);
   if (!reservation) return undefined;
   let changed = false;
   async function read(platform: ExpressPlatform, session: PlatformSession, fetch: (eligible: () => boolean) => Promise<PlatformParcel | undefined>) {
@@ -62,7 +77,7 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
       if (!active() || !current() || !reservation?.isCurrent()) return false;
       const state = readState();
       const row = ownerIn(state);
-      if (!row || !needsParcelDetailFields(row)) return false;
+      if (!row || !needsParcelDetailFields(row, true)) return false;
       return platform === "jingdong" ? jdOrderFor(row, state.shipments) === jdOrder :
         platform === "pinduoduo" ? JSON.stringify(row.pddImport) === JSON.stringify(pdd) :
           !row.pddImport && row.identity.sourceProvider?.trim().toLowerCase() === nativeSource;
@@ -70,9 +85,9 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
     try {
       if (!eligible()) return;
       const parcel = await fetch(eligible);
-      if (parcel?.waybill !== waybill || !(parcel.title || parcel.estimate) || !eligible()) return;
+      if (parcel?.waybill !== waybill || !(parcel.title || parcel.estimate || parcel.productImageURL) || !eligible()) return;
       const saved = savePlatformParcelData({ observed, owner: session.ownerKey, detailTarget: owner,
-        parcels: [parcel], current: eligible }).state;
+        cainiaoGeneration: platform === "cainiao" ? session.generation : undefined, parcels: [parcel], current: eligible }).state;
       if (saved.revision !== observed.revision) changed = true;
       observed = saved;
     } catch {
@@ -84,8 +99,10 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
   if (pddSession && pddSession.ownerKey === pdd?.ownerKey && pdd.shippingId) {
     const shippingId = pdd.shippingId;
     const fields = displayedPlatformFields(owner);
-    const estimate = !fields.estimate && deliveryEstimateApplies(owner);
-    await read("pinduoduo", pddSession, (eligible) => fetchPddParcelDetails(pddSession, shippingId, waybill, !fields.title, estimate, eligible, signal));
+    const estimate = deliveryEstimateApplies(owner);
+    const image = !owner.identity.productImageURL && !pddParcelProductImage(owner);
+    await read("pinduoduo", pddSession, (eligible) =>
+      fetchPddParcelDetails(pddSession, shippingId, waybill, !fields.title, estimate, image, eligible, signal));
   }
   if (jd) await read("jingdong", jd, (eligible) => fetchJdParcelDetails(jd, jdOrder, waybill, eligible, signal));
   const shipment = changed ? ownerIn(observed) : undefined;

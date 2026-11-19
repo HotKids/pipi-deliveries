@@ -20,6 +20,7 @@ const refreshStart = page.indexOf("  function refresh(forceManualRefresh");
 const refreshEnd = page.indexOf("  async function copyWaybill()", refreshStart);
 assert.ok(refreshStart >= 0 && refreshEnd > refreshStart);
 const refreshSource = stripTypeScriptTypes(page.slice(refreshStart, refreshEnd));
+const presentationSource = stripTypeScriptTypes(capture(/  (function showShipment\([\s\S]*?)\n  const cloudAbortRef/));
 const cleanup = capture(/return \(\) => \{\s*(refreshGenerationRef\.current \+= 1;[\s\S]*?)\s*\};\s*\}, \[props\.shipment\.identity\.id\]\);/);
 
 function deferred() {
@@ -44,6 +45,13 @@ function pageHarness(seed = shipment()) {
       onStateChange: () => { state.updates++; },
     },
     shipment: seed,
+    cloudLifecycle: seed.identity.id,
+    shipmentLifecycleKey: (value: any) => value.identity.id,
+    imageScope: seed.identity.id,
+    imageDownloadScope: "",
+    needsParcelDetailFields: () => false,
+    readOwnerState: () => ({ bindings: [] }),
+    refreshCloudMetadata: async () => {},
     shouldRequestDetailProductImage: () => false,
     loadState: () => ({ bindings: [] }),
     AbortController,
@@ -55,9 +63,11 @@ function pageHarness(seed = shipment()) {
     joinedJdPullRef: { current: false },
     detailEntryRef: { current: undefined },
     displayTracks: seed.timeline.tracks,
+    pendingWhileScrolling: { current: { moving: false } },
     setNotice: (text: string) => { state.notices.push(text); },
     setLoadingManualDetail: (value: boolean) => { state.loading = value; },
     setShipment: (update: (value: any) => any) => { state.shipment = update(state.shipment); },
+    setCloud: () => {},
     preferNewerShipment: (_old: any, next: any) => next,
     continueManualShipmentPreview: (_preview: any, options: any) => {
       state.calls++;
@@ -80,7 +90,9 @@ function pageHarness(seed = shipment()) {
     writeDiagnostic: () => {},
   };
   state.loading = runInNewContext(initialLoading, context);
-  const refresh = runInNewContext(`${refreshSource}\nrefresh;`, context);
+  context.setImageDownloadScope = (value: string) => { context.imageDownloadScope = value; };
+  const { refresh, finishDetailOpening } = runInNewContext(
+    `${presentationSource}\n${refreshSource}\n({ refresh, finishDetailOpening });`, context);
   const labels = () => {
     const expressions = {
       loadingManualDetail: state.loading,
@@ -95,12 +107,28 @@ function pageHarness(seed = shipment()) {
       empty: state.shipment.timeline.tracks.length ? null : runInNewContext(emptyExpression, expressions),
     };
   };
-  return { state, network, refresh, labels,
+  return { state, network, refresh, finishDetailOpening, labels,
     context,
+    scrollPhase: (phase: string) => runInNewContext("onScrollPhaseChange('idle', phase)", { ...context, phase }),
     preview: (value: any) => onPreview?.(value),
     unmount: () => runInNewContext(cleanup, context),
     aborted: () => signal?.aborted,
   };
+}
+
+{
+  const current = shipment("TRANSIT", [{ detail: "Cached track" }]);
+  const next = shipment("TRANSIT", [{ detail: "New track" }]);
+  const page = pageHarness(current);
+  const opening = page.refresh(false);
+  page.scrollPhase("interacting");
+  page.preview(next);
+  assert.equal(page.state.shipment, current, "a preview must not move visible rows while scrolling");
+  page.scrollPhase("idle");
+  assert.equal(page.state.shipment, next, "the latest preview becomes visible when scrolling ends");
+  page.unmount();
+  page.network.resolve({ shipment: next, state: {}, refreshed: true });
+  await opening;
 }
 
 // Opening and pulling are different operations, but repeated pulls share the same continuation.
@@ -367,7 +395,42 @@ for (const fails of [false, true]) {
   }
 }
 
-// Optional metadata has its own existing image-only request; it cannot extend or replace the trajectory outcome.
+{
+  const page = pageHarness(shipment("TRANSIT", [{ detail: "Cached event" }]));
+  page.context.props.refreshOnAppear = "detail_open";
+  page.context.props.persistedShipment = true;
+  page.context.props.manualPreview = null;
+  page.context.needsParcelDetailFields = () => true;
+  page.context.shouldRequestDetailProductImage = () => true;
+  const calls: string[] = [];
+  const fields = deferred();
+  const cloud = deferred();
+  const next = { shipment: page.state.shipment, state: {}, refreshed: true };
+  page.context.refreshShipmentById = (_id: string, options: any) => {
+    calls.push(options.trigger);
+    return options.trigger === "detail_open" ? page.network.promise : Promise.resolve(next);
+  };
+  page.context.refreshParcelDetailFields = () => { calls.push("fields"); return fields.promise; };
+  page.context.refreshCloudMetadata = () => { calls.push("cloud"); return cloud.promise; };
+
+  const trajectory = page.refresh(false);
+  const opening = page.finishDetailOpening(new AbortController().signal);
+  assert.deepEqual(calls, ["detail_open"]);
+  assert.equal(page.context.imageDownloadScope, "");
+
+  page.network.resolve(next);
+  await trajectory;
+  assert.deepEqual(calls, ["detail_open", "fields", "cloud"]);
+  fields.resolve(undefined);
+  await Promise.resolve();
+  assert.equal(page.context.imageDownloadScope, "");
+  cloud.resolve(undefined);
+  await opening;
+  assert.deepEqual(calls, ["detail_open", "fields", "cloud", "product_image"]);
+  assert.equal(page.context.imageDownloadScope, page.context.imageScope);
+}
+
+// An optional image request cannot extend or replace the trajectory outcome.
 for (const imageOutcome of ["timeout", "next-pull", "dismiss"] as const) {
   const page = pageHarness(shipment("TRANSIT", [{ detail: "Cached event" }]));
   page.context.props.refreshOnAppear = "detail_open";
@@ -387,7 +450,9 @@ for (const imageOutcome of ["timeout", "next-pull", "dismiss"] as const) {
     images.push({ request, signal: options.signal });
     return request.promise;
   };
-  await page.refresh(false);
+  const trajectory = page.refresh(false);
+  const opening = page.finishDetailOpening(new AbortController().signal);
+  await trajectory;
   for (let step = 0; step < 10 && !images.length; step++) await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, ["detail_open", "product_image"]);
   assert.equal(page.state.updates, 1, "the trajectory result is already presented while image metadata never resolves");
@@ -412,6 +477,7 @@ for (const imageOutcome of ["timeout", "next-pull", "dismiss"] as const) {
     page.unmount();
     await page.context.productImageRequestRef.current;
   }
+  await opening;
 }
 
 console.log("manual detail loading lifecycle tests passed");

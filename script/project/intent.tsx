@@ -3,22 +3,23 @@ import { refreshIntentMessage } from "./services/refresh-result";
 import { refreshAllShipments } from "./services/sync";
 import { backgroundHostBootstrap, backgroundRefreshOptions } from "./services/background-refresh";
 import { beginDiagnosticOperation, flushDiagnostics, writeDiagnostic } from "./services/logger";
-import { discardShortcutDraft, notifyScreenShortcutStatus, PICKUP_SHORTCUT_SAVED, scheduleScreenShortcutStatus, stageShortcutLookup, submitScreenShortcut } from "./services/parcel-shortcut";
+import { discardShortcutDraft, MEAL_SHORTCUT_RECORD_PARAMETER, notifyScreenPickupSaved, notifyScreenShortcutStatus, PARCEL_SHORTCUT_RECORD_PARAMETER, scheduleScreenShortcutStatus, stageShortcutLookup, submitScreenShortcut } from "./services/parcel-shortcut";
 import { normalizeRecognizedPickupCode, recognizeParcelCodes, type ParcelLookup } from "./services/parcel-code-ocr";
 import { showShortcutPickupActivities } from "./services/parcel-live-activity";
-import type { ParcelActivityTarget } from "./services/parcel-pickup";
+import { parcelCardArtwork } from "./services/parcel-card-appearance";
+import { independentPickupContent, PLATFORM_ACCOUNT_NAMES } from "./services/parcel-pickup";
 import { isParcelWaybill, parcelImageRows, parcelTextRows, type ParcelRow } from "./services/parcel-waybill-ocr";
 import { saveRecognizedParcelCode } from "./services/storage";
 import { ensureMealRules } from "./services/carrier-authority";
 import { mealFromModel, onlineMealRequiresQR, recognizeMealImage } from "./services/meal/recognize";
-import { putMealObservations, stageLuckinDraft } from "./services/meal/records";
+import { currentMeal, putMealObservations, readMeals, stageLuckinDraft } from "./services/meal/records";
 import { mealCredentialScope } from "./services/meal/rules";
 import { synchronizeMeals } from "./services/meal/cloud";
 import { normalizeWaybill } from "./services/status";
 import { ONLINE_BUDGET_MS, requestOnlineRecognition } from "./services/recognition/client";
 import { recognitionOperation } from "./services/recognition/settings";
 import { waitForRefresh } from "./services/deadline";
-import { LUCKIN_RESCAN } from "./services/shortcut-capture";
+import { LUCKIN_RESCAN, SCREEN_SHORTCUT_INSTALL_URL, SCREEN_SHORTCUT_VERSION, screenShortcutVersion } from "./services/shortcut-capture";
 
 function shortcutImagePath(value: string): string | undefined {
   let path = value;
@@ -43,8 +44,19 @@ type ScreenResult = {
   cancelled?: true;
 };
 
-async function notifyShortcutPickup(targets: readonly ParcelActivityTarget[], message: string): Promise<string> {
-  return await showShortcutPickupActivities(targets) ? message : notifyScreenShortcutStatus(message);
+async function notifyShortcutMeals(ids: readonly string[], scope: string): Promise<void> {
+  if (scope !== mealCredentialScope()) return;
+  const saved = readMeals(scope);
+  for (const id of ids) {
+    const meal = currentMeal(saved, id);
+    if (!meal || scope !== mealCredentialScope()) continue;
+    await notifyScreenPickupSaved({
+      name: meal.brandName, code: meal.code, details: [meal.productName, meal.merchantName],
+      iconPath: parcelCardArtwork({ kind: "meal", mealBrandId: meal.brandId }).mark?.path,
+      parameters: { [MEAL_SHORTCUT_RECORD_PARAMETER]: id },
+    });
+  }
+  await showShortcutPickupActivities(ids.map(mealId => ({ mealId, mealScope: scope })));
 }
 
 function modelParcel(fields: Record<string, unknown>, capturedAtMs: number): ParcelLookup | undefined {
@@ -135,16 +147,15 @@ async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shor
         report("manual_rescan_required");
         return notifyScreenShortcutStatus(manual);
       }
-      const scheduled = await scheduleScreenShortcutStatus("已识别瑞幸订单，请在 3 秒内打开“取餐码”");
+      const scheduled = await scheduleScreenShortcutStatus("请在 3 秒内打开取餐码，等待自动二次识别");
       report(scheduled ? "automatic_rescan_requested" : "manual_rescan_required");
       return scheduled ? LUCKIN_RESCAN : manual;
     }
     if (meals?.ids.length) {
       report("meal_saved", meals.ids.length);
-      const message = await notifyShortcutPickup(meals.ids.map(mealId => ({ mealId, mealScope: meals.scope })),
-        `已添加 ${meals.ids.length} 张取餐码，可在「待取」查看。`);
+      await notifyShortcutMeals(meals.ids, meals.scope);
       await synchronizeMeals(5_000);
-      return message;
+      return `已添加 ${meals.ids.length} 张取餐码，可在「待取」查看。`;
     }
     imageParcel = parcel;
   } else {
@@ -170,7 +181,19 @@ async function recognizeShortcutParcel(parameter: NonNullable<typeof Intent.shor
     : lookup && parameter.type === "text" ? "lookup_staged" : "waybill_recognized", record ? 1 : 0);
   if (parameter.type === "fileURL") {
     if (lookup) return submitScreenShortcut(lookup, showShortcutPickupActivities);
-    if (record?.kind === "pickup") return notifyShortcutPickup([{ recordId: record.id }], PICKUP_SHORTCUT_SAVED);
+    if (record?.kind === "pickup") {
+      const card = independentPickupContent(record);
+      if (card?.target) {
+        const message = await notifyScreenPickupSaved({
+          name: PLATFORM_ACCOUNT_NAMES[record.platform], code: card.code,
+          details: [record.note, card.location],
+          iconPath: parcelCardArtwork(card).mark?.path,
+          parameters: { [PARCEL_SHORTCUT_RECORD_PARAMETER]: record.id },
+        });
+        await showShortcutPickupActivities([card.target]);
+        return message;
+      }
+    }
   }
   return "已识别快递信息，打开派派助手查看。";
 }
@@ -179,14 +202,20 @@ async function run() {
   const imagePaths = Intent.imagePathsParameter;
   const paths = imagePaths?.length ? imagePaths : Intent.fileURLsParameter;
   const input = Intent.shortcutParameter;
-  const automaticRescan = Intent.textsParameter?.includes(LUCKIN_RESCAN) === true ||
-    (input?.type === "text" && input.value === LUCKIN_RESCAN);
+  const texts = [...(Intent.textsParameter ?? []), ...(input?.type === "text" ? [input.value] : [])];
+  const installedShortcutVersion = screenShortcutVersion(texts);
+  const automaticRescan = installedShortcutVersion !== undefined || texts.includes(LUCKIN_RESCAN);
   const screenshot = paths?.length === 1
     ? { type: "fileURL" as const, value: paths[0] }
     : undefined;
   const parameter = automaticRescan && input?.type !== "fileURL" && screenshot ? screenshot : input ?? screenshot;
   if (parameter) {
     const screen = parameter.type === "fileURL";
+    if (screen && installedShortcutVersion !== undefined &&
+        installedShortcutVersion < SCREEN_SHORTCUT_VERSION) {
+      Script.exit(Intent.text(SCREEN_SHORTCUT_INSTALL_URL));
+      return;
+    }
     const finish = beginDiagnosticOperation("shortcut.screen", {
       stage: screen ? "screenshot" : "text", trigger: automaticRescan ? "luckin_rescan" : "shortcut",
     });
