@@ -12,6 +12,7 @@ export const TIMELINE_SLOT = {
   V2_QUERY: "v2_query",
   JD_H5: "jd_h5",
   CN_H5: "cn_h5",
+  PDD_H5: "pdd_h5",
   K100_H5: "k100_h5",
   JT_H5: "jt_h5",
   KDNIAO: "kdniao",
@@ -39,6 +40,9 @@ export function normalizeTimelineSlot(
       return TIMELINE_SLOT.KDNIAO;
     case "cainiao_h5":
       return TIMELINE_SLOT.CN_H5;
+    case "pinduoduo_h5":
+    case "pdd_h5":
+      return TIMELINE_SLOT.PDD_H5;
     case "kuaidi100_h5":
       return TIMELINE_SLOT.K100_H5;
     case "web":

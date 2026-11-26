@@ -36,4 +36,13 @@ public final class NotificationKey {
 
     @Override public int hashCode() { return id; }
     @Override public String toString() { return label + "/0x" + Integer.toHexString(id); }
+
+    /**
+     * The key for a logcat line: its namespace and framework id, without the stable id, as Pipi's NotificationKey
+     * logs it for the shared PromotedNotificationPublisher (G-HIGH-19, 2026-11-20 review).
+     */
+    public String logLabel() {
+        int colon = label.indexOf(':');
+        return (colon < 0 ? label : label.substring(0, colon)) + "/0x" + Integer.toHexString(id);
+    }
 }

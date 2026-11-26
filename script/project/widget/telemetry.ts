@@ -2,7 +2,8 @@
  * Widget timeline telemetry (方案 A 验证, 2026-09-04).
  *
  * The widget is our only background refresh path, but WidgetKit documents neither a cadence nor
- * an execution budget for a timeline provider, and our run awaits up to 122 s of network work.
+ * an execution budget for a timeline provider, and our run awaits network work for up to
+ * WIDGET_REFRESH_WAIT_MS (widget/runtime.ts) before it presents.
  * Two facts decide whether that assumption holds, and neither is observable from inside a single
  * run: how long WidgetKit actually waits between runs, and whether the extension survives to
  * `Widget.present`.

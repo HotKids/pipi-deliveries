@@ -1,33 +1,40 @@
 import {
   Button,
+  Divider,
   HStack,
   Image,
   List,
+  Rectangle,
+  ScrollView,
   Section,
   Spacer,
   Text,
   VStack,
   useState,
+  type VirtualNode,
 } from "scripting";
 import {
   clearDiagnostics,
+  diagnosticCategory,
+  diagnosticSummaryText,
   diagnosticText,
   diagnosticsEnabled,
   readDiagnostics,
   setDiagnosticsEnabled,
+  writeDiagnostic,
   writeRuntimeCapabilities,
+  type DiagnosticCategory,
   type DiagnosticDetails,
   type DiagnosticEntry,
 } from "../services/logger";
 import { copyText } from "../services/clipboard";
 import { SAVE_FAILED_TOAST, transientToast } from "../services/ui-feedback";
 
+const ACTION_FAILED_TOAST = "操作失败，请稍后重试";
+
 const EVENT_TITLES: Record<string, string> = {
-  "app.state.applied": "页面状态已更新",
   "app.startup.carriers.failed": "启动时未更新承运商表",
-  "cloud.international.refresh.failed": "国际物流同步未完成",
   "activity.parcel.preview.read.failed": "实时活动预览状态读取失败",
-  "binding.flow.opened": "开始绑定手机号",
   "platform.pdd.import.unavailable": "拼多多快递导入未完成",
   "platform.sync.unavailable": "平台快递同步未完成",
   "platform.cainiao.profile": "菜鸟昵称读取结果",
@@ -35,68 +42,44 @@ const EVENT_TITLES: Record<string, string> = {
   "platform.cainiao.sync.failed": "菜鸟同步阶段失败",
   "platform.jingdong.sync.failed": "京东同步失败",
   "platform.parcel_detail.unavailable": "快递详情资料补查未完成",
-  "platform.identity.failed": "驿站身份码获取失败",
-  "platform.identity.started": "开始处理驿站身份码",
   "platform.identity.completed": "驿站身份码处理结束",
-  "platform.parcel_sync.started": "开始同步平台包裹",
   "platform.parcel_sync.completed": "平台包裹同步结束",
-  "platform.cabinet.started": "开始请求丰巢开柜",
   "platform.cabinet.completed": "丰巢开柜请求结束",
-  "cloud.pdd.started": "开始同步拼多多云记录",
-  "cloud.pdd.completed": "拼多多云记录同步结束",
-  "cloud.parcel.metadata.started": "开始读取云端商品信息",
-  "cloud.parcel.metadata.completed": "云端商品信息读取结束",
-  "meal.sync.started": "开始同步取餐码",
-  "meal.sync.completed": "取餐码同步结束",
   "platform.jingdong.session.save_failed": "京东会话未能保存",
-  "binding.handler.entered": "已进入绑定流程",
-  "binding.code.started": "正在发送验证码",
   "binding.code.succeeded": "验证码发送成功",
   "binding.code.failed": "验证码发送失败",
-  "binding.verify.started": "正在验证绑定",
   "binding.verify.succeeded": "绑定验证成功",
   "binding.verify.failed": "绑定验证失败",
   "binding.persisted": "绑定记录已保存",
   "binding.persist.failed": "绑定记录保存失败",
   "binding.refresh.succeeded": "绑定后同步完成",
   "binding.refresh.failed": "绑定后同步失败",
-  "manager.rendered": "手机号页面已刷新",
   "manager.platform_status.unavailable": "平台账号状态读取失败",
   "storage.state.saved": "本地状态已保存",
   "storage.state.recovered": "本地状态已恢复",
   "storage.state.rejected": "本地状态校验失败",
   "storage.state.failed": "本地状态保存失败",
-  "detail.refresh.started": "详情刷新开始",
-  "detail.refresh.stage_started": "详情刷新阶段开始",
   "detail.refresh.stage_succeeded": "详情刷新阶段完成",
   "detail.refresh.stage_failed": "详情刷新阶段失败",
-  "detail.refresh.stage_skipped": "详情刷新阶段跳过",
   "detail.refresh.skipped": "详情无需刷新",
   "detail.refresh.committed": "详情已更新",
   "detail.refresh.failed": "详情刷新失败",
   "detail.refresh.ui_failed": "详情页刷新失败",
   "detail.refresh.fallback_failed": "详情兜底失败",
   "detail.refresh.primary_contest.completed": "详情主数据源查询完成",
-  "detail.refresh.alignment": "状态与头条对不上，强制刷新",
   "detail.route_publish_failed": "详情路由保存失败",
   "account.identity.generated": "已创建本机身份",
-  "account.sync.parsed": "关联快递已解析",
   "account.sync.failed": "账号快递同步失败",
   "account.owner.superseded": "同一运单换了新包裹，旧件让位",
-  "order.projection.started": "正在提取运单号",
   "order.projection.extracted": "已提取运单号",
   "order.projection.committed": "运单号已保存",
-  "order.projection.succeeded": "运单号提取成功",
   "order.projection.empty": "页面尚未返回运单号",
   "order.projection.failed": "运单号提取失败",
   "order.projection.skipped": "本次无需提取运单号",
   "manual.query.completed": "手动查询完成",
-  "manual.source.started": "数据源查询开始",
   "manual.source.succeeded": "数据源查询成功",
   "manual.source.skipped": "数据源没有有效轨迹",
   "manual.source.failed": "数据源查询失败",
-  "refresh.started": "快递同步开始",
-  "refresh.stage.started": "快递刷新阶段开始",
   "refresh.stage.succeeded": "快递刷新阶段完成",
   "refresh.stage.failed": "快递刷新阶段失败",
   "refresh.stage.skipped": "快递刷新阶段跳过",
@@ -105,16 +88,12 @@ const EVENT_TITLES: Record<string, string> = {
   "refresh.succeeded": "快递同步完成",
   "refresh.failed": "快递同步失败",
   // 2026-11-12 诊断日志统一（与 Pipi 诊断日志同一套书面标题）：凡是会写入的事件都有中文标题，页面不再露出原始事件键。
-  "app.startup.failed": "应用启动失败",
   "app.session.failed": "应用会话失败",
   "app.resume.failed": "回到前台恢复失败",
   "app.shortcut.resume.failed": "快递识别结果读取失败",
   "app.activity.resume.failed": "实时活动完成后读取待取列表失败",
-  "app.scene.changed": "前后台状态变化",
   "activity.parcel.reconcile.failed": "取件实时活动更新失败",
-  "activity.parcel.operation.started": "开始处理包裹实时活动",
   "activity.parcel.operation.completed": "包裹实时活动处理结束",
-  "pickup.action.started": "开始处理待取操作",
   "pickup.action.completed": "待取操作结束",
   "pickup.tab.changed": "待取标签页显示状态已变更",
   "pickup.meal.reload.failed": "取餐卡片刷新失败",
@@ -124,7 +103,6 @@ const EVENT_TITLES: Record<string, string> = {
   "activity.parcel.restore.failed": "快递实时活动恢复失败",
   "activity.parcel.expiry.failed": "寄件码到期状态保存失败",
   "runtime.capabilities": "运行环境能力缺失",
-  "account.sync.started": "账号快递同步开始",
   "account.list.record": "账号列表记录",
   "account.external.cached": "来源 App 入口已缓存",
   "account.enhanced.completed": "增强同步完成",
@@ -142,7 +120,6 @@ const EVENT_TITLES: Record<string, string> = {
   "detail.timeline.candidate": "详情候选轨迹",
   "detail.selection.record_failed": "详情选包记录失败",
   "detail.external.routes": "外跳入口已就绪",
-  "detail.external.request": "外跳入口请求开始",
   "detail.external.request_failed": "外跳入口请求失败",
   "detail.external.cache_failed": "外跳入口缓存失败",
   "detail.pdd_source.save_failed": "拼多多来源保存失败",
@@ -161,6 +138,11 @@ const EVENT_TITLES: Record<string, string> = {
   "gateway.activation.resolved": "Access Key 激活完成",
   "gateway.activation.failed": "Access Key 激活失败",
   "gateway.credential.cleanup": "旧凭据清理失败",
+  "gateway.credential.saved": "Access Key 已保存",
+  "gateway.credential.removed": "Access Key 已移除",
+  "gateway.credential.missing": "未读取到 Access Key",
+  "gateway.credential.read_failed": "Access Key 读取失败",
+  "gateway.credential.save_failed": "Access Key 保存失败",
   "gateway.request.wait_ended": "Worker 请求等待结束",
   "gateway.request.late_settled": "Worker 请求超时后返回",
   "manual.meizu.response": "v6_query 回包",
@@ -169,7 +151,6 @@ const EVENT_TITLES: Record<string, string> = {
   "ownership.split.applied": "已拆开合并的运单",
   "ownership.split.skipped": "运单拆分跳过",
   "ownership.split.completed": "运单拆分完成",
-  "notification.replay.started": "通知补发开始",
   "notification.replay.loaded": "通知补发已读取",
   "notification.replay.completed": "通知补发完成",
   "notification.replay.skipped": "通知补发跳过",
@@ -178,16 +159,7 @@ const EVENT_TITLES: Record<string, string> = {
   "notification.replay.failed": "通知补发失败",
   "notification.schedule.failed": "通知发送失败",
   "refresh.skipped": "快递同步跳过",
-  "refresh.wait.started": "等待其他刷新结束",
   "refresh.wait.completed": "其他刷新已结束",
-  "refresh.preparation.started": "准备阶段开始",
-  "refresh.preparation.completed": "准备阶段完成",
-  "refresh.account.completed": "账号阶段完成",
-  "refresh.pdd_cloud.unavailable": "拼多多云同步暂不可用",
-  "refresh.enrichment.started": "逐票补充开始",
-  "refresh.enrichment.completed": "逐票补充完成",
-  "refresh.finalization.started": "收尾阶段开始",
-  "refresh.finalization.completed": "收尾阶段完成",
   "refresh.finalization.skipped": "收尾阶段跳过",
   "refresh.ownership.invalidated": "刷新所有权失效",
   "refresh.presentation.failed": "刷新结果显示失败",
@@ -200,16 +172,105 @@ const EVENT_TITLES: Record<string, string> = {
   "pickup.artwork.change.failed": "切换卡片图标失败",
   "meal.cards.refresh.failed": "取餐码刷新失败",
   "meal.cards.unavailable": "取餐码读取失败",
-  "meal.sync.deferred": "取餐码稍后同步",
   "recognition.online.fallback": "在线识别回到本地",
-  "shortcut.screen.started": "开始快捷指令识别",
+  "recognition.online.completed": "在线识别结束",
+  "recognition.online.validation": "在线识别结果不符",
   "shortcut.screen.completed": "快捷指令识别结束",
-  "shortcut.query.started": "开始快捷指令查件",
   "shortcut.query.completed": "快捷指令查件结束",
-  "shortcut.phone_tail.started": "开始处理手机尾号",
   "shortcut.phone_tail.completed": "手机尾号处理流程结束",
   "shortcut.notification.failed": "快捷指令通知发送失败",
   "shortcut.activity.unavailable": "快捷指令实时活动不可用",
+  // 2026-11-24 诊断日志第 1、2、4 步（owner 2026-11-21 rulings D4–D11）的新事件。
+  "diagnostic.flow.unfinished": "上次未结束的操作",
+  "diagnostics.recording.started": "开始记录诊断日志",
+  // Owner 2026-11-24 「Clear once after update (Recommended)」: the one clear of lines kept before the keyed handle.
+  "diagnostics.log.cleared": "已清空旧版诊断日志",
+  "intent.run.completed": "后台入口运行结束",
+  "app.startup.completed": "应用启动结束",
+  "app.session.completed": "应用会话结束",
+  "app.foreground.completed": "回到前台处理结束",
+  "app.resume.completed": "回到前台已读取本地数据",
+  "meal.cards.loaded": "取餐码卡片已更新",
+  "express.row.changed": "快递列表显示已变化",
+  "express.row.mismatch": "列表与详情状态不一致",
+  "notification.decision": "通知处理结果",
+  "notification.fengchao.reminder.completed": "丰巢取件提醒已处理",
+  "shortcut.notification.completed": "快捷指令通知已发送",
+  "platform.account.changed": "平台账号状态变化",
+  "platform.account.code.completed": "平台验证码请求结束",
+  "platform.parcel_detail.completed": "快递详情资料补查结束",
+  "account.enhanced.operation.completed": "三星增强请求结束",
+  "binding.unbind.completed": "解绑手机号结束",
+  "gateway.credential.checked": "Access Key 校验结果",
+  "settings.changed": "设置已更改",
+  "order.projection.pass": "首页运单提取结束",
+  "home.query.completed": "首页查件结束",
+  // 2026-11-24 诊断日志第 5–7 步：开始行并入终态（D4），阶段并入刷新终态（D158），云同步统一（D188）。
+  "account.sync.completed": "账号快递同步完成",
+  "alignment.completed": "状态对齐结束",
+  "cloud.sync.completed": "云端同步结束",
+  "cloud.sync.failed": "云端同步未完成",
+  "cloud.sync.skipped": "云端同步跳过",
+  "detail.product_name.completed": "商品名编辑结束",
+  "note.edit.completed": "备注编辑结束",
+  "storage.retention.applied": "过期快递已隐藏或清理",
+  "widget.run.completed": "小组件运行结束",
+};
+
+/**
+ * Events that earlier builds wrote and this build no longer writes (D4 start lines, D158–D163 noise, D188 cloud names,
+ * D244 fixed names). A line stored before the update stays readable for up to seven days, so it keeps its title; this
+ * table is read only for such lines and never names an event the logger accepts.
+ */
+const RETIRED_EVENT_TITLES: Record<string, string> = {
+  "app.state.applied": "页面状态已更新",
+  "cloud.international.refresh.failed": "国际物流同步未完成",
+  "binding.flow.opened": "开始绑定手机号",
+  "platform.identity.failed": "驿站身份码获取失败",
+  "platform.identity.started": "开始处理驿站身份码",
+  "platform.parcel_sync.started": "开始同步平台包裹",
+  "platform.cabinet.started": "开始请求丰巢开柜",
+  "cloud.pdd.started": "开始同步拼多多云记录",
+  "cloud.pdd.completed": "拼多多云记录同步结束",
+  "cloud.parcel.metadata.started": "开始读取云端商品信息",
+  "cloud.parcel.metadata.completed": "云端商品信息读取结束",
+  "meal.sync.started": "开始同步取餐码",
+  "meal.sync.completed": "取餐码同步结束",
+  "binding.handler.entered": "已进入绑定流程",
+  "binding.code.started": "正在发送验证码",
+  "binding.verify.started": "正在验证绑定",
+  "manager.rendered": "手机号页面已刷新",
+  "detail.refresh.started": "详情刷新开始",
+  "detail.refresh.stage_started": "详情刷新阶段开始",
+  "detail.refresh.alignment": "状态与头条对不上，强制刷新",
+  "account.sync.parsed": "关联快递已解析",
+  "order.projection.started": "正在提取运单号",
+  "order.projection.succeeded": "运单号提取成功",
+  "manual.source.started": "数据源查询开始",
+  "refresh.started": "快递同步开始",
+  "refresh.stage.started": "快递刷新阶段开始",
+  "app.startup.failed": "应用启动失败",
+  "app.scene.changed": "前后台状态变化",
+  "activity.parcel.operation.started": "开始处理包裹实时活动",
+  "pickup.action.started": "开始处理待取操作",
+  "account.sync.started": "账号快递同步开始",
+  "detail.external.request": "外跳入口请求开始",
+  "notification.replay.started": "通知补发开始",
+  "refresh.wait.started": "等待其他刷新结束",
+  "refresh.preparation.started": "准备阶段开始",
+  "refresh.preparation.completed": "准备阶段完成",
+  "refresh.account.completed": "账号阶段完成",
+  "refresh.pdd_cloud.unavailable": "拼多多云同步暂不可用",
+  "refresh.enrichment.started": "逐票补充开始",
+  "refresh.enrichment.completed": "逐票补充完成",
+  "refresh.finalization.started": "收尾阶段开始",
+  "refresh.finalization.completed": "收尾阶段完成",
+  "meal.sync.deferred": "取餐码稍后同步",
+  "meal.sync.skipped": "取餐码同步跳过",
+  "recognition.online.started": "开始在线识别",
+  "shortcut.screen.started": "开始快捷指令识别",
+  "shortcut.query.started": "开始快捷指令查件",
+  "shortcut.phone_tail.started": "开始处理手机尾号",
   "widget.run.started": "小组件开始运行",
   "widget.run.presenting": "小组件开始显示",
   "widget.refresh.completed": "小组件刷新完成",
@@ -229,10 +290,75 @@ function timeText(value: string): string {
 }
 
 function failureText(item: DiagnosticEntry): string | null {
-  if (item.details.httpStatus === 401 && item.details.failureCode === "unauthorized") {
+  const workerError = item.details.workerError;
+  if (item.details.httpStatus === 401 &&
+      (item.details.failureCode === "unauthorized" || workerError === "unauthorized")) {
     return "Access Key 不可用";
   }
-  return item.details.failureCode ? `代码 ${item.details.failureCode}` : null;
+  const code = item.details.failureCode;
+  // Every failure code the logger keeps (SAFE_FAILURE_CODES and ACCOUNT_FAILURE_CODES in services/logger.ts) reads in
+  // Chinese (G-MED-21): the online recognition client's codes (2026-11-21), the account-list conditions (D175, Pipi's
+  // labels) and the gateway's closed error words. The page shows no raw key for them.
+  const labels: Record<string, string> = {
+    upstream_rejected: "服务方拒绝请求",
+    invalid_response: "返回内容无效",
+    body_too_large: "内容超过大小限制",
+    invalid_input: "输入不符合要求",
+    account_list_request_failed: "账号列表请求失败",
+    account_list_rejected: "账号列表接口返回业务错误",
+    account_list_invalid: "账号列表数据不完整，本轮未采用",
+    phone_verification_required: "需要重新验证手机号",
+    cancelled: "操作取消",
+    attestation_rejected: "设备证明被拒绝",
+    carrier_mismatch: "承运商不一致",
+    carrier_unknown: "承运商未知",
+    cloud_metadata_not_granted: "未获准读取云端快递信息",
+    cloud_record_retention_pending: "云记录正在整理，稍后重试",
+    cloud_record_storage_unavailable: "云记录存储不可用",
+    cloud_snapshot_changed: "云端记录已变更",
+    cloud_sync_disabled: "云同步未开启",
+    delegation_unavailable: "委托查询不可用",
+    detail_route_not_reconstructable: "详情入口无法重建",
+    expired_request: "请求已过期",
+    forbidden: "无权访问",
+    gateway_not_configured: "服务未配置",
+    invalid_cloud_record_identity: "云记录身份无效",
+    invalid_company_code: "承运商代码无效",
+    invalid_content_length: "内容长度无效",
+    invalid_express_identity: "快递身份无效",
+    invalid_express_interface: "快递接口无效",
+    invalid_express_operation: "快递操作无效",
+    invalid_flight_operation: "航班操作无效",
+    invalid_jd_app_route: "京东 App 入口无效",
+    invalid_json: "JSON 格式无效",
+    invalid_movie_operation: "电影操作无效",
+    invalid_order_id: "订单号无效",
+    invalid_primary_routes: "主数据源入口无效",
+    invalid_push_receipt: "推送回执无效",
+    invalid_query: "查询参数无效",
+    invalid_railway_operation: "铁路操作无效",
+    invalid_route_credential: "入口凭据无效",
+    invalid_timeline_query: "轨迹查询无效",
+    invalid_upstream_response: "上游返回无效",
+    invalid_waybill: "运单号无效",
+    invalid_weather_operation: "天气操作无效",
+    key_activated_elsewhere: "Access Key 已在其他设备激活",
+    key_store_unavailable: "密钥存储不可用",
+    method_not_allowed: "请求方法不允许",
+    network: "网络连接失败",
+    not_found: "未找到",
+    phone_tail: "需要手机尾号",
+    rate_limited: "请求过于频繁",
+    rejected: "请求被拒绝",
+    replay_store_unavailable: "防重放存储不可用",
+    replayed_request: "重复请求",
+    unauthorized: "未授权",
+    upstream_business_error: "上游业务错误",
+    upstream_unavailable: "上游服务不可用",
+  };
+  // The Worker's own code keeps its closed wire word (D175).
+  const parts = [code ? `代码 ${labels[code] || code}` : null, workerError ? `Worker 代码 ${workerError}` : null];
+  return parts.filter(Boolean).join(" · ") || null;
 }
 
 function stageText(value: string): string {
@@ -274,6 +400,8 @@ function stageText(value: string): string {
     jd_sync_detail: "读取京东物流详情",
     jd_sync_save: "保存京东同步结果",
     station_identity_entry: "打开身份码",
+    query: "查询",
+    sender: "寄件",
     station_identity_request: "请求身份码",
     station_identity_response: "读取身份码结果",
     platform_parcel_sync: "同步平台包裹",
@@ -346,6 +474,35 @@ function stageText(value: string): string {
     keychain: "本机凭据",
     state: "本地状态",
     ui_handler: "页面操作",
+    // 2026-11-24 诊断日志：新增阶段。
+    watch_page: "国际物流页",
+    commit: "写入结果",
+    code: "发送验证码",
+    bind: "验证绑定",
+    unbind: "解绑",
+    login: "登录",
+    recognition: "智能识别",
+    credential_check: "Access Key 校验",
+    carrier_table: "承运商表",
+    fengchao_cabinets: "丰巢柜件",
+    pdd_orders: "拼多多订单",
+    pdd_pickup: "拼多多待取",
+    cainiao_recipient: "菜鸟收件",
+    cainiao_sender: "菜鸟寄件",
+    online_recognition: "在线识别",
+    vision_ocr: "文字识别",
+    meal_recognition: "取餐码识别",
+    screenshot: "截屏",
+    text: "短信正文",
+    refresh: "快递刷新",
+    complete_activity: "完成实时活动",
+    // Online recognition stages (2026-11-21).
+    prompt: "提示词下载",
+    image: "图片编码",
+    request: "发送请求",
+    response: "读取响应",
+    provider_parse: "解析服务商响应",
+    result_parse: "解析识别结果",
   } as Record<string, string>)[value] || value;
 }
 
@@ -400,21 +557,89 @@ function executionBoundaryText(value: string): string {
   return value === "host_budget" ? "宿主总预算" : "分阶段预算";
 }
 
+/** The flows a `diagnostic.flow.unfinished` line can name, in the words of their end lines (D4). */
+const UNFINISHED_TITLES: Record<string, string> = {
+  refresh: "快递同步",
+  "detail.refresh": "详情刷新",
+  "widget.run": "小组件运行",
+  "order.projection": "京东运单提取",
+  "notification.replay": "通知补发",
+  "binding.code": "验证码发送",
+  "binding.verify": "绑定验证",
+  "cloud.sync": "云端同步",
+  "cloud.pdd": "拼多多云记录同步",
+  "cloud.parcel.metadata": "云端商品信息读取",
+  "meal.sync": "取餐码同步",
+  "platform.identity": "驿站身份码处理",
+  "platform.parcel_sync": "平台包裹同步",
+  "platform.cabinet": "丰巢开柜请求",
+  "platform.parcel_detail": "快递详情资料补查",
+  "platform.account.code": "平台验证码请求",
+  "shortcut.screen": "快捷指令识别",
+  "shortcut.query": "快捷指令查件",
+  "shortcut.phone_tail": "手机尾号处理",
+  "activity.parcel.operation": "包裹实时活动处理",
+  "pickup.action": "待取操作",
+  "recognition.online": "在线识别",
+  "account.enhanced.operation": "三星增强请求",
+  "binding.unbind": "解绑手机号",
+  "app.startup": "应用启动",
+  "home.query": "首页查件",
+};
+
+/** cloud.sync.* (D188): one event for every synchronized domain; the title names the domain. */
+const CLOUD_DOMAIN_TITLES: Record<string, Record<string, string>> = {
+  pdd: { completed: "拼多多云记录同步结束", failed: "拼多多云记录同步未完成", skipped: "拼多多云记录同步跳过" },
+  parcel_metadata: { completed: "云端商品信息读取结束", failed: "云端商品信息读取未完成", skipped: "云端商品信息读取跳过" },
+  meal_pickup: { completed: "取餐码同步结束", failed: "取餐码同步未完成", skipped: "取餐码同步跳过" },
+  international: { completed: "国际物流同步结束", failed: "国际物流同步未完成", skipped: "国际物流同步跳过" },
+  parcel_cloud: { completed: "快递云记录同步结束", failed: "快递云记录同步未完成", skipped: "快递云记录同步跳过" },
+};
+
 /**
- * The line's title. `detail.refresh.alignment` carries three kinds of line (the forced refresh, a row the signed freeze
- * stops, and the forced refresh failing), and `detail.refresh.skipped` also closes a pull that joined a running refresh,
- * so their titles follow the line rather than the event alone.
+ * The line's title. Some events carry several kinds of line, so their titles follow the line (D215): an alignment end
+ * by its result, a skipped source or detail refresh by its reason, a cloud line by its domain, an online recognition by
+ * whether it was the connection test (D229), and an unfinished-flow line by the flow it names.
  */
 function eventTitle(item: DiagnosticEntry): string {
-  if (item.event === "detail.refresh.alignment") {
-    if (item.details.skipReason === "signed_frozen") return "状态与头条对不上，已签收冻结，不强刷";
-    if (item.details.result === "failed") return "状态对齐强刷失败";
+  const details = item.details;
+  if (item.event === "alignment.completed") {
+    // D170: a signed-frozen row never reaches an alignment flow, so there is no frozen alignment title.
+    if (details.result === "failed") return "状态对齐强刷失败";
+    // A background alignment can also stop after its request, when the row changed or left (stale_target, removed,
+    // ownership_lost); only no_query means no source was asked.
+    if (details.result === "skipped") return details.skipReason === "no_query" ? "状态对齐未请求数据源" : "状态对齐已跳过";
+    if (details.result === "interrupted") return "状态对齐已中断";
+    return "状态与头条对不上，已强制刷新";
   }
   // A pull that met this row's status-alignment refresh waited for it and shows its outcome (user 2026-10-02).
-  if (item.event === "detail.refresh.skipped" && item.details.skipReason === "coalesced_detail_refresh") {
+  if (item.event === "detail.refresh.skipped" && details.skipReason === "coalesced_detail_refresh") {
     return "详情下拉等待正在执行的刷新";
   }
-  return EVENT_TITLES[item.event] || item.event;
+  if (item.event === "detail.refresh.skipped" && details.skipReason &&
+      ["interrupted", "stale_target", "lease_held", "removed", "ownership_lost"].includes(details.skipReason)) {
+    return "详情刷新未执行";
+  }
+  if (item.event === "manual.source.skipped") {
+    if (details.result === "cooldown" || details.skipReason === "cooldown") return "数据源冷却中，未查询";
+    if (details.result === "unsupported_carrier") return "数据源不支持该承运商";
+    return "数据源没有有效轨迹";
+  }
+  if (item.event === "refresh.stage.skipped" && (details.skipReason === "cooldown" || details.skipReason === "signed_frozen")) {
+    return details.skipReason === "cooldown" ? "快递刷新阶段冷却中" : "已签收冻结，跳过刷新";
+  }
+  if (item.event.startsWith("cloud.sync.") && details.domain) {
+    const title = CLOUD_DOMAIN_TITLES[details.domain]?.[item.event.slice("cloud.sync.".length)];
+    if (title) return title;
+  }
+  if (item.event === "recognition.online.completed" && details.trigger === "connection_test") return "连接测试结束";
+  if (item.event === "diagnostic.flow.unfinished" && details.unfinishedEvent) {
+    return `上次未结束：${UNFINISHED_TITLES[details.unfinishedEvent] || details.unfinishedEvent}`;
+  }
+  // A line stored before D183 renamed the alignment flow keeps that event's own failure title. (Its signed-frozen
+  // variant has not been written since 2026-11-16, beyond the log's seven days, so it is not kept; D170.)
+  if (item.event === "detail.refresh.alignment" && details.result === "failed") return "状态对齐强刷失败";
+  return EVENT_TITLES[item.event] || RETIRED_EVENT_TITLES[item.event] || item.event;
 }
 
 function reasonText(value: string): string {
@@ -430,6 +655,7 @@ function reasonText(value: string): string {
     cache_read: "读取本地缓存",
     list_pull: "列表下拉",
     detail_open: "打开详情",
+    handle_upgrade: "旧版订单指纹已改为本机句柄",
     detail_pull: "详情下拉",
     status_alignment: "状态对齐强刷",
     status_ahead: "状态比头条新",
@@ -447,6 +673,8 @@ function reasonText(value: string): string {
     coalesced_detail_refresh: "详情刷新已在执行",
     refreshed: "已更新",
     unchanged: "没有变化",
+    no_changes: "没有变化",
+    input_unavailable: "无法读取截屏输入",
     deadline_exhausted: "刷新预算已用尽",
     home_projection: "首页提取运单号",
     not_foreground: "不在前台",
@@ -569,6 +797,78 @@ function reasonText(value: string): string {
     diagnostic: "诊断探针",
     invalid_time: "时间无效",
     none: "无",
+    // Access Key 保存、读取与取餐码同步跳过（2026-11-21）。
+    new_key: "此前未保存 Access Key",
+    same_key: "与原 Access Key 相同",
+    different_key: "替换了原 Access Key",
+    absent: "本机脚本没有保存记录",
+    invalid: "保存记录无法识别",
+    keychain_read_failed: "钥匙串读取失败",
+    legacy_record_unreadable: "旧授权记录无法读取",
+    legacy_record_invalid: "旧授权记录无效",
+    no_access_key: "没有可用的 Access Key",
+    access_key_rejected: "Access Key 不可用于同步",
+    no_meal_rules: "没有可用的取餐规则",
+    // Online recognition attempt (2026-11-21).
+    connection_test: "测试连接",
+    shortcut: "快捷指令识别",
+    no_match: "识别结果不符",
+    image_unavailable: "测试图片不可用",
+    configuration: "在线识别配置不可用",
+    // 2026-11-24 诊断日志：新增结果与原因。
+    forced: "已强制刷新",
+    no_query: "未请求数据源",
+    stale_target: "目标已变更",
+    empty_timeline_hidden: "空轨迹已隐藏",
+    not_running: "实时活动未运行",
+    outdated_shortcut: "快捷指令需要更新",
+    // The Shortcut screen and text recognition results (shortcut.screen, G-MED-21).
+    luckin_rescan: "瑞幸二次识别",
+    // Other written words the page used to show raw (G-MED-21).
+    meal: "取餐码",
+    aligned: "已对齐",
+    lagging: "落后于当前轨迹",
+    parse_failed: "解析失败",
+    write_failed: "写入失败",
+    enhancement_active: "增强模式进行中",
+    closed_from_activity: "从实时活动收起",
+    closed_after_grace: "宽限期后收起",
+    manual_rescan_required: "需手动二次识别",
+    automatic_rescan_requested: "已请求自动二次识别",
+    meal_saved: "已保存取餐码",
+    pickup_saved: "已保存取件码",
+    handoff_saved: "已保存寄件码",
+    lookup_staged: "运单待确认",
+    waybill_recognized: "已识别运单号",
+    phone_tail_rejected: "手机尾号不正确",
+    already_listed: "已在列表中",
+    pickup_save_failed: "取件码保存失败",
+    invalid_input: "输入无效",
+    logout: "已退出登录",
+    enhancement_unavailable: "增强模式远端解绑未完成",
+    held: "等待承运商识别",
+    notified: "已通知",
+    suppressed: "未通知",
+    first_seen: "首次出现",
+    retention_hidden: "已隐藏",
+    attached: "已挂靠其他快递",
+    no_item_order: "无商品订单",
+    channel_off: "通知已关闭",
+    reloaded: "已读取其他进程的更新",
+    reconciled: "已对齐实时活动",
+    shortcut_lookup: "有待处理的快捷指令",
+    loaded: "已读取",
+    closed: "已关闭",
+    throttled: "两分钟内已同步",
+    shown: "已显示",
+    scheduled: "已安排",
+    added: "新出现",
+    saved: "已保存",
+    unreachable: "无法连接",
+    user: "用户操作",
+    superseded: "新的测试开始",
+    settings_saved: "设置已保存",
+    page_closed: "页面已关闭",
   } as Record<string, string>)[value] || value;
 }
 
@@ -610,6 +910,92 @@ function bindingsCount(details: DiagnosticDetails): number | null {
   return typeof legacy === "number" ? legacy : null;
 }
 
+/**
+ * recognition.online.* (2026-11-21): the configured provider, protocol and model, the request number, the exchange
+ * phase that stopped, what ended the request, and the attempt and request budgets.
+ */
+function recognitionParts(item: DiagnosticEntry): Array<string | null> {
+  if (!item.event.startsWith("recognition.online.")) return [];
+  const details = item.details;
+  const provider = details.onlineProvider
+    ? ({ openai: "OpenAI", gemini: "Gemini", compatible: "OpenAI-Compat" } as Record<string, string>)[details.onlineProvider]
+    : undefined;
+  const protocol = details.onlineProtocol
+    ? ({ responses: "Responses", chat_completions: "Chat Completions", gemini: "Gemini" } as Record<string, string>)[
+      details.onlineProtocol]
+    : undefined;
+  const phase = details.requestPhase
+    ? ({ request: "等待响应", response_body: "读取响应内容", response_complete: "响应已读完" } as Record<string, string>)[
+      details.requestPhase]
+    : undefined;
+  const origin = details.timeoutOrigin
+    ? ({
+      timeout_signal: "请求超时",
+      parent_signal: "操作取消",
+      native_timeout: "系统请求超时",
+      native_abort: "系统中止请求",
+      deadline_after_headers: "收到响应头后到达截止时间",
+      deadline_after_body: "读完响应后到达截止时间",
+      deadline_after_error: "出错后到达截止时间",
+    } as Record<string, string>)[details.timeoutOrigin]
+    : undefined;
+  return [
+    provider ? `服务商 ${provider}` : null,
+    protocol ? `协议 ${protocol}` : null,
+    details.onlineModel ? `模型 ${details.onlineModel}` : null,
+    details.attempt === 2 ? "第 2 次请求（关闭思考重试）" : details.attempt === 1 ? "第 1 次请求" : null,
+    phase ? `请求阶段 ${phase}` : null,
+    origin ? `中止原因 ${origin}` : null,
+    details.budgetMs != null ? `总预算 ${details.budgetMs} ms` : null,
+    details.requestBudgetMs != null ? `请求预算 ${details.requestBudgetMs} ms` : null,
+  ];
+}
+
+/** D158: a refresh's phases, folded into its end line. */
+function phaseParts(details: DiagnosticDetails): Array<string | null> {
+  return [
+    details.preparationMs != null ? `准备 ${details.preparationMs} ms` : null,
+    details.accountMs != null ? `账号阶段 ${details.accountMs} ms` : null,
+    details.accountContinued === false ? "账号阶段后未继续" : null,
+    details.enrichmentMs != null ? `逐票补充 ${details.enrichmentMs} ms` : null,
+    details.finalizationMs != null ? `收尾 ${details.finalizationMs} ms` : null,
+    // D201: the cloud PDD read inside the refresh.
+    details.cloudPddRecords != null ? `拼多多云记录 ${details.cloudPddRecords} 条` : null,
+    details.cloudPddChanged != null ? `拼多多云记录${details.cloudPddChanged ? "已写入" : "无变化"}` : null,
+  ];
+}
+
+/** D181: the candidate map of a selection line, one part per package. */
+function candidateParts(map: string | undefined): string[] {
+  if (!map) return [];
+  return map.split(",").map((fragment) => {
+    const [provider, state, count, completeness, gate, lag] = fragment.split(":");
+    const lagText = !lag || lag === "0" ? "" : ` · ${lag.startsWith("a") ? "新" : "旧"} ${lag.slice(1)} 分钟`;
+    return `候选 ${providerText(provider || "")} ${({ selected: "已选", available: "有轨迹", empty: "无轨迹" } as
+      Record<string, string>)[state || ""] || state} ${count} 条 ${completeness === "full" ? "完整" : "不完整"}${
+      gate && gate !== "ok" ? ` · ${reasonText(gate)}` : ""}${lagText}`;
+  });
+}
+
+/**
+ * An online recognition that returned no supported fields is not the express cache's 缓存无轨迹. The Access Key
+ * save results name the restore only for that event: refresh.stage.failed also writes `write_failed`.
+ */
+function resultText(item: DiagnosticEntry, result: string): string {
+  if (result === "empty" && item.event.startsWith("recognition.online.")) return "未识别到有效信息";
+  if (item.event === "settings.changed" && (result === "online" || result === "local")) {
+    return result === "online" ? "在线识别" : "本地识别";
+  }
+  if (item.event === "gateway.credential.checked" && result === "accepted") return "校验通过";
+  if (item.event === "platform.account.changed" && result === "login") return "已登录";
+  if (item.event === "gateway.credential.save_failed") {
+    const label = ({ write_failed: "写入失败，已恢复原记录", restore_failed: "写入失败且原记录未能恢复" } as
+      Record<string, string>)[result];
+    if (label) return label;
+  }
+  return reasonText(result);
+}
+
 function detailsText(item: DiagnosticEntry): string {
   const details = item.details;
   const hasSource = Boolean(
@@ -620,7 +1006,25 @@ function detailsText(item: DiagnosticEntry): string {
     details.baseActiveSource,
   );
   const parts = [
-    details.runtimeHost ? `运行宿主 ${details.runtimeHost === "widget" ? "小组件" : "主应用"}` : null,
+    details.runtimeHost ? `运行宿主 ${({ app: "主应用", widget: "小组件", app_intent: "App Intent",
+      shortcut: "快捷指令" } as Record<string, string>)[details.runtimeHost] || details.runtimeHost}` : null,
+    details.ageMs != null ? `已过 ${Math.round(details.ageMs / 60_000)} 分钟` : null,
+    // D6: business times are ages at the line's time; the compared ones read in minutes.
+    details.statusEventAgeMs != null ? `状态时间 ${Math.round(details.statusEventAgeMs / 60_000)} 分钟前` : null,
+    details.headlineAgeMs != null ? `头条时间 ${Math.round(details.headlineAgeMs / 60_000)} 分钟前` : null,
+    details.detailAgeMs != null ? `详情最新 ${Math.round(details.detailAgeMs / 60_000)} 分钟前` : null,
+    details.pushOrigin === "app_local" ? "本地通知" : null,
+    details.senderRole ? "寄件" : null,
+    details.signedFrozen ? "已签收冻结" : null,
+    details.detailStatusSemantic && item.event.startsWith("express.row.")
+      ? `详情状态 ${details.detailStatusSemantic}` : null,
+    details.localOnly ? "仅本机" : null,
+    details.changed != null ? `${details.changed ? "有" : "无"}新变化` : null,
+    details.cancelReason ? `取消原因 ${reasonText(details.cancelReason)}` : null,
+    details.lockScreenStyle
+      ? `锁屏样式 ${({ dynamic: "动态", black: "黑色", white: "白色" } as Record<string, string>)[details.lockScreenStyle]}` : null,
+    details.mealRulesResult
+      ? `取餐规则${({ accepted: "已接受", rejected: "未接受", absent: "未提供" } as Record<string, string>)[details.mealRulesResult]}` : null,
     details.sqliteOpenAvailable != null ? `SQLite ${details.sqliteOpenAvailable ? "可用" : "不可用"}` : null,
     details.sharedFilesAvailable != null ? `共享文件${details.sharedFilesAvailable ? "可用" : "不可用"}` : null,
     details.hotlineMatchesExpected != null ? `客服电话校验${details.hotlineMatchesExpected ? "通过" : "未通过"}` : null,
@@ -630,6 +1034,62 @@ function detailsText(item: DiagnosticEntry): string {
     details.deadlineLagMs != null ? `截止延迟 ${details.deadlineLagMs} ms` : null,
     details.clientBuild != null ? `构建 ${details.clientBuild}` : null,
     details.trigger ? `触发 ${reasonText(details.trigger)}` : null,
+    // D226, D228 (owner 2026-11-21 「保留用词合同，只改页面显示（推荐）」): the common reason, link and phase keys read on the
+    // page; `level` is the chain level, not the line's level.
+    details.interface ? `接口 ${details.interface}` : null,
+    details.level ? `链路级别 ${details.level}` : null,
+    details.statusSemantic && !item.event.startsWith("express.row.") ? `状态 ${details.statusSemantic}` : null,
+    details.gateReason ? `闸门 ${reasonText(details.gateReason)}` : null,
+    details.cooldownReason ? `冷却原因 ${reasonText(details.cooldownReason)}` : null,
+    details.cooldownRemainingMs != null ? `冷却剩余 ${Math.ceil(details.cooldownRemainingMs / 1000)} 秒` : null,
+    details.providerNextDueInMs != null ? `${Math.ceil(details.providerNextDueInMs / 60_000)} 分钟后可再查` : null,
+    details.selectionReason ? `选包原因 ${reasonText(details.selectionReason)}` : null,
+    details.statusProvider ? `状态来源 ${providerText(details.statusProvider)}` : null,
+    details.headlineProvider ? `头条来源 ${providerText(details.headlineProvider)}` : null,
+    details.latestEventAgeMs != null ? `最新事件 ${Math.round(details.latestEventAgeMs / 60_000)} 分钟前` : null,
+    details.feedEventAgeMs != null ? `来源最新 ${Math.round(details.feedEventAgeMs / 60_000)} 分钟前` : null,
+    // D226: further keys read on the page rather than only in the copied text.
+    details.historyProvider ? `历史来源 ${providerText(details.historyProvider)}` : null,
+    details.latestTrackSemantic ? `最新节点状态 ${details.latestTrackSemantic}` : null,
+    details.structuredStatus != null ? `状态${details.structuredStatus ? "为结构化状态" : "非结构化状态"}` : null,
+    details.latestTrackAgeMs != null ? `最新节点 ${Math.round(details.latestTrackAgeMs / 60_000)} 分钟前` : null,
+    details.listEventAgeMs != null ? `列表事件 ${Math.round(details.listEventAgeMs / 60_000)} 分钟前` : null,
+    details.providerLastAttemptAgeMs != null
+      ? `上次查询 ${Math.round(details.providerLastAttemptAgeMs / 60_000)} 分钟前` : null,
+    details.hasPickup != null ? `${details.hasPickup ? "有" : "无"}揽收节点` : null,
+    details.foreignPackage ? "属于其他包裹" : null,
+    details.takeoverReason === "waybill_reuse" ? "运单号被重用" : null,
+    details.fromProvider && details.toProvider ? `归属 ${details.fromProvider} → ${details.toProvider}` : null,
+    details.projectionReason
+      ? `打开原因 ${({ timeline_reopen: "补轨迹", forced: "同步后提取", scheduled: "按计划" } as Record<string, string>)[
+        details.projectionReason] || details.projectionReason}` : null,
+    details.jdPage ? `京东页面 ${({ jd_login: "登录页", jd_account: "账号页", jd_orders: "订单页", jd_other: "其他京东页",
+      web_other: "其他网页", error_page: "错误页", local_page: "本地页", other: "其他" } as Record<string, string>)[
+      details.jdPage] || details.jdPage}` : null,
+    details.riskControlSeen ? "遇到风控" : null,
+    details.viewportHosted != null ? `网页视口${details.viewportHosted ? "已挂载" : "未挂载"}` : null,
+    details.upstreamCode != null ? `上游代码 ${details.upstreamCode}` : null,
+    details.valueKind ? `回包值类型 ${details.valueKind}` : null,
+    details.enhancedMode != null ? `增强模式${details.enhancedMode ? "开启" : "关闭"}` : null,
+    details.realWaybillCount != null ? `真实运单 ${details.realWaybillCount}` : null,
+    details.productImageCount != null ? `商品图 ${details.productImageCount}` : null,
+    details.blockedMs != null ? `等待其他刷新 ${details.blockedMs} ms` : null,
+    details.scriptVersion ? `脚本版本 ${details.scriptVersion}` : null,
+    ...phaseParts(details),
+    ...candidateParts(details.candidateMap),
+    details.alignmentAttempts != null ? `已用强刷 ${details.alignmentAttempts}/3` : null,
+    details.attemptCounted === false ? "本次未计入强刷次数" : null,
+    details.nextAttemptInMs != null ? `${Math.ceil(details.nextAttemptInMs / 60_000)} 分钟后可再次强刷` : null,
+    details.widgetSize ? `尺寸 ${reasonText(details.widgetSize)}` : null,
+    details.sincePreviousMs != null ? `距上次运行 ${Math.round(details.sincePreviousMs / 60_000)} 分钟` : null,
+    details.refreshMs != null ? `刷新耗时 ${details.refreshMs} ms` : null,
+    details.surface ? `实时活动 ${({ express_live: "快递取件码", handoff_live: "寄件码", pickup_live: "取餐码" } as
+      Record<string, string>)[details.surface] || details.surface}` : null,
+    details.hiddenRecords != null ? `隐藏 ${details.hiddenRecords}` : null,
+    details.removedRecords != null ? `清理 ${details.removedRecords}` : null,
+    details.pendingNotifications != null ? `待发通知 ${details.pendingNotifications}` : null,
+    details.appliedRevision != null ? `界面版本 ${details.appliedRevision}` : null,
+    ...recognitionParts(item),
     hasSource ? "统一通道" : null,
     details.waybillTail ? `运单尾号 ${details.waybillTail}` : null,
     details.sourceProvider
@@ -658,9 +1118,6 @@ function detailsText(item: DiagnosticEntry): string {
     details.routableOrders != null ? `可提取订单 ${details.routableOrders}` : null,
     details.selected != null
       ? `本轮${details.selected ? "已选中" : "未选中"}`
-      : null,
-    details.webViewAllowed != null
-      ? `网页提取${details.webViewAllowed ? "允许" : "禁用"}`
       : null,
     details.routePointerPresent != null
       ? `路由标记${details.routePointerPresent ? "存在" : "缺失"}`
@@ -773,10 +1230,7 @@ function detailsText(item: DiagnosticEntry): string {
     details.executionBoundary
       ? `执行边界 ${executionBoundaryText(details.executionBoundary)}`
       : null,
-    details.readbackMatched != null
-      ? `回读${details.readbackMatched ? "一致" : "不一致"}`
-      : null,
-    details.result ? `结果 ${reasonText(details.result)}` : null,
+    details.result ? `结果 ${resultText(item, details.result)}` : null,
     details.stage ? `阶段 ${stageText(details.stage)}` : null,
     details.errorCategory ? `原因 ${errorText(details.errorCategory)}` : null,
     details.httpStatus != null ? `HTTP ${details.httpStatus}` : null,
@@ -785,6 +1239,36 @@ function detailsText(item: DiagnosticEntry): string {
     details.flowId ? `流程 ${details.flowId}` : null,
   ];
   return parts.filter(Boolean).join(" · ");
+}
+
+/** D221: the kinds the page filters by (one set with Pipi's kinds where iOS has the feature). */
+const CATEGORY_TITLES: ReadonlyArray<readonly [DiagnosticCategory | "all", string]> = [
+  ["all", "全部"], ["express", "快递"], ["pickup", "取件"], ["platform", "平台与账号"], ["ocr", "识别"],
+  ["cloud", "云同步"], ["notification", "通知"], ["app", "应用"],
+];
+
+export type DiagnosticGroup = { key: string; head: DiagnosticEntry; steps: DiagnosticEntry[]; category: DiagnosticCategory };
+
+/**
+ * D222: the lines of one flow fold into one card. `items` is newest first, so a flow's first line here is its newest
+ * (normally its end line): the card shows it and its earlier lines are the steps. A line without a flow id stands alone.
+ * The card's kind is its newest line's kind (D230).
+ */
+export function groupDiagnostics(items: readonly DiagnosticEntry[]): DiagnosticGroup[] {
+  const groups: DiagnosticGroup[] = [];
+  const byFlow = new Map<string, DiagnosticGroup>();
+  for (const item of items) {
+    const flowId = item.details.flowId;
+    const existing = flowId ? byFlow.get(flowId) : undefined;
+    if (existing) {
+      existing.steps.push(item);
+      continue;
+    }
+    const group = { key: item.id, head: item, steps: [], category: diagnosticCategory(item.event) };
+    groups.push(group);
+    if (flowId) byFlow.set(flowId, group);
+  }
+  return groups;
 }
 
 function levelColor(
@@ -797,17 +1281,74 @@ function levelColor(
       : "accentColor";
 }
 
+function EntryRow({ item, footer, showSeparator, separatorLeading = 28 }: {
+  item: DiagnosticEntry;
+  footer?: VirtualNode | null;
+  showSeparator?: boolean;
+  separatorLeading?: number;
+}) {
+  const details = detailsText(item);
+  return (
+    <HStack
+      spacing={10}
+      alignment="top"
+      padding={{ vertical: 5 }}
+      listRowSeparator="hidden"
+      overlay={showSeparator ? {
+        alignment: "bottom",
+        content: <Divider padding={{ leading: separatorLeading }} />,
+      } : undefined}
+    >
+      <Image
+        systemName={
+          item.level === "error"
+            ? "xmark.circle.fill"
+            : item.level === "warning"
+              ? "exclamationmark.triangle.fill"
+              : "circle.fill"
+        }
+        foregroundStyle={levelColor(item)}
+        frame={{ width: 18 }}
+      />
+      <VStack alignment="leading" spacing={3} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+        <HStack spacing={8} frame={{ maxWidth: "infinity" }}>
+          <Text font="subheadline" fontWeight="semibold">{eventTitle(item)}</Text>
+          <Spacer />
+          <Text font="caption" foregroundStyle="secondaryLabel" monospacedDigit>{timeText(item.at)}</Text>
+        </HStack>
+        {details ? (
+          <Text font="footnote" lineSpacing={2} foregroundStyle="secondaryLabel">{details}</Text>
+        ) : null}
+        {footer ?? null}
+      </VStack>
+    </HStack>
+  );
+}
+
 export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: number) => void }) {
   const [items, setItems] = useState<DiagnosticEntry[]>([]);
   const [notice, setNotice] = useState("");
   const [recording, setRecording] = useState(() => diagnosticsEnabled());
+  const [category, setCategory] = useState<DiagnosticCategory | "all">("all");
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const groups = groupDiagnostics(items).filter((group) => category === "all" || group.category === category);
 
   function showItems(next: DiagnosticEntry[]) {
     setItems(next);
     onCountChange(next.length);
   }
 
+  // The toolbar button calls this without awaiting it: a failed log read or prompt shows a notice instead of
+  // ending the Scripting session (G-HIGH-17).
   async function actions() {
+    try {
+      await runAction();
+    } catch {
+      setNotice(ACTION_FAILED_TOAST);
+    }
+  }
+
+  async function runAction() {
     // 复制 and 清空 act on stored entries, so they are offered only when there are some. That makes
     // the sheet's indices depend on the log's state, hence the key list instead of fixed offsets.
     const latest = readDiagnostics();
@@ -839,6 +1380,8 @@ export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: nu
       }
       setRecording(next);
       if (next) {
+        // D40: the line that says from when this log holds evidence.
+        writeDiagnostic("diagnostics.recording.started", { result: "started" });
         writeRuntimeCapabilities("app");
         showItems(readDiagnostics());
       }
@@ -850,7 +1393,8 @@ export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: nu
         setNotice("暂无可复制的日志");
         return;
       }
-      const result = await copyText(diagnosticText(latestItems));
+      // D225: the raw lines with a short summary above them (counts and enumerated words only).
+      const result = await copyText(`${diagnosticSummaryText(latestItems)}\n${diagnosticText(latestItems)}`);
       setNotice(
         result === "copied"
           ? "日志已复制"
@@ -886,16 +1430,54 @@ export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: nu
       toast={transientToast(notice, setNotice)}
       toolbar={{
         topBarTrailing: (
-          <Button buttonStyle="plain" action={actions}>
-            <Image
-              systemName="ellipsis.circle"
-              font={17}
-              frame={{ width: 44, height: 44 }}
-            />
-          </Button>
+          <Button
+            title="更多操作"
+            systemImage="ellipsis.circle"
+            labelStyle="iconOnly"
+            action={actions}
+          />
         ),
       }}
     >
+      {items.length ? (
+        <Section listSectionMargins={0} listSectionSeparator="hidden">
+          <ScrollView
+            axes="horizontal"
+            scrollIndicator="hidden"
+            listRowInsets={{ top: 4, bottom: 8, leading: 20, trailing: 20 }}
+            listRowBackground={<Rectangle fill="clear" />}
+            listRowSeparator="hidden"
+          >
+            <HStack spacing={8}>
+              {CATEGORY_TITLES.map(([value, title]) => {
+                const selected = category === value;
+                return (
+                  <Button
+                    key={value}
+                    buttonStyle="plain"
+                    accessibilityAddTraits={selected ? "isSelected" : undefined}
+                    action={() => setCategory(value as DiagnosticCategory | "all")}
+                  >
+                    <Text
+                      font="subheadline"
+                      fontWeight={selected ? "semibold" : "regular"}
+                      foregroundStyle={selected ? "white" : "secondaryLabel"}
+                      padding={{ horizontal: 14, vertical: 7 }}
+                      background={{
+                        style: selected ? "accentColor" : "secondarySystemGroupedBackground",
+                        shape: "capsule",
+                      }}
+                      contentShape="capsule"
+                    >
+                      {title}
+                    </Text>
+                  </Button>
+                );
+              })}
+            </HStack>
+          </ScrollView>
+        </Section>
+      ) : null}
       <Section
         footer={
           <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">
@@ -903,7 +1485,7 @@ export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: nu
           </Text>
         }
       >
-        {!items.length ? (
+        {!groups.length ? (
           <VStack
             spacing={8}
             padding={{ vertical: 28 }}
@@ -917,46 +1499,35 @@ export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: nu
             <Text font="subheadline" fontWeight="medium">暂无诊断日志</Text>
           </VStack>
         ) : (
-          items.map((item) => (
-            <HStack
-              key={item.id}
-              spacing={10}
-              alignment="top"
-              padding={{ vertical: 5 }}
-            >
-              <Image
-                systemName={
-                  item.level === "error"
-                    ? "xmark.circle.fill"
-                    : item.level === "warning"
-                      ? "exclamationmark.triangle.fill"
-                      : "circle.fill"
-                }
-                foregroundStyle={levelColor(item)}
-                frame={{ width: 18 }}
-              />
-              <VStack
-                alignment="leading"
-                spacing={3}
-                frame={{ maxWidth: "infinity", alignment: "leading" }}
-              >
-                <HStack spacing={8} frame={{ maxWidth: "infinity" }}>
-                  <Text font="subheadline" fontWeight="semibold">
-                    {eventTitle(item)}
-                  </Text>
-                  <Spacer />
-                  <Text font="caption" foregroundStyle="secondaryLabel" monospacedDigit>
-                    {timeText(item.at)}
-                  </Text>
+          groups.flatMap((group, groupIndex) => {
+            const open = expanded.has(group.key);
+            const hasMoreGroups = groupIndex < groups.length - 1;
+            const toggle = group.steps.length ? (
+              <Button buttonStyle="plain" action={() => setExpanded((current) => {
+                const next = new Set(current);
+                if (next.has(group.key)) next.delete(group.key);
+                else next.add(group.key);
+                return next;
+              })}>
+                <Text font="caption" foregroundStyle="accentColor">
+                  {open ? "收起步骤" : `展开 ${group.steps.length} 条步骤`}
+                </Text>
+              </Button>
+            ) : null;
+            return [
+              <EntryRow key={group.key} item={group.head} footer={toggle}
+                showSeparator={(open && group.steps.length > 0) || hasMoreGroups} />,
+              ...(open ? group.steps.map((step, stepIndex) => (
+                <HStack key={step.id} padding={{ leading: 28 }} listRowSeparator="hidden"
+                  overlay={stepIndex < group.steps.length - 1 || hasMoreGroups ? {
+                    alignment: "bottom",
+                    content: <Divider padding={{ leading: 56 }} />,
+                  } : undefined}>
+                  <EntryRow item={step} />
                 </HStack>
-                {detailsText(item) ? (
-                  <Text font="footnote" lineSpacing={2} foregroundStyle="secondaryLabel">
-                    {detailsText(item)}
-                  </Text>
-                ) : null}
-              </VStack>
-            </HStack>
-          ))
+              )) : []),
+            ];
+          })
         )}
       </Section>
     </List>

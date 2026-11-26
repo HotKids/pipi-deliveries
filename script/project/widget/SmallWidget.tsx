@@ -17,9 +17,9 @@ import {
   smallWidgetLayout,
 } from "./layout";
 import { WidgetLineArt } from "./WidgetLineArt";
+import { WidgetSenderTag } from "./WidgetSenderTag";
 import {
   EMPTY_WIDGET_ACCENT,
-  carrierWidgetAccent,
   emptyWidgetBackground,
   mediumWidgetBackground,
 } from "./palette";
@@ -89,28 +89,38 @@ export function SmallWidget(props: {
                     maxWidth: "infinity",
                   }}
                 >
-                  <Text
-                    font={layout.statusFont}
-                    fontWeight="semibold"
-                    foregroundStyle={statusTextTint(row.semantic, {
-                      label: row.statusLabel,
-                      brandAccent: carrierWidgetAccent(row.courierCode, row.companyName, row.accountOrder),
-                    })}
-                    lineLimit={1}
-                    minScaleFactor={0.9}
-                    allowsTightening={true}
-                    frame={{
-                      minHeight: layout.statusLineHeight,
-                      maxHeight: layout.statusLineHeight,
-                      maxWidth: "infinity",
-                      alignment: "topLeading",
-                    }}
-                  >
-                    {row.statusLabel}
-                  </Text>
+                  {/* The card is titled by its status, so an outgoing parcel's small gray 寄 tag follows the
+                      status word, its text at the carrier line's size (owner 2026-11-20); the status may
+                      shrink a little more so the tag always fits. */}
+                  <HStack alignment="center" spacing={4} frame={{ maxWidth: "infinity", alignment: "leading" }}>
+                    <Text
+                      font={layout.statusFont}
+                      fontWeight="semibold"
+                      foregroundStyle={statusTextTint(row.semantic, { label: row.statusLabel })}
+                      lineLimit={1}
+                      minScaleFactor={row.sender === true ? 0.75 : 0.9}
+                      allowsTightening={true}
+                      frame={row.sender === true ? {
+                        minHeight: layout.statusLineHeight,
+                        maxHeight: layout.statusLineHeight,
+                        alignment: "topLeading",
+                      } : {
+                        minHeight: layout.statusLineHeight,
+                        maxHeight: layout.statusLineHeight,
+                        maxWidth: "infinity",
+                        alignment: "topLeading",
+                      }}
+                    >
+                      {row.statusLabel}
+                    </Text>
+                    {row.sender === true ? (
+                      <WidgetSenderTag font={layout.companyFont} verticalPadding={1} />
+                    ) : null}
+                  </HStack>
                   <Text
                     font={layout.companyFont}
                     foregroundStyle="secondaryLabel"
+                    monospacedDigit
                     lineLimit={1}
                     minScaleFactor={0.75}
                     allowsTightening={true}
@@ -177,6 +187,7 @@ export function SmallWidget(props: {
                 font={layout.pillFont}
                 fontWeight="semibold"
                 foregroundStyle="white"
+                monospacedDigit
                 lineLimit={1}
               >
                 全部快递 {snapshot.totalCount}

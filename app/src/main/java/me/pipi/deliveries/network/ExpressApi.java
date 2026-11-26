@@ -100,6 +100,10 @@ public final class ExpressApi {
             return new QueryException(Kind.PHONE_REQUIRED, message);
         }
 
+        public static QueryException phoneTailMismatch(String message) {
+            return new QueryException(Kind.PHONE_MISMATCH, message);
+        }
+
         public boolean needsPhoneTail() {
             return kind == Kind.PHONE_REQUIRED || kind == Kind.PHONE_MISMATCH;
         }

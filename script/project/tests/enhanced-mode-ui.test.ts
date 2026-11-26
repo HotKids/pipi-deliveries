@@ -34,12 +34,14 @@ function mountHandlers(source: string, name: string, props: any, exports: string
     setTimeout: () => 1,
     clearTimeout: () => {},
     SCRIPT_BINDING_SOURCE: "interface5",
+    INPUT_ROW_HEIGHT: 52,
     accountStatus,
     onPlatformAccountsChanged,
     PLATFORM_SOURCES,
     EXPRESS_POLICY: { sources: { maxBindingsPerSource: 5 } },
     EXPRESS_TOAST_COPY: { codeSent: "sent", codeSendFailed: "send failed", bindFailed: "bind failed" },
     createDiagnosticFlowId: () => "synthetic-flow",
+    beginDiagnosticFlow: () => {},
     diagnosticErrorDetails: () => ({}),
     writeDiagnostic: () => {},
     errorMessage: (_error: unknown, fallback: string) => fallback,
@@ -145,17 +147,43 @@ assert.equal(bound[1][3], false);
 binding.unmount();
 
 let finishSend!: () => void;
+// R5-NEW-07 ②: the code request's flow ends with its line on every exit, so no marker stays open.
+const codeLines: Array<[string, any]> = [];
+const codeDiagnostics = {
+  beginDiagnosticFlow: (event: string, details: any) => { codeLines.push([event, details]); },
+  writeDiagnostic: (event: string, details: any) => { codeLines.push([event, details]); },
+};
 const late = mountHandlers(handlers, "PhoneBindingPage", {
   bindings: [],
   onSendCode: () => new Promise<void>((resolve) => { finishSend = resolve; }),
   onBind: () => {},
-}, "changePhone, sendCode, verificationPhone");
+}, "changePhone, sendCode, verificationPhone", codeDiagnostics);
 late.render().changePhone(basePhone);
 const pendingSend = late.render().sendCode();
 late.unmount();
 finishSend();
 await pendingSend;
 assert.equal(late.render().verificationPhone, "", "a dismissed page cannot accept a late SMS result");
+assert.deepEqual(codeLines.map(([event, details]) => [event, details.cancelReason]),
+  [["binding.code.started", undefined], ["binding.code.succeeded", "page_closed"]],
+  "a dismissed page still ends the code request it started");
+
+codeLines.length = 0;
+const changed = mountHandlers(handlers, "PhoneBindingPage", {
+  bindings: [],
+  onSendCode: () => new Promise<void>((resolve) => { finishSend = resolve; }),
+  onBind: () => {},
+}, "changePhone, sendCode, verificationPhone", codeDiagnostics);
+changed.render().changePhone(basePhone);
+const changedSend = changed.render().sendCode();
+changed.render().changePhone("13900000000");
+finishSend();
+await changedSend;
+assert.equal(changed.render().verificationPhone, "", "a changed phone cannot accept the earlier SMS result");
+assert.deepEqual(codeLines.map(([event, details]) => [event, details.cancelReason]),
+  [["binding.code.started", undefined], ["binding.code.succeeded", "user"]],
+  "a phone changed during the request still ends the request it started");
+changed.unmount();
 
 const managerBindings: Array<{ finish: () => void }> = [];
 const managerHandlers = managerSource.slice(
@@ -280,7 +308,7 @@ for (const [identity, refreshOnAppear, expectedCalls] of [
   const shipment = { identity: { bindingSource: "interface5", sourceId: "synthetic-order",
     phone: "13800001234", ...identity }, timeline: { tracks: [] } };
   await runInNewContext(`${detailSource.slice(appearStart, appearEnd)}\n${entryFields}\nfinishDetailOpening(signal)`, {
-    props: { shipment, refreshOnAppear, persistedShipment: false }, shipment,
+    props: { shipment, refreshOnAppear, persistedShipment: false }, shipment, syncedInternational: false,
     signal: new AbortController().signal,
     refreshGenerationRef: { current: 1 },
     refreshInFlightRef: { current: null },
@@ -304,7 +332,9 @@ for (const [identity, refreshOnAppear, expectedCalls] of [
 const imageRequests: Array<{ url: string; signal: AbortSignal; finish: (image: any) => void }> = [];
 const imageProps = { imageURL: "", cacheKey: "", courierCode: "JD", companyName: "京东快递", size: 72,
   get shipment() { return { identity: { id: this.cacheKey, createdAtMs: 1 } }; } };
-const thumbnail = mountHandlers(thumbnailSource.slice(
+// The component's module-level owner index is evaluated with it; only its imports are left out.
+const thumbnail = mountHandlers(thumbnailSource.slice(0, thumbnailSource.indexOf("export function ProductThumbnail("))
+  .replace(/^import[\s\S]*?;\n/gm, "") + thumbnailSource.slice(
   thumbnailSource.indexOf("export function ProductThumbnail("),
   thumbnailSource.indexOf("  if (!image) {"),
 ), "ProductThumbnail", imageProps, "image", {

@@ -24,6 +24,7 @@ import { internationalShipment } from "../services/international-records";
 import type { AccountBinding, AppState, Shipment } from "../models";
 import { ProductThumbnail } from "../components/ProductThumbnail";
 import { bundledImage } from "../components/bundled-image";
+import { iconTileShape } from "../components/icon-tile";
 import { productImageCacheKey } from "../services/product-image-cache";
 import { SenderBadge } from "../components/SenderBadge";
 import { carrierDisplayName, courierHotline } from "../services/carrier-presentation";
@@ -67,6 +68,7 @@ import { platformSession } from "../services/platform-accounts";
 import { presentPddParcelH5 } from "../services/platform-web-parcels";
 import { cloudParcelMetadataForCache, readCachedCloudParcelMetadata, readCloudParcelMetadata, recordCloudParcelMetadata,
   type CloudParcelDetails } from "../services/cloud-parcel-metadata";
+import { readCachedParcelCloudPddLink, synchronizeParcelCloudRecords } from "../services/parcel-cloud-sync";
 import { needsParcelDetailFields, refreshParcelDetailFields } from "../services/parcel-detail-fields";
 import { gatewayCredentialForLocalCache, gatewayCredentialGeneration } from "../services/credentials";
 import { GatewayError } from "../services/gateway";
@@ -86,7 +88,9 @@ import {
 } from "../services/ui-feedback";
 import { EXPRESS_TOAST_COPY, jdRiskControlRetryText } from "../services/express-toast-copy";
 import {
+  createDiagnosticFlowId,
   diagnosticErrorDetails,
+  diagnosticProviderWord,
   writeDiagnostic,
 } from "../services/logger";
 
@@ -156,6 +160,12 @@ export function DetailPage(props: {
   }, [shipment.identity.id, shipment.identity.sourceProvider, shipment.identity.sourceId]);
   async function editNote() {
     if (!props.persistedShipment) return;
+    // D247: an edit ends with note.edit.completed, Pipi's event and results (committed, cancelled); failures keep
+    // their own lines.
+    const editStartedAt = Date.now();
+    const editEnd = (result: "committed" | "cancelled") => writeDiagnostic("note.edit.completed", {
+      stage: "commit", result, persisted: result === "committed", durationMs: Date.now() - editStartedAt,
+    });
     let value: string | null;
     try {
       value = await Dialog.prompt({
@@ -171,9 +181,13 @@ export function DetailPage(props: {
       setNotice(EXPRESS_TOAST_COPY.userNoteUnavailable);
       return;
     }
-    if (value == null) return;
+    if (value == null) {
+      editEnd("cancelled");
+      return;
+    }
     try {
       const state = setShipmentNote(shipment, value);
+      editEnd("committed");
       const updated = state.shipments.find((item) => item.identity.id === shipment.identity.id);
       if (updated) {
         setNotice(noteSavedToast(value));
@@ -181,6 +195,9 @@ export function DetailPage(props: {
         props.onStateChange?.(state, updated);
       }
       requestWidgetReload();
+      if (typeof synchronizeParcelCloudRecords === "function") {
+        void synchronizeParcelCloudRecords().catch(() => undefined);
+      }
     } catch (error) {
       writeDiagnostic("detail.note.save_failed", diagnosticErrorDetails(error), "warning");
       setNotice(noteSaveFailedToast(error));
@@ -188,6 +205,11 @@ export function DetailPage(props: {
   }
 
   async function editProductName() {
+    // D247: the product name edit ends with one line like the note edit.
+    const editStartedAt = Date.now();
+    const editEnd = (result: "committed" | "cancelled") => writeDiagnostic("detail.product_name.completed", {
+      stage: "commit", result, persisted: result === "committed", durationMs: Date.now() - editStartedAt,
+    });
     let value: string | null;
     try {
       value = await Dialog.prompt({
@@ -204,9 +226,13 @@ export function DetailPage(props: {
       }, "warning");
       return;
     }
-    if (value == null) return;
+    if (value == null) {
+      editEnd("cancelled");
+      return;
+    }
     try {
       const state = setShipmentProductName(shipment, value);
+      editEnd("committed");
       const updated = state.shipments.find(
         (item) => item.identity.id === shipment.identity.id,
       );
@@ -216,6 +242,9 @@ export function DetailPage(props: {
         setNotice("商品名已更新");
       }
       requestWidgetReload();
+      if (typeof synchronizeParcelCloudRecords === "function") {
+        void synchronizeParcelCloudRecords().catch(() => undefined);
+      }
     } catch (error) {
       writeDiagnostic("detail.product_name.save_failed", diagnosticErrorDetails(error), "warning");
       setNotice(error instanceof ShipmentLifecycleChangedError
@@ -276,6 +305,8 @@ export function DetailPage(props: {
     // Same keys as sync.ts shipmentDiagnosticDetails so every express line reads alike; that
     // helper is module-private there, and importing sync into a page would be a heavy cycle.
     const identity = {
+      // D125: one flow id for this read's selection and its candidates.
+      flowId: createDiagnosticFlowId("detail-read"),
       waybillTail: waybillSuffix(displayWaybill(shipment)),
       automatic: !shipment.identity.manuallyAdded,
       sourceProvider: String(shipment.identity.sourceProvider || "")
@@ -289,6 +320,20 @@ export function DetailPage(props: {
       ...(shipment.sourceTimeline ? [shipment.sourceTimeline] : []),
       ...(shipment.manualTimelines || []),
     ];
+    // D181 (D24, D139): the candidates are folded into the selection line as one compact map, one fragment per
+    // package: provider, selected / available / empty, effective node count, full / part, the gate reason (ok when
+    // eligible) and how far its newest node is ahead (a) of or behind (b) the selected package, in minutes.
+    const selectedLatestAt = timelineLatestTrackAt(detailTimeline);
+    const candidateMap = candidates.slice(0, 16).map((candidate) => {
+      const count = timedTracks(candidate.tracks).length;
+      const evidence = shipmentDetailCandidateEvidence(shipment, candidate);
+      const latestAt = timelineLatestTrackAt(candidate);
+      const lagMinutes = latestAt > 0 && selectedLatestAt > 0 ? Math.round((latestAt - selectedLatestAt) / 60_000) : 0;
+      const state = candidate.provider === detailTimeline.provider ? "selected" : count > 0 ? "available" : "empty";
+      return [diagnosticProviderWord(candidate.provider), state, String(Math.min(count, 9999)),
+        candidate.complete === true || evidence.detailComplete ? "full" : "part", evidence.gateReason || "ok",
+        lagMinutes === 0 ? "0" : `${lagMinutes > 0 ? "a" : "b"}${Math.abs(lagMinutes)}`].join(":");
+    }).join(",");
     writeDiagnostic("detail.timeline.selected", {
       ...identity,
       ...shipmentSelectionEvidence(shipment),
@@ -312,25 +357,9 @@ export function DetailPage(props: {
       availableCandidateCount: candidates.filter(
         (timeline) => timedTracks(timeline.tracks).length > 0,
       ).length,
+      ...(candidateMap ? { candidateMap } : {}),
       selected: true,
     });
-    for (const candidate of candidates) {
-      writeDiagnostic("detail.timeline.candidate", {
-        ...identity,
-        stage: "detail_refresh",
-        timelineProvider: candidate.provider,
-        statusSemantic: candidate.semantic,
-        structuredStatus: candidate.structuredStatus === true,
-        latestEventAtMs: timelineLatestEventAt(candidate),
-        latestTrackAtMs: timelineLatestTrackAt(candidate),
-        statusEventAtMs: candidate.statusEventAtMs || 0,
-        latestTrackSemantic: latestTimelineTrackSemantic(candidate.tracks),
-        effectiveTrackCount: timedTracks(candidate.tracks).length,
-        captureComplete: candidate.complete === true,
-        ...shipmentDetailCandidateEvidence(shipment, candidate),
-        result: timedTracks(candidate.tracks).length > 0 ? "available" : "empty",
-      });
-    }
     // The package on screen becomes the sticky selection (audit D7, adopted 2026-09-25). A manual query
     // preview is not a stored row and records nothing.
     const selectionProvider = detailTimeline.provider.trim().toLowerCase();
@@ -359,7 +388,7 @@ export function DetailPage(props: {
   // 它（D-6）。详情页曾在 kuaidi100_h5 包裹上改读包裹自带的承运商，那份是抓取当时写死的，修复过的
   // identity 不会回头改它，于是同一单在列表里是真承运商、在详情页仍是泄漏的京东快递。
   const syncedInternational = internationalShipment(shipment);
-  const hotline = syncedInternational ? "" : courierHotline(
+  const hotline = courierHotline(
     shipment.identity.courierCode,
     shipment.identity.companyName,
   );
@@ -380,7 +409,9 @@ export function DetailPage(props: {
     : presentationStatus.text;
   const phoneTail = shipmentDetailPhoneTail(shipment);
   const needsExtraFields = needsParcelDetailFields(shipment);
-  const cloudWaybill = !syncedInternational && SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment &&
+  // An international parcel reads the shared cloud product name and image like any other parcel
+  // (2026-11-20 review, part 3 rule 4).
+  const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment &&
       (needsExtraFields || !localPddAppURL) && !unprojectedAccountOrder(shipment)
     ? normalizeWaybill(displayWaybill(shipment)) : "";
   const cloudCredential = /^[A-Z0-9]{6,64}$/.test(cloudWaybill) ? gatewayCredentialForLocalCache() : null;
@@ -395,7 +426,15 @@ export function DetailPage(props: {
       if (metadata && ownsCloudWaybill(props.visibleShipments)) return metadata;
     } catch { /* Shipment state or the optional cache may be temporarily unavailable. */ }
   }, [cloudScope, cloudCredential?.rejected, props.visibleShipments]);
-  const restoredCloud = initialCloudMetadata ? { metadata: initialCloudMetadata } : undefined;
+  const restoredPddLink = useMemo(() => {
+    if (!cloudCredential || cloudCredential.rejected || !cloudWaybill) return;
+    try {
+      return readCachedParcelCloudPddLink(cloudCredential.scope, cloudWaybill);
+    } catch { return undefined; }
+  }, [cloudCredential?.scope, cloudCredential?.rejected, cloudWaybill]);
+  const restoredCloud = initialCloudMetadata || restoredPddLink
+    ? { ...(initialCloudMetadata ? { metadata: initialCloudMetadata } : {}), ...(restoredPddLink ? { pddLink: restoredPddLink } : {}) }
+    : undefined;
   const cloudDetails: CloudParcelDetails | undefined = cloudCredential?.rejected
     ? undefined : (cloud?.scope === cloudScope ? cloud.details : restoredCloud);
   const pddExternalAppURL = localPddAppURL || cloudPddParcelAppURL(shipment, cloudDetails?.pddLink);
@@ -463,7 +502,8 @@ export function DetailPage(props: {
         () => currentCredential() && ownsCloudWaybill());
     } catch (error) {
       if (!currentCredential()) return;
-      if (error instanceof GatewayError && (error.status === 401 || error.status === 403)) {
+      if (error instanceof GatewayError &&
+          (error.status === 403 || (error.status === 401 && error.gatewayCode !== "expired_request"))) {
         recordCloudParcelMetadata(cloudCredential.scope, cloudParcel, requestedAt, "denied", currentCredential);
         clearCloudMetadata();
         return;
@@ -504,7 +544,6 @@ export function DetailPage(props: {
   const imageScope = JSON.stringify([cloudLifecycle, waybill, cloudScope]);
   const [imageDownloadScope, setImageDownloadScope] = useState("");
   useEffect(() => {
-    if (syncedInternational) return;
     const controller = new AbortController();
     void finishDetailOpening(controller.signal);
     return () => { controller.abort(); cloudAbortRef.current?.abort(); };
@@ -670,17 +709,24 @@ export function DetailPage(props: {
   }
 
   async function finishDetailOpening(signal: AbortSignal) {
+    // R5-NEW-11 ⑤: a Watch parcel's cloud metadata (product name, thumbnail) starts with the page, beside its Watch
+    // page read (up to 20 s on a weak network) instead of after it; its waybill and lifecycle do not change with it.
+    const watchCloud = syncedInternational ? refreshCloudMetadata() : undefined;
     const refreshed = await refreshInFlightRef.current;
     if (signal.aborted) return;
     if (refreshed && shipmentLifecycleKey(refreshed) !== cloudLifecycle) return;
     const target = refreshed ?? shipment;
-    const fields = props.persistedShipment && needsParcelDetailFields(target, true)
+    // Shopping-platform fields belong to domestic parcels; a Watch parcel reads only the cloud metadata.
+    const fields = props.persistedShipment && !syncedInternational && needsParcelDetailFields(target, true)
       ? refreshParcelDetailFields(target, () => !signal.aborted, readOwnerState, signal).catch(() => undefined)
       : undefined;
-    const [result] = await Promise.all([fields, refreshCloudMetadata()]);
+    const [result] = await Promise.all([fields, watchCloud ?? refreshCloudMetadata()]);
     if (signal.aborted) return;
     if (result) {
       showShipment(result.shipment);
+      if (typeof synchronizeParcelCloudRecords === "function") {
+        void synchronizeParcelCloudRecords().catch(() => undefined);
+      }
       props.onStateChange?.(result.state, result.shipment);
     }
     const pulled = await (pullInFlightRef.current ?? refreshInFlightRef.current);
@@ -742,7 +788,7 @@ export function DetailPage(props: {
           return;
         }
         if (!pddExternalAppURL) {
-          if (platformSession("pinduoduo")) {
+          if (current.pddImport && platformSession("pinduoduo")) {
             setNotice("暂无拼多多订单链接");
             return;
           }
@@ -956,7 +1002,7 @@ export function DetailPage(props: {
             onTapGesture={props.persistedShipment ? () => void editNote() : undefined}
             contextMenu={productNameMenu}>
             {platformFields.estimate ? (
-              <Text font="subheadline" lineSpacing={3} fontWeight="medium" foregroundStyle="systemBlue">{platformFields.estimate}</Text>
+              <Text font="subheadline" lineSpacing={3} fontWeight="medium" foregroundStyle={statusTextTint("TRANSIT")}>{platformFields.estimate}</Text>
             ) : null}
             {platformFields.title ? (
               <Text font="subheadline" lineSpacing={3} fixedSize={{ horizontal: false, vertical: true }}>
@@ -974,8 +1020,14 @@ export function DetailPage(props: {
       {pickup ? (
         <Section>
           <VStack spacing={3} alignment="leading" frame={{ maxWidth: "infinity", alignment: "leading" }}
-            padding={{ vertical: 6 }}>
-            <Text font={15} fontWeight="semibold">取件码 {pickup.code}</Text>
+            padding={{ vertical: 6 }} contentShape="rect"
+            onTapGesture={() => {
+              if (!pickup.code.trim()) return;
+              void copyText(pickup.code).then((result) => {
+                setNotice(result === "copied" ? EXPRESS_TOAST_COPY.pickupCodeCopied : EXPRESS_TOAST_COPY.copyFailed);
+              });
+            }}>
+            <Text font={15} fontWeight="semibold" monospacedDigit>取件码 {pickup.code}</Text>
             {pickup.location ? <Text font={13} foregroundStyle="secondaryLabel">{pickup.location}</Text> : null}
           </VStack>
         </Section>
@@ -986,7 +1038,7 @@ export function DetailPage(props: {
           <HStack spacing={6}>
             {detailSourceIcon ? (
               <Image image={detailSourceIcon}
-                resizable scaleToFit frame={{ width: 16, height: 16 }} />
+                resizable scaleToFit frame={{ width: 16, height: 16 }} clipShape={iconTileShape(16)} />
             ) : null}
             <HStack spacing={0}>
               <Text>{detailSource ? "物流信息来自" : "物流信息"}</Text>
@@ -1043,7 +1095,7 @@ export function DetailPage(props: {
                   foregroundStyle={index === 0 ? "label" : "secondaryLabel"}
                   frame={{ maxWidth: "infinity", alignment: "leading" }}
                   styledText={trackPhoneText(trackDisplayDetail(detailTimeline.provider, track),
-                    syncedInternational ? undefined : (phone) => { void dialPhone(phone); })}
+                    (phone) => { void dialPhone(phone); })}
                 />
               </HStack>
           )} />

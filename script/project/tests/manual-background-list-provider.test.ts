@@ -107,8 +107,8 @@ test("a manual row whose list shows v4_query is refreshed from v4_query in the b
   const stored = loadState(NOW).shipments[0];
   assert.equal(selectShipmentTimeline(stored).semantic, "COMPLETED");
   assert.equal(selectShipmentTimeline(stored).provider, "v4_query");
-  assert.equal(stageEvents("refresh.stage.started")[0]?.details.requestProvider, "v4_query",
-    "the stage log names the provider actually asked");
+  // D4: the stage writes no start line; its end line names the provider actually asked.
+  assert.deepEqual(stageEvents("refresh.stage.started"), []);
   assert.equal(stageEvents("refresh.stage.succeeded")[0]?.details.requestProvider, "v4_query");
 });
 
@@ -121,7 +121,9 @@ test("a manual row whose list shows k100_h5 still refreshes from Online", async 
   assert.equal(calls[0].pickerOnly, true);
   assert.notEqual(calls[0].motoOnly, true);
   assert.ok(round.paths.length > 0 && round.paths.every(path => path === ONLINE_PATH));
-  assert.equal(stageEvents("refresh.stage.started")[0]?.details.requestProvider, "v6_query");
+  assert.deepEqual(stageEvents("refresh.stage.started"), []);
+  assert.equal(stageEvents("refresh.stage.failed")[0]?.details.requestProvider, "v6_query",
+    "the stage's end line names the provider actually asked");
 });
 
 test("a failed v4_query background refresh does not fall through to another provider", async () => {
@@ -258,13 +260,18 @@ test("background KDNiao cooldown logs its schedule and never switches to Online"
     identityFingerprint: schedule.identityFingerprint, result: "upstream_rejected", now: NOW - 60000 });
   assert.equal((await round.run()).length, 0);
   assert.deepEqual(round.paths, []);
-  const details = stageEvents("refresh.stage.skipped")[0]?.details;
+  const skipped = stageEvents("refresh.stage.skipped")[0];
+  const details = skipped?.details;
   assert.equal(details?.requestProvider, "kdniao");
   assert.equal(details?.cooldownReason, "upstream_rejected");
-  assert.equal(details?.providerLastAttemptAtMs, NOW - 60000);
+  // D6 (owner 2026-11-21 「改成相对量（推荐）」): the schedule reads as the attempt's age and the time left.
+  const lineAt = Date.parse(String(skipped?.at));
+  assert.equal(details?.providerLastAttemptAtMs, undefined);
+  assert.equal(details?.providerLastAttemptAgeMs, lineAt - (NOW - 60000));
   assert.equal(details?.providerFailures, 1);
   assert.ok(Number(details?.cooldownRemainingMs) >= 3180000);
-  assert.equal(Number(details?.providerNextDueAtMs), NOW + Number(details?.cooldownRemainingMs));
+  assert.equal(details?.providerNextDueAtMs, undefined);
+  assert.equal(Number(details?.providerNextDueInMs), NOW + Number(details?.cooldownRemainingMs) - lineAt);
 });
 
 test("a failed background KDNiao refresh does not switch providers or discard history", async () => {

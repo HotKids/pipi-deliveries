@@ -71,6 +71,23 @@ function contrast(first: number, second: number): number {
   return Math.max(a, b) / Math.min(a, b);
 }
 
+/**
+ * Lifts dark brand pickup/tea codes in 5% steps toward white until they meet WCAG AA (4.5:1)
+ * against a dark surface such as the Dynamic Island (#000000), preserving brand hue.
+ */
+export function legibleCodeOnDark(hex: string, bgRgb = 0x000000, minContrast = 4.5): ColorStringHex {
+  if (hex === "white" || /^#f{6}$/i.test(hex)) return "#ffffff";
+  const brand = Number.parseInt(hex.replace(/^#/, ""), 16);
+  if (!Number.isFinite(brand) || brand < 0 || brand > WHITE) return "#ffffff";
+  if (contrast(brand, bgRgb) >= minContrast) return hex as ColorStringHex;
+  let candidate = brand;
+  for (let step = 1; step <= 20; step++) {
+    candidate = blendStatusColor(brand, WHITE, step * 0.05);
+    if (contrast(candidate, bgRgb) >= minContrast) return asColor(candidate);
+  }
+  return "#ffffff";
+}
+
 // Pipi's ExpressPickupCardPresentation.Palette uses the logo on the button and
 // code, with a 0x1F overlay and separate contrast adjustments against each surface.
 export function pickupCardPalette(card: ParcelActivityContent) {

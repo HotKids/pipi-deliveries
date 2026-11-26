@@ -9,6 +9,7 @@ import me.pipi.deliveries.model.CainiaoRoute;
 import me.pipi.deliveries.model.ExpressQueryResult;
 import me.pipi.deliveries.model.WorkerStatusProjection;
 import me.pipi.deliveries.model.ExpressStatusNormalizer;
+import me.pipi.deliveries.model.ExpressTimeCodec;
 import me.pipi.deliveries.model.ExpressTimeline;
 import me.pipi.deliveries.model.StatusSemantic;
 
@@ -148,10 +149,16 @@ public final class ExpressSubscriptionClient {
         String code = first(value, "com", "cpCode");
         String name = first(value, "name", "cpName");
         String stateName = first(value, "stateName", "logisticsStatusDesc");
-        String status = first(value, "status", "state", "logsiticsStatus");
+        // Owner 2026-11-21 「Read it for every status」: the four coarse spellings in the Worker's order,
+        // the first recognized value deciding and recognized values that disagree giving no status;
+        // 「Lite 用完整状态词表（推荐）」: recognized through the Worker's full common vocabulary.
+        StatusSemantic.MeizuCoarseStatus coarse = StatusSemantic.meizuCoarseStatus(value);
+        String status = coarse.code;
         String time = first(value, "time", "logisticsGmtModified");
         String detail = first(value, "context", "lastLogisticDetail", "message");
         boolean providerError = ExpressStatusNormalizer.isProviderErrorDetail(detail);
+        // A root provider error line blanks the root's status (the coarse reading included).
+        boolean rootProviderError = providerError;
         if (providerError) {
             time = "";
             detail = "";
@@ -199,19 +206,29 @@ public final class ExpressSubscriptionClient {
             throw new ExpressApi.NoTrackException();
         }
         logManualParse(fallbackWaybill, "accepted", parsed.size());
+        WorkerStatusProjection workerStatus = projected != null ? projected
+                : WorkerStatusProjection.read(value);
+        // Customs clearance (owner 2026-11-20): an unprojected FAILED with a listed structured
+        // description receives the projection the Worker gives it.
+        if (workerStatus == null) {
+            workerStatus = WorkerStatusProjection.meizuFailedDescription(value, status,
+                    ExpressTimeCodec.parse(first(value, "time", "ftime", "logisticsGmtModified")));
+        }
         return new ExpressQueryResult(
                 responseNumber.isEmpty() ? fallbackWaybill : responseNumber,
                 code,
                 CarrierRegistry.companyNameFromCpCode(code, name),
-                StatusSemantic.fromStored(status, stateName),
+                // Owner 2026-11-21 「文案推出的状态不当结构化证据（推荐）」: with no recognized coarse value the
+                // description's status is still shown but is no structured evidence.
+                rootProviderError ? StatusSemantic.UNKNOWN : coarse.semantic(stateName),
                 time,
                 detail,
                 tracks.toString(),
                 first(value, "detailUrl", "url"),
                 first(value, "subPhone", "receiverPhone"),
                 TimelineSlot.V6_QUERY)
-                .withManualStatusEvidence(stateName, !status.isEmpty())
-                .withWorkerStatus(projected != null ? projected : WorkerStatusProjection.read(value));
+                .withManualStatusEvidence(stateName, !rootProviderError && coarse.recognized)
+                .withWorkerStatus(workerStatus);
     }
 
     private static void logManualParse(String waybill, String outcome, int nodes) {
@@ -434,10 +451,19 @@ public final class ExpressSubscriptionClient {
         String code = value.optString("cpCode", fallbackCode).trim();
         String description = value.optString("logisticsStatusDesc", "");
         String detail = value.optString("lastLogisticDetail", "");
+        // Owner 2026-11-21 「Read it for every status」: the Worker's v6 field order and disagreement rule;
+        // 「Lite 用完整状态词表（推荐）」: recognized through the Worker's full common vocabulary.
+        StatusSemantic.MeizuCoarseStatus coarse = StatusSemantic.meizuCoarseStatus(value);
+        String coarseStatus = coarse.code;
         WorkerStatusProjection projected = WorkerStatusProjection.read(value);
-        StatusSemantic semantic = projected != null ? projected.semantic : StatusSemantic.fromStored(
-                value.optString("logsiticsStatus",
-                        value.optString("logisticsStatus", "")), description);
+        // Customs clearance (owner 2026-11-20): an unprojected FAILED with a listed structured
+        // description receives the projection the Worker gives it.
+        if (projected == null) {
+            projected = WorkerStatusProjection.meizuFailedDescription(value, coarseStatus,
+                    ExpressTimeCodec.parse(first(value, "time", "ftime", "logisticsGmtModified")));
+        }
+        StatusSemantic semantic = projected != null ? projected.semantic
+                : coarse.semantic(description);
         // packageDyn is delivery metadata and can contain the route secret. The gateway
         // converts that secret into a complete direct H5; never persist the raw metadata as a
         // local timeline.

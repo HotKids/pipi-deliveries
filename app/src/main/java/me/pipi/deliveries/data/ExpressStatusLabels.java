@@ -92,6 +92,15 @@ public final class ExpressStatusLabels {
         return "";
     }
 
+    /** The priority of a Worker-owned subtype of one semantic, or 0 when it is no subtype. */
+    public int subtypePriority(StatusSemantic semantic, String code) {
+        String wanted = code == null ? "" : code;
+        for (Subtype subtype : subtypes) {
+            if (subtype.semantic == semantic && subtype.code.equals(wanted)) return subtype.priority;
+        }
+        return 0;
+    }
+
     public List<Subtype> subtypes() {
         return subtypes;
     }
@@ -130,8 +139,17 @@ public final class ExpressStatusLabels {
         if (table != null) installed = table;
     }
 
+    private static volatile Runnable readBarrier;
+
+    /** Lets a host make reads wait for its startup table; without one, reads never wait. */
+    public static void setReadBarrier(Runnable barrier) {
+        readBarrier = barrier;
+    }
+
     /** The published mapping table, or the bundled copy before the first publish. */
     public static ExpressStatusLabels rules() {
+        Runnable barrier = readBarrier;
+        if (barrier != null) barrier.run();
         ExpressStatusLabels current = installed;
         return current != null ? current : BUNDLED;
     }

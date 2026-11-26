@@ -18,7 +18,7 @@ import { accountChildDeadline, oldestBatchIndices } from "../account-sync-policy
 import { pendingManualPreviewShipment, prepareManualPreview } from "../manual-preview";
 import { applyRecognizedPickup } from "../parcel-pickup";
 import type { ParcelLookup } from "../parcel-code-ocr";
-import { createDiagnosticFlowId, diagnosticErrorDetails, openStageCancellationEnd, writeDiagnostic } from "../logger";
+import { beginDiagnosticFlow, createDiagnosticFlowId, diagnosticErrorDetails, openStageCancellationEnd, writeDiagnostic, type DiagnosticDetails } from "../logger";
 import { requireScriptSource } from "../script-source";
 import { CarrierRecognitionBudget } from "../carrier-recognition";
 import { needsManualPhoneTail } from "../jt-h5";
@@ -145,10 +145,21 @@ export async function refreshBackgroundSfAlignment(
       attempt = reserveAlignmentAttempt(task.id, times, Date.now(), MANUAL_REFRESH_MIN_INTERVAL_MS);
     } catch (error) { reservationError = error; throw error; }
   };
+  // D108, D183 (D25): each exit writes the alignment's one end line, alignment.completed, with a fixed reason; its start
+  // (the compared tuple) is merged into it (D4). The ledger fields follow the foreground alignment.
+  const ledger = (): DiagnosticDetails => attempt ? {
+    alignmentAttempts: attempt.attempts, attemptCounted: true,
+    ...(attempt.attempts < 3 ? { nextAttemptInMs: MANUAL_REFRESH_MIN_INTERVAL_MS } : {}),
+  } : { attemptCounted: false };
+  const endSkipped = (skipReason: string, shipment: Shipment = original) =>
+    writeDiagnostic("alignment.completed", { flowId, source, trigger: "status_alignment",
+      ...shipmentDiagnosticDetails(shipment), result: "skipped", skipReason, ...ledger() });
+  let started = false, ended = false;
   try {
-    writeDiagnostic("detail.refresh.alignment", { flowId, source, trigger: "status_alignment",
+    beginDiagnosticFlow("alignment.started", { flowId, source, trigger: "status_alignment",
       ...shipmentDiagnosticDetails(original), statusEventAtMs: times.statusAtMs,
       headlineAtMs: times.headlineAtMs, detailAtMs: times.detailAtMs });
+    started = true;
     let outcome: ManualQueryOutcome | undefined, queryError: unknown;
     try {
       outcome = await query({ source, bindings: bindingsForSource(current, source),
@@ -164,14 +175,24 @@ export async function refreshBackgroundSfAlignment(
     // A queued row can become obsolete before dispatch without cancelling unrelated rows in this batch.
     if (reservationError === staleReservation) {
       current = loadState();
+      ended = true;
+      endSkipped("stale_target");
       return summary();
     }
     if (reservationError) throw reservationError;
-    if (!isCurrent() || !attempt) return summary();
+    if (!isCurrent() || !attempt) {
+      ended = true;
+      endSkipped(!attempt ? "no_query" : "ownership_lost");
+      return summary();
+    }
     attempted = 1;
     current = loadState();
     const target = current.shipments.find(item => item.identity.id === task.id);
-    if (!target || !alignmentOwnerCurrent(state, original, current)) return summary();
+    if (!target || !alignmentOwnerCurrent(state, original, current)) {
+      ended = true;
+      endSkipped(!target ? "removed" : "stale_target");
+      return summary();
+    }
     const incoming = rejectForeignManualResult(target, outcome?.shipment ?? null, {
       flowId, source, stage: "status_alignment", timelineProvider: TIMELINE_SLOT.V6_QUERY,
     });
@@ -184,7 +205,11 @@ export async function refreshBackgroundSfAlignment(
       succeeded = 1;
     } else failed = 1;
     assertRefreshSignal(signal);
-    if (!isCurrent()) return summary();
+    if (!isCurrent()) {
+      ended = true;
+      endSkipped("ownership_lost");
+      return summary();
+    }
     const after = current.shipments.find(item => item.identity.id === task.id);
     const complete = newerAlignmentEvidence(original, after);
     if (finishAlignmentAttempt(task.id, attempt, complete,
@@ -196,12 +221,74 @@ export async function refreshBackgroundSfAlignment(
         requestWidgetReload();
       }
     }
-    writeDiagnostic("detail.refresh.alignment", { flowId, source, trigger: "status_alignment",
+    ended = true;
+    writeDiagnostic("alignment.completed", { flowId, source, trigger: "status_alignment",
       ...shipmentDiagnosticDetails(current.shipments.find(item => item.identity.id === task.id) || original),
-      result: failed ? "failed" : "completed", ...(queryError ? diagnosticErrorDetails(queryError) : {}) },
+      result: failed ? "failed" : "forced", changed: complete, ...ledger(),
+      ...(queryError ? diagnosticErrorDetails(queryError) : {}) },
       failed ? "warning" : "info");
     return summary();
+  } catch (error) {
+    // D108: a cancellation or a failed reservation also ends the flow the start line opened.
+    if (started && !ended) {
+      ended = true;
+      writeDiagnostic("alignment.completed", { flowId, source, trigger: "status_alignment",
+        ...shipmentDiagnosticDetails(original), result: signal.aborted ? "interrupted" : "failed", ...ledger(),
+        ...diagnosticErrorDetails(error) }, signal.aborted ? "info" : "warning");
+    }
+    throw error;
   } finally { lease.release(); }
+}
+
+async function fallbackPendingCloudPddShipment(input: {
+  reserved: Shipment;
+  currentState: AppState;
+  source: BindingSource;
+  flowId: string;
+  taskDeadline: number | undefined;
+  forceManualRefresh: boolean;
+  moto: boolean;
+  paid: boolean;
+  signal: AbortSignal;
+  runQuery: typeof queryManualForSource;
+  primaryOutcome: Awaited<ReturnType<typeof queryManualForSource>>;
+}): Promise<Awaited<ReturnType<typeof queryManualForSource>>> {
+  const { reserved, currentState, source, flowId, taskDeadline, forceManualRefresh, moto, paid, signal, runQuery, primaryOutcome } = input;
+  if (!reserved.pddCloudOrigin || reserved.timeline.provider !== "pending" || moto || paid ||
+      primaryOutcome?.skipReason === "cooldown" ||
+      Boolean(primaryOutcome?.shipment && timedTracks(primaryOutcome.shipment.timeline.tracks).length) ||
+      deadlineExpired(taskDeadline)) {
+    return primaryOutcome;
+  }
+  const common = {
+    source,
+    bindings: bindingsForSource(currentState, source),
+    waybill: displayWaybill(reserved),
+    phoneTail: reserved.identity.phoneTail,
+    rawCourierCode: reserved.identity.rawCourierCode,
+    courierCode: reserved.identity.courierCode,
+    companyName: reserved.identity.companyName,
+    sourceProvider: reserved.identity.sourceProvider,
+    deadlineAtMs: taskDeadline,
+    signal,
+    diagnosticFlowId: flowId,
+    diagnosticStage: "manual_refresh" as const,
+    currentShipment: reserved,
+    scheduled: !forceManualRefresh,
+    recordSchedule: true,
+    hostSafe: true,
+  };
+  const motoOutcome = await runQuery({ ...common, motoOnly: true, includeKdniaoFallback: false });
+  assertRefreshSignal(signal);
+  if (motoOutcome?.shipment && timedTracks(motoOutcome.shipment.timeline.tracks).length) {
+    return motoOutcome;
+  }
+  if (deadlineExpired(taskDeadline)) return primaryOutcome;
+  const kdniaoOutcome = await runQuery({ ...common, fallbackOnly: true, includeKdniaoFallback: true });
+  assertRefreshSignal(signal);
+  return kdniaoOutcome?.shipment && timedTracks(kdniaoOutcome.shipment.timeline.tracks).length
+    ? kdniaoOutcome
+    : primaryOutcome;
 }
 
 /** Explicit Home refresh retains Online even when background polling follows a paid history package. */
@@ -279,16 +366,24 @@ export async function refreshOnlineShipment(
       mutations, stage);
   };
   let reserved: Shipment | undefined;
+  // D242: a row whose refresh another runtime holds, or that this commit no longer owns, ends with a skipped stage.
+  const skipLeaseHeld = (shipment: Shipment) => writeDiagnostic("refresh.stage.skipped", { flowId, source,
+    stage: "manual_refresh", ...shipmentDiagnosticDetails(shipment, provider), result: "lease_held",
+    skipReason: "lease_held" });
   if (checkpoint.transientManualLease) {
     if (!beginRuntimeManualRefreshAttempt(current.identity.id, attemptId, startedAt, taskDeadline) ||
         !ownsRuntimeManualRefreshAttempt(current.identity.id, attemptId, startedAt)) {
+      skipLeaseHeld(current);
       return summary();
     }
     reserved = current;
   } else {
     commit(beginManualRefreshAttempt(current, attemptId, startedAt, taskDeadline), new Map(), "manual_refresh_attempt");
     reserved = currentState.shipments.find(item => item.identity.id === task.id);
-    if (!reserved || !ownsManualRefreshLease(reserved, attemptId)) return summary();
+    if (!reserved || !ownsManualRefreshLease(reserved, attemptId)) {
+      skipLeaseHeld(reserved || current);
+      return summary();
+    }
   }
   onQueryStarted();
   const release = () => {
@@ -301,7 +396,7 @@ export async function refreshOnlineShipment(
       commit(releaseManualRefreshLease(reserved, attemptId), new Map(), "manual_refresh_release");
     }
   };
-  writeDiagnostic("refresh.stage.started", { flowId, source, stage: "manual_refresh",
+  beginDiagnosticFlow("refresh.stage.started", { flowId, source, stage: "manual_refresh",
     budgetMs: stageBudgetMs(taskDeadline, startedAt), ...shipmentDiagnosticDetails(reserved, provider) });
   const stageCancelled = openStageCancellationEnd(flowId, signal, () => writeDiagnostic("refresh.stage.failed", {
     flowId, source, stage: "manual_refresh", ...shipmentDiagnosticDetails(reserved || current, provider),
@@ -319,6 +414,10 @@ export async function refreshOnlineShipment(
         : { pickerFirst: true, pickerOnly: true }),
       includeKdniaoFallback: paid, scheduled: !forceManualRefresh, recordSchedule: true, hostSafe: true });
     assertRefreshSignal(signal);
+    outcome = await fallbackPendingCloudPddShipment({
+      reserved, currentState, source, flowId, taskDeadline, forceManualRefresh,
+      moto, paid, signal, runQuery: query, primaryOutcome: outcome,
+    });
     stageCancelled.close();
   } catch (error) {
     rethrowStageCancellation(signal, stageCancelled.end);

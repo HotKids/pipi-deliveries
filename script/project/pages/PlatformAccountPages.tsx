@@ -143,6 +143,7 @@ export function PlatformWebLogin({ platform, generation, embedded }: {
 
   const content = (
     <VStack spacing={0} navigationBarTitleDisplayMode="inline" navigationBarBackButtonHidden={Boolean(embedded)}
+      interactiveDismissDisabled={!embedded}
       toast={transientToast(notice, setNotice)}
       toolbar={{
         topBarLeading: (
@@ -166,7 +167,7 @@ function FengchaoBinding({ generation }: { generation: string }) {
   const active = useRef(true);
   useEffect(() => () => { active.current = false; challenge.current = null; }, []);
   return (
-    <NavigationStack>
+    <NavigationStack interactiveDismissDisabled={true}>
       <PhoneBindingPage
         bindings={[]}
         purpose="fengchao"
@@ -200,7 +201,7 @@ export async function presentPlatformLogin(platform: ExpressPlatform): Promise<b
   const result = await Navigation.present<boolean>({
     element: platform === "fengchao" ? <FengchaoBinding generation={generation} /> :
       <PlatformWebLogin platform={platform} generation={generation} />,
-    modalPresentationStyle: platform === "fengchao" ? "pageSheet" : "fullScreen",
+    modalPresentationStyle: "pageSheet",
   });
   return result === true;
 }

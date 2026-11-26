@@ -216,6 +216,12 @@ public final class ExpressTimeline {
         String code = first(track.value, "statusCode", "logisticsStatus", "status", "state", "action");
         WorkerStatusProjection normalized = WorkerStatusProjection.nodeEvidence(track.value);
         if (normalized != null) return normalized.semantic;
+        // A Meizu Online node's coarse fields in the Worker's order and disagreement rule, through the
+        // Worker's full common vocabulary (owner 2026-11-21 「Read it for every status」, 「Lite 用完整状态词表
+        // （推荐）」), as the Worker's projection of the node reads them.
+        StatusSemantic meizu = TimelineSlot.V6_QUERY.equals(TimelineSlot.normalize(source))
+                ? StatusSemantic.meizuNodeSemantic(track.value) : null;
+        if (meizu != null) return meizu;
         StatusSemantic semantic = TimelineSlot.isAccount(source) || "account".equals(source)
                 ? StatusSemantic.fromAccountState(code, "") : StatusSemantic.fromKuaidi100EventCode(code);
         return semantic == StatusSemantic.UNKNOWN ? StatusSemantic.fromStored(code, "") : semantic;
@@ -571,12 +577,14 @@ public final class ExpressTimeline {
         long sourceTime = parseTime(source.optString("time", ""));
         boolean sameEventTime = targetTime > 0L && targetTime == sourceTime;
         boolean jtSource = "jt_h5".equals(source.optString("_pipiStatusSource"));
+        boolean customsRefinement = refinesCachedMeizuFailure(target, source);
         Iterator<String> keys = source.keys();
         while (keys.hasNext()) {
             String key = keys.next();
             // DOM label and body belong to their original event, even when text folds nearby.
             if (jtSource && !sameEventTime && ("jtStatusLabel".equals(key)
                     || "displayContext".equals(key) || "_pipiStatusSource".equals(key))) continue;
+            if (customsRefinement && "normalizedStatus".equals(key)) continue;
             Object current = target.opt(key);
             if (target.has(key) && !target.isNull(key)
                     && (!(current instanceof String)
@@ -594,6 +602,24 @@ public final class ExpressTimeline {
                 disableReadReuse();
             }
         }
+    }
+
+    /**
+     * Customs clearance (owner 2026-11-20, 补充修改五; third review M-03, 2026-11-23): the refreshed copy of a Meizu
+     * Online event reads its own coarse FAILED through the customs refinement (清关中, 待清关, 已清关), while its
+     * older cached copy still carries the unrefined FAILED projection (异常件). That projection is the misreading
+     * the refreshed copy corrects, so it is not copied into the refreshed node as missing metadata; a node of
+     * its own reading DANGER would otherwise contradict the package's TRANSIT status.
+     */
+    private static boolean refinesCachedMeizuFailure(JSONObject target, JSONObject source) {
+        if (target.has("normalizedStatus")) return false;
+        WorkerStatusProjection cached = WorkerStatusProjection.nodeEvidence(source);
+        if (cached == null || cached.semantic != StatusSemantic.DANGER
+                || !"FAILED".equalsIgnoreCase(cached.code.trim())) return false;
+        StatusSemantic.MeizuCoarseStatus coarse = StatusSemantic.meizuCoarseStatus(target);
+        return !coarse.conflict && coarse.recognized
+                && !StatusSemantic.meizuFailedDescriptionCode(coarse.code, StatusSemantic.meizuDescription(target))
+                .isEmpty();
     }
 
     /** 同包内同文案节点的合并窗口（用户定 2026-09-06，三端同 Pipi CROSS_SOURCE_DUPLICATE_WINDOW_SECONDS）。 */

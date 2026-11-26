@@ -158,7 +158,8 @@ public class ExpressKuaidi100TimelineCaptureTest {
         assertTrue(context.getSharedPreferences("express_k100_capture_cooldown", 0).getAll().isEmpty());
         assertTrue(ExpressKuaidi100CaptureCooldown.due(context, TimelineSlot.K100_H5, "JTTEST1", first, now + 1));
         ExpressKuaidi100CaptureCooldown.record(context, TimelineSlot.K100_H5, "JTTEST1", first, now);
-        assertFalse(ExpressKuaidi100CaptureCooldown.due(context, TimelineSlot.K100_H5, "JTTEST1", corrected, now + 1));
+        assertFalse(ExpressKuaidi100CaptureCooldown.due(context, TimelineSlot.K100_H5, "JTTEST1", first, now + 1));
+        assertTrue(ExpressKuaidi100CaptureCooldown.due(context, TimelineSlot.K100_H5, "JTTEST1", corrected, now + 1));
         for (String key : context.getSharedPreferences("express_k100_capture_cooldown", 0).getAll().keySet()) {
             assertFalse(key.contains("1234"));
             assertFalse(key.contains("5678"));

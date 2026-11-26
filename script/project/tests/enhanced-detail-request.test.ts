@@ -91,7 +91,8 @@ for (const marked of [true, false]) {
     { trigger: "product_image", requestProductImage: true }, runtime);
   assert.equal(requests, 1, "a visible detail page may acquire image metadata using the current enabled phone binding");
   const metadataLog = readDiagnostics().find(entry => entry.event === "account.enhanced.completed")!.details;
-  assert.match(metadataLog.flowId!, /^detail-/);
+  // D8 (owner 2026-11-21 「三项都改（推荐）」): the detail flow's id is numeric.
+  assert.match(metadataLog.flowId!, /^\d+$/);
   assert.equal(metadataLog.trigger, "product_image");
   assert.equal(metadataLog.requestProvider, "v3_list");
   assert.equal(metadataLog.interface, "v3");
@@ -151,6 +152,9 @@ const skipped = await runShipmentRefreshForTesting(waiting.identity.id, lease,
   });
 assert.equal(pageReservations, 1, "the synthetic capture starts while the phone still uses ordinary binding");
 assert.equal(pageLoads, 0, "enabling enhancement during the viewport wait prevents a new H5 number load");
+// D104 (D4): this exit ends the detail flow with its own line, so no later runtime reports the flow unfinished.
+assert.equal(readDiagnostics().filter(entry => entry.event === "detail.refresh.skipped" &&
+  entry.details.skipReason === "enhancement_active").length, 1);
 assert.equal(skipped.shipment.identity.projectedWaybill, "");
 assert.equal(loadState().shipments[0].identity.orderProjectionRetry, undefined,
   "a newly blocked page does not consume the order's H5 cooldown");

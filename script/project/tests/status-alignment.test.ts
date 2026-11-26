@@ -214,15 +214,25 @@ try {
     assert.equal(refreshed.length, 1);
     assert.equal(Object.keys(records).length, 1);
     assert.doesNotMatch(JSON.stringify(records), new RegExp(WAYBILL), "the record keeps no waybill");
-    const event = readDiagnostics().find(entry => entry.event === "detail.refresh.alignment")!;
+    // D183 (D25): the alignment's one end line, alignment.completed, carries its start (the compared tuple, D4).
+    const event = readDiagnostics().find(entry => entry.event === "alignment.completed")!;
     assert.equal(event.details.trigger, "status_alignment");
     assert.equal(event.details.alignmentReason, "status_ahead");
-    assert.equal(event.details.statusEventAtMs, at("2026-09-08 13:31:00"));
-    assert.equal(event.details.headlineAtMs, at("2026-09-08 11:41:00"));
-    assert.equal(event.details.detailAtMs, at("2026-09-08 11:41:00"));
+    // D6 (owner 2026-11-21 「改成相对量（推荐）」): the three compared times read as their ages at the line's time.
+    const lineAt = Date.parse(event.at);
+    assert.equal(event.details.statusEventAtMs, undefined);
+    assert.equal(event.details.statusEventAgeMs, lineAt - at("2026-09-08 13:31:00"));
+    assert.equal(event.details.headlineAgeMs, lineAt - at("2026-09-08 11:41:00"));
+    assert.equal(event.details.detailAgeMs, lineAt - at("2026-09-08 11:41:00"));
     assert.equal(event.details.headlineAligned, false, "the first attempt has not finished at its start event");
     assert.equal(event.details.waybillTail, "9001");
     assert.doesNotMatch(JSON.stringify(event.details), new RegExp(WAYBILL));
+    // D25: the end line says which of the tuple's three forced refreshes this was, and whether it counted.
+    assert.equal(event.details.result, "forced");
+    assert.equal(event.details.attemptCounted, true);
+    assert.equal(event.details.alignmentAttempts, 1);
+    assert.equal(readDiagnostics().some(entry => entry.event === "detail.refresh.alignment"), false,
+      "the former start and end lines are one alignment.completed line");
 
     assert.equal((await pass()).result, "nothing_due", "the same three times are refreshed once");
     assert.equal(refreshed.length, 1);
@@ -336,7 +346,9 @@ try {
     assert.ok(loadState(now).shipments[0]!.manualTimelines?.some(timeline => timeline.provider === "v6_query"),
       "the Online answer is kept in its own slot");
     assert.equal(aligned.result.refreshed, true);
-    const started = readDiagnostics().find(entry => entry.event === "detail.refresh.started")!;
+    // D4: the detail refresh writes no start line; its end line carries the trigger.
+    const started = readDiagnostics().find(entry => entry.event === "detail.refresh.committed" ||
+      entry.event === "detail.refresh.skipped" || entry.event === "detail.refresh.failed")!;
     assert.equal(started.details.trigger, "status_alignment");
     const persisted = loadState(now).shipments[0]!;
     assert.equal(selectShipmentTimeline(persisted).latestTimeText, "2026-09-08 13:31:00");

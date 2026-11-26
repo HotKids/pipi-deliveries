@@ -45,7 +45,14 @@ const stale = internationalShipmentSnapshot({ ...raw, status: "CANCELLED", statu
   tracks: [{ at: now - 5 * 3600_000, time: "", detail: "Synthetic return scan" }] }, now);
 assert.equal(visibleShipments(commitWatchSnapshot({ ...inbound, snapshot: "snapshot-c",
   shipments: [stale], observedAtMs: Date.now() })).length, 0);
-const restored = commitWatchSnapshot({ ...inbound, observedAtMs: Date.now(), snapshot: "snapshot-d" });
+const unchangedScan = commitWatchSnapshot({ ...inbound, observedAtMs: now + 500, snapshot: "snapshot-d" });
+assert.equal(visibleShipments(unchangedScan).length, 0,
+  "a changed page without a newer scan timestamp must not revive a deleted Watch");
+const newerScanRow = internationalShipmentSnapshot({
+  ...raw, updatedAt: now + 1_000,
+  tracks: [{ at: now + 1_000, time: new Date(now + 1_000).toISOString(), detail: "Newer tracking scan" }],
+}, now + 1_000);
+const restored = commitWatchSnapshot({ ...inbound, shipments: [newerScanRow], observedAtMs: now + 1_000, snapshot: "snapshot-e" });
 assert.equal(visibleShipments(restored).length, 1);
 saveGatewayToken("SyntheticKey_002");
 assert.equal(visibleShipments(restored).length, 0);

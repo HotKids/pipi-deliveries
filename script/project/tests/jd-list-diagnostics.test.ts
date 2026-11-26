@@ -115,8 +115,10 @@ for (const signedQuery of [false, true]) {
       assert.equal(d.mergedFeedStatusSemantic, "COMPLETED");
       assert.equal(d.feedStatusSemantic, "COMPLETED");
       assert.equal(d.statusSemantic, "COMPLETED");
-      assert.equal(d.preparedEventAtMs, parseProviderTime(NEW));
-      assert.equal(d.mergedFeedEventAtMs, parseProviderTime(NEW));
+      // D6 (owner 2026-11-21 「改成相对量（推荐）」): the compared times read as their ages at the line's time.
+      const lineAt = Date.parse(entry.at);
+      assert.equal(d.preparedEventAgeMs, lineAt - parseProviderTime(NEW)!);
+      assert.equal(d.mergedFeedEventAgeMs, lineAt - parseProviderTime(NEW)!);
       assert.equal(d.result, "stored");
     }
     for (const row of stored.shipments) {
@@ -139,7 +141,7 @@ test("an older completion response is distinguished from an upstream DELIVERY pa
   assert.equal(d.preparedStatusSemantic, "COMPLETED");
   assert.equal(d.mergedFeedStatusSemantic, "DELIVERY");
   assert.equal(d.feedStatusSemantic, "DELIVERY");
-  assert.ok(d.listEventAtMs! < d.previousFeedEventAtMs!);
+  assert.ok(d.listEventAgeMs! > d.previousFeedEventAgeMs!, "D6: an older list event has the larger age");
 });
 
 test("a received row with no matching binding is visible in diagnostics without becoming a new owner", async () => {
@@ -168,7 +170,7 @@ test("a first-signing order review is kept and preserves the structured completi
   assert.equal(d.listStatusSemantic, "COMPLETED");
   assert.equal(d.preparedStatusSemantic, "COMPLETED");
   assert.equal(d.feedStatusSemantic, "COMPLETED");
-  assert.equal(d.listEventAtMs, d.preparedEventAtMs);
+  assert.equal(d.listEventAgeMs, d.preparedEventAgeMs);
   assert.equal(stored.shipments[0].timeline.semantic, "COMPLETED");
   assert.ok(stored.shipments[0].timeline.tracks.some(track => track.detail.includes("购物进行评价")));
 });

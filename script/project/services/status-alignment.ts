@@ -1,5 +1,5 @@
 import type { AppState, BindingSource, Shipment } from "../models";
-import { createDiagnosticFlowId, diagnosticErrorDetails, writeDiagnostic, type DiagnosticDetails } from "./logger";
+import { beginDiagnosticFlow, createDiagnosticFlowId, diagnosticErrorDetails, writeDiagnostic, type DiagnosticDetails } from "./logger";
 import { projectionViewportHostAvailable } from "./projection-viewport";
 import { parseAlignmentAttempt, rowLedgerKey } from "./row-ledger";
 import {
@@ -111,7 +111,8 @@ export type StatusAlignmentPassDependencies = Readonly<{
   busy: (source: BindingSource) => boolean;
   load: (now: number) => AppState;
   records: StatusAlignmentRecordStore;
-  refresh: (shipmentId: string, beforeQuery: () => void) => Promise<{ state: AppState }>;
+  /** `flowId`: the alignment's own flow, carried by the forced refresh's lines (D107). */
+  refresh: (shipmentId: string, beforeQuery: () => void, flowId?: string) => Promise<{ state: AppState }>;
   now: () => number;
   canAsk: (shipment: Shipment) => boolean;
 }>;
@@ -121,9 +122,10 @@ const defaultPassDependencies: StatusAlignmentPassDependencies = {
   busy: listRefreshInProgress,
   load: (now) => readAppStateSnapshot(now).state,
   records: ledgerRecordStore,
-  refresh: (shipmentId, beforeQuery) => refreshShipmentById(shipmentId, {
+  refresh: (shipmentId, beforeQuery, flowId) => refreshShipmentById(shipmentId, {
     trigger: "status_alignment",
     beforeQuery,
+    diagnosticFlowId: flowId,
     // The same options as the detail page's pull; the flow opens the gates the alignment run passes.
     forceAccountOrderProjection: true,
     forceManualRefresh: true,
@@ -180,12 +182,19 @@ export async function runStatusAlignmentPass(
   };
   const details = alignmentDiagnosticDetails(target);
   const flowId = details.flowId;
-  writeDiagnostic("detail.refresh.alignment", { ...details, candidateCount: due.length });
+  // D183 (D25): one alignment.completed per alignment flow, Pipi's target event; its start (the compared tuple and
+  // the due count) is merged into it (D4). The ledger fields say how many of the tuple's three forced refreshes are
+  // used, whether this one counted and when the next may run.
+  beginDiagnosticFlow("alignment.started", { ...details, candidateCount: due.length });
+  const ledger = (): DiagnosticDetails => attempt ? {
+    alignmentAttempts: attempt.attempts, attemptCounted: true,
+    ...(attempt.attempts < 3 ? { nextAttemptInMs: MANUAL_REFRESH_MIN_INTERVAL_MS } : {}),
+  } : { attemptCounted: false };
   let refreshedState: AppState;
   let refreshFailed = false;
   let refreshError: unknown;
   try {
-    refreshedState = (await dependencies.refresh(target.shipment.identity.id, beforeQuery)).state;
+    refreshedState = (await dependencies.refresh(target.shipment.identity.id, beforeQuery, flowId)).state;
   } catch (error) {
     refreshFailed = true;
     refreshError = error;
@@ -194,6 +203,11 @@ export async function runStatusAlignmentPass(
   // Source flows may turn a transport exception into an unchanged result; a failed reservation still fails this pass.
   if (reservationError) throw reservationError;
   if (!attempt) {
+    // D107: the forced refresh asked no source, so the alignment flow ends without using an attempt.
+    writeDiagnostic("alignment.completed", {
+      ...details, result: "skipped", skipReason: "no_query", ...ledger(),
+      ...(refreshFailed ? diagnosticErrorDetails(refreshError) : {}),
+    });
     const current = dependencies.records.load();
     const blocked = dueStatusAlignments(refreshedState, now, current, new Set(), true).some(candidate =>
       candidate.shipment.identity.id === target.shipment.identity.id && dependencies.canAsk(candidate.shipment));
@@ -216,17 +230,26 @@ export async function runStatusAlignmentPass(
   }
   if (refreshFailed) {
     // The refresh flow records its own failure; this line closes the alignment flow.
-    writeDiagnostic("detail.refresh.alignment", {
+    writeDiagnostic("alignment.completed", {
       flowId,
       source: SCRIPT_BINDING_SOURCE,
       trigger: "status_alignment",
       result: "failed",
+      ...ledger(),
       ...diagnosticErrorDetails(refreshError),
     }, "warning");
     return { result: "failed", shipmentId: target.shipment.identity.id, moreDue: due.length > 1,
       state: refreshedState,
       retryPending: pendingAlignmentRetry(refreshedState, now, dependencies.records.load(), dependencies.canAsk) };
   }
+  // D107: the forced refresh ran; the flow ends with whether it brought newer evidence.
+  const changed = newerAlignmentEvidence(target.shipment,
+    refreshedState.shipments.find(shipment => shipment.identity.id === target.shipment.identity.id));
+  writeDiagnostic("alignment.completed", {
+    ...details, result: "forced", changed, ...ledger(),
+    // A forced refresh that brought newer evidence completes the tuple; the next one is not due.
+    ...(changed ? { nextAttemptInMs: undefined } : {}),
+  });
   return { result: "attempted", shipmentId: target.shipment.identity.id, moreDue: due.length > 1,
     retryPending: pendingAlignmentRetry(refreshedState, now, dependencies.records.load(), dependencies.canAsk),
     state: { ...refreshedState, shipments: refreshedState.shipments.map(shipment =>

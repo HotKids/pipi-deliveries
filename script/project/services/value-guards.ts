@@ -52,6 +52,19 @@ export function positiveFiniteTime(value: unknown, maxAtMs?: number): number {
   return value;
 }
 
+/** The Worker's `CLOUD_EDIT_FUTURE_TOLERANCE_MS` (cloud_records.js): how far a cloud time may lead this clock. */
+export const CLOUD_FUTURE_TOLERANCE_MS = 5 * 60 * 1_000;
+
+/**
+ * A cloud record time on this device's clock (fourth external review R4-NEW-06, fifth review R5-NEW-11 ④): a time up
+ * to the tolerance ahead of this clock reads as now, `null` names one further ahead, and 0 an invalid time.
+ */
+export function cloudRecordTime(value: unknown, now: number): number | null {
+  const at = positiveFiniteTime(value);
+  if (!at) return 0;
+  return at > now + CLOUD_FUTURE_TOLERANCE_MS ? null : Math.min(at, now);
+}
+
 export function cloneJsonValue<T>(value: T): T {
   if (Array.isArray(value)) {
     return value.map((item) =>

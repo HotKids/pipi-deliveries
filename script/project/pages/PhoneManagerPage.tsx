@@ -1,6 +1,7 @@
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import {
   Button,
+  Divider,
   HStack,
   Image,
   List,
@@ -34,9 +35,17 @@ import {
 import type { PlatformSyncProgress } from "../services/platform-parcel-sync";
 import { existingEnhancementIdentity, EnhancementIdentityMissing } from "../services/enhanced-account";
 import { EnhancementUnbindUnavailable } from "../services/enhancement-unsubscribe";
+import { mealCredentialScope } from "../services/meal/rules";
+import { activeWatchScope } from "../services/international-records";
 
 const ACCOUNT_ICON_SIZE = 32;
 const XIAOMI_BRAND_ORANGE = "#FF6900";
+const SENDER_SYNCING = "寄件同步中";
+
+/** Whether a saved Access Key lets the existing cloud record pulls run (meal codes or international parcels). */
+function cloudRecordsAvailable(): boolean {
+  try { return Boolean(mealCredentialScope() || activeWatchScope()); } catch { return false; }
+}
 
 type MaybeAsync = void | Promise<void>;
 
@@ -52,6 +61,8 @@ export type PhoneManagerPageProps = {
   onRemove: (binding: AccountBinding, localOnly?: boolean) => MaybeAsync;
   onRefresh: () => Promise<RefreshSummary>;
   onPlatformRefresh: (platform: ExpressPlatform | undefined, onProgress: PlatformSyncProgress) => Promise<string>;
+  /** The app's cloud record pulls; each records its own failure and shows no toast. */
+  onCloudRecordsRefresh?: () => Promise<void>;
 };
 
 export function PhoneManagerPage(props: PhoneManagerPageProps) {
@@ -63,6 +74,8 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   const [visible, setVisible] = useState(false);
   const [platformAccounts, setPlatformAccounts] = useState<Partial<Record<ExpressPlatform, AccountStatus>>>({});
   const [syncingPlatforms, setSyncingPlatforms] = useState<readonly ExpressPlatform[]>([]);
+  const [sendingPlatforms, setSendingPlatforms] = useState<readonly ExpressPlatform[]>([]);
+  const [cloudSyncAvailable, setCloudSyncAvailable] = useState(false);
   const mountedRef = useRef(true);
   const actionInFlightRef = useRef(false);
   const bindingGenerationRef = useRef(0);
@@ -106,6 +119,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         }
         pending.clear();
         setPlatformAccounts(previous => ({ ...previous, ...accounts }));
+        setCloudSyncAvailable(cloudRecordsAvailable());
       }, 0);
     }
     scheduleAccounts();
@@ -117,15 +131,6 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   }, [visible]);
 
   useEffect(() => () => { mountedRef.current = false; }, []);
-
-  useEffect(() => {
-    if (!visible) return;
-    writeDiagnostic("manager.rendered", {
-      activeSource: SCRIPT_BINDING_SOURCE,
-      revision: props.stateRevision,
-      v5Bindings: visibleBindings.length,
-    });
-  }, [visible, props.stateRevision, visibleBindings.length]);
 
   useEffect(() => {
     if (props.notice) setNotice(props.notice);
@@ -237,16 +242,49 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
 
   async function syncPlatforms(platform?: ExpressPlatform) {
     try {
-      const result = await props.onPlatformRefresh(platform, (source, running) => {
+      const result = await props.onPlatformRefresh(platform, (source, running, stage) => {
         if (!mountedRef.current) return;
-        setSyncingPlatforms(current => running ? [...current, source] : current.filter(item => item !== source));
+        // A Cainiao round that committed its recipients shows its icon and new time while sender appointments load.
+        const sending = running && stage === "sender";
+        setSyncingPlatforms(current => running && !sending ? [...current, source] : current.filter(item => item !== source));
+        setSendingPlatforms(current => sending ? [...current, source] : current.filter(item => item !== source));
       });
       if (mountedRef.current) setNotice(result);
     } catch {
       if (mountedRef.current) setNotice(EXPRESS_TOAST_COPY.refreshFailed);
     } finally {
-      if (mountedRef.current) setSyncingPlatforms([]);
+      if (mountedRef.current) {
+        setSyncingPlatforms([]);
+        setSendingPlatforms([]);
+      }
     }
+  }
+
+  // 立即同步 also starts the cloud record pulls when the Access Key allows it (IOS-PARITY-11). The platform summary
+  // keeps its own toast; the cloud pulls report nothing and skip without an authorized key. They belong to the app,
+  // like the Home list pull, and may outlive this page, so the page's busy state covers only the platform sync. Pipi's
+  // covers its platform sync, Bot policy check and job enqueue. Each cloud owner joins its own in-flight pull on a
+  // repeated tap.
+  async function syncNow() {
+    await runAction(async () => {
+      const platforms = Object.values(platformAccounts).some(item => item?.state === "active");
+      const cloud = cloudSyncAvailable ? props.onCloudRecordsRefresh : undefined;
+      if (!platforms && !cloud) return;
+      if (cloud) void cloud().catch(() => undefined);
+      if (platforms) await syncPlatforms();
+    }, "同步失败，请稍后重试");
+  }
+
+  async function confirmPlatformLogout(platform: ExpressPlatform, generation: string): Promise<void> {
+    const name = PLATFORM_NAMES[platform];
+    const message = platform === "fengchao"
+      ? "退出后，将停止同步该丰巢账号的待取件信息，也无法使用一键开柜。"
+      : "退出后，将停止同步该账号的快递信息。";
+    const confirmed = await Dialog.confirm({
+      title: `退出${name}账号`, message,
+      cancelLabel: "取消", confirmLabel: "退出",
+    });
+    if (confirmed && clearPlatformLogin(platform, generation) && mountedRef.current) setNotice("已退出登录");
   }
 
   async function managePlatform(platform: ExpressPlatform) {
@@ -254,12 +292,22 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
       const current = accountStatus(platform);
       const name = PLATFORM_NAMES[platform];
       if (current.state === "active") {
-        const confirmed = await Dialog.confirm({
-          title: `退出${name}账号`, message: `退出后，将停止同步该账号的快递信息。`,
-          cancelLabel: "取消", confirmLabel: "退出",
-        });
-        if (confirmed && clearPlatformLogin(platform, current.generation) && mountedRef.current) setNotice("已退出登录");
+        await confirmPlatformLogout(platform, current.generation);
         return;
+      }
+      if (current.state === "expired") {
+        const choice = await Dialog.actionSheet({
+          title: `${name}登录已失效`,
+          actions: [
+            { label: "重新登录" },
+            { label: "退出登录", destructive: true },
+          ],
+        });
+        if (choice == null || choice < 0) return;
+        if (choice === 1) {
+          await confirmPlatformLogout(platform, current.generation);
+          return;
+        }
       }
       if (await presentPlatformLogin(platform)) await syncPlatforms(platform);
     }, "账号操作失败，请稍后重试");
@@ -303,16 +351,12 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
       toolbar={{
         topBarTrailing: (
           <Button
-            buttonStyle="plain"
+            title="添加手机号"
+            systemImage="plus"
+            labelStyle="iconOnly"
             action={add}
             disabled={busy}
-          >
-            <Image
-              systemName="plus"
-              font={17}
-              frame={{ width: 44, height: 44 }}
-            />
-          </Button>
+          />
         ),
       }}
     >
@@ -329,16 +373,22 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         }
       >
         {visibleBindings.length ? (
-          visibleBindings.map((binding) => (
+          visibleBindings.map((binding, index) => (
             <HStack
               key={`${binding.source}:${binding.phone}`}
               spacing={12}
               padding={{ vertical: 6 }}
+              listRowSeparator="hidden"
+              overlay={index < visibleBindings.length - 1 ? {
+                alignment: "bottom",
+                content: <Divider padding={{ leading: ACCOUNT_ICON_SIZE + 12 }} />,
+              } : undefined}
               trailingSwipeActions={{
                 allowsFullSwipe: false,
                 actions: [
                   <Button
                     title="解绑"
+                    systemImage="minus.circle.fill"
                     role="destructive"
                     action={() => remove(binding)}
                     disabled={busy}
@@ -379,9 +429,9 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
           <HStack>
             <Text>更多数据源</Text>
             <Spacer />
-            <SectionIconButton title="立即同步" symbol="arrow.clockwise" disabled={busy ||
-              !Object.values(platformAccounts).some((item) => item.state === "active")}
-              action={() => void runAction(() => syncPlatforms(), "同步失败，请稍后重试")} />
+            <SectionIconButton title="立即同步" symbol="arrow.clockwise" disabled={busy || !cloudSyncAvailable &&
+              !Object.values(platformAccounts).some((item) => item?.state === "active")}
+              action={() => void syncNow()} />
           </HStack>
         }
         footer={
@@ -400,7 +450,9 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
               subtitle={account ? platformAccountSubtitle(account) : ""}
               state={account?.state}
               syncing={syncingPlatforms.includes(platform)}
+              sending={sendingPlatforms.includes(platform)}
               disabled={busy}
+              showSeparator
               onTap={() => void managePlatform(platform)}
             />
           );
@@ -418,13 +470,15 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   );
 }
 
-function PlatformAccountRow({ platform, title, subtitle, state, syncing, disabled, onTap }: {
+function PlatformAccountRow({ platform, title, subtitle, state, syncing, sending, disabled, showSeparator, onTap }: {
   platform: ExpressPlatform | "samsung";
   title: string;
   subtitle: string;
   state?: AccountStatus["state"];
   syncing?: boolean;
+  sending?: boolean;
   disabled: boolean;
+  showSeparator?: boolean;
   onTap: () => void;
 }) {
   const copy = state ? {
@@ -433,7 +487,16 @@ function PlatformAccountRow({ platform, title, subtitle, state, syncing, disable
     offline: { status: "未登录", subtitle: "" },
   }[state] : { status: "", subtitle: "" };
   return (
-    <Button buttonStyle="plain" disabled={disabled} action={onTap}>
+    <Button
+      buttonStyle="plain"
+      disabled={disabled}
+      action={onTap}
+      listRowSeparator="hidden"
+      overlay={showSeparator ? {
+        alignment: "bottom",
+        content: <Divider padding={{ leading: ACCOUNT_ICON_SIZE + 12 }} />,
+      } : undefined}
+    >
       <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">
         {syncing ? (
           <ProgressView progressViewStyle="circular" frame={{ width: ACCOUNT_ICON_SIZE, height: ACCOUNT_ICON_SIZE }} />
@@ -447,7 +510,10 @@ function PlatformAccountRow({ platform, title, subtitle, state, syncing, disable
           ) : null}
         </VStack>
         <Spacer />
-        <Text font="footnote" foregroundStyle="secondaryLabel" fixedSize={{ horizontal: true, vertical: false }}>{copy.status}</Text>
+        <Text font="footnote" foregroundStyle="secondaryLabel" fixedSize={{ horizontal: true, vertical: false }}>
+          {sending ? SENDER_SYNCING : copy.status}
+        </Text>
+        <Image systemName="chevron.right" font={12} foregroundStyle="tertiaryLabel" />
       </HStack>
     </Button>
   );

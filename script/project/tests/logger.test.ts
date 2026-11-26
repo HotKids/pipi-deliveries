@@ -33,6 +33,7 @@ installSharedFileMock(memory);
 setDiagnosticsEnabled(true);
 
 const {
+  beginDiagnosticFlow,
   classifyDiagnosticError,
   clearDiagnostics,
   diagnosticErrorDetails,
@@ -232,7 +233,7 @@ assert.deepEqual(cainiaoDiagnostic.details, {
   routeKind: "cainiao",
   automatic: true,
   selected: true,
-  webViewAllowed: true,
+  // D170: webViewAllowed was never written by the app and left the key list.
   routePointerPresent: true,
   routePresent: true,
   routeTrusted: true,
@@ -316,7 +317,7 @@ for (let index = 0; index < 505; index++) {
 assert.equal(readDiagnostics().length, 200);
 
 clearDiagnostics();
-writeDiagnostic("refresh.stage.started", {
+writeDiagnostic("refresh.stage.skipped", {
   flowId: "refresh-terminal-owner",
   stage: "manual_refresh",
 });
@@ -330,7 +331,7 @@ writeDiagnostic("refresh.stage.succeeded", {
 });
 assert.deepEqual(
   readDiagnostics().map((entry) => entry.event),
-  ["refresh.failed", "refresh.stage.started"],
+  ["refresh.failed", "refresh.stage.skipped"],
   "a refresh terminal event must remain the final record for its flow",
 );
 
@@ -351,7 +352,7 @@ writeDiagnostic("account.sync.failed", {
 assert.equal(readDiagnostics()[0].details.httpStatus, 401);
 assert.equal(readDiagnostics()[0].details.failureCode, "unauthorized");
 
-writeDiagnostic("account.sync.parsed", {
+writeDiagnostic("account.sync.completed", {
   source: "interface5",
   rawRecords: 3,
   records: 2,
@@ -461,7 +462,7 @@ assert.deepEqual(readDiagnostics(), []);
 assert.equal(memory.has(DIAGNOSTIC_KEY), false);
 
 for (let index = 0; index < 520; index++) {
-  writeDiagnostic("refresh.stage.started", {
+  writeDiagnostic("refresh.stage.skipped", {
     flowId: `flow-${String(index).padStart(3, "0")}`,
     stage: "account_detail",
   });
@@ -481,7 +482,7 @@ assert.equal(readDiagnostics().length, 1);
 clearDiagnostics();
 assert.deepEqual(readDiagnostics(), []);
 
-writeDiagnostic("detail.refresh.started", {
+writeDiagnostic("detail.refresh.skipped", {
   trigger: "identity_projection", statusSemantic: "UNKNOWN", detailStatusSemantic: "UNKNOWN",
   missingStatusRefresh: true, unprojectedOrder: false, detailComplete: true,
 });
@@ -494,8 +495,9 @@ clearDiagnostics();
 
 console.log("diagnostic logger privacy and retention tests passed");
 
-writeDiagnostic("refresh.started", { flowId: "progress-test", trigger: "list_pull" });
-writeDiagnostic("refresh.stage.started", {
+// D4: the refresh writes no start line; its trigger still reaches its child lines.
+beginDiagnosticFlow("refresh.started", { flowId: "progress-test", trigger: "list_pull" });
+writeDiagnostic("refresh.stage.skipped", {
   flowId: "progress-test", stage: "manual_refresh", requestProvider: "v6_query",
   displayTimelineProvider: "v5_list",
 });
@@ -509,16 +511,20 @@ writeDiagnostic("detail.timeline.selected", { trigger: "cache_read", candidateCo
   availableCandidateCount: 5, incompleteReason: "latest_unknown", captureComplete: true,
   latestEventAtMs: 1789073940000, latestTrackAtMs: 1788998300000,
   feedEventAtMs: 1788998400000, statusEventAtMs: 1789073940000 });
-const cacheLog = readDiagnostics()[0].details;
+const cacheEntry = readDiagnostics()[0];
+const cacheLog = cacheEntry.details;
+const cacheAt = Date.parse(cacheEntry.at);
 assert.equal(cacheLog.candidateCount, 6);
 assert.equal(cacheLog.availableCandidateCount, 5);
 assert.equal(cacheLog.attempted, undefined, "cache candidates are not network attempts");
 assert.equal(cacheLog.incompleteReason, "latest_unknown");
 assert.equal(cacheLog.captureComplete, true);
-assert.equal(cacheLog.latestEventAtMs, 1789073940000);
-assert.equal(cacheLog.latestTrackAtMs, 1788998300000);
-assert.equal(cacheLog.feedEventAtMs, 1788998400000);
-assert.equal(cacheLog.statusEventAtMs, 1789073940000);
+// D6 (owner 2026-11-21 「改成相对量（推荐）」): absolute business times are kept as their age at the line's own time.
+assert.equal(cacheLog.latestEventAtMs, undefined);
+assert.equal(cacheLog.latestEventAgeMs, cacheAt - 1789073940000);
+assert.equal(cacheLog.latestTrackAgeMs, cacheAt - 1788998300000);
+assert.equal(cacheLog.feedEventAgeMs, cacheAt - 1788998400000);
+assert.equal(cacheLog.statusEventAgeMs, cacheAt - 1789073940000);
 writeDiagnostic("refresh.succeeded", { flowId: "progress-test", result: "succeeded" });
 assert.equal(readDiagnostics()[0].details.trigger, "list_pull");
 clearDiagnostics();
@@ -603,7 +609,7 @@ assert.equal(readDiagnostics().length, diagnosticCount);
 
 setDiagnosticsEnabled(true);
 clearDiagnostics();
-writeDiagnostic("refresh.started", { flowId: "batch-log", trigger: "list_pull" });
+beginDiagnosticFlow("refresh.started", { flowId: "batch-log", trigger: "list_pull" });
 const originalGet = Storage.get, originalSet = Storage.set;
 const originalPublish = FileManager.createLinkSync;
 let logReads = 0, logWrites = 0;
@@ -627,7 +633,7 @@ try {
   assert.deepEqual(records.map(entry => entry.details.waybillTail), ["5678", "1234"]);
   assert.ok(records.every(entry => entry.details.trigger === "list_pull"));
   assert.equal(diagnosticText().includes("synthetic-private-value"), false);
-  writeDiagnostic("widget.run.started", { flowId: "other-runtime" });
+  writeDiagnostic("widget.run.completed", { flowId: "other-runtime" });
   writeDiagnosticBatch("account.list.record", [{ flowId: "batch-log", waybillTail: "9012" }]);
   assert.ok(readDiagnostics().some(entry => entry.details.flowId === "other-runtime"),
     "each batch reads current storage instead of reusing an earlier snapshot");
@@ -648,13 +654,16 @@ clearDiagnostics();
 writeDiagnostic("refresh.stage.skipped", {
   stage: "manual_refresh", requestProvider: "kdniao", skipReason: "cooldown",
   cooldownReason: "upstream_rejected", cooldownRemainingMs: 123000,
-  providerLastAttemptAtMs: 1000, providerNextDueAtMs: 124000, providerFailures: 2,
+  providerLastAttemptAtMs: Date.now() - 1000, providerNextDueAtMs: Date.now() + 123000, providerFailures: 2,
 });
 const cooldown = readDiagnostics()[0].details;
 assert.equal(cooldown.cooldownReason, "upstream_rejected");
 assert.equal(cooldown.cooldownRemainingMs, 123000);
-assert.equal(cooldown.providerLastAttemptAtMs, 1000);
-assert.equal(cooldown.providerNextDueAtMs, 124000);
+// D6: the attempt reads as its age and the next due time as the time left; neither absolute time is kept.
+assert.equal(cooldown.providerLastAttemptAtMs, undefined);
+assert.equal(cooldown.providerNextDueAtMs, undefined);
+assert.ok(Math.abs(Number(cooldown.providerLastAttemptAgeMs) - 1000) < 1000);
+assert.ok(Math.abs(Number(cooldown.providerNextDueInMs) - 123000) < 1000);
 assert.equal(cooldown.providerFailures, 2);
 clearDiagnostics();
 writeDiagnostic("refresh.stage.skipped", {
@@ -751,3 +760,19 @@ for (const key of ["enhancedMode", "productImagePresent"] as const) {
     assert.equal(readDiagnostics()[0].details[key], undefined, `${key} accepts only booleans`);
   }
 }
+
+// Online recognition identity (owner 2026-11-21: 记上（推荐）): closed provider and protocol values, and a model
+// name of 1–64 letters, digits, `.`, `_` or `-`; anything else is left out.
+writeDiagnostic("recognition.online.completed", {
+  onlineProvider: "compatible", onlineProtocol: "responses", onlineModel: "gpt-5.1_vision-mini",
+});
+assert.deepEqual([readDiagnostics()[0].details.onlineProvider, readDiagnostics()[0].details.onlineProtocol,
+  readDiagnostics()[0].details.onlineModel], ["compatible", "responses", "gpt-5.1_vision-mini"]);
+for (const [key, value] of [["onlineProvider", "Synthetic Provider"], ["onlineProvider", "anthropic"],
+  ["onlineProtocol", "graphql"], ["onlineProtocol", 1], ["onlineModel", "models/gemini-4"], ["onlineModel", "m".repeat(65)],
+  ["onlineModel", "model name"], ["onlineModel", "https://example.invalid/model"], ["onlineModel", "sk:synthetic"],
+  ["onlineModel", ""], ["onlineModel", 7]] as const) {
+  writeDiagnostic("recognition.online.completed", { [key]: value } as never);
+  assert.equal((readDiagnostics()[0].details as Record<string, unknown>)[key], undefined, `${key} rejects ${String(value).slice(0, 20)}`);
+}
+console.log("online recognition identity sanitizer checks passed");

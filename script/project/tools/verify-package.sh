@@ -71,6 +71,7 @@ for required in \
   intent.tsx \
   app_intents.tsx \
   live_activity.tsx \
+  notification.tsx \
   assets/parcel-activity/box.png \
   assets/parcel-activity/box-lock-screen.png \
   assets/parcel-activity/box-frames.png \
@@ -124,6 +125,7 @@ for required in \
   services/manual-query-parser.ts \
   services/manual-query.ts \
   services/logger.ts \
+  services/parcel-cloud-sync.ts \
   services/pdd-cloud-records.ts \
   services/platform-accounts.ts \
   services/platform-parcel-data.ts \
@@ -150,6 +152,7 @@ for required in \
   widget/SmallWidget.tsx \
   widget/MediumWidget.tsx \
   widget/WidgetLineArt.tsx \
+  widget/WidgetSenderTag.tsx \
   widget/layout.ts \
   contracts/express-policy.v1.json \
   contracts/express-policy.generated.ts \

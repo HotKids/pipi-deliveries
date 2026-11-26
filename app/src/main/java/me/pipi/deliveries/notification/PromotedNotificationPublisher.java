@@ -91,8 +91,7 @@ public final class PromotedNotificationPublisher {
                         .invoke(builder, true);
             } catch (Throwable error) {
                 // Optional API: extras below preserve the public fallback contract.
-                Log.w(TAG, "promoted ongoing builder API unavailable; using extras fallback",
-                        error);
+                Log.w(TAG, "promoted ongoing builder API unavailable; using extras fallback" + " kind=" + error.getClass().getSimpleName());
             }
         }
         Bundle extras = new Bundle();
@@ -106,9 +105,16 @@ public final class PromotedNotificationPublisher {
      * Posts the enhanced variant, probes supported Samsung SystemUI, and atomically replaces a
      * rejected notification with a private-extra-free generic clone.
      */
-    @SuppressLint("MissingPermission")
     public static void post(Context context, NotificationManager manager, NotificationKey key,
                             Notification enhanced, Notification genericAndroid) {
+        post(context, manager, key, enhanced, genericAndroid, null);
+    }
+
+    /** Tries the native pickup template before the established pickup notification. */
+    @SuppressLint("MissingPermission")
+    public static void post(Context context, NotificationManager manager, NotificationKey key,
+                            Notification enhanced, Notification genericAndroid,
+                            Notification pickupNowBar) {
         if (context == null || manager == null || key == null || enhanced == null) return;
         Context app = context.getApplicationContext();
         Notification generic = genericClone(genericAndroid == null ? enhanced : genericAndroid);
@@ -116,29 +122,21 @@ public final class PromotedNotificationPublisher {
         synchronized (LOCK) {
             cancelProbeLocked(key);
             long generation = GENERATIONS.advance(key);
+            if (pickupNowBar != null && SamsungNowBarCompat.shouldTryPickupNowBar(app)
+                    && canProbeDelivery(app, manager, pickupNowBar)) {
+                try {
+                    key.notify(manager, pickupNowBar);
+                    scheduleProbeLocked(app, manager, key, generation, generic, enhanced);
+                    return;
+                } catch (IllegalArgumentException rejected) {
+                    SamsungNowBarCompat.recordPickupNowBarRejection(app);
+                    Log.w(TAG, "Pickup Now Bar notification rejected during posting");
+                }
+            }
             if (SamsungNowBarCompat.useGenericFallback(app)) {
                 fallbackGeneration = generation;
             } else {
-                key.notify(manager, enhanced);
-                boolean shouldProbe = SamsungNowBarCompat.shouldProbeDelivery(app)
-                        && canObserveDelivery(app, manager, enhanced)
-                        && PromotedNotificationPolicy.hasProbeWindow(
-                                enhanced.getTimeoutAfter(),
-                                PROBE_DELAY_MS + PROBE_CONFIRM_DELAY_MS,
-                                PROBE_DELIVERY_MARGIN_MS);
-                if (!shouldProbe) {
-                    GENERATIONS.clearIfCurrent(key, generation);
-                    return;
-                }
-                String expectedFingerprint = NotificationDismissalStore.activeFingerprint(app, key);
-                String expectedToken = NotificationDismissalStore.activeToken(app, key);
-                ProbeState state = new ProbeState(generation, expectedFingerprint, expectedToken);
-                PROBES.put(key, state);
-                state.future = PROBE_EXECUTOR.schedule(
-                        () -> probe(app, manager, key, generation, generic,
-                                expectedFingerprint, expectedToken, false),
-                        PROBE_DELAY_MS,
-                        TimeUnit.MILLISECONDS);
+                postEnhancedLocked(app, manager, key, generation, enhanced, generic);
                 return;
             }
         }
@@ -150,12 +148,44 @@ public final class PromotedNotificationPublisher {
             if (!GENERATIONS.isCurrent(key, fallbackGeneration)) return;
             try {
                 key.notify(manager, compacted);
-                Log.w(TAG, "Using generic Android live update key=" + key
+                Log.w(TAG, "Using generic Android live update key=" + key.logLabel()
                         + " fingerprint=" + SamsungNowBarCompat.fingerprint(app));
             } finally {
                 GENERATIONS.clearIfCurrent(key, fallbackGeneration);
             }
         }
+    }
+
+    private static void postEnhancedLocked(Context app, NotificationManager manager,
+                                           NotificationKey key, long generation,
+                                           Notification enhanced, Notification generic) {
+        key.notify(manager, enhanced);
+        if (SamsungNowBarCompat.shouldProbeDelivery(app)
+                && canProbeDelivery(app, manager, enhanced)) {
+            scheduleProbeLocked(app, manager, key, generation, generic, null);
+        } else {
+            finishProbeLocked(key, generation);
+        }
+    }
+
+    private static boolean canProbeDelivery(Context app, NotificationManager manager,
+                                            Notification notification) {
+        return PromotedNotificationPolicy.hasProbeWindow(
+                notification.getTimeoutAfter(), PROBE_DELAY_MS + PROBE_CONFIRM_DELAY_MS,
+                PROBE_DELIVERY_MARGIN_MS) && canObserveDelivery(app, manager, notification);
+    }
+
+    private static void scheduleProbeLocked(Context app, NotificationManager manager,
+                                            NotificationKey key, long generation,
+                                            Notification generic, Notification pickupFallback) {
+        String expectedFingerprint = NotificationDismissalStore.activeFingerprint(app, key);
+        String expectedToken = NotificationDismissalStore.activeToken(app, key);
+        ProbeState state = new ProbeState(generation, pickupFallback);
+        PROBES.put(key, state);
+        state.future = PROBE_EXECUTOR.schedule(
+                () -> probe(app, manager, key, generation, generic,
+                        expectedFingerprint, expectedToken, false),
+                PROBE_DELAY_MS, TimeUnit.MILLISECONDS);
     }
 
     /** Posts an ordinary replacement while invalidating an older live probe for the same ID. */
@@ -208,12 +238,12 @@ public final class PromotedNotificationPublisher {
                 }
             }
         } catch (Throwable error) {
-            Log.w(TAG, "SystemUI survival probe unavailable key=" + key, error);
+            Log.w(TAG, "SystemUI survival probe unavailable key=" + key.logLabel() + " kind=" + error.getClass().getSimpleName());
             finishProbe(key, generation);
             return;
         }
 
-        boolean prepareGenericRepost = false;
+        boolean pickupNowBar;
         synchronized (LOCK) {
             // Second generation check: cancellation may have happened during the framework query.
             if (!GENERATIONS.isCurrent(key, generation)) return;
@@ -221,38 +251,57 @@ public final class PromotedNotificationPublisher {
                 finishProbeLocked(key, generation);
                 return;
             }
+            ProbeState state = PROBES.get(key);
+            if (state == null || state.generation != generation) return;
+            pickupNowBar = state.pickupFallback != null;
             if (active) {
                 if (!confirmation) {
-                    ProbeState state = PROBES.get(key);
-                    if (state == null || state.generation != generation) return;
                     state.future = PROBE_EXECUTOR.schedule(
                             () -> probe(context, manager, key, generation,
                                     genericAndroid, expectedFingerprint, expectedToken, true),
                             PROBE_CONFIRM_DELAY_MS,
                             TimeUnit.MILLISECONDS);
-                    Log.i(TAG, "Samsung enhancement passed initial delivery key=" + key);
+                    if (!pickupNowBar) {
+                        Log.i(TAG, "Samsung enhancement passed initial delivery key=" + key.logLabel());
+                    }
                     return;
                 }
-                SamsungNowBarCompat.recordProbe(context, true);
-                Log.i(TAG, "Samsung enhancement survived delayed confirmation key=" + key);
+                if (pickupNowBar) {
+                    Log.i(TAG, "Pickup Now Bar notification delivery observed");
+                } else {
+                    SamsungNowBarCompat.recordProbe(context, true);
+                    Log.i(TAG, "Samsung enhancement survived delayed confirmation key=" + key.logLabel());
+                }
                 finishProbeLocked(key, generation);
                 return;
             }
             if (NotificationDismissalStore.wasDismissedForProbe(
                     context, key, expectedFingerprint, expectedToken)) {
-                Log.i(TAG, "Live update dismissed by user before probe fallback key=" + key);
+                Log.i(TAG, "Live update dismissed by user before probe fallback key=" + key.logLabel());
                 finishProbeLocked(key, generation);
                 return;
             }
             if (!SamsungNowBarCompat.SYSTEM_UI_ERROR_FALLBACK_ENABLED) {
-                Log.w(TAG, "SystemUI removed enhanced live update key=" + key
+                Log.w(TAG, "SystemUI removed enhanced live update key=" + key.logLabel()
                         + "; temporary error fallback disabled");
                 finishProbeLocked(key, generation);
                 return;
             }
-            prepareGenericRepost = true;
+            if (pickupNowBar && !SamsungNowBarCompat.useGenericFallback(context)) {
+                SamsungNowBarCompat.recordPickupNowBarRejection(context);
+                Log.w(TAG, "Pickup Now Bar removed; restoring the established pickup notification");
+                try {
+                    postEnhancedLocked(context, manager, key, generation,
+                            state.pickupFallback, genericAndroid);
+                } catch (RuntimeException failure) {
+                    finishProbeLocked(key, generation);
+                    Log.w(TAG, "Unable to restore pickup notification"
+                            + " kind=" + failure.getClass().getSimpleName());
+                    throw failure;
+                }
+                return;
+            }
         }
-        if (!prepareGenericRepost) return;
         Notification compacted = compactSamsungFallback(context, genericAndroid);
         synchronized (LOCK) {
             if (!GENERATIONS.isCurrent(key, generation)) return;
@@ -262,17 +311,25 @@ public final class PromotedNotificationPublisher {
             }
             if (NotificationDismissalStore.wasDismissedForProbe(
                     context, key, expectedFingerprint, expectedToken)) {
-                Log.i(TAG, "Live update dismissed by user during fallback preparation key=" + key);
+                Log.i(TAG, "Live update dismissed by user during fallback preparation key=" + key.logLabel());
                 finishProbeLocked(key, generation);
                 return;
             }
-            int failures = SamsungNowBarCompat.recordProbe(context, false);
+            if (pickupNowBar) {
+                SamsungNowBarCompat.recordPickupNowBarRejection(context);
+                Log.w(TAG, "Pickup Now Bar removed; restoring the generic pickup notification");
+            } else {
+                int failures = SamsungNowBarCompat.recordProbe(context, false);
+                Log.w(TAG, "SystemUI removed enhanced live update key=" + key.logLabel()
+                        + " failures=" + failures
+                        + "; reposting generic Android live update");
+            }
             if (!GENERATIONS.isCurrent(key, generation)) return;
-            Log.w(TAG, "SystemUI removed enhanced live update key=" + key
-                    + " failures=" + failures
-                    + "; reposting generic Android live update");
-            key.notify(manager, compacted);
-            finishProbeLocked(key, generation);
+            try {
+                key.notify(manager, compacted);
+            } finally {
+                finishProbeLocked(key, generation);
+            }
         }
     }
 
@@ -301,7 +358,7 @@ public final class PromotedNotificationPublisher {
                     .setSmallIcon(Icon.createWithBitmap(bitmap))
                     .build();
         } catch (Throwable error) {
-            Log.w(TAG, "Unable to compact Samsung fallback small icon", error);
+            Log.w(TAG, "Unable to compact Samsung fallback small icon" + " kind=" + error.getClass().getSimpleName());
             return notification;
         }
     }
@@ -338,7 +395,7 @@ public final class PromotedNotificationPublisher {
             return channel != null
                     && channel.getImportance() != NotificationManager.IMPORTANCE_NONE;
         } catch (Throwable error) {
-            Log.w(TAG, "Unable to verify notification permission/channel state", error);
+            Log.w(TAG, "Unable to verify notification permission/channel state" + " kind=" + error.getClass().getSimpleName());
             return false;
         }
     }
@@ -361,14 +418,12 @@ public final class PromotedNotificationPublisher {
 
     private static final class ProbeState {
         final long generation;
-        final String expectedFingerprint;
-        final String expectedToken;
+        final Notification pickupFallback;
         ScheduledFuture<?> future;
 
-        ProbeState(long generation, String expectedFingerprint, String expectedToken) {
+        ProbeState(long generation, Notification pickupFallback) {
             this.generation = generation;
-            this.expectedFingerprint = expectedFingerprint;
-            this.expectedToken = expectedToken;
+            this.pickupFallback = pickupFallback;
         }
     }
 }

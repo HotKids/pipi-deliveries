@@ -2,7 +2,7 @@ import { Notification } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { deadlineExpired, remainingTimeoutMs, waitForRefresh } from "./deadline";
 import { readDurableTextCandidates, writeDurableText } from "./durable-files";
-import { writeDiagnostic } from "./logger";
+import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { loadNotificationStatuses } from "./notification-preferences";
 import { parcelActivityContent } from "./parcel-pickup";
 import { acquireDurableRefreshLease } from "./refresh-runtime-state";
@@ -65,8 +65,9 @@ export function reconcileFengchaoReminders(state: AppState, { deadline, shipment
 } = {}): Promise<void> {
   const canJoin = !preferencesChanged && pendingRevision === state.revision;
   pendingRevision = state.revision;
-  const run = pendingRun.then(completed => canJoin && completed || reconcileCurrent(state, deadline, shipments)).catch(() => {
-    writeDiagnostic("notification.fengchao.reminder.failed", {}, "warning");
+  const run = pendingRun.then(completed => canJoin && completed || reconcileCurrent(state, deadline, shipments)).catch((error) => {
+    writeDiagnostic("notification.fengchao.reminder.failed", { pushOrigin: "app_local", ...diagnosticErrorDetails(error) },
+      "warning");
     return false;
   });
   pendingRun = run;
@@ -111,6 +112,8 @@ async function reconcileCurrent(state: AppState, deadline?: number, shipments?: 
       }
     }
     if (remove.length) await waitForRefresh(Notification.removePendings(remove), end);
+    // D122: how many reminders this pass scheduled, removed and saw refused by the system (no shipment or code).
+    let scheduled = 0, refused = 0;
     for (const [key, receipt] of Object.entries(receipts)) {
       if (receipt.freeUntil <= now || !plans.has(key) && receipt.scheduledAt > now) delete receipts[key];
     }
@@ -127,11 +130,18 @@ async function reconcileCurrent(state: AppState, deadline?: number, shipments?: 
         trigger: new TimeIntervalNotificationTrigger({ timeInterval: (scheduledAt - time) / 1000, repeats: false }),
       }), end);
       if (accepted) {
+        scheduled++;
         receipts[key] = { scheduledAt, freeUntil: plan.freeUntil };
         writeDurableText(LEDGER, JSON.stringify(receipts));
-      }
+      } else refused++;
     }
     writeDurableText(LEDGER, JSON.stringify(receipts));
+    if (scheduled || refused || remove.length) {
+      writeDiagnostic("notification.fengchao.reminder.completed", {
+        pushOrigin: "app_local", succeeded: scheduled, failed: refused, records: remove.length,
+        result: refused ? "partial" : "succeeded",
+      }, refused ? "warning" : "info");
+    }
     return current();
   } finally {
     lease.release();

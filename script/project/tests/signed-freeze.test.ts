@@ -213,7 +213,8 @@ test("the alignment pass does not check a frozen row out of step", async () => {
   assert.equal((await pass()).result, "nothing_due");
   assert.equal((await pass()).result, "nothing_due");
   assert.equal(refreshed, 0, "the frozen row is never forced");
-  assert.equal(readDiagnostics().filter(entry => entry.event === "detail.refresh.alignment").length, 0,
+  assert.equal(readDiagnostics().filter(entry => entry.event === "detail.refresh.alignment" ||
+    entry.event === "alignment.completed").length, 0,
     "a frozen row writes no alignment line");
   assert.deepEqual(records, {}, "and leaves no record");
 });

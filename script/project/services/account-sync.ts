@@ -507,7 +507,7 @@ export async function fetchAccountExternalAppRoutes(
   }
   const record = shipment.accountRecord;
   if (!/^1[3-9]\d{9}$/.test(record.phone || "")) return [];
-  writeDiagnostic("detail.external.request", { ...context, stage: "account_list", result: "started" });
+  // D4: the request writes no start line; its end (detail.external.routes or request_failed) carries the duration.
   try {
     const response = await accountApi(Date.now() + 15_000, signal).sync({
       source: SCRIPT_BINDING_SOURCE,

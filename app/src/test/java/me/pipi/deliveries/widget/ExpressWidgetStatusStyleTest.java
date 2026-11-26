@@ -11,18 +11,19 @@ import me.pipi.deliveries.model.StatusSemantic;
 import org.junit.Test;
 
 public final class ExpressWidgetStatusStyleTest {
+    /** Owner 2026-11-20 (修改 11), table 1.2-A light non-capsule text pair. */
     @Test
     public void widgetStatusColoursComeFromTheSharedTable() {
-        assertEquals(0xFFBA1A1A, foreground(StatusSemantic.DANGER));
-        assertEquals(0xFF693B10, foreground(StatusSemantic.WAITING_PICKUP));
-        assertEquals(0xFF7A491D, foreground(StatusSemantic.DELIVERY));
-        assertEquals(0xFF005D2D, foreground(StatusSemantic.COMPLETED));
-        assertEquals(0xFF004590, foreground(StatusSemantic.TRANSIT));
-        assertEquals(0xFF004EA1, foreground(StatusSemantic.PICKED));
-        assertEquals(0xFF0F61C1, foreground(StatusSemantic.ORDERED));
-        assertEquals(0xFF0057B3, foreground(StatusSemantic.SHIPPED));
-        assertEquals(0xFF63696A, foreground(StatusSemantic.CANCELLED));
-        assertEquals(0xFF545B5C, foreground(StatusSemantic.UNKNOWN));
+        assertEquals(0xFFF03A30, foreground(StatusSemantic.DANGER));
+        assertEquals(0xFF6D8F00, foreground(StatusSemantic.WAITING_PICKUP));
+        assertEquals(0xFF0E9F52, foreground(StatusSemantic.DELIVERY));
+        assertEquals(0xFFD97E06, foreground(StatusSemantic.COMPLETED));
+        assertEquals(0xFF0A6CFF, foreground(StatusSemantic.TRANSIT));
+        assertEquals(0xFF0277BD, foreground(StatusSemantic.PICKED));
+        assertEquals(0xFF5A6B80, foreground(StatusSemantic.ORDERED));
+        assertEquals(0xFF0091B8, foreground(StatusSemantic.SHIPPED));
+        assertEquals(0xFF6E767F, foreground(StatusSemantic.CANCELLED));
+        assertEquals(0xFF9AA3AB, foreground(StatusSemantic.UNKNOWN));
         assertNotEquals(foreground(StatusSemantic.DELIVERY), foreground(StatusSemantic.COMPLETED));
     }
 

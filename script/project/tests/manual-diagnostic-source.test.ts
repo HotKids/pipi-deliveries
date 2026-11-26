@@ -63,17 +63,17 @@ assert.equal(querySummary.details.selectionScope, "query_response");
 assert.equal(querySummary.details.returnedTrackCount, 1);
 assert.equal(querySummary.details.selected, undefined,
   "a query response cannot claim to be the final persisted display selection");
+// D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): a source writes no start line; its end line carries the
+// same provider and its duration.
+assert.equal(entries.some((candidate) => candidate.event === "manual.source.started"), false);
 for (const event of [
-  "manual.source.started",
   "manual.source.succeeded",
   "manual.query.completed",
 ]) {
   const entry = entries.find((candidate) => candidate.event === event);
   assert.ok(entry, `missing ${event}`);
   assert.equal(entry.details.timelineProvider, "v4_query");
-  if (event !== "manual.source.started") {
-    assert.equal(typeof entry.details.durationMs, "number");
-  }
+  assert.equal(typeof entry.details.durationMs, "number");
 }
 
 clearDiagnostics();
@@ -129,8 +129,9 @@ await queryManualForSource({
   },
 });
 const fallbackEntries = readDiagnostics();
+// D4: the paid source writes no start line; its end line names it.
 assert.equal(
-  fallbackEntries.find((entry) => entry.event === "manual.source.started")
+  fallbackEntries.find((entry) => entry.event.startsWith("manual.source."))
     ?.details.timelineProvider,
   "kdniao",
 );

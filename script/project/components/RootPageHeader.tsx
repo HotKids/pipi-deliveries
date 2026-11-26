@@ -1,33 +1,6 @@
-import { Button, List, Rectangle, Section, Text, VStack, ZStack, useState, type ListProps, type VirtualNode } from "scripting";
+import { Button, List, Section, VStack, ZStack, useState, type ListProps, type ScrollPhase, type VirtualNode } from "scripting";
 
 export const ROOT_PAGE_MARGIN = 20;
-const CLOSE_SIZE = 44;
-const HEADER_TOP_INSET = 4;
-
-function RootPageTitle({ title, onVisibilityChange }: { title: string; onVisibilityChange?: (visible: boolean) => void }) {
-  return (
-    <Text font="largeTitle" fontWeight="bold" foregroundStyle="label"
-      frame={{ maxWidth: "infinity", minHeight: CLOSE_SIZE, alignment: "leading" }}
-      listRowInsets={{ top: HEADER_TOP_INSET, leading: ROOT_PAGE_MARGIN, bottom: 16, trailing: ROOT_PAGE_MARGIN + CLOSE_SIZE }}
-      onScrollVisibilityChange={onVisibilityChange ? { onChanged: onVisibilityChange } : undefined}
-      listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden">
-      {title}
-    </Text>
-  );
-}
-
-function RootPageCloseButton({ action }: { action: () => void }) {
-  const glass = Number.parseInt(Device.systemVersion, 10) >= 26;
-  return (
-    <VStack padding={{ top: HEADER_TOP_INSET, trailing: ROOT_PAGE_MARGIN }}>
-      <Button title="关闭" systemImage="xmark"
-        labelStyle="iconOnly" buttonStyle="plain" action={action} font={17} fontWeight="semibold"
-        foregroundStyle="label" frame={{ width: CLOSE_SIZE, height: CLOSE_SIZE }}
-        background={glass ? undefined : { style: "secondarySystemGroupedBackground", shape: "circle" }}
-        glassEffect={glass ? "circle" : undefined} contentShape="circle" />
-    </VStack>
-  );
-}
 
 export function RootTabList({ title, onClose, topAccessory, titleAction, refresh, emptyState, bottomInset, children }: {
   title: string;
@@ -39,32 +12,53 @@ export function RootTabList({ title, onClose, topAccessory, titleAction, refresh
   bottomInset?: number;
   children?: ListProps["children"];
 }) {
-  const [titleVisible, setTitleVisible] = useState(true);
-  const trackVisibility = titleAction && Number.parseInt(Device.systemVersion, 10) >= 18;
-  const header = (
+  const [fabVisible, setFabVisible] = useState(true);
+  const supportsScrollPhase = Boolean(titleAction) && Number.parseInt(Device.systemVersion, 10) >= 18;
+  const supportsGlassTransition = Number.parseInt(Device.systemVersion, 10) >= 26;
+  const onScrollPhaseChange = (_oldPhase: ScrollPhase, newPhase: ScrollPhase) => {
+    setFabVisible(newPhase === "idle");
+  };
+  const header = topAccessory != null ? (
     <Section key="root-heading" listSectionMargins={0} listSectionSeparator="hidden"
-      animation={topAccessory === undefined ? undefined : { animation: Animation.easeOut(0.18), value: topAccessory !== null }}>
-      <RootPageTitle title={title} onVisibilityChange={trackVisibility ? setTitleVisible : undefined} />
+      animation={{ animation: Animation.easeOut(0.18), value: true }}>
       {topAccessory}
     </Section>
-  );
+  ) : null;
   return (
-    <ZStack alignment="topTrailing" overlay={titleAction ? {
-      alignment: "bottomTrailing",
-      content: <VStack opacity={titleVisible ? 1 : 0} allowsHitTesting={titleVisible} accessibilityHidden={!titleVisible}
-        animation={{ animation: Animation.easeOut(0.18), value: titleVisible }}>
-        {titleAction}
-      </VStack>,
-    } : undefined}>
-      <List listStyle="insetGroup" frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+    <ZStack
+      alignment="bottomTrailing"
+      overlay={titleAction ? {
+        alignment: "bottomTrailing",
+        content: (
+          <VStack animation={{ animation: Animation.easeOut(0.18), value: fabVisible }}>
+            {fabVisible ? (
+              <VStack glassEffectTransition={supportsGlassTransition ? "materialize" : undefined}>
+                {titleAction}
+              </VStack>
+            ) : null}
+          </VStack>
+        ),
+      } : undefined}
+    >
+      <List
+        listStyle="insetGroup"
+        navigationTitle={title}
+        navigationBarTitleDisplayMode="large"
+        toolbar={{
+          topBarTrailing: (
+            <Button title="关闭" systemImage="xmark" labelStyle="iconOnly" action={onClose} />
+          ),
+        }}
+        frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         refreshable={refresh}
+        onScrollPhaseChange={supportsScrollPhase ? onScrollPhaseChange : undefined}
         contentMargins={bottomInset === undefined
-          ? { edges: "top", insets: 0, placement: "scrollContent" }
-          : { edges: "vertical", insets: { top: 0, bottom: bottomInset, leading: 0, trailing: 0 }, placement: "scrollContent" }}
-        overlay={emptyState ? { alignment: "center", content: emptyState } : undefined}>
-        {[header, ...[children].flat()]}
+          ? undefined
+          : { edges: "bottom", insets: bottomInset, placement: "scrollContent" }}
+        overlay={emptyState ? { alignment: "center", content: emptyState } : undefined}
+      >
+        {header ? [header, ...[children].flat()] : children}
       </List>
-      <RootPageCloseButton action={onClose} />
     </ZStack>
   );
 }

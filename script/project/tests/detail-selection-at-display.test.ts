@@ -54,7 +54,7 @@ assert.equal(selectShipmentDetailTimeline(unrecorded).provider, "v6_query",
 // The page records the package it shows, except for a manual query preview.
 const page = readFileSync(new URL("../pages/DetailPage.tsx", import.meta.url), "utf8");
 assert.match(page,
-  /if \(!props\.manualPreview && !props\.readOnly\) \{\s*try \{\s*recordShipmentDetailSelection\(shipment\.identity\.id\);[\s\S]*?\}, \[shipment\.identity\.id, selectionSignature\]\);/,
+  /if \(!props\.manualPreview\) \{\s*try \{\s*recordShipmentDetailSelection\(shipment\.identity\.id\);[\s\S]*?\}, \[shipment\.identity\.id, selectionSignature\]\);/,
   "the selection effect records the shown package");
 
 console.log("detail selection at display tests passed");

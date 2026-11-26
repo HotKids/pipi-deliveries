@@ -83,21 +83,26 @@ function diagnosticBatch(id: string, epoch: string) {
   return { directory, ready, published };
 }
 
-function diagnosticMetadata(epoch: string, values: readonly unknown[]): string {
-  return JSON.stringify({ version: 2, epoch, createdAtMs: Date.now(), recordCount: values.length, ...entryTimestampRange(values) });
+/**
+ * `keyedHandles` marks a batch of lines this version wrote, whose ownerFingerprint is the keyed handle (D7). Lines an
+ * older build stored, or that are migrated from its shared array, carry no mark; readers ignore the field.
+ */
+function diagnosticMetadata(epoch: string, values: readonly unknown[], migrated = false): string {
+  return JSON.stringify({ version: 2, epoch, createdAtMs: Date.now(), recordCount: values.length,
+    ...entryTimestampRange(values), ...(migrated ? {} : { keyedHandles: true }) });
 }
 
 function rowName(index: number): string {
   return `r${String(index).padStart(4, "0")}.json`;
 }
 
-export function publishDiagnosticBatch(id: string, epoch: string, values: readonly unknown[]): void {
+export function publishDiagnosticBatch(id: string, epoch: string, values: readonly unknown[], migrated = false): void {
   const { directory, ready, published } = diagnosticBatch(id, epoch);
   FileManager.createDirectorySync(root(), true);
   if (published()) return;
   try {
     if (!FileManager.existsSync(directory)) FileManager.createDirectorySync(directory, false);
-    verifiedWrite(`${directory}/meta.json`, diagnosticMetadata(epoch, values));
+    verifiedWrite(`${directory}/meta.json`, diagnosticMetadata(epoch, values, migrated));
     for (let index = 0; index < values.length; index++) {
       FileManager.writeAsStringSync(`${directory}/${rowName(index)}`, JSON.stringify(values[index]));
     }
@@ -109,14 +114,14 @@ export function publishDiagnosticBatch(id: string, epoch: string, values: readon
 }
 
 export async function publishDiagnosticBatchAsync(
-  id: string, epoch: string, values: readonly unknown[], current: () => boolean,
+  id: string, epoch: string, values: readonly unknown[], current: () => boolean, migrated = false,
 ): Promise<boolean> {
   const { directory, ready, published } = diagnosticBatch(id, epoch);
   if (published()) return true;
   const metaPath = `${directory}/meta.json`;
   try {
     await FileManager.createDirectory(directory, true);
-    const metadata = diagnosticMetadata(epoch, values);
+    const metadata = diagnosticMetadata(epoch, values, migrated);
     await FileManager.writeAsString(metaPath, metadata);
     if (await FileManager.readAsString(metaPath) !== metadata) throw new Error("Diagnostic file verification failed");
     // Wait for other writes to settle before any retry can use this batch id.
@@ -169,6 +174,112 @@ export function markDiagnosticLegacyImported(): void {
   try { FileManager.renameSync(pending, marker); }
   catch (error) { if (!FileManager.existsSync(marker)) throw error; }
   finally { removeBestEffort(pending); }
+}
+
+/**
+ * R5-NEW-11 ⑥ (fifth review, 2026-11-25): the markers of running operations (D4), one file per flow in its own
+ * directory. A runtime that opens or closes a flow touches only that flow's file, so the app, widget, App Intent and
+ * Shortcut runtimes can no longer overwrite each other's markers through one shared map, and a closed marker cannot
+ * come back. A marker is named `<flowId>-<event>.json`.
+ */
+const OPEN_FLOWS = "open-flows";
+const OPEN_FLOW_FILE = /^[0-9]{1,17}-[a-z][a-z0-9_.]{0,63}\.json$/;
+
+function openFlowDirectory(): string {
+  return `${root()}/${OPEN_FLOWS}`;
+}
+
+export function writeOpenFlowMarker(name: string, text: string): void {
+  if (!OPEN_FLOW_FILE.test(name)) throw new Error("Invalid diagnostic flow marker");
+  FileManager.createDirectorySync(openFlowDirectory(), true);
+  FileManager.writeAsStringSync(`${openFlowDirectory()}/${name}`, text);
+}
+
+export function removeOpenFlowMarker(name: string): void {
+  if (OPEN_FLOW_FILE.test(name)) removeBestEffort(`${openFlowDirectory()}/${name}`);
+}
+
+/** Every marker that is still open, with its text. A marker closed while this reads is left out. */
+export function openFlowMarkers(): { name: string; text: string }[] {
+  const directory = openFlowDirectory();
+  if (!FileManager.existsSync(directory)) return [];
+  const markers: { name: string; text: string }[] = [];
+  for (const entry of FileManager.readDirectorySync(directory, false)) {
+    const name = entry.split("/").pop()!;
+    if (!OPEN_FLOW_FILE.test(name)) continue;
+    try { markers.push({ name, text: FileManager.readAsStringSync(`${directory}/${name}`) }); }
+    catch { /* Closed by another runtime meanwhile. */ }
+  }
+  return markers;
+}
+
+/** Takes a marker for one report: of runtimes that race for it, only the one whose rename succeeds gets true. */
+export function claimOpenFlowMarker(name: string, runtime: string): boolean {
+  if (!OPEN_FLOW_FILE.test(name) || !/^[a-z0-9]{1,32}$/.test(runtime)) return false;
+  const path = `${openFlowDirectory()}/${name}`;
+  const claimed = `${path}.claimed-${runtime}`;
+  try { FileManager.renameSync(path, claimed); } catch { return false; }
+  removeBestEffort(claimed);
+  return true;
+}
+
+/** Removes every open marker (recording turned off, the log cleared). */
+export function clearOpenFlowMarkers(): void {
+  removeBestEffort(openFlowDirectory());
+}
+
+/**
+ * Owner 2026-11-24 「Clear once after update (Recommended)」: the device-wide marker of the one clear of the lines kept
+ * by builds before the keyed ownerFingerprint handle (D7). The marker is a symbolic link whose target names the runtime
+ * that created it (`runtime`, unique per runtime); creating a link that already exists fails, so of runtimes that race
+ * (app, widget, App Intent, Shortcut) exactly one reads its own target back and gets true. Every later call gets false.
+ * Any other failure throws, so the next runtime tries again. Only a clear that did not finish removes the marker.
+ */
+const HANDLE_RESET_MARKER = "handle-reset-v1";
+
+function handleResetOwner(): string | undefined {
+  try { return FileManager.destinationOfSymbolicLink(`${root()}/${HANDLE_RESET_MARKER}`); } catch { return undefined; }
+}
+
+export function claimDiagnosticHandleReset(runtime: string): boolean {
+  if (!/^[a-z0-9]{1,32}$/.test(runtime)) throw new Error("Invalid diagnostic runtime");
+  const marker = `${root()}/${HANDLE_RESET_MARKER}`;
+  if (handleResetOwner() !== undefined || FileManager.existsSync(marker)) return false;
+  FileManager.createDirectorySync(root(), true);
+  const claim = `${marker}.${runtime}`;
+  // A lost native acknowledgement is resolved by reading the link back, as a batch publication is.
+  try { FileManager.createLinkSync(marker, claim); }
+  catch (error) { if (handleResetOwner() === undefined) throw error; }
+  return handleResetOwner() === claim;
+}
+
+/** Gives the claim back after a clear that did not finish, so the next runtime clears. */
+export function releaseDiagnosticHandleReset(): void {
+  removeBestEffort(`${root()}/${HANDLE_RESET_MARKER}`);
+}
+
+/**
+ * Removes every batch without the `keyedHandles` mark, published or left staged, in any epoch, and returns whether one
+ * of them held a line. Batches this version writes keep their lines whenever they were published, so a runtime that
+ * writes while another clears loses nothing. A staged batch whose metadata is not yet written is left to its writer.
+ */
+export function retireUnkeyedDiagnosticBatches(): boolean {
+  let retired = false;
+  for (const name of names()) {
+    const staged = /^(b[0-9a-z]+-[a-f0-9-]{36}-[0-9]{8})\.batch$/.exec(name)?.[1];
+    if (!BATCH.test(name) && !staged) continue;
+    const { ready, directory } = batchPaths(staged ? `${staged}.ready` : name);
+    try {
+      if (staged && FileManager.isLinkSync(ready)) continue;
+      if (!staged && FileManager.destinationOfSymbolicLink(ready) !== directory) continue;
+      const metadata = JSON.parse(FileManager.readAsStringSync(`${directory}/meta.json`)) as { keyedHandles?: unknown };
+      if (metadata.keyedHandles === true) continue;
+      retired ||= FileManager.readDirectorySync(directory, false).some(row => ROW.test(row.split("/").pop()!));
+      removeBestEffort(ready);
+      removeBestEffort(directory);
+    } catch { /* A batch another runtime retires or is still writing. */ }
+  }
+  return retired;
 }
 
 export function clearDiagnosticFiles(): void {

@@ -1,12 +1,12 @@
 import type { AbortSignal } from "scripting";
 import type { Shipment } from "../models";
 import { GatewayError, postGateway } from "./gateway";
-import { beginDiagnosticOperation } from "./logger";
+import { beginDiagnosticOperation, diagnosticErrorDetails } from "./logger";
 import { productTitle } from "./platform-parcel-data";
 import type { CloudParcelMetadata, CloudParcelPddLink } from "./platform-parcel-merge";
 import { cloudProductImageURL } from "./product-image-url";
 import { publishSharedData, sharedData, withSharedFileTransaction } from "./shared-file-transaction";
-import { asPlainObject, cleanString, positiveFiniteTime, type JsonObject } from "./value-guards";
+import { asPlainObject, cleanString, cloudRecordTime, type JsonObject } from "./value-guards";
 import { matchesParcelMetadataLifecycle } from "./waybill-reuse";
 
 export type CloudParcelDetails = Readonly<{
@@ -29,7 +29,19 @@ export function cloudParcelMetadataForCache(shipment: Shipment, metadata?: Cloud
 
 export function readCachedCloudParcelMetadata(credential: string, parcel: string): CloudParcelMetadata | undefined {
   const cache = sharedData().cloudParcelTitles;
-  return cache?.credential === credential ? cache.entries.find(entry => entry.parcel === parcel)?.title : undefined;
+  if (cache?.credential !== credential) return undefined;
+  const exact = cache.entries.find(entry => entry.parcel === parcel);
+  if (exact) return exact.title;
+  try {
+    const parsed = JSON.parse(parcel) as unknown;
+    const waybill = Array.isArray(parsed) && typeof parsed[0] === "string" ? parsed[0] : "";
+    if (waybill) return cache.entries.find(entry => entry.parcel === waybill)?.title;
+  } catch {
+    const prefix = `[${JSON.stringify(parcel)},`;
+    const byWaybill = cache.entries.find(entry => entry.parcel.startsWith(prefix));
+    if (byWaybill) return byWaybill.title;
+  }
+  return undefined;
 }
 
 export function recordCloudParcelMetadata(credential: string, parcel: string, requestedAt: number,
@@ -54,10 +66,18 @@ export function recordCloudParcelMetadata(credential: string, parcel: string, re
   } catch { /* A failed optional cache write cannot hide a verified result. */ }
 }
 
+/**
+ * R5-NEW-11 ④: a cloud time read on this device's clock, as the PDD pages read theirs (`cloudRecordTime`). A record the
+ * Worker just wrote may lead a slow clock by up to the Worker's tolerance and reads as now; one further ahead is invalid.
+ */
+function cloudTime(value: unknown, now: number): number {
+  return cloudRecordTime(value, now) ?? 0;
+}
+
 function parcelIdentity(value: JsonObject, waybill: string, now: number) {
   if (value.waybill !== waybill) return;
-  const anchorAt = positiveFiniteTime(value.anchorAt, now);
-  const terminalAt = positiveFiniteTime(value.terminalAt, now);
+  const anchorAt = cloudTime(value.anchorAt, now);
+  const terminalAt = cloudTime(value.terminalAt, now);
   if (!anchorAt || (Object.hasOwn(value, "terminalAt") && value.terminalAt !== 0 && terminalAt < anchorAt)) return;
   return { waybill, anchorAt, terminalAt };
 }
@@ -67,29 +87,41 @@ export function parseCloudParcelDetails(result: JsonObject, waybill: string, now
   const value = asPlainObject(result.metadata);
   const identity = parcelIdentity(value, waybill, now);
   const productName = productTitle(value.productName);
+  const productNameObservedAt = cloudTime(value.productNameObservedAt, now);
   const productImageURL = cloudProductImageURL(value.productImageUrl);
   const deliveryEstimate = cleanString(value.deliveryEstimate).replace(/。$/, "");
-  const deliveryEstimateObservedAt = positiveFiniteTime(value.deliveryEstimateObservedAt, now);
+  const deliveryEstimateObservedAt = cloudTime(value.deliveryEstimateObservedAt, now);
   const metadata = identity && (productName || productImageURL || deliveryEstimate && deliveryEstimateObservedAt)
-    ? { ...identity, productName, ...(productImageURL ? { productImageURL } : {}), deliveryEstimate, deliveryEstimateObservedAt } : undefined;
+    ? {
+        ...identity,
+        productName,
+        ...(productName && productNameObservedAt ? { productNameObservedAt } : {}),
+        ...(productImageURL ? { productImageURL } : {}),
+        deliveryEstimate,
+        deliveryEstimateObservedAt,
+      } : undefined;
   const link = asPlainObject(result.pddLink);
   const linkIdentity = parcelIdentity(link, waybill, now);
   const shippingId = typeof link.shippingId === "string" ? link.shippingId : "";
-  const pddLink = linkIdentity && /^[1-9][0-9]{0,19}$/.test(shippingId) && positiveFiniteTime(link.observedAt, now)
+  const pddLink = linkIdentity && /^[1-9][0-9]{0,19}$/.test(shippingId) && cloudTime(link.observedAt, now)
     ? { ...linkIdentity, shippingId } : undefined;
   return metadata || pddLink ? { metadata, pddLink } : undefined;
 }
 
 export async function readCloudParcelMetadata(waybill: string, signal: AbortSignal): Promise<CloudParcelDetails | undefined> {
-  const finish = beginDiagnosticOperation("cloud.parcel.metadata", { stage: "query" }, false);
+  // D115: every read ends with one line; a failure carries its category and HTTP status, a closed page reads as
+  // cancelled, and a reply without fields for this parcel as empty.
+  // D188 (D29): the read is one cloud.sync line of the parcel_metadata domain.
+  const finish = beginDiagnosticOperation("cloud.sync", { domain: "parcel_metadata", stage: "query" });
   try {
     const result = await postGateway("/api/cloud-records/parcel-metadata", { schemaVersion: 1, waybill }, { signal });
     if (result.ok !== true || !Object.hasOwn(result, "metadata")) throw new GatewayError("服务响应异常");
     const details = parseCloudParcelDetails(result, waybill, Date.now());
-    if (details) finish("succeeded");
+    finish(details ? "succeeded" : "empty");
     return details;
   } catch (error) {
-    if (!signal.aborted) finish("failed", {}, "warning");
+    if (signal.aborted) finish("cancelled");
+    else finish("failed", diagnosticErrorDetails(error), "warning");
     throw error;
   }
 }

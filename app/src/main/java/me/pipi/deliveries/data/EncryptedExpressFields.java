@@ -38,7 +38,7 @@ final class EncryptedExpressFields {
             return Result.available(PREFIX + KeystoreSecretBox.encrypt(KEY_ALIAS, clean));
         } catch (Throwable error) {
             if (ENCRYPTION_WARNING_LOGGED.compareAndSet(false, true)) {
-                Log.w(TAG, "Provider credential encryption is temporarily unavailable", error);
+                Log.w(TAG, "Provider credential encryption is temporarily unavailable" + " kind=" + error.getClass().getSimpleName());
             }
             return Result.unavailable();
         }
@@ -67,7 +67,7 @@ final class EncryptedExpressFields {
             // Callers must distinguish an unreadable ciphertext from a genuinely empty field so a
             // transient AndroidKeyStore failure can never overwrite the persisted envelope.
             if (DECRYPTION_WARNING_LOGGED.compareAndSet(false, true)) {
-                Log.w(TAG, "Provider credential decryption is temporarily unavailable", error);
+                Log.w(TAG, "Provider credential decryption is temporarily unavailable" + " kind=" + error.getClass().getSimpleName());
             }
             return Result.unavailable();
         }

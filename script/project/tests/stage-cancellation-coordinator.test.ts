@@ -162,7 +162,9 @@ async function cutOffPull(options: Parameters<typeof refreshAllShipments>[1], st
   await until(started);
   await nextRefreshFindsTheFlowLost();
   assert.ok(await outcome, "the cut-off refresh rejects");
-  const flowId = readDiagnostics().find((entry) => entry.event === "refresh.started" &&
+  // D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): the refresh writes no start line; its end line carries its
+  // trigger.
+  const flowId = readDiagnostics().find((entry) => entry.event === "refresh.failed" &&
     entry.details.trigger === "list_pull")?.details.flowId;
   assert.ok(flowId);
   return flowLines(flowId);
@@ -209,7 +211,9 @@ test("a Home projection pass cut off by the coordinator ends its attempt once", 
   await until(() => pageOpened);
   await nextRefreshFindsTheFlowLost();
   assert.equal((await pass).result, "failed");
-  const flowId = readDiagnostics().find((entry) => entry.event === "order.projection.started")?.details.flowId;
+  // D4: the page attempt writes no start line; its end line carries why the page opened.
+  const flowId = readDiagnostics().find((entry) => entry.event.startsWith("order.projection.") &&
+    entry.details.projectionReason != null)?.details.flowId;
   const lines = flowLines(flowId);
   const ends = lines.filter((entry) => entry.event === "order.projection.failed");
   assert.equal(ends.length, 1, JSON.stringify(lines.map((entry) => [entry.event, entry.details.errorCategory])));

@@ -413,7 +413,8 @@ assert.equal(stalledFetchSignal?.aborted, true);
     bodyController.abort();
     const bodyTimeout = await rejectsAsOperationTimeout(bodyRequest, "timeout_signal", "response_body");
     assert.equal(stalledBodySignal?.aborted, true);
-    assert.ok(bodyTimeout.requestDetails?.requestId?.startsWith("request-"));
+    // D8: the request id is a locally generated non-negative number.
+    assert.match(String(bodyTimeout.requestDetails?.requestId), /^\d+$/);
     assert.ok(bodyTimeout.requestDetails?.signalAbortAfterMs! >= bodyTimeout.requestDetails?.requestBudgetMs!);
     assert.equal(typeof bodyTimeout.requestDetails?.responseHeadersAfterMs, "number");
     assert.equal(bodyTimeout.requestDetails?.responseBodyAfterMs, undefined);
@@ -568,6 +569,7 @@ try {
 }
 
 setDiagnosticsEnabled(true);
+let latestFakeClock = 0;
 for (const phase of ["response_body", "request"] as const) {
   let settleNative!: () => void;
   const parent = new AbortController();
@@ -607,12 +609,22 @@ for (const phase of ["response_body", "request"] as const) {
     assert.equal(entry.details.requestElapsedMs, 5000);
     assert.deepEqual(attempts, [true], "a late native callback must not finish the query twice");
     assert.equal(JSON.stringify(entry).includes("private"), false);
-  } finally { Date.now = realNow; }
+  } finally {
+    latestFakeClock = Math.max(latestFakeClock, clock);
+    Date.now = realNow;
+  }
 }
-const diagnosticCount = readDiagnostics().length;
-fetchHandler = async () => ({ ...gatewayResponse(200), text: async () => '{"ok":true}' });
-await postGateway("/api/express/classify", {});
-assert.equal(readDiagnostics().length, diagnosticCount, "normal completion must not add per-request log noise");
+// The lines above are dated by the fake clock, up to 5 s ahead of real time, and readDiagnostics hides a line dated
+// after its `now` until real time reaches it. Both counts read at one time past every such line, so they see the same
+// lines; a line the request writes is dated at that time and still counted.
+const countClock = Math.max(realNow(), latestFakeClock) + 1;
+Date.now = () => countClock;
+try {
+  const diagnosticCount = readDiagnostics().length;
+  fetchHandler = async () => ({ ...gatewayResponse(200), text: async () => '{"ok":true}' });
+  await postGateway("/api/express/classify", {});
+  assert.equal(readDiagnostics().length, diagnosticCount, "normal completion must not add per-request log noise");
+} finally { Date.now = realNow; }
 setDiagnosticsEnabled(false);
 
 // Empty-history retirement may count only a real request that was not denied access.

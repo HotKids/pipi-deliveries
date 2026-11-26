@@ -429,13 +429,15 @@ test("entry stage diagnostics distinguish the response from accumulated display 
     const result = await runShipmentRefreshForTesting(row.identity.id, {isCurrent: () => true},
       {trigger: "detail_open"}, {refreshAccountParcel: async () => parcel(true)});
     assert.equal(selectShipmentDetailTimeline(result.shipment).tracks.length, 8);
-    for (const event of ["detail.refresh.stage_started", "detail.refresh.stage_succeeded"]) {
-      const details = readDiagnostics().find(entry => entry.event === event)!.details;
-      assert.equal(details.displayTimelineProvider, event.endsWith("started") ? "v5_list" : "v5_query");
-      assert.equal(details.effectiveTrackCount, 2, "the query returned two nodes");
-      assert.equal(details.displayedTrackCount, event.endsWith("started") ? 2 : 8);
-      assert.equal(details.selectionScope, event.endsWith("started") ? "display" : "query_response");
-    }
+    // D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): the stage writes no start line; its end line reports the
+    // query response against the accumulated display history.
+    assert.equal(readDiagnostics().some(entry => entry.event === "detail.refresh.stage_started"), false);
+    const details = readDiagnostics().find(entry => entry.event === "detail.refresh.stage_succeeded")!.details;
+    assert.equal(details.displayTimelineProvider, "v5_query");
+    assert.equal(details.effectiveTrackCount, 2, "the query returned two nodes");
+    assert.equal(details.displayedTrackCount, 8);
+    assert.equal(details.selectionScope, "query_response");
+    assert.equal(typeof details.budgetMs, "number", "the start's budget is merged into the end line");
   } finally {
     setDiagnosticsEnabled(false);
   }

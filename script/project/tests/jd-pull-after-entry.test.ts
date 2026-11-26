@@ -128,11 +128,14 @@ test("a nonempty but incomplete entry query does not suppress the requested JD H
   assert.equal(selectShipmentDetailTimeline(result.shipment).provider, "jd_h5");
   assert.equal(shipmentDetailIncompleteReason(result.shipment), null);
   assert.equal(selectShipmentDetailTimeline(loadState(NOW).shipments[0]).provider, "jd_h5");
-  assert.ok(readDiagnostics().some(e => e.event === "order.projection.started" && e.details.result === "timeline_reopen"));
-  const captured = readDiagnostics().find(e => e.event === "detail.timeline.candidate" &&
-    e.details.stage === "detail_webview")!.details;
+  // D4: the page attempt's start is merged into its end line, which says why the page reopened.
+  assert.ok(readDiagnostics().some(e => e.event.startsWith("order.projection.") && e.details.projectionReason === "timeline_reopen"));
+  const capturedEntry = readDiagnostics().find(e => e.event === "detail.timeline.candidate" &&
+    e.details.stage === "detail_webview")!;
+  const captured = capturedEntry.details;
   assert.equal(captured.effectiveTrackCount, freshHistory.tracks.length);
-  assert.equal(captured.latestTrackAtMs, EVENT);
+  // D6: the newest node reads as its age at the line's time.
+  assert.equal(captured.latestTrackAgeMs, Date.parse(capturedEntry.at) - EVENT);
   assert.equal(captured.hasPickup, true);
   assert.equal(captured.foreignPackage, false);
   assert.equal(captured.waybillMatches, true);

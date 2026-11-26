@@ -11,6 +11,7 @@ import { alternateMealArtwork, resolvePickupVisualStyle } from "../services/meal
 import { completeMeal, currentMeal, putMealObservations, readMeals, stageLuckinDraft, updateMeals,
   type MealEnvelope, type MealSession } from "../services/meal/records";
 import { applyMealPage, applyMealReceipt, mealPullRequest, prepareMealBatch, recoverMealConflict } from "../services/meal/cloud";
+import { mealCompactCode } from "../services/parcel-pickup";
 
 const raw = JSON.parse(readFileSync(new URL("../../../pickup-rules.json", import.meta.url), "utf8"));
 const rules = { raw, parsed: createPickupRuntime(raw) };
@@ -177,7 +178,7 @@ const cardsFile = readFileSync(new URL("../services/meal/cards.ts", import.meta.
 const cardsService = stripTypeScriptTypes(cardsFile, {mode: "transform"})
   .replace(/^import[\s\S]*?;\n/gm, "").replace(/^export /gm, "");
 const cards = runInNewContext(cardsService + "\n;({ mealCard, mealRedemption, toggleMealCup });", {
-  currentMeal, readMeals, updateMeals, alternateMealArtwork, resolvePickupVisualStyle,
+  currentMeal, readMeals, updateMeals, alternateMealArtwork, resolvePickupVisualStyle, mealCompactCode,
   mealCredentialScope: () => localArtworkScope, cachedMealRules: () => rules,
 }) as typeof import("../services/meal/cards");
 const firstCup = cards.mealCard(localArtworkScope, artworkId, readMeals(localArtworkScope), now)!;
@@ -185,11 +186,22 @@ assert.equal(firstCup.mealStyle?.artworkAsset, defaultCoffee.artworkAsset);
 assert.equal(firstCup.artworkSwitchable, true);
 assert.equal(cards.toggleMealCup(firstCup, now), true);
 assert.equal(readMeals(localArtworkScope).style[artworkId].artworkAsset, hotCoffee);
+assert.equal(readMeals(localArtworkScope).edits[artworkId].payload.drinkTemperature, "hot");
 assert.equal(cards.toggleMealCup(firstCup, now), false, "a stale tap cannot overwrite the newly selected cup");
 const selectedCup = cards.mealCard(localArtworkScope, artworkId, readMeals(localArtworkScope), now)!;
 assert.equal(cards.toggleMealCup(selectedCup, now), true);
 assert.equal(readMeals(localArtworkScope).style[artworkId].artworkAsset, defaultCoffee.artworkAsset);
-assert.deepEqual(readMeals(localArtworkScope).edits[artworkId].payload, artworkObservation.payload);
+assert.deepEqual(readMeals(localArtworkScope).edits[artworkId].payload, { ...artworkObservation.payload, drinkTemperature: "cold" });
+// The compact Dynamic Island mirrors Pipi's status-bar capsule; the card keeps the full code.
+const starbucksScope = "d".repeat(64);
+const [starbucksId] = putMealObservations(starbucksScope, [{
+  payload: { brandId: "xingbake", brandName: "Starbucks", productName: "太妃榛果拿铁", code: "96.笑一个吧",
+    createdAt: now, expiresAt: now + 60_000 },
+  artwork: defaultCoffee,
+}], true);
+const starbucksCard = cards.mealCard(starbucksScope, starbucksId, readMeals(starbucksScope), now)!;
+assert.equal(starbucksCard.code, "96.笑一个吧", "the Lock Screen, expanded island and copy keep the full code");
+assert.equal(starbucksCard.mealCompactCode, "96", "the compact island shows only the Starbucks number");
 const scope = "a".repeat(64);
 stageLuckinDraft(scope, order.draft!);
 assert.deepEqual(readMeals(scope).edits, {}, "a first-page draft is never uploaded");
@@ -199,6 +211,7 @@ assert.equal(currentMeal(readMeals(scope), picked, now)?.productName, "耶加雪
 assert.equal(currentMeal(readMeals(scope), picked, now)?.qrPayload, "a1234567AA0=");
 const luckinCard = cards.mealCard(scope, picked, readMeals(scope), now);
 assert.equal(luckinCard?.code, "949");
+assert.equal(luckinCard?.mealCompactCode, "949");
 assert.equal(luckinCard?.hasMealQR, true);
 assert.equal(cards.mealRedemption(match!.payload)?.title, "取餐码");
 assert.equal(cards.mealRedemption(match!.payload)?.prompt, "请扫码取餐");
@@ -207,6 +220,7 @@ assert.equal(cards.mealRedemption({ ...match!.payload, code: "" })?.label, "待�
 const [redeem] = putMealObservations(scope, [tea([" SYNTHETIC QR "])!], true);
 const redemptionCard = cards.mealCard(scope, redeem, readMeals(scope), now);
 assert.equal(redemptionCard?.code, "待核销");
+assert.equal(redemptionCard?.mealCompactCode, "幽兰拿铁", "the island follows Pipi's QR-only Chayan capsule");
 assert.equal(redemptionCard?.hasMealQR, true);
 assert.equal(cards.mealRedemption(decoded!)?.title, "核销码");
 assert.equal(cards.mealRedemption(decoded!)?.payload, " SYNTHETIC QR ");

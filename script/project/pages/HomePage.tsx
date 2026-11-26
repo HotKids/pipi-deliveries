@@ -1,3 +1,4 @@
+import { INPUT_ROW_HEIGHT, INPUT_ROW_ICON_GAP, INPUT_ROW_ICON_SIZE, INPUT_ROW_INSET } from "../components/input-metrics";
 import {
   Button,
   Capsule,
@@ -27,7 +28,8 @@ import type { AppState, RefreshSummary, Shipment, StatusSemantic } from "../mode
 import { ShipmentRow } from "../components/ShipmentRow";
 import { EmptyTabState } from "../components/EmptyDeliveryVehicle";
 import { ROOT_PAGE_MARGIN, RootTabList } from "../components/RootPageHeader";
-import { TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, tabCapsuleSurface, TabFloatingActionButton } from "../components/TabFloatingActionButton";
+import { TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
+import { synchronizeParcelCloudRecords } from "../services/parcel-cloud-sync";
 import {
   commitManualShipmentPreview,
   queryManualShipmentPreview,
@@ -56,6 +58,8 @@ import {
   manualQueryFailureToast,
   refreshSummaryToast,
   transientToast,
+  withWatchPullOutcome,
+  type WatchPullOutcome,
 } from "../services/ui-feedback";
 import {
   ManualCarrierDetectionCoordinator,
@@ -72,18 +76,30 @@ import {
 const CARRIER_DETECTION_MIN_LENGTH = 6;
 const CARRIER_DETECTION_DEBOUNCE_MS = 600;
 import { manualPreviewNeedsDetailRefresh } from "../services/manual-preview";
-import { normalizeWaybill, shipmentPresentationStatus } from "../services/status";
+import { normalizeWaybill, shipmentPresentationStatus, waybillSuffix } from "../services/status";
+import { beginDiagnosticOperation, diagnosticErrorDetails } from "../services/logger";
 import {
   displayWaybill,
   needsDetailEntryQuery,
   unprojectedAccountOrder,
 } from "../services/shipment-policy";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
-import { internationalShipment } from "../services/international-records";
+import { internationalShipment, watchDetailOpenRefreshes } from "../services/international-records";
 import {
-  gatewayAccessKeyRejected,
-  subscribeGatewayAccessKeyRejected,
-} from "../services/credentials";
+  accessKeyReminder,
+  subscribeAccessKeyReminder,
+  type AccessKeyReminder,
+} from "../services/access-key-reminder";
+
+/**
+ * Home's Access Key notices. The conflict text repeats the Settings authorization notice; `missing` and
+ * `conflict` open Settings, where the key is entered (owner decision, 2026-11-21: 首页提醒).
+ */
+const ACCESS_KEY_NOTICE_COPY: Record<AccessKeyReminder, string> = {
+  rejected: "Access Key 已失效，请通过 TG Bot 重新获取。",
+  missing: "Access Key 未设置，请重新填写。",
+  conflict: "检测到本地授权记录不一致，请重新保存 Access Key。",
+};
 
 const shipmentFilters = {
   all: "全部",
@@ -115,10 +131,11 @@ function ShipmentFilterBar({ visibleFilters, filter, groups, onSelect }: {
           return (
             <ZStack alignment="leading" frame={{ width: size.width, height: FILTER_ROW_HEIGHT }}
               animation={{ animation: Animation.smooth({ duration: FILTER_SLIDE_SECONDS }), value: layoutKey }}>
-              <Capsule fill="thinMaterial" stroke={{ shapeStyle: "separator", strokeStyle: { lineWidth: 0.5 } }}
+              <Capsule fill="tertiarySystemFill"
                 frame={{ height: 32 }} allowsHitTesting={false} />
               {segmentWidth > 0 ? (
-                <Capsule fill="secondarySystemFill" frame={{ width: segmentWidth, height: 26 }}
+                <Capsule fill="systemBackground" frame={{ width: segmentWidth, height: 26 }}
+                  shadow={{ color: "rgba(0,0,0,0.08)", radius: 2, x: 0, y: 1 }}
                   offset={{ x: selectedOffset, y: 0 }} allowsHitTesting={false} />
               ) : null}
               <HStack spacing={0} padding={{ horizontal: FILTER_SEGMENT_INSET }}>
@@ -171,8 +188,11 @@ export function HomePage(props: {
   shortcutLookup?: ParcelLookup;
   onShortcutHandled: (generation: number) => void;
   onStateChange: (state: AppState) => void;
-  onListPull?: () => void;
+  /** Starts the pull's cloud work and returns its international Watch read, which the toast waits for (G-HIGH-10). */
+  onListPull?: () => Promise<WatchPullOutcome> | void;
   platformNotice?: Readonly<{ text: string }>;
+  /** Shows the Settings tab, where the Access Key is entered. */
+  onOpenSettings?: () => void;
 }) {
   const dismiss = Navigation.useDismiss();
   const pullInFlight = useRef<Promise<void> | null>(null);
@@ -185,8 +205,9 @@ export function HomePage(props: {
   const [notice, setNotice] = useState("");
   const searchPresented = useObservable(props.autoFocusSearch && !props.initialShipmentId);
   const handledNavigationRef = useRef<number | undefined>(undefined);
-  const [accessKeyRejected, setAccessKeyRejected] = useState(gatewayAccessKeyRejected);
-  const [accessKeyNoticeDismissed, setAccessKeyNoticeDismissed] = useState(false);
+  const [accessKeyNoticeKind, setAccessKeyNoticeKind] = useState(accessKeyReminder);
+  // Closing a notice hides that kind for this page; a different notice still appears.
+  const [dismissedAccessKeyNotice, setDismissedAccessKeyNotice] = useState<AccessKeyReminder | null>(null);
   const [shipmentNavigationTarget, setShipmentNavigationTargetState] = useState<
     ShipmentNavigationTarget | null
   >(() => props.initialShipmentId && props.shipments.some(
@@ -257,7 +278,7 @@ export function HomePage(props: {
   }
 
   useEffect(() => {
-    return subscribeGatewayAccessKeyRejected(setAccessKeyRejected);
+    return subscribeAccessKeyReminder(setAccessKeyNoticeKind);
   }, []);
 
   useEffect(() => {
@@ -303,8 +324,9 @@ export function HomePage(props: {
         accountSourceFollowup: true,
       });
       applyInteractiveRefreshSummary(summary);
-      props.onListPull?.();
-      setNotice(refreshSummaryToast(summary));
+      // The international Watch rows are part of the pull: its toast waits for their read and counts it (G-HIGH-10).
+      const watch = await Promise.resolve(props.onListPull?.()).catch((): WatchPullOutcome => "failed");
+      setNotice(refreshSummaryToast(withWatchPullOutcome(summary, watch || undefined)));
       if (summary.continuing) followPullCompletion(completion);
     } catch (error) {
       // One gesture, one outcome: refreshAllShipments resolves with failures on the line above
@@ -355,6 +377,9 @@ export function HomePage(props: {
       return;
     }
     props.onStateChange(result.state);
+    if (typeof synchronizeParcelCloudRecords === "function") {
+      void synchronizeParcelCloudRecords().catch(() => undefined);
+    }
     setNotice(EXPRESS_TOAST_COPY.deleted);
     if (shipmentNavigationTargetId(shipmentNavigationTarget) === id) {
       setShipmentNavigationTarget(null);
@@ -393,6 +418,9 @@ export function HomePage(props: {
       return;
     }
     props.onStateChange(result.state);
+    if (typeof synchronizeParcelCloudRecords === "function") {
+      void synchronizeParcelCloudRecords().catch(() => undefined);
+    }
     setNotice(EXPRESS_TOAST_COPY.signed);
   }
 
@@ -407,8 +435,25 @@ export function HomePage(props: {
     shortcutGeneration: props.navigationRequestGeneration,
     onShortcutHandled: props.onShortcutHandled,
   };
-  const showAccessKeyNotice = accessKeyRejected && !accessKeyNoticeDismissed;
-  const accessKeyNotice = showAccessKeyNotice ? (
+  useEffect(() => {
+    if (!accessKeyNoticeKind) setDismissedAccessKeyNotice(null);
+  }, [accessKeyNoticeKind]);
+  const shownAccessKeyNotice = accessKeyNoticeKind && accessKeyNoticeKind !== dismissedAccessKeyNotice
+    ? accessKeyNoticeKind : null;
+  // Every notice opens the Settings root, where the key is entered again; the rejected notice keeps its text
+  // (owner decision 2026-11-21: 「已失效」提醒也能点进设置（推荐）).
+  const openAccessKeySettings = shownAccessKeyNotice ? props.onOpenSettings : undefined;
+  const accessKeyNoticeText = shownAccessKeyNotice ? (
+    <Text
+      font={14}
+      foregroundStyle="secondaryLabel"
+      frame={{ maxWidth: "infinity", minHeight: 44, alignment: "leading" }}
+      contentShape="rect"
+    >
+      {ACCESS_KEY_NOTICE_COPY[shownAccessKeyNotice]}
+    </Text>
+  ) : <VStack />;
+  const accessKeyNotice = shownAccessKeyNotice ? (
     <VStack listRowInsets={{ top: 0, bottom: 0, leading: ROOT_PAGE_MARGIN, trailing: ROOT_PAGE_MARGIN }}
       listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden">
       <HStack
@@ -417,17 +462,16 @@ export function HomePage(props: {
         background="secondarySystemBackground"
         clipShape={{ type: "rect", cornerRadius: 20, style: "continuous" }}
       >
-        <Text
-          font={14}
-          foregroundStyle="secondaryLabel"
-          frame={{ maxWidth: "infinity", alignment: "leading" }}
-        >
-          Access Key 已失效，请通过 TG Bot 重新获取。
-        </Text>
+        {openAccessKeySettings ? (
+          <Button buttonStyle="plain" action={openAccessKeySettings}>
+            {accessKeyNoticeText}
+          </Button>
+        ) : accessKeyNoticeText}
         <Button
+          accessibilityLabel="关闭提示"
           role="close"
           buttonStyle="plain"
-          action={() => setAccessKeyNoticeDismissed(true)}
+          action={() => setDismissedAccessKeyNotice(shownAccessKeyNotice)}
         >
           <Image
             systemName="xmark"
@@ -441,9 +485,20 @@ export function HomePage(props: {
     </VStack>
   ) : null;
 
+  const shipmentListFooter = (
+    <Text
+      font="caption"
+      foregroundStyle="tertiaryLabel"
+      frame={{ maxWidth: "infinity", alignment: "center" }}
+      padding={{ top: 6, bottom: 12 }}
+    >
+      只显示 14 天内的快递
+    </Text>
+  );
+
   return (
     <NavigationStack>
-      <VStack navigationBarVisibility="hidden" spacing={0}
+      <VStack spacing={0}
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         toast={searchPresented.value ? undefined : transientToast(notice, setNotice)}
         sheet={{
@@ -451,9 +506,11 @@ export function HomePage(props: {
           content: (
             <NavigationStack
               background="systemGroupedBackground"
-              toolbarBackgroundVisibility={{ visibility: "hidden", bars: ["navigationBar"] }}
+              presentationDetents={[280, "medium", "large"]}
+              presentationDragIndicator="visible"
             >
               <ScrollView navigationTitle="查询快递" navigationBarTitleDisplayMode="inline" scrollIndicator="never"
+                scrollDismissesKeyboard="interactively"
                 frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
                 background="systemGroupedBackground"
                 toolbar={{
@@ -499,7 +556,7 @@ export function HomePage(props: {
                 binding.source === selected.identity.bindingSource && binding.phone === selected.accountRecord?.phone)}
               attachedOrders={selectedAttachedOrders}
               manualPreview={manualPreview}
-              refreshOnAppear={internationalShipment(selected) ? "detail_open" : manualPreview
+              refreshOnAppear={internationalShipment(selected) ? watchDetailOpenRefreshes(selected) ? "detail_open" : false : manualPreview
                 ? manualPreviewNeedsDetailRefresh(selected)
                   ? "manual_submit"
                   : false
@@ -531,11 +588,13 @@ export function HomePage(props: {
           ) : null}
           {shipments.length ? (
             <Section listSectionMargins={{ edges: "vertical", length: 0 }}
+              footer={shipmentListFooter}
               listSectionSeparator={{ visibility: "hidden", edges: "top" }}>
               <ForEach data={observableItems} builder={({ id, shipment, deleting, completing }) => (
                 <ShipmentRow
                   key={id}
                   shipment={shipment}
+                  showSeparator={id !== observableItems.value.at(-1)?.id}
                   onOpen={() => rowActions.current.openShipment(shipment)}
                   onDelete={() => void rowActions.current.confirmDelete(shipment)}
                   onComplete={() => void rowActions.current.confirmComplete(shipment)}
@@ -544,23 +603,6 @@ export function HomePage(props: {
                 />
               )} />
             </Section>
-          ) : null}
-          {shipments.length ? (
-            <VStack
-              spacing={8}
-              padding={{ bottom: 12 }}
-              frame={{ maxWidth: "infinity" }}
-              listRowBackground={<Rectangle fill="clear" />}
-              listRowSeparator="hidden"
-            >
-              <Text
-                font={12}
-                foregroundStyle="tertiaryLabel"
-                frame={{ maxWidth: "infinity", alignment: "center" }}
-              >
-                只显示 14 天内的快递
-              </Text>
-            </VStack>
           ) : null}
         </RootTabList>
       </VStack>
@@ -704,6 +746,12 @@ function HomeSearchBar(props: {
       setValidationNotice("请输入有效的快递单号");
       return;
     }
+    // D110: the Home add flow ends with one line: already listed, a pickup code that could not be saved, a phone tail
+    // still needed, committed or failed. Only the waybill's last four characters are written (D5).
+    const finish = beginDiagnosticOperation("home.query", {
+      stage: "manual_query", waybillTail: waybillSuffix(submittedNormalized),
+      trigger: lookup ? "shortcut" : "manual",
+    });
     // Checked before carrier detection and before any provider round: a waybill the list already
     // tracks must not spend a recognition call, a provider query or a second row.
     const alreadyListed = props.shipments.find(
@@ -713,11 +761,13 @@ function HomeSearchBar(props: {
       if (lookup?.pickup) {
         try {
           props.onStateChange(saveRecognizedShipmentPickup(alreadyListed, lookup));
-        } catch {
+        } catch (error) {
+          finish("pickup_save_failed", diagnosticErrorDetails(error), "warning");
           setNotice("取件码保存失败，请稍后重试");
           return;
         }
       }
+      finish("already_listed");
       setValidationNotice("");
       setNotice(EXPRESS_TOAST_COPY.alreadyInList);
       // 用户定 2026-09-05：提示「已在列表」的同时打开那一票的详情（三端同）。
@@ -738,6 +788,7 @@ function HomeSearchBar(props: {
       setValidationNotice(
         submittedPhoneTail ? "请输入 4 位手机尾号" : "请输入手机尾号",
       );
+      finish("awaiting_phone_tail");
       return;
     }
     queryingRef.current = true;
@@ -758,7 +809,10 @@ function HomeSearchBar(props: {
       } catch {
         submittedCarrier = null;
       }
-      if (shortcutGeneration !== shortcutGenerationRef.current) return;
+      if (shortcutGeneration !== shortcutGenerationRef.current) {
+        finish("cancelled");
+        return;
+      }
       if (submittedCarrier) setDetectedCarrier(submittedCarrier);
       if (
         (submittedCarrier?.requiresPhoneTail || needsPhoneTail) &&
@@ -768,6 +822,7 @@ function HomeSearchBar(props: {
         setValidationNotice(
           submittedPhoneTail ? "请输入 4 位手机尾号" : "请输入手机尾号",
         );
+        finish("awaiting_phone_tail");
         return;
       }
       const preview = await queryManualShipmentPreview({
@@ -776,6 +831,7 @@ function HomeSearchBar(props: {
         presentation: submittedCarrier,
       });
       const committed = commitManualShipmentPreview(preview, Date.now(), lookup);
+      finish("committed");
       props.onStateChange(committed);
       if (shortcutGeneration !== shortcutGenerationRef.current) return;
       const resolvedLookup = !lookup?.pickup || committed.shipments.some((shipment) =>
@@ -786,9 +842,14 @@ function HomeSearchBar(props: {
       );
       if (resolvedLookup) clearQueryInputs();
     } catch (error) {
+      const message = errorMessage(error, "");
+      // The end function writes once: a commit that already ended keeps its result.
+      finish(message.includes("手机尾号") ? "awaiting_phone_tail"
+        : isManualQueryValidationMessage(message) ? "invalid_input" : "failed",
+        diagnosticErrorDetails(error), isManualQueryValidationMessage(message) ? "info" : "warning");
       if (shortcutGeneration !== shortcutGenerationRef.current) return;
       // 校验类文案内联显示；其余一律走统一的失败 / 超时 toast，上游文案不外露。
-      const value = errorMessage(error, "");
+      const value = message;
       if (isManualQueryValidationMessage(value)) {
         setValidationNotice(value);
       } else {
@@ -808,15 +869,16 @@ function HomeSearchBar(props: {
       alignment="leading"
       padding={{ horizontal: 16, top: 6, bottom: 40 }}
     >
+      {/* Owner 2026-11-20: the query and phone-tail inputs share one surface and metrics. */}
       <HStack
-        spacing={8}
-        padding={{ horizontal: 16, vertical: 13 }}
-        frame={{ maxWidth: "infinity" }}
-        {...tabCapsuleSurface()}
+        spacing={INPUT_ROW_ICON_GAP}
+        padding={{ horizontal: INPUT_ROW_INSET }}
+        frame={{ minHeight: INPUT_ROW_HEIGHT, maxWidth: "infinity" }}
+        background={{ style: "secondarySystemGroupedBackground", shape: { type: "rect", cornerRadius: 16, style: "continuous" } }}
       >
         <Image
           systemName="magnifyingglass"
-          font={18}
+          font={INPUT_ROW_ICON_SIZE}
           foregroundStyle="label"
         />
         <TextField
@@ -870,14 +932,14 @@ function HomeSearchBar(props: {
       </HStack>
       {needsPhoneTail ? (
         <HStack
-          spacing={9}
-          padding={{ horizontal: 14 }}
-          frame={{ minHeight: 52, maxWidth: "infinity" }}
-          background="tertiarySystemFill"
-          clipShape={{ type: "rect", cornerRadius: 24, style: "continuous" }}
+          spacing={INPUT_ROW_ICON_GAP}
+          padding={{ horizontal: INPUT_ROW_INSET }}
+          frame={{ minHeight: INPUT_ROW_HEIGHT, maxWidth: "infinity" }}
+          background={{ style: "secondarySystemGroupedBackground", shape: { type: "rect", cornerRadius: 16, style: "continuous" } }}
         >
           <Image
             systemName="phone"
+            font={INPUT_ROW_ICON_SIZE}
             foregroundStyle={phoneTailValidation ? "systemRed" : "secondaryLabel"}
           />
           <VStack
@@ -908,7 +970,7 @@ function HomeSearchBar(props: {
               frame={{ maxWidth: "infinity" }}
             />
             {phoneTailValidation && phoneTail ? (
-              <Text font={11} foregroundStyle="systemRed" lineLimit={1}>
+              <Text font="footnote" foregroundStyle="systemRed" lineLimit={1}>
                 {validationNotice}
               </Text>
             ) : null}

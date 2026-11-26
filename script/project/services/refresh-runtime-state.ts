@@ -345,17 +345,32 @@ export function refreshProviderCooldownDetails(
   };
 }
 
-/** Reserve the upstream's exact per-waybill H5 interval before loading, including failed attempts. */
-export function claimKuaidi100Capture(waybill: string, beforeQuery?: () => void, now = Date.now()): boolean {
+function kuaidi100CaptureKey(waybill: string, phones?: readonly string[]): { key: string; fingerprint: string } {
+  const normalizedTails = [...new Set((phones ?? [])
+    .map(value => String(value || "").replace(/\D/g, ""))
+    .filter(value => value.length === 4))].sort().join(",");
+  return {
+    key: normalizedTails ? `k100_h5:${waybill}:${normalizedTails}` : `k100_h5:${waybill}`,
+    fingerprint: normalizedTails ? `k100_h5:${normalizedTails}` : "k100_h5",
+  };
+}
+
+/** Reserve the upstream's per-(waybill, phones) H5 interval before loading. */
+export function claimKuaidi100Capture(
+  waybill: string,
+  beforeQuery?: () => void,
+  now = Date.now(),
+  phones?: readonly string[],
+): boolean {
   return withSharedFileTransaction(() => {
     const current = readRuntimeMetadata(now);
-    const key = `k100_h5:${waybill}`;
+    const { key, fingerprint } = kuaidi100CaptureKey(waybill, phones);
     const previous = current.providers.find(item => item.key === key && item.provider === "kuaidi100");
     const intervalMs = PROVIDER_SUCCESS_INTERVAL_MS.kuaidi100;
     if (previous && now < previous.lastAttemptAtMs + intervalMs) return false;
     beforeQuery?.();
     const schedule: ProviderSchedule = {
-      key, provider: "kuaidi100", identityFingerprint: "k100_h5",
+      key, provider: "kuaidi100", identityFingerprint: fingerprint,
       lastAttemptAtMs: now, lastSuccessAtMs: previous?.lastSuccessAtMs || 0,
       consecutiveFailures: previous?.consecutiveFailures || 0,
       nextDueAtMs: now + intervalMs, lastResult: "no_result",
@@ -365,6 +380,17 @@ export function claimKuaidi100Capture(waybill: string, beforeQuery?: () => void,
         ...current.providers.filter(item => item.key !== key || item.provider !== "kuaidi100"), schedule,
       ], now) });
     return true;
+  });
+}
+
+/** Release a no-tail probe reservation when Kuaidi100 asks for phone verification without running an upstream query. */
+export function releaseKuaidi100Capture(waybill: string, phones?: readonly string[], now = Date.now()): void {
+  withSharedFileTransaction(() => {
+    const current = readRuntimeMetadata(now);
+    const { key } = kuaidi100CaptureKey(waybill, phones);
+    const filtered = current.providers.filter(item => !(item.key === key && item.provider === "kuaidi100"));
+    if (filtered.length === current.providers.length) return;
+    writeRuntimeMetadata({ ...current, revision: current.revision + 1, providers: filtered });
   });
 }
 

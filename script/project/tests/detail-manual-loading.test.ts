@@ -50,6 +50,7 @@ function pageHarness(seed = shipment()) {
     imageScope: seed.identity.id,
     imageDownloadScope: "",
     needsParcelDetailFields: () => false,
+    syncedInternational: false,
     readOwnerState: () => ({ bindings: [] }),
     refreshCloudMetadata: async () => {},
     shouldRequestDetailProductImage: () => false,
@@ -427,6 +428,36 @@ for (const fails of [false, true]) {
   cloud.resolve(undefined);
   await opening;
   assert.deepEqual(calls, ["detail_open", "fields", "cloud", "product_image"]);
+  assert.equal(page.context.imageDownloadScope, page.context.imageScope);
+}
+
+// 2026-11-20 review, part 3 rule 4: an international Watch detail opens with the shared cloud metadata
+// read and its image scope, without the domestic shopping-platform fields.
+{
+  const page = pageHarness(shipment("TRANSIT", [{ detail: "Cached event" }]));
+  page.context.props.refreshOnAppear = "detail_open";
+  page.context.props.persistedShipment = true;
+  page.context.props.manualPreview = null;
+  page.context.syncedInternational = true;
+  page.context.needsParcelDetailFields = () => true;
+  const calls: string[] = [];
+  const cloud = deferred();
+  const next = { shipment: page.state.shipment, state: {}, refreshed: true };
+  page.context.refreshShipmentById = (_id: string, options: any) => {
+    calls.push(options.trigger);
+    return options.trigger === "detail_open" ? page.network.promise : Promise.resolve(next);
+  };
+  page.context.refreshParcelDetailFields = () => { calls.push("fields"); return Promise.resolve(undefined); };
+  page.context.refreshCloudMetadata = () => { calls.push("cloud"); return cloud.promise; };
+
+  const trajectory = page.refresh(false);
+  const opening = page.finishDetailOpening(new AbortController().signal);
+  page.network.resolve(next);
+  await trajectory;
+  assert.deepEqual(calls, ["detail_open", "cloud"]);
+  cloud.resolve(undefined);
+  await opening;
+  assert.deepEqual(calls, ["detail_open", "cloud"], "a Watch parcel requests no account product image");
   assert.equal(page.context.imageDownloadScope, page.context.imageScope);
 }
 

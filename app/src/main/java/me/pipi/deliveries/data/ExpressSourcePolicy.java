@@ -151,6 +151,31 @@ final class ExpressSourcePolicy {
                 && (currentEventTime <= 0L || incomingEventTime > currentEventTime);
     }
 
+    /**
+     * Customs clearance (owner 2026-11-20, 补充修改五; third review H-01, 2026-11-23): the one same-clock
+     * DANGER → TRANSIT an interface-6 row takes. Its stored DANGER is the Worker's unrefined FAILED reading of a
+     * Meizu coarse FAILED and the new reading of that same clock is the customs subtype 清关中
+     * (CUSTOMS_CLEARANCE), which only the refinement of a coarse FAILED produces. A stored row keeps no upstream
+     * description, so 待清关 / 已清关 (code TRANSIT, the same code as an upstream TRANSIT) do not qualify, and a
+     * DANGER without that FAILED projection stays where it is. The cached projection must be the stored reading
+     * itself, of the same state and clock (fourth review R4-NEW-08 ③, owner 2026-11-23「报告里的都直接做」), as the
+     * same-owner priority comparison in ExpressRepository requires.
+     */
+    static boolean correctsMeizuCustomsMisreading(
+            String currentOwner, StatusSemantic current, long currentEventTime,
+            me.pipi.deliveries.model.WorkerStatusProjection currentProjection,
+            String incomingOwner, StatusSemantic incoming, long incomingEventTime,
+            me.pipi.deliveries.model.WorkerStatusProjection incomingProjection) {
+        return SOURCE_INTERFACE6.equals(source(currentOwner)) && SOURCE_INTERFACE6.equals(source(incomingOwner))
+                && current == StatusSemantic.DANGER && incoming == StatusSemantic.TRANSIT
+                && currentEventTime > 0L && incomingEventTime == currentEventTime
+                && currentProjection != null && currentProjection.matches(current, currentEventTime)
+                && "FAILED".equalsIgnoreCase(currentProjection.code.trim())
+                && incomingProjection != null && incomingProjection.structured
+                && incomingProjection.semantic == StatusSemantic.TRANSIT
+                && StatusSemantic.CUSTOMS_CLEARANCE_CODE.equals(incomingProjection.code);
+    }
+
     static boolean shouldApplyHeadline(
             String currentOwner, long currentEventTime,
             String incomingOwner, long incomingEventTime) {

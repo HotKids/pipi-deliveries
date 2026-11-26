@@ -1,7 +1,9 @@
 import { RecognitionSettingsPage } from "./RecognitionSettingsPage";
+import { recognitionSettings } from "../services/recognition/settings";
 import {
   AppEvents,
   Button,
+  Divider,
   HStack,
   Image,
   Link,
@@ -55,6 +57,7 @@ import { ParcelActivityPage, ParcelShortcutPage } from "./PickupSettingsPages";
 import { notificationEnabledCount } from "../services/notification-preferences";
 import { reconcileFengchaoReminders } from "../services/fengchao-reminders";
 import { SAVE_FAILED_TOAST, transientToast } from "../services/ui-feedback";
+import { safeRead } from "../services/safe-read";
 import { platformRefreshMessage, refreshPlatformParcels } from "../services/platform-parcel-sync";
 import { accountStatus, onPlatformAccountsChanged, PLATFORM_SOURCES, type ExpressPlatform } from "../services/platform-accounts";
 
@@ -225,6 +228,9 @@ function useSettingsOverview() {
 
 export function SettingsPage(props: {
   onAccessKeyChanged?: () => void;
+  onCloudRecordsRefresh?: () => Promise<void>;
+  /** Each increase returns the tab to its root, where the Access Key field is (a Home Access Key notice). */
+  rootRequest?: number;
   state: AppState;
   onStateChange: (state: AppState) => void;
 }) {
@@ -234,10 +240,21 @@ export function SettingsPage(props: {
   const [destination, setDestination] =
     useState<"" | "phones" | "notifications" | "diagnostics" | "privacy" | "shortcuts" | "activity" | "recognition">("");
   const [managerNotice, setManagerNotice] = useState("");
+  const [recognitionMode, setRecognitionMode] = useState(() =>
+    safeRead(() => recognitionSettings().draft.mode, "local" as const));
+  useEffect(() => {
+    if (!destination) {
+      setRecognitionMode(safeRead(() => recognitionSettings().draft.mode, "local" as const));
+    }
+  }, [destination]);
   const [diagnosticCount, setDiagnosticCount] = useState(0);
   const { authorization, authorizationNotice, setAuthorizationNotice, platformCount, enabledNotificationCount,
     setEnabledNotificationCount, refreshAuthorization, setOverviewVisible } = useSettingsOverview();
   const configured = authorization === "authorized" || authorization === "saved" || authorization === "rejected";
+
+  useEffect(() => {
+    if (props.rootRequest) setDestination("");
+  }, [props.rootRequest]);
 
   function saveToken() {
     try {
@@ -310,13 +327,8 @@ export function SettingsPage(props: {
   ) {
     const requestedSource = SCRIPT_BINDING_SOURCE;
     const handlerSource = SCRIPT_BINDING_SOURCE;
-    writeDiagnostic("binding.handler.entered", {
-      flowId,
-      requestedSource,
-      handlerSource,
-      ...diagnosticState(props.state),
-      stage: "ui_handler",
-    });
+    // D4: the handler writes no start line; the verification (binding.verify.*) and the commit (binding.persisted)
+    // end this flow.
     const next = await bindPhone(requestedSource, phone, code, flowId, enhanced);
     props.onStateChange(next);
     void refreshAllShipments(requestedSource, { accountListOnly: true })
@@ -339,7 +351,8 @@ export function SettingsPage(props: {
             flowId,
             requestedSource,
             handlerSource,
-            ...diagnosticState(loadState()),
+            // An error handler cannot throw while it logs (G-MED-20).
+            ...safeRead(() => diagnosticState(loadState()), {}),
             ...diagnosticErrorDetails(error),
           },
           "warning",
@@ -354,7 +367,7 @@ export function SettingsPage(props: {
 
   return (
     <NavigationStack>
-      <VStack navigationBarVisibility="hidden" spacing={0}
+      <VStack spacing={0}
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         onAppear={() => setOverviewVisible(true)}
         onDisappear={() => setOverviewVisible(false)}
@@ -385,6 +398,7 @@ export function SettingsPage(props: {
               onPlatformRefresh={async (platform, onProgress) => platformRefreshMessage(
                 await refreshPlatformParcels(props.onStateChange, "manual", platform, onProgress),
               )}
+              onCloudRecordsRefresh={props.onCloudRecordsRefresh}
               onRemove={async (binding, localOnly) => {
                 setManagerNotice("");
                 props.onStateChange(await unbindPhone(binding.source, binding.phone, { localOnly, expectedBinding: binding }));
@@ -414,7 +428,12 @@ export function SettingsPage(props: {
           ) : destination === "activity" ? (
             <ParcelActivityPage />
           ) : destination === "recognition" ? (
-            <RecognitionSettingsPage />
+            <RecognitionSettingsPage onSaved={(message) => {
+              // A successful save returns here and reports on this page (owner 2026-11-21).
+              setRecognitionMode(safeRead(() => recognitionSettings().draft.mode, "local" as const));
+              setDestination("");
+              setNotice(message);
+            }} />
           ) : destination === "diagnostics" ? (
             <DiagnosticLogPage onCountChange={setDiagnosticCount} />
           ) : (
@@ -467,15 +486,20 @@ export function SettingsPage(props: {
           </Section>
 
           <Section header={<Text>更多</Text>}>
-            <Button buttonStyle="plain" action={() => setDestination("recognition")}>
+            <Button buttonStyle="plain" action={() => setDestination("recognition")} listRowSeparator="hidden"
+              overlay={{ alignment: "bottom", content: <Divider padding={{ leading: 42 }} /> }}>
               <HStack spacing={12} padding={{ vertical: 5 }} frame={{ minHeight: 44, maxWidth: "infinity" }} contentShape="rect">
                 <SettingsRowIcon systemName="sparkles" backgroundColor={SETTINGS_BLUE} />
                 <Text>智能识别</Text>
                 <Spacer />
+                <Text foregroundStyle="secondaryLabel">
+                  {recognitionMode === "online" ? "在线识别" : "本地识别"}
+                </Text>
                 <SettingsAccessoryIcon systemName="chevron.right" />
               </HStack>
             </Button>
-            <Button buttonStyle="plain" action={() => setDestination("shortcuts")}>
+            <Button buttonStyle="plain" action={() => setDestination("shortcuts")} listRowSeparator="hidden"
+              overlay={{ alignment: "bottom", content: <Divider padding={{ leading: 42 }} /> }}>
               <HStack
                 spacing={12}
                 padding={{ vertical: 5 }}
@@ -488,7 +512,7 @@ export function SettingsPage(props: {
                 <SettingsAccessoryIcon systemName="chevron.right" />
               </HStack>
             </Button>
-            <Button buttonStyle="plain" action={() => setDestination("activity")}>
+            <Button buttonStyle="plain" action={() => setDestination("activity")} listRowSeparator="hidden">
               <HStack
                 spacing={12}
                 padding={{ vertical: 5 }}
@@ -507,6 +531,8 @@ export function SettingsPage(props: {
             <Button
               buttonStyle="plain"
               action={() => setDestination("diagnostics")}
+              listRowSeparator="hidden"
+              overlay={{ alignment: "bottom", content: <Divider padding={{ leading: 42 }} /> }}
             >
               <HStack
                 spacing={12}
@@ -528,6 +554,7 @@ export function SettingsPage(props: {
             <Button
               buttonStyle="plain"
               action={() => setDestination("privacy")}
+              listRowSeparator="hidden"
             >
               <HStack
                 spacing={12}
@@ -599,11 +626,13 @@ export function SettingsPage(props: {
               spacing={12}
               padding={{ vertical: 5 }}
               frame={{ minHeight: 44, maxWidth: "infinity" }}
+              listRowSeparator="hidden"
+              overlay={{ alignment: "bottom", content: <Divider padding={{ leading: 42 }} /> }}
             >
               <SettingsAppIcon />
               <Text>派派助手</Text>
               <Spacer />
-              <Text foregroundStyle="secondaryLabel">{SCRIPT_VERSION}</Text>
+              <Text foregroundStyle="secondaryLabel" monospacedDigit>{SCRIPT_VERSION}</Text>
             </HStack>
             <Link url={PROJECT_URL}>
               <HStack
@@ -611,6 +640,7 @@ export function SettingsPage(props: {
                 padding={{ vertical: 5 }}
                 frame={{ minHeight: 44, maxWidth: "infinity" }}
                 contentShape="rect"
+                listRowSeparator="hidden"
               >
                 <SettingsRowIcon systemName="link" backgroundColor={SETTINGS_GRAY} />
                 <Text foregroundStyle="label">项目地址</Text>

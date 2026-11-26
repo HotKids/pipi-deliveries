@@ -1,7 +1,7 @@
 import type { AbortSignal } from "scripting";
 import type { Shipment } from "../models";
 import { currentPlatformSession, platformSession, type ExpressPlatform, type PlatformSession } from "./platform-accounts";
-import { writeDiagnostic } from "./logger";
+import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { cainiaoParcelDetails, type PlatformParcel } from "./platform-parcel-data";
 import { deliveryEstimateApplies, displayedPlatformFields, pddParcelProductImage, samePlatformTarget } from "./platform-parcel-merge";
 import { fetchJdParcelDetails, fetchPddParcelDetails } from "./platform-web-parcels";
@@ -66,11 +66,14 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
   const jdOrder = jdOrderFor(owner, observed.shipments);
   const jd = jdOrder ? platformSession("jingdong") : null;
   if (!cainiao && !(pddSession && pddSession.ownerKey === pdd?.ownerKey) && !jd) return undefined;
-  // Cainiao keeps the existing image-selector lease across successful captures.
+  const sessionKey = [cainiao?.generation, pddSession?.generation, jd?.generation].filter(Boolean).join("|");
+  // Cainiao keeps the existing image-selector lease across successful captures; include session generations
+  // so re-authenticating an account can retry immediately, and release the lease if every attempt aborts/throws.
   const lease = cainiao ? "parcel-detail-fields:cainiao-goods-v2:" : "parcel-detail-fields:";
-  const reservation = acquireDurableRefreshLease(lease + privateHash(waybill), DETAIL_FIELDS_INTERVAL_MS);
+  const reservation = acquireDurableRefreshLease(lease + privateHash(`${waybill}\u0000${sessionKey}`), DETAIL_FIELDS_INTERVAL_MS);
   if (!reservation) return undefined;
   let changed = false;
+  let settledRead = false;
   async function read(platform: ExpressPlatform, session: PlatformSession, fetch: (eligible: () => boolean) => Promise<PlatformParcel | undefined>) {
     const current = () => projectionSceneActive() && !!currentPlatformSession(platform, session.generation);
     const eligible = () => {
@@ -82,29 +85,54 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
         platform === "pinduoduo" ? JSON.stringify(row.pddImport) === JSON.stringify(pdd) :
           !row.pddImport && row.identity.sourceProvider?.trim().toLowerCase() === nativeSource;
     };
+    // D128: each platform read that runs ends with one line (committed, unchanged or empty); a failure keeps its
+    // unavailable line with its category. A read that does not start (no longer eligible) writes nothing.
+    const startedAt = Date.now();
+    const end = (result: "committed" | "unchanged" | "empty") => writeDiagnostic("platform.parcel_detail.completed", {
+      sourceProvider: platform, result, durationMs: Date.now() - startedAt,
+    });
     try {
       if (!eligible()) return;
       const parcel = await fetch(eligible);
-      if (parcel?.waybill !== waybill || !(parcel.title || parcel.estimate || parcel.productImageURL) || !eligible()) return;
+      if (parcel?.waybill !== waybill || !(parcel.title || parcel.estimate || parcel.productImageURL)) {
+        if (eligible()) {
+          settledRead = true;
+          end("empty");
+        }
+        return;
+      }
+      if (!eligible()) return;
       const saved = savePlatformParcelData({ observed, owner: session.ownerKey, detailTarget: owner,
         cainiaoGeneration: platform === "cainiao" ? session.generation : undefined, parcels: [parcel], current: eligible }).state;
+      settledRead = true;
       if (saved.revision !== observed.revision) changed = true;
+      end(saved.revision !== observed.revision ? "committed" : "unchanged");
       observed = saved;
-    } catch {
-      if (active() && current()) writeDiagnostic("platform.parcel_detail.unavailable", { sourceProvider: platform }, "warning");
+    } catch (error) {
+      if (active() && current()) {
+        writeDiagnostic("platform.parcel_detail.unavailable", {
+          sourceProvider: platform, durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error),
+        }, "warning");
+      }
     }
   }
-  if (cainiao) await read("cainiao", cainiao, async () =>
-    cainiaoParcelDetails(await readCainiao(cainiao, CAINIAO_PARCEL_DETAIL, { mailNo: waybill }, signal), waybill, Date.now()));
-  if (pddSession && pddSession.ownerKey === pdd?.ownerKey && pdd.shippingId) {
-    const shippingId = pdd.shippingId;
-    const fields = displayedPlatformFields(owner);
-    const estimate = deliveryEstimateApplies(owner);
-    const image = !owner.identity.productImageURL && !pddParcelProductImage(owner);
-    await read("pinduoduo", pddSession, (eligible) =>
-      fetchPddParcelDetails(pddSession, shippingId, waybill, !fields.title, estimate, image, eligible, signal));
+  try {
+    if (cainiao) await read("cainiao", cainiao, async () =>
+      cainiaoParcelDetails(await readCainiao(cainiao, CAINIAO_PARCEL_DETAIL, { mailNo: waybill }, signal), waybill, Date.now()));
+    if (pddSession && pddSession.ownerKey === pdd?.ownerKey && pdd.shippingId) {
+      const shippingId = pdd.shippingId;
+      const fields = displayedPlatformFields(owner);
+      const estimate = deliveryEstimateApplies(owner);
+      const image = !owner.identity.productImageURL && !pddParcelProductImage(owner);
+      await read("pinduoduo", pddSession, (eligible) =>
+        fetchPddParcelDetails(pddSession, shippingId, waybill, !fields.title, estimate, image, eligible, signal));
+    }
+    if (jd) await read("jingdong", jd, (eligible) => fetchJdParcelDetails(jd, jdOrder, waybill, eligible, signal));
+  } finally {
+    if (!settledRead) {
+      try { reservation.release(); } catch { /* Best-effort lease rollback on transient error or exit. */ }
+    }
   }
-  if (jd) await read("jingdong", jd, (eligible) => fetchJdParcelDetails(jd, jdOrder, waybill, eligible, signal));
   const shipment = changed ? ownerIn(observed) : undefined;
   return shipment ? { state: observed, shipment } : undefined;
 }

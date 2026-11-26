@@ -17,6 +17,7 @@ function EmptyDeliveryVehicle({ size }: { size: number }) {
     <Image
       image={artwork}
       renderingMode="original"
+      widgetAccentedRenderingMode="fullColor"
       resizable={true}
       scaleToFit={true}
       frame={{ width: size, height: size }}

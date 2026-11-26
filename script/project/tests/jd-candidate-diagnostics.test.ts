@@ -78,15 +78,18 @@ test("candidate evidence survives the diagnostic allowlist without node text or 
   writeDiagnostic("detail.timeline.candidate", {
     timelineProvider: "jd_h5", ...policy.shipmentDetailCandidateEvidence(current, pack("jd_h5", 18, true)),
   });
-  const details = readDiagnostics()[0].details;
+  const entry = readDiagnostics()[0];
+  const details = entry.details;
   assert.equal(details.hasPickup, true);
   assert.equal(details.candidateEligible, true);
   assert.equal(details.cainiaoFallbackActive, false);
   assert.equal(details.foreignPackage, false);
   assert.equal(details.waybillMatches, true);
   assert.equal(details.detailComplete, true);
-  assert.equal(details.foreignAnchorAtMs, 0);
-  assert.equal(details.earliestTrackAtMs, NOW - 17 * 60000);
+  // D6 (owner 2026-11-21 「改成相对量（推荐）」): an absent anchor is left out; the earliest node reads as its age.
+  assert.equal(details.foreignAnchorAgeMs, undefined);
+  assert.equal(details.earliestTrackAtMs, undefined);
+  assert.equal(details.earliestTrackAgeMs, Date.parse(entry.at) - (NOW - 17 * 60000));
   assert.equal(JSON.stringify(details).includes(WAYBILL), false);
   assert.equal(JSON.stringify(details).includes("Synthetic event"), false);
   setDiagnosticsEnabled(false);

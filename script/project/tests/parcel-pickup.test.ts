@@ -4,7 +4,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import type { ParcelHandoffRecord, PickupCodeRecord, Shipment } from "../models";
 import { MEAL_ARTWORK_TOKENS, PICKUP_STICKER_ENTRANCE } from "../components/pickup-card-tokens.generated";
-import { PICKUP_TAB_TITLE, activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, nextPickupArtwork, PARCEL_ACTIVITY_PREVIEW, parcelActivityContent, parcelCardKey, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, withPickupArtwork, type ParcelActivityContent } from "../services/parcel-pickup";
+import { PICKUP_TAB_TITLE, activePickupCards, applyRecognizedPickup, handoffActivityContent, independentPickupContent, mealCompactCode, nextPickupArtwork, PARCEL_ACTIVITY_PREVIEW, parcelActivityCompactText, parcelActivityContent, parcelCardKey, parcelPickupShortCode, parcelPickupSubtitle, pickupDateSections, withPickupArtwork, type ParcelActivityContent } from "../services/parcel-pickup";
 import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, parcelCardPalette, pickupCardAppearance, pickupCardPalette, type ParcelLockScreenStyle } from "../services/parcel-card-appearance";
 import { resolvePickupVisualStyle } from "../services/meal/pickup-artwork";
 import { recognizeParcelCodes } from "../services/parcel-code-ocr";
@@ -32,6 +32,43 @@ assert.equal(PICKUP_STICKER_ENTRANCE.mealDelay, 367);
 assert.equal(PICKUP_STICKER_ENTRANCE.parcelDelay, 1250);
 assert.equal(parcelPickupShortCode("1-2-3456"), "1-2-3456");
 assert.equal(parcelPickupShortCode("B-12-34567"), "B1234567");
+// The compact Dynamic Island mirrors Pipi's meal capsule, PickupNotificationRenderer.capsule,
+// with the examples of PickupNotificationRendererTest and PickupNotificationPresentationTest.
+assert.equal(mealCompactCode({ brandId: "xingbake", code: "96.笑一个吧" }), "96", "Starbucks shows only the leading number");
+assert.equal(mealCompactCode({ brandId: "xingbake", code: "27.心间有彩虹" }), "27");
+assert.equal(mealCompactCode({ brandId: "xingbake", code: " 笑一个吧 " }), "笑一个吧", "a code without a leading number stays whole");
+assert.equal(mealCompactCode({ brandId: "other", code: "27.心间有彩虹" }), "27.心间有彩虹",
+  "other brands keep the whole phrase");
+assert.equal(mealCompactCode({ brandId: "jpgcoffee", code: " A-12-34567 " }), "A-12-34567",
+  "meal codes are trimmed but not shortened like parcel codes");
+assert.equal(mealCompactCode({ brandId: "chayanyuese", code: "", productName: "幽兰拿铁" }), "幽兰拿铁");
+for (const productName of ["幽兰拿铁热饮", "桂花乌龙茶", "", "   ", undefined]) {
+  assert.equal(mealCompactCode({ brandId: "chayanyuese", code: "", productName }), "茶颜悦色",
+    "a QR-only Chayan card with five or more characters or no product shows the brand");
+}
+assert.equal(mealCompactCode({ brandId: "chayanyuese", productName: "幽兰拿铁" }), "幽兰拿铁");
+assert.equal(mealCompactCode({ brandId: "chayanyuese", code: "A123", productName: "幽兰拿铁" }), "A123");
+assert.equal(mealCompactCode({ brandId: "ruixing", code: "" }), "待取餐",
+  "a QR-only Luckin card shows 待取餐 (owner, 2026-11-21: \"pipi 也显示待取餐\")");
+assert.equal(mealCompactCode({ brandId: "ruixing", code: "  " }), "待取餐");
+assert.equal(mealCompactCode({ brandId: "ruixing" }), "待取餐");
+const starbucksActivity = { kind: "meal", title: "太妃榛果拿铁", location: "深圳沙井海岸城店", code: "96.笑一个吧",
+  mealBrandId: "xingbake", mealCompactCode: "96" } as const satisfies ParcelActivityContent;
+assert.equal(parcelActivityCompactText(starbucksActivity), "96");
+const { mealCompactCode: _savedCompactCode, ...earlierStarbucksActivity } = starbucksActivity;
+assert.equal(parcelActivityCompactText(earlierStarbucksActivity), "96",
+  "an activity published before the field applies the same rule to its code");
+assert.equal(parcelActivityCompactText({ ...brandedMeal, code: "S5756-0001-ABC" }), "S5756-0001-ABC",
+  "a long meal code is left to the system instead of becoming 待取餐");
+assert.equal(parcelActivityCompactText({ ...starbucksActivity, mealCompactCode: "" }), "96",
+  "an empty saved value applies the rule to the code");
+assert.equal(parcelActivityCompactText({ kind: "meal", title: "生椰拿铁", location: "", code: "待取餐",
+  mealBrandId: "ruixing" }), "待取餐", "an earlier QR-only Luckin activity keeps 待取餐");
+assert.equal(parcelActivityCompactText(PARCEL_ACTIVITY_PREVIEW), "1-2-3456");
+assert.equal(parcelActivityCompactText({ ...PARCEL_ACTIVITY_PREVIEW, code: "B-12-34567" }), "B1234567");
+assert.equal(parcelActivityCompactText({ ...PARCEL_ACTIVITY_PREVIEW, code: "123456789" }), "待取件");
+assert.equal(parcelActivityCompactText({ ...PARCEL_ACTIVITY_PREVIEW, kind: "handoff", code: "123456789" }), "待寄件");
+assert.equal(parcelActivityCompactText({ ...PARCEL_ACTIVITY_PREVIEW, code: "" }), "待取件");
 const previewAddress = { ...PARCEL_ACTIVITY_PREVIEW, address: "示例路 8 号" };
 assert.deepEqual(parcelPickupSubtitle(previewAddress), { text: "旺旺多多驿站", symbol: "house.fill" });
 assert.deepEqual(parcelPickupSubtitle(previewAddress, previewAddress.address, true), { text: "示例路 8 号", symbol: "mappin.circle.fill" });
@@ -584,9 +621,11 @@ assert.deepEqual(activeCodes(), []);
 records = [firstPickup];
 let previewTransitions = 0;
 const nativeTabClosures: string[] = [];
-const unsubscribePreview = host.onParcelActivityChanged((change: { kind: "preview" } | { kind: "pickup-tab-empty"; activityId: string }) => {
+const siblingEndedIds: string[] = [];
+const unsubscribePreview = host.onParcelActivityChanged((change: { kind: "preview" } | { kind: "pickup-tab-empty"; activityId: string } | { kind: "activity-ended"; activityId: string }) => {
   if (change.kind === "preview") previewTransitions++;
-  else nativeTabClosures.push(change.activityId);
+  else if (change.kind === "pickup-tab-empty") nativeTabClosures.push(change.activityId);
+  else siblingEndedIds.push(change.activityId);
 });
 await host.startAllParcelActivities();
 Reflect.deleteProperty(session as object, "lockScreenStyle");
@@ -655,9 +694,11 @@ assert.deepEqual(activeCodes(), [fourthPickup.code, firstPickup.code], "real car
 await assert.rejects(host.startParcelActivityPreview(), /锁屏预览暂时无法启动/);
 assert.deepEqual(activeCodes(), [fourthPickup.code, firstPickup.code]);
 const realReceipts = receipts();
-await savedStyleHost.completeParcelActivity({ kind: "pickup", linkId: realReceipts.find(receipt => native.get(receipt.id)?.code === firstPickup.code)!.linkId });
+const firstRealReceipt = realReceipts.find(receipt => native.get(receipt.id)?.code === firstPickup.code)!;
+await savedStyleHost.completeParcelActivity({ kind: "pickup", linkId: firstRealReceipt.linkId });
 await host.parcelActivityStatus();
 assert.deepEqual(nativeTabClosures, [], "completing one of two real cards leaves the tab displayed");
+assert.deepEqual(siblingEndedIds, [firstRealReceipt.id], "completing one of two real cards notifies PickupPage to reload");
 await host.startParcelActivityPreview();
 const abandonedPreview = receipts().find(receipt => !receipt.target)!;
 native.get(abandonedPreview.id)!.state = "ended";
@@ -775,6 +816,11 @@ assert.match(activityCardSource, /systemName=\{isMeal \? "fork\.knife" : "shippi
   "the smaller utensil glyph remains centered in the shared capsule icon slot");
 assert.match(activityCardSource, /isMeal \? "我已取餐"/);
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
+assert.match(activityEntrySource, /const compactCode = parcelActivityCompactText\(data\);/);
+assert.match(activityEntrySource, /compactTrailing=\{\(\s*<Text [^>]*>\s*\{compactCode\}\s*<\/Text>/,
+  "the compact island shows the shared capsule text");
+assert.match(activityCardSource, /const pickupCode = isMeal \? data\.code : parcelPickupShortCode\(data\.code\);/,
+  "the Lock Screen, expanded island and Smart Stack keep the full meal code");
 assert.match(activityEntrySource, /content=\{<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} lockScreen lockScreenStyle=\{data\.lockScreenStyle\} \/>\}/);
 assert.match(activityEntrySource, /<LiveActivityUIExpandedCenter>\s*<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} expanded \/>/,
   "the registered island uses the common Pipi card");
@@ -783,8 +829,8 @@ assert.ok(islandAppearanceSource);
 const islandAppearance = new Function("PIPI_CARD", islandAppearanceSource + "\nreturn expandedIslandAppearance;")({
   edge: 12, capsuleHeight: 35,
 });
-assert.deepEqual(islandAppearance.dynamicIslandContentMargins.expanded, { top: 0, leading: 12, trailing: 18, bottom: 18 },
-  "the right and bottom edges share one clearance around the expanded capsule");
+assert.deepEqual(islandAppearance.dynamicIslandContentMargins.expanded, { top: 6, leading: 12, trailing: 18, bottom: 18 },
+  "the expanded island reserves a 6pt top clearance under the sensor capsule");
 const activityScaleSource = activityCardSource.match(/  const widthScale = [\s\S]*?  const verticalScale = [\s\S]*?;/)?.[0];
 assert.ok(activityScaleSource);
 const activityScale = new Function("width", "card", "expanded", "lockScreen", "MAX_ACTIVITY_HEIGHT",
@@ -1013,41 +1059,32 @@ assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate=\{visi
   "a standalone preview retains its animation and a trailing preview uses the final frame");
 const homeSource = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
 for (const source of [homeSource, pickupSource, settingsSource]) {
-  assert.match(source, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootTabList\b/,
-    "each tab delegates its initial position and scroll layout to the same root");
-  assert.doesNotMatch(source, /<List\b|<RootPageTitle\b|<RootPageCloseButton\b|listStyle=/);
+  assert.match(source, /<NavigationStack>\s*<VStack [^]*?<RootTabList\b/,
+    "each tab delegates its native NavigationStack list and scroll layout to the same root");
+  assert.doesNotMatch(source, /navigationBarVisibility="hidden"|<List\b|<RootPageTitle\b|<RootPageCloseButton\b|listStyle=/);
 }
 assert.match(homeSource, /<RootTabList\b[^>]*\btitle="快递"/);
-assert.match(pickupSource, /<RootTabList title=\{PICKUP_TAB_TITLE\} onClose=\{\(\) => dismiss\(\)\} bottomInset=\{TAB_FAB_SCROLL_INSET\}\s+emptyState=\{!sections\.length \? <EmptyTabState pickup=\{emptyArtwork\} \/> : undefined\}>/);
+assert.match(pickupSource, /<RootTabList title=\{PICKUP_TAB_TITLE\} onClose=\{\(\) => dismiss\(\)\} bottomInset=\{TAB_FAB_SCROLL_INSET\}\s+titleAction=\{<IdentityCodeButton onOpen=\{openIdentity\} \/>\}\s+refresh=\{onRefresh\}\s+emptyState=\{!sections\.length \? <EmptyTabState pickup=\{emptyArtwork\} \/> : undefined\}>/);
 assert.match(settingsSource, /<RootTabList title="设置" onClose=\{\(\) => dismiss\(\)\}>/);
 assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:|rootPageScroll|headerCollapsed/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|待取|取件)"|navigationTitle=\{PICKUP_TAB_TITLE\}/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-assert.match(rootHeader, /const header = \(\s*<Section key="root-heading" listSectionMargins=\{0\} listSectionSeparator="hidden"\s*animation=\{topAccessory === undefined \? undefined : \{ animation: Animation\.easeOut\(0\.18\), value: topAccessory !== null \}\}>\s*<RootPageTitle title=\{title\} onVisibilityChange=\{trackVisibility \? setTitleVisible : undefined\} \/>\s*\{topAccessory\}\s*<\/Section>/);
-assert.match(rootHeader, /onScrollVisibilityChange=\{onVisibilityChange \? \{ onChanged: onVisibilityChange \} : undefined\}/);
-assert.match(rootHeader, /<VStack opacity=\{titleVisible \? 1 : 0\} allowsHitTesting=\{titleVisible\} accessibilityHidden=\{!titleVisible\}\s*animation=\{\{ animation: Animation\.easeOut\(0\.18\), value: titleVisible \}\}>\s*\{titleAction\}\s*<\/VStack>/,
-  "the query action fades while hit testing and accessibility follow title visibility immediately");
-assert.match(rootHeader, /<List listStyle="insetGroup"[^]*?refreshable=\{refresh\}[^]*?edges: "top", insets: 0, placement: "scrollContent"[^]*?edges: "vertical", insets: \{ top: 0, bottom: bottomInset[^]*?>\s*\{\[header, \.\.\.\[children\]\.flat\(\)\]\}\s*<\/List>\s*<RootPageCloseButton action=\{onClose\} \/>/,
-  "one grouped list scrolls every title and any filter from the same initial top inset under a fixed close control");
-assert.doesNotMatch(rootHeader, /\bchildren=\{/,
-  "Scripting's JSX factory receives the list rows as positional children");
-assert.match(rootHeader, /function RootPageTitle[^]*?<Text font="largeTitle" fontWeight="bold"[^]*?\{title\}\s*<\/Text>/);
-assert.match(rootHeader, /const HEADER_TOP_INSET = 4;/);
-assert.match(rootHeader, /function RootPageTitle[^]*?minHeight: CLOSE_SIZE, alignment: "leading"[^]*?listRowInsets=\{\{ top: HEADER_TOP_INSET,/,
-  "the large title shares the close control's initial vertical center");
-assert.match(rootHeader, /function RootPageCloseButton[^]*?<VStack padding=\{\{ top: HEADER_TOP_INSET, trailing: ROOT_PAGE_MARGIN \}\}>\s*<Button title="关闭" systemImage="xmark"/);
-assert.equal(rootHeader.match(/\{title\}\s*<\/Text>/g)?.length, 1);
-assert.doesNotMatch(rootHeader, /navigationTitle|ToolbarItem|collapsed|import\s*\{[^}]*\bAnimation\b/);
-assert.match(rootHeader, /const CLOSE_SIZE = 44;[^]*?labelStyle="iconOnly"[^]*?width: CLOSE_SIZE, height: CLOSE_SIZE/);
-assert.match(pickupSource, /overlay=\{\{ alignment: "bottomTrailing", content: <IdentityCodeButton onOpen=\{openIdentity\}/,
-  "the identity popover stays anchored to the bottom of the scrolling viewport");
+assert.match(rootHeader, /const header = topAccessory != null \? \(\s*<Section key="root-heading" listSectionMargins=\{0\} listSectionSeparator="hidden"/);
+assert.match(rootHeader, /onScrollPhaseChange=\{supportsScrollPhase \? onScrollPhaseChange : undefined\}/);
+assert.match(rootHeader, /glassEffectTransition=\{supportsGlassTransition \? "materialize" : undefined\}/,
+  "the floating action button materializes on idle scroll phase without semi-transparent opacity");
+assert.doesNotMatch(rootHeader, /opacity=\{/,
+  "Liquid Glass FAB must never be wrapped in fractional opacity");
+assert.match(rootHeader, /<List\s+listStyle="insetGroup"\s+navigationTitle=\{title\}\s+navigationBarTitleDisplayMode="large"\s+toolbar=\{\{\s*topBarTrailing: \(\s*<Button title="关闭" systemImage="xmark" labelStyle="iconOnly" action=\{onClose\} \/>/,
+  "native NavigationStack owns the collapsible large title and trailing close button");
+assert.doesNotMatch(rootHeader, /\bchildren=\{|import\s*\{[^}]*\bAnimation\b/,
+  "Scripting's JSX factory receives the list rows as positional children and uses host Animation global");
 assert.match(pickupSource, /onBindingUnavailable=\{\(\) => void openIdentity\(identity\.platform\)\}/,
   "an identity page whose binding expires uses the same app handoff as the picker");
-assert.match(pickupSource, /<HStack spacing=\{0\} popover=\{\{\s*isPresented: showPicker,\s*onChanged: setShowPicker,/,
-  "the containing row owns the reference popover binding");
-assert.match(pickupSource, /<TabFloatingActionButton title="身份码" symbol="person\.text\.rectangle"/);
+assert.match(pickupSource, /<Menu\s+label=\{<TabFloatingActionSurface title="身份码" symbol="person\.text\.rectangle" \/>\}\s+accessibilityLabel="身份码"/,
+  "identity code choices use the native iOS Menu over the floating glass action surface");
 const floatingButtonSource = readFileSync(new URL("../components/TabFloatingActionButton.tsx", import.meta.url), "utf8");
-assert.match(floatingButtonSource, /<Label title=\{title\} systemImage=\{symbol\} labelStyle="iconOnly"/,
+assert.match(floatingButtonSource, /<Label\s+title=\{title\}\s+systemImage=\{symbol\}\s+labelStyle="iconOnly"/,
   "both floating actions use a symbol-only label");
 assert.match(pickupSource, /onLocationTap=\{canSwitch \? \(\) => setShowAddress\(!showAddress\)/);
 const stationIdentitySource = readFileSync(new URL("../pages/StationIdentityPage.tsx", import.meta.url), "utf8");
@@ -1096,11 +1133,11 @@ assert.match(stationIdentitySource, /<Form navigationTitle=\{IDENTITY_CODE_TITLE
 assert.match(stationIdentitySource, /listRowInsets=\{valid \? SCAN_ROW_INSETS : DETAIL_ROW_INSETS\}/);
 assert.match(stationIdentitySource, /<Text font=\{16\} foregroundStyle="secondaryLabel" multilineTextAlignment="center"\s*frame=\{\{ maxWidth: "infinity", minHeight: DETAIL_ROW_HEIGHT \}\}>\s*\{status\}/,
   "an unavailable scan uses the shared detail-row height and insets");
-assert.match(stationIdentitySource, /\{\.\.\.tabCapsuleSurface\(true\)\}>复制<\/Text>/);
-assert.doesNotMatch(stationIdentitySource, /presentPlatformLogin|授权拼多多|登录淘宝/,
-  "the identity page does not present an account setup form");
-assert.match(stationIdentitySource, /<QRImage data=\{value\} size=\{184\} \/>/,
-  "the card pairs a QR code with the barcode for every valid identity");
+assert.match(stationIdentitySource, /title="复制"\s+buttonStyle="bordered"\s+buttonBorderShape="capsule"/);
+assert.doesNotMatch(stationIdentitySource, /tabCapsuleSurface|presentPlatformLogin|授权拼多多|登录淘宝/,
+  "the identity page uses standard bordered capsule button and does not present an account setup form");
+assert.match(stationIdentitySource, /<VStack padding=\{12\} frame=\{\{ width: 200, height: 200 \}\}\s*background=\{\{ style: "white", shape: QR_SHAPE \}\} contentShape="rect">\s*<QRImage data=\{value\} size=\{176\} \/>/,
+  "the card pairs a 176pt QR code inside a 12pt white quiet zone with the barcode for every valid identity");
 assert.match(expandedScanSource, /<QRImage data=\{data\} size=\{qrSize\} \/>/,
   "the shared full-screen QR encodes the payload passed by the identity or meal page");
 

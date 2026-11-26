@@ -8,6 +8,7 @@ import {
 } from "./account-sync-policy";
 import { accountOrderTextIdentity } from "./account-order-text-identity";
 import type {
+  NormalizedStatus,
   Shipment,
   ShipmentIdentity,
   StatusSemantic,
@@ -213,43 +214,67 @@ export function rgbLuminance(color: number): number {
   }, 0);
 }
 
-const STATUS_TEXT_TINT_CACHE_MAX = 128;
-const statusTextTintCache = new Map<string, { light: ColorStringHex; dark: ColorStringHex }>();
+function statusHex(color: number): ColorStringHex {
+  return `#${color.toString(16).padStart(6, "0")}` as ColorStringHex;
+}
 
+function statusContrast(color: number, background: number): number {
+  const a = rgbLuminance(color), b = rgbLuminance(background);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+// Owner 2026-11-20 (修改 11): lists, details, the 寄 badge and the small widget show the shared
+// non-capsule text pair as it is, without a contrast adjustment.
 export function statusTextTint(
   semantic: StatusSemantic,
-  options: { badgeOpacity?: number; brandAccent?: string; fillRGB?: number; label?: string } = {},
+  options: { label?: string } = {},
 ): { light: ColorStringHex; dark: ColorStringHex } {
-  const cacheKey = `${semantic}|${options.label ?? ""}|${options.badgeOpacity ?? ""}|${options.brandAccent ?? ""}|${options.fillRGB ?? ""}`;
-  const cached = statusTextTintCache.get(cacheKey);
+  return {
+    light: statusHex(statusTextAccent(semantic, options.label, false)),
+    dark: statusHex(statusTextAccent(semantic, options.label, true)),
+  };
+}
+
+export const BRAND_GRADIENT_STATUS_MIN_CONTRAST = 3;
+const BRAND_GRADIENT_STATUS_CACHE_MAX = 128;
+const brandGradientStatusCache = new Map<string, { light: ColorStringHex; dark: ColorStringHex }>();
+
+// Owner 2026-11-20 (修改 11, rule 3): the medium widget's status badge keeps the text pair unless the carrier
+// brand gradient causes the drop, that is, its contrast at the brand corner (the 0x55 brand under the badge
+// fill) is under 3.0:1 and lower than on the plain badge. Only then it takes the smallest 1% step toward
+// black or white that reaches 3.0:1 at that corner.
+export function brandGradientStatusTint(
+  semantic: StatusSemantic,
+  options: { brandAccent: string; badgeOpacity: number; label?: string },
+): { light: ColorStringHex; dark: ColorStringHex } {
+  const cacheKey = `${semantic}|${options.label ?? ""}|${options.badgeOpacity}|${options.brandAccent}`;
+  const cached = brandGradientStatusCache.get(cacheKey);
   if (cached) {
     return { light: cached.light, dark: cached.dark };
   }
-  const fill = options.fillRGB ?? statusTextAccent(semantic, options.label);
+  const fill = statusTextAccent(semantic, options.label);
+  const brand = Number.parseInt(options.brandAccent.slice(1), 16);
   const tone = (surface: number, dark: boolean): ColorStringHex => {
-    const accent = statusTextAccent(semantic, options.label, dark);
-    const brand = options.brandAccent ? Number.parseInt(options.brandAccent.slice(1), 16) : surface;
-    const backgrounds = [surface, blendStatusColor(surface, brand, 0x55 / 255)]
-      .map((background) => blendStatusColor(background, fill, options.badgeOpacity ?? 0));
-    const contrast = (color: number) => Math.min(...backgrounds.map((background) => {
-      const a = rgbLuminance(color), b = rgbLuminance(background);
-      return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-    }));
-    const target = contrast(0) >= contrast(0xffffff) ? 0 : 0xffffff;
-    for (let step = 0; step <= 100; step++) {
-      const candidate = blendStatusColor(accent, target, step / 100);
-      if (contrast(candidate) >= 4.5) return `#${candidate.toString(16).padStart(6, "0")}`;
+    const text = statusTextAccent(semantic, options.label, dark);
+    const plain = blendStatusColor(surface, fill, options.badgeOpacity);
+    const corner = blendStatusColor(blendStatusColor(surface, brand, 0x55 / 255), fill, options.badgeOpacity);
+    const atCorner = statusContrast(text, corner);
+    if (atCorner >= BRAND_GRADIENT_STATUS_MIN_CONTRAST || atCorner >= statusContrast(text, plain)) {
+      return statusHex(text);
     }
-    return `#${target.toString(16).padStart(6, "0")}`;
+    const target = statusContrast(0, corner) >= statusContrast(0xffffff, corner) ? 0 : 0xffffff;
+    for (let step = 1; step <= 100; step++) {
+      const candidate = blendStatusColor(text, target, step / 100);
+      if (statusContrast(candidate, corner) >= BRAND_GRADIENT_STATUS_MIN_CONTRAST) return statusHex(candidate);
+    }
+    return statusHex(target);
   };
-  const resolved = options.brandAccent
-    ? { light: tone(0xffffff, false), dark: tone(0x1c1c1e, true) }
-    : { light: tone(0xf2f2f7, false), dark: tone(0x2c2c2e, true) };
-  if (statusTextTintCache.size >= STATUS_TEXT_TINT_CACHE_MAX) {
-    const oldestKey = statusTextTintCache.keys().next().value;
-    if (oldestKey !== undefined) statusTextTintCache.delete(oldestKey);
+  const resolved = { light: tone(0xffffff, false), dark: tone(0x1c1c1e, true) };
+  if (brandGradientStatusCache.size >= BRAND_GRADIENT_STATUS_CACHE_MAX) {
+    const oldestKey = brandGradientStatusCache.keys().next().value;
+    if (oldestKey !== undefined) brandGradientStatusCache.delete(oldestKey);
   }
-  statusTextTintCache.set(cacheKey, resolved);
+  brandGradientStatusCache.set(cacheKey, resolved);
   return { light: resolved.light, dark: resolved.dark };
 }
 
@@ -460,6 +485,179 @@ export function semanticFromStored(
     default:
       return semanticFromText(description);
   }
+}
+
+/**
+ * Customs clearance (owner decision 2026-11-20 「清关中…应该属于运输中吧…显示清关中 属于运输中的分支」; the
+ * Worker's express-status.js CUSTOMS_CLEARANCE_POLICY holds the same values). Meizu v6 maps Kuaidi100's
+ * customs states into its coarse FAILED bucket and keeps the structured state name in the sibling
+ * description field. Only that exact description refines FAILED: 清关中 is the TRANSIT subtype
+ * CUSTOMS_CLEARANCE (清关中 through the label table's subtypes), 待清关 and 已清关 are plain TRANSIT, and
+ * every other description, or none, stays FAILED (异常件). Track text is never read.
+ */
+const CUSTOMS_CLEARANCE_CODE = "CUSTOMS_CLEARANCE";
+const MEIZU_FAILED_STATUS = "FAILED";
+const MEIZU_DESCRIPTION_FIELDS = ["logisticsStatusDesc", "stateName"] as const;
+const MEIZU_FAILED_DESCRIPTIONS: Readonly<Record<string, string>> = Object.freeze({
+  清关中: CUSTOMS_CLEARANCE_CODE,
+  待清关: "TRANSIT",
+  已清关: "TRANSIT",
+});
+
+/**
+ * The projection the Worker gives a Meizu v6 row whose coarse status is FAILED and whose structured
+ * description is listed above, for a packet the Worker did not project. Otherwise undefined.
+ */
+export function meizuFailedDescriptionProjection(
+  row: Readonly<Record<string, unknown>>,
+  coarseStatus: string,
+  eventAtMs: number | null,
+): NormalizedStatus | undefined {
+  if (String(coarseStatus ?? "").trim().toUpperCase() !== MEIZU_FAILED_STATUS) return undefined;
+  let description = "";
+  for (const field of MEIZU_DESCRIPTION_FIELDS) {
+    const value = row[field];
+    if ((typeof value === "string" || typeof value === "number") && String(value).trim()) {
+      description = String(value).trim();
+      break;
+    }
+  }
+  if (!Object.hasOwn(MEIZU_FAILED_DESCRIPTIONS, description)) return undefined;
+  const code = MEIZU_FAILED_DESCRIPTIONS[description];
+  const semantic: StatusSemantic = "TRANSIT";
+  const subtype = activeStatusLabelTable().subtypes
+    .find((value) => value.semantic === semantic && value.code === code);
+  return {
+    version: 1,
+    scope: "SHIPMENT",
+    semantic,
+    code,
+    text: statusDisplay({ scope: "SHIPMENT", semantic, code }).label,
+    priority: subtype?.priority ?? 0,
+    eventAtMs: eventAtMs != null && Number.isSafeInteger(eventAtMs) && eventAtMs > 0 ? eventAtMs : 0,
+    structured: true,
+  };
+}
+
+/**
+ * Meizu v6 coarse status fields in the Worker's order. The owner's 2026-11-21 answer 「Read it for every
+ * status」 makes the correctly spelled `logisticsStatus` decide every Online status beside the upstream
+ * spelling `logsiticsStatus` and `status` / `state` (docs/EXPRESS_OWNERSHIP_PLAN_FINAL_20260830.md §6.4
+ * amendment), as the Worker, Lite and the Bot read them.
+ */
+export const MEIZU_COARSE_STATUS_FIELDS = ["logsiticsStatus", "logisticsStatus", "status", "state"] as const;
+
+/** An exact upper-case whitelisted Meizu enum (§6.4), or UNKNOWN. */
+export function exactMeizuCoarseSemantic(value: unknown): StatusSemantic {
+  if (typeof value !== "string" || value !== value.trim().toUpperCase()) return "UNKNOWN";
+  return semanticFromStored(value, "");
+}
+
+/**
+ * The Worker's v6 reading of the coarse fields: the first recognized value in field order and its
+ * semantic. Unrecognized values do not mask a recognized one; recognized values that disagree give no
+ * status (`conflict`).
+ */
+export function meizuCoarseStatus(
+  row: Readonly<Record<string, unknown>>,
+  read: (value: string) => StatusSemantic = exactMeizuCoarseSemantic,
+): { code: string; semantic: StatusSemantic; conflict: boolean } {
+  let code = "";
+  let semantic: StatusSemantic = "UNKNOWN";
+  for (const field of MEIZU_COARSE_STATUS_FIELDS) {
+    const candidate = row[field];
+    if (typeof candidate !== "string") continue;
+    const value = read(candidate);
+    if (value === "UNKNOWN") continue;
+    if (semantic === "UNKNOWN") {
+      code = candidate;
+      semantic = value;
+    } else if (value !== semantic) {
+      return { code: "", semantic: "UNKNOWN", conflict: true };
+    }
+  }
+  return { code, semantic, conflict: false };
+}
+
+/**
+ * A cached Meizu Online node read before the customs refinement (owner 2026-11-20, 补充修改五): its own
+ * retained structured fields are coarse FAILED with a listed description, while its stored projection
+ * is absent or the unrefined FAILED / DANGER reading. Returns the node read through the same refinement,
+ * or the node itself.
+ */
+function rederivedMeizuOnlineTrack(track: TrackNode, packageFailedAtMs = 0): TrackNode {
+  const stored = nodeNormalizedStatus(track.raw);
+  if (stored && !(stored.semantic === "DANGER" && stored.code.trim().toUpperCase() === "FAILED")) {
+    return track;
+  }
+  const coarse = meizuCoarseStatus(track.raw);
+  let coarseCode = coarse.semantic === "DANGER" ? coarse.code : "";
+  // A node cached before its coarse field was retained (third review C-02, 2026-11-23: compactTrackRaw used to
+  // drop the upstream spelling `logsiticsStatus`) keeps no coarse value. Its own FAILED projection, or the
+  // package's FAILED projection at the node's clock, is the structured evidence of that coarse FAILED.
+  if (!coarseCode && !coarse.conflict && track.raw._pipiStatusSource === "meizu" &&
+      MEIZU_COARSE_STATUS_FIELDS.every((field) => track.raw[field] === undefined) &&
+      (stored || (packageFailedAtMs > 0 && (track.timeMs || 0) === packageFailedAtMs))) {
+    coarseCode = MEIZU_FAILED_STATUS;
+  }
+  if (!coarseCode) return track;
+  const refined = meizuFailedDescriptionProjection(track.raw, coarseCode,
+    stored?.eventAtMs || track.timeMs);
+  return refined ? { ...track, raw: { ...track.raw, normalizedStatus: refined } } : track;
+}
+
+/**
+ * The cached Meizu Online (v6_query) package before a merge with a newer answer from the same source.
+ * A cached node is read again through the customs refinement from its own retained structured fields, so
+ * the two copies of an event collapse into the refined node. When the cached package's DANGER status was
+ * that node's reading, the package follows the refined node. Meizu Online answers with its latest node only:
+ * once that node has moved past the cached event, the event never returns (third review C-01, 2026-11-23),
+ * so the cached node no longer waits for the incoming answer to carry it. Nothing changes for an event the
+ * incoming answer still reads as something other than TRANSIT (an older Worker).
+ */
+export function rederivedMeizuOnlinePackage(
+  current: TimelinePackage,
+  incoming: TimelinePackage,
+): TimelinePackage {
+  const otherwiseRead = new Set(incoming.tracks
+    .filter((track) => {
+      const projection = nodeNormalizedStatus(track.raw);
+      const semantic = projection ? projection.structured ? projection.semantic
+        : "UNKNOWN" : meizuCoarseStatus(track.raw).semantic;
+      return semantic !== "TRANSIT" && semantic !== "UNKNOWN";
+    })
+    .map(trackBaseKey));
+  const packageProjection = current.normalizedStatus;
+  const packageFailedAtMs = current.semantic === "DANGER" && current.statusEventAtMs &&
+      packageProjection?.semantic === "DANGER" &&
+      packageProjection.code.trim().toUpperCase() === MEIZU_FAILED_STATUS
+    ? current.statusEventAtMs : 0;
+  const rederived = new Set<TrackNode>();
+  const tracks = current.tracks.map((track) => {
+    if (otherwiseRead.has(trackBaseKey(track))) return track;
+    const next = rederivedMeizuOnlineTrack(track, packageFailedAtMs);
+    if (next !== track) rederived.add(next);
+    return next;
+  });
+  if (!rederived.size) return current;
+  const statusAt = current.statusEventAtMs || 0;
+  const statusNodes = current.semantic === "DANGER" && statusAt > 0
+    ? tracks.filter((track) => (nodeNormalizedStatus(track.raw)?.eventAtMs || track.timeMs) === statusAt)
+    : [];
+  const refined = statusNodes.filter((track) => rederived.has(track))
+    .map((track) => nodeNormalizedStatus(track.raw)!)
+    .sort((left, right) => right.priority - left.priority)[0];
+  // Another node of that clock still reading DANGER keeps the package where it was.
+  const stillDanger = statusNodes.some((track) => !rederived.has(track) &&
+    nodeNormalizedStatus(track.raw)?.semantic === "DANGER");
+  if (!refined || stillDanger) return { ...current, tracks };
+  return {
+    ...current,
+    tracks,
+    semantic: refined.semantic,
+    statusEventAtMs: statusAt,
+    normalizedStatus: { ...refined, eventAtMs: statusAt },
+  };
 }
 
 export function semanticFromAccountState(
@@ -1011,13 +1209,23 @@ export function isNonEventDetail(value: string): boolean {
 }
 
 /**
+ * A Watch scan the Bot holds while its lagging summary has not caught up with it (R5 follow-up, owner 2026-11-25
+ * 「所有展示面都跳过（推荐）」; the cloud record's `heldTracks`, marked by `internationalShipmentSnapshot`). The detail
+ * timeline keeps it; no headline leads with it.
+ */
+export function isHeldTrack(track: unknown): boolean {
+  return Boolean(track && typeof track === "object" && (track as { held?: unknown }).held === true);
+}
+
+/**
  * The track a surface should show as the headline: the newest real observation, skipping explicit
  * Worker `orderStageOnly` nodes once the same packet contains `SHIPMENT`-scoped observations
- * (matching Pipi's `TrackTimelinePolicy` headline loop).
+ * (matching Pipi's `TrackTimelinePolicy` headline loop), and never a held Watch scan (`isHeldTrack`).
  */
 export function headlineTrack<Track>(
-  tracks: readonly Track[],
+  candidates: readonly Track[],
 ): Track | null {
+  const tracks = candidates.some(isHeldTrack) ? candidates.filter(track => !isHeldTrack(track)) : candidates;
   if (!tracks.length) return null;
   const hasShipmentScope = tracks.some((candidate) => {
     const raw = candidate && typeof candidate === "object" && "raw" in candidate
@@ -1047,7 +1255,11 @@ export function listHeadline(timeline: TimelinePackage, tracksOnly = false): { d
   const tracks = timedTracks(timeline.tracks).filter(({ detail }) => !isAccountUpdateSummary(detail));
   if (tracksOnly) tracks.sort((left, right) => right.timeMs! - left.timeMs!);
   const track = headlineTrack(tracks);
-  if (!track) return null;
+  if (!track) {
+    // Every scan is held: the record's own headline is its status text (international-records).
+    return timeline.tracks.some(isHeldTrack) && usable(timeline.latestDetail)
+      ? { detail: timeline.latestDetail.trim(), timeText: timeline.latestTimeText } : null;
+  }
   const display = trackDisplayDetail(timeline.provider, track);
   return { detail: (usable(display) ? display : track.detail).trim(), timeText: track.timeText };
 }
@@ -1324,6 +1536,23 @@ const SAME_EVENT_PROGRESS: readonly StatusSemantic[] = [
   "COMPLETED",
 ];
 
+/**
+ * The one same-event DANGER → TRANSIT the regression guard lets through for a Meizu account (interface-6)
+ * package (third review H-01, 2026-11-23; owner 2026-11-20, 补充修改五): its stored DANGER is the Worker's
+ * unrefined FAILED reading and the new reading of that same clock is the customs subtype 清关中
+ * (CUSTOMS_CLEARANCE), which only the refinement of a coarse FAILED produces for Meizu. An account package
+ * keeps no node description, so 待清关 / 已清关 (code TRANSIT, the same code as an upstream TRANSIT) do not
+ * qualify. The Online (v6_query) cache is re-read node by node instead (rederivedMeizuOnlinePackage).
+ */
+function correctsMeizuAccountCustomsMisreading(current: TimelinePackage, incoming: TimelinePackage): boolean {
+  if (String(incoming.provider || "").trim().toLowerCase() !== "interface6" ||
+      current.semantic !== "DANGER" || incoming.semantic !== "TRANSIT") return false;
+  const before = current.normalizedStatus;
+  const after = timelineNormalizedStatus(incoming);
+  return before?.semantic === "DANGER" && before.code.trim().toUpperCase() === MEIZU_FAILED_STATUS &&
+    after?.structured === true && after.code === CUSTOMS_CLEARANCE_CODE;
+}
+
 function rejectsSameEventRegression(
   current: StatusSemantic,
   incoming: StatusSemantic,
@@ -1419,6 +1648,10 @@ export function mergeTimelinePackage(
   if (current.provider.toLowerCase() !== incoming.provider.toLowerCase()) {
     return incoming;
   }
+  if (normalizeTimelineSlot(incoming.provider) === TIMELINE_SLOT.V6_QUERY) {
+    // Customs clearance (owner 2026-11-20): the same Online event cached before the refinement.
+    current = rederivedMeizuOnlinePackage(current, incoming);
+  }
   if (timelineCapability(incoming.provider) === "account") {
     const nowMs = Date.now();
     const currentAt = current.statusEventAtMs || 0;
@@ -1442,7 +1675,8 @@ export function mergeTimelinePackage(
         (incomingAt > 0 && incomingAt >= currentAt &&
           !(current.semantic === "COMPLETED" && incoming.semantic === "COMPLETED" &&
             currentValidClock && !incomingValidClock) &&
-          (incomingAt !== currentAt || !rejectsSameEventRegression(current.semantic, incoming.semantic))) ||
+          (incomingAt !== currentAt || !rejectsSameEventRegression(current.semantic, incoming.semantic) ||
+            correctsMeizuAccountCustomsMisreading(current, incoming))) ||
         (!currentAt && !incomingAt && timelineLatestEventAt(incoming) >= timelineLatestEventAt(current)));
     const confirmsStatus = current.semantic === incoming.semantic &&
       current.structuredStatus !== true && incoming.structuredStatus === true && incomingAt > 0;
@@ -1573,6 +1807,7 @@ const MANUAL_TIMELINE_PROVIDERS = new Set<string>([
   TIMELINE_SLOT.V6_QUERY,
   TIMELINE_SLOT.V2_QUERY,
   TIMELINE_SLOT.CN_H5,
+  TIMELINE_SLOT.PDD_H5,
   TIMELINE_SLOT.K100_H5,
   TIMELINE_SLOT.JT_H5,
   TIMELINE_SLOT.JD_H5,
@@ -1599,7 +1834,7 @@ export function timelineCapability(provider: unknown): TimelineCapability {
     return "route";
   }
   if (
-    value === TIMELINE_SLOT.JD_H5 || value === TIMELINE_SLOT.CN_H5 ||
+    value === TIMELINE_SLOT.JD_H5 || value === TIMELINE_SLOT.CN_H5 || value === TIMELINE_SLOT.PDD_H5 ||
     value === TIMELINE_SLOT.K100_H5 || value === TIMELINE_SLOT.JT_H5
   ) return "web";
   if (value === TIMELINE_SLOT.KDNIAO || value === TIMELINE_SLOT.K100_PAID) {
@@ -1823,8 +2058,19 @@ function signedAt(shipment: Shipment, now: number): number {
   return validLifecycleTime(shipment.settledAtMs, now) || terminalEvidenceAtMs(shipment, now);
 }
 
-/** Local completion is only a fallback when the displayed logistics date is unavailable. */
+/**
+ * Local completion is only a fallback when the displayed logistics date is unavailable.
+ *
+ * An international Watch row (G-MED-03, 2026-11-20 review) shows its latest timed scan's epoch, and a scan's text can be
+ * a foreign wall clock, so it never reads that text as Beijing time. Without any valid scan time (no scans, or only
+ * scans with at = 0) the cloud record's own update time (`successAtMs`, untouched by local edits) anchors the same
+ * 14-day, 21-day and 4-hour windows, instead of the row never expiring.
+ */
 export function signedRetentionAtMs(shipment: Shipment, now = Date.now()): number {
+  if (shipment.identity.sourceProvider === "lastscanned") {
+    return validLifecycleTime(shipment.timeline.statusEventAtMs, now) || signedAt(shipment, now) ||
+      validLifecycleTime(shipment.timeline.successAtMs, now);
+  }
   return validLifecycleTime(parseListEventTime(shipment.timeline.latestTimeText), now) ||
     signedAt(shipment, now);
 }
@@ -2011,6 +2257,7 @@ export function buildWidgetSnapshot(
         statusLabel: presentation.semantic === "DANGER" ? "异常件" : presentation.text,
         // 备注单独带着：4×2 拼成「状态词 · 备注」，2×2 放不下只显示状态词（用户定 2026-09-06）。
         note: String(item.note || "").trim(),
+        sender: item.identity.sender === true,
         latestDetail: timelineDisplayDetail(item.timeline),
       };
     }),

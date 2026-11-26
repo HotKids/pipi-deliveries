@@ -155,11 +155,20 @@ public final class Kuaidi100TimelinePolicy {
                     "logisticsStatus", "statusCode", "status", "state", "action");
             String description = first(value, "logisticsStatusDesc", "stateName");
             WorkerStatusProjection projected = WorkerStatusProjection.nodeEvidence(value);
-            semantic = projected != null ? projected.semantic : isAccountProvider(source)
+            // A Meizu Online node's coarse fields in the Worker's order and disagreement rule, through the
+            // Worker's full common vocabulary (owner 2026-11-21 「Read it for every status」, 「Lite
+            // 用完整状态词表（推荐）」); with none recognized, the reading below stays, except that a Meizu
+            // node's description field is no structured status (owner 2026-11-21 「文案推出的状态不当结构化证据
+            // （推荐）」): its text then decides as for any node without one.
+            boolean meizuNode = TimelineSlot.V6_QUERY.equals(TimelineSlot.normalize(source));
+            StatusSemantic meizu = projected == null && meizuNode
+                    ? StatusSemantic.meizuNodeSemantic(value) : null;
+            semantic = projected != null ? projected.semantic : meizu != null ? meizu
+                    : isAccountProvider(source)
                     ? StatusSemantic.fromAccountState(code, description)
                     : StatusSemantic.fromKuaidi100EventCode(code);
-            if (semantic == StatusSemantic.UNKNOWN && projected == null) {
-                semantic = StatusSemantic.fromStored(code, description);
+            if (semantic == StatusSemantic.UNKNOWN && projected == null && meizu == null) {
+                semantic = StatusSemantic.fromStored(code, meizuNode ? "" : description);
             }
             if (semantic == StatusSemantic.PICKED
                     || (orderedCounts && semantic == StatusSemantic.ORDERED)) {

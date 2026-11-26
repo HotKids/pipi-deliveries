@@ -135,7 +135,8 @@ public final class ExpressNotificationsTest {
         for (ExpressItem item : new ExpressItem[]{signed, unknown}) {
             assertTrue(ExpressNotifications.post(context, item, StatusSemantic.COMPLETED));
             Notification posted = Shadows.shadowOf(manager).getNotification((int) item.rowId);
-            assertEquals(item == signed ? 0xFF005D2D : 0xFF545B5C, posted.color);
+            // Owner 2026-11-20 (修改 11): the light text pair, unadjusted.
+            assertEquals(item == signed ? 0xFFD97E06 : 0xFF9AA3AB, posted.color);
         }
     }
 

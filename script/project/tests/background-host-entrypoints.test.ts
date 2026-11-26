@@ -21,6 +21,9 @@ const source = [executable("services/shortcut-capture.ts"), executable("intent.t
 function runShortcut(bindings: Record<string, unknown>) {
   return runInNewContext(source.replace(/void run\(\);\s*$/, "run();"), {
     beginDiagnosticOperation: () => () => {},
+    // The host's own diagnostic calls (D103, D119); this harness checks the host's behaviour, not its lines.
+    writeRuntimeCapabilities: () => {}, diagnosticErrorDetails: () => ({}), writeDiagnostic: () => {},
+    flushDiagnostics: () => {},
     ...bindings,
   });
 }
@@ -48,6 +51,25 @@ assert.equal(exited, "completed");
 assert.equal(events[0], "cache", "Shortcuts must bootstrap the last-good carrier cache before refreshing");
 assert.ok(events.indexOf("flush") < events.indexOf("exit"), "Shortcuts flush before the host exits");
 
+// G-HIGH-10: the Shortcut refresh reads the Watch rows after its domestic pass too.
+{
+  const calls: string[] = [];
+  const state = { revision: 7 };
+  let message: unknown;
+  await runShortcut({
+    backgroundHostBootstrap: () => calls.push("cache"),
+    backgroundRefreshOptions: () => ({ budgetMs: 120_000, accountOrderProjection: true, backgroundHostSafe: true }),
+    refreshAllShipments: async () => { calls.push("refresh"); return { attempted: 1, succeeded: 1, failed: 0, state }; },
+    refreshDueWatchShipments: async (current: unknown) => { assert.equal(current, state); calls.push("watch"); return undefined; },
+    refreshIntentMessage: () => "completed",
+    flushDiagnostics: () => calls.push("flush"),
+    Script: { exit: (value: unknown) => { calls.push("exit"); message = value; } },
+    Intent: { text: (value: string) => value },
+  });
+  assert.equal(message, "completed");
+  assert.deepEqual(calls, ["cache", "refresh", "watch", "flush", "exit"]);
+}
+
 assert.match(SCREEN_SHORTCUT_INSTALL_URL, /^https:\/\/www\.icloud\.com\/shortcuts\/[a-f0-9]{32}$/);
 await runShortcut({
   Intent: {
@@ -72,6 +94,8 @@ function runAppIntents(bindings: Record<string, unknown>): Map<string, Registere
   runInNewContext(app, {
     AppIntentProtocol,
     AppIntentManager: { register: (intent: RegisteredIntent) => intents.set(intent.name, intent) },
+    // The host's own diagnostic calls (D103); this harness checks the host's behaviour, not its lines.
+    writeRuntimeCapabilities: () => {}, diagnosticErrorDetails: () => ({}), writeDiagnostic: () => {},
     ...bindings,
   });
   return intents;
@@ -105,6 +129,29 @@ const refresh = intents.get("RefreshPipiDeliveriesIntent");
 assert.equal(refresh?.protocol, AppIntentProtocol.AppIntent);
 assert.equal(await refresh.perform(), undefined, "the App Intent keeps its supported void result contract");
 assert.deepEqual(successCalls, ["cache", "refresh", "flush"]);
+
+// G-HIGH-10 (2026-11-20 review): the App Intent refresh reads the international Watch rows after its domestic pass, as
+// the widget does; a skipped pass leaves them to their owner and a Watch failure cannot fail the intent.
+for (const skipped of [false, true]) {
+  const calls: string[] = [];
+  const state = { revision: 4 };
+  const watched = runAppIntents({
+    backgroundHostBootstrap: () => calls.push("cache"),
+    backgroundRefreshOptions: () => ({ budgetMs: 120_000, accountOrderProjection: true, backgroundHostSafe: true }),
+    refreshAllShipments: async () => {
+      calls.push("refresh");
+      return { attempted: 1, succeeded: 1, failed: 0, state, ...(skipped ? { skipReason: "active_cross_runtime_refresh" } : {}) };
+    },
+    refreshDueWatchShipments: async (current: unknown) => {
+      assert.equal(current, state, "the Watch read follows the committed domestic state");
+      calls.push("watch");
+      return undefined;
+    },
+    flushDiagnostics: () => calls.push("flush"),
+  });
+  assert.equal(await watched.get("RefreshPipiDeliveriesIntent")!.perform(), undefined);
+  assert.deepEqual(calls, skipped ? ["cache", "refresh", "flush"] : ["cache", "refresh", "watch", "flush"]);
+}
 
 successCalls.length = 0;
 const complete = intents.get("CompleteParcelActivityIntent");
@@ -238,6 +285,7 @@ for (const [intent, expected, fileRead, record, failedSave] of [
 // Exercise the same production shortcut with the selected provider conclusive, unavailable or unable to match.
 for (const phase of ["local", "online-express", "online-empty", "online-error", "cancelled"] as const) {
   const calls: string[] = [];
+  const fallbacks: Record<string, unknown>[] = [];
   let final = "";
   await runShortcut({
     Intent: { ...file("/synthetic/image.png"), text: (value: string) => value },
@@ -254,6 +302,8 @@ for (const phase of ["local", "online-express", "online-empty", "online-error", 
       return phase === "online-express" || phase === "cancelled"
         ? { family: "express", fields: { waybill: track, pickupCode: "A1-2345" } } : null;
     },
+    // The fallback record names the configured provider, protocol and model (owner 2026-11-21: 记上（推荐）).
+    onlineRecognitionIdentity: (config: unknown) => ({ onlineProvider: "gemini", config }),
     waitForRefresh: (work: unknown) => work,
     recognizeParcelCodes: () => ({}),
     parcelImageRows, parcelTextRows, normalizeWaybill, isParcelWaybill, normalizeRecognizedPickupCode,
@@ -264,11 +314,19 @@ for (const phase of ["local", "online-express", "online-empty", "online-error", 
     },
     showShortcutPickupActivities: async () => true,
     notifyScreenShortcutStatus: (message: string) => message,
-    writeDiagnostic() {}, flushDiagnostics() {},
+    writeDiagnostic(event: string, details: Record<string, unknown>) {
+      if (event === "recognition.online.fallback") fallbacks.push(details);
+    },
+    flushDiagnostics() {},
   });
   assert.deepEqual(calls, phase === "local" ? ["local"] :
     phase === "online-express" ? ["provider", "query"] :
     phase === "cancelled" ? ["provider"] : ["provider", "local"]);
+  if (phase === "online-empty" || phase === "online-error") {
+    assert.equal(fallbacks.length, 1);
+    assert.equal(fallbacks[0].onlineProvider, "gemini");
+    assert.equal(fallbacks[0].result, phase === "online-empty" ? "no_match" : "unavailable");
+  }
   if (phase === "cancelled") assert.match(final, /识别已取消/);
 }
 
@@ -296,6 +354,7 @@ for (const phase of ["local-meal", "online-meal", "luckin-draft", "luckin-auto",
     ONLINE_BUDGET_MS: 25_000,
     mealCredentialScope: () => scope,
     requestOnlineRecognition: async () => ({ family: "pickup", fields: {} }),
+    onlineRecognitionIdentity: () => ({}),
     ensureMealRules: async () => ({}),
     onlineMealRequiresQR: () => false,
     mealFromModel: () => observation,
@@ -376,6 +435,7 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
   const currentState = () => ({ shipments, pendingQueries: [], activeSource: "v5" });
   const host = runInNewContext(`${shortcutService}\n({ notifyScreenPickupSaved, scheduleScreenShortcutStatus, submitScreenShortcut, submitScreenShortcutPhoneTail });`, {
     beginDiagnosticOperation: () => () => {},
+    diagnosticErrorDetails: () => ({}),
     Path, isParcelWaybill, normalizeRecognizedPickupCode, listHeadline, normalizeWaybill,
     EXPRESS_TOAST_COPY, MANUAL_QUERY_BUDGET_MS: 30_000,
     backgroundHostBootstrap() {},
@@ -446,18 +506,21 @@ function screenshotRuntime(mode: "new" | "known" | "partial" | "phone" | "empty"
     notifyScreenPickupSaved: typeof import("../services/parcel-shortcut").notifyScreenPickupSaved;
     scheduleScreenShortcutStatus: (message: string) => Promise<boolean>;
     submitScreenShortcut: (lookup: ParcelLookup, present: (targets: { shipmentId: string }[]) => Promise<boolean>) => Promise<string>;
-    submitScreenShortcutPhoneTail: (token: string, tail: string) => Promise<{ done: boolean; message: string }>;
+    submitScreenShortcutPhoneTail: (token: string, tail: string,
+      present?: (targets: { shipmentId: string }[]) => Promise<boolean>) => Promise<{ done: boolean; message: string }>;
+  };
+  const present = async (targets: { shipmentId: string }[]) => {
+    assert.equal(shipments.length, 1, "the activity follows the durable shipment commit");
+    assert.equal(targets[0].shipmentId, savedShipment.identity.id);
+    calls.push("activity");
+    return activity === true;
   };
   return { ...host, calls, banners, files,
     submitScreenShortcut: (lookup: ParcelLookup) => {
       expectedLookup = lookup;
-      return host.submitScreenShortcut(lookup, async targets => {
-        assert.equal(shipments.length, 1, "the activity follows the durable shipment commit");
-        assert.equal(targets[0].shipmentId, savedShipment.identity.id);
-        calls.push("activity");
-        return activity === true;
-      });
+      return host.submitScreenShortcut(lookup, present);
     },
+    submitScreenShortcutPhoneTail: (token: string, tail: string) => host.submitScreenShortcutPhoneTail(token, tail, present),
   };
 }
 
@@ -523,6 +586,20 @@ assert.equal(needsTail.files.size, 0);
 assert.equal(needsTail.banners[1].body, latestBody);
 assert.equal((await needsTail.submitScreenShortcutPhoneTail(screenShortcutDraft, "0007")).done, true);
 assert.equal(needsTail.banners.length, 2, "a consumed prompt cannot repeat the query or notification");
+
+// G-MED-18 (2026-11-20 review): a pickup code recognized with the waybill is announced and offered as a Live Activity
+// after the phone tail too, as on the direct path.
+for (const accepted of [true, false]) {
+  const coded = screenshotRuntime("phone", accepted);
+  assert.equal(await coded.submitScreenShortcut(screenshotLookup), "请长按通知，输入手机号后 4 位。");
+  const { screenShortcutDraft: draft } = coded.banners[0].userInfo as { screenShortcutDraft: string };
+  const reply = await coded.submitScreenShortcutPhoneTail(draft, "0007");
+  assert.equal(reply.done, true);
+  assert.equal(reply.message, `已添加 中通快递 · A1-2345\n示例驿站\n${latestBody}`);
+  assert.equal(coded.calls.at(-1), "activity", "the pickup code reaches its Live Activity");
+  assert.equal(coded.banners[1].title, "已添加 中通快递 · A1-2345");
+  assert.equal(coded.banners[1].iconImageData, "/synthetic/assets/couriers/zto.png");
+}
 
 const noTracks = screenshotRuntime("empty");
 assert.equal(await noTracks.submitScreenShortcut(screenshotLookup), EXPRESS_TOAST_COPY.manualQueryNoTrack);

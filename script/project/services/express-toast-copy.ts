@@ -97,9 +97,29 @@ export const EXPRESS_TOAST_COPY = Object.freeze({
   pickupRecordActionFailed: "操作失败，请稍后重试",
 });
 
+/**
+ * Pickup-tab and identity-code copy (G-LOW-04, 2026-11-20 review). These actions exist on iOS and Pipi only (Lite has
+ * no pickup tab), so they sit beside the three-client table instead of in it; the handoff-window words are Pipi's
+ * pickup card's (lib/cards/express_pickup_card.dart). A failed save reads SAVE_FAILED_TOAST (ui-feedback.ts).
+ */
+export const PICKUP_TOAST_COPY = Object.freeze({
+  handoffWindowInvalid: "请输入有效的上门时间",
+  handoffWindowSaved: "已保存",
+  /** The record changed after the prompt opened (ShipmentLifecycleChangedError). */
+  pickupCardChanged: "卡片已更新，请重试",
+  handoffRecordDeleted: "该寄件码已删除",
+  previewStopFailed: "结束预览失败，请重试",
+  identityCodeCopied: "身份码已复制",
+  identityCodeOpening: "正在打开身份码",
+  identityCodeWebUnavailable: "无法打开网页身份码，请稍后重试",
+  identityCodeLoading: "正在获取身份码…",
+});
+
 export const MEAL_TOAST_COPY = Object.freeze({
   completed: "已标记取餐",
   completeFailed: "标记失败，请稍后重试",
+  deleted: "该取餐码已删除",
+  deleteFailed: "删除失败，请稍后重试",
   codeCopied: "取餐码已复制",
   copyFailed: "取餐码复制失败，请稍后重试",
 });

@@ -1,9 +1,10 @@
 import { Button, Circle, HStack, Image, Link, Rectangle, Script, Spacer, Text, VStack, ZStack, gradient, type AppIntent, type VirtualNode } from "scripting";
 import type { ParcelActivityCompletion } from "../services/parcel-activity-action";
 import {
-  PARCEL_LOCK_SCREEN_BOX, PICKUP_CARD_FOREGROUND, parcelCardArtwork, pickupCardAppearance, pickupCardPalette,
+  PARCEL_LOCK_SCREEN_BOX, PICKUP_CARD_FOREGROUND, legibleCodeOnDark, parcelCardArtwork, pickupCardAppearance, pickupCardPalette,
   type ParcelLockScreenStyle,
 } from "../services/parcel-card-appearance";
+import { rgbLuminance } from "../services/status";
 import { parcelPickupShortCode, parcelPickupSubtitle, type ParcelActivityContent } from "../services/parcel-pickup";
 import { MEAL_ARTWORK_TOKENS } from "./pickup-card-tokens.generated";
 
@@ -135,7 +136,17 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     (lockScreen || expanded ? `${imageRoot}/${file.name}` : `${Script.directory}/assets/${file.path}`);
   const mealImagePath = isMeal ? mealPath(assets.meal) : undefined;
   const mealStickerPath = isMeal ? mealPath(assets.mealSticker) : undefined;
-  const cardShape = { type: "rect", cornerRadius: card.corner * scale } as const;
+  const cardShape = { type: "rect", cornerRadius: card.corner * scale, style: "continuous" } as const;
+  const gradientRightRgb = Number.parseInt(palette.gradient[1].replace(/^#/, ""), 16);
+  const darkSurface = rgbLuminance(gradientRightRgb) < 0.2;
+  const resolvedCodeColor = expanded
+    ? legibleCodeOnDark(appearance.code, 0x000000)
+    : lockScreen && lockScreenStyle !== "white" && lockScreenStyle !== "black" && darkSurface
+      ? legibleCodeOnDark(appearance.code, gradientRightRgb)
+      : appearance.code;
+  const smartStackCodeColor = darkSurface
+    ? legibleCodeOnDark(palette.code, gradientRightRgb)
+    : palette.code;
   const cardBackground = gradient("linear", {
     colors: [...palette.gradient], startPoint: "leading", endPoint: "trailing",
   });
@@ -218,7 +229,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
   );
   const code = (
     <Text font={card.codeFont * scale} fontWeight="semibold" fontWidth="standard"
-      foregroundStyle={appearance.code}
+      foregroundStyle={resolvedCodeColor}
       kerning={0} lineLimit={1} allowsTightening={fitsHost}
       minScaleFactor={lockScreen ? 11 / (card.codeFont * scale) : 12 / card.codeFont}
       frame={{ ...slot(card.codeHeight, lockScreen ? card.capsuleIcon : card.codeHeight),
@@ -256,9 +267,10 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
 
   const capsuleControl = (label: VirtualNode) => {
     const priority = lockScreen ? undefined : 1;
-    if (completion) return <Button intent={completion} buttonStyle="plain" layoutPriority={priority}>{label}</Button>;
+    const hitTarget = lockScreen ? label : <ZStack frame={{ minHeight: 44 }} contentShape="rect">{label}</ZStack>;
+    if (completion) return <Button intent={completion} buttonStyle="plain" layoutPriority={priority}>{hitTarget}</Button>;
     if (onComplete) {
-      return <Button action={onComplete} buttonStyle="plain" disabled={actionPending} layoutPriority={priority}>{label}</Button>;
+      return <Button action={onComplete} buttonStyle="plain" disabled={actionPending} layoutPriority={priority}>{hitTarget}</Button>;
     }
     return label;
   };
@@ -311,7 +323,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
     <HStack spacing={fitsHost ? 0 : card.codeGap * scale}
       frame={{ ...actionRowHeight, maxWidth: "infinity", alignment: "leading" }}
       layoutPriority={fitsHost ? 1 : 0}>
-      {onCopy ? <Button buttonStyle="plain" action={onCopy}>{code}</Button> : linkToScanCode(code)}
+      {onCopy ? <Button buttonStyle="plain" action={onCopy}><ZStack frame={{ minHeight: 44 }} contentShape="rect">{code}</ZStack></Button> : linkToScanCode(code)}
       {fitsHost && !lockScreen ? <Spacer minLength={showCapsule ? card.codeGap * scale : 0} /> : null}
       {showCapsule && !lockScreen ? capsuleControl(capsule) : null}
     </HStack>
@@ -400,7 +412,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
           offset={{ x: 0, y: SMART_STACK_DIVIDER_INK_OFFSET }}>
           {dividerDots(watchContentWidth, 1)}
         </HStack>
-        <Text font={SMART_STACK_CODE_FONT} fontWeight="semibold" fontWidth="condensed" foregroundStyle={palette.code}
+        <Text font={SMART_STACK_CODE_FONT} fontWeight="semibold" fontWidth="condensed" foregroundStyle={smartStackCodeColor}
           kerning={0.4} lineLimit={1} allowsTightening minScaleFactor={11 / SMART_STACK_CODE_FONT}>{pickupCode}</Text>
       </VStack>
     </HStack>

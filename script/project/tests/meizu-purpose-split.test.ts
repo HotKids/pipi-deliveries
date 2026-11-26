@@ -50,7 +50,9 @@ for (const scene of [
   const cached = merged.manualTimelines?.find(item => item.provider === "v6_query");
   assert.equal(cached?.tracks.length, 2, "existing same-provider history survives the endpoint change");
   assert.equal(cached?.complete, false, "accumulating scalar events does not prove complete history");
-  for (const event of ["manual.source.started", "manual.meizu.response", "manual.source.succeeded", "manual.query.completed"]) {
+  // D4: the source writes no start line; its end line names the endpoint.
+  assert.equal(readDiagnostics().some(item => item.event === "manual.source.started"), false);
+  for (const event of ["manual.meizu.response", "manual.source.succeeded", "manual.query.completed"]) {
     const entry = readDiagnostics().find(item => item.event === event);
     assert.ok(entry, `${scene.name}: ${event}`);
     assert.equal(entry.details.level, level, `${scene.name}: ${event} identifies the real endpoint purpose`);

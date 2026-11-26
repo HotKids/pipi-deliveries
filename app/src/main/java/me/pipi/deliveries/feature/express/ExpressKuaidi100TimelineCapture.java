@@ -46,6 +46,7 @@ final class ExpressKuaidi100TimelineCapture {
     private List<String> phones;
     private final boolean jtPage;
     private boolean phoneRequired;
+    private boolean phoneMismatch;
     private final Callback callback;
     private final ArrayList<Runnable> delayed = new ArrayList<>();
     private WebView webView;
@@ -137,6 +138,8 @@ final class ExpressKuaidi100TimelineCapture {
     }
 
     boolean needsPhoneTail() { return phoneRequired; }
+
+    boolean isPhoneTailMismatch() { return phoneMismatch; }
 
     static List<String> phoneCandidates(String supplied, List<String> boundPhones) {
         return ExpressCarrierH5CaptureCore.phoneCandidates(supplied, boundPhones);
@@ -241,6 +244,8 @@ final class ExpressKuaidi100TimelineCapture {
                 diagnostics.accept(frame);
                 phoneRequired = frame.isPhoneRequired() || !jtPage && phones.isEmpty()
                         && Boolean.TRUE.equals(diagnostics.checkCodeVisible);
+                phoneMismatch = "PHONE_MISMATCH".equals(frame.failure)
+                        || (phoneRequired && !phones.isEmpty() && diagnostics.phoneVerificationAttempted);
                 if (phoneRequired) {
                     complete("", "phone_required");
                     return;

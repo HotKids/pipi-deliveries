@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { memory, NOW } from "./state-storage-mock";
 
 import type { Shipment } from "../models";
-import { carrierDisplayName, courierIconName, EMPTY_CARRIER_DISPLAY_NAME } from "../services/carrier-presentation";
+import { carrierDisplayName, courierIconName, EMPTY_CARRIER_DISPLAY_NAME, widgetIdentityText } from "../services/carrier-presentation";
 import { shipmentNotificationEvent, shipmentNotificationPresentation } from "../services/notification-events";
 
 // 其余裁决 35（用户 2026-09-27：「算了统一前面加 快递 两个字吧」）：承运商位置为空时，本地通知标题、列表行、小组件与
@@ -61,7 +61,10 @@ function row(companyName: string, semantic: "TRANSIT" | "DELIVERY", at: number, 
   assert.match(small, /`\$\{carrierDisplayName\(row\.companyName\)\} \$\{row\.waybillSuffix\}`/);
   assert.match(small, /:\s*carrierDisplayName\(row\.companyName\)\}/);
   const medium = source("../widget/MediumWidget.tsx");
-  assert.match(medium, /\{carrierDisplayName\(props\.row\.companyName\)\} \{props\.row\.waybillSuffix\}/);
+  // The 4×2 row prints its identity through the shared helper, which keeps the empty-carrier word.
+  assert.match(medium, /\{widgetIdentityText\(props\.row\)\}/);
+  assert.equal(widgetIdentityText({ companyName: "", waybillSuffix: "0361" }), `${EMPTY_CARRIER_DISPLAY_NAME} 0361`);
+  assert.equal(widgetIdentityText({ companyName: "", waybillSuffix: "" }), EMPTY_CARRIER_DISPLAY_NAME);
 }
 
 console.log("empty carrier display tests passed");

@@ -3,6 +3,7 @@ import type { PickupPlatform } from "../models";
 import type { CabinetParcel } from "./fengchao-account";
 import { sha256Hex } from "./scripting-data";
 import { asPlainObject, cleanString } from "./value-guards";
+import { writeDiagnostic } from "./logger";
 
 export const PLATFORM_SOURCES = ["cainiao", "jingdong", "pinduoduo", "fengchao"] as const;
 export type ExpressPlatform = typeof PLATFORM_SOURCES[number];
@@ -25,7 +26,7 @@ type AccountBase = Readonly<{
   cainiaoLabelKind?: "nickname" | "identifier";
 }>;
 
-type WebCredentials = Readonly<{ kind: "web"; cookies: readonly PlatformCookie[] }>;
+type WebCredentials = Readonly<{ kind: "web"; cookies: readonly PlatformCookie[]; pddPhoneTails?: readonly string[] }>;
 export type CabinetCredentials = Readonly<{
   kind: "cabinet";
   token: string;
@@ -46,6 +47,7 @@ export type PlatformSession = AccountBase & Readonly<{
 
 export type PlatformAccount = PlatformSession | AccountBase & Readonly<{
   state: "offline" | "expired";
+  ownerKey?: string;
 }>;
 
 export type AccountStatus = AccountBase & Readonly<{ state: PlatformAccount["state"] }>;
@@ -204,7 +206,16 @@ export function onPlatformAccountsChanged(listener: (platform: ExpressPlatform) 
   return () => { listeners.delete(listener); };
 }
 
+// One synchronous turn shares the Keychain read and parse behind display-only session checks. Every saved
+// account change forgets it before writing; a change made by another runtime is read from the next turn.
+const accountsInTurn = new Map<ExpressPlatform, PlatformAccount>();
+
+function forgetSessionsInTurn(): void {
+  accountsInTurn.clear();
+}
+
 function saveAccount(platform: ExpressPlatform, account: PlatformAccount): void {
+  forgetSessionsInTurn();
   if (!Keychain.set(accountKey(platform), JSON.stringify(account), {
     accessibility: "first_unlock_this_device",
     synchronizable: false,
@@ -222,9 +233,34 @@ export function platformSession(platform: ExpressPlatform): PlatformSession | nu
   return account.state === "active" ? account : null;
 }
 
-export function currentPlatformSession(platform: ExpressPlatform, expected: string): PlatformSession | null {
-  const session = platformSession(platform);
-  return session?.generation === expected ? session : null;
+export function currentPlatformSession(
+  platform: ExpressPlatform, expected: string, allowExpired = false,
+): PlatformSession | null {
+  const account = readPlatformAccount(platform);
+  if (account.generation !== expected) return null;
+  if (account.state === "active") return account;
+  if (allowExpired && account.state === "expired") {
+    return { ...account, state: "active", ownerKey: account.ownerKey || "", credentials: { kind: "web", cookies: [] } };
+  }
+  return null;
+}
+
+/** The display-only form of currentPlatformSession: checks made in one synchronous turn share one read. */
+export function currentPlatformSessionInTurn(
+  platform: ExpressPlatform, expected: string, allowExpired = false,
+): PlatformSession | null {
+  let account = accountsInTurn.get(platform);
+  if (account === undefined) {
+    account = readPlatformAccount(platform);
+    accountsInTurn.set(platform, account);
+    void Promise.resolve().then(forgetSessionsInTurn);
+  }
+  if (account.generation !== expected) return null;
+  if (account.state === "active") return account;
+  if (allowExpired && account.state === "expired") {
+    return { ...account, state: "active", ownerKey: account.ownerKey || "", credentials: { kind: "web", cookies: [] } };
+  }
+  return null;
 }
 
 export function savePlatformLogin(
@@ -234,29 +270,41 @@ export function savePlatformLogin(
   identifier: string,
   nickname = "",
 ): boolean {
-  if (readPlatformAccount(platform).generation !== expected) return false;
+  const previous = readPlatformAccount(platform);
+  if (previous.generation !== expected) {
+    writeDiagnostic("platform.account.changed", { sourceProvider: platform, result: "stale", stage: "login" });
+    return false;
+  }
   const confirmedName = cleanString(nickname);
   const cainiao = platform === "cainiao" && credentials.kind === "web";
+  const ownerKey = sha256Hex(platform + ":" + identifier);
+  const reuseGeneration = cainiao && previous.state === "expired" && previous.ownerKey === ownerKey && previous.generation;
   saveAccount(platform, {
     state: "active",
-    generation: UUID.string(),
-    ownerKey: sha256Hex(platform + ":" + identifier),
+    generation: reuseGeneration || UUID.string(),
+    ownerKey,
     label: confirmedName || (cainiao ? cainiaoAccountLabel(credentials.cookies) : maskedAccountLabel(platform, identifier)),
     ...(cainiao ? { cainiaoLabelKind: confirmedName ? "nickname" : "identifier" } : {}),
     credentials,
   });
+  // D117: one line per sign-in, sign-out or expiry; no account label, cookie or identifier.
+  writeDiagnostic("platform.account.changed", { sourceProvider: platform, result: "login" });
   return true;
 }
 
 export function clearPlatformLogin(platform: ExpressPlatform, expected: string, expired = false): boolean {
   const current = readPlatformAccount(platform);
   if (current.generation !== expected || current.state === "offline") return false;
+  const preserveGeneration = expired && platform === "cainiao";
   saveAccount(platform, {
     state: expired ? "expired" : "offline",
-    generation: UUID.string(),
+    generation: preserveGeneration ? current.generation : UUID.string(),
     label: expired ? current.label : "",
+    ...(expired && "ownerKey" in current && current.ownerKey ? { ownerKey: current.ownerKey } : {}),
     ...(expired && current.cainiaoLabelKind ? { cainiaoLabelKind: current.cainiaoLabelKind } : {}),
   });
+  writeDiagnostic("platform.account.changed", { sourceProvider: platform, result: expired ? "expired" : "logout" },
+    expired ? "warning" : "info");
   return true;
 }
 
@@ -286,9 +334,21 @@ export function replacePlatformCookies(
   if (current?.credentials.kind !== "web") return false;
   if (JSON.stringify(current.credentials.cookies) !== JSON.stringify(previous)) return false;
   if (JSON.stringify(previous) !== JSON.stringify(cookies)) {
-    saveAccount(platform, { ...current, credentials: { kind: "web", cookies } });
+    saveAccount(platform, { ...current, credentials: { ...current.credentials, kind: "web", cookies } });
   }
   return true;
+}
+
+export function savePddPhoneTails(generation: string, tails: readonly string[]): void {
+  const current = currentPlatformSession("pinduoduo", generation);
+  if (current?.credentials.kind !== "web") return;
+  const normalized = [...new Set(tails.filter(tail => /^\d{4}$/.test(tail)))];
+  if (!normalized.length) return;
+  const existing = current.credentials.pddPhoneTails || [];
+  const merged = [...new Set([...normalized, ...existing])].slice(0, 16);
+  if (JSON.stringify(merged) !== JSON.stringify(existing)) {
+    saveAccount("pinduoduo", { ...current, credentials: { ...current.credentials, pddPhoneTails: merged } });
+  }
 }
 
 export function notePlatformSync(

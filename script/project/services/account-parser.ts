@@ -9,6 +9,7 @@ import type { AccountDetailRecord, StatusSemantic, TimelinePackage } from "../mo
 import {
   headlineTrack,
   isNonEventDetail,
+  meizuFailedDescriptionProjection,
   normalizeWaybill,
   parseProviderTime,
   semanticFromAccountState,
@@ -345,7 +346,12 @@ function parseParcel(
     "stateName",
     "statusText",
   );
-  const projection = responseNormalizedStatus(value);
+  // Customs clearance (owner 2026-11-20): an unprojected interface-6 row whose coarse FAILED carries a
+  // listed structured description receives the projection the Worker gives it.
+  const projection = responseNormalizedStatus(value) ?? (source === "interface6"
+    ? meizuFailedDescriptionProjection(value, stateCode, parseProviderTime(first(
+      value, "time", "ftime", "logisticsGmtModified")))
+    : undefined);
   let semantic = projection?.semantic ?? (source === "interface5"
     ? semanticFromAccountState(stateCode, stateText)
     : semanticFromStored(stateCode, stateText));

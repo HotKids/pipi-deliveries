@@ -305,8 +305,9 @@ const detail = (trigger: "identity_projection" | "detail_pull", capture: () => P
   logged = readDiagnostics().length;
   await detail("detail_pull", () => { opened++; });
   assert.equal(opened, 1, "the pull opens the page of a marked order");
+  // D4: the page attempt writes no start line; its end line carries why the page opened (projectionReason).
   assert.equal(readDiagnostics().slice(0, readDiagnostics().length - logged)
-    .filter((entry) => entry.event === "order.projection.started").length, 1);
+    .filter((entry) => entry.event.startsWith("order.projection.") && entry.details.projectionReason != null).length, 1);
   assert.equal(retry()?.emptyShellConfirmedAtMs, undefined, "the capture cleared the mark");
   assert.equal(retry()?.emptyShellAtMs, undefined);
   assert.equal(owner().identity.projectedWaybill || "", "");

@@ -10,15 +10,14 @@ const page = readFileSync(
   "utf8",
 );
 
+// D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): refresh.stage.started and detail.refresh.stage_started are no
+// longer written, so their titles left the page with them; detail.refresh.stage_skipped was never written (D170).
 for (const contract of [
-  '"refresh.stage.started": "快递刷新阶段开始"',
   '"refresh.stage.succeeded": "快递刷新阶段完成"',
   '"refresh.stage.failed": "快递刷新阶段失败"',
   '"refresh.stage.skipped": "快递刷新阶段跳过"',
-  '"detail.refresh.stage_started": "详情刷新阶段开始"',
   '"detail.refresh.stage_succeeded": "详情刷新阶段完成"',
   '"detail.refresh.stage_failed": "详情刷新阶段失败"',
-  '"detail.refresh.stage_skipped": "详情刷新阶段跳过"',
   '"manual.query.completed": "手动查询完成"',
   '"manual.source.succeeded": "数据源查询成功"',
   "运单尾号 ${details.waybillTail}",
@@ -89,7 +88,8 @@ for (const [name, suffix] of [["providerText", ""], ["stageText", " 查询"]] as
 
 // 页面不露出原始事件键（2026-11-12）：源码里写入的每个事件都要有中文标题。
 {
-  const titles = new Set([...page.matchAll(/^  "([a-z0-9_.]+)": "/gm)].map((match) => match[1]));
+  const eventTitles = page.match(/const EVENT_TITLES: Record<string, string> = \{\n([\s\S]*?)\n\};/)?.[1] ?? "";
+  const titles = new Set([...eventTitles.matchAll(/^  "([a-z0-9_.]+)": "/gm)].map((match) => match[1]));
   const sources: string[] = [];
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -109,11 +109,18 @@ for (const [name, suffix] of [["providerText", ""], ["stageText", " 查询"]] as
     "shipment.delete.succeeded", "shipment.delete.failed"]) written.add(event);
   const missing = [...written].filter((event) => !titles.has(event)).sort();
   assert.deepEqual(missing, [], `diagnostic events without a Chinese title: ${missing.join(", ")}`);
+  // D10: the logger writes only events of its closed table; every written event is in it, and (D170) the page titles
+  // exactly the table, with no title for an event nothing writes.
+  const { DIAGNOSTIC_EVENTS } = await import("../services/diagnostic-events");
+  const unlisted = [...written].filter((event) => !DIAGNOSTIC_EVENTS.has(event)).sort();
+  assert.deepEqual(unlisted, [], `written events outside the closed table: ${unlisted.join(", ")}`);
+  assert.deepEqual([...titles].sort(), [...DIAGNOSTIC_EVENTS].sort(), "the page titles exactly the closed event table");
+  assert.equal(/writeDiagnostic\(`/.test(sources.join("\n")), false, "no event name is built at run time");
 }
 
 console.log("diagnostic log presentation contracts passed");
 
-const diagnosticFunctions = ["legacyBool", "bindingsCount", "providerText", "reasonText", "errorText", "stageText", "timelineProviderText", "failureText", "detailsText"].map(name => {
+const diagnosticFunctions = ["legacyBool", "bindingsCount", "providerText", "reasonText", "errorText", "stageText", "timelineProviderText", "failureText", "recognitionParts", "phaseParts", "candidateParts", "resultText", "detailsText"].map(name => {
   const source = page.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`))?.[0];
   assert.ok(source);
   return stripTypeScriptTypes(source);
@@ -164,3 +171,52 @@ const firstRowText = renderDetails({ event: "detail.refresh.stage_failed", detai
 for (const text of ["提取行 1", "首行时间缺失", "首行 ftime 存在", "首行内容存在", "首行结果 时间无效"]) {
   assert.ok(firstRowText.includes(text), text);
 }
+
+// Online recognition records (N1, 2026-11-21): the request number, the exchange phase, what ended the request,
+// both budgets and the configured provider, protocol and model; an empty result is not the express cache's
+// 缓存无轨迹, and the client's failure codes read in Chinese.
+{
+  const started = renderDetails({ event: "recognition.online.started", details: {
+    trigger: "connection_test", onlineProvider: "compatible", onlineProtocol: "chat_completions",
+    onlineModel: "vision-fixture", budgetMs: 30000,
+  } });
+  for (const text of ["触发 测试连接", "服务商 OpenAI-Compat", "协议 Chat Completions", "模型 vision-fixture",
+    "总预算 30000 ms"]) assert.ok(started.includes(text), text);
+  const failed = renderDetails({ event: "recognition.online.completed", details: {
+    trigger: "shortcut", onlineProvider: "gemini", onlineProtocol: "gemini", onlineModel: "gemini-4-hydrogen",
+    result: "failed", stage: "request", attempt: 2, requestPhase: "request", timeoutOrigin: "timeout_signal",
+    budgetMs: 25000, requestBudgetMs: 24000, errorCategory: "timeout", failureCode: "upstream_rejected", httpStatus: 404,
+  } });
+  for (const text of ["服务商 Gemini", "协议 Gemini", "模型 gemini-4-hydrogen", "第 2 次请求（关闭思考重试）",
+    "请求阶段 等待响应", "中止原因 请求超时", "总预算 25000 ms", "请求预算 24000 ms", "结果 失败", "阶段 发送请求",
+    "代码 服务方拒绝请求"]) assert.ok(failed.includes(text), text);
+  assert.doesNotMatch(failed, /upstream_rejected|timeout_signal|\brequest\b|chat_completions/, "no raw key on the page");
+  for (const [phase, label] of [["response_body", "读取响应内容"], ["response_complete", "响应已读完"]]) {
+    assert.ok(renderDetails({ event: "recognition.online.completed", details: { requestPhase: phase, attempt: 1 } })
+      .includes(`请求阶段 ${label}`));
+  }
+  assert.ok(renderDetails({ event: "recognition.online.completed", details: { attempt: 1 } }).includes("第 1 次请求"));
+  for (const [code, label] of [["invalid_response", "返回内容无效"], ["body_too_large", "内容超过大小限制"],
+    ["invalid_input", "输入不符合要求"], ["upstream_rejected", "服务方拒绝请求"]]) {
+    assert.ok(renderDetails({ event: "recognition.online.completed", details: { failureCode: code } }).includes(`代码 ${label}`), code);
+  }
+  assert.ok(renderDetails({ event: "recognition.online.completed", details: { result: "empty" } }).includes("结果 未识别到有效信息"));
+  assert.ok(renderDetails({ event: "detail.timeline.selected", details: { result: "empty" } }).includes("结果 缓存无轨迹"),
+    "the express cache keeps its own word");
+  assert.ok(renderDetails({ event: "recognition.online.fallback", details: { result: "configuration" } })
+    .includes("结果 在线识别配置不可用"));
+  // Other events keep their text: the request fields stay a recognition-only addition.
+  const gateway = renderDetails({ event: "gateway.request.wait_ended", details: { requestPhase: "request", attempt: 2, budgetMs: 1 } });
+  assert.doesNotMatch(gateway, /请求阶段|第 2 次请求|总预算/);
+  // Access Key save failures (owner 2026-11-21: 记录保存失败（推荐）).
+  assert.ok(page.includes('"gateway.credential.save_failed": "Access Key 保存失败"'));
+  for (const [result, label] of [["keychain_read_failed", "钥匙串读取失败"], ["write_failed", "写入失败，已恢复原记录"],
+    ["restore_failed", "写入失败且原记录未能恢复"]]) {
+    assert.ok(renderDetails({ event: "gateway.credential.save_failed", details: { stage: "credential_storage", result } })
+      .includes(`结果 ${label}`), result);
+  }
+  // The restore wording belongs to the Access Key event: a refresh write that was skipped restored nothing.
+  assert.doesNotMatch(renderDetails({ event: "refresh.stage.failed", details: { stage: "account_detail", result: "write_failed" } }),
+    /已恢复原记录|原记录未能恢复/);
+}
+console.log("online recognition and Access Key log presentation passed");

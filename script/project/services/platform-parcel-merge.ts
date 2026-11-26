@@ -1,13 +1,14 @@
-import type { AppState, ParcelPlatformFields, PddCloudOrigin, Shipment } from "../models";
+import type { AppState, CloudPddParcelTombstone, ParcelPlatformFields, PddCloudOrigin, Shipment } from "../models";
 import { projectedCarrierPresentation } from "./carrier-presentation";
 import { pendingManualPreviewShipment } from "./manual-preview";
 import { shipmentLifecycleKey } from "./shipment-lifecycle";
-import { displayWaybill, unprojectedAccountOrder } from "./shipment-policy";
-import { normalizeWaybill, shipmentPresentationStatus } from "./status";
+import { displayWaybill, selectShipmentTimeline, unprojectedAccountOrder } from "./shipment-policy";
+import { mergeTimelineAuthorities, normalizeWaybill, shipmentPresentationStatus } from "./status";
 import { matchesParcelMetadataLifecycle } from "./waybill-reuse";
-import { displayDeliveryEstimate, pddParcelNativeAppURL, type PlatformParcel } from "./platform-parcel-data";
+import { displayDeliveryEstimate, pddParcelNativeAppURL, pddTimelineFromTraces, type PlatformParcel } from "./platform-parcel-data";
 import { pddProductImageURL } from "./product-image-url";
 import { internationalShipment } from "./international-records";
+import { SCRIPT_BINDING_SOURCE } from "./script-source";
 
 export function eligiblePickup(shipment: Shipment): boolean {
   return !shipment.forcedCompletedAtMs && !shipment.identity.sender &&
@@ -73,7 +74,16 @@ export function keepPlatformFields(previous: Shipment | undefined, current: Ship
   const retained = fields && (sameFields(current, fields) ||
     !fields.waybill && !!current.identity.projectedWaybill && previous.identity.accountOrder)
     ? { ...fields, waybill: current.identity.projectedWaybill ? displayWaybill(current) : fields.waybill } : undefined;
-  let platformFields = current.platformFields ?? retained;
+  // R5-NEW-09 ②: a Watch row's fields come from its own snapshot. A snapshot without its estimate withdrew it, so only
+  // the user's title edit is carried and the cloud parcel metadata's estimate can show again.
+  const carried = retained && internationalShipment(current)
+    ? retained.manualTitle != null || retained.manualTitleEditedAtMs != null
+      ? { waybill: retained.waybill, waybillGeneration: retained.waybillGeneration,
+          ...(retained.manualTitle != null ? { manualTitle: retained.manualTitle } : {}),
+          ...(retained.manualTitleEditedAtMs != null ? { manualTitleEditedAtMs: retained.manualTitleEditedAtMs } : {}) }
+      : undefined
+    : retained;
+  let platformFields = current.platformFields ?? carried;
   if (platformFields && retained && sameFields(current, platformFields) &&
       (retained.manualTitleEditedAtMs ?? 0) > (platformFields.manualTitleEditedAtMs ?? 0)) {
     platformFields = {
@@ -105,6 +115,8 @@ export type CloudPddParcel = Readonly<{
   terminalAt: number;
   carrierCode: string;
   phone4: string;
+  /** A Pipi automatic row's PDD link: marks an existing same-lifecycle row and never imports one (C-03). */
+  markOnly?: boolean;
 }>;
 
 type CloudPddParcelIdentity = Pick<CloudParcelMetadata, "waybill" | "anchorAt" | "terminalAt">;
@@ -114,44 +126,170 @@ function matchesCloudPddParcel(shipment: Shipment, parcel: CloudPddParcelIdentit
     matchesParcelMetadataLifecycle(shipment, parcel.anchorAt, parcel.terminalAt ?? 0, now);
 }
 
-export function adoptCloudPddParcelSource(shipment: Shipment, parcel: CloudPddParcelIdentity, now: number): Shipment {
+/**
+ * The rows that can show a confirmed PDD source. On 2026-11-20 the owner asked for PDD to have the highest priority
+ * (「pdd 图标这条把优先级提到最高」), so the order for one parcel is 「已确认 PDD > 自动来源 > 普通手动来源」. A manual or
+ * generic Kuaidi100 row qualifies, as before, and so does an automatic account row of this script. Sender rows never
+ * qualify, and neither do JingDong business sources (account orders and JingDong-sourced rows), because a PDD order never
+ * produces JingDong evidence.
+ */
+function acceptsPddParcelSource(shipment: Shipment): boolean {
   const { identity } = shipment;
-  const genericSource = identity.manuallyAdded || identity.sourceProvider?.toLowerCase() === "kuaidi100";
-  if (!genericSource || identity.sender || identity.accountOrder || hasPddParcelSource(shipment) ||
+  const provider = identity.sourceProvider?.toLowerCase() || "";
+  const generic = identity.manuallyAdded || provider === "kuaidi100";
+  const automatic = !identity.manuallyAdded && identity.bindingSource === SCRIPT_BINDING_SOURCE && provider !== "jingdong";
+  return (generic || automatic) && !identity.sender && !identity.accountOrder;
+}
+
+export function adoptCloudPddParcelSource(shipment: Shipment, parcel: CloudPddParcelIdentity, now: number): Shipment {
+  if (!acceptsPddParcelSource(shipment) || hasPddParcelSource(shipment) ||
       !matchesCloudPddParcel(shipment, parcel, now)) return shipment;
   return { ...shipment, pddCloudOrigin: { waybill: parcel.waybill, waybillGeneration: shipment.waybillReuseAtMs ?? 0 } };
 }
 
+/**
+ * Keeps the PDD source when an account row takes over a manual row of the same parcel, under the same 2026-11-20
+ * priority. The survivor takes the manual row's confirmed PDD source (its local import and cloud origin)
+ * with the PDD product name and image. The detail page then keeps the PDD source, its exact parcel page and the linked
+ * product. The automatic source keeps its status, timeline and pickup data.
+ *
+ * The caller has already decided that the two rows are one parcel and not a reused waybill. The survivor's own values
+ * are never replaced. A sender row or a JingDong business source never takes the source. `stored` is the survivor's
+ * saved row; its platform fields count as the survivor's own, as storage keeps them (`keepPlatformFields`).
+ */
+export function withAbsorbedPddParcelSource(survivor: Shipment, absorbed: Shipment, stored?: Shipment): Shipment {
+  if (absorbed.identity.sender || !hasPddParcelSource(absorbed) || !acceptsPddParcelSource(survivor)) return survivor;
+  const waybill = normalizeWaybill(displayWaybill(survivor));
+  if (!waybill || waybill !== normalizeWaybill(displayWaybill(absorbed))) return survivor;
+  const target = keepPlatformFields(stored, survivor);
+  const generation = target.waybillReuseAtMs ?? 0;
+  const pddImport = target.pddImport || absorbed.pddImport;
+  const pddCloudOrigin = currentPddCloudOrigin(target, target.pddCloudOrigin) ||
+    (currentPddCloudOrigin(absorbed, absorbed.pddCloudOrigin) ? { waybill, waybillGeneration: generation } : undefined);
+  const own = target.platformFields && sameFields(target, target.platformFields) ? target.platformFields : undefined;
+  const carried = absorbed.platformFields && sameFields(absorbed, absorbed.platformFields)
+    ? absorbed.platformFields : undefined;
+  const association = pddImport ? pddProductAssociation({ ...target, pddImport }) : "";
+  const title = !own?.title && carried?.title?.source === "pinduoduo" ? carried.title : undefined;
+  const named = !own?.manualTitle && carried?.manualTitle ? carried : undefined;
+  const pddImage = !own?.pddImage && association && carried?.pddImage?.association === association
+    ? carried.pddImage : undefined;
+  const platformFields = title || named || pddImage ? {
+    ...own,
+    waybill: displayWaybill(target),
+    waybillGeneration: generation,
+    ...(title ? { title } : {}),
+    ...(named ? { manualTitle: named.manualTitle } : {}),
+    ...(named?.manualTitleEditedAtMs !== undefined ? { manualTitleEditedAtMs: named.manualTitleEditedAtMs } : {}),
+    ...(pddImage ? { pddImage } : {}),
+  } : undefined;
+  return {
+    ...target,
+    ...(pddImport ? { pddImport } : {}),
+    ...(pddCloudOrigin ? { pddCloudOrigin } : {}),
+    ...(platformFields ? { platformFields } : {}),
+  };
+}
+
+const CLOUD_PDD_TOMBSTONE_REUSE_GAP_MS = 24 * 3_600_000;
+
+export function matchingCloudPddTombstone(
+  tombstones: readonly CloudPddParcelTombstone[] | undefined,
+  waybill: string,
+  anchorAt: number,
+  terminalAt = 0,
+): CloudPddParcelTombstone | undefined {
+  if (!tombstones?.length) return undefined;
+  const canonical = normalizeWaybill(waybill);
+  if (!canonical) return undefined;
+  const matches = tombstones.filter((entry) => {
+    if (normalizeWaybill(entry.waybill) !== canonical) return false;
+    // A strictly later lifecycle on the reused waybill supersedes an earlier parcel's tombstone.
+    if (anchorAt > 0 && entry.anchorAt > 0 && anchorAt >= Math.max(entry.anchorAt, entry.actedAtMs) + CLOUD_PDD_TOMBSTONE_REUSE_GAP_MS) {
+      return false;
+    }
+    if (terminalAt > 0 && entry.anchorAt > 0 && terminalAt + CLOUD_PDD_TOMBSTONE_REUSE_GAP_MS <= entry.anchorAt) {
+      return false;
+    }
+    return true;
+  });
+  if (!matches.length) return undefined;
+  return matches.sort((left, right) => right.actedAtMs - left.actedAtMs)[0];
+}
+
 export function applyCloudPddParcels(state: AppState, parcels: readonly CloudPddParcel[], now: number): AppState {
   const incoming = new Map<string, CloudPddParcel | null>();
-  for (const parcel of parcels) incoming.set(parcel.waybill, incoming.has(parcel.waybill) ? null : parcel);
+  for (const parcel of parcels) {
+    if (!parcel.markOnly) incoming.set(parcel.waybill, incoming.has(parcel.waybill) ? null : parcel);
+  }
+  // Third external review C-03 (owner 2026-11-23): Pipi exports an automatic row's confirmed PDD source only as its
+  // PDD link, so a link marks the waybill's sole same-lifecycle row here, as Pipi and the Bot adopt it. A waybill
+  // that also has a PDD express record keeps the record's path; a link never adds a row.
+  const marks = new Map<string, CloudPddParcel | null>();
+  for (const parcel of parcels) {
+    if (parcel.markOnly && !incoming.has(parcel.waybill)) {
+      marks.set(parcel.waybill, marks.has(parcel.waybill) ? null : parcel);
+    }
+  }
   const local = new Map<string, Shipment[]>();
   for (const shipment of state.shipments) {
     if (unprojectedAccountOrder(shipment)) continue;
     const waybill = normalizeWaybill(displayWaybill(shipment));
-    if (!incoming.get(waybill)) continue;
+    if (!incoming.get(waybill) && !marks.get(waybill)) continue;
     const sameNumber = local.get(waybill) || [];
     sameNumber.push(shipment);
     local.set(waybill, sameNumber);
   }
   const pending = new Set(state.pendingQueries.map(query => normalizeWaybill(query.waybill)));
   const changes = new Map<string, Shipment>();
+  const tombstones = state.cloudPddTombstones;
   for (const [waybill, parcel] of incoming) {
     if (!parcel) continue;
+    const tombstone = matchingCloudPddTombstone(tombstones, waybill, parcel.anchorAt, parcel.terminalAt);
+    if (tombstone?.action === "deleted") continue;
     const existing = local.get(waybill) || [];
     if (existing.length > 1) continue;
     const current = existing[0];
     if (current) {
-      const adopted = adoptCloudPddParcelSource(current, parcel, now);
+      let adopted = adoptCloudPddParcelSource(current, parcel, now);
+      if (tombstone?.action === "completed" && !adopted.forcedCompletedAtMs && matchesCloudPddParcel(adopted, parcel, now)) {
+        adopted = {
+          ...adopted,
+          forcedCompletedAtMs: tombstone.actedAtMs,
+          settledAtMs: tombstone.actedAtMs,
+          timeline: { ...adopted.timeline, semantic: "COMPLETED", structuredStatus: true, statusEventAtMs: tombstone.actedAtMs },
+        };
+      }
       if (adopted !== current) changes.set(current.identity.id, adopted);
       continue;
     }
     if (pending.has(waybill)) continue;
+    const createdAtMs = parcel.anchorAt || now;
+    // Skip resurrecting an already expired/completed parcel beyond the 21-day signed retention cutoff.
+    if (parcel.terminalAt > 0 && now - parcel.terminalAt >= 21 * 86_400_000) continue;
+    if (tombstone?.action === "completed" && now - tombstone.actedAtMs >= 21 * 86_400_000) continue;
     const carrier = projectedCarrierPresentation(waybill, parcel.carrierCode, "");
-    const shipment = pendingManualPreviewShipment({ id: `${state.activeSource}:${waybill}`, source: state.activeSource,
+    const baseShipment = pendingManualPreviewShipment({ id: `${state.activeSource}:${waybill}`, source: state.activeSource,
       waybill, phoneTail: parcel.phone4, ...carrier, rawCourierCode: parcel.carrierCode,
-      createdAtMs: now, lastAttemptAtMs: now, attempts: 0 });
+      createdAtMs, lastAttemptAtMs: now, attempts: 0 });
+    const shipment = tombstone?.action === "completed"
+      ? {
+          ...baseShipment,
+          forcedCompletedAtMs: tombstone.actedAtMs,
+          settledAtMs: tombstone.actedAtMs,
+          timeline: { ...baseShipment.timeline, semantic: "COMPLETED" as const, structuredStatus: true, statusEventAtMs: tombstone.actedAtMs },
+        }
+      : baseShipment;
     changes.set(shipment.identity.id, { ...shipment, pddCloudOrigin: { waybill, waybillGeneration: 0 } });
+  }
+  for (const [waybill, mark] of marks) {
+    if (!mark) continue;
+    const tombstone = matchingCloudPddTombstone(tombstones, waybill, mark.anchorAt, mark.terminalAt);
+    if (tombstone?.action === "deleted") continue;
+    const existing = local.get(waybill) || [];
+    if (existing.length !== 1) continue;
+    const adopted = adoptCloudPddParcelSource(existing[0], mark, now);
+    if (adopted !== existing[0]) changes.set(existing[0].identity.id, adopted);
   }
   if (!changes.size) return state;
   const shipments = new Map(state.shipments.map(shipment => [shipment.identity.id, shipment]));
@@ -164,6 +302,7 @@ export type CloudParcelMetadata = Readonly<{
   anchorAt: number;
   terminalAt?: number;
   productName?: string;
+  productNameObservedAt?: number;
   productImageURL?: string;
   deliveryEstimate?: string;
   deliveryEstimateObservedAt?: number;
@@ -191,8 +330,19 @@ export function displayedPlatformFields(shipment: Shipment, now = Date.now(), cl
   const localEstimate = estimate && inTransit ? displayDeliveryEstimate(estimate.text, estimate.capturedAtMs, now) : "";
   const cloudEstimate = inTransit && matchingCloud?.deliveryEstimate && !matchingCloud.terminalAt
     ? displayDeliveryEstimate(matchingCloud.deliveryEstimate, matchingCloud.deliveryEstimateObservedAt ?? 0, now) : "";
+  const cloudTitleNewerThanLocalEdit = Boolean(
+    matchingCloud?.productName &&
+    matchingCloud.productNameObservedAt &&
+    saved?.manualTitleEditedAtMs &&
+    matchingCloud.productNameObservedAt > saved.manualTitleEditedAtMs,
+  );
+  const title = cloudTitleNewerThanLocalEdit
+    ? matchingCloud?.productName
+    : saved?.manualTitle !== undefined
+      ? saved.manualTitle || matchingCloud?.productName
+      : saved?.title?.text || matchingCloud?.productName;
   return {
-    title: saved?.manualTitle || saved?.title?.text || matchingCloud?.productName,
+    title: title || undefined,
     estimate: localEstimate || cloudEstimate,
     ...(matchingCloud?.productImageURL ? { productImageURL: matchingCloud.productImageURL } : {}),
   };
@@ -238,6 +388,18 @@ export function enrichPlatformParcel(shipment: Shipment, parcel: PlatformParcel,
       ...(image ? { cainiaoImage: image } : {}), ...(pddImage ? { pddImage } : {}) };
     if (JSON.stringify(platformFields) !== JSON.stringify(fields) || waybill !== fields?.waybill) {
       next = { ...next, platformFields };
+    }
+  }
+  if (parcel.source === "pinduoduo" && parcel.traces?.length && waybill && !next.forcedCompletedAtMs) {
+    const pddTimeline = pddTimelineFromTraces(
+      waybill, next.identity.courierCode, next.identity.companyName, parcel.traces, now, next.identity.rawCourierCode,
+    );
+    if (pddTimeline) {
+      const manualTimelines = mergeTimelineAuthorities(next.manualTimelines || [], pddTimeline);
+      if (JSON.stringify(manualTimelines) !== JSON.stringify(next.manualTimelines || [])) {
+        const withPdd: Shipment = { ...next, manualTimelines, updatedAtMs: Math.max(next.updatedAtMs, now) };
+        next = { ...withPdd, timeline: selectShipmentTimeline(withPdd) };
+      }
     }
   }
   if (!waybill || !eligiblePickup(next)) return next;

@@ -7,9 +7,11 @@ import { needsDetailEntryQuery, selectShipmentTimeline, selectShipmentDetailTime
 const home = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
 const expression = home.match(/refreshOnAppear=\{([\s\S]*?)\}\s+onStateChange=/)?.[1];
 assert.ok(expression, "Home must declare the detail entry refresh trigger");
-function trigger(homeStatus: string, detailStatus = homeStatus, preview = false, order = false, watch = false) {
+function trigger(homeStatus: string, detailStatus = homeStatus, preview = false, order = false, watch = false,
+  watchRefreshes = true) {
   return runInNewContext(expression!, {
-    watch,
+    internationalShipment: () => watch,
+    watchDetailOpenRefreshes: () => watchRefreshes,
     needsDetailEntryQuery: () => homeStatus === "UNKNOWN",
     selected: {}, manualPreview: preview ? {} : null,
     manualPreviewNeedsDetailRefresh: () => true,
@@ -51,7 +53,13 @@ assert.equal(trigger("UNKNOWN", "UNKNOWN", false, true), "detail_open");
 assert.equal(trigger("COMPLETED", "COMPLETED", false, true), "detail_open",
   "an unresolved identity opens automatically even when history is complete");
 assert.equal(trigger("UNKNOWN", "UNKNOWN", true), "manual_submit");
-assert.equal(trigger("UNKNOWN", "UNKNOWN", false, false, true), false, "Watch shipments never start a local query");
+// Owner 2026-11-19 parity: a Watch row opens like any other row and refreshes its own cloud projection;
+// the watch: branch never enters the domestic query chain (international-detail-refresh.test.ts).
+assert.equal(trigger("DELIVERY", "DELIVERY", false, false, true), "detail_open",
+  "a Watch row refreshes its own projection on open");
+// G-MED-02: a terminal Watch row that already shows its scans opens from what is stored (international-detail-open).
+assert.equal(trigger("COMPLETED", "COMPLETED", false, false, true, false), false,
+  "Home follows the Watch rule's false result");
 console.log("Home missing-status entry partitions passed");
 
 // Exercise the real policy at the Home entry boundary, rather than the status-only stub above.
@@ -63,7 +71,7 @@ for (const carrier of ["JD", "SF", "ZTO"]) {
     timeline: active, sourceTimeline: { ...active, provider: "v5_list" },
     accountRecord: { waybill, companyCode: carrier, provider: "JingDong", phone: "" } };
   assert.equal(runInNewContext(expression!, {
-    needsDetailEntryQuery, selected: row, manualPreview: null, watch: false,
+    needsDetailEntryQuery, selected: row, manualPreview: null, internationalShipment: () => false,
     unprojectedAccountOrder: () => false,
   }), "detail_open", "a JD-source row with complete active history starts one entry query");
 }

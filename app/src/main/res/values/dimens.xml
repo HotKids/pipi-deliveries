@@ -3,4 +3,11 @@
     <dimen name="express_search_field_height">48dp</dimen>
     <dimen name="express_search_field_corner_radius">24dp</dimen>
     <dimen name="express_widget_search_edge_inset">14dp</dimen>
+    <!-- The small gray 寄 tag of an outgoing parcel (owner 2026-11-21, "Lite 也加寄标签"), as on Pipi:
+         after the status word on the 2×2 widget, after the waybill tail on every 4×2 row. The 4×2
+         rows take the status capsule's height (DeliveriesExpressWideStatus) instead of the 2×2
+         vertical padding. -->
+    <dimen name="express_widget_sender_tag_gap">4dp</dimen>
+    <dimen name="express_widget_sender_tag_padding_horizontal">3dp</dimen>
+    <dimen name="express_widget_sender_tag_padding_vertical">1dp</dimen>
 </resources>

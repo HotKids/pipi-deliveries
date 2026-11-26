@@ -33,6 +33,7 @@ import {
   isAccountUpdateSummary,
   isNonEventDetail,
   headlineTrack,
+  isHeldTrack,
   mergeTimelineAuthorities,
   mergeTimelinePackage,
   mergeTracks,
@@ -185,6 +186,7 @@ function selectedManualTimelines(shipment: Shipment): TimelinePackage[] {
     TIMELINE_SLOT.V6_QUERY,
     TIMELINE_SLOT.V2_QUERY,
     TIMELINE_SLOT.CN_H5,
+    TIMELINE_SLOT.PDD_H5,
     TIMELINE_SLOT.K100_H5,
     TIMELINE_SLOT.JT_H5,
     TIMELINE_SLOT.JD_H5,
@@ -259,13 +261,15 @@ const PRE_KDNIAO_TIMELINE_PROVIDERS = new Set<string>([
   TIMELINE_SLOT.V6_QUERY,
   TIMELINE_SLOT.V2_QUERY,
   TIMELINE_SLOT.CN_H5,
+  TIMELINE_SLOT.PDD_H5,
   TIMELINE_SLOT.K100_H5,
   TIMELINE_SLOT.JT_H5,
   TIMELINE_SLOT.JD_H5,
 ]);
 
 function isShunFengManualTimeline(timeline: TimelinePackage): boolean {
-  return normalizeTimelineSlot(timeline.provider) === TIMELINE_SLOT.V6_QUERY ||
+  const slot = normalizeTimelineSlot(timeline.provider);
+  return slot === TIMELINE_SLOT.V6_QUERY || slot === TIMELINE_SLOT.PDD_H5 ||
     isVerifiedKuaidi100Timeline(timeline) || timelineCapability(timeline.provider) === "fallback";
 }
 
@@ -1092,8 +1096,10 @@ function alignmentReading(shipment: Shipment, list: TimelinePackage,
 }
 
 function sameStateHeadline(shipment: Shipment, list: TimelinePackage, reading: AlignmentReading): HeadlineEvidence | null {
+  // A held Watch scan is never a donor headline (isHeldTrack).
   const newest = (packages: readonly TimelinePackage[]) => packages.flatMap(timeline =>
-    timedTracks(timeline.tracks).filter(track => sameStateNode(track, list.semantic, reading.times.statusAtMs))
+    timedTracks(timeline.tracks).filter(track => !isHeldTrack(track) &&
+      sameStateNode(track, list.semantic, reading.times.statusAtMs))
       .map(track => ({ provider: timeline.provider, track })))
     .sort((left, right) => right.track.timeMs! - left.track.timeMs!)[0] || null;
   if (!reading.sf) return newest(reading.donors);
@@ -1754,6 +1760,7 @@ function resolveStructuredStatus(
   if (selectedEvidence.semantic !== "UNKNOWN") {
     const preferred = donors.filter(donor =>
       donor.timeline.semantic === selectedEvidence.semantic && donor.timeline.structuredStatus &&
+      (donor.eventAtMs || 0) >= (selectedEvidence.eventAtMs || 0) &&
       statusPriority(donor.timeline) > statusPriority(selected))
       .sort((left, right) => statusPriority(right.timeline) - statusPriority(left.timeline) ||
         compareDonors(left, right))[0]?.timeline;
@@ -2077,6 +2084,7 @@ function detailManualRejectionReason(shipment: Shipment, timeline: TimelinePacka
     }
     if (capability === "web") {
       return provider === TIMELINE_SLOT.CN_H5 ||
+        provider === TIMELINE_SLOT.PDD_H5 ||
         (provider === TIMELINE_SLOT.JD_H5 && isJingDongSourceShipment(shipment)) ||
         (provider === TIMELINE_SLOT.JT_H5 &&
           primaryH5Provider(shipment.identity.courierCode) === TIMELINE_SLOT.JT_H5 &&

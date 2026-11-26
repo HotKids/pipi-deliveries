@@ -14,7 +14,7 @@ import { deadlineAfter, deadlineExpired } from "../deadline";
 import { ACCOUNT_ORDER_PROJECTION_BUDGET_MS, accountOrderPageConfirmedEmpty, accountOrderProjectionAttemptRemainingMs, accountOrderProjectionRouteHash, rotatingBatchIndices, activeAccountOrderProjectionAttempt, accountChildDeadline, nextEmptyShellStrikes, projectionRiskControlled, retainedEmptyShellStrikes, shouldRetryAccountOrderProjectionUnprompted, accountOrderProjectionRiskRemainingMs, unionPageOutcome } from "../account-sync-policy";
 import { accountParcelWithProjectionReference } from "../account-order-reference";
 import { enhancementPhone, withCurrentAccountEnhancement } from "../enhanced-account";
-import { createDiagnosticFlowId, diagnosticErrorDetails, openStageCancellationEnd, writeDiagnostic } from "../logger";
+import { beginDiagnosticFlow, changedSinceLastLogged, createDiagnosticFlowId, diagnosticErrorDetails, openStageCancellationEnd, writeDiagnostic } from "../logger";
 import { SCRIPT_BINDING_SOURCE, requireScriptSource } from "../script-source";
 import { projectAccountOrder, type AccountOrderProjectionDiagnostics } from "../account-order-projection";
 import { CarrierRecognitionBudget, carrierRecognitionDue, carrierRecognitionExhausted, truncatedCarrierRecognitionLast } from "../carrier-recognition";
@@ -833,11 +833,12 @@ export async function projectAccountOrders(
     attempted++;
     const releaseProjectionAttempt = trackProjectionAttempt(runtimeState, expectedId);
     let projectionDiagnostics: AccountOrderProjectionDiagnostics | null = null;
-    writeDiagnostic("order.projection.started", {
+    beginDiagnosticFlow("order.projection.started", {
       flowId,
       source,
       stage: "webview",
       ownerFingerprint,
+      projectionReason: "scheduled",
     });
     let resolvedParcel: AccountParcelDto | null = null;
     let projectionFailed = false;
@@ -1236,6 +1237,7 @@ async function runStoredOrderProjection(
   moreDue: boolean,
   includeCompleted: boolean,
 ): Promise<StoredOrderProjectionResult> {
+  const startedAt = Date.now();
   try {
     const summary = await runtimeState.refreshCoordinator.runFull(
       source,
@@ -1267,7 +1269,7 @@ async function runStoredOrderProjection(
           // is asked again right before it loads; off screen the order is skipped (not_foreground) and left for the next pass.
           unionPageSceneGate,
           // 用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒。One Home pass is one operation with its own budget.
-          new CarrierRecognitionBudget(),
+          new CarrierRecognitionBudget(undefined, { flowId }),
           // The pass's catch below writes a cancelled attempt's end.
           true,
         );
@@ -1295,9 +1297,16 @@ async function runStoredOrderProjection(
         ownership: durableLease,
       },
     );
-    if (statePresentationFingerprint(summary.state) !== statePresentationFingerprint(before)) {
+    const changed = statePresentationFingerprint(summary.state) !== statePresentationFingerprint(before);
+    if (changed) {
       requestWidgetReload();
     }
+    // D106: the Home pass that opened the union page ends with one line for its flow.
+    writeDiagnostic("order.projection.pass", {
+      flowId, source, trigger: STORED_PROJECTION_TRIGGER, result: "attempted", changed,
+      ownerFingerprint: projectionOwnerFingerprint(candidate.ownerId), durationMs: Date.now() - startedAt,
+      attempted: summary.attempted, succeeded: summary.succeeded, failed: summary.failed,
+    });
     return { result: "attempted", ownerId: candidate.ownerId, moreDue, state: summary.state };
   } catch (error) {
     writeDiagnostic("order.projection.failed", {
@@ -1305,6 +1314,7 @@ async function runStoredOrderProjection(
       source,
       stage: "webview",
       ownerFingerprint: projectionOwnerFingerprint(candidate.ownerId),
+      durationMs: Date.now() - startedAt,
       ...diagnosticErrorDetails(error),
     }, "warning");
     return { result: "failed", ownerId: candidate.ownerId, moreDue: false };
@@ -1322,7 +1332,29 @@ async function runStoredOrderProjection(
  * until then. Only the app root may call it: it refuses to run where no projection viewport is
  * hosted, which is every widget and App Intent runtime.
  */
+/**
+ * D106: a pass that another refresh kept from running (busy, lease held) ends with one line, written once per change
+ * of result so the on-screen watch does not repeat it. A pass with nothing due, or one asked off screen or outside the
+ * app host, is a routine check and stays silent (the AGENTS.md section 10 routine-noise exception; the existing
+ * "no log spam" regression locks it).
+ */
 export async function projectStoredAccountOrders(
+  runtimeState: SyncRuntimeState,
+  options: Parameters<typeof projectStoredAccountOrdersOnce>[1] = {},
+): Promise<StoredOrderProjectionResult> {
+  const startedAt = Date.now();
+  const outcome = await projectStoredAccountOrdersOnce(runtimeState, options);
+  if ((outcome.result === "busy" || outcome.result === "lease_held") &&
+      changedSinceLastLogged("order.projection.pass", outcome.result)) {
+    writeDiagnostic("order.projection.pass", {
+      source: requireScriptSource(options.source || SCRIPT_BINDING_SOURCE), trigger: STORED_PROJECTION_TRIGGER,
+      result: outcome.result, skipReason: outcome.result, durationMs: Date.now() - startedAt,
+    });
+  }
+  return outcome;
+}
+
+async function projectStoredAccountOrdersOnce(
   runtimeState: SyncRuntimeState,
   options: Readonly<{
     source?: BindingSource;

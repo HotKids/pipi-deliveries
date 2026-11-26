@@ -55,7 +55,7 @@ export function shipmentNotificationEvent(
    */
   rule: Readonly<{ statusChangeOnly?: boolean }> = {},
 ): Omit<ShipmentNotificationEvent, "id"> | null {
-  if (!previous) return null;
+  if (!previous || previous.timeline.provider === "pending") return null;
   if (isFrozenJingDongShipment(previous)) return null;
   // Preferences and comparisons follow the visible status, including JD order completion.
   if (!notificationEnabled(presentedSemantic(current) as StatusSemantic)) return null;

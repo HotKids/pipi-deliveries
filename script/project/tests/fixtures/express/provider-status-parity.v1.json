@@ -222,6 +222,293 @@
         "eventAtMs": 0,
         "structured": true
       }
+    },
+    {
+      "name": "meizu-failed-customs",
+      "provider": "v6",
+      "mode": "timeline",
+      "input": {
+        "code": 200,
+        "value": "{\"mailNo\":\"TEST8021\",\"cpCode\":\"zhongtongguoji\",\"cpName\":\"中通国际\",\"fromCp\":\"KD-100\",\"logsiticsStatus\":\"FAILED\",\"logisticsStatusDesc\":\"清关中\",\"lastLogisticDetail\":\"Synthetic event\",\"logisticsGmtModified\":\"2026-11-20 17:28:31\"}"
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "CUSTOMS_CLEARANCE",
+        "text": "清关中",
+        "priority": 1,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "meizu-failed-pending",
+      "provider": "v6",
+      "mode": "timeline",
+      "input": {
+        "code": 200,
+        "value": "{\"mailNo\":\"TEST8021\",\"cpCode\":\"zhongtongguoji\",\"cpName\":\"中通国际\",\"fromCp\":\"KD-100\",\"logsiticsStatus\":\"FAILED\",\"logisticsStatusDesc\":\"待清关\",\"lastLogisticDetail\":\"Synthetic event\",\"logisticsGmtModified\":\"2026-11-20 17:28:31\"}"
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "TRANSIT",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "meizu-failed-cleared",
+      "provider": "v6",
+      "mode": "timeline",
+      "input": {
+        "code": 200,
+        "value": "{\"mailNo\":\"TEST8021\",\"cpCode\":\"zhongtongguoji\",\"cpName\":\"中通国际\",\"fromCp\":\"KD-100\",\"logsiticsStatus\":\"FAILED\",\"logisticsStatusDesc\":\"已清关\",\"lastLogisticDetail\":\"Synthetic event\",\"logisticsGmtModified\":\"2026-11-20 17:28:31\"}"
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "TRANSIT",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "meizu-failed-exception",
+      "provider": "v6",
+      "mode": "timeline",
+      "input": {
+        "code": 200,
+        "value": "{\"mailNo\":\"TEST8021\",\"cpCode\":\"zhongtongguoji\",\"cpName\":\"中通国际\",\"fromCp\":\"KD-100\",\"logsiticsStatus\":\"FAILED\",\"logisticsStatusDesc\":\"清关异常\",\"lastLogisticDetail\":\"Synthetic event\",\"logisticsGmtModified\":\"2026-11-20 17:28:31\"}"
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "FAILED",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "meizu-failed-problem",
+      "provider": "v6",
+      "mode": "timeline",
+      "input": {
+        "code": 200,
+        "value": "{\"mailNo\":\"TEST8021\",\"cpCode\":\"zhongtongguoji\",\"cpName\":\"中通国际\",\"fromCp\":\"KD-100\",\"logsiticsStatus\":\"FAILED\",\"logisticsStatusDesc\":\"问题件\",\"lastLogisticDetail\":\"Synthetic event\",\"logisticsGmtModified\":\"2026-11-20 17:28:31\"}"
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "FAILED",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "meizu-failed-empty",
+      "provider": "v6",
+      "mode": "timeline",
+      "input": {
+        "code": 200,
+        "value": "{\"mailNo\":\"TEST8021\",\"cpCode\":\"zhongtongguoji\",\"cpName\":\"中通国际\",\"fromCp\":\"KD-100\",\"logsiticsStatus\":\"FAILED\",\"logisticsStatusDesc\":\"\",\"lastLogisticDetail\":\"Synthetic event\",\"logisticsGmtModified\":\"2026-11-20 17:28:31\"}"
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "FAILED",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "meizu-failed-customs-vps-spelling",
+      "provider": "v6",
+      "mode": "timeline",
+      "input": {
+        "code": 200,
+        "value": "{\"mailNo\":\"TEST8021\",\"cpCode\":\"zhongtongguoji\",\"cpName\":\"中通国际\",\"fromCp\":\"KD-100\",\"logisticsStatus\":\"FAILED\",\"logisticsStatusDesc\":\"清关中\",\"lastLogisticDetail\":\"Synthetic event\",\"logisticsGmtModified\":\"2026-11-20 17:28:31\"}"
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "CUSTOMS_CLEARANCE",
+        "text": "清关中",
+        "priority": 1,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "meizu-failed-customs-equal-time-subtype",
+      "provider": "v6",
+      "mode": "timeline",
+      "input": {
+        "code": 200,
+        "value": "{\"mailNo\":\"TEST8021\",\"tracks\":[{\"time\":\"2026-11-20 17:28:31\",\"logsiticsStatus\":\"TRANSPORT\",\"context\":\"Synthetic event A\"},{\"time\":\"2026-11-20 17:28:31\",\"logsiticsStatus\":\"FAILED\",\"logisticsStatusDesc\":\"清关中\",\"context\":\"Synthetic event B\"}]}"
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "CUSTOMS_CLEARANCE",
+        "text": "清关中",
+        "priority": 1,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "k100-customs-state-10",
+      "provider": "k100",
+      "mode": "timeline",
+      "input": {
+        "status": "200",
+        "state": "10",
+        "data": [
+          {
+            "ftime": "2026-11-20 17:28:31",
+            "context": "Synthetic event",
+            "statusCode": "10"
+          }
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "10",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "k100-customs-state-11",
+      "provider": "k100",
+      "mode": "timeline",
+      "input": {
+        "status": "200",
+        "state": "11",
+        "data": [
+          {
+            "ftime": "2026-11-20 17:28:31",
+            "context": "Synthetic event",
+            "statusCode": "11"
+          }
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "CUSTOMS_CLEARANCE",
+        "text": "清关中",
+        "priority": 1,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "k100-customs-state-12",
+      "provider": "k100",
+      "mode": "timeline",
+      "input": {
+        "status": "200",
+        "state": "12",
+        "data": [
+          {
+            "ftime": "2026-11-20 17:28:31",
+            "context": "Synthetic event",
+            "statusCode": "12"
+          }
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "12",
+        "text": "运输中",
+        "priority": 0,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "k100-customs-state-13",
+      "provider": "k100",
+      "mode": "timeline",
+      "input": {
+        "status": "200",
+        "state": "13",
+        "data": [
+          {
+            "ftime": "2026-11-20 17:28:31",
+            "context": "Synthetic event",
+            "statusCode": "13"
+          }
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "DANGER",
+        "code": "13",
+        "text": "异常件",
+        "priority": 0,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
+    },
+    {
+      "name": "kdn-customs-action-602",
+      "provider": "kdniao",
+      "mode": "timeline",
+      "input": {
+        "Success": true,
+        "State": "2",
+        "Traces": [
+          {
+            "Action": "2",
+            "AcceptTime": "2026-11-20 12:53:00",
+            "AcceptStation": "Synthetic event A"
+          },
+          {
+            "Action": "602",
+            "AcceptTime": "2026-11-20 17:28:31",
+            "AcceptStation": "Synthetic event B"
+          }
+        ]
+      },
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "CUSTOMS_CLEARANCE",
+        "text": "清关中",
+        "priority": 1,
+        "eventAtMs": 1795166911000,
+        "structured": true
+      }
     }
   ],
   "clocks": [

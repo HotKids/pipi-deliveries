@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The small gray 寄 tag of an outgoing parcel on the Lite widgets (owner 2026-11-21, "Lite 也加寄标签"):
+     the same gray #9A9AA0 with 3dp corners as Pipi's wide rows and Deliveries iOS. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#FF9A9AA0" />
+    <corners android:radius="3dp" />
+</shape>

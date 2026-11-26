@@ -5,7 +5,7 @@ import { carrierDisplayName } from "./carrier-presentation";
 import { deadlineAfter } from "./deadline";
 import { EXPRESS_TOAST_COPY } from "./express-toast-copy";
 import { needsManualPhoneTail } from "./jt-h5";
-import { beginDiagnosticOperation, flushDiagnostics, writeDiagnostic } from "./logger";
+import { beginDiagnosticOperation, diagnosticErrorDetails, flushDiagnostics, writeDiagnostic } from "./logger";
 import { detectManualCarrier } from "./manual-query";
 import { shipmentNotificationPresentation } from "./notification-events";
 import { scheduleShipmentNotification } from "./notifications";
@@ -186,12 +186,24 @@ export async function queryScreenShortcut(lookup: ParcelLookup, phoneTail?: stri
 }
 
 async function sendScreenNotification(send: (deadlineAtMs: number) => Promise<boolean>): Promise<boolean> {
+  let failure: unknown;
   try {
-    if (await send(deadlineAfter(SHORTCUT_NOTIFICATION_BUDGET_MS))) return true;
-  } catch {
+    if (await send(deadlineAfter(SHORTCUT_NOTIFICATION_BUDGET_MS))) {
+      // D122: a delivered Shortcut notification (a saved pickup code included) is recorded with its layer.
+      try { writeDiagnostic("shortcut.notification.completed", { pushOrigin: "app_local", result: "scheduled" }); }
+      catch { /* Diagnostics are optional. */ }
+      return true;
+    }
+  } catch (error) {
     // The result is still available to the caller if the notification cannot be queued.
+    failure = error;
   }
-  try { writeDiagnostic("shortcut.notification.failed", {}, "warning"); } catch { /* Diagnostics are optional. */ }
+  try {
+    writeDiagnostic("shortcut.notification.failed", {
+      pushOrigin: "app_local", result: failure === undefined ? "rejected" : "failed",
+      ...(failure === undefined ? {} : diagnosticErrorDetails(failure)),
+    }, "warning");
+  } catch { /* Diagnostics are optional. */ }
   return false;
 }
 
@@ -280,27 +292,36 @@ export async function submitScreenShortcut(lookup: ParcelLookup, presentPickup: 
     notifyScreenShortcutStatus(message);
 }
 
-export async function submitScreenShortcutPhoneTail(token: string, phoneTail: string): Promise<{
+/**
+ * The notification's phone-tail reply. A pickup code recognized with the waybill is saved and presented as on the
+ * direct path (G-MED-18), so `presentPickup` is the same Live Activity owner submitScreenShortcut receives.
+ */
+export async function submitScreenShortcutPhoneTail(token: string, phoneTail: string, presentPickup?: PresentPickup): Promise<{
   done: boolean; message: string;
 }> {
   if (!/^\d{4}$/.test(phoneTail)) return { done: false, message: "请输入 4 位手机尾号" };
   const lookup = readScreenShortcutLookup(token);
   if (!lookup) return { done: true, message: "此运单已处理。" };
-  const startedAt = Date.now();
-  try { writeDiagnostic("shortcut.phone_tail.started"); } catch { /* Diagnostics are optional. */ }
+  // D120: the reply ends with its result (committed, phone_tail_rejected, no_result or failed); the start is merged into
+  // it (D4) and the tail itself is never written.
+  const finish = beginDiagnosticOperation("shortcut.phone_tail", { stage: "manual_query" });
   try {
     const result = await queryScreenShortcut(lookup, phoneTail);
-    if (!result.shipment) return { done: false, message: result.needsPhoneTail
-      ? EXPRESS_TOAST_COPY.manualPhoneTailRequired : EXPRESS_TOAST_COPY.manualQueryNoTrack };
+    if (!result.shipment) {
+      finish(result.needsPhoneTail ? "phone_tail_rejected" : "no_result");
+      return { done: false, message: result.needsPhoneTail
+        ? EXPRESS_TOAST_COPY.manualPhoneTailRequired : EXPRESS_TOAST_COPY.manualQueryNoTrack };
+    }
     discardShortcutDraft(token);
-    return { done: true, message: await notifyScreenShipment(result) };
+    finish("committed", { records: 1 });
+    return { done: true, message: await notifyScreenShipment(result,
+      lookup.pickup && presentPickup ? { code: lookup.pickup.code, present: presentPickup } : undefined) };
   } catch (error) {
-    return { done: false, message: needsManualPhoneTail(error)
+    const rejected = needsManualPhoneTail(error);
+    finish(rejected ? "phone_tail_rejected" : "failed", diagnosticErrorDetails(error), rejected ? "info" : "warning");
+    return { done: false, message: rejected
       ? EXPRESS_TOAST_COPY.manualPhoneTailRequired : manualQueryFailureToast(error) };
   } finally {
-    try {
-      writeDiagnostic("shortcut.phone_tail.completed", { durationMs: Date.now() - startedAt });
-      flushDiagnostics();
-    } catch { /* Diagnostics are optional. */ }
+    try { flushDiagnostics(); } catch { /* Diagnostics are optional. */ }
   }
 }

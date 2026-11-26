@@ -89,7 +89,7 @@ reset({ [ENABLED_KEY]: false });
 reset({ [ENABLED_KEY]: false, [BETA_VERSION_KEY]: "0.6.4-beta9" });
 {
   const logger = await launch("beta", "0.6.5-beta2");
-  logger.writeDiagnostic("widget.run.started", { flowId: "beta-install" });
+  logger.writeDiagnostic("widget.run.completed", { flowId: "beta-install" });
   assert.equal(logger.readDiagnostics().length, 1, "the first write of a new beta is recorded");
   assert.equal(memory.get(BETA_VERSION_KEY), "0.6.5-beta2");
 }
@@ -103,7 +103,7 @@ reset({ [ENABLED_KEY]: false, [BETA_VERSION_KEY]: "0.6.4-beta9" });
   assert.equal(app.diagnosticsEnabled(), false, "a manual off within this beta holds in this runtime");
   const widget = await launch("beta", "0.6.5-beta1");
   assert.equal(widget.diagnosticsEnabled(), false, "the same beta in another host keeps the user's off");
-  widget.writeDiagnostic("widget.run.started", { flowId: "beta-install" });
+  widget.writeDiagnostic("widget.run.completed", { flowId: "beta-install" });
   assert.equal(widget.readDiagnostics().length, 0, "nothing is recorded while the user keeps it off");
   const relaunch = await launch("beta", "0.6.5-beta1");
   assert.equal(relaunch.diagnosticsEnabled(), false, "relaunching the same beta keeps the user's off");
@@ -140,7 +140,7 @@ for (const stored of [false, true]) {
   reset({ [ENABLED_KEY]: stored, [BETA_VERSION_KEY]: "0.6.5-beta1" });
   const logger = await launch("formal", "0.6.5");
   assert.equal(logger.diagnosticsEnabled(), stored, "formal follows the previous setting");
-  logger.writeDiagnostic("widget.run.started", { flowId: "formal-install" });
+  logger.writeDiagnostic("widget.run.completed", { flowId: "formal-install" });
   assert.equal(memory.get(ENABLED_KEY), stored);
   assert.equal(memory.get(BETA_VERSION_KEY), "0.6.5-beta1", "formal never touches the beta record");
   assert.equal(writtenKeys.includes(ENABLED_KEY), false);
@@ -152,7 +152,7 @@ reset();
 {
   const logger = await launch("formal", "0.6.5");
   assert.equal(logger.diagnosticsEnabled(), false, "formal defaults to off");
-  logger.writeDiagnostic("widget.run.started", { flowId: "formal-install" });
+  logger.writeDiagnostic("widget.run.completed", { flowId: "formal-install" });
   assert.equal(logger.readDiagnostics().length, 0);
   assert.equal(memory.has(ENABLED_KEY), false);
   assert.equal(memory.has(BETA_VERSION_KEY), false);
@@ -165,7 +165,7 @@ try {
   const logger = await launch("beta", "0.6.5-beta1");
   assert.doesNotThrow(() => logger.diagnosticsEnabled());
   assert.equal(logger.diagnosticsEnabled(), true, "an unreadable switch falls back to the beta default");
-  assert.doesNotThrow(() => logger.writeDiagnostic("widget.run.started", { flowId: "beta-install" }));
+  assert.doesNotThrow(() => logger.writeDiagnostic("widget.run.completed", { flowId: "beta-install" }));
 } finally {
   failReads = false;
 }

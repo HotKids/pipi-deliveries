@@ -11,7 +11,7 @@ import { GatewayError, postGateway } from "./gateway";
 import { normalizeWaybill } from "./status";
 import { deadlineExpired, OperationTimeoutError } from "./deadline";
 import { RefreshCoordinator } from "./refresh-coordination";
-import { writeDiagnostic } from "./logger";
+import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
 
 const CACHE_KEY = "pipi_deliveries_carrier_recognition_v1";
 /**
@@ -54,13 +54,16 @@ export class CarrierRecognitionBudget {
    * 提交前核对答「这样做」); a user operation's budget marks nothing.
    */
   readonly syncRound: boolean;
+  /** The flow this budget belongs to, written on its recognition lines (D124); diagnostics only. */
+  readonly flowId?: string;
 
   constructor(
     budgetMs = CARRIER_RECOGNITION_BUDGET_MS,
-    options: Readonly<{ syncRound?: boolean }> = {},
+    options: Readonly<{ syncRound?: boolean; flowId?: string }> = {},
   ) {
     this.remainingMs = Math.max(0, Math.floor(Number(budgetMs) || 0));
     this.syncRound = options.syncRound === true;
+    this.flowId = options.flowId;
   }
 
   remainingAt(now = Date.now()): number {
@@ -851,9 +854,18 @@ async function reportCarrierRecognition(
   const cachedBefore = (options.store || storageStore).load().find(
     (entry) => normalizeWaybill(entry.waybill) === waybill,
   );
+  // D124: the line carries its flow (the round or operation whose budget it waits in), its duration and the budget
+  // left when it started.
+  const startedAt = Date.now();
+  const flow = {
+    ...(options.budget?.flowId ? { flowId: options.budget.flowId } : {}),
+    ...(options.budget ? { budgetMs: options.budget.remainingAt(startedAt) } : {}),
+  };
   try {
     const outcome = await runCarrierRecognition(waybill, options);
     writeDiagnostic("carrier.recognition.completed", {
+      ...flow,
+      durationMs: Date.now() - startedAt,
       waybillTail: waybill.slice(-4),
       // The shared words for this endpoint, the ones Pipi already tags it with: source
       // k100_autoCom, stage classify. The internal retryStage names stay internal.
@@ -879,12 +891,16 @@ async function reportCarrierRecognition(
     });
     return outcome;
   } catch (error) {
+    // D124/D224 (D3): a failed recognition is asked again by a later round, so it is a WARNING with its category.
     writeDiagnostic("carrier.recognition.completed", {
+      ...flow,
+      durationMs: Date.now() - startedAt,
       waybillTail: waybill.slice(-4),
       attempt: (cachedBefore?.networkFailures || 0) + 1,
       skipReason: cachedBefore?.state,
       result: "failed",
-    }, "error");
+      ...diagnosticErrorDetails(error),
+    }, "warning");
     throw error;
   }
 }

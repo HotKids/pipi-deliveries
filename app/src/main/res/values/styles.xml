@@ -133,6 +133,22 @@
         <item name="android:textSize">11dp</item>
     </style>
 
+    <!-- Owner 2026-11-21 ("Lite 也加寄标签"): an outgoing parcel's small gray 寄 tag right after the
+         waybill tail, before the status capsule, as on Pipi's wide rows. It takes the capsule's box
+         (18dp height, 11dp medium text); it has no layout weight, so it never shrinks, and the
+         provider shows it only for an outgoing parcel. -->
+    <style name="DeliveriesExpressWideSenderTag" parent="DeliveriesExpressWideStatus">
+        <item name="android:layout_marginStart">@dimen/express_widget_sender_tag_gap</item>
+        <item name="android:background">@drawable/widget_express_sender_tag_bg</item>
+        <item name="android:contentDescription">@string/express_sender_description</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:paddingStart">@dimen/express_widget_sender_tag_padding_horizontal</item>
+        <item name="android:paddingEnd">@dimen/express_widget_sender_tag_padding_horizontal</item>
+        <item name="android:text">@string/express_sender</item>
+        <item name="android:textColor">#FFFFFFFF</item>
+        <item name="android:visibility">gone</item>
+    </style>
+
     <style name="DeliveriesExpressWideDetail">
         <item name="android:layout_width">match_parent</item>
         <item name="android:layout_height">wrap_content</item>

@@ -113,7 +113,9 @@ test("a signed JD row out of step: the pull is closed, the alignment run reopens
   await runShipmentRefreshForTesting(row.identity.id, lease, options("status_alignment"), runtime(aligned, fresh));
   assert.deepEqual(aligned, ["v5_query", "jd_h5"],
     "the per-waybill query past the freeze, then the union page past the pickup gate; a complete page stops the chain");
-  const started = readDiagnostics().find(entry => entry.event === "detail.refresh.started")!;
+  // D4: the detail refresh writes no start line; its end line carries the trigger.
+  const started = readDiagnostics().find(entry => entry.event === "detail.refresh.committed" ||
+    entry.event === "detail.refresh.skipped" || entry.event === "detail.refresh.failed")!;
   assert.equal(started.details.trigger, "status_alignment");
   const persisted = loadState(NOW).shipments[0]!;
   assert.equal(selectShipmentTimeline(persisted).latestDetail, "Synthetic H5 event 0",

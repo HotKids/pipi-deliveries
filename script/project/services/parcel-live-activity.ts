@@ -3,12 +3,13 @@ import { PARCEL_ACTIVITY_ART, PipiParcelActivity } from "../live_activity";
 import type { AppState } from "../models";
 import { pauseWhileActive } from "./deadline";
 import { activeMealCards } from "./meal/cards";
-import { beginDiagnosticOperation, writeDiagnostic } from "./logger";
+import { beginDiagnosticOperation, diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { acquireDurableRefreshLease } from "./refresh-runtime-state";
 import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, type ParcelLockScreenStyle } from "./parcel-card-appearance";
 import {
   EMPTY_CONTENT,
   PARCEL_ACTIVITY_NAME,
+  ParcelActivityError,
   endActivity,
   nativePickupTabCloseId,
   parcelActivityRegistry,
@@ -29,7 +30,10 @@ let pending: Promise<unknown> = Promise.resolve();
 let queuedReconciliation: { state: AppState; cards?: readonly ParcelActivityContent[] } | undefined;
 let foreground = true;
 const displayed = new Map<string, string>();
-type ParcelActivityChange = { kind: "preview" } | { kind: "pickup-tab-empty"; activityId: string };
+type ParcelActivityChange =
+  | { kind: "preview" }
+  | { kind: "pickup-tab-empty"; activityId: string }
+  | { kind: "activity-ended"; activityId: string };
 const activityListeners = new Set<(change: ParcelActivityChange) => void>();
 
 export function onParcelActivityChanged(listener: (change: ParcelActivityChange) => void): () => void {
@@ -52,6 +56,7 @@ function observeEndedActivity({ id, state }: LiveActivityDetail): void {
     const receipt = parcelActivityRegistry().receipts.find(item => item.id === id);
     if (!receipt) return;
     if (nativePickupTabCloseId() === id) notifyActivityChanged({ kind: "pickup-tab-empty", activityId: id });
+    else if (receipt.target) notifyActivityChanged({ kind: "activity-ended", activityId: id });
     if (!receipt.target) await withActivityOwnership(async isCurrent => forgetReceipt(receipt, isCurrent));
   }).catch(() => writeDiagnostic("activity.parcel.end.observe.failed", {}, "warning"));
 }
@@ -79,7 +84,7 @@ async function withActivityOwnership<T>(operation: (isCurrent: ActivityOwnership
     }
     await pauseWhileActive(100);
   } while (Date.now() < deadline);
-  throw new Error("实时活动正在更新，请稍后重试。");
+  throw new ParcelActivityError("实时活动正在更新，请稍后重试。");
 }
 
 function serializeMutation<T>(operation: (isCurrent: ActivityOwnership) => Promise<T>): Promise<T> {
@@ -87,7 +92,7 @@ function serializeMutation<T>(operation: (isCurrent: ActivityOwnership) => Promi
 }
 
 function requireActivityOwnership(isCurrent: ActivityOwnership): void {
-  if (!isCurrent()) throw new Error("实时活动状态已更新，请稍后重试。");
+  if (!isCurrent()) throw new ParcelActivityError("实时活动状态已更新，请稍后重试。");
 }
 
 async function isRunning(receipt: Receipt): Promise<boolean> {
@@ -121,7 +126,7 @@ export function parcelActivityPreviewing(): Promise<boolean> {
 
 function committedState(): AppState {
   const state = loadState();
-  if (stateLoadFailure()) throw new Error("本地数据暂不可用，请稍后重试。");
+  if (stateLoadFailure()) throw new ParcelActivityError("本地数据暂不可用，请稍后重试。");
   return state;
 }
 
@@ -161,6 +166,15 @@ function prepareArtwork(content: ParcelActivityContent): void {
   }
 }
 
+/**
+ * D190 (D38): the surface word Pipi uses for the same live content: a parcel code is the express live activity, a
+ * handoff code the handoff activity and a meal code the meal pickup activity. A preview has none.
+ */
+function activitySurface(content: ParcelActivityContent): { surface?: "express_live" | "handoff_live" | "pickup_live" } {
+  if (!content.target) return {};
+  return { surface: content.kind === "handoff" ? "handoff_live" : content.kind === "meal" ? "pickup_live" : "express_live" };
+}
+
 function activityData(content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle, linkId?: string, relevanceScore?: number) {
   const { target, expiresAtMs, capturedAtMs: _capturedAtMs, businessDateKey: _businessDateKey, ...card } = content;
   const link = target ? { linkId } : { previewLinkId: linkId };
@@ -170,14 +184,16 @@ function activityData(content: ParcelActivityContent, lockScreenStyle: ParcelLoc
 async function createActivity(content: ParcelActivityContent, lockScreenStyle: ParcelLockScreenStyle, isCurrent: ActivityOwnership,
   relevanceScore?: number): Promise<boolean> {
   const finish = beginDiagnosticOperation("activity.parcel.operation", {
-    stage: "start", trigger: content.target ? content.kind ?? "pickup" : "preview", valueKind: lockScreenStyle,
+    stage: "start", trigger: content.target ? content.kind ?? "pickup" : "preview", lockScreenStyle,
+    ...activitySurface(content),
   });
   try {
     const created = await registerActivity(content, lockScreenStyle, isCurrent, relevanceScore);
     finish(created ? "succeeded" : "rejected", {}, created ? "info" : "warning");
     return created;
   } catch (error) {
-    finish(isCurrent() ? "failed" : "cancelled", {}, isCurrent() ? "warning" : "info");
+    finish(isCurrent() ? "failed" : "cancelled", isCurrent() ? diagnosticErrorDetails(error) : {},
+      isCurrent() ? "warning" : "info");
     throw error;
   }
 }
@@ -193,7 +209,7 @@ async function registerActivity(content: ParcelActivityContent, lockScreenStyle:
   const id = activity.activityId;
   try {
     requireActivityOwnership(isCurrent);
-    if (!id) throw new Error("无法保存实时活动，请稍后重试。");
+    if (!id) throw new ParcelActivityError("无法保存实时活动，请稍后重试。");
     const registry = parcelActivityRegistry();
     saveParcelActivityRegistry({
       ...registry, receipts: [...registry.receipts, { id, target: content.target, linkId }],
@@ -247,8 +263,9 @@ async function updateActivity(receipt: Receipt, content: ParcelActivityContent, 
   const serialized = JSON.stringify({ card, options });
   if (displayed.get(receipt.id) === serialized) return true;
   const finish = beginDiagnosticOperation("activity.parcel.operation", {
-    stage: "update", trigger: content.target ? content.kind ?? "pickup" : "preview", valueKind: lockScreenStyle,
-  }, false);
+    stage: "update", trigger: content.target ? content.kind ?? "pickup" : "preview", lockScreenStyle,
+    ...activitySurface(content),
+  });
   try {
     const activity = await LiveActivity.from<ParcelActivityState>(receipt.id, PARCEL_ACTIVITY_NAME);
     prepareArtwork(content);
@@ -259,17 +276,20 @@ async function updateActivity(receipt: Receipt, content: ParcelActivityContent, 
       finish(current ? "succeeded" : "cancelled");
       return current;
     }
-    if (await isRunning(receipt)) throw new Error("实时活动更新失败，请稍后重试。");
+    if (await isRunning(receipt)) throw new ParcelActivityError("实时活动更新失败，请稍后重试。");
+    // D121: the activity is no longer running; the update ends without repainting it.
+    finish("not_running");
     return false;
   } catch (error) {
-    finish(isCurrent() ? "failed" : "cancelled", {}, isCurrent() ? "warning" : "info");
+    finish(isCurrent() ? "failed" : "cancelled", isCurrent() ? diagnosticErrorDetails(error) : {},
+      isCurrent() ? "warning" : "info");
     throw error;
   }
 }
 
 async function requireActivitiesEnabled(): Promise<void> {
   if (!(await LiveActivity.areActivitiesEnabled())) {
-    throw new Error("请在系统设置中允许 Scripting 显示实时活动。");
+    throw new ParcelActivityError("请在系统设置中允许 Scripting 显示实时活动。");
   }
 }
 
@@ -277,19 +297,19 @@ export function startParcelActivity(target: ParcelActivityTarget): Promise<void>
   return serializeMutation(async isCurrent => {
     const registry = parcelActivityRegistry();
     if (registry.showAll || (await Promise.all(registry.receipts.map(isRunning))).some(Boolean)) {
-      throw new Error("请先结束当前实时活动。");
+      throw new ParcelActivityError("请先结束当前实时活动。");
     }
     await requireActivitiesEnabled();
     const content = parcelForTarget(committedState(), target);
     if (!content || (content.expiresAtMs !== undefined && content.expiresAtMs <= Date.now())) {
-      throw new Error("该快递码已不可用。");
+      throw new ParcelActivityError("该快递码已不可用。");
     }
     if (registry.receipts.length) {
       requireActivityOwnership(isCurrent);
       for (const receipt of registry.receipts) displayed.delete(receipt.id);
       saveParcelActivityRegistry({ ...registry, receipts: [] });
     }
-    if (!await createActivity(content, registry.lockScreenStyle, isCurrent)) throw new Error("实时活动启动失败，请稍后重试。");
+    if (!await createActivity(content, registry.lockScreenStyle, isCurrent)) throw new ParcelActivityError("实时活动启动失败，请稍后重试。");
   });
 }
 
@@ -304,7 +324,7 @@ export function startParcelActivityPreview(): Promise<void> {
     await requireActivitiesEnabled();
     if (preview) forgetReceipt(preview, isCurrent);
     if (!await createActivity(PARCEL_ACTIVITY_PREVIEW, lockScreenStyle, isCurrent)) {
-      throw new Error("锁屏预览暂时无法启动，请稍后重试。");
+      throw new ParcelActivityError("锁屏预览暂时无法启动，请稍后重试。");
     }
   });
 }
@@ -408,7 +428,7 @@ async function synchronizeActivities(
   if (!shortcutKeys && (!foreground || !await LiveActivity.areActivitiesEnabled())) return shown;
   for (const card of ranked) {
     if (shortcutKeys) {
-      if (!shortcutKeys.has(card.key) || card.content.kind === "handoff") continue;
+      if (!shortcutKeys.has(card.key)) continue;
     } else if (!foreground) return shown;
     if (dismissed.includes(card.key) || (card.content.expiresAtMs ?? Infinity) <= Date.now() ||
       parcelActivityRegistry().receipts.some((item) => parcelCardKey(item) === card.key)) continue;
@@ -423,9 +443,33 @@ async function synchronizeActivities(
       if (await createActivity(card.content, lockScreenStyle, isCurrent, card.rank)) continue;
     }
     if (await replaceOldest(card, ranked, isCurrent)) continue;
-    throw new Error("部分实时活动暂时无法显示，请在取件页查看。");
+    throw new ParcelActivityError("部分实时活动暂时无法显示，请在取件页查看。");
   }
   return shown;
+}
+
+export function retireCompletedParcelActivities(state: AppState): Promise<void> {
+  return serialize(async () => {
+    if (stateLoadFailure()) return;
+    const registry = parcelActivityRegistry();
+    if (!registry.receipts.length) return;
+    await withActivityOwnership(async isCurrent => {
+      const now = Date.now();
+      const activeKeys = new Set(
+        [...activePickupCards(visibleShipments(state), state.pickupCodeRecords, state.pickupArtworkChoices), ...activeMealCards()]
+          .filter(card => card.target && (card.kind !== "meal" || (card.expiresAtMs ?? Infinity) > now))
+          .map(parcelCardKey),
+      );
+      for (const receipt of parcelActivityRegistry().receipts) {
+        if (!receipt.target) continue;
+        const key = parcelCardKey(receipt);
+        if (key && !activeKeys.has(key)) {
+          try { await closeActivity(receipt, isCurrent); }
+          catch { writeDiagnostic("activity.parcel.expiry.failed", {}, "warning"); }
+        }
+      }
+    });
+  }).catch(() => { /* Background host retirement is best-effort. */ });
 }
 
 export async function showShortcutPickupActivities(targets: readonly ParcelActivityTarget[]): Promise<boolean> {
@@ -455,7 +499,7 @@ export function setParcelLockScreenStyle(lockScreenStyle: ParcelLockScreenStyle)
     const registry = parcelActivityRegistry();
     if (registry.lockScreenStyle === lockScreenStyle) return;
     const finish = beginDiagnosticOperation("activity.parcel.operation", {
-      stage: "style", valueKind: lockScreenStyle, records: registry.receipts.length,
+      stage: "style", lockScreenStyle, records: registry.receipts.length,
     });
     let persisted = false;
     try {

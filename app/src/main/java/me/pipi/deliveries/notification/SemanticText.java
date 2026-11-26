@@ -39,7 +39,7 @@ public final class SemanticText {
             styled.setSpan(annotation, safeStart, safeEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             return styled;
         } catch (Throwable error) {
-            Log.w(TAG, "semantic annotation unavailable", error);
+            Log.w(TAG, "semantic annotation unavailable" + " kind=" + error.getClass().getSimpleName());
             return source;
         }
     }
@@ -52,7 +52,7 @@ public final class SemanticText {
                 annotationFactory = Notification.class.getMethod(
                         "createSemanticStyleAnnotation", int.class);
             } catch (Throwable error) {
-                Log.w(TAG, "semantic annotation factory unavailable", error);
+                Log.w(TAG, "semantic annotation factory unavailable" + " kind=" + error.getClass().getSimpleName());
             } finally {
                 lookupComplete = true;
             }

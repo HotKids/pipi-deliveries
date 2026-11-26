@@ -1,3 +1,5 @@
+import { writeDiagnostic } from "../logger";
+
 const SETTINGS_KEY = "pipi_deliveries_online_recognition_v1";
 export const OPENAI_URL = "https://api.openai.com/v1";
 export const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta";
@@ -95,12 +97,22 @@ export function saveRecognitionSettings(draft: RecognitionDraft, enteredKey: str
   let configuration: RecognitionConfig;
   if (draft.mode === "online") configuration = prepareRecognitionConfig(draft, enteredKey);
   else {
-    const previous = read();
+    let previous: Stored | undefined;
+    try { previous = read(); } catch { /* Corrupted Keychain configuration must not block returning to local mode. */ }
     configuration = { ...(previous?.draft ?? defaults), mode: "local", apiKey: previous?.apiKey ?? "" };
   }
   const { apiKey, ...savedDraft } = configuration;
   const encoded = JSON.stringify({ schema: 1, revision: UUID.string(), draft: savedDraft, apiKey });
-  if (!Keychain.set(SETTINGS_KEY, encoded)) throw new RecognitionSettingError("storage");
+  if (!Keychain.set(SETTINGS_KEY, encoded)) {
+    writeDiagnostic("settings.changed", { stage: "recognition", result: "save_failed" }, "warning");
+    throw new RecognitionSettingError("storage");
+  }
+  // D119/D126: the saved mode and the closed provider and protocol values only; no URL, model, name or key.
+  writeDiagnostic("settings.changed", {
+    stage: "recognition", result: configuration.mode,
+    ...(configuration.mode === "online"
+      ? { onlineProvider: configuration.provider, onlineProtocol: configuration.protocol } : {}),
+  });
 }
 
 export function recognitionOperation() {

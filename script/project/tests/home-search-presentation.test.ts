@@ -89,7 +89,7 @@ const launchRefresh = appSource.match(
   /useEffect\(\(\) => \{[^}]*?subscribeRefreshState\(applyState\)[\s\S]*?\}, \[hasState\]\);/,
 )?.[0] || "";
 assert.match(launchRefresh, /const summary = await refreshAllShipments\(\);\s*if \(mounted\) applyState\(summary\.state\)/);
-assert.match(launchRefresh, /await refreshAllShipments\(\)[\s\S]*?await refreshCarrierAuthorityIfNeeded\(\)[\s\S]*?await refreshMeals\(\)[\s\S]*?await refreshPlatformList\("observe"\)[\s\S]*?refreshInternational\(\)/);
+assert.match(launchRefresh, /Promise\.allSettled\(\[[\s\S]*?await refreshAllShipments\(\)[\s\S]*?await refreshCarrierAuthorityIfNeeded\(\)[\s\S]*?await refreshMeals\(\)[\s\S]*?refreshPlatformList\("observe"\)[\s\S]*?refreshInternational\(\)/);
 assert.doesNotMatch(
   launchRefresh,
   /promotedPendingShipmentNavigationTarget|applyInteractiveRefreshSummary/,

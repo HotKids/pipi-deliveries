@@ -118,7 +118,9 @@ public final class ExpressLoginActivity extends AppCompatActivity {
                 java.util.List<String> sourcePhones = repository.phones(bindingSource);
                 if (!sourcePhones.contains(number)
                         && !ExpressPhoneBindingPolicy.hasCapacity(sourcePhones.size())) {
-                    runOnUiThread(() -> showError(ExpressPhoneBindingPolicy.limitMessage()));
+                    runOnUiThread(() -> {
+                        if (!isFinishing() && !isDestroyed()) showError(ExpressPhoneBindingPolicy.limitMessage());
+                    });
                     return;
                 }
                 if (ExpressAccountSource.isV5(this)) {
@@ -188,8 +190,7 @@ public final class ExpressLoginActivity extends AppCompatActivity {
 
     /** 绑定失败留在表单内联显示（三端同），上游给了原因就显示原因，否则用统一兜底文案。 */
     private void inlineFailure(Throwable failure, String fallback) {
-        String message = failure.getMessage() == null || failure.getMessage().trim().isEmpty()
-                ? fallback : failure.getMessage();
+        String message = userMessage(failure, fallback);
         runOnUiThread(() -> {
             if (!isFinishing() && !isDestroyed()) showError(message);
         });
@@ -197,13 +198,36 @@ public final class ExpressLoginActivity extends AppCompatActivity {
 
     /** 验证码发送失败走 toast（AGENTS §11 三端统一）：上游给了原因就显示原因，否则用统一兜底文案。 */
     private void toastFailure(Throwable failure, String fallback) {
-        String message = failure.getMessage() == null || failure.getMessage().trim().isEmpty()
-                ? fallback : failure.getMessage();
+        String message = userMessage(failure, fallback);
         runOnUiThread(() -> {
             if (!isFinishing() && !isDestroyed()) {
                 Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
             }
         });
+    }
+
+    /**
+     * The failure's own text only when it is user copy: the Chinese messages Lite and the gateway's sanitized answers
+     * throw. A platform or library failure (an unresolved host, a socket timeout, a JSON or Keystore error) carries
+     * English text, a class name or a URL, and shows the page's fallback instead (G-HIGH-18, 2026-11-20 review).
+     */
+    static String userMessage(Throwable failure, String fallback) {
+        String message = failure == null || failure.getMessage() == null ? "" : failure.getMessage().trim();
+        if (message.isEmpty() || message.length() > 96 || !containsHan(message)
+                || message.indexOf('\n') >= 0 || message.indexOf('\r') >= 0) return fallback;
+        String lower = message.toLowerCase(java.util.Locale.ROOT);
+        for (String marker : new String[]{"exception", "error", "java.", "javax.", "android.", "http", "://"}) {
+            if (lower.contains(marker)) return fallback;
+        }
+        return message;
+    }
+
+    private static boolean containsHan(String value) {
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if (character >= 0x4E00 && character <= 0x9FFF) return true;
+        }
+        return false;
     }
 
     private void showError(String message) {

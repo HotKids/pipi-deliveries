@@ -152,7 +152,10 @@ assert.equal(cachedProductImage(warmImage.key), null,
 const { sharedData, sharedStateText, publishSharedData, withSharedFileTransaction } = await import("../services/shared-file-transaction");
 const { shipmentLifecycleKey } = await import("../services/shipment-lifecycle");
 const thumbnail = readFileSync(new URL("../components/ProductThumbnail.tsx", import.meta.url), "utf8");
-const ownerSource = stripTypeScriptTypes(thumbnail.slice(thumbnail.indexOf("  const lifecycle ="), thumbnail.indexOf("  const [loaded,")));
+// The owner closure reads the module's shared owner index, so the module-level code runs in the same scope.
+const thumbnailModule = thumbnail.slice(0, thumbnail.indexOf("export function ProductThumbnail(")).replace(/^import[\s\S]*?;\n/gm, "");
+const ownerSource = stripTypeScriptTypes(thumbnailModule +
+  thumbnail.slice(thumbnail.indexOf("  const lifecycle ="), thumbnail.indexOf("  const [loaded,")));
 const oldClock = Date.now;
 Date.now = () => NOW;
 try {

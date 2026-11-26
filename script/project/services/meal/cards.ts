@@ -1,5 +1,5 @@
 import { cachedMealRules } from "../carrier-authority";
-import type { ParcelActivityContent } from "../parcel-pickup";
+import { mealCompactCode, type ParcelActivityContent } from "../parcel-pickup";
 import { currentMeal, readMeals, updateMeals, type MealPayload, type MealSnapshot } from "./records";
 import { alternateMealArtwork, resolvePickupVisualStyle } from "./pickup-artwork";
 import { mealCredentialScope } from "./rules";
@@ -26,12 +26,14 @@ export function mealCard(scope: string, id: string, state: MealSnapshot, now: nu
   const code = redemption?.label ?? payload.code?.trim();
   if (!code) return null;
   const mealStyle = mealStyleFor(payload, state.style[id]);
+  const brandName = payload.brandName?.trim() || "";
+  const merchantName = payload.merchantName?.trim() || "";
   return {
     target: { mealId: id, mealScope: scope }, kind: "meal",
     capturedAtMs: payload.createdAt, expiresAtMs: payload.expiresAt,
-    title: payload.productName?.trim() || payload.brandName?.trim() || "取餐码",
-    location: payload.merchantName?.trim() || "",
-    code, mealStyle, mealBrandId: payload.brandId, hasMealQR: Boolean(redemption),
+    title: payload.productName?.trim() || brandName || "取餐码",
+    location: merchantName && merchantName !== brandName ? merchantName : "",
+    code, mealCompactCode: mealCompactCode(payload), mealStyle, mealBrandId: payload.brandId, hasMealQR: Boolean(redemption),
     ...(alternateMealArtwork(mealStyle) ? { artworkSwitchable: true } : {}),
   };
 }
@@ -44,10 +46,26 @@ export function toggleMealCup(card: ParcelActivityContent, now = Date.now()): bo
     const payload = currentMeal(state, target.mealId, now);
     const style = payload && mealStyleFor(payload, state.style[target.mealId]);
     const artworkAsset = alternateMealArtwork(style);
-    changed = Boolean(style && artworkAsset && style.artworkAsset === card.mealStyle?.artworkAsset);
-    return changed && style && artworkAsset
-      ? { ...state, style: { ...state.style, [target.mealId]: { ...style, artworkAsset } } }
-      : state;
+    changed = Boolean(payload && style && artworkAsset && style.artworkAsset === card.mealStyle?.artworkAsset);
+    if (!changed || !payload || !style || !artworkAsset) return state;
+    const drinkTemperature = artworkAsset === style.temperaturePair?.hot ? "hot" as const
+      : artworkAsset === style.temperaturePair?.cold ? "cold" as const
+      : style.drinkTemperature;
+    const pending = state.edits[target.mealId];
+    const mutationId = typeof UUID !== "undefined" ? UUID.string().toLowerCase() : `cup-${now}-${artworkAsset}`;
+    return {
+      ...state,
+      style: { ...state.style, [target.mealId]: { ...style, artworkAsset, ...(drinkTemperature ? { drinkTemperature } : {}) } },
+      edits: {
+        ...state.edits,
+        [target.mealId]: {
+          mutationId,
+          editedAt: now,
+          payload: drinkTemperature ? { ...payload, drinkTemperature } : payload,
+          ...(!pending || pending.requiresExisting ? { requiresExisting: true as const } : {}),
+        },
+      },
+    };
   });
   return changed;
 }

@@ -15,7 +15,7 @@ const pipiTable = javaToastTable("../../../../flutter_app/android/app/src/main/j
 const snake = (key: string) => key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase();
 const iosTable = new Map(Object.entries(EXPRESS_TOAST_COPY).map(([key, value]) => [snake(key), value]));
 
-// The pickup and handoff actions in the express parity contract are shared by Pipi and iOS.
+// The pickup and handoff actions in the express parity contract are shared by Pipi and iOS (and Lite once mirrored).
 for (const [iosKey, pipiKey] of Object.entries({
   PICKUP_CODE_COPIED: "PICKUP_CODE_COPIED",
   HANDOFF_CODE_COPIED: "HANDOFF_CODE_COPIED",
@@ -25,7 +25,7 @@ for (const [iosKey, pipiKey] of Object.entries({
 })) {
   assert.ok(iosTable.has(iosKey), iosKey);
   assert.equal(iosTable.get(iosKey), pipiTable.get(pipiKey), iosKey);
-  iosTable.delete(iosKey);
+  if (!liteTable.has(iosKey)) iosTable.delete(iosKey);
 }
 
 assert.ok(iosTable.size >= 31);

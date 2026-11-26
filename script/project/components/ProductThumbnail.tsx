@@ -2,7 +2,7 @@ import { AbortController, Image, VStack, useEffect, useState } from "scripting";
 import { initialProductImage, loadProductImage } from "../services/product-images";
 import { cachedProductImage, cainiaoImageCacheKey, cloudProductImageCacheKey, pddImageCacheKey, productImageCacheKey } from "../services/product-image-cache";
 import { pddParcelProductImage } from "../services/platform-parcel-merge";
-import { currentPlatformSession } from "../services/platform-accounts";
+import { currentPlatformSessionInTurn } from "../services/platform-accounts";
 import { gatewayCredentialForLocalCache } from "../services/credentials";
 import { isStoredShipmentRetained, readAppStateSnapshot } from "../services/storage";
 import type { Shipment } from "../models";
@@ -10,6 +10,37 @@ import { shipmentLifecycleKey } from "../services/shipment-lifecycle";
 import { sharedData, withSharedFileTransaction } from "../services/shared-file-transaction";
 import { CourierIcon } from "./CourierIcon";
 import { iconTileShape } from "./icon-tile";
+
+// Thumbnails checking one committed state version share its stored shipments, grouped by lifecycle in
+// stored order. A new state version, or a found owner that retention no longer keeps, rebuilds it once.
+type OwnerIndex = Readonly<{ stateRef: string | undefined; byLifecycle: ReadonlyMap<string, readonly Shipment[]> }>;
+let ownerIndex: OwnerIndex | undefined;
+
+function rebuildOwnerIndex(): OwnerIndex {
+  // The shipments and their state reference come from the same shared-file generation.
+  return withSharedFileTransaction(() => {
+    const byLifecycle = new Map<string, Shipment[]>();
+    for (const shipment of readAppStateSnapshot().state.shipments) {
+      const lifecycleKey = shipmentLifecycleKey(shipment);
+      const owners = byLifecycle.get(lifecycleKey);
+      if (owners) owners.push(shipment);
+      else byLifecycle.set(lifecycleKey, [shipment]);
+    }
+    return ownerIndex = { stateRef: sharedData().stateRef, byLifecycle };
+  });
+}
+
+/** The first stored shipment with this lifecycle and image key, as a scan of the stored state finds it. */
+function storedImageOwner(lifecycle: string, cacheKey: string, keyFor: (shipment: Shipment) => string): Shipment | undefined {
+  const find = (index: OwnerIndex) => index.byLifecycle.get(lifecycle)?.find(shipment => keyFor(shipment) === cacheKey);
+  const stateRef = sharedData().stateRef;
+  const index = ownerIndex;
+  if (stateRef && index && stateRef === index.stateRef) {
+    const owner = find(index);
+    if (!owner || isStoredShipmentRetained(owner)) return owner;
+  }
+  return find(rebuildOwnerIndex());
+}
 
 export function ProductThumbnail(props: {
   shipment: Shipment;
@@ -24,7 +55,7 @@ export function ProductThumbnail(props: {
 }) {
   const cainiao = !props.cacheKey ? props.shipment.platformFields?.cainiaoImage : undefined;
   const cainiaoCurrent = () => {
-    try { return !!cainiao && !!currentPlatformSession("cainiao", cainiao.generation); }
+    try { return !!cainiao && !!currentPlatformSessionInTurn("cainiao", cainiao.generation, true); }
     catch { return false; }
   };
   const useCainiao = cainiaoCurrent();
@@ -37,25 +68,14 @@ export function ProductThumbnail(props: {
   };
   const imageURL = props.imageURL || (useCainiao ? cainiao?.url : pdd || cloud?.url) || "";
   const keyFor = useCainiao ? cainiaoImageCacheKey : pdd ? pddImageCacheKey
-    : cloud ? (shipment: Shipment) => cloudProductImageCacheKey(shipment, cloud.scope)
+    // R5-NEW-09 ①: the cloud image's own URL is part of its key, so a replaced cloud image is not served from the old one.
+    : cloud ? (shipment: Shipment) => cloudProductImageCacheKey(shipment, cloud.scope, cloud.url)
       : (shipment: Shipment) => productImageCacheKey(shipment.identity);
   const cacheKey = useCainiao || pdd || cloud ? keyFor(props.shipment) : props.cacheKey;
   const lifecycle = shipmentLifecycleKey(props.shipment);
-  let checkedStateRef: string | undefined;
-  let retained = false;
-  let checkedShipment = props.shipment;
   const isRetained = () => {
     if (!cacheKey || useCainiao && !cainiaoCurrent() || cloud && !cloudCurrent()) return false;
-    const stateRef = sharedData().stateRef;
-    if (stateRef && stateRef === checkedStateRef && (!retained || isStoredShipmentRetained(checkedShipment))) return retained;
-    return withSharedFileTransaction(() => {
-      const current = readAppStateSnapshot().state.shipments.find(shipment =>
-        shipmentLifecycleKey(shipment) === lifecycle && keyFor(shipment) === cacheKey);
-      retained = current != null;
-      if (current) checkedShipment = current;
-      checkedStateRef = sharedData().stateRef;
-      return retained;
-    });
+    return storedImageOwner(lifecycle, cacheKey, keyFor) != null;
   };
   const [loaded, setLoaded] = useState<{
     key: string;

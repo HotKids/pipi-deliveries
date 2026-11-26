@@ -65,6 +65,16 @@ const DATE = "(?:今天|明天|(?:\\d{4}年)?\\d{1,2}月\\d{1,2}日|\\d{4}-\\d{1
 const WINDOW = new RegExp("(" + DATE + ")?\\s*(\\d{1,2})[:：](\\d{2})\\s*[–—~～至-]\\s*(" +
   DATE + ")?\\s*(\\d{1,2})[:：](\\d{2})");
 const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
+
+function nearestCalendarYear(month: number, date: number, observedAtMs: number): number {
+  const observed = observedAtMs + 8 * HOUR_MS;
+  let year = new Date(observed).getUTCFullYear();
+  let candidate = Date.UTC(year, month - 1, date);
+  if (candidate < observed - 180 * DAY_MS) candidate = Date.UTC(++year, month - 1, date);
+  else if (candidate > observed + 180 * DAY_MS) candidate = Date.UTC(--year, month - 1, date);
+  return year;
+}
 
 function appointmentDate(value: string | undefined, capturedAtMs: number): string {
   if (!value) return "";
@@ -74,7 +84,8 @@ function appointmentDate(value: string | undefined, capturedAtMs: number): strin
   const date = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/) ??
     value.match(/^(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日$/);
   if (!date) return "";
-  const day = [date[1] ?? captureDay.slice(0, 4), date[2].padStart(2, "0"), date[3].padStart(2, "0")].join("-");
+  const year = date[1] ? Number(date[1]) : nearestCalendarYear(Number(date[2]), Number(date[3]), capturedAtMs);
+  const day = [String(year), date[2].padStart(2, "0"), date[3].padStart(2, "0")].join("-");
   const ms = Date.parse(day);
   return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === day ? day : "";
 }
@@ -103,7 +114,12 @@ function recognizeHandoff(lines: readonly string[], capturedAtMs: number): Indep
   if (range[1] && !first || range[4] && !last) return record;
   if (!first || !last) return { ...record, windowText };
   const windowStartAtMs = Date.parse(first + "T" + from + ":00+08:00");
-  const windowEndAtMs = Date.parse(last + "T" + to + ":00+08:00");
+  let windowEndAtMs = Date.parse(last + "T" + to + ":00+08:00");
+  if (windowEndAtMs < windowStartAtMs && range[4] && !/\d{4}/.test(range[4])) {
+    const rolledDay = [String(Number(last.slice(0, 4)) + 1), last.slice(5)].join("-");
+    const rolledMs = Date.parse(rolledDay + "T" + to + ":00+08:00");
+    if (Number.isFinite(rolledMs)) windowEndAtMs = rolledMs;
+  }
   return windowEndAtMs < windowStartAtMs ? { ...record, windowText } :
     { ...record, windowText, windowStartAtMs, windowEndAtMs };
 }

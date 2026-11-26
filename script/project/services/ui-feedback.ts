@@ -38,6 +38,21 @@ export function noteSaveFailedToast(error: unknown): string {
     ? EXPRESS_TOAST_COPY.userNoteChanged : SAVE_FAILED_TOAST;
 }
 
+/** What a list pull's international Watch page read did (G-HIGH-10): changed rows, nothing new, failed, or not run. */
+export type WatchPullOutcome = "refreshed" | "unchanged" | "failed" | "skipped";
+
+/**
+ * A list pull counts its Watch page read as one more refresh when the read changed rows or failed (G-HIGH-10, 2026-11-20
+ * review), so the toast answers for the international rows too. An unchanged or skipped read adds nothing.
+ */
+export function withWatchPullOutcome<T extends Readonly<{ attempted: number; succeeded: number; failed: number }>>(
+  summary: T, outcome: WatchPullOutcome | undefined,
+): T {
+  if (outcome === "refreshed") return { ...summary, attempted: summary.attempted + 1, succeeded: summary.succeeded + 1 };
+  if (outcome === "failed") return { ...summary, attempted: summary.attempted + 1, failed: summary.failed + 1 };
+  return summary;
+}
+
 /** 列表下拉的四种结果（三端同一张表，AGENTS §11）。 */
 export function refreshSummaryToast(summary: Readonly<{
   attempted: number;

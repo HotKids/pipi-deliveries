@@ -58,6 +58,11 @@ export type TrackNode = {
   detail: string;
   /** Optional right-column JT text; detail retains the full label and body as evidence. */
   displayContext?: string;
+  /**
+   * A Watch scan the Bot holds while its lagging summary catches up (the cloud record's `heldTracks`; owner
+   * 2026-11-25 「所有展示面都跳过（推荐）」): the detail timeline shows it, no headline leads with it (`isHeldTrack`).
+   */
+  held?: true;
   statusCode: string;
   raw: Readonly<Record<string, unknown>>;
 };
@@ -207,6 +212,22 @@ export type ParcelPlatformFields = Readonly<{
 export type PddParcelImport = Readonly<{ ownerKey: string; orderId: string; shippingId?: string }>;
 export type PddCloudOrigin = Readonly<{ waybill: string; waybillGeneration: number }>;
 
+export type CloudPddParcelTombstone = Readonly<{
+  waybill: string;
+  anchorAt: number;
+  action: "deleted" | "completed";
+  actedAtMs: number;
+}>;
+
+export type WatchFeedbackRecord = Readonly<{
+  scope: string;
+  watchRecordId: string;
+  waybill: string;
+  action: "completed" | "deleted";
+  actedAt: number;
+  latestTrackAtMs: number;
+}>;
+
 export type ParcelHandoffRecord = Readonly<{
   id: string;
   kind: "handoff";
@@ -352,6 +373,8 @@ export type AppState = {
   pendingQueries: readonly PendingManualQuery[];
   shipments: readonly Shipment[];
   watchSource?: { scope: string; snapshot: string; observedAtMs: number };
+  watchFeedback?: readonly WatchFeedbackRecord[];
+  cloudPddTombstones?: readonly CloudPddParcelTombstone[];
   pickupCodeRecords?: readonly PickupCodeRecord[];
   pickupArtworkChoices?: PickupArtworkChoices;
   pendingNotifications?: readonly ShipmentNotificationEvent[];
@@ -377,6 +400,8 @@ export type WidgetRow = {
   statusLabel: string;
   /** 用户备注；2×2 不显示，4×2 拼在状态词后面。旧快照没有这个字段，按空处理。 */
   note?: string;
+  /** Outgoing parcel: a small gray 寄 tag follows the 2×2 status word and the 4×2 waybill tail (owner 2026-11-20). Older snapshots lack it. */
+  sender?: boolean;
   latestDetail: string;
 };
 

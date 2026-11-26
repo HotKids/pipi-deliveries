@@ -61,6 +61,8 @@ test("an empty outbox records one timed completion while retaining real reads an
     assert.deepEqual(events.map(entry => entry.event), ["notification.replay.completed"]);
     assert.deepEqual(events[0].details, {
       clientBuild: events[0].details.clientBuild,
+      // D191 (plan step 7): every drain line names the app_local layer; iOS has local notifications only.
+      pushOrigin: "app_local",
       flowId: "empty-outbox", stage: "notifications", result: "completed",
       budgetMs: 1_000, readDurationMs: readElapsed, durationMs: readElapsed,
       scheduleDurationMs: 0, writeDurationMs: 0,
@@ -89,18 +91,21 @@ test("an empty alignment-filtered drain preserves other queued events with one c
   assert.equal(events[0].details.readDurationMs, 0);
 });
 
-test("a nonempty drain preserves its start, read and completion trace with durable ACKs", async () => {
+test("a nonempty drain preserves its read and completion trace with durable ACKs", async () => {
   seed();
   schedule = async () => { clock += 5; };
   await replayPendingShipmentNotifications(() => true, { deadlineAtMs: NOW + 1_000, flowId: "real-outbox" });
   const events = readDiagnostics().filter(entry => entry.event.startsWith("notification.replay.")).reverse();
+  // D4/D207 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」: 「iOS 例行降噪例外按同一规则处理」): the nonempty drain's
+  // start line is merged into its completion, which keeps the budget.
   assert.deepEqual(events.map(entry => entry.event), [
-    "notification.replay.started", "notification.replay.loaded", "notification.replay.completed",
+    "notification.replay.loaded", "notification.replay.completed",
   ]);
-  assert.equal(events[0].details.budgetMs, 1_000);
-  assert.equal(events[1].details.pendingNotifications, 3);
-  assert.equal(events[2].details.succeeded, 3);
-  assert.equal(events[2].details.durationMs, 15);
+  assert.equal(events[1].details.budgetMs, 1_000);
+  assert.equal(events[0].details.pendingNotifications, 3);
+  assert.equal(events[1].details.succeeded, 3);
+  assert.equal(events[1].details.durationMs, 15);
+  assert.ok(events.every(entry => entry.details.pushOrigin === "app_local"));
   assert.equal(attempted.length, 3);
   assert.equal(loadState().pendingNotifications?.length, 0);
 });

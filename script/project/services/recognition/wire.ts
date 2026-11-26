@@ -159,5 +159,12 @@ export function parseRecognitionResult(text: string): { family: Family; fields: 
   for (const field of REQUIRED[family]) if (!string(fields[field]).trim()) invalid();
   if (family === "pickup" && ["brand", "productName", "merchantName", "pickupCode"].every(key => fields[key] === null)) invalid();
   if (family === "express" && /^1[3-9]\d{9}$/u.test(string(fields.waybill).trim())) invalid();
+  if (family === "movie") {
+    const seats = list(fields.seatInfo);
+    if (seats.length === 0 && fields.showStartTime === null) invalid();
+    if (fields.ticketCount !== null && seats.length > 0 && fields.ticketCount !== seats.length) invalid();
+  }
+  if (family === "train" && !/^[GDCZTKY]\d{1,4}$/u.test(string(fields.trainNo).trim())) invalid();
+  if (family === "flight" && !/^[A-Za-z0-9][A-Za-z]{1,2}\d{3,4}$/u.test(string(fields.flightNo).trim())) invalid();
   return { family, fields };
 }

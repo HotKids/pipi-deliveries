@@ -26,6 +26,12 @@ const ACCENT_BY_ICON: Readonly<Partial<Record<string, ColorStringHex>>> = {
   yzpy: "#008E4F",
   zjs: "#009D51",
   zto: "#0480BB",
+  // International Watch icons (G-MED-04, 2026-11-20 review): the same filter over the 156px bundled artwork.
+  "watch-dhl": "#FECC00",
+  "watch-fedex": "#4D138B",
+  "watch-gls": "#0519B0",
+  "watch-ups": "#EFB828",
+  "watch-usps": "#333267",
 };
 
 export function carrierArtworkAccent(icon: string): ColorStringHex | undefined {
@@ -54,6 +60,15 @@ export const EMPTY_CARRIER_DISPLAY_NAME = "快递";
 export function carrierDisplayName(companyName: string | null | undefined): string {
   const name = String(companyName || "").trim();
   return (name && resolveCarrierName(name)?.displayName) || name || EMPTY_CARRIER_DISPLAY_NAME;
+}
+
+/**
+ * 4×2 widget identity line: 「承运商 尾号」. An outgoing parcel's 寄 is the gray tag after it, not text (owner
+ * 2026-11-20: 「4×2 也改成灰色标签放尾号后面」).
+ */
+export function widgetIdentityText(row: Readonly<{ companyName: string; waybillSuffix: string }>): string {
+  const carrier = carrierDisplayName(row.companyName);
+  return row.waybillSuffix ? `${carrier} ${row.waybillSuffix}` : carrier;
 }
 
 export type BuiltInCarrierPresentation = Readonly<{

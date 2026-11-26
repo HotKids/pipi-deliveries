@@ -1,4 +1,4 @@
-import { Button, HStack, Rectangle, Spacer, Text, VStack } from "scripting";
+import { Button, Divider, HStack, Rectangle, Spacer, Text, VStack } from "scripting";
 import type { Shipment } from "../models";
 import {
   listHeadline,
@@ -33,6 +33,7 @@ export function ShipmentRow(props: {
   onComplete: () => void;
   deleteDisabled?: boolean;
   completeDisabled?: boolean;
+  showSeparator?: boolean;
 }) {
   const item = props.shipment;
   const presentationStatus = shipmentPresentationStatus(item);
@@ -45,6 +46,11 @@ export function ShipmentRow(props: {
       padding={{ vertical: 10 }}
       listRowInsets={{ top: 8, leading: 0, bottom: 8, trailing: 0 }}
       listRowBackground={<Rectangle fill="clear" />}
+      listRowSeparator="hidden"
+      overlay={props.showSeparator ? {
+        alignment: "bottom",
+        content: <Divider padding={{ leading: 60 }} />,
+      } : undefined}
       contentShape="rect"
       onTapGesture={props.onOpen}
       trailingSwipeActions={{
@@ -52,6 +58,7 @@ export function ShipmentRow(props: {
         actions: [
           <Button
             title="删除"
+            systemImage="trash"
             role="destructive"
             disabled={props.deleteDisabled === true}
             action={props.onDelete}
@@ -66,6 +73,7 @@ export function ShipmentRow(props: {
               actions: [
                 <Button
                   title="签收"
+                  systemImage="checkmark.circle.fill"
                   tint="systemGreen"
                   disabled={props.completeDisabled === true}
                   action={props.onComplete}

@@ -7,13 +7,13 @@ import type { AccountParcelDto } from "../account-parser";
 import { queryManualForSource } from "../manual-query";
 import type { ShipmentRouteMutation } from "../routes";
 import { displayWaybill, isForeignManualPackage, isJingDongSourceShipment, isHomeAccountQuerySource, selectShipmentDetailTimeline, selectShipmentTimeline, shipmentSelectionEvidence, signedRefreshFrozen } from "../shipment-policy";
-import { privateHash, refreshValueFingerprint as shipmentEffectiveFingerprint } from "../storage";
+import { refreshValueFingerprint as shipmentEffectiveFingerprint } from "../storage";
 import { normalizeWaybill, normalizedProjectedWaybill, timelineCapability, timedTracks, timelineLatestEventAt, timelineLatestTrackAt } from "../status";
 import { type RefreshProviderResult, runtimeManualRefreshAttempt } from "../refresh-runtime-state";
 import { OperationTimeoutError } from "../deadline";
 import { activeAccountOrderProjectionAttempt } from "../account-sync-policy";
 import type { ExpressToastKey } from "../express-toast-copy";
-import { diagnosticErrorDetails, writeDiagnostic, type StageCancellationEnd } from "../logger";
+import { diagnosticErrorDetails, diagnosticHandle, writeDiagnostic, type StageCancellationEnd } from "../logger";
 import { CarrierRecognitionBudget, carrierRecognitionDue, recognizeNonSyncCarrier, type CarrierRecognitionResult } from "../carrier-recognition";
 import { repairProjectedShipmentCarrier } from "../account-carrier-normalization";
 import { carrierUnmatched } from "../carrier-gate";
@@ -157,6 +157,11 @@ export type ShipmentRefreshOptions = {
   detailEntry?: DetailEntryObservation;
   /** Alignment reserves once at the first actual transport request, after source/ownership gates. */
   beforeQuery?: () => void;
+  /**
+   * The flow a forced status-alignment refresh belongs to (D107): its lines carry the alignment's flow id instead of a
+   * new one. Diagnostics only.
+   */
+  diagnosticFlowId?: string;
 };
 export type TargetRefreshLease = Readonly<{
   deadlineAtMs?: number;
@@ -433,8 +438,12 @@ export function rowClassifyAnchor(shipment: Shipment): () => number | undefined 
   return () => firstClassifyAnchor(shipment.identity.id, () => shipmentReuseAnchorAtMs(shipment));
 }
 
+/**
+ * The order's handle on diagnostic lines (D7, owner 2026-11-21 「保留尾号写成例外，订单指纹换句柄（推荐）」): a local keyed
+ * handle that cannot be reversed to the order number, in place of the unsalted order-number hash this used to be.
+ */
 export function projectionOwnerFingerprint(ownerId: string): string {
-  return privateHash(ownerId).slice(0, 12);
+  return diagnosticHandle("order", ownerId);
 }
 
 /**

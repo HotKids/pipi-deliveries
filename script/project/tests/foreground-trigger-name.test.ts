@@ -62,7 +62,9 @@ Object.assign(globalThis, {
   assert.deepEqual(outcomes.map((outcome) => outcome.trigger), ["foreground"],
     "the foreground controller hears the renamed trigger");
   assert.deepEqual(leaseTriggers, ["foreground"], "the lease records the renamed trigger");
-  const started = rawEntries().filter((entry) => entry.event === "refresh.started");
+  // D4: the refresh writes no start line; its end line carries the trigger.
+  assert.equal(rawEntries().some((entry) => entry.event === "refresh.started"), false);
+  const started = rawEntries().filter((entry) => entry.event === "refresh.succeeded");
   assert.equal(started.length, 1);
   assert.equal(started[0]!.details.trigger, "foreground", "the stored line is written foreground, not translated later");
   assert.equal(JSON.stringify(rawEntries()).includes("foreground_sync"), false, "no new line carries the old name");
@@ -96,7 +98,7 @@ Object.assign(globalThis, {
   assert.deepEqual(rawEntries(), old, "reading translates; it does not rewrite the stored log");
 
   // 翻译只在读取路径：写入按调用方给的原值落盘，新写入的 foreground 靠 sync.ts 自己写对。
-  writeDiagnostic("refresh.started", { flowId: "refresh-new1", source: "interface5", trigger: "foreground_sync" });
+  writeDiagnostic("refresh.skipped", { flowId: "refresh-new1", source: "interface5", trigger: "foreground_sync" });
   flushDiagnostics();
   assert.equal(rawEntries().at(-1)!.details.trigger, "foreground_sync", "the write path does not translate");
 }
@@ -106,7 +108,8 @@ Object.assign(globalThis, {
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
   const page = readFileSync(join(projectRoot, "pages/DiagnosticLogPage.tsx"), "utf8");
   const functions = ["legacyBool", "bindingsCount", "providerText", "reasonText", "stageText",
-    "timelineProviderText", "failureText", "detailsText"].map((name) => {
+    "timelineProviderText", "failureText", "recognitionParts", "phaseParts", "candidateParts", "resultText",
+    "detailsText"].map((name) => {
     const source = page.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`))?.[0];
     assert.ok(source, name);
     return stripTypeScriptTypes(source);

@@ -993,10 +993,18 @@ export async function queryManualForSource(input: {
 }): Promise<ManualQueryOutcome> {
   requireScriptSource(input.source);
   const waybill = normalizeWaybill(input.waybill);
-  if (waybill.length < 6) throw new Error("请输入有效的快递单号");
+  // D109: a query refused before its source chain still ends with its own line (no waybill or tail is written).
+  const rejectInput = (message: string) => {
+    writeDiagnostic("manual.query.completed", {
+      flowId: input.diagnosticFlowId, source: input.source, stage: input.diagnosticStage || "manual_query",
+      result: "invalid_input", failureCode: "invalid_input",
+    });
+    return new Error(message);
+  };
+  if (waybill.length < 6) throw rejectInput("请输入有效的快递单号");
   const phoneTail = String(input.phoneTail || "").trim();
   if (phoneTail && !/^\d{4}$/.test(phoneTail)) {
-    throw new Error("请输入 4 位手机尾号");
+    throw rejectInput("请输入 4 位手机尾号");
   }
 
   const phoneTails = input.bindings.map((binding) => binding.phone.slice(-4));
@@ -1106,13 +1114,8 @@ export async function queryManualForSource(input: {
     const timelineProvider = observation.source === "route" ? routeTimelineProvider
       : diagnosticManualProvider(observation.result?.shipment?.timeline.provider || observation.source);
     if (observation.phase === "started") {
-      writeDiagnostic("manual.source.started", {
-        flowId: diagnosticFlowId,
-        source: input.source,
-        stage,
-        ...diagnosticIdentity,
-        timelineProvider,
-      });
+      // D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): a source writes no start line; its end line carries the
+      // same identity and its duration.
       const startedAt = Date.now();
       sourceCancelled.set(observation.source, openStageCancellationEnd(diagnosticFlowId, input.signal, () =>
         // 用户 2026-09-28：cancelled by the parent refresh, the source still ends — diagnostics only, so it records
@@ -1207,7 +1210,15 @@ export async function queryManualForSource(input: {
         ? hasPickerTimelineStart(accumulated)
         : hasTimelineStartBeforeKdniao(accumulated)),
     );
-  }, Boolean(input.pickerFirst));
+  }, Boolean(input.pickerFirst)).catch((error: unknown) => {
+    // D109: the chain itself failed (its deadline or cancellation); the query ends here before the error escapes.
+    writeDiagnostic("manual.query.completed", {
+      flowId: diagnosticFlowId, source: input.source, stage: input.diagnosticStage || "manual_query",
+      ...diagnosticIdentity, durationMs: Date.now() - queryStartedAt,
+      result: input.signal?.aborted ? "cancelled" : "failed", ...diagnosticErrorDetails(error),
+    }, input.signal?.aborted ? "info" : "warning");
+    throw error;
+  });
   const {
     selected: selectedResult,
     selectedRouteUrl,
@@ -1228,6 +1239,12 @@ export async function queryManualForSource(input: {
     : 0;
   const selectedStatusOnly = !selectedTrackCount && selected?.timeline.structuredStatus === true &&
     selected.timeline.semantic !== "UNKNOWN";
+  const phoneError = !selected
+    ? Object.values(errors).find(
+        (error) =>
+          error instanceof Error && error.message.includes("手机尾号"),
+      )
+    : null;
   writeDiagnostic("manual.query.completed", {
     flowId: diagnosticFlowId,
     source: input.source,
@@ -1252,13 +1269,9 @@ export async function queryManualForSource(input: {
       : selectedStatusOnly ? "status_only"
       : selection.attemptedSources === 0 ? "cooldown"
       : Object.values(errors).some(Boolean) ? "query_failed" : "empty_response",
+    // D109: a query that ends asking for the phone tail says so; the tail itself is never written.
+    ...(phoneError instanceof Error ? { failureCode: "phone_tail" } : {}),
   }, selectedTrackCount || selectedStatusOnly ? "info" : "warning");
-  const phoneError = !selected
-    ? Object.values(errors).find(
-        (error) =>
-          error instanceof Error && error.message.includes("手机尾号"),
-      )
-    : null;
   if (phoneError instanceof Error) throw phoneError;
   if (selected && hasTimed(selected)) {
     return { shipment: selected, pending: null, routeUrl: selectedRouteUrl, result: "success" };

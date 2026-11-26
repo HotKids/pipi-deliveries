@@ -16,7 +16,7 @@ import { deadlineAfter, deadlineExpired, OperationTimeoutError } from "../deadli
 import { ACCOUNT_DETAIL_BUDGET_MS, accountChildDeadline } from "../account-sync-policy";
 import { accountParcelWithProjectionReference } from "../account-order-reference";
 import { enhancementPhone } from "../enhanced-account";
-import { classifyDiagnosticError, diagnosticErrorDetails, flushDiagnostics, openStageCancellationEnd, writeDiagnostic } from "../logger";
+import { beginDiagnosticFlow, classifyDiagnosticError, diagnosticErrorDetails, flushDiagnostics, openStageCancellationEnd, writeDiagnostic } from "../logger";
 import { SCRIPT_BINDING_SOURCE, requireScriptSource } from "../script-source";
 import { carrierUnmatched } from "../carrier-gate";
 import {
@@ -219,7 +219,7 @@ export async function refreshHomeAccountShipment(
     recordCainiaoSupplementAttempt(original.identity.id, forcedInfo.timesKey,
       forcedInfo.statusSemantic, Date.now(), complete);
   };
-  writeDiagnostic("refresh.stage.started", { flowId, source, stage: "account_detail", stagePhase: "query",
+  beginDiagnosticFlow("refresh.stage.started", { flowId, source, stage: "account_detail", stagePhase: "query",
     budgetMs: ACCOUNT_DETAIL_BUDGET_MS, ...shipmentDiagnosticDetails(original, "v5_query") });
   flushDiagnostics();
   const stageCancelled = openStageCancellationEnd(flowId, signal, () => {
@@ -428,7 +428,7 @@ export async function runDetailEntryQuery(
     catch (error) { reservationFailed = true; throw error; }
   } : undefined;
   const routes: DeferredRouteMutations = new Map();
-  writeDiagnostic("detail.refresh.stage_started", {
+  beginDiagnosticFlow("detail.refresh.stage_started", {
     flowId, source, trigger: statusAlignment ? "status_alignment" : "detail_open", stage: "account_detail",
     budgetMs: ACCOUNT_DETAIL_BUDGET_MS,
     ...shipmentDiagnosticDetails(original, "v5_query"),

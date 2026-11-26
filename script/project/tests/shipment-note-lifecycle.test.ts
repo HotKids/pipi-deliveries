@@ -25,7 +25,10 @@ const page = readFileSync(new URL("../pages/DetailPage.tsx", import.meta.url), "
 const action = stripTypeScriptTypes(page.slice(page.indexOf("async function editProductName()"), page.indexOf("const [loadingManualDetail")));
 const noteAction = stripTypeScriptTypes(page.slice(page.indexOf("async function editNote()"), page.indexOf("async function editProductName()")));
 const thumbnail = readFileSync(new URL("../components/ProductThumbnail.tsx", import.meta.url), "utf8");
-const ownerSource = stripTypeScriptTypes(thumbnail.slice(thumbnail.indexOf("  const cainiao ="), thumbnail.indexOf("  const [loaded,")));
+// The owner closure reads the module's shared owner index, so the module-level code runs in the same scope.
+const thumbnailModule = thumbnail.slice(0, thumbnail.indexOf("export function ProductThumbnail(")).replace(/^import[\s\S]*?;\n/gm, "");
+const ownerSource = stripTypeScriptTypes(thumbnailModule +
+  thumbnail.slice(thumbnail.indexOf("  const cainiao ="), thumbnail.indexOf("  const [loaded,")));
 try {
   for (const change of ["reimport", "reuse", "delete", "refresh", "projection", "manual-refresh", "first-owner", "absorption"] as const) {
     memory.clear();

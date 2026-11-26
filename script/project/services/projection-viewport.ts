@@ -56,6 +56,7 @@ export function createProjectionViewportHost(show: (view: ProjectionViewportView
 let host: ProjectionViewportHost | null = null;
 // The app root mounts on screen and its first scene event may never come.
 let sceneActive = true;
+const sceneListeners = new Set<(active: boolean) => void>();
 
 /**
  * The app root reports its scene phase (user 2026-09-25): a refresh flow opens the union page only
@@ -63,7 +64,16 @@ let sceneActive = true;
  * and times out.
  */
 export function setProjectionSceneActive(active: boolean): void {
+  if (sceneActive === active) return;
   sceneActive = active;
+  for (const listener of [...sceneListeners]) {
+    try { listener(active); } catch { /* scene listeners are best-effort */ }
+  }
+}
+
+export function onProjectionSceneChange(listener: (active: boolean) => void): () => void {
+  sceneListeners.add(listener);
+  return () => { sceneListeners.delete(listener); };
 }
 
 export function projectionSceneActive(): boolean {

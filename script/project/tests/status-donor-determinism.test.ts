@@ -99,7 +99,8 @@ test("automatic SF takeover can upgrade its same-semantic Worker subtype without
     waybill: "SF123456789012", courierCode: "SF", companyName: "SF" });
   const source = sf(pack("interface5", "PICKED", 1, EVENT - 3000));
   const online = sf(pack("v6_query", "DELIVERY", 2));
-  const station = sf(pack("v4_query", "DELIVERY", 14, EVENT - 1000, 1));
+  const station = sf(pack("v4_query", "DELIVERY", 14, EVENT, 1));
+  const staleStation = sf(pack("v4_query", "DELIVERY", 14, EVENT - 1000, 1));
   const shipment: Shipment = { ...row([online, station]), identity: { ...row([online]).identity,
     id: source.waybill, sourceId: source.waybill, courierCode: "SF", companyName: "SF",
     manuallyAdded: false, sourceProvider: "ShunFeng" }, timeline: source, sourceTimeline: source };
@@ -108,6 +109,8 @@ test("automatic SF takeover can upgrade its same-semantic Worker subtype without
   assert.equal(selected.normalizedStatus?.priority, 1);
   assert.equal(selected.statusEventAtMs, station.statusEventAtMs);
   assert.equal(shipmentSelectionEvidence(shipment).statusProvider, "v4_query");
+  assert.equal(selectShipmentTimeline({ ...shipment, manualTimelines: [online, staleStation] }).normalizedStatus?.priority, 0,
+    "an older subtype donor cannot rewind a newer status event");
   const laterDifferent = sf(pack("v4_query", "COMPLETED", 14, EVENT + 1000));
   assert.equal(selectShipmentTimeline({ ...shipment, manualTimelines: [online, laterDifferent] }).semantic,
     "DELIVERY", "same-semantic preference cannot replace an already valid SF status with a different semantic");

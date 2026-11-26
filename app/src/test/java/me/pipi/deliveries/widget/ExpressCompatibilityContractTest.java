@@ -183,7 +183,9 @@ public final class ExpressCompatibilityContractTest {
         String layout = projectFile("app/src/main/res/layout/express_widget_2x2.xml");
         String provider = source("ExpressWidgetProvider.java");
         String metrics = source("ExpressWidgetLayout.java");
-        String header = block(layout, "@+id/widget_compact_top", "</LinearLayout>");
+        // The whole header element: since the 寄 tag (owner 2026-11-21, "Lite 也加寄标签") the status
+        // word sits in its own line container, whose closing tag comes before the carrier line.
+        String header = element(layout, "@+id/widget_compact_top");
 
         assertTrue(layout.contains("@+id/widget_priority_status"));
         assertTrue(layout.contains("@+id/widget_compact_courier_logo"));
@@ -243,8 +245,12 @@ public final class ExpressCompatibilityContractTest {
         String provider = source("ExpressWidgetProvider.java");
         String metrics = source("ExpressWidgetLayout.java");
         String api31 = source("ExpressWidgetApi31.java");
-        String identity = block(
-                layout, "@+id/widget_compact_identity", "</LinearLayout>");
+        // The whole identity element. Owner 2026-11-21 ("Lite 也加寄标签"): the status word and an
+        // outgoing parcel's 寄 tag share one line container inside it, before the carrier line.
+        String identity = element(layout, "@+id/widget_compact_identity");
+        String identityTag = identity.substring(0, identity.indexOf('>') + 1);
+        String statusLineTag = element(layout, "@+id/widget_compact_status_line");
+        statusLineTag = statusLineTag.substring(0, statusLineTag.indexOf('>') + 1);
 
         assertTrue(identity.contains("android:layout_width=\"0dp\""));
         // 用户定 2026-09-05 晚：固定 24dp/14dp 行会把 20sp「运输中」和 12sp「京东快递」
@@ -253,12 +259,17 @@ public final class ExpressCompatibilityContractTest {
         assertTrue(identity.contains("android:layout_height=\"wrap_content\""));
         assertTrue(identity.contains("android:layout_weight=\"1\""));
         assertTrue(identity.contains("android:paddingBottom=\"5dp\""));
-        assertFalse(identity.contains("android:gravity=\"center_vertical\"\n"));
-        assertEquals(3, occurrences(identity, "android:layout_height=\"wrap_content\""));
+        assertFalse(identityTag.contains("android:gravity="));
+        // The one centred gravity belongs to the status line, which aligns the tag on the status word.
+        assertEquals(1, occurrences(identity, "android:gravity=\"center_vertical\""));
+        assertTrue(statusLineTag.contains("android:gravity=\"center_vertical\""));
+        // Natural heights: the identity, the status line, the status word, the 寄 tag and the carrier line.
+        assertEquals(5, occurrences(identity, "android:layout_height=\"wrap_content\""));
         assertEquals(1, occurrences(identity, "android:layout_marginTop=\"-2dp\""));
         assertEquals(0, occurrences(identity, "android:lineHeight="));
         assertEquals(0, occurrences(identity, "android:layout_height=\"0dp\""));
-        assertEquals(2, occurrences(identity, "android:includeFontPadding=\"false\""));
+        // The status word, the 寄 tag and the carrier line.
+        assertEquals(3, occurrences(identity, "android:includeFontPadding=\"false\""));
         assertTrue(metrics.contains("COMPACT_IDENTITY_BOTTOM_INSET_DP = 5f"));
         assertTrue(metrics.contains("final float courierLogoSizeDp"));
         assertTrue(metrics.contains("COMPACT_STATUS_TEXT_SIZE_SP = 20f"));
@@ -426,6 +437,33 @@ public final class ExpressCompatibilityContractTest {
         assertTrue(start >= 0);
         assertTrue(end > start);
         return source.substring(start, end + endTag.length());
+    }
+
+    /** The element whose opening tag carries {@code id}, through its matching closing tag. */
+    private static String element(String source, String id) {
+        int idAt = source.indexOf(id);
+        assertTrue(idAt >= 0);
+        int start = source.lastIndexOf('<', idAt);
+        int nameEnd = start + 1;
+        while (!Character.isWhitespace(source.charAt(nameEnd))) nameEnd++;
+        String name = source.substring(start + 1, nameEnd);
+        String open = "<" + name;
+        String close = "</" + name + ">";
+        int depth = 0;
+        int offset = start;
+        while (true) {
+            int nextOpen = source.indexOf(open, offset);
+            int nextClose = source.indexOf(close, offset);
+            assertTrue(nextClose > start);
+            if (nextOpen >= 0 && nextOpen < nextClose) {
+                depth++;
+                offset = nextOpen + open.length();
+            } else {
+                depth--;
+                offset = nextClose + close.length();
+                if (depth == 0) return source.substring(start, offset);
+            }
+        }
     }
 
     private static PngRgba decodeRgbaPng(byte[] source) throws Exception {

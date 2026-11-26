@@ -127,6 +127,9 @@ async function until(condition: () => boolean, timeoutMs = 4_000): Promise<void>
 
 const owner = () => loadState().shipments.find((shipment) => shipment.identity.id === OWNER_ID)!;
 const events = (event: string) => readDiagnostics().filter((entry) => entry.event === event);
+// D4: a union page attempt writes no start line; its end line carries why the page opened.
+const pageAttempts = () => readDiagnostics().filter((entry) => entry.event.startsWith("order.projection.") &&
+  entry.details.projectionReason != null);
 
 // In the foreground the refresh flow opens the page as before.
 {
@@ -147,7 +150,7 @@ for (const phase of ["inactive", "background"] as const) {
   assert.deepEqual(loadedUrls, [], `${phase}: the union page never loads off screen`);
   assert.equal(owner().identity.projectedWaybill || "", "");
   assert.equal(owner().identity.orderProjectionRetry, undefined, `${phase}: the order was not reserved`);
-  assert.deepEqual(events("order.projection.started"), []);
+  assert.deepEqual(pageAttempts(), []);
   const skipped = events("order.projection.skipped").filter((entry) => entry.details.result === "not_foreground");
   assert.equal(skipped.length, 1, `${phase}: the skip is logged with its reason`);
   assert.equal(skipped[0]!.details.stage, "webview");
@@ -257,7 +260,7 @@ for (const phase of ["inactive", "background"] as const) {
     const skipped = events("order.projection.skipped").filter((entry) => entry.details.result === "not_foreground");
     assert.equal(skipped.length, 1, `${trigger}: one skip line`);
     assert.equal(skipped[0]!.details.stage, "detail_webview");
-    assert.deepEqual(events("order.projection.started"), []);
+    assert.deepEqual(pageAttempts(), []);
     setProjectionSceneActive(true);
     await runShipmentRefreshForTesting(OWNER_ID, { isCurrent: () => true, deadlineAtMs: clock + 30_000 },
       { trigger, forceAccountOrderProjection: true, forceManualRefresh: trigger !== "detail_open",
@@ -283,11 +286,13 @@ for (const phase of ["inactive", "background"] as const) {
   setProjectionSceneActive(true);
 }
 
-// The app root reports every scene change before the order projection controller sees it.
+// The app root sets the scene before the order projection controller sees it. D162 (plan step 5): a phase change no
+// longer writes app.scene.changed of its own.
 {
   const app = readFileSync(new URL("../index.tsx", import.meta.url), "utf8");
   assert.match(app,
-    /"app\.scene\.changed"[\s\S]*?setProjectionSceneActive\(phase === "active"\);[\s\S]*?orderProjection\.scenePhaseChanged\(phase\)/);
+    /const observe = \(phase[\s\S]*?setProjectionSceneActive\(phase === "active"\);[\s\S]*?orderProjection\.scenePhaseChanged\(phase\)/);
+  assert.equal(app.includes('"app.scene.changed"'), false);
 }
 
 console.log("refresh union page foreground-only tests passed");

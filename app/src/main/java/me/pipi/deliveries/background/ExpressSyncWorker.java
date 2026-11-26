@@ -76,8 +76,11 @@ public final class ExpressSyncWorker extends Worker {
                     try {
                         ExpressWidgetProvider.refreshAll(context);
                     } catch (RuntimeException failure) {
-                        Log.w("ExpressSyncWorker", "Widget reconciliation failed", failure);
+                        Log.w("ExpressSyncWorker", "Widget reconciliation failed" + " kind=" + failure.getClass().getSimpleName());
                     }
+                }
+                if (repository != null) {
+                    repository.awaitPendingPublications(5_000L);
                 }
                 context.sendBroadcast(new Intent(
                         ExpressRepository.ACTION_SYNC_FINISHED)

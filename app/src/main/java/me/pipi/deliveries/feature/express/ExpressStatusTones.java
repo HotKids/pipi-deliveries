@@ -4,20 +4,20 @@ package me.pipi.deliveries.feature.express;
 final class ExpressStatusTones {
     private ExpressStatusTones() {}
 
-    static int accent(String label, boolean dark) {
+    static int text(String label, boolean dark) {
         return switch (label) {
-            case "已下单" -> dark ? 0xFF90B6FF : 0xFF0F61C1;
-            case "已发货" -> dark ? 0xFF7DABFF : 0xFF0057B3;
-            case "已揽件" -> dark ? 0xFF639DFF : 0xFF004EA1;
-            case "运输中" -> dark ? 0xFF5290F3 : 0xFF004590;
-            case "待派送" -> dark ? 0xFFFAAC20 : 0xFF8B572A;
-            case "派送中" -> dark ? 0xFFEA9F09 : 0xFF7A491D;
-            case "待取件" -> dark ? 0xFFD59000 : 0xFF693B10;
-            case "已签收" -> dark ? 0xFF64CA83 : 0xFF005D2D;
-            case "已完成" -> dark ? 0xFF50B771 : 0xFF00733A;
-            case "异常件" -> dark ? 0xFFFF7164 : 0xFFBA1A1A;
-            case "暂无状态" -> dark ? 0xFF969C9D : 0xFF545B5C;
-            case "已取消" -> dark ? 0xFF818788 : 0xFF63696A;
+            case "已下单" -> dark ? 0xFFA9BACA : 0xFF5A6B80;
+            case "已发货" -> dark ? 0xFF4DD0E1 : 0xFF0091B8;
+            case "已揽件" -> dark ? 0xFF4FC3F7 : 0xFF0277BD;
+            case "运输中" -> dark ? 0xFF4DA3FF : 0xFF0A6CFF;
+            case "待派送" -> dark ? 0xFF4FD8C8 : 0xFF00897B;
+            case "派送中" -> dark ? 0xFF3FD68B : 0xFF0E9F52;
+            case "待取件" -> dark ? 0xFFD4E157 : 0xFF6D8F00;
+            case "已签收" -> dark ? 0xFFFFB84D : 0xFFD97E06;
+            case "已完成" -> dark ? 0xFFFFAD66 : 0xFFE56A00;
+            case "异常件" -> dark ? 0xFFFF8A80 : 0xFFF03A30;
+            case "已取消" -> dark ? 0xFFB9BFC5 : 0xFF6E767F;
+            case "暂无状态" -> dark ? 0xFFC9D1D8 : 0xFF9AA3AB;
             default -> 0;
         };
     }
@@ -34,8 +34,8 @@ final class ExpressStatusTones {
             case "已签收" -> me.pipi.deliveries.R.drawable.widget_express_status_completed_bg;
             case "已完成" -> me.pipi.deliveries.R.drawable.widget_express_status_order_completed_bg;
             case "异常件" -> me.pipi.deliveries.R.drawable.widget_express_status_danger_bg;
-            case "暂无状态" -> me.pipi.deliveries.R.drawable.widget_express_status_neutral_bg;
             case "已取消" -> me.pipi.deliveries.R.drawable.widget_express_status_cancelled_bg;
+            case "暂无状态" -> me.pipi.deliveries.R.drawable.widget_express_status_neutral_bg;
             default -> me.pipi.deliveries.R.drawable.widget_express_status_neutral_bg;
         };
     }

@@ -16,7 +16,7 @@ import {
 } from "../widget/palette";
 
 const smallest = smallWidgetLayout(141, 148);
-assert.equal(smallest.outerPadding, 12);
+assert.equal(smallest.outerPadding, 10);
 assert.equal(smallest.headerSpacing, 8);
 assert.equal(smallest.iconSize, 38);
 assert.equal(smallest.statusFont, 20);
@@ -31,11 +31,11 @@ assert.equal(
   smallest.iconSize,
 );
 assert.equal(smallest.detailFont, 12);
-assert.equal(smallest.pillHeight, 40);
-assert.equal(smallest.pillFont, 14);
-assert.equal(smallest.pillIconFont, 13);
+assert.equal(smallest.pillHeight, 30);
+assert.equal(smallest.pillFont, 13);
+assert.equal(smallest.pillIconFont, 12);
 assert.equal(smallest.pillSpacing, 4);
-assert.equal(smallest.pillHorizontalPadding, 5);
+assert.equal(smallest.pillHorizontalPadding, 6);
 assert.ok(
   smallest.outerPadding * 2
     + smallest.iconSize
@@ -63,7 +63,7 @@ assert.ok(
 );
 
 const regularSmall = smallWidgetLayout(158, 155);
-assert.equal(regularSmall.outerPadding, 14);
+assert.equal(regularSmall.outerPadding, 12);
 assert.equal(regularSmall.headerSpacing, 9);
 assert.equal(regularSmall.iconSize, 42);
 assert.equal(regularSmall.statusFont, 20);
@@ -77,18 +77,19 @@ assert.equal(
     + regularSmall.identitySpacing,
   regularSmall.iconSize,
 );
-assert.equal(regularSmall.pillHeight, smallest.pillHeight);
-assert.equal(regularSmall.pillFont, 14);
-assert.equal(regularSmall.pillIconFont, 14);
+assert.equal(regularSmall.pillHeight, 32);
+assert.equal(regularSmall.pillFont, 13);
+assert.equal(regularSmall.pillIconFont, 13);
 assert.equal(regularSmall.pillSpacing, 6);
-assert.equal(regularSmall.pillHorizontalPadding, 11);
+assert.equal(regularSmall.pillHorizontalPadding, 10);
 
 const shortRegularWidth = smallWidgetLayout(158, 148);
 assert.equal(shortRegularWidth.iconSize, 38);
-assert.equal(shortRegularWidth.pillFont, 14);
-assert.equal(shortRegularWidth.pillIconFont, 14);
+assert.equal(shortRegularWidth.pillHeight, 30);
+assert.equal(shortRegularWidth.pillFont, 13);
+assert.equal(shortRegularWidth.pillIconFont, 13);
 assert.equal(shortRegularWidth.pillSpacing, 6);
-assert.equal(shortRegularWidth.pillHorizontalPadding, 11);
+assert.equal(shortRegularWidth.pillHorizontalPadding, 10);
 
 const compactEmpty = smallWidgetEmptyLayout(141, 148);
 assert.equal(compactEmpty.padding, 12);
@@ -126,10 +127,7 @@ assert.equal(regularEmpty.contentHeight, 103);
 assert.equal(regularEmpty.contentCenterY, 89.5);
 
 assert.equal(EMPTY_WIDGET_ACCENT, "#3482FF");
-assert.deepEqual(EMPTY_WIDGET_TEXT_COLOR, {
-  light: "rgba(0, 0, 0, 0.3)",
-  dark: "rgba(255, 255, 255, 0.3)",
-});
+assert.equal(EMPTY_WIDGET_TEXT_COLOR, "secondaryLabel");
 const emptyBackground = emptyWidgetBackground();
 assert.deepEqual(emptyBackground.light.startPoint, { x: 0, y: 1 });
 assert.deepEqual(emptyBackground.light.endPoint, { x: 1, y: 0 });
@@ -355,7 +353,8 @@ assert.doesNotMatch(
 );
 assert.match(
   smallSource,
-  /font=\{layout\.statusFont\}[\s\S]*?lineLimit=\{1\}[\s\S]*?minScaleFactor=\{0\.9\}[\s\S]*?allowsTightening=\{true\}/,
+  // A receiving parcel keeps 0.9; an outgoing one may shrink to 0.75 to keep its 寄 capsule (owner 2026-11-20).
+  /font=\{layout\.statusFont\}[\s\S]*?lineLimit=\{1\}[\s\S]*?minScaleFactor=\{row\.sender === true \? 0\.75 : 0\.9\}[\s\S]*?allowsTightening=\{true\}/,
   "compact populated status must remain complete after the larger outer padding",
 );
 const smallPopulatedBranch = smallSource.slice(
@@ -408,7 +407,7 @@ assert.match(
 );
 assert.match(
   mediumSource,
-  /<Text font=\{15\} fontWeight="semibold">\s*\{snapshot\.activeCount\}\s*<\/Text>/,
+  /<Text font=\{15\} fontWeight="semibold" monospacedDigit>\s*\{snapshot\.activeCount\}\s*<\/Text>/,
   "medium header count must retain the same title typography and snapshot in every state",
 );
 assert.match(

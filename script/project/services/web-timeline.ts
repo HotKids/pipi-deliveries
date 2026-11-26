@@ -1,7 +1,7 @@
 import { AbortController, type AbortSignal } from "scripting";
 import { resolveCarrierQuery } from "./carrier-query";
 import { TIMELINE_SLOT } from "./timeline-slot";
-import { claimKuaidi100Capture } from "./refresh-runtime-state";
+import { claimKuaidi100Capture, releaseKuaidi100Capture } from "./refresh-runtime-state";
 import { jtH5JavaScript, primaryH5Provider, primaryH5Route, webPhoneTails, WebTimelinePhoneError } from "./jt-h5";
 import type { TimelinePackage, TrackNode } from "../models";
 import {
@@ -464,7 +464,7 @@ export async function scrapeWebTimeline(
   try {
     if (input.signal?.aborted) throw new OperationTimeoutError();
     if (jt) input.beforeQuery?.();
-    else if (!claimKuaidi100Capture(waybill, input.beforeQuery)) {
+    else if (!claimKuaidi100Capture(waybill, input.beforeQuery, Date.now(), tails)) {
       exitReason = "cooldown";
       return null;
     }
@@ -543,6 +543,7 @@ export async function scrapeWebTimeline(
         const timeline = webTimelineFromExtraction(raw, { ...input, waybill }, startedAtMs);
         if (!jt && phoneChallengeVisible === true && Date.now() < deadlineAtMs) {
           if (!tails.length) {
+            try { releaseKuaidi100Capture(waybill, tails); } catch { /* Best-effort cooldown rollback */ }
             exitReason = "phone_tail";
             throw new WebTimelinePhoneError();
           }

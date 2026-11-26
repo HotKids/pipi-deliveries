@@ -31,19 +31,21 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
 import type { PickupEmptyArtwork } from "./components/EmptyDeliveryVehicle";
 import { expireDueParcelHandoffs, loadAppState, peekStateRevision, refreshStoredWatchShipments, toggleParcelArtwork, visibleShipments } from "./services/storage";
-import { requestWidgetReload } from "./services/widgets";
 import { performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
+import { SCRIPT_VERSION } from "./services/build-track";
 import {
   beginDiagnosticOperation,
+  changedSinceLastLogged,
   diagnosticErrorDetails,
   diagnosticState,
   drainAppDiagnostics,
+  noteDiagnosticAppliedRevision,
   startAppDiagnosticWrites,
   writeDiagnostic,
   writeRuntimeCapabilities,
 } from "./services/logger";
 import { preferNewerState } from "./services/ui-state";
-import { refreshAllShipments, subscribeRefreshState } from "./services/sync";
+import { refreshAllShipments, refreshCloudPddParcels, subscribeRefreshState } from "./services/sync";
 import {
   reloadAndRefreshOnResume,
   resumeShipmentId,
@@ -52,6 +54,7 @@ import { activeMealCards, toggleMealCup } from "./services/meal/cards";
 import { completeMeal } from "./services/meal/records";
 import { mealCredentialScope } from "./services/meal/rules";
 import { synchronizeMeals } from "./services/meal/cloud";
+import { synchronizeParcelCloudRecords } from "./services/parcel-cloud-sync";
 import { ensureMealRules, loadCarrierAuthorityCache, refreshCarrierAuthorityIfNeeded } from "./services/carrier-authority";
 import { startForegroundOrderProjection } from "./services/foreground-order-projection";
 import { startForegroundRefresh } from "./services/foreground-return-refresh";
@@ -72,7 +75,8 @@ import { nativePickupTabCloseId } from "./services/parcel-activity-action";
 import { PICKUP_TAB_TITLE, activePickupCards, independentPickupContent, type ParcelActivityContent } from "./services/parcel-pickup";
 import { nextParcelHandoffDeadline } from "./services/parcel-handoff-expiry";
 import { reconcileFengchaoReminders } from "./services/fengchao-reminders";
-import { transientToast } from "./services/ui-feedback";
+import { transientToast, type WatchPullOutcome } from "./services/ui-feedback";
+import { activeWatchScope } from "./services/international-records";
 import { EXPRESS_TOAST_COPY, MEAL_TOAST_COPY } from "./services/express-toast-copy";
 import { ShipmentLifecycleChangedError } from "./services/shipment-lifecycle";
 
@@ -107,14 +111,16 @@ function pickupNavigation(state: AppState | null, parameters: Readonly<Record<st
 }
 
 async function readStartupState(): Promise<StartupState> {
+  // D100: the startup read ends with one line and its duration; a read that never returns is reported by the next
+  // launch (D4). A failure stays an ERROR, since the page then waits for the user; it replaces app.startup.failed.
+  // D150/D171: the startup line names the script version, since seven days of log can span an update.
+  const finish = beginDiagnosticOperation("app.startup", { stage: "state", scriptVersion: SCRIPT_VERSION });
   try {
-    return { state: await loadAppState() };
+    const state = await loadAppState();
+    finish("succeeded", diagnosticState(state));
+    return { state };
   } catch (error) {
-    writeDiagnostic(
-      "app.startup.failed",
-      diagnosticErrorDetails(error),
-      "error",
-    );
+    finish("failed", diagnosticErrorDetails(error), "error");
     return { state: null };
   }
 }
@@ -129,9 +135,15 @@ async function readPickupPreview(): Promise<boolean | undefined> {
 }
 
 function readMealCards() {
-  try { return activeMealCards(); }
-  catch {
-    writeDiagnostic("meal.cards.unavailable", {}, "warning");
+  try {
+    const cards = activeMealCards();
+    // D127: a change in how many meal cards are shown is recorded; an unchanged reload is not.
+    if (changedSinceLastLogged("meal.cards.loaded", String(cards.length))) {
+      writeDiagnostic("meal.cards.loaded", { records: cards.length, result: cards.length ? "shown" : "empty" });
+    }
+    return cards;
+  } catch (error) {
+    writeDiagnostic("meal.cards.unavailable", diagnosticErrorDetails(error), "warning");
     return [];
   }
 }
@@ -192,6 +204,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   const [pickupNotice, setPickupNotice] = useState("");
   const [mealCards, setMealCards] = useState(readMealCards);
   const [watchAccessRevision, setWatchAccessRevision] = useState(0);
+  // A Home Access Key notice brings Settings back to its root, where the key is entered.
+  const [settingsRootRequest, setSettingsRootRequest] = useState(0);
   const [navigationRequest, setNavigationRequest] = useState(() => {
     const parameters = Script.queryParameters || {};
     const { activityShipmentId, pickupRecordId, activityMealQRCode } = pickupNavigation(startup.state, parameters, mealCards);
@@ -237,7 +251,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
         ? preferNewerState(current.state, next)
         : next;
       if (selected === current.state) return current;
-      writeDiagnostic("app.state.applied", diagnosticState(selected));
+      // D161: the applied revision reaches the next refresh's end line instead of a line per applied state.
+      noteDiagnosticAppliedRevision(selected.revision);
       return { state: selected };
     });
   }
@@ -245,23 +260,40 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   function refreshPlatformList(mode: "observe" | "pull") {
     return refreshPlatformParcels(applyState, mode).then((result) => {
       if (result.added) setPlatformNotice({ text: `已新增 ${result.added} 件快递` });
+      if (result.added || result.succeeded) void refreshParcelCloud();
     }).catch(() => {
       writeDiagnostic("platform.sync.unavailable", {}, "warning");
     });
   }
 
-  function refreshInternational(force = false) {
+  // The app's one Watch page owner. Its result tells a list pull what the read did (G-HIGH-10); every other caller
+  // ignores it.
+  function refreshInternational(force = false): Promise<WatchPullOutcome> {
     const current = internationalRequest.current;
     const now = Date.now();
-    if (!force && now - current.startedAt < 120_000) return;
+    if (!force && now - current.startedAt < 120_000) {
+      // D105: the two-minute throttle is recorded once per change, not on every return to the foreground.
+      if (changedSinceLastLogged("cloud.international.throttle", "throttled")) {
+        writeDiagnostic("cloud.sync.skipped", { domain: "international", stage: "watch_page", result: "throttled",
+          skipReason: "throttled" });
+      }
+      return Promise.resolve("skipped");
+    }
     current.startedAt = now;
     const generation = ++current.generation;
-    void refreshStoredWatchShipments().then(next => {
-      if (current.generation !== generation || !next || next.revision <= revision.current) return;
+    return refreshStoredWatchShipments().then((next): WatchPullOutcome => {
+      // The widget reads the shared state on its own timeline; a reload here would start a second
+      // runtime refreshing beside this foreground pass.
+      if (current.generation !== generation) return "skipped";
+      // No result: no authorized Watch scope (nothing to read), or a read that failed and logged its own line.
+      if (!next) return activeWatchScope() ? "failed" : "skipped";
+      if (next.revision <= revision.current) return "unchanged";
       applyState(next);
-      requestWidgetReload();
-    }).catch((error) => {
-      writeDiagnostic("cloud.international.refresh.failed", diagnosticErrorDetails(error), "warning");
+      return "refreshed";
+    }).catch((error): WatchPullOutcome => {
+      writeDiagnostic("cloud.sync.failed", { domain: "international", stage: "watch_page",
+        ...diagnosticErrorDetails(error) }, "warning");
+      return "failed";
     });
   }
 
@@ -272,14 +304,46 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
     return cards;
   }
 
-  async function refreshMeals() {
+  /** `explicit`: 立即同步 or an Access Key change, which the automatic retry backoff for meal rules does not delay. */
+  async function refreshMeals(explicit = false) {
     try {
       reloadMeals();
-      if (await ensureMealRules()) await synchronizeMeals();
+      if (await ensureMealRules("meal_sync", { explicit })) await synchronizeMeals();
       reloadMeals();
-    } catch {
-      writeDiagnostic("meal.cards.refresh.failed", {}, "warning");
+    } catch (error) {
+      writeDiagnostic("meal.cards.refresh.failed", diagnosticErrorDetails(error), "warning");
     }
+  }
+
+  async function refreshParcelCloud() {
+    if (typeof synchronizeParcelCloudRecords !== "function") return;
+    try {
+      await synchronizeParcelCloudRecords();
+      if (typeof loadAppState === "function") {
+        const next = await loadAppState();
+        applyState(next);
+      }
+    } catch {
+      // synchronizeParcelCloudRecords logs its own diagnostic outcome.
+    }
+  }
+
+  // The cloud record pull: the list pull, an Access Key change and 立即同步 on the account page share it.
+  // Each owner skips without an authorized Access Key and records its own failure. The cloud PDD list is read
+  // here for 立即同步 and a key change (owner 2026-11-21: 加上（推荐）); the list pull's own refresh already read
+  // it in the same pass.
+  // The list pull waits for the Watch read alone (G-HIGH-10); the meal and PDD pulls finish on their own.
+  function startCloudRecords(trigger: "list_pull" | "access_key" | "sync_now") {
+    const observed = latestPickupView.current.state;
+    const meals = refreshMeals(trigger !== "list_pull");
+    const parcels = refreshParcelCloud();
+    const international = refreshInternational(true);
+    const pdd = trigger !== "list_pull" && observed ? refreshCloudPddParcels(observed, applyState) : undefined;
+    return { international, done: Promise.all([meals, parcels, international, pdd]).then(() => undefined) };
+  }
+
+  function refreshCloudRecords(trigger: "list_pull" | "access_key" | "sync_now"): Promise<void> {
+    return startCloudRecords(trigger).done;
   }
 
   async function finishPickup(card: typeof pickupCards[number], openCabinet: boolean): Promise<void> {
@@ -305,6 +369,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
     try {
       const notice = await performPickupAction(card, openCabinet, applyState);
       if (notice) setPickupNotice(notice);
+      if (!openCabinet && typeof refreshParcelCloud === "function") void refreshParcelCloud();
     } catch (error) {
       if (error instanceof ShipmentLifecycleChangedError) {
         setPickupNotice(card.kind === "handoff" ? "未找到该寄件码"
@@ -329,7 +394,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
     if (mealObservation.current !== undefined) return;
     mealObservation.current = setTimeout(() => {
       mealObservation.current = undefined;
-      refreshMeals();
+      void refreshMeals();
+      void refreshParcelCloud();
     }, 0);
   }
 
@@ -338,7 +404,10 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
       if (card.kind === "meal") {
         const changed = toggleMealCup(card);
         reloadMeals();
-        if (changed) return true;
+        if (changed) {
+          refreshMeals();
+          return true;
+        }
       } else {
         applyState(toggleParcelArtwork(card));
         return true;
@@ -363,7 +432,9 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
         reload();
         return;
       }
-      setActivityEndId(change.activityId);
+      if (change.kind === "pickup-tab-empty") {
+        setActivityEndId(change.activityId);
+      }
       reloadMeals();
       void loadAppState().then(next => {
         if (mounted) applyState(next);
@@ -379,28 +450,27 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
     let mounted = true;
     const unsubscribe = hasState ? subscribeRefreshState(applyState) : undefined;
     const start = async () => {
-      if (hasState) {
-        try {
+      if (!mounted) return;
+      if (!hasState) {
+        try { await refreshCarrierAuthorityIfNeeded(); }
+        catch (error) { writeDiagnostic("app.startup.carriers.failed", diagnosticErrorDetails(error), "warning"); }
+        return;
+      }
+      launchWorkStarted.current = true;
+      await Promise.allSettled([
+        (async () => {
           const summary = await refreshAllShipments();
           if (mounted) applyState(summary.state);
-        } catch { /* Refresh records its own failure. */ }
-      }
-      if (!mounted) return;
-      try {
-        await refreshCarrierAuthorityIfNeeded();
-      } catch (error) {
-        writeDiagnostic("app.startup.carriers.failed", diagnosticErrorDetails(error), "warning");
-      }
-      if (!mounted || !hasState) return;
-      // Both tabs have already rendered their cached cards. Keep independent network work
-      // behind the first parcel refresh and reuse the carrier snapshot for meal rules.
-      await refreshMeals();
-      if (!mounted) return;
-      await refreshPlatformList("observe");
-      if (mounted) {
-        launchWorkStarted.current = true;
-        refreshInternational();
-      }
+        })(),
+        (async () => {
+          try { await refreshCarrierAuthorityIfNeeded(); }
+          catch (error) { writeDiagnostic("app.startup.carriers.failed", diagnosticErrorDetails(error), "warning"); }
+          if (mounted) await refreshMeals();
+        })(),
+        refreshPlatformList("observe"),
+        refreshInternational(),
+        refreshParcelCloud(),
+      ]);
     };
     const timer = setTimeout(() => void start(), LAUNCH_INTERACTION_GRACE_MS);
     return () => {
@@ -424,7 +494,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
     // A visible row whose status, headline and detail times are out of step is refreshed once, forced (user 2026-10-02).
     const statusAlignment = startStatusAlignment({ applyState });
     const observe = (phase: "active" | "inactive" | "background") => {
-      writeDiagnostic("app.scene.changed", { result: phase });
+      // D162: a phase change writes no line of its own; a return to the foreground ends in app.foreground.completed.
       // Refresh flows open the union page only while the app is active (user 2026-09-25).
       setProjectionSceneActive(phase === "active");
       parcelActivitySceneChanged(phase);
@@ -437,17 +507,28 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
           observeMeals();
           refreshInternational();
         }
+        const foregroundStartedAt = Date.now();
         try {
           if (peekStateRevision() > revision.current) {
             void loadAppState().then(next => {
               if (mounted) applyState(next);
-            }).catch(() => {
-              if (mounted) writeDiagnostic("app.shortcut.resume.failed", {}, "warning");
+              // D101: the return to the foreground read a newer revision another runtime wrote.
+              writeDiagnostic("app.foreground.completed", { result: "reloaded",
+                durationMs: Date.now() - foregroundStartedAt, ...diagnosticState(next) });
+            }).catch((error) => {
+              if (mounted) writeDiagnostic("app.shortcut.resume.failed", diagnosticErrorDetails(error), "warning");
             });
           } else if (latestPickupView.current.state) {
             reconcileParcelActivity(latestPickupView.current.state, latestPickupView.current.pickupCards);
           }
           const lookup = nextShortcutLookup();
+          // D101: a return that found the stored state current and reconciled the activities; written when its
+          // outcome (a pending Shortcut lookup or none) changes.
+          const outcome = lookup ? "shortcut_lookup" : "reconciled";
+          if (peekStateRevision() <= revision.current && changedSinceLastLogged("app.foreground", outcome)) {
+            writeDiagnostic("app.foreground.completed", { result: outcome,
+              durationMs: Date.now() - foregroundStartedAt });
+          }
           setNavigationRequest((current) => {
             const next = preferShortcutLookup(current.shortcutLookup, lookup);
             return next === current.shortcutLookup ? current : {
@@ -456,8 +537,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
               generation: current.generation + 1,
             };
           });
-        } catch {
-          writeDiagnostic("app.shortcut.resume.failed", {}, "warning");
+        } catch (error) {
+          writeDiagnostic("app.shortcut.resume.failed", diagnosticErrorDetails(error), "warning");
         }
       }
     };
@@ -547,6 +628,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
         },
         applyPersisted: (persisted, shipmentId) => {
           if (request !== resumeGeneration.current) return;
+          // D101: the resume read the stored state; its refresh writes its own lines.
+          writeDiagnostic("app.resume.completed", { result: "loaded", ...diagnosticState(persisted) });
           const meals = reloadMeals();
           const parameters = details.queryParameters || {};
           const presented = latestPickupView.current.state;
@@ -609,6 +692,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   return (
     <TabView
       selection={selection}
+      tabBarMinimizeBehavior={Number.parseInt(Device.systemVersion, 10) >= 26 ? "onScrollDown" : undefined}
       background={
         projectionView
           ? {
@@ -653,6 +737,15 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
             toast={transientToast(pickupNotice, setPickupNotice)}
             onAction={finishPickup}
             onArtworkChange={changePickupArtwork}
+            onMealDeleted={() => refreshMeals()}
+            onRefresh={async () => {
+              await Promise.allSettled([
+                refreshMeals(true),
+                refreshParcelCloud(),
+                refreshPlatformList("pull"),
+                refreshAllShipments(undefined, { forceManualRefresh: true }).then((summary) => applyState(summary.state)),
+              ]);
+            }}
           />
         </Tab>
       ) : null}
@@ -672,16 +765,21 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
               current.generation === generation ? { ...current, shortcutLookup: undefined } : current);
           }}
           onStateChange={applyState}
-          onListPull={() => { refreshPlatformList("pull"); refreshMeals(); refreshInternational(true); }}
+          onListPull={() => { refreshPlatformList("pull"); return startCloudRecords("list_pull").international; }}
           platformNotice={platformNotice}
+          onOpenSettings={() => {
+            setSettingsRootRequest(value => value + 1);
+            selection.setValue("settings");
+          }}
         />
       </Tab>
       <Tab key="settings" title="设置" systemImage="gearshape.fill" value="settings">
-        <SettingsPage state={state} onStateChange={applyState} onAccessKeyChanged={() => {
-          setWatchAccessRevision(value => value + 1);
-          refreshMeals();
-          refreshInternational(true);
-        }} />
+        <SettingsPage state={state} onStateChange={applyState} rootRequest={settingsRootRequest}
+          onCloudRecordsRefresh={() => refreshCloudRecords("sync_now")}
+          onAccessKeyChanged={() => {
+            setWatchAccessRevision(value => value + 1);
+            void refreshCloudRecords("access_key");
+          }} />
       </Tab>
     </TabView>
   );
@@ -699,10 +797,13 @@ async function run() {
     let initialPickupPreview = false;
     try { initialPickupPreview = hasRegisteredParcelPreview(); }
     catch { writeDiagnostic("activity.parcel.preview.read.failed", { result: "failed" }, "warning"); }
+    const presentedAt = Date.now();
     await Navigation.present({
       element: <App initialStartup={initialStartup} initialPickupPreview={initialPickupPreview} />,
       modalPresentationStyle: "fullScreen",
     });
+    // D100: the session ended when the user closed the script; a session the system ends writes no line.
+    writeDiagnostic("app.session.completed", { result: "closed", durationMs: Date.now() - presentedAt });
   } catch (error) {
     writeDiagnostic(
       "app.session.failed",

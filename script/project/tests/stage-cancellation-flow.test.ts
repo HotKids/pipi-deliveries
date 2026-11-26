@@ -91,15 +91,17 @@ test("a detail refresh cut off by the parent refresh ends as interrupted", async
       refreshWebTimeline: async () => null,
       queryManualForSource: emptyManual,
     }), cancelled);
-  const started = readDiagnostics().filter(entry => entry.event === "detail.refresh.started");
+  // D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): the refresh writes no start line; its one end line carries
+  // the start (its trigger and the state it started from).
+  assert.equal(readDiagnostics().some(entry => entry.event === "detail.refresh.started"), false);
   const ends = readDiagnostics().filter(entry => entry.event === "detail.refresh.skipped" ||
     entry.event === "detail.refresh.failed" || entry.event === "detail.refresh.committed");
-  assert.equal(started.length, 1);
   assert.equal(ends.length, 1, JSON.stringify(readDiagnostics().map(e => [e.event, e.details.skipReason])));
   assert.equal(ends[0].event, "detail.refresh.skipped");
   assert.equal(ends[0].details.skipReason, "interrupted");
   assert.equal(ends[0].details.result, "interrupted");
-  assert.equal(ends[0].details.flowId, started[0].details.flowId);
+  assert.match(String(ends[0].details.flowId), /^\d+$/);
+  assert.equal(typeof ends[0].details.baseRevision, "number", "the start's state is merged into the end line");
 });
 
 test("a detail entry query cancelled before the flow starts ends no flow", async () => {
@@ -141,11 +143,11 @@ test("a KDNiao fallback cut off by the parent refresh ends its source as cancell
     } },
   }), cancelled);
   assert.equal(posted, 1);
-  const started = stageEnds("manual.source.started");
+  // D4: the source writes no start line; its one end line names its stage.
+  assert.equal(stageEnds("manual.source.started").length, 0);
   const failed = stageEnds("manual.source.failed");
-  assert.equal(started.length, 1);
   assert.equal(failed.length, 1, JSON.stringify(readDiagnostics().map(e => [e.event, e.details.stage])));
-  assert.equal(failed[0].stage, started[0].stage);
+  assert.equal(failed[0].stage, "kdniao");
   assert.equal(failed[0].errorCategory, "cancelled");
   assert.equal(failed[0].flowId, "detail-kdniao-cancelled");
 });

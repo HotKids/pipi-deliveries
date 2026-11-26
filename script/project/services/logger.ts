@@ -3,12 +3,15 @@ import { RefreshInvalidatedError } from "./refresh-coordination";
 import type { AppState, BindingSource } from "../models";
 import { SCRIPT_BINDING_SOURCE } from "./script-source";
 import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD, SCRIPT_VERSION } from "./build-track";
+import { sha256Hex } from "./scripting-data";
 import { OperationTimeoutError, type RequestTimeoutDetails, type WaitTimeoutDetails } from "./deadline";
+import { DIAGNOSTIC_EVENTS } from "./diagnostic-events";
 import {
-  clearDiagnosticFiles, diagnosticBatchId, diagnosticEpoch, diagnosticFiles,
-  diagnosticLegacyImported, markDiagnosticLegacyImported, pruneDiagnosticBatchesAsync,
-  pruneDiagnosticBatchesByMetadata, pruneDiagnosticFiles, publishDiagnosticBatch,
-  publishDiagnosticBatchAsync, readDiagnosticEpoch,
+  claimDiagnosticHandleReset, claimOpenFlowMarker, clearDiagnosticFiles, clearOpenFlowMarkers, diagnosticBatchId,
+  diagnosticEpoch, diagnosticFiles, diagnosticLegacyImported, markDiagnosticLegacyImported, openFlowMarkers,
+  pruneDiagnosticBatchesAsync, pruneDiagnosticBatchesByMetadata, pruneDiagnosticFiles, publishDiagnosticBatch,
+  publishDiagnosticBatchAsync, readDiagnosticEpoch, releaseDiagnosticHandleReset, removeOpenFlowMarker,
+  retireUnkeyedDiagnosticBatches, writeOpenFlowMarker,
 } from "./diagnostic-store";
 
 export type DiagnosticLevel = "info" | "warning" | "error";
@@ -16,7 +19,6 @@ export type DiagnosticLevel = "info" | "warning" | "error";
 export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetails> & {
   cooldownRemainingMs?: number;
   projectionComplete?: boolean;
-  accumulatedStart?: boolean;
   commitProtocol?: "immutable_link";
   commitSequence?: number;
   selectionScope?: "query_response" | "display";
@@ -26,7 +28,91 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   toProvider?: "v5" | "v6";
   returnedTrackCount?: number;
   displayedTrackCount?: number;
-  runtimeHost?: "app" | "widget";
+  /** The runtime that wrote the line (D103): the app, a widget, an App Intent or the Shortcut intent host. */
+  runtimeHost?: DiagnosticRuntimeHost;
+  /** diagnostic.flow.unfinished: the operation that started and never wrote its end line (D4). */
+  unfinishedEvent?: string;
+  /** diagnostic.flow.unfinished: how long ago that operation started. */
+  ageMs?: number;
+  /** recognition.online.completed: who cancelled the attempt (D34, D119). */
+  cancelReason?: "user" | "superseded" | "settings_saved" | "page_closed" | "deadline";
+  /** The lock-screen style of the parcel live activity (D121); `valueKind` stays the JSON type of a reply value. */
+  lockScreenStyle?: "dynamic" | "black" | "white";
+  /** Which layer published a notification line (AGENTS.md section 10); iOS only has local notifications. */
+  pushOrigin?: "app_local";
+  /** express.row.*: the row is the user's own sent parcel (the 寄 mark). */
+  senderRole?: boolean;
+  /** express.row.*: the row has reached the signed freeze. */
+  signedFrozen?: boolean;
+  /** binding.unbind.completed: the binding was removed on this device only. */
+  localOnly?: boolean;
+  /** A flow's end line: whether it brought newer evidence or changed stored data. */
+  changed?: boolean;
+  /** carrier.authority.refreshed: what happened to the meal rule pack offered in the same reply (D113). */
+  mealRulesResult?: "accepted" | "rejected" | "absent";
+  /**
+   * refresh.succeeded / refresh.failed (D158): each phase's duration, folded into the refresh's end line instead of a
+   * start and an end line per phase.
+   */
+  preparationMs?: number;
+  accountMs?: number;
+  enrichmentMs?: number;
+  finalizationMs?: number;
+  /** refresh.*: whether the account phase let the refresh go on to per-row work (D158). */
+  accountContinued?: boolean;
+  /**
+   * refresh.* (D201, owner 2026-11-21 「只记失败，成功并入流程终态（推荐）」): the cloud PDD read inside the refresh, folded
+   * into its end line: the parcels it returned and whether saving them changed the list.
+   */
+  cloudPddRecords?: number;
+  cloudPddChanged?: boolean;
+  /**
+   * account.sync.failed (D175, D20): the Worker's own error code, a closed word (the gateway codes); `failureCode` then
+   * names the account-list condition with Pipi's codes.
+   */
+  workerError?: string;
+  /** The newest state revision the app's screen had applied when the line was written (D161). */
+  appliedRevision?: number;
+  /** widget.run.completed (D159): the widget size and the duration of its refresh within the run. */
+  widgetSize?: "small" | "medium" | "unsupported";
+  refreshMs?: number;
+  /** alignment.completed (D25, D183): forced refreshes used for this tuple (of 3) and whether this one counted. */
+  alignmentAttempts?: number;
+  attemptCounted?: boolean;
+  /** alignment.completed: the time until the next forced refresh may run for this tuple. */
+  nextAttemptInMs?: number;
+  /** activity.parcel.operation.completed (D38, D190): which live surface the operation was for. */
+  surface?: "express_live" | "pickup_live" | "handoff_live";
+  /** cloud.sync.completed (D29, D188): which synchronized domain the line reports. */
+  domain?: "pdd" | "parcel_metadata" | "meal_pickup" | "international" | "parcel_cloud";
+  /**
+   * detail.timeline.selected (D181, D24): the candidate packages as one compact map, comma-separated fragments
+   * `provider:selected|available|empty:count:full|part:gate:0|aN|bN` (N minutes ahead or behind the selected package).
+   */
+  candidateMap?: string;
+  /** order.projection.* (D4): why a union page attempt opened; carried by the attempt's end line. */
+  projectionReason?: "timeline_reopen" | "forced" | "scheduled";
+  /** storage.retention.applied (D237, D245): rows hidden by the signed or cancelled windows and rows deleted. */
+  hiddenRecords?: number;
+  removedRecords?: number;
+  // Relative times (D6, owner 2026-11-21 「改成相对量（推荐）」): the logger turns every absolute business time
+  // below (`*AtMs`) into its distance from the line's own time before the line is kept.
+  listEventAgeMs?: number;
+  preparedEventAgeMs?: number;
+  previousFeedEventAgeMs?: number;
+  mergedFeedEventAgeMs?: number;
+  carrierFetchedAgeMs?: number;
+  carrierLastAttemptAgeMs?: number;
+  foreignAnchorAgeMs?: number;
+  earliestTrackAgeMs?: number;
+  headlineAgeMs?: number;
+  detailAgeMs?: number;
+  providerLastAttemptAgeMs?: number;
+  providerNextDueInMs?: number;
+  latestEventAgeMs?: number;
+  latestTrackAgeMs?: number;
+  feedEventAgeMs?: number;
+  statusEventAgeMs?: number;
   sqliteOpenAvailable?: boolean;
   sharedFilesAvailable?: boolean;
   carrierTableVersion?: string;
@@ -97,8 +183,6 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   carrierCode?: string;
   /** The raw platform code the source sent (JD/JDKD…), before recognition. */
   rawCarrierCode?: string;
-  /** The code actually shown to the user, after the R-20 display rules. */
-  displayCarrierCode?: string;
   /** Whitelisted StatusSemantic value. */
   statusSemantic?: string;
   listStateNumber?: number;
@@ -122,7 +206,7 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   /** What started this refresh: detail_pull / detail_open / identity_projection / status_alignment. */
   trigger?: string;
   /**
-   * detail.refresh.alignment（用户 2026-10-02 状态对齐强刷）：哪一边落后——status_ahead / headline_ahead /
+   * alignment.completed（用户 2026-10-02 状态对齐强刷；D183 前为 detail.refresh.alignment）：哪一边落后——status_ahead / headline_ahead /
    * detail_behind（与 Pipi ExpressStatusAlignment.reason 同一套）。
    */
   alignmentReason?: "status_ahead" | "headline_ahead" | "detail_behind";
@@ -165,7 +249,6 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   providerLastAttemptAtMs?: number;
   providerNextDueAtMs?: number;
   providerFailures?: number;
-  readbackMatched?: boolean;
   loadSettled?: boolean;
   loadCompleted?: boolean;
   mainPresent?: boolean;
@@ -246,7 +329,6 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   viewportAvailable?: boolean;
   automatic?: boolean;
   selected?: boolean;
-  webViewAllowed?: boolean;
   routePointerPresent?: boolean;
   routePresent?: boolean;
   routeTrusted?: boolean;
@@ -269,7 +351,17 @@ export type DiagnosticDetails = Partial<RequestTimeoutDetails & WaitTimeoutDetai
   interface?: string;
   /** 统一用词（2026-09-05）：链上的哪一级，见 unifiedLevel()。 */
   level?: string;
+  /**
+   * recognition.online.*: the configured provider, protocol and model name, like Pipi (owner 2026-11-21: 记上（推荐）;
+   * the model name is the owner's own configuration). Closed enums; a model name outside 1–64 letters, digits,
+   * `.`, `_` or `-` is left out.
+   */
+  onlineProvider?: "openai" | "gemini" | "compatible";
+  onlineProtocol?: "responses" | "chat_completions" | "gemini";
+  onlineModel?: string;
 };
+
+export type DiagnosticRuntimeHost = "app" | "widget" | "app_intent" | "shortcut";
 
 export type DiagnosticEntry = {
   id: string;
@@ -371,7 +463,6 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "sourceProvider",
   "carrierCode",
   "rawCarrierCode",
-  "displayCarrierCode",
   "statusSemantic",
   "structuredStatus",
   "detailStatusSemantic",
@@ -403,7 +494,6 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "projectionTrackCount",
   "cooldownRemainingMs",
   "cooldownReason", "providerLastAttemptAtMs", "providerNextDueAtMs", "providerFailures",
-  "readbackMatched",
   "loadSettled",
   "loadCompleted",
   "mainPresent",
@@ -472,10 +562,8 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "viewportAvailable",
   "viewportHosted",
   "projectionComplete",
-  "accumulatedStart",
   "automatic",
   "selected",
-  "webViewAllowed",
   "routePointerPresent",
   "routePresent",
   "routeTrusted",
@@ -493,7 +581,89 @@ const DETAIL_KEYS = new Set<keyof DiagnosticDetails>([
   "stage",
   "stagePhase",
   "errorCategory",
+  "onlineProvider", "onlineProtocol", "onlineModel",
 ]);
+
+/**
+ * D6 (owner 2026-11-21 「改成相对量（推荐）」): absolute business times are not kept. Each key on the left is replaced by
+ * its distance from the line's own time: a past time by its age, a due time by the time left. An absent time (zero or
+ * not a number) is left out, and a time on the wrong side of the line's time counts as zero.
+ */
+const RELATIVE_TIME_KEYS: Readonly<Partial<Record<keyof DiagnosticDetails, Readonly<{ key: keyof DiagnosticDetails; due?: true }>>>> = {
+  listEventAtMs: { key: "listEventAgeMs" },
+  preparedEventAtMs: { key: "preparedEventAgeMs" },
+  previousFeedEventAtMs: { key: "previousFeedEventAgeMs" },
+  mergedFeedEventAtMs: { key: "mergedFeedEventAgeMs" },
+  carrierFetchedAtMs: { key: "carrierFetchedAgeMs" },
+  carrierLastAttemptAtMs: { key: "carrierLastAttemptAgeMs" },
+  foreignAnchorAtMs: { key: "foreignAnchorAgeMs" },
+  earliestTrackAtMs: { key: "earliestTrackAgeMs" },
+  headlineAtMs: { key: "headlineAgeMs" },
+  detailAtMs: { key: "detailAgeMs" },
+  providerLastAttemptAtMs: { key: "providerLastAttemptAgeMs" },
+  providerNextDueAtMs: { key: "providerNextDueInMs", due: true },
+  latestEventAtMs: { key: "latestEventAgeMs" },
+  latestTrackAtMs: { key: "latestTrackAgeMs" },
+  feedEventAtMs: { key: "feedEventAgeMs" },
+  statusEventAtMs: { key: "statusEventAgeMs" },
+};
+for (const [absolute, relative] of Object.entries(RELATIVE_TIME_KEYS)) {
+  DETAIL_KEYS.delete(absolute as keyof DiagnosticDetails);
+  DETAIL_KEYS.add(relative!.key);
+}
+for (const key of ["runtimeHost", "unfinishedEvent", "ageMs", "cancelReason", "lockScreenStyle", "pushOrigin",
+  "senderRole", "signedFrozen", "localOnly", "changed", "mealRulesResult",
+  "preparationMs", "accountMs", "enrichmentMs", "finalizationMs", "accountContinued", "appliedRevision",
+  "widgetSize", "refreshMs", "alignmentAttempts", "attemptCounted", "nextAttemptInMs", "surface", "domain",
+  "hiddenRecords", "removedRecords", "candidateMap", "projectionReason", "cloudPddRecords", "cloudPddChanged",
+  "workerError"] as const) DETAIL_KEYS.add(key);
+
+/** The detail keys a kept line can hold (D170: the log page reads no other key). */
+export const DIAGNOSTIC_DETAIL_KEYS: ReadonlySet<string> = DETAIL_KEYS as ReadonlySet<string>;
+
+/** Replaces absolute business times with their distance from `referenceMs` (D6). */
+function withRelativeTimes(details: DiagnosticDetails, referenceMs: number): DiagnosticDetails {
+  let result: DiagnosticDetails | undefined;
+  for (const [absolute, relative] of Object.entries(RELATIVE_TIME_KEYS)) {
+    if (!(absolute in details)) continue;
+    result ??= { ...details };
+    const value = Number((details as Record<string, unknown>)[absolute]);
+    delete (result as Record<string, unknown>)[absolute];
+    if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(referenceMs)) continue;
+    (result as Record<string, unknown>)[relative!.key] = Math.max(0, relative!.due ? value - referenceMs : referenceMs - value);
+  }
+  return result ?? details;
+}
+
+/** The operations that record one end line with their duration and may be reported unfinished (D4). */
+const TRACKED_FLOW_EVENTS = new Set<string>([
+  "platform.identity", "platform.parcel_sync", "platform.cabinet", "platform.parcel_detail", "platform.account.code",
+  "cloud.pdd", "cloud.parcel.metadata", "meal.sync", "cloud.sync",
+  "shortcut.screen", "shortcut.query", "shortcut.phone_tail", "activity.parcel.operation", "pickup.action",
+  "recognition.online", "account.enhanced.operation", "binding.unbind", "app.startup", "home.query",
+  // Top-level flows whose start is merged into their end line (D4 applied to every iOS start line, step 5).
+  "refresh", "detail.refresh", "widget.run", "notification.replay", "binding.code", "binding.verify", "order.projection",
+]);
+const RUNTIME_HOSTS = new Set<DiagnosticRuntimeHost>(["app", "widget", "app_intent", "shortcut"]);
+const CANCEL_REASONS = new Set(["user", "superseded", "settings_saved", "page_closed", "deadline"]);
+const LOCK_SCREEN_STYLES = new Set(["dynamic", "black", "white"]);
+const MEAL_RULES_RESULTS = new Set(["accepted", "rejected", "absent"]);
+const WIDGET_SIZES = new Set(["small", "medium", "unsupported"]);
+const CANDIDATE_FRAGMENT = "[a-z][a-z0-9_]{1,15}:(?:selected|available|empty):\\d{1,4}:(?:full|part):[a-z][a-z0-9_]{1,31}:(?:0|[ab]\\d{1,7})";
+const CANDIDATE_MAP = new RegExp(`^${CANDIDATE_FRAGMENT}(?:,${CANDIDATE_FRAGMENT}){0,15}$`);
+const LIVE_SURFACES = new Set(["express_live", "pickup_live", "handoff_live"]);
+const CLOUD_DOMAINS = new Set(["pdd", "parcel_metadata", "meal_pickup", "international", "parcel_cloud"]);
+
+/**
+ * D11 (owner 2026-11-21 「三项都改（推荐）」): the kind of page a JD web read stopped on, as a closed enum. No host name,
+ * path or query is kept. Older lines that stored `scheme:host` read back through the same classification.
+ */
+const JD_PAGE_KINDS = new Set(["jd_login", "jd_account", "jd_orders", "jd_other", "web_other", "error_page",
+  "local_page", "other"]);
+
+const ONLINE_PROVIDERS = new Set(["openai", "gemini", "compatible"]);
+const ONLINE_PROTOCOLS = new Set(["responses", "chat_completions", "gemini"]);
+const ONLINE_MODEL = /^[A-Za-z0-9._-]{1,64}$/;
 
 const SOURCE_KEYS = new Set<keyof DiagnosticDetails>([
   "source",
@@ -587,7 +757,6 @@ const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
   "missingStatusRefresh",
   "unprojectedOrder",
   "detailComplete",
-  "readbackMatched",
   "loadSettled",
   "loadCompleted",
   "captureSeen",
@@ -601,10 +770,8 @@ const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
   "viewportAvailable",
   "viewportHosted",
   "projectionComplete",
-  "accumulatedStart",
   "automatic",
   "selected",
-  "webViewAllowed",
   "routePointerPresent",
   "routePresent",
   "routeTrusted",
@@ -619,12 +786,27 @@ const BOOLEAN_KEYS = new Set<keyof DiagnosticDetails>([
   "kdniaoAttempted",
   "kdniaoSucceeded",
 ]);
+for (const relative of Object.values(RELATIVE_TIME_KEYS)) NUMBER_KEYS.add(relative!.key);
+for (const key of ["ageMs", "preparationMs", "accountMs", "enrichmentMs", "finalizationMs", "appliedRevision",
+  "refreshMs", "alignmentAttempts", "nextAttemptInMs", "hiddenRecords", "removedRecords", "cloudPddRecords"] as const) {
+  NUMBER_KEYS.add(key);
+}
+for (const key of ["senderRole", "signedFrozen", "localOnly", "changed", "accountContinued", "attemptCounted",
+  "cloudPddChanged"] as const) {
+  BOOLEAN_KEYS.add(key);
+}
 
-const SAFE_FAILURE_CODES = new Set([
+export const SAFE_FAILURE_CODES: ReadonlySet<string> = new Set([
   "attestation_rejected",
   "body_too_large",
   "carrier_mismatch",
   "carrier_unknown",
+  // R5-NEW-07 ③: the Worker's cloud-record answers (gateway.ts keeps the same words).
+  "cloud_metadata_not_granted",
+  "cloud_record_retention_pending",
+  "cloud_record_storage_unavailable",
+  "cloud_snapshot_changed",
+  "cloud_sync_disabled",
   "delegation_unavailable",
   "detail_route_not_reconstructable",
   "expired_request",
@@ -635,6 +817,7 @@ const SAFE_FAILURE_CODES = new Set([
   "invalid_express_identity",
   "invalid_express_interface",
   "invalid_express_operation",
+  "invalid_cloud_record_identity",
   "invalid_flight_operation",
   "invalid_input",
   "invalid_jd_app_route",
@@ -667,6 +850,36 @@ const SAFE_FAILURE_CODES = new Set([
   "upstream_business_error",
   "upstream_unavailable",
 ]);
+
+/**
+ * D175 (D20, plan step 7): the account-list conditions an account.sync.failed line names, the same codes Pipi's
+ * account flow writes (PhoneSyncClient, ExpressDiagnosticLog.accountFailure). The Worker's own code goes in
+ * `workerError`.
+ */
+export const ACCOUNT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "account_list_request_failed", "account_list_rejected", "account_list_invalid", "phone_verification_required",
+  "cancelled",
+]);
+
+/**
+ * The fixed failure code and Worker code of an account-list stage that ended without a list (D175): a Worker that
+ * answered with its own error code rejected the request; no answer, a timeout or an answer without a code is a failed
+ * request; a reply that did not parse is an invalid list. A cancellation by the parent refresh is `cancelled`.
+ */
+export function accountListFailureDetails(error: unknown): DiagnosticDetails {
+  const details = diagnosticErrorDetails(error);
+  const workerCode = error && typeof error === "object" && "gatewayCode" in error
+    ? String((error as { gatewayCode?: unknown }).gatewayCode || "").trim().toLowerCase() : "";
+  const name = error instanceof Error ? error.name : "";
+  const failureCode = details.errorCategory === "cancelled" ? "cancelled"
+    : workerCode === "phone_verification_required" ? "phone_verification_required"
+    : workerCode || (name === "AccountApiError" && details.failureCode === "upstream_rejected")
+      ? "account_list_rejected"
+    : name === "AccountParseError" || details.errorCategory === "protocol" ? "account_list_invalid"
+    : "account_list_request_failed";
+  const { failureCode: _code, ...rest } = details;
+  return { ...rest, failureCode, ...(workerCode ? { workerError: workerCode } : {}) };
+}
 
 function validEntry(value: unknown, now: number): value is DiagnosticEntry {
   if (!value || typeof value !== "object") return false;
@@ -701,6 +914,8 @@ const STAGE_WIRE: Record<string, string> = {
   account_detail: "v5_query",
   jingdong_h5: "jd_h5",
   cainiao_h5: "cn_h5",
+  pinduoduo_h5: "pdd_h5",
+  pdd_h5: "pdd_h5",
   kuaidi100_query: "k100_h5",
   web_timeline: "k100_h5",
   picker_query: "v6_query",
@@ -728,6 +943,8 @@ const PROVIDER_WIRE: Record<string, string> = {
   kuaidi100: "k100_h5",
   jingdong_h5: "jd_h5",
   cainiao_h5: "cn_h5",
+  pinduoduo_h5: "pdd_h5",
+  pdd_h5: "pdd_h5",
   web: "cn_h5",
 };
 const PROVIDER_KEYS = new Set<keyof DiagnosticDetails>([
@@ -752,15 +969,28 @@ function unifiedWire(key: keyof DiagnosticDetails, value: string): string {
   return value;
 }
 
-export function jdDiagnosticPage(scheme: unknown, hostname: unknown): string {
-  if (typeof scheme !== "string" || !/^(?:https?|file|data|blob|applewebdata|webkit-error):$/.test(scheme)) return "other:other";
-  // Keep only the provider's DNS name. WebKit error pages and foreign hosts can contain private identifiers.
-  const host = /^https?:$/.test(scheme) && typeof hostname === "string" && hostname.length <= 55 &&
-    /^(?:[a-z0-9-]+\.)*(?:jd\.com|jd\.hk|360buyimg\.com)$/.test(hostname) ? hostname : "other";
-  return scheme + host;
+/** A package's provider in the shared log words (2026-09-05), for compact fields that name packages. */
+export function diagnosticProviderWord(provider: string): string {
+  const wire = unifiedWire("timelineProvider", String(provider || "").trim());
+  const lower = wire.toLowerCase();
+  return /^[a-z][a-z0-9_]{1,15}$/.test(lower) ? lower : "other";
 }
 
-function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
+export function jdDiagnosticPage(scheme: unknown, hostname: unknown): string {
+  if (typeof scheme !== "string") return "other";
+  if (scheme === "webkit-error:") return "error_page";
+  if (/^(?:file|data|blob|applewebdata):$/.test(scheme)) return "local_page";
+  if (!/^https?:$/.test(scheme)) return "other";
+  const host = typeof hostname === "string" && hostname.length <= 55 ? hostname.toLowerCase() : "";
+  if (!/^(?:[a-z0-9-]+\.)*(?:jd\.com|jd\.hk|360buyimg\.com)$/.test(host)) return "web_other";
+  // The same login hosts the JD reader treats as a signed-out session (platform-web-parcels.ts).
+  if (host === "plogin.m.jd.com" || host === "passport.jd.com") return "jd_login";
+  if (host === "my.m.jd.com" || host === "home.m.jd.com") return "jd_account";
+  if (host === "trade.m.jd.com") return "jd_orders";
+  return "jd_other";
+}
+
+function sanitizeDetails(value: DiagnosticDetails, event = ""): DiagnosticDetails {
   const result: DiagnosticDetails = {};
   for (const [rawKey, rawValue] of Object.entries(value)) {
     const key = rawKey as keyof DiagnosticDetails;
@@ -768,8 +998,41 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
     if (key === "jdPage") {
       if (typeof rawValue === "string") {
         const separator = rawValue.indexOf(":");
-        if (separator > 0) result.jdPage = jdDiagnosticPage(rawValue.slice(0, separator + 1), rawValue.slice(separator + 1));
+        if (JD_PAGE_KINDS.has(rawValue)) result.jdPage = rawValue;
+        else if (separator > 0) result.jdPage = jdDiagnosticPage(rawValue.slice(0, separator + 1), rawValue.slice(separator + 1));
       }
+      continue;
+    }
+    if (key === "runtimeHost") {
+      if (RUNTIME_HOSTS.has(rawValue as DiagnosticRuntimeHost)) result.runtimeHost = rawValue as DiagnosticRuntimeHost;
+      continue;
+    }
+    if (key === "unfinishedEvent") {
+      if (typeof rawValue === "string" && TRACKED_FLOW_EVENTS.has(rawValue)) result.unfinishedEvent = rawValue;
+      continue;
+    }
+    if (key === "cancelReason" || key === "lockScreenStyle" || key === "mealRulesResult") {
+      const allowed = key === "cancelReason" ? CANCEL_REASONS : key === "lockScreenStyle" ? LOCK_SCREEN_STYLES : MEAL_RULES_RESULTS;
+      if (typeof rawValue === "string" && allowed.has(rawValue)) (result as Record<string, unknown>)[key] = rawValue;
+      continue;
+    }
+    if (key === "pushOrigin") {
+      if (rawValue === "app_local") result.pushOrigin = rawValue;
+      continue;
+    }
+    if (key === "candidateMap") {
+      if (typeof rawValue === "string" && CANDIDATE_MAP.test(rawValue) && !/\d{5,}/.test(rawValue.replace(/:[ab]?\d+(?=,|$)/g, ""))) {
+        result.candidateMap = rawValue;
+      }
+      continue;
+    }
+    if (key === "projectionReason") {
+      if (rawValue === "timeline_reopen" || rawValue === "forced" || rawValue === "scheduled") result.projectionReason = rawValue;
+      continue;
+    }
+    if (key === "widgetSize" || key === "surface" || key === "domain") {
+      const allowed = key === "widgetSize" ? WIDGET_SIZES : key === "surface" ? LIVE_SURFACES : CLOUD_DOMAINS;
+      if (typeof rawValue === "string" && allowed.has(rawValue)) (result as Record<string, unknown>)[key] = rawValue;
       continue;
     }
     if (key === "jdNativeLoad") {
@@ -794,6 +1057,16 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
     }
     if (key === "listStatusScope") {
       if (rawValue === "ORDER" || rawValue === "SHIPMENT" || rawValue === "unknown") result[key] = rawValue;
+      continue;
+    }
+    if (key === "onlineProvider" || key === "onlineProtocol") {
+      if (typeof rawValue === "string" && (key === "onlineProvider" ? ONLINE_PROVIDERS : ONLINE_PROTOCOLS).has(rawValue)) {
+        (result as Record<string, unknown>)[key] = rawValue;
+      }
+      continue;
+    }
+    if (key === "onlineModel") {
+      if (typeof rawValue === "string" && ONLINE_MODEL.test(rawValue)) result.onlineModel = rawValue;
       continue;
     }
     if (key === "listStatusSemantic" || key === "preparedStatusSemantic" ||
@@ -846,7 +1119,10 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
       continue;
     }
     if (key === "attempt") {
-      if (rawValue === 1 || rawValue === 2) result.attempt = rawValue;
+      // A request retries once; the paid carrier stage allows three attempts in a waybill's life (D124).
+      if (rawValue === 1 || rawValue === 2 || rawValue === 3 && event.startsWith("carrier.recognition.")) {
+        result.attempt = rawValue;
+      }
       continue;
     }
     if (key === "upstreamCode") {
@@ -876,9 +1152,15 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
     }
     if (key === "failureCode") {
       const code = String(rawValue).trim().toLowerCase();
-      if (SAFE_FAILURE_CODES.has(code)) {
+      if (SAFE_FAILURE_CODES.has(code) || ACCOUNT_FAILURE_CODES.has(code)) {
         result.failureCode = code;
       }
+      continue;
+    }
+    if (key === "workerError") {
+      // A Worker code from the closed gateway list, `other` otherwise, as Pipi's workerErrorCode does.
+      const code = String(rawValue).trim().toLowerCase();
+      if (code) result.workerError = SAFE_FAILURE_CODES.has(code) ? code : "other";
       continue;
     }
     if (SOURCE_KEYS.has(key)) {
@@ -903,11 +1185,62 @@ function sanitizeDetails(value: DiagnosticDetails): DiagnosticDetails {
       continue;
     }
     const text = unifiedWire(key, String(rawValue || "").trim());
-    if (SAFE_TEXT.test(text)) {
+    if (diagnosticTextAllowed(key, text)) {
       (result as Record<string, unknown>)[key] = text;
     }
   }
   return result;
+}
+
+/**
+ * D10 (plan step 7): the remaining text fields hold enumerated words, not free text. An identifier key (a flow or
+ * request id, a version, the local order handle) keeps the safe-text shape. A code key (carrier and status codes)
+ * takes letters, digits and underscores starting with a letter. Every other key takes a lowercase word of letters,
+ * digits and underscores (k100_autoCom keeps its one capital). No word may hold a run of four or more digits, so a
+ * waybill, an order number or a phone tail passed by mistake is dropped rather than kept.
+ */
+const IDENTIFIER_TEXT_KEYS = new Set<keyof DiagnosticDetails>([
+  "flowId", "blockingFlowId", "requestId", "scriptVersion", "carrierTableVersion", "ownerFingerprint",
+]);
+const CODE_TEXT_KEYS = new Set<keyof DiagnosticDetails>([
+  "carrierCode", "rawCarrierCode", "statusSemantic", "detailStatusSemantic", "latestTrackSemantic",
+]);
+const ENUM_WORD = /^[a-z][A-Za-z0-9_]{0,63}$/;
+const CODE_WORD = /^[A-Za-z][A-Za-z0-9_]{0,23}$/;
+
+/**
+ * D10: the text keys whose words form a known closed set take only those words. The sets follow their owning types
+ * (StatusSemantic in models.ts, DetailIncompleteReason in shipment-policy.ts, ShipmentRoute["kind"], the page readers'
+ * extraction sources and page classes, classifyDiagnosticError) plus the words older stored lines still carry;
+ * tests/diagnostics-log-steps-5-7.test.ts checks every word the code writes against them.
+ */
+const STATUS_SEMANTIC_WORDS = new Set(["UNKNOWN", "ORDERED", "SHIPPED", "PICKED", "TRANSIT", "DELIVERY",
+  "WAITING_PICKUP", "COMPLETED", "CANCELLED", "DANGER"]);
+export const CLOSED_TEXT_VALUES: Readonly<Partial<Record<keyof DiagnosticDetails, ReadonlySet<string>>>> = {
+  statusSemantic: STATUS_SEMANTIC_WORDS,
+  detailStatusSemantic: STATUS_SEMANTIC_WORDS,
+  latestTrackSemantic: STATUS_SEMANTIC_WORDS,
+  // latest_unknown is an older reason that stored lines may still hold.
+  incompleteReason: new Set(["no_tracks", "status_unknown", "status_mismatch", "sf_active", "missing_source_time",
+    "missing_pickup", "time_mismatch", "latest_unknown"]),
+  routeKind: new Set(["cainiao", "web", "none"]),
+  extractionSource: new Set(["data_array", "data_missing", "vue", "dom", "none", "diagnostic", "dom_modal", "script",
+    "probe", "replay", "resource_replay"]),
+  pageClass: new Set(["jd", "other", "invalid", "feed", "unknown"]),
+  visibilityState: new Set(["visible", "hidden", "prerender", "unknown"]),
+  interface: new Set(["v1", "v2", "v3", "v4", "v5", "v6"]),
+  errorCategory: new Set(["cancelled", "timeout", "upstream", "authorization", "rate_limited", "service", "protocol",
+    "validation", "no_result", "removed", "state_changed", "network", "storage", "unknown", "ownership_lost",
+    "superseded", "stale_timeline"]),
+};
+
+function diagnosticTextAllowed(key: keyof DiagnosticDetails, text: string): boolean {
+  if (!SAFE_TEXT.test(text)) return false;
+  const closed = CLOSED_TEXT_VALUES[key];
+  if (closed) return closed.has(text);
+  if (IDENTIFIER_TEXT_KEYS.has(key)) return true;
+  if (/\d{4,}/.test(text)) return false;
+  return (CODE_TEXT_KEYS.has(key) ? CODE_WORD : ENUM_WORD).test(text);
 }
 
 /**
@@ -929,7 +1262,8 @@ function readLegacyTriggers(details: DiagnosticDetails): DiagnosticDetails {
 }
 
 function cleanStoredEntry(entry: DiagnosticEntry, translate = true): DiagnosticEntry {
-  const details = sanitizeDetails(entry.details);
+  // A line kept before D6 still holds absolute times; they read back relative to that line's own time.
+  const details = sanitizeDetails(withRelativeTimes(entry.details, Date.parse(entry.at)), entry.event);
   if (translate && entry.event.startsWith("carrier.authority.") && details.carrierCode === "HTKY") delete details.carrierCode;
   return { id: entry.id, at: entry.at, level: entry.level, event: entry.event,
     details: translate ? readLegacyTriggers(details) : details };
@@ -986,15 +1320,190 @@ function migrateLegacyDiagnostics(now: number): void {
   if (diagnosticEpoch() !== "legacy") return;
   const entries = legacyDiagnosticEntries(now);
   if (!entries) return;
-  if (entries.length) publishDiagnosticBatch(diagnosticBatchId(), "legacy", entries);
+  if (entries.length) publishDiagnosticBatch(diagnosticBatchId(), "legacy", entries, true);
   retireLegacyDiagnostics();
 }
 
-export function createDiagnosticFlowId(prefix: string): string {
-  const safePrefix = SAFE_TEXT.test(prefix) ? prefix : "flow";
-  return `${safePrefix}-${Date.now().toString(36)}-${Math.random()
-    .toString(36)
-    .slice(2, 7)}`;
+let flowSequence = Math.floor(Math.random() * 1024);
+
+/**
+ * D8 (owner 2026-11-21 「三项都改（推荐）」): a flow id is a non-negative number, generated locally from the clock and a
+ * per-runtime sequence, as Pipi's AppDiagnosticLog.newFlowId does: `(epochMs << 10) ^ (sequence & 0x3ff)`. The start time
+ * of a flow can be read back from its id (D4). It is written as decimal digits so lease records and map keys keep their
+ * string type. `_kind` names the flow at the call site only; it is not part of the id.
+ */
+export function createDiagnosticFlowId(_kind?: string): string {
+  flowSequence = (flowSequence + 1) & 0x3ff;
+  return String(Math.max(0, Date.now()) * 1024 + flowSequence);
+}
+
+/** The runtime this script session writes from (D103); entrypoints set it before their first line. */
+let runtimeHost: DiagnosticRuntimeHost | undefined;
+
+export function setDiagnosticRuntimeHost(host: DiagnosticRuntimeHost): void {
+  runtimeHost = host;
+}
+
+export function diagnosticRuntimeHost(): DiagnosticRuntimeHost | undefined {
+  return runtimeHost;
+}
+
+/**
+ * D161: the newest revision the app's screen applied. The app's state hook reports it instead of writing a line per
+ * applied state; a refresh's end line carries it, so the log still shows whether the screen received the new revision.
+ */
+let appliedRevision: number | undefined;
+
+export function noteDiagnosticAppliedRevision(revision: number): void {
+  if (Number.isFinite(revision) && revision >= 0) appliedRevision = Math.max(appliedRevision ?? 0, revision);
+}
+
+export function diagnosticAppliedRevision(): number | undefined {
+  return appliedRevision;
+}
+
+/**
+ * D7 (owner 2026-11-21 「保留尾号写成例外，订单指纹换句柄（推荐）」): a local handle for a value that must not be written
+ * itself, such as a JD order number. It is a keyed SHA-256 with a random key that stays on this device and changes
+ * when the log is cleared, so the same order reads alike within one log, while the handle cannot be reversed or
+ * matched against an order number without the key. Returns "" while recording is off or no key can be kept.
+ */
+const HANDLE_KEY = "pipi_deliveries_diagnostic_handle_key_v1";
+let handleKey: string | undefined;
+
+const HANDLE_KEY_PATTERN = /^[0-9a-f]{32,64}$/;
+
+function diagnosticHandleKey(): string {
+  if (handleKey) return handleKey;
+  try {
+    const stored = Storage.get<string>(HANDLE_KEY, { shared: true });
+    if (typeof stored === "string" && HANDLE_KEY_PATTERN.test(stored)) return handleKey = stored;
+  } catch { /* A new key is generated below. */ }
+  let generated = "";
+  try { generated = Crypto.generateSymmetricKey(256).toHexString().toLowerCase(); } catch { /* Fallback below. */ }
+  // A host without the native key generator keeps a key for this runtime only.
+  if (!HANDLE_KEY_PATTERN.test(generated)) {
+    generated = Array.from({ length: 4 }, () => Math.floor(Math.random() * 0x100000000).toString(16).padStart(8, "0")).join("");
+  }
+  try { Storage.set(HANDLE_KEY, generated, { shared: true }); } catch { /* The key stays in this runtime. */ }
+  return handleKey = generated;
+}
+
+export function diagnosticHandle(scope: string, value: string): string {
+  if (!value || !diagnosticsEnabled()) return "";
+  try {
+    return sha256Hex(`${diagnosticHandleKey()}\u0000${scope}\u0000${value}`).slice(0, 12);
+  } catch {
+    return "";
+  }
+}
+
+function retireDiagnosticHandleKey(): void {
+  handleKey = undefined;
+  try { Storage.remove(HANDLE_KEY, { shared: true }); } catch { /* A later handle generates its own key. */ }
+}
+
+/**
+ * D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): an operation writes no start line, only its end line with
+ * its duration. While it runs, a small marker is kept on the device; a marker left by an earlier runtime and older than
+ * UNFINISHED_AFTER_MS is reported as `diagnostic.flow.unfinished` when the next runtime starts, then dropped.
+ * R5-NEW-11 ⑥: each marker is its own file (diagnostic-store `writeOpenFlowMarker`), so runtimes never rewrite each
+ * other's markers. The shared map that builds before it kept under OPEN_FLOWS_KEY is moved into those files once.
+ */
+const OPEN_FLOWS_KEY = "pipi_deliveries_diagnostic_open_flows_v1";
+const OPEN_FLOW_LIMIT = 32;
+const UNFINISHED_AFTER_MS = 10 * 60 * 1000;
+const runtimeInstance = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+type OpenFlow = { event: string; startedAtMs: number; runtime: string; host?: DiagnosticRuntimeHost };
+
+function openFlowRecord(value: unknown): OpenFlow | null {
+  const flow = value as Partial<OpenFlow> | null;
+  if (!flow || typeof flow !== "object" || typeof flow.event !== "string" || !TRACKED_FLOW_EVENTS.has(flow.event) ||
+      typeof flow.startedAtMs !== "number" || !Number.isFinite(flow.startedAtMs) ||
+      typeof flow.runtime !== "string") return null;
+  return { event: flow.event, startedAtMs: flow.startedAtMs, runtime: flow.runtime,
+    ...(RUNTIME_HOSTS.has(flow.host as DiagnosticRuntimeHost) ? { host: flow.host } : {}) };
+}
+
+function openFlowFile(flowId: string, event: string): string {
+  return `${flowId}-${event}.json`;
+}
+
+/** The open markers by file name, with their flow id. */
+function readOpenFlows(): { name: string; flowId: string; flow: OpenFlow }[] {
+  const flows: { name: string; flowId: string; flow: OpenFlow }[] = [];
+  for (const { name, text } of openFlowMarkers()) {
+    let flow: OpenFlow | null = null;
+    try { flow = openFlowRecord(JSON.parse(text)); } catch { /* A marker being written is read again later. */ }
+    const flowId = name.slice(0, name.indexOf("-"));
+    if (flow && name === openFlowFile(flowId, flow.event)) flows.push({ name, flowId, flow });
+  }
+  return flows;
+}
+
+function clearOpenFlows(): void {
+  try { clearOpenFlowMarkers(); } catch { /* A lost marker only loses an unfinished report. */ }
+  try { Storage.remove(OPEN_FLOWS_KEY, { shared: true }); } catch { /* Moved or dropped by the next report. */ }
+}
+
+/**
+ * Moves the shared map of builds before R5-NEW-11 ⑥ into marker files, once, so what such a build left open is still
+ * reported. Entries were keyed by `<flowId>:<event>`, or by the flow id alone before that keying.
+ */
+function migrateLegacyOpenFlows(): void {
+  let raw: unknown;
+  try { raw = Storage.get<string>(OPEN_FLOWS_KEY, { shared: true }); } catch { return; }
+  if (raw == null) return;
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) as unknown : null;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        const flowId = key.split(":")[0]!;
+        const flow = openFlowRecord(value);
+        if (!flow || !/^\d{1,17}$/.test(flowId) || key !== flowId && key !== `${flowId}:${flow.event}`) continue;
+        writeOpenFlowMarker(openFlowFile(flowId, flow.event), JSON.stringify(flow));
+      }
+    }
+    Storage.remove(OPEN_FLOWS_KEY, { shared: true });
+  } catch { /* The next runtime moves what is left. */ }
+}
+
+function openDiagnosticFlow(flowId: string, event: string, startedAtMs: number): void {
+  if (!TRACKED_FLOW_EVENTS.has(event) || !diagnosticsEnabled()) return;
+  try {
+    writeOpenFlowMarker(openFlowFile(flowId, event), JSON.stringify(
+      { event, startedAtMs, runtime: runtimeInstance, ...(runtimeHost ? { host: runtimeHost } : {}) }));
+    const flows = readOpenFlows();
+    if (flows.length <= OPEN_FLOW_LIMIT) return;
+    flows.sort((left, right) => left.flow.startedAtMs - right.flow.startedAtMs);
+    for (const { name } of flows.slice(0, flows.length - OPEN_FLOW_LIMIT)) removeOpenFlowMarker(name);
+  } catch { /* A lost marker only loses an unfinished report. */ }
+}
+
+function closeDiagnosticFlow(flowId: string, event: string): void {
+  try { removeOpenFlowMarker(openFlowFile(flowId, event)); }
+  catch { /* A marker left behind is reported once by a later runtime. */ }
+}
+
+/**
+ * Called once by each entrypoint (app, widget, App Intent, Shortcut) after it names its runtime: one warning line for
+ * every operation an earlier runtime started and never ended (D4 「上次未结束」). Markers older than the log's own
+ * seven days are dropped without a line. Runtimes that start together report each marker once: the one that claims it.
+ */
+export function reportUnfinishedDiagnosticFlows(now = Date.now()): void {
+  if (!diagnosticsEnabled()) return;
+  migrateLegacyOpenFlows();
+  let flows: ReturnType<typeof readOpenFlows> = [];
+  try { flows = readOpenFlows(); } catch { return; }
+  for (const { name, flowId, flow } of flows) {
+    if (flow.runtime === runtimeInstance || now - flow.startedAtMs < UNFINISHED_AFTER_MS) continue;
+    if (!claimOpenFlowMarker(name, runtimeInstance)) continue;
+    if (now - flow.startedAtMs >= MAX_AGE_MS) continue;
+    writeDiagnostic("diagnostic.flow.unfinished", {
+      flowId, unfinishedEvent: flow.event, ageMs: now - flow.startedAtMs,
+      ...(flow.host ? { runtimeHost: flow.host } : {}),
+    }, "warning");
+  }
 }
 
 export function diagnosticState(state: AppState): DiagnosticDetails {
@@ -1007,9 +1516,27 @@ export function diagnosticState(state: AppState): DiagnosticDetails {
   };
 }
 
+/**
+ * R5-NEW-07 ③: a parcel provider's PlatformWireError (platform-wire.ts) names its reason; it reads in the same categories
+ * as Pipi's PDD lines (ExpressDiagnosticLog.pddCategory): an expired or verification-gated login is an authorization
+ * failure, an unavailable answer a service failure and a changed session a validation failure. Matched by name, as the
+ * account errors are, so the logger imports no provider code.
+ */
+const PLATFORM_WIRE_CATEGORIES: Readonly<Record<string, string>> = {
+  expired: "authorization",
+  verification: "authorization",
+  unavailable: "service",
+  changed: "validation",
+};
+
 export function classifyDiagnosticError(error: unknown): string {
   if (error instanceof RefreshInvalidatedError) return error.reason;
   const name = error instanceof Error ? error.name.toLowerCase() : "";
+  if (name === "platformwireerror") {
+    const reason = (error as { reason?: unknown }).reason;
+    const category = typeof reason === "string" ? PLATFORM_WIRE_CATEGORIES[reason] : undefined;
+    if (category) return category;
+  }
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   const rawCode = error && typeof error === "object" && "code" in error
     ? (error as { code?: unknown }).code
@@ -1148,8 +1675,45 @@ function reopenDiagnosticsForNewBeta(): void {
   }
 }
 
+/**
+ * Owner 2026-11-24 「Clear once after update (Recommended)」: lines kept by builds before the keyed handle (D7) can still
+ * hold the old unsalted, reversible ownerFingerprint for up to seven days. The first touch of the log in each runtime
+ * (app, widget, App Intent, Shortcut) checks a device-wide marker once; of all runtimes, only the one that creates it
+ * clears those lines (the older build's shared array and every batch without the keyed-handle mark) and, when it
+ * cleared one, writes the fixed line `diagnostics.log.cleared result=handle_upgrade`. The marker stays, so this never
+ * repeats. It is not clearDiagnostics: lines this version writes, in this or another runtime, stay, and the recording
+ * switch, the handle key and business data are unchanged. While recording is off the old lines are cleared and, as for
+ * every line, the fixed line is not written.
+ */
+let handleResetChecked = false;
+
+function retirePreHandleDiagnostics(): void {
+  if (handleResetChecked) return;
+  handleResetChecked = true;
+  try {
+    if (!claimDiagnosticHandleReset(runtimeInstance)) return;
+  } catch {
+    return; // Nothing was claimed; the next runtime checks again.
+  }
+  let cleared = false;
+  try {
+    const legacy = Storage.get<unknown>(DIAGNOSTIC_KEY, { shared: true });
+    if (Array.isArray(legacy) && legacy.length) {
+      retireLegacyDiagnostics();
+      cleared = true;
+    }
+    // After the shared array, so a batch migrated from it meanwhile is cleared too.
+    if (retireUnkeyedDiagnosticBatches()) cleared = true;
+  } catch {
+    try { releaseDiagnosticHandleReset(); } catch { /* The old lines then expire after seven days. */ }
+    return;
+  }
+  if (cleared) writeDiagnostic("diagnostics.log.cleared", { result: "handle_upgrade" });
+}
+
 export function diagnosticsEnabled(): boolean {
   reopenDiagnosticsForNewBeta();
+  retirePreHandleDiagnostics();
   try {
     const stored = Storage.get<boolean>(DIAGNOSTIC_ENABLED_KEY, { shared: true });
     return typeof stored === "boolean" ? stored : DIAGNOSTICS_DEFAULT_ENABLED;
@@ -1163,7 +1727,14 @@ export function setDiagnosticsEnabled(enabled: boolean): boolean {
   reopenDiagnosticsForNewBeta();
   try {
     Storage.set(DIAGNOSTIC_ENABLED_KEY, enabled === true, { shared: true });
-    if (!enabled) { bufferedEntries.length = 0; pendingPublication = undefined; }
+    // A recording that starts begins with a clean repeat filter (G-MED-21).
+    if (enabled) forgetRepeatedLines();
+    if (!enabled) {
+      bufferedEntries.length = 0;
+      pendingPublication = undefined;
+      // An operation that was running when recording stopped has nothing to report later.
+      clearOpenFlows();
+    }
     return true;
   } catch {
     return false;
@@ -1186,6 +1757,8 @@ const LEVEL_BY_STAGE: Record<string, string> = {
   detail_webview: "jd_h5",
   detail_webview_commit: "jd_h5",
   cainiao_h5: "cn_h5",
+  pinduoduo_h5: "pdd_h5",
+  pdd_h5: "pdd_h5",
   kuaidi100_query: "k100_h5",
   web_timeline: "k100_h5",
   picker_query: "v6_query",
@@ -1215,6 +1788,8 @@ const LEVEL_BY_PROVIDER: Record<string, string> = {
   kuaidi100: "k100_h5",
   jingdong_h5: "jd_h5",
   cainiao_h5: "cn_h5",
+  pinduoduo_h5: "pdd_h5",
+  pdd_h5: "pdd_h5",
   web: "cn_h5",
   v5_query: "v5_query",
   v4_query: "v4_query",
@@ -1240,9 +1815,15 @@ function unifiedLevel(details: DiagnosticDetails): string {
   return "";
 }
 
-/** Capability presence is host evidence, not proof of a working transaction. */
-export function writeRuntimeCapabilities(runtimeHost: "app" | "widget", flowId?: string): void {
+/**
+ * Each host's first diagnostic call (app, widget, App Intent, Shortcut). It names the runtime for later lines (D103),
+ * reports what an earlier runtime left unfinished (D4) and records missing capabilities. Capability presence is host
+ * evidence, not proof of a working transaction.
+ */
+export function writeRuntimeCapabilities(runtimeHost: DiagnosticRuntimeHost, flowId?: string): void {
+  setDiagnosticRuntimeHost(runtimeHost);
   if (!diagnosticsEnabled()) return;
+  try { reportUnfinishedDiagnosticFlows(); } catch { /* Diagnostics are optional. */ }
   try {
     const runtime = globalThis as unknown as {
       SQLite?: { open?: unknown };
@@ -1283,28 +1864,168 @@ export function writeDiagnostic(
   }
 }
 
-type OperationEvent =
-  | "platform.identity" | "platform.parcel_sync" | "platform.cabinet"
-  | "cloud.pdd" | "cloud.parcel.metadata" | "meal.sync"
-  | "shortcut.screen" | "shortcut.query" | "activity.parcel.operation" | "pickup.action";
+export type OperationEvent =
+  | "platform.identity" | "platform.parcel_sync" | "platform.cabinet" | "platform.parcel_detail" | "platform.account.code"
+  | "cloud.sync"
+  | "shortcut.screen" | "shortcut.query" | "shortcut.phone_tail" | "activity.parcel.operation" | "pickup.action"
+  | "recognition.online" | "account.enhanced.operation" | "binding.unbind" | "app.startup" | "home.query";
 
-export function beginDiagnosticOperation(event: OperationEvent, details: DiagnosticDetails = {}, recordStart = true) {
+export type DiagnosticOperationEnd = ((result: string, extra?: DiagnosticDetails, level?: DiagnosticLevel) => void) &
+  Readonly<{
+    flowId: string;
+    /** Ends the operation without a line, for an outcome its caller writes once per change of result. */
+    discard: () => void;
+  }>;
+
+/**
+ * One operation, one end line `<event>.completed` with its duration (D4, owner 2026-11-21 「开始并入终态，卡住另记
+ * （推荐）」; the start line this used to write is merged into the end). The flow id is returned on the end function so a
+ * caller can pass it to work the operation runs. An operation that never ends is reported by the next runtime.
+ */
+export function beginDiagnosticOperation(event: OperationEvent, details: DiagnosticDetails = {}): DiagnosticOperationEnd {
   const startedAt = Date.now();
   const flowId = createDiagnosticFlowId(event);
-  if (recordStart) {
-    try { writeDiagnostic(event + ".started", { ...details, flowId }); } catch { /* Diagnostics are optional. */ }
-  }
+  try { openDiagnosticFlow(flowId, event, startedAt); } catch { /* Diagnostics are optional. */ }
   let finished = false;
-  return (result: string, extra: DiagnosticDetails = {}, level: DiagnosticLevel = "info") => {
+  const end = (result: string, extra: DiagnosticDetails = {}, level: DiagnosticLevel = "info") => {
     if (finished) return;
     finished = true;
     try {
+      closeDiagnosticFlow(flowId, event);
       writeDiagnostic(event + ".completed", {
         ...details, ...extra, flowId, result, durationMs: Math.max(0, Date.now() - startedAt),
       }, level);
     } catch { /* Diagnostics are optional. */ }
   };
+  const discard = () => {
+    if (finished) return;
+    finished = true;
+    try { closeDiagnosticFlow(flowId, event); } catch { /* Diagnostics are optional. */ }
+  };
+  return Object.assign(end, { flowId, discard });
 }
+
+/**
+ * D4 for the flows that used to write their own start line (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」, applied
+ * to every iOS start line in step 5): the start's details are kept in memory and merged into the first end line of the
+ * same flow, which then carries the start's evidence, the end's own values and the flow's duration. A family names its
+ * end events and the detail keys that tie an end line to its start. A `marker` family also keeps the device-local
+ * marker, so a flow an earlier runtime left unfinished is reported at the next host start.
+ */
+export type DiagnosticStartEvent =
+  | "refresh.started" | "refresh.wait.started" | "detail.refresh.started" | "detail.refresh.stage_started"
+  | "refresh.stage.started" | "account.sync.started" | "order.projection.started" | "binding.code.started"
+  | "binding.verify.started" | "notification.replay.started" | "widget.run.started" | "alignment.started";
+
+type StartFamily = Readonly<{
+  family: string;
+  ends: readonly string[];
+  keys: readonly (keyof DiagnosticDetails)[];
+  marker?: true;
+}>;
+
+const START_FAMILIES: Readonly<Record<DiagnosticStartEvent, StartFamily>> = {
+  "refresh.started": { family: "refresh", ends: ["refresh.succeeded", "refresh.failed"], keys: ["flowId"], marker: true },
+  "refresh.wait.started": { family: "refresh.wait", ends: ["refresh.wait.completed", "refresh.failed"], keys: ["flowId"] },
+  "detail.refresh.started": {
+    family: "detail.refresh", ends: ["detail.refresh.committed", "detail.refresh.skipped", "detail.refresh.failed"],
+    keys: ["flowId"], marker: true,
+  },
+  "detail.refresh.stage_started": {
+    family: "detail.refresh.stage",
+    ends: ["detail.refresh.stage_succeeded", "detail.refresh.stage_failed"],
+    keys: ["flowId", "stage", "waybillTail"],
+  },
+  "refresh.stage.started": {
+    family: "refresh.stage", ends: ["refresh.stage.succeeded", "refresh.stage.failed", "refresh.stage.skipped"],
+    keys: ["flowId", "stage", "waybillTail"],
+  },
+  "account.sync.started": { family: "account.sync", ends: ["account.sync.completed", "account.sync.failed"], keys: ["flowId", "stage"] },
+  "order.projection.started": {
+    family: "order.projection",
+    ends: ["order.projection.extracted", "order.projection.empty", "order.projection.failed", "order.projection.rejected",
+      "order.projection.skipped"],
+    keys: ["flowId", "ownerFingerprint"], marker: true,
+  },
+  "binding.code.started": { family: "binding.code", ends: ["binding.code.succeeded", "binding.code.failed"], keys: ["flowId"], marker: true },
+  "binding.verify.started": {
+    family: "binding.verify", ends: ["binding.verify.succeeded", "binding.verify.failed"], keys: ["flowId"], marker: true,
+  },
+  "notification.replay.started": {
+    family: "notification.replay", ends: ["notification.replay.completed"], keys: ["flowId"], marker: true,
+  },
+  "widget.run.started": { family: "widget.run", ends: ["widget.run.completed"], keys: ["flowId"], marker: true },
+  "alignment.started": { family: "alignment", ends: ["alignment.completed"], keys: ["flowId"] },
+};
+const STARTS_BY_END = new Map<string, StartFamily[]>();
+for (const family of Object.values(START_FAMILIES)) {
+  for (const end of family.ends) STARTS_BY_END.set(end, [...(STARTS_BY_END.get(end) || []), family]);
+}
+const START_STASH_LIMIT = 256;
+const startStash = new Map<string, { startedAtMs: number; details: DiagnosticDetails }>();
+
+function startStashKey(family: StartFamily, details: DiagnosticDetails): string {
+  return [family.family, ...family.keys.map((key) => {
+    const value = String(details[key] ?? "").trim();
+    if (key === "stage") return STAGE_WIRE[value.toLowerCase()] || value;
+    return key === "waybillTail" ? value.toUpperCase() : value;
+  })].join("\u0000");
+}
+
+/**
+ * Starts a flow without a start line (D4). Its details reach the flow's end line; a `marker` family is reported as
+ * unfinished by a later runtime if no end line follows. The trigger is remembered for the flow's later lines, as the
+ * start line used to do.
+ */
+export function beginDiagnosticFlow(event: DiagnosticStartEvent, details: DiagnosticDetails = {}): void {
+  try {
+    if (!diagnosticsEnabled()) return;
+    const family = START_FAMILIES[event];
+    const startedAtMs = Date.now();
+    const key = startStashKey(family, details);
+    startStash.delete(key);
+    startStash.set(key, { startedAtMs, details });
+    while (startStash.size > START_STASH_LIMIT) startStash.delete(startStash.keys().next().value!);
+    const flowId = String(details.flowId || "");
+    if (flowId && details.trigger) {
+      const trigger = sanitizeDetails({ trigger: details.trigger }).trigger;
+      if (trigger) flowTriggers.set(flowId, trigger);
+    }
+    if (family.marker && /^\d{1,17}$/.test(flowId)) openDiagnosticFlow(flowId, family.family, startedAtMs);
+  } catch { /* Diagnostics are optional. */ }
+}
+
+/** The end line of a started flow, with its start's details underneath its own and the flow's duration. */
+function withDiagnosticStart(event: string, details: DiagnosticDetails, now: number): DiagnosticDetails {
+  const families = STARTS_BY_END.get(event);
+  if (!families) return details;
+  for (const family of families) {
+    const key = startStashKey(family, details);
+    const start = startStash.get(key);
+    if (!start) continue;
+    startStash.delete(key);
+    const flowId = String(details.flowId || start.details.flowId || "");
+    if (family.marker && flowId) {
+      try { closeDiagnosticFlow(flowId, family.family); } catch { /* Diagnostics are optional. */ }
+    }
+    // A start that described the displayed selection and an end that describes a query response are different scopes:
+    // the display's selection evidence stays out of the response's line.
+    const startDetails = start.details.selectionScope && details.selectionScope &&
+        start.details.selectionScope !== details.selectionScope
+      ? Object.fromEntries(Object.entries(start.details).filter(([key]) => !DISPLAY_SCOPE_KEYS.has(key)))
+      : start.details;
+    // An end value left undefined does not erase the start's value.
+    const merged: Record<string, unknown> = { ...startDetails };
+    for (const [key, value] of Object.entries(details)) if (value !== undefined) merged[key] = value;
+    return { ...merged, durationMs: details.durationMs ?? Math.max(0, now - start.startedAtMs) } as DiagnosticDetails;
+  }
+  return details;
+}
+
+/** Keys that only a display-scope line carries (shipmentDiagnosticDetails without a response). */
+const DISPLAY_SCOPE_KEYS = new Set<string>([
+  "historyProvider", "headlineProvider", "statusProvider", "selectionReason", "feedEventAtMs",
+]);
 
 type PendingStageEnd = { signal?: AbortSignal; ended: boolean; write: () => void };
 const pendingStageEnds = new Map<string, Set<PendingStageEnd>>();
@@ -1369,22 +2090,25 @@ function bufferDiagnosticBatch(
   }
   if (!details.length || !diagnosticsEnabled()) return false;
   const cleanEvent = String(event || "").trim();
-  if (!SAFE_TEXT.test(cleanEvent)) return false;
+  // D10: only an event from the closed table is written.
+  if (!SAFE_TEXT.test(cleanEvent) || !DIAGNOSTIC_EVENTS.has(cleanEvent)) return false;
   const now = Date.now();
   const entries: DiagnosticEntry[] = [];
   const terminalFlowIds = new Set<string>();
-  for (const detail of details) {
+  for (const rawDetail of details) {
+    const detail = withDiagnosticStart(cleanEvent, rawDetail, now);
     const unified = unifiedLevel(detail);
     const cleanDetails = sanitizeDetails({
-      ...detail,
+      ...withRelativeTimes(detail, now),
       clientBuild: SCRIPT_CLIENT_BUILD,
       ...(unified ? { level: unified } : {}),
       ...(unified && INTERFACE_LEVELS.has(unified) && !detail.interface
         ? { interface: "v5" }
         : {}),
-    });
+    }, cleanEvent);
     const flowId = cleanDetails.flowId || "";
     if (flowId && (closedFlowIds.has(flowId) || terminalFlowIds.has(flowId))) continue;
+    if (level === "info" && repeatedRoutineLine(cleanEvent, cleanDetails, now)) continue;
     if (flowId) {
       if (cleanDetails.trigger) {
         flowTriggers.set(flowId, cleanDetails.trigger);
@@ -1429,6 +2153,36 @@ function bufferDiagnosticBatch(
     }
   }
   return true;
+}
+
+/**
+ * Step 5 (D164, D165, D166, D168; owner 2026-11-21 「删噪声，低价值类保底降到 10（推荐）」): routine info lines that
+ * repeat the same outcome for the same subject are written once per change, shared by every runtime
+ * (changedSinceLastLogged). `subject` names the fields that identify what the line is about, `outcome` the fields
+ * whose change makes it new; `when` limits a filter to the outcomes the plan lists. Warnings and errors pass.
+ */
+const REPEAT_FILTERS: Readonly<Record<string, Readonly<{
+  subject: readonly (keyof DiagnosticDetails)[];
+  outcome: readonly (keyof DiagnosticDetails)[];
+  when?: (details: DiagnosticDetails) => boolean;
+}>>> = {
+  "order.projection.skipped": { subject: ["ownerFingerprint", "waybillTail", "stage", "source"], outcome: ["result", "skipReason"] },
+  "refresh.stage.skipped": {
+    subject: ["stage", "waybillTail", "source"], outcome: ["result", "skipReason"],
+    when: (details) => details.skipReason === "cooldown" || details.skipReason === "signed_frozen",
+  },
+  "carrier.recognition.completed": {
+    subject: ["waybillTail"], outcome: ["result", "skipReason"], when: (details) => details.result === "cooldown",
+  },
+  "carrier.authority.loaded": { subject: [], outcome: ["result"], when: (details) => details.result === "cache_unavailable" },
+};
+
+function repeatedRoutineLine(event: string, details: DiagnosticDetails, now: number): boolean {
+  const filter = REPEAT_FILTERS[event];
+  if (!filter || (filter.when && !filter.when(details))) return false;
+  const subject = [event, ...filter.subject.map((key) => String(details[key] ?? ""))].join("\u0000");
+  const outcome = filter.outcome.map((key) => String(details[key] ?? "")).join("\u0000");
+  return !changedSinceLastLogged(subject, outcome, now);
 }
 
 function reconcileBufferedEpoch(epoch: string): boolean {
@@ -1478,7 +2232,8 @@ async function flushAppDiagnosticBatch(): Promise<void> {
     if (epoch === "legacy") {
       const legacy = legacyDiagnosticEntries(now);
       const current = () => bufferedEpoch === epoch && hasDiagnosticWork();
-      if (legacy && (!legacy.length || await publishDiagnosticBatchAsync(diagnosticBatchId(), epoch, legacy, current))
+      if (legacy && (!legacy.length
+        || await publishDiagnosticBatchAsync(diagnosticBatchId(), epoch, legacy, current, true))
         && current()) retireLegacyDiagnostics();
     }
     for (let pass = 0; pass < 2 && bufferedEntries.length && bufferedEpoch === epoch; pass++) {
@@ -1514,6 +2269,7 @@ export async function drainAppDiagnostics(): Promise<void> {
 
 /** Each runtime publishes its own batch. Short-lived widget and intent hosts flush before exiting. */
 export function flushDiagnostics(): void {
+  persistRepeatStore();
   if (!bufferedEntries.length) return;
   if (appDiagnosticWrites) {
     requestAppDiagnosticFlush();
@@ -1546,6 +2302,7 @@ export function writeDiagnosticBatch(
 }
 
 export function readDiagnostics(): DiagnosticEntry[] {
+  retirePreHandleDiagnostics();
   flushDiagnostics();
   const now = Date.now();
   const entries = storedEntries(now, true);
@@ -1569,31 +2326,137 @@ export function readDiagnostics(): DiagnosticEntry[] {
 export const REPEAT_RELOG_MS = 6 * 60 * 60 * 1000;
 const REPEAT_KEYS = 512;
 const repeatedLines = new Map<string, { fingerprint: string; atMs: number }>();
+/**
+ * Step 5 (plan section 4.2): the widget, App Intent and Shortcut hosts are short-lived runtimes, so the record of
+ * what was last written is kept on the device as well, shared by every runtime. Keys and fingerprints are stored as
+ * short hashes, never as the values they describe.
+ */
+const REPEAT_STORE_KEY = "pipi_deliveries_diagnostic_repeat_v1";
+let repeatStoreLoaded = false;
+let repeatStoreDirty = false;
+let repeatPersistScheduled = false;
+
+function repeatHash(value: string): string {
+  try { return sha256Hex(value).slice(0, 16); } catch { return value.length > 64 ? value.slice(0, 64) : value; }
+}
+
+function readRepeatStore(): Record<string, [string, number]> {
+  try {
+    const raw = Storage.get<string>(REPEAT_STORE_KEY, { shared: true });
+    const parsed = typeof raw === "string" ? JSON.parse(raw) as unknown : null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const entries: Record<string, [string, number]> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (Array.isArray(value) && typeof value[0] === "string" && typeof value[1] === "number" && Number.isFinite(value[1])) {
+        entries[key] = [value[0], value[1]];
+      }
+    }
+    return entries;
+  } catch {
+    return {};
+  }
+}
 
 /**
- * Whether a repeating info line for `key` carries something new: its first sighting in this script
- * session, a changed `fingerprint`, or REPEAT_RELOG_MS since it was last written. Only memory holds the
- * key and fingerprint; nothing is persisted. Clearing the log forgets every key. Warnings and errors
- * never go through this filter.
+ * The records belong to the device's current log. A small shared generation marks them: when it is gone (the shared
+ * storage was reset) or another runtime replaced it, this runtime's records are dropped and the shared ones reread.
+ */
+const REPEAT_GENERATION_KEY = "pipi_deliveries_diagnostic_repeat_generation_v1";
+let repeatGeneration: string | undefined;
+
+function syncRepeatGeneration(): void {
+  let stored: unknown;
+  try { stored = Storage.get<string>(REPEAT_GENERATION_KEY, { shared: true }); } catch { return; }
+  if (typeof stored === "string" && stored === repeatGeneration) return;
+  repeatedLines.clear();
+  repeatStoreLoaded = false;
+  repeatStoreDirty = false;
+  if (typeof stored === "string" && stored) {
+    repeatGeneration = stored;
+    return;
+  }
+  repeatGeneration = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    Storage.set(REPEAT_GENERATION_KEY, repeatGeneration, { shared: true });
+    Storage.remove(REPEAT_STORE_KEY, { shared: true });
+  } catch { /* The records stay in this runtime. */ }
+}
+
+function loadRepeatStore(): void {
+  if (repeatStoreLoaded) return;
+  repeatStoreLoaded = true;
+  const stored = Object.entries(readRepeatStore()).sort((left, right) => left[1][1] - right[1][1]);
+  for (const [key, [fingerprint, atMs]] of stored) {
+    if (!repeatedLines.has(key)) repeatedLines.set(key, { fingerprint, atMs });
+  }
+}
+
+/** Writes this runtime's records over the shared ones, keeping the newer record of each key. */
+function persistRepeatStore(): void {
+  if (!repeatStoreDirty) return;
+  repeatStoreDirty = false;
+  try {
+    const merged = readRepeatStore();
+    for (const [key, line] of repeatedLines) {
+      const stored = merged[key];
+      if (!stored || stored[1] <= line.atMs) merged[key] = [line.fingerprint, line.atMs];
+    }
+    const kept = Object.entries(merged).sort((left, right) => right[1][1] - left[1][1]).slice(0, REPEAT_KEYS);
+    Storage.set(REPEAT_STORE_KEY, JSON.stringify(Object.fromEntries(kept)), { shared: true });
+  } catch { /* A lost record only repeats one line later. */ }
+}
+
+/**
+ * Whether a repeating info line for `key` carries something new: its first sighting, a changed `fingerprint`, or
+ * REPEAT_RELOG_MS since it was last written by any runtime on this device. Clearing the log forgets every key.
+ * Warnings and errors never go through this filter.
  */
 export function changedSinceLastLogged(key: string, fingerprint: string, now = Date.now()): boolean {
-  const last = repeatedLines.get(key);
-  if (last && last.fingerprint === fingerprint && now - last.atMs >= 0 && now - last.atMs < REPEAT_RELOG_MS) {
+  // An off log writes nothing, so it registers no sighting either (G-MED-21): a line skipped now must not collapse
+  // the same line once recording is on.
+  if (!diagnosticsEnabled()) return true;
+  syncRepeatGeneration();
+  loadRepeatStore();
+  const hashedKey = repeatHash(key);
+  const hashedFingerprint = repeatHash(fingerprint);
+  const last = repeatedLines.get(hashedKey);
+  if (last && last.fingerprint === hashedFingerprint && now - last.atMs >= 0 && now - last.atMs < REPEAT_RELOG_MS) {
     return false;
   }
-  repeatedLines.delete(key);
-  repeatedLines.set(key, { fingerprint, atMs: now });
+  repeatedLines.delete(hashedKey);
+  repeatedLines.set(hashedKey, { fingerprint: hashedFingerprint, atMs: now });
   while (repeatedLines.size > REPEAT_KEYS) {
     const eldest = repeatedLines.keys().next().value;
     if (eldest === undefined) break;
     repeatedLines.delete(eldest);
   }
+  repeatStoreDirty = true;
+  if (!repeatPersistScheduled) {
+    repeatPersistScheduled = true;
+    void Promise.resolve().then(() => {
+      repeatPersistScheduled = false;
+      persistRepeatStore();
+    });
+  }
   return true;
+}
+
+/** Forgets every repeat record, in this runtime and on the device. */
+function forgetRepeatedLines(): void {
+  repeatedLines.clear();
+  repeatStoreDirty = false;
+  repeatStoreLoaded = false;
+  repeatGeneration = undefined;
+  try {
+    Storage.remove(REPEAT_STORE_KEY, { shared: true });
+    Storage.remove(REPEAT_GENERATION_KEY, { shared: true });
+  } catch { /* Old records expire on their own. */ }
 }
 
 export function clearDiagnostics(): void {
   try {
-    repeatedLines.clear();
+    forgetRepeatedLines();
+    startStash.clear();
     migrateLegacyDiagnostics(Date.now());
     Storage.remove(DIAGNOSTIC_KEY, { shared: true });
     clearDiagnosticFiles();
@@ -1602,10 +2465,68 @@ export function clearDiagnostics(): void {
     bufferedEpoch = diagnosticEpoch();
     closedFlowIds.clear();
     flowTriggers.clear();
+    // A cleared log starts with a new handle key (D7) and no earlier operation to report (D4).
+    retireDiagnosticHandleKey();
+    clearOpenFlows();
     storedEntries(Date.now(), true);
   } catch {
     throw new Error("诊断日志清空失败");
   }
+}
+
+/**
+ * D221/D230: the kind a line belongs to on the log page, from its event name. A folded flow takes the kind of its
+ * newest line, so one flow is never split between kinds. The words are Pipi's kind words (AppDiagnosticLog.Kind: app,
+ * express, pickup, platform, ocr, notification) for the features iOS has; `cloud` is iOS's own kind for the cloud.sync
+ * lines, which Pipi files under app.
+ */
+export type DiagnosticCategory = "express" | "pickup" | "platform" | "ocr" | "cloud" | "notification" | "app";
+
+export function diagnosticCategory(event: string): DiagnosticCategory {
+  // A meal pull stored before D188 as meal.sync.* is the same cloud flow as today's cloud.sync line.
+  if (/^(?:cloud\.|meal\.sync\.)/.test(event)) return "cloud";
+  if (/^(?:notification\.)/.test(event)) return "notification";
+  if (/^(?:recognition\.|shortcut\.screen)/.test(event)) return "ocr";
+  if (/^(?:pickup\.|meal\.|activity\.|shortcut\.)/.test(event)) return "pickup";
+  if (/^(?:platform\.|binding\.|account\.enhanced|manager\.|gateway\.|settings\.)/.test(event)) return "platform";
+  if (/^(?:refresh\.|detail\.|manual\.|account\.|order\.|carrier\.|express\.|alignment\.|shipment\.|ownership\.|note\.|product\.|home\.)/
+    .test(event)) return "express";
+  return "app";
+}
+
+/**
+ * D225 (D14 on iOS): the short summary copied above the raw lines: the script version, track and build, the number of
+ * lines of each kind and level, the failed events and the flows reported unfinished. Counts and enumerated words only.
+ * The log keeps no count of evicted lines, so none is given.
+ */
+export function diagnosticSummaryText(entries = readDiagnostics()): string {
+  const byCategory = new Map<DiagnosticCategory, number>();
+  const failures = new Map<string, number>();
+  let warnings = 0, errors = 0, unfinished = 0, recordingSince = "";
+  for (const entry of entries) {
+    const category = diagnosticCategory(entry.event);
+    byCategory.set(category, (byCategory.get(category) || 0) + 1);
+    if (entry.level === "warning") warnings++;
+    if (entry.level === "error") errors++;
+    if (entry.level !== "info") failures.set(entry.event, (failures.get(entry.event) || 0) + 1);
+    if (entry.event === "diagnostic.flow.unfinished") unfinished++;
+    if (entry.event === "diagnostics.recording.started" && (!recordingSince || entry.at < recordingSince)) {
+      recordingSince = entry.at;
+    }
+  }
+  const oldest = entries.reduce((value, entry) => !value || entry.at < value ? entry.at : value, "");
+  const lines = [
+    `# summary version=${SCRIPT_VERSION} track=${SCRIPT_BUILD_TRACK} build=${SCRIPT_CLIENT_BUILD} entries=${entries.length}` +
+      ` warnings=${warnings} errors=${errors} unfinished=${unfinished}` +
+      (oldest ? ` oldest=${oldest}` : "") + (recordingSince ? ` recordingSince=${recordingSince}` : ""),
+    `# kinds ${[...byCategory].sort(([left], [right]) => left.localeCompare(right))
+      .map(([category, count]) => `${category}=${count}`).join(" ")}`,
+  ];
+  if (failures.size) {
+    lines.push(`# problems ${[...failures].sort(([left], [right]) => left.localeCompare(right))
+      .map(([event, count]) => `${event}=${count}`).join(" ")}`);
+  }
+  return lines.join("\n");
 }
 
 export function diagnosticText(entries = readDiagnostics()): string {

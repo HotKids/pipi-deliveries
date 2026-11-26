@@ -1,5 +1,6 @@
 import { Button, HStack, Notification, Text, VStack, useRef, useState } from "scripting";
 import { readScreenShortcutLookup, submitScreenShortcutPhoneTail } from "./services/parcel-shortcut";
+import { showShortcutPickupActivities } from "./services/parcel-live-activity";
 
 const DIGIT_ROWS = [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"]] as const;
 
@@ -16,7 +17,7 @@ function PhoneTailInput({ token }: { token: string }) {
     setQuerying(true);
     setMessage("");
     try {
-      const result = await submitScreenShortcutPhoneTail(token, tail);
+      const result = await submitScreenShortcutPhoneTail(token, tail, showShortcutPickupActivities);
       setDone(result.done);
       setMessage(result.message);
     } finally {

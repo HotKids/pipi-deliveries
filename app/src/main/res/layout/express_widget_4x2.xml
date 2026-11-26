@@ -137,6 +137,9 @@
                             android:id="@+id/widget_express_company1"
                             style="@style/DeliveriesExpressWideCompany" />
                         <TextView
+                            android:id="@+id/widget_express_sender1"
+                            style="@style/DeliveriesExpressWideSenderTag" />
+                        <TextView
                             android:id="@+id/widget_express_status1"
                             style="@style/DeliveriesExpressWideStatus" />
                         <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
@@ -174,6 +177,9 @@
                             android:id="@+id/widget_express_company2"
                             style="@style/DeliveriesExpressWideCompany" />
                         <TextView
+                            android:id="@+id/widget_express_sender2"
+                            style="@style/DeliveriesExpressWideSenderTag" />
+                        <TextView
                             android:id="@+id/widget_express_status2"
                             style="@style/DeliveriesExpressWideStatus" />
                         <TextView style="@style/DeliveriesExpressWideTitleSpacer" />
@@ -210,6 +216,9 @@
                         <TextView
                             android:id="@+id/widget_express_company3"
                             style="@style/DeliveriesExpressWideCompany" />
+                        <TextView
+                            android:id="@+id/widget_express_sender3"
+                            style="@style/DeliveriesExpressWideSenderTag" />
                         <TextView
                             android:id="@+id/widget_express_status3"
                             style="@style/DeliveriesExpressWideStatus" />

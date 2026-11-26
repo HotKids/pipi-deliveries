@@ -1,3 +1,4 @@
+import { INPUT_ROW_HEIGHT } from "../components/input-metrics";
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import {
   Button,
@@ -15,6 +16,7 @@ import {
 import type { AccountBinding } from "../models";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
 import {
+  beginDiagnosticFlow,
   createDiagnosticFlowId,
   diagnosticErrorDetails,
   writeDiagnostic,
@@ -67,7 +69,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
   const flowIdRef = useRef(createDiagnosticFlowId("binding"));
 
   const maxCodeLength = enhanced ? 8 : 6;
-  const inputRowHeight = 50;
+  const inputRowHeight = INPUT_ROW_HEIGHT;
   const remainingSeconds = Math.max(
     0,
     Math.ceil((resendAtMs - nowMs) / 1_000),
@@ -88,10 +90,8 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
     : (binding ? "正在绑定…" : "绑定");
 
   useEffect(() => {
-    if (!cabinet) writeDiagnostic("binding.flow.opened", {
-      flowId: flowIdRef.current,
-      requestedSource: SCRIPT_BINDING_SOURCE,
-    });
+    // D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): opening the page writes no start line; the code request
+    // and the verification each end with their own line under this flow id.
     return () => {
       mountedRef.current = false;
       requestSequenceRef.current += 1;
@@ -150,7 +150,7 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
     setResendAtMs(0);
 
     try {
-      if (!cabinet) writeDiagnostic("binding.code.started", {
+      if (!cabinet) beginDiagnosticFlow("binding.code.started", {
         flowId: flowIdRef.current,
         requestedSource,
       });
@@ -164,6 +164,12 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
         requestId !== requestSequenceRef.current ||
         phoneRef.current !== requestedPhone
       ) {
+        // R5-NEW-07 ②: the code was sent; a page closed or a phone changed meanwhile still ends the flow.
+        if (!cabinet) writeDiagnostic("binding.code.succeeded", {
+          flowId: flowIdRef.current,
+          requestedSource,
+          cancelReason: mountedRef.current ? "user" : "page_closed",
+        });
         return;
       }
       const sentAt = Date.now();
@@ -183,7 +189,8 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
           requestedSource,
           ...diagnosticErrorDetails(error),
         },
-        "error",
+        // D202 (D3): a code request that failed is retried by the user, so it is a WARNING.
+        "warning",
       );
       if (mountedRef.current && requestId === requestSequenceRef.current) {
         setNotice(errorMessage(error, EXPRESS_TOAST_COPY.codeSendFailed));
@@ -314,10 +321,11 @@ export function PhoneBindingPage(props: PhoneBindingPageProps) {
               action={sendCode}
               disabled={busy || remainingSeconds > 0 || !validPhone(phone) || !bindingAllowed}
               buttonStyle="plain"
+              monospacedDigit
               frame={{ minWidth: 112, minHeight: 44, alignment: "trailing" }}
             />
           </HStack>
-          {cabinet ? null : <Divider />}
+          <Divider />
           <HStack
             frame={{ maxWidth: "infinity", alignment: "center" }}
             padding={{ top: 18 }}

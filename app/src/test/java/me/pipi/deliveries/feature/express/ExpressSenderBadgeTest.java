@@ -2,6 +2,7 @@ package me.pipi.deliveries.feature.express;
 import android.app.Application;
 import android.view.View;
 import android.widget.TextView;
+import me.pipi.deliveries.model.StatusSemantic;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
@@ -11,17 +12,23 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk=31,manifest=Config.NONE,application=Application.class)
 public class ExpressSenderBadgeTest {
+ // Owner 2026-11-20 (修改 11): the light text colour at 0x1A under the appearance's text colour, unadjusted.
  @Test public void rebindingAReceiverHidesTheExistingSenderBadge() {
   BadgeView view=new BadgeView();
-  ExpressSenderBadge.apply(view,true,0xff008800);
+  ExpressSenderBadge.apply(view,true,StatusSemantic.DELIVERY,"派送中");
   assertEquals("寄",view.getText().toString()); assertEquals(View.VISIBLE,view.getVisibility());
-  int surface = com.google.android.material.color.MaterialColors.getColor(view,
-    com.google.android.material.R.attr.colorSurface);
-  int background = androidx.core.graphics.ColorUtils.compositeColors(0x1a008800, surface);
-  assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(view.getCurrentTextColor(), background) >= 4.5);
+  assertEquals(0xFF0E9F52,view.getCurrentTextColor());
+  assertEquals(0x1a0e9f52,((android.graphics.drawable.GradientDrawable) view.getBackground()).getColor().getDefaultColor());
   assertFalse(view.getIncludeFontPadding()); assertEquals(android.graphics.Typeface.BOLD,view.requestedStyle);
-  ExpressSenderBadge.apply(view,false,0xffff0000);
+  ExpressSenderBadge.apply(view,false,StatusSemantic.DANGER,"异常件");
   assertEquals(View.GONE,view.getVisibility());
+ }
+ @Config(qualifiers="night")
+ @Test public void nightBadgeKeepsTheLightFillUnderTheNightTextColour() {
+  BadgeView view=new BadgeView();
+  ExpressSenderBadge.apply(view,true,StatusSemantic.WAITING_PICKUP,"待取件");
+  assertEquals(0xFFD4E157,view.getCurrentTextColor());
+  assertEquals(0x1a6d8f00,((android.graphics.drawable.GradientDrawable) view.getBackground()).getColor().getDefaultColor());
  }
  private static final class BadgeView extends TextView {
   int requestedStyle;

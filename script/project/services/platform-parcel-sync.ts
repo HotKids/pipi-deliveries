@@ -2,36 +2,45 @@ import { AbortController } from "scripting";
 import type { AppState, ParcelHandoffRecord, Shipment } from "../models";
 import { detectManualCarrier } from "./manual-query";
 import {
-  currentPlatformSession, notePlatformSync, onPlatformAccountsChanged, platformSession, saveCainiaoNickname, PLATFORM_NAMES, PLATFORM_SOURCES,
+  currentPlatformSession, notePlatformSync, onPlatformAccountsChanged, platformSession, saveCainiaoNickname, savePddPhoneTails, PLATFORM_NAMES, PLATFORM_SOURCES,
   type ExpressPlatform, type PlatformSession,
 } from "./platform-accounts";
 import { CAINIAO_LIST_PARAMETERS, CAINIAO_RECIPIENT_LIST,
-  PlatformWireError, readCainiao, readCainiaoProfileNickname, readCainiaoSenderAppointments, readPdd } from "./platform-wire";
-import { cainiaoHandoffId, cainiaoHandoffs, cainiaoRecipientParcels, pddPickupParcels, type PlatformParcel } from "./platform-parcel-data";
+  fetchPddBoundPhoneTails, PlatformWireError, readCainiao, readCainiaoProfileNickname, readCainiaoSenderAppointments, readPdd } from "./platform-wire";
+import { cainiaoHandoffId, cainiaoHandoffs, cainiaoRecipientParcels, pddPickupParcels, pddTimelineFromTraces, type PlatformParcel } from "./platform-parcel-data";
 import { fetchFengchaoCabinets, requestCabinetOpening, supportsCabinetOpening } from "./fengchao-account";
-import { fetchJdParcels, fetchPddOrders } from "./platform-web-parcels";
-import { eligiblePickup } from "./platform-parcel-merge";
+import { fetchJdParcels, fetchPddOrders, fetchPddParcelDetails } from "./platform-web-parcels";
+import { eligiblePickup, enrichPlatformParcel } from "./platform-parcel-merge";
 import { projectionSceneActive } from "./projection-viewport";
-import { displayWaybill } from "./shipment-policy";
+import { displayWaybill, selectShipmentTimeline } from "./shipment-policy";
+import { mergeTimelineAuthorities } from "./status";
+import { SCRIPT_BINDING_SOURCE } from "./script-source";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "./shipment-lifecycle";
 import {
   completeCurrentParcelCard, loadState, parcelCardKey, readAppStateSnapshot, savePlatformParcelData, visibleShipments,
 } from "./storage";
-import { commitManualShipmentPreview, continueManualShipmentPreview, queryManualShipmentPreview } from "./sync";
+import { commitManualShipmentPreview, continueManualShipmentPreview, queryManualShipmentPreview, type ManualShipmentPreview } from "./sync";
 import { activePickupCards, type ParcelActivityContent } from "./parcel-pickup";
-import { beginDiagnosticOperation, writeDiagnostic } from "./logger";
+import { beginDiagnosticOperation, diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { EXPRESS_TOAST_COPY } from "./express-toast-copy";
 
 const DISCOVERY_INTERVAL = 4 * 3_600_000;
 const observedRows = new Map<ExpressPlatform, { generation: string; keys: Set<string> }>();
 const regularAttempts = new Map<ExpressPlatform, { generation: string; atMs: number }>();
 type PlatformSyncResult = { added: number; partial: boolean; changed: boolean };
-const inFlight = new Map<ExpressPlatform, { generation: string; task: Promise<PlatformSyncResult>; recheck: boolean }>();
+/** Diagnostics only (D116): the stage a round is in, and the first stage that failed in a partial round. */
+type PlatformSyncProgressNote = { stage: string; failedStage?: string; failure?: unknown };
+// A joined caller still learns when a Cainiao round has moved on to its sender appointments.
+type SenderStage = { started: boolean; listeners: Set<() => void> };
+const inFlight = new Map<ExpressPlatform, {
+  generation: string; task: Promise<PlatformSyncResult>; recheck: boolean; sender: SenderStage;
+}>();
 const cainiaoProfileInFlight = new Set<string>();
 
 type RefreshMode = "observe" | "pull" | "manual";
 type ReadScope = { recipients: boolean; regular: boolean };
-export type PlatformSyncProgress = (platform: ExpressPlatform, running: boolean) => void;
+/** `stage: "sender"` reports a running Cainiao round that committed its recipients and now reads sender appointments. */
+export type PlatformSyncProgress = (platform: ExpressPlatform, running: boolean, stage?: "sender") => void;
 type PlatformRefreshIssue = { platform: ExpressPlatform; reason: "expired" | "partial" | "failed" };
 type PlatformRefreshResult = { succeeded: number; failed: number; added: number; issues: PlatformRefreshIssue[] };
 
@@ -74,6 +83,7 @@ async function importPddParcels(session: PlatformSession, observations: readonly
   const unsubscribe = onPlatformAccountsChanged(() => { if (!current()) abort.abort(); });
   let added = 0;
   let knownWaybills: Set<string> | undefined;
+  let resolvedPhoneTails: string[] | undefined;
   try {
     for (const item of observations) {
       if (!knownWaybills) {
@@ -85,18 +95,106 @@ async function importPddParcels(session: PlatformSession, observations: readonly
       // A network wait can let another host add, remove or replace a waybill.
       knownWaybills = undefined;
       const presentation = await detectManualCarrier(item.waybill, { signal: abort.signal }).catch(() => null);
-      if (!presentation || presentation.requiresPhoneTail || !current()) continue;
-      const preview = await queryManualShipmentPreview({ waybill: item.waybill, presentation }).catch(() => null);
-      if (!preview?.shipment || (!preview.hasTimedResult && preview.roundComplete !== false) || !current()) continue;
-      const tagged = {
-        ...preview,
-        shipment: { ...preview.shipment, pddImport: { ownerKey: session.ownerKey, orderId: item.orderIds?.[0] || "",
-          ...(item.shippingId && item.orderIds?.length === 1 ? { shippingId: item.shippingId } : {}) } },
+      if (!presentation || !current()) continue;
+      let phoneTails: string[] = [];
+      if (presentation.requiresPhoneTail) {
+        if (!resolvedPhoneTails) {
+          const fetched = await fetchPddBoundPhoneTails(session, abort.signal).catch(() => []);
+          if (fetched.length) savePddPhoneTails(session.generation, fetched);
+          const live = currentPlatformSession("pinduoduo", session.generation);
+          const cached = live?.credentials.kind === "web" ? live.credentials.pddPhoneTails || [] : [];
+          const localBound = readAppStateSnapshot().state.bindings
+            .filter(binding => binding.source === SCRIPT_BINDING_SOURCE)
+            .map(binding => binding.phone.slice(-4));
+          resolvedPhoneTails = [...new Set([...fetched, ...cached, ...localBound].filter(tail => /^\d{4}$/.test(tail)))];
+        }
+        phoneTails = resolvedPhoneTails;
+      }
+      let detailParcel: PlatformParcel | undefined;
+      if (!item.traces?.length && item.shippingId && item.orderIds?.length === 1) {
+        detailParcel = await fetchPddParcelDetails(
+          session, item.shippingId, item.waybill, !item.title, !item.estimate, true, current, abort.signal, true,
+        ).catch(() => undefined);
+      }
+      if (!current()) break;
+      const now = Date.now();
+      const pddTimeline = pddTimelineFromTraces(
+        item.waybill, presentation.courierCode, presentation.companyName, detailParcel?.traces ?? item.traces, now,
+      );
+      let preview: Awaited<ReturnType<typeof queryManualShipmentPreview>> | null = null;
+      const tailsToTry = phoneTails.length ? phoneTails : [""];
+      for (const candidateTail of tailsToTry) {
+        preview = await queryManualShipmentPreview({
+          waybill: item.waybill,
+          ...(candidateTail ? { phoneTail: candidateTail } : {}),
+          presentation,
+        }).catch(() => null);
+        if (!current()) break;
+        if (preview?.hasTimedResult) break;
+      }
+      if (!current()) break;
+      if (!preview?.shipment && !pddTimeline) continue;
+      if (!preview?.hasTimedResult && preview?.roundComplete !== false && !pddTimeline) continue;
+      const pddImport = {
+        ownerKey: session.ownerKey,
+        orderId: item.orderIds?.[0] || "",
+        ...(item.shippingId && item.orderIds?.length === 1 ? { shippingId: item.shippingId } : {}),
+      };
+      const basePreview: ManualShipmentPreview = preview ?? {
+        shipment: {
+          identity: {
+            id: `${SCRIPT_BINDING_SOURCE}:manual:${item.waybill}`,
+            bindingSource: SCRIPT_BINDING_SOURCE,
+            sourceOwner: "manual",
+            sourceId: item.waybill,
+            phoneTail: phoneTails[0] || "",
+            courierCode: presentation.courierCode,
+            companyName: presentation.companyName,
+            manuallyAdded: true,
+            createdAtMs: now,
+          },
+          timeline: pddTimeline!,
+          sourceTimeline: null,
+          manualTimelines: [pddTimeline!],
+          route: null,
+          updatedAtMs: now,
+        },
+        pending: {
+          id: `${SCRIPT_BINDING_SOURCE}:${item.waybill}`,
+          source: SCRIPT_BINDING_SOURCE,
+          waybill: item.waybill,
+          phoneTail: phoneTails[0] || "",
+          courierCode: presentation.courierCode,
+          companyName: presentation.companyName,
+          createdAtMs: now,
+          lastAttemptAtMs: now,
+          attempts: 1,
+          route: null,
+        },
+        routeUrl: "",
+        commitBase: { shipment: null, pending: null },
+        hasTimedResult: true,
+        roundComplete: true,
+      };
+      let mergedShipment: Shipment | null = basePreview.shipment ? { ...basePreview.shipment, pddImport } : null;
+      if (mergedShipment && pddTimeline) {
+        const manualTimelines = mergeTimelineAuthorities(mergedShipment.manualTimelines || [], pddTimeline);
+        const withPdd: Shipment = { ...mergedShipment, manualTimelines };
+        mergedShipment = { ...withPdd, timeline: selectShipmentTimeline(withPdd) };
+      }
+      if (mergedShipment && detailParcel) {
+        mergedShipment = enrichPlatformParcel(mergedShipment, detailParcel, now);
+      }
+      const tagged: ManualShipmentPreview = {
+        ...basePreview,
+        hasTimedResult: basePreview.hasTimedResult || Boolean(pddTimeline),
+        roundComplete: basePreview.hasTimedResult || Boolean(pddTimeline) ? true : basePreview.roundComplete,
+        shipment: mergedShipment,
       };
       try {
         const committed = commitManualShipmentPreview(tagged);
         publish(committed);
-        const final = preview.roundComplete === false && current()
+        const final = preview && preview.roundComplete === false && !basePreview.hasTimedResult && !pddTimeline && current()
           ? (await continueManualShipmentPreview(tagged, { signal: abort.signal })).state : committed;
         publish(final);
         if (final.shipments.some((shipment) => displayWaybill(shipment) === item.waybill)) added++;
@@ -113,7 +211,8 @@ async function importPddParcels(session: PlatformSession, observations: readonly
 
 async function syncPlatform(
   platform: ExpressPlatform, session: PlatformSession, scope: ReadScope, publish: (state: AppState) => void,
-  before: AppState, visible: readonly Shipment[],
+  before: AppState, visible: readonly Shipment[], onSenderStage?: () => void,
+  note: PlatformSyncProgressNote = { stage: "platform_parcel_sync" },
 ): Promise<PlatformSyncResult> {
   const current = () => projectionSceneActive() && currentPlatformSession(platform, session.generation) != null;
   const now = Date.now();
@@ -127,18 +226,23 @@ async function syncPlatform(
   };
   let succeeded = false;
   let failed = false;
-  async function read(operation: () => Promise<void>) {
+  async function read(stage: string, operation: () => Promise<void>) {
     if (!current()) throw new PlatformWireError("changed");
+    note.stage = stage;
     try {
       await operation();
       succeeded = true;
     } catch (error) {
       if (!current()) throw error;
       failed = true;
+      if (!note.failedStage) {
+        note.failedStage = stage;
+        note.failure = error;
+      }
     }
   }
   if (platform === "cainiao") {
-    const readStage = (recipient: boolean) => read(async () => {
+    const readStage = (recipient: boolean) => read(recipient ? "cainiao_recipient" : "cainiao_sender", async () => {
       const stage = recipient ? "cainiao_recipient" : "cainiao_sender";
       const started = Date.now();
       let commitStarted: number | undefined;
@@ -170,19 +274,26 @@ async function syncPlatform(
           stage: stage + (commitStarted === undefined ? "_request" : "_commit"),
           durationMs: Date.now() - started,
           result: error instanceof PlatformWireError ? error.reason : "failed",
+          ...diagnosticErrorDetails(error),
         }, "warning");
         throw error;
       }
     });
     if (scope.recipients) await readStage(true);
-    if (scope.regular) await readStage(false);
+    if (scope.regular) {
+      // The recipient sync time is already published; the same round continues with sender appointments.
+      if (scope.recipients && succeeded) onSenderStage?.();
+      await readStage(false);
+    }
   } else if (platform === "fengchao") {
+    note.stage = "fengchao_cabinets";
     const saved = persist({ parcels: [], cabinets: await fetchFengchaoCabinets(session) });
     if (!notePlatformSync(platform, session.generation, Date.now(), { cabinetLinks: saved.cabinetLinks })) {
       throw new PlatformWireError("changed");
     }
     return { added: 0, partial: false, changed };
   } else if (platform === "jingdong") {
+    note.stage = "jd_sync_orders";
     const data = await fetchJdParcels(session, visible, (parcels) => persist({ parcels }));
     try {
       if (data.parcels.length) persist({ parcels: data.parcels });
@@ -191,13 +302,13 @@ async function syncPlatform(
       }
     } catch (error) {
       writeDiagnostic("platform.jingdong.sync.failed", { stage: "jd_sync_save",
-        result: error instanceof PlatformWireError ? error.reason : "failed" }, "warning");
+        result: error instanceof PlatformWireError ? error.reason : "failed", ...diagnosticErrorDetails(error) }, "warning");
       throw error;
     }
     return { added: 0, partial: false, changed };
   } else {
     let added = 0;
-    if (scope.regular) await read(async () => {
+    if (scope.regular) await read("pdd_orders", async () => {
       const orders = await fetchPddOrders(session);
       added = await importPddParcels(session, orders, publish);
       persist({ parcels: orders }, readAppStateSnapshot().state);
@@ -207,7 +318,7 @@ async function syncPlatform(
     });
     const observed = scope.regular ? readAppStateSnapshot().state : before;
     const waiting = visibleShipments(observed).filter(eligiblePickup);
-    if (waiting.length) await read(async () => {
+    if (waiting.length) await read("pdd_pickup", async () => {
       const round = observedRows.get(platform);
       if (round?.generation === session.generation) {
         for (const shipment of waiting) round.keys.add("pickup:" + shipmentLifecycleKey(shipment));
@@ -256,7 +367,7 @@ export async function refreshPlatformParcels(
     if (previous?.generation === session.generation) {
       if (mode === "observe") previous.recheck = true;
       const task = mode === "manual" ? previous.task : previous.task.then((outcome) => ({ ...outcome, added: 0 }));
-      return [{ platform, task }];
+      return [{ platform, task, sender: previous.sender }];
     }
     const { state, visible } = snapshot ??= readSnapshot();
     const scope = scopeFor(platform, session, visible, mode, state.pickupCodeRecords);
@@ -264,18 +375,30 @@ export async function refreshPlatformParcels(
     const userInitiated = mode !== "observe";
     const finish = beginDiagnosticOperation("platform.parcel_sync", {
       sourceProvider: platform, trigger: mode, stage: "platform_parcel_sync",
-    }, userInitiated);
-    const task = syncPlatform(platform, session, scope, publish, state, visible).then(result => {
-      if (userInitiated || platform !== "cainiao" && (result.partial || result.changed || result.added > 0)) {
-        finish(result.partial ? "partial" : "succeeded", { succeeded: result.added },
-          result.partial ? "warning" : "info");
-      }
+    });
+    const note: PlatformSyncProgressNote = { stage: "platform_parcel_sync" };
+    const sender: SenderStage = { started: false, listeners: new Set() };
+    const task = syncPlatform(platform, session, scope, publish, state, visible, () => {
+      sender.started = true;
+      for (const listener of sender.listeners) listener();
+    }, note).then(result => {
+      // D116: an automatic round of any platform, Cainiao included, writes its end when it changed something or
+      // failed in part; an unchanged automatic round closes without a line. A partial round names its failed stage.
+      if (userInitiated || result.partial || result.changed || result.added > 0) {
+        finish(result.partial ? "partial" : "succeeded", {
+          succeeded: result.added, changed: result.changed,
+          ...(result.partial && note.failedStage ? { stage: note.failedStage, ...diagnosticErrorDetails(note.failure) } : {}),
+        }, result.partial ? "warning" : "info");
+      } else finish.discard();
       return result;
     }, error => {
       if (error instanceof PlatformWireError && error.reason === "changed") {
         if (userInitiated) finish("cancelled");
-      } else if (userInitiated || platform !== "cainiao") {
-        finish(error instanceof PlatformWireError ? error.reason : "failed", {}, "warning");
+        else finish.discard();
+      } else {
+        finish(error instanceof PlatformWireError ? error.reason : "failed", {
+          stage: note.failedStage || note.stage, ...diagnosticErrorDetails(note.failure ?? error),
+        }, "warning");
       }
       throw error;
     }).finally(() => {
@@ -286,12 +409,18 @@ export async function refreshPlatformParcels(
         writeDiagnostic("platform.sync.unavailable", {}, "warning");
       });
     });
-    inFlight.set(platform, { generation: session.generation, task, recheck: false });
-    return [{ platform, task }];
+    inFlight.set(platform, { generation: session.generation, task, recheck: false, sender });
+    return [{ platform, task, sender }];
   });
-  const results = await Promise.allSettled(tasks.map(({ platform, task }) => {
+  const results = await Promise.allSettled(tasks.map(({ platform, task, sender }) => {
     onProgress?.(platform, true);
-    return task.finally(() => onProgress?.(platform, false));
+    const senderStarted = () => onProgress?.(platform, true, "sender");
+    if (sender.started) senderStarted();
+    else sender.listeners.add(senderStarted);
+    return task.finally(() => {
+      sender.listeners.delete(senderStarted);
+      onProgress?.(platform, false);
+    });
   }));
   for (const [index, result] of results.entries()) {
     const { platform } = tasks[index];
@@ -372,12 +501,13 @@ export async function performPickupAction(card: ParcelActivityContent, openCabin
     return "柜件状态已变更，请刷新后重试";
   }
   opening.add(key);
-  let requested = false;
   try {
     const label = [cabinet.cabinetName, cabinet.location].filter(Boolean).join(" · ");
     const confirmed = await Dialog.confirm({
-      title: "确认开柜", message: "到达" + (label || "丰巢快递柜") + "后再开柜。",
-      cancelLabel: "取消", confirmLabel: "开柜",
+      title: "确认开柜",
+      message: `${label ? `即将打开「${label}」。` : "即将打开当前丰巢格口。"}\n\n注意：请您已到达柜机前再点击开门，避免格口打开，没有及时取件快件丢失。`,
+      cancelLabel: "取消",
+      confirmLabel: "开柜",
     });
     if (!confirmed) {
       finish("cancelled");
@@ -391,17 +521,28 @@ export async function performPickupAction(card: ParcelActivityContent, openCabin
       finish("changed");
       return "柜件状态已变更，请刷新后重试";
     }
-    requested = true;
-    await requestCabinetOpening(active, cabinet);
-    finish("accepted");
-    return "开柜请求已受理";
-  } catch (error) {
-    if (error instanceof PlatformWireError && error.reason === "expired") {
+    const outcome = await requestCabinetOpening(active, cabinet);
+    if (outcome === "opened") {
+      finish("accepted");
+      return "柜门已开启";
+    }
+    if (outcome === "expired") {
       finish("expired", {}, "warning");
       return "丰巢登录已失效，请重新登录";
     }
-    finish(requested ? "unconfirmed" : "failed", {}, "warning");
-    return "开柜结果未确认，请在柜机输入取件码";
+    if (outcome === "unconfirmed") {
+      finish("unconfirmed", {}, "warning");
+      return "暂未确认柜门开启，请查看柜机";
+    }
+    finish("failed", {}, "warning");
+    return "开柜失败，请在柜机输入取件码";
+  } catch (error) {
+    if (error instanceof PlatformWireError && error.reason === "changed") {
+      finish("changed");
+      return "柜件状态已变更，请刷新后重试";
+    }
+    finish("failed", {}, "warning");
+    return "开柜失败，请在柜机输入取件码";
   } finally {
     opening.delete(key);
   }

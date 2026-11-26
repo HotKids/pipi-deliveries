@@ -4,6 +4,7 @@ import {
 import { encryptFengchaoChallenge } from "./fengchao-rsa";
 import { jsonObject, PlatformWireError, providerRequest } from "./platform-wire";
 import { utf8Data } from "./scripting-data";
+import { beginDiagnosticOperation, diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { asPlainObject, cleanScalarText, type JsonObject } from "./value-guards";
 
 const FENGCHAO = "https://consumer.fcbox.com";
@@ -58,7 +59,24 @@ function success(payload?: JsonObject): boolean {
   return code === "0" || code === "150100000" || payload?.success === true;
 }
 
+/**
+ * D118 (the binding page records no line for the Fengchao sign-in): one end line per code request and per failed
+ * sign-in; a successful sign-in is the account's own `platform.account.changed` login line. No mobile, code or token.
+ */
 export async function requestFengchaoCode(mobile: string): Promise<FengchaoChallenge> {
+  const finish = beginDiagnosticOperation("platform.account.code", { sourceProvider: "fengchao", stage: "code" });
+  try {
+    const challenge = await requestFengchaoCodeOnce(mobile);
+    finish("succeeded");
+    return challenge;
+  } catch (error) {
+    const reason = error instanceof PlatformWireError ? error.reason : "failed";
+    finish(reason, diagnosticErrorDetails(error), reason === "verification" ? "info" : "warning");
+    throw error;
+  }
+}
+
+async function requestFengchaoCodeOnce(mobile: string): Promise<FengchaoChallenge> {
   if (!/^1[3-9]\d{9}$/.test(mobile)) throw new PlatformWireError("unavailable");
   const query = "mobile=" + mobile + "&type=11&opCode=" + OP_CODE + "&nationCode=86";
   const response = await providerRequest(FENGCHAO + "/v1/account/secureCheckMobile?" + query, deviceHeaders(""));
@@ -81,6 +99,17 @@ export async function requestFengchaoCode(mobile: string): Promise<FengchaoChall
 }
 
 export async function signInFengchao(challenge: FengchaoChallenge, code: string): Promise<CabinetCredentials> {
+  try {
+    return await signInFengchaoOnce(challenge, code);
+  } catch (error) {
+    writeDiagnostic("platform.account.changed", {
+      sourceProvider: "fengchao", stage: "login", result: "failed", ...diagnosticErrorDetails(error),
+    }, "warning");
+    throw error;
+  }
+}
+
+async function signInFengchaoOnce(challenge: FengchaoChallenge, code: string): Promise<CabinetCredentials> {
   if (!/^\d{4,6}$/.test(code)) throw new PlatformWireError("unavailable");
   const response = await providerRequest(FENGCHAO + "/v1/account/secureLoginByPhone?mobile=" + challenge.mobile +
     "&verifyCode=" + code + "&channel=0&type=1&weiXinUser=&nationCode=86&opCode=" + OP_CODE +
@@ -172,20 +201,51 @@ export function supportsCabinetOpening(parcel: CabinetParcel): boolean {
   return Boolean(parcel.cabinetCode && parcel.boxId && parcel.postId && parcel.code);
 }
 
-export async function requestCabinetOpening(session: PlatformSession, parcel: CabinetParcel): Promise<void> {
-  if (!supportsCabinetOpening(parcel)) throw new PlatformWireError("unavailable");
-  const payload = await cabinetRequest(session, "/post/clientGet/openBox", {
-    cabinetCode: parcel.cabinetCode, channel: "APP-ANDRIOD", clientMobile: parcel.clientMobile,
-    code: parcel.code, expressId: parcel.expressId, localActivityId: "", localAddress: parcel.address,
-    localAllBoxIdList: parcel.boxId, localBoxGlobalRow: parcel.boxGlobalRow, localCode: parcel.code,
-    localCurrBoxId: parcel.boxId, localDigitizationStatus: 0, localFromSource: "2",
-    localOneClickOpenCabinetValidTime: "", localOrderId: "", localPopupTimeout: 120,
-    localRefusePackages: [{
-      companyLogoUrl: parcel.companyLogoUrl, companyName: parcel.companyName, expressId: parcel.expressId,
-      expressType: parcel.expressType, localSelected: true, postId: parcel.postId, staffMobile: parcel.staffMobile,
-    }],
-    localRefuseSessionTokenTime: 120, localScanFirst: true, localScanTotal: 0, localSource: "0",
-    localSupportVisual: false, mobilePickType: "APP-ANDRIOD", pickType: "ANDROID_PICK_MOBILE_APP", postId: parcel.postId,
-  });
-  if (!success(payload) || payload.success === false) throw new PlatformWireError("unavailable");
+export type CabinetOpeningOutcome = "opened" | "expired" | "failed" | "unconfirmed";
+
+export async function requestCabinetOpening(
+  session: PlatformSession, parcel: CabinetParcel,
+): Promise<CabinetOpeningOutcome> {
+  if (!supportsCabinetOpening(parcel)) return "failed";
+  const live = currentPlatformSession("fengchao", session.generation);
+  if (live?.credentials.kind !== "cabinet") throw new PlatformWireError("changed");
+  const { token, clientIp, flag, userAuth } = live.credentials;
+  const headers = {
+    ...deviceHeaders(clientIp),
+    Authorization: token,
+    "pinpoint-traceid": "ConsumerA0fc2d4fc6bfea8b^" + Date.now() + "^993",
+    FLAG: flag,
+    FC_USER_FLAG: flag,
+    FC_USER_AUTH: userAuth,
+  };
+  let response: Awaited<ReturnType<typeof providerRequest>>;
+  try {
+    response = await providerRequest(FENGCHAO + "/post/clientGet/openBox", headers, {
+      cabinetCode: parcel.cabinetCode, channel: "APP-ANDRIOD", clientMobile: parcel.clientMobile,
+      code: parcel.code, expressId: parcel.expressId, localActivityId: "", localAddress: parcel.address,
+      localAllBoxIdList: parcel.boxId, localBoxGlobalRow: parcel.boxGlobalRow, localCode: parcel.code,
+      localCurrBoxId: parcel.boxId, localDigitizationStatus: 0, localFromSource: "2",
+      localOneClickOpenCabinetValidTime: "", localOrderId: "", localPopupTimeout: 120,
+      localRefusePackages: [{
+        companyLogoUrl: parcel.companyLogoUrl, companyName: parcel.companyName, expressId: parcel.expressId,
+        expressType: parcel.expressType, localSelected: true, postId: parcel.postId, staffMobile: parcel.staffMobile,
+      }],
+      localRefuseSessionTokenTime: 120, localScanFirst: true, localScanTotal: 0, localSource: "0",
+      localSupportVisual: false, mobilePickType: "APP-ANDRIOD", pickType: "ANDROID_PICK_MOBILE_APP", postId: parcel.postId,
+    });
+  } catch {
+    if (!currentPlatformSession("fengchao", session.generation)) throw new PlatformWireError("changed");
+    return "unconfirmed";
+  }
+  const payload = jsonObject(await response.text().catch(() => ""));
+  if (!currentPlatformSession("fengchao", session.generation)) throw new PlatformWireError("changed");
+  if (response.status === 401 || cleanScalarText(payload?.code) === "401") {
+    clearPlatformLogin("fengchao", session.generation, true);
+    return "expired";
+  }
+  if (payload && (payload.success === false || (Object.hasOwn(payload, "code") && !success(payload)))) {
+    return "failed";
+  }
+  if (!response.ok || !payload || !success(payload)) return "unconfirmed";
+  return "opened";
 }

@@ -249,7 +249,8 @@ test("HTKY's newer twelve-node primary history replaces its seven-node account c
     }
     const commit = readDiagnostics().find(entry => entry.event === "detail.refresh.committed")!;
     assert.equal(commit.details.displayedTrackCount, 12);
-    assert.equal(commit.details.latestTrackAtMs, primaryAt);
-    assert.equal(commit.details.statusEventAtMs, queryAt);
+    // D6: the newest node and the status time read as their ages at the line's time.
+    assert.equal(commit.details.latestTrackAgeMs, Date.parse(commit.at) - primaryAt);
+    assert.equal(commit.details.statusEventAgeMs, Date.parse(commit.at) - queryAt);
   } finally { Date.now = realNow; setDiagnosticsEnabled(false); }
 });

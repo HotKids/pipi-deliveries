@@ -1,5 +1,5 @@
 import { postGateway } from "./gateway";
-import { gatewayCredentialGeneration } from "./credentials";
+import { gatewayCredentialForLocalCache, gatewayCredentialGeneration } from "./credentials";
 import {
   readDurableTextResult,
   writeDurableText,
@@ -26,6 +26,8 @@ const CARRIER_AUTHORITY_ATTEMPT_FILE = "carrier-authority-attempt-v1.json";
 const STORAGE_SCHEMA = 1;
 const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 const REQUEST_TIMEOUT_MS = 5_000;
+/** After a rules request for a key fails or brings no pack, automatic meal pulls wait this long (N3, 2026-11-21). */
+export const MEAL_RULES_RETRY_BACKOFF_MS = 30_000;
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1_000;
 
 export type CarrierAuthorityPayload = Readonly<{
@@ -52,6 +54,7 @@ type StoredCarrierAuthorityAttempt = Readonly<{
   storageSchema: 1;
   lastAttemptAtMs: number;
   mealScope?: string;
+  mealRulesRetryNotBeforeMs?: number;
 }>;
 
 type CarrierAuthorityDependencies = Readonly<{
@@ -66,24 +69,68 @@ let loadedFetchedAtMs = 0;
 let loadedLastAttemptAtMs = 0;
 let loadedAttemptScope = "";
 let loadedMealOffer: ScopedMealOffer | undefined;
-let inFlight: { generation: number | null; operation: Promise<boolean> } | undefined;
+/** `mealScope` is the Access Key scope this request asked rules for; empty for a request without rules. */
+let inFlight: { generation: number | null; mealScope: string; operation: Promise<boolean> } | undefined;
+type MealSyncSkip = "no_access_key" | "access_key_rejected" | "no_meal_rules";
+let reportedMealSyncSkip: MealSyncSkip | "" = "";
+/** The key scope whose last rules request ended without a pack, and when automatic meal pulls may ask again. */
+let mealRulesRetry: { scope: string; notBeforeMs: number } | undefined;
+
+/** `explicit`: 立即同步 or an Access Key change, which the automatic retry backoff does not delay. */
+type MealRulesRequest = CarrierAuthorityDependencies & Readonly<{ explicit?: boolean }>;
 
 export function cachedMealRules(): MealRules | null {
   const scope = mealCredentialScope();
   return scope && loadedMealOffer?.scope === scope ? compileMealRules(loadedMealOffer) : null;
 }
 
-export async function ensureMealRules(): Promise<MealRules | null> {
+/**
+ * The current Access Key's meal rules, requested while none were accepted for it. `meal_sync` marks the app's
+ * meal pull (launch, foreground return, list pull, 立即同步, a key change), which does not run without them and
+ * records why it was skipped. An automatic call (launch, foreground return, list pull, a Shortcut) made within
+ * MEAL_RULES_RETRY_BACKOFF_MS after a rules request for the same key ended without a pack does not ask again; an
+ * explicit one (立即同步, a key change) does, and a call made while such a request runs still waits for it.
+ */
+export async function ensureMealRules(
+  trigger?: "meal_sync",
+  request: MealRulesRequest = {},
+): Promise<MealRules | null> {
+  const rules = await currentMealRules(request);
+  if (trigger) reportMealSyncGate(rules);
+  return rules;
+}
+
+async function currentMealRules(request: MealRulesRequest): Promise<MealRules | null> {
   const scope = mealCredentialScope();
   if (!scope) return null;
   if (!loadedMealOffer) loadCarrierAuthorityCache();
   const cached = cachedMealRules();
   if (cached) return cached;
-  await refreshCarrierAuthorityIfNeeded();
-  if (scope !== mealCredentialScope()) return null;
-  // A changed key may have joined the preceding key's request while it was settling.
-  if (loadedMealOffer?.scope !== scope && loadedAttemptScope !== scope) await refreshCarrierAuthorityIfNeeded();
+  const backoff = mealRulesRetry?.scope === scope && Date.now() < mealRulesRetry.notBeforeMs;
+  if (!request.explicit && backoff && inFlight?.mealScope !== scope) return null;
+  // Only an accepted pack settles a key's rules (owner decision, 2026-11-21): a failed or unusable answer
+  // is asked again by a later call instead of waiting for the carrier table's daily refresh.
+  await requestCarrierAuthority(Date.now(), request, undefined, scope);
   return scope === mealCredentialScope() ? cachedMealRules() : null;
+}
+
+/** A meal pull that cannot run for want of a usable Access Key (D111); written like the app pull's own skip. */
+export function reportMealSyncSkipped(): void {
+  reportMealSyncGate(null);
+}
+
+/**
+ * Records a skipped meal pull once per change of reason in a runtime (owner decision, 2026-11-21: 诊断日志事件);
+ * a pull that runs clears it, so the next skip is recorded again. The key events carry the key's own state.
+ */
+function reportMealSyncGate(rules: MealRules | null): void {
+  const reason: MealSyncSkip | "" = rules ? "" : mealCredentialScope() ? "no_meal_rules"
+    : gatewayCredentialForLocalCache() ? "access_key_rejected" : "no_access_key";
+  if (reason === reportedMealSyncSkip) return;
+  reportedMealSyncSkip = reason;
+  if (!reason) return;
+  writeDiagnostic("cloud.sync.skipped", { domain: "meal_pickup", stage: "cloud_record_sync", result: reason, skipReason: reason },
+    reason === "no_meal_rules" ? "warning" : "info");
 }
 
 export function carrierAuthorityDiagnosticDetails(nowMs = Date.now()) {
@@ -224,10 +271,14 @@ function attemptCandidate(
     if (stored.storageSchema !== STORAGE_SCHEMA ||
       !Number.isSafeInteger(lastAttemptAtMs) || lastAttemptAtMs <= 0 ||
       lastAttemptAtMs > nowMs + MAX_CLOCK_SKEW_MS) return null;
+    const retryNotBefore = Number(stored.mealRulesRetryNotBeforeMs);
     return Object.freeze({
       storageSchema: STORAGE_SCHEMA,
       lastAttemptAtMs,
       mealScope: typeof stored.mealScope === "string" ? stored.mealScope : undefined,
+      ...(Number.isSafeInteger(retryNotBefore) && retryNotBefore > 0 && retryNotBefore <= nowMs + MAX_CLOCK_SKEW_MS
+        ? { mealRulesRetryNotBeforeMs: retryNotBefore }
+        : {}),
     });
   } catch {
     return null;
@@ -242,6 +293,11 @@ function loadCarrierAuthorityAttempt(nowMs: number): void {
     .sort((left, right) => right.lastAttemptAtMs - left.lastAttemptAtMs)[0];
   loadedLastAttemptAtMs = selected?.lastAttemptAtMs || 0;
   loadedAttemptScope = selected?.mealScope || "";
+  if (selected?.mealScope && selected.mealRulesRetryNotBeforeMs && selected.mealRulesRetryNotBeforeMs > nowMs) {
+    if (!mealRulesRetry || mealRulesRetry.scope !== selected.mealScope || selected.mealRulesRetryNotBeforeMs > mealRulesRetry.notBeforeMs) {
+      mealRulesRetry = { scope: selected.mealScope, notBeforeMs: selected.mealRulesRetryNotBeforeMs };
+    }
+  }
 }
 
 /** Loads the newest fully validated primary/backup snapshot without networking. */
@@ -282,14 +338,21 @@ export function refreshCarrierAuthorityIfNeeded(
 
 export async function checkSavedAccessKey(): Promise<void> {
   const generation = gatewayCredentialGeneration();
-  if (generation !== null) await requestCarrierAuthority(Date.now(), {}, generation);
+  if (generation === null) return;
+  await requestCarrierAuthority(Date.now(), {}, generation);
 }
 
 function requestCarrierAuthority(
-  nowMs: number, dependencies: CarrierAuthorityDependencies, verifyGeneration?: number,
+  nowMs: number, dependencies: CarrierAuthorityDependencies, verifyGeneration?: number, mealRulesScope?: string,
 ): Promise<boolean> {
   if (inFlight) {
-    const { generation, operation } = inFlight;
+    const { generation, mealScope, operation } = inFlight;
+    if (mealRulesScope !== undefined) {
+      if (mealScope === mealRulesScope) return operation;
+      // A preceding key's request or the cooldown's authorization check carries no rules for this key.
+      return operation.then(() => mealRulesScope === mealCredentialScope() && loadedMealOffer?.scope !== mealRulesScope
+        ? requestCarrierAuthority(Date.now(), dependencies, undefined, mealRulesScope) : false);
+    }
     if (verifyGeneration === undefined || verifyGeneration === generation) return operation;
     return operation.then(() => gatewayCredentialGeneration() === verifyGeneration
       ? requestCarrierAuthority(Date.now(), dependencies, verifyGeneration) : false);
@@ -300,7 +363,10 @@ function requestCarrierAuthority(
     loadedFetchedAtMs,
     loadedLastAttemptAtMs,
   );
-  const scopeNeedsRules = scope && loadedMealOffer?.scope !== scope && loadedAttemptScope !== scope;
+  // A key's first attempt passes the daily throttle for every caller; until a pack is accepted only the meal
+  // path asks again, so the carrier table's own refreshes keep their 24-hour throttle.
+  const scopeNeedsRules = Boolean(scope) && loadedMealOffer?.scope !== scope &&
+    (mealRulesScope === scope || loadedAttemptScope !== scope);
   const onCooldown = !scopeNeedsRules && latestActivityAtMs > 0 && nowMs - latestActivityAtMs < REFRESH_INTERVAL_MS;
   if (onCooldown && verifyGeneration === undefined) {
     const details = carrierAuthorityDiagnosticDetails(nowMs);
@@ -310,21 +376,74 @@ function requestCarrierAuthority(
     return Promise.resolve(false);
   }
   const generation = verifyGeneration ?? gatewayCredentialGeneration();
+  const checkStartedAt = Date.now();
+  // D113/D123: the saved key's check records its result (accepted, rejected or unreachable) without the key.
+  const recordCheck = (error?: unknown) => {
+    if (verifyGeneration === undefined) return;
+    const details = error === undefined ? {} : diagnosticErrorDetails(error);
+    writeDiagnostic("gateway.credential.checked", {
+      stage: onCooldown ? "credential_check" : "carrier_table",
+      result: error === undefined ? "accepted" : details.errorCategory === "authorization" ? "rejected" : "unreachable",
+      durationMs: Date.now() - checkStartedAt, ...details,
+    }, error === undefined || details.errorCategory === "authorization" ? "info" : "warning");
+  };
   // Auth can be checked during the catalog cooldown without querying a shipment or touching the cache.
   const request = onCooldown
-    ? post(CARRIER_AUTHORITY_ROUTE, {}, { timeoutMs: REQUEST_TIMEOUT_MS }).then(() => false, () => false)
-    : refreshAuthority(nowMs, scope, post);
+    ? post(CARRIER_AUTHORITY_ROUTE, {}, { timeoutMs: REQUEST_TIMEOUT_MS }).then(() => {
+      recordCheck();
+      return false;
+    }, (error: unknown) => {
+      recordCheck(error);
+      return false;
+    })
+    : refreshAuthority(nowMs, scope, post).then((installed) => {
+      recordCheck(installed ? undefined : lastAuthorityRequestError);
+      return installed;
+    });
   const operation = request.finally(() => {
     if (inFlight?.operation === operation) inFlight = undefined;
   });
-  inFlight = { generation, operation };
+  inFlight = { generation, mealScope: onCooldown ? "" : scope, operation };
   return operation;
 }
 
 async function refreshAuthority(
   nowMs: number, scope: string, post: NonNullable<CarrierAuthorityDependencies["post"]>,
 ): Promise<boolean> {
+  try {
+    return await refreshAuthorityOnce(nowMs, scope, post);
+  } finally {
+    // A request that asked for this key's rules and ended without them holds automatic meal pulls briefly,
+    // persisted to CARRIER_AUTHORITY_ATTEMPT_FILE so background/Shortcut hosts share the backoff (M-08).
+    if (scope) {
+      if (loadedMealOffer?.scope === scope) {
+        mealRulesRetry = undefined;
+      } else {
+        const notBeforeMs = Date.now() + MEAL_RULES_RETRY_BACKOFF_MS;
+        mealRulesRetry = { scope, notBeforeMs };
+        try {
+          writeDurableText(CARRIER_AUTHORITY_ATTEMPT_FILE, JSON.stringify({
+            storageSchema: STORAGE_SCHEMA,
+            lastAttemptAtMs: loadedLastAttemptAtMs || nowMs,
+            mealScope: scope,
+            mealRulesRetryNotBeforeMs: notBeforeMs,
+          } satisfies StoredCarrierAuthorityAttempt));
+        } catch {
+          // Best-effort cross-process backoff persistence.
+        }
+      }
+    }
+  }
+}
+
+/** The last carrier-table request's transport or authorization error; a reply with any payload clears it. */
+let lastAuthorityRequestError: unknown;
+
+async function refreshAuthorityOnce(
+  nowMs: number, scope: string, post: NonNullable<CarrierAuthorityDependencies["post"]>,
+): Promise<boolean> {
   const startedAtMs = Date.now();
+  lastAuthorityRequestError = undefined;
   try {
     const attempt: StoredCarrierAuthorityAttempt = {
       storageSchema: STORAGE_SCHEMA,
@@ -355,19 +474,34 @@ async function refreshAuthority(
     const offered = scope && mealCredentialScope() === scope
       ? parseMealRuleOffer((response as { mealRules?: unknown }).mealRules) : null;
     const meal = offered && compileMealRules(offered) ? { ...offered, scope } : loadedMealOffer;
-    const stored: StoredCarrierAuthority = {
-      storageSchema: STORAGE_SCHEMA,
-      fetchedAtMs: nowMs,
-      payload,
-      ...(meal ? { meal } : {}),
-    };
-    writeDurableText(CARRIER_AUTHORITY_FILE, JSON.stringify({
-      ...stored,
+    const serializedBody = {
       payload: {
         ...payload,
         entries: payload.entries.map(({ aliases, ...record }) => ({ ...record, codeAliases: aliases })),
       },
-    }));
+      ...(meal ? { meal } : {}),
+    };
+    const existingRaw = readDurableTextResult(CARRIER_AUTHORITY_FILE).candidates[0];
+    let unchangedWithinWindow = false;
+    if (existingRaw && loadedFetchedAtMs > 0 && nowMs - loadedFetchedAtMs < REFRESH_INTERVAL_MS) {
+      try {
+        const parsedExisting = JSON.parse(existingRaw) as Record<string, unknown>;
+        const existingBody = {
+          payload: parsedExisting.payload,
+          ...(parsedExisting.meal ? { meal: parsedExisting.meal } : {}),
+        };
+        unchangedWithinWindow = JSON.stringify(existingBody) === JSON.stringify(serializedBody);
+      } catch {
+        unchangedWithinWindow = false;
+      }
+    }
+    if (!unchangedWithinWindow) {
+      writeDurableText(CARRIER_AUTHORITY_FILE, JSON.stringify({
+        storageSchema: STORAGE_SCHEMA,
+        fetchedAtMs: nowMs,
+        ...serializedBody,
+      }));
+    }
     if (!installCarrierQueryRecords(
       payload.entries,
       payload.version,
@@ -385,9 +519,12 @@ async function refreshAuthority(
     writeDiagnostic("carrier.authority.refreshed", {
       ...carrierAuthorityDiagnosticDetails(), result: "installed",
       durationMs: Date.now() - startedAtMs,
+      // D113: whether the meal rule pack this request asked for was accepted for the key.
+      ...(scope ? { mealRulesResult: !offered ? "absent" : meal?.scope === scope ? "accepted" : "rejected" } as const : {}),
     });
     return true;
   } catch (error) {
+    lastAuthorityRequestError = error;
     writeDiagnostic("carrier.authority.failed", {
       ...carrierAuthorityDiagnosticDetails(), ...diagnosticErrorDetails(error),
       durationMs: Date.now() - startedAtMs,
@@ -402,4 +539,7 @@ export function resetCarrierAuthorityRuntimeForTesting(): void {
   loadedAttemptScope = "";
   loadedMealOffer = undefined;
   inFlight = undefined;
+  reportedMealSyncSkip = "";
+  mealRulesRetry = undefined;
+  lastAuthorityRequestError = undefined;
 }

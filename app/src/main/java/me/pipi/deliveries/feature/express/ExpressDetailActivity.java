@@ -209,6 +209,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private ExpressQueryCancellation firstManualQueryCancellation;
     private Future<?> firstManualQueryTask;
     private boolean firstManualQueryInFlight;
+    private boolean restartFirstManualQueryOnStart;
 
     static Intent manualQueryIntent(Context context, String waybill, String phone,
             String courierHint, String bindingSource) {
@@ -369,7 +370,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     @Override protected void onStop() {
         detailStarted = false;
         cancelInitialDetailLoad();
-        cancelFirstManualQuery();
+        cancelFirstManualQuery(!isFinishing());
         if (presentationCancellation != null) presentationCancellation.cancel();
         presentationCancellation = null;
         if (kuaidi100Capture != null) kuaidi100Capture.cancel();
@@ -387,6 +388,13 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         super.onStart();
         detailStarted = true;
         if (!initialDetailShown && initialDetailTask == null) loadInitialDetail();
+        if (restartFirstManualQueryOnStart) {
+            restartFirstManualQueryOnStart = false;
+            if (getIntent().getBooleanExtra(EXTRA_MANUAL_QUERY, false)
+                    && (item == null || item.rowId == 0L)) {
+                startFirstManualQuery();
+            }
+        }
         if (restartLocalRefreshOnStart) {
             restartLocalRefreshOnStart = false;
             // 用户 2026-09-28：the refresh this restart runs is not the user's pull; it is logged
@@ -402,6 +410,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
     private void startFirstManualQuery() {
         if (firstManualQueryInFlight || previewResult == null) return;
+        restartFirstManualQueryOnStart = false;
         String waybill = previewResult.waybill;
         String bindingSource = previewBindingSource;
         String suppliedPhone = previewPhone;
@@ -671,11 +680,16 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     private void cancelFirstManualQuery() {
+        cancelFirstManualQuery(false);
+    }
+
+    private void cancelFirstManualQuery(boolean restartOnStart) {
         if (!firstManualQueryInFlight) return;
         firstManualQueryCancellation.cancel();
         if (firstManualQueryTask != null) firstManualQueryTask.cancel(true);
         cancelAddChainCapture();
         finishFirstManualQuery();
+        restartFirstManualQueryOnStart |= restartOnStart;
         if (previewResult != null && timeline != null) renderFirstManualResult(previewResult);
     }
 
@@ -719,6 +733,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         java.util.concurrent.atomic.AtomicReference<String> tracks =
                 new java.util.concurrent.atomic.AtomicReference<>("");
         java.util.concurrent.atomic.AtomicBoolean phoneRequired = new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.atomic.AtomicBoolean phoneMismatch = new java.util.concurrent.atomic.AtomicBoolean();
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed() || cancellation.isCancelled()) {
                 finished.countDown();
@@ -729,6 +744,7 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                         if (addChainCapture == done) addChainCapture = null;
                         tracks.set(tracksJson == null ? "" : tracksJson);
                         phoneRequired.set(done.needsPhoneTail());
+                        phoneMismatch.set(done.isPhoneTailMismatch());
                         finished.countDown();
                     });
             capture.usePhoneCandidates(boundPhones);
@@ -752,8 +768,13 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         }
         if (!completed) runOnUiThread(this::cancelAddChainCapture);
         if (phoneRequired.get()) {
+            if (phones.isEmpty()) {
+                ExpressKuaidi100CaptureCooldown.clear(this, provider, waybill, phones);
+            }
             manualPhoneTailRequired = true;
-            throw ExpressApi.QueryException.phoneTailRequired(ExpressToastCopy.MANUAL_PHONE_TAIL_REQUIRED);
+            throw phoneMismatch.get()
+                    ? ExpressApi.QueryException.phoneTailMismatch(getString(R.string.phone_tail_mismatch))
+                    : ExpressApi.QueryException.phoneTailRequired(ExpressToastCopy.MANUAL_PHONE_TAIL_REQUIRED);
         }
         ExpressQueryResult captured = ExpressDetailActivity.kuaidi100CapturedResult(
                 waybill, selected.courierCode, selected.companyName, phone, tracks.get());
@@ -1146,6 +1167,10 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     private void refreshLocalTimelineInBackground(boolean showProgress) {
+        if (getIntent().getBooleanExtra(EXTRA_MANUAL_QUERY, false) && item != null && item.rowId == 0L) {
+            startFirstManualQuery();
+            return;
+        }
         if (localRefreshInFlight) {
             // JD pulls share an in-flight page; a gesture must not queue a surprise retry after it ends.
             boolean sharesJdCapture = false;
@@ -1754,6 +1779,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         ExpressKuaidi100CaptureCooldown.record(this, provider, owner.displayWaybill(), phones, System.currentTimeMillis());
         ExpressAutomaticTimelineCapture.Result result = ExpressAutomaticTimelineCapture.capture(this,
                 owner, route, provider, phones, cancellation);
+        if (result != null && result.phoneRequired && phones.isEmpty()) {
+            ExpressKuaidi100CaptureCooldown.clear(this, provider, owner.displayWaybill(), phones);
+        }
         if (owner.manuallyAdded && result != null && result.phoneRequired) manualPhoneTailRequired = true;
         return result == null ? null : result.timeline;
     }
@@ -1833,12 +1861,10 @@ public final class ExpressDetailActivity extends AppCompatActivity {
             String courierCode, String company, String waybill,
             String status, StatusSemantic semantic) {
         statusView.setText(status);
-        int accent = ExpressStatusColors.accent(semantic, status, ExpressStatusColors.isNight(statusView.getContext()));
-        statusView.setTextColor(ExpressStatusColors.textOn(accent,
-                com.google.android.material.color.MaterialColors.getColor(statusView,
-                        com.google.android.material.R.attr.colorSurface)));
+        statusView.setTextColor(ExpressStatusColors.accent(semantic, status,
+                ExpressStatusColors.isNight(statusView.getContext())));
         ExpressSenderBadge.apply(findViewById(R.id.detail_sender),
-                item != null && item.sender, accent);
+                item != null && item.sender, semantic, status);
         // 跨端对齐裁决 #35：承运商为空时统一写「快递」；热线仍按原来的承运商名查。
         waybillView.setText(getString(R.string.express_company_waybill,
                 ExpressItem.carrierLabel(company), waybill));
@@ -2171,9 +2197,9 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                 ExpressAccountSource.bindingSourceForOwner(owner)) ? "v5" : "v6";
     }
 
+    /** The diagnostic contract's four-alphanumeric waybillTail, separators dropped first (G-LOW-16). */
     private static String tailOf(String value) {
-        String clean = value == null ? "" : value.trim();
-        return clean.length() <= 4 ? clean : clean.substring(clean.length() - 4);
+        return me.pipi.deliveries.network.ExpressLog.tail(value);
     }
 
     /**

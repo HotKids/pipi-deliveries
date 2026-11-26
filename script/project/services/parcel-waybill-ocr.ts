@@ -90,6 +90,13 @@ export function parcelWaybillEvidence(rows: readonly ParcelRow[]): {
   const copied = new Set<string>();
   rows.forEach((row, index) => {
     if (!row.text.includes(rules.copyWord) && cleanRow(rows[index + 1]?.text ?? "") !== rules.copyWord) return;
+    if (row.bounds) {
+      const leftText = rows
+        .filter((other) => other !== row && other.bounds && other.bounds.right <= row.bounds!.left + 8 && sameRow(other.bounds, row.bounds!))
+        .map((other) => other.text)
+        .join(" ");
+      if (leftText && rules.negLabels.some((name) => leftText.includes(name))) return;
+    }
     const [value] = waybillsOnRow(row);
     if (value) copied.add(value);
   });

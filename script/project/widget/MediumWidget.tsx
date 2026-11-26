@@ -10,10 +10,11 @@ import {
 import type { WidgetRow, WidgetSnapshot } from "../models";
 import { withNote } from "../services/status";
 import { CourierIcon } from "../components/CourierIcon";
-import { carrierDisplayName } from "../services/carrier-presentation";
+import { widgetIdentityText } from "../services/carrier-presentation";
 import { EmptyDeliveryStateGroup } from "../components/EmptyDeliveryVehicle";
 import { mediumWidgetLayout, mediumWidgetPlacement } from "./layout";
 import { WidgetLineArt } from "./WidgetLineArt";
+import { WidgetSenderTag } from "./WidgetSenderTag";
 import {
   carrierWidgetAccent,
   EMPTY_WIDGET_ACCENT,
@@ -53,9 +54,18 @@ function Row(props: {
         />
         <VStack alignment="leading" spacing={1} frame={{ maxWidth: "infinity" }}>
           <HStack spacing={6} frame={{ maxWidth: "infinity" }}>
-            <Text font={15} fontWeight="semibold" lineLimit={1}>
-              {carrierDisplayName(props.row.companyName)} {props.row.waybillSuffix}
-            </Text>
+            {/* An outgoing parcel's small gray 寄 tag follows the waybill tail, 4 points after it, at the
+                status capsule's size and height (owner 2026-11-20). The tag is never compressed: the
+                identity text gives way before it. The identity and the capsule keep sharing the
+                row width as on every other row. */}
+            <HStack spacing={4}>
+              <Text font={15} fontWeight="semibold" monospacedDigit lineLimit={1}>
+                {widgetIdentityText(props.row)}
+              </Text>
+              {props.row.sender === true ? (
+                <WidgetSenderTag font={11} verticalPadding={2} />
+              ) : null}
+            </HStack>
             <Text
               font={11}
               fontWeight="medium"
@@ -152,7 +162,7 @@ export function MediumWidget(props: {
             >
               <Text font={15} fontWeight="semibold">我的快递</Text>
               <HStack alignment="firstTextBaseline" spacing={4}>
-                <Text font={15} fontWeight="semibold">
+                <Text font={15} fontWeight="semibold" monospacedDigit>
                   {snapshot.activeCount}
                 </Text>
                 <Text

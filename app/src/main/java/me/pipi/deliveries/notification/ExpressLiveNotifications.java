@@ -25,6 +25,9 @@ public final class ExpressLiveNotifications {
     private static final String PREFS = "express_live_settings";
     private static final String DELIVERY = "delivery";
     private static final String PICKUP = "pickup";
+    // Owner 2026-11-20 (修改 11): 待派送, 派送中 and 待取件 share the green end of the status hue line.
+    @android.annotation.SuppressLint("InlinedApi")
+    static final int TITLE_SEMANTIC = Notification.SEMANTIC_STYLE_SAFE;
 
     private ExpressLiveNotifications() {}
 
@@ -122,7 +125,7 @@ public final class ExpressLiveNotifications {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(context, CHANNEL)
                 .setSmallIcon(spec.smallIcon).setColor(spec.accent).setColorized(false)
-                .setContentTitle(SemanticText.annotate(spec.title, Notification.SEMANTIC_STYLE_CAUTION, 0,
+                .setContentTitle(SemanticText.annotate(spec.title, TITLE_SEMANTIC, 0,
                         spec.labelLength))
                 .setContentText(ExpressNotifications.breakableText(
                         Build.VERSION.SDK_INT >= 37 ? spec.summary : spec.detail))

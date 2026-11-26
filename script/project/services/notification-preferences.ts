@@ -3,6 +3,7 @@ import {
   readDurableTextCandidates,
   writeDurableText,
 } from "./durable-files";
+import { writeDiagnostic } from "./logger";
 
 const NOTIFICATION_PREFERENCES_KEY =
   "pipi_deliveries_notification_preferences_v1";
@@ -151,8 +152,13 @@ export function saveNotificationStatuses(
   } catch {
     shared = false;
   }
-  if (!durable && !shared) throw new Error("无法保存通知设置，请稍后重试");
+  if (!durable && !shared) {
+    writeDiagnostic("settings.changed", { stage: "notifications", result: "save_failed" }, "warning");
+    throw new Error("无法保存通知设置，请稍后重试");
+  }
   cachedEnabled = stored.enabled;
+  // D126: the saved notification choice as a count of enabled statuses only.
+  writeDiagnostic("settings.changed", { stage: "notifications", result: "saved", records: stored.enabled.length });
   return [...cachedEnabled];
 }
 

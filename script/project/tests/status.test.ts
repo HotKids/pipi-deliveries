@@ -117,12 +117,13 @@ assert.equal(semanticFromAccountState(106, ""), "WAITING_PICKUP");
 assert.equal(semanticFromAccountState("107", ""), "COMPLETED");
 assert.equal(widgetStatusLabel("DANGER"), "异常件");
 assert.equal(widgetStatusLabel("UNKNOWN"), "暂无状态");
-assert.equal(statusTextAccent("COMPLETED"), 0x005d2d);
-assert.equal(statusTextAccent("COMPLETED", "已完成", true), 0x50b771);
-assert.equal(statusTextAccent("DELIVERY"), 0x7a491d);
-assert.equal(statusTextAccent("DELIVERY", "待派送", true), 0xfaac20);
-assert.equal(statusTextAccent("ORDERED"), 0x0f61c1);
-assert.equal(statusTextAccent("CANCELLED"), 0x63696a);
+// Owner 2026-11-20 (修改 11), table 1.2-A non-capsule pair.
+assert.equal(statusTextAccent("COMPLETED"), 0xd97e06);
+assert.equal(statusTextAccent("COMPLETED", "已完成", true), 0xffad66);
+assert.equal(statusTextAccent("DELIVERY"), 0x0e9f52);
+assert.equal(statusTextAccent("DELIVERY", "待派送", true), 0x4fd8c8);
+assert.equal(statusTextAccent("ORDERED"), 0x5a6b80);
+assert.equal(statusTextAccent("CANCELLED"), 0x6e767f);
 assert.equal(
   containsTimelineStartTrack([
     track("2026-08-26 11:58:00", "快递已下单", ""),
@@ -806,6 +807,10 @@ assert.equal(
   assert.equal(notedWidget.rows[0]?.note, "给妈妈的");
   assert.equal(withNote("运输中", notedWidget.rows[0]?.note), `运输中${NOTE_SEPARATOR}给妈妈的`);
   assert.equal(withNote("运输中", undefined), "运输中");
+  // Owner 2026-11-20: widget rows carry the outgoing flag so both sizes show the gray 寄 tag.
+  const outgoing = { ...plain, identity: { ...plain.identity, sender: true } };
+  assert.equal(buildWidgetSnapshot([outgoing], NOW).rows[0]?.sender, true);
+  assert.equal(notedWidget.rows[0]?.sender, false);
 }
 
 const widget = buildWidgetSnapshot([
@@ -1019,7 +1024,7 @@ for (const historyStatus of ["UNKNOWN", "DELIVERY"] as const) {
   const value = shipment("8238522608021", "TRANSIT", NOW - 120_000);
   const stationTrack = (at: number, detail: string, code = "") => track(
     new Date(at + 8 * 3_600_000).toISOString().slice(0, 19).replace("T", " "), detail, code);
-  const stationAt = NOW - 60_000;
+  const stationAt = historyStatus === "UNKNOWN" ? NOW - 60_000 : NOW;
   const moto: TimelinePackage = { ...value.timeline, provider: "v4_query", semantic: "DELIVERY",
     structuredStatus: true, statusEventAtMs: stationAt, complete: false,
     normalizedStatus: { version: 1, scope: "SHIPMENT", semantic: "DELIVERY", code: "STA_DELIVERING",

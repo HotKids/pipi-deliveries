@@ -4,7 +4,7 @@ import { PICKUP_CARD_SPACING } from "../services/parcel-card-appearance";
 
 const CAPTION_ROOM = 64;
 const SCAN_PANEL_INSET = 16;
-const SCAN_QUIET_ZONE = 8;
+const SCAN_QUIET_ZONE = 12;
 const SCAN_PANEL_SHAPE = { type: "rect", cornerRadius: 24, style: "continuous" } as const;
 const SCAN_TILE_SHAPE = { type: "rect", cornerRadius: 14, style: "continuous" } as const;
 
@@ -27,12 +27,12 @@ export function ScanCodeSurface({ closeLabel, onClose, followsSystemAppearance, 
 
 export function ScanCodeNumber({ value, prominent }: { value: string; prominent?: boolean }) {
   return <Text font={prominent ? "title2" : 14} fontWeight={prominent ? "semibold" : "medium"}
-    fontDesign={prominent ? "monospaced" : undefined} foregroundStyle={prominent ? "label" : "#1C1C1E"} lineLimit={1}
+    fontDesign={prominent ? "monospaced" : undefined} monospacedDigit foregroundStyle="label" lineLimit={1}
     minScaleFactor={0.55}>{value}</Text>;
 }
 
 export function ScanCodeShrinkHint({ text = "点击可缩小", prominent }: { text?: string; prominent?: boolean }) {
-  return <Text font={prominent ? "footnote" : 12} foregroundStyle={prominent ? "secondaryLabel" : "#636366"}>{text}</Text>;
+  return <Text font={prominent ? "footnote" : 12} foregroundStyle="secondaryLabel">{text}</Text>;
 }
 
 function ScanCodeCaption({ number, footer, hint, prominent }: {
@@ -80,13 +80,13 @@ export function ExpandedQRCode({ data, title, titleLogo, number, footer, hint, h
         accessibilityActions={close ? [{ name: close.label, action: close.action }] : undefined}>
         <GeometryReader padding={showsCard ? { top: 48 } : undefined}>
           {({ size }) => {
-            const inset = title ? 2 * (SCAN_PANEL_INSET + SCAN_QUIET_ZONE) : 0;
+            const inset = title ? 2 * (SCAN_PANEL_INSET + SCAN_QUIET_ZONE) : 2 * SCAN_QUIET_ZONE;
             const qrSize = Math.min(320, size.width - inset, size.height - inset - (title ? CAPTION_ROOM : 0));
             return (
               <VStack spacing={12} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
                 {qrSize > 0 ? (
-                  <VStack padding={title ? SCAN_QUIET_ZONE : 0}
-                    background={title ? { style: "white", shape: SCAN_TILE_SHAPE } : undefined}>
+                  <VStack padding={SCAN_QUIET_ZONE}
+                    background={{ style: "white", shape: SCAN_TILE_SHAPE }}>
                     <QRImage data={data} size={qrSize} />
                   </VStack>
                 ) : null}

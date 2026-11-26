@@ -73,7 +73,9 @@ jobs:
         run: rm -f "$RUNNER_TEMP/deliveries-verify-signing/release.jks"
 
   release-apk:
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    # G-LOW-32: sign only from main or a version tag; verify proves the tag is on main. The workflow
+    # runs only on workflow_dispatch, so the former event clause let any dispatched branch sign.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: verify
     runs-on: ubuntu-latest
     permissions:
@@ -160,20 +162,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           current_version="${GITHUB_REF_NAME#v}"
+          # Only this track's own vX.Y.Z releases and tags: iOS ios-vX.Y.Z numbers sit below
+          # Lite's and are the iOS download entry (G-HIGH-05).
           current_release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.id')"
           # Check latest after collecting targets to reject a run superseded during pagination.
           release_ids="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq "
             .[] | select(.draft == false and .published_at != null)
-            | select(.tag_name | test(\"^(ios-)?v[0-9]+([.][0-9]+){2}$\"))
-            | select((.tag_name | sub(\"^(ios-)?v\"; \"\") | split(\".\") | map(tonumber))
+            | select(.tag_name | test(\"^v[0-9]+([.][0-9]+){2}$\"))
+            | select((.tag_name | sub(\"^v\"; \"\") | split(\".\") | map(tonumber))
               < (\"$current_version\" | split(\".\") | map(tonumber)))
             | .id
           ")"
           unpublished_tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             --jq '.[] | select(.draft == true or .published_at == null) | .tag_name | @uri')"
           tag_names="$(gh api --paginate "repos/$GITHUB_REPOSITORY/tags?per_page=100" --jq "
-            .[] | select(.name | test(\"^(ios-)?v[0-9]+([.][0-9]+){2}$\"))
-            | select((.name | sub(\"^(ios-)?v\"; \"\") | split(\".\") | map(tonumber))
+            .[] | select(.name | test(\"^v[0-9]+([.][0-9]+){2}$\"))
+            | select((.name | sub(\"^v\"; \"\") | split(\".\") | map(tonumber))
               < (\"$current_version\" | split(\".\") | map(tonumber)))
             | .name | @uri
           ")"

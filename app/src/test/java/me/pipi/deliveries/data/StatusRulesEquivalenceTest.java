@@ -111,7 +111,11 @@ public final class StatusRulesEquivalenceTest {
             case "1": return StatusSemantic.PICKED;
             case "2":
             case "201":
-            case "204": return StatusSemantic.TRANSIT;
+            case "204":
+            // Owner decision 2026-11-20 (customs clearance, MEIZU-CUSTOMS-CLEARANCE-20261120):
+            // KDNiao Action 602 清关进行中 joins TRANSIT in both Worker tracks; it is an addition to
+            // the old switch, not a migration difference.
+            case "602": return StatusSemantic.TRANSIT;
             case "202": return StatusSemantic.DELIVERY;
             case "211":
             case "412": return StatusSemantic.WAITING_PICKUP;

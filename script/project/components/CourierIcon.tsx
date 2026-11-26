@@ -29,6 +29,7 @@ function CourierIconTile({ artwork, size }: { artwork?: UIImage; size: number })
           image={artwork}
           resizable
           scaleToFit
+          widgetAccentedRenderingMode="fullColor"
           frame={{ width: size, height: size }}
         />
       ) : (

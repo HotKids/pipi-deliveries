@@ -44,7 +44,17 @@ function mealObservation(payload: MealPayload, rawRules: MealRules["raw"], produ
 }
 
 export function onlineMealRequiresQR(fields: Record<string, unknown>, rules: MealRules): boolean {
-  return Boolean(redemptionIdentity(rules.parsed, ["brand", "merchantName", "productName"].map(key => modelText(fields, key)).join("\n")));
+  if (redemptionIdentity(rules.parsed, ["brand", "merchantName", "productName"].map(key => modelText(fields, key)).join("\n"))) {
+    return true;
+  }
+  const brand = onlineBrand(
+    rules.parsed,
+    modelText(fields, "brand", 256),
+    modelText(fields, "pickupCode", 256),
+    modelText(fields, "productName"),
+    modelText(fields, "productSpec"),
+  );
+  return brand?.id === "ruixing";
 }
 
 export function mealFromModel(fields: Record<string, unknown>, capturedAt: number, rules: MealRules): MealObservation | null {
@@ -82,7 +92,8 @@ export function recognizeMealText(
   const parsed = parsePickupCredentials(input, rules.parsed);
   const evidenceText = blocks.map(block => block.text).join("\n");
   function observation(result: ReturnType<typeof parsePickupCredentials>[number], metadata: boolean): MealObservation {
-    const verifiedOnlineQR = result.brandId === "chayanyuese" && result.qrPayload ? model : undefined;
+    const verifiedOnlineQR = (result.brandId === "chayanyuese" || result.brandId === "ruixing") && result.qrPayload
+      ? model : undefined;
     const onlineProduct = verifiedOnlineQR ? modelText(verifiedOnlineQR, "productName") : "";
     const onlineMerchant = verifiedOnlineQR ? modelText(verifiedOnlineQR, "merchantName") : "";
     const payload: MealPayload = {
@@ -99,6 +110,13 @@ export function recognizeMealText(
     return mealObservation(payload, rules.raw, payload.productName ?? "", evidenceText);
   }
   if (parsed.length) return { meals: parsed.map(value => observation(value, parsed.length === 1)) };
-  const draft = !model ? parseLuckinDraft(input, rules.parsed) : undefined;
+  const allowLuckinDraft = !model || onlineBrand(
+    rules.parsed,
+    modelText(model, "brand", 256),
+    modelText(model, "pickupCode", 256),
+    modelText(model, "productName"),
+    modelText(model, "productSpec"),
+  )?.id === "ruixing";
+  const draft = allowLuckinDraft ? parseLuckinDraft(input, rules.parsed) : undefined;
   return { meals: [], ...(draft ? { draft: observation(draft, true) } : {}) };
 }

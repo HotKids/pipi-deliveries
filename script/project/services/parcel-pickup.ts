@@ -32,6 +32,8 @@ export type ParcelActivityContent = Readonly<{
   kind?: "handoff" | "meal";
   mealStyle?: PickupVisualStyle;
   mealBrandId?: string;
+  /** The compact Dynamic Island text from Pipi's meal capsule rule. */
+  mealCompactCode?: string;
   hasMealQR?: boolean;
   businessDateKey?: string;
   capturedAtMs?: number;
@@ -120,9 +122,57 @@ export function parcelPickupShortCode(code: string): string {
   return Array.from(value).length <= 8 ? value : value.replace(/[^\p{L}\p{N}]/gu, "") || value;
 }
 
+/**
+ * A meal's text beside the brand mark in the compact Dynamic Island. It mirrors
+ * Pipi's status-bar capsule (`PickupNotificationRenderer.capsule` in the Android
+ * app): the trimmed text code, only its leading number for Starbucks, and for a
+ * Chayan Yuese card without a text code the product name when it has fewer than
+ * five characters, otherwise the brand. A card without a text code, such as a
+ * QR-only Luckin card, shows 待取餐 (owner, 2026-11-21: "pipi 也显示待取餐").
+ * Like Pipi it does not pre-truncate the phrase; the system owns the width. The
+ * card, expanded island and copy keep the full code.
+ */
+export function mealCompactCode(
+  { brandId, code, productName }: Readonly<{ brandId?: string; code?: string; productName?: string }>,
+): string {
+  const value = (code ?? "").trim();
+  if (brandId === "chayanyuese" && !value) {
+    const product = (productName ?? "").trim();
+    return product && Array.from(product).length < 5 ? product : "茶颜悦色";
+  }
+  if (!value) return "待取餐";
+  if (brandId !== "xingbake") return value;
+  return value.match(/^\p{Nd}+/u)?.[0] ?? value;
+}
+
+/**
+ * Text beside the brand mark in the compact Dynamic Island, the counterpart of
+ * Pipi's status-bar capsule. A meal uses its saved capsule text; an activity
+ * published before that field existed, or with it empty, applies the same rule
+ * to its code.
+ * Parcels and handoffs keep the eight-character short code.
+ */
+export function parcelActivityCompactText(
+  data: Pick<ParcelActivityContent, "kind" | "code" | "title" | "mealBrandId" | "mealCompactCode">,
+): string {
+  if (data.kind === "meal") {
+    const trimmedCode = data.code.trim();
+    const code = trimmedCode === "待核销" ? "" : trimmedCode;
+    const savedCompact = data.mealCompactCode?.trim();
+    return savedCompact || mealCompactCode({ brandId: data.mealBrandId, code, productName: data.title });
+  }
+  const code = parcelPickupShortCode(data.code);
+  return code && Array.from(code).length <= 8 ? code : data.kind === "handoff" ? "待寄件" : "待取件";
+}
+
 export function parcelPickupSubtitle(card: ParcelActivityContent, location = card.location, showingAddress = false) {
   if (card.kind === "handoff") return { text: location, symbol: "calendar.circle.fill" };
-  if (!location) return { text: card.kind === "meal" ? "请及时取餐" : "请及时取件", symbol: "doc.text.fill" };
+  if (!location) {
+    return {
+      text: card.kind === "meal" ? "请及时取餐" : "请及时取件",
+      symbol: card.kind === "meal" ? "fork.knife" : "doc.text.fill",
+    };
+  }
   return { text: location, symbol: showingAddress || location === card.address ? "mappin.circle.fill" : "house.fill" };
 }
 
@@ -198,11 +248,12 @@ export function activePickupCards(
 export function parcelActivityContent(shipment: Shipment): ParcelActivityContent | null {
   const pickup = shipment.pickup;
   const code = cleanString(pickup?.code);
+  const semantic = shipmentPresentationStatus(shipment).semantic;
   if (!pickup || (pickup.platform && !Object.prototype.hasOwnProperty.call(PLATFORM_ACCOUNT_NAMES, pickup.platform)) ||
     !code || /[\u0000-\u001f\u007f]/.test(code) ||
     !Number.isSafeInteger(pickup.capturedAtMs) || pickup.capturedAtMs <= 0 ||
-    unprojectedAccountOrder(shipment) || shipment.forcedCompletedAtMs || pickup.completedAtMs ||
-    shipmentPresentationStatus(shipment).semantic !== "WAITING_PICKUP") {
+    unprojectedAccountOrder(shipment) || shipment.identity.sender || shipment.forcedCompletedAtMs || pickup.completedAtMs ||
+    (semantic !== "WAITING_PICKUP" && semantic !== "DELIVERY")) {
     return null;
   }
   const waybill = normalizeWaybill(cleanString(pickup.waybill));

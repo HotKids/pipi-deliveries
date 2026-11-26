@@ -1,10 +1,13 @@
-import type { ParcelHandoffRecord, PddParcelImport } from "../models";
+import type { ParcelHandoffRecord, PddParcelImport, TimelinePackage, TrackNode } from "../models";
 import { platformPickupCode } from "./fengchao-account";
 import { trustedPlatformPage, type ExpressPlatform } from "./platform-accounts";
 import { sha256Hex } from "./scripting-data";
-import { normalizeWaybill, parseListEventTime } from "./status";
+import { isNonEventDetail, normalizeWaybill, packageSemantic, parseListEventTime, parseProviderTime, usableTimedTracks } from "./status";
+import { TIMELINE_SLOT } from "./timeline-slot";
 import { cainiaoProductImageURL } from "./product-image-url";
 import { asPlainObject, cleanScalarText, firstCleanScalarText, isPlainObject, type JsonObject } from "./value-guards";
+
+export type PddTrace = Readonly<{ time: string; info: string }>;
 
 export type PlatformParcel = Readonly<{
   source: ExpressPlatform;
@@ -22,7 +25,56 @@ export type PlatformParcel = Readonly<{
   taken?: boolean;
   takenAtMs?: number;
   productImageURL?: string;
+  traces?: readonly PddTrace[];
 }>;
+
+export function pddTimelineFromTraces(
+  waybill: string,
+  courierCode: string,
+  companyName: string,
+  traces: readonly PddTrace[] | undefined,
+  now: number,
+  rawCourierCode?: string,
+): TimelinePackage | null {
+  if (!traces?.length || !waybill) return null;
+  const seen = new Set<string>();
+  const tracks: TrackNode[] = [];
+  for (const item of traces.slice(0, 100)) {
+    const rawTime = cleanScalarText(item?.time).replace(/[./]/g, "-").replace("T", " ");
+    const timeText = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(rawTime) ? `${rawTime}:00` : rawTime;
+    const timeMs = parseProviderTime(timeText);
+    const detail = cleanScalarText(item?.info).replace(/\s+/g, " ").slice(0, 2_000);
+    const key = `${timeText}\u0000${detail}`;
+    if (timeMs == null || !detail || isNonEventDetail(detail) || seen.has(key)) continue;
+    seen.add(key);
+    tracks.push({
+      timeText,
+      timeMs,
+      detail,
+      statusCode: "",
+      raw: { _pipiStatusSource: "pdd_h5" },
+    });
+  }
+  tracks.sort((left, right) => (right.timeMs || 0) - (left.timeMs || 0));
+  const timed = usableTimedTracks(tracks);
+  if (!timed.length) return null;
+  const status = packageSemantic("", tracks);
+  return {
+    provider: TIMELINE_SLOT.PDD_H5,
+    structuredStatus: false,
+    complete: timed.length >= 2,
+    waybill,
+    ...(rawCourierCode ? { rawCourierCode } : {}),
+    courierCode,
+    companyName,
+    semantic: status.semantic,
+    statusEventAtMs: status.eventAtMs,
+    latestTimeText: timed[0].timeText,
+    latestDetail: timed[0].detail,
+    tracks,
+    successAtMs: now,
+  };
+}
 
 export function pddParcelDetailPath(shippingId: string, waybill: string): string {
   if (!/^[1-9][0-9]{0,19}$/.test(shippingId) || !/^[A-Z0-9]{6,64}$/.test(waybill)) return "";
@@ -192,14 +244,30 @@ function senderWaiting(status: string): boolean {
   return SENDER_ACTIVE.test(status) || /待取件|待揽收|待上门/.test(status);
 }
 
+export function nearestCalendarYear(month: number, date: number, referenceMs: number): number {
+  const observed = chinaDay(referenceMs);
+  let year = new Date(observed).getUTCFullYear();
+  let candidate = Date.UTC(year, month - 1, date);
+  if (candidate < observed - 180 * DAY) candidate = Date.UTC(++year, month - 1, date);
+  else if (candidate > observed + 180 * DAY) candidate = Date.UTC(--year, month - 1, date);
+  return year;
+}
+
 export function parseHandoffWindow(text: string, now: number, exact = false): [number, number] | undefined {
   const range = /(?:(\d{4})[-/])?(\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})\s*[-–~至]\s*(?:(\d{1,2})[-/](\d{1,2})\s+)?(\d{1,2}):(\d{2})/.exec(text);
   if (!range || exact && range[0] !== text) return undefined;
-  const year = range[1] || String(new Date(chinaDay(now)).getUTCFullYear());
-  const build = (month: string, date: string, hour: string, minute: string) =>
-    parseListEventTime([year, month.padStart(2, "0"), date.padStart(2, "0")].join("-") + " " + hour.padStart(2, "0") + ":" + minute);
-  const start = build(range[2], range[3], range[4], range[5]);
-  const end = build(range[6] || range[2], range[7] || range[3], range[8], range[9]);
+  const startMonth = Number(range[2]);
+  const startDate = Number(range[3]);
+  const startYear = range[1] ? Number(range[1]) : nearestCalendarYear(startMonth, startDate, now);
+  const build = (year: number, month: string, date: string, hour: string, minute: string) =>
+    parseListEventTime([String(year), month.padStart(2, "0"), date.padStart(2, "0")].join("-") + " " + hour.padStart(2, "0") + ":" + minute);
+  const start = build(startYear, range[2], range[3], range[4], range[5]);
+  const endMonthStr = range[6] || range[2];
+  const endDateStr = range[7] || range[3];
+  let end = build(startYear, endMonthStr, endDateStr, range[8], range[9]);
+  if (start && end && end < start && range[6]) {
+    end = build(startYear + 1, endMonthStr, endDateStr, range[8], range[9]);
+  }
   return start && end && end >= start ? [start, end] : undefined;
 }
 

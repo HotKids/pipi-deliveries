@@ -19,6 +19,11 @@ export type ShipmentMutationResult =
 
 type ShipmentMutationAction = "complete" | "delete";
 
+const SHIPMENT_MUTATION_EVENTS = {
+  complete: { succeeded: "shipment.complete.succeeded", failed: "shipment.complete.failed" },
+  delete: { succeeded: "shipment.delete.succeeded", failed: "shipment.delete.failed" },
+} as const;
+
 /**
  * 2026-11-12 诊断日志补齐（Pipi「我已取件」结果行的 iOS 对应）：右滑签收与删除的结果以前只进 toast。
  * Only the action, outcome, duration and error classification are recorded; never the row id or waybill.
@@ -30,7 +35,8 @@ function logShipmentMutation(
   error?: unknown,
 ): void {
   try {
-    writeDiagnostic(`shipment.${action}.${outcome}`, {
+    // D10/D244: fixed event names from a closed table, never a name built at run time.
+    writeDiagnostic(SHIPMENT_MUTATION_EVENTS[action][outcome], {
       stage: "ui_handler",
       result: outcome,
       durationMs: Math.max(0, Date.now() - startedAtMs),

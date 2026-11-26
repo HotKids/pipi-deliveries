@@ -1,3 +1,4 @@
+import { SCRIPT_BUILD_TRACK } from "../build-track";
 import { gatewayCredentialForLocalCache } from "../credentials";
 import { savedKeyActivatedElsewhere } from "../scripting-activation";
 import { sha256Hex } from "../scripting-data";
@@ -9,7 +10,13 @@ export type MealRuleOffer = Readonly<{ sha256: string; pack: string }>;
 export type MealRules = Readonly<{ raw: unknown; parsed: PickupRuntime }>;
 let compiled: { offer: MealRuleOffer; rules: MealRules } | undefined;
 
+/**
+ * The Access Key scope meal codes and their rules belong to. Only the formal Worker serves the meal rule pack and
+ * the meal record routes, so a beta build has none, like activeWatchScope (N3, 2026-11-21): it neither asks for the
+ * rules on every meal pull nor pulls meal records.
+ */
 export function mealCredentialScope(): string {
+  if (SCRIPT_BUILD_TRACK !== "formal") return "";
   const credential = gatewayCredentialForLocalCache();
   return credential && !credential.rejected && !savedKeyActivatedElsewhere() ? credential.scope : "";
 }

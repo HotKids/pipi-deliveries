@@ -16,9 +16,17 @@ export function formatListTime(value: string): string {
     : raw;
 }
 
+// A time that names its zone is an instant; Pipi reads the same forms (ExpressTimeCodec.timelineTime).
+const ZONED_TIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d{3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * The provider wall clock of a track time (2026-11-20 review, part 3 rule 1). A zoned time first reads in
+ * Beijing time, as the list does; an ISO local time drops its seconds and fraction.
+ */
 function matchProviderTime(value: string): RegExpMatchArray | null {
-  return String(value || "").trim().match(
-    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::\d{2})?$/,
+  const raw = String(value || "").trim();
+  return (ZONED_TIME.test(raw) ? formatListTime(raw) : raw).match(
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/,
   );
 }
 

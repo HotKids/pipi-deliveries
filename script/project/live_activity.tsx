@@ -10,19 +10,18 @@ import {
 } from "scripting";
 import { CompleteParcelActivityIntent } from "./app_intents";
 import { PIPI_CARD, ParcelLiveActivityCard, parcelActivityImage } from "./components/ParcelLiveActivityCard";
-import { iconTileShape } from "./components/icon-tile";
 import { PARCEL_ACTIVITY_NAME, type ParcelActivityState } from "./services/parcel-activity-action";
-import { parcelPickupShortCode } from "./services/parcel-pickup";
-import { parcelCardArtwork, pickupCardPalette } from "./services/parcel-card-appearance";
+import { parcelActivityCompactText } from "./services/parcel-pickup";
+import { legibleCodeOnDark, parcelCardArtwork, pickupCardPalette } from "./services/parcel-card-appearance";
 
 export const PARCEL_ACTIVITY_ART = "pipi-deliveries/parcel-activity-art-v1";
 
-// The rounded island needs half a capsule of clearance at its lower corner.
+// The rounded island needs half a capsule of clearance at its lower corner and 6 pt top breathing room.
 const expandedActionInset = Math.ceil(PIPI_CARD.capsuleHeight / 2);
 const expandedIslandAppearance = {
   dynamicIslandContentMargins: {
     expanded: {
-      top: 0,
+      top: 6,
       leading: PIPI_CARD.edge,
       trailing: expandedActionInset,
       bottom: expandedActionInset,
@@ -37,7 +36,7 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
     const url = data.linkId ? Script.createRunSingleURLScheme(Script.name, {
       parcelActivity: data.linkId,
     }) : undefined;
-    const compactCode = parcelPickupShortCode(data.code);
+    const compactCode = parcelActivityCompactText(data);
     const handoff = data.kind === "handoff";
     const meal = data.kind === "meal";
     const { mark, sticker } = parcelCardArtwork(data);
@@ -48,7 +47,7 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
     const width = Device.isiPhone ? Math.min(Device.screen.width, Device.screen.height) - 2 * 14 : undefined;
     const badgeSize = 20;
     const glyph = (
-      <ZStack frame={{ width: badgeSize, height: badgeSize }} clipShape={meal ? "circle" : iconTileShape(badgeSize)}
+      <ZStack frame={{ width: badgeSize, height: badgeSize }} clipShape="circle"
         background={brand ? undefined : "rgba(255,255,255,0.16)"}>
         {brand ? <Image image={brand} renderingMode="original" resizable scaleToFill /> : (
           <Image systemName={meal ? "fork.knife" : handoff ? "tray.and.arrow.up.fill" : "shippingbox.fill"} font={12} foregroundStyle="white" />
@@ -64,18 +63,20 @@ export const PipiParcelActivity = LiveActivity.register<ParcelActivityState>(
       data, imageRoot, logoPath, url, preview: !data.linkId,
       completion,
     };
+    const compactCodeColor = legibleCodeOnDark(palette.code, 0x000000);
     return (
       <LiveActivityUI
         {...expandedIslandAppearance}
+        widgetURL={url}
         content={<ParcelLiveActivityCard {...cardProps} width={width} lockScreen lockScreenStyle={data.lockScreenStyle} />}
-        compactLeading={<HStack widgetURL={url}>{glyph}</HStack>}
+        compactLeading={<HStack>{glyph}</HStack>}
         compactTrailing={(
-          <Text font={13} fontWeight="semibold" fontWidth="condensed" foregroundStyle={palette.code}
-            lineLimit={1} minScaleFactor={0.75} widgetURL={url}>
-            {compactCode && Array.from(compactCode).length <= 8 ? compactCode : meal ? "待取餐" : handoff ? "待寄件" : "待取件"}
+          <Text font={13} fontWeight="semibold" fontWidth="condensed" foregroundStyle={compactCodeColor}
+            lineLimit={1} minScaleFactor={0.75}>
+            {compactCode}
           </Text>
         )}
-        minimal={<HStack widgetURL={url}>{glyph}</HStack>}
+        minimal={<HStack>{glyph}</HStack>}
       >
         <LiveActivityUIExpandedCenter>
           <ParcelLiveActivityCard {...cardProps} width={width} expanded />

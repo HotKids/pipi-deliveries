@@ -114,7 +114,6 @@ function validatedTemperaturePair(current: ResolvedArtwork, hot: ResolvedArtwork
 }
 
 export function alternateMealArtwork(style: PickupVisualStyle | undefined): string | undefined {
-  if (style?.drinkTemperature) return undefined
   const pair = style?.temperaturePair
   if (!pair?.hot || !pair.cold || pair.hot === pair.cold) return undefined
   if (style?.artworkAsset === pair.hot) return pair.cold

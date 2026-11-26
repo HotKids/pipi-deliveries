@@ -190,8 +190,13 @@ assert.match(
 );
 const headerSection = detailPage.match(/<Section>\s*([\s\S]*?)\s*<\/Section>/)?.[1] ?? "";
 assert.match(detailPage, /readCloudParcelMetadata\(cloudWaybill, controller\.signal\)/);
-assert.match(detailPage, /useEffect\(\(\) => \{\s*if \(props\.readOnly\) return;[\s\S]*?void finishDetailOpening\(controller\.signal\)/);
-assert.match(detailPage, /refreshable=\{props\.readOnly \? undefined : async \(\) => \{ await Promise\.all\(\[refresh\(true\), refreshCloudMetadata\(\)\]\); \}\}/);
+// Owner 2026-11-19 parity and the 2026-11-20 review (part 3 rule 4): every detail, international included,
+// opens with the shared cloud metadata read and keeps the shared pull-to-refresh, whose watch: branch reads
+// the Watch. A synced international parcel skips only the domestic shopping-platform fields.
+assert.match(detailPage, /useEffect\(\(\) => \{\s*const controller = new AbortController\(\);\s*void finishDetailOpening\(controller\.signal\)/);
+assert.match(detailPage, /const fields = props\.persistedShipment && !syncedInternational && needsParcelDetailFields\(target, true\)/);
+assert.doesNotMatch(detailPage, /const cloudWaybill = !syncedInternational/);
+assert.match(detailPage, /refreshable=\{async \(\) => \{ await Promise\.all\(\[refresh\(true\), refreshCloudMetadata\(\)\]\); \}\}/);
 assert.match(headerSection, /官方电话：/);
 assert.doesNotMatch(headerSection, /<Divider|platformFields\.(estimate|title)/);
 assert.match(detailPage, /const showParcelInfo = Boolean\(platformFields\.estimate \|\| platformFields\.title \|\| note\)/);

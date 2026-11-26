@@ -1,5 +1,5 @@
 import {
-  GeometryReader, Image, Rectangle, Script, TimelineCanvas, VStack, ZStack,
+  Button, GeometryReader, Image, Rectangle, Script, TimelineCanvas, VStack, ZStack,
   useEffect, useRef, useState,
 } from "scripting";
 import { PARCEL_ACTIVITY_PREVIEW, type ParcelActivityContent } from "../services/parcel-pickup";
@@ -37,19 +37,42 @@ function mealArtworkPlayback(art: { path: string; name: string }): ArtworkPlayba
   } : undefined;
 }
 
-let recentAtlas: { path: string; image?: UIImage | null; request: Promise<UIImage | null> } | undefined;
+// The last four animation atlases stay decoded (G-LOW-13), most recently used last, so moving between a few cards
+// does not read and decode an atlas again. A load that failed stays cached like before, until it is evicted.
+const ATLAS_CACHE_SLOTS = 4;
+type AtlasEntry = { image?: UIImage | null; request: Promise<UIImage | null> };
+const recentAtlases = new Map<string, AtlasEntry>();
+
+function touchAtlas(path: string): AtlasEntry | undefined {
+  const entry = recentAtlases.get(path);
+  if (entry) {
+    recentAtlases.delete(path);
+    recentAtlases.set(path, entry);
+  }
+  return entry;
+}
+
+/** The decoded atlas already loaded for `path` (null when its load failed), or undefined. */
+function cachedArtworkAtlas(path: string): UIImage | null | undefined {
+  return touchAtlas(path)?.image;
+}
 
 function loadArtworkAtlas(path: string): Promise<UIImage | null> {
-  if (recentAtlas?.path === path) return recentAtlas.request;
-  const entry: NonNullable<typeof recentAtlas> = {
-    path,
+  const cached = touchAtlas(path);
+  if (cached) return cached.request;
+  const entry: AtlasEntry = {
     request: FileManager.readAsData(`${Script.directory}/assets/${path}`)
       .then((data) => UIImage.fromData(data)).catch(() => null).then((image) => {
         entry.image = image;
         return image;
       }),
   };
-  recentAtlas = entry;
+  recentAtlases.set(path, entry);
+  while (recentAtlases.size > ATLAS_CACHE_SLOTS) {
+    const eldest = recentAtlases.keys().next().value;
+    if (eldest === undefined) break;
+    recentAtlases.delete(eldest);
+  }
   return entry.request;
 }
 
@@ -134,7 +157,7 @@ function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playba
   autoPlay: boolean; playOnMount: boolean; replayRequest: number;
 }) {
   const [appearance, setAppearance] = useState(0);
-  const [atlas, setAtlas] = useState(playback && recentAtlas?.path === playback.path ? recentAtlas.image : undefined);
+  const [atlas, setAtlas] = useState(playback ? cachedArtworkAtlas(playback.path) : undefined);
   const [playbackReady, setPlaybackReady] = useState(false);
   const hasAppeared = useRef(false);
   const visible = useRef(false);
@@ -193,8 +216,9 @@ function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playba
   );
 }
 
-function ParcelCardListRow({ spaceAfter, width: containerWidth, art, animate, ...cardProps }: Omit<ParcelLiveActivityCardProps, "artwork"> & {
+function ParcelCardListRow({ spaceAfter, width: containerWidth, art, animate, deleteAction, ...cardProps }: Omit<ParcelLiveActivityCardProps, "artwork"> & {
   spaceAfter?: boolean; art?: PickupArtwork; animate: boolean;
+  deleteAction?: { title: string; onDelete: () => void };
 }) {
   const [width, setWidth] = useState<number>(PIPI_CARD.width);
   const [replayRequest, setReplayRequest] = useState(0);
@@ -204,6 +228,11 @@ function ParcelCardListRow({ spaceAfter, width: containerWidth, art, animate, ..
     <VStack spacing={0} frame={{ maxWidth: "infinity" }} listRowInsets={0}
       padding={spaceAfter ? { bottom: PICKUP_CARD_SPACING } : undefined}
       listRowBackground={<Rectangle fill="clear" />} listRowSeparator="hidden"
+      contextMenu={deleteAction ? {
+        menuItems: (
+          <Button role="destructive" title={deleteAction.title} systemImage="trash" action={deleteAction.onDelete} />
+        ),
+      } : undefined}
       background={containerWidth === undefined ? (
         <GeometryReader>
           {({ size }) => (
@@ -252,6 +281,7 @@ export function PickupTabCard(props: {
   showingAddress?: boolean;
   onLocationTap?: () => void;
   onArtworkTap?: () => void;
+  deleteAction?: { title: string; onDelete: () => void };
 }) {
   const { data, animate, spaceAfter, ...cardProps } = props;
   const isMeal = data.kind === "meal";

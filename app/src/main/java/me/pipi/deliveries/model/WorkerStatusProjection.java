@@ -96,6 +96,32 @@ public final class WorkerStatusProjection {
         } catch (Exception invalid) { throw new IllegalArgumentException("Invalid timeline cache", invalid); }
     }
 
+    /**
+     * The projection the Worker gives a Meizu v6 row whose coarse status is FAILED and whose structured
+     * description is a listed customs state ({@link StatusSemantic#meizuFailedDescriptionCode}), for a
+     * packet the Worker did not project (owner decision 2026-11-20). Null otherwise.
+     */
+    public static WorkerStatusProjection meizuFailedDescription(
+            JSONObject row, String coarseStatus, long eventAtMs) {
+        if (row == null) return null;
+        String code = StatusSemantic.meizuFailedDescriptionCode(
+                coarseStatus, StatusSemantic.meizuDescription(row));
+        if (code.isEmpty()) return null;
+        me.pipi.deliveries.data.ExpressStatusLabels table =
+                me.pipi.deliveries.data.CarrierRegistry.statusLabels();
+        String text = table.subtypeLabel(StatusSemantic.TRANSIT, code);
+        if (text.isEmpty()) text = table.label(StatusSemantic.TRANSIT);
+        try {
+            return read(new JSONObject().put("normalizedStatus", new JSONObject()
+                    .put("version", 1).put("scope", "SHIPMENT").put("semantic", "TRANSIT")
+                    .put("code", code).put("text", text)
+                    .put("priority", table.subtypePriority(StatusSemantic.TRANSIT, code))
+                    .put("eventAtMs", Math.max(0L, eventAtMs)).put("structured", true)));
+        } catch (Exception impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
     public static int priority(ExpressQueryResult result) {
         return result == null || result.workerStatus == null ? 0 : result.workerStatus.priority;
     }

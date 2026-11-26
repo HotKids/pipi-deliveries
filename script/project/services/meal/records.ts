@@ -33,18 +33,30 @@ export type MealEnvelope = {
   | { deleted: false; lifecycle: "active" | "history"; historyAt: number; payload: MealPayload }
 );
 
-export type MealEdit = { mutationId: string; editedAt: number; payload: MealPayload; requiresExisting?: true };
+export type MealEdit = {
+  mutationId: string;
+  editedAt: number;
+  payload: MealPayload;
+  requiresExisting?: true;
+  deleted?: true;
+};
 export type MealMutation = {
   mutationId: string;
   recordId: string;
   editedAt: number;
   baseRevision: number;
-  operation: "put" | "restore";
   type: "meal_pickup";
-  lifecycle: "active" | "history";
-  historyAt: number;
-  payload: MealPayload;
-};
+} & (
+  | {
+      operation: "put" | "restore";
+      lifecycle: "active" | "history";
+      historyAt: number;
+      payload: MealPayload;
+    }
+  | {
+      operation: "delete";
+    }
+);
 export type MealBatch = {
   schemaVersion: 1;
   generation: number;
@@ -147,10 +159,33 @@ export function putMealObservations(scope: string, entries: readonly MealObserva
 }
 
 export function currentMeal(state: MealSnapshot, id: string, now = Date.now()): MealPayload | undefined {
-  const pending = state.edits[id]?.payload;
+  const edit = state.edits[id];
+  if (edit?.deleted) return undefined;
+  const pending = edit?.payload;
   const remote = state.remote[id];
   const value = pending ?? (remote?.deleted === false && remote.lifecycle === "active" ? remote.payload : undefined);
   return value && !value.completedAt && value.expiresAt > now ? value : undefined;
+}
+
+export function deleteMeal(scope: string, id: string, now = Date.now()): boolean {
+  const mutationId = typeof UUID !== "undefined" ? UUID.string().toLowerCase() : `delete-${now}`;
+  let deleted = false;
+  updateMeals(scope, state => {
+    const payload = currentMeal(state, id, now);
+    deleted = Boolean(payload);
+    if (!payload) return state;
+    const remote = state.remote[id];
+    const edits = { ...state.edits };
+    const style = { ...state.style };
+    delete style[id];
+    if (!remote || remote.deleted) {
+      delete edits[id];
+      return { ...state, edits, style };
+    }
+    edits[id] = { mutationId, editedAt: now, payload, requiresExisting: true, deleted: true };
+    return { ...state, edits, style };
+  });
+  return deleted;
 }
 
 export function completeMeal(scope: string, id: string, now = Date.now()): boolean {

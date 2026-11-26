@@ -1,6 +1,8 @@
 import { asPlainObject, isPlainObject } from "../value-guards";
-import { postGateway } from "../gateway";
-import { beginDiagnosticOperation } from "../logger";
+import { GatewayError, postGateway } from "../gateway";
+import { beginDiagnosticOperation, changedSinceLastLogged, diagnosticErrorDetails } from "../logger";
+import { reportMealSyncSkipped } from "../carrier-authority";
+import { acquireRenewingDurableRefreshLease } from "../refresh-runtime-state";
 import { MEAL_UUID, pruneMeals, readMeals, updateMeals, type MealBatch, type MealEnvelope,
   type MealPayload, type MealSession, type MealSnapshot } from "./records";
 import { mealCredentialScope } from "./rules";
@@ -9,6 +11,8 @@ const CLOUD_ROOT = "/api/cloud-records/scripting-meals/";
 const MAX_STEPS = 12;
 const BUDGET_MS = 15000;
 const REQUEST_TIMEOUT_MS = 5000;
+const CLOUD_DENIED_BACKOFF_MS = 5 * 60_000;
+const deniedUntilByScope = new Map<string, number>();
 
 function integer(value: unknown, minimum = 0): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
@@ -111,14 +115,17 @@ function reconcileMealEdits(state: MealSnapshot, previous: MealSnapshot, complet
   for (const [id, edit] of Object.entries(edits)) {
     if (edit.mutationId === currentBatch) continue;
     const cloud = state.remote[id];
-    if (cloud ? cloud.editedAt >= edit.editedAt || cloud.deleted && cloud.reason === "retention" :
+    if (cloud ? cloud.editedAt >= edit.editedAt || cloud.deleted && (cloud.reason === "retention" || Boolean(edit.deleted)) :
       completeSnapshot && edit.requiresExisting) delete edits[id];
   }
   const style = Object.fromEntries(Object.entries(state.style).filter(([id, artwork]) => {
     const cloud = state.remote[id];
     const before = previous.remote[id];
-    const current = edits[id]?.payload ?? (cloud?.deleted === false ? cloud.payload : undefined);
-    const prior = previous.edits[id]?.payload ?? (before?.deleted === false ? before.payload : undefined);
+    const edit = edits[id];
+    if (edit?.deleted) return false;
+    const current = edit?.payload ?? (cloud?.deleted === false ? cloud.payload : undefined);
+    const prior = (!previous.edits[id]?.deleted ? previous.edits[id]?.payload : undefined) ??
+      (before?.deleted === false ? before.payload : undefined);
     return current && (!current.drinkTemperature || current.drinkTemperature === artwork.drinkTemperature) &&
       (!prior || (prior.brandId === current.brandId && (prior.productName ?? "") === (current.productName ?? "")));
   }));
@@ -131,6 +138,22 @@ export function prepareMealBatch(state: MealSnapshot, now: number, requestId: st
   if (!selected) return state;
   const [id, edit] = selected;
   const cloud = state.remote[id];
+  if (edit.deleted) {
+    if (!cloud || cloud.deleted) {
+      const edits = { ...state.edits };
+      delete edits[id];
+      return { ...state, edits };
+    }
+    const batch: MealBatch = {
+      schemaVersion: 1, generation: state.session.generation, epoch: state.session.epoch,
+      sequence: state.session.nextSequence, requestId, includeMealOrderMetadata: true,
+      mutations: [{
+        mutationId: edit.mutationId, recordId: id, baseRevision: cloud.revision,
+        type: "meal_pickup", operation: "delete", editedAt: edit.editedAt,
+      }],
+    };
+    return { ...state, batch };
+  }
   const historic = edit.payload.expiresAt <= now || Boolean(edit.payload.completedAt);
   const includeMealTemperature = state.session.mealTemperatureSupported;
   const { drinkTemperature, ...legacyPayload } = edit.payload;
@@ -157,12 +180,28 @@ export function applyMealReceipt(state: MealSnapshot, batch: MealBatch, response
       session.nextSequence !== batch.sequence + 1 || receipt.recordId !== mutation.recordId ||
       receipt.mutationId !== mutation.mutationId || !integer(receipt.revision, 1) ||
       !integer(receipt.editedAt) || typeof receipt.deleted !== "boolean") throw new Error("Invalid meal sync receipt");
-  const { recordId: id, payload, lifecycle, historyAt } = mutation;
+  const { recordId: id } = mutation;
   const remote = { ...state.remote };
   if (!remote[id] || remote[id].revision < receipt.revision) {
-    const common = { recordId: id, type: "meal_pickup" as const, revision: receipt.revision, changedAt: Date.now(),
-      editedAt: receipt.editedAt, lifecycle, historyAt };
-    remote[id] = receipt.deleted ? { ...common, deleted: true, reason: "retention" } : { ...common, deleted: false, payload };
+    if (mutation.operation === "delete" || receipt.deleted) {
+      const lifecycle = mutation.operation === "delete"
+        ? (remote[id]?.lifecycle ?? "active")
+        : mutation.lifecycle;
+      const historyAt = mutation.operation === "delete"
+        ? (remote[id]?.historyAt ?? 0)
+        : mutation.historyAt;
+      remote[id] = {
+        recordId: id, type: "meal_pickup", revision: receipt.revision, changedAt: Date.now(),
+        editedAt: receipt.editedAt, lifecycle, historyAt, deleted: true,
+        reason: mutation.operation === "delete" ? "user" : "retention",
+      };
+    } else {
+      remote[id] = {
+        recordId: id, type: "meal_pickup", revision: receipt.revision, changedAt: Date.now(),
+        editedAt: receipt.editedAt, lifecycle: mutation.lifecycle, historyAt: mutation.historyAt,
+        deleted: false, payload: mutation.payload,
+      };
+    }
   }
   const edits = { ...state.edits };
   if (edits[id]?.mutationId === mutation.mutationId) delete edits[id];
@@ -200,7 +239,7 @@ export function recoverMealConflict(state: MealSnapshot, batch: MealBatch, confl
   if (!["reset_required", "endpoint_generation_conflict", "mutation_receipt_expired",
     "mutation_replay_conflict", "mutation_sequence_conflict"].includes(String(conflict.error))) return state;
   const edits = { ...state.edits };
-  if (edits[id] && (mutation.baseRevision || conflict.mutationOutcome !== "not_committed")) {
+  if (edits[id] && mutation.baseRevision > 0) {
     edits[id] = { ...edits[id], requiresExisting: true };
   }
   return { ...state, session: undefined, cursor: null, snapshot: undefined, batch: undefined, edits };
@@ -208,80 +247,114 @@ export function recoverMealConflict(state: MealSnapshot, batch: MealBatch, confl
 
 let inFlight: { scope: string; promise: Promise<void> } | undefined;
 
-async function sync(scope: string, budgetMs: number): Promise<"succeeded" | "no_changes" | "budget_exhausted"> {
-  const deadlineAtMs = Date.now() + budgetMs;
-  async function request(operation: "session" | "pull" | "mutate", body: Record<string, unknown>,
-    onConflict?: (response: Readonly<Record<string, unknown>>) => void) {
-    if (mealCredentialScope() !== scope) throw new Error("Meal activation changed");
-    const reply = await postGateway(CLOUD_ROOT + operation, body, {
-      timeoutMs: REQUEST_TIMEOUT_MS, deadlineAtMs, onConflict,
-    });
-    if (mealCredentialScope() !== scope) throw new Error("Meal activation changed");
-    return reply;
-  }
-  updateMeals(scope, current => pruneMeals(current, Date.now()));
-  let pulled = false;
-  let processedRecords = false;
-  for (let step = 0; step < MAX_STEPS && Date.now() < deadlineAtMs; step++) {
-    let state = readMeals(scope);
-    if (!state.session) {
-      const session = sessionFrom(await request("session", { schemaVersion: 1 }));
-      updateMeals(scope, current => current.session ? current : { ...current, session });
-      pulled = false;
-      continue;
+type MealSyncOutcome = "succeeded" | "no_changes" | "budget_exhausted" | "lease_held" | "skipped";
+
+async function sync(scope: string, budgetMs: number): Promise<MealSyncOutcome> {
+  const now = Date.now();
+  if ((deniedUntilByScope.get(scope) ?? 0) > now) return "skipped";
+  const lease = acquireRenewingDurableRefreshLease(
+    `cloud:meal:${scope}`,
+    Math.max(30_000, budgetMs + 5_000),
+    now,
+    { flowId: "meal_cloud_sync", trigger: "foreground" },
+  );
+  if (!lease) return "lease_held";
+  try {
+    const deadlineAtMs = Date.now() + budgetMs;
+    async function request(operation: "session" | "pull" | "mutate", body: Record<string, unknown>,
+      onConflict?: (response: Readonly<Record<string, unknown>>) => void) {
+      if (mealCredentialScope() !== scope || !lease?.isCurrent()) throw new Error("Meal activation changed");
+      const reply = await postGateway(CLOUD_ROOT + operation, body, {
+        timeoutMs: REQUEST_TIMEOUT_MS, deadlineAtMs, onConflict,
+      });
+      if (mealCredentialScope() !== scope || !lease?.isCurrent()) throw new Error("Meal activation changed");
+      return reply;
     }
-    if (state.batch) {
-      const batch = state.batch;
-      let conflict: Record<string, unknown> | undefined;
-      try {
-        const response = await request("mutate", batch, value => { conflict = value; });
-        updateMeals(scope, current => applyMealReceipt(current, batch, response));
-        processedRecords = true;
+    updateMeals(scope, current => pruneMeals(current, Date.now()));
+    let pulled = false;
+    let processedRecords = false;
+    for (let step = 0; step < MAX_STEPS && Date.now() < deadlineAtMs; step++) {
+      let state = readMeals(scope);
+      if (!state.session) {
+        const session = sessionFrom(await request("session", { schemaVersion: 1 }));
+        updateMeals(scope, current => current.session ? current : { ...current, session });
         pulled = false;
-      } catch (error) {
-        if (!conflict || mealCredentialScope() !== scope) throw error;
-        const recovered = updateMeals(scope, current => recoverMealConflict(current, batch, conflict!));
-        if (recovered.batch?.requestId === batch.requestId) throw error;
-        processedRecords = true;
-        pulled = Boolean(recovered.session);
-      }
-      continue;
-    }
-    if (!pulled || state.snapshot) {
-      let response: Record<string, unknown>;
-      let generationConflict = false;
-      try {
-        response = await request("pull", mealPullRequest(state), (value) => {
-          generationConflict = value.error === "endpoint_generation_conflict";
-        });
-      } catch (error) {
-        if (!generationConflict || mealCredentialScope() !== scope) throw error;
-        updateMeals(scope, current => current.batch || current.session?.generation !== state.session?.generation
-          ? current : { ...current, session: undefined, cursor: null, snapshot: undefined });
         continue;
       }
-      updateMeals(scope, current => applyMealPage(current, state, response));
-      processedRecords ||= response.mode === "snapshot" || (Array.isArray(response.records) && response.records.length > 0);
-      const current = readMeals(scope);
-      pulled = response.hasMore === false && response.mode !== "snapshot" &&
-        (!current.session?.mealTemperatureSupported || !!current.mealTemperatureProjected);
-      continue;
+      if (state.batch) {
+        const batch = state.batch;
+        let conflict: Record<string, unknown> | undefined;
+        try {
+          const response = await request("mutate", batch, value => { conflict = value; });
+          updateMeals(scope, current => applyMealReceipt(current, batch, response));
+          processedRecords = true;
+          pulled = false;
+        } catch (error) {
+          if (!conflict || mealCredentialScope() !== scope) throw error;
+          const recovered = updateMeals(scope, current => recoverMealConflict(current, batch, conflict!));
+          if (recovered.batch?.requestId === batch.requestId) throw error;
+          processedRecords = true;
+          pulled = Boolean(recovered.session);
+        }
+        continue;
+      }
+      if (!pulled || state.snapshot) {
+        let response: Record<string, unknown>;
+        let generationConflict = false;
+        try {
+          response = await request("pull", mealPullRequest(state), (value) => {
+            generationConflict = value.error === "endpoint_generation_conflict";
+          });
+        } catch (error) {
+          if (!generationConflict || mealCredentialScope() !== scope) throw error;
+          updateMeals(scope, current => current.batch || current.session?.generation !== state.session?.generation
+            ? current : { ...current, session: undefined, cursor: null, snapshot: undefined });
+          continue;
+        }
+        updateMeals(scope, current => applyMealPage(current, state, response));
+        processedRecords ||= response.mode === "snapshot" || (Array.isArray(response.records) && response.records.length > 0);
+        const current = readMeals(scope);
+        pulled = response.hasMore === false && response.mode !== "snapshot" &&
+          (!current.session?.mealTemperatureSupported || !!current.mealTemperatureProjected);
+        continue;
+      }
+      state = updateMeals(scope, current => prepareMealBatch(pruneMeals(current, Date.now()), Date.now(), UUID.string().toLowerCase()));
+      if (!state.batch) return processedRecords ? "succeeded" : "no_changes";
     }
-    state = updateMeals(scope, current => prepareMealBatch(pruneMeals(current, Date.now()), Date.now(), UUID.string().toLowerCase()));
-    if (!state.batch) return processedRecords ? "succeeded" : "no_changes";
+    return "budget_exhausted";
+  } catch (error) {
+    if (error instanceof GatewayError && error.status === 403 &&
+        (error.gatewayCode === "cloud_metadata_not_granted" || error.gatewayCode === "cloud_sync_disabled")) {
+      deniedUntilByScope.set(scope, Date.now() + CLOUD_DENIED_BACKOFF_MS);
+      return "skipped";
+    }
+    throw error;
+  } finally {
+    lease.release();
   }
-  return "budget_exhausted";
 }
 
 export function synchronizeMeals(budgetMs = BUDGET_MS): Promise<void> {
   const scope = mealCredentialScope();
-  if (!scope) return Promise.resolve();
+  if (!scope) {
+    // D111: a Shortcut or live-activity pull without a usable Access Key records the same skip as the app's pull.
+    reportMealSyncSkipped();
+    return Promise.resolve();
+  }
   if (inFlight?.scope === scope) return inFlight.promise;
-  const finish = beginDiagnosticOperation("meal.sync", { stage: "cloud_record_sync" }, false);
+  // D188 (D29): the pull is one cloud.sync line of the meal_pickup domain.
+  const finish = beginDiagnosticOperation("cloud.sync", { domain: "meal_pickup", stage: "cloud_record_sync" });
   const promise = sync(scope, budgetMs).then(result => {
-    if (result !== "no_changes") finish(result);
-  }, () => {
-    finish("retained", {}, "warning");
+    // D111: a pull that found nothing new is written once per change of result, so every foreground return does not
+    // repeat it.
+    if ((result !== "no_changes" && result !== "lease_held" && result !== "skipped") ||
+        changedSinceLastLogged("meal.sync.result", result)) {
+      finish(result);
+    } else {
+      finish.discard();
+    }
+  }, (error: unknown) => {
+    finish("retained", diagnosticErrorDetails(error), "warning");
   }).finally(() => {
     if (inFlight?.promise === promise) inFlight = undefined;
   });

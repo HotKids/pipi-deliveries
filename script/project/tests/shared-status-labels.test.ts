@@ -127,7 +127,9 @@ function row(scope: "ORDER" | "SHIPMENT", semantic: StatusSemantic, projection?:
     assert.equal(JSON.stringify(cancelled), original);
   }
   assert.equal(activeStatusLabelTable().subtypes.at(-1)?.label, "Legacy cancellation subtype");
-  assert.equal(activeStatusLabelTable().orderLabels.CANCELLED, "订单已取消");
+  // The installed table keeps its served order label; the Worker table serves 已取消 since
+  // ORDER-CANCELLED-LABEL-20261124 (owner 2026-11-24, 修改 11 rule 1.1-1).
+  assert.equal(activeStatusLabelTable().orderLabels.CANCELLED, "已取消");
   resetStatusLabelTableForTesting();
 }
 

@@ -14,8 +14,10 @@ assert.deepEqual(calls, ["17717262250", "+8613800138000", "075512345678", "40012
 assert.deepEqual(trackPhoneText("无电话：138****8000，单号JD13800138000", () => assert.fail()).content,
   ["无电话：138****8000，单号JD13800138000"]);
 const page = readFileSync(new URL("../pages/DetailPage.tsx", import.meta.url), "utf8");
-assert.deepEqual(trackPhoneText(text).content, [text], "read-only Watch details retain the original trace without phone actions");
-assert.match(page, /styledText=\{trackPhoneText\(trackDisplayDetail\(detailTimeline\.provider, track\),\s*syncedInternational \? undefined : \(phone\) => \{ void dialPhone\(phone\); \}\)\}/);
+assert.deepEqual(trackPhoneText(text).content, [text], "a text without a dial action keeps the original trace");
+// 2026-11-20 review, part 3 rule 3: international parcels dial their scan numbers like any other parcel.
+assert.match(page, /styledText=\{trackPhoneText\(trackDisplayDetail\(detailTimeline\.provider, track\),\s*\(phone\) => \{ void dialPhone\(phone\); \}\)\}/);
+assert.doesNotMatch(page, /syncedInternational \? undefined : \(phone\)/);
 assert.match(page, /Safari.openURL\(`tel:\$\{phone\}`\)/);
 assert.match(page, /async function dialPhone\(phone: string\) \{[\s\S]*?Safari.openURL\(`tel:\$\{phone\}`\)/);
 assert.match(page, /物流信息来自/);

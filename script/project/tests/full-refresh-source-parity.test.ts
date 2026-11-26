@@ -167,7 +167,8 @@ for (const [entry, options] of [
     assert.deepEqual(first.query, ["CNNEW003", "CNOLD001", "CNOLD002"]);
     assert.deepEqual(first.online, ["SFSYNTH001"]);
     assert.equal(first.summary.failed, 0);
-    const accountStage = readDiagnostics().find(value => value.event === "refresh.stage.started" &&
+    // D4: the stage writes no start line; its end line carries the flow's trigger.
+    const accountStage = readDiagnostics().find(value => value.event.startsWith("refresh.stage.") &&
       value.details.requestProvider === "v5_query");
     assert.equal(accountStage?.details.trigger, entry === "Home" ? "list_pull"
       : entry === "startup/resume" ? "foreground" : "background");
@@ -302,27 +303,38 @@ test("full refresh traces preparation, account request and one notification drai
   await round([], { backgroundHostSafe: true, budgetMs: 30_000 });
   const entries = readDiagnostics().reverse();
   const events = entries.map(entry => entry.event);
-  const ordered = ["refresh.preparation.started", "refresh.preparation.completed", "account.sync.started",
-    "account.sync.parsed", "refresh.account.completed", "refresh.finalization.started",
-    "notification.replay.completed", "refresh.finalization.completed",
-    "refresh.succeeded"];
+  // D158 (plan step 5, owner 2026-11-21 「删噪声，低价值类保底降到 10（推荐）」) and D4: the account stage ends with
+  // account.sync.completed and the drain with its own line; the phases are durations on the refresh's end line.
+  const ordered = ["account.sync.completed", "notification.replay.completed", "refresh.succeeded"];
   for (let i = 0; i < ordered.length; i++) {
     assert.ok(events.includes(ordered[i]), `${ordered[i]} must be observable`);
     if (i) assert.ok(events.indexOf(ordered[i - 1]) < events.indexOf(ordered[i]));
   }
+  for (const folded of ["refresh.started", "refresh.preparation.started", "refresh.preparation.completed",
+    "account.sync.started", "account.sync.parsed", "refresh.account.completed", "refresh.finalization.started",
+    "refresh.finalization.completed"]) {
+    assert.equal(events.includes(folded), false, `${folded} is folded into an end line`);
+  }
+  const end = entries.find(entry => entry.event === "refresh.succeeded")!;
+  for (const phase of ["preparationMs", "accountMs", "finalizationMs", "durationMs"] as const) {
+    assert.equal(typeof end.details[phase], "number", `the refresh end line carries ${phase}`);
+  }
+  assert.equal(end.details.accountContinued, true);
+  assert.equal(end.details.pendingNotifications, 0);
+  assert.equal(end.details.trigger, "background");
+  assert.equal(typeof end.details.baseRevision, "number", "the refresh's start is merged into its end line");
   assert.equal(events.filter(event => event === "notification.replay.started").length, 0,
     "an empty notification drain emits no redundant start line");
   assert.equal(events.filter(event => event === "notification.replay.completed").length, 1,
     "empty outboxes still have exactly one observable drain completion");
-  for (const event of ["refresh.preparation.completed", "refresh.account.completed",
-    "notification.replay.completed", "refresh.finalization.completed"]) {
+  for (const event of ["account.sync.completed", "notification.replay.completed"]) {
     assert.equal(typeof entries.find(entry => entry.event === event)?.details.durationMs, "number");
   }
   const replay = entries.find(entry => entry.event === "notification.replay.completed")!;
   assert.equal(replay.details.pendingNotifications, 0);
   assert.equal(typeof replay.details.readDurationMs, "number");
   assert.equal(typeof replay.details.budgetMs, "number");
-  assert.equal(replay.details.flowId, entries.find(entry => entry.event === "refresh.started")?.details.flowId);
+  assert.equal(replay.details.flowId, end.details.flowId);
 });
 
 for (const accountFailed of [false, true]) {

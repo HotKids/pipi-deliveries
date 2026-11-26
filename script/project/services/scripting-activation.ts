@@ -1,7 +1,7 @@
 import { removeLegacyCredentialCopies } from "./legacy-credential-cleanup";
 import { loadGatewayCredentials } from "./credentials";
 import { sha256Hex } from "./scripting-data";
-import { writeDiagnostic } from "./logger";
+import { changedSinceLastLogged, writeDiagnostic } from "./logger";
 import { publishSharedData, sharedData, withSharedFileTransaction } from "./shared-file-transaction";
 
 /**
@@ -47,6 +47,9 @@ export function resetScriptingActivationProcessState(): void {
 function report(result: ScriptingActivationSource): void {
   if (reportedOutcomes.has(result)) return;
   reportedOutcomes.add(result);
+  // D159 (plan step 5): every widget run is a new runtime, so the resolved identity is written when its source
+  // changes, shared across runtimes, instead of once per runtime.
+  if (!changedSinceLastLogged("gateway.activation.resolved", result)) return;
   writeDiagnostic("gateway.activation.resolved", {
     stage: "activation_identity", result, persisted: true,
   }, "info");
@@ -91,6 +94,8 @@ export function scriptingInstallationDigest(): string {
   });
   return installationDigest;
 }
+
+export { scriptingInstallationRecorded } from "./scripting-installation";
 
 function keyFingerprint(token: string): string {
   return sha256Hex(`pipi-scripting-activation-notice-v1\n${token}`);

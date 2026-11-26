@@ -1,7 +1,9 @@
 import type { AccountDetailRecord, AttachedCarrierStatus, Shipment } from "../models";
 import { JING_DONG_ACCOUNT_CP_CODE, JING_DONG_ACCOUNT_NAME } from "./account-parser";
 import { SCRIPT_BINDING_SOURCE } from "./script-source";
+import { hasPddParcelSource, withAbsorbedPddParcelSource } from "./platform-parcel-merge";
 import { displayWaybill, forcedCompletedAt } from "./shipment-policy";
+import { newerWaybillReuseGeneration } from "./waybill-reuse";
 import { normalizedProjectedWaybill, normalizeWaybill } from "./status";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import { timelineNormalizedStatus } from "./worker-status";
@@ -187,6 +189,16 @@ export function withWaybillOwnership(
     if (!visible || String(visible.note || "").trim()) continue;
     byId.set(visible.identity.id, { ...visible, note: String(current.note).trim(), updatedAtMs: bumped(visible, now) });
     byId.set(current.identity.id, { ...withoutField(current, "note"), updatedAtMs: bumped(current, now) });
+  }
+  for (const shipment of rows) {
+    if (!attached.has(shipment.identity.id) || !hasPddParcelSource(shipment)) continue;
+    const visibleId = first.get(occupancyKey(shipment))?.identity.id;
+    const visible = visibleId ? byId.get(visibleId) : undefined;
+    if (!visible || newerWaybillReuseGeneration(shipment, visible) || newerWaybillReuseGeneration(visible, shipment)) continue;
+    const propagated = withAbsorbedPddParcelSource(visible, shipment, previousById.get(visible.identity.id));
+    if (!sameValue(propagated, visible)) {
+      byId.set(visible.identity.id, { ...propagated, updatedAtMs: bumped(visible, now) });
+    }
   }
   rows = rows.map((shipment) => byId.get(shipment.identity.id) || shipment);
 

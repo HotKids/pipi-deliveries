@@ -6,13 +6,14 @@ import type { AccountParcelDto } from "../account-parser";
 import { EnhancementUnbindUnavailable } from "../enhancement-unsubscribe";
 import { absorbHistoricalShipment, absorbManualShipment, accountShipmentIsSupersededRecord, accountShipmentReusesWaybill, applyAccountShipment, automaticBindingIdentityOf, automaticSourceOf, displayWaybill, isHistoricalAccountDuplicate, manualShipmentReusedBy, reusedWaybillShipment, recordAutomaticOwnerRefresh, sameCanonicalWaybill } from "../shipment-policy";
 import { addBinding, enableBindingEnhancement, bindingsForSource, loadState, privateHash, pruneRoutesForState as safelyPruneRoutes, removeBinding } from "../storage";
+import { withAbsorbedPddParcelSource } from "../platform-parcel-merge";
 import { normalizeWaybill, normalizedProjectedWaybill, sortShipments, timelineLatestEventAt, parseProviderTime } from "../status";
 import { acquireRenewingDurableRefreshLease } from "../refresh-runtime-state";
 import { requestWidgetReload } from "../widgets";
 import { deadlineAfter } from "../deadline";
 import { ACCOUNT_FOLLOWUP_RESERVE_MS, ACCOUNT_LIST_BUDGET_MS, accountChildDeadline } from "../account-sync-policy";
 import { enhancementOperation, requireEnhancementBinding } from "../enhanced-account";
-import { createDiagnosticFlowId, diagnosticErrorDetails, diagnosticState, diagnosticsEnabled, openStageCancellationEnd, writeDiagnostic, writeDiagnosticBatch, changedSinceLastLogged, type DiagnosticDetails } from "../logger";
+import { accountListFailureDetails, beginDiagnosticFlow, beginDiagnosticOperation, createDiagnosticFlowId, diagnosticErrorDetails, diagnosticState, diagnosticsEnabled, openStageCancellationEnd, writeDiagnostic, writeDiagnosticBatch, changedSinceLastLogged, type DiagnosticDetails } from "../logger";
 import { SCRIPT_BINDING_SOURCE, requireScriptSource } from "../script-source";
 import { CarrierRecognitionBudget, forgetCarrierRecognition, truncatedCarrierRecognitionLast } from "../carrier-recognition";
 import { GatewayError } from "../gateway";
@@ -116,6 +117,8 @@ export function mergeAccountParcel(
    * the absorbed automatic waybill row ids (see the end of this function).
    */
   orderMerges?: Map<string, string[]>,
+  /** The sync round's flow, for the reuse line below (D129); diagnostics only. */
+  flowId?: string,
 ): Shipment[] {
   let shipments = [...shipmentsInput];
   const resolvedParcel = accountParcelWithExistingProjection(parcel, shipments);
@@ -188,6 +191,9 @@ export function mergeAccountParcel(
       // 归属-6（用户 2026-09-25）：退出列表的那一行的备注，在接管它的行还没有备注时带过去，从不覆盖已有的备注。
       const note = String(duplicate.note || "").trim();
       if (note && !String(merged.note || "").trim()) merged = { ...merged, note };
+      // 已确认 PDD > 自动来源 > 普通手动来源（用户 2026-11-20「pdd 图标这条把优先级提到最高」）：同一票手动行已确认的
+      // 拼多多来源、商品名与商品图跟到接管它的行。号码上有京东订单投影时（京东购物件）不带。
+      if (!jingDongOrderOnNumber) merged = withAbsorbedPddParcelSource(merged, duplicate, current);
     } else {
       merged = absorbHistoricalShipment(merged, duplicate, now);
       merged = deferPersistedRoute(merged, duplicate, now, routeMutations);
@@ -199,6 +205,7 @@ export function mergeAccountParcel(
   if (reusedWaybill) {
     // Pipi 同一事件：不带运单号、行 id 或手机号。
     writeDiagnostic("account.owner.superseded", {
+      flowId,
       takeoverReason: "waybill_reuse",
       fromProvider: !current || current.identity.manuallyAdded ? "manual" : source === "interface6" ? "v6" : "v5",
       toProvider: source === "interface6" ? "v6" : "v5",
@@ -208,7 +215,7 @@ export function mergeAccountParcel(
       forgetCarrierRecognition(displayWaybill(merged));
     } catch (error) {
       writeDiagnostic("account.owner.superseded", {
-        takeoverReason: "waybill_reuse", result: "recognition_reset_failed", ...diagnosticErrorDetails(error),
+        flowId, takeoverReason: "waybill_reuse", result: "recognition_reset_failed", ...diagnosticErrorDetails(error),
       }, "warning");
     }
   }
@@ -292,7 +299,7 @@ export async function synchronizeAccountList(
   );
   let fetched: Awaited<ReturnType<typeof fetchAccountParcels>>;
   try {
-    writeDiagnostic("account.sync.started", {
+    beginDiagnosticFlow("account.sync.started", {
       flowId, source, stage: "account_list",
       budgetMs: stageBudgetMs(listDeadlineAtMs, startedAt),
     });
@@ -300,10 +307,13 @@ export async function synchronizeAccountList(
     // (errorCategory "cancelled") where the cancellation reaches it; the catch below then lets the
     // cancellation escape before any stage-failure handling, as before.
     // Written before the flow's own end even when the coordinator reports that end first (openStageCancellationEnd).
+    // D224 (D3): a cancellation by the parent refresh is an expected end, recorded as INFO.
     const listCancelled = openStageCancellationEnd(flowId, signal, () => writeDiagnostic("account.sync.failed", {
       flowId, source, stage: "account_list", durationMs: Date.now() - startedAt,
       budgetMs: stageBudgetMs(listDeadlineAtMs, startedAt), result: "failed", errorCategory: "cancelled",
-    }, "error"));
+      // D175 (D20): the same fixed code Pipi's account flow writes for a cancelled list stage.
+      failureCode: "cancelled",
+    }, "info"));
     const endCancelledList = () => {
       if (signal?.aborted) listCancelled.end();
       else listCancelled.close();
@@ -348,9 +358,11 @@ export async function synchronizeAccountList(
         durationMs: Date.now() - startedAt,
         budgetMs: stageBudgetMs(listDeadlineAtMs, startedAt),
         result: canContinue ? "cached_fallback" : "failed",
-        ...diagnosticErrorDetails(error),
+        // D175 (D20): the condition as Pipi's account flow names it, with the Worker's own code as workerError.
+        ...accountListFailureDetails(error),
       },
-      "error",
+      // D224 (D3): only a key the user must re-enter is an ERROR; a cached fallback or a failed round is retried.
+      requiresCredentialRecovery ? "error" : "warning",
     );
     if (requiresCredentialRecovery) {
       throw error;
@@ -370,10 +382,13 @@ export async function synchronizeAccountList(
     shipments = shipments.map(shipment => applyEnhancementMetadata(shipment, parcel, now));
   }
   succeeded++;
-  writeDiagnostic("account.sync.parsed", {
+  // D175 (D20): the list stage ends with account.sync.completed, as on Pipi; its start (budget) is merged into it (D4),
+  // and the former separate parsed line is this line.
+  writeDiagnostic("account.sync.completed", {
     flowId,
     source,
     stage: "account_list",
+    result: "succeeded",
     durationMs: Date.now() - startedAt,
     budgetMs: stageBudgetMs(listDeadlineAtMs, startedAt),
     rawRecords: fetched.rawRecords,
@@ -402,6 +417,7 @@ export async function synchronizeAccountList(
       now,
       routeMutations,
       orderMerges,
+      flowId,
     );
   }
   // T23 (user 2026-09-26): a projected order already stored without a matched carrier is recognised again with
@@ -457,13 +473,22 @@ export async function bindPhone(
   try {
     const flowId = diagnosticFlowId || createDiagnosticFlowId("bind");
     const startedAt = Date.now();
-    writeDiagnostic("binding.verify.started", { flowId, source });
+    beginDiagnosticFlow("binding.verify.started", { flowId, source });
     if (enhanced) {
-      const binding = requireEnhancementBinding(loadState().bindings, phone);
-      const identityFingerprint = await enhancementOperation("bind", phone, { code, deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS) });
-      if (!bindingLease.isCurrent()) throw new Error("手机号验证已超时，请稍后重试");
-      const next = enableBindingEnhancement(phone, binding.boundAtMs, Date.now(), identityFingerprint);
-      return next;
+      // D118: the Samsung enhanced verification ends the flow it started, like the base binding below.
+      try {
+        const binding = requireEnhancementBinding(loadState().bindings, phone);
+        const identityFingerprint = await enhancementOperation("bind", phone, { code, deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS) });
+        if (!bindingLease.isCurrent()) throw new Error("手机号验证已超时，请稍后重试");
+        const next = enableBindingEnhancement(phone, binding.boundAtMs, Date.now(), identityFingerprint);
+        writeDiagnostic("binding.verify.succeeded", { flowId, source, enhancedMode: true, durationMs: Date.now() - startedAt });
+        return next;
+      } catch (error) {
+        writeDiagnostic("binding.verify.failed", {
+          flowId, source, enhancedMode: true, durationMs: Date.now() - startedAt, ...diagnosticErrorDetails(error),
+        }, "warning");
+        throw error;
+      }
     }
     try {
       await verifyAccountBinding(
@@ -481,7 +506,8 @@ export async function bindPhone(
           durationMs: Date.now() - startedAt,
           ...diagnosticErrorDetails(error),
         },
-        "error",
+        // D202 (D3): a rejected or failed verification is answered by the user retrying, so it is a WARNING.
+        "warning",
       );
       throw error;
     }
@@ -521,14 +547,20 @@ export async function unbindPhone(
   options: { localOnly?: boolean; expectedBinding?: AccountBinding } = {},
 ): Promise<AppState> {
   requireScriptSource(source);
+  // D118: one end line per unbind with its result and duration; no phone number.
+  const finish = beginDiagnosticOperation("binding.unbind", { source, localOnly: options.localOnly === true });
   const bindingLease = acquireRenewingDurableRefreshLease(`binding:${privateHash(phone)}`, MANUAL_QUERY_BUDGET_MS + 1_000);
-  if (!bindingLease) throw new Error("该手机号正在验证或解绑，请稍后重试");
+  if (!bindingLease) {
+    finish("busy");
+    throw new Error("该手机号正在验证或解绑，请稍后重试");
+  }
   try {
     const binding = loadState().bindings.find(value => value.source === source && value.phone === phone);
     const expected = options.expectedBinding;
     if (expected && (expected.source !== source || expected.phone !== phone || !binding || binding.boundAtMs !== expected.boundAtMs ||
         binding.enhancedMode !== expected.enhancedMode || binding.enhancedAtMs !== expected.enhancedAtMs ||
         binding.enhancedIdentityFingerprint !== expected.enhancedIdentityFingerprint)) {
+      finish("stale");
       throw new Error("手机号绑定已变更，请稍后重试");
     }
     let pendingUnsubscribe: { identityFingerprint: string } | undefined;
@@ -540,14 +572,23 @@ export async function unbindPhone(
         try { await enhancementOperation("unbind", phone, { deadlineAtMs: deadlineAfter(MANUAL_QUERY_BUDGET_MS),
           expectedIdentityFingerprint: binding.enhancedIdentityFingerprint }); }
         catch (error) {
+          finish("enhancement_unavailable", { enhancedMode: true, ...diagnosticErrorDetails(error) }, "warning");
           throw new EnhancementUnbindUnavailable(error instanceof Error ? error.message : "远端解绑未完成，请稍后重试");
         }
       }
     }
-    if (!bindingLease.isCurrent()) throw new Error("手机号解绑已超时，请稍后重试");
+    if (!bindingLease.isCurrent()) {
+      finish("timed_out", {}, "warning");
+      throw new Error("手机号解绑已超时，请稍后重试");
+    }
     const next = removeBinding(source, phone, Date.now(), binding, pendingUnsubscribe);
+    finish("succeeded", { enhancedMode: binding?.enhancedMode === true, ...diagnosticState(next) });
     safelyPruneRoutes(next);
     requestWidgetReload();
     return next;
+  } catch (error) {
+    // The specific ends above win; this closes any other exit (the end function writes once).
+    finish("failed", diagnosticErrorDetails(error), "warning");
+    throw error;
   } finally { bindingLease.release(); }
 }

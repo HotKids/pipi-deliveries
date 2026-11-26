@@ -3,7 +3,7 @@ import type { AppState, ShipmentNotificationEvent } from "../models";
 import { loadNotificationStatuses, notificationEnabled } from "./notification-preferences";
 import { acknowledgeShipmentNotification, deferShipmentNotification, loadStateSnapshot, type LoadedStateSnapshot } from "./storage";
 import { acquireDurableRefreshLease, durableRefreshLeaseRemainingMs } from "./refresh-runtime-state";
-import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
+import { beginDiagnosticFlow, diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { deadlineExpired, pauseWhileActive, remainingTimeoutMs, waitForRefresh } from "./deadline";
 import { isHiddenCompletedOrderPlaceholder, isConfirmedNoItemOrder, isHiddenSignedShipment, isHiddenCancelledShipment, shipmentPresentationStatus } from "./status";
 import { isAttachedShipment } from "./waybill-ownership";
@@ -11,6 +11,7 @@ import { shipmentNotificationPresentation } from "./notification-events";
 import { isShunFengSourceShipment, selectShipmentTimeline, shipmentHeadlineMatchesStatus } from "./shipment-policy";
 import { loadAlignmentRecords, parseAlignmentAttempt, rowLedgerKey } from "./row-ledger";
 import { reconcileFengchaoReminders } from "./fengchao-reminders";
+import { notificationDecisionForEvent, recordNotificationDecisions, type NotificationDecision } from "./row-diagnostics";
 
 export async function scheduleShipmentNotification(
   event: Omit<ShipmentNotificationEvent, "id">, deadlineAtMs: number,
@@ -45,7 +46,12 @@ export async function replayPendingShipmentNotifications(
   const startedAt = Date.now();
   const deadlineAtMs = Math.min(options.deadlineAtMs ?? Infinity, startedAt + 15_000);
   const budgetMs = Math.max(0, deadlineAtMs - startedAt);
-  const details = { flowId: options.flowId, stage: "notifications" };
+  // The drain's own lines follow the section 10 routine-noise exception, with its start merged into its end (D4/D207,
+  // owner 2026-11-21 「开始并入终态，卡住另记（推荐）」: 「iOS 例行降噪例外按同一规则处理」). Every line names the
+  // app_local layer (D191): iOS has local notifications only.
+  const details = { flowId: options.flowId, stage: "notifications", pushOrigin: "app_local" as const };
+  // D131: what became of each event this drain handled, written once at its end.
+  const decisions: NotificationDecision[] = [];
   if (deadlineExpired(deadlineAtMs) || !canSchedule()) {
     writeDiagnostic("notification.replay.skipped", {
       ...details, result: deadlineExpired(deadlineAtMs) ? "budget_exhausted" : "ownership_lost",
@@ -83,7 +89,7 @@ export async function replayPendingShipmentNotifications(
       (event.shipmentId === options.alignedShipmentId && event.semantic === "COMPLETED"));
     readDurationMs = Date.now() - readStartedAt;
     if (events.length > 0) {
-      writeDiagnostic("notification.replay.started", { ...details, budgetMs });
+      beginDiagnosticFlow("notification.replay.started", { ...details, budgetMs });
       writeDiagnostic("notification.replay.loaded", {
         ...details, pendingNotifications: events.length, readDurationMs,
       });
@@ -99,8 +105,10 @@ export async function replayPendingShipmentNotifications(
       if (deadlineExpired(deadlineAtMs)) { result = "budget_exhausted"; return current; }
       const shipment = latest.shipments.find((shipment) => shipment.identity.id === event.shipmentId);
       // Hidden owners still retire their queued events instead of waiting for a repair they no longer run.
+      const attachedOwner = Boolean(shipment && isAttachedShipment(latest.shipments, shipment));
+      const channelOff = !notificationEnabled(event.semantic);
       const deliverable = shipment && !isHiddenSignedShipment(shipment) && !isHiddenCancelledShipment(shipment) &&
-        !isConfirmedNoItemOrder(shipment) && !isHiddenCompletedOrderPlaceholder(shipment) && !isAttachedShipment(latest.shipments, shipment) && notificationEnabled(event.semantic);
+        !isConfirmedNoItemOrder(shipment) && !isHiddenCompletedOrderPlaceholder(shipment) && !attachedOwner && !channelOff;
       const signedSF = deliverable && event.semantic === "COMPLETED" && isShunFengSourceShipment(shipment) &&
         shipmentPresentationStatus(shipment).semantic === "COMPLETED";
       if (signedSF) {
@@ -156,6 +164,8 @@ export async function replayPendingShipmentNotifications(
       // and before this durable acknowledgement can repeat the notification.
       current = commitEvent(event.id, snapshot);
       succeeded++;
+      const decision = notificationDecisionForEvent(event, shipment, Boolean(deliverable), channelOff, attachedOwner);
+      if (decision) decisions.push(decision);
     }
   } catch (error) {
     result = "pending_retry";
@@ -167,6 +177,7 @@ export async function replayPendingShipmentNotifications(
     }, "warning");
   } finally {
     lease.release();
+    try { recordNotificationDecisions(decisions, options.flowId); } catch { /* Diagnostics are optional. */ }
     const pendingNotifications = current ? deliverableEvents(current).length : undefined;
     writeDiagnostic("notification.replay.completed", {
       ...details, result: result === "completed" && pendingNotifications ? "pending_retry" : result,

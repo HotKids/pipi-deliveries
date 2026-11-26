@@ -77,18 +77,39 @@ assert.ok(start >= 0 && end > start && copyStart >= 0 && copyEnd > copyStart);
 const makeConnectionTest = new Function(
   "cancelTest", "setValidation", "request", "prepareRecognitionConfig", "draft", "key", "setTesting", "setNotice",
   "UIImage", "Script", "requestOnlineRecognition", "CONNECTION_TEST_BUDGET_MS", "RecognitionSettingError",
+  "writeDiagnostic", "onlineRecognitionFailure", "onlineRecognitionIdentity", "cancelReason",
   `${page.slice(copyStart, copyEnd)}\nreturn (${page.slice(start, end).trim()});`,
 );
-for (const outcome of ["success", "failure", "cancel"]) {
+// A failed test names a safe category (IOS-SR-04, owner 2026-11-21); a failure without one keeps the general copy.
+const categories: Record<string, string> = {
+  authorization: "连接测试失败，密钥无效或无权限",
+  model: "连接测试失败，模型不可用",
+  rate_limited: "连接测试失败，请求过于频繁或额度不足",
+  timeout: "连接测试失败，连接超时",
+  network: "连接测试失败，网络连接失败",
+  invalid_response: "连接测试失败，返回内容无法识别",
+  prompt: "连接测试失败，提示词下载失败",
+};
+const identity = { onlineProvider: "compatible", onlineProtocol: "chat_completions", onlineModel: "vision-fixture" };
+const outcomes = ["success", "no_match", "cancel", "uncategorized", ...Object.keys(categories)];
+for (const outcome of outcomes) {
   const notices: string[] = [];
   const busy: boolean[] = [];
+  const recorded: Array<{ event: string; details: Record<string, unknown> }> = [];
+  const requests: unknown[][] = [];
   const request = { current: null as AbortController | null };
   let complete!: (value: unknown) => void;
-  const response = new Promise(resolve => { complete = resolve; });
+  let fail!: (error: unknown) => void;
+  const response = new Promise((resolve, reject) => { complete = resolve; fail = reject; });
+  const thrown = new Error("Synthetic provider message: key sk-synthetic is invalid");
   const run = makeConnectionTest(
     () => {}, () => {}, request, prepareRecognitionConfig, online, "", (value: boolean) => busy.push(value),
     (message: string) => notices.push(message), { fromFile: () => ({}) }, { directory: "/fixture" },
-    () => response, 5_000, Error,
+    (...args: unknown[]) => { requests.push(args); return response; }, 5_000, class SyntheticSettingError extends Error {},
+    (event: string, details: Record<string, unknown>) => recorded.push({ event, details }),
+    (error: unknown) => error === thrown && outcome in categories ? outcome : undefined,
+    () => identity,
+    { current: undefined },
   ) as () => Promise<void>;
   const pending = run();
   assert.deepEqual(notices, ["正在测试连接"]);
@@ -96,10 +117,18 @@ for (const outcome of ["success", "failure", "cancel"]) {
     request.current?.abort();
     request.current = null;
   }
-  complete(outcome === "failure" ? null : { family: "pickup", fields: pickup });
+  if (outcome === "uncategorized" || outcome in categories) fail(thrown);
+  else complete(outcome === "no_match" ? null : { family: "pickup", fields: pickup });
   await pending;
-  assert.deepEqual(notices, outcome === "cancel" ? ["正在测试连接"] : ["正在测试连接",
-    outcome === "success" ? "连接测试成功" : "连接测试失败，请检查在线识别配置"]);
+  const expected = outcome === "success" ? "连接测试成功" : outcome === "no_match" ? "连接测试失败，识别结果不符"
+    : outcome === "uncategorized" ? "连接测试失败，请检查在线识别配置" : categories[outcome];
+  assert.deepEqual(notices, outcome === "cancel" ? ["正在测试连接"] : ["正在测试连接", expected], outcome);
+  assert.ok(!notices.join("").includes("sk-synthetic") && !notices.join("").includes("Synthetic provider"),
+    "the provider's message never reaches the Toast");
   assert.deepEqual(busy, outcome === "cancel" ? [true] : [true, false]);
+  assert.equal(requests[0]?.[4], "connection_test", "the page marks its attempt as a connection test");
+  assert.deepEqual(recorded, outcome === "no_match" ? [{ event: "recognition.online.validation",
+    details: { trigger: "connection_test", ...identity, stage: "validation", result: "no_match" } }] : [],
+    "a reply that is not the test code is recorded with the configured provider, protocol and model");
 }
 console.log("Online recognition settings and provider wire tests passed");

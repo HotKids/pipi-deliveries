@@ -6,7 +6,7 @@ import {
   type PlatformSession, type WebPlatform,
 } from "./platform-accounts";
 import { deliveryForecast, objectList, pddParcelDetailPath, productTitle, uniqueDeliveryForecast,
-  type PlatformParcel } from "./platform-parcel-data";
+  type PddTrace, type PlatformParcel } from "./platform-parcel-data";
 import {
   JD_ORDERS_PAGE, JD_ORDER_LIST_URL, jdLoginProof, jdSyncView, openProviderController, PlatformWireError, verifiedJdCookies,
 } from "./platform-wire";
@@ -160,6 +160,17 @@ const CAPTURE_PDD_ORDERS = `(() => {
     }
     return field(row, ['shipping_id']);
   }
+  function extractTraces(row) {
+    const raw = row?.shipping?.traces ?? row?.traces ?? row?.express_traces ?? row?.track_list;
+    if (!Array.isArray(raw)) return undefined;
+    const out = [];
+    for (const item of raw.slice(0, 100)) {
+      const time = field(item, ['time', 'ftime', 'accept_time', 'status_time']);
+      const info = field(item, ['info', 'context', 'desc', 'status_desc', 'detail']);
+      if (time && info) out.push({ time: time.slice(0, 64), info: info.slice(0, 2000) });
+    }
+    return out.length ? out : undefined;
+  }
   function scan(value, order, depth) {
     if (!value || typeof value !== 'object' || depth > 32) return;
     if (!Array.isArray(value)) {
@@ -169,7 +180,8 @@ const CAPTURE_PDD_ORDERS = `(() => {
         const title = field(value.order_goods?.[0], ['goods_name','goods_title']).slice(0, 512);
         let id = '';
         try { id = shippingId(value, waybill); } catch (_) {}
-        output.push({ waybill, orderId: order, shippingId: id, title, forecast: typeof value.timeForecast === 'string' ? value.timeForecast.slice(0, 100) : '' });
+        const traces = extractTraces(value);
+        output.push({ waybill, orderId: order, shippingId: id, title, forecast: typeof value.timeForecast === 'string' ? value.timeForecast.slice(0, 100) : '', ...(traces ? { traces } : {}) });
       }
     }
     Object.values(value).forEach(child => scan(child, order, depth + 1));
@@ -503,9 +515,20 @@ export async function presentPddParcelH5(appURL: string, session: PlatformSessio
   }
 }
 
+function sanitizePddTraces(value: unknown): PddTrace[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: PddTrace[] = [];
+  for (const item of objectList(value).slice(0, 100)) {
+    const time = cleanScalarText(item.time);
+    const info = cleanScalarText(item.info);
+    if (time && info) out.push({ time, info });
+  }
+  return out.length ? out : undefined;
+}
+
 export function fetchPddParcelDetails(session: PlatformSession, shippingId: string, waybill: string,
   needsTitle: boolean, needsEstimate: boolean, needsImage: boolean,
-  eligible: () => boolean, signal?: AbortSignal): Promise<PlatformParcel | undefined> {
+  eligible: () => boolean, signal?: AbortSignal, needsTraces = false): Promise<PlatformParcel | undefined> {
   const detailPath = pddParcelDetailPath(shippingId, waybill);
   if (!detailPath) return Promise.resolve(undefined);
   const url = "https://mobile.yangkeduo.com" + detailPath;
@@ -519,7 +542,7 @@ export function fetchPddParcelDetails(session: PlatformSession, shippingId: stri
   `;
   return withProviderPage("pinduoduo", session, async (web, deadline) => {
     if (!eligible()) return undefined;
-    if (needsEstimate || needsImage) await addPddCapture(web, `(() => { ${route}` + String.raw`
+    if (needsEstimate || needsImage || needsTraces) await addPddCapture(web, `(() => { ${route}` + String.raw`
       function keep(address, body) {
         const request = new URL(address, location.href);
         if (request.origin !== location.origin || request.pathname !== '/proxy/api/api/express/shipping/track' ||
@@ -536,6 +559,13 @@ export function fetchPddParcelDetails(session: PlatformSession, shippingId: stri
         const forecast = shipping.time_forecast ?? shipping.timeForecast;
         const fields = forecast && typeof forecast === 'object' ? Object.values(forecast).slice(0, 24) : [forecast];
         window.__pipiDeliveriesParcelForecast = fields.filter(value => typeof value === 'string').map(value => value.slice(0, 256));
+        if (${needsTraces} && Array.isArray(shipping.traces)) {
+          window.__pipiDeliveriesPddTraces = shipping.traces.slice(0, 100).flatMap(row => {
+            const time = typeof row?.time === 'string' ? row.time.trim().slice(0, 64) : '';
+            const info = typeof row?.info === 'string' ? row.info.trim().slice(0, 2000) : '';
+            return time && info ? [{ time, info }] : [];
+          });
+        }
       }
       const fetchPage = window.fetch;
       window.fetch = function (...args) {
@@ -564,18 +594,22 @@ export function fetchPddParcelDetails(session: PlatformSession, shippingId: stri
       const title = titles.size === 1 ? [...titles][0] : '';
       const forecasts = window.__pipiDeliveriesParcelForecast;
       const image = window.__pipiDeliveriesPddProductImage;
-      if (!title && !forecasts && !image) return null;
-      const pending = (${needsTitle} && !title) || (${needsEstimate} && !forecasts?.length) || (${needsImage} && !image);
-      return { state: pending ? 'pending' : 'complete', waybill, shippingId, title, forecasts, image };
+      const traces = window.__pipiDeliveriesPddTraces;
+      if (!title && !forecasts && !image && !traces?.length) return null;
+      const pending = (${needsTitle} && !title) || (${needsEstimate} && !forecasts?.length) || (${needsImage} && !image) || (${needsTraces} && !traces?.length);
+      return { state: pending ? 'pending' : 'complete', waybill, shippingId, title, forecasts, image, traces };
     `, Math.min(deadline, Date.now() + 8_000), undefined, (value) => {
       const row = asPlainObject(value);
       return row.waybill === waybill && row.shippingId === shippingId &&
-        (Boolean(productTitle(row.title) || pddProductImageURL(row.image)) || Array.isArray(row.forecasts) && row.forecasts.length > 0);
+        (Boolean(productTitle(row.title) || pddProductImageURL(row.image)) ||
+          Array.isArray(row.forecasts) && row.forecasts.length > 0 ||
+          Array.isArray(row.traces) && row.traces.length > 0);
     }, signal));
     if (row.waybill !== waybill || row.shippingId !== shippingId) return undefined;
     const estimate = uniqueDeliveryForecast(Array.isArray(row.forecasts) ? row.forecasts : [], Date.now());
+    const traces = sanitizePddTraces(row.traces);
     return { source: "pinduoduo", waybill, shippingId, title: productTitle(row.title), estimate,
-      productImageURL: pddProductImageURL(row.image) };
+      productImageURL: pddProductImageURL(row.image), ...(traces ? { traces } : {}) };
   }, signal);
 }
 
@@ -598,11 +632,14 @@ export async function fetchPddOrders(session: PlatformSession): Promise<Platform
       const previous = orders.get(waybill);
       if (previous?.orderIds?.length && id && !previous.orderIds.includes(id)) conflicts.add(waybill);
       if (previous?.shippingId && shippingId && previous.shippingId !== shippingId) conflicts.add(waybill);
+      const traces = sanitizePddTraces(item.traces);
+      const bestTraces = traces && (!previous?.traces || traces.length >= previous.traces.length) ? traces : previous?.traces;
       orders.set(waybill, {
         source: "pinduoduo", waybill, orderIds: id ? [id] : previous?.orderIds,
         shippingId: /^[1-9][0-9]{0,19}$/.test(shippingId) ? shippingId : previous?.shippingId,
         title: productTitle(item.title) || previous?.title,
         estimate: deliveryForecast(item.forecast, Date.now()) || previous?.estimate,
+        ...(bestTraces ? { traces: bestTraces } : {}),
       });
     }
     return [...orders.values()].filter(({ waybill }) => !conflicts.has(waybill));

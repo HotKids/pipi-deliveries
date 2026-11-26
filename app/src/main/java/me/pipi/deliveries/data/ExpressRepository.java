@@ -438,7 +438,8 @@ public final class ExpressRepository {
                         : projectTimelineProjection(db, raw, sidecars);
                 ExpressItem candidate = projection.item;
                 if (owner != null && owner.ownerRowId > 0L
-                        && candidate.rowId != owner.ownerRowId) continue;
+                        && candidate.rowId != owner.ownerRowId
+                        && findRaw(db, owner.ownerRowId) != null) continue;
                 if (owner == null && !bindingSource.isEmpty()
                         && !ExpressSourcePolicy.belongsToBindingSource(
                         candidate, bindingSource)) continue;
@@ -6257,7 +6258,11 @@ public final class ExpressRepository {
                         || (fallbackFillsUnknown && !terminalTransition)
                         || ExpressSourcePolicy.shouldApplyState(
                                 currentOwner, previousSourceSemantic, currentEventTime,
-                                incomingOwner, incomingSemantic, incomingEventTime);
+                                incomingOwner, incomingSemantic, incomingEventTime)
+                        || ExpressSourcePolicy.correctsMeizuCustomsMisreading(
+                                currentOwner, previousSourceSemantic, currentEventTime,
+                                WorkerStatusProjection.cached(previous.tracksJson),
+                                incomingOwner, incomingSemantic, incomingEventTime, packageResult.workerStatus);
                 if (previous != null && currentOwner.equals(incomingOwner)
                         && previousSourceSemantic == incomingSemantic) {
                     WorkerStatusProjection oldStatus = WorkerStatusProjection.cached(previous.tracksJson);
@@ -7682,6 +7687,20 @@ public final class ExpressRepository {
                 }
             }
         });
+    }
+
+    public void awaitPendingPublications(long timeoutMillis) {
+        if (timeoutMillis <= 0L) return;
+        java.util.concurrent.CountDownLatch barrier = new java.util.concurrent.CountDownLatch(1);
+        try {
+            publicationWorker.execute(barrier::countDown);
+            barrier.await(timeoutMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException unavailable) {
+            android.util.Log.w("ExpressRepository", "Publication barrier unavailable: "
+                    + unavailable.getClass().getSimpleName());
+        }
     }
 
     private static boolean winsCanonical(ExpressItem candidate, ExpressItem current) {
@@ -10157,6 +10176,8 @@ public final class ExpressRepository {
             if (normalized.isEmpty()) {
                 stageNotificationCancellation(db, item.rowId);
                 deleteRowLedger(db, "", item.rowId);
+                db.delete(ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE, "owner_row_id=?",
+                        new String[]{Long.toString(item.rowId)});
                 db.delete(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE, "owner_row_id=?",
                         new String[]{Long.toString(item.rowId)});
                 db.delete(ExpressDatabase.OWNER_MANUAL_ROUTE_TABLE, "owner_row_id=?",
@@ -10235,7 +10256,11 @@ public final class ExpressRepository {
         ArrayList<Long> removedRows = new ArrayList<>();
         if (normalized != null && !normalized.isEmpty()) collectRowIds(db, normalized, removedRows);
         if (!removedRows.contains(fallbackRowId)) removedRows.add(fallbackRowId);
-        for (long removedRow : removedRows) stageNotificationCancellation(db, removedRow);
+        for (long removedRow : removedRows) {
+            stageNotificationCancellation(db, removedRow);
+            db.delete(ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE, "owner_row_id=?",
+                    new String[]{Long.toString(removedRow)});
+        }
         // 优化 1、3: the rows' ledger goes with them (user deletion, retention deletion, a reused waybill).
         deleteRowLedger(db, normalized, fallbackRowId);
         if (normalized == null || normalized.isEmpty()) {
@@ -10253,10 +10278,12 @@ public final class ExpressRepository {
                 new String[]{normalized});
         db.delete(ExpressDatabase.EXPRESS_TABLE, "_id=?",
                 new String[]{Long.toString(fallbackRowId)});
+        db.delete(ExpressDatabase.AUTOMATIC_OWNERSHIP_TABLE,
+                "owner_record_key=?", new String[]{normalized});
         // The removed record's own slots under the waybill it was projected onto (T1: one slot per
         // record) go with it; the waybill's other records keep theirs.
         db.delete(ExpressDatabase.AUTOMATIC_OBSERVATION_TABLE,
-                "record_key=? AND normalized_waybill<>?", new String[]{normalized, normalized});
+                "record_key=?", new String[]{normalized});
         db.delete(ExpressDatabase.OWNER_MANUAL_TIMELINE_TABLE,
                 "normalized_waybill=? OR owner_row_id=?",
                 new String[]{normalized, Long.toString(fallbackRowId)});

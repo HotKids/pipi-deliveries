@@ -57,6 +57,12 @@ export function readDurableTextCandidates(name: string): readonly string[] {
   return readDurableTextResult(name).candidates;
 }
 
+/** Removes a retired durable file and its backup; failures are left for a later attempt. */
+export function removeDurableText(name: string): void {
+  removeBestEffort(durablePath(name));
+  removeBestEffort(backupPath(name));
+}
+
 export function removeBestEffort(path: string): void {
   try {
     if (

@@ -124,4 +124,31 @@ await second().refreshCloudMetadata();
 assert.equal(mount()().cloudDetails.metadata.productName, updated.productName);
 saveGatewayToken("SyntheticKey_002");
 assert.equal(mount()().cloudDetails, undefined, "another credential cannot display the previous title");
+
+// 2026-11-20 review, part 3 rule 4: an international Watch parcel reads the same cloud product
+// metadata as any other parcel, under the same unique-owner fence.
+const watchWaybill = "1Z00000000000006132";
+const watch: Shipment = {
+  identity: { id: "watch:00000000-0000-0000-0000-000000006132", sourceId: watchWaybill, sourceOwner: "lastscanned",
+    sourceProvider: "lastscanned", bindingSource: null, phoneTail: "", courierCode: "watch-ups", companyName: "UPS",
+    manuallyAdded: false, createdAtMs: now - 60_000 },
+  timeline: { provider: "lastscanned", waybill: watchWaybill, courierCode: "watch-ups", companyName: "UPS",
+    semantic: "TRANSIT", structuredStatus: true, statusEventAtMs: now - 10_000, latestTimeText: "", latestDetail: "",
+    tracks: [{ timeText: "", timeMs: now - 50_000, detail: "Picked up", statusCode: "", raw: {} }], successAtMs: now - 10_000 },
+  updatedAtMs: now - 10_000,
+};
+assert.equal(internationalShipment(watch), true);
+const watchTitle = { ...original, waybill: watchWaybill, anchorAt: now - 50_000, productName: "Watch title" };
+visible = [shipment, watch];
+requests = 0;
+reply = async () => ({ metadata: watchTitle });
+const watchDetail = mount(watch);
+await watchDetail().refreshCloudMetadata();
+assert.equal(requests, 1, "the Watch detail asks for its own waybill's cloud metadata");
+assert.equal(displayedPlatformFields(watch, now, watchDetail().cloudDetails?.metadata).title, watchTitle.productName);
+assert.equal(displayedPlatformFields(watch, now, watchDetail().cloudDetails?.metadata).productImageURL,
+  watchTitle.productImageURL);
+visible = [shipment, watch, { ...watch, identity: { ...watch.identity, id: "synthetic-duplicate-watch" } }];
+assert.equal(mount(watch)().cloudDetails, undefined, "an ambiguous Watch owner cannot display a cloud title");
+visible = [shipment];
 console.log("cloud parcel title: cached first render, background update, transient failure and owner fences passed");

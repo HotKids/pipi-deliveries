@@ -5,7 +5,7 @@ import { seedRecognizedCarriers } from "./carrier-recognition-seed";
 import { parseAccountSyncResponse } from "../services/account-parser";
 import { fetchAccountParcels, parcelToShipment } from "../services/account-sync";
 import { ENHANCEMENT_ROUTE, loadEnhancementIdentity } from "../services/enhanced-account";
-import { readDiagnostics, setDiagnosticsEnabled, writeDiagnostic } from "../services/logger";
+import { beginDiagnosticFlow, readDiagnostics, setDiagnosticsEnabled } from "../services/logger";
 import { saveGatewayToken } from "../services/credentials";
 import { emptyState, loadState, saveState } from "../services/storage";
 
@@ -57,7 +57,8 @@ function seed(projected = false) {
 }
 async function fetchList() {
   const state = loadState();
-  writeDiagnostic("refresh.started", { flowId: "refresh-enhanced-list", trigger: "list_pull" });
+  // D4: the refresh writes no start line; its trigger still reaches the list lines.
+  beginDiagnosticFlow("refresh.started", { flowId: "refresh-enhanced-list", trigger: "list_pull" });
   return fetchAccountParcels("interface5", state.bindings, NOW + 30_000, undefined, undefined, state.shipments,
     { flowId: "refresh-enhanced-list" });
 }

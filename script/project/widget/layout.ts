@@ -113,7 +113,7 @@ export function smallWidgetLayout(
   const identitySpacing = 1;
   const statusLineHeight = iconSize * 0.6;
   return {
-    outerPadding: compact ? 12 : 14,
+    outerPadding: compact ? 10 : 12,
     headerSpacing: compact ? 8 : 9,
     statusFont: 20,
     companyFont: 12,
@@ -122,11 +122,11 @@ export function smallWidgetLayout(
     companyLineHeight: iconSize - identitySpacing - statusLineHeight,
     detailFont: populatedDetailFont(compact),
     iconSize,
-    pillHeight: 40,
-    pillFont: 14,
-    pillIconFont: compactWidth ? 13 : 14,
+    pillHeight: compact ? 30 : 32,
+    pillFont: 13,
+    pillIconFont: compactWidth ? 12 : 13,
     pillSpacing: compactWidth ? 4 : 6,
-    pillHorizontalPadding: compactWidth ? 5 : 11,
+    pillHorizontalPadding: compactWidth ? 6 : 10,
   };
 }
 

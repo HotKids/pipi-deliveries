@@ -139,6 +139,9 @@ test("3585 sequence: interrupted Round 1 v5_query keeps 14:46 PICKED pair, uncha
 
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const path = new URL(url).pathname;
+    if (path === "/api/cloud-records/pdd-shipments") {
+      return jsonResponse({ ok: true, parcels: [], nextAfter: null });
+    }
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
     if (path === "/api/express/accounts/sync") {
       return jsonResponse({ code: 0, data: { expressList: [list1907] } });
@@ -176,7 +179,8 @@ test("3585 sequence: interrupted Round 1 v5_query keeps 14:46 PICKED pair, uncha
     }),
   );
   assert.equal(queryCalls, 1);
-  assert.equal(startedFlushedBeforeAbort, true, "refresh.stage.started must flush before query completes");
+  // D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): the stage writes no start line; its end line carries it.
+  assert.equal(startedFlushedBeforeAbort, false, "no refresh.stage.started line is written");
 
   const cancelledDiag = readDiagnostics().find(
     entry => entry.event === "refresh.stage.failed" &&
@@ -187,6 +191,7 @@ test("3585 sequence: interrupted Round 1 v5_query keeps 14:46 PICKED pair, uncha
   assert.equal(cancelledDiag.details.stagePhase, "query");
   assert.equal(cancelledDiag.details.result, "cancelled");
   assert.equal(cancelledDiag.details.errorCategory, "cancelled");
+  assert.equal(typeof cancelledDiag.details.budgetMs, "number", "the stage's start (its budget) is merged into its end");
 
   const afterRound1 = loadState(clock).shipments[0];
   assert.equal(afterRound1.sourceTimeline?.semantic, "TRANSIT", "raw 19:07 list status is preserved");
@@ -210,6 +215,9 @@ test("3585 sequence: interrupted Round 1 v5_query keeps 14:46 PICKED pair, uncha
   clock = parseProviderTime(dates.round2At)!;
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const path = new URL(url).pathname;
+    if (path === "/api/cloud-records/pdd-shipments") {
+      return jsonResponse({ ok: true, parcels: [], nextAfter: null });
+    }
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
     if (path === "/api/express/accounts/sync") {
       return jsonResponse({ code: 0, data: { expressList: [list1907] } });
@@ -273,6 +281,9 @@ test("empty result, lagging tracks, and query timeout keep aligned 14:46 pair, l
 
   globalThis.fetch = (async (url: string) => {
     const path = new URL(url).pathname;
+    if (path === "/api/cloud-records/pdd-shipments") {
+      return jsonResponse({ ok: true, parcels: [], nextAfter: null });
+    }
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
     if (path === "/api/express/accounts/sync") {
       return jsonResponse({ code: 0, data: { expressList: [list1907] } });
@@ -450,6 +461,9 @@ test("late v5_query response is re-validated against write-time status and rejec
 
   globalThis.fetch = (async (url: string) => {
     const path = new URL(url).pathname;
+    if (path === "/api/cloud-records/pdd-shipments") {
+      return jsonResponse({ ok: true, parcels: [], nextAfter: null });
+    }
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
     if (path === "/api/express/accounts/sync") {
       return jsonResponse({ code: 0, data: { expressList: [queryCalls === 0 ? list1907 : list1914] } });
@@ -537,6 +551,9 @@ test("DetailPage v5_query coalescing, upstream_rejected risk-control cooldown, a
   // 1) Coalescing: background v5_query and concurrent DetailPage detail_open share a single upstream request.
   globalThis.fetch = (async (url: string) => {
     const path = new URL(url).pathname;
+    if (path === "/api/cloud-records/pdd-shipments") {
+      return jsonResponse({ ok: true, parcels: [], nextAfter: null });
+    }
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
     if (path === "/api/express/accounts/sync") {
       return jsonResponse({ code: 0, data: { expressList: [list1907] } });
@@ -564,6 +581,9 @@ test("DetailPage v5_query coalescing, upstream_rejected risk-control cooldown, a
   const list2005 = cainiaoRecord(105, [{ time: dates.deliveryAt, desc: GENERIC }]);
   globalThis.fetch = (async (url: string) => {
     const path = new URL(url).pathname;
+    if (path === "/api/cloud-records/pdd-shipments") {
+      return jsonResponse({ ok: true, parcels: [], nextAfter: null });
+    }
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
     if (path === "/api/express/accounts/sync") {
       return jsonResponse({ code: 0, data: { expressList: [list2005] } });
@@ -581,6 +601,9 @@ test("DetailPage v5_query coalescing, upstream_rejected risk-control cooldown, a
   const list2010 = cainiaoRecord(106, [{ time: dates.waitingAt, desc: GENERIC }]);
   globalThis.fetch = (async (url: string) => {
     const path = new URL(url).pathname;
+    if (path === "/api/cloud-records/pdd-shipments") {
+      return jsonResponse({ ok: true, parcels: [], nextAfter: null });
+    }
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
     if (path === "/api/express/accounts/sync") {
       return jsonResponse({ code: 0, data: { expressList: [list2010] } });
@@ -596,6 +619,9 @@ test("DetailPage v5_query coalescing, upstream_rejected risk-control cooldown, a
   const list2110 = cainiaoRecord(107, [{ time: dates.signedAt, desc: GENERIC }]);
   globalThis.fetch = (async (url: string) => {
     const path = new URL(url).pathname;
+    if (path === "/api/cloud-records/pdd-shipments") {
+      return jsonResponse({ ok: true, parcels: [], nextAfter: null });
+    }
     if (path === "/api/express/carriers") return { ok: false, status: 503, text: async () => "offline" };
     if (path === "/api/express/accounts/sync") {
       return jsonResponse({ code: 0, data: { expressList: [list2110] } });

@@ -1180,10 +1180,11 @@ test("an unexpected JD document reports its origin and native load outcome witho
   } });
   registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
   try {
+    // D11 (owner 2026-11-21 「三项都改（推荐）」): the page is a closed kind, never a host name.
     for (const [address, expectedPage] of [
-      [location.href, "https:gias.jd.com"],
-      ["https://synthetic-host.example/synthetic-path", "https:other"],
-      ["applewebdata://synthetic-page/synthetic-path", "applewebdata:other"],
+      [location.href, "jd_other"],
+      ["https://synthetic-host.example/synthetic-path", "web_other"],
+      ["applewebdata://synthetic-page/synthetic-path", "local_page"],
     ]) {
       clearDiagnostics();
       location = new URL(address);
@@ -1211,7 +1212,7 @@ test("an unexpected JD document reports its origin and native load outcome witho
     assert.deepEqual(expired.issues, [{ platform: "jingdong", reason: "expired" }]);
     assert.equal(platformSession("jingdong"), null);
     const note = readDiagnostics().find(({ event }) => event === "platform.jingdong.sync.failed");
-    assert.equal(note?.details.jdPage, "https:plogin.m.jd.com");
+    assert.equal(note?.details.jdPage, "jd_login");
     assert.doesNotMatch(JSON.stringify(note), /synthetic-/);
   } finally {
     clearPlatformLogin("jingdong", accountStatus("jingdong").generation);
@@ -1387,7 +1388,7 @@ test("cabinet opening requires a live association after confirmation and submits
     assert.equal(await first, "");
     const confirmed = performPickupAction(card, true, () => {});
     allow(true);
-    assert.match(await confirmed, /开柜请求已受理/);
+    assert.match(await confirmed, /柜门已开启/);
     assert.equal(calls, 1);
     assert.equal(loadState().shipments[0].forcedCompletedAtMs, undefined);
     const stale = performPickupAction(card, true, () => {});

@@ -8,7 +8,8 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
-import android.graphics.Color;
+import android.content.res.Resources;
+import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.TextPaint;
@@ -63,6 +64,12 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
             R.id.widget_express_status2,
             R.id.widget_express_status3
     };
+    /** Each 4×2 row's small gray 寄 tag after the waybill tail (owner 2026-11-21). */
+    private static final int[] WIDE_SENDER_IDS = {
+            R.id.widget_express_sender1,
+            R.id.widget_express_sender2,
+            R.id.widget_express_sender3
+    };
     private static final int[] WIDE_DETAIL_IDS = {
             R.id.widget_express_detail1,
             R.id.widget_express_detail2,
@@ -114,13 +121,21 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 accent = ExpressWidgetPalette.emptyAccent(context);
                 views.setImageViewResource(R.id.widget_compact_brand_gradient,
                         R.drawable.widget_express_empty_gradient_mask);
+                views.setViewVisibility(R.id.widget_compact_sender, View.GONE);
             } else {
                 ExpressItem item = selected.get(0);
                 accent = ExpressWidgetPalette.accent(context, item);
                 views.setImageViewResource(R.id.widget_compact_brand_gradient,
                         R.drawable.widget_express_brand_gradient_mask);
-                views.setTextViewText(R.id.widget_priority_status,
-                        ExpressWidgetPresentation.statusText(item));
+                String status = ExpressWidgetPresentation.statusText(item);
+                views.setTextViewText(R.id.widget_priority_status, status);
+                // Owner 2026-11-21 ("Lite 也加寄标签"): an outgoing parcel's gray 寄 tag follows the
+                // status word, which steps down only as far as the tag needs (Pipi's 2×2 rule).
+                views.setViewVisibility(R.id.widget_compact_sender,
+                        item.sender ? View.VISIBLE : View.GONE);
+                views.setTextViewTextSize(R.id.widget_priority_status, TypedValue.COMPLEX_UNIT_SP,
+                        compactStatusTextSp(context, status, item.sender,
+                                widthDp * hostRatio, layout));
                 applyStatusTextColor(context, views, R.id.widget_priority_status, item, accent, false);
                 views.setImageViewResource(R.id.widget_compact_courier_logo,
                         item.displayIconResource());
@@ -217,14 +232,15 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 }
                 ExpressWidgetMeasurements.centerWideRowGlyphs(context, views, displayed,
                         rowLayout.visibleRows, WIDE_ROW_IDS, WIDE_LOGO_FRAME_IDS,
-                        WIDE_LOGO_IDS, WIDE_COMPANY_IDS, WIDE_STATUS_IDS,
+                        WIDE_LOGO_IDS, WIDE_COMPANY_IDS, WIDE_SENDER_IDS, WIDE_STATUS_IDS,
                         WIDE_DETAIL_IDS, hostWidthDp, rowLayout.detailMaxLines);
             }
 
             views.setOnClickPendingIntent(R.id.widget_express_header,
                     openList(context, 5100 + id));
+            // An empty card's tap focuses the query field, as the 2×2 empty card and Pipi and iOS do (G-MED-22).
             views.setOnClickPendingIntent(R.id.widget_express_empty,
-                    openList(context, 6100 + id));
+                    openSearch(context, 6100 + id));
             views.setOnClickPendingIntent(R.id.widget_express_search,
                     openSearch(context, 7100 + id));
             views.setOnClickPendingIntent(R.id.widget_express_root, null);
@@ -254,6 +270,9 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 typography.textSize(WidgetTypographyProfile.Token.PRIMARY_TITLE));
         views.setTextViewText(WIDE_COMPANY_IDS[index],
                 ExpressWidgetPresentation.rowIdentity(item));
+        // Cleared on every bind; ExpressWidgetMeasurements.centerWideRowGlyphs caps it again.
+        views.setInt(WIDE_COMPANY_IDS[index], "setMaxWidth", Integer.MAX_VALUE);
+        views.setViewVisibility(WIDE_SENDER_IDS[index], item.sender ? View.VISIBLE : View.GONE);
         views.setTextViewText(WIDE_STATUS_IDS[index],
                 ExpressWidgetPresentation.statusText(item));
         views.setInt(WIDE_STATUS_IDS[index],
@@ -275,6 +294,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
 
     private static void hideWideRow(RemoteViews views, int index) {
         views.setTextViewText(WIDE_COMPANY_IDS[index], "");
+        views.setViewVisibility(WIDE_SENDER_IDS[index], View.GONE);
         views.setTextViewText(WIDE_STATUS_IDS[index], "");
         views.setTextViewText(WIDE_DETAIL_IDS[index], "");
         views.setViewVisibility(WIDE_DETAIL_IDS[index], View.GONE);
@@ -324,12 +344,62 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 TypedValue.COMPLEX_UNIT_SP, layout.statusTextSizeSp);
         views.setTextViewTextSize(R.id.widget_compact_company,
                 TypedValue.COMPLEX_UNIT_SP, layout.companyTextSizeSp);
+        // The 寄 tag's text matches the carrier line, as on Pipi's 2×2 (owner 2026-11-21).
+        views.setTextViewTextSize(R.id.widget_compact_sender,
+                TypedValue.COMPLEX_UNIT_SP, layout.companyTextSizeSp);
         views.setTextViewTextSize(R.id.widget_compact_detail,
                 TypedValue.COMPLEX_UNIT_SP, layout.detailTextSizeSp);
         views.setTextViewTextSize(R.id.widget_compact_all_text,
                 TypedValue.COMPLEX_UNIT_SP, layout.pillContentSize);
         views.setInt(R.id.widget_compact_detail,
                 "setMaxLines", layout.detailLineLimit);
+    }
+
+    /** The 2×2 logo's end margin in express_widget_2x2.xml, before the status word. */
+    private static final float COMPACT_LOGO_GAP_DP = 9f;
+    /** The smallest 2×2 status size an outgoing parcel's 寄 tag can step the status word down to. */
+    static final float COMPACT_SENDER_MIN_STATUS_SP = 14f;
+
+    /** Width of the 2×2 card's small gray 寄 tag, including its gap after the status word. */
+    static float compactSenderTagPx(Context context, ExpressWidgetLayout.Compact layout) {
+        Resources resources = context.getResources();
+        TextPaint paint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
+        paint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        paint.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
+                layout.companyTextSizeSp, resources.getDisplayMetrics()));
+        return paint.measureText(context.getString(R.string.express_sender))
+                + 2f * resources.getDimension(R.dimen.express_widget_sender_tag_padding_horizontal)
+                + resources.getDimension(R.dimen.express_widget_sender_tag_gap);
+    }
+
+    /**
+     * The 2×2 headline size. With an outgoing parcel's 寄 tag the status word steps down from the
+     * usual size only when the status and tag would not fit beside the logo, never below 14sp, so
+     * the tag is never pushed out (Pipi {@code ExpressWidgetProvider.compactStatusTextSp}); every
+     * other headline keeps its fixed size.
+     */
+    static float compactStatusTextSp(Context context, String status, boolean sender,
+            float widthDp, ExpressWidgetLayout.Compact layout) {
+        float preferred = layout.statusTextSizeSp;
+        if (!sender || status == null || status.isEmpty()
+                || !Float.isFinite(widthDp) || widthDp <= 0f) {
+            return preferred;
+        }
+        // API 29/30 keep the 44dp logo slot and inset the artwork inside it.
+        float logoSlotDp = Build.VERSION.SDK_INT >= 31
+                ? layout.courierLogoSizeDp
+                : layout.courierLogoSizeDp + 2f * layout.logoHorizontalInsetDp;
+        DisplayMetrics metrics = context.getResources().getDisplayMetrics();
+        float availablePx = Math.max(0f, widthDp - layout.paddingDp * 2f - logoSlotDp
+                - COMPACT_LOGO_GAP_DP) * metrics.density;
+        TextPaint paint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
+        paint.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        float tagPx = compactSenderTagPx(context, layout);
+        for (float sp = preferred; sp > COMPACT_SENDER_MIN_STATUS_SP; sp -= 1f) {
+            paint.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, sp, metrics));
+            if (paint.measureText(status) + tagPx <= availablePx) return sp;
+        }
+        return Math.min(preferred, COMPACT_SENDER_MIN_STATUS_SP);
     }
 
     /** 与 Pipi 的同名判定同形：单行且量得下才算一行，量不准时按多行处理。 */
@@ -416,24 +486,18 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         }
     }
 
+    // Owner 2026-11-20 (修改 11): the 2×2 headline shows the shared text pair as it is; the 4×2 badge keeps it
+    // unless the carrier brand gradient (0x55 at its corner, under the 0x1A badge fill) causes a drop under 3.0:1.
     static int statusTextColor(Context context, ExpressItem item, int accent, boolean badge) {
+        int status = ExpressStatusColors.accent(context, item);
+        if (!badge) return status;
         int surface = context.getColor(R.color.widget_surface);
         int tinted = androidx.core.graphics.ColorUtils.compositeColors(
                 (accent & 0x00ffffff) | 0x55000000, surface);
-        int status = ExpressStatusColors.accent(context, item);
-        if (badge) {
-            int fill = ExpressStatusColors.widgetBadgeFill(item);
-            surface = androidx.core.graphics.ColorUtils.compositeColors(fill, surface);
-            tinted = androidx.core.graphics.ColorUtils.compositeColors(fill, tinted);
-        }
-        int text = ExpressStatusColors.textOn(status, surface, tinted);
-        // Daytime badges use the approved midpoint; night keeps the full contrast tone.
-        if (badge && !ExpressStatusColors.isNight(context)) {
-            return Color.rgb((Color.red(status) + Color.red(text) + 1) / 2,
-                    (Color.green(status) + Color.green(text) + 1) / 2,
-                    (Color.blue(status) + Color.blue(text) + 1) / 2);
-        }
-        return text;
+        int fill = ExpressStatusColors.widgetBadgeFill(item);
+        return ExpressStatusColors.brandGradientFloor(status,
+                androidx.core.graphics.ColorUtils.compositeColors(fill, surface),
+                androidx.core.graphics.ColorUtils.compositeColors(fill, tinted));
     }
 
 }

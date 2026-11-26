@@ -17,7 +17,11 @@ function oldKdniaoAction(value: string): StatusSemantic {
     case "1": return "PICKED";
     case "2":
     case "201":
-    case "204": return "TRANSIT";
+    case "204":
+    // Owner decision 2026-11-20 (customs clearance, MEIZU-CUSTOMS-CLEARANCE-20261120): KDNiao Action
+    // 602 清关进行中 joins TRANSIT in both Worker tracks; it is an addition to the old switch, not a
+    // migration difference.
+    case "602": return "TRANSIT";
     case "202": return "DELIVERY";
     case "211":
     case "412": return "WAITING_PICKUP";
@@ -92,6 +96,7 @@ function assertGroup(
 
 const statusRules = BOOTSTRAP_STATUS_LABEL_TABLE.statusRules as Record<string, unknown>;
 assertGroup("kdniao", statusRules.kdniao as CodeGroup, oldKdniaoAction);
+assert.equal(statusRuleSemantic("kdniao", "602"), "TRANSIT", "owner 2026-11-20: KDNiao 602 is 运输中 (清关中)");
 assertGroup("kdniaoTopState", statusRules.kdniaoTopState as CodeGroup, oldKdniaoState);
 assertGroup(
   "structuredDescriptions",

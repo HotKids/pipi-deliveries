@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { memory, NOW } from "./state-storage-mock";
+import { openFlows } from "./open-flow-markers";
 
 import type { Shipment } from "../models";
 import { parseAccountSyncResponse } from "../services/account-parser";
@@ -234,6 +235,13 @@ const events = (event: string, flowId?: unknown) => readDiagnostics()
   .filter((entry) => entry.event === event && (flowId == null || entry.details.flowId === flowId));
 const flowOf = (event: string, trigger: string) =>
   events(event).find((entry) => entry.details.trigger === trigger)?.details.flowId;
+// D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): a refresh writes no start line; its end line carries its trigger.
+const refreshFlowOf = (trigger: string) => readDiagnostics().find((entry) =>
+  (entry.event === "refresh.succeeded" || entry.event === "refresh.failed") && entry.details.trigger === trigger)?.details.flowId;
+// A union page attempt's start is merged into its end line, which carries why the page opened.
+const pageAttempts = () => readDiagnostics().filter((entry) => entry.event.startsWith("order.projection.") &&
+  entry.details.projectionReason != null);
+const openMarkers = () => Object.values(openFlows()).map((flow) => flow.event);
 
 // ---------------------------------------------------------------------------------------------
 // The lease itself.
@@ -339,7 +347,8 @@ const flowOf = (event: string, trigger: string) =>
   page.load = () => new Promise<boolean>(() => {});
   void replaced.projectStoredAccountOrders();
   await advanceTo(NOW + 12_000);
-  assert.equal(events("order.projection.started").length, 1, "the capture was running");
+  // The capture writes no start line; while it runs, its device-local marker stands for it (D4).
+  assert.ok(openMarkers().includes("order.projection"), "the capture was running");
   killRuntime();
   const renewalsAfterDeath = renewals();
 
@@ -352,8 +361,9 @@ const flowOf = (event: string, trigger: string) =>
   const pull = app.refreshAllShipments("interface5", { forceManualRefresh: true, accountOrderProjection: false });
   const outcome = await settle(pull, NOW + 200_000);
   assert.equal(outcome.status, "fulfilled");
-  const flowId = flowOf("refresh.wait.started", "list_pull");
-  assert.equal(events("refresh.wait.started", flowId)[0]?.details.blockingTrigger, "home_projection");
+  const flowId = flowOf("refresh.wait.completed", "list_pull");
+  assert.equal(events("refresh.wait.completed", flowId)[0]?.details.blockingTrigger, "home_projection",
+    "the wait's start (its blocker) is merged into its end line (D4)");
   const waited = Number(events("refresh.wait.completed", flowId)[0]?.details.durationMs);
   // Its last renewal at +10 s carried the dead holder's lease to +40 s; the fixed lease held it to +125 s.
   assert.ok(waited >= 20_000 && waited <= 20_250,
@@ -386,7 +396,7 @@ const flowOf = (event: string, trigger: string) =>
   assert.equal(events("refresh.wait.completed").length, 0, "the pull is still waiting");
   const [held, pulled] = [await settle(holding, NOW + 300_000), await settle(pull, NOW + 300_000)];
   assert.equal(held.status, "fulfilled");
-  const holderFlow = flowOf("refresh.started", "background");
+  const holderFlow = refreshFlowOf("background");
   assert.deepEqual(events("refresh.ownership.invalidated", holderFlow), [], "the live holder kept ownership");
   assert.equal(events("refresh.succeeded", holderFlow).length, 1);
   const query = loadState().shipments.find((shipment) => shipment.identity.sourceId === "CNLIVE0001")
@@ -394,7 +404,7 @@ const flowOf = (event: string, trigger: string) =>
   assert.equal(query?.latestDetail, "query 实际物流事件");
   assert.equal(query?.successAtMs, NOW + 33_000, "the holder committed its +33 s detail");
   assert.equal(pulled.status, "fulfilled");
-  const waited = Number(events("refresh.wait.completed", flowOf("refresh.wait.started", "list_pull"))[0]
+  const waited = Number(events("refresh.wait.completed", flowOf("refresh.wait.completed", "list_pull"))[0]
     ?.details.durationMs);
   assert.ok(waited > 30_000 && waited <= 33_000,
     `the pull waited for the live holder's release (waited ${waited} ms)`);
@@ -425,7 +435,7 @@ const flowOf = (event: string, trigger: string) =>
   openGate();
   const outcome = await settle(pull, NOW + 200_000);
   assert.equal(outcome.status, "rejected");
-  const flowId = flowOf("refresh.started", "list_pull");
+  const flowId = refreshFlowOf("list_pull");
   assert.equal(events("refresh.ownership.invalidated", flowId)[0]?.details.result, "ownership_lost");
   assert.equal(events("refresh.failed", flowId)[0]?.details.errorCategory, "ownership_lost");
   assert.equal(peekStateRevision(), revision, "nothing was committed after the lease was lost");
@@ -462,7 +472,7 @@ const flowOf = (event: string, trigger: string) =>
   const outcome = await settle(pass, NOW + 200_000);
   assert.equal(outcome.status, "fulfilled");
   assert.equal((outcome as PromiseFulfilledResult<{ result: string }>).value.result, "failed");
-  const flowId = events("order.projection.started")[0]?.details.flowId;
+  const flowId = pageAttempts()[0]?.details.flowId;
   assert.ok(events("order.projection.failed", flowId)
     .some((entry) => entry.details.errorCategory === "ownership_lost"));
   assert.deepEqual(events("order.projection.committed", flowId), []);
@@ -488,8 +498,8 @@ const flowOf = (event: string, trigger: string) =>
   const outcome = await settle(
     app.refreshAllShipments("interface5", { forceManualRefresh: true, accountOrderProjection: false }), NOW + 60_000);
   assert.equal(outcome.status, "rejected");
-  const flowId = flowOf("refresh.started", "list_pull");
-  assert.equal(events("account.sync.parsed", flowId).length, 1, "the list answered in time");
+  const flowId = refreshFlowOf("list_pull");
+  assert.equal(events("account.sync.completed", flowId).length, 1, "the list answered in time");
   assert.equal(events("refresh.ownership.invalidated", flowId)[0]?.details.result, "ownership_lost");
   assert.equal(peekStateRevision(), revision, "the list result was not committed");
   assert.equal(loadState().shipments.some((shipment) => shipment.identity.sourceId === "CNLEASE0002"), false);
@@ -508,7 +518,7 @@ const flowOf = (event: string, trigger: string) =>
   const app = await runtime("lost-at-projection-commit");
   const outcome = await settle(app.projectStoredAccountOrders(), NOW + 60_000);
   assert.equal((outcome as PromiseFulfilledResult<{ result: string }>).value.result, "failed");
-  const flowId = events("order.projection.started")[0]?.details.flowId;
+  const flowId = pageAttempts()[0]?.details.flowId;
   assert.equal(events("order.projection.extracted", flowId).length, 1, "the page named the waybill");
   assert.deepEqual(events("order.projection.skipped", flowId), [], "the attempt reservation was still its own");
   assert.equal(events("order.projection.failed", flowId)[0]?.details.errorCategory, "ownership_lost");

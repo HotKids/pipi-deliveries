@@ -79,4 +79,5 @@
     <string name="notification_channel_completed">已签收</string>
     <string name="notification_channel_description">接收对应快递状态的物流更新</string>
     <string name="express_sender">寄</string>
+    <string name="express_sender_description">寄件</string>
 </resources>

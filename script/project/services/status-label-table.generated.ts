@@ -15,13 +15,19 @@ export const GENERATED_STATUS_LABEL_TABLE = {
   },
   "orderLabels": {
     "COMPLETED": "已完成",
-    "CANCELLED": "订单已取消"
+    "CANCELLED": "已取消"
   },
   "subtypes": [
     {
       "semantic": "DELIVERY",
       "code": "STA_DELIVERING",
       "label": "待派送",
+      "priority": 1
+    },
+    {
+      "semantic": "TRANSIT",
+      "code": "CUSTOMS_CLEARANCE",
+      "label": "清关中",
       "priority": 1
     }
   ],
@@ -68,7 +74,8 @@ export const GENERATED_STATUS_LABEL_TABLE = {
         "TRANSFER",
         "LH_HO",
         "CC_HO",
-        "在途"
+        "在途",
+        "CUSTOMS_CLEARANCE"
       ],
       "DELIVERY": [
         "DELIVERING",
@@ -236,7 +243,8 @@ export const GENERATED_STATUS_LABEL_TABLE = {
       "TRANSIT": [
         "TRANSPORT",
         "TRANSIT",
-        "INTRANSIT"
+        "INTRANSIT",
+        "CUSTOMS_CLEARANCE"
       ],
       "DELIVERY": [
         "DELIVERING",
@@ -314,7 +322,8 @@ export const GENERATED_STATUS_LABEL_TABLE = {
       "TRANSIT": [
         "2",
         "201",
-        "204"
+        "204",
+        "602"
       ],
       "DELIVERY": [
         "202"

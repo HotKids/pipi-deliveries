@@ -202,4 +202,44 @@ public final class ExpressSourcePolicyTest {
         return "[{\"time\":\"2026-08-24 10:00:00\",\"context\":\""
                 + detail + "\"}]";
     }
+
+    /**
+     * Third review H-01 (2026-11-23): an interface-6 row stored with an older Worker's FAILED projection (异常件)
+     * takes the customs subtype 清关中 for the same clock; the ordinary same-clock rule alone rejects it. 待清关 /
+     * 已清关 (code TRANSIT), another DANGER code, a missing projection, another clock or owner stay rejected.
+     */
+    @Test
+    public void anInterfaceSixFailedReadingTakesTheSameClockCustomsSubtype() throws Exception {
+        long at = 1795166911000L;
+        me.pipi.deliveries.model.WorkerStatusProjection failed = projection("DANGER", "FAILED", at);
+        me.pipi.deliveries.model.WorkerStatusProjection customs = projection("TRANSIT", "CUSTOMS_CLEARANCE", at);
+        assertFalse("the ordinary same-clock rule", ExpressSourcePolicy.shouldApplyState(
+                "INTERFACE6", StatusSemantic.DANGER, at, "INTERFACE6", StatusSemantic.TRANSIT, at));
+        assertTrue(ExpressSourcePolicy.correctsMeizuCustomsMisreading("INTERFACE6", StatusSemantic.DANGER, at, failed,
+                "INTERFACE6", StatusSemantic.TRANSIT, at, customs));
+        assertFalse(ExpressSourcePolicy.correctsMeizuCustomsMisreading("INTERFACE6", StatusSemantic.DANGER, at, failed,
+                "INTERFACE6", StatusSemantic.TRANSIT, at, projection("TRANSIT", "TRANSIT", at)));
+        assertFalse(ExpressSourcePolicy.correctsMeizuCustomsMisreading("INTERFACE6", StatusSemantic.DANGER, at,
+                projection("DANGER", "PROBLEM", at), "INTERFACE6", StatusSemantic.TRANSIT, at, customs));
+        assertFalse(ExpressSourcePolicy.correctsMeizuCustomsMisreading("INTERFACE6", StatusSemantic.DANGER, at, null,
+                "INTERFACE6", StatusSemantic.TRANSIT, at, customs));
+        assertFalse(ExpressSourcePolicy.correctsMeizuCustomsMisreading("INTERFACE6", StatusSemantic.DANGER,
+                at - 60_000L, failed, "INTERFACE6", StatusSemantic.TRANSIT, at, customs));
+        assertFalse(ExpressSourcePolicy.correctsMeizuCustomsMisreading("interface5", StatusSemantic.DANGER, at, failed,
+                "interface5", StatusSemantic.TRANSIT, at, customs));
+        // Fourth review R4-NEW-08 ③ (owner 2026-11-23「报告里的都直接做」): the cached FAILED projection must be the
+        // stored reading itself; one of another clock is not the evidence for this DANGER.
+        assertFalse(ExpressSourcePolicy.correctsMeizuCustomsMisreading("INTERFACE6", StatusSemantic.DANGER, at,
+                projection("DANGER", "FAILED", at - 60_000L), "INTERFACE6", StatusSemantic.TRANSIT, at, customs));
+        assertFalse(ExpressSourcePolicy.correctsMeizuCustomsMisreading("INTERFACE6", StatusSemantic.DANGER, at,
+                projection("DANGER", "FAILED", 0L), "INTERFACE6", StatusSemantic.TRANSIT, at, customs));
+    }
+
+    private static me.pipi.deliveries.model.WorkerStatusProjection projection(String semantic, String code, long at)
+            throws Exception {
+        return me.pipi.deliveries.model.WorkerStatusProjection.read(new org.json.JSONObject().put("normalizedStatus",
+                new org.json.JSONObject().put("version", 1).put("scope", "SHIPMENT").put("semantic", semantic)
+                        .put("code", code).put("text", "x").put("priority", 0).put("eventAtMs", at)
+                        .put("structured", true)));
+    }
 }

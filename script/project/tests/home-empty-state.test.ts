@@ -74,7 +74,7 @@ const next = refresh();
 assert.equal(beginCount, 2, "a new gesture still starts another pull");
 finishPull();
 await next;
-assert.match(homeSource, /<NavigationStack>\s*<VStack navigationBarVisibility="hidden"[^]*?<RootTabList key="shipments" title="快递" onClose=\{\(\) => dismiss\(\)\}[^]*?topAccessory=\{visibleFilters\.length > 1 \? \(\s*<ShipmentFilterBar/,
+assert.match(homeSource, /<NavigationStack>\s*<VStack spacing=\{0\}[^]*?<RootTabList key="shipments" title="快递" onClose=\{\(\) => dismiss\(\)\}[^]*?topAccessory=\{visibleFilters\.length > 1 \? \(\s*<ShipmentFilterBar/,
   "the filter scrolls with the title in the common list");
 assert.match(homeSource, /\{accessKeyNotice \? \(\s*<Section[^>]*>\s*\{accessKeyNotice\}\s*<\/Section>/,
   "the access-key notice retains its list row");
@@ -104,8 +104,8 @@ assert.doesNotMatch(
 );
 assert.match(
   homeSource,
-  /<ForEach[\s\S]*?<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 14 天内的快递\s*<\/Text>/,
-  "the populated list still ends with the history note",
+  /const shipmentListFooter = \(\s*<Text[\s\S]*?foregroundStyle="tertiaryLabel"[\s\S]*?>\s*只显示 14 天内的快递\s*<\/Text>[\s\S]*?<Section[\s\S]*?footer=\{shipmentListFooter\}[^>]*>\s*<ForEach/,
+  "the populated list section carries the 14-day history footer",
 );
 
 const classifierSource = homeSource.match(/^function shipmentFilter\([\s\S]*?^\}/m)?.[0];
@@ -152,10 +152,12 @@ assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(sel
 const filterBar = homeSource.match(/<GeometryReader frame=\{\{ height: FILTER_ROW_HEIGHT \}\}>([^]*?)<\/GeometryReader>/)?.[1] ?? "";
 assert.match(filterBar, /<Text font=\{11\} fontWeight="semibold" monospacedDigit[^]*?frame=\{\{ minWidth: 16, minHeight: 16 \}\}\s*background=\{\{ style: "systemFill", shape: "capsule" \}\}[^]*?>\s*\{groups\[key\]\.length\}/,
   "the horizontal filter uses the original independent count badge");
-assert.match(filterBar, /<Capsule fill="secondarySystemFill" frame=\{\{ width: segmentWidth, height: 26 \}\}\s*offset=\{\{ x: selectedOffset, y: 0 \}\} allowsHitTesting=\{false\} \/>/,
-  "one selection fill shares the segment layout's animation");
+assert.match(filterBar, /<Capsule fill="tertiarySystemFill"\s*frame=\{\{ height: 32 \}\} allowsHitTesting=\{false\} \/>/,
+  "filter bar uses tertiarySystemFill track");
+assert.match(filterBar, /<Capsule fill="systemBackground" frame=\{\{ width: segmentWidth, height: 26 \}\}[\s\S]*?offset=\{\{ x: selectedOffset, y: 0 \}\} allowsHitTesting=\{false\} \/>/,
+  "one selection thumb shares the segment layout's animation");
 assert.match(filterBar, /<ZStack alignment="leading"[^\n]*\n\s*animation=\{\{ animation: Animation\.smooth\(\{ duration: FILTER_SLIDE_SECONDS \}\), value: layoutKey \}\}>/);
-assert.equal(filterBar.match(/<Capsule fill="secondarySystemFill"/g)?.length, 1);
+assert.equal(filterBar.match(/<Capsule fill="systemBackground"/g)?.length, 1);
 assert.doesNotMatch(filterBar, /glassEffect|tabCapsuleSurface|matchedGeometryEffect|NamespaceReader/);
 const geometry = filterBar.match(/const segmentWidth = [^\n]+\n\s*const selectedOffset = [^\n]+\n\s*const layoutKey = [^\n]+/)?.[0];
 assert.ok(geometry);

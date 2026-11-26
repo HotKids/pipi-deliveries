@@ -417,7 +417,9 @@ const projectedWaybill = (row: Shipment) =>
   assert.equal(passes, 1, "its own commits start no second pass");
   assert.equal(pageLoads, 1);
   assert.equal(requests.includes("/api/express/accounts/sync"), false);
-  const pageEvents = readDiagnostics().filter((entry) => entry.event === "order.projection.started");
+  // D4: one page attempt is one end line carrying its start (projectionReason).
+  const pageEvents = readDiagnostics().filter((entry) => entry.event.startsWith("order.projection.") &&
+    entry.details.projectionReason != null);
   assert.equal(pageEvents.length, 1);
   app.stop();
 }
@@ -426,7 +428,9 @@ const projectedWaybill = (row: Shipment) =>
 {
   const app = readFileSync(new URL("../index.tsx", import.meta.url), "utf8");
   assert.match(app,
-    /startForegroundOrderProjection\(\{ applyState \}\)[\s\S]*?"app\.scene\.changed"[\s\S]*?scenePhaseChanged\(phase\)[\s\S]*?AppEvents\.scenePhase\.addListener[\s\S]*?orderProjection\.stop\(\)/);
+    // D162 (plan step 5): a phase change no longer writes app.scene.changed; the wiring is unchanged.
+    /startForegroundOrderProjection\(\{ applyState \}\)[\s\S]*?scenePhaseChanged\(phase\)[\s\S]*?AppEvents\.scenePhase\.addListener[\s\S]*?orderProjection\.stop\(\)/);
+  assert.equal(app.includes('"app.scene.changed"'), false);
 }
 
 console.log("foreground order projection integration tests passed");

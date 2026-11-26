@@ -19,13 +19,14 @@ import { ACCOUNT_DETAIL_BUDGET_MS, ACCOUNT_H5_BUDGET_MS, ACCOUNT_ORDER_PROJECTIO
 import type { ExpressToastKey } from "../express-toast-copy";
 import { accountParcelWithProjectionReference } from "../account-order-reference";
 import { enhanceAccountParcels, enhancementPhone, withCurrentAccountEnhancement } from "../enhanced-account";
-import { createDiagnosticFlowId, diagnosticErrorDetails, diagnosticState, writeDiagnostic } from "../logger";
+import { beginDiagnosticFlow, createDiagnosticFlowId, diagnosticErrorDetails, diagnosticState, writeDiagnostic } from "../logger";
 import { SCRIPT_BINDING_SOURCE, requireScriptSource } from "../script-source";
 import { SCRIPT_CLIENT_BUILD, SCRIPT_VERSION } from "../build-track";
 import type { AccountOrderProjectionDiagnostics } from "../account-order-projection";
 import { CarrierRecognitionBudget, recognizeNonSyncCarrier, type CarrierRecognitionResult } from "../carrier-recognition";
 import { needsProjectedCarrierRepair, repairProjectedShipmentCarrier } from "../account-carrier-normalization";
 import { carrierUnmatched } from "../carrier-gate";
+import { resolveCarrierCpCode } from "../carrier-query";
 import { GatewayError } from "../gateway";
 import { trustedCainiaoH5Route, type CainiaoH5Diagnostics } from "../cainiao-h5";
 import type { WebTimelineDiagnostics } from "../web-timeline";
@@ -171,18 +172,26 @@ async function runShipmentRefreshFlow(
     ...runtimeOverrides,
   };
   const startedAt = Date.now();
-  const flowId = createDiagnosticFlowId("detail");
+  const flowId = options.diagnosticFlowId || createDiagnosticFlowId("detail");
   let base = loadState(startedAt);
   const initial = base.shipments.find(
     (item) => item.identity.id === shipmentId,
   );
   if (!initial) throw new Error("该快递已从列表中移除");
   let original = initial;
+  // D104: every early exit of the flow writes its own end line with a fixed reason.
+  const skipEarly = (skipReason: string, shipment: Shipment = original) => writeDiagnostic("detail.refresh.skipped", {
+    flowId, source: shipment.identity.bindingSource || base.activeSource, trigger: options.trigger || "detail_open",
+    durationMs: Date.now() - startedAt, ...shipmentDiagnosticDetails(shipment), persisted: false,
+    skipReason, result: skipReason,
+  });
   // The frozen-join repair must keep its identity fence through the scheduled flow startup.
   if (lease.expectedFingerprint != null && detailRequestFingerprint(original, base) !== lease.expectedFingerprint) {
+    skipEarly("stale_target");
     return { state: base, shipment: original, refreshed: false, querySucceeded: false };
   }
   if (lease.expectedImageOwner != null && productImageOwnerFingerprint(original, base) !== lease.expectedImageOwner) {
+    skipEarly("stale_target");
     return { state: base, shipment: original, refreshed: false, querySucceeded: false };
   }
   const source = requireScriptSource(
@@ -219,7 +228,15 @@ async function runShipmentRefreshFlow(
       }
     }
   }
-  if (trigger === "product_image") return { state: base, shipment: original, refreshed: identityApplied };
+  if (trigger === "product_image") {
+    if (identityApplied) {
+      writeDiagnostic("detail.refresh.committed", {
+        flowId, source, trigger, durationMs: Date.now() - startedAt, ...shipmentDiagnosticDetails(original),
+        persisted: true, result: "applied",
+      });
+    } else skipEarly("product_image");
+    return { state: base, shipment: original, refreshed: identityApplied };
+  }
   // Old cached feed text can resolve identity without waiting for another provider response.
   // T23 (user 2026-09-26, 跨端对齐裁决 #28): its waybill — or a union-page waybill held for its carrier — is recognised
   // first and projected only with a matched carrier; otherwise the order stays as it is and no page is opened here.
@@ -336,6 +353,7 @@ async function runShipmentRefreshFlow(
     }
   }
   if (trigger === "identity_projection" && !unprojectedAccountOrder(original)) {
+    skipEarly("already_projected");
     return { state: base, shipment: original, refreshed: identityApplied };
   }
   // A projected order keeps its own repair below; any other automatic row is asked here (T23).
@@ -353,6 +371,7 @@ async function runShipmentRefreshFlow(
   const missingHistoryRefresh = trigger === "missing_history" &&
     !hasUsableShipmentDynamics(original) && !original.emptyTimelineHiddenAtMs;
   if (original.emptyTimelineHiddenAtMs) {
+    skipEarly("empty_timeline_hidden");
     return { shipment: original, state: base, refreshed: false };
   }
   // The shared Home resolver already borrows eligible cached structured status.
@@ -400,7 +419,7 @@ async function runShipmentRefreshFlow(
   );
   assertRefreshSignal(signal);
   assertWithinDeadline(deadlineAtMs);
-  writeDiagnostic("detail.refresh.started", {
+  beginDiagnosticFlow("detail.refresh.started", {
     flowId,
     source,
     trigger,
@@ -746,12 +765,14 @@ async function runShipmentRefreshFlow(
                 }
                 let projectionDiagnostics:
                   AccountOrderProjectionDiagnostics | null = null;
-                writeDiagnostic("order.projection.started", {
+                // D4: the page attempt's start reaches its end line; projectionReason (why the page opened) is kept apart
+                // from that line's own result.
+                beginDiagnosticFlow("order.projection.started", {
                   flowId,
                   source,
                   stage: "detail_webview",
                   ownerFingerprint,
-                  result: reopenForTimeline
+                  projectionReason: reopenForTimeline
                     ? "timeline_reopen"
                     : forceAccountOrderProjection ? "forced" : "scheduled",
                 });
@@ -1028,6 +1049,12 @@ async function runShipmentRefreshFlow(
                 pageSkippedRestore.field, pageSkippedRestore.retry);
               const shipment = state.shipments.find(item => item.identity.id === pageSkippedRestore.ownerId);
               if (!shipment) throw new Error("该快递已从列表中移除");
+              // D104: this exit also ends the flow its start opened (a Samsung enhancement that took over the order's
+              // number while the page waited), so no later runtime reports it unfinished (D4).
+              writeDiagnostic("detail.refresh.skipped", {
+                flowId, source, durationMs: Date.now() - startedAt, ...shipmentDiagnosticDetails(shipment),
+                persisted: false, skipReason: "enhancement_active", result: "enhancement_active",
+              });
               return { state, shipment, refreshed: identityApplied };
             }
             refreshed = withProjectionAttemptRecord(refreshed, pageSkippedRestore.field, pageSkippedRestore.retry);
@@ -1112,7 +1139,7 @@ async function runShipmentRefreshFlow(
           cainiaoH5StartedAt,
         );
         stage = "cainiao_h5";
-        writeDiagnostic("detail.refresh.stage_started", {
+        beginDiagnosticFlow("detail.refresh.stage_started", {
           flowId,
           source,
           stage,
@@ -1265,6 +1292,11 @@ async function runShipmentRefreshFlow(
           const current = latest.shipments.find(item => item.identity.id === original.identity.id);
           if (!alignmentOwnerCurrent(base, original, latest)) {
             if (!current) throw new Error("该快递已从列表中移除");
+            // D104: the row changed owner while its Online request ran; the flow ends without a commit.
+            writeDiagnostic("detail.refresh.skipped", {
+              flowId, source, durationMs: Date.now() - startedAt, ...shipmentDiagnosticDetails(current),
+              persisted: false, skipReason: "stale_target", result: "stale_target",
+            });
             return { state: latest, shipment: current, refreshed: false };
           }
           // Online completion must be judged against state accepted while the request was pending.
@@ -1304,9 +1336,12 @@ async function runShipmentRefreshFlow(
       );
       const h5Kind = primaryContestRequested ? "web" : "none";
       const provider = String(enrichmentBase.identity.sourceProvider || "").toLowerCase();
+      const rawCarrier = enrichmentBase.identity.rawCourierCode || enrichmentBase.identity.courierCode;
+      const normalizedCarrier = resolveCarrierCpCode(rawCarrier)?.standardCode ||
+        enrichmentBase.identity.courierCode.toUpperCase();
       const motoSupported = primaryContestRequested &&
         (enrichmentBase.identity.manuallyAdded || provider === "cainiao") &&
-        enrichmentBase.identity.courierCode.toUpperCase() !== "SF";
+        normalizedCarrier !== "SF";
       const h5Provider = primaryH5Provider(enrichmentBase.identity.courierCode);
       const h5Stage = h5Provider === "jt_h5" ? "jt_h5" : "kuaidi100_query";
       const h5StartedAt = Date.now();
@@ -1317,7 +1352,7 @@ async function runShipmentRefreshFlow(
         h5StartedAt,
       );
       if (h5Kind !== "none") {
-        writeDiagnostic("detail.refresh.stage_started", {
+        beginDiagnosticFlow("detail.refresh.stage_started", {
           flowId,
           source,
           stage: h5Stage,
@@ -1685,7 +1720,20 @@ async function runShipmentRefreshFlow(
   if (!changed) {
     const state = loadState();
     const current = state.shipments.find(item => item.identity.id === original.identity.id);
-    if (!current) throw new Error("该快递已从列表中移除");
+    if (!current) {
+      // R5-NEW-07 ②: a row deleted while the refresh ran ends the flow like a refused commit, so its marker closes.
+      writeDiagnostic("detail.refresh.skipped", {
+        flowId,
+        source,
+        ...diagnosticState(state),
+        durationMs: Date.now() - startedAt,
+        ...shipmentDiagnosticDetails(original),
+        persisted: false,
+        skipReason: "removed",
+        result: "removed",
+      });
+      throw new Error("该快递已从列表中移除");
+    }
     safelyPruneRoutes(state);
     const result = querySucceeded === true ? "unchanged"
       : queryFailureObserved ? "query_failed"
@@ -1715,6 +1763,11 @@ async function runShipmentRefreshFlow(
     };
   }
   if (deadlineExpired(deadlineAtMs) || !lease.isCurrent()) {
+    // D104: the flow that logged its start ends here, before its commit, when its time or lease ran out.
+    writeDiagnostic("detail.refresh.failed", {
+      flowId, source, durationMs: Date.now() - startedAt, stage: "commit", ...shipmentDiagnosticDetails(original),
+      persisted: false, errorCategory: "timeout",
+    }, "warning");
     throw new OperationTimeoutError();
   }
   // 粘性选包（用户定 2026-09-05 晚）：落库前记下这轮详情页会显示的包，下一轮默认还显示它。
@@ -1902,6 +1955,7 @@ export function runTargetedShipmentRefresh(
           const current = snapshot.state.shipments.find(item => item.identity.id === shipmentId);
           if (!current) throw new Error("该快递已从列表中移除");
           if (productImageOwnerFingerprint(current, snapshot.state) !== expectedImageOwner) {
+            writeTargetedSkip(current, options.trigger, "stale_target");
             return { state: snapshot.state, shipment: current, refreshed: false, querySucceeded: false };
           }
         }
@@ -1916,6 +1970,7 @@ export function runTargetedShipmentRefresh(
       const current = currentState.shipments.find(item => item.identity.id === shipmentId);
       if (!current) throw new Error("该快递已从列表中移除");
       if (productImageOwnerFingerprint(current, currentState) !== expectedImageOwner) {
+        writeTargetedSkip(current, options.trigger, "stale_target");
         return { state: currentState, shipment: current, refreshed: false, querySucceeded: false };
       }
       assertRefreshSignal(options.signal);
@@ -1929,6 +1984,8 @@ export function runTargetedShipmentRefresh(
     const shipment = state.shipments.find(
       (item) => item.identity.id === shipmentId,
     );
+    // D104: another runtime holds this row's detail lease; the request ends without a query.
+    if (shipment) writeTargetedSkip(shipment, options.trigger, "lease_held");
     return shipment
       ? Promise.resolve({ shipment, state, refreshed: false, querySucceeded: false })
       : Promise.reject(new Error("该快递已从列表中移除"));
@@ -1963,6 +2020,14 @@ export function runTargetedShipmentRefresh(
     run.then(settle, settle);
   }
   return run;
+}
+
+/** The end line of a detail request that ends before its flow starts (D104). */
+function writeTargetedSkip(shipment: Shipment, trigger: ShipmentRefreshOptions["trigger"], skipReason: string): void {
+  writeDiagnostic("detail.refresh.skipped", {
+    source: shipment.identity.bindingSource || SCRIPT_BINDING_SOURCE, trigger: trigger || "detail_open",
+    ...shipmentDiagnosticDetails(shipment), persisted: false, skipReason, result: skipReason,
+  });
 }
 
 export async function runTargetedShipmentRefreshWithProjectionWait(

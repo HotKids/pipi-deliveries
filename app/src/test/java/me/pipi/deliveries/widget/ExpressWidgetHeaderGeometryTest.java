@@ -182,26 +182,46 @@ public final class ExpressWidgetHeaderGeometryTest {
                 RemoteViews cached = ReflectionHelpers.getField(infos.get(widgetId), "lastRemoteViews");
                 View root = cached.apply(source, new FrameLayout(source));
                 int accent = ExpressWidgetPalette.accent(source, item);
+                // updateConfiguration changes the Resources this view shares with every context of the same
+                // appearance; restore them after each host so the next host keeps its own appearance.
+                Configuration sourceConfiguration = new Configuration(root.getResources().getConfiguration());
+                android.util.DisplayMetrics sourceMetrics = new android.util.DisplayMetrics();
+                sourceMetrics.setTo(root.getResources().getDisplayMetrics());
                 for (int hostMode : new int[]{Configuration.UI_MODE_NIGHT_NO, Configuration.UI_MODE_NIGHT_YES}) {
                     Context host = appearance(application, hostMode);
-                    root.getResources().updateConfiguration(host.getResources().getConfiguration(),
-                            host.getResources().getDisplayMetrics());
-                    cached.reapply(host, root);
-                    TextView status = root.findViewById(compact
-                            ? R.id.widget_priority_status : R.id.widget_express_status1);
-                    assertEquals("A cached widget must resolve the host's current appearance",
-                            ExpressWidgetProvider.statusTextColor(host, item, accent, !compact),
-                            status.getCurrentTextColor());
-                    int surface = host.getColor(R.color.widget_surface);
-                    int tinted = androidx.core.graphics.ColorUtils.compositeColors(
-                            (accent & 0xffffff) | 0x55000000, surface);
-                    for (int background : new int[]{surface, tinted}) {
-                        if (!compact) background = androidx.core.graphics.ColorUtils.compositeColors(
-                                0x1afbc02d, background);
-                        assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
-                                status.getCurrentTextColor(), background)
-                                >= (!compact && hostMode == Configuration.UI_MODE_NIGHT_NO
-                                ? androidx.core.graphics.ColorUtils.calculateContrast(0xfffbc02d, background) : 4.5));
+                    assertEquals("The host context has the intended appearance", hostMode,
+                            host.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK);
+                    try {
+                        root.getResources().updateConfiguration(host.getResources().getConfiguration(),
+                                host.getResources().getDisplayMetrics());
+                        cached.reapply(host, root);
+                        TextView status = root.findViewById(compact
+                                ? R.id.widget_priority_status : R.id.widget_express_status1);
+                        assertEquals("A cached widget must resolve the host's current appearance",
+                                ExpressWidgetProvider.statusTextColor(host, item, accent, !compact),
+                                status.getCurrentTextColor());
+                        // Owner 2026-11-20 (修改 11), table 1.2-A 已下单 text pair: the 2×2 headline shows it as
+                        // it is; the 4×2 badge keeps 3.0:1 over its 0x1A fill on the brand gradient.
+                        int shared = hostMode == Configuration.UI_MODE_NIGHT_YES ? 0xFFA9BACA : 0xFF5A6B80;
+                        if (compact) {
+                            assertEquals("The 2x2 headline follows the host's text pair", shared,
+                                    status.getCurrentTextColor());
+                            continue;
+                        }
+                        int surface = host.getColor(R.color.widget_surface);
+                        int tinted = androidx.core.graphics.ColorUtils.compositeColors(
+                                (accent & 0xffffff) | 0x55000000, surface);
+                        for (int background : new int[]{surface, tinted}) {
+                            background = androidx.core.graphics.ColorUtils.compositeColors(0x1a5a6b80, background);
+                            assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
+                                    status.getCurrentTextColor(), background) >= 3.0);
+                        }
+                        if (hostMode == Configuration.UI_MODE_NIGHT_YES) {
+                            assertEquals("The night badge clears 3.0:1 without adjustment", shared,
+                                    status.getCurrentTextColor());
+                        }
+                    } finally {
+                        root.getResources().updateConfiguration(sourceConfiguration, sourceMetrics);
                     }
                 }
             }

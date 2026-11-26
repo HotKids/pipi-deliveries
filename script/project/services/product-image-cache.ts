@@ -9,9 +9,24 @@ import { shipmentLifecycleKey } from "./shipment-lifecycle";
 const images = new Map<string, { image: UIImage; isRetained?: () => boolean }>();
 const MEMORY_LIMIT = 32;
 export const PRODUCT_IMAGE_TIMEOUT_MS = 20_000;
-const IMAGE_NAME = /^[a-f0-9]{64}\.\d+-[a-z0-9]+\.img$/;
-const DELETE_NAME = /^[a-f0-9]{64}\.\d+-[a-z0-9]+\.deleted$/;
-const PENDING_NAME = /^[a-f0-9]{64}\.\d+-[a-z0-9]+\.img\.pending-(\d+)-[a-z0-9]+$/;
+// R5-NEW-09 ①: a cloud image's key carries a digest of its URL after its owner key (`<owner>.<variant>`), so a replaced
+// cloud image is a new file and memory entry; the owner key alone still names every file of that record for cleanup.
+const KEY = "[a-f0-9]{64}(?:\\.[a-f0-9]{16})?";
+const IMAGE_NAME = new RegExp(`^${KEY}\\.\\d+-[a-z0-9]+\\.img$`);
+const DELETE_NAME = new RegExp(`^${KEY}\\.\\d+-[a-z0-9]+\\.deleted$`);
+const PENDING_NAME = new RegExp(`^${KEY}\\.\\d+-[a-z0-9]+\\.img\\.pending-(\\d+)-[a-z0-9]+$`);
+const CACHE_KEY = new RegExp(`^${KEY}$`);
+const FILE_STAMP = /^\d+-[a-z0-9]+\.img$/;
+
+/** The record owner of a cache key: the key itself, or the part before a cloud image's URL variant. */
+function ownerKey(key: string): string {
+  return key.slice(0, 64);
+}
+
+/** Whether `name` is a file of exactly this key (a variant key's files are not its owner's own files). */
+function fileOfKey(name: string, key: string): boolean {
+  return name.startsWith(`${key}.`) && FILE_STAMP.test(name.slice(key.length + 1));
+}
 
 function directory(): string {
   return Path.join(FileManager.appGroupDocumentsDirectory, "pipi-deliveries", "product-images");
@@ -23,12 +38,26 @@ function cacheNames(): string[] {
   } catch { return []; }
 }
 
+// A key is a pure function of its serialized inputs: the most recent inputs reuse their key instead of hashing again.
+const keysByInput = new Map<string, string>();
+const KEY_MEMORY_LIMIT = 256;
+
 export function productImageCacheKey(identity: ShipmentIdentity, scope: readonly unknown[] = []): string {
   // Keep the persistent address stable across account refresh and order projection; memory validates its original lifecycle.
   try {
-    return Crypto.sha256(utf8Data(JSON.stringify([
+    const input = JSON.stringify([
       identity.bindingSource, identity.id, identity.sourceId, identity.phone || "", identity.orderId || "", ...scope,
-    ]))).toHexString().toLowerCase();
+    ]);
+    const remembered = keysByInput.get(input);
+    if (remembered !== undefined) {
+      keysByInput.delete(input);
+      keysByInput.set(input, remembered);
+      return remembered;
+    }
+    const key = Crypto.sha256(utf8Data(input)).toHexString().toLowerCase();
+    keysByInput.set(input, key);
+    if (keysByInput.size > KEY_MEMORY_LIMIT) keysByInput.delete(keysByInput.keys().next().value!);
+    return key;
   } catch {
     return "";
   }
@@ -41,8 +70,19 @@ export function cainiaoImageCacheKey(shipment: Shipment): string {
   return productImageCacheKey(shipment.identity, ["cainiao", fields.waybill, fields.waybillGeneration, image.generation, image.url]);
 }
 
-export function cloudProductImageCacheKey(shipment: Shipment, scope: string): string {
-  return scope ? productImageCacheKey(shipment.identity, ["cloud", shipmentLifecycleKey(shipment), scope]) : "";
+/**
+ * The cloud image of a record under one Access Key scope. With its URL the key names that image (R5-NEW-09 ①: a changed
+ * `productImageUrl` misses the earlier image); without one it is the record's owner key, which cleanup uses for every
+ * image the record held.
+ */
+export function cloudProductImageCacheKey(shipment: Shipment, scope: string, url = ""): string {
+  const owner = scope ? productImageCacheKey(shipment.identity, ["cloud", shipmentLifecycleKey(shipment), scope]) : "";
+  if (!owner || !url) return owner;
+  try {
+    return `${owner}.${Crypto.sha256(utf8Data(url)).toHexString().toLowerCase().slice(0, 16)}`;
+  } catch {
+    return "";
+  }
 }
 
 export function pddImageCacheKey(shipment: Shipment): string {
@@ -62,13 +102,13 @@ function imageCacheKeys(subject: Shipment | ShipmentIdentity, scope: string): st
 }
 
 export function productImageCachePath(key: string): string {
-  if (!/^[a-f0-9]{64}$/.test(key)) throw new Error("Invalid product image cache identity");
+  if (!CACHE_KEY.test(key)) throw new Error("Invalid product image cache identity");
   return Path.join(directory(), `${key}.${Date.now()}-${Math.random().toString(36).slice(2) || "0"}.img`);
 }
 
 export function productImageCacheFiles(key: string): string[] {
-  if (!/^[a-f0-9]{64}$/.test(key)) return [];
-  return cacheNames().filter(name => IMAGE_NAME.test(name) && name.startsWith(`${key}.`) &&
+  if (!CACHE_KEY.test(key)) return [];
+  return cacheNames().filter(name => IMAGE_NAME.test(name) && fileOfKey(name, key) &&
     !FileManager.existsSync(Path.join(directory(), name.replace(/\.img$/, ".deleted"))))
     .sort().map(name => Path.join(directory(), name));
 }
@@ -104,10 +144,11 @@ export function pruneProductImages(previous: readonly (Shipment | ShipmentIdenti
     catch { /* Losing authorization must not stop cleanup of existing local products. */ }
     const keep = new Set(retained.flatMap(subject => imageCacheKeys(subject, scope)));
     if (keep.has("")) throw new Error("Product image identity unavailable");
-    for (const key of images.keys()) if (!keep.has(key)) images.delete(key);
+    // A cloud image's variant key is kept or removed with its record's owner key.
+    for (const key of images.keys()) if (!keep.has(key) && !keep.has(ownerKey(key))) images.delete(key);
     for (const key of new Set(previous.flatMap(subject => imageCacheKeys(subject, scope)))) {
       if (!key || keep.has(key)) continue;
-      images.delete(key);
+      for (const remembered of [...images.keys()]) if (ownerKey(remembered) === key) images.delete(remembered);
       for (const name of names) {
         if (!IMAGE_NAME.test(name) || !name.startsWith(`${key}.`)) continue;
         try {

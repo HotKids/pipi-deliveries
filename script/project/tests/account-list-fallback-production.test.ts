@@ -384,8 +384,14 @@ console.log("account-list cached fallback production-path tests passed");
   assert.equal(failure.failed, 1);
   const events = readDiagnostics();
   assert.equal(events.find(entry => entry.event === "account.sync.failed")?.details.httpStatus, 502);
-  for (const event of ["refresh.account.completed", "refresh.enrichment.completed", "refresh.finalization.completed", "refresh.failed"]) {
-    assert.ok(events.some(entry => entry.event === event), `missing failure boundary: ${event}`);
+  // D158 (plan step 5): the phases are folded into the refresh's end line instead of a line each.
+  const end = events.find(entry => entry.event === "refresh.failed");
+  assert.ok(end, "missing failure boundary: refresh.failed");
+  for (const phase of ["accountMs", "enrichmentMs", "finalizationMs"] as const) {
+    assert.equal(typeof end!.details[phase], "number", `missing failure boundary: ${phase}`);
+  }
+  for (const event of ["refresh.account.completed", "refresh.enrichment.completed", "refresh.finalization.completed"]) {
+    assert.equal(events.some(entry => entry.event === event), false, `${event} is folded into refresh.failed`);
   }
   const secondRuntime = await import("../services/sync.ts?after-502-runtime");
   const retry = await secondRuntime.refreshAllShipments("interface5", { backgroundHostSafe: true, budgetMs: 120_000 });
@@ -429,8 +435,8 @@ console.log("account-list cached fallback production-path tests passed");
     assert.equal(blocked.blockingTrigger, "background");
     assert.equal(blocked.blockingLeaseAgeMs, 20_000);
     assert.equal(blocked.blockingLeaseRemainingMs, 10_000);
-    assert.ok(readDiagnostics().some(entry => entry.event === "refresh.started" &&
-      entry.details.flowId === blocked.blockingFlowId));
+    // D4: the blocking refresh wrote no start line; its flow id names the flow whose end line follows below.
+    assert.equal(readDiagnostics().some(entry => entry.event === "refresh.started"), false);
     assert.equal("token" in blocked, false);
     // Still suspended 120 seconds in, the first runtime never renewed its lease: it no longer blocks the second.
     clock += 100_000;
@@ -445,6 +451,9 @@ console.log("account-list cached fallback production-path tests passed");
     }] } }));
     const firstError = await firstResult;
     assert.ok(firstError, "the expired first runtime must reject its late account result");
+    assert.ok(readDiagnostics().some(entry => entry.event === "refresh.failed" &&
+      entry.details.flowId === blocked.blockingFlowId && entry.details.trigger === "background"),
+      "the blocking flow ends with its own line, which carries its start's trigger");
     assert.deepEqual(loadState(clock).shipments, afterSecond.shipments,
       "a runtime that lost persistent ownership must not publish a late account commit");
   } finally {

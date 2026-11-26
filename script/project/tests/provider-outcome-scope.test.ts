@@ -44,15 +44,18 @@ try {
       },
     });
   assert.equal(selectShipmentDetailTimeline(result.shipment).provider, "v4_query");
-  const success = readDiagnostics().find(event => event.event === "detail.refresh.stage_succeeded"
-    && event.details.requestProvider === "k100_h5")?.details;
+  const successEntry = readDiagnostics().find(event => event.event === "detail.refresh.stage_succeeded"
+    && event.details.requestProvider === "k100_h5");
+  const success = successEntry?.details;
+  const lineAt = Date.parse(String(successEntry?.at));
   assert.ok(success);
   assert.equal(success.selectionScope, "query_response");
   assert.equal(success.statusSemantic, h5.semantic);
   assert.equal(success.structuredStatus, false);
-  assert.equal(success.statusEventAtMs, h5.statusEventAtMs);
-  assert.equal(success.latestTrackAtMs, h5.tracks[0].timeMs);
-  assert.equal(success.latestEventAtMs, h5.statusEventAtMs);
+  // D6: the package's times read as their ages at the line's time.
+  assert.equal(success.statusEventAgeMs, lineAt - h5.statusEventAtMs!);
+  assert.equal(success.latestTrackAgeMs, lineAt - h5.tracks[0].timeMs!);
+  assert.equal(success.latestEventAgeMs, lineAt - h5.statusEventAtMs!);
   assert.equal(success.effectiveTrackCount, 14);
   assert.equal(success.displayedTrackCount, 17);
   assert.equal(success.displayTimelineProvider, "v4_query");

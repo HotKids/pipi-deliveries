@@ -37,7 +37,7 @@ public final class DeliveriesApp extends Application {
                 repository.reconcileLiveNotifications();
                 repository.replayPendingNotifications();
             } catch (Throwable failure) {
-                Log.w(TAG, "Local maintenance failed; a later worker will retry", failure);
+                Log.w(TAG, "Local maintenance failed; a later worker will retry" + " kind=" + failure.getClass().getSimpleName());
             }
         }, "deliveries-maintenance");
         maintenance.start();

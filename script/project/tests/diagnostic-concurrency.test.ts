@@ -84,7 +84,7 @@ if (role !== "parent") {
   const logger = await import("../services/logger");
   if (role.startsWith("clear")) logger.clearDiagnostics();
   else if (role === "late-buffer" || role === "late-read-without-files") {
-    logger.writeDiagnostic("refresh.started", { flowId: "pre-clear-buffer" });
+    logger.writeDiagnostic("refresh.skipped", { flowId: "pre-clear-buffer" });
     fs.writeFileSync(join(root, `${role}.ready`), "");
     const until = Date.now() + 8_000;
     while (!exists(join(root, `${role}.release`))) {
@@ -95,7 +95,7 @@ if (role !== "parent") {
       delete (globalThis as any).FileManager;
       fs.writeFileSync(join(root, "unavailable-read.json"), JSON.stringify(logger.readDiagnostics().map(entry => entry.details.flowId)));
     } else logger.flushDiagnostics();
-  } else logger.writeDiagnosticBatch("refresh.started", [{ flowId: process.argv[4] || role }]);
+  } else logger.writeDiagnosticBatch("refresh.skipped", [{ flowId: process.argv[4] || role }]);
 } else {
   try {
     Storage.set("pipi_deliveries_diagnostic_enabled_v1", true, { shared: true });
@@ -156,7 +156,7 @@ if (role !== "parent") {
     assert.equal(logger.readDiagnostics().length, 1, "a cleared old shared array cannot become authoritative again");
 
     logger.clearDiagnostics();
-    logger.writeDiagnosticBatch("refresh.stage.started", Array.from({ length: 205 }, (_, index) => ({ flowId: `retention-${index}` })));
+    logger.writeDiagnosticBatch("refresh.stage.skipped", Array.from({ length: 205 }, (_, index) => ({ flowId: `retention-${index}` })));
     assert.equal(logger.readDiagnostics().length, 200);
     const store = await import("../services/diagnostic-store");
     assert.equal(store.diagnosticFiles().length, 200, "window pruning removes individual persisted rows, not just exported lines");
@@ -185,7 +185,7 @@ if (role !== "parent") {
       rawResponse: "synthetic-private-root", details: { flowId: "legacy-flow", trigger: "foreground_sync", phone: "synthetic-private-marker" } }]);
     assert.equal(logger.readDiagnostics()[0]?.details.trigger, "foreground");
     assert.equal(logger.readDiagnostics().length, 1, "legacy reads are idempotent before migration");
-    logger.writeDiagnosticBatch("refresh.started", [{ flowId: "new-flow" }]);
+    logger.writeDiagnosticBatch("refresh.skipped", [{ flowId: "new-flow" }]);
     assert.deepEqual(new Set(logger.readDiagnostics().map(entry => entry.details.flowId)), new Set(["legacy-flow", "new-flow"]));
     assert.equal(Storage.get(LOG), null, "legacy data is removed only after an immutable migration is published");
     const persisted = store.diagnosticFiles();

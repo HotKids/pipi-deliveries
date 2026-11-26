@@ -5,11 +5,16 @@ import android.graphics.drawable.GradientDrawable;
 import android.view.View;
 import android.widget.TextView;
 
-/** Shared list/detail badge using the iOS status tint and compact sender treatment. */
+import me.pipi.deliveries.model.StatusSemantic;
+
+/**
+ * Shared list/detail badge using the iOS status tint and compact sender treatment: the light text colour
+ * at 0x1A under the current appearance's text colour (owner 2026-11-20, 修改 11).
+ */
 final class ExpressSenderBadge {
     private ExpressSenderBadge() {}
 
-    static void apply(TextView view, boolean sender, int color) {
+    static void apply(TextView view, boolean sender, StatusSemantic semantic, String label) {
         if (view == null) return;
         view.setVisibility(sender ? View.VISIBLE : View.GONE);
         if (!sender) return;
@@ -17,17 +22,14 @@ final class ExpressSenderBadge {
         view.setText(me.pipi.deliveries.R.string.express_sender);
         view.setTextSize(11);
         view.setTypeface(view.getTypeface(), Typeface.BOLD);
-        int surface = com.google.android.material.color.MaterialColors.getColor(view,
-                com.google.android.material.R.attr.colorSurface);
-        int fill = (color & 0x00ffffff) | 0x1a000000;
-        view.setTextColor(ExpressStatusColors.textOn(color,
-                androidx.core.graphics.ColorUtils.compositeColors(fill, surface)));
+        view.setTextColor(ExpressStatusColors.accent(semantic, label,
+                ExpressStatusColors.isNight(view.getContext())));
         view.setIncludeFontPadding(false);
         view.setSingleLine(true);
         view.setPadding(Math.round(6 * density), Math.round(2 * density),
                 Math.round(6 * density), Math.round(2 * density));
         GradientDrawable background = new GradientDrawable();
-        background.setColor((color & 0x00ffffff) | 0x1a000000);
+        background.setColor(ExpressStatusColors.badgeFill(semantic, label));
         background.setCornerRadius(6 * density);
         view.setBackground(background);
     }

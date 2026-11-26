@@ -1071,11 +1071,8 @@ public final class ExpressListActivity extends AppCompatActivity {
             ExpressItem item = getItem(position);
             holder.icon.setImageResource(item.displayIconResource());
             holder.title.setText(item.displayStatus());
-            int accent = ExpressStatusColors.accent(holder.title.getContext(), item);
-            holder.title.setTextColor(ExpressStatusColors.textOn(accent,
-                    com.google.android.material.color.MaterialColors.getColor(holder.title,
-                            com.google.android.material.R.attr.colorSurface)));
-            ExpressSenderBadge.apply(holder.sender, item.sender, accent);
+            holder.title.setTextColor(ExpressStatusColors.accent(holder.title.getContext(), item));
+            ExpressSenderBadge.apply(holder.sender, item.sender, item.semantic, item.displayStatus());
             holder.time.setText(me.pipi.deliveries.model.ExpressTimeCodec.formatListTime(item.latestTime));
             holder.time.setVisibility(item.latestTime.isEmpty() ? View.GONE : View.VISIBLE);
             holder.waybill.setText(getString(

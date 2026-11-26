@@ -142,8 +142,9 @@ test("a list union page cut off when the flow loses its lease ends its projectio
   clock += 57 * 60_000;
   releaseMount();
   await assert.rejects(refresh);
-  assert.equal(cancelledEnds("order.projection.started", "webview").length, 1);
+  // D4: the page attempt writes no start line; its cancelled end carries why the page opened.
   const ended = cancelledEnds("order.projection.failed", "webview");
+  assert.equal(ended[0]?.details.projectionReason, "scheduled");
   assert.equal(ended.length, 1, JSON.stringify(readDiagnostics().map((e) => [e.event, e.details.stage])));
   assert.equal(ended[0]!.details.errorCategory, "cancelled");
 });
@@ -159,8 +160,9 @@ test("an account list request cut off by the parent refresh ends its stage as ca
   }) as unknown as typeof fetch;
   await assert.rejects(synchronizeAccountListForTesting(loadState(), "interface5", NOW, new Map(), "cancelled-list",
     NOW + 30_000, undefined, controller.signal), (error: unknown) => error instanceof Error && error.name === "OperationTimeoutError");
-  assert.equal(cancelledEnds("account.sync.started", "v5_list").length, 1);
+  // D4: the list stage writes no start line; its cancelled end carries its budget.
   const ended = cancelledEnds("account.sync.failed", "v5_list");
+  assert.equal(typeof ended[0]?.details.budgetMs, "number");
   assert.equal(ended.length, 1, JSON.stringify(readDiagnostics().map((e) => [e.event, e.details.stage])));
   assert.equal(ended[0]!.details.errorCategory, "cancelled");
 });
@@ -182,8 +184,8 @@ test("a detail union page cut off by the parent refresh ends its projection stag
       queryManualForSource: async () => ({ result: "empty_response" as const, shipment: null, pending: null, routeUrl: "" }),
     }), (error: unknown) => error instanceof Error && error.name === "OperationTimeoutError");
   assert.equal(pages, 1);
-  assert.equal(cancelledEnds("order.projection.started", "detail_webview").length, 1);
   const ended = cancelledEnds("order.projection.failed", "detail_webview");
+  assert.equal(ended[0]?.details.projectionReason, "forced", "the cancelled end carries why the page opened (D4)");
   assert.equal(ended.length, 1, JSON.stringify(readDiagnostics().map((e) => [e.event, e.details.stage])));
   assert.equal(ended[0]!.details.errorCategory, "cancelled");
 });

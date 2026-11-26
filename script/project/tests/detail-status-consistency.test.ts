@@ -187,10 +187,14 @@ try {
   assert.deepEqual(Object.keys(success.details).sort(), [
     "clientBuild", "durationMs", "effectiveTrackCount", "flowId", "level", "result", "source", "stage", "timelineProvider", "trigger", "waybillTail",
     "automatic", "carrierCode", "displayTimelineProvider",
-    "latestEventAtMs", "latestTrackAtMs", "requestProvider", "routeKind",
-    "routePointerPresent", "sourceProvider", "statusEventAtMs",
+    // D6 (owner 2026-11-21 「改成相对量（推荐）」): the business times are kept as ages.
+    "latestEventAgeMs", "latestTrackAgeMs", "requestProvider", "routeKind",
+    "routePointerPresent", "sourceProvider", "statusEventAgeMs",
     "statusSemantic", "structuredStatus",
     "selectionScope", "displayedTrackCount",
+    // D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): the stage's start line is merged into this end line, which
+    // keeps its budget; the start's display-scope selection evidence stays off this query-response line.
+    "budgetMs",
   ].sort(), "successful capture retains parcel identity and distinguishes capture from presentation");
   assert.equal(success.details.selectionScope, "query_response");
   assert.equal(success.details.structuredStatus, false, "capture diagnostics retain the H5 source's evidence");

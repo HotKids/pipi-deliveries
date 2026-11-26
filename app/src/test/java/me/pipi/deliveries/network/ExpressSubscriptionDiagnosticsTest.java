@@ -179,7 +179,10 @@ public class ExpressSubscriptionDiagnosticsTest {
         assertEquals(1, Kuaidi100TimelinePolicy.timedTrackCount(success.result));
         assertEquals("2026-09-09 18:51:23", success.result.latestTime);
         assertEquals(StatusSemantic.TRANSIT, success.result.semantic);
-        assertTrue(success.result.structuredStatusEvidence);
+        // logsiticsStatus "2" is no coarse value the Worker's common vocabulary knows, so the shown
+        // 运输中 comes from logisticsStatusDesc and is no structured evidence (owner 2026-11-21
+        // 「文案推出的状态不当结构化证据（推荐）」; the Worker gives this record no status).
+        assertFalse(success.result.structuredStatusEvidence);
         String log = responseLog();
         assertTrue(log, log.contains("level=v6_query"));
         assertFalse(log.contains("SFSYNTHETIC"));

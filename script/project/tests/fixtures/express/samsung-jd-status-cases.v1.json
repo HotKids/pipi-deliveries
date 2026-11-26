@@ -401,7 +401,7 @@
         "scope": "ORDER",
         "semantic": "CANCELLED",
         "code": "ILLEGAL STATUS",
-        "text": "订单已取消",
+        "text": "已取消",
         "eventAtMs": 1789286113000,
         "display": {
           "semantic": "CANCELLED",
@@ -422,7 +422,7 @@
         "scope": "ORDER",
         "semantic": "CANCELLED",
         "code": "疑难",
-        "text": "订单已取消",
+        "text": "已取消",
         "eventAtMs": 1789286113000,
         "display": {
           "semantic": "CANCELLED",

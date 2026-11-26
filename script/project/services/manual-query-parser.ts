@@ -4,6 +4,8 @@ import {
   headlineTrack,
   isNonEventDetail,
   isProviderErrorDetail,
+  meizuCoarseStatus,
+  meizuFailedDescriptionProjection,
   packageSemantic,
   parseProviderTime,
   semanticFromStored,
@@ -31,13 +33,18 @@ export type ParsedManualTimeline = {
   normalizedStatus?: NormalizedStatus;
 };
 
+// Meizu Online's coarse status arrives under the upstream spelling `logsiticsStatus`, and `stateName` is its
+// second structured description field: both are kept so a cached node can be read again through the customs
+// refinement (owner 2026-11-20, 补充修改五; third review C-02, 2026-11-23).
 const RETAINED_TRACK_RAW_FIELDS = [
   "normalizedStatus",
   "statusCode",
   "status",
   "state",
+  "logsiticsStatus",
   "logisticsStatus",
   "logisticsStatusDesc",
+  "stateName",
   "action",
   "areaCode",
   "location",
@@ -88,8 +95,10 @@ function presentation(
   statusEventAtMs: number | null,
   hasStructuredStatus: boolean,
   root: JsonObject,
+  localProjection?: NormalizedStatus,
 ): ParsedManualTimeline {
-  const normalizedStatus = responseNormalizedStatus(root) || responseNormalizedStatus(root.data);
+  const normalizedStatus = responseNormalizedStatus(root) || responseNormalizedStatus(root.data) ||
+    localProjection;
   const timed = sortedTracks(usableTimedTracks(tracks));
   const meaningful = sortedTracks(tracks.filter(
     (track) => Boolean(track.detail.trim()) && !isNonEventDetail(track.detail),
@@ -226,11 +235,6 @@ export function parseMotoTimeline(root: JsonObject): ParsedManualTimeline {
   );
 }
 
-const MEIZU_STRUCTURED_STATUS_FIELDS = [
-  "status",
-  "state",
-  "logsiticsStatus",
-] as const;
 const MEIZU_CONTAINER_FIELDS = ["value", "data", "manual"] as const;
 const MEIZU_MAX_ENVELOPE_DEPTH = 12;
 
@@ -239,6 +243,8 @@ type CollectedMeizuTimeline = {
   newestStatus: StatusSemantic;
   newestStatusAtMs: number;
   ambiguousNewestStatus: boolean;
+  /** The local customs projection of the newest status, when the Worker sent none. */
+  newestProjection?: NormalizedStatus;
 };
 
 export function decodeMeizuEnvelope(value: unknown): unknown {
@@ -257,22 +263,19 @@ export function decodeMeizuEnvelope(value: unknown): unknown {
   }
 }
 
-function exactMeizuSemantic(value: unknown): StatusSemantic {
-  if (typeof value !== "string" || value !== value.trim().toUpperCase()) {
-    return "UNKNOWN";
-  }
-  return semanticFromStored(value, "");
+/**
+ * A node's structured Meizu status: the coarse fields `logsiticsStatus`, `logisticsStatus`, `status` and
+ * `state` in the Worker's order, recognized values that disagree giving UNKNOWN (owner 2026-11-21
+ * 「Read it for every status」, the Worker, Lite and Bot reading; §6.4 amendment).
+ */
+function structuredMeizuSemantic(value: JsonObject): StatusSemantic {
+  return meizuCoarseStatus(value).semantic;
 }
 
-function structuredMeizuSemantic(value: JsonObject): StatusSemantic {
-  let semantic: StatusSemantic = "UNKNOWN";
-  for (const field of MEIZU_STRUCTURED_STATUS_FIELDS) {
-    const candidate = exactMeizuSemantic(value[field]);
-    if (candidate === "UNKNOWN") continue;
-    if (semantic !== "UNKNOWN" && semantic !== candidate) return "UNKNOWN";
-    semantic = candidate;
-  }
-  return semantic;
+/** The coarse value the customs refinement reads: the node's recognized FAILED-bucket code, or "". */
+function meizuDangerStatus(value: JsonObject): string {
+  const coarse = meizuCoarseStatus(value);
+  return coarse.semantic === "DANGER" ? coarse.code : "";
 }
 
 function hasMeizuContainer(value: JsonObject): boolean {
@@ -298,17 +301,25 @@ function considerMeizuStatus(
   collected: CollectedMeizuTimeline,
   semantic: StatusSemantic,
   eventAtMs: number | null,
+  projection?: NormalizedStatus,
 ): void {
   if (semantic === "UNKNOWN" || eventAtMs == null) return;
   if (eventAtMs > collected.newestStatusAtMs) {
     collected.newestStatus = semantic;
     collected.newestStatusAtMs = eventAtMs;
     collected.ambiguousNewestStatus = false;
+    collected.newestProjection = projection;
   } else if (
     eventAtMs === collected.newestStatusAtMs &&
     semantic !== collected.newestStatus
   ) {
     collected.ambiguousNewestStatus = true;
+  } else if (
+    eventAtMs === collected.newestStatusAtMs &&
+    (projection?.priority ?? 0) > (collected.newestProjection?.priority ?? 0)
+  ) {
+    // The Worker's evidence selection prefers the subtype at one clock.
+    collected.newestProjection = projection;
   }
 }
 
@@ -329,15 +340,19 @@ function collectMeizuTimeline(
   if (!decoded || typeof decoded !== "object") return;
 
   const item = decoded as JsonObject;
-  const structured = structuredMeizuSemantic(item);
   // `refresh`（queryByMailNoOnline）回的是列表记录形状：最新一条在 lastLogisticDetail /
   // logisticsGmtModified，没有 time/context（用户定 2026-09-04：顺丰列表轮用 refresh）。
   const eventTimeText = firstText(item, "time", "logisticsGmtModified");
   const eventAtMs = parseProviderTime(eventTimeText);
+  // Customs clearance (owner 2026-11-20): FAILED refined by its exact structured description, the
+  // projection the Worker gives this node; a Worker projection already on the node decides itself.
+  const local = responseNormalizedStatus(item) ? undefined
+    : meizuFailedDescriptionProjection(item, meizuDangerStatus(item), eventAtMs);
+  const structured = local?.semantic ?? structuredMeizuSemantic(item);
   const detail = meizuPresentation(item);
   const providerError = isProviderErrorDetail(detail);
   if (!providerError) {
-    considerMeizuStatus(collected, structured, eventAtMs);
+    considerMeizuStatus(collected, structured, eventAtMs, local);
   }
   if (
     !providerError && (
@@ -351,6 +366,7 @@ function collectMeizuTimeline(
       ...item,
       ...(detail && !firstText(item, "context") ? { context: detail } : {}),
       ...(eventTimeText && !firstText(item, "time") ? { time: eventTimeText } : {}),
+      ...(local ? { normalizedStatus: local } : {}),
     });
   }
 
@@ -383,10 +399,17 @@ export function parseMeizuTimeline(root: JsonObject): ParsedManualTimeline {
       seen.add(identity);
       return true;
     });
-  const fallbackSemantic = isProviderErrorDetail(meizuPresentation(root))
+  const rootProviderError = isProviderErrorDetail(meizuPresentation(root));
+  // The root's coarse fields in the Worker's order with its disagreement rule (owner 2026-11-21).
+  const rootCoarse = meizuCoarseStatus(root, (value) => semanticFromStored(value, ""));
+  const rootStatus = rootCoarse.code;
+  const rootLocal = rootProviderError || responseNormalizedStatus(root)
+    ? undefined
+    : meizuFailedDescriptionProjection(root, rootStatus, statusEventAt("TRANSIT", tracks));
+  const fallbackSemantic = rootProviderError || rootCoarse.conflict
     ? "UNKNOWN"
-    : semanticFromStored(
-      firstText(root, "status", "state", "logisticsStatus"),
+    : rootLocal?.semantic ?? semanticFromStored(
+      rootStatus,
       firstText(root, "stateName", "logisticsStatusDesc"),
     );
   const semantic = collected.ambiguousNewestStatus
@@ -397,12 +420,16 @@ export function parseMeizuTimeline(root: JsonObject): ParsedManualTimeline {
   const eventAtMs = semantic === collected.newestStatus
     ? collected.newestStatusAtMs || null
     : statusEventAt(semantic, tracks);
+  const localProjection = semantic === "UNKNOWN" ? undefined
+    : semantic === collected.newestStatus ? collected.newestProjection
+    : rootLocal?.semantic === semantic ? rootLocal : undefined;
   return presentation(
     tracks,
     semantic,
     eventAtMs,
     false,
     root,
+    localProjection,
   );
 }
 

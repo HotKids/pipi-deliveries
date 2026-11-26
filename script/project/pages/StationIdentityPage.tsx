@@ -1,14 +1,14 @@
 import {
   AbortController, AppEvents, Button, Canvas, Form, GeometryReader, HStack, Image, ProgressView, QRImage, Section,
-  Text, VStack, ZStack, useEffect, useMemo, useObservable, useRef, useState,
+  Text, VStack, useEffect, useMemo, useObservable, useRef, useState,
 } from "scripting";
 import { ExpandedQRCode, ScanCodeNumber, ScanCodeShrinkHint, ScanCodeSurface } from "../components/ExpandedScanCode";
 import { PICKUP_CARD_SPACING } from "../services/parcel-card-appearance";
 import { bundledImage } from "../components/bundled-image";
 import { iconTileShape } from "../components/icon-tile";
-import { tabCapsuleSurface } from "../components/TabFloatingActionButton";
 import { copyText } from "../services/clipboard";
-import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
+import { EXPRESS_TOAST_COPY, PICKUP_TOAST_COPY } from "../services/express-toast-copy";
+import { safeRead } from "../services/safe-read";
 import { code128Widths } from "../services/code128";
 import { currentPlatformSession, onPlatformAccountsChanged, platformSession,
   type IdentityPlatform, type PlatformSession } from "../services/platform-accounts";
@@ -28,8 +28,9 @@ type ScanFormat = "barcode" | "qr";
 type ScanState = [value: string, expiresAtMs: number, remaining: number, mobile: string];
 const EMPTY_SCAN: ScanState = ["", 0, 0, ""];
 const identityCache = new Map<IdentityVariant, { generation: string; code: StationIdentityCode }>();
-const BARCODE_SHAPE = { type: "rect", cornerRadius: 10, style: "continuous" } as const;
-const QR_SHAPE = { type: "rect", cornerRadius: 14, style: "continuous" } as const;
+const BARCODE_SHAPE = { type: "rect", cornerRadius: 16, style: "continuous" } as const;
+const QR_SHAPE = { type: "rect", cornerRadius: 12, style: "continuous" } as const;
+const MAX_BARCODE_VALUE_LENGTH = 80;
 const DETAIL_ROW_INSETS = { top: 12, bottom: 12, leading: 16, trailing: 16 };
 const SCAN_ROW_INSETS = { ...DETAIL_ROW_INSETS, leading: 8, trailing: 8 };
 const DETAIL_ROW_HEIGHT = 44;
@@ -100,14 +101,17 @@ function Barcode({ widthList, width, height }: {
   );
 }
 
-function countdown(seconds: number): string {
+function countdown(seconds: number, renewalFailed = false): string {
   const minutes = String(Math.floor(seconds / 60)).padStart(2, "0");
-  return seconds > 1 ? `${minutes}:${String(seconds % 60).padStart(2, "0")} 后自动刷新` : "正在自动刷新…";
+  const mmss = `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+  if (renewalFailed) return seconds > 0 ? `${mmss} 后过期` : "身份码已过期";
+  return seconds > 1 ? `${mmss} 后自动刷新` : "正在自动刷新…";
 }
 
-function FullScreenIdentity({ format, scan, onClose }: {
+function FullScreenIdentity({ format, scan, renewalFailed, onClose }: {
   format: ScanFormat;
   scan: Observable<ScanState>;
+  renewalFailed: boolean;
   onClose: () => void;
 }) {
   const [[value, , remaining, mobile], setScan] = useState(() => scan.value);
@@ -116,11 +120,12 @@ function FullScreenIdentity({ format, scan, onClose }: {
     setScan(scan.value);
     return () => scan.unsubscribe(setScan);
   }, [scan]);
-  const widths = useMemo(() => value ? code128Widths(value) : [], [value]);
-  const time = <Text font={12} monospacedDigit foregroundStyle="#636366">{countdown(remaining)}</Text>;
+  const canRenderBarcode = Boolean(value) && value.length <= MAX_BARCODE_VALUE_LENGTH;
+  const widths = useMemo(() => (canRenderBarcode ? code128Widths(value) : []), [canRenderBarcode, value]);
+  const time = <Text font="caption" monospacedDigit foregroundStyle="secondaryLabel">{countdown(remaining, renewalFailed)}</Text>;
   return (
-    <ScanCodeSurface closeLabel="缩小身份码" onClose={onClose}>
-      {value && remaining > 0 ? format === "barcode" ? (
+    <ScanCodeSurface closeLabel="缩小身份码" onClose={onClose} followsSystemAppearance>
+      {value && remaining > 0 ? format === "barcode" && widths.length > 0 ? (
         <GeometryReader>
           {({ size }) => {
             const portrait = size.height > size.width;
@@ -129,8 +134,10 @@ function FullScreenIdentity({ format, scan, onClose }: {
             return (
               <VStack spacing={12} frame={{ width: length }} rotationEffect={portrait ? 90 : 0}
                 position={{ x: size.width / 2, y: size.height / 2 }}>
-                {mobile ? <Text font={16} fontWeight="semibold" foregroundStyle="#1C1C1E">{mobile}</Text> : null}
-                <Barcode widthList={widths} width={length} height={thickness} />
+                {mobile ? <Text font={16} fontWeight="semibold" monospacedDigit foregroundStyle="label">{mobile}</Text> : null}
+                <VStack padding={{ vertical: 12, horizontal: 12 }} background={{ style: "white", shape: BARCODE_SHAPE }}>
+                  <Barcode widthList={widths} width={Math.max(120, length - 24)} height={thickness} />
+                </VStack>
                 <VStack spacing={4}><ScanCodeNumber value={value} /><ScanCodeShrinkHint />{time}</VStack>
               </VStack>
             );
@@ -138,7 +145,7 @@ function FullScreenIdentity({ format, scan, onClose }: {
         </GeometryReader>
       ) : (
         <ExpandedQRCode data={value} number={value} footer={time} />
-      ) : <Text font={15} foregroundStyle="#636366">身份码已过期</Text>}
+      ) : <Text font={15} foregroundStyle="secondaryLabel">身份码已过期</Text>}
     </ScanCodeSurface>
   );
 }
@@ -147,14 +154,16 @@ export function StationIdentityPage({ platform, onBindingUnavailable }: {
   platform: IdentityPlatform;
   onBindingUnavailable: () => void;
 }) {
-  const [generation, setGeneration] = useState(() => platformSession(platform)?.generation);
+  // Keychain and storage reads here have no caller to catch them (G-MED-20): a failure reads as no binding or the
+  // default page.
+  const [generation, setGeneration] = useState(() => safeRead(() => platformSession(platform)?.generation, undefined));
   const [outbound, setOutbound] = useState(() =>
-    platform === "cainiao" && Storage.get<boolean>(CAINIAO_OUTBOUND_PREFERENCE) === true);
+    safeRead(() => platform === "cainiao" && Storage.get<boolean>(CAINIAO_OUTBOUND_PREFERENCE) === true, false));
   const handedOff = useRef(false);
   const variant = outbound && platform === "cainiao" ? "cainiao-outbound" : platform;
   useEffect(() => {
     function updateBinding() {
-      const next = platformSession(platform)?.generation;
+      const next = safeRead(() => platformSession(platform)?.generation, undefined);
       if (identityCache.get(platform)?.generation !== next) identityCache.delete(platform);
       if (platform === "cainiao" && identityCache.get("cainiao-outbound")?.generation !== next) {
         identityCache.delete("cainiao-outbound");
@@ -174,7 +183,7 @@ export function StationIdentityPage({ platform, onBindingUnavailable }: {
   return generation
     ? <StationIdentityContent key={`${generation}:${variant}`} platform={platform} variant={variant}
         expectedGeneration={generation} onSwitchCainiao={() => {
-          Storage.set(CAINIAO_OUTBOUND_PREFERENCE, !outbound);
+          safeRead(() => Storage.set(CAINIAO_OUTBOUND_PREFERENCE, !outbound), false);
           setOutbound(!outbound);
         }} />
     : <VStack />;
@@ -193,6 +202,8 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
   const busy = loading !== null;
   const [notice, setNotice] = useState("");
   const [failure, setFailure] = useState<"verification" | "unavailable" | null>(null);
+  const [accountChanged, setAccountChanged] = useState(false);
+  const [renewalFailed, setRenewalFailed] = useState(false);
   const active = useRef(true);
   const mounted = useRef(true);
   const openingRecovery = useRef(false);
@@ -200,8 +211,9 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
   const countdownTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const generation = useRef(0);
   const requestedRenewal = useRef(0);
-  const widthList = useMemo(() => value ? code128Widths(value) : [], [value]);
-  const currentSession = () => currentPlatformSession(platform, expectedGeneration);
+  const canRenderBarcode = Boolean(value) && value.length <= MAX_BARCODE_VALUE_LENGTH;
+  const widthList = useMemo(() => (canRenderBarcode ? code128Widths(value) : []), [canRenderBarcode, value]);
+  const currentSession = () => safeRead(() => currentPlatformSession(platform, expectedGeneration), null);
   const cainiaoOutbound = variant === "cainiao-outbound";
   const providerName = cainiaoOutbound ? "菜鸟" : platform === "cainiao" ? "淘宝" : "拼多多";
 
@@ -213,11 +225,11 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
       const app = cainiaoOutbound ? CAINIAO_OUTBOUND_APP_URL : IDENTITY_APP_URL[platform];
       if (destination === "app" && await Safari.openURL(app).catch(() => false)) return;
       if (mounted.current && currentSession()) {
-        setNotice("正在打开身份码");
+        setNotice(PICKUP_TOAST_COPY.identityCodeOpening);
         await openWebIdentity(platform, session, variant);
       }
     } catch {
-      if (mounted.current && currentSession()) setNotice("无法打开网页身份码，请稍后重试");
+      if (mounted.current && currentSession()) setNotice(PICKUP_TOAST_COPY.identityCodeWebUnavailable);
     } finally {
       openingRecovery.current = false;
     }
@@ -227,7 +239,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
     if (!value || !currentSession() || expiresAtMs <= Date.now()) return;
     const result = await copyText(value);
     if (mounted.current && currentSession()) {
-      setNotice(result === "copied" ? "身份码已复制" : EXPRESS_TOAST_COPY.copyFailed);
+      setNotice(result === "copied" ? PICKUP_TOAST_COPY.identityCodeCopied : EXPRESS_TOAST_COPY.copyFailed);
     }
   }
 
@@ -238,7 +250,9 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
 
   function clear() {
     generation.current++;
+    requestedRenewal.current = 0;
     cancelCountdown();
+    setRenewalFailed(false);
     scan.setValue(EMPTY_SCAN);
   }
 
@@ -250,8 +264,11 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
     const left = Math.max(0, Math.ceil((expiresAtMs - time) / 1_000));
     if (left !== remaining) scan.setValue(left ? [value, expiresAtMs, left, mobile] : EMPTY_SCAN);
     if (left) countdownTimer.current = setTimeout(tick, 500);
-    if (expiresAtMs - time <= 1_000 && requestedRenewal.current !== expiresAtMs) {
+    if (expiresAtMs - time <= 1_500 && requestedRenewal.current !== expiresAtMs) {
       requestedRenewal.current = expiresAtMs;
+      void refresh();
+    } else if (left === 0 && !requestInFlight.current) {
+      requestedRenewal.current = 0;
       void refresh();
     }
   }
@@ -260,6 +277,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
     if (!mounted.current || !active.current || request !== generation.current) return;
     const remaining = Math.ceil((code.expiresAtMs - Date.now()) / 1_000);
     if (remaining <= 0) return;
+    setRenewalFailed(false);
     scan.setValue([code.value, code.expiresAtMs, remaining, code.mobile ?? ""]);
     if (countdownTimer.current === undefined) countdownTimer.current = setTimeout(tick, 500);
   }
@@ -267,13 +285,18 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
   async function refresh(manual = false) {
     if (requestInFlight.current || !active.current || !mounted.current) return;
     const session = currentSession();
-    if (!session) return;
+    if (!session) {
+      clear();
+      setAccountChanged(true);
+      return;
+    }
     const request = generation.current;
     const controller = new AbortController();
     requestInFlight.current = controller;
     setLoading(manual ? "manual" : "automatic");
     setFailure(null);
-    if (manual) setNotice("正在获取身份码…");
+    setAccountChanged(false);
+    if (manual) setNotice(PICKUP_TOAST_COPY.identityCodeLoading);
     try {
       const code = await fetchStationIdentity(platform, session, controller.signal, cainiaoOutbound);
       if (controller.signal.aborted || !currentSession()) return;
@@ -282,14 +305,20 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
       showCode(code, request);
     } catch (error) {
       if (mounted.current && active.current && request === generation.current) {
-        const reason = error instanceof PlatformWireError ? error.reason : "unavailable";
-        setFailure(reason === "verification" ? reason : "unavailable");
+        if (!currentSession()) {
+          clear();
+          setAccountChanged(true);
+        } else {
+          const reason = error instanceof PlatformWireError ? error.reason : "unavailable";
+          setFailure(reason === "verification" ? reason : "unavailable");
+          if (scan.value[0] && scan.value[1] > Date.now()) setRenewalFailed(true);
+        }
       }
     } finally {
       requestInFlight.current = undefined;
       if (mounted.current) {
         setLoading(null);
-        if (active.current && request !== generation.current && !scan.value[0]) void refresh();
+        if (active.current && request !== generation.current && !scan.value[0] && currentSession()) void refresh();
       }
     }
   }
@@ -304,6 +333,14 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
         clear();
       }
     };
+    const unsubscribeAccount = onPlatformAccountsChanged((changed) => {
+      if (changed !== platform || currentSession()) return;
+      requestInFlight.current?.abort();
+      clear();
+      setFull(null);
+      setFailure(null);
+      setAccountChanged(true);
+    });
     AppEvents.scenePhase.addListener(onScene);
     const cached = identityCache.get(variant);
     if (cached?.generation === expectedGeneration && currentSession()) showCode(cached.code, generation.current);
@@ -312,16 +349,19 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
       mounted.current = false;
       cancelCountdown();
       requestInFlight.current?.abort();
+      unsubscribeAccount();
       AppEvents.scenePhase.removeListener(onScene);
     };
   }, []);
 
   const valid = Boolean(value) && remaining > 0;
   const showNumber = valid || (platform === "cainiao" && !busy && failure !== null);
-  const showRecovery = !valid && !busy;
+  const showRecovery = !valid && !busy && !accountChanged;
   // Never fade out an expired barcode or its number during an identity change.
   const revealResult = Transition.asymmetric(Transition.opacity(), Transition.identity());
-  const status = busy ? "正在获取身份码…" : failure === "verification" ? "请完成安全验证"
+  const status = busy ? "正在获取身份码…" : accountChanged
+    ? "账号已变更或登录已失效，请重新打开身份码"
+    : failure === "verification" ? "请完成安全验证"
     : failure === "unavailable" ? "未获取到身份码，请点右上角重试" : "身份码已过期";
   const manualProgress = loading === "manual"
     ? <ProgressView progressViewStyle="circular" accessibilityLabel="正在获取身份码" /> : null;
@@ -346,26 +386,32 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
             isPresented: full !== null,
             onChanged: (shown) => { if (!shown) setFull(null); },
             content: full ? (
-              <FullScreenIdentity format={full} scan={scan} onClose={() => setFull(null)} />
+              <FullScreenIdentity format={full} scan={scan} renewalFailed={renewalFailed} onClose={() => setFull(null)} />
             ) : <VStack />,
           }}>
           {valid ? (
             <VStack spacing={12} frame={{ maxWidth: "infinity" }} transition={revealResult}>
-              <Button buttonStyle="plain" action={() => { setFull("barcode"); void refresh(); }}>
-                <VStack padding={{ vertical: 8, horizontal: 4 }} frame={{ maxWidth: "infinity" }}
-                  background={{ style: "white", shape: BARCODE_SHAPE }} contentShape="rect">
-                  <Barcode widthList={widthList} height={78} />
-                </VStack>
-              </Button>
+              {widthList.length > 0 ? (
+                <Button buttonStyle="plain" action={() => { setFull("barcode"); void refresh(); }}>
+                  <VStack padding={{ vertical: 8, horizontal: 4 }} frame={{ maxWidth: "infinity" }}
+                    background={{ style: "white", shape: BARCODE_SHAPE }} contentShape="rect">
+                    <Barcode widthList={widthList} height={78} />
+                  </VStack>
+                </Button>
+              ) : null}
               <Button buttonStyle="plain" action={() => { setFull("qr"); void refresh(); }}>
-                <VStack padding={10} frame={{ width: 200, height: 200 }}
+                <VStack padding={12} frame={{ width: 200, height: 200 }}
                   background={{ style: "white", shape: QR_SHAPE }} contentShape="rect">
-                  <QRImage data={value} size={184} />
+                  <QRImage data={value} size={176} />
                 </VStack>
               </Button>
-              <Text font={13} foregroundStyle="secondaryLabel">点击条形码或二维码可放大刷新</Text>
-              {manualProgress ?? <Text font={12} foregroundStyle={remaining > 60 ? "tertiaryLabel" : "systemRed"}>
-                {busy ? "正在刷新…" : countdown(remaining)}
+              {widthList.length > 0 ? (
+                <Text font={13} foregroundStyle="secondaryLabel">点击条形码或二维码可放大刷新</Text>
+              ) : (
+                <Text font={13} foregroundStyle="secondaryLabel">点击二维码可放大刷新</Text>
+              )}
+              {manualProgress ?? <Text font={12} monospacedDigit foregroundStyle={remaining > 60 && !renewalFailed ? "tertiaryLabel" : "systemRed"}>
+                {busy ? "正在刷新…" : countdown(remaining, renewalFailed)}
               </Text>}
             </VStack>
           ) : manualProgress ? (
@@ -380,7 +426,7 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
         <Section key="identity-recipient" transition={revealResult} header={detailTitle("取件人")}>
           <HStack frame={{ minHeight: DETAIL_ROW_HEIGHT }} listRowInsets={DETAIL_ROW_INSETS}>
             <Text font={16}>绑定手机号</Text>
-            <Text font={16} foregroundStyle="secondaryLabel"
+            <Text font={16} monospacedDigit foregroundStyle="secondaryLabel"
               frame={{ maxWidth: "infinity", alignment: "trailing" }}>{mobile}</Text>
           </HStack>
         </Section>
@@ -398,18 +444,18 @@ function StationIdentityContent({ platform, variant, expectedGeneration, onSwitc
             ) : <HStack frame={{ width: 48, alignment: "leading" }}>
               <StationIdentityMark asset={markAsset} size={DETAIL_MARK_SIZE} />
             </HStack>}
-            <Text font={valid ? 24 : 16} fontWeight={valid ? "bold" : undefined}
+            <Text font={valid ? 24 : 16} fontWeight={valid ? "bold" : undefined} monospacedDigit
               foregroundStyle={valid ? "label" : "secondaryLabel"} lineLimit={1} minScaleFactor={0.55}
               frame={{ maxWidth: "infinity", alignment: valid ? "leading" : "trailing" }}>
               {valid ? value.replace(/(\d{4})(\d{4})(\d{4})/, "$1 $2 $3") : "暂无编号"}
             </Text>
-            {valid ? <Button buttonStyle="plain" padding={{ leading: 12 }} action={() => void copyIdentity()}>
-              <ZStack frame={{ minWidth: DETAIL_ROW_HEIGHT, minHeight: DETAIL_ROW_HEIGHT }} contentShape="rect">
-                <Text font={14} fontWeight="semibold" foregroundStyle="accentColor"
-                  frame={{ minHeight: DETAIL_MARK_SIZE }} padding={{ horizontal: 12 }}
-                  {...tabCapsuleSurface(true)}>复制</Text>
-              </ZStack>
-            </Button> : null}
+            {valid ? <Button
+              title="复制"
+              buttonStyle="bordered"
+              buttonBorderShape="capsule"
+              padding={{ leading: 12 }}
+              action={() => void copyIdentity()}
+            /> : null}
           </HStack>
         </Section>
       ) : null}

@@ -230,7 +230,8 @@ assert.ok(homeSource.includes("setNotice(EXPRESS_TOAST_COPY.deleted)"));
 // must name the same failure, and a failed deletion must not be reported as a failed query.
 assert.match(
   homeSource,
-  /setNotice\(refreshSummaryToast\(summary\)\);[\s\S]{0,320}?setNotice\(EXPRESS_TOAST_COPY\.refreshFailed\)/,
+  // G-HIGH-10: the resolved pull's summary first counts its Watch read.
+  /setNotice\(refreshSummaryToast\(withWatchPullOutcome\(summary, watch \|\| undefined\)\)\);[\s\S]{0,320}?setNotice\(EXPRESS_TOAST_COPY\.refreshFailed\)/,
   "a rejected refresh must name the same failure refreshSummaryToast names",
 );
 assert.match(
@@ -265,7 +266,7 @@ const completion = stripTypeScriptTypes(app.slice(
 ));
 const pickup = await readFile(resolve(projectDir, "pages/PickupPage.tsx"), "utf8");
 assert.match(app, /<PickupPage[\s\S]*?toast=\{transientToast\(pickupNotice, setPickupNotice\)\}/);
-assert.match(pickup, /<VStack navigationBarVisibility="hidden" spacing=\{0\} toast=\{toast\}/);
+assert.match(pickup, /<VStack spacing=\{0\} toast=\{toast\}/);
 const pickupNotices: string[] = [];
 let rowVisible = true;
 const finishPickup = Function("scope", `with(scope) { ${completion}; return finishPickup; }`)({

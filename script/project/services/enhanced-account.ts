@@ -5,7 +5,7 @@ import type { AccountParcelDto } from "./account-parser";
 import { matchBoundPhone } from "./account-parser";
 import { postGateway } from "./gateway";
 import { remainingTimeoutMs } from "./deadline";
-import { diagnosticErrorDetails, writeDiagnostic } from "./logger";
+import { beginDiagnosticOperation, diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { readDurableTextResult, writeDurableText } from "./durable-files";
 import { withSharedFileTransaction } from "./shared-file-transaction";
 import { utf8Data } from "./scripting-data";
@@ -121,21 +121,32 @@ export function enhancementOperation(operation: "bind", phone: string, options?:
 export function enhancementOperation(operation: "code" | "unbind", phone: string, options?: EnhancementOperationOptions): Promise<void>;
 export async function enhancementOperation(operation: "code" | "bind" | "unbind", phone: string,
   options: EnhancementOperationOptions = {}): Promise<string | void> {
+  // D118: one end line per Samsung enhancement request (code, bind or unbind), without the phone, code or identity.
+  const finish = beginDiagnosticOperation("account.enhanced.operation", { stage: operation });
   if (!/^1[3-9]\d{9}$/.test(phone) || (operation === "bind" && !/^\d{4,8}$/.test(options.code || ""))) {
+    finish("invalid_input");
     throw new Error("请输入正确的手机号和验证码");
   }
-  const identity = operation === "unbind" ? existingEnhancementIdentity() : loadEnhancementIdentity();
-  if (!identity) throw new EnhancementIdentityMissing();
-  const identityFingerprint = enhancementIdentityFingerprint(identity);
-  if (operation === "unbind" && options.expectedIdentityFingerprint !== identityFingerprint) {
-    throw new Error("无法确认增强模式原订阅身份，请重新验证绑定该手机号");
+  try {
+    const identity = operation === "unbind" ? existingEnhancementIdentity() : loadEnhancementIdentity();
+    if (!identity) throw new EnhancementIdentityMissing();
+    const identityFingerprint = enhancementIdentityFingerprint(identity);
+    if (operation === "unbind" && options.expectedIdentityFingerprint !== identityFingerprint) {
+      finish("identity_unavailable", {}, "warning");
+      throw new Error("无法确认增强模式原订阅身份，请重新验证绑定该手机号");
+    }
+    const result = await postGateway(ENHANCEMENT_ROUTE, { operation, phone,
+      identity, ...(options.code ? { code: options.code } : {}) }, {
+      timeoutMs: remainingTimeoutMs(options.deadlineAtMs, 25_000), deadlineAtMs: options.deadlineAtMs,
+    });
+    if (result.ok !== true) throw new Error("增强模式操作失败，请稍后重试");
+    finish("succeeded");
+    if (operation === "bind") return identityFingerprint;
+  } catch (error) {
+    finish(error instanceof EnhancementIdentityMissing ? "identity_unavailable" : "failed",
+      diagnosticErrorDetails(error), "warning");
+    throw error;
   }
-  const result = await postGateway(ENHANCEMENT_ROUTE, { operation, phone,
-    identity, ...(options.code ? { code: options.code } : {}) }, {
-    timeoutMs: remainingTimeoutMs(options.deadlineAtMs, 25_000), deadlineAtMs: options.deadlineAtMs,
-  });
-  if (result.ok !== true) throw new Error("增强模式操作失败，请稍后重试");
-  if (operation === "bind") return identityFingerprint;
 }
 
 export function enhancementPhone(parcel: AccountParcelDto, bindings: readonly AccountBinding[]): string {

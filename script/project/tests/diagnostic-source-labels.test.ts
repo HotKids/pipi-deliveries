@@ -9,7 +9,7 @@ for (const [sourceProvider, expected] of [
   memory.clear();
   setDiagnosticsEnabled(true);
   const identity = Object.freeze({ sourceProvider });
-  writeDiagnostic("detail.refresh.started", identity);
+  writeDiagnostic("detail.refresh.committed", identity);
   assert.equal(readDiagnostics()[0]?.details.sourceProvider, expected);
   assert.ok(diagnosticText().includes(`sourceProvider=${expected}`));
   assert.equal(identity.sourceProvider, sourceProvider, "log naming never rewrites business identity");

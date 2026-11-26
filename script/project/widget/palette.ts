@@ -1,25 +1,22 @@
 import type { ColorStringHex, ColorStringRGBA } from "scripting";
 import { carrierArtworkAccent, courierIconName } from "../services/carrier-presentation";
 import type { StatusSemantic } from "../models";
-import { blendStatusColor, statusTextAccent, statusTextTint } from "../services/status";
+import { brandGradientStatusTint, statusTextAccent } from "../services/status";
 
+// The status badge keeps its 0x1A light-text fill; the text keeps the shared pair unless the carrier
+// brand gradient pushes it under the 3.0:1 floor (owner 2026-11-20, 修改 11).
 export function widgetStatusStyle(semantic: StatusSemantic, brandAccent: string, label = "") {
   const accent = statusTextAccent(semantic, label);
   const opacity = 0x1a / 255;
-  const foreground = statusTextTint(semantic, { brandAccent, badgeOpacity: opacity, label });
-  const light = blendStatusColor(accent, Number.parseInt(foreground.light.slice(1), 16), 0.5);
   return {
     background: `rgba(${accent >> 16 & 255}, ${accent >> 8 & 255}, ${accent & 255}, ${opacity})` as ColorStringRGBA,
-    foreground: { light: `#${light.toString(16).padStart(6, "0")}`, dark: foreground.dark },
+    foreground: brandGradientStatusTint(semantic, { brandAccent, badgeOpacity: opacity, label }),
   } as const;
 }
 
 export const EMPTY_WIDGET_ACCENT = "#3482FF";
 
-export const EMPTY_WIDGET_TEXT_COLOR = {
-  light: "rgba(0, 0, 0, 0.3)",
-  dark: "rgba(255, 255, 255, 0.3)",
-} as const;
+export const EMPTY_WIDGET_TEXT_COLOR = "secondaryLabel" as const;
 
 type RGB = readonly [number, number, number];
 

@@ -30,6 +30,7 @@
     "LH_HO": "TRANSIT",
     "CC_HO": "TRANSIT",
     "在途": "TRANSIT",
+    "CUSTOMS_CLEARANCE": "TRANSIT",
     "DELIVERING": "DELIVERY",
     "DELIVERY": "DELIVERY",
     "DELIVER": "DELIVERY",
@@ -121,7 +122,8 @@
       "405": "DANGER",
       "406": "COMPLETED",
       "407": "DANGER",
-      "412": "WAITING_PICKUP"
+      "412": "WAITING_PICKUP",
+      "602": "TRANSIT"
     },
     "v5": {
       "CREATE": "ORDERED",
@@ -1481,6 +1483,19 @@
       }
     },
     {
+      "code": "CUSTOMS_CLEARANCE",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "CUSTOMS_CLEARANCE",
+        "text": "清关中",
+        "priority": 1,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
       "code": "DELIVERING",
       "expected": {
         "version": 1,
@@ -2032,9 +2047,9 @@
         "version": 1,
         "scope": "SHIPMENT",
         "semantic": "TRANSIT",
-        "code": "11",
-        "text": "运输中",
-        "priority": 0,
+        "code": "CUSTOMS_CLEARANCE",
+        "text": "清关中",
+        "priority": 1,
         "eventAtMs": 0,
         "structured": true
       }
@@ -2665,6 +2680,20 @@
         "code": "412",
         "text": "待取件",
         "priority": 0,
+        "eventAtMs": 0,
+        "structured": true
+      }
+    },
+    {
+      "provider": "kdniao",
+      "code": "602",
+      "expected": {
+        "version": 1,
+        "scope": "SHIPMENT",
+        "semantic": "TRANSIT",
+        "code": "CUSTOMS_CLEARANCE",
+        "text": "清关中",
+        "priority": 1,
         "eventAtMs": 0,
         "structured": true
       }

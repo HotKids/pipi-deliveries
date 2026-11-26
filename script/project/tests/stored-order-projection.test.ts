@@ -166,7 +166,8 @@ registerProjectionViewportHost(viewportHost);
     ?.identity.projectedWaybill, WAYBILL, "the pass hands the committed state to the page");
   const committed = projectionEvents().find((entry) => entry.event === "order.projection.committed");
   assert.equal(committed?.details.result, "applied");
-  assert.match(String(committed?.details.flowId), /^home-projection-/);
+  // D8 (owner 2026-11-21 「三项都改（推荐）」): a flow id is a non-negative number; the pass is named by its trigger.
+  assert.match(String(committed?.details.flowId), /^\d+$/);
   assert.equal(durableRefreshLeaseRemainingMs("full:interface5"), 0, "the pass released full:<source>");
 }
 

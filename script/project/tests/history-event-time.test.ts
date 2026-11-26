@@ -319,10 +319,18 @@ test("the actual detail entry repairs old H5 history with one account query", as
     const cached = loadState(NOW).shipments[0];
     assert.equal(selectShipmentDetailTimeline(cached).provider, "v5_query");
     assert.equal(cached.sourceTimeline!.tracks.length, 0);
-    const start = readDiagnostics().find(entry => entry.event === "detail.refresh.stage_started")!.details;
-    assert.equal(start.latestEventAtMs, EVENT);
-    assert.equal(start.statusEventAtMs, EVENT);
-    assert.equal(start.latestTrackAtMs, OLD_H5_EVENT, "diagnostics distinguish old tracks from account display fields");
-    assert.equal(start.incompleteReason, "time_mismatch");
+    // D4 (owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): the stage writes no start line. Its end line keeps the
+    // start's reason for running (the old H5 history's time mismatch) beside its own result, the repaired history.
+    assert.equal(readDiagnostics().some(entry => entry.event === "detail.refresh.stage_started"), false);
+    const endEntry = readDiagnostics().find(entry => entry.event === "detail.refresh.stage_succeeded" &&
+      entry.details.stage === "v5_query")!;
+    const end = endEntry.details;
+    // D6 (owner 2026-11-21 「改成相对量（推荐）」): the times read as their ages at the line's time.
+    const lineAt = Date.parse(endEntry.at);
+    assert.equal(end.latestEventAgeMs, lineAt - EVENT);
+    assert.equal(end.statusEventAgeMs, lineAt - EVENT);
+    assert.equal(end.latestTrackAgeMs, lineAt - EVENT, "the end line reports the repaired history, not the old H5 tracks");
+    assert.equal(end.incompleteReason, "time_mismatch", "the start's reason for the query is kept on its end line");
+    assert.equal(typeof end.budgetMs, "number");
   } finally { setDiagnosticsEnabled(false); Date.now = realNow; }
 });

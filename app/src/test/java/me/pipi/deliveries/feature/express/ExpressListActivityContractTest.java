@@ -76,7 +76,7 @@ public final class ExpressListActivityContractTest {
         String list = source();
         String detail = projectFile("app/src/main/java/me/pipi/deliveries/feature/express/ExpressDetailActivity.java");
         String onStop = method(detail, "protected void onStop()", "protected void onStart()");
-        assertTrue(onStop.contains("cancelFirstManualQuery();"));
+        assertTrue(onStop.contains("cancelFirstManualQuery(!isFinishing());"));
         assertTrue(detail.contains("firstManualQueryCancellation.cancel();"));
         assertTrue(detail.contains("firstManualQueryTask.cancel(true);"));
         assertTrue(detail.contains("if (!firstManualQueryIsCurrent(cancellation)) return;"));

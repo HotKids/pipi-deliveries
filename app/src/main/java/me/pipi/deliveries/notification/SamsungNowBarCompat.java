@@ -6,25 +6,23 @@ import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
+import android.widget.RemoteViews;
 
 /**
- * Safe Samsung Now Bar visual hints layered on the standard promoted notification.
+ * Samsung Now Bar visual hints layered on the standard promoted notification.
  *
- * <p>Do not attach Samsung's private {@code style=1}: current One UI builds can
- * reject that private template and remove the live notification entirely. The
- * standard Android promoted style already enters Now Bar; these two extras only
- * provide its dedicated foreground icon and semantic background color.</p>
+ * <p>One UI can remove a notification that uses its private template. The pickup
+ * pilot supplies that template on a separate candidate so rejection can restore
+ * the established promoted notification.</p>
  */
 public final class SamsungNowBarCompat {
     private static final String TAG = "PipiNowBar";
-    private static final boolean DELIVERIES_HOST =
-            SamsungNowBarCompat.class.getPackageName().startsWith("me.pipi.deliveries.");
-    private static final String COMPAT_PREF =
-            DELIVERIES_HOST ? "deliveries_systemui_compat" : "pipi_systemui_compat";
     private static final String COMPAT_FINGERPRINT = "fingerprint";
     private static final String COMPAT_FAILURES = "failures";
     private static final String COMPAT_FALLBACK = "fallback";
     private static final String COMPAT_PROBE_PASSED = "probe_passed";
+    private static final String COMPAT_PICKUP_NOW_BAR_REJECTED = "pickup_now_bar_rejected";
+    private static final double MIN_WHITE_CHIP_CONTRAST = 4.5;
     private static final int COMPAT_SCHEMA = 2;
     // Diagnostic kill switch only. Normal builds retain the Samsung SystemUI
     // protection and reset its learned result after every APK installation.
@@ -81,7 +79,7 @@ public final class SamsungNowBarCompat {
             Log.i(TAG, "Using white nowbarIcon on semantic leftIconBgColor");
             return true;
         } catch (Throwable error) {
-            Log.w(TAG, "Unable to apply colored expanded Now Bar background", error);
+            Log.w(TAG, "Unable to apply colored expanded Now Bar background" + " kind=" + error.getClass().getSimpleName());
             return false;
         }
     }
@@ -90,9 +88,78 @@ public final class SamsungNowBarCompat {
                                                 int backgroundColor) {
         if (!shouldTrySamsungEnhancement(context)) return false;
         Bundle extras = new Bundle();
-        extras.putInt("android.ongoingActivityNoti.chipBgColor", backgroundColor);
+        extras.putInt(
+                "android.ongoingActivityNoti.chipBgColor",
+                clampChipBackgroundForWhiteText(backgroundColor));
         builder.addExtras(extras);
         return true;
+    }
+
+    static int clampChipBackgroundForWhiteText(int backgroundColor) {
+        int opaque = 0xff000000 | backgroundColor;
+        if (contrastWithWhite(opaque) >= MIN_WHITE_CHIP_CONTRAST) return opaque;
+        int r = (opaque >> 16) & 0xff;
+        int g = (opaque >> 8) & 0xff;
+        int b = opaque & 0xff;
+        float lo = 0f;
+        float hi = 1f;
+        for (int step = 0; step < 24; step++) {
+            float mid = (lo + hi) * 0.5f;
+            if (contrastWithWhite(scaleRgb(r, g, b, mid)) >= MIN_WHITE_CHIP_CONTRAST) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        return scaleRgb(r, g, b, lo);
+    }
+
+    private static int scaleRgb(int r, int g, int b, float scale) {
+        int nr = Math.min(255, Math.max(0, Math.round(r * scale)));
+        int ng = Math.min(255, Math.max(0, Math.round(g * scale)));
+        int nb = Math.min(255, Math.max(0, Math.round(b * scale)));
+        return 0xff000000 | (nr << 16) | (ng << 8) | nb;
+    }
+
+    static double contrastWithWhite(int color) {
+        double luminance = relativeLuminance(color);
+        return 1.05 / (luminance + 0.05);
+    }
+
+    private static double relativeLuminance(int color) {
+        double r = linearize(((color >> 16) & 0xff) / 255.0);
+        double g = linearize(((color >> 8) & 0xff) / 255.0);
+        double b = linearize((color & 0xff) / 255.0);
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+
+    private static double linearize(double channel) {
+        return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+    }
+
+    public static boolean shouldTryPickupNowBar(Context context) {
+        return shouldTrySamsungEnhancement(context)
+                && !compatPrefs(context).getBoolean(COMPAT_PICKUP_NOW_BAR_REJECTED, false);
+    }
+
+    public static Notification pickupNowBarCandidate(Notification enhanced, String capsule,
+                                                      String primary, String secondary,
+                                                      RemoteViews expanded) {
+        Notification candidate = enhanced.clone();
+        Bundle extras = candidate.extras;
+        extras.putInt("android.ongoingActivityNoti.style", 1);
+        extras.putCharSequence("android.ongoingActivityNoti.nowbarPrimaryInfo", primary);
+        extras.putCharSequence("android.ongoingActivityNoti.nowbarSecondaryInfo", secondary);
+        extras.putCharSequence("android.ongoingActivityNoti.chipExpandedText", capsule);
+        extras.putParcelable("android.ongoingActivityNoti.chipIcon", candidate.getSmallIcon());
+        extras.putParcelable("android.ongoingActivityNoti.expandedRemoteView", expanded);
+        return candidate;
+    }
+
+    static void recordPickupNowBarRejection(Context context) {
+        synchronized (SamsungNowBarCompat.class) {
+            compatPrefs(context).edit().putBoolean(COMPAT_PICKUP_NOW_BAR_REJECTED, true).apply();
+        }
     }
 
     static boolean shouldTrySamsungEnhancement(Context context) {
@@ -131,7 +198,7 @@ public final class SamsungNowBarCompat {
             cachedUpdateTime = resolved;
             return resolved;
         } catch (Throwable error) {
-            Log.w(TAG, "Unable to read APK update time for compatibility probe", error);
+            Log.w(TAG, "Unable to read APK update time for compatibility probe" + " kind=" + error.getClass().getSimpleName());
             return 0L;
         }
     }
@@ -142,8 +209,12 @@ public final class SamsungNowBarCompat {
     }
 
     private static android.content.SharedPreferences compatPrefs(Context context) {
-        android.content.SharedPreferences prefs = context.getApplicationContext()
-                .getSharedPreferences(COMPAT_PREF, Context.MODE_PRIVATE);
+        Context app = context.getApplicationContext();
+        // Pipi and Lite keep separate files, named after the running app (see NotificationHost).
+        android.content.SharedPreferences prefs = app.getSharedPreferences(
+                NotificationHost.isDeliveries(app)
+                        ? "deliveries_systemui_compat" : "pipi_systemui_compat",
+                Context.MODE_PRIVATE);
         String current = fingerprint(context);
         synchronized (SamsungNowBarCompat.class) {
             String previous = prefs.getString(COMPAT_FINGERPRINT, "");

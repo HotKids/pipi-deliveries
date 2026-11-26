@@ -70,17 +70,46 @@
                     android:orientation="vertical"
                     android:paddingBottom="5dp">
 
-                    <TextView
-                        android:id="@+id/widget_priority_status"
+                    <!-- Owner 2026-11-21 ("Lite 也加寄标签"): an outgoing parcel's small gray 寄 tag
+                         follows the status word, as on Pipi's 2×2. -->
+                    <LinearLayout
+                        android:id="@+id/widget_compact_status_line"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:ellipsize="end"
-                        android:fontFamily="sans-serif"
-                        android:includeFontPadding="false"
-                        android:maxLines="1"
-                        android:textColor="?attr/colorOnSurface"
-                        android:textSize="20sp"
-                        android:textStyle="bold" />
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <!-- wrap_content with weight: the status word shrinks first, so the tag stays visible. -->
+                        <TextView
+                            android:id="@+id/widget_priority_status"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:ellipsize="end"
+                            android:fontFamily="sans-serif"
+                            android:includeFontPadding="false"
+                            android:maxLines="1"
+                            android:textColor="?attr/colorOnSurface"
+                            android:textSize="20sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/widget_compact_sender"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="@dimen/express_widget_sender_tag_gap"
+                            android:background="@drawable/widget_express_sender_tag_bg"
+                            android:contentDescription="@string/express_sender_description"
+                            android:fontFamily="sans-serif-medium"
+                            android:includeFontPadding="false"
+                            android:maxLines="1"
+                            android:paddingHorizontal="@dimen/express_widget_sender_tag_padding_horizontal"
+                            android:paddingVertical="@dimen/express_widget_sender_tag_padding_vertical"
+                            android:text="@string/express_sender"
+                            android:textColor="#FFFFFFFF"
+                            android:textSize="12sp"
+                            android:visibility="gone" />
+                    </LinearLayout>
 
                     <TextView
                         android:id="@+id/widget_compact_company"

@@ -9,7 +9,10 @@ const source = await readFile(
   "utf8",
 );
 
-assert.match(source, /const inputRowHeight = 50;/);
+// Owner 2026-11-20: the binding rows share the Home input-row height.
+assert.match(source, /const inputRowHeight = INPUT_ROW_HEIGHT;/);
+assert.match(await readFile(resolve(projectDir, "components/input-metrics.ts"), "utf8"),
+  /export const INPUT_ROW_HEIGHT = 52;/);
 assert.match(
   source,
   /title="手机号"[\s\S]*?frame=\{\{ minHeight: inputRowHeight, maxHeight: inputRowHeight, maxWidth: "infinity" \}\}[\s\S]*?overlay=\{\{[\s\S]*?alignment: "bottom"[\s\S]*?content: \([\s\S]*?<Divider[\s\S]*?frame=\{\{ minHeight: 1, maxHeight: 1, maxWidth: "infinity" \}\}[\s\S]*?\/>[\s\S]*?\)[\s\S]*?\}\}/,
@@ -22,8 +25,8 @@ assert.match(
 );
 assert.match(
   source,
-  /textContentType="oneTimeCode"[\s\S]*?<\/HStack>\s*\{cabinet \? null : <Divider \/>\}\s*<HStack/,
-  "the regular verification row must retain its divider above the submit capsule",
+  /textContentType="oneTimeCode"[\s\S]*?<\/HStack>\s*<Divider \/>\s*<HStack/,
+  "both regular and cabinet verification rows retain their divider above the submit capsule",
 );
 assert.match(
   source,

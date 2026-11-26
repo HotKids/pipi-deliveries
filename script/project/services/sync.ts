@@ -8,7 +8,7 @@
  * - **跨端对等文件**：Pipi `ExpressPoller.java` / `ExpressRepository.java`、
  *   Lite `ExpressSyncManager.java` / `ExpressRepository.java`、Bot `pipi-bot/bot.py`。
  */
-import type { AbortSignal } from "scripting";
+import { AbortController, type AbortSignal } from "scripting";
 import type { AppState, BindingSource, RefreshSummary } from "../models";
 import { replayPendingShipmentNotifications } from "./notifications";
 import { replayEnhancementUnsubscribes } from "./enhancement-unsubscribe";
@@ -20,15 +20,19 @@ import { acquireRenewingDurableRefreshLease, durableRefreshLeaseDiagnostics, rec
 import { requestWidgetReload } from "./widgets";
 import { refreshCarrierAuthorityIfNeeded } from "./carrier-authority";
 import { assertWithinDeadline, deadlineAfter, deadlineExpired } from "./deadline";
-import { beginDiagnosticOperation, createDiagnosticFlowId, diagnosticErrorDetails, diagnosticState, writeDiagnostic } from "./logger";
+import {
+  beginDiagnosticFlow, beginDiagnosticOperation, changedSinceLastLogged, classifyDiagnosticError, createDiagnosticFlowId,
+  diagnosticAppliedRevision, diagnosticErrorDetails, diagnosticRuntimeHost, diagnosticState, writeDiagnostic,
+  type DiagnosticLevel,
+} from "./logger";
 import { SCRIPT_BINDING_SOURCE, requireScriptSource } from "./script-source";
 import { SCRIPT_BUILD_TRACK, SCRIPT_CLIENT_BUILD, SCRIPT_VERSION } from "./build-track";
-import { gatewayCredentialGeneration } from "./credentials";
+import { gatewayCredentialGeneration, onGatewayCredentialChanged } from "./credentials";
 import { readCloudPddParcels } from "./pdd-cloud-records";
 import { CarrierRecognitionBudget } from "./carrier-recognition";
 import type { FullRefreshLease } from "./refresh-coordination";
 import { FULL_REFRESH_FINALIZATION_RESERVE_MS, fullRefreshHostPolicy } from "./refresh-mode";
-import { projectionSceneActive, projectionViewportHostAvailable } from "./projection-viewport";
+import { onProjectionSceneChange, projectionSceneActive, projectionViewportHostAvailable } from "./projection-viewport";
 import {
   cainiaoListHasUpdate,
   createSyncRuntimeState,
@@ -71,6 +75,26 @@ import { refreshShipmentEnrichment } from "./sync/enrichment-scheduler";
 
 const runtimeState = createSyncRuntimeState();
 
+/**
+ * D158 (plan step 5, under D4 owner 2026-11-21 「开始并入终态，卡住另记（推荐）」): a full refresh writes its phases
+ * into its own end line, not a start and an end line per phase.
+ */
+type RefreshPhases = {
+  preparationMs?: number;
+  pendingNotifications?: number;
+  accountMs?: number;
+  accountContinued?: boolean;
+  enrichmentMs?: number;
+  finalizationMs?: number;
+  /**
+   * D201 (owner 2026-11-21 「只记失败，成功并入流程终态（推荐）」): the cloud PDD read the refresh made, folded into its
+   * end line: the parcels the read returned and whether saving them changed the stored list. A failed read keeps its
+   * own cloud.sync line.
+   */
+  cloudPddRecords?: number;
+  cloudPddChanged?: boolean;
+};
+
 export function subscribeRefreshState(listener: (state: AppState) => void): () => void {
   runtimeState.refreshStateListeners.add(listener);
   return () => { runtimeState.refreshStateListeners.delete(listener); };
@@ -96,11 +120,11 @@ async function runFullRefresh(
   lease: FullRefreshLease,
   before: LoadedStateSnapshot,
   onAccountPhase?: (summary: RefreshSummary) => void,
+  phases: RefreshPhases = {},
 ): Promise<RefreshSummary> {
   requireScriptSource(source);
   lease.assertCurrent();
   const preparationStartedAt = Date.now();
-  writeDiagnostic("refresh.preparation.started", { flowId, source, stage: "preparation" });
   if (!backgroundHostSafe) {
     await refreshCarrierAuthorityIfNeeded();
     lease.assertCurrent();
@@ -111,10 +135,8 @@ async function runFullRefresh(
   });
   const startedAt = Date.now();
   const initial = loadStateSnapshot(startedAt, before).state;
-  writeDiagnostic("refresh.preparation.completed", {
-    flowId, source, stage: "preparation", durationMs: Date.now() - preparationStartedAt,
-    pendingNotifications: initial.pendingNotifications?.length || 0,
-  });
+  phases.preparationMs = Date.now() - preparationStartedAt;
+  phases.pendingNotifications = initial.pendingNotifications?.length || 0;
   const orderMerges = new Map<string, string[]>();
   const notificationContext = {
     previousById: new Map(initial.shipments.map((shipment) => [shipment.identity.id, shipment])),
@@ -139,7 +161,7 @@ async function runFullRefresh(
   // own deadline. A waybill left when it runs out stays held (T23) until a later round.
   // 用户 2026-09-27 第二轮清单：截断排后；同步轮里被任一时限截住的也记，是截断排后细则，用户 2026-09-27 提交前核对答
   // 「这样做」。The waybills any time limit of this round cuts off go last in the next rounds.
-  const recognitionBudget = new CarrierRecognitionBudget(undefined, { syncRound: true });
+  const recognitionBudget = new CarrierRecognitionBudget(undefined, { syncRound: true, flowId });
 
   try {
     const accountMutations: DeferredRouteMutations = new Map();
@@ -165,11 +187,8 @@ async function runFullRefresh(
     attempted += account.attempted;
     succeeded += account.succeeded;
     failed += account.failed;
-    writeDiagnostic("refresh.account.completed", {
-      flowId, source, result: account.canContinue ? "continue" : "stop",
-      attempted: account.attempted, succeeded: account.succeeded, failed: account.failed,
-      durationMs: Date.now() - accountStartedAt,
-    });
+    phases.accountMs = Date.now() - accountStartedAt;
+    phases.accountContinued = account.canContinue;
     if (!account.canContinue) {
       return summary = {
         attempted,
@@ -202,7 +221,10 @@ async function runFullRefresh(
       });
       try {
         const saved = saveAccountAppRoutes(appRoutes);
-        writeDiagnostic("account.external.cached", { source, records: saved, flowId });
+        // D167: written when the number of cached source-app entries changes, not on every successful round.
+        if (changedSinceLastLogged(`account.external.cached\u0000${source}`, String(saved))) {
+          writeDiagnostic("account.external.cached", { source, records: saved, flowId });
+        }
       } catch (error) {
         writeDiagnostic("detail.external.cache_failed", { source, ...diagnosticErrorDetails(error) }, "warning");
       }
@@ -288,34 +310,28 @@ async function runFullRefresh(
       }
     }
 
-    if (SCRIPT_BUILD_TRACK === "formal" && !accountListOnly && !backgroundHostSafe &&
-        projectionSceneActive() && !deadlineExpired(enrichmentDeadlineAtMs)) {
+    const canPullCloudPdd = backgroundHostSafe
+      ? (enrichmentDeadlineAtMs == null || enrichmentDeadlineAtMs - Date.now() >= 4_000)
+      : projectionSceneActive() && !deadlineExpired(enrichmentDeadlineAtMs);
+    if (SCRIPT_BUILD_TRACK === "formal" && !accountListOnly && canPullCloudPdd) {
       const generation = gatewayCredentialGeneration();
       if (generation !== null) {
-        const finish = beginDiagnosticOperation("cloud.pdd", { sourceProvider: "pinduoduo", source }, false);
-        let stage = "cloud_pdd_pull";
-        let persisted = false;
-        try {
-          const deadline = Math.min(enrichmentDeadlineAtMs ?? Infinity, deadlineAfter(8_000));
-          const parcels = await readCloudPddParcels(lease.signal, deadline);
-          const isCurrent = () => lease.isCurrent() && projectionSceneActive() && gatewayCredentialGeneration() === generation;
-          if (parcels.length && isCurrent()) {
-            stage = "cloud_pdd_commit";
-            const { state: saved, changed } = saveCloudPddParcels(parcels, currentState, isCurrent);
-            persisted = changed;
-            stage = "cloud_pdd_publish";
-            if (saved.revision > currentState.revision) runtimeState.publishRefreshState(saved);
-            currentState = saved;
-            if (persisted) finish("committed", { stage: "cloud_pdd_commit", records: parcels.length });
-          }
-        } catch {
-          lease.assertCurrent();
-          finish("unavailable", { stage, persisted }, "warning");
-        }
+        currentState = await pullCloudPddParcels({
+          observed: currentState, source, signal: lease.signal,
+          deadlineAtMs: Math.min(enrichmentDeadlineAtMs ?? Infinity, deadlineAfter(8_000)),
+          isCurrent: () => lease.isCurrent() && (backgroundHostSafe || projectionSceneActive()) &&
+            gatewayCredentialGeneration() === generation,
+          publish: state => runtimeState.publishRefreshState(state),
+          assertCurrent: () => lease.assertCurrent(),
+          fold: (records, changed) => {
+            phases.cloudPddRecords = records;
+            phases.cloudPddChanged = changed;
+          },
+        });
       }
     }
 
-    writeDiagnostic("refresh.enrichment.started", { flowId, source, result: accountListOnly ? "skipped" : "eligible" });
+    const enrichmentStartedAt = Date.now();
     const enrichment = accountListOnly ? {
       state: currentState, attempted: 0, succeeded: 0, failed: 0, promotedPendingShipmentIds: [],
     } : await refreshShipmentEnrichment(
@@ -330,9 +346,7 @@ async function runFullRefresh(
     succeeded += enrichment.succeeded;
     failed += enrichment.failed;
     promotedPendingShipmentIds.push(...enrichment.promotedPendingShipmentIds);
-    writeDiagnostic("refresh.enrichment.completed", {
-      flowId, source, attempted: enrichment.attempted, succeeded: enrichment.succeeded, failed: enrichment.failed,
-    });
+    if (!accountListOnly) phases.enrichmentMs = Date.now() - enrichmentStartedAt;
 
     lease.assertCurrent();
     if (backgroundHostSafe && succeeded > 0) {
@@ -351,7 +365,6 @@ async function runFullRefresh(
     // A best-effort notification timeout must not replace a committed refresh result.
     if (lease.isCurrent()) {
       const finalizationStartedAt = Date.now();
-      writeDiagnostic("refresh.finalization.started", { flowId, source, stage: "notifications" });
       // Keep the existing finalization reserve for durable ACKs and lease release.
       const notificationDeadlineAtMs = deadlineAtMs == null
         ? undefined : deadlineAtMs - FULL_REFRESH_FINALIZATION_RESERVE_MS;
@@ -369,9 +382,7 @@ async function runFullRefresh(
           if (summary && unsubscribed) summary.state = unsubscribed;
         }
       } catch { /* Optional unsubscribe replay cannot replace the committed refresh result. */ }
-      writeDiagnostic("refresh.finalization.completed", {
-        flowId, source, stage: "notifications", durationMs: Date.now() - finalizationStartedAt,
-      });
+      phases.finalizationMs = Date.now() - finalizationStartedAt;
     } else {
       writeDiagnostic("refresh.finalization.skipped", {
         flowId, source, stage: "notifications",
@@ -379,6 +390,141 @@ async function runFullRefresh(
       });
     }
   }
+}
+
+/**
+ * One read of the cloud PDD parcel list and its commit: a full refresh's own pass and the explicit cloud record
+ * pull (refreshCloudPddParcels) share it. Records a commit or a failure; an unchanged list records nothing.
+ * `assertCurrent` lets a refresh that lost its lease leave instead of recording a failure. `fold` receives a read that
+ * answered inside a flow with its own end line (the full refresh, D201): the parcel count and whether the commit
+ * changed the list go on that end line instead of a cloud.sync line of their own.
+ */
+async function pullCloudPddParcels(options: {
+  observed: AppState;
+  source?: BindingSource;
+  signal: AbortSignal;
+  deadlineAtMs: number;
+  isCurrent: () => boolean;
+  publish: (state: AppState) => void;
+  assertCurrent?: () => void;
+  fold?: (records: number, changed: boolean) => void;
+}): Promise<AppState> {
+  const { observed, source, signal, deadlineAtMs, isCurrent, publish, assertCurrent, fold } = options;
+  // D188 (D29): the read is one cloud.sync line of the pdd domain.
+  const finish = beginDiagnosticOperation("cloud.sync", { domain: "pdd", sourceProvider: "pinduoduo", source });
+  let currentState = observed;
+  let stage = "cloud_pdd_pull";
+  let persisted = false;
+  try {
+    const parcels = await readCloudPddParcels(signal, deadlineAtMs);
+    if (parcels.length && isCurrent()) {
+      stage = "cloud_pdd_commit";
+      const { state: saved, changed } = saveCloudPddParcels(parcels, currentState, isCurrent);
+      persisted = changed;
+      stage = "cloud_pdd_publish";
+      if (saved.revision > currentState.revision) publish(saved);
+      currentState = saved;
+      if (persisted && !fold) finish("committed", { stage: "cloud_pdd_commit", records: parcels.length });
+    }
+    try { fold?.(parcels.length, persisted); } catch { /* Diagnostics are optional. */ }
+    // A read that changed nothing is a successful request with no line of its own (D201, owner 2026-11-21 「只记失败，
+    // 成功并入流程终态（推荐）」); its operation marker is closed without a line.
+    finish.discard();
+  } catch (error) {
+    try { assertCurrent?.(); } catch (superseded) {
+      // A superseded read ends without a line, as before; its marker is closed so no runtime reports it unfinished.
+      finish.discard();
+      throw superseded;
+    }
+    finish("unavailable", { stage, persisted, ...diagnosticErrorDetails(error) }, "warning");
+  }
+  return currentState;
+}
+
+let cloudPddPull: {
+  generation: number;
+  observedShipments: Map<string, AppState["shipments"][number]>;
+  work: Promise<void>;
+} | undefined;
+
+/**
+ * The cloud PDD parcel list outside a full refresh, for 立即同步 and an Access Key change (owner 2026-11-21:
+ * 加上（推荐）). It reads the list once with the refresh's own rules (formal track, a saved Access Key, the app in
+ * the foreground, 8 seconds), enriches newly added pending cloud PDD placeholders via non-WebView manual chain,
+ * and does not run the account refresh. Calls for the same key share a running read while merging their observed
+ * rows so an in-flight delete cannot resurrect. Never rejects.
+ */
+export function refreshCloudPddParcels(observed: AppState, publish: (state: AppState) => void): Promise<void> {
+  if (SCRIPT_BUILD_TRACK !== "formal" || !projectionSceneActive()) return Promise.resolve();
+  const generation = gatewayCredentialGeneration();
+  if (generation === null) return Promise.resolve();
+  if (cloudPddPull?.generation === generation) {
+    for (const row of observed.shipments) cloudPddPull.observedShipments.set(row.identity.id, row);
+    return cloudPddPull.work;
+  }
+  const observedShipments = new Map(observed.shipments.map(row => [row.identity.id, row]));
+  const beforePendingIds = new Set(
+    observed.shipments
+      .filter(row => row.pddCloudOrigin && row.timeline.provider === "pending")
+      .map(row => row.identity.id),
+  );
+  const controller = new AbortController();
+  const isCurrent = () => !controller.signal.aborted && projectionSceneActive() &&
+    gatewayCredentialGeneration() === generation;
+  const stopScene = onProjectionSceneChange(active => { if (!active) controller.abort(); });
+  const stopCredential = onGatewayCredentialChanged(() => {
+    if (gatewayCredentialGeneration() !== generation) controller.abort();
+  });
+  const observedProxy = new Proxy(observed, {
+    get(target, prop, receiver) {
+      if (prop === "shipments") return [...observedShipments.values()];
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  const work = (async () => {
+    const pulled = await pullCloudPddParcels({
+      observed: observedProxy, signal: controller.signal, deadlineAtMs: deadlineAfter(8_000), publish, isCurrent,
+    });
+    if (!isCurrent()) return;
+    const newPendingIds = new Set(
+      pulled.shipments
+        .filter(row => row.pddCloudOrigin && row.timeline.provider === "pending" && !beforePendingIds.has(row.identity.id))
+        .map(row => row.identity.id),
+    );
+    if (!newPendingIds.size) return;
+    const flowId = createDiagnosticFlowId("cloud_pdd_enrich");
+    const leaseAdapter: FullRefreshLease = {
+      generation,
+      signal: controller.signal,
+      isCurrent,
+      assertCurrent: () => { if (!isCurrent()) throw new Error("Cloud PDD enrichment superseded"); },
+    };
+    const notificationContext = {
+      previousById: new Map(pulled.shipments.map(row => [row.identity.id, row])),
+      batchId: flowId,
+      orderMerges: new Map<string, string[]>(),
+    };
+    const { checkpoint } = fullRefreshCheckpoints(
+      runtimeState, SCRIPT_BINDING_SOURCE, flowId, leaseAdapter, pulled, notificationContext,
+    );
+    const skipRefreshIds = new Set(
+      pulled.shipments.filter(row => !newPendingIds.has(row.identity.id)).map(row => row.identity.id),
+    );
+    const enriched = await refreshShipmentEnrichment(
+      runtimeState, pulled, SCRIPT_BINDING_SOURCE, flowId, checkpoint, deadlineAfter(15_000),
+      skipRefreshIds, false, false, controller.signal, {}, false, new Set(),
+      new CarrierRecognitionBudget(undefined, { syncRound: true, flowId }), false,
+    );
+    if (isCurrent() && enriched.state.revision > pulled.revision) {
+      publish(enriched.state);
+    }
+  })().then(() => undefined, () => undefined).finally(() => {
+    stopScene();
+    stopCredential();
+    if (cloudPddPull?.work === work) cloudPddPull = undefined;
+  });
+  cloudPddPull = { generation, observedShipments, work };
+  return work;
 }
 
 export function refreshAllShipments(
@@ -481,7 +627,7 @@ async function startFullRefresh(
   if (!durableLease && options.forceManualRefresh) {
     // A user's pull must execute after the holder, not finish as a skipped background run.
     const waitDeadline = deadlineAtMs ?? startedAt + leaseMaxMs;
-    writeDiagnostic("refresh.wait.started", { flowId, source, trigger,
+    beginDiagnosticFlow("refresh.wait.started", { flowId, source, trigger,
       ...durableRefreshLeaseDiagnostics(`full:${source}`) });
     try {
       while (!durableLease) {
@@ -501,6 +647,8 @@ async function startFullRefresh(
   if (!durableLease) {
     const state = loadState(startedAt);
     writeDiagnostic("refresh.skipped", {
+      flowId,
+      runtimeHost: diagnosticRuntimeHost(),
       source,
       ...diagnosticState(state),
       result: "active_cross_runtime_refresh",
@@ -529,7 +677,7 @@ async function startFullRefresh(
   try {
     before = projectionViewportHostAvailable() && !options.backgroundHostSafe
       ? readAppStateSnapshot(startedAt) : loadStateSnapshot(startedAt);
-    writeDiagnostic("refresh.started", {
+    beginDiagnosticFlow("refresh.started", {
       flowId,
       source,
       trigger,
@@ -539,12 +687,19 @@ async function startFullRefresh(
       baseRevision: before.state.revision,
       executionBoundary: deadlineAtMs == null ? "per_stage" : "host_budget",
       ...(budgetMs == null ? {} : { budgetMs }),
+      runtimeHost: diagnosticRuntimeHost(),
     });
   } catch (error) {
     durableLease.release();
+    // D102: the snapshot read after the lease failed; the refresh ends here and the error still reaches the caller.
+    writeDiagnostic("refresh.failed", {
+      flowId, source, trigger, stage: "state", durationMs: Date.now() - startedAt,
+      runtimeHost: diagnosticRuntimeHost(), ...diagnosticErrorDetails(error),
+    }, "warning");
     throw error;
   }
   let blockedMs = 0;
+  const phases: RefreshPhases = {};
   const coordinated = runtimeState.refreshCoordinator.runFull(
     source,
     async (skipRefreshIds, lease) => {
@@ -562,6 +717,7 @@ async function startFullRefresh(
         lease,
         before,
         options.onAccountPhase,
+        phases,
       );
     },
     (detail) => detail.refreshed,
@@ -583,6 +739,9 @@ async function startFullRefresh(
       writeDiagnostic(failedCompletely ? "refresh.failed" : "refresh.succeeded", {
         flowId,
         source,
+        trigger,
+        ...phases,
+        ...(diagnosticAppliedRevision() == null ? {} : { appliedRevision: diagnosticAppliedRevision() }),
         ...diagnosticState(summary.state),
         attempted: summary.attempted,
         succeeded: summary.succeeded,
@@ -599,7 +758,8 @@ async function startFullRefresh(
           : summary.failed > 0
             ? "partial"
             : "succeeded",
-      }, failedCompletely ? "error" : summary.failed > 0 ? "warning" : "info");
+        // D174 (D3): a round that failed entirely is retried by the next round, so it is a WARNING like a partial one.
+      }, failedCompletely || summary.failed > 0 ? "warning" : "info");
       // Reloading at startup or inside checkpoints starts an independent widget
       // runtime that can commit an older snapshot while this refresh is writing.
       if (
@@ -612,11 +772,19 @@ async function startFullRefresh(
       return summary;
     },
     (error) => {
+      // D174 (D3): only a failed local commit is an ERROR; a cancelled refresh is an expected end and anything else is
+      // retried by a later round.
+      const category = classifyDiagnosticError(error);
+      const level: DiagnosticLevel = category === "storage" ? "error"
+        : category === "cancelled" || category === "ownership_lost" ? "info" : "warning";
       writeDiagnostic(
         "refresh.failed",
         {
           flowId,
           source,
+          trigger,
+          ...phases,
+          ...(diagnosticAppliedRevision() == null ? {} : { appliedRevision: diagnosticAppliedRevision() }),
           baseActiveSource: before.state.activeSource,
           baseRevision: before.state.revision,
           durationMs: Date.now() - startedAt,
@@ -628,7 +796,7 @@ async function startFullRefresh(
             : { deadlineLagMs: Math.max(0, Date.now() - deadlineAtMs) }),
           ...diagnosticErrorDetails(error),
         },
-        "error",
+        level,
       );
       throw error;
     },
@@ -682,15 +850,28 @@ export function refreshShipmentById(
 ): Promise<ShipmentRefreshResult> {
   if (shipmentId.startsWith("watch:")) {
     return (async () => {
+      // D104: an international row's detail refresh is the Watch page read; it ends with the same detail lines.
+      const flowId = options?.diagnosticFlowId || createDiagnosticFlowId("detail");
+      const startedAt = Date.now();
+      const trigger = options?.trigger || "detail_open";
       const before = loadState();
       const previous = visibleShipments(before).find(row => row.identity.id === shipmentId);
       if (!previous) throw new Error("该快递已从列表中移除");
       const fresh = await refreshStoredWatchShipments();
       const state = fresh ?? before;
       const shipment = visibleShipments(state).find(row => row.identity.id === shipmentId);
-      if (!shipment) throw new Error("该快递已从列表中移除");
-      return { state, shipment, refreshed: shipment.updatedAtMs > previous.updatedAtMs,
-        querySucceeded: fresh !== undefined };
+      if (!shipment) {
+        writeDiagnostic("detail.refresh.skipped", { flowId, trigger, stage: "watch_page",
+          durationMs: Date.now() - startedAt, persisted: false, skipReason: "removed", result: "removed" });
+        throw new Error("该快递已从列表中移除");
+      }
+      const refreshed = shipment.updatedAtMs > previous.updatedAtMs;
+      const result = fresh === undefined ? "query_failed" : refreshed ? "applied" : "unchanged";
+      writeDiagnostic(refreshed ? "detail.refresh.committed" : "detail.refresh.skipped", {
+        flowId, trigger, stage: "watch_page", durationMs: Date.now() - startedAt, persisted: refreshed,
+        result, ...(refreshed ? {} : { skipReason: result }),
+      }, fresh === undefined ? "warning" : "info");
+      return { state, shipment, refreshed, querySucceeded: fresh !== undefined };
     })();
   }
   return refreshShipmentByIdWithRuntime(runtimeState, shipmentId, options);

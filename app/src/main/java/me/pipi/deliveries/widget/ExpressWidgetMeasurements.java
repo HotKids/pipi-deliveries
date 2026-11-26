@@ -85,22 +85,30 @@ final class ExpressWidgetMeasurements {
     static void centerWideRowGlyphs(Context context, RemoteViews views,
             java.util.List<me.pipi.deliveries.model.ExpressItem> items, int visibleRows,
             int[] rowIds, int[] logoFrameIds, int[] logoIds,
-            int[] companyIds, int[] statusIds, int[] detailIds,
+            int[] companyIds, int[] senderIds, int[] statusIds, int[] detailIds,
             float widthDp, int detailMaxLines) {
         if (visibleRows <= 0 || widthDp <= 0f) return;
         int count = Math.min(visibleRows, Math.min(items.size(), rowIds.length));
-        boolean needsMeasurement = false;
+        View shell = inflateAndLayoutShell(context, views, widthDp);
+        // Fourth external review R4-NEW-08 ③ (owner 2026-11-23「报告里的都直接做」): as on Pipi
+        // (ExpressWidgetMeasurements.centerRowGlyphs there), a long carrier name yields to the 寄 tag
+        // and the status capsule; the identity is capped at the width they leave.
+        boolean capped = false;
+        for (int index = 0; index < count; index++) {
+            capped |= capWideIdentity(views, shell, companyIds[index], senderIds[index],
+                    statusIds[index]);
+        }
+        boolean needsCentering = false;
         for (int index = 0; index < count; index++) {
             boolean expandedDetail = detailMaxLines > 1
                     && !items.get(index).latestDetail.isEmpty();
             if (!expandedDetail) {
-                needsMeasurement = true;
+                needsCentering = true;
                 break;
             }
         }
-        if (!needsMeasurement) return;
-
-        View shell = inflateAndLayoutShell(context, views, widthDp);
+        if (!needsCentering) return;
+        if (capped) shell = inflateAndLayoutShell(context, views, widthDp);
         for (int index = 0; index < count; index++) {
             boolean expandedDetail = detailMaxLines > 1
                     && !items.get(index).latestDetail.isEmpty();
@@ -131,6 +139,34 @@ final class ExpressWidgetMeasurements {
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
         shell.layout(0, 0, shell.getMeasuredWidth(), shell.getMeasuredHeight());
         return shell;
+    }
+
+    /**
+     * Caps one wide row's identity at the title line width left after the visible 寄 tag and the
+     * status capsule at their natural widths, and reports whether the identity was wider.
+     */
+    private static boolean capWideIdentity(RemoteViews views, View shell,
+            int companyId, int senderId, int statusId) {
+        TextView identity = shell.findViewById(companyId);
+        ViewGroup line = (ViewGroup) identity.getParent();
+        int unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
+        int available = line.getMeasuredWidth() - line.getPaddingLeft() - line.getPaddingRight()
+                - horizontalMargins(identity);
+        for (int id : new int[] {senderId, statusId}) {
+            View view = shell.findViewById(id);
+            if (view.getVisibility() == View.GONE) continue;
+            view.measure(unspecified, unspecified);
+            available -= view.getMeasuredWidth() + horizontalMargins(view);
+        }
+        int maxWidth = Math.max(1, available);
+        views.setInt(companyId, "setMaxWidth", maxWidth);
+        identity.measure(unspecified, unspecified);
+        return identity.getMeasuredWidth() > maxWidth;
+    }
+
+    private static int horizontalMargins(View view) {
+        ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams) view.getLayoutParams();
+        return params.leftMargin + params.rightMargin;
     }
 
     private static void applyCenteredRowPadding(RemoteViews views, View shell,

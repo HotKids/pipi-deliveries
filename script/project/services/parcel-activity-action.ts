@@ -11,6 +11,17 @@ import { completeCurrentParcelCard, loadState, stateLoadFailure, visibleShipment
 import { beginDiagnosticOperation, writeDiagnostic } from "./logger";
 
 export const PARCEL_ACTIVITY_NAME = "PipiDeliveriesParcelPickup";
+
+/**
+ * A failure whose message is written for the user. The Live Activity settings page shows only these messages; a host
+ * or storage error keeps its own text out of the page and shows the page's fallback (G-HIGH-18).
+ */
+export class ParcelActivityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ParcelActivityError";
+  }
+}
 const REGISTRY_KEY = "pipi-deliveries.parcel-activity.v1";
 export const EMPTY_CONTENT: ParcelActivityContent = { title: "快递实时活动", location: "", code: "" };
 
@@ -39,7 +50,7 @@ export function parcelActivityRegistry(): ParcelActivityRegistry {
 
 export function saveParcelActivityRegistry(registry: ParcelActivityRegistry): void {
   if (!Storage.set(REGISTRY_KEY, registry)) {
-    throw new Error("无法保存实时活动，请稍后重试。");
+    throw new ParcelActivityError("无法保存实时活动，请稍后重试。");
   }
 }
 
@@ -65,7 +76,7 @@ export async function endActivity(id: string): Promise<void> {
   if (await activity?.end(EMPTY_CONTENT, { dismissTimeInterval: 0 })) return;
   const state = await LiveActivity.getActivityState(id);
   if (state === "active" || state === "stale") {
-    throw new Error("实时活动结束失败，请稍后重试。");
+    throw new ParcelActivityError("实时活动结束失败，请稍后重试。");
   }
 }
 
@@ -142,7 +153,7 @@ async function applyParcelActivityAction(params: ParcelActivityCompletion) {
   const committed = withSharedFileTransaction(() => {
     if (!parcelActivityRegistry().receipts.some((item) => item.id === receipt.id && item.linkId === linkId)) return false;
     const state = loadState();
-    if (stateLoadFailure()) throw new Error("本地数据暂不可用，请稍后重试。");
+    if (stateLoadFailure()) throw new ParcelActivityError("本地数据暂不可用，请稍后重试。");
     const card = parcelForTarget(state, target);
     if (card) {
       if ((card.kind ?? "pickup") !== kind) return false;

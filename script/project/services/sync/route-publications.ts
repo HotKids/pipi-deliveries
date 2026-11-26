@@ -195,14 +195,15 @@ export function publishDeferredRoutes(
   state: AppState,
   mutations: DeferredRouteMutations,
   now: number,
-  commit?: { state: AppState; routesPruned?: boolean },
+  commit?: { state: AppState; routesPruned?: boolean; acceptedShipmentIds?: ReadonlySet<string> },
 ): AppState {
   const eligible = [...mutations.values()].filter((mutation) =>
     mutation.owner === "shipment"
       ? state.shipments.some(
           (shipment) =>
             shipment.identity.id === mutation.targetId &&
-            shipmentRouteVersion(shipment) === mutation.expectedVersion,
+            (shipmentRouteVersion(shipment) === mutation.expectedVersion ||
+              Boolean(commit?.state === state && commit.acceptedShipmentIds?.has(shipment.identity.id))),
         )
       : state.pendingQueries.some(
           (pending) =>

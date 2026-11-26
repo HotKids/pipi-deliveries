@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from "node:module";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -141,10 +142,10 @@ const widgetSource = await readFile(resolve(projectDir, "widget.tsx"), "utf8");
 const widgetRun = widgetSource.slice(widgetSource.indexOf("async function run()"), widgetSource.lastIndexOf("void run();"));
 const presented: unknown[] = [];
 const fallbackView = { cached: true };
-await runInNewContext(widgetRun + "\nrun()", {
+await runInNewContext(stripTypeScriptTypes(widgetRun) + "\nrun()", {
   Widget: { family: "systemSmall", present: (view: unknown) => presented.push(view) },
   createDiagnosticFlowId: () => "synthetic-widget",
-  writeRuntimeCapabilities() {}, writeDiagnostic() {}, flushDiagnostics() {},
+  writeRuntimeCapabilities() {}, writeDiagnostic() {}, flushDiagnostics() {}, beginDiagnosticFlow() {},
   widgetRunGapMs() {}, readWidgetRunAtMs() {}, recordWidgetRunAtMs() {},
   lastNetworkRefreshSuccessAtMs: () => 0,
   backgroundHostBootstrap() { throw new Error("unavailable carrier cache"); },
@@ -160,8 +161,14 @@ const { readSyncSource } = await import("./sync-source-helper");
 const syncSource = readSyncSource();
 assert.match(
   widgetSource,
-  /shouldRunWidgetNetworkRefresh\(\s*lastNetworkRefreshSuccessAtMs\(\),?\s*\)[\s\S]*?if \(bootstrapReady && shouldRefresh && waitMs > 1_000\)[\s\S]*?await bestEffortWidgetRefresh[\s\S]*?const budget = Math\.min\(WIDGET_REFRESH_BUDGET_MS, waitMs - 1_000\)[\s\S]*?backgroundRefreshOptions\(budget\)[\s\S]*?refreshStoredWatchShipments\(budget\)[\s\S]*?Widget\.present\(content,/,
+  /shouldRunWidgetNetworkRefresh\(\s*lastNetworkRefreshSuccessAtMs\(\),?\s*\)[\s\S]*?if \(bootstrapReady && shouldRefresh && waitMs > 1_000\)[\s\S]*?await bestEffortWidgetRefresh[\s\S]*?const budget = Math\.min\(WIDGET_REFRESH_BUDGET_MS, waitMs - 1_000\)[\s\S]*?backgroundRefreshOptions\(budget\)[\s\S]*?Widget\.present\(content,/,
   "widget freshness must be based on successful network work rather than unrelated local state writes",
+);
+// Watch rows run concurrently beside the domestic pass inside the same budget and never discard its result (§8.4 #6).
+assert.match(
+  widgetSource,
+  /Promise\.all\(\[\s*refreshAllShipments\(undefined, backgroundRefreshOptions\(budget\)\),\s*initialState \? refreshDueWatchShipments\(initialState, budget\)/,
+  "the widget runs Watch reads concurrently with the domestic pass while isolating failures",
 );
 assert.deepEqual(backgroundRefreshOptions(WIDGET_REFRESH_BUDGET_MS), {
   budgetMs: WIDGET_REFRESH_BUDGET_MS, accountOrderProjection: true, backgroundHostSafe: true,
@@ -219,9 +226,11 @@ assert.doesNotMatch(
   /requestWidgetReload\(\)/,
   "persisting a binding must not launch a widget beside its immediate full refresh",
 );
-for (const event of ["account.sync.started", "account.sync.failed", "account.sync.parsed"]) {
+// D4/D175: the list stage starts without a line (beginDiagnosticFlow) and ends with account.sync.completed or failed.
+for (const [writer, event] of [["beginDiagnosticFlow", "account.sync.started"], ["writeDiagnostic", "account.sync.failed"],
+  ["writeDiagnostic", "account.sync.completed"]]) {
   assert.match(synchronizeAccountListSource, new RegExp(
-    `writeDiagnostic\\(\\s*"${event.replaceAll(".", "\\.")}"[\\s\\S]*?budgetMs: stageBudgetMs\\(listDeadlineAtMs, startedAt\\)`,
+    `${writer}\\(\\s*"${event.replaceAll(".", "\\.")}"[\\s\\S]*?budgetMs: stageBudgetMs\\(listDeadlineAtMs, startedAt\\)`,
   ), `${event} must report the account stage budget`);
 }
 

@@ -430,6 +430,52 @@ export async function readPdd(session: PlatformSession, path: string, body: Json
   return result;
 }
 
+export async function fetchPddBoundPhoneTails(session: PlatformSession, signal?: AbortSignal): Promise<string[]> {
+  try {
+    if (signal?.aborted) return [];
+    const active = currentPlatformSession("pinduoduo", session.generation);
+    if (active?.credentials.kind !== "web") return [];
+    const endpoint = PDD + "/api/apoc/express/detail";
+    const attached = pddCredentialsFor(active.credentials.cookies, endpoint);
+    const token = cookieValue(attached, "PDDAccessToken");
+    const response = await providerRequest(endpoint, {
+      Cookie: cookieHeader(attached),
+      Referer: PDD_STATION_PAGE,
+      "User-Agent": MOBILE_WEB_USER_AGENT,
+      ...(token ? { AccessToken: token } : {}),
+    }, { entry_source: 17 }, 5, signal);
+    if (!response.ok) return [];
+    const payload = jsonObject(await response.text());
+    if (!payload) return [];
+    const result = asPlainObject(payload.result ?? payload);
+    const lists = [result.new_binding_list, result.binding_list, payload.new_binding_list, payload.binding_list];
+    const tails = new Set<string>();
+    const collect = (node: unknown, depth: number) => {
+      if (depth > 4 || !node) return;
+      if (typeof node === "string") {
+        const masked = node.match(/\b1[3-9]\d\*{4}(\d{4})\b/) || node.match(/\b1[3-9]\d{5}(\d{4})\b/);
+        if (masked?.[1]) tails.add(masked[1]);
+        return;
+      }
+      if (Array.isArray(node)) {
+        for (const item of node) collect(item, depth + 1);
+        return;
+      }
+      if (typeof node === "object") {
+        for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+          if (/mobile|phone/i.test(key) && typeof value === "string") collect(value, depth + 1);
+          else if (Array.isArray(value) || isPlainObject(value)) collect(value, depth + 1);
+        }
+      }
+    };
+    for (const list of lists) collect(list, 0);
+    if (!tails.size) collect(result, 0);
+    return [...tails];
+  } catch {
+    return [];
+  }
+}
+
 export function identityWebCookies(platform: IdentityPlatform, session: PlatformSession | null): readonly PlatformCookie[] {
   const cookies = session?.credentials.kind === "web" ? session.credentials.cookies : [];
   if (platform !== "pinduoduo") return cookies;
@@ -499,7 +545,7 @@ export async function fetchStationIdentity(platform: IdentityPlatform, session: 
   let stage = "station_identity_request";
   const trigger = cainiaoOutbound ? "station_identity_outbound"
     : platform === "cainiao" ? "station_identity_taobao" : "station_identity_pdd";
-  const finish = beginDiagnosticOperation("platform.identity", { sourceProvider: platform, trigger, stage }, false);
+  const finish = beginDiagnosticOperation("platform.identity", { sourceProvider: platform, trigger, stage });
   try {
     if (platform === "cainiao" && cainiaoOutbound) {
       const result = await readCainiao(session, CAINIAO_OUTBOUND_CODE, {

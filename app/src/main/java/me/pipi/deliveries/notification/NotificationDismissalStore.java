@@ -21,11 +21,6 @@ public final class NotificationDismissalStore {
     static final String EXTRA_FINGERPRINT = "notification_fingerprint";
     static final String EXTRA_TOKEN = "notification_generation";
 
-    private static final boolean DELIVERIES_HOST =
-            NotificationDismissalStore.class.getPackageName().startsWith("me.pipi.deliveries.");
-    private static final String PREFS =
-            DELIVERIES_HOST ? "deliveries_notification_dismissals" : "pipi_notification_dismissals";
-    private static final String URI_SCHEME = DELIVERIES_HOST ? "deliveries" : "pipi";
     private static final int MAX_RECENT_TOKENS = 128;
 
     private static final Object MEMORY_LOCK = new Object();
@@ -41,14 +36,26 @@ public final class NotificationDismissalStore {
 
     private NotificationDismissalStore() {}
 
+    /** Pipi and Lite keep separate files, named after the running app (see NotificationHost). */
+    private static android.content.SharedPreferences prefs(Context context) {
+        return context.getSharedPreferences(
+                NotificationHost.isDeliveries(context)
+                        ? "deliveries_notification_dismissals"
+                        : "pipi_notification_dismissals",
+                Context.MODE_PRIVATE);
+    }
+
+    private static String uriScheme(Context context) {
+        return NotificationHost.isDeliveries(context) ? "deliveries" : "pipi";
+    }
+
     @SuppressLint("ApplySharedPref")
     public static boolean prepare(Context context, Notification.Builder builder,
                                   NotificationKey key, String fingerprint) {
         if (context == null || builder == null || key == null) return false;
         String stableFingerprint = fingerprint == null ? "" : fingerprint;
         if (isDismissed(context, key, stableFingerprint)) return false;
-        android.content.SharedPreferences prefs =
-                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        android.content.SharedPreferences prefs = prefs(context);
         String persistenceKey = key.persistenceKey();
         String activeKey = persistenceKey + ":active";
         String tokenKey = persistenceKey + ":token";
@@ -73,7 +80,8 @@ public final class NotificationDismissalStore {
         }
         Intent intent = new Intent(context, NotificationDismissedReceiver.class)
                 .setAction(NotificationDismissedReceiver.ACTION_DISMISSED)
-                .setData(Uri.parse(URI_SCHEME + "://notification-dismissed/" + key.id + "/" + token))
+                .setData(Uri.parse(uriScheme(context) + "://notification-dismissed/"
+                        + key.id + "/" + token))
                 .putExtra(EXTRA_KEY, persistenceKey)
                 .putExtra(EXTRA_ID, key.id)
                 .putExtra(EXTRA_FINGERPRINT, stableFingerprint)
@@ -93,8 +101,7 @@ public final class NotificationDismissalStore {
             String memDismissed = RECENTLY_DISMISSED_BY_KEY.get(key.persistenceKey());
             if (memDismissed != null && memDismissed.equals(expected)) return true;
         }
-        String dismissed = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(key.persistenceKey(), null);
+        String dismissed = prefs(context).getString(key.persistenceKey(), null);
         return dismissed != null && dismissed.equals(expected);
     }
 
@@ -107,7 +114,7 @@ public final class NotificationDismissalStore {
             RECENTLY_DISMISSED_TOKENS.clear();
         }
         if (context == null) return;
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply();
+        prefs(context).edit().clear().apply();
     }
 
     static void clear(Context context, NotificationKey key) {
@@ -120,7 +127,7 @@ public final class NotificationDismissalStore {
             }
         }
         if (context == null || key == null) return;
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        prefs(context).edit()
                 .remove(key.persistenceKey())
                 .remove(key.persistenceKey() + ":active")
                 .remove(key.persistenceKey() + ":token")
@@ -159,8 +166,7 @@ public final class NotificationDismissalStore {
             if (known != null) return known;
         }
         if (context == null) return null;
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(persistenceKey + ":active", null);
+        return prefs(context).getString(persistenceKey + ":active", null);
     }
 
     static String activeToken(Context context, NotificationKey key) {
@@ -171,8 +177,7 @@ public final class NotificationDismissalStore {
             if (known != null) return known;
         }
         if (context == null) return null;
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(persistenceKey + ":token", null);
+        return prefs(context).getString(persistenceKey + ":token", null);
     }
 
     static boolean wasDismissedForProbe(
@@ -191,8 +196,7 @@ public final class NotificationDismissalStore {
             }
         }
         if (context == null) return false;
-        android.content.SharedPreferences prefs =
-                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        android.content.SharedPreferences prefs = prefs(context);
         String diskDismissed = prefs.getString(persistenceKey, null);
         if (diskDismissed == null) return false;
         if (expectedFingerprint != null) return diskDismissed.equals(expectedFingerprint);
@@ -207,7 +211,7 @@ public final class NotificationDismissalStore {
         synchronized (MEMORY_LOCK) {
             RECENTLY_DISMISSED_BY_KEY.put(key.persistenceKey(), safeFingerprint);
         }
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs(context)
                 .edit()
                 .putString(key.persistenceKey(), safeFingerprint)
                 .commit();
@@ -216,8 +220,7 @@ public final class NotificationDismissalStore {
     @SuppressLint("ApplySharedPref")
     static boolean recordIfCurrent(Context context, NotificationKey key, String fingerprint, String token) {
         if (context == null || key == null || token == null || fingerprint == null) return false;
-        android.content.SharedPreferences prefs =
-                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        android.content.SharedPreferences prefs = prefs(context);
         String persistenceKey = key.persistenceKey();
         // A delayed swipe callback must not dismiss another parcel or a foreground-restored activity.
         if (!token.equals(prefs.getString(persistenceKey + ":token", null))

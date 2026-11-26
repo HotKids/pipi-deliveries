@@ -10,11 +10,12 @@ import { Path } from "scripting";
 import { statusProjectionFields } from "./worker-status";
 import { sharedCommitSequence, sharedData, sharedStateText, publishSharedData, withSharedFileTransaction, SharedCommitConflict, prefetchSharedStateFiles, type PrefetchedStateFiles } from "./shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
-import { activeWatchScope, internationalShipment, legacyWatchSnapshot, refreshInternationalShipments, type WatchSnapshot } from "./international-records";
+import { activeWatchScope, internationalShipment, legacyWatchSnapshot, refreshInternationalShipments, retireLegacyWatchSnapshot, type WatchSnapshot } from "./international-records";
 import type {
   AccountBinding,
   AppState,
   BindingSource,
+  CloudPddParcelTombstone,
   PendingManualQuery,
   PendingEnhancementUnsubscribe,
   PickupCodeRecord,
@@ -22,6 +23,7 @@ import type {
   Shipment,
   ShipmentNotificationEvent,
   TimelinePackage,
+  WatchFeedbackRecord,
   WidgetSnapshot,
 } from "../models";
 import { nextParcelHandoffDeadline, parcelHandoffDeadline } from "./parcel-handoff-expiry";
@@ -38,6 +40,7 @@ import {
   hasSavedOrderWaybill,
   isHiddenSignedShipment,
   isHiddenCancelledShipment,
+  isHeldTrack,
   isNonEventDetail,
   mergeTimelineAuthorities,
   normalizedProjectedWaybill,
@@ -74,10 +77,14 @@ import { projectedCarrierPresentation } from "./carrier-presentation";
 import { isJingDongAccountOrder } from "./account-parser";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
 import {
+  changedSinceLastLogged,
   createDiagnosticFlowId,
+  diagnosticErrorDetails,
   diagnosticState,
+  diagnosticsEnabled,
   writeDiagnostic,
 } from "./logger";
+import { recordNotificationDecisions, recordRowPresentationChanges, type NotificationDecision } from "./row-diagnostics";
 import {
   attachedShipmentIds,
   splitMergedOrderRows,
@@ -521,6 +528,123 @@ function isCanonicalMigratedState(
   return true;
 }
 
+const WATCH_FEEDBACK_MAX = 256;
+const CLOUD_PDD_TOMBSTONE_MAX = 256;
+const CLOUD_PDD_TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const PICKUP_CODE_HISTORY_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const PICKUP_CODE_HISTORY_MAX = 500;
+
+export function prunePickupCodeRecords(
+  records: readonly PickupCodeRecord[] | undefined,
+  now: number,
+): PickupCodeRecord[] | undefined {
+  if (!Array.isArray(records)) return undefined;
+  if (!records.length) return [];
+  const historyEntries: Array<{ item: PickupCodeRecord; historyClock: number }> = [];
+  for (const item of records) {
+    const deadline = parcelHandoffDeadline(item);
+    const expiredClock = item.kind === "handoff"
+      ? (item.expiredAtMs || (deadline !== undefined && deadline <= now ? deadline : 0))
+      : 0;
+    const historyClock = (item.completedAtMs && item.completedAtMs > 0 ? item.completedAtMs : 0) || expiredClock;
+    if (historyClock > 0) {
+      if (now - historyClock <= PICKUP_CODE_HISTORY_TTL_MS) {
+        historyEntries.push({ item, historyClock });
+      }
+    }
+  }
+  const retainedHistory = new Set(
+    historyEntries
+      .sort((left, right) => right.historyClock - left.historyClock || right.item.capturedAtMs - left.item.capturedAtMs)
+      .slice(0, PICKUP_CODE_HISTORY_MAX)
+      .map((entry) => entry.item),
+  );
+  return records.filter((item) => {
+    const deadline = parcelHandoffDeadline(item);
+    const expiredClock = item.kind === "handoff"
+      ? (item.expiredAtMs || (deadline !== undefined && deadline <= now ? deadline : 0))
+      : 0;
+    const isHistory = Boolean((item.completedAtMs && item.completedAtMs > 0) || expiredClock > 0);
+    return !isHistory || retainedHistory.has(item);
+  });
+}
+
+function normalizeWatchFeedback(
+  records: readonly WatchFeedbackRecord[] | undefined,
+): WatchFeedbackRecord[] {
+  if (!Array.isArray(records) || !records.length) return [];
+  const byKey = new Map<string, WatchFeedbackRecord>();
+  for (const item of records) {
+    if (!item || typeof item !== "object") continue;
+    const scope = typeof item.scope === "string" ? item.scope.trim() : "";
+    const watchRecordId = typeof item.watchRecordId === "string" ? item.watchRecordId.trim() : "";
+    const waybill = typeof item.waybill === "string" ? item.waybill.trim() : "";
+    const action = item.action === "completed" || item.action === "deleted" ? item.action : null;
+    const actedAt = Number(item.actedAt);
+    const latestTrackAtMs = Math.max(0, Number(item.latestTrackAtMs) || 0);
+    if (!scope || !watchRecordId || !waybill || !action || !Number.isFinite(actedAt) || actedAt <= 0) continue;
+    const key = `${scope}\u0000${watchRecordId}`;
+    const existing = byKey.get(key);
+    if (!existing || actedAt >= existing.actedAt) {
+      byKey.set(key, { scope, watchRecordId, waybill, action, actedAt, latestTrackAtMs });
+    }
+  }
+  return [...byKey.values()]
+    .sort((left, right) => right.actedAt - left.actedAt)
+    .slice(0, WATCH_FEEDBACK_MAX);
+}
+
+function normalizeCloudPddTombstones(
+  records: readonly CloudPddParcelTombstone[] | undefined,
+  now: number,
+): CloudPddParcelTombstone[] {
+  if (!Array.isArray(records) || !records.length) return [];
+  const byKey = new Map<string, CloudPddParcelTombstone>();
+  for (const item of records) {
+    if (!item || typeof item !== "object") continue;
+    const waybill = normalizeWaybill(String(item.waybill || ""));
+    const anchorAt = Math.max(0, Math.trunc(Number(item.anchorAt) || 0));
+    const action = item.action === "completed" || item.action === "deleted" ? item.action : null;
+    const actedAtMs = Number(item.actedAtMs);
+    if (!waybill || !action || !Number.isFinite(actedAtMs) || actedAtMs <= 0) continue;
+    if (now - actedAtMs > CLOUD_PDD_TOMBSTONE_TTL_MS) continue;
+    const key = `${waybill}\u0000${anchorAt}`;
+    const existing = byKey.get(key);
+    if (!existing || actedAtMs >= existing.actedAtMs) {
+      byKey.set(key, { waybill, anchorAt, action, actedAtMs });
+    }
+  }
+  return [...byKey.values()]
+    .sort((left, right) => right.actedAtMs - left.actedAtMs)
+    .slice(0, CLOUD_PDD_TOMBSTONE_MAX);
+}
+
+function latestWatchTrackAtMs(shipment: Shipment): number {
+  let latest = 0;
+  for (const track of shipment.timeline.tracks) {
+    if (typeof track.timeMs === "number" && Number.isFinite(track.timeMs) && track.timeMs > latest) {
+      latest = track.timeMs;
+    }
+  }
+  if (latest > 0) return latest;
+  return Math.max(0, Number(shipment.timeline.statusEventAtMs) || 0, Number(shipment.updatedAtMs) || 0);
+}
+
+function upsertWatchFeedbackEntry(
+  records: readonly WatchFeedbackRecord[] | undefined,
+  entry: WatchFeedbackRecord,
+): WatchFeedbackRecord[] {
+  return normalizeWatchFeedback([...(records ?? []), entry]);
+}
+
+function upsertCloudPddTombstoneEntry(
+  records: readonly CloudPddParcelTombstone[] | undefined,
+  entry: CloudPddParcelTombstone,
+  now: number,
+): CloudPddParcelTombstone[] {
+  return normalizeCloudPddTombstones([...(records ?? []), entry], now);
+}
+
 function migrate(value: LegacyAppState | AppState, now: number): AppState {
   const canonical = isCanonicalMigratedState(value);
   const base = isCurrentState(value)
@@ -556,6 +680,8 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     ),
     now,
   );
+  const watchFeedback = normalizeWatchFeedback(base.watchFeedback);
+  const cloudPddTombstones = normalizeCloudPddTombstones(base.cloudPddTombstones, now);
   return {
     version: 2,
     revision: base.revision,
@@ -568,7 +694,11 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     ),
     shipments: sortShipments(retainedShipments),
     ...(base.watchSource ? { watchSource: base.watchSource } : {}),
-    ...(Array.isArray(base.pickupCodeRecords) ? { pickupCodeRecords: base.pickupCodeRecords } : {}),
+    ...(watchFeedback.length ? { watchFeedback } : {}),
+    ...(cloudPddTombstones.length ? { cloudPddTombstones } : {}),
+    ...(Array.isArray(base.pickupCodeRecords)
+      ? { pickupCodeRecords: prunePickupCodeRecords(base.pickupCodeRecords, now) ?? [] }
+      : {}),
     ...(base.pickupArtworkChoices && typeof base.pickupArtworkChoices === "object" && !Array.isArray(base.pickupArtworkChoices)
       ? { pickupArtworkChoices: base.pickupArtworkChoices } : {}),
     pendingNotifications: base.pendingNotifications || [],
@@ -1158,7 +1288,8 @@ function sanitizeProviderErrorTimeline(
   const tracks = timeline.tracks.filter((track) =>
     !isNonEventDetail(track.detail)
   );
-  const latest = [...tracks].sort(
+  // A held Watch scan never becomes the headline (isHeldTrack).
+  const latest = tracks.filter((track) => !isHeldTrack(track)).sort(
     (left, right) => (right.timeMs || 0) - (left.timeMs || 0),
   )[0] || null;
   // Legacy packages did not record whether package-level metadata came from a
@@ -1697,7 +1828,11 @@ function decodeStateReadback(stored: EncodedState) {
   } : decodeStoredRaw(raw);
 }
 
+// Counts this runtime's state publications; a cached result is reusable only while it is unchanged.
+let stateWriteCount = 0;
+
 function writeDurableState(stored: EncodedState): void {
+  stateWriteCount += 1;
   publishSharedData({}, stored.serialized);
   // Legacy mirrors are recoverable compatibility copies, never publication authority.
   try { writeDurableText(durableSlotForRevision(stored.state.revision), stored.serialized); }
@@ -1706,8 +1841,10 @@ function writeDurableState(stored: EncodedState): void {
 
 const WIDGET_SNAPSHOT_SIDECAR_FILE = "widget-snapshot-v1.json";
 
+// Version 2: WidgetRow carries `sender` (the gray 寄 tag). A version 1 sidecar predates the flag and
+// is ignored, so the widget reads the shared state and rewrites the sidecar.
 type WidgetSnapshotSidecar = {
-  version: 1;
+  version: 2;
   stateRevision: number;
   stateChecksum: string;
   createdAtMs: number;
@@ -1793,7 +1930,7 @@ function writeWidgetSnapshotSidecar(
       precomputedSnapshot ?? buildWidgetSnapshot(visibleShipments(state, now), now);
     const emptyShellProjectionHashes = collectEmptyShellProjectionHashes(state);
     const payload: WidgetSnapshotSidecar = {
-      version: 1,
+      version: 2,
       stateRevision: state.revision,
       stateChecksum,
       createdAtMs: now,
@@ -1842,7 +1979,7 @@ function readValidWidgetSnapshotSidecar(now: number): WidgetSnapshot | null {
       FileManager.readAsStringSync(sidecarPath),
     ) as Partial<WidgetSnapshotSidecar>;
     if (
-      sidecar.version !== 1 ||
+      sidecar.version !== 2 ||
       typeof sidecar.stateRevision !== "number" ||
       typeof sidecar.stateChecksum !== "string" ||
       typeof sidecar.createdAtMs !== "number" ||
@@ -2346,6 +2483,7 @@ type StateSaveOptions = {
   acknowledgedEnhancementUnsubscribeId?: string;
   forceSidecarPrune?: boolean;
   pickupArtworkChoice?: { key: string; value: PickupArtworkChoice };
+  pickupCodeRecords?: readonly PickupCodeRecord[];
 };
 
 export function saveState(
@@ -2373,7 +2511,42 @@ function ownsShipment(state: AppState, shipment: Shipment): boolean {
     Boolean(state.watchSource && state.watchSource.scope === activeWatchScope());
 }
 
-export function commitWatchSnapshot({ shipments, ...source }: WatchSnapshot): AppState {
+// The last Watch page this runtime committed or confirmed unchanged, with the state it produced.
+let lastWatchCommit: { scope: string; snapshot: string; writes: number; state: AppState } | undefined;
+
+// Review item 8 (1): an unchanged Watch page leaves the shared state untouched (no write, no revision),
+// so `watchSource.observedAtMs` keeps the last *changed* page. The time of the last unchanged read is
+// kept here, per scope and outside AppState, for the background read throttle in `watchRefreshDue`.
+const WATCH_READ_MARKER_KEY = "pipi_deliveries_watch_read_v1";
+
+function unchangedWatchReadAtMs(scope: string): number {
+  try {
+    const raw = Storage.get<string>(WATCH_READ_MARKER_KEY, { shared: true });
+    if (typeof raw !== "string") return 0;
+    const marker = JSON.parse(raw) as { scope?: unknown; observedAtMs?: unknown };
+    const observedAtMs = Number(marker.observedAtMs);
+    return marker.scope === scope && Number.isFinite(observedAtMs) && observedAtMs > 0 ? observedAtMs : 0;
+  } catch { return 0; }
+}
+
+function recordUnchangedWatchRead(scope: string, observedAtMs: number): void {
+  // A stale read never moves the marker back.
+  if (!scope || !(observedAtMs > 0) || unchangedWatchReadAtMs(scope) >= observedAtMs) return;
+  try { Storage.set(WATCH_READ_MARKER_KEY, JSON.stringify({ scope, observedAtMs }), { shared: true }); }
+  catch { /* The marker only throttles background reads; a lost write costs one more read. */ }
+}
+
+export function commitWatchSnapshot(input: WatchSnapshot): AppState {
+  lastWatchCommit = undefined;
+  const committed = commitWatchSnapshotLocked(input);
+  if (committed.watchSource?.scope === input.scope && committed.watchSource.snapshot === input.snapshot &&
+      input.snapshot) {
+    lastWatchCommit = { scope: input.scope, snapshot: input.snapshot, writes: stateWriteCount, state: committed };
+  }
+  return committed;
+}
+
+function commitWatchSnapshotLocked({ shipments, ...source }: WatchSnapshot): AppState {
   return withSharedFileTransaction(() => {
     const now = Date.now();
     const state = loadState(now);
@@ -2382,35 +2555,120 @@ export function commitWatchSnapshot({ shipments, ...source }: WatchSnapshot): Ap
     if (previousSource && previousSource.observedAtMs > source.observedAtMs) return state;
     const existing = state.shipments.filter(internationalShipment);
     const byId = new Map((previousSource ? existing : []).map(row => [row.identity.id, row]));
-    const watches = shipments.map(row => {
+    const scopedFeedback = (state.watchFeedback ?? []).filter(entry => entry.scope === source.scope);
+    const feedbackByRecordId = new Map(scopedFeedback.map(entry => [entry.watchRecordId, entry]));
+    const feedbackByWaybill = new Map(scopedFeedback.map(entry => [normalizeWaybill(entry.waybill), entry]));
+    const revivedRecordIds = new Set<string>();
+    const unchangedPage = Boolean(previousSource && source.snapshot && previousSource.snapshot === source.snapshot);
+    const watches = (unchangedPage ? shipments.filter(row => byId.has(row.identity.id)) : shipments).filter(row => {
+      const recordId = row.identity.id.startsWith("watch:") ? row.identity.id.slice("watch:".length) : "";
+      const feedback = (recordId ? feedbackByRecordId.get(recordId) : undefined) ??
+        feedbackByWaybill.get(normalizeWaybill(displayWaybill(row)));
+      if (feedback?.action === "deleted") {
+        // IOS-PARITY-12: an in-flight/same-ms read or an unchanged scan timestamp keeps the deleted Watch hidden;
+        // resurface only when a strictly newer scan arrives after deletion.
+        if (source.observedAtMs > feedback.actedAt && latestWatchTrackAtMs(row) > feedback.latestTrackAtMs) {
+          revivedRecordIds.add(feedback.watchRecordId);
+          return true;
+        }
+        return false;
+      }
+      return true;
+    }).map(row => {
+      const recordId = row.identity.id.startsWith("watch:") ? row.identity.id.slice("watch:".length) : "";
+      const feedback = (recordId ? feedbackByRecordId.get(recordId) : undefined) ??
+        feedbackByWaybill.get(normalizeWaybill(displayWaybill(row)));
+      const completedAtMs = feedback?.action === "completed" ? feedback.actedAt : undefined;
       const old = byId.get(row.identity.id);
-      if (!old) return row;
+      if (!old) {
+        return completedAtMs && !row.forcedCompletedAtMs ? { ...row, forcedCompletedAtMs: completedAtMs } : row;
+      }
       return {
         ...row,
         identity: { ...row.identity, createdAtMs: old.identity.createdAtMs },
         note: old.note,
-        forcedCompletedAtMs: old.forcedCompletedAtMs,
+        forcedCompletedAtMs: old.forcedCompletedAtMs ?? completedAtMs,
         detailSelection: old.detailSelection,
         updatedAtMs: Math.max(row.updatedAtMs, old.updatedAtMs + 1),
       };
     }).filter(row => isStoredShipmentRetained(row, now));
-    if (previousSource?.snapshot === source.snapshot &&
-        watches.length === existing.length && watches.every(row => byId.has(row.identity.id))) return state;
+    if (previousSource?.snapshot === source.snapshot && !revivedRecordIds.size &&
+        watches.length === existing.length && watches.every(row => byId.has(row.identity.id))) {
+      recordUnchangedWatchRead(source.scope, source.observedAtMs);
+      return state;
+    }
+    const nextWatchFeedback = revivedRecordIds.size
+      ? scopedFeedback.filter(entry => !revivedRecordIds.has(entry.watchRecordId))
+      : scopedFeedback;
     return saveState({ ...state, watchSource: source,
+      watchFeedback: nextWatchFeedback,
       shipments: [...state.shipments.filter(row => !internationalShipment(row)), ...watches],
-    }, now, {}, state);
+    }, now, { notifyChanges: Boolean(previousSource) }, state);
   });
 }
 
 function importLegacyWatchState(state: AppState): AppState {
   if (state.watchSource) return state;
   const legacy = legacyWatchSnapshot();
-  return legacy ? commitWatchSnapshot(legacy) : state;
+  if (!legacy) return state;
+  const imported = commitWatchSnapshot(legacy);
+  // The imported rows now live in the shared state; the old cache must not be read on every load.
+  if (imported.watchSource?.scope === legacy.scope) retireLegacyWatchSnapshot();
+  return imported;
+}
+
+/**
+ * Whether a background runtime should read the Watch page: none recorded or the last is two minutes old.
+ * The last read is the later of the last changed page and the last unchanged read of the same scope.
+ */
+export function watchRefreshDue(state: AppState, now = Date.now()): boolean {
+  const source = state.watchSource;
+  const observed = source ? Math.max(source.observedAtMs, unchangedWatchReadAtMs(source.scope)) : 0;
+  return !(observed > 0 && now - observed >= 0 && now - observed < 120_000);
 }
 
 export async function refreshStoredWatchShipments(budgetMs?: number): Promise<AppState | undefined> {
+  const startedAt = Date.now();
   const snapshot = await refreshInternationalShipments(budgetMs);
-  return snapshot ? commitWatchSnapshot(snapshot) : undefined;
+  if (!snapshot) return undefined;
+  // D105: a Watch read that reached this runtime ends with one line; an unchanged page is written once per change
+  // of result, so the two-minute cadence does not repeat it.
+  const finish = (result: "committed" | "unchanged" | "denied", state: AppState) => {
+    if (result !== "committed" && !changedSinceLastLogged("cloud.international.refresh", result)) return state;
+    // D188 (D29, D251): the Watch read is one cloud.sync line of the international domain.
+    writeDiagnostic("cloud.sync.completed", {
+      domain: "international", stage: "watch_page", result, records: snapshot.shipments.length, durationMs: Date.now() - startedAt,
+    });
+    return state;
+  };
+  // An unchanged Watch page needs no shared-state transaction while this runtime has written nothing
+  // since its previous commit. Callers keep the newer of this result and any state they already hold.
+  const last = lastWatchCommit;
+  if (last && snapshot.snapshot && last.scope === snapshot.scope && last.snapshot === snapshot.snapshot &&
+      last.writes === stateWriteCount && snapshot.scope === activeWatchScope()) {
+    recordUnchangedWatchRead(snapshot.scope, snapshot.observedAtMs);
+    return finish("unchanged", last.state);
+  }
+  const writesBefore = stateWriteCount;
+  const committed = commitWatchSnapshot(snapshot);
+  return finish(!snapshot.snapshot ? "denied" : stateWriteCount > writesBefore ? "committed" : "unchanged", committed);
+}
+
+/**
+ * A background runtime's Watch page read after its domestic pass: the widget, the App Intent and the Shortcut refresh
+ * (G-HIGH-10). It runs only when the stored page is due and more than two seconds of the runtime's budget are left. It
+ * returns the newer state, or nothing; a failure is logged and never discards the domestic result.
+ */
+export async function refreshDueWatchShipments(state: AppState, budgetMs?: number): Promise<AppState | undefined> {
+  if (!watchRefreshDue(state, Date.now()) || budgetMs !== undefined && budgetMs <= 2_000) return undefined;
+  try {
+    const watch = await refreshStoredWatchShipments(budgetMs);
+    return watch && watch.revision > state.revision ? watch : undefined;
+  } catch (error) {
+    writeDiagnostic("cloud.sync.failed", { domain: "international", stage: "watch_page",
+      ...diagnosticErrorDetails(error) }, "warning");
+    return undefined;
+  }
 }
 
 export function saveCloudPddParcels(parcels: readonly CloudPddParcel[], observed: AppState,
@@ -2466,6 +2724,16 @@ export function saveRecognizedParcelCode(record: PickupCodeRecord, now = Date.no
     const deadline = parcelHandoffDeadline(record);
     const stored = deadline !== undefined && deadline <= now ? { ...record, expiredAtMs: deadline } : record;
     return saveStateAndPrune(previous, now, {}, previous, [...saved, stored]).state;
+  });
+}
+
+export function deleteIndependentParcelCode(id: string, now = Date.now()): AppState {
+  return withSharedFileTransaction(() => {
+    const previous = loadState(now);
+    const saved = previous.pickupCodeRecords ?? [];
+    if (!saved.some((item) => item.id === id)) throw new ShipmentLifecycleChangedError();
+    const records = saved.filter((item) => item.id !== id);
+    return saveStateAndPrune(previous, now, { forceSidecarPrune: true }, previous, records).state;
   });
 }
 
@@ -2865,6 +3133,11 @@ function saveStateAndPrune(
       normalizedShipments, emptyTimelineRetirements, now), now),
     now,
   );
+  // D245 (D237): the rows this commit deleted by retention and the rows kept hidden, recorded after the commit.
+  const retentionRemoved = normalizedShipments.length - retainedShipments.length;
+  // Counted only while recording is on, so a commit without diagnostics does no extra pass over its rows.
+  const retentionHidden = diagnosticsEnabled()
+    ? retainedShipments.length - pruneShipments(retainedShipments, now).length : 0;
   const reusedNumberRows = new Set(retainedShipments
     .filter((shipment) => newerWaybillReuseGeneration(previousById.get(shipment.identity.id), shipment))
     .map((shipment) => shipment.identity.id));
@@ -2876,7 +3149,10 @@ function saveStateAndPrune(
     if (!pending) throw new Error("本机解绑记录保存失败");
     if (!unsubscribes.some(item => item.id === pending.id)) unsubscribes.push(pending);
   }
-  const savedPickupCodes = pickupCodeRecords ?? previous.pickupCodeRecords;
+  const savedPickupCodes = prunePickupCodeRecords(
+    pickupCodeRecords ?? notificationCommit.pickupCodeRecords ?? previous.pickupCodeRecords,
+    now,
+  );
   const artworkUpdate = notificationCommit.pickupArtworkChoice;
   let pickupArtworkChoices = previous.pickupArtworkChoices;
   if (pickupArtworkChoices || artworkUpdate) {
@@ -2893,6 +3169,13 @@ function saveStateAndPrune(
       ...pickupArtworkChoices, ...(artworkUpdate ? { [artworkUpdate.key]: artworkUpdate.value } : {}),
     }).filter(([key]) => owned.has(key)));
   }
+  const savedWatchSource = candidate.watchSource ?? previous.watchSource;
+  const savedWatchFeedback = normalizeWatchFeedback(candidate.watchFeedback ?? previous.watchFeedback)
+    .filter(entry => !savedWatchSource || entry.scope === savedWatchSource.scope);
+  const savedCloudPddTombstones = normalizeCloudPddTombstones(
+    candidate.cloudPddTombstones ?? previous.cloudPddTombstones,
+    now,
+  );
   const next: AppState = {
     version: 2,
     revision: Math.max(previous.revision, candidate.revision) + 1,
@@ -2904,9 +3187,11 @@ function saveStateAndPrune(
       now,
     ),
     shipments: sortShipments(retainedShipments),
-    ...((candidate.watchSource ?? previous.watchSource) ? {
-      watchSource: candidate.watchSource ?? previous.watchSource,
+    ...(savedWatchSource ? {
+      watchSource: savedWatchSource,
     } : {}),
+    ...(savedWatchFeedback.length ? { watchFeedback: savedWatchFeedback } : {}),
+    ...(savedCloudPddTombstones.length ? { cloudPddTombstones: savedCloudPddTombstones } : {}),
     ...(savedPickupCodes ? { pickupCodeRecords: savedPickupCodes } : {}),
     ...(pickupArtworkChoices && Object.keys(pickupArtworkChoices).length ? { pickupArtworkChoices } : {}),
     // An unsent event of the old parcel goes with it when a new parcel takes the reused number (user 2026-10-02).
@@ -2928,6 +3213,9 @@ function saveStateAndPrune(
   }
   // Rows that received a deliverable event in this save; a held event of theirs is superseded (T23).
   const freshEventShipmentIds = new Set<string>();
+  // D131: the notification decisions this commit makes, for the diagnostic log only.
+  const decisions: NotificationDecision[] = [];
+  const recordDecisions = diagnosticsEnabled();
   if (notificationCommit.notifyChanges) {
     const context = notificationCommit.context;
     const baselineById = context?.previousById || previousById;
@@ -2937,7 +3225,15 @@ function saveStateAndPrune(
     for (const shipment of next.shipments) {
       if (isHiddenSignedShipment(shipment, now) || isHiddenCancelledShipment(shipment, now) || isConfirmedNoItemOrder(shipment) ||
           isHiddenCompletedOrderPlaceholder(shipment) ||
-          attached.has(shipment.identity.id)) continue;
+          attached.has(shipment.identity.id)) {
+        // A hidden or attached row whose change would otherwise have notified is recorded as suppressed.
+        const baseline = baselineById.get(shipment.identity.id);
+        if (recordDecisions && baseline && baseline !== shipment && shipmentNotificationEvent(baseline, shipment, {})) {
+          decisions.push({ shipment, result: "suppressed", skipReason: attached.has(shipment.identity.id) ? "attached"
+            : isConfirmedNoItemOrder(shipment) ? "no_item_order" : "retention_hidden" });
+        }
+        continue;
+      }
       const merge = context?.orderMerges?.get(shipment.identity.id);
       const rule = { statusChangeOnly: merge != null };
       // Merge round: the absorbed waybill row's state in this round's snapshot is the baseline.
@@ -2945,13 +3241,19 @@ function saveStateAndPrune(
       // 「当新件初次出现，不通知」（用户 2026-10-02）：新件拿走复用号码的那一行时，旧件不是它的上一次状态。
       const sameGeneration = (baseline: Shipment | null | undefined) =>
         baseline && !newerWaybillReuseGeneration(baseline, shipment) ? baseline : null;
+      const notificationBaseline =
+        (absorbedId && baselineById.get(absorbedId)) || sameGeneration(baselineById.get(shipment.identity.id));
       const event = shipmentNotificationEvent(
-        (absorbedId && baselineById.get(absorbedId)) || sameGeneration(baselineById.get(shipment.identity.id)),
+        notificationBaseline,
         shipment,
         rule,
       );
+      if (recordDecisions && !notificationBaseline && !previousById.has(shipment.identity.id)) {
+        decisions.push({ shipment, result: "suppressed", skipReason: "first_seen" });
+      }
       // T23（用户 2026-09-26，跨端对齐裁决 #28）：承运商还没对上的行不带空白承运商排队，事件挂起，承运商对上时再生成标题。
       const hold = event ? carrierAwaitingRecognition(shipment) : false;
+      if (recordDecisions && event && hold) decisions.push({ shipment, semantic: event.semantic, result: "held" });
       if (event && context && !shipmentNotificationEvent(
         (absorbedId && previousById.get(absorbedId)) || sameGeneration(previousById.get(shipment.identity.id)),
         shipment,
@@ -3046,25 +3348,48 @@ function saveStateAndPrune(
       now,
     );
   }
-  writeDiagnostic(
+  const mirrorsStored = primaryStored && backupStored;
+  // D160 (plan step 5, owner 2026-11-21 「删噪声，低价值类保底降到 10（推荐）」): a healthy commit writes no line; a slow
+  // commit and a commit whose mirror copy failed (D243) still do. Failures and recoveries have their own lines.
+  const commitDurationMs = Date.now() - startedAtMs;
+  if (!mirrorsStored || commitDurationMs >= STORAGE_SLOW_COMMIT_MS) writeDiagnostic(
     "storage.state.saved",
     {
       ...diagnosticState(stored.state),
       commitProtocol: "immutable_link",
       commitSequence: sharedCommitSequence(),
-      durationMs: Date.now() - startedAtMs,
+      durationMs: commitDurationMs,
       readDurationMs,
       writeDurationMs: writeFinishedAtMs - startedAtMs - readDurationMs,
       verifyDurationMs: verifyFinishedAtMs - writeFinishedAtMs,
       pruneDurationMs: Date.now() - verifyFinishedAtMs,
-      result: primaryStored && backupStored
+      result: mirrorsStored
         ? "durable_and_mirrors"
         : "durable_only",
     },
-    "info",
+    // D243: a mirror copy that failed to write is a degraded commit the next one repairs, so it is a WARNING.
+    mirrorsStored ? "info" : "warning",
   );
+  try {
+    const batchId = notificationCommit.context?.batchId;
+    // D245: written when rows were deleted, or when a nonzero number of hidden rows changed.
+    if (retentionRemoved > 0 ||
+        (retentionHidden > 0 && changedSinceLastLogged("storage.retention.hidden", String(retentionHidden), now))) {
+      writeDiagnostic("storage.retention.applied", {
+        ...(batchId && /^\d+$/.test(batchId) ? { flowId: batchId } : {}),
+        removedRecords: Math.max(0, retentionRemoved), hiddenRecords: Math.max(0, retentionHidden),
+        result: retentionRemoved > 0 ? "removed" : "hidden",
+      });
+    }
+    recordRowPresentationChanges(previous.shipments, stored.state.shipments, batchId, now);
+    recordNotificationDecisions(decisions, batchId);
+  } catch { /* Diagnostics never change a commit. */ }
   return { state: stored.state, routesPruned };
 }
+
+
+/** A commit at least this long is recorded even when it succeeded (D160). */
+export const STORAGE_SLOW_COMMIT_MS = 1_000;
 
 function replaceShipment(
   shipments: readonly Shipment[],
@@ -3113,16 +3438,40 @@ function rebaseNewAccountProjection(
   };
 }
 
+function coreIdentityWithoutEnrichment(identity: Shipment["identity"]): Record<string, unknown> {
+  const {
+    courierCode: _courierCode,
+    rawCourierCode: _rawCourierCode,
+    companyName: _companyName,
+    carrierIsBuiltIn: _carrierIsBuiltIn,
+    carrierKuaidi100Code: _carrierKuaidi100Code,
+    carrierTableVersion: _carrierTableVersion,
+    productImageURL: _productImageURL,
+    ...core
+  } = identity;
+  return core;
+}
+
 /** Independent provider results may commit together; a newer result in the same slot wins. */
 function rebaseIndependentTimelines(before: Shipment, current: Shipment, incoming: Shipment, now: number): Shipment | null {
   const digest = (value: unknown) => stableJson(value ?? null);
-  if (digest(before.identity) !== digest(current.identity) ||
-      digest(before.identity) !== digest(incoming.identity) ||
-      before.forcedCompletedAtMs !== current.forcedCompletedAtMs ||
-      before.emptyTimelineHiddenAtMs !== current.emptyTimelineHiddenAtMs) return null;
+  const coreBefore = digest(coreIdentityWithoutEnrichment(before.identity));
+  if (
+    coreBefore !== digest(coreIdentityWithoutEnrichment(current.identity)) ||
+    coreBefore !== digest(coreIdentityWithoutEnrichment(incoming.identity)) ||
+    before.forcedCompletedAtMs !== current.forcedCompletedAtMs ||
+    before.emptyTimelineHiddenAtMs !== current.emptyTimelineHiddenAtMs
+  ) {
+    return null;
+  }
+  const identityChangedOnCurrent = digest(before.identity) !== digest(current.identity);
+  const identityChangedOnIncoming = digest(before.identity) !== digest(incoming.identity);
+  if (identityChangedOnCurrent && identityChangedOnIncoming && digest(current.identity) !== digest(incoming.identity)) {
+    return null;
+  }
   if (digest(before.manualRefreshLease) !== digest(incoming.manualRefreshLease) &&
       digest(before.manualRefreshLease) !== digest(current.manualRefreshLease)) return null;
-  let merged = current;
+  let merged: Shipment = identityChangedOnIncoming ? { ...current, identity: incoming.identity } : current;
   if (digest(before.sourceTimeline) !== digest(incoming.sourceTimeline)) {
     if (digest(before.sourceTimeline) !== digest(current.sourceTimeline) || !incoming.sourceTimeline) return null;
     merged = applyAccountShipment(current, { ...incoming, manualTimelines: current.manualTimelines,
@@ -3174,6 +3523,7 @@ export type RefreshStateCommit = Readonly<{
   state: AppState;
   applied: boolean;
   routesPruned?: boolean;
+  acceptedShipmentIds?: ReadonlySet<string>;
 }>;
 
 const REFRESH_VOLATILE_FIELDS = new Set([
@@ -3241,6 +3591,7 @@ export function commitRefreshState(
         .map((item) => [item.identity.id, item]),
     );
     const shipmentsById = new Map(latest.shipments.map((item) => [item.identity.id, item]));
+    const acceptedShipmentIds = new Set<string>();
 
     for (const [id, candidateIncoming] of candidateShipments) {
       const before = baseShipments.get(id);
@@ -3300,6 +3651,7 @@ export function commitRefreshState(
       // 落库前的最后一道闸：签收之后轨迹不许变少。整行被 feed 重建时合并里的那道闸拿不到
       // `current`，根本不会执行（用户 2026-09-08 报：签收件每轮刷新之后「暂无物流动态」）。
       shipmentsById.set(id, preserveSettledShipment(current, incoming));
+      acceptedShipmentIds.add(id);
     }
 
     for (const [id, before] of baseShipments) {
@@ -3350,11 +3702,12 @@ export function commitRefreshState(
     if (
       refreshContentFingerprint(merged) === refreshContentFingerprint(latest)
     ) {
-      return { state: latest, applied: true };
+      return { state: latest, applied: true, acceptedShipmentIds };
     }
     return {
       ...saveStateAndPrune(merged, now, { notifyChanges: true, context: notificationContext }, latest),
       applied: true,
+      acceptedShipmentIds,
     };
   });
 }
@@ -3714,9 +4067,15 @@ export function upsertShipment(incoming: Shipment, now = Date.now()): AppState {
       : incoming.identity.manuallyAdded
         ? applyManualShipment(undefined, incoming, now)
         : applyAccountShipment(undefined, incoming, now);
+    const clearedTombstones = incoming.identity.manuallyAdded && state.cloudPddTombstones?.length
+      ? state.cloudPddTombstones.filter(
+          entry => !(entry.action === "deleted" && entry.waybill === normalizeWaybill(displayWaybill(shipment))),
+        )
+      : state.cloudPddTombstones;
     return saveState(
       {
         ...state,
+        ...(clearedTombstones !== state.cloudPddTombstones ? { cloudPddTombstones: clearedTombstones } : {}),
         shipments: [
           ...state.shipments.filter(
             (item) => item.identity.id !== shipment.identity.id,
@@ -3845,12 +4204,30 @@ export function removeShipmentWithCleanup(
     const shipment = state.shipments.find((item) => item.identity.id === id);
     if (shipment && !ownsShipment(state, shipment)) throw new ShipmentLifecycleChangedError();
     const canonical = shipment ? displayWaybill(shipment) : "";
+    const watchScope = state.watchSource?.scope || activeWatchScope();
+    const watchFeedback = shipment && internationalShipment(shipment) && watchScope && id.startsWith("watch:")
+      ? upsertWatchFeedbackEntry(state.watchFeedback, {
+          scope: watchScope,
+          watchRecordId: id.slice("watch:".length),
+          waybill: canonical,
+          action: "deleted",
+          actedAt: now,
+          latestTrackAtMs: latestWatchTrackAtMs(shipment),
+        })
+      : state.watchFeedback;
+    const cloudPddTombstones = shipment?.pddCloudOrigin
+      ? upsertCloudPddTombstoneEntry(state.cloudPddTombstones, {
+          waybill: normalizeWaybill(shipment.pddCloudOrigin.waybill || canonical),
+          anchorAt: Math.max(0, Math.trunc(Number(shipment.identity.createdAtMs) || 0)),
+          action: "deleted",
+          actedAtMs: now,
+        }, now)
+      : state.cloudPddTombstones;
     return saveStateAndPrune(
       {
         ...state,
-        ...(shipment && internationalShipment(shipment) && state.watchSource ? {
-          watchSource: { ...state.watchSource, observedAtMs: Math.max(state.watchSource.observedAtMs, now) },
-        } : {}),
+        ...(watchFeedback !== state.watchFeedback ? { watchFeedback } : {}),
+        ...(cloudPddTombstones !== state.cloudPddTombstones ? { cloudPddTombstones } : {}),
         pendingQueries: shipment
           ? state.pendingQueries.filter(
               (pending) =>
@@ -3877,9 +4254,31 @@ export function forceCompleteShipment(
     const current = state.shipments.find((item) => item.identity.id === id);
     if (current && !ownsShipment(state, current)) throw new ShipmentLifecycleChangedError();
     if (!current || current.timeline.semantic === "COMPLETED") return state;
+    const canonical = displayWaybill(current);
+    const watchScope = state.watchSource?.scope || activeWatchScope();
+    const watchFeedback = internationalShipment(current) && watchScope && id.startsWith("watch:")
+      ? upsertWatchFeedbackEntry(state.watchFeedback, {
+          scope: watchScope,
+          watchRecordId: id.slice("watch:".length),
+          waybill: canonical,
+          action: "completed",
+          actedAt: now,
+          latestTrackAtMs: latestWatchTrackAtMs(current),
+        })
+      : state.watchFeedback;
+    const cloudPddTombstones = current.pddCloudOrigin
+      ? upsertCloudPddTombstoneEntry(state.cloudPddTombstones, {
+          waybill: normalizeWaybill(current.pddCloudOrigin.waybill || canonical),
+          anchorAt: Math.max(0, Math.trunc(Number(current.identity.createdAtMs) || 0)),
+          action: "completed",
+          actedAtMs: now,
+        }, now)
+      : state.cloudPddTombstones;
     return saveState(
       {
         ...state,
+        ...(watchFeedback !== state.watchFeedback ? { watchFeedback } : {}),
+        ...(cloudPddTombstones !== state.cloudPddTombstones ? { cloudPddTombstones } : {}),
         shipments: state.shipments.map((item) =>
           item.identity.id === id
             ? {
