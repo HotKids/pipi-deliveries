@@ -146,11 +146,26 @@ function migratedAlignmentRecords(value: unknown): RowLedger {
   return ledger;
 }
 
+let parsedLedgerMemo: { raw: string; ledger: RowLedger } | undefined;
+let rowLedgerInTurn: { get: unknown; ledger: RowLedger } | undefined;
+let rowLedgerResetScheduled = false;
+const rowKeyMemo = new Map<string, string>();
+const ROW_KEY_MEMO_LIMIT = 256;
+
+function forgetRowLedgerInTurn(): void {
+  rowLedgerInTurn = undefined;
+}
+
 const storageStore: RowLedgerStore = {
   load: () => {
     try {
       const stored = Storage.get<string>(LEDGER_KEY, { shared: true });
-      if (typeof stored === "string") return parseRowLedger(stored);
+      if (typeof stored === "string") {
+        if (parsedLedgerMemo?.raw === stored) return { ...parsedLedgerMemo.ledger };
+        const parsed = parseRowLedger(stored);
+        parsedLedgerMemo = { raw: stored, ledger: parsed };
+        return { ...parsed };
+      }
     } catch {
       return {};
     }
@@ -162,23 +177,43 @@ const storageStore: RowLedgerStore = {
     }
   },
   save: (ledger) => {
+    forgetRowLedgerInTurn();
     try {
-      Storage.set(LEDGER_KEY, JSON.stringify({ version: 1, rows: ledger }), { shared: true });
+      const serialized = JSON.stringify({ version: 1, rows: ledger });
+      if (Storage.set(LEDGER_KEY, serialized, { shared: true }) !== false) {
+        parsedLedgerMemo = { raw: serialized, ledger: { ...ledger } };
+      } else {
+        parsedLedgerMemo = undefined;
+      }
     } catch {
+      parsedLedgerMemo = undefined;
       /* Signed releases and classification retain their best-effort storage contract. */
     }
   },
 };
 
 export function loadRowLedger(): RowLedger {
+  if (rowLedgerInTurn && rowLedgerInTurn.get === Storage.get) {
+    return { ...rowLedgerInTurn.ledger };
+  }
   try {
-    return storageStore.load();
+    const loaded = storageStore.load();
+    rowLedgerInTurn = { get: Storage.get, ledger: loaded };
+    if (!rowLedgerResetScheduled) {
+      rowLedgerResetScheduled = true;
+      void Promise.resolve().then(() => {
+        rowLedgerResetScheduled = false;
+        rowLedgerInTurn = undefined;
+      });
+    }
+    return { ...loaded };
   } catch {
     return {};
   }
 }
 
 function saveRowLedger(ledger: RowLedger): void {
+  forgetRowLedgerInTurn();
   try {
     storageStore.save(ledger);
   } catch {
@@ -188,8 +223,20 @@ function saveRowLedger(ledger: RowLedger): void {
 
 /** The ledger key of a row: a hash of its id (the key the status alignment record always used). */
 export function rowLedgerKey(rowId: string): string {
-  const hash = Crypto.sha256(utf8Data(String(rowId || ""))).toHexString().toLowerCase();
-  return `row:${hash.slice(0, 24)}`;
+  const input = String(rowId || "");
+  const remembered = rowKeyMemo.get(input);
+  if (remembered !== undefined) {
+    rowKeyMemo.delete(input);
+    rowKeyMemo.set(input, remembered);
+    return remembered;
+  }
+  const hash = Crypto.sha256(utf8Data(input)).toHexString().toLowerCase();
+  const key = `row:${hash.slice(0, 24)}`;
+  rowKeyMemo.set(input, key);
+  if (rowKeyMemo.size > ROW_KEY_MEMO_LIMIT) {
+    rowKeyMemo.delete(rowKeyMemo.keys().next().value!);
+  }
+  return key;
 }
 
 /** Applies `change` to one row's entry and saves the ledger when it changed. */
@@ -295,6 +342,7 @@ export function loadAlignmentRecords(): Record<string, string> {
  * with the row itself or when its times change, which overwrites them).
  */
 export function saveAlignmentRecords(records: Readonly<Record<string, string>>): void {
+  forgetRowLedgerInTurn();
   const ledger = loadAlignmentLedger();
   let changed = false;
   for (const [key, times] of Object.entries(records)) {
@@ -302,8 +350,13 @@ export function saveAlignmentRecords(records: Readonly<Record<string, string>>):
     ledger[key] = { ...(ledger[key] || {}), alignment: times, updatedAtMs: Date.now() };
     changed = true;
   }
-  if (changed && !Storage.set(LEDGER_KEY, JSON.stringify({ version: 1, rows: ledger }), { shared: true })) {
-    throw new Error("Failed to save alignment row ledger");
+  if (changed) {
+    const serialized = JSON.stringify({ version: 1, rows: ledger });
+    if (!Storage.set(LEDGER_KEY, serialized, { shared: true })) {
+      parsedLedgerMemo = undefined;
+      throw new Error("Failed to save alignment row ledger");
+    }
+    parsedLedgerMemo = { raw: serialized, ledger: { ...ledger } };
   }
 }
 
@@ -321,6 +374,7 @@ export function pruneRowLedgerForState(
   now = Date.now(),
 ): void {
   const ledger = loadRowLedger();
+  forgetRowLedgerInTurn();
   const keys = Object.keys(ledger);
   if (!keys.length) return;
   const reused = new Set([...reusedRowIds].map(rowLedgerKey));

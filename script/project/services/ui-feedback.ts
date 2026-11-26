@@ -10,8 +10,20 @@ export const SAVE_FAILED_TOAST = "保存失败，请稍后重试";
 // copy of this, which let one gesture report two different outcomes (HomePage's pull-to-refresh
 // answered 刷新失败 through refreshSummaryToast but 查询失败 through its own hard-coded fallback).
 // The fallback stays a parameter so each call site still names its own operation.
+const RAW_HOST_ERROR_PATTERN =
+  /\b(?:TypeError|ReferenceError|SyntaxError|RangeError|DOMException|AbortError|NSURLError|CFNetwork|kCFError|SQLite|JSON\.parse|undefined is not|null is not|Failed to fetch|Network request failed|The Internet connection|A server with the specified hostname|request timed out|Load failed)\b/i;
+
+function isLocalizedUserMessage(message: string): boolean {
+  const trimmed = message.trim();
+  if (!trimmed || trimmed.length > 160) return false;
+  if (RAW_HOST_ERROR_PATTERN.test(trimmed)) return false;
+  return /[\u4e00-\u9fff]/.test(trimmed);
+}
+
 export function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
+  if (!(error instanceof Error)) return fallback;
+  const message = error.message.trim();
+  return isLocalizedUserMessage(message) ? message : fallback;
 }
 
 export function transientToast(

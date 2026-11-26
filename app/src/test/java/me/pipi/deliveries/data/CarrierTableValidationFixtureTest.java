@@ -108,6 +108,22 @@ public final class CarrierTableValidationFixtureTest {
         assertEquals("youzhengguonei", CarrierRegistry.queryCode("YOUZHENGBK", ""));
     }
 
+    @Test
+    public void ztoInternationalMapsToZtoInBootstrapAndAliases() {
+        CarrierRegistry.Carrier byK100 = CarrierRegistry.resolveKuaidi100Code("zhongtongguoji");
+        assertNotNull(byK100);
+        assertEquals("ZTO", byK100.standardCode);
+        assertEquals("中通快递", byK100.companyName);
+        assertEquals("zhongtong", byK100.kuaidi100Code);
+        assertEquals(me.pipi.deliveries.R.drawable.zto, byK100.iconResource);
+
+        CarrierRegistry.Carrier byName = CarrierRegistry.resolveName("中通国际");
+        assertNotNull(byName);
+        assertEquals("ZTO", byName.standardCode);
+        assertEquals("中通快递", byName.companyName);
+        assertEquals("zhongtong", CarrierRegistry.queryCode("", "中通国际"));
+    }
+
     /** Key order independent; array order and every value exact. */
     private static String canonical(JSONObject entry) throws Exception {
         java.util.TreeMap<String, String> fields = new java.util.TreeMap<>();

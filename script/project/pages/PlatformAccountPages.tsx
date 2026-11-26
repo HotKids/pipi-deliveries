@@ -57,7 +57,7 @@ async function verifiedLogin(platform: WebPlatform, controller: WebViewControlle
     const id = cookieValue(appCookies, "pdd_user_id");
     return token && id ? { id, proof: token, cookies, nickname: cleanString(page.nickname).replace(/^游客$/, "") } : null;
   }
-  if (!["home.m.jd.com", "my.m.jd.com", "trade.m.jd.com"].includes(url.hostname)) return null;
+  if (!["home.m.jd.com", "my.m.jd.com", "trade.m.jd.com", "o.m.jd.com"].includes(url.hostname)) return null;
   const account = jdLoginProof(cookies, url.toString());
   return account ? { ...account, cookies, nickname: cleanString(page.nickname).replace(/^京东用户$/, "") } : null;
 }

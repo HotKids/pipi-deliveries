@@ -19,31 +19,79 @@ const MAX_ROUTE_LENGTH = 16_384;
 type AccountAppRouteValue = AccountAppRoute & { updatedAtMs: number };
 export type AccountAppRouteInput = Readonly<{ record: AccountDetailRecord; route: AccountAppRoute }>;
 
+const appRouteKeyMemo = new Map<string, string>();
+const APP_ROUTE_KEY_MEMO_LIMIT = 256;
+let appRoutesParsedMemo: { raw: string; values: Record<string, AccountAppRouteValue> } | undefined;
+let appRoutesInTurn: { get: unknown; values: Record<string, AccountAppRouteValue> } | undefined;
+let appRoutesResetScheduled = false;
+
+function forgetAppRoutesInTurn(): void {
+  appRoutesInTurn = undefined;
+}
+
 function accountAppRouteKey(record: AccountDetailRecord): string {
   const provider = String(record.provider || "").toLowerCase();
   if (!record.waybill || !record.companyCode || !/^1[3-9]\d{9}$/.test(record.phone || "") ||
     !["jingdong", "cainiao", "shunfeng"].includes(provider)) return "";
-  return Crypto.sha256(utf8Data(JSON.stringify([
+  const lookupKey = `${SCRIPT_BINDING_SOURCE}\0${provider}\0${record.waybill}\0${record.companyCode}\0${record.phone}`;
+  const remembered = appRouteKeyMemo.get(lookupKey);
+  if (remembered !== undefined) {
+    appRouteKeyMemo.delete(lookupKey);
+    appRouteKeyMemo.set(lookupKey, remembered);
+    return remembered;
+  }
+  const hashed = Crypto.sha256(utf8Data(JSON.stringify([
     SCRIPT_BINDING_SOURCE, provider, record.waybill, record.companyCode, record.phone,
   ]))).toHexString().toLowerCase();
+  appRouteKeyMemo.set(lookupKey, hashed);
+  if (appRouteKeyMemo.size > APP_ROUTE_KEY_MEMO_LIMIT) {
+    appRouteKeyMemo.delete(appRouteKeyMemo.keys().next().value!);
+  }
+  return hashed;
 }
 
 function readAccountAppRoutes(strict = false): Record<string, AccountAppRouteValue> {
   let raw: string | null;
   try { raw = Keychain.get(ACCOUNT_APP_ROUTES_KEY); }
   catch (error) { if (strict) throw error; return {}; }
+  if (!raw) return {};
+  if (appRoutesParsedMemo?.raw === raw) return { ...appRoutesParsedMemo.values };
   try {
-    const value = JSON.parse(raw || "{}");
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const value = JSON.parse(raw);
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      appRoutesParsedMemo = { raw, values: value as Record<string, AccountAppRouteValue> };
+      return { ...(value as Record<string, AccountAppRouteValue>) };
+    }
+    return {};
   } catch {
     return {};
   }
 }
 
+function readAccountAppRoutesInTurn(): Record<string, AccountAppRouteValue> {
+  if (appRoutesInTurn && appRoutesInTurn.get === Keychain.get) {
+    return appRoutesInTurn.values;
+  }
+  const values = readAccountAppRoutes();
+  appRoutesInTurn = { get: Keychain.get, values };
+  if (!appRoutesResetScheduled) {
+    appRoutesResetScheduled = true;
+    void Promise.resolve().then(() => {
+      appRoutesResetScheduled = false;
+      appRoutesInTurn = undefined;
+    });
+  }
+  return values;
+}
+
 function writeAccountAppRoutes(value: Record<string, AccountAppRouteValue>): void {
-  if (!Keychain.set(ACCOUNT_APP_ROUTES_KEY, JSON.stringify(value))) {
+  forgetAppRoutesInTurn();
+  const serialized = JSON.stringify(value);
+  if (!Keychain.set(ACCOUNT_APP_ROUTES_KEY, serialized)) {
+    appRoutesParsedMemo = undefined;
     throw new Error("App links could not be saved");
   }
+  appRoutesParsedMemo = { raw: serialized, values: { ...value } };
 }
 
 function validatedAccountAppTargets(record: AccountDetailRecord, route: AccountAppRoute): AccountAppTarget[] {
@@ -67,12 +115,13 @@ export function saveAccountAppRoutes(inputs: readonly AccountAppRouteInput[], no
 }
 
 export function loadAccountAppRoutes(record: AccountDetailRecord, now = Date.now()): AccountAppTarget[] {
-  const route = readAccountAppRoutes()[accountAppRouteKey(record)];
+  const route = readAccountAppRoutesInTurn()[accountAppRouteKey(record)];
   return route && Number.isFinite(route.updatedAtMs) && route.updatedAtMs > 0 && route.updatedAtMs <= now
     ? validatedAccountAppTargets(record, route) : [];
 }
 
 export function pruneAccountAppRoutes(records: readonly AccountDetailRecord[]): void {
+  forgetAppRoutesInTurn();
   const routes = readAccountAppRoutes(true);
   if (!Object.keys(routes).length) return;
   const retained = new Set(records.map(accountAppRouteKey).filter(Boolean));
@@ -171,6 +220,8 @@ function trustedOrderProjectionRoute(value: string): string {
   return "";
 }
 
+let orderProjectionRefsMemo: { raw: string; read: RouteMapRead } | undefined;
+
 function readOrderProjectionRefs(strict = false): RouteMapRead {
   let raw: string | null;
   try { raw = Keychain.get(ORDER_PROJECTION_REFS_KEY); }
@@ -180,6 +231,9 @@ function readOrderProjectionRefs(strict = false): RouteMapRead {
   }
   try {
     if (!raw) return { values: {}, dirty: false };
+    if (orderProjectionRefsMemo?.raw === raw) {
+      return { values: { ...orderProjectionRefsMemo.read.values }, dirty: orderProjectionRefsMemo.read.dirty };
+    }
     const value = raw ? (JSON.parse(raw) as unknown) : null;
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return { values: {}, dirty: true };
@@ -210,7 +264,9 @@ function readOrderProjectionRefs(strict = false): RouteMapRead {
         entry?.updatedAtMs !== updatedAtMs
       ) dirty = true;
     }
-    return { values, dirty };
+    const parsedRead: RouteMapRead = { values, dirty };
+    orderProjectionRefsMemo = { raw, read: { values: { ...values }, dirty } };
+    return parsedRead;
   } catch {
     return { values: {}, dirty: true };
   }
@@ -218,10 +274,14 @@ function readOrderProjectionRefs(strict = false): RouteMapRead {
 
 function writeOrderProjectionRefs(value: RouteMap): void {
   try {
-    if (!Keychain.set(ORDER_PROJECTION_REFS_KEY, JSON.stringify(value))) {
+    const serialized = JSON.stringify(value);
+    if (!Keychain.set(ORDER_PROJECTION_REFS_KEY, serialized)) {
+      orderProjectionRefsMemo = undefined;
       throw new Error("订单详情保存失败，请稍后重试");
     }
+    orderProjectionRefsMemo = { raw: serialized, read: { values: { ...value }, dirty: false } };
   } catch (error) {
+    orderProjectionRefsMemo = undefined;
     if (error instanceof Error) throw error;
     throw new Error("订单详情保存失败，请稍后重试");
   }
@@ -307,15 +367,21 @@ export function pruneOrderProjectionReferences(
   if (changed) writeOrderProjectionRefs(refs);
 }
 
+let routesParsedMemo: { raw: string; values: RouteMap } | undefined;
+
 function read(strict = false): RouteMap {
   let raw: string | null;
   try { raw = Keychain.get(ROUTES_KEY); }
   catch (error) { if (strict) throw error; return {}; }
+  if (!raw) return {};
+  if (routesParsedMemo?.raw === raw) return { ...routesParsedMemo.values };
   try {
-    const value = raw ? (JSON.parse(raw) as unknown) : null;
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as RouteMap)
-      : {};
+    const value = JSON.parse(raw) as unknown;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      routesParsedMemo = { raw, values: value as RouteMap };
+      return { ...(value as RouteMap) };
+    }
+    return {};
   } catch {
     return {};
   }
@@ -323,10 +389,14 @@ function read(strict = false): RouteMap {
 
 function write(value: RouteMap): void {
   try {
-    if (!Keychain.set(ROUTES_KEY, JSON.stringify(value))) {
+    const serialized = JSON.stringify(value);
+    if (!Keychain.set(ROUTES_KEY, serialized)) {
+      routesParsedMemo = undefined;
       throw new Error("快递详情保存失败，请稍后重试");
     }
+    routesParsedMemo = { raw: serialized, values: { ...value } };
   } catch (error) {
+    routesParsedMemo = undefined;
     if (error instanceof Error) throw error;
     throw new Error("快递详情保存失败，请稍后重试");
   }

@@ -984,9 +984,9 @@ export function jdDiagnosticPage(scheme: unknown, hostname: unknown): string {
   const host = typeof hostname === "string" && hostname.length <= 55 ? hostname.toLowerCase() : "";
   if (!/^(?:[a-z0-9-]+\.)*(?:jd\.com|jd\.hk|360buyimg\.com)$/.test(host)) return "web_other";
   // The same login hosts the JD reader treats as a signed-out session (platform-web-parcels.ts).
-  if (host === "plogin.m.jd.com" || host === "passport.jd.com") return "jd_login";
+  if (host === "plogin.m.jd.com" || host === "passport.jd.com" || host === "passport.m.jd.com") return "jd_login";
   if (host === "my.m.jd.com" || host === "home.m.jd.com") return "jd_account";
-  if (host === "trade.m.jd.com") return "jd_orders";
+  if (host === "trade.m.jd.com" || host === "o.m.jd.com") return "jd_orders";
   return "jd_other";
 }
 
@@ -1711,22 +1711,51 @@ function retirePreHandleDiagnostics(): void {
   if (cleared) writeDiagnostic("diagnostics.log.cleared", { result: "handle_upgrade" });
 }
 
+let diagnosticsEnabledInTurn: { get: unknown; value: boolean } | undefined;
+let diagnosticsEnabledResetScheduled = false;
+
+function forgetDiagnosticsEnabledInTurn(): void {
+  diagnosticsEnabledInTurn = undefined;
+}
+
 export function diagnosticsEnabled(): boolean {
   reopenDiagnosticsForNewBeta();
   retirePreHandleDiagnostics();
+  if (diagnosticsEnabledInTurn && diagnosticsEnabledInTurn.get === Storage.get) {
+    return diagnosticsEnabledInTurn.value;
+  }
+  let enabled = DIAGNOSTICS_DEFAULT_ENABLED;
   try {
     const stored = Storage.get<boolean>(DIAGNOSTIC_ENABLED_KEY, { shared: true });
-    return typeof stored === "boolean" ? stored : DIAGNOSTICS_DEFAULT_ENABLED;
+    enabled = typeof stored === "boolean" ? stored : DIAGNOSTICS_DEFAULT_ENABLED;
   } catch {
-    return DIAGNOSTICS_DEFAULT_ENABLED;
+    enabled = DIAGNOSTICS_DEFAULT_ENABLED;
   }
+  diagnosticsEnabledInTurn = { get: Storage.get, value: enabled };
+  if (!diagnosticsEnabledResetScheduled) {
+    diagnosticsEnabledResetScheduled = true;
+    void Promise.resolve().then(() => {
+      diagnosticsEnabledResetScheduled = false;
+      diagnosticsEnabledInTurn = undefined;
+    });
+  }
+  return enabled;
 }
 
 /** Turning recording off stops new records; existing diagnostics remain readable. */
 export function setDiagnosticsEnabled(enabled: boolean): boolean {
   reopenDiagnosticsForNewBeta();
+  forgetDiagnosticsEnabledInTurn();
   try {
     Storage.set(DIAGNOSTIC_ENABLED_KEY, enabled === true, { shared: true });
+    diagnosticsEnabledInTurn = { get: Storage.get, value: enabled === true };
+    if (!diagnosticsEnabledResetScheduled) {
+      diagnosticsEnabledResetScheduled = true;
+      void Promise.resolve().then(() => {
+        diagnosticsEnabledResetScheduled = false;
+        diagnosticsEnabledInTurn = undefined;
+      });
+    }
     // A recording that starts begins with a clean repeat filter (G-MED-21).
     if (enabled) forgetRepeatedLines();
     if (!enabled) {
@@ -2455,6 +2484,7 @@ function forgetRepeatedLines(): void {
 
 export function clearDiagnostics(): void {
   try {
+    forgetDiagnosticsEnabledInTurn();
     forgetRepeatedLines();
     startStash.clear();
     migrateLegacyDiagnostics(Date.now());

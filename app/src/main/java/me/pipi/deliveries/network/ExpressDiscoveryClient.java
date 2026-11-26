@@ -131,12 +131,19 @@ public final class ExpressDiscoveryClient {
         final ExpressQueryResult parsed;
         final String associatedPhone;
         final String bindingGeneration;
+        final ExpressItem previous;
 
-        HeldRecord(JSONObject item, ExpressQueryResult parsed, String associatedPhone, String bindingGeneration) {
+        HeldRecord(
+                JSONObject item,
+                ExpressQueryResult parsed,
+                String associatedPhone,
+                String bindingGeneration,
+                ExpressItem previous) {
             this.item = item;
             this.parsed = parsed;
             this.associatedPhone = associatedPhone;
             this.bindingGeneration = bindingGeneration;
+            this.previous = previous;
         }
     }
 
@@ -211,62 +218,64 @@ public final class ExpressDiscoveryClient {
         Map<String, ExpressItem> existingBeforeSync = new HashMap<>();
         Set<String> importedWaybills = new HashSet<>();
         int imported = 0;
-        for (int index = 0; index < list.length(); index++) {
-            JSONObject item = list.optJSONObject(index);
-            String waybill = itemIdentity(item);
-            String normalizedWaybill = normalize(waybill);
-            Integer listed = listedRecords.get(normalizedWaybill);
-            if (listed == null || listed != index) continue;
-            boolean suppressed = repository.hasUnboundPhoneAssociation(
-                    waybill, "interface5");
-            String associatedPhone = matchedPhone(
-                    item, normalizedPhones, !suppressed);
-            String bindingGeneration = bindingGenerations.get(
-                    associatedPhone.replaceAll("\\D", ""));
-            if (ExpressRepository.shouldSuppressAutomaticImport(
-                    suppressed, associatedPhone) || bindingGeneration == null) continue;
-            syncedWaybills.add(normalizedWaybill);
-            syncedWaybillsByGeneration
-                    .computeIfAbsent(bindingGeneration, ignored -> new HashSet<>())
-                    .add(normalizedWaybill);
-            ExpressItem previous = existingBeforeSync.containsKey(normalizedWaybill)
-                    ? existingBeforeSync.get(normalizedWaybill)
-                    : repository.findByWaybill(waybill, "interface5");
-            if (!existingBeforeSync.containsKey(normalizedWaybill)) {
-                existingBeforeSync.put(normalizedWaybill, previous);
-            }
-            // The list operation is the only one that discovers account order ids. Persist every
-            // summary before starting any slower per-item detail request, otherwise a killed
-            // Worker can lose later order ids that getList may not repeat on the next refresh.
-            if (isAccountOrderRecord(item)) {
-                ExpressQueryResult jd = parseAccountOrder(item, false, true, associatedPhone);
-                if (jd == null) continue;
-                repository.saveInterface5OrderSummary(
-                        jd, associatedPhone, bindingGeneration);
-                if (previous == null
-                        && repository.findByWaybill(waybill, "interface5") != null
-                        && importedWaybills.add(normalizedWaybill)) imported++;
-                continue;
-            }
-            if (carriers != null) {
-                ExpressQueryResult parsed = storedExpress(item, associatedPhone, true);
-                if (parsed != null && carriers.recognizedFirst(parsed)) {
-                    held.add(new HeldRecord(item, parsed, associatedPhone, bindingGeneration));
+        try (ExpressRepository.CommitScope ignored = repository.openCommitScope()) {
+            for (int index = 0; index < list.length(); index++) {
+                JSONObject item = list.optJSONObject(index);
+                String waybill = itemIdentity(item);
+                String normalizedWaybill = normalize(waybill);
+                Integer listed = listedRecords.get(normalizedWaybill);
+                if (listed == null || listed != index) continue;
+                boolean suppressed = repository.hasUnboundPhoneAssociation(
+                        waybill, "interface5");
+                String associatedPhone = matchedPhone(
+                        item, normalizedPhones, !suppressed);
+                String bindingGeneration = bindingGenerations.get(
+                        associatedPhone.replaceAll("\\D", ""));
+                if (ExpressRepository.shouldSuppressAutomaticImport(
+                        suppressed, associatedPhone) || bindingGeneration == null) continue;
+                syncedWaybills.add(normalizedWaybill);
+                syncedWaybillsByGeneration
+                        .computeIfAbsent(bindingGeneration, ignoredKey -> new HashSet<>())
+                        .add(normalizedWaybill);
+                ExpressItem previous = existingBeforeSync.containsKey(normalizedWaybill)
+                        ? existingBeforeSync.get(normalizedWaybill)
+                        : repository.findByWaybill(waybill, "interface5");
+                if (!existingBeforeSync.containsKey(normalizedWaybill)) {
+                    existingBeforeSync.put(normalizedWaybill, previous);
+                }
+                // The list operation is the only one that discovers account order ids. Persist every
+                // summary before starting any slower per-item detail request, otherwise a killed
+                // Worker can lose later order ids that getList may not repeat on the next refresh.
+                if (isAccountOrderRecord(item)) {
+                    ExpressQueryResult jd = parseAccountOrder(item, false, true, associatedPhone);
+                    if (jd == null) continue;
+                    repository.saveInterface5OrderSummary(
+                            jd, associatedPhone, bindingGeneration);
+                    if (previous == null
+                            && repository.findByWaybill(waybill, "interface5") != null
+                            && importedWaybills.add(normalizedWaybill)) imported++;
                     continue;
                 }
+                if (carriers != null) {
+                    ExpressQueryResult parsed = storedExpress(item, associatedPhone, true);
+                    if (parsed != null && carriers.recognizedFirst(parsed)) {
+                        held.add(new HeldRecord(item, parsed, associatedPhone, bindingGeneration, previous));
+                        continue;
+                    }
+                }
+                if (persistParcel(repository, item, associatedPhone, bindingGeneration, null,
+                        previous, discovered, changedCainiao) && importedWaybills.add(normalizedWaybill)) imported++;
             }
-            if (persistParcel(repository, item, associatedPhone, bindingGeneration, null,
-                    discovered, changedCainiao) && importedWaybills.add(normalizedWaybill)) imported++;
-        }
-        // 代码 5: the new rows' carriers are recognised once the rest of the list is stored, and each is stored with it.
-        if (!held.isEmpty()) {
-            ArrayList<ExpressQueryResult> records = new ArrayList<>();
-            for (HeldRecord record : held) records.add(record.parsed);
-            Map<String, me.pipi.deliveries.model.CarrierNormalization> recognized = carriers.recognize(records);
-            for (HeldRecord record : held) {
-                if (persistParcel(repository, record.item, record.associatedPhone, record.bindingGeneration,
-                        recognized, discovered, changedCainiao)
-                        && importedWaybills.add(normalize(itemIdentity(record.item)))) imported++;
+            // 代码 5: the new rows' carriers are recognised once the rest of the list is stored, and each is stored with it.
+            if (!held.isEmpty()) {
+                ArrayList<ExpressQueryResult> records = new ArrayList<>();
+                for (HeldRecord record : held) records.add(record.parsed);
+                Map<String, me.pipi.deliveries.model.CarrierNormalization> recognized = carriers.recognize(records);
+                for (HeldRecord record : held) {
+                    if (persistParcel(repository, record.item, record.associatedPhone, record.bindingGeneration,
+                            recognized, record.previous, discovered, changedCainiao)
+                            && importedWaybills.add(normalize(itemIdentity(record.item)))) imported++;
+                }
             }
         }
         ExpressLog.line("v5", "v5_list", "", "succeeded",
@@ -604,20 +613,22 @@ public final class ExpressDiscoveryClient {
      */
     private boolean persistParcel(ExpressRepository repository, JSONObject item, String associatedPhone,
             String bindingGeneration, Map<String, me.pipi.deliveries.model.CarrierNormalization> recognized,
-            ArrayList<JSONObject> discovered, Map<String, Integer> changedCainiao) {
+            ExpressItem previous, ArrayList<JSONObject> discovered, Map<String, Integer> changedCainiao) {
         if (!isCainiaoListItem(item)) {
-            return persistExpress(repository, item, associatedPhone, bindingGeneration, recognized);
+            return persistExpress(repository, item, associatedPhone, bindingGeneration, recognized, previous);
         }
         String waybill = itemIdentity(item);
         String normalizedWaybill = normalize(waybill);
-        synchronized (repository) {
-            ExpressItem before = repository.findByWaybill(waybill, "interface5");
-            ExpressQueryResult previousSource = before == null ? null
-                    : repository.automaticSourceTimeline(before);
-            boolean added = persistExpress(repository, item, associatedPhone, bindingGeneration, recognized);
-            ExpressItem current = repository.findByWaybill(waybill, "interface5");
-            ExpressQueryResult currentSource = current == null ? null
-                    : repository.automaticSourceTimeline(current);
+        ExpressQueryResult previousSource = previous == null ? null
+                : repository.automaticSourceTimeline(previous);
+        if (!persistExpressRecord(repository, item, associatedPhone, bindingGeneration, recognized)) {
+            return false;
+        }
+        ExpressItem current = repository.findByWaybill(waybill, "interface5");
+        boolean added = previous == null && current != null;
+        ExpressQueryResult currentSource = current == null ? null
+                : repository.automaticSourceTimeline(current);
+        synchronized (this) {
             if (!cainiaoListSummaries.containsKey(normalizedWaybill)) {
                 cainiaoSyncOrder.add(normalizedWaybill);
             }
@@ -634,11 +645,24 @@ public final class ExpressDiscoveryClient {
                     discovered.set(pending, item);
                 }
             }
-            return added;
         }
+        return added;
     }
 
     private boolean persistExpress(
+            ExpressRepository repository, JSONObject item, String phone,
+            String bindingGeneration,
+            Map<String, me.pipi.deliveries.model.CarrierNormalization> recognized,
+            ExpressItem previous) {
+        String waybill = itemIdentity(item);
+        if (!persistExpressRecord(repository, item, phone, bindingGeneration, recognized)) {
+            return false;
+        }
+        return previous == null
+                && repository.findByWaybill(waybill, "interface5") != null;
+    }
+
+    private boolean persistExpressRecord(
             ExpressRepository repository, JSONObject item, String phone,
             String bindingGeneration,
             Map<String, me.pipi.deliveries.model.CarrierNormalization> recognized) {
@@ -654,10 +678,8 @@ public final class ExpressDiscoveryClient {
                 "nodes", ExpressTimeline.parse(result.tracksJson, "", "").size(),
                 "headlinePresent", !first(item, "lastLogisticDetail", "context", "message").isEmpty(),
                 "semantic", result.semantic.name());
-        ExpressItem previous = repository.findByWaybill(waybill, "interface5");
         repository.saveInterface5(result, phone, bindingGeneration);
-        return previous == null
-                && repository.findByWaybill(waybill, "interface5") != null;
+        return true;
     }
 
     private static ExpressQueryResult storedExpress(

@@ -1780,6 +1780,137 @@ function matchesEncoded(
     read.valid?.serialized === encoded.serialized;
 }
 
+function storedStringMatches(
+  key: string,
+  shared: boolean,
+  expected: string,
+): boolean {
+  try {
+    return Storage.get<unknown>(key, shared ? { shared: true } : undefined) === expected;
+  } catch {
+    return false;
+  }
+}
+
+type StoredEnvelopeHeader = Readonly<{
+  header: StatePayloadHeader;
+  envelopeChecksum: string;
+}>;
+
+type StoredHeaderRead = Readonly<{
+  valid: StoredEnvelopeHeader | null;
+  invalid: boolean;
+  failed: boolean;
+}>;
+
+const STABLE_REVISION_RE = /"revision":(-?\d+(?:\.\d+)?),"shipments":\[/;
+const STABLE_TAIL_RE = /,"updatedAtMs":(-?\d+(?:\.\d+)?),"version":(1|2)(?:,"watchFeedback":|,"watchSource":|\}$)/;
+const PREFIX_HEADER_RE = /^\{"version":(1|2),"revision":(-?\d+(?:\.\d+)?),"updatedAtMs":(-?\d+(?:\.\d+)?),/;
+
+/**
+ * Validates the outer schema-3 envelope and SHA-256 payload checksum and extracts the top-level
+ * state header without calling `JSON.parse(envelope.payload)` inside WidgetKit's 30MB limit.
+ */
+function decodeStoredEnvelopeHeader(raw: unknown): StoredHeaderRead {
+  try {
+    if (raw == null) return { valid: null, invalid: false, failed: false };
+    if (raw === "") return { valid: null, invalid: true, failed: false };
+    if (typeof raw === "string") {
+      const envelope = JSON.parse(raw) as Partial<StoredStateEnvelope>;
+      if (
+        envelope.schema !== 3 ||
+        typeof envelope.checksum !== "string" ||
+        !/^[a-f0-9]{64}$/i.test(envelope.checksum) ||
+        typeof envelope.payload !== "string" ||
+        sha256Hex(envelope.payload) !== envelope.checksum.toLowerCase()
+      ) {
+        return { valid: null, invalid: true, failed: false };
+      }
+      const payload = envelope.payload;
+      const envelopeChecksum = envelope.checksum.toLowerCase();
+      const shipmentsOffset = payload.indexOf('"shipments":[');
+      if (shipmentsOffset > 0) {
+        const revMatch = STABLE_REVISION_RE.exec(payload.slice(0, shipmentsOffset + 13));
+        const tailMatch = STABLE_TAIL_RE.exec(payload);
+        if (revMatch && tailMatch) {
+          const revision = Number(revMatch[1]);
+          const updatedAtMs = Number(tailMatch[1]);
+          const version = Number(tailMatch[2]) as 1 | 2;
+          if (Number.isFinite(revision) && Number.isFinite(updatedAtMs)) {
+            return {
+              valid: { header: { version, revision, updatedAtMs }, envelopeChecksum },
+              invalid: false,
+              failed: false,
+            };
+          }
+        }
+        const prefixMatch = PREFIX_HEADER_RE.exec(payload);
+        if (prefixMatch) {
+          const version = Number(prefixMatch[1]) as 1 | 2;
+          const revision = Number(prefixMatch[2]);
+          const updatedAtMs = Number(prefixMatch[3]);
+          if (Number.isFinite(revision) && Number.isFinite(updatedAtMs)) {
+            return {
+              valid: { header: { version, revision, updatedAtMs }, envelopeChecksum },
+              invalid: false,
+              failed: false,
+            };
+          }
+        }
+      }
+    }
+    const fallback = decodeStoredRaw(raw);
+    return {
+      valid: fallback.valid
+        ? { header: fallback.valid.header, envelopeChecksum: fallback.valid.envelopeChecksum }
+        : null,
+      invalid: fallback.invalid,
+      failed: fallback.failed,
+    };
+  } catch {
+    return { valid: null, invalid: true, failed: false };
+  }
+}
+
+function readStoredStateHeader(
+  key: string,
+  shared: boolean,
+  decode: (raw: unknown) => StoredHeaderRead,
+): StoredHeaderRead {
+  try {
+    return decode(Storage.get<unknown>(key, shared ? { shared: true } : undefined));
+  } catch {
+    return { valid: null, invalid: false, failed: true };
+  }
+}
+
+function chooseStoredHeader(...reads: readonly StoredHeaderRead[]): StoredEnvelopeHeader | null {
+  return reads
+    .map((read) => read.valid)
+    .filter((value): value is StoredEnvelopeHeader => value != null)
+    .sort((left, right) =>
+      right.header.revision - left.header.revision ||
+      right.header.updatedAtMs - left.header.updatedAtMs
+    )[0] || null;
+}
+
+function readDurableStateHeader(
+  name: string,
+  decode: (raw: unknown) => StoredHeaderRead,
+): StoredHeaderRead {
+  try {
+    const result = readDurableTextResult(name);
+    const reads = result.candidates.map(decode);
+    return {
+      valid: chooseStoredHeader(...reads),
+      invalid: reads.some((read) => read.invalid),
+      failed: result.failed || reads.some((read) => read.failed),
+    };
+  } catch {
+    return { valid: null, invalid: false, failed: true };
+  }
+}
+
 function orderedStoredStates(
   ...reads: readonly StoredStateRead[]
 ): DecodedStoredState[] {
@@ -1993,23 +2124,32 @@ function readValidWidgetSnapshotSidecar(now: number): WidgetSnapshot | null {
       return null;
     }
     const shared = sharedStateText();
-    let winning: DecodedStoredState | null = null;
+    let winning: StoredEnvelopeHeader | null = null;
+    const decodedHeaders = new Map<string, StoredHeaderRead>();
+    const decodeHeader = (raw: unknown): StoredHeaderRead => {
+      if (typeof raw !== "string") return decodeStoredEnvelopeHeader(raw);
+      const cached = decodedHeaders.get(raw);
+      if (cached) return cached;
+      const result = decodeStoredEnvelopeHeader(raw);
+      if (result.valid) decodedHeaders.set(raw, result);
+      return result;
+    };
     if (shared != null) {
-      const read = decodeStoredRaw(shared);
+      const read = decodeHeader(shared);
       if (read.invalid || read.failed || !read.valid) return null;
       winning = read.valid;
     } else {
-      const primary = readStoredState(STATE_KEY, false);
-      const backup = readStoredState(STATE_BACKUP_KEY, true);
-      const durableA = readDurableState(STATE_DURABLE_SLOT_A);
-      const durableB = readDurableState(STATE_DURABLE_SLOT_B);
+      const primary = readStoredStateHeader(STATE_KEY, false, decodeHeader);
+      const backup = readStoredStateHeader(STATE_BACKUP_KEY, true, decodeHeader);
+      const durableA = readDurableStateHeader(STATE_DURABLE_SLOT_A, decodeHeader);
+      const durableB = readDurableStateHeader(STATE_DURABLE_SLOT_B, decodeHeader);
       if (
         primary.invalid || backup.invalid || durableA.invalid || durableB.invalid ||
         primary.failed || backup.failed || durableA.failed || durableB.failed
       ) {
         return null;
       }
-      winning = chooseStoredState(primary, backup, durableA, durableB);
+      winning = chooseStoredHeader(primary, backup, durableA, durableB);
     }
     if (
       !winning ||
@@ -2118,8 +2258,11 @@ function readStateSnapshot(now: number, prior?: LoadedStateSnapshot,
     const durableA = readDurableState(STATE_DURABLE_SLOT_A, decode);
     const durableB = readDurableState(STATE_DURABLE_SLOT_B, decode);
     const sharedRead = shared == null ? null : decode(shared);
+    let previousSharedDecoded: StoredStateRead | undefined;
+    const readPreviousShared = (): StoredStateRead =>
+      previousSharedDecoded ??= decode(sharedStateText(true, prefetched));
     const candidates = sharedRead
-      ? orderedStoredStates(sharedRead, decode(sharedStateText(true, prefetched)))
+      ? (sharedRead.valid ? [sharedRead.valid] : orderedStoredStates(sharedRead, readPreviousShared()))
       : orderedStoredStates(primary, backup, durableA, durableB);
     let chosen: DecodedStoredState | null = candidates[0] ?? null;
 
@@ -2183,8 +2326,10 @@ function readStateSnapshot(now: number, prior?: LoadedStateSnapshot,
     let legacyBindingRecoveryDurable = true;
     let healthyBindingBackup = false;
     let migrationAttempted = 0;
-    const attempts = recoveredLegacy ? [chosen] : candidates;
-    for (const candidate of attempts) {
+    const attempts = recoveredLegacy ? [...[chosen]] : [...candidates];
+    let sharedFallbackAppended = !sharedRead?.valid;
+    for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
+      const candidate = attempts[attemptIndex]!;
       const parsedState = candidate.state;
       migrationAttempted++;
       try {
@@ -2206,6 +2351,13 @@ function readStateSnapshot(now: number, prior?: LoadedStateSnapshot,
           { result: "migration_failed", revision: candidate.header.revision },
           "warning",
         );
+        if (!recoveredLegacy && !sharedFallbackAppended) {
+          sharedFallbackAppended = true;
+          const fallback = readPreviousShared().valid;
+          if (fallback && fallback.serialized !== candidate.serialized) {
+            attempts.push(fallback);
+          }
+        }
       }
     }
     if (!restored || !chosenState) {
@@ -2274,11 +2426,9 @@ function readStateSnapshot(now: number, prior?: LoadedStateSnapshot,
       if (!primaryMatches) mirrorStoredState(STATE_KEY, encoded, false);
       if (!backupMatches) mirrorStoredState(STATE_BACKUP_KEY, encoded, true);
       pendingCommit = encoded;
-      const refreshedPrimary = readStoredState(STATE_KEY, false, decode);
-      const refreshedBackup = readStoredState(STATE_BACKUP_KEY, true, decode);
       if (
-        matchesEncoded(refreshedPrimary, encoded) &&
-        matchesEncoded(refreshedBackup, encoded)
+        storedStringMatches(STATE_KEY, false, encoded.serialized) &&
+        storedStringMatches(STATE_BACKUP_KEY, true, encoded.serialized)
       ) {
         pendingCommit = null;
       }
@@ -2315,7 +2465,22 @@ export function visibleShipments(
   state: AppState,
   now = Date.now(),
 ): Shipment[] {
-  return storedShipmentsForProcessing(state, now).filter(shipment => !isHiddenCompletedOrderPlaceholder(shipment));
+  const candidates = storedShipmentsForProcessing(state, now).filter(
+    (shipment) => !isHiddenCompletedOrderPlaceholder(shipment),
+  );
+  const occupiedAutomaticBills = new Set<string>();
+  for (const shipment of candidates) {
+    if (!shipment.identity.manuallyAdded && !unprojectedAccountOrder(shipment) && !internationalShipment(shipment)) {
+      const bill = normalizeWaybill(displayWaybill(shipment));
+      if (bill) occupiedAutomaticBills.add(bill);
+    }
+  }
+  if (!occupiedAutomaticBills.size) return candidates;
+  return candidates.filter(
+    (shipment) =>
+      !shipment.identity.manuallyAdded ||
+      !occupiedAutomaticBills.has(normalizeWaybill(displayWaybill(shipment))),
+  );
 }
 
 /** Preserve projection and alignment work for display-only hidden order placeholders. */
@@ -2478,6 +2643,7 @@ type StateSaveOptions = {
   notifyChanges?: boolean;
   context?: RefreshNotificationContext;
   acknowledgedId?: string;
+  acknowledgedIds?: ReadonlySet<string>;
   deferredId?: string;
   enhancementUnsubscribe?: PendingEnhancementUnsubscribe;
   acknowledgedEnhancementUnsubscribeId?: string;
@@ -2565,9 +2731,19 @@ function commitWatchSnapshotLocked({ shipments, ...source }: WatchSnapshot): App
       const feedback = (recordId ? feedbackByRecordId.get(recordId) : undefined) ??
         feedbackByWaybill.get(normalizeWaybill(displayWaybill(row)));
       if (feedback?.action === "deleted") {
-        // IOS-PARITY-12: an in-flight/same-ms read or an unchanged scan timestamp keeps the deleted Watch hidden;
-        // resurface only when a strictly newer scan arrives after deletion.
-        if (source.observedAtMs > feedback.actedAt && latestWatchTrackAtMs(row) > feedback.latestTrackAtMs) {
+        const retrackedNewWatchRecord = Boolean(
+          row.updatedAtMs > feedback.actedAt &&
+          recordId &&
+          feedback.watchRecordId &&
+          recordId !== feedback.watchRecordId,
+        );
+        // IOS-PARITY-12 & W1: an in-flight/same-ms read or an unchanged scan timestamp on the same Watch record
+        // keeps the deleted Watch hidden; resurface when a strictly newer scan arrives after deletion OR when Bot
+        // creates a brand-new Watch record (recordId !== feedback.watchRecordId) with updatedAtMs > actedAt.
+        if (
+          retrackedNewWatchRecord ||
+          (source.observedAtMs > feedback.actedAt && latestWatchTrackAtMs(row) > feedback.latestTrackAtMs)
+        ) {
           revivedRecordIds.add(feedback.watchRecordId);
           return true;
         }
@@ -2578,7 +2754,18 @@ function commitWatchSnapshotLocked({ shipments, ...source }: WatchSnapshot): App
       const recordId = row.identity.id.startsWith("watch:") ? row.identity.id.slice("watch:".length) : "";
       const feedback = (recordId ? feedbackByRecordId.get(recordId) : undefined) ??
         feedbackByWaybill.get(normalizeWaybill(displayWaybill(row)));
-      const completedAtMs = feedback?.action === "completed" ? feedback.actedAt : undefined;
+      const staleOldRecordFeedback = Boolean(
+        feedback &&
+        (revivedRecordIds.has(feedback.watchRecordId) ||
+          (row.updatedAtMs > feedback.actedAt &&
+            recordId &&
+            feedback.watchRecordId &&
+            recordId !== feedback.watchRecordId)),
+      );
+      if (staleOldRecordFeedback && feedback) {
+        revivedRecordIds.add(feedback.watchRecordId);
+      }
+      const completedAtMs = !staleOldRecordFeedback && feedback?.action === "completed" ? feedback.actedAt : undefined;
       const old = byId.get(row.identity.id);
       if (!old) {
         return completedAtMs && !row.forcedCompletedAtMs ? { ...row, forcedCompletedAtMs: completedAtMs } : row;
@@ -2650,14 +2837,27 @@ export async function refreshStoredWatchShipments(budgetMs?: number): Promise<Ap
     return finish("unchanged", last.state);
   }
   const writesBefore = stateWriteCount;
-  const committed = commitWatchSnapshot(snapshot);
-  return finish(!snapshot.snapshot ? "denied" : stateWriteCount > writesBefore ? "committed" : "unchanged", committed);
+  let committed = commitWatchSnapshot(snapshot);
+  const wrote = stateWriteCount > writesBefore;
+  if (wrote && committed.pendingNotifications?.some((event) => !event.awaitingCarrier)) {
+    try {
+      const { replayPendingShipmentNotifications } = await import("./notifications");
+      const replayed = await replayPendingShipmentNotifications(undefined, {
+        deadlineAtMs: budgetMs !== undefined ? startedAt + budgetMs : undefined,
+      });
+      if (replayed && replayed.revision > committed.revision) committed = replayed;
+    } catch {
+      /* Notification replay is best-effort; unacknowledged events remain queued in AppState. */
+    }
+  }
+  return finish(!snapshot.snapshot ? "denied" : wrote ? "committed" : "unchanged", committed);
 }
 
 /**
- * A background runtime's Watch page read after its domestic pass: the widget, the App Intent and the Shortcut refresh
- * (G-HIGH-10). It runs only when the stored page is due and more than two seconds of the runtime's budget are left. It
- * returns the newer state, or nothing; a failure is logged and never discards the domestic result.
+ * A background runtime's Watch page read beside or after its domestic pass: the widget runs both concurrently inside
+ * the same budget (§8.4 #6), while the App Intent and Shortcut refresh run after the domestic pass (G-HIGH-10). It
+ * runs only when the stored page is due and more than two seconds of the runtime's budget are left. It returns the
+ * newer state, or nothing; a failure is logged and never discards the domestic result.
  */
 export async function refreshDueWatchShipments(state: AppState, budgetMs?: number): Promise<AppState | undefined> {
   if (!watchRefreshDue(state, Date.now()) || budgetMs !== undefined && budgetMs <= 2_000) return undefined;
@@ -3083,7 +3283,7 @@ function saveStateAndPrune(
   notificationCommit: StateSaveOptions,
   previousInTransaction?: AppState,
   pickupCodeRecords?: readonly PickupCodeRecord[],
-): { state: AppState; routesPruned: boolean } {
+): { state: AppState; routesPruned: boolean; verified?: { serialized: string; readAtMs: number } } {
   const startedAtMs = Date.now();
   // ACK/defer read inside this transaction; its CAS retry re-reads before reusing the snapshot.
   const previous = previousInTransaction ?? loadState(now);
@@ -3196,7 +3396,9 @@ function saveStateAndPrune(
     ...(pickupArtworkChoices && Object.keys(pickupArtworkChoices).length ? { pickupArtworkChoices } : {}),
     // An unsent event of the old parcel goes with it when a new parcel takes the reused number (user 2026-10-02).
     pendingNotifications: (previous.pendingNotifications || []).filter((event) =>
-      event.id !== notificationCommit.acknowledgedId && !reusedNumberRows.has(event.shipmentId)
+      event.id !== notificationCommit.acknowledgedId &&
+      !notificationCommit.acknowledgedIds?.has(event.id) &&
+      !reusedNumberRows.has(event.shipmentId)
     ),
     ...(unsubscribes.length ? { pendingEnhancementUnsubscribes: unsubscribes } : {}),
     // 一次性 feed 槽重建的标记跟着状态走：候选没带就沿用存着的，都没有就从现在起算（只有读盘时
@@ -3311,12 +3513,9 @@ function saveStateAndPrune(
   let primaryStored = true;
   primaryStored = mirrorStoredState(STATE_KEY, stored, false);
   pendingCommit = stored;
-  const decode = decodeStateReadback(stored);
-  const writtenPrimary = readStoredState(STATE_KEY, false, decode);
-  const writtenBackup = readStoredState(STATE_BACKUP_KEY, true, decode);
   if (
-    matchesEncoded(writtenPrimary, stored) &&
-    matchesEncoded(writtenBackup, stored)
+    storedStringMatches(STATE_KEY, false, stored.serialized) &&
+    storedStringMatches(STATE_BACKUP_KEY, true, stored.serialized)
   ) {
     pendingCommit = null;
   }
@@ -3384,7 +3583,11 @@ function saveStateAndPrune(
     recordRowPresentationChanges(previous.shipments, stored.state.shipments, batchId, now);
     recordNotificationDecisions(decisions, batchId);
   } catch { /* Diagnostics never change a commit. */ }
-  return { state: stored.state, routesPruned };
+  const verified = mirrorsStored && !pendingCommit && !lastStateLoadFailure &&
+    !routesPruneDirty && !productImagesPruneDirty && !stored.state.emptyTimelineRetirements?.length
+    ? { serialized: stored.serialized, readAtMs: now }
+    : undefined;
+  return { state: stored.state, routesPruned, ...(verified ? { verified } : {}) };
 }
 
 
@@ -3717,10 +3920,27 @@ export function acknowledgeShipmentNotification(
   now = Date.now(),
   prior?: LoadedStateSnapshot,
 ): AppState {
+  return acknowledgeShipmentNotificationsSnapshot([eventId], now, prior).state;
+}
+
+export function acknowledgeShipmentNotificationsSnapshot(
+  eventIds: readonly string[],
+  now = Date.now(),
+  prior?: LoadedStateSnapshot,
+): LoadedStateSnapshot {
+  if (!eventIds.length) return loadStateSnapshot(now, prior);
+  const targetIds = new Set(eventIds);
   return withSharedFileTransaction(() => {
-    const state = loadStateSnapshot(now, prior).state;
-    if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
-    return saveStateAndPrune(state, now, { acknowledgedId: eventId }, state).state;
+    const loaded = loadStateSnapshot(now, prior);
+    const state = loaded.state;
+    if (!state.pendingNotifications?.some((event) => targetIds.has(event.id))) return loaded;
+    const saved = saveStateAndPrune(
+      state,
+      now,
+      eventIds.length === 1 ? { acknowledgedId: eventIds[0] } : { acknowledgedIds: targetIds },
+      state,
+    );
+    return { state: saved.state, ...(saved.verified ? { verified: saved.verified } : {}) };
   });
 }
 
@@ -3729,10 +3949,20 @@ export function deferShipmentNotification(
   now = Date.now(),
   prior?: LoadedStateSnapshot,
 ): AppState {
+  return deferShipmentNotificationSnapshot(eventId, now, prior).state;
+}
+
+export function deferShipmentNotificationSnapshot(
+  eventId: string,
+  now = Date.now(),
+  prior?: LoadedStateSnapshot,
+): LoadedStateSnapshot {
   return withSharedFileTransaction(() => {
-    const state = loadStateSnapshot(now, prior).state;
-    if (!state.pendingNotifications?.some((event) => event.id === eventId)) return state;
-    return saveStateAndPrune(state, now, { deferredId: eventId }, state).state;
+    const loaded = loadStateSnapshot(now, prior);
+    const state = loaded.state;
+    if (!state.pendingNotifications?.some((event) => event.id === eventId)) return loaded;
+    const saved = saveStateAndPrune(state, now, { deferredId: eventId }, state);
+    return { state: saved.state, ...(saved.verified ? { verified: saved.verified } : {}) };
   });
 }
 

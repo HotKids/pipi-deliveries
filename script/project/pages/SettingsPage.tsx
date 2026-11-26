@@ -3,7 +3,6 @@ import { recognitionSettings } from "../services/recognition/settings";
 import {
   AppEvents,
   Button,
-  Divider,
   HStack,
   Image,
   Link,
@@ -486,8 +485,7 @@ export function SettingsPage(props: {
           </Section>
 
           <Section header={<Text>更多</Text>}>
-            <Button buttonStyle="plain" action={() => setDestination("recognition")} listRowSeparator="hidden"
-              overlay={{ alignment: "bottom", content: <Divider padding={{ leading: 42 }} /> }}>
+            <Button buttonStyle="plain" action={() => setDestination("recognition")}>
               <HStack spacing={12} padding={{ vertical: 5 }} frame={{ minHeight: 44, maxWidth: "infinity" }} contentShape="rect">
                 <SettingsRowIcon systemName="sparkles" backgroundColor={SETTINGS_BLUE} />
                 <Text>智能识别</Text>
@@ -498,8 +496,7 @@ export function SettingsPage(props: {
                 <SettingsAccessoryIcon systemName="chevron.right" />
               </HStack>
             </Button>
-            <Button buttonStyle="plain" action={() => setDestination("shortcuts")} listRowSeparator="hidden"
-              overlay={{ alignment: "bottom", content: <Divider padding={{ leading: 42 }} /> }}>
+            <Button buttonStyle="plain" action={() => setDestination("shortcuts")}>
               <HStack
                 spacing={12}
                 padding={{ vertical: 5 }}
@@ -512,7 +509,7 @@ export function SettingsPage(props: {
                 <SettingsAccessoryIcon systemName="chevron.right" />
               </HStack>
             </Button>
-            <Button buttonStyle="plain" action={() => setDestination("activity")} listRowSeparator="hidden">
+            <Button buttonStyle="plain" action={() => setDestination("activity")}>
               <HStack
                 spacing={12}
                 padding={{ vertical: 5 }}
@@ -531,8 +528,6 @@ export function SettingsPage(props: {
             <Button
               buttonStyle="plain"
               action={() => setDestination("diagnostics")}
-              listRowSeparator="hidden"
-              overlay={{ alignment: "bottom", content: <Divider padding={{ leading: 42 }} /> }}
             >
               <HStack
                 spacing={12}
@@ -554,7 +549,6 @@ export function SettingsPage(props: {
             <Button
               buttonStyle="plain"
               action={() => setDestination("privacy")}
-              listRowSeparator="hidden"
             >
               <HStack
                 spacing={12}
@@ -626,8 +620,6 @@ export function SettingsPage(props: {
               spacing={12}
               padding={{ vertical: 5 }}
               frame={{ minHeight: 44, maxWidth: "infinity" }}
-              listRowSeparator="hidden"
-              overlay={{ alignment: "bottom", content: <Divider padding={{ leading: 42 }} /> }}
             >
               <SettingsAppIcon />
               <Text>派派助手</Text>
@@ -640,7 +632,6 @@ export function SettingsPage(props: {
                 padding={{ vertical: 5 }}
                 frame={{ minHeight: 44, maxWidth: "infinity" }}
                 contentShape="rect"
-                listRowSeparator="hidden"
               >
                 <SettingsRowIcon systemName="link" backgroundColor={SETTINGS_GRAY} />
                 <Text foregroundStyle="label">项目地址</Text>

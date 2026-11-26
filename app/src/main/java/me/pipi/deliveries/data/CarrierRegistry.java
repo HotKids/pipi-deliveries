@@ -304,8 +304,8 @@ public final class CarrierRegistry {
 
     static String bootstrapVersion(boolean beta) {
         return beta
-                ? "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9"
-                : "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9";
+                ? "a39d590a766c2281d04c27bceed9a683a5ff36866f60fd7c9aab682f408e85d7"
+                : "a39d590a766c2281d04c27bceed9a683a5ff36866f60fd7c9aab682f408e85d7";
     }
 
     static int sizeForTesting() {
@@ -541,7 +541,8 @@ public final class CarrierRegistry {
                         List.of("SFEXPRESS", "SHUNFENG"), List.of(), List.of(),
                         List.of("顺丰", "顺丰快递")),
                 definition("ZTO", "中通快递", "zhongtong", "95311", "zto", true,
-                        List.of("ZHONGTONG"), List.of(), List.of(), List.of("中通")),
+                        List.of("ZHONGTONG"), List.of(), List.of("zhongtongguoji"),
+                        List.of("中通", "中通国际")),
                 definition("ZTOKY", "中通快运", "zhongtongkuaiyun", "", "zto", false,
                         List.of(), List.of(), List.of(), List.of()),
                 definition("YTO", "圆通速递", "yuantong", "95554", "yto", false,

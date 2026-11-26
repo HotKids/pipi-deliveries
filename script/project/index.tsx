@@ -31,7 +31,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
 import type { PickupEmptyArtwork } from "./components/EmptyDeliveryVehicle";
 import { expireDueParcelHandoffs, loadAppState, peekStateRevision, refreshStoredWatchShipments, toggleParcelArtwork, visibleShipments } from "./services/storage";
-import { performPickupAction, refreshPlatformParcels } from "./services/platform-parcel-sync";
+import { performPickupAction, platformObservationSignature, refreshPlatformParcels } from "./services/platform-parcel-sync";
 import { SCRIPT_VERSION } from "./services/build-track";
 import {
   beginDiagnosticOperation,
@@ -46,6 +46,7 @@ import {
 } from "./services/logger";
 import { preferNewerState } from "./services/ui-state";
 import { refreshAllShipments, refreshCloudPddParcels, subscribeRefreshState } from "./services/sync";
+import { enrichPendingCloudShipments } from "./services/sync";
 import {
   reloadAndRefreshOnResume,
   resumeShipmentId,
@@ -229,6 +230,10 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   revision.current = state?.revision ?? -1;
   const resumeGeneration = useRef(0);
   const shipments = useMemo(() => state ? visibleShipments(state) : [], [state, watchAccessRevision]);
+  const platformObservationKey = useMemo(
+    () => state ? platformObservationSignature(shipments, state.pickupCodeRecords) : "",
+    [hasState, shipments, state?.pickupCodeRecords],
+  );
   const pickupCards = useMemo(() => [...mealCards, ...activePickupCards(shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices)],
     [shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices, mealCards]);
   const latestPickupView = useRef({ state, pickupCards });
@@ -322,6 +327,9 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
       if (typeof loadAppState === "function") {
         const next = await loadAppState();
         applyState(next);
+      }
+      if (typeof enrichPendingCloudShipments === "function") {
+        await enrichPendingCloudShipments(applyState);
       }
     } catch {
       // synchronizeParcelCloudRecords logs its own diagnostic outcome.
@@ -482,7 +490,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
 
   useEffect(() => {
     if (state && launchWorkStarted.current) observePlatformList();
-  }, [state?.revision]);
+  }, [platformObservationKey]);
 
   useEffect(() => {
     let mounted = true;
@@ -692,7 +700,6 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   return (
     <TabView
       selection={selection}
-      tabBarMinimizeBehavior={Number.parseInt(Device.systemVersion, 10) >= 26 ? "onScrollDown" : undefined}
       background={
         projectionView
           ? {

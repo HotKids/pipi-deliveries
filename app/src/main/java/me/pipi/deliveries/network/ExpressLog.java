@@ -312,10 +312,25 @@ public final class ExpressLog {
         return format(atMs, "failed".equals(outcome) ? "WARNING" : "INFO", event, mapped);
     }
 
+    static boolean shouldEmit(boolean debug, boolean betaTrack, boolean loggable) {
+        return debug || betaTrack || loggable;
+    }
+
+    private static boolean isBetaTrack() {
+        return BuildConfig.VERSION_NAME.contains("-beta")
+                || "https://beta.pipiassistant.app".equals(BuildConfig.EXPRESS_GATEWAY_URL);
+    }
+
     private static void emit(String message) {
         try {
-            if (message.contains(" ERROR ")) Log.e(TAG, message);
-            else if (message.contains(" WARNING ")) Log.w(TAG, message);
+            final int level = message.contains(" ERROR ")
+                    ? Log.ERROR
+                    : message.contains(" WARNING ") ? Log.WARN : Log.INFO;
+            if (!shouldEmit(BuildConfig.DEBUG, isBetaTrack(), Log.isLoggable(TAG, level))) {
+                return;
+            }
+            if (level == Log.ERROR) Log.e(TAG, message);
+            else if (level == Log.WARN) Log.w(TAG, message);
             else Log.i(TAG, message);
         }
         catch (RuntimeException ignored) { /* Logging cannot affect a query or persistence. */ }

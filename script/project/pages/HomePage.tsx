@@ -246,6 +246,34 @@ export function HomePage(props: {
   }, [groups]);
   const rowActions = useRef({ openShipment, confirmDelete, confirmComplete });
   rowActions.current = { openShipment, confirmDelete, confirmComplete };
+  const rowHandlers = useRef(new Map<string, {
+    shipment: Shipment;
+    onOpen: () => void;
+    onDelete: () => void;
+    onComplete: () => void;
+  }>());
+  useEffect(() => {
+    const liveIds = new Set(shipments.map((item) => item.identity.id));
+    for (const key of rowHandlers.current.keys()) {
+      if (!liveIds.has(key)) rowHandlers.current.delete(key);
+    }
+  }, [shipments]);
+  function rowHandlersFor(id: string, shipment: Shipment) {
+    let cached = rowHandlers.current.get(id);
+    if (!cached) {
+      const entry = {
+        shipment,
+        onOpen: () => rowActions.current.openShipment(entry.shipment),
+        onDelete: () => void rowActions.current.confirmDelete(entry.shipment),
+        onComplete: () => void rowActions.current.confirmComplete(entry.shipment),
+      };
+      rowHandlers.current.set(id, entry);
+      cached = entry;
+    } else {
+      cached.shipment = shipment;
+    }
+    return cached;
+  }
   const candidate = selectedNavigationShipment(
     props.state,
     shipmentNavigationTarget,
@@ -522,6 +550,7 @@ export function HomePage(props: {
                 toast={transientToast(notice, setNotice)}
               >
                 <HomeSearchBar
+                  open={searchPresented.value}
                   state={props.state}
                   shipments={shipments}
                   autoFocusSearch={props.autoFocusSearch}
@@ -594,10 +623,9 @@ export function HomePage(props: {
                 <ShipmentRow
                   key={id}
                   shipment={shipment}
-                  showSeparator={id !== observableItems.value.at(-1)?.id}
-                  onOpen={() => rowActions.current.openShipment(shipment)}
-                  onDelete={() => void rowActions.current.confirmDelete(shipment)}
-                  onComplete={() => void rowActions.current.confirmComplete(shipment)}
+                  onOpen={rowHandlersFor(id, shipment).onOpen}
+                  onDelete={rowHandlersFor(id, shipment).onDelete}
+                  onComplete={rowHandlersFor(id, shipment).onComplete}
                   deleteDisabled={deleting}
                   completeDisabled={completing}
                 />
@@ -611,6 +639,7 @@ export function HomePage(props: {
 }
 
 function HomeSearchBar(props: {
+  open: boolean;
   state: AppState;
   shipments: readonly Shipment[];
   autoFocusSearch: boolean;
@@ -646,6 +675,7 @@ function HomeSearchBar(props: {
   }
   const storedWaybills = useMemo(() => {
     const index = new Map<string, Shipment[]>();
+    if (!props.open && !props.shortcutLookup) return index;
     for (const shipment of props.state.shipments) {
       const waybill = normalizeWaybill(displayWaybill(shipment));
       if (!waybill) continue;
@@ -654,7 +684,7 @@ function HomeSearchBar(props: {
       else index.set(waybill, [shipment]);
     }
     return index;
-  }, [props.state.shipments]);
+  }, [props.open, Boolean(props.shortcutLookup), props.state.shipments]);
   const phoneTailValidation = validationNotice.includes("手机尾号");
 
   function cancelCarrierDetection(keepWaybill?: string) {

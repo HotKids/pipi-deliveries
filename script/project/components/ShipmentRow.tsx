@@ -1,4 +1,4 @@
-import { Button, Divider, HStack, Rectangle, Spacer, Text, VStack } from "scripting";
+import { Button, HStack, Rectangle, Spacer, Text, VStack, useMemo } from "scripting";
 import type { Shipment } from "../models";
 import {
   listHeadline,
@@ -33,12 +33,14 @@ export function ShipmentRow(props: {
   onComplete: () => void;
   deleteDisabled?: boolean;
   completeDisabled?: boolean;
-  showSeparator?: boolean;
 }) {
   const item = props.shipment;
-  const presentationStatus = shipmentPresentationStatus(item);
+  const presentationStatus = useMemo(() => shipmentPresentationStatus(item), [item]);
   const headline = listHeadline(item.timeline);
-  const eventTime = headline ? formatListTime(headline.timeText) : "";
+  const eventTime = useMemo(
+    () => (headline ? formatListTime(headline.timeText) : ""),
+    [headline?.timeText],
+  );
 
   return (
     <HStack
@@ -46,11 +48,6 @@ export function ShipmentRow(props: {
       padding={{ vertical: 10 }}
       listRowInsets={{ top: 8, leading: 0, bottom: 8, trailing: 0 }}
       listRowBackground={<Rectangle fill="clear" />}
-      listRowSeparator="hidden"
-      overlay={props.showSeparator ? {
-        alignment: "bottom",
-        content: <Divider padding={{ leading: 60 }} />,
-      } : undefined}
       contentShape="rect"
       onTapGesture={props.onOpen}
       trailingSwipeActions={{

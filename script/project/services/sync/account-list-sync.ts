@@ -6,7 +6,7 @@ import type { AccountParcelDto } from "../account-parser";
 import { EnhancementUnbindUnavailable } from "../enhancement-unsubscribe";
 import { absorbHistoricalShipment, absorbManualShipment, accountShipmentIsSupersededRecord, accountShipmentReusesWaybill, applyAccountShipment, automaticBindingIdentityOf, automaticSourceOf, displayWaybill, isHistoricalAccountDuplicate, manualShipmentReusedBy, reusedWaybillShipment, recordAutomaticOwnerRefresh, sameCanonicalWaybill } from "../shipment-policy";
 import { addBinding, enableBindingEnhancement, bindingsForSource, loadState, privateHash, pruneRoutesForState as safelyPruneRoutes, removeBinding } from "../storage";
-import { withAbsorbedPddParcelSource } from "../platform-parcel-merge";
+import { withAbsorbedParcelFields } from "../platform-parcel-merge";
 import { normalizeWaybill, normalizedProjectedWaybill, sortShipments, timelineLatestEventAt, parseProviderTime } from "../status";
 import { acquireRenewingDurableRefreshLease } from "../refresh-runtime-state";
 import { requestWidgetReload } from "../widgets";
@@ -188,12 +188,9 @@ export function mergeAccountParcel(
       // 旧版本留下的同号历史行是旧件的：新件接管时一起退出，不把它的轨迹并给新件。
     } else if (duplicate.identity.manuallyAdded) {
       merged = absorbManualShipment(merged, duplicate, now);
-      // 归属-6（用户 2026-09-25）：退出列表的那一行的备注，在接管它的行还没有备注时带过去，从不覆盖已有的备注。
-      const note = String(duplicate.note || "").trim();
-      if (note && !String(merged.note || "").trim()) merged = { ...merged, note };
-      // 已确认 PDD > 自动来源 > 普通手动来源（用户 2026-11-20「pdd 图标这条把优先级提到最高」）：同一票手动行已确认的
-      // 拼多多来源、商品名与商品图跟到接管它的行。号码上有京东订单投影时（京东购物件）不带。
-      if (!jingDongOrderOnNumber) merged = withAbsorbedPddParcelSource(merged, duplicate, current);
+      // 归属-6 & §8.6 #5: preserve remarks, pickup codes, manual completion, non-PDD platformFields,
+      // and confirmed PDD source (unless a JD shopping order occupies the waybill).
+      merged = withAbsorbedParcelFields(merged, duplicate, current, { skipPddSource: jingDongOrderOnNumber });
     } else {
       merged = absorbHistoricalShipment(merged, duplicate, now);
       merged = deferPersistedRoute(merged, duplicate, now, routeMutations);

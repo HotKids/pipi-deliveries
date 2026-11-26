@@ -14,10 +14,25 @@ import android.widget.FrameLayout;
 import android.widget.RemoteViews;
 import android.widget.TextView;
 
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 import me.pipi.deliveries.R;
 
 /** Measures the express header and rows with the host's actual fonts. */
 final class ExpressWidgetMeasurements {
+    private static final int GLYPH_BOUNDS_CACHE_LIMIT = 256;
+    private static final Object GLYPH_BOUNDS_CACHE_LOCK = new Object();
+    private static final LinkedHashMap<List<Object>, Rect> GLYPH_BOUNDS_CACHE =
+            new LinkedHashMap<List<Object>, Rect>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<List<Object>, Rect> eldest) {
+                    return size() > GLYPH_BOUNDS_CACHE_LIMIT;
+                }
+            };
+
     private ExpressWidgetMeasurements() {}
 
     static void centerHeaderGlyphs(Context context, RemoteViews views,
@@ -57,6 +72,26 @@ final class ExpressWidgetMeasurements {
     private static Rect glyphBounds(TextView text) {
         int width = text.getWidth(), height = text.getHeight();
         if (width <= 0 || height <= 0) return new Rect(0, 0, width, height);
+        android.util.DisplayMetrics metrics = text.getResources().getDisplayMetrics();
+        List<Object> cacheKey = Arrays.asList(
+                metrics.densityDpi,
+                Float.floatToIntBits(metrics.scaledDensity),
+                width,
+                height,
+                text.getPaddingLeft(),
+                text.getPaddingTop(),
+                text.getPaddingRight(),
+                text.getPaddingBottom(),
+                text.getGravity(),
+                text.getMaxLines(),
+                Float.floatToIntBits(text.getTextSize()),
+                text.getTypeface() == null ? 0 : text.getTypeface().getStyle(),
+                text.getIncludeFontPadding(),
+                String.valueOf(text.getText()));
+        synchronized (GLYPH_BOUNDS_CACHE_LOCK) {
+            Rect cached = GLYPH_BOUNDS_CACHE.get(cacheKey);
+            if (cached != null) return new Rect(cached);
+        }
         // CJK fallback fonts and the chevron have different ink bounds inside centered line boxes.
         Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         Drawable background = text.getBackground();
@@ -74,8 +109,12 @@ final class ExpressWidgetMeasurements {
                     bottom = Math.max(bottom, y);
                 }
             }
-            return new Rect(0, bottom < top ? 0 : top, width,
+            Rect computed = new Rect(0, bottom < top ? 0 : top, width,
                     bottom < top ? height : bottom + 1);
+            synchronized (GLYPH_BOUNDS_CACHE_LOCK) {
+                GLYPH_BOUNDS_CACHE.put(cacheKey, new Rect(computed));
+            }
+            return computed;
         } finally {
             text.setBackground(background);
             bitmap.recycle();

@@ -28,7 +28,7 @@ assert.deepEqual(parseCarrierClassificationResponse({
   displayName: "跨越速运",
   kuaidi100Code: "kuayue",
   isBuiltIn: true,
-  tableVersion: "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
+  tableVersion: "a39d590a766c2281d04c27bceed9a683a5ff36866f60fd7c9aab682f408e85d7",
 });
 // A Kuaidi100 code is not a standard code and resolves nothing.
 assert.equal(parseCarrierClassificationResponse({ auto: [{ comCode: "kuayue" }] }), null);
@@ -145,7 +145,7 @@ assert.deepEqual(rebuiltResolved.normalization, {
   displayName: "顺丰速运",
   kuaidi100Code: "shunfeng",
   isBuiltIn: true,
-  tableVersion: "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
+  tableVersion: "a39d590a766c2281d04c27bceed9a683a5ff36866f60fd7c9aab682f408e85d7",
 });
 assert.deepEqual(
   driftedResolvedCache.entries()[0]?.normalization,

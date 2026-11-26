@@ -29,7 +29,7 @@ type CarrierIndexes = Readonly<{
 }>;
 
 const BOOTSTRAP_TABLE_VERSION =
-  "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9";
+  "a39d590a766c2281d04c27bceed9a683a5ff36866f60fd7c9aab682f408e85d7";
 export const BOOTSTRAP_TABLE_SOURCE = "embedded-transition";
 
 /**

@@ -136,7 +136,7 @@ resetCarrierAuthorityRuntimeForTesting();
 resetCarrierQueryRecordsForTesting();
 assert.equal(
   activeCarrierTableVersion(),
-  "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
+  "a39d590a766c2281d04c27bceed9a683a5ff36866f60fd7c9aab682f408e85d7",
 );
 assert.equal(BOOTSTRAP_TABLE_SOURCE, "embedded-transition");
 assert.equal(activeCarrierTableSource(), "embedded-transition");

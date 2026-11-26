@@ -9,21 +9,74 @@ public final class ExpressAccountSource {
     public static final String V6 = "v6";
     private static final String PREFS = "express_account_source";
     private static final String KEY_ACTIVE = "active_interface";
+    private static final Object CACHE_LOCK = new Object();
+    private static volatile Context cachedContext;
+    private static volatile SharedPreferences cachedPreferences;
+    private static volatile String cachedActive;
+    private static final SharedPreferences.OnSharedPreferenceChangeListener PREFS_LISTENER =
+            (preferences, key) -> {
+                if (key == null || KEY_ACTIVE.equals(key)) {
+                    cachedActive = normalize(preferences.getString(KEY_ACTIVE, V6));
+                }
+            };
 
     private ExpressAccountSource() {}
 
     public static String current(Context context) {
-        SharedPreferences preferences = context.getApplicationContext()
-                .getSharedPreferences(PREFS, 0);
-        return normalize(preferences.getString(KEY_ACTIVE, V6));
+        Context app = context.getApplicationContext();
+        Context key = app == null ? context : app;
+        String active = cachedActive;
+        if (key == cachedContext && active != null) {
+            return active;
+        }
+        synchronized (CACHE_LOCK) {
+            if (key == cachedContext && cachedActive != null) {
+                return cachedActive;
+            }
+            if (cachedPreferences != null) {
+                cachedPreferences.unregisterOnSharedPreferenceChangeListener(PREFS_LISTENER);
+            }
+            SharedPreferences preferences = key.getSharedPreferences(PREFS, 0);
+            preferences.registerOnSharedPreferenceChangeListener(PREFS_LISTENER);
+            String resolved = normalize(preferences.getString(KEY_ACTIVE, V6));
+            cachedPreferences = preferences;
+            cachedActive = resolved;
+            cachedContext = key;
+            return resolved;
+        }
     }
 
     public static String toggle(Context context) {
         String selected = next(current(context));
-        if (!context.getApplicationContext().getSharedPreferences(PREFS, 0)
-                .edit().putString(KEY_ACTIVE, selected).commit()) {
-            throw new IllegalStateException("无法切换接口，请稍后重试");
+        Context app = context.getApplicationContext();
+        Context key = app == null ? context : app;
+        synchronized (CACHE_LOCK) {
+            if (!key.getSharedPreferences(PREFS, 0)
+                    .edit().putString(KEY_ACTIVE, selected).commit()) {
+                throw new IllegalStateException("无法切换接口，请稍后重试");
+            }
+            cachedActive = selected;
+            cachedContext = key;
         }
+        return selected;
+    }
+
+    /** Updates the volatile active source immediately and commits persistence off the UI thread. */
+    public static String toggleAsync(Context context, java.util.concurrent.Executor executor) {
+        String selected = next(current(context));
+        Context app = context.getApplicationContext();
+        Context key = app == null ? context : app;
+        synchronized (CACHE_LOCK) {
+            cachedActive = selected;
+            cachedContext = key;
+        }
+        executor.execute(() -> {
+            synchronized (CACHE_LOCK) {
+                key.getSharedPreferences(PREFS, 0)
+                        .edit().putString(KEY_ACTIVE, cachedActive != null ? cachedActive : selected)
+                        .commit();
+            }
+        });
         return selected;
     }
 

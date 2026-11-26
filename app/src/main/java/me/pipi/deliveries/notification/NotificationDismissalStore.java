@@ -59,16 +59,23 @@ public final class NotificationDismissalStore {
         String persistenceKey = key.persistenceKey();
         String activeKey = persistenceKey + ":active";
         String tokenKey = persistenceKey + ":token";
-        String token = prefs.getString(tokenKey, "");
-        if (!stableFingerprint.equals(prefs.getString(activeKey, null)) || token.isEmpty()) {
-            token = UUID.randomUUID().toString();
-        }
-        // SystemUI can outlive this process; its delete intent must have a durable identity first.
-        if (!prefs.edit()
-                .putString(activeKey, stableFingerprint)
-                .putString(tokenKey, token)
-                .commit()) {
-            return false;
+        String storedActive = prefs.getString(activeKey, null);
+        String storedToken = prefs.getString(tokenKey, null);
+        String token = storedToken == null ? "" : storedToken;
+        boolean unchanged = stableFingerprint.equals(storedActive)
+                && !token.isEmpty()
+                && token.equals(storedToken);
+        if (!unchanged) {
+            if (!stableFingerprint.equals(storedActive) || token.isEmpty()) {
+                token = UUID.randomUUID().toString();
+            }
+            // SystemUI can outlive this process; its delete intent must have a durable identity first.
+            if (!prefs.edit()
+                    .putString(activeKey, stableFingerprint)
+                    .putString(tokenKey, token)
+                    .commit()) {
+                return false;
+            }
         }
         synchronized (MEMORY_LOCK) {
             ACTIVE_FINGERPRINTS.put(persistenceKey, stableFingerprint);

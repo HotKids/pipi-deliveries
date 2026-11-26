@@ -86,6 +86,20 @@ final class ExpressReadSidePool {
         }
     }
 
+    private static final class HomeMemo {
+        final Stamp stamp;
+        final long startedAtNanos;
+        final ExpressRepository.HomeRows rows;
+
+        HomeMemo(Stamp stamp, long startedAtNanos, ExpressRepository.HomeRows rows) {
+            this.stamp = stamp;
+            this.startedAtNanos = startedAtNanos;
+            this.rows = new ExpressRepository.HomeRows(
+                    Collections.unmodifiableList(new ArrayList<>(rows.visible)),
+                    Collections.unmodifiableList(new ArrayList<>(rows.processing)));
+        }
+    }
+
     private final Context context;
     private final Object sideConnectionLock = new Object();
     private final Object listProjectionLock = new Object();
@@ -93,6 +107,7 @@ final class ExpressReadSidePool {
     private SQLiteDatabase stampConnection;
     private SQLiteDatabase listReadConnection;
     private volatile Memo latestMemo;
+    private volatile HomeMemo latestHomeMemo;
     private final AtomicInteger listVisibleComputations = new AtomicInteger();
     private final AtomicInteger listProjectionsWithoutMonitor = new AtomicInteger();
     private final AtomicInteger listProjectionFallbacks = new AtomicInteger();
@@ -143,6 +158,44 @@ final class ExpressReadSidePool {
         }
     }
 
+    ExpressRepository.HomeRows sharedHomeRows(
+            SQLiteDatabase writer,
+            String bindingSource,
+            long invalidationVersion,
+            Map<String, String> detailSelections) {
+        HomeMemo memo = latestHomeMemo;
+        if (memo == null || System.nanoTime() - memo.startedAtNanos > SHARE_WINDOW_NANOS) {
+            return null;
+        }
+        Stamp current = captureStamp(writer, bindingSource, invalidationVersion, detailSelections);
+        return memo.stamp.sameAs(current) ? memo.rows : null;
+    }
+
+    ExpressRepository.HomeRows computeHomeRowsReadOnly(
+            SQLiteDatabase writer,
+            String bindingSource,
+            long invalidationVersion,
+            Map<String, String> detailSelections,
+            Function<SQLiteDatabase, ExpressRepository.HomeRows> projection) {
+        if (!supportsReadOnlyTransactions()) return null;
+        synchronized (listProjectionLock) {
+            ExpressRepository.HomeRows shared = sharedHomeRows(
+                    writer, bindingSource, invalidationVersion, detailSelections);
+            if (shared != null) return shared;
+            Stamp before = captureStamp(
+                    writer, bindingSource, invalidationVersion, detailSelections);
+            long startedAtNanos = System.nanoTime();
+            ExpressRepository.HomeRows computed = readOnlySide(writer, projection);
+            if (computed == null) return null;
+            HomeMemo memo = before == null ? null : new HomeMemo(before, startedAtNanos, computed);
+            if (memo != null) {
+                latestHomeMemo = memo;
+            }
+            listProjectionsWithoutMonitor.incrementAndGet();
+            return memo != null ? memo.rows : computed;
+        }
+    }
+
     <T> T readOnlySide(SQLiteDatabase writer, Function<SQLiteDatabase, T> read) {
         if (!supportsReadOnlyTransactions()) return null;
         synchronized (listProjectionLock) {
@@ -152,12 +205,28 @@ final class ExpressReadSidePool {
                 }
                 SQLiteDatabase connection = sideConnection(writer, false);
                 if (connection == null) return null;
-                connection.beginTransactionReadOnly();
-                try {
-                    return read.apply(connection);
-                } finally {
-                    connection.endTransaction();
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                    connection.beginTransactionReadOnly();
+                    try {
+                        return read.apply(connection);
+                    } finally {
+                        connection.endTransaction();
+                    }
                 }
+                if (!writer.isWriteAheadLoggingEnabled()) return null;
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    if (writer.inTransaction()) return null;
+                    long beforeVersion = DatabaseUtils.longForQuery(
+                            connection, "PRAGMA data_version", null);
+                    T value = read.apply(connection);
+                    long afterVersion = DatabaseUtils.longForQuery(
+                            connection, "PRAGMA data_version", null);
+                    if (beforeVersion == afterVersion && !writer.inTransaction()) {
+                        return value;
+                    }
+                }
+                listProjectionFallbacks.incrementAndGet();
+                return null;
             } catch (RuntimeException fallbackRequired) {
                 listProjectionFallbacks.incrementAndGet();
                 return null;
@@ -197,8 +266,16 @@ final class ExpressReadSidePool {
         }
     }
 
+    void recordLockedHomeComputation(
+            Stamp preStamp, long startedAtNanos, ExpressRepository.HomeRows computed) {
+        if (preStamp != null && computed != null) {
+            latestHomeMemo = new HomeMemo(preStamp, startedAtNanos, computed);
+        }
+    }
+
     void close() {
         latestMemo = null;
+        latestHomeMemo = null;
         synchronized (sideConnectionLock) {
             closeQuietly(stampConnection);
             closeQuietly(listReadConnection);
@@ -221,7 +298,7 @@ final class ExpressReadSidePool {
     }
 
     private static boolean supportsReadOnlyTransactions() {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM;
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q;
     }
 
     private SQLiteDatabase sideConnection(SQLiteDatabase writer, boolean stampReader) {

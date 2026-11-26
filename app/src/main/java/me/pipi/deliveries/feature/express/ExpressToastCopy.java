@@ -77,12 +77,6 @@ final class ExpressToastCopy {
     static final String USER_NOTE_CHANGED = "快递信息已变更，请重新打开备注";
     static final String USER_NOTE_SAVED = "备注已保存";
     static final String USER_NOTE_DELETED = "备注已删除";
-    static final String PICKUP_RECORD_DELETED = "该取件码已删除";
-    static final String PICKUP_CODE_COPIED = "取件码已复制";
-    static final String HANDOFF_CODE_COPIED = "寄件码已复制";
-    static final String HANDOFF_COMPLETED = "已寄件";
-    static final String HANDOFF_EXPIRED = "寄件码已失效";
-    static final String PICKUP_RECORD_ACTION_FAILED = "操作失败，请稍后重试";
 
     /** 删除成功。 */
     static final String DELETED = "该快递已删除";

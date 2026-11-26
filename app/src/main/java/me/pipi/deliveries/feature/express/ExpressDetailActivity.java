@@ -162,25 +162,29 @@ public final class ExpressDetailActivity extends AppCompatActivity {
 
         DetailState(ExpressRepository repository, ExpressItem owner, String bindingSource) {
             this.owner = owner;
-            ownerClaim = repository.captureManualQueryOwner(owner);
-            ExpressItem persisted = owner.rowId > 0L ? owner
-                    : repository.findByWaybill(owner.displayWaybill(), bindingSource);
-            routeOwner = persisted == null ? owner : persisted;
-            selected = repository.manualDetailTimelineAuthority(owner);
-            ExpressQueryResult ownSource = repository.automaticSourceTimeline(owner);
-            attachedOrderFeeds = repository.attachedOrderFeeds(owner);
-            source = ManualTimelineAuthorityPolicy.withAttachedOrderStage(
-                    ownSource, attachedOrderFeeds);
-            displayed = ManualTimelineAuthorityPolicy.withAttachedOrderStage(
-                    ManualTimelineAuthorityPolicy.withOwnerOrderStage(owner, ownSource, selected),
-                    attachedOrderFeeds);
-            String accountSource = accountTimelineSource(owner);
-            account = accountSource.isEmpty() ? null : accountTimelineFor(
-                    repository, owner, accountTimelineWaybill(owner), accountSource);
-            publicTimeline = v4TimelineOwnsItem(owner)
-                    ? repository.v4Timeline(owner.displayWaybill()) : null;
-            kuaidi100 = repository.kuaidi100Timeline(owner.displayWaybill());
-            phones = repository.phoneCandidates("", bindingSource);
+            try (ExpressRepository.CommitScope ignored = repository.openCommitScope()) {
+                synchronized (repository) {
+                    ownerClaim = repository.captureManualQueryOwner(owner);
+                    ExpressItem persisted = owner.rowId > 0L ? owner
+                            : repository.findByWaybill(owner.displayWaybill(), bindingSource);
+                    routeOwner = persisted == null ? owner : persisted;
+                    selected = repository.manualDetailTimelineAuthority(owner);
+                    ExpressQueryResult ownSource = repository.automaticSourceTimeline(owner);
+                    attachedOrderFeeds = repository.attachedOrderFeeds(owner);
+                    source = ManualTimelineAuthorityPolicy.withAttachedOrderStage(
+                            ownSource, attachedOrderFeeds);
+                    displayed = ManualTimelineAuthorityPolicy.withAttachedOrderStage(
+                            ManualTimelineAuthorityPolicy.withOwnerOrderStage(owner, ownSource, selected),
+                            attachedOrderFeeds);
+                    String accountSource = accountTimelineSource(owner);
+                    account = accountSource.isEmpty() ? null : accountTimelineFor(
+                            repository, owner, accountTimelineWaybill(owner), accountSource);
+                    publicTimeline = v4TimelineOwnsItem(owner)
+                            ? repository.v4Timeline(owner.displayWaybill()) : null;
+                    kuaidi100 = repository.kuaidi100Timeline(owner.displayWaybill());
+                    phones = repository.phoneCandidates("", bindingSource);
+                }
+            }
         }
 
         /** The same attached order stage for a package drawn from the other detail caches. */
@@ -1915,8 +1919,8 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     private void renderTimeline(List<ExpressTimeline.Track> tracks) {
         timelineLoadingPlaceholder = false;
         renderedTimelineSignature = timelineSignature(tracks);
-        timeline.removeAllViews();
         if (tracks.isEmpty()) {
+            timeline.removeAllViews();
             TextView empty = textView(R.string.no_logistics, 14f, secondaryTextColor());
             empty.setGravity(Gravity.CENTER);
             empty.setPadding(0, dp(28), 0, dp(28));
@@ -1924,9 +1928,28 @@ public final class ExpressDetailActivity extends AppCompatActivity {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             return;
         }
+        for (int index = timeline.getChildCount() - 1; index >= 0; index--) {
+            if (!(timeline.getChildAt(index).getTag() instanceof TrackRowHolder)) {
+                timeline.removeViewAt(index);
+            }
+        }
+        if (timeline.getChildCount() > tracks.size()) {
+            timeline.removeViews(tracks.size(), timeline.getChildCount() - tracks.size());
+        }
+        int primary = MaterialColors.getColor(timeline,
+                com.google.android.material.R.attr.colorOnSurface);
+        int secondary = secondaryTextColor();
+        int existingCount = timeline.getChildCount();
         for (int index = 0; index < tracks.size(); index++) {
-            timeline.addView(buildTrackRow(
-                    tracks.get(index), index == 0, index == tracks.size() - 1));
+            ExpressTimeline.Track track = tracks.get(index);
+            boolean latest = index == 0;
+            boolean last = index == tracks.size() - 1;
+            if (index < existingCount) {
+                TrackRowHolder holder = (TrackRowHolder) timeline.getChildAt(index).getTag();
+                holder.bind(track, latest, last, primary, secondary);
+            } else {
+                timeline.addView(buildTrackRow(track, latest, last));
+            }
         }
     }
 
@@ -1957,6 +1980,49 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         EMPTY
     }
 
+    private static final class TrackRowHolder {
+        final TextView time;
+        final TextView day;
+        final View topLine;
+        final TimelineDot dot;
+        final TextView detail;
+        String boundDetail;
+
+        TrackRowHolder(TextView time, TextView day, View topLine, TimelineDot dot,
+                TextView detail, String boundDetail) {
+            this.time = time;
+            this.day = day;
+            this.topLine = topLine;
+            this.dot = dot;
+            this.detail = detail;
+            this.boundDetail = boundDetail;
+        }
+
+        void bind(ExpressTimeline.Track track, boolean latest, boolean last, int primary, int secondary) {
+            String date = "";
+            String clock = track.time;
+            int separator = clock.indexOf(' ');
+            if (separator > 0) {
+                date = clock.substring(0, separator);
+                clock = clock.length() >= separator + 6
+                        ? clock.substring(separator + 1, separator + 6)
+                        : clock.substring(separator + 1);
+            }
+            time.setText(clock);
+            time.setTextColor(latest ? primary : secondary);
+            day.setText(date);
+            day.setTextColor(secondary);
+            topLine.setVisibility(latest ? View.GONE : View.VISIBLE);
+            dot.update(latest, last);
+            if (!java.util.Objects.equals(boundDetail, track.displayDetail)) {
+                boundDetail = track.displayDetail;
+                detail.setText(track.displayDetail);
+                ExpressTrackPhoneLinks.apply(detail, BLUE);
+            }
+            detail.setTextColor(latest ? primary : secondary);
+        }
+    }
+
     private View buildTrackRow(ExpressTimeline.Track track, boolean latest, boolean last) {
         int primary = MaterialColors.getColor(timeline,
                 com.google.android.material.R.attr.colorOnSurface);
@@ -1984,7 +2050,17 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         timeColumn.addView(day);
         row.addView(timeColumn, new LinearLayout.LayoutParams(
                 dp(66), ViewGroup.LayoutParams.WRAP_CONTENT));
-        row.addView(buildIndicator(latest, last), new LinearLayout.LayoutParams(
+        FrameLayout indicator = new FrameLayout(this);
+        int centerY = dp(10);
+        View topLine = addLine(indicator, 0, centerY, LINE);
+        topLine.setVisibility(latest ? View.GONE : View.VISIBLE);
+        addLine(indicator, centerY, ViewGroup.LayoutParams.MATCH_PARENT, LINE);
+        TimelineDot dot = new TimelineDot(this, latest, last);
+        FrameLayout.LayoutParams dotParams = new FrameLayout.LayoutParams(dp(14), dp(14));
+        dotParams.gravity = Gravity.CENTER_HORIZONTAL;
+        dotParams.topMargin = centerY - dp(7);
+        indicator.addView(dot, dotParams);
+        row.addView(indicator, new LinearLayout.LayoutParams(
                 dp(28), ViewGroup.LayoutParams.MATCH_PARENT));
         TextView detail = textView(track.displayDetail, 15.5f, latest ? primary : secondary);
         ExpressTrackPhoneLinks.apply(detail, BLUE);
@@ -1992,29 +2068,18 @@ public final class ExpressDetailActivity extends AppCompatActivity {
         detail.setPadding(dp(10), 0, 0, dp(22));
         row.addView(detail, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.setTag(new TrackRowHolder(time, day, topLine, dot, detail, track.displayDetail));
         return row;
     }
 
-    private View buildIndicator(boolean latest, boolean last) {
-        FrameLayout indicator = new FrameLayout(this);
-        int centerY = dp(10);
-        if (!latest) addLine(indicator, 0, centerY, LINE);
-        addLine(indicator, centerY, ViewGroup.LayoutParams.MATCH_PARENT, LINE);
-        View dot = new TimelineDot(this, latest, last);
-        FrameLayout.LayoutParams dotParams = new FrameLayout.LayoutParams(dp(14), dp(14));
-        dotParams.gravity = Gravity.CENTER_HORIZONTAL;
-        dotParams.topMargin = centerY - dp(7);
-        indicator.addView(dot, dotParams);
-        return indicator;
-    }
-
-    private void addLine(FrameLayout parent, int top, int height, int color) {
+    private View addLine(FrameLayout parent, int top, int height, int color) {
         View line = new View(this);
         line.setBackgroundColor(color);
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(1), height);
         params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
         params.topMargin = top;
         parent.addView(line, params);
+        return line;
     }
 
     private TextView textView(int textRes, float size, int color) {
@@ -2035,16 +2100,28 @@ public final class ExpressDetailActivity extends AppCompatActivity {
     }
 
     private static final class TimelineDot extends View {
-        private final boolean latest;
-        private final boolean last;
+        private boolean latest;
+        private boolean last;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Drawable chevron;
+        private Drawable chevron;
 
         TimelineDot(Context context, boolean latest, boolean last) {
             super(context);
             this.latest = latest;
             this.last = last;
-            chevron = AppCompatResources.getDrawable(context, R.drawable.ic_symbol_expand_less);
+            if (latest || last) {
+                chevron = AppCompatResources.getDrawable(context, R.drawable.ic_symbol_expand_less);
+            }
+        }
+
+        void update(boolean latest, boolean last) {
+            if (this.latest == latest && this.last == last) return;
+            this.latest = latest;
+            this.last = last;
+            if ((latest || last) && chevron == null) {
+                chevron = AppCompatResources.getDrawable(getContext(), R.drawable.ic_symbol_expand_less);
+            }
+            invalidate();
         }
 
         @Override protected void onDraw(Canvas canvas) {

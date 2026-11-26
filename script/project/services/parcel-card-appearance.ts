@@ -4,6 +4,7 @@ import type { ParcelActivityContent } from "./parcel-pickup";
 import { blendStatusColor, rgbLuminance } from "./status";
 
 export const PARCEL_LOCK_SCREEN_BOX = "box-lock-screen.png";
+export const PARCEL_ACTIVITY_ART = "pipi-deliveries/parcel-activity-art-v1";
 export const PICKUP_CARD_SPACING = 16;
 export const PICKUP_DATE_GROUP_SPACING = 32;
 

@@ -3804,7 +3804,70 @@ export function absorbManualShipment(
       now,
     );
   }
-  return result;
+  if (manualOwner.identity.sender) return result;
+  const waybill = normalizeWaybill(displayWaybill(result));
+  const sameBill = Boolean(waybill && waybill === normalizeWaybill(displayWaybill(manualOwner)));
+  const generation = result.waybillReuseAtMs ?? 0;
+  const manualGen = manualOwner.waybillReuseAtMs ?? 0;
+  const pickup = !result.pickup && !result.identity.sender && sameBill && manualOwner.pickup &&
+    normalizeWaybill(manualOwner.pickup.waybill) === waybill &&
+    manualOwner.pickup.waybillGeneration === manualGen
+    ? { ...manualOwner.pickup, waybill: displayWaybill(result), waybillGeneration: generation }
+    : result.pickup;
+  const forcedCompletedAtMs = result.forcedCompletedAtMs ?? (sameBill ? manualOwner.forcedCompletedAtMs : undefined);
+  const settledAtMs = result.settledAtMs ??
+    (forcedCompletedAtMs ? manualOwner.settledAtMs ?? forcedCompletedAtMs : undefined);
+  const ownFields = result.platformFields;
+  const carriedFields = sameBill && manualOwner.platformFields &&
+    normalizeWaybill(manualOwner.platformFields.waybill) === waybill &&
+    manualOwner.platformFields.waybillGeneration === manualGen
+    ? manualOwner.platformFields
+    : undefined;
+  let platformFields = ownFields;
+  if (carriedFields) {
+    const manualTitleNewer = carriedFields.manualTitle !== undefined &&
+      (!ownFields?.manualTitle || (carriedFields.manualTitleEditedAtMs ?? 0) > (ownFields.manualTitleEditedAtMs ?? 0));
+    const nonPddTitle = !ownFields?.title && carriedFields.title && carriedFields.title.source !== "pinduoduo"
+      ? carriedFields.title
+      : undefined;
+    const nonPddEstimate = !ownFields?.estimate && carriedFields.estimate && carriedFields.estimate.source !== "pinduoduo"
+      ? carriedFields.estimate
+      : undefined;
+    const cainiaoImage = !ownFields?.cainiaoImage && carriedFields.cainiaoImage
+      ? carriedFields.cainiaoImage
+      : undefined;
+    if (manualTitleNewer || nonPddTitle || nonPddEstimate || cainiaoImage) {
+      platformFields = {
+        ...ownFields,
+        waybill: displayWaybill(result),
+        waybillGeneration: generation,
+        ...(manualTitleNewer
+          ? {
+              manualTitle: carriedFields.manualTitle,
+              ...(carriedFields.manualTitleEditedAtMs !== undefined
+                ? { manualTitleEditedAtMs: carriedFields.manualTitleEditedAtMs }
+                : {}),
+            }
+          : {}),
+        ...(nonPddTitle ? { title: nonPddTitle } : {}),
+        ...(nonPddEstimate ? { estimate: nonPddEstimate } : {}),
+        ...(cainiaoImage ? { cainiaoImage } : {}),
+      };
+    }
+  }
+  const note = String(result.note || "").trim() || String(manualOwner.note || "").trim();
+  let merged: Shipment = {
+    ...result,
+    ...(pickup ? { pickup } : {}),
+    ...(forcedCompletedAtMs !== undefined ? { forcedCompletedAtMs } : {}),
+    ...(settledAtMs !== undefined ? { settledAtMs } : {}),
+    ...(platformFields ? { platformFields } : {}),
+    ...(note ? { note } : {}),
+  };
+  if (forcedCompletedAtMs !== undefined && !result.forcedCompletedAtMs) {
+    merged = { ...merged, timeline: selectShipmentTimeline(merged) };
+  }
+  return merged;
 }
 
 export function absorbHistoricalShipment(

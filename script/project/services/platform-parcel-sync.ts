@@ -44,6 +44,28 @@ export type PlatformSyncProgress = (platform: ExpressPlatform, running: boolean,
 type PlatformRefreshIssue = { platform: ExpressPlatform; reason: "expired" | "partial" | "failed" };
 type PlatformRefreshResult = { succeeded: number; failed: number; added: number; issues: PlatformRefreshIssue[] };
 
+export function platformObservationSignature(
+  visible: readonly Shipment[],
+  records?: AppState["pickupCodeRecords"],
+): string {
+  const parts: string[] = [];
+  for (const shipment of visible) {
+    if (eligiblePickup(shipment)) {
+      parts.push("pickup:" + shipmentLifecycleKey(shipment));
+    } else {
+      const provider = shipment.identity.sourceProvider?.toLowerCase() || "";
+      if (provider === "cainiao" || provider === "jingdong" || provider === "pinduoduo" || provider === "fengchao" ||
+          shipment.pddImport?.ownerKey) {
+        parts.push(`source:${provider}:${shipment.pddImport?.ownerKey || ""}:${shipmentLifecycleKey(shipment)}`);
+      }
+    }
+  }
+  const standalone = Boolean(records?.some((row) => row.kind === "pickup" && row.platform === "cainiao" &&
+    row.id.startsWith("cn-station:") && !row.completedAtMs));
+  parts.push(standalone ? "cn:1" : "cn:0");
+  return parts.join("\n");
+}
+
 function scopeFor(platform: ExpressPlatform, session: PlatformSession, visible: readonly Shipment[], mode: RefreshMode,
   records: AppState["pickupCodeRecords"]): ReadScope {
   const now = Date.now();

@@ -451,6 +451,11 @@ export function DetailPage(props: {
   const detailSource = syncedInternational ? undefined : DETAIL_SOURCES[source];
   const detailSourceIcon = detailSource && bundledImage(detailSource[1]);
   const platformFields = displayedPlatformFields(shipment, Date.now(), cloudDetails?.metadata);
+  const cloudImageProp = useMemo(
+    () => cloudCredential && platformFields.productImageURL
+      ? { url: platformFields.productImageURL, scope: cloudCredential.scope } : undefined,
+    [cloudCredential?.scope, platformFields.productImageURL],
+  );
   const note = shipment.note?.trim();
   const showParcelInfo = Boolean(platformFields.estimate || platformFields.title || note);
   const productNameMenu = props.persistedShipment ? {
@@ -942,8 +947,7 @@ export function DetailPage(props: {
             size={72}
             allowDownload={imageDownloadScope === imageScope}
             imageURL={shipment.identity.productImageURL}
-            cloudImage={cloudCredential && platformFields.productImageURL
-              ? { url: platformFields.productImageURL, scope: cloudCredential.scope } : undefined}
+            cloudImage={cloudImageProp}
           />
           <VStack alignment="leading" spacing={4} frame={{ maxWidth: "infinity" }}>
             <HStack alignment="center" spacing={6} contentShape="rect"

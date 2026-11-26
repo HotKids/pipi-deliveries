@@ -161,12 +161,22 @@ export function RecognitionSettingsPage(props: { onSaved: (message: string) => v
     return <LabeledContent key={name} title={label}>{input}</LabeledContent>;
   }
 
+  const missingInputsNotice = draft.mode === "online" && !validation && !hasInputs
+    ? (() => {
+        const missing: string[] = [];
+        if (draft.provider === "compatible" && !draft.baseUrl.trim()) missing.push("Base URL");
+        if (!canReuseKey && !key.trim()) missing.push("API Key");
+        if (!draft.model.trim()) missing.push("Model");
+        return missing.length ? `请先填写 ${missing.join("、")} 后再测试连接或保存` : "";
+      })()
+    : "";
+
   return (
     <List navigationTitle="智能识别" navigationBarTitleDisplayMode="inline" toast={transientToast(notice, setNotice)}
       toolbar={{
         topBarTrailing: (
           <Button title="保存" systemImage="checkmark" labelStyle="iconOnly"
-            action={save} disabled={draft.mode === "online" && !hasInputs} />
+            action={save} disabled={testing || (draft.mode === "online" && !hasInputs)} />
         ),
       }}>
       <Section footer={!saved.valid || draft.mode === "online" ? (
@@ -184,6 +194,7 @@ export function RecognitionSettingsPage(props: { onSaved: (message: string) => v
         <Section footer={
           <VStack alignment="leading" spacing={4}>
             {validation ? <Text foregroundStyle="systemRed">{validationMessage(validation)}</Text> : null}
+            {missingInputsNotice ? <Text foregroundStyle="secondaryLabel">{missingInputsNotice}</Text> : null}
             <Text>连接测试使用内置测试图片，不会保存当前设置或生成卡片。</Text>
           </VStack>
         }>
@@ -231,7 +242,7 @@ export function RecognitionSettingsPage(props: { onSaved: (message: string) => v
               <Text tag="json">JSON</Text>
             </Picker>,
           ] : null}
-          {field("apiKey", "API Key", <SecureField title="API Key" prompt={canReuseKey ? "•".repeat(Math.min(saved.keyLength, 20)) : "请输入 API Key"}
+          {field("apiKey", "API Key", <SecureField title="API Key" prompt={canReuseKey ? "•".repeat(saved.keyLength) : "请输入 API Key"}
             value={key} autocorrectionDisabled textInputAutocapitalization="never"
             multilineTextAlignment="trailing" onChanged={value => {
               cancelTest();

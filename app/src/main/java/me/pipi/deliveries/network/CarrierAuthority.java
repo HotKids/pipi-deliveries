@@ -182,7 +182,8 @@ public final class CarrierAuthority {
         }
 
         @Override public boolean recordAttemptMs(long value) {
-            return preferences.edit().putLong(LAST_ATTEMPT, value).commit();
+            preferences.edit().putLong(LAST_ATTEMPT, value).apply();
+            return true;
         }
     }
 }

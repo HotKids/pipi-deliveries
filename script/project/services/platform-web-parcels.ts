@@ -32,7 +32,7 @@ const JD_ACCOUNT_PAGE_CHECK = String.raw`
     return { state: 'pending', stage: 'jd_sync_document' };
   }
   if (location.protocol === 'https:' && !location.port &&
-    ['plogin.m.jd.com','passport.jd.com'].includes(location.hostname)) {
+    ['plogin.m.jd.com','passport.jd.com','passport.m.jd.com'].includes(location.hostname)) {
     return { state: 'expired', scheme: location.protocol, hostname: location.hostname };
   }
 `;
@@ -46,8 +46,76 @@ const READ_JD_PROFILE = String.raw`
 `;
 
 const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
-  if (!['https://my.m.jd.com','https://trade.m.jd.com','https://home.m.jd.com'].includes(location.origin)) {
+  if (!['https://my.m.jd.com','https://trade.m.jd.com','https://home.m.jd.com','https://o.m.jd.com'].includes(location.origin)) {
     return { state: 'pending', stage: 'jd_sync_unexpected_page', scheme: location.protocol, hostname: location.hostname };
+  }
+  if (location.origin === 'https://o.m.jd.com') {
+    const appRoot = typeof document.getElementById === 'function' ? document.getElementById('app') : document.querySelector?.('#app');
+    let store = null;
+    if (appRoot) {
+      const rootKeys = Object.keys(appRoot).filter(k => k.startsWith('__reactContainer$') || k.startsWith('__reactFiber$'));
+      const queue = rootKeys.map(k => appRoot[k]).filter(Boolean);
+      const visited = new Set();
+      let steps = 0;
+      while (queue.length && steps < 300 && !store) {
+        const fiber = queue.shift();
+        if (!fiber || typeof fiber !== 'object' || visited.has(fiber)) continue;
+        visited.add(fiber);
+        steps++;
+        const candidates = [fiber.memoizedProps?.value];
+        for (let ctx = fiber.dependencies?.firstContext; ctx; ctx = ctx.next) {
+          candidates.push(ctx.memoizedValue, ctx.context?._currentValue);
+        }
+        for (const val of candidates) {
+          if (typeof val?.state === 'function' && val.state()?.orderList) {
+            store = val;
+            break;
+          }
+        }
+        if (!store) {
+          if (fiber.child) queue.push(fiber.child);
+          if (fiber.sibling) queue.push(fiber.sibling);
+          if (fiber.current) queue.push(fiber.current);
+        }
+      }
+    }
+    if (store) {
+      const ol = store.state()?.orderList;
+      if (ol?.status === 3) {
+        return { state: 'expired', scheme: location.protocol, hostname: location.hostname };
+      }
+      const fnId = ol?.params?.functionId || 'newUserAllOrderList';
+      if (ol?.status === 0 && (
+        Number(ol?.listQurTime?.[fnId]) > 0 ||
+        (!ol?.loading && Array.isArray(ol?.data?.orderList?.[fnId]) && ol?.subTabMap?.[fnId]?.isLoading === false)
+      )) {
+        const raw = Array.isArray(ol?.data?.orderList?.[fnId]) ? ol.data.orderList[fnId] : [];
+        const orders = [], seen = new Set();
+        for (const item of raw) {
+          const orderId = String(item?.orderId || '').trim();
+          if (!/^[0-9]{8,32}$/.test(orderId) || seen.has(orderId)) continue;
+          seen.add(orderId);
+          const wares = Array.isArray(item?.orderMsg?.wareInfoList) ? item.orderMsg.wareInfoList : [];
+          const sku = wares[0] || {};
+          const title = wares.length === 1 && !item?.isVirtualOrder ? String(sku.wname || '').trim() : '';
+          const tp = item?.trackProgress || (Array.isArray(item?.trackProgressList) ? item.trackProgressList[0] : null) || item?.stepFloor || {};
+          const forecast = [tp?.title, tp?.subTitle, tp?.message]
+            .map(v => typeof v === 'string' ? v.trim() : '')
+            .filter(Boolean)
+            .join(' ');
+          const state = String(item?.orderStatusShow || item?.orderStatusInfo?.stateTip || '').trim();
+          orders.push({
+            orderId,
+            title,
+            forecast,
+            state,
+            skuId: String(sku.wareId || sku.skuId || ''),
+            shopId: String(item?.shopId || ''),
+          });
+        }
+        return { orders };
+      }
+    }
   }
   const text = el => (el?.textContent || '').trim();
   const states = Array.from(document.querySelectorAll('[class*="order_state"]'));
@@ -62,7 +130,7 @@ const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
       return { state: 'pending', stage: 'jd_sync_order_navigation' };
     }
     const body = document.body?.innerText || '';
-    if (/暂时没有相关订单|暂无相关订单|没有找到相关订单/.test(body)) return { orders: [] };
+    if (/暂时没有相关订单|暂无相关订单|没有找到相关订单|没有相关订单|没有筛选到相关订单/.test(body)) return { orders: [] };
     if (/快速验证|验证一下|滑动验证|人机验证|安全验证/.test(body)) return { state: 'verification' };
     if (/大促异常火爆|稍后再试/.test(body)) return { state: 'unavailable' };
     return { state: 'pending', stage: window.innerWidth === 0 || window.innerHeight === 0
@@ -248,6 +316,7 @@ async function withProviderPage<T>(
   platform: WebPlatform, session: PlatformSession,
   read: (controller: WebViewController, deadline: number, reportStage: ReportStage) => Promise<T>,
   signal?: AbortSignal,
+  priority: "interactive" | "background" = signal ? "interactive" : "background",
 ): Promise<T> {
   const deadline = Date.now() + 30_000;
   let stage: JdSyncStage = "jd_sync_queue";
@@ -286,7 +355,7 @@ async function withProviderPage<T>(
         releaseProjectionViewport();
         if (platform !== "jingdong") web.dispose();
       }
-    }, deadline, signal);
+    }, deadline, signal, priority);
   } catch (error) {
     if (platform === "jingdong" && !signal?.aborted) {
       writeDiagnostic("platform.jingdong.sync.failed", {

@@ -285,6 +285,24 @@ public final class ExpressRepository {
         return homeRows(bindingSource).visible;
     }
 
+    public static final class CommitScope implements AutoCloseable {
+        private final EncryptedExpressFields.CommitScope delegate;
+
+        private CommitScope(EncryptedExpressFields.CommitScope delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public void close() {
+            delegate.close();
+        }
+    }
+
+    /** Opens a thread-local Keystore decode/encode cache scope across a sync or detail snapshot. */
+    public CommitScope openCommitScope() {
+        return new CommitScope(EncryptedExpressFields.openCommitScope());
+    }
+
     /** Display-only hidden placeholders keep participating in the same Home projection pass. */
     public HomeRows homeRows(String bindingSource) {
         String normalized = clean(bindingSource).toLowerCase(Locale.ROOT);
@@ -294,12 +312,37 @@ public final class ExpressRepository {
             }
         }
         if (canUseSideRead()) {
-            HomeRows unlocked = readSidePool.readOnlySide(
-                    helper.openedDatabaseOrNull(), db -> computeHomeRows(db, normalized));
-            if (unlocked != null) return unlocked;
+            SQLiteDatabase writer = helper.openedDatabaseOrNull();
+            Map<String, String> selections = detailSelectionsSnapshot();
+            HomeRows shared = readSidePool.sharedHomeRows(
+                    writer, normalized, invalidationVersion, selections);
+            if (shared != null) {
+                return new HomeRows(new ArrayList<>(shared.visible), new ArrayList<>(shared.processing));
+            }
+            HomeRows unlocked = readSidePool.computeHomeRowsReadOnly(
+                    writer, normalized, invalidationVersion, selections,
+                    db -> computeHomeRows(db, normalized));
+            if (unlocked != null) {
+                return new HomeRows(new ArrayList<>(unlocked.visible), new ArrayList<>(unlocked.processing));
+            }
         }
         synchronized (this) {
-            return computeHomeRows(database(), normalized);
+            SQLiteDatabase db = database();
+            if (!Boolean.TRUE.equals(TEMPORARY_REVIEWS_ABSENT.get())) {
+                Map<String, String> selections = detailSelectionsSnapshot();
+                HomeRows shared = readSidePool.sharedHomeRows(
+                        db, normalized, invalidationVersion, selections);
+                if (shared != null) {
+                    return new HomeRows(new ArrayList<>(shared.visible), new ArrayList<>(shared.processing));
+                }
+                ExpressReadSidePool.Stamp preStamp = readSidePool.captureStamp(
+                        db, normalized, invalidationVersion, selections);
+                long startedAtNanos = System.nanoTime();
+                HomeRows computed = computeHomeRows(db, normalized);
+                readSidePool.recordLockedHomeComputation(preStamp, startedAtNanos, computed);
+                return computed;
+            }
+            return computeHomeRows(db, normalized);
         }
     }
 
@@ -308,7 +351,7 @@ public final class ExpressRepository {
         ArrayList<ExpressItem> processing = new ArrayList<>();
         for (VisibleRow view : visibleRowViews(db, normalizedSource, true, true)) {
             processing.add(view.shown);
-            if (!hiddenCompletedOrderPlaceholder(db, view.shown)) visible.add(view.shown);
+            if (!hiddenCompletedOrderPlaceholder(db, view.shown, view.raw)) visible.add(view.shown);
         }
         return new HomeRows(visible, processing);
     }
@@ -422,6 +465,7 @@ public final class ExpressRepository {
         Map<Long, ExpressItem> raws = new HashMap<>();
         VisibleProjectionSidecars sidecars = visibleProjectionSidecars(db);
         Map<String, AutomaticOwnershipState> ownership = sidecars.ownershipByWaybill;
+        ArrayList<ExpressItem> cursorRows = new ArrayList<>();
         try (Cursor cursor = db.query(
                 ExpressDatabase.EXPRESS_TABLE, null,
                 "canShow=1 AND isDeleted=0", null, null, null,
@@ -430,37 +474,49 @@ public final class ExpressRepository {
                 ExpressItem raw = readRaw(db, cursor, sidecars, forHome);
                 raws.put(raw.rowId, raw);
                 sidecars.rawsByRowId.put(raw.rowId, raw);
-                String normalized = ExpressSourcePolicy.normalizeWaybill(raw.displayWaybill());
-                AutomaticOwnershipState owner = ownership.get(normalized);
-                TimelineProjection projection = owner != null && owner.displayFrozen
-                        && raw.rowId == owner.ownerRowId
-                        ? projectFrozenTimelineAuthorities(db, raw, sidecars)
-                        : projectTimelineProjection(db, raw, sidecars);
-                ExpressItem candidate = projection.item;
-                if (owner != null && owner.ownerRowId > 0L
-                        && candidate.rowId != owner.ownerRowId
-                        && findRaw(db, owner.ownerRowId) != null) continue;
-                if (owner == null && !bindingSource.isEmpty()
-                        && !ExpressSourcePolicy.belongsToBindingSource(
-                        candidate, bindingSource)) continue;
-                String key = normalized.isEmpty()
-                        ? "row:" + candidate.rowId : normalized;
-                TimelineProjection previous = canonical.get(key);
-                if (previous == null || winsCanonical(candidate, previous.item)) {
-                    canonical.put(key, projection);
-                }
+                cursorRows.add(raw);
+            }
+        }
+        for (ExpressItem raw : cursorRows) {
+            String normalized = ExpressSourcePolicy.normalizeWaybill(raw.displayWaybill());
+            AutomaticOwnershipState owner = ownership.get(normalized);
+            TimelineProjection projection = owner != null && owner.displayFrozen
+                    && raw.rowId == owner.ownerRowId
+                    ? projectFrozenTimelineAuthorities(db, raw, sidecars)
+                    : projectTimelineProjection(db, raw, sidecars);
+            ExpressItem candidate = projection.item;
+            if (owner != null && owner.ownerRowId > 0L
+                    && candidate.rowId != owner.ownerRowId
+                    && (raws.containsKey(owner.ownerRowId)
+                            || findRaw(db, owner.ownerRowId) != null)) continue;
+            if (owner == null && !bindingSource.isEmpty()
+                    && !ExpressSourcePolicy.belongsToBindingSource(
+                    candidate, bindingSource)) continue;
+            String key = normalized.isEmpty()
+                    ? "row:" + candidate.rowId : normalized;
+            TimelineProjection previous = canonical.get(key);
+            if (previous == null || winsCanonical(candidate, previous.item)) {
+                canonical.put(key, projection);
             }
         }
         ArrayList<VisibleRow> visible = new ArrayList<>();
         long now = System.currentTimeMillis();
+        JingDongEmptyOrderPages emptyOrderPages = null;
         for (TimelineProjection projection : canonical.values()) {
             ExpressItem item = projection.item;
             ExpressItem raw = raws.get(item.rowId);
+            if (JingDongEmptyOrderPages.applies(item)) {
+                if (emptyOrderPages == null) emptyOrderPages = new JingDongEmptyOrderPages(context);
+                if (hiddenNoItemOrder(db, item, raw, sidecars, emptyOrderPages)) continue;
+            }
             // 用户 2026-10-02 刷回前列表头条临时取状态所在包的最新节点: display only. Retention reads the time the list shows
             // (用户 2026-09-16, the JD signed-headline exception included), so it reads the aligned headline too.
             ExpressItem shown = align ? holdCainiaoAlignedBaseline(
-                    db, raw, alignHeadlineToStatus(db, raw, item, sidecars, projection.headline), sidecars) : item;
-            if (ExpressVisibilityPolicy.isExpired(shown, now) || hiddenNoItemOrder(db, item)) continue;
+                    db, raw, alignHeadlineToStatus(db, raw, item, sidecars, projection.headline, true, now), sidecars) : item;
+            if (ExpressVisibilityPolicy.isExpired(shown, now)) continue;
+            if (shown.headlineDisplay() == null) {
+                shown = shown.withHeadlineDisplay(ExpressTimeline.displayHeadline(shown));
+            }
             visible.add(new VisibleRow(raw, projection, shown, sidecars));
         }
         // Status groups first, then the newest time the row shows within the group (audit L13, user
@@ -513,6 +569,11 @@ public final class ExpressRepository {
     /** One display projection shared by the list, widgets and notification body. */
     private ExpressItem alignHeadlineToStatus(SQLiteDatabase db, ExpressItem raw, ExpressItem presented,
             VisibleProjectionSidecars sidecars, AlignmentNode headline) {
+        return alignHeadlineToStatus(db, raw, presented, sidecars, headline, false, System.currentTimeMillis());
+    }
+
+    private ExpressItem alignHeadlineToStatus(SQLiteDatabase db, ExpressItem raw, ExpressItem presented,
+            VisibleProjectionSidecars sidecars, AlignmentNode headline, boolean canonicalVisibleRow, long now) {
         if (raw == null || presented == null || presented.semantic == StatusSemantic.UNKNOWN
                 || presented.semantic == StatusSemantic.CANCELLED) return presented;
         if (!presented.manuallyAdded && (presented.isAccountOrder()
@@ -552,7 +613,11 @@ public final class ExpressRepository {
             }
         }
         if (newest == null && sf && coarse != null) {
-            StatusAlignmentProbe probe = statusAlignmentProbeReadOnly(db, presented);
+            StatusAlignmentProbe probe = canonicalVisibleRow
+                    ? (!ExpressVisibilityPolicy.isExpired(presented, now)
+                            ? buildSingleRowAlignmentProbe(db, presented, headline, donors)
+                            : null)
+                    : statusAlignmentProbeReadOnly(db, presented);
             if (probe != null
                     && alignmentAttemptFinishedReadOnly(db, presented.rowId, alignmentTimes(probe))) {
                 newest = coarse;
@@ -795,25 +860,35 @@ public final class ExpressRepository {
             if (view.raw == null) continue;
             List<ExpressQueryResult> donors = statusDonors(db, view.raw, row, view.sidecars);
             if (donors.isEmpty()) continue;
+            StatusAlignmentProbe probe = buildSingleRowAlignmentProbe(db, row, view.headline, donors);
+            if (probe != null) probes.add(probe);
+        }
+        return probes;
+    }
+
+    private StatusAlignmentProbe buildSingleRowAlignmentProbe(
+            SQLiteDatabase db,
+            ExpressItem row,
+            AlignmentNode headline,
+            List<ExpressQueryResult> donors) {
+        return withoutTemporaryReviews(() -> {
             ExpressItem current = findManualOwner(db, row.rowId);
-            if (!sameOwnerIdentity(current, row)) continue;
+            if (!sameOwnerIdentity(current, row)) return null;
             ManualTimelineAuthorityPolicy.DetailDecision decision =
                     storedDetailDecision(db, current, false);
             ExpressQueryResult shown = decision.candidate == null
                     ? sourcePackage(current) : decision.candidate.result;
-            AlignmentNode headline = view.headline;
             ExpressTimeline.Track detailNode = null;
             for (ExpressTimeline.Track node : ExpressTimeline.parse(shown.tracksJson, "", "", shown.timelineProvider)) {
                 if (node.epochMillis > 0L) { detailNode = node; break; }
             }
-            probes.add(new StatusAlignmentProbe(row, alignmentStatusAt(row, donors),
+            return new StatusAlignmentProbe(row, alignmentStatusAt(row, donors),
                     Math.max(0L, ExpressSourcePolicy.parseEventTime(row.latestTime)),
                     detailNode == null ? 0L : detailNode.epochMillis,
                     decision.candidate != null && TimelineSlot.isWebCapture(decision.candidate.provider),
                     headline.semantic, detailNode == null ? StatusSemantic.UNKNOWN : detailNode.semantic,
-                    headline.coarse, isShunFeng(row) && decision.candidate == null, row.statusEventTime <= 0L));
-        }
-        return probes;
+                    headline.coarse, isShunFeng(row) && decision.candidate == null, row.statusEventTime <= 0L);
+        });
     }
 
     /**
@@ -1766,12 +1841,16 @@ public final class ExpressRepository {
 
     /** Only presentation is hidden; this is not evidence that the order contains no physical item. */
     private boolean hiddenCompletedOrderPlaceholder(SQLiteDatabase db, ExpressItem item) {
+        return hiddenCompletedOrderPlaceholder(db, item, null);
+    }
+
+    private boolean hiddenCompletedOrderPlaceholder(SQLiteDatabase db, ExpressItem item, ExpressItem preloadedRaw) {
         if (item == null || item.manuallyAdded || !item.isAccountOrder() || !item.isJingDongSource()
                 || !JD_SHORT_ORDER_ID.matcher(item.waybill).matches() || !item.projectedWaybill.isEmpty()
                 || item.semantic != StatusSemantic.COMPLETED) return false;
         WorkerStatusProjection status = WorkerStatusProjection.cached(item.tracksJson);
         if (status == null || !status.structured || !status.matches(item.semantic, item.statusEventTime)) return false;
-        ExpressItem raw = findRaw(db, item.rowId);
+        ExpressItem raw = preloadedRaw != null && preloadedRaw.rowId == item.rowId ? preloadedRaw : findRaw(db, item.rowId);
         if (raw == null) return false;
         return !hasSavedOrderWaybill(db, raw);
     }
@@ -1847,11 +1926,24 @@ public final class ExpressRepository {
      * </ol>
      */
     private boolean hiddenNoItemOrder(SQLiteDatabase db, ExpressItem item) {
-        if (!JingDongEmptyOrderPages.applies(item)
-                || !new JingDongEmptyOrderPages(context).confirmed(item)) return false;
+        if (!JingDongEmptyOrderPages.applies(item)) return false;
+        return hiddenNoItemOrder(db, item, null, null, new JingDongEmptyOrderPages(context));
+    }
+
+    private boolean hiddenNoItemOrder(
+            SQLiteDatabase db,
+            ExpressItem item,
+            ExpressItem preloadedRaw,
+            VisibleProjectionSidecars sidecars,
+            JingDongEmptyOrderPages emptyPages) {
+        if (!JingDongEmptyOrderPages.applies(item) || !emptyPages.confirmed(item)) return false;
         // 行上读到的可能是不带投影的原始行，投影与 feed 历史都按库里这一行自己的再核一遍。
-        ExpressItem raw = findRaw(db, item.rowId);
-        if (raw == null || !orderProjection(db, raw.waybill, "interface5").waybill.isEmpty()
+        ExpressItem raw = preloadedRaw != null && preloadedRaw.rowId == item.rowId ? preloadedRaw : findRaw(db, item.rowId);
+        if (raw == null) return false;
+        OrderProjection projected = sidecars != null && sidecars.orderProjections != null
+                ? sidecars.orderProjections.getOrDefault(orderProjectionKey(raw.waybill, "interface5"), OrderProjection.EMPTY)
+                : orderProjection(db, raw.waybill, "interface5");
+        if (!projected.waybill.isEmpty()
                 || me.pipi.deliveries.feature.express.ExpressOrderTextIdentity.fromTracksJson(
                         raw.tracksJson, raw.waybill) != null) return false;
         List<ExpressTimeline.Track> nodes = ExpressTimeline.parse(
@@ -5683,11 +5775,15 @@ public final class ExpressRepository {
                 result.routeCredential,
                 CainiaoRoute.isLegacyCredentialedUrl(result.detailUrl)
                         ? result.detailUrl : "");
-        EncryptedExpressFields.Result encryptedRoute =
-                EncryptedExpressFields.tryEncode(incomingCredential);
+        boolean sameTargetCredential = preserveSameOwnerRoute && target != null
+                && target.routeCredentialAvailable
+                && clean(target.routeCredential).equals(clean(incomingCredential));
+        EncryptedExpressFields.Result encryptedRoute = sameTargetCredential
+                ? EncryptedExpressFields.Result.available("")
+                : EncryptedExpressFields.tryEncode(incomingCredential);
         boolean incomingSelected = !selectedRoute.isEmpty()
                 && selectedRoute.equals(result.detailUrl);
-        if (incomingSelected && !incomingCredential.isEmpty() && !encryptedRoute.available) {
+        if (incomingSelected && !incomingCredential.isEmpty() && !sameTargetCredential && !encryptedRoute.available) {
             selectedRoute = currentRoute;
             incomingSelected = false;
         }
@@ -5702,7 +5798,7 @@ public final class ExpressRepository {
         values.put("moreInfoUrl", selectedRoute);
         values.put("routeOwner", selectedRoute.isEmpty() ? "" : normalizedOwner);
         values.put("routeInterface", routeInterface);
-        if (incomingSelected && encryptedRoute.available) {
+        if (incomingSelected && !sameTargetCredential && encryptedRoute.available) {
             values.put("routeCredential", encryptedRoute.value);
         } else if (!preserveSameOwnerRoute || selectedRoute.isEmpty()) {
             values.put("routeCredential", "");
@@ -6186,10 +6282,18 @@ public final class ExpressRepository {
                 result.routeCredential,
                 CainiaoRoute.isLegacyCredentialedUrl(result.detailUrl)
                         ? result.detailUrl : "");
-        EncryptedExpressFields.Result encryptedIncomingRoute =
-                EncryptedExpressFields.tryEncode(incomingRouteCredential);
         String incomingOwner = ExpressSourcePolicy.source(source);
         String incomingBindingSource = ExpressSourcePolicy.bindingSourceForOwner(incomingOwner);
+        ExpressItem precheckedPrevious = !incomingRouteCredential.isEmpty() && canUseSideRead()
+                ? readSidePool.readOnlySide(helper.openedDatabaseOrNull(),
+                        db -> findRawByWaybill(db, result.waybill, incomingBindingSource))
+                : null;
+        boolean skipPreEncode = precheckedPrevious != null
+                && precheckedPrevious.routeCredentialAvailable
+                && clean(precheckedPrevious.routeCredential).equals(clean(incomingRouteCredential));
+        EncryptedExpressFields.Result encryptedIncomingRoute = skipPreEncode
+                ? null
+                : EncryptedExpressFields.tryEncode(incomingRouteCredential);
         ExpressQueryResult packageResult = result;
         StatusSemantic incomingSemantic = result.workerStatus != null ? result.semantic : ExpressStatusNormalizer.normalize(
                 incomingOwner, result.semantic.storageCode,
@@ -6351,7 +6455,13 @@ public final class ExpressRepository {
                         && (previous == null
                         || !clean(result.routeInterface).isEmpty()
                         || !incomingRouteCredential.isEmpty());
-                if (useIncomingRouteFields && !encryptedIncomingRoute.available
+                boolean sameStoredCredential = previous != null
+                        && previous.routeCredentialAvailable
+                        && clean(previous.routeCredential).equals(clean(incomingRouteCredential));
+                if (useIncomingRouteFields && !sameStoredCredential && encryptedIncomingRoute == null) {
+                    encryptedIncomingRoute = EncryptedExpressFields.tryEncode(incomingRouteCredential);
+                }
+                if (useIncomingRouteFields && !sameStoredCredential && !encryptedIncomingRoute.available
                         && previous != null) {
                     // Keep the existing route and ciphertext paired if encryption is temporarily
                     // unavailable. A later discovery response can safely retry the enrichment.
@@ -6372,7 +6482,7 @@ public final class ExpressRepository {
                         ? "" : previous != null && selectedRoute.equals(previous.detailUrl)
                         ? previous.routeOwner : incomingOwner);
                 values.put("routeInterface", routeInterface);
-                if (useIncomingRouteFields && encryptedIncomingRoute.available) {
+                if (useIncomingRouteFields && !sameStoredCredential && encryptedIncomingRoute.available) {
                     values.put("routeCredential", encryptedIncomingRoute.value);
                 }
                 values.put("canShow", 1);
@@ -7647,7 +7757,7 @@ public final class ExpressRepository {
         return probe != null && alignmentAttemptFinished(current.rowId, alignmentTimes(probe));
     }
 
-    public synchronized long invalidationVersion() {
+    public long invalidationVersion() {
         return invalidationVersion;
     }
 

@@ -77,7 +77,7 @@ export class PlatformWireError extends Error {
 export const JD_ORDERS_PAGE = "https://my.m.jd.com/index.html?sceneval=2";
 const JD_HOME_PAGE = "https://home.m.jd.com/myJd/newhome.action";
 export const JD_ORDER_LIST_URL = new URL("/order/orderlist_jdm.shtml", "https://trade.m.jd.com").href;
-const JD_ACCOUNT_PAGES = [JD_HOME_PAGE, JD_ORDERS_PAGE, JD_ORDER_LIST_URL];
+const JD_ACCOUNT_PAGES = [JD_HOME_PAGE, JD_ORDERS_PAGE, JD_ORDER_LIST_URL, "https://o.m.jd.com/list"];
 
 /** The sign-in view and the order reader use the same JD account evidence. */
 export function jdLoginProof(cookies: readonly PlatformCookie[], address?: string) {

@@ -94,6 +94,8 @@ public final class ExpressListActivity extends AppCompatActivity {
     private final ExecutorService carrierDetectWorker = Executors.newFixedThreadPool(2);
     private final ExecutorService databaseWorker = Executors.newSingleThreadExecutor();
     private int reloadGeneration;
+    private volatile long renderedInvalidationVersion = -1L;
+    private volatile String renderedBindingSource = "";
     private int queryLookupGeneration;
     private boolean queryLookupPending;
     private ExpressQueryCancellation textProjectionCancellation;
@@ -163,6 +165,14 @@ public final class ExpressListActivity extends AppCompatActivity {
                 if (orderProjectionCapture == null) attemptedOrderProjections.clear();
                 else resetOrderProjectionAttemptsAfterCapture = true;
                 announcePullRefreshOutcome(intent);
+                String activeSource = ExpressAccountSource.bindingSource(ExpressListActivity.this);
+                if (renderedInvalidationVersion >= 0L
+                        && activeSource.equals(renderedBindingSource)
+                        && ExpressRepository.get(ExpressListActivity.this).invalidationVersion()
+                                == renderedInvalidationVersion) {
+                    startNextOrderProjectionCapture();
+                    return;
+                }
             } else if (intent != null
                     && ExpressRepository.ACTION_SYNC_ACCOUNT_PHASE.equals(intent.getAction())) {
                 // E1 (owner 2026-11-10): the pull ends once its account phase is stored; the round's
@@ -309,6 +319,8 @@ public final class ExpressListActivity extends AppCompatActivity {
         }
         invalidateCarrierDetection();
         reloadGeneration++;
+        renderedInvalidationVersion = -1L;
+        renderedBindingSource = "";
         if (queryLookupPending) {
             queryLookupGeneration++;
             queryLookupPending = false;
@@ -389,12 +401,16 @@ public final class ExpressListActivity extends AppCompatActivity {
         databaseWorker.execute(() -> {
             long startedAt = android.os.SystemClock.elapsedRealtime();
             try {
-                ExpressRepository.HomeRows fresh = ExpressRepository.get(this).homeRows(bindingSource);
+                ExpressRepository repository = ExpressRepository.get(this);
+                long capturedVersion = repository.invalidationVersion();
+                ExpressRepository.HomeRows fresh = repository.homeRows(bindingSource);
                 android.util.Log.i("ExpressHomeLoad", "Local list loaded: waitMs=" + (startedAt - requestedAt)
                         + " readMs=" + (android.os.SystemClock.elapsedRealtime() - startedAt) + " rows=" + fresh.visible.size());
                 runOnUiThread(() -> {
                     if (generation != reloadGeneration || isFinishing() || isDestroyed()
                             || !bindingSource.equals(ExpressAccountSource.bindingSource(this))) return;
+                    renderedInvalidationVersion = capturedVersion;
+                    renderedBindingSource = bindingSource;
                     items.clear();
                     items.addAll(fresh.visible);
                     orderProjectionItems.clear();

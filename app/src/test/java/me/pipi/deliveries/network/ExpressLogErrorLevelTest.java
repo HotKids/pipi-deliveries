@@ -1,6 +1,7 @@
 package me.pipi.deliveries.network;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Application;
@@ -48,5 +49,12 @@ public final class ExpressLogErrorLevelTest {
             assertTrue(event, source.contains("ExpressLog.error(\"" + event + "\""));
             assertTrue(event, !source.contains("ExpressLog.write(\"" + event + "\""));
         }
+    }
+
+    @Test public void formalReleaseGatesLogcatBehindIsLoggable() {
+        assertTrue(ExpressLog.shouldEmit(true, false, false));
+        assertTrue(ExpressLog.shouldEmit(false, true, false));
+        assertTrue(ExpressLog.shouldEmit(false, false, true));
+        assertFalse(ExpressLog.shouldEmit(false, false, false));
     }
 }

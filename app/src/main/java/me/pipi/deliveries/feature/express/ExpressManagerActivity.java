@@ -136,7 +136,7 @@ public final class ExpressManagerActivity extends AppCompatActivity {
         lastTitleTapAt = now;
         if (titleTapCount < 3) return;
         titleTapCount = 0;
-        String selected = ExpressAccountSource.toggle(this);
+        String selected = ExpressAccountSource.toggleAsync(this, worker);
         ExpressRepository.get(this).requestPendingNotificationReplay();
         reloadPhones();
         ExpressWidgetProvider.refreshAll(this);

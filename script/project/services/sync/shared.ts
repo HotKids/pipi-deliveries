@@ -31,6 +31,8 @@ export const FULL_REFRESH_COORDINATION_WAIT_MS = 2_000;
 export const ACCOUNT_ORDER_PROJECTION_ATTEMPT_MS = 22_000;
 export const FORCED_PROJECTION_WAIT_SLICE_MS = 100;
 
+export type H5Priority = "interactive" | "background";
+
 export type SyncRuntimeState = {
   readonly refreshStateListeners: Set<(state: AppState) => void>;
   readonly fullRefreshOutcomeListeners: Set<(outcome: FullRefreshOutcome) => void>;
@@ -41,6 +43,9 @@ export type SyncRuntimeState = {
     RefreshSummary
   >;
   h5Queue: Promise<void>;
+  h5Active: boolean;
+  readonly h5InteractiveWaiters: Array<() => void>;
+  readonly h5BackgroundWaiters: Array<() => void>;
   readonly activeProjectionAttempts: Map<string, { promise: Promise<void>; settle: () => void }>;
   readonly accountDetailRequests: RefreshCoordinator<BindingSource, string, AccountParcelDto | null, never>;
   readonly accountSourceFullRequests: WeakSet<Promise<RefreshSummary>>;
@@ -68,6 +73,9 @@ export function createSyncRuntimeState(): SyncRuntimeState {
       RefreshSummary
     >(),
     h5Queue: Promise.resolve(),
+    h5Active: false,
+    h5InteractiveWaiters: [],
+    h5BackgroundWaiters: [],
     activeProjectionAttempts: new Map(),
     accountDetailRequests: new RefreshCoordinator<BindingSource, string, AccountParcelDto | null, never>(),
     accountSourceFullRequests: new WeakSet(),

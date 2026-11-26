@@ -7,7 +7,7 @@
   },
   "base": {
     "schemaVersion": 2,
-    "version": "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
+    "version": "a39d590a766c2281d04c27bceed9a683a5ff36866f60fd7c9aab682f408e85d7",
     "source": "embedded-transition",
     "entries": [
       {
@@ -36,9 +36,13 @@
           "ZHONGTONG"
         ],
         "nameAliases": [
-          "中通"
+          "中通",
+          "中通国际"
         ],
-        "requiresPhoneTail": true
+        "requiresPhoneTail": true,
+        "kuaidi100CodeAliases": [
+          "zhongtongguoji"
+        ]
       },
       {
         "standardCode": "ZTOKY",
@@ -287,7 +291,7 @@
   },
   "formalStartupBase": {
     "schemaVersion": 2,
-    "version": "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
+    "version": "a39d590a766c2281d04c27bceed9a683a5ff36866f60fd7c9aab682f408e85d7",
     "source": "embedded-transition",
     "entries": [
       {
@@ -316,9 +320,13 @@
           "ZHONGTONG"
         ],
         "nameAliases": [
-          "中通"
+          "中通",
+          "中通国际"
         ],
-        "requiresPhoneTail": true
+        "requiresPhoneTail": true,
+        "kuaidi100CodeAliases": [
+          "zhongtongguoji"
+        ]
       },
       {
         "standardCode": "ZTOKY",
@@ -574,7 +582,7 @@
     "formalStartupBase": {
       "track": "formal",
       "artifactPath": "cloudflare/express-gateway/src/worker.js",
-      "artifactSha256": "6fc576bd76b659dd46ac0fc7106cf25ff9e1c0396f4a61929e02c65cc36b19cd"
+      "artifactSha256": "ac147c336e8d9e1ffcb749ccbdbdc1fa648b96c3cc09c6741a75f791648a8ceb"
     }
   },
   "cases": [

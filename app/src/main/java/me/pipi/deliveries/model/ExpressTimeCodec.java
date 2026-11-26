@@ -11,10 +11,21 @@ import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.time.temporal.ChronoField;
 import java.time.temporal.TemporalAccessor;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 
 /** Provider timestamps without an offset belong to China, independently of device timezone. */
 public final class ExpressTimeCodec {
+    private static final int LIST_TIME_CACHE_LIMIT = 256;
+    private static final Object LIST_TIME_CACHE_LOCK = new Object();
+    private static final LinkedHashMap<String, String> LIST_TIME_CACHE =
+            new LinkedHashMap<String, String>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+                    return size() > LIST_TIME_CACHE_LIMIT;
+                }
+            };
     private static final ZoneId CHINA = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter SPACE_SECONDS = formatter("uuuu-MM-dd HH:mm:ss");
     private static final DateTimeFormatter LIST_FORMAT = formatter("uuuu-MM-dd HH:mm");
@@ -35,10 +46,23 @@ public final class ExpressTimeCodec {
     private ExpressTimeCodec() {}
 
     public static String formatListTime(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return "";
+        }
+        synchronized (LIST_TIME_CACHE_LOCK) {
+            String cached = LIST_TIME_CACHE.get(raw);
+            if (cached != null) {
+                return cached;
+            }
+        }
         long epoch = parse(raw);
-        return epoch <= 0L
-                ? (raw == null ? "" : raw)
+        String formatted = epoch <= 0L
+                ? raw
                 : LIST_FORMAT.format(Instant.ofEpochMilli(epoch).atZone(CHINA));
+        synchronized (LIST_TIME_CACHE_LOCK) {
+            LIST_TIME_CACHE.put(raw, formatted);
+        }
+        return formatted;
     }
 
     private static DateTimeFormatter formatter(String pattern) {

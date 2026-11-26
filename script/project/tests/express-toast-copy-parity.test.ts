@@ -22,6 +22,7 @@ for (const [iosKey, pipiKey] of Object.entries({
   HANDOFF_COMPLETED: "HANDOFF_COMPLETED",
   HANDOFF_EXPIRED: "HANDOFF_EXPIRED",
   PICKUP_RECORD_ACTION_FAILED: "HANDOFF_FAILED",
+  PICKUP_RECORD_DELETED: "PICKUP_RECORD_DELETED",
 })) {
   assert.ok(iosTable.has(iosKey), iosKey);
   assert.equal(iosTable.get(iosKey), pipiTable.get(pipiKey), iosKey);

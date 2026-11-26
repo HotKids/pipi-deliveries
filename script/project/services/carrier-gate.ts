@@ -11,6 +11,7 @@ import { displayWaybill, unprojectedAccountOrder } from "./shipment-policy";
 type CarrierEvidence = "matched" | "blank" | "platform_label" | "raw_code";
 
 function carrierEvidence(shipment: Shipment, requireVisibleName = true): CarrierEvidence {
+  if (shipment.identity.sourceProvider === "lastscanned" || shipment.identity.id.startsWith("watch:")) return "matched";
   if (unprojectedAccountOrder(shipment)) return "matched";
   const waybill = displayWaybill(shipment);
   if (!waybill) return "matched";

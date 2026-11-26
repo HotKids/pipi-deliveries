@@ -60,6 +60,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
     private volatile String openedPath;
     private volatile Object openedFileKey;
     private volatile boolean closed;
+    private volatile boolean schemaPreparedInLifecycle;
 
     public static ExpressDatabase shared(Context context) {
         Context application = context.getApplicationContext();
@@ -104,6 +105,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         ensureCanonicalColumns(db);
         createNativeSidecars(db);
         dropObsoleteTables(db);
+        schemaPreparedInLifecycle = true;
     }
 
     @Override
@@ -142,6 +144,7 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         }
         if (oldVersion < 26) migrateAutomaticRecordKeys(db);
         dropObsoleteTables(db);
+        schemaPreparedInLifecycle = true;
     }
 
     @Override
@@ -152,33 +155,97 @@ public final class ExpressDatabase extends SQLiteOpenHelper {
         ensureCanonicalColumns(db);
         createNativeSidecars(db);
         dropObsoleteTables(db);
+        schemaPreparedInLifecycle = true;
     }
 
     @Override
     public void onOpen(SQLiteDatabase db) {
         super.onOpen(db);
-        if (!db.isReadOnly()) {
-            lastOpenedDatabase = db;
-            String path = db.getPath();
-            openedPath = path;
-            openedFileKey = fileKey(path);
+        if (db.isReadOnly()) {
+            return;
         }
+        lastOpenedDatabase = db;
+        String path = db.getPath();
+        openedPath = path;
+        openedFileKey = fileKey(path);
         synchronized (VERIFIED_CONNECTIONS) {
             if (Boolean.TRUE.equals(VERIFIED_CONNECTIONS.get(db))) {
                 return;
             }
         }
-        createExpressTables(db);
-        ensureCanonicalColumns(db);
-        createNativeSidecars(db);
-        dropObsoleteTables(db);
-        db.delete(OWNER_MANUAL_TIMELINE_TABLE, "LOWER(provider) IN (?,?)",
-                new String[]{"v6_picker", "meizu_picker"});
-        db.delete(OWNER_MANUAL_ROUTE_TABLE, "LOWER(provider) IN (?,?)",
-                new String[]{"v6_picker", "meizu_picker"});
+        if (schemaPreparedInLifecycle) {
+            schemaPreparedInLifecycle = false;
+        } else if (!hasCurrentCanonicalSchema(db)) {
+            createExpressTables(db);
+            ensureCanonicalColumns(db);
+            createNativeSidecars(db);
+            dropObsoleteTables(db);
+        }
+        retireLegacyPickerSlotsIfPresent(db);
         synchronized (VERIFIED_CONNECTIONS) {
             VERIFIED_CONNECTIONS.put(db, Boolean.TRUE);
         }
+    }
+
+    private static void retireLegacyPickerSlotsIfPresent(SQLiteDatabase db) {
+        String[] retired = new String[]{"v6_picker", "meizu_picker"};
+        if (hasRetiredPickerRows(db, OWNER_MANUAL_TIMELINE_TABLE, retired)) {
+            db.delete(OWNER_MANUAL_TIMELINE_TABLE, "LOWER(provider) IN (?,?)", retired);
+        }
+        if (hasRetiredPickerRows(db, OWNER_MANUAL_ROUTE_TABLE, retired)) {
+            db.delete(OWNER_MANUAL_ROUTE_TABLE, "LOWER(provider) IN (?,?)", retired);
+        }
+    }
+
+    private static boolean hasRetiredPickerRows(
+            SQLiteDatabase db, String table, String[] retiredProviders) {
+        try (Cursor cursor = db.query(table, new String[]{"1"},
+                "LOWER(provider) IN (?,?)", retiredProviders, null, null, null, "1")) {
+            return cursor.moveToFirst();
+        }
+    }
+
+    private static boolean hasCurrentCanonicalSchema(SQLiteDatabase db) {
+        try (Cursor cursor = db.rawQuery(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ("
+                        + "'server_express','express_phone','express_notification_outbox',"
+                        + "'k100_h5_timeline','v4_query_timeline','v5_query_timeline','v6_list_timeline',"
+                        + "'owner_manual_timeline','owner_manual_route','owner_manual_retry',"
+                        + "'k100_pending','order_projection','held_order_projection',"
+                        + "'row_refresh_ledger','unbound_association','automatic_ownership',"
+                        + "'automatic_observation','" + ExpressAutomaticDeletionFence.TABLE + "')",
+                null)) {
+            if (!cursor.moveToFirst() || cursor.getInt(0) != 18) {
+                return false;
+            }
+        }
+        try (Cursor legacy = db.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name LIKE 'aicy_%' LIMIT 1",
+                null)) {
+            if (legacy.moveToFirst()) return false;
+        }
+        return hasColumns(db, EXPRESS_TABLE,
+                "cainiaoH5FallbackOwner", "projectionRetryRoute", "listOriginAtMs", "senderPhone")
+                && hasColumns(db, AUTOMATIC_OBSERVATION_TABLE, "record_key", "route_credential")
+                && hasColumns(db, AUTOMATIC_OWNERSHIP_TABLE, "owner_record_key")
+                && hasColumns(db, ACCOUNT_V5_TIMELINE_TABLE, "owner_presentation");
+    }
+
+    private static boolean hasColumns(SQLiteDatabase db, String table, String... expected) {
+        int matched = 0;
+        try (Cursor cursor = db.rawQuery("PRAGMA table_info(" + table + ")", null)) {
+            int nameIndex = cursor.getColumnIndex("name");
+            while (cursor.moveToNext()) {
+                String name = cursor.getString(nameIndex);
+                for (String column : expected) {
+                    if (column.equals(name)) {
+                        matched++;
+                        break;
+                    }
+                }
+            }
+        }
+        return matched == expected.length;
     }
 
     @Override

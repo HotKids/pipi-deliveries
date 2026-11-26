@@ -98,11 +98,11 @@ function wcagContrast(hexA: string, rgbB: number): number {
   return Math.max(l1, l2) / Math.min(l1, l2);
 }
 
-test("L-01: script.json and SCRIPT_VERSION are aligned at 0.9.38 on formal track", () => {
+test("L-01: script.json and SCRIPT_VERSION are aligned at 0.9.39 on formal track", () => {
   const pkg = JSON.parse(readFileSync(new URL("../script.json", import.meta.url), "utf8")) as { version: string };
   assert.equal(SCRIPT_BUILD_TRACK, "formal");
-  assert.equal(pkg.version, "0.9.38");
-  assert.equal(SCRIPT_VERSION, "0.9.38");
+  assert.equal(pkg.version, "0.9.39");
+  assert.equal(SCRIPT_VERSION, "0.9.39");
 });
 
 test("Task A: parcelDetailRecordId matches Worker UUIDv5 byte-for-byte", () => {

@@ -191,6 +191,115 @@ export function withAbsorbedPddParcelSource(survivor: Shipment, absorbed: Shipme
   };
 }
 
+/**
+ * Preserves pickup codes, manual `forcedCompletedAtMs`, user remarks, and non-PDD `platformFields` (`manualTitle`,
+ * non-PDD `title`, `estimate`, `cainiaoImage`) when an automatic source takes over a manual row or an order row
+ * attaches/projects on the same waybill generation (§8.6 #5). Never overwrites the survivor's own populated fields.
+ */
+export function withAbsorbedParcelFields(
+  survivor: Shipment,
+  absorbed: Shipment,
+  stored?: Shipment,
+  options: { skipPddSource?: boolean; skipNote?: boolean } = {},
+): Shipment {
+  if (absorbed.identity.sender) return survivor;
+  const waybill = normalizeWaybill(displayWaybill(survivor));
+  if (!waybill || waybill !== normalizeWaybill(displayWaybill(absorbed))) return survivor;
+  let base = survivor;
+  if (
+    stored &&
+    shipmentLifecycleKey(stored) === shipmentLifecycleKey(survivor) &&
+    stored.platformFields &&
+    sameFields(survivor, stored.platformFields) &&
+    survivor.platformFields &&
+    sameFields(survivor, survivor.platformFields)
+  ) {
+    base = {
+      ...survivor,
+      platformFields: {
+        ...stored.platformFields,
+        ...survivor.platformFields,
+      },
+    };
+  }
+  let target = keepPlatformFields(stored, base);
+  if (!options.skipPddSource) {
+    target = withAbsorbedPddParcelSource(target, absorbed, stored);
+  }
+  const generation = target.waybillReuseAtMs ?? 0;
+  const absorbedGen = absorbed.waybillReuseAtMs ?? 0;
+
+  let pickup = target.pickup;
+  if (
+    !pickup &&
+    !target.identity.sender &&
+    absorbed.pickup &&
+    normalizeWaybill(absorbed.pickup.waybill) === waybill &&
+    absorbed.pickup.waybillGeneration === absorbedGen
+  ) {
+    pickup = {
+      ...absorbed.pickup,
+      waybill: displayWaybill(target),
+      waybillGeneration: generation,
+    };
+  }
+
+  const forcedCompletedAtMs = target.forcedCompletedAtMs ?? absorbed.forcedCompletedAtMs;
+  const settledAtMs = target.settledAtMs ??
+    (forcedCompletedAtMs ? absorbed.settledAtMs ?? forcedCompletedAtMs : undefined);
+
+  const own = target.platformFields && sameFields(target, target.platformFields) ? target.platformFields : undefined;
+  const carried = absorbed.platformFields && sameFields(absorbed, absorbed.platformFields)
+    ? absorbed.platformFields
+    : undefined;
+  let platformFields = own;
+  if (carried) {
+    const manualTitleNewer = carried.manualTitle !== undefined &&
+      (!own?.manualTitle || (carried.manualTitleEditedAtMs ?? 0) > (own.manualTitleEditedAtMs ?? 0));
+    const nonPddTitle = !own?.title && carried.title && carried.title.source !== "pinduoduo"
+      ? carried.title
+      : undefined;
+    const allowEstimate = carried.estimate &&
+      (carried.estimate.source !== "pinduoduo" || (!options.skipPddSource && acceptsPddParcelSource(target)));
+    const estimate = !own?.estimate && allowEstimate ? carried.estimate : undefined;
+    const cainiaoImage = !own?.cainiaoImage && carried.cainiaoImage ? carried.cainiaoImage : undefined;
+    if (manualTitleNewer || nonPddTitle || estimate || cainiaoImage) {
+      platformFields = {
+        ...own,
+        waybill: displayWaybill(target),
+        waybillGeneration: generation,
+        ...(manualTitleNewer
+          ? {
+              manualTitle: carried.manualTitle,
+              ...(carried.manualTitleEditedAtMs !== undefined
+                ? { manualTitleEditedAtMs: carried.manualTitleEditedAtMs }
+                : {}),
+            }
+          : {}),
+        ...(nonPddTitle ? { title: nonPddTitle } : {}),
+        ...(estimate ? { estimate } : {}),
+        ...(cainiaoImage ? { cainiaoImage } : {}),
+      };
+    }
+  }
+
+  const absorbedNote = options.skipNote ? "" : String(absorbed.note || "").trim();
+  const note = String(target.note || "").trim() || absorbedNote;
+
+  let merged: Shipment = {
+    ...target,
+    ...(pickup ? { pickup } : {}),
+    ...(forcedCompletedAtMs !== undefined ? { forcedCompletedAtMs } : {}),
+    ...(settledAtMs !== undefined ? { settledAtMs } : {}),
+    ...(platformFields ? { platformFields } : {}),
+    ...(note ? { note } : {}),
+  };
+  if (forcedCompletedAtMs !== undefined && !target.forcedCompletedAtMs) {
+    merged = { ...merged, timeline: selectShipmentTimeline(merged) };
+  }
+  return merged;
+}
+
 const CLOUD_PDD_TOMBSTONE_REUSE_GAP_MS = 24 * 3_600_000;
 
 export function matchingCloudPddTombstone(

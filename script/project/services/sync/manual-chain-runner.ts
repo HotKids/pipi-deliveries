@@ -254,7 +254,7 @@ async function fallbackPendingCloudPddShipment(input: {
   primaryOutcome: Awaited<ReturnType<typeof queryManualForSource>>;
 }): Promise<Awaited<ReturnType<typeof queryManualForSource>>> {
   const { reserved, currentState, source, flowId, taskDeadline, forceManualRefresh, moto, paid, signal, runQuery, primaryOutcome } = input;
-  if (!reserved.pddCloudOrigin || reserved.timeline.provider !== "pending" || moto || paid ||
+  if (!reserved.identity.manuallyAdded || reserved.timeline.provider !== "pending" || moto || paid ||
       primaryOutcome?.skipReason === "cooldown" ||
       Boolean(primaryOutcome?.shipment && timedTracks(primaryOutcome.shipment.timeline.tracks).length) ||
       deadlineExpired(taskDeadline)) {

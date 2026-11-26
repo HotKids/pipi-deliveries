@@ -1052,11 +1052,58 @@ assert.equal(renderPickupTab([]).emptyArtwork, "meal", "the preview alternates b
 assert.equal(PICKUP_TAB_TITLE, "待取");
 assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title=\{PICKUP_TAB_TITLE\} systemImage="archivebox\.fill" value="pickup"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="shippingbox\.fill" value="deliveries"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
-assert.match(pickupSource, /cardRow\(card, visible && sectionIndex === 0 && index === 0,\s*index < items.length - 1 \|\| preview\)/,
-  "only the first visible row receives playback and spacing appears between cards in the same section");
+assert.match(pickupSource, /cardRow\(card, visible && animationReady && sectionIndex === 0 && index === 0,\s*index < items.length - 1 \|\| preview\)/,
+  "only the first visible row receives playback after the 1s active-tab delay and spacing appears between cards in the same section");
 assert.match(pickupSource, /await stopParcelActivityPreview\(\)/);
-assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate=\{visible && sectionIndex === 0 && items.length === 0\}\s+onComplete=\{\(\) => void closePreview\(\)\} actionPending=\{closingPreview\} \/>/,
-  "a standalone preview retains its animation and a trailing preview uses the final frame");
+assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate=\{visible && animationReady && sectionIndex === 0 && items.length === 0\}\s+onComplete=\{\(\) => void closePreview\(\)\} actionPending=\{closingPreview\} \/>/,
+  "a standalone preview waits for the 1s active-tab delay and a trailing preview uses the final frame");
+{
+  const { createPickupAnimationGate, PICKUP_CARD_ANIMATION_DELAY_MS } = await import("../services/parcel-pickup");
+  assert.equal(PICKUP_CARD_ANIMATION_DELAY_MS, 1_000);
+  let scheduledFn: (() => void) | undefined;
+  let scheduledMs = 0;
+  let clearedCount = 0;
+  const states: boolean[] = [];
+  const gate = createPickupAnimationGate(
+    (next) => states.push(next),
+    {
+      set: (fn, ms) => {
+        scheduledFn = fn;
+        scheduledMs = ms;
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      },
+      clear: () => {
+        clearedCount++;
+        scheduledFn = undefined;
+      },
+    },
+  );
+  gate.setVisible(true);
+  assert.equal(gate.isAnimating(), false, "first paint on tab switch stays static frame 0");
+  assert.equal(scheduledMs, 1_000);
+  // Exiting tab before 1s cancels timer immediately
+  gate.setVisible(false);
+  assert.equal(clearedCount, 1);
+  assert.equal(gate.isAnimating(), false);
+  // Re-entering starts fresh 1s timer and enables animation after 1s
+  gate.setVisible(true);
+  assert.ok(scheduledFn);
+  scheduledFn!();
+  assert.equal(gate.isAnimating(), true, "animation starts 1s after pickup tab is active");
+  assert.equal(states.at(-1), true);
+  // App backgrounding immediately stops animation
+  gate.setSceneActive(false);
+  assert.equal(gate.isAnimating(), false);
+  assert.equal(states.at(-1), false);
+  // Returning to foreground starts a fresh 1s delay before animating again
+  gate.setSceneActive(true);
+  assert.equal(gate.isAnimating(), false);
+  assert.ok(scheduledFn);
+  scheduledFn!();
+  assert.equal(gate.isAnimating(), true);
+  gate.dispose();
+  assert.equal(gate.isAnimating(), false);
+}
 const homeSource = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
 for (const source of [homeSource, pickupSource, settingsSource]) {
   assert.match(source, /<NavigationStack>\s*<VStack [^]*?<RootTabList\b/,
@@ -1075,14 +1122,19 @@ assert.match(rootHeader, /glassEffectTransition=\{supportsGlassTransition \? "ma
   "the floating action button materializes on idle scroll phase without semi-transparent opacity");
 assert.doesNotMatch(rootHeader, /opacity=\{/,
   "Liquid Glass FAB must never be wrapped in fractional opacity");
-assert.match(rootHeader, /<List\s+listStyle="insetGroup"\s+navigationTitle=\{title\}\s+navigationBarTitleDisplayMode="large"\s+toolbar=\{\{\s*topBarTrailing: \(\s*<Button title="关闭" systemImage="xmark" labelStyle="iconOnly" action=\{onClose\} \/>/,
-  "native NavigationStack owns the collapsible large title and trailing close button");
+assert.match(rootHeader, /navigationBarVisibility="hidden"[\s\S]*?<VStack spacing=\{0\} frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}>\s*<RootPageHeader title=\{title\} onClose=\{onClose\} \/>\s*<List\s+listStyle="insetGroup"/,
+  "RootTabList pins one shared non-collapsing RootPageHeader above List and hides the system root nav bar (U10)");
+assert.doesNotMatch(rootHeader, /navigationBarTitleDisplayMode="large"|navigationTitle=\{title\}/,
+  "root pages do not use a collapsing large navigationTitle (U10)");
 assert.doesNotMatch(rootHeader, /\bchildren=\{|import\s*\{[^}]*\bAnimation\b/,
   "Scripting's JSX factory receives the list rows as positional children and uses host Animation global");
 assert.match(pickupSource, /onBindingUnavailable=\{\(\) => void openIdentity\(identity\.platform\)\}/,
   "an identity page whose binding expires uses the same app handoff as the picker");
-assert.match(pickupSource, /<Menu\s+label=\{<TabFloatingActionSurface title="身份码" symbol="person\.text\.rectangle" \/>\}\s+accessibilityLabel="身份码"/,
-  "identity code choices use the native iOS Menu over the floating glass action surface");
+assert.match(pickupSource, /popover=\{\{\s*isPresented:\s*showPicker,\s*onChanged:\s*setShowPicker,\s*arrowEdge:\s*"bottom",\s*presentationCompactAdaptation:\s*"popover",[\s\S]*?fixedSize=\{\{\s*horizontal:\s*true,\s*vertical:\s*true\s*\}\}[\s\S]*?<Divider\b[\s\S]*?<TabFloatingActionButton title="身份码" symbol="person\.text\.rectangle"/,
+  "identity code choices use a tight popover with a Divider anchored directly on TabFloatingActionButton");
+const identityBlock = pickupSource.slice(pickupSource.indexOf("function IdentityCodeButton"), pickupSource.indexOf("function PickupCardRow"));
+assert.doesNotMatch(identityBlock, /maxWidth:\s*"infinity"|width:\s*44/,
+  "IdentityCodeButton popover has zero trailing maxWidth spacer and no 44pt dummy spacer");
 const floatingButtonSource = readFileSync(new URL("../components/TabFloatingActionButton.tsx", import.meta.url), "utf8");
 assert.match(floatingButtonSource, /<Label\s+title=\{title\}\s+systemImage=\{symbol\}\s+labelStyle="iconOnly"/,
   "both floating actions use a symbol-only label");

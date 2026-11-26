@@ -1,7 +1,12 @@
 import { Notification, Script } from "scripting";
 import type { AppState, ShipmentNotificationEvent } from "../models";
 import { loadNotificationStatuses, notificationEnabled } from "./notification-preferences";
-import { acknowledgeShipmentNotification, deferShipmentNotification, loadStateSnapshot, type LoadedStateSnapshot } from "./storage";
+import {
+  acknowledgeShipmentNotificationsSnapshot,
+  deferShipmentNotificationSnapshot,
+  loadStateSnapshot,
+  type LoadedStateSnapshot,
+} from "./storage";
 import { acquireDurableRefreshLease, durableRefreshLeaseRemainingMs } from "./refresh-runtime-state";
 import { beginDiagnosticFlow, diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { deadlineExpired, pauseWhileActive, remainingTimeoutMs, waitForRefresh } from "./deadline";
@@ -69,19 +74,41 @@ export async function replayPendingShipmentNotifications(
   let result = "completed";
   const readStartedAt = Date.now();
   let readDurationMs: number | undefined;
-  const commitEvent = (eventId: string, observed: LoadedStateSnapshot, deferred = false) => {
+  let snapshot: LoadedStateSnapshot | undefined;
+  const batchedSuppressedAckIds: string[] = [];
+  const commitAckIds = (eventIds: readonly string[], observed: LoadedStateSnapshot): AppState => {
     const commitStartedAt = Date.now();
     try {
-      return deferred ? deferShipmentNotification(eventId, commitStartedAt, observed)
-        : acknowledgeShipmentNotification(eventId, commitStartedAt, observed);
+      snapshot = acknowledgeShipmentNotificationsSnapshot(eventIds, commitStartedAt, observed);
+      return snapshot.state;
     } finally {
       // Include the owning mutation's reads and cleanup, separately from host scheduling.
       writeDurationMs += Date.now() - commitStartedAt;
     }
   };
+  const commitDeferred = (eventId: string, observed: LoadedStateSnapshot): AppState => {
+    const commitStartedAt = Date.now();
+    try {
+      snapshot = deferShipmentNotificationSnapshot(eventId, commitStartedAt, observed);
+      return snapshot.state;
+    } finally {
+      writeDurationMs += Date.now() - commitStartedAt;
+    }
+  };
+  const flushSuppressedAcks = (): boolean => {
+    if (!batchedSuppressedAckIds.length || !snapshot) return true;
+    if (!canSchedule() || !lease.isCurrent()) {
+      batchedSuppressedAckIds.length = 0;
+      result = deadlineExpired(deadlineAtMs) ? "budget_exhausted" : "ownership_lost";
+      return false;
+    }
+    const ids = batchedSuppressedAckIds.splice(0, batchedSuppressedAckIds.length);
+    current = commitAckIds(ids, snapshot);
+    return true;
+  };
   try {
     loadNotificationStatuses(true);
-    let snapshot = loadStateSnapshot();
+    snapshot = loadStateSnapshot();
     current = snapshot.state;
     // T23 (user 2026-09-26): an event queued while its row's carrier was unmatched waits for the carrier; storage
     // releases it with a rebuilt title, so it is neither scheduled nor acknowledged here.
@@ -94,15 +121,19 @@ export async function replayPendingShipmentNotifications(
         ...details, pendingNotifications: events.length, readDurationMs,
       });
     }
-    for (const [index, event] of events.entries()) {
+    let yieldedAfterCommit = false;
+    for (const event of events) {
       // Finish each durable ACK before letting a queued UI event run.
-      if (index > 0) await pauseWhileActive(0);
-      if (deadlineExpired(deadlineAtMs)) { result = "budget_exhausted"; return current; }
-      if (!canSchedule() || !lease.isCurrent()) { result = "ownership_lost"; return current; }
+      if (yieldedAfterCommit) {
+        yieldedAfterCommit = false;
+        await pauseWhileActive(0);
+      }
+      if (deadlineExpired(deadlineAtMs)) { flushSuppressedAcks(); result = "budget_exhausted"; return current; }
+      if (!canSchedule() || !lease.isCurrent()) { batchedSuppressedAckIds.length = 0; result = "ownership_lost"; return current; }
       snapshot = loadStateSnapshot(Date.now(), snapshot);
       const latest = current = snapshot.state;
       if (!latest.pendingNotifications?.some((item) => item.id === event.id)) continue;
-      if (deadlineExpired(deadlineAtMs)) { result = "budget_exhausted"; return current; }
+      if (deadlineExpired(deadlineAtMs)) { flushSuppressedAcks(); result = "budget_exhausted"; return current; }
       const shipment = latest.shipments.find((shipment) => shipment.identity.id === event.shipmentId);
       // Hidden owners still retire their queued events instead of waiting for a repair they no longer run.
       const attachedOwner = Boolean(shipment && isAttachedShipment(latest.shipments, shipment));
@@ -122,23 +153,27 @@ export async function replayPendingShipmentNotifications(
           continue;
         }
       }
+      if (!deliverable) {
+        attempted++;
+        batchedSuppressedAckIds.push(event.id);
+        succeeded++;
+        const decision = notificationDecisionForEvent(event, shipment, false, channelOff, attachedOwner);
+        if (decision) decisions.push(decision);
+        continue;
+      }
+      if (!flushSuppressedAcks()) return current;
       attempted++;
       const scheduleStartedAt = Date.now();
       try {
-        // A queued event may cross the visibility cutoff before the host accepts it.
-        // Acknowledge hidden owners below so they cannot block later visible events. A row that has since become
-        // attached to another row's waybill (ownership plan T3, user 2026-09-25) is hidden the same way.
-        if (deliverable) {
-          try {
-            // SF signing waits in the durable outbox while alignment settles. Its original payload may
-            // predate that repair, so deliver the same current presentation as the list and widgets.
-            const presentation = signedSF
-              ? shipmentNotificationPresentation({ ...shipment, timeline: selectShipmentTimeline(shipment) })
-              : event;
-            await scheduleShipmentNotification(presentation, deadlineAtMs);
-          } finally {
-            scheduleDurationMs += Date.now() - scheduleStartedAt;
-          }
+        try {
+          // SF signing waits in the durable outbox while alignment settles. Its original payload may
+          // predate that repair, so deliver the same current presentation as the list and widgets.
+          const presentation = signedSF
+            ? shipmentNotificationPresentation({ ...shipment, timeline: selectShipmentTimeline(shipment) })
+            : event;
+          await scheduleShipmentNotification(presentation, deadlineAtMs);
+        } finally {
+          scheduleDurationMs += Date.now() - scheduleStartedAt;
         }
       } catch (error) {
         failed++;
@@ -152,8 +187,9 @@ export async function replayPendingShipmentNotifications(
         }
         // Persist rotation before another host wait: a bounded drain may expire
         // before reaching healthy events, which must lead the next attempt.
-        current = commitEvent(event.id, snapshot, true);
+        current = commitDeferred(event.id, snapshot);
         if (deadlineExpired(deadlineAtMs)) { result = "budget_exhausted"; return current; }
+        yieldedAfterCommit = true;
         continue;
       }
       if (!canSchedule() || !lease.isCurrent()) {
@@ -162,11 +198,13 @@ export async function replayPendingShipmentNotifications(
       }
       // The host has no documented caller-selected request ID. A crash after scheduling
       // and before this durable acknowledgement can repeat the notification.
-      current = commitEvent(event.id, snapshot);
+      current = commitAckIds([event.id], snapshot);
       succeeded++;
-      const decision = notificationDecisionForEvent(event, shipment, Boolean(deliverable), channelOff, attachedOwner);
+      yieldedAfterCommit = true;
+      const decision = notificationDecisionForEvent(event, shipment, true, channelOff, attachedOwner);
       if (decision) decisions.push(decision);
     }
+    if (!flushSuppressedAcks()) return current;
   } catch (error) {
     result = "pending_retry";
     writeDiagnostic("notification.replay.failed", {

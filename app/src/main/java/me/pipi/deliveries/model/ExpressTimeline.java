@@ -28,6 +28,15 @@ public final class ExpressTimeline {
     private static final Pattern FINGERPRINT_SUFFIX = Pattern.compile("[。.!！?？,，;；、…]+$");
     private static final Pattern EVENT_SUFFIX = Pattern.compile("[\\s。！!，,；;：:]+$");
     private static final ThreadLocal<ReadScope> READ_SCOPE = new ThreadLocal<>();
+    private static final int DISPLAY_HEADLINE_CACHE_LIMIT = 256;
+    private static final Object DISPLAY_HEADLINE_CACHE_LOCK = new Object();
+    private static final LinkedHashMap<List<String>, String> DISPLAY_HEADLINE_CACHE =
+            new LinkedHashMap<List<String>, String>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<List<String>, String> eldest) {
+                    return size() > DISPLAY_HEADLINE_CACHE_LIMIT;
+                }
+            };
 
     private static final class ReadScope {
         final Map<List<String>, List<Track>> parsed = new HashMap<>();
@@ -241,13 +250,28 @@ public final class ExpressTimeline {
     public static String displayHeadline(ExpressItem item) {
         String projected = item.headlineDisplay();
         if (projected != null) return projected;
+        String tracksJson = clean(item.tracksJson);
+        if (tracksJson.isEmpty() || "[]".equals(tracksJson)
+                || !tracksJson.contains("displayContext")) {
+            return item.latestDetail;
+        }
+        List<String> cacheKey = Arrays.asList(item.latestTime, item.latestDetail, tracksJson);
+        synchronized (DISPLAY_HEADLINE_CACHE_LOCK) {
+            String cached = DISPLAY_HEADLINE_CACHE.get(cacheKey);
+            if (cached != null) return cached;
+        }
+        String resolved = item.latestDetail;
         long time = parseTime(item.latestTime);
         for (RawTrack raw : rawTracksReadOnly(item.tracksJson)) {
             if (time > 0L && time == raw.epochMillis && item.latestDetail.equals(raw.detail)) {
-                return displayContext(raw.value, raw.detail);
+                resolved = displayContext(raw.value, raw.detail);
+                break;
             }
         }
-        return item.latestDetail;
+        synchronized (DISPLAY_HEADLINE_CACHE_LOCK) {
+            DISPLAY_HEADLINE_CACHE.put(cacheKey, resolved);
+        }
+        return resolved;
     }
 
     public static Track latestJtStatusEvidence(String tracksJson) {

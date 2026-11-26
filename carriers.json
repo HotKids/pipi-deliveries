@@ -1,7 +1,7 @@
 {
   "about": "派派快递承运商内置表的公开副本，由 Worker 中台生成，供 kdbot 定时拉取。",
   "schemaVersion": 2,
-  "version": "b6009e8d0a72f68005d3fcc8139b19aeb7113df0751e3db45744632406d525f9",
+  "version": "a39d590a766c2281d04c27bceed9a683a5ff36866f60fd7c9aab682f408e85d7",
   "source": "embedded-transition",
   "entries": [
     {
@@ -30,9 +30,13 @@
         "ZHONGTONG"
       ],
       "nameAliases": [
-        "中通"
+        "中通",
+        "中通国际"
       ],
-      "requiresPhoneTail": true
+      "requiresPhoneTail": true,
+      "kuaidi100CodeAliases": [
+        "zhongtongguoji"
+      ]
     },
     {
       "standardCode": "ZTOKY",

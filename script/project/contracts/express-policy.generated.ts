@@ -100,6 +100,9 @@ export const EXPRESS_POLICY = {
         "standardCode": "ZTO",
         "displayName": "中通快递",
         "kuaidi100Code": "zhongtong",
+        "kuaidi100CodeAliases": [
+          "zhongtongguoji"
+        ],
         "hotline": "95311",
         "iconKey": "zto",
         "requiresPhoneTail": true,
@@ -107,7 +110,8 @@ export const EXPRESS_POLICY = {
           "ZHONGTONG"
         ],
         "nameAliases": [
-          "中通"
+          "中通",
+          "中通国际"
         ]
       },
       {

@@ -1,10 +1,12 @@
 import type { AbortSignal } from "scripting";
-import { postGateway } from "./gateway";
+import { GatewayError, postGateway } from "./gateway";
 import type { CloudPddParcel } from "./platform-parcel-merge";
 import { asPlainObject, cleanString, cloudRecordTime } from "./value-guards";
 
 const WAYBILL = /^[A-Z0-9]{6,64}$/;
 const RECORD_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const SNAPSHOT_HEX = /^[a-f0-9]{64}$/;
+const MAX_SNAPSHOT_RETRIES = 3;
 
 /**
  * A page anchor on this device's clock (fourth external review R4-NEW-06, owner 2026-11-23「报告里的都直接做」). The
@@ -22,16 +24,45 @@ function cloudTerminalAt(value: unknown, now: number): number {
 }
 
 export async function readCloudPddParcels(signal: AbortSignal, deadlineAtMs: number): Promise<CloudPddParcel[]> {
-  const parcels: CloudPddParcel[] = [];
-  let after: string | null = null;
-  do {
-    const page: Record<string, unknown> = await postGateway("/api/cloud-records/pdd-shipments",
-      { schemaVersion: 1, ...(after ? { after } : {}) }, { signal, deadlineAtMs });
-    const read = parseCloudPddShipmentPage(page, after, Date.now());
-    parcels.push(...read.parcels);
-    after = read.nextAfter;
-  } while (after);
-  return parcels;
+  for (let attempt = 0; attempt < MAX_SNAPSHOT_RETRIES; attempt++) {
+    const parcels: CloudPddParcel[] = [];
+    let after: string | null = null;
+    let snapshot: string | null = null;
+    try {
+      do {
+        const page: Record<string, unknown> = await postGateway(
+          "/api/cloud-records/pdd-shipments",
+          {
+            schemaVersion: 1,
+            bindSnapshot: true,
+            ...(after ? { after, snapshot } : {}),
+          },
+          { signal, deadlineAtMs },
+        );
+        const read = parseCloudPddShipmentPage(page, after, Date.now(), {
+          bound: true,
+          expectedSnapshot: snapshot,
+        });
+        parcels.push(...read.parcels);
+        snapshot = read.snapshot;
+        after = read.nextAfter;
+      } while (after);
+      return parcels;
+    } catch (error) {
+      if (
+        error instanceof GatewayError &&
+        error.status === 409 &&
+        error.gatewayCode === "cloud_snapshot_changed" &&
+        attempt + 1 < MAX_SNAPSHOT_RETRIES &&
+        !signal.aborted &&
+        Date.now() < deadlineAtMs
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Cloud PDD snapshot changed repeatedly");
 }
 
 /**
@@ -39,10 +70,16 @@ export async function readCloudPddParcels(signal: AbortSignal, deadlineAtMs: num
  * external review C-03, owner 2026-11-23) are the PDD links Pipi exports for automatic rows, read as `markOnly`
  * entries: a source mark for an existing same-lifecycle row, never an import.
  */
-export function parseCloudPddShipmentPage(page: Record<string, unknown>, after: string | null, now: number):
-  { parcels: CloudPddParcel[]; nextAfter: string | null } {
+export function parseCloudPddShipmentPage(
+  page: Record<string, unknown>,
+  after: string | null,
+  now: number,
+  options: { bound?: boolean; expectedSnapshot?: string | null } = {},
+): { parcels: CloudPddParcel[]; nextAfter: string | null; snapshot: string | null } {
+  const snapshot = typeof page.snapshot === "string" && SNAPSHOT_HEX.test(page.snapshot) ? page.snapshot : null;
   if (page.ok !== true || !Array.isArray(page.parcels) || page.parcels.length > 100 ||
     Object.hasOwn(page, "pddLinks") && (!Array.isArray(page.pddLinks) || page.pddLinks.length > 100) ||
+    (options.bound && ((page.nextAfter !== null && !snapshot) || (options.expectedSnapshot && snapshot !== options.expectedSnapshot))) ||
     !(page.nextAfter === null || typeof page.nextAfter === "string" && RECORD_ID.test(page.nextAfter) &&
       (!after || page.nextAfter > after))) throw new Error("Invalid cloud PDD shipment page");
   const parcels: CloudPddParcel[] = [];
@@ -65,5 +102,5 @@ export function parseCloudPddShipmentPage(page: Record<string, unknown>, after: 
     parcels.push({ waybill, anchorAt, terminalAt: cloudTerminalAt(link.terminalAt, now),
       carrierCode: "", phone4: "", markOnly: true });
   }
-  return { parcels, nextAfter: page.nextAfter as string | null };
+  return { parcels, nextAfter: page.nextAfter as string | null, snapshot };
 }

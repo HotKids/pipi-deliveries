@@ -41,6 +41,7 @@ import {
   statePresentationFingerprint,
   type DeferredRouteMutations,
   type FullRefreshOutcome,
+  type H5Priority,
   type ShipmentRefreshOptions,
   type ShipmentRefreshResult,
   type SyncRuntimeState,
@@ -463,11 +464,6 @@ export function refreshCloudPddParcels(observed: AppState, publish: (state: AppS
     return cloudPddPull.work;
   }
   const observedShipments = new Map(observed.shipments.map(row => [row.identity.id, row]));
-  const beforePendingIds = new Set(
-    observed.shipments
-      .filter(row => row.pddCloudOrigin && row.timeline.provider === "pending")
-      .map(row => row.identity.id),
-  );
   const controller = new AbortController();
   const isCurrent = () => !controller.signal.aborted && projectionSceneActive() &&
     gatewayCredentialGeneration() === generation;
@@ -482,42 +478,11 @@ export function refreshCloudPddParcels(observed: AppState, publish: (state: AppS
     },
   });
   const work = (async () => {
-    const pulled = await pullCloudPddParcels({
+    await pullCloudPddParcels({
       observed: observedProxy, signal: controller.signal, deadlineAtMs: deadlineAfter(8_000), publish, isCurrent,
     });
     if (!isCurrent()) return;
-    const newPendingIds = new Set(
-      pulled.shipments
-        .filter(row => row.pddCloudOrigin && row.timeline.provider === "pending" && !beforePendingIds.has(row.identity.id))
-        .map(row => row.identity.id),
-    );
-    if (!newPendingIds.size) return;
-    const flowId = createDiagnosticFlowId("cloud_pdd_enrich");
-    const leaseAdapter: FullRefreshLease = {
-      generation,
-      signal: controller.signal,
-      isCurrent,
-      assertCurrent: () => { if (!isCurrent()) throw new Error("Cloud PDD enrichment superseded"); },
-    };
-    const notificationContext = {
-      previousById: new Map(pulled.shipments.map(row => [row.identity.id, row])),
-      batchId: flowId,
-      orderMerges: new Map<string, string[]>(),
-    };
-    const { checkpoint } = fullRefreshCheckpoints(
-      runtimeState, SCRIPT_BINDING_SOURCE, flowId, leaseAdapter, pulled, notificationContext,
-    );
-    const skipRefreshIds = new Set(
-      pulled.shipments.filter(row => !newPendingIds.has(row.identity.id)).map(row => row.identity.id),
-    );
-    const enriched = await refreshShipmentEnrichment(
-      runtimeState, pulled, SCRIPT_BINDING_SOURCE, flowId, checkpoint, deadlineAfter(15_000),
-      skipRefreshIds, false, false, controller.signal, {}, false, new Set(),
-      new CarrierRecognitionBudget(undefined, { syncRound: true, flowId }), false,
-    );
-    if (isCurrent() && enriched.state.revision > pulled.revision) {
-      publish(enriched.state);
-    }
+    await enrichPendingCloudShipments(publish);
   })().then(() => undefined, () => undefined).finally(() => {
     stopScene();
     stopCredential();
@@ -919,8 +884,9 @@ export function runParcelWebRead<T>(
   capture: () => Promise<T>,
   deadlineAtMs?: number,
   signal?: AbortSignal,
+  priority: H5Priority = "interactive",
 ): Promise<T> {
-  return withH5Controller(runtimeState, capture, deadlineAtMs, signal);
+  return withH5Controller(runtimeState, capture, deadlineAtMs, signal, priority);
 }
 
 export const runH5CaptureForTesting = runParcelWebRead;
@@ -929,4 +895,115 @@ export function runShipmentEnrichmentForTesting(
   ...args: Parameters<typeof refreshShipmentEnrichment> extends [SyncRuntimeState, ...infer Rest] ? Rest : never
 ): Promise<RefreshSummary> {
   return refreshShipmentEnrichment(runtimeState, ...args);
+}
+
+const enrichingPendingCloudShipmentIds = new Set<string>();
+
+/**
+ * Enriches non-deleted `timeline.provider === "pending"` cloud manual shipments (both `pddCloudOrigin` from
+ * `express` / `express_pdd_link` and ordinary cloud manual `express`) immediately via the non-WebView manual chain
+ * (`pdd_h5` when a PDD session is active + `phone4` + `v6_query -> v4_query -> kdniao`), suppressing first-discovery
+ * status-transition notifications and reloading widgets when visible presentation changes.
+ */
+export async function enrichPendingCloudShipments(
+  publish?: (state: AppState) => void,
+): Promise<AppState | undefined> {
+  if (SCRIPT_BUILD_TRACK !== "formal") return undefined;
+  const generation = gatewayCredentialGeneration();
+  if (generation === null) return undefined;
+  const baseState = loadState();
+  const targetRows = baseState.shipments.filter(
+    (row) =>
+      row.identity.manuallyAdded &&
+      row.timeline.provider === "pending" &&
+      !row.forcedCompletedAtMs &&
+      !enrichingPendingCloudShipmentIds.has(row.identity.id),
+  );
+  if (!targetRows.length) return undefined;
+  const targetIds = new Set(targetRows.map((row) => row.identity.id));
+  for (const id of targetIds) enrichingPendingCloudShipmentIds.add(id);
+  const controller = new AbortController();
+  const isCurrent = () =>
+    !controller.signal.aborted && gatewayCredentialGeneration() === generation;
+  const stopCredential = onGatewayCredentialChanged(() => {
+    if (gatewayCredentialGeneration() !== generation) controller.abort();
+  });
+  try {
+    const hasPddPending = targetRows.some((row) => Boolean(row.pddCloudOrigin || row.pddImport));
+    const pddObservePromise = hasPddPending && projectionSceneActive()
+      ? (async () => {
+          try {
+            const { platformSession } = await import("./platform-accounts");
+            if (!platformSession("pinduoduo")) return;
+            const { refreshPlatformParcels } = await import("./platform-parcel-sync");
+            await refreshPlatformParcels((next) => publish?.(next), "observe");
+          } catch {
+            /* Best-effort PDD H5 trace supplement; non-WebView manual chain still runs below. */
+          }
+        })()
+      : Promise.resolve();
+    const flowId = createDiagnosticFlowId("cloud_pdd_enrich");
+    const leaseAdapter: FullRefreshLease = {
+      generation,
+      signal: controller.signal,
+      isCurrent,
+      assertCurrent: () => {
+        if (!isCurrent()) throw new Error("Cloud pending enrichment superseded");
+      },
+    };
+    const notificationContext = {
+      previousById: new Map(baseState.shipments.map((row) => [row.identity.id, row])),
+      batchId: flowId,
+      orderMerges: new Map<string, string[]>(),
+    };
+    const { checkpoint } = fullRefreshCheckpoints(
+      runtimeState,
+      SCRIPT_BINDING_SOURCE,
+      flowId,
+      leaseAdapter,
+      baseState,
+      notificationContext,
+    );
+    const skipRefreshIds = new Set(
+      baseState.shipments
+        .filter((row) => !targetIds.has(row.identity.id))
+        .map((row) => row.identity.id),
+    );
+    const [enriched] = await Promise.all([
+      refreshShipmentEnrichment(
+        runtimeState,
+        baseState,
+        SCRIPT_BINDING_SOURCE,
+        flowId,
+        checkpoint,
+        deadlineAfter(15_000),
+        skipRefreshIds,
+        false,
+        false,
+        controller.signal,
+        {},
+        false,
+        new Set(),
+        new CarrierRecognitionBudget(undefined, { syncRound: true, flowId }),
+        false,
+      ),
+      pddObservePromise,
+    ]);
+    if (!isCurrent()) return undefined;
+    const latest = loadState();
+    const finalState = latest.revision >= enriched.state.revision ? latest : enriched.state;
+    if (finalState.revision > baseState.revision) {
+      publish?.(finalState);
+      if (statePresentationFingerprint(finalState) !== statePresentationFingerprint(baseState)) {
+        requestWidgetReload();
+      }
+      return finalState;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  } finally {
+    stopCredential();
+    for (const id of targetIds) enrichingPendingCloudShipmentIds.delete(id);
+  }
 }

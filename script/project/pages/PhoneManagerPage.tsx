@@ -1,7 +1,6 @@
 import { EXPRESS_TOAST_COPY } from "../services/express-toast-copy";
 import {
   Button,
-  Divider,
   HStack,
   Image,
   List,
@@ -373,16 +372,11 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
         }
       >
         {visibleBindings.length ? (
-          visibleBindings.map((binding, index) => (
+          visibleBindings.map((binding) => (
             <HStack
               key={`${binding.source}:${binding.phone}`}
               spacing={12}
               padding={{ vertical: 6 }}
-              listRowSeparator="hidden"
-              overlay={index < visibleBindings.length - 1 ? {
-                alignment: "bottom",
-                content: <Divider padding={{ leading: ACCOUNT_ICON_SIZE + 12 }} />,
-              } : undefined}
               trailingSwipeActions={{
                 allowsFullSwipe: false,
                 actions: [
@@ -452,7 +446,6 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
               syncing={syncingPlatforms.includes(platform)}
               sending={sendingPlatforms.includes(platform)}
               disabled={busy}
-              showSeparator
               onTap={() => void managePlatform(platform)}
             />
           );
@@ -470,7 +463,7 @@ export function PhoneManagerPage(props: PhoneManagerPageProps) {
   );
 }
 
-function PlatformAccountRow({ platform, title, subtitle, state, syncing, sending, disabled, showSeparator, onTap }: {
+function PlatformAccountRow({ platform, title, subtitle, state, syncing, sending, disabled, onTap }: {
   platform: ExpressPlatform | "samsung";
   title: string;
   subtitle: string;
@@ -478,7 +471,6 @@ function PlatformAccountRow({ platform, title, subtitle, state, syncing, sending
   syncing?: boolean;
   sending?: boolean;
   disabled: boolean;
-  showSeparator?: boolean;
   onTap: () => void;
 }) {
   const copy = state ? {
@@ -491,11 +483,6 @@ function PlatformAccountRow({ platform, title, subtitle, state, syncing, sending
       buttonStyle="plain"
       disabled={disabled}
       action={onTap}
-      listRowSeparator="hidden"
-      overlay={showSeparator ? {
-        alignment: "bottom",
-        content: <Divider padding={{ leading: ACCOUNT_ICON_SIZE + 12 }} />,
-      } : undefined}
     >
       <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">
         {syncing ? (

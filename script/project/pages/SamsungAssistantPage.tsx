@@ -1,4 +1,4 @@
-import { Button, Divider, HStack, Image, List, Section, Spacer, Text, VStack, useEffect, useRef, useState } from "scripting";
+import { Button, HStack, Image, List, Section, Spacer, Text, VStack, useEffect, useRef, useState } from "scripting";
 import { PhoneBindingPage, type PhoneBindingPageProps } from "./PhoneBindingPage";
 import { SettingsRowIcon } from "../components/SettingsRowIcon";
 import { transientToast } from "../services/ui-feedback";
@@ -56,16 +56,11 @@ export function SamsungAssistantPage(props: SamsungAssistantPageProps) {
           {props.unsubscribeNotice ? <Text font="footnote" lineSpacing={3} foregroundStyle="secondaryLabel">{props.unsubscribeNotice}</Text> : null}
         </VStack>
       }>
-        {props.bindings.length ? props.bindings.map((binding, index) => (
+        {props.bindings.length ? props.bindings.map((binding) => (
           <Button
             key={binding.phone}
             buttonStyle="plain"
             action={() => selectPhone(binding.phone)}
-            listRowSeparator="hidden"
-            overlay={index < props.bindings.length - 1 ? {
-              alignment: "bottom",
-              content: <Divider padding={{ leading: 48 }} />,
-            } : undefined}
           >
             <HStack spacing={12} padding={{ vertical: 6 }} contentShape="rect">
               <SettingsRowIcon systemName="phone.fill" backgroundColor={SAMSUNG_PHONE_TILE_BLUE} size={36} />

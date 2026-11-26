@@ -17,6 +17,23 @@ const DIRECTORY = "pipi-deliveries/transactions-v1";
 const ID = /^g(\d+)-[a-z0-9]+$/;
 const MAX_ATTEMPTS = 8;
 let active: Frame | undefined;
+let turnSnapshot: { rootPath: string; readAsStringSync: unknown; frame: Frame } | undefined;
+let turnResetScheduled = false;
+
+function forgetTurnSnapshot(): void {
+  turnSnapshot = undefined;
+}
+
+function rememberTurnSnapshot(frame: Frame): void {
+  turnSnapshot = { rootPath: root(), readAsStringSync: FileManager.readAsStringSync, frame };
+  if (!turnResetScheduled) {
+    turnResetScheduled = true;
+    void Promise.resolve().then(() => {
+      turnResetScheduled = false;
+      turnSnapshot = undefined;
+    });
+  }
+}
 
 export class SharedCommitConflict extends Error {
   constructor() { super("Shared state changed during commit"); this.name = "SharedCommitConflict"; }
@@ -113,7 +130,10 @@ function latest(): Frame {
       let frame = readFrame(id);
       for (let depth = 0; depth < 256; depth++) {
         const next = linkedId(`${path(frame.id)}/next`);
-        if (!next) { publishHint(frame); return frame; }
+        if (!next) {
+          if (hints[0] !== `head-${frame.sequence}`) publishHint(frame);
+          return frame;
+        }
         const successor = readFrame(next);
         if (successor.sequence !== frame.sequence + 1) throw new Error("Invalid shared sequence");
         frame = successor;
@@ -147,8 +167,25 @@ function retire(frame: Frame): void {
   }
 }
 
-export function sharedCommitSequence(): number { return (active || latest()).sequence; }
-export function sharedData(): Readonly<SharedData> { return (active || latest()).data; }
+function latestInTurn(): Frame {
+  if (active) return active;
+  const cached = turnSnapshot;
+  if (
+    cached &&
+    cached.rootPath === root() &&
+    cached.readAsStringSync === FileManager.readAsStringSync &&
+    FileManager.existsSync(`${path(cached.frame.id)}/record.json`) &&
+    !FileManager.isLinkSync(`${path(cached.frame.id)}/next`)
+  ) {
+    return cached.frame;
+  }
+  const frame = latest();
+  rememberTurnSnapshot(frame);
+  return frame;
+}
+
+export function sharedCommitSequence(): number { return latestInTurn().sequence; }
+export function sharedData(): Readonly<SharedData> { return latestInTurn().data; }
 export type PrefetchedStateFiles = ReadonlyMap<string, string>;
 
 export async function prefetchSharedStateFiles(): Promise<PrefetchedStateFiles> {
@@ -224,15 +261,19 @@ function publish(patch: Partial<SharedData>, blob?: SharedBlob): void {
     }
   }
   active = next;
+  rememberTurnSnapshot(next);
   try { publishHint(next); retire(next); } catch { /* The committed next link permits recovery. */ }
 }
 
 export function withSharedFileTransaction<T>(operation: () => T): T {
   if (active) return operation();
+  forgetTurnSnapshot();
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     active = latest();
+    rememberTurnSnapshot(active);
     try { return operation(); }
     catch (error) {
+      forgetTurnSnapshot();
       if (!(error instanceof SharedCommitConflict) || attempt === MAX_ATTEMPTS - 1) throw error;
       writeDiagnostic("storage.transaction.retry", {
         commitProtocol: "immutable_link", commitSequence: active.sequence,

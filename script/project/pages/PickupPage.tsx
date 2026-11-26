@@ -1,14 +1,15 @@
-import { Button, HStack, Menu, Navigation, NavigationStack, Section, Text, VStack, useEffect, useMemo, useRef, useState } from "scripting";
+import { AppEvents, Button, Divider, HStack, Navigation, NavigationStack, Section, Text, VStack, useCallback, useEffect, useMemo, useRef, useState } from "scripting";
 import type { AppState, Shipment } from "../models";
 import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTabCard";
 import { EmptyTabState, type PickupEmptyArtwork } from "../components/EmptyDeliveryVehicle";
 import { ExpandedQRCode, ScanCodeSurface } from "../components/ExpandedScanCode";
 import { RootTabList } from "../components/RootPageHeader";
-import { TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionSurface } from "../components/TabFloatingActionButton";
+import { TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
 import { synchronizeParcelCloudRecords } from "../services/parcel-cloud-sync";
 import { stopParcelActivityPreview, type MealQRCodeTarget } from "../services/parcel-live-activity";
 import { PICKUP_DATE_GROUP_SPACING, parcelCardArtwork } from "../services/parcel-card-appearance";
-import { PICKUP_TAB_TITLE, pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
+import { PICKUP_TAB_TITLE, createPickupAnimationGate, pickupDateSections, shipmentForPickupTarget, type ParcelActivityContent, type ParcelActivityTarget } from "../services/parcel-pickup";
+import { projectionSceneActive } from "../services/projection-viewport";
 import { copyText } from "../services/clipboard";
 import { EXPRESS_TOAST_COPY, MEAL_TOAST_COPY, PICKUP_TOAST_COPY } from "../services/express-toast-copy";
 import { accountStatus, onPlatformAccountsChanged, type IdentityPlatform } from "../services/platform-accounts";
@@ -42,21 +43,34 @@ type PickupIdentityDestination =
 function IdentityCodeButton({ onOpen }: {
   onOpen: (platform: IdentityPlatform) => void;
 }) {
+  const [showPicker, setShowPicker] = useState(false);
   return (
     <VStack padding={TAB_FAB_PADDING}>
-      <Menu
-        label={<TabFloatingActionSurface title="身份码" symbol="person.text.rectangle" />}
-        accessibilityLabel="身份码"
-      >
-        {IDENTITY_CHOICES.map(({ platform, title }) => (
-          <Button key={platform} action={() => onOpen(platform)}>
-            <HStack spacing={8}>
-              <Text>{title}</Text>
-              <StationIdentityMark asset={platform} />
-            </HStack>
-          </Button>
-        ))}
-      </Menu>
+      <VStack popover={{
+        isPresented: showPicker,
+        onChanged: setShowPicker,
+        arrowEdge: "bottom",
+        presentationCompactAdaptation: "popover",
+        content: (
+          <VStack alignment="leading" spacing={0} padding={6} fixedSize={{ horizontal: true, vertical: true }}>
+            {IDENTITY_CHOICES.flatMap(({ platform, title }, index) => [
+              ...(index > 0 ? [<Divider key={`${platform}-divider`} />] : []),
+              <Button key={platform} buttonStyle="plain" contentShape="rect" action={() => {
+                setShowPicker(false);
+                onOpen(platform);
+              }}>
+                <HStack spacing={10} padding={{ horizontal: 10, vertical: 9 }}>
+                  <StationIdentityMark asset={platform} />
+                  <Text font={17} foregroundStyle="label" fixedSize={{ horizontal: true, vertical: true }}>{title}</Text>
+                </HStack>
+              </Button>,
+            ])}
+          </VStack>
+        ),
+      }}>
+        <TabFloatingActionButton title="身份码" symbol="person.text.rectangle"
+          action={() => setShowPicker(!showPicker)} />
+      </VStack>
     </VStack>
   );
 }
@@ -154,6 +168,17 @@ function PickupCardRow({ card, animate, spaceAfter, width, note, opensCabinet, a
     }
   }
 
+  const latestRowCallbacks = useRef({ copyCode, editNote, editWindow, complete, onArtworkChange, card });
+  latestRowCallbacks.current = { copyCode, editNote, editWindow, complete, onArtworkChange, card };
+  const handleCopy = useCallback(() => void latestRowCallbacks.current.copyCode(), []);
+  const handleEditNote = useCallback(() => void latestRowCallbacks.current.editNote(), []);
+  const handleEditWindow = useCallback(() => void latestRowCallbacks.current.editWindow(), []);
+  const handleArtworkTap = useCallback(() => {
+    const { onArtworkChange: change, card: currentCard } = latestRowCallbacks.current;
+    if (change(currentCard)) setArtworkChanged(true);
+  }, []);
+  const handleComplete = useCallback(() => void latestRowCallbacks.current.complete(), []);
+
   return (
     <PickupTabCard
       data={card}
@@ -161,18 +186,16 @@ function PickupCardRow({ card, animate, spaceAfter, width, note, opensCabinet, a
       spaceAfter={spaceAfter}
       width={width}
       title={note || card.title}
-      onCopy={onMealCode ?? (() => void copyCode())}
+      onCopy={onMealCode ?? handleCopy}
       onDetail={onDetail}
-      onEditNote={card.target && onSaveNote ? () => void editNote() : undefined}
+      onEditNote={card.target && onSaveNote ? handleEditNote : undefined}
       actionLabel={opensCabinet ? "一键开柜" : undefined}
       actionPending={actionPending || actionBlocked}
       locationText={canSwitch && showAddress ? card.address : card.location || (onSaveWindow ? "设置上门时间" : "")}
       showingAddress={canSwitch && showAddress}
-      onLocationTap={canSwitch ? () => setShowAddress(!showAddress) : onSaveWindow ? () => void editWindow() : undefined}
-      onArtworkTap={card.artworkSwitchable ? () => {
-        if (onArtworkChange(card)) setArtworkChanged(true);
-      } : undefined}
-      onComplete={card.target ? () => void complete() : undefined}
+      onLocationTap={canSwitch ? () => setShowAddress(!showAddress) : onSaveWindow ? handleEditWindow : undefined}
+      onArtworkTap={card.artworkSwitchable ? handleArtworkTap : undefined}
+      onComplete={card.target ? handleComplete : undefined}
       deleteAction={deleteAction}
     />
   );
@@ -204,8 +227,28 @@ export function PickupPage({
   const [identity, setIdentity] = useState<PickupIdentityDestination | null>(null);
   const identityRequest = useRef(0);
   const [visible, setVisible] = useState(false);
+  const [animationReady, setAnimationReady] = useState(false);
+  const animationGateRef = useRef<ReturnType<typeof createPickupAnimationGate> | null>(null);
+  if (!animationGateRef.current) {
+    animationGateRef.current = createPickupAnimationGate(setAnimationReady);
+  }
   const [cabinetRevision, setCabinetRevision] = useState(0);
   const [closingPreview, setClosingPreview] = useState(false);
+  useEffect(() => {
+    const gate = animationGateRef.current!;
+    gate.setSceneActive(projectionSceneActive());
+    const observe = (phase: "active" | "inactive" | "background") => {
+      gate.setSceneActive(phase === "active");
+    };
+    AppEvents.scenePhase.addListener(observe);
+    return () => {
+      AppEvents.scenePhase.removeListener(observe);
+      gate.dispose();
+    };
+  }, []);
+  useEffect(() => {
+    animationGateRef.current!.setVisible(visible);
+  }, [visible]);
   useEffect(() => {
     if (!activityMealQRCode) return;
     identityRequest.current++;
@@ -224,7 +267,7 @@ export function PickupPage({
   const attachedOrders = useMemo(() => selected ? attachedProjectedOrders(state.shipments, selected) : undefined,
     [state.shipments, selected]);
   const records = state.pickupCodeRecords;
-  const sections = pickupDateSections(cards, previewing, focusedRecordId);
+  const sections = useMemo(() => pickupDateSections(cards, previewing, focusedRecordId), [cards, previewing, focusedRecordId]);
   const mealQrCard = mealQr && cards.find(card => card.target && "mealId" in card.target &&
     card.target.mealId === mealQr.id && card.target.mealScope === mealQr.scope);
   // A render-time Keychain or storage read cannot throw out of the page (G-MED-20).
@@ -239,26 +282,6 @@ export function PickupPage({
     try { await stopParcelActivityPreview(); }
     catch { showNotice(PICKUP_TOAST_COPY.previewStopFailed); }
     finally { setClosingPreview(false); }
-  }
-
-  // The picker calls this without awaiting it, so a failed Keychain read is reported here instead of ending the
-  // Scripting session (G-HIGH-17). stationIdentityDestination writes its own failure line.
-  async function openIdentity(platform: IdentityPlatform) {
-    const request = ++identityRequest.current;
-    let routed = false;
-    try {
-      const route = await stationIdentityDestination(platform, (url) => Safari.openURL(url));
-      routed = true;
-      if (request !== identityRequest.current) return;
-      setIdentity(route === "login" ? { platform, route, generation: accountStatus(platform).generation }
-        : route === "local" ? { platform, route } : null);
-    } catch (error) {
-      if (routed) {
-        writeDiagnostic("platform.identity.completed", { sourceProvider: platform, stage: "station_identity_entry",
-          result: "failed", ...diagnosticErrorDetails(error) }, "warning");
-      }
-      if (request === identityRequest.current) showNotice(EXPRESS_TOAST_COPY.pickupRecordActionFailed);
-    }
   }
 
   async function confirmDeleteMeal(mealScope: string, mealId: string): Promise<void> {
@@ -292,6 +315,26 @@ export function PickupPage({
       showNotice(error instanceof ShipmentLifecycleChangedError
         ? PICKUP_TOAST_COPY.pickupCardChanged
         : EXPRESS_TOAST_COPY.deleteFailed);
+    }
+  }
+
+  // The picker calls this without awaiting it, so a failed Keychain read is reported here instead of ending the
+  // Scripting session (G-HIGH-17). stationIdentityDestination writes its own failure line.
+  async function openIdentity(platform: IdentityPlatform) {
+    const request = ++identityRequest.current;
+    let routed = false;
+    try {
+      const route = await stationIdentityDestination(platform, (url) => Safari.openURL(url));
+      routed = true;
+      if (request !== identityRequest.current) return;
+      setIdentity(route === "login" ? { platform, route, generation: accountStatus(platform).generation }
+        : route === "local" ? { platform, route } : null);
+    } catch (error) {
+      if (routed) {
+        writeDiagnostic("platform.identity.completed", { sourceProvider: platform, stage: "station_identity_entry",
+          result: "failed", ...diagnosticErrorDetails(error) }, "warning");
+      }
+      if (request === identityRequest.current) showNotice(EXPRESS_TOAST_COPY.pickupRecordActionFailed);
     }
   }
 
@@ -405,9 +448,9 @@ export function PickupPage({
           emptyState={!sections.length ? <EmptyTabState pickup={emptyArtwork} /> : undefined}>
           {sections.map(({ key, label, items, preview }, sectionIndex) => (
             <Section key={key} header={<Text>{label}</Text>} listSectionSpacing={PICKUP_DATE_GROUP_SPACING}>
-              {items.map((card, index) => cardRow(card, visible && sectionIndex === 0 && index === 0,
+              {items.map((card, index) => cardRow(card, visible && animationReady && sectionIndex === 0 && index === 0,
                 index < items.length - 1 || preview))}
-              {preview ? <ParcelActivityPreviewCard animate={visible && sectionIndex === 0 && items.length === 0}
+              {preview ? <ParcelActivityPreviewCard animate={visible && animationReady && sectionIndex === 0 && items.length === 0}
                 onComplete={() => void closePreview()} actionPending={closingPreview} /> : null}
             </Section>
           ))}

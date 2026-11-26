@@ -274,6 +274,8 @@ while IFS= read -r network_url; do
     'https://my.m.jd.com/index.html?sceneval=2'|\
     'https://trade.m.jd.com'|\
     'https://trade.m.jd.com/order/deal_wuliu_jdm.shtml?from=orderdetail&dealState=7&dealId='|\
+    'https://o.m.jd.com'|\
+    'https://o.m.jd.com/list'|\
     'https://mobile.yangkeduo.com'|\
     'https://img.pddpic.com'|\
     'https://mobile.yangkeduo.com/login.html'|\

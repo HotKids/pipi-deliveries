@@ -69,7 +69,7 @@
   "carrierQuery": {
     "records": [
       { "standardCode": "SF", "displayName": "顺丰速运", "kuaidi100Code": "shunfeng", "hotline": "95338", "iconKey": "sf", "requiresPhoneTail": true, "aliases": ["SFEXPRESS", "SHUNFENG"], "nameAliases": ["顺丰", "顺丰快递"] },
-      { "standardCode": "ZTO", "displayName": "中通快递", "kuaidi100Code": "zhongtong", "hotline": "95311", "iconKey": "zto", "requiresPhoneTail": true, "aliases": ["ZHONGTONG"], "nameAliases": ["中通"] },
+      { "standardCode": "ZTO", "displayName": "中通快递", "kuaidi100Code": "zhongtong", "kuaidi100CodeAliases": ["zhongtongguoji"], "hotline": "95311", "iconKey": "zto", "requiresPhoneTail": true, "aliases": ["ZHONGTONG"], "nameAliases": ["中通", "中通国际"] },
       { "standardCode": "ZTOKY", "displayName": "中通快运", "kuaidi100Code": "zhongtongkuaiyun", "hotline": "", "iconKey": "zto", "requiresPhoneTail": false, "aliases": [], "nameAliases": [] },
       { "standardCode": "YTO", "displayName": "圆通速递", "kuaidi100Code": "yuantong", "hotline": "95554", "iconKey": "yto", "requiresPhoneTail": false, "aliases": ["YUANTONG"], "nameAliases": ["圆通", "圆通快递"] },
       { "standardCode": "STO", "displayName": "申通快递", "kuaidi100Code": "shentong", "hotline": "95543", "iconKey": "sto", "requiresPhoneTail": false, "aliases": ["SHENTONG"], "nameAliases": ["申通"] },

@@ -2,6 +2,7 @@ import type { ColorStringHex } from "scripting";
 import {
   normalizeCarrierCode,
   resolveCarrierCpCode,
+  resolveCarrierKuaidi100Code,
   resolveCarrierName,
   resolveCarrierQuery,
   type CarrierQueryRecord,
@@ -97,6 +98,7 @@ export function courierIconName(
   return displayIcon(
     resolveCarrierQuery(courierCode) ||
       resolveCarrierCpCode(courierCode) ||
+      resolveCarrierKuaidi100Code(courierCode) ||
       resolveCarrierName(companyName) ||
       null,
   );

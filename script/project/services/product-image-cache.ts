@@ -42,20 +42,30 @@ function cacheNames(): string[] {
 const keysByInput = new Map<string, string>();
 const KEY_MEMORY_LIMIT = 256;
 
+function scopeLookupToken(scope: readonly unknown[]): string {
+  if (!scope.length) return "";
+  let token = "";
+  for (const item of scope) {
+    token += `\0${typeof item}:${String(item)}`;
+  }
+  return token;
+}
+
 export function productImageCacheKey(identity: ShipmentIdentity, scope: readonly unknown[] = []): string {
   // Keep the persistent address stable across account refresh and order projection; memory validates its original lifecycle.
   try {
+    const lookupKey = `${identity.bindingSource}\0${identity.id}\0${identity.sourceId}\0${identity.phone || ""}\0${identity.orderId || ""}${scopeLookupToken(scope)}`;
+    const remembered = keysByInput.get(lookupKey);
+    if (remembered !== undefined) {
+      keysByInput.delete(lookupKey);
+      keysByInput.set(lookupKey, remembered);
+      return remembered;
+    }
     const input = JSON.stringify([
       identity.bindingSource, identity.id, identity.sourceId, identity.phone || "", identity.orderId || "", ...scope,
     ]);
-    const remembered = keysByInput.get(input);
-    if (remembered !== undefined) {
-      keysByInput.delete(input);
-      keysByInput.set(input, remembered);
-      return remembered;
-    }
     const key = Crypto.sha256(utf8Data(input)).toHexString().toLowerCase();
-    keysByInput.set(input, key);
+    keysByInput.set(lookupKey, key);
     if (keysByInput.size > KEY_MEMORY_LIMIT) keysByInput.delete(keysByInput.keys().next().value!);
     return key;
   } catch {
@@ -78,8 +88,18 @@ export function cainiaoImageCacheKey(shipment: Shipment): string {
 export function cloudProductImageCacheKey(shipment: Shipment, scope: string, url = ""): string {
   const owner = scope ? productImageCacheKey(shipment.identity, ["cloud", shipmentLifecycleKey(shipment), scope]) : "";
   if (!owner || !url) return owner;
+  const variantInput = `cloud-url\0${url}`;
+  const remembered = keysByInput.get(variantInput);
+  if (remembered !== undefined) {
+    keysByInput.delete(variantInput);
+    keysByInput.set(variantInput, remembered);
+    return `${owner}.${remembered}`;
+  }
   try {
-    return `${owner}.${Crypto.sha256(utf8Data(url)).toHexString().toLowerCase().slice(0, 16)}`;
+    const variant = Crypto.sha256(utf8Data(url)).toHexString().toLowerCase().slice(0, 16);
+    keysByInput.set(variantInput, variant);
+    if (keysByInput.size > KEY_MEMORY_LIMIT) keysByInput.delete(keysByInput.keys().next().value!);
+    return `${owner}.${variant}`;
   } catch {
     return "";
   }

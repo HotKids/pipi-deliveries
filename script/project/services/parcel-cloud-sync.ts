@@ -1001,10 +1001,6 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
       }
     }
 
-    if (pddParcels.length) {
-      workingState = applyCloudPddParcels(workingState, pddParcels, now);
-    }
-
     for (const { envelope, waybill } of nonPddExpress) {
       const payload = envelope.payload ?? {};
       const anchorAt = cloudTime(payload.createdAt, now) || cloudTime(payload.eventAt, now) || now;
@@ -1072,6 +1068,10 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           }
         : created;
       workingState = { ...workingState, shipments: [...workingState.shipments, imported] };
+    }
+
+    if (pddParcels.length) {
+      workingState = applyCloudPddParcels(workingState, pddParcels, now);
     }
 
     // 2. Inbound `express_metadata` -> shared cache + monotonic title update
@@ -1407,12 +1407,35 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
         const remoteWatchId = typeof payload.watchRecordId === "string" && MEAL_UUID.test(payload.watchRecordId)
           ? payload.watchRecordId
           : "";
-        const matchingWatchRow = watchRows.find(
+        const sameWaybillWatchRow = watchRows.find(
           (row) =>
             internationalShipment(row) &&
             row.identity.id.startsWith("watch:") &&
-            (remoteWatchId ? row.identity.id === `watch:${remoteWatchId}` : normalizeWaybill(displayWaybill(row)) === waybill),
+            normalizeWaybill(displayWaybill(row)) === waybill,
         );
+        // W1: if a newly re-tracked Watch record on the same waybill has updatedAtMs > actedAt (either a different
+        // watchRecordId W_new !== W_old or a waybill-only feedback record), do not overwrite watchFeedbackList or
+        // delete/complete the newer Watch record.
+        if (
+          sameWaybillWatchRow &&
+          sameWaybillWatchRow.updatedAtMs > actedAt &&
+          (!remoteWatchId || sameWaybillWatchRow.identity.id !== `watch:${remoteWatchId}`)
+        ) {
+          nextSynced[envelope.recordId] = {
+            revision: envelope.revision,
+            type: "express_watch_feedback",
+            localKey: `watch_feedback:${waybill}`,
+            editedAt: envelope.editedAt,
+          };
+          continue;
+        }
+        const matchingWatchRow = remoteWatchId
+          ? watchRows.find(
+              (row) =>
+                internationalShipment(row) &&
+                row.identity.id === `watch:${remoteWatchId}`,
+            )
+          : sameWaybillWatchRow;
         const resolvedWatchId = remoteWatchId ||
           (matchingWatchRow ? matchingWatchRow.identity.id.slice("watch:".length) : "") ||
           parcelDetailRecordId("parcel-watch-feedback:", waybill);
@@ -1449,7 +1472,11 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           }
         }
 
-        if (matchingWatchRow && actedAt >= latestWatchTrackTime(matchingWatchRow)) {
+        if (
+          matchingWatchRow &&
+          (!remoteWatchId ? actedAt >= matchingWatchRow.updatedAtMs : true) &&
+          actedAt >= latestWatchTrackTime(matchingWatchRow)
+        ) {
           if (action === "deleted") {
             watchRows = watchRows.filter((row) => row.identity.id !== matchingWatchRow.identity.id);
             watchRowsChanged = true;

@@ -4,7 +4,7 @@ import type { AppState, BindingSource, RefreshSummary } from "../../models";
 import { refreshAccountParcel } from "../account-sync";
 import { queryManualForSource } from "../manual-query";
 import { displayWaybill } from "../shipment-policy";
-import { loadState } from "../storage";
+import { loadStateSnapshot, type LoadedStateSnapshot } from "../storage";
 import { deadlineAfter, deadlineExpired } from "../deadline";
 import { writeDiagnostic } from "../logger";
 import { CarrierRecognitionBudget, truncatedCarrierRecognitionLast } from "../carrier-recognition";
@@ -53,6 +53,7 @@ export async function refreshShipmentEnrichment(
   cainiaoListUpdatedIds: ReadonlySet<string> = cainiaoFollowupIds,
 ): Promise<RefreshSummary> {
   let currentState = state;
+  let currentSnapshot: LoadedStateSnapshot | undefined;
   let attempted = 0;
   let succeeded = 0;
   let failed = 0;
@@ -125,7 +126,8 @@ export async function refreshShipmentEnrichment(
     try {
       assertRefreshSignal(controller.signal);
       // Queued work must observe deletions, sign-offs, and binding changes made while waiting.
-      currentState = loadState(Date.now());
+      currentSnapshot = loadStateSnapshot(Date.now(), currentSnapshot);
+      currentState = currentSnapshot.state;
       jobBase = currentState;
       const target = currentState.shipments.find(shipment => shipment.identity.id === job.id);
       if (target && !target.identity.manuallyAdded) {
@@ -148,7 +150,10 @@ export async function refreshShipmentEnrichment(
         controller.signal, runtimeOverrides.queryManualForSource || queryManualForSource,
         recognitionBudget, backgroundHostSafe, onWorkStarted,
       );
-      if (job.backgroundAlignment) currentState = loadState(Date.now());
+      if (job.backgroundAlignment) {
+        currentSnapshot = loadStateSnapshot(Date.now(), currentSnapshot);
+        currentState = currentSnapshot.state;
+      }
       return {job, summary: result};
     } catch (error) {
       firstFailure ??= {error};

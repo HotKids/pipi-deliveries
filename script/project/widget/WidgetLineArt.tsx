@@ -1,5 +1,6 @@
 import { Image, Script } from "scripting";
 
+// Passes appearance file paths directly to WidgetKit without allocating JS UIImage bitmaps.
 export function WidgetLineArt(props: { family: "small" | "medium" }) {
   return (
     <Image

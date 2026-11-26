@@ -15,6 +15,7 @@ import {
   createSyncRuntimeState,
   isCainiaoAutomaticShipment,
   isJingDongAutomaticShipment,
+  type H5Priority,
   type SyncRuntimeState,
 } from "./shared";
 
@@ -32,19 +33,51 @@ export function storedCainiaoRoute(shipment: Shipment, now = Date.now()): string
 
 const defaultH5RuntimeState = createSyncRuntimeState();
 
+function releaseNextH5Waiter(runtimeState: SyncRuntimeState): void {
+  const next = runtimeState.h5InteractiveWaiters.shift() ?? runtimeState.h5BackgroundWaiters.shift();
+  if (next) next();
+  else runtimeState.h5Active = false;
+}
+
 export async function withH5Controller<T>(
   runtimeState: SyncRuntimeState,
   capture: () => Promise<T>,
   deadlineAtMs = deadlineAfter(ACCOUNT_H5_BUDGET_MS),
   signal?: AbortSignal,
+  priority: H5Priority = "interactive",
 ): Promise<T> {
-  const previous = runtimeState.h5Queue;
-  let release!: () => void;
-  const turn = new Promise<void>(resolve => { release = resolve; });
-  runtimeState.h5Queue = previous.then(() => turn);
+  assertRefreshSignal(signal);
+  assertWithinDeadline(deadlineAtMs);
+  let acquired = false;
+  if (!runtimeState.h5Active) {
+    runtimeState.h5Active = true;
+    acquired = true;
+  } else {
+    let waiter!: () => void;
+    const queue = priority === "interactive"
+      ? runtimeState.h5InteractiveWaiters
+      : runtimeState.h5BackgroundWaiters;
+    const turn = new Promise<void>((resolve) => {
+      waiter = () => {
+        acquired = true;
+        resolve();
+      };
+      queue.push(waiter);
+    });
+    try {
+      await waitForRefresh(turn, deadlineAtMs, signal);
+    } catch (error) {
+      const index = queue.indexOf(waiter);
+      if (index >= 0) {
+        queue.splice(index, 1);
+      } else if (acquired) {
+        releaseNextH5Waiter(runtimeState);
+      }
+      throw error;
+    }
+  }
   let durable: DurableRefreshLease | null = null;
   try {
-    await waitForRefresh(previous, deadlineAtMs, signal);
     while (!durable) {
       assertRefreshSignal(signal);
       assertWithinDeadline(deadlineAtMs);
@@ -54,7 +87,7 @@ export async function withH5Controller<T>(
     return await capture();
   } finally {
     durable?.release();
-    release();
+    releaseNextH5Waiter(runtimeState);
   }
 }
 

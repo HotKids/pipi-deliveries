@@ -5,7 +5,8 @@ import { accountParcelStructuredSemantic, accountParcelWithExistingProjection, n
 import type { AccountParcelDto } from "../account-parser";
 import { replayPendingShipmentNotifications } from "../notifications";
 import { loadOrderProjectionReference, saveOrderProjectionReferences } from "../routes";
-import { applyTargetedAccountShipment, jingDongOrderPastPickup, selectShipmentDetailTimeline, unprojectedAccountOrder } from "../shipment-policy";
+import { absorbManualShipment, applyTargetedAccountShipment, jingDongOrderPastPickup, sameCanonicalWaybill, selectShipmentDetailTimeline, unprojectedAccountOrder } from "../shipment-policy";
+import { withAbsorbedParcelFields } from "../platform-parcel-merge";
 import { bindingsForSource, commitTargetShipmentRefresh, loadState, peekStateRevision, readAppStateSnapshot, storedShipmentsForProcessing } from "../storage";
 import { normalizeWaybill, normalizedProjectedWaybill, shipmentPresentationStatus, sortShipments, timedTracks } from "../status";
 import { acquireRenewingDurableRefreshLease, durableRefreshLeaseMaxRemainingMs, durableRefreshLeaseRemainingMs, type DurableRefreshLease } from "../refresh-runtime-state";
@@ -115,6 +116,7 @@ export async function projectAccountOrderWithCarrier(
   /** The round's or operation's recognition wait (用户 2026-09-27 第二轮清单：识别总时长三端对齐 30 秒). */
   recognitionBudget?: CarrierRecognitionBudget,
   runtimeState: SyncRuntimeState = defaultProjectionRuntimeState,
+  priority: "interactive" | "background" = "interactive",
 ): Promise<AccountParcelDto> {
   const projected = await withH5Controller(runtimeState, () => projectAccountOrder(
     parcel,
@@ -122,7 +124,7 @@ export async function projectAccountOrderWithCarrier(
     observe,
     signal,
     beforeLoad,
-  ), projectionDeadlineAtMs, signal);
+  ), projectionDeadlineAtMs, signal, priority);
   // Best effort (T23, 2026-09-26): a recognition failure must not drop the waybill the page named; an unmatched
   // carrier holds the projection instead.
   return normalizeAccountParcelCarrierBestEffort(projected, {
@@ -519,6 +521,18 @@ export function applyAccountOrderProjectionToOwner(
     now,
     routeMutations,
   );
+  if (!unprojectedAccountOrder(projected)) {
+    const manualDuplicates = shipmentsInput.filter(
+      (item) =>
+        item.identity.id !== projected.identity.id &&
+        item.identity.manuallyAdded &&
+        sameCanonicalWaybill(item, projected),
+    );
+    for (const duplicate of manualDuplicates) {
+      projected = absorbManualShipment(projected, duplicate, now);
+      projected = withAbsorbedParcelFields(projected, duplicate, owner, { skipPddSource: true });
+    }
+  }
   return replaceById(shipmentsInput, projected);
 }
 
@@ -866,6 +880,7 @@ export async function projectAccountOrders(
             pageGate,
             recognitionBudget,
             runtimeState,
+            "background",
           );
       assertRefreshSignal(signal);
       const extracted = normalizeWaybill(resolvedParcel.waybill) !==

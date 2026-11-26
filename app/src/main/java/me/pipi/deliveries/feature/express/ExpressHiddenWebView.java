@@ -87,6 +87,11 @@ final class ExpressHiddenWebView {
         }
 
         @Override
+        public boolean hasOverlappingRendering() {
+            return false;
+        }
+
+        @Override
         public boolean dispatchTouchEvent(MotionEvent event) {
             return false;
         }

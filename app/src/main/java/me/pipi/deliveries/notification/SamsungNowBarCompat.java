@@ -6,14 +6,14 @@ import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
-import android.widget.RemoteViews;
 
 /**
- * Samsung Now Bar visual hints layered on the standard promoted notification.
+ * Safe Samsung Now Bar visual hints layered on the standard promoted notification.
  *
- * <p>One UI can remove a notification that uses its private template. The pickup
- * pilot supplies that template on a separate candidate so rejection can restore
- * the established promoted notification.</p>
+ * <p>Do not attach Samsung's private {@code style=1}: current One UI builds can
+ * reject that private template and remove the live notification entirely. The
+ * standard Android promoted style already enters Now Bar; these two extras only
+ * provide its dedicated foreground icon and semantic background color.</p>
  */
 public final class SamsungNowBarCompat {
     private static final String TAG = "PipiNowBar";
@@ -21,7 +21,6 @@ public final class SamsungNowBarCompat {
     private static final String COMPAT_FAILURES = "failures";
     private static final String COMPAT_FALLBACK = "fallback";
     private static final String COMPAT_PROBE_PASSED = "probe_passed";
-    private static final String COMPAT_PICKUP_NOW_BAR_REJECTED = "pickup_now_bar_rejected";
     private static final double MIN_WHITE_CHIP_CONTRAST = 4.5;
     private static final int COMPAT_SCHEMA = 2;
     // Diagnostic kill switch only. Normal builds retain the Samsung SystemUI
@@ -135,31 +134,6 @@ public final class SamsungNowBarCompat {
 
     private static double linearize(double channel) {
         return channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
-    }
-
-    public static boolean shouldTryPickupNowBar(Context context) {
-        return shouldTrySamsungEnhancement(context)
-                && !compatPrefs(context).getBoolean(COMPAT_PICKUP_NOW_BAR_REJECTED, false);
-    }
-
-    public static Notification pickupNowBarCandidate(Notification enhanced, String capsule,
-                                                      String primary, String secondary,
-                                                      RemoteViews expanded) {
-        Notification candidate = enhanced.clone();
-        Bundle extras = candidate.extras;
-        extras.putInt("android.ongoingActivityNoti.style", 1);
-        extras.putCharSequence("android.ongoingActivityNoti.nowbarPrimaryInfo", primary);
-        extras.putCharSequence("android.ongoingActivityNoti.nowbarSecondaryInfo", secondary);
-        extras.putCharSequence("android.ongoingActivityNoti.chipExpandedText", capsule);
-        extras.putParcelable("android.ongoingActivityNoti.chipIcon", candidate.getSmallIcon());
-        extras.putParcelable("android.ongoingActivityNoti.expandedRemoteView", expanded);
-        return candidate;
-    }
-
-    static void recordPickupNowBarRejection(Context context) {
-        synchronized (SamsungNowBarCompat.class) {
-            compatPrefs(context).edit().putBoolean(COMPAT_PICKUP_NOW_BAR_REJECTED, true).apply();
-        }
     }
 
     static boolean shouldTrySamsungEnhancement(Context context) {

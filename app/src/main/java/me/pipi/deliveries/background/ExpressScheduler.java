@@ -59,7 +59,7 @@ public final class ExpressScheduler {
             finished.run();
         };
         main.postDelayed(timeout, BROADCAST_HANDOFF_TIMEOUT_MS);
-        new Thread(() -> {
+        me.pipi.deliveries.util.PipiExecutors.backgroundExecutor().execute(() -> {
             try {
                 ListenableFuture<Operation.State.SUCCESS> enqueued = requestWidgetRefresh(context);
                 enqueued.addListener(() -> {
@@ -75,7 +75,7 @@ public final class ExpressScheduler {
                         + failure.getClass().getSimpleName());
                 finish.run();
             }
-        }, "deliveries-widget-handoff").start();
+        });
     }
 
     public static void ensureScheduled(Context context) {

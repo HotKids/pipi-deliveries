@@ -338,6 +338,20 @@ async function run() {
       const watch = await refreshDueWatchShipments(latest);
       if (watch) latest = watch;
     }
+    await Promise.all([
+      typeof synchronizeParcelCloudRecords === "function" && typeof mealCredentialScope === "function" && mealCredentialScope()
+        ? synchronizeParcelCloudRecords(5_000).catch(() => undefined)
+        : Promise.resolve(),
+      typeof synchronizeMeals === "function"
+        ? (async () => {
+            if (typeof ensureMealRules === "function") {
+              const ready = await ensureMealRules("meal_sync").catch(() => null);
+              if (!ready) return;
+            }
+            await synchronizeMeals(5_000).catch(() => undefined);
+          })()
+        : Promise.resolve(),
+    ]);
     if (typeof retireCompletedParcelActivities === "function" && latest) {
       await retireCompletedParcelActivities(latest);
     }

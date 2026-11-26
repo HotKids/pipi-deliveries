@@ -28,7 +28,9 @@ final class ExpressWidgetPalette {
         Bitmap bitmap = null;
         int accent = FALLBACK_ACCENT;
         try {
-            bitmap = BitmapFactory.decodeResource(context.getResources(), resource);
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = 4;
+            bitmap = BitmapFactory.decodeResource(context.getResources(), resource, options);
             if (bitmap != null && bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
                 int[] pixels = new int[bitmap.getWidth() * bitmap.getHeight()];
                 bitmap.getPixels(pixels, 0, bitmap.getWidth(), 0, 0,
