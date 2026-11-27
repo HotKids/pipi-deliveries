@@ -2,7 +2,7 @@ import { allowedProductImageURL } from "./product-image-url";
 import { AbortController, fetch, Path, type AbortSignal } from "scripting";
 import { utf8Data } from "./scripting-data";
 import { writeDiagnostic, type DiagnosticDetails } from "./logger";
-import { cachedProductImage, productImageCacheFiles, productImageCachePath, rememberProductImage,
+import { cachedProductImage, invalidateProductImageDirectoryCache, productImageCacheFiles, productImageCachePath, rememberProductImage,
   PRODUCT_IMAGE_TIMEOUT_MS as TIMEOUT_MS } from "./product-image-cache";
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
@@ -102,9 +102,14 @@ async function cache(path: string, data: Data, signal: AbortSignal, owner?: Imag
     if (owner) {
       if (productImageCacheFiles(owner.key).length) return;
       FileManager.renameSync(pending, path);
-      if (!retained(owner) || productImageCacheFiles(owner.key)[0] !== path) FileManager.removeSync(path);
+      if (typeof invalidateProductImageDirectoryCache === "function") invalidateProductImageDirectoryCache();
+      if (!retained(owner) || productImageCacheFiles(owner.key)[0] !== path) {
+        FileManager.removeSync(path);
+        if (typeof invalidateProductImageDirectoryCache === "function") invalidateProductImageDirectoryCache();
+      }
     } else {
       await FileManager.rename(pending, path);
+      if (typeof invalidateProductImageDirectoryCache === "function") invalidateProductImageDirectoryCache();
     }
   } catch {
     // An optional cache failure must not hide an already validated product image.
@@ -184,6 +189,42 @@ async function download(url: string, controller: AbortController, details: Diagn
   } finally {
     void reader.cancel().catch(() => {});
     reader.releaseLock();
+  }
+}
+
+/** Asynchronously reads and decodes a persisted product image into the memory cache without network requests. */
+export async function warmCachedProductImage(
+  key: string,
+  signal?: AbortSignal,
+  isRetained?: () => boolean,
+): Promise<UIImage | null> {
+  if (!key || signal?.aborted) return null;
+  try { if (isRetained && !isRetained()) return null; } catch { return null; }
+  const remembered = cachedProductImage(key);
+  if (remembered) return remembered;
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort);
+  try {
+    let paths: string[] = [];
+    try { paths = productImageCacheFiles(key); } catch { paths = []; }
+    const details: DiagnosticDetails = { stage: "cache", result: "failed" };
+    for (const existingPath of paths) {
+      if (controller.signal.aborted) return null;
+      const existing = await cached(existingPath, controller.signal, details);
+      if (existing) {
+        const current = () => {
+          try {
+            return (!isRetained || isRetained()) && FileManager.existsSync(existingPath) &&
+              !FileManager.existsSync(existingPath.replace(/\.img$/, ".deleted"));
+          } catch { return false; }
+        };
+        return current() ? rememberProductImage(key, existing.image, current) : null;
+      }
+    }
+    return null;
+  } finally {
+    signal?.removeEventListener("abort", abort);
   }
 }
 

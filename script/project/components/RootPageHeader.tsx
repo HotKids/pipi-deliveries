@@ -35,6 +35,7 @@ export function RootTabList({
   refresh,
   emptyState,
   bottomInset,
+  onListScrollSettled,
   children,
 }: {
   title: string;
@@ -45,6 +46,7 @@ export function RootTabList({
   refresh?: () => Promise<void>;
   emptyState?: VirtualNode;
   bottomInset?: number;
+  onListScrollSettled?: (moving: boolean) => void;
   children?: ListProps["children"];
 }) {
   return (
@@ -80,6 +82,9 @@ export function RootTabList({
           scrollContentBackground="hidden"
           frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
           refreshable={refresh}
+          onScrollPhaseChange={onListScrollSettled && Number.parseInt(Device.systemVersion, 10) >= 18
+            ? (_, phase) => onListScrollSettled(phase !== "idle")
+            : undefined}
           contentMargins={bottomInset === undefined
             ? { edges: "top", insets: 0, placement: "scrollContent" }
             : { edges: "vertical", insets: { top: 0, bottom: bottomInset, leading: 0, trailing: 0 }, placement: "scrollContent" }}

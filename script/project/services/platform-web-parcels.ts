@@ -96,8 +96,9 @@ const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
           if (!/^[0-9]{8,32}$/.test(orderId) || seen.has(orderId)) continue;
           seen.add(orderId);
           const wares = Array.isArray(item?.orderMsg?.wareInfoList) ? item.orderMsg.wareInfoList : [];
-          const sku = wares[0] || {};
-          const title = wares.length === 1 && !item?.isVirtualOrder ? String(sku.wname || '').trim() : '';
+          const namedWares = !item?.isVirtualOrder ? wares.filter(w => String(w?.wname || '').trim()) : [];
+          const sku = (namedWares.length ? namedWares[namedWares.length - 1] : null) || wares[0] || {};
+          const title = namedWares.length ? String(sku.wname || '').trim() : '';
           const tp = item?.trackProgress || (Array.isArray(item?.trackProgressList) ? item.trackProgressList[0] : null) || item?.stepFloor || {};
           const forecast = [tp?.title, tp?.subTitle, tp?.message]
             .map(v => typeof v === 'string' ? v.trim() : '')
@@ -109,7 +110,7 @@ const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
             title,
             forecast,
             state,
-            skuId: String(sku.wareId || sku.skuId || ''),
+            skuId: String(sku.wareId || sku.skuId || wares[0]?.wareId || wares[0]?.skuId || ''),
             shopId: String(item?.shopId || ''),
           });
         }
@@ -148,11 +149,12 @@ const READ_JD_ORDERS = JD_ACCOUNT_PAGE_CHECK + String.raw`
     }).find(entry => /^[0-9]{8,32}$/.test(String(entry?.orderid || '')));
     if (!data || seen.has(String(data.orderid))) continue;
     seen.add(String(data.orderid));
-    const titles = new Set(Array.from(card.querySelectorAll('[class*="order_item"] [class*="desc"]')).map(text).filter(Boolean));
-    const sku = data.orderSkus?.[0] || {};
-    orders.push({ orderId: String(data.orderid), title: titles.size === 1 && (data.orderSkus?.length || 0) <= 1 ? [...titles][0] : '',
+    const titles = Array.from(card.querySelectorAll('[class*="order_item"] [class*="desc"]')).map(text).filter(Boolean);
+    const skus = Array.isArray(data.orderSkus) ? data.orderSkus : [];
+    const sku = (skus.length ? skus[skus.length - 1] : null) || skus[0] || {};
+    orders.push({ orderId: String(data.orderid), title: titles.length ? titles[titles.length - 1] : '',
       forecast: text(card.querySelector('[class*="order_wuliubar"]')), state: text(state),
-      skuId: String(sku.skuid || data.skuid || ''), shopId: String(data.shopId || sku.shopid || data.shopid || '') });
+      skuId: String(sku.skuid || skus[0]?.skuid || data.skuid || ''), shopId: String(data.shopId || sku.shopid || data.shopid || '') });
   }
   return orders.length ? { orders }
     : { state: 'pending', stage: 'jd_sync_order_cards' };
@@ -174,10 +176,10 @@ function readJdParcel(order: string) {
         waybills.add(item[1]);
       }
     }
-    const titles = new Set(Array.from(
+    const titles = Array.from(
       summary?.querySelectorAll('[class*="Summary-module__single___"] [class*="Summary-module__text___"]') || [],
-      node => (node.textContent || '').trim()).filter(Boolean));
-    const title = structured ? (titles.size === 1 ? [...titles][0] : '')
+      node => (node.textContent || '').trim()).filter(Boolean);
+    const title = structured ? (titles.length ? titles[titles.length - 1] : '')
       : (text.match(/我要催单\s*([\s\S]{4,160}?)\s*(?:\d+\s*件|国内承运人|承运人|运单号|$)/)?.[1] || '').trim();
     const codes = new Set(Array.from(text.matchAll(/(?:取件码|提货码|取货码|凭码|自提码)[:：\s]*([A-Za-z0-9-]{3,12})(?![A-Za-z0-9-])/g), item => item[1]));
     const header = text.split(/\b\d{4}(?:[-/]\d{1,2}[-/]\d{1,2}|年\d{1,2}月\d{1,2}日)/, 1)[0];
@@ -263,7 +265,13 @@ const CAPTURE_PDD_ORDERS = `(() => {
         inheritedWaybill = waybill;
       }
       if (waybill.length >= 5 && waybill.length <= 64) {
-        const title = field(value.order_goods?.[0], ['goods_name','goods_title']).slice(0, 512);
+        let title = '';
+        if (Array.isArray(value.order_goods)) {
+          for (let gi = value.order_goods.length - 1; gi >= 0; gi--) {
+            const candidate = field(value.order_goods[gi], ['goods_name','goods_title']).slice(0, 512);
+            if (candidate) { title = candidate; break; }
+          }
+        }
         let id = '';
         try { id = shippingId(value, waybill); } catch (_) {}
         if (!id && (!inheritedWaybill || inheritedWaybill === waybill)) id = inheritedShipping;
@@ -315,12 +323,23 @@ function assertCurrent(platform: WebPlatform, session: PlatformSession, signal?:
 export function fetchJdParcelDetails(session: PlatformSession, order: string, waybill: string,
   eligible: () => boolean, signal?: AbortSignal): Promise<PlatformParcel | undefined> {
   if (!/^\d{8,32}$/.test(order)) return Promise.resolve(undefined);
-  return withProviderPage("jingdong", session, async (web, deadline) => {
+  return withProviderPage("jingdong", session, async (web, deadline, reportStage) => {
     if (!eligible()) return undefined;
     const row = asPlainObject(await pageResult("jingdong", session, web, jdParcelURL(order), readJdParcel(order), deadline,
       undefined, undefined, signal));
     if (normalizeWaybill(cleanScalarText(row.waybill)) !== waybill) return undefined;
-    return { source: "jingdong", waybill, title: productTitle(row.title), estimate: deliveryForecast(row.forecast, Date.now()) };
+    let title = productTitle(row.title);
+    let estimate = deliveryForecast(row.forecast, Date.now());
+    if (!title && Date.now() < deadline && eligible()) {
+      const listRes = asPlainObject(await pageResult("jingdong", session, web, JD_ORDER_LIST_URL, READ_JD_ORDERS,
+        deadline, reportStage, undefined, signal).catch(() => null));
+      const matched = objectList(listRes.orders).find(item => cleanScalarText(item.orderId) === order);
+      if (matched) {
+        title = productTitle(matched.title);
+        if (!estimate) estimate = deliveryForecast(matched.forecast, Date.now());
+      }
+    }
+    return { source: "jingdong", waybill, title, estimate };
   }, signal);
 }
 
@@ -677,9 +696,9 @@ export function fetchPddParcelDetails(session: PlatformSession, shippingId: stri
       if (location.origin === 'https://mobile.yangkeduo.com' && /login\.html|passport/.test(location.pathname)) return { state: 'expired' };
     ` + route + String.raw`
       if (/安全验证|滑动验证/.test(document.body?.innerText || '')) return { state: 'verification' };
-      const titles = new Set(Array.from(document.querySelectorAll('.assistant-waybill .move-order-goods .goods-name'),
-        node => (node.textContent || '').trim()).filter(Boolean));
-      const title = titles.size === 1 ? [...titles][0] : '';
+      const titles = Array.from(document.querySelectorAll('.assistant-waybill .move-order-goods .goods-name'),
+        node => (node.textContent || '').trim()).filter(Boolean);
+      const title = titles.length ? titles[titles.length - 1] : '';
       const forecasts = window.__pipiDeliveriesParcelForecast;
       const image = window.__pipiDeliveriesPddProductImage;
       const traces = window.__pipiDeliveriesPddTraces;

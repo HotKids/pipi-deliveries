@@ -32,10 +32,26 @@ function directory(): string {
   return Path.join(FileManager.appGroupDocumentsDirectory, "pipi-deliveries", "product-images");
 }
 
-function cacheNames(): string[] {
+let cachedDirEntries: { dir: string; reader: unknown; names: string[] } | undefined;
+
+export function invalidateProductImageDirectoryCache(): void {
+  cachedDirEntries = undefined;
+}
+
+function cacheNames(refresh = false): string[] {
+  const dir = directory();
+  const reader = FileManager.readDirectorySync;
+  if (!refresh && cachedDirEntries?.dir === dir && cachedDirEntries.reader === reader) {
+    return cachedDirEntries.names;
+  }
   try {
-    return FileManager.readDirectorySync(directory(), false).map(path => path.slice(path.lastIndexOf("/") + 1));
-  } catch { return []; }
+    const names = FileManager.readDirectorySync(dir, false).map(path => path.slice(path.lastIndexOf("/") + 1));
+    cachedDirEntries = { dir, reader, names };
+    return names;
+  } catch {
+    cachedDirEntries = undefined;
+    return [];
+  }
 }
 
 // A key is a pure function of its serialized inputs: the most recent inputs reuse their key instead of hashing again.
@@ -128,9 +144,12 @@ export function productImageCachePath(key: string): string {
 
 export function productImageCacheFiles(key: string): string[] {
   if (!CACHE_KEY.test(key)) return [];
-  return cacheNames().filter(name => IMAGE_NAME.test(name) && fileOfKey(name, key) &&
-    !FileManager.existsSync(Path.join(directory(), name.replace(/\.img$/, ".deleted"))))
-    .sort().map(name => Path.join(directory(), name));
+  const dir = directory();
+  const select = (names: string[]) => names.filter(name => IMAGE_NAME.test(name) && fileOfKey(name, key) &&
+    !FileManager.existsSync(Path.join(dir, name.replace(/\.img$/, ".deleted"))))
+    .sort().map(name => Path.join(dir, name));
+  const hit = select(cacheNames(false));
+  return hit.length ? hit : select(cacheNames(true));
 }
 
 export function cachedProductImage(key: string): UIImage | null {
@@ -157,7 +176,8 @@ export function rememberProductImage(key: string, image: UIImage, isRetained?: (
 export function pruneProductImages(previous: readonly (Shipment | ShipmentIdentity)[],
   retained: readonly (Shipment | ShipmentIdentity)[], now = Date.now()): boolean {
   let failed = false;
-  const names = new Set(cacheNames());
+  invalidateProductImageDirectoryCache();
+  const names = new Set(cacheNames(true));
   try {
     let scope = "";
     try { scope = gatewayCredentialForLocalCache()?.scope ?? ""; }
@@ -206,5 +226,6 @@ export function pruneProductImages(previous: readonly (Shipment | ShipmentIdenti
     try { writeDiagnostic("product.image.cache_cleanup_failed", { stage: "cache", result: "failed" }, "warning"); }
     catch { /* Image cleanup cannot fail a saved shipment transaction. */ }
   }
+  invalidateProductImageDirectoryCache();
   return !failed;
 }

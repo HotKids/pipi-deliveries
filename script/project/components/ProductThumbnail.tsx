@@ -1,5 +1,5 @@
 import { AbortController, Image, VStack, useEffect, useState } from "scripting";
-import { initialProductImage, loadProductImage } from "../services/product-images";
+import { initialProductImage, loadProductImage, warmCachedProductImage } from "../services/product-images";
 import { cachedProductImage, cainiaoImageCacheKey, cloudProductImageCacheKey, pddImageCacheKey, productImageCacheKey } from "../services/product-image-cache";
 import { pddParcelProductImage } from "../services/platform-parcel-merge";
 import { currentPlatformSessionInTurn } from "../services/platform-accounts";
@@ -51,14 +51,17 @@ export function ProductThumbnail(props: {
   companyName: string;
   accountOrder?: boolean;
   allowDownload?: boolean;
+  /** When true, first paint uses only already-decoded in-memory images and defers disk/Keychain reads until post-paint. */
+  deferDiskDecode?: boolean;
   size: number;
 }) {
   const cainiao = !props.cacheKey ? props.shipment.platformFields?.cainiaoImage : undefined;
+  const deferDisk = props.deferDiskDecode === true;
   const cainiaoCurrent = () => {
     try { return !!cainiao && !!currentPlatformSessionInTurn("cainiao", cainiao.generation, true); }
     catch { return false; }
   };
-  const useCainiao = cainiaoCurrent();
+  const useCainiao = deferDisk ? Boolean(cainiao?.url) : cainiaoCurrent();
   const pdd = !props.cacheKey && !useCainiao && props.shipment.platformFields?.pddImage
     ? pddParcelProductImage(props.shipment) : "";
   const cloud = !props.cacheKey && !useCainiao && !pdd ? props.cloudImage : undefined;
@@ -77,12 +80,15 @@ export function ProductThumbnail(props: {
     if (!cacheKey || useCainiao && !cainiaoCurrent() || cloud && !cloudCurrent()) return false;
     return storedImageOwner(lifecycle, cacheKey, keyFor) != null;
   };
+  const syncFirstPaintImage = () => deferDisk
+    ? (cacheKey ? cachedProductImage(cacheKey) : null)
+    : initialProductImage(cacheKey, isRetained);
   const [loaded, setLoaded] = useState<{
     key: string;
     lifecycle: string;
     isRetained: () => boolean;
     image: Awaited<ReturnType<typeof loadProductImage>>;
-  } | null>(() => ({ key: cacheKey, lifecycle, isRetained, image: initialProductImage(cacheKey, isRetained) }));
+  } | null>(() => ({ key: cacheKey, lifecycle, isRetained, image: syncFirstPaintImage() }));
 
   useEffect(() => {
     try {
@@ -97,18 +103,26 @@ export function ProductThumbnail(props: {
       setLoaded(null);
       return;
     }
-    if (props.allowDownload === false || !imageURL && !cacheKey) return;
+    if (props.allowDownload === false) {
+      if (deferDisk || !cacheKey || typeof warmCachedProductImage !== "function") return;
+      const controller = new AbortController();
+      void warmCachedProductImage(cacheKey, controller.signal, isRetained).then((image) => {
+        if (!controller.signal.aborted && image) setLoaded({ key: cacheKey, lifecycle, isRetained, image });
+      }).catch(() => {});
+      return () => controller.abort();
+    }
+    if (!imageURL && !cacheKey) return;
     const controller = new AbortController();
     void loadProductImage(imageURL, controller.signal, cacheKey ? { key: cacheKey, isRetained } : undefined).then((image) => {
       if (!controller.signal.aborted && image) setLoaded({ key: cacheKey, lifecycle, isRetained, image });
     }).catch(() => { /* Keep an already successful image during an optional refresh failure. */ });
     return () => controller.abort();
-  }, [cacheKey, imageURL, lifecycle, props.allowDownload]);
+  }, [cacheKey, deferDisk, imageURL, lifecycle, props.allowDownload]);
 
   let image: Awaited<ReturnType<typeof loadProductImage>> = null;
   try {
-    image = loaded?.key === cacheKey && loaded.lifecycle === lifecycle && loaded.isRetained()
-      ? loaded.image : initialProductImage(cacheKey, isRetained);
+    image = loaded?.key === cacheKey && loaded.lifecycle === lifecycle && (deferDisk || loaded.isRetained())
+      ? loaded.image : syncFirstPaintImage();
   } catch { /* A failed authoritative read cannot expose an unverified lifecycle's image. */ }
   if (!image) {
     return (

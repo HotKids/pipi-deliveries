@@ -1117,7 +1117,7 @@ assert.doesNotMatch(rootHeader, /<Divider\b/,
   "fixed header transitions cleanly into the scrolling list without a divider line");
 assert.match(rootHeader, /\{titleAction \? \(\s*<VStack\s+frame=\{\{ maxWidth: "infinity", maxHeight: "infinity", alignment: "bottomTrailing" \}\}\s+padding=\{TAB_FAB_PADDING\}\s*>\s*\{titleAction\}\s*<\/VStack>\s*\) : null\}/,
   "Liquid Glass FAB stays steady inside safe area at bottomTrailing without scroll-hiding");
-assert.doesNotMatch(rootHeader, /opacity=\{|alignFabWithTabBar|onScrollPhaseChange/,
+assert.doesNotMatch(rootHeader, /opacity=\{|alignFabWithTabBar|closeVisible/,
   "RootTabList avoids scroll-hiding and fractional opacity on Liquid Glass controls");
 assert.doesNotMatch(rootHeader, /navigationBarTitleDisplayMode="large"|navigationTitle=\{title\}/,
   "root pages do not use a collapsing large navigationTitle");

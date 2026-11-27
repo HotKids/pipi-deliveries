@@ -5,7 +5,7 @@ import {
 import { PARCEL_ACTIVITY_PREVIEW, type ParcelActivityContent } from "../services/parcel-pickup";
 import { parcelCardArtwork, PICKUP_CARD_SPACING, type ParcelLockScreenStyle } from "../services/parcel-card-appearance";
 import { MEAL_ARTWORK_FRAME_ENDS } from "../services/meal/artwork-motion.generated";
-import { bundledImage } from "./bundled-image";
+import { bundledImage, prewarmBundledImages } from "./bundled-image";
 import { ParcelLiveActivityCard, type ParcelLiveActivityCardProps, PIPI_CARD } from "./ParcelLiveActivityCard";
 import { MEAL_ARTWORK_TOKENS, PICKUP_STICKER_ENTRANCE } from "./pickup-card-tokens.generated";
 
@@ -20,6 +20,7 @@ type ArtworkPlayback = {
   pixelScale: number;
   frameEnds: readonly number[];
   stickerDelay: number;
+  firstVisibleFrame?: number;
 };
 
 const BOX_PLAYBACK: ArtworkPlayback = {
@@ -27,6 +28,8 @@ const BOX_PLAYBACK: ArtworkPlayback = {
   pixelScale: 3,
   frameEnds: Array.from({ length: 43 }, (_, index) => (index + 1) * FRAME_DURATION_MS),
   stickerDelay: PICKUP_STICKER_ENTRANCE.parcelDelay,
+  // Frames 0..6 in box-frames.png are transparent lead-in frames; start handoff at the first visible box frame.
+  firstVisibleFrame: 7,
 };
 
 function mealArtworkPlayback(art: { path: string; name: string }): ArtworkPlayback | undefined {
@@ -106,19 +109,27 @@ function stickerRotation(elapsed: number): number {
 type StickerPlacement = { logoSize: number; logoX: number; logoY: number };
 type PickupArtwork = StickerPlacement & { baseAsset: string; logoAsset?: string; playback?: ArtworkPlayback };
 
-function AnimatedPickupArtwork({ atlas, playback, logo, logoSize, logoX, logoY }: StickerPlacement & {
-  atlas: UIImage; playback: ArtworkPlayback; logo: UIImage | null;
+function AnimatedPickupArtwork({ atlas, playback, logo, logoSize, logoX, logoY, onFirstVisibleFrame }: StickerPlacement & {
+  atlas: UIImage; playback: ArtworkPlayback; logo: UIImage | null; onFirstVisibleFrame: () => void;
 }) {
   const [settled, setSettled] = useState(false);
   const timer = useRef<number | undefined>(undefined);
+  const handoffTimer = useRef<number | undefined>(undefined);
+  const notifiedVisible = useRef(false);
   const stopTimer = () => {
     if (timer.current !== undefined) clearTimeout(timer.current);
     timer.current = undefined;
+    if (handoffTimer.current !== undefined) clearTimeout(handoffTimer.current);
+    handoffTimer.current = undefined;
   };
   useEffect(() => stopTimer, []);
-  const { frameEnds, pixelScale, stickerDelay } = playback;
+  const { frameEnds, pixelScale, stickerDelay, firstVisibleFrame = 0 } = playback;
+  const startOffsetMs = firstVisibleFrame > 0 ? (frameEnds[firstVisibleFrame - 1] ?? firstVisibleFrame * FRAME_DURATION_MS) : 0;
   const lastFrame = frameEnds.length - 1;
-  const finishAt = Math.max(frameEnds[lastFrame], logo ? stickerDelay + PICKUP_STICKER_ENTRANCE.duration : 0);
+  const finishAt = Math.max(
+    0,
+    Math.max(frameEnds[lastFrame], logo ? stickerDelay + PICKUP_STICKER_ENTRANCE.duration : 0) - startOffsetMs,
+  );
   const width = ART_WIDTH * pixelScale;
   const height = ART_HEIGHT * pixelScale;
   const stickerX = logoX - logoSize / 2;
@@ -135,7 +146,7 @@ function AnimatedPickupArtwork({ atlas, playback, logo, logoSize, logoX, logoY }
       }}
       onDisappear={stopTimer}
       draw={(ctx, _, seconds) => {
-        const elapsed = Math.max(0, seconds * 1000);
+        const elapsed = Math.max(0, seconds * 1000) + startOffsetMs;
         const frame = elapsed >= frameEnds[lastFrame] ? lastFrame : frameEnds.findIndex(end => elapsed < end);
         ctx.drawImage({ image: atlas }, frame % ATLAS_COLUMNS * width, Math.floor(frame / ATLAS_COLUMNS) * height,
           width, height, 0, 0, ART_WIDTH, ART_HEIGHT);
@@ -148,9 +159,30 @@ function AnimatedPickupArtwork({ atlas, playback, logo, logoSize, logoX, logoY }
           ctx.drawImage({ image: logo }, -pivotX, -pivotY, logoSize, logoSize);
           ctx.restore();
         }
+        if (!notifiedVisible.current && frame >= firstVisibleFrame) {
+          notifiedVisible.current = true;
+          handoffTimer.current = setTimeout(() => {
+            handoffTimer.current = undefined;
+            onFirstVisibleFrame();
+          }, 0);
+        }
       }}
     />
   );
+}
+
+export function prewarmPickupTabAssets(cards: readonly ParcelActivityContent[], previewing = false): Promise<void> {
+  const paths: Array<string | undefined> = [BOX_IMAGE];
+  if (previewing) {
+    paths.push(parcelCardArtwork(PARCEL_ACTIVITY_PREVIEW).sticker?.path);
+  }
+  for (const card of cards.slice(0, 8)) {
+    const { meal, mealSticker, sticker, mark } = parcelCardArtwork(card);
+    paths.push(card.kind === "meal" ? meal?.path : BOX_IMAGE);
+    paths.push(card.kind === "meal" ? mealSticker?.path : sticker?.path);
+    paths.push(mark?.path);
+  }
+  return prewarmBundledImages(paths);
 }
 
 function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playback, autoPlay, playOnMount, replayRequest }: PickupArtwork & {
@@ -159,11 +191,13 @@ function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playba
   const [appearance, setAppearance] = useState(0);
   const [atlas, setAtlas] = useState(playback ? cachedArtworkAtlas(playback.path) : undefined);
   const [playbackReady, setPlaybackReady] = useState(false);
+  const [canvasHandedOff, setCanvasHandedOff] = useState(false);
   const hasAppeared = useRef(false);
-  const visible = useRef(false);
+  const visible = useRef(playOnMount);
   const startTimer = useRef<number | undefined>(undefined);
+  const playbackGeneration = useRef(0);
   const cancelPlaybackStart = () => {
-    visible.current = false;
+    playbackGeneration.current += 1;
     if (startTimer.current !== undefined) clearTimeout(startTimer.current);
     startTimer.current = undefined;
   };
@@ -173,45 +207,74 @@ function PickupTabArtwork({ baseAsset, logoAsset, logoSize, logoX, logoY, playba
       if (!immediate) return;
       cancelPlaybackStart();
     }
-    visible.current = true;
+    const generation = ++playbackGeneration.current;
     const begin = () => {
       startTimer.current = undefined;
-      if (!visible.current) return;
-      if (atlas === undefined) void loadArtworkAtlas(playback.path).then((image) => {
-        if (visible.current) setAtlas(image);
-      });
-      if (hasAppeared.current) setAppearance((visit) => visit + 1);
-      hasAppeared.current = true;
-      setPlaybackReady(true);
+      if (!visible.current || generation !== playbackGeneration.current) return;
+      const activate = (loadedAtlas: UIImage | null) => {
+        if (!visible.current || generation !== playbackGeneration.current) return;
+        setAtlas(loadedAtlas);
+        if (!loadedAtlas) return;
+        setCanvasHandedOff(false);
+        if (hasAppeared.current) setAppearance((visit) => visit + 1);
+        hasAppeared.current = true;
+        setPlaybackReady(true);
+      };
+      const warm = cachedArtworkAtlas(playback.path);
+      if (warm !== undefined) activate(warm);
+      else void loadArtworkAtlas(playback.path).then(activate);
     };
     if (immediate) begin();
     else startTimer.current = setTimeout(begin, PLAYBACK_START_DELAY_MS);
   }
   useEffect(() => {
-    // A scan sheet opened by a link can mount without forwarding the artwork's onAppear.
-    if (playOnMount && autoPlay) startPlayback();
-    return cancelPlaybackStart;
-  }, []);
+    if (playOnMount) visible.current = true;
+    return () => {
+      visible.current = false;
+      cancelPlaybackStart();
+    };
+  }, [playOnMount]);
   useEffect(() => {
-    if (replayRequest > 0) startPlayback(true);
+    if (!autoPlay || !playback) {
+      cancelPlaybackStart();
+      setPlaybackReady(false);
+      setCanvasHandedOff(false);
+      return;
+    }
+    if (visible.current) startPlayback();
+  }, [autoPlay, playback?.path]);
+  useEffect(() => {
+    if (replayRequest > 0 && visible.current) startPlayback(true);
   }, [replayRequest]);
   const logo = bundledImage(logoAsset) ?? null;
-  const still = bundledImage(playbackReady && atlas ? undefined : baseAsset);
+  const showCanvas = Boolean(playbackReady && atlas && playback);
+  const keepStaticUnderlay = !showCanvas || !canvasHandedOff;
+  const still = keepStaticUnderlay ? bundledImage(baseAsset) : undefined;
+  const showStaticSticker = Boolean(logo && (!autoPlay || !playback || atlas === null));
   return (
     <ZStack alignment="topLeading" frame={{ width: ART_WIDTH, height: ART_HEIGHT }}
-      onAppear={!playOnMount && autoPlay && playback ? () => startPlayback() : undefined}
+      onAppear={!playOnMount ? () => {
+        visible.current = true;
+        if (autoPlay && playback) startPlayback();
+      } : undefined}
       onDisappear={!playOnMount ? () => {
+        visible.current = false;
         cancelPlaybackStart();
-        if (playback) setPlaybackReady(false);
+        if (playback) {
+          setPlaybackReady(false);
+          setCanvasHandedOff(false);
+        }
       } : undefined}>
-      {playbackReady && atlas && playback ? <AnimatedPickupArtwork key={appearance} atlas={atlas}
-        playback={playback} logo={logo} logoSize={logoSize} logoX={logoX} logoY={logoY} /> : (
+      {keepStaticUnderlay ? (
         <ZStack alignment="topLeading">
           {still ? <Image image={still} resizable scaleToFit frame={{ width: ART_WIDTH, height: ART_HEIGHT }} /> : null}
-          {logo && (!autoPlay || !playback || atlas === null) ? <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
+          {showStaticSticker && logo ? <Image image={logo} resizable scaleToFit frame={{ width: logoSize, height: logoSize }}
             offset={{ x: logoX - logoSize / 2, y: logoY - logoSize / 2 }} /> : null}
         </ZStack>
-      )}
+      ) : null}
+      {showCanvas && atlas && playback ? <AnimatedPickupArtwork key={appearance} atlas={atlas}
+        playback={playback} logo={logo} logoSize={logoSize} logoX={logoX} logoY={logoY}
+        onFirstVisibleFrame={() => setCanvasHandedOff(true)} /> : null}
     </ZStack>
   );
 }
@@ -244,7 +307,7 @@ function ParcelCardListRow({ spaceAfter, width: containerWidth, art, animate, de
       <ParcelLiveActivityCard {...cardProps} width={containerWidth ?? width}
         onArtworkTap={cardProps.onArtworkTap ?? replay}
         artworkActionLabel={replay ? "重播商品动画" : undefined}
-        artwork={art ? <PickupTabArtwork key={animate ? art.playback?.path ?? art.baseAsset : art.baseAsset}
+        artwork={art ? <PickupTabArtwork key={`${art.baseAsset}:${art.playback?.path ?? ""}`}
           {...art} autoPlay={animate} replayRequest={replay ? replayRequest : 0}
           playOnMount={containerWidth !== undefined} /> : undefined} />
     </VStack>

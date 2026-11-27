@@ -37,7 +37,7 @@ import {
 import { saveRecognizedShipmentPickup, stateLoadFailure } from "../services/storage";
 import type { ParcelLookup } from "../services/parcel-code-ocr";
 import { attachedProjectedOrders } from "../services/waybill-ownership";
-import { DetailPage } from "./DetailPage";
+import { DetailPage, prefetchShipmentDetailEntry } from "./DetailPage";
 import {
   consumeShipmentNavigationTarget,
   manualPreviewNavigationTarget,
@@ -151,6 +151,35 @@ function shipmentFilter(semantic: StatusSemantic): Exclude<ShipmentFilter, "all"
   }
 }
 
+type ShipmentListItem = { id: string; shipment: Shipment; deleting: boolean; completing: boolean };
+
+function sameShipmentRowPresentation(left: Shipment, right: Shipment): boolean {
+  if (left === right) return true;
+  return left.updatedAtMs === right.updatedAtMs &&
+    left.note === right.note &&
+    left.forcedCompletedAtMs === right.forcedCompletedAtMs &&
+    left.identity.companyName === right.identity.companyName &&
+    left.identity.courierCode === right.identity.courierCode &&
+    left.identity.sender === right.identity.sender &&
+    left.identity.accountOrder === right.identity.accountOrder &&
+    left.identity.projectedWaybill === right.identity.projectedWaybill &&
+    displayWaybill(left) === displayWaybill(right) &&
+    left.timeline.semantic === right.timeline.semantic &&
+    left.timeline.latestTimeText === right.timeline.latestTimeText &&
+    left.timeline.latestDetail === right.timeline.latestDetail;
+}
+
+function sameShipmentItemList(
+  left: readonly ShipmentListItem[] | undefined,
+  right: readonly ShipmentListItem[],
+): boolean {
+  if (!left || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
 export function HomePage(props: {
   state: AppState;
   shipments: readonly Shipment[];
@@ -168,11 +197,11 @@ export function HomePage(props: {
 }) {
   const dismiss = Navigation.useDismiss();
   const pullInFlight = useRef<Promise<void> | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const deletingRef = useRef(false);
   /** E1: a pull's background completion applies its result only while this page is mounted. */
   const mountedRef = useRef(true);
-  const [completing, setCompleting] = useState(false);
+  const [completingId, setCompletingId] = useState<string | null>(null);
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
   const searchPresented = useObservable(props.autoFocusSearch && !props.initialShipmentId);
@@ -186,18 +215,56 @@ export function HomePage(props: {
     (shipment) => shipment.identity.id === props.initialShipmentId,
   ) ? persistedShipmentNavigationTarget(props.initialShipmentId) : null);
   const shipmentNavigationTargetRef = useRef(shipmentNavigationTarget);
-  const shipments = props.shipments;
-  const groups = useMemo(() => {
-    type Item = { id: string; shipment: Shipment; deleting: boolean; completing: boolean };
-    const buckets: Record<ShipmentFilter, Item[]> = { all: [], transit: [], pickup: [], danger: [] };
-    for (const shipment of shipments) {
-      const item = { id: shipment.identity.id, shipment, deleting, completing };
-      buckets.all.push(item);
-      const bucket = shipmentFilter(shipmentPresentationStatus(shipment).semantic);
-      if (bucket) buckets[bucket].push(item);
+  const [, setScrollSettleTick] = useState(0);
+  const scrollStateRef = useRef<{ moving: boolean; shown: readonly Shipment[]; latest: readonly Shipment[] }>({
+    moving: false,
+    shown: props.shipments,
+    latest: props.shipments,
+  });
+  scrollStateRef.current.latest = props.shipments;
+  if (!scrollStateRef.current.moving) {
+    scrollStateRef.current.shown = props.shipments;
+  }
+  const onListScrollSettled = useCallback((moving: boolean) => {
+    scrollStateRef.current.moving = moving;
+    if (!moving && scrollStateRef.current.shown !== scrollStateRef.current.latest) {
+      scrollStateRef.current.shown = scrollStateRef.current.latest;
+      setScrollSettleTick((tick) => tick + 1);
     }
+  }, []);
+  const shipments = scrollStateRef.current.shown;
+  const prevItemsRef = useRef(new Map<string, ShipmentListItem>());
+  const prevBucketsRef = useRef<Record<ShipmentFilter, ShipmentListItem[]> | null>(null);
+  const groups = useMemo(() => {
+    const nextItems = new Map<string, ShipmentListItem>();
+    const rawBuckets: Record<ShipmentFilter, ShipmentListItem[]> = { all: [], transit: [], pickup: [], danger: [] };
+    for (const shipment of shipments) {
+      const id = shipment.identity.id;
+      const deleting = deletingId === id;
+      const completing = completingId === id;
+      const previous = prevItemsRef.current.get(id);
+      const item = previous &&
+          previous.deleting === deleting &&
+          previous.completing === completing &&
+          sameShipmentRowPresentation(previous.shipment, shipment)
+        ? previous
+        : { id, shipment, deleting, completing };
+      nextItems.set(id, item);
+      rawBuckets.all.push(item);
+      const bucket = shipmentFilter(shipmentPresentationStatus(item.shipment).semantic);
+      if (bucket) rawBuckets[bucket].push(item);
+    }
+    prevItemsRef.current = nextItems;
+    const prevBuckets = prevBucketsRef.current;
+    const buckets: Record<ShipmentFilter, ShipmentListItem[]> = {
+      all: sameShipmentItemList(prevBuckets?.all, rawBuckets.all) ? prevBuckets!.all : rawBuckets.all,
+      transit: sameShipmentItemList(prevBuckets?.transit, rawBuckets.transit) ? prevBuckets!.transit : rawBuckets.transit,
+      pickup: sameShipmentItemList(prevBuckets?.pickup, rawBuckets.pickup) ? prevBuckets!.pickup : rawBuckets.pickup,
+      danger: sameShipmentItemList(prevBuckets?.danger, rawBuckets.danger) ? prevBuckets!.danger : rawBuckets.danger,
+    };
+    prevBucketsRef.current = buckets;
     return buckets;
-  }, [shipments, deleting, completing]);
+  }, [shipments, deletingId, completingId]);
   const visibleFilters = (Object.keys(shipmentFilters) as ShipmentFilter[])
     .filter((key) => key === "all" || groups[key].length > 0);
   const [selectedFilter, setSelectedFilter] = useState<ShipmentFilter>("all");
@@ -351,7 +418,7 @@ export function HomePage(props: {
   async function confirmDelete(shipment: Shipment): Promise<void> {
     if (deletingRef.current) return;
     deletingRef.current = true;
-    setDeleting(true);
+    setDeletingId(shipment.identity.id);
     setNotice("");
     try {
       const confirmed = await Dialog.confirm({
@@ -367,7 +434,7 @@ export function HomePage(props: {
       setNotice(EXPRESS_TOAST_COPY.deleteFailed);
     } finally {
       deletingRef.current = false;
-      setDeleting(false);
+      setDeletingId(null);
     }
   }
 
@@ -378,6 +445,7 @@ export function HomePage(props: {
       setNotice(EXPRESS_TOAST_COPY.deleteFailed);
       return;
     }
+    scrollStateRef.current.moving = false;
     props.onStateChange(result.state);
     if (typeof synchronizeParcelCloudRecords === "function") {
       void synchronizeParcelCloudRecords().catch(() => undefined);
@@ -393,7 +461,7 @@ export function HomePage(props: {
   async function confirmComplete(shipment: Shipment): Promise<void> {
     if (completingRef.current) return;
     completingRef.current = true;
-    setCompleting(true);
+    setCompletingId(shipment.identity.id);
     setNotice("");
     try {
       const confirmed = await Dialog.confirm({
@@ -408,7 +476,7 @@ export function HomePage(props: {
       setNotice(EXPRESS_TOAST_COPY.signFailed);
     } finally {
       completingRef.current = false;
-      setCompleting(false);
+      setCompletingId(null);
     }
   }
 
@@ -419,6 +487,7 @@ export function HomePage(props: {
       setNotice(EXPRESS_TOAST_COPY.signFailed);
       return;
     }
+    scrollStateRef.current.moving = false;
     props.onStateChange(result.state);
     if (typeof synchronizeParcelCloudRecords === "function") {
       void synchronizeParcelCloudRecords().catch(() => undefined);
@@ -427,6 +496,7 @@ export function HomePage(props: {
   }
 
   function openShipment(shipment: Shipment) {
+    prefetchShipmentDetailEntry(shipment, shipments);
     setShipmentNavigationTarget(
       persistedShipmentNavigationTarget(shipment.identity.id),
     );
@@ -589,6 +659,7 @@ export function HomePage(props: {
           subtitle={`${groups.pickup.length} 件待取 · ${groups.all.length} 个包裹`}
           onClose={() => dismiss()}
           refresh={refresh} bottomInset={TAB_FAB_SCROLL_INSET}
+          onListScrollSettled={onListScrollSettled}
           titleAction={(
             <TabFloatingActionButton title="查询" symbol="magnifyingglass" action={() => searchPresented.setValue(true)} />
           )}

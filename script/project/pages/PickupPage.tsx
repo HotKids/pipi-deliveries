@@ -26,7 +26,7 @@ import { deleteIndependentParcelCode, parcelCardKey, setParcelHandoffWindow, set
 import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { diagnosticErrorDetails, writeDiagnostic } from "../services/logger";
 import { requestWidgetReload } from "../services/widgets";
-import { DetailPage } from "./DetailPage";
+import { DetailPage, prefetchShipmentDetailEntry } from "./DetailPage";
 import { PlatformWebLogin } from "./PlatformAccountPages";
 import { IDENTITY_CODE_TITLES, StationIdentityMark, StationIdentityPage } from "./StationIdentityPage";
 import { pickupCabinetActions } from "../services/platform-parcel-sync";
@@ -372,6 +372,7 @@ export function PickupPage({
         onArtworkChange={onArtworkChange}
         showNotice={showNotice} onDetail={shipment ? () => {
           identityRequest.current++;
+          prefetchShipmentDetailEntry(shipment, shipments);
           setDetailTarget(target);
         } : undefined}
         deleteAction={record ? {

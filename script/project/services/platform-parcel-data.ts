@@ -174,8 +174,9 @@ function cainiaoParcelFields(parcel: JsonObject, now: number) {
   if (typeof parcel.packageDyn === "string") {
     try { dynamic = asPlainObject(JSON.parse(parcel.packageDyn)); } catch { /* Unknown provider field. */ }
   }
+  const itemTitles = objectList(parcel.packageItem).map((item) => productTitle(item.itemTitle)).filter(Boolean);
   return {
-    title: [...new Set(objectList(parcel.packageItem).map((item) => productTitle(item.itemTitle)).filter(Boolean))].join("\n"),
+    title: itemTitles.length ? itemTitles[itemTitles.length - 1]! : "",
     estimate: CN_RECIPIENT_TERMINAL.test(firstCleanScalarText(parcel, "status", "statusDesc", "packageStatus")) ? "" :
       uniqueDeliveryForecast([...Object.values(parcel), ...Object.values(dynamic)], now),
   };

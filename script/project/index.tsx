@@ -30,6 +30,7 @@ import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
+import { prewarmPickupTabAssets } from "./components/PickupTabCard";
 import { ROOT_PAGE_BG } from "./components/TabFloatingActionButton";
 import type { PickupEmptyArtwork } from "./components/EmptyDeliveryVehicle";
 import { expireDueParcelHandoffs, loadAppState, peekStateRevision, refreshStoredWatchShipments, toggleParcelArtwork, visibleShipments } from "./services/storage";
@@ -88,6 +89,7 @@ type StartupState = {
 };
 
 const LAUNCH_INTERACTION_GRACE_MS = 250;
+const BACKGROUND_STATE_COALESCE_MS = 60;
 
 function shortcutPickupRecordId(state: AppState | null, parameters: Readonly<Record<string, unknown>>): string {
   const id = parameters[PARCEL_SHORTCUT_RECORD_PARAMETER];
@@ -251,8 +253,13 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
     [state?.pickupCodeRecords]);
   const query = Script.queryParameters || {};
   const focusSearch = String(query.focus || "") === "search";
+  const coalescedStateRef = useRef<{
+    lastCommitAt: number;
+    pending: AppState | null;
+    timer?: ReturnType<typeof setTimeout>;
+  }>({ lastCommitAt: 0, pending: null });
 
-  function applyState(next: AppState) {
+  function commitState(next: AppState) {
     setStartup((current) => {
       const selected = current.state
         ? preferNewerState(current.state, next)
@@ -263,6 +270,52 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
       return { state: selected };
     });
   }
+
+  function applyImmediateState(next: AppState) {
+    const slot = coalescedStateRef.current;
+    if (slot.timer !== undefined) {
+      clearTimeout(slot.timer);
+      slot.timer = undefined;
+    }
+    const merged = slot.pending ? preferNewerState(slot.pending, next) : next;
+    slot.pending = null;
+    slot.lastCommitAt = Date.now();
+    commitState(merged);
+  }
+
+  function applyState(next: AppState) {
+    const slot = coalescedStateRef.current;
+    slot.pending = slot.pending ? preferNewerState(slot.pending, next) : next;
+    if (slot.timer !== undefined) return;
+    const now = Date.now();
+    const elapsed = now - slot.lastCommitAt;
+    if (elapsed >= BACKGROUND_STATE_COALESCE_MS) {
+      const chosen = slot.pending;
+      slot.pending = null;
+      slot.lastCommitAt = now;
+      commitState(chosen);
+      return;
+    }
+    slot.timer = setTimeout(() => {
+      slot.timer = undefined;
+      const chosen = slot.pending;
+      slot.pending = null;
+      if (!chosen) return;
+      slot.lastCommitAt = Date.now();
+      commitState(chosen);
+    }, Math.max(0, BACKGROUND_STATE_COALESCE_MS - elapsed));
+  }
+
+  useEffect(() => () => {
+    if (coalescedStateRef.current.timer !== undefined) {
+      clearTimeout(coalescedStateRef.current.timer);
+      coalescedStateRef.current.timer = undefined;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (hasPickupTab) prewarmPickupTabAssets(pickupCards, pickupPreview);
+  }, [hasPickupTab, pickupCards, pickupPreview]);
 
   function refreshPlatformList(mode: "observe" | "pull") {
     return refreshPlatformParcels(applyState, mode).then((result) => {
@@ -377,7 +430,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
       return;
     }
     try {
-      const notice = await performPickupAction(card, openCabinet, applyState);
+      const notice = await performPickupAction(card, openCabinet, applyImmediateState);
       if (notice) setPickupNotice(notice);
       if (!openCabinet && typeof refreshParcelCloud === "function") void refreshParcelCloud();
     } catch (error) {
@@ -419,7 +472,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
           return true;
         }
       } else {
-        applyState(toggleParcelArtwork(card));
+        applyImmediateState(toggleParcelArtwork(card));
         return true;
       }
     } catch (error) {
@@ -744,7 +797,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
             activityMealQRCode={navigationRequest.activityMealQRCode}
             onActivityMealQRCodeHandled={target => setNavigationRequest(current => current.activityMealQRCode === target
               ? { ...current, activityMealQRCode: undefined } : current)}
-            onStateChange={applyState}
+            onStateChange={applyImmediateState}
             showNotice={setPickupNotice}
             toast={transientToast(pickupNotice, setPickupNotice)}
             onAction={finishPickup}
@@ -755,7 +808,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
                 refreshMeals(true),
                 refreshParcelCloud(),
                 refreshPlatformList("pull"),
-                refreshAllShipments(undefined, { forceManualRefresh: true }).then((summary) => applyState(summary.state)),
+                refreshAllShipments(undefined, { forceManualRefresh: true }).then((summary) => applyImmediateState(summary.state)),
               ]);
             }}
           />
@@ -776,7 +829,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
             setNavigationRequest((current) =>
               current.generation === generation ? { ...current, shortcutLookup: undefined } : current);
           }}
-          onStateChange={applyState}
+          onStateChange={applyImmediateState}
           onListPull={() => { refreshPlatformList("pull"); return startCloudRecords("list_pull").international; }}
           platformNotice={platformNotice}
           onOpenSettings={() => {
@@ -786,7 +839,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
         />
       </Tab>
       <Tab key="settings" title="设置" systemImage="gearshape.fill" value="settings">
-        <SettingsPage state={state} onStateChange={applyState} rootRequest={settingsRootRequest}
+        <SettingsPage state={state} onStateChange={applyImmediateState} rootRequest={settingsRootRequest}
           onCloudRecordsRefresh={() => refreshCloudRecords("sync_now")}
           onAccessKeyChanged={() => {
             setWatchAccessRevision(value => value + 1);

@@ -25,7 +25,14 @@ import type { AccountBinding, AppState, Shipment } from "../models";
 import { ProductThumbnail } from "../components/ProductThumbnail";
 import { bundledImage } from "../components/bundled-image";
 import { iconTileShape } from "../components/icon-tile";
-import { productImageCacheKey } from "../services/product-image-cache";
+import {
+  cachedProductImage,
+  cainiaoImageCacheKey,
+  cloudProductImageCacheKey,
+  pddImageCacheKey,
+  productImageCacheKey,
+} from "../services/product-image-cache";
+import { warmCachedProductImage } from "../services/product-images";
 import { SenderBadge } from "../components/SenderBadge";
 import { carrierDisplayName, courierHotline } from "../services/carrier-presentation";
 import {
@@ -105,6 +112,89 @@ const DETAIL_SOURCES: Readonly<Record<string, readonly [string, string] | undefi
   shunfeng: ["顺丰", "sources/sfexpress.png"],
 };
 type DetailCloudState = { scope: string; details?: CloudParcelDetails };
+const PREFETCH_DETAIL_TTL_MS = 15_000;
+type PrefetchedDetailEntry = Readonly<{
+  shipmentId: string;
+  cloudWaybill: string;
+  cloudLifecycle: string;
+  credential: ReturnType<typeof gatewayCredentialForLocalCache>;
+  metadata?: CloudParcelDetails["metadata"];
+  pddLink?: CloudParcelDetails["pddLink"];
+  atMs: number;
+}>;
+let prefetchedDetailEntry: PrefetchedDetailEntry | null = null;
+let prefetchDetailController: AbortController | null = null;
+let prefetchDetailTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Warms local cache metadata and persisted product thumbnail asynchronously for ONLY the tapped
+ * shipment during navigation entry, keeping the tap handler and DetailPage first paint free of
+ * synchronous Keychain, directory, and image-decoding work.
+ */
+export function prefetchShipmentDetailEntry(
+  shipment: Shipment,
+  visibleRows?: readonly Shipment[],
+): void {
+  if (prefetchDetailTimer !== null) {
+    clearTimeout(prefetchDetailTimer);
+    prefetchDetailTimer = null;
+  }
+  prefetchDetailController?.abort();
+  const controller = new AbortController();
+  prefetchDetailController = controller;
+  const shipmentId = shipment.identity.id;
+  prefetchDetailTimer = setTimeout(() => {
+    prefetchDetailTimer = null;
+    if (controller.signal.aborted) return;
+    const waybill = displayWaybill(shipment);
+    const normalizedWaybill = normalizeWaybill(waybill);
+    const localPddURL = !unprojectedAccountOrder(shipment)
+      ? pddParcelAppURL(shipment.pddImport, normalizedWaybill) : "";
+    const targetCloudWaybill = SCRIPT_BUILD_TRACK === "formal" &&
+        (needsParcelDetailFields(shipment) || !localPddURL) && !unprojectedAccountOrder(shipment)
+      ? normalizedWaybill : "";
+    const targetLifecycle = shipmentLifecycleKey(shipment);
+    const credential = /^[A-Z0-9]{6,64}$/.test(targetCloudWaybill) ? gatewayCredentialForLocalCache() : null;
+    let metadata: CloudParcelDetails["metadata"];
+    let pddLink: CloudParcelDetails["pddLink"];
+    if (credential && !credential.rejected && targetCloudWaybill) {
+      try {
+        const rows = visibleRows ?? visibleShipments(readAppStateSnapshot().state);
+        const matches = rows.filter(item =>
+          !unprojectedAccountOrder(item) && normalizeWaybill(displayWaybill(item)) === targetCloudWaybill);
+        if (matches.length === 1 && shipmentLifecycleKey(matches[0]) === targetLifecycle) {
+          metadata = readCachedCloudParcelMetadata(credential.scope, JSON.stringify([targetCloudWaybill, targetLifecycle]));
+        }
+      } catch { /* Optional prefetch skips unavailable state. */ }
+      try {
+        pddLink = readCachedParcelCloudPddLink(credential.scope, targetCloudWaybill);
+      } catch { /* Optional prefetch skips unavailable link cache. */ }
+    }
+    if (controller.signal.aborted) return;
+    prefetchedDetailEntry = {
+      shipmentId,
+      cloudWaybill: targetCloudWaybill,
+      cloudLifecycle: targetLifecycle,
+      credential,
+      metadata,
+      pddLink,
+      atMs: Date.now(),
+    };
+    const directKey = shipment.identity.enhancedMode || shipment.identity.productImageURL
+      ? productImageCacheKey(shipment.identity) : "";
+    const cainiaoKey = !directKey && shipment.platformFields?.cainiaoImage?.url
+      ? cainiaoImageCacheKey(shipment) : "";
+    const pddKey = !directKey && !cainiaoKey && shipment.platformFields?.pddImage
+      ? pddImageCacheKey(shipment) : "";
+    const cloudImageURL = metadata?.productImageURL || "";
+    const cloudKey = !directKey && !cainiaoKey && !pddKey && credential && !credential.rejected && cloudImageURL
+      ? cloudProductImageCacheKey(shipment, credential.scope, cloudImageURL) : "";
+    const imageKey = directKey || cainiaoKey || pddKey || cloudKey;
+    if (imageKey && !cachedProductImage(imageKey) && typeof warmCachedProductImage === "function") {
+      void warmCachedProductImage(imageKey, controller.signal).catch(() => undefined);
+    }
+  }, 0);
+}
 
 export function DetailPage(props: {
   shipment: Shipment;
@@ -123,6 +213,10 @@ export function DetailPage(props: {
 }) {
   const [shipment, setShipment] = useState(props.shipment);
   const [notice, setNotice] = useState("");
+  const [detailPostPaintReady, setDetailPostPaintReady] = useState(
+    () => prefetchedDetailEntry?.shipmentId === props.shipment.identity.id &&
+      Date.now() - prefetchedDetailEntry.atMs < PREFETCH_DETAIL_TTL_MS,
+  );
   const [cloud, setCloud] = useState<DetailCloudState | undefined>(undefined);
   const pendingWhileScrolling = useRef<{ moving: boolean; shipment?: Shipment; cloud?: DetailCloudState }>({ moving: false });
   function showShipment(updated: Shipment) {
@@ -414,24 +508,37 @@ export function DetailPage(props: {
   const cloudWaybill = SCRIPT_BUILD_TRACK === "formal" && props.persistedShipment &&
       (needsExtraFields || !localPddAppURL) && !unprojectedAccountOrder(shipment)
     ? normalizeWaybill(displayWaybill(shipment)) : "";
-  const cloudCredential = /^[A-Z0-9]{6,64}$/.test(cloudWaybill) ? gatewayCredentialForLocalCache() : null;
-  const cloudGeneration = cloudCredential?.generation ?? null;
+  const canReadSyncLocalCache = typeof detailPostPaintReady === "boolean" ? detailPostPaintReady : true;
   const cloudLifecycle = shipmentLifecycleKey(shipment);
+  const prefetchedMatch = typeof prefetchedDetailEntry === "object" && prefetchedDetailEntry !== null &&
+      prefetchedDetailEntry.shipmentId === shipment.identity.id &&
+      prefetchedDetailEntry.cloudWaybill === cloudWaybill &&
+      prefetchedDetailEntry.cloudLifecycle === cloudLifecycle &&
+      Date.now() - prefetchedDetailEntry.atMs < PREFETCH_DETAIL_TTL_MS
+    ? prefetchedDetailEntry : undefined;
+  const cloudCredential = /^[A-Z0-9]{6,64}$/.test(cloudWaybill)
+    ? (prefetchedMatch ? prefetchedMatch.credential : canReadSyncLocalCache ? gatewayCredentialForLocalCache() : null)
+    : null;
+  const cloudGeneration = cloudCredential?.generation ?? null;
   const cloudParcel = JSON.stringify([cloudWaybill, cloudLifecycle]);
   const cloudScope = cloudCredential ? JSON.stringify([cloudGeneration, cloudParcel]) : "";
   const initialCloudMetadata = useMemo(() => {
     if (!cloudCredential || cloudCredential.rejected) return;
+    if (prefetchedMatch) return prefetchedMatch.metadata;
+    if (!canReadSyncLocalCache) return;
     try {
       const metadata = readCachedCloudParcelMetadata(cloudCredential.scope, cloudParcel);
       if (metadata && ownsCloudWaybill(props.visibleShipments)) return metadata;
     } catch { /* Shipment state or the optional cache may be temporarily unavailable. */ }
-  }, [cloudScope, cloudCredential?.rejected, props.visibleShipments]);
+  }, [canReadSyncLocalCache, cloudScope, cloudCredential?.rejected, prefetchedMatch, props.visibleShipments]);
   const restoredPddLink = useMemo(() => {
     if (!cloudCredential || cloudCredential.rejected || !cloudWaybill) return;
+    if (prefetchedMatch) return prefetchedMatch.pddLink;
+    if (!canReadSyncLocalCache) return;
     try {
       return readCachedParcelCloudPddLink(cloudCredential.scope, cloudWaybill);
     } catch { return undefined; }
-  }, [cloudCredential?.scope, cloudCredential?.rejected, cloudWaybill]);
+  }, [canReadSyncLocalCache, cloudCredential?.scope, cloudCredential?.rejected, cloudWaybill, prefetchedMatch]);
   const restoredCloud = initialCloudMetadata || restoredPddLink
     ? { ...(initialCloudMetadata ? { metadata: initialCloudMetadata } : {}), ...(restoredPddLink ? { pddLink: restoredPddLink } : {}) }
     : undefined;
@@ -561,10 +668,17 @@ export function DetailPage(props: {
   const imageScope = JSON.stringify([cloudLifecycle, waybill, cloudScope]);
   const [imageDownloadScope, setImageDownloadScope] = useState("");
   useEffect(() => {
+    if (detailPostPaintReady) return;
+    const hydrateTimer = setTimeout(() => {
+      setDetailPostPaintReady(true);
+    }, 0);
+    return () => clearTimeout(hydrateTimer);
+  }, [detailPostPaintReady, props.shipment.identity.id]);
+  useEffect(() => {
     const controller = new AbortController();
     void finishDetailOpening(controller.signal);
     return () => { controller.abort(); cloudAbortRef.current?.abort(); };
-  }, [imageScope, props.persistedShipment]);
+  }, [detailPostPaintReady, imageScope, props.persistedShipment]);
 
   function refresh(forceManualRefresh = false): Promise<Shipment | undefined> {
     if (forceManualRefresh && pullInFlightRef.current) return pullInFlightRef.current;
@@ -957,7 +1071,8 @@ export function DetailPage(props: {
               unprojectedAccountOrder(shipment),
             )}
             size={72}
-            allowDownload={imageDownloadScope === imageScope}
+            deferDiskDecode={!detailPostPaintReady}
+            allowDownload={detailPostPaintReady && imageDownloadScope === imageScope}
             imageURL={shipment.identity.productImageURL}
             cloudImage={cloudImageProp}
           />
