@@ -6,7 +6,7 @@ import { mealCredentialScope } from "./rules";
 
 export function mealRedemption({ brandId, code, qrPayload }: MealPayload) {
   if (!qrPayload?.trim()) return undefined;
-  if (brandId === "chayanyuese") return { payload: qrPayload, label: "待核销", title: "核销码", prompt: "请扫码核销" };
+  if (brandId === "chayanyuese" && !code?.trim()) return { payload: qrPayload, label: "待核销", title: "核销码", prompt: "请扫码核销" };
   if (brandId === "ruixing") return { payload: qrPayload, label: code?.trim() || "待取餐", title: "取餐码", prompt: "请扫码取餐" };
 }
 

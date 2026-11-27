@@ -43,8 +43,11 @@ function mealObservation(payload: MealPayload, rawRules: MealRules["raw"], produ
   return { payload: artwork.drinkTemperature ? { ...payload, drinkTemperature: artwork.drinkTemperature } : payload, artwork };
 }
 
+type Candidate = { content: string; boundingBox: VisionBoundingBox };
+
 export function onlineMealRequiresQR(fields: Record<string, unknown>, rules: MealRules): boolean {
-  if (redemptionIdentity(rules.parsed, ["brand", "merchantName", "productName"].map(key => modelText(fields, key)).join("\n"))) {
+  if (!modelText(fields, "pickupCode", 256).trim()
+      && redemptionIdentity(rules.parsed, ["brand", "merchantName", "productName"].map(key => modelText(fields, key)).join("\n"))) {
     return true;
   }
   const brand = onlineBrand(
@@ -57,28 +60,42 @@ export function onlineMealRequiresQR(fields: Record<string, unknown>, rules: Mea
   return brand?.id === "ruixing";
 }
 
-export function mealFromModel(fields: Record<string, unknown>, capturedAt: number, rules: MealRules): MealObservation | null {
+export function mealFromModel(
+  fields: Record<string, unknown>,
+  capturedAt: number,
+  rules: MealRules,
+  candidates?: readonly Candidate[],
+): MealObservation | null {
   const code = modelText(fields, "pickupCode", 256);
   if (!code) return null;
   const name = modelText(fields, "brand", 256);
+  const merchant = modelText(fields, "merchantName");
   const product = modelText(fields, "productName");
   const spec = modelText(fields, "productSpec");
-  const brand = onlineBrand(rules.parsed, name, code, product, spec);
+  const joined = [
+    merchant,
+    product,
+    ...(candidates ?? []).map(item => normalizePickupText(item.content)),
+  ].filter(Boolean).join("\n");
+  const brand = onlineBrand(rules.parsed, name, code, product, spec)
+    ?? (!name ? redemptionIdentity(rules.parsed, joined) : undefined);
   const payload: MealPayload = {
     brandId: brand?.id ?? rules.parsed.genericBrandId, brandName: brand?.name ?? (name || rules.parsed.genericBrandName),
-    code, merchantName: chineseParentheses(cleanMerchant(modelText(fields, "merchantName"), rules.parsed)),
+    code, merchantName: chineseParentheses(cleanMerchant(merchant, rules.parsed)),
     productName: productTitle(product), createdAt: capturedAt, expiresAt: capturedAt + rules.parsed.ttlSeconds * 1000,
     ...onlineMetadata(fields),
   };
   return mealObservation(payload, rules.raw, product, spec ? product + "\n" + spec : "");
 }
 
-type Candidate = { content: string; boundingBox: VisionBoundingBox };
 export async function recognizeMealImage(image: UIImage, candidates: readonly Candidate[], capturedAt: number,
   rules: MealRules, model?: Record<string, unknown>) {
   const width = image.width * image.scale, height = image.height * image.scale;
   const joined = candidates.map(item => normalizePickupText(item.content)).join("\n");
   const tea = redemptionPage(rules.parsed, joined);
+  if (model && !tea && !onlineMealRequiresQR(model, rules) && modelText(model, "pickupCode", 256)) {
+    return recognizeMealText(candidates, width, height, capturedAt, [], rules, model);
+  }
   const qrPayloads = tea ? readMealQRs(image) : await QRCode.parseImage(image).then(value => value ? [value] : [], () => []);
   return recognizeMealText(candidates, width, height, capturedAt, qrPayloads, rules, model);
 }
@@ -87,6 +104,11 @@ export function recognizeMealText(
   candidates: readonly Candidate[], width: number, height: number, capturedAt: number,
   qrPayloads: readonly string[], rules: MealRules, model?: Record<string, unknown>,
 ): { meals: MealObservation[]; draft?: MealObservation } {
+  const joined = candidates.map(item => normalizePickupText(item.content)).join("\n");
+  if (model && !redemptionPage(rules.parsed, joined) && !onlineMealRequiresQR(model, rules)) {
+    const fromModel = mealFromModel(model, capturedAt, rules, candidates);
+    if (fromModel) return { meals: [fromModel] };
+  }
   const blocks = candidates.map(candidate => visionBoundingBoxToOcrBlock(candidate.content, candidate.boundingBox, width, height));
   const input = { blocks, screenWidth: width, recognizedAtMs: capturedAt, rawBarcodes: qrPayloads };
   const parsed = parsePickupCredentials(input, rules.parsed);

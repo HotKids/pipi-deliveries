@@ -11,6 +11,7 @@ export const WIDGET_REFRESH_BUDGET_MS = 7_000;
 export const WIDGET_REFRESH_WAIT_MS = 8_000;
 export const WIDGET_RELOAD_AFTER_MS = 15 * 60 * 1_000;
 export const WIDGET_RECENT_STATE_MS = 60_000;
+export const WIDGET_FAILURE_BACKOFF_MS = 45_000;
 
 export function widgetPresentationKind(family: string): WidgetPresentationKind {
   if (family === "systemSmall") return "small";
@@ -62,9 +63,27 @@ export async function bestEffortWidgetRefresh(
 export function shouldRunWidgetNetworkRefresh(
   stateUpdatedAtMs: number,
   now = Date.now(),
+  recentFailure?: Readonly<{
+    failedAtMs: number;
+    stateRevision: number;
+    currentStateRevision?: number;
+  }>,
 ): boolean {
-  if (!Number.isFinite(stateUpdatedAtMs) || stateUpdatedAtMs <= 0) return true;
-  return now - stateUpdatedAtMs >= WIDGET_RECENT_STATE_MS;
+  if (Number.isFinite(stateUpdatedAtMs) && stateUpdatedAtMs > 0 && now - stateUpdatedAtMs < WIDGET_RECENT_STATE_MS) {
+    return false;
+  }
+  if (
+    recentFailure &&
+    Number.isFinite(recentFailure.failedAtMs) &&
+    recentFailure.failedAtMs > 0 &&
+    now >= recentFailure.failedAtMs &&
+    now - recentFailure.failedAtMs < WIDGET_FAILURE_BACKOFF_MS &&
+    (recentFailure.currentStateRevision === undefined ||
+      recentFailure.currentStateRevision <= recentFailure.stateRevision)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function widgetReloadPolicy(now = Date.now()): Readonly<{

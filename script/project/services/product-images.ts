@@ -12,6 +12,7 @@ const THUMBNAIL_EDGE = 432;
 
 async function decode(data: Data, signal: AbortSignal, details: DiagnosticDetails): Promise<UIImage | null> {
   if (signal.aborted || data.size <= 0 || data.size > MAX_IMAGE_BYTES) return null;
+  const decodeStartedAt = Date.now();
   details.stage = "metadata";
   if (typeof ImageIO === "undefined" || typeof ImageIO.readMetadata !== "function") {
     details.result = "unavailable_api";
@@ -30,6 +31,7 @@ async function decode(data: Data, signal: AbortSignal, details: DiagnosticDetail
     width: THUMBNAIL_EDGE,
     height: THUMBNAIL_EDGE,
   }) || null;
+  details.loadDurationMs = Date.now() - decodeStartedAt;
   if (!image) details.result = "decode_failed";
   return image;
 }
@@ -41,11 +43,13 @@ function cachePath(url: string): string {
 }
 
 async function cached(path: string, signal: AbortSignal, details: DiagnosticDetails): Promise<{ image: UIImage; data: Data } | null> {
+  const readStartedAt = Date.now();
   try {
     const stat = await FileManager.stat(path);
     if (signal.aborted || stat.type !== "file" || stat.size <= 0 ||
         stat.size > MAX_IMAGE_BYTES || await FileManager.isLink(path)) return null;
     const data = await FileManager.readAsData(path);
+    details.readDurationMs = Date.now() - readStartedAt;
     let image: UIImage | null = null;
     try { image = await decode(data, signal, details); }
     catch { /* A corrupt encoded cache is replaced by the next successful download. */ }
@@ -192,6 +196,77 @@ async function download(url: string, controller: AbortController, details: Diagn
   }
 }
 
+type SharedImageTask = {
+  promise: Promise<UIImage | null>;
+  waiters: number;
+  controller: AbortController;
+};
+
+const warmInFlight = new Map<string, SharedImageTask>();
+
+function awaitSharedImageTask(
+  map: Map<string, SharedImageTask>,
+  key: string,
+  signal: AbortSignal | undefined,
+  start: (controller: AbortController) => Promise<UIImage | null>,
+): Promise<UIImage | null> {
+  let entry = map.get(key);
+  if (!entry) {
+    const controller = new AbortController();
+    const created: SharedImageTask = {
+      waiters: 0,
+      controller,
+      promise: Promise.resolve(null),
+    };
+    created.promise = start(controller).finally(() => {
+      if (map.get(key) === created) map.delete(key);
+    });
+    map.set(key, created);
+    entry = created;
+  }
+  entry.waiters += 1;
+  if (!signal) {
+    return entry.promise.finally(() => {
+      entry!.waiters = Math.max(0, entry!.waiters - 1);
+    });
+  }
+  return new Promise<UIImage | null>((resolve) => {
+    let settled = false;
+    const release = () => {
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      release();
+      entry!.waiters = Math.max(0, entry!.waiters - 1);
+      if (entry!.waiters === 0) entry!.controller.abort();
+      resolve(null);
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort);
+    void entry!.promise.then(
+      (image) => {
+        if (settled) return;
+        settled = true;
+        release();
+        entry!.waiters = Math.max(0, entry!.waiters - 1);
+        resolve(signal.aborted ? null : image);
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        release();
+        entry!.waiters = Math.max(0, entry!.waiters - 1);
+        resolve(null);
+      },
+    );
+  });
+}
+
 /** Asynchronously reads and decodes a persisted product image into the memory cache without network requests. */
 export async function warmCachedProductImage(
   key: string,
@@ -202,10 +277,7 @@ export async function warmCachedProductImage(
   try { if (isRetained && !isRetained()) return null; } catch { return null; }
   const remembered = cachedProductImage(key);
   if (remembered) return remembered;
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  signal?.addEventListener("abort", abort);
-  try {
+  const image = await awaitSharedImageTask(warmInFlight, key, signal, async (controller) => {
     let paths: string[] = [];
     try { paths = productImageCacheFiles(key); } catch { paths = []; }
     const details: DiagnosticDetails = { stage: "cache", result: "failed" };
@@ -223,9 +295,10 @@ export async function warmCachedProductImage(
       }
     }
     return null;
-  } finally {
-    signal?.removeEventListener("abort", abort);
-  }
+  });
+  if (!image || signal?.aborted) return null;
+  try { if (isRetained && !isRetained()) return null; } catch { return null; }
+  return image;
 }
 
 /** Product images are optional; cancellation and every validation failure return null. */
@@ -233,6 +306,11 @@ export async function loadProductImage(value: string, signal?: AbortSignal, owne
   if (signal?.aborted || !retained(owner)) return null;
   const remembered = owner ? cachedProductImage(owner.key) : null;
   if (remembered) return remembered;
+  if (owner?.key && warmInFlight.has(owner.key)) {
+    const warmed = await awaitSharedImageTask(warmInFlight, owner.key, signal, async () => null);
+    if (signal?.aborted || !retained(owner)) return null;
+    if (warmed) return rememberProductImage(owner.key, warmed, owner.isRetained);
+  }
   const url = allowedProductImageURL(value.trim());
   if (!url && !owner) {
     writeDiagnostic("product.image.completed", { stage: "validation", result: "invalid_url" }, "warning");

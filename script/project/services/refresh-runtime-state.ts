@@ -51,6 +51,8 @@ type RefreshRuntimeState = Readonly<{
   revision: number;
   lastAccountSyncSuccessAtMs: number;
   lastBackgroundPollSuccessAtMs: number;
+  lastWidgetFailureAtMs?: number;
+  lastWidgetFailureStateRevision?: number;
   providers: readonly ProviderSchedule[];
   leases: readonly RuntimeLease[];
   manualAttempts?: readonly RuntimeManualRefreshAttempt[];
@@ -460,11 +462,38 @@ export function recordNetworkRefreshSuccess(
     writeRuntimeMetadata({
       ...current,
       revision: current.revision + 1,
+      lastWidgetFailureAtMs: undefined,
+      lastWidgetFailureStateRevision: undefined,
       ...(kind === "account"
         ? { lastAccountSyncSuccessAtMs: now }
         : { lastBackgroundPollSuccessAtMs: now }),
   });
   });
+}
+
+export function recordWidgetNetworkFailure(
+  stateRevision = 0,
+  now = Date.now(),
+): void {
+  withSharedFileTransaction(() => {
+    const current = readRuntimeMetadata(now);
+    writeRuntimeMetadata({
+      ...current,
+      revision: current.revision + 1,
+      lastWidgetFailureAtMs: now,
+      lastWidgetFailureStateRevision: Math.max(0, Math.floor(Number(stateRevision) || 0)),
+    });
+  });
+}
+
+export function lastWidgetNetworkFailure(
+  now = Date.now(),
+): Readonly<{ failedAtMs: number; stateRevision: number }> {
+  const state = readRuntimeMetadata(now);
+  return {
+    failedAtMs: finiteTimestamp(state.lastWidgetFailureAtMs),
+    stateRevision: Math.max(0, Math.floor(Number(state.lastWidgetFailureStateRevision) || 0)),
+  };
 }
 
 export type DurableRefreshLease = Readonly<{

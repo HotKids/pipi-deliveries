@@ -15,6 +15,7 @@ import me.pipi.deliveries.R;
 import me.pipi.deliveries.feature.express.ExpressDetailActivity;
 import me.pipi.deliveries.feature.express.ExpressStatusColors;
 import me.pipi.deliveries.model.ExpressItem;
+import me.pipi.deliveries.model.StatusSemantic;
 
 /** One derived live notification; shipment records remain owned by the repository. */
 public final class ExpressLiveNotifications {
@@ -25,9 +26,21 @@ public final class ExpressLiveNotifications {
     private static final String PREFS = "express_live_settings";
     private static final String DELIVERY = "delivery";
     private static final String PICKUP = "pickup";
-    // Owner 2026-11-20 (修改 11): 待派送, 派送中 and 待取件 share the green end of the status hue line.
+    // Owner 2026-11-27 (修改 29, A2 5-hue line): 橙系派送待取 uses SEMANTIC_STYLE_CAUTION.
     @android.annotation.SuppressLint("InlinedApi")
-    static final int TITLE_SEMANTIC = Notification.SEMANTIC_STYLE_SAFE;
+    static final int TITLE_SEMANTIC = Notification.SEMANTIC_STYLE_CAUTION;
+
+    @android.annotation.SuppressLint("InlinedApi")
+    public static int titleSemantic(StatusSemantic semantic) {
+        if (semantic == null) return Notification.SEMANTIC_STYLE_UNSPECIFIED;
+        return switch (semantic) {
+            case ORDERED, SHIPPED, PICKED -> Notification.SEMANTIC_STYLE_INFO;
+            case TRANSIT -> Notification.SEMANTIC_STYLE_SAFE;
+            case DELIVERY, WAITING_PICKUP -> Notification.SEMANTIC_STYLE_CAUTION;
+            case DANGER, CANCELLED -> Notification.SEMANTIC_STYLE_DANGER;
+            case COMPLETED, UNKNOWN -> Notification.SEMANTIC_STYLE_UNSPECIFIED;
+        };
+    }
 
     private ExpressLiveNotifications() {}
 
@@ -125,8 +138,8 @@ public final class ExpressLiveNotifications {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(context, CHANNEL)
                 .setSmallIcon(spec.smallIcon).setColor(spec.accent).setColorized(false)
-                .setContentTitle(SemanticText.annotate(spec.title, TITLE_SEMANTIC, 0,
-                        spec.labelLength))
+                .setContentTitle(SemanticText.annotate(spec.title,
+                        titleSemantic(spec.primary.semantic), 0, spec.labelLength))
                 .setContentText(ExpressNotifications.breakableText(
                         Build.VERSION.SDK_INT >= 37 ? spec.summary : spec.detail))
                 .setStyle(new Notification.BigTextStyle().bigText(

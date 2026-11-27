@@ -1,4 +1,4 @@
-import type { ColorStringHex } from "scripting";
+import type { ColorStringHex, ColorStringRGBA } from "scripting";
 import { nodeNormalizedStatus, responseNormalizedStatus, timelineNormalizedStatus, statusPriority, statusProjectionFields } from "./worker-status";
 import { isValidNonFutureStatusClock } from "./terminal-clock-policy";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
@@ -17,7 +17,11 @@ import type {
   WidgetSnapshot,
 } from "../models";
 import { EXPRESS_POLICY } from "../contracts/express-policy.generated";
-import { PARCEL_STATUS_TONES } from "./status-tones.generated";
+import {
+  PARCEL_STATUS_BADGE_OPACITY,
+  PARCEL_STATUS_CAPSULE_TONES,
+  PARCEL_STATUS_TONES,
+} from "./status-tones.generated";
 import {
   activeStatusLabelTable,
   jtLabelSemantic,
@@ -197,6 +201,12 @@ export function statusTextAccent(semantic: StatusSemantic, label = "", dark = fa
   return (palette[key] ?? PARCEL_STATUS_TONES.暂无状态)[dark ? 1 : 0];
 }
 
+export function statusCapsuleAccent(semantic: StatusSemantic, label = "", dark = false): number {
+  const palette: Readonly<Record<string, readonly [number, number]>> = PARCEL_STATUS_CAPSULE_TONES;
+  const key = Object.hasOwn(palette, label) ? label : statusLabel(semantic);
+  return (palette[key] ?? PARCEL_STATUS_CAPSULE_TONES.暂无状态)[dark ? 1 : 0];
+}
+
 export function blendStatusColor(color: number, target: number, amount: number): number {
   let result = 0;
   for (const shift of [16, 8, 0]) {
@@ -223,8 +233,12 @@ function statusContrast(color: number, background: number): number {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
-// Owner 2026-11-20 (修改 11): lists, details, the 寄 badge and the small widget show the shared
-// non-capsule text pair as it is, without a contrast adjustment.
+function statusRgba(color: number, opacity: number): ColorStringRGBA {
+  return `rgba(${(color >> 16) & 255}, ${(color >> 8) & 255}, ${color & 255}, ${opacity})` as ColorStringRGBA;
+}
+
+// Owner 2026-11-27 (修改 29): lists, details, the 寄 badge and the small widget show the shared
+// non-capsule text pair as it is; light-capsule surfaces use the capsule base colour at 12% (light) / 22% (dark).
 export function statusTextTint(
   semantic: StatusSemantic,
   options: { label?: string } = {},
@@ -235,29 +249,49 @@ export function statusTextTint(
   };
 }
 
+export function statusBadgeFillTint(
+  semantic: StatusSemantic,
+  options: { label?: string } = {},
+): { light: ColorStringRGBA; dark: ColorStringRGBA } {
+  return {
+    light: statusRgba(statusCapsuleAccent(semantic, options.label, false), PARCEL_STATUS_BADGE_OPACITY.light),
+    dark: statusRgba(statusCapsuleAccent(semantic, options.label, true), PARCEL_STATUS_BADGE_OPACITY.dark),
+  };
+}
+
 export const BRAND_GRADIENT_STATUS_MIN_CONTRAST = 3;
 const BRAND_GRADIENT_STATUS_CACHE_MAX = 128;
 const brandGradientStatusCache = new Map<string, { light: ColorStringHex; dark: ColorStringHex }>();
 
-// Owner 2026-11-20 (修改 11, rule 3): the medium widget's status badge keeps the text pair unless the carrier
-// brand gradient causes the drop, that is, its contrast at the brand corner (the 0x55 brand under the badge
-// fill) is under 3.0:1 and lower than on the plain badge. Only then it takes the smallest 1% step toward
-// black or white that reaches 3.0:1 at that corner.
+// Owner 2026-11-27 (修改 29): the medium widget's status badge uses the capsule base colour at 12% (light) /
+// 22% (dark) and keeps the text pair unless the carrier brand gradient causes a drop under 3.0:1 and lower
+// than on the plain badge, taking the smallest 1% step toward black or white that reaches 3.0:1 at the corner.
 export function brandGradientStatusTint(
   semantic: StatusSemantic,
-  options: { brandAccent: string; badgeOpacity: number; label?: string },
+  options: {
+    brandAccent: string;
+    badgeOpacity?: number | Readonly<{ light: number; dark: number }>;
+    label?: string;
+  },
 ): { light: ColorStringHex; dark: ColorStringHex } {
-  const cacheKey = `${semantic}|${options.label ?? ""}|${options.badgeOpacity}|${options.brandAccent}`;
+  const lightOpacity = typeof options.badgeOpacity === "number"
+    ? options.badgeOpacity
+    : (options.badgeOpacity?.light ?? PARCEL_STATUS_BADGE_OPACITY.light);
+  const darkOpacity = typeof options.badgeOpacity === "number"
+    ? options.badgeOpacity
+    : (options.badgeOpacity?.dark ?? PARCEL_STATUS_BADGE_OPACITY.dark);
+  const cacheKey = `${semantic}|${options.label ?? ""}|${lightOpacity}|${darkOpacity}|${options.brandAccent}`;
   const cached = brandGradientStatusCache.get(cacheKey);
   if (cached) {
     return { light: cached.light, dark: cached.dark };
   }
-  const fill = statusTextAccent(semantic, options.label);
   const brand = Number.parseInt(options.brandAccent.slice(1), 16);
   const tone = (surface: number, dark: boolean): ColorStringHex => {
+    const fill = statusCapsuleAccent(semantic, options.label, dark);
+    const opacity = dark ? darkOpacity : lightOpacity;
     const text = statusTextAccent(semantic, options.label, dark);
-    const plain = blendStatusColor(surface, fill, options.badgeOpacity);
-    const corner = blendStatusColor(blendStatusColor(surface, brand, 0x55 / 255), fill, options.badgeOpacity);
+    const plain = blendStatusColor(surface, fill, opacity);
+    const corner = blendStatusColor(blendStatusColor(surface, brand, 0x55 / 255), fill, opacity);
     const atCorner = statusContrast(text, corner);
     if (atCorner >= BRAND_GRADIENT_STATUS_MIN_CONTRAST || atCorner >= statusContrast(text, plain)) {
       return statusHex(text);

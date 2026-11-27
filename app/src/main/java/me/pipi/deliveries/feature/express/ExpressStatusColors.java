@@ -27,6 +27,14 @@ public final class ExpressStatusColors {
         return selected != 0 ? selected : ExpressStatusTones.text("暂无状态", dark);
     }
 
+    public static int capsule(StatusSemantic semantic, String label, boolean dark) {
+        int selected = ExpressStatusTones.capsule(label, dark);
+        if (selected == 0) {
+            selected = ExpressStatusTones.capsule(CarrierRegistry.statusLabels().label(semantic), dark);
+        }
+        return selected != 0 ? selected : ExpressStatusTones.capsule("暂无状态", dark);
+    }
+
     public static boolean isNight(Context context) {
         return (context.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
@@ -40,13 +48,22 @@ public final class ExpressStatusColors {
         return ExpressStatusTones.widgetBadge(label);
     }
 
-    public static int widgetBadgeFill(ExpressItem item) {
-        return badgeFill(item.semantic, item.displayStatus());
+    public static int widgetBadgeFill(Context context, ExpressItem item) {
+        return badgeFill(item.semantic, item.displayStatus(), isNight(context));
     }
 
-    /** The light text colour at 0x1A, in both appearances (the 寄 badge and the 4×2 status badge). */
+    public static int widgetBadgeFill(ExpressItem item) {
+        return badgeFill(item.semantic, item.displayStatus(), false);
+    }
+
+    /** Owner 2026-11-27 (修改 29): capsule base colour at 12% (0x1F) in light mode and 22% (0x38) in dark mode. */
+    public static int badgeFill(StatusSemantic semantic, String label, boolean dark) {
+        int alpha = dark ? ExpressStatusTones.DARK_BADGE_ALPHA : ExpressStatusTones.LIGHT_BADGE_ALPHA;
+        return (capsule(semantic, label, dark) & 0x00ffffff) | alpha;
+    }
+
     public static int badgeFill(StatusSemantic semantic, String label) {
-        return (accent(semantic, label, false) & 0x00ffffff) | 0x1a000000;
+        return badgeFill(semantic, label, false);
     }
 
     /**

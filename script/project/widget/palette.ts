@@ -1,16 +1,89 @@
 import type { ColorStringHex, ColorStringRGBA } from "scripting";
 import { carrierArtworkAccent, courierIconName } from "../services/carrier-presentation";
 import type { StatusSemantic } from "../models";
-import { brandGradientStatusTint, statusTextAccent } from "../services/status";
+import { brandGradientStatusTint, statusBadgeFillTint } from "../services/status";
+import { PARCEL_STATUS_BADGE_OPACITY } from "../services/status-tones.generated";
 
-// The status badge keeps its 0x1A light-text fill; the text keeps the shared pair unless the carrier
-// brand gradient pushes it under the 3.0:1 floor (owner 2026-11-20, 修改 11).
+// Owner 2026-11-27 (修改 29): capsule base colour at 12% (light) / 22% (dark); text keeps the shared pair
+// unless the carrier brand gradient pushes it under the 3.0:1 floor.
 export function widgetStatusStyle(semantic: StatusSemantic, brandAccent: string, label = "") {
-  const accent = statusTextAccent(semantic, label);
-  const opacity = 0x1a / 255;
   return {
-    background: `rgba(${accent >> 16 & 255}, ${accent >> 8 & 255}, ${accent & 255}, ${opacity})` as ColorStringRGBA,
-    foreground: brandGradientStatusTint(semantic, { brandAccent, badgeOpacity: opacity, label }),
+    background: statusBadgeFillTint(semantic, { label }),
+    foreground: brandGradientStatusTint(semantic, {
+      brandAccent,
+      badgeOpacity: PARCEL_STATUS_BADGE_OPACITY,
+      label,
+    }),
+  } as const;
+}
+
+const SENDER_TAG_BACKGROUND = {
+  light: "rgba(117, 117, 117, 0.12)" as ColorStringRGBA,
+  dark: "rgba(117, 117, 117, 0.22)" as ColorStringRGBA,
+} as const;
+
+const SENDER_TAG_INK: Readonly<{ light: RGB; dark: RGB }> = {
+  light: [0x61, 0x61, 0x61],
+  dark: [0xbd, 0xbd, 0xbd],
+};
+
+function srgbLuminance([r, g, b]: RGB): number {
+  const linear = (channel: number) => {
+    const v = channel / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+}
+
+function rgbContrast(a: RGB, b: RGB): number {
+  const la = srgbLuminance(a);
+  const lb = srgbLuminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+function blendRGB(base: RGB, overlay: RGB, amount: number): RGB {
+  return [
+    Math.round(base[0] + (overlay[0] - base[0]) * amount),
+    Math.round(base[1] + (overlay[1] - base[1]) * amount),
+    Math.round(base[2] + (overlay[2] - base[2]) * amount),
+  ];
+}
+
+function rgbToHex([r, g, b]: RGB): ColorStringHex {
+  const h = (v: number) => v.toString(16).padStart(2, "0");
+  return `#${h(r)}${h(g)}${h(b)}` as ColorStringHex;
+}
+
+function senderInkWithGradientFloor(ink: RGB, surface: RGB, brand: RGB, fillAlpha: number): ColorStringHex {
+  const fill: RGB = [0x75, 0x75, 0x75];
+  const plain = blendRGB(surface, fill, fillAlpha);
+  const corner = blendRGB(blendRGB(surface, brand, 0x55 / 255), fill, fillAlpha);
+  const atCorner = rgbContrast(ink, corner);
+  if (atCorner >= 3.0 || atCorner >= rgbContrast(ink, plain)) return rgbToHex(ink);
+  const target: RGB = rgbContrast([0, 0, 0], corner) >= rgbContrast([255, 255, 255], corner)
+    ? [0, 0, 0]
+    : [255, 255, 255];
+  for (let step = 1; step <= 100; step++) {
+    const candidate = blendRGB(ink, target, step / 100);
+    if (rgbContrast(candidate, corner) >= 3.0) return rgbToHex(candidate);
+  }
+  return rgbToHex(target);
+}
+
+export function widgetSenderTagStyle(brandAccent?: string) {
+  if (!brandAccent) {
+    return {
+      background: SENDER_TAG_BACKGROUND,
+      foreground: { light: "#616161" as ColorStringHex, dark: "#BDBDBD" as ColorStringHex },
+    } as const;
+  }
+  const brand = hexToRGB(brandAccent);
+  return {
+    background: SENDER_TAG_BACKGROUND,
+    foreground: {
+      light: senderInkWithGradientFloor(SENDER_TAG_INK.light, [255, 255, 255], brand, PARCEL_STATUS_BADGE_OPACITY.light),
+      dark: senderInkWithGradientFloor(SENDER_TAG_INK.dark, [28, 28, 30], brand, PARCEL_STATUS_BADGE_OPACITY.dark),
+    },
   } as const;
 }
 

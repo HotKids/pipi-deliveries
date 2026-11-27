@@ -8,6 +8,7 @@ import static org.junit.Assert.assertTrue;
 import android.app.Application;
 import android.appwidget.AppWidgetManager;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -156,9 +157,8 @@ public final class ExpressWidgetSenderTagTest {
             TextView status = root.findViewById(R.id.widget_priority_status);
             TextView company = root.findViewById(R.id.widget_compact_company);
             assertEquals(label, View.VISIBLE, tag.getVisibility());
-            assertEquals(label + " the tag matches the carrier line",
-                    company.getTextSize(), tag.getTextSize(), 0.01f);
-            assertEquals(label, 12f, tag.getTextSize() / scaled, 0.01f);
+            assertEquals(label, 12f, company.getTextSize() / scaled, 0.01f);
+            assertEquals(label, 11f, tag.getTextSize() / scaled, 0.01f);
             ExpressWidgetLayout.Compact layout = ExpressWidgetLayout.compact(size[0], size[1]);
             assertEquals(label + " the status word steps down only for the tag",
                     ExpressWidgetProvider.compactStatusTextSp(context,
@@ -205,7 +205,7 @@ public final class ExpressWidgetSenderTagTest {
                 TextPaint paint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
                 paint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
                 paint.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
-                        layout.companyTextSizeSp, metrics));
+                        ExpressWidgetProvider.compactSenderTextSp(layout), metrics));
                 float tag = paint.measureText("寄") + 2f * context.getResources().getDimension(
                         R.dimen.express_widget_sender_tag_padding_horizontal)
                         + context.getResources().getDimension(R.dimen.express_widget_sender_tag_gap);
@@ -223,11 +223,14 @@ public final class ExpressWidgetSenderTagTest {
         View root = LayoutInflater.from(context).inflate(R.layout.express_widget_2x2, null);
         TextView tag = root.findViewById(R.id.widget_compact_sender);
         TextView status = root.findViewById(R.id.widget_priority_status);
+        boolean night = (context.getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         assertEquals("寄", tag.getText().toString());
         assertEquals("寄件", tag.getContentDescription().toString());
         assertEquals(View.GONE, tag.getVisibility());
-        assertEquals(0xFFFFFFFF, tag.getCurrentTextColor());
-        assertEquals(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 12f,
+        assertEquals(night ? ExpressWidgetProvider.SENDER_TAG_DARK_INK
+                : ExpressWidgetProvider.SENDER_TAG_LIGHT_INK, tag.getCurrentTextColor());
+        assertEquals(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 11f,
                 context.getResources().getDisplayMetrics()), tag.getTextSize(), 0.01f);
         assertEquals(1, tag.getMaxLines());
         // Right after the status word on the same line, before the carrier line.
@@ -255,6 +258,8 @@ public final class ExpressWidgetSenderTagTest {
     private static void assertWideTags(Context context) {
         View root = LayoutInflater.from(context).inflate(
                 R.layout.express_widget_4x2, new FrameLayout(context), false);
+        boolean night = (context.getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         for (int index = 0; index < 3; index++) {
             String label = "row " + index;
             TextView identity = root.findViewById(WIDE_COMPANY_IDS[index]);
@@ -269,7 +274,8 @@ public final class ExpressWidgetSenderTagTest {
             assertEquals(label, View.GONE, tag.getVisibility());
             assertEquals("寄", tag.getText().toString());
             assertEquals("寄件", tag.getContentDescription().toString());
-            assertEquals(0xFFFFFFFF, tag.getCurrentTextColor());
+            assertEquals(night ? ExpressWidgetProvider.SENDER_TAG_DARK_INK
+                    : ExpressWidgetProvider.SENDER_TAG_LIGHT_INK, tag.getCurrentTextColor());
             assertGray(context, tag);
             LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) tag.getLayoutParams();
             assertEquals(context.getResources().getDimensionPixelSize(
@@ -279,9 +285,11 @@ public final class ExpressWidgetSenderTagTest {
                     R.dimen.express_widget_sender_tag_padding_horizontal);
             assertEquals(horizontal, tag.getPaddingStart());
             assertEquals(horizontal, tag.getPaddingEnd());
-            // The status capsule's box and font: height, size and medium weight.
-            assertEquals(status.getLayoutParams().height, params.height);
-            assertEquals(status.getTextSize(), tag.getTextSize(), 0.01f);
+            // Stepped down one notch (16dp / 10dp) below the 18dp / 11dp status capsule.
+            assertEquals(dp(context, 16f), params.height);
+            assertEquals(dp(context, 18f), status.getLayoutParams().height);
+            assertEquals(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 10f,
+                    context.getResources().getDisplayMetrics()), tag.getTextSize(), 0.01f);
             assertEquals("The tag shares the capsule's medium weight",
                     status.getTypeface().getWeight(), tag.getTypeface().getWeight());
             assertEquals(1, tag.getMaxLines());
@@ -292,9 +300,12 @@ public final class ExpressWidgetSenderTagTest {
     }
 
     private static void assertGray(Context context, TextView tag) {
+        boolean night = (context.getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         assertTrue(tag.getBackground() instanceof GradientDrawable);
         GradientDrawable fill = (GradientDrawable) tag.getBackground();
-        assertEquals(0xFF9A9AA0, fill.getColor().getDefaultColor());
+        assertEquals(night ? ExpressWidgetProvider.SENDER_TAG_DARK_FILL
+                : ExpressWidgetProvider.SENDER_TAG_LIGHT_FILL, fill.getColor().getDefaultColor());
         assertEquals(dp(context, 3f), fill.getCornerRadius(), 0.01f);
     }
 

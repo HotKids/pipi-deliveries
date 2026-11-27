@@ -67,16 +67,22 @@ export function parsePickupCredentials(
     .sort((left, right) => left.top - right.top || left.left - right.left)
   if (blocks.length === 0) return []
 
-  const text = blocks.map((block) => block.text).join("\n")
+  const rawText = blocks.map((block) => block.text).join("\n")
   const decoded = (input.rawBarcodes ?? []).filter(value => Boolean(value.trim()))
   const barcodes = decoded.map(value => value.trim())
-  const redemption = redemptionPage(runtime, text)
-  let brand = redemption ?? identifyBrand(runtime, input.host, text, barcodes)
+  const identity = redemptionIdentity(runtime, rawText)
+  const redemption = redemptionPage(runtime, rawText)
+  if (identity) {
+    blocks = blocks.filter(row => !identity.redemption?.username?.matches(row.text))
+    if (blocks.length === 0) return []
+  }
+  const text = blocks.map((block) => block.text).join("\n")
   const hostBrand = positiveHostBrand(runtime, input.host)
+  let brand = redemption
+    ?? (identity ? (hostBrand ?? identity) : identifyBrand(runtime, input.host, text, barcodes))
   if (redemption) {
     if (blocks.some(row => !isStepRow(runtime, row.text) && runtime.cancellationStatus.finds(row.text))) return []
     if (new Set(decoded).size !== 1) return []
-    blocks = blocks.filter(row => !redemption.redemption?.username?.matches(row.text))
   } else if (!acceptPage(runtime, text, brand, hostBrand, barcodes)) return []
   if (!brand && mayUseBrandHint(hostBrand, barcodes)) brand = hostBrand
 
@@ -408,6 +414,48 @@ function rankCodes(
 
     if (!runtime.postV2.codeLabelOnly.matches(line)) continue
     const freeform = runtime.postV2.codeFreeformLabel.matches(line)
+    if (direct) {
+      const labelBlock = blocks[index]
+      const labelHeight = Math.max(1, labelBlock.bottom - labelBlock.top)
+      let aboveIndex = -1
+      let bestAboveGap = Number.POSITIVE_INFINITY
+      for (let prev = index - 1; prev >= 0; prev -= 1) {
+        const valueBlock = blocks[prev]
+        if (Math.min(valueBlock.right, labelBlock.right) <= Math.max(valueBlock.left, labelBlock.left)) continue
+        const gap = labelBlock.top - valueBlock.bottom
+        if (gap < 0) continue
+        if (gap < bestAboveGap) {
+          bestAboveGap = gap
+          aboveIndex = prev
+        }
+      }
+      if (aboveIndex >= 0) {
+        const valueBlock = blocks[aboveIndex]
+        const valueHeight = Math.max(1, valueBlock.bottom - valueBlock.top)
+        if (bestAboveGap <= 2 * Math.max(valueHeight, labelHeight)) {
+          const rawAbove = valueBlock.text
+          if (!runtime.postV2.codeLabelSkipNext.finds(rawAbove)
+              && !runtime.postV2.codeLabelOnly.matches(rawAbove)) {
+            const aboveCode = cleanCode(rawAbove, runtime)
+            if (isValidCodeShape(aboveCode, runtime) && (freeform || ASCII_CREDENTIAL.test(aboveCode))) {
+              addCandidate(
+                candidates,
+                aboveCode,
+                aboveIndex,
+                freeform ? index : aboveIndex,
+                true,
+                false,
+                "",
+                blocks,
+                screenWidth,
+                tallest,
+                runtime,
+              )
+            }
+          }
+        }
+      }
+    }
     for (let offset = 1; offset <= runtime.postV2.codeLabelLookahead; offset += 1) {
       const valueIndex = index + offset
       if (valueIndex >= blocks.length) break

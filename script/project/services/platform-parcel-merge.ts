@@ -414,7 +414,11 @@ export function applyCloudPddParcels(state: AppState, parcels: readonly CloudPdd
           timeline: { ...baseShipment.timeline, semantic: "COMPLETED" as const, structuredStatus: true, statusEventAtMs: tombstone.actedAtMs },
         }
       : baseShipment;
-    changes.set(shipment.identity.id, { ...shipment, pddCloudOrigin: { waybill, waybillGeneration: 0 } });
+    changes.set(shipment.identity.id, {
+      ...shipment,
+      pddCloudOrigin: { waybill, waybillGeneration: 0 },
+      cloudExpressOrigin: { waybill, waybillGeneration: 0 },
+    });
   }
   for (const [waybill, mark] of marks) {
     if (!mark) continue;

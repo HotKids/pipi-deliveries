@@ -22,14 +22,14 @@ final class ExpressSenderBadge {
         view.setText(me.pipi.deliveries.R.string.express_sender);
         view.setTextSize(11);
         view.setTypeface(view.getTypeface(), Typeface.BOLD);
-        view.setTextColor(ExpressStatusColors.accent(semantic, label,
-                ExpressStatusColors.isNight(view.getContext())));
+        boolean dark = ExpressStatusColors.isNight(view.getContext());
+        view.setTextColor(ExpressStatusColors.accent(semantic, label, dark));
         view.setIncludeFontPadding(false);
         view.setSingleLine(true);
         view.setPadding(Math.round(6 * density), Math.round(2 * density),
                 Math.round(6 * density), Math.round(2 * density));
         GradientDrawable background = new GradientDrawable();
-        background.setColor(ExpressStatusColors.badgeFill(semantic, label));
+        background.setColor(ExpressStatusColors.badgeFill(semantic, label, dark));
         background.setCornerRadius(6 * density);
         view.setBackground(background);
     }

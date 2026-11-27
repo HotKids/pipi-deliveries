@@ -12,23 +12,23 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk=31,manifest=Config.NONE,application=Application.class)
 public class ExpressSenderBadgeTest {
- // Owner 2026-11-27 (修改 24, Material): the light text colour at 0x1A under the appearance's text colour, unadjusted.
+ // Owner 2026-11-27 (修改 29, five-family): capsule base colour at 12% (0x1F) in light and 22% (0x38) in night under the appearance's text colour.
  @Test public void rebindingAReceiverHidesTheExistingSenderBadge() {
   BadgeView view=new BadgeView();
   ExpressSenderBadge.apply(view,true,StatusSemantic.DELIVERY,"派送中");
   assertEquals("寄",view.getText().toString()); assertEquals(View.VISIBLE,view.getVisibility());
-  assertEquals(0xFF2E7D32,view.getCurrentTextColor());
-  assertEquals(0x1a2e7d32,((android.graphics.drawable.GradientDrawable) view.getBackground()).getColor().getDefaultColor());
+  assertEquals(0xFFEF6C00,view.getCurrentTextColor());
+  assertEquals(0x1fff9800,((android.graphics.drawable.GradientDrawable) view.getBackground()).getColor().getDefaultColor());
   assertFalse(view.getIncludeFontPadding()); assertEquals(android.graphics.Typeface.BOLD,view.requestedStyle);
   ExpressSenderBadge.apply(view,false,StatusSemantic.DANGER,"异常件");
   assertEquals(View.GONE,view.getVisibility());
  }
  @Config(qualifiers="night")
- @Test public void nightBadgeKeepsTheLightFillUnderTheNightTextColour() {
+ @Test public void nightBadgeUsesDarkCapsuleFillAt22PercentUnderNightTextColour() {
   BadgeView view=new BadgeView();
   ExpressSenderBadge.apply(view,true,StatusSemantic.WAITING_PICKUP,"待取件");
-  assertEquals(0xFFC5E1A5,view.getCurrentTextColor());
-  assertEquals(0x1a558b2f,((android.graphics.drawable.GradientDrawable) view.getBackground()).getColor().getDefaultColor());
+  assertEquals(0xFFFF8A65,view.getCurrentTextColor());
+  assertEquals(0x38f4511e,((android.graphics.drawable.GradientDrawable) view.getBackground()).getColor().getDefaultColor());
  }
  private static final class BadgeView extends TextView {
   int requestedStyle;

@@ -268,20 +268,28 @@ const pickup = await readFile(resolve(projectDir, "pages/PickupPage.tsx"), "utf8
 assert.match(app, /<PickupPage[\s\S]*?toast=\{transientToast\(pickupNotice, setPickupNotice\)\}/);
 assert.match(pickup, /<VStack spacing=\{0\} toast=\{toast\}/);
 const pickupNotices: string[] = [];
+const pickupDiagnostics: Array<{ event: string; level?: string }> = [];
 let rowVisible = true;
+let pickupError: Error | null = null;
 const finishPickup = Function("scope", `with(scope) { ${completion}; return finishPickup; }`)({
   EXPRESS_TOAST_COPY, MEAL_TOAST_COPY, ShipmentLifecycleChangedError,
   beginDiagnosticOperation() { return () => {}; },
+  writeDiagnostic(event: string, _details?: unknown, level?: string) {
+    pickupDiagnostics.push({ event, level });
+  },
+  diagnosticErrorDetails() { return {}; },
   setPickupNotice(message: string) { pickupNotices.push(message); },
   async performPickupAction(_card: unknown, openCabinet: boolean, publish: () => void) {
+    if (pickupError) throw pickupError;
     if (openCabinet) return "";
     publish();
     return EXPRESS_TOAST_COPY.signed;
   },
-  applyState() { rowVisible = false; },
+  applyImmediateState() { rowVisible = false; },
   mealCredentialScope: () => "account",
   completeMeal: () => true,
   refreshMeals() { rowVisible = false; },
+  reloadMeals() {},
 });
 await finishPickup({ target: { shipmentId: "parcel" } }, false);
 assert.equal(rowVisible, false);
@@ -290,5 +298,25 @@ await finishPickup({ target: { recordId: "cabinet" } }, true);
 assert.deepEqual(pickupNotices, ["已标记为签收"], "cancelling cabinet opening is silent");
 await finishPickup({ target: { mealScope: "account", mealId: "meal" } }, false);
 assert.deepEqual(pickupNotices, ["已标记为签收", "已标记取餐"]);
+
+// Error branches: stale lifecycle vs unexpected runtime error
+pickupNotices.length = 0;
+pickupDiagnostics.length = 0;
+pickupError = new ShipmentLifecycleChangedError();
+await finishPickup({ target: { shipmentId: "parcel" } }, false);
+await finishPickup({ target: { recordId: "pickup-rec" } }, false);
+await finishPickup({ kind: "handoff", target: { recordId: "handoff-rec" } }, false);
+assert.deepEqual(pickupNotices, ["该快递已失效", "未找到该取件码", "未找到该寄件码"]);
+assert.deepEqual(pickupDiagnostics, [], "stale lifecycle notices do not emit failure diagnostics");
+
+pickupNotices.length = 0;
+pickupError = new Error("synthetic disk error");
+await finishPickup({ target: { shipmentId: "parcel" } }, false);
+await finishPickup({ target: { recordId: "pickup-rec" } }, false);
+assert.deepEqual(pickupNotices, [EXPRESS_TOAST_COPY.signFailed, EXPRESS_TOAST_COPY.pickupRecordActionFailed]);
+assert.deepEqual(pickupDiagnostics, [
+  { event: "pickup.parcel.complete.failed", level: "warning" },
+  { event: "pickup.parcel.complete.failed", level: "warning" },
+]);
 
 console.log("transient toast presentation tests passed");

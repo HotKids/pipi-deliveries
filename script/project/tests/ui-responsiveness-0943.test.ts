@@ -267,8 +267,10 @@ test("DetailPage prefetches only the tapped shipment and defers disk/Keychain re
   assert.match(detailSource, /export function prefetchShipmentDetailEntry\(/);
   assert.match(detailSource, /prefetchDetailController\?\.abort\(\);/,
     "tapping another shipment cancels any superseded single-shipment prefetch");
-  assert.match(detailSource, /deferDiskDecode=\{!detailPostPaintReady\}/,
-    "first paint skips synchronous disk/ImageIO thumbnail decode");
+  assert.match(detailSource, /deferDiskDecode=\{true\}/,
+    "DetailPage keeps synchronous disk/ImageIO thumbnail decode outside render across its entire lifecycle");
+  assert.match(detailSource, /postPaintReady=\{detailPostPaintReady\}/,
+    "post-paint readiness gates asynchronous ProductThumbnail disk decode");
   assert.match(detailSource, /allowDownload=\{detailPostPaintReady && imageDownloadScope === imageScope\}/,
     "network image download stays gated until post-paint Stage 3");
   assert.match(homeSource, /prefetchShipmentDetailEntry\(shipment, shipments\);/);

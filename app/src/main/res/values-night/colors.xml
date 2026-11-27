@@ -2,5 +2,6 @@
 <resources>
     <color name="widget_empty_text">#4DFFFFFF</color>
     <color name="widget_compact_pill_background">#FF48484A</color>
+    <color name="widget_sender_tag_text">#FFBDBDBD</color>
     <color name="widget_surface">#FF1C1C1E</color>
 </resources>

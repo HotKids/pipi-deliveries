@@ -51,12 +51,18 @@ export function ProductThumbnail(props: {
   companyName: string;
   accountOrder?: boolean;
   allowDownload?: boolean;
-  /** When true, first paint uses only already-decoded in-memory images and defers disk/Keychain reads until post-paint. */
+  /**
+   * When true, render never performs synchronous disk, Keychain, shared-state, or ImageIO work;
+   * first paint uses in-memory cached images and effects load/validate asynchronously.
+   */
   deferDiskDecode?: boolean;
+  /** Gates post-paint effect execution when `deferDiskDecode` is enabled. */
+  postPaintReady?: boolean;
   size: number;
 }) {
   const cainiao = !props.cacheKey ? props.shipment.platformFields?.cainiaoImage : undefined;
   const deferDisk = props.deferDiskDecode === true;
+  const postPaintReady = props.postPaintReady !== false;
   const cainiaoCurrent = () => {
     try { return !!cainiao && !!currentPlatformSessionInTurn("cainiao", cainiao.generation, true); }
     catch { return false; }
@@ -87,15 +93,27 @@ export function ProductThumbnail(props: {
     key: string;
     lifecycle: string;
     isRetained: () => boolean;
+    verified?: boolean;
     image: Awaited<ReturnType<typeof loadProductImage>>;
-  } | null>(() => ({ key: cacheKey, lifecycle, isRetained, image: syncFirstPaintImage() }));
+  } | null>(() => {
+    const initial = syncFirstPaintImage();
+    return { key: cacheKey, lifecycle, isRetained, verified: !deferDisk && Boolean(initial), image: initial };
+  });
 
   useEffect(() => {
+    if (deferDisk && !postPaintReady) return;
     try {
-      const remembered = cachedProductImage(cacheKey);
+      const remembered = cacheKey ? cachedProductImage(cacheKey) : null;
       if (remembered && isRetained()) {
-        setLoaded(current => current?.key === cacheKey && current.lifecycle === lifecycle && current.image === remembered
-          ? current : { key: cacheKey, lifecycle, isRetained, image: remembered });
+        setLoaded(current =>
+          current?.key === cacheKey && current.lifecycle === lifecycle && current.image === remembered && current.verified
+            ? current
+            : { key: cacheKey, lifecycle, isRetained, verified: true, image: remembered }
+        );
+        return;
+      }
+      if (!isRetained()) {
+        setLoaded(null);
         return;
       }
     } catch {
@@ -104,25 +122,51 @@ export function ProductThumbnail(props: {
       return;
     }
     if (props.allowDownload === false) {
-      if (deferDisk || !cacheKey || typeof warmCachedProductImage !== "function") return;
+      if (!cacheKey || typeof warmCachedProductImage !== "function") return;
       const controller = new AbortController();
       void warmCachedProductImage(cacheKey, controller.signal, isRetained).then((image) => {
-        if (!controller.signal.aborted && image) setLoaded({ key: cacheKey, lifecycle, isRetained, image });
+        if (controller.signal.aborted) return;
+        try {
+          if (!isRetained()) {
+            setLoaded(null);
+            return;
+          }
+        } catch {
+          setLoaded(null);
+          return;
+        }
+        if (image) setLoaded({ key: cacheKey, lifecycle, isRetained, verified: true, image });
       }).catch(() => {});
       return () => controller.abort();
     }
     if (!imageURL && !cacheKey) return;
     const controller = new AbortController();
     void loadProductImage(imageURL, controller.signal, cacheKey ? { key: cacheKey, isRetained } : undefined).then((image) => {
-      if (!controller.signal.aborted && image) setLoaded({ key: cacheKey, lifecycle, isRetained, image });
+      if (controller.signal.aborted) return;
+      try {
+        if (cacheKey && !isRetained()) {
+          setLoaded(null);
+          return;
+        }
+      } catch {
+        setLoaded(null);
+        return;
+      }
+      if (image) setLoaded({ key: cacheKey, lifecycle, isRetained, verified: true, image });
     }).catch(() => { /* Keep an already successful image during an optional refresh failure. */ });
     return () => controller.abort();
-  }, [cacheKey, deferDisk, imageURL, lifecycle, props.allowDownload]);
+  }, [cacheKey, deferDisk, imageURL, lifecycle, postPaintReady, props.allowDownload]);
 
   let image: Awaited<ReturnType<typeof loadProductImage>> = null;
   try {
-    image = loaded?.key === cacheKey && loaded.lifecycle === lifecycle && (deferDisk || loaded.isRetained())
-      ? loaded.image : syncFirstPaintImage();
+    if (deferDisk) {
+      image = loaded?.key === cacheKey && loaded.lifecycle === lifecycle
+        ? (loaded.image ?? (cacheKey ? cachedProductImage(cacheKey) : null))
+        : (cacheKey ? cachedProductImage(cacheKey) : null);
+    } else {
+      image = loaded?.key === cacheKey && loaded.lifecycle === lifecycle && loaded.isRetained()
+        ? loaded.image : syncFirstPaintImage();
+    }
   } catch { /* A failed authoritative read cannot expose an unverified lifecycle's image. */ }
   if (!image) {
     return (

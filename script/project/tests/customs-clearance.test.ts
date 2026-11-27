@@ -186,7 +186,8 @@ function shipment(id: string, semantic: StatusSemantic, normalizedStatus?: Norma
   const danger = shipment("77100000000003", "DANGER", { version: 1, scope: "SHIPMENT", semantic: "DANGER",
     code: "FAILED", text: "异常件", priority: 0, eventAtMs: AT + 60_000, structured: true });
   assert.deepEqual(shipmentPresentationStatus(customs), { semantic: "TRANSIT", text: "清关中" });
-  assert.equal(statusTextAccent("TRANSIT", "清关中"), statusTextAccent("TRANSIT", "运输中"));
+  assert.equal(statusTextAccent("TRANSIT", "清关中"), 0x00796b);
+  assert.notEqual(statusTextAccent("TRANSIT", "清关中"), statusTextAccent("TRANSIT", "运输中"));
   assert.equal(statusTextAccent("TRANSIT", "清关中", true), statusTextAccent("TRANSIT", "运输中", true));
   assert.notEqual(statusTextAccent("TRANSIT", "清关中"), statusTextAccent("DANGER", "异常件"));
   const sorted = sortShipments([danger, transit, customs]).map((value) => value.identity.sourceId);

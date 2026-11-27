@@ -62,9 +62,11 @@ public class ExpressWidgetBadgeContrastTest {
                 GradientDrawable badge = (GradientDrawable) context.getDrawable(
                         ExpressStatusColors.widgetBadgeBackground(item));
                 int fill = badge.getColor().getDefaultColor();
-                assertEquals("Keep the daylight badge fill", ExpressStatusColors.widgetBadgeFill(item), fill);
-                assertEquals("The badge fill is the light text colour at 0x1A",
-                        (ExpressStatusColors.accent(semantic, "", false) & 0xffffff) | 0x1a000000, fill);
+                int expectedAlpha = night ? 0x38000000 : 0x1f000000;
+                assertEquals("Match the appearance-aware capsule badge fill",
+                        ExpressStatusColors.widgetBadgeFill(context, item), fill);
+                assertEquals("The badge fill is the capsule base colour at 12% (day) / 22% (night)",
+                        (ExpressStatusColors.capsule(semantic, "", night) & 0xffffff) | expectedAlpha, fill);
                 assertEquals("Keep the existing sender-badge radius", 3f,
                         badge.getCornerRadius(), 0f);
                 for (int brand : BADGE_ACCENTS) {
@@ -101,27 +103,27 @@ public class ExpressWidgetBadgeContrastTest {
         }
     }
 
-    /** Collision and non-collision cases in each appearance (修改 11 rule 3). */
-    @Test public void redOnRedAndGreenOnGreenCollideWhileOtherPairsStayRaw() {
+    /** Collision and non-collision cases in each appearance (修改 29). */
+    @Test public void redOnRedAndOrangeOnOrangeCollideWhileOtherPairsStayRaw() {
         RuntimeEnvironment.setQualifiers(qualifiers(false));
         Context day = RuntimeEnvironment.getApplication();
         assertTrue(badge(day, item(StatusSemantic.DANGER), 0xffd32b2c).isFloored());
-        assertTrue(badge(day, item(StatusSemantic.DELIVERY), 0xff009d51).isFloored());
-        assertTrue(badge(day, item(StatusSemantic.ORDERED), 0xff3482ff).isRaw());
+        assertTrue(badge(day, item(StatusSemantic.DELIVERY), 0xfff39400).isFloored());
         // A white artwork adds no drop, so even the lightest pairs stay as they are.
+        assertTrue(badge(day, item(StatusSemantic.ORDERED), 0xffffffff).isRaw());
         assertTrue(badge(day, item(StatusSemantic.COMPLETED), 0xffffffff).isRaw());
         assertTrue(badge(day, item(StatusSemantic.UNKNOWN), 0xffffffff).isRaw());
         RuntimeEnvironment.setQualifiers(qualifiers(true));
         Context night = RuntimeEnvironment.getApplication();
-        assertTrue(badge(night, item(StatusSemantic.TRANSIT), 0xfff7cd23).isFloored());
-        assertTrue(badge(night, item(StatusSemantic.DANGER), 0xffffcdd2).isFloored());
-        assertTrue(badge(night, item(StatusSemantic.DANGER), 0xffd32b2c).isRaw());
+        assertTrue(badge(night, item(StatusSemantic.DANGER), 0xffffffff).isFloored());
+        assertTrue(badge(night, item(StatusSemantic.COMPLETED), 0xffffffff).isFloored());
+        assertTrue(badge(night, item(StatusSemantic.DANGER), 0xff00519e).isRaw());
         assertTrue(badge(night, item(StatusSemantic.TRANSIT), 0xff3482ff).isRaw());
     }
 
     private static Badge badge(Context context, ExpressItem item, int brand) {
         int surface = context.getColor(R.color.widget_surface);
-        int fill = ExpressStatusColors.widgetBadgeFill(item);
+        int fill = ExpressStatusColors.widgetBadgeFill(context, item);
         int plain = ColorUtils.compositeColors(fill, surface);
         int corner = ColorUtils.compositeColors(fill, ColorUtils.compositeColors(
                 ColorUtils.setAlphaComponent(brand, 0x55), surface));
@@ -167,7 +169,7 @@ public class ExpressWidgetBadgeContrastTest {
             assertEquals(expected, text.getCurrentTextColor());
             views.reapply(host, root);
             assertEquals(expected, text.getCurrentTextColor());
-            assertEquals(0x1a5a6b80,
+            assertEquals(ExpressStatusColors.widgetBadgeFill(host, item),
                     ((GradientDrawable) text.getBackground()).getColor().getDefaultColor());
         }
     }

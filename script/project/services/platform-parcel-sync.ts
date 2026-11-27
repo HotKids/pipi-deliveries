@@ -9,8 +9,8 @@ import { CAINIAO_LIST_PARAMETERS, CAINIAO_RECIPIENT_LIST,
   fetchPddBoundPhoneTails, PlatformWireError, readCainiao, readCainiaoProfileNickname, readCainiaoSenderAppointments, readPdd } from "./platform-wire";
 import { cainiaoHandoffId, cainiaoHandoffs, cainiaoRecipientParcels, pddPickupParcels, pddTimelineFromTraces, type PlatformParcel } from "./platform-parcel-data";
 import { fetchFengchaoCabinets, requestCabinetOpening, supportsCabinetOpening } from "./fengchao-account";
-import { fetchJdParcels, fetchPddOrders, fetchPddParcelDetails } from "./platform-web-parcels";
-import { eligiblePickup, enrichPlatformParcel } from "./platform-parcel-merge";
+import { fetchJdParcels, fetchPddOrders, fetchPddParcelDetails, missingJdDeliveryEstimate } from "./platform-web-parcels";
+import { deliveryEstimateApplies, eligiblePickup, enrichPlatformParcel } from "./platform-parcel-merge";
 import { projectionSceneActive } from "./projection-viewport";
 import { displayWaybill, selectShipmentTimeline } from "./shipment-policy";
 import { mergeTimelineAuthorities } from "./status";
@@ -56,7 +56,8 @@ export function platformObservationSignature(
       const provider = shipment.identity.sourceProvider?.toLowerCase() || "";
       if (provider === "cainiao" || provider === "jingdong" || provider === "pinduoduo" || provider === "fengchao" ||
           shipment.pddImport?.ownerKey) {
-        parts.push(`source:${provider}:${shipment.pddImport?.ownerKey || ""}:${shipmentLifecycleKey(shipment)}`);
+        const needsEstimate = provider === "jingdong" && deliveryEstimateApplies(shipment) && missingJdDeliveryEstimate(shipment);
+        parts.push(`source:${provider}:${shipment.pddImport?.ownerKey || ""}:${shipmentLifecycleKey(shipment)}${needsEstimate ? ":est" : ""}`);
       }
     }
   }
@@ -72,6 +73,7 @@ function scopeFor(platform: ExpressPlatform, session: PlatformSession, visible: 
   const last = observedRows.get(platform);
   const keys = new Set<string>();
   let waiting = false;
+  let jdMissingEstimate = false;
   for (const shipment of visible) {
     if (eligiblePickup(shipment)) {
       waiting = true;
@@ -79,6 +81,10 @@ function scopeFor(platform: ExpressPlatform, session: PlatformSession, visible: 
     } else if (shipment.identity.sourceProvider?.toLowerCase() === platform ||
       platform === "pinduoduo" && shipment.pddImport?.ownerKey === session.ownerKey) {
       keys.add("source:" + shipmentLifecycleKey(shipment));
+      if (platform === "jingdong" && deliveryEstimateApplies(shipment) && missingJdDeliveryEstimate(shipment, now)) {
+        jdMissingEstimate = true;
+        keys.add("source:est:" + shipmentLifecycleKey(shipment));
+      }
     }
   }
   const newKeys = [...keys].filter((key) => last?.generation !== session.generation || !last.keys.has(key));
@@ -92,7 +98,7 @@ function scopeFor(platform: ExpressPlatform, session: PlatformSession, visible: 
   const recipients = mode === "manual" || waiting && (mode === "pull" || newKeys.some((key) => key.startsWith("pickup:"))) ||
     Boolean(standalone && (mode === "pull" || due));
   const regular = mode === "manual" || due && (platform !== "pinduoduo" || hour >= 7 && hour < 23) ||
-    platform === "jingdong" && newKeys.some((key) => key.startsWith("source:"));
+    platform === "jingdong" && (newKeys.some((key) => key.startsWith("source:")) || (mode === "pull" && jdMissingEstimate));
   observedRows.set(platform, { generation: session.generation, keys });
   if (regular) regularAttempts.set(platform, { generation: session.generation, atMs: now });
   return { recipients, regular };
@@ -235,6 +241,7 @@ async function syncPlatform(
   platform: ExpressPlatform, session: PlatformSession, scope: ReadScope, publish: (state: AppState) => void,
   before: AppState, visible: readonly Shipment[], onSenderStage?: () => void,
   note: PlatformSyncProgressNote = { stage: "platform_parcel_sync" },
+  mode: RefreshMode = "observe",
 ): Promise<PlatformSyncResult> {
   const current = () => projectionSceneActive() && currentPlatformSession(platform, session.generation) != null;
   const now = Date.now();
@@ -316,7 +323,10 @@ async function syncPlatform(
     return { added: 0, partial: false, changed };
   } else if (platform === "jingdong") {
     note.stage = "jd_sync_orders";
-    const data = await fetchJdParcels(session, visible, (parcels) => persist({ parcels }));
+    const data = await fetchJdParcels(session, visible, (parcels) => persist({ parcels }), {
+      allShipments: before.shipments,
+      bypassEstimateCooldown: mode === "manual",
+    });
     try {
       if (data.parcels.length) persist({ parcels: data.parcels });
       if (!notePlatformSync(platform, session.generation, Date.now())) {
@@ -403,7 +413,7 @@ export async function refreshPlatformParcels(
     const task = syncPlatform(platform, session, scope, publish, state, visible, () => {
       sender.started = true;
       for (const listener of sender.listeners) listener();
-    }, note).then(result => {
+    }, note, mode).then(result => {
       // D116: an automatic round of any platform, Cainiao included, writes its end when it changed something or
       // failed in part; an unchanged automatic round closes without a line. A partial round names its failed stage.
       if (userInitiated || result.partial || result.changed || result.added > 0) {

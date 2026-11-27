@@ -111,6 +111,7 @@ async function recognizeShortcutImage(rawImage: UIImage, capturedAtMs: number, n
   };
   const scope = mealCredentialScope();
   let onlineQR: Record<string, unknown> | undefined;
+  let pendingOnlineMeal: ReturnType<typeof mealFromModel> = null;
   let onlineFallbackNotice = "";
   if (operation.mode === "online") {
     note.stage = "online_recognition";
@@ -129,7 +130,15 @@ async function recognizeShortcutImage(rawImage: UIImage, capturedAtMs: number, n
           if (onlineMealRequiresQR(result.fields, rules)) onlineQR = result.fields;
           else {
             const meal = mealFromModel(result.fields, capturedAtMs, rules);
-            if (meal) return { ...none, meals: { ids: putMealObservations(scope, [meal], true), scope } };
+            if (meal) {
+              const rawBrand = typeof result.fields.brand === "string" ? result.fields.brand.trim() : "";
+              if (!rawBrand && rules.parsed && meal.payload.brandId === rules.parsed.genericBrandId) {
+                onlineQR = result.fields;
+                pendingOnlineMeal = meal;
+              } else {
+                return { ...none, meals: { ids: putMealObservations(scope, [meal], true), scope } };
+              }
+            }
           }
         }
       }
@@ -161,6 +170,9 @@ async function recognizeShortcutImage(rawImage: UIImage, capturedAtMs: number, n
   const width = image.width * image.scale, height = image.height * image.scale;
   const rows = parcelImageRows(recognized.candidates, width, height);
   const parcel = recognizeParcelCodes(rows, capturedAtMs);
+  if (!recognized.candidates.length && pendingOnlineMeal && scope && mealCredentialScope() === scope) {
+    return { parcel, meals: { ids: putMealObservations(scope, [pendingOnlineMeal], true), scope } };
+  }
   if (!onlineQR && (parcel.lookup || parcel.independent) || !recognized.candidates.length || !scope || mealCredentialScope() !== scope) {
     return { parcel };
   }

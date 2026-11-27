@@ -94,6 +94,8 @@ export function courierIconName(
   accountOrder = false,
 ): string {
   if (accountOrder) return EXPRESS_POLICY.carrierIcons.accountOrder;
+  if (courierCode === "watch-ems") return "ems";
+  if (courierCode === "watch-yzpy") return "yzpy";
   if (/^watch-(dhl|fedex|gls|ups|usps)$/.test(courierCode)) return courierCode;
   return displayIcon(
     resolveCarrierQuery(courierCode) ||

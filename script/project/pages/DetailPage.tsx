@@ -678,7 +678,7 @@ export function DetailPage(props: {
     const controller = new AbortController();
     void finishDetailOpening(controller.signal);
     return () => { controller.abort(); cloudAbortRef.current?.abort(); };
-  }, [detailPostPaintReady, imageScope, props.persistedShipment]);
+  }, [detailPostPaintReady, props.shipment.identity.id, cloudLifecycle, props.persistedShipment]);
 
   function refresh(forceManualRefresh = false): Promise<Shipment | undefined> {
     if (forceManualRefresh && pullInFlightRef.current) return pullInFlightRef.current;
@@ -840,6 +840,7 @@ export function DetailPage(props: {
   }
 
   async function finishDetailOpening(signal: AbortSignal) {
+    if (typeof detailPostPaintReady === "boolean" && !detailPostPaintReady) return;
     // R5-NEW-11 ⑤: a Watch parcel's cloud metadata (product name, thumbnail) starts with the page, beside its Watch
     // page read (up to 20 s on a weak network) instead of after it; its waybill and lifecycle do not change with it.
     const watchCloud = syncedInternational ? refreshCloudMetadata() : undefined;
@@ -1071,7 +1072,8 @@ export function DetailPage(props: {
               unprojectedAccountOrder(shipment),
             )}
             size={72}
-            deferDiskDecode={!detailPostPaintReady}
+            deferDiskDecode={true}
+            postPaintReady={detailPostPaintReady}
             allowDownload={detailPostPaintReady && imageDownloadScope === imageScope}
             imageURL={shipment.identity.productImageURL}
             cloudImage={cloudImageProp}

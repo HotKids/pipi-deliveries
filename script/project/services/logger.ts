@@ -2221,6 +2221,7 @@ function repeatedRoutineLine(event: string, details: DiagnosticDetails, now: num
 function reconcileBufferedEpoch(epoch: string): boolean {
   if (bufferedEpoch !== undefined && bufferedEpoch !== epoch) {
     bufferedEntries.length = 0;
+    lastLoadedDiagnostics = [];
     pendingPublication = undefined;
     bufferedEpoch = epoch;
     return false;
@@ -2334,6 +2335,67 @@ export function writeDiagnosticBatch(
   if (bufferDiagnosticBatch(event, details, level)) flushDiagnostics();
 }
 
+let lastLoadedDiagnostics: DiagnosticEntry[] = [];
+
+/**
+ * Returns the most recently loaded diagnostic entries merged with any in-memory buffered entries
+ * without touching disk, flushing batches, or pruning retention files.
+ */
+export function peekRecentDiagnostics(): DiagnosticEntry[] {
+  const now = Date.now();
+  const unique = new Map<string, DiagnosticEntry>();
+  for (const entry of lastLoadedDiagnostics) {
+    if (validEntry(entry, now)) unique.set(entry.id, entry);
+  }
+  for (const entry of bufferedEntries) {
+    if (validEntry(entry, now)) unique.set(entry.id, cleanStoredEntry(entry));
+  }
+  return [...unique.values()]
+    .filter(({ event }) => event !== "carrier.authority.current")
+    .slice(-MAX_RECORDS)
+    .reverse();
+}
+
+/**
+ * Cancelably reads and sanitizes stored + buffered diagnostic entries for view display without
+ * triggering batch flush or file-pruning work on the navigation path.
+ */
+export function readDiagnosticsSnapshot(signal?: AbortSignal): Promise<DiagnosticEntry[]> {
+  if (signal?.aborted) return Promise.resolve([]);
+  return new Promise<DiagnosticEntry[]>((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      if (signal?.aborted) {
+        resolve([]);
+        return;
+      }
+      const now = Date.now();
+      const entries = storedEntries(now, false).map((entry) => cleanStoredEntry(entry));
+      const unique = new Map(entries.map((entry) => [entry.id, entry]));
+      let showPending = false;
+      try { showPending = diagnosticEpoch() === bufferedEpoch; }
+      catch { showPending = bufferedEpoch === undefined; }
+      if (showPending) {
+        for (const entry of bufferedEntries.filter((entry) => validEntry(entry, now))) {
+          unique.set(entry.id, cleanStoredEntry(entry));
+        }
+      }
+      const result = [...unique.values()]
+        .filter(({ event }) => event !== "carrier.authority.current")
+        .slice(-MAX_RECORDS)
+        .reverse();
+      lastLoadedDiagnostics = [...result].reverse();
+      resolve(result);
+    }, 0);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve([]);
+    };
+    signal?.addEventListener("abort", onAbort);
+  });
+}
+
 export function readDiagnostics(): DiagnosticEntry[] {
   retirePreHandleDiagnostics();
   flushDiagnostics();
@@ -2348,7 +2410,9 @@ export function readDiagnostics(): DiagnosticEntry[] {
       unique.set(entry.id, cleanStoredEntry(entry));
     }
   }
-  return [...unique.values()].filter(({ event }) => event !== "carrier.authority.current").slice(-MAX_RECORDS).reverse();
+  const result = [...unique.values()].filter(({ event }) => event !== "carrier.authority.current").slice(-MAX_RECORDS).reverse();
+  lastLoadedDiagnostics = [...result].reverse();
+  return result;
 }
 
 /**
@@ -2495,6 +2559,7 @@ export function clearDiagnostics(): void {
     Storage.remove(DIAGNOSTIC_KEY, { shared: true });
     clearDiagnosticFiles();
     bufferedEntries.length = 0;
+    lastLoadedDiagnostics = [];
     pendingPublication = undefined;
     bufferedEpoch = diagnosticEpoch();
     closedFlowIds.clear();

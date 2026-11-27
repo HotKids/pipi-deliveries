@@ -267,7 +267,7 @@ export function ParcelLiveActivityCard({ data, imageRoot, logoPath, width, url, 
 
   const capsuleControl = (label: VirtualNode) => {
     const priority = lockScreen ? undefined : 1;
-    const hitTarget = lockScreen ? label : <ZStack frame={{ minHeight: 44 }} contentShape="rect">{label}</ZStack>;
+    const hitTarget = lockScreen || expanded ? label : <ZStack frame={{ minHeight: 44 }} contentShape="rect">{label}</ZStack>;
     if (completion) return <Button intent={completion} buttonStyle="plain" layoutPriority={priority}>{hitTarget}</Button>;
     if (onComplete) {
       return <Button action={onComplete} buttonStyle="plain" disabled={actionPending} layoutPriority={priority}>{hitTarget}</Button>;

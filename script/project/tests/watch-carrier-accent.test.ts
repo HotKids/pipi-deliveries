@@ -91,4 +91,17 @@ for (const key of ["dhl", "fedex", "gls", "ups", "usps"]) {
   assert.ok(widgetStatusStyle("TRANSIT", accent, "运输中").foreground.light.startsWith("#"));
 }
 assert.equal(carrierArtworkAccent("watch"), undefined, "a Watch carrier without its own icon keeps the fallback");
+for (const [icon, expectedKey, expectedAccent] of [
+  ["ems", "ems", "#F39400"],
+  ["yzpy", "yzpy", "#008E4F"],
+] as const) {
+  const watch = internationalShipmentSnapshot({
+    id: "00000000-0000-4000-8000-000000000402", waybill: "WATCHPOST01", carrierName: icon === "ems" ? "EMS" : "中国邮政",
+    icon, status: "TRANSIT", statusText: "运输中", updatedAt: now - 60_000,
+    tracks: [{ at: now - 60_000, time: new Date(now - 60_000).toISOString(), detail: "Synthetic scan" }],
+  }, now);
+  assert.equal(watch.identity.courierCode, `watch-${icon}`);
+  assert.equal(courierIconName(watch.identity.courierCode, watch.identity.companyName), expectedKey);
+  assert.equal(carrierWidgetAccent(watch.identity.courierCode, watch.identity.companyName), expectedAccent);
+}
 console.log("Watch carrier accents follow their bundled artwork");

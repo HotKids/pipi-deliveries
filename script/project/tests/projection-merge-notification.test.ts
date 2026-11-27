@@ -17,7 +17,7 @@ import { projectStoredAccountOrders, refreshAllShipments } from "../services/syn
 // 用户 2026-09-25，两条合起来：订单行投影后与同一运单的已有行合并的那一轮，通知判断改用被并入的运单行当「上一次
 // 状态」（该行在这一轮开始时的快照里存在时），并且只有展示状态变了才推；快照里没有被并入的行时，照样只认状态变化，
 // 比的是留下来的那一行。之后各轮照旧。
-// Lite 上 0579 投影成 YT0000000001003 后并进那张早已签收的菜鸟来源运单行，推了一条六天前的「圆通速递 7051 ·
+// Lite 上 0579 投影成 YT0000000001003 后并进那张早已签收的菜鸟来源运单行，推了一条六天前的「圆通速递 1003 ·
 // 已签收」；iOS 上订单级「已完成」不是结构化状态时，投影后的订单行显示暂无状态，并进已签收的运单行时同样会推。
 // 同日晚用户采纳归属方案（T1–T7，归属-3/4）：订单只写它自己的行，运单行先占号时订单挂靠、隐藏、不通知，不再有
 // 「并进来的那一轮」；合并轮的规则留在代码里作兜底（最后一段仍单独测它）。下面的设备形态改为验证采纳后的行为：
@@ -183,7 +183,7 @@ const shownWaybillRow = () => {
   assert.equal(shipmentPresentationStatus(orderRow()).semantic, "COMPLETED");
   await listRound([completedOrder(true), signedToday], NOW + 60_000);
   assert.equal(shownWaybillRow().timeline.semantic, "COMPLETED");
-  assert.deepEqual(titles(), ["圆通速递 7051 · 已签收"]);
+  assert.deepEqual(titles(), ["圆通速递 1003 · 已签收"]);
   assert.equal(scheduled[0]!.body, "您的快件已签收，签收人：本人");
 }
 
@@ -195,10 +195,10 @@ const shownWaybillRow = () => {
   await listRound([transitOrder, inTransitLater], NOW + 60_000);
   assert.equal(shownWaybillRow().timeline.semantic, "TRANSIT");
   assert.equal(shownWaybillRow().timeline.latestDetail, "快件已到达【上海转运中心】");
-  assert.deepEqual(titles(), ["圆通速递 7051 · 运输中"], "the listed row's own newer event notifies");
+  assert.deepEqual(titles(), ["圆通速递 1003 · 运输中"], "the listed row's own newer event notifies");
   assert.equal(scheduled[0]!.body, "快件已到达【上海转运中心】");
   await listRound([transitOrder, inTransitLatest], NOW + 120_000);
-  assert.deepEqual(titles(), ["圆通速递 7051 · 运输中", "圆通速递 7051 · 运输中"], "later rounds keep the existing rules");
+  assert.deepEqual(titles(), ["圆通速递 1003 · 运输中", "圆通速递 1003 · 运输中"], "later rounds keep the existing rules");
   assert.equal(scheduled[1]!.body, "快件已到达【上海浦东营业部】");
 }
 
@@ -240,11 +240,11 @@ const shownWaybillRow = () => {
   };
   const id = row(inTransit).identity.id;
   const absent = new Map([[id, [`interface5:account:NOT${WAYBILL}`]]]);
-  assert.deepEqual(pending(row(inTransit), row(inTransitLater)), ["圆通速递 7051 · 运输中"],
+  assert.deepEqual(pending(row(inTransit), row(inTransitLater)), ["圆通速递 1003 · 运输中"],
     "control: without a merge a newer event with new text notifies");
   assert.deepEqual(pending(row(inTransit), row(inTransitLater), absent), [],
     "merge round without its absorbed row in the snapshot: status-only against the surviving row");
-  assert.deepEqual(pending(row(inTransit), row(signedToday), absent), ["圆通速递 7051 · 已签收"]);
+  assert.deepEqual(pending(row(inTransit), row(signedToday), absent), ["圆通速递 1003 · 已签收"]);
 }
 
 console.log("projection merge notification rule tests passed");

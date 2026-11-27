@@ -114,9 +114,12 @@ function chinaDay(time: number): number {
   return Math.floor((time + CHINA_OFFSET) / DAY) * DAY;
 }
 
-export function displayDeliveryEstimate(text: string, capturedAt: number, now = Date.now()): string {
-  if (capturedAt <= 0 || capturedAt > now || !/^预计[^\r\n。；;]{1,70}?送达$/.test(text)) return "";
-  const matches = Array.from(text.matchAll(/(今天|今日|明天|后天)|(?:(\d{4})年)?(\d{1,2})[月/-](\d{1,2})日?/g));
+export function displayDeliveryEstimate(rawText: string, capturedAt: number, now = Date.now()): string {
+  const text = rawText.replace(/。$/, "");
+  if (capturedAt <= 0 || capturedAt > now || !/^预计[^\r\n"<>。；;]{1,70}?送达$/.test(text)) return "";
+  const matches = Array.from(
+    text.matchAll(/(今天|今日|明天|后天)|(?<![:\d])(?:(\d{4})[年/-])?(\d{1,2})(?:月(\d{1,2})日?|[/-](\d{1,2})(?![:\d/-]))/g),
+  );
   const day = matches[matches.length - 1];
   if (!day) return "";
   const observed = chinaDay(capturedAt);
@@ -125,7 +128,7 @@ export function displayDeliveryEstimate(text: string, capturedAt: number, now = 
   else {
     let year = Number(day[2]) || new Date(observed).getUTCFullYear();
     const month = Number(day[3]);
-    const date = Number(day[4]);
+    const date = Number(day[4] || day[5]);
     arrival = Date.UTC(year, month - 1, date);
     if (!day[2] && arrival < observed - 10 * DAY) arrival = Date.UTC(++year, month - 1, date);
     const resolved = new Date(arrival);
@@ -139,9 +142,13 @@ export function displayDeliveryEstimate(text: string, capturedAt: number, now = 
     text.slice((day.index ?? 0) + day[0].length);
 }
 
-export function deliveryForecast(raw: unknown, now: number): string {
-  const value = cleanScalarText(raw).match(/预计[^\r\n。；;]{1,70}?送达/)?.[0] || "";
+export function normalizeParcelDeliveryEstimate(raw: unknown, now = Date.now()): string {
+  const value = cleanScalarText(raw).match(/预计[^\r\n"<>。；;]{1,70}?送达/)?.[0] || "";
   return displayDeliveryEstimate(value, now, now);
+}
+
+export function deliveryForecast(raw: unknown, now: number): string {
+  return normalizeParcelDeliveryEstimate(raw, now);
 }
 
 export function uniqueDeliveryForecast(values: readonly unknown[], now: number): string {

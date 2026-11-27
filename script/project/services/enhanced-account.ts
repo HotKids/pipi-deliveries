@@ -173,6 +173,8 @@ function enhancementRequested(parcel: AccountParcelDto, purpose: "waybill" | "im
     normalizeWaybill(parcel.waybill) === normalizeWaybill(parcel.ownerId);
 }
 
+export const ENHANCEMENT_MIN_BUDGET_MS = 2_200;
+
 export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[], bindings: readonly AccountBinding[],
   options: { purpose?: "waybill" | "image"; deadlineAtMs?: number; signal?: AbortSignal;
     flowId?: string; trigger?: string;
@@ -204,6 +206,20 @@ export async function enhanceAccountParcels(parcels: readonly AccountParcelDto[]
     return marked;
   }
   const startedAt = Date.now();
+  if (purpose === "waybill" && options.deadlineAtMs !== undefined && options.deadlineAtMs - startedAt < ENHANCEMENT_MIN_BUDGET_MS) {
+    writeDiagnostic("account.enhanced.skipped", {
+      ...diagnostic,
+      result: "budget_exhausted",
+      skipReason: "budget_exhausted",
+      budgetMs: Math.max(0, Math.round(options.deadlineAtMs - startedAt)),
+      requestedOrderCount: distinctOrders.length,
+      matchedOrderCount: 0,
+      realWaybillCount: 0,
+      imageURLCount: 0,
+      productImageCount: 0,
+    });
+    return marked;
+  }
   try {
     const request = options.request || (payload => postGateway(ENHANCEMENT_ROUTE, payload, {
       deadlineAtMs: options.deadlineAtMs, signal: options.signal,

@@ -106,8 +106,8 @@
                             android:paddingHorizontal="@dimen/express_widget_sender_tag_padding_horizontal"
                             android:paddingVertical="@dimen/express_widget_sender_tag_padding_vertical"
                             android:text="@string/express_sender"
-                            android:textColor="#FFFFFFFF"
-                            android:textSize="12sp"
+                            android:textColor="@color/widget_sender_tag_text"
+                            android:textSize="11sp"
                             android:visibility="gone" />
                     </LinearLayout>
 

@@ -8,6 +8,7 @@
  */
 import { Path } from "scripting";
 import { statusProjectionFields } from "./worker-status";
+import { replayPendingShipmentNotifications } from "./notifications";
 import { sharedCommitSequence, sharedData, sharedStateText, publishSharedData, withSharedFileTransaction, SharedCommitConflict, prefetchSharedStateFiles, type PrefetchedStateFiles } from "./shared-file-transaction";
 import { normalizeTimelineSlot, TIMELINE_SLOT } from "./timeline-slot";
 import { activeWatchScope, internationalShipment, legacyWatchSnapshot, refreshInternationalShipments, retireLegacyWatchSnapshot, type WatchSnapshot } from "./international-records";
@@ -985,6 +986,7 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
       : undefined;
   const rawCloudOrigin = shipment.cloudExpressOrigin;
   const cloudExpressOrigin = rawCloudOrigin &&
+    manuallyAdded &&
     typeof rawCloudOrigin.waybill === "string" &&
     normalizeWaybill(rawCloudOrigin.waybill) &&
     Number.isFinite(rawCloudOrigin.waybillGeneration) &&
@@ -994,6 +996,19 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
         waybillGeneration: rawCloudOrigin.waybillGeneration,
       }
     : undefined;
+  const rawPlatformFields = shipment.platformFields;
+  const cleanedPlatformFields = rawPlatformFields &&
+    manuallyAdded &&
+    typeof rawPlatformFields.manualTitle === "string" &&
+    typeof rawPlatformFields.cloudProductName === "string" &&
+    rawPlatformFields.manualTitle === rawPlatformFields.cloudProductName &&
+    (rawPlatformFields.manualTitleEditedAtMs === undefined ||
+      rawPlatformFields.manualTitleEditedAtMs === rawPlatformFields.cloudProductNameObservedAtMs)
+    ? (() => {
+        const { manualTitle: _mt, manualTitleEditedAtMs: _mtAt, ...restFields } = rawPlatformFields;
+        return restFields;
+      })()
+    : rawPlatformFields;
   const rawManualRefreshLease = shipment.manualRefreshLease;
   const manualRefreshLeaseAttemptId = String(
     rawManualRefreshLease?.attemptId || "",
@@ -1015,8 +1030,9 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
         expiresAtMs: manualRefreshLeaseExpiresAtMs,
       }
     : undefined;
+  const { cloudExpressOrigin: _previousCloudExpressOrigin, ...shipmentBase } = shipment;
   return {
-    ...shipment,
+    ...shipmentBase,
     statusPresentation: repairsJingDongOrder
       ? shipment.statusPresentation ||
         (shipment.timeline.semantic === "COMPLETED"
@@ -1036,6 +1052,7 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
     cainiaoH5FallbackActivatedAtMs,
     ...(pendingKdniaoAttemptAtMs !== undefined ? { pendingKdniaoAttemptAtMs } : {}),
     ...(cloudExpressOrigin ? { cloudExpressOrigin } : {}),
+    ...(cleanedPlatformFields !== shipment.platformFields ? { platformFields: cleanedPlatformFields } : {}),
     manualRefreshAttemptAtMs,
     manualRefreshLease,
     identity: {
@@ -2862,7 +2879,6 @@ export async function refreshStoredWatchShipments(budgetMs?: number): Promise<Ap
   const wrote = stateWriteCount > writesBefore;
   if (wrote && committed.pendingNotifications?.some((event) => !event.awaitingCarrier)) {
     try {
-      const { replayPendingShipmentNotifications } = await import("./notifications");
       const replayed = await replayPendingShipmentNotifications(undefined, {
         deadlineAtMs: budgetMs !== undefined ? startedAt + budgetMs : undefined,
       });
@@ -4477,10 +4493,9 @@ export function removeShipmentWithCleanup(
           latestTrackAtMs: latestWatchTrackAtMs(shipment),
         })
       : state.watchFeedback;
-    const cloudOriginWaybill = shipment?.pddCloudOrigin?.waybill ||
-      (shipment?.identity.manuallyAdded
-        ? (shipment.cloudExpressOrigin?.waybill || (shipment.pddImport ? canonical : ""))
-        : "");
+    const cloudOriginWaybill = shipment?.identity.manuallyAdded
+      ? (shipment.cloudExpressOrigin?.waybill || "")
+      : "";
     const cloudPddTombstones = cloudOriginWaybill
       ? upsertCloudPddTombstoneEntry(state.cloudPddTombstones, {
           waybill: normalizeWaybill(cloudOriginWaybill || canonical),
@@ -4532,10 +4547,9 @@ export function forceCompleteShipment(
           latestTrackAtMs: latestWatchTrackAtMs(current),
         })
       : state.watchFeedback;
-    const cloudOriginWaybill = current.pddCloudOrigin?.waybill ||
-      (current.identity.manuallyAdded
-        ? (current.cloudExpressOrigin?.waybill || (current.pddImport ? canonical : ""))
-        : "");
+    const cloudOriginWaybill = current.identity.manuallyAdded
+      ? (current.cloudExpressOrigin?.waybill || "")
+      : "";
     const cloudPddTombstones = cloudOriginWaybill
       ? upsertCloudPddTombstoneEntry(state.cloudPddTombstones, {
           waybill: normalizeWaybill(cloudOriginWaybill || canonical),

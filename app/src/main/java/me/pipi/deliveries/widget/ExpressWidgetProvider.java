@@ -273,6 +273,8 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         // Cleared on every bind; ExpressWidgetMeasurements.centerWideRowGlyphs caps it again.
         views.setInt(WIDE_COMPANY_IDS[index], "setMaxWidth", Integer.MAX_VALUE);
         views.setViewVisibility(WIDE_SENDER_IDS[index], item.sender ? View.VISIBLE : View.GONE);
+        applySenderTagTextColor(context, views, WIDE_SENDER_IDS[index],
+                ExpressWidgetPalette.accent(context, items.get(0)));
         views.setTextViewText(WIDE_STATUS_IDS[index],
                 ExpressWidgetPresentation.statusText(item));
         views.setInt(WIDE_STATUS_IDS[index],
@@ -344,9 +346,9 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
                 TypedValue.COMPLEX_UNIT_SP, layout.statusTextSizeSp);
         views.setTextViewTextSize(R.id.widget_compact_company,
                 TypedValue.COMPLEX_UNIT_SP, layout.companyTextSizeSp);
-        // The 寄 tag's text matches the carrier line, as on Pipi's 2×2 (owner 2026-11-21).
+        // The 2×2 寄 tag steps down 1sp below the carrier line, matching Pipi and iOS (owner 2026-11-27).
         views.setTextViewTextSize(R.id.widget_compact_sender,
-                TypedValue.COMPLEX_UNIT_SP, layout.companyTextSizeSp);
+                TypedValue.COMPLEX_UNIT_SP, compactSenderTextSp(layout));
         views.setTextViewTextSize(R.id.widget_compact_detail,
                 TypedValue.COMPLEX_UNIT_SP, layout.detailTextSizeSp);
         views.setTextViewTextSize(R.id.widget_compact_all_text,
@@ -359,6 +361,11 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
     private static final float COMPACT_LOGO_GAP_DP = 9f;
     /** The smallest 2×2 status size an outgoing parcel's 寄 tag can step the status word down to. */
     static final float COMPACT_SENDER_MIN_STATUS_SP = 14f;
+    static final float COMPACT_SENDER_TEXT_OFFSET_SP = 1f;
+
+    static float compactSenderTextSp(ExpressWidgetLayout.Compact layout) {
+        return Math.max(10f, layout.companyTextSizeSp - COMPACT_SENDER_TEXT_OFFSET_SP);
+    }
 
     /** Width of the 2×2 card's small gray 寄 tag, including its gap after the status word. */
     static float compactSenderTagPx(Context context, ExpressWidgetLayout.Compact layout) {
@@ -366,7 +373,7 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         TextPaint paint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
         paint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         paint.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
-                layout.companyTextSizeSp, resources.getDisplayMetrics()));
+                compactSenderTextSp(layout), resources.getDisplayMetrics()));
         return paint.measureText(context.getString(R.string.express_sender))
                 + 2f * resources.getDimension(R.dimen.express_widget_sender_tag_padding_horizontal)
                 + resources.getDimension(R.dimen.express_widget_sender_tag_gap);
@@ -494,8 +501,40 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         int surface = context.getColor(R.color.widget_surface);
         int tinted = androidx.core.graphics.ColorUtils.compositeColors(
                 (accent & 0x00ffffff) | 0x55000000, surface);
-        int fill = ExpressStatusColors.widgetBadgeFill(item);
+        int fill = ExpressStatusColors.widgetBadgeFill(context, item);
         return ExpressStatusColors.brandGradientFloor(status,
+                androidx.core.graphics.ColorUtils.compositeColors(fill, surface),
+                androidx.core.graphics.ColorUtils.compositeColors(fill, tinted));
+    }
+
+    static final int SENDER_TAG_LIGHT_FILL = 0x1F757575;
+    static final int SENDER_TAG_DARK_FILL = 0x38757575;
+    static final int SENDER_TAG_LIGHT_INK = 0xFF616161;
+    static final int SENDER_TAG_DARK_INK = 0xFFBDBDBD;
+
+    private static void applySenderTagTextColor(Context context, RemoteViews views, int id, int accent) {
+        if (Build.VERSION.SDK_INT >= 31) {
+            Configuration appearance = new Configuration(context.getResources().getConfiguration());
+            appearance.uiMode = (appearance.uiMode & ~Configuration.UI_MODE_NIGHT_MASK)
+                    | Configuration.UI_MODE_NIGHT_NO;
+            int day = senderTagTextColor(context.createConfigurationContext(appearance), accent, false);
+            appearance.uiMode = (appearance.uiMode & ~Configuration.UI_MODE_NIGHT_MASK)
+                    | Configuration.UI_MODE_NIGHT_YES;
+            int night = senderTagTextColor(context.createConfigurationContext(appearance), accent, true);
+            ExpressWidgetApi31.applyStatusTextColor(views, id, day, night);
+        } else {
+            views.setTextColor(id, senderTagTextColor(
+                    context, accent, ExpressStatusColors.isNight(context)));
+        }
+    }
+
+    static int senderTagTextColor(Context context, int accent, boolean night) {
+        int ink = night ? SENDER_TAG_DARK_INK : SENDER_TAG_LIGHT_INK;
+        int fill = night ? SENDER_TAG_DARK_FILL : SENDER_TAG_LIGHT_FILL;
+        int surface = context.getColor(R.color.widget_surface);
+        int tinted = androidx.core.graphics.ColorUtils.compositeColors(
+                (accent & 0x00ffffff) | 0x55000000, surface);
+        return ExpressStatusColors.brandGradientFloor(ink,
                 androidx.core.graphics.ColorUtils.compositeColors(fill, surface),
                 androidx.core.graphics.ColorUtils.compositeColors(fill, tinted));
     }

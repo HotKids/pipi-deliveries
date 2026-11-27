@@ -63,7 +63,7 @@ function Row(props: {
                 {widgetIdentityText(props.row)}
               </Text>
               {props.row.sender === true ? (
-                <WidgetSenderTag font={11} verticalPadding={2} />
+                <WidgetSenderTag font={10} verticalPadding={1.5} brandAccent={props.brandAccent} />
               ) : null}
             </HStack>
             <Text

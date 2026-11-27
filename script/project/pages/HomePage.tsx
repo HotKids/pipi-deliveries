@@ -156,9 +156,11 @@ type ShipmentListItem = { id: string; shipment: Shipment; deleting: boolean; com
 
 function sameShipmentRowPresentation(left: Shipment, right: Shipment): boolean {
   if (left === right) return true;
-  return left.updatedAtMs === right.updatedAtMs &&
-    left.note === right.note &&
-    left.forcedCompletedAtMs === right.forcedCompletedAtMs &&
+  return (left.note || "").trim() === (right.note || "").trim() &&
+    Boolean(left.forcedCompletedAtMs) === Boolean(right.forcedCompletedAtMs) &&
+    left.statusPresentation?.scope === right.statusPresentation?.scope &&
+    left.statusPresentation?.semantic === right.statusPresentation?.semantic &&
+    left.statusPresentation?.text === right.statusPresentation?.text &&
     left.identity.companyName === right.identity.companyName &&
     left.identity.courierCode === right.identity.courierCode &&
     left.identity.sender === right.identity.sender &&
@@ -167,7 +169,9 @@ function sameShipmentRowPresentation(left: Shipment, right: Shipment): boolean {
     displayWaybill(left) === displayWaybill(right) &&
     left.timeline.semantic === right.timeline.semantic &&
     left.timeline.latestTimeText === right.timeline.latestTimeText &&
-    left.timeline.latestDetail === right.timeline.latestDetail;
+    left.timeline.latestDetail === right.timeline.latestDetail &&
+    left.timeline.headlineDisplay?.timeText === right.timeline.headlineDisplay?.timeText &&
+    left.timeline.headlineDisplay?.detail === right.timeline.headlineDisplay?.detail;
 }
 
 function sameShipmentItemList(

@@ -3,5 +3,6 @@
     <color name="ic_launcher_background">#FFFFEBD6</color>
     <color name="widget_empty_text">#4D000000</color>
     <color name="widget_compact_pill_background">#FF000000</color>
+    <color name="widget_sender_tag_text">#FF616161</color>
     <color name="widget_surface">#FFFFFFFF</color>
 </resources>

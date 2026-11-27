@@ -75,9 +75,79 @@ assert.equal(decoded?.qrPayload, " SYNTHETIC QR ");
 assert.equal(decoded?.totalAmount, "00.50");
 assert.equal(decoded?.expiresAt, now + 7200000);
 assert.equal(onlineMealRequiresQR({ productName: "幽兰拿铁" }, rules), true);
+assert.equal(onlineMealRequiresQR({ brand: "茶颜悦色", pickupCode: "983", productName: "烟火易冷" }, rules), false);
+assert.equal(onlineMealRequiresQR({ brand: "茶颜悦色", pickupCode: "   ", productName: "烟火易冷" }, rules), true);
 assert.equal(onlineMealRequiresQR({ brand: "星巴克" }, rules), false);
 assert.equal(mealFromModel({ brand: "星巴克", productName: "馥芮白®", pickupCode: "0123", productSpec: "大杯冰" }, now, rules)?.payload.productName, "馥芮白");
 assert.equal(chineseParentheses("咖啡 (大杯) (L)"), "咖啡 （大杯） (L)");
+
+const chayanOrdinaryScreen = [
+  ...candidates([
+    ["弦钰小主", 70, 60, 260],
+    ["精心制作中", 170, 60, 320],
+    ["预计 20:27~20:37 可取餐", 230, 60, 480],
+    ["取餐码", 240, 880, 1000],
+    ["中电软件园D3店 >", 380, 60, 420],
+    ["烟火易冷", 520, 220, 420],
+    ["丝滑 白脱版 | 450ml杯型 限时同价,免核销 | 下单立取,热,标准糖", 575, 220, 980],
+    ["共1件商品, 实付 ¥16", 720, 600, 1020],
+  ]),
+  {
+    content: "983",
+    boundingBox: { x: 860 / width, y: 1 - (170 + 55) / height, width: (1020 - 860) / width, height: 55 / height },
+  },
+];
+const chayanOrdinary = recognizeMealText(chayanOrdinaryScreen, width, height, now, [], rules).meals[0];
+assert.equal(chayanOrdinary?.payload.brandId, "chayanyuese");
+assert.equal(chayanOrdinary?.payload.brandName, "茶颜悦色");
+assert.equal(chayanOrdinary?.payload.code, "983");
+assert.equal(chayanOrdinary?.payload.merchantName, "中电软件园D3店");
+assert.equal(chayanOrdinary?.payload.productName, "烟火易冷");
+assert.equal(chayanOrdinary?.payload.status, "制作中");
+assert.equal(chayanOrdinary?.payload.itemCount, 1);
+assert.equal(chayanOrdinary?.payload.totalAmount, "16");
+assert.equal(chayanOrdinary?.payload.qrPayload, undefined);
+
+const chayanMisleadingUsername = recognizeMealText([
+  ...candidates([
+    ["霸王茶姬小主", 70, 60, 300],
+    ["精心制作中", 170, 60, 320],
+    ["取餐码", 240, 880, 1000],
+    ["中电软件园D3店 >", 380, 60, 420],
+    ["烟火易冷", 520, 220, 420],
+    ["丝滑 白脱版 | 450ml杯型 限时同价,免核销 | 下单立取,热,标准糖", 575, 220, 980],
+  ]),
+  {
+    content: "983",
+    boundingBox: { x: 860 / width, y: 1 - (170 + 55) / height, width: (1020 - 860) / width, height: 55 / height },
+  },
+], width, height, now, [], rules).meals[0];
+assert.equal(chayanMisleadingUsername?.payload.brandId, "chayanyuese", "username line is stripped before identifyBrand");
+assert.equal(chayanMisleadingUsername?.payload.code, "983");
+assert.equal(chayanMisleadingUsername?.payload.productName, "烟火易冷");
+
+const chayanOnlineFields = {
+  brand: null,
+  pickupCode: "983",
+  merchantName: "中电软件园D3店 >",
+  productName: "烟火易冷",
+  productSpec: "丝滑 白脱版 | 450ml杯型 限时同价,免核销 | 下单立取,热,标准糖",
+  waitTime: "预计 20:27~20:37 可取餐",
+  itemCount: 1,
+  totalAmount: "16",
+};
+assert.equal(onlineMealRequiresQR(chayanOnlineFields, rules), false);
+const chayanFromModelWithOcr = mealFromModel(chayanOnlineFields, now, rules, chayanOrdinaryScreen);
+assert.equal(chayanFromModelWithOcr?.payload.brandId, "chayanyuese");
+assert.equal(chayanFromModelWithOcr?.payload.brandName, "茶颜悦色");
+assert.equal(chayanFromModelWithOcr?.payload.code, "983");
+assert.equal(chayanFromModelWithOcr?.payload.merchantName, "中电软件园D3店");
+assert.equal(chayanFromModelWithOcr?.payload.productName, "烟火易冷");
+assert.equal(chayanFromModelWithOcr?.payload.itemCount, 1);
+assert.equal(chayanFromModelWithOcr?.payload.totalAmount, "16");
+const chayanFromRecognizeWithModel = recognizeMealText(chayanOrdinaryScreen, width, height, now, [], rules, chayanOnlineFields).meals[0];
+assert.equal(chayanFromRecognizeWithModel?.payload.brandId, "chayanyuese");
+assert.equal(chayanFromRecognizeWithModel?.payload.code, "983");
 
 // The Android scenario union uses this order summary and its distinct product row.
 const starbucks = recognizeMealText(candidates([
@@ -225,6 +295,15 @@ assert.equal(redemptionCard?.hasMealQR, true);
 assert.equal(cards.mealRedemption(decoded!)?.title, "核销码");
 assert.equal(cards.mealRedemption(decoded!)?.payload, " SYNTHETIC QR ");
 assert.equal(cards.mealRedemption(decoded!)?.prompt, "请扫码核销");
+const chayanOrdinaryScope = "e".repeat(64);
+const [chayanOrdinaryId] = putMealObservations(chayanOrdinaryScope, [chayanOrdinary!], true);
+const chayanOrdinaryCard = cards.mealCard(chayanOrdinaryScope, chayanOrdinaryId, readMeals(chayanOrdinaryScope), now);
+assert.equal(chayanOrdinaryCard?.code, "983", "exempt-verification Chayan displays the copyable numeric code");
+assert.equal(chayanOrdinaryCard?.mealCompactCode, "983", "Dynamic Island compact capsule shows 983 for ordinary Chayan");
+assert.equal(chayanOrdinaryCard?.hasMealQR, false);
+assert.equal(cards.mealRedemption(chayanOrdinary!.payload), undefined);
+assert.equal(cards.mealRedemption({ ...chayanOrdinary!.payload, qrPayload: " SYNTHETIC QR " }), undefined,
+  "ordinary Chayan with a numeric pickup code never degrades to 待核销");
 assert.equal(currentMeal(readMeals("b".repeat(64)), picked, now), undefined);
 stageLuckinDraft(scope, order.draft!);
 const [separate] = putMealObservations(scope, [second(now + 120001, ["a1234567AA0="]).meals[0]], true);

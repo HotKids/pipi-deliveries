@@ -819,10 +819,45 @@ const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.
 assert.match(activityEntrySource, /const compactCode = parcelActivityCompactText\(data\);/);
 assert.match(activityEntrySource, /const badgeSize = 27;/,
   "the compact and minimal Dynamic Island badges use the 27pt concentric diameter");
-assert.match(activityEntrySource, /compactTrailing=\{\(\s*<Text font=\{15\} fontWeight="semibold" foregroundStyle=\{compactCodeColor\}\s+lineLimit=\{1\} minScaleFactor=\{0\.75\}>\s*\{compactCode\}\s*<\/Text>/,
-  "the compact island shows the shared capsule text at standard-width 15pt semibold");
+assert.match(activityEntrySource, /compactLeading=\{<HStack widgetURL=\{url\}>\{glyph\}<\/HStack>\}/,
+  "compactLeading opens the deep link without placing widgetURL on the outer LiveActivityUI");
+assert.match(activityEntrySource, /compactTrailing=\{\(\s*<Text font=\{15\} fontWeight="semibold" foregroundStyle=\{compactCodeColor\}\s+lineLimit=\{1\} minScaleFactor=\{0\.75\} widgetURL=\{url\}>\s*\{compactCode\}\s*<\/Text>/,
+  "the compact island shows the shared capsule text at standard-width 15pt semibold and carries widgetURL");
+assert.match(activityEntrySource, /minimal=\{<HStack widgetURL=\{url\}>\{glyph\}<\/HStack>\}/,
+  "minimal opens the deep link directly");
+assert.doesNotMatch(activityEntrySource, /<LiveActivityUI[^>]*\bwidgetURL=/,
+  "outer LiveActivityUI must never set widgetURL, which intercepts Dynamic Island expanded Button(intent:) taps");
 assert.doesNotMatch(activityEntrySource, /compactTrailing=[\s\S]*?fontWidth="condensed"/,
   "compactTrailing must not condense the Dynamic Island text");
+assert.match(activityCardSource, /const hitTarget = lockScreen \|\| expanded \? label : <ZStack frame=\{\{ minHeight: 44 \}\} contentShape="rect">\{label\}<\/ZStack>;/,
+  "only in-app cards wrap the 35pt completion capsule in a 44pt ZStack; Lock Screen and Dynamic Island expanded keep the unclipped 35pt capsule hit target");
+assert.match(activityCardSource, /overlay=\{lockScreenAction \? \{ alignment: "bottomTrailing", content: lockScreenAction \} : undefined\}\s+widgetURL=\{sharesSmartStack \? undefined : url\}/,
+  "Lock Screen preserves separate deep-link widgetURL and trailing Button(intent:) hit targets");
+{
+  const actionRowSlot = new Function("card", "expanded", "lockScreen", "verticalScale", `
+    const flexibleHeight = lockScreen || expanded;
+    const slot = (size, minimum = 0) => ({
+      minHeight: (flexibleHeight ? minimum : size) * verticalScale,
+      idealHeight: size * verticalScale,
+      maxHeight: size * verticalScale,
+    });
+    const actionRowHeight = slot(card.capsuleHeight, expanded ? card.capsuleHeight : card.capsuleIcon + 2 * card.iconGap);
+    const uses44ptWrapper = !(lockScreen || expanded);
+    return { actionRowHeight, uses44ptWrapper };
+  `);
+  const cardSpec = { capsuleHeight: 35, capsuleIcon: 19, iconGap: 4 };
+  for (const kind of ["meal", "pickup", "handoff"] as const) {
+    const label = kind === "meal" ? "我已取餐" : kind === "handoff" ? "我已寄件" : "我已取件";
+    assert.ok(activityCardSource.includes(label), `completion label ${label} is wired`);
+    const expandedSpec = actionRowSlot(cardSpec, true, false, 1);
+    assert.equal(expandedSpec.uses44ptWrapper, false, `${label}: Dynamic Island expanded button does not overflow 35pt bottomRow`);
+    assert.deepEqual(expandedSpec.actionRowHeight, { minHeight: 35, idealHeight: 35, maxHeight: 35 });
+    const lockSpec = actionRowSlot(cardSpec, false, true, 1);
+    assert.equal(lockSpec.uses44ptWrapper, false, `${label}: Lock Screen button keeps 35pt capsule hit target`);
+    const appSpec = actionRowSlot(cardSpec, false, false, 1);
+    assert.equal(appSpec.uses44ptWrapper, true, `${label}: in-app card retains 44pt touch target`);
+  }
+}
 assert.match(activityCardSource, /const pickupCode = isMeal \? data\.code : parcelPickupShortCode\(data\.code\);/,
   "the Lock Screen, expanded island and Smart Stack keep the full meal code");
 assert.match(activityEntrySource, /content=\{<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} lockScreen lockScreenStyle=\{data\.lockScreenStyle\} \/>\}/);
@@ -947,7 +982,9 @@ assert.match(settingsSource, /destination === "diagnostics" \? \(\s*<DiagnosticL
 const logPageSource = readFileSync(new URL("../pages/DiagnosticLogPage.tsx", import.meta.url), "utf8");
 assert.doesNotMatch(logPageSource, /useState\(\(\) => readDiagnostics\(\)\)/,
   "constructing the diagnostics destination never reads the log before it is shown");
-assert.match(logPageSource, /onAppear=\{\(\) => \{\s*showItems\(readDiagnostics\(\)\);/);
+assert.match(logPageSource, /onAppear=\{\(\) => \{\s*reloadDiagnosticsOnAppear\(\);/);
+assert.match(logPageSource, /onDisappear=\{cancelSnapshotLoad\}/);
+assert.match(logPageSource, /useMemo\(\(\) => groupDiagnostics\(items\), \[items\]\)/);
 assert.match(logPageSource, /onCountChange\(next\.length\)/);
 assert.match(logPageSource, /clearDiagnostics\(\);\s*showItems\(\[\]\)/,
   "clearing the log updates the cached badge");

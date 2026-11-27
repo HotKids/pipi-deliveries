@@ -3,7 +3,11 @@ import type { AppState } from "./models";
 import { loadState, loadWidgetSnapshot, refreshDueWatchShipments, visibleShipments } from "./services/storage";
 import { retireCompletedParcelActivities } from "./services/parcel-live-activity";
 import { buildWidgetSnapshot } from "./services/status";
-import { lastNetworkRefreshSuccessAtMs } from "./services/refresh-runtime-state";
+import {
+  lastNetworkRefreshSuccessAtMs,
+  lastWidgetNetworkFailure,
+  recordWidgetNetworkFailure,
+} from "./services/refresh-runtime-state";
 import { FallbackWidget } from "./widget/FallbackWidget";
 import { MediumWidget } from "./widget/MediumWidget";
 import { SmallWidget } from "./widget/SmallWidget";
@@ -132,6 +136,7 @@ async function run() {
     Widget.present(content, { reloadPolicy: widgetReloadPolicy() });
     return;
   }
+  const prepStartedAtMs = Date.now();
   let bootstrapReady = false;
   try {
     backgroundHostBootstrap();
@@ -139,11 +144,34 @@ async function run() {
   } catch {
     /* Reported as the run's result below. */
   }
+  let initialState: AppState | undefined;
+  if (bootstrapReady && typeof loadState === "function") {
+    try {
+      initialState = loadState();
+    } catch {
+      /* Domestic refresh still runs with its own state load. */
+    }
+  }
+  const preparationMs = Date.now() - prepStartedAtMs;
   let shouldRefresh = true;
+  let backedOffAfterFailure = false;
   try {
     shouldRefresh = shouldRunWidgetNetworkRefresh(
       lastNetworkRefreshSuccessAtMs(),
     );
+    if (shouldRefresh && typeof lastWidgetNetworkFailure === "function") {
+      const failure = lastWidgetNetworkFailure();
+      if (
+        !shouldRunWidgetNetworkRefresh(0, Date.now(), {
+          failedAtMs: failure.failedAtMs,
+          stateRevision: failure.stateRevision,
+          currentStateRevision: initialState?.revision,
+        })
+      ) {
+        shouldRefresh = false;
+        backedOffAfterFailure = true;
+      }
+    }
   } catch {
     shouldRefresh = true;
   }
@@ -160,14 +188,19 @@ async function run() {
       const syncWidgetMeals = async (mealBudgetMs: number): Promise<void> => {
         try {
           if (typeof synchronizeMeals !== "function") return;
+          const remainingBeforeRules = mealBudgetMs - (Date.now() - refreshStartedAtMs);
+          if (remainingBeforeRules <= 1_000) return;
           if (typeof ensureMealRules === "function" && !(await ensureMealRules("meal_sync"))) return;
-          await synchronizeMeals(Math.min(4_000, Math.max(1_000, mealBudgetMs)));
+          const remainingForMeals = mealBudgetMs - (Date.now() - refreshStartedAtMs);
+          if (remainingForMeals <= 800) return;
+          await synchronizeMeals(Math.min(4_000, Math.max(800, remainingForMeals)));
         } catch {
           /* Best-effort cloud meal sync never blocks domestic or Watch widget refresh. */
         }
       };
-      let initialState: AppState | undefined;
-      try { initialState = loadState(); } catch { /* Domestic refresh still runs with its own state load. */ }
+      if (!initialState && typeof loadState === "function") {
+        try { initialState = loadState(); } catch { /* Domestic refresh still runs with its own state load. */ }
+      }
       const [summary, watch] = await Promise.all([
         refreshAllShipments(undefined, backgroundRefreshOptions(budget)),
         initialState ? refreshDueWatchShipments(initialState, budget) : Promise.resolve(undefined),
@@ -181,21 +214,57 @@ async function run() {
       }
       return summary;
     }, waitMs);
-    if (outcome !== "completed" && outcome !== "partial") refreshed.state = watchState ?? null;
+    if (outcome !== "completed" && outcome !== "partial") {
+      let checkpointState: AppState | undefined;
+      if (typeof loadState === "function") {
+        try {
+          const latestPersisted = loadState();
+          if (latestPersisted && (!initialState || latestPersisted.revision > initialState.revision)) {
+            checkpointState = latestPersisted;
+          }
+        } catch {
+          /* Keep watchState or early prepared initialState when disk read is unavailable. */
+        }
+      }
+      refreshed.state =
+        watchState && (!checkpointState || watchState.revision >= checkpointState.revision)
+          ? watchState
+          : (checkpointState ?? null);
+      if (
+        (outcome === "timed_out" || outcome === "failed") &&
+        !refreshed.state &&
+        typeof recordWidgetNetworkFailure === "function"
+      ) {
+        try {
+          recordWidgetNetworkFailure(initialState?.revision ?? 0);
+        } catch {
+          /* Best-effort failure backoff metadata. */
+        }
+      }
+    }
     result = outcome;
     extra = {
+      preparationMs,
+      ...(initialState ? { baseRevision: initialState.revision } : {}),
+      ...(refreshed.state ? { resultRevision: refreshed.state.revision } : {}),
       ...(outcome === "skipped" ? { skipReason: "active_cross_runtime_refresh" } : {}),
       refreshMs: Date.now() - refreshStartedAtMs,
     };
     level = outcome === "completed" || outcome === "skipped" ? "info" : "warning";
   } else if (bootstrapReady) {
     result = shouldRefresh ? "budget_exhausted" : "recent_state";
-    extra = { skipReason: result };
+    extra = {
+      preparationMs,
+      ...(initialState ? { baseRevision: initialState.revision } : {}),
+      skipReason: backedOffAfterFailure ? "cooldown" : result,
+    };
     level = "info";
   }
   // The host destroys this context as soon as the timeline is presented, so the run must be
   // reported before that call, not after it.
-  const content = widgetContent(refreshed.state);
+  const finalizationStartedAtMs = Date.now();
+  const content = widgetContent(refreshed.state ?? initialState);
+  extra = { ...extra, finalizationMs: Date.now() - finalizationStartedAtMs };
   finish(result, extra, level);
   flushDiagnostics();
   Widget.present(content, { reloadPolicy: widgetReloadPolicy() });

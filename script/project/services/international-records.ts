@@ -10,7 +10,7 @@ import { formatListTime } from "./time-presentation";
 
 const CACHE = "international-shipments-v1.json";
 const RECORD_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
-const WATCH_ICONS = new Set(["dhl", "fedex", "gls", "ups", "usps"]);
+const WATCH_ICONS = new Set(["dhl", "ems", "fedex", "gls", "ups", "usps", "yzpy"]);
 const WATCH_STATES = new Set([
   "ORDERED", "SHIPPED", "PICKED", "TRANSIT", "DELIVERY", "WAITING_PICKUP", "COMPLETED", "DANGER", "CANCELLED", "UNKNOWN",
 ]);

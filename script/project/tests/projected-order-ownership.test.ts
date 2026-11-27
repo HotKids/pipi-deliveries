@@ -204,7 +204,7 @@ for (const orderFirst of [true, false]) {
   assert.deepEqual(titles(), [], `${label}: the attached order's new nodes never notify`);
   assert.deepEqual(loadState().pendingNotifications || [], []);
   await listRound(orderFirst ? [order(3), inTransitNewer] : [inTransitNewer, order(3)], NOW + 4 * 60_000);
-  assert.deepEqual(titles(), ["圆通速递 7051 · 运输中"], `${label}: the waybill record's own newer event notifies`);
+  assert.deepEqual(titles(), ["圆通速递 1003 · 运输中"], `${label}: the waybill record's own newer event notifies`);
   assert.equal(scheduled[0]!.body, "快件已到达【上海浦东营业部】");
 }
 
@@ -330,7 +330,7 @@ for (const withWaybillRow of [true, false]) {
   assert.ok(shown.timeline.tracks.every((track) => track.detail.includes("您的订单")),
     "timelines stay separate: no carrier node enters the order row");
   assert.ok(selectShipmentDetailPresentation(shown).tracks.every((track) => track.detail.includes("您的订单")));
-  assert.deepEqual(titles(), ["圆通速递 7051 · 已签收"], "one notification for the signing");
+  assert.deepEqual(titles(), ["圆通速递 1003 · 已签收"], "one notification for the signing");
   assert.equal(scheduled[0]!.body, "您的快件已签收，签收人：本人");
   const settled = loadState();
   clock += 1000;
@@ -338,7 +338,7 @@ for (const withWaybillRow of [true, false]) {
     "reading the carried status back changes nothing");
   await listRound([order(1), signedToday], NOW + 180_000);
   await listRound([order(2), signedToday], NOW + 240_000);
-  assert.deepEqual(titles(), ["圆通速递 7051 · 已签收"], "only one notification");
+  assert.deepEqual(titles(), ["圆通速递 1003 · 已签收"], "only one notification");
   assert.equal(onlyVisible().timeline.semantic, "COMPLETED");
 }
 
@@ -486,7 +486,7 @@ for (const withWaybillRow of [true, false]) {
   assert.deepEqual([summary.records, summary.succeeded, summary.failed], [2, 1, 1]);
   for (const entry of events) {
     const text = JSON.stringify(entry.details);
-    for (const number of [ORDER, WAYBILL, OTHER, "0579", "7051"]) {
+    for (const number of [ORDER, WAYBILL, OTHER, "0579", "1003"]) {
       assert.ok(!text.includes(number), `no waybill or order number in ${entry.event}`);
     }
   }

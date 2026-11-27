@@ -78,16 +78,15 @@ function registerParcelActivityOnce(): ParcelActivityBuilder {
       return (
         <LiveActivityUI
           {...expandedIslandAppearance}
-          widgetURL={url}
           content={<ParcelLiveActivityCard {...cardProps} width={width} lockScreen lockScreenStyle={data.lockScreenStyle} />}
-          compactLeading={<HStack>{glyph}</HStack>}
+          compactLeading={<HStack widgetURL={url}>{glyph}</HStack>}
           compactTrailing={(
             <Text font={15} fontWeight="semibold" foregroundStyle={compactCodeColor}
-              lineLimit={1} minScaleFactor={0.75}>
+              lineLimit={1} minScaleFactor={0.75} widgetURL={url}>
               {compactCode}
             </Text>
           )}
-          minimal={<HStack>{glyph}</HStack>}
+          minimal={<HStack widgetURL={url}>{glyph}</HStack>}
         >
           <LiveActivityUIExpandedCenter>
             <ParcelLiveActivityCard {...cardProps} width={width} expanded />

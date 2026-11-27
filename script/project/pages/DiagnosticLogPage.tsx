@@ -1,4 +1,5 @@
 import {
+  AbortController,
   Button,
   Divider,
   HStack,
@@ -10,6 +11,9 @@ import {
   Spacer,
   Text,
   VStack,
+  useEffect,
+  useMemo,
+  useRef,
   useState,
   type VirtualNode,
 } from "scripting";
@@ -19,7 +23,9 @@ import {
   diagnosticSummaryText,
   diagnosticText,
   diagnosticsEnabled,
+  peekRecentDiagnostics,
   readDiagnostics,
+  readDiagnosticsSnapshot,
   setDiagnosticsEnabled,
   writeDiagnostic,
   writeRuntimeCapabilities,
@@ -1326,17 +1332,43 @@ function EntryRow({ item, footer, showSeparator, separatorLeading = 28 }: {
 }
 
 export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: number) => void }) {
-  const [items, setItems] = useState<DiagnosticEntry[]>([]);
+  const [items, setItems] = useState<DiagnosticEntry[]>(peekRecentDiagnostics);
   const [notice, setNotice] = useState("");
   const [recording, setRecording] = useState(() => diagnosticsEnabled());
   const [category, setCategory] = useState<DiagnosticCategory | "all">("all");
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
-  const groups = groupDiagnostics(items).filter((group) => category === "all" || group.category === category);
+  const loadAbortRef = useRef<AbortController | null>(null);
+  const allGroups = useMemo(() => groupDiagnostics(items), [items]);
+  const groups = useMemo(
+    () => (category === "all" ? allGroups : allGroups.filter((group) => group.category === category)),
+    [allGroups, category],
+  );
 
   function showItems(next: DiagnosticEntry[]) {
     setItems(next);
     onCountChange(next.length);
   }
+
+  function cancelSnapshotLoad() {
+    loadAbortRef.current?.abort();
+    loadAbortRef.current = null;
+  }
+
+  function reloadDiagnosticsOnAppear() {
+    cancelSnapshotLoad();
+    const immediate = peekRecentDiagnostics();
+    showItems(immediate);
+    setRecording(diagnosticsEnabled());
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    void readDiagnosticsSnapshot(controller.signal).then((loaded) => {
+      if (controller.signal.aborted || loadAbortRef.current !== controller) return;
+      loadAbortRef.current = null;
+      showItems(loaded);
+    });
+  }
+
+  useEffect(() => () => cancelSnapshotLoad(), []);
 
   // The toolbar button calls this without awaiting it: a failed log read or prompt shows a notice instead of
   // ending the Scripting session (G-HIGH-17).
@@ -1424,9 +1456,9 @@ export function DiagnosticLogPage({ onCountChange }: { onCountChange: (count: nu
       navigationTitle="诊断日志"
       navigationBarTitleDisplayMode="inline"
       onAppear={() => {
-        showItems(readDiagnostics());
-        setRecording(diagnosticsEnabled());
+        reloadDiagnosticsOnAppear();
       }}
+      onDisappear={cancelSnapshotLoad}
       toast={transientToast(notice, setNotice)}
       toolbar={{
         topBarTrailing: (

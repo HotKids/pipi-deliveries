@@ -1,17 +1,22 @@
 import { Text } from "scripting";
+import { widgetSenderTagStyle } from "./palette";
 
-// The small gray 寄 tag of an outgoing parcel on the widgets (owner 2026-11-20): white 寄 on gray
-// #9A9AA0 with 3-point corners, never pushed out. The 2×2 puts it after the status word at the
-// carrier line's size; the 4×2 puts it after the waybill tail at its status capsule's size and height.
+// Neutral light-capsule 寄 tag on outgoing-parcel widgets (owner 2026-11-27): 12% (light) / 22% (dark)
+// gray fill and gray ink matching the status capsule style, stepped down 1pt for optical balance.
 // Rendered only for sender rows: the call site leaves it out, because a component may not return null.
-export function WidgetSenderTag(props: { font: number; verticalPadding: number }) {
+export function WidgetSenderTag(props: {
+  font: number;
+  verticalPadding: number;
+  brandAccent?: string;
+}) {
+  const style = widgetSenderTagStyle(props.brandAccent);
   return (
     <Text
       font={props.font}
       fontWeight="medium"
-      foregroundStyle="white"
-      padding={{ horizontal: 3, vertical: props.verticalPadding }}
-      background="rgba(154, 154, 160, 1)"
+      foregroundStyle={style.foreground}
+      padding={{ horizontal: 3.5, vertical: props.verticalPadding }}
+      background={style.background}
       clipShape={{
         type: "rect",
         cornerRadius: 3,

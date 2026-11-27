@@ -114,7 +114,7 @@ export function SmallWidget(props: {
                       {row.statusLabel}
                     </Text>
                     {row.sender === true ? (
-                      <WidgetSenderTag font={layout.companyFont} verticalPadding={1} />
+                      <WidgetSenderTag font={layout.companyFont - 1} verticalPadding={1} />
                     ) : null}
                   </HStack>
                   <Text

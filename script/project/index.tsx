@@ -26,7 +26,8 @@ import {
   setProjectionSceneActive,
   type ProjectionViewportView,
 } from "./services/projection-viewport";
-import type { AppState } from "./models";
+import type { AppState, Shipment } from "./models";
+import { displayWaybill } from "./services/shipment-policy";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
@@ -153,6 +154,60 @@ function readMealCards() {
   }
 }
 
+function sameForegroundShipmentProjection(left: Shipment, right: Shipment): boolean {
+  if (left === right) return true;
+  return (
+    left.identity.id === right.identity.id &&
+    left.identity.createdAtMs === right.identity.createdAtMs &&
+    left.waybillReuseAtMs === right.waybillReuseAtMs &&
+    (left.note || "").trim() === (right.note || "").trim() &&
+    Boolean(left.forcedCompletedAtMs) === Boolean(right.forcedCompletedAtMs) &&
+    left.statusPresentation?.scope === right.statusPresentation?.scope &&
+    left.statusPresentation?.semantic === right.statusPresentation?.semantic &&
+    left.statusPresentation?.text === right.statusPresentation?.text &&
+    left.identity.companyName === right.identity.companyName &&
+    left.identity.courierCode === right.identity.courierCode &&
+    left.identity.sender === right.identity.sender &&
+    left.identity.accountOrder === right.identity.accountOrder &&
+    left.identity.projectedWaybill === right.identity.projectedWaybill &&
+    displayWaybill(left) === displayWaybill(right) &&
+    left.timeline.semantic === right.timeline.semantic &&
+    left.timeline.latestTimeText === right.timeline.latestTimeText &&
+    left.timeline.latestDetail === right.timeline.latestDetail &&
+    left.timeline.headlineDisplay?.timeText === right.timeline.headlineDisplay?.timeText &&
+    left.timeline.headlineDisplay?.detail === right.timeline.headlineDisplay?.detail &&
+    left.platformFields?.manualTitle === right.platformFields?.manualTitle &&
+    left.platformFields?.cloudProductName === right.platformFields?.cloudProductName &&
+    left.platformFields?.title?.text === right.platformFields?.title?.text &&
+    left.platformFields?.estimate?.text === right.platformFields?.estimate?.text &&
+    left.platformFields?.cainiaoImage?.url === right.platformFields?.cainiaoImage?.url &&
+    left.platformFields?.pddImage?.url === right.platformFields?.pddImage?.url &&
+    (left.pickup === right.pickup || JSON.stringify(left.pickup) === JSON.stringify(right.pickup))
+  );
+}
+
+export function selectForegroundShipmentsProjection(
+  previous: readonly Shipment[],
+  next: readonly Shipment[],
+): readonly Shipment[] {
+  if (previous === next) return previous;
+  if (previous.length !== next.length) return next;
+  for (let i = 0; i < next.length; i += 1) {
+    if (!sameForegroundShipmentProjection(previous[i]!, next[i]!)) return next;
+  }
+  return previous;
+}
+
+export function selectForegroundPickupCardsProjection<T>(
+  previous: readonly T[],
+  next: readonly T[],
+): readonly T[] {
+  if (previous === next) return previous;
+  if (previous.length !== next.length) return next;
+  if (next.length === 0) return previous;
+  return JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
+}
+
 function usePickupTabState(cards: readonly ParcelActivityContent[], previewing: boolean, activityEndId?: string) {
   const hasCards = cards.length > 0 || previewing;
   const [keepVisible, setKeepVisible] = useState(hasCards);
@@ -233,15 +288,27 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   const revision = useRef(state?.revision ?? -1);
   revision.current = state?.revision ?? -1;
   const resumeGeneration = useRef(0);
-  const shipments = useMemo(() => state ? visibleShipments(state) : [], [state, watchAccessRevision]);
+  const prevShipmentsRef = useRef<readonly Shipment[]>([]);
+  const shipments = useMemo(() => {
+    const computed = state ? visibleShipments(state) : [];
+    const projected = selectForegroundShipmentsProjection(prevShipmentsRef.current, computed);
+    prevShipmentsRef.current = projected;
+    return projected;
+  }, [state, watchAccessRevision]);
   const platformObservationKey = useMemo(
     () => state ? platformObservationSignature(shipments, state.pickupCodeRecords) : "",
     [hasState, shipments, state?.pickupCodeRecords],
   );
   const pickupCards = useMemo(() => [...mealCards, ...activePickupCards(shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices)],
     [shipments, state?.pickupCodeRecords, state?.pickupArtworkChoices, mealCards]);
-  const latestPickupView = useRef({ state, pickupCards });
-  latestPickupView.current = { state, pickupCards };
+  const prevPickupCardsRef = useRef(pickupCards);
+  const stablePickupCards = useMemo(() => {
+    const projected = selectForegroundPickupCardsProjection(prevPickupCardsRef.current, pickupCards);
+    prevPickupCardsRef.current = projected as typeof pickupCards;
+    return projected as typeof pickupCards;
+  }, [pickupCards]);
+  const latestPickupView = useRef({ state, pickupCards: stablePickupCards });
+  latestPickupView.current = { state, pickupCards: stablePickupCards };
   const [pickupPreview, setPickupPreview] = useState(initialPickupPreview);
   const [activityEndId, setActivityEndId] = useState<string | undefined>(undefined);
   const { visible: hasPickupTab, emptyArtwork } = usePickupTabState(pickupCards, pickupPreview, activityEndId);
@@ -625,8 +692,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   }, [state]);
 
   useEffect(() => {
-    if (state) reconcileParcelActivity(state, pickupCards);
-  }, [state, pickupCards]);
+    if (state) reconcileParcelActivity(state, stablePickupCards);
+  }, [state?.pickupCodeRecords, state?.pickupArtworkChoices, stablePickupCards]);
 
   useEffect(() => {
     if (!mealCards.length) return;
@@ -702,13 +769,26 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
           const pendingLookup = pickupRecordId ? undefined : nextShortcutLookup();
           setStartup(current => current.state && preferNewerState(resumed, current.state) === current.state
             ? current : { state: resumed });
-          setNavigationRequest((current) => ({
-            shipmentId: activityShipmentId || shipmentId,
-            pickupRecordId,
-            activityMealQRCode,
-            shortcutLookup: screenLookup || preferShortcutLookup(current.shortcutLookup, pendingLookup),
-            generation: current.generation + 1,
-          }));
+          setNavigationRequest((current) => {
+            const nextShipmentId = activityShipmentId || shipmentId;
+            const nextShortcut = screenLookup || preferShortcutLookup(current.shortcutLookup, pendingLookup);
+            const hasRealTarget = Boolean(
+              nextShipmentId ||
+              pickupRecordId ||
+              activityMealQRCode ||
+              String(parameters.focus || "") === "search" ||
+              nextShortcut !== current.shortcutLookup,
+            );
+            return !hasRealTarget
+              ? current
+              : {
+                  shipmentId: nextShipmentId,
+                  pickupRecordId,
+                  activityMealQRCode,
+                  shortcutLookup: nextShortcut,
+                  generation: current.generation + 1,
+                };
+          });
           if (pickupRecordId) selection.setValue("pickup");
           else if (screenLookup || activityShipmentId) selection.setValue("deliveries");
         },
@@ -790,7 +870,7 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
           <PickupPage
             state={state}
             shipments={shipments}
-            cards={pickupCards}
+            cards={stablePickupCards}
             previewing={pickupPreview}
             emptyArtwork={emptyArtwork}
             focusedRecordId={navigationRequest.pickupRecordId}

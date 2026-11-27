@@ -91,10 +91,10 @@ public final class ExpressWidgetHeaderGeometryTest {
                 assertEquals(width == 300 ? 17f : 16f, company.getTextSize() / density, .01f);
                 assertEquals(13f, detail.getTextSize() / density, .01f);
                 int badgeSurface = androidx.core.graphics.ColorUtils.compositeColors(
-                        0x1a3275d6, context.getColor(R.color.widget_surface));
+                        0x1f00796b, context.getColor(R.color.widget_surface));
                 assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
                         status.getCurrentTextColor(), badgeSurface)
-                        >= androidx.core.graphics.ColorUtils.calculateContrast(0xff3275d6, badgeSurface));
+                        >= androidx.core.graphics.ColorUtils.calculateContrast(0xff004d40, badgeSurface));
                 ExpressWidgetRowPolicy.RowLayout expected = ExpressWidgetRowPolicy.calculate(3, 220f,
                         context.getResources().getDisplayMetrics().density,
                         CardSizeProfile.fromWidth(width).typography.lineBox(
@@ -200,9 +200,9 @@ public final class ExpressWidgetHeaderGeometryTest {
                         assertEquals("A cached widget must resolve the host's current appearance",
                                 ExpressWidgetProvider.statusTextColor(host, item, accent, !compact),
                                 status.getCurrentTextColor());
-                        // Owner 2026-11-20 (修改 11), table 1.2-A 已下单 text pair: the 2×2 headline shows it as
-                        // it is; the 4×2 badge keeps 3.0:1 over its 0x1A fill on the brand gradient.
-                        int shared = hostMode == Configuration.UI_MODE_NIGHT_YES ? 0xFFA9BACA : 0xFF5A6B80;
+                        // Owner 2026-11-27 (修改 29), 已下单 text pair & 12% / 22% capsule badge fill:
+                        // the 2×2 headline shows it as it is; the 4×2 badge keeps 3.0:1 on the brand gradient.
+                        int shared = hostMode == Configuration.UI_MODE_NIGHT_YES ? 0xFF4DD0E1 : 0xFF00838F;
                         if (compact) {
                             assertEquals("The 2x2 headline follows the host's text pair", shared,
                                     status.getCurrentTextColor());
@@ -211,8 +211,9 @@ public final class ExpressWidgetHeaderGeometryTest {
                         int surface = host.getColor(R.color.widget_surface);
                         int tinted = androidx.core.graphics.ColorUtils.compositeColors(
                                 (accent & 0xffffff) | 0x55000000, surface);
+                        int badgeFill = hostMode == Configuration.UI_MODE_NIGHT_YES ? 0x3800ACC1 : 0x1F00BCD4;
                         for (int background : new int[]{surface, tinted}) {
-                            background = androidx.core.graphics.ColorUtils.compositeColors(0x1a5a6b80, background);
+                            background = androidx.core.graphics.ColorUtils.compositeColors(badgeFill, background);
                             assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
                                     status.getCurrentTextColor(), background) >= 3.0);
                         }

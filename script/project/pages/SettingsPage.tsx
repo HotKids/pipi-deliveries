@@ -118,18 +118,80 @@ function SettingsAppIcon() {
 const OVERVIEW_SECTIONS = ["authorization", "platforms", "notifications"] as const;
 type OverviewSection = typeof OVERVIEW_SECTIONS[number];
 
+export type SettingsOverviewSummary = Readonly<{
+  authorization: AuthorizationState | undefined;
+  authorizationNotice: string;
+  platformCount: number;
+  enabledNotificationCount: number | undefined;
+}>;
+
+let cachedSettingsOverview: SettingsOverviewSummary | undefined;
+
+export function resetSettingsOverviewCacheForTests(): void {
+  cachedSettingsOverview = undefined;
+}
+
+export function resolveAuthorizationSummary(): Pick<SettingsOverviewSummary, "authorization" | "authorizationNotice"> {
+  try {
+    const { status: credentialStatus, verification } = gatewayAccessKeyState();
+    const next = authorizationState(credentialStatus, verification);
+    return {
+      authorization: next,
+      authorizationNotice:
+        credentialStatus === "conflict"
+          ? "检测到本地授权记录不一致，请重新保存 Access Key"
+          : (next === "saved" || next === "authorized") && savedKeyActivatedElsewhere()
+            ? ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE
+            : "",
+    };
+  } catch {
+    return {
+      authorization: "unavailable",
+      authorizationNotice: "暂时无法读取访问授权，请稍后重试",
+    };
+  }
+}
+
+export function resolveAllActivePlatformCount(): number {
+  let count = 0;
+  for (const platform of PLATFORM_SOURCES) {
+    try {
+      if (accountStatus(platform).state === "active") count += 1;
+    } catch {
+      writeDiagnostic("settings.platform_count.unavailable", { sourceProvider: platform }, "warning");
+    }
+  }
+  return count;
+}
+
 function useSettingsOverview() {
-  const [authorization, setAuthorization] =
-    useState<AuthorizationState | undefined>();
-  const [authorizationNotice, setAuthorizationNotice] = useState("");
-  const [platformCount, setPlatformCount] = useState(0);
-  const [enabledNotificationCount, setEnabledNotificationCount] = useState<number | undefined>();
+  const [overview, setOverview] = useState<SettingsOverviewSummary>(() => cachedSettingsOverview ?? {
+    authorization: undefined,
+    authorizationNotice: "",
+    platformCount: 0,
+    enabledNotificationCount: undefined,
+  });
   const visible = useRef(false);
   const checkAuthorization = useRef(false);
   const pending = useRef(new Set<OverviewSection>(OVERVIEW_SECTIONS));
-  const pendingPlatforms = useRef(new Set<ExpressPlatform>(PLATFORM_SOURCES));
-  const activePlatforms = useRef(new Set<ExpressPlatform>());
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  function publishOverview(updater: (current: SettingsOverviewSummary) => SettingsOverviewSummary) {
+    setOverview((current) => {
+      const next = updater(current);
+      if (
+        next.authorization === current.authorization &&
+        next.authorizationNotice === current.authorizationNotice &&
+        next.platformCount === current.platformCount &&
+        next.enabledNotificationCount === current.enabledNotificationCount
+      ) {
+        cachedSettingsOverview = current;
+        return current;
+      }
+      cachedSettingsOverview = next;
+      return next;
+    });
+  }
 
   function scheduleOverview(sections: readonly OverviewSection[] = []) {
     for (const section of sections) pending.current.add(section);
@@ -137,33 +199,25 @@ function useSettingsOverview() {
     timer.current = setTimeout(() => {
       timer.current = undefined;
       if (!visible.current) return;
-      if (pending.current.delete("authorization")) {
-        refreshAuthorization();
-        if (checkAuthorization.current) {
-          checkAuthorization.current = false;
-          void checkSavedAccessKey().catch(error => {
-            writeDiagnostic("settings.authorization.check_failed", diagnosticErrorDetails(error), "warning");
-          });
-        }
-      } else if (pending.current.has("platforms")) {
-        const platform = pendingPlatforms.current.values().next().value;
-        if (platform) {
-          pendingPlatforms.current.delete(platform);
-          activePlatforms.current.delete(platform);
-          try {
-            if (accountStatus(platform).state === "active") activePlatforms.current.add(platform);
-          } catch {
-            writeDiagnostic("settings.platform_count.unavailable", { sourceProvider: platform }, "warning");
-          }
-        }
-        if (!pendingPlatforms.current.size) {
-          pending.current.delete("platforms");
-          setPlatformCount(activePlatforms.current.size);
-        }
-      } else if (pending.current.delete("notifications")) {
-        setEnabledNotificationCount(notificationEnabledCount(true));
+      const needAuth = pending.current.delete("authorization");
+      const needPlatforms = pending.current.delete("platforms");
+      const needNotifications = pending.current.delete("notifications");
+      const authSummary = needAuth ? resolveAuthorizationSummary() : undefined;
+      const resolvedPlatforms = needPlatforms ? resolveAllActivePlatformCount() : undefined;
+      const resolvedNotifications = needNotifications ? notificationEnabledCount(true) : undefined;
+      publishOverview((current) => ({
+        authorization: authSummary ? authSummary.authorization : current.authorization,
+        authorizationNotice: authSummary ? authSummary.authorizationNotice : current.authorizationNotice,
+        platformCount: resolvedPlatforms !== undefined ? resolvedPlatforms : current.platformCount,
+        enabledNotificationCount:
+          resolvedNotifications !== undefined ? resolvedNotifications : current.enabledNotificationCount,
+      }));
+      if (needAuth && checkAuthorization.current) {
+        checkAuthorization.current = false;
+        void checkSavedAccessKey().catch(error => {
+          writeDiagnostic("settings.authorization.check_failed", diagnosticErrorDetails(error), "warning");
+        });
       }
-      scheduleOverview();
     }, 0);
   }
 
@@ -171,7 +225,7 @@ function useSettingsOverview() {
     visible.current = shown;
     if (shown) {
       checkAuthorization.current = true;
-      scheduleOverview(["authorization"]);
+      scheduleOverview(OVERVIEW_SECTIONS);
     } else if (timer.current !== undefined) {
       clearTimeout(timer.current);
       timer.current = undefined;
@@ -182,13 +236,11 @@ function useSettingsOverview() {
     const onScene = (phase: "active" | "inactive" | "background") => {
       if (phase === "active") {
         checkAuthorization.current = true;
-        for (const platform of PLATFORM_SOURCES) pendingPlatforms.current.add(platform);
         scheduleOverview(OVERVIEW_SECTIONS);
       }
     };
     AppEvents.scenePhase.addListener(onScene);
-    const unsubscribe = onPlatformAccountsChanged(platform => {
-      pendingPlatforms.current.add(platform);
+    const unsubscribe = onPlatformAccountsChanged(() => {
       scheduleOverview(["platforms"]);
     });
     const stopActivationObservation = onScriptingActivationRejectionChanged(() => scheduleOverview(["authorization"]));
@@ -206,24 +258,46 @@ function useSettingsOverview() {
     try {
       const { status: credentialStatus, verification } = gatewayAccessKeyState();
       const next = authorizationState(credentialStatus, verification);
-      setAuthorization(next);
-      setAuthorizationNotice(
+      const authorizationNotice =
         credentialStatus === "conflict"
           ? "检测到本地授权记录不一致，请重新保存 Access Key"
           : (next === "saved" || next === "authorized") && savedKeyActivatedElsewhere()
             ? ACCESS_KEY_ACTIVATED_ELSEWHERE_MESSAGE
-            : "",
-      );
+            : "";
+      publishOverview((current) => ({
+        ...current,
+        authorization: next,
+        authorizationNotice,
+      }));
       return next;
     } catch {
-      setAuthorization("unavailable");
-      setAuthorizationNotice("暂时无法读取访问授权，请稍后重试");
+      publishOverview((current) => ({
+        ...current,
+        authorization: "unavailable",
+        authorizationNotice: "暂时无法读取访问授权，请稍后重试",
+      }));
       return "unavailable";
     }
   }
 
-  return { authorization, authorizationNotice, setAuthorizationNotice, platformCount,
-    enabledNotificationCount, setEnabledNotificationCount, refreshAuthorization, setOverviewVisible };
+  function setAuthorizationNotice(authorizationNotice: string) {
+    publishOverview((current) => ({ ...current, authorizationNotice }));
+  }
+
+  function setEnabledNotificationCount(enabledNotificationCount: number | undefined) {
+    publishOverview((current) => ({ ...current, enabledNotificationCount }));
+  }
+
+  return {
+    authorization: overview.authorization,
+    authorizationNotice: overview.authorizationNotice,
+    setAuthorizationNotice,
+    platformCount: overview.platformCount,
+    enabledNotificationCount: overview.enabledNotificationCount,
+    setEnabledNotificationCount,
+    refreshAuthorization,
+    setOverviewVisible,
+  };
 }
 
 export function SettingsPage(props: {

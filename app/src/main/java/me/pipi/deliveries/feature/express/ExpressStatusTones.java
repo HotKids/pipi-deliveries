@@ -2,22 +2,45 @@
 package me.pipi.deliveries.feature.express;
 
 final class ExpressStatusTones {
+    static final int LIGHT_BADGE_ALPHA = 0x1F000000;
+    static final int DARK_BADGE_ALPHA = 0x38000000;
+
     private ExpressStatusTones() {}
+
+    static int capsule(String label, boolean dark) {
+        return switch (label) {
+            case "已下单" -> dark ? 0xFF00ACC1 : 0xFF00BCD4;
+            case "已发货" -> dark ? 0xFF039BE5 : 0xFF03A9F4;
+            case "已揽件" -> dark ? 0xFF1E88E5 : 0xFF2196F3;
+            case "运输中" -> dark ? 0xFF00796B : 0xFF00796B;
+            case "清关中" -> dark ? 0xFF26A69A : 0xFF26A69A;
+            case "待派送" -> dark ? 0xFFFFB300 : 0xFFFFC107;
+            case "派送中" -> dark ? 0xFFFB8C00 : 0xFFFF9800;
+            case "待取件" -> dark ? 0xFFF4511E : 0xFFFF5722;
+            case "已签收" -> dark ? 0xFF546E7A : 0xFF607D8B;
+            case "已完成" -> dark ? 0xFF607D8B : 0xFF90A4AE;
+            case "异常件" -> dark ? 0xFFE53935 : 0xFFF44336;
+            case "已取消" -> dark ? 0xFFA84E4E : 0xFFC06060;
+            case "暂无状态" -> dark ? 0xFF757575 : 0xFFBDBDBD;
+            default -> 0;
+        };
+    }
 
     static int text(String label, boolean dark) {
         return switch (label) {
-            case "已下单" -> dark ? 0xFFB0BEC5 : 0xFF455A64;
-            case "已发货" -> dark ? 0xFF80DEEA : 0xFF00838F;
-            case "已揽件" -> dark ? 0xFF81D4FA : 0xFF0277BD;
-            case "运输中" -> dark ? 0xFF90CAF9 : 0xFF1565C0;
-            case "待派送" -> dark ? 0xFF80CBC4 : 0xFF00695C;
-            case "派送中" -> dark ? 0xFFA5D6A7 : 0xFF2E7D32;
-            case "待取件" -> dark ? 0xFFC5E1A5 : 0xFF558B2F;
-            case "已签收" -> dark ? 0xFFFFCC80 : 0xFFEF6C00;
-            case "已完成" -> dark ? 0xFFFFAB91 : 0xFFE64A19;
-            case "异常件" -> dark ? 0xFFEF9A9A : 0xFFD32F2F;
-            case "已取消" -> dark ? 0xFFE0E0E0 : 0xFF757575;
-            case "暂无状态" -> dark ? 0xFFBDBDBD : 0xFF9E9E9E;
+            case "已下单" -> dark ? 0xFF4DD0E1 : 0xFF00838F;
+            case "已发货" -> dark ? 0xFF4FC3F7 : 0xFF0277BD;
+            case "已揽件" -> dark ? 0xFF64B5F6 : 0xFF1565C0;
+            case "运输中" -> dark ? 0xFF4DB6AC : 0xFF004D40;
+            case "清关中" -> dark ? 0xFF4DB6AC : 0xFF00796B;
+            case "待派送" -> dark ? 0xFFFFD54F : 0xFFFF8F00;
+            case "派送中" -> dark ? 0xFFFFB74D : 0xFFEF6C00;
+            case "待取件" -> dark ? 0xFFFF8A65 : 0xFFD84315;
+            case "已签收" -> dark ? 0xFF90A4AE : 0xFF455A64;
+            case "已完成" -> dark ? 0xFFB0BEC5 : 0xFF607D8B;
+            case "异常件" -> dark ? 0xFFE57373 : 0xFFC62828;
+            case "已取消" -> dark ? 0xFFD98C8C : 0xFF8F4343;
+            case "暂无状态" -> dark ? 0xFFE0E0E0 : 0xFF9E9E9E;
             default -> 0;
         };
     }
@@ -28,6 +51,7 @@ final class ExpressStatusTones {
             case "已发货" -> me.pipi.deliveries.R.drawable.widget_express_status_shipped_bg;
             case "已揽件" -> me.pipi.deliveries.R.drawable.widget_express_status_picked_bg;
             case "运输中" -> me.pipi.deliveries.R.drawable.widget_express_status_transit_bg;
+            case "清关中" -> me.pipi.deliveries.R.drawable.widget_express_status_customs_bg;
             case "待派送" -> me.pipi.deliveries.R.drawable.widget_express_status_waiting_delivery_bg;
             case "派送中" -> me.pipi.deliveries.R.drawable.widget_express_status_delivery_bg;
             case "待取件" -> me.pipi.deliveries.R.drawable.widget_express_status_waiting_bg;
