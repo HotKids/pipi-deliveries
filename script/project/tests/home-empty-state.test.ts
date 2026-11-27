@@ -129,8 +129,10 @@ assert.match(searchSheet, /<NavigationStack[\s\S]*?presentationBackground="syste
   "the existing search form has its own opaque sheet background, navigation and title");
 assert.match(homeSource, /<TextField\s+title="查询快递单号"[^]*?prompt="请输入运单号"/,
   "the waybill field displays the requested prompt");
-assert.match(searchSheet, /systemImage="xmark" labelStyle="iconOnly"[\s\S]*?searchPresented\.setValue\(false\)/,
-  "the search sheet must have an icon-only close button");
+assert.match(searchSheet, /presentationDragIndicator="visible"/,
+  "the search sheet uses pull-down dismissal");
+assert.doesNotMatch(searchSheet, /cancellationAction|systemImage="xmark"/,
+  "the search sheet omits a header close button and dismisses by pulling down");
 const navigationEffect = homeSource.match(/useEffect\(\(\) => \{\n(    const generation = props\.navigationRequestGeneration;[\s\S]*?)\n  \}, \[props\.navigationRequestGeneration\]\);/)?.[1];
 assert.ok(navigationEffect, "the navigation request runs once per generation");
 const openFromRequest = new Function("props", "handledNavigationRef", "searchPresented",

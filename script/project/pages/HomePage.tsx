@@ -604,12 +604,6 @@ export function HomePage(props: {
                   frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
                   background="systemGroupedBackground"
                   presentationBackground="systemGroupedBackground"
-                  toolbar={{
-                    cancellationAction: (
-                      <Button title="关闭" systemImage="xmark" labelStyle="iconOnly"
-                        action={() => searchPresented.setValue(false)} />
-                    ),
-                  }}
                   toast={transientToast(notice, setNotice)}
                 >
                   <HomeSearchBar
