@@ -82,7 +82,8 @@ export function shipmentReuseAnchorAtMs(shipment: Shipment, now = Date.now()): n
 }
 
 export function matchesParcelMetadataLifecycle(shipment: Shipment, anchorAt: number, terminalAt: number, now: number): boolean {
-  const localAnchor = shipmentReuseAnchorAtMs(shipment, now);
+  const localAnchor = shipmentReuseAnchorAtMs(shipment, now) ||
+    (shipment.identity.manuallyAdded ? validTime(shipment.identity.createdAtMs, now) || validTime(shipment.updatedAtMs, now) : 0);
   const localTerminal = waybillReuseTerminalAtMs(reuseTimeline(shipment), now);
   return localAnchor > 0 && validTime(anchorAt, now) > 0 &&
     !reusesWaybill(validTime(terminalAt, now), localAnchor) && !reusesWaybill(localTerminal, anchorAt);

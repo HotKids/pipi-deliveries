@@ -510,33 +510,43 @@ export function HomePage(props: {
           content: (
             <NavigationStack
               background="systemGroupedBackground"
+              presentationBackground="systemGroupedBackground"
               presentationDetents={[280, "medium", "large"]}
               presentationDragIndicator="visible"
             >
-              <ScrollView navigationTitle="查询快递" navigationBarTitleDisplayMode="inline" scrollIndicator="never"
-                scrollDismissesKeyboard="interactively"
-                frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-                background="systemGroupedBackground"
-                toolbar={{
-                  cancellationAction: (
-                    <Button title="关闭" systemImage="xmark" labelStyle="iconOnly"
-                      action={() => searchPresented.setValue(false)} />
-                  ),
-                }}
-                toast={transientToast(notice, setNotice)}
-              >
-                <HomeSearchBar
-                  open={searchPresented.value}
-                  state={props.state}
-                  shipments={shipments}
-                  autoFocusSearch={props.autoFocusSearch}
-                  {...shortcutSearchProps}
-                  onStateChange={props.onStateChange}
-                  setNotice={setNotice}
-                  openShipment={openShipment}
-                  setShipmentNavigationTarget={setShipmentNavigationTarget}
+              <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} background="systemGroupedBackground">
+                <VStack
+                  frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+                  background="systemGroupedBackground"
+                  ignoresSafeArea
+                  accessibilityHidden
                 />
-              </ScrollView>
+                <ScrollView navigationTitle="查询快递" navigationBarTitleDisplayMode="inline" scrollIndicator="never"
+                  scrollDismissesKeyboard="interactively"
+                  frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+                  background="systemGroupedBackground"
+                  presentationBackground="systemGroupedBackground"
+                  toolbar={{
+                    cancellationAction: (
+                      <Button title="关闭" systemImage="xmark" labelStyle="iconOnly"
+                        action={() => searchPresented.setValue(false)} />
+                    ),
+                  }}
+                  toast={transientToast(notice, setNotice)}
+                >
+                  <HomeSearchBar
+                    open={searchPresented.value}
+                    state={props.state}
+                    shipments={shipments}
+                    autoFocusSearch={props.autoFocusSearch}
+                    {...shortcutSearchProps}
+                    onStateChange={props.onStateChange}
+                    setNotice={setNotice}
+                    openShipment={openShipment}
+                    setShipmentNavigationTarget={setShipmentNavigationTarget}
+                  />
+                </ScrollView>
+              </ZStack>
             </NavigationStack>
           ),
         }}

@@ -226,7 +226,8 @@ const CAPTURE_PDD_ORDERS = `(() => {
         if (/^[1-9][0-9]{0,19}$/.test(id)) return id;
       }
     }
-    return field(row, ['shipping_id']);
+    const raw = field(row, ['shipping_id', 'shippingId']);
+    return /^[1-9][0-9]{0,19}$/.test(raw) ? raw : '';
   }
   function extractTraces(row) {
     const raw = row?.shipping?.traces ?? row?.traces ?? row?.express_traces ?? row?.track_list;
@@ -251,20 +252,26 @@ const CAPTURE_PDD_ORDERS = `(() => {
     } catch (_) {}
     return '';
   }
-  function scan(value, order, depth) {
+  function scan(value, order, inheritedShipping, inheritedWaybill, depth) {
     if (!value || typeof value !== 'object' || depth > 32) return;
     if (!Array.isArray(value)) {
       order = field(value, orderKeys) || jumpOrderId(value) || order;
       const waybill = field(value, waybillKeys);
+      const ownShipping = field(value, ['shipping_id', 'shippingId']);
+      if (/^[1-9][0-9]{0,19}$/.test(ownShipping)) {
+        inheritedShipping = ownShipping;
+        inheritedWaybill = waybill;
+      }
       if (waybill.length >= 5 && waybill.length <= 64) {
         const title = field(value.order_goods?.[0], ['goods_name','goods_title']).slice(0, 512);
         let id = '';
         try { id = shippingId(value, waybill); } catch (_) {}
+        if (!id && (!inheritedWaybill || inheritedWaybill === waybill)) id = inheritedShipping;
         const traces = extractTraces(value);
         output.push({ waybill, orderId: order, shippingId: id, title, forecast: typeof value.timeForecast === 'string' ? value.timeForecast.slice(0, 100) : '', ...(traces ? { traces } : {}) });
       }
     }
-    Object.values(value).forEach(child => scan(child, order, depth + 1));
+    Object.values(value).forEach(child => scan(child, order, inheritedShipping, inheritedWaybill, depth + 1));
   }
   function approved(address) {
     const url = new URL(address, location.href);
@@ -277,7 +284,7 @@ const CAPTURE_PDD_ORDERS = `(() => {
       const code = String(value.error_code ?? '');
       if (value.success === false || !['', '0', '1000000'].includes(code)) return;
       bytes += text.length;
-      scan(value, '', 0);
+      scan(value, '', '', '', 0);
       window.__pipiDeliveriesPddSuccess = true;
     } catch (_) {}
   }

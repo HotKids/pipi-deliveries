@@ -125,8 +125,8 @@ assert.match(homeSource, /const searchPresented = useObservable\(/,
 assert.match(searchSheet, /isPresented: searchPresented,/);
 assert.doesNotMatch(searchSheet, /onChanged:/,
   "the presentation binding owns dismissal without a second state callback");
-assert.match(searchSheet, /<NavigationStack[\s\S]*?<ScrollView navigationTitle="查询快递"[\s\S]*?<HomeSearchBar/,
-  "the existing search form has its own sheet navigation and title");
+assert.match(searchSheet, /<NavigationStack[\s\S]*?presentationBackground="systemGroupedBackground"[\s\S]*?<VStack[\s\S]*?background="systemGroupedBackground"[\s\S]*?ignoresSafeArea[\s\S]*?<ScrollView navigationTitle="查询快递"[\s\S]*?<HomeSearchBar/,
+  "the existing search form has its own opaque sheet background, navigation and title");
 assert.match(homeSource, /<TextField\s+title="查询快递单号"[^]*?prompt="请输入运单号"/,
   "the waybill field displays the requested prompt");
 assert.match(searchSheet, /systemImage="xmark" labelStyle="iconOnly"[\s\S]*?searchPresented\.setValue\(false\)/,

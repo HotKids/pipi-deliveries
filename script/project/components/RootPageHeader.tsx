@@ -1,4 +1,4 @@
-import { HStack, List, Rectangle, Section, Spacer, Text, VStack, ZStack, type ListProps, type VirtualNode } from "scripting";
+import { HStack, List, Rectangle, Section, Spacer, Text, VStack, ZStack, useState, type ListProps, type ScrollPhase, type VirtualNode } from "scripting";
 import { ROOT_PAGE_BG, RoundButton, TAB_FAB_PADDING } from "./TabFloatingActionButton";
 
 export const ROOT_PAGE_MARGIN = 20;
@@ -8,7 +8,11 @@ export function BigTitle({ title, bottomPadding = 12 }: {
   bottomPadding?: number;
 }) {
   return (
-    <HStack frame={{ maxWidth: "infinity", alignment: "leading" }} padding={{ top: 8, bottom: bottomPadding, trailing: 52 }}>
+    <HStack
+      alignment="center"
+      frame={{ maxWidth: "infinity", minHeight: 42, alignment: "leading" }}
+      padding={{ top: 0, bottom: bottomPadding, trailing: 52 }}
+    >
       <Text font={34} fontWeight="bold" foregroundStyle="label" lineLimit={1}>
         {title}
       </Text>
@@ -38,6 +42,12 @@ export function RootTabList({
   bottomInset?: number;
   children?: ListProps["children"];
 }) {
+  const [closeVisible, setCloseVisible] = useState(true);
+  const supportsScrollPhase = Number.parseInt(Device.systemVersion, 10) >= 18;
+  const supportsGlassTransition = Number.parseInt(Device.systemVersion, 10) >= 26;
+  const onScrollPhaseChange = (_oldPhase: ScrollPhase, newPhase: ScrollPhase) => {
+    setCloseVisible(newPhase === "idle");
+  };
   const header = (
     <Section
       key="root-heading"
@@ -76,6 +86,7 @@ export function RootTabList({
         scrollContentBackground="hidden"
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
         refreshable={refresh}
+        onScrollPhaseChange={supportsScrollPhase ? onScrollPhaseChange : undefined}
         contentMargins={bottomInset === undefined
           ? { edges: "top", insets: 0, placement: "scrollContent" }
           : { edges: "vertical", insets: { top: 0, bottom: bottomInset, leading: 0, trailing: 0 }, placement: "scrollContent" }}
@@ -86,8 +97,13 @@ export function RootTabList({
       <VStack
         frame={{ maxWidth: "infinity", maxHeight: "infinity", alignment: "topTrailing" }}
         padding={{ trailing: ROOT_PAGE_MARGIN, top: 4 }}
+        animation={{ animation: Animation.easeOut(0.18), value: closeVisible }}
       >
-        <RoundButton icon="xmark" iconSize={17} accessibilityLabel="关闭" onTap={onClose} />
+        {closeVisible ? (
+          <VStack glassEffectTransition={supportsGlassTransition ? "materialize" : undefined}>
+            <RoundButton icon="xmark" iconSize={17} accessibilityLabel="关闭" onTap={onClose} />
+          </VStack>
+        ) : null}
       </VStack>
       {titleAction ? (
         <VStack

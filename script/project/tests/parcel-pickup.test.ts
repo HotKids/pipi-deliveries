@@ -1112,12 +1112,16 @@ assert.match(rootHeader, /background=\{ROOT_PAGE_BG\} ignoresSafeArea/,
   "full-bleed ignoresSafeArea background prevents any white status-bar band");
 assert.match(rootHeader, /<List\s+listStyle="insetGroup"\s+navigationTitle=""\s+navigationBarTitleDisplayMode="inline"\s+toolbarVisibility=\{\{ visibility: "hidden", bars: \["navigationBar"\] \}\}/,
   "RootTabList hides navigationBar toolbar cleanly without seam while scrolling BigTitle with content");
-assert.match(rootHeader, /alignment:\s*"topTrailing"[\s\S]*?padding=\{\{ trailing: ROOT_PAGE_MARGIN, top: 4 \}\}[\s\S]*?<RoundButton icon="xmark"/,
-  "top-right close button stays fixed at topTrailing across all root tabs");
-assert.match(rootHeader, /alignment:\s*"bottomTrailing"[\s\S]*?padding=\{TAB_FAB_PADDING\}/,
-  "FAB stays inside the tab safe area at bottomTrailing without ignoresSafeArea");
-assert.doesNotMatch(rootHeader, /opacity=\{|alignFabWithTabBar|onScrollPhaseChange/,
-  "Liquid Glass FAB stays steady inside safe area without scroll-hiding or fractional opacity");
+assert.match(rootHeader, /minHeight:\s*42[\s\S]*?padding=\{\{ top: 0, bottom: bottomPadding, trailing: 52 \}\}/,
+  "BigTitle shares the 42pt row height and top: 4 offset so title and close button are vertically centered");
+assert.match(rootHeader, /alignment:\s*"topTrailing"[\s\S]*?padding=\{\{ trailing: ROOT_PAGE_MARGIN, top: 4 \}\}[\s\S]*?\{closeVisible \?[\s\S]*?<RoundButton icon="xmark"/,
+  "top-right close button stays vertically aligned at topTrailing and hides while scrolling");
+assert.match(rootHeader, /setCloseVisible\(newPhase === "idle"\)/,
+  "scroll phase hides only the top-right close button while scrolling");
+assert.match(rootHeader, /\{titleAction \? \(\s*<VStack\s+frame=\{\{ maxWidth: "infinity", maxHeight: "infinity", alignment: "bottomTrailing" \}\}\s+padding=\{TAB_FAB_PADDING\}\s*>\s*\{titleAction\}\s*<\/VStack>\s*\) : null\}/,
+  "Liquid Glass FAB stays steady inside safe area at bottomTrailing without scroll-hiding");
+assert.doesNotMatch(rootHeader, /opacity=\{|alignFabWithTabBar/,
+  "RootTabList avoids fractional opacity on Liquid Glass controls");
 assert.doesNotMatch(rootHeader, /navigationBarTitleDisplayMode="large"|navigationTitle=\{title\}/,
   "root pages do not use a collapsing large navigationTitle");
 assert.doesNotMatch(rootHeader, /\bchildren=\{|import\s*\{[^}]*\bAnimation\b/,

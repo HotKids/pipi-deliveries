@@ -122,8 +122,17 @@ test("a cloud PDD link can open a matched parcel with complete local display fie
   assert.equal(parsed?.metadata, undefined);
   assert.equal(cloudPddParcelAppURL(shipment(), parsed?.pddLink, NOW),
     "pinduoduo://com.xunmeng.pinduoduo" + pddParcelDetailPath("73000919", waybill));
+  const untrackedManual = shipment({
+    timeline: {
+      provider: "manual", waybill, courierCode: "SF", companyName: "顺丰速运", semantic: "UNKNOWN",
+      statusEventAtMs: null, latestTimeText: "", latestDetail: "", tracks: [], successAtMs: null,
+    },
+  });
+  assert.equal(cloudPddParcelAppURL(untrackedManual, parsed?.pddLink, NOW),
+    "pinduoduo://com.xunmeng.pinduoduo" + pddParcelDetailPath("73000919", waybill));
   const reused = { ...pddLink, anchorAt: NOW - 3 * 86_400_000, terminalAt: NOW - 2 * 86_400_000 };
   assert.equal(cloudPddParcelAppURL(shipment(), reused, NOW), "");
+  assert.equal(cloudPddParcelAppURL(untrackedManual, reused, NOW), "");
   assert.equal(cloudPddParcelAppURL(shipment(), { ...pddLink, waybill: "SYNTHETIC456" }, NOW), "");
   for (const shippingId of ["", 73000919, "73000919&next=2"]) {
     const metadata = { waybill, anchorAt: NOW - 10_000, productName: "Synthetic item" };
