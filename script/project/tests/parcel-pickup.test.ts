@@ -1105,23 +1105,20 @@ assert.match(settingsSource, /<RootTabList title="设置" onClose=\{\(\) => dism
 assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:|rootPageScroll|headerCollapsed/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|待取|取件)"|navigationTitle=\{PICKUP_TAB_TITLE\}/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-assert.match(rootHeader, /<Section\s+key="root-heading"\s+listSectionMargins=\{0\}\s+listSectionSeparator="hidden"/,
-  "BigTitle and optional subtitle/topAccessory live inside the scrollable root-heading Section");
-assert.match(rootHeader, /<BigTitle title=\{title\}/);
+assert.match(rootHeader, /<VStack\s+spacing=\{0\}\s+frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}>[\s\S]*?<BigTitle title=\{title\} onClose=\{onClose\}[\s\S]*?\{subtitle \?[\s\S]*?\{topAccessory\}[\s\S]*?<\/VStack>\s*<List[\s\S]*?>\s*\{children\}\s*<\/List>/,
+  "BigTitle, close button, subtitle and topAccessory stay fixed in the header VStack above the scrolling List");
 assert.match(rootHeader, /background=\{ROOT_PAGE_BG\} ignoresSafeArea/,
   "full-bleed ignoresSafeArea background prevents any white status-bar band");
 assert.match(rootHeader, /<List\s+listStyle="insetGroup"\s+navigationTitle=""\s+navigationBarTitleDisplayMode="inline"\s+toolbarVisibility=\{\{ visibility: "hidden", bars: \["navigationBar"\] \}\}/,
-  "RootTabList hides navigationBar toolbar cleanly without seam while scrolling BigTitle with content");
-assert.match(rootHeader, /minHeight:\s*42[\s\S]*?padding=\{\{ top: 0, bottom: bottomPadding, trailing: 52 \}\}/,
-  "BigTitle shares the 42pt row height and top: 4 offset so title and close button are vertically centered");
-assert.match(rootHeader, /alignment:\s*"topTrailing"[\s\S]*?padding=\{\{ trailing: ROOT_PAGE_MARGIN, top: 4 \}\}[\s\S]*?\{closeVisible \?[\s\S]*?<RoundButton icon="xmark"/,
-  "top-right close button stays vertically aligned at topTrailing and hides while scrolling");
-assert.match(rootHeader, /setCloseVisible\(newPhase === "idle"\)/,
-  "scroll phase hides only the top-right close button while scrolling");
+  "RootTabList hides navigationBar toolbar cleanly without seam");
+assert.match(rootHeader, /<HStack\s+alignment="center"\s+spacing=\{12\}\s+frame=\{\{ maxWidth: "infinity", minHeight: 42, alignment: "leading" \}\}[\s\S]*?<RoundButton icon="xmark"/,
+  "BigTitle and top-right close button share a single 42pt center-aligned HStack");
+assert.doesNotMatch(rootHeader, /<Divider\b/,
+  "fixed header transitions cleanly into the scrolling list without a divider line");
 assert.match(rootHeader, /\{titleAction \? \(\s*<VStack\s+frame=\{\{ maxWidth: "infinity", maxHeight: "infinity", alignment: "bottomTrailing" \}\}\s+padding=\{TAB_FAB_PADDING\}\s*>\s*\{titleAction\}\s*<\/VStack>\s*\) : null\}/,
   "Liquid Glass FAB stays steady inside safe area at bottomTrailing without scroll-hiding");
-assert.doesNotMatch(rootHeader, /opacity=\{|alignFabWithTabBar/,
-  "RootTabList avoids fractional opacity on Liquid Glass controls");
+assert.doesNotMatch(rootHeader, /opacity=\{|alignFabWithTabBar|onScrollPhaseChange/,
+  "RootTabList avoids scroll-hiding and fractional opacity on Liquid Glass controls");
 assert.doesNotMatch(rootHeader, /navigationBarTitleDisplayMode="large"|navigationTitle=\{title\}/,
   "root pages do not use a collapsing large navigationTitle");
 assert.doesNotMatch(rootHeader, /\bchildren=\{|import\s*\{[^}]*\bAnimation\b/,

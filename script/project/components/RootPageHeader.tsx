@@ -1,22 +1,27 @@
-import { HStack, List, Rectangle, Section, Spacer, Text, VStack, ZStack, useState, type ListProps, type ScrollPhase, type VirtualNode } from "scripting";
+import { HStack, List, Spacer, Text, VStack, ZStack, type ListProps, type VirtualNode } from "scripting";
 import { ROOT_PAGE_BG, RoundButton, TAB_FAB_PADDING } from "./TabFloatingActionButton";
 
 export const ROOT_PAGE_MARGIN = 20;
 
-export function BigTitle({ title, bottomPadding = 12 }: {
+export function BigTitle({ title, onClose, bottomPadding = 0 }: {
   title: string;
+  onClose?: () => void;
   bottomPadding?: number;
 }) {
   return (
     <HStack
       alignment="center"
+      spacing={12}
       frame={{ maxWidth: "infinity", minHeight: 42, alignment: "leading" }}
-      padding={{ top: 0, bottom: bottomPadding, trailing: 52 }}
+      padding={{ top: 0, bottom: bottomPadding }}
     >
       <Text font={34} fontWeight="bold" foregroundStyle="label" lineLimit={1}>
         {title}
       </Text>
       <Spacer />
+      {onClose ? (
+        <RoundButton icon="xmark" iconSize={17} accessibilityLabel="关闭" onTap={onClose} />
+      ) : null}
     </HStack>
   );
 }
@@ -42,68 +47,46 @@ export function RootTabList({
   bottomInset?: number;
   children?: ListProps["children"];
 }) {
-  const [closeVisible, setCloseVisible] = useState(true);
-  const supportsScrollPhase = Number.parseInt(Device.systemVersion, 10) >= 18;
-  const supportsGlassTransition = Number.parseInt(Device.systemVersion, 10) >= 26;
-  const onScrollPhaseChange = (_oldPhase: ScrollPhase, newPhase: ScrollPhase) => {
-    setCloseVisible(newPhase === "idle");
-  };
-  const header = (
-    <Section
-      key="root-heading"
-      listSectionMargins={0}
-      listSectionSeparator="hidden"
-      animation={{ animation: Animation.easeOut(0.18), value: true }}
-    >
-      <VStack
-        alignment="leading"
-        spacing={0}
-        frame={{ maxWidth: "infinity", alignment: "leading" }}
-        padding={{ top: 4, bottom: subtitle || topAccessory ? 8 : 0 }}
-        listRowInsets={{ top: 0, bottom: 0, leading: ROOT_PAGE_MARGIN, trailing: ROOT_PAGE_MARGIN }}
-        listRowBackground={<Rectangle fill="clear" />}
-        listRowSeparator="hidden"
-      >
-        <BigTitle title={title} bottomPadding={subtitle ? 4 : topAccessory ? 8 : 12} />
-        {subtitle ? (
-          <Text font={15} foregroundStyle="secondaryLabel">
-            {subtitle}
-          </Text>
-        ) : null}
-        {topAccessory}
-      </VStack>
-    </Section>
-  );
-
   return (
     <ZStack alignment="top" frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
       <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} background={ROOT_PAGE_BG} ignoresSafeArea />
-      <List
-        listStyle="insetGroup"
-        navigationTitle=""
-        navigationBarTitleDisplayMode="inline"
-        toolbarVisibility={{ visibility: "hidden", bars: ["navigationBar"] }}
-        scrollContentBackground="hidden"
-        frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        refreshable={refresh}
-        onScrollPhaseChange={supportsScrollPhase ? onScrollPhaseChange : undefined}
-        contentMargins={bottomInset === undefined
-          ? { edges: "top", insets: 0, placement: "scrollContent" }
-          : { edges: "vertical", insets: { top: 0, bottom: bottomInset, leading: 0, trailing: 0 }, placement: "scrollContent" }}
-        overlay={emptyState ? { alignment: "center", content: emptyState } : undefined}
-      >
-        {[header, ...[children].flat()]}
-      </List>
-      <VStack
-        frame={{ maxWidth: "infinity", maxHeight: "infinity", alignment: "topTrailing" }}
-        padding={{ trailing: ROOT_PAGE_MARGIN, top: 4 }}
-        animation={{ animation: Animation.easeOut(0.18), value: closeVisible }}
-      >
-        {closeVisible ? (
-          <VStack glassEffectTransition={supportsGlassTransition ? "materialize" : undefined}>
-            <RoundButton icon="xmark" iconSize={17} accessibilityLabel="关闭" onTap={onClose} />
-          </VStack>
-        ) : null}
+      <VStack spacing={0} frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
+        <VStack
+          alignment="leading"
+          spacing={0}
+          frame={{ maxWidth: "infinity", alignment: "leading" }}
+          padding={{
+            top: 4,
+            bottom: subtitle || topAccessory ? 12 : 8,
+            leading: ROOT_PAGE_MARGIN,
+            trailing: ROOT_PAGE_MARGIN,
+          }}
+          background={ROOT_PAGE_BG}
+          animation={topAccessory === undefined ? undefined : { animation: Animation.easeOut(0.18), value: topAccessory !== null }}
+        >
+          <BigTitle title={title} onClose={onClose} bottomPadding={subtitle ? 4 : 0} />
+          {subtitle ? (
+            <Text font={15} foregroundStyle="secondaryLabel">
+              {subtitle}
+            </Text>
+          ) : null}
+          {topAccessory}
+        </VStack>
+        <List
+          listStyle="insetGroup"
+          navigationTitle=""
+          navigationBarTitleDisplayMode="inline"
+          toolbarVisibility={{ visibility: "hidden", bars: ["navigationBar"] }}
+          scrollContentBackground="hidden"
+          frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+          refreshable={refresh}
+          contentMargins={bottomInset === undefined
+            ? { edges: "top", insets: 0, placement: "scrollContent" }
+            : { edges: "vertical", insets: { top: 0, bottom: bottomInset, leading: 0, trailing: 0 }, placement: "scrollContent" }}
+          overlay={emptyState ? { alignment: "center", content: emptyState } : undefined}
+        >
+          {children}
+        </List>
       </VStack>
       {titleAction ? (
         <VStack

@@ -176,7 +176,7 @@ test("LIVE BUG 3, IOS-SEP-03, U9, U10 & IOS-SR-07: List row separators, fixed Ta
 
   const rootHeaderSrc = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
   assert.match(rootHeaderSrc, /toolbarVisibility=\{\{ visibility: "hidden", bars: \["navigationBar"\] \}\}/, "U8: List hides navigationBar cleanly");
-  assert.match(rootHeaderSrc, /<List[\s\S]*?\[header, \.\.\.\[children\]\.flat\(\)\]/, "U8: BigTitle header scrolls inside List");
+  assert.match(rootHeaderSrc, /<BigTitle title=\{title\} onClose=\{onClose\}[\s\S]*?<\/VStack>\s*<List[\s\S]*?>\s*\{children\}\s*<\/List>/, "U8: BigTitle header stays fixed above scrolling List without divider");
 
   const pickupPageSrc = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
   assert.match(pickupPageSrc, /popover:\s*\{[\s\S]*?arrowEdge:\s*"bottom"[\s\S]*?presentationCompactAdaptation:\s*"popover"/, "U8: IdentityCodeButton uses popover");
