@@ -6,18 +6,18 @@ final class ExpressStatusTones {
 
     static int text(String label, boolean dark) {
         return switch (label) {
-            case "已下单" -> dark ? 0xFFA9BACA : 0xFF5A6B80;
-            case "已发货" -> dark ? 0xFF4DD0E1 : 0xFF0091B8;
-            case "已揽件" -> dark ? 0xFF4FC3F7 : 0xFF0277BD;
-            case "运输中" -> dark ? 0xFF4DA3FF : 0xFF0A6CFF;
-            case "待派送" -> dark ? 0xFF4FD8C8 : 0xFF00897B;
-            case "派送中" -> dark ? 0xFF3FD68B : 0xFF0E9F52;
-            case "待取件" -> dark ? 0xFFD4E157 : 0xFF6D8F00;
-            case "已签收" -> dark ? 0xFFFFB84D : 0xFFD97E06;
-            case "已完成" -> dark ? 0xFFFFAD66 : 0xFFE56A00;
-            case "异常件" -> dark ? 0xFFFF8A80 : 0xFFF03A30;
-            case "已取消" -> dark ? 0xFFB9BFC5 : 0xFF6E767F;
-            case "暂无状态" -> dark ? 0xFFC9D1D8 : 0xFF9AA3AB;
+            case "已下单" -> dark ? 0xFFB0BEC5 : 0xFF455A64;
+            case "已发货" -> dark ? 0xFF80DEEA : 0xFF00838F;
+            case "已揽件" -> dark ? 0xFF81D4FA : 0xFF0277BD;
+            case "运输中" -> dark ? 0xFF90CAF9 : 0xFF1565C0;
+            case "待派送" -> dark ? 0xFF80CBC4 : 0xFF00695C;
+            case "派送中" -> dark ? 0xFFA5D6A7 : 0xFF2E7D32;
+            case "待取件" -> dark ? 0xFFC5E1A5 : 0xFF558B2F;
+            case "已签收" -> dark ? 0xFFFFCC80 : 0xFFEF6C00;
+            case "已完成" -> dark ? 0xFFFFAB91 : 0xFFE64A19;
+            case "异常件" -> dark ? 0xFFEF9A9A : 0xFFD32F2F;
+            case "已取消" -> dark ? 0xFFE0E0E0 : 0xFF757575;
+            case "暂无状态" -> dark ? 0xFFBDBDBD : 0xFF9E9E9E;
             default -> 0;
         };
     }

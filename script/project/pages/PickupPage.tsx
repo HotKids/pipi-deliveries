@@ -36,11 +36,11 @@ const IDENTITY_CHOICES = [
   { platform: "pinduoduo", title: "多多驿站" },
 ] as const;
 
-type PickupIdentityDestination =
+export type PickupIdentityDestination =
   | { platform: IdentityPlatform; route: "local" }
   | { platform: IdentityPlatform; route: "login"; generation: string };
 
-function IdentityCodeButton({ onOpen }: {
+export function IdentityCodeButton({ onOpen }: {
   onOpen: (platform: IdentityPlatform) => void;
 }) {
   const [showPicker, setShowPicker] = useState(false);
@@ -79,6 +79,59 @@ function IdentityCodeButton({ onOpen }: {
       ]}
     />
   );
+}
+
+export function StationIdentityDestination({ identity, setIdentity, openIdentity }: {
+  identity: PickupIdentityDestination;
+  setIdentity: (next: PickupIdentityDestination | null) => void;
+  openIdentity: (platform: IdentityPlatform) => Promise<void>;
+}) {
+  return identity.route === "login"
+    ? <PlatformWebLogin key={identity.platform} platform={identity.platform}
+        generation={identity.generation}
+        embedded={{
+          title: IDENTITY_CODE_TITLES[identity.platform],
+          onFinished: (saved) => setIdentity(saved ? { platform: identity.platform, route: "local" } : null),
+        }} />
+    : <StationIdentityPage key={identity.platform} platform={identity.platform}
+        onBindingUnavailable={() => void openIdentity(identity.platform)} />;
+}
+
+export function useStationIdentityNavigation(
+  showNotice: (message: string) => void,
+  onBeforeOpen?: () => void,
+) {
+  const [identity, setIdentity] = useState<PickupIdentityDestination | null>(null);
+  const identityRequest = useRef(0);
+  useEffect(() => () => { identityRequest.current++; }, []);
+
+  function clearIdentity() {
+    identityRequest.current++;
+    setIdentity(null);
+  }
+
+  // The picker calls this without awaiting it, so a failed Keychain read is reported here instead of ending the
+  // Scripting session (G-HIGH-17). stationIdentityDestination writes its own failure line.
+  async function openIdentity(platform: IdentityPlatform) {
+    onBeforeOpen?.();
+    const request = ++identityRequest.current;
+    let routed = false;
+    try {
+      const route = await stationIdentityDestination(platform, (url) => Safari.openURL(url));
+      routed = true;
+      if (request !== identityRequest.current) return;
+      setIdentity(route === "login" ? { platform, route, generation: accountStatus(platform).generation }
+        : route === "local" ? { platform, route } : null);
+    } catch (error) {
+      if (routed) {
+        writeDiagnostic("platform.identity.completed", { sourceProvider: platform, stage: "station_identity_entry",
+          result: "failed", ...diagnosticErrorDetails(error) }, "warning");
+      }
+      if (request === identityRequest.current) showNotice(EXPRESS_TOAST_COPY.pickupRecordActionFailed);
+    }
+  }
+  // end useStationIdentityNavigation
+  return { identity, setIdentity, clearIdentity, openIdentity };
 }
 
 function PickupCardRow({ card, animate, spaceAfter, width, note, opensCabinet, actionBlocked, onDetail, onSaveNote, onSaveWindow, onAction,
@@ -230,8 +283,7 @@ export function PickupPage({
   const dismiss = Navigation.useDismiss();
   const [mealQr, setMealQr] = useState<MealQRCodeTarget | null>(activityMealQRCode ?? null);
   const [detailTarget, setDetailTarget] = useState<ParcelActivityTarget | undefined>(undefined);
-  const [identity, setIdentity] = useState<PickupIdentityDestination | null>(null);
-  const identityRequest = useRef(0);
+  const { identity, setIdentity, clearIdentity, openIdentity } = useStationIdentityNavigation(showNotice);
   const [visible, setVisible] = useState(false);
   const [animationReady, setAnimationReady] = useState(false);
   const animationGateRef = useRef<ReturnType<typeof createPickupAnimationGate> | null>(null);
@@ -257,8 +309,7 @@ export function PickupPage({
   }, [visible]);
   useEffect(() => {
     if (!activityMealQRCode) return;
-    identityRequest.current++;
-    setIdentity(null);
+    clearIdentity();
     setDetailTarget(undefined);
     setMealQr(activityMealQRCode);
     onActivityMealQRCodeHandled(activityMealQRCode);
@@ -266,7 +317,6 @@ export function PickupPage({
   useEffect(() => visible ? onPlatformAccountsChanged(platform => {
     if (platform === "fengchao") setCabinetRevision(value => value + 1);
   }) : undefined, [visible]);
-  useEffect(() => () => { identityRequest.current++; }, []);
   const cabinetActions = useMemo(() => visible ? pickupCabinetActions(cards) : undefined,
     [cards, visible, cabinetRevision]);
   const selected = shipmentForPickupTarget(shipments, detailTarget);
@@ -324,26 +374,6 @@ export function PickupPage({
     }
   }
 
-  // The picker calls this without awaiting it, so a failed Keychain read is reported here instead of ending the
-  // Scripting session (G-HIGH-17). stationIdentityDestination writes its own failure line.
-  async function openIdentity(platform: IdentityPlatform) {
-    const request = ++identityRequest.current;
-    let routed = false;
-    try {
-      const route = await stationIdentityDestination(platform, (url) => Safari.openURL(url));
-      routed = true;
-      if (request !== identityRequest.current) return;
-      setIdentity(route === "login" ? { platform, route, generation: accountStatus(platform).generation }
-        : route === "local" ? { platform, route } : null);
-    } catch (error) {
-      if (routed) {
-        writeDiagnostic("platform.identity.completed", { sourceProvider: platform, stage: "station_identity_entry",
-          result: "failed", ...diagnosticErrorDetails(error) }, "warning");
-      }
-      if (request === identityRequest.current) showNotice(EXPRESS_TOAST_COPY.pickupRecordActionFailed);
-    }
-  }
-
   function cardRow(card: ParcelActivityContent, animate: boolean, spaceAfter: boolean, sheetWidth?: number) {
     const target = card.target;
     const key = parcelCardKey(card);
@@ -371,7 +401,7 @@ export function PickupPage({
         actionBlocked={card.platform === "fengchao" && !cabinetActions} onAction={onAction}
         onArtworkChange={onArtworkChange}
         showNotice={showNotice} onDetail={shipment ? () => {
-          identityRequest.current++;
+          clearIdentity();
           prefetchShipmentDetailEntry(shipment, shipments);
           setDetailTarget(target);
         } : undefined}
@@ -421,21 +451,12 @@ export function PickupPage({
           isPresented: Boolean(identity || selected),
           onChanged: (presented) => {
             if (!presented) {
-              identityRequest.current++;
-              setIdentity(null);
+              clearIdentity();
               setDetailTarget(undefined);
             }
           },
           content: identity
-            ? identity.route === "login"
-              ? <PlatformWebLogin key={identity.platform} platform={identity.platform}
-                  generation={identity.generation}
-                  embedded={{
-                    title: IDENTITY_CODE_TITLES[identity.platform],
-                    onFinished: (saved) => setIdentity(saved ? { platform: identity.platform, route: "local" } : null),
-                  }} />
-              : <StationIdentityPage key={identity.platform} platform={identity.platform}
-                  onBindingUnavailable={() => void openIdentity(identity.platform)} />
+            ? <StationIdentityDestination identity={identity} setIdentity={setIdentity} openIdentity={openIdentity} />
             : selected ? (
             <DetailPage
               key={selected.identity.id}

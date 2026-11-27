@@ -19,20 +19,20 @@ const hex = (value: number) => `#${value.toString(16).padStart(6, "0")}`;
 const mix = (from: number[], to: number[], amount: number) => from.map((c, i) => Math.round(c + (to[i] - c) * amount));
 const channelsHex = (channels: number[]) => "#" + channels.map(c => c.toString(16).padStart(2, "0")).join("");
 
-// Table 1.2-A of the owner's 2026-11-20 status colour decision (修改 11), non-capsule (text) pair.
+// Owner 2026-11-27 (修改 24) Material non-capsule (text) pair.
 const textTable: Array<[StatusSemantic, string, number, number]> = [
-  ["ORDERED", "已下单", 0x5a6b80, 0xa9baca],
-  ["SHIPPED", "已发货", 0x0091b8, 0x4dd0e1],
-  ["PICKED", "已揽件", 0x0277bd, 0x4fc3f7],
-  ["TRANSIT", "运输中", 0x0a6cff, 0x4da3ff],
-  ["DELIVERY", "待派送", 0x00897b, 0x4fd8c8],
-  ["DELIVERY", "派送中", 0x0e9f52, 0x3fd68b],
-  ["WAITING_PICKUP", "待取件", 0x6d8f00, 0xd4e157],
-  ["COMPLETED", "已签收", 0xd97e06, 0xffb84d],
-  ["COMPLETED", "已完成", 0xe56a00, 0xffad66],
-  ["DANGER", "异常件", 0xf03a30, 0xff8a80],
-  ["CANCELLED", "已取消", 0x6e767f, 0xb9bfc5],
-  ["UNKNOWN", "暂无状态", 0x9aa3ab, 0xc9d1d8],
+  ["ORDERED", "已下单", 0x455a64, 0xb0bec5],
+  ["SHIPPED", "已发货", 0x00838f, 0x80deea],
+  ["PICKED", "已揽件", 0x0277bd, 0x81d4fa],
+  ["TRANSIT", "运输中", 0x1565c0, 0x90caf9],
+  ["DELIVERY", "待派送", 0x00695c, 0x80cbc4],
+  ["DELIVERY", "派送中", 0x2e7d32, 0xa5d6a7],
+  ["WAITING_PICKUP", "待取件", 0x558b2f, 0xc5e1a5],
+  ["COMPLETED", "已签收", 0xef6c00, 0xffcc80],
+  ["COMPLETED", "已完成", 0xe64a19, 0xffab91],
+  ["DANGER", "异常件", 0xd32f2f, 0xef9a9a],
+  ["CANCELLED", "已取消", 0x757575, 0xe0e0e0],
+  ["UNKNOWN", "暂无状态", 0x9e9e9e, 0xbdbdbd],
 ];
 
 // Lists, details, the 寄 badge and the small widget emit the pair unchanged, with no 4.5:1 darkening.
@@ -41,8 +41,8 @@ for (const [semantic, label, light, dark] of textTable) {
   assert.equal(statusTextAccent(semantic, label, true), dark, `${label} dark`);
   assert.deepEqual(statusTextTint(semantic, { label }), { light: hex(light), dark: hex(dark) }, label);
 }
-assert.deepEqual(statusTextTint("DELIVERY"), { light: "#0e9f52", dark: "#3fd68b" }, "DELIVERY reads 派送中");
-assert.deepEqual(statusTextTint("COMPLETED"), { light: "#d97e06", dark: "#ffb84d" }, "COMPLETED reads 已签收");
+assert.deepEqual(statusTextTint("DELIVERY"), { light: "#2e7d32", dark: "#a5d6a7" }, "DELIVERY reads 派送中");
+assert.deepEqual(statusTextTint("COMPLETED"), { light: "#ef6c00", dark: "#ffcc80" }, "COMPLETED reads 已签收");
 assert.deepEqual(statusTextTint("TRANSIT", { label: "清关中" }), statusTextTint("TRANSIT"), "清关中 keeps 运输中");
 console.log("status text: lists, details, sender badge and small widget emit the shared pair directly");
 
@@ -111,9 +111,9 @@ for (const [semantic, label, light] of textTable) {
 for (const mode of ["light", "dark"] as const) {
   assert.ok(counts[mode].floored > 0 && counts[mode].unchanged > 0, `${mode}: the floor applies only to collisions`);
 }
-// Light: red on red and green on green collide; 已下单 on the blue fallback accent does not, and a white
+// Light: red on red and orange on orange collide; 已下单 on the blue fallback accent does not, and a white
 // artwork leaves even the lightest pairs (已签收, 已完成, 暂无状态) as they are.
-for (const [semantic, label, brand] of [["DANGER", "异常件", "#D32B2C"], ["DELIVERY", "派送中", "#009D51"]] as const) {
+for (const [semantic, label, brand] of [["DANGER", "异常件", "#D32B2C"], ["COMPLETED", "已签收", "#F39400"]] as const) {
   const light = badge(semantic, label, brand, "light");
   assert.ok(light.collides && light.shown !== light.raw, `${label} on ${brand} collides in light mode`);
 }
@@ -122,8 +122,8 @@ for (const [semantic, label, brand] of [["ORDERED", "已下单", "#3482FF"], ["C
   const light = badge(semantic, label, brand, "light");
   assert.ok(!light.collides && light.shown === light.raw, `${label} on ${brand} stays raw in light mode`);
 }
-// Dark: 运输中 on the yellow accent and 异常件 on a pale pink accent collide; 异常件 on red does not.
-for (const [semantic, label, brand] of [["TRANSIT", "运输中", "#F7CD23"], ["DANGER", "异常件", "#FFCDD2"]] as const) {
+// Dark: 异常件 and 暂无状态 on a pure white accent collide; 异常件 on red and 运输中 on blue do not.
+for (const [semantic, label, brand] of [["DANGER", "异常件", "#FFFFFF"], ["UNKNOWN", "暂无状态", "#FFFFFF"]] as const) {
   const dark = badge(semantic, label, brand, "dark");
   assert.ok(dark.collides && dark.shown !== dark.raw, `${label} on ${brand} collides in dark mode`);
 }

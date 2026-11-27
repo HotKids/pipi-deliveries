@@ -147,8 +147,10 @@ openFromRequest({ ...route, navigationRequestGeneration: 2 }, handledNavigation,
 assert.equal(presentation.value, true, "a new search request may open after dismissal");
 assert.match(searchSheet, /autoFocusSearch=\{props\.autoFocusSearch\}/,
   "only the existing focus and shortcut entry points should open the keyboard automatically");
-assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(selected\)/,
-  "the main navigation destination presents shipment details");
+assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(selected \|\| identity\)/,
+  "the main navigation destination presents shipment details or the shared station identity destination");
+assert.match(homeSource, /titleAction=\{filter === "pickup" \? \(\s*<IdentityCodeButton onOpen=\{openIdentity\} \/>\s*\) : \(\s*<TabFloatingActionButton title="查询" symbol="magnifyingglass" action=\{\(\) => searchPresented\.setValue\(true\)\} \/>\s*\)\}/,
+  "switching the express list filter to 待取 replaces the 查询 FAB with the shared 身份码 FAB");
 const filterBar = homeSource.slice(
   homeSource.indexOf("function ShipmentFilterBar"),
   homeSource.indexOf("function shipmentFilter"),

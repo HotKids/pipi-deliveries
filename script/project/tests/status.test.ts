@@ -117,13 +117,13 @@ assert.equal(semanticFromAccountState(106, ""), "WAITING_PICKUP");
 assert.equal(semanticFromAccountState("107", ""), "COMPLETED");
 assert.equal(widgetStatusLabel("DANGER"), "异常件");
 assert.equal(widgetStatusLabel("UNKNOWN"), "暂无状态");
-// Owner 2026-11-20 (修改 11), table 1.2-A non-capsule pair.
-assert.equal(statusTextAccent("COMPLETED"), 0xd97e06);
-assert.equal(statusTextAccent("COMPLETED", "已完成", true), 0xffad66);
-assert.equal(statusTextAccent("DELIVERY"), 0x0e9f52);
-assert.equal(statusTextAccent("DELIVERY", "待派送", true), 0x4fd8c8);
-assert.equal(statusTextAccent("ORDERED"), 0x5a6b80);
-assert.equal(statusTextAccent("CANCELLED"), 0x6e767f);
+// Owner 2026-11-27 (修改 24), Material non-capsule pair.
+assert.equal(statusTextAccent("COMPLETED"), 0xef6c00);
+assert.equal(statusTextAccent("COMPLETED", "已完成", true), 0xffab91);
+assert.equal(statusTextAccent("DELIVERY"), 0x2e7d32);
+assert.equal(statusTextAccent("DELIVERY", "待派送", true), 0x80cbc4);
+assert.equal(statusTextAccent("ORDERED"), 0x455a64);
+assert.equal(statusTextAccent("CANCELLED"), 0x757575);
 assert.equal(
   containsTimelineStartTrack([
     track("2026-08-26 11:58:00", "快递已下单", ""),

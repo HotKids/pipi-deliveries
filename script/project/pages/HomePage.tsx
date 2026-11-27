@@ -38,6 +38,7 @@ import { saveRecognizedShipmentPickup, stateLoadFailure } from "../services/stor
 import type { ParcelLookup } from "../services/parcel-code-ocr";
 import { attachedProjectedOrders } from "../services/waybill-ownership";
 import { DetailPage, prefetchShipmentDetailEntry } from "./DetailPage";
+import { IdentityCodeButton, StationIdentityDestination, useStationIdentityNavigation } from "./PickupPage";
 import {
   consumeShipmentNavigationTarget,
   manualPreviewNavigationTarget,
@@ -205,6 +206,10 @@ export function HomePage(props: {
   const completingRef = useRef(false);
   const [notice, setNotice] = useState("");
   const searchPresented = useObservable(props.autoFocusSearch && !props.initialShipmentId);
+  const { identity, setIdentity, clearIdentity, openIdentity } = useStationIdentityNavigation(
+    setNotice,
+    () => searchPresented.setValue(false),
+  );
   const handledNavigationRef = useRef<number | undefined>(undefined);
   const [accessKeyNoticeKind, setAccessKeyNoticeKind] = useState(accessKeyReminder);
   // Closing a notice hides that kind for this page; a different notice still appears.
@@ -334,7 +339,10 @@ export function HomePage(props: {
   ) {
     shipmentNavigationTargetRef.current = target;
     setShipmentNavigationTargetState(target);
-    if (target) searchPresented.setValue(false);
+    if (target) {
+      clearIdentity();
+      searchPresented.setValue(false);
+    }
   }
 
   function applyInteractiveRefreshSummary(summary: RefreshSummary) {
@@ -621,15 +629,18 @@ export function HomePage(props: {
           ),
         }}
         navigationDestination={{
-          isPresented: Boolean(selected),
+          isPresented: Boolean(selected || identity),
           onChanged: (presented) => {
             if (presented) return;
+            clearIdentity();
             const consumed = consumeShipmentNavigationTarget(
               shipmentNavigationTargetRef.current,
             );
             setShipmentNavigationTarget(consumed.nextTarget);
           },
-          content: selected ? (
+          content: identity ? (
+            <StationIdentityDestination identity={identity} setIdentity={setIdentity} openIdentity={openIdentity} />
+          ) : selected ? (
             <DetailPage
               key={selected.identity.id}
               shipment={selected}
@@ -660,7 +671,9 @@ export function HomePage(props: {
           onClose={() => dismiss()}
           refresh={refresh} bottomInset={TAB_FAB_SCROLL_INSET}
           onListScrollSettled={onListScrollSettled}
-          titleAction={(
+          titleAction={filter === "pickup" ? (
+            <IdentityCodeButton onOpen={openIdentity} />
+          ) : (
             <TabFloatingActionButton title="查询" symbol="magnifyingglass" action={() => searchPresented.setValue(true)} />
           )}
           emptyState={!shipments.length ? <EmptyTabState /> : undefined}

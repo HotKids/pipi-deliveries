@@ -52,8 +52,8 @@ test("authorization confirmation failure is contained before removal", async () 
 test("opening an identity code contains a failed route or account read", async () => {
   for (const failure of ["route", "account"] as const) {
     let notice = "", identity: unknown = "unset";
-    const open = action("../pages/PickupPage.tsx", "async function openIdentity(platform: IdentityPlatform)", "function cardRow(", {
-      identityRequest: { current: 0 }, Safari: { openURL: async () => false },
+    const open = action("../pages/PickupPage.tsx", "async function openIdentity(platform: IdentityPlatform)", "// end useStationIdentityNavigation", {
+      identityRequest: { current: 0 }, onBeforeOpen: undefined, Safari: { openURL: async () => false },
       stationIdentityDestination: async () => {
         if (failure === "route") throw new Error("Synthetic keychain failure");
         return "login";
