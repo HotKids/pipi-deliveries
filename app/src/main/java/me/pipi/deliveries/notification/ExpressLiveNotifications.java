@@ -10,6 +10,8 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
+import android.view.View;
+import android.widget.RemoteViews;
 import java.util.List;
 import me.pipi.deliveries.R;
 import me.pipi.deliveries.feature.express.ExpressDetailActivity;
@@ -122,8 +124,36 @@ public final class ExpressLiveNotifications {
         Notification.Builder generic = builder(context, spec);
         generic.setDeleteIntent(enhancedNotification.deleteIntent);
         PromotedNotificationPublisher.configureGeneric(generic, spec.capsule);
-        PromotedNotificationPublisher.post(context, manager, KEY, enhancedNotification, generic.build());
+        Notification expressNowBar = SamsungNowBarCompat.shouldTryNowBarTemplate(
+                context, "express.live")
+                ? expressLiveNowBar(context, spec, enhancedNotification)
+                : null;
+        PromotedNotificationPublisher.post(
+                context, manager, KEY, enhancedNotification, generic.build(), expressNowBar);
         return true;
+    }
+
+    private static Notification expressLiveNowBar(
+            Context context, ExpressLivePresentation spec, Notification established) {
+        RemoteViews expanded = new RemoteViews(
+                context.getPackageName(), R.layout.express_live_now_bar_expanded);
+        expanded.setOnClickPendingIntent(
+                R.id.express_now_bar_detail_root, established.contentIntent);
+        int logo = spec.primary != null ? spec.primary.displayIconResource() : 0;
+        expanded.setImageViewResource(
+                R.id.express_now_bar_icon, logo != 0 ? logo : spec.smallIcon);
+        expanded.setTextViewText(R.id.express_now_bar_title, spec.title);
+        CharSequence summary = ExpressNotifications.breakableText(spec.summary);
+        CharSequence detail = ExpressNotifications.breakableText(spec.detail);
+        expanded.setTextViewText(R.id.express_now_bar_summary, summary);
+        expanded.setViewVisibility(R.id.express_now_bar_summary,
+                summary.length() > 0 ? View.VISIBLE : View.GONE);
+        expanded.setTextViewText(R.id.express_now_bar_detail, detail);
+        expanded.setViewVisibility(R.id.express_now_bar_detail,
+                detail.length() > 0 ? View.VISIBLE : View.GONE);
+        return SamsungNowBarCompat.nowBarCandidate(
+                established, spec.capsule, spec.title,
+                ExpressNotifications.breakableText(fullDetail(spec)), expanded);
     }
 
     private static Notification.Builder builder(Context context, ExpressLivePresentation spec) {

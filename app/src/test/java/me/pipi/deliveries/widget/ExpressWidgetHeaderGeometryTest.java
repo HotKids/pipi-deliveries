@@ -91,10 +91,10 @@ public final class ExpressWidgetHeaderGeometryTest {
                 assertEquals(width == 300 ? 17f : 16f, company.getTextSize() / density, .01f);
                 assertEquals(13f, detail.getTextSize() / density, .01f);
                 int badgeSurface = androidx.core.graphics.ColorUtils.compositeColors(
-                        0x1f00796b, context.getColor(R.color.widget_surface));
+                        0x1f26a69a, context.getColor(R.color.widget_surface));
                 assertTrue(androidx.core.graphics.ColorUtils.calculateContrast(
                         status.getCurrentTextColor(), badgeSurface)
-                        >= androidx.core.graphics.ColorUtils.calculateContrast(0xff004d40, badgeSurface));
+                        >= androidx.core.graphics.ColorUtils.calculateContrast(0xff00796b, badgeSurface));
                 ExpressWidgetRowPolicy.RowLayout expected = ExpressWidgetRowPolicy.calculate(3, 220f,
                         context.getResources().getDisplayMetrics().density,
                         CardSizeProfile.fromWidth(width).typography.lineBox(

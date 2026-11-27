@@ -15,7 +15,8 @@ public class ExpressLivePromotionTest extends ExpressLiveNotificationsTest {
         ReflectionHelpers.setStaticField(Build.class, "MANUFACTURER", "samsung");
         ExpressLiveNotifications.sync(context, List.of(item(1, StatusSemantic.DELIVERY)));
         assertTrue(live().extras.containsKey("android.ongoingActivityNoti.nowbarIcon"));
-        assertFalse(live().extras.containsKey("android.ongoingActivityNoti.style"));
+        assertEquals(1, live().extras.getInt("android.ongoingActivityNoti.style"));
+        assertNotNull(live().extras.getParcelable("android.ongoingActivityNoti.expandedRemoteView"));
         assertEquals("派送中 1", live().extras.getCharSequence("android.shortCriticalText").toString());
         SamsungNowBarCompat.recordProbe(context, false);
         SamsungNowBarCompat.recordProbe(context, false);

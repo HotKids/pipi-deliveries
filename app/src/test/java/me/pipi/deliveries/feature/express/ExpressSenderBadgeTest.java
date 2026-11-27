@@ -17,7 +17,7 @@ public class ExpressSenderBadgeTest {
   BadgeView view=new BadgeView();
   ExpressSenderBadge.apply(view,true,StatusSemantic.DELIVERY,"派送中");
   assertEquals("寄",view.getText().toString()); assertEquals(View.VISIBLE,view.getVisibility());
-  assertEquals(0xFFEF6C00,view.getCurrentTextColor());
+  assertEquals(0xFFE65100,view.getCurrentTextColor());
   assertEquals(0x1fff9800,((android.graphics.drawable.GradientDrawable) view.getBackground()).getColor().getDefaultColor());
   assertFalse(view.getIncludeFontPadding()); assertEquals(android.graphics.Typeface.BOLD,view.requestedStyle);
   ExpressSenderBadge.apply(view,false,StatusSemantic.DANGER,"异常件");

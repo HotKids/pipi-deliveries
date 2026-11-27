@@ -22,8 +22,9 @@ public final class SamsungNowBarCompat {
     private static final String COMPAT_FALLBACK = "fallback";
     private static final String COMPAT_PROBE_PASSED = "probe_passed";
     private static final String COMPAT_PICKUP_NOW_BAR_REJECTED = "pickup_now_bar_rejected";
+    private static final String COMPAT_NOW_BAR_REJECTED_PREFIX = "now_bar_rejected:";
     private static final double MIN_WHITE_CHIP_CONTRAST = 4.5;
-    private static final int COMPAT_SCHEMA = 2;
+    private static final int COMPAT_SCHEMA = 3;
     // Diagnostic kill switch only. Normal builds retain the Samsung SystemUI
     // protection and reset its learned result after every APK installation.
     static final boolean SYSTEM_UI_ERROR_FALLBACK_ENABLED = true;
@@ -138,24 +139,51 @@ public final class SamsungNowBarCompat {
     }
 
     public static boolean shouldTryPickupNowBar(Context context) {
-        return shouldTrySamsungEnhancement(context)
-                && !compatPrefs(context).getBoolean(COMPAT_PICKUP_NOW_BAR_REJECTED, false);
+        return shouldTryNowBarTemplate(context, "pickup.live");
+    }
+
+    public static boolean shouldTryNowBarTemplate(Context context) {
+        return shouldTryNowBarTemplate(context, "");
+    }
+
+    public static boolean shouldTryNowBarTemplate(Context context, String namespace) {
+        if (!shouldTrySamsungEnhancement(context)) return false;
+        android.content.SharedPreferences prefs = compatPrefs(context);
+        if (prefs.getBoolean(rejectionKey(namespace), false)) return false;
+        return !("pickup.live".equals(namespace) || namespace == null || namespace.isEmpty())
+                || !prefs.getBoolean(COMPAT_PICKUP_NOW_BAR_REJECTED, false);
     }
 
     public static Notification pickupNowBarCandidate(Notification enhanced, String capsule,
                                                      String primary, String secondary,
                                                      RemoteViews expanded) {
+        return nowBarCandidate(enhanced, capsule, primary, secondary, expanded);
+    }
+
+    public static Notification nowBarCandidate(Notification enhanced, CharSequence capsule,
+                                               CharSequence primary, CharSequence secondary,
+                                               RemoteViews expanded) {
         Notification candidate = enhanced.clone();
         Bundle extras = candidate.extras;
         extras.putInt("android.ongoingActivityNoti.style", 1);
-        extras.putCharSequence("android.ongoingActivityNoti.nowbarPrimaryInfo", primary);
-        extras.putCharSequence("android.ongoingActivityNoti.nowbarSecondaryInfo", secondary);
-        extras.putCharSequence("android.ongoingActivityNoti.chipExpandedText", capsule);
+        extras.putCharSequence("android.ongoingActivityNoti.nowbarPrimaryInfo",
+                primary == null ? "" : primary);
+        extras.putCharSequence("android.ongoingActivityNoti.nowbarSecondaryInfo",
+                secondary == null ? "" : secondary);
+        if (primary != null && primary.length() > 0) {
+            extras.putCharSequence("android.ongoingActivityNoti.primaryInfo", primary);
+        }
+        if (capsule != null && capsule.length() > 0) {
+            extras.putCharSequence("android.ongoingActivityNoti.chipExpandedText", capsule);
+        }
         extras.putParcelable("android.ongoingActivityNoti.chipIcon", candidate.getSmallIcon());
-        extras.putParcelable("android.ongoingActivityNoti.expandedRemoteView", expanded);
+        if (expanded != null) {
+            extras.putParcelable("android.ongoingActivityNoti.expandedRemoteView", expanded);
+        }
         CharSequence bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
-        if (bigText != null && bigText.length() > 0) {
-            extras.putCharSequence("android.ongoingActivityNoti.secondaryInfo", bigText);
+        CharSequence statusSecondary = bigText != null && bigText.length() > 0 ? bigText : secondary;
+        if (statusSecondary != null && statusSecondary.length() > 0) {
+            extras.putCharSequence("android.ongoingActivityNoti.secondaryInfo", statusSecondary);
         }
         if (candidate.actions != null && candidate.actions.length > 0) {
             extras.putInt("android.ongoingActivityNoti.actionType", 1);
@@ -165,9 +193,68 @@ public final class SamsungNowBarCompat {
         return candidate;
     }
 
+    public static Notification tripNowBarCandidate(
+            Notification enhanced,
+            CharSequence capsule,
+            CharSequence primary,
+            CharSequence secondary,
+            int progressPercent,
+            float[] segmentStarts,
+            int[] segmentColors,
+            int progressColor,
+            Icon trackerIcon) {
+        Notification candidate = nowBarCandidate(enhanced, capsule, primary, secondary, null);
+        if (segmentStarts == null || segmentColors == null
+                || segmentStarts.length == 0
+                || segmentStarts.length != segmentColors.length) {
+            return candidate;
+        }
+        Bundle extras = candidate.extras;
+        extras.putInt("android.ongoingActivityNoti.progressMax", 100);
+        extras.putInt("android.ongoingActivityNoti.progress",
+                Math.max(0, Math.min(100, progressPercent)));
+        Bundle[] segments = new Bundle[segmentStarts.length];
+        for (int index = 0; index < segmentStarts.length; index++) {
+            Bundle segment = new Bundle();
+            segment.putFloat("android.ongoingActivityNoti.progressSegments.segmentStart",
+                    Math.max(0f, Math.min(0.999f, segmentStarts[index])));
+            segment.putInt("android.ongoingActivityNoti.progressSegments.segmentColor",
+                    segmentColors[index]);
+            segments[index] = segment;
+        }
+        extras.putParcelableArray("android.ongoingActivityNoti.progressSegments", segments);
+        extras.putInt("android.ongoingActivityNoti.progressSegments.progressColor", progressColor);
+        if (trackerIcon != null) {
+            extras.putParcelable("android.ongoingActivityNoti.progressSegments.icon", trackerIcon);
+        }
+        return candidate;
+    }
+
+    static String namespaceOf(NotificationKey key) {
+        if (key == null) return "";
+        String persisted = key.persistenceKey();
+        if (persisted == null) return "";
+        int colon = persisted.indexOf(':');
+        return colon < 0 ? persisted : persisted.substring(0, colon);
+    }
+
+    private static String rejectionKey(String namespace) {
+        String clean = namespace == null ? "" : namespace.trim();
+        return COMPAT_NOW_BAR_REJECTED_PREFIX + (clean.isEmpty() ? "default" : clean);
+    }
+
     static void recordPickupNowBarRejection(Context context) {
+        recordNowBarRejection(context, "pickup.live");
+    }
+
+    static void recordNowBarRejection(Context context, String namespace) {
         synchronized (SamsungNowBarCompat.class) {
-            compatPrefs(context).edit().putBoolean(COMPAT_PICKUP_NOW_BAR_REJECTED, true).apply();
+            android.content.SharedPreferences.Editor editor = compatPrefs(context).edit()
+                    .putBoolean(rejectionKey(namespace), true);
+            if ("pickup.live".equals(namespace) || namespace == null || namespace.isEmpty()) {
+                editor.putBoolean(COMPAT_PICKUP_NOW_BAR_REJECTED, true);
+            }
+            editor.apply();
         }
     }
 

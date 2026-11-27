@@ -110,27 +110,29 @@ public final class PromotedNotificationPublisher {
         post(context, manager, key, enhanced, genericAndroid, null);
     }
 
-    /** Tries the native pickup template before the established pickup notification. */
+    /** Tries the Samsung Now Bar style=1 template before the established promoted notification. */
     @SuppressLint("MissingPermission")
     public static void post(Context context, NotificationManager manager, NotificationKey key,
                             Notification enhanced, Notification genericAndroid,
-                            Notification pickupNowBar) {
+                            Notification nowBarCandidate) {
         if (context == null || manager == null || key == null || enhanced == null) return;
         Context app = context.getApplicationContext();
         Notification generic = genericClone(genericAndroid == null ? enhanced : genericAndroid);
+        String namespace = SamsungNowBarCompat.namespaceOf(key);
         long fallbackGeneration = 0L;
         synchronized (LOCK) {
             cancelProbeLocked(key);
             long generation = GENERATIONS.advance(key);
-            if (pickupNowBar != null && SamsungNowBarCompat.shouldTryPickupNowBar(app)
-                    && canProbeDelivery(app, manager, pickupNowBar)) {
+            if (nowBarCandidate != null
+                    && SamsungNowBarCompat.shouldTryNowBarTemplate(app, namespace)
+                    && canProbeDelivery(app, manager, nowBarCandidate)) {
                 try {
-                    key.notify(manager, pickupNowBar);
+                    key.notify(manager, nowBarCandidate);
                     scheduleProbeLocked(app, manager, key, generation, generic, enhanced);
                     return;
                 } catch (IllegalArgumentException rejected) {
-                    SamsungNowBarCompat.recordPickupNowBarRejection(app);
-                    Log.w(TAG, "Pickup Now Bar notification rejected during posting");
+                    SamsungNowBarCompat.recordNowBarRejection(app, namespace);
+                    Log.w(TAG, "Now Bar template rejected during posting key=" + key.logLabel());
                 }
             }
             if (SamsungNowBarCompat.useGenericFallback(app)) {
@@ -288,14 +290,16 @@ public final class PromotedNotificationPublisher {
                 return;
             }
             if (pickupNowBar && !SamsungNowBarCompat.useGenericFallback(context)) {
-                SamsungNowBarCompat.recordPickupNowBarRejection(context);
-                Log.w(TAG, "Pickup Now Bar removed; restoring the established pickup notification");
+                SamsungNowBarCompat.recordNowBarRejection(
+                        context, SamsungNowBarCompat.namespaceOf(key));
+                Log.w(TAG, "Now Bar template removed; restoring established notification key="
+                        + key.logLabel());
                 try {
                     postEnhancedLocked(context, manager, key, generation,
                             state.pickupFallback, genericAndroid);
                 } catch (RuntimeException failure) {
                     finishProbeLocked(key, generation);
-                    Log.w(TAG, "Unable to restore pickup notification"
+                    Log.w(TAG, "Unable to restore established notification"
                             + " kind=" + failure.getClass().getSimpleName());
                     throw failure;
                 }
@@ -316,8 +320,10 @@ public final class PromotedNotificationPublisher {
                 return;
             }
             if (pickupNowBar) {
-                SamsungNowBarCompat.recordPickupNowBarRejection(context);
-                Log.w(TAG, "Pickup Now Bar removed; restoring the generic pickup notification");
+                SamsungNowBarCompat.recordNowBarRejection(
+                        context, SamsungNowBarCompat.namespaceOf(key));
+                Log.w(TAG, "Now Bar template removed; restoring generic notification key="
+                        + key.logLabel());
             } else {
                 int failures = SamsungNowBarCompat.recordProbe(context, false);
                 Log.w(TAG, "SystemUI removed enhanced live update key=" + key.logLabel()

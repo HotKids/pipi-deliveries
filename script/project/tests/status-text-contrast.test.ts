@@ -31,16 +31,16 @@ const toneTable: Array<[StatusSemantic, string, number, number, number, number]>
   ["ORDERED", "已下单", 0x00838f, 0x4dd0e1, 0x00bcd4, 0x00acc1],
   ["SHIPPED", "已发货", 0x0277bd, 0x4fc3f7, 0x03a9f4, 0x039be5],
   ["PICKED", "已揽件", 0x1565c0, 0x64b5f6, 0x2196f3, 0x1e88e5],
-  ["TRANSIT", "运输中", 0x004d40, 0x4db6ac, 0x00796b, 0x00796b],
-  ["TRANSIT", "清关中", 0x00796b, 0x4db6ac, 0x26a69a, 0x26a69a],
-  ["DELIVERY", "待派送", 0xff8f00, 0xffd54f, 0xffc107, 0xffb300],
-  ["DELIVERY", "派送中", 0xef6c00, 0xffb74d, 0xff9800, 0xfb8c00],
-  ["WAITING_PICKUP", "待取件", 0xd84315, 0xff8a65, 0xff5722, 0xf4511e],
-  ["COMPLETED", "已签收", 0x455a64, 0x90a4ae, 0x607d8b, 0x546e7a],
-  ["COMPLETED", "已完成", 0x607d8b, 0xb0bec5, 0x90a4ae, 0x607d8b],
+  ["TRANSIT", "运输中", 0x00796b, 0x4db6ac, 0x26a69a, 0x26a69a],
+  ["TRANSIT", "清关中", 0x00695c, 0x26a69a, 0x00796b, 0x00796b],
+  ["DELIVERY", "待派送", 0xff6f00, 0xffd54f, 0xffc107, 0xffb300],
+  ["DELIVERY", "派送中", 0xe65100, 0xffb74d, 0xff9800, 0xfb8c00],
+  ["WAITING_PICKUP", "待取件", 0xbf360c, 0xff8a65, 0xff5722, 0xf4511e],
+  ["COMPLETED", "已签收", 0x607d8b, 0xb0bec5, 0x90a4ae, 0x607d8b],
+  ["COMPLETED", "已完成", 0x455a64, 0x90a4ae, 0x607d8b, 0x546e7a],
   ["DANGER", "异常件", 0xc62828, 0xe57373, 0xf44336, 0xe53935],
-  ["CANCELLED", "已取消", 0x8f4343, 0xd98c8c, 0xc06060, 0xa84e4e],
-  ["UNKNOWN", "暂无状态", 0x9e9e9e, 0xe0e0e0, 0xbdbdbd, 0x757575],
+  ["CANCELLED", "已取消", 0x7e3a3a, 0xd98c8c, 0xc06060, 0xa84e4e],
+  ["UNKNOWN", "暂无状态", 0x757575, 0xe0e0e0, 0xbdbdbd, 0x757575],
 ];
 
 assert.deepEqual(PARCEL_STATUS_BADGE_OPACITY, { light: 0.12, dark: 0.22 });
@@ -56,16 +56,20 @@ for (const [semantic, label, light, dark, lightCap, darkCap] of toneTable) {
   assert.equal(fill.light, `rgba(${rgb(lightCap).join(", ")}, 0.12)`);
   assert.equal(fill.dark, `rgba(${rgb(darkCap).join(", ")}, 0.22)`);
 }
-assert.deepEqual(statusTextTint("DELIVERY"), { light: "#ef6c00", dark: "#ffb74d" }, "DELIVERY reads 派送中");
-assert.deepEqual(statusTextTint("COMPLETED"), { light: "#455a64", dark: "#90a4ae" }, "COMPLETED reads 已签收");
+assert.deepEqual(statusTextTint("DELIVERY"), { light: "#e65100", dark: "#ffb74d" }, "DELIVERY reads 派送中");
+assert.deepEqual(statusTextTint("COMPLETED"), { light: "#607d8b", dark: "#b0bec5" }, "COMPLETED reads 已签收");
 assert.deepEqual(
   statusTextTint("TRANSIT", { label: "清关中" }),
-  { light: "#00796b", dark: "#4db6ac" },
-  "清关中 uses its own light text #00796b while sharing dark text #4db6ac",
+  { light: "#00695c", dark: "#26a69a" },
+  "清关中 uses dedicated text pair #00695c / #26a69a (修改 31)",
 );
 assert.notEqual(
   statusTextTint("TRANSIT", { label: "清关中" }).light,
   statusTextTint("TRANSIT", { label: "运输中" }).light,
+);
+assert.notEqual(
+  statusTextTint("TRANSIT", { label: "清关中" }).dark,
+  statusTextTint("TRANSIT", { label: "运输中" }).dark,
 );
 console.log("status text: lists, details, sender badge and small widget emit the shared pair directly");
 

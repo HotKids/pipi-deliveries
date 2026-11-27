@@ -15,15 +15,15 @@ public final class ExpressWidgetStatusStyleTest {
     @Test
     public void widgetStatusColoursComeFromTheSharedTable() {
         assertEquals(0xFFC62828, foreground(StatusSemantic.DANGER));
-        assertEquals(0xFFD84315, foreground(StatusSemantic.WAITING_PICKUP));
-        assertEquals(0xFFEF6C00, foreground(StatusSemantic.DELIVERY));
-        assertEquals(0xFF455A64, foreground(StatusSemantic.COMPLETED));
-        assertEquals(0xFF004D40, foreground(StatusSemantic.TRANSIT));
+        assertEquals(0xFFBF360C, foreground(StatusSemantic.WAITING_PICKUP));
+        assertEquals(0xFFE65100, foreground(StatusSemantic.DELIVERY));
+        assertEquals(0xFF607D8B, foreground(StatusSemantic.COMPLETED));
+        assertEquals(0xFF00796B, foreground(StatusSemantic.TRANSIT));
         assertEquals(0xFF1565C0, foreground(StatusSemantic.PICKED));
         assertEquals(0xFF00838F, foreground(StatusSemantic.ORDERED));
         assertEquals(0xFF0277BD, foreground(StatusSemantic.SHIPPED));
-        assertEquals(0xFF8F4343, foreground(StatusSemantic.CANCELLED));
-        assertEquals(0xFF9E9E9E, foreground(StatusSemantic.UNKNOWN));
+        assertEquals(0xFF7E3A3A, foreground(StatusSemantic.CANCELLED));
+        assertEquals(0xFF757575, foreground(StatusSemantic.UNKNOWN));
         assertNotEquals(foreground(StatusSemantic.DELIVERY), foreground(StatusSemantic.COMPLETED));
     }
 
