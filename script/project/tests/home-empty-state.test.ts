@@ -74,13 +74,13 @@ const next = refresh();
 assert.equal(beginCount, 2, "a new gesture still starts another pull");
 finishPull();
 await next;
-assert.match(homeSource, /<NavigationStack>\s*<VStack spacing=\{0\}[^]*?<RootTabList key="shipments" title="快递" onClose=\{\(\) => dismiss\(\)\}[^]*?topAccessory=\{visibleFilters\.length > 1 \? \(\s*<ShipmentFilterBar/,
-  "the filter scrolls with the title in the common list");
+assert.match(homeSource, /<NavigationStack\b[^>]*toolbarBackgroundVisibility=\{\{ visibility: "hidden", bars: \["navigationBar"\] \}\}[^>]*>\s*<VStack spacing=\{0\}[^]*?<RootTabList\s+key="shipments"\s+title="快递"\s+subtitle=\{`\$\{groups\.pickup\.length\} 件待取 · \$\{groups\.all\.length\} 个包裹`\}\s+onClose=\{\(\) => dismiss\(\)\}[^]*?topAccessory=\{visibleFilters\.length > 1 \? \(\s*<ShipmentFilterBar/,
+  "the subtitle and segmented filter scroll with the title in the common list");
 assert.match(homeSource, /\{accessKeyNotice \? \(\s*<Section[^>]*>\s*\{accessKeyNotice\}\s*<\/Section>/,
   "the access-key notice retains its list row");
 assert.doesNotMatch(homeSource, /safeAreaInset=|alignment: "topLeading",|headerCollapsed|rootPageScroll/,
   "the native list owns the scroll without a collapse observer");
-assert.match(homeSource, /<VStack padding=\{TAB_FAB_PADDING\}>\s*<TabFloatingActionButton title="查询"/);
+assert.match(homeSource, /<TabFloatingActionButton title="查询" symbol="magnifyingglass" action=\{\(\) => searchPresented\.setValue\(true\)\} \/>/);
 assert.match(homeSource, /bottomInset=\{TAB_FAB_SCROLL_INSET\}/);
 const appSource = await readFile(resolve(projectDir, "index.tsx"), "utf8");
 assert.match(appSource, /subscribeRefreshState\(applyState\)[\s\S]*?refreshAllShipments\(\)[\s\S]*?\}, \[hasState\]\);/,
@@ -149,49 +149,46 @@ assert.match(searchSheet, /autoFocusSearch=\{props\.autoFocusSearch\}/,
   "only the existing focus and shortcut entry points should open the keyboard automatically");
 assert.match(homeSource, /navigationDestination=\{\{\s*isPresented: Boolean\(selected\)/,
   "the main navigation destination presents shipment details");
-const filterBar = homeSource.match(/<GeometryReader frame=\{\{ height: FILTER_ROW_HEIGHT \}\}>([^]*?)<\/GeometryReader>/)?.[1] ?? "";
-assert.match(filterBar, /<Text font=\{11\} fontWeight="semibold" monospacedDigit[^]*?frame=\{\{ minWidth: 16, minHeight: 16 \}\}\s*background=\{\{ style: "systemFill", shape: "capsule" \}\}[^]*?>\s*\{groups\[key\]\.length\}/,
-  "the horizontal filter uses the original independent count badge");
-assert.match(filterBar, /<Capsule fill="tertiarySystemFill"\s*frame=\{\{ height: 32 \}\} allowsHitTesting=\{false\} \/>/,
-  "filter bar uses tertiarySystemFill track");
-assert.match(filterBar, /<Capsule fill="systemBackground" frame=\{\{ width: segmentWidth, height: 26 \}\}[\s\S]*?offset=\{\{ x: selectedOffset, y: 0 \}\} allowsHitTesting=\{false\} \/>/,
-  "one selection thumb shares the segment layout's animation");
-assert.match(filterBar, /<ZStack alignment="leading"[^\n]*\n\s*animation=\{\{ animation: Animation\.smooth\(\{ duration: FILTER_SLIDE_SECONDS \}\), value: layoutKey \}\}>/);
-assert.equal(filterBar.match(/<Capsule fill="systemBackground"/g)?.length, 1);
-assert.doesNotMatch(filterBar, /glassEffect|tabCapsuleSurface|matchedGeometryEffect|NamespaceReader/);
-const geometry = filterBar.match(/const segmentWidth = [^\n]+\n\s*const selectedOffset = [^\n]+\n\s*const layoutKey = [^\n]+/)?.[0];
-assert.ok(geometry);
-const slot = new Function("size", "visibleFilters", "filter", "FILTER_SEGMENT_INSET",
-  geometry + "\nreturn { segmentWidth, selectedOffset, layoutKey }; ");
-for (const width of [280, 362, 540]) {
-  for (const filters of [["all", "transit"], ["all", "transit", "pickup", "danger"]]) {
-    const first = slot({ width }, filters, filters[0], 3);
-    const last = slot({ width }, filters, filters.at(-1), 3);
-    assert.equal(first.selectedOffset, 3);
-    assert.equal(last.segmentWidth, first.segmentWidth, "the sliding selection fill retains the slot width");
-    assert.equal(last.selectedOffset + last.segmentWidth, width - 3);
-    assert.notEqual(last.layoutKey, first.layoutKey);
-  }
-  const before = slot({ width }, ["all", "transit", "pickup"], "transit", 3);
-  const after = slot({ width }, ["all", "transit"], "transit", 3);
-  assert.notEqual(after.selectedOffset, before.selectedOffset);
-  assert.notEqual(after.segmentWidth, before.segmentWidth);
-  assert.notEqual(after.layoutKey, before.layoutKey, "removing a segment also animates a retained selection");
-}
+const filterBar = homeSource.slice(
+  homeSource.indexOf("function ShipmentFilterBar"),
+  homeSource.indexOf("function shipmentFilter"),
+);
+assert.match(filterBar, /<Picker\s+title="筛选"\s+value=\{filter\}\s+onChanged=\{\(value: string\) => onSelect\(value as ShipmentFilter\)\}\s+pickerStyle="segmented"/,
+  "ShipmentFilterBar uses native iOS 26 segmented Picker");
+assert.match(filterBar, /<Text\s+key=\{key\}\s+tag=\{key\}\s+font=\{14\}\s+monospacedDigit\s+contentTransition="numericText"\s+animation=\{\{ animation: Animation\.snappy\(\{ duration: 0\.32 \}\), value: groups\[key\]\.length \}\}\s*>\{`\$\{shipmentFilters\[key\]\} \$\{groups\[key\]\.length\}`\}<\/Text>/,
+  "each segmented Picker option uses numericText transition with snappy animation");
+assert.doesNotMatch(filterBar, /GeometryReader|<Capsule|tertiarySystemFill/,
+  "hand-rolled GeometryReader fake capsule bar is replaced by native segmented Picker");
 const showFilter = homeSource.match(/^  function showFilter\([\s\S]*?^  \}/m)?.[0];
 assert.ok(showFilter);
 const allItems = [{ id: "synthetic-transit" }, { id: "synthetic-completed" }];
 const transitItems = [allItems[0]];
 const filterUpdates: unknown[] = [];
 const selection = { current: { filter: "all", items: allItems } };
-const select = new Function("groups", "selection", "visibleFilters", "observableItems",
-  stripTypeScriptTypes(showFilter) + "\nreturn showFilter;")(
-    { all: allItems, transit: transitItems }, selection, ["all", "transit"],
-    { setValue: (items: unknown) => {
+let currentSelectedFilter = "all";
+const select = new Function(
+  "groups",
+  "selection",
+  "visibleFilters",
+  "observableItems",
+  "getSelectedFilter",
+  "setSelectedFilter",
+  stripTypeScriptTypes(showFilter).replace(/\bselectedFilter\b/g, "getSelectedFilter()") + "\nreturn showFilter;",
+)(
+  { all: allItems, transit: transitItems },
+  selection,
+  ["all", "transit"],
+  {
+    setValue: (items: unknown) => {
       assert.equal(items, selection.current.items);
       filterUpdates.push({ filter: selection.current.filter, items });
-    } },
-  );
+    },
+  },
+  () => currentSelectedFilter,
+  (next: string) => {
+    currentSelectedFilter = next;
+  },
+);
 select("all");
 select("pickup");
 select("transit");

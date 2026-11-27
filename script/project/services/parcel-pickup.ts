@@ -299,51 +299,22 @@ export function applyRecognizedPickup(shipment: Shipment, lookup: ParcelLookup):
   };
 }
 
-export const PICKUP_CARD_ANIMATION_DELAY_MS = 1_000;
-
 export function createPickupAnimationGate(
   onChange: (animate: boolean) => void,
-  timers: {
-    set: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
-    clear: (id: ReturnType<typeof setTimeout>) => void;
-  } = {
-    set: (fn, ms) => setTimeout(fn, ms),
-    clear: (id) => clearTimeout(id),
-  },
 ) {
   let visible = false;
   let active = true;
   let ready = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  function stop() {
-    if (timer !== undefined) {
-      timers.clear(timer);
-      timer = undefined;
-    }
-    if (ready) {
-      ready = false;
-      onChange(false);
-    }
-  }
 
   function sync() {
-    if (!visible || !active) {
-      stop();
-      return;
-    }
-    if (ready || timer !== undefined) return;
-    onChange(false);
-    timer = timers.set(() => {
-      timer = undefined;
-      if (!visible || !active) return;
-      ready = true;
-      onChange(true);
-    }, PICKUP_CARD_ANIMATION_DELAY_MS);
+    const next = visible && active;
+    if (ready === next) return;
+    ready = next;
+    onChange(ready);
   }
 
   return {
-    isAnimating: () => visible && active && ready,
+    isAnimating: () => ready,
     setVisible(next: boolean) {
       if (visible === next) return;
       visible = next;
@@ -356,7 +327,7 @@ export function createPickupAnimationGate(
     },
     dispose() {
       visible = false;
-      stop();
+      sync();
     },
   };
 }

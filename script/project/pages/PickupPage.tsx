@@ -4,7 +4,7 @@ import { ParcelActivityPreviewCard, PickupTabCard } from "../components/PickupTa
 import { EmptyTabState, type PickupEmptyArtwork } from "../components/EmptyDeliveryVehicle";
 import { ExpandedQRCode, ScanCodeSurface } from "../components/ExpandedScanCode";
 import { RootTabList } from "../components/RootPageHeader";
-import { TAB_FAB_PADDING, TAB_FAB_SCROLL_INSET, TabFloatingActionButton } from "../components/TabFloatingActionButton";
+import { FloatingActions, ROOT_PAGE_BG, TAB_FAB_SCROLL_INSET } from "../components/TabFloatingActionButton";
 import { synchronizeParcelCloudRecords } from "../services/parcel-cloud-sync";
 import { stopParcelActivityPreview, type MealQRCodeTarget } from "../services/parcel-live-activity";
 import { PICKUP_DATE_GROUP_SPACING, parcelCardArtwork } from "../services/parcel-card-appearance";
@@ -45,33 +45,39 @@ function IdentityCodeButton({ onOpen }: {
 }) {
   const [showPicker, setShowPicker] = useState(false);
   return (
-    <VStack padding={TAB_FAB_PADDING}>
-      <VStack popover={{
-        isPresented: showPicker,
-        onChanged: setShowPicker,
-        arrowEdge: "bottom",
-        presentationCompactAdaptation: "popover",
-        content: (
-          <VStack alignment="leading" spacing={0} padding={6} fixedSize={{ horizontal: true, vertical: true }}>
-            {IDENTITY_CHOICES.flatMap(({ platform, title }, index) => [
-              ...(index > 0 ? [<Divider key={`${platform}-divider`} />] : []),
-              <Button key={platform} buttonStyle="plain" contentShape="rect" action={() => {
-                setShowPicker(false);
-                onOpen(platform);
-              }}>
-                <HStack spacing={10} padding={{ horizontal: 10, vertical: 9 }}>
-                  <StationIdentityMark asset={platform} />
-                  <Text font={17} foregroundStyle="label" fixedSize={{ horizontal: true, vertical: true }}>{title}</Text>
-                </HStack>
-              </Button>,
-            ])}
-          </VStack>
-        ),
-      }}>
-        <TabFloatingActionButton title="身份码" symbol="person.text.rectangle"
-          action={() => setShowPicker(!showPicker)} />
-      </VStack>
-    </VStack>
+    <FloatingActions
+      items={[
+        {
+          symbol: "person.text.rectangle",
+          label: "身份码",
+          title: "身份码",
+          anchorPad: 44,
+          action: () => setShowPicker(!showPicker),
+          popover: {
+            isPresented: showPicker,
+            onChanged: setShowPicker,
+            arrowEdge: "bottom",
+            presentationCompactAdaptation: "popover",
+            content: (
+              <VStack alignment="leading" spacing={0} padding={6} fixedSize={{ horizontal: true, vertical: true }}>
+                {IDENTITY_CHOICES.flatMap(({ platform, title }, index) => [
+                  ...(index > 0 ? [<Divider key={`${platform}-divider`} />] : []),
+                  <Button key={platform} buttonStyle="plain" contentShape="rect" action={() => {
+                    setShowPicker(false);
+                    onOpen(platform);
+                  }}>
+                    <HStack spacing={10} padding={{ horizontal: 10, vertical: 9 }}>
+                      <StationIdentityMark asset={platform} />
+                      <Text font={17} foregroundStyle="label" fixedSize={{ horizontal: true, vertical: true }}>{title}</Text>
+                    </HStack>
+                  </Button>,
+                ])}
+              </VStack>
+            ),
+          },
+        },
+      ]}
+    />
   );
 }
 
@@ -389,11 +395,13 @@ export function PickupPage({
   }
 
   return (
-    <NavigationStack>
+    <NavigationStack toolbarBackgroundVisibility={{ visibility: "hidden", bars: ["navigationBar"] }}>
       <VStack spacing={0} toast={toast}
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
-        onAppear={() => setVisible(true)}
-        onDisappear={() => setVisible(false)}
+        background={ROOT_PAGE_BG}
+        toolbarBackground={{ style: ROOT_PAGE_BG, bars: ["tabBar"] }}
+        onAppear={() => { setVisible(true); animationGateRef.current?.setVisible(true); }}
+        onDisappear={() => { setVisible(false); animationGateRef.current?.setVisible(false); }}
         sheet={{
           isPresented: Boolean(redemption && mealQrCard),
           onChanged: shown => { if (!shown) closeMealCode(); },

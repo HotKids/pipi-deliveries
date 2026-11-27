@@ -487,9 +487,11 @@ export function DetailPage(props: {
     const currentCredential = () => !controller.signal.aborted && gatewayCredentialGeneration() === cloudGeneration;
     try {
       if (!ownsCloudWaybill()) { clearCloudMetadata(); return; }
-      const details = await readCloudParcelMetadata(cloudWaybill, controller.signal);
+      const fetched = await readCloudParcelMetadata(cloudWaybill, controller.signal);
       if (!currentCredential()) return;
       if (!ownsCloudWaybill()) { clearCloudMetadata(); return; }
+      const fallbackLink = cloudDetails?.pddLink ?? restoredPddLink;
+      const details = fetched?.pddLink || !fallbackLink ? fetched : { ...(fetched ?? {}), pddLink: fallbackLink };
       showCloud({ scope: cloudScope, details });
       if (details?.pddLink && !pddOrigin) {
         try {
@@ -514,9 +516,19 @@ export function DetailPage(props: {
         return;
       }
       let metadata: CloudParcelDetails["metadata"];
-      try { if (ownsCloudWaybill()) metadata = cloudParcelMetadataForCache(shipment, cloudDetails?.metadata); }
-      catch { /* An unreadable owner cannot display cloud metadata. */ }
-      showCloud({ scope: cloudScope, details: metadata ? { metadata } : undefined });
+      let pddLink: CloudParcelDetails["pddLink"];
+      try {
+        if (ownsCloudWaybill()) {
+          metadata = cloudParcelMetadataForCache(shipment, cloudDetails?.metadata);
+          pddLink = cloudDetails?.pddLink ?? restoredPddLink;
+        }
+      } catch { /* An unreadable owner cannot display cloud metadata. */ }
+      showCloud({
+        scope: cloudScope,
+        details: metadata || pddLink
+          ? { ...(metadata ? { metadata } : {}), ...(pddLink ? { pddLink } : {}) }
+          : undefined,
+      });
     }
   }
 
@@ -793,7 +805,7 @@ export function DetailPage(props: {
           return;
         }
         if (!pddExternalAppURL) {
-          if (current.pddImport && platformSession("pinduoduo")) {
+          if (platformSession("pinduoduo")) {
             setNotice("暂无拼多多订单链接");
             return;
           }

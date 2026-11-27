@@ -4,7 +4,7 @@
  * - **执行顺序**：先刷 Online（`v6_query`）同源缓存 -> 缺少起始节点时并发执行白名单主轮（Moto / K100 H5）->
  *   仍无起始证据时执行付费快递鸟兜底；各手动源仅合并自身同源缓存，严禁跨源拼接节点。
  * - **预算与冷却**：单级请求受 15 秒截止时间与各自冷却/风控门禁约束，首次查件支持 Picker 详情预览后再单事务正式入库。
- * - **跨端对等文件**：Pipi `ExpressPoller.java`、Lite `ExpressManualChain.java`、Bot `pipi-bot/express.py`。
+ * - **跨端对等文件**：Pipi `ExpressPoller.java`、Lite `ExpressManualChain.java`、Bot `pipi-bot/bot/express.py`。
  */
 import type { AbortSignal } from "scripting";
 import { TIMELINE_SLOT } from "./timeline-slot";

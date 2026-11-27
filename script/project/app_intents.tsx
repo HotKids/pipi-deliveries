@@ -1,34 +1,13 @@
 import { AppIntentManager, AppIntentProtocol } from "scripting";
-import type { ParcelActivityCompletion } from "./services/parcel-activity-action";
+import { refreshAllShipments } from "./services/sync";
+import { refreshDueWatchShipments } from "./services/storage";
+import { backgroundHostBootstrap, backgroundRefreshOptions } from "./services/background-refresh";
 import { diagnosticErrorDetails, flushDiagnostics, writeDiagnostic, writeRuntimeCapabilities } from "./services/logger";
-
-declare const backgroundHostBootstrap:
-  | (typeof import("./services/background-refresh"))["backgroundHostBootstrap"]
-  | undefined;
-declare const backgroundRefreshOptions:
-  | (typeof import("./services/background-refresh"))["backgroundRefreshOptions"]
-  | undefined;
-declare const refreshAllShipments:
-  | (typeof import("./services/sync"))["refreshAllShipments"]
-  | undefined;
-declare const refreshDueWatchShipments:
-  | (typeof import("./services/storage"))["refreshDueWatchShipments"]
-  | undefined;
-declare const retireCompletedParcelActivities:
-  | (typeof import("./services/parcel-live-activity"))["retireCompletedParcelActivities"]
-  | undefined;
-declare const synchronizeParcelCloudRecords:
-  | (typeof import("./services/parcel-cloud-sync"))["synchronizeParcelCloudRecords"]
-  | undefined;
-declare const ensureMealRules:
-  | (typeof import("./services/carrier-authority"))["ensureMealRules"]
-  | undefined;
-declare const synchronizeMeals:
-  | (typeof import("./services/meal/cloud"))["synchronizeMeals"]
-  | undefined;
-declare const completeParcelActivity:
-  | (typeof import("./services/parcel-activity-action"))["completeParcelActivity"]
-  | undefined;
+import { completeParcelActivity, type ParcelActivityCompletion } from "./services/parcel-activity-action";
+import { retireCompletedParcelActivities } from "./services/parcel-live-activity";
+import { synchronizeParcelCloudRecords } from "./services/parcel-cloud-sync";
+import { ensureMealRules } from "./services/carrier-authority";
+import { synchronizeMeals } from "./services/meal/cloud";
 
 const REGISTERED_INTENTS_KEY = "__pipiDeliveriesRegisteredAppIntents__";
 
@@ -61,60 +40,31 @@ export const RefreshPipiDeliveriesIntent = registerAppIntentOnce("RefreshPipiDel
     protocol: AppIntentProtocol.AppIntent,
     perform: async () => {
       const end = beginIntentRun("refresh");
-      const injectedBootstrap = typeof backgroundHostBootstrap === "function" ? backgroundHostBootstrap : undefined;
-      const injectedOptions = typeof backgroundRefreshOptions === "function" ? backgroundRefreshOptions : undefined;
-      const injectedRefresh = typeof refreshAllShipments === "function" ? refreshAllShipments : undefined;
-      const injectedWatch = typeof refreshDueWatchShipments === "function" ? refreshDueWatchShipments : undefined;
-      const injectedRetire = typeof retireCompletedParcelActivities === "function"
-        ? retireCompletedParcelActivities
-        : undefined;
-      const injectedParcelCloud = typeof synchronizeParcelCloudRecords === "function"
-        ? synchronizeParcelCloudRecords
-        : undefined;
-      const injectedEnsureMealRules = typeof ensureMealRules === "function" ? ensureMealRules : undefined;
-      const injectedMealSync = typeof synchronizeMeals === "function" ? synchronizeMeals : undefined;
       try {
-        {
-          const backgroundHostBootstrap = injectedBootstrap
-            ?? (await import("./services/background-refresh")).backgroundHostBootstrap;
-          backgroundHostBootstrap();
-        }
-        const backgroundRefreshOptions = injectedOptions
-          ?? (await import("./services/background-refresh")).backgroundRefreshOptions;
-        const runRefresh = injectedRefresh ?? (await import("./services/sync")).refreshAllShipments;
-        const summary = await runRefresh(undefined, backgroundRefreshOptions());
+        backgroundHostBootstrap();
+        const summary = await refreshAllShipments(undefined, backgroundRefreshOptions());
         // The international Watch rows follow the domestic pass, as on the widget (G-HIGH-10).
         let latest = summary && !summary.skipReason ? summary.state : undefined;
-        if (latest) {
-          const runWatch = injectedWatch
-            ?? (!injectedRefresh ? (await import("./services/storage")).refreshDueWatchShipments : undefined);
-          if (typeof runWatch === "function") {
-            const watch = await runWatch(latest);
-            if (watch) latest = watch;
-          }
+        if (latest && typeof refreshDueWatchShipments === "function") {
+          const watch = await refreshDueWatchShipments(latest);
+          if (watch) latest = watch;
         }
-        const parcelCloud = injectedParcelCloud
-          ?? (!injectedRefresh ? (await import("./services/parcel-cloud-sync")).synchronizeParcelCloudRecords : undefined);
-        const mealSync = injectedMealSync
-          ?? (!injectedRefresh ? (await import("./services/meal/cloud")).synchronizeMeals : undefined);
-        const mealRules = injectedEnsureMealRules
-          ?? (!injectedRefresh ? (await import("./services/carrier-authority")).ensureMealRules : undefined);
         await Promise.all([
-          typeof parcelCloud === "function" ? parcelCloud(5_000).catch(() => undefined) : Promise.resolve(),
-          typeof mealSync === "function"
+          typeof synchronizeParcelCloudRecords === "function"
+            ? synchronizeParcelCloudRecords(5_000).catch(() => undefined)
+            : Promise.resolve(),
+          typeof synchronizeMeals === "function"
             ? (async () => {
-                if (typeof mealRules === "function") {
-                  const ready = await mealRules("meal_sync").catch(() => null);
+                if (typeof ensureMealRules === "function") {
+                  const ready = await ensureMealRules("meal_sync").catch(() => null);
                   if (!ready) return;
                 }
-                await mealSync(5_000).catch(() => undefined);
+                await synchronizeMeals(5_000).catch(() => undefined);
               })()
             : Promise.resolve(),
         ]);
-        const retire = injectedRetire
-          ?? (!injectedRefresh ? (await import("./services/parcel-live-activity")).retireCompletedParcelActivities : undefined);
-        if (typeof retire === "function" && latest) {
-          await retire(latest);
+        if (typeof retireCompletedParcelActivities === "function" && latest) {
+          await retireCompletedParcelActivities(latest);
         }
         end(summary?.skipReason ? "skipped" : "completed");
       } catch (error) {
@@ -133,18 +83,10 @@ export const CompleteParcelActivityIntent = registerAppIntentOnce("CompleteParce
     protocol: AppIntentProtocol.LiveActivityIntent,
     perform: async (params: ParcelActivityCompletion) => {
       const end = beginIntentRun("complete_activity");
-      const injectedComplete = typeof completeParcelActivity === "function" ? completeParcelActivity : undefined;
-      const injectedParcelCloud = typeof synchronizeParcelCloudRecords === "function"
-        ? synchronizeParcelCloudRecords
-        : undefined;
       try {
-        const complete = injectedComplete
-          ?? (await import("./services/parcel-activity-action")).completeParcelActivity;
-        await complete(params);
-        const parcelCloud = injectedParcelCloud
-          ?? (!injectedComplete ? (await import("./services/parcel-cloud-sync")).synchronizeParcelCloudRecords : undefined);
-        if (typeof parcelCloud === "function") {
-          await parcelCloud(4_000).catch(() => undefined);
+        await completeParcelActivity(params);
+        if (typeof synchronizeParcelCloudRecords === "function") {
+          await synchronizeParcelCloudRecords(4_000).catch(() => undefined);
         }
         end("completed");
       } catch (error) {

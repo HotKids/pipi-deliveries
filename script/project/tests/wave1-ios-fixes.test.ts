@@ -253,7 +253,7 @@ const NOW = Date.UTC(2026, 11, 31, 15, 0, 0); // 2026-12-31 23:00:00 CST (+08:00
   // Subtype donor clock: stale older CUSTOMS_CLEARANCE must NOT override newer TRANSPORT
   const staleCustomsPkg: TimelinePackage = {
     provider: TIMELINE_SLOT.V6_QUERY,
-    waybill: "77100000000045",
+    waybill: "77000000000904",
     courierCode: "STO",
     companyName: "申通快递",
     semantic: "TRANSIT",
@@ -267,7 +267,7 @@ const NOW = Date.UTC(2026, 11, 31, 15, 0, 0); // 2026-12-31 23:00:00 CST (+08:00
   };
   const newerDomesticPkg: TimelinePackage = {
     provider: TIMELINE_SLOT.K100_H5,
-    waybill: "77100000000045",
+    waybill: "77000000000904",
     courierCode: "STO",
     companyName: "申通快递",
     semantic: "TRANSIT",
@@ -282,10 +282,10 @@ const NOW = Date.UTC(2026, 11, 31, 15, 0, 0); // 2026-12-31 23:00:00 CST (+08:00
   };
   const customsShipment: Shipment = {
     identity: {
-      id: "interface5:manual:77100000000045",
+      id: "interface5:manual:77000000000904",
       bindingSource: "interface5",
       sourceOwner: "manual",
-      sourceId: "77100000000045",
+      sourceId: "77000000000904",
       phoneTail: "",
       courierCode: "STO",
       companyName: "申通快递",

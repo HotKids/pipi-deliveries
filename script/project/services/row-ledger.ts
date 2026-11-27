@@ -193,12 +193,13 @@ const storageStore: RowLedgerStore = {
 };
 
 export function loadRowLedger(): RowLedger {
-  if (rowLedgerInTurn && rowLedgerInTurn.get === Storage.get) {
+  const storageGet = typeof Storage !== "undefined" ? Storage.get : undefined;
+  if (rowLedgerInTurn && rowLedgerInTurn.get === storageGet) {
     return { ...rowLedgerInTurn.ledger };
   }
   try {
     const loaded = storageStore.load();
-    rowLedgerInTurn = { get: Storage.get, ledger: loaded };
+    rowLedgerInTurn = { get: storageGet, ledger: loaded };
     if (!rowLedgerResetScheduled) {
       rowLedgerResetScheduled = true;
       void Promise.resolve().then(() => {

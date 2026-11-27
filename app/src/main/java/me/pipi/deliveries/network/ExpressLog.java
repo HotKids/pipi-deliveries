@@ -312,8 +312,8 @@ public final class ExpressLog {
         return format(atMs, "failed".equals(outcome) ? "WARNING" : "INFO", event, mapped);
     }
 
-    static boolean shouldEmit(boolean debug, boolean betaTrack, boolean loggable) {
-        return debug || betaTrack || loggable;
+    static boolean shouldEmit(boolean debug, boolean betaTrack) {
+        return debug || betaTrack;
     }
 
     private static boolean isBetaTrack() {
@@ -323,12 +323,12 @@ public final class ExpressLog {
 
     private static void emit(String message) {
         try {
+            if (!shouldEmit(BuildConfig.DEBUG, isBetaTrack())) {
+                return;
+            }
             final int level = message.contains(" ERROR ")
                     ? Log.ERROR
                     : message.contains(" WARNING ") ? Log.WARN : Log.INFO;
-            if (!shouldEmit(BuildConfig.DEBUG, isBetaTrack(), Log.isLoggable(TAG, level))) {
-                return;
-            }
             if (level == Log.ERROR) Log.e(TAG, message);
             else if (level == Log.WARN) Log.w(TAG, message);
             else Log.i(TAG, message);

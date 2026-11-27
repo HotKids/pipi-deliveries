@@ -136,7 +136,24 @@ public final class ExpressManagerActivity extends AppCompatActivity {
         lastTitleTapAt = now;
         if (titleTapCount < 3) return;
         titleTapCount = 0;
-        String selected = ExpressAccountSource.toggleAsync(this, worker);
+        switchAccountSource();
+    }
+
+    void switchAccountSource() {
+        switchAccountSource(this);
+    }
+
+    void switchAccountSource(android.content.Context storageContext) {
+        final String selected;
+        try {
+            selected = ExpressAccountSource.toggle(storageContext);
+        } catch (RuntimeException failure) {
+            String reason = failure.getMessage();
+            String message = reason == null || reason.isEmpty()
+                    ? "无法切换接口，请稍后重试" : reason;
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+            return;
+        }
         ExpressRepository.get(this).requestPendingNotificationReplay();
         reloadPhones();
         ExpressWidgetProvider.refreshAll(this);

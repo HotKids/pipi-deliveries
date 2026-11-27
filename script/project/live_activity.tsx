@@ -16,10 +16,13 @@ import { PARCEL_ACTIVITY_ART, legibleCodeOnDark, parcelCardArtwork, pickupCardPa
 
 export { PARCEL_ACTIVITY_ART };
 
-// The rounded island needs half a capsule of clearance at its lower corner and 6 pt top breathing room.
+// The rounded island needs half a capsule of clearance at its lower corner and 6 pt top breathing room;
+// compactLeading and minimal use concentric 4 pt insets so the 27 pt circular badge fits unclipped.
 const expandedActionInset = Math.ceil(PIPI_CARD.capsuleHeight / 2);
 const expandedIslandAppearance = {
   dynamicIslandContentMargins: {
+    compactLeading: { top: 4, bottom: 4, leading: 4 },
+    minimal: { all: 4 },
     expanded: {
       top: 6,
       leading: PIPI_CARD.edge,
@@ -53,12 +56,12 @@ function registerParcelActivityOnce(): ParcelActivityBuilder {
       const palette = pickupCardPalette(data);
       // Lock Screen activities align with the standard 14 pt notification margin.
       const width = Device.isiPhone ? Math.min(Device.screen.width, Device.screen.height) - 2 * 14 : undefined;
-      const badgeSize = 20;
+      const badgeSize = 27;
       const glyph = (
         <ZStack frame={{ width: badgeSize, height: badgeSize }} clipShape="circle"
           background={brand ? undefined : "rgba(255,255,255,0.16)"}>
           {brand ? <Image image={brand} renderingMode="original" resizable scaleToFill /> : (
-            <Image systemName={meal ? "fork.knife" : handoff ? "tray.and.arrow.up.fill" : "shippingbox.fill"} font={12} foregroundStyle="white" />
+            <Image systemName={meal ? "fork.knife" : handoff ? "tray.and.arrow.up.fill" : "shippingbox.fill"} font={15} foregroundStyle="white" />
           )}
         </ZStack>
       );
@@ -79,7 +82,7 @@ function registerParcelActivityOnce(): ParcelActivityBuilder {
           content={<ParcelLiveActivityCard {...cardProps} width={width} lockScreen lockScreenStyle={data.lockScreenStyle} />}
           compactLeading={<HStack>{glyph}</HStack>}
           compactTrailing={(
-            <Text font={13} fontWeight="semibold" fontWidth="condensed" foregroundStyle={compactCodeColor}
+            <Text font={15} fontWeight="semibold" foregroundStyle={compactCodeColor}
               lineLimit={1} minScaleFactor={0.75}>
               {compactCode}
             </Text>

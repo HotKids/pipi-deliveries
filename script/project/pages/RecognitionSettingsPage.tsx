@@ -1,4 +1,4 @@
-import { AbortController, Button, HStack, Image, LabeledContent, List, Menu, Picker, Script, Section,
+import { AbortController, Button, HStack, Image, LabeledContent, List, Picker, Script, Section,
   SecureField, Spacer, Text, TextField, VStack, useColorScheme, useEffect, useRef, useState, type VirtualNode } from "scripting";
 import { CONNECTION_TEST_BUDGET_MS, onlineRecognitionFailure, onlineRecognitionIdentity,
   requestOnlineRecognition } from "../services/recognition/client";
@@ -58,6 +58,7 @@ export function RecognitionSettingsPage(props: { onSaved: (message: string) => v
   const [reuse, setReuse] = useState(true);
   const [testing, setTesting] = useState(false);
   const [notice, setNotice] = useState("");
+  const [showProviders, setShowProviders] = useState(false);
   const [validation, setValidation] = useState<RecognitionSettingError | undefined>(undefined);
   const request = useRef<AbortController | null>(null);
   // D119: who cancelled a test, read by that test's own end line. The record names the cancelled request, so a test
@@ -158,7 +159,10 @@ export function RecognitionSettingsPage(props: { onSaved: (message: string) => v
   }
 
   function field(name: RecognitionSettingError["field"], label: string, input: VirtualNode) {
-    return <LabeledContent key={name} title={label}>{input}</LabeledContent>;
+    return <VStack key={name} alignment="leading" spacing={6}>
+      <LabeledContent title={label}>{input}</LabeledContent>
+      {validation?.field === name ? <Text foregroundStyle="systemRed">{validationMessage(validation)}</Text> : null}
+    </VStack>;
   }
 
   const missingInputsNotice = draft.mode === "online" && !validation && !hasInputs
@@ -179,51 +183,49 @@ export function RecognitionSettingsPage(props: { onSaved: (message: string) => v
             action={save} disabled={testing || (draft.mode === "online" && !hasInputs)} />
         ),
       }}>
-      <Section footer={!saved.valid || draft.mode === "online" ? (
-        <VStack alignment="leading" spacing={4}>
-          {!saved.valid ? <Text foregroundStyle="systemRed">无法读取在线识别配置，请重新配置</Text> : null}
-          {draft.mode === "online" ? <Text>将截图发送至所选模型识别。在线识别不可用或无有效结果时，自动使用本地识别。</Text> : null}
-        </VStack>
-      ) : undefined}>
+      <Section footer={draft.mode === "online" ? <Text>将截图发送至所选模型识别。在线识别不可用或无有效结果时，自动使用本地识别。</Text> : undefined}>
         <Picker title="识别模式" value={draft.mode} onChanged={(value: string) => edit({ mode: value as Mode })} pickerStyle="menu">
           <Text tag="local">本地识别</Text>
           <Text tag="online">在线识别</Text>
         </Picker>
+        {saved.valid ? null : <Text foregroundStyle="systemRed">无法读取在线识别配置，请重新配置</Text>}
       </Section>
       {draft.mode === "online" ? (
-        <Section footer={
-          <VStack alignment="leading" spacing={4}>
-            {validation ? <Text foregroundStyle="systemRed">{validationMessage(validation)}</Text> : null}
-            {missingInputsNotice ? <Text foregroundStyle="secondaryLabel">{missingInputsNotice}</Text> : null}
-            <Text>连接测试使用内置测试图片，不会保存当前设置或生成卡片。</Text>
-          </VStack>
-        }>
+        <Section footer={<Text>连接测试使用内置样图，不保存设置或生成卡片。</Text>}>
           <HStack spacing={8}>
             <Text accessibilityHidden fixedSize={{ horizontal: true, vertical: false }}>Provider</Text>
             <Spacer minLength={8} />
-            <Menu
-              accessibilityLabel="Provider"
-              accessibilityValue={providerTitle}
-              label={
-                <HStack spacing={8} contentShape="rect">
-                  <ProviderLogo provider={draft.provider} />
-                  <Text foregroundStyle="accentColor" lineLimit={1}>{providerTitle}</Text>
-                  <Image systemName="chevron.up.chevron.down" font={11} foregroundStyle="accentColor" accessibilityHidden />
-                </HStack>
-              }
-            >
-              {PROVIDERS.map((provider) => (
-                <Button
-                  key={provider}
-                  title={provider === "compatible" ? providerTitle : PROVIDER_NAMES[provider]}
-                  systemImage={provider === draft.provider ? "checkmark" : undefined}
-                  accessibilityAddTraits={provider === draft.provider ? "isSelected" : undefined}
-                  action={() => {
-                    if (provider !== draft.provider) edit(providerDefaults(provider));
-                  }}
-                />
-              ))}
-            </Menu>
+            <Button buttonStyle="plain" layoutPriority={1} accessibilityLabel="Provider" accessibilityValue={providerTitle}
+              action={() => setShowProviders(true)}
+              popover={{
+                isPresented: showProviders, onChanged: setShowProviders,
+                arrowEdge: "top", presentationCompactAdaptation: "popover",
+                content: (
+                  <VStack alignment="leading" spacing={0} padding={6} fixedSize={{ horizontal: true, vertical: false }}>
+                    {PROVIDERS.map(provider => (
+                      <Button key={provider} buttonStyle="plain" contentShape="rect" action={() => {
+                        setShowProviders(false);
+                        if (provider !== draft.provider) edit(providerDefaults(provider));
+                      }}>
+                        <HStack spacing={8} padding={{ horizontal: 10 }}
+                          frame={{ minHeight: 44, maxWidth: "infinity", alignment: "leading" }}>
+                          <Image systemName="checkmark" font={12} frame={{ width: 12 }} accessibilityHidden
+                            opacity={provider === draft.provider ? 1 : 0} />
+                          <Text>{PROVIDER_NAMES[provider]}</Text>
+                          <Spacer minLength={4} />
+                          <ProviderLogo provider={provider} />
+                        </HStack>
+                      </Button>
+                    ))}
+                  </VStack>
+                ),
+              }}>
+              <HStack spacing={8} contentShape="rect">
+                <Text foregroundStyle="accentColor" lineLimit={1}>{providerTitle}</Text>
+                <ProviderLogo provider={draft.provider} />
+                <Image systemName="chevron.up.chevron.down" font={11} foregroundStyle="accentColor" accessibilityHidden />
+              </HStack>
+            </Button>
           </HStack>
           {draft.provider === "compatible" ? [
             field("providerName", "Provider Name", <TextField title="Provider Name" prompt="Optional" value={draft.providerName}
@@ -252,6 +254,8 @@ export function RecognitionSettingsPage(props: { onSaved: (message: string) => v
           {field("model", "Model", <TextField title="Model" prompt="请输入支持图像识别的 Model ID" value={draft.model}
             autocorrectionDisabled textInputAutocapitalization="never"
             multilineTextAlignment="trailing" onChanged={model => edit({ model })} />)}
+          {validation?.field === "storage" ? <Text foregroundStyle="systemRed">{validationMessage(validation)}</Text> : null}
+          {missingInputsNotice ? <Text font={13} foregroundStyle="secondaryLabel">{missingInputsNotice}</Text> : null}
           <Button title={testing ? "重新测试连接" : "测试连接"} buttonStyle="borderless"
             disabled={!hasInputs} action={() => void testConnection()} />
         </Section>

@@ -4,7 +4,7 @@
  * - **职责边界**：管理 `AppState` 读写、旧槽位一次性迁移、同运单占号与拆分（`waybill-ownership.ts`）、
  *   运单重用清理（`waybill-reuse.ts`）、14/21 天签收留存与 4 小时取消裁剪、通知事件队列及桌面小组件快照生成。
  * - **并发契约**：跨宿主变更一律通过 `withSharedFileTransaction` 验证前序代次后原子发布，路由与行台账按哈希侧存。
- * - **跨端对等文件**：Pipi `ExpressRepository.java`、Lite `ExpressRepository.java`、Bot `pipi-bot/business_records.py`。
+ * - **跨端对等文件**：Pipi `ExpressRepository.java`、Lite `ExpressRepository.java`、Bot `pipi-bot/bot/business_records.py`。
  */
 import { Path } from "scripting";
 import { statusProjectionFields } from "./worker-status";
@@ -29,7 +29,7 @@ import type {
 import { nextParcelHandoffDeadline, parcelHandoffDeadline } from "./parcel-handoff-expiry";
 import { activePickupCards, applyRecognizedPickup, nextPickupArtwork, parcelCardKey, type ParcelActivityContent } from "./parcel-pickup";
 import type { PickupArtworkChoice } from "../models";
-import { adoptCloudPddParcelSource, applyCloudPddParcels, cloudPddParcelAppURL, deliveryEstimateApplies, displayedPlatformFields, enrichPlatformParcel, keepPlatformFields, matchPlatformParcel, samePlatformTarget, type CloudParcelPddLink, type CloudPddParcel } from "./platform-parcel-merge";
+import { acceptsPddParcelSource, adoptCloudPddParcelSource, applyCloudPddParcels, cloudPddParcelAppURL, deliveryEstimateApplies, displayedPlatformFields, enrichPlatformParcel, keepPlatformFields, matchPlatformParcel, samePlatformTarget, type CloudParcelPddLink, type CloudPddParcel } from "./platform-parcel-merge";
 import type { PlatformParcel } from "./platform-parcel-data";
 import type { CabinetParcel } from "./fengchao-account";
 import type { ParcelLookup } from "./parcel-code-ocr";
@@ -975,6 +975,25 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
       rawCainiaoH5FallbackActivatedAtMs > 0
       ? rawCainiaoH5FallbackActivatedAtMs
       : undefined;
+  const rawPendingKdniaoAttemptAtMs = Number(
+    shipment.pendingKdniaoAttemptAtMs,
+  );
+  const pendingKdniaoAttemptAtMs =
+    Number.isFinite(rawPendingKdniaoAttemptAtMs) &&
+      rawPendingKdniaoAttemptAtMs > 0
+      ? rawPendingKdniaoAttemptAtMs
+      : undefined;
+  const rawCloudOrigin = shipment.cloudExpressOrigin;
+  const cloudExpressOrigin = rawCloudOrigin &&
+    typeof rawCloudOrigin.waybill === "string" &&
+    normalizeWaybill(rawCloudOrigin.waybill) &&
+    Number.isFinite(rawCloudOrigin.waybillGeneration) &&
+    rawCloudOrigin.waybillGeneration === (shipment.waybillReuseAtMs ?? 0)
+    ? {
+        waybill: normalizeWaybill(rawCloudOrigin.waybill),
+        waybillGeneration: rawCloudOrigin.waybillGeneration,
+      }
+    : undefined;
   const rawManualRefreshLease = shipment.manualRefreshLease;
   const manualRefreshLeaseAttemptId = String(
     rawManualRefreshLease?.attemptId || "",
@@ -1015,6 +1034,8 @@ function migrateShipmentSource(shipment: Shipment): Shipment | null {
       : shipment.manualTimelines,
     forcedCompletedAtMs,
     cainiaoH5FallbackActivatedAtMs,
+    ...(pendingKdniaoAttemptAtMs !== undefined ? { pendingKdniaoAttemptAtMs } : {}),
+    ...(cloudExpressOrigin ? { cloudExpressOrigin } : {}),
     manualRefreshAttemptAtMs,
     manualRefreshLease,
     identity: {
@@ -3159,10 +3180,21 @@ export function savePlatformParcelData(input: {
           }, now, input.cainiaoGeneration);
         } else {
           next = enrichPlatformParcel(latest, { ...parcel, productImageURL }, now);
-          if (parcel.source === "pinduoduo" && saved?.ownerKey === input.owner && !saved.shippingId && parcel.shippingId &&
-            parcel.waybill === displayWaybill(latest) && parcel.orderIds?.length === 1 &&
-            (!saved.orderId || saved.orderId === parcel.orderIds[0])) {
-            next = { ...next, pddImport: { ...saved, orderId: parcel.orderIds[0], shippingId: parcel.shippingId } };
+          if (parcel.source === "pinduoduo" && input.owner && parcel.waybill === displayWaybill(latest) &&
+            parcel.orderIds?.length === 1 && acceptsPddParcelSource(latest)) {
+            if (!saved) {
+              next = {
+                ...next,
+                pddImport: {
+                  ownerKey: input.owner,
+                  orderId: parcel.orderIds[0],
+                  ...(parcel.shippingId ? { shippingId: parcel.shippingId } : {}),
+                },
+              };
+            } else if (saved.ownerKey === input.owner && !saved.shippingId && parcel.shippingId &&
+              (!saved.orderId || saved.orderId === parcel.orderIds[0])) {
+              next = { ...next, pddImport: { ...saved, orderId: parcel.orderIds[0], shippingId: parcel.shippingId } };
+            }
           }
         }
         if (next !== latest) updated.set(target.identity.id, { ...next, updatedAtMs: Math.max(now, latest.updatedAtMs + 1) });
@@ -3694,7 +3726,7 @@ function rebaseIndependentTimelines(before: Shipment, current: Shipment, incomin
       digest(before.detailSelection) === digest(current.detailSelection)) {
     merged = { ...merged, detailSelection: incoming.detailSelection };
   }
-  for (const field of ["manualRefreshLease", "manualRefreshAttemptAtMs", "cainiaoH5FallbackActivatedAtMs", "route"] as const) {
+  for (const field of ["manualRefreshLease", "manualRefreshAttemptAtMs", "cainiaoH5FallbackActivatedAtMs", "pendingKdniaoAttemptAtMs", "route"] as const) {
     if (digest(before[field]) !== digest(incoming[field]) && digest(before[field]) === digest(current[field])) {
       merged = { ...merged, [field]: incoming[field] };
     }
@@ -4445,10 +4477,14 @@ export function removeShipmentWithCleanup(
           latestTrackAtMs: latestWatchTrackAtMs(shipment),
         })
       : state.watchFeedback;
-    const cloudPddTombstones = shipment?.pddCloudOrigin
+    const cloudOriginWaybill = shipment?.pddCloudOrigin?.waybill ||
+      (shipment?.identity.manuallyAdded
+        ? (shipment.cloudExpressOrigin?.waybill || (shipment.pddImport ? canonical : ""))
+        : "");
+    const cloudPddTombstones = cloudOriginWaybill
       ? upsertCloudPddTombstoneEntry(state.cloudPddTombstones, {
-          waybill: normalizeWaybill(shipment.pddCloudOrigin.waybill || canonical),
-          anchorAt: Math.max(0, Math.trunc(Number(shipment.identity.createdAtMs) || 0)),
+          waybill: normalizeWaybill(cloudOriginWaybill || canonical),
+          anchorAt: Math.max(0, Math.trunc(Number(shipment?.identity.createdAtMs) || 0)),
           action: "deleted",
           actedAtMs: now,
         }, now)
@@ -4496,9 +4532,13 @@ export function forceCompleteShipment(
           latestTrackAtMs: latestWatchTrackAtMs(current),
         })
       : state.watchFeedback;
-    const cloudPddTombstones = current.pddCloudOrigin
+    const cloudOriginWaybill = current.pddCloudOrigin?.waybill ||
+      (current.identity.manuallyAdded
+        ? (current.cloudExpressOrigin?.waybill || (current.pddImport ? canonical : ""))
+        : "");
+    const cloudPddTombstones = cloudOriginWaybill
       ? upsertCloudPddTombstoneEntry(state.cloudPddTombstones, {
-          waybill: normalizeWaybill(current.pddCloudOrigin.waybill || canonical),
+          waybill: normalizeWaybill(cloudOriginWaybill || canonical),
           anchorAt: Math.max(0, Math.trunc(Number(current.identity.createdAtMs) || 0)),
           action: "completed",
           actedAtMs: now,

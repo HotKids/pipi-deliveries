@@ -239,10 +239,22 @@ const CAPTURE_PDD_ORDERS = `(() => {
     }
     return out.length ? out : undefined;
   }
+  function jumpOrderId(row) {
+    if (typeof row?.jump_url !== 'string') return '';
+    try {
+      const jump = new URL(row.jump_url, location.href);
+      if (jump.origin !== location.origin || jump.username || jump.password) return '';
+      for (const key of orderKeys) {
+        const values = jump.searchParams.getAll(key).map(v => v.trim()).filter(Boolean);
+        if (values.length === 1) return values[0];
+      }
+    } catch (_) {}
+    return '';
+  }
   function scan(value, order, depth) {
     if (!value || typeof value !== 'object' || depth > 32) return;
     if (!Array.isArray(value)) {
-      order = field(value, orderKeys) || order;
+      order = field(value, orderKeys) || jumpOrderId(value) || order;
       const waybill = field(value, waybillKeys);
       if (waybill.length >= 5 && waybill.length <= 64) {
         const title = field(value.order_goods?.[0], ['goods_name','goods_title']).slice(0, 512);

@@ -75,7 +75,7 @@ export async function replayPendingShipmentNotifications(
   const readStartedAt = Date.now();
   let readDurationMs: number | undefined;
   let snapshot: LoadedStateSnapshot | undefined;
-  const batchedSuppressedAckIds: string[] = [];
+  const pendingSuppressedBatch: Array<{ id: string; decision?: NotificationDecision }> = [];
   const commitAckIds = (eventIds: readonly string[], observed: LoadedStateSnapshot): AppState => {
     const commitStartedAt = Date.now();
     try {
@@ -96,14 +96,18 @@ export async function replayPendingShipmentNotifications(
     }
   };
   const flushSuppressedAcks = (): boolean => {
-    if (!batchedSuppressedAckIds.length || !snapshot) return true;
+    if (!pendingSuppressedBatch.length || !snapshot) return true;
     if (!canSchedule() || !lease.isCurrent()) {
-      batchedSuppressedAckIds.length = 0;
+      pendingSuppressedBatch.length = 0;
       result = deadlineExpired(deadlineAtMs) ? "budget_exhausted" : "ownership_lost";
       return false;
     }
-    const ids = batchedSuppressedAckIds.splice(0, batchedSuppressedAckIds.length);
-    current = commitAckIds(ids, snapshot);
+    const batch = pendingSuppressedBatch.splice(0, pendingSuppressedBatch.length);
+    current = commitAckIds(batch.map((item) => item.id), snapshot);
+    succeeded += batch.length;
+    for (const item of batch) {
+      if (item.decision) decisions.push(item.decision);
+    }
     return true;
   };
   try {
@@ -129,7 +133,7 @@ export async function replayPendingShipmentNotifications(
         await pauseWhileActive(0);
       }
       if (deadlineExpired(deadlineAtMs)) { flushSuppressedAcks(); result = "budget_exhausted"; return current; }
-      if (!canSchedule() || !lease.isCurrent()) { batchedSuppressedAckIds.length = 0; result = "ownership_lost"; return current; }
+      if (!canSchedule() || !lease.isCurrent()) { pendingSuppressedBatch.length = 0; result = "ownership_lost"; return current; }
       snapshot = loadStateSnapshot(Date.now(), snapshot);
       const latest = current = snapshot.state;
       if (!latest.pendingNotifications?.some((item) => item.id === event.id)) continue;
@@ -155,10 +159,8 @@ export async function replayPendingShipmentNotifications(
       }
       if (!deliverable) {
         attempted++;
-        batchedSuppressedAckIds.push(event.id);
-        succeeded++;
         const decision = notificationDecisionForEvent(event, shipment, false, channelOff, attachedOwner);
-        if (decision) decisions.push(decision);
+        pendingSuppressedBatch.push({ id: event.id, decision });
         continue;
       }
       if (!flushSuppressedAcks()) return current;

@@ -68,7 +68,7 @@ export function pddParcelProductImage(shipment: Shipment): string {
 }
 
 export function keepPlatformFields(previous: Shipment | undefined, current: Shipment): Shipment {
-  if (!previous || (!previous.platformFields && !previous.pddImport && !previous.pddCloudOrigin) ||
+  if (!previous || (!previous.platformFields && !previous.pddImport && !previous.pddCloudOrigin && !previous.cloudExpressOrigin) ||
       shipmentLifecycleKey(previous) !== shipmentLifecycleKey(current)) return current;
   const fields = previous.platformFields;
   const retained = fields && (sameFields(current, fields) ||
@@ -77,10 +77,12 @@ export function keepPlatformFields(previous: Shipment | undefined, current: Ship
   // R5-NEW-09 ②: a Watch row's fields come from its own snapshot. A snapshot without its estimate withdrew it, so only
   // the user's title edit is carried and the cloud parcel metadata's estimate can show again.
   const carried = retained && internationalShipment(current)
-    ? retained.manualTitle != null || retained.manualTitleEditedAtMs != null
+    ? retained.manualTitle != null || retained.manualTitleEditedAtMs != null || retained.cloudProductName != null
       ? { waybill: retained.waybill, waybillGeneration: retained.waybillGeneration,
           ...(retained.manualTitle != null ? { manualTitle: retained.manualTitle } : {}),
-          ...(retained.manualTitleEditedAtMs != null ? { manualTitleEditedAtMs: retained.manualTitleEditedAtMs } : {}) }
+          ...(retained.manualTitleEditedAtMs != null ? { manualTitleEditedAtMs: retained.manualTitleEditedAtMs } : {}),
+          ...(retained.cloudProductName != null ? { cloudProductName: retained.cloudProductName } : {}),
+          ...(retained.cloudProductNameObservedAtMs != null ? { cloudProductNameObservedAtMs: retained.cloudProductNameObservedAtMs } : {}) }
       : undefined
     : retained;
   let platformFields = current.platformFields ?? carried;
@@ -92,11 +94,24 @@ export function keepPlatformFields(previous: Shipment | undefined, current: Ship
       manualTitleEditedAtMs: retained.manualTitleEditedAtMs,
     };
   }
+  if (platformFields && retained && sameFields(current, platformFields) &&
+      retained.cloudProductName &&
+      (!platformFields.cloudProductName || (retained.cloudProductNameObservedAtMs ?? 0) > (platformFields.cloudProductNameObservedAtMs ?? 0))) {
+    platformFields = {
+      ...platformFields,
+      cloudProductName: retained.cloudProductName,
+      ...(retained.cloudProductNameObservedAtMs !== undefined
+        ? { cloudProductNameObservedAtMs: retained.cloudProductNameObservedAtMs }
+        : {}),
+    };
+  }
+  const cloudExpressOrigin = currentPddCloudOrigin(current, current.cloudExpressOrigin ?? previous.cloudExpressOrigin);
   return {
     ...current,
     platformFields,
     pddImport: current.pddImport || previous.pddImport,
     pddCloudOrigin: currentPddCloudOrigin(current, current.pddCloudOrigin ?? previous.pddCloudOrigin),
+    ...(cloudExpressOrigin ? { cloudExpressOrigin } : {}),
   };
 }
 
@@ -133,7 +148,7 @@ function matchesCloudPddParcel(shipment: Shipment, parcel: CloudPddParcelIdentit
  * qualify, and neither do JingDong business sources (account orders and JingDong-sourced rows), because a PDD order never
  * produces JingDong evidence.
  */
-function acceptsPddParcelSource(shipment: Shipment): boolean {
+export function acceptsPddParcelSource(shipment: Shipment): boolean {
   const { identity } = shipment;
   const provider = identity.sourceProvider?.toLowerCase() || "";
   const generic = identity.manuallyAdded || provider === "kuaidi100";
@@ -256,6 +271,8 @@ export function withAbsorbedParcelFields(
   if (carried) {
     const manualTitleNewer = carried.manualTitle !== undefined &&
       (!own?.manualTitle || (carried.manualTitleEditedAtMs ?? 0) > (own.manualTitleEditedAtMs ?? 0));
+    const cloudTitleNewer = carried.cloudProductName !== undefined &&
+      (!own?.cloudProductName || (carried.cloudProductNameObservedAtMs ?? 0) > (own.cloudProductNameObservedAtMs ?? 0));
     const nonPddTitle = !own?.title && carried.title && carried.title.source !== "pinduoduo"
       ? carried.title
       : undefined;
@@ -263,7 +280,7 @@ export function withAbsorbedParcelFields(
       (carried.estimate.source !== "pinduoduo" || (!options.skipPddSource && acceptsPddParcelSource(target)));
     const estimate = !own?.estimate && allowEstimate ? carried.estimate : undefined;
     const cainiaoImage = !own?.cainiaoImage && carried.cainiaoImage ? carried.cainiaoImage : undefined;
-    if (manualTitleNewer || nonPddTitle || estimate || cainiaoImage) {
+    if (manualTitleNewer || cloudTitleNewer || nonPddTitle || estimate || cainiaoImage) {
       platformFields = {
         ...own,
         waybill: displayWaybill(target),
@@ -273,6 +290,14 @@ export function withAbsorbedParcelFields(
               manualTitle: carried.manualTitle,
               ...(carried.manualTitleEditedAtMs !== undefined
                 ? { manualTitleEditedAtMs: carried.manualTitleEditedAtMs }
+                : {}),
+            }
+          : {}),
+        ...(cloudTitleNewer
+          ? {
+              cloudProductName: carried.cloudProductName,
+              ...(carried.cloudProductNameObservedAtMs !== undefined
+                ? { cloudProductNameObservedAtMs: carried.cloudProductNameObservedAtMs }
                 : {}),
             }
           : {}),
@@ -361,7 +386,7 @@ export function applyCloudPddParcels(state: AppState, parcels: readonly CloudPdd
     const current = existing[0];
     if (current) {
       let adopted = adoptCloudPddParcelSource(current, parcel, now);
-      if (tombstone?.action === "completed" && !adopted.forcedCompletedAtMs && matchesCloudPddParcel(adopted, parcel, now)) {
+      if (tombstone?.action === "completed" && adopted.identity.manuallyAdded && !adopted.forcedCompletedAtMs && matchesCloudPddParcel(adopted, parcel, now)) {
         adopted = {
           ...adopted,
           forcedCompletedAtMs: tombstone.actedAtMs,
@@ -439,17 +464,20 @@ export function displayedPlatformFields(shipment: Shipment, now = Date.now(), cl
   const localEstimate = estimate && inTransit ? displayDeliveryEstimate(estimate.text, estimate.capturedAtMs, now) : "";
   const cloudEstimate = inTransit && matchingCloud?.deliveryEstimate && !matchingCloud.terminalAt
     ? displayDeliveryEstimate(matchingCloud.deliveryEstimate, matchingCloud.deliveryEstimateObservedAt ?? 0, now) : "";
+  const effectiveCloudName = matchingCloud?.productName || saved?.cloudProductName;
+  const effectiveCloudAt = matchingCloud?.productName
+    ? (matchingCloud.productNameObservedAt ?? 0)
+    : (saved?.cloudProductNameObservedAtMs ?? 0);
   const cloudTitleNewerThanLocalEdit = Boolean(
-    matchingCloud?.productName &&
-    matchingCloud.productNameObservedAt &&
+    effectiveCloudName &&
+    effectiveCloudAt &&
+    saved?.manualTitle &&
     saved?.manualTitleEditedAtMs &&
-    matchingCloud.productNameObservedAt > saved.manualTitleEditedAtMs,
+    effectiveCloudAt > saved.manualTitleEditedAtMs,
   );
   const title = cloudTitleNewerThanLocalEdit
-    ? matchingCloud?.productName
-    : saved?.manualTitle !== undefined
-      ? saved.manualTitle || matchingCloud?.productName
-      : saved?.title?.text || matchingCloud?.productName;
+    ? effectiveCloudName
+    : saved?.manualTitle || saved?.title?.text || effectiveCloudName;
   return {
     title: title || undefined,
     estimate: localEstimate || cloudEstimate,

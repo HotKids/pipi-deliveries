@@ -817,8 +817,12 @@ assert.match(activityCardSource, /systemName=\{isMeal \? "fork\.knife" : "shippi
 assert.match(activityCardSource, /isMeal \? "我已取餐"/);
 const activityEntrySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
 assert.match(activityEntrySource, /const compactCode = parcelActivityCompactText\(data\);/);
-assert.match(activityEntrySource, /compactTrailing=\{\(\s*<Text [^>]*>\s*\{compactCode\}\s*<\/Text>/,
-  "the compact island shows the shared capsule text");
+assert.match(activityEntrySource, /const badgeSize = 27;/,
+  "the compact and minimal Dynamic Island badges use the 27pt concentric diameter");
+assert.match(activityEntrySource, /compactTrailing=\{\(\s*<Text font=\{15\} fontWeight="semibold" foregroundStyle=\{compactCodeColor\}\s+lineLimit=\{1\} minScaleFactor=\{0\.75\}>\s*\{compactCode\}\s*<\/Text>/,
+  "the compact island shows the shared capsule text at standard-width 15pt semibold");
+assert.doesNotMatch(activityEntrySource, /compactTrailing=[\s\S]*?fontWidth="condensed"/,
+  "compactTrailing must not condense the Dynamic Island text");
 assert.match(activityCardSource, /const pickupCode = isMeal \? data\.code : parcelPickupShortCode\(data\.code\);/,
   "the Lock Screen, expanded island and Smart Stack keep the full meal code");
 assert.match(activityEntrySource, /content=\{<ParcelLiveActivityCard \{\.\.\.cardProps\} width=\{width\} lockScreen lockScreenStyle=\{data\.lockScreenStyle\} \/>\}/);
@@ -829,6 +833,10 @@ assert.ok(islandAppearanceSource);
 const islandAppearance = new Function("PIPI_CARD", islandAppearanceSource + "\nreturn expandedIslandAppearance;")({
   edge: 12, capsuleHeight: 35,
 });
+assert.deepEqual(islandAppearance.dynamicIslandContentMargins.compactLeading, { top: 4, bottom: 4, leading: 4 },
+  "compactLeading reserves concentric 4pt margins for the 27pt badge");
+assert.deepEqual(islandAppearance.dynamicIslandContentMargins.minimal, { all: 4 },
+  "minimal reserves concentric 4pt margins for the 27pt badge");
 assert.deepEqual(islandAppearance.dynamicIslandContentMargins.expanded, { top: 6, leading: 12, trailing: 18, bottom: 18 },
   "the expanded island reserves a 6pt top clearance under the sensor capsule");
 const activityScaleSource = activityCardSource.match(/  const widthScale = [\s\S]*?  const verticalScale = [\s\S]*?;/)?.[0];
@@ -1053,61 +1061,42 @@ assert.equal(PICKUP_TAB_TITLE, "待取");
 assert.match(appSource, /\{hasPickupTab \? \(\s*<Tab key="pickup" title=\{PICKUP_TAB_TITLE\} systemImage="archivebox\.fill" value="pickup"[\s\S]*?<Tab key="deliveries" title="快递" systemImage="shippingbox\.fill" value="deliveries"/);
 const pickupSource = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
 assert.match(pickupSource, /cardRow\(card, visible && animationReady && sectionIndex === 0 && index === 0,\s*index < items.length - 1 \|\| preview\)/,
-  "only the first visible row receives playback after the 1s active-tab delay and spacing appears between cards in the same section");
+  "only the first visible row receives playback when the pickup tab and scene are active and spacing appears between cards in the same section");
 assert.match(pickupSource, /await stopParcelActivityPreview\(\)/);
 assert.match(pickupSource, /preview \? <ParcelActivityPreviewCard animate=\{visible && animationReady && sectionIndex === 0 && items.length === 0\}\s+onComplete=\{\(\) => void closePreview\(\)\} actionPending=\{closingPreview\} \/>/,
-  "a standalone preview waits for the 1s active-tab delay and a trailing preview uses the final frame");
+  "a standalone preview plays when the pickup tab and scene are active and a trailing preview uses the final frame");
 {
-  const { createPickupAnimationGate, PICKUP_CARD_ANIMATION_DELAY_MS } = await import("../services/parcel-pickup");
-  assert.equal(PICKUP_CARD_ANIMATION_DELAY_MS, 1_000);
-  let scheduledFn: (() => void) | undefined;
-  let scheduledMs = 0;
-  let clearedCount = 0;
+  // I-3 (owner decision A4): 撤回 1 秒延迟，切到「待取」页且场景活跃时立即播放（保留退后台暂停）
+  const { createPickupAnimationGate } = await import("../services/parcel-pickup");
   const states: boolean[] = [];
-  const gate = createPickupAnimationGate(
-    (next) => states.push(next),
-    {
-      set: (fn, ms) => {
-        scheduledFn = fn;
-        scheduledMs = ms;
-        return 1 as unknown as ReturnType<typeof setTimeout>;
-      },
-      clear: () => {
-        clearedCount++;
-        scheduledFn = undefined;
-      },
-    },
-  );
+  const gate = createPickupAnimationGate((next) => states.push(next));
+  assert.equal(gate.isAnimating(), false, "starts inactive until pickup tab becomes visible");
   gate.setVisible(true);
-  assert.equal(gate.isAnimating(), false, "first paint on tab switch stays static frame 0");
-  assert.equal(scheduledMs, 1_000);
-  // Exiting tab before 1s cancels timer immediately
-  gate.setVisible(false);
-  assert.equal(clearedCount, 1);
-  assert.equal(gate.isAnimating(), false);
-  // Re-entering starts fresh 1s timer and enables animation after 1s
-  gate.setVisible(true);
-  assert.ok(scheduledFn);
-  scheduledFn!();
-  assert.equal(gate.isAnimating(), true, "animation starts 1s after pickup tab is active");
+  assert.equal(gate.isAnimating(), true, "plays immediately when pickup tab is visible and scene is active");
   assert.equal(states.at(-1), true);
-  // App backgrounding immediately stops animation
+  // Exiting tab immediately pauses animation
+  gate.setVisible(false);
+  assert.equal(gate.isAnimating(), false);
+  assert.equal(states.at(-1), false);
+  // Re-entering immediately resumes animation
+  gate.setVisible(true);
+  assert.equal(gate.isAnimating(), true);
+  assert.equal(states.at(-1), true);
+  // App backgrounding immediately pauses animation
   gate.setSceneActive(false);
   assert.equal(gate.isAnimating(), false);
   assert.equal(states.at(-1), false);
-  // Returning to foreground starts a fresh 1s delay before animating again
+  // Returning to foreground immediately resumes animation while tab is visible
   gate.setSceneActive(true);
-  assert.equal(gate.isAnimating(), false);
-  assert.ok(scheduledFn);
-  scheduledFn!();
   assert.equal(gate.isAnimating(), true);
+  assert.equal(states.at(-1), true);
   gate.dispose();
   assert.equal(gate.isAnimating(), false);
 }
 const homeSource = readFileSync(new URL("../pages/HomePage.tsx", import.meta.url), "utf8");
 for (const source of [homeSource, pickupSource, settingsSource]) {
-  assert.match(source, /<NavigationStack>\s*<VStack [^]*?<RootTabList\b/,
-    "each tab delegates its native NavigationStack list and scroll layout to the same root");
+  assert.match(source, /<NavigationStack\b[^>]*toolbarBackgroundVisibility=\{\{ visibility: "hidden", bars: \["navigationBar"\] \}\}[^>]*>\s*<VStack [^]*?<RootTabList\b/,
+    "each tab delegates its native NavigationStack list and scroll layout to the same root with hidden navigationBar background");
   assert.doesNotMatch(source, /navigationBarVisibility="hidden"|<List\b|<RootPageTitle\b|<RootPageCloseButton\b|listStyle=/);
 }
 assert.match(homeSource, /<RootTabList\b[^>]*\btitle="快递"/);
@@ -1116,28 +1105,32 @@ assert.match(settingsSource, /<RootTabList title="设置" onClose=\{\(\) => dism
 assert.doesNotMatch(pickupSource + settingsSource, /safeAreaInset=\{\{ top:|rootPageScroll|headerCollapsed/);
 assert.doesNotMatch(pickupSource + settingsSource, /navigationTitle="(设置|待取|取件)"|navigationTitle=\{PICKUP_TAB_TITLE\}/);
 const rootHeader = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-assert.match(rootHeader, /const header = topAccessory != null \? \(\s*<Section key="root-heading" listSectionMargins=\{0\} listSectionSeparator="hidden"/);
-assert.match(rootHeader, /onScrollPhaseChange=\{supportsScrollPhase \? onScrollPhaseChange : undefined\}/);
-assert.match(rootHeader, /glassEffectTransition=\{supportsGlassTransition \? "materialize" : undefined\}/,
-  "the floating action button materializes on idle scroll phase without semi-transparent opacity");
-assert.doesNotMatch(rootHeader, /opacity=\{/,
-  "Liquid Glass FAB must never be wrapped in fractional opacity");
-assert.match(rootHeader, /navigationBarVisibility="hidden"[\s\S]*?<VStack spacing=\{0\} frame=\{\{ maxWidth: "infinity", maxHeight: "infinity" \}\}>\s*<RootPageHeader title=\{title\} onClose=\{onClose\} \/>\s*<List\s+listStyle="insetGroup"/,
-  "RootTabList pins one shared non-collapsing RootPageHeader above List and hides the system root nav bar (U10)");
+assert.match(rootHeader, /<Section\s+key="root-heading"\s+listSectionMargins=\{0\}\s+listSectionSeparator="hidden"/,
+  "BigTitle and optional subtitle/topAccessory live inside the scrollable root-heading Section");
+assert.match(rootHeader, /<BigTitle title=\{title\}/);
+assert.match(rootHeader, /background=\{ROOT_PAGE_BG\} ignoresSafeArea/,
+  "full-bleed ignoresSafeArea background prevents any white status-bar band");
+assert.match(rootHeader, /<List\s+listStyle="insetGroup"\s+navigationTitle=""\s+navigationBarTitleDisplayMode="inline"\s+toolbarVisibility=\{\{ visibility: "hidden", bars: \["navigationBar"\] \}\}/,
+  "RootTabList hides navigationBar toolbar cleanly without seam while scrolling BigTitle with content");
+assert.match(rootHeader, /alignment:\s*"topTrailing"[\s\S]*?padding=\{\{ trailing: ROOT_PAGE_MARGIN, top: 4 \}\}[\s\S]*?<RoundButton icon="xmark"/,
+  "top-right close button stays fixed at topTrailing across all root tabs");
+assert.match(rootHeader, /alignment:\s*"bottomTrailing"[\s\S]*?padding=\{TAB_FAB_PADDING\}/,
+  "FAB stays inside the tab safe area at bottomTrailing without ignoresSafeArea");
+assert.doesNotMatch(rootHeader, /opacity=\{|alignFabWithTabBar|onScrollPhaseChange/,
+  "Liquid Glass FAB stays steady inside safe area without scroll-hiding or fractional opacity");
 assert.doesNotMatch(rootHeader, /navigationBarTitleDisplayMode="large"|navigationTitle=\{title\}/,
-  "root pages do not use a collapsing large navigationTitle (U10)");
+  "root pages do not use a collapsing large navigationTitle");
 assert.doesNotMatch(rootHeader, /\bchildren=\{|import\s*\{[^}]*\bAnimation\b/,
   "Scripting's JSX factory receives the list rows as positional children and uses host Animation global");
 assert.match(pickupSource, /onBindingUnavailable=\{\(\) => void openIdentity\(identity\.platform\)\}/,
   "an identity page whose binding expires uses the same app handoff as the picker");
-assert.match(pickupSource, /popover=\{\{\s*isPresented:\s*showPicker,\s*onChanged:\s*setShowPicker,\s*arrowEdge:\s*"bottom",\s*presentationCompactAdaptation:\s*"popover",[\s\S]*?fixedSize=\{\{\s*horizontal:\s*true,\s*vertical:\s*true\s*\}\}[\s\S]*?<Divider\b[\s\S]*?<TabFloatingActionButton title="身份码" symbol="person\.text\.rectangle"/,
-  "identity code choices use a tight popover with a Divider anchored directly on TabFloatingActionButton");
-const identityBlock = pickupSource.slice(pickupSource.indexOf("function IdentityCodeButton"), pickupSource.indexOf("function PickupCardRow"));
-assert.doesNotMatch(identityBlock, /maxWidth:\s*"infinity"|width:\s*44/,
-  "IdentityCodeButton popover has zero trailing maxWidth spacer and no 44pt dummy spacer");
+assert.match(pickupSource, /<FloatingActions[\s\S]*?symbol:\s*"person\.text\.rectangle"[\s\S]*?label:\s*"身份码"[\s\S]*?anchorPad:\s*44[\s\S]*?popover:\s*\{\s*isPresented:\s*showPicker,\s*onChanged:\s*setShowPicker,\s*arrowEdge:\s*"bottom",\s*presentationCompactAdaptation:\s*"popover",[\s\S]*?fixedSize=\{\{\s*horizontal:\s*true,\s*vertical:\s*true\s*\}\}[\s\S]*?<Divider\b/,
+  "identity code choices use FloatingActions with label 身份码, anchorPad 44, and a tight popover with Divider");
 const floatingButtonSource = readFileSync(new URL("../components/TabFloatingActionButton.tsx", import.meta.url), "utf8");
-assert.match(floatingButtonSource, /<Label\s+title=\{title\}\s+systemImage=\{symbol\}\s+labelStyle="iconOnly"/,
-  "both floating actions use a symbol-only label");
+assert.match(floatingButtonSource, /export const TAB_FAB_DIAMETER = 58;/,
+  "FAB uses the 58pt Liquid Glass RoundButton spec");
+assert.match(floatingButtonSource, /UIGlass\.clear\(\)\.interactive\(true\)/,
+  "RoundButton and FAB use clear interactive Liquid Glass on iOS 26+");
 assert.match(pickupSource, /onLocationTap=\{canSwitch \? \(\) => setShowAddress\(!showAddress\)/);
 const stationIdentitySource = readFileSync(new URL("../pages/StationIdentityPage.tsx", import.meta.url), "utf8");
 assert.match(stationIdentitySource,

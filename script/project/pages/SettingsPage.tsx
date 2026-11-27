@@ -18,6 +18,7 @@ import {
   useState,
 } from "scripting";
 import { RootTabList } from "../components/RootPageHeader";
+import { ROOT_PAGE_BG } from "../components/TabFloatingActionButton";
 import { SETTINGS_ORANGE, SettingsRowIcon } from "../components/SettingsRowIcon";
 import type { AppState } from "../models";
 import { sendAccountCode } from "../services/account-sync";
@@ -365,9 +366,11 @@ export function SettingsPage(props: {
   const boundAccountCount = boundPhoneCount + platformCount;
 
   return (
-    <NavigationStack>
+    <NavigationStack toolbarBackgroundVisibility={{ visibility: "hidden", bars: ["navigationBar"] }}>
       <VStack spacing={0}
         frame={{ maxWidth: "infinity", maxHeight: "infinity" }}
+        background={ROOT_PAGE_BG}
+        toolbarBackground={{ style: ROOT_PAGE_BG, bars: ["tabBar"] }}
         onAppear={() => setOverviewVisible(true)}
         onDisappear={() => setOverviewVisible(false)}
         toast={transientToast(notice, setNotice)}

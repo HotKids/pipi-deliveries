@@ -11,6 +11,7 @@ import {
   Tab,
   TabView,
   Text,
+  VStack,
   WebView,
   ZStack,
   useEffect,
@@ -29,6 +30,7 @@ import type { AppState } from "./models";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
+import { ROOT_PAGE_BG } from "./components/TabFloatingActionButton";
 import type { PickupEmptyArtwork } from "./components/EmptyDeliveryVehicle";
 import { expireDueParcelHandoffs, loadAppState, peekStateRevision, refreshStoredWatchShipments, toggleParcelArtwork, visibleShipments } from "./services/storage";
 import { performPickupAction, platformObservationSignature, refreshPlatformParcels } from "./services/platform-parcel-sync";
@@ -698,35 +700,38 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
   }
 
   return (
-    <TabView
-      selection={selection}
-      background={
-        projectionView
-          ? {
-              alignment: "topLeading",
-              // Match Pipi's renderable capture surface while keeping it behind the app.
-              content: (
-                <GeometryReader>
-                  {({ size }) => (
-                    <ZStack>
-                      {size.width > 0 && size.height > 0 ? (
-                        <WebView key={projectionView.id}
-                          controller={projectionView.controller}
-                          frame={{ width: size.width, height: size.height }}
-                          opacity={0.01}
-                          allowsHitTesting={false}
-                          disabled={true}
-                          onAppear={projectionView.appeared}
-                        />
-                      ) : null}
-                    </ZStack>
-                  )}
-                </GeometryReader>
-              ),
-            }
-          : undefined
-      }
-    >
+    <ZStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }}>
+      <VStack frame={{ maxWidth: "infinity", maxHeight: "infinity" }} background={ROOT_PAGE_BG} ignoresSafeArea />
+      <TabView
+        selection={selection}
+        toolbarBackground={{ style: ROOT_PAGE_BG, bars: ["tabBar"] }}
+        background={
+          projectionView
+            ? {
+                alignment: "topLeading",
+                // Match Pipi's renderable capture surface while keeping it behind the app.
+                content: (
+                  <GeometryReader>
+                    {({ size }) => (
+                      <ZStack>
+                        {size.width > 0 && size.height > 0 ? (
+                          <WebView key={projectionView.id}
+                            controller={projectionView.controller}
+                            frame={{ width: size.width, height: size.height }}
+                            opacity={0.01}
+                            allowsHitTesting={false}
+                            disabled={true}
+                            onAppear={projectionView.appeared}
+                          />
+                        ) : null}
+                      </ZStack>
+                    )}
+                  </GeometryReader>
+                ),
+              }
+            : ROOT_PAGE_BG
+        }
+      >
       {hasPickupTab ? (
         <Tab key="pickup" title={PICKUP_TAB_TITLE} systemImage="archivebox.fill" value="pickup">
           <PickupPage
@@ -788,7 +793,8 @@ function App({ initialStartup, initialPickupPreview }: { initialStartup: Startup
             void refreshCloudRecords("access_key");
           }} />
       </Tab>
-    </TabView>
+      </TabView>
+    </ZStack>
   );
 }
 

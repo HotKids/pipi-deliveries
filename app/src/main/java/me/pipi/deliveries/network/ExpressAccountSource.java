@@ -61,25 +61,6 @@ public final class ExpressAccountSource {
         return selected;
     }
 
-    /** Updates the volatile active source immediately and commits persistence off the UI thread. */
-    public static String toggleAsync(Context context, java.util.concurrent.Executor executor) {
-        String selected = next(current(context));
-        Context app = context.getApplicationContext();
-        Context key = app == null ? context : app;
-        synchronized (CACHE_LOCK) {
-            cachedActive = selected;
-            cachedContext = key;
-        }
-        executor.execute(() -> {
-            synchronized (CACHE_LOCK) {
-                key.getSharedPreferences(PREFS, 0)
-                        .edit().putString(KEY_ACTIVE, cachedActive != null ? cachedActive : selected)
-                        .commit();
-            }
-        });
-        return selected;
-    }
-
     public static boolean isV5(Context context) {
         return V5.equals(current(context));
     }

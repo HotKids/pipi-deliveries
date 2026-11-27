@@ -1,10 +1,11 @@
 import { LiveActivity, Path, Script, type LiveActivityDetail, type ScenePhase } from "scripting";
+import { PARCEL_ACTIVITY_ART, PipiParcelActivity } from "../live_activity";
 import type { AppState } from "../models";
 import { pauseWhileActive } from "./deadline";
 import { activeMealCards } from "./meal/cards";
 import { beginDiagnosticOperation, diagnosticErrorDetails, writeDiagnostic } from "./logger";
 import { acquireDurableRefreshLease } from "./refresh-runtime-state";
-import { PARCEL_ACTIVITY_ART, PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, type ParcelLockScreenStyle } from "./parcel-card-appearance";
+import { PARCEL_LOCK_SCREEN_BOX, parcelCardArtwork, type ParcelLockScreenStyle } from "./parcel-card-appearance";
 import {
   EMPTY_CONTENT,
   PARCEL_ACTIVITY_NAME,
@@ -17,10 +18,6 @@ import {
   type ParcelActivityState,
   type Receipt,
 } from "./parcel-activity-action";
-
-declare const PipiParcelActivity:
-  | (() => ReturnType<(typeof import("../live_activity"))["PipiParcelActivity"]>)
-  | undefined;
 import {
   PARCEL_ACTIVITY_PREVIEW,
   activePickupCards,
@@ -207,15 +204,7 @@ async function registerActivity(content: ParcelActivityContent, lockScreenStyle:
   const { card, options } = activityData(content, lockScreenStyle, linkId, relevanceScore);
   prepareArtwork(content);
   requireActivityOwnership(isCurrent);
-  const cachedBuilder = (globalThis as Record<string, unknown>).__pipiDeliveriesParcelPickupBuilder__ as
-    | typeof PipiParcelActivity
-    | undefined;
-  const makeActivity = typeof PipiParcelActivity === "function"
-    ? PipiParcelActivity
-    : typeof cachedBuilder === "function"
-      ? cachedBuilder
-      : (await import("../live_activity")).PipiParcelActivity;
-  const activity = makeActivity();
+  const activity = PipiParcelActivity();
   if (!await activity.start(card, options)) return false;
   const id = activity.activityId;
   try {

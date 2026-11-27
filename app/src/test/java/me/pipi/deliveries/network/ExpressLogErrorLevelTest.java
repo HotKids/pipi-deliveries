@@ -51,10 +51,9 @@ public final class ExpressLogErrorLevelTest {
         }
     }
 
-    @Test public void formalReleaseGatesLogcatBehindIsLoggable() {
-        assertTrue(ExpressLog.shouldEmit(true, false, false));
-        assertTrue(ExpressLog.shouldEmit(false, true, false));
-        assertTrue(ExpressLog.shouldEmit(false, false, true));
-        assertFalse(ExpressLog.shouldEmit(false, false, false));
+    @Test public void formalReleaseIsSilentByDefault() {
+        assertTrue(ExpressLog.shouldEmit(true, false));
+        assertTrue(ExpressLog.shouldEmit(false, true));
+        assertFalse(ExpressLog.shouldEmit(false, false));
     }
 }

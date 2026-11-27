@@ -6,7 +6,7 @@
  * - **跨宿主并发契约**：App、小组件与 App Intent 共享 App Group 存储，状态落盘统一经
  *   `shared-file-transaction.ts` 乐观代次事务与 `refresh-runtime-state.ts` 租约栅栏串行提交。
  * - **跨端对等文件**：Pipi `ExpressPoller.java` / `ExpressRepository.java`、
- *   Lite `ExpressSyncManager.java` / `ExpressRepository.java`、Bot `pipi-bot/bot.py`。
+ *   Lite `ExpressSyncManager.java` / `ExpressRepository.java`、Bot `pipi-bot/bot/bot.py`。
  */
 import { AbortController, type AbortSignal } from "scripting";
 import type { AppState, BindingSource, RefreshSummary } from "../models";

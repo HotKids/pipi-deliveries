@@ -56,6 +56,7 @@ const {
   loadState,
   refreshStoredWatchShipments,
   removeShipment,
+  savePlatformParcelData,
   saveState,
   visibleShipments,
 } = await import("../services/storage.ts");
@@ -72,29 +73,26 @@ const { jdDiagnosticPage } = await import("../services/logger.ts");
 const { jdLoginProof, PlatformWireError } = await import("../services/platform-wire.ts");
 const { accountStatus, clearPlatformLogin, platformSession, savePlatformLogin } =
   await import("../services/platform-accounts.ts");
-const { fetchJdParcels } = await import("../services/platform-web-parcels.ts");
+const { fetchJdParcels, fetchPddOrders } = await import("../services/platform-web-parcels.ts");
+const { pddParcelAppURL } = await import("../services/platform-parcel-data.ts");
 const { registerProjectionViewportHost, setProjectionSceneActive } =
   await import("../services/projection-viewport.ts");
 
-test("LIVE BUG 6: LiveActivity.register & AppIntentManager.register are idempotent singletons and app_intents has zero eager heavy imports", () => {
+test("LIVE BUG 6 & I-2: LiveActivity.register & AppIntentManager.register are idempotent singletons and extension entry paths use static imports", () => {
+  const widgetSource = readFileSync(new URL("../widget.tsx", import.meta.url), "utf8");
   const appIntentsSource = readFileSync(new URL("../app_intents.tsx", import.meta.url), "utf8");
   const liveActivitySource = readFileSync(new URL("../live_activity.tsx", import.meta.url), "utf8");
   const parcelLiveActivitySource = readFileSync(new URL("../services/parcel-live-activity.ts", import.meta.url), "utf8");
 
-  // 1. Static import graph check: app_intents.tsx must NOT eagerly import parcel-live-activity, sync, storage, or parcel-cloud-sync at top level!
-  const topLevelImports = appIntentsSource.match(/^import\s+(?!type\b)[\s\S]*?from\s+"[^"]+";/gm) ?? [];
-  for (const imp of topLevelImports) {
-    assert.doesNotMatch(
-      imp,
-      /parcel-live-activity|parcel-cloud-sync|\/sync"|\/storage"|background-refresh|meal\/cloud/,
-      `app_intents.tsx must not have eager top-level import: ${imp}`,
-    );
+  // 1. I-2: Extension entry paths must NEVER depend on dynamic `await import(...)`
+  for (const [label, src] of [
+    ["widget.tsx", widgetSource],
+    ["app_intents.tsx", appIntentsSource],
+    ["services/parcel-live-activity.ts", parcelLiveActivitySource],
+  ] as const) {
+    assert.doesNotMatch(src, /\bimport\s*\(/, `${label} must use static imports rather than dynamic import(...)`);
   }
-  assert.doesNotMatch(
-    parcelLiveActivitySource,
-    /^import\s+(?!type\b)[\s\S]*?from\s+"\.\.\/live_activity"/m,
-    "parcel-live-activity.ts must never statically import ../live_activity",
-  );
+  assert.match(liveActivitySource, /__pipiDeliveriesParcelPickupBuilder__/, "live_activity.tsx guards duplicate registration via globalThis");
 
   // 2. Simulate warm WidgetKit JSContext evaluating app_intents.tsx + live_activity.tsx TWICE (entry + module import)
   const registeredActivities = new Set<string>();
@@ -170,18 +168,20 @@ test("LIVE BUG 3, IOS-SEP-03, U9, U10 & IOS-SR-07: List row separators, fixed Ta
 
   const indexSrc = readFileSync(new URL("../index.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(indexSrc, /tabBarMinimizeBehavior/, "U9: bottom TabView stays fixed without shrinking on scroll");
+  assert.match(indexSrc, /background=\{ROOT_PAGE_BG\} ignoresSafeArea/, "U8: full-bleed ignoresSafeArea background behind TabView");
   const fabSrc = readFileSync(new URL("../components/TabFloatingActionButton.tsx", import.meta.url), "utf8");
-  assert.match(fabSrc, /export const TAB_FAB_DIAMETER = 48;/, "U9: FAB diameter matches 48pt tab bar circle height");
-  assert.match(fabSrc, /export const TAB_FAB_SCROLL_INSET = 92;/, "U9: list bottom scroll inset remains 92pt");
+  assert.match(fabSrc, /export const TAB_FAB_DIAMETER = 58;/, "U8: FAB diameter matches 58pt RoundButton spec");
+  assert.match(fabSrc, /export const TAB_FAB_SCROLL_INSET = 104;/, "U8: list bottom scroll inset clears 58pt FAB");
+  assert.doesNotMatch(fabSrc, /alignFabWithTabBar|ignoresSafeArea/, "U8: FAB stays inside safe area without dropping beside TabBar");
 
   const rootHeaderSrc = readFileSync(new URL("../components/RootPageHeader.tsx", import.meta.url), "utf8");
-  assert.match(rootHeaderSrc, /navigationBarVisibility="hidden"/, "U10: root pages hide collapsing system navigation bar");
-  assert.match(rootHeaderSrc, /<RootPageHeader title=\{title\} onClose=\{onClose\} \/>[\s\S]*?<List\b/, "U10: RootPageHeader pinned above List");
+  assert.match(rootHeaderSrc, /toolbarVisibility=\{\{ visibility: "hidden", bars: \["navigationBar"\] \}\}/, "U8: List hides navigationBar cleanly");
+  assert.match(rootHeaderSrc, /<List[\s\S]*?\[header, \.\.\.\[children\]\.flat\(\)\]/, "U8: BigTitle header scrolls inside List");
 
   const pickupPageSrc = readFileSync(new URL("../pages/PickupPage.tsx", import.meta.url), "utf8");
-  assert.match(pickupPageSrc, /popover=\{\{[\s\S]*?arrowEdge:\s*"bottom"[\s\S]*?presentationCompactAdaptation:\s*"popover"/, "LIVE BUG 2: IdentityCodeButton uses popover");
-  assert.match(pickupPageSrc, /fixedSize=\{\{ horizontal: true, vertical: true \}\}/, "LIVE BUG 2: tight popover width");
-  assert.doesNotMatch(pickupPageSrc, /width:\s*44,\s*height:\s*TAB_FAB_DIAMETER/, "LIVE BUG 2: no 44pt dummy spacer");
+  assert.match(pickupPageSrc, /popover:\s*\{[\s\S]*?arrowEdge:\s*"bottom"[\s\S]*?presentationCompactAdaptation:\s*"popover"/, "U8: IdentityCodeButton uses popover");
+  assert.match(pickupPageSrc, /fixedSize=\{\{ horizontal: true, vertical: true \}\}/, "U8: tight popover width");
+  assert.match(pickupPageSrc, /anchorPad:\s*44/, "U8: station identity popover uses anchorPad 44");
 
   for (const entryRel of ["../widget.tsx", "../intent.tsx", "../app_intents.tsx"]) {
     const entrySrc = readFileSync(new URL(entryRel, import.meta.url), "utf8");
@@ -190,8 +190,9 @@ test("LIVE BUG 3, IOS-SEP-03, U9, U10 & IOS-SR-07: List row separators, fixed Ta
 
   const recSrc = readFileSync(new URL("../pages/RecognitionSettingsPage.tsx", import.meta.url), "utf8");
   assert.match(recSrc, /disabled=\{testing \|\| \(draft\.mode === "online" && !hasInputs\)\}/, "IOS-SR-07 (1): checkmark disabled while testing");
-  assert.match(recSrc, /title=\{provider === "compatible" \? providerTitle : PROVIDER_NAMES\[provider\]\}/, "IOS-SR-07 (2): custom providerTitle in Menu");
-  assert.match(recSrc, /<ProviderLogo provider=\{draft\.provider\} \/>\s*<Text foregroundStyle="accentColor" lineLimit=\{1\}>\{providerTitle\}<\/Text>/, "IOS-SR-07 (3): [Logo] [Name] order");
+  assert.match(recSrc, /popover=\{\{[\s\S]*?isPresented: showProviders[\s\S]*?<Image systemName="checkmark"[\s\S]*?<Text>\{PROVIDER_NAMES\[provider\]\}<\/Text>[\s\S]*?<ProviderLogo provider=\{provider\} \/>/, "U2: Provider selector uses popover with [checkmark] Name [logo]");
+  assert.match(recSrc, /<Text foregroundStyle="accentColor" lineLimit=\{1\}>\{providerTitle\}<\/Text>\s*<ProviderLogo provider=\{draft\.provider\} \/>\s*<Image systemName="chevron\.up\.chevron\.down"/, "U2: button row content [providerTitle] [ProviderLogo] [chevron]");
+  assert.match(recSrc, /<Section footer=\{<Text>连接测试使用内置样图，不保存设置或生成卡片。<\/Text>\}>/, "U2: concise 22-char 1-line Section 2 footer");
   assert.match(recSrc, /missingInputsNotice/, "IOS-SR-07 (4): empty required fields guidance");
   assert.match(recSrc, /prompt=\{canReuseKey \? "•"\.repeat\(saved\.keyLength\) : "请输入 API Key"\}/, "IOS-SR-07 (5): full saved.keyLength mask");
 });
@@ -995,6 +996,138 @@ test("JD o.m.jd.com/list migration: Fiber Zustand store extraction (orders, empt
   } finally {
     const activeGen = accountStatus("jingdong").generation;
     if (activeGen) clearPlatformLogin("jingdong", activeGen);
+    (globalThis as Record<string, unknown>).WebViewController = originalWebViewController;
+    registerProjectionViewportHost(null);
+  }
+});
+
+test("U9: PDD order sync attaches pddImport shippingId onto existing cloud-imported PDD row and parses jump_url order_sn", async () => {
+  clock = NOW;
+  memory.clear();
+  const sfBill = "SF0000000001002";
+  const cloudPddRow = {
+    identity: {
+      id: `interface5:manual:${sfBill}`,
+      bindingSource: "interface5" as const,
+      sourceOwner: "manual" as const,
+      sourceId: sfBill,
+      phoneTail: "",
+      courierCode: "SF",
+      companyName: "顺丰速运",
+      manuallyAdded: true,
+      createdAtMs: clock - 3_600_000,
+    },
+    timeline: {
+      provider: "kdniao" as const,
+      waybill: sfBill,
+      courierCode: "SF",
+      companyName: "顺丰速运",
+      semantic: "COMPLETED" as const,
+      structuredStatus: true,
+      statusEventAtMs: clock - 600_000,
+      latestTimeText: "2026-11-26 18:48:38",
+      latestDetail: "您的快件已派送成功",
+      tracks: [{
+        timeMs: clock - 600_000,
+        timeText: "2026-11-26 18:48:38",
+        detail: "您的快件已派送成功",
+        statusCode: "301",
+        raw: {},
+      }],
+      successAtMs: clock - 600_000,
+    },
+    sourceTimeline: null,
+    manualTimelines: [],
+    pddCloudOrigin: { waybill: sfBill, waybillGeneration: 0 },
+    updatedAtMs: clock - 600_000,
+  };
+  const seeded = saveState({ ...emptyState(), shipments: [cloudPddRow] }, clock);
+  assert.equal(seeded.shipments[0]?.pddImport, undefined);
+
+  const originalWebViewController = (globalThis as Record<string, unknown>).WebViewController;
+  let userScript = "";
+  (globalThis as Record<string, unknown>).WebViewController = class {
+    url = "https://mobile.yangkeduo.com/orders.html";
+    async setCookie() { return true; }
+    async addUserScript(opts: { source: string }) {
+      userScript = opts.source;
+      return "script-id";
+    }
+    async loadURL() { return true; }
+    async evaluateJavaScript(script: string) {
+      const currentUrl = new URL("https://mobile.yangkeduo.com/orders.html");
+      const sandbox: Record<string, unknown> = {
+        location: currentUrl,
+        document: { body: { innerText: "" } },
+        URL,
+        URLSearchParams,
+        fetch: async (reqUrl: string) => ({
+          ok: true,
+          url: reqUrl,
+          clone: () => ({
+            text: async () => JSON.stringify({
+              error_code: 0,
+              result: {
+                track_info_list: [{
+                  tracking_number: sfBill,
+                  shipping_id: "115",
+                  jump_url: `/psnl_goods_help.html?_t_module_name=assistant_waybill&shipping_id=115&tracking_number=${sfBill}&order_sn=261125-00000123456`,
+                }],
+              },
+            }),
+          }),
+        }),
+        XMLHttpRequest: class { send() {} addEventListener() {} },
+      };
+      sandbox.window = sandbox;
+      sandbox.top = sandbox;
+      runInNewContext(userScript, sandbox);
+      await (sandbox.fetch as (u: string) => Promise<unknown>)("https://mobile.yangkeduo.com/proxy/api/api/express_trackbox/list");
+      await new Promise((r) => setTimeout(r, 0));
+      return runInNewContext(`(() => {${script}})()`, sandbox);
+    }
+    dispose() {}
+  };
+  registerProjectionViewportHost({ mount: async () => true, unmount: () => {} });
+  try {
+    savePlatformLogin(
+      "pinduoduo",
+      "",
+      {
+        kind: "web",
+        cookies: [
+          { name: "PDDAccessToken", value: "synthetic-pdd-token", domain: ".yangkeduo.com", path: "/", isSecure: true },
+          { name: "pdd_user_id", value: "424242", domain: ".yangkeduo.com", path: "/", isSecure: true },
+        ],
+      },
+      "424242",
+      "测试拼多多",
+    );
+    const session = platformSession("pinduoduo")!;
+    const orders = await fetchPddOrders(session);
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0]?.waybill, sfBill);
+    assert.equal(orders[0]?.shippingId, "115");
+    assert.deepEqual(orders[0]?.orderIds, ["261125-00000123456"]);
+
+    const saved = savePlatformParcelData(
+      { observed: seeded, owner: session.ownerKey, parcels: orders, current: () => true },
+      clock + 1_000,
+    );
+    assert.equal(saved.changed, true);
+    const updated = saved.state.shipments[0]!;
+    assert.deepEqual(updated.pddImport, {
+      ownerKey: session.ownerKey,
+      orderId: "261125-00000123456",
+      shippingId: "115",
+    });
+    assert.equal(
+      pddParcelAppURL(updated.pddImport, sfBill),
+      `pinduoduo://com.xunmeng.pinduoduo/psnl_goods_help.html?_t_module_name=assistant_waybill&shipping_id=115&tracking_number=${sfBill}`,
+    );
+  } finally {
+    const gen = accountStatus("pinduoduo").generation;
+    if (gen) clearPlatformLogin("pinduoduo", gen);
     (globalThis as Record<string, unknown>).WebViewController = originalWebViewController;
     registerProjectionViewportHost(null);
   }

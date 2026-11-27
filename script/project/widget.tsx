@@ -1,11 +1,15 @@
 import { Script, Widget } from "scripting";
 import type { AppState } from "./models";
 import { loadState, loadWidgetSnapshot, refreshDueWatchShipments, visibleShipments } from "./services/storage";
+import { retireCompletedParcelActivities } from "./services/parcel-live-activity";
 import { buildWidgetSnapshot } from "./services/status";
 import { lastNetworkRefreshSuccessAtMs } from "./services/refresh-runtime-state";
 import { FallbackWidget } from "./widget/FallbackWidget";
 import { MediumWidget } from "./widget/MediumWidget";
 import { SmallWidget } from "./widget/SmallWidget";
+import { refreshAllShipments } from "./services/sync";
+import { ensureMealRules } from "./services/carrier-authority";
+import { synchronizeMeals } from "./services/meal/cloud";
 import {
   bestEffortWidgetRefresh,
   createWidgetStateHolder,
@@ -27,17 +31,6 @@ import {
   type DiagnosticDetails,
 } from "./services/logger";
 import { backgroundHostBootstrap, backgroundRefreshOptions } from "./services/background-refresh";
-
-declare const refreshAllShipments: (typeof import("./services/sync"))["refreshAllShipments"] | undefined;
-declare const retireCompletedParcelActivities:
-  | (typeof import("./services/parcel-live-activity"))["retireCompletedParcelActivities"]
-  | undefined;
-declare const ensureMealRules:
-  | (typeof import("./services/carrier-authority"))["ensureMealRules"]
-  | undefined;
-declare const synchronizeMeals:
-  | (typeof import("./services/meal/cloud"))["synchronizeMeals"]
-  | undefined;
 
 function widgetContent(refreshedState?: AppState | null) {
   const kind = widgetPresentationKind(String(Widget.family || ""));
@@ -162,24 +155,13 @@ async function run() {
   if (bootstrapReady && shouldRefresh && waitMs > 1_000) {
     const refreshStartedAtMs = Date.now();
     let watchState: AppState | undefined;
-    const injectedRefresh = typeof refreshAllShipments === "function" ? refreshAllShipments : undefined;
-    const injectedRetire = typeof retireCompletedParcelActivities === "function"
-      ? retireCompletedParcelActivities
-      : undefined;
-    const injectedMealRules = typeof ensureMealRules === "function" ? ensureMealRules : undefined;
-    const injectedMealSync = typeof synchronizeMeals === "function" ? synchronizeMeals : undefined;
     const outcome = await bestEffortWidgetRefresh(async () => {
       const budget = Math.min(WIDGET_REFRESH_BUDGET_MS, waitMs - 1_000);
-      const refreshAllShipments = injectedRefresh ?? (await import("./services/sync")).refreshAllShipments;
       const syncWidgetMeals = async (mealBudgetMs: number): Promise<void> => {
         try {
-          const mealSync = injectedMealSync
-            ?? (!injectedRefresh ? (await import("./services/meal/cloud")).synchronizeMeals : undefined);
-          if (typeof mealSync !== "function") return;
-          const mealRules = injectedMealRules
-            ?? (!injectedRefresh ? (await import("./services/carrier-authority")).ensureMealRules : undefined);
-          if (typeof mealRules === "function" && !(await mealRules("meal_sync"))) return;
-          await mealSync(Math.min(4_000, Math.max(1_000, mealBudgetMs)));
+          if (typeof synchronizeMeals !== "function") return;
+          if (typeof ensureMealRules === "function" && !(await ensureMealRules("meal_sync"))) return;
+          await synchronizeMeals(Math.min(4_000, Math.max(1_000, mealBudgetMs)));
         } catch {
           /* Best-effort cloud meal sync never blocks domestic or Watch widget refresh. */
         }
@@ -194,14 +176,8 @@ async function run() {
       watchState = watch;
       const domestic = !summary.skipReason && summary.state ? summary.state : null;
       refreshed.state = watch && (!domestic || watch.revision > domestic.revision) ? watch : domestic;
-      if (refreshed.state) {
-        let retire = injectedRetire;
-        if (!retire && !injectedRefresh) {
-          retire = (await import("./services/parcel-live-activity")).retireCompletedParcelActivities;
-        }
-        if (typeof retire === "function") {
-          await retire(refreshed.state);
-        }
+      if (typeof retireCompletedParcelActivities === "function" && refreshed.state) {
+        await retireCompletedParcelActivities(refreshed.state);
       }
       return summary;
     }, waitMs);

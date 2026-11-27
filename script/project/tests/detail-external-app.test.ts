@@ -200,6 +200,21 @@ for (const credentialChanged of [false, true]) {
   assert.equal(attempt.requestCount(), 0);
 }
 
+// Cloud-origin PDD row without a shippingId link yet: active PDD login shows PDD notice instead of jumping to K100.
+const cloudOriginOnly = { ...cloudPdd, pddCloudOrigin: { waybill: displayWaybill(cloudPdd), waybillGeneration: 0 } };
+const cloudOriginLoggedIn = scenario(true, false, "拼多多", {
+  shipment: cloudOriginOnly, current: [cloudOriginOnly], persisted: true, pddURL: "", pddLogin: "active",
+});
+await cloudOriginLoggedIn.run();
+assert.deepEqual(cloudOriginLoggedIn.opened, []);
+assert.deepEqual(cloudOriginLoggedIn.notices, ["暂无拼多多订单链接"]);
+
+const cloudOriginLoggedOut = scenario(true, false, "拼多多", {
+  shipment: cloudOriginOnly, current: [cloudOriginOnly], persisted: true, pddURL: "", pddLogin: undefined,
+});
+await cloudOriginLoggedOut.run();
+assert.deepEqual(cloudOriginLoggedOut.opened, [manualUrl]);
+
 const visibilityStart = page.indexOf("  const manualExternalAppURL =");
 const visibilityEnd = page.indexOf("\n  const externalAppName =", visibilityStart);
 assert.ok(visibilityStart >= 0 && visibilityEnd > visibilityStart);

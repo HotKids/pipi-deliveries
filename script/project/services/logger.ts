@@ -1721,17 +1721,20 @@ function forgetDiagnosticsEnabledInTurn(): void {
 export function diagnosticsEnabled(): boolean {
   reopenDiagnosticsForNewBeta();
   retirePreHandleDiagnostics();
-  if (diagnosticsEnabledInTurn && diagnosticsEnabledInTurn.get === Storage.get) {
+  const storageGet = typeof Storage !== "undefined" ? Storage.get : undefined;
+  if (diagnosticsEnabledInTurn && diagnosticsEnabledInTurn.get === storageGet) {
     return diagnosticsEnabledInTurn.value;
   }
   let enabled = DIAGNOSTICS_DEFAULT_ENABLED;
   try {
-    const stored = Storage.get<boolean>(DIAGNOSTIC_ENABLED_KEY, { shared: true });
+    const stored = typeof Storage !== "undefined"
+      ? Storage.get<boolean>(DIAGNOSTIC_ENABLED_KEY, { shared: true })
+      : undefined;
     enabled = typeof stored === "boolean" ? stored : DIAGNOSTICS_DEFAULT_ENABLED;
   } catch {
     enabled = DIAGNOSTICS_DEFAULT_ENABLED;
   }
-  diagnosticsEnabledInTurn = { get: Storage.get, value: enabled };
+  diagnosticsEnabledInTurn = { get: storageGet, value: enabled };
   if (!diagnosticsEnabledResetScheduled) {
     diagnosticsEnabledResetScheduled = true;
     void Promise.resolve().then(() => {
@@ -1747,6 +1750,7 @@ export function setDiagnosticsEnabled(enabled: boolean): boolean {
   reopenDiagnosticsForNewBeta();
   forgetDiagnosticsEnabledInTurn();
   try {
+    if (typeof Storage === "undefined") return false;
     Storage.set(DIAGNOSTIC_ENABLED_KEY, enabled === true, { shared: true });
     diagnosticsEnabledInTurn = { get: Storage.get, value: enabled === true };
     if (!diagnosticsEnabledResetScheduled) {

@@ -21,6 +21,7 @@ import type { ParcelLookup } from "../parcel-code-ocr";
 import { beginDiagnosticFlow, createDiagnosticFlowId, diagnosticErrorDetails, openStageCancellationEnd, writeDiagnostic, type DiagnosticDetails } from "../logger";
 import { requireScriptSource } from "../script-source";
 import { CarrierRecognitionBudget } from "../carrier-recognition";
+import { resolveCarrierCpCode, resolveCarrierQuery } from "../carrier-query";
 import { needsManualPhoneTail } from "../jt-h5";
 import { runManualDetailSourceContest } from "../manual-detail-refresh";
 import {
@@ -252,13 +253,30 @@ async function fallbackPendingCloudPddShipment(input: {
   signal: AbortSignal;
   runQuery: typeof queryManualForSource;
   primaryOutcome: Awaited<ReturnType<typeof queryManualForSource>>;
-}): Promise<Awaited<ReturnType<typeof queryManualForSource>>> {
-  const { reserved, currentState, source, flowId, taskDeadline, forceManualRefresh, moto, paid, signal, runQuery, primaryOutcome } = input;
+  reservePendingKdniaoAttempt: (shipment: Shipment) => Promise<Shipment>;
+}): Promise<{
+  outcome: Awaited<ReturnType<typeof queryManualForSource>>;
+  reserved: Shipment;
+}> {
+  let { reserved } = input;
+  const {
+    currentState,
+    source,
+    flowId,
+    taskDeadline,
+    forceManualRefresh,
+    moto,
+    paid,
+    signal,
+    runQuery,
+    primaryOutcome,
+    reservePendingKdniaoAttempt,
+  } = input;
   if (!reserved.identity.manuallyAdded || reserved.timeline.provider !== "pending" || moto || paid ||
       primaryOutcome?.skipReason === "cooldown" ||
       Boolean(primaryOutcome?.shipment && timedTracks(primaryOutcome.shipment.timeline.tracks).length) ||
       deadlineExpired(taskDeadline)) {
-    return primaryOutcome;
+    return { outcome: primaryOutcome, reserved };
   }
   const common = {
     source,
@@ -281,14 +299,50 @@ async function fallbackPendingCloudPddShipment(input: {
   const motoOutcome = await runQuery({ ...common, motoOnly: true, includeKdniaoFallback: false });
   assertRefreshSignal(signal);
   if (motoOutcome?.shipment && timedTracks(motoOutcome.shipment.timeline.tracks).length) {
-    return motoOutcome;
+    return { outcome: motoOutcome, reserved };
   }
-  if (deadlineExpired(taskDeadline)) return primaryOutcome;
-  const kdniaoOutcome = await runQuery({ ...common, fallbackOnly: true, includeKdniaoFallback: true });
+  if (deadlineExpired(taskDeadline)) return { outcome: primaryOutcome, reserved };
+  // AGENTS.md §9 (2026-10-23 "每票后台最多尝试一次，后续手动补查"): unresolved `pending` manual / cloud-imported
+  // parcels spend at most one durable paid KDNiao attempt per parcel lifecycle across background / list-pull /
+  // post-cloud-sync enrichment, reserved after ordinary KDNiao cooldown check and before paid network I/O.
+  const generation = reserved.waybillReuseAtMs ?? 0;
+  const previousAttemptAt = Number(reserved.pendingKdniaoAttemptAtMs) || 0;
+  if (previousAttemptAt > 0 && previousAttemptAt >= generation) {
+    return { outcome: primaryOutcome, reserved };
+  }
+  const rawCode = String(reserved.identity.rawCourierCode || "").trim();
+  const hasKnownCarrier = Boolean(
+    (rawCode ? resolveCarrierCpCode(rawCode) : null) ||
+    resolveCarrierQuery(String(reserved.identity.courierCode || "")),
+  );
+  if (!hasKnownCarrier) {
+    return { outcome: primaryOutcome, reserved };
+  }
+  const schedule = manualProviderSchedule({
+    source,
+    waybill: displayWaybill(reserved),
+    rawCourierCode: reserved.identity.rawCourierCode,
+    phoneTail: reserved.identity.phoneTail,
+    sourceProvider: reserved.identity.sourceProvider,
+  });
+  if (!refreshProviderDue(schedule.key, "kdniao", schedule.identityFingerprint)) {
+    return { outcome: primaryOutcome, reserved };
+  }
+  reserved = await reservePendingKdniaoAttempt(reserved);
+  const kdniaoOutcome = await runQuery({
+    ...common,
+    currentShipment: reserved,
+    fallbackOnly: true,
+    includeKdniaoFallback: true,
+    scheduled: false,
+  });
   assertRefreshSignal(signal);
-  return kdniaoOutcome?.shipment && timedTracks(kdniaoOutcome.shipment.timeline.tracks).length
-    ? kdniaoOutcome
-    : primaryOutcome;
+  return {
+    outcome: kdniaoOutcome?.shipment && timedTracks(kdniaoOutcome.shipment.timeline.tracks).length
+      ? kdniaoOutcome
+      : primaryOutcome,
+    reserved,
+  };
 }
 
 /** Explicit Home refresh retains Online even when background polling follows a paid history package. */
@@ -414,10 +468,29 @@ export async function refreshOnlineShipment(
         : { pickerFirst: true, pickerOnly: true }),
       includeKdniaoFallback: paid, scheduled: !forceManualRefresh, recordSchedule: true, hostSafe: true });
     assertRefreshSignal(signal);
-    outcome = await fallbackPendingCloudPddShipment({
-      reserved, currentState, source, flowId, taskDeadline, forceManualRefresh,
-      moto, paid, signal, runQuery: query, primaryOutcome: outcome,
+    const fallbackResult = await fallbackPendingCloudPddShipment({
+      reserved,
+      currentState,
+      source,
+      flowId,
+      taskDeadline,
+      forceManualRefresh,
+      moto,
+      paid,
+      signal,
+      runQuery: query,
+      primaryOutcome: outcome,
+      reservePendingKdniaoAttempt: async (target) => {
+        const stamped: Shipment = {
+          ...target,
+          pendingKdniaoAttemptAtMs: Math.max(1, Date.now(), target.waybillReuseAtMs ?? 0),
+        };
+        await commitAsync(stamped, new Map(), "manual_refresh_kdniao_attempt");
+        return currentState.shipments.find((item) => item.identity.id === task.id) ?? stamped;
+      },
     });
+    outcome = fallbackResult.outcome;
+    reserved = fallbackResult.reserved;
     stageCancelled.close();
   } catch (error) {
     rethrowStageCancellation(signal, stageCancelled.end);

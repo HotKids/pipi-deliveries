@@ -5,7 +5,7 @@
  *   结构化状态覆盖、京东已签收列表头条窄例外、头条与状态 5 分钟对齐探针及签收三态冻结判定。
  * - **无副作用约束**：本模块仅对内存快照做确定性计算，不直接触发网络请求或文件 I/O。
  * - **跨端对等文件**：Pipi `ExpressRepository.java` / `ExpressDetailTimelinePolicy.java`、
- *   Lite `ExpressRepository.java` / `Kuaidi100TimelinePolicy.java`、Bot `pipi-bot/express.py`。
+ *   Lite `ExpressRepository.java` / `Kuaidi100TimelinePolicy.java`、Bot `pipi-bot/bot/express.py`。
  */
 import { nodeNormalizedStatus, timelineNormalizedStatus, statusPriority, statusProjectionFields } from "./worker-status";
 import { preservesTerminalStatus } from "./terminal-clock-policy";
@@ -2823,6 +2823,9 @@ function mergeAccountShipmentPackage(
     // The account response cannot revoke eligibility already established by this owner's H5 attempt.
     cainiaoH5FallbackActivatedAtMs:
       current?.cainiaoH5FallbackActivatedAtMs ?? incoming.cainiaoH5FallbackActivatedAtMs,
+    ...((current?.pendingKdniaoAttemptAtMs ?? incoming.pendingKdniaoAttemptAtMs) !== undefined
+      ? { pendingKdniaoAttemptAtMs: current?.pendingKdniaoAttemptAtMs ?? incoming.pendingKdniaoAttemptAtMs }
+      : {}),
     route: keepsCainiaoRoute
       ? incoming.route || current?.route || null
       : null,
@@ -3407,6 +3410,8 @@ export function reusedWaybillShipment(incomingInput: Shipment, now: number, auto
     forcedCompletedAtMs: _forcedCompletedAtMs,
     settledAtMs: _settledAtMs,
     cainiaoH5FallbackActivatedAtMs: _cainiaoH5FallbackActivatedAtMs,
+    pendingKdniaoAttemptAtMs: _pendingKdniaoAttemptAtMs,
+    cloudExpressOrigin: _cloudExpressOrigin,
     emptyTimelineHiddenAtMs: _emptyTimelineHiddenAtMs,
     manualRefreshAttemptAtMs: _manualRefreshAttemptAtMs,
     manualRefreshLease: _manualRefreshLease,
@@ -3771,6 +3776,12 @@ function applyManualShipmentInner(
     route,
     forcedCompletedAtMs:
       current.forcedCompletedAtMs ?? incoming.forcedCompletedAtMs,
+    ...((current.pendingKdniaoAttemptAtMs ?? incoming.pendingKdniaoAttemptAtMs) !== undefined
+      ? { pendingKdniaoAttemptAtMs: current.pendingKdniaoAttemptAtMs ?? incoming.pendingKdniaoAttemptAtMs }
+      : {}),
+    ...((current.cloudExpressOrigin ?? incoming.cloudExpressOrigin) !== undefined
+      ? { cloudExpressOrigin: current.cloudExpressOrigin ?? incoming.cloudExpressOrigin }
+      : {}),
     updatedAtMs: now,
   };
   const selected = selectShipmentTimeline(candidate);
@@ -3827,6 +3838,8 @@ export function absorbManualShipment(
   if (carriedFields) {
     const manualTitleNewer = carriedFields.manualTitle !== undefined &&
       (!ownFields?.manualTitle || (carriedFields.manualTitleEditedAtMs ?? 0) > (ownFields.manualTitleEditedAtMs ?? 0));
+    const cloudTitleNewer = carriedFields.cloudProductName !== undefined &&
+      (!ownFields?.cloudProductName || (carriedFields.cloudProductNameObservedAtMs ?? 0) > (ownFields.cloudProductNameObservedAtMs ?? 0));
     const nonPddTitle = !ownFields?.title && carriedFields.title && carriedFields.title.source !== "pinduoduo"
       ? carriedFields.title
       : undefined;
@@ -3836,7 +3849,7 @@ export function absorbManualShipment(
     const cainiaoImage = !ownFields?.cainiaoImage && carriedFields.cainiaoImage
       ? carriedFields.cainiaoImage
       : undefined;
-    if (manualTitleNewer || nonPddTitle || nonPddEstimate || cainiaoImage) {
+    if (manualTitleNewer || cloudTitleNewer || nonPddTitle || nonPddEstimate || cainiaoImage) {
       platformFields = {
         ...ownFields,
         waybill: displayWaybill(result),
@@ -3846,6 +3859,14 @@ export function absorbManualShipment(
               manualTitle: carriedFields.manualTitle,
               ...(carriedFields.manualTitleEditedAtMs !== undefined
                 ? { manualTitleEditedAtMs: carriedFields.manualTitleEditedAtMs }
+                : {}),
+            }
+          : {}),
+        ...(cloudTitleNewer
+          ? {
+              cloudProductName: carriedFields.cloudProductName,
+              ...(carriedFields.cloudProductNameObservedAtMs !== undefined
+                ? { cloudProductNameObservedAtMs: carriedFields.cloudProductNameObservedAtMs }
                 : {}),
             }
           : {}),

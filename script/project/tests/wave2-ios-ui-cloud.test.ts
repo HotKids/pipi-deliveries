@@ -98,11 +98,11 @@ function wcagContrast(hexA: string, rgbB: number): number {
   return Math.max(l1, l2) / Math.min(l1, l2);
 }
 
-test("L-01: script.json and SCRIPT_VERSION are aligned at 0.9.39 on formal track", () => {
+test("L-01: script.json and SCRIPT_VERSION stay aligned on formal track", () => {
   const pkg = JSON.parse(readFileSync(new URL("../script.json", import.meta.url), "utf8")) as { version: string };
   assert.equal(SCRIPT_BUILD_TRACK, "formal");
-  assert.equal(pkg.version, "0.9.39");
-  assert.equal(SCRIPT_VERSION, "0.9.39");
+  assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(SCRIPT_VERSION, pkg.version);
 });
 
 test("Task A: parcelDetailRecordId matches Worker UUIDv5 byte-for-byte", () => {
@@ -738,9 +738,8 @@ test("Task B #14: legibleCodeOnDark lifts dark tea/coffee brand codes to WCAG >=
 test("Task B #4, #5, #11, #15 & §9.5 #7 ②: HIG layout & Live Activity invariants", () => {
   const fabSource = readFileSync(new URL("../components/TabFloatingActionButton.tsx", import.meta.url), "utf8");
   const cardSource = readFileSync(new URL("../components/ParcelLiveActivityCard.tsx", import.meta.url), "utf8");
-  assert.match(fabSource, /export const TAB_FAB_SCROLL_INSET = 92;/);
-  assert.match(fabSource, /UIGlass\.regular\(\)\.interactive\(true\)/);
-  assert.doesNotMatch(fabSource, /UIGlass\.clear\(\)/);
+  assert.match(fabSource, /export const TAB_FAB_SCROLL_INSET = 104;/);
+  assert.match(fabSource, /UIGlass\.clear\(\)\.interactive\(true\)/);
   assert.equal(EMPTY_WIDGET_TEXT_COLOR, "secondaryLabel");
 
   const compactSmall = smallWidgetLayout(148, 148);

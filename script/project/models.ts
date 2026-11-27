@@ -203,6 +203,8 @@ export type ParcelPlatformFields = Readonly<{
   waybillGeneration: number;
   manualTitle?: string;
   manualTitleEditedAtMs?: number;
+  cloudProductName?: string;
+  cloudProductNameObservedAtMs?: number;
   title?: { text: string; source: "cainiao" | "jingdong" | "pinduoduo" };
   cainiaoImage?: { url: string; generation: string };
   pddImage?: { url: string; association: string };
@@ -211,6 +213,7 @@ export type ParcelPlatformFields = Readonly<{
 
 export type PddParcelImport = Readonly<{ ownerKey: string; orderId: string; shippingId?: string }>;
 export type PddCloudOrigin = Readonly<{ waybill: string; waybillGeneration: number }>;
+export type CloudExpressOrigin = Readonly<{ waybill: string; waybillGeneration: number }>;
 
 export type CloudPddParcelTombstone = Readonly<{
   waybill: string;
@@ -268,8 +271,15 @@ export type Shipment = {
   platformFields?: ParcelPlatformFields;
   pddImport?: PddParcelImport;
   pddCloudOrigin?: PddCloudOrigin;
+  /** Cloud-imported manual `express` parcel provenance (all non-PDD origins), used for deletion/completion tombstones. */
+  cloudExpressOrigin?: CloudExpressOrigin;
   /** Set only after this shipment's trusted Cainiao H5 returned no usable timeline. */
   cainiaoH5FallbackActivatedAtMs?: number;
+  /**
+   * Unresolved `pending` manual / cloud-imported parcel's one durable background paid KDNiao attempt timestamp
+   * for the current parcel lifecycle (`AGENTS.md §9`, 2026-10-23 "每票后台最多尝试一次，后续手动补查").
+   */
+  pendingKdniaoAttemptAtMs?: number;
   manualRefreshAttemptAtMs?: number;
   manualRefreshLease?: {
     attemptId: string;

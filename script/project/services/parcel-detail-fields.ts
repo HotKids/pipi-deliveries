@@ -20,9 +20,17 @@ function isCainiaoParcel(shipment: Shipment): boolean {
   return !shipment.pddImport && /^(?:cainiao|taobao)$/i.test(shipment.identity.sourceProvider?.trim() || "");
 }
 
+function hasLocalParcelTitle(shipment: Shipment): boolean {
+  const fields = shipment.platformFields;
+  if (!fields || fields.waybillGeneration !== (shipment.waybillReuseAtMs ?? 0)) return false;
+  const waybill = unprojectedAccountOrder(shipment) ? "" : displayWaybill(shipment);
+  if (fields.waybill !== waybill) return false;
+  return Boolean(fields.manualTitle || fields.title?.text);
+}
+
 export function needsParcelDetailFields(shipment: Shipment, refreshEstimate = false): boolean {
   const fields = displayedPlatformFields(shipment);
-  if (!fields.title || ((refreshEstimate || !fields.estimate) && deliveryEstimateApplies(shipment))) return true;
+  if (!hasLocalParcelTitle(shipment) || ((refreshEstimate || !fields.estimate) && deliveryEstimateApplies(shipment))) return true;
   if (shipment.pddImport?.orderId && shipment.pddImport.shippingId) {
     return !shipment.identity.productImageURL && !pddParcelProductImage(shipment);
   }
@@ -121,11 +129,10 @@ export async function refreshParcelDetailFields(expected: Shipment, active: () =
       cainiaoParcelDetails(await readCainiao(cainiao, CAINIAO_PARCEL_DETAIL, { mailNo: waybill }, signal), waybill, Date.now()));
     if (pddSession && pddSession.ownerKey === pdd?.ownerKey && pdd.shippingId) {
       const shippingId = pdd.shippingId;
-      const fields = displayedPlatformFields(owner);
       const estimate = deliveryEstimateApplies(owner);
       const image = !owner.identity.productImageURL && !pddParcelProductImage(owner);
       await read("pinduoduo", pddSession, (eligible) =>
-        fetchPddParcelDetails(pddSession, shippingId, waybill, !fields.title, estimate, image, eligible, signal));
+        fetchPddParcelDetails(pddSession, shippingId, waybill, !hasLocalParcelTitle(owner), estimate, image, eligible, signal));
     }
     if (jd) await read("jingdong", jd, (eligible) => fetchJdParcelDetails(jd, jdOrder, waybill, eligible, signal));
   } finally {
