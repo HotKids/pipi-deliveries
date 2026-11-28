@@ -17,7 +17,7 @@ final class ExpressStatusTones {
             case "待派送" -> dark ? 0xFFFFB300 : 0xFFFFC107;
             case "派送中" -> dark ? 0xFFFB8C00 : 0xFFFF9800;
             case "待取件" -> dark ? 0xFFF4511E : 0xFFFF5722;
-            case "已签收" -> dark ? 0xFF607D8B : 0xFF90A4AE;
+            case "已签收" -> dark ? 0xFF607D8B : 0xFF78909C;
             case "已完成" -> dark ? 0xFF546E7A : 0xFF607D8B;
             case "异常件" -> dark ? 0xFFE53935 : 0xFFF44336;
             case "已取消" -> dark ? 0xFFA84E4E : 0xFFC06060;
@@ -36,7 +36,7 @@ final class ExpressStatusTones {
             case "待派送" -> dark ? 0xFFFFD54F : 0xFFFF6F00;
             case "派送中" -> dark ? 0xFFFFB74D : 0xFFE65100;
             case "待取件" -> dark ? 0xFFFF8A65 : 0xFFBF360C;
-            case "已签收" -> dark ? 0xFFB0BEC5 : 0xFF607D8B;
+            case "已签收" -> dark ? 0xFFB0BEC5 : 0xFF546E7A;
             case "已完成" -> dark ? 0xFF90A4AE : 0xFF455A64;
             case "异常件" -> dark ? 0xFFE57373 : 0xFFC62828;
             case "已取消" -> dark ? 0xFFD98C8C : 0xFF7E3A3A;

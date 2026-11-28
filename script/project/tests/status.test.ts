@@ -23,6 +23,7 @@ import {
   shouldRefreshShipment,
   terminalEvidenceAtMs,
   sortShipments,
+  statusCapsuleAccent,
   statusLabel,
   statusTextAccent,
   widgetStatusLabel,
@@ -117,8 +118,9 @@ assert.equal(semanticFromAccountState(106, ""), "WAITING_PICKUP");
 assert.equal(semanticFromAccountState("107", ""), "COMPLETED");
 assert.equal(widgetStatusLabel("DANGER"), "异常件");
 assert.equal(widgetStatusLabel("UNKNOWN"), "暂无状态");
-// Owner 2026-11-27 (修改 29, five-family non-capsule pair).
-assert.equal(statusTextAccent("COMPLETED"), 0x607d8b);
+// Owner 2026-11-27/28 (修改 29 & 修改 31, five-family palette).
+assert.equal(statusTextAccent("COMPLETED"), 0x546e7a);
+assert.equal(statusCapsuleAccent("COMPLETED"), 0x78909c);
 assert.equal(statusTextAccent("COMPLETED", "已完成", true), 0x90a4ae);
 assert.equal(statusTextAccent("DELIVERY"), 0xe65100);
 assert.equal(statusTextAccent("DELIVERY", "待派送", true), 0xffd54f);

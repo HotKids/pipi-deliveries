@@ -17,6 +17,7 @@ import type {
   AppState,
   BindingSource,
   CloudPddParcelTombstone,
+  IgnoredCloudManualWaybill,
   PendingManualQuery,
   PendingEnhancementUnsubscribe,
   PickupCodeRecord,
@@ -120,7 +121,7 @@ import {
 import { carrierAwaitingRecognition } from "./carrier-gate";
 import { notificationEnabled } from "./notification-preferences";
 import { preserveSettledShipment } from "./shipment-policy";
-import { newerWaybillReuseGeneration } from "./waybill-reuse";
+import { newerWaybillReuseGeneration, shipmentReuseAnchorAtMs } from "./waybill-reuse";
 import { ShipmentLifecycleChangedError, shipmentLifecycleKey } from "./shipment-lifecycle";
 import { pruneRowLedgerForState } from "./row-ledger";
 import { cainiaoImageCacheKey, productImageCacheFiles, pruneProductImages } from "./product-image-cache";
@@ -646,6 +647,47 @@ function upsertCloudPddTombstoneEntry(
   return normalizeCloudPddTombstones([...(records ?? []), entry], now);
 }
 
+function normalizeIgnoredCloudManualWaybills(
+  records: readonly IgnoredCloudManualWaybill[] | undefined,
+  now: number,
+): IgnoredCloudManualWaybill[] {
+  if (!Array.isArray(records) || !records.length) return [];
+  const byKey = new Map<string, IgnoredCloudManualWaybill>();
+  for (const item of records) {
+    if (!item || typeof item !== "object") continue;
+    const waybill = normalizeWaybill(String(item.waybill || ""));
+    const anchorAt = Math.max(0, Math.trunc(Number(item.anchorAt) || 0));
+    const rawIgnoredAtMs = Number(item.ignoredAtMs);
+    const ignoredAtMs = Number.isFinite(rawIgnoredAtMs) && rawIgnoredAtMs > 0
+      ? Math.trunc(rawIgnoredAtMs)
+      : (anchorAt > 0 ? anchorAt : now);
+    if (!waybill || ignoredAtMs <= 0) continue;
+    if (now - ignoredAtMs > CLOUD_PDD_TOMBSTONE_TTL_MS) continue;
+    const key = `${waybill}\u0000${anchorAt}`;
+    const existing = byKey.get(key);
+    if (!existing || ignoredAtMs >= existing.ignoredAtMs) {
+      byKey.set(key, { waybill, anchorAt, ignoredAtMs });
+    }
+  }
+  return [...byKey.values()]
+    .sort((left, right) => right.ignoredAtMs - left.ignoredAtMs)
+    .slice(0, CLOUD_PDD_TOMBSTONE_MAX);
+}
+
+function upsertIgnoredCloudManualWaybillEntry(
+  records: readonly IgnoredCloudManualWaybill[] | undefined,
+  entry: IgnoredCloudManualWaybill,
+  now: number,
+): IgnoredCloudManualWaybill[] {
+  return normalizeIgnoredCloudManualWaybills([...(records ?? []), entry], now);
+}
+
+function stripLegacyManualCloudImported(shipment: Shipment): Shipment {
+  if (!shipment.identity?.manuallyAdded || !shipment.cloudExpressOrigin) return shipment;
+  const { cloudExpressOrigin: _cleared, ...rest } = shipment;
+  return rest;
+}
+
 function migrate(value: LegacyAppState | AppState, now: number): AppState {
   const canonical = isCanonicalMigratedState(value);
   const base = isCurrentState(value)
@@ -659,6 +701,8 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
   const feedSlotRebuiltAtMs = isCurrentState(value) && typeof value.feedSlotRebuiltAtMs === "number"
     ? value.feedSlotRebuiltAtMs
     : 0;
+  const alreadyClearedManualCloudImported =
+    isCurrentState(value) && value.migratedClearManualCloudImported_0948 === true;
   const emptyTimelineRetirements = mergeEmptyTimelineRetirements(
     undefined, base.emptyTimelineRetirements, base.shipments || [],
   );
@@ -667,11 +711,14 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     ? { shipments: [...base.shipments], splits: [], skipped: [] }
     : splitMergedOrderRows(migrateShipmentSources(base.shipments || []), now);
   if (!canonical) logMergedOrderSplits(split);
+  const splitShipments = alreadyClearedManualCloudImported
+    ? split.shipments
+    : split.shipments.map(stripLegacyManualCloudImported);
   const retainedShipments = pruneExpiredManualPlaceholders(
     retainDurableShipments(
       applyEmptyTimelineRetirements(withWaybillOwnership(
         null,
-        split.shipments
+        splitShipments
           .map((shipment) => normalizeShipmentAuthorities(shipment, now))
           .map((shipment) => feedSlotRebuiltAtMs ? shipment : markFeedSlotRebuild(shipment)),
         now,
@@ -683,6 +730,7 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
   );
   const watchFeedback = normalizeWatchFeedback(base.watchFeedback);
   const cloudPddTombstones = normalizeCloudPddTombstones(base.cloudPddTombstones, now);
+  const ignoredCloudManualWaybills = normalizeIgnoredCloudManualWaybills(base.ignoredCloudManualWaybills, now);
   return {
     version: 2,
     revision: base.revision,
@@ -697,6 +745,8 @@ function migrate(value: LegacyAppState | AppState, now: number): AppState {
     ...(base.watchSource ? { watchSource: base.watchSource } : {}),
     ...(watchFeedback.length ? { watchFeedback } : {}),
     ...(cloudPddTombstones.length ? { cloudPddTombstones } : {}),
+    ...(ignoredCloudManualWaybills.length ? { ignoredCloudManualWaybills } : {}),
+    migratedClearManualCloudImported_0948: true,
     ...(Array.isArray(base.pickupCodeRecords)
       ? { pickupCodeRecords: prunePickupCodeRecords(base.pickupCodeRecords, now) ?? [] }
       : {}),
@@ -3424,22 +3474,46 @@ function saveStateAndPrune(
     candidate.cloudPddTombstones ?? previous.cloudPddTombstones,
     now,
   );
+  const nextPendingQueries = prunePending(
+    migratePendingSources(candidate.pendingQueries),
+    now,
+  );
+  const manuallyReaddedWaybills = new Set<string>();
+  for (const pending of nextPendingQueries) {
+    const w = normalizeWaybill(pending.waybill);
+    if (w) manuallyReaddedWaybills.add(w);
+  }
+  for (const shipment of retainedShipments) {
+    if (
+      !previousById.has(shipment.identity.id) &&
+      shipment.identity.manuallyAdded &&
+      !shipment.cloudExpressOrigin &&
+      !shipment.pddCloudOrigin &&
+      !shipment.pddImport
+    ) {
+      const w = normalizeWaybill(displayWaybill(shipment));
+      if (w) manuallyReaddedWaybills.add(w);
+    }
+  }
+  const savedIgnoredCloudManualWaybills = normalizeIgnoredCloudManualWaybills(
+    candidate.ignoredCloudManualWaybills ?? previous.ignoredCloudManualWaybills,
+    now,
+  ).filter((entry) => !manuallyReaddedWaybills.has(entry.waybill));
   const next: AppState = {
     version: 2,
     revision: Math.max(previous.revision, candidate.revision) + 1,
     updatedAtMs: now,
     activeSource: SCRIPT_BINDING_SOURCE,
     bindings: uniqueBindings(candidate.bindings),
-    pendingQueries: prunePending(
-      migratePendingSources(candidate.pendingQueries),
-      now,
-    ),
+    pendingQueries: nextPendingQueries,
     shipments: sortShipments(retainedShipments),
     ...(savedWatchSource ? {
       watchSource: savedWatchSource,
     } : {}),
     ...(savedWatchFeedback.length ? { watchFeedback: savedWatchFeedback } : {}),
     ...(savedCloudPddTombstones.length ? { cloudPddTombstones: savedCloudPddTombstones } : {}),
+    ...(savedIgnoredCloudManualWaybills.length ? { ignoredCloudManualWaybills: savedIgnoredCloudManualWaybills } : {}),
+    migratedClearManualCloudImported_0948: true,
     ...(savedPickupCodes ? { pickupCodeRecords: savedPickupCodes } : {}),
     ...(pickupArtworkChoices && Object.keys(pickupArtworkChoices).length ? { pickupArtworkChoices } : {}),
     // An unsent event of the old parcel goes with it when a new parcel takes the reused number (user 2026-10-02).
@@ -4345,15 +4419,25 @@ export function upsertShipment(incoming: Shipment, now = Date.now()): AppState {
       : incoming.identity.manuallyAdded
         ? applyManualShipment(undefined, incoming, now)
         : applyAccountShipment(undefined, incoming, now);
+    const canonicalWaybill = normalizeWaybill(displayWaybill(shipment));
     const clearedTombstones = incoming.identity.manuallyAdded && state.cloudPddTombstones?.length
       ? state.cloudPddTombstones.filter(
-          entry => !(entry.action === "deleted" && entry.waybill === normalizeWaybill(displayWaybill(shipment))),
+          entry => !(entry.action === "deleted" && entry.waybill === canonicalWaybill),
         )
       : state.cloudPddTombstones;
+    const clearedIgnoredManual = incoming.identity.manuallyAdded &&
+      !incoming.cloudExpressOrigin &&
+      !incoming.pddCloudOrigin &&
+      state.ignoredCloudManualWaybills?.length
+      ? state.ignoredCloudManualWaybills.filter(entry => entry.waybill !== canonicalWaybill)
+      : state.ignoredCloudManualWaybills;
     return saveState(
       {
         ...state,
         ...(clearedTombstones !== state.cloudPddTombstones ? { cloudPddTombstones: clearedTombstones } : {}),
+        ...(clearedIgnoredManual !== state.ignoredCloudManualWaybills
+          ? { ignoredCloudManualWaybills: clearedIgnoredManual }
+          : {}),
         shipments: [
           ...state.shipments.filter(
             (item) => item.identity.id !== shipment.identity.id,
@@ -4493,9 +4577,10 @@ export function removeShipmentWithCleanup(
           latestTrackAtMs: latestWatchTrackAtMs(shipment),
         })
       : state.watchFeedback;
-    const cloudOriginWaybill = shipment?.identity.manuallyAdded
-      ? (shipment.cloudExpressOrigin?.waybill || "")
-      : "";
+    const cloudOriginWaybill = shipment?.pddCloudOrigin?.waybill ||
+      (shipment?.identity.manuallyAdded
+        ? (shipment.cloudExpressOrigin?.waybill || (shipment.pddImport ? canonical : ""))
+        : "");
     const cloudPddTombstones = cloudOriginWaybill
       ? upsertCloudPddTombstoneEntry(state.cloudPddTombstones, {
           waybill: normalizeWaybill(cloudOriginWaybill || canonical),
@@ -4504,11 +4589,22 @@ export function removeShipmentWithCleanup(
           actedAtMs: now,
         }, now)
       : state.cloudPddTombstones;
+    const ignoredCloudManualWaybills = shipment?.identity.manuallyAdded && !cloudOriginWaybill && canonical
+      ? upsertIgnoredCloudManualWaybillEntry(state.ignoredCloudManualWaybills, {
+          waybill: normalizeWaybill(canonical),
+          anchorAt: Math.max(
+            0,
+            Math.trunc(shipmentReuseAnchorAtMs(shipment, now) || Number(shipment.identity.createdAtMs) || now),
+          ),
+          ignoredAtMs: now,
+        }, now)
+      : state.ignoredCloudManualWaybills;
     return saveStateAndPrune(
       {
         ...state,
         ...(watchFeedback !== state.watchFeedback ? { watchFeedback } : {}),
         ...(cloudPddTombstones !== state.cloudPddTombstones ? { cloudPddTombstones } : {}),
+        ...(ignoredCloudManualWaybills !== state.ignoredCloudManualWaybills ? { ignoredCloudManualWaybills } : {}),
         pendingQueries: shipment
           ? state.pendingQueries.filter(
               (pending) =>
@@ -4547,9 +4643,10 @@ export function forceCompleteShipment(
           latestTrackAtMs: latestWatchTrackAtMs(current),
         })
       : state.watchFeedback;
-    const cloudOriginWaybill = current.identity.manuallyAdded
-      ? (current.cloudExpressOrigin?.waybill || "")
-      : "";
+    const cloudOriginWaybill = current.pddCloudOrigin?.waybill ||
+      (current.identity.manuallyAdded
+        ? (current.cloudExpressOrigin?.waybill || (current.pddImport ? canonical : ""))
+        : "");
     const cloudPddTombstones = cloudOriginWaybill
       ? upsertCloudPddTombstoneEntry(state.cloudPddTombstones, {
           waybill: normalizeWaybill(cloudOriginWaybill || canonical),
@@ -4587,9 +4684,16 @@ export function upsertPendingQuery(
   return withSharedFileTransaction(() => {
     requireScriptSource(pending.source);
     const state = loadState(now);
+    const canonicalWaybill = normalizeWaybill(pending.waybill);
+    const clearedIgnoredManual = canonicalWaybill && state.ignoredCloudManualWaybills?.length
+      ? state.ignoredCloudManualWaybills.filter((entry) => entry.waybill !== canonicalWaybill)
+      : state.ignoredCloudManualWaybills;
     return saveState(
       {
         ...state,
+        ...(clearedIgnoredManual !== state.ignoredCloudManualWaybills
+          ? { ignoredCloudManualWaybills: clearedIgnoredManual }
+          : {}),
         pendingQueries: [
           ...state.pendingQueries.filter((item) => item.id !== pending.id),
           pending,

@@ -106,6 +106,7 @@ const {
   saveState,
   setShipmentNote,
 } = await import("../services/storage.ts");
+const { listHeadline, shipmentPresentationStatus, statusTextTint } = await import("../services/status.ts");
 
 const OWNER_ID = "a".repeat(64);
 const ENDPOINT_ID = `scripting-parcel:${"b".repeat(64)}`;
@@ -511,14 +512,16 @@ test("In1: local manual row never mutates/deletes cloud express record, while cl
   assert.equal(matchedLocal.cloudExpressOrigin, undefined, "pre-existing local manual row never acquires cloudExpressOrigin");
   assert.equal(importedCloud.cloudExpressOrigin?.waybill, cloudImportedWaybill, "cloud-created row carries cloudExpressOrigin");
 
+  const pddAdoptedWaybill = "YT7700000000404";
+  saveState({ ...loadState(), shipments: [...loadState().shipments, makeManualShipment(pddAdoptedWaybill)] }, clock + 50);
   const pddNewWaybill = "YT7700000000403";
   const { state: afterPddImport } = saveCloudPddParcels([
-    { waybill: localManualWaybill, anchorAt: clock - 20_000, terminalAt: 0, carrierCode: "zto", phone4: "1234" },
+    { waybill: pddAdoptedWaybill, anchorAt: clock - 20_000, terminalAt: 0, carrierCode: "zto", phone4: "1234" },
     { waybill: pddNewWaybill, anchorAt: clock - 20_000, terminalAt: 0, carrierCode: "zto", phone4: "1234" },
   ], loadState(), () => true, clock + 100);
-  assert.equal(afterPddImport.shipments.find((row) => row.timeline.waybill === localManualWaybill)?.cloudExpressOrigin, undefined);
+  assert.equal(afterPddImport.shipments.find((row) => row.timeline.waybill === pddAdoptedWaybill)?.cloudExpressOrigin, undefined);
   assert.equal(afterPddImport.shipments.find((row) => row.timeline.waybill === pddNewWaybill)?.cloudExpressOrigin?.waybill, pddNewWaybill);
-  assert.equal(hasPddParcelSource(afterPddImport.shipments.find((row) => row.timeline.waybill === localManualWaybill)!), true);
+  assert.equal(hasPddParcelSource(afterPddImport.shipments.find((row) => row.timeline.waybill === pddAdoptedWaybill)!), true);
 
   clock += 1_000;
   removeShipmentWithCleanup(matchedLocal.identity.id, clock);
@@ -1137,6 +1140,9 @@ test("0.9.46 Phase 3 & Phase 4: foreground projection stability and cancelable n
     `${projCode}\n;({ selectForegroundShipmentsProjection, selectForegroundPickupCardsProjection });`,
     {
       displayWaybill: (s: Shipment) => s.timeline.waybill,
+      listHeadline,
+      shipmentPresentationStatus,
+      statusTextTint,
       resolveShipmentTitle: (s: Shipment) => s.platformFields?.manualTitle || s.timeline.companyName,
       shipmentStatusLabel: (s: Shipment) => s.timeline.semantic,
       shipmentSubtitle: (s: Shipment) => s.timeline.latestDetail,

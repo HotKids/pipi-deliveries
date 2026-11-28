@@ -12,6 +12,7 @@ import { clearPlatformLogin, platformSession, savePlatformLogin } from "../servi
 import { cainiaoParcelDetails, cainiaoRecipientParcels } from "../services/platform-parcel-data";
 import { fetchJdParcelDetails, fetchJdParcels, fetchPddOrders } from "../services/platform-web-parcels";
 import { registerProjectionViewportHost } from "../services/projection-viewport";
+import { listHeadline, shipmentPresentationStatus, statusTextTint } from "../services/status";
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (rel: string) => readFileSync(resolve(projectDir, rel), "utf8");
@@ -287,7 +288,12 @@ test("HomePage scopes swipe flags per ID, reuses unchanged row items & buckets, 
   assert.ok(start >= 0 && end > start);
   const helpers = runInNewContext(
     `${stripTypeScriptTypes(homeSource.slice(start, end))}\n({ sameShipmentRowPresentation, sameShipmentItemList })`,
-    { displayWaybill: (row: any) => row.timeline.waybill || row.identity.sourceId },
+    {
+      displayWaybill: (row: any) => row.timeline.waybill || row.identity.sourceId,
+      listHeadline,
+      shipmentPresentationStatus,
+      statusTextTint,
+    },
   ) as {
     sameShipmentRowPresentation: (a: any, b: any) => boolean;
     sameShipmentItemList: (a: any[] | undefined, b: any[]) => boolean;

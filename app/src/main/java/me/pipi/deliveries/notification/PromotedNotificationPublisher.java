@@ -57,8 +57,98 @@ public final class PromotedNotificationPublisher {
     private static final ScheduledExecutorService PROBE_EXECUTOR =
             Executors.newSingleThreadScheduledExecutor(
                     PipiExecutors.namedFactory("pipi-systemui-probe"));
+    private static volatile java.util.function.LongSupplier clock = System::currentTimeMillis;
 
     private PromotedNotificationPublisher() {}
+
+    static void setClockForTest(java.util.function.LongSupplier supplier) {
+        clock = supplier == null ? System::currentTimeMillis : supplier;
+    }
+
+    /**
+     * Reconciles unconfirmed Now Bar {@code style=1} probes left behind by an earlier process
+     * before startup live-surface restoration runs.
+     */
+    public static void reconcilePendingNowBarProbes(Context context) {
+        if (context == null) return;
+        Context app = context.getApplicationContext();
+        if (app == null) app = context;
+        NotificationManager manager = app.getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        reconcilePendingNowBarProbes(app, manager, clock.getAsLong());
+    }
+
+    static void reconcilePendingNowBarProbes(
+            Context app, NotificationManager manager, long nowMillis) {
+        if (app == null || manager == null || !SamsungNowBarCompat.shouldProbe(app)) return;
+        synchronized (LOCK) {
+            for (SamsungNowBarCompat.PendingNowBarProbe pending
+                    : SamsungNowBarCompat.listPendingNowBarProbes(app)) {
+                reconcilePendingNowBarProbeLocked(app, manager, pending, nowMillis);
+            }
+        }
+    }
+
+    private static void reconcilePendingNowBarProbeLocked(
+            Context app,
+            NotificationManager manager,
+            SamsungNowBarCompat.PendingNowBarProbe pending,
+            long nowMillis) {
+        if (pending == null) return;
+        if (!pending.osBuild.equals(SamsungNowBarCompat.osBuildFingerprint())) {
+            SamsungNowBarCompat.clearPendingNowBarProbe(app, pending.namespace);
+            return;
+        }
+        if (pending.timeoutAt > 0L && nowMillis >= pending.timeoutAt) {
+            SamsungNowBarCompat.clearPendingNowBarProbe(app, pending.namespace);
+            return;
+        }
+        long elapsed = nowMillis - pending.postedAt;
+        if (elapsed < SamsungNowBarCompat.PENDING_PROBE_STALE_MS) return;
+        if (!canObserveNotifications(app, manager)) {
+            SamsungNowBarCompat.clearPendingNowBarProbe(app, pending.namespace);
+            return;
+        }
+        NotificationKey persistedKey =
+                NotificationKey.persisted(pending.persistenceKey, pending.id);
+        boolean active = false;
+        try {
+            StatusBarNotification[] notifications = manager.getActiveNotifications();
+            if (notifications != null) {
+                for (StatusBarNotification notification : notifications) {
+                    if (persistedKey.matches(notification, app.getPackageName())) {
+                        active = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "Unable to inspect active notifications for pending Now Bar probe"
+                    + " namespace=" + pending.namespace
+                    + " kind=" + error.getClass().getSimpleName());
+            return;
+        }
+        if (active) {
+            if (elapsed >= PROBE_DELAY_MS + PROBE_CONFIRM_DELAY_MS) {
+                SamsungNowBarCompat.recordNowBarConfirmed(app, pending.namespace);
+                Log.i(TAG, "Now Bar template confirmed from prior post namespace="
+                        + pending.namespace + " key=" + persistedKey.logLabel());
+            }
+            return;
+        }
+        if (NotificationDismissalStore.wasDismissedForProbe(
+                app, persistedKey, pending.dismissalFingerprint, pending.dismissalToken)) {
+            SamsungNowBarCompat.clearPendingNowBarProbe(app, pending.namespace);
+            return;
+        }
+        if (!SamsungNowBarCompat.SYSTEM_UI_ERROR_FALLBACK_ENABLED) {
+            SamsungNowBarCompat.clearPendingNowBarProbe(app, pending.namespace);
+            return;
+        }
+        SamsungNowBarCompat.recordNowBarRejection(app, pending.namespace);
+        Log.w(TAG, "Unconfirmed Now Bar template missing after probe window; disabling namespace="
+                + pending.namespace + " key=" + persistedKey.logLabel());
+    }
 
     /** Adds the public promoted contract and the Samsung-only small-icon hint. */
     public static void configureEnhanced(Context context, Notification.Builder builder,
@@ -121,18 +211,46 @@ public final class PromotedNotificationPublisher {
         String namespace = SamsungNowBarCompat.namespaceOf(key);
         long fallbackGeneration = 0L;
         synchronized (LOCK) {
+            if (SamsungNowBarCompat.shouldProbe(app)) {
+                reconcilePendingNowBarProbeLocked(
+                        app,
+                        manager,
+                        SamsungNowBarCompat.readPendingNowBarProbe(app, namespace),
+                        clock.getAsLong());
+            }
             cancelProbeLocked(key);
             long generation = GENERATIONS.advance(key);
             if (nowBarCandidate != null
-                    && SamsungNowBarCompat.shouldTryNowBarTemplate(app, namespace)
-                    && canProbeDelivery(app, manager, nowBarCandidate)) {
-                try {
-                    key.notify(manager, nowBarCandidate);
-                    scheduleProbeLocked(app, manager, key, generation, generic, enhanced);
-                    return;
-                } catch (IllegalArgumentException rejected) {
-                    SamsungNowBarCompat.recordNowBarRejection(app, namespace);
-                    Log.w(TAG, "Now Bar template rejected during posting key=" + key.logLabel());
+                    && SamsungNowBarCompat.shouldTryNowBarTemplate(app, namespace)) {
+                if (SamsungNowBarCompat.isNowBarConfirmedOnCurrentBuild(app, namespace)) {
+                    try {
+                        key.notify(manager, nowBarCandidate);
+                        finishProbeLocked(key, generation);
+                        return;
+                    } catch (IllegalArgumentException rejected) {
+                        SamsungNowBarCompat.recordNowBarRejection(app, namespace);
+                        Log.w(TAG, "Now Bar template rejected during posting namespace="
+                                + namespace + " key=" + key.logLabel());
+                    }
+                } else if (canProbeDelivery(app, manager, nowBarCandidate)) {
+                    String expectedFp = NotificationDismissalStore.activeFingerprint(app, key);
+                    String expectedTok = NotificationDismissalStore.activeToken(app, key);
+                    SamsungNowBarCompat.recordPendingNowBarProbe(
+                            app,
+                            key,
+                            clock.getAsLong(),
+                            nowBarCandidate.getTimeoutAfter(),
+                            expectedFp,
+                            expectedTok);
+                    try {
+                        key.notify(manager, nowBarCandidate);
+                        scheduleProbeLocked(app, manager, key, generation, generic, enhanced);
+                        return;
+                    } catch (IllegalArgumentException rejected) {
+                        SamsungNowBarCompat.recordNowBarRejection(app, namespace);
+                        Log.w(TAG, "Now Bar template rejected during posting namespace="
+                                + namespace + " key=" + key.logLabel());
+                    }
                 }
             }
             if (SamsungNowBarCompat.useGenericFallback(app)) {
@@ -256,6 +374,7 @@ public final class PromotedNotificationPublisher {
             ProbeState state = PROBES.get(key);
             if (state == null || state.generation != generation) return;
             pickupNowBar = state.pickupFallback != null;
+            String namespace = SamsungNowBarCompat.namespaceOf(key);
             if (active) {
                 if (!confirmation) {
                     state.future = PROBE_EXECUTOR.schedule(
@@ -269,7 +388,9 @@ public final class PromotedNotificationPublisher {
                     return;
                 }
                 if (pickupNowBar) {
-                    Log.i(TAG, "Pickup Now Bar notification delivery observed");
+                    SamsungNowBarCompat.recordNowBarConfirmed(context, namespace);
+                    Log.i(TAG, "Now Bar template delivery observed namespace="
+                            + namespace + " key=" + key.logLabel());
                 } else {
                     SamsungNowBarCompat.recordProbe(context, true);
                     Log.i(TAG, "Samsung enhancement survived delayed confirmation key=" + key.logLabel());
@@ -279,21 +400,26 @@ public final class PromotedNotificationPublisher {
             }
             if (NotificationDismissalStore.wasDismissedForProbe(
                     context, key, expectedFingerprint, expectedToken)) {
+                if (pickupNowBar) {
+                    SamsungNowBarCompat.clearPendingNowBarProbe(context, namespace);
+                }
                 Log.i(TAG, "Live update dismissed by user before probe fallback key=" + key.logLabel());
                 finishProbeLocked(key, generation);
                 return;
             }
             if (!SamsungNowBarCompat.SYSTEM_UI_ERROR_FALLBACK_ENABLED) {
+                if (pickupNowBar) {
+                    SamsungNowBarCompat.clearPendingNowBarProbe(context, namespace);
+                }
                 Log.w(TAG, "SystemUI removed enhanced live update key=" + key.logLabel()
                         + "; temporary error fallback disabled");
                 finishProbeLocked(key, generation);
                 return;
             }
             if (pickupNowBar && !SamsungNowBarCompat.useGenericFallback(context)) {
-                SamsungNowBarCompat.recordNowBarRejection(
-                        context, SamsungNowBarCompat.namespaceOf(key));
-                Log.w(TAG, "Now Bar template removed; restoring established notification key="
-                        + key.logLabel());
+                SamsungNowBarCompat.recordNowBarRejection(context, namespace);
+                Log.w(TAG, "Now Bar template removed; restoring established notification namespace="
+                        + namespace + " key=" + key.logLabel());
                 try {
                     postEnhancedLocked(context, manager, key, generation,
                             state.pickupFallback, genericAndroid);
@@ -313,17 +439,20 @@ public final class PromotedNotificationPublisher {
                 finishProbeLocked(key, generation);
                 return;
             }
+            String namespace = SamsungNowBarCompat.namespaceOf(key);
             if (NotificationDismissalStore.wasDismissedForProbe(
                     context, key, expectedFingerprint, expectedToken)) {
+                if (pickupNowBar) {
+                    SamsungNowBarCompat.clearPendingNowBarProbe(context, namespace);
+                }
                 Log.i(TAG, "Live update dismissed by user during fallback preparation key=" + key.logLabel());
                 finishProbeLocked(key, generation);
                 return;
             }
             if (pickupNowBar) {
-                SamsungNowBarCompat.recordNowBarRejection(
-                        context, SamsungNowBarCompat.namespaceOf(key));
-                Log.w(TAG, "Now Bar template removed; restoring generic notification key="
-                        + key.logLabel());
+                SamsungNowBarCompat.recordNowBarRejection(context, namespace);
+                Log.w(TAG, "Now Bar template removed; restoring generic notification namespace="
+                        + namespace + " key=" + key.logLabel());
             } else {
                 int failures = SamsungNowBarCompat.recordProbe(context, false);
                 Log.w(TAG, "SystemUI removed enhanced live update key=" + key.logLabel()
@@ -385,16 +514,25 @@ public final class PromotedNotificationPublisher {
         GENERATIONS.invalidate(key);
         ProbeState previous = PROBES.remove(key);
         if (previous != null && previous.future != null) previous.future.cancel(false);
+        SamsungNowBarCompat.clearPendingNowBarProbeIfMatches(key);
     }
 
-    private static boolean canObserveDelivery(Context context, NotificationManager manager,
-                                              Notification notification) {
+    private static boolean canObserveNotifications(Context context, NotificationManager manager) {
         try {
             if (context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                     != PackageManager.PERMISSION_GRANTED) {
                 return false;
             }
-            if (!manager.areNotificationsEnabled()) return false;
+            return manager.areNotificationsEnabled();
+        } catch (Throwable error) {
+            return false;
+        }
+    }
+
+    private static boolean canObserveDelivery(Context context, NotificationManager manager,
+                                              Notification notification) {
+        try {
+            if (!canObserveNotifications(context, manager)) return false;
             String channelId = notification.getChannelId();
             if (channelId == null || channelId.isEmpty()) return false;
             NotificationChannel channel = manager.getNotificationChannel(channelId);

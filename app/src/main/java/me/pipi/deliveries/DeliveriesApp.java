@@ -34,6 +34,7 @@ public final class DeliveriesApp extends Application {
                 ExpressRepository repository = ExpressRepository.get(this);
                 repository.runPendingMigrations();
                 repository.pruneExpiredShipmentsIfDue();
+                me.pipi.deliveries.notification.PromotedNotificationPublisher.reconcilePendingNowBarProbes(this);
                 repository.reconcileLiveNotifications();
                 repository.replayPendingNotifications();
             } catch (Throwable failure) {

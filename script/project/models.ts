@@ -222,6 +222,12 @@ export type CloudPddParcelTombstone = Readonly<{
   actedAtMs: number;
 }>;
 
+export type IgnoredCloudManualWaybill = Readonly<{
+  waybill: string;
+  anchorAt: number;
+  ignoredAtMs: number;
+}>;
+
 export type WatchFeedbackRecord = Readonly<{
   scope: string;
   watchRecordId: string;
@@ -385,6 +391,8 @@ export type AppState = {
   watchSource?: { scope: string; snapshot: string; observedAtMs: number };
   watchFeedback?: readonly WatchFeedbackRecord[];
   cloudPddTombstones?: readonly CloudPddParcelTombstone[];
+  ignoredCloudManualWaybills?: readonly IgnoredCloudManualWaybill[];
+  migratedClearManualCloudImported_0948?: true;
   pickupCodeRecords?: readonly PickupCodeRecord[];
   pickupArtworkChoices?: PickupArtworkChoices;
   pendingNotifications?: readonly ShipmentNotificationEvent[];

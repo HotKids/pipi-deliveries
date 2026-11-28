@@ -1,19 +1,28 @@
 package me.pipi.deliveries.notification;
 
+import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.content.Context;
+import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.widget.RemoteViews;
 
+import org.json.JSONObject;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
 /**
  * Samsung Now Bar visual hints layered on the standard promoted notification.
  *
- * <p>One UI can remove a notification that uses its private template. The pickup
- * pilot supplies that template on a separate candidate so rejection can restore
- * the established promoted notification.</p>
+ * <p>One UI can remove a notification that uses its private template. Each live
+ * namespace supplies that template on a separate candidate so rejection can restore
+ * the established promoted notification without affecting sibling scenes.</p>
  */
 public final class SamsungNowBarCompat {
     private static final String TAG = "PipiNowBar";
@@ -23,16 +32,98 @@ public final class SamsungNowBarCompat {
     private static final String COMPAT_PROBE_PASSED = "probe_passed";
     private static final String COMPAT_PICKUP_NOW_BAR_REJECTED = "pickup_now_bar_rejected";
     private static final String COMPAT_NOW_BAR_REJECTED_PREFIX = "now_bar_rejected:";
+    private static final String COMPAT_NOW_BAR_CONFIRMED_BUILD_PREFIX = "confirmed_os_build:";
+    private static final String COMPAT_NOW_BAR_PENDING_PROBE_PREFIX = "pending_probe:";
+    static final long PENDING_PROBE_STALE_MS = 1_500L;
+    public static final int EXPANDED_MONOCHROME_LIGHT_INK = 0xFF1C1B1F;
+    public static final int EXPANDED_MONOCHROME_DARK_INK = 0xFFFFFFFF;
     private static final double MIN_WHITE_CHIP_CONTRAST = 4.5;
     private static final int COMPAT_SCHEMA = 3;
     // Diagnostic kill switch only. Normal builds retain the Samsung SystemUI
     // protection and reset its learned result after every APK installation.
     static final boolean SYSTEM_UI_ERROR_FALLBACK_ENABLED = true;
 
+    private static volatile Context cachedAppContext;
     private static volatile String cachedUpdatePackage;
     private static volatile long cachedUpdateTime = -1L;
 
+    static final class PendingNowBarProbe {
+        final String namespace;
+        final String persistenceKey;
+        final String tag;
+        final int id;
+        final long postedAt;
+        final long timeoutAt;
+        final String osBuild;
+        final String dismissalFingerprint;
+        final String dismissalToken;
+
+        PendingNowBarProbe(
+                String namespace,
+                String persistenceKey,
+                String tag,
+                int id,
+                long postedAt,
+                long timeoutAt,
+                String osBuild,
+                String dismissalFingerprint,
+                String dismissalToken) {
+            this.namespace = namespace == null ? "" : namespace;
+            this.persistenceKey = persistenceKey == null ? "" : persistenceKey;
+            this.tag = tag == null ? "" : tag;
+            this.id = id;
+            this.postedAt = postedAt;
+            this.timeoutAt = timeoutAt;
+            this.osBuild = osBuild == null ? "" : osBuild;
+            this.dismissalFingerprint = dismissalFingerprint == null ? "" : dismissalFingerprint;
+            this.dismissalToken = dismissalToken == null ? "" : dismissalToken;
+        }
+    }
+
     private SamsungNowBarCompat() {}
+
+    /**
+     * Binds an icon onto a Now Bar expanded {@link RemoteViews} slot, applying day/night high-contrast
+     * tinting to monochrome vector glyphs while keeping full-color courier logos and brand stickers untinted.
+     */
+    @SuppressLint("NewApi")
+    public static void bindExpandedIcon(
+            Context context, RemoteViews expanded, int iconViewId, Icon icon, boolean monochrome) {
+        if (expanded == null) return;
+        expanded.setImageViewIcon(iconViewId, icon);
+        applyExpandedIconTint(context, expanded, iconViewId, monochrome);
+    }
+
+    @SuppressLint("NewApi")
+    public static void bindExpandedIcon(
+            Context context, RemoteViews expanded, int iconViewId, int iconRes, boolean monochrome) {
+        if (expanded == null) return;
+        expanded.setImageViewResource(iconViewId, iconRes);
+        applyExpandedIconTint(context, expanded, iconViewId, monochrome);
+    }
+
+    @SuppressLint("NewApi")
+    private static void applyExpandedIconTint(
+            Context context, RemoteViews expanded, int iconViewId, boolean monochrome) {
+        if (Build.VERSION.SDK_INT >= 31) {
+            if (monochrome) {
+                expanded.setColorStateList(
+                        iconViewId,
+                        "setImageTintList",
+                        ColorStateList.valueOf(EXPANDED_MONOCHROME_LIGHT_INK),
+                        ColorStateList.valueOf(EXPANDED_MONOCHROME_DARK_INK));
+            } else {
+                expanded.setColorStateList(iconViewId, "setImageTintList", null, null);
+            }
+        } else if (monochrome && context != null) {
+            boolean night = (context.getResources().getConfiguration().uiMode
+                    & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+            expanded.setInt(
+                    iconViewId,
+                    "setColorFilter",
+                    night ? EXPANDED_MONOCHROME_DARK_INK : EXPANDED_MONOCHROME_LIGHT_INK);
+        }
+    }
 
     public static boolean applyIfAllowed(Context context, Notification.Builder builder,
                                          int smallIcon, CharSequence chipText,
@@ -238,23 +329,154 @@ public final class SamsungNowBarCompat {
         return colon < 0 ? persisted : persisted.substring(0, colon);
     }
 
-    private static String rejectionKey(String namespace) {
+    private static String normalizedNamespace(String namespace) {
         String clean = namespace == null ? "" : namespace.trim();
-        return COMPAT_NOW_BAR_REJECTED_PREFIX + (clean.isEmpty() ? "default" : clean);
+        return clean.isEmpty() ? "default" : clean;
+    }
+
+    private static String rejectionKey(String namespace) {
+        return COMPAT_NOW_BAR_REJECTED_PREFIX + normalizedNamespace(namespace);
+    }
+
+    private static String confirmedBuildKey(String namespace) {
+        return COMPAT_NOW_BAR_CONFIRMED_BUILD_PREFIX + normalizedNamespace(namespace);
+    }
+
+    private static String pendingProbeKey(String namespace) {
+        return COMPAT_NOW_BAR_PENDING_PROBE_PREFIX + normalizedNamespace(namespace);
+    }
+
+    static String osBuildFingerprint() {
+        String value = Build.FINGERPRINT;
+        return value == null || value.isEmpty()
+                ? Build.BRAND + "/" + Build.MODEL + "/" + Build.ID : value;
+    }
+
+    static boolean isNowBarConfirmedOnCurrentBuild(Context context, String namespace) {
+        if (!shouldTryNowBarTemplate(context, namespace)) return false;
+        String confirmed = compatPrefs(context).getString(confirmedBuildKey(namespace), "");
+        return osBuildFingerprint().equals(confirmed);
+    }
+
+    @SuppressLint("ApplySharedPref")
+    static void recordNowBarConfirmed(Context context, String namespace) {
+        synchronized (SamsungNowBarCompat.class) {
+            compatPrefs(context).edit()
+                    .remove(pendingProbeKey(namespace))
+                    .putString(confirmedBuildKey(namespace), osBuildFingerprint())
+                    .commit();
+        }
+    }
+
+    @SuppressLint("ApplySharedPref")
+    static void recordPendingNowBarProbe(
+            Context context,
+            NotificationKey key,
+            long postedAt,
+            long timeoutAfterMs,
+            String dismissalFingerprint,
+            String dismissalToken) {
+        if (context == null || key == null) return;
+        String namespace = namespaceOf(key);
+        long timeoutAt = timeoutAfterMs > 0L ? postedAt + timeoutAfterMs : 0L;
+        try {
+            JSONObject payload = new JSONObject()
+                    .put("namespace", normalizedNamespace(namespace))
+                    .put("persistenceKey", key.persistenceKey())
+                    .put("tag", "")
+                    .put("id", key.id)
+                    .put("postedAt", postedAt)
+                    .put("timeoutAt", timeoutAt)
+                    .put("osBuild", osBuildFingerprint())
+                    .put("dismissalFingerprint", dismissalFingerprint == null ? "" : dismissalFingerprint)
+                    .put("dismissalToken", dismissalToken == null ? "" : dismissalToken);
+            synchronized (SamsungNowBarCompat.class) {
+                compatPrefs(context).edit()
+                        .putString(pendingProbeKey(namespace), payload.toString())
+                        .commit();
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "Unable to persist Now Bar pending probe kind=" + error.getClass().getSimpleName());
+        }
+    }
+
+    static PendingNowBarProbe readPendingNowBarProbe(Context context, String namespace) {
+        if (context == null) return null;
+        String raw = compatPrefs(context).getString(pendingProbeKey(namespace), null);
+        return parsePendingNowBarProbe(raw);
+    }
+
+    static List<PendingNowBarProbe> listPendingNowBarProbes(Context context) {
+        List<PendingNowBarProbe> out = new ArrayList<>();
+        if (context == null) return out;
+        Map<String, ?> entries = compatPrefs(context).getAll();
+        for (Map.Entry<String, ?> entry : entries.entrySet()) {
+            if (entry.getKey() == null
+                    || !entry.getKey().startsWith(COMPAT_NOW_BAR_PENDING_PROBE_PREFIX)
+                    || !(entry.getValue() instanceof String)) {
+                continue;
+            }
+            PendingNowBarProbe parsed = parsePendingNowBarProbe((String) entry.getValue());
+            if (parsed != null) out.add(parsed);
+        }
+        return out;
+    }
+
+    private static PendingNowBarProbe parsePendingNowBarProbe(String raw) {
+        if (raw == null || raw.isEmpty()) return null;
+        try {
+            JSONObject obj = new JSONObject(raw);
+            return new PendingNowBarProbe(
+                    obj.optString("namespace", ""),
+                    obj.optString("persistenceKey", ""),
+                    obj.optString("tag", ""),
+                    obj.optInt("id", 0),
+                    obj.optLong("postedAt", 0L),
+                    obj.optLong("timeoutAt", 0L),
+                    obj.optString("osBuild", ""),
+                    obj.optString("dismissalFingerprint", ""),
+                    obj.optString("dismissalToken", ""));
+        } catch (Throwable invalid) {
+            return null;
+        }
+    }
+
+    @SuppressLint("ApplySharedPref")
+    static void clearPendingNowBarProbe(Context context, String namespace) {
+        if (context == null) return;
+        synchronized (SamsungNowBarCompat.class) {
+            compatPrefs(context).edit().remove(pendingProbeKey(namespace)).commit();
+        }
+    }
+
+    @SuppressLint("ApplySharedPref")
+    static void clearPendingNowBarProbeIfMatches(NotificationKey key) {
+        Context app = cachedAppContext;
+        if (app == null || key == null) return;
+        String namespace = namespaceOf(key);
+        synchronized (SamsungNowBarCompat.class) {
+            PendingNowBarProbe existing = readPendingNowBarProbe(app, namespace);
+            if (existing != null && existing.id == key.id) {
+                compatPrefs(app).edit().remove(pendingProbeKey(namespace)).commit();
+            }
+        }
     }
 
     static void recordPickupNowBarRejection(Context context) {
         recordNowBarRejection(context, "pickup.live");
     }
 
+    @SuppressLint("ApplySharedPref")
     static void recordNowBarRejection(Context context, String namespace) {
         synchronized (SamsungNowBarCompat.class) {
             android.content.SharedPreferences.Editor editor = compatPrefs(context).edit()
-                    .putBoolean(rejectionKey(namespace), true);
+                    .putBoolean(rejectionKey(namespace), true)
+                    .remove(pendingProbeKey(namespace))
+                    .remove(confirmedBuildKey(namespace));
             if ("pickup.live".equals(namespace) || namespace == null || namespace.isEmpty()) {
                 editor.putBoolean(COMPAT_PICKUP_NOW_BAR_REJECTED, true);
             }
-            editor.apply();
+            editor.commit();
         }
     }
 
@@ -272,10 +494,7 @@ public final class SamsungNowBarCompat {
     }
 
     static String fingerprint(Context context) {
-        String value = Build.FINGERPRINT;
-        String firmware = value == null || value.isEmpty()
-                ? Build.BRAND + "/" + Build.MODEL + "/" + Build.ID : value;
-        return firmware + "/app@" + packageLastUpdateTime(context)
+        return osBuildFingerprint() + "/app@" + packageLastUpdateTime(context)
                 + "/compat@" + COMPAT_SCHEMA;
     }
 
@@ -300,12 +519,15 @@ public final class SamsungNowBarCompat {
     }
 
     static void resetCacheForTest() {
+        cachedAppContext = null;
         cachedUpdatePackage = null;
         cachedUpdateTime = -1L;
     }
 
     private static android.content.SharedPreferences compatPrefs(Context context) {
         Context app = context.getApplicationContext();
+        if (app == null) app = context;
+        cachedAppContext = app;
         // Pipi and Lite keep separate files, named after the running app (see NotificationHost).
         android.content.SharedPreferences prefs = app.getSharedPreferences(
                 NotificationHost.isDeliveries(app)

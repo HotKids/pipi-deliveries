@@ -78,13 +78,13 @@ export function parsePickupCredentials(
   }
   const text = blocks.map((block) => block.text).join("\n")
   const hostBrand = positiveHostBrand(runtime, input.host)
-  let brand = redemption
-    ?? (identity ? (hostBrand ?? identity) : identifyBrand(runtime, input.host, text, barcodes))
+  let brand = redemption ?? identifyBrand(runtime, input.host, text, barcodes)
   if (redemption) {
     if (blocks.some(row => !isStepRow(runtime, row.text) && runtime.cancellationStatus.finds(row.text))) return []
     if (new Set(decoded).size !== 1) return []
-  } else if (!acceptPage(runtime, text, brand, hostBrand, barcodes)) return []
+  } else if (!acceptPage(runtime, text, brand ?? identity, hostBrand, barcodes)) return []
   if (!brand && mayUseBrandHint(hostBrand, barcodes)) brand = hostBrand
+  if (!brand && identity) brand = identity
 
   const selected = redemption ? [] : selectCodes(rankCodes(blocks, input.screenWidth, runtime))
   if (!redemption && selected.length === 0) return []

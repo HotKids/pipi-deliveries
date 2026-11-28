@@ -132,7 +132,12 @@ async function recognizeShortcutImage(rawImage: UIImage, capturedAtMs: number, n
             const meal = mealFromModel(result.fields, capturedAtMs, rules);
             if (meal) {
               const rawBrand = typeof result.fields.brand === "string" ? result.fields.brand.trim() : "";
-              if (!rawBrand && rules.parsed && meal.payload.brandId === rules.parsed.genericBrandId) {
+              const needsLocalOcrCheck = Boolean(
+                rules.parsed &&
+                ((!rawBrand && meal.payload.brandId === rules.parsed.genericBrandId) ||
+                  rules.parsed.brandsById?.get(meal.payload.brandId)?.redemption),
+              );
+              if (needsLocalOcrCheck) {
                 onlineQR = result.fields;
                 pendingOnlineMeal = meal;
               } else {

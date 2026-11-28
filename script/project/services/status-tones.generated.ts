@@ -34,7 +34,7 @@ export const PARCEL_STATUS_CAPSULE_TONES = {
     16011550
   ],
   "已签收": [
-    9479342,
+    7901340,
     6323595
   ],
   "已完成": [
@@ -88,7 +88,7 @@ export const PARCEL_STATUS_TONES = {
     16747109
   ],
   "已签收": [
-    6323595,
+    5533306,
     11583173
   ],
   "已完成": [

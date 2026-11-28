@@ -103,6 +103,7 @@ assert.equal(chayanOrdinary?.payload.brandName, "茶颜悦色");
 assert.equal(chayanOrdinary?.payload.code, "983");
 assert.equal(chayanOrdinary?.payload.merchantName, "中电软件园D3店");
 assert.equal(chayanOrdinary?.payload.productName, "烟火易冷");
+assert.equal(chayanOrdinary?.payload.drinkTemperature, "hot", "P2-1: strips productName 烟火易冷 before reading spec 热");
 assert.equal(chayanOrdinary?.payload.status, "制作中");
 assert.equal(chayanOrdinary?.payload.itemCount, 1);
 assert.equal(chayanOrdinary?.payload.totalAmount, "16");
@@ -122,9 +123,35 @@ const chayanMisleadingUsername = recognizeMealText([
     boundingBox: { x: 860 / width, y: 1 - (170 + 55) / height, width: (1020 - 860) / width, height: 55 / height },
   },
 ], width, height, now, [], rules).meals[0];
-assert.equal(chayanMisleadingUsername?.payload.brandId, "chayanyuese", "username line is stripped before identifyBrand");
+assert.equal(chayanMisleadingUsername?.payload.brandId, "chayanyuese", "username line is stripped before identifyBrand when no other brand is in remaining text");
 assert.equal(chayanMisleadingUsername?.payload.code, "983");
 assert.equal(chayanMisleadingUsername?.payload.productName, "烟火易冷");
+assert.equal(chayanMisleadingUsername?.payload.drinkTemperature, "hot");
+
+const chageeWithXiaozhuGreeting = recognizeMealText(candidates([
+  ["霸王茶姬", 40, 60, 260],
+  ["霸王茶姬小主", 90, 60, 300],
+  ["取餐码 A018", 180, 60, 340],
+  ["伯牙绝弦", 320, 60, 300],
+]), width, height, now, [], rules).meals[0];
+assert.equal(chageeWithXiaozhuGreeting?.payload.brandId, "bawangchaji", "I2-12: 霸王茶姬 in remaining text wins keyword competition after stripping ...小主");
+assert.equal(chageeWithXiaozhuGreeting?.payload.brandName, "霸王茶姬");
+assert.equal(chageeWithXiaozhuGreeting?.payload.code, "A018");
+
+const gumingWithXiaozhuGreeting = recognizeMealText([
+  ...candidates([
+    ["古茗", 50, 60, 220],
+    ["亲爱的小主", 110, 60, 280],
+    ["取餐码", 240, 880, 1000],
+  ]),
+  {
+    content: "612",
+    boundingBox: { x: 860 / width, y: 1 - (170 + 55) / height, width: (1020 - 860) / width, height: 55 / height },
+  },
+], width, height, now, [], rules).meals[0];
+assert.equal(gumingWithXiaozhuGreeting?.payload.brandId, "guming", "I2-12: 古茗 / 亲爱的小主 / 取餐码 resolves to 古茗");
+assert.equal(gumingWithXiaozhuGreeting?.payload.brandName, "古茗");
+assert.equal(gumingWithXiaozhuGreeting?.payload.code, "612");
 
 const chayanOnlineFields = {
   brand: null,
@@ -143,11 +170,42 @@ assert.equal(chayanFromModelWithOcr?.payload.brandName, "茶颜悦色");
 assert.equal(chayanFromModelWithOcr?.payload.code, "983");
 assert.equal(chayanFromModelWithOcr?.payload.merchantName, "中电软件园D3店");
 assert.equal(chayanFromModelWithOcr?.payload.productName, "烟火易冷");
+assert.equal(chayanFromModelWithOcr?.payload.drinkTemperature, "hot");
 assert.equal(chayanFromModelWithOcr?.payload.itemCount, 1);
 assert.equal(chayanFromModelWithOcr?.payload.totalAmount, "16");
 const chayanFromRecognizeWithModel = recognizeMealText(chayanOrdinaryScreen, width, height, now, [], rules, chayanOnlineFields).meals[0];
 assert.equal(chayanFromRecognizeWithModel?.payload.brandId, "chayanyuese");
 assert.equal(chayanFromRecognizeWithModel?.payload.code, "983");
+assert.equal(chayanFromRecognizeWithModel?.payload.drinkTemperature, "hot");
+
+// I2-5: On a genuine 待扫码核销 (or 扫码核销 / 请出示二维码) page, even if the online model returns
+// brand 茶颜悦色 plus an invented text code, QR decoding is still required and the invented code is never saved.
+const chayanInventedOnlineOnRedemption = {
+  brand: "茶颜悦色",
+  pickupCode: "11",
+  merchantName: "深圳前海壹方城游园会店",
+  productName: "幽兰拿铁",
+};
+assert.equal(onlineMealRequiresQR(chayanInventedOnlineOnRedemption, rules, redemption), true);
+assert.equal(onlineMealRequiresQR({ ...chayanInventedOnlineOnRedemption, status: "请出示二维码" }, rules), true);
+assert.deepEqual(
+  recognizeMealText(redemption, width, height, now, [], rules, chayanInventedOnlineOnRedemption).meals,
+  [],
+  "I2-5: without a decoded QR, invented text code 11 on 待扫码核销 page is rejected",
+);
+const chayanRedemptionWithOnlineInventedCode = recognizeMealText(
+  redemption,
+  width,
+  height,
+  now,
+  [" SYNTHETIC QR "],
+  rules,
+  chayanInventedOnlineOnRedemption,
+).meals[0];
+assert.equal(chayanRedemptionWithOnlineInventedCode?.payload.brandId, "chayanyuese");
+assert.equal(chayanRedemptionWithOnlineInventedCode?.payload.code, "");
+assert.equal(chayanRedemptionWithOnlineInventedCode?.payload.status, "待核销");
+assert.equal(chayanRedemptionWithOnlineInventedCode?.payload.qrPayload, " SYNTHETIC QR ");
 
 // The Android scenario union uses this order summary and its distinct product row.
 const starbucks = recognizeMealText(candidates([

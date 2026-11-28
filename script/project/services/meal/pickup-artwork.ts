@@ -48,11 +48,10 @@ export function resolvePickupVisualStyle(
   const brand = brands.find((candidate) => clean(candidate.id) === brandId)
 
   const styleText = clean(input.productName) || clean(input.evidenceText)
-  const temperatureText = clean(input.evidenceText) || styleText
   const category = brand
     ? clean(brand.category)
     : categoryFromText(runtime, styleText)
-  const temperature = input.drinkTemperature ?? resolveTemperature(runtime, temperatureText)
+  const temperature = input.drinkTemperature ?? resolveTemperature(runtime, input.productName, input.evidenceText)
   const artwork = resolveArtwork(runtime, unknown, brand, category, styleText, temperature)
   const temperaturePair = temperature === "unknown"
     ? validatedTemperaturePair(artwork,
@@ -219,14 +218,53 @@ function categoryFromText(runtime: JsonObject, source: string): string {
   return "catering"
 }
 
-function resolveTemperature(runtime: JsonObject, source: string): "cold" | "hot" | "unknown" {
-  const hotCold = optionalObject(runtime.hotColdKeywords)
+function stripIngredients(hotCold: JsonObject, source: string): string {
   let value = clean(source)
   for (const ingredient of strings(hotCold.ingredient_strip)) {
     value = value.split(ingredient).join("")
   }
-  if (containsAny(value, strings(hotCold.cold))) return "cold"
-  if (containsAny(value, strings(hotCold.hot))) return "hot"
+  return value
+}
+
+function stripRecognizedProducts(productEvidence: string, artworkEvidence: string): string {
+  let rest = artworkEvidence
+  const candidates = new Set<string>()
+  const pushVariants = (name: string) => {
+    const trimmed = clean(name)
+    if (!trimmed) return
+    candidates.add(trimmed)
+    candidates.add(trimmed.replace(/（/gu, "(").replace(/）/gu, ")"))
+    candidates.add(trimmed.replace(/\(/gu, "（").replace(/\)/gu, "）"))
+  }
+  pushVariants(productEvidence)
+  for (const segment of productEvidence.split(/\s*(?:\+|＋|\/|、|，|,|\|)\s*/u)) {
+    pushVariants(segment)
+  }
+  for (const token of [...candidates].sort((left, right) => right.length - left.length)) {
+    rest = rest.split(token).join("\n")
+  }
+  return rest
+}
+
+function resolveTemperature(
+  runtime: JsonObject,
+  productEvidence: string,
+  artworkEvidence: string,
+): "cold" | "hot" | "unknown" {
+  const hotCold = optionalObject(runtime.hotColdKeywords)
+  const coldKeywords = strings(hotCold.cold)
+  const hotKeywords = strings(hotCold.hot)
+  const prod = clean(productEvidence)
+  const extra = clean(artworkEvidence)
+  if (prod && extra) {
+    const rest = stripIngredients(hotCold, stripRecognizedProducts(prod, extra))
+    const restCold = containsAny(rest, coldKeywords)
+    const restHot = containsAny(rest, hotKeywords)
+    if (restCold !== restHot) return restCold ? "cold" : "hot"
+  }
+  const value = stripIngredients(hotCold, extra || prod)
+  if (containsAny(value, coldKeywords)) return "cold"
+  if (containsAny(value, hotKeywords)) return "hot"
   return "unknown"
 }
 

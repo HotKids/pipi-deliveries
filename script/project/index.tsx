@@ -28,6 +28,7 @@ import {
 } from "./services/projection-viewport";
 import type { AppState, Shipment } from "./models";
 import { displayWaybill } from "./services/shipment-policy";
+import { listHeadline, shipmentPresentationStatus, statusTextTint } from "./services/status";
 import { HomePage } from "./pages/HomePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PickupPage } from "./pages/PickupPage";
@@ -156,6 +157,21 @@ function readMealCards() {
 
 function sameForegroundShipmentProjection(left: Shipment, right: Shipment): boolean {
   if (left === right) return true;
+  const leftPresentation = shipmentPresentationStatus(left);
+  const rightPresentation = shipmentPresentationStatus(right);
+  if (
+    leftPresentation.semantic !== rightPresentation.semantic ||
+    leftPresentation.text !== rightPresentation.text
+  ) {
+    return false;
+  }
+  const leftTone = statusTextTint(leftPresentation.semantic, { label: leftPresentation.text });
+  const rightTone = statusTextTint(rightPresentation.semantic, { label: rightPresentation.text });
+  if (leftTone.light !== rightTone.light || leftTone.dark !== rightTone.dark) {
+    return false;
+  }
+  const leftHeadline = Array.isArray(left.timeline.tracks) ? listHeadline(left.timeline) : null;
+  const rightHeadline = Array.isArray(right.timeline.tracks) ? listHeadline(right.timeline) : null;
   return (
     left.identity.id === right.identity.id &&
     left.identity.createdAtMs === right.identity.createdAtMs &&
@@ -165,6 +181,11 @@ function sameForegroundShipmentProjection(left: Shipment, right: Shipment): bool
     left.statusPresentation?.scope === right.statusPresentation?.scope &&
     left.statusPresentation?.semantic === right.statusPresentation?.semantic &&
     left.statusPresentation?.text === right.statusPresentation?.text &&
+    left.timeline.normalizedStatus?.scope === right.timeline.normalizedStatus?.scope &&
+    left.timeline.normalizedStatus?.semantic === right.timeline.normalizedStatus?.semantic &&
+    left.timeline.normalizedStatus?.code === right.timeline.normalizedStatus?.code &&
+    left.timeline.normalizedStatus?.text === right.timeline.normalizedStatus?.text &&
+    left.timeline.normalizedStatus?.structured === right.timeline.normalizedStatus?.structured &&
     left.identity.companyName === right.identity.companyName &&
     left.identity.courierCode === right.identity.courierCode &&
     left.identity.sender === right.identity.sender &&
@@ -174,6 +195,8 @@ function sameForegroundShipmentProjection(left: Shipment, right: Shipment): bool
     left.timeline.semantic === right.timeline.semantic &&
     left.timeline.latestTimeText === right.timeline.latestTimeText &&
     left.timeline.latestDetail === right.timeline.latestDetail &&
+    leftHeadline?.timeText === rightHeadline?.timeText &&
+    leftHeadline?.detail === rightHeadline?.detail &&
     left.timeline.headlineDisplay?.timeText === right.timeline.headlineDisplay?.timeText &&
     left.timeline.headlineDisplay?.detail === right.timeline.headlineDisplay?.detail &&
     left.platformFields?.manualTitle === right.platformFields?.manualTitle &&

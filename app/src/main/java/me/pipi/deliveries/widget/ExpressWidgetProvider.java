@@ -273,8 +273,10 @@ public class ExpressWidgetProvider extends AppWidgetProvider {
         // Cleared on every bind; ExpressWidgetMeasurements.centerWideRowGlyphs caps it again.
         views.setInt(WIDE_COMPANY_IDS[index], "setMaxWidth", Integer.MAX_VALUE);
         views.setViewVisibility(WIDE_SENDER_IDS[index], item.sender ? View.VISIBLE : View.GONE);
-        applySenderTagTextColor(context, views, WIDE_SENDER_IDS[index],
-                ExpressWidgetPalette.accent(context, items.get(0)));
+        if (item.sender) {
+            applySenderTagTextColor(context, views, WIDE_SENDER_IDS[index],
+                    ExpressWidgetPalette.accent(context, items.get(0)));
+        }
         views.setTextViewText(WIDE_STATUS_IDS[index],
                 ExpressWidgetPresentation.statusText(item));
         views.setInt(WIDE_STATUS_IDS[index],

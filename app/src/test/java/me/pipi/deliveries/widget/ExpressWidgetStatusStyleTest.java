@@ -17,7 +17,7 @@ public final class ExpressWidgetStatusStyleTest {
         assertEquals(0xFFC62828, foreground(StatusSemantic.DANGER));
         assertEquals(0xFFBF360C, foreground(StatusSemantic.WAITING_PICKUP));
         assertEquals(0xFFE65100, foreground(StatusSemantic.DELIVERY));
-        assertEquals(0xFF607D8B, foreground(StatusSemantic.COMPLETED));
+        assertEquals(0xFF546E7A, foreground(StatusSemantic.COMPLETED));
         assertEquals(0xFF00796B, foreground(StatusSemantic.TRANSIT));
         assertEquals(0xFF1565C0, foreground(StatusSemantic.PICKED));
         assertEquals(0xFF00838F, foreground(StatusSemantic.ORDERED));

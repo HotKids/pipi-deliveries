@@ -311,12 +311,14 @@ public final class ExpressSubscriptionClientTest {
             assertTrue(parsed.structuredStatusEvidence);
             ExpressItem row = item(parsed);
             assertEquals("清关中", row.displayStatus());
-            // Sorting, filters and notification groups follow TRANSIT; 清关中 uses its dedicated light text #00796B and shares dark #4DB6AC.
+            // Sorting, filters and notification groups follow TRANSIT; 清关中 uses its dedicated light text #00695C and dark text #26A69A (distinct from 运输中 #4DB6AC).
             assertEquals(ExpressStatusColors.accent(StatusSemantic.TRANSIT, "清关中", false),
                     ExpressStatusColors.accent(row.semantic, row.displayStatus(), false));
             assertNotEquals(ExpressStatusColors.accent(StatusSemantic.TRANSIT, "运输中", false),
                     ExpressStatusColors.accent(row.semantic, row.displayStatus(), false));
-            assertEquals(ExpressStatusColors.accent(StatusSemantic.TRANSIT, "运输中", true),
+            assertEquals(ExpressStatusColors.accent(StatusSemantic.TRANSIT, "清关中", true),
+                    ExpressStatusColors.accent(row.semantic, row.displayStatus(), true));
+            assertNotEquals(ExpressStatusColors.accent(StatusSemantic.TRANSIT, "运输中", true),
                     ExpressStatusColors.accent(row.semantic, row.displayStatus(), true));
             assertNotEquals(ExpressStatusColors.accent(StatusSemantic.DANGER, "异常件", false),
                     ExpressStatusColors.accent(row.semantic, row.displayStatus(), false));

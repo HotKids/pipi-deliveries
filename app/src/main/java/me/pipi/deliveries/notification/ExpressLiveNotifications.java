@@ -140,8 +140,9 @@ public final class ExpressLiveNotifications {
         expanded.setOnClickPendingIntent(
                 R.id.express_now_bar_detail_root, established.contentIntent);
         int logo = spec.primary != null ? spec.primary.displayIconResource() : 0;
-        expanded.setImageViewResource(
-                R.id.express_now_bar_icon, logo != 0 ? logo : spec.smallIcon);
+        SamsungNowBarCompat.bindExpandedIcon(
+                context, expanded, R.id.express_now_bar_icon,
+                logo != 0 ? logo : spec.smallIcon, logo == 0);
         expanded.setTextViewText(R.id.express_now_bar_title, spec.title);
         CharSequence summary = ExpressNotifications.breakableText(spec.summary);
         CharSequence detail = ExpressNotifications.breakableText(spec.detail);

@@ -170,10 +170,16 @@ const CAPTURE_JD_FORECASTS = `(() => {
   window.__pipiDeliveriesJdForecastHooked = true;
   window.__pipiDeliveriesJdForecastDealId = new URLSearchParams(location.search).get('dealId') || '';
   const output = window.__pipiDeliveriesJdForecasts = [];
+  const recHeadingRe = /可能您还想要|猜你喜欢|为你推荐/;
+  const recKeyRe = /^(?:recommend\\w*|recList|recFloor\\w*|guess\\w*|mayLike\\w*|feed\\w*|adList|ads|banner\\w*)$/i;
   let bytes = 0;
+  function beforeRecommendations(raw) {
+    return typeof raw === 'string' ? raw.split(recHeadingRe, 1)[0] : '';
+  }
   function addEstimate(raw) {
-    if (typeof raw !== 'string' || !raw.includes('预计') || !raw.includes('送达')) return;
-    for (const item of raw.matchAll(/预计[^\\r\\n"<>。；;]{1,70}?送达/g)) {
+    const clipped = beforeRecommendations(raw);
+    if (!clipped || !clipped.includes('预计') || !clipped.includes('送达')) return;
+    for (const item of clipped.matchAll(/预计[^\\r\\n"<>。；;]{1,70}?送达/g)) {
       const text = item[0].trim();
       if (text && !output.includes(text) && output.length < 32) output.push(text);
     }
@@ -184,6 +190,16 @@ const CAPTURE_JD_FORECASTS = `(() => {
       (node.opeRemark || node.opeTitle || node.statusDesc || node.content || node.message)
     );
   }
+  function isRecommendationFloor(node) {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return false;
+    for (const k of ['title', 'name', 'header', 'floorName', 'subTitle', 'text', 'label', 'mId', 'bId', 'moduleId']) {
+      const val = node[k];
+      if (typeof val === 'string' && (recHeadingRe.test(val) || /recommend|guessyoulike|diviner/i.test(val))) {
+        return true;
+      }
+    }
+    return false;
+  }
   function scanJson(value, depth) {
     if (!value || depth > 24 || output.length >= 32) return;
     if (typeof value === 'string') {
@@ -193,22 +209,36 @@ const CAPTURE_JD_FORECASTS = `(() => {
     if (typeof value !== 'object') return;
     if (Array.isArray(value)) {
       for (const child of value.slice(0, 64)) {
-        if (child && typeof child === 'object' && !Array.isArray(child) && isTimelineTraceObject(child)) continue;
+        if (child && typeof child === 'object' && !Array.isArray(child)) {
+          if (isRecommendationFloor(child)) break;
+          if (isTimelineTraceObject(child)) continue;
+        }
         scanJson(child, depth + 1);
       }
       return;
     }
-    if (isTimelineTraceObject(value)) return;
+    if (isTimelineTraceObject(value) || isRecommendationFloor(value)) return;
     for (const [key, child] of Object.entries(value)) {
       if (/^(?:traceList|traces|waybillTrack|trackList|opeRemarkList|progressList)$/i.test(key)) continue;
+      if (recKeyRe.test(key)) continue;
       scanJson(child, depth + 1);
     }
   }
   function approved(address) {
     try {
       const url = new URL(address, location.href);
-      return url.protocol === 'https:' && !url.username && !url.password &&
-        (url.hostname === 'api.m.jd.com' || url.hostname === 'trade.m.jd.com' || url.hostname.endsWith('.m.jd.com'));
+      if (url.protocol !== 'https:' || url.username || url.password) return false;
+      const full = url.pathname + url.search;
+      if (/(?:recommend|diviner|guess|youlike|maylike|banner|advert|marketing|coupon|comment|browse)/i.test(full)) {
+        return false;
+      }
+      if (url.hostname === 'trade.m.jd.com') {
+        return /(?:order|wuliu|track|logistics|waybill|deal)/i.test(full);
+      }
+      if (url.hostname === 'api.m.jd.com') {
+        return /(?:order|track|wuliu|logistics|waybill|promise|delivery|express|parcel|union|deal)/i.test(full);
+      }
+      return false;
     } catch (_) {
       return false;
     }
@@ -229,7 +259,8 @@ const CAPTURE_JD_FORECASTS = `(() => {
       scanJson(JSON.parse(trimmed), 0);
       return;
     } catch (_) {}
-    const head = trimmed.split(/(?<!预计)\\b\\d{4}(?:[-/]\\d{1,2}[-/]\\d{1,2}|年\\d{1,2}月\\d{1,2}日)/, 1)[0];
+    const clipped = beforeRecommendations(trimmed);
+    const head = clipped.split(/(?<!预计)\\b\\d{4}(?:[-/]\\d{1,2}[-/]\\d{1,2}|年\\d{1,2}月\\d{1,2}日)/, 1)[0];
     addEstimate(head);
   }
   if (typeof window.fetch === 'function') {
@@ -276,7 +307,7 @@ function readJdParcel(order: string) {
     if (location.origin !== 'https://trade.m.jd.com' || location.pathname !== '/order/deal_wuliu_jdm.shtml') return null;
     const orderIds = new URLSearchParams(location.search).getAll('dealId');
     if (orderIds.length !== 1 || orderIds[0] !== ` + JSON.stringify(order) + String.raw`) return null;
-    const text = (document.body?.innerText || '').split('可能您还想要')[0];
+    const text = (document.body?.innerText || '').split(/可能您还想要|猜你喜欢|为你推荐/)[0];
     const summary = document.querySelector?.('[class*="Summary-module__m___"]') || null;
     const copies = summary?.querySelectorAll?.('[class*="Summary-module__copy___"][data-copy-cont]') || [];
     const waybills = new Set(Array.from(copies, node => (node.getAttribute('data-copy-cont') || '').trim())
@@ -308,7 +339,7 @@ function readJdParcel(order: string) {
       '[class*="map"],[class*="Map"],[class*="bubble"],[class*="Bubble"],[class*="promise"],[class*="Promise"],[class*="arrive"],[class*="Arrive"]'
     ) || [];
     for (const node of Array.from(callouts).slice(0, 40)) {
-      const nodeText = String(node?.innerText || node?.textContent || '');
+      const nodeText = String(node?.innerText || node?.textContent || '').split(/可能您还想要|猜你喜欢|为你推荐/)[0];
       const preTimeline = nodeText.split(/(?<!预计)\b\d{4}(?:[-/]\d{1,2}[-/]\d{1,2}|年\d{1,2}月\d{1,2}日)/, 1)[0];
       collectEstimates(preTimeline);
     }

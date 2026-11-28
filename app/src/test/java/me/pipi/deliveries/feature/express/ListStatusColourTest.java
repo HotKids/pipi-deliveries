@@ -14,7 +14,7 @@ public final class ListStatusColourTest {
         assertEquals(0xFFC62828, colour(StatusSemantic.DANGER));
         assertEquals(0xFFBF360C, colour(StatusSemantic.WAITING_PICKUP));
         assertEquals(0xFFE65100, colour(StatusSemantic.DELIVERY));
-        assertEquals(0xFF607D8B, colour(StatusSemantic.COMPLETED));
+        assertEquals(0xFF546E7A, colour(StatusSemantic.COMPLETED));
         assertEquals(0xFF1565C0, colour(StatusSemantic.PICKED));
         assertEquals(0xFF00796B, colour(StatusSemantic.TRANSIT));
         assertEquals(0xFF00838F, colour(StatusSemantic.ORDERED));

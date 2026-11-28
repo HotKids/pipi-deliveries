@@ -36,7 +36,7 @@ const toneTable: Array<[StatusSemantic, string, number, number, number, number]>
   ["DELIVERY", "待派送", 0xff6f00, 0xffd54f, 0xffc107, 0xffb300],
   ["DELIVERY", "派送中", 0xe65100, 0xffb74d, 0xff9800, 0xfb8c00],
   ["WAITING_PICKUP", "待取件", 0xbf360c, 0xff8a65, 0xff5722, 0xf4511e],
-  ["COMPLETED", "已签收", 0x607d8b, 0xb0bec5, 0x90a4ae, 0x607d8b],
+  ["COMPLETED", "已签收", 0x546e7a, 0xb0bec5, 0x78909c, 0x607d8b],
   ["COMPLETED", "已完成", 0x455a64, 0x90a4ae, 0x607d8b, 0x546e7a],
   ["DANGER", "异常件", 0xc62828, 0xe57373, 0xf44336, 0xe53935],
   ["CANCELLED", "已取消", 0x7e3a3a, 0xd98c8c, 0xc06060, 0xa84e4e],
@@ -57,7 +57,7 @@ for (const [semantic, label, light, dark, lightCap, darkCap] of toneTable) {
   assert.equal(fill.dark, `rgba(${rgb(darkCap).join(", ")}, 0.22)`);
 }
 assert.deepEqual(statusTextTint("DELIVERY"), { light: "#e65100", dark: "#ffb74d" }, "DELIVERY reads 派送中");
-assert.deepEqual(statusTextTint("COMPLETED"), { light: "#607d8b", dark: "#b0bec5" }, "COMPLETED reads 已签收");
+assert.deepEqual(statusTextTint("COMPLETED"), { light: "#546e7a", dark: "#b0bec5" }, "COMPLETED reads 已签收");
 assert.deepEqual(
   statusTextTint("TRANSIT", { label: "清关中" }),
   { light: "#00695c", dark: "#26a69a" },

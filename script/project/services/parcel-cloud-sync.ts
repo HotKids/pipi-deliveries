@@ -1,5 +1,6 @@
 import type {
   AppState,
+  IgnoredCloudManualWaybill,
   ParcelHandoffRecord,
   PickupCodeRecord,
   PickupPlatform,
@@ -63,6 +64,7 @@ const RETENTION_CUTOFF_MS = 90 * 86_400_000;
 const EXPRESS_SIGN_RETENTION_MS = 21 * 86_400_000;
 const CLOUD_TITLE_CACHE_LIMIT = 64;
 const ESTIMATE_MAX_CHARS = 80;
+export const PARCEL_CLOUD_QUARANTINE_TTL_MS = 24 * 60 * 60 * 1_000;
 
 const WAYBILL_PATTERN = /^[A-Z0-9]{6,64}$/;
 const WATCH_WAYBILL_PATTERN = /^[A-Z0-9][A-Z0-9_-]{0,63}$/;
@@ -174,6 +176,11 @@ export type ParcelSyncedBaseline = Readonly<{
   localDigest?: string;
 }>;
 
+export type ParcelQuarantinedRecord = Readonly<{
+  digest: string;
+  expiresAtMs: number;
+}>;
+
 export type ParcelCloudSnapshot = Readonly<{
   schemaVersion: 1;
   session?: ParcelCloudSession;
@@ -188,7 +195,7 @@ export type ParcelCloudSnapshot = Readonly<{
   synced: Readonly<Record<string, ParcelSyncedBaseline>>;
   edits: Readonly<Record<string, ParcelCloudEdit>>;
   pddLinks?: Readonly<Record<string, CloudParcelPddLink>>;
-  quarantined?: Readonly<Record<string, string>>;
+  quarantined?: Readonly<Record<string, ParcelQuarantinedRecord>>;
   legacyManualTitleCleaned?: true;
   batch?: ParcelCloudBatch;
 }>;
@@ -366,10 +373,27 @@ function writeStoreFile(store: ParcelCloudStoreFile): void {
   writeDurableText(PARCEL_CLOUD_FILE, JSON.stringify(store));
 }
 
-export function readParcelCloudState(scope: string): ParcelCloudSnapshot {
+function normalizeQuarantinedEntries(
+  raw: unknown,
+  now = Date.now(),
+): Record<string, ParcelQuarantinedRecord> {
+  if (!isPlainObject(raw)) return {};
+  const result: Record<string, ParcelQuarantinedRecord> = {};
+  for (const [id, entry] of Object.entries(raw)) {
+    if (!isPlainObject(entry)) continue;
+    const digest = typeof entry.digest === "string" ? entry.digest : "";
+    const expiresAtMs = typeof entry.expiresAtMs === "number" ? entry.expiresAtMs : 0;
+    if (!digest || !Number.isFinite(expiresAtMs) || expiresAtMs <= now) continue;
+    result[id] = { digest, expiresAtMs: Math.trunc(expiresAtMs) };
+  }
+  return result;
+}
+
+export function readParcelCloudState(scope: string, now = Date.now()): ParcelCloudSnapshot {
   if (!scope) return emptyParcelCloudSnapshot();
   const raw = readStoreFile().scopes[scope];
   if (!raw || raw.schemaVersion !== 1) return emptyParcelCloudSnapshot();
+  const quarantined = normalizeQuarantinedEntries(raw.quarantined, now);
   return {
     schemaVersion: 1,
     ...(raw.session ? { session: raw.session } : {}),
@@ -379,7 +403,7 @@ export function readParcelCloudState(scope: string): ParcelCloudSnapshot {
     synced: isPlainObject(raw.synced) ? raw.synced : {},
     edits: isPlainObject(raw.edits) ? raw.edits : {},
     ...(isPlainObject(raw.pddLinks) ? { pddLinks: raw.pddLinks } : {}),
-    ...(isPlainObject(raw.quarantined) ? { quarantined: raw.quarantined as Record<string, string> } : {}),
+    ...(Object.keys(quarantined).length ? { quarantined } : {}),
     ...(raw.legacyManualTitleCleaned === true ? { legacyManualTitleCleaned: true as const } : {}),
     ...(raw.batch ? { batch: raw.batch } : {}),
   };
@@ -1041,15 +1065,20 @@ function parcelEditQuarantineDigest(
 }
 
 /**
- * Returns true when a 4xx rejection code indicates transient clock skew or future timestamp bounds
- * rather than a permanent schema/content defect.
+ * Returns true when a non-retryable 4xx payload rejection code indicates transient clock skew or
+ * future timestamp bounds rather than a permanent schema/content defect.
+ * HTTP 401 (`expired_request` auth skew), 408, 409, and 429 are excluded first so in-flight batches
+ * and queued mutations are retained and retried rather than dropped.
  */
 export function isClockSkewMutationRejection(error: unknown): boolean {
   if (!(error instanceof GatewayError)) return false;
   if (error.status < 400 || error.status >= 500) return false;
+  if (error.status === 401 || error.status === 408 || error.status === 409 || error.status === 429) {
+    return false;
+  }
   const code = String(error.gatewayCode || "");
   const message = String(error.message || "");
-  const pattern = /clock_skew|future_timestamp|future_time|future_clock|timestamp_skew|timestamp_out_of_bounds|edit_clock_skew|expired_request/i;
+  const pattern = /clock_skew|future_timestamp|future_time|future_clock|timestamp_skew|timestamp_out_of_bounds|edit_clock_skew/i;
   return pattern.test(code) || pattern.test(message);
 }
 
@@ -1074,13 +1103,15 @@ export function isDeterministicParcelMutationRejection(error: unknown): boolean 
 }
 
 /**
- * Drops a rejected mutation batch. Genuine schema/content rejections quarantine the exact payload digest,
- * while transient clock-skew rejections drop only the skewed in-flight batch without quarantining.
+ * Drops a rejected mutation batch. Genuine schema/content rejections quarantine the exact payload digest
+ * with a bounded TTL (`PARCEL_CLOUD_QUARANTINE_TTL_MS`), while transient clock-skew rejections drop only
+ * the skewed in-flight batch without quarantining.
  */
 export function dropRejectedParcelBatch(
   state: ParcelCloudSnapshot,
   batch: ParcelCloudBatch,
   error?: unknown,
+  now = Date.now(),
 ): ParcelCloudSnapshot {
   if (state.batch?.requestId !== batch.requestId) return state;
   const mutation = batch.mutations[0];
@@ -1103,9 +1134,9 @@ export function dropRejectedParcelBatch(
     mutation.historyAt ?? 0,
     mutation.payload,
   );
-  const quarantined: Record<string, string> = {
-    ...(state.quarantined ?? {}),
-    [id]: digest,
+  const quarantined: Record<string, ParcelQuarantinedRecord> = {
+    ...normalizeQuarantinedEntries(state.quarantined, now),
+    [id]: { digest, expiresAtMs: Math.trunc(now) + PARCEL_CLOUD_QUARANTINE_TTL_MS },
   };
   return {
     ...state,
@@ -1243,6 +1274,31 @@ function matchesCloudShipmentLifecycle(
   if (remoteTerminal > 0 && localAnchor - remoteTerminal >= WAYBILL_REUSE_MIN_GAP_MS) return false;
   if (localTerminal > 0 && remoteAnchor - localTerminal >= WAYBILL_REUSE_MIN_GAP_MS) return false;
   return true;
+}
+
+function matchingIgnoredCloudManualWaybill(
+  records: readonly IgnoredCloudManualWaybill[] | undefined,
+  waybill: string,
+  anchorAt: number,
+  terminalAt: number,
+): IgnoredCloudManualWaybill | undefined {
+  if (!records?.length) return undefined;
+  const canonical = normalizeWaybill(waybill);
+  if (!canonical) return undefined;
+  return records.find((entry) => {
+    if (normalizeWaybill(entry.waybill) !== canonical) return false;
+    if (
+      anchorAt > 0 &&
+      entry.anchorAt > 0 &&
+      anchorAt >= Math.max(entry.anchorAt, entry.ignoredAtMs) + WAYBILL_REUSE_MIN_GAP_MS
+    ) {
+      return false;
+    }
+    if (terminalAt > 0 && entry.anchorAt > 0 && terminalAt + WAYBILL_REUSE_MIN_GAP_MS <= entry.anchorAt) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function normalizedEstimateForWire(text: string | undefined): string {
@@ -1650,6 +1706,9 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
         continue;
       }
       if (workingState.pendingQueries.some((q) => normalizeWaybill(q.waybill) === waybill)) continue;
+      if (matchingIgnoredCloudManualWaybill(workingState.ignoredCloudManualWaybills, waybill, anchorAt, completedAt)) {
+        continue;
+      }
       const previousSync = cloudState.synced[envelope.recordId];
       // Do not resurrect a manual parcel that was already synced to this device and later removed locally.
       if (previousSync && previousSync.revision === envelope.revision) continue;
@@ -2024,6 +2083,53 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
     let pickupRecordsChanged = false;
     let waybillPickupsChanged = false;
     let shipmentsForPickups = workingState.shipments;
+    const normalizeParcelCodeForMatch = (value: string): string =>
+      cleanString(value).replace(/\s+/g, "").toUpperCase();
+    const isLocalCodeBoundToOtherCloudRecord = (item: PickupCodeRecord, currentRecordId: string): boolean => {
+      if (item.id !== currentRecordId && Boolean(cloudState.remote[item.id] && !cloudState.remote[item.id]!.deleted)) {
+        return true;
+      }
+      if (!MEAL_UUID.test(item.id)) {
+        const detId = parcelDetailRecordId(`parcel-${item.kind}:`, item.id);
+        if (detId !== currentRecordId && Boolean(cloudState.remote[detId] && !cloudState.remote[detId]!.deleted)) {
+          return true;
+        }
+      }
+      for (const [otherRecordId, entry] of Object.entries(nextSynced)) {
+        if (otherRecordId === currentRecordId) continue;
+        if (entry.localKey === `code:${item.id}` && !cloudState.remote[otherRecordId]?.deleted) {
+          return true;
+        }
+      }
+      return false;
+    };
+    const findStandaloneCodeMatchIndex = (
+      expectedKind: "pickup" | "handoff",
+      envelopeRecordId: string,
+      previousSync: ParcelSyncedBaseline | undefined,
+      platform: PickupPlatform,
+      rawCode: string,
+      capturedAt: number,
+    ): number => {
+      const exactIdIndex = pickupRecords.findIndex(
+        (item) =>
+          item.kind === expectedKind &&
+          (item.id === envelopeRecordId ||
+            previousSync?.localKey === `code:${item.id}` ||
+            (!MEAL_UUID.test(item.id) && parcelDetailRecordId(`parcel-${expectedKind}:`, item.id) === envelopeRecordId)),
+      );
+      if (exactIdIndex >= 0) return exactIdIndex;
+      const normalizedCode = normalizeParcelCodeForMatch(rawCode);
+      if (!normalizedCode) return -1;
+      return pickupRecords.findIndex(
+        (item) =>
+          item.kind === expectedKind &&
+          item.platform === platform &&
+          normalizeParcelCodeForMatch(item.code) === normalizedCode &&
+          Math.abs(item.capturedAtMs - capturedAt) <= 1_000 &&
+          !isLocalCodeBoundToOtherCloudRecord(item, envelopeRecordId),
+      );
+    };
 
     for (const envelope of Object.values(cloudState.remote)) {
       if (envelope.type !== "parcel_pickup" && envelope.type !== "parcel_handoff") continue;
@@ -2121,11 +2227,13 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
         const platform = standaloneBrandToPlatform(payload.brandId);
         if (!platform) continue;
         const location = cleanString(payload.location);
-        const matchIndex = pickupRecords.findIndex(
-          (item) =>
-            item.id === envelope.recordId ||
-            (previousSync?.localKey === `code:${item.id}`) ||
-            (item.kind === "pickup" && item.platform === platform && Math.abs(item.capturedAtMs - capturedAt) <= 1_000),
+        const matchIndex = findStandaloneCodeMatchIndex(
+          "pickup",
+          envelope.recordId,
+          previousSync,
+          platform,
+          code,
+          capturedAt,
         );
         const existingItem = matchIndex >= 0 ? (pickupRecords[matchIndex] as StandaloneParcelPickup) : undefined;
         const localId = existingItem?.id ?? envelope.recordId;
@@ -2210,11 +2318,13 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
         const windowEndAt = cloudTime(payload.windowEndAt, now + 366 * 86_400_000);
         const expiresAt = windowEndAt > 0 ? windowEndAt + 3_600_000 : 0;
         const windowText = cleanString(payload.windowText);
-        const matchIndex = pickupRecords.findIndex(
-          (item) =>
-            item.id === envelope.recordId ||
-            (previousSync?.localKey === `code:${item.id}`) ||
-            (item.kind === "handoff" && item.platform === platform && Math.abs(item.capturedAtMs - capturedAt) <= 1_000),
+        const matchIndex = findStandaloneCodeMatchIndex(
+          "handoff",
+          envelope.recordId,
+          previousSync,
+          platform,
+          code,
+          capturedAt,
         );
         const existingItem = matchIndex >= 0 ? (pickupRecords[matchIndex] as ParcelHandoffRecord) : undefined;
         const localId = existingItem?.id ?? envelope.recordId;
@@ -2490,7 +2600,19 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
 
     // 6. Compute Outbound Local Edits -> nextEdits
     const nextEdits: Record<string, ParcelCloudEdit> = { ...cloudState.edits };
-    const nextQuarantined: Record<string, string> = { ...(cloudState.quarantined ?? {}) };
+    const nextQuarantined: Record<string, ParcelQuarantinedRecord> = normalizeQuarantinedEntries(
+      cloudState.quarantined,
+      now,
+    );
+    const isQuarantinedDigest = (recordId: string, digest: string): boolean => {
+      const entry = nextQuarantined[recordId];
+      if (!entry) return false;
+      if (entry.expiresAtMs <= now) {
+        delete nextQuarantined[recordId];
+        return false;
+      }
+      return entry.digest === digest;
+    };
     const enqueueEdit = (
       recordId: string,
       type: ParcelCloudRecordType,
@@ -2507,7 +2629,7 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
           return;
         }
         const qDigest = parcelEditQuarantineDigest(type, true, cloud.lifecycle, cloud.historyAt, undefined);
-        if (nextQuarantined[recordId] === qDigest) {
+        if (isQuarantinedDigest(recordId, qDigest)) {
           delete nextEdits[recordId];
           return;
         }
@@ -2528,7 +2650,7 @@ export function reconcileParcelCloudRecordsWithLocal(scope: string, now = Date.n
       }
       if (!payload) return;
       const qDigest = parcelEditQuarantineDigest(type, false, lifecycle, historyAt, payload);
-      if (nextQuarantined[recordId] === qDigest) {
+      if (isQuarantinedDigest(recordId, qDigest)) {
         delete nextEdits[recordId];
         return;
       }
@@ -3187,11 +3309,14 @@ async function runParcelCloudSync(scope: string, budgetMs: number): Promise<Parc
               continue;
             }
           }
-          if (isClockSkewMutationRejection(error) && mealCredentialScope() === scope) {
-            updateParcelCloudState(scope, (current) => dropRejectedParcelBatch(current, batch, error));
+          const isRetryableHoldStatus =
+            error instanceof GatewayError &&
+            (error.status === 401 || error.status === 408 || error.status === 409 || error.status === 429);
+          if (!isRetryableHoldStatus && isClockSkewMutationRejection(error) && mealCredentialScope() === scope) {
+            updateParcelCloudState(scope, (current) => dropRejectedParcelBatch(current, batch, error, Date.now()));
             throw error;
           }
-          if (isDeterministicParcelMutationRejection(error) && mealCredentialScope() === scope) {
+          if (!isRetryableHoldStatus && isDeterministicParcelMutationRejection(error) && mealCredentialScope() === scope) {
             writeDiagnostic(
               "cloud.sync.failed",
               {
@@ -3202,7 +3327,7 @@ async function runParcelCloudSync(scope: string, budgetMs: number): Promise<Parc
               },
               "warning",
             );
-            updateParcelCloudState(scope, (current) => dropRejectedParcelBatch(current, batch, error));
+            updateParcelCloudState(scope, (current) => dropRejectedParcelBatch(current, batch, error, Date.now()));
             processedRecords = true;
             continue;
           }

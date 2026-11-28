@@ -52,18 +52,10 @@ public final class ExpressStatusColors {
         return badgeFill(item.semantic, item.displayStatus(), isNight(context));
     }
 
-    public static int widgetBadgeFill(ExpressItem item) {
-        return badgeFill(item.semantic, item.displayStatus(), false);
-    }
-
     /** Owner 2026-11-27 (修改 29): capsule base colour at 12% (0x1F) in light mode and 22% (0x38) in dark mode. */
     public static int badgeFill(StatusSemantic semantic, String label, boolean dark) {
         int alpha = dark ? ExpressStatusTones.DARK_BADGE_ALPHA : ExpressStatusTones.LIGHT_BADGE_ALPHA;
         return (capsule(semantic, label, dark) & 0x00ffffff) | alpha;
-    }
-
-    public static int badgeFill(StatusSemantic semantic, String label) {
-        return badgeFill(semantic, label, false);
     }
 
     /**

@@ -45,7 +45,27 @@ function mealObservation(payload: MealPayload, rawRules: MealRules["raw"], produ
 
 type Candidate = { content: string; boundingBox: VisionBoundingBox };
 
-export function onlineMealRequiresQR(fields: Record<string, unknown>, rules: MealRules): boolean {
+const EXPLICIT_REDEMPTION_CUE_PATTERN = /待扫码核销|扫码核销|请出示二维码|出示二维码|核销二维码|请扫码核销/u;
+
+function hasExplicitRedemptionCues(text: string, runtime: MealRules["parsed"]): boolean {
+  if (!text) return false;
+  if (redemptionPage(runtime, text)) return true;
+  return EXPLICIT_REDEMPTION_CUE_PATTERN.test(text);
+}
+
+export function onlineMealRequiresQR(
+  fields: Record<string, unknown>,
+  rules: MealRules,
+  candidates?: readonly Candidate[],
+): boolean {
+  const fieldLines = ["brand", "merchantName", "productName", "productSpec", "waitTime", "status"]
+    .map(key => modelText(fields, key))
+    .filter(Boolean);
+  const candidateLines = (candidates ?? []).map(item => normalizePickupText(item.content)).filter(Boolean);
+  const combined = [...fieldLines, ...candidateLines].join("\n");
+  if (hasExplicitRedemptionCues(combined, rules.parsed)) {
+    return true;
+  }
   if (!modelText(fields, "pickupCode", 256).trim()
       && redemptionIdentity(rules.parsed, ["brand", "merchantName", "productName"].map(key => modelText(fields, key)).join("\n"))) {
     return true;
@@ -93,10 +113,13 @@ export async function recognizeMealImage(image: UIImage, candidates: readonly Ca
   const width = image.width * image.scale, height = image.height * image.scale;
   const joined = candidates.map(item => normalizePickupText(item.content)).join("\n");
   const tea = redemptionPage(rules.parsed, joined);
-  if (model && !tea && !onlineMealRequiresQR(model, rules) && modelText(model, "pickupCode", 256)) {
+  const explicitRedemption = Boolean(tea || hasExplicitRedemptionCues(joined, rules.parsed));
+  if (model && !explicitRedemption && !onlineMealRequiresQR(model, rules, candidates) && modelText(model, "pickupCode", 256)) {
     return recognizeMealText(candidates, width, height, capturedAt, [], rules, model);
   }
-  const qrPayloads = tea ? readMealQRs(image) : await QRCode.parseImage(image).then(value => value ? [value] : [], () => []);
+  const qrPayloads = explicitRedemption
+    ? readMealQRs(image)
+    : await QRCode.parseImage(image).then(value => value ? [value] : [], () => []);
   return recognizeMealText(candidates, width, height, capturedAt, qrPayloads, rules, model);
 }
 
@@ -105,7 +128,11 @@ export function recognizeMealText(
   qrPayloads: readonly string[], rules: MealRules, model?: Record<string, unknown>,
 ): { meals: MealObservation[]; draft?: MealObservation } {
   const joined = candidates.map(item => normalizePickupText(item.content)).join("\n");
-  if (model && !redemptionPage(rules.parsed, joined) && !onlineMealRequiresQR(model, rules)) {
+  const requiresQr = Boolean(
+    hasExplicitRedemptionCues(joined, rules.parsed) ||
+    (model && onlineMealRequiresQR(model, rules, candidates)),
+  );
+  if (model && !requiresQr) {
     const fromModel = mealFromModel(model, capturedAt, rules, candidates);
     if (fromModel) return { meals: [fromModel] };
   }
@@ -132,6 +159,45 @@ export function recognizeMealText(
     return mealObservation(payload, rules.raw, payload.productName ?? "", evidenceText);
   }
   if (parsed.length) return { meals: parsed.map(value => observation(value, parsed.length === 1)) };
+  if (model && hasExplicitRedemptionCues(
+    [joined, ...["brand", "merchantName", "productName", "productSpec", "waitTime", "status"].map(k => modelText(model, k))]
+      .filter(Boolean)
+      .join("\n"),
+    rules.parsed,
+  )) {
+    const decoded = qrPayloads.filter(value => Boolean(value.trim()));
+    const modelBrand = onlineBrand(
+      rules.parsed,
+      modelText(model, "brand", 256),
+      modelText(model, "pickupCode", 256),
+      modelText(model, "productName"),
+      modelText(model, "productSpec"),
+    ) ?? redemptionIdentity(
+      rules.parsed,
+      [joined, modelText(model, "brand"), modelText(model, "merchantName"), modelText(model, "productName")].filter(Boolean).join("\n"),
+    );
+    if (modelBrand?.redemption && new Set(decoded).size === 1) {
+      const onlineProduct = modelText(model, "productName");
+      const onlineMerchant = modelText(model, "merchantName");
+      const onlineSpec = modelText(model, "productSpec");
+      const payload: MealPayload = {
+        brandId: modelBrand.id,
+        brandName: modelBrand.name,
+        code: "",
+        merchantName: chineseParentheses(cleanMerchant(onlineMerchant, rules.parsed)),
+        productName: productTitle(onlineProduct),
+        createdAt: capturedAt,
+        expiresAt: capturedAt + rules.parsed.ttlSeconds * 1000,
+        status: "待核销",
+        qrPayload: decoded[0],
+        ...mealOrderMetadata(rules.raw, blocks, modelText(model, "waitTime", 128)),
+        ...onlineMetadata(model),
+      };
+      return {
+        meals: [mealObservation(payload, rules.raw, payload.productName ?? "", [evidenceText, onlineSpec].filter(Boolean).join("\n"))],
+      };
+    }
+  }
   const allowLuckinDraft = !model || onlineBrand(
     rules.parsed,
     modelText(model, "brand", 256),
